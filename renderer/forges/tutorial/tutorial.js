@@ -468,16 +468,16 @@ const TOPICS = [
         ' (each is 16 KB of map data — around 45 screens, a little fewer where actors are dense).'
       ),
       table(
-        ['Board', 'Tilesets', 'Screen banks', 'What it does'],
+        ['Board', 'Tilesets', 'Screen banks', 'What it does', 'Famous games'],
         [
-          [b('NROM-256'), '1', '1', 'No switching at all — everything is mapped at once. The default, and enough for a small game.'],
-          [b('CNROM'), '4', '1', 'Adds graphics switching: each map can pick which tileset it draws with. Program space stays NROM-sized.'],
-          [b('GxROM'), '4', '1', 'The same capacity as CNROM on a licensed Nintendo board — prefer it if you intend to have real cartridges made.'],
-          [b('Color Dreams'), '16', '1', 'The most tilesets without program switching. An unlicensed board: fine in every emulator, rarer as a real reproduction cartridge.'],
-          [b('UxROM'), '1', '7', 'The opposite trade: one fixed tileset, but seven switchable banks of screens. Pick it when you run out of world, not art.'],
-          [b('MMC1'), '16', '7', 'Switches both program and graphics. The mapper more NES games used than any other, and what Final Fantasy and Zelda shipped on.'],
-          [b('MMC3'), '32', '15', 'The largest board here, with a bonus: its scanline interrupt gives the message font its own graphics bank (see below).'],
-          [b('UNROM 512'), '4', '31', 'A modern homebrew board. Its graphics are RAM filled from program space at boot, so each tileset costs about one screen bank.']
+          [b('NROM-256'), '1', '1', 'No switching at all — everything is mapped at once. The default, and enough for a small game.', 'Super Mario Bros., Donkey Kong, Balloon Fight'],
+          [b('CNROM'), '4', '1', 'Adds graphics switching: each map can pick which tileset it draws with. Program space stays NROM-sized.', 'Gradius, Adventure Island, Solomon’s Key'],
+          [b('GxROM'), '4', '1', 'The same capacity as CNROM on a licensed Nintendo board — prefer it if you intend to have real cartridges made.', 'Super Mario Bros. / Duck Hunt (the combo cartridge), Gumshoe'],
+          [b('Color Dreams'), '16', '1', 'The most tilesets without program switching. An unlicensed board: fine in every emulator, rarer as a real reproduction cartridge.', 'Crystal Mines, Bible Adventures'],
+          [b('UxROM'), '1', '7', 'The opposite trade: one fixed tileset, but seven switchable banks of screens. Pick it when you run out of world, not art.', 'Mega Man, Castlevania, Contra, DuckTales'],
+          [b('MMC1'), '16', '7', 'Switches both program and graphics. The mapper more NES games used than any other, and what Final Fantasy and Zelda shipped on.', 'The Legend of Zelda, Metroid, Final Fantasy, Mega Man 2'],
+          [b('MMC3'), '32', '15', 'The largest board here, with a bonus: its scanline interrupt gives the message font its own graphics bank (see below).', 'Super Mario Bros. 3, Kirby’s Adventure, Mega Man 3, Crystalis'],
+          [b('UNROM 512'), '4', '31', 'A modern homebrew board. Its graphics are RAM filled from program space at boot, so each tileset costs about one screen bank.', 'Micro Mages, Lizard — modern homebrew, not 1980s releases']
         ]
       ),
       h3('Three boards with a twist'),
