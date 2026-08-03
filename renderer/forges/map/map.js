@@ -32,7 +32,7 @@ const TOOLS = [
   { id: 'stamp', label: '▪ Stamp', title: 'Paint the selected metatile' },
   { id: 'rect', label: '▭ Rect', title: 'Fill a rectangle' },
   { id: 'fill', label: '🪣 Fill', title: 'Flood fill matching metatiles' },
-  { id: 'pick', label: '💧 Pick', title: 'Pick up the metatile under the cursor' },
+  { id: 'pick', label: '💧 Pick', title: 'Pick up the metatile under the cursor, then return to Stamp' },
   { id: 'start', label: '⚑ Start', title: 'Place where the player begins' },
   { id: 'entity', label: '☗ Actor', title: 'Place an actor' }
 ];
@@ -237,6 +237,7 @@ export function mount(container, app) {
     if (state.tool === 'pick') {
       state.metatile = currentScreen().metatiles[cell.row * LIMITS.screenCols + cell.col];
       metatilePanel.render();
+      setTool('stamp');
       return;
     }
 
@@ -938,6 +939,13 @@ export function mount(container, app) {
     renderMapSettings();
   }
 
+  function setTool(id) {
+    state.tool = id;
+    root.querySelectorAll('[data-tool]').forEach((button) => {
+      button.classList.toggle('active', button.dataset.tool === id);
+    });
+  }
+
   function toolButton(tool) {
     return el(
       'button.btn.btn-sm',
@@ -945,12 +953,7 @@ export function mount(container, app) {
         class: state.tool === tool.id ? 'active' : '',
         title: tool.title,
         dataset: { tool: tool.id },
-        onclick: () => {
-          state.tool = tool.id;
-          root.querySelectorAll('[data-tool]').forEach((button) => {
-            button.classList.toggle('active', button.dataset.tool === tool.id);
-          });
-        }
+        onclick: () => setTool(tool.id)
       },
       tool.label
     );
