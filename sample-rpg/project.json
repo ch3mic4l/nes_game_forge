@@ -1,0 +1,27 @@
+{
+  "format": 1,
+  "project": {
+    "name": "Fallen Star",
+    "engineVersion": 1,
+    "gameType": "rpg",
+    "startMap": 0,
+    "startScreen": 0,
+    "startX": 112,
+    "startY": 112,
+    "maxHearts": 3,
+    "titleMap": null,
+    "titleScreen": 0
+  },
+  "cartridge": {
+    "mapper": 1,
+    "mirroring": "vertical"
+  },
+  "switches": [],
+  "rpg": {
+    "xpBase": 8,
+    "xpGrow": 4,
+    "maxLevel": 8,
+    "battleTilesetId": 1,
+    "encounterMusic": null
+  }
+}

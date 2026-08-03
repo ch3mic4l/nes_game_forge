@@ -1,0 +1,21 @@
+{
+  "name": "nes-game-forge",
+  "version": "0.1.0",
+  "description": "Create NES games through a UI: Map Forge, Sound Forge, Tile Forge, Sprite Forge and Controller Forge, plus a ROM builder, emulator and debugger.",
+  "type": "module",
+  "main": "main/main.js",
+  "license": "MIT",
+  "scripts": {
+    "start": "electron --no-sandbox .",
+    "start:sandboxed": "electron .",
+    "test": "node --test \"test/unit/*.test.js\"",
+    "smoke": "FORGE_SMOKE=1 electron --no-sandbox .",
+    "build:sample": "node main/build/cli.js sample",
+    "sample": "node tools/make-sample.js",
+    "sample:rpg": "node tools/make-rpg-sample.js",
+    "build:sample:rpg": "node main/build/cli.js sample-rpg"
+  },
+  "devDependencies": {
+    "electron": "^38.0.0"
+  }
+}

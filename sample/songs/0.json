@@ -1,0 +1,194 @@
+{
+  "name": "Greenwood",
+  "tempo": {
+    "framesPerRow": 8
+  },
+  "instruments": [
+    {
+      "id": 0,
+      "name": "Lead",
+      "duty": 2,
+      "volEnv": [
+        15,
+        14,
+        13,
+        12,
+        11,
+        10,
+        9,
+        8
+      ],
+      "sustain": 7
+    },
+    {
+      "id": 1,
+      "name": "Harmony",
+      "duty": 1,
+      "volEnv": [
+        9,
+        8,
+        7,
+        6,
+        5
+      ],
+      "sustain": 4
+    },
+    {
+      "id": 2,
+      "name": "Percussion",
+      "duty": 0,
+      "volEnv": [
+        12,
+        8,
+        4,
+        1,
+        0
+      ],
+      "sustain": 4
+    }
+  ],
+  "patterns": [
+    {
+      "id": 0,
+      "rows": 16,
+      "channels": {
+        "pulse1": [
+          {
+            "note": 48,
+            "inst": 0
+          },
+          null,
+          {
+            "note": 52,
+            "inst": 0
+          },
+          null,
+          {
+            "note": 55,
+            "inst": 0
+          },
+          null,
+          {
+            "note": 52,
+            "inst": 0
+          },
+          null,
+          {
+            "note": 53,
+            "inst": 0
+          },
+          null,
+          {
+            "note": 50,
+            "inst": 0
+          },
+          null,
+          {
+            "note": 43,
+            "inst": 0
+          },
+          null,
+          {
+            "note": 48,
+            "inst": 0
+          },
+          null
+        ],
+        "pulse2": [
+          {
+            "note": 40,
+            "inst": 1
+          },
+          null,
+          null,
+          null,
+          {
+            "note": 43,
+            "inst": 1
+          },
+          null,
+          null,
+          null,
+          {
+            "note": 45,
+            "inst": 1
+          },
+          null,
+          null,
+          null,
+          {
+            "note": 40,
+            "inst": 1
+          },
+          null,
+          null,
+          null
+        ],
+        "triangle": [
+          {
+            "note": 24,
+            "inst": 0
+          },
+          null,
+          null,
+          null,
+          {
+            "note": 24,
+            "inst": 0
+          },
+          null,
+          null,
+          null,
+          {
+            "note": 29,
+            "inst": 0
+          },
+          null,
+          null,
+          null,
+          {
+            "note": 31,
+            "inst": 0
+          },
+          null,
+          null,
+          null
+        ],
+        "noise": [
+          {
+            "note": 20,
+            "inst": 2
+          },
+          null,
+          null,
+          null,
+          {
+            "note": 20,
+            "inst": 2
+          },
+          null,
+          null,
+          null,
+          {
+            "note": 20,
+            "inst": 2
+          },
+          null,
+          null,
+          null,
+          {
+            "note": 20,
+            "inst": 2
+          },
+          null,
+          null,
+          null
+        ]
+      }
+    }
+  ],
+  "order": [
+    0
+  ],
+  "loop": 0
+}

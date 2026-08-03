@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self' forge:; script-src 'self' forge:; style-src 'self' 'unsafe-inline' forge:; img-src 'self' data: blob: forge:; connect-src 'self' forge:; media-src 'self' blob:; worker-src 'self' forge: blob:; child-src 'self' forge: blob:;"
+    />
+    <title>NES Game Forge</title>
+    <link rel="stylesheet" href="./styles/app.css" />
+  </head>
+  <body>
+    <div id="app" class="app">
+      <header class="titlebar">
+        <div class="brand">
+          <span class="brand-mark">NES</span>
+          <span class="brand-name">Game Forge</span>
+        </div>
+        <div class="project-chip" id="projectChip">
+          <span class="project-name" id="projectName">No project open</span>
+          <span class="dirty-dot" id="dirtyDot" hidden title="Unsaved changes"></span>
+        </div>
+        <div class="titlebar-actions">
+          <button class="btn" data-action="project:new">New</button>
+          <button class="btn" data-action="project:open">Open</button>
+          <button class="btn" data-action="project:save" id="saveButton" disabled>Save</button>
+          <span class="spacer"></span>
+          <button class="btn btn-accent" data-action="build:play" id="playButton" disabled>Build &amp; Play</button>
+        </div>
+      </header>
+
+      <div class="workspace">
+        <nav class="rail" id="rail" aria-label="Forges"></nav>
+        <main class="stage" id="stage" aria-live="polite"></main>
+      </div>
+
+      <footer class="statusbar">
+        <span class="status-dot" id="statusDot"></span>
+        <span class="status-text" id="statusText">Ready</span>
+        <span class="spacer"></span>
+        <span class="status-meta" id="statusMeta"></span>
+      </footer>
+    </div>
+
+    <div class="modal-host" id="modalHost" hidden></div>
+    <div class="toast-host" id="toastHost"></div>
+
+    <script type="module" src="./app.js"></script>
+  </body>
+</html>

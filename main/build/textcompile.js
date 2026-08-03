@@ -1,0 +1,253 @@
+// Compiles a project's authored text into the strings and events the engine
+// runs, through shared/font.js so the wrapping the editor previews is the
+// wrapping the ROM performs.
+//
+// A string is glyph tiles with three control codes below the font's base: end,
+// newline and page break. An event is a list of pages, each
+// [cond, arg, body length, commands...], ended by EVT_PAGES_END; the engine runs
+// the first page whose condition passes. Both tables are byte-indexed, so a
+// project may carry at most 255 of each.
+
+import { BOX_COLS, BOX_ROWS, textToTiles, wrapText } from '../../shared/font.js';
+import { EVENT_COMMANDS, EVENT_CONDITIONS } from '../../shared/project.js';
+
+// String control codes, matching engine/constants.asm.
+export const TXT_END = 0x00;
+export const TXT_NEWLINE = 0x01;
+export const TXT_PAGE = 0x02;
+
+// Page conditions and command opcodes are numbered by their position in
+// EVENT_CONDITIONS and EVENT_COMMANDS — that order *is* the wire format, so it
+// is read from there rather than restated as a second list of constants.
+export const condIndex = (id) => Math.max(0, EVENT_CONDITIONS.findIndex((entry) => entry.id === id));
+export const opIndex = (id) => Math.max(0, EVENT_COMMANDS.findIndex((entry) => entry.id === id));
+export const COND_NONE = 0;
+export const EVT_PAGES_END = 0xff;
+export const OP_END = 0x00;
+export const OP_SAY = opIndex('say');
+
+export const NO_EVENT = 0xff;
+export const MAX_TABLE = 255; // $FF is the "none" marker in both tables
+
+/**
+ * Authored text as engine bytes: pages of wrapped lines, then a terminator.
+ * A page break costs one byte and a line break one, so what the editor shows as
+ * four lines is what the box types.
+ */
+export function encodeString(text) {
+  const bytes = [];
+  const unmapped = new Set();
+  wrapText(text, BOX_COLS, BOX_ROWS).forEach((page, pageIndex) => {
+    if (pageIndex) bytes.push(TXT_PAGE);
+    page.forEach((line, lineIndex) => {
+      if (lineIndex) bytes.push(TXT_NEWLINE);
+      const mapped = textToTiles(line);
+      for (const char of mapped.unmapped) unmapped.add(char);
+      bytes.push(...mapped.tiles);
+    });
+  });
+  bytes.push(TXT_END);
+  return { bytes, unmapped };
+}
+
+/**
+ * Every event in the project, and which placed actor runs which.
+ *
+ * The returned `eventFor` is keyed by the entity objects themselves, because
+ * that is what generate.js has in hand when it writes each screen's actor list
+ * and it saves both sides agreeing on a naming scheme for the same thing.
+ */
+export function compileText(project) {
+  const strings = [];
+  const stringIds = new Map(); // identical text is stored once
+  const events = [];
+  const eventFor = new Map();
+  const unmapped = new Set();
+
+  const internString = (text) => {
+    const encoded = encodeString(text);
+    for (const char of encoded.unmapped) unmapped.add(char);
+    const key = encoded.bytes.join(',');
+    if (!stringIds.has(key)) {
+      stringIds.set(key, strings.length);
+      strings.push(encoded.bytes);
+    }
+    return stringIds.get(key);
+  };
+
+  // Warp targets are flat screen indices, the same space the door records use.
+  const screenCount = (project.maps ?? []).reduce((total, map) => total + (map.screens?.length ?? 0), 0);
+  const byte = (value, limit = 255) => Math.max(0, Math.min(limit, value | 0));
+
+  const encodeCommand = (command) => {
+    switch (command.op) {
+      case 'say':
+        return [OP_SAY, internString(command.text ?? '')];
+      case 'warp':
+        return [
+          opIndex('warp'),
+          byte(command.screen, Math.max(0, screenCount - 1)),
+          byte(command.x, 240),
+          byte(command.y, 224)
+        ];
+      case 'give':
+      case 'take':
+        return [opIndex(command.op), byte(command.actor)];
+      case 'setSwitch':
+      case 'clearSwitch':
+        return [opIndex(command.op), byte(command.switch, 63)];
+      case 'join':
+        return [opIndex('join'), byte(command.member, 3)];
+      default:
+        return null;
+    }
+  };
+
+  const encodeEvent = (pages) => {
+    const bytes = [];
+    for (const page of pages) {
+      const body = (page.commands ?? []).map(encodeCommand).filter(Boolean).flat();
+      body.push(OP_END);
+      bytes.push(condIndex(page.cond?.type), byte(page.cond?.arg, 63), body.length, ...body);
+    }
+    bytes.push(EVT_PAGES_END);
+    return bytes;
+  };
+
+  for (const map of project.maps ?? []) {
+    for (const screen of map.screens ?? []) {
+      for (const entity of screen.entities ?? []) {
+        // An authored event wins; plain dialogue becomes an event of one
+        // unconditional page that says one thing, so the engine has a single
+        // path for "talking to somebody" rather than a special case beside the
+        // scripted one.
+        const pages = entity.props?.event?.pages ?? null;
+        const dialogue = String(entity.props?.dialogue ?? '').trim();
+        if (!pages?.length && !dialogue) continue;
+        eventFor.set(entity, events.length);
+        events.push(
+          pages?.length
+            ? encodeEvent(pages)
+            : [COND_NONE, 0, 3, OP_SAY, internString(dialogue), OP_END, EVT_PAGES_END]
+        );
+      }
+    }
+  }
+
+  const problems = [];
+  if (strings.length > MAX_TABLE) {
+    problems.push({
+      severity: 'error',
+      where: 'Map Forge',
+      message: `This project has ${strings.length} pieces of dialogue and the engine holds ${MAX_TABLE}.`
+    });
+  }
+  if (events.length > MAX_TABLE) {
+    problems.push({
+      severity: 'error',
+      where: 'Map Forge',
+      message: `This project has ${events.length} events and the engine holds ${MAX_TABLE}.`
+    });
+  }
+  if (unmapped.size) {
+    problems.push({
+      severity: 'warning',
+      where: 'Map Forge',
+      message:
+        `The font has no glyph for ${[...unmapped].map((char) => `"${char}"`).join(', ')}, ` +
+        'so those characters are written as spaces.'
+    });
+  }
+
+  return {
+    strings,
+    events,
+    eventFor,
+    problems,
+    system: systemStrings(project),
+    bytes: textSize(strings, events)
+  };
+}
+
+/** Bytes the compiled text will occupy in the $E000 bank, including both tables. */
+export function textSize(strings, events) {
+  const total = (list) => list.reduce((sum, entry) => sum + entry.length, 0);
+  const system = Object.values(systemStrings(null)).reduce(
+    (sum, text) => sum + encodeString(text).bytes.length + TITLE_LINE_LIMIT,
+    0
+  ); // the project's own name is longer than the placeholder, so allow for it
+  return (
+    system +
+    2 * Math.max(1, strings.length) +
+    total(strings) +
+    2 * Math.max(1, events.length) +
+    total(events)
+  );
+}
+
+/**
+ * Strings the engine itself says, rather than the project. Always emitted — the
+ * code that refers to them is always assembled, so the labels have to exist even
+ * in a game with no dialogue of its own.
+ *
+ * The title lines are single-line and unwrapped on purpose: the title screen
+ * writes them straight into the nametable during the same rendering-off window
+ * that draws the screen, so it has no message box to wrap them into.
+ */
+export const TITLE_LINE_LIMIT = 28;
+
+export function systemStrings(project) {
+  const name = String(project?.project?.name ?? '')
+    .toUpperCase()
+    .replace(/[^\x20-\x7f]/g, '')
+    .trim()
+    .slice(0, TITLE_LINE_LIMIT);
+  return {
+    sys_title: name || 'UNTITLED',
+    sys_press_start: 'PRESS START',
+    // One page, deliberately: a blank line would be a page break, and the box
+    // would sit waiting for a press before it had said what the press is for.
+    sys_game_over: 'GAME OVER\nPress Start to try again.'
+  };
+}
+
+/**
+ * The assembly source. The pointer tables always exist, even for a project with
+ * no text at all, because script.asm refers to them unconditionally.
+ */
+export function textTables({ strings, events, system = systemStrings(null) }) {
+  const chunks = ['; Generated -- compiled dialogue strings and events.'];
+  for (const [label, text] of Object.entries(system)) {
+    chunks.push(`${label}:\n${dbRows(encodeString(text).bytes)}`);
+  }
+  const table = (name, list, prefix) => {
+    const count = Math.max(1, list.length);
+    chunks.push(`${name}_ptr_lo:\n${labelRow(count, (i) => `LOW(${prefix}_${i})`)}`);
+    chunks.push(`${name}_ptr_hi:\n${labelRow(count, (i) => `HIGH(${prefix}_${i})`)}`);
+    if (!list.length) chunks.push(`${prefix}_0:\n  .db $00`);
+    else list.forEach((bytes, index) => chunks.push(`${prefix}_${index}:\n${dbRows(bytes)}`));
+  };
+  table('str', strings, 'str_data');
+  table('event', events, 'event_data');
+  return `${chunks.join('\n')}\n`;
+}
+
+const hex = (value) => `$${(value & 0xff).toString(16).padStart(2, '0').toUpperCase()}`;
+
+function dbRows(values, perLine = 16) {
+  const lines = [];
+  for (let i = 0; i < values.length; i += perLine) {
+    lines.push(`  .db ${values.slice(i, i + perLine).map(hex).join(',')}`);
+  }
+  return lines.join('\n');
+}
+
+function labelRow(count, format, perLine = 8) {
+  const lines = [];
+  for (let i = 0; i < count; i += perLine) {
+    const slice = [];
+    for (let j = i; j < Math.min(i + perLine, count); j++) slice.push(format(j));
+    lines.push(`  .db ${slice.join(',')}`);
+  }
+  return lines.join('\n');
+}

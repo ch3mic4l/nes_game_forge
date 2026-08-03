@@ -1,0 +1,124 @@
+// Central project state: one object, snapshot-based undo, change notifications.
+//
+// Snapshots are whole-project structuredClones. At NES scale a project is well
+// under a megabyte, so this stays fast and removes a whole class of undo bugs.
+
+const UNDO_LIMIT = 100;
+
+export class Store {
+  constructor() {
+    this.project = null;
+    this.dir = null;
+    this.dirty = false;
+    this.undoStack = [];
+    this.redoStack = [];
+    this.listeners = new Set();
+    this.stroke = null;
+  }
+
+  get isOpen() {
+    return this.project !== null;
+  }
+
+  subscribe(listener) {
+    this.listeners.add(listener);
+    return () => this.listeners.delete(listener);
+  }
+
+  emit(detail = {}) {
+    for (const listener of this.listeners) listener(detail);
+  }
+
+  open(dir, project) {
+    this.dir = dir;
+    this.project = project;
+    this.dirty = false;
+    this.undoStack = [];
+    this.redoStack = [];
+    this.emit({ type: 'open' });
+  }
+
+  close() {
+    this.dir = null;
+    this.project = null;
+    this.dirty = false;
+    this.undoStack = [];
+    this.redoStack = [];
+    this.emit({ type: 'close' });
+  }
+
+  markSaved() {
+    this.dirty = false;
+    this.emit({ type: 'saved' });
+  }
+
+  pushUndo(label) {
+    if (!this.project) return;
+    this.undoStack.push({ label, state: structuredClone(this.project) });
+    if (this.undoStack.length > UNDO_LIMIT) this.undoStack.shift();
+    this.redoStack = [];
+  }
+
+  /** Snapshot, mutate, notify — the normal path for a discrete edit. */
+  commit(label, mutate) {
+    if (!this.project) return;
+    this.pushUndo(label);
+    mutate(this.project);
+    this.dirty = true;
+    this.emit({ type: 'change', label });
+  }
+
+  /**
+   * A drag should be one undo entry. beginStroke snapshots once; touch() notifies
+   * without snapshotting; endStroke closes it out.
+   */
+  beginStroke(label) {
+    if (!this.project || this.stroke) return;
+    this.pushUndo(label);
+    this.stroke = label;
+    this.dirty = true;
+  }
+
+  touch(detail = {}) {
+    this.dirty = true;
+    this.emit({ type: 'change', live: true, ...detail });
+  }
+
+  endStroke() {
+    if (!this.stroke) return;
+    const label = this.stroke;
+    this.stroke = null;
+    this.emit({ type: 'change', label });
+  }
+
+  /** Discard the pending stroke snapshot when a drag turned out to change nothing. */
+  cancelStroke() {
+    if (!this.stroke) return;
+    this.stroke = null;
+    const entry = this.undoStack.pop();
+    if (entry) this.project = entry.state;
+    this.emit({ type: 'change' });
+  }
+
+  undo() {
+    const entry = this.undoStack.pop();
+    if (!entry) return false;
+    this.redoStack.push({ label: entry.label, state: structuredClone(this.project) });
+    this.project = entry.state;
+    this.dirty = true;
+    this.emit({ type: 'undo', label: entry.label });
+    return entry.label ?? true;
+  }
+
+  redo() {
+    const entry = this.redoStack.pop();
+    if (!entry) return false;
+    this.undoStack.push({ label: entry.label, state: structuredClone(this.project) });
+    this.project = entry.state;
+    this.dirty = true;
+    this.emit({ type: 'redo', label: entry.label });
+    return entry.label ?? true;
+  }
+}
+
+export const store = new Store();

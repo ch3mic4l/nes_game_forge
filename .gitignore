@@ -1,0 +1,7 @@
+node_modules/
+dist/
+sample/build/
+sample-rpg/build/
+*.nes
+*.fns
+.DS_Store

@@ -1,0 +1,29 @@
+{
+  "format": 1,
+  "project": {
+    "name": "Sample Quest",
+    "engineVersion": 1,
+    "gameType": "action",
+    "startMap": 0,
+    "startScreen": 0,
+    "startX": 112,
+    "startY": 112,
+    "maxHearts": 3,
+    "titleMap": 1,
+    "titleScreen": 0
+  },
+  "cartridge": {
+    "mapper": 0,
+    "mirroring": "vertical"
+  },
+  "switches": [
+    "Chest opened"
+  ],
+  "rpg": {
+    "xpBase": 25,
+    "xpGrow": 12,
+    "maxLevel": 15,
+    "battleTilesetId": 0,
+    "encounterMusic": null
+  }
+}

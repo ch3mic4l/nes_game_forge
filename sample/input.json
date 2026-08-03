@@ -1,0 +1,40 @@
+{
+  "states": {
+    "gameplay": {
+      "A": "attack",
+      "B": "interact",
+      "SELECT": "item",
+      "START": "pause"
+    },
+    "menu": {
+      "A": "confirm",
+      "B": "cancel",
+      "SELECT": "none",
+      "START": "pause"
+    },
+    "dialog": {
+      "A": "confirm",
+      "B": "confirm",
+      "SELECT": "none",
+      "START": "none"
+    },
+    "title": {
+      "A": "confirm",
+      "B": "none",
+      "SELECT": "none",
+      "START": "confirm"
+    },
+    "gameover": {
+      "A": "confirm",
+      "B": "none",
+      "SELECT": "none",
+      "START": "confirm"
+    },
+    "battle": {
+      "A": "confirm",
+      "B": "cancel",
+      "SELECT": "none",
+      "START": "none"
+    }
+  }
+}

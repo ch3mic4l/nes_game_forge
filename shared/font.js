@@ -1,0 +1,323 @@
+// The engine's built-in text face and the rules for when a project carries it.
+//
+// Single writer for: the glyph art, the character-to-tile mapping, the reserved
+// tile ranges (96 background tiles for the font, two sprite tiles for the HUD
+// hearts), and the predicates that decide when a project pays for them. The
+// generator stamps these into the build-time CHR copies; the Tile Forge marks
+// the ranges; validateProject refuses user art inside them — all from here, so
+// the three can never disagree.
+//
+// Free of DOM and Node APIs: imported by the main process, the renderer and
+// node:test alike.
+
+// --------------------------------------------------------------- reserved map
+
+/** First background tile the font occupies: 96 glyphs at $A0-$FF. */
+export const FONT_BASE = 0xa0;
+export const FONT_COUNT = 96;
+
+/**
+ * Sprite-table tiles the HUD hearts use when combat is in play. These share
+ * their indices with two of the font's window glyphs, which is not a clash: the
+ * font lives in the background pattern table and the hearts in the sprite one,
+ * and the hardware reads them from different halves of the CHR bank.
+ */
+export const HEART_FULL_TILE = 0xfe;
+export const HEART_EMPTY_TILE = 0xff;
+
+/**
+ * The battle targeting cursor's sprite tile, reserved only on a split-font
+ * board (see fontBankSplit): there the background arrow glyph is in the font's
+ * own CHR bank, which is switched in below the text windows — and the cursor
+ * points at monsters *above* them, so it has to be a sprite instead.
+ */
+export const SPRITE_ARROW_TILE = 0xfd;
+
+/** The message window's text area: 4 rows of 28 characters. */
+export const BOX_COLS = 28;
+export const BOX_ROWS = 4;
+
+// ---------------------------------------------------------------- glyph art
+//
+// Each glyph is up to 8 rows of up to 8 columns, '#' = colour slot 3, '.' = the
+// shared backdrop. Missing rows and short rows pad with backdrop, so lowercase
+// bodies simply start at their x-height row. ASCII 32-127 is exactly 96 codes;
+// the four rarely-typed codes { | } ~ are spent on window furniture and 127
+// (DEL) on the page-advance arrow — see the named aliases at the bottom.
+
+const G = {
+  ' ': [],
+  '!': ['..#..', '..#..', '..#..', '..#..', '..#..', '', '..#..'],
+  '"': ['.#.#.', '.#.#.'],
+  '#': ['.#.#.', '.#.#.', '#####', '.#.#.', '#####', '.#.#.', '.#.#.'],
+  $: ['..#..', '.####', '#.#..', '.###.', '..#.#', '####.', '..#..'],
+  '%': ['##...', '##..#', '...#.', '..#..', '.#...', '#..##', '...##'],
+  '&': ['.##..', '#..#.', '#.#..', '.#...', '#.#.#', '#..#.', '.##.#'],
+  "'": ['..#..', '..#..'],
+  '(': ['...#.', '..#..', '.#...', '.#...', '.#...', '..#..', '...#.'],
+  ')': ['.#...', '..#..', '...#.', '...#.', '...#.', '..#..', '.#...'],
+  '*': ['', '..#..', '#.#.#', '.###.', '#.#.#', '..#..'],
+  '+': ['', '..#..', '..#..', '#####', '..#..', '..#..'],
+  ',': ['', '', '', '', '', '.##..', '..#..', '.#...'],
+  '-': ['', '', '', '#####'],
+  '.': ['', '', '', '', '', '.##..', '.##..'],
+  '/': ['....#', '...#.', '...#.', '..#..', '.#...', '.#...', '#....'],
+  0: ['.###.', '#...#', '#..##', '#.#.#', '##..#', '#...#', '.###.'],
+  1: ['..#..', '.##..', '..#..', '..#..', '..#..', '..#..', '#####'],
+  2: ['.###.', '#...#', '....#', '...#.', '..#..', '.#...', '#####'],
+  3: ['#####', '...#.', '..#..', '...#.', '....#', '#...#', '.###.'],
+  4: ['...#.', '..##.', '.#.#.', '#..#.', '#####', '...#.', '...#.'],
+  5: ['#####', '#....', '####.', '....#', '....#', '#...#', '.###.'],
+  6: ['..##.', '.#...', '#....', '####.', '#...#', '#...#', '.###.'],
+  7: ['#####', '....#', '...#.', '..#..', '.#...', '.#...', '.#...'],
+  8: ['.###.', '#...#', '#...#', '.###.', '#...#', '#...#', '.###.'],
+  9: ['.###.', '#...#', '#...#', '.####', '....#', '...#.', '.##..'],
+  ':': ['', '.##..', '.##..', '', '', '.##..', '.##..'],
+  ';': ['', '.##..', '.##..', '', '', '.##..', '..#..'],
+  '<': ['...#.', '..#..', '.#...', '#....', '.#...', '..#..', '...#.'],
+  '=': ['', '', '#####', '', '#####'],
+  '>': ['.#...', '..#..', '...#.', '....#', '...#.', '..#..', '.#...'],
+  '?': ['.###.', '#...#', '....#', '...#.', '..#..', '', '..#..'],
+  '@': ['.###.', '#...#', '#.###', '#.#.#', '#.##.', '#....', '.###.'],
+  A: ['.###.', '#...#', '#...#', '#####', '#...#', '#...#', '#...#'],
+  B: ['####.', '#...#', '#...#', '####.', '#...#', '#...#', '####.'],
+  C: ['.###.', '#...#', '#....', '#....', '#....', '#...#', '.###.'],
+  D: ['####.', '#...#', '#...#', '#...#', '#...#', '#...#', '####.'],
+  E: ['#####', '#....', '#....', '####.', '#....', '#....', '#####'],
+  F: ['#####', '#....', '#....', '####.', '#....', '#....', '#....'],
+  G: ['.###.', '#...#', '#....', '#.###', '#...#', '#...#', '.###.'],
+  H: ['#...#', '#...#', '#...#', '#####', '#...#', '#...#', '#...#'],
+  I: ['#####', '..#..', '..#..', '..#..', '..#..', '..#..', '#####'],
+  J: ['..###', '...#.', '...#.', '...#.', '...#.', '#..#.', '.##..'],
+  K: ['#...#', '#..#.', '#.#..', '##...', '#.#..', '#..#.', '#...#'],
+  L: ['#....', '#....', '#....', '#....', '#....', '#....', '#####'],
+  M: ['#...#', '##.##', '#.#.#', '#.#.#', '#...#', '#...#', '#...#'],
+  N: ['#...#', '##..#', '#.#.#', '#..##', '#...#', '#...#', '#...#'],
+  O: ['.###.', '#...#', '#...#', '#...#', '#...#', '#...#', '.###.'],
+  P: ['####.', '#...#', '#...#', '####.', '#....', '#....', '#....'],
+  Q: ['.###.', '#...#', '#...#', '#...#', '#.#.#', '#..#.', '.##.#'],
+  R: ['####.', '#...#', '#...#', '####.', '#.#..', '#..#.', '#...#'],
+  S: ['.####', '#....', '#....', '.###.', '....#', '....#', '####.'],
+  T: ['#####', '..#..', '..#..', '..#..', '..#..', '..#..', '..#..'],
+  U: ['#...#', '#...#', '#...#', '#...#', '#...#', '#...#', '.###.'],
+  V: ['#...#', '#...#', '#...#', '#...#', '#...#', '.#.#.', '..#..'],
+  W: ['#...#', '#...#', '#...#', '#.#.#', '#.#.#', '##.##', '#...#'],
+  X: ['#...#', '#...#', '.#.#.', '..#..', '.#.#.', '#...#', '#...#'],
+  Y: ['#...#', '#...#', '.#.#.', '..#..', '..#..', '..#..', '..#..'],
+  Z: ['#####', '....#', '...#.', '..#..', '.#...', '#....', '#####'],
+  '[': ['..###', '..#..', '..#..', '..#..', '..#..', '..#..', '..###'],
+  '\\': ['#....', '.#...', '.#...', '..#..', '...#.', '...#.', '....#'],
+  ']': ['###..', '..#..', '..#..', '..#..', '..#..', '..#..', '###..'],
+  '^': ['..#..', '.#.#.', '#...#'],
+  _: ['', '', '', '', '', '', '', '#####'],
+  '`': ['.#...', '..#..'],
+  a: ['', '', '.###.', '....#', '.####', '#...#', '.####'],
+  b: ['#....', '#....', '####.', '#...#', '#...#', '#...#', '####.'],
+  c: ['', '', '.###.', '#....', '#....', '#...#', '.###.'],
+  d: ['....#', '....#', '.####', '#...#', '#...#', '#...#', '.####'],
+  e: ['', '', '.###.', '#...#', '#####', '#....', '.###.'],
+  f: ['..##.', '.#..#', '.#...', '###..', '.#...', '.#...', '.#...'],
+  g: ['', '', '.####', '#...#', '#...#', '.####', '....#', '.###.'],
+  h: ['#....', '#....', '####.', '#...#', '#...#', '#...#', '#...#'],
+  i: ['..#..', '', '.##..', '..#..', '..#..', '..#..', '.###.'],
+  j: ['...#.', '', '..##.', '...#.', '...#.', '...#.', '#..#.', '.##..'],
+  k: ['#....', '#....', '#..#.', '#.#..', '##...', '#.#..', '#..#.'],
+  l: ['.##..', '..#..', '..#..', '..#..', '..#..', '..#..', '.###.'],
+  m: ['', '', '##.#.', '#.#.#', '#.#.#', '#.#.#', '#.#.#'],
+  n: ['', '', '####.', '#...#', '#...#', '#...#', '#...#'],
+  o: ['', '', '.###.', '#...#', '#...#', '#...#', '.###.'],
+  p: ['', '', '####.', '#...#', '#...#', '####.', '#....', '#....'],
+  q: ['', '', '.####', '#...#', '#...#', '.####', '....#', '....#'],
+  r: ['', '', '#.##.', '##..#', '#....', '#....', '#....'],
+  s: ['', '', '.####', '#....', '.###.', '....#', '####.'],
+  t: ['.#...', '.#...', '###..', '.#...', '.#...', '.#..#', '..##.'],
+  u: ['', '', '#...#', '#...#', '#...#', '#...#', '.####'],
+  v: ['', '', '#...#', '#...#', '#...#', '.#.#.', '..#..'],
+  w: ['', '', '#...#', '#.#.#', '#.#.#', '#.#.#', '.#.#.'],
+  x: ['', '', '#...#', '.#.#.', '..#..', '.#.#.', '#...#'],
+  y: ['', '', '#...#', '#...#', '#...#', '.####', '....#', '.###.'],
+  z: ['', '', '#####', '...#.', '..#..', '.#...', '#####'],
+  // Window furniture. The frame lines run through the middle of the tile so one
+  // tile serves both edges (the background has no flip bits), and the corner is
+  // a bead both lines terminate into, which reads as a rounded corner.
+  '{': ['', '', '', '########', '########'],
+  '|': ['...##...', '...##...', '...##...', '...##...', '...##...', '...##...', '...##...', '...##...'],
+  '}': ['', '..####..', '.######.', '.######.', '.######.', '.######.', '..####..'],
+  '~': ['########', '########', '########', '########', '########', '########', '########', '########'],
+  '\x7f': ['', '', '#######.', '.#####..', '..###...', '...#....']
+};
+
+// Hearts are sprite tiles and use colour slot 1, which is red in the default
+// sprite palette 0. Slot 0 stays transparent, as sprites always treat it.
+const HEART_ART = {
+  full: ['.##.##..', '#######.', '#######.', '#######.', '.#####..', '..###...', '...#....'],
+  empty: ['.##.##..', '#..#..#.', '#.....#.', '#.....#.', '.#...#..', '..#.#...', '...#....']
+};
+
+/** Expand a rows-of-'#' sketch into the project's 64-character tile string. */
+function rowsToTile(rows, slot = '3') {
+  let out = '';
+  for (let y = 0; y < 8; y++) {
+    const row = rows[y] ?? '';
+    for (let x = 0; x < 8; x++) out += row[x] === '#' ? slot : '0';
+  }
+  return out;
+}
+
+/** The 96 font tiles in ASCII order, as 64-character tile strings. */
+export const FONT_TILES = Array.from({ length: FONT_COUNT }, (_, index) =>
+  rowsToTile(G[String.fromCharCode(32 + index)] ?? [])
+);
+
+export const HEART_TILES = {
+  [HEART_FULL_TILE]: rowsToTile(HEART_ART.full, '1'),
+  [HEART_EMPTY_TILE]: rowsToTile(HEART_ART.empty, '1')
+};
+
+// A right-pointing arrow for the sprite cursor, drawn in slot 1 like the
+// hearts so it takes a colour every sprite palette actually defines.
+export const SPRITE_ARROW_ART = rowsToTile(
+  ['#....', '##...', '###..', '####.', '###..', '##...', '#....'],
+  '1'
+);
+
+// ------------------------------------------------------------------ mapping
+
+/** The background tile a character renders as, or null if it has no glyph. */
+export function charToTile(char) {
+  const code = char.codePointAt(0);
+  if (code < 32 || code > 127) return null;
+  return FONT_BASE + (code - 32);
+}
+
+/** Named window furniture, so nothing hardcodes the characters that carry it. */
+export const TILE_SPACE = charToTile(' ');
+export const BORDER_H = charToTile('{');
+export const BORDER_V = charToTile('|');
+export const BORDER_CORNER = charToTile('}');
+export const BORDER_FILL = charToTile('~');
+export const ARROW_TILE = charToTile('\x7f');
+
+/**
+ * Map a line of text to tile indices. Characters without a glyph become spaces
+ * and are reported, so the compiler can warn once instead of dying mid-build.
+ */
+export function textToTiles(text) {
+  const tiles = [];
+  const unmapped = new Set();
+  for (const char of text) {
+    const tile = charToTile(char);
+    if (tile === null) unmapped.add(char);
+    tiles.push(tile ?? TILE_SPACE);
+  }
+  return { tiles, unmapped };
+}
+
+/**
+ * Word-wrap authored text into message-window pages.
+ *
+ * Returns an array of pages, each an array of at most `rows` line strings of at
+ * most `cols` characters. A newline forces a line break, a blank line forces a
+ * page break, and overflow past `rows` starts a new page on a word boundary.
+ * Shared by the build-time compiler and the event editor's preview, so what the
+ * editor shows is what the ROM says.
+ */
+export function wrapText(text, cols = BOX_COLS, rows = BOX_ROWS) {
+  const pages = [];
+  let page = [];
+  const flush = () => {
+    if (page.length) pages.push(page);
+    page = [];
+  };
+  const push = (line) => {
+    if (page.length >= rows) flush();
+    page.push(line);
+  };
+
+  for (const paragraph of String(text ?? '').split(/\n[ \t]*\n/)) {
+    for (const hardLine of paragraph.split('\n')) {
+      const words = hardLine.split(/[ \t]+/).filter(Boolean);
+      if (!words.length) {
+        push('');
+        continue;
+      }
+      let line = '';
+      for (const word of words) {
+        const candidate = line ? `${line} ${word}` : word;
+        if (candidate.length <= cols) {
+          line = candidate;
+        } else if (line) {
+          push(line);
+          line = word.slice(0, cols);
+        } else {
+          line = word.slice(0, cols); // a single word longer than the window
+        }
+      }
+      push(line);
+    }
+    flush(); // blank line in the source = page break
+  }
+  return pages;
+}
+
+// ---------------------------------------------------------------- predicates
+
+/**
+ * Does any part of the project put text on screen? True as soon as an entity
+ * carries dialogue or an event, a title screen is chosen, the game is a
+ * turn-based RPG (battles are text), or combat can reach the game-over screen.
+ * The generator stamps the font and the Tile Forge reserves $A0-$FF exactly
+ * when this is true, so a text-free project keeps all 256 tiles.
+ */
+export function projectUsesText(project) {
+  if (project.project?.gameType === 'rpg') return true;
+  if (project.project?.titleMap !== null && project.project?.titleMap !== undefined) return true;
+  if (projectUsesCombat(project)) return true;
+  for (const map of project.maps ?? []) {
+    for (const screen of map.screens ?? []) {
+      for (const entity of screen.entities ?? []) {
+        if (String(entity.props?.dialogue ?? '').trim()) return true;
+        if (entity.props?.event?.pages?.length) return true;
+      }
+    }
+  }
+  return false;
+}
+
+/**
+ * Can the player be hurt? True when any actor deals damage or a damage-type
+ * metatile is actually painted on a screen (merely defining one costs nothing).
+ * Drives the HUD hearts, the reserved heart sprites and the game-over screen.
+ */
+/**
+ * Does this build give the font its own CHR bank instead of stamping it into
+ * every tileset? True on a board with a scanline interrupt (MMC3) when the
+ * project shows text at all: the interrupt switches the font bank in where the
+ * text windows start, so the $A0-$FF reservation disappears and the project
+ * keeps all 256 background tiles. Single writer — the generator's stamping,
+ * the Tile Forge's shading and validateProject's collision check all ask here,
+ * so the three cannot disagree. Callers pass the *resolved* mapper
+ * (shared/cartridge.js resolveMapper), keeping this module import-free.
+ */
+export function fontBankSplit(project, mapper) {
+  return Boolean(mapper?.scanlineIrq) && projectUsesText(project);
+}
+
+/** CHR pages the font bank costs — what tilesetLimit calls reservedChrPages. */
+export function fontChrPages(project, mapper) {
+  return fontBankSplit(project, mapper) ? 1 : 0;
+}
+
+export function projectUsesCombat(project) {
+  if ((project.sprites?.actors ?? []).some((actor) => (actor.damage ?? 0) > 0)) return true;
+  const damaging = new Set(
+    (project.metatiles ?? []).filter((tile) => tile.collision === 'damage').map((tile) => tile.id)
+  );
+  if (!damaging.size) return false;
+  for (const map of project.maps ?? []) {
+    for (const screen of map.screens ?? []) {
+      if (screen.metatiles.some((id) => damaging.has(id))) return true;
+    }
+  }
+  return false;
+}

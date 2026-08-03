@@ -1,0 +1,770 @@
+[
+  {
+    "id": 0,
+    "name": "Void",
+    "tiles": [
+      0,
+      0,
+      0,
+      0
+    ],
+    "palette": 0,
+    "collision": "open"
+  },
+  {
+    "id": 1,
+    "name": "Grass",
+    "tiles": [
+      1,
+      1,
+      1,
+      1
+    ],
+    "palette": 0,
+    "collision": "open"
+  },
+  {
+    "id": 2,
+    "name": "Tree",
+    "tiles": [
+      2,
+      3,
+      4,
+      5
+    ],
+    "palette": 1,
+    "collision": "solid"
+  },
+  {
+    "id": 3,
+    "name": "Water",
+    "tiles": [
+      6,
+      6,
+      6,
+      6
+    ],
+    "palette": 2,
+    "collision": "water"
+  },
+  {
+    "id": 4,
+    "name": "Stone wall",
+    "tiles": [
+      7,
+      7,
+      7,
+      7
+    ],
+    "palette": 3,
+    "collision": "solid"
+  },
+  {
+    "id": 5,
+    "name": "Thorns",
+    "tiles": [
+      8,
+      8,
+      8,
+      8
+    ],
+    "palette": 1,
+    "collision": "damage"
+  },
+  {
+    "id": 6,
+    "name": "Metatile 6",
+    "tiles": [
+      0,
+      0,
+      0,
+      0
+    ],
+    "palette": 0,
+    "collision": "open"
+  },
+  {
+    "id": 7,
+    "name": "Metatile 7",
+    "tiles": [
+      0,
+      0,
+      0,
+      0
+    ],
+    "palette": 0,
+    "collision": "open"
+  },
+  {
+    "id": 8,
+    "name": "Metatile 8",
+    "tiles": [
+      0,
+      0,
+      0,
+      0
+    ],
+    "palette": 0,
+    "collision": "open"
+  },
+  {
+    "id": 9,
+    "name": "Metatile 9",
+    "tiles": [
+      0,
+      0,
+      0,
+      0
+    ],
+    "palette": 0,
+    "collision": "open"
+  },
+  {
+    "id": 10,
+    "name": "Metatile 10",
+    "tiles": [
+      0,
+      0,
+      0,
+      0
+    ],
+    "palette": 0,
+    "collision": "open"
+  },
+  {
+    "id": 11,
+    "name": "Metatile 11",
+    "tiles": [
+      0,
+      0,
+      0,
+      0
+    ],
+    "palette": 0,
+    "collision": "open"
+  },
+  {
+    "id": 12,
+    "name": "Metatile 12",
+    "tiles": [
+      0,
+      0,
+      0,
+      0
+    ],
+    "palette": 0,
+    "collision": "open"
+  },
+  {
+    "id": 13,
+    "name": "Metatile 13",
+    "tiles": [
+      0,
+      0,
+      0,
+      0
+    ],
+    "palette": 0,
+    "collision": "open"
+  },
+  {
+    "id": 14,
+    "name": "Metatile 14",
+    "tiles": [
+      0,
+      0,
+      0,
+      0
+    ],
+    "palette": 0,
+    "collision": "open"
+  },
+  {
+    "id": 15,
+    "name": "Metatile 15",
+    "tiles": [
+      0,
+      0,
+      0,
+      0
+    ],
+    "palette": 0,
+    "collision": "open"
+  },
+  {
+    "id": 16,
+    "name": "Metatile 16",
+    "tiles": [
+      0,
+      0,
+      0,
+      0
+    ],
+    "palette": 0,
+    "collision": "open"
+  },
+  {
+    "id": 17,
+    "name": "Metatile 17",
+    "tiles": [
+      0,
+      0,
+      0,
+      0
+    ],
+    "palette": 0,
+    "collision": "open"
+  },
+  {
+    "id": 18,
+    "name": "Metatile 18",
+    "tiles": [
+      0,
+      0,
+      0,
+      0
+    ],
+    "palette": 0,
+    "collision": "open"
+  },
+  {
+    "id": 19,
+    "name": "Metatile 19",
+    "tiles": [
+      0,
+      0,
+      0,
+      0
+    ],
+    "palette": 0,
+    "collision": "open"
+  },
+  {
+    "id": 20,
+    "name": "Metatile 20",
+    "tiles": [
+      0,
+      0,
+      0,
+      0
+    ],
+    "palette": 0,
+    "collision": "open"
+  },
+  {
+    "id": 21,
+    "name": "Metatile 21",
+    "tiles": [
+      0,
+      0,
+      0,
+      0
+    ],
+    "palette": 0,
+    "collision": "open"
+  },
+  {
+    "id": 22,
+    "name": "Metatile 22",
+    "tiles": [
+      0,
+      0,
+      0,
+      0
+    ],
+    "palette": 0,
+    "collision": "open"
+  },
+  {
+    "id": 23,
+    "name": "Metatile 23",
+    "tiles": [
+      0,
+      0,
+      0,
+      0
+    ],
+    "palette": 0,
+    "collision": "open"
+  },
+  {
+    "id": 24,
+    "name": "Metatile 24",
+    "tiles": [
+      0,
+      0,
+      0,
+      0
+    ],
+    "palette": 0,
+    "collision": "open"
+  },
+  {
+    "id": 25,
+    "name": "Metatile 25",
+    "tiles": [
+      0,
+      0,
+      0,
+      0
+    ],
+    "palette": 0,
+    "collision": "open"
+  },
+  {
+    "id": 26,
+    "name": "Metatile 26",
+    "tiles": [
+      0,
+      0,
+      0,
+      0
+    ],
+    "palette": 0,
+    "collision": "open"
+  },
+  {
+    "id": 27,
+    "name": "Metatile 27",
+    "tiles": [
+      0,
+      0,
+      0,
+      0
+    ],
+    "palette": 0,
+    "collision": "open"
+  },
+  {
+    "id": 28,
+    "name": "Metatile 28",
+    "tiles": [
+      0,
+      0,
+      0,
+      0
+    ],
+    "palette": 0,
+    "collision": "open"
+  },
+  {
+    "id": 29,
+    "name": "Metatile 29",
+    "tiles": [
+      0,
+      0,
+      0,
+      0
+    ],
+    "palette": 0,
+    "collision": "open"
+  },
+  {
+    "id": 30,
+    "name": "Metatile 30",
+    "tiles": [
+      0,
+      0,
+      0,
+      0
+    ],
+    "palette": 0,
+    "collision": "open"
+  },
+  {
+    "id": 31,
+    "name": "Metatile 31",
+    "tiles": [
+      0,
+      0,
+      0,
+      0
+    ],
+    "palette": 0,
+    "collision": "open"
+  },
+  {
+    "id": 32,
+    "name": "Metatile 32",
+    "tiles": [
+      0,
+      0,
+      0,
+      0
+    ],
+    "palette": 0,
+    "collision": "open"
+  },
+  {
+    "id": 33,
+    "name": "Metatile 33",
+    "tiles": [
+      0,
+      0,
+      0,
+      0
+    ],
+    "palette": 0,
+    "collision": "open"
+  },
+  {
+    "id": 34,
+    "name": "Metatile 34",
+    "tiles": [
+      0,
+      0,
+      0,
+      0
+    ],
+    "palette": 0,
+    "collision": "open"
+  },
+  {
+    "id": 35,
+    "name": "Metatile 35",
+    "tiles": [
+      0,
+      0,
+      0,
+      0
+    ],
+    "palette": 0,
+    "collision": "open"
+  },
+  {
+    "id": 36,
+    "name": "Metatile 36",
+    "tiles": [
+      0,
+      0,
+      0,
+      0
+    ],
+    "palette": 0,
+    "collision": "open"
+  },
+  {
+    "id": 37,
+    "name": "Metatile 37",
+    "tiles": [
+      0,
+      0,
+      0,
+      0
+    ],
+    "palette": 0,
+    "collision": "open"
+  },
+  {
+    "id": 38,
+    "name": "Metatile 38",
+    "tiles": [
+      0,
+      0,
+      0,
+      0
+    ],
+    "palette": 0,
+    "collision": "open"
+  },
+  {
+    "id": 39,
+    "name": "Metatile 39",
+    "tiles": [
+      0,
+      0,
+      0,
+      0
+    ],
+    "palette": 0,
+    "collision": "open"
+  },
+  {
+    "id": 40,
+    "name": "Metatile 40",
+    "tiles": [
+      0,
+      0,
+      0,
+      0
+    ],
+    "palette": 0,
+    "collision": "open"
+  },
+  {
+    "id": 41,
+    "name": "Metatile 41",
+    "tiles": [
+      0,
+      0,
+      0,
+      0
+    ],
+    "palette": 0,
+    "collision": "open"
+  },
+  {
+    "id": 42,
+    "name": "Metatile 42",
+    "tiles": [
+      0,
+      0,
+      0,
+      0
+    ],
+    "palette": 0,
+    "collision": "open"
+  },
+  {
+    "id": 43,
+    "name": "Metatile 43",
+    "tiles": [
+      0,
+      0,
+      0,
+      0
+    ],
+    "palette": 0,
+    "collision": "open"
+  },
+  {
+    "id": 44,
+    "name": "Metatile 44",
+    "tiles": [
+      0,
+      0,
+      0,
+      0
+    ],
+    "palette": 0,
+    "collision": "open"
+  },
+  {
+    "id": 45,
+    "name": "Metatile 45",
+    "tiles": [
+      0,
+      0,
+      0,
+      0
+    ],
+    "palette": 0,
+    "collision": "open"
+  },
+  {
+    "id": 46,
+    "name": "Metatile 46",
+    "tiles": [
+      0,
+      0,
+      0,
+      0
+    ],
+    "palette": 0,
+    "collision": "open"
+  },
+  {
+    "id": 47,
+    "name": "Metatile 47",
+    "tiles": [
+      0,
+      0,
+      0,
+      0
+    ],
+    "palette": 0,
+    "collision": "open"
+  },
+  {
+    "id": 48,
+    "name": "Metatile 48",
+    "tiles": [
+      0,
+      0,
+      0,
+      0
+    ],
+    "palette": 0,
+    "collision": "open"
+  },
+  {
+    "id": 49,
+    "name": "Metatile 49",
+    "tiles": [
+      0,
+      0,
+      0,
+      0
+    ],
+    "palette": 0,
+    "collision": "open"
+  },
+  {
+    "id": 50,
+    "name": "Metatile 50",
+    "tiles": [
+      0,
+      0,
+      0,
+      0
+    ],
+    "palette": 0,
+    "collision": "open"
+  },
+  {
+    "id": 51,
+    "name": "Metatile 51",
+    "tiles": [
+      0,
+      0,
+      0,
+      0
+    ],
+    "palette": 0,
+    "collision": "open"
+  },
+  {
+    "id": 52,
+    "name": "Metatile 52",
+    "tiles": [
+      0,
+      0,
+      0,
+      0
+    ],
+    "palette": 0,
+    "collision": "open"
+  },
+  {
+    "id": 53,
+    "name": "Metatile 53",
+    "tiles": [
+      0,
+      0,
+      0,
+      0
+    ],
+    "palette": 0,
+    "collision": "open"
+  },
+  {
+    "id": 54,
+    "name": "Metatile 54",
+    "tiles": [
+      0,
+      0,
+      0,
+      0
+    ],
+    "palette": 0,
+    "collision": "open"
+  },
+  {
+    "id": 55,
+    "name": "Metatile 55",
+    "tiles": [
+      0,
+      0,
+      0,
+      0
+    ],
+    "palette": 0,
+    "collision": "open"
+  },
+  {
+    "id": 56,
+    "name": "Metatile 56",
+    "tiles": [
+      0,
+      0,
+      0,
+      0
+    ],
+    "palette": 0,
+    "collision": "open"
+  },
+  {
+    "id": 57,
+    "name": "Metatile 57",
+    "tiles": [
+      0,
+      0,
+      0,
+      0
+    ],
+    "palette": 0,
+    "collision": "open"
+  },
+  {
+    "id": 58,
+    "name": "Metatile 58",
+    "tiles": [
+      0,
+      0,
+      0,
+      0
+    ],
+    "palette": 0,
+    "collision": "open"
+  },
+  {
+    "id": 59,
+    "name": "Metatile 59",
+    "tiles": [
+      0,
+      0,
+      0,
+      0
+    ],
+    "palette": 0,
+    "collision": "open"
+  },
+  {
+    "id": 60,
+    "name": "Metatile 60",
+    "tiles": [
+      0,
+      0,
+      0,
+      0
+    ],
+    "palette": 0,
+    "collision": "open"
+  },
+  {
+    "id": 61,
+    "name": "Metatile 61",
+    "tiles": [
+      0,
+      0,
+      0,
+      0
+    ],
+    "palette": 0,
+    "collision": "open"
+  },
+  {
+    "id": 62,
+    "name": "Metatile 62",
+    "tiles": [
+      0,
+      0,
+      0,
+      0
+    ],
+    "palette": 0,
+    "collision": "open"
+  },
+  {
+    "id": 63,
+    "name": "Metatile 63",
+    "tiles": [
+      0,
+      0,
+      0,
+      0
+    ],
+    "palette": 0,
+    "collision": "open"
+  }
+]
