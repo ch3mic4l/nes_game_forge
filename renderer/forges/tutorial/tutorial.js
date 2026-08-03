@@ -447,6 +447,71 @@ const TOPICS = [
         ' — it runs anywhere, including real hardware with a flash cartridge.'
       )
     ]
+  },
+  {
+    id: 'mappers',
+    label: 'Cartridges & mappers',
+    glyph: '🗄',
+    forge: 'build',
+    render: () => [
+      p(
+        'The NES console itself can only see 32 KB of program and 8 KB of graphics at a ',
+        'time. Every game bigger than that ships extra chips ',
+        b('on the cartridge'),
+        ' that swap what the console sees — a ',
+        b('mapper'),
+        '. Which mapper a project uses is chosen in the Build panel, and it sets two ',
+        'ceilings: how many ',
+        b('tilesets'),
+        ' the game can hold (each is one 8 KB graphics bank) and how many ',
+        b('screen banks'),
+        ' (each is 16 KB of map data — around 45 screens, a little fewer where actors are dense).'
+      ),
+      table(
+        ['Board', 'Tilesets', 'Screen banks', 'What it does'],
+        [
+          [b('NROM-256'), '1', '1', 'No switching at all — everything is mapped at once. The default, and enough for a small game.'],
+          [b('CNROM'), '4', '1', 'Adds graphics switching: each map can pick which tileset it draws with. Program space stays NROM-sized.'],
+          [b('GxROM'), '4', '1', 'The same capacity as CNROM on a licensed Nintendo board — prefer it if you intend to have real cartridges made.'],
+          [b('Color Dreams'), '16', '1', 'The most tilesets without program switching. An unlicensed board: fine in every emulator, rarer as a real reproduction cartridge.'],
+          [b('UxROM'), '1', '7', 'The opposite trade: one fixed tileset, but seven switchable banks of screens. Pick it when you run out of world, not art.'],
+          [b('MMC1'), '16', '7', 'Switches both program and graphics. The mapper more NES games used than any other, and what Final Fantasy and Zelda shipped on.'],
+          [b('MMC3'), '32', '15', 'The largest board here, with a bonus: its scanline interrupt gives the message font its own graphics bank (see below).'],
+          [b('UNROM 512'), '4', '31', 'A modern homebrew board. Its graphics are RAM filled from program space at boot, so each tileset costs about one screen bank.']
+        ]
+      ),
+      h3('Three boards with a twist'),
+      p(
+        b('MMC3'),
+        ' can interrupt the CPU at an exact scanline, and the engine uses that to switch a ',
+        'dedicated font bank in mid-frame, exactly where a text window starts. On every other ',
+        'board a game with dialogue gives up background tiles ',
+        code('$A0–$FF'),
+        ' in every tileset to the font; on MMC3 you keep all 256.'
+      ),
+      p(
+        b('UNROM 512'),
+        ' has no graphics ROM at all — its four pattern pages are RAM, and the engine copies ',
+        'each tileset into place from program space at boot. That is why its tilesets consume ',
+        'screen capacity, and it is the only board offering four-screen mirroring (at the ',
+        'cost of one more tileset).'
+      ),
+      p(
+        b('MMC1'),
+        ' and ',
+        b('MMC3'),
+        ' are the boards a ',
+        b('turn-based RPG'),
+        ' can use, along with UNROM 512: the battle system lives in a switchable program ',
+        'bank and monster art in a switchable tileset, so the board must swap both. The ',
+        'Build panel greys out anything the project cannot use and says why.'
+      ),
+      tip(
+        'Switching mappers later is safe in the shrinking direction too — the Build panel ',
+        'recomputes capacity immediately and tells you what no longer fits, before the ',
+        'assembler ever runs. Start on NROM and move up when a capacity bar fills.'
+      )
+    ]
   }
 ];
 
