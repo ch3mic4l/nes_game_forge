@@ -26,6 +26,7 @@ npm run smoke      # end-to-end: boots the real UI and drives it
 | **Build & Play** | Done — generates assembly, assembles with `nesasm`, verifies the ROM, plays it in-app |
 | **Emulator + debugger** | Done — breakpoints, step/over/out, scanline & frame step, disassembly with symbols, memory editor, PPU viewers |
 | **Turn-based RPG mode** | Done — party, spells, monster stats, encounters, FF-style menu battles with XP, gold, levels, elements and drops |
+| **Tutorial** | Done — a guided tour of every Forge under 🎓 Learn in the rail, with jumps into the Forge each topic explains |
 
 All five Forges are built. The engine behind them is a top-down adventure; other
 genres would need new engine modules rather than new UI.

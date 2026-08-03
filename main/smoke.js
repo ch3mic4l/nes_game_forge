@@ -62,7 +62,7 @@ const scenario = (dir, sampleDir) => `
   step('save/load round trip', 'identical');
 
   // Visit every Forge so a syntax error in any module is caught here.
-  for (const id of ['sprite', 'map', 'sound', 'controller', 'build', 'tile']) {
+  for (const id of ['sprite', 'map', 'sound', 'controller', 'build', 'tutorial', 'tile']) {
     window.__app.goTo(id);
     await wait(140);
     if (!document.querySelector('#stage').children.length) throw new Error(id + ' forge mounted nothing');
@@ -349,6 +349,26 @@ const scenario = (dir, sampleDir) => `
   await wait(150);
   if (store.project.input.states.gameplay.A !== beforeBinding) throw new Error('undo did not restore the binding');
   step('controller forge', '16 bindings incl. the title row, rebind + undo work');
+
+  // --- Tutorial Forge ----------------------------------------------------
+  window.__app.goTo('tutorial');
+  await wait(300);
+  const topics = document.querySelectorAll('#stage [data-topic]');
+  if (topics.length < 8) throw new Error('the Tutorial Forge listed only ' + topics.length + ' topics');
+  const firstHeading = document.querySelector('#stage .tutorial-body h2').textContent;
+  document.querySelector('#stage [data-topic="dialogue"]').click();
+  await wait(150);
+  const secondHeading = document.querySelector('#stage .tutorial-body h2').textContent;
+  if (secondHeading === firstHeading) throw new Error('selecting a topic did not change the page');
+  // The jump button is how a topic hands over to the Forge it explains.
+  const jump = [...document.querySelectorAll('#stage .tutorial-body .btn-accent')].find((b) =>
+    b.textContent.includes('Map Forge')
+  );
+  if (!jump) throw new Error('the dialogue topic has no jump into the Map Forge');
+  jump.click();
+  await wait(300);
+  if (!document.querySelector('#stage canvas')) throw new Error('the tutorial jump did not mount the Map Forge');
+  step('tutorial forge', topics.length + ' topics, topic switch + jump to Map Forge work');
 
   // --- drive the real Build & Play UI so the screenshot shows it running --
   window.__app.store.open(sample.value.dir, sample.value.project);

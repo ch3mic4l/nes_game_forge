@@ -48,6 +48,14 @@ const FORGES = [
     glyph: '⚙',
     title: 'Build & Play',
     load: () => import('./forges/build/build.js')
+  },
+  { separator: true },
+  {
+    id: 'tutorial',
+    label: 'Learn',
+    glyph: '🎓',
+    title: 'Tutorial',
+    load: () => import('./forges/tutorial/tutorial.js')
   }
 ];
 
