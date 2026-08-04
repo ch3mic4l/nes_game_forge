@@ -407,6 +407,64 @@ const TOPICS = [
     ]
   },
   {
+    id: 'code',
+    label: 'Code Forge',
+    glyph: '‹›',
+    forge: 'code',
+    render: () => [
+      p(
+        'Everything above is a way of describing your game as ',
+        b('data'),
+        '. The Code Forge is the way out of that: the engine’s own 6502 assembly, in an editor, ',
+        'for when you want something the other Forges do not offer.'
+      ),
+      p(
+        'Editing an engine file does not change the app. Your edit is saved ',
+        b('inside your project'),
+        ' as a copy, and the build lays that copy over the original. Another project built on the ',
+        'same machine is untouched, and ',
+        b('Revert'),
+        ' puts the original back whenever you want it. Files you have edited are marked ',
+        code('edited'),
+        ' in the tree.'
+      ),
+      h3('Your own files'),
+      p(
+        'The ',
+        b('+'),
+        ' button adds a file of your own. It is assembled into the fixed bank at ',
+        code('$C000'),
+        ' — the part of the cartridge every mapper leaves permanently visible — so a label you ',
+        'define there can be called from anywhere:'
+      ),
+      el(
+        'pre.tutorial-code',
+        null,
+        '; my_hooks.asm\nmy_routine:\n  lda #$01\n  sta player_speed\n  rts'
+      ),
+      p(
+        'Then, in an engine file you have edited, ',
+        code('jsr my_routine'),
+        '. Editing the engine is how your code gets called; adding a file is where you put it.'
+      ),
+      h3('When it does not assemble'),
+      p(
+        'The capacity warnings elsewhere in the app cannot measure hand-written code — how much ',
+        'a source file turns into is not knowable until it is assembled. So the assembler is the ',
+        'check, and when it refuses, the error line in ',
+        b('Build & Play'),
+        ' is clickable: it opens the file here, at the line that caused it.'
+      ),
+      tip(
+        'The ',
+        b('Generated'),
+        ' group is the build’s own output — your project turned into tables and constants. It is ',
+        'read-only because the next build rewrites all of it, and it is worth reading: it is ',
+        'exactly what your maps, sprites and songs became.'
+      )
+    ]
+  },
+  {
     id: 'build',
     label: 'Build & Play',
     glyph: '⚙',

@@ -906,6 +906,21 @@ canvas.sheet {
   white-space: nowrap;
 }
 
+/* A short code sample in a topic. Highlighting is the Code Forge's business;
+   here it only has to read as code and scroll rather than stretch the page. */
+.tutorial-code {
+  margin: 0 0 12px;
+  padding: 12px 14px;
+  background: var(--bg-0);
+  border: 1px solid var(--line-soft);
+  border-radius: var(--radius-sm);
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--text);
+  overflow-x: auto;
+}
+
 .tutorial-tip {
   margin: 16px 0 12px;
   padding: 10px 14px;
@@ -979,5 +994,351 @@ canvas.sheet {
 .tab.active {
   background: var(--bg-3);
   border-color: var(--line);
+  color: var(--text);
+}
+
+/* ------------------------------------------------------------------ Code Forge */
+
+/* Syntax colours. The mnemonic deliberately shares the accent so code reads in
+   the same palette as the rest of the app rather than as a foreign widget. */
+:root {
+  --syn-comment: #6b7488;
+  --syn-directive: #4da3ff;
+  --syn-mnemonic: #ff9d3c;
+  --syn-label: #57d38c;
+  --syn-number: #c9a0ff;
+  --syn-string: #e8c66a;
+}
+
+:root[data-theme='light'] {
+  --syn-comment: #858da1;
+  --syn-directive: #1668c4;
+  --syn-mnemonic: #b85c00;
+  --syn-label: #1f8a52;
+  --syn-number: #7a3fbd;
+  --syn-string: #96690a;
+}
+
+.tree-body {
+  padding: 8px;
+}
+
+.tree-group {
+  margin-bottom: 14px;
+}
+
+.tree-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  padding: 4px 6px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+}
+
+.tree-count {
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 0;
+}
+
+.tree-add {
+  background: none;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  color: var(--text-dim);
+  cursor: pointer;
+  font-size: 12px;
+  line-height: 1;
+  padding: 2px 6px;
+}
+
+.tree-add:hover {
+  background: var(--bg-3);
+  color: var(--text);
+}
+
+.tree-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 6px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
+.tree-row:hover {
+  background: var(--bg-2);
+  color: var(--text);
+}
+
+.tree-row.active {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.tree-name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--mono);
+  font-size: 11.5px;
+}
+
+.tree-badge {
+  flex: none;
+  padding: 1px 5px;
+  border-radius: 999px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: 9px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.tree-action {
+  flex: none;
+  background: none;
+  border: none;
+  color: var(--text-faint);
+  cursor: pointer;
+  font-size: 12px;
+  line-height: 1;
+  padding: 0 2px;
+  opacity: 0;
+}
+
+.tree-row:hover .tree-action {
+  opacity: 1;
+}
+
+.tree-action:hover {
+  color: var(--text);
+}
+
+.tree-empty {
+  padding: 4px 6px;
+  font-size: 11px;
+  color: var(--text-faint);
+}
+
+/* The editor's tab strip: unlike the shared .tabs, these size to their label and
+   scroll sideways, because there is one per open file rather than a fixed set. */
+.code-tabs {
+  overflow-x: auto;
+  scrollbar-width: thin;
+}
+
+.code-tab {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: none;
+  max-width: 200px;
+  font-family: var(--mono);
+  font-size: 11.5px;
+  font-weight: 500;
+}
+
+.code-tab-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.code-tab-dot {
+  flex: none;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+}
+
+.code-tab-close {
+  flex: none;
+  background: none;
+  border: none;
+  color: var(--text-faint);
+  cursor: pointer;
+  font-size: 13px;
+  line-height: 1;
+  padding: 0 1px;
+}
+
+.code-tab-close:hover {
+  color: var(--red);
+}
+
+.code-tabs-empty {
+  padding: 5px 4px;
+  font-size: 11px;
+  color: var(--text-faint);
+}
+
+.code-head {
+  padding: 0;
+  text-transform: none;
+  letter-spacing: 0;
+}
+
+.code-body {
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.code-hint {
+  flex: none;
+  padding: 7px 12px;
+  border-bottom: 1px solid var(--line-soft);
+  background: var(--bg-2);
+  color: var(--text-dim);
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.code-host {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+}
+
+/* The editor. Gutter, highlight layer and textarea must agree on every metric
+   that affects where a glyph lands, or the caret drifts away from the character
+   it is sitting on. They are set here once and inherited by all three. */
+.code-editor {
+  --code-line: 1.55;
+  --code-size: 12.5px;
+  --code-pad: 10px;
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  font-family: var(--mono);
+  font-size: var(--code-size);
+  line-height: var(--code-line);
+  tab-size: 2;
+}
+
+.code-gutter {
+  flex: none;
+  padding: var(--code-pad) 8px var(--code-pad) 12px;
+  border-right: 1px solid var(--line-soft);
+  background: var(--bg-1);
+  color: var(--text-faint);
+  text-align: right;
+  overflow: hidden;
+  user-select: none;
+}
+
+.gutter-line {
+  white-space: pre;
+}
+
+.code-scroll {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  background: var(--bg-0);
+}
+
+.code-hl,
+.code-input {
+  margin: 0;
+  padding: var(--code-pad);
+  border: 0;
+  font: inherit;
+  line-height: inherit;
+  tab-size: inherit;
+  white-space: pre;
+  overflow-wrap: normal;
+}
+
+.code-hl {
+  position: absolute;
+  inset: 0;
+  overflow: visible;
+  pointer-events: none;
+  color: var(--text);
+  will-change: transform;
+}
+
+.hl-line {
+  white-space: pre;
+  min-height: calc(var(--code-size) * var(--code-line));
+}
+
+.code-input {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  resize: none;
+  outline: none;
+  overflow: auto;
+  background: transparent;
+  /* The text itself is drawn by the layer underneath; only the caret and the
+     selection come from the textarea. */
+  color: transparent;
+  caret-color: var(--accent);
+}
+
+.code-input::selection {
+  background: var(--accent-soft);
+}
+
+.code-input:read-only {
+  caret-color: var(--text-faint);
+}
+
+/* Where the assembler reported an error. */
+.code-errline {
+  position: absolute;
+  left: 0;
+  right: 0;
+  /* Positioned from the highlight row's offsetTop, which already includes the
+     layer's padding — so no margin of its own here. */
+  height: calc(var(--code-size) * var(--code-line));
+  background: rgba(255, 107, 107, 0.16);
+  border-left: 2px solid var(--red);
+  pointer-events: none;
+}
+
+.tok-comment {
+  color: var(--syn-comment);
+  font-style: italic;
+}
+
+.tok-directive {
+  color: var(--syn-directive);
+}
+
+.tok-mnemonic {
+  color: var(--syn-mnemonic);
+  font-weight: 600;
+}
+
+.tok-label {
+  color: var(--syn-label);
+}
+
+.tok-number {
+  color: var(--syn-number);
+}
+
+.tok-string {
+  color: var(--syn-string);
+}
+
+.tok-ident {
   color: var(--text);
 }

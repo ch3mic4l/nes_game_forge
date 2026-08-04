@@ -30,6 +30,13 @@ contextBridge.exposeInMainWorld('forge', {
     readBinary: (filters) => invoke('files:readBinary', filters),
     writeBinary: (name, bytes) => invoke('files:writeBinary', name, bytes)
   },
+  // The Code Forge. Stock engine sources are fetched over forge:// instead —
+  // they live under the app root, which that scheme already serves.
+  code: {
+    engineFiles: () => invoke('code:engineFiles'),
+    generatedFiles: (dir) => invoke('code:generatedFiles', dir),
+    readGenerated: (dir, relative) => invoke('code:readGenerated', dir, relative)
+  },
   on: (channel, listener) => {
     const allowed = ['menu:action', 'build:log'];
     if (!allowed.includes(channel)) return () => {};

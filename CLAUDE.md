@@ -5,8 +5,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## What this is
 
 An Electron app for building NES games through a UI (five "Forges": Tile, Sprite, Map, Sound,
-Controller), which compiles a project into a real `.nes` ROM with `nesasm` and plays it in a
-built-in emulator with a debugger. See `README.md` for the user-facing description and the
+Controller — plus the Code Forge, the escape hatch for hand-written 6502), which compiles a
+project into a real `.nes` ROM with `nesasm` and plays it in a built-in emulator with a debugger. See `README.md` for the user-facing description and the
 current feature status table.
 
 ## Commands
@@ -248,6 +248,51 @@ reserves, and must be raised if the engine grows.
 `generate.js`'s `checkCapacity()` computes that split and reports overflow as a plain-language
 error *before* the assembler runs. Adding per-screen or per-actor data means updating the byte
 math there too.
+
+### The Code Forge
+
+The user's own 6502, in `project.code`: `overrides` are edited copies of engine files, `files` are
+new sources. It lives in the project — not beside it — so undo, the dirty dot and saving are the
+ones every other Forge already uses, and a per-project override cannot leak into another project.
+On disk it is raw `.asm` under `code/engine/` and `code/user/`, two folders rather than one so
+which kind a file is never depends on the engine's current file list.
+
+Three rules hold it together:
+
+- **The engine folder is the single writer of what a stock file is.** `engineFileNames()` in
+  `generate.js` is that list; `checkCapacity` uses it to refuse a user file that would collide
+  with an engine name, and to *warn* rather than fail on an override naming a file this version
+  does not ship — a project saved by a later version still has to build.
+- **Overrides are copied in at their own name and their own line numbers.** The generator writes
+  the stock engine in first and the overrides over the top, so nesasm's `file:line` refers to
+  exactly what the editor shows, and the Build panel's error line can open it. `build/` is
+  `rm -rf`'d every build, so editing files *there* is not a feature — it is data loss.
+- **`assets/usercode.inc` is always emitted**, empty or not, and `engine/main.asm` includes it
+  unconditionally in the kernel-lo bank. A project with no code of its own therefore assembles
+  byte-for-byte identically to one built before the Forge existed, which `codebuild.test.js`
+  asserts directly. $C000 is permanently mapped on every supported mapper, so a user label is
+  callable from anywhere with no banking to think about.
+
+Hand-written code is **deliberately outside `checkCapacity`'s byte math**: how much a source file
+assembles to cannot be known from its text, and a guess would either refuse a project that fits
+or promise room the assembler then denies. The assembler is the capacity check, which is why
+`parseNesasmErrors` in `nesasm.js` matters — nesasm v3.1 reports errors across three lines
+(`#[2] file`, then `line bank:addr source`, then the message) and **exits 0 anyway**. A message
+shape it fails to recognise reads as a successful build until the ROM that was never written
+fails to rename, so it also falls back on nesasm's own `# N error(s)` count. `build:run` is the
+one IPC channel that does not flatten its error through `fail()`, because the `{file, line}` array
+is what the deep-link needs.
+
+The editor (`renderer/forges/code/`) is hand-rolled — no runtime dependencies, no bundler, and a
+CSP with no `unsafe-eval` rules out Monaco and CodeMirror. `highlight.js` is a pure per-line
+tokenizer (nesasm has no multi-line construct), and its one invariant is that joining the tokens
+reproduces the line; a test asserts that over every line of the engine. Two metric rules in
+`editor.js`: the gutter, the highlight layer and the textarea must agree on every font and spacing
+value or the caret drifts off its character, and `gotoLine` sets the selection *before* the scroll
+because focusing a textarea scrolls it on the browser's terms and discards anything set first.
+Typing commits to the store on a pause rather than per keystroke (an unusable undo stack) or on
+blur (a commit that may never come), so `saveProject` in `app.js` calls the mount contract's
+optional `flushPendingEdits()` first.
 
 `engine/constants.asm` is the single allocation map for zero page and the `$0300+` RAM arrays.
 New engine state goes there; a collision is silent and will present as an unrelated bug.

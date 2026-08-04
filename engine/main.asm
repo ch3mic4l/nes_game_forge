@@ -61,6 +61,9 @@
   .include "script.asm"
   .include "input.asm"
   .include "music.asm"
+; The Code Forge's own files, last so they can call anything above them. Always
+; generated -- empty for a project that has none.
+  .include "assets/usercode.inc"
 
 ; -------------------------- fixed kernel: music and text, then the vectors
 

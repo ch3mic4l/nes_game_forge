@@ -23,13 +23,47 @@ npm run smoke      # end-to-end: boots the real UI and drives it
 | **Sprite Forge** | Done — metasprite assembly, animation timeline with live preview, actors bound to behaviours |
 | **Sound Forge** | Done — tracker for all four channels, instruments, order list, preview through the same replayer the ROM agrees with |
 | **Controller Forge** | Done — buttons bound to engine actions per game state, plus keyboard bindings for the player |
+| **Code Forge** | Done — the engine's 6502 source in a tabbed editor with syntax highlighting; edits are kept per project, and you can add your own `.asm` files |
 | **Build & Play** | Done — generates assembly, assembles with `nesasm`, verifies the ROM, plays it in-app |
 | **Emulator + debugger** | Done — breakpoints, step/over/out, scanline & frame step, disassembly with symbols, memory editor, PPU viewers |
 | **Turn-based RPG mode** | Done — party, spells, monster stats, encounters, FF-style menu battles with XP, gold, levels, elements and drops |
 | **Tutorial** | Done — a guided tour of every Forge under 🎓 Learn in the rail, with jumps into the Forge each topic explains |
 
 All five Forges are built. The engine behind them is a top-down adventure; other
-genres would need new engine modules rather than new UI.
+genres would need new engine modules rather than new UI — or the Code Forge, which
+is the escape hatch when the UI does not offer what you want.
+
+### The Code Forge
+
+Every source file that goes into the ROM, in a file tree with tabbed editors.
+
+Editing an engine file does not change the app: the edit is saved into your
+project as an override, and the build lays it over the original. So one project's
+custom code cannot leak into another, an untouched project builds exactly as it
+always did, and **Revert** puts the original back. Overridden files are badged
+*edited* in the tree.
+
+You can also add files of your own. They are assembled into the fixed bank at
+`$C000`, which every mapper leaves permanently mapped, so a label you define is
+callable from anywhere:
+
+```asm
+; my_hooks.asm — your own file
+my_routine:
+  lda #$01
+  sta some_engine_variable
+  rts
+```
+
+then, in an engine file you have edited, `jsr my_routine`.
+
+Hand-written code is the one thing the capacity check cannot measure — how much a
+source file assembles to is not knowable from its text — so the assembler enforces
+the bank limits instead. When it refuses, the Build panel's error line is
+clickable and opens the file at the line that caused it.
+
+The generated `.inc` files are listed too, read-only: they are rewritten from your
+project on every build.
 
 The player character is drawn in the **Tile Forge**, not the Sprite Forge: the
 engine reads four directions × two walk frames from **sprite tiles `$00`-`$1F`**

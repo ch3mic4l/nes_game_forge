@@ -116,6 +116,61 @@ export function registerIpc({ getWindow }) {
       };
       return ok(await buildProject({ dir, project: data, log, settings: await getSettings() }));
     } catch (error) {
+      // Unlike every other channel, a failed build carries structure worth
+      // keeping: nesasm reports `file:line: message`, and the Code Forge opens
+      // exactly that. fail() would flatten it all into one string.
+      return { ...fail(error), errors: error.errors ?? null, problems: error.problems ?? null };
+    }
+  });
+
+  // --- Code Forge ----------------------------------------------------------
+  // The stock engine sources are served over forge:// (they live under the app
+  // root); these three channels cover what that scheme cannot reach — the file
+  // list, and the generated output inside the *project* folder.
+
+  ipcMain.handle('code:engineFiles', async () => {
+    try {
+      const { engineFileNames, ENGINE_DIR } = await import('./build/generate.js');
+      const files = [];
+      for (const name of engineFileNames()) {
+        const stat = await fs.stat(path.join(ENGINE_DIR, name)).catch(() => null);
+        files.push({ name, size: stat?.size ?? 0 });
+      }
+      return ok(files);
+    } catch (error) {
+      return fail(error);
+    }
+  });
+
+  ipcMain.handle('code:generatedFiles', async (_event, dir) => {
+    try {
+      const buildDir = path.join(dir, 'build');
+      const assets = (await fs.readdir(path.join(buildDir, 'assets')).catch(() => []))
+        .filter((name) => name.endsWith('.inc'))
+        .sort()
+        .map((name) => `assets/${name}`);
+      const symbols = await fs
+        .access(path.join(buildDir, 'game.fns'))
+        .then(() => ['game.fns'])
+        .catch(() => []);
+      return ok([...assets, ...symbols]);
+    } catch (error) {
+      return fail(error);
+    }
+  });
+
+  ipcMain.handle('code:readGenerated', async (_event, dir, relative) => {
+    try {
+      const buildDir = path.join(dir, 'build');
+      const file = path.resolve(buildDir, relative);
+      // The renderer supplies this path, so it is checked rather than trusted:
+      // inside the project's build folder, and a text file the viewer can show.
+      if (file !== buildDir && !file.startsWith(buildDir + path.sep)) {
+        throw new Error('That file is outside the project build folder.');
+      }
+      if (!/\.(inc|asm|fns)$/.test(file)) throw new Error('That file is not a text file.');
+      return ok(await fs.readFile(file, 'utf8'));
+    } catch (error) {
       return fail(error);
     }
   });

@@ -62,7 +62,7 @@ const scenario = (dir, sampleDir) => `
   step('save/load round trip', 'identical');
 
   // Visit every Forge so a syntax error in any module is caught here.
-  for (const id of ['sprite', 'map', 'sound', 'controller', 'build', 'tutorial', 'tile']) {
+  for (const id of ['sprite', 'map', 'sound', 'controller', 'code', 'build', 'tutorial', 'tile']) {
     window.__app.goTo(id);
     await wait(140);
     if (!document.querySelector('#stage').children.length) throw new Error(id + ' forge mounted nothing');
@@ -370,6 +370,115 @@ const scenario = (dir, sampleDir) => `
   if (!document.querySelector('#stage canvas')) throw new Error('the tutorial jump did not mount the Map Forge');
   step('tutorial forge', topics.length + ' topics, topic switch + jump to Map Forge work');
 
+  // --- Code Forge --------------------------------------------------------
+  window.__app.goTo('code');
+  await wait(400);
+  const codeStage = document.querySelector('#stage');
+  const engineRows = [...codeStage.querySelectorAll('.tree-row')];
+  if (engineRows.length < 15) throw new Error('the Code Forge listed only ' + engineRows.length + ' files');
+
+  // Open a stock engine file. Nothing is copied into the project yet.
+  const playerRow = engineRows.find((row) => row.querySelector('.tree-name').textContent === 'player.asm');
+  if (!playerRow) throw new Error('player.asm is missing from the file tree');
+  playerRow.click();
+  await wait(300);
+  const input = codeStage.querySelector('.code-input');
+  if (!input) throw new Error('the editor did not mount');
+  if (!input.value.includes('update_player')) throw new Error('the stock engine source did not load');
+  if (!codeStage.querySelector('.tok-mnemonic')) throw new Error('nothing was syntax highlighted');
+  if (store.project.code.overrides.length) throw new Error('merely opening a file made an override');
+  const highlightedLines = codeStage.querySelectorAll('.hl-line').length;
+  const sourceLines = input.value.split('\\n').length;
+  if (highlightedLines !== sourceLines) {
+    throw new Error('highlight layer has ' + highlightedLines + ' lines for ' + sourceLines + ' of source');
+  }
+  step('code forge mounted', engineRows.length + ' files, ' + highlightedLines + ' lines highlighted');
+
+  // Type. The edit becomes an override once typing pauses.
+  const stockText = input.value;
+  input.value = '; smoke test\\n' + stockText;
+  input.dispatchEvent(new Event('input', { bubbles: true }));
+  await wait(900);
+  if (store.project.code.overrides.length !== 1) throw new Error('typing did not create an override');
+  if (!store.project.code.overrides[0].text.startsWith('; smoke test')) throw new Error('the override lost the edit');
+  if (!store.dirty) throw new Error('editing code did not mark the project dirty');
+  const badge = [...codeStage.querySelectorAll('.tree-badge')].some((b) => b.textContent === 'edited');
+  if (!badge) throw new Error('the edited file is not badged in the tree');
+  step('engine override', 'player.asm edited, badged and dirty');
+
+  // Committing re-renders the Forge, and re-rendering must not move the editor
+  // in the DOM: that blurs it, so the caret would vanish a moment after every
+  // pause in typing. Typing is the one thing this Forge exists to do.
+  input.focus();
+  input.value = '; more\\n' + input.value;
+  input.dispatchEvent(new Event('input', { bubbles: true }));
+  input.setSelectionRange(500, 500);
+  await wait(900);
+  if (document.activeElement !== input) throw new Error('the editor lost focus when the edit committed');
+  if (input.selectionStart !== 500) throw new Error('the caret moved to ' + input.selectionStart + ' on commit');
+  step('typing survives a commit', 'focus and caret held at 500');
+
+  // Undo is the project's own undo, because the code lives in the project. Two
+  // pauses in typing were two commits, so undoing back to stock takes two.
+  store.undo();
+  store.undo();
+  await wait(250);
+  if (store.project.code.overrides.length) throw new Error('undo did not remove the override');
+  if (codeStage.querySelector('.code-input').value !== stockText) {
+    throw new Error('undo did not put the stock text back in the open editor');
+  }
+  step('code undo', 'override removed, editor resynced');
+
+  // A file of the user's own, which the generator wires into the build.
+  store.commit('smoke user file', (project) => {
+    project.code.files.push({ name: 'smoke_hook.asm', text: 'smoke_hook:\\n  rts\\n' });
+  });
+  await wait(250);
+  const userRow = [...codeStage.querySelectorAll('.tree-name')].find((n) => n.textContent === 'smoke_hook.asm');
+  if (!userRow) throw new Error('the new user file is not in the tree');
+  userRow.click();
+  await wait(250);
+  const tabNames = [...codeStage.querySelectorAll('.code-tab-name')].map((n) => n.textContent);
+  if (tabNames.length !== 2) throw new Error('expected two open tabs, saw ' + tabNames.join(', '));
+  step('user code file', tabNames.join(' + '));
+
+  // The saved project must carry the code back off disk unchanged.
+  const codeSaved = await window.forge.project.save(store.dir, store.project);
+  if (!codeSaved.ok) throw new Error('save with code: ' + codeSaved.error);
+  const codeReopened = await window.forge.project.open(store.dir);
+  if (!codeReopened.ok) throw new Error('reopen with code: ' + codeReopened.error);
+  if (JSON.stringify(codeReopened.value.project.code) !== JSON.stringify(store.project.code)) {
+    throw new Error('code did not round-trip through disk');
+  }
+  step('code round trip', codeReopened.value.project.code.files.length + ' user file(s) survived');
+
+  // A build error has to lead back to the line that caused it. This drives the
+  // whole path: the assembler's message, the structured error surviving IPC, the
+  // clickable log line, and the Code Forge opening the file at that line.
+  store.commit('smoke broken code', (project) => {
+    project.code.files[0].text = 'smoke_hook:\\n  this is not an opcode\\n  rts\\n';
+  });
+  window.__app.goTo('build');
+  await wait(300);
+  await window.__app.current.build();
+  await wait(600);
+  const errorLines = [...document.querySelectorAll('#stage div')].filter(
+    (node) => node.title && node.title.startsWith('Open ') && node.title.includes('Code Forge')
+  );
+  if (!errorLines.length) throw new Error('a broken build produced no clickable error line');
+  if (!errorLines[0].textContent.includes('smoke_hook.asm:2')) {
+    throw new Error('the error line did not name the file and line: ' + errorLines[0].textContent);
+  }
+  errorLines[0].click();
+  await wait(700);
+  if (!document.querySelector('#stage .code-editor')) throw new Error('clicking the error did not open the Code Forge');
+  const marker = document.querySelector('#stage .code-errline');
+  if (!marker || marker.hidden) throw new Error('the offending line was not marked in the editor');
+  step('build error deep-link', errorLines[0].textContent.trim());
+
+  store.undo();
+  await wait(200);
+
   // --- drive the real Build & Play UI so the screenshot shows it running --
   window.__app.store.open(sample.value.dir, sample.value.project);
   await wait(200);
@@ -512,6 +621,14 @@ export async function runSmoke(window) {
         await window.webContents.executeJavaScript(
           `window.__app.goTo(${JSON.stringify(process.env.FORGE_SHOT_FORGE)});` +
             'new Promise((resolve) => setTimeout(resolve, 500))'
+        );
+      }
+      // FORGE_SHOT_SETUP runs in the renderer once that Forge is up, for panes
+      // whose interesting state needs a click to reach — the Code Forge shows an
+      // empty stage until a file is opened.
+      if (process.env.FORGE_SHOT_SETUP) {
+        await window.webContents.executeJavaScript(
+          `(async () => { ${process.env.FORGE_SHOT_SETUP} })().then(() => new Promise((r) => setTimeout(r, 400)))`
         );
       }
       const image = await window.webContents.capturePage();

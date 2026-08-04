@@ -384,7 +384,8 @@ export function createProject(name = 'Untitled Game', gameType = 'action') {
     switches: [], // names only; the engine just sees 64 bits
     party: rpg ? [createPartyMember(0, 'Hero')] : [],
     spells: [],
-    rpg: { ...defaultRpg(), battleTilesetId: rpg ? 1 : 0 }
+    rpg: { ...defaultRpg(), battleTilesetId: rpg ? 1 : 0 },
+    code: { overrides: [], files: [] }
   };
 }
 
@@ -715,6 +716,59 @@ function normalizeInput(raw) {
   return base;
 }
 
+/**
+ * A Code Forge filename. No slashes, so a name can never escape the folder it is
+ * written into, and no leading dot, so it cannot become a config file — the
+ * generator writes these straight into `build/` beside the engine sources.
+ */
+export const CODE_FILE_RE = /^[A-Za-z0-9_][A-Za-z0-9_.-]{0,30}\.asm$/;
+
+export const CODE_LIMITS = {
+  fileBytes: 128 * 1024, // one source file
+  files: 64 // per group
+};
+
+/**
+ * Source text as the generator will write it: LF endings and a trailing newline,
+ * so a save/load round-trip is byte-identical and the last line of a file never
+ * runs into the next `.include`.
+ */
+export function normalizeCodeText(raw) {
+  const text = String(raw ?? '').replace(/\r\n?/g, '\n').slice(0, CODE_LIMITS.fileBytes);
+  if (!text) return '';
+  return text.endsWith('\n') ? text : `${text}\n`;
+}
+
+const normalizeCodeGroup = (raw) => {
+  const seen = new Set();
+  const files = [];
+  for (const entry of Array.isArray(raw) ? raw : []) {
+    const name = typeof entry?.name === 'string' ? entry.name : '';
+    if (!CODE_FILE_RE.test(name) || seen.has(name)) continue;
+    seen.add(name);
+    files.push({ name, text: normalizeCodeText(entry?.text) });
+    if (files.length >= CODE_LIMITS.files) break;
+  }
+  // Sorted so the order matches the readdir that reads them back, which is what
+  // makes a save/load round-trip compare equal.
+  return files.sort((a, b) => a.name.localeCompare(b.name));
+};
+
+/**
+ * The Code Forge slice: edited copies of stock engine files, and the user's own
+ * files. Which names are *stock* is not knowable here — this module may not touch
+ * the filesystem — so the engine-name checks live in the generator's
+ * `checkCapacity`, which can read the engine folder.
+ */
+export function normalizeCode(raw) {
+  const overrides = normalizeCodeGroup(raw?.overrides);
+  const taken = new Set(overrides.map((file) => file.name));
+  // A user file may not shadow an override: both are written into the same build
+  // folder, so one would silently overwrite the other.
+  const files = normalizeCodeGroup(raw?.files).filter((file) => !taken.has(file.name));
+  return { overrides, files };
+}
+
 /** Fill in defaults and clamp everything so the UI can trust the shape. */
 export function normalizeProject(raw) {
   const base = createProject(raw?.project?.name || 'Untitled Game');
@@ -799,7 +853,8 @@ export function normalizeProject(raw) {
       .map((name, index) => normalizeLabel(name, `Switch ${index}`)),
     party,
     spells,
-    rpg
+    rpg,
+    code: normalizeCode(raw.code)
   };
 }
 

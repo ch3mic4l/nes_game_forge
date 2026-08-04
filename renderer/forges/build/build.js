@@ -118,6 +118,30 @@ export function mount(container, app) {
     logStage.scrollTop = logStage.scrollHeight;
   }
 
+  /** An error line that names a file the Code Forge can open, at the line it names. */
+  function writeLink(line, { file, line: lineNumber }) {
+    log.append(
+      el(
+        'div',
+        {
+          style: {
+            color: 'var(--red)',
+            cursor: 'pointer',
+            textDecoration: 'underline',
+            textDecorationStyle: 'dotted'
+          },
+          title: `Open ${file} in the Code Forge`,
+          onclick: async () => {
+            await app.goTo('code');
+            app.current?.openFile?.(file, lineNumber);
+          }
+        },
+        line
+      )
+    );
+    logStage.scrollTop = logStage.scrollHeight;
+  }
+
   const unsubscribe = window.forge.on('build:log', (line) => write(line));
 
   function setBusy(busy) {
@@ -149,7 +173,19 @@ export function mount(container, app) {
 
     if (!result.ok) {
       write('');
-      for (const line of String(result.error).split('\n')) write(line, 'error');
+      // The assembler reports `file:line: message`, and the Code Forge can open
+      // exactly that — so those lines are rendered as links rather than text.
+      // Everything else (a capacity problem, a missing nesasm) is plain.
+      const located = new Map(
+        (result.errors ?? [])
+          .filter((entry) => entry.file)
+          .map((entry) => [`${entry.file}:${entry.line}: ${entry.message}`, entry])
+      );
+      for (const line of String(result.error).split('\n')) {
+        const entry = located.get(line);
+        if (entry) writeLink(line, entry);
+        else write(line, 'error');
+      }
       app.setStatus('Build failed', 'error');
       if (!silent) toast('Build failed — see the log.', 'error');
       lastBuild = null;

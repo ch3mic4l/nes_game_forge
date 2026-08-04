@@ -5,6 +5,7 @@
 // constant and no chance of the two drifting apart.
 
 import fs from 'node:fs/promises';
+import { readdirSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { encodeTiles, tileFromString, BLANK_TILE } from '../../shared/chr.js';
@@ -58,9 +59,24 @@ import {
 } from '../../shared/cartridge.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const ENGINE_DIR = path.resolve(__dirname, '../../engine');
+export const ENGINE_DIR = path.resolve(__dirname, '../../engine');
 
 export const SCREEN_BYTES = SCREEN_METATILES + 64; // 240 metatiles + 64 attribute bytes
+
+/**
+ * The stock engine sources, which is what makes a Code Forge override an
+ * *override* rather than a new file. The engine folder is the single writer for
+ * that list — nothing else may keep a copy of it.
+ */
+let engineFileCache = null;
+export function engineFileNames() {
+  if (!engineFileCache) {
+    engineFileCache = readdirSync(ENGINE_DIR)
+      .filter((file) => file.endsWith('.asm'))
+      .sort();
+  }
+  return engineFileCache;
+}
 
 // actor, x, y, the door target (screen, x, y), then the event it runs and the
 // switch that hides it. Actors that use none of it carry zeroes and $FF there;
@@ -272,6 +288,52 @@ function padTable(tiles) {
   return out;
 }
 
+/**
+ * Code Forge checks. Deliberately *not* a byte estimate: how much a source file
+ * assembles to cannot be known from its text, and a wrong guess would either
+ * refuse a project that fits or promise room the assembler then denies. The
+ * assembler is the capacity check for hand-written code, and its overflow error
+ * names the file and line, which the Code Forge opens directly.
+ */
+function checkCode(project) {
+  const problems = [];
+  const code = project.code ?? { overrides: [], files: [] };
+  const stock = new Set(engineFileNames());
+
+  for (const file of code.files) {
+    if (stock.has(file.name)) {
+      problems.push({
+        severity: 'error',
+        where: 'Code Forge',
+        message:
+          `"${file.name}" is the name of a stock engine file, so it would overwrite it. Rename your file, or ` +
+          'edit the engine file itself — the Code Forge keeps your changes as a per-project copy.'
+      });
+    }
+  }
+  // An override naming a file this version does not ship is skipped rather than
+  // refused, so a project saved by a later version still builds here.
+  for (const file of code.overrides) {
+    if (!stock.has(file.name)) {
+      problems.push({
+        severity: 'warning',
+        where: 'Code Forge',
+        message: `"${file.name}" is not a file in this version's engine, so your edited copy is not used.`
+      });
+    }
+  }
+  if (code.overrides.length || code.files.length) {
+    problems.push({
+      severity: 'warning',
+      where: 'Code Forge',
+      message:
+        'This project contains hand-written engine code, which the capacity check above does not measure. ' +
+        'The assembler enforces the bank limits; any overflow names the file and line.'
+    });
+  }
+  return problems;
+}
+
 /** Capacity checks that must pass before the assembler is worth running. */
 export function checkCapacity(project) {
   const text = compileText(project);
@@ -367,6 +429,7 @@ export function checkCapacity(project) {
         'free alongside the engine code. Reduce the number of screens, actors or metasprites.'
     });
   }
+  problems.push(...checkCode(project));
   // Music and text share the $E000 half of the fixed kernel, above the vectors.
   if (musicBytes + text.bytes > BANK_SIZE - 64) {
     problems.push({
@@ -856,8 +919,45 @@ export async function generateAssets({ dir, project, log = () => {} }) {
   );
 
   // --- engine source -------------------------------------------------------
-  for (const file of await fs.readdir(ENGINE_DIR)) {
-    if (file.endsWith('.asm')) await fs.copyFile(path.join(ENGINE_DIR, file), path.join(buildDir, file));
+  // Stock first, then the Code Forge's copies over the top: an override is a
+  // per-project edit of an engine file, so it must land at the same name and the
+  // same line numbers (the assembler's errors are reported against these files,
+  // and the Code Forge opens them by name and line). The app's own engine/ folder
+  // is never written to.
+  for (const file of engineFileNames()) {
+    await fs.copyFile(path.join(ENGINE_DIR, file), path.join(buildDir, file));
+  }
+  const code = project.code ?? { overrides: [], files: [] };
+  const stock = new Set(engineFileNames());
+  let overridden = 0;
+  for (const file of code.overrides) {
+    if (!stock.has(file.name)) continue; // warned about in checkCapacity
+    await fs.writeFile(path.join(buildDir, file.name), file.text, 'utf8');
+    overridden += 1;
+  }
+  for (const file of code.files) {
+    await fs.writeFile(path.join(buildDir, file.name), file.text, 'utf8');
+  }
+
+  // The include slot for user files. engine/main.asm includes this one file
+  // unconditionally, in the fixed kernel at $C000 — permanently mapped on every
+  // supported mapper, so a `jsr` into user code works from anywhere without the
+  // user having to think about banking. Always emitted, so a project with no
+  // code of its own assembles exactly as it did before the Code Forge existed.
+  await fs.writeFile(
+    path.join(assetsDir, 'usercode.inc'),
+    code.files.length
+      ? `; Generated -- Code Forge files, in the fixed kernel.\n${code.files
+          .map((file) => `  .include "${file.name}"`)
+          .join('\n')}\n`
+      : '; Generated -- this project has no Code Forge files of its own.\n'
+  );
+
+  if (overridden || code.files.length) {
+    log(
+      `code: ${overridden} engine file${overridden === 1 ? '' : 's'} overridden, ` +
+        `${code.files.length} user file${code.files.length === 1 ? '' : 's'} included`
+    );
   }
 
   const banksUsed = new Set(screenBank).size;

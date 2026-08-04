@@ -92,7 +92,48 @@ export async function saveProject(dir, data) {
     project.songs.map((song, index) => writeJson(path.join(dir, 'songs', `${index}.json`), song))
   );
 
+  await saveCode(dir, project.code);
+
   return project;
+}
+
+// Code Forge sources are written as raw .asm, not wrapped in JSON, so they stay
+// diffable and can be opened by any editor. Overrides and user files are kept in
+// separate folders so which one a file is never depends on the engine's current
+// file list — a user file that happens to share a name with a *future* engine
+// file is still a user file.
+const CODE_GROUPS = [
+  ['overrides', 'engine'],
+  ['files', 'user']
+];
+
+async function saveCode(dir, code) {
+  for (const [key, folder] of CODE_GROUPS) {
+    const target = path.join(dir, 'code', folder);
+    const files = code[key];
+    // Only projects that use the Code Forge grow a code/ folder.
+    if (!files.length && !(await fs.access(target).then(() => true, () => false))) continue;
+    await fs.mkdir(target, { recursive: true });
+    for (const entry of await fs.readdir(target).catch(() => [])) {
+      if (entry.endsWith('.asm')) await fs.rm(path.join(target, entry), { force: true });
+    }
+    for (const file of files) await fs.writeFile(path.join(target, file.name), file.text, 'utf8');
+  }
+}
+
+async function loadCode(dir) {
+  const code = {};
+  for (const [key, folder] of CODE_GROUPS) {
+    const target = path.join(dir, 'code', folder);
+    const names = (await fs.readdir(target).catch(() => [])).filter((f) => f.endsWith('.asm'));
+    const files = [];
+    for (const name of names.sort()) {
+      const text = await fs.readFile(path.join(target, name), 'utf8').catch(() => null);
+      if (text !== null) files.push({ name, text });
+    }
+    code[key] = files;
+  }
+  return code;
 }
 
 /**
@@ -163,7 +204,8 @@ export async function loadProject(dir) {
     party: await readJson(path.join(dir, 'party.json')),
     spells: await readJson(path.join(dir, 'spells.json')),
     maps,
-    songs
+    songs,
+    code: await loadCode(dir)
   });
 }
 

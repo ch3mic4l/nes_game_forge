@@ -41,6 +41,13 @@ const FORGES = [
     title: 'Controller Forge',
     load: () => import('./forges/controller/controller.js')
   },
+  {
+    id: 'code',
+    label: 'Code',
+    glyph: '‹›',
+    title: 'Code Forge',
+    load: () => import('./forges/code/code.js')
+  },
   { separator: true },
   {
     id: 'build',
@@ -255,6 +262,10 @@ async function loadProject(dir) {
 
 async function saveProject() {
   if (!store.isOpen) return false;
+  // A Forge holding an edit it has not committed yet — the Code Forge's editor
+  // waits for typing to pause — writes it into the project first, so Ctrl+S
+  // never saves a version older than what is on screen.
+  mounted?.flushPendingEdits?.();
   const result = await window.forge.project.save(store.dir, store.project);
   if (!result.ok) {
     toast(result.error, 'error');
