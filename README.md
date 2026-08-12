@@ -33,6 +33,10 @@ All five Forges are built. The engine behind them is a top-down adventure; other
 genres would need new engine modules rather than new UI — or the Code Forge, which
 is the escape hatch when the UI does not offer what you want.
 
+Where this could go next — richer events, authoring tools for large projects, cartridge
+saves — is written down in [ROADMAP.md](ROADMAP.md). None of it is built; this table is
+the account of what is.
+
 ### The Code Forge
 
 Every source file that goes into the ROM, in a file tree with tabbed editors.
