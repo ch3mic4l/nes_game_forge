@@ -51,21 +51,27 @@ const NAV_GAP = 14;
 // renumber this one: copy actor 1, delete actor 0, and the index names somebody
 // else while staying comfortably in range.
 //
-// The snapshot runs up to and including the copied index, because that prefix is
-// exactly what decides who sits there — appending or deleting an actor *after*
-// it moves nothing, and keeps the paste. Comparing the name of that one actor is
-// not enough: names are not unique, so two actors called "Guard" would let a
-// deletion shuffle one into the other's place and compare equal. Renaming
-// anything in the prefix also withdraws the paste, which costs one more copy;
-// the alternative costs a wrong actor placed in silence.
+// The snapshot is the whole roster, and the pessimism is the point. Two weaker
+// versions were tried and both let the wrong actor through, because names are
+// not unique:
+//
+//   - comparing the copied actor's name back: two actors called "Guard" at 1
+//     and 2, delete actor 0, and the one that shuffles into index 1 compares
+//     equal to the one that was copied.
+//   - comparing only the names up to the copied index: three actors called
+//     "Chest", copy the middle one, delete the first, and that prefix is
+//     *still* ["Chest","Chest"] while index 1 now holds the third.
+//
+// So any change to the roster at all withdraws the paste, which costs one more
+// copy where the alternative costs a wrong actor placed in silence. The one
+// assumption left is that nothing reorders actors — the Sprite Forge only
+// appends and deletes — since swapping two identically named ones would leave
+// this list unchanged. Add reordering and this needs object identity instead.
 let clipboard = null;
-const rosterUpTo = (project, index) =>
-  JSON.stringify(project.sprites.actors.slice(0, index + 1).map((actor) => actor.name));
+const rosterOf = (project) => JSON.stringify(project.sprites.actors.map((actor) => actor.name));
 
 const clipboardIsHere = () =>
-  Boolean(clipboard) &&
-  clipboard.dir === store.dir &&
-  rosterUpTo(store.project, clipboard.entity.actorId) === clipboard.roster;
+  Boolean(clipboard) && clipboard.dir === store.dir && rosterOf(store.project) === clipboard.roster;
 
 const TOOLS = [
   { id: 'stamp', label: '▪ Stamp', title: 'Paint the selected metatile' },
@@ -786,7 +792,7 @@ export function mount(container, app) {
                     onclick: () => {
                       clipboard = {
                         dir: store.dir,
-                        roster: rosterUpTo(store.project, entity.actorId),
+                        roster: rosterOf(store.project),
                         entity: structuredClone(entity)
                       };
                       renderEntities();

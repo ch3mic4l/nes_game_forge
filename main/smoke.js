@@ -159,14 +159,15 @@ const scenario = (dir, sampleDir) => `
   // two different screens, so the assertion is that the Forge lands on the one
   // the row described rather than on the first match anywhere.
   store.commit('smoke placed actors', (project) => {
-    // Three actors, two of them sharing a name. The clipboard check further
-    // down needs a same-named actor *after* the one it copies, or deleting an
-    // earlier actor puts the copied index out of range and the bounds check
-    // answers first — which is how this passed while testing nothing.
-    project.sprites.actors.push({ name: 'Villager', behavior: 'npc' });
+    // Three actors, all sharing a name, because the clipboard check further
+    // down is about what a weaker guard would miss. With distinct names almost
+    // anything passes; with the copied actor last, deleting an earlier one puts
+    // its index out of range and the bounds check answers first — which is how
+    // that check once passed while testing nothing at all.
     project.sprites.actors.push({ name: 'Chest', behavior: 'npc' });
     project.sprites.actors.push({ name: 'Chest', behavior: 'npc' });
-    const actorId = project.sprites.actors.length - 2;
+    project.sprites.actors.push({ name: 'Chest', behavior: 'npc' });
+    const actorId = 1; // the middle one: another of the same name sits after it
     project.maps[0].screens[0].entities.push({ actorId, x: 16, y: 16, props: { name: 'Empty chest' } });
     project.maps[0].screens[3].entities.push({
       actorId,
@@ -287,16 +288,17 @@ const scenario = (dir, sampleDir) => `
   if (store.project.maps[0].screens[1].entities.length !== 1) throw new Error('paste put nothing on screen 1');
 
   // Deleting an actor renumbers every placed actorId, and cannot renumber the
-  // clipboard's. Here the copied index stays comfortably in range afterwards
-  // and lands on the *other* actor of the same name — so neither the bounds
-  // check nor a name comparison would notice, and only the roster snapshot
-  // does. Asserted present first, or this would pass for finding nothing.
+  // clipboard's. All three actors share a name, so after the deletion the
+  // copied index is in range, holds a *different* actor, and every weaker
+  // guard still says yes: the bounds check, the copied actor's name, and the
+  // names up to that index are all unchanged. Only the whole roster differs.
+  // Asserted present first, or this would pass for finding nothing.
   const pasteOffered = () =>
     [...document.querySelectorAll('#stage button')].some((node) => node.textContent.startsWith('Paste '));
   if (!pasteOffered()) throw new Error('paste is not offered even before the actor list changes');
   const copiedActor = store.project.sprites.actors[1];
   store.commit('smoke delete an earlier actor', (project) => {
-    project.sprites.actors.splice(0, 1); // the Villager, before both Chests
+    project.sprites.actors.splice(0, 1); // the first Chest, ahead of the copied one
     project.sprites.actors.forEach((actor, position) => (actor.id = position));
     for (const map of project.maps) {
       for (const screen of map.screens) {
@@ -312,6 +314,9 @@ const scenario = (dir, sampleDir) => `
   }
   if (store.project.sprites.actors[1]?.name !== copiedActor.name) {
     throw new Error('the shuffled-into actor should share the name, or the guard is not being tested');
+  }
+  if (store.project.sprites.actors.slice(0, 2).some((actor) => actor.name !== copiedActor.name)) {
+    throw new Error('the names up to the copied index should be unchanged, or a prefix guard would pass');
   }
   if (pasteOffered()) throw new Error('paste survived the actor it copied being renumbered');
   store.undo();

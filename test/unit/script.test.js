@@ -16,7 +16,7 @@ import NES from '../../renderer/emulator/core/nes.js';
 import { loadProject, saveProject } from '../../main/project-io.js';
 import { buildProject } from '../../main/build/pipeline.js';
 import { compileText, EVT_PAGES_END } from '../../main/build/textcompile.js';
-import { createProject, normalizeProject, compiledPages } from '../../shared/project.js';
+import { createProject, normalizeProject, compiledPages, enabledCommands } from '../../shared/project.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const SAMPLE = path.join(ROOT, 'sample');
@@ -356,6 +356,19 @@ test('the off flag survives normalization only when it is set', () => {
   assert.equal('off' in commands[0], false, 'an enabled command carries no flag at all');
   assert.equal(commands[1].off, true);
   assert.equal('off' in commands[2], false, 'only a literal true counts');
+
+  // And the shared rule has to read `off` the same way the schema writes it.
+  // A truthiness test here would call { off: 'yes' } disabled before a load and
+  // enabled after one, so the same hand-edited project would compile to two
+  // different ROMs depending on whether it had been through normalization.
+  const page = {
+    commands: [{ op: 'say', text: 'a' }, { op: 'say', text: 'b', off: true }, { op: 'say', text: 'c', off: 'yes' }]
+  };
+  assert.deepEqual(
+    enabledCommands(page).map((command) => command.text),
+    ['a', 'c'],
+    'only a literal true disables, before normalization as well as after'
+  );
 });
 
 test('switching every command off keeps the work and only stops the build', () => {
