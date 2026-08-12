@@ -15,9 +15,16 @@ import {
   RPG_LIMITS,
   SCREEN_METATILES,
   COLLISION_TYPES,
-  collisionIndex
+  collisionIndex,
+  AUTHOR_NAME_MAX,
+  createMap,
+  createScreen,
+  screenLabel,
+  entityLabel,
+  flatScreens
 } from '../../shared/project.js';
 import { resolveMapper, rpgCapable } from '../../shared/cartridge.js';
+import { flattenScreens } from '../../main/build/generate.js';
 import { FONT_BASE } from '../../shared/font.js';
 import { BLANK_TILE } from '../../shared/chr.js';
 
@@ -330,4 +337,57 @@ test('an RPG project round-trips through normalize unchanged', () => {
   project.switches.push('Chest opened');
   const normalized = normalizeProject(structuredClone(project));
   assert.deepEqual(normalized, project);
+});
+
+// --- authoring names ---------------------------------------------------------
+
+test('screens and placed actors carry a name for the author, capped and tidied', () => {
+  const project = normalizeProject({
+    maps: [
+      {
+        screens: [
+          {
+            name: `  Cave   mouth  ${'x'.repeat(80)}`,
+            entities: [{ actorId: 0, x: 0, y: 0, props: { name: '  Gate key chest ' } }]
+          }
+        ]
+      }
+    ]
+  });
+  const screen = project.maps[0].screens[0];
+  assert.equal(screen.name.length, AUTHOR_NAME_MAX);
+  assert.match(screen.name, /^Cave mouth x+$/, 'runs of whitespace collapse, ends trimmed');
+  assert.equal(screen.entities[0].props.name, 'Gate key chest');
+
+  // Unnamed is the empty string, never a number: the number is where the screen
+  // sits, and a resize moves it.
+  assert.equal(normalizeProject({ maps: [{}] }).maps[0].screens[0].name, '');
+});
+
+test('a screen reads by its name where it has one and by its position where it does not', () => {
+  const project = createProject('Named');
+  project.maps[0].name = 'Overworld';
+  assert.equal(screenLabel(project, 0, 0), 'Overworld · screen 0');
+  project.maps[0].screens[0].name = 'Cave mouth';
+  assert.equal(screenLabel(project, 0, 0), 'Overworld · Cave mouth');
+  assert.equal(entityLabel(project, { actorId: 0 }), project.sprites.actors[0]?.name ?? 'Actor 0');
+  assert.equal(entityLabel(project, { actorId: 0, props: { name: 'Innkeeper' } }), 'Innkeeper');
+});
+
+test('the screen list the UI offers is numbered the way the engine numbers screens', () => {
+  const project = createProject('Two maps');
+  project.maps.push(createMap(1, 'Caves'));
+  project.maps[1].gridW = 2;
+  project.maps[1].gridH = 2;
+  project.maps[1].screens = [createScreen(), createScreen(), createScreen(), createScreen()];
+
+  // A door's toScreen and a warp command's screen are indices into this list,
+  // and the generator compiles its table in the same order. Disagree and the
+  // player lands somewhere the editor never showed.
+  const offered = flatScreens(project);
+  const compiled = flattenScreens(project).flat;
+  assert.equal(offered.length, compiled.length);
+  offered.forEach((entry, index) => {
+    assert.equal(entry.screen, compiled[index].screen, `screen ${index} is the same object in both`);
+  });
 });

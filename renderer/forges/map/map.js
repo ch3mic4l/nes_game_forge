@@ -5,7 +5,16 @@
 
 import { store } from '../../store.js';
 import { el, clear, fill, field, toast, confirmModal, fitZoom, observeSize } from '../../ui.js';
-import { LIMITS, createScreen, createMap, COLLISION_TYPES } from '../../../shared/project.js';
+import {
+  LIMITS,
+  createScreen,
+  createMap,
+  COLLISION_TYPES,
+  AUTHOR_NAME_MAX,
+  flatScreens,
+  screenLabel,
+  entityLabel
+} from '../../../shared/project.js';
 import { BOX_COLS, BOX_ROWS, FONT_BASE, wrapText } from '../../../shared/font.js';
 import { RPG_LIMITS } from '../../../shared/project.js';
 import { createMetatilePanel } from './metatiles.js';
@@ -162,7 +171,7 @@ export function mount(container, app) {
           borderRadius: '3px',
           cursor: 'pointer'
         },
-        title: `Screen ${index}`,
+        title: screen.name?.trim() ? `Screen ${index} — ${screen.name}` : `Screen ${index}`,
         onclick: () => {
           state.screenIndex = index;
           renderScreen();
@@ -378,14 +387,10 @@ export function mount(container, app) {
 
   /** The names and labels the event editor needs to read as English. */
   function eventContext() {
-    const screens = [];
-    store.project.maps.forEach((map) => {
-      map.screens.forEach((_, screenIndex) => screens.push(`${map.name} · ${screenIndex}`));
-    });
     return {
       actors: store.project.sprites.actors,
       switches: store.project.switches ?? [],
-      screens,
+      screens: flatScreens(store.project).map((entry) => entry.label),
       // Only an RPG has a party, so this is what decides whether Join is offered.
       party: store.project.project.gameType === 'rpg' ? store.project.party ?? [] : []
     };
@@ -496,10 +501,7 @@ export function mount(container, app) {
 
   /** Where a door leads: a screen anywhere in the project, and a landing spot. */
   function doorTarget(entity, index) {
-    const flat = [];
-    store.project.maps.forEach((map) => {
-      map.screens.forEach((_, screenIndex) => flat.push({ label: `${map.name} · ${screenIndex}` }));
-    });
+    const flat = flatScreens(store.project);
 
     const setProp = (key, value) => {
       const { mapIndex, screenIndex } = state;
@@ -596,7 +598,22 @@ export function mount(container, app) {
               el(
                 'div.field-row',
                 null,
-                el('span', { style: { flex: '1' } }, `${actors[entity.actorId]?.name ?? `Actor ${entity.actorId}`} @ ${entity.x},${entity.y}`),
+                // The name is what the event list and every "find uses" result
+                // shows, so it is edited where the actor is placed rather than
+                // behind another dialog. Unnamed placements keep reading as the
+                // actor they are, which is what the placeholder says.
+                el('input', {
+                  type: 'text',
+                  value: entity.props?.name ?? '',
+                  maxLength: AUTHOR_NAME_MAX,
+                  placeholder: actors[entity.actorId]?.name ?? `Actor ${entity.actorId}`,
+                  title: 'What you call this one — “Gate key chest”, “Innkeeper”',
+                  style: { flex: '1' },
+                  onchange: (event) =>
+                    setEntityProp(index, 'Rename placed actor', {
+                      name: event.target.value.trim().slice(0, AUTHOR_NAME_MAX)
+                    })
+                }),
                 el(
                   'button.btn.btn-sm',
                   {
@@ -612,6 +629,11 @@ export function mount(container, app) {
                   },
                   '✕'
                 )
+              ),
+              el(
+                'p.hint',
+                { style: { margin: '0 0 4px' } },
+                `${actors[entity.actorId]?.name ?? `Actor ${entity.actorId}`} @ ${entity.x},${entity.y}`
               ),
               // A door needs somewhere to lead, so it gets its target inline;
               // anything else can be talked to, so it gets a line to say.
@@ -634,12 +656,7 @@ export function mount(container, app) {
    */
   function titleScreenSelect() {
     const { titleMap, titleScreen } = store.project.project;
-    const options = [];
-    store.project.maps.forEach((map, mapIndex) => {
-      map.screens.forEach((_, screenIndex) => {
-        options.push({ mapIndex, screenIndex, label: `${map.name} · screen ${screenIndex}` });
-      });
-    });
+    const options = flatScreens(store.project);
     const currentIndex = options.findIndex(
       (entry) => entry.mapIndex === titleMap && entry.screenIndex === titleScreen
     );
@@ -901,12 +918,28 @@ export function mount(container, app) {
           )
         )
       ),
-      el('div.panel-head', { style: { paddingLeft: '0' } }, 'Player start'),
-      el(
-        'p.hint',
-        null,
-        `${store.project.maps[startMap]?.name ?? '?'} · screen ${startScreen} · x ${startX}, y ${startY}`
+      // Naming the screen you are looking at, next to the navigator that
+      // selected it. The name is authoring metadata and reaches no .inc file;
+      // what it buys is every warp, door and search result reading as a place.
+      field(
+        `Screen ${state.screenIndex} name`,
+        el('input', {
+          type: 'text',
+          value: currentScreen().name ?? '',
+          maxLength: AUTHOR_NAME_MAX,
+          placeholder: 'unnamed — e.g. Cave mouth',
+          onchange: (event) => {
+            const { mapIndex, screenIndex } = state;
+            const value = event.target.value;
+            store.commit('Rename screen', (project) => {
+              project.maps[mapIndex].screens[screenIndex].name = value.trim().slice(0, AUTHOR_NAME_MAX);
+            });
+            renderAll();
+          }
+        })
       ),
+      el('div.panel-head', { style: { paddingLeft: '0' } }, 'Player start'),
+      el('p.hint', null, `${screenLabel(store.project, startMap, startScreen)} · x ${startX}, y ${startY}`),
       el('p.hint', null, 'Choose the ⚑ Start tool and click to move it.'),
       el('div.panel-head', { style: { paddingLeft: '0' } }, 'Title screen'),
       titleScreenSelect(),

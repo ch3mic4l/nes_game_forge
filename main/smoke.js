@@ -117,8 +117,11 @@ const scenario = (dir, sampleDir) => `
     const map = project.maps[0];
     map.gridW = 2;
     map.gridH = 2;
+    // Spelled out rather than built by createScreen, so this is also the check
+    // that a screen literal knows every field: the round trip below compares
+    // this against what normalization produced on the way back off disk.
     while (map.screens.length < 4) {
-      map.screens.push({ metatiles: new Array(240).fill(0), entities: [] });
+      map.screens.push({ name: '', metatiles: new Array(240).fill(0), entities: [] });
     }
   });
   await wait(250);
@@ -134,6 +137,23 @@ const scenario = (dir, sampleDir) => `
     throw new Error('maps did not survive the disk round trip');
   }
   step('map round trip', 'identical');
+
+  // Naming a screen has to reach every menu that offers one, which is the whole
+  // point of it: the label is built in one place so a warp, a door and the
+  // title-screen picker cannot disagree about what a screen is called.
+  const screenName = [...document.querySelectorAll('#stage input')].find((node) =>
+    (node.placeholder ?? '').startsWith('unnamed')
+  );
+  if (!screenName) throw new Error('the Map Forge offers no screen name field');
+  screenName.value = 'Cave mouth';
+  screenName.dispatchEvent(new Event('change', { bubbles: true }));
+  await wait(250);
+  if (store.project.maps[0].screens[0].name !== 'Cave mouth') throw new Error('the screen name did not commit');
+  const named = [...document.querySelectorAll('#stage option')].filter((node) =>
+    node.textContent.includes('Cave mouth')
+  );
+  if (!named.length) throw new Error('a named screen is still listed by its number');
+  step('named screen', named.length + ' menu(s) show it by name');
 
   // --- mapper selection and the tileset list -----------------------------
   window.__app.goTo('tile');

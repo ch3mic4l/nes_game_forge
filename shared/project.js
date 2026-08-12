@@ -44,6 +44,15 @@ export const LIMITS = {
 
 export const SCREEN_METATILES = LIMITS.screenCols * LIMITS.screenRows; // 240
 
+/**
+ * How long a name the author gives a screen or a placed actor may be. These are
+ * authoring metadata and reach no `.inc` file, so the limit is about keeping a
+ * dropdown readable rather than about ROM bytes — the engine never sees them.
+ */
+export const AUTHOR_NAME_MAX = 32;
+
+const authorName = (raw) => String(raw ?? '').replace(/\s+/g, ' ').trim().slice(0, AUTHOR_NAME_MAX);
+
 /** Collision behaviours a metatile can carry. Index is what the engine sees. */
 export const COLLISION_TYPES = [
   { id: 'open', label: 'Open', color: 'transparent' },
@@ -271,7 +280,10 @@ export function createMetatile(id) {
 }
 
 export function createScreen() {
-  return { metatiles: new Array(SCREEN_METATILES).fill(0), entities: [] };
+  // An unnamed screen is the empty string, not "Screen 3": the number is where
+  // it sits in the map and changes when the map is resized, so storing it would
+  // leave a name that quietly lies. `screenLabel` supplies the fallback.
+  return { name: '', metatiles: new Array(SCREEN_METATILES).fill(0), entities: [] };
 }
 
 export function createMap(id, name = 'World') {
@@ -516,6 +528,10 @@ function normalizeEntity(raw) {
     y: clamp(raw?.y, 0, 239, 0),
     props: {
       ...props,
+      // What the author calls this placement — "Gate key chest", not "Chest".
+      // It lives in the prop bag with the rest of the per-placement data and is
+      // compiled by nothing; `entityLabel` is what reads it.
+      name: authorName(props.name),
       toScreen: clamp(props.toScreen, 0, 255, 0),
       toX: clamp(props.toX, 0, 240, 112),
       toY: clamp(props.toY, 0, 224, 112),
@@ -528,6 +544,7 @@ function normalizeEntity(raw) {
 
 function normalizeScreen(raw) {
   const screen = createScreen();
+  screen.name = authorName(raw?.name);
   const source = Array.isArray(raw?.metatiles) ? raw.metatiles : [];
   for (let i = 0; i < SCREEN_METATILES && i < source.length; i++) {
     screen.metatiles[i] = clamp(source[i], 0, LIMITS.metatiles - 1, 0);
@@ -536,6 +553,42 @@ function normalizeScreen(raw) {
     screen.entities = raw.entities.slice(0, LIMITS.entitiesPerScreen).map(normalizeEntity);
   }
   return screen;
+}
+
+/**
+ * How a screen reads in a menu. Every warp target, door target, title-screen
+ * picker and search result goes through this, so a screen that has been named
+ * is named everywhere at once and one that has not still says where it is.
+ */
+export function screenLabel(project, mapIndex, screenIndex) {
+  const map = project.maps[mapIndex];
+  if (!map) return `screen ${screenIndex}`;
+  const name = map.screens[screenIndex]?.name?.trim();
+  return `${map.name} · ${name || `screen ${screenIndex}`}`;
+}
+
+/**
+ * Every screen in the project, in the order the engine numbers them — maps in
+ * order, screens in order. That order is a wire format: it is what a door's
+ * `toScreen` and a warp command's `screen` index into, and `flattenScreens` in
+ * the generator builds the compiled table the same way. A test asserts the two
+ * agree, because a disagreement would send the player to the wrong screen with
+ * nothing in the UI looking wrong.
+ */
+export function flatScreens(project) {
+  const out = [];
+  project.maps.forEach((map, mapIndex) => {
+    map.screens.forEach((screen, screenIndex) => {
+      out.push({ mapIndex, screenIndex, screen, map, label: screenLabel(project, mapIndex, screenIndex) });
+    });
+  });
+  return out;
+}
+
+/** How a placed actor reads in a list: what the author called it, or what it is. */
+export function entityLabel(project, entity) {
+  const actor = project.sprites.actors[entity?.actorId];
+  return entity?.props?.name?.trim() || actor?.name || `Actor ${entity?.actorId ?? 0}`;
 }
 
 function normalizeMap(raw, id) {
@@ -867,13 +920,14 @@ export function validateProject(project) {
 
   if (!project.maps.length) add('error', 'Map Forge', 'A project needs at least one map.');
 
-  project.maps.forEach((map) => {
+  project.maps.forEach((map, mapIndex) => {
     map.screens.forEach((screen, index) => {
       if (screen.entities.length > LIMITS.entitiesPerScreen) {
         add(
           'error',
           'Map Forge',
-          `${map.name} screen ${index} has ${screen.entities.length} entities; the engine allows ${LIMITS.entitiesPerScreen}.`
+          `${screenLabel(project, mapIndex, index)} has ${screen.entities.length} entities; ` +
+            `the engine allows ${LIMITS.entitiesPerScreen}.`
         );
       }
     });
