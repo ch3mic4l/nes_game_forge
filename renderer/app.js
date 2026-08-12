@@ -93,6 +93,12 @@ export const app = {
   toast,
   showModal,
   goTo: (id) => selectForge(id),
+  /**
+   * A Forge holding an edit it has not committed to the store yet says so here.
+   * Nothing else can: the store emits no event until the commit lands, and the
+   * close guard asks main long before that.
+   */
+  notePendingEdits: () => refreshChrome(),
   /** The currently mounted Forge, for menu actions and the smoke test. */
   get current() {
     return mounted;
@@ -291,9 +297,15 @@ async function buildAndPlay() {
 // window shut afterwards. Cancelling `beforeunload` from here instead — which is
 // what this used to do — vetoed the close silently: no prompt, and the title-bar
 // X simply stopped working for the rest of the session.
+//
+// "Unsaved" is not `store.dirty` alone. The Code Forge waits for typing to pause
+// before it commits, so a buffer that has diverged is work at risk that the store
+// has not heard about yet — and the window's X does not wait for the debounce.
+const unsavedWork = () => store.isOpen && (store.dirty || Boolean(mounted?.hasPendingEdits?.()));
+
 let reportedDirty = null;
 function reportDirty() {
-  const dirty = store.isOpen && store.dirty;
+  const dirty = unsavedWork();
   const name = store.project?.project?.name ?? '';
   const key = `${dirty}:${name}`;
   if (key === reportedDirty) return; // one message per real change, not per stroke
@@ -303,9 +315,10 @@ function reportDirty() {
 
 function refreshChrome() {
   const open = store.isOpen;
-  dom.saveButton.disabled = !open || !store.dirty;
+  const unsaved = unsavedWork();
+  dom.saveButton.disabled = !open || !unsaved;
   dom.playButton.disabled = !open;
-  dom.dirtyDot.hidden = !store.dirty;
+  dom.dirtyDot.hidden = !unsaved;
   dom.projectName.textContent = open ? store.project.project.name : 'No project open';
   dom.projectName.title = store.dir ?? '';
   reportDirty();
@@ -329,6 +342,21 @@ document.querySelectorAll('[data-action]').forEach((button) => {
   button.addEventListener('click', () => runAction(button.dataset.action));
 });
 
+/**
+ * Ctrl+Z with the caret in a code editor means "undo my typing", not "undo a
+ * project snapshot" — but the application menu owns the accelerator, so the
+ * keystroke never reaches the textarea by itself and has to be handed back.
+ * `execCommand` is deprecated and is still the only way into a textarea's own
+ * undo stack; it fires `input`, so the editor re-highlights and re-commits like
+ * any other edit. It answers false when that stack is empty, and the project's
+ * undo takes over from there.
+ */
+function undoInFocusedEditor(redo) {
+  const node = document.activeElement;
+  if (!node?.classList?.contains('code-input') || node.readOnly) return false;
+  return document.execCommand(redo ? 'redo' : 'undo');
+}
+
 async function runAction(action) {
   switch (action) {
     case 'project:new':
@@ -339,9 +367,16 @@ async function runAction(action) {
     case 'project:saveAs':
       return saveProject();
     case 'edit:undo':
+      if (undoInFocusedEditor(false)) return;
+      // Uncommitted typing has to become an undo entry before it can be undone.
+      // Skipping this reverts the project *underneath* the buffer, and the
+      // pending commit then writes the typing back into the undone state.
+      mounted?.flushPendingEdits?.();
       if (!store.undo()) app.setStatus('Nothing to undo');
       return;
     case 'edit:redo':
+      if (undoInFocusedEditor(true)) return;
+      mounted?.flushPendingEdits?.();
       if (!store.redo()) app.setStatus('Nothing to redo');
       return;
     case 'build:run':

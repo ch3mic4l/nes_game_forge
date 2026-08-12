@@ -22,6 +22,14 @@ const kinds = (line) =>
     .filter((token) => token.text.trim())
     .map((token) => token.type);
 
+/* The text a browser displays after highlightLine is assigned to innerHTML. */
+const visibleText = (html) =>
+  html
+    .replace(/<\/?span(?:\s[^>]*)?>/g, '')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&amp;/g, '&');
+
 test('a comment runs to the end of the line', () => {
   assert.deepEqual(typed('; hello, world'), [['comment', '; hello, world']]);
   assert.deepEqual(kinds('  lda #$80 ; load it'), ['mnemonic', 'number', 'comment']);
@@ -76,7 +84,7 @@ test('highlightLine escapes HTML', () => {
   assert.doesNotMatch(html, /<&/);
 });
 
-test('tokenizing never alters the source', () => {
+test('tokenizing and rendering never alter the source', () => {
   const files = fs.readdirSync(ENGINE_DIR).filter((file) => file.endsWith('.asm'));
   assert.ok(files.length > 10, 'expected the engine sources to be present');
 
@@ -88,6 +96,7 @@ test('tokenizing never alters the source', () => {
         .map((token) => token.text)
         .join('');
       assert.equal(joined, line, `${file}:${index + 1} round-trip`);
+      assert.equal(visibleText(highlightLine(line)), line, file + ':' + (index + 1) + ' rendered text');
       lines += 1;
     }
   }
@@ -99,6 +108,7 @@ test('tokenizing never alters the source', () => {
         .join(''),
       line
     );
+    assert.equal(visibleText(highlightLine(line)), line);
   }
-  assert.ok(lines > 1000, `expected to cover the engine, saw ${lines} lines`);
+  assert.ok(lines > 1000, 'expected to cover the engine, saw ' + lines + ' lines');
 });

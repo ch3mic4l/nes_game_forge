@@ -723,10 +723,7 @@ function normalizeInput(raw) {
  */
 export const CODE_FILE_RE = /^[A-Za-z0-9_][A-Za-z0-9_.-]{0,30}\.asm$/;
 
-export const CODE_LIMITS = {
-  fileBytes: 128 * 1024, // one source file
-  files: 64 // per group
-};
+export const CODE_LIMITS = { files: 64 };
 
 /**
  * Source text as the generator will write it: LF endings and a trailing newline,
@@ -734,7 +731,10 @@ export const CODE_LIMITS = {
  * runs into the next `.include`.
  */
 export function normalizeCodeText(raw) {
-  const text = String(raw ?? '').replace(/\r\n?/g, '\n').slice(0, CODE_LIMITS.fileBytes);
+  // Source is authored data, so normalization may make line endings canonical
+  // but must never truncate it. A project can be edited outside the app, and a
+  // later save must not silently throw away the tail of a large file.
+  const text = String(raw ?? '').replace(/\r\n?/g, '\n');
   if (!text) return '';
   return text.endsWith('\n') ? text : `${text}\n`;
 }
@@ -747,7 +747,6 @@ const normalizeCodeGroup = (raw) => {
     if (!CODE_FILE_RE.test(name) || seen.has(name)) continue;
     seen.add(name);
     files.push({ name, text: normalizeCodeText(entry?.text) });
-    if (files.length >= CODE_LIMITS.files) break;
   }
   // Sorted so the order matches the readdir that reads them back, which is what
   // makes a save/load round-trip compare equal.

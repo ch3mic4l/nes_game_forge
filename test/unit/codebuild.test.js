@@ -17,7 +17,7 @@ import { loadProject, saveProject } from '../../main/project-io.js';
 import { buildProject } from '../../main/build/pipeline.js';
 import { checkCapacity, engineFileNames } from '../../main/build/generate.js';
 import { normalizeProject, createProject, CODE_FILE_RE } from '../../shared/project.js';
-import { parseNesasmErrors } from '../../main/build/nesasm.js';
+import { parseNesasmErrors, runNesasm } from '../../main/build/nesasm.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const SAMPLE = path.join(ROOT, 'sample');
@@ -114,13 +114,22 @@ test('the engine file list is the single source of what a stock file is', () => 
 
 // --- the build ---------------------------------------------------------------
 
-test('a project with no code of its own builds byte-identically', { skip: needsSample }, async (t) => {
+test('an empty include slot emits the same ROM as the template without that slot', { skip: needsSample }, async (t) => {
+  const stockMain = await fs.promises.readFile(path.join(ROOT, 'engine/main.asm'), 'utf8');
+  const withoutSlot = stockMain.replace(
+    "; The Code Forge's own files, last so they can call anything above them. Always\n" +
+      '; generated -- empty for a project that has none.\n' +
+      '  .include "assets/usercode.inc"\n',
+    ''
+  );
+  assert.notEqual(withoutSlot, stockMain, 'the test failed to remove the include slot');
+
   const plain = await buildVariant(t, 'code-none-a', () => {});
-  const empty = await buildVariant(t, 'code-none-b', (project) => {
-    project.code = { overrides: [], files: [] };
+  const without = await buildVariant(t, 'code-none-b', (project) => {
+    project.code.overrides.push({ name: 'main.asm', text: withoutSlot });
   });
   const a = await fs.promises.readFile(plain.built.romPath);
-  const b = await fs.promises.readFile(empty.built.romPath);
+  const b = await fs.promises.readFile(without.built.romPath);
   assert.deepEqual(a, b, 'the unconditional usercode.inc include must cost nothing');
 
   const inc = await fs.promises.readFile(path.join(plain.dir, 'build/assets/usercode.inc'), 'utf8');
@@ -208,6 +217,13 @@ test('code survives a save/load round trip byte for byte', { skip: needsSample }
   project.code.files.push({ name: 'alpha.asm', text: 'alpha_label:\n  rts\n' });
   project.code.overrides.push({ name: 'player.asm', text: '; not really player.asm\n' });
   const saved = await saveProject(dir, project);
+  for (const group of ['overrides', 'files']) {
+    assert.deepEqual(
+      Object.fromEntries(saved.code[group].map((file) => [file.name, file.text])),
+      Object.fromEntries(project.code[group].map((file) => [file.name, file.text])),
+      'saving changed authored source before it reached disk'
+    );
+  }
 
   // Raw .asm on disk, not wrapped in JSON, so it stays diffable and any editor
   // can open it.
@@ -222,6 +238,25 @@ test('code survives a save/load round trip byte for byte', { skip: needsSample }
   assert.equal(JSON.stringify(reloaded), JSON.stringify(saved), 'the whole project must round-trip');
 });
 
+
+test('large and numerous external source files round-trip without silent loss', async (t) => {
+  const dir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'forge-code-lossless-'));
+  t.after(() => fs.promises.rm(dir, { recursive: true, force: true }));
+
+  const project = createProject('Lossless');
+  project.code.files = Array.from({ length: 65 }, (_, index) => ({
+    name: 'file_' + String(index).padStart(2, '0') + '.asm',
+    text: 'label_' + index + ':\n  rts\n'
+  }));
+  const large = '; ' + 'x'.repeat(140 * 1024) + '\n';
+  project.code.files.push({ name: 'large.asm', text: large });
+
+  const saved = await saveProject(dir, project);
+  const reloaded = await loadProject(dir);
+  assert.equal(saved.code.files.length, 66);
+  assert.deepEqual(reloaded.code, saved.code);
+  assert.equal(reloaded.code.files.find((file) => file.name === 'large.asm')?.text, large);
+});
 test('deleting the last code file removes it from disk', { skip: needsSample }, async (t) => {
   const dir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'forge-code-rm-'));
   t.after(() => fs.promises.rm(dir, { recursive: true, force: true }));
@@ -291,4 +326,19 @@ test('the older one-line form is still understood', () => {
   assert.deepEqual(parseNesasmErrors('boot.asm:42: Syntax error!'), [
     { file: 'boot.asm', line: 42, message: 'Syntax error!' }
   ]);
+});
+
+test('nesasm error count is fatal even when the message shape is unknown', async (t) => {
+  const dir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'forge-fake-nesasm-'));
+  t.after(() => fs.promises.rm(dir, { recursive: true, force: true }));
+  const binary = path.join(dir, 'fake-nesasm');
+  await fs.promises.writeFile(
+    binary,
+    "#!/bin/sh\nprintf '%s\\n' 'an unfamiliar diagnostic shape' '# 1 error(s)'\nexit 0\n"
+  );
+  await fs.promises.chmod(binary, 0o755);
+
+  const result = await runNesasm({ cwd: dir, binary });
+  assert.equal(result.ok, false);
+  assert.match(result.errors[0]?.message ?? '', /reported 1 error/);
 });

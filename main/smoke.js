@@ -15,6 +15,18 @@ const scenario = (dir, sampleDir) => `
   const report = { steps: [] };
   const step = (name, detail) => report.steps.push({ name, detail });
   const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+  /**
+   * Wait for a condition rather than for a guessed number of milliseconds. A
+   * fixed sleep is a bet on how fast a machine under load answers an IPC, and
+   * losing that bet reads as a broken feature rather than as a slow reply.
+   */
+  const until = async (what, condition, ms = 4000) => {
+    for (let waited = 0; waited < ms; waited += 25) {
+      if (condition()) return;
+      await wait(25);
+    }
+    throw new Error('timed out waiting for ' + what);
+  };
 
   const created = await window.forge.project.create({ dir: ${JSON.stringify(dir)}, name: 'Smoke Game' });
   if (!created.ok) throw new Error('create: ' + created.error);
@@ -371,11 +383,11 @@ const scenario = (dir, sampleDir) => `
   step('tutorial forge', topics.length + ' topics, topic switch + jump to Map Forge work');
 
   // --- Code Forge --------------------------------------------------------
-  window.__app.goTo('code');
-  await wait(400);
+  // The engine's file list arrives over IPC, so wait for the tree it fills in.
+  await window.__app.goTo('code');
   const codeStage = document.querySelector('#stage');
+  await until('the Code Forge file tree', () => codeStage.querySelectorAll('.tree-row').length >= 15);
   const engineRows = [...codeStage.querySelectorAll('.tree-row')];
-  if (engineRows.length < 15) throw new Error('the Code Forge listed only ' + engineRows.length + ' files');
 
   // Open a stock engine file. Nothing is copied into the project yet.
   const playerRow = engineRows.find((row) => row.querySelector('.tree-name').textContent === 'player.asm');
@@ -392,6 +404,12 @@ const scenario = (dir, sampleDir) => `
   if (highlightedLines !== sourceLines) {
     throw new Error('highlight layer has ' + highlightedLines + ' lines for ' + sourceLines + ' of source');
   }
+  const sourceRows = input.value.split('\\n');
+  const renderedRows = [...codeStage.querySelectorAll('.hl-line')].map((row) =>
+    row.textContent === String.fromCharCode(160) ? '' : row.textContent
+  );
+  const wrongRow = renderedRows.findIndex((text, index) => text !== sourceRows[index]);
+  if (wrongRow >= 0) throw new Error('highlight changed source line ' + (wrongRow + 1));
   step('code forge mounted', engineRows.length + ' files, ' + highlightedLines + ' lines highlighted');
 
   // Type. The edit becomes an override once typing pauses.
@@ -429,18 +447,96 @@ const scenario = (dir, sampleDir) => `
   }
   step('code undo', 'override removed, editor resynced');
 
-  // A file of the user's own, which the generator wires into the build.
-  store.commit('smoke user file', (project) => {
-    project.code.files.push({ name: 'smoke_hook.asm', text: 'smoke_hook:\\n  rts\\n' });
-  });
-  await wait(250);
-  const userRow = [...codeStage.querySelectorAll('.tree-name')].find((n) => n.textContent === 'smoke_hook.asm');
-  if (!userRow) throw new Error('the new user file is not in the tree');
+  // Create a user file through the real modal, then undo its creation while
+  // its tab is open. The tab must disappear with the model entry.
+  const addFile = [...codeStage.querySelectorAll('button.tree-add')].find(
+    (button) => button.textContent === '+'
+  );
+  if (!addFile) throw new Error('the Code Forge has no new-file button');
+  addFile.click();
+  await wait(100);
+  const modalInput = document.querySelector('#modalHost input');
+  const createButton = document.querySelector('#modalHost .btn-accent');
+  if (!modalInput || !createButton) throw new Error('the new-file modal did not open');
+  modalInput.value = 'smoke_hook.asm';
+  createButton.click();
+  await wait(300);
+
+  let userRow = [...codeStage.querySelectorAll('.tree-name')].find(
+    (node) => node.textContent === 'smoke_hook.asm'
+  );
+  if (!userRow) throw new Error('the new file is missing from the tree');
+  if (![...codeStage.querySelectorAll('.code-tab-name')].some((node) => node.textContent === 'smoke_hook.asm')) {
+    throw new Error('the new file did not open in a tab');
+  }
+
+  store.undo();
+  await wait(300);
+  if (store.project.code.files.some((file) => file.name === 'smoke_hook.asm')) {
+    throw new Error('undoing Create left the user file in the project');
+  }
+  if ([...codeStage.querySelectorAll('.code-tab-name')].some((node) => node.textContent === 'smoke_hook.asm')) {
+    throw new Error('undoing Create left its tab open and editable');
+  }
+
+  store.redo();
+  await wait(300);
+  userRow = [...codeStage.querySelectorAll('.tree-name')].find(
+    (node) => node.textContent === 'smoke_hook.asm'
+  );
+  if (!userRow) throw new Error('redoing Create did not restore the file');
   userRow.click();
   await wait(250);
-  const tabNames = [...codeStage.querySelectorAll('.code-tab-name')].map((n) => n.textContent);
-  if (tabNames.length !== 2) throw new Error('expected two open tabs, saw ' + tabNames.join(', '));
-  step('user code file', tabNames.join(' + '));
+  // Delete uses its confirmation UI and closes the tab; undo restores the file.
+  const deleteAction = userRow.closest('.tree-row')?.querySelector('.tree-action');
+  if (!deleteAction) throw new Error('the user file has no delete action');
+  deleteAction.click();
+  await wait(100);
+  document.querySelector('#modalHost .btn-accent')?.click();
+  await wait(300);
+  if (store.project.code.files.some((file) => file.name === 'smoke_hook.asm')) {
+    throw new Error('the delete action left the file in the project');
+  }
+  if ([...codeStage.querySelectorAll('.code-tab-name')].some((node) => node.textContent === 'smoke_hook.asm')) {
+    throw new Error('deleting a file left its tab open');
+  }
+  store.undo();
+  await wait(300);
+  userRow = [...codeStage.querySelectorAll('.tree-name')].find(
+    (node) => node.textContent === 'smoke_hook.asm'
+  );
+  if (!userRow) throw new Error('undoing Delete did not restore the file');
+  userRow.click();
+  await wait(200);
+
+  // Invalid names are rejected by the same modal path, and the creation cap is
+  // enforced before opening another modal.
+  const codeAddButton = () => [...codeStage.querySelectorAll('button.tree-add')].find(
+    (button) => button.textContent === '+'
+  );
+  codeAddButton().click();
+  await wait(100);
+  document.querySelector('#modalHost input').value = 'bad/name.asm';
+  document.querySelector('#modalHost .btn-accent').click();
+  await wait(150);
+  if (store.project.code.files.some((file) => file.name === 'bad/name.asm')) {
+    throw new Error('the new-file UI accepted a path separator');
+  }
+
+  store.commit('smoke seed code-file cap', (project) => {
+    for (let index = 0; index < 63; index++) {
+      project.code.files.push({ name: 'cap_' + String(index).padStart(2, '0') + '.asm', text: '' });
+    }
+  });
+  await wait(250);
+  codeAddButton().click();
+  await wait(150);
+  if (!document.querySelector('#modalHost').hidden) {
+    throw new Error('the new-file UI opened past its 64-file creation cap');
+  }
+  store.undo();
+  await wait(300);
+  step('user file UI and lifecycle', 'create, validate, cap, delete, undo/redo');
 
   // The saved project must carry the code back off disk unchanged.
   const codeSaved = await window.forge.project.save(store.dir, store.project);
@@ -452,32 +548,56 @@ const scenario = (dir, sampleDir) => `
   }
   step('code round trip', codeReopened.value.project.code.files.length + ' user file(s) survived');
 
-  // A build error has to lead back to the line that caused it. This drives the
-  // whole path: the assembler's message, the structured error surviving IPC, the
-  // clickable log line, and the Code Forge opening the file at that line.
-  store.commit('smoke broken code', (project) => {
-    project.code.files[0].text = 'smoke_hook:\\n  this is not an opcode\\n  rts\\n';
-  });
-  window.__app.goTo('build');
-  await wait(300);
-  await window.__app.current.build();
-  await wait(600);
-  const errorLines = [...document.querySelectorAll('#stage div')].filter(
-    (node) => node.title && node.title.startsWith('Open ') && node.title.includes('Code Forge')
+  // A broken engine override drives the complete diagnostic path, including
+  // the asynchronous engine list and the exact marked/selected source line.
+  const brokenText = stockText.replace(
+    'update_player:\\n',
+    'update_player:\\n  this is not an opcode\\n'
   );
-  if (!errorLines.length) throw new Error('a broken build produced no clickable error line');
-  if (!errorLines[0].textContent.includes('smoke_hook.asm:2')) {
-    throw new Error('the error line did not name the file and line: ' + errorLines[0].textContent);
+  const brokenLine = brokenText.split('\\n').findIndex((line) => line.includes('this is not an opcode')) + 1;
+  store.commit('smoke broken engine override', (project) => {
+    project.code.overrides.push({ name: 'player.asm', text: brokenText });
+  });
+  await window.__app.goTo('build');
+  await window.__app.current.build();
+  await wait(300);
+  const errorLine = [...document.querySelectorAll('#stage div')].find(
+    (node) => node.title?.startsWith('Open player.asm')
+  );
+  if (!errorLine) throw new Error('a broken engine override produced no clickable error line');
+  if (!errorLine.textContent.includes('player.asm:' + brokenLine)) {
+    throw new Error('the error line named the wrong location: ' + errorLine.textContent);
   }
-  errorLines[0].click();
-  await wait(700);
-  if (!document.querySelector('#stage .code-editor')) throw new Error('clicking the error did not open the Code Forge');
+  errorLine.click();
+  await until('the engine error deep link', () => document.querySelector('#stage .code-editor'));
   const marker = document.querySelector('#stage .code-errline');
-  if (!marker || marker.hidden) throw new Error('the offending line was not marked in the editor');
-  step('build error deep-link', errorLines[0].textContent.trim());
+  const markedRow = document.querySelectorAll('#stage .hl-line')[brokenLine - 1];
+  const linkedInput = document.querySelector('#stage .code-input');
+  if (!marker || marker.hidden || !markedRow) throw new Error('the offending line was not marked');
+  if (parseFloat(marker.style.top) !== markedRow.offsetTop) {
+    throw new Error('the error marker was not positioned on line ' + brokenLine);
+  }
+  if (!linkedInput.value.slice(linkedInput.selectionStart, linkedInput.selectionEnd).includes('this is not an opcode')) {
+    throw new Error('the error deep link selected the wrong source line');
+  }
+  step('engine build-error deep link', errorLine.textContent.trim());
 
   store.undo();
-  await wait(200);
+  await wait(300);
+
+  // Large externally authored files are preserved by normalization, and an
+  // in-app edit must use the same lossless path.
+  await window.__app.current.openFile('smoke_hook.asm', 0);
+  const bigInput = codeStage.querySelector('.code-input');
+  const largeText = '; ' + 'x'.repeat(140 * 1024) + '\\n';
+  bigInput.value = largeText; // one comment line, so highlighting stays cheap
+  bigInput.dispatchEvent(new Event('input', { bubbles: true }));
+  await wait(900);
+  const largeFile = store.project.code.files.find((file) => file.name === 'smoke_hook.asm');
+  if (largeFile?.text !== largeText) throw new Error('a large source edit was truncated or dropped');
+  store.undo();
+  await wait(300);
+  step('large source preserved', '140 KB committed losslessly');
 
   // --- drive the real Build & Play UI so the screenshot shows it running --
   window.__app.store.open(sample.value.dir, sample.value.project);
@@ -547,6 +667,81 @@ export async function runSmoke(window) {
       );
     } else {
       console.log('  ok  unsaved changes reach the close handler — edit → dirty, save → clean');
+    }
+
+    // Typing in the Code Forge does not reach the store until it pauses, and the
+    // X does not wait for the pause. So main has to hear about a buffer the
+    // moment it diverges — which is why this asks *sooner* than the commit delay
+    // rather than polling past it, where the commit alone would answer yes and
+    // the question would prove nothing.
+    await window.webContents.executeJavaScript(`(async () => {
+      const tick = () => new Promise((resolve) => setTimeout(resolve, 25));
+      const find = () => [...document.querySelectorAll('#stage .tree-row')].find(
+        (node) => node.querySelector('.tree-name').textContent === 'player.asm'
+      );
+      await window.__app.goTo('code');
+      for (let waited = 0; waited < 4000 && !find(); waited += 25) await tick();
+      const row = find();
+      if (!row) throw new Error('the Code Forge did not list player.asm');
+      row.click();
+      for (let waited = 0; waited < 4000 && !document.querySelector('#stage .code-input'); waited += 25) await tick();
+      const input = document.querySelector('#stage .code-input');
+      if (!input) throw new Error('the editor did not open player.asm');
+      input.value = '; unsaved\\n' + input.value;
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+      return true;
+    })()`);
+    for (let attempt = 0; attempt < 20 && !unsavedChanges().dirty; attempt++) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    if (!unsavedChanges().dirty) {
+      problems.push('typing in the Code Forge did not reach the close handler before the commit landed');
+    } else {
+      console.log('  ok  uncommitted typing reaches the close handler — dirty before the commit lands');
+    }
+    await window.webContents.executeJavaScript('window.__app.saveProject()');
+
+    // The Electron menu owns Cmd/Ctrl+Z, so the keystroke never reaches the
+    // textarea by itself and has to be handed back. What that buys is
+    // granularity, which is the only thing worth asserting: two insertions with
+    // no pause between them are one project commit but two entries in the
+    // textarea's own history, so undo has to take back the second one alone.
+    // Sending it to the store instead commits the pair and takes back both —
+    // the same end state whenever the burst is a single edit, which is why this
+    // types twice. Asserting the end state alone passes either way.
+    const menuUndo = await window.webContents.executeJavaScript(`(() => {
+      const input = document.querySelector('#stage .code-input');
+      input.focus();
+      input.setSelectionRange(0, 0);
+      const before = input.value;
+      const first = document.execCommand('insertText', false, '; first\\n');
+      // Moving the caret ends the typing group, so the two insertions are two
+      // entries in the textarea's history rather than one coalesced edit.
+      input.setSelectionRange(0, 0);
+      const second = document.execCommand('insertText', false, '; second\\n');
+      return {
+        before,
+        typed: first && second && input.value === '; second\\n; first\\n' + before
+      };
+    })()`);
+    window.webContents.send('menu:action', 'edit:undo');
+    // Past the commit delay, so what the editor is left holding is also what the
+    // project ends up with.
+    await new Promise((resolve) => setTimeout(resolve, 900));
+    const afterUndo = await window.webContents.executeJavaScript(`(() => {
+      const input = document.querySelector('#stage .code-input');
+      const override = window.__app.store.project.code.overrides.find((file) => file.name === 'player.asm');
+      return { text: input.value, projectText: override?.text };
+    })()`);
+    const wantedAfterUndo = '; first\n' + menuUndo.before;
+    if (!menuUndo.typed) {
+      problems.push('the smoke test could not type into the code editor');
+    } else if (afterUndo.text !== wantedAfterUndo) {
+      problems.push('menu undo in the Code Forge took back more than the last thing typed');
+    } else if (afterUndo.projectText !== wantedAfterUndo) {
+      problems.push('the editor and the project disagree about the text after a menu undo');
+    } else {
+      console.log('  ok  focused menu undo stays in the editor — one insertion, not the whole burst');
     }
 
     // The map screen is drawn at the largest whole zoom its stage has room for,

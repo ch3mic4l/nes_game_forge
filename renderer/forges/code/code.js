@@ -20,7 +20,7 @@
 
 import { store } from '../../store.js';
 import { el, fill, toast, confirmModal, promptModal } from '../../ui.js';
-import { CODE_FILE_RE } from '../../../shared/project.js';
+import { CODE_FILE_RE, CODE_LIMITS } from '../../../shared/project.js';
 import { createEditor } from './editor.js';
 
 /** How long typing has to pause before it becomes one undo entry. */
@@ -59,6 +59,12 @@ export function mount(container, app) {
   const findFile = (group, name) => codeSlice()[group].find((file) => file.name === name) ?? null;
   const tabKey = (kind, name) => `${kind}:${name}`;
   const activeTab = () => tabs.find((tab) => tabKey(tab.kind, tab.name) === activeKey) ?? null;
+
+  // A buffer that has diverged from what is committed is the tab strip's dot and
+  // the shell's unsaved work — one predicate, so the dot and the close guard
+  // cannot disagree about whether typing is at risk.
+  const tabDirty = (tab) => tab.kind !== 'generated' && tab.editor.getValue() !== tab.committed;
+  const notePending = () => app.notePendingEdits?.();
 
   // ------------------------------------------------------------ file access
 
@@ -117,11 +123,16 @@ export function mount(container, app) {
     tab.committed = text;
     renderTree();
     renderTabs();
+    notePending();
   }
 
   function scheduleCommit(tab) {
     clearTimeout(pendingCommit);
     renderTabs(); // the dot appears as soon as the buffer differs
+    // And so does the shell's. The commit is a moment away, but the close guard
+    // lives in main and asks *now*: without this, typing and immediately hitting
+    // the window's X closed it with no prompt and lost the edit.
+    notePending();
     pendingCommit = setTimeout(() => {
       pendingCommit = null;
       commitTab(tab);
@@ -133,6 +144,7 @@ export function mount(container, app) {
     clearTimeout(pendingCommit);
     pendingCommit = null;
     for (const tab of tabs) if (tab.kind !== 'generated') commitTab(tab);
+    notePending();
   }
 
   // ------------------------------------------------------------ tabs
@@ -172,8 +184,12 @@ export function mount(container, app) {
     return tab;
   }
 
-  function closeTab(tab) {
-    if (tab.kind !== 'generated') commitTab(tab);
+  /**
+   * `commit: false` throws the buffer away instead of writing it back — for the
+   * tabs whose file is being removed, where committing would recreate it.
+   */
+  function closeTab(tab, { commit = true } = {}) {
+    if (commit && tab.kind !== 'generated') commitTab(tab);
     const index = tabs.indexOf(tab);
     tabs.splice(index, 1);
     tab.editor.destroy();
@@ -182,6 +198,14 @@ export function mount(container, app) {
       activeKey = next ? tabKey(next.kind, next.name) : null;
     }
     showActive();
+    notePending();
+  }
+
+  /** Put the project's copy of a file back into the tab showing it. */
+  function syncTab(tab, text) {
+    if (text === tab.committed) return;
+    tab.editor.setValue(text);
+    tab.committed = text;
   }
 
   function showActive() {
@@ -231,7 +255,7 @@ export function mount(container, app) {
       tabs.length
         ? tabs.map((tab) => {
             const key = tabKey(tab.kind, tab.name);
-            const dirty = tab.kind !== 'generated' && tab.editor.getValue() !== tab.committed;
+            const dirty = tabDirty(tab);
             return el(
               'div.tab.code-tab',
               {
@@ -314,6 +338,16 @@ export function mount(container, app) {
   }
 
   async function newFile() {
+    // The engine list decides whether a name collides with a stock file, and it
+    // arrives asynchronously.
+    await engineReady;
+    if (codeSlice().files.length >= CODE_LIMITS.files) {
+      return toast(
+        `A project can hold ${CODE_LIMITS.files} of your own code files, and this one is full. ` +
+          'Delete one first.',
+        'error'
+      );
+    }
     const name = await promptModal(
       'New code file',
       'File name — letters, numbers, dashes and underscores, ending in .asm',
@@ -350,12 +384,9 @@ export function mount(container, app) {
       'Delete'
     );
     if (!confirmed) return;
+    // Closing normally commits, which would recreate what we are about to delete.
     const tab = tabs.find((entry) => entry.kind === 'user' && entry.name === name);
-    if (tab) {
-      // Closing commits, which would recreate what we are about to delete.
-      tab.committed = tab.editor.getValue();
-      closeTab(tab);
-    }
+    if (tab) closeTab(tab, { commit: false });
     store.commit(`Delete ${name}`, (project) => {
       const index = project.code.files.findIndex((entry) => entry.name === name);
       if (index >= 0) project.code.files.splice(index, 1);
@@ -444,7 +475,11 @@ export function mount(container, app) {
   showActive();
   app.setMeta('Code Forge');
 
-  window.forge.code.engineFiles().then((result) => {
+  // Kept, not just fired: anything that has to *know* whether a name is a stock
+  // engine file — the new-file check, and the build panel's deep link into an
+  // error — has to wait for it. A deep link arrives the moment this Forge mounts,
+  // which is exactly when the list is still empty.
+  const engineReady = window.forge.code.engineFiles().then((result) => {
     if (result.ok) engineFiles = result.value;
     renderTree();
   });
@@ -457,23 +492,52 @@ export function mount(container, app) {
       app.setMeta('');
     },
     flushPendingEdits,
+    hasPendingEdits: () => tabs.some(tabDirty),
     onProjectChange() {
       // An undo, a redo, or an edit from somewhere else. Re-read every open tab
       // from the project — except one whose buffer is mid-edit and already
       // matches what was committed, which is the tab that caused this.
-      for (const tab of tabs) {
+      for (const tab of [...tabs]) {
         if (tab.kind === 'generated') continue;
-        const stored =
-          tab.kind === 'user'
-            ? findFile('files', tab.name)?.text
-            : findFile('overrides', tab.name)?.text ?? stockText.get(tab.name);
-        if (stored === undefined || stored === tab.committed) continue;
-        tab.editor.setValue(stored);
-        tab.committed = stored;
+
+        if (tab.kind === 'user') {
+          const file = findFile('files', tab.name);
+          // Nothing behind the tab any more — an undone Create, or a Delete from
+          // elsewhere. Left open it stays editable, and every later commit looks
+          // for a file that is not there and drops the edit on the floor.
+          if (!file) closeTab(tab, { commit: false });
+          else syncTab(tab, file.text);
+          continue;
+        }
+
+        const override = findFile('overrides', tab.name);
+        if (override) {
+          syncTab(tab, override.text);
+          continue;
+        }
+        // No override left, so the tab shows the stock file again. It may never
+        // have been fetched — a tab opened on an already-overridden file reads
+        // the override and never touches the original — so fetch it before
+        // deciding, rather than leaving the edit on screen as if it survived.
+        const stock = stockText.get(tab.name);
+        if (stock !== undefined) {
+          syncTab(tab, stock);
+          continue;
+        }
+        readStock(tab.name).then(
+          (text) => {
+            // The project may have moved on again while that was in flight.
+            if (!tabs.includes(tab) || findFile('overrides', tab.name)) return;
+            syncTab(tab, text);
+            renderTabs();
+          },
+          () => {}
+        );
       }
       renderTree();
       renderTabs();
       showActive();
+      notePending();
     },
     /**
      * Open a file the build reported an error in. Names arrive as the assembler
@@ -481,6 +545,7 @@ export function mount(container, app) {
      * there under their own names and with their own line numbers.
      */
     async openFile(name, line = 0) {
+      await engineReady;
       const bare = name.replace(/^.*[/\\]/, '');
       if (name.startsWith('assets/') || bare.endsWith('.inc')) {
         await refreshGenerated();
