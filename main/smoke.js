@@ -240,8 +240,14 @@ const scenario = (dir, sampleDir) => `
   if (!warned) throw new Error('a page with everything switched off was not called out');
   document.querySelector('#modalHost .btn-accent').click();
   await wait(300);
+  // Saving must keep what was switched off — that is the whole promise of the
+  // toggle. What it stops doing is reaching the ROM, which compiledPages
+  // decides and the build asserts, not this.
   const offEvent = store.project.maps[0].screens[3].entities[0].props.event;
-  if (offEvent) throw new Error('an event with nothing left enabled was still saved');
+  if (!offEvent?.pages?.length) throw new Error('saving an all-off event threw the commands away');
+  if (offEvent.pages.some((page) => page.commands.some((command) => !command.off))) {
+    throw new Error('some command did not switch off');
+  }
   store.undo();
   await wait(200);
   store.undo();

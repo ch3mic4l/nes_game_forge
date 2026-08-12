@@ -11,6 +11,7 @@ import assert from 'node:assert/strict';
 import { EVENT_TEMPLATES, templatesFor, usedSwitches, firstFreeSwitch } from '../../renderer/forges/map/templates.js';
 import {
   createProject,
+  createPartyMember,
   normalizeProject,
   EVENT_COMMANDS,
   EVENT_CONDITIONS,
@@ -74,6 +75,7 @@ test('all switches spent means no free switch, not switch zero', () => {
 test('every template builds an event the engine can actually run', () => {
   const project = createProject('Templates', 'rpg');
   project.sprites.actors = [{ name: 'Gem', behavior: 'pickup' }];
+  project.party.push(createPartyMember(1, 'Mage')); // so Recruit is buildable
 
   for (const template of EVENT_TEMPLATES) {
     const free = firstFreeSwitch(project);
@@ -103,11 +105,25 @@ test('every template builds an event the engine can actually run', () => {
   }
 });
 
-test('templates that need a party are hidden from a project without one', () => {
+test('Recruit is offered only once there is somebody to recruit', () => {
   const action = createProject('Action');
   const rpg = createProject('Quest', 'rpg');
-  assert.ok(templatesFor(rpg).some((entry) => entry.id === 'recruit'));
-  assert.ok(!templatesFor(action).some((entry) => entry.id === 'recruit'));
+  const has = (project) => templatesFor(project).some((entry) => entry.id === 'recruit');
+
+  assert.equal(has(action), false, 'an action build does not assemble the battle bank');
+  // A new RPG has only the hero, who is in the party from boot. Offering
+  // Recruit here would compile a member index past the end of the generated
+  // tables — party_join would read somebody else's stats.
+  assert.equal(rpg.party.length, 1);
+  assert.equal(has(rpg), false, 'nobody to recruit yet');
+
+  rpg.party.push(createPartyMember(1, 'Mage'));
+  assert.equal(has(rpg), true);
+  const event = EVENT_TEMPLATES.find((entry) => entry.id === 'recruit').build(rpg, 0);
+  const join = event.pages[0].commands.find((command) => command.op === 'join');
+  assert.equal(join.member, 1, 'an actual party member, and never the hero');
+  assert.ok(join.member < rpg.party.length);
+
   assert.ok(templatesFor(action).length, 'an action project still gets the rest');
 });
 

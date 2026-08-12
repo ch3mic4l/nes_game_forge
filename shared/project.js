@@ -79,6 +79,15 @@ export const BEHAVIORS = [
 ];
 
 /**
+ * Who the interact action can start a conversation with — the rule `do_talk`
+ * applies in the engine, written down beside the behaviours it is about. The
+ * Map Forge uses it to decide whether to offer a dialogue box, and the event
+ * list to decide whether "says nothing" is a remark worth making; two copies of
+ * this list would drift the moment a behaviour is added.
+ */
+export const canTalk = (actor) => Boolean(actor) && !['pickup', 'door', 'player'].includes(actor.behavior);
+
+/**
  * The animation an actor draws, chosen by which way it is facing. Every one of
  * these is read by the engine (`actor_anim_dir`, four entries per actor, with
  * left and right sharing `walkSide`); an unset slot falls back to `idle`.
@@ -172,22 +181,11 @@ export const EVENT_COMMANDS = [
   { id: 'join', label: 'Party member joins', args: ['member'] }
 ];
 
-/**
- * A command can be switched off while you work out whether you want it, the way
- * you would comment a line out. These two are the single writers of what that
- * means, consulted by the compiler and by the editor alike.
- *
- * The second one is the one that matters. A page whose commands are all
- * switched off still *matches*, and a matching page that does nothing swallows
- * every page below it — so the page has to leave the ROM with them. Disabling
- * the only command on page 1 would otherwise silently turn the whole event off,
- * which is the same failure as an empty page and cost real debugging time
- * before the editor learned to drop those.
- */
-export const enabledCommands = (page) => (page?.commands ?? []).filter((command) => !command.off);
-
-export const compiledPages = (event) =>
-  (event?.pages ?? []).filter((page) => enabledCommands(page).length > 0);
+// A command can be switched off while you work out whether you want it, the way
+// you would comment a line out. What that means lives in `eventrules.js`, which
+// `font.js` needs as well — re-exported here so the schema stays the one place
+// to look for it.
+export { enabledCommands, compiledPages } from './eventrules.js';
 
 /**
  * The subset engine/script.asm can actually run. Everything in EVENT_COMMANDS is

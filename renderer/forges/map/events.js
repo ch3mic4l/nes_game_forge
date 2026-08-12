@@ -378,15 +378,19 @@ export function editEvent(event, context) {
       {
         label: 'Save',
         primary: true,
-        // A page with nothing to run compiles to a page that does nothing,
-        // which would swallow every page below it. The compiler drops those
-        // too — `compiledPages` is the shared rule — but a page kept here with
-        // its commands merely switched off is work the author is still holding
-        // on to, so what is dropped is the genuinely empty page and the event
-        // is judged by what would actually be built.
+        // Only the genuinely empty page is dropped — one with no commands at
+        // all, which would compile to a page that matches and does nothing and
+        // so swallow every page below it.
+        //
+        // A page whose commands are merely switched off is kept, and so is an
+        // event whose every command is. That is the whole promise of the
+        // toggle: switching a line off is how you find out whether it was the
+        // problem without losing what it said, so Save must not be the thing
+        // that throws it away. `compiledPages` leaves them out of the ROM, and
+        // the plain dialogue underneath comes back until they are switched on.
         onClick: () => {
           const pages = draft.pages.filter((page) => page.commands.length);
-          return pages.some((page) => enabledCommands(page).length) ? { pages } : null;
+          return pages.length ? { pages } : null;
         }
       }
     ]

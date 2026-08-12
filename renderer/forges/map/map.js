@@ -13,7 +13,8 @@ import {
   AUTHOR_NAME_MAX,
   flatScreens,
   screenLabel,
-  entityLabel
+  entityLabel,
+  canTalk
 } from '../../../shared/project.js';
 import { BOX_COLS, BOX_ROWS, FONT_BASE, wrapText } from '../../../shared/font.js';
 import { RPG_LIMITS } from '../../../shared/project.js';
@@ -34,15 +35,18 @@ import {
 // fit calculation has to subtract exactly what the stylesheet lays out.
 const NAV_GAP = 14;
 
-// Who the interact action will start a conversation with — the same rule
-// `do_talk` applies in the engine, so an actor only offers a dialogue field if
-// the ROM can actually reach it.
-const canTalk = (actor) => Boolean(actor) && !['pickup', 'door', 'player'].includes(actor.behavior);
-
 // Outside `mount` on purpose: copying an actor, going to the Sprite Forge to
 // check what it looks like and coming back to paste is the ordinary way this
 // gets used, and a clipboard that emptied itself on the way would be a trap.
+//
+// It remembers which project it was filled from, and paste is not offered
+// anywhere else. Everything a placement carries is an *index* into the project
+// around it — the actor, the switch it hides behind, the screen its door leads
+// to, the item its event gives — and every one of those indices stays perfectly
+// valid in another project while meaning something entirely different. There is
+// no repair for that, only a refusal.
 let clipboard = null;
+const clipboardIsHere = () => clipboard && clipboard.dir === store.dir;
 
 const TOOLS = [
   { id: 'stamp', label: '▪ Stamp', title: 'Paint the selected metatile' },
@@ -707,17 +711,17 @@ export function mount(container, app) {
           'Switches…'
         )
       ),
-      // Only once something has been copied: an always-present Paste that
-      // usually cannot do anything is worse than no button at all.
-      clipboard
+      // Only once something has been copied *here*: an always-present Paste
+      // that usually cannot do anything is worse than no button at all.
+      clipboardIsHere()
         ? el(
             'button.btn.btn-sm',
             {
               style: { marginBottom: '8px' },
               title: 'Put the copied actor on this screen',
-              onclick: () => placeCopy(clipboard, 'Paste actor')
+              onclick: () => placeCopy(clipboard.entity, 'Paste actor')
             },
-            `Paste ${entityLabel(store.project, clipboard)}`
+            `Paste ${entityLabel(store.project, clipboard.entity)}`
           )
         : null,
       actors.length
@@ -761,7 +765,7 @@ export function mount(container, app) {
                   {
                     title: 'Copy this actor, its dialogue and its event',
                     onclick: () => {
-                      clipboard = structuredClone(entity);
+                      clipboard = { dir: store.dir, entity: structuredClone(entity) };
                       renderEntities();
                       toast(`Copied ${entityLabel(store.project, entity)}.`);
                     }

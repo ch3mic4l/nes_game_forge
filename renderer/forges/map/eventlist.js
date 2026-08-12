@@ -13,14 +13,15 @@
 // case where the thing you are looking for is somewhere else.
 
 import { el, fill, showModal } from '../../ui.js';
-import { screenLabel, entityLabel, flatScreens, BEHAVIORS, RPG_LIMITS } from '../../../shared/project.js';
+import {
+  screenLabel,
+  entityLabel,
+  flatScreens,
+  canTalk,
+  BEHAVIORS,
+  RPG_LIMITS
+} from '../../../shared/project.js';
 import { describeCommand, describeCondition } from './events.js';
-
-// Who the interact action can reach — the same rule `do_talk` applies in the
-// engine, and the same one the Map Forge uses to decide whether to offer a
-// dialogue box. A pickup with nothing to say is doing its job; an NPC with
-// nothing to say is an oversight, and only the second is worth pointing out.
-const CANNOT_TALK = ['pickup', 'door', 'player'];
 
 /**
  * One row per placed actor: where it is, what it is called, and what it does.
@@ -59,10 +60,10 @@ export function buildEventIndex(project, context) {
         screenIndex,
         entityIndex,
         title: entityLabel(project, entity),
-        // What a row with no detail says for itself.
-        note: CANNOT_TALK.includes(actor?.behavior)
-          ? behavior?.label ?? actor?.behavior ?? ''
-          : 'says nothing when talked to',
+        // What a row with no detail says for itself. A pickup with nothing to
+        // say is doing its job; only an actor the interact action can reach
+        // gets remarked on, which is `canTalk` — the engine's own rule.
+        note: canTalk(actor) ? 'says nothing when talked to' : behavior?.label ?? actor?.behavior ?? '',
         // The actor is named even when it is also the title, because searching
         // for "chest" should find every chest however each one was named.
         actorName: actor?.name ?? `Actor ${entity.actorId}`,

@@ -357,3 +357,25 @@ test('the off flag survives normalization only when it is set', () => {
   assert.equal(commands[1].off, true);
   assert.equal('off' in commands[2], false, 'only a literal true counts');
 });
+
+test('switching every command off keeps the work and only stops the build', () => {
+  // The toggle's promise is that a command can be taken out of the ROM without
+  // being lost. The editor's Save therefore keeps a page whose commands are all
+  // off — it is the genuinely empty page it drops — and only compiledPages
+  // decides what is built.
+  const project = createProject('Held');
+  project.sprites.actors = [{ name: 'Sign', behavior: 'npc' }];
+  const event = {
+    pages: [{ cond: { type: 'none', arg: 0 }, commands: [{ op: 'say', text: 'Kept.', off: true }] }]
+  };
+  project.maps[0].screens[0].entities = [{ actorId: 0, x: 0, y: 0, props: { event } }];
+
+  const reloaded = normalizeProject(structuredClone(project));
+  assert.deepEqual(
+    reloaded.maps[0].screens[0].entities[0].props.event,
+    event,
+    'a save/load round trip keeps what was switched off, text and all'
+  );
+  assert.deepEqual(compiledPages(event), [], 'and none of it reaches the ROM');
+  assert.equal(compileText(project).events.length, 0, 'no event, and no dialogue to fall back on');
+});

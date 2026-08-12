@@ -135,3 +135,25 @@ test('party members do not by themselves imply combat art', () => {
   assert.equal(projectUsesCombat(project), false); // no hostile actor yet
   assert.equal(projectUsesText(project), true); // but battles are always text
 });
+
+test('an event switched off command by command stops charging for the font', () => {
+  // The font costs 96 background tiles in every tileset — or, on MMC3, a whole
+  // CHR page. What decides that has to be what the ROM actually contains: an
+  // event whose every command is switched off compiles to nothing, so charging
+  // for it would bill the author for work they took back, and would fail
+  // validateProject over artwork in $A0-$FF that nothing is going to overwrite.
+  const project = createProject('Quiet again');
+  const page = { cond: { type: 'none', arg: 0 }, commands: [{ op: 'say', text: 'Hello.' }] };
+  project.maps[0].screens[0].entities.push({ actorId: 0, x: 0, y: 0, props: { event: { pages: [page] } } });
+  assert.equal(projectUsesText(project), true);
+
+  page.commands[0].off = true;
+  assert.equal(projectUsesText(project), false, 'nothing left to say, so nothing to say it with');
+
+  // But a page that still runs something keeps it on, even alongside a dead one.
+  project.maps[0].screens[0].entities[0].props.event.pages.push({
+    cond: { type: 'none', arg: 0 },
+    commands: [{ op: 'say', text: 'Still here.' }]
+  });
+  assert.equal(projectUsesText(project), true);
+});

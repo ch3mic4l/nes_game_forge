@@ -118,16 +118,21 @@ export const EVENT_TEMPLATES = [
   },
   {
     id: 'recruit',
-    rpg: true,
     label: 'Recruit — joins the party, once',
     hint: 'Adds a party member and remembers it, so they cannot be recruited twice.',
-    build: (_project, free) => ({
+    // Not just "is this an RPG". Member 0 is the hero, who is already in the
+    // party at boot, so there is nobody to recruit until the Sprite Forge has a
+    // second member — and `join` compiles the index straight through, so a
+    // template naming one that does not exist sends the engine into
+    // `party_join` for stats past the end of the generated tables.
+    available: (project) => project.project?.gameType === 'rpg' && (project.party?.length ?? 0) > 1,
+    build: (project, free) => ({
       pages: [
         {
           cond: { type: 'switchOff', arg: free },
           commands: [
             { op: 'say', text: 'I will come with you.' },
-            { op: 'join', member: 1 },
+            { op: 'join', member: Math.min(project.party.length - 1, RPG_LIMITS.party - 1) },
             { op: 'setSwitch', switch: free }
           ]
         },
@@ -138,4 +143,4 @@ export const EVENT_TEMPLATES = [
 ];
 
 export const templatesFor = (project) =>
-  EVENT_TEMPLATES.filter((entry) => !entry.rpg || project.project?.gameType === 'rpg');
+  EVENT_TEMPLATES.filter((entry) => !entry.available || entry.available(project));

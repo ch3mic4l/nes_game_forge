@@ -10,6 +10,8 @@
 // Free of DOM and Node APIs: imported by the main process, the renderer and
 // node:test alike.
 
+import { entityHasLiveEvent } from './eventrules.js';
+
 // --------------------------------------------------------------- reserved map
 
 /** First background tile the font occupies: 96 glyphs at $A0-$FF. */
@@ -277,7 +279,11 @@ export function projectUsesText(project) {
     for (const screen of map.screens ?? []) {
       for (const entity of screen.entities ?? []) {
         if (String(entity.props?.dialogue ?? '').trim()) return true;
-        if (entity.props?.event?.pages?.length) return true;
+        // Only an event that survives to the ROM. One whose every command has
+        // been switched off compiles to nothing, and reserving $A0-$FF — or on
+        // MMC3 a whole CHR page — for text the cartridge does not contain would
+        // charge the author for work they took back.
+        if (entityHasLiveEvent(entity)) return true;
       }
     }
   }
