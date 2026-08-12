@@ -191,8 +191,17 @@ app.whenReady().then(async () => {
   createWindow();
 
   if (process.env.FORGE_SMOKE) {
-    const { runSmoke } = await import('./smoke.js');
-    app.exit(await runSmoke(mainWindow));
+    // Caught, because an uncaught one here is not a failed test — it is a window
+    // sitting open forever with nothing driving it. A syntax error in smoke.js
+    // rejects this import, and without this the run hangs until whatever is
+    // waiting on it gives up, with the actual error buried in a warning.
+    try {
+      const { runSmoke } = await import('./smoke.js');
+      app.exit(await runSmoke(mainWindow));
+    } catch (error) {
+      console.error('Smoke test could not run:', error);
+      app.exit(1);
+    }
     return;
   }
 

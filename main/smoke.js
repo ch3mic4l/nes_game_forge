@@ -165,9 +165,12 @@ const scenario = (dir, sampleDir) => `
     // copied actor last, deleting an earlier one puts its index out of range
     // and the bounds check answers first — which is how that check once passed
     // while testing nothing at all.
-    project.sprites.actors.push({ name: 'Chest', behavior: 'npc', speed: 1 });
-    project.sprites.actors.push({ name: 'Chest', behavior: 'npc', speed: 2 });
-    project.sprites.actors.push({ name: 'Chest', behavior: 'npc', speed: 3 });
+    // Carrying an id from the start, because the delete below assigns one: with
+    // these omitted here the records would differ by having gained a field, and
+    // a guard that looked at nothing but the id would pass this test too.
+    project.sprites.actors.push({ id: 0, name: 'Chest', behavior: 'npc', speed: 1 });
+    project.sprites.actors.push({ id: 1, name: 'Chest', behavior: 'npc', speed: 2 });
+    project.sprites.actors.push({ id: 2, name: 'Chest', behavior: 'npc', speed: 3 });
     const actorId = 1; // the middle one: another of the same name sits after it
     project.maps[0].screens[0].entities.push({ actorId, x: 16, y: 16, props: { name: 'Empty chest' } });
     project.maps[0].screens[3].entities.push({
@@ -326,8 +329,11 @@ const scenario = (dir, sampleDir) => `
   // names, so any guard comparing those says yes again — while index 1 still
   // holds the actor that shuffled into it. Only comparing the records notices,
   // and only because this new one is not a copy of what was deleted.
+  // Same name, same position, same id as the record that used to sit at the end
+  // — so the roster differs by speed alone, and nothing weaker than the whole
+  // record can tell this apart from what was copied.
   store.commit('smoke add a same-named actor', (project) => {
-    project.sprites.actors.push({ name: 'Chest', behavior: 'npc', speed: 8 });
+    project.sprites.actors.push({ id: 2, name: 'Chest', behavior: 'npc', speed: 8 });
   });
   await wait(250);
   const names = store.project.sprites.actors.map((actor) => actor.name);
