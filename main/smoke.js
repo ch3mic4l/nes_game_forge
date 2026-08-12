@@ -155,6 +155,40 @@ const scenario = (dir, sampleDir) => `
   if (!named.length) throw new Error('a named screen is still listed by its number');
   step('named screen', named.length + ' menu(s) show it by name');
 
+  // Search, and be taken to what was found. Two actors with the same name on
+  // two different screens, so the assertion is that the Forge lands on the one
+  // the row described rather than on the first match anywhere.
+  store.commit('smoke placed actors', (project) => {
+    project.sprites.actors.push({ name: 'Chest', behavior: 'npc' });
+    const actorId = project.sprites.actors.length - 1;
+    project.maps[0].screens[0].entities.push({ actorId, x: 16, y: 16, props: { name: 'Empty chest' } });
+    project.maps[0].screens[3].entities.push({
+      actorId,
+      x: 48,
+      y: 32,
+      props: { name: 'Gate key chest', dialogue: 'A brass key.' }
+    });
+  });
+  await wait(250);
+  [...document.querySelectorAll('#stage button')].find((node) => node.textContent === 'Find…')?.click();
+  await wait(200);
+  const findInput = document.querySelector('#modalHost input');
+  if (!findInput) throw new Error('the Find button did not open the event list');
+  findInput.value = 'brass key';
+  findInput.dispatchEvent(new Event('input', { bubbles: true }));
+  await wait(150);
+  const hits = [...document.querySelectorAll('#modalHost [title="Go to this actor"]')];
+  if (hits.length !== 1) throw new Error('searching dialogue matched ' + hits.length + ' rows, expected 1');
+  hits[0].click();
+  await until('the event list to navigate', () => document.querySelector('#modalHost').hidden);
+  const shown = [...document.querySelectorAll('#stage input')].map((node) => node.value);
+  if (!shown.includes('Gate key chest')) {
+    throw new Error('the search result did not take the Map Forge to the screen it named');
+  }
+  store.undo();
+  await wait(250);
+  step('event search', 'dialogue on screen 3 found and jumped to');
+
   // --- mapper selection and the tileset list -----------------------------
   window.__app.goTo('tile');
   await wait(250);

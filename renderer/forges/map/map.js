@@ -19,6 +19,7 @@ import { BOX_COLS, BOX_ROWS, FONT_BASE, wrapText } from '../../../shared/font.js
 import { RPG_LIMITS } from '../../../shared/project.js';
 import { createMetatilePanel } from './metatiles.js';
 import { describeCommand, describeCondition, editEvent, editSwitches } from './events.js';
+import { openEventList } from './eventlist.js';
 import {
   MetatileRenderer,
   drawCollisionOverlay,
@@ -396,6 +397,22 @@ export function mount(container, app) {
     };
   }
 
+  /**
+   * Search the project, and go where the answer is. Selecting a row moves the
+   * Forge to that map and screen and scrolls its row into view — the point of
+   * finding something is being taken to it, not being told where it was.
+   */
+  async function findEvent(query = '') {
+    const found = await openEventList(store.project, eventContext(), { query });
+    if (!found) return;
+    state.mapIndex = found.mapIndex;
+    state.screenIndex = found.screenIndex;
+    renderAll();
+    const row = entityList.querySelectorAll('[data-entity]')[found.entityIndex];
+    row?.scrollIntoView({ block: 'nearest' });
+    row?.querySelector('input')?.focus();
+  }
+
   const setEntityProp = (index, label, patch) => {
     const { mapIndex, screenIndex } = state;
     store.commit(label, (project) => {
@@ -561,6 +578,17 @@ export function mount(container, app) {
           { style: { paddingLeft: '0', flex: '1' } },
           `Actors on this screen (${screen.entities.length}/${LIMITS.entitiesPerScreen})`
         ),
+        // Searching for something is a project-wide question — a warp's
+        // destination is somewhere else by definition — so this jumps the whole
+        // Forge rather than filtering the list below it.
+        el(
+          'button.btn.btn-sm',
+          {
+            title: 'Search every placed actor in the project',
+            onclick: () => findEvent()
+          },
+          'Find…'
+        ),
         // The switches are project-wide, but this is where they get used, so
         // this is where they are named.
         el(
@@ -594,7 +622,7 @@ export function mount(container, app) {
         ? screen.entities.map((entity, index) =>
             el(
               'div',
-              { style: { marginBottom: '6px' } },
+              { dataset: { entity: index }, style: { marginBottom: '6px' } },
               el(
                 'div.field-row',
                 null,
