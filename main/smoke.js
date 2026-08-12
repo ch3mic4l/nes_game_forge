@@ -185,9 +185,63 @@ const scenario = (dir, sampleDir) => `
   if (!shown.includes('Gate key chest')) {
     throw new Error('the search result did not take the Map Forge to the screen it named');
   }
-  store.undo();
-  await wait(250);
   step('event search', 'dialogue on screen 3 found and jumped to');
+
+  // A template writes the two-page pattern the event system is built around,
+  // and opens it in the editor rather than saving it — so this drives the
+  // editor's own Save and then checks the guard is the free switch the picker
+  // promised, not one something else already holds.
+  const rowButton = (entityIndex, label) =>
+    [...document.querySelectorAll('#stage [data-entity="' + entityIndex + '"] button')].find(
+      (node) => node.textContent === label
+    );
+  rowButton(0, 'Template…').click();
+  await wait(200);
+  const chestTemplate = document.querySelector('#modalHost [data-template="chest"]');
+  if (!chestTemplate) throw new Error('the template picker offered no chest');
+  chestTemplate.click();
+  await until('the event editor', () => document.querySelector('#modalHost .btn-accent'));
+  document.querySelector('#modalHost .btn-accent').click();
+  await wait(300);
+  const templated = store.project.maps[0].screens[3].entities[0].props.event;
+  if (!templated || templated.pages.length !== 2) throw new Error('the chest template saved no two-page event');
+  if (templated.pages[0].cond.type !== 'switchOff' || templated.pages[0].cond.arg !== 0) {
+    throw new Error('the template did not guard its first page with the free switch');
+  }
+
+  // Duplicate keeps the event, and lands somewhere you can see it.
+  rowButton(0, '+⧉').click();
+  await wait(250);
+  const twins = store.project.maps[0].screens[3].entities;
+  if (twins.length !== 2) throw new Error('duplicate produced ' + twins.length + ' actors, expected 2');
+  if (JSON.stringify(twins[1].props.event) !== JSON.stringify(templated)) {
+    throw new Error('the duplicate did not carry the event across');
+  }
+  if (twins[1].x === twins[0].x && twins[1].y === twins[0].y) {
+    throw new Error('the duplicate landed exactly under the original');
+  }
+
+  // Copy and paste is the same thing across screens.
+  rowButton(0, '⧉').click();
+  await wait(150);
+  [...document.querySelectorAll('#stage canvas')]
+    .filter((node) => node.width === 64 && node.height === 60)[1]
+    .click();
+  await wait(250);
+  const paste = [...document.querySelectorAll('#stage button')].find((node) =>
+    node.textContent.startsWith('Paste ')
+  );
+  if (!paste) throw new Error('a copied actor offered no paste on another screen');
+  paste.click();
+  await wait(250);
+  if (store.project.maps[0].screens[1].entities.length !== 1) throw new Error('paste put nothing on screen 1');
+  step('template, duplicate, paste', 'chest template + 2 copies');
+
+  for (let undone = 0; undone < 4; undone++) {
+    store.undo();
+    await wait(120);
+  }
+  if (store.project.maps[0].screens[3].entities.length) throw new Error('undo did not unwind the actor edits');
 
   // --- mapper selection and the tileset list -----------------------------
   window.__app.goTo('tile');

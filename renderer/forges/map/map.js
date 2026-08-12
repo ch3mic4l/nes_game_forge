@@ -4,7 +4,7 @@
 // is a grid of screens; walking off an edge moves to the neighbour.
 
 import { store } from '../../store.js';
-import { el, clear, fill, field, toast, confirmModal, fitZoom, observeSize } from '../../ui.js';
+import { el, clear, fill, field, toast, confirmModal, showModal, fitZoom, observeSize } from '../../ui.js';
 import {
   LIMITS,
   createScreen,
@@ -20,6 +20,7 @@ import { RPG_LIMITS } from '../../../shared/project.js';
 import { createMetatilePanel } from './metatiles.js';
 import { describeCommand, describeCondition, editEvent, editSwitches } from './events.js';
 import { openEventList } from './eventlist.js';
+import { templatesFor, firstFreeSwitch } from './templates.js';
 import {
   MetatileRenderer,
   drawCollisionOverlay,
@@ -37,6 +38,11 @@ const NAV_GAP = 14;
 // `do_talk` applies in the engine, so an actor only offers a dialogue field if
 // the ROM can actually reach it.
 const canTalk = (actor) => Boolean(actor) && !['pickup', 'door', 'player'].includes(actor.behavior);
+
+// Outside `mount` on purpose: copying an actor, going to the Sprite Forge to
+// check what it looks like and coming back to paste is the ordinary way this
+// gets used, and a clipboard that emptied itself on the way would be a trap.
+let clipboard = null;
 
 const TOOLS = [
   { id: 'stamp', label: '▪ Stamp', title: 'Paint the selected metatile' },
@@ -413,6 +419,34 @@ export function mount(container, app) {
     row?.querySelector('input')?.focus();
   }
 
+  /**
+   * Put a copy of an actor on the current screen. Offset by one metatile and
+   * kept on the screen, because a copy landing exactly under the original looks
+   * like nothing happened and then two of them move as one.
+   */
+  function placeCopy(source, label) {
+    const screen = currentScreen();
+    if (screen.entities.length >= LIMITS.entitiesPerScreen) {
+      return toast(`A screen can hold at most ${LIMITS.entitiesPerScreen} actors.`, 'error');
+    }
+    // The clipboard outlives the project it was filled from, and actorId is an
+    // index into *this* project's actors. Pasting past the end would place an
+    // actor that draws nothing and does nothing, which looks like a paste that
+    // silently failed rather than one that should not have been offered.
+    if (source.actorId >= store.project.sprites.actors.length) {
+      return toast('That actor does not exist in this project, so there is nothing to place.', 'error');
+    }
+    const { mapIndex, screenIndex } = state;
+    const copy = structuredClone(source);
+    copy.x = Math.min(SCREEN_PX_W - METATILE_PX, source.x + METATILE_PX);
+    copy.y = Math.min(SCREEN_PX_H - METATILE_PX, source.y + METATILE_PX);
+    store.commit(label, (project) => {
+      project.maps[mapIndex].screens[screenIndex].entities.push(copy);
+    });
+    renderScreen();
+    renderEntities();
+  }
+
   const setEntityProp = (index, label, patch) => {
     const { mapIndex, screenIndex } = state;
     store.commit(label, (project) => {
@@ -490,9 +524,76 @@ export function mount(container, app) {
           },
           event ? 'Edit event…' : 'Event…'
         ),
+        // Offered only where there is nothing to lose: a template replaces the
+        // whole event, so with one already written this would be a button whose
+        // job is to throw work away.
+        event
+          ? null
+          : el(
+              'button.btn.btn-sm',
+              { title: 'Start from a chest, a gate, a one-off conversation…', onclick: () => applyTemplate(entity, index) },
+              'Template…'
+            ),
         hideSwitchSelect(entity, index)
       )
     );
+  }
+
+  /**
+   * Start an event from a ready-made shape. The template is built and then
+   * *opened in the editor* rather than saved straight to the project: it is a
+   * draft to adjust, and Cancel has to leave the actor exactly as it was.
+   */
+  async function applyTemplate(entity, index) {
+    const templates = templatesFor(store.project);
+    const free = firstFreeSwitch(store.project);
+    if (free === null) {
+      return toast(
+        `Every one of the ${RPG_LIMITS.switches} switches is in use, so a template has none left ` +
+          'to guard its first page with.',
+        'error'
+      );
+    }
+
+    const chosen = await showModal({
+      title: 'Start from a template',
+      width: 460,
+      body: (close) =>
+        el(
+          'div',
+          { style: { minWidth: '420px' } },
+          el(
+            'p.hint',
+            { style: { marginBottom: '10px' } },
+            `Each of these is a guarded page plus a fallback, wired to switch ${free} — the lowest ` +
+              'one nothing else uses. It opens in the editor, so nothing is decided yet.'
+          ),
+          templates.map((template) =>
+            el(
+              'div',
+              {
+                dataset: { template: template.id },
+                style: {
+                  padding: '8px 10px',
+                  marginBottom: '6px',
+                  background: 'var(--bg-2)',
+                  border: '1px solid var(--line)',
+                  borderRadius: 'var(--radius)',
+                  cursor: 'pointer'
+                },
+                onclick: () => close(template)
+              },
+              el('div', { style: { fontWeight: '600' } }, template.label),
+              el('p.hint', { style: { margin: '2px 0 0' } }, template.hint)
+            )
+          )
+        ),
+      actions: [{ label: 'Cancel', value: null }]
+    });
+    if (!chosen) return;
+
+    const result = await editEvent(chosen.build(store.project, free), eventContext());
+    if (result !== undefined) setEntityProp(index, `Event from ${chosen.label}`, { event: result });
   }
 
   /** A switch that makes this actor absent — an opened chest, a departed NPC. */
@@ -606,6 +707,19 @@ export function mount(container, app) {
           'Switches…'
         )
       ),
+      // Only once something has been copied: an always-present Paste that
+      // usually cannot do anything is worse than no button at all.
+      clipboard
+        ? el(
+            'button.btn.btn-sm',
+            {
+              style: { marginBottom: '8px' },
+              title: 'Put the copied actor on this screen',
+              onclick: () => placeCopy(clipboard, 'Paste actor')
+            },
+            `Paste ${entityLabel(store.project, clipboard)}`
+          )
+        : null,
       actors.length
         ? field(
             'Actor to place',
@@ -642,6 +756,26 @@ export function mount(container, app) {
                       name: event.target.value.trim().slice(0, AUTHOR_NAME_MAX)
                     })
                 }),
+                el(
+                  'button.btn.btn-sm',
+                  {
+                    title: 'Copy this actor, its dialogue and its event',
+                    onclick: () => {
+                      clipboard = structuredClone(entity);
+                      renderEntities();
+                      toast(`Copied ${entityLabel(store.project, entity)}.`);
+                    }
+                  },
+                  '⧉'
+                ),
+                el(
+                  'button.btn.btn-sm',
+                  {
+                    title: 'Place another one just like this',
+                    onclick: () => placeCopy(entity, 'Duplicate actor')
+                  },
+                  '+⧉'
+                ),
                 el(
                   'button.btn.btn-sm',
                   {
