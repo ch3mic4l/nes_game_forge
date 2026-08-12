@@ -159,14 +159,15 @@ const scenario = (dir, sampleDir) => `
   // two different screens, so the assertion is that the Forge lands on the one
   // the row described rather than on the first match anywhere.
   store.commit('smoke placed actors', (project) => {
-    // Three actors, all sharing a name, because the clipboard check further
-    // down is about what a weaker guard would miss. With distinct names almost
-    // anything passes; with the copied actor last, deleting an earlier one puts
-    // its index out of range and the bounds check answers first — which is how
-    // that check once passed while testing nothing at all.
-    project.sprites.actors.push({ name: 'Chest', behavior: 'npc' });
-    project.sprites.actors.push({ name: 'Chest', behavior: 'npc' });
-    project.sprites.actors.push({ name: 'Chest', behavior: 'npc' });
+    // Three actors sharing a name and differing only in a field nothing here
+    // reads, because the clipboard check further down is about what a weaker
+    // guard would miss. With distinct names almost anything passes; with the
+    // copied actor last, deleting an earlier one puts its index out of range
+    // and the bounds check answers first — which is how that check once passed
+    // while testing nothing at all.
+    project.sprites.actors.push({ name: 'Chest', behavior: 'npc', speed: 1 });
+    project.sprites.actors.push({ name: 'Chest', behavior: 'npc', speed: 2 });
+    project.sprites.actors.push({ name: 'Chest', behavior: 'npc', speed: 3 });
     const actorId = 1; // the middle one: another of the same name sits after it
     project.maps[0].screens[0].entities.push({ actorId, x: 16, y: 16, props: { name: 'Empty chest' } });
     project.maps[0].screens[3].entities.push({
@@ -319,6 +320,24 @@ const scenario = (dir, sampleDir) => `
     throw new Error('the names up to the copied index should be unchanged, or a prefix guard would pass');
   }
   if (pasteOffered()) throw new Error('paste survived the actor it copied being renumbered');
+
+  // And it must not come back when the roster merely *looks* the way it did.
+  // Adding a third actor called Chest restores the count and the sequence of
+  // names, so any guard comparing those says yes again — while index 1 still
+  // holds the actor that shuffled into it. Only comparing the records notices,
+  // and only because this new one is not a copy of what was deleted.
+  store.commit('smoke add a same-named actor', (project) => {
+    project.sprites.actors.push({ name: 'Chest', behavior: 'npc', speed: 8 });
+  });
+  await wait(250);
+  const names = store.project.sprites.actors.map((actor) => actor.name);
+  if (names.length !== 3 || names.some((name) => name !== 'Chest')) {
+    throw new Error('the smoke setup did not restore the roster of names: ' + names.join(','));
+  }
+  if (pasteOffered()) throw new Error('paste came back for a roster that only looks like the one copied');
+
+  store.undo();
+  await wait(200);
   store.undo();
   await wait(250);
   if (!pasteOffered()) throw new Error('undoing the deletion did not bring the paste back');

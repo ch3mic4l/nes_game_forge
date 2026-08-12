@@ -51,24 +51,26 @@ const NAV_GAP = 14;
 // renumber this one: copy actor 1, delete actor 0, and the index names somebody
 // else while staying comfortably in range.
 //
-// The snapshot is the whole roster, and the pessimism is the point. Two weaker
-// versions were tried and both let the wrong actor through, because names are
-// not unique:
+// The snapshot is every actor record, not a summary of them. Three weaker
+// versions were tried and each let the wrong actor through:
 //
-//   - comparing the copied actor's name back: two actors called "Guard" at 1
-//     and 2, delete actor 0, and the one that shuffles into index 1 compares
-//     equal to the one that was copied.
-//   - comparing only the names up to the copied index: three actors called
-//     "Chest", copy the middle one, delete the first, and that prefix is
-//     *still* ["Chest","Chest"] while index 1 now holds the third.
+//   - the copied actor's name: two actors called "Guard" at 1 and 2, delete
+//     actor 0, and the one that shuffles into index 1 compares equal.
+//   - the names up to the copied index: three actors called "Chest", copy the
+//     middle, delete the first, and that prefix is *still* ["Chest","Chest"].
+//   - every name: delete actor 0, then add an actor and call it "Chest" too.
+//     The list of names matches again, so the paste comes back — while index 1
+//     holds a different actor. A name list describes the state, and a state can
+//     be arrived at twice.
 //
-// So any change to the roster at all withdraws the paste, which costs one more
-// copy where the alternative costs a wrong actor placed in silence. The one
-// assumption left is that nothing reorders actors — the Sprite Forge only
-// appends and deletes — since swapping two identically named ones would leave
-// this list unchanged. Add reordering and this needs object identity instead.
+// Whole records answer all three, and their residual case is the harmless one:
+// they compare equal only when the actor now at that index is defined
+// identically to the one copied, which is to say interchangeable with it. They
+// also survive undo, whose structuredClone restores records that are equal
+// without being the same objects — which is why object identity in a WeakMap
+// was the wrong tool here, undo being far more frequent than editing an actor.
 let clipboard = null;
-const rosterOf = (project) => JSON.stringify(project.sprites.actors.map((actor) => actor.name));
+const rosterOf = (project) => JSON.stringify(project.sprites.actors);
 
 const clipboardIsHere = () =>
   Boolean(clipboard) && clipboard.dir === store.dir && rosterOf(store.project) === clipboard.roster;
