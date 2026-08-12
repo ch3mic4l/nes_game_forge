@@ -105,10 +105,14 @@ test('every template builds an event the engine can actually run', () => {
   }
 });
 
-test('Recruit is offered only once there is somebody to recruit', () => {
+test('Recruit is offered only once there is somebody left to recruit', () => {
   const action = createProject('Action');
   const rpg = createProject('Quest', 'rpg');
   const has = (project) => templatesFor(project).some((entry) => entry.id === 'recruit');
+  const memberOf = (project) =>
+    EVENT_TEMPLATES.find((entry) => entry.id === 'recruit')
+      .build(project, 0)
+      .pages[0].commands.find((command) => command.op === 'join').member;
 
   assert.equal(has(action), false, 'an action build does not assemble the battle bank');
   // A new RPG has only the hero, who is in the party from boot. Offering
@@ -119,10 +123,18 @@ test('Recruit is offered only once there is somebody to recruit', () => {
 
   rpg.party.push(createPartyMember(1, 'Mage'));
   assert.equal(has(rpg), true);
-  const event = EVENT_TEMPLATES.find((entry) => entry.id === 'recruit').build(rpg, 0);
-  const join = event.pages[0].commands.find((command) => command.op === 'join');
-  assert.equal(join.member, 1, 'an actual party member, and never the hero');
-  assert.ok(join.member < rpg.party.length);
+  assert.equal(memberOf(rpg), 1, 'an actual party member, and never the hero');
+
+  // Length is not the question — `startsInParty` is authorable per member, so a
+  // party of four can still have nobody to recruit. Recruiting somebody already
+  // in the party is a conversation that does nothing and then sets the switch
+  // that says it happened.
+  rpg.party.push(createPartyMember(2, 'Knight'));
+  rpg.party[2].startsInParty = true;
+  assert.equal(memberOf(rpg), 1, 'the Mage, not the Knight who is already here');
+
+  rpg.party[1].startsInParty = true;
+  assert.equal(has(rpg), false, 'a full party with nobody left to join');
 
   assert.ok(templatesFor(action).length, 'an action project still gets the rest');
 });

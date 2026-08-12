@@ -8,8 +8,16 @@
 //
 // `project.js` re-exports both, so the schema stays the one place to look.
 
-/** The commands a page runs. A switched-off one is authoring scaffolding. */
-export const enabledCommands = (page) => (page?.commands ?? []).filter((command) => !command.off);
+/**
+ * The commands a page runs. A switched-off one is authoring scaffolding.
+ *
+ * `!== true` rather than a truthiness test, to match the schema exactly:
+ * normalization keeps `off` only when it is literally true, so anything else
+ * means enabled. Reading `{ off: 'yes' }` as disabled here would have this
+ * module and `normalizeEventCommand` give opposite answers about the same
+ * hand-edited project, depending on whether it had been through normalization.
+ */
+export const enabledCommands = (page) => (page?.commands ?? []).filter((command) => command?.off !== true);
 
 /**
  * The pages that reach the ROM.

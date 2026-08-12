@@ -46,17 +46,26 @@ const NAV_GAP = 14;
 // valid in another project while meaning something entirely different. There is
 // no repair for that, only a refusal.
 //
-// It also remembers which actor it copied, because deleting an actor renumbers
-// every *placed* actorId (see the Sprite Forge) and cannot renumber this one:
-// copy actor 1, delete actor 0, and the index now names somebody else while
-// staying comfortably in range. Comparing the name back is deliberately
-// pessimistic — renaming the actor also withdraws the paste, which costs a
-// second copy, where the alternative costs a wrong actor placed silently.
+// It also remembers the actor roster it was copied against, because deleting an
+// actor renumbers every *placed* actorId (see the Sprite Forge) and cannot
+// renumber this one: copy actor 1, delete actor 0, and the index names somebody
+// else while staying comfortably in range.
+//
+// The snapshot runs up to and including the copied index, because that prefix is
+// exactly what decides who sits there — appending or deleting an actor *after*
+// it moves nothing, and keeps the paste. Comparing the name of that one actor is
+// not enough: names are not unique, so two actors called "Guard" would let a
+// deletion shuffle one into the other's place and compare equal. Renaming
+// anything in the prefix also withdraws the paste, which costs one more copy;
+// the alternative costs a wrong actor placed in silence.
 let clipboard = null;
+const rosterUpTo = (project, index) =>
+  JSON.stringify(project.sprites.actors.slice(0, index + 1).map((actor) => actor.name));
+
 const clipboardIsHere = () =>
   Boolean(clipboard) &&
   clipboard.dir === store.dir &&
-  store.project.sprites.actors[clipboard.entity.actorId]?.name === clipboard.actorName;
+  rosterUpTo(store.project, clipboard.entity.actorId) === clipboard.roster;
 
 const TOOLS = [
   { id: 'stamp', label: '▪ Stamp', title: 'Paint the selected metatile' },
@@ -777,7 +786,7 @@ export function mount(container, app) {
                     onclick: () => {
                       clipboard = {
                         dir: store.dir,
-                        actorName: actors[entity.actorId]?.name,
+                        roster: rosterUpTo(store.project, entity.actorId),
                         entity: structuredClone(entity)
                       };
                       renderEntities();

@@ -50,6 +50,17 @@ export function firstFreeSwitch(project) {
   return null;
 }
 
+/**
+ * The first party member somebody could actually recruit: one the game does not
+ * already start with. -1 when there is nobody, which is also what decides
+ * whether the Recruit template is offered at all.
+ */
+export function recruitable(project) {
+  if (project.project?.gameType !== 'rpg') return -1;
+  const party = (project.party ?? []).slice(0, RPG_LIMITS.party);
+  return party.findIndex((member) => !member.startsInParty);
+}
+
 /** The first actor that behaves like a collectable, for a template to hand over. */
 const firstPickup = (project) => {
   const index = (project.sprites?.actors ?? []).findIndex((actor) => actor.behavior === 'pickup');
@@ -120,19 +131,21 @@ export const EVENT_TEMPLATES = [
     id: 'recruit',
     label: 'Recruit — joins the party, once',
     hint: 'Adds a party member and remembers it, so they cannot be recruited twice.',
-    // Not just "is this an RPG". Member 0 is the hero, who is already in the
-    // party at boot, so there is nobody to recruit until the Sprite Forge has a
-    // second member — and `join` compiles the index straight through, so a
-    // template naming one that does not exist sends the engine into
-    // `party_join` for stats past the end of the generated tables.
-    available: (project) => project.project?.gameType === 'rpg' && (project.party?.length ?? 0) > 1,
+    // Not just "is this an RPG", and not just "is there a second member".
+    // `startsInParty` is authorable per member, so a project can have four of
+    // them and nobody to recruit. Recruiting somebody who is already in the
+    // party is a conversation that does nothing and then sets the switch saying
+    // it happened, which is worse than no template at all — and `join` compiles
+    // the index straight through, so naming a member who does not exist sends
+    // `party_join` after stats past the end of the generated tables.
+    available: (project) => recruitable(project) >= 0,
     build: (project, free) => ({
       pages: [
         {
           cond: { type: 'switchOff', arg: free },
           commands: [
             { op: 'say', text: 'I will come with you.' },
-            { op: 'join', member: Math.min(project.party.length - 1, RPG_LIMITS.party - 1) },
+            { op: 'join', member: recruitable(project) },
             { op: 'setSwitch', switch: free }
           ]
         },

@@ -159,8 +159,14 @@ const scenario = (dir, sampleDir) => `
   // two different screens, so the assertion is that the Forge lands on the one
   // the row described rather than on the first match anywhere.
   store.commit('smoke placed actors', (project) => {
+    // Three actors, two of them sharing a name. The clipboard check further
+    // down needs a same-named actor *after* the one it copies, or deleting an
+    // earlier actor puts the copied index out of range and the bounds check
+    // answers first — which is how this passed while testing nothing.
+    project.sprites.actors.push({ name: 'Villager', behavior: 'npc' });
     project.sprites.actors.push({ name: 'Chest', behavior: 'npc' });
-    const actorId = project.sprites.actors.length - 1;
+    project.sprites.actors.push({ name: 'Chest', behavior: 'npc' });
+    const actorId = project.sprites.actors.length - 2;
     project.maps[0].screens[0].entities.push({ actorId, x: 16, y: 16, props: { name: 'Empty chest' } });
     project.maps[0].screens[3].entities.push({
       actorId,
@@ -281,14 +287,16 @@ const scenario = (dir, sampleDir) => `
   if (store.project.maps[0].screens[1].entities.length !== 1) throw new Error('paste put nothing on screen 1');
 
   // Deleting an actor renumbers every placed actorId, and cannot renumber the
-  // clipboard's. The copied index would stay in range and name somebody else,
-  // so the paste has to withdraw rather than place the wrong actor. Asserted
-  // present first, or the check below would pass for having nothing to find.
+  // clipboard's. Here the copied index stays comfortably in range afterwards
+  // and lands on the *other* actor of the same name — so neither the bounds
+  // check nor a name comparison would notice, and only the roster snapshot
+  // does. Asserted present first, or this would pass for finding nothing.
   const pasteOffered = () =>
     [...document.querySelectorAll('#stage button')].some((node) => node.textContent.startsWith('Paste '));
   if (!pasteOffered()) throw new Error('paste is not offered even before the actor list changes');
+  const copiedActor = store.project.sprites.actors[1];
   store.commit('smoke delete an earlier actor', (project) => {
-    project.sprites.actors.splice(0, 1);
+    project.sprites.actors.splice(0, 1); // the Villager, before both Chests
     project.sprites.actors.forEach((actor, position) => (actor.id = position));
     for (const map of project.maps) {
       for (const screen of map.screens) {
@@ -299,6 +307,12 @@ const scenario = (dir, sampleDir) => `
     }
   });
   await wait(250);
+  if (store.project.sprites.actors[1] === copiedActor) {
+    throw new Error('the smoke setup did not actually shuffle the copied index onto another actor');
+  }
+  if (store.project.sprites.actors[1]?.name !== copiedActor.name) {
+    throw new Error('the shuffled-into actor should share the name, or the guard is not being tested');
+  }
   if (pasteOffered()) throw new Error('paste survived the actor it copied being renumbered');
   store.undo();
   await wait(250);
