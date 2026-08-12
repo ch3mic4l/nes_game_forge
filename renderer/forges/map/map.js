@@ -45,8 +45,18 @@ const NAV_GAP = 14;
 // to, the item its event gives — and every one of those indices stays perfectly
 // valid in another project while meaning something entirely different. There is
 // no repair for that, only a refusal.
+//
+// It also remembers which actor it copied, because deleting an actor renumbers
+// every *placed* actorId (see the Sprite Forge) and cannot renumber this one:
+// copy actor 1, delete actor 0, and the index now names somebody else while
+// staying comfortably in range. Comparing the name back is deliberately
+// pessimistic — renaming the actor also withdraws the paste, which costs a
+// second copy, where the alternative costs a wrong actor placed silently.
 let clipboard = null;
-const clipboardIsHere = () => clipboard && clipboard.dir === store.dir;
+const clipboardIsHere = () =>
+  Boolean(clipboard) &&
+  clipboard.dir === store.dir &&
+  store.project.sprites.actors[clipboard.entity.actorId]?.name === clipboard.actorName;
 
 const TOOLS = [
   { id: 'stamp', label: '▪ Stamp', title: 'Paint the selected metatile' },
@@ -765,7 +775,11 @@ export function mount(container, app) {
                   {
                     title: 'Copy this actor, its dialogue and its event',
                     onclick: () => {
-                      clipboard = { dir: store.dir, entity: structuredClone(entity) };
+                      clipboard = {
+                        dir: store.dir,
+                        actorName: actors[entity.actorId]?.name,
+                        entity: structuredClone(entity)
+                      };
                       renderEntities();
                       toast(`Copied ${entityLabel(store.project, entity)}.`);
                     }

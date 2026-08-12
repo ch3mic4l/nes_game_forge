@@ -279,6 +279,30 @@ const scenario = (dir, sampleDir) => `
   paste.click();
   await wait(250);
   if (store.project.maps[0].screens[1].entities.length !== 1) throw new Error('paste put nothing on screen 1');
+
+  // Deleting an actor renumbers every placed actorId, and cannot renumber the
+  // clipboard's. The copied index would stay in range and name somebody else,
+  // so the paste has to withdraw rather than place the wrong actor. Asserted
+  // present first, or the check below would pass for having nothing to find.
+  const pasteOffered = () =>
+    [...document.querySelectorAll('#stage button')].some((node) => node.textContent.startsWith('Paste '));
+  if (!pasteOffered()) throw new Error('paste is not offered even before the actor list changes');
+  store.commit('smoke delete an earlier actor', (project) => {
+    project.sprites.actors.splice(0, 1);
+    project.sprites.actors.forEach((actor, position) => (actor.id = position));
+    for (const map of project.maps) {
+      for (const screen of map.screens) {
+        screen.entities = screen.entities
+          .filter((entity) => entity.actorId !== 0)
+          .map((entity) => ({ ...entity, actorId: entity.actorId - 1 }));
+      }
+    }
+  });
+  await wait(250);
+  if (pasteOffered()) throw new Error('paste survived the actor it copied being renumbered');
+  store.undo();
+  await wait(250);
+  if (!pasteOffered()) throw new Error('undoing the deletion did not bring the paste back');
   step('event authoring', 'chest template, reorder, switch off, duplicate, paste');
 
   for (let undone = 0; undone < 4; undone++) {
