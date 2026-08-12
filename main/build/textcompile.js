@@ -9,7 +9,7 @@
 // project may carry at most 255 of each.
 
 import { BOX_COLS, BOX_ROWS, textToTiles, wrapText } from '../../shared/font.js';
-import { EVENT_COMMANDS, EVENT_CONDITIONS } from '../../shared/project.js';
+import { EVENT_COMMANDS, EVENT_CONDITIONS, enabledCommands, compiledPages } from '../../shared/project.js';
 
 // String control codes, matching engine/constants.asm.
 export const TXT_END = 0x00;
@@ -106,7 +106,7 @@ export function compileText(project) {
   const encodeEvent = (pages) => {
     const bytes = [];
     for (const page of pages) {
-      const body = (page.commands ?? []).map(encodeCommand).filter(Boolean).flat();
+      const body = enabledCommands(page).map(encodeCommand).filter(Boolean).flat();
       body.push(OP_END);
       bytes.push(condIndex(page.cond?.type), byte(page.cond?.arg, 63), body.length, ...body);
     }
@@ -121,12 +121,15 @@ export function compileText(project) {
         // unconditional page that says one thing, so the engine has a single
         // path for "talking to somebody" rather than a special case beside the
         // scripted one.
-        const pages = entity.props?.event?.pages ?? null;
+        // Only the pages that still do something. An event switched off command
+        // by command until nothing is left is an event that is not there, which
+        // is also why the plain dialogue underneath it comes back.
+        const pages = compiledPages(entity.props?.event);
         const dialogue = String(entity.props?.dialogue ?? '').trim();
-        if (!pages?.length && !dialogue) continue;
+        if (!pages.length && !dialogue) continue;
         eventFor.set(entity, events.length);
         events.push(
-          pages?.length
+          pages.length
             ? encodeEvent(pages)
             : [COND_NONE, 0, 3, OP_SAY, internString(dialogue), OP_END, EVT_PAGES_END]
         );

@@ -15,6 +15,8 @@ import { fileURLToPath } from 'node:url';
 import NES from '../../renderer/emulator/core/nes.js';
 import { loadProject, saveProject } from '../../main/project-io.js';
 import { buildProject } from '../../main/build/pipeline.js';
+import { compileText, EVT_PAGES_END } from '../../main/build/textcompile.js';
+import { createProject, normalizeProject, compiledPages } from '../../shared/project.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const SAMPLE = path.join(ROOT, 'sample');
@@ -265,4 +267,93 @@ test('an event whose every page is ruled out says nothing and ends cleanly', {
   for (let i = 0; i < 30; i++) nes.frame();
   assert.equal(nes.cpu.mem[GAME_STATE], ST_GAMEPLAY, 'a silent event should not strand the player');
   assert.equal(nes.cpu.mem[BOX_STATE], 0);
+});
+
+// --- switching a command off -------------------------------------------------
+
+test('a switched-off command leaves the ROM, and takes an emptied page with it', () => {
+  const project = createProject('Toggles');
+  project.sprites.actors = [{ name: 'Sign', behavior: 'npc' }];
+  const entity = {
+    actorId: 0,
+    x: 0,
+    y: 0,
+    props: {
+      dialogue: 'Fallback line.',
+      event: {
+        pages: [
+          {
+            cond: { type: 'none', arg: 0 },
+            commands: [
+              { op: 'say', text: 'Kept.' },
+              { op: 'setSwitch', switch: 4, off: true }
+            ]
+          }
+        ]
+      }
+    }
+  };
+  project.maps[0].screens[0].entities = [entity];
+
+  const compiled = compileText(project);
+  const bytes = compiled.events[0];
+  // [cond, arg, body length, ...body, EVT_PAGES_END] — the disabled setSwitch
+  // is simply not there, so the body is one say plus the terminator.
+  assert.equal(bytes[2], 3, 'body carries only the enabled command and OP_END');
+  assert.equal(bytes.at(-1), EVT_PAGES_END);
+
+  // Switch the last live command off and the page has nothing left to run. It
+  // must not compile as an empty page: a page that matches and does nothing
+  // swallows every page below it, so the event is gone and the plain dialogue
+  // underneath comes back instead.
+  entity.props.event.pages[0].commands[0].off = true;
+  const emptied = compileText(project);
+  assert.deepEqual(compiledPages(entity.props.event), [], 'nothing left to build');
+  assert.equal(emptied.events.length, 1, 'the dialogue still needs an event');
+  assert.equal(emptied.events[0][2], 3, 'one unconditional say — the fallback dialogue');
+  assert.notEqual(
+    emptied.strings.findIndex((bytes) => bytes.length),
+    -1,
+    'the fallback text was compiled'
+  );
+
+  // And with no dialogue to fall back on, the actor has no event at all.
+  delete entity.props.dialogue;
+  assert.equal(compileText(project).events.length, 0);
+});
+
+test('the off flag survives normalization only when it is set', () => {
+  const project = normalizeProject({
+    maps: [
+      {
+        screens: [
+          {
+            entities: [
+              {
+                actorId: 0,
+                props: {
+                  event: {
+                    pages: [
+                      {
+                        cond: { type: 'none', arg: 0 },
+                        commands: [
+                          { op: 'say', text: 'On' },
+                          { op: 'say', text: 'Off', off: true },
+                          { op: 'say', text: 'Nonsense', off: 'yes' }
+                        ]
+                      }
+                    ]
+                  }
+                }
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  });
+  const commands = project.maps[0].screens[0].entities[0].props.event.pages[0].commands;
+  assert.equal('off' in commands[0], false, 'an enabled command carries no flag at all');
+  assert.equal(commands[1].off, true);
+  assert.equal('off' in commands[2], false, 'only a literal true counts');
 });

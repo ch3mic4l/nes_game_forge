@@ -164,6 +164,28 @@ Only commands the engine implements are offered. Anything a newer version of the
 Forge wrote is preserved through a save, so a project never loses work by being
 opened here.
 
+### Working on a project with a lot in it
+
+Four things in the Map Forge for once there is more than a screenful:
+
+- **Template…** writes the two-page pattern above for you — a chest, a one-off
+  greeting, a gate that opens for whoever carries the key, or (in an RPG) a
+  recruit. It picks the lowest switch nothing else is using and opens in the
+  editor, so it is a draft rather than a decision.
+- **Find…** searches every placed actor in the project — names, dialogue, and
+  what each event does. Because the rows read with the names resolved, searching
+  a switch's name finds everything that sets, clears or tests it, and searching a
+  screen's name finds every warp that leads there. Picking a result takes you to it.
+- **Name a screen** and **name a placed actor**, and they read that way
+  everywhere: warp targets, door targets, the title-screen picker, search results.
+  Both are for you — neither reaches the ROM.
+- **⧉** copies an actor with its dialogue and its event, **+⧉** drops another one
+  beside it, and inside an event, ↑ ↓ ⧉ reorder and duplicate pages and commands.
+  The checkbox on a command switches it **off** without deleting it: it stays in
+  the project and leaves the ROM. Switch off everything on a page and the page
+  leaves too, because a page that matches and does nothing would swallow every
+  page below it — the editor says so before you save.
+
 ## Health, damage and dying
 
 An actor with **contact damage** above zero costs the player a heart on touch; a

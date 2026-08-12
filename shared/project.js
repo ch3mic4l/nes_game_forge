@@ -173,6 +173,23 @@ export const EVENT_COMMANDS = [
 ];
 
 /**
+ * A command can be switched off while you work out whether you want it, the way
+ * you would comment a line out. These two are the single writers of what that
+ * means, consulted by the compiler and by the editor alike.
+ *
+ * The second one is the one that matters. A page whose commands are all
+ * switched off still *matches*, and a matching page that does nothing swallows
+ * every page below it — so the page has to leave the ROM with them. Disabling
+ * the only command on page 1 would otherwise silently turn the whole event off,
+ * which is the same failure as an empty page and cost real debugging time
+ * before the editor learned to drop those.
+ */
+export const enabledCommands = (page) => (page?.commands ?? []).filter((command) => !command.off);
+
+export const compiledPages = (event) =>
+  (event?.pages ?? []).filter((page) => enabledCommands(page).length > 0);
+
+/**
  * The subset engine/script.asm can actually run. Everything in EVENT_COMMANDS is
  * normalized, saved and compiled — so a project written by a later version
  * survives a round trip through this one — but the Map Forge only offers these,
@@ -487,6 +504,9 @@ function normalizeEventCommand(raw) {
   const command = EVENT_COMMANDS.find((entry) => entry.id === raw?.op);
   if (!command || command.id === 'end') return null;
   const out = { op: command.id };
+  // Only when it is actually off, so a project that has never used the toggle
+  // is byte-for-byte what it was before the toggle existed.
+  if (raw?.off === true) out.off = true;
   for (const arg of command.args) {
     if (arg === 'text') out.text = String(raw?.text ?? '').slice(0, MAX_DIALOGUE);
     else if (arg === 'switch') out.switch = clamp(raw?.switch, 0, RPG_LIMITS.switches - 1, 0);

@@ -17,8 +17,17 @@ import {
   EVENT_COMMANDS,
   EVENT_CONDITIONS,
   IMPLEMENTED_COMMANDS,
-  RPG_LIMITS
+  RPG_LIMITS,
+  enabledCommands
 } from '../../../shared/project.js';
+
+/** Move an item within its list, or do nothing at the ends. */
+function moveWithin(list, from, to) {
+  if (to < 0 || to >= list.length) return false;
+  const [item] = list.splice(from, 1);
+  list.splice(to, 0, item);
+  return true;
+}
 
 const offeredCommands = (context) =>
   EVENT_COMMANDS.filter(
@@ -37,8 +46,17 @@ const defaultCommand = (op) => {
   return out;
 };
 
-/** How a command reads in the list, so a page is legible without opening it. */
-export function describeCommand(command, { actors = [], switches = [], screens = [], party = [] } = {}) {
+/**
+ * How a command reads in the list, so a page is legible without opening it.
+ * A switched-off command says so wherever it is summarised — the alternative
+ * is a list describing an event that is not the one the ROM will run.
+ */
+export function describeCommand(command, context = {}) {
+  const text = describeEnabled(command, context);
+  return command.off ? `(off) ${text}` : text;
+}
+
+function describeEnabled(command, { actors = [], switches = [], screens = [], party = [] } = {}) {
   const actorName = (id) => actors[id]?.name ?? `actor ${id}`;
   const switchName = (n) => switches[n]?.trim() || `switch ${n}`;
   switch (command.op) {
@@ -105,14 +123,47 @@ export function editEvent(event, context) {
     );
   };
 
+  /** ↑ ↓ ⧉ ✕ over a list, which both pages and commands need. */
+  function listTools(list, index, { what, onChange, canRemove = true }) {
+    const button = (label, title, disabled, act) =>
+      el(
+        'button.btn.btn-sm',
+        {
+          title,
+          disabled,
+          onclick: () => {
+            act();
+            onChange();
+          }
+        },
+        label
+      );
+    return [
+      button('↑', `Move this ${what} up`, index === 0, () => moveWithin(list, index, index - 1)),
+      button('↓', `Move this ${what} down`, index === list.length - 1, () => moveWithin(list, index, index + 1)),
+      button('⧉', `Duplicate this ${what}`, false, () =>
+        list.splice(index + 1, 0, structuredClone(list[index]))
+      ),
+      button('✕', `Remove this ${what}`, !canRemove, () => list.splice(index, 1))
+    ];
+  }
+
   function pageCard(page, index) {
     const condition = EVENT_CONDITIONS.find((entry) => entry.id === page.cond.type) ?? EVENT_CONDITIONS[0];
+    // Order is the whole semantics of an event — the first passing page wins —
+    // so a page that will never be reached, or one left with nothing to do, is
+    // worth saying out loud rather than leaving to be discovered in the ROM.
+    const dead = page.commands.length > 0 && enabledCommands(page).length === 0;
+    const unreachable = draft.pages.some(
+      (earlier, position) =>
+        position < index && earlier.cond.type === 'none' && enabledCommands(earlier).length > 0
+    );
     return el(
       'div',
       {
         style: {
           background: 'var(--bg-2)',
-          border: '1px solid var(--line)',
+          border: `1px solid ${dead ? 'var(--accent)' : 'var(--line)'}`,
           borderRadius: 'var(--radius)',
           padding: '10px',
           marginBottom: '10px'
@@ -136,19 +187,27 @@ export function editEvent(event, context) {
           )
         ),
         condition.arg ? conditionArg(page, condition) : null,
-        el(
-          'button.btn.btn-sm',
-          {
-            title: 'Remove this page',
-            disabled: draft.pages.length === 1,
-            onclick: () => {
-              draft.pages.splice(index, 1);
-              rerender();
-            }
-          },
-          '✕'
-        )
+        listTools(draft.pages, index, {
+          what: 'page',
+          onChange: rerender,
+          canRemove: draft.pages.length > 1
+        })
       ),
+      dead
+        ? el(
+            'p.hint',
+            { style: { color: 'var(--accent)', margin: '0 0 6px' } },
+            'Everything here is switched off, so this page is not built. A page that matches and ' +
+              'does nothing would swallow every page below it.'
+          )
+        : null,
+      unreachable
+        ? el(
+            'p.hint',
+            { style: { color: 'var(--accent)', margin: '0 0 6px' } },
+            'An “Always” page above this one runs first, so this page is never reached.'
+          )
+        : null,
       page.commands.length
         ? page.commands.map((command, position) => commandRow(page, command, position))
         : el('p.hint', null, 'This page does nothing yet.'),
@@ -195,27 +254,34 @@ export function editEvent(event, context) {
   }
 
   function commandRow(page, command, position) {
-    const remove = el(
-      'button.btn.btn-sm',
-      {
-        title: 'Remove',
-        onclick: () => {
-          page.commands.splice(position, 1);
+    // Switched off is not deleted: it is how you find out whether a line was
+    // the problem without losing what it said. The row stays legible and
+    // editable, so what comes back is what went away.
+    const toggle = el(
+      'label.check',
+      { title: command.off ? 'Switched off — not built' : 'Switch this command off without deleting it' },
+      el('input', {
+        type: 'checkbox',
+        checked: !command.off,
+        onchange: (fired) => {
+          if (fired.target.checked) delete command.off;
+          else command.off = true;
           rerender();
         }
-      },
-      '✕'
+      })
     );
+    const tools = [toggle, ...listTools(page.commands, position, { what: 'command', onChange: rerender })];
+    const dim = command.off ? { opacity: '0.55' } : null;
 
     if (command.op === 'say') {
       return el(
         'div',
-        { style: { marginBottom: '6px' } },
+        { style: { marginBottom: '6px', ...dim } },
         el(
           'div.field-row',
           null,
           el('span', { style: { flex: '1', color: 'var(--text-dim)' } }, 'Show text'),
-          remove
+          tools
         ),
         el('textarea', {
           rows: 3,
@@ -289,14 +355,14 @@ export function editEvent(event, context) {
 
     return el(
       'div.field-row',
-      { style: { marginBottom: '6px' } },
+      { style: { marginBottom: '6px', ...dim } },
       el(
         'span',
         { style: { flex: 'none', minWidth: '96px', color: 'var(--text-dim)' } },
         EVENT_COMMANDS.find((entry) => entry.id === command.op)?.label ?? command.op
       ),
       controls,
-      remove
+      tools
     );
   }
 
@@ -312,12 +378,15 @@ export function editEvent(event, context) {
       {
         label: 'Save',
         primary: true,
-        // A page with no commands compiles to a page that does nothing, which
-        // would swallow every page below it. Dropping them here means the ROM
-        // matches what the editor showed.
+        // A page with nothing to run compiles to a page that does nothing,
+        // which would swallow every page below it. The compiler drops those
+        // too — `compiledPages` is the shared rule — but a page kept here with
+        // its commands merely switched off is work the author is still holding
+        // on to, so what is dropped is the genuinely empty page and the event
+        // is judged by what would actually be built.
         onClick: () => {
           const pages = draft.pages.filter((page) => page.commands.length);
-          return pages.length ? { pages } : null;
+          return pages.some((page) => enabledCommands(page).length) ? { pages } : null;
         }
       }
     ]

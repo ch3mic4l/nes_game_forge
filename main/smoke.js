@@ -209,6 +209,44 @@ const scenario = (dir, sampleDir) => `
     throw new Error('the template did not guard its first page with the free switch');
   }
 
+  // Reordering and switching a command off, through the editor's own controls.
+  // The last of these is the one worth driving end to end: switching off the
+  // only live command on a page has to take the page out of the build, not
+  // leave a page that matches and does nothing.
+  rowButton(0, 'Edit event…').click();
+  await until('the event editor', () => document.querySelector('#modalHost .btn-accent'));
+  const pageOne = document.querySelectorAll('#modalHost .field-row');
+  const sayRow = [...document.querySelectorAll('#modalHost .field-row')].find((node) =>
+    node.textContent.includes('Show text')
+  );
+  if (!sayRow || !pageOne.length) throw new Error('the event editor did not lay the template out');
+  [...sayRow.querySelectorAll('button')].find((node) => node.textContent === '↓').click();
+  await wait(150);
+  document.querySelector('#modalHost .btn-accent').click();
+  await wait(300);
+  const reordered = store.project.maps[0].screens[3].entities[0].props.event.pages[0].commands;
+  if (reordered[0].op !== 'give') throw new Error('moving a command down did not reorder the page');
+
+  rowButton(0, 'Edit event…').click();
+  await until('the event editor', () => document.querySelector('#modalHost .btn-accent'));
+  for (const box of document.querySelectorAll('#modalHost .check input')) {
+    box.checked = false;
+    box.dispatchEvent(new Event('change', { bubbles: true }));
+    await wait(60);
+  }
+  const warned = [...document.querySelectorAll('#modalHost p')].some((node) =>
+    node.textContent.includes('not built')
+  );
+  if (!warned) throw new Error('a page with everything switched off was not called out');
+  document.querySelector('#modalHost .btn-accent').click();
+  await wait(300);
+  const offEvent = store.project.maps[0].screens[3].entities[0].props.event;
+  if (offEvent) throw new Error('an event with nothing left enabled was still saved');
+  store.undo();
+  await wait(200);
+  store.undo();
+  await wait(200);
+
   // Duplicate keeps the event, and lands somewhere you can see it.
   rowButton(0, '+⧉').click();
   await wait(250);
@@ -235,7 +273,7 @@ const scenario = (dir, sampleDir) => `
   paste.click();
   await wait(250);
   if (store.project.maps[0].screens[1].entities.length !== 1) throw new Error('paste put nothing on screen 1');
-  step('template, duplicate, paste', 'chest template + 2 copies');
+  step('event authoring', 'chest template, reorder, switch off, duplicate, paste');
 
   for (let undone = 0; undone < 4; undone++) {
     store.undo();
