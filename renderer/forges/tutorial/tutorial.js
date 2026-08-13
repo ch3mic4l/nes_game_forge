@@ -276,6 +276,14 @@ const TOPICS = [
         '. A page can set one, add to it or subtract from it, and a condition can ask whether ',
         'one is, is at least, or is under a number. Adding and subtracting stop at 255 and 0 ',
         'rather than wrapping round.'
+      ),
+      p(
+        'A page condition decides which page runs before it runs. ',
+        b('If…'),
+        ' decides in the middle of one: it takes the same conditions a page does and holds two ',
+        'lists of commands, Then and Else, either of which can hold another If. That is how one ',
+        'conversation can hand over a reward only to somebody carrying the key, without splitting ',
+        'into two pages that repeat everything they have in common.'
       )
     ]
   },

@@ -21,7 +21,9 @@ import {
   RPG_LIMITS,
   conditionArgLimit,
   enabledCommands,
-  compiledPages
+  compiledPages,
+  entityLabel,
+  screenLabel
 } from '../../shared/project.js';
 
 // String control codes, matching engine/constants.asm.
@@ -41,6 +43,10 @@ export const OP_SAY = opIndex('say');
 
 export const NO_EVENT = 0xff;
 export const MAX_TABLE = 255; // $FF is the "none" marker in both tables
+// Every length in this format is one byte: a page body's, and each side of a
+// branch. `script_skip` adds it to the pointer, so 255 is the whole of it.
+export const MAX_BODY = 255;
+export const OP_JUMP = 0xfe; // the compiler's own punctuation; see constants.asm
 
 /**
  * Authored text as engine bytes: pages of wrapped lines, then a terminator.
@@ -92,7 +98,24 @@ export function compileText(project) {
   const screenCount = (project.maps ?? []).reduce((total, map) => total + (map.screens?.length ?? 0), 0);
   const byte = (value, limit = 255) => Math.max(0, Math.min(limit, value | 0));
 
-  const encodeCommand = (command) => {
+  // Lengths in this format are single bytes: a page body's, and a branch's two.
+  // Nothing checked them before branches existed, because a page long enough to
+  // overflow one would have been absurd to author a command at a time. A branch
+  // makes it reachable, and a length that wrapped would send the engine into the
+  // middle of a command — so it is refused here, naming what to shorten.
+  const tooLong = [];
+  const measured = (bytes, what) => {
+    if (bytes.length > MAX_BODY) tooLong.push({ what, length: bytes.length });
+    return bytes;
+  };
+
+  const encodeCondition = (cond) => [
+    condIndex(cond?.type),
+    byte(cond?.arg, conditionArgLimit(cond?.type)),
+    byte(cond?.value)
+  ];
+
+  const encodeCommand = (command, where) => {
     switch (command.op) {
       case 'say':
         return [OP_SAY, internString(command.text ?? '')];
@@ -115,34 +138,61 @@ export function compileText(project) {
         return [opIndex(command.op), byte(command.variable, RPG_LIMITS.variables - 1), byte(command.value)];
       case 'join':
         return [opIndex('join'), byte(command.member, 3)];
+      case 'branch': {
+        // [OP_IF, cond, arg, value, then-length] then [OP_JUMP, else-length]
+        // else. Past the opcode that is a page header exactly, which is what
+        // lets the engine read a branch with the routine it reads a page with.
+        //
+        // The OP_JUMP pair is emitted even with nothing in the else-branch: it
+        // is what a taken then-branch runs into, so leaving it out would need
+        // the engine to work out whether there was one.
+        const then = measured(encodeBody(command.then, `${where} → If`), `${where} → If`);
+        const otherwise = measured(encodeBody(command.else, `${where} → Else`), `${where} → Else`);
+        return [
+          opIndex('branch'),
+          ...encodeCondition(command.cond),
+          then.length,
+          ...then,
+          OP_JUMP,
+          otherwise.length,
+          ...otherwise
+        ];
+      }
       default:
         return null;
     }
   };
 
-  const encodeEvent = (pages) => {
+  /**
+   * A list of commands as bytes: a page's body, or one side of a branch. Not
+   * measured here — a page's body carries an OP_END the branches do not, so
+   * each caller measures the bytes its own length byte will have to describe.
+   */
+  const encodeBody = (commands, where) =>
+    enabledCommands({ commands })
+      .map((command) => encodeCommand(command, where))
+      .filter(Boolean)
+      .flat();
+
+  const encodeEvent = (pages, where) => {
     const bytes = [];
-    for (const page of pages) {
-      const body = enabledCommands(page).map(encodeCommand).filter(Boolean).flat();
+    pages.forEach((page, index) => {
+      const at = `${where}, page ${index + 1}`;
+      const body = encodeBody(page.commands, at);
       body.push(OP_END);
+      measured(body, at);
       // The argument's ceiling is the condition's own, not a flat 63: a variable
       // condition's byte indexes an array of 16 that the engine does not
       // range-check, and buildProject is handed the project the app is holding
       // rather than one that has just been through the schema.
-      bytes.push(
-        condIndex(page.cond?.type),
-        byte(page.cond?.arg, conditionArgLimit(page.cond?.type)),
-        byte(page.cond?.value),
-        body.length,
-        ...body
-      );
-    }
+      bytes.push(...encodeCondition(page.cond), body.length, ...body);
+    });
     bytes.push(EVT_PAGES_END);
     return bytes;
   };
 
-  for (const map of project.maps ?? []) {
-    for (const screen of map.screens ?? []) {
+  for (const [mapIndex, map] of (project.maps ?? []).entries()) {
+    for (const [screenIndex, screen] of (map.screens ?? []).entries()) {
       for (const entity of screen.entities ?? []) {
         // An authored event wins; plain dialogue becomes an event of one
         // unconditional page that says one thing, so the engine has a single
@@ -157,7 +207,12 @@ export function compileText(project) {
         eventFor.set(entity, events.length);
         events.push(
           pages.length
-            ? encodeEvent(pages)
+            ? encodeEvent(
+                pages,
+                // Named the way the Map Forge names it, because a length problem
+                // is reported to whoever has to go and shorten it.
+                `${entityLabel(project, entity)} on ${screenLabel(project, mapIndex, screenIndex)}`
+              )
             : // one unconditional page: [cond, arg, value, length], then Say and End
               [COND_NONE, 0, 0, 3, OP_SAY, internString(dialogue), OP_END, EVT_PAGES_END]
         );
@@ -166,6 +221,19 @@ export function compileText(project) {
   }
 
   const problems = [];
+  for (const { what, length } of tooLong) {
+    problems.push({
+      severity: 'error',
+      where: 'Map Forge',
+      message:
+        `${what} compiles to ${length} bytes and the engine can only step over ${MAX_BODY} at a ` +
+        'time. Use fewer commands here — the count is commands, not characters, so long text ' +
+        'costs no more than short — or move some of them onto another actor. A branch would not ' +
+        'help, because everything inside one still counts towards the body holding it, and ' +
+        'another page would not either, because pages are alternatives: only the first that ' +
+        'matches runs.'
+    });
+  }
   if (strings.length > MAX_TABLE) {
     problems.push({
       severity: 'error',

@@ -175,6 +175,12 @@ subtract from it, and a page condition can ask whether one *is*, *is at least* o
 Adding and subtracting stop at 255 and 0 rather than wrapping round, because a
 counter that rolls over is a quest that silently starts again.
 
+A page condition decides which page runs *before* it runs. **If…** decides in the
+middle of one: it takes the same conditions a page does, and holds two lists of
+commands — **Then** and **Else** — either of which can hold another If. So "say
+hello, then hand over the reward but only if they are carrying the key, then say
+goodbye" is one page rather than two that both repeat the hello and the goodbye.
+
 Only commands the engine implements are offered. Anything a newer version of the
 Forge wrote is preserved through a save, so a project never loses work by being
 opened here.

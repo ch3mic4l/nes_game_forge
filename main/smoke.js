@@ -313,6 +313,40 @@ const scenario = (dir, sampleDir) => `
   await wait(200);
   step('variables', 'Add to variable authored and a variable named');
 
+  // A branch, and a command inside it. The nesting is the part only the real
+  // editor can show: the inner list has its own "+ Add a command…", and what it
+  // adds has to land inside the branch rather than beside it.
+  rowButton(0, 'Edit event…').click();
+  await until('the event editor', () => document.querySelector('#modalHost .btn-accent'));
+  const addToPage = [...document.querySelectorAll('#modalHost select')].find((node) =>
+    node.textContent.includes('Add a command')
+  );
+  addToPage.value = 'branch';
+  addToPage.dispatchEvent(new Event('change', { bubbles: true }));
+  await wait(200);
+  const thenSide = document.querySelector('#modalHost [data-branch="then"]');
+  const elseSide = document.querySelector('#modalHost [data-branch="else"]');
+  if (!thenSide || !elseSide) throw new Error('the branch did not render both of its sides');
+  const addToThen = [...thenSide.querySelectorAll('select')].find((node) =>
+    node.textContent.includes('Add a command')
+  );
+  if (!addToThen) throw new Error('the Then side offered no command list of its own');
+  addToThen.value = 'setSwitch';
+  addToThen.dispatchEvent(new Event('change', { bubbles: true }));
+  await wait(200);
+  document.querySelector('#modalHost .btn-accent').click();
+  await wait(300);
+  const branched = store.project.maps[0].screens[3].entities[0].props.event.pages[0].commands;
+  const branch = branched[branched.length - 1];
+  if (branch?.op !== 'branch') throw new Error('the branch saved as ' + JSON.stringify(branch));
+  if (branch.then?.length !== 1 || branch.then[0].op !== 'setSwitch') {
+    throw new Error('the command went beside the branch instead of inside it: ' + JSON.stringify(branch));
+  }
+  if (branch.else?.length !== 0) throw new Error('the else side started with something in it');
+  store.undo();
+  await wait(200);
+  step('branching', 'If authored with a command inside its Then side');
+
   // Duplicate keeps the event, and lands somewhere you can see it.
   rowButton(0, '+⧉').click();
   await wait(250);

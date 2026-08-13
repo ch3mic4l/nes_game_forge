@@ -457,6 +457,13 @@ OP_JOIN     = $07
 OP_SET_VAR  = $08
 OP_ADD_VAR  = $09
 OP_SUB_VAR  = $0A
+OP_IF       = $0B           ; [cond, arg, value, length of the then-branch] --
+                            ; deliberately the same four bytes a page header is,
+                            ; so script_cond reads a branch and a page alike
+; Punctuation rather than a command: the compiler emits it, nothing authors it,
+; and it is numbered out of the way of EVENT_COMMANDS so the two orders cannot
+; grow into each other. It ends a then-branch by stepping over the else-branch.
+OP_JUMP     = $FE
 
 ; ------------------------------------------------------------- constants
 OAM         = $0200         ; sprite shadow, DMA'd every frame

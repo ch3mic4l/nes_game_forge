@@ -15,13 +15,16 @@ import { fileURLToPath } from 'node:url';
 import NES from '../../renderer/emulator/core/nes.js';
 import { loadProject, saveProject } from '../../main/project-io.js';
 import { buildProject } from '../../main/build/pipeline.js';
-import { compileText, EVT_PAGES_END } from '../../main/build/textcompile.js';
+import { compileText, EVT_PAGES_END, OP_JUMP, OP_END } from '../../main/build/textcompile.js';
 import {
   createProject,
   normalizeProject,
   compiledPages,
   enabledCommands,
-  RPG_LIMITS
+  RPG_LIMITS,
+  EVENT_COMMANDS,
+  EVENT_CONDITIONS,
+  MAX_BRANCH_DEPTH
 } from '../../shared/project.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
@@ -579,4 +582,370 @@ test('a variable condition carries its number, and only such a condition does', 
   ).events;
   assert.equal(writeBytes[5], RPG_LIMITS.variables - 1, 'the compiler clamped the written variable');
   assert.equal(writeBytes[6], 4);
+});
+
+// ----------------------------------------------------------------- branching
+//
+// A page condition decides which page runs before it runs. A branch decides in
+// the middle of one, which is what "give the reward, but only if they are
+// carrying the key" needs without two pages repeating everything they share.
+//
+// The engine keeps no stack: which way a branch went is only ever where
+// script_ptr points. So the things worth proving are that both sides are
+// reachable, that what follows the branch runs either way, that a Say can
+// suspend inside one and resume correctly, and that nesting works — because all
+// four of those are that one claim seen from different sides.
+
+test('a branch runs one side or the other, and the rest of the page either way', {
+  skip: !hasRom && 'run `npm run sample` first'
+}, async (t) => {
+  const { nes } = await buildWith(t, [
+    chest([
+      {
+        cond: { type: 'none', arg: 0 },
+        commands: [
+          {
+            op: 'branch',
+            cond: { type: 'switchOn', arg: 5 },
+            then: [{ op: 'say', text: 'You have the key.' }, { op: 'setVar', variable: 1, value: 1 }],
+            else: [{ op: 'say', text: 'Come back with the key.' }, { op: 'setVar', variable: 2, value: 1 }]
+          },
+          // After the branch, whichever way it went: this is what proves the
+          // else-branch is stepped over rather than run into.
+          { op: 'addVar', variable: 0, value: 1 },
+          { op: 'setSwitch', switch: 5 }
+        ]
+      }
+    ])
+  ]);
+
+  // First time through, switch 5 is off, so the else-branch runs.
+  assert.ok(talkThrough(nes), 'the first conversation never ended');
+  assert.equal(nes.cpu.mem[VARIABLES + 2], 1, 'the else-branch should have run');
+  assert.equal(nes.cpu.mem[VARIABLES + 1], 0, 'the then-branch ran as well');
+  assert.equal(nes.cpu.mem[VARIABLES], 1, 'the commands after the branch did not run');
+
+  // The page turned the switch on, so this time the then-branch runs — and the
+  // tail runs again, which it could not if the else-branch had been fallen into.
+  assert.ok(talkThrough(nes), 'the second conversation never ended');
+  assert.equal(nes.cpu.mem[VARIABLES + 1], 1, 'the then-branch should have run');
+  assert.equal(nes.cpu.mem[VARIABLES], 2, 'the commands after the branch did not run the second time');
+});
+
+test('a branch nests, and an empty else is not fallen into', {
+  skip: !hasRom && 'run `npm run sample` first'
+}, async (t) => {
+  const { nes } = await buildWith(t, [
+    chest([
+      {
+        cond: { type: 'none', arg: 0 },
+        commands: [
+          { op: 'setVar', variable: 0, value: 4 },
+          {
+            op: 'branch',
+            cond: { type: 'varAtLeast', arg: 0, value: 3 },
+            then: [
+              {
+                op: 'branch',
+                cond: { type: 'varUnder', arg: 0, value: 9 },
+                // Both an inner branch and the commands around it, so the outer
+                // then-length has to have counted the whole of the inner one.
+                then: [{ op: 'setVar', variable: 1, value: 1 }],
+                else: [{ op: 'setVar', variable: 2, value: 1 }]
+              },
+              { op: 'setVar', variable: 3, value: 1 }
+            ],
+            // Nothing here at all: the compiler still emits the jump the taken
+            // then-branch runs into, and it must land past this.
+            else: []
+          },
+          { op: 'say', text: 'Done.' },
+          { op: 'setVar', variable: 4, value: 1 }
+        ]
+      }
+    ])
+  ]);
+
+  assert.ok(talkThrough(nes), 'the conversation never ended');
+  assert.equal(nes.cpu.mem[VARIABLES + 1], 1, 'the inner then-branch should have run');
+  assert.equal(nes.cpu.mem[VARIABLES + 2], 0, 'the inner else-branch ran too');
+  assert.equal(nes.cpu.mem[VARIABLES + 3], 1, 'the outer then-branch stopped at its inner branch');
+  assert.equal(nes.cpu.mem[VARIABLES + 4], 1, 'the page did not continue past the branch');
+});
+
+test('a message inside a branch suspends and resumes where it left off', {
+  skip: !hasRom && 'run `npm run sample` first'
+}, async (t) => {
+  // Say is the command that hands control to the message box for several frames,
+  // and script_resume picks the event up from script_ptr knowing nothing about
+  // branches. A branch whose then-side is two messages and a counter is the
+  // smallest thing that would break if resuming lost its place.
+  const { nes } = await buildWith(t, [
+    chest([
+      {
+        cond: { type: 'none', arg: 0 },
+        commands: [
+          {
+            op: 'branch',
+            cond: { type: 'none', arg: 0 },
+            then: [
+              { op: 'say', text: 'The door is stuck fast.' },
+              { op: 'setVar', variable: 1, value: 1 },
+              { op: 'say', text: 'You give it a shove.' },
+              { op: 'addVar', variable: 1, value: 1 }
+            ],
+            else: [{ op: 'setVar', variable: 2, value: 1 }]
+          },
+          { op: 'setVar', variable: 3, value: 1 }
+        ]
+      }
+    ])
+  ]);
+
+  assert.ok(talkThrough(nes), 'the conversation never ended');
+  assert.equal(nes.cpu.mem[VARIABLES + 1], 2, 'both sides of the suspended message did not run');
+  assert.equal(nes.cpu.mem[VARIABLES + 2], 0, 'the else-branch ran');
+  assert.equal(nes.cpu.mem[VARIABLES + 3], 1, 'the page did not resume past the branch');
+});
+
+test('a branch compiles to a page header inline, and its lengths are checked', () => {
+  const project = createProject('Branching');
+  project.sprites.actors = [{ name: 'Sign', behavior: 'npc' }];
+  const page = (commands) => {
+    project.maps[0].screens[0].entities = [
+      { actorId: 0, x: 0, y: 0, props: { event: { pages: [{ cond: { type: 'none', arg: 0 }, commands }] } } }
+    ];
+    return normalizeProject(structuredClone(project));
+  };
+
+  const built = compileText(
+    page([
+      {
+        op: 'branch',
+        cond: { type: 'varAtLeast', arg: 1, value: 4 },
+        then: [{ op: 'setVar', variable: 2, value: 9 }],
+        else: [{ op: 'setVar', variable: 3, value: 8 }, { op: 'setVar', variable: 4, value: 7 }]
+      }
+    ])
+  );
+  const [bytes] = built.events;
+  assert.deepEqual(built.problems, []);
+
+  // [cond, arg, value, body length] then the body. Past OP_IF the branch is
+  // that same four-byte header — which is the whole reason the engine reads a
+  // branch with the routine it reads a page with.
+  const OP_IF = EVENT_COMMANDS.findIndex((entry) => entry.id === 'branch');
+  const body = bytes.slice(4);
+  assert.equal(body[0], OP_IF);
+  assert.equal(body[1], EVENT_CONDITIONS.findIndex((entry) => entry.id === 'varAtLeast'), 'the condition');
+  assert.equal(body[2], 1, 'the variable it compares');
+  assert.equal(body[3], 4, 'the number it compares against');
+  assert.equal(body[4], 3, 'the then-branch is one three-byte command');
+  assert.equal(body[8], OP_JUMP, 'a taken then-branch has to run into the jump');
+  assert.equal(body[9], 6, 'the else-branch is two three-byte commands');
+  assert.equal(body[16], OP_END, 'and the page ends after the branch');
+
+  // Nothing in the else-branch still emits the jump, because that is what the
+  // end of a taken then-branch runs into.
+  const [lonely] = compileText(
+    page([{ op: 'branch', cond: { type: 'none', arg: 0 }, then: [{ op: 'setVar', variable: 0, value: 1 }], else: [] }])
+  ).events;
+  assert.equal(lonely.slice(4)[8], OP_JUMP);
+  assert.equal(lonely.slice(4)[9], 0, 'an empty else-branch is a jump of nothing');
+
+  // Every length in this format is one byte, and a branch is what makes 255 of
+  // them reachable. A body that overflowed would send the engine into the middle
+  // of a command, so it is refused by name rather than wrapped. setVar is three
+  // bytes, which is what makes the boundary reachable exactly.
+  const filler = (count) => Array.from({ length: count }, () => ({ op: 'setVar', variable: 0, value: 1 }));
+  const branchOf = (side, count) => [
+    { op: 'branch', cond: { type: 'none', arg: 0 }, then: [], else: [], [side]: filler(count) }
+  ];
+
+  const longThen = compileText(page(branchOf('then', 90)));
+  assert.equal(longThen.problems.length, 2, 'the branch and the page it is in are both too long');
+  assert.match(longThen.problems[0].message, /→ If compiles to 270 bytes/);
+  assert.match(longThen.problems[0].message, /A branch would not help/);
+  assert.equal(longThen.problems[0].where, 'Map Forge');
+
+  // The else side is measured too, and named as itself.
+  const longElse = compileText(page(branchOf('else', 90)));
+  assert.match(longElse.problems[0].message, /→ Else compiles to 270 bytes/);
+
+  // Exactly 255 in a branch side is the largest that fits, and that side is not
+  // reported — while the page around it is, by the seven bytes of branch framing
+  // plus its own OP_END. Which is the whole reason the advice above says a
+  // branch cannot rescue an oversized body.
+  const edge = compileText(page(branchOf('then', 85)));
+  assert.equal(
+    edge.problems.filter((problem) => /→ If/.test(problem.message)).length,
+    0,
+    '255 bytes is the largest a branch side may be, and it fits'
+  );
+  assert.match(edge.problems[0].message, /page 1 compiles to 263 bytes/);
+
+  // ...while a page body of exactly 255 bytes of commands is one too many,
+  // because the OP_END that ends it is part of what the length has to describe.
+  assert.deepEqual(compileText(page(filler(84))).problems, [], '84 commands and an OP_END is 253');
+  const pageEdge = compileText(page(filler(85)));
+  assert.equal(pageEdge.problems.length, 1);
+  assert.match(pageEdge.problems[0].message, /page 1 compiles to 256 bytes/);
+});
+
+test('a branch nested deeper than the editor offers still survives a round trip', async (t) => {
+  // The rule this is about is the one the whole schema is built on: anything a
+  // newer version of the Forge wrote is preserved through a save. Branches are
+  // the first structure that recurses, and an earlier version of this dropped
+  // the contents of anything past the editor's own nesting limit — which reads
+  // as a project quietly losing work the moment it is opened here.
+  const deep = (levels) => {
+    let command = { op: 'setVar', variable: 0, value: 1 };
+    for (let level = 0; level < levels; level++) {
+      command = { op: 'branch', cond: { type: 'none', arg: 0 }, then: [command], else: [] };
+    }
+    return command;
+  };
+
+  const project = createProject('Deep');
+  project.sprites.actors = [{ name: 'Sign', behavior: 'npc' }];
+  const levels = MAX_BRANCH_DEPTH + 4;
+  project.maps[0].screens[0].entities = [
+    {
+      actorId: 0,
+      x: 0,
+      y: 0,
+      props: { event: { pages: [{ cond: { type: 'none', arg: 0 }, commands: [deep(levels)] }] } }
+    }
+  ];
+
+  // A real round trip, not a normalize: the disk is its own schema, and what is
+  // being claimed is that the file comes back with everything it went in with.
+  const dir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'forge-deep-'));
+  t.after(() => fs.promises.rm(dir, { recursive: true, force: true }));
+  const normalized = normalizeProject(structuredClone(project));
+  await saveProject(dir, normalized);
+  const reopened = await loadProject(dir);
+  assert.deepEqual(reopened.maps[0].screens[0].entities, normalized.maps[0].screens[0].entities);
+
+  let command = reopened.maps[0].screens[0].entities[0].props.event.pages[0].commands[0];
+  for (let level = 0; level < levels; level++) {
+    assert.equal(command.op, 'branch', `level ${level} of the nesting was dropped`);
+    command = command.then[0];
+  }
+  assert.deepEqual(command, { op: 'setVar', variable: 0, value: 1 }, 'the innermost command was lost');
+
+  // The engine has no limit either — nesting is bytes inside bytes — so it
+  // compiles, and every level is one OP_IF.
+  const OP_IF = EVENT_COMMANDS.findIndex((entry) => entry.id === 'branch');
+  const built = compileText(reopened);
+  assert.deepEqual(built.problems, []);
+  assert.equal(built.events[0].filter((byte) => byte === OP_IF).length, levels);
+});
+
+test('nesting past what any project could hold fails by name, not by stack', () => {
+  // The guard exists so a corrupt or hostile file cannot recurse normalization
+  // until the runtime gives out. What it must not do is truncate: an error the
+  // app can show beats a project silently missing its deep end, and it beats a
+  // RangeError from somewhere inside the schema.
+  const deep = (levels) => {
+    let command = { op: 'say', text: 'Bottom.' };
+    for (let level = 0; level < levels; level++) {
+      command = { op: 'branch', cond: { type: 'none', arg: 0 }, then: [command], else: [] };
+    }
+    return command;
+  };
+  const withNesting = (levels) => ({
+    maps: [
+      {
+        screens: [
+          {
+            entities: [
+              {
+                actorId: 0,
+                props: { event: { pages: [{ cond: { type: 'none', arg: 0 }, commands: [deep(levels)] }] } }
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  });
+
+  assert.throws(() => normalizeProject(withNesting(200)), /nests event branches more than 64 deep/);
+  // And the level below the guard is ordinary data, so the boundary is a limit
+  // rather than a fence somewhere in the middle of what people might write.
+  assert.doesNotThrow(() => normalizeProject(withNesting(60)));
+});
+
+test('a long page that is declined is stepped over exactly', {
+  skip: !hasRom && 'run `npm run sample` first'
+}, async (t) => {
+  // A page body's length is one byte, and stepping over a declined page means
+  // adding the header to it. At 252 and up that sum carries out of the
+  // accumulator — which script_skip cannot see, because it clears the carry
+  // before adding to the pointer — and the engine lands four bytes inside the
+  // page it meant to skip, running whatever it finds there as an opcode.
+  //
+  // 83 three-byte commands, one two-byte command and the OP_END is 252, which
+  // is the length that makes the sum wrap to exactly zero: the engine then steps
+  // over nothing at all and reads the same page header again, forever. The other
+  // lengths in range wander instead, and wandering can land back on its feet —
+  // this one cannot, which is what makes it the case worth writing down.
+  const filler = [
+    ...Array.from({ length: 83 }, () => ({ op: 'setVar', variable: 5, value: 1 })),
+    { op: 'give', actor: GEM }
+  ];
+  const { nes } = await buildWith(t, [
+    chest([
+      { cond: { type: 'switchOn', arg: 7 }, commands: filler },
+      {
+        cond: { type: 'none', arg: 0 },
+        commands: [{ op: 'say', text: 'Past it.' }, { op: 'setVar', variable: 0, value: 1 }]
+      }
+    ])
+  ]);
+
+  assert.ok(talkThrough(nes), 'the conversation never ended');
+  assert.equal(nes.cpu.mem[VARIABLES], 1, 'the page after the long declined one did not run');
+  assert.equal(nes.cpu.mem[VARIABLES + 5], 0, 'the declined page ran anyway');
+});
+
+test('a branch with nothing live inside it is not a live command', () => {
+  // The rule that makes an empty page dangerous makes an empty branch dangerous
+  // in exactly the same way: it matches, does nothing, and swallows every page
+  // below it — and the plain dialogue underneath.
+  const project = createProject('Hollow');
+  project.sprites.actors = [{ name: 'Sign', behavior: 'npc' }];
+  const event = {
+    pages: [
+      {
+        cond: { type: 'none', arg: 0 },
+        commands: [
+          {
+            op: 'branch',
+            cond: { type: 'switchOn', arg: 1 },
+            then: [{ op: 'say', text: 'Off.', off: true }],
+            else: []
+          }
+        ]
+      }
+    ]
+  };
+  project.maps[0].screens[0].entities = [
+    { actorId: 0, x: 0, y: 0, props: { dialogue: 'Fallback line.', event } }
+  ];
+
+  assert.deepEqual(enabledCommands(event.pages[0]), [], 'a branch with nothing live in it is not live');
+  assert.deepEqual(compiledPages(event), [], 'so the page it is alone on does not reach the ROM');
+
+  // ...and the dialogue underneath comes back, exactly as it does when the last
+  // live command on a page is switched off.
+  const built = compileText(normalizeProject(structuredClone(project)));
+  assert.equal(built.events.length, 1);
+  assert.equal(built.events[0][3], 3, 'one unconditional say — the fallback dialogue');
+
+  // A branch with one live command on either side is still live, so the fix
+  // cannot have swallowed the ordinary case.
+  const live = { ...event.pages[0].commands[0], else: [{ op: 'say', text: 'On.' }] };
+  assert.equal(enabledCommands({ commands: [live] }).length, 1);
 });

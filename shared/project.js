@@ -196,7 +196,14 @@ export const EVENT_COMMANDS = [
   // quest that silently starts again.
   { id: 'setVar', label: 'Set variable', args: ['variable', 'value'] },
   { id: 'addVar', label: 'Add to variable', args: ['variable', 'value'] },
-  { id: 'subVar', label: 'Subtract from variable', args: ['variable', 'value'] }
+  { id: 'subVar', label: 'Subtract from variable', args: ['variable', 'value'] },
+  // The only command that contains other commands. A page condition decides
+  // which page runs *before* it runs; this decides in the middle of one, which
+  // is what "give the reward, but only if they are carrying the key" needs
+  // without splitting the conversation across two pages that both have to
+  // repeat the parts they share. `cond` is the same shape a page's is — the
+  // vocabulary of conditions has one definition, and one encoder.
+  { id: 'branch', label: 'If…', args: ['branch'] }
 ];
 
 // A command can be switched off while you work out whether you want it, the way
@@ -223,7 +230,8 @@ export const IMPLEMENTED_COMMANDS = new Set([
   'join',
   'setVar',
   'addVar',
-  'subVar'
+  'subVar',
+  'branch'
 ]);
 
 /** Limits the battle system imposes on top of LIMITS. */
@@ -533,7 +541,26 @@ function normalizeMetatile(raw, id) {
 
 const MAX_DIALOGUE = 240; // one message is a handful of pages at 28 columns
 
-function normalizeEventCommand(raw) {
+/**
+ * How deep the *editor* offers to nest branches.
+ *
+ * Neither the schema nor the engine has a limit: a branch is bytes inside the
+ * bytes of the branch around it, and nothing is remembered but where the script
+ * pointer is. This is a judgement about what stays legible in a modal, and it is
+ * all it is — a project written by a later version with deeper nesting keeps
+ * every command through a load and a save here.
+ */
+export const MAX_BRANCH_DEPTH = 8;
+
+/**
+ * A depth no authored project can reach, where normalization gives up rather
+ * than recursing until the stack does. A file this deep is corrupt or hostile,
+ * and failing to open it by name beats failing with a RangeError — or, far
+ * worse, quietly returning a project with the deep end missing.
+ */
+const BRANCH_DEPTH_LIMIT = 64;
+
+function normalizeEventCommand(raw, depth = 0) {
   const command = EVENT_COMMANDS.find((entry) => entry.id === raw?.op);
   if (!command || command.id === 'end') return null;
   const out = { op: command.id };
@@ -545,7 +572,16 @@ function normalizeEventCommand(raw) {
     else if (arg === 'switch') out.switch = clamp(raw?.switch, 0, RPG_LIMITS.switches - 1, 0);
     else if (arg === 'member') out.member = clamp(raw?.member, 0, RPG_LIMITS.party - 1, 0);
     else if (arg === 'variable') out.variable = clamp(raw?.variable, 0, RPG_LIMITS.variables - 1, 0);
-    else out[arg] = clamp(raw?.[arg], 0, 255, 0);
+    else if (arg === 'branch') {
+      if (depth >= BRANCH_DEPTH_LIMIT) {
+        throw new Error(`This project nests event branches more than ${BRANCH_DEPTH_LIMIT} deep.`);
+      }
+      out.cond = normalizeCondition(raw?.cond);
+      const branchList = (list) =>
+        (Array.isArray(list) ? list : []).map((entry) => normalizeEventCommand(entry, depth + 1)).filter(Boolean);
+      out.then = branchList(raw?.then);
+      out.else = branchList(raw?.else);
+    } else out[arg] = clamp(raw?.[arg], 0, 255, 0);
   }
   return out;
 }
@@ -564,20 +600,29 @@ export function conditionArgLimit(type) {
   return 255;
 }
 
-function normalizeEventPage(raw) {
-  const condition = EVENT_CONDITIONS.find((entry) => entry.id === raw?.cond?.type) ?? EVENT_CONDITIONS[0];
+/**
+ * A condition, wherever one appears. A page has one and so does a branch, and
+ * they are the same three bytes in the same order in the ROM, so they are the
+ * same object here — one shape, one clamp, one encoder, one engine routine.
+ */
+function normalizeCondition(raw) {
+  const condition = EVENT_CONDITIONS.find((entry) => entry.id === raw?.type) ?? EVENT_CONDITIONS[0];
   const cond = {
     type: condition.id,
-    arg: condition.arg ? clamp(raw?.cond?.arg, 0, conditionArgLimit(condition.id), 0) : 0
+    arg: condition.arg ? clamp(raw?.arg, 0, conditionArgLimit(condition.id), 0) : 0
   };
-  // Only conditions that compare against a number carry the second header byte,
-  // and only they get the field — exactly as `off` is kept only when it is true.
+  // Only conditions that compare against a number carry the value byte, and
+  // only they get the field — exactly as `off` is kept only when it is true.
   // Every page in every existing project would otherwise gain a `value: 0` on
   // its next save, which is a diff saying nothing happened.
-  if (condition.value) cond.value = clamp(raw?.cond?.value, 0, 255, 0);
+  if (condition.value) cond.value = clamp(raw?.value, 0, 255, 0);
+  return cond;
+}
+
+function normalizeEventPage(raw) {
   return {
-    cond,
-    commands: (Array.isArray(raw?.commands) ? raw.commands : []).map(normalizeEventCommand).filter(Boolean)
+    cond: normalizeCondition(raw?.cond),
+    commands: (Array.isArray(raw?.commands) ? raw.commands : []).map((entry) => normalizeEventCommand(entry)).filter(Boolean)
   };
 }
 

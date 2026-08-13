@@ -38,13 +38,23 @@ script_page:
   ldy #0
   lda [script_ptr_lo],y
   cmp #EVT_PAGES_END
-  beq script_finish         ; every page was ruled out: nothing to say
+  bne script_page_test      ; inverted into a jump: the branch runner between
+  jmp script_finish         ; here and script_finish put it out of ±128 bytes
+script_page_test:
   jsr script_cond
   beq script_page_run
-  ldy #EVT_PAGE_HEAD-1      ; skipped: step over the header and the body, whose
-  lda [script_ptr_lo],y     ; length is the last byte of that header
-  clc
-  adc #EVT_PAGE_HEAD
+  ; Skipped: step over the header and then over the body, whose length is the
+  ; last byte of that header. Two steps, not one sum: a body may be 255 bytes,
+  ; and adding the header to that carries out of the accumulator -- which
+  ; script_skip cannot see, because it clears the carry before adding to the
+  ; pointer. The sum wrapped, and the page after a long declined one was entered
+  ; four bytes into the middle of it.
+  ldy #EVT_PAGE_HEAD-1
+  lda [script_ptr_lo],y
+  pha
+  lda #EVT_PAGE_HEAD
+  jsr script_skip
+  pla
   jsr script_skip
   jmp script_page
 script_page_run:
@@ -102,8 +112,16 @@ script_run_addvar:
   jmp script_op_addvar
 script_run_subvar:
   cmp #OP_SUB_VAR
-  bne script_run_bad
+  bne script_run_if
   jmp script_op_subvar
+script_run_if:
+  cmp #OP_IF
+  bne script_run_jump
+  jmp script_op_if
+script_run_jump:
+  cmp #OP_JUMP
+  bne script_run_bad
+  jmp script_op_jump
 script_run_bad:
   jmp script_finish         ; an opcode this engine cannot run stops the event
                             ; rather than being reinterpreted as another one
@@ -177,6 +195,58 @@ script_op_join:
   jsr call_battle
   jmp script_next2
   .endif
+
+; --------------------------------------------------------------- branching
+;
+; [OP_IF, cond, arg, value, then-length] then-branch [OP_JUMP, else-length]
+; else-branch. Past the opcode that is exactly a page header, so `script_cond`
+; and the skip below are the ones script_page already uses -- an If is a page
+; inside a page, which is why neither needed a second implementation.
+;
+; There is no stack and nothing is remembered: which way a branch went is only
+; ever where script_ptr is pointing. That is what lets Say suspend inside a
+; branch and script_resume pick the event up again knowing nothing about it, and
+; it is why nesting costs the engine nothing at all -- an inner branch is just
+; more bytes inside the outer one's count.
+;
+; The compiler emits the OP_JUMP pair even when there is no else-branch, so both
+; arrivals at the end of a then-branch look the same. Two bytes for a shape the
+; engine does not have to ask questions about.
+
+script_op_if:
+  lda #1
+  jsr script_skip           ; now script_ptr is at a page header
+  jsr script_cond
+  bne script_op_if_else
+  lda #EVT_PAGE_HEAD        ; taken: step over the header into the then-branch
+  jsr script_skip
+  jmp script_run
+; Not taken: over the header, over the then-branch, over the OP_JUMP pair that
+; ends it -- three steps rather than one sum, because a page body may be up to
+; 255 bytes and the total would not fit in the accumulator.
+script_op_if_else:
+  ldy #EVT_PAGE_HEAD-1
+  lda [script_ptr_lo],y     ; the then-branch's length, before the pointer moves
+  pha
+  lda #EVT_PAGE_HEAD
+  jsr script_skip
+  pla
+  jsr script_skip           ; now on the OP_JUMP that ends the then-branch
+  lda #2                    ; over it, and the else-branch runs
+  jsr script_skip
+  jmp script_run
+
+; Reached only by running off the end of a taken then-branch, which is the one
+; place the else-branch has to be stepped over rather than into.
+script_op_jump:
+  ldy #1
+  lda [script_ptr_lo],y     ; the else-branch's length
+  pha
+  lda #2                    ; the OP_JUMP and its length byte
+  jsr script_skip
+  pla
+  jsr script_skip
+  jmp script_run
 
 ; ------------------------------------------------------------- the variables
 ;

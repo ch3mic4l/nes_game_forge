@@ -17,6 +17,7 @@ import {
   EVENT_COMMANDS,
   EVENT_CONDITIONS,
   IMPLEMENTED_COMMANDS,
+  MAX_BRANCH_DEPTH,
   RPG_LIMITS,
   enabledCommands
 } from '../../../shared/project.js';
@@ -44,7 +45,11 @@ const defaultCommand = (op) => {
     if (arg === 'text') out.text = '';
     else if (arg === 'x') out.x = 112;
     else if (arg === 'y') out.y = 112;
-    else out[arg] = 0;
+    else if (arg === 'branch') {
+      out.cond = { type: 'none', arg: 0 };
+      out.then = [];
+      out.else = [];
+    } else out[arg] = 0;
   }
   return out;
 };
@@ -59,7 +64,8 @@ export function describeCommand(command, context = {}) {
   return command.off ? `(off) ${text}` : text;
 }
 
-function describeEnabled(command, { actors = [], switches = [], variables = [], screens = [], party = [] } = {}) {
+function describeEnabled(command, context = {}) {
+  const { actors = [], switches = [], variables = [], screens = [], party = [] } = context;
   const actorName = (id) => actors[id]?.name ?? `actor ${id}`;
   const switchName = (n) => switches[n]?.trim() || `switch ${n}`;
   const varName = (n) => variables[n]?.trim() || `variable ${n}`;
@@ -84,6 +90,17 @@ function describeEnabled(command, { actors = [], switches = [], variables = [], 
       return `Add ${command.value ?? 0} to ${varName(command.variable)}`;
     case 'subVar':
       return `Subtract ${command.value ?? 0} from ${varName(command.variable)}`;
+    case 'branch': {
+      // Described down to its contents, because the event list's search runs
+      // over exactly this text: a switch used only inside a branch has to be
+      // findable by its name like any other.
+      const side = (list) =>
+        enabledCommands({ commands: list })
+          .map((entry) => describeCommand(entry, context))
+          .join('; ') || 'nothing';
+      const otherwise = (command.else ?? []).length ? `, else ${side(command.else)}` : '';
+      return `If ${describeCondition(command.cond, context)}: ${side(command.then)}${otherwise}`;
+    }
     default:
       return EVENT_COMMANDS.find((entry) => entry.id === command.op)?.label ?? command.op;
   }
@@ -165,7 +182,6 @@ export function editEvent(event, context) {
   }
 
   function pageCard(page, index) {
-    const condition = EVENT_CONDITIONS.find((entry) => entry.id === page.cond.type) ?? EVENT_CONDITIONS[0];
     // Order is the whole semantics of an event — the first passing page wins —
     // so a page that will never be reached, or one left with nothing to do, is
     // worth saying out loud rather than leaving to be discovered in the ROM.
@@ -189,20 +205,7 @@ export function editEvent(event, context) {
         'div.field-row',
         { style: { marginBottom: '8px' } },
         el('span.field-label', { style: { flex: 'none' } }, `Page ${index + 1}`),
-        el(
-          'select',
-          {
-            style: { flex: '1' },
-            onchange: (fired) => {
-              page.cond = { type: fired.target.value, arg: 0 };
-              rerender();
-            }
-          },
-          EVENT_CONDITIONS.map((entry) =>
-            el('option', { value: entry.id, selected: entry.id === condition.id }, entry.label)
-          )
-        ),
-        condition.arg ? conditionArg(page, condition) : null,
+        conditionControls(page.cond, rerender),
         listTools(draft.pages, index, {
           what: 'page',
           onChange: rerender,
@@ -213,8 +216,9 @@ export function editEvent(event, context) {
         ? el(
             'p.hint',
             { style: { color: 'var(--accent)', margin: '0 0 6px' } },
-            'Everything here is switched off, so this page is not built. A page that matches and ' +
-              'does nothing would swallow every page below it.'
+            'Nothing here would run, so this page is not built — everything is switched off, or ' +
+              'the only thing left is a branch with nothing live inside it. A page that matches ' +
+              'and does nothing would swallow every page below it.'
           )
         : null,
       unreachable
@@ -225,46 +229,88 @@ export function editEvent(event, context) {
           )
         : null,
       page.commands.length
-        ? page.commands.map((command, position) => commandRow(page, command, position))
+        ? page.commands.map((command, position) => commandRow(page.commands, command, position))
         : el('p.hint', null, 'This page does nothing yet.'),
+      addCommand(page.commands, 0)
+    );
+  }
+
+  /**
+   * The "+ Add a command…" control for one list — a page's, or one side of a
+   * branch. `depth` is what stops a branch being offered inside a branch inside
+   * a branch forever. Nothing breaks past it — neither the schema nor the engine
+   * has a limit — so this is only about what stays readable in a modal, and a
+   * project that arrives already nested deeper keeps every level.
+   */
+  function addCommand(list, depth) {
+    return el(
+      'div.field-row',
+      { style: { marginTop: '6px' } },
       el(
-        'div.field-row',
-        { style: { marginTop: '6px' } },
-        el(
-          'select',
-          {
-            value: '',
-            onchange: (fired) => {
-              if (!fired.target.value) return;
-              page.commands.push(defaultCommand(fired.target.value));
-              rerender();
-            }
-          },
-          el('option', { value: '' }, '+ Add a command…'),
-          offeredCommands(context).map((entry) => el('option', { value: entry.id }, entry.label))
-        )
+        'select',
+        {
+          value: '',
+          onchange: (fired) => {
+            if (!fired.target.value) return;
+            list.push(defaultCommand(fired.target.value));
+            rerender();
+          }
+        },
+        el('option', { value: '' }, '+ Add a command…'),
+        offeredCommands(context)
+          .filter((entry) => entry.id !== 'branch' || depth < MAX_BRANCH_DEPTH)
+          .map((entry) => el('option', { value: entry.id }, entry.label))
       )
     );
   }
 
-  function conditionArg(page, condition) {
-    if (condition.arg === 'switch') return switchSelect(page.cond.arg, (value) => (page.cond.arg = value));
+  /**
+   * The controls for one condition — a page's or a branch's, which are the same
+   * object and so get the same editor.
+   */
+  function conditionArg(cond, condition) {
+    if (condition.arg === 'switch') return switchSelect(cond.arg, (value) => (cond.arg = value));
     // A variable is compared against a number, so it is the one condition that
     // needs the header's second byte as well.
     if (condition.arg === 'variable') {
       return [
-        variableSelect(page.cond.arg, (value) => (page.cond.arg = value)),
-        valueInput(page.cond.value ?? 0, (value) => (page.cond.value = value))
+        variableSelect(cond.arg, (value) => (cond.arg = value)),
+        valueInput(cond.value ?? 0, (value) => (cond.value = value))
       ];
     }
     return el(
       'select',
       {
         style: { flex: '1' },
-        onchange: (fired) => (page.cond.arg = Number(fired.target.value))
+        onchange: (fired) => (cond.arg = Number(fired.target.value))
       },
-      context.actors.map((actor, id) => el('option', { value: id, selected: id === page.cond.arg }, actor.name))
+      context.actors.map((actor, id) => el('option', { value: id, selected: id === cond.arg }, actor.name))
     );
+  }
+
+  /** The condition picker plus whatever that condition takes as an argument. */
+  function conditionControls(cond, onChange) {
+    const condition = EVENT_CONDITIONS.find((entry) => entry.id === cond.type) ?? EVENT_CONDITIONS[0];
+    return [
+      el(
+        'select',
+        {
+          style: { flex: '1' },
+          onchange: (fired) => {
+            // A fresh condition rather than a retyped one: the old argument
+            // indexes a different list, and its value byte may not exist at all.
+            cond.type = fired.target.value;
+            cond.arg = 0;
+            delete cond.value;
+            onChange();
+          }
+        },
+        EVENT_CONDITIONS.map((entry) =>
+          el('option', { value: entry.id, selected: entry.id === condition.id }, entry.label)
+        )
+      ),
+      condition.arg ? conditionArg(cond, condition) : null
+    ];
   }
 
   function switchSelect(value, onChange) {
@@ -306,7 +352,7 @@ export function editEvent(event, context) {
     });
   }
 
-  function commandRow(page, command, position) {
+  function commandRow(list, command, position, depth = 0) {
     // Switched off is not deleted: it is how you find out whether a line was
     // the problem without losing what it said. The row stays legible and
     // editable, so what comes back is what went away.
@@ -323,8 +369,49 @@ export function editEvent(event, context) {
         }
       })
     );
-    const tools = [toggle, ...listTools(page.commands, position, { what: 'command', onChange: rerender })];
+    const tools = [toggle, ...listTools(list, position, { what: 'command', onChange: rerender })];
     const dim = command.off ? { opacity: '0.55' } : null;
+
+    // The one command that holds commands. Switching it off takes both sides out
+    // with it, which is what the indentation is saying.
+    if (command.op === 'branch') {
+      // Each side is named in the DOM as well as on screen: which list a control
+      // belongs to is the whole question a branch asks of the editor, and the
+      // smoke test has no other way to ask it.
+      const side = (label, commands) =>
+        el(
+          'div',
+          {
+            dataset: { branch: label.toLowerCase() },
+            style: { borderLeft: '2px solid var(--line)', paddingLeft: '10px', marginLeft: '6px' }
+          },
+          el('div.field-row', { style: { marginBottom: '4px' } }, el('span.field-label', null, label)),
+          commands.map((entry, index) => commandRow(commands, entry, index, depth + 1)),
+          addCommand(commands, depth + 1)
+        );
+      return el(
+        'div',
+        {
+          style: {
+            marginBottom: '8px',
+            padding: '8px',
+            background: 'var(--bg-1)',
+            border: '1px solid var(--line)',
+            borderRadius: 'var(--radius)',
+            ...dim
+          }
+        },
+        el(
+          'div.field-row',
+          { style: { marginBottom: '6px' } },
+          el('span', { style: { flex: 'none', color: 'var(--text-dim)' } }, 'If'),
+          conditionControls(command.cond, rerender),
+          tools
+        ),
+        side('Then', command.then),
+        side('Else', command.else)
+      );
+    }
 
     if (command.op === 'say') {
       return el(

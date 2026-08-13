@@ -355,7 +355,13 @@ the event rather than being reinterpreted as another one. Every command is now i
 is additionally hidden by the event editor unless the project has a party, because in an action
 build `OP_JOIN` is exactly such an opcode — the battle bank it calls into is not assembled.
 
-A page is `[cond, arg, value, body length, commands…]`. The header is a fixed four bytes on every
+A page is `[cond, arg, value, body length, commands…]`, and **a branch is that same header inline
+in a body**: `[OP_IF, cond, arg, value, then-length]`, the then-branch, `[OP_JUMP, else-length]`,
+the else-branch. Past the opcode the shapes are identical, so `script_cond` and the skip that
+declines a page are the ones a branch uses too — and because nothing is remembered but where
+`script_ptr` points, nesting costs the engine nothing and a `Say` can suspend inside a branch with
+`script_resume` knowing nothing about it. The `OP_JUMP` pair is emitted even for an empty else, so
+both arrivals at the end of a then-branch look the same. The header is a fixed four bytes on every
 page even though only the variable comparisons read `value`, because `script_skip` steps over a
 page it has declined *without* decoding the condition that declined it; `EVT_PAGE_HEAD` in
 `engine/constants.asm` and the header written by `main/build/textcompile.js` are the two ends of

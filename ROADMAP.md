@@ -36,8 +36,10 @@ through the Code Forge.
   more than two states)~~ — **done**: 16 of them, with Set/Add/Subtract commands and *is* / *is at
   least* / *is under* page conditions. The page header gained a fourth byte to carry the number a
   condition compares against, which is what the rest of this list will want as well
-- **Conditional branch** with an else block, so a page can decide mid-run rather than only at the
-  point it is chosen
+- ~~**Conditional branch** with an else block, so a page can decide mid-run rather than only at the
+  point it is chosen~~ — **done**: `If…` takes the same conditions a page does and nests, because
+  past its opcode a branch *is* a page header, so the engine reads one with the routine it reads
+  the other with
 - **Player choices** in dialogue — the message box already has the state machine for a prompt
 - **Triggers**: interact (today's behaviour), player-touch, autorun-on-entry
 - **Common events**: one event body callable from many places, so a chest or a shop is authored once
