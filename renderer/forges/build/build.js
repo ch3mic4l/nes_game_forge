@@ -15,6 +15,7 @@ import {
   tilesetLimit
 } from '../../../shared/cartridge.js';
 import { BLANK_TILE } from '../../../shared/chr.js';
+import { parseEquates } from '../../../shared/enginesyms.js';
 import { mountPlayer } from '../../emulator/player.js';
 
 // 240 metatile ids, 64 attribute bytes and an empty actor list. Mirrors
@@ -204,13 +205,18 @@ export function mount(container, app) {
     return result.value;
   }
 
-  async function buildAndPlay() {
+  /**
+   * @param {{startAt?: {screen: number, x: number, y: number, label?: string}}} [options]
+   *   `startAt` is the Map Forge's "play from here": where to put the player
+   *   once the ROM is running. It changes nothing about the ROM being built.
+   */
+  async function buildAndPlay(options = {}) {
     const result = (await build({ silent: true })) ?? lastBuild;
     if (!result) return;
-    await play(result);
+    await play(result, options);
   }
 
-  async function play(result) {
+  async function play(result, { startAt = null } = {}) {
     const rom = await window.forge.build.readRom(result.romPath);
     if (!rom.ok) return toast(rom.error, 'error');
 
@@ -220,6 +226,16 @@ export function mount(container, app) {
       if (loaded.ok) symbols = loaded.value;
     }
 
+    // Where the engine keeps the bytes a test-play override pokes. Read out of
+    // the build rather than remembered here, so it is the constants.asm that
+    // assembled *this* ROM — the Code Forge can have overridden it.
+    let ram = null;
+    if (startAt) {
+      const source = await window.forge.code.readGenerated(store.dir, 'constants.asm');
+      if (source.ok) ram = parseEquates(source.value);
+      else write(`Could not read the engine constants: ${source.error}`, 'warn');
+    }
+
     logStage.style.display = 'none';
     playHost.style.display = 'block';
     clear(playHost);
@@ -227,6 +243,8 @@ export function mount(container, app) {
     emulator = mountPlayer(playHost, {
       rom: new Uint8Array(rom.value),
       symbols,
+      ram,
+      startAt,
       app,
       onExit: () => {
         emulator?.destroy?.();
@@ -446,6 +464,14 @@ export function mount(container, app) {
     onProjectChange: renderSummary,
     build,
     buildAndPlay,
-    openInMesen
+    openInMesen,
+    /**
+     * The mounted emulator, for the smoke test: whether "play from here" put
+     * the player where it was asked to is a fact about engine RAM, and nothing
+     * on the screen shows it.
+     */
+    get player() {
+      return emulator;
+    }
   };
 }

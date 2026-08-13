@@ -99,6 +99,13 @@ main_loop:
   bne main_loop_ui          ; so do the menu and dialogue states
   jsr update_player
   jsr update_entities
+; A name for the moment a door is decided, emitting nothing: it is where the
+; frame's movement is finished and warp_ready is about to be read, which is the
+; only point outside the engine anything can hand it a destination. The Map
+; Forge's "play from here" stops here to do exactly that, and a label costs the
+; cartridge nothing while an assumption about which instruction follows
+; update_entities would cost it correctness.
+main_loop_warp:
   lda warp_ready            ; a door fires outside the entity loop, so the
   beq main_loop_draw        ; respawn cannot clear the array mid-walk
   jsr take_door

@@ -5,6 +5,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import PaletteTable from '../../renderer/emulator/core/ppu/palette-table.js';
 import NES from '../../renderer/emulator/core/nes.js';
+import { Emulator } from '../../renderer/emulator/runcontrol.js';
 import { NES_PALETTE } from '../../shared/nespalette.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
@@ -56,6 +57,24 @@ test('the sample ROM boots and renders', { skip: !hasRom && 'run `npm run sample
   // The sample's pond uses background palette 2, whose colour 1 is NES $01.
   const pondPixel = lastFrame[48 * 256 + 48] & 0xffffff;
   assert.equal(pondPixel, 0x0000fc, 'the sample pond should render as NES $01 dark blue');
+});
+
+test('the ⟳ Reset button leaves the ROM able to draw again', { skip: !hasRom && 'run `npm run sample` first' }, () => {
+  const emulator = new Emulator({ onFrame: () => {} });
+  emulator.loadROM(new Uint8Array(fs.readFileSync(ROM_PATH)));
+  for (let i = 0; i < 20; i++) emulator.runFrame();
+
+  // `nes.reset()` builds a new PPU, so everything `nes.loadROM` does *after*
+  // its own reset has to be done again. Miss the mirroring and the nametables
+  // are never allocated: the engine's first background write after a reset
+  // throws from inside the PPU, which run control has to redo for itself
+  // because it resets without going back through loadROM.
+  emulator.reset();
+  for (let i = 0; i < 30; i++) emulator.runFrame();
+  assert.ok(
+    emulator.nes.ppu.vramMem.subarray(0x2000, 0x2400).some((byte) => byte !== 0),
+    'nothing was drawn after a reset'
+  );
 });
 
 // Engine RAM layout, from engine/constants.asm.

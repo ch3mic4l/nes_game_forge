@@ -94,6 +94,15 @@ Anything the 6502 engine and the JavaScript tooling both depend on has **one** d
   button, and the engine indexes it with `game_state * NUM_BUTTONS`. `ACT_*` and `ST_*` in
   `engine/constants.asm` are those orders written down, so adding an action or a state means
   editing both ends in the same change.
+- Engine RAM addresses → `engine/constants.asm`. Tooling that has to know where a byte lives
+  *parses* them (`parseEquates` in `shared/enginesyms.js`) out of the `constants.asm` in `build/`,
+  which is the copy that assembled the ROM in hand — a Code Forge override of it included. The
+  Map Forge's ▶ Test tool is the caller: `renderer/emulator/testplay.js` pokes the engine's own
+  `warp_*` bytes after boot, synchronizing on `main_loop_warp` — a label that exists in
+  `engine/boot.asm` purely to be that point, and emits no bytes, so the ROM is identical with and
+  without it. The same goes for the *labels* generally: `game.fns` is how the tooling names an
+  address, so a label is cheaper than an assumption about which instruction follows which. Tests hardcode addresses with a `; from engine/constants.asm` comment
+  because a test that reads the file it is checking proves nothing; shipping code must not.
 
 `shared/` modules must stay free of DOM and Node APIs: they are imported by the main process, the
 renderer, and `node:test` alike.
@@ -399,7 +408,11 @@ so the engine needs no length byte.
 before touching or upgrading it** — it lists the deliberate divergences from upstream. Run control
 (stepping, breakpoints, watchpoints) is layered *outside* the core in `runcontrol.js` to keep the
 vendored code close to upstream; `Emulator.stepInstruction()` mirrors the body of `nes.frame()`
-and must be updated in step with it.
+and must be updated in step with it. `Emulator.reset()` goes through the core's own `reloadROM()`
+rather than `nes.reset()` for the mirror image of that reason: `nes.reset()` builds a *new* PPU and
+mapper, and re-doing by hand what `loadROM` does after its own reset is a second copy of that
+sequence — the version that re-did only half of it left the nametables unallocated, so the first
+background write after a reset threw from inside the PPU.
 
 **The run loop paces itself by wall-clock time, never one-frame-per-rAF.** `requestAnimationFrame`
 fires at the display's refresh rate; on a 120 Hz monitor a frame-per-callback loop runs the game at

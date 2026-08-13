@@ -81,7 +81,12 @@ const TOOLS = [
   { id: 'fill', label: '🪣 Fill', title: 'Flood fill matching metatiles' },
   { id: 'pick', label: '💧 Pick', title: 'Pick up the metatile under the cursor, then return to Stamp' },
   { id: 'start', label: '⚑ Start', title: 'Place where the player begins' },
-  { id: 'entity', label: '☗ Actor', title: 'Place an actor' }
+  { id: 'entity', label: '☗ Actor', title: 'Place an actor' },
+  {
+    id: 'play',
+    label: '▶ Test',
+    title: 'Build and play from the spot you click — the cartridge still starts at ⚑ Start'
+  }
 ];
 
 export function mount(container, app) {
@@ -276,6 +281,26 @@ export function mount(container, app) {
     return true;
   }
 
+  /**
+   * Play the game from the spot just clicked, rather than from ⚑ Start.
+   *
+   * Nothing about the project changes and nothing is committed: the Build panel
+   * builds exactly the ROM it would have built anyway, and the position is
+   * poked into the emulator's RAM once that ROM is running (see
+   * renderer/emulator/testplay.js). Everything the Build panel needs is read
+   * before handing over, because going there unmounts this Forge.
+   */
+  async function playFromHere(cell) {
+    const flat = flatScreens(store.project);
+    const screen = flat.findIndex((entry) => entry.screen === currentScreen());
+    if (screen < 0) return;
+    const x = cell.col * METATILE_PX;
+    const y = cell.row * METATILE_PX;
+    const label = `${flat[screen].label} at ${x},${y}`;
+    await app.goTo('build');
+    await app.current?.buildAndPlay?.({ startAt: { screen, x, y, label } });
+  }
+
   function onPointerDown(event) {
     if (event.button > 2) return;
     event.preventDefault();
@@ -321,6 +346,11 @@ export function mount(container, app) {
       });
       renderScreen();
       renderEntities();
+      return;
+    }
+
+    if (state.tool === 'play') {
+      if (event.button === 0) playFromHere(cell); // a right-click should not start a build
       return;
     }
 

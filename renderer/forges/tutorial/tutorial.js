@@ -197,7 +197,8 @@ const TOPICS = [
           ['▭ Rect / ▨ Fill', 'Rectangles and flood fill of the same'],
           ['💧 Pick', 'Grab the metatile under the cursor, then return to Stamp'],
           ['⚑ Start', 'Set where the player begins'],
-          ['☗ Actor', 'Place an actor from the Sprite Forge — up to eight per screen']
+          ['☗ Actor', 'Place an actor from the Sprite Forge — up to eight per screen'],
+          ['▶ Test', 'Build and play from the spot you click, without walking there']
         ]
       ),
       p(

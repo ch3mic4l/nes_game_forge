@@ -2,6 +2,7 @@
 
 import { el, clear, fill, toast, fitZoom, observeSize } from '../ui.js';
 import { Emulator, BUTTON } from './runcontrol.js';
+import { applyStartOverride } from './testplay.js';
 import { AudioOut } from './audio.js';
 import { cpuPanel, disassemblyPanel, memoryPanel, ppuPanel } from './panels.js';
 
@@ -43,7 +44,16 @@ function keyMap(bindings) {
   return map;
 }
 
-export function mountPlayer(container, { rom, symbols = {}, app, onExit }) {
+/**
+ * @param {object} options
+ * @param {Uint8Array} options.rom
+ * @param {object} [options.symbols] label -> address, from the build's .fns
+ * @param {object} [options.ram] engine constants, from the build's constants.asm
+ * @param {{screen: number, x: number, y: number, label?: string}} [options.startAt]
+ *   where to start the player instead of the project's own start — a test-play
+ *   override poked into RAM after boot, never compiled into the ROM
+ */
+export function mountPlayer(container, { rom, symbols = {}, ram = null, startAt = null, app, onExit }) {
   const labelsByAddress = new Map();
   for (const [name, address] of Object.entries(symbols)) {
     if (!labelsByAddress.has(address)) labelsByAddress.set(address, name);
@@ -392,11 +402,28 @@ export function mountPlayer(container, { rom, symbols = {}, app, onExit }) {
     return { destroy };
   }
 
+  // The cartridge still starts where the project says; this moves the player
+  // once it is already running. Failing is not fatal — the ROM is fine, it is
+  // only the shortcut into it that is not — but it gives up part-way through a
+  // start it never completed, so the ROM is loaded again rather than played on
+  // from wherever that left the machine. "Playing from the start" then means it.
+  let startedFrom = null;
+  if (startAt) {
+    try {
+      applyStartOverride(emulator, startAt, { ram, symbols });
+      startedFrom = startAt.label ?? `screen ${startAt.screen}`;
+      toast(`Playing from ${startedFrom}`, 'success');
+    } catch (error) {
+      emulator.loadROM(rom);
+      toast(`Could not start from there: ${error.message}. Playing from the start.`, 'error');
+    }
+  }
+
   audio.start().then((ready) => {
     if (!ready && audio.failed) status.textContent = `Sound unavailable (${audio.failed})`;
   });
   setRunning(true);
-  app?.setStatus?.('Playing');
+  app?.setStatus?.(startedFrom ? `Playing from ${startedFrom}` : 'Playing');
 
   function destroy() {
     running = false;

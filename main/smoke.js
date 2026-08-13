@@ -832,6 +832,51 @@ const scenario = (dir, sampleDir) => `
   if (!playCanvas) throw new Error('the play view never showed a 256x240 screen');
   step('build & play UI', 'emulator mounted in the Build panel');
 
+  // --- play from here: the Map Forge's Test tool, clicked for real ---------
+  // The whole path only exists in the app: the tool reads the selected screen,
+  // the Build panel reads the engine constants back out of the build over IPC,
+  // and the player pokes them. Where the player ended up is engine RAM, which
+  // no amount of looking at the screen can tell you.
+  await window.__app.goTo('map');
+  await wait(300);
+  const testThumbs = [...document.querySelectorAll('#stage canvas')].filter((c) => c.width === 64 && c.height === 60);
+  if (testThumbs.length < 4) throw new Error('the navigator showed ' + testThumbs.length + ' screens, expected 4');
+  testThumbs[3].click(); // Greenwood's far corner: not where the cartridge starts
+  await wait(200);
+  document.querySelector('#stage [data-tool="play"]').click();
+  const testCanvas = document.querySelector('#stage .canvas-stage canvas.pixels');
+  const testBox = testCanvas.getBoundingClientRect();
+  const testCol = 3, testRow = 4; // metatile cell -> 48,64 in screen pixels
+  testCanvas.dispatchEvent(new PointerEvent('pointerdown', {
+    bubbles: true,
+    button: 0,
+    clientX: testBox.left + ((testCol + 0.5) / 16) * testBox.width,
+    clientY: testBox.top + ((testRow + 0.5) / 15) * testBox.height
+  }));
+  await until('play from here to build and boot', () => window.__app.current?.player?.emulator, 60000);
+  const testEmu = window.__app.current.player.emulator;
+  // Engine RAM, from engine/constants.asm: flat_screen, player_x, player_y and
+  // game_state. Screen 3 is the fourth screen of the first map, and reaching
+  // gameplay without a Start press means the title screen was skipped too.
+  if (testEmu.peek(0x0016) !== 3) throw new Error('play from here landed on screen ' + testEmu.peek(0x0016));
+  if (testEmu.peek(0x0010) !== 48 || testEmu.peek(0x0011) !== 64) {
+    throw new Error('player is at ' + testEmu.peek(0x0010) + ',' + testEmu.peek(0x0011) + ', expected 48,64');
+  }
+  if (testEmu.peek(0x0025) !== 0) throw new Error('play from here did not get past the title screen');
+  step('play from here', 'screen 3 at 48,64, title skipped');
+
+  // And the cartridge that just built is the one the user would ship: reset it
+  // and it boots into its own title screen at the authored start. This is the
+  // honesty rule end to end -- the unit test can only say the RAM helper does
+  // not patch anything, while this is the whole Map Forge to Build path.
+  testEmu.reset();
+  for (let i = 0; i < 40; i++) testEmu.runFrame();
+  if (testEmu.peek(0x0025) !== 3) throw new Error('after a reset the ROM did not boot into its title screen');
+  if (testEmu.peek(0x0010) !== 112 || testEmu.peek(0x0011) !== 112) {
+    throw new Error('after a reset the player is at ' + testEmu.peek(0x0010) + ',' + testEmu.peek(0x0011));
+  }
+  step('the built ROM is unchanged', 'reset boots the title at the authored start');
+
   return report;
 })()
 `;

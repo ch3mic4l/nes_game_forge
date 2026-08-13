@@ -166,7 +166,7 @@ opened here.
 
 ### Working on a project with a lot in it
 
-Four things in the Map Forge for once there is more than a screenful:
+Five things in the Map Forge for once there is more than a screenful:
 
 - **Template…** writes the two-page pattern above for you — a chest, a one-off
   greeting, a gate that opens for whoever carries the key, or (in an RPG) a
@@ -185,6 +185,11 @@ Four things in the Map Forge for once there is more than a screenful:
   the project and leaves the ROM. Switch off everything on a page and the page
   leaves too, because a page that matches and does nothing would swallow every
   page below it — the editor says so before you save.
+- **▶ Test** builds the project and plays it from the spot you click, so trying
+  out a screen does not mean walking there first. The cartridge is not changed to
+  do it: it still starts where ⚑ Start says, and the player is moved once the ROM
+  is already running — which is why ⟳ Reset in the player drops you back at the
+  real start, and why nothing you could ship can carry a test position.
 
 ## Health, damage and dying
 

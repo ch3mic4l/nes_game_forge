@@ -46,8 +46,14 @@ export class Emulator {
   }
 
   reset() {
-    this.nes.reset();
-    if (this.nes.mmap) this.nes.mmap.loadROM();
+    // Through the loader, not `nes.reset()`. That call builds a *new* PPU and a
+    // new mapper, so everything `loadROM` does after its own reset would have to
+    // be repeated here and kept in step with the core forever — and the version
+    // that repeated only half of it left the nametables unallocated, so the
+    // first background write after a reset threw from inside the PPU.
+    // `reloadROM()` is that sequence, written down once, upstream.
+    if (this.nes.romData) this.nes.reloadROM();
+    else this.nes.reset();
     this.inFrame = false;
     this.frames = 0;
     this.instructions = 0;
@@ -182,6 +188,24 @@ export class Emulator {
       if (hit) return { frameEnded: false, hit };
     }
     return { frameEnded: false, exhausted: true };
+  }
+
+  /**
+   * Run until the program counter reaches `address`, and answer whether it did.
+   *
+   * The budget is in frames rather than instructions because every caller is
+   * really asking a question about frames — "has this ROM finished booting
+   * yet?" — and a boot that draws a screen under forced blank is a very
+   * different number of instructions on one cartridge than on another.
+   */
+  runToAddress(address, { frames = 60 } = {}) {
+    let left = frames;
+    const limit = 500000 * frames;
+    for (let i = 0; i < limit && left > 0; i++) {
+      if (this.pc === address) return true;
+      if (this.stepInstruction()) left--;
+    }
+    return false;
   }
 
   checkBreak() {

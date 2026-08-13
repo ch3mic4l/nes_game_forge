@@ -47,17 +47,18 @@ compiler in `main/build/generate.js`, and `engine/script.asm` — and each one c
 which `KERNEL_CODE_BYTES` in `generate.js` has to account for. Variables also need a home in
 `engine/constants.asm` and a slot in whatever save record item 4 defines.
 
-## 2. Event-authoring productivity
+## 2. Event-authoring productivity — **done**
 
 The cheapest genuinely large win on this list: pure editor work, no engine change, no ROM cost, no
-capacity math.
+capacity math. All of it is now in the Map Forge (README's *Working on a project with a lot in it*),
+and it is kept here for the reasoning below rather than as outstanding work.
 
-- **Names** for placed events, and **named screens** (today both are identified by index)
-- A searchable **event list** for the current map
-- **Find uses** of a switch, an actor, an item or a destination
-- **Duplicate and copy/paste** for actors, event pages and individual commands
-- **Templates**: chest, locked door, NPC, pickup, party recruit, boss encounter
-- **Reorder** commands, and **disable** one temporarily instead of deleting it to test
+- ~~**Names** for placed events, and **named screens** (today both are identified by index)~~
+- ~~A searchable **event list** for the current map~~
+- ~~**Find uses** of a switch, an actor, an item or a destination~~
+- ~~**Duplicate and copy/paste** for actors, event pages and individual commands~~
+- ~~**Templates**: chest, locked door, NPC, pickup, party recruit, boss encounter~~
+- ~~**Reorder** commands, and **disable** one temporarily instead of deleting it to test~~
 
 RPG Maker added exactly these — event list, event search, easy-event templates, copy/paste, command
 skipping — specifically to make larger projects survivable
@@ -72,7 +73,8 @@ so they belong in the project JSON and nowhere in `assets/`.
 Build-and-play and the debugger are already strong. What is missing is the *creator* half — getting
 to the thing under test without playing up to it.
 
-- **Play from here**: boot at the currently selected screen and position
+- ~~**Play from here**: boot at the currently selected screen and position~~ — **done**, as the Map
+  Forge's ▶ Test tool
 - **Battle-test** a selected encounter without walking into it
 - A runtime **switch/variable inspector** (the debugger already reads engine RAM; this is a labelled
   view of it, and item 1's variables make it much more useful)
@@ -80,9 +82,12 @@ to the thing under test without playing up to it.
 - **Reload the ROM** while keeping the selected test scenario
 - **Screenshot / GIF capture** from the emulator panel
 
-The honesty rule applies here: a test-play override must not be able to end up in a built ROM. The
-natural shape is a debug entry point the player build never reaches, or state poked into RAM by
-`runcontrol.js` after boot rather than compiled in.
+The honesty rule applies here: a test-play override must not be able to end up in a built ROM. Play
+from here settled the shape the rest of these should follow — `renderer/emulator/testplay.js` pokes
+engine RAM once the ROM is running and the build knows nothing about it, so the ROM is unpatched by
+construction rather than by a flag somebody has to clear. It also settled where the addresses come
+from: `shared/enginesyms.js` parses them out of the `constants.asm` the build assembled, so engine
+RAM keeps exactly one definition.
 
 ## 4. Cartridge save/load
 
@@ -170,9 +175,9 @@ not be mutated.
 
 ## Suggested order
 
-1. Event names, list and search; duplication; templates; play-from-here — item 2 plus the first
-   piece of item 3
-2. Variables, branching, choices, triggers, common events — item 1
+1. ~~Event names, list and search; duplication; templates; play-from-here — item 2 plus the first
+   piece of item 3~~ — **done**
+2. Variables, branching, choices, triggers, common events — item 1 — **next**
 3. SRAM save/load — item 4
 4. Items, equipment, status effects, battle testing — item 5 plus the rest of item 3
 5. Movement routes and the audiovisual cutscene commands — item 6
