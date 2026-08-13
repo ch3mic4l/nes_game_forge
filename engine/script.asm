@@ -2,8 +2,11 @@
 ;
 ; An event is a list of pages; the first page whose condition passes is the one
 ; that runs, which is how the same chest says "a gem!" once and "it's empty."
-; after. A page is [cond, arg, body length, commands...] and the list ends with
-; EVT_PAGES_END. Commands run straight through until one of them has to wait for
+; after. A page is [cond, arg, value, body length, commands...] and the list ends
+; with EVT_PAGES_END -- the value byte is on every page, whether or not its
+; condition is one of the comparisons that reads it, because script_skip steps
+; over a page it has declined without decoding what declined it.
+; Commands run straight through until one of them has to wait for
 ; the player -- Say does, because the message box types over several frames -- at
 ; which point script_ptr is left pointing at the next command and the box's close
 ; path calls script_resume.
@@ -38,8 +41,8 @@ script_page:
   beq script_finish         ; every page was ruled out: nothing to say
   jsr script_cond
   beq script_page_run
-  ldy #2                    ; skipped: step over the header and the body
-  lda [script_ptr_lo],y
+  ldy #EVT_PAGE_HEAD-1      ; skipped: step over the header and the body, whose
+  lda [script_ptr_lo],y     ; length is the last byte of that header
   clc
   adc #EVT_PAGE_HEAD
   jsr script_skip
@@ -86,9 +89,21 @@ script_run_warp:
 script_run_join:
   .if BATTLE_ENABLED
   cmp #OP_JOIN
-  bne script_run_bad
+  bne script_run_setvar
   jmp script_op_join
   .endif
+script_run_setvar:
+  cmp #OP_SET_VAR
+  bne script_run_addvar
+  jmp script_op_setvar
+script_run_addvar:
+  cmp #OP_ADD_VAR
+  bne script_run_subvar
+  jmp script_op_addvar
+script_run_subvar:
+  cmp #OP_SUB_VAR
+  bne script_run_bad
+  jmp script_op_subvar
 script_run_bad:
   jmp script_finish         ; an opcode this engine cannot run stops the event
                             ; rather than being reinterpreted as another one
@@ -163,6 +178,55 @@ script_op_join:
   jmp script_next2
   .endif
 
+; ------------------------------------------------------------- the variables
+;
+; [op, which, value], three bytes. `which` is an index into a 16-byte array, and
+; it is not range-checked here: every byte of an event is clamped as it is
+; compiled (see normalizeEventCommand in shared/project.js and encodeCommand in
+; main/build/textcompile.js), which is the one place that can know how many
+; variables this build has. A check here would need a second answer to that.
+;
+; Add and subtract saturate instead of wrapping. A counter that rolls 255 -> 0
+; is a quest that silently starts over, and the 6502 makes the cheap thing the
+; wrong one.
+
+script_op_setvar:
+  jsr script_var
+  sta variables,x
+  jmp script_next3
+
+script_op_addvar:
+  jsr script_var
+  clc
+  adc variables,x
+  bcc script_var_store
+  lda #$FF
+  jmp script_var_store
+
+script_op_subvar:
+  jsr script_var
+  sta script_val
+  lda variables,x
+  sec
+  sbc script_val
+  bcs script_var_store
+  lda #0
+script_var_store:
+  sta variables,x
+script_next3:
+  lda #3
+  jsr script_skip
+  jmp script_run
+
+; The variable command at script_ptr: X = which variable, A = the operand.
+script_var:
+  ldy #1
+  lda [script_ptr_lo],y
+  tax
+  iny
+  lda [script_ptr_lo],y
+  rts
+
 ; The one-byte argument of the command at script_ptr.
 script_arg:
   ldy #1
@@ -198,6 +262,12 @@ script_cond:
   beq script_cond_off
   cmp #COND_HAS_ITEM
   beq script_cond_item
+  cmp #COND_VAR_EQ
+  beq script_cond_var_eq
+  cmp #COND_VAR_GE
+  beq script_cond_var_ge
+  cmp #COND_VAR_LT
+  beq script_cond_var_lt
   lda #1                    ; a condition this engine cannot test never passes,
   rts                       ; so a project built by a later version stays quiet
 script_cond_on:
@@ -215,11 +285,42 @@ script_cond_off:
 script_cond_item:
   jsr script_arg
   jmp has_item              ; already answers 0/1 with the flags to match
+
+; The three variable comparisons. Each one runs the same subtraction and reads a
+; different flag out of it -- equal, at least, under -- so what they compare is
+; written down once.
+script_cond_var_eq:
+  jsr script_cond_var
+  bne script_cond_fail
+  lda #0
+  rts
+script_cond_var_ge:
+  jsr script_cond_var
+  bcc script_cond_fail
+  lda #0
+  rts
+script_cond_var_lt:
+  jsr script_cond_var
+  bcs script_cond_fail
+script_cond_pass:
+  lda #0
+  rts
 script_cond_fail:
   lda #1
   rts
-script_cond_pass:
-  lda #0
+
+; The page header's variable against the page header's value, as flags:
+; Z means they are equal, C means the variable is the greater of the two. The
+; index needs no check for the reason script_var does not have one.
+script_cond_var:
+  ldy #2
+  lda [script_ptr_lo],y     ; the value the page compares against
+  sta script_val
+  ldy #1
+  lda [script_ptr_lo],y     ; which variable
+  tax
+  lda variables,x
+  cmp script_val
   rts
 
 ; ------------------------------------------------------------- the switches

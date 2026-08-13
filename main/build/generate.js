@@ -35,6 +35,7 @@ import { NO_EVENT, compileText, textTables } from './textcompile.js';
 import { battleTables, checkBattleTables } from './battletables.js';
 import {
   LIMITS,
+  RPG_LIMITS,
   SCREEN_METATILES,
   BEHAVIORS,
   ACTIONS,
@@ -124,15 +125,15 @@ const TITLE_PROMPT_ROW = 19;
 // Measured by building the sample and reading nesasm's usage for the kernel-lo
 // bank (prgLayout().kernelLoBank), minus that project's fixedBytes + tableBytes.
 // UNROM 512 is the high-water mark because banks.asm emits the most code for it:
-// 5444 bytes as of writing, with the message box, the event runner, action
-// combat, the title screen and the RPG's kernel-side half all in. The battle
-// system itself is not in this number — it lives in a switchable bank, which is
-// the whole reason it can exist at all. MMC3 additionally assembles the
-// scanline split (engine/split.asm, ~150 bytes) but still comes in under the
-// UNROM 512 total, so that board keeps setting the ceiling. Re-measure and
-// raise this if the engine grows; the sample builds at 2 KB of headroom on
-// UNROM 512.
-const KERNEL_CODE_BYTES = 5560;
+// 5747 bytes as measured by building sample-rpg on that board, with the message
+// box, the event runner and its variables, action combat, the title screen and
+// the RPG's kernel-side half all in. The battle system itself is not in this
+// number — it lives in a switchable bank, which is the whole reason it can exist
+// at all. MMC3 additionally assembles the scanline split (engine/split.asm) and
+// comes to 5727, so UNROM 512 keeps setting the ceiling. Re-measure and raise
+// this if the engine grows: build sample-rpg on mapper 30, take nesasm's usage
+// for the bank holding `reset`, and subtract `reset - $C000`.
+const KERNEL_CODE_BYTES = 5860;
 const PLAYER_FRAMES = 8; // 4 directions x 2 walk frames
 const PLAYER_TILES = PLAYER_FRAMES * 4;
 
@@ -681,6 +682,10 @@ export async function generateAssets({ dir, project, log = () => {} }) {
     `START_Y       = ${project.project.startY}`,
     'PLAYER_SPEED  = 2',
     `START_SONG    = ${startSong(project)}`,
+    // How many named counters an event can use. constants.asm allocates the
+    // block; RPG_LIMITS.variables is what says how big it is, here and in the
+    // clamp that keeps a variable index inside it.
+    `NUM_VARIABLES = ${RPG_LIMITS.variables}`,
     `NUM_TILESETS  = ${project.tilesets.length}`,
     // banks.asm has one routine for every discrete single-write mapper; which one
     // is in use shows up only as the register values in chr_bank_values below.

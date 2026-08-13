@@ -4,12 +4,25 @@
 //
 // A string is glyph tiles with three control codes below the font's base: end,
 // newline and page break. An event is a list of pages, each
-// [cond, arg, body length, commands...], ended by EVT_PAGES_END; the engine runs
-// the first page whose condition passes. Both tables are byte-indexed, so a
-// project may carry at most 255 of each.
+// [cond, arg, value, body length, commands...], ended by EVT_PAGES_END; the
+// engine runs the first page whose condition passes. Both tables are
+// byte-indexed, so a project may carry at most 255 of each.
+//
+// The header is a fixed four bytes even though only the conditions that compare
+// a variable against a number read `value`: `script_skip` steps over a declined
+// page without looking at its condition, so a header whose size depended on
+// which condition it carried would have to be decoded before it could be
+// skipped. EVT_PAGE_HEAD in engine/constants.asm is the other half of this.
 
 import { BOX_COLS, BOX_ROWS, textToTiles, wrapText } from '../../shared/font.js';
-import { EVENT_COMMANDS, EVENT_CONDITIONS, enabledCommands, compiledPages } from '../../shared/project.js';
+import {
+  EVENT_COMMANDS,
+  EVENT_CONDITIONS,
+  RPG_LIMITS,
+  conditionArgLimit,
+  enabledCommands,
+  compiledPages
+} from '../../shared/project.js';
 
 // String control codes, matching engine/constants.asm.
 export const TXT_END = 0x00;
@@ -96,6 +109,10 @@ export function compileText(project) {
       case 'setSwitch':
       case 'clearSwitch':
         return [opIndex(command.op), byte(command.switch, 63)];
+      case 'setVar':
+      case 'addVar':
+      case 'subVar':
+        return [opIndex(command.op), byte(command.variable, RPG_LIMITS.variables - 1), byte(command.value)];
       case 'join':
         return [opIndex('join'), byte(command.member, 3)];
       default:
@@ -108,7 +125,17 @@ export function compileText(project) {
     for (const page of pages) {
       const body = enabledCommands(page).map(encodeCommand).filter(Boolean).flat();
       body.push(OP_END);
-      bytes.push(condIndex(page.cond?.type), byte(page.cond?.arg, 63), body.length, ...body);
+      // The argument's ceiling is the condition's own, not a flat 63: a variable
+      // condition's byte indexes an array of 16 that the engine does not
+      // range-check, and buildProject is handed the project the app is holding
+      // rather than one that has just been through the schema.
+      bytes.push(
+        condIndex(page.cond?.type),
+        byte(page.cond?.arg, conditionArgLimit(page.cond?.type)),
+        byte(page.cond?.value),
+        body.length,
+        ...body
+      );
     }
     bytes.push(EVT_PAGES_END);
     return bytes;
@@ -131,7 +158,8 @@ export function compileText(project) {
         events.push(
           pages.length
             ? encodeEvent(pages)
-            : [COND_NONE, 0, 3, OP_SAY, internString(dialogue), OP_END, EVT_PAGES_END]
+            : // one unconditional page: [cond, arg, value, length], then Say and End
+              [COND_NONE, 0, 0, 3, OP_SAY, internString(dialogue), OP_END, EVT_PAGES_END]
         );
       }
     }

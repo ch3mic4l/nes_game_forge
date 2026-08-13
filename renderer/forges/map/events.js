@@ -21,6 +21,9 @@ import {
   enabledCommands
 } from '../../../shared/project.js';
 
+/** What a number field is worth as an engine byte: whole, and inside the range. */
+const wholeNumber = (raw, max) => Math.max(0, Math.min(max, Math.round(Number(raw) || 0)));
+
 /** Move an item within its list, or do nothing at the ends. */
 function moveWithin(list, from, to) {
   if (to < 0 || to >= list.length) return false;
@@ -56,9 +59,10 @@ export function describeCommand(command, context = {}) {
   return command.off ? `(off) ${text}` : text;
 }
 
-function describeEnabled(command, { actors = [], switches = [], screens = [], party = [] } = {}) {
+function describeEnabled(command, { actors = [], switches = [], variables = [], screens = [], party = [] } = {}) {
   const actorName = (id) => actors[id]?.name ?? `actor ${id}`;
   const switchName = (n) => switches[n]?.trim() || `switch ${n}`;
+  const varName = (n) => variables[n]?.trim() || `variable ${n}`;
   switch (command.op) {
     case 'say':
       return `Say “${(command.text ?? '').trim().slice(0, 40) || '…'}”`;
@@ -74,16 +78,28 @@ function describeEnabled(command, { actors = [], switches = [], screens = [], pa
       return `Warp to ${screens[command.screen] ?? `screen ${command.screen}`} at ${command.x},${command.y}`;
     case 'join':
       return `${party[command.member]?.name ?? `Member ${command.member}`} joins the party`;
+    case 'setVar':
+      return `Set ${varName(command.variable)} to ${command.value ?? 0}`;
+    case 'addVar':
+      return `Add ${command.value ?? 0} to ${varName(command.variable)}`;
+    case 'subVar':
+      return `Subtract ${command.value ?? 0} from ${varName(command.variable)}`;
     default:
       return EVENT_COMMANDS.find((entry) => entry.id === command.op)?.label ?? command.op;
   }
 }
 
 /** How a page's condition reads. */
-export function describeCondition(cond, { actors = [], switches = [] } = {}) {
+export function describeCondition(cond, { actors = [], switches = [], variables = [] } = {}) {
   const entry = EVENT_CONDITIONS.find((item) => item.id === cond?.type) ?? EVENT_CONDITIONS[0];
   if (!entry.arg) return entry.label;
   if (entry.arg === 'switch') return `${entry.label}: ${switches[cond.arg]?.trim() || `switch ${cond.arg}`}`;
+  // A comparison reads as a sentence about the thing being compared, so the
+  // name goes where the word "Variable" is in the label: "Gems is at least 3".
+  if (entry.arg === 'variable') {
+    const name = variables[cond.arg]?.trim() || `variable ${cond.arg}`;
+    return `${entry.label.replace('Variable', name)} ${cond.value ?? 0}`;
+  }
   return `${entry.label}: ${actors[cond.arg]?.name ?? `actor ${cond.arg}`}`;
 }
 
@@ -233,6 +249,14 @@ export function editEvent(event, context) {
 
   function conditionArg(page, condition) {
     if (condition.arg === 'switch') return switchSelect(page.cond.arg, (value) => (page.cond.arg = value));
+    // A variable is compared against a number, so it is the one condition that
+    // needs the header's second byte as well.
+    if (condition.arg === 'variable') {
+      return [
+        variableSelect(page.cond.arg, (value) => (page.cond.arg = value)),
+        valueInput(page.cond.value ?? 0, (value) => (page.cond.value = value))
+      ];
+    }
     return el(
       'select',
       {
@@ -251,6 +275,35 @@ export function editEvent(event, context) {
         el('option', { value: n, selected: n === value }, context.switches[n]?.trim() || `Switch ${n}`)
       )
     );
+  }
+
+  function variableSelect(value, onChange) {
+    return el(
+      'select',
+      { style: { flex: '1' }, onchange: (fired) => onChange(Number(fired.target.value)) },
+      Array.from({ length: RPG_LIMITS.variables }, (_, n) =>
+        el('option', { value: n, selected: n === value }, context.variables?.[n]?.trim() || `Variable ${n}`)
+      )
+    );
+  }
+
+  /**
+   * The 0-255 a variable is set to, counted by, or compared against.
+   *
+   * Rounded here, not left to the schema: a number field will hand back 1.5 for
+   * the asking, the compiler truncates it to 1 and the schema rounds it to 2, so
+   * the same project would build differently before and after being reopened.
+   */
+  function valueInput(value, onChange) {
+    return el('input', {
+      type: 'number',
+      min: 0,
+      max: 255,
+      value,
+      title: 'A number from 0 to 255',
+      style: { width: '70px', flex: 'none' },
+      onchange: (fired) => onChange(wholeNumber(fired.target.value, 255))
+    });
   }
 
   function commandRow(page, command, position) {
@@ -313,6 +366,11 @@ export function editEvent(event, context) {
       );
     } else if (command.op === 'setSwitch' || command.op === 'clearSwitch') {
       controls.push(switchSelect(command.switch, (value) => (command.switch = value)));
+    } else if (command.op === 'setVar' || command.op === 'addVar' || command.op === 'subVar') {
+      controls.push(
+        variableSelect(command.variable, (value) => (command.variable = value)),
+        valueInput(command.value ?? 0, (value) => (command.value = value))
+      );
     } else if (command.op === 'join') {
       controls.push(
         el(
@@ -332,6 +390,8 @@ export function editEvent(event, context) {
             el('option', { value: index, selected: index === command.screen }, `→ ${label}`)
           )
         ),
+        // Whole numbers for the same reason valueInput rounds: these become
+        // single bytes, and the compiler and the schema round differently.
         el('input', {
           type: 'number',
           min: 0,
@@ -339,7 +399,7 @@ export function editEvent(event, context) {
           value: command.x,
           title: 'Landing x',
           style: { width: '70px' },
-          onchange: (fired) => (command.x = Number(fired.target.value))
+          onchange: (fired) => (command.x = wholeNumber(fired.target.value, 240))
         }),
         el('input', {
           type: 'number',
@@ -348,7 +408,7 @@ export function editEvent(event, context) {
           value: command.y,
           title: 'Landing y',
           style: { width: '70px' },
-          onchange: (fired) => (command.y = Number(fired.target.value))
+          onchange: (fired) => (command.y = wholeNumber(fired.target.value, 224))
         })
       );
     }
@@ -398,16 +458,33 @@ export function editEvent(event, context) {
 }
 
 /** Name the 64 switches, so an event reads as English rather than as numbers. */
-export function editSwitches(names, onSave) {
+export const editSwitches = (names, onSave) =>
+  editNameList(names, onSave, {
+    title: 'Switches',
+    count: RPG_LIMITS.switches,
+    hint: 'A name is for you — the engine only sees 64 bits.'
+  });
+
+/** The same for the variables, which are counters rather than flags. */
+export const editVariables = (names, onSave) =>
+  editNameList(names, onSave, {
+    title: 'Variables',
+    count: RPG_LIMITS.variables,
+    hint:
+      `A name is for you — the engine only sees ${RPG_LIMITS.variables} bytes. Each holds 0 to 255, ` +
+      'and adding or subtracting stops at those ends rather than wrapping round.'
+  });
+
+function editNameList(names, onSave, { title, count, hint }) {
   const draft = [...names];
   const body = el('div', { style: { minWidth: '380px' } });
 
   const rerender = () => {
-    // Only named switches and the next free one are listed: 64 rows of "Switch
+    // Only named entries and the next free one are listed: 64 rows of "Switch
     // 37" would bury the handful that are actually in use.
-    const shown = Math.min(RPG_LIMITS.switches, Math.max(1, lastNamed(draft) + 2));
+    const shown = Math.min(count, Math.max(1, lastNamed(draft) + 2));
     fill(body,
-      el('p.hint', { style: { marginBottom: '10px' } }, 'A name is for you — the engine only sees 64 bits.'),
+      el('p.hint', { style: { marginBottom: '10px' } }, hint),
       Array.from({ length: shown }, (_, n) =>
         el(
           'div.field-row',
@@ -429,7 +506,7 @@ export function editSwitches(names, onSave) {
   rerender();
 
   return showModal({
-    title: 'Switches',
+    title,
     body,
     actions: [
       { label: 'Cancel', value: false },

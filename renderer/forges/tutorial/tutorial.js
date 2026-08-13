@@ -246,6 +246,8 @@ const TOPICS = [
         ', where the engine runs the first page whose condition holds. A page can show text, ',
         'give or take an item, set or clear one of 64 ',
         b('switches'),
+        ', count with one of 16 ',
+        b('variables'),
         ', warp the player, or recruit a party member.'
       ),
       p('The whole trick behind a chest that opens once:'),
@@ -264,6 +266,16 @@ const TOPICS = [
         'switches with the ',
         b('Switches…'),
         ' button — the engine sees 64 bits, but the editor reads better with words.'
+      ),
+      p(
+        'A switch answers yes or no. When you need to count — three gems handed over, what ',
+        'stage a quest is at — use a ',
+        b('variable'),
+        ': sixteen bytes holding 0 to 255, named with ',
+        b('Variables…'),
+        '. A page can set one, add to it or subtract from it, and a condition can ask whether ',
+        'one is, is at least, or is under a number. Adding and subtracting stop at 255 and 0 ',
+        'rather than wrapping round.'
       )
     ]
   },

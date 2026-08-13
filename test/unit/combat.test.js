@@ -16,7 +16,7 @@ import NES from '../../renderer/emulator/core/nes.js';
 import { loadProject, saveProject } from '../../main/project-io.js';
 import { buildProject } from '../../main/build/pipeline.js';
 import { generateAssets } from '../../main/build/generate.js';
-import { createProject } from '../../shared/project.js';
+import { createProject, RPG_LIMITS } from '../../shared/project.js';
 import { HEART_EMPTY_TILE, HEART_FULL_TILE } from '../../shared/font.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
@@ -34,6 +34,13 @@ const PLAYER_IFRAMES = 0x4f;
 const ENT_ACTIVE = 0x300;
 const ENT_HP = 0x338;
 const ENT_HURT = 0x388;
+const SWITCHES = 0x390;
+const VARIABLES = 0x500;
+// The base addresses are this file's to know; how long each array is belongs to
+// RPG_LIMITS, so a test that marked only the first 16 of 32 variables and called
+// them all cleared cannot happen.
+const SWITCH_BYTES = RPG_LIMITS.switches / 8;
+const NUM_VARIABLES = RPG_LIMITS.variables;
 const OAM = 0x200;
 
 const ST_GAMEPLAY = 0;
@@ -290,22 +297,33 @@ test('running out of hearts reaches game over, and Start goes back to the title'
   assert.equal(nes.cpu.mem[PLAYER_Y], START_Y);
 });
 
-test('a restart clears the switches, so a one-time chest refills', {
+test('a restart clears the switches and the variables, so a one-time chest refills', {
   skip: !hasRom && 'run `npm run sample` first'
 }, async (t) => {
   const { nes } = await buildWith(t, (project) => {
     spiker(project, MAX_HEARTS);
-    // Set a switch before dying, by hand: the fastest route is an event on the
-    // very actor that kills us, run before contact lands.
-    project.switches = ['Flag'];
   });
 
-  // What matters is that init_session ran at all, which the hearts prove; the
-  // switch array is cleared in the same routine, so one scenario covers both.
+  // Both arrays are marked before dying, and marked from outside rather than
+  // through an event: what is under test is `init_session`, not the route to it,
+  // and a test that only checks they are zero afterwards would pass just as well
+  // with the clearing loops deleted — they start at zero.
+  nes.cpu.mem.fill(0xff, SWITCHES, SWITCHES + SWITCH_BYTES);
+  nes.cpu.mem.fill(0x07, VARIABLES, VARIABLES + NUM_VARIABLES);
+
   assert.ok(walkUntil(nes, RIGHT, (n) => n.cpu.mem[GAME_STATE] === ST_GAMEOVER), 'never died');
   for (let i = 0; i < 600 && nes.cpu.mem[BOX_STATE] !== BOX_ENDWAIT; i++) nes.frame();
   tap(nes, START, 10); // to the title
   tap(nes, START, 10); // and into a new game
-  assert.equal(nes.cpu.mem[PLAYER_HP], MAX_HEARTS);
-  assert.deepEqual([...nes.cpu.mem.slice(0x390, 0x398)], Array(8).fill(0), 'the switches survived a restart');
+  assert.equal(nes.cpu.mem[PLAYER_HP], MAX_HEARTS, 'a new game should refill the hearts');
+  assert.deepEqual(
+    [...nes.cpu.mem.slice(SWITCHES, SWITCHES + SWITCH_BYTES)],
+    Array(SWITCH_BYTES).fill(0),
+    'the switches survived a restart'
+  );
+  assert.deepEqual(
+    [...nes.cpu.mem.slice(VARIABLES, VARIABLES + NUM_VARIABLES)],
+    Array(NUM_VARIABLES).fill(0),
+    'the variables survived a restart'
+  );
 });

@@ -16,7 +16,13 @@ import NES from '../../renderer/emulator/core/nes.js';
 import { loadProject, saveProject } from '../../main/project-io.js';
 import { buildProject } from '../../main/build/pipeline.js';
 import { compileText, EVT_PAGES_END } from '../../main/build/textcompile.js';
-import { createProject, normalizeProject, compiledPages, enabledCommands } from '../../shared/project.js';
+import {
+  createProject,
+  normalizeProject,
+  compiledPages,
+  enabledCommands,
+  RPG_LIMITS
+} from '../../shared/project.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const SAMPLE = path.join(ROOT, 'sample');
@@ -33,6 +39,7 @@ const ENT_ACTIVE = 0x300;
 const ENT_ACTOR = 0x308;
 const INV_ITEMS = 0x378;
 const SWITCHES = 0x390;
+const VARIABLES = 0x500;
 
 const ST_GAMEPLAY = 0;
 const BOX_PAGEWAIT = 3;
@@ -297,9 +304,9 @@ test('a switched-off command leaves the ROM, and takes an emptied page with it',
 
   const compiled = compileText(project);
   const bytes = compiled.events[0];
-  // [cond, arg, body length, ...body, EVT_PAGES_END] — the disabled setSwitch
-  // is simply not there, so the body is one say plus the terminator.
-  assert.equal(bytes[2], 3, 'body carries only the enabled command and OP_END');
+  // [cond, arg, value, body length, ...body, EVT_PAGES_END] — the disabled
+  // setSwitch is simply not there, so the body is one say plus the terminator.
+  assert.equal(bytes[3], 3, 'body carries only the enabled command and OP_END');
   assert.equal(bytes.at(-1), EVT_PAGES_END);
 
   // Switch the last live command off and the page has nothing left to run. It
@@ -310,7 +317,7 @@ test('a switched-off command leaves the ROM, and takes an emptied page with it',
   const emptied = compileText(project);
   assert.deepEqual(compiledPages(entity.props.event), [], 'nothing left to build');
   assert.equal(emptied.events.length, 1, 'the dialogue still needs an event');
-  assert.equal(emptied.events[0][2], 3, 'one unconditional say — the fallback dialogue');
+  assert.equal(emptied.events[0][3], 3, 'one unconditional say — the fallback dialogue');
   assert.notEqual(
     emptied.strings.findIndex((bytes) => bytes.length),
     -1,
@@ -391,4 +398,185 @@ test('switching every command off keeps the work and only stops the build', () =
   );
   assert.deepEqual(compiledPages(event), [], 'and none of it reaches the ROM');
   assert.equal(compileText(project).events.length, 0, 'no event, and no dialogue to fall back on');
+});
+
+// --------------------------------------------------------------- variables
+//
+// A switch answers yes or no. A variable counts, which is what a quest stage,
+// a tally of what has been handed over or a score needs — and the thing worth
+// testing is not that a byte can be written but that the counting and the
+// comparison agree with each other over several conversations.
+
+test('a variable counts, and a page waits for it to reach a number', {
+  skip: !hasRom && 'run `npm run sample` first'
+}, async (t) => {
+  const { nes } = await buildWith(t, [
+    chest([
+      // Top page wins, so this one takes over the moment the count is high
+      // enough — and stops the page below from counting any further.
+      { cond: { type: 'varAtLeast', arg: 0, value: 3 }, commands: [{ op: 'say', text: 'That is plenty.' }] },
+      {
+        cond: { type: 'none', arg: 0 },
+        commands: [{ op: 'say', text: 'One more.' }, { op: 'addVar', variable: 0, value: 1 }]
+      }
+    ])
+  ]);
+
+  for (let count = 1; count <= 3; count++) {
+    assert.ok(talkThrough(nes), `conversation ${count} never ended`);
+    assert.equal(nes.cpu.mem[VARIABLES], count, `the ${count}th talk should have counted`);
+  }
+  assert.ok(talkThrough(nes), 'the fourth conversation never ended');
+  assert.equal(nes.cpu.mem[VARIABLES], 3, 'the guarded page took over, so nothing counted a fourth time');
+});
+
+test('a variable saturates rather than wrapping round', {
+  skip: !hasRom && 'run `npm run sample` first'
+}, async (t) => {
+  // 250 + 10 and 5 - 20 are the two ends. Wrapping would put a quest counter
+  // back at the beginning, which reads as the quest having been reset.
+  const { nes } = await buildWith(t, [
+    chest([
+      {
+        cond: { type: 'none', arg: 0 },
+        commands: [
+          { op: 'say', text: 'Counting.' },
+          { op: 'setVar', variable: 0, value: 250 },
+          { op: 'addVar', variable: 0, value: 10 },
+          { op: 'setVar', variable: 1, value: 5 },
+          { op: 'subVar', variable: 1, value: 20 }
+        ]
+      }
+    ])
+  ]);
+
+  assert.ok(talkThrough(nes), 'the conversation never ended');
+  assert.equal(nes.cpu.mem[VARIABLES], 255, '250 + 10 should stop at 255');
+  assert.equal(nes.cpu.mem[VARIABLES + 1], 0, '5 - 20 should stop at 0');
+});
+
+
+test('each comparison passes exactly when it should, and declines when it should not', {
+  skip: !hasRom && 'run `npm run sample` first'
+}, async (t) => {
+  // One chest, five pages, four conversations. The pages are in the order the
+  // engine checks them, so reaching page three means pages one and two both
+  // declined — which is how a single build shows each comparison saying no as
+  // well as yes. Variable 0 is walked 0 → 5 → 9 → 2 so that every comparison is
+  // asked above its number, below it, and exactly on it — which is where a
+  // plausible wrong implementation hides. "At least" is reached once strictly
+  // above its number (9 ≥ 8) and once exactly on it (2 ≥ 2), and "under 2" is
+  // asked at 2, where an "at most" would wrongly match. Every page writes its
+  // own witness variable, and the last page must never run at all: a comparison
+  // that wrongly declined would fall through to it and say so.
+  const { nes } = await buildWith(t, [
+    chest([
+      {
+        cond: { type: 'varUnder', arg: 0, value: 2 },
+        commands: [
+          { op: 'say', text: 'Under two.' },
+          { op: 'setVar', variable: 1, value: 1 },
+          { op: 'setVar', variable: 0, value: 5 }
+        ]
+      },
+      {
+        cond: { type: 'varEquals', arg: 0, value: 5 },
+        commands: [
+          { op: 'say', text: 'Exactly five.' },
+          { op: 'setVar', variable: 2, value: 1 },
+          { op: 'setVar', variable: 0, value: 9 }
+        ]
+      },
+      {
+        cond: { type: 'varAtLeast', arg: 0, value: 8 },
+        commands: [
+          { op: 'say', text: 'Eight or more.' },
+          { op: 'setVar', variable: 3, value: 1 },
+          { op: 'setVar', variable: 0, value: 2 }
+        ]
+      },
+      {
+        cond: { type: 'varAtLeast', arg: 0, value: 2 },
+        commands: [{ op: 'say', text: 'Two or more.' }, { op: 'setVar', variable: 4, value: 1 }]
+      },
+      {
+        cond: { type: 'none', arg: 0 },
+        commands: [{ op: 'say', text: 'Nothing matched.' }, { op: 'setVar', variable: 5, value: 1 }]
+      }
+    ])
+  ]);
+
+  assert.ok(talkThrough(nes), 'the first conversation never ended');
+  assert.equal(nes.cpu.mem[VARIABLES + 1], 1, '0 is under 2');
+  assert.equal(nes.cpu.mem[VARIABLES], 5);
+
+  // 5: not under 2, and not 8 or more — but exactly 5.
+  assert.ok(talkThrough(nes), 'the second conversation never ended');
+  assert.equal(nes.cpu.mem[VARIABLES + 2], 1, '5 equals 5');
+  assert.equal(nes.cpu.mem[VARIABLES], 9);
+
+  // 9: not under 2, not equal to 5, and strictly above 8 rather than on it —
+  // which is what an "at least" written as "equals" would fail.
+  assert.ok(talkThrough(nes), 'the third conversation never ended');
+  assert.equal(nes.cpu.mem[VARIABLES + 3], 1, '9 is 8 or more');
+  assert.equal(nes.cpu.mem[VARIABLES], 2);
+
+  // 2: "under 2" must decline standing exactly on its number, 8-or-more must
+  // decline below its number, and 2-or-more must match exactly on it.
+  assert.ok(talkThrough(nes), 'the fourth conversation never ended');
+  assert.equal(nes.cpu.mem[VARIABLES + 4], 1, '2 is 2 or more, and 2 is not under 2');
+
+  assert.equal(nes.cpu.mem[VARIABLES + 5], 0, 'a comparison declined when it should have matched');
+});
+
+test('a variable condition carries its number, and only such a condition does', () => {
+  const withPage = (cond, commands = [{ op: 'say', text: 'Hm.' }]) => {
+    const project = createProject('Counters');
+    project.sprites.actors = [{ name: 'Sign', behavior: 'npc' }];
+    project.maps[0].screens[0].entities = [
+      { actorId: 0, x: 0, y: 0, props: { event: { pages: [{ cond, commands }] } } }
+    ];
+    return project;
+  };
+
+  const project = withPage({ type: 'varAtLeast', arg: 2, value: 7 }, [
+    { op: 'addVar', variable: 2, value: 3 }
+  ]);
+  const [bytes] = compileText(project).events;
+  // [cond, arg, value, body length, ...body]: the header is four bytes on every
+  // page, and this is the condition that reads the third of them.
+  assert.equal(bytes[1], 2, 'the variable');
+  assert.equal(bytes[2], 7, 'the number it is compared against');
+  assert.equal(bytes[3], 4, 'addVar is three bytes, then OP_END');
+
+  // The field itself is only there when the condition uses it, exactly as `off`
+  // is only there when it is true — otherwise every page in every project would
+  // gain a `value: 0` the next time it was saved.
+  const page = (p) => normalizeProject(structuredClone(p)).maps[0].screens[0].entities[0].props.event.pages[0];
+  assert.equal(page(project).cond.value, 7);
+  assert.equal('value' in page(withPage({ type: 'switchOn', arg: 1, value: 9 })).cond, false);
+  assert.equal('value' in page(withPage({ type: 'none', arg: 0 })).cond, false);
+
+  // Both bytes are clamped by the schema...
+  const wild = withPage({ type: 'varEquals', arg: 99, value: 300 });
+  assert.equal(page(wild).cond.arg, RPG_LIMITS.variables - 1);
+  assert.equal(page(wild).cond.value, 255);
+
+  // ...and, separately, by the compiler — which is the one that matters. The
+  // engine indexes the 16-byte variable block with that byte and range-checks
+  // nothing, and `buildProject` is handed the project the app is holding rather
+  // than one that has just come back through the schema. So the clamp is proved
+  // here against a project that has *not* been normalized: an index of 99 would
+  // otherwise have the engine compare against whatever lies past the block.
+  const [wildBytes] = compileText(wild).events;
+  assert.equal(wildBytes[1], RPG_LIMITS.variables - 1, 'the compiler clamped the variable index');
+  assert.equal(wildBytes[2], 255, 'and the number it is compared against');
+
+  // The same for the commands that *write* a variable, which is the direction
+  // where an unclamped index would land on somebody else's byte.
+  const [writeBytes] = compileText(
+    withPage({ type: 'none', arg: 0 }, [{ op: 'setVar', variable: 99, value: 4 }])
+  ).events;
+  assert.equal(writeBytes[5], RPG_LIMITS.variables - 1, 'the compiler clamped the written variable');
+  assert.equal(writeBytes[6], 4);
 });

@@ -144,7 +144,7 @@ inside a menu) is ignored there rather than reinterpreted, and the panel says so
 A line of dialogue is the simple case. **Event…** in the Map Forge is the rest of
 it: an actor gets a list of **pages**, and the engine runs the first page whose
 condition holds. A page can show text, give or take an item, turn one of 64
-**switches** on or off, or warp the player.
+**switches** on or off, count with one of 16 **variables**, or warp the player.
 
 That is the whole trick behind a chest that opens once — page one is guarded by
 *switch off*, and the last thing it does is turn that switch on, so from then on
@@ -159,6 +159,21 @@ Switches survive screen changes and warps, so they are also how an actor stops
 being there: **Gone once …** on a placed actor means it simply does not spawn
 once that switch is on. Name the switches with the **Switches…** button — the
 engine only ever sees 64 bits, but the editor reads much better with words.
+
+A switch answers yes or no. When you need to *count* — three gems handed over,
+what stage a quest has reached, how many times somebody has been asked — that is
+a **variable**: sixteen bytes holding 0 to 255, named with **Variables…** and
+living exactly as long as the switches do. A page can set one, add to it or
+subtract from it, and a page condition can ask whether one *is*, *is at least* or
+*is under* a number:
+
+| Page | Condition | Does |
+|---|---|---|
+| 1 | `Gems` is at least 3 | Say "that will do — take this", give the Sword |
+| 2 | Always | Say "bring me three gems", add 1 to `Gems` |
+
+Adding and subtracting stop at 255 and 0 rather than wrapping round, because a
+counter that rolls over is a quest that silently starts again.
 
 Only commands the engine implements are offered. Anything a newer version of the
 Forge wrote is preserved through a save, so a project never loses work by being

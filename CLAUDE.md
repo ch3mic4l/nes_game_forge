@@ -340,7 +340,8 @@ columns 0 and 31 — so the frame drawn there is decoration, and nothing the pla
 `COMBAT_ENABLED` and `TITLE_ENABLED` in `config.inc` gate them. Combat is on exactly when
 `projectUsesCombat` is true, which is also what decides whether the heart art is stamped into
 sprite tiles `$FE/$FF`. `init_session` is the single definition of "new game" — hearts, bag,
-counters and all 64 switches — and both boot and the game-over path go through it. Where a game
+counters, all 64 switches and all 16 variables — and both boot and the game-over path go through
+it. Where a game
 over *lands* is `restart_game`: the title if there is one, a new game if there is not.
 
 `engine/script.asm` runs an actor's event: a list of pages, first passing page wins, commands run
@@ -354,8 +355,19 @@ the event rather than being reinterpreted as another one. Every command is now i
 is additionally hidden by the event editor unless the project has a party, because in an action
 build `OP_JOIN` is exactly such an opcode — the battle bank it calls into is not assembled.
 
-The 64 switches are the only state that outlives a screen change, which is what makes "this
-happened already" expressible. `switch_test` / `switch_set` / `switch_clear` **preserve X and Y**,
+A page is `[cond, arg, value, body length, commands…]`. The header is a fixed four bytes on every
+page even though only the variable comparisons read `value`, because `script_skip` steps over a
+page it has declined *without* decoding the condition that declined it; `EVT_PAGE_HEAD` in
+`engine/constants.asm` and the header written by `main/build/textcompile.js` are the two ends of
+that. The variables themselves are 16 bytes at `variables` in `constants.asm`, but **how many
+there are is generated** — `NUM_VARIABLES` in `config.inc`, from `RPG_LIMITS.variables`, which is
+also what clamps a variable index as it is compiled. The engine therefore range-checks nothing:
+the compiler is the only thing that can know how big the array is, so it is the only thing that
+guards it.
+
+The 64 switches and the 16 variables are the only state that outlives a screen change, which is
+what makes "this happened already" expressible. `switch_test` / `switch_set` / `switch_clear`
+**preserve X and Y**,
 and `switch_split` builds its mask by shifting rather than indexing a table for exactly that
 reason: `spawn_entities` calls `switch_test` with the entity slot in X and the record cursor in Y,
 and reloading Y after the test would set the flags from the reload rather than from the switch.

@@ -10,9 +10,9 @@
 ; -- COMBAT_ENABLED is zero when no actor deals damage and no Damage metatile is
 ; painted anywhere, and then the hearts are not drawn and nothing calls in here.
 
-; Start a new life: full hearts, an empty bag, and every switch back off. Run at
-; boot and again whenever a game-over screen is dismissed, so "new game" means
-; the same thing both times.
+; Start a new life: full hearts, an empty bag, and every switch and variable back
+; to zero. Run at boot and again whenever a game-over screen is dismissed, so
+; "new game" means the same thing both times.
 init_session:
   lda #MAX_HEARTS
   sta player_hp
@@ -31,6 +31,11 @@ init_session_switches:
   sta switches,x
   dex
   bpl init_session_switches
+  ldx #NUM_VARIABLES-1      ; the counters go back to zero with the flags: they
+init_session_vars:          ; are the same kind of state and outlive a screen
+  sta variables,x           ; change for the same reason
+  dex
+  bpl init_session_vars
   .if BATTLE_ENABLED
   lda #0
   sta enc_step

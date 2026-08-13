@@ -264,6 +264,55 @@ const scenario = (dir, sampleDir) => `
   store.undo();
   await wait(200);
 
+  // A variable command, added the way a user adds one: pick it out of the
+  // command list, type a number, save. Nothing else can see that the select,
+  // the default command, the controls and the schema all agree on its shape.
+  rowButton(0, 'Edit event…').click();
+  await until('the event editor', () => document.querySelector('#modalHost .btn-accent'));
+  const addCommand = [...document.querySelectorAll('#modalHost select')].find((node) =>
+    node.textContent.includes('Add a command')
+  );
+  if (!addCommand) throw new Error('the event editor offered no command list');
+  addCommand.value = 'addVar';
+  addCommand.dispatchEvent(new Event('change', { bubbles: true }));
+  await wait(200);
+  const varRow = [...document.querySelectorAll('#modalHost .field-row')].find((node) =>
+    node.textContent.includes('Add to variable')
+  );
+  if (!varRow) throw new Error('adding a variable command produced no row');
+  const varAmount = varRow.querySelector('input[type=number]');
+  // Deliberately not a whole number: a number field hands back what it is given,
+  // the compiler truncates and the schema rounds, so the editor has to settle it
+  // before those two can disagree about the same project.
+  varAmount.value = '2.6';
+  varAmount.dispatchEvent(new Event('change', { bubbles: true }));
+  await wait(120);
+  document.querySelector('#modalHost .btn-accent').click();
+  await wait(300);
+  const varCommands = store.project.maps[0].screens[3].entities[0].props.event.pages[0].commands;
+  const added = varCommands[varCommands.length - 1];
+  if (added?.op !== 'addVar' || added.value !== 3) {
+    throw new Error('the variable command saved as ' + JSON.stringify(added));
+  }
+  store.undo();
+  await wait(200);
+
+  // And naming one, which is the other half of it reading as English.
+  document.querySelector('#stage button[title^="Name the 16"]').click();
+  await until('the variables dialog', () => document.querySelector('#modalHost input[type=text]'));
+  const varName = document.querySelector('#modalHost input[type=text]');
+  varName.value = 'Gems handed over';
+  varName.dispatchEvent(new Event('change', { bubbles: true }));
+  await wait(120);
+  document.querySelector('#modalHost .btn-accent').click();
+  await wait(250);
+  if (store.project.variables?.[0] !== 'Gems handed over') {
+    throw new Error('naming a variable did not reach the project: ' + JSON.stringify(store.project.variables));
+  }
+  store.undo();
+  await wait(200);
+  step('variables', 'Add to variable authored and a variable named');
+
   // Duplicate keeps the event, and lands somewhere you can see it.
   rowButton(0, '+⧉').click();
   await wait(250);

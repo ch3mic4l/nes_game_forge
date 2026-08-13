@@ -32,8 +32,10 @@ implemented end to end — that invariant holds and must keep holding — but se
 language, and quests, shops, puzzles, cutscenes and boss fights are all currently reachable only
 through the Code Forge.
 
-- Named 8-bit **variables** alongside the existing 64 switches (counters, quest stages, flags with
-  more than two states)
+- ~~Named 8-bit **variables** alongside the existing 64 switches (counters, quest stages, flags with
+  more than two states)~~ — **done**: 16 of them, with Set/Add/Subtract commands and *is* / *is at
+  least* / *is under* page conditions. The page header gained a fourth byte to carry the number a
+  condition compares against, which is what the rest of this list will want as well
 - **Conditional branch** with an else block, so a page can decide mid-run rather than only at the
   point it is chosen
 - **Player choices** in dialogue — the message box already has the state machine for a prompt

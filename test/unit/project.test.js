@@ -23,6 +23,10 @@ import {
   entityLabel,
   flatScreens
 } from '../../shared/project.js';
+import fs from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
+import { loadProject, saveProject } from '../../main/project-io.js';
 import { resolveMapper, rpgCapable } from '../../shared/cartridge.js';
 import { flattenScreens } from '../../main/build/generate.js';
 import { FONT_BASE } from '../../shared/font.js';
@@ -390,4 +394,87 @@ test('the screen list the UI offers is numbered the way the engine numbers scree
   offered.forEach((entry, index) => {
     assert.equal(entry.screen, compiled[index].screen, `screen ${index} is the same object in both`);
   });
+});
+
+// The disk is a separate schema from the in-memory one: `saveProject` spreads a
+// project across a folder of files by hand, so a part nobody wrote a line for is
+// simply not written. That is invisible until the project is reopened, which is
+// exactly when losing it costs the most work — the variables' names were lost
+// this way. Comparing the whole project against itself after a round trip is the
+// only form of this test that keeps holding as parts are added.
+test('every part of a project survives being written and read back', async (t) => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'forge-roundtrip-'));
+  t.after(() => fs.rm(dir, { recursive: true, force: true }));
+
+  const draft = createProject('Round Trip', 'rpg');
+  // Something away from the default in every part that is written out, because a
+  // part left at its defaults would normalize back to those same defaults after
+  // being dropped — and pass. Each line below is one file, or one field of the
+  // head file, that `saveProject` has to have remembered.
+  draft.project.name = 'Round Trip';
+  draft.project.startX = 64;
+  draft.project.titleMap = 0;
+  draft.cartridge.mapper = 1;
+  draft.cartridge.mirroring = 'horizontal';
+  draft.switches[0] = 'Chest opened';
+  draft.variables[0] = 'Gems handed over';
+  draft.tilesets[0].name = 'Woodland';
+  draft.tilesets[0].background.tiles[1] = '1'.repeat(64);
+  draft.tilesets[0].sprites.tiles[2] = '2'.repeat(64);
+  draft.palettes.bg[0][1] = 0x21;
+  draft.palettes.sprite[1][2] = 0x16;
+  draft.metatiles[1].name = 'Bramble';
+  draft.metatiles[1].collision = 'damage';
+  draft.metatiles[1].tiles = [4, 5, 6, 7];
+  draft.sprites.metasprites.push({ name: 'Hero', tiles: [{ tile: 3, x: 0, y: 0, palette: 1 }] });
+  draft.sprites.animations.push({ name: 'Walk', frames: [{ metaspriteId: 0, duration: 6 }] });
+  draft.sprites.actors.push({ name: 'Innkeeper', behavior: 'npc', animationId: 0, damage: 2 });
+  draft.input.states.gameplay.A = 'interact';
+  draft.input.states.menu.START = 'cancel';
+  draft.party[0].name = 'Ilse';
+  draft.party[0].baseHp = 24;
+  draft.spells.push({ name: 'Ember', kind: 'damage', amount: 9, cost: 3, element: 'fire' });
+  draft.rpg.xpBase = 12;
+  draft.rpg.maxLevel = 9;
+  draft.rpg.battleTilesetId = 0;
+  draft.maps[0].name = 'Greenwood';
+  draft.maps[0].songId = 0;
+  draft.maps[0].encounters = { ...draft.maps[0].encounters, rate: 24 };
+  draft.maps[0].screens[0].name = 'The clearing';
+  draft.maps[0].screens[0].metatiles[5] = 1;
+  draft.maps[0].screens[0].entities = [
+    {
+      actorId: 0,
+      x: 32,
+      y: 48,
+      props: {
+        name: 'Innkeeper',
+        dialogue: 'Rooms are five gold.',
+        event: {
+          pages: [
+            {
+              cond: { type: 'varAtLeast', arg: 0, value: 3 },
+              commands: [{ op: 'say', text: 'That will do.' }, { op: 'subVar', variable: 0, value: 3 }]
+            }
+          ]
+        }
+      }
+    }
+  ];
+  draft.code.files.push({ name: 'hooks.asm', text: '; nothing yet\n' });
+  draft.code.overrides.push({ name: 'player.asm', text: '; mine now\n' });
+  draft.songs.push({ name: 'Overworld', tempo: 9 });
+
+  // Normalized once, so what is compared is a project in the shape the app holds
+  // — the same shape `loadProject` returns — rather than the hand-written one.
+  const project = normalizeProject(draft);
+  await saveProject(dir, project);
+  const reopened = await loadProject(dir);
+
+  // Every top-level part is named, so a whole part going missing is a failure
+  // that says which one rather than a wall of diff.
+  for (const part of Object.keys(project)) {
+    assert.deepEqual(reopened[part], project[part], `${part} did not survive the round trip`);
+  }
+  assert.deepEqual(reopened, project);
 });

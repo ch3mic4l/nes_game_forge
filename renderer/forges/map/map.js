@@ -19,7 +19,7 @@ import {
 import { BOX_COLS, BOX_ROWS, FONT_BASE, wrapText } from '../../../shared/font.js';
 import { RPG_LIMITS } from '../../../shared/project.js';
 import { createMetatilePanel } from './metatiles.js';
-import { describeCommand, describeCondition, editEvent, editSwitches } from './events.js';
+import { describeCommand, describeCondition, editEvent, editSwitches, editVariables } from './events.js';
 import { openEventList } from './eventlist.js';
 import { templatesFor, firstFreeSwitch } from './templates.js';
 import {
@@ -458,6 +458,7 @@ export function mount(container, app) {
     return {
       actors: store.project.sprites.actors,
       switches: store.project.switches ?? [],
+      variables: store.project.variables ?? [],
       screens: flatScreens(store.project).map((entry) => entry.label),
       // Only an RPG has a party, so this is what decides whether Join is offered.
       party: store.project.project.gameType === 'rpg' ? store.project.party ?? [] : []
@@ -766,6 +767,20 @@ export function mount(container, app) {
               })
           },
           'Switches…'
+        ),
+        el(
+          'button.btn.btn-sm',
+          {
+            title: `Name the ${RPG_LIMITS.variables} counters events can set and compare`,
+            onclick: () =>
+              editVariables(store.project.variables ?? [], (names) => {
+                store.commit('Rename variables', (project) => {
+                  project.variables = names;
+                });
+                renderEntities();
+              })
+          },
+          'Variables…'
         )
       ),
       // Only once something has been copied *here*: an always-present Paste

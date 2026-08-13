@@ -160,6 +160,9 @@ irq_tmp     = $77           ; the IRQ handler's staging byte -- interrupt-only,
                             ; so it can never collide with mainline scratch
 bt_tgt_vis  = $78           ; battle targeting cursor is showing (sprite cursor
                             ; on split builds; the BG-tile cursor ignores it)
+script_val  = $79           ; the number a page condition or a variable command
+                            ; works against. It cannot be an immediate: it comes
+                            ; out of the event data, not out of the code
 
 ; Which split program this frame runs. OFF disarms the counter entirely.
 SPL_OFF     = 0
@@ -242,6 +245,15 @@ LIST_ROWS   = 4
 NUM_SWITCHES = 64
 switches    = $0390         ; eight bytes, bit (n & 7) of byte (n >> 3)
 NO_SWITCH   = $FF           ; an actor that no switch hides
+
+; ------------------------------------------------------------- variable RAM
+; Named 8-bit counters an event sets, adds to, subtracts from and compares --
+; what a switch cannot express, which is anything with more than two states.
+; They live beside the switches in every other respect: cleared by init_session,
+; and untouched by a screen change or a warp. NUM_VARIABLES is generated into
+; config.inc from RPG_LIMITS.variables, so how many there are has one writer and
+; it is not this file.
+variables   = $0500
 
 ; ------------------------------------------------------------ inventory RAM
 ; One actor id per item carried, oldest first. Not a per-screen array: the bag
@@ -424,9 +436,15 @@ COND_NONE     = 0
 COND_SW_ON    = 1
 COND_SW_OFF   = 2
 COND_HAS_ITEM = 3
+COND_VAR_EQ   = 4
+COND_VAR_GE   = 5
+COND_VAR_LT   = 6
 
 EVT_PAGES_END = $FF         ; no further page: the event has nothing to say
-EVT_PAGE_HEAD = 3           ; cond, arg, body length
+; cond, arg, value, body length. The value byte is there on every page, not only
+; the ones whose condition compares against a number, because script_skip steps
+; over a declined page without decoding what declined it.
+EVT_PAGE_HEAD = 4
 
 OP_END      = $00
 OP_SAY      = $01
@@ -436,6 +454,9 @@ OP_SET_SW   = $04
 OP_CLR_SW   = $05
 OP_WARP     = $06
 OP_JOIN     = $07
+OP_SET_VAR  = $08
+OP_ADD_VAR  = $09
+OP_SUB_VAR  = $0A
 
 ; ------------------------------------------------------------- constants
 OAM         = $0200         ; sprite shadow, DMA'd every frame

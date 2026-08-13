@@ -161,12 +161,24 @@ export const SPELL_SCOPES = [
   { id: 'all', label: 'All targets' }
 ];
 
-/** Event-page conditions, in the order the compiled bytecode uses. */
+/**
+ * Event-page conditions, in the order the compiled bytecode uses.
+ *
+ * `arg` names what the first byte of the page header means; `value: true` says
+ * the condition also carries the second one, which is what lets a variable be
+ * compared against a number rather than only tested for being set. Every page
+ * carries both bytes whether or not its condition reads them — a fixed header
+ * is what `script_skip` steps over without having to know which condition it
+ * just declined.
+ */
 export const EVENT_CONDITIONS = [
   { id: 'none', label: 'Always', arg: null },
   { id: 'switchOn', label: 'Switch is on', arg: 'switch' },
   { id: 'switchOff', label: 'Switch is off', arg: 'switch' },
-  { id: 'hasItem', label: 'Carrying item', arg: 'actor' }
+  { id: 'hasItem', label: 'Carrying item', arg: 'actor' },
+  { id: 'varEquals', label: 'Variable is', arg: 'variable', value: true },
+  { id: 'varAtLeast', label: 'Variable is at least', arg: 'variable', value: true },
+  { id: 'varUnder', label: 'Variable is under', arg: 'variable', value: true }
 ];
 
 /** Event commands, in the order the compiled bytecode uses. */
@@ -178,7 +190,13 @@ export const EVENT_COMMANDS = [
   { id: 'setSwitch', label: 'Turn switch on', args: ['switch'] },
   { id: 'clearSwitch', label: 'Turn switch off', args: ['switch'] },
   { id: 'warp', label: 'Warp player', args: ['screen', 'x', 'y'] },
-  { id: 'join', label: 'Party member joins', args: ['member'] }
+  { id: 'join', label: 'Party member joins', args: ['member'] },
+  // A switch answers yes or no; these count. Add and subtract saturate at 0 and
+  // 255 rather than wrapping, because a quest counter that rolls over to 0 is a
+  // quest that silently starts again.
+  { id: 'setVar', label: 'Set variable', args: ['variable', 'value'] },
+  { id: 'addVar', label: 'Add to variable', args: ['variable', 'value'] },
+  { id: 'subVar', label: 'Subtract from variable', args: ['variable', 'value'] }
 ];
 
 // A command can be switched off while you work out whether you want it, the way
@@ -195,13 +213,29 @@ export { enabledCommands, compiledPages } from './eventrules.js';
  * refuses to ship. `join` is implemented, but only an RPG has a party to join,
  * so the event editor additionally hides it in an action project.
  */
-export const IMPLEMENTED_COMMANDS = new Set(['say', 'give', 'take', 'setSwitch', 'clearSwitch', 'warp', 'join']);
+export const IMPLEMENTED_COMMANDS = new Set([
+  'say',
+  'give',
+  'take',
+  'setSwitch',
+  'clearSwitch',
+  'warp',
+  'join',
+  'setVar',
+  'addVar',
+  'subVar'
+]);
 
 /** Limits the battle system imposes on top of LIMITS. */
 export const RPG_LIMITS = {
   party: 4,
   monstersPerBattle: 4,
   switches: 64,
+  // Named 8-bit counters, alongside the switches: a quest stage, how many of
+  // something has been handed over, a stat a later scene reads back. Sixteen
+  // bytes of engine RAM, and `NUM_VARIABLES` in config.inc is generated from
+  // this — engine/constants.asm allocates the block but does not size it.
+  variables: 16,
   spells: 32,
   maxLevel: 15,
   encounterActors: 4,
@@ -409,6 +443,7 @@ export function createProject(name = 'Untitled Game', gameType = 'action') {
     songs: [],
     input: defaultInput(),
     switches: [], // names only; the engine just sees 64 bits
+    variables: [], // and 16 bytes, likewise named only for the author's benefit
     party: rpg ? [createPartyMember(0, 'Hero')] : [],
     spells: [],
     rpg: { ...defaultRpg(), battleTilesetId: rpg ? 1 : 0 },
@@ -509,16 +544,39 @@ function normalizeEventCommand(raw) {
     if (arg === 'text') out.text = String(raw?.text ?? '').slice(0, MAX_DIALOGUE);
     else if (arg === 'switch') out.switch = clamp(raw?.switch, 0, RPG_LIMITS.switches - 1, 0);
     else if (arg === 'member') out.member = clamp(raw?.member, 0, RPG_LIMITS.party - 1, 0);
+    else if (arg === 'variable') out.variable = clamp(raw?.variable, 0, RPG_LIMITS.variables - 1, 0);
     else out[arg] = clamp(raw?.[arg], 0, 255, 0);
   }
   return out;
 }
 
+/**
+ * How far a page condition's first header byte may go, which depends on what it
+ * names. Exported because the compiler has to apply exactly this rule: the
+ * engine indexes the variable array with that byte and does not range-check it,
+ * on the grounds that only the thing that knows how many variables the build has
+ * can guard it. Two answers to "how far" would put that byte past the array.
+ */
+export function conditionArgLimit(type) {
+  const condition = EVENT_CONDITIONS.find((entry) => entry.id === type) ?? EVENT_CONDITIONS[0];
+  if (condition.arg === 'switch') return RPG_LIMITS.switches - 1;
+  if (condition.arg === 'variable') return RPG_LIMITS.variables - 1;
+  return 255;
+}
+
 function normalizeEventPage(raw) {
   const condition = EVENT_CONDITIONS.find((entry) => entry.id === raw?.cond?.type) ?? EVENT_CONDITIONS[0];
-  const limit = condition.arg === 'switch' ? RPG_LIMITS.switches - 1 : 255;
+  const cond = {
+    type: condition.id,
+    arg: condition.arg ? clamp(raw?.cond?.arg, 0, conditionArgLimit(condition.id), 0) : 0
+  };
+  // Only conditions that compare against a number carry the second header byte,
+  // and only they get the field — exactly as `off` is kept only when it is true.
+  // Every page in every existing project would otherwise gain a `value: 0` on
+  // its next save, which is a diff saying nothing happened.
+  if (condition.value) cond.value = clamp(raw?.cond?.value, 0, 255, 0);
   return {
-    cond: { type: condition.id, arg: condition.arg ? clamp(raw?.cond?.arg, 0, limit, 0) : 0 },
+    cond,
     commands: (Array.isArray(raw?.commands) ? raw.commands : []).map(normalizeEventCommand).filter(Boolean)
   };
 }
@@ -921,6 +979,9 @@ export function normalizeProject(raw) {
     switches: (Array.isArray(raw.switches) ? raw.switches : [])
       .slice(0, RPG_LIMITS.switches)
       .map((name, index) => normalizeLabel(name, `Switch ${index}`)),
+    variables: (Array.isArray(raw.variables) ? raw.variables : [])
+      .slice(0, RPG_LIMITS.variables)
+      .map((name, index) => normalizeLabel(name, `Variable ${index}`)),
     party,
     spells,
     rpg,

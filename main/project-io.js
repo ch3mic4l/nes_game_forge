@@ -41,13 +41,14 @@ export async function saveProject(dir, data) {
   await fs.mkdir(path.join(dir, 'songs'), { recursive: true });
   await fs.mkdir(path.join(dir, 'tiles'), { recursive: true });
 
-  // Switch names and the progression numbers are small and rarely edited, so
-  // they ride in the head file rather than earning one of their own.
+  // Switch and variable names and the progression numbers are small and rarely
+  // edited, so they ride in the head file rather than earning one of their own.
   await writeJson(path.join(dir, PROJECT_MARKER), {
     format: project.format,
     project: project.project,
     cartridge: project.cartridge,
     switches: project.switches,
+    variables: project.variables,
     rpg: project.rpg
   });
 
@@ -195,6 +196,7 @@ export async function loadProject(dir) {
     project: head.project,
     cartridge: head.cartridge,
     switches: head.switches,
+    variables: head.variables,
     rpg: head.rpg,
     tilesets,
     palettes: await readJson(path.join(dir, 'palettes.json')),
