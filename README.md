@@ -105,8 +105,8 @@ change. Every action runs:
 | Dash | Doubles walking speed while held |
 | Pause | Freezes the player and every actor until pressed again |
 | Item | Opens the inventory — the pickups you are carrying — and closes it again |
-| Confirm | Spends the highlighted item, or turns the page of a conversation |
-| Cancel | Closes the inventory, or turns the page of a conversation |
+| Confirm | Spends the highlighted item, or turns the page of a conversation — or answers the question it is asking |
+| Cancel | Closes the inventory, or turns the page of a conversation — or answers the question it is asking |
 
 The table has one row per **game state**, and the state decides which row the
 engine reads. There are three, and the two beyond `gameplay` are what `Item`,
@@ -116,7 +116,7 @@ engine reads. There are three, and the two beyond `gameplay` are what `Item`,
 |---|---|---|
 | Walking around | — | The world runs |
 | In a menu | The `Item` action | The world freezes; your pickups are laid out along the top and the D-pad picks one |
-| Reading dialogue | Interacting with an actor that is not a pickup | The world freezes and the actor speaks |
+| Reading dialogue | Interacting with an actor that is not a pickup | The world freezes and the actor speaks; if it asks something, the D-pad moves the cursor between the answers |
 
 The menu draws no box and no text: all 256 background tiles of a tileset belong
 to the Tile Forge, and the engine will not take tiles for a menu. It is drawn
@@ -143,8 +143,9 @@ inside a menu) is ignored there rather than reinterpreted, and the panel says so
 
 A line of dialogue is the simple case. **Event…** in the Map Forge is the rest of
 it: an actor gets a list of **pages**, and the engine runs the first page whose
-condition holds. A page can show text, give or take an item, turn one of 64
-**switches** on or off, count with one of 16 **variables**, or warp the player.
+condition holds. A page can show text, ask the player a question, give or take an
+item, turn one of 64 **switches** on or off, count with one of 16 **variables**,
+or warp the player.
 
 That is the whole trick behind a chest that opens once — page one is guarded by
 *switch off*, and the last thing it does is turn that switch on, so from then on
@@ -180,6 +181,21 @@ middle of one: it takes the same conditions a page does, and holds two lists of
 commands — **Then** and **Else** — either of which can hold another If. So "say
 hello, then hand over the reward but only if they are carrying the key, then say
 goodbye" is one page rather than two that both repeat the hello and the goodbye.
+
+**Ask a question…** puts that decision to the *player* instead. It holds up to
+four answers — one per row of the message box — each with its own list of
+commands, and the message box lists them with a cursor the D-pad moves:
+
+| | |
+|---|---|
+| Say | "Ten gold for the lantern. Well?" |
+| Ask | **Pay up** → subtract 10 from `Gold`, give the Lantern, say "pleasure doing business"<br>**Not today** → say "suit yourself" |
+
+An answer holds anything a page holds, including another question or an If, and
+whatever the player picks, the page carries on underneath it. Either button
+answers with whatever the cursor is on — to this box both have always meant "go
+on", and a question is it asking which way rather than a second thing to back
+out of.
 
 Only commands the engine implements are offered. Anything a newer version of the
 Forge wrote is preserved through a save, so a project never loses work by being

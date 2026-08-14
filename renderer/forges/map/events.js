@@ -14,6 +14,7 @@
 import { el, fill, showModal } from '../../ui.js';
 import { BOX_COLS, BOX_ROWS, wrapText } from '../../../shared/font.js';
 import {
+  CHOICE_LIMITS,
   EVENT_COMMANDS,
   EVENT_CONDITIONS,
   IMPLEMENTED_COMMANDS,
@@ -49,6 +50,13 @@ const defaultCommand = (op) => {
       out.cond = { type: 'none', arg: 0 };
       out.then = [];
       out.else = [];
+    } else if (arg === 'choice') {
+      // Yes and No, because that is the question nearly every first one is, and
+      // a question that arrives already sayable is one you can try immediately.
+      out.options = [
+        { text: 'Yes', commands: [] },
+        { text: 'No', commands: [] }
+      ];
     } else out[arg] = 0;
   }
   return out;
@@ -63,6 +71,12 @@ export function describeCommand(command, context = {}) {
   const text = describeEnabled(command, context);
   return command.off ? `(off) ${text}` : text;
 }
+
+/** What a nested list of commands reads as, inside a branch or an option. */
+const describeList = (list, context) =>
+  enabledCommands({ commands: list })
+    .map((entry) => describeCommand(entry, context))
+    .join('; ') || 'nothing';
 
 function describeEnabled(command, context = {}) {
   const { actors = [], switches = [], variables = [], screens = [], party = [] } = context;
@@ -94,13 +108,15 @@ function describeEnabled(command, context = {}) {
       // Described down to its contents, because the event list's search runs
       // over exactly this text: a switch used only inside a branch has to be
       // findable by its name like any other.
-      const side = (list) =>
-        enabledCommands({ commands: list })
-          .map((entry) => describeCommand(entry, context))
-          .join('; ') || 'nothing';
-      const otherwise = (command.else ?? []).length ? `, else ${side(command.else)}` : '';
-      return `If ${describeCondition(command.cond, context)}: ${side(command.then)}${otherwise}`;
+      const otherwise = (command.else ?? []).length ? `, else ${describeList(command.else, context)}` : '';
+      return `If ${describeCondition(command.cond, context)}: ${describeList(command.then, context)}${otherwise}`;
     }
+    case 'choice':
+      // Down to its contents for the same reason a branch is, and with the
+      // labels as well: "Ask" on its own would find nothing and say less.
+      return `Ask: ${(command.options ?? [])
+        .map((option) => `“${option.text || '…'}” → ${describeList(option.commands, context)}`)
+        .join('; ')}`;
     default:
       return EVENT_COMMANDS.find((entry) => entry.id === command.op)?.label ?? command.op;
   }
@@ -156,8 +172,8 @@ export function editEvent(event, context) {
     );
   };
 
-  /** ↑ ↓ ⧉ ✕ over a list, which both pages and commands need. */
-  function listTools(list, index, { what, onChange, canRemove = true }) {
+  /** ↑ ↓ ⧉ ✕ over a list, which pages, commands and options all need. */
+  function listTools(list, index, { what, onChange, canRemove = true, canDuplicate = true }) {
     const button = (label, title, disabled, act) =>
       el(
         'button.btn.btn-sm',
@@ -174,7 +190,7 @@ export function editEvent(event, context) {
     return [
       button('↑', `Move this ${what} up`, index === 0, () => moveWithin(list, index, index - 1)),
       button('↓', `Move this ${what} down`, index === list.length - 1, () => moveWithin(list, index, index + 1)),
-      button('⧉', `Duplicate this ${what}`, false, () =>
+      button('⧉', `Duplicate this ${what}`, !canDuplicate, () =>
         list.splice(index + 1, 0, structuredClone(list[index]))
       ),
       button('✕', `Remove this ${what}`, !canRemove, () => list.splice(index, 1))
@@ -258,7 +274,7 @@ export function editEvent(event, context) {
         },
         el('option', { value: '' }, '+ Add a command…'),
         offeredCommands(context)
-          .filter((entry) => entry.id !== 'branch' || depth < MAX_BRANCH_DEPTH)
+          .filter((entry) => !entry.nests || depth < MAX_BRANCH_DEPTH)
           .map((entry) => el('option', { value: entry.id }, entry.label))
       )
     );
@@ -410,6 +426,106 @@ export function editEvent(event, context) {
         ),
         side('Then', command.then),
         side('Else', command.else)
+      );
+    }
+
+    // The other command that holds commands, and the only one whose lists the
+    // player picks between rather than a condition. Each option is one row of
+    // the message box, which is why there can be four of them and why a label
+    // is as wide as a row of text.
+    if (command.op === 'choice') {
+      const options = command.options ?? [];
+      const full = options.length >= CHOICE_LIMITS.options;
+      return el(
+        'div',
+        {
+          style: {
+            marginBottom: '8px',
+            padding: '8px',
+            background: 'var(--bg-1)',
+            border: '1px solid var(--line)',
+            borderRadius: 'var(--radius)',
+            ...dim
+          }
+        },
+        el(
+          'div.field-row',
+          { style: { marginBottom: '6px' } },
+          el('span', { style: { flex: 'none', color: 'var(--text-dim)' } }, 'Ask'),
+          el(
+            'span.hint',
+            { style: { flex: '1', margin: '0' } },
+            'and run whichever answer the player picks'
+          ),
+          tools
+        ),
+        options.map((option, index) =>
+          el(
+            'div',
+            {
+              // Named in the DOM the way a branch's sides are, and for the same
+              // reason: which list a control belongs to is the whole question,
+              // and the smoke test has no other way to ask it.
+              dataset: { option: String(index) },
+              style: { borderLeft: '2px solid var(--line)', paddingLeft: '10px', marginLeft: '6px' }
+            },
+            el(
+              'div.field-row',
+              { style: { marginBottom: '4px' } },
+              el('input', {
+                type: 'text',
+                value: option.text ?? '',
+                maxLength: CHOICE_LIMITS.label,
+                placeholder: `Answer ${index + 1}`,
+                title: `One row of the message box: up to ${CHOICE_LIMITS.label} characters`,
+                onchange: (fired) => {
+                  option.text = fired.target.value;
+                  rerender();
+                }
+              }),
+              listTools(options, index, {
+                what: 'answer',
+                onChange: rerender,
+                canRemove: options.length > 1,
+                canDuplicate: !full
+              })
+            ),
+            option.commands.map((entry, position) =>
+              commandRow(option.commands, entry, position, depth + 1)
+            ),
+            addCommand(option.commands, depth + 1)
+          )
+        ),
+        // An answer with no label is a legitimate thing to be holding while you
+        // write one, and the engine draws its row blank rather than breaking —
+        // but it reaches the ROM as a row the player can put the cursor on and
+        // nothing to tell them what it means, so it is worth saying out loud.
+        options.some((option) => !(option.text ?? '').trim())
+          ? el(
+              'p.hint',
+              { style: { color: 'var(--accent)', margin: '6px 0 0' } },
+              'An answer with no label draws an empty row. The player can still pick it — they ' +
+                'just have nothing to go on.'
+            )
+          : null,
+        full
+          ? el(
+              'p.hint',
+              { style: { margin: '6px 0 0' } },
+              `The message box has ${CHOICE_LIMITS.options} rows of text, so a question can offer ` +
+                `${CHOICE_LIMITS.options} answers.`
+            )
+          : el(
+              'button.btn.btn-sm',
+              {
+                style: { marginTop: '6px' },
+                onclick: () => {
+                  options.push({ text: '', commands: [] });
+                  rerender();
+                }
+              },
+              '+ Answer'
+            )
       );
     }
 

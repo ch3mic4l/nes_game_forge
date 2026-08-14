@@ -51,6 +51,67 @@ test('a switch counts as used wherever it can hide', () => {
   assert.equal(usedSwitches(carrying).has(7), false, 'an actor id is not a switch');
 });
 
+test('a switch hides just as well inside a branch or an answer', () => {
+  // The scan used to read only a page's own list, so every command that holds
+  // commands was a new place a switch could sit unseen — and an unseen switch is
+  // one a template hands out again. One nested case per kind, and one nested
+  // inside the other, because the whole claim is that depth does not matter.
+  const project = createProject('Nested');
+  project.sprites.actors = [{ name: 'NPC', behavior: 'npc' }];
+  project.maps[0].screens[0].entities = [
+    {
+      actorId: 0,
+      x: 0,
+      y: 0,
+      props: {
+        event: {
+          pages: [
+            {
+              cond: { type: 'none', arg: 0 },
+              commands: [
+                {
+                  op: 'branch',
+                  // A branch carries the same condition object a page does, so
+                  // it is the same place to hide as a page's.
+                  cond: { type: 'switchOn', arg: 11 },
+                  then: [{ op: 'setSwitch', switch: 12 }],
+                  else: [
+                    {
+                      op: 'choice',
+                      options: [
+                        { text: 'Yes', commands: [{ op: 'clearSwitch', switch: 13 }] },
+                        {
+                          text: 'No',
+                          commands: [
+                            {
+                              op: 'branch',
+                              cond: { type: 'switchOff', arg: 14 },
+                              then: [{ op: 'setSwitch', switch: 15, off: true }],
+                              else: []
+                            }
+                          ]
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      }
+    }
+  ];
+
+  const used = usedSwitches(project);
+  for (const n of [11, 12, 13, 14]) assert.ok(used.has(n), `switch ${n} was not seen`);
+  // Including one on a switched-off command: the toggle is about what the ROM
+  // runs, and a line you are about to switch back on still names a switch that
+  // is spoken for.
+  assert.ok(used.has(15), 'a switched-off command still spends its switch');
+  assert.equal(firstFreeSwitch(project), 0, 'nothing below 11 is in use');
+});
+
 test('all switches spent means no free switch, not switch zero', () => {
   const project = createProject('Full');
   project.sprites.actors = [{ name: 'NPC', behavior: 'npc' }];

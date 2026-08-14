@@ -6,7 +6,9 @@
 // newline and page break. An event is a list of pages, each
 // [cond, arg, value, body length, commands...], ended by EVT_PAGES_END; the
 // engine runs the first page whose condition passes. Both tables are
-// byte-indexed, so a project may carry at most 255 of each.
+// byte-indexed, so a project may carry at most 255 of each. A question's option
+// labels are strings like any other, which is why they cost nothing new: two
+// actors offering the same answer share the bytes it is written in.
 //
 // The header is a fixed four bytes even though only the conditions that compare
 // a variable against a number read `value`: `script_skip` steps over a declined
@@ -16,9 +18,11 @@
 
 import { BOX_COLS, BOX_ROWS, textToTiles, wrapText } from '../../shared/font.js';
 import {
+  CHOICE_LIMITS,
   EVENT_COMMANDS,
   EVENT_CONDITIONS,
   RPG_LIMITS,
+  choiceLabel,
   conditionArgLimit,
   enabledCommands,
   compiledPages,
@@ -104,8 +108,12 @@ export function compileText(project) {
   // makes it reachable, and a length that wrapped would send the engine into the
   // middle of a command — so it is refused here, naming what to shorten.
   const tooLong = [];
+  const measureLength = (length, what) => {
+    if (length > MAX_BODY) tooLong.push({ what, length });
+    return length;
+  };
   const measured = (bytes, what) => {
-    if (bytes.length > MAX_BODY) tooLong.push({ what, length: bytes.length });
+    measureLength(bytes.length, what);
     return bytes;
   };
 
@@ -156,6 +164,48 @@ export function compileText(project) {
           OP_JUMP,
           otherwise.length,
           ...otherwise
+        ];
+      }
+      case 'choice': {
+        // [OP_CHOICE, count, one string id per option] and then one record per
+        // option: [length, commands..., OP_JUMP, what is left of the question].
+        //
+        // The string ids are contiguous and up front so the engine can draw the
+        // options straight out of the command it is sitting on — row n is the
+        // n'th byte after the count — while script_ptr stays put on the choice
+        // until it is answered. Only the answer walks the records.
+        //
+        // The trailing jump is the branch's, doing the branch's job: it is what
+        // a finished option runs into, and it steps over the options below.
+        // Every option carries one, including the last, so all of them end the
+        // same way and none of them is a special case.
+        //
+        // Clamped here as well as in the schema, and for the reason the
+        // condition's argument is: buildProject is handed the project the app is
+        // holding rather than one that has just been through normalization. A
+        // fifth option would be drawn a row below the last row of text, which is
+        // the bottom of the frame and then the attribute table — and answering a
+        // question with no options at all would send the engine past the end of
+        // the command it was answering.
+        const options = (command.options ?? []).slice(0, CHOICE_LIMITS.options);
+        if (!options.length) return null;
+        const named = (option, index) => `${where} → “${choiceLabel(option.text) || `option ${index + 1}`}”`;
+        const bodies = options.map((option, index) => encodeBody(option.commands, named(option, index)));
+        const lengths = bodies.map((body, index) =>
+          measureLength(body.length + 2, named(options[index], index))
+        );
+        // How far each option has to jump to reach the end: every record below
+        // it, each of them a length byte and what it describes. The first option
+        // has the furthest to go, so measuring that one measures all of them.
+        const past = lengths.map((_, index) =>
+          lengths.slice(index + 1).reduce((sum, length) => sum + 1 + length, 0)
+        );
+        measureLength(past[0], `${where} → the options after the first`);
+        return [
+          opIndex('choice'),
+          options.length,
+          ...options.map((option) => internString(choiceLabel(option.text))),
+          ...bodies.flatMap((body, index) => [lengths[index], ...body, OP_JUMP, past[index]])
         ];
       }
       default:

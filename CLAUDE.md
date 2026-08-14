@@ -324,7 +324,15 @@ after the OAM DMA. Three rules hold it together:
 - A frame that ran long leaves `vram_ready` clear, so NMI skips it and the writes land next
   vblank — late, never torn.
 - Producers cap themselves at one 32-byte row per frame, which is why raising the box, wiping a
-  page and taking the box down are each a state machine stepped once per tick rather than a loop.
+  page, listing a question's options and taking the box down are each a state machine stepped once
+  per tick rather than a loop.
+- **A packet that is opened must be pushed to at least once.** `vram_drain_byte` tests its counter
+  after decrementing it, so a count of zero is 256 — a page of whatever the queue held, written
+  into the nametable well past the end of vblank. A producer has to *know* it has a byte before
+  `vram_open`: either it always does (fixed-width rows, one-tile writes, the engine's own strings)
+  or it looked first. Listing a question's options is the one that has to look, because an answer
+  whose label has not been typed yet is an ordinary thing to be holding. The drain is deliberately
+  not defended against it, because it runs in NMI every frame.
 - **NMI rewrites `$2000` after draining, not before.** A `$2006` write copies its high byte into
   the PPU's `t` register, nametable-select bits included, so resetting `$2005` alone leaves the
   screen scrolled to a different nametable.
@@ -354,6 +362,34 @@ written by a later version round-trips through this one, and an opcode the engin
 the event rather than being reinterpreted as another one. Every command is now implemented; `join`
 is additionally hidden by the event editor unless the project has a party, because in an action
 build `OP_JOIN` is exactly such an opcode — the battle bank it calls into is not assembled.
+
+**A command that holds commands is not a special case to be named, it is a `nests: true` entry.**
+Two of them exist (`branch`, `choice`) and the third will be along. Anything asking a question of a
+whole event walks `allCommands` in `shared/eventrules.js` rather than a page's own list, and
+anything asking how deep it may go asks `nests`. Both rules are there because the same defect
+happened twice: `usedSwitches` in `templates.js` read only the top level, so a switch set inside a
+branch was invisible to the free-switch scan and got handed out again — which presents as two
+unrelated events firing together, and reads as an engine bug.
+
+**A question is a branch the player takes.** `[OP_CHOICE, count, a string id per option]` and then
+one record per option, `[length, commands…, OP_JUMP, what is left of the question]` — the same
+`OP_JUMP` a then-branch ends with, doing the same job. The string ids are contiguous and up front
+because `script_ptr` **stays on the command** until it is answered: `text_choice_step` draws row *n*
+from the *n*'th byte after the count, so nothing has to be remembered but `choice_sel`, and
+`script_choose` walks that into a body exactly once. That is what lets a `Say` inside an option
+suspend and resume through `script_resume`, which knows nothing about questions. `CHOICE_LIMITS` in
+`shared/project.js` is the single writer for what one holds, and both numbers come from the box —
+four options because `BOX_ROWS` is four, and a label as wide as `BOX_COLS` — so the schema, the
+editor and the compiler's clamp cannot offer an option the box has no row for. The cursor is
+`ARROW_TILE` in the padding column (`BOX_TEXT_LO-1`), which is inside the frame and outside the
+text, so moving it cannot disturb a label and wiping the labels cannot rub it out. `box_after`
+carries which phase the box was raised for, so raising the frame and wiping a page stay one
+implementation each rather than asking what they are being done for — and `box_handover` is the
+single end of both, because **a phase must leave `box_row` at zero for the next one**. Typing
+counts in `msg_line`, so for as long as the box only ever typed, every phase could leave that
+counter wherever it had finished and nothing noticed; listing options reads it, and read the 4 the
+wipe left, which drew no labels at all while every RAM assertion still passed. That is why
+`script.test.js` reads the *nametable* for this one.
 
 A page is `[cond, arg, value, body length, commands…]`, and **a branch is that same header inline
 in a body**: `[OP_IF, cond, arg, value, then-length]`, the then-branch, `[OP_JUMP, else-length]`,

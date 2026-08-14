@@ -40,7 +40,10 @@ through the Code Forge.
   point it is chosen~~ — **done**: `If…` takes the same conditions a page does and nests, because
   past its opcode a branch *is* a page header, so the engine reads one with the routine it reads
   the other with
-- **Player choices** in dialogue — the message box already has the state machine for a prompt
+- ~~**Player choices** in dialogue — the message box already has the state machine for a prompt~~
+  — **done**: `Ask a question…` holds up to four answers, one per row of the box, each with its own
+  list of commands. It is the branch with the condition replaced by somebody at the controller,
+  down to ending every answer with the same `OP_JUMP` a then-branch ends with
 - **Triggers**: interact (today's behaviour), player-touch, autorun-on-entry
 - **Common events**: one event body callable from many places, so a chest or a shop is authored once
 - Commands for starting a **battle**, changing **music**, **moving an actor**, and
@@ -181,7 +184,8 @@ not be mutated.
 
 1. ~~Event names, list and search; duplication; templates; play-from-here — item 2 plus the first
    piece of item 3~~ — **done**
-2. Variables, branching, choices, triggers, common events — item 1 — **next**
+2. Variables, branching, choices, triggers, common events — item 1 — **in progress**: variables,
+   branching and choices are done; triggers and common events are what is left
 3. SRAM save/load — item 4
 4. Items, equipment, status effects, battle testing — item 5 plus the rest of item 3
 5. Movement routes and the audiovisual cutscene commands — item 6

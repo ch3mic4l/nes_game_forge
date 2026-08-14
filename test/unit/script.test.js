@@ -13,6 +13,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import NES from '../../renderer/emulator/core/nes.js';
+import { ARROW_TILE, FONT_BASE } from '../../shared/font.js';
 import { loadProject, saveProject } from '../../main/project-io.js';
 import { buildProject } from '../../main/build/pipeline.js';
 import { compileText, EVT_PAGES_END, OP_JUMP, OP_END } from '../../main/build/textcompile.js';
@@ -21,6 +22,7 @@ import {
   normalizeProject,
   compiledPages,
   enabledCommands,
+  CHOICE_LIMITS,
   RPG_LIMITS,
   EVENT_COMMANDS,
   EVENT_CONDITIONS,
@@ -47,9 +49,15 @@ const VARIABLES = 0x500;
 const ST_GAMEPLAY = 0;
 const BOX_PAGEWAIT = 3;
 const BOX_ENDWAIT = 6;
+const BOX_CHOICEWAIT = 8;
+const CHOICE_SEL = 0x7a;
+// The box is nametable rows 24-29 and its text starts on the second of them,
+// from BOX_ADDR_HI/BOX_TEXT_LO in engine/constants.asm.
+const TEXT_ROW = 25;
 
 const A = 0;
 const B = 1;
+const DOWN = 5;
 
 /** The player start, so an actor placed here is inside the interact reach. */
 const START_X = 112;
@@ -78,24 +86,48 @@ const tap = (nes, button, frames = 2) => {
   for (let i = 0; i < frames; i++) nes.frame();
 };
 
-/** Talk, then press through every page until the conversation ends. */
-function talkThrough(nes, budget = 30) {
+const waiting = (nes) => {
+  const box = nes.cpu.mem[BOX_STATE];
+  return box === BOX_PAGEWAIT || box === BOX_ENDWAIT || box === BOX_CHOICEWAIT;
+};
+
+/**
+ * Talk, then press through every page until the conversation ends.
+ *
+ * `answers` is what to do at each question, in the order they come up: how many
+ * rows down the cursor moves before the button. A question with no answer left
+ * takes the first option, which is what an empty list means.
+ */
+function talkThrough(nes, budget = 30, answers = []) {
   tap(nes, B);
+  const pending = [...answers];
   for (let press = 0; press < budget; press++) {
     if (nes.cpu.mem[GAME_STATE] === ST_GAMEPLAY) return true;
     // Wait for the box to want an answer, then give it one. A press outside a
     // wait is ignored by design, so polling for the wait is what makes this
     // independent of how long the text is.
     for (let frame = 0; frame < 600; frame++) {
-      const box = nes.cpu.mem[BOX_STATE];
-      if (box === BOX_PAGEWAIT || box === BOX_ENDWAIT || nes.cpu.mem[GAME_STATE] === ST_GAMEPLAY) break;
+      if (waiting(nes) || nes.cpu.mem[GAME_STATE] === ST_GAMEPLAY) break;
       nes.frame();
     }
     if (nes.cpu.mem[GAME_STATE] === ST_GAMEPLAY) return true;
+    if (nes.cpu.mem[BOX_STATE] === BOX_CHOICEWAIT) {
+      const steps = pending.shift() ?? 0;
+      for (let step = 0; step < steps; step++) tap(nes, DOWN);
+    }
     tap(nes, A);
     for (let i = 0; i < 20; i++) nes.frame();
   }
   return nes.cpu.mem[GAME_STATE] === ST_GAMEPLAY;
+}
+
+/** Run frames until the question is up and waiting, or give up. */
+function reachQuestion(nes, frames = 600) {
+  for (let frame = 0; frame < frames; frame++) {
+    if (nes.cpu.mem[BOX_STATE] === BOX_CHOICEWAIT) return true;
+    nes.frame();
+  }
+  return false;
 }
 
 const switchOn = (nes, n) => Boolean(nes.cpu.mem[SWITCHES + (n >> 3)] & (1 << (n & 7)));
@@ -798,8 +830,18 @@ test('a branch nested deeper than the editor offers still survives a round trip'
   // the first structure that recurses, and an earlier version of this dropped
   // the contents of anything past the editor's own nesting limit — which reads
   // as a project quietly losing work the moment it is opened here.
+  // A question at the bottom of the nest, because the other half of that rule is
+  // the one the variables cost a bug to learn: a field nobody wrote a line for
+  // in project-io is a field that is silently not there when the file comes
+  // back. An option's label and its command list are two such fields.
   const deep = (levels) => {
-    let command = { op: 'setVar', variable: 0, value: 1 };
+    let command = {
+      op: 'choice',
+      options: [
+        { text: 'Take it', commands: [{ op: 'setVar', variable: 0, value: 1 }] },
+        { text: 'Leave it', commands: [] }
+      ]
+    };
     for (let level = 0; level < levels; level++) {
       command = { op: 'branch', cond: { type: 'none', arg: 0 }, then: [command], else: [] };
     }
@@ -832,7 +874,17 @@ test('a branch nested deeper than the editor offers still survives a round trip'
     assert.equal(command.op, 'branch', `level ${level} of the nesting was dropped`);
     command = command.then[0];
   }
-  assert.deepEqual(command, { op: 'setVar', variable: 0, value: 1 }, 'the innermost command was lost');
+  assert.deepEqual(
+    command,
+    {
+      op: 'choice',
+      options: [
+        { text: 'Take it', commands: [{ op: 'setVar', variable: 0, value: 1 }] },
+        { text: 'Leave it', commands: [] }
+      ]
+    },
+    'the innermost command was lost, or came back missing a label or a list'
+  );
 
   // The engine has no limit either — nesting is bytes inside bytes — so it
   // compiles, and every level is one OP_IF.
@@ -847,10 +899,15 @@ test('nesting past what any project could hold fails by name, not by stack', () 
   // until the runtime gives out. What it must not do is truncate: an error the
   // app can show beats a project silently missing its deep end, and it beats a
   // RangeError from somewhere inside the schema.
+  // Alternating the two commands that hold commands, because the guard is about
+  // the depth of the recursion rather than about which command recursed.
   const deep = (levels) => {
     let command = { op: 'say', text: 'Bottom.' };
     for (let level = 0; level < levels; level++) {
-      command = { op: 'branch', cond: { type: 'none', arg: 0 }, then: [command], else: [] };
+      command =
+        level % 2
+          ? { op: 'branch', cond: { type: 'none', arg: 0 }, then: [command], else: [] }
+          : { op: 'choice', options: [{ text: 'On', commands: [command] }] };
     }
     return command;
   };
@@ -871,10 +928,455 @@ test('nesting past what any project could hold fails by name, not by stack', () 
     ]
   });
 
-  assert.throws(() => normalizeProject(withNesting(200)), /nests event branches more than 64 deep/);
+  assert.throws(() => normalizeProject(withNesting(200)), /nests event commands more than 64 deep/);
   // And the level below the guard is ordinary data, so the boundary is a limit
   // rather than a fence somewhere in the middle of what people might write.
   assert.doesNotThrow(() => normalizeProject(withNesting(60)));
+});
+
+// ----------------------------------------------------------------- questions
+//
+// A branch asks the game which way to go; a question asks the player. The engine
+// remembers nothing but which row the cursor is on, so what is worth proving is
+// that every option is reachable, that the page carries on afterwards whichever
+// one was picked, that a Say inside an option suspends and resumes, and that a
+// question nests with the branch it is a cousin of.
+
+test('every option of a question is reachable, and the page carries on after it', {
+  skip: !hasRom && 'run `npm run sample` first'
+}, async (t) => {
+  const ask = {
+    op: 'choice',
+    options: [
+      { text: 'Yes', commands: [{ op: 'setVar', variable: 1, value: 1 }] },
+      { text: 'No', commands: [{ op: 'setVar', variable: 2, value: 1 }] },
+      { text: 'Ask again later', commands: [{ op: 'setVar', variable: 3, value: 1 }] }
+    ]
+  };
+  const { nes } = await buildWith(t, [
+    chest([
+      {
+        cond: { type: 'none', arg: 0 },
+        commands: [
+          { op: 'say', text: 'Will you help?' },
+          ask,
+          // Whichever option ran, this runs after it: the jump each option ends
+          // with has to land past the ones below it and nowhere else.
+          { op: 'addVar', variable: 0, value: 1 }
+        ]
+      }
+    ])
+  ]);
+
+  // The cursor starts on the first option, so no presses of Down at all.
+  assert.ok(talkThrough(nes, 30, [0]), 'the first conversation never ended');
+  assert.deepEqual(
+    [1, 2, 3].map((n) => nes.cpu.mem[VARIABLES + n]),
+    [1, 0, 0],
+    'the first option should have run, and only it'
+  );
+  assert.equal(nes.cpu.mem[VARIABLES], 1, 'the command after the question did not run');
+
+  assert.ok(talkThrough(nes, 30, [1]), 'the second conversation never ended');
+  assert.equal(nes.cpu.mem[VARIABLES + 2], 1, 'one press of Down should have picked the second option');
+  assert.equal(nes.cpu.mem[VARIABLES], 2, 'the command after the question did not run again');
+
+  // ...and the last option, which is the one whose jump has nothing left to
+  // step over — the case a length that counted itself would get wrong.
+  assert.ok(talkThrough(nes, 30, [2]), 'the third conversation never ended');
+  assert.equal(nes.cpu.mem[VARIABLES + 3], 1, 'two presses of Down should have picked the third option');
+  assert.equal(nes.cpu.mem[VARIABLES], 3, 'the command after the question did not run a third time');
+});
+
+test('the cursor wraps at both ends of a question', {
+  skip: !hasRom && 'run `npm run sample` first'
+}, async (t) => {
+  const { nes } = await buildWith(t, [
+    chest([
+      {
+        cond: { type: 'none', arg: 0 },
+        commands: [
+          {
+            op: 'choice',
+            options: [
+              { text: 'First', commands: [] },
+              { text: 'Second', commands: [] },
+              { text: 'Third', commands: [] }
+            ]
+          }
+        ]
+      }
+    ])
+  ]);
+
+  tap(nes, B);
+  assert.ok(reachQuestion(nes), 'the question never came up');
+  assert.equal(nes.cpu.mem[CHOICE_SEL], 0, 'the cursor starts on the first option');
+
+  // Off the top of a three-option list is the third option, not option 255 —
+  // which would walk the answer straight past the end of the command.
+  tap(nes, 4); // Up
+  assert.equal(nes.cpu.mem[CHOICE_SEL], 2, 'Up from the first option should reach the last');
+  tap(nes, DOWN);
+  assert.equal(nes.cpu.mem[CHOICE_SEL], 0, 'Down from the last option should reach the first');
+  tap(nes, DOWN);
+  tap(nes, DOWN);
+  assert.equal(nes.cpu.mem[CHOICE_SEL], 2);
+
+  // And the whole thing still ends: an option with nothing in it runs nothing
+  // and falls out of the question like any other.
+  tap(nes, A);
+  for (let frame = 0; frame < 400 && nes.cpu.mem[GAME_STATE] !== ST_GAMEPLAY; frame++) nes.frame();
+  assert.equal(nes.cpu.mem[GAME_STATE], ST_GAMEPLAY, 'an empty option did not end the conversation');
+});
+
+test('the box draws one answer per row, with the cursor beside the one picked', {
+  skip: !hasRom && 'run `npm run sample` first'
+}, async (t) => {
+  // Everything else here asserts on engine RAM, which cannot see a label drawn
+  // one row too low or a cursor written into the text instead of beside it —
+  // and those are exactly the mistakes this makes easy. So this one reads the
+  // nametable the ROM actually wrote.
+  const { nes } = await buildWith(t, [
+    chest([
+      {
+        cond: { type: 'none', arg: 0 },
+        commands: [
+          {
+            op: 'choice',
+            options: [
+              { text: 'Buy the lantern', commands: [] },
+              { text: 'Sell the rope', commands: [] },
+              { text: 'Nothing today', commands: [] }
+            ]
+          }
+        ]
+      }
+    ])
+  ]);
+
+  tap(nes, B);
+  assert.ok(reachQuestion(nes), 'the question never came up');
+  // The last thing queued drains on the next vblank, so what is on screen is
+  // always a frame or two behind the state that asked for it.
+  for (let frame = 0; frame < 4; frame++) nes.frame();
+
+  // The box is tile rows 24-29; its four rows of text start at row 25, column 2,
+  // and the cursor sits in column 1 — inside the frame, outside the text.
+  const cell = (row, col) => nes.ppu.vramMem[0x2000 + row * 32 + col];
+  const text = (row) => {
+    let out = '';
+    for (let col = 2; col < 30; col++) {
+      const tile = cell(row, col);
+      out += tile >= FONT_BASE ? String.fromCharCode(32 + (tile - FONT_BASE)) : ' ';
+    }
+    return out.trimEnd();
+  };
+  const cursorRow = () => [0, 1, 2, 3].findIndex((n) => cell(TEXT_ROW + n, 1) === ARROW_TILE);
+
+  assert.equal(text(TEXT_ROW), 'Buy the lantern');
+  assert.equal(text(TEXT_ROW + 1), 'Sell the rope');
+  assert.equal(text(TEXT_ROW + 2), 'Nothing today');
+  assert.equal(text(TEXT_ROW + 3), '', 'the fourth row belongs to a fourth answer, and there is none');
+  assert.equal(cursorRow(), 0, 'the cursor starts beside the first answer');
+
+  tap(nes, DOWN);
+  for (let frame = 0; frame < 4; frame++) nes.frame(); // the queue drains next vblank
+  assert.equal(cursorRow(), 1, 'the cursor did not move with the D-pad');
+  assert.equal(text(TEXT_ROW), 'Buy the lantern', 'moving the cursor disturbed a label');
+
+  // Answering takes the cursor down with it: it is outside the width the next
+  // message would wipe, so nothing else would ever rub it out.
+  tap(nes, A);
+  for (let frame = 0; frame < 8; frame++) nes.frame();
+  assert.equal(cursorRow(), -1, 'the cursor was left on screen after the answer');
+});
+
+test('an answer with no label yet leaves its row blank and the screen intact', {
+  skip: !hasRom && 'run `npm run sample` first'
+}, async (t) => {
+  // Adding an answer and not having typed its label yet is an ordinary thing to
+  // be holding, and it compiles to a string of nothing but the end marker. The
+  // row it draws is empty — but opening a VRAM packet and closing it without
+  // pushing a byte leaves a count of zero, which the drain reads as 256 and
+  // writes a page of stale queue into the nametable. Nothing in engine RAM can
+  // see that happen, so this reads the screen.
+  const { nes } = await buildWith(t, [
+    chest([
+      {
+        cond: { type: 'none', arg: 0 },
+        commands: [
+          {
+            op: 'choice',
+            options: [
+              { text: '', commands: [] },
+              { text: 'Named', commands: [{ op: 'setVar', variable: 1, value: 1 }] }
+            ]
+          }
+        ]
+      }
+    ])
+  ]);
+
+  tap(nes, B);
+  assert.ok(reachQuestion(nes), 'the question never came up');
+  for (let frame = 0; frame < 6; frame++) nes.frame();
+
+  const cell = (row, col) => nes.ppu.vramMem[0x2000 + row * 32 + col];
+  const rowText = (row) => {
+    let out = '';
+    for (let col = 2; col < 30; col++) {
+      const tile = cell(row, col);
+      out += tile >= FONT_BASE ? String.fromCharCode(32 + (tile - FONT_BASE)) : ' ';
+    }
+    return out.trim();
+  };
+
+  assert.equal(rowText(TEXT_ROW), '', 'the unlabelled answer drew something');
+  assert.equal(rowText(TEXT_ROW + 1), 'Named', 'the answer below it was not drawn');
+  // 256 bytes of stale queue starting at the blank row would run straight
+  // through the rows under it and out of the box entirely, so the frame is what
+  // says whether anything overran: it is the same on both sides of the box.
+  for (const row of [24, 29]) {
+    assert.equal(cell(row, 1), cell(row, 30), `the box frame on row ${row} was overwritten`);
+  }
+  assert.equal(cell(TEXT_ROW, 0), cell(TEXT_ROW + 1, 0), 'the left edge of the box was overwritten');
+
+  // ...and it is still answerable: the cursor starts on it and Down reaches the
+  // one below, which is the only way to prove the blank row is a row at all.
+  assert.equal(nes.cpu.mem[CHOICE_SEL], 0);
+  tap(nes, DOWN);
+  assert.ok(talkThrough(nes, 20), 'the conversation never ended');
+  assert.equal(nes.cpu.mem[VARIABLES + 1], 1, 'the labelled answer below the blank one did not run');
+});
+
+test('a message inside an option suspends and resumes, and questions nest', {
+  skip: !hasRom && 'run `npm run sample` first'
+}, async (t) => {
+  // Say is the command that hands the box several frames of control, and a
+  // question is answered through a path of its own rather than script_resume —
+  // so an option that says two things and then asks something else is the
+  // smallest thing that would break if either lost its place.
+  const { nes } = await buildWith(t, [
+    chest([
+      {
+        cond: { type: 'none', arg: 0 },
+        commands: [
+          {
+            op: 'choice',
+            options: [
+              {
+                text: 'Take the left road',
+                commands: [
+                  { op: 'say', text: 'The road bends north.' },
+                  { op: 'setVar', variable: 1, value: 1 },
+                  { op: 'say', text: 'A gate blocks the way.' },
+                  {
+                    op: 'choice',
+                    options: [
+                      { text: 'Open it', commands: [{ op: 'setVar', variable: 2, value: 1 }] },
+                      { text: 'Turn back', commands: [{ op: 'setVar', variable: 3, value: 1 }] }
+                    ]
+                  },
+                  { op: 'addVar', variable: 1, value: 1 }
+                ]
+              },
+              { text: 'Take the right road', commands: [{ op: 'setVar', variable: 4, value: 1 }] }
+            ]
+          },
+          { op: 'setVar', variable: 5, value: 1 }
+        ]
+      }
+    ])
+  ]);
+
+  // The first option, then the second option of the question inside it.
+  assert.ok(talkThrough(nes, 40, [0, 1]), 'the conversation never ended');
+  assert.equal(nes.cpu.mem[VARIABLES + 1], 2, 'both sides of the suspended messages did not run');
+  assert.equal(nes.cpu.mem[VARIABLES + 2], 0, 'the inner first option ran');
+  assert.equal(nes.cpu.mem[VARIABLES + 3], 1, 'the inner second option should have run');
+  assert.equal(nes.cpu.mem[VARIABLES + 4], 0, 'the outer second option ran');
+  assert.equal(nes.cpu.mem[VARIABLES + 5], 1, 'the page did not carry on past the outer question');
+});
+
+test('a question inside a branch, and a branch inside a question', {
+  skip: !hasRom && 'run `npm run sample` first'
+}, async (t) => {
+  // The two commands that hold commands, each inside the other. Neither knows
+  // anything about the other — nesting is bytes inside bytes — which is exactly
+  // the claim worth a test, because it is the claim that costs nothing to break.
+  const { nes } = await buildWith(t, [
+    chest([
+      {
+        cond: { type: 'none', arg: 0 },
+        commands: [
+          { op: 'setVar', variable: 0, value: 7 },
+          {
+            op: 'branch',
+            cond: { type: 'varAtLeast', arg: 0, value: 5 },
+            then: [
+              {
+                op: 'choice',
+                options: [
+                  { text: 'Pay', commands: [{ op: 'subVar', variable: 0, value: 5 }] },
+                  {
+                    text: 'Haggle',
+                    commands: [
+                      {
+                        op: 'branch',
+                        cond: { type: 'varUnder', arg: 0, value: 10 },
+                        then: [{ op: 'setVar', variable: 1, value: 1 }],
+                        else: [{ op: 'setVar', variable: 2, value: 1 }]
+                      }
+                    ]
+                  }
+                ]
+              }
+            ],
+            else: [{ op: 'setVar', variable: 3, value: 1 }]
+          },
+          { op: 'setVar', variable: 4, value: 1 }
+        ]
+      }
+    ])
+  ]);
+
+  assert.ok(talkThrough(nes, 30, [1]), 'the conversation never ended');
+  assert.equal(nes.cpu.mem[VARIABLES], 7, 'the first option ran instead of the second');
+  assert.equal(nes.cpu.mem[VARIABLES + 1], 1, 'the branch inside the second option did not run');
+  assert.equal(nes.cpu.mem[VARIABLES + 2], 0, 'the wrong side of the inner branch ran');
+  assert.equal(nes.cpu.mem[VARIABLES + 3], 0, 'the outer else-branch ran');
+  assert.equal(nes.cpu.mem[VARIABLES + 4], 1, 'the page did not carry on past the branch');
+});
+
+test('a question compiles to its options up front and its bodies behind them', () => {
+  const project = createProject('Asking');
+  project.sprites.actors = [{ name: 'Sign', behavior: 'npc' }];
+  const page = (commands) => {
+    project.maps[0].screens[0].entities = [
+      { actorId: 0, x: 0, y: 0, props: { event: { pages: [{ cond: { type: 'none', arg: 0 }, commands }] } } }
+    ];
+    return normalizeProject(structuredClone(project));
+  };
+  const OP_CHOICE = EVENT_COMMANDS.findIndex((entry) => entry.id === 'choice');
+
+  const built = compileText(
+    page([
+      {
+        op: 'choice',
+        options: [
+          { text: 'Yes', commands: [{ op: 'setVar', variable: 1, value: 1 }] },
+          { text: 'No', commands: [] }
+        ]
+      }
+    ])
+  );
+  assert.deepEqual(built.problems, []);
+  const body = built.events[0].slice(4); // past the page header
+
+  assert.equal(body[0], OP_CHOICE);
+  assert.equal(body[1], 2, 'two options');
+  // The string ids are contiguous and up front, which is what lets the box draw
+  // row n from the n'th byte after the count without walking any bodies.
+  assert.equal(body[2], 0, 'the first option interned first');
+  assert.equal(body[3], 1, 'and the second after it');
+  assert.equal(body[4], 5, 'the first record is a three-byte command and its jump');
+  assert.equal(body[8], OP_JUMP, 'every option ends with the jump a then-branch ends with');
+  assert.equal(body[9], 3, 'past the second record: its length byte, an empty body and its jump');
+  assert.equal(body[10], 2, 'the second record is nothing but its jump');
+  assert.equal(body[11], OP_JUMP);
+  assert.equal(body[12], 0, 'the last option has nothing left to step over');
+  assert.equal(body[13], OP_END, 'and the page ends after the question');
+
+  // The labels reach the string table as themselves, wrapped by nothing: a
+  // label is one row of the box, and a control byte in the middle of one would
+  // be drawn as a tile.
+  const [yes, no] = built.strings;
+  assert.deepEqual(yes, [...'Yes'].map((char) => char.charCodeAt(0) - 32 + 0xa0).concat(0));
+  assert.equal(no.length, 'No'.length + 1, 'two glyphs and the end of the string');
+
+  // Lengths are single bytes here as everywhere, and a question is the second
+  // structure that makes 255 reachable. Both the record and the distance the
+  // first option has to jump are measured, and both name what to shorten.
+  const filler = (count) => Array.from({ length: count }, () => ({ op: 'setVar', variable: 0, value: 1 }));
+  const long = compileText(
+    page([{ op: 'choice', options: [{ text: 'Long', commands: filler(85) }, { text: 'Short', commands: [] }] }])
+  );
+  assert.match(long.problems[0].message, /→ “Long” compiles to 257 bytes/);
+  assert.equal(long.problems[0].where, 'Map Forge');
+
+  const far = compileText(
+    page([{ op: 'choice', options: [{ text: 'First', commands: [] }, { text: 'Second', commands: filler(85) }] }])
+  );
+  assert.match(far.problems[0].message, /→ “Second” compiles to 257 bytes/);
+  assert.match(far.problems[1].message, /→ the options after the first compiles to 258 bytes/);
+
+  // An unnamed option is still named in the problem, because the author has to
+  // be able to find the one being complained about.
+  const unnamed = compileText(page([{ op: 'choice', options: [{ text: '', commands: filler(85) }] }]));
+  assert.match(unnamed.problems[0].message, /→ “option 1” compiles to 257 bytes/);
+});
+
+test('a question is clamped to what the box can show, and an empty one is not a command', () => {
+  const optionsOf = (count) =>
+    Array.from({ length: count }, (_, n) => ({ text: `Option ${n}`, commands: [] }));
+  const withChoice = (options) =>
+    normalizeProject({
+      maps: [
+        {
+          screens: [
+            {
+              entities: [
+                {
+                  actorId: 0,
+                  props: {
+                    event: { pages: [{ cond: { type: 'none', arg: 0 }, commands: [{ op: 'choice', options }] }] }
+                  }
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    });
+
+  const commandsOf = (project) => project.maps[0].screens[0].entities[0].props.event.pages[0].commands;
+
+  // Four rows of text, four options. A fifth is dropped rather than kept for a
+  // later version to honour: there is no row for it, so it is not data — it is
+  // an option the player could neither see nor reach.
+  assert.equal(commandsOf(withChoice(optionsOf(6)))[0].options.length, CHOICE_LIMITS.options);
+  // A question with nothing to choose between is not a question at all.
+  assert.deepEqual(commandsOf(withChoice([])), []);
+
+  // A label is one row wide and cannot wrap, so it is squeezed onto one.
+  const long = 'x'.repeat(CHOICE_LIMITS.label + 10);
+  const squeezed = commandsOf(withChoice([{ text: `  two   ${'y'.repeat(40)}\nlines  `, commands: [] }, { text: long }]))[0];
+  assert.equal(squeezed.options[0].text.includes('\n'), false, 'a label may not carry a line break');
+  assert.ok(squeezed.options[0].text.startsWith('two y'), 'runs of whitespace collapse');
+  assert.equal(squeezed.options[1].text.length, CHOICE_LIMITS.label);
+  assert.deepEqual(squeezed.options[1].commands, [], 'an option with no command list gets an empty one');
+});
+
+test('a question is live even when its options do nothing', () => {
+  // A branch with nothing live inside it is invisible, so it is not a live
+  // command. A question with two empty options is not: it stops the
+  // conversation and waits to be answered, which the player can see happening.
+  const event = {
+    pages: [
+      {
+        cond: { type: 'none', arg: 0 },
+        commands: [{ op: 'choice', options: [{ text: 'Yes', commands: [] }, { text: 'No', commands: [] }] }]
+      }
+    ]
+  };
+  assert.equal(enabledCommands(event.pages[0]).length, 1);
+  assert.equal(compiledPages(event).length, 1);
+
+  // ...and switching it off takes its options with it, like any other command.
+  const off = { pages: [{ cond: { type: 'none', arg: 0 }, commands: [{ ...event.pages[0].commands[0], off: true }] }] };
+  assert.deepEqual(enabledCommands(off.pages[0]), []);
+  assert.deepEqual(compiledPages(off), []);
 });
 
 test('a long page that is declined is stepped over exactly', {

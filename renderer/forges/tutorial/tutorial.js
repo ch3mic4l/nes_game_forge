@@ -284,6 +284,15 @@ const TOPICS = [
         'lists of commands, Then and Else, either of which can hold another If. That is how one ',
         'conversation can hand over a reward only to somebody carrying the key, without splitting ',
         'into two pages that repeat everything they have in common.'
+      ),
+      p(
+        b('Ask a question…'),
+        ' puts that decision to the player instead. It holds up to four answers — one for each ',
+        'row of the message box — and each answer has its own list of commands, so a shop is ',
+        '“Pay up” taking the gold and handing over the lantern beside “Not today” saying so. The ',
+        'box lists the answers with a cursor the D-pad moves, either button answers with whatever ',
+        'the cursor is on, and the page carries on underneath whichever one was picked. An answer ',
+        'holds anything a page holds, including another question.'
       )
     ]
   },

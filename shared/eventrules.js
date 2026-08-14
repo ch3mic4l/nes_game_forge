@@ -29,11 +29,38 @@ const isLive = (command) => {
   if (command.op === 'branch') {
     return [...(command.then ?? []), ...(command.else ?? [])].some(isLive);
   }
+  // A question is not asked about its contents the way a branch is. A branch
+  // with nothing live inside it is invisible — the player never learns it was
+  // there — but a question with two empty options still stops the conversation
+  // and waits to be answered, which is a thing that happened on screen.
+  if (command.op === 'choice') return (command.options ?? []).length > 0;
   return true;
 };
 
 /** The commands a page runs. A switched-off one is authoring scaffolding. */
 export const enabledCommands = (page) => (page?.commands ?? []).filter(isLive);
+
+/**
+ * Every command in a list, including the ones inside the commands that hold
+ * commands — a branch's two sides, a question's answers, and whatever those
+ * hold in turn.
+ *
+ * Anything asking "does this event mention X" has to walk this rather than the
+ * top level. A switch set inside a branch was invisible to the template
+ * allocator, which handed the same switch to something else and coupled two
+ * unrelated events; an answer is a second place to hide, and there will be a
+ * third. Switched-off commands are included: the toggle is about what the ROM
+ * runs, and a switch named by a command you are about to switch back on is not
+ * a switch anybody else should be given.
+ */
+export function* allCommands(list) {
+  for (const command of list ?? []) {
+    yield command;
+    yield* allCommands(command.then);
+    yield* allCommands(command.else);
+    for (const option of command.options ?? []) yield* allCommands(option.commands);
+  }
+}
 
 /**
  * The pages that reach the ROM.

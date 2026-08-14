@@ -347,6 +347,51 @@ const scenario = (dir, sampleDir) => `
   await wait(200);
   step('branching', 'If authored with a command inside its Then side');
 
+  // A question, which is the other command that holds commands — and the one
+  // whose lists are named by the author rather than by the editor, so both the
+  // label and the list underneath it have to land on the right answer.
+  rowButton(0, 'Edit event…').click();
+  await until('the event editor', () => document.querySelector('#modalHost .btn-accent'));
+  const addQuestion = [...document.querySelectorAll('#modalHost select')].find((node) =>
+    node.textContent.includes('Add a command')
+  );
+  addQuestion.value = 'choice';
+  addQuestion.dispatchEvent(new Event('change', { bubbles: true }));
+  await wait(200);
+  const answers = [...document.querySelectorAll('#modalHost [data-option]')];
+  if (answers.length !== 2) throw new Error('a new question rendered ' + answers.length + ' answers, expected 2');
+  const firstLabel = answers[0].querySelector('input[type=text]');
+  firstLabel.value = 'Hand it over';
+  firstLabel.dispatchEvent(new Event('change', { bubbles: true }));
+  await wait(200);
+  // The second answer's own command list, which is the part only the real
+  // editor can show: what it adds has to land inside that answer and nowhere
+  // else — not in the first answer, and not beside the question.
+  const addToSecond = [...document.querySelectorAll('#modalHost [data-option="1"] select')].find((node) =>
+    node.textContent.includes('Add a command')
+  );
+  if (!addToSecond) throw new Error('the second answer offered no command list of its own');
+  addToSecond.value = 'setSwitch';
+  addToSecond.dispatchEvent(new Event('change', { bubbles: true }));
+  await wait(200);
+  document.querySelector('#modalHost .btn-accent').click();
+  await wait(300);
+  const asked = store.project.maps[0].screens[3].entities[0].props.event.pages[0].commands;
+  const question = asked[asked.length - 1];
+  if (question?.op !== 'choice') throw new Error('the question saved as ' + JSON.stringify(question));
+  if (question.options?.[0]?.text !== 'Hand it over') {
+    throw new Error('the answer label did not reach the project: ' + JSON.stringify(question.options));
+  }
+  if (question.options[0].commands.length !== 0) {
+    throw new Error('the command landed in the first answer: ' + JSON.stringify(question.options));
+  }
+  if (question.options[1]?.commands?.[0]?.op !== 'setSwitch') {
+    throw new Error('the command went beside the answer instead of inside it: ' + JSON.stringify(question));
+  }
+  store.undo();
+  await wait(200);
+  step('questions', 'Ask authored with a labelled answer and a command inside another');
+
   // Duplicate keeps the event, and lands somewhere you can see it.
   rowButton(0, '+⧉').click();
   await wait(250);

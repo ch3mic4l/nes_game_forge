@@ -18,6 +18,8 @@ import {
   defaultMapperFor
 } from './cartridge.js';
 import {
+  BOX_COLS,
+  BOX_ROWS,
   FONT_BASE,
   HEART_FULL_TILE,
   SPRITE_ARROW_TILE,
@@ -197,20 +199,29 @@ export const EVENT_COMMANDS = [
   { id: 'setVar', label: 'Set variable', args: ['variable', 'value'] },
   { id: 'addVar', label: 'Add to variable', args: ['variable', 'value'] },
   { id: 'subVar', label: 'Subtract from variable', args: ['variable', 'value'] },
-  // The only command that contains other commands. A page condition decides
-  // which page runs *before* it runs; this decides in the middle of one, which
-  // is what "give the reward, but only if they are carrying the key" needs
-  // without splitting the conversation across two pages that both have to
-  // repeat the parts they share. `cond` is the same shape a page's is — the
-  // vocabulary of conditions has one definition, and one encoder.
-  { id: 'branch', label: 'If…', args: ['branch'] }
+  // The commands that contain other commands. A page condition decides which
+  // page runs *before* it runs; a branch decides in the middle of one, which is
+  // what "give the reward, but only if they are carrying the key" needs without
+  // splitting the conversation across two pages that both have to repeat the
+  // parts they share. `cond` is the same shape a page's is — the vocabulary of
+  // conditions has one definition, and one encoder.
+  //
+  // `nests` says the command holds a list of commands, whatever it calls them.
+  // The editor's depth limit and the schema's safety bound both ask this rather
+  // than naming the two commands, so a third one is not a third place to edit.
+  { id: 'branch', label: 'If…', args: ['branch'], nests: true },
+  // A branch asks the game a question. This one asks the *player*: the message
+  // box lists the options, the player puts the cursor on one, and that option's
+  // commands are the ones that run. Everything a branch is, with the condition
+  // replaced by somebody at the controller.
+  { id: 'choice', label: 'Ask a question', args: ['choice'], nests: true }
 ];
 
 // A command can be switched off while you work out whether you want it, the way
 // you would comment a line out. What that means lives in `eventrules.js`, which
 // `font.js` needs as well — re-exported here so the schema stays the one place
 // to look for it.
-export { enabledCommands, compiledPages } from './eventrules.js';
+export { enabledCommands, compiledPages, allCommands } from './eventrules.js';
 
 /**
  * The subset engine/script.asm can actually run. Everything in EVENT_COMMANDS is
@@ -231,8 +242,22 @@ export const IMPLEMENTED_COMMANDS = new Set([
   'setVar',
   'addVar',
   'subVar',
-  'branch'
+  'branch',
+  'choice'
 ]);
+
+/**
+ * What a question fits in, which is what the message box is: one option per text
+ * row, and a label as wide as a row of text. The cursor sits in the padding
+ * column outside that width, so a label may use the whole of it.
+ *
+ * Both numbers come from the box rather than being chosen here, because the box
+ * is what has to draw the answer — a fifth option would have nowhere to go.
+ */
+export const CHOICE_LIMITS = {
+  options: BOX_ROWS,
+  label: BOX_COLS
+};
 
 /** Limits the battle system imposes on top of LIMITS. */
 export const RPG_LIMITS = {
@@ -542,10 +567,11 @@ function normalizeMetatile(raw, id) {
 const MAX_DIALOGUE = 240; // one message is a handful of pages at 28 columns
 
 /**
- * How deep the *editor* offers to nest branches.
+ * How deep the *editor* offers to nest a command that holds commands — a branch
+ * inside a branch, or an option of a question that asks another one.
  *
- * Neither the schema nor the engine has a limit: a branch is bytes inside the
- * bytes of the branch around it, and nothing is remembered but where the script
+ * Neither the schema nor the engine has a limit: the inner one is bytes inside
+ * the bytes of the outer one, and nothing is remembered but where the script
  * pointer is. This is a judgement about what stays legible in a modal, and it is
  * all it is — a project written by a later version with deeper nesting keeps
  * every command through a load and a save here.
@@ -560,9 +586,27 @@ export const MAX_BRANCH_DEPTH = 8;
  */
 const BRANCH_DEPTH_LIMIT = 64;
 
+/**
+ * One line of a question, which is one row of the box and cannot wrap.
+ *
+ * Exported because the compiler has to apply exactly this rule, for the reason
+ * `conditionArgLimit` is exported: the engine draws a label by pushing glyphs
+ * until the string ends, so a label the wrapper had broken into two lines would
+ * put a control byte into the middle of a row of tiles.
+ */
+export const choiceLabel = (raw) =>
+  String(raw ?? '').replace(/\s+/g, ' ').trim().slice(0, CHOICE_LIMITS.label);
+
 function normalizeEventCommand(raw, depth = 0) {
   const command = EVENT_COMMANDS.find((entry) => entry.id === raw?.op);
   if (!command || command.id === 'end') return null;
+  if (command.nests && depth >= BRANCH_DEPTH_LIMIT) {
+    throw new Error(`This project nests event commands more than ${BRANCH_DEPTH_LIMIT} deep.`);
+  }
+  // Every list of commands inside this one, wherever it hangs: a branch's two
+  // sides and a question's options are the same recursion with different names.
+  const inner = (list) =>
+    (Array.isArray(list) ? list : []).map((entry) => normalizeEventCommand(entry, depth + 1)).filter(Boolean);
   const out = { op: command.id };
   // Only when it is actually off, so a project that has never used the toggle
   // is byte-for-byte what it was before the toggle existed.
@@ -573,14 +617,22 @@ function normalizeEventCommand(raw, depth = 0) {
     else if (arg === 'member') out.member = clamp(raw?.member, 0, RPG_LIMITS.party - 1, 0);
     else if (arg === 'variable') out.variable = clamp(raw?.variable, 0, RPG_LIMITS.variables - 1, 0);
     else if (arg === 'branch') {
-      if (depth >= BRANCH_DEPTH_LIMIT) {
-        throw new Error(`This project nests event branches more than ${BRANCH_DEPTH_LIMIT} deep.`);
-      }
       out.cond = normalizeCondition(raw?.cond);
-      const branchList = (list) =>
-        (Array.isArray(list) ? list : []).map((entry) => normalizeEventCommand(entry, depth + 1)).filter(Boolean);
-      out.then = branchList(raw?.then);
-      out.else = branchList(raw?.else);
+      out.then = inner(raw?.then);
+      out.else = inner(raw?.else);
+    } else if (arg === 'choice') {
+      // Extra options are dropped rather than kept for a later version to
+      // honour, which is the one place this schema does not preserve what it
+      // was given: the box has four rows, so a fifth option is not data the
+      // engine could ever be taught to show — it is an option the player would
+      // have no way to pick and no way to see.
+      out.options = (Array.isArray(raw?.options) ? raw.options : [])
+        .slice(0, CHOICE_LIMITS.options)
+        .map((option) => ({ text: choiceLabel(option?.text), commands: inner(option?.commands) }));
+      // A question with nothing to choose between is not a question. It would
+      // compile to a box that comes up, offers nothing and takes the player's
+      // answer as option zero, which is somewhere past the end of the command.
+      if (!out.options.length) return null;
     } else out[arg] = clamp(raw?.[arg], 0, 255, 0);
   }
   return out;

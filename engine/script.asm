@@ -9,7 +9,9 @@
 ; Commands run straight through until one of them has to wait for
 ; the player -- Say does, because the message box types over several frames -- at
 ; which point script_ptr is left pointing at the next command and the box's close
-; path calls script_resume.
+; path calls script_resume. A question waits in the same way and resumes through
+; script_choose instead, because what it is waiting for is an answer rather than
+; an acknowledgement.
 ;
 ; Dispatch is a chain of compares rather than a jump table for the same reason
 ; do_action's is: a table would be a second place the opcode order had to be kept
@@ -116,8 +118,12 @@ script_run_subvar:
   jmp script_op_subvar
 script_run_if:
   cmp #OP_IF
-  bne script_run_jump
+  bne script_run_choice
   jmp script_op_if
+script_run_choice:
+  cmp #OP_CHOICE
+  bne script_run_jump
+  jmp script_op_choice
 script_run_jump:
   cmp #OP_JUMP
   bne script_run_bad
@@ -245,6 +251,55 @@ script_op_jump:
   lda #2                    ; the OP_JUMP and its length byte
   jsr script_skip
   pla
+  jsr script_skip
+  jmp script_run
+
+; --------------------------------------------------------------- questions
+;
+; [OP_CHOICE, count, a string id per option] and then one record per option:
+; [length, commands..., OP_JUMP, what is left of the question].
+;
+; A branch asks the game which way to go; this asks the player. Past that the
+; two are the same shape, down to the OP_JUMP every option ends with -- the one
+; a finished then-branch runs into, doing the same job of stepping over the
+; alternatives that were not taken.
+;
+; script_ptr stays on the command for as long as the question is up, because the
+; box reads the option labels back out of it as it draws them. Which row the
+; cursor is on is the only thing remembered, and it is turned into a body once,
+; here, when the player presses a button. Nothing else is kept -- so a Say inside
+; an option suspends and resumes through script_resume, which knows nothing
+; about questions, exactly as it does inside a branch.
+
+script_op_choice:
+  jmp box_choose            ; suspends here; text_advance answers it
+
+; The player picked option choice_sel. Step over the header, then over every
+; record above the answer -- each one a length byte and the bytes it counts --
+; and then into the answer's own body.
+script_choose:
+  ldy #1
+  lda [script_ptr_lo],y     ; count
+  clc
+  adc #2                    ; the opcode, the count, and one string id per option
+  jsr script_skip
+  ldx choice_sel
+  beq script_choose_enter
+; Two steps per record rather than one sum, for the reason script_page's skip
+; takes two: a record may be 255 bytes long, and adding its length byte to that
+; carries out of the accumulator where script_skip cannot see it.
+script_choose_walk:
+  ldy #0
+  lda [script_ptr_lo],y     ; this record's length
+  pha
+  lda #1                    ; and the byte that carried it
+  jsr script_skip
+  pla
+  jsr script_skip           ; script_skip and pha/pla both leave X alone
+  dex
+  bne script_choose_walk
+script_choose_enter:
+  lda #1                    ; over the answer's own length byte, into its body
   jsr script_skip
   jmp script_run
 

@@ -16,25 +16,34 @@
 // (ROADMAP.md item 1), and a template that compiles to nothing is exactly what
 // this codebase refuses to ship.
 
-import { RPG_LIMITS } from '../../../shared/project.js';
+import { RPG_LIMITS, allCommands } from '../../../shared/project.js';
 
 /**
  * Which switches the project already spends. Every place a switch number can
- * hide: a page's condition, a set/clear command, and an actor's hide switch.
- * Miss one and a template hands out a switch that is already load-bearing,
- * which presents as two unrelated events firing together.
+ * hide: a page's condition, a branch's condition (which is the same object), a
+ * set/clear command wherever it sits, and an actor's hide switch. Miss one and a
+ * template hands out a switch that is already load-bearing, which presents as
+ * two unrelated events firing together.
+ *
+ * Nested commands are reached through `allCommands` rather than by naming the
+ * commands that hold commands, because the last two additions to that list were
+ * each a place a switch could hide from this.
  */
 export function usedSwitches(project) {
   const used = new Set();
+  const fromCondition = (cond) => {
+    if (cond?.type === 'switchOn' || cond?.type === 'switchOff') used.add(cond.arg);
+  };
   for (const map of project.maps ?? []) {
     for (const screen of map.screens ?? []) {
       for (const entity of screen.entities ?? []) {
         const props = entity.props ?? {};
         if (typeof props.hideSwitch === 'number') used.add(props.hideSwitch);
         for (const page of props.event?.pages ?? []) {
-          if (page.cond?.type === 'switchOn' || page.cond?.type === 'switchOff') used.add(page.cond.arg);
-          for (const command of page.commands ?? []) {
+          fromCondition(page.cond);
+          for (const command of allCommands(page.commands)) {
             if (command.op === 'setSwitch' || command.op === 'clearSwitch') used.add(command.switch);
+            fromCondition(command.cond); // a branch's, which a page's editor also writes
           }
         }
       }

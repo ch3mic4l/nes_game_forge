@@ -12,6 +12,18 @@
 ; cycles of drain, which fits vblank alongside the 513-cycle OAM DMA with room
 ; to spare. Nothing here formats numbers or reads tables inside NMI: the drain
 ; only copies bytes.
+;
+; **A packet that is opened must be pushed to at least once.** vram_drain_byte
+; tests its counter after decrementing it, so a count of zero is 256 -- a whole
+; page of whatever the queue happened to hold, written into the nametable and
+; running long past the end of vblank. A producer therefore has to *know* it has
+; a byte before it calls vram_open: either because it always does (the
+; fixed-width rows, the one-tile writes, the engine's own strings, which are
+; never empty) or because it looked first. Listing a question's options is the
+; one that has to look, because an answer whose label has not been written yet
+; is an ordinary thing for a project to be holding. The drain is not defended
+; against it: it runs in NMI, and a second answer to the question of what a
+; packet is would cost every frame.
 
 ; --------------------------------------------------------------- the queue
 
@@ -93,24 +105,38 @@ vram_drain_done:
 
 ; ---------------------------------------------------------- the message box
 
-; Start typing the string whose pointer is already in msg_ptr, raising the box
-; first if it is not already up.
-box_say:
+; Put the box up -- or reuse the one that is up -- and hand it to the phase in A
+; once there is a clear frame to work in: BOX_TYPING to say something, or
+; BOX_CHOICE to ask something. Raising the frame and wiping a page are the same
+; two jobs whichever it turns out to be, so what happens afterwards is decided
+; here, once, rather than asked at the end of both of them.
+box_begin:
+  sta box_after
   lda #0
   sta msg_col
   sta msg_line
-  lda box_state
-  bne box_say_open          ; the box is already up: type straight into it
   sta box_row
+  lda box_state
+  bne box_begin_clear       ; already up: keep the frame, wipe what it holds
   lda #BOX_OPENING
   sta box_state
   rts
-box_say_open:
-  lda #BOX_CLEARING         ; a second message reuses the frame, wiping the text
+box_begin_clear:
+  lda #BOX_CLEARING
   sta box_state
-  lda #0
-  sta box_row
   rts
+
+; Start typing the string whose pointer is already in msg_ptr.
+box_say:
+  lda #BOX_TYPING
+  jmp box_begin
+
+; Ask the question at script_ptr. The options are read back out of the command
+; as they are drawn, which is why nothing may advance script_ptr until one of
+; them is picked.
+box_choose:
+  lda #BOX_CHOICE
+  jmp box_begin
 
 ; Take the box down again and hand back to the script.
 box_close:
@@ -143,19 +169,34 @@ text_tick_clearing:
   jmp text_clear_step
 text_tick_closing:
   cmp #BOX_CLOSING
-  bne text_tick_wait
+  bne text_tick_choice
   jmp text_close_step
+text_tick_choice:
+  cmp #BOX_CHOICE
+  bne text_tick_choicewait
+  jmp text_choice_step
+text_tick_choicewait:
+  cmp #BOX_CHOICEWAIT
+  bne text_tick_wait
+  jmp text_choice_move      ; a wait that still has a cursor to steer
 text_tick_wait:
-  rts                       ; the two WAIT states are waiting for the player
+  rts                       ; the WAIT states are waiting for the player
 
-; The confirm/cancel action, while a box is up. Only the two waits react: a
-; press during the typewriter is ignored rather than queued.
+; The confirm/cancel action, while a box is up. Only the waits react: a press
+; during the typewriter, or while the options are still being listed, is ignored
+; rather than queued.
+;
+; Cancel arrives here too, and answers a question with whatever the cursor is
+; on. Both buttons have always meant "go on" to this box; a question is the box
+; asking which way, not a second thing to back out of.
 text_advance:
   lda box_state
   cmp #BOX_PAGEWAIT
   beq text_advance_page
   cmp #BOX_ENDWAIT
   beq text_advance_end
+  cmp #BOX_CHOICEWAIT
+  beq text_advance_pick
   rts
 text_advance_page:
   jsr text_hide_arrow
@@ -167,6 +208,9 @@ text_advance_page:
 text_advance_end:
   jsr text_hide_arrow
   jmp script_resume
+text_advance_pick:
+  jsr choice_hide           ; the cursor is the one thing the next phase would
+  jmp script_choose         ; not wipe: it sits outside the text area
 
 ; ------------------------------------------------------------------- steps
 
@@ -216,12 +260,7 @@ text_open_attr_loop:
   dey
   bne text_open_attr_loop
   jsr vram_end
-  lda #0
-  sta msg_col
-  sta msg_line
-  lda #BOX_TYPING
-  sta box_state
-  rts
+  jmp box_handover
 
 ; One glyph per frame -- the typewriter.
 text_type_step:
@@ -293,22 +332,15 @@ text_arrow_write:
   jsr vram_push
   jmp vram_end
 
-; Wipe the four text rows, one per frame, then start typing again.
+; Wipe the four text rows, one per frame, then get on with whatever the box was
+; cleared for. The cursor column is outside this width and is not wiped here:
+; a question takes its own cursor down when it is answered, which is the only
+; time one is up.
 text_clear_step:
   lda box_row
   cmp #BOX_TEXT_ROWS
   bcs text_clear_done
-  lda box_row
-  asl a
-  asl a
-  asl a
-  asl a
-  asl a
-  clc
-  adc #BOX_TEXT_LO
-  tay
-  lda #BOX_ADDR_HI
-  jsr vram_open
+  jsr box_text_row_addr
   ldy #BOX_COLS
 text_clear_loop:
   lda #TILE_SPACE
@@ -319,12 +351,164 @@ text_clear_loop:
   inc box_row
   rts
 text_clear_done:
+  ; fall through
+
+; A shared phase is finished: hand the box to whatever it was raised or cleared
+; for, with the counters it walks the box with back at the start.
+;
+; box_row is one of them. Typing does not use it -- it counts in msg_line -- so
+; for as long as the box only ever typed, every phase could leave it wherever it
+; had finished and nothing noticed. Listing a question's options counts rows in
+; box_row like the phases before it do, and reads whatever the last one left.
+box_handover:
   lda #0
   sta msg_col
   sta msg_line
-  lda #BOX_TYPING
+  sta box_row
+  lda box_after
   sta box_state
   rts
+
+; Open a packet at the start of the box_row'th row of text. Preserves nothing
+; but the queue, which is all three callers want from it.
+box_text_row_addr:
+  lda box_row
+  asl a
+  asl a
+  asl a
+  asl a
+  asl a                     ; row * 32
+  clc
+  adc #BOX_TEXT_LO
+  tay
+  lda #BOX_ADDR_HI
+  jmp vram_open
+
+; ------------------------------------------------------------- the question
+;
+; A question is the box with one option on each of its text rows and the cursor
+; in the padding column beside them -- column 1, which is inside the frame and
+; outside the 28 columns of text, so moving the cursor can never disturb a label
+; and wiping the labels can never rub the cursor out.
+;
+; The command being asked is still under script_ptr: nothing advances past a
+; question until it is answered. So the labels are read straight out of it --
+; the string id for row n is the n'th byte after the count -- and the only thing
+; this has to remember is which row the cursor is on. See script_choose for the
+; other half, which is the walk from that number to the commands it chose.
+
+; One option per frame, keeping the one-row-per-frame budget every phase here
+; keeps to.
+text_choice_step:
+  ldy #1
+  lda [script_ptr_lo],y     ; how many options there are
+  cmp box_row
+  beq text_choice_ready
+  bcc text_choice_ready     ; can only happen to data this engine did not write
+  lda box_row
+  clc
+  adc #2                    ; past the opcode and the count, to this row's id
+  tay
+  lda [script_ptr_lo],y
+  tay
+  lda str_ptr_lo,y
+  sta msg_ptr_lo
+  lda str_ptr_hi,y
+  sta msg_ptr_hi
+  ; An answer with no label yet is an ordinary thing to be holding while you
+  ; write one, and its string is nothing but TXT_END. That row is left blank --
+  ; but the packet must not be opened for it, because a packet with a count of
+  ; zero is one the drain reads as 256. See the queue rules at the top.
+  ldy #0
+  lda [msg_ptr_lo],y
+  beq text_choice_blank
+  jsr box_text_row_addr
+  ; A label is compiled to fit one row and ends with TXT_END, so the count is a
+  ; backstop rather than the thing that stops the loop: it is what keeps a string
+  ; this engine did not compile from running the whole queue off the end of its
+  ; page.
+  lda #BOX_COLS
+  sta box_col
+  ldy #0
+text_choice_glyph:
+  lda [msg_ptr_lo],y
+  beq text_choice_drawn
+  jsr vram_push             ; preserves Y, which is walking the label
+  iny
+  dec box_col
+  bne text_choice_glyph
+text_choice_drawn:
+  jsr vram_end
+text_choice_blank:
+  inc box_row
+  rts
+text_choice_ready:
+  lda #0
+  sta choice_sel
+  lda #BOX_CHOICEWAIT
+  sta box_state
+  jmp choice_show
+
+; Up and down, while the question is up. The d-pad is read here directly for the
+; reason the inventory reads it directly: it is not in the Controller Forge's
+; table, because during play it always walks and in a menu it always moves the
+; cursor. The list wraps at both ends, exactly as the item row does.
+text_choice_move:
+  lda pad_new
+  and #BTN_UP
+  bne text_choice_up
+  lda pad_new
+  and #BTN_DOWN
+  bne text_choice_down
+  rts
+text_choice_up:
+  jsr choice_hide
+  lda choice_sel
+  bne text_choice_up_step
+  ldy #1
+  lda [script_ptr_lo],y     ; off the top: round to the last option
+text_choice_up_step:
+  sec
+  sbc #1
+  sta choice_sel
+  jmp choice_show
+text_choice_down:
+  jsr choice_hide
+  lda choice_sel
+  clc
+  adc #1
+  ldy #1
+  cmp [script_ptr_lo],y     ; past the last: round back to the first
+  bcc text_choice_down_store
+  lda #0
+text_choice_down_store:
+  sta choice_sel
+  jmp choice_show
+
+; A = the tile to write beside the option the cursor is on.
+choice_cursor:
+  pha
+  lda choice_sel
+  asl a
+  asl a
+  asl a
+  asl a
+  asl a                     ; row * 32
+  clc
+  adc #BOX_TEXT_LO-1        ; the padding column, left of the text
+  tay
+  lda #BOX_ADDR_HI
+  jsr vram_open
+  pla
+  jsr vram_push
+  jmp vram_end
+
+choice_show:
+  lda #ARROW_TILE
+  jmp choice_cursor
+choice_hide:
+  lda #TILE_SPACE
+  jmp choice_cursor
 
 ; Put the world back. The box covers metatile rows 12-14 exactly, so each of its
 ; six tile rows is one half of one metatile row and can be rebuilt straight from

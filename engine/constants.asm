@@ -163,6 +163,15 @@ bt_tgt_vis  = $78           ; battle targeting cursor is showing (sprite cursor
 script_val  = $79           ; the number a page condition or a variable command
                             ; works against. It cannot be an immediate: it comes
                             ; out of the event data, not out of the code
+; A question the player answers. Which option the cursor is on is the whole of
+; what is remembered: the labels are read out of the command script_ptr is still
+; sitting on, and the answer is walked into a body once, when it is given.
+choice_sel  = $7A
+; Which phase the box hands itself to once it is up and clear -- typing a
+; message, or listing a question's options. Decided by whoever asked for the
+; box, so raising the frame and wiping a page stay one implementation each and
+; neither has to ask what it is being done for.
+box_after   = $7B
 
 ; Which split program this frame runs. OFF disarms the counter entirely.
 SPL_OFF     = 0
@@ -412,7 +421,7 @@ BOX_MT_ROW    = 12          ; metatile row the box starts on
 ; player to press a button is not.
 ARROW_LO      = $9E
 
-; box_state. Everything but CLOSED freezes the world, and everything but the two
+; box_state. Everything but CLOSED freezes the world, and everything but the
 ; WAIT states is a multi-frame job the tick advances by one step per frame -- the
 ; NMI queue only carries one row of tiles per vblank.
 BOX_CLOSED    = 0
@@ -422,6 +431,8 @@ BOX_PAGEWAIT  = 3           ; page full, more text after it
 BOX_CLEARING  = 4
 BOX_CLOSING   = 5
 BOX_ENDWAIT   = 6           ; the message is over; confirm resumes the script
+BOX_CHOICE    = 7           ; listing a question's options, one row per frame
+BOX_CHOICEWAIT = 8          ; ...and waiting for one of them to be picked
 
 ; String bytes. Glyphs are $A0-$FF (see shared/font.js), so anything below the
 ; font's base is free to be a control code.
@@ -460,6 +471,11 @@ OP_SUB_VAR  = $0A
 OP_IF       = $0B           ; [cond, arg, value, length of the then-branch] --
                             ; deliberately the same four bytes a page header is,
                             ; so script_cond reads a branch and a page alike
+OP_CHOICE   = $0C           ; [count, a string id per option] then one record per
+                            ; option: [length, commands, OP_JUMP, the rest of the
+                            ; question]. A branch the player takes rather than
+                            ; the condition, down to ending each option the same
+                            ; way a then-branch ends
 ; Punctuation rather than a command: the compiler emits it, nothing authors it,
 ; and it is numbered out of the way of EVENT_COMMANDS so the two orders cannot
 ; grow into each other. It ends a then-branch by stepping over the else-branch.
