@@ -36,6 +36,15 @@ init_session_vars:          ; are the same kind of state and outlive a screen
   sta variables,x           ; change for the same reason
   dex
   bpl init_session_vars
+  lda #NO_MAP               ; forces apply_map_music to redecide even when the
+  sta cur_map               ; next screen is the same map index the player was
+                             ; already on -- a game over must not inherit it
+  jsr music_stop             ; makes the session's silence real rather than
+                              ; merely believed: resetting cur_map is not
+                              ; enough on its own, because the destination map
+                              ; can itself be Silence, and set_music only calls
+                              ; back into music_play/music_stop when something
+                              ; has actually changed
   .if BATTLE_ENABLED
   lda #0
   sta enc_step

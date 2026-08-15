@@ -131,8 +131,12 @@ script_run_jump:
   jmp script_op_jump
 script_run_call:
   cmp #OP_CALL
-  bne script_run_bad
+  bne script_run_music
   jmp script_op_call
+script_run_music:
+  cmp #OP_MUSIC
+  bne script_run_bad
+  jmp script_op_music
 script_run_bad:
   jmp script_finish         ; an opcode this engine cannot run stops the event
                             ; rather than being reinterpreted as another one
@@ -224,6 +228,15 @@ script_op_join:
   jsr call_battle
   jmp script_next2
   .endif
+
+; [OP_MUSIC, song index or NO_SONG]. set_music (engine/music.asm) is the same
+; routine apply_map_music calls when a screen arrives on a new map, so an
+; event and the map it is running on agree about what counts as a change and
+; neither can retrigger a song the other just started.
+script_op_music:
+  jsr script_arg
+  jsr set_music
+  jmp script_next2
 
 ; ------------------------------------------------------------------- calls
 ;

@@ -14,7 +14,54 @@
 ; counts at half the pulse rate, so it looks up note + 12 in that same table
 ; and lands on the same pitch.
 
-music_play:                 ; A = song index, or NO_SONG to stop
+; A = the song to play, or NO_SONG for silence. Calls music_play only when it
+; differs from cur_song, the shadow of what is already sounding -- calling
+; this with the song already playing does nothing, which is what stops a
+; screen edge or a Play music command from retriggering a song that never
+; stopped. cur_song itself is not this routine's to keep: music_play and
+; music_stop below are its single writers, so anything that reaches the APU
+; by calling them directly -- a Code Forge routine, say, and $C000 is
+; permanently mapped so one may call either from anywhere -- leaves cur_song
+; as honest as this wrapper does, rather than needing to know a rule only
+; set_music followed.
+set_music:
+  cmp cur_song
+  beq set_music_done
+  jmp music_play
+set_music_done:
+  rts
+
+; The map underneath flat_screen decides the music -- but only when the map
+; itself has changed. Called once from boot and once from redraw_screen (the
+; single place every other arrival, including a battle return and a door,
+; funnels through), it compares screen_map[flat_screen] against cur_map and
+; returns at once, without even reading map_song, when they already agree.
+; That is what lets a Play music command's override survive a screen edge
+; inside the map it was issued on: the edge redraws the screen, but the map
+; underneath it has not changed, so this never reaches set_music to reassert
+; the map's own choice over it. Crossing into a different map -- or
+; init_session resetting cur_map to NO_MAP, which start_game and restart_game
+; both run through before this ever sees the new screen -- makes the compare
+; fail and the map's own song takes over regardless of what was playing.
+apply_map_music:
+  ldy flat_screen
+  lda screen_map,y
+  cmp cur_map
+  beq apply_map_music_done
+  sta cur_map
+  tay
+  lda map_song,y
+  jmp set_music
+apply_map_music_done:
+  rts
+
+; A = song index, or NO_SONG to stop. The single writer of cur_song: every
+; path that reaches the APU, whether through set_music above or by a caller
+; going straight to music_play or music_stop, keeps the shadow honest by
+; storing here rather than by convention -- a rule spread across callers is a
+; rule a Code Forge routine calling this directly has no way to know.
+music_play:
+  sta cur_song
   cmp #NO_SONG
   beq music_stop
   asl a
@@ -48,7 +95,13 @@ music_play_loop:
   sta mus_enabled
   rts
 
+; A separate entry point as well as music_play's own NO_SONG case, so a
+; direct call -- init_session uses one, to make a new session's silence real
+; rather than merely believed -- still leaves cur_song correct rather than
+; relying on always arriving here through music_play's branch.
 music_stop:
+  lda #NO_SONG
+  sta cur_song
   lda #0
   sta mus_enabled
   lda #$30                  ; constant volume, zero

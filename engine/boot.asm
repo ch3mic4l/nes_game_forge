@@ -61,15 +61,17 @@ boot_wait2:
   lda #NO_ENTITY            ; nobody is talking; the rest of the UI state is
   sta talk_ent              ; zero, which boot_clear has already arranged
 
-  lda #START_SONG
-  jsr music_play
-
   .if TITLE_ENABLED
   lda #TITLE_FLAT_SCREEN    ; the cartridge boots into its title, not its world
   sta flat_screen
   lda #ST_TITLE
   sta game_state
   .endif
+
+  ; flat_screen is final now -- the title's, if there is one -- so this is the
+  ; one point boot decides the music instead of hardcoding the start map's:
+  ; apply_map_music reads whichever screen is actually about to be drawn.
+  jsr apply_map_music
 
   ldy flat_screen           ; select the starting map's tileset before drawing
   lda screen_tileset,y

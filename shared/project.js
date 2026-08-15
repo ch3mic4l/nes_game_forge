@@ -7,6 +7,7 @@
 
 import { BLANK_TILE } from './chr.js';
 import { normalizeSong } from './audio.js';
+import { allCommands, projectEvents } from './eventrules.js';
 import {
   DEFAULT_MAPPER,
   resolveMapper,
@@ -297,7 +298,14 @@ export const EVENT_COMMANDS = [
   // authored somewhere else. An id rather than a position in
   // project.commonEvents is what lets one be deleted without silently
   // retargeting every call naming a later one.
-  { id: 'call', label: 'Run common event', args: ['event'] }
+  { id: 'call', label: 'Run common event', args: ['event'] },
+  // Changes which song is sounding, immediately: `null` is Silence, otherwise
+  // a song's index, the same idiom a map's own Music field uses (see
+  // createMap). engine/music.asm's set_music is the single place either side
+  // applies one, comparing against what is already sounding first — so this
+  // and a map deciding its own song on arrival agree about what counts as a
+  // change, and neither retriggers a song that is already playing.
+  { id: 'music', label: 'Play music', args: ['song'] }
 ];
 
 // A command can be switched off while you work out whether you want it, the way
@@ -327,7 +335,8 @@ export const IMPLEMENTED_COMMANDS = new Set([
   'subVar',
   'branch',
   'choice',
-  'call'
+  'call',
+  'music'
 ]);
 
 /**
@@ -468,6 +477,38 @@ export function createMap(id, name = 'World') {
     battleGroundTile: 0,
     encounters: { rate: 0, actorIds: [] } // rate 0 = no random encounters here
   };
+}
+
+/**
+ * What every reference to a song becomes once `index` is gone from
+ * `project.songs`: `null` (Silence) for a map or a Play music command that
+ * named exactly that song, and one lower for anything that named a later one
+ * — the same renumbering `resolveCommonEventIds`' callers give a deleted
+ * common event's neighbours. Walks every event the project holds through
+ * `allCommands` rather than each page's own list, because a Play music
+ * command can be sitting inside a branch or a question same as any other —
+ * `usedSwitches` in templates.js made exactly this mistake once, over a
+ * switch instead of a song, and it read as two unrelated events firing
+ * together rather than as what it was.
+ *
+ * Mutates `project` and returns it. The caller removes `project.songs[index]`
+ * itself, before or after calling this — nothing here reads that list.
+ */
+export function renumberSongDeletion(project, index) {
+  for (const map of project.maps ?? []) {
+    if (map.songId === index) map.songId = null;
+    else if (map.songId > index) map.songId -= 1;
+  }
+  for (const event of projectEvents(project)) {
+    for (const page of event.pages ?? []) {
+      for (const command of allCommands(page.commands)) {
+        if (command.op !== 'music') continue;
+        if (command.song === index) command.song = null;
+        else if (command.song > index) command.song -= 1;
+      }
+    }
+  }
+  return project;
 }
 
 export function defaultInput() {
@@ -772,6 +813,14 @@ function normalizeEventCommand(raw, depth = 0) {
     // events actually get, so falling back to it would silently retarget a
     // dangling or hand-edited call to whatever that one happens to be.
     else if (arg === 'event') out.event = commonEventId(raw?.event) ?? NO_COMMON_EVENT;
+    // A song index, or `null` for Silence — the same shape map.songId is,
+    // and deliberately not clamped against how many songs the project
+    // actually has: buildProject compiles the project the app is holding
+    // rather than one freshly normalized, so the true ceiling is enforced
+    // where the song count is known, at compile time (see songByte in
+    // main/build/textcompile.js), the same reason 'warp's screen is a loose
+    // byte clamp here and a real one in the compiler.
+    else if (arg === 'song') out.song = raw?.song === null || raw?.song === undefined ? null : clamp(raw?.song, 0, 255, 0);
     else if (arg === 'branch') {
       out.cond = normalizeCondition(raw?.cond);
       out.then = inner(raw?.then);

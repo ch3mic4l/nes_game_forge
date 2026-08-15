@@ -8,6 +8,7 @@ import { store } from '../../store.js';
 import { el, clear, fill, field, toast, confirmModal } from '../../ui.js';
 import { CHANNELS, NUM_NOTES, noteName, createSong, createPattern, createInstrument, MAX_INSTRUMENTS } from '../../../shared/audio.js';
 import { compileSong } from '../../../main/build/songcompile.js';
+import { renumberSongDeletion } from '../../../shared/project.js';
 import { Replayer } from './replayer.js';
 import { Synth } from './synth.js';
 
@@ -312,10 +313,7 @@ export function mount(container, app) {
               const index = state.song;
               store.commit('Delete song', (project) => {
                 project.songs.splice(index, 1);
-                for (const map of project.maps) {
-                  if (map.songId === index) map.songId = null;
-                  else if (map.songId > index) map.songId -= 1;
-                }
+                renumberSongDeletion(project, index);
               });
               state.song = Math.max(0, state.song - 1);
               render();

@@ -5,6 +5,7 @@
   "gridH": 1,
   "screens": [
     {
+      "name": "",
       "metatiles": [
         3,
         3,
@@ -253,11 +254,13 @@
           "x": 48,
           "y": 48,
           "props": {
+            "name": "",
             "toScreen": 0,
             "toX": 112,
             "toY": 112,
             "dialogue": "",
             "event": null,
+            "trigger": "interact",
             "hideSwitch": null
           }
         },
@@ -266,11 +269,13 @@
           "x": 176,
           "y": 176,
           "props": {
+            "name": "",
             "toScreen": 0,
             "toX": 112,
             "toY": 112,
             "dialogue": "",
             "event": null,
+            "trigger": "interact",
             "hideSwitch": null
           }
         },
@@ -304,10 +309,12 @@
                 }
               ]
             },
+            "name": "",
             "toScreen": 0,
             "toX": 112,
             "toY": 112,
-            "dialogue": ""
+            "dialogue": "",
+            "trigger": "interact"
           }
         },
         {
@@ -315,11 +322,13 @@
           "x": 32,
           "y": 208,
           "props": {
+            "name": "",
             "toScreen": 0,
             "toX": 112,
             "toY": 112,
             "dialogue": "",
             "event": null,
+            "trigger": "interact",
             "hideSwitch": null
           }
         }

@@ -19,6 +19,8 @@
   "switches": [
     "Chest opened"
   ],
+  "variables": [],
+  "commonEventSeq": 0,
   "rpg": {
     "xpBase": 25,
     "xpGrow": 12,

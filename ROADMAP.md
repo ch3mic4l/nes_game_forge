@@ -58,8 +58,14 @@ through the Code Forge.
   authored. Past the bound a call is skipped rather than pushed, so a cycle unwinds instead of
   hanging. Common events are compiled into the same table a placement's own event is, ahead of it,
   so a call's one-byte argument is just the table slot the callee landed in
-- Commands for starting a **battle**, changing **music**, **moving an actor**, and
-  **healing/damaging** the party
+- ~~A command for changing **music**~~ — **done**: `Play music…` sets the song directly, through
+  the same `set_music` a map arriving at its own song goes through — so the two cannot disagree
+  about what is sounding, and an event's choice survives a screen edge inside the map it ran on but
+  not a change to a different one. The map itself no longer stops deciding after boot either: every
+  map already had its own Music field, but only the start map's took effect: `apply_map_music`
+  (`engine/music.asm`), called once from boot and once from `redraw_screen`, is now the single place
+  that decides
+- Commands for starting a **battle**, **moving an actor**, and **healing/damaging** the party
 
 Every addition here lands in four places at once — `EVENT_COMMANDS`, the schema and normalizer, the
 compiler in `main/build/generate.js`, and `engine/script.asm` — and each one costs kernel bytes,
@@ -197,8 +203,8 @@ not be mutated.
 1. ~~Event names, list and search; duplication; templates; play-from-here — item 2 plus the first
    piece of item 3~~ — **done**
 2. Variables, branching, choices, triggers, common events — item 1 — **in progress**: variables,
-   branching, choices and triggers are done; common events are what is left, and they are the one
-   that needs the script runner to remember something (where to come back to)
+   branching, choices, triggers, common events and Play music are done; starting a battle, moving
+   an actor, and healing/damaging the party are what is left
 3. SRAM save/load — item 4
 4. Items, equipment, status effects, battle testing — item 5 plus the rest of item 3
 5. Movement routes and the audiovisual cutscene commands — item 6

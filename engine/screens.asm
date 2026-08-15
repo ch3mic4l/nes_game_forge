@@ -111,6 +111,8 @@ redraw_screen:
   lda screen_tileset,y
   jsr switch_chr_bank
   jsr set_screen_ptr
+  jsr apply_map_music       ; the map decides, but only when it has changed --
+                            ; see engine/music.asm
   jsr spawn_entities        ; each screen refills its actors on entry
   jsr draw_screen
   jsr title_draw            ; over the top, while rendering is still off

@@ -472,7 +472,8 @@ export function mount(container, app) {
       screens: flatScreens(store.project).map((entry) => entry.label),
       // Only an RPG has a party, so this is what decides whether Join is offered.
       party: store.project.project.gameType === 'rpg' ? store.project.party ?? [] : [],
-      commonEvents: store.project.commonEvents ?? []
+      commonEvents: store.project.commonEvents ?? [],
+      songs: store.project.songs ?? []
     };
   }
 

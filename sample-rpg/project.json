@@ -17,6 +17,8 @@
     "mirroring": "vertical"
   },
   "switches": [],
+  "variables": [],
+  "commonEventSeq": 0,
   "rpg": {
     "xpBase": 8,
     "xpGrow": 4,

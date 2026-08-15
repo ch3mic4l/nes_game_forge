@@ -16,7 +16,7 @@ import NES from '../../renderer/emulator/core/nes.js';
 import { ARROW_TILE, FONT_BASE } from '../../shared/font.js';
 import { loadProject, saveProject } from '../../main/project-io.js';
 import { buildProject } from '../../main/build/pipeline.js';
-import { compileText, EVT_PAGES_END, OP_JUMP, OP_END, OP_CALL } from '../../main/build/textcompile.js';
+import { compileText, EVT_PAGES_END, OP_JUMP, OP_END, OP_CALL, OP_MUSIC, NO_SONG } from '../../main/build/textcompile.js';
 import {
   createProject,
   normalizeProject,
@@ -841,6 +841,31 @@ test('a branch compiles to a page header inline, and its lengths are checked', (
   const pageEdge = compileText(page(filler(85)));
   assert.equal(pageEdge.problems.length, 1);
   assert.match(pageEdge.problems[0].message, /page 1 compiles to 256 bytes/);
+});
+
+test('Play music compiles to a song index or NO_SONG for Silence', () => {
+  const project = createProject('Jukebox');
+  project.sprites.actors = [{ name: 'Speaker', behavior: 'npc' }];
+  project.songs = [{ name: 'Theme' }];
+  const page = (commands) => {
+    project.maps[0].screens[0].entities = [
+      { actorId: 0, x: 0, y: 0, props: { event: { pages: [{ cond: { type: 'none', arg: 0 }, commands }] } } }
+    ];
+    return project;
+  };
+
+  const [named] = compileText(page([{ op: 'music', song: 0 }])).events;
+  assert.deepEqual(named.slice(4, 6), [OP_MUSIC, 0], 'a live song compiles to its own index');
+
+  const [silence] = compileText(page([{ op: 'music', song: null }])).events;
+  assert.deepEqual(silence.slice(4, 6), [OP_MUSIC, NO_SONG], 'Silence compiles to NO_SONG');
+
+  // A reference to a song that used to exist — deleted since, or never valid
+  // to begin with — falls back to NO_SONG rather than pointing at whichever
+  // song the table happens to hold at that index, same as an unresolvable
+  // common event call compiles to nothing instead of running the wrong one.
+  const [stale] = compileText(page([{ op: 'music', song: 5 }])).events;
+  assert.deepEqual(stale.slice(4, 6), [OP_MUSIC, NO_SONG], 'a song past the end of the list falls back to NO_SONG');
 });
 
 test('a branch nested deeper than the editor offers still survives a round trip', async (t) => {

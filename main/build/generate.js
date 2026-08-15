@@ -31,7 +31,7 @@ import {
   projectUsesText
 } from '../../shared/font.js';
 import { compileSong, songTables } from './songcompile.js';
-import { NO_EVENT, compileText, textTables } from './textcompile.js';
+import { NO_EVENT, compileText, textTables, songByte } from './textcompile.js';
 import { battleTables, checkBattleTables } from './battletables.js';
 import {
   LIMITS,
@@ -131,19 +131,28 @@ const TITLE_PROMPT_ROW = 19;
 //
 // Measured by building the sample and reading nesasm's usage for the kernel-lo
 // bank (prgLayout().kernelLoBank), minus that project's fixedBytes + tableBytes.
-// UNROM 512 is the high-water mark because banks.asm emits the most code for it:
-// 6334 bytes as measured by building sample-rpg on that board, with the message
-// box, the event runner with its variables, branches, questions, triggers and
-// common-event calls, action combat, the title screen and the RPG's kernel-side
-// half all in. The battle system itself is not in this number — it lives in a
-// switchable bank, which is the whole reason it can exist at all. MMC3
-// additionally assembles the scanline split (engine/split.asm) and comes to
-// 6305, so UNROM 512 keeps setting the ceiling. That leaves 32 bytes of slack:
-// the next thing to grow the kernel measures again and raises this, rather than
-// assuming the number below is generous. Re-measure and raise this if the
-// engine grows: build sample-rpg on mapper 30, take nesasm's usage for the bank
-// holding `reset`, and subtract `reset - $C000`.
-const KERNEL_CODE_BYTES = 6366;
+// UNROM 512 is the high-water mark because banks.asm emits the most code for
+// it, and it has to be measured with *every* conditionally-assembled block
+// turned on at once — a project that leaves one off is not the worst case, and
+// an earlier version of this comment measured sample-rpg with its title
+// disabled and quoted a number 220 bytes short of the real ceiling, which
+// checkCapacity then handed straight to a "Bank overflow" from the assembler
+// instead of catching itself. 6638 bytes as measured by building sample-rpg on
+// mapper 30 with a title screen added, the message box, the event runner with
+// its variables, branches, questions, triggers, common-event calls and Play
+// music all in, and action combat and the RPG's kernel-side half. The battle
+// system itself is not in this number — it lives in a switchable bank, which
+// is the whole reason it can exist at all. That leaves 32 bytes of slack: the
+// next thing to grow the kernel measures again and raises this, rather than
+// assuming the number below is generous.
+//
+// test/unit/kernelbytes.test.js builds exactly that worst case and asserts the
+// real measurement stays inside this constant, so a future regression is a
+// failing test rather than a silent promise the assembler later refuses.
+// Re-measure and raise this if the engine grows: build sample-rpg with a
+// title on mapper 30, take nesasm's usage for the bank holding `reset`, and
+// subtract `reset - $C000`.
+export const KERNEL_CODE_BYTES = 6670;
 const PLAYER_FRAMES = 8; // 4 directions x 2 walk frames
 const PLAYER_TILES = PLAYER_FRAMES * 4;
 
@@ -381,9 +390,9 @@ export function checkCapacity(project) {
   // pointers) plus 1 each for screen_tileset and screen_bank, and map_base is one
   // byte per map. These all live in the fixed kernel with the engine code.
   // 13 bytes per screen of lookup tables (4 neighbours, 4 data pointers, 2 actor
-  // pointers, tileset, bank, map) and 7 per map (base, encounter rate, four
-  // formation slots... plus the two battle backdrop tiles).
-  const tableBytes = 13 * flat.length + 8 * project.maps.length + entityBytes + spriteBytes;
+  // pointers, tileset, bank, map) and 9 per map (base, encounter rate, four
+  // formation slots, the two battle backdrop tiles, and the song).
+  const tableBytes = 13 * flat.length + 9 * project.maps.length + entityBytes + spriteBytes;
   const kernelFree = BANK_SIZE - KERNEL_CODE_BYTES - fixedBytes - tableBytes;
 
   const mapper = resolveMapper(project.cartridge.mapper);
@@ -702,7 +711,11 @@ export async function generateAssets({ dir, project, log = () => {} }) {
     `START_X       = ${project.project.startX}`,
     `START_Y       = ${project.project.startY}`,
     'PLAYER_SPEED  = 2',
-    `START_SONG    = ${startSong(project)}`,
+    // Which song boots up is no longer a separate fact: engine/boot.asm calls
+    // apply_map_music once flat_screen is final (the title's, if there is
+    // one), the same routine redraw_screen calls on every arrival, so it
+    // reads map_song off whichever screen is about to be drawn instead of a
+    // constant baked in here for the start map alone.
     // How many named counters an event can use. constants.asm allocates the
     // block; RPG_LIMITS.variables is what says how big it is, here and in the
     // clamp that keeps a variable index inside it.
@@ -868,6 +881,10 @@ export async function generateAssets({ dir, project, log = () => {} }) {
       )}`,
       `map_battle_sky:\n${dbBlock(project.maps.map((map) => map.battleSkyTile ?? 0))}`,
       `map_battle_ground:\n${dbBlock(project.maps.map((map) => map.battleGroundTile ?? 0))}`,
+      // The song a map plays, in the same NO_SONG-for-Silence byte a Play
+      // music command's argument compiles to (see songByte) — apply_map_music
+      // indexes this with screen_map's answer, one map lookup after the other.
+      `map_song:\n${dbBlock(project.maps.map((map) => songByte(project.songs, map.songId)))}`,
       `screen_map:\n${dbBlock(flat.map((entry) => project.maps.indexOf(entry.map)))}`,
       // One byte per screen rather than a map lookup at runtime: entering a
       // screen is the hot path, and screens.asm already has the flat index.
@@ -1092,14 +1109,6 @@ function spriteTables(project, playerTiles) {
   chunks.push(`actor_anim_dir:\n${dbBlock(animTable, 4)}`);
 
   return `${chunks.join('\n')}\n`;
-}
-
-/** The song the starting map plays, or $FF for silence. */
-function startSong(project) {
-  const songs = project.songs ?? [];
-  if (!songs.length) return '$FF';
-  const id = project.maps[project.project.startMap]?.songId;
-  return id === null || id === undefined || id >= songs.length ? '$FF' : String(id);
 }
 
 const behaviorIndex = (id) => Math.max(0, BEHAVIORS.findIndex((entry) => entry.id === id));

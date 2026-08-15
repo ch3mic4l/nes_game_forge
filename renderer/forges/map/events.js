@@ -72,6 +72,10 @@ const defaultCommand = (op, context = {}) => {
       // be a stored preference for whichever common event happens to hold
       // that id, which the offered list may not even contain.
       out.event = context.commonEvents?.[0]?.id ?? 0;
+    } else if (arg === 'song') {
+      // Silence, the same default a brand-new map's own Music field has —
+      // not song 0, which nothing here chose.
+      out.song = null;
     } else out[arg] = 0;
   }
   return out;
@@ -105,12 +109,14 @@ const describeList = (list, context) =>
     .join('; ') || 'nothing';
 
 function describeEnabled(command, context = {}) {
-  const { actors = [], switches = [], variables = [], screens = [], party = [], commonEvents = [] } = context;
+  const { actors = [], switches = [], variables = [], screens = [], party = [], commonEvents = [], songs = [] } =
+    context;
   const actorName = (id) => actors[id]?.name ?? `actor ${id}`;
   const switchName = (n) => switches[n]?.trim() || `switch ${n}`;
   const varName = (n) => variables[n]?.trim() || `variable ${n}`;
   const commonEventName = (id) =>
     commonEvents.find((entry) => entry.id === id)?.name?.trim() || `common event ${id}`;
+  const songName = (id) => songs[id]?.name?.trim() || `song ${id}`;
   switch (command.op) {
     case 'say':
       return `Say “${(command.text ?? '').trim().slice(0, 40) || '…'}”`;
@@ -134,6 +140,8 @@ function describeEnabled(command, context = {}) {
       return `Subtract ${command.value ?? 0} from ${varName(command.variable)}`;
     case 'call':
       return `Run ${commonEventName(command.event)}`;
+    case 'music':
+      return command.song === null || command.song === undefined ? 'Silence' : `Play ${songName(command.song)}`;
     case 'branch': {
       // Described down to its contents, because the event list's search runs
       // over exactly this text: a switch used only inside a branch has to be
@@ -639,6 +647,24 @@ export function editEvent(event, context) {
               { value: entry.id, selected: entry.id === command.event },
               entry.name || `Common event ${entry.id}`
             )
+          )
+        )
+      );
+    } else if (command.op === 'music') {
+      const songs = context.songs ?? [];
+      controls.push(
+        el(
+          'select',
+          {
+            style: { flex: '1' },
+            onchange: (fired) => {
+              const raw = fired.target.value;
+              command.song = raw === '' ? null : Number(raw);
+            }
+          },
+          el('option', { value: '', selected: command.song === null || command.song === undefined }, 'Silence'),
+          songs.map((song, index) =>
+            el('option', { value: index, selected: index === command.song }, song.name)
           )
         )
       );

@@ -23,7 +23,8 @@ import {
   entityLabel,
   flatScreens,
   resolveCommonEventIds,
-  commonEventId
+  commonEventId,
+  renumberSongDeletion
 } from '../../shared/project.js';
 import fs from 'node:fs/promises';
 import os from 'node:os';
@@ -517,6 +518,52 @@ test('maps carry a battle backdrop and an encounter table', () => {
 
   // No encounter table at all means no wandering monsters, not a default one.
   assert.equal(normalizeProject({ maps: [{}] }).maps[0].encounters.rate, 0);
+});
+
+test('deleting a song renumbers every reference, including one nested inside a branch', () => {
+  const project = createProject();
+  project.songs = [{ name: 'A' }, { name: 'B' }, { name: 'C' }];
+  project.maps[0].songId = 2;
+  project.maps.push(createMap(1, 'Second'));
+  project.maps[1].songId = 1; // names the song about to be deleted
+  project.maps[0].screens[0].entities = [
+    {
+      actorId: 0,
+      x: 0,
+      y: 0,
+      props: {
+        event: {
+          pages: [
+            {
+              cond: { type: 'none', arg: 0 },
+              commands: [
+                {
+                  op: 'branch',
+                  cond: { type: 'none', arg: 0 },
+                  // A switch used only inside a branch was once invisible to
+                  // usedSwitches for exactly this reason — a song named only
+                  // here has to be found the same way a switch is.
+                  then: [{ op: 'music', song: 2 }],
+                  else: [{ op: 'music', song: 0 }]
+                },
+                { op: 'music', song: null }
+              ]
+            }
+          ]
+        }
+      }
+    }
+  ];
+
+  renumberSongDeletion(project, 1); // delete the middle song, "B"
+
+  assert.equal(project.maps[0].songId, 1, 'a map naming a song above the deleted one should shift down');
+  assert.equal(project.maps[1].songId, null, 'a map naming the deleted song should go silent');
+
+  const [branch, silence] = project.maps[0].screens[0].entities[0].props.event.pages[0].commands;
+  assert.equal(branch.then[0].song, 1, 'a Play music command nested inside a branch did not renumber');
+  assert.equal(branch.else[0].song, 0, 'a reference below the deleted song should not move');
+  assert.equal(silence.song, null, 'Silence should stay Silence');
 });
 
 test('a title screen pointing at a deleted map falls back to none', () => {

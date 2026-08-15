@@ -145,7 +145,8 @@ A line of dialogue is the simple case. **Event…** in the Map Forge is the rest
 it: an actor gets a list of **pages**, and the engine runs the first page whose
 condition holds. A page can show text, ask the player a question, give or take an
 item, turn one of 64 **switches** on or off, count with one of 16 **variables**,
-or warp the player.
+warp the player, or change the music with **Play music…** — the same choice of
+songs, plus Silence, the Map Forge's own Music field offers.
 
 That is the whole trick behind a chest that opens once — page one is guarded by
 *switch off*, and the last thing it does is turn that switch on, so from then on
@@ -331,7 +332,16 @@ The **Sound Forge** is a tracker: rows of notes across two pulse channels, the
 triangle and the noise channel, grouped into patterns and arranged by an order
 list with a loop point. Instruments carry a duty cycle and a volume envelope
 (the triangle ignores both, because the NES gives it neither). Assign a song to
-a map in the Map Forge and the engine starts it at boot.
+a map in the Map Forge and the engine reasserts it whenever that map is
+entered — walking across a screen edge inside the same map never touches it.
+Arriving at a different map does reassert its own configured song, but that is
+not the same as restarting: two maps that happen to share a song play on
+without a hitch, since only an actual change to what is sounding starts
+anything. Booting follows the same rule — whichever screen the cartridge lands
+on decides, so a project with a title screen boots into *its* map's song, not
+necessarily the start map's. An event can override the music directly with
+**Play music…**, which holds until the player leaves for a different map; a
+screen edge inside the one the command ran on leaves it alone.
 
 The format is defined once, in `shared/audio.js`, and implemented three times:
 by the 6502 driver in `engine/music.asm`, by the compiler in

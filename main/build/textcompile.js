@@ -56,13 +56,33 @@ export const OP_END = 0x00;
 export const OP_SAY = opIndex('say');
 
 export const OP_CALL = opIndex('call');
+export const OP_MUSIC = opIndex('music');
 
 export const NO_EVENT = 0xff;
+// A map's own songId is $FF for the same reason (see generate.js's maps.inc),
+// so a screen change and a Play music command reach the engine's NO_SONG
+// through the same byte, no matter which one decided it.
+export const NO_SONG = 0xff;
 export const MAX_TABLE = 255; // $FF is the "none" marker in both tables
 // Every length in this format is one byte: a page body's, and each side of a
 // branch. `script_skip` adds it to the pointer, so 255 is the whole of it.
 export const MAX_BODY = 255;
 export const OP_JUMP = 0xfe; // the compiler's own punctuation; see constants.asm
+
+/**
+ * The byte a song id becomes: NO_SONG for Silence, or for an id that is not a
+ * live song any more — deleted since, or never valid to begin with. Shared by
+ * a map's own songId (generate.js's map_song table) and a Play music command's
+ * argument, so the two reach the same answer for the same value rather than
+ * one clamping loosely in the schema and the other trusting it outright.
+ * Takes `songs` rather than a whole project because generate.js calls this
+ * once per map from inside a `.map()`, not once for the whole project.
+ */
+export function songByte(songs, id) {
+  if (id === null || id === undefined) return NO_SONG;
+  const n = Number(id);
+  return Number.isInteger(n) && n >= 0 && n < (songs?.length ?? 0) ? n : NO_SONG;
+}
 
 /**
  * Authored text as engine bytes: pages of wrapped lines, then a terminator.
@@ -197,6 +217,8 @@ export function compileText(project) {
         const slot = commonEventTableIndex.get(commonEventId(command.event));
         return slot === undefined ? null : [OP_CALL, slot];
       }
+      case 'music':
+        return [OP_MUSIC, songByte(project.songs, command.song)];
       case 'branch': {
         // [OP_IF, cond, arg, value, then-length] then [OP_JUMP, else-length]
         // else. Past the opcode that is a page header exactly, which is what

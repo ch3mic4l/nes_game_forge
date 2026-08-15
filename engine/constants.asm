@@ -217,6 +217,14 @@ call_depth  = $7E
 call_ret_lo = $7F                          ; CALL_STACK_DEPTH bytes
 call_ret_hi = call_ret_lo+CALL_STACK_DEPTH ; CALL_STACK_DEPTH bytes
 
+; Which map is on screen and which song is sounding, so a redraw can tell
+; whether either has to change -- see apply_map_music and set_music in
+; music.asm, the single place either is applied. Both are reset to their
+; sentinels by init_session, since a game over is a genuinely new game and
+; must not inherit the song of wherever the player died.
+cur_map     = call_ret_hi+CALL_STACK_DEPTH ; NO_MAP until a screen decides
+cur_song    = cur_map+1                    ; NO_SONG until set_music runs
+
 ; Which split program this frame runs. OFF disarms the counter entirely.
 SPL_OFF     = 0
 SPL_BOX     = 1             ; the message box: font in from tile row 24
@@ -238,6 +246,7 @@ MUS_REST    = $FE
 MUS_LOOP    = $FF
 MUS_INST    = $F0
 NO_SONG     = $FF
+NO_MAP      = $FF           ; cur_map: no screen has decided the music yet
 NUM_NOTES   = 96
 
 ; ------------------------------------------------------------ entity RAM
@@ -541,6 +550,9 @@ OP_CHOICE   = $0C           ; [count, a string id per option] then one record pe
 OP_CALL     = $0D           ; [which common event] -- run it and come back to
                             ; the command after this one; see call_depth and
                             ; CALL_STACK_DEPTH in the zero page map above
+OP_MUSIC    = $0E           ; [song index or NO_SONG] -- see set_music in
+                            ; music.asm, which both this and a map arriving
+                            ; apply through
 ; Punctuation rather than a command: the compiler emits it, nothing authors it,
 ; and it is numbered out of the way of EVENT_COMMANDS so the two orders cannot
 ; grow into each other. It ends a then-branch by stepping over the else-branch.
