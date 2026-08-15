@@ -128,12 +128,19 @@ battle_begin_status:
 ; Back to the field. The screen was never changed, so this is the ordinary
 ; redraw -- and the actor that started a touch encounter is cleared afterwards,
 ; because spawn_entities has just put it back.
+;
+; Coming back to a screen is not entering it, so the entry event spawn_entities
+; just armed is put down again. Without this every battle replays whatever the
+; screen says when the player walks in, which on a screen with a wandering
+; monster is every few steps.
 battle_end:
   lda #ST_GAMEPLAY
   sta game_state
   lda #0
   sta enc_step
   jsr redraw_screen
+  lda #NO_ENTITY
+  sta pending_ent
   ldx bt_from_ent
   cpx #MAX_ENTITIES
   bcs battle_end_done

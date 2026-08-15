@@ -92,12 +92,37 @@ main_loop:
   jsr wait_vblank
   jsr read_pad
   jsr music_tick            ; music keeps playing while the world is paused
+  ; What the last frame left owed, settled before the buttons are read into
+  ; actions. It has to be before them and not merely before the world: an
+  ; interact reaches start_dialog and an event is free to warp, so a button on
+  ; this frame could otherwise overwrite the destination of a warp already owed,
+  ; or warp away from a screen whose opening is armed and never gets spoken --
+  ; the redraw clears what is pending.
+  jsr settle_owed
+  bne main_loop_draw        ; it took the frame; the frame was the transition's
+  lda #0
+  sta screen_fresh          ; nothing has been drawn this frame yet
   jsr dispatch_input        ; button actions from the Controller Forge
   lda paused
   bne main_loop_draw        ; a pause action freezes the world, not the screen
   lda game_state
   bne main_loop_ui          ; so do the menu and dialogue states
+  ; The buttons can have made work of their own. A warp, from an interact whose
+  ; event carried one -- and the world must not update on the screen being left,
+  ; where a door could overwrite the destination on its way past.
+  lda warp_ready
+  bne main_loop_owed_warp
+  ; ...or a whole screen: Start, on the title, draws one from inside
+  ; dispatch_input. The frame belongs to the screen that arrived, and the event
+  ; it owes is settled at the top of the next one.
+  lda screen_fresh
+  bne main_loop_draw
   jsr update_player
+  ; Crossing a screen edge redraws from inside update_player, and the rest of
+  ; this frame does not belong to the screen that just arrived: its actors have
+  ; spawned but its own event has not had its turn yet.
+  lda screen_fresh
+  bne main_loop_draw
   jsr update_entities
 ; A name for the moment a door is decided, emitting nothing: it is where the
 ; frame's movement is finished and warp_ready is about to be read, which is the
@@ -108,8 +133,54 @@ main_loop:
 main_loop_warp:
   lda warp_ready            ; a door fires outside the entity loop, so the
   beq main_loop_draw        ; respawn cannot clear the array mid-walk
+main_loop_owed_warp:
   jsr take_door
   jmp main_loop_draw
+; Settle whatever a previous frame left owed: a warp an event asked for, or an
+; event a trigger armed. Returns A != 0 when it took the frame, in which case the
+; caller must not run the world -- the frame belonged to the transition.
+;
+; The gate is here rather than at the call site because this is the only thing
+; that needs it before dispatch_input: buttons are read in every state, but a
+; warp and a pending event are gameplay's alone.
+settle_owed:
+  lda paused
+  bne settle_owed_none      ; a pause freezes the world, and this is the world
+  lda game_state
+  bne settle_owed_none      ; so do the menu, dialogue and battle states
+  ; A warp first: an event that warps finishes while the box is still up, so the
+  ; frame that reads warp_ready after update_entities never runs. Without this
+  ; the world gets one more update on a screen the player has already left.
+  lda warp_ready
+  bne settle_owed_warp
+  ; Then the event: a screen that has just arrived, or an actor the player
+  ; walked into on the frame before.
+  lda pending_ent
+  cmp #NO_ENTITY
+  beq settle_owed_none
+  tax
+  lda #NO_ENTITY
+  sta pending_ent           ; disarmed before it runs, not after: the event is
+                            ; free to warp, and the redraw that follows arms
+                            ; whatever the next screen owes
+  ; The slot must still hold an actor. Nothing between the arming and here can
+  ; empty one now that the buttons are read afterwards -- an entity only ever
+  ; deactivates itself, and the frame that arms an entry event never reaches the
+  ; entity loop. This is a guard rather than a fix: the index is remembered
+  ; across a frame boundary, and a stale one would speak for something that is
+  ; not there without saying so. If it is gone the frame is an ordinary one.
+  lda ent_active,x
+  beq settle_owed_none
+  jsr start_dialog          ; X = the slot whose event the frame owes
+  lda #1
+  rts
+settle_owed_warp:
+  jsr take_door
+  lda #1
+  rts
+settle_owed_none:
+  lda #0
+  rts
 main_loop_ui:
   jsr ui_tick               ; the world is frozen: run the overlay instead
 main_loop_draw:
@@ -130,9 +201,10 @@ main_loop_ready:
   ; it lands the queue may be half-written, and NMI leaves a half-written queue
   ; alone rather than drawing part of it.
   lda vram_len
-  beq main_loop
-  lda #1
+  beq main_loop_idle        ; inverted into a jump: the frame between here and
+  lda #1                    ; the top is past a branch's 128-byte reach
   sta vram_ready
+main_loop_idle:
   jmp main_loop
 
 take_door:

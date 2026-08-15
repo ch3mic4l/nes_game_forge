@@ -392,6 +392,32 @@ const scenario = (dir, sampleDir) => `
   await wait(200);
   step('questions', 'Ask authored with a labelled answer and a command inside another');
 
+  // The trigger, which is the one part of an event that lives on the placement
+  // rather than in the event. Only the real panel can show the select is wired
+  // to the store and that the hint under it follows the choice.
+  const triggerSelect = document.querySelector('#stage [data-entity="0"] select[title="What makes this event run"]');
+  if (!triggerSelect) throw new Error('the placed actor offered no trigger control');
+  const offered = [...triggerSelect.options].map((option) => option.value);
+  if (offered.join(',') !== 'interact,touch,enter') {
+    throw new Error('the trigger list was ' + offered.join(','));
+  }
+  triggerSelect.value = 'touch';
+  triggerSelect.dispatchEvent(new Event('change', { bubbles: true }));
+  await wait(250);
+  if (store.project.maps[0].screens[3].entities[0].props.trigger !== 'touch') {
+    throw new Error('the trigger did not reach the project');
+  }
+  const triggerHint = document.querySelector('#stage [data-entity="0"] [data-trigger-hint="touch"]');
+  if (!triggerHint || !triggerHint.textContent.includes('walks into it')) {
+    throw new Error('the hint did not follow the trigger: ' + (triggerHint?.textContent ?? 'missing'));
+  }
+  store.undo();
+  await wait(200);
+  if ((store.project.maps[0].screens[3].entities[0].props.trigger ?? 'interact') !== 'interact') {
+    throw new Error('undo left the trigger changed');
+  }
+  step('triggers', 'trigger set to touch, hint followed, undo put it back');
+
   // Duplicate keeps the event, and lands somewhere you can see it.
   rowButton(0, '+⧉').click();
   await wait(250);

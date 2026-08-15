@@ -24,9 +24,12 @@ import {
   enabledCommands,
   CHOICE_LIMITS,
   RPG_LIMITS,
+  BEHAVIORS,
   EVENT_COMMANDS,
   EVENT_CONDITIONS,
-  MAX_BRANCH_DEPTH
+  MAX_BRANCH_DEPTH,
+  availableTriggers,
+  effectiveTrigger
 } from '../../shared/project.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
@@ -45,6 +48,9 @@ const ENT_ACTOR = 0x308;
 const INV_ITEMS = 0x378;
 const SWITCHES = 0x390;
 const VARIABLES = 0x500;
+const PLAYER_HP = 0x4e;
+const PENDING_ENT = 0x7c;
+const NO_ENTITY = 0xff;
 
 const ST_GAMEPLAY = 0;
 const BOX_PAGEWAIT = 3;
@@ -57,7 +63,9 @@ const TEXT_ROW = 25;
 
 const A = 0;
 const B = 1;
+const UP = 4;
 const DOWN = 5;
+const RIGHT = 7;
 
 /** The player start, so an actor placed here is inside the interact reach. */
 const START_X = 112;
@@ -84,6 +92,13 @@ const tap = (nes, button, frames = 2) => {
   nes.frame();
   nes.buttonUp(1, button);
   for (let i = 0; i < frames; i++) nes.frame();
+};
+
+const hold = (nes, button, frames) => {
+  nes.buttonDown(1, button);
+  for (let i = 0; i < frames; i++) nes.frame();
+  nes.buttonUp(1, button);
+  nes.frame();
 };
 
 const waiting = (nes) => {
@@ -153,7 +168,9 @@ async function buildWith(t, entities, tweak = () => {}) {
   tweak(project);
   await saveProject(dir, project);
   const built = await buildProject({ dir, project, log: () => {} });
-  return { project, nes: boot(built.romPath) };
+  // The ROM path as well as a booted machine: a test about what happens on the
+  // title screen has to do its own booting, because `boot` presses through it.
+  return { project, romPath: built.romPath, nes: boot(built.romPath) };
 }
 
 const chest = (pages) => ({
@@ -934,6 +951,586 @@ test('nesting past what any project could hold fails by name, not by stack', () 
   assert.doesNotThrow(() => normalizeProject(withNesting(60)));
 });
 
+// ------------------------------------------------------------------ triggers
+//
+// Everything above is about what an event says. A trigger is about when it runs,
+// which until now was always "the player walked up and pressed the button" — so
+// nothing could happen *to* the player. The two worth proving are that each
+// trigger fires at its own moment, and that neither fires twice: a touch event
+// ends with the player still standing on the actor, and an entry event ends with
+// the screen still loaded, so both have somewhere obvious to loop forever.
+
+const DOOR = 3; // Portal, the sample's door actor
+const npcAt = (props, x = START_X, y = START_Y - 16) => ({ actorId: NPC, x, y, props });
+
+test('a touch event runs on contact, and not again until the player steps off', {
+  skip: !hasRom && 'run `npm run sample` first'
+}, async (t) => {
+  const { nes } = await buildWith(t, [
+    npcAt({
+      trigger: 'touch',
+      event: {
+        pages: [
+          {
+            cond: { type: 'none', arg: 0 },
+            commands: [{ op: 'addVar', variable: 0, value: 1 }, { op: 'say', text: 'Careful!' }]
+          }
+        ]
+      }
+    })
+  ]);
+
+  // Standing 16 pixels away is outside TOUCH_RANGE, and no button has been
+  // pressed: an event that ran here would be running on its own.
+  for (let frame = 0; frame < 20; frame++) nes.frame();
+  assert.equal(nes.cpu.mem[VARIABLES], 0, 'the event ran without being touched');
+
+  hold(nes, UP, 6);
+  assert.equal(nes.cpu.mem[VARIABLES], 1, 'walking into it did not run its event');
+  assert.notEqual(nes.cpu.mem[GAME_STATE], ST_GAMEPLAY, 'the event did not start a conversation');
+
+  // The conversation ends with the player still standing exactly where they were
+  // when it started, which is the shape that would restart it forever.
+  assert.ok(talkThrough(nes), 'the conversation never ended');
+  for (let frame = 0; frame < 90; frame++) nes.frame();
+  assert.equal(nes.cpu.mem[VARIABLES], 1, 'standing still on it ran the event again');
+  assert.equal(nes.cpu.mem[GAME_STATE], ST_GAMEPLAY);
+
+  // Stepping off re-arms it, and stepping back on fires it a second time.
+  hold(nes, DOWN, 12);
+  assert.equal(nes.cpu.mem[VARIABLES], 1, 'walking away ran the event');
+  hold(nes, UP, 12);
+  assert.equal(nes.cpu.mem[VARIABLES], 2, 'walking back into it did not run the event again');
+});
+
+test('a trigger is a choice, so the interact button does not also run the event', {
+  skip: !hasRom && 'run `npm run sample` first'
+}, async (t) => {
+  // What makes an event run is one answer, not a set. An entry event is a scene
+  // meant to happen as the screen appears; if the button worked as well, walking
+  // up to whatever carried it and pressing interact would play it again.
+  const { nes } = await buildWith(t, [
+    npcAt({
+      trigger: 'enter',
+      event: {
+        pages: [{ cond: { type: 'none', arg: 0 }, commands: [{ op: 'addVar', variable: 0, value: 1 }] }]
+      }
+    })
+  ]);
+
+  for (let frame = 0; frame < 40; frame++) nes.frame();
+  assert.equal(nes.cpu.mem[VARIABLES], 1, 'the entry event did not run on its own');
+
+  // Standing right beside it and pressing the button, several times.
+  for (let press = 0; press < 3; press++) tap(nes, B, 20);
+  assert.equal(nes.cpu.mem[VARIABLES], 1, 'the interact button ran an event that is not its to run');
+  assert.equal(nes.cpu.mem[GAME_STATE], ST_GAMEPLAY, 'pressing interact started a conversation');
+});
+
+test('a touch event waits for the frame to finish before it takes over', {
+  skip: !hasRom && 'run `npm run sample` first'
+}, async (t) => {
+  // A touch trigger arms rather than starting, because the entity loop is still
+  // walking the other slots when it fires. A door on the same square is the case
+  // that shows why: it would otherwise redraw the screen out from under the
+  // conversation the touch had just started. The warp settles first, and the
+  // event on the screen the player has left never runs.
+  const { nes } = await buildWith(t, [
+    npcAt({
+      trigger: 'touch',
+      event: {
+        pages: [{ cond: { type: 'none', arg: 0 }, commands: [{ op: 'setVar', variable: 0, value: 1 }] }]
+      }
+    }),
+    // The door sits on the same spot, so one step lands on both of them.
+    { actorId: DOOR, x: START_X, y: START_Y - 16, props: { toScreen: 1, toX: START_X, toY: START_Y } }
+  ]);
+
+  hold(nes, UP, 10);
+  for (let frame = 0; frame < 30; frame++) nes.frame();
+
+  assert.equal(nes.cpu.mem[FLAT_SCREEN], 1, 'the door did not take the player through');
+  assert.equal(nes.cpu.mem[GAME_STATE], ST_GAMEPLAY, 'a conversation survived the screen it started on');
+  assert.equal(nes.cpu.mem[VARIABLES], 0, 'the event ran on a screen the player had already left');
+});
+
+test('walking onto a screen gives it the frame, not the world it walked into', {
+  skip: !hasRom && 'run `npm run sample` first'
+}, async (t) => {
+  // Crossing a screen edge redraws from inside update_player, so the rest of
+  // that frame would otherwise be the *new* screen's actors running before the
+  // event it owes. The reading is the player's hearts: the actor waiting at the
+  // landing spot deals contact damage, and an entry event that says something
+  // freezes the world — so a heart lost here is a frame that should not have
+  // happened at all.
+  const BRAMBLE = 5; // the sample's stationary actor with contact damage
+  const { nes } = await buildWith(
+    t,
+    [],
+    (project) => {
+      // The fixture's own level design is not what is under test, and a wall in
+      // the way would make this about pathfinding.
+      for (const screen of project.maps[0].screens) screen.metatiles = screen.metatiles.map(() => 0);
+      project.maps[0].screens[1].entities = [
+        npcAt(
+          {
+            trigger: 'enter',
+            event: {
+              pages: [
+                {
+                  cond: { type: 'none', arg: 0 },
+                  commands: [{ op: 'setVar', variable: 0, value: 1 }, { op: 'say', text: 'Mind the brambles.' }]
+                }
+              ]
+            }
+          },
+          128,
+          64
+        ),
+        // cross_right lands the player at x = 0 with their y unchanged, which is
+        // exactly here.
+        { actorId: BRAMBLE, x: 8, y: START_Y, props: {} }
+      ];
+    }
+  );
+
+  const hearts = nes.cpu.mem[PLAYER_HP];
+  assert.ok(hearts > 0, 'the fixture should start with hearts');
+
+  for (let step = 0; step < 120 && nes.cpu.mem[FLAT_SCREEN] === 0; step++) hold(nes, RIGHT, 1);
+  assert.equal(nes.cpu.mem[FLAT_SCREEN], 1, 'the player never crossed onto the next screen');
+
+  for (let frame = 0; frame < 8; frame++) nes.frame();
+  assert.equal(nes.cpu.mem[VARIABLES], 1, 'the screen walked onto did not run its entry event');
+  assert.equal(nes.cpu.mem[PLAYER_HP], hearts, 'the new screen got a frame of its own before its event did');
+});
+
+test('crossing an edge ends the frame inside update_player as well', {
+  skip: !hasRom && 'run `npm run sample` first'
+}, async (t) => {
+  // A crossing does not unwind update_player: cross_* is reached with a jmp and
+  // ends in redraw_screen, whose rts comes back here. So the *rest* of the same
+  // routine — the spike underfoot, the step towards a wandering monster — would
+  // still be spent on the screen that has just arrived. This one goes *down*
+  // deliberately: a vertical crossing happens after the check that catches a
+  // horizontal one, so the floor of the new screen is the only thing that can
+  // answer for it.
+  const DAMAGE_TILE = 40; // one of the sample's spare metatiles, made harmful
+  const DOWN_SCREEN = 2; // the 2x2 grid's bottom-left, below the start screen
+  const { nes } = await buildWith(
+    t,
+    [],
+    (project) => {
+      project.metatiles[DAMAGE_TILE].collision = 'damage';
+      for (const [index, screen] of project.maps[0].screens.entries()) {
+        screen.metatiles = screen.metatiles.map(() => 0);
+        // The whole top row of the destination, so the landing cell is harmful
+        // however the crossing rounds.
+        if (index === DOWN_SCREEN) {
+          for (let col = 0; col < 16; col++) screen.metatiles[col] = DAMAGE_TILE;
+        }
+      }
+      project.maps[0].screens[DOWN_SCREEN].entities = [
+        npcAt(
+          {
+            trigger: 'enter',
+            event: {
+              pages: [
+                {
+                  cond: { type: 'none', arg: 0 },
+                  commands: [{ op: 'setVar', variable: 0, value: 1 }, { op: 'say', text: 'Watch your step.' }]
+                }
+              ]
+            }
+          },
+          128,
+          64
+        )
+      ];
+    }
+  );
+
+  const hearts = nes.cpu.mem[PLAYER_HP];
+  for (let step = 0; step < 120 && nes.cpu.mem[FLAT_SCREEN] === 0; step++) hold(nes, DOWN, 1);
+  assert.equal(nes.cpu.mem[FLAT_SCREEN], DOWN_SCREEN, 'the player never crossed onto the screen below');
+
+  for (let frame = 0; frame < 8; frame++) nes.frame();
+  assert.equal(nes.cpu.mem[VARIABLES], 1, 'the screen walked onto did not run its entry event');
+  assert.equal(nes.cpu.mem[PLAYER_HP], hearts, 'the floor of the new screen was charged for before its event ran');
+});
+
+test('what the frame already owes happens before the buttons do', {
+  skip: !hasRom && 'run `npm run sample` first'
+}, async (t) => {
+  // A touch event arms on one frame and runs on the next, and the buttons are
+  // read into actions in between. They must be read *after*: an interact reaches
+  // start_dialog and an event is free to warp, so a button on this frame could
+  // otherwise send the player somewhere else and take the owed event with it.
+  // Attacking the actor whose event is owed is the same claim at its smallest —
+  // the swing lands after the event, which by then has frozen the world.
+  const { nes } = await buildWith(
+    t,
+    [
+      npcAt({
+        trigger: 'touch',
+        event: {
+          pages: [{ cond: { type: 'none', arg: 0 }, commands: [{ op: 'setVar', variable: 0, value: 1 }] }]
+        }
+      })
+    ],
+    (project) => {
+      project.sprites.actors[NPC].hp = 1; // one swing beats it, so the race is a race
+    }
+  );
+
+  // Walk into it, watching the engine's own answer to "does this frame owe an
+  // event": pressing the button a frame earlier or later would be testing
+  // whichever of the two happened to win.
+  nes.buttonDown(1, UP);
+  let armed = false;
+  for (let frame = 0; frame < 60 && !armed; frame++) {
+    nes.frame();
+    armed = nes.cpu.mem[PENDING_ENT] !== NO_ENTITY;
+  }
+  nes.buttonUp(1, UP);
+  assert.ok(armed, 'walking into it never armed an event');
+  assert.equal(nes.cpu.mem[VARIABLES], 0, 'the event ran before it was owed');
+
+  // The next frame is the one that runs it, and the attack is pressed on exactly
+  // that frame.
+  nes.buttonDown(1, A);
+  nes.frame();
+  nes.buttonUp(1, A);
+  for (let frame = 0; frame < 30; frame++) nes.frame();
+
+  assert.equal(nes.cpu.mem[VARIABLES], 1, 'the event the frame owed did not run');
+  assert.equal(nes.cpu.mem[ENT_ACTIVE], 1, 'the attack landed before the event it owed');
+});
+
+test('the screen Start draws gets its own opening before the world touches it', {
+  skip: !hasRom && 'run `npm run sample` first'
+}, async (t) => {
+  // Start on the title screen draws the first screen of the game from inside
+  // dispatch_input, which is the one place a whole screen arrives without a
+  // warp and without a crossing. The frame it arrives on is not the world's:
+  // the reading is the player's hearts against something standing where the
+  // game begins.
+  const BRAMBLE = 5; // the sample's stationary actor with contact damage
+  const { nes } = await buildWith(
+    t,
+    [
+      npcAt(
+        {
+          trigger: 'enter',
+          event: {
+            pages: [
+              {
+                cond: { type: 'none', arg: 0 },
+                commands: [{ op: 'setVar', variable: 0, value: 1 }, { op: 'say', text: 'It begins.' }]
+              }
+            ]
+          }
+        },
+        64,
+        64
+      ),
+      { actorId: BRAMBLE, x: START_X, y: START_Y + 8, props: {} }
+    ],
+    (project) => {
+      for (const screen of project.maps[0].screens) screen.metatiles = screen.metatiles.map(() => 0);
+    }
+  );
+
+  // buildWith's boot presses Start on the title, so the game has already begun.
+  assert.equal(nes.cpu.mem[VARIABLES], 1, 'the first screen of the game never spoke');
+  assert.equal(nes.cpu.mem[PLAYER_HP], 3, 'the world got a frame on the screen Start drew');
+});
+
+test('a second button pressed with confirm does not act on the screen it drew', {
+  skip: !hasRom && 'run `npm run sample` first'
+}, async (t) => {
+  // dispatch_input looks up game_state again for every button, so two pressed
+  // together are read in two different states once the first one changes it:
+  // confirm begins the game, and interact — on the same frame — then talks to
+  // whatever the first screen spawned, on a screen the player has not seen a
+  // frame of. If that conversation warps, the opening is discarded with it.
+  const AWAY = 3;
+  const { romPath } = await buildWith(
+    t,
+    [
+      npcAt(
+        {
+          trigger: 'enter',
+          event: {
+            pages: [
+              {
+                cond: { type: 'none', arg: 0 },
+                commands: [{ op: 'setVar', variable: 0, value: 1 }, { op: 'say', text: 'You came.' }]
+              }
+            ]
+          }
+        },
+        64,
+        64
+      ),
+      // Standing where the game begins, and happy to be talked to.
+      {
+        actorId: NPC,
+        x: START_X,
+        y: START_Y + 8,
+        props: {
+          trigger: 'interact',
+          event: {
+            pages: [
+              { cond: { type: 'none', arg: 0 }, commands: [{ op: 'warp', screen: AWAY, x: START_X, y: START_Y }] }
+            ]
+          }
+        }
+      }
+    ],
+    (project) => {
+      for (const screen of project.maps[0].screens) screen.metatiles = screen.metatiles.map(() => 0);
+    }
+  );
+
+  const nes = new NES({ onFrame: () => {}, emulateSound: false });
+  nes.loadROM(new Uint8Array(fs.readFileSync(romPath)));
+  for (let frame = 0; frame < 30; frame++) nes.frame();
+  assert.equal(nes.cpu.mem[GAME_STATE], 3, 'the fixture should boot into its title screen');
+
+  // Confirm and interact on the very same frame. A is the button the dispatcher
+  // reads first, so it is the one that can change the state under the rest —
+  // Start is read last and could never do this.
+  nes.buttonDown(1, A);
+  nes.buttonDown(1, B);
+  nes.frame();
+  nes.buttonUp(1, A);
+  nes.buttonUp(1, B);
+  for (let frame = 0; frame < 40; frame++) nes.frame();
+
+  assert.equal(nes.cpu.mem[VARIABLES], 1, 'the first screen of the game never spoke');
+  assert.notEqual(nes.cpu.mem[FLAT_SCREEN], AWAY, 'the second button talked its way off the screen');
+});
+
+test('a button on the arrival frame cannot warp a screen out of its own opening', {
+  skip: !hasRom && 'run `npm run sample` first'
+}, async (t) => {
+  // The reason the settle has to come before dispatch_input rather than merely
+  // before the world: an interact reaches start_dialog, and that event is free
+  // to warp. The redraw clears what is pending — so pressing the button on the
+  // frame a screen arrives could mean its opening is simply never spoken.
+  const AWAY = 3; // somewhere neither screen involved would otherwise reach
+  const { nes } = await buildWith(
+    t,
+    [],
+    (project) => {
+      for (const screen of project.maps[0].screens) screen.metatiles = screen.metatiles.map(() => 0);
+      project.maps[0].screens[1].entities = [
+        npcAt(
+          {
+            trigger: 'enter',
+            event: {
+              pages: [
+                {
+                  cond: { type: 'none', arg: 0 },
+                  commands: [{ op: 'setVar', variable: 0, value: 1 }, { op: 'say', text: 'At last.' }]
+                }
+              ]
+            }
+          },
+          128,
+          64
+        ),
+        // Standing where the crossing lands, and happy to be talked to.
+        {
+          actorId: NPC,
+          x: 16,
+          y: START_Y,
+          props: {
+            trigger: 'interact',
+            event: {
+              pages: [
+                {
+                  cond: { type: 'none', arg: 0 },
+                  commands: [{ op: 'warp', screen: AWAY, x: START_X, y: START_Y }]
+                }
+              ]
+            }
+          }
+        }
+      ];
+    }
+  );
+
+  for (let step = 0; step < 120 && nes.cpu.mem[FLAT_SCREEN] === 0; step++) hold(nes, RIGHT, 1);
+  assert.equal(nes.cpu.mem[FLAT_SCREEN], 1, 'the player never crossed onto the next screen');
+
+  // The very next frame is the one the screen's opening is owed on.
+  tap(nes, B);
+  for (let frame = 0; frame < 30; frame++) nes.frame();
+
+  assert.equal(nes.cpu.mem[VARIABLES], 1, 'the screen never got to say its piece');
+  assert.notEqual(nes.cpu.mem[FLAT_SCREEN], AWAY, 'a button on the arrival frame warped the opening away');
+});
+
+test('an entry event runs as the screen loads, before the player can move', {
+  skip: !hasRom && 'run `npm run sample` first'
+}, async (t) => {
+  // Screen 0 greets and sends the player on; screen 1 greets them when they
+  // land. Together that is the whole of the rule: an entry event fires without
+  // being asked, it fires once, and one that warps hands the moment on to
+  // whatever the next screen owes rather than swallowing it.
+  const { nes } = await buildWith(
+    t,
+    [
+      npcAt({
+        trigger: 'enter',
+        event: {
+          pages: [
+            {
+              cond: { type: 'none', arg: 0 },
+              commands: [
+                { op: 'addVar', variable: 0, value: 1 },
+                { op: 'say', text: 'You should not be here.' },
+                { op: 'warp', screen: 1, x: START_X, y: START_Y }
+              ]
+            }
+          ]
+        }
+      })
+    ],
+    (project) => {
+      project.maps[0].screens[1].entities = [
+        npcAt({
+          trigger: 'enter',
+          event: {
+            pages: [
+              { cond: { type: 'none', arg: 0 }, commands: [{ op: 'addVar', variable: 1, value: 1 }] }
+            ]
+          }
+        })
+      ];
+    }
+  );
+
+  // Nothing has been pressed but Start on the title, and the first screen has
+  // already spoken.
+  assert.equal(nes.cpu.mem[VARIABLES], 1, 'the entry event did not run on its own');
+  assert.notEqual(nes.cpu.mem[BOX_STATE], 0, 'it did not get as far as opening the box');
+
+  assert.ok(talkThrough(nes), 'the conversation never ended');
+  for (let frame = 0; frame < 30; frame++) nes.frame();
+
+  assert.equal(nes.cpu.mem[FLAT_SCREEN], 1, 'the warp at the end of the event did not happen');
+  assert.equal(nes.cpu.mem[VARIABLES + 1], 1, 'the screen warped into never ran its own entry event');
+  assert.equal(nes.cpu.mem[VARIABLES], 1, 'the first screen ran its entry event twice');
+
+  // ...and standing on the new screen does not run it over and over.
+  for (let frame = 0; frame < 120; frame++) nes.frame();
+  assert.equal(nes.cpu.mem[VARIABLES + 1], 1, 'the entry event ran again while the screen sat there');
+});
+
+test('one actor owns the moment a screen loads, and the Map Forge says which', {
+  skip: !hasRom && 'run `npm run sample` first'
+}, async (t) => {
+  const entering = (variable) => ({
+    trigger: 'enter',
+    event: {
+      pages: [{ cond: { type: 'none', arg: 0 }, commands: [{ op: 'addVar', variable, value: 1 }] }]
+    }
+  });
+  const { nes } = await buildWith(t, [
+    npcAt(entering(0), START_X, START_Y - 16),
+    npcAt(entering(1), START_X + 32, START_Y - 16)
+  ]);
+
+  for (let frame = 0; frame < 60; frame++) nes.frame();
+  assert.equal(nes.cpu.mem[VARIABLES], 1, 'the first entry event did not run');
+  assert.equal(nes.cpu.mem[VARIABLES + 1], 0, 'the second one ran as well, on top of the first');
+});
+
+test('a pickup keeps its own meaning for being walked into', {
+  skip: !hasRom && 'run `npm run sample` first'
+}, async (t) => {
+  // Walking into a pickup collects it, so touch is a moment already spoken for.
+  // `availableTriggers` is what says so, and the compiler applies it as well as
+  // the editor — this is that rule seen from the ROM, where the event must not
+  // run and the gem must still land in the bag.
+  const { nes } = await buildWith(t, [
+    {
+      actorId: GEM,
+      x: START_X,
+      y: START_Y - 16,
+      props: {
+        trigger: 'touch',
+        event: {
+          pages: [{ cond: { type: 'none', arg: 0 }, commands: [{ op: 'setVar', variable: 0, value: 1 }] }]
+        }
+      }
+    }
+  ]);
+
+  hold(nes, UP, 8);
+  assert.equal(nes.cpu.mem[INV_COUNT], 1, 'the pickup was not collected');
+  assert.equal(nes.cpu.mem[VARIABLES], 0, 'the event ran instead of the pickup being collected');
+  assert.equal(nes.cpu.mem[GAME_STATE], ST_GAMEPLAY, 'collecting a pickup started a conversation');
+});
+
+test('touch is offered only where nothing else already owns being walked into', () => {
+  const action = createProject('Action');
+  const rpg = createProject('Quest');
+  rpg.project.gameType = 'rpg';
+  const triggersFor = (actor, project = action) => availableTriggers(actor, project).map((entry) => entry.id);
+
+  assert.deepEqual(triggersFor({ behavior: 'npc' }), ['interact', 'touch', 'enter']);
+  assert.deepEqual(
+    triggersFor({ behavior: 'pickup' }),
+    ['interact', 'enter'],
+    'a pickup is collected by being walked into'
+  );
+  assert.deepEqual(triggersFor({ behavior: 'door' }), ['interact', 'enter'], 'a door is walked through');
+
+  // The same actor, and the answer depends on the project: contact damage costs
+  // a heart in an action game and the event still runs, but in an RPG it starts
+  // a battle, which freezes the world before the event could have its turn.
+  const monster = { behavior: 'chaser', damage: 2 };
+  assert.ok(triggersFor(monster).includes('touch'), 'contact damage does not stop an event in an action game');
+  assert.equal(triggersFor(monster, rpg).includes('touch'), false, 'in an RPG that contact is a battle');
+  assert.ok(triggersFor({ behavior: 'chaser', damage: 0 }, rpg).includes('touch'), 'a harmless RPG actor is fine');
+
+  // Every behaviour keeps the two that are not about walking into something.
+  for (const entry of BEHAVIORS) {
+    for (const project of [action, rpg]) {
+      const offered = triggersFor({ behavior: entry.id, damage: 4 }, project);
+      assert.ok(offered.includes('interact'), `${entry.id} lost the interact trigger`);
+      assert.ok(offered.includes('enter'), `${entry.id} lost the entry trigger`);
+    }
+  }
+
+  // A trigger this version does not have becomes the one every event had before
+  // there were triggers, rather than being dropped along with the event.
+  const normalized = normalizeProject({
+    maps: [
+      {
+        screens: [
+          {
+            entities: [
+              { actorId: 0, props: { trigger: 'someLaterIdea', dialogue: 'Kept.' } },
+              { actorId: 0, props: { dialogue: 'Also kept.' } },
+              { actorId: 0, props: { trigger: 'enter', dialogue: 'Entering.' } }
+            ]
+          }
+        ]
+      }
+    ]
+  });
+  const placed = normalized.maps[0].screens[0].entities;
+  assert.equal(placed[0].props.trigger, 'interact');
+  assert.equal(placed[0].props.dialogue, 'Kept.', 'the rest of the placement went with it');
+  assert.equal(placed[1].props.trigger, 'interact', 'a placement that predates triggers gets the old meaning');
+  assert.equal(placed[2].props.trigger, 'enter');
+});
+
 // ----------------------------------------------------------------- questions
 //
 // A branch asks the game which way to go; a question asks the player. The engine
@@ -1356,6 +1953,45 @@ test('a question is clamped to what the box can show, and an empty one is not a 
   assert.ok(squeezed.options[0].text.startsWith('two y'), 'runs of whitespace collapse');
   assert.equal(squeezed.options[1].text.length, CHOICE_LIMITS.label);
   assert.deepEqual(squeezed.options[1].commands, [], 'an option with no command list gets an empty one');
+});
+
+test('a trigger the actor has stopped having room for is kept, and read as one thing', {
+  skip: !hasRom && 'run `npm run sample` first'
+}, async (t) => {
+  // An actor is edited in a different Forge to the one that places it, so a
+  // placement set to touch can find itself on an actor that has since been given
+  // contact damage in an RPG. What must not happen is the editor showing one
+  // answer, the hint describing another and the ROM running a third.
+  const project = createProject('Quest');
+  project.project.gameType = 'rpg';
+  project.sprites.actors = [{ name: 'Wisp', behavior: 'chaser', damage: 0 }];
+  const placement = { actorId: 0, x: 0, y: 0, props: { trigger: 'touch', dialogue: 'Boo.' } };
+  const actor = project.sprites.actors[0];
+
+  assert.equal(effectiveTrigger(placement, actor, project), 'touch', 'a harmless actor can be walked into');
+
+  // The Sprite Forge gives it teeth, and walking into it now means a battle.
+  actor.damage = 3;
+  assert.equal(effectiveTrigger(placement, actor, project), 'interact', 'the trigger it can no longer have');
+  assert.equal(placement.props.trigger, 'touch', 'the authored choice was overwritten rather than kept');
+  // ...and it comes back, which is the whole reason it is kept rather than
+  // reconciled: a change to an actor must not destroy work on a placement.
+  actor.damage = 0;
+  assert.equal(effectiveTrigger(placement, actor, project), 'touch', 'putting the damage back did not restore it');
+
+  // The ROM agrees with the editor, which is the half of this that a unit test
+  // of the schema cannot see: build it and read the byte back out of the record.
+  const { project: built, romPath } = await buildWith(t, [
+    { actorId: NPC, x: START_X, y: START_Y - 16, props: { trigger: 'touch', dialogue: 'Careful.' } }
+  ], (tweaked) => {
+    tweaked.sprites.actors[NPC].damage = 2; // an action game: touch still stands
+  });
+  assert.ok(fs.existsSync(romPath));
+  assert.equal(
+    effectiveTrigger(built.maps[0].screens[0].entities[0], built.sprites.actors[NPC], built),
+    'touch',
+    'contact damage in an action game costs a heart and the event still runs'
+  );
 });
 
 test('a question is live even when its options do nothing', () => {

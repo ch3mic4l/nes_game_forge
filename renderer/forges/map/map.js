@@ -14,7 +14,10 @@ import {
   flatScreens,
   screenLabel,
   entityLabel,
-  canTalk
+  canTalk,
+  EVENT_TRIGGERS,
+  availableTriggers,
+  effectiveTrigger
 } from '../../../shared/project.js';
 import { BOX_COLS, BOX_ROWS, FONT_BASE, wrapText } from '../../../shared/font.js';
 import { RPG_LIMITS } from '../../../shared/project.js';
@@ -596,8 +599,79 @@ export function mount(container, app) {
               { title: 'Start from a chest, a gate, a one-off conversation…', onclick: () => applyTemplate(entity, index) },
               'Template…'
             ),
+        triggerSelect(entity, index),
         hideSwitchSelect(entity, index)
+      ),
+      triggerNote(entity)
+    );
+  }
+
+  /**
+   * What makes this actor's event run. Only the triggers its behaviour has room
+   * for are listed — `availableTriggers` is the single writer, and the compiler
+   * applies the same rule, so this cannot offer a moment the ROM spends on
+   * something else.
+   */
+  function triggerSelect(entity, index) {
+    const actor = store.project.sprites.actors[entity.actorId];
+    // The effective one, never the stored one: an actor edited in another Forge
+    // can have taken the stored choice away, and a select with nothing selected
+    // shows its first option while the project still says otherwise.
+    const current = effectiveTrigger(entity, actor, store.project);
+    return el(
+      'select',
+      {
+        style: { flex: '1' },
+        title: 'What makes this event run',
+        onchange: (fired) => setEntityProp(index, 'Change trigger', { trigger: fired.target.value })
+      },
+      availableTriggers(actor, store.project).map((entry) =>
+        el('option', { value: entry.id, selected: entry.id === current }, entry.label)
       )
+    );
+  }
+
+  /**
+   * The hint for the chosen trigger, and — for an entry event — whether this is
+   * the actor that will actually get the moment. Only one event can run as a
+   * screen loads, and the engine gives it to the first one placed; saying which
+   * beats leaving it to be found by wondering why the other never fires.
+   */
+  function triggerNote(entity) {
+    const actor = store.project.sprites.actors[entity.actorId];
+    const stored = entity.props?.trigger ?? EVENT_TRIGGERS[0].id;
+    const current = effectiveTrigger(entity, actor, store.project);
+    // The stored choice is kept rather than rewritten — undo the change to the
+    // actor and it comes back — so the only thing that has to happen here is
+    // saying so, instead of describing a trigger the ROM will not use.
+    if (current !== stored) {
+      const label = (id) => EVENT_TRIGGERS.find((item) => item.id === id)?.label ?? id;
+      return el(
+        'p.hint',
+        { dataset: { triggerHint: current }, style: { margin: '4px 0 0', color: 'var(--accent)' } },
+        `“${label(stored)}” is not available for this actor any more — walking into it already ` +
+          `means something else. This event runs “${label(current)}” instead until you pick again.`
+      );
+    }
+    const entry = EVENT_TRIGGERS.find((item) => item.id === current);
+    if (!entry || current === EVENT_TRIGGERS[0].id) return null;
+    const entering =
+      current === 'enter'
+        ? (currentScreen().entities ?? []).filter((placed) => placed.props?.trigger === 'enter')
+        : [];
+    const shadowed = entering.length > 1 && entering[0] !== entity;
+    return el(
+      'p.hint',
+      {
+        // Named in the DOM because it is one of several hints in this panel and
+        // the smoke test has no other way to ask for this one.
+        dataset: { triggerHint: current },
+        style: { margin: '4px 0 0', color: shadowed ? 'var(--accent)' : null }
+      },
+      shadowed
+        ? 'Another actor on this screen already runs its event when the screen loads, and only ' +
+            'the first one does. This one will not.'
+        : entry.hint
     );
   }
 

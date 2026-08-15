@@ -65,6 +65,23 @@ inv_sel     = $38           ; the slot the menu highlights
 items_used  = $39           ; items spent with the confirm action
 talk_ent    = $3A           ; entity being spoken to, NO_ENTITY when none
 ui_slot     = $3B           ; draw_menu's slot counter
+; The slot whose event the frame owes the player, or NO_ENTITY. Both triggers
+; that are not the interact button arm this and neither starts a conversation
+; itself, because both would be starting one in the middle of something: the
+; entry trigger inside the redraw that spawned it, on a screen still being drawn,
+; and the touch trigger inside the loop that is still walking the other seven
+; slots. main_loop is the one place either of them turns into a conversation, at
+; a frame boundary with the world not half-updated.
+;
+; First claim wins, which is the same rule for both: two actors cannot each own
+; the moment a screen loads, and an entry event must not be pushed aside by a
+; touch on the frame the screen arrives.
+pending_ent = $7C
+; A screen was drawn during this frame, so the rest of it does not belong to the
+; world: crossing a screen edge redraws from inside update_player, and everything
+; after that call would otherwise be a frame of the *new* screen running before
+; the event it owes has had its turn.
+screen_fresh = $7D
 
 ; The NMI's VRAM write queue. The main loop appends packets during the frame and
 ; sets vram_ready with its last store; NMI drains them after the OAM DMA. A frame
@@ -210,7 +227,7 @@ ent_hp      = $0338         ; hits left, seeded from actor_hp at spawn
 ent_to_scr  = $0360         ; door target: screen, then position
 ent_to_x    = $0368
 ent_to_y    = $0370
-ent_event   = $0380         ; the event this actor runs when talked to
+ent_event   = $0380         ; the event this actor runs
 ent_hurt    = $0388         ; frames left flashing after a hit
 
 ; ------------------------------------------------------------- battle arrays
@@ -263,6 +280,24 @@ NO_SWITCH   = $FF           ; an actor that no switch hides
 ; config.inc from RPG_LIMITS.variables, so how many there are has one writer and
 ; it is not this file.
 variables   = $0500
+
+; ------------------------------------------------------------- trigger RAM
+; Two more per-slot arrays, over here rather than beside the others because the
+; $0300 page is spoken for down to its last eight bytes.
+;
+; ent_trigger is the record's trigger byte, held per slot because the touch test
+; has to run for every actor every frame. ent_touched is that test's memory: the
+; player is still standing on the actor when the conversation it started ends,
+; so without it the event would begin again the moment the box came down, for
+; as long as the player stood there.
+ent_trigger = $0510
+ent_touched = $0518
+
+; Triggers, in the same order as EVENT_TRIGGERS in shared/project.js.
+TRIG_INTERACT = 0           ; the interact action, in reach -- what every event
+                            ; did before this byte existed, which is why it is 0
+TRIG_TOUCH  = 1
+TRIG_ENTER  = 2             ; the screen loaded
 
 ; ------------------------------------------------------------ inventory RAM
 ; One actor id per item carried, oldest first. Not a per-screen array: the bag

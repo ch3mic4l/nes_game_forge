@@ -25,7 +25,17 @@ update_player_right:
   beq update_player_vertical
   jsr move_right
 
+; Crossing an edge does not unwind this routine: move_left and its three
+; siblings reach cross_* with a jmp, and cross_* ends in redraw_screen, whose
+; rts lands back here with a different screen underneath the player. Everything
+; after that point would be spent on a screen that has only just spawned its
+; actors and has not yet had the turn it is owed -- a second axis of movement
+; against its collision, a heart to its spikes, a step towards its wandering
+; monsters. So the frame stops here instead. main_loop clears screen_fresh
+; before calling this, and stops as well.
 update_player_vertical:
+  lda screen_fresh
+  bne update_player_crossed
   lda pad
   and #BTN_UP
   beq update_player_down
@@ -38,6 +48,8 @@ update_player_down:
   jsr move_down
 
 update_player_anim:
+  lda screen_fresh
+  bne update_player_crossed
   jsr player_hazard         ; after moving, so stepping onto a spike costs a heart
   .if BATTLE_ENABLED
   jsr check_encounter       ; ...and wandering monsters count the steps
@@ -59,6 +71,7 @@ update_player_stand:
   sta anim_frame
   sta anim_timer
 update_player_done:
+update_player_crossed:
   rts
 
 ; ------------------------------------------------------------- directions

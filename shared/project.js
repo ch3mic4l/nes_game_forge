@@ -183,6 +183,74 @@ export const EVENT_CONDITIONS = [
   { id: 'varUnder', label: 'Variable is under', arg: 'variable', value: true }
 ];
 
+/**
+ * What makes a placed actor's event run. The order is the wire format: it is one
+ * byte of the entity record and `TRIG_*` in `engine/constants.asm` is this list
+ * written down, so adding one means editing both ends in the same change.
+ *
+ * `interact` is what every event did before there were triggers, and it stays
+ * the default — a project that has never seen this control builds exactly as it
+ * did, which is the only reason it can be index 0.
+ */
+export const EVENT_TRIGGERS = [
+  { id: 'interact', label: 'When talked to', hint: 'The player walks up and presses the interact button.' },
+  {
+    id: 'touch',
+    label: 'When touched',
+    hint: 'The player walks into it. It happens again only after walking away and back.'
+  },
+  {
+    id: 'enter',
+    label: 'When the screen loads',
+    hint: 'Straight away, every time the screen is entered — guard it with a switch if it should happen once.'
+  }
+];
+
+/**
+ * Which triggers mean something for this actor, in this project.
+ *
+ * `touch` is the only one that can be spoken for, because it is the only one
+ * that names a moment something else already owns:
+ *
+ * - Walking into a **pickup** collects it and walking into a **door** goes
+ *   through it. The pickup is gone before its event could run, and the door's
+ *   warp would land in the middle of the conversation it started.
+ * - In an **RPG**, walking into anything that deals damage starts a battle,
+ *   which freezes the world — so the event behind it would never get its turn.
+ *   In an action game the same contact costs a heart and the event *does* run,
+ *   which is why this asks the project and not only the actor.
+ *
+ * Offering it anyway is the "looks functional, does something else" case this
+ * codebase refuses. The compiler applies the same rule as the editor, because a
+ * hand-edited project reaches the ROM through it rather than through the editor.
+ *
+ * `interact` and `enter` are always available: one is a button and the other is
+ * the screen loading, and neither is a moment a behaviour can take.
+ */
+export const availableTriggers = (actor, project) => {
+  const walkedInto = actor?.behavior === 'pickup' || actor?.behavior === 'door';
+  const startsBattle = project?.project?.gameType === 'rpg' && (actor?.damage ?? 0) > 0;
+  return EVENT_TRIGGERS.filter((entry) => entry.id !== 'touch' || !(walkedInto || startsBattle));
+};
+
+/**
+ * The trigger a placement actually gets — its own, unless the actor has stopped
+ * having room for it.
+ *
+ * An actor is edited in a different Forge to the one that places it, so a
+ * placement set to `touch` can find itself on an actor that has since been given
+ * contact damage in an RPG. The stored choice is deliberately *not* rewritten
+ * when that happens: put the damage back to zero and the trigger the author
+ * picked is still there. What must not happen is the three answers disagreeing —
+ * the editor showing one, the hint describing another and the ROM running a
+ * third — so everything that needs to know asks this.
+ */
+export function effectiveTrigger(entity, actor, project) {
+  const wanted = entity?.props?.trigger ?? EVENT_TRIGGERS[0].id;
+  const allowed = availableTriggers(actor, project).some((entry) => entry.id === wanted);
+  return allowed ? wanted : EVENT_TRIGGERS[0].id;
+}
+
 /** Event commands, in the order the compiled bytecode uses. */
 export const EVENT_COMMANDS = [
   { id: 'end', label: 'End', args: [] },
@@ -687,6 +755,12 @@ function normalizeEvent(raw) {
 function normalizeEntity(raw) {
   const props = raw?.props && typeof raw.props === 'object' ? { ...raw.props } : {};
   const event = normalizeEvent(props.event);
+  // An unknown trigger becomes the one every event had before triggers existed,
+  // rather than being dropped: a project written by a later version keeps its
+  // events, and they run the way this version's engine knows how to run them.
+  const trigger = EVENT_TRIGGERS.some((entry) => entry.id === props.trigger)
+    ? props.trigger
+    : EVENT_TRIGGERS[0].id;
   const dialogue = String(props.dialogue ?? '').slice(0, MAX_DIALOGUE);
   const hideSwitch =
     props.hideSwitch === null || props.hideSwitch === undefined
@@ -710,6 +784,7 @@ function normalizeEntity(raw) {
       toY: clamp(props.toY, 0, 224, 112),
       dialogue,
       event,
+      trigger,
       hideSwitch
     }
   };

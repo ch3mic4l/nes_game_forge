@@ -197,6 +197,19 @@ answers with whatever the cursor is on — to this box both have always meant "g
 on", and a question is it asking which way rather than a second thing to back
 out of.
 
+**When** an event runs is set on the placed actor, beside the event itself:
+
+| Trigger | When it runs |
+|---|---|
+| When talked to | The player walks up and presses interact — what every event did before there were triggers |
+| When touched | The player walks into it. It happens again only after walking away and back, so standing on it does not restart the conversation forever |
+| When the screen loads | Straight away, every time that screen is entered — the opening of a scene. Guard it with a switch if it should only happen once |
+
+A trigger is a choice, not a set: an actor set to *When touched* does not also answer the interact
+button. *When touched* is offered only where nothing else already owns being walked into — a pickup
+is collected, a door is gone through, and in an RPG anything that deals damage starts a battle. Only
+one actor per screen can run its event as the screen loads; the Map Forge says which one it is.
+
 Only commands the engine implements are offered. Anything a newer version of the
 Forge wrote is preserved through a save, so a project never loses work by being
 opened here.

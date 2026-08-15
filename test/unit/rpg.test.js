@@ -436,6 +436,59 @@ test('walking into a placed monster is a fight, and beating it removes it', {
   }
 });
 
+test('coming back from a battle is not entering the screen again', {
+  skip: needsSample
+}, async (t) => {
+  // A battle ends by redrawing the field, and a redraw is what arms an entry
+  // event — so without a word from battle_end, every fight replays whatever the
+  // screen says when the player walks in. On a screen with wandering monsters
+  // that is every few steps.
+  const VARIABLES = 0x500; // from engine/constants.asm
+  const dir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'forge-reentry-'));
+  t.after(() => fs.promises.rm(dir, { recursive: true, force: true }));
+  const project = await loadProject(SAMPLE);
+  project.maps[0].encounters = { rate: 0, actorIds: [] };
+  project.maps[0].screens[0].entities.push({
+    actorId: 2, // Iris, who has nothing to do with the fight
+    x: 96,
+    y: 32,
+    props: {
+      trigger: 'enter',
+      event: {
+        pages: [{ cond: { type: 'none', arg: 0 }, commands: [{ op: 'addVar', variable: 0, value: 1 }] }]
+      }
+    }
+  });
+  await saveProject(dir, project);
+  const built = await buildProject({ dir, project, log: () => {} });
+
+  const nes = boot(built.romPath);
+  assert.equal(nes.cpu.mem[VARIABLES], 1, 'the entry event did not run when the game started');
+
+  // Into the slime in the bottom-right corner, exactly as the touch-encounter
+  // test does it.
+  for (let step = 0; step < 400 && nes.cpu.mem[GAME_STATE] === ST_GAMEPLAY; step++) {
+    const buttons = [];
+    if (nes.cpu.mem[PLAYER_X] < 168) buttons.push(RIGHT);
+    if (nes.cpu.mem[PLAYER_Y] < 168) buttons.push(DOWN);
+    if (!buttons.length) break;
+    for (const button of buttons) nes.buttonDown(1, button);
+    nes.frame();
+    for (const button of buttons) nes.buttonUp(1, button);
+  }
+  for (let i = 0; i < 30 && nes.cpu.mem[GAME_STATE] !== ST_BATTLE; i++) nes.frame();
+  assert.equal(nes.cpu.mem[GAME_STATE], ST_BATTLE, 'walking into the slime did not start a fight');
+  assert.equal(nes.cpu.mem[VARIABLES], 1, 'the entry event ran again on the way to the fight');
+
+  chooseCommand(nes, BC_FIGHT);
+  tap(nes, A, 20);
+  for (let i = 0; i < 80 && nes.cpu.mem[GAME_STATE] === ST_BATTLE; i++) tap(nes, A, 12);
+  assert.equal(nes.cpu.mem[GAME_STATE], ST_GAMEPLAY, 'the battle never ended');
+
+  for (let i = 0; i < 60; i++) nes.frame();
+  assert.equal(nes.cpu.mem[VARIABLES], 1, 'the screen ran its entry event again when the battle ended');
+});
+
 // --- joining, and fighting as more than one ---------------------------------
 
 test('a Join event recruits a member mid-script, and they fight from then on', {

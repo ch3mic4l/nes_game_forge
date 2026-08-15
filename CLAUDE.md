@@ -352,6 +352,76 @@ counters, all 64 switches and all 16 variables — and both boot and the game-ov
 it. Where a game
 over *lands* is `restart_game`: the title if there is one, a new game if there is not.
 
+**What makes an event run is a byte of the entity record**, `EVENT_TRIGGERS` in
+`shared/project.js` in wire order, `TRIG_*` in `engine/constants.asm` at the other end. `interact`
+is index 0 because it is what every event did before the byte existed, and **a trigger is a choice
+rather than a set** — `do_talk` requires `TRIG_INTERACT`, or an entry event could be replayed by
+walking up to whatever carried it and pressing the button.
+
+**Neither of the other two starts a conversation itself.** Both arm `pending_ent`, and `main_loop`
+is the single place it becomes one. Touch fires from inside `update_entities`, which is still
+walking the other seven slots — starting there leaves the pickups, doors and contact damage below
+it acting on a world that has just frozen, and a door on the same square redraws the screen out
+from under the conversation. Enter is armed by `spawn_entities`, inside the redraw that spawned it,
+against a screen still being drawn. So both wait for a frame boundary, and the rules below are all
+one rule seen from different sides: **a frame that draws a screen or decides a warp belongs to that
+transition, not to the player.**
+
+- **First claim wins**, for both triggers through one `arm_event`. Two actors cannot each own the
+  moment a screen loads, and a touch must not push aside the entry event of the screen it happened
+  on. The Map Forge says which actor has the moment, on the ones that do not.
+- **`pending_ent` is disarmed before the event runs, not after**, so an event that warps hands the
+  moment on to whatever the next screen owes rather than swallowing it.
+- **Work owed is settled before `dispatch_input`, not merely before the world**, and the frame ends
+  there because it belongs to the transition rather than to the player. `settle_owed` is the one
+  routine for it, carrying its own `paused`/`game_state` gate — buttons are read in every state,
+  but a warp and a pending event are gameplay's alone. Before the world, because an event finishes
+  while the box is still up, so the frame that reads `warp_ready` after `update_entities` never
+  runs. Before the *buttons*, because an interact reaches `start_dialog` and an event is free to
+  warp: a press on that frame could otherwise overwrite the destination of a warp already owed, or
+  warp away from a screen whose opening was armed and never spoken.
+- **`dispatch_input` stops once a button has drawn a screen or decided a warp.** It looks
+  `game_state` up again for every button, so two pressed together are read in two different states
+  the moment the first one changes it: confirm and interact on the same frame begin the game and
+  then talk to whatever the first screen spawned — on a screen the player has not seen a frame of,
+  and if that conversation warps, the opening goes with it. A is read first, which is why this is
+  reachable at all; Start is read last and never could be.
+- **`screen_fresh` means a screen has been drawn and the world has not run since**, cleared once
+  per frame *before* `dispatch_input` and checked at every point the world could start on a screen
+  that has only just arrived. There are three ways one arrives mid-frame, and each needed its own
+  check: `dispatch_input` draws one outright (Start, on the title); `update_player` crosses an edge
+  — and that **does not unwind it**, because `cross_*` is reached with a `jmp` and ends in
+  `redraw_screen`, whose `rts` lands back mid-routine with a different screen under the player, so
+  `update_player` stops at the flag twice as well (before the second axis of movement, and before
+  the hazard and encounter checks); and the input can leave a warp for the next frame. Miss one and
+  the new screen charges for its spikes, counts a step towards its wandering monsters, or moves the
+  player against its collision before it has said a word.
+- **A pending event is checked against `ent_active` before it runs.** With the settle ahead of the
+  buttons nothing known can empty that slot in between, so this is a guard rather than a fix: the
+  index is remembered across a frame boundary, and a stale one would speak for something that is
+  not there without saying so.
+- **`ent_touched` is cleared by walking off, not by the event ending.** The conversation ends with
+  the player standing exactly where they started it.
+
+Coming back from a battle is not entering a screen: `battle_end` redraws the field it never left,
+so it puts down the entry event that redraw just armed — otherwise every fight replays whatever the
+screen says on arrival.
+
+`availableTriggers(actor, project)` is the single writer for which triggers are real for a
+placement. `touch` is the only one that can be spoken for: walking into a pickup collects it,
+walking into a door goes through it, and in an *RPG* walking into anything that deals damage starts
+a battle, which freezes the world before the event could run — the same contact in an action game
+costs a heart and the event still runs, which is why it asks the project and not only the actor.
+
+**`effectiveTrigger(entity, actor, project)` is what everything then asks**, because an actor is
+edited in a different Forge to the one that places it: a placement set to `touch` can find itself
+on an actor that has since been given contact damage. The stored choice is deliberately *not*
+rewritten — put the damage back and it is still there, since a change to an actor must not destroy
+work on a placement — so the select, the hint under it and the compiler all derive the same answer
+from it instead, and the Map Forge says out loud when the two differ. Three places deciding this
+separately is exactly how the editor comes to show one trigger, the hint describe another and the
+ROM run a third.
+
 `engine/script.asm` runs an actor's event: a list of pages, first passing page wins, commands run
 straight through until one has to wait for the player. `Say` is such a command, so the box's close
 path calls `script_resume`. Plain dialogue is compiled into an event of one unconditional page, so

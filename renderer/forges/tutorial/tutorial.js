@@ -286,6 +286,18 @@ const TOPICS = [
         'into two pages that repeat everything they have in common.'
       ),
       p(
+        'When an event runs is set on the placed actor rather than in the event: ',
+        b('When talked to'),
+        ' is the original behaviour, ',
+        b('When touched'),
+        ' runs it as the player walks into the actor, and ',
+        b('When the screen loads'),
+        ' runs it the moment that screen appears — which is how a scene opens, because nothing ',
+        'else in the engine can make something happen *to* the player. An entry event happens ',
+        'every time the screen is entered, so guard it with a switch when it should happen once. ',
+        'Only one actor per screen gets that moment, and the Map Forge says which.'
+      ),
+      p(
         b('Ask a question…'),
         ' puts that decision to the player instead. It holds up to four answers — one for each ',
         'row of the message box — and each answer has its own list of commands, so a shop is ',

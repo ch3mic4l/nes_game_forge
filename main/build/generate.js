@@ -40,7 +40,9 @@ import {
   BEHAVIORS,
   ACTIONS,
   BUTTONS,
+  EVENT_TRIGGERS,
   INPUT_STATES,
+  effectiveTrigger,
   collisionIndex,
   validateProject
 } from '../../shared/project.js';
@@ -79,10 +81,15 @@ export function engineFileNames() {
   return engineFileCache;
 }
 
-// actor, x, y, the door target (screen, x, y), then the event it runs and the
-// switch that hides it. Actors that use none of it carry zeroes and $FF there;
-// a uniform record keeps the engine's spawn loop trivial.
-export const ENTITY_RECORD = 8;
+// actor, x, y, the door target (screen, x, y), then the event it runs, what
+// makes it run, and the switch that hides it. Actors that use none of it carry
+// zeroes and $FF there; a uniform record keeps the engine's spawn loop trivial.
+//
+// The hide switch stays last because it is the one field spawn_entities reads
+// and then may act on by abandoning the record — everything after it would have
+// to be stepped over on the path that declines the actor as well as the one that
+// keeps it, which is two places to get the cursor right instead of none.
+export const ENTITY_RECORD = 9;
 
 /** Bytes the compiled music will occupy: period table, instruments and streams. */
 function musicSize(songs) {
@@ -125,18 +132,18 @@ const TITLE_PROMPT_ROW = 19;
 // Measured by building the sample and reading nesasm's usage for the kernel-lo
 // bank (prgLayout().kernelLoBank), minus that project's fixedBytes + tableBytes.
 // UNROM 512 is the high-water mark because banks.asm emits the most code for it:
-// 6079 bytes as measured by building sample-rpg on that board, with the message
-// box, the event runner with its variables, branches and questions, action
-// combat, the title screen and the RPG's kernel-side half all in. The battle
-// system itself is not in this number — it lives in a switchable bank, which is
-// the whole reason it can exist at all. MMC3 additionally assembles the scanline
-// split (engine/split.asm) and comes to 6059, so UNROM 512 keeps setting the
-// ceiling. That leaves 41 bytes of slack: the next thing to grow the kernel
+// 6268 bytes as measured by building sample-rpg on that board, with the message
+// box, the event runner with its variables, branches, questions and triggers,
+// action combat, the title screen and the RPG's kernel-side half all in. The
+// battle system itself is not in this number — it lives in a switchable bank,
+// which is the whole reason it can exist at all. MMC3 additionally assembles the
+// scanline split (engine/split.asm) and comes to 6248, so UNROM 512 keeps setting the
+// ceiling. That leaves 32 bytes of slack: the next thing to grow the kernel
 // measures again and raises this, rather than assuming the number below is
 // generous. Re-measure and raise this if the engine grows: build sample-rpg on
 // mapper 30, take nesasm's usage for the bank holding `reset`, and subtract
 // `reset - $C000`.
-const KERNEL_CODE_BYTES = 6120;
+const KERNEL_CODE_BYTES = 6300;
 const PLAYER_FRAMES = 8; // 4 directions x 2 walk frames
 const PLAYER_TILES = PLAYER_FRAMES * 4;
 
@@ -277,6 +284,17 @@ function mapperMirror(mapper, mirroring) {
   if (mapper.prgSwitch === PRG_SWITCH.mmc1) return vertical ? 2 : 3;
   if (mapper.prgSwitch === PRG_SWITCH.mmc3) return vertical ? 0 : 1;
   return 0;
+}
+
+/**
+ * The trigger byte for a placement: which of EVENT_TRIGGERS it carries, as the
+ * index the engine's TRIG_* constants are. A trigger the actor's behaviour has
+ * no room for falls back to the first, which is what every event did before
+ * there were triggers — the same answer normalization gives an unknown one.
+ */
+function triggerIndex(entity, actor, project) {
+  const trigger = effectiveTrigger(entity, actor, project);
+  return Math.max(0, EVENT_TRIGGERS.findIndex((entry) => entry.id === trigger));
 }
 
 /** Bytes one screen occupies: metatiles, attributes, then its actor list. */
@@ -877,7 +895,7 @@ export async function generateAssets({ dir, project, log = () => {} }) {
     const chunks = [
       '; Generated -- per screen: 240 metatile ids, 64 attribute bytes, then the',
       '; actor list as a count followed by (actor, x, y, door screen, door x,',
-      '; door y, event, hide switch).'
+      '; door y, event, trigger, hide switch).'
     ];
     for (let index = from; index < to; index++) {
       const { screen } = flat[index];
@@ -899,6 +917,11 @@ export async function generateAssets({ dir, project, log = () => {} }) {
           entity.props?.toX ?? 0,
           entity.props?.toY ?? 0,
           text.eventFor.get(entity) ?? NO_EVENT,
+          // Which trigger this placement gets is the actor's behaviour question
+          // as well as the author's, and `availableTriggers` is the single
+          // writer for it — applied here and not only in the Map Forge, because
+          // buildProject is handed the project the app is holding.
+          triggerIndex(entity, project.sprites.actors[entity.actorId], project),
           entity.props?.hideSwitch ?? 0xff
         );
       }

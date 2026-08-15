@@ -75,12 +75,22 @@ dispatch_pressed:
   jsr do_action
   pla
   tax
+  ; An action that drew a screen or decided a warp has taken the frame, and the
+  ; buttons after it would be read against whatever it left behind: game_state is
+  ; looked up again for every button, so Start on the title and interact pressed
+  ; together would begin the game and then immediately talk to whatever the first
+  ; screen spawned -- on a screen the player has not seen a frame of, and before
+  ; the event that screen owes has been spoken.
+  lda screen_fresh
+  ora warp_ready
+  bne dispatch_done
 
 dispatch_next:
   inx
   cpx #NUM_BUTTONS
   bne dispatch_loop
 
+dispatch_done:
   lda #PLAYER_SPEED
   ldy dash_on
   beq dispatch_speed
@@ -244,6 +254,12 @@ do_talk_loop:
   beq do_talk_next          ; a door is walked through, not spoken to
   cmp #BEH_PLAYER
   beq do_talk_next
+  ; What makes an event run is a choice, not a set: an actor whose event runs on
+  ; touch or on arrival does not also answer the button. Without this an entry
+  ; event -- a scene meant to happen once as the screen appears -- could be
+  ; played again by walking up to whatever carried it and pressing interact.
+  lda ent_trigger,x
+  bne do_talk_next          ; TRIG_INTERACT is zero
   jsr entity_in_reach
   bne do_talk_next
   jmp start_dialog          ; X = the slot being spoken to

@@ -7,8 +7,13 @@ spawn_entities:
   ldx #MAX_ENTITIES-1
 spawn_clear:
   sta ent_active,x
+  sta ent_touched,x         ; a screen arrives with nothing stood on
   dex
   bpl spawn_clear
+  lda #NO_ENTITY            ; ...and owing nothing, until a record says otherwise
+  sta pending_ent
+  lda #1                    ; the rest of this frame is not the new screen's
+  sta screen_fresh
 
   ldy flat_screen
   lda screen_ent_lo,y
@@ -18,7 +23,9 @@ spawn_clear:
 
   ldy #0
   lda [esptr_lo],y          ; how many actors this screen places
-  beq spawn_done
+  bne spawn_any             ; inverted into a jump: the record loop between here
+  jmp spawn_done            ; and spawn_done is past a branch's 128-byte reach
+spawn_any:
   sta ent_tmp
   ldx #0
   iny                       ; step past the count byte
@@ -44,8 +51,11 @@ spawn_loop:
   lda [esptr_lo],y          ; door target y
   sta ent_to_y,x
   iny
-  lda [esptr_lo],y          ; the event it runs when talked to
+  lda [esptr_lo],y          ; the event it runs
   sta ent_event,x
+  iny
+  lda [esptr_lo],y          ; and what makes it run
+  sta ent_trigger,x
   iny
   lda [esptr_lo],y          ; the switch that hides it once it is on
   iny
@@ -68,12 +78,25 @@ spawn_place:
   sta ent_frame,x
   sta ent_timer,x
   sta ent_hurt,x
+  ; An actor that runs its event on arrival: remembered for the main loop, and
+  ; only the first one on the screen. Two events both claiming the moment the
+  ; screen appears is a question with no good answer, so the answer is the one
+  ; the Map Forge lists first -- and the editor says so rather than leaving it
+  ; to be discovered.
+  ; Y is the record cursor here and stays that way: arm_event needs no index
+  ; register, so it has none to give back.
+  lda ent_trigger,x
+  cmp #TRIG_ENTER
+  bne spawn_armed
+  jsr arm_event
+spawn_armed:
   inx
   cpx #MAX_ENTITIES
-  beq spawn_done
+  beq spawn_done            ; every slot is full; the rest of the list is over
 spawn_next:
   dec ent_tmp
-  bne spawn_loop
+  beq spawn_done
+  jmp spawn_loop            ; the top of the record is out of a branch's reach
 spawn_done:
   rts
 
@@ -113,8 +136,9 @@ update_entities_door:
 update_entities_anim:
   jsr entity_animate
   ; After the actor has moved, so an actor that walked into the player counts as
-  ; much as a player who walked into it.
+  ; much as a player who walked into it. The same goes for a touch trigger.
   jsr entity_contact
+  jsr entity_trigger_touch
 update_entities_next:
   inx
   cpx #MAX_ENTITIES
@@ -354,6 +378,55 @@ entity_door:
   lda ent_to_y,x
   sta warp_y
 entity_door_done:
+  rts
+
+; X = slot. The frame owes this actor's event, unless it already owes one.
+;
+; First claim wins, and it has to: crossing a screen edge redraws from inside
+; update_player, so a screen's entry event is armed and then the same frame walks
+; the entity loop on that new screen -- where a touch would otherwise take the
+; moment the screen had already claimed. An actor with nothing to say never
+; claims it at all.
+arm_event:
+  lda ent_event,x
+  cmp #NO_EVENT
+  beq arm_event_done
+  lda pending_ent
+  cmp #NO_ENTITY
+  bne arm_event_done        ; something already owns this frame
+  stx pending_ent
+arm_event_done:
+  rts
+
+; An actor whose event runs when the player walks into it rather than when they
+; ask. X = slot, and entity_touching_player preserves it.
+;
+; It arms rather than starts, because this runs inside a loop that is still
+; walking the other seven slots: starting here would leave the pickups, doors and
+; contact damage below it to act on a world that had just been frozen, and a door
+; on the same square would redraw the screen out from under the conversation. So
+; the loop finishes, the frame's warp is settled, and main_loop starts it.
+;
+; The actor has to be *walked off* before it can fire again. The conversation ends
+; with the player standing exactly where they were when it started, so without
+; ent_touched the next frame starts it over, and keeps starting it over for as
+; long as the player stands there.
+entity_trigger_touch:
+  lda ent_trigger,x
+  cmp #TRIG_TOUCH
+  bne entity_trigger_done
+  jsr entity_touching_player
+  beq entity_trigger_on
+  lda #0                    ; walked off it: armed again
+  sta ent_touched,x
+  rts
+entity_trigger_on:
+  lda ent_touched,x
+  bne entity_trigger_done   ; still standing where it last fired
+  lda #1
+  sta ent_touched,x
+  jmp arm_event
+entity_trigger_done:
   rts
 
 ; X = slot. A = 0 (Z set) when the player overlaps this actor.
