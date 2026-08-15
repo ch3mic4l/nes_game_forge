@@ -21,7 +21,9 @@ import {
   createScreen,
   screenLabel,
   entityLabel,
-  flatScreens
+  flatScreens,
+  resolveCommonEventIds,
+  commonEventId
 } from '../../shared/project.js';
 import fs from 'node:fs/promises';
 import os from 'node:os';
@@ -249,6 +251,207 @@ test('an entity with no event stores null rather than an empty shell', () => {
   assert.equal(props.dialogue, '');
 });
 
+test('a common event keeps its id through normalization, however it is deleted', () => {
+  // A `call` command carries a common event's id, not its row in the list, so
+  // normalizeCommonEvents has to hand back the same id for the same entry
+  // every time it is asked — and never hand out an id something else in the
+  // list is already using, or two calls would end up naming the same slot.
+  const project = normalizeProject({
+    commonEvents: [
+      { id: 5, name: 'A', event: { pages: [{ cond: { type: 'none', arg: 0 }, commands: [{ op: 'say', text: 'A' }] }] } },
+      { id: 2, name: 'B', event: { pages: [{ cond: { type: 'none', arg: 0 }, commands: [{ op: 'say', text: 'B' }] }] } }
+    ]
+  });
+  assert.deepEqual(
+    project.commonEvents.map((entry) => entry.id),
+    [5, 2],
+    'an authored id was renumbered even though nothing collided'
+  );
+  // Nothing else in this project has ever claimed 6 or higher, so the next
+  // fresh id has to start there — one past the highest id actually in use,
+  // whatever seq the project came in with.
+  assert.equal(project.commonEventSeq, 6);
+
+  // A hand-edited duplicate is not trusted as-is — the second one spending an
+  // id the first already claimed is exactly the corruption ids exist to rule
+  // out — so it is handed a fresh one instead. Not the lowest free id: 0 was
+  // never spent by this list, but handing it out here would be exactly the
+  // reuse ids are for ruling out one step removed from a deletion rather than
+  // reachable straight from this one project alone.
+  const collided = normalizeProject({
+    commonEvents: [
+      { id: 3, name: 'First', event: null },
+      { id: 3, name: 'Second', event: null }
+    ]
+  });
+  assert.deepEqual(collided.commonEvents.map((entry) => entry.id), [3, 4]);
+  assert.equal(collided.commonEventSeq, 5);
+
+  // Old projects saved before common events existed carry none, and one
+  // loaded from a version that never numbered them gets sequential ids
+  // starting from 0 — not from array position blindly, which is exactly the
+  // bug this id exists to avoid reintroducing.
+  const legacy = normalizeProject({ commonEvents: [{ name: 'X' }, { name: 'Y' }] });
+  assert.deepEqual(legacy.commonEvents.map((entry) => entry.id), [0, 1]);
+  assert.equal(legacy.commonEventSeq, 2);
+});
+
+test('a common event id is never reused, even after the entry that held it is deleted', () => {
+  // The whole reason an id is not simply "the lowest one free": the lowest
+  // free id is exactly the one a deletion just vacated, so handing it to the
+  // next entry added would retarget any call still naming the one that was
+  // removed — the identical failure a stable id exists to rule out, just
+  // deferred by one edit. commonEventSeq is what remembers the ceiling
+  // independently of which ids the current list happens to hold.
+  let project = normalizeProject({
+    commonEvents: [
+      { name: 'A', event: null },
+      { name: 'B', event: null }
+    ]
+  });
+  assert.deepEqual(project.commonEvents.map((e) => e.id), [0, 1]);
+  assert.equal(project.commonEventSeq, 2);
+
+  // Delete A (id 0) the way the list editor's ✕ does: a plain splice.
+  project.commonEvents = project.commonEvents.filter((entry) => entry.id !== 0);
+  project = normalizeProject(project); // a save/load round trip carries the project through unchanged
+  assert.deepEqual(project.commonEvents.map((e) => e.id), [1]);
+  assert.equal(project.commonEventSeq, 2, 'the ceiling must not fall back down just because 0 is unused again');
+
+  // Add a replacement. It must not be handed 0 back.
+  project.commonEvents.push({ id: project.commonEventSeq, name: 'C', event: null });
+  project.commonEventSeq += 1;
+  project = normalizeProject(project);
+  assert.deepEqual(project.commonEvents.map((e) => e.id), [1, 2], 'the freed id 0 was handed to the replacement');
+  assert.equal(project.commonEventSeq, 3);
+});
+
+test('resolveCommonEventIds never reuses an id below the persisted seq', () => {
+  // The unit `normalizeCommonEvents` is built on, exercised directly: a seq
+  // ahead of every id actually in the list still has to win over "the lowest
+  // id nothing here is using" — that lower number is a retired id, not a
+  // free one, and only `seq` remembers the difference.
+  const { ids, seq } = resolveCommonEventIds([{ name: 'Only survivor' }], 6);
+  assert.deepEqual(ids, [6], 'a fresh id must come from the seq, not from position 0');
+  assert.equal(seq, 7);
+
+  // A seq lower than an id actually present is corrected upward rather than
+  // trusted — a hand-edited file could easily understate it.
+  const corrected = resolveCommonEventIds([{ id: 9 }], 2);
+  assert.deepEqual(corrected.ids, [9]);
+  assert.equal(corrected.seq, 10);
+});
+
+test('commonEventId rejects everything past the safe integer range, not only non-integers', () => {
+  // Number.isInteger accepts 2**53 and every double above it that still
+  // rounds to a whole number, but none of them has a unique successor —
+  // `n + 1 === n` past that point — so a counter built on a merely-integer
+  // check could hand out the same id twice. Number.isSafeInteger is the
+  // actual boundary this has to hold at.
+  const unsafe = Number.MAX_SAFE_INTEGER + 1; // 9007199254740992
+  assert.equal(Number.isInteger(unsafe), true, 'the test is not exercising anything if this is false');
+  assert.equal(commonEventId(unsafe), null);
+  assert.equal(commonEventId(Number.MAX_SAFE_INTEGER), Number.MAX_SAFE_INTEGER, 'the boundary itself is still valid');
+
+  // `Number(null)` is 0, not NaN — the one input commonEventId cannot afford
+  // to run through a bare Number() call, or a missing reference reads as a
+  // request for common event 0 rather than as missing.
+  assert.equal(commonEventId(null), null);
+  assert.equal(commonEventId(undefined), null);
+  assert.equal(commonEventId(''), null);
+
+  // A numeric string is still a valid id — the compiler has to accept this
+  // exact input too, since it is what an unnormalized live command can hold.
+  assert.equal(commonEventId('5'), 5);
+  assert.equal(commonEventId(-3), null);
+  assert.equal(commonEventId(2.5), null);
+
+  // An entry authored with an unsafe id cannot be trusted with it, so it is
+  // reassigned — from a seq that itself cannot be trusted past this range
+  // either, which is why it also falls back rather than trying to advance.
+  const project = normalizeProject({
+    commonEvents: [{ id: unsafe, name: 'Unsafe', event: null }],
+    commonEventSeq: unsafe
+  });
+  assert.notEqual(project.commonEvents[0].id, unsafe);
+  assert.ok(Number.isSafeInteger(project.commonEvents[0].id));
+  assert.ok(Number.isSafeInteger(project.commonEventSeq));
+});
+
+test('commonEventId rejects values that only coerce to 0, not values that are 0', () => {
+  // Number(false), Number([]) and Number('   ') are all 0, same as
+  // Number('0') — so a bare Number() call cannot tell a malformed reference
+  // from a request for common event 0. Guarding the input's type first is
+  // what keeps a hand-edited `false` or `[]` from silently resolving to
+  // whichever common event actually holds id 0.
+  assert.equal(commonEventId(false), null);
+  assert.equal(commonEventId(true), null);
+  assert.equal(commonEventId([]), null);
+  assert.equal(commonEventId([0]), null);
+  assert.equal(commonEventId({}), null);
+  assert.equal(commonEventId('   '), null);
+  assert.equal(commonEventId('0'), 0, 'a genuinely numeric string for 0 is still valid');
+  assert.equal(commonEventId(0), 0, 'and so is the number itself');
+});
+
+test('an invalid call reference normalizes to NO_COMMON_EVENT, never to 0', () => {
+  // 0 is an id a common event can actually be sitting at, so falling back to
+  // it for a reference that could not be understood would silently retarget
+  // a dangling or hand-edited call to whatever that one happens to be —
+  // exactly the bug a stable id exists to rule out, from the other end.
+  const project = normalizeProject({
+    maps: [
+      {
+        screens: [
+          {
+            entities: [
+              {
+                actorId: 0,
+                props: { event: { pages: [{ cond: { type: 'none', arg: 0 }, commands: [{ op: 'call', event: -7 }] }] } }
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  });
+  const call = project.maps[0].screens[0].entities[0].props.event.pages[0].commands[0];
+  assert.equal(call.op, 'call');
+  assert.notEqual(call.event, 0);
+  assert.equal(commonEventId(call.event), null, 'the normalized reference must still fail commonEventId');
+});
+
+// The disk is a separate schema from the in-memory one, and commonEventSeq in
+// particular is easy to lose without a test noticing: a project whose surviving
+// common events happen to imply the same ceiling the counter already holds would
+// pass even with the field silently dropped from project-io.js. Both cases below
+// are built so the current list cannot reconstruct the right answer on its own.
+test('commonEventSeq survives a disk round trip even when the surviving list could not reconstruct it', async (t) => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'forge-seq-'));
+  t.after(() => fs.rm(dir, { recursive: true, force: true }));
+
+  // One low-numbered survivor; the seq is far ahead of anything it implies.
+  const project = normalizeProject({
+    commonEvents: [{ id: 3, name: 'Survivor', event: null }],
+    commonEventSeq: 40
+  });
+  assert.equal(project.commonEventSeq, 40);
+  await saveProject(dir, project);
+  const reopened = await loadProject(dir);
+  assert.equal(reopened.commonEventSeq, 40, 'the seq did not survive the round trip');
+  assert.equal(reopened.commonEvents[0].id, 3, 'the survivor itself round-tripped');
+
+  // Nothing survives at all, so there is nothing left in the list that could
+  // even hint at a minimum for the seq to fall back on.
+  const emptyDir = await fs.mkdtemp(path.join(os.tmpdir(), 'forge-seq-empty-'));
+  t.after(() => fs.rm(emptyDir, { recursive: true, force: true }));
+  const emptied = normalizeProject({ commonEvents: [], commonEventSeq: 40 });
+  assert.equal(emptied.commonEventSeq, 40);
+  await saveProject(emptyDir, emptied);
+  const reopenedEmpty = await loadProject(emptyDir);
+  assert.equal(reopenedEmpty.commonEventSeq, 40, 'an empty list must not reset the seq back to 0');
+});
+
 test('actors carry battle stats whether or not the project uses them', () => {
   const project = normalizeProject({
     sprites: { actors: [{ name: 'Slime', damage: 99, battle: { atk: 300, weak: 'plaid', dropPct: 1000 } }] }
@@ -418,6 +621,10 @@ test('every part of a project survives being written and read back', async (t) =
   draft.cartridge.mirroring = 'horizontal';
   draft.switches[0] = 'Chest opened';
   draft.variables[0] = 'Gems handed over';
+  draft.commonEvents.push({
+    name: 'Reward',
+    event: { pages: [{ cond: { type: 'none', arg: 0 }, commands: [{ op: 'say', text: 'A gem!' }] }] }
+  });
   draft.tilesets[0].name = 'Woodland';
   draft.tilesets[0].background.tiles[1] = '1'.repeat(64);
   draft.tilesets[0].sprites.tiles[2] = '2'.repeat(64);

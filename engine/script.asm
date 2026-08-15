@@ -23,6 +23,7 @@ script_start:
   lda #0
   sta script_active
   sta box_state
+  sta call_depth            ; a fresh conversation starts with an empty stack
   lda ent_event,x
   cmp #NO_EVENT
   beq script_start_done
@@ -41,7 +42,7 @@ script_page:
   lda [script_ptr_lo],y
   cmp #EVT_PAGES_END
   bne script_page_test      ; inverted into a jump: the branch runner between
-  jmp script_finish         ; here and script_finish put it out of ±128 bytes
+  jmp script_end            ; here and script_end put it out of ±128 bytes
 script_page_test:
   jsr script_cond
   beq script_page_run
@@ -73,7 +74,7 @@ script_run:
   ldy #0
   lda [script_ptr_lo],y
   bne script_run_say
-  jmp script_finish         ; OP_END
+  jmp script_end            ; OP_END
 script_run_say:
   cmp #OP_SAY
   bne script_run_give
@@ -126,11 +127,33 @@ script_run_choice:
   jmp script_op_choice
 script_run_jump:
   cmp #OP_JUMP
-  bne script_run_bad
+  bne script_run_call
   jmp script_op_jump
+script_run_call:
+  cmp #OP_CALL
+  bne script_run_bad
+  jmp script_op_call
 script_run_bad:
   jmp script_finish         ; an opcode this engine cannot run stops the event
                             ; rather than being reinterpreted as another one
+
+; Reached when a page's commands run out (OP_END) or script_page finds no
+; further page (EVT_PAGES_END). A call left on the stack is not finished --
+; the event that made it is still mid-page -- so this pops the return point
+; and keeps that one running; only an empty stack really ends the
+; conversation. script_op_warp skips this and jumps to script_finish directly,
+; because the player leaving the screen ends the conversation regardless of
+; how many calls deep it was.
+script_end:
+  lda call_depth
+  beq script_finish
+  dec call_depth
+  ldx call_depth
+  lda call_ret_lo,x
+  sta script_ptr_lo
+  lda call_ret_hi,x
+  sta script_ptr_hi
+  jmp script_run
 
 script_finish:
   lda #0
@@ -201,6 +224,50 @@ script_op_join:
   jsr call_battle
   jmp script_next2
   .endif
+
+; ------------------------------------------------------------------- calls
+;
+; [OP_CALL, which common event]. Unlike a branch or a question, what follows
+; the opcode is not more of the event -- it is a reference to one compiled
+; elsewhere, at the table slot commonEventTableIndex resolved in
+; main/build/textcompile.js. Running it is exactly script_start's own trick,
+; minus the entity lookup: point script_ptr at that event's first page and
+; fall into script_page, the same way talking to an actor does.
+;
+; What has to be remembered is where to come back to, because unlike a branch
+; -- which is bytes inside the body already being walked -- a common event's
+; body is bytes somewhere else entirely. That is call_ret_lo/hi: a small
+; fixed-depth stack rather than one more branch to script_ptr, because two
+; common events are free to call each other and a cycle between them would
+; recurse this routine forever if depth were not bounded. CALL_STACK_DEPTH in
+; engine/constants.asm is that bound, and past it a call is skipped -- the
+; command after it just runs next -- rather than pushed onto a stack with
+; nowhere left to put it.
+script_op_call:
+  ldy #1
+  lda [script_ptr_lo],y      ; which common event
+  sta tmp
+  lda #2
+  jsr script_skip            ; past the opcode and the argument -- the return
+                              ; point, saved below before script_ptr moves again
+  lda call_depth
+  cmp #CALL_STACK_DEPTH
+  bcc script_op_call_push    ; below the bound: push the return point and call
+  jmp script_run             ; at the bound already: skip the call, keep going
+                              ; -- script_run is well past a branch's reach
+script_op_call_push:
+  ldx call_depth
+  lda script_ptr_lo
+  sta call_ret_lo,x
+  lda script_ptr_hi
+  sta call_ret_hi,x
+  inc call_depth
+  ldy tmp
+  lda event_ptr_lo,y
+  sta script_ptr_lo
+  lda event_ptr_hi,y
+  sta script_ptr_hi
+  jmp script_page
 
 ; --------------------------------------------------------------- branching
 ;

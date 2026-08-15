@@ -15,6 +15,14 @@
 // page without looking at its condition, so a header whose size depended on
 // which condition it carried would have to be decoded before it could be
 // skipped. EVT_PAGE_HEAD in engine/constants.asm is the other half of this.
+//
+// project.commonEvents share this same events table: a common event compiles
+// through the same encodeEvent as a placement's, and OP_CALL's one-byte
+// argument is the table slot it landed in, resolved from project.commonEvents'
+// own index by commonEventTableIndex before anything is encoded. The engine
+// remembers where to come back to on a small fixed stack (call_ret_lo/hi in
+// engine/constants.asm) rather than anything this module tracks — a call is a
+// jump the engine can unwind, not a shape the compiler flattens.
 
 import { BOX_COLS, BOX_ROWS, textToTiles, wrapText } from '../../shared/font.js';
 import {
@@ -27,7 +35,9 @@ import {
   enabledCommands,
   compiledPages,
   entityLabel,
-  screenLabel
+  screenLabel,
+  resolveCommonEventIds,
+  commonEventId
 } from '../../shared/project.js';
 
 // String control codes, matching engine/constants.asm.
@@ -44,6 +54,8 @@ export const COND_NONE = 0;
 export const EVT_PAGES_END = 0xff;
 export const OP_END = 0x00;
 export const OP_SAY = opIndex('say');
+
+export const OP_CALL = opIndex('call');
 
 export const NO_EVENT = 0xff;
 export const MAX_TABLE = 255; // $FF is the "none" marker in both tables
@@ -102,6 +114,28 @@ export function compileText(project) {
   const screenCount = (project.maps ?? []).reduce((total, map) => total + (map.screens?.length ?? 0), 0);
   const byte = (value, limit = 255) => Math.max(0, Math.min(limit, value | 0));
 
+  // Which slot of the shared events table each common event lands in, keyed by
+  // its stable id rather than its position in project.commonEvents — a call
+  // stores that id, not a position, so deleting an earlier common event must
+  // not silently retarget every call naming a later one. resolveCommonEventIds
+  // is what says which id an entry actually has: buildProject is handed the
+  // project the app is holding, which may not have been through
+  // normalizeProject since a common event was added, so this cannot simply
+  // trust entry.id to already be there — the same reason screenCount above is
+  // recomputed rather than trusted. Decided before anything is encoded,
+  // because a `call` may be compiled while encoding either a placement's
+  // event or another common event, and either can come first. Common events
+  // are then the first things pushed into `events` below, in this same
+  // order, so the slot predicted here is the slot they actually land in. One
+  // with nothing live in it gets no slot at all: a call naming it compiles to
+  // nothing, exactly as a question with no options does.
+  const commonEventTableIndex = new Map();
+  const { ids: commonEventIds } = resolveCommonEventIds(project.commonEvents, project.commonEventSeq);
+  const liveCommonEvents = (project.commonEvents ?? [])
+    .map((entry, index) => ({ entry, id: commonEventIds[index] }))
+    .filter(({ entry }) => compiledPages(entry?.event).length > 0);
+  liveCommonEvents.forEach(({ id }, slot) => commonEventTableIndex.set(id, slot));
+
   // Lengths in this format are single bytes: a page body's, and a branch's two.
   // Nothing checked them before branches existed, because a page long enough to
   // overflow one would have been absurd to author a command at a time. A branch
@@ -146,6 +180,23 @@ export function compileText(project) {
         return [opIndex(command.op), byte(command.variable, RPG_LIMITS.variables - 1), byte(command.value)];
       case 'join':
         return [opIndex('join'), byte(command.member, 3)];
+      case 'call': {
+        // A reference, not a container: the argument is the callee's slot in
+        // the shared events table, resolved above rather than clamped here.
+        // Read through commonEventId rather than trusted as already a
+        // number — buildProject is handed live, possibly-unnormalized
+        // project state, and command.event straight off an in-memory
+        // command can be a string ("5") or the NO_COMMON_EVENT sentinel;
+        // commonEventTableIndex's own keys came from resolveCommonEventIds
+        // running every entry's id through the same function, so a raw
+        // command.event has to go through it too or the two sides drift.
+        // One that resolves to no live slot — deleted after being called,
+        // never live to begin with, or simply not a valid id — compiles to
+        // nothing, the same way a question with no options does, rather
+        // than pointing at whatever the table happens to hold in its place.
+        const slot = commonEventTableIndex.get(commonEventId(command.event));
+        return slot === undefined ? null : [OP_CALL, slot];
+      }
       case 'branch': {
         // [OP_IF, cond, arg, value, then-length] then [OP_JUMP, else-length]
         // else. Past the opcode that is a page header exactly, which is what
@@ -240,6 +291,15 @@ export function compileText(project) {
     bytes.push(EVT_PAGES_END);
     return bytes;
   };
+
+  // Pushed first, and in the same order `commonEventTableIndex` was assigned
+  // in, so each one lands in exactly the slot a `call` naming it already
+  // resolved to — whether that `call` sits on a placement or inside another
+  // common event.
+  for (const { entry, id } of liveCommonEvents) {
+    const name = String(entry.name ?? '').trim() || `Common event ${id}`;
+    events.push(encodeEvent(compiledPages(entry.event), `Common event “${name}”`));
+  }
 
   for (const [mapIndex, map] of (project.maps ?? []).entries()) {
     for (const [screenIndex, screen] of (map.screens ?? []).entries()) {

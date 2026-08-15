@@ -18,9 +18,12 @@ import {
   EVENT_COMMANDS,
   EVENT_CONDITIONS,
   IMPLEMENTED_COMMANDS,
+  LIMITS,
   MAX_BRANCH_DEPTH,
   RPG_LIMITS,
-  enabledCommands
+  compiledPages,
+  enabledCommands,
+  commonEventId
 } from '../../../shared/project.js';
 
 /** What a number field is worth as an engine byte: whole, and inside the range. */
@@ -36,10 +39,16 @@ function moveWithin(list, from, to) {
 
 const offeredCommands = (context) =>
   EVENT_COMMANDS.filter(
-    (entry) => IMPLEMENTED_COMMANDS.has(entry.id) && (entry.id !== 'join' || context.party?.length)
+    (entry) =>
+      IMPLEMENTED_COMMANDS.has(entry.id) &&
+      (entry.id !== 'join' || context.party?.length) &&
+      // Nothing to call until at least one common event exists — offering it
+      // sooner would be exactly the "looks functional, does nothing" case
+      // this codebase refuses to ship, one authoring step earlier.
+      (entry.id !== 'call' || context.commonEvents?.length)
   );
 
-const defaultCommand = (op) => {
+const defaultCommand = (op, context = {}) => {
   const entry = EVENT_COMMANDS.find((command) => command.id === op);
   const out = { op };
   for (const arg of entry.args) {
@@ -57,10 +66,27 @@ const defaultCommand = (op) => {
         { text: 'Yes', commands: [] },
         { text: 'No', commands: [] }
       ];
+    } else if (arg === 'event') {
+      // A common event's *id*, not its row in the list — ids survive a
+      // deletion elsewhere in the list undisturbed, positions do not. 0 would
+      // be a stored preference for whichever common event happens to hold
+      // that id, which the offered list may not even contain.
+      out.event = context.commonEvents?.[0]?.id ?? 0;
     } else out[arg] = 0;
   }
   return out;
 };
+
+/**
+ * Whether a `call` command's target is not among the common events on offer
+ * — deleted, or never valid to begin with. Pulled out of the select that
+ * uses it so the "does this reference resolve" question has one testable
+ * answer, the same reason `commonEventId` itself is not inlined everywhere
+ * it is asked.
+ */
+export function callTargetMissing(commonEvents, eventId) {
+  return !(commonEvents ?? []).some((entry) => entry.id === eventId);
+}
 
 /**
  * How a command reads in the list, so a page is legible without opening it.
@@ -79,10 +105,12 @@ const describeList = (list, context) =>
     .join('; ') || 'nothing';
 
 function describeEnabled(command, context = {}) {
-  const { actors = [], switches = [], variables = [], screens = [], party = [] } = context;
+  const { actors = [], switches = [], variables = [], screens = [], party = [], commonEvents = [] } = context;
   const actorName = (id) => actors[id]?.name ?? `actor ${id}`;
   const switchName = (n) => switches[n]?.trim() || `switch ${n}`;
   const varName = (n) => variables[n]?.trim() || `variable ${n}`;
+  const commonEventName = (id) =>
+    commonEvents.find((entry) => entry.id === id)?.name?.trim() || `common event ${id}`;
   switch (command.op) {
     case 'say':
       return `Say “${(command.text ?? '').trim().slice(0, 40) || '…'}”`;
@@ -104,6 +132,8 @@ function describeEnabled(command, context = {}) {
       return `Add ${command.value ?? 0} to ${varName(command.variable)}`;
     case 'subVar':
       return `Subtract ${command.value ?? 0} from ${varName(command.variable)}`;
+    case 'call':
+      return `Run ${commonEventName(command.event)}`;
     case 'branch': {
       // Described down to its contents, because the event list's search runs
       // over exactly this text: a switch used only inside a branch has to be
@@ -268,7 +298,7 @@ export function editEvent(event, context) {
           value: '',
           onchange: (fired) => {
             if (!fired.target.value) return;
-            list.push(defaultCommand(fired.target.value));
+            list.push(defaultCommand(fired.target.value, context));
             rerender();
           }
         },
@@ -584,6 +614,34 @@ export function editEvent(event, context) {
           )
         )
       );
+    } else if (command.op === 'call') {
+      const commonEvents = context.commonEvents ?? [];
+      controls.push(
+        el(
+          'select',
+          { style: { flex: '1' }, onchange: (fired) => (command.event = Number(fired.target.value)) },
+          // A reference the list no longer has — its common event was deleted
+          // out from under it — gets its own option rather than being left to
+          // fall on whichever option the browser renders first while
+          // `command.event` keeps pointing at nothing: that would show one
+          // event calling and compile a call to another, the editor and the
+          // ROM disagreeing about what a command does.
+          callTargetMissing(commonEvents, command.event)
+            ? el('option', { value: command.event, selected: true }, 'Missing event')
+            : null,
+          // The option's value is the common event's own id, not its row in
+          // the list — the list can be reordered or have an earlier entry
+          // deleted out from under this without this select's value changing
+          // what it names.
+          commonEvents.map((entry) =>
+            el(
+              'option',
+              { value: entry.id, selected: entry.id === command.event },
+              entry.name || `Common event ${entry.id}`
+            )
+          )
+        )
+      );
     } else if (command.op === 'warp') {
       controls.push(
         el(
@@ -729,3 +787,111 @@ const lastNamed = (names) => {
   for (let n = names.length - 1; n >= 0; n--) if (names[n]?.trim()) return n;
   return -1;
 };
+
+/**
+ * Author the project's common events: bodies a `call` command reaches by name
+ * rather than by place, so a chest, a shop or a recurring cutscene is written
+ * once. Each row is a name and how many pages it holds; "Edit…" opens the same
+ * page editor a placement's own event does, because a common event is that
+ * same page/condition/command shape with a name instead of a place.
+ *
+ * `showModal` only ever has one modal open at a time, so "Edit…" cannot nest
+ * one inside this one. Instead it resolves this list early with which row was
+ * picked, edits that entry against the same `draft`, and reopens the list —
+ * only Cancel and Save leave this function, resolving the same way `editEvent`
+ * does (`undefined` for Cancel), or `{ commonEvents, commonEventSeq }` for
+ * Save — both fields, because a "+ Common event" click during this session
+ * consumed part of the id counter and that has to be saved along with the
+ * list it was spent into, or the next session would hand the same id out
+ * again. `seq` is a one-element array rather than a returned/reassigned
+ * value so the add button in `listBody` — a plain function, not a closure
+ * over this one — can advance it in place.
+ */
+export async function editCommonEvents(commonEvents, commonEventSeq, context) {
+  const draft = structuredClone(commonEvents ?? []);
+  // The same validity rule the schema applies wherever else an id is read,
+  // not a second one hand-rolled here — see commonEventId in
+  // shared/project.js for why the two must not drift apart.
+  const seq = [commonEventId(commonEventSeq) ?? 0];
+
+  for (;;) {
+    const action = await showModal({ title: 'Common events', width: 480, body: (close) => listBody(draft, seq, close) });
+    // Escape or a click outside the modal resolves with null, same as Cancel;
+    // only an actual row's Edit… button resolves with an { edit } object.
+    if (action && typeof action === 'object' && 'edit' in action) {
+      const entry = draft[action.edit];
+      // The live draft, not the caller's snapshot: a common event added,
+      // renamed or removed earlier in this same session has to be what
+      // "Run common event" offers here, or the picker shows names that no
+      // longer exist and can save a call to one that is already gone.
+      const result = await editEvent(entry.event, { ...context, commonEvents: draft });
+      if (result !== undefined) entry.event = result;
+      continue;
+    }
+    return action === 'save' ? { commonEvents: draft, commonEventSeq: seq[0] } : undefined;
+  }
+}
+
+function listBody(draft, seq, close) {
+  const body = el('div', { style: { minWidth: '460px' } });
+
+  const row = (entry, index) => {
+    const pages = compiledPages(entry.event).length;
+    return el(
+      'div.field-row',
+      { style: { marginBottom: '6px' } },
+      el('input', {
+        type: 'text',
+        value: entry.name,
+        placeholder: `Common event ${index + 1}`,
+        style: { flex: '1' },
+        onchange: (fired) => (entry.name = fired.target.value)
+      }),
+      el('span.hint', { style: { flex: 'none', minWidth: '54px' } }, pages ? `${pages} page${pages === 1 ? '' : 's'}` : 'empty'),
+      el('button.btn.btn-sm', { onclick: () => close({ edit: index }) }, 'Edit…'),
+      el(
+        'button.btn.btn-sm',
+        { title: 'Remove this common event', onclick: () => { draft.splice(index, 1); rerender(); } },
+        '✕'
+      )
+    );
+  };
+
+  const rerender = () => {
+    const full = draft.length >= LIMITS.commonEvents;
+    fill(
+      body,
+      el(
+        'p.hint',
+        { style: { marginBottom: '10px' } },
+        'One body, callable from any placement’s event — a chest, a shop, a recurring cutscene ' +
+          'authored once rather than repeated everywhere it happens.'
+      ),
+      draft.map(row),
+      full
+        ? el('p.hint', { style: { margin: '6px 0' } }, `Up to ${LIMITS.commonEvents} common events.`)
+        : el(
+            'button.btn.btn-sm',
+            {
+              style: { margin: '6px 0' },
+              onclick: () => {
+                // The next id off the running counter, never one recycled
+                // from a deletion — see resolveCommonEventIds in
+                // shared/project.js for why that distinction has to hold.
+                draft.push({ id: seq[0]++, name: `Common event ${draft.length + 1}`, event: null });
+                rerender();
+              }
+            },
+            '+ Common event'
+          ),
+      el(
+        'div.field-row',
+        { style: { marginTop: '10px' } },
+        el('button.btn.btn-sm', { onclick: () => close('cancel') }, 'Cancel'),
+        el('button.btn.btn-sm.btn-accent', { onclick: () => close('save') }, 'Save')
+      )
+    );
+  };
+  rerender();
+  return body;
+}

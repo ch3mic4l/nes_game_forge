@@ -10,6 +10,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import { buildEventIndex, searchEvents } from '../../renderer/forges/map/eventlist.js';
+import { callTargetMissing } from '../../renderer/forges/map/events.js';
 import { createProject, createMap, createScreen, flatScreens } from '../../shared/project.js';
 
 /** A project with a chest, a locked door, an innkeeper and somewhere to go. */
@@ -125,4 +126,56 @@ test('a screen with no actors contributes no rows and does not throw', () => {
   const project = createProject('Empty');
   project.maps[0].screens.push(createScreen());
   assert.deepEqual(buildEventIndex(project, { actors: [], switches: [], screens: [], party: [] }), []);
+});
+
+test('a common event is its own row, findable by what its body does', () => {
+  const { project, context } = scenario();
+  // A switch of its own, distinct from the chest's, so a match against it
+  // can only have come from the common event's own row.
+  project.switches.push('Bridge lowered');
+  context.switches = project.switches;
+  project.commonEvents = [
+    {
+      id: 5,
+      name: 'Open the gate',
+      event: {
+        pages: [{ cond: { type: 'none', arg: 0 }, commands: [{ op: 'setSwitch', switch: 1 }] }]
+      }
+    }
+  ];
+  context.commonEvents = project.commonEvents;
+
+  const rows = buildEventIndex(project, context);
+  // The three placed actors from `scenario()` plus one row for the common
+  // event — a `call` to it describes only the callee's name (see the
+  // 'Villager' style rows above), so the switch set inside it would
+  // otherwise never turn up in a search.
+  assert.equal(rows.length, 4);
+
+  const found = searchEvents(rows, 'Bridge lowered');
+  assert.equal(found.length, 1);
+  assert.equal(found[0].title, 'Open the gate');
+  assert.equal(found[0].common, true);
+  assert.ok(found[0].detail[0].includes('Turn on Bridge lowered'));
+});
+
+test('a freshly added common event with no pages yet does not throw and reads as empty', () => {
+  const { project, context } = scenario();
+  // listBody in events.js pushes exactly this shape for "+ Common event" —
+  // `event: null` until the entry is first opened for editing.
+  project.commonEvents = [{ id: 0, name: 'New one', event: null }];
+  context.commonEvents = project.commonEvents;
+
+  const rows = buildEventIndex(project, context);
+  const row = rows.find((entry) => entry.common);
+  assert.ok(row, 'the common event still gets a row');
+  assert.deepEqual(row.detail, []);
+});
+
+test('callTargetMissing tells a live reference from a dangling one', () => {
+  const commonEvents = [{ id: 3, name: 'Shop' }, { id: 7, name: 'Cutscene' }];
+  assert.equal(callTargetMissing(commonEvents, 3), false);
+  assert.equal(callTargetMissing(commonEvents, 99), true, 'deleted out from under the command');
+  assert.equal(callTargetMissing([], 3), true, 'no common events left in the project at all');
+  assert.equal(callTargetMissing(undefined, 3), true, 'context.commonEvents itself may be absent');
 });

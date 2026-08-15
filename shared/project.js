@@ -41,7 +41,13 @@ export const LIMITS = {
   entitiesPerScreen: 8,
   palettes: 4,
   metaspriteTiles: 16,
-  animationFrames: 32
+  animationFrames: 32,
+  // One body, callable from any placement's event — a chest, a shop, a
+  // recurring cutscene — rather than authored again at every place it is
+  // used. The real ceiling is the 255-entry compiled events table it shares
+  // with every placed actor's own event; this is the authoring-side cap that
+  // keeps the list itself readable well below that.
+  commonEvents: 32
 };
 
 export const SCREEN_METATILES = LIMITS.screenCols * LIMITS.screenRows; // 240
@@ -282,14 +288,23 @@ export const EVENT_COMMANDS = [
   // box lists the options, the player puts the cursor on one, and that option's
   // commands are the ones that run. Everything a branch is, with the condition
   // replaced by somebody at the controller.
-  { id: 'choice', label: 'Ask a question', args: ['choice'], nests: true }
+  { id: 'choice', label: 'Ask a question', args: ['choice'], nests: true },
+  // Run a common event, then come back to the command after this one. Unlike
+  // branch and choice this does not hold its own commands — `event` is a
+  // common event's stable `id` (see normalizeCommonEvents), resolved to a
+  // table slot at compile time — so it is not `nests: true`: there is
+  // nothing here for the editor to nest into, only a reference to a body
+  // authored somewhere else. An id rather than a position in
+  // project.commonEvents is what lets one be deleted without silently
+  // retargeting every call naming a later one.
+  { id: 'call', label: 'Run common event', args: ['event'] }
 ];
 
 // A command can be switched off while you work out whether you want it, the way
 // you would comment a line out. What that means lives in `eventrules.js`, which
 // `font.js` needs as well — re-exported here so the schema stays the one place
 // to look for it.
-export { enabledCommands, compiledPages, allCommands } from './eventrules.js';
+export { enabledCommands, compiledPages, allCommands, projectEvents } from './eventrules.js';
 
 /**
  * The subset engine/script.asm can actually run. Everything in EVENT_COMMANDS is
@@ -311,7 +326,8 @@ export const IMPLEMENTED_COMMANDS = new Set([
   'addVar',
   'subVar',
   'branch',
-  'choice'
+  'choice',
+  'call'
 ]);
 
 /**
@@ -545,6 +561,8 @@ export function createProject(name = 'Untitled Game', gameType = 'action') {
     input: defaultInput(),
     switches: [], // names only; the engine just sees 64 bits
     variables: [], // and 16 bytes, likewise named only for the author's benefit
+    commonEvents: [], // bodies a `call` command reaches by stable id; see normalizeCommonEvents
+    commonEventSeq: 0, // the next id a common event will be given; never reused, see resolveCommonEventIds
     party: rpg ? [createPartyMember(0, 'Hero')] : [],
     spells: [],
     rpg: { ...defaultRpg(), battleTilesetId: rpg ? 1 : 0 },
@@ -665,6 +683,69 @@ const BRANCH_DEPTH_LIMIT = 64;
 export const choiceLabel = (raw) =>
   String(raw ?? '').replace(/\s+/g, ' ').trim().slice(0, CHOICE_LIMITS.label);
 
+/**
+ * A common event id, coerced the same way wherever one is read: an entry's
+ * own `id` (see `resolveCommonEventIds`, further down), a `call` command's
+ * `event` reference to one (just below), and the running `commonEventSeq`
+ * counter itself. All three have to agree on exactly what counts as a valid
+ * id, or two of them can drift apart on the same malformed value — a `call`
+ * byte-clamped to 255 while its target kept an authored id of 300 is what
+ * let one stop reaching the other, and `buildProject` is handed live,
+ * possibly-unnormalized project state, so a reference read straight off an
+ * in-memory command has to be run through this too, not only the definition
+ * it names — trusting `command.event` to already be a number the moment it
+ * is read is the same mistake as trusting `entry.id` to be.
+ *
+ * A non-negative *safe* integer, or a string that is genuinely one, is a
+ * common event id; anything else — missing, `null` (which `Number(null)` is
+ * 0, not "absent" — worth calling out, since it is the one input this cannot
+ * fall through to a bare `Number()` call for), `''` or a blank string, a
+ * boolean or an array (`Number(false)` and `Number([])` are also 0, the same
+ * trap by a different door — this is why only `number` and `string` are
+ * handed to `Number()` at all), negative, fractional, NaN, or past
+ * `Number.MAX_SAFE_INTEGER` — is not a common event id, and this returns
+ * null rather than rounding, truncating, coercing or wrapping one into
+ * existence. `resolveCommonEventIds` reassigns an entry
+ * whose id fails this the same way it reassigns one that is simply missing;
+ * a `call` whose reference fails it is given a sentinel a real id can never
+ * be (see `normalizeEventCommand`) so it compiles away instead of being
+ * reinterpreted as a call to whatever the fallback would have been.
+ *
+ * Safe rather than merely an integer: `next++` in `resolveCommonEventIds`
+ * cannot tell 9007199254740992 from 9007199254740993 — the double past
+ * which every integer stops having a unique successor — so trusting a
+ * seq or an id at that point would start handing out duplicates. A project
+ * would need quadrillions of added-and-deleted common events to reach it
+ * legitimately; the practical reason to guard it is a hand-edited file, and
+ * the guard is to distrust the number rather than try to advance it, which
+ * is exactly what returning null and falling back through the normal
+ * missing-id path already does.
+ *
+ * It is never written into the ROM as a byte of its own — only the table
+ * slot it resolves to at compile time is — so nothing here bounds it to
+ * 255, and a project that has added and deleted enough common events to
+ * pass that number keeps working.
+ */
+export function commonEventId(raw) {
+  if (typeof raw === 'number') return Number.isSafeInteger(raw) && raw >= 0 ? raw : null;
+  if (typeof raw !== 'string' || raw.trim() === '') return null;
+  const n = Number(raw);
+  return Number.isSafeInteger(n) && n >= 0 ? n : null;
+}
+
+/**
+ * What a `call` command's `event` becomes when its reference cannot be made
+ * into a real id — a negative number a real id can never be, rather than a
+ * fallback like 0 that a real common event could actually be sitting at.
+ * `commonEventId(NO_COMMON_EVENT)` is null by construction, so the compiler
+ * asking the same question it always asks drops the call on its own,
+ * without a separate "is this the sentinel" check anywhere: an unresolvable
+ * reference compiles away and runs nothing, the same rule this codebase
+ * already holds for an opcode the engine cannot run — never reinterpreted
+ * as a call to whichever event a missing value happened to coerce to.
+ */
+export const NO_COMMON_EVENT = -1;
+
 function normalizeEventCommand(raw, depth = 0) {
   const command = EVENT_COMMANDS.find((entry) => entry.id === raw?.op);
   if (!command || command.id === 'end') return null;
@@ -684,6 +765,13 @@ function normalizeEventCommand(raw, depth = 0) {
     else if (arg === 'switch') out.switch = clamp(raw?.switch, 0, RPG_LIMITS.switches - 1, 0);
     else if (arg === 'member') out.member = clamp(raw?.member, 0, RPG_LIMITS.party - 1, 0);
     else if (arg === 'variable') out.variable = clamp(raw?.variable, 0, RPG_LIMITS.variables - 1, 0);
+    // Not the generic byte clamp below: a common event id is resolved to a
+    // table slot at compile time rather than written into the ROM itself,
+    // so it is not bounded to 255 — see commonEventId. An invalid reference
+    // becomes NO_COMMON_EVENT rather than 0 — 0 is a common event id common
+    // events actually get, so falling back to it would silently retarget a
+    // dangling or hand-edited call to whatever that one happens to be.
+    else if (arg === 'event') out.event = commonEventId(raw?.event) ?? NO_COMMON_EVENT;
     else if (arg === 'branch') {
       out.cond = normalizeCondition(raw?.cond);
       out.then = inner(raw?.then);
@@ -750,6 +838,78 @@ function normalizeEventPage(raw) {
 function normalizeEvent(raw) {
   const pages = (Array.isArray(raw?.pages) ? raw.pages : []).map(normalizeEventPage);
   return pages.length ? { pages } : null;
+}
+
+/**
+ * The id each entry of `commonEvents` actually has, in the same order, and
+ * the seq that has to be persisted afterward — resolved the same way whether
+ * or not the list has been through `normalizeProject` since an entry was
+ * added or removed.
+ *
+ * `seq` is the highest id this project has ever handed out, plus one, kept
+ * as its own field (`project.commonEventSeq`) rather than derived from the
+ * list on every load — deleting the common event with the highest id would
+ * otherwise make a lower, already-spent number look free again. It is what
+ * a fresh entry's id is drawn from, and *only* from: the lowest currently
+ * unused id is exactly the one a just-deleted entry left behind, so handing
+ * it to the next new entry would silently give a dangling `call` — one still
+ * naming the id of whatever was deleted — a brand new target to run instead
+ * of leaving it dangling. That is the same failure a stable id exists to
+ * prevent in the first place, so ids must never be reused, only ever handed
+ * out going up.
+ *
+ * An id already on an entry is kept if it is a valid id (see `commonEventId`)
+ * nothing earlier in the list has already claimed, and pulls `seq` past
+ * itself if it was ahead of what had been persisted — a hand-edited file, or
+ * a build made before this project's last save caught up. Everything else —
+ * missing, invalid, or already spent by an earlier entry in the same list —
+ * draws the next id off `seq` and consumes it.
+ *
+ * The compiler needs this as much as the schema does and for the same
+ * reason `screenCount` and `conditionArgLimit` are recomputed in
+ * `main/build/textcompile.js` rather than trusted from a normalized project:
+ * `buildProject` is handed the project the app is holding, not one freshly
+ * renormalized, so a common event a live session added is compiled against
+ * whatever id and seq it actually carries in memory. Both callers asking
+ * this the same way is what makes them agree on which id a given entry has.
+ */
+export function resolveCommonEventIds(commonEvents, seq) {
+  let next = commonEventId(seq) ?? 0;
+  const used = new Set();
+  const ids = [];
+  for (const entry of commonEvents ?? []) {
+    const requested = commonEventId(entry?.id);
+    const valid = requested !== null && !used.has(requested);
+    const id = valid ? requested : next++;
+    used.add(id);
+    if (id >= next) next = id + 1;
+    ids.push(id);
+  }
+  return { ids, seq: next };
+}
+
+/**
+ * A common event: the same page/condition/command shape a placement's own
+ * event is, with a name instead of a place — `call` is what reaches it, from
+ * however many placements want to. Compiled into the shared events table
+ * exactly like a placed actor's event, and edited with the same modal.
+ *
+ * Whole-array rather than per-entry, because the `id` a `call` stores has to
+ * be assigned with the rest of the list — and the running `seq` — in view:
+ * `call` references an id, not a position, so that deleting entry 0 does not
+ * silently turn a call naming entry 1 into a call naming entry 2 — the
+ * defect `usedSwitches` already had to be taught to see through once, for a
+ * different reference hiding in a different place.
+ */
+function normalizeCommonEvents(raw, rawSeq) {
+  const source = (Array.isArray(raw) ? raw : []).slice(0, LIMITS.commonEvents);
+  const { ids, seq } = resolveCommonEventIds(source, rawSeq);
+  const commonEvents = source.map((entry, index) => ({
+    id: ids[index],
+    name: normalizeLabel(entry?.name, `Common event ${index + 1}`),
+    event: normalizeEvent(entry?.event)
+  }));
+  return { commonEvents, commonEventSeq: seq };
 }
 
 function normalizeEntity(raw) {
@@ -1129,6 +1289,8 @@ export function normalizeProject(raw) {
   // An RPG always has someone to play as; an action game has no party at all.
   if (project.gameType === 'rpg' && !party.length) party.push(createPartyMember(0, 'Hero'));
 
+  const { commonEvents, commonEventSeq } = normalizeCommonEvents(raw.commonEvents, raw.commonEventSeq);
+
   return {
     format: PROJECT_FORMAT,
     project,
@@ -1154,6 +1316,8 @@ export function normalizeProject(raw) {
     variables: (Array.isArray(raw.variables) ? raw.variables : [])
       .slice(0, RPG_LIMITS.variables)
       .map((name, index) => normalizeLabel(name, `Variable ${index}`)),
+    commonEvents,
+    commonEventSeq,
     party,
     spells,
     rpg,

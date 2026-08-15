@@ -16,7 +16,7 @@ import NES from '../../renderer/emulator/core/nes.js';
 import { ARROW_TILE, FONT_BASE } from '../../shared/font.js';
 import { loadProject, saveProject } from '../../main/project-io.js';
 import { buildProject } from '../../main/build/pipeline.js';
-import { compileText, EVT_PAGES_END, OP_JUMP, OP_END } from '../../main/build/textcompile.js';
+import { compileText, EVT_PAGES_END, OP_JUMP, OP_END, OP_CALL } from '../../main/build/textcompile.js';
 import {
   createProject,
   normalizeProject,
@@ -29,7 +29,9 @@ import {
   EVENT_CONDITIONS,
   MAX_BRANCH_DEPTH,
   availableTriggers,
-  effectiveTrigger
+  effectiveTrigger,
+  NO_COMMON_EVENT,
+  commonEventId
 } from '../../shared/project.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
@@ -2086,4 +2088,353 @@ test('a branch with nothing live inside it is not a live command', () => {
   // cannot have swallowed the ordinary case.
   const live = { ...event.pages[0].commands[0], else: [{ op: 'say', text: 'On.' }] };
   assert.equal(enabledCommands({ commands: [live] }).length, 1);
+});
+
+// -------------------------------------------------------------- common events
+//
+// Everything above is one body run by the one placement that owns it. A common
+// event is the first thing in this list the script runner has to *remember*
+// something for: which command to come back to once the callee runs out of
+// pages. The showcase is the same chest as the very first test, except the
+// "a gem!" half is authored once, off to the side, and reached by name.
+
+const HUNTER = 2; // Hunter, the sample's chaser -- a second distinct give target
+
+test('common events compile into the same table a placement’s own event does', () => {
+  const project = createProject('Common');
+  project.sprites.actors = [{ name: 'Sign', behavior: 'npc' }];
+  project.commonEvents = [
+    {
+      name: 'Reward',
+      event: { pages: [{ cond: { type: 'none', arg: 0 }, commands: [{ op: 'give', actor: GEM }] }] }
+    }
+  ];
+  const caller = () => ({
+    actorId: 0,
+    x: 0,
+    y: 0,
+    props: { event: { pages: [{ cond: { type: 'none', arg: 0 }, commands: [{ op: 'call', event: 0 }] }] } }
+  });
+  // Two placements naming the same common event by index, to prove authoring
+  // it once and calling it from more than one place is exactly what it looks
+  // like: both compile to a call into the one table slot "Reward" occupies.
+  project.maps[0].screens[0].entities = [caller(), caller()];
+  const built = compileText(normalizeProject(structuredClone(project)));
+  assert.deepEqual(built.problems, []);
+
+  // Common events are pushed first, so "Reward" lands at table slot 0 and the
+  // two placements' own events -- pushed after -- land at slots 1 and 2.
+  assert.equal(built.events.length, 3);
+  assert.deepEqual(built.events[0], [0, 0, 0, 3, /* give */ 2, GEM, OP_END, EVT_PAGES_END]);
+  for (const event of built.events.slice(1)) {
+    assert.deepEqual(event.slice(4), [OP_CALL, 0, OP_END, EVT_PAGES_END], 'call, then slot 0, then end');
+  }
+
+  // A call naming a common event that compiles to nothing -- deleted, or never
+  // live to begin with -- drops out of the body entirely, the same way a
+  // question with no options does, rather than pointing at whatever the table
+  // happens to hold in its place.
+  const dangling = createProject('Dangling');
+  dangling.sprites.actors = [{ name: 'Sign', behavior: 'npc' }];
+  dangling.commonEvents = [{ name: 'Empty', event: null }];
+  dangling.maps[0].screens[0].entities = [caller()];
+  const droppedBuilt = compileText(normalizeProject(structuredClone(dangling)));
+  assert.equal(droppedBuilt.events.length, 1, 'the empty common event took no table slot');
+  assert.deepEqual(droppedBuilt.events[0].slice(4), [OP_END, EVT_PAGES_END], 'the call compiled to nothing');
+});
+
+test('deleting a common event does not retarget the calls that survive it', () => {
+  // A, B and C, authored in that order, get ids 0, 1 and 2. A placement calls
+  // B by that id. Deleting A -- exactly what the Common events editor's ✕
+  // does, a plain splice with no renumbering -- leaves the list as [B, C]
+  // with B and C's ids untouched. If the compiler ever went back to
+  // resolving a call by its row in the list instead of by id, this call
+  // would silently start running C, the thing that took B's old row, instead
+  // of the B it actually names.
+  const project = createProject('Deleted');
+  project.sprites.actors = [{ name: 'Sign', behavior: 'npc' }];
+  project.commonEvents = [
+    { id: 0, name: 'A', event: { pages: [{ cond: { type: 'none', arg: 0 }, commands: [{ op: 'say', text: 'A' }] }] } },
+    { id: 1, name: 'B', event: { pages: [{ cond: { type: 'none', arg: 0 }, commands: [{ op: 'say', text: 'B' }] }] } },
+    { id: 2, name: 'C', event: { pages: [{ cond: { type: 'none', arg: 0 }, commands: [{ op: 'say', text: 'C' }] }] } }
+  ];
+  project.maps[0].screens[0].entities = [
+    { actorId: 0, x: 0, y: 0, props: { event: { pages: [{ cond: { type: 'none', arg: 0 }, commands: [{ op: 'call', event: 1 }] }] } } }
+  ];
+
+  // A deleted out from under B and C, the way the list editor's ✕ leaves it:
+  // a plain splice, with B and C's own ids untouched.
+  project.commonEvents = project.commonEvents.filter((entry) => entry.id !== 0);
+  const built = compileText(normalizeProject(structuredClone(project)));
+
+  // B and C still compile, in whichever order the list holds them, and the
+  // caller's OP_CALL slot still has to resolve to whichever one carries B's
+  // id -- not to whatever now happens to sit where B used to sit.
+  assert.equal(built.events.length, 3, 'two common events plus the caller');
+  const callerBody = built.events[2].slice(4);
+  assert.equal(callerBody[0], OP_CALL);
+  const targetBody = built.events[callerBody[1]];
+  // Decode the target event's Say text back through the string table, rather
+  // than asserting on a slot number that is itself the thing under test.
+  const decoded = built.strings[targetBody[5]]
+    .filter((byte) => byte >= FONT_BASE)
+    .map((byte) => String.fromCharCode(byte - FONT_BASE + 32))
+    .join('');
+  assert.equal(decoded, 'B', `the call ran "${decoded}" instead of the B it was authored to name`);
+});
+
+test('a dangling call still resolves to nothing after its deleted id is issued to a replacement', () => {
+  // A is deleted, and a replacement is added afterward -- exactly what
+  // clicking "+ Common event" does, drawing its id from commonEventSeq
+  // rather than from the lowest id nothing is using (see
+  // resolveCommonEventIds in shared/project.js). A call still naming A's old
+  // id must not start running the replacement just because the replacement
+  // landed in the table slot A used to occupy.
+  let project = createProject('Replaced');
+  project.sprites.actors = [{ name: 'Sign', behavior: 'npc' }];
+  project.commonEvents = [
+    { name: 'A', event: { pages: [{ cond: { type: 'none', arg: 0 }, commands: [{ op: 'say', text: 'A' }] }] } }
+  ];
+  project.maps[0].screens[0].entities = [
+    { actorId: 0, x: 0, y: 0, props: { event: { pages: [{ cond: { type: 'none', arg: 0 }, commands: [{ op: 'call', event: 0 }] }] } } }
+  ];
+  project = normalizeProject(project);
+  assert.equal(project.commonEvents[0].id, 0);
+  assert.equal(project.commonEventSeq, 1);
+
+  // A deleted, exactly as the list editor's ✕ leaves it: a plain splice.
+  project.commonEvents = project.commonEvents.filter((entry) => entry.id !== 0);
+  project = normalizeProject(project);
+  assert.equal(project.commonEvents.length, 0);
+  assert.equal(project.commonEventSeq, 1, 'the ceiling must not fall back to 0 just because nothing is using it now');
+
+  // A replacement, added the way "+ Common event" adds one: from the seq,
+  // not from whatever id the deletion just freed.
+  project.commonEvents.push({
+    id: project.commonEventSeq,
+    name: 'Replacement',
+    event: { pages: [{ cond: { type: 'none', arg: 0 }, commands: [{ op: 'say', text: 'Replacement' }] }] }
+  });
+  project.commonEventSeq += 1;
+  project = normalizeProject(project);
+  assert.equal(project.commonEvents[0].id, 1, 'the replacement should not have been handed the deleted id back');
+
+  const built = compileText(structuredClone(project));
+  // Only the replacement compiles into the table; the caller's call, still
+  // naming id 0, drops out entirely rather than being resolved against
+  // whatever id now occupies the slot A used to.
+  assert.equal(built.events.length, 2, 'the replacement plus the caller');
+  const callerBody = built.events[1].slice(4);
+  assert.deepEqual(callerBody, [OP_END, EVT_PAGES_END], 'the dangling call should have compiled to nothing');
+});
+
+test('a live, unnormalized call resolves the same way a saved one does', () => {
+  // buildProject is handed the project the app is holding, which may never
+  // have been through normalizeEventCommand since the call was authored —
+  // so command.event straight off an in-memory command can be a string, the
+  // way an unconverted form field would leave it. commonEventTableIndex's
+  // own keys are built by running every entry's id through commonEventId
+  // (see resolveCommonEventIds), so a raw command.event has to go through
+  // the identical function or a call that works after a save silently stops
+  // working before one.
+  const project = createProject('Live');
+  project.sprites.actors = [{ name: 'Sign', behavior: 'npc' }];
+  project.commonEvents = [
+    {
+      id: 0,
+      name: 'Reward',
+      event: { pages: [{ cond: { type: 'none', arg: 0 }, commands: [{ op: 'say', text: 'Reward' }] }] }
+    }
+  ];
+  project.maps[0].screens[0].entities = [
+    {
+      actorId: 0,
+      x: 0,
+      y: 0,
+      props: { event: { pages: [{ cond: { type: 'none', arg: 0 }, commands: [{ op: 'call', event: '0' }] }] } }
+    }
+  ];
+  // Not run through normalizeProject: this is exactly the shape buildProject
+  // receives when the live app hands over the project it is currently
+  // holding.
+  const built = compileText(project);
+  assert.deepEqual(built.problems, []);
+  assert.equal(built.events.length, 2);
+  const callerBody = built.events[1].slice(4);
+  assert.equal(callerBody[0], OP_CALL);
+  assert.equal(callerBody[1], 0, 'the string "0" should resolve exactly like the number 0 does');
+});
+
+test('an unresolvable call compiles to nothing and never runs common event 0', () => {
+  // 0 is an id a common event can really be sitting at, so an invalid
+  // reference falling back to it would silently run that one instead of
+  // nothing — the same failure a dangling reference already had to be
+  // taught not to cause, from the opposite direction.
+  const project = createProject('Zero');
+  project.sprites.actors = [{ name: 'Sign', behavior: 'npc' }];
+  project.commonEvents = [
+    {
+      id: 0,
+      name: 'Zero',
+      event: { pages: [{ cond: { type: 'none', arg: 0 }, commands: [{ op: 'say', text: 'Zero' }] }] }
+    }
+  ];
+  project.maps[0].screens[0].entities = [
+    {
+      actorId: 0,
+      x: 0,
+      y: 0,
+      props: { event: { pages: [{ cond: { type: 'none', arg: 0 }, commands: [{ op: 'call', event: -7 }] }] } }
+    }
+  ];
+  const normalized = normalizeProject(structuredClone(project));
+  const call = normalized.maps[0].screens[0].entities[0].props.event.pages[0].commands[0];
+  assert.equal(call.event, NO_COMMON_EVENT, 'an invalid reference must not normalize to 0');
+  assert.equal(commonEventId(call.event), null);
+
+  const built = compileText(normalized);
+  assert.equal(built.events.length, 2, 'the common event plus the caller');
+  const callerBody = built.events[1].slice(4);
+  assert.deepEqual(callerBody, [OP_END, EVT_PAGES_END], 'the invalid call should not have run common event 0');
+});
+
+test('deleting a common event in the built ROM still runs what the survivor names', {
+  skip: !hasRom && 'run `npm run sample` first'
+}, async (t) => {
+  // The same scenario as the byte-level test above, but through a booted ROM:
+  // A, B and C get ids 0, 1 and 2; the chest calls B; A is deleted the way
+  // the editor's ✕ leaves it, splicing the list without touching B or C's
+  // ids. Talking to the chest has to give the Gem that B hands over, not the
+  // Hunter that C would -- C being the thing that slid into B's old row.
+  const { nes } = await buildWith(t, [chest([{ cond: { type: 'none', arg: 0 }, commands: [{ op: 'call', event: 1 }] }])], (project) => {
+    project.commonEvents = [
+      { id: 1, name: 'B', event: { pages: [{ cond: { type: 'none', arg: 0 }, commands: [{ op: 'give', actor: GEM }] }] } },
+      { id: 2, name: 'C', event: { pages: [{ cond: { type: 'none', arg: 0 }, commands: [{ op: 'give', actor: HUNTER }] }] } }
+    ];
+  });
+  assert.ok(talkThrough(nes), 'the conversation never ended');
+  assert.equal(nes.cpu.mem[INV_COUNT], 1);
+  assert.equal(nes.cpu.mem[INV_ITEMS], GEM, 'the call ran C instead of the B it was authored to name');
+});
+
+test('a call reaches into a common event and comes back to the command after it', {
+  skip: !hasRom && 'run `npm run sample` first'
+}, async (t) => {
+  const { nes } = await buildWith(
+    t,
+    [
+      chest([
+        {
+          cond: { type: 'none', arg: 0 },
+          commands: [
+            { op: 'say', text: 'Before.' },
+            { op: 'give', actor: 0 }, // Slime
+            { op: 'call', event: 0 },
+            { op: 'give', actor: HUNTER },
+            { op: 'say', text: 'After.' }
+          ]
+        }
+      ])
+    ],
+    (project) => {
+      project.commonEvents = [
+        {
+          name: 'Reward',
+          event: {
+            pages: [
+              {
+                cond: { type: 'none', arg: 0 },
+                commands: [{ op: 'say', text: 'Reward!' }, { op: 'give', actor: GEM }]
+              }
+            ]
+          }
+        }
+      ];
+    }
+  );
+
+  assert.ok(talkThrough(nes), 'the conversation never ended');
+  // Three pages, three gifts, in the order they were authored: the common
+  // event's own Say suspended and resumed correctly, its Give ran exactly
+  // once, and script_ptr came back to the command after the call rather than
+  // restarting the chest's page or skipping past it.
+  assert.equal(nes.cpu.mem[INV_COUNT], 3);
+  assert.deepEqual(
+    [...nes.cpu.mem.slice(INV_ITEMS, INV_ITEMS + 3)],
+    [0, GEM, HUNTER],
+    'the bag should read Slime, Gem, Hunter — before, inside the call, and after it'
+  );
+});
+
+test('the same call runs the common event again, not a copy of it', {
+  skip: !hasRom && 'run `npm run sample` first'
+}, async (t) => {
+  // The whole point of a common event is authoring the body once. Firing the
+  // same call twice should run it twice, with the same effect each time,
+  // rather than something that only works the first time script_ptr visits
+  // that table slot.
+  const { nes } = await buildWith(
+    t,
+    [chest([{ cond: { type: 'none', arg: 0 }, commands: [{ op: 'call', event: 0 }] }])],
+    (project) => {
+      project.commonEvents = [
+        {
+          name: 'Count',
+          event: { pages: [{ cond: { type: 'none', arg: 0 }, commands: [{ op: 'addVar', variable: 0, value: 1 }] }] }
+        }
+      ];
+    }
+  );
+  assert.ok(talkThrough(nes), 'the first conversation never ended');
+  assert.equal(nes.cpu.mem[VARIABLES], 1);
+  assert.ok(talkThrough(nes), 'the second conversation never ended');
+  assert.equal(nes.cpu.mem[VARIABLES], 2, 'the same common event ran a second time from the same placement');
+});
+
+test('a cycle between common events is bounded, not a hang', {
+  skip: !hasRom && 'run `npm run sample` first'
+}, async (t) => {
+  // Common event A calls B, B calls A, and so on. CALL_STACK_DEPTH in
+  // engine/constants.asm is the one place that recursion is bounded: once the
+  // stack is full a call is skipped rather than pushed, so the chain unwinds
+  // instead of running forever. Each level counts once on the way down, so the
+  // final count is exactly the bound — proof the engine stopped pushing there
+  // and not one level sooner or later.
+  const { nes } = await buildWith(
+    t,
+    [chest([{ cond: { type: 'none', arg: 0 }, commands: [{ op: 'call', event: 0 }, { op: 'say', text: 'Done.' }] }])],
+    (project) => {
+      project.commonEvents = [
+        {
+          name: 'A',
+          event: {
+            pages: [
+              {
+                cond: { type: 'none', arg: 0 },
+                commands: [{ op: 'addVar', variable: 0, value: 1 }, { op: 'call', event: 1 }]
+              }
+            ]
+          }
+        },
+        {
+          name: 'B',
+          event: {
+            pages: [
+              {
+                cond: { type: 'none', arg: 0 },
+                commands: [{ op: 'addVar', variable: 0, value: 1 }, { op: 'call', event: 0 }]
+              }
+            ]
+          }
+        }
+      ];
+    }
+  );
+
+  assert.ok(talkThrough(nes, 60), 'a cycle between common events hung the conversation');
+  assert.equal(nes.cpu.mem[GAME_STATE], ST_GAMEPLAY, 'the world was not handed back');
+  // The engine's own CALL_STACK_DEPTH (engine/constants.asm) is 4: the chest's
+  // own call is depth 1, and A and B alternate from there until the fifth call
+  // finds the stack full and is skipped instead of pushed.
+  assert.equal(nes.cpu.mem[VARIABLES], 4, 'the recursion bound did not land where the engine defines it');
 });

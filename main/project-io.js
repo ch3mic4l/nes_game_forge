@@ -41,14 +41,19 @@ export async function saveProject(dir, data) {
   await fs.mkdir(path.join(dir, 'songs'), { recursive: true });
   await fs.mkdir(path.join(dir, 'tiles'), { recursive: true });
 
-  // Switch and variable names and the progression numbers are small and rarely
-  // edited, so they ride in the head file rather than earning one of their own.
+  // Switch and variable names, the progression numbers, and the common event
+  // id counter are small and rarely edited, so they ride in the head file
+  // rather than earning one of their own. commonEventSeq has to survive this
+  // round trip specifically: it is what keeps a deleted common event's id
+  // from being handed to the next one added, and a counter reset on every
+  // save would silently start reusing ids the moment the project reopened.
   await writeJson(path.join(dir, PROJECT_MARKER), {
     format: project.format,
     project: project.project,
     cartridge: project.cartridge,
     switches: project.switches,
     variables: project.variables,
+    commonEventSeq: project.commonEventSeq,
     rpg: project.rpg
   });
 
@@ -75,6 +80,7 @@ export async function saveProject(dir, data) {
   await writeJson(path.join(dir, 'input.json'), project.input);
   await writeJson(path.join(dir, 'party.json'), project.party);
   await writeJson(path.join(dir, 'spells.json'), project.spells);
+  await writeJson(path.join(dir, 'commonEvents.json'), project.commonEvents);
 
   // Maps and songs are one file each, named by index so renames never orphan data.
   const existingMaps = await fs.readdir(path.join(dir, 'maps')).catch(() => []);
@@ -197,6 +203,7 @@ export async function loadProject(dir) {
     cartridge: head.cartridge,
     switches: head.switches,
     variables: head.variables,
+    commonEventSeq: head.commonEventSeq,
     rpg: head.rpg,
     tilesets,
     palettes: await readJson(path.join(dir, 'palettes.json')),
@@ -205,6 +212,7 @@ export async function loadProject(dir) {
     input: await readJson(path.join(dir, 'input.json')),
     party: await readJson(path.join(dir, 'party.json')),
     spells: await readJson(path.join(dir, 'spells.json')),
+    commonEvents: await readJson(path.join(dir, 'commonEvents.json')),
     maps,
     songs,
     code: await loadCode(dir)

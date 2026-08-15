@@ -16,7 +16,7 @@
 // (ROADMAP.md item 1), and a template that compiles to nothing is exactly what
 // this codebase refuses to ship.
 
-import { RPG_LIMITS, allCommands } from '../../../shared/project.js';
+import { RPG_LIMITS, allCommands, projectEvents } from '../../../shared/project.js';
 
 /**
  * Which switches the project already spends. Every place a switch number can
@@ -27,7 +27,10 @@ import { RPG_LIMITS, allCommands } from '../../../shared/project.js';
  *
  * Nested commands are reached through `allCommands` rather than by naming the
  * commands that hold commands, because the last two additions to that list were
- * each a place a switch could hide from this.
+ * each a place a switch could hide from this. A `call` is a third: the switch
+ * it hides is not in the caller's own commands at all, it is in the common
+ * event named by index — so this walks `projectEvents`, which visits every
+ * common event directly, rather than the placed actors alone.
  */
 export function usedSwitches(project) {
   const used = new Set();
@@ -37,15 +40,17 @@ export function usedSwitches(project) {
   for (const map of project.maps ?? []) {
     for (const screen of map.screens ?? []) {
       for (const entity of screen.entities ?? []) {
-        const props = entity.props ?? {};
-        if (typeof props.hideSwitch === 'number') used.add(props.hideSwitch);
-        for (const page of props.event?.pages ?? []) {
-          fromCondition(page.cond);
-          for (const command of allCommands(page.commands)) {
-            if (command.op === 'setSwitch' || command.op === 'clearSwitch') used.add(command.switch);
-            fromCondition(command.cond); // a branch's, which a page's editor also writes
-          }
-        }
+        const hideSwitch = entity.props?.hideSwitch;
+        if (typeof hideSwitch === 'number') used.add(hideSwitch);
+      }
+    }
+  }
+  for (const event of projectEvents(project)) {
+    for (const page of event.pages ?? []) {
+      fromCondition(page.cond);
+      for (const command of allCommands(page.commands)) {
+        if (command.op === 'setSwitch' || command.op === 'clearSwitch') used.add(command.switch);
+        fromCondition(command.cond); // a branch's, which a page's editor also writes
       }
     }
   }

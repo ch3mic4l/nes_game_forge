@@ -112,6 +112,23 @@ test('a switch hides just as well inside a branch or an answer', () => {
   assert.equal(firstFreeSwitch(project), 0, 'nothing below 11 is in use');
 });
 
+test('a switch hides in a common event too, even one no placement calls yet', () => {
+  // A call does not carry the callee's commands inline the way a branch or a
+  // question does -- it names a common event by index -- so following `call`
+  // edges would miss one authored but not yet wired up anywhere. Scanning
+  // every common event directly, the way every placement is already scanned,
+  // catches it regardless.
+  const project = createProject('Common');
+  project.sprites.actors = [{ name: 'Chest', behavior: 'npc' }];
+  project.commonEvents = [
+    {
+      name: 'Reset',
+      event: { pages: [{ cond: { type: 'none', arg: 0 }, commands: [{ op: 'setSwitch', switch: 20 }] }] }
+    }
+  ];
+  assert.ok(usedSwitches(project).has(20), 'a switch set only inside a common event was not seen');
+});
+
 test('all switches spent means no free switch, not switch zero', () => {
   const project = createProject('Full');
   project.sprites.actors = [{ name: 'NPC', behavior: 'npc' }];

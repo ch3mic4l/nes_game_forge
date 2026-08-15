@@ -210,6 +210,13 @@ button. *When touched* is offered only where nothing else already owns being wal
 is collected, a door is gone through, and in an RPG anything that deals damage starts a battle. Only
 one actor per screen can run its event as the screen loads; the Map Forge says which one it is.
 
+A chest, a shop and a recurring cutscene often say the same thing. **Common events…**, beside
+Switches and Variables, is a list of event bodies with names instead of a place — written once and
+reached from anywhere with **Run common event…**, which runs the named one's own pages exactly as
+an actor's own event would and comes back to the command after it once the common event runs out of
+pages. Common events are free to call each other, and the engine bounds how deep that can nest, so a
+pair that call one another back and forth unwind instead of freezing the game.
+
 Only commands the engine implements are offered. Anything a newer version of the
 Forge wrote is preserved through a save, so a project never loses work by being
 opened here.

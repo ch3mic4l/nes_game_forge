@@ -10,7 +10,7 @@
 // Free of DOM and Node APIs: imported by the main process, the renderer and
 // node:test alike.
 
-import { entityHasLiveEvent } from './eventrules.js';
+import { compiledPages, projectEvents } from './eventrules.js';
 
 // --------------------------------------------------------------- reserved map
 
@@ -279,13 +279,19 @@ export function projectUsesText(project) {
     for (const screen of map.screens ?? []) {
       for (const entity of screen.entities ?? []) {
         if (String(entity.props?.dialogue ?? '').trim()) return true;
-        // Only an event that survives to the ROM. One whose every command has
-        // been switched off compiles to nothing, and reserving $A0-$FF — or on
-        // MMC3 a whole CHR page — for text the cartridge does not contain would
-        // charge the author for work they took back.
-        if (entityHasLiveEvent(entity)) return true;
       }
     }
+  }
+  // Every placed actor's event and every common event — a common event that a
+  // `call` reaches is exactly as capable of putting text on screen as an
+  // event authored directly on a placement, and it has no dialogue string of
+  // its own to have already been caught above. Only an event that survives to
+  // the ROM counts: one whose every command has been switched off compiles to
+  // nothing, and reserving $A0-$FF — or on MMC3 a whole CHR page — for text
+  // the cartridge does not contain would charge the author for work they took
+  // back.
+  for (const event of projectEvents(project)) {
+    if (compiledPages(event).length > 0) return true;
   }
   return false;
 }

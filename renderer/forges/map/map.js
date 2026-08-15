@@ -22,7 +22,14 @@ import {
 import { BOX_COLS, BOX_ROWS, FONT_BASE, wrapText } from '../../../shared/font.js';
 import { RPG_LIMITS } from '../../../shared/project.js';
 import { createMetatilePanel } from './metatiles.js';
-import { describeCommand, describeCondition, editEvent, editSwitches, editVariables } from './events.js';
+import {
+  describeCommand,
+  describeCondition,
+  editEvent,
+  editSwitches,
+  editVariables,
+  editCommonEvents
+} from './events.js';
 import { openEventList } from './eventlist.js';
 import { templatesFor, firstFreeSwitch } from './templates.js';
 import {
@@ -464,18 +471,43 @@ export function mount(container, app) {
       variables: store.project.variables ?? [],
       screens: flatScreens(store.project).map((entry) => entry.label),
       // Only an RPG has a party, so this is what decides whether Join is offered.
-      party: store.project.project.gameType === 'rpg' ? store.project.party ?? [] : []
+      party: store.project.project.gameType === 'rpg' ? store.project.party ?? [] : [],
+      commonEvents: store.project.commonEvents ?? []
     };
+  }
+
+  /** Open the common events editor and commit whatever it hands back. Shared
+   * by the toolbar button and the event list, since picking a common event
+   * row there means the same thing as clicking this button. */
+  async function openCommonEventsEditor() {
+    const result = await editCommonEvents(
+      store.project.commonEvents ?? [],
+      store.project.commonEventSeq ?? 0,
+      eventContext()
+    );
+    if (result !== undefined) {
+      store.commit('Edit common events', (project) => {
+        project.commonEvents = result.commonEvents;
+        project.commonEventSeq = result.commonEventSeq;
+      });
+      renderEntities();
+    }
   }
 
   /**
    * Search the project, and go where the answer is. Selecting a row moves the
    * Forge to that map and screen and scrolls its row into view — the point of
-   * finding something is being taken to it, not being told where it was.
+   * finding something is being taken to it, not being told where it was. A
+   * common event has no place, only a name, so picking one opens the common
+   * events editor instead of moving the screen underneath it.
    */
   async function findEvent(query = '') {
     const found = await openEventList(store.project, eventContext(), { query });
     if (!found) return;
+    if (found.common) {
+      await openCommonEventsEditor();
+      return;
+    }
     state.mapIndex = found.mapIndex;
     state.screenIndex = found.screenIndex;
     renderAll();
@@ -855,6 +887,14 @@ export function mount(container, app) {
               })
           },
           'Variables…'
+        ),
+        el(
+          'button.btn.btn-sm',
+          {
+            title: 'Author events any placement can run — a chest, a shop, a recurring cutscene',
+            onclick: openCommonEventsEditor
+          },
+          'Common events…'
         )
       ),
       // Only once something has been copied *here*: an always-present Paste

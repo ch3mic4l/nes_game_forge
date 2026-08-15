@@ -190,6 +190,33 @@ choice_sel  = $7A
 ; neither has to ask what it is being done for.
 box_after   = $7B
 
+; How many common events may be nested inside one another before a call is
+; simply skipped rather than pushed. Bounded here, once, because unlike a
+; branch or a question -- nesting the schema itself limits at MAX_BRANCH_DEPTH
+; and refuses past BRANCH_DEPTH_LIMIT -- two common events are free to call
+; each other and no authoring-time check can see that cycle coming: it is only
+; a cycle once both bodies exist. Four is enough for a call chain no game
+; actually needs and cheap enough that a runaway one costs a few bytes of
+; stack rather than a hang.
+;
+; Defined here, ahead of call_ret_lo/hi below, rather than beside OP_CALL
+; further down: call_ret_hi's own address is an expression in this constant
+; rather than a second literal, so raising it can never leave the two arrays
+; overlapping the way two independently-hand-kept numbers could. It must stay
+; small enough that call_ret_lo + 2*CALL_STACK_DEPTH does not run past $FF --
+; the end of zero page -- and the next thing this map allocates after
+; call_ret_hi has to move down with it if it ever needs to grow past what
+; fits before $0340 (the music RAM below).
+CALL_STACK_DEPTH = 4
+
+; A common event's call stack: where to resume in the caller once the callee
+; runs out of pages. call_depth is the count in use, and also the next free
+; slot -- a call pushes the return point at call_ret_lo/hi[call_depth] and
+; then increments it, a return decrements first and reads the same slot back.
+call_depth  = $7E
+call_ret_lo = $7F                          ; CALL_STACK_DEPTH bytes
+call_ret_hi = call_ret_lo+CALL_STACK_DEPTH ; CALL_STACK_DEPTH bytes
+
 ; Which split program this frame runs. OFF disarms the counter entirely.
 SPL_OFF     = 0
 SPL_BOX     = 1             ; the message box: font in from tile row 24
@@ -511,6 +538,9 @@ OP_CHOICE   = $0C           ; [count, a string id per option] then one record pe
                             ; question]. A branch the player takes rather than
                             ; the condition, down to ending each option the same
                             ; way a then-branch ends
+OP_CALL     = $0D           ; [which common event] -- run it and come back to
+                            ; the command after this one; see call_depth and
+                            ; CALL_STACK_DEPTH in the zero page map above
 ; Punctuation rather than a command: the compiler emits it, nothing authors it,
 ; and it is numbered out of the way of EVENT_COMMANDS so the two orders cannot
 ; grow into each other. It ends a then-branch by stepping over the else-branch.

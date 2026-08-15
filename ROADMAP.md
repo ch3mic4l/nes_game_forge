@@ -48,7 +48,16 @@ through the Code Forge.
   byte of the entity record, so what makes an event run is a property of the placement rather than
   of the event. Entry triggers are what make an opening scene possible at all: until now nothing
   could happen *to* the player
-- **Common events**: one event body callable from many places, so a chest or a shop is authored once
+- ~~**Common events**: one event body callable from many places, so a chest or a shop is authored
+  once~~ — **done**: `Run common event…` calls one of the project's own events by name and returns
+  to the command after it when the callee runs out of pages. It is the first addition to this list
+  that needed the script runner to remember something rather than only where `script_ptr` is
+  pointing — a small fixed-depth stack (`call_ret_lo/hi`, `CALL_STACK_DEPTH` in
+  `engine/constants.asm`) of return addresses, because two common events are free to call each
+  other and a cycle between them is only visible once both bodies exist, not while either is being
+  authored. Past the bound a call is skipped rather than pushed, so a cycle unwinds instead of
+  hanging. Common events are compiled into the same table a placement's own event is, ahead of it,
+  so a call's one-byte argument is just the table slot the callee landed in
 - Commands for starting a **battle**, changing **music**, **moving an actor**, and
   **healing/damaging** the party
 

@@ -1,4 +1,4 @@
-// Every placed actor in the project, in one searchable list.
+// Every placed actor, and every common event, in one searchable list.
 //
 // Two problems, one answer. Finding something again — "where did I put the
 // innkeeper?" — is a search over names. Finding *uses* of something — "what
@@ -24,13 +24,46 @@ import {
 import { describeCommand, describeCondition } from './events.js';
 
 /**
- * One row per placed actor: where it is, what it is called, and what it does.
- * Pure — no DOM — so the search that runs over it is testable on its own.
+ * One row per placed actor, plus one row per common event — where it is, what
+ * it is called, and what it does. Pure — no DOM — so the search that runs
+ * over it is testable on its own.
+ *
+ * A common event's body is described by `call` from wherever it is reached,
+ * never inlined into the caller's own row: `call` describes as the callee's
+ * *name*, so a switch set only inside a common event was otherwise invisible
+ * to search even when a placed actor calls it. Resolving `call` into the
+ * body it names was the other way to close that gap, but common events may
+ * call each other, so that route needs its recursion bounded against a cycle
+ * for no real benefit over indexing each definition once, here, on its own.
  */
 export function buildEventIndex(project, context) {
   const rows = [];
   const switchName = (n) => context.switches?.[n]?.trim() || `switch ${n}`;
   const screens = flatScreens(project);
+
+  (project.commonEvents ?? []).forEach((entry) => {
+    const name = entry.name?.trim() || `Common event ${entry.id}`;
+    // Live store state, same as everywhere else this file reads it — a
+    // freshly added common event holds `event: null` until it is first
+    // opened for editing (see listBody in events.js), same reason
+    // compiledPages exists rather than every reader assuming `.pages`.
+    const detail = (entry.event?.pages ?? []).map(
+      (page, position) =>
+        `${position + 1}. ${describeCondition(page.cond, context)} → ${
+          page.commands.map((command) => describeCommand(command, context)).join('; ') || 'nothing'
+        }`
+    );
+    rows.push({
+      common: true,
+      title: name,
+      note: 'common event',
+      actorName: name,
+      where: 'Common events',
+      at: `id ${entry.id}`,
+      detail,
+      haystack: [name, ...detail].join('   ').toLowerCase()
+    });
+  });
 
   screens.forEach(({ mapIndex, screenIndex, screen }) => {
     screen.entities.forEach((entity, entityIndex) => {
@@ -122,11 +155,24 @@ export function openEventList(project, context, { query = '' } = {}) {
         }
       });
 
+      // What the rows actually are, so the count never calls a common event a
+      // placed actor or the other way round — worded against the whole list
+      // rather than whatever a search narrowed it to, since that is the
+      // question "how many things can I search here" is actually asking.
+      const placedCount = rows.filter((row) => !row.common).length;
+      const commonCount = rows.length - placedCount;
+      const kind =
+        placedCount && commonCount
+          ? 'placed actors and common events'
+          : commonCount
+          ? `common event${commonCount === 1 ? '' : 's'}`
+          : `placed actor${placedCount === 1 ? '' : 's'}`;
+
       function render() {
         const found = searchEvents(rows, current);
         summary.textContent = current
-          ? `${found.length} of ${rows.length} placed actors`
-          : `${rows.length} placed actor${rows.length === 1 ? '' : 's'}`;
+          ? `${found.length} of ${rows.length} ${kind}`
+          : `${rows.length} ${kind}`;
 
         fill(results,
           found.length
@@ -142,7 +188,10 @@ export function openEventList(project, context, { query = '' } = {}) {
                       borderRadius: 'var(--radius)',
                       cursor: 'pointer'
                     },
-                    title: 'Go to this actor',
+                    // A common event has no place to go to — picking one
+                    // opens the common events editor instead, which is what
+                    // the caller does with a row whose `common` flag is set.
+                    title: row.common ? 'Open the common events editor' : 'Go to this actor',
                     onclick: () => close(row)
                   },
                   el(

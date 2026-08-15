@@ -151,6 +151,32 @@ test('the font is stamped into every background table of a project with text', a
   assert.ok([...chr.slice(capitalA, capitalA + 16)].some((byte) => byte !== 0), 'the glyph for A is blank');
 });
 
+test('a project whose only text lives in a common event still gets the font', async (t) => {
+  // No placement has a dialogue string or a live event of its own -- the only
+  // Say in the whole project is inside a common event nothing has called yet.
+  // The reservation has to see that, or the ROM would draw text with no font
+  // behind it the day something finally calls it.
+  const dir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'forge-common-font-'));
+  t.after(() => fs.promises.rm(dir, { recursive: true, force: true }));
+
+  const project = createProject('Common');
+  project.commonEvents = [
+    {
+      name: 'Greeting',
+      event: { pages: [{ cond: { type: 'none', arg: 0 }, commands: [{ op: 'say', text: 'Hi.' }] }] }
+    }
+  ];
+  await generateAssets({ dir, project });
+
+  const chr = await fs.promises.readFile(path.join(dir, 'build/assets/tiles0.chr'));
+  const expected = encodeTiles(FONT_TILES);
+  assert.deepEqual(
+    [...chr.slice(FONT_BASE * 16, FONT_BASE * 16 + expected.length)],
+    [...expected],
+    'the background table should carry the font even though nothing places it'
+  );
+});
+
 test('a project with nothing to say keeps all 256 background tiles', async (t) => {
   const dir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'forge-nofont-'));
   t.after(() => fs.promises.rm(dir, { recursive: true, force: true }));

@@ -74,5 +74,25 @@ export function* allCommands(list) {
 export const compiledPages = (event) =>
   (event?.pages ?? []).filter((page) => enabledCommands(page).length > 0);
 
-/** Whether an entity's event puts anything at all into the build. */
-export const entityHasLiveEvent = (entity) => compiledPages(entity?.props?.event).length > 0;
+/**
+ * Every event body the project holds: each placed actor's, and every common
+ * event's. A common event is not reached by walking a placement's own
+ * commands — a `call` names it by index rather than holding its pages — so
+ * anything that has to know what the whole project can show or set (does it
+ * use text at all, which switches are already spoken for) walks this instead
+ * of the placed actors alone. That is also why this needs no special handling
+ * for a `call`: a called common event's own switches and text are found by
+ * this same walk visiting it directly, not by following the reference.
+ */
+export function* projectEvents(project) {
+  for (const map of project?.maps ?? []) {
+    for (const screen of map.screens ?? []) {
+      for (const entity of screen.entities ?? []) {
+        if (entity.props?.event) yield entity.props.event;
+      }
+    }
+  }
+  for (const entry of project?.commonEvents ?? []) {
+    if (entry.event) yield entry.event;
+  }
+}

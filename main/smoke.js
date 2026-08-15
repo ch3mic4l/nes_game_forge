@@ -418,6 +418,72 @@ const scenario = (dir, sampleDir) => `
   }
   step('triggers', 'trigger set to touch, hint followed, undo put it back');
 
+  // Common events: authored in one modal, referenced in a nested one that has
+  // to see entries added earlier in the *same* session. Regression coverage
+  // for a bug where the picker was handed the project's commonEvents as it
+  // stood when the toolbar button was clicked, rather than the list being
+  // built up inside this modal — so a project's first common event could not
+  // reference the second one added right beside it until after a save and a
+  // reopen.
+  document.querySelector('#stage button[title^="Author events any placement"]').click();
+  await until('the common events dialog', () => document.querySelector('#modalHost button'));
+  const addCommonEvent = () =>
+    [...document.querySelectorAll('#modalHost button')].find((node) => node.textContent === '+ Common event');
+  addCommonEvent().click();
+  await wait(150);
+  addCommonEvent().click();
+  await wait(150);
+  const commonEditButtons = () =>
+    [...document.querySelectorAll('#modalHost button')].filter((node) => node.textContent === 'Edit…');
+  if (commonEditButtons().length !== 2) throw new Error('two common events did not produce two rows');
+  commonEditButtons()[0].click(); // edit the first one, from inside the same unsaved session
+  await until('the common event’s own page editor', () => document.querySelector('#modalHost .btn-accent'));
+  const addToCommon = [...document.querySelectorAll('#modalHost select')].find((node) =>
+    node.textContent.includes('Add a command')
+  );
+  if (!addToCommon) throw new Error('the common event’s page editor offered no command list');
+  const offeredCall = [...addToCommon.options].some((option) => option.textContent === 'Run common event');
+  if (!offeredCall) {
+    throw new Error('Run common event was not offered — the picker used a stale, pre-session list');
+  }
+  addToCommon.value = 'call';
+  addToCommon.dispatchEvent(new Event('change', { bubbles: true }));
+  await wait(200);
+  const callRow = [...document.querySelectorAll('#modalHost .field-row')].find((node) =>
+    node.textContent.includes('Run common event')
+  );
+  const callSelect = callRow?.querySelector('select');
+  if (!callSelect) throw new Error('the call command rendered no target picker');
+  if (callSelect.options.length !== 2) {
+    throw new Error('the target picker offered ' + callSelect.options.length + ', expected both common events');
+  }
+  const secondId = callSelect.options[1].value;
+  callSelect.value = secondId;
+  callSelect.dispatchEvent(new Event('change', { bubbles: true }));
+  await wait(200);
+  document.querySelector('#modalHost .btn-accent').click(); // save the call command's own page editor
+  // Closing this nested modal and the outer list modal reopening both cross a
+  // promise resolution, same as any other Save — a fixed settle rather than
+  // polling, matching every other modal-closing click in this scenario.
+  await wait(300);
+  await until('back at the common events list', () =>
+    [...document.querySelectorAll('#modalHost button')].some((node) => node.textContent === 'Save')
+  );
+  const saveList = [...document.querySelectorAll('#modalHost button')].find((node) => node.textContent === 'Save');
+  if (!saveList) throw new Error('the common events list did not come back after saving the call');
+  saveList.click();
+  await wait(300);
+  const savedCommon = store.project.commonEvents;
+  if (savedCommon?.length !== 2) throw new Error('common events saved as ' + JSON.stringify(savedCommon));
+  const savedCall = savedCommon[0].event?.pages?.[0]?.commands?.[0];
+  if (savedCall?.op !== 'call' || String(savedCall.event) !== secondId) {
+    throw new Error('the call did not save against the common event picked from the live list: ' + JSON.stringify(savedCall));
+  }
+  store.undo();
+  await wait(200);
+  if ((store.project.commonEvents ?? []).length !== 0) throw new Error('undo left a common event behind');
+  step('common events', 'authored one from inside the same session it referenced another');
+
   // Duplicate keeps the event, and lands somewhere you can see it.
   rowButton(0, '+⧉').click();
   await wait(250);

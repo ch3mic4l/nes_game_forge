@@ -132,18 +132,18 @@ const TITLE_PROMPT_ROW = 19;
 // Measured by building the sample and reading nesasm's usage for the kernel-lo
 // bank (prgLayout().kernelLoBank), minus that project's fixedBytes + tableBytes.
 // UNROM 512 is the high-water mark because banks.asm emits the most code for it:
-// 6268 bytes as measured by building sample-rpg on that board, with the message
-// box, the event runner with its variables, branches, questions and triggers,
-// action combat, the title screen and the RPG's kernel-side half all in. The
-// battle system itself is not in this number — it lives in a switchable bank,
-// which is the whole reason it can exist at all. MMC3 additionally assembles the
-// scanline split (engine/split.asm) and comes to 6248, so UNROM 512 keeps setting the
-// ceiling. That leaves 32 bytes of slack: the next thing to grow the kernel
-// measures again and raises this, rather than assuming the number below is
-// generous. Re-measure and raise this if the engine grows: build sample-rpg on
-// mapper 30, take nesasm's usage for the bank holding `reset`, and subtract
-// `reset - $C000`.
-const KERNEL_CODE_BYTES = 6300;
+// 6334 bytes as measured by building sample-rpg on that board, with the message
+// box, the event runner with its variables, branches, questions, triggers and
+// common-event calls, action combat, the title screen and the RPG's kernel-side
+// half all in. The battle system itself is not in this number — it lives in a
+// switchable bank, which is the whole reason it can exist at all. MMC3
+// additionally assembles the scanline split (engine/split.asm) and comes to
+// 6305, so UNROM 512 keeps setting the ceiling. That leaves 32 bytes of slack:
+// the next thing to grow the kernel measures again and raises this, rather than
+// assuming the number below is generous. Re-measure and raise this if the
+// engine grows: build sample-rpg on mapper 30, take nesasm's usage for the bank
+// holding `reset`, and subtract `reset - $C000`.
+const KERNEL_CODE_BYTES = 6366;
 const PLAYER_FRAMES = 8; // 4 directions x 2 walk frames
 const PLAYER_TILES = PLAYER_FRAMES * 4;
 
