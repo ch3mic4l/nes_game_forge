@@ -139,6 +139,32 @@ export function* liveCommands(list, choiceOptionLimit) {
 }
 
 /**
+ * A Heal/Damage command's `value` field as the byte it means, rounded to the
+ * nearest whole number and clamped to 0-255 — the single clamp for that
+ * field, full stop. Everything that ever has to decide what one of these
+ * commands is worth calls this rather than writing its own 0-255 clamp:
+ * `normalizeEventCommand` (shared/project.js) for what gets saved,
+ * `encodeCommand` (main/build/textcompile.js) for the byte written to the
+ * ROM, `projectUsesCombat` (shared/font.js) for whether a live Damage can
+ * reach the player at all, and the Map Forge's own number field
+ * (renderer/forges/map/events.js) for what a keystroke turns into. A second,
+ * independently-written clamp is exactly how this used to go wrong: an
+ * un-normalized fractional value (hand-edited JSON, or a project written by
+ * a later version) truncated one way through one clamp and rounded another
+ * way through a second, so a save round-trip alone could turn a harmless
+ * `Damage 0.6` into a real `Damage 1`. Rounds rather than truncates to match
+ * `normalizeEventCommand`'s existing `clamp()` behaviour, so no project that
+ * has already been through it changes meaning. Takes the bare value, not a
+ * command object, so a raw keystroke or a raw `value` field is exactly as
+ * valid an input as an already-shaped command's `.value`.
+ */
+export const damageAmount = (value) => {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return 0;
+  return Math.max(0, Math.min(255, Math.round(number)));
+};
+
+/**
  * Every event body the project holds: each placed actor's, and every common
  * event's. A common event is not reached by walking a placement's own
  * commands — a `call` names it by index rather than holding its pages — so

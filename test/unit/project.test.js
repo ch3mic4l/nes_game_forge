@@ -868,7 +868,9 @@ const FIXED_OPCODE_WIDTH = {
   subVar: 3,
   call: 2,
   music: 2,
-  battle: 1 + RPG_LIMITS.monstersPerBattle
+  battle: 1 + RPG_LIMITS.monstersPerBattle,
+  heal: 2,
+  damage: 2
 };
 
 /**
@@ -1020,7 +1022,9 @@ test('liveCommands and encodeBody agree on the actual sequence of compiled opcod
       one('subVar'),
       one('music'),
       one('call'), // resolvableCommonEvents' id 0 -- exercises FIXED_OPCODE_WIDTH.call against a real slot byte, not just NO_COMMON_EVENT_SLOT
-      one('battle')
+      one('battle'),
+      one('heal'),
+      one('damage')
     ],
     "a branch's then side, then its else side": [
       { op: 'branch', cond: { type: 'none', arg: 0 }, then: [one('say')], else: [one('give')] }

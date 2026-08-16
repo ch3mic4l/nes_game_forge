@@ -23,6 +23,7 @@ import {
   RPG_LIMITS,
   actorMissing,
   compiledPages,
+  damageAmount,
   enabledCommands,
   commonEventId,
   isMonsterActor
@@ -155,6 +156,10 @@ function describeEnabled(command, context = {}) {
       return (command.monsters ?? []).length
         ? `Battle ${command.monsters.map(actorName).join(', ')}`
         : 'Battle (no monsters — dropped on save)';
+    case 'heal':
+      return `Heal ${command.value ?? 0}`;
+    case 'damage':
+      return `Damage ${command.value ?? 0}`;
     case 'branch': {
       // Described down to its contents, because the event list's search runs
       // over exactly this text: a switch used only inside a branch has to be
@@ -403,9 +408,13 @@ export function editEvent(event, context) {
   /**
    * The 0-255 a variable is set to, counted by, or compared against.
    *
-   * Rounded here, not left to the schema: a number field will hand back 1.5 for
-   * the asking, the compiler truncates it to 1 and the schema rounds it to 2, so
-   * the same project would build differently before and after being reopened.
+   * Rounded here through damageAmount (shared/eventrules.js), not a second
+   * clamp written here: a number field will hand back 1.5 for the asking,
+   * and normalizeEventCommand/encodeCommand/projectUsesCombat all have to
+   * agree with whatever this turns it into, or the same project builds
+   * differently before and after being reopened. damageAmount is named for
+   * the Heal/Damage field it was written for, but the clamp a 0-255 field
+   * needs is the same clamp regardless of which field is asking.
    */
   function valueInput(value, onChange) {
     return el('input', {
@@ -415,7 +424,7 @@ export function editEvent(event, context) {
       value,
       title: 'A number from 0 to 255',
       style: { width: '70px', flex: 'none' },
-      onchange: (fired) => onChange(wholeNumber(fired.target.value, 255))
+      onchange: (fired) => onChange(damageAmount(fired.target.value))
     });
   }
 
@@ -659,6 +668,38 @@ export function editEvent(event, context) {
             : 'An empty formation is dropped when you save — pick at least one monster above, or this ' +
               'command will not be there when you come back.'
         )
+      );
+    }
+
+    if (command.op === 'heal' || command.op === 'damage') {
+      // The same "does this project have a party" test that already decides
+      // whether Join/Battle are offered at all — a party only exists in an
+      // RPG, so it doubles as "is this project an RPG" without a second field
+      // to keep in step with it.
+      const isRpg = (context.party ?? []).length > 0;
+      const unit = isRpg ? 'HP' : 'hearts';
+      const whole = isRpg ? 'every recruited party member' : 'the player';
+      const hint =
+        command.op === 'heal'
+          ? `Restores ${unit} to ${whole}, saturating at full.` +
+            (isRpg ? ' A member who has fallen gets back up too, the same as an inn.' : ' 255 is a full heal.')
+          : `Takes ${unit} away from ${whole}, saturating at 0. Reaching 0 is the same game over as ` +
+            (isRpg ? 'a lost fight — everyone recruited falling at once ends it here too.' : 'running out of hearts.');
+      return el(
+        'div',
+        { style: { marginBottom: '6px', ...dim } },
+        el(
+          'div.field-row',
+          null,
+          el(
+            'span',
+            { style: { flex: 'none', minWidth: '96px', color: 'var(--text-dim)' } },
+            command.op === 'heal' ? 'Heal' : 'Damage'
+          ),
+          valueInput(command.value ?? 0, (value) => (command.value = value)),
+          tools
+        ),
+        el('p.hint', null, hint)
       );
     }
 

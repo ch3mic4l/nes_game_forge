@@ -312,9 +312,16 @@ test('UxROM builds with seven switchable screen banks', async () => {
 test('UxROM holds far more screens than NROM, and they land in different banks', async () => {
   const nrom = await import('../../main/build/generate.js');
   const base = createProject('Big');
-  const wide = (project, maps) => {
+  // Three full 4x4 maps plus one 3x2, not four full 4x4 (64): the kernel's
+  // own lookup-table budget (KERNEL_CODE_BYTES) is a separate,
+  // mapper-independent ceiling from the per-mapper screen-storage one this
+  // test is actually about, and 64 screens now overruns it before either
+  // mapper's own capacity is exercised -- LIMITS.mapGrid caps a single map's
+  // grid at 4x4, so reaching an exact total past NROM's ~52 without also
+  // tripping that shared ceiling means more than one map.
+  const wide = (project) => {
     project.maps = [];
-    for (let m = 0; m < maps; m++) {
+    for (let m = 0; m < 3; m++) {
       project.maps.push({
         id: m,
         name: `Map ${m}`,
@@ -325,40 +332,56 @@ test('UxROM holds far more screens than NROM, and they land in different banks',
         tilesetId: 0
       });
     }
+    project.maps.push({
+      id: 3,
+      name: 'Map 3',
+      gridW: 3,
+      gridH: 2,
+      screens: Array.from({ length: 6 }, () => ({ metatiles: new Array(240).fill(0), entities: [] })),
+      songId: null,
+      tilesetId: 0
+    });
   };
 
-  // 4 maps x 16 screens = 64 screens: past NROM's ~52, inside UxROM's reach.
+  // 3x16 + 6 = 54 screens: past NROM's ~52, inside UxROM's reach.
   const onNrom = normalizeProject({ ...structuredClone(base), cartridge: { mapper: 0 } });
-  wide(onNrom, 4);
+  wide(onNrom);
   const nromCheck = nrom.checkCapacity(normalizeProject(onNrom));
   assert.ok(
     nromCheck.problems.some((p) => p.severity === 'error' && /holds/.test(p.message)),
-    'NROM should refuse 64 screens with a plain-language error'
+    'NROM should refuse 54 screens with a plain-language error'
   );
 
   const onUxrom = normalizeProject({ ...structuredClone(base), cartridge: { mapper: 2 } });
-  wide(onUxrom, 4);
+  wide(onUxrom);
   const uxromCheck = nrom.checkCapacity(normalizeProject(onUxrom));
   assert.deepEqual(
     uxromCheck.problems.filter((p) => p.severity === 'error'),
     [],
-    'UxROM should accept 64 screens'
+    'UxROM should accept 54 screens'
   );
   assert.ok(uxromCheck.capacity > 300, `UxROM capacity ${uxromCheck.capacity} should be in the hundreds`);
   assert.equal(uxromCheck.dataBankCount, 7);
 });
 
 test('a UxROM ROM boots into a screen that lives in a switched-in bank', async () => {
-  // 64 screens across four maps. About 26 screens fit per 8 KB region and two
-  // regions share a 16 KB bank, so bank 0 holds roughly the first 53. The start
-  // screen is the very last one, which therefore lives in bank 1 — boot only
-  // draws it correctly if switch_prg_bank works. The assertion on screen_bank
-  // below keeps this test from quietly becoming vacuous if packing changes.
+  // 54 screens across four maps -- three full 4x4 maps plus one 6-wide strip,
+  // rather than four full 4x4 maps (64): the kernel's own lookup-table budget
+  // (KERNEL_CODE_BYTES) is a separate, mapper-independent ceiling from the
+  // per-mapper screen-storage one this test is actually about, and it is
+  // tighter now than it once was, so 64 screens overruns it before UxROM's
+  // own capacity is ever exercised. 54 keeps clear of that while still
+  // landing the start screen outside bank 0: about 26 screens fit per 8 KB
+  // region and two regions share a 16 KB bank, so bank 0 holds roughly the
+  // first 53, and the start screen is the very last of the 54 — boot only
+  // draws it correctly if switch_prg_bank works. The assertion on
+  // screen_bank below keeps this test from quietly becoming vacuous if
+  // packing changes.
   const dir = path.join(await scratch(), 'Uxrom.forge');
   const project = createProject('Banked');
   project.cartridge.mapper = 2;
   project.maps = [];
-  for (let m = 0; m < 4; m++) {
+  for (let m = 0; m < 3; m++) {
     project.maps.push({
       id: m,
       name: `Map ${m}`,
@@ -369,12 +392,21 @@ test('a UxROM ROM boots into a screen that lives in a switched-in bank', async (
       tilesetId: 0
     });
   }
+  project.maps.push({
+    id: 3,
+    name: 'Map 3',
+    gridW: 3,
+    gridH: 2,
+    screens: Array.from({ length: 6 }, () => ({ metatiles: new Array(240).fill(0), entities: [] })),
+    songId: null,
+    tilesetId: 0
+  });
   // Paint the start screen entirely with metatile 1, whose four tiles are tile 1.
   project.metatiles[1].tiles = [1, 1, 1, 1];
   project.metatiles[1].palette = 0;
-  project.maps[3].screens[15].metatiles = new Array(240).fill(1);
+  project.maps[3].screens[5].metatiles = new Array(240).fill(1);
   project.project.startMap = 3;
-  project.project.startScreen = 15;
+  project.project.startScreen = 5;
   project.tilesets[0].background.tiles[1] = '1'.repeat(64);
 
   await saveProject(dir, project);
@@ -390,16 +422,17 @@ test('a UxROM ROM boots into a screen that lives in a switched-in bank', async (
     .split(/^[a-z_]+:/m)[0]
     .match(/\$[0-9A-F]{2}/g)
     .map((byte) => parseInt(byte.slice(1), 16));
-  assert.equal(bankTable.length, 64, 'one bank byte per screen');
-  assert.ok(bankTable[63] > 0, `the start screen should be in a switched bank, got bank ${bankTable[63]}`);
+  assert.equal(bankTable.length, 54, 'one bank byte per screen');
+  assert.ok(bankTable[53] > 0, `the start screen should be in a switched bank, got bank ${bankTable[53]}`);
 
   const nes = new NES({ onFrame: () => {}, emulateSound: false });
   nes.loadROM(new Uint8Array(rom));
   for (let i = 0; i < 40; i++) nes.frame();
 
   assert.ok(nes.cpu.REG_PC >= 0x8000, `PC $${nes.cpu.REG_PC.toString(16)} should be in ROM`);
-  // Screen 48 is the start; it must have been reachable, so nametable 0 is filled
-  // with tile 1 rather than the zeroes a failed bank switch would leave.
+  // Flat screen 53, the last of the 54, is the start; it must have been
+  // reachable, so nametable 0 is filled with tile 1 rather than the zeroes a
+  // failed bank switch would leave.
   const nametable = Array.from({ length: 960 }, (_, i) => nes.ppu.vramMem[0x2000 + i]);
   const ones = nametable.filter((byte) => byte === 1).length;
   assert.ok(ones > 900, `expected a screen of tile 1, saw ${ones}/960 — the bank switch likely failed`);

@@ -75,6 +75,7 @@ const BC_RUN = 3;
 
 const A = 0;
 const B = 1;
+const START = 3;
 const UP = 4;
 const DOWN = 5;
 const LEFT = 6;
@@ -359,6 +360,153 @@ test('a wipe ends the game the same way running out of hearts does', {
   for (let i = 0; i < 60 && nes.cpu.mem[GAME_STATE] === ST_BATTLE; i++) tap(nes, A, 12);
   assert.equal(nes.cpu.mem[PC_HP], 0, 'the party should have been wiped out');
   assert.equal(nes.cpu.mem[GAME_STATE], ST_GAMEOVER, 'a wipe should reach the game-over screen');
+});
+
+test('a status a lost battle leaves behind does not survive the restart that follows it', {
+  skip: needsSample
+}, async (t) => {
+  const dir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'forge-lostbattle-'));
+  t.after(() => fs.promises.rm(dir, { recursive: true, force: true }));
+  const project = await loadProject(SAMPLE);
+  // The same guaranteed loss "a wipe ends the game" above sets up.
+  project.sprites.actors[0].battle = {
+    ...project.sprites.actors[0].battle,
+    atk: 250,
+    acc: 255,
+    speed: 200,
+    def: 200
+  };
+  project.sprites.actors[0].hp = 200;
+  await saveProject(dir, project);
+  const built = await buildProject({ dir, project, log: () => {} });
+
+  const nes = boot(built.romPath);
+  assert.ok(walkIntoEncounter(nes));
+  // Poisoned mid-fight, the same way a monster's own Venom would leave it --
+  // battle_finish (engine/battleturn.asm) jumps straight to player_died on
+  // defeat, so battle_end never runs and never gets a chance to clear this.
+  nes.cpu.mem[PC_STATUS] = 1;
+  chooseCommand(nes, BC_FIGHT);
+  for (let i = 0; i < 60 && nes.cpu.mem[GAME_STATE] === ST_BATTLE; i++) tap(nes, A, 12);
+  assert.equal(nes.cpu.mem[GAME_STATE], ST_GAMEOVER, 'the party should have been wiped out');
+  assert.equal(
+    nes.cpu.mem[PC_STATUS],
+    1,
+    'a defeat should not clear this on its own -- init_session is what is under test here, on restart'
+  );
+
+  for (let i = 0; i < 300 && nes.cpu.mem[BOX_STATE] !== BOX_ENDWAIT; i++) nes.frame();
+  assert.equal(nes.cpu.mem[BOX_STATE], BOX_ENDWAIT, 'the game-over message never finished');
+  tap(nes, START, 10); // sample-rpg has no title, so this starts a new game directly
+  assert.equal(nes.cpu.mem[GAME_STATE], ST_GAMEPLAY, 'restarting should have started a new game');
+  assert.equal(nes.cpu.mem[PC_STATUS], 0, 'init_session should clear a status a lost battle left behind');
+});
+
+// --- scripted heal and damage -----------------------------------------------
+//
+// engine/rpg.asm's party_heal/party_damage, reached from the field through
+// OP_HEAL/OP_DAMAGE -- the RPG side of what combat.asm's gain_hearts/
+// lose_hearts already are for an action project. Placed on actor 2 (Iris),
+// the sample's own harmless npc -- the same actor id the "coming back from a
+// battle" test above places a second time elsewhere on this screen, so a
+// second placement carrying its own event is already proven not to collide
+// with her own Join event at (208,32).
+
+/** Iris, standing just above the player's own start position. */
+function teller(pages, { x = 112, y = 96 } = {}) {
+  return { actorId: 2, x, y, props: { event: { pages } } };
+}
+
+test('scripted Heal and Damage change every recruited member\'s HP, saturating at the max', {
+  skip: needsSample
+}, async (t) => {
+  const TOUCHED = 20;
+  const dir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'forge-healdamage-'));
+  t.after(() => fs.promises.rm(dir, { recursive: true, force: true }));
+  const project = await loadProject(SAMPLE);
+  project.maps[0].screens[0].entities.push(
+    teller([
+      {
+        cond: { type: 'switchOff', arg: TOUCHED },
+        commands: [{ op: 'say', text: 'Ow.' }, { op: 'damage', value: 3 }, { op: 'setSwitch', switch: TOUCHED }]
+      },
+      { cond: { type: 'none', arg: 0 }, commands: [{ op: 'say', text: 'There.' }, { op: 'heal', value: 255 }] }
+    ])
+  );
+  await saveProject(dir, project);
+  const built = await buildProject({ dir, project, log: () => {} });
+
+  const nes = boot(built.romPath);
+  const max = nes.cpu.mem[PC_HP_MAX];
+  assert.equal(nes.cpu.mem[PC_HP], max, 'the session should start on full HP');
+
+  assert.ok(talkThrough(nes), 'the first conversation never ended');
+  assert.equal(nes.cpu.mem[PC_HP], max - 3, 'Damage 3 should take exactly three HP');
+
+  assert.ok(talkThrough(nes), 'the second conversation never ended');
+  assert.equal(nes.cpu.mem[PC_HP], max, 'Heal 255 should be a full heal, saturating at the max');
+});
+
+test('Heal revives a party member who has fallen to zero, the same as an inn would', {
+  skip: needsSample
+}, async (t) => {
+  const rom = await buildVariant(t, 'revive', (project) => {
+    project.maps[0].screens[0].entities.push(
+      teller([{ cond: { type: 'none', arg: 0 }, commands: [{ op: 'say', text: 'Rest.' }, { op: 'heal', value: 255 }] }])
+    );
+  });
+  const nes = boot(rom);
+  const max = nes.cpu.mem[PC_HP_MAX];
+  nes.cpu.mem[PC_HP] = 0; // fallen, but still recruited -- pc_in_party is untouched
+
+  assert.ok(talkThrough(nes), 'the conversation never ended');
+  assert.equal(nes.cpu.mem[PC_HP], max, 'a fallen member should have been revived to the max');
+});
+
+test('a killing Damage wipes the whole recruited party and reaches game over ' +
+  'without running the rest of the page', {
+  skip: needsSample
+}, async (t) => {
+  const TOUCHED = 21;
+  const dir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'forge-partywipe-'));
+  t.after(() => fs.promises.rm(dir, { recursive: true, force: true }));
+  const project = await loadProject(SAMPLE);
+  project.maps[0].encounters = { rate: 0, actorIds: [] }; // a wandering monster must not race this
+  project.maps[0].screens[0].entities.push(
+    teller([
+      {
+        cond: { type: 'none', arg: 0 },
+        commands: [{ op: 'say', text: 'Ow.' }, { op: 'damage', value: 255 }, { op: 'setSwitch', switch: TOUCHED }]
+      }
+    ])
+  );
+  await saveProject(dir, project);
+  const built = await buildProject({ dir, project, log: () => {} });
+
+  const nes = boot(built.romPath);
+  // Recruit Iris first, so this is genuinely "everyone recruited," not a
+  // one-member party's coincidence -- the same route the Join test above
+  // proves is walkable both ways.
+  walkTo(nes, 208, 48);
+  assert.ok(talkThrough(nes), 'recruiting Iris never finished');
+  assert.equal(nes.cpu.mem[PARTY_SIZE], 2, 'Iris never joined');
+  walkTo(nes, 112, 112);
+
+  tap(nes, B);
+  for (let i = 0; i < 300 && nes.cpu.mem[BOX_STATE] !== BOX_ENDWAIT; i++) nes.frame();
+  assert.equal(nes.cpu.mem[BOX_STATE], BOX_ENDWAIT, 'the line never finished');
+  tap(nes, A); // dismiss -- resumes the script, and the killing Damage runs
+  for (let i = 0; i < 300 && nes.cpu.mem[BOX_STATE] !== BOX_ENDWAIT; i++) nes.frame();
+
+  assert.equal(nes.cpu.mem[GAME_STATE], ST_GAMEOVER, 'wiping every recruited member should reach game over');
+  assert.equal(nes.cpu.mem[BOX_STATE], BOX_ENDWAIT, 'the game-over message never finished');
+  assert.equal(nes.cpu.mem[PC_HP], 0);
+  assert.equal(nes.cpu.mem[PC_HP + 1], 0, "Iris's HP should have been wiped too");
+  assert.equal(
+    nes.cpu.mem[SWITCHES] & (1 << TOUCHED),
+    0,
+    'the command after the killing Damage ran on a dead session'
+  );
 });
 
 test('enough experience raises a level, and a level restores you', {
@@ -749,6 +897,32 @@ test('the party can poison a monster, and the poison alone finishes it', {
   assert.equal(ended, ST_GAMEPLAY, 'the poison never finished the slime');
   assert.equal(nes.cpu.mem[MON_ALIVE], 0);
   assert.ok(nes.cpu.mem[PC_XP_LO] > 0, 'a poison victory should still pay out');
+});
+
+test('winning a battle clears a status that fight leaves behind, not just one it never had', {
+  skip: needsSample
+}, async (t) => {
+  // A one-hit-point slime dies to the first attack that lands, so the fight
+  // stays short and deterministic regardless of how many extra poison-tick
+  // messages the status under test adds to every party turn.
+  const rom = await buildVariant(t, 'won-poisoned', (project) => {
+    project.sprites.actors[0].hp = 1;
+  });
+  const nes = boot(rom);
+  assert.ok(walkIntoEncounter(nes));
+  waitForMenu(nes);
+  // Poisoned mid-fight, the same way a monster's own Venom would leave it --
+  // battle_end is what is under test here, not how the status was acquired.
+  nes.cpu.mem[PC_STATUS] = 1;
+
+  let state = ST_BATTLE;
+  for (let round = 0; round < 30 && state === ST_BATTLE; round++) {
+    if (nes.cpu.mem[BT_PHASE] === BP_MENU) chooseCommand(nes, BC_FIGHT);
+    else tap(nes, A, 12);
+    state = nes.cpu.mem[GAME_STATE];
+  }
+  assert.equal(state, ST_GAMEPLAY, 'the fight never ended');
+  assert.equal(nes.cpu.mem[PC_STATUS], 0, 'battle_end should clear a status a won fight leaves behind');
 });
 
 // --- an event starting a battle ----------------------------------------------

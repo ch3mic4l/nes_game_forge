@@ -154,6 +154,24 @@ battle_end:
   sta game_state
   lda #0
   sta enc_step
+  ; A status only means anything inside a battle, and battle_begin already
+  ; clears every slot on the way in -- but leaving a won fight's poison
+  ; sitting in pc_status until then is a byte that is stale rather than
+  ; meaningful, the exact shape of trap CLAUDE.md's battle-statuses section
+  ; warns about: harmless only for as long as nothing reads it between here
+  ; and there, which stops being true the day a save record starts
+  ; serializing this array. This routine is in the kernel, unlike most of the
+  ; battle system (see the file header), so the four extra instructions are
+  ; charged against KERNEL_CODE_BYTES rather than the 8 KB the battle bank
+  ; rations -- worth it for making "never leaves a battle" true by
+  ; construction instead of an invariant every future reader has to remember
+  ; not to trust.
+  ldx #0
+battle_end_status:
+  sta pc_status,x
+  inx
+  cpx #MAX_PARTY
+  bne battle_end_status
   jsr redraw_screen
   lda #NO_ENTITY
   sta pending_ent
@@ -235,6 +253,81 @@ battle_end_no_restore:
   sta game_state
   jmp script_resume
 battle_end_gameplay:
+  rts
+
+; ---------------------------------------------------- the party's health
+
+; pc_hp/pc_hp_max/pc_in_party are plain kernel RAM -- the battle bank writes
+; them, but nothing about reading or saturating them needs the bank switched
+; in, so the Heal/Damage commands touch them directly here rather than
+; growing call_battle a fourth entry point. Both are the RPG side of
+; combat.asm's gain_hearts/lose_hearts: the same saturating arithmetic, over
+; every recruited slot instead of the one action-mode meter.
+
+; A = HP to restore to every recruited party member, saturating at each
+; member's own max -- and past zero, since Heal is the field's inn and an inn
+; revives a fallen member the same way it tops off a standing one; there is
+; no separate command for the difference. pc_status is left alone: nothing on
+; the field can carry a status into this to begin with -- battle_begin and
+; battle_end both clear it, so a status never survives outside a battle to be
+; healed away here. See CLAUDE.md's battle statuses.
+party_heal:
+  sta bt_tmp
+  ldx #0
+party_heal_slot:
+  lda pc_in_party,x
+  beq party_heal_next
+  lda pc_hp,x
+  clc
+  adc bt_tmp
+  bcs party_heal_max         ; wrapped past 255: certainly over this member's max
+  cmp pc_hp_max,x
+  bcc party_heal_store
+party_heal_max:
+  lda pc_hp_max,x
+party_heal_store:
+  sta pc_hp,x
+party_heal_next:
+  inx
+  cpx #MAX_PARTY
+  bne party_heal_slot
+  rts
+
+; A = damage to deal to every recruited party member, saturating at 0.
+; Returns with Z set when every recruited member is now at zero -- a field
+; party wipe, which nothing checked for before this command existed;
+; battle_finish is the only other place that asks the same question, over
+; the same bytes, and the two must not disagree about what "everyone down"
+; means. party_size guards an empty party (nobody joined yet) from reading as
+; a wipe of nobody.
+party_damage:
+  sta bt_tmp
+  lda party_size
+  beq party_damage_none
+  lda #0
+  sta bt_tmp2                ; any recruited member still standing?
+  ldx #0
+party_damage_slot:
+  lda pc_in_party,x
+  beq party_damage_next
+  lda pc_hp,x
+  sec
+  sbc bt_tmp
+  bcs party_damage_store
+  lda #0                     ; more damage than this member's hp left
+party_damage_store:
+  sta pc_hp,x
+  beq party_damage_next
+  lda #1
+  sta bt_tmp2
+party_damage_next:
+  inx
+  cpx #MAX_PARTY
+  bne party_damage_slot
+  lda bt_tmp2
+  rts                        ; Z set: nobody recruited is left standing
+party_damage_none:
+  lda #1                     ; nothing to wipe -- not the Z-set answer
   rts
 
   .endif

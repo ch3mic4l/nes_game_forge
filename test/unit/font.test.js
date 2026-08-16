@@ -117,6 +117,58 @@ test('a damage metatile only counts once it is actually painted somewhere', () =
   assert.equal(projectUsesCombat(project), true);
 });
 
+test('a live Damage command counts as combat in an action project, but not in an RPG', () => {
+  const damageEvent = {
+    pages: [{ cond: { type: 'none', arg: 0 }, commands: [{ op: 'damage', value: 3 }] }]
+  };
+
+  const project = createProject('Trapper');
+  project.maps[0].screens[0].entities.push({ actorId: 0, x: 0, y: 0, props: { event: damageEvent } });
+  assert.equal(projectUsesCombat(project), true, 'a scripted Damage should reserve the hearts');
+
+  // Structurally identical event, but the RPG's Damage lands on pc_hp
+  // (engine/rpg.asm's party_damage), not player_hp -- so it has nothing to
+  // do with the hearts HUD this predicate reserves art for.
+  const rpg = createProject('Trapper RPG', 'rpg');
+  rpg.maps[0].screens[0].entities.push({ actorId: 0, x: 0, y: 0, props: { event: damageEvent } });
+  assert.equal(projectUsesCombat(rpg), false, "an RPG's Damage command does not touch player_hp");
+});
+
+test('a switched-off Damage command does not turn combat on', () => {
+  const project = createProject('Trapper');
+  project.maps[0].screens[0].entities.push({
+    actorId: 0,
+    x: 0,
+    y: 0,
+    props: {
+      event: { pages: [{ cond: { type: 'none', arg: 0 }, commands: [{ op: 'damage', value: 3, off: true }] }] }
+    }
+  });
+  assert.equal(projectUsesCombat(project), false, 'a switched-off command must not reserve art the ROM will not use');
+});
+
+test('a Damage command left at its default value of 0 does not turn combat on', () => {
+  const project = createProject('Trapper');
+  // An author who drops a Damage command onto a page and has not typed a
+  // number yet gets op: 'damage' with no value set at all -- the same shape
+  // defaultCommand (renderer/forges/map/events.js) creates, and the same
+  // shape a hand-edited { op: 'damage' } with no value key is. It compiles to
+  // OP_DAMAGE, 0, which subtracts nothing, so it must not reserve the hearts.
+  project.maps[0].screens[0].entities.push({
+    actorId: 0,
+    x: 0,
+    y: 0,
+    props: { event: { pages: [{ cond: { type: 'none', arg: 0 }, commands: [{ op: 'damage' }] }] } }
+  });
+  assert.equal(projectUsesCombat(project), false, 'a Damage of 0 cannot hurt the player');
+
+  // Raising it off zero is the same as any other damage source appearing --
+  // consistent with a metatile being painted or a damaging actor being added,
+  // not a new special case.
+  project.maps[0].screens[0].entities[0].props.event.pages[0].commands[0].value = 2;
+  assert.equal(projectUsesCombat(project), true, 'a nonzero Damage should reserve the hearts');
+});
+
 test('an event with no dialogue still needs the font', () => {
   const project = createProject('Eventful');
   project.maps[0].screens[0].entities.push({

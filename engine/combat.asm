@@ -1,14 +1,23 @@
 ; combat.asm -- the player's health in an action game.
 ;
-; Three things can take a heart: an actor whose damage is more than zero walking
-; into you, a metatile the Map Forge marked Damage, and nothing else. All three
-; go through hurt_player, so the invincible window, the knockback and the way a
-; game ends have one implementation rather than three.
+; Three things can take a heart through hurt_player: an actor whose damage is
+; more than zero walking into you, a metatile the Map Forge marked Damage, and
+; nothing else -- the invincible window, the knockback and the way a game ends
+; are one implementation because all three share it. A scripted Damage command
+; is a fourth thing that can take a heart, and deliberately does not go through
+; hurt_player: a trap that says "you take 2 hearts" has no attacker to knock
+; back and must land every time, iframes included, so script_op_damage
+; (engine/script.asm) calls lose_hearts directly -- the saturating store and
+; the death check hurt_player itself falls into, factored out so there is
+; still one implementation of what losing a heart means, not two that can
+; disagree. A scripted Heal is the only way a heart is ever given back outside
+; a new game, through gain_hearts, its saturating-add mirror.
 ;
 ; None of this is conditional on the project: it is a few hundred bytes and the
 ; alternative is two engines. What *is* conditional is whether it can ever fire
-; -- COMBAT_ENABLED is zero when no actor deals damage and no Damage metatile is
-; painted anywhere, and then the hearts are not drawn and nothing calls in here.
+; -- COMBAT_ENABLED is zero when no actor deals damage, no Damage metatile is
+; painted anywhere and no live Damage command is compiled in, and then the
+; hearts are not drawn and nothing calls in here.
 
 ; Start a new life: full hearts, an empty bag, and every switch and variable back
 ; to zero. Run at boot and again whenever a game-over screen is dismissed, so
@@ -48,6 +57,20 @@ init_session_vars:          ; are the same kind of state and outlive a screen
   .if BATTLE_ENABLED
   lda #0
   sta enc_step
+  ; A status only means anything inside a battle -- battle_begin and
+  ; battle_end (engine/rpg.asm) both already hold that at the two ordinary
+  ; edges of one, but a defeat is not an ordinary edge: battle_finish jumps
+  ; straight to player_died on a loss, so battle_end never runs and a status
+  ; a losing fight left behind survives the game over. restart_game already
+  ; calls in here for everything else "new game" means, so this is that
+  ; boundary's own business rather than a third clear bolted onto the defeat
+  ; path specifically -- one more exit a status must never survive would be
+  ; exactly how this bug happened the first time.
+  ldx #MAX_PARTY-1
+init_session_status:
+  sta pc_status,x
+  dex
+  bpl init_session_status
   lda #BE_INIT              ; the party, out of the tables in the battle bank
   jmp call_battle
   .endif
@@ -59,23 +82,64 @@ init_session_vars:          ; are the same kind of state and outlive a screen
 hurt_player:
   ldy player_iframes
   bne hurt_player_done
-  sta tmp
-  lda player_hp
-  sec
-  sbc tmp
-  bcs hurt_player_store
-  lda #0                    ; more damage than hearts left
-hurt_player_store:
-  sta player_hp
+  pha                        ; hearts to lose -- knockback_dir clobbers A
   lda #IFRAME_TIME
   sta player_iframes
   jsr knockback_dir
   lda #KNOCKBACK_TIME
   sta kb_timer
+  pla
+  jsr lose_hearts
   lda player_hp
   bne hurt_player_done
   jmp player_died
 hurt_player_done:
+  rts
+
+; A = hearts to lose, saturating at 0. Always returns -- the saturating store
+; is the one implementation of what losing hearts means, shared by
+; hurt_player above and script_op_damage (engine/script.asm), but *deciding*
+; the game is over from it is each caller's own job, done with its own jmp
+; to player_died right after the jsr returns and its own read of player_hp.
+; lose_hearts jumping there itself, on top of being called with jsr, would
+; leave that jsr's own return address sitting unpopped on the stack: nothing
+; would ever get around to using it *incorrectly* until the next unrelated
+; rts happened to pop it, which turned out to be one deep inside the message
+; box's own call chain -- control returned into the middle of
+; script_op_damage as though the jsr to this routine had simply finished,
+; and the page carried on past a killing hit as though it had never landed.
+; That is the failure combat.test.js's killing-Damage test caught, and the
+; reason every caller decides player_died for itself instead of trusting a
+; callee to jump there on its behalf.
+lose_hearts:
+  sta tmp
+  lda player_hp
+  sec
+  sbc tmp
+  bcs lose_hearts_store
+  lda #0                     ; more damage than hearts left
+lose_hearts_store:
+  sta player_hp
+  rts
+
+; A = hearts to restore, saturating at MAX_HEARTS. The Heal command's own
+; implementation -- nothing else in the base engine ever gives a heart back
+; outside a new game, so this has no other caller. Two comparisons, not one:
+; the 8-bit add itself can carry past 255 before the sum is ever compared
+; against a MAX_HEARTS far below that, and a value clamped to a byte at
+; authoring time can still be handed here as large as 255.
+gain_hearts:
+  sta tmp
+  lda player_hp
+  clc
+  adc tmp
+  bcs gain_hearts_max         ; wrapped past 255: certainly over MAX_HEARTS
+  cmp #MAX_HEARTS+1
+  bcc gain_hearts_store
+gain_hearts_max:
+  lda #MAX_HEARTS
+gain_hearts_store:
+  sta player_hp
   rts
 
 ; Which way to be thrown: away from the actor in slot X, on whichever axis it is

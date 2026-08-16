@@ -327,3 +327,94 @@ test('a restart clears the switches and the variables, so a one-time chest refil
     'the variables survived a restart'
   );
 });
+
+// --- scripted heal and damage ------------------------------------------------
+//
+// engine/combat.asm's gain_hearts/lose_hearts, reached from the field through
+// OP_HEAL/OP_DAMAGE -- an npc's own event, not a hazard, so nothing here goes
+// through hurt_player: no invincible window, no knockback.
+
+/** A static npc, cloned off the sample's own actor 0 so it has real art. */
+function teller(project, pages) {
+  const id = project.sprites.actors.length;
+  project.sprites.actors.push({
+    ...structuredClone(project.sprites.actors[0]),
+    id,
+    name: 'Teller',
+    behavior: 'npc',
+    damage: 0
+  });
+  return { actorId: id, x: START_X, y: START_Y - 16, props: { event: { pages } } };
+}
+
+/** Talk (B), then press through every page until the conversation ends. */
+function talkThrough(nes, budget = 20) {
+  tap(nes, B);
+  for (let press = 0; press < budget; press++) {
+    if (nes.cpu.mem[GAME_STATE] === ST_GAMEPLAY) return true;
+    for (let frame = 0; frame < 300; frame++) {
+      if (nes.cpu.mem[BOX_STATE] === BOX_ENDWAIT || nes.cpu.mem[GAME_STATE] === ST_GAMEPLAY) break;
+      nes.frame();
+    }
+    if (nes.cpu.mem[GAME_STATE] === ST_GAMEPLAY) return true;
+    tap(nes, A);
+    run(nes, 20);
+  }
+  return nes.cpu.mem[GAME_STATE] === ST_GAMEPLAY;
+}
+
+test('scripted Heal and Damage change player_hp, saturating at the max', {
+  skip: !hasRom && 'run `npm run sample` first'
+}, async (t) => {
+  const TOUCHED = 0;
+  const { nes } = await buildWith(t, (project) => {
+    project.maps[0].screens[0].entities.push(
+      teller(project, [
+        {
+          cond: { type: 'switchOff', arg: TOUCHED },
+          commands: [{ op: 'say', text: 'Ow.' }, { op: 'damage', value: 1 }, { op: 'setSwitch', switch: TOUCHED }]
+        },
+        { cond: { type: 'none', arg: 0 }, commands: [{ op: 'say', text: 'There.' }, { op: 'heal', value: 255 }] }
+      ])
+    );
+  });
+
+  assert.equal(nes.cpu.mem[PLAYER_HP], MAX_HEARTS);
+  assert.ok(talkThrough(nes), 'the first conversation never ended');
+  assert.equal(nes.cpu.mem[PLAYER_HP], MAX_HEARTS - 1, 'Damage 1 should take exactly one heart');
+  assert.equal(nes.cpu.mem[PLAYER_IFRAMES], 0, 'a scripted Damage should not grant an invincible window');
+
+  assert.ok(talkThrough(nes), 'the second conversation never ended');
+  assert.equal(nes.cpu.mem[PLAYER_HP], MAX_HEARTS, 'Heal 255 should be a full heal, saturating at the max');
+});
+
+test('a killing Damage reaches game over, and the rest of the page does not run', {
+  skip: !hasRom && 'run `npm run sample` first'
+}, async (t) => {
+  const TOUCHED = 0;
+  const { nes } = await buildWith(t, (project) => {
+    project.maps[0].screens[0].entities.push(
+      teller(project, [
+        {
+          cond: { type: 'none', arg: 0 },
+          commands: [{ op: 'say', text: 'Ow.' }, { op: 'damage', value: MAX_HEARTS }, { op: 'setSwitch', switch: TOUCHED }]
+        }
+      ])
+    );
+  });
+
+  tap(nes, B); // talk
+  for (let i = 0; i < 300 && nes.cpu.mem[BOX_STATE] !== BOX_ENDWAIT; i++) nes.frame();
+  assert.equal(nes.cpu.mem[BOX_STATE], BOX_ENDWAIT, 'the line never finished');
+  tap(nes, A); // dismiss -- resumes the script, and the killing Damage runs
+  for (let i = 0; i < 300 && nes.cpu.mem[BOX_STATE] !== BOX_ENDWAIT; i++) nes.frame();
+
+  assert.equal(nes.cpu.mem[GAME_STATE], ST_GAMEOVER, 'a killing scripted Damage should reach game over');
+  assert.equal(nes.cpu.mem[PLAYER_HP], 0);
+  assert.equal(nes.cpu.mem[BOX_STATE], BOX_ENDWAIT, 'the game-over message never finished');
+  assert.equal(
+    nes.cpu.mem[SWITCHES] & (1 << TOUCHED),
+    0,
+    'the command after the killing Damage ran on a dead session'
+  );
+});

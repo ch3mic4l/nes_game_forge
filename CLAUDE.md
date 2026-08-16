@@ -352,6 +352,28 @@ counters, all 64 switches and all 16 variables — and both boot and the game-ov
 it. Where a game
 over *lands* is `restart_game`: the title if there is one, a new game if there is not.
 
+**`Heal`/`Damage` mean whichever of the engine's two health models the build actually has**,
+decided once, at assemble time, by `BATTLE_ENABLED` — never a third model invented for the
+command. In an action project that is `player_hp`, through `combat.asm`'s `gain_hearts`/
+`lose_hearts`; in an RPG it is every recruited member's `pc_hp` (`$0398+`, plain kernel RAM, no
+`call_battle` needed to reach it — see "The battle system" below), through `rpg.asm`'s
+`party_heal`/`party_damage`. `player_hazard` still takes a heart off `player_hp` on a Damage
+metatile even in an RPG — a pre-existing asymmetry with `entity_contact`'s own `BATTLE_ENABLED`
+divert, left alone here — but the scripted commands do not add a third disagreement of their own:
+an RPG's `Damage` never touches `player_hp`. `lose_hearts` and `party_damage` both end a killing
+hit with a `jmp` to `player_died` rather than a `jsr` that returns into `script_next` — the same
+trap `script_op_call`'s `NO_COMMON_EVENT_SLOT` stop already had to avoid — because a page that
+went on to run its next command over a dead session would read as "damage that sometimes forgets
+to end the game." `script_op_damage` deliberately does not route through `hurt_player`: a trap has
+no attacker for the knockback and must land regardless of the invincible window a physical hit
+would still be honouring. `Heal 255` is a full heal with no separate "inn" vocabulary, and — the
+one place the two models genuinely diverge — revives a fallen RPG party member the way an inn
+would, where `cast_heal` in battle never has to ask the question because it only ever heals
+whoever is already taking their turn. `projectUsesCombat` (`shared/font.js`) counts a live
+`Damage` command in an action project the same way it counts a damage actor or a painted metatile,
+because an author whose only damage source is this command still needs the hearts drawn — but not
+in an RPG, where `Damage` never reaches `player_hp` and so has nothing to do with that reservation.
+
 **What makes an event run is a byte of the entity record**, `EVENT_TRIGGERS` in
 `shared/project.js` in wire order, `TRIG_*` in `engine/constants.asm` at the other end. `interact`
 is index 0 because it is what every event did before the byte existed, and **a trigger is a choice
@@ -540,6 +562,12 @@ everything else in `engine/battle.asm` + `battleui.asm` + `battleturn.asm` on th
 Calling *out* of the bank is free — the kernel is permanently mapped — so the battle system uses
 `vram_open`/`vram_push`, `draw_metasprite` and `add_item` directly.
 
+Not everything the battle bank writes needs the bank switched in to *read*: `pc_hp`, `pc_hp_max`
+and `pc_in_party` (`$0398+`) are plain kernel RAM like any other engine array, so `rpg.asm`'s
+`party_heal`/`party_damage` — the field's `Heal`/`Damage` commands, on an RPG build — touch them
+directly rather than growing `call_battle` a fourth entry point for what is, on this side, only a
+saturating loop over four bytes.
+
 Three shapes worth keeping:
 
 - **Combatants are one index space**: 0-3 party, 4-7 monsters. `turn_order`, targeting, the cursor
@@ -552,8 +580,20 @@ Three shapes worth keeping:
 - **Poison is a status bit, ticked by the message flow.** `pc_status`/`mon_slot_status` carry it,
   and the bite lands in `battle_message_done`: after the victim's own line is dismissed, one tick
   of damage and one more line, with `bt_ptick` marking that second line so dismissing *it*
-  advances the turn instead of poisoning twice. Statuses are cleared when a battle starts and
-  never leave it; a heal or a potion cures the caster's own.
+  advances the turn instead of poisoning twice. A status never survives past the battle that gave
+  it to a party member, on any of the three ways a battle can stop mattering: `battle_begin` and
+  `battle_end` (`engine/rpg.asm`) each zero `pc_status` for every party slot, covering a fight
+  entered and a fight left normally — including a fight the party won, where `battle_end` not
+  clearing it used to leave a winning member's poison sitting on the field, inert only because
+  nothing out there reads it, until the next battle's own reset overwrote it. A loss is the third
+  way and does not go through `battle_end` at all: `battle_finish` (`engine/battleturn.asm`) jumps
+  straight to `player_died` on defeat, so the clear for that path lives in `init_session`
+  (`engine/combat.asm`) instead — the single definition of "new game" every game over already
+  runs through via `restart_game`, rather than a clear bolted onto the defeat path on its own.
+  Nothing currently depends on any of this — nothing on the field reads `pc_status` — but a
+  stale-but-harmless byte stops being harmless the day a save record starts serializing this
+  array, so the invariant is enforced at every exit rather than merely documented at one of them.
+  A heal or a potion cures the caster's own, mid-battle.
 
 Anything the engine would need a multiply for is a table instead: `main/build/battletables.js`
 precomputes per-level stats and the experience curve, and pads every name to `RPG_LIMITS.nameLength`

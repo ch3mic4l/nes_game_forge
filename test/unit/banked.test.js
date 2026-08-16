@@ -181,13 +181,16 @@ test(
     project.maps[0].encounters = { rate: 0, actorIds: [] };
     // Push Iris's map into a PRG bank the code region does not occupy — see
     // the comment above. ~26 screens fill one region on this mapper; three
-    // full 4x4 maps (48) comfortably clears the one region left in the code
-    // region's own 16 KB bank.
+    // 4x3 maps (36) comfortably clears the one region left in the code
+    // region's own 16 KB bank, with margin kept deliberately tighter than an
+    // earlier version's 4x4 (48) once the kernel grew enough to make that
+    // padding itself the thing exceeding the lookup-table budget this test
+    // is not about.
     for (let n = 0; n < 3; n++) {
       const padding = createMap(90 + n, `Padding ${n}`);
       padding.gridW = 4;
-      padding.gridH = 4;
-      padding.screens = Array.from({ length: 16 }, () => createScreen());
+      padding.gridH = 3;
+      padding.screens = Array.from({ length: 12 }, () => createScreen());
       padding.tilesetId = project.maps[0].tilesetId;
       project.maps.unshift(padding);
     }

@@ -7,7 +7,7 @@
 
 import { BLANK_TILE } from './chr.js';
 import { normalizeSong } from './audio.js';
-import { allCommands, choiceOptionsSlice, compiledPages, liveCommands, projectEvents } from './eventrules.js';
+import { allCommands, choiceOptionsSlice, compiledPages, damageAmount, liveCommands, projectEvents } from './eventrules.js';
 import {
   DEFAULT_MAPPER,
   resolveMapper,
@@ -342,14 +342,34 @@ export const EVENT_COMMANDS = [
   // ever reaches the command after this one when the player won. There is no
   // lose branch to author: whatever should happen on victory is just the
   // commands that follow, the same way a page after a switch check is.
-  { id: 'battle', label: 'Start a battle', args: ['monsters'] }
+  { id: 'battle', label: 'Start a battle', args: ['monsters'] },
+  // Whole-party HP, saturating at 0 and at the max -- the same saturation
+  // addVar/subVar already apply, and for the same reason: a counter that
+  // wraps reads as something that should not have happened. Which HP this
+  // means depends on the build: player_hp (hearts) in an action project,
+  // every recruited pc_hp in an RPG, decided at assemble time by
+  // BATTLE_ENABLED (engine/script.asm's script_op_heal/script_op_damage) --
+  // there is no third health model for a script to invent, and neither
+  // command is RPG-only the way join and battle are, so both are always
+  // offered. `Heal 255` is a full heal with no separate "inn" vocabulary,
+  // and revives a fallen RPG party member the same way an inn would.
+  { id: 'heal', label: 'Heal', args: ['value'] },
+  { id: 'damage', label: 'Damage', args: ['value'] }
 ];
 
 // A command can be switched off while you work out whether you want it, the way
 // you would comment a line out. What that means lives in `eventrules.js`, which
 // `font.js` needs as well — re-exported here so the schema stays the one place
 // to look for it.
-export { enabledCommands, compiledPages, allCommands, choiceOptionsSlice, liveCommands, projectEvents } from './eventrules.js';
+export {
+  enabledCommands,
+  compiledPages,
+  allCommands,
+  choiceOptionsSlice,
+  damageAmount,
+  liveCommands,
+  projectEvents
+} from './eventrules.js';
 
 /**
  * The subset engine/script.asm can actually run. Everything in EVENT_COMMANDS is
@@ -374,7 +394,9 @@ export const IMPLEMENTED_COMMANDS = new Set([
   'choice',
   'call',
   'music',
-  'battle'
+  'battle',
+  'heal',
+  'damage'
 ]);
 
 /**
@@ -976,6 +998,13 @@ function normalizeEventCommand(raw, depth = 0) {
     // else the event went on to do. `actorByte` (main/build/textcompile.js)
     // is the other half: NO_ACTOR for null, the same as songByte's NO_SONG.
     else if (arg === 'actor') out.actor = raw?.actor === null || raw?.actor === undefined ? null : clamp(raw?.actor, 0, 255, 0);
+    // Heal/Damage's value goes through damageAmount (shared/eventrules.js)
+    // rather than the generic clamp below: encodeCommand and
+    // projectUsesCombat (shared/font.js) both have to agree with whatever
+    // this saves, so it is the single clamp all of them share rather than a
+    // second one written here that could round a fractional value
+    // differently than they do.
+    else if (arg === 'value' && (command.id === 'heal' || command.id === 'damage')) out.value = damageAmount(raw?.value);
     else out[arg] = clamp(raw?.[arg], 0, 255, 0);
   }
   return out;

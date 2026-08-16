@@ -619,6 +619,12 @@ OP_BATTLE   = $0F           ; [MAX_MONSTERS actor ids, NO_ACTOR-padded] --
                             ; Only assembled where BATTLE_ENABLED is, the same
                             ; as OP_JOIN: an action build has no battle bank to
                             ; call into, so the opcode has nowhere to dispatch
+OP_HEAL     = $10           ; [amount] -- unlike OP_JOIN/OP_BATTLE, always
+OP_DAMAGE   = $11           ; assembled: gain_hearts/lose_hearts (combat.asm)
+                            ; or party_heal/party_damage (rpg.asm), decided by
+                            ; BATTLE_ENABLED inside script_op_heal/
+                            ; script_op_damage rather than at dispatch, because
+                            ; neither command is RPG-only the way Join is
 ; Punctuation rather than a command: the compiler emits it, nothing authors it,
 ; and it is numbered out of the way of EVENT_COMMANDS so the two orders cannot
 ; grow into each other. It ends a then-branch by stepping over the else-branch.

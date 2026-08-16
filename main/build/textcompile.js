@@ -42,6 +42,7 @@ import {
   liveCommonEvents,
   commonEventId
 } from '../../shared/project.js';
+import { damageAmount } from '../../shared/eventrules.js';
 
 // String control codes, matching engine/constants.asm.
 export const TXT_END = 0x00;
@@ -243,6 +244,15 @@ export function compileText(project) {
       case 'addVar':
       case 'subVar':
         return [opIndex(command.op), byte(command.variable, RPG_LIMITS.variables - 1), byte(command.value)];
+      // damageAmount (shared/eventrules.js) rather than the local byte()
+      // above: normalizeEventCommand, projectUsesCombat (shared/font.js) and
+      // the Map Forge's own number field all have to agree with this on the
+      // same question, so this is the one place every one of them derives a
+      // Heal/Damage value from, not four clamps that can drift.
+      case 'heal':
+        return [opIndex('heal'), damageAmount(command.value)];
+      case 'damage':
+        return [opIndex('damage'), damageAmount(command.value)];
       case 'join':
         return [opIndex('join'), byte(command.member, 3)];
       case 'call': {

@@ -140,9 +140,17 @@ script_run_music:
 script_run_battle:
   .if BATTLE_ENABLED
   cmp #OP_BATTLE
-  bne script_run_bad
+  bne script_run_heal
   jmp script_op_battle
   .endif
+script_run_heal:
+  cmp #OP_HEAL
+  bne script_run_damage
+  jmp script_op_heal
+script_run_damage:
+  cmp #OP_DAMAGE
+  bne script_run_bad
+  jmp script_op_damage
 script_run_bad:
   jmp script_finish         ; an opcode this engine cannot run stops the event
                             ; rather than being reinterpreted as another one
@@ -296,6 +304,51 @@ script_op_battle_slot:
   jsr script_skip
   jmp battle_begin
   .endif
+
+; [op, value]. Heals or damages the whole party -- always assembled, unlike
+; OP_JOIN/OP_BATTLE just above, because neither command is RPG-only. Which
+; health model that means is decided here, at assemble time, by the same
+; BATTLE_ENABLED flag: every recruited pc_hp in an RPG (party_heal/
+; party_damage, engine/rpg.asm) or the action game's one player_hp meter
+; (gain_hearts/lose_hearts, engine/combat.asm) otherwise -- there is no
+; third model for a script to invent, and the two must not silently disagree
+; about whether the player is alive.
+script_op_heal:
+  jsr script_arg
+  .if BATTLE_ENABLED
+  jsr party_heal
+  .endif
+  .if !BATTLE_ENABLED
+  jsr gain_hearts
+  .endif
+  jmp script_next2
+
+; A killing Damage must stop the event exactly where it happens, not carry on
+; into whatever the page says next -- the same "must be a jmp, never a jsr
+; that returns into script_next" shape script_op_call's NO_COMMON_EVENT_SLOT
+; stop already is. Both sides jsr a routine that only ever saturates and
+; returns (party_damage / lose_hearts), then decide death themselves, right
+; here, with their own jmp to player_died -- neither callee may jump there
+; on our behalf, because the jsr that reached it would leave its own return
+; address sitting on the stack for some unrelated rts to pop later. In an
+; RPG, party_damage's own Z flag says whether that hit wiped the party;
+; lose_hearts leaves the answer in player_hp for the same reason gain_hearts
+; does, so this side reads it back instead of carrying its own flag.
+script_op_damage:
+  jsr script_arg
+  .if BATTLE_ENABLED
+  jsr party_damage
+  bne script_op_damage_done  ; someone recruited is still standing
+  jmp player_died
+  .endif
+  .if !BATTLE_ENABLED
+  jsr lose_hearts
+  lda player_hp
+  bne script_op_damage_done
+  jmp player_died
+  .endif
+script_op_damage_done:
+  jmp script_next2
 
 ; ------------------------------------------------------------------- calls
 ;

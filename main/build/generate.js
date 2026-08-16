@@ -137,25 +137,35 @@ const TITLE_PROMPT_ROW = 19;
 // an earlier version of this comment measured sample-rpg with its title
 // disabled and quoted a number 220 bytes short of the real ceiling, which
 // checkCapacity then handed straight to a "Bank overflow" from the assembler
-// instead of catching itself. 6780 bytes as measured by building sample-rpg on
-// mapper 30 with a title screen added, the message box, the event runner with
-// its variables, branches, questions, triggers, common-event calls (including
-// script_op_call's own NO_COMMON_EVENT stop, separate from the CALL_STACK_DEPTH
-// skip it falls through to), Play music and Start a battle all in, and action
-// combat and the RPG's kernel-side half (script_op_battle, and battle_end's
-// script-resume and record-identity restore paths — not the battle system
-// itself, which lives in a switchable bank, the whole reason it can exist at
-// all). That leaves 20 bytes of slack: the next thing to grow the kernel
-// measures again and raises this, rather than assuming the number below is
-// generous.
+// instead of catching itself. 6952 bytes as last measured by building
+// sample-rpg on mapper 30 with a title screen added, the message box, the
+// event runner with its variables, branches, questions, triggers,
+// common-event calls (including script_op_call's own NO_COMMON_EVENT stop,
+// separate from the CALL_STACK_DEPTH skip it falls through to), Play music,
+// Start a battle, and Heal/Damage (script_op_heal/script_op_damage,
+// dispatched unconditionally since neither is RPG-only, plus gain_hearts/
+// lose_hearts and the RPG's own party_heal/party_damage — each jsr'd and
+// always returning, with the caller doing its own jmp to player_died, never
+// the callee) all in, and action combat and the RPG's kernel-side half
+// (script_op_battle, battle_end's script-resume and record-identity restore
+// paths, and init_session's own status clear on the defeat path — not the
+// battle system itself, which lives in a switchable bank, the whole reason
+// it can exist at all). That leaves 20 bytes of slack: the next thing to
+// grow the kernel measures again and raises this, rather than assuming the
+// number below is generous.
 //
-// test/unit/kernelbytes.test.js builds exactly that worst case, on every
-// RPG-capable board, and asserts the real measurement stays inside this
-// constant, so a future regression is a failing test rather than a silent
-// promise the assembler later refuses. Re-measure and raise this if the engine
-// grows: build sample-rpg with a title on mapper 30, take nesasm's usage for
-// the bank holding `reset`, and subtract `reset - $C000`.
-export const KERNEL_CODE_BYTES = 6800;
+// That 6952 figure is quoted here only to explain what a worst-case build
+// contains — it is a hand-copied snapshot, not the source of truth, and it
+// has already gone stale against this constant three times as the kernel
+// grew. test/unit/kernelbytes.test.js is the source of truth: it re-measures
+// all three RPG-capable boards from a real build on every run and fails the
+// moment any of them exceeds the constant below, so it cannot go stale the
+// way a comment can. Trust its output over this paragraph's number if the
+// two ever disagree, and re-measure by actually running it rather than
+// hand-editing either — build sample-rpg with a title on mapper 30, take
+// nesasm's usage for the bank holding `reset`, and subtract `reset - $C000`,
+// or just read what the test itself reports.
+export const KERNEL_CODE_BYTES = 6972;
 const PLAYER_FRAMES = 8; // 4 directions x 2 walk frames
 const PLAYER_TILES = PLAYER_FRAMES * 4;
 

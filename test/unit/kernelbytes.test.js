@@ -36,7 +36,7 @@ const hasNesasm = spawnSync('nesasm', [], { stdio: 'ignore' }).error?.code !== '
 // RPG may target at all — asserting the ceiling on only one of them assumes
 // today's ordering (UNROM 512 highest) holds forever, and an eight-byte
 // margin over the runner-up (MMC3) is not a margin a future change need
-// respect. Measured: UNROM 512 6780, MMC3 6772, MMC1 6583 — three boards,
+// respect. Measured: UNROM 512 6952, MMC3 6944, MMC1 6755 — three boards,
 // each build well under 50ms, so iterating all of them costs nothing worth
 // trimming for.
 const CAPABLE_MAPPERS = SUPPORTED_MAPPERS.filter(rpgCapable);

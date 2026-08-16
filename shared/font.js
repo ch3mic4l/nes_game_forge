@@ -10,7 +10,7 @@
 // Free of DOM and Node APIs: imported by the main process, the renderer and
 // node:test alike.
 
-import { compiledPages, projectEvents } from './eventrules.js';
+import { compiledPages, damageAmount, liveCommands, projectEvents } from './eventrules.js';
 
 // --------------------------------------------------------------- reserved map
 
@@ -325,10 +325,35 @@ export function projectUsesCombat(project) {
   const damaging = new Set(
     (project.metatiles ?? []).filter((tile) => tile.collision === 'damage').map((tile) => tile.id)
   );
-  if (!damaging.size) return false;
-  for (const map of project.maps ?? []) {
-    for (const screen of map.screens ?? []) {
-      if (screen.metatiles.some((id) => damaging.has(id))) return true;
+  if (damaging.size) {
+    for (const map of project.maps ?? []) {
+      for (const screen of map.screens ?? []) {
+        if (screen.metatiles.some((id) => damaging.has(id))) return true;
+      }
+    }
+  }
+  // A scripted Damage command reaches player_hp/hearts only in an action
+  // project -- in an RPG it lands on pc_hp instead (engine/script.asm's
+  // script_op_damage), which this predicate has nothing to do with:
+  // BATTLE_ENABLED reserves the party art on its own. Only a command that
+  // survives to the ROM counts, the same rule projectUsesText applies just
+  // above -- via liveCommands rather than compiledPages, because a live
+  // Damage sitting inside a switched-off branch would be exactly the "looks
+  // functional, does nothing" case this codebase refuses to charge for. And
+  // only one that would actually emit a nonzero byte: a Damage dropped onto a
+  // page and left at its untouched default of 0 subtracts nothing, and
+  // damageAmount (shared/eventrules.js) is the same clamp encodeCommand
+  // (main/build/textcompile.js) applies to what it writes, so this cannot
+  // reserve the hearts for a command the compiled ROM leaves harmless. Heal
+  // never enters this predicate at all -- it cannot hurt anybody, at any
+  // value.
+  if (project.project?.gameType !== 'rpg') {
+    for (const event of projectEvents(project)) {
+      for (const page of compiledPages(event)) {
+        for (const command of liveCommands(page.commands, BOX_ROWS)) {
+          if (command.op === 'damage' && damageAmount(command.value) > 0) return true;
+        }
+      }
     }
   }
   return false;

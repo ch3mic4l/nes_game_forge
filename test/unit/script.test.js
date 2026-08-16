@@ -2586,6 +2586,42 @@ test('an unresolvable call carries NO_COMMON_EVENT_SLOT and never runs common ev
   );
 });
 
+test('a fractional Damage value compiles to the same byte before and after normalization', () => {
+  // damageAmount (shared/eventrules.js) is the single clamp normalizeEventCommand,
+  // encodeCommand and projectUsesCombat all share now -- before it was one function
+  // per caller, and they disagreed on a value like this: normalizeEventCommand
+  // rounded 0.6 up to 1 while encodeCommand's own byte() truncated it to 0, so a
+  // project holding an un-normalized 0.6 (hand-edited JSON, or written by a later
+  // version) compiled one way live and a different way after a save round-trip
+  // put it through normalizeProject first -- exactly the kind of thing
+  // buildProject compiling the project the app is holding, rather than one freshly
+  // normalized, is supposed to be safe against.
+  const project = createProject('Fractional');
+  project.sprites.actors = [{ name: 'Trap', behavior: 'npc' }];
+  project.maps[0].screens[0].entities = [
+    {
+      actorId: 0,
+      x: 0,
+      y: 0,
+      props: { event: { pages: [{ cond: { type: 'none', arg: 0 }, commands: [{ op: 'damage', value: 0.6 }] }] } }
+    }
+  ];
+
+  const liveBuilt = compileText(project); // not run through normalizeProject
+  const liveBody = liveBuilt.events[0].slice(4);
+  assert.deepEqual(liveBody, [opIndex('damage'), 1, OP_END, EVT_PAGES_END]);
+
+  const normalized = normalizeProject(structuredClone(project));
+  assert.equal(
+    normalized.maps[0].screens[0].entities[0].props.event.pages[0].commands[0].value,
+    1,
+    'normalizeEventCommand should round 0.6 the same way encodeCommand does'
+  );
+  const normalizedBuilt = compileText(normalized);
+  const normalizedBody = normalizedBuilt.events[0].slice(4);
+  assert.deepEqual(normalizedBody, liveBody, 'a save round-trip must not change what this command does');
+});
+
 test('deleting a common event in the built ROM still runs what the survivor names', {
   skip: !hasRom && 'run `npm run sample` first'
 }, async (t) => {
