@@ -30,13 +30,16 @@ import {
   EVENT_COMMANDS,
   EVENT_CONDITIONS,
   RPG_LIMITS,
+  actorMissing,
+  battleFormationSlice,
   choiceLabel,
+  choiceOptionsSlice,
   conditionArgLimit,
   enabledCommands,
   compiledPages,
   entityLabel,
   screenLabel,
-  resolveCommonEventIds,
+  liveCommonEvents,
   commonEventId
 } from '../../shared/project.js';
 
@@ -57,12 +60,31 @@ export const OP_SAY = opIndex('say');
 
 export const OP_CALL = opIndex('call');
 export const OP_MUSIC = opIndex('music');
+export const OP_BATTLE = opIndex('battle');
 
 export const NO_EVENT = 0xff;
 // A map's own songId is $FF for the same reason (see generate.js's maps.inc),
 // so a screen change and a Play music command reach the engine's NO_SONG
 // through the same byte, no matter which one decided it.
 export const NO_SONG = 0xff;
+// An empty formation slot: the same sentinel main/build/generate.js's
+// encounterRow pads a map's own (random) encounter table with, so
+// mon_slot_actor reads one byte shape regardless of which of the two ever
+// filled it.
+export const NO_ACTOR = 0xff;
+// OP_CALL's own operand: the table slot the named common event would occupy,
+// or this when nothing resolves -- deleted since, never live to begin with,
+// or a `call` never given a target. Named apart from shared/project.js's own
+// `NO_COMMON_EVENT_ID` (-1) on purpose, not just kept in separate modules:
+// that one is a schema-level "no reference chosen" value `command.event` can
+// hold before compiling, in the same space real ids live in, so importing
+// the wrong sentinel into the wrong place would not fail loudly -- $FF read
+// as a schema id would go looking for a stable id 255 could really have.
+// This is the wire-level byte script_op_call reads and refuses, in the same
+// $FF space every other table-slot sentinel here uses, safe for the
+// identical reason MAX_TABLE below caps the table at 255 entries -- $FF can
+// never be a real slot.
+export const NO_COMMON_EVENT_SLOT = 0xff;
 export const MAX_TABLE = 255; // $FF is the "none" marker in both tables
 // Every length in this format is one byte: a page body's, and each side of a
 // branch. `script_skip` adds it to the pointer, so 255 is the whole of it.
@@ -82,6 +104,24 @@ export function songByte(songs, id) {
   if (id === null || id === undefined) return NO_SONG;
   const n = Number(id);
   return Number.isInteger(n) && n >= 0 && n < (songs?.length ?? 0) ? n : NO_SONG;
+}
+
+/**
+ * The byte a Give item / Take item command's `actor` becomes: NO_ACTOR for
+ * anything `actorMissing` (shared/project.js) says does not resolve —
+ * `null` (renumberActorDeletion's mark for a deleted actor), or any other
+ * id no actor sits at, the same shape songByte gives a stale or absent
+ * song. `actorMissing` is also what validateProject asks, so the two agree
+ * on the same question rather than one trusting a sentinel the other
+ * merely happens to write. engine/script.asm's script_op_give/
+ * script_op_take are the other half — a live command with an unresolvable
+ * actor is a validateProject error, but buildProject compiles the project
+ * the app is holding rather than one that has passed validation, so this
+ * still has to not hand add_item/remove_item a byte that indexes the
+ * actor tables past their end.
+ */
+export function actorByte(actors, id) {
+  return actorMissing(actors, id) ? NO_ACTOR : id;
 }
 
 /**
@@ -132,29 +172,34 @@ export function compileText(project) {
 
   // Warp targets are flat screen indices, the same space the door records use.
   const screenCount = (project.maps ?? []).reduce((total, map) => total + (map.screens?.length ?? 0), 0);
+  // A battle command's monster ids are the only case, besides a song, where
+  // an out-of-range reference has to be caught here rather than at the field
+  // it is a byte clamp everywhere else: an actor deleted since the command
+  // was authored (or a hand-edited id that was never valid) would otherwise
+  // index setup_monsters' own tables past their end, exactly the reason
+  // songByte exists for a stale song id.
+  const actorCount = project.sprites?.actors?.length ?? 0;
   const byte = (value, limit = 255) => Math.max(0, Math.min(limit, value | 0));
 
   // Which slot of the shared events table each common event lands in, keyed by
   // its stable id rather than its position in project.commonEvents — a call
   // stores that id, not a position, so deleting an earlier common event must
-  // not silently retarget every call naming a later one. resolveCommonEventIds
-  // is what says which id an entry actually has: buildProject is handed the
-  // project the app is holding, which may not have been through
-  // normalizeProject since a common event was added, so this cannot simply
-  // trust entry.id to already be there — the same reason screenCount above is
-  // recomputed rather than trusted. Decided before anything is encoded,
-  // because a `call` may be compiled while encoding either a placement's
-  // event or another common event, and either can come first. Common events
-  // are then the first things pushed into `events` below, in this same
-  // order, so the slot predicted here is the slot they actually land in. One
-  // with nothing live in it gets no slot at all: a call naming it compiles to
-  // nothing, exactly as a question with no options does.
+  // not silently retarget every call naming a later one. liveCommonEvents
+  // (shared/project.js) is what says which entries get a slot at all and
+  // which id each one carries: buildProject is handed the project the app is
+  // holding, which may not have been through normalizeProject since a common
+  // event was added, so this cannot simply trust entry.id to already be there
+  // — the same reason screenCount above is recomputed rather than trusted.
+  // Decided before anything is encoded, because a `call` may be compiled
+  // while encoding either a placement's event or another common event, and
+  // either can come first. The entries are then the first things pushed into
+  // `events` below, in this same order, so the slot predicted here is the
+  // slot they actually land in. One with nothing live in it gets no slot at
+  // all: a call naming it carries NO_COMMON_EVENT_SLOT below instead, for
+  // script_op_call (engine/script.asm) to refuse.
   const commonEventTableIndex = new Map();
-  const { ids: commonEventIds } = resolveCommonEventIds(project.commonEvents, project.commonEventSeq);
-  const liveCommonEvents = (project.commonEvents ?? [])
-    .map((entry, index) => ({ entry, id: commonEventIds[index] }))
-    .filter(({ entry }) => compiledPages(entry?.event).length > 0);
-  liveCommonEvents.forEach(({ id }, slot) => commonEventTableIndex.set(id, slot));
+  const liveCommonEventEntries = liveCommonEvents(project);
+  liveCommonEventEntries.forEach(({ id }, slot) => commonEventTableIndex.set(id, slot));
 
   // Lengths in this format are single bytes: a page body's, and a branch's two.
   // Nothing checked them before branches existed, because a page long enough to
@@ -190,7 +235,7 @@ export function compileText(project) {
         ];
       case 'give':
       case 'take':
-        return [opIndex(command.op), byte(command.actor)];
+        return [opIndex(command.op), actorByte(project.sprites?.actors, command.actor)];
       case 'setSwitch':
       case 'clearSwitch':
         return [opIndex(command.op), byte(command.switch, 63)];
@@ -206,19 +251,48 @@ export function compileText(project) {
         // Read through commonEventId rather than trusted as already a
         // number — buildProject is handed live, possibly-unnormalized
         // project state, and command.event straight off an in-memory
-        // command can be a string ("5") or the NO_COMMON_EVENT sentinel;
-        // commonEventTableIndex's own keys came from resolveCommonEventIds
-        // running every entry's id through the same function, so a raw
-        // command.event has to go through it too or the two sides drift.
+        // command can be a string ("5") or shared/project.js's own
+        // NO_COMMON_EVENT_ID sentinel; commonEventTableIndex's own keys came
+        // from resolveCommonEventIds running every entry's id through the
+        // same function, so a raw command.event has to go through it too or
+        // the two sides drift.
+        //
         // One that resolves to no live slot — deleted after being called,
-        // never live to begin with, or simply not a valid id — compiles to
-        // nothing, the same way a question with no options does, rather
-        // than pointing at whatever the table happens to hold in its place.
+        // never live to begin with, simply not a valid id, or a `call` never
+        // given a target — is still emitted, carrying this module's own
+        // NO_COMMON_EVENT_SLOT (the $FF table-slot sentinel, a different
+        // name and a different value from NO_COMMON_EVENT_ID above on
+        // purpose — see the comment beside its definition) as its operand,
+        // rather than dropped the way an empty choice or an empty battle
+        // formation is. A `call` is not scaffolding the way those are: the
+        // page goes on to something the author wrote to run *after* it, so
+        // removing the command silently keeps that -- the exact "Call
+        // Reward, then Set switch Quest complete" failure this sentinel
+        // exists to close. script_op_call (engine/script.asm) refuses it
+        // and stops the event, the same answer script_run_bad gives an
+        // opcode it does not recognise at all, and script_op_give/
+        // script_op_take give NO_ACTOR — an operand naming nothing is that
+        // family's shape of bug regardless of which opcode carries it.
         const slot = commonEventTableIndex.get(commonEventId(command.event));
-        return slot === undefined ? null : [OP_CALL, slot];
+        return [OP_CALL, slot === undefined ? NO_COMMON_EVENT_SLOT : slot];
       }
       case 'music':
         return [OP_MUSIC, songByte(project.songs, command.song)];
+      case 'battle': {
+        // Up to RPG_LIMITS.monstersPerBattle actor ids, NO_ACTOR-padded --
+        // the same fixed-width, no-count shape generate.js's encounterRow
+        // compiles a map's own (random) encounter table into, so
+        // script_op_battle can copy these bytes straight into mon_slot_actor
+        // without decoding a count first. An id past actorCount — an actor
+        // deleted since, or never valid to begin with — becomes NO_ACTOR
+        // rather than a byte setup_monsters would index its tables past the
+        // end with, the same fallback songByte gives a stale song id.
+        const monsters = battleFormationSlice(command.monsters).map((id) =>
+          Number.isInteger(id) && id >= 0 && id < actorCount ? id : NO_ACTOR
+        );
+        while (monsters.length < RPG_LIMITS.monstersPerBattle) monsters.push(NO_ACTOR);
+        return [OP_BATTLE, ...monsters];
+      }
       case 'branch': {
         // [OP_IF, cond, arg, value, then-length] then [OP_JUMP, else-length]
         // else. Past the opcode that is a page header exactly, which is what
@@ -260,7 +334,7 @@ export function compileText(project) {
         // the bottom of the frame and then the attribute table — and answering a
         // question with no options at all would send the engine past the end of
         // the command it was answering.
-        const options = (command.options ?? []).slice(0, CHOICE_LIMITS.options);
+        const options = choiceOptionsSlice(command.options, CHOICE_LIMITS.options);
         if (!options.length) return null;
         const named = (option, index) => `${where} → “${choiceLabel(option.text) || `option ${index + 1}`}”`;
         const bodies = options.map((option, index) => encodeBody(option.commands, named(option, index)));
@@ -318,7 +392,7 @@ export function compileText(project) {
   // in, so each one lands in exactly the slot a `call` naming it already
   // resolved to — whether that `call` sits on a placement or inside another
   // common event.
-  for (const { entry, id } of liveCommonEvents) {
+  for (const { entry, id } of liveCommonEventEntries) {
     const name = String(entry.name ?? '').trim() || `Common event ${id}`;
     events.push(encodeEvent(compiledPages(entry.event), `Common event “${name}”`));
   }

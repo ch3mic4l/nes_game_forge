@@ -27,6 +27,7 @@ const needsSample = !hasRom && 'run `npm run sample:rpg && npm run build:sample:
 // Engine RAM, from engine/constants.asm.
 const PLAYER_X = 0x10;
 const PLAYER_Y = 0x11;
+const FLAT_SCREEN = 0x16;
 const GAME_STATE = 0x25;
 const INV_COUNT = 0x37;
 const BOX_STATE = 0x40;
@@ -748,4 +749,338 @@ test('the party can poison a monster, and the poison alone finishes it', {
   assert.equal(ended, ST_GAMEPLAY, 'the poison never finished the slime');
   assert.equal(nes.cpu.mem[MON_ALIVE], 0);
   assert.ok(nes.cpu.mem[PC_XP_LO] > 0, 'a poison victory should still pay out');
+});
+
+// --- an event starting a battle ----------------------------------------------
+
+test('a Start a battle command suspends the script, and winning resumes it', {
+  skip: needsSample
+}, async (t) => {
+  const VARIABLES = 0x500; // engine/constants.asm
+  const rom = await buildVariant(t, 'scripted-battle', (project) => {
+    // Only the scripted fight may start -- a random encounter on the way
+    // would be indistinguishable from the answer.
+    project.maps[0].encounters = { rate: 0, actorIds: [] };
+
+    // An entry event on this screen, so battle_end re-arming it would show up.
+    project.maps[0].screens[0].entities.push({
+      actorId: 2, // Iris, who has nothing to do with the fight
+      x: 96,
+      y: 32,
+      props: {
+        trigger: 'enter',
+        event: { pages: [{ cond: { type: 'none', arg: 0 }, commands: [{ op: 'addVar', variable: 0, value: 1 }] }] }
+      }
+    });
+
+    // A boss: touching it starts a scripted fight against the Slime (actor
+    // 0), and the command after it -- turning on a switch -- is the win
+    // case, authored with no new vocabulary. Losing is not authored at all:
+    // it is already a game over, from player_died.
+    const bossId = project.sprites.actors.length;
+    project.sprites.actors.push({
+      ...structuredClone(project.sprites.actors[2]),
+      id: bossId,
+      name: 'Boss Door',
+      damage: 0
+    });
+    project.maps[0].screens[0].entities.push({
+      actorId: bossId,
+      x: 176,
+      y: 32,
+      props: {
+        trigger: 'touch',
+        event: {
+          pages: [
+            {
+              cond: { type: 'none', arg: 0 },
+              commands: [
+                { op: 'battle', monsters: [0] },
+                { op: 'setSwitch', switch: 5 }
+              ]
+            }
+          ]
+        }
+      }
+    });
+  });
+
+  const nes = boot(rom);
+  const startScreen = nes.cpu.mem[FLAT_SCREEN];
+  assert.equal(nes.cpu.mem[VARIABLES], 1, 'the entry event did not run when the game started');
+  assert.equal(nes.cpu.mem[SWITCHES] & (1 << 5), 0, 'the boss switch should not already be on');
+
+  walkTo(nes, 176, 32);
+  for (let i = 0; i < 30 && nes.cpu.mem[GAME_STATE] !== ST_BATTLE; i++) nes.frame();
+  assert.equal(nes.cpu.mem[GAME_STATE], ST_BATTLE, 'touching the boss did not start the scripted fight');
+  for (let i = 0; i < 12; i++) nes.frame(); // let battle_intro's own first tick settle in
+  assert.equal(nes.cpu.mem[BT_COUNT], 1, 'the formation should hold exactly the one monster named');
+  assert.equal(nes.cpu.mem[MON_SLOT_ACTOR], 0, "the formation should be the Slime, not the map's own encounter table");
+
+  // Win it — the same way "FIGHT wears the monster down" does, since it is
+  // the same lone Slime.
+  const startHp = nes.cpu.mem[MON_HP];
+  chooseCommand(nes, BC_FIGHT);
+  tap(nes, A, 20);
+  for (let round = 0; round < 12 && nes.cpu.mem[MON_HP] === startHp; round++) {
+    if (nes.cpu.mem[BT_PHASE] === BP_MENU) chooseCommand(nes, BC_FIGHT);
+    tap(nes, A, 20);
+  }
+  assert.ok(nes.cpu.mem[MON_HP] < startHp, 'twelve attacks all missed, which is not a roll');
+  const state = pressThrough(nes);
+  assert.equal(state, ST_GAMEPLAY, 'the battle never ended');
+  assert.equal(nes.cpu.mem[MON_ALIVE], 0);
+
+  // The event resumed at the command after the battle: the win case, with no
+  // lose branch anywhere to author.
+  assert.ok(nes.cpu.mem[SWITCHES] & (1 << 5), 'the script did not resume after winning');
+
+  // The field is intact: the redraw that put the player back did not replay
+  // this screen's entry event...
+  assert.equal(nes.cpu.mem[VARIABLES], 1, 'the screen ran its entry event again when the battle ended');
+  // ...it is still the screen the player was standing on...
+  assert.equal(nes.cpu.mem[FLAT_SCREEN], startScreen, 'the battle left the player on a different screen');
+  // ...and the trampoline restored the screen bank: the player can still
+  // walk, which means mtptr is reading the map again, not the battle system.
+  const before = nes.cpu.mem[PLAYER_X];
+  walkTo(nes, before - 16, nes.cpu.mem[PLAYER_Y], 30);
+  assert.ok(nes.cpu.mem[PLAYER_X] < before, 'the player cannot move after the scripted battle');
+});
+
+test('winning does not re-arm the boss even when its own event reshuffles entity slots', {
+  skip: needsSample
+}, async (t) => {
+  // The boss's own event hides an earlier actor before it battles, so the
+  // redraw that follows victory spawns the boss into a *different* slot than
+  // it held during the fight (the hidden actor no longer takes one ahead of
+  // it). Restoring ent_touched by a slot index remembered before the fight
+  // would put it back on whatever now sits in that slot instead of the boss
+  // — and the boss's own slot, left clear, would read as a fresh touch and
+  // arm the same event again. If battle_end is asking the field who the
+  // player is standing on right now rather than trusting a stale index, the
+  // reshuffle makes no difference and this passes; if it regresses to a
+  // remembered index, the battle restarts forever.
+  const HIDE_SWITCH = 7;
+  let bossId;
+  const rom = await buildVariant(t, 'scripted-battle-reshuffle', (project) => {
+    project.maps[0].encounters = { rate: 0, actorIds: [] };
+
+    // An actor placed *before* the boss in the entity list, so hiding it
+    // shifts every later actor — the boss included — down one slot.
+    const earlyId = project.sprites.actors.length;
+    project.sprites.actors.push({
+      ...structuredClone(project.sprites.actors[2]),
+      id: earlyId,
+      name: 'Early Bird',
+      damage: 0
+    });
+    project.maps[0].screens[0].entities.push({
+      actorId: earlyId,
+      x: 64,
+      y: 32,
+      props: { hideSwitch: HIDE_SWITCH }
+    });
+
+    // The boss: hides Early Bird, then fights. Both happen inside the one
+    // conversation, so the shift is already decided by the time battle_begin
+    // runs — it just is not applied until battle_end's own redraw.
+    bossId = project.sprites.actors.length;
+    project.sprites.actors.push({
+      ...structuredClone(project.sprites.actors[2]),
+      id: bossId,
+      name: 'Boss Door',
+      damage: 0
+    });
+    project.maps[0].screens[0].entities.push({
+      actorId: bossId,
+      x: 176,
+      y: 32,
+      props: {
+        trigger: 'touch',
+        event: {
+          pages: [
+            {
+              cond: { type: 'none', arg: 0 },
+              commands: [
+                { op: 'setSwitch', switch: HIDE_SWITCH },
+                { op: 'battle', monsters: [0] }
+              ]
+            }
+          ]
+        }
+      }
+    });
+  });
+
+  const nes = boot(rom);
+
+  walkTo(nes, 176, 32);
+  for (let i = 0; i < 30 && nes.cpu.mem[GAME_STATE] !== ST_BATTLE; i++) nes.frame();
+  assert.equal(nes.cpu.mem[GAME_STATE], ST_BATTLE, 'touching the boss did not start the scripted fight');
+  for (let i = 0; i < 12; i++) nes.frame(); // let battle_intro's own first tick settle in
+
+  const startHp = nes.cpu.mem[MON_HP];
+  chooseCommand(nes, BC_FIGHT);
+  tap(nes, A, 20);
+  for (let round = 0; round < 12 && nes.cpu.mem[MON_HP] === startHp; round++) {
+    if (nes.cpu.mem[BT_PHASE] === BP_MENU) chooseCommand(nes, BC_FIGHT);
+    tap(nes, A, 20);
+  }
+  assert.ok(nes.cpu.mem[MON_HP] < startHp, 'twelve attacks all missed, which is not a roll');
+  const state = pressThrough(nes);
+  assert.equal(state, ST_GAMEPLAY, 'the battle never ended');
+
+  // The boss should still be standing there, just no longer next to Early
+  // Bird — which is what actually moves it into a different slot than it
+  // fought in, since spawn_entities assigns slots by walking the entity
+  // list in order and Early Bird no longer takes one ahead of it.
+  const ENT_ACTIVE = 0x300;
+  const ENT_ACTOR = 0x308;
+  let bossSlot = -1;
+  for (let slot = 0; slot < 8; slot++) {
+    if (nes.cpu.mem[ENT_ACTIVE + slot] === 1 && nes.cpu.mem[ENT_ACTOR + slot] === bossId) bossSlot = slot;
+  }
+  assert.notEqual(bossSlot, -1, 'the boss should still be on the field after winning');
+
+  // Give the field several frames to settle. A regression re-arms the boss's
+  // event on the very next update_entities pass and never leaves ST_BATTLE
+  // again; the fix leaves the world running.
+  for (let i = 0; i < 60; i++) nes.frame();
+  assert.equal(nes.cpu.mem[GAME_STATE], ST_GAMEPLAY, 'the boss re-armed itself and the battle restarted');
+});
+
+test('a random encounter that lands on a touch event does not suppress it', {
+  skip: needsSample
+}, async (t) => {
+  const TOUCH_SWITCH = 6;
+  const rom = await buildVariant(t, 'random-encounter-touch', (project) => {
+    // Rate 3 rather than the usual "walk until it rolls": the player moves 2
+    // pixels a frame and TOUCH_RANGE is 12, so the entity 16 pixels away
+    // first reads as touched on the third moving frame -- the same frame
+    // enc_step reaches a rate of 3. That is the exact interleaving the bug
+    // depends on: check_encounter (inside update_player) freezes the world
+    // before update_entities, later the same frame, ever gets to arm the
+    // touch through settle_owed.
+    project.maps[0].encounters = { rate: 3, actorIds: [0] };
+
+    // A touch-triggered event with no damage of its own, so the only way
+    // into it is entity_trigger_touch -- never entity_contact/touch_encounter.
+    project.maps[0].screens[0].entities.push({
+      actorId: 2, // Iris, who has nothing to do with the fight
+      x: 128,
+      y: 112,
+      props: {
+        trigger: 'touch',
+        event: { pages: [{ cond: { type: 'none', arg: 0 }, commands: [{ op: 'setSwitch', switch: TOUCH_SWITCH }] }] }
+      }
+    });
+  });
+
+  const nes = boot(rom);
+  assert.equal(nes.cpu.mem[PLAYER_X], 112);
+  assert.equal(nes.cpu.mem[PLAYER_Y], 112);
+
+  walkTo(nes, 128, 112, 20);
+  for (let i = 0; i < 30 && nes.cpu.mem[GAME_STATE] !== ST_BATTLE; i++) nes.frame();
+  assert.equal(nes.cpu.mem[GAME_STATE], ST_BATTLE, 'the random encounter never started');
+  for (let i = 0; i < 12; i++) nes.frame(); // let battle_intro's own first tick settle in
+  assert.equal(nes.cpu.mem[BT_COUNT], 1, 'the formation should hold exactly the one monster named');
+  assert.equal(
+    nes.cpu.mem[SWITCHES] & (1 << TOUCH_SWITCH),
+    0,
+    'the touch event ran before the encounter could steal the frame -- the scenario never happened'
+  );
+
+  const startHp = nes.cpu.mem[MON_HP];
+  chooseCommand(nes, BC_FIGHT);
+  tap(nes, A, 20);
+  for (let round = 0; round < 12 && nes.cpu.mem[MON_HP] === startHp; round++) {
+    if (nes.cpu.mem[BT_PHASE] === BP_MENU) chooseCommand(nes, BC_FIGHT);
+    tap(nes, A, 20);
+  }
+  assert.ok(nes.cpu.mem[MON_HP] < startHp, 'twelve attacks all missed, which is not a roll');
+  const state = pressThrough(nes);
+  assert.equal(state, ST_GAMEPLAY, 'the battle never ended');
+
+  // The touch was only ever armed, never run -- it must come back able to
+  // fire, not latched shut the way a genuinely-run event should be. Give the
+  // field a few frames to notice the player is still standing there.
+  for (let i = 0; i < 30 && !(nes.cpu.mem[SWITCHES] & (1 << TOUCH_SWITCH)); i++) nes.frame();
+  assert.ok(
+    nes.cpu.mem[SWITCHES] & (1 << TOUCH_SWITCH),
+    'the touch event never ran after the random encounter stole its frame'
+  );
+});
+
+test("an entry event's own battle does not suppress an unrelated touch entity underfoot", {
+  skip: needsSample
+}, async (t) => {
+  const ENTRY_SWITCH = 5;
+  const BYSTANDER_SWITCH = 6;
+  const rom = await buildVariant(t, 'entry-battle-bystander', (project) => {
+    project.maps[0].encounters = { rate: 0, actorIds: [] };
+    const { startX, startY } = project.project;
+
+    // The screen's own opening event: touching nothing, just arriving is
+    // enough. Its battle freezes the world before update_entities has run
+    // even once this screen, which is the exact interleaving this guards --
+    // settle_owed dispatches an armed entry event before update_player/
+    // update_entities ever run on the frame the screen is drawn.
+    project.maps[0].screens[0].entities.push({
+      actorId: 2, // Iris, who has nothing to do with either event
+      x: 16,
+      y: 16,
+      props: {
+        trigger: 'enter',
+        event: { pages: [{ cond: { type: 'none', arg: 0 }, commands: [
+          { op: 'battle', monsters: [0] },
+          { op: 'setSwitch', switch: ENTRY_SWITCH }
+        ] }] }
+      }
+    });
+
+    // A bystander the player already stands on at boot: a touch event wholly
+    // unrelated to the entry event's own battle, and never scanned before
+    // that battle steals the frame. Iris again -- no damage, so this is the
+    // event/trigger path only, never entity_contact/touch_encounter's.
+    project.maps[0].screens[0].entities.push({
+      actorId: 2,
+      x: startX,
+      y: startY,
+      props: {
+        trigger: 'touch',
+        event: { pages: [{ cond: { type: 'none', arg: 0 }, commands: [{ op: 'setSwitch', switch: BYSTANDER_SWITCH }] }] }
+      }
+    });
+  });
+
+  const nes = boot(rom);
+  for (let i = 0; i < 30 && nes.cpu.mem[GAME_STATE] !== ST_BATTLE; i++) nes.frame();
+  assert.equal(nes.cpu.mem[GAME_STATE], ST_BATTLE, "the entry event's battle never started");
+  for (let i = 0; i < 12; i++) nes.frame(); // let battle_intro's own first tick settle in
+  assert.equal(
+    nes.cpu.mem[SWITCHES] & (1 << BYSTANDER_SWITCH),
+    0,
+    'the bystander was never standing there to have run already -- the scenario never happened'
+  );
+
+  const startHp = nes.cpu.mem[MON_HP];
+  chooseCommand(nes, BC_FIGHT);
+  tap(nes, A, 20);
+  for (let round = 0; round < 12 && nes.cpu.mem[MON_HP] === startHp; round++) {
+    if (nes.cpu.mem[BT_PHASE] === BP_MENU) chooseCommand(nes, BC_FIGHT);
+    tap(nes, A, 20);
+  }
+  assert.ok(nes.cpu.mem[MON_HP] < startHp, 'twelve attacks all missed, which is not a roll');
+  const state = pressThrough(nes);
+  assert.equal(state, ST_GAMEPLAY, 'the battle never ended');
+  assert.ok(nes.cpu.mem[SWITCHES] & (1 << ENTRY_SWITCH), "the entry event's own script did not resume after winning");
+
+  // The bystander's touch was never armed, let alone run -- it must not come
+  // back latched shut by a restore meant for the entry event's own actor.
+  for (let i = 0; i < 30 && !(nes.cpu.mem[SWITCHES] & (1 << BYSTANDER_SWITCH)); i++) nes.frame();
+  assert.ok(
+    nes.cpu.mem[SWITCHES] & (1 << BYSTANDER_SWITCH),
+    "the bystander's touch event never ran once the world resumed"
+  );
 });

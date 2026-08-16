@@ -28,6 +28,8 @@ spawn_clear:
 spawn_any:
   sta ent_tmp
   ldx #0
+  lda #0
+  sta ent_spawn_rec          ; the first record in the list is ordinal 0
   iny                       ; step past the count byte
 ; A record is read into the slot before it is known whether it belongs there: the
 ; slot is only marked active once the hide switch has had its say, so a hidden
@@ -67,6 +69,8 @@ spawn_loop:
 spawn_place:
   lda #1
   sta ent_active,x
+  lda ent_spawn_rec
+  sta ent_record,x          ; which record this slot came from, not which slot
   sty ent_tmp2              ; the record cursor, which the actor lookup needs Y for
   ldy ent_actor,x
   lda actor_hp,y
@@ -94,6 +98,7 @@ spawn_armed:
   cpx #MAX_ENTITIES
   beq spawn_done            ; every slot is full; the rest of the list is over
 spawn_next:
+  inc ent_spawn_rec          ; the next record is one further along, placed or not
   dec ent_tmp
   beq spawn_done
   jmp spawn_loop            ; the top of the record is out of a branch's reach

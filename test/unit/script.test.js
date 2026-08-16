@@ -16,10 +16,23 @@ import NES from '../../renderer/emulator/core/nes.js';
 import { ARROW_TILE, FONT_BASE } from '../../shared/font.js';
 import { loadProject, saveProject } from '../../main/project-io.js';
 import { buildProject } from '../../main/build/pipeline.js';
-import { compileText, EVT_PAGES_END, OP_JUMP, OP_END, OP_CALL, OP_MUSIC, NO_SONG } from '../../main/build/textcompile.js';
+import {
+  compileText,
+  EVT_PAGES_END,
+  OP_JUMP,
+  OP_END,
+  OP_CALL,
+  OP_MUSIC,
+  NO_SONG,
+  OP_BATTLE,
+  NO_ACTOR,
+  NO_COMMON_EVENT_SLOT,
+  opIndex
+} from '../../main/build/textcompile.js';
 import {
   createProject,
   normalizeProject,
+  validateProject,
   compiledPages,
   enabledCommands,
   CHOICE_LIMITS,
@@ -30,7 +43,7 @@ import {
   MAX_BRANCH_DEPTH,
   availableTriggers,
   effectiveTrigger,
-  NO_COMMON_EVENT,
+  NO_COMMON_EVENT_ID,
   commonEventId
 } from '../../shared/project.js';
 
@@ -237,6 +250,181 @@ test('Take removes what Give handed over, and Carrying gates on it', {
 
   assert.ok(talkThrough(nes));
   assert.equal(nes.cpu.mem[INV_COUNT], 1, 'an empty bag should fall through to the second page again');
+});
+
+test('a Give naming an actor past the end of the list does not pass validation', () => {
+  // Not renumberActorDeletion's null -- a plain out-of-range id, the shape a
+  // project written by a later version or a hand-edited one can hold
+  // without ever having gone through a deletion at all. actorMissing
+  // (shared/project.js) has to catch this the same way it catches null.
+  const project = createProject('Quest');
+  project.sprites.actors = [{ name: 'Sign', behavior: 'npc' }];
+  project.maps[0].screens[0].entities.push({
+    actorId: 0,
+    x: 0,
+    y: 0,
+    props: { event: { pages: [{ cond: { type: 'none', arg: 0 }, commands: [{ op: 'give', actor: 99 }] }] } }
+  });
+  const errors = validateProject(project).filter((p) => p.severity === 'error');
+  assert.ok(
+    errors.some((p) => /do not name a real/.test(p.message)),
+    'a Give past the end of the actor list should not pass validation'
+  );
+});
+
+/** The first index at which `needle` occurs in `haystack`, or -1. */
+function indexOfBytes(haystack, needle) {
+  outer: for (let i = 0; i <= haystack.length - needle.length; i++) {
+    for (let j = 0; j < needle.length; j++) {
+      if (haystack[i + j] !== needle[j]) continue outer;
+    }
+    return i;
+  }
+  return -1;
+}
+
+test('script_op_give stops the event on NO_ACTOR rather than indexing the bag or carrying on', {
+  skip: !hasRom && 'run `npm run sample` first'
+}, async (t) => {
+  // validateProject already refuses to let a *live* unresolvable Give reach
+  // buildProject (the test above), so there is no project this test could
+  // author that would compile NO_ACTOR through the front door — which is
+  // exactly the point: the guard this proves is for whatever validateProject
+  // does not see, a hand-edited or later-version ROM among them. So this
+  // builds an ordinary, valid ROM and patches the one byte a corrupt project
+  // could produce, the same way applyHeaderPatch (main/build/pipeline.js)
+  // already rewrites an assembled ROM's bytes directly for UNROM 512.
+  //
+  // A command after the Give is what tells "stopped" and "skipped" apart:
+  // an opcode the engine cannot run is supposed to stop the event the same
+  // way script_run_bad's unknown-opcode case does, not carry on to whatever
+  // comes next having silently not done the thing it was there for.
+  const OP_GIVE = opIndex('give');
+  const TOUCHED_SWITCH = 5;
+  const entities = [
+    chest([
+      {
+        cond: { type: 'none', arg: 0 },
+        commands: [
+          { op: 'say', text: 'Here.' },
+          { op: 'give', actor: GEM },
+          { op: 'setSwitch', switch: TOUCHED_SWITCH }
+        ]
+      }
+    ])
+  ];
+  const { project, romPath } = await buildWith(t, entities);
+
+  const [compiled] = compileText(normalizeProject(structuredClone(project))).events;
+  const giveAt = compiled.indexOf(OP_GIVE);
+  assert.notEqual(giveAt, -1, 'the compiled event has no OP_GIVE to find');
+  assert.equal(compiled[giveAt + 1], GEM, "OP_GIVE's own argument should be the actor id right after it");
+
+  const romBytes = fs.readFileSync(romPath);
+  const at = indexOfBytes(romBytes, compiled);
+  assert.notEqual(at, -1, "the compiled event's own bytes were not found verbatim in the built ROM");
+  assert.equal(
+    indexOfBytes(romBytes.subarray(at + 1), compiled),
+    -1,
+    'the compiled event should appear exactly once, or patching one occurrence proves nothing about which ran'
+  );
+
+  const patched = Uint8Array.from(romBytes);
+  patched[at + giveAt + 1] = NO_ACTOR;
+  const patchedPath = path.join(path.dirname(romPath), 'patched.nes');
+  await fs.promises.writeFile(patchedPath, patched);
+
+  // Through boot(), not a fresh NES() with no further setup: the sample
+  // fixture has a title screen, and only boot() knows to press through it.
+  const nes = boot(patchedPath);
+
+  assert.ok(talkThrough(nes), 'the conversation never ended');
+  assert.equal(nes.cpu.mem[INV_COUNT], 0, 'a NO_ACTOR byte reached add_item and indexed the bag with it');
+  assert.equal(
+    nes.cpu.mem[SWITCHES] & (1 << TOUCHED_SWITCH),
+    0,
+    'the event carried on past the unrunnable Give instead of stopping there'
+  );
+});
+
+test('script_op_call stops the event on NO_COMMON_EVENT_SLOT rather than skipping past it', {
+  skip: !hasRom && 'run `npm run sample` first'
+}, async (t) => {
+  // Same technique as script_op_give's NO_ACTOR test just above, and for the
+  // same reason: validateProject already refuses a *live* call naming a
+  // common event that does not resolve, so there is no project this test
+  // could author that would compile NO_COMMON_EVENT_SLOT through the front
+  // door. This builds an ordinary, valid ROM with a call that genuinely
+  // resolves, then patches the one byte a corrupt project (hand-edited, or
+  // written by a later version) could produce, the same way applyHeaderPatch
+  // (main/build/pipeline.js) already rewrites an assembled ROM's bytes
+  // directly for UNROM 512.
+  //
+  // Reproduces "Call Reward, then Set switch Quest complete" for real, in
+  // the emulator: before this fix, the engine had nothing to refuse -- the
+  // compiler dropped an unresolved call entirely, so there was no byte here
+  // to patch at all and the switch after it always ran. Now the compiler
+  // always emits the call, so the byte exists, and script_op_call reading
+  // NO_COMMON_EVENT_SLOT out of it is what has to stop the event rather than
+  // running the Set switch that follows.
+  const REWARD_VAR = 0;
+  const TOUCHED_SWITCH = 5;
+  const entities = [
+    chest([
+      {
+        cond: { type: 'none', arg: 0 },
+        commands: [
+          { op: 'say', text: 'Here.' },
+          { op: 'call', event: 0 },
+          { op: 'setSwitch', switch: TOUCHED_SWITCH }
+        ]
+      }
+    ])
+  ];
+  const { project, romPath } = await buildWith(t, entities, (project) => {
+    project.commonEvents = [
+      {
+        name: 'Reward',
+        event: {
+          pages: [{ cond: { type: 'none', arg: 0 }, commands: [{ op: 'addVar', variable: REWARD_VAR, value: 1 }] }]
+        }
+      }
+    ];
+  });
+
+  // events[0] is the Reward common event itself -- compileText (main/build/
+  // textcompile.js) pushes every live common event before it walks the
+  // placed entities -- so the chest's own compiled event, the one carrying
+  // OP_CALL, is events[1].
+  const [, compiled] = compileText(normalizeProject(structuredClone(project))).events;
+  const callAt = compiled.indexOf(OP_CALL);
+  assert.notEqual(callAt, -1, 'the compiled event has no OP_CALL to find');
+  assert.notEqual(compiled[callAt + 1], NO_COMMON_EVENT_SLOT, "the call should have resolved to a real slot, not already be NO_COMMON_EVENT_SLOT");
+
+  const romBytes = fs.readFileSync(romPath);
+  const at = indexOfBytes(romBytes, compiled);
+  assert.notEqual(at, -1, "the compiled event's own bytes were not found verbatim in the built ROM");
+  assert.equal(
+    indexOfBytes(romBytes.subarray(at + 1), compiled),
+    -1,
+    'the compiled event should appear exactly once, or patching one occurrence proves nothing about which ran'
+  );
+
+  const patched = Uint8Array.from(romBytes);
+  patched[at + callAt + 1] = NO_COMMON_EVENT_SLOT;
+  const patchedPath = path.join(path.dirname(romPath), 'patched.nes');
+  await fs.promises.writeFile(patchedPath, patched);
+
+  const nes = boot(patchedPath);
+
+  assert.ok(talkThrough(nes), 'the conversation never ended');
+  assert.equal(nes.cpu.mem[VARIABLES + REWARD_VAR], 0, 'a NO_COMMON_EVENT_SLOT byte reached event_ptr_lo/hi and ran Reward anyway');
+  assert.equal(
+    nes.cpu.mem[SWITCHES] & (1 << TOUCHED_SWITCH),
+    0,
+    'the event carried on past the unresolvable Call instead of stopping there'
+  );
+  assert.equal(nes.cpu.mem[GAME_STATE], ST_GAMEPLAY, 'the world was not handed back -- the event should have ended, not hung');
 });
 
 test('an actor hidden by a switch is gone the next time the screen loads', {
@@ -863,9 +1051,69 @@ test('Play music compiles to a song index or NO_SONG for Silence', () => {
   // A reference to a song that used to exist — deleted since, or never valid
   // to begin with — falls back to NO_SONG rather than pointing at whichever
   // song the table happens to hold at that index, same as an unresolvable
-  // common event call compiles to nothing instead of running the wrong one.
+  // common event call falls back to NO_COMMON_EVENT_SLOT rather than running
+  // whichever one the table happens to hold in its place.
   const [stale] = compileText(page([{ op: 'music', song: 5 }])).events;
   assert.deepEqual(stale.slice(4, 6), [OP_MUSIC, NO_SONG], 'a song past the end of the list falls back to NO_SONG');
+});
+
+test('Start a battle compiles to a fixed, NO_ACTOR-padded formation', () => {
+  const project = createProject('Boss Fight', 'rpg');
+  project.sprites.actors = [
+    { name: 'Villager', damage: 0 },
+    { name: 'Slime', damage: 4 },
+    { name: 'Ogre', damage: 8 }
+  ];
+  const page = (commands) => {
+    project.maps[0].screens[0].entities = [
+      { actorId: 1, x: 0, y: 0, props: { event: { pages: [{ cond: { type: 'none', arg: 0 }, commands }] } } }
+    ];
+    return project;
+  };
+
+  const [partial] = compileText(page([{ op: 'battle', monsters: [1, 2] }])).events;
+  assert.deepEqual(
+    partial.slice(4, 9),
+    [OP_BATTLE, 1, 2, NO_ACTOR, NO_ACTOR],
+    'a two-monster formation should NO_ACTOR-pad the rest, not leave the command short'
+  );
+
+  const [full] = compileText(page([{ op: 'battle', monsters: [1, 2, 1, 2] }])).events;
+  assert.deepEqual(full.slice(4, 9), [OP_BATTLE, 1, 2, 1, 2], 'a full formation needs no padding');
+
+  // RPG_LIMITS.monstersPerBattle is the box the formation fits in, the same
+  // way CHOICE_LIMITS.options is the box a question's answers fit in: past
+  // it is dropped rather than overflowing into whatever byte comes next.
+  const [tooMany] = compileText(page([{ op: 'battle', monsters: [1, 2, 1, 2, 1] }])).events;
+  assert.deepEqual(tooMany.slice(4, 9), [OP_BATTLE, 1, 2, 1, 2], 'a fifth monster should be dropped, not overflow the command');
+});
+
+test('Give item / Take item compile to NO_ACTOR when the actor is missing', () => {
+  const OP_GIVE = opIndex('give');
+  const OP_TAKE = opIndex('take');
+  const project = createProject('Quest', 'rpg');
+  project.sprites.actors = [{ name: 'Gem', damage: 0 }];
+  const page = (commands) => {
+    project.maps[0].screens[0].entities = [
+      { actorId: 0, x: 0, y: 0, props: { event: { pages: [{ cond: { type: 'none', arg: 0 }, commands }] } } }
+    ];
+    return project;
+  };
+
+  const [named] = compileText(page([{ op: 'give', actor: 0 }])).events;
+  assert.deepEqual(named.slice(4, 6), [OP_GIVE, 0], 'a live actor compiles to its own id');
+
+  // renumberActorDeletion's mark for "this used to name an actor" -- not 0,
+  // which a real actor could actually be sitting at.
+  const [missing] = compileText(page([{ op: 'give', actor: null }])).events;
+  assert.deepEqual(missing.slice(4, 6), [OP_GIVE, NO_ACTOR], 'a missing actor compiles to NO_ACTOR rather than 0');
+
+  // Defensive: buildProject compiles the project the app is holding rather
+  // than one freshly normalized, so a hand-edited or stale id past the end
+  // of the actor list has to fall back the same way, not index the engine's
+  // own tables past their end.
+  const [stale] = compileText(page([{ op: 'take', actor: 5 }])).events;
+  assert.deepEqual(stale.slice(4, 6), [OP_TAKE, NO_ACTOR], 'an actor past the end of the list falls back to NO_ACTOR');
 });
 
 test('a branch nested deeper than the editor offers still survives a round trip', async (t) => {
@@ -2127,7 +2375,7 @@ const HUNTER = 2; // Hunter, the sample's chaser -- a second distinct give targe
 
 test('common events compile into the same table a placement’s own event does', () => {
   const project = createProject('Common');
-  project.sprites.actors = [{ name: 'Sign', behavior: 'npc' }];
+  project.sprites.actors = [{ name: 'Sign', behavior: 'npc' }, { name: 'Gem' }];
   project.commonEvents = [
     {
       name: 'Reward',
@@ -2155,17 +2403,24 @@ test('common events compile into the same table a placement’s own event does',
     assert.deepEqual(event.slice(4), [OP_CALL, 0, OP_END, EVT_PAGES_END], 'call, then slot 0, then end');
   }
 
-  // A call naming a common event that compiles to nothing -- deleted, or never
-  // live to begin with -- drops out of the body entirely, the same way a
-  // question with no options does, rather than pointing at whatever the table
-  // happens to hold in its place.
+  // A call naming a common event that has no live slot -- deleted, or never
+  // live to begin with -- still gets its own bytes, carrying NO_COMMON_EVENT_SLOT
+  // as its operand rather than pointing at whatever the table happens to hold
+  // in its place, and rather than dropping out of the body the way a question
+  // with no options does. script_op_call (engine/script.asm) is what reads
+  // and refuses that sentinel at runtime; the compiler's job is only to leave
+  // it something to refuse.
   const dangling = createProject('Dangling');
   dangling.sprites.actors = [{ name: 'Sign', behavior: 'npc' }];
   dangling.commonEvents = [{ name: 'Empty', event: null }];
   dangling.maps[0].screens[0].entities = [caller()];
   const droppedBuilt = compileText(normalizeProject(structuredClone(dangling)));
   assert.equal(droppedBuilt.events.length, 1, 'the empty common event took no table slot');
-  assert.deepEqual(droppedBuilt.events[0].slice(4), [OP_END, EVT_PAGES_END], 'the call compiled to nothing');
+  assert.deepEqual(
+    droppedBuilt.events[0].slice(4),
+    [OP_CALL, NO_COMMON_EVENT_SLOT, OP_END, EVT_PAGES_END],
+    'the call should carry NO_COMMON_EVENT_SLOT rather than being dropped'
+  );
 });
 
 test('deleting a common event does not retarget the calls that survive it', () => {
@@ -2246,11 +2501,15 @@ test('a dangling call still resolves to nothing after its deleted id is issued t
 
   const built = compileText(structuredClone(project));
   // Only the replacement compiles into the table; the caller's call, still
-  // naming id 0, drops out entirely rather than being resolved against
-  // whatever id now occupies the slot A used to.
+  // naming id 0, carries NO_COMMON_EVENT_SLOT rather than being resolved
+  // against whatever id now occupies the slot A used to.
   assert.equal(built.events.length, 2, 'the replacement plus the caller');
   const callerBody = built.events[1].slice(4);
-  assert.deepEqual(callerBody, [OP_END, EVT_PAGES_END], 'the dangling call should have compiled to nothing');
+  assert.deepEqual(
+    callerBody,
+    [OP_CALL, NO_COMMON_EVENT_SLOT, OP_END, EVT_PAGES_END],
+    'the dangling call should carry NO_COMMON_EVENT_SLOT, not resolve to the replacement'
+  );
 });
 
 test('a live, unnormalized call resolves the same way a saved one does', () => {
@@ -2290,10 +2549,10 @@ test('a live, unnormalized call resolves the same way a saved one does', () => {
   assert.equal(callerBody[1], 0, 'the string "0" should resolve exactly like the number 0 does');
 });
 
-test('an unresolvable call compiles to nothing and never runs common event 0', () => {
+test('an unresolvable call carries NO_COMMON_EVENT_SLOT and never runs common event 0', () => {
   // 0 is an id a common event can really be sitting at, so an invalid
   // reference falling back to it would silently run that one instead of
-  // nothing — the same failure a dangling reference already had to be
+  // stopping — the same failure a dangling reference already had to be
   // taught not to cause, from the opposite direction.
   const project = createProject('Zero');
   project.sprites.actors = [{ name: 'Sign', behavior: 'npc' }];
@@ -2314,13 +2573,17 @@ test('an unresolvable call compiles to nothing and never runs common event 0', (
   ];
   const normalized = normalizeProject(structuredClone(project));
   const call = normalized.maps[0].screens[0].entities[0].props.event.pages[0].commands[0];
-  assert.equal(call.event, NO_COMMON_EVENT, 'an invalid reference must not normalize to 0');
+  assert.equal(call.event, NO_COMMON_EVENT_ID, 'an invalid reference must not normalize to 0');
   assert.equal(commonEventId(call.event), null);
 
   const built = compileText(normalized);
   assert.equal(built.events.length, 2, 'the common event plus the caller');
   const callerBody = built.events[1].slice(4);
-  assert.deepEqual(callerBody, [OP_END, EVT_PAGES_END], 'the invalid call should not have run common event 0');
+  assert.deepEqual(
+    callerBody,
+    [OP_CALL, NO_COMMON_EVENT_SLOT, OP_END, EVT_PAGES_END],
+    'the invalid call should carry NO_COMMON_EVENT_SLOT, not resolve to common event 0'
+  );
 });
 
 test('deleting a common event in the built ROM still runs what the survivor names', {

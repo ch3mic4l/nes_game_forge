@@ -9,7 +9,7 @@
 // stat, so the engine indexes with a single `lda mon_hp,y`. Presentation sits
 // next to the numbers — art, palette and name are tables like any other.
 
-import { ELEMENTS, RPG_LIMITS, SPELL_KINDS, SPELL_SCOPES } from '../../shared/project.js';
+import { ELEMENTS, RPG_LIMITS, SPELL_KINDS, SPELL_SCOPES, isMonsterActor } from '../../shared/project.js';
 import { textToTiles } from '../../shared/font.js';
 
 /** Longest name the battle box has room for, in its 12-column message area. */
@@ -243,7 +243,7 @@ export function checkBattleTables(project) {
       }
     }
   }
-  const hostile = project.sprites.actors.filter((actor) => (actor.damage ?? 0) > 0);
+  const hostile = project.sprites.actors.filter(isMonsterActor);
   if (!hostile.length) {
     problems.push({
       severity: 'warning',

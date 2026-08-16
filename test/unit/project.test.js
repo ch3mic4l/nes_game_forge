@@ -24,16 +24,28 @@ import {
   flatScreens,
   resolveCommonEventIds,
   commonEventId,
-  renumberSongDeletion
+  renumberSongDeletion,
+  renumberActorDeletion,
+  battleFormationSlice,
+  liveCommands,
+  compiledPages,
+  projectEvents,
+  CHOICE_LIMITS,
+  EVENT_COMMANDS
 } from '../../shared/project.js';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { loadProject, saveProject } from '../../main/project-io.js';
+import { buildProject } from '../../main/build/pipeline.js';
 import { resolveMapper, rpgCapable } from '../../shared/cartridge.js';
 import { flattenScreens } from '../../main/build/generate.js';
+import { compileText, opIndex, OP_JUMP } from '../../main/build/textcompile.js';
 import { FONT_BASE } from '../../shared/font.js';
 import { BLANK_TILE } from '../../shared/chr.js';
+import { spawnSync } from 'node:child_process';
+
+const hasNesasm = spawnSync('nesasm', [], { stdio: 'ignore' }).error?.code !== 'ENOENT';
 
 test('a new project satisfies its own schema', () => {
   const project = createProject('Demo');
@@ -395,7 +407,7 @@ test('commonEventId rejects values that only coerce to 0, not values that are 0'
   assert.equal(commonEventId(0), 0, 'and so is the number itself');
 });
 
-test('an invalid call reference normalizes to NO_COMMON_EVENT, never to 0', () => {
+test('an invalid call reference normalizes to NO_COMMON_EVENT_ID, never to 0', () => {
   // 0 is an id a common event can actually be sitting at, so falling back to
   // it for a reference that could not be understood would silently retarget
   // a dangling or hand-edited call to whatever that one happens to be —
@@ -566,6 +578,194 @@ test('deleting a song renumbers every reference, including one nested inside a b
   assert.equal(silence.song, null, 'Silence should stay Silence');
 });
 
+test('deleting an actor renumbers Give/Take item as well as a battle formation, nested or not', () => {
+  const project = createProject('Quest', 'rpg');
+  project.sprites.actors = [{ name: 'A' }, { name: 'B' }, { name: 'C' }, { name: 'D' }];
+  project.maps[0].screens[0].entities = [
+    {
+      actorId: 0,
+      x: 0,
+      y: 0,
+      props: {
+        event: {
+          pages: [
+            {
+              cond: { type: 'none', arg: 0 },
+              commands: [
+                { op: 'give', actor: 1 }, // names the actor about to be deleted
+                { op: 'take', actor: 2 }, // above it — should shift down
+                { op: 'battle', monsters: [1, 2, 3] },
+                {
+                  op: 'branch',
+                  cond: { type: 'none', arg: 0 },
+                  then: [{ op: 'give', actor: 1 }],
+                  else: [{ op: 'take', actor: 3 }]
+                },
+                {
+                  op: 'choice',
+                  options: [{ text: 'Take it', commands: [{ op: 'give', actor: 2 }] }]
+                }
+              ]
+            }
+          ]
+        }
+      }
+    }
+  ];
+
+  renumberActorDeletion(project, 1); // delete "B"
+
+  const commands = project.maps[0].screens[0].entities[0].props.event.pages[0].commands;
+  // Nothing is dropped -- a Give/Take naming exactly the deleted actor
+  // becomes visibly missing (actor: null) rather than erasing whatever else
+  // the event went on to do.
+  assert.deepEqual(
+    commands.map((c) => c.op),
+    ['give', 'take', 'battle', 'branch', 'choice']
+  );
+  const [give, take, battle, branch, choice] = commands;
+  assert.equal(give.actor, null, 'a Give item command naming exactly the deleted actor should read as missing');
+  assert.equal(take.actor, 1, 'a Take item command naming an actor above the deleted one should shift down');
+  assert.deepEqual(battle.monsters, [1, 2], 'the deleted actor drops out of the formation and the rest shift down');
+  assert.equal(branch.then[0].actor, null, 'a Give item nested in a branch names the deleted actor the same way');
+  assert.equal(branch.else[0].actor, 2, 'a reference below the deleted actor inside a branch should not move');
+  assert.equal(choice.options[0].commands[0].actor, 1, 'a reference inside a question option should renumber too');
+});
+
+test('a live Give/Take with a missing actor blocks the build; a switched-off one does not', () => {
+  const project = createProject('Quest', 'rpg');
+  project.sprites.actors = [{ name: 'Gem' }];
+  project.maps[0].screens[0].entities.push({
+    actorId: 0,
+    x: 0,
+    y: 0,
+    props: {
+      event: { pages: [{ cond: { type: 'none', arg: 0 }, commands: [{ op: 'give', actor: null }] }] }
+    }
+  });
+  const errors = validateProject(project).filter((p) => p.severity === 'error');
+  assert.equal(errors.length, 1);
+  assert.match(errors[0].message, /do not name a real/);
+
+  // Switching it off is the same escape hatch the previous round's finding
+  // gave a disabled battle command: scaffolding that names nothing real
+  // must not be what stands between an author and a build.
+  project.maps[0].screens[0].entities[0].props.event.pages[0].commands[0].off = true;
+  assert.deepEqual(validateProject(project).filter((p) => p.severity === 'error'), []);
+});
+
+test('the give/take check applies to an action project too, and now refuses a build it used to allow', {
+  skip: !hasNesasm && 'nesasm not found on PATH'
+}, async (t) => {
+  // Give/Take is a base-engine command (engine/ui.asm's add_item/inv_items),
+  // not one BATTLE_ENABLED gates, so an action project offers it same as an
+  // RPG does -- but the check itself lived inside validateProject's
+  // gameType === 'rpg' block until this round, which made it unreachable
+  // for exactly this project type. A project that built cleanly on 38001c6
+  // with a stale give/take id can fail here now: that is the intended
+  // effect of moving the check where the command actually lives, not a
+  // regression, but it is a compatibility change and deserves its own
+  // regression test rather than riding along on an RPG one that could never
+  // have caught it going missing again.
+  const project = createProject('Quest'); // action, the default gameType
+  project.sprites.actors = [{ name: 'Sign', behavior: 'npc' }];
+  project.maps[0].screens[0].entities.push({
+    actorId: 0,
+    x: 0,
+    y: 0,
+    props: { event: { pages: [{ cond: { type: 'none', arg: 0 }, commands: [{ op: 'give', actor: 99 }] }] } }
+  });
+
+  const errors = validateProject(project).filter((p) => p.severity === 'error');
+  assert.equal(errors.length, 1, 'an action project should get the same validateProject error an RPG does');
+  assert.match(errors[0].message, /do not name a real/);
+
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'forge-action-give-'));
+  t.after(() => fs.rm(dir, { recursive: true, force: true }));
+  await saveProject(dir, project);
+  await assert.rejects(
+    buildProject({ dir, project, log: () => {} }),
+    /do not name a real/,
+    'buildProject should refuse this project rather than compiling actor 99 into the ROM as-is'
+  );
+});
+
+test('a Run common event command naming a deleted common event fails validation and cannot build', {
+  skip: !hasNesasm && 'nesasm not found on PATH'
+}, async (t) => {
+  // This gap predates the battle command entirely -- it came in with common
+  // events themselves (490c71e) -- and was never caught because nothing
+  // asked whether a call's target still resolved. Reproduces the sequence
+  // that reads as silent data loss: Call Reward, then Set switch Quest
+  // complete, with the Reward common event gone. Before this fix, the call
+  // just compiled away and the switch still got set as though Reward had
+  // run.
+  const QUEST_COMPLETE = 5;
+  const project = createProject('Quest');
+  project.sprites.actors = [{ name: 'Sign', behavior: 'npc' }];
+  project.commonEvents = []; // Reward has been deleted; nothing defines id 0 any more
+  project.maps[0].screens[0].entities.push({
+    actorId: 0,
+    x: 0,
+    y: 0,
+    props: {
+      event: {
+        pages: [
+          {
+            cond: { type: 'none', arg: 0 },
+            commands: [{ op: 'call', event: 0 }, { op: 'setSwitch', switch: QUEST_COMPLETE }]
+          }
+        ]
+      }
+    }
+  });
+
+  const errors = validateProject(project).filter((p) => p.severity === 'error');
+  assert.equal(errors.length, 1);
+  assert.match(errors[0].message, /no longer exists or has nothing left in it/);
+
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'forge-dangling-call-'));
+  t.after(() => fs.rm(dir, { recursive: true, force: true }));
+  await saveProject(dir, project);
+  await assert.rejects(
+    buildProject({ dir, project, log: () => {} }),
+    /no longer exists or has nothing left in it/,
+    'buildProject should refuse this project rather than silently dropping the call and setting the switch anyway'
+  );
+
+  // liveCommands still yields the dangling call -- that half is unchanged
+  // and is not what this fix touches.
+  const [command] = project.maps[0].screens[0].entities[0].props.event.pages[0].commands;
+  const live = [...liveCommands([command], CHOICE_LIMITS.options)];
+  assert.equal(live.length, 1, 'liveCommands should still yield the structurally live call');
+  assert.equal(live[0].op, 'call');
+});
+
+test("a Give/Take's missing actor survives normalize instead of clamping to a real one", () => {
+  const project = normalizeProject({
+    maps: [
+      {
+        screens: [
+          {
+            entities: [
+              {
+                actorId: 0,
+                x: 0,
+                y: 0,
+                props: { event: { pages: [{ cond: { type: 'none', arg: 0 }, commands: [{ op: 'give', actor: null }] }] } }
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  });
+  const [command] = project.maps[0].screens[0].entities[0].props.event.pages[0].commands;
+  assert.equal(command.actor, null, 'the generic byte clamp would have turned this into actor 0 -- a real actor id');
+  // And a second pass leaves it exactly where the first one did.
+  assert.deepEqual(normalizeProject(structuredClone(project)).maps, project.maps);
+});
+
 test('a title screen pointing at a deleted map falls back to none', () => {
   const project = normalizeProject({ project: { titleMap: 5, titleScreen: 9 }, maps: [{}] });
   assert.equal(project.project.titleMap, null);
@@ -581,6 +781,369 @@ test('validateProject refuses artwork under the message font', () => {
   assert.equal(problems.length, 1);
   assert.equal(problems[0].where, 'Tile Forge');
   assert.match(problems[0].message, /message font/);
+});
+
+test('a battle command whose every monster id has gone stale is flagged the same as an empty one', () => {
+  // Deleting the only actor a formation named leaves the array non-empty but
+  // every id in it out of range -- textcompile.js clamps each one to
+  // NO_ACTOR, so this compiles to the identical instant win an
+  // authored-empty formation does. Validation has to judge the formation by
+  // what survives normalization, not by whether the array started out empty.
+  const project = createProject('Quest', 'rpg');
+  project.sprites.actors.push({ name: 'Slime', damage: 10 });
+  const staleId = project.sprites.actors.length; // never assigned to any actor
+  project.maps[0].screens[0].entities.push({
+    actorId: 0,
+    x: 0,
+    y: 0,
+    props: {
+      trigger: 'touch',
+      event: { pages: [{ cond: { type: 'none', arg: 0 }, commands: [{ op: 'battle', monsters: [staleId] }] }] }
+    }
+  });
+  const errors = validateProject(project).filter((p) => p.severity === 'error');
+  assert.equal(errors.length, 1);
+  assert.match(errors[0].message, /name no monsters/);
+
+  // A formation that still has at least one real monster left is a warning,
+  // not a build-stopping error -- it still compiles to a fight.
+  project.maps[0].screens[0].entities[0].props.event.pages[0].commands[0].monsters = [0, staleId];
+  assert.deepEqual(validateProject(project).filter((p) => p.severity === 'error'), []);
+  const warnings = validateProject(project).filter((p) => p.severity === 'warning');
+  assert.equal(warnings.length, 1);
+  assert.match(warnings[0].message, /name an actor that/);
+});
+
+test('a switched-off battle command does not block the build, wherever it is nested', () => {
+  // A disabled command is authoring scaffolding: the compiler's own
+  // traversal (encodeBody, main/build/textcompile.js) skips it, so a build
+  // must not stop for something the ROM was never going to contain.
+  const project = createProject('Quest', 'rpg');
+  project.maps[0].screens[0].entities.push({
+    actorId: 0,
+    x: 0,
+    y: 0,
+    props: {
+      trigger: 'touch',
+      event: {
+        pages: [
+          {
+            cond: { type: 'none', arg: 0 },
+            commands: [
+              { op: 'battle', monsters: [], off: true },
+              {
+                op: 'branch',
+                off: true,
+                cond: { type: 'none', arg: 0 },
+                then: [{ op: 'battle', monsters: [] }],
+                else: []
+              },
+              { op: 'say', text: 'Still here.' }
+            ]
+          }
+        ]
+      }
+    }
+  });
+  assert.deepEqual(validateProject(project).filter((p) => p.severity === 'error'), []);
+});
+
+const OP_END = opIndex('end');
+
+// Fixed width in bytes -- opcode plus its own arguments -- for every
+// EVENT_COMMANDS entry that is not self-describing (branch and choice carry
+// their own length bytes and are decoded structurally instead; see
+// decodeOpSequence). Mirrors the args each one has in shared/project.js, not
+// a second guess at it: one entry per arg, one byte each, plus the opcode.
+const FIXED_OPCODE_WIDTH = {
+  say: 2,
+  give: 2,
+  take: 2,
+  setSwitch: 2,
+  clearSwitch: 2,
+  warp: 4,
+  join: 2,
+  setVar: 3,
+  addVar: 3,
+  subVar: 3,
+  call: 2,
+  music: 2,
+  battle: 1 + RPG_LIMITS.monstersPerBattle
+};
+
+/**
+ * The sequence of opcodes a compiled event body actually contains, in the
+ * order encodeBody wrote them, flattened depth-first exactly the way
+ * liveCommands' own pre-order yields (a branch or option's contents
+ * immediately after the command that holds them) -- so the two are
+ * comparable element for element, not just by count. Branch and choice are
+ * decoded through their own length bytes rather than a fixed width, the
+ * same self-describing shape that lets script_skip (engine/script.asm) step
+ * over a body without decoding what is in it.
+ */
+function decodeOpSequence(bytes, cursor, end, out = []) {
+  while (cursor < end) {
+    const opcode = bytes[cursor];
+    if (opcode === OP_END) break;
+    const opName = EVENT_COMMANDS[opcode]?.id;
+    assert.ok(opName, `byte ${opcode} at offset ${cursor} is not a recognised opcode`);
+    out.push(opName);
+    if (opName === 'branch') {
+      const thenLen = bytes[cursor + 4];
+      const thenStart = cursor + 5;
+      // The OP_JUMP marker right after the then-body is the only thing that
+      // tells script_skip (engine/script.asm) it has reached the else side
+      // rather than more then-body it should keep stepping over -- a wrong
+      // byte there is invisible to a decoder that only ever reads thenLen to
+      // know where to stop, so it is checked by value, not just walked past.
+      assert.equal(
+        bytes[thenStart + thenLen],
+        OP_JUMP,
+        `branch at offset ${cursor}: expected OP_JUMP at ${thenStart + thenLen} (past the then-body), found ${bytes[thenStart + thenLen]}`
+      );
+      decodeOpSequence(bytes, thenStart, thenStart + thenLen, out);
+      const elseLen = bytes[thenStart + thenLen + 1]; // past the OP_JUMP byte
+      const elseStart = thenStart + thenLen + 2;
+      decodeOpSequence(bytes, elseStart, elseStart + elseLen, out);
+      cursor = elseStart + elseLen;
+    } else if (opName === 'choice') {
+      const count = bytes[cursor + 1];
+      const first = cursor + 2 + count; // past the opcode, the count, and one string id per option
+
+      // Every option's own length byte, read up front in the order the
+      // records actually sit in -- the recursion below still walks the same
+      // order, but this first pass is what lets the OP_JUMP marker and the
+      // jump distance after each body be checked against values computed
+      // from the lengths themselves, rather than only ever being used to
+      // find the next record.
+      const records = [];
+      for (let i = 0, p = first; i < count; i++) {
+        // Each option's own length byte counts its body *plus* the OP_JUMP
+        // pair after it (encodeCommand's 'choice' case: `lengths[i] =
+        // body.length + 2`), not the body alone -- the record is
+        // [length, ...body, OP_JUMP, past], L+1 bytes end to end.
+        const len = bytes[p];
+        const bodyStart = p + 1;
+        const bodyLen = len - 2;
+        records.push({ start: p, len, bodyStart, bodyLen });
+        p += len + 1;
+      }
+
+      // past[i] is "every record after option i, each one's own length byte
+      // plus what it describes" (encodeCommand's own comment) -- accumulated
+      // backwards here for the same reason it is easiest to compute forwards
+      // there: option i's distance depends on every option below it, which
+      // for the last option is zero and grows by one full record at a time
+      // working back towards the first.
+      let expectedPast = 0;
+      for (let i = count - 1; i >= 0; i--) {
+        const { start, len, bodyStart, bodyLen } = records[i];
+        assert.equal(
+          bytes[bodyStart + bodyLen],
+          OP_JUMP,
+          `choice option ${i} at offset ${cursor}: expected OP_JUMP at ${bodyStart + bodyLen} (past its body), found ${bytes[bodyStart + bodyLen]}`
+        );
+        assert.equal(
+          bytes[bodyStart + bodyLen + 1],
+          expectedPast,
+          `choice option ${i} at offset ${cursor}: jump distance past the remaining options is ` +
+            `${bytes[bodyStart + bodyLen + 1]}, expected ${expectedPast} -- a stale distance here would send ` +
+            'script_choose (engine/script.asm) somewhere the compiled sequence never actually put a command'
+        );
+        expectedPast += 1 + len;
+      }
+
+      for (const { bodyStart, bodyLen } of records) {
+        decodeOpSequence(bytes, bodyStart, bodyStart + bodyLen, out);
+      }
+      cursor = first + records.reduce((sum, r) => sum + r.len + 1, 0);
+    } else {
+      const width = FIXED_OPCODE_WIDTH[opName];
+      assert.ok(width, `${opName} has no known fixed width -- add it to FIXED_OPCODE_WIDTH`);
+      cursor += width;
+    }
+  }
+  return out;
+}
+
+test('liveCommands and encodeBody agree on the actual sequence of compiled opcodes', () => {
+  // Counting OP_BATTLE bytes only proved battle commands, only by count --
+  // a duplicate plus a drop would cancel out, and nothing about it spoke to
+  // any other opcode. This decodes the real compiled event back into an
+  // opcode sequence and compares it against liveCommands' own sequence
+  // directly, across every opcode this schema has, so identity and order
+  // both have to agree, not just a total.
+  const project = createProject('Quest', 'rpg');
+  project.sprites.actors = [{ name: 'Slime', damage: 5 }];
+  project.party = [{ id: 0, name: 'Hero', spells: [] }];
+
+  // A resolvable common event, id 0 by resolveCommonEventIds' own default
+  // (no explicit `id`, commonEventSeq starts at 0) -- present for every
+  // scenario below so a `call` in any of them, not only the dedicated
+  // dangling-call case further down, resolves to something real instead of
+  // compiling away. Harmless to the scenarios that never emit `call`.
+  const resolvableCommonEvents = [
+    { name: 'Common', event: { pages: [{ cond: { type: 'none', arg: 0 }, commands: [{ op: 'give', actor: 0 }] }] } }
+  ];
+
+  const compiledSequence = (commands) => {
+    project.maps[0].screens[0].entities = [
+      { actorId: 0, x: 0, y: 0, props: { event: { pages: [{ cond: { type: 'none', arg: 0 }, commands }] } } }
+    ];
+    project.commonEvents = resolvableCommonEvents;
+    // compileText (main/build/textcompile.js) pushes every live common event
+    // before it walks the placed entities, so with one common event present
+    // the placed entity's compiled event is events[1], not events[0].
+    const [, event] = compileText(project).events;
+    // A page whose only commands are switched off has no live commands at
+    // all, so compiledPages drops it and the entity gets no event and no
+    // dialogue -- compileText emits nothing for it, not an empty event.
+    if (!event) return [];
+    return decodeOpSequence(event, 4, event.length); // past the page header
+  };
+
+  const liveSequence = (commands) => [...liveCommands(commands, CHOICE_LIMITS.options)].map((c) => c.op);
+
+  const one = (op, extra) => ({ op, monsters: [0], actor: 0, switch: 0, screen: 0, x: 0, y: 0, member: 0, variable: 0, value: 0, event: 0, song: null, ...extra });
+
+  const scenarios = {
+    'a straight line of every fixed-width opcode, in order': [
+      one('say'),
+      one('give'),
+      one('take'),
+      one('setSwitch'),
+      one('clearSwitch'),
+      one('warp'),
+      one('join'),
+      one('setVar'),
+      one('addVar'),
+      one('subVar'),
+      one('music'),
+      one('call'), // resolvableCommonEvents' id 0 -- exercises FIXED_OPCODE_WIDTH.call against a real slot byte, not just NO_COMMON_EVENT_SLOT
+      one('battle')
+    ],
+    "a branch's then side, then its else side": [
+      { op: 'branch', cond: { type: 'none', arg: 0 }, then: [one('say')], else: [one('give')] }
+    ],
+    'all four choice options a box has rows for, each different': [
+      {
+        op: 'choice',
+        options: [
+          { text: 'A', commands: [one('say')] },
+          { text: 'B', commands: [one('give')] },
+          { text: 'C', commands: [one('setSwitch')] },
+          { text: 'D', commands: [one('battle')] }
+        ]
+      }
+    ],
+    'a fifth choice option, past CHOICE_LIMITS.options': [
+      {
+        op: 'choice',
+        options: [
+          { text: 'A', commands: [one('say')] },
+          { text: 'B', commands: [one('give')] },
+          { text: 'C', commands: [one('setSwitch')] },
+          { text: 'D', commands: [one('battle')] },
+          { text: 'E', commands: [one('music')] } // discarded, must not appear on either side
+        ]
+      }
+    ],
+    'a switched-off branch, whatever it holds': [
+      { op: 'branch', off: true, cond: { type: 'none', arg: 0 }, then: [one('say')], else: [one('give')] }
+    ],
+    'a switched-off command, directly': [one('say', { off: true })],
+    'nested branches, three deep': [
+      {
+        op: 'branch',
+        cond: { type: 'none', arg: 0 },
+        then: [{ op: 'branch', cond: { type: 'none', arg: 0 }, then: [one('say')], else: [] }],
+        else: []
+      }
+    ]
+  };
+
+  for (const [name, commands] of Object.entries(scenarios)) {
+    assert.deepEqual(compiledSequence(commands), liveSequence(commands), name);
+  }
+
+  // A common event is reached by projectEvents rather than by walking a
+  // placement's own pages, and compiles into the shared table whether or
+  // not anything calls it -- the same comparison has to hold there too.
+  project.maps[0].screens[0].entities = [];
+  project.commonEvents = [{ name: 'Common', event: { pages: [{ cond: { type: 'none', arg: 0 }, commands: [one('say')] }] } }];
+  const [commonEvent] = compileText(project).events;
+  const commonCompiled = decodeOpSequence(commonEvent, 4, commonEvent.length);
+  let commonLive = [];
+  for (const event of projectEvents(project)) {
+    for (const page of compiledPages(event)) {
+      commonLive = commonLive.concat(liveSequence(page.commands));
+    }
+  }
+  assert.deepEqual(commonCompiled, commonLive, 'a common event, reached through projectEvents');
+
+  // A dangling `call` -- naming a common event id nothing defines -- used to
+  // be the one documented exception to "these two sequences must match":
+  // encodeCommand's 'call' case (main/build/textcompile.js) used to resolve
+  // the reference and compile to nothing when it did not, the same way an
+  // empty battle formation or a choice with no options does, while
+  // liveCommands (which has no way to ask "does this reference resolve", the
+  // same reason it cannot for a missing give/take actor either) kept
+  // yielding the call regardless. That is no longer how the compiler answers
+  // this: an unresolved call now still gets a table slot's worth of bytes,
+  // carrying NO_COMMON_EVENT_SLOT as its operand, so script_op_call
+  // (engine/script.asm) has something to read and refuse at runtime instead
+  // of the command simply not being there -- and liveCommands and the
+  // compiled sequence agree on 'call' now like every other opcode, with no
+  // exception left to encode. event: 999 names nothing -- compiledSequence's
+  // own resolvableCommonEvents (id 0) is the only common event it sets up.
+  const danglingCallCommands = [one('say'), { op: 'call', event: 999 }, one('give')];
+  const danglingCompiled = compiledSequence(danglingCallCommands);
+  const danglingLive = liveSequence(danglingCallCommands);
+  assert.deepEqual(danglingCompiled, ['say', 'call', 'give'], 'an unresolved call still gets its own bytes, carrying NO_COMMON_EVENT_SLOT');
+  assert.deepEqual(danglingLive, ['say', 'call', 'give'], 'liveCommands is not expected to resolve a call target, but still yields it structurally');
+  assert.deepEqual(danglingLive, danglingCompiled, 'no filtering needed any more -- the two sequences agree on a dangling call directly');
+});
+
+test('liveCommands refuses to walk without a choice-option limit', () => {
+  // Required, not defaulted: an omitted limit used to mean "walk every
+  // option, unbounded" -- silently the exact divergence from encodeBody
+  // this argument exists to close. A caller that forgets it now finds out
+  // immediately rather than shipping a validator that agrees with the
+  // compiler by accident, only for as long as no project has a fifth option.
+  const commands = [{ op: 'battle', monsters: [0] }];
+  assert.throws(() => [...liveCommands(commands)], /choiceOptionLimit/);
+  assert.throws(() => [...liveCommands(commands, undefined)], /choiceOptionLimit/);
+  assert.doesNotThrow(() => [...liveCommands(commands, CHOICE_LIMITS.options)]);
+});
+
+test('a formation whose only valid monster falls past the truncation point reads as empty', () => {
+  // The compiler (encodeCommand's 'battle' case, main/build/textcompile.js)
+  // slices to RPG_LIMITS.monstersPerBattle *before* deciding which ids are
+  // still real actors -- so a live, not-yet-normalized formation with more
+  // entries than that can lose its only valid one to truncation rather than
+  // to staleness, and still has to read as empty: the ROM never sees it
+  // either way. battleFormationSlice is the one place both this and the
+  // compiler apply that order, so they cannot drift apart on it again.
+  const actorCount = 1; // only actor 0 exists
+  const overfull = [99, 99, 99, 99, 0]; // the only valid id sits in the fifth slot
+  const sliced = battleFormationSlice(overfull);
+  assert.deepEqual(sliced, [99, 99, 99, 99], 'RPG_LIMITS.monstersPerBattle is 4');
+  const valid = sliced.filter((id) => Number.isInteger(id) && id >= 0 && id < actorCount);
+  assert.deepEqual(valid, [], 'the fifth slot never reaches the ROM, so its valid id does not count');
+
+  const project = createProject('Quest', 'rpg');
+  project.sprites.actors = [{ name: 'Slime', damage: 5 }];
+  project.maps[0].screens[0].entities.push({
+    actorId: 0,
+    x: 0,
+    y: 0,
+    props: {
+      event: { pages: [{ cond: { type: 'none', arg: 0 }, commands: [{ op: 'battle', monsters: overfull }] }] }
+    }
+  });
+  const errors = validateProject(project).filter((p) => p.severity === 'error');
+  assert.equal(errors.length, 1);
+  assert.match(errors[0].message, /name no monsters/);
 });
 
 test('an RPG project round-trips through normalize unchanged', () => {

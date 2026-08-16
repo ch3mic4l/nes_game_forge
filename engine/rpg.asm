@@ -121,6 +121,22 @@ battle_begin_status:
   inx
   cpx #MAX_PARTY
   bne battle_begin_status
+  ; Captured before the reset below clears it: NO_ENTITY here for a random or
+  ; contact-damage fight, neither of which ever set talk_ent to begin with,
+  ; or the entity slot whose event is mid-script and about to suspend on this
+  ; battle. bt_owner_rec -- the record that slot was spawned from, not the
+  ; slot itself -- is only meaningful when bt_owner_ent names a real one; it
+  ; is what battle_end asks the field for again once the fight is over,
+  ; because the slot is exactly what the redraw at the other end is free to
+  ; reassign.
+  lda talk_ent
+  sta bt_owner_ent
+  cmp #MAX_ENTITIES
+  bcs battle_begin_no_owner
+  tax
+  lda ent_record,x
+  sta bt_owner_rec
+battle_begin_no_owner:
   lda #NO_ENTITY
   sta talk_ent
   rts
@@ -151,6 +167,74 @@ battle_end:
 battle_end_done:
   lda #NO_ENTITY
   sta bt_from_ent
+  ; redraw_screen's own spawn_entities has just cleared ent_touched for every
+  ; slot on the screen, on the grounds that a screen arrives with nothing yet
+  ; stood on. That is true even here, for most of the ways a battle can
+  ; start: a random step (check_encounter) or an authored monster's contact
+  ; damage (touch_encounter) both fire from inside update_player/
+  ; update_entities on the very frame the touch happens, *before*
+  ; settle_owed ever gets a chance to actually run that entity's own event --
+  ; so if the entity the player is standing on also happens to carry a touch
+  ; event of its own, arm_event only ever queued it; nothing has run yet, and
+  ; latching ent_touched shut here would suppress it forever, not just for
+  ; this frame.
+  ;
+  ; A scripted fight is different: OP_BATTLE is a command a page reaches only
+  ; by already running, which means whatever touch armed this event has
+  ; already been consumed by start_dialog -- but *only that one entity's*.
+  ; The player can be standing on more than one touch-triggered actor at
+  ; once (an entry event's own battle can start before an unrelated entity
+  ; underfoot has had its first update_entities pass at all), so "a script
+  ; is running" is not enough to say which of them may come back latched;
+  ; only bt_owner_rec, the record battle_begin found in talk_ent, names the
+  ; one whose event is actually suspended. Nothing else the player happens to
+  ; be standing on gets touched here -- each of those never ran, and reads
+  ; the same as any other screen that has just arrived.
+  ;
+  ; Restoring by the slot bt_owner_ent named before the fight cannot work
+  ; either: the same respawn that cleared ent_touched can also hand that
+  ; actor a different slot, or drop an earlier one and shift the rest down
+  ; (see rpg.test.js's reshuffle test) -- which is exactly why bt_owner_rec
+  ; is a record, not a slot, and this asks the field which slot that record
+  ; landed in now rather than trusting the one it held before.
+  ldx bt_owner_ent
+  cpx #MAX_ENTITIES
+  bcs battle_end_no_restore
+  ldx #0
+battle_end_owner_loop:
+  lda ent_active,x
+  beq battle_end_owner_next
+  lda ent_record,x
+  cmp bt_owner_rec
+  bne battle_end_owner_next
+  lda #1
+  sta ent_touched,x
+  jmp battle_end_no_restore   ; records are unique per screen; nothing more to find
+battle_end_owner_next:
+  inx
+  cpx #MAX_ENTITIES
+  bne battle_end_owner_loop
+battle_end_no_restore:
+  lda #NO_ENTITY
+  sta bt_owner_ent
+  ; This has to run after every line above it, not before: pending_ent and
+  ; ent_active are the redraw's own bookkeeping, settled before anything
+  ; about the *script* is decided, so a resumed script is never confused
+  ; with the entry event redraw_screen just armed and this already put down
+  ; -- and never undoes it either, since script_resume cannot re-arm what
+  ; pending_ent has already forgotten.
+  lda script_active
+  beq battle_end_gameplay
+  ; The world has to stay frozen for whatever the script does next -- ST_DIALOG
+  ; is the same state start_dialog itself sets, so if the next command is
+  ; another Say, it draws over a field the player cannot walk around on rather
+  ; than one still moving under it. script_resume's own ending, however many
+  ; commands away that is, is what eventually sets ST_GAMEPLAY back -- the
+  ; same close_ui every other conversation ends through.
+  lda #ST_DIALOG
+  sta game_state
+  jmp script_resume
+battle_end_gameplay:
   rts
 
   .endif

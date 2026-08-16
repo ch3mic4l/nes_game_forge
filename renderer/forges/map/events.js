@@ -21,9 +21,11 @@ import {
   LIMITS,
   MAX_BRANCH_DEPTH,
   RPG_LIMITS,
+  actorMissing,
   compiledPages,
   enabledCommands,
-  commonEventId
+  commonEventId,
+  isMonsterActor
 } from '../../../shared/project.js';
 
 /** What a number field is worth as an engine byte: whole, and inside the range. */
@@ -41,7 +43,10 @@ const offeredCommands = (context) =>
   EVENT_COMMANDS.filter(
     (entry) =>
       IMPLEMENTED_COMMANDS.has(entry.id) &&
-      (entry.id !== 'join' || context.party?.length) &&
+      // Only an RPG has a party, and only an RPG has a battle bank to call
+      // into — the same reason 'join' already hides here, extended to
+      // 'battle' rather than given a second condition to ask.
+      ((entry.id !== 'join' && entry.id !== 'battle') || context.party?.length) &&
       // Nothing to call until at least one common event exists — offering it
       // sooner would be exactly the "looks functional, does nothing" case
       // this codebase refuses to ship, one authoring step earlier.
@@ -76,6 +81,10 @@ const defaultCommand = (op, context = {}) => {
       // Silence, the same default a brand-new map's own Music field has —
       // not song 0, which nothing here chose.
       out.song = null;
+    } else if (arg === 'monsters') {
+      // Empty, not a formation of one nothing chose — the picker below warns
+      // about an empty formation rather than this reaching for a monster.
+      out.monsters = [];
     } else out[arg] = 0;
   }
   return out;
@@ -121,9 +130,9 @@ function describeEnabled(command, context = {}) {
     case 'say':
       return `Say “${(command.text ?? '').trim().slice(0, 40) || '…'}”`;
     case 'give':
-      return `Give ${actorName(command.actor)}`;
+      return actorMissing(actors, command.actor) ? 'Give (missing actor)' : `Give ${actorName(command.actor)}`;
     case 'take':
-      return `Take ${actorName(command.actor)}`;
+      return actorMissing(actors, command.actor) ? 'Take (missing actor)' : `Take ${actorName(command.actor)}`;
     case 'setSwitch':
       return `Turn on ${switchName(command.switch)}`;
     case 'clearSwitch':
@@ -142,6 +151,10 @@ function describeEnabled(command, context = {}) {
       return `Run ${commonEventName(command.event)}`;
     case 'music':
       return command.song === null || command.song === undefined ? 'Silence' : `Play ${songName(command.song)}`;
+    case 'battle':
+      return (command.monsters ?? []).length
+        ? `Battle ${command.monsters.map(actorName).join(', ')}`
+        : 'Battle (no monsters — dropped on save)';
     case 'branch': {
       // Described down to its contents, because the event list's search runs
       // over exactly this text: a switch used only inside a branch has to be
@@ -594,12 +607,77 @@ export function editEvent(event, context) {
       );
     }
 
+    if (command.op === 'battle') {
+      const monsters = command.monsters ?? [];
+      const hostile = (context.actors ?? [])
+        .map((actor, id) => ({ actor, id }))
+        .filter(({ actor }) => isMonsterActor(actor));
+      return el(
+        'div',
+        { style: { marginBottom: '6px', ...dim } },
+        el(
+          'div.field-row',
+          { style: { marginBottom: '4px' } },
+          el('span', { style: { flex: '1', color: 'var(--text-dim)' } }, 'Start a battle'),
+          tools
+        ),
+        // Only monster-qualifying actors are offered — a formation slot
+        // pointing at a pickup would compile, and then stand there being one.
+        hostile.length
+          ? Array.from({ length: RPG_LIMITS.monstersPerBattle }, (_, slot) =>
+              el(
+                'select',
+                {
+                  style: { marginBottom: '4px' },
+                  onchange: (fired) => {
+                    const next = [...monsters];
+                    if (fired.target.value === '') next.splice(slot, 1);
+                    else next[slot] = Number(fired.target.value);
+                    command.monsters = next.filter((id) => id !== undefined);
+                    rerender();
+                  }
+                },
+                el('option', { value: '', selected: monsters[slot] === undefined }, `Slot ${slot + 1} — empty`),
+                hostile.map(({ actor, id }) =>
+                  el('option', { value: id, selected: id === monsters[slot] }, actor.name)
+                )
+              )
+            )
+          : el(
+              'p.hint',
+              { style: { color: 'var(--accent)' } },
+              'No actor has contact damage above zero, so there is nothing to fight yet — give a monster ' +
+                'damage in the Sprite Forge.'
+            ),
+        el(
+          'p.hint',
+          null,
+          monsters.length
+            ? 'The player cannot run from this fight, the same as walking into a placed monster on the map. ' +
+              'Losing is a game over, the same as running out of hearts, so there is no lose branch to write — ' +
+              'whatever comes after this command only ever runs when the player wins.'
+            : 'An empty formation is dropped when you save — pick at least one monster above, or this ' +
+              'command will not be there when you come back.'
+        )
+      );
+    }
+
     const controls = [];
     if (command.op === 'give' || command.op === 'take') {
       controls.push(
         el(
           'select',
           { style: { flex: '1' }, onchange: (fired) => (command.actor = Number(fired.target.value)) },
+          // A reference the actor list no longer has -- its actor was
+          // deleted out from under it (renumberActorDeletion) -- gets its
+          // own option rather than being left to fall on whichever option
+          // the browser renders first while `command.actor` keeps pointing
+          // at nothing: that would show one actor being given and compile a
+          // give of another, the editor and the ROM disagreeing about what
+          // the command does.
+          actorMissing(context.actors, command.actor)
+            ? el('option', { value: command.actor ?? '', selected: true }, 'Missing actor')
+            : null,
           context.actors.map((actor, id) =>
             el('option', { value: id, selected: id === command.actor }, actor.name)
           )
@@ -735,13 +813,58 @@ export function editEvent(event, context) {
         // problem without losing what it said, so Save must not be the thing
         // that throws it away. `compiledPages` leaves them out of the ROM, and
         // the plain dialogue underneath comes back until they are switched on.
+        //
+        // A Start a battle command with nothing in its formation is dropped
+        // too, wherever it is nested — the same thing normalizeEventCommand
+        // already does on disk, applied here as well because the editor hands
+        // Build the live project, not a normalized one: if Save let this
+        // through, the gap between what the picker shows and what the ROM
+        // does would only close on the next save-and-reload, and in between,
+        // an author's actor-appears-to-fight, actor-instantly-wins reads as a
+        // working boss fight right up until it is not one.
         onClick: () => {
-          const pages = draft.pages.filter((page) => page.commands.length);
+          const pages = draft.pages
+            .map((page) => ({ ...page, commands: stripEmptyBattles(page.commands) }))
+            .filter((page) => page.commands.length);
           return pages.length ? { pages } : null;
         }
       }
     ]
   });
+}
+
+/**
+ * A Start a battle command survives only with at least one monster in its
+ * formation, however deep a branch or a question has nested it -- unless it,
+ * or whatever holds it, is switched off. A disabled command is authoring
+ * scaffolding: the whole point of the toggle is finding out whether a line
+ * was the problem without losing what it said, so Save must not be the thing
+ * that throws it away, and neither may this. That is also why a disabled
+ * branch or option is returned untouched rather than recursed into — the
+ * compiler already treats it as not there (compiledPages/liveCommands,
+ * shared/eventrules.js), so stripping something out of it would be discarding
+ * data nothing downstream was ever going to read anyway.
+ */
+export function stripEmptyBattles(commands) {
+  return commands
+    .map((command) => {
+      if (command.off === true) return command;
+      if (command.op === 'battle') return (command.monsters ?? []).length ? command : null;
+      if (command.op === 'branch') {
+        return { ...command, then: stripEmptyBattles(command.then ?? []), else: stripEmptyBattles(command.else ?? []) };
+      }
+      if (command.op === 'choice') {
+        return {
+          ...command,
+          options: (command.options ?? []).map((option) => ({
+            ...option,
+            commands: stripEmptyBattles(option.commands ?? [])
+          }))
+        };
+      }
+      return command;
+    })
+    .filter(Boolean);
 }
 
 /** Name the 64 switches, so an event reads as English rather than as numbers. */

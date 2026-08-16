@@ -477,6 +477,39 @@ also what clamps a variable index as it is compiled. The engine therefore range-
 the compiler is the only thing that can know how big the array is, so it is the only thing that
 guards it.
 
+**`Run common event…` compiles to `[OP_CALL, table slot]`**, the slot a `call`'s target resolved to
+in `main/build/textcompile.js`'s own events table — common events are compiled into it ahead of
+every placement's, so a call's one-byte argument is the position it landed in, nothing more.
+`shared/project.js`'s `liveCommonEvents(project)` is the single definition of which
+`project.commonEvents` entries get a slot at all — one with at least one live page
+(`compiledPages(entry.event).length > 0`), carrying the id `resolveCommonEventIds` gives it — and
+both the compiler's slot assignment and `validateProject`'s own "does this call's target still
+resolve" check consume that one function rather than two implementations of the same admission rule
+that could disagree about which id a deleted or emptied-out common event leaves behind.
+
+A `call` naming nothing live — deleted since, never live to begin with, or never given a target —
+still compiles to `[OP_CALL, NO_COMMON_EVENT_SLOT]` rather than being dropped: `script_op_call`
+(`engine/script.asm`) reads the operand and, finding the sentinel, stops the event exactly as
+`script_run_bad` stops one on an opcode it does not recognise at all, and exactly as
+`script_op_give`/`script_op_take` already do on `NO_ACTOR` — a recognised command whose operand
+names nothing is that family's shape of bug regardless of which opcode carries it. Dropping the
+command silently instead — which is what this engine did until the gap was found — let the page
+carry on to whatever the author wrote to run *after* the call, having silently not run the thing
+the call was there for. `validateProject` also refuses a build over a *live* `call` like that, the
+same way it refuses a missing Give/Take actor or an empty battle formation, so this is defense in
+depth for a hand-edited project or one written by a later version, not the only thing standing
+between a broken reference and a shipped ROM.
+
+**Exceeding `CALL_STACK_DEPTH` is a different failure from `NO_COMMON_EVENT_SLOT` and gets a different
+answer.** The callee there is perfectly real — there is just nowhere left on the small fixed
+`call_ret_lo/hi` stack (`CALL_STACK_DEPTH` in `engine/constants.asm`) to remember the way back — so
+`script_op_call` skips the call and runs the next command, on purpose: two common events are free to
+call each other, and a cycle between them is only visible once both bodies exist, not while either
+is being authored, so past the bound a call has to unwind rather than hang the game on an
+author-invisible cycle. The two checks do not share a branch: `script_op_call` tests the operand
+against `NO_COMMON_EVENT_SLOT` first and stops there before the depth is even read, so a fix to one
+cannot quietly change the other's behaviour.
+
 The 64 switches and the 16 variables are the only state that outlives a screen change, which is
 what makes "this happened already" expressible. `switch_test` / `switch_set` / `switch_clear`
 **preserve X and Y**,

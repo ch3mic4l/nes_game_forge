@@ -137,22 +137,25 @@ const TITLE_PROMPT_ROW = 19;
 // an earlier version of this comment measured sample-rpg with its title
 // disabled and quoted a number 220 bytes short of the real ceiling, which
 // checkCapacity then handed straight to a "Bank overflow" from the assembler
-// instead of catching itself. 6638 bytes as measured by building sample-rpg on
+// instead of catching itself. 6780 bytes as measured by building sample-rpg on
 // mapper 30 with a title screen added, the message box, the event runner with
-// its variables, branches, questions, triggers, common-event calls and Play
-// music all in, and action combat and the RPG's kernel-side half. The battle
-// system itself is not in this number — it lives in a switchable bank, which
-// is the whole reason it can exist at all. That leaves 32 bytes of slack: the
-// next thing to grow the kernel measures again and raises this, rather than
-// assuming the number below is generous.
+// its variables, branches, questions, triggers, common-event calls (including
+// script_op_call's own NO_COMMON_EVENT stop, separate from the CALL_STACK_DEPTH
+// skip it falls through to), Play music and Start a battle all in, and action
+// combat and the RPG's kernel-side half (script_op_battle, and battle_end's
+// script-resume and record-identity restore paths — not the battle system
+// itself, which lives in a switchable bank, the whole reason it can exist at
+// all). That leaves 20 bytes of slack: the next thing to grow the kernel
+// measures again and raises this, rather than assuming the number below is
+// generous.
 //
-// test/unit/kernelbytes.test.js builds exactly that worst case and asserts the
-// real measurement stays inside this constant, so a future regression is a
-// failing test rather than a silent promise the assembler later refuses.
-// Re-measure and raise this if the engine grows: build sample-rpg with a
-// title on mapper 30, take nesasm's usage for the bank holding `reset`, and
-// subtract `reset - $C000`.
-export const KERNEL_CODE_BYTES = 6670;
+// test/unit/kernelbytes.test.js builds exactly that worst case, on every
+// RPG-capable board, and asserts the real measurement stays inside this
+// constant, so a future regression is a failing test rather than a silent
+// promise the assembler later refuses. Re-measure and raise this if the engine
+// grows: build sample-rpg with a title on mapper 30, take nesasm's usage for
+// the bank holding `reset`, and subtract `reset - $C000`.
+export const KERNEL_CODE_BYTES = 6800;
 const PLAYER_FRAMES = 8; // 4 directions x 2 walk frames
 const PLAYER_TILES = PLAYER_FRAMES * 4;
 

@@ -20,7 +20,7 @@ import {
   effectiveTrigger
 } from '../../../shared/project.js';
 import { BOX_COLS, BOX_ROWS, FONT_BASE, wrapText } from '../../../shared/font.js';
-import { RPG_LIMITS } from '../../../shared/project.js';
+import { RPG_LIMITS, isMonsterActor } from '../../../shared/project.js';
 import { createMetatilePanel } from './metatiles.js';
 import {
   describeCommand,
@@ -1066,7 +1066,7 @@ export function mount(container, app) {
     const encounters = map.encounters ?? { rate: 0, actorIds: [] };
     const hostile = store.project.sprites.actors
       .map((actor, id) => ({ actor, id }))
-      .filter(({ actor }) => (actor.damage ?? 0) > 0);
+      .filter(({ actor }) => isMonsterActor(actor));
 
     const tilePicker = (value, onChange) =>
       el(

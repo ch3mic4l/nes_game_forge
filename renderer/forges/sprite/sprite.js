@@ -11,7 +11,8 @@ import {
   ANIM_SLOTS,
   ELEMENTS,
   RPG_LIMITS,
-  tilesetAt
+  tilesetAt,
+  renumberActorDeletion
 } from '../../../shared/project.js';
 import { battleSection, partyPanel } from './battle.js';
 import { drawSheet, sheetIndexFromEvent } from '../../widgets/sheet.js';
@@ -673,6 +674,9 @@ export function mount(container, app) {
                       }));
                   }
                 }
+                // A Start a battle command's formation is a second place an
+                // actor id is stored, not reached by walking placements above.
+                renumberActorDeletion(project, index);
               });
               state.actor = Math.max(0, state.actor - 1);
               render();

@@ -65,7 +65,22 @@ through the Code Forge.
   map already had its own Music field, but only the start map's took effect: `apply_map_music`
   (`engine/music.asm`), called once from boot and once from `redraw_screen`, is now the single place
   that decides
-- Commands for starting a **battle**, **moving an actor**, and **healing/damaging** the party
+- ~~A command for starting a **battle**~~ — **done**: `Start a battle…` names a formation of up to
+  `RPG_LIMITS.monstersPerBattle` monsters directly, never the map's own (random) encounter table,
+  which already has a path of its own. It suspends the script exactly as `Say` does —
+  `script_op_battle` advances `script_ptr` past the whole command before handing over to
+  `battle_begin`, the same routine a placed monster's contact and the step counter already use — and
+  `battle_end` resumes it once the fight is won, through the same `script_resume` a dismissed message
+  box calls. Cannot be run from, the same as walking into a placed monster; losing is not authored at
+  all, since it is already a game over from `player_died`, so control only ever comes back here on a
+  win, and whatever follows the command (turning on a switch, say) is the win case with no new
+  vocabulary. The dangerous part was never starting the fight, it was coming back from it without
+  disturbing what a *different* redraw already has to do: `battle_end`'s own `redraw_screen` both
+  re-arms the screen's entry event (which it already had to put back down) and clears every entity's
+  `ent_touched` (which a resumed script's own touch trigger needs put back, since the world never
+  moved during the fight) — two redraw side effects a scripted battle now has to settle before it
+  decides whether to resume anything, not two chances to get the ordering wrong.
+- Commands for **moving an actor**, and **healing/damaging** the party
 
 Every addition here lands in four places at once — `EVENT_COMMANDS`, the schema and normalizer, the
 compiler in `main/build/generate.js`, and `engine/script.asm` — and each one costs kernel bytes,

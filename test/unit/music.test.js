@@ -36,8 +36,8 @@ const hasRom = fs.existsSync(ROM_PATH);
 // for tests regardless: a test that reads the file it is checking proves
 // nothing.
 const FLAT_SCREEN = 0x16;
-const CUR_MAP = 0x87;  // NO_MAP until a screen decides
-const CUR_SONG = 0x88; // NO_SONG until set_music runs
+const CUR_MAP = 0x8a;  // NO_MAP until a screen decides
+const CUR_SONG = 0x8b; // NO_SONG until set_music runs
 
 test('the period table tunes A-4 to 440 Hz', () => {
   const period = PERIOD_TABLE[45];

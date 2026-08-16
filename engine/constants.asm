@@ -214,15 +214,43 @@ CALL_STACK_DEPTH = 4
 ; slot -- a call pushes the return point at call_ret_lo/hi[call_depth] and
 ; then increments it, a return decrements first and reads the same slot back.
 call_depth  = $7E
-call_ret_lo = $7F                          ; CALL_STACK_DEPTH bytes
-call_ret_hi = call_ret_lo+CALL_STACK_DEPTH ; CALL_STACK_DEPTH bytes
+call_ret_lo = $7F                          ; CALL_STACK_DEPTH bytes  @size=CALL_STACK_DEPTH
+call_ret_hi = call_ret_lo+CALL_STACK_DEPTH ; CALL_STACK_DEPTH bytes  @size=CALL_STACK_DEPTH
+
+; spawn_entities' own ascending counter: which record of the screen's entity
+; list the loop is on, whether or not that record is the one being placed
+; into a slot -- a hidden record still has to count, or the ordinal handed
+; to the record after it would be wrong. Scratch, good for nothing once
+; spawn_entities returns.
+ent_spawn_rec = call_ret_hi+CALL_STACK_DEPTH
+
+; What battle_begin (engine/rpg.asm) found in talk_ent the moment it ran:
+; the entity slot whose event is mid-script and about to suspend on this
+; battle, or NO_ENTITY for a random or contact-damage fight, neither of
+; which has a script running to suspend. Captured before battle_begin's own
+; "no conversation is showing" reset clears talk_ent, and translated to
+; bt_owner_rec (ent_record's ordinal, not the slot) in the same breath, since
+; the slot is exactly what the redraw at the other end of the battle is free
+; to reassign.
+bt_owner_ent = ent_spawn_rec+1
+bt_owner_rec = bt_owner_ent+1
 
 ; Which map is on screen and which song is sounding, so a redraw can tell
 ; whether either has to change -- see apply_map_music and set_music in
 ; music.asm, the single place either is applied. Both are reset to their
 ; sentinels by init_session, since a game over is a genuinely new game and
 ; must not inherit the song of wherever the player died.
-cur_map     = call_ret_hi+CALL_STACK_DEPTH ; NO_MAP until a screen decides
+;
+; Chained off bt_owner_rec, not off call_ret_hi directly: the comment beside
+; CALL_STACK_DEPTH already warns that whatever this map allocates next has to
+; move down with call_ret_hi's own array, and cur_map used to be that next
+; thing until ent_spawn_rec/bt_owner_ent/bt_owner_rec (above) took the byte it
+; was sitting on -- both chained from the same call_ret_hi+CALL_STACK_DEPTH
+; expression, silently sharing $87/$88 between spawn_entities' record counter
+; and the map/song bytes until a battle whose owner happened to be recorded
+; as actor 4 also read back as cur_song 4, and music.asm's own next write
+; stepped on bt_owner_ent mid-battle_end.
+cur_map     = bt_owner_rec+1               ; NO_MAP until a screen decides
 cur_song    = cur_map+1                    ; NO_SONG until set_music runs
 
 ; Which split program this frame runs. OFF disarms the counter entirely.
@@ -234,13 +262,13 @@ SPL_TITLE   = 3             ; the title's two text bands
 ; ------------------------------------------------------------- music RAM
 ; Six parallel arrays, one byte per channel, at $0340.
 MUS_CHANNELS = 4
-mus_ptr_lo  = $0340
-mus_ptr_hi  = $0344
-mus_dur     = $0348         ; frames left on the current event
-mus_inst    = $034C
-mus_step    = $0350         ; envelope step
-mus_note    = $0354         ; $FF when the channel is resting
-mus_trig    = $0358         ; a note started this frame
+mus_ptr_lo  = $0340  ; @size=MUS_CHANNELS
+mus_ptr_hi  = $0344  ; @size=MUS_CHANNELS
+mus_dur     = $0348         ; frames left on the current event  @size=MUS_CHANNELS
+mus_inst    = $034C  ; @size=MUS_CHANNELS
+mus_step    = $0350         ; envelope step  @size=MUS_CHANNELS
+mus_note    = $0354         ; $FF when the channel is resting  @size=MUS_CHANNELS
+mus_trig    = $0358         ; a note started this frame  @size=MUS_CHANNELS
 
 MUS_REST    = $FE
 MUS_LOOP    = $FF
@@ -252,19 +280,19 @@ NUM_NOTES   = 96
 ; ------------------------------------------------------------ entity RAM
 ; Eight parallel arrays at $0300, one byte per slot.
 MAX_ENTITIES = 8
-ent_active  = $0300
-ent_actor   = $0308
-ent_x       = $0310
-ent_y       = $0318
-ent_dir     = $0320
-ent_frame   = $0328         ; index into the actor's animation
-ent_timer   = $0330
-ent_hp      = $0338         ; hits left, seeded from actor_hp at spawn
-ent_to_scr  = $0360         ; door target: screen, then position
-ent_to_x    = $0368
-ent_to_y    = $0370
-ent_event   = $0380         ; the event this actor runs
-ent_hurt    = $0388         ; frames left flashing after a hit
+ent_active  = $0300  ; @size=MAX_ENTITIES
+ent_actor   = $0308  ; @size=MAX_ENTITIES
+ent_x       = $0310  ; @size=MAX_ENTITIES
+ent_y       = $0318  ; @size=MAX_ENTITIES
+ent_dir     = $0320  ; @size=MAX_ENTITIES
+ent_frame   = $0328         ; index into the actor's animation  @size=MAX_ENTITIES
+ent_timer   = $0330  ; @size=MAX_ENTITIES
+ent_hp      = $0338         ; hits left, seeded from actor_hp at spawn  @size=MAX_ENTITIES
+ent_to_scr  = $0360         ; door target: screen, then position  @size=MAX_ENTITIES
+ent_to_x    = $0368  ; @size=MAX_ENTITIES
+ent_to_y    = $0370  ; @size=MAX_ENTITIES
+ent_event   = $0380         ; the event this actor runs  @size=MAX_ENTITIES
+ent_hurt    = $0388         ; frames left flashing after a hit  @size=MAX_ENTITIES
 
 ; ------------------------------------------------------------- battle arrays
 ; Nine parallel arrays for the party, four entries each, and four for the
@@ -273,30 +301,48 @@ ent_hurt    = $0388         ; frames left flashing after a hit
 MAX_PARTY   = 4
 MAX_MONSTERS = 4
 NUM_COMBATANTS = 8          ; party 0-3, monsters 4-7
-pc_hp       = $0398
-pc_hp_max   = $039C
-pc_mp       = $03A0
-pc_mp_max   = $03A4
-pc_level    = $03A8
-pc_xp_lo    = $03AC
-pc_xp_hi    = $03B0
-pc_in_party = $03B4         ; recruited, so it takes a slot in battle
-pc_spells   = $03B8         ; bitmask of the spells known at this level
+pc_hp       = $0398  ; @size=MAX_PARTY
+pc_hp_max   = $039C  ; @size=MAX_PARTY
+pc_mp       = $03A0  ; @size=MAX_PARTY
+pc_mp_max   = $03A4  ; @size=MAX_PARTY
+pc_level    = $03A8  ; @size=MAX_PARTY
+pc_xp_lo    = $03AC  ; @size=MAX_PARTY
+pc_xp_hi    = $03B0  ; @size=MAX_PARTY
+pc_in_party = $03B4         ; recruited, so it takes a slot in battle  @size=MAX_PARTY
+pc_spells   = $03B8         ; bitmask of the spells known at this level  @size=MAX_PARTY
 
-mon_slot_actor = $03BC      ; which actor id is in this monster slot
-mon_slot_hp = $03C0
-mon_slot_max = $03C4
-mon_slot_alive = $03C8
+mon_slot_actor = $03BC      ; which actor id is in this monster slot  @size=MAX_MONSTERS
+mon_slot_hp = $03C0  ; @size=MAX_MONSTERS
+mon_slot_max = $03C4  ; @size=MAX_MONSTERS
+mon_slot_alive = $03C8  ; @size=MAX_MONSTERS
 
-turn_order  = $03CC         ; NUM_COMBATANTS entries, fastest first
-bt_digits   = $03D4         ; three decimal digits, most significant first
-bt_line     = $03D8         ; the message area's staging buffer, MSG_COLS wide
-bt_list     = $03E4         ; the open spell or item list, one id per row
-mon_slot_mp = $03EC         ; what each monster has left to cast with
+turn_order  = $03CC         ; NUM_COMBATANTS entries, fastest first  @size=NUM_COMBATANTS
+bt_digits   = $03D4         ; three decimal digits, most significant first  @size=3
+; $03D8-$03E3 (12 bytes) is free. It held bt_line, "the message area's
+; staging buffer" -- a byte array push_battle_string (engine/battleui.asm)
+; never turned out to need: it writes each glyph straight to VRAM out of
+; bs_text and bt_digits as it goes, with no local buffer to stage a line
+; into first. Nothing else ever read or wrote it either; the RAM guard
+; (test/unit/rammap.test.js) has no way to catch a block that is simply
+; unused, only one that collides, so this was only found by checking every
+; @size annotation against the code that actually indexes it.
+bt_list     = $03E4  ; the open spell or item list -- up to eight  @size=8
+                            ; entries, not the four the box shows at once:
+                            ; build_spell_list/build_item_list
+                            ; (engine/battleui.asm) fill the whole list, and
+                            ; spell_chosen/item_chosen (engine/battleturn.asm)
+                            ; index it with bt_sel directly, which draw_list's
+                            ; own cursor comparison (bt_vrow+bt_scroll against
+                            ; bt_sel) proves is the *absolute* position in
+                            ; that list, not a 0-3 row on screen. LIST_ROWS is
+                            ; how many of those eight the box can show at
+                            ; once, scrolled by bt_scroll -- not how many
+                            ; entries this array holds.
+mon_slot_mp = $03EC         ; what each monster has left to cast with  @size=MAX_MONSTERS
 ; Status bits, one byte per combatant side. Bit 0 is poison, the only status;
 ; both are cleared when a battle starts, so nothing carries into the field.
-pc_status   = $03F0
-mon_slot_status = $03F4
+pc_status   = $03F0  ; @size=MAX_PARTY
+mon_slot_status = $03F4  ; @size=MAX_MONSTERS
 
 MSG_ROW     = 21            ; the message area and the lists share these rows
 LIST_ROWS   = 4
@@ -305,7 +351,7 @@ LIST_ROWS   = 4
 ; 64 one-bit flags, which is what an event sets and tests. They survive a screen
 ; change and a warp, and only a new game clears them.
 NUM_SWITCHES = 64
-switches    = $0390         ; eight bytes, bit (n & 7) of byte (n >> 3)
+switches    = $0390         ; eight bytes, bit (n & 7) of byte (n >> 3)  @size=8
 NO_SWITCH   = $FF           ; an actor that no switch hides
 
 ; ------------------------------------------------------------- variable RAM
@@ -315,19 +361,29 @@ NO_SWITCH   = $FF           ; an actor that no switch hides
 ; and untouched by a screen change or a warp. NUM_VARIABLES is generated into
 ; config.inc from RPG_LIMITS.variables, so how many there are has one writer and
 ; it is not this file.
-variables   = $0500
+variables   = $0500  ; @size=NUM_VARIABLES
 
 ; ------------------------------------------------------------- trigger RAM
-; Two more per-slot arrays, over here rather than beside the others because the
-; $0300 page is spoken for down to its last eight bytes.
+; Three more per-slot arrays, over here rather than beside the others because
+; the $0300 page is spoken for down to its last eight bytes.
 ;
 ; ent_trigger is the record's trigger byte, held per slot because the touch test
 ; has to run for every actor every frame. ent_touched is that test's memory: the
 ; player is still standing on the actor when the conversation it started ends,
 ; so without it the event would begin again the moment the box came down, for
 ; as long as the player stood there.
-ent_trigger = $0510
-ent_touched = $0518
+;
+; ent_record is which record in the screen's own entity list -- the fixed,
+; authored order the Map Forge saved, not the slot a hide switch or a
+; respawn happened to land it in -- spawn_entities filled this slot from.
+; That ordinal is the one thing about a placement spawn_entities cannot
+; change: hiding an earlier actor moves *slots* around, never records. A
+; battle that began mid-script remembers the record here (battle_end,
+; engine/rpg.asm) rather than the slot, so it can find the same actor again
+; after the redraw that ended the battle has possibly handed it a new one.
+ent_trigger = $0510  ; @size=MAX_ENTITIES
+ent_touched = $0518  ; @size=MAX_ENTITIES
+ent_record  = $0520  ; @size=MAX_ENTITIES
 
 ; Triggers, in the same order as EVENT_TRIGGERS in shared/project.js.
 TRIG_INTERACT = 0           ; the interact action, in reach -- what every event
@@ -339,12 +395,12 @@ TRIG_ENTER  = 2             ; the screen loaded
 ; One actor id per item carried, oldest first. Not a per-screen array: the bag
 ; travels with the player, so it survives a screen change.
 MAX_ITEMS   = 8
-inv_items   = $0378
+inv_items   = $0378  ; @size=MAX_ITEMS
 
 ; ------------------------------------------------------------- VRAM queue RAM
 ; One page, so the NMI's drain loop can index the whole queue with X. Packets are
 ; [addr_hi, addr_lo, count, bytes...] and a zero addr_hi terminates.
-vram_buf    = $0400
+vram_buf    = $0400  ; @size=256
 
 ; Behaviours, in the same order as BEHAVIORS in shared/project.js.
 BEH_PLAYER  = 0
@@ -357,6 +413,10 @@ BEH_NPC     = 5             ; stands still; update_entities only animates it
 NO_ANIM     = $FF
 NO_ENTITY   = $FF           ; talk_ent: nobody is speaking
 NO_EVENT    = $FF           ; ent_event: this actor has nothing to say
+NO_ACTOR    = $FF           ; mon_slot_actor: an empty formation slot
+NO_COMMON_EVENT = $FF       ; OP_CALL's own operand: the named common event
+                            ; does not resolve to a table slot -- see
+                            ; script_op_call
 TOUCH_RANGE = 12            ; how close counts as touching, in pixels
 REACH_RANGE = 20            ; how far attack and interact reach
 
@@ -553,13 +613,19 @@ OP_CALL     = $0D           ; [which common event] -- run it and come back to
 OP_MUSIC    = $0E           ; [song index or NO_SONG] -- see set_music in
                             ; music.asm, which both this and a map arriving
                             ; apply through
+OP_BATTLE   = $0F           ; [MAX_MONSTERS actor ids, NO_ACTOR-padded] --
+                            ; suspends the script exactly as OP_SAY does; see
+                            ; script_op_battle and battle_end in engine/rpg.asm.
+                            ; Only assembled where BATTLE_ENABLED is, the same
+                            ; as OP_JOIN: an action build has no battle bank to
+                            ; call into, so the opcode has nowhere to dispatch
 ; Punctuation rather than a command: the compiler emits it, nothing authors it,
 ; and it is numbered out of the way of EVENT_COMMANDS so the two orders cannot
 ; grow into each other. It ends a then-branch by stepping over the else-branch.
 OP_JUMP     = $FE
 
 ; ------------------------------------------------------------- constants
-OAM         = $0200         ; sprite shadow, DMA'd every frame
+OAM         = $0200         ; sprite shadow, DMA'd every frame  @size=256
 
 BTN_A       = $80
 BTN_B       = $40

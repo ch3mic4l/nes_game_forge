@@ -135,8 +135,14 @@ script_run_call:
   jmp script_op_call
 script_run_music:
   cmp #OP_MUSIC
-  bne script_run_bad
+  bne script_run_battle
   jmp script_op_music
+script_run_battle:
+  .if BATTLE_ENABLED
+  cmp #OP_BATTLE
+  bne script_run_bad
+  jmp script_op_battle
+  .endif
 script_run_bad:
   jmp script_finish         ; an opcode this engine cannot run stops the event
                             ; rather than being reinterpreted as another one
@@ -176,13 +182,36 @@ script_op_say:
   jsr script_skip
   jmp box_say               ; suspends here; the box drives the rest
 
+; NO_ACTOR is what actorByte (main/build/textcompile.js) compiles a Give/Take
+; whose actor does not resolve to -- validateProject refuses a build over a
+; *live* command like that, but buildProject compiles the project the app is
+; holding rather than one that has passed validation, the same reason a
+; battle formation's own actor ids are checked again here rather than
+; trusted. add_item/remove_item have no such check of their own: they take
+; whatever byte they are handed and index the actor tables with it, so a
+; command the compiler deliberately marked "nothing to give" must never
+; reach them, or the byte that meant "nothing" becomes an id past the end of
+; every actor-indexed table the inventory then draws from.
+;
+; script_finish, not script_next2: the opcode is recognised but its operand
+; names nothing, which is the same situation script_run_bad's unknown-opcode
+; case is in, and gets the same answer -- an unrunnable command stops the
+; event rather than being skipped. Skipping would carry on to whatever comes
+; after silently having not done the thing it was there for: a page that
+; reads "give the Lantern, then mark the shop visited" would mark the shop
+; visited without ever having given the Lantern, and nothing about the
+; conversation would say so.
 script_op_give:
   jsr script_arg
+  cmp #NO_ACTOR
+  beq script_finish
   jsr add_item
   jmp script_next2
 
 script_op_take:
   jsr script_arg
+  cmp #NO_ACTOR
+  beq script_finish
   jsr remove_item
   jmp script_next2
 
@@ -238,6 +267,36 @@ script_op_music:
   jsr set_music
   jmp script_next2
 
+; [OP_BATTLE, MAX_MONSTERS actor ids, NO_ACTOR-padded]. Copies the formation
+; straight into mon_slot_actor and hands over to battle_begin (engine/rpg.asm)
+; -- the same routine touch_encounter and the step counter use, so a scripted
+; fight is not a fourth way in. script_ptr is advanced past the whole command
+; first and script_active is left set, exactly how OP_SAY suspends: script_run
+; is not reached again this frame, and nothing here calls script_finish, so
+; the event stays open across the thousands of frames a battle takes. Losing
+; already ends the game elsewhere (player_died, reached from battle_finish)
+; and never comes back through here, so whatever runs next -- if anything --
+; is only ever the win case; battle_end is where the script picks back up.
+  .if BATTLE_ENABLED
+script_op_battle:
+  ldy #1
+  ldx #0
+script_op_battle_slot:
+  lda [script_ptr_lo],y
+  sta mon_slot_actor,x
+  iny
+  inx
+  cpx #MAX_MONSTERS
+  bne script_op_battle_slot
+  lda #NO_ENTITY
+  sta bt_from_ent            ; not a touch or a step -- nothing to despawn
+  lda #0
+  sta bt_esc                 ; a scripted fight cannot be run from
+  lda #1+MAX_MONSTERS
+  jsr script_skip
+  jmp battle_begin
+  .endif
+
 ; ------------------------------------------------------------------- calls
 ;
 ; [OP_CALL, which common event]. Unlike a branch or a question, what follows
@@ -253,16 +312,35 @@ script_op_music:
 ; fixed-depth stack rather than one more branch to script_ptr, because two
 ; common events are free to call each other and a cycle between them would
 ; recurse this routine forever if depth were not bounded. CALL_STACK_DEPTH in
-; engine/constants.asm is that bound, and past it a call is skipped -- the
-; command after it just runs next -- rather than pushed onto a stack with
-; nowhere left to put it.
+; engine/constants.asm is that bound.
+;
+; There are two different reasons a call can fail to run, and they get two
+; different answers. NO_COMMON_EVENT -- the compiler could not give this
+; `call` a table slot at all, because nothing it names is live -- is the same
+; situation script_op_give/script_op_take's own NO_ACTOR is in: a recognised
+; command whose operand names nothing, which stops the event exactly as
+; script_run_bad does for an opcode this engine cannot run at all, rather
+; than silently not doing the thing the page said it would and carrying on
+; to whatever comes after. Past CALL_STACK_DEPTH is not that: the callee is
+; perfectly real, there is just nowhere left on the small fixed stack to
+; remember the way back, so the call is skipped -- the command after it just
+; runs next -- and stays a skip on purpose. Two common events are free to
+; call each other, and a cycle between them is only visible once both bodies
+; exist, not while either is being authored; turning the bound into a stop
+; would make an author-invisible cycle hang the game rather than unwind.
 script_op_call:
   ldy #1
-  lda [script_ptr_lo],y      ; which common event
+  lda [script_ptr_lo],y      ; which common event's table slot, or NO_COMMON_EVENT
   sta tmp
   lda #2
   jsr script_skip            ; past the opcode and the argument -- the return
                               ; point, saved below before script_ptr moves again
+  lda tmp
+  cmp #NO_COMMON_EVENT
+  bne script_op_call_depth   ; a real slot: fall through to the depth check
+  jmp script_finish          ; the sentinel: stop, the same answer script_run_bad
+                              ; and script_op_give/take give an operand naming nothing
+script_op_call_depth:
   lda call_depth
   cmp #CALL_STACK_DEPTH
   bcc script_op_call_push    ; below the bound: push the return point and call

@@ -36,7 +36,7 @@ const hasNesasm = spawnSync('nesasm', [], { stdio: 'ignore' }).error?.code !== '
 // RPG may target at all — asserting the ceiling on only one of them assumes
 // today's ordering (UNROM 512 highest) holds forever, and an eight-byte
 // margin over the runner-up (MMC3) is not a margin a future change need
-// respect. Measured: UNROM 512 6638, MMC3 6630, MMC1 6441 — three boards,
+// respect. Measured: UNROM 512 6780, MMC3 6772, MMC1 6583 — three boards,
 // each build well under 50ms, so iterating all of them costs nothing worth
 // trimming for.
 const CAPABLE_MAPPERS = SUPPORTED_MAPPERS.filter(rpgCapable);
@@ -66,10 +66,12 @@ test(
       const built = await buildProject({ dir, project, log: (line) => lines.push(line) });
 
       const { kernelLoBank } = prgLayout(mapper);
-      // nesasm's own "segment usage" table, one row per bank: "BANK  62   7182/1010".
+      // nesasm's own "segment usage" table, one row per bank: "BANK  62   7182/1010"
+      // — right-aligned, so the free half can carry a leading space the used
+      // half never does ("7235/ 957").
       const bankLine = lines.find((line) => new RegExp(`^BANK\\s+${kernelLoBank}\\s`).test(line));
       assert.ok(bankLine, `${mapper.name}: nesasm's usage table never mentioned bank ${kernelLoBank} (kernel-lo)`);
-      const used = Number(bankLine.match(/(\d+)\/(\d+)\s*$/)[1]);
+      const used = Number(bankLine.match(/(\d+)\/\s*(\d+)\s*$/)?.[1]);
       assert.ok(Number.isFinite(used) && used > 0, `${mapper.name}: could not parse a used-byte count out of "${bankLine}"`);
 
       assert.ok(built.symbolPath, `${mapper.name}: nesasm should have written a symbol file`);

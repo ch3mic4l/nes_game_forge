@@ -12,7 +12,8 @@ import {
   SPELL_KINDS,
   SPELL_SCOPES,
   createPartyMember,
-  createSpell
+  createSpell,
+  isMonsterActor
 } from '../../../shared/project.js';
 import { FONT_BASE } from '../../../shared/font.js';
 import { drawSheet, sheetIndexFromEvent, SHEET_COLS } from '../../widgets/sheet.js';
@@ -49,7 +50,7 @@ export function battleSection(actor, index, rerender) {
     rerender();
   };
 
-  const hostile = (actor.damage ?? 0) > 0;
+  const hostile = isMonsterActor(actor);
 
   return el(
     'div',

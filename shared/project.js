@@ -7,7 +7,7 @@
 
 import { BLANK_TILE } from './chr.js';
 import { normalizeSong } from './audio.js';
-import { allCommands, projectEvents } from './eventrules.js';
+import { allCommands, choiceOptionsSlice, compiledPages, liveCommands, projectEvents } from './eventrules.js';
 import {
   DEFAULT_MAPPER,
   resolveMapper,
@@ -214,6 +214,32 @@ export const EVENT_TRIGGERS = [
 ];
 
 /**
+ * What makes an actor a monster: contact damage above zero, the same field an
+ * action game's spikes use. It is the single writer for that test — the Sprite
+ * Forge's *In battle* tab, the Map Forge's encounter table and battle command
+ * formation pickers, and `availableTriggers` below all ask this rather than
+ * each spelling out `(actor.damage ?? 0) > 0` and one of them drifting.
+ */
+export const isMonsterActor = (actor) => (actor?.damage ?? 0) > 0;
+
+/**
+ * Whether a Give item / Take item command's `actor` still names a real
+ * actor — the single question the compiler (`actorByte`,
+ * main/build/textcompile.js), `validateProject` below and the Map Forge's
+ * own select (`giveTargetMissing`, renderer/forges/map/events.js) all ask,
+ * so an id that does not resolve reads the same way no matter which of them
+ * is asking. Not merely `null` — the mark `renumberActorDeletion` leaves —
+ * but any id no actor currently sits at: a project written by a later
+ * version, or a hand-edited one, can hold one that was never `null` to
+ * begin with. Validating against "is this the deletion sentinel" instead of
+ * "does this resolve" is exactly the gap that let an out-of-range id pass
+ * review, compile to NO_ACTOR, and still reach `add_item` with a byte that
+ * indexes the actor tables past their end.
+ */
+export const actorMissing = (actors, id) =>
+  id === null || id === undefined || !Number.isInteger(id) || id < 0 || id >= (actors?.length ?? 0);
+
+/**
  * Which triggers mean something for this actor, in this project.
  *
  * `touch` is the only one that can be spoken for, because it is the only one
@@ -236,7 +262,7 @@ export const EVENT_TRIGGERS = [
  */
 export const availableTriggers = (actor, project) => {
   const walkedInto = actor?.behavior === 'pickup' || actor?.behavior === 'door';
-  const startsBattle = project?.project?.gameType === 'rpg' && (actor?.damage ?? 0) > 0;
+  const startsBattle = project?.project?.gameType === 'rpg' && isMonsterActor(actor);
   return EVENT_TRIGGERS.filter((entry) => entry.id !== 'touch' || !(walkedInto || startsBattle));
 };
 
@@ -305,14 +331,25 @@ export const EVENT_COMMANDS = [
   // applies one, comparing against what is already sounding first — so this
   // and a map deciding its own song on arrival agree about what counts as a
   // change, and neither retriggers a song that is already playing.
-  { id: 'music', label: 'Play music', args: ['song'] }
+  { id: 'music', label: 'Play music', args: ['song'] },
+  // Up to RPG_LIMITS.monstersPerBattle monster actors (isMonsterActor), the
+  // formation this fight is against — never the map's own encounter table,
+  // which already has the random kind. Cannot be run from: see
+  // battle_menu_run in engine/battleui.asm, which only offers Run at all when
+  // bt_esc is set, and script_op_battle never sets it. Losing is already
+  // defined elsewhere — the whole party falling is GAME OVER, and
+  // restart_game decides where that lands — so control only
+  // ever reaches the command after this one when the player won. There is no
+  // lose branch to author: whatever should happen on victory is just the
+  // commands that follow, the same way a page after a switch check is.
+  { id: 'battle', label: 'Start a battle', args: ['monsters'] }
 ];
 
 // A command can be switched off while you work out whether you want it, the way
 // you would comment a line out. What that means lives in `eventrules.js`, which
 // `font.js` needs as well — re-exported here so the schema stays the one place
 // to look for it.
-export { enabledCommands, compiledPages, allCommands, projectEvents } from './eventrules.js';
+export { enabledCommands, compiledPages, allCommands, choiceOptionsSlice, liveCommands, projectEvents } from './eventrules.js';
 
 /**
  * The subset engine/script.asm can actually run. Everything in EVENT_COMMANDS is
@@ -336,7 +373,8 @@ export const IMPLEMENTED_COMMANDS = new Set([
   'branch',
   'choice',
   'call',
-  'music'
+  'music',
+  'battle'
 ]);
 
 /**
@@ -370,6 +408,20 @@ export const RPG_LIMITS = {
   // length byte — and it is what the battle box's message area has room for.
   nameLength: 10
 };
+
+/**
+ * The up-to-RPG_LIMITS.monstersPerBattle monster ids a Start a battle
+ * command's formation actually compiles from — the same truncation
+ * encodeCommand (main/build/textcompile.js) applies before it asks which of
+ * them are still real actors. A valid id sitting past the truncation point
+ * never reaches the ROM, so anything judging a formation's validity has to
+ * lose it the same way the compiler does, or it can approve a formation the
+ * compiler empties out — a formation whose only real monster falls in the
+ * fifth slot compiles to an instant win exactly as an authored-empty one
+ * does. The single writer for both the compiler and validateProject below.
+ */
+export const battleFormationSlice = (monsters) =>
+  (Array.isArray(monsters) ? monsters : []).slice(0, RPG_LIMITS.monstersPerBattle);
 
 // ---------------------------------------------------------------------------
 // Defaults
@@ -505,6 +557,54 @@ export function renumberSongDeletion(project, index) {
         if (command.op !== 'music') continue;
         if (command.song === index) command.song = null;
         else if (command.song > index) command.song -= 1;
+      }
+    }
+  }
+  return project;
+}
+
+/**
+ * What every reference to an actor becomes once `index` is gone from
+ * `project.sprites.actors`: renumbered down by one for everything above it,
+ * the same treatment a placement gets inline where it is deleted (sprite.js)
+ * and renumberSongDeletion gives a song. Left alone, an id above the deleted
+ * one silently repoints at whichever actor now happens to sit there, and an
+ * id equal to it survives pointing at nothing — indistinguishable, from
+ * inside the command, from a project that still has that actor.
+ *
+ * A Start a battle command's formation is a list, so the deleted id is
+ * simply removed from it — a battle with monsters left over is still a
+ * battle. Give item and Take item name exactly one actor with no such list
+ * to fall back into, so their `actor` becomes `null` instead — visibly
+ * missing rather than deleted or silently repointed, the same shape a Play
+ * music command's `song` already is for a deleted song (normalizeEventCommand
+ * above, and actorByte in main/build/textcompile.js at the other end).
+ * Dropping the command outright was tried and rejected: it erases whatever
+ * else the event went on to do. validateProject's own give/take check is
+ * what actually stops a *live* one with a missing actor from reaching a
+ * build; a disabled one keeps its scaffolding, missing actor and all.
+ *
+ * Walked through `allCommands`, not each page's own list, since a battle or
+ * a give/take can be sitting inside a branch or a question same as any other
+ * command — the same reason renumberSongDeletion walks it that way.
+ *
+ * Placed actors are renumbered separately, inline where they are deleted —
+ * this only ever needs to run alongside that, never instead of it.
+ *
+ * Mutates `project` and returns it. The caller removes
+ * `project.sprites.actors[index]` itself, before or after calling this —
+ * nothing here reads that list.
+ */
+export function renumberActorDeletion(project, index) {
+  for (const event of projectEvents(project)) {
+    for (const page of event.pages ?? []) {
+      for (const command of allCommands(page.commands)) {
+        if (command.op === 'battle' && Array.isArray(command.monsters)) {
+          command.monsters = command.monsters.filter((id) => id !== index).map((id) => (id > index ? id - 1 : id));
+        } else if ((command.op === 'give' || command.op === 'take') && typeof command.actor === 'number') {
+          if (command.actor === index) command.actor = null;
+          else if (command.actor > index) command.actor -= 1;
+        }
       }
     }
   }
@@ -778,14 +878,22 @@ export function commonEventId(raw) {
  * What a `call` command's `event` becomes when its reference cannot be made
  * into a real id — a negative number a real id can never be, rather than a
  * fallback like 0 that a real common event could actually be sitting at.
- * `commonEventId(NO_COMMON_EVENT)` is null by construction, so the compiler
- * asking the same question it always asks drops the call on its own,
- * without a separate "is this the sentinel" check anywhere: an unresolvable
- * reference compiles away and runs nothing, the same rule this codebase
- * already holds for an opcode the engine cannot run — never reinterpreted
- * as a call to whichever event a missing value happened to coerce to.
+ * `commonEventId(NO_COMMON_EVENT_ID)` is null by construction, so
+ * `commonEventTableIndex.get(...)` in main/build/textcompile.js asking the
+ * same question it always asks finds no slot on its own, without a separate
+ * "is this the sentinel" check anywhere — never reinterpreted as a call to
+ * whichever event a missing value happened to coerce to.
+ *
+ * Named apart from textcompile.js's own `NO_COMMON_EVENT_SLOT` ($FF, the
+ * table-slot sentinel `script_op_call` in engine/script.asm actually reads
+ * and refuses) on purpose, not just kept in separate modules: this is a
+ * schema-level "no reference chosen" value in the same space real ids live
+ * in, and $FF is a real id a stable-id project could someday reach. A caller
+ * that imported the wire sentinel and stored it here — or the reverse —
+ * would still run, and `commonEventId(255)` would accept it as a real id
+ * rather than reject it the way this value is built to be rejected.
  */
-export const NO_COMMON_EVENT = -1;
+export const NO_COMMON_EVENT_ID = -1;
 
 function normalizeEventCommand(raw, depth = 0) {
   const command = EVENT_COMMANDS.find((entry) => entry.id === raw?.op);
@@ -809,10 +917,11 @@ function normalizeEventCommand(raw, depth = 0) {
     // Not the generic byte clamp below: a common event id is resolved to a
     // table slot at compile time rather than written into the ROM itself,
     // so it is not bounded to 255 — see commonEventId. An invalid reference
-    // becomes NO_COMMON_EVENT rather than 0 — 0 is a common event id common
-    // events actually get, so falling back to it would silently retarget a
-    // dangling or hand-edited call to whatever that one happens to be.
-    else if (arg === 'event') out.event = commonEventId(raw?.event) ?? NO_COMMON_EVENT;
+    // becomes NO_COMMON_EVENT_ID rather than 0 — 0 is a common event id
+    // common events actually get, so falling back to it would silently
+    // retarget a dangling or hand-edited call to whatever that one happens
+    // to be.
+    else if (arg === 'event') out.event = commonEventId(raw?.event) ?? NO_COMMON_EVENT_ID;
     // A song index, or `null` for Silence — the same shape map.songId is,
     // and deliberately not clamped against how many songs the project
     // actually has: buildProject compiles the project the app is holding
@@ -830,15 +939,44 @@ function normalizeEventCommand(raw, depth = 0) {
       // honour, which is the one place this schema does not preserve what it
       // was given: the box has four rows, so a fifth option is not data the
       // engine could ever be taught to show — it is an option the player would
-      // have no way to pick and no way to see.
-      out.options = (Array.isArray(raw?.options) ? raw.options : [])
-        .slice(0, CHOICE_LIMITS.options)
-        .map((option) => ({ text: choiceLabel(option?.text), commands: inner(option?.commands) }));
+      // have no way to pick and no way to see. choiceOptionsSlice
+      // (shared/eventrules.js) is the same truncation encodeBody
+      // (main/build/textcompile.js) and liveCommands apply, so a live,
+      // not-yet-saved project reads the same "how many options" answer here
+      // as it would at compile time.
+      out.options = choiceOptionsSlice(raw?.options, CHOICE_LIMITS.options).map((option) => ({
+        text: choiceLabel(option?.text),
+        commands: inner(option?.commands)
+      }));
       // A question with nothing to choose between is not a question. It would
       // compile to a box that comes up, offers nothing and takes the player's
       // answer as option zero, which is somewhere past the end of the command.
       if (!out.options.length) return null;
-    } else out[arg] = clamp(raw?.[arg], 0, 255, 0);
+    } else if (arg === 'monsters') {
+      // Loosely clamped here and bounded for real at compile time, the same
+      // reason 'warp's screen is: buildProject compiles the project the app
+      // is holding, not one freshly normalized, so only the compiler knows
+      // how many actors actually exist. battleFormationSlice is the same
+      // truncation encodeCommand applies, ahead of the id clamp here rather
+      // than after it, so the two cannot disagree about which entries this
+      // formation even has room for.
+      out.monsters = battleFormationSlice(raw?.monsters).map((id) => clamp(id, 0, 255, 0));
+      // A battle with nothing in it is not a battle — it would compile to an
+      // instant, silent victory, the same non-command a question with no
+      // options would be.
+      if (!out.monsters.length) return null;
+    }
+    // A Give item / Take item target, or `null` for one that no longer names
+    // an actor -- the same shape 'song' is, and for the same reason: actor
+    // deletion (renumberActorDeletion) has exactly one thing it can do with
+    // a Give/Take that named the actor being removed, since neither command
+    // holds a list to drop the id from the way a battle formation does. Not
+    // 0 or any other number — a real actor could be sitting at either — and
+    // not dropping the command outright either, which would erase whatever
+    // else the event went on to do. `actorByte` (main/build/textcompile.js)
+    // is the other half: NO_ACTOR for null, the same as songByte's NO_SONG.
+    else if (arg === 'actor') out.actor = raw?.actor === null || raw?.actor === undefined ? null : clamp(raw?.actor, 0, 255, 0);
+    else out[arg] = clamp(raw?.[arg], 0, 255, 0);
   }
   return out;
 }
@@ -935,6 +1073,32 @@ export function resolveCommonEventIds(commonEvents, seq) {
     ids.push(id);
   }
   return { ids, seq: next };
+}
+
+/**
+ * Every common event that reaches the ROM, in table order: `{ entry, id }`
+ * pairs, one per `project.commonEvents` entry with at least one live page
+ * (`compiledPages(entry.event).length > 0`), each carrying the id
+ * `resolveCommonEventIds` gives it — the same id a `call` command's own
+ * target names. This is the single definition of "gets a slot in the
+ * compiled table at all": main/build/textcompile.js assigns each pair's
+ * position in this array as that common event's slot, in this exact order,
+ * and `liveCommonEventIds` below asks the identical question as a plain id
+ * lookup instead of a table position. A second implementation of this filter
+ * is exactly how a call ends up approved on one side and dropped on the
+ * other — the same shape of gap `liveCommands`/`encodeBody` closes for a
+ * single command, one level up: an admission rule rather than an opcode.
+ */
+export function liveCommonEvents(project) {
+  const { ids } = resolveCommonEventIds(project?.commonEvents, project?.commonEventSeq);
+  return (project?.commonEvents ?? [])
+    .map((entry, index) => ({ entry, id: ids[index] }))
+    .filter(({ entry }) => compiledPages(entry?.event).length > 0);
+}
+
+/** The ids of every common event `liveCommonEvents` admits — what a `call` can actually reach. */
+export function liveCommonEventIds(project) {
+  return new Set(liveCommonEvents(project).map(({ id }) => id));
 }
 
 /**
@@ -1505,6 +1669,138 @@ export function validateProject(project) {
         }
       }
     }
+    // Walked the same way renumberSongDeletion and renumberActorDeletion
+    // are: a battle command can be sitting inside a branch or a question,
+    // not only on a page's own list. An empty formation is checked here,
+    // not only trusted to the Map Forge's own Save button, because the
+    // renderer hands Build the live project rather than a normalized one —
+    // deleting the only actor a formation named (renumberActorDeletion)
+    // reaches this same live state from a completely different screen, with
+    // no Save button of its own to catch it at.
+    //
+    // liveCommands, not allCommands, and compiledPages rather than every
+    // page: a battle command an author has switched off, or one sitting
+    // inside a switched-off branch, is scaffolding the compiler already
+    // ignores (encodeBody, main/build/textcompile.js), so a build must not
+    // stop for it. allCommands exists for the opposite question — what a
+    // switch or actor is named by, off or not — and would fail a build the
+    // ROM was never going to contain. The choice-option limit is passed in
+    // rather than left to liveCommands' own default: a fifth option here is
+    // exactly as unreachable as a battle command switched off, and skipping
+    // it is what keeps this traversal the one encodeBody itself performs.
+    let emptyBattles = 0;
+    let staleBattleMonsters = 0;
+    // A missing actor only blocks a build while the command that names it
+    // is live -- the same rule an empty battle formation follows.
+    // actorMissing, not `=== null`: renumberActorDeletion's null is one way
+    // to end up with nothing to give, but not the only one a live project
+    // can hold — an id past the end of the actor list, from a later
+    // version's project or a hand-edited one, resolves to nothing exactly
+    // as surely and has to be caught the same way, or it passes review,
+    // compiles to NO_ACTOR, and still reaches add_item.
+    for (const event of projectEvents(project)) {
+      for (const page of compiledPages(event)) {
+        for (const command of liveCommands(page.commands, CHOICE_LIMITS.options)) {
+          if (command.op !== 'battle') continue;
+          // Sliced to RPG_LIMITS.monstersPerBattle before anything asks which
+          // ids are still real actors -- the same order encodeCommand applies
+          // them in. A valid id sitting past the truncation point never
+          // reaches the ROM, so a formation whose only real monster falls in
+          // the fifth slot has to read as empty, not merely stale.
+          const compiled = battleFormationSlice(command.monsters);
+          const validMonsters = compiled.filter(
+            (id) => Number.isInteger(id) && id >= 0 && id < project.sprites.actors.length
+          );
+          if (!validMonsters.length) emptyBattles++;
+          else if (validMonsters.length < compiled.length) staleBattleMonsters++;
+        }
+      }
+    }
+    if (emptyBattles) {
+      add(
+        'error',
+        'Map Forge',
+        `${emptyBattles} Start a battle command${emptyBattles === 1 ? '' : 's'} name no monsters, which would ` +
+          'compile to an instant win rather than a fight. Add at least one monster to each.'
+      );
+    }
+    if (staleBattleMonsters) {
+      add(
+        'warning',
+        'Map Forge',
+        `${staleBattleMonsters} Start a battle command${staleBattleMonsters === 1 ? '' : 's'} name an actor that ` +
+          'no longer exists.'
+      );
+    }
+  }
+
+  // Give item / Take item is a base-engine command (engine/ui.asm's
+  // add_item/inv_items, driven by OP_GIVE/OP_TAKE in every build), not one
+  // BATTLE_ENABLED gates the way the battle checks above are -- an action
+  // project offers it too, so this runs unconditionally rather than inside
+  // the RPG-only block. actorMissing is the same "does this resolve"
+  // question the compiler (actorByte) and the Map Forge's own select ask;
+  // checking only for `null` here would miss an id past the end of the
+  // actor list that was never produced by a deletion at all.
+  let missingGiveTake = 0;
+  for (const event of projectEvents(project)) {
+    for (const page of compiledPages(event)) {
+      for (const command of liveCommands(page.commands, CHOICE_LIMITS.options)) {
+        if (
+          (command.op === 'give' || command.op === 'take') &&
+          actorMissing(project.sprites.actors, command.actor)
+        ) {
+          missingGiveTake++;
+        }
+      }
+    }
+  }
+  if (missingGiveTake) {
+    add(
+      'error',
+      'Map Forge',
+      `${missingGiveTake} Give item / Take item command${missingGiveTake === 1 ? '' : 's'} do not name a real ` +
+        'actor. Pick an actor or switch the command off.'
+    );
+  }
+
+  // A call to a common event that no longer has anything live in it is
+  // structurally the same gap an empty battle formation and a missing give/
+  // take actor are: liveCommands has no way to ask "does this reference
+  // resolve" for the same reason it cannot for those two (shared/
+  // eventrules.js), so a dangling call used to reach review clean and
+  // compile away silently. It no longer compiles away -- textcompile.js's
+  // 'call' case now emits [OP_CALL, NO_COMMON_EVENT_SLOT] rather than dropping
+  // the command, and script_op_call (engine/script.asm) stops the event on
+  // that sentinel the same way it already stopped one on an unrecognised
+  // opcode or a Give/Take naming no actor -- but this check still refuses
+  // the *build*, the same as it refuses a missing Give/Take actor or an
+  // empty battle formation: an author should be told the reference is
+  // broken, not have the page quietly stop running when the ROM does.
+  // liveCommonEventIds is built on liveCommonEvents, the same admission rule
+  // main/build/textcompile.js uses to decide which entries get a table slot
+  // at all -- one definition rather than two that could disagree about which
+  // id a deleted or emptied-out common event leaves behind, so a build can no
+  // longer depend on the engine's own runtime stop to be the only thing
+  // catching this.
+  const liveEventIds = liveCommonEventIds(project);
+  let danglingCalls = 0;
+  for (const event of projectEvents(project)) {
+    for (const page of compiledPages(event)) {
+      for (const command of liveCommands(page.commands, CHOICE_LIMITS.options)) {
+        if (command.op === 'call' && !liveEventIds.has(commonEventId(command.event))) {
+          danglingCalls++;
+        }
+      }
+    }
+  }
+  if (danglingCalls) {
+    add(
+      'error',
+      'Map Forge',
+      `${danglingCalls} Run common event command${danglingCalls === 1 ? '' : 's'} name a common event that no ` +
+        'longer exists or has nothing left in it. Pick another common event or switch the command off.'
+    );
   }
 
   return problems;

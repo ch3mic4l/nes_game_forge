@@ -304,7 +304,15 @@ Fantasy shipped on.
 
 An actor becomes a monster by having **contact damage above zero** — the same
 field an action game uses for spikes. Walking into one you placed on the map
-starts a fight you cannot run from; the step counter starts ones you can.
+starts a fight you cannot run from; the step counter starts ones you can. An
+event can start one directly, too, with **Start a battle…** — naming up to
+four monsters as its own formation, never the map's random one, for the fight
+that belongs at a specific moment rather than under foot. It cannot be run
+from either, the same as walking into a placed monster. Losing is not
+something you author: it is already a game over, exactly like running out of
+hearts, so there is no lose branch to build — whatever you put *after* the
+command (turning on a switch named `Boss defeated`, say) only ever runs when
+the player wins, because that is the only way control comes back to it.
 
 Members past the first are recruited in play with an event's **Party member
 joins** command — the sample's Iris waits in a corner of the field for exactly
