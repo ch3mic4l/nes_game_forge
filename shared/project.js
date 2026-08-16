@@ -16,6 +16,8 @@ import {
   tilesetLimit,
   rpgCapable,
   rpgUnsupportedReason,
+  batteryCapable,
+  batteryUnsupportedReason,
   defaultMapperFor
 } from './cartridge.js';
 import {
@@ -122,7 +124,14 @@ export const ACTIONS = [
   { id: 'item', label: 'Use item' },
   { id: 'pause', label: 'Pause menu' },
   { id: 'cancel', label: 'Cancel / back' },
-  { id: 'confirm', label: 'Confirm' }
+  { id: 'confirm', label: 'Confirm' },
+  // Title-only, and only meaningful when the project can save (SAVE_ENABLED):
+  // loads the one save slot and resumes there. Offered here unconditionally,
+  // like every other action — the Controller Forge already says "the engine
+  // ignores this action here" for one bound somewhere it does nothing, and a
+  // project with no Save command is exactly that, not a reason to hide the
+  // option. Appended last so existing ACT_* numbering is untouched.
+  { id: 'continue', label: 'Continue (load save)' }
 ];
 
 /**
@@ -354,7 +363,12 @@ export const EVENT_COMMANDS = [
   // offered. `Heal 255` is a full heal with no separate "inn" vocabulary,
   // and revives a fallen RPG party member the same way an inn would.
   { id: 'heal', label: 'Heal', args: ['value'] },
-  { id: 'damage', label: 'Damage', args: ['value'] }
+  { id: 'damage', label: 'Damage', args: ['value'] },
+  // No argument -- there is exactly one save slot, so there is nothing to
+  // name. Only offered on a board with battery-backed WRAM (batteryCapable,
+  // shared/cartridge.js); validateProject refuses a live one elsewhere the
+  // same way it refuses Join in a project with no party.
+  { id: 'save', label: 'Save the game', args: [] }
 ];
 
 // A command can be switched off while you work out whether you want it, the way
@@ -396,7 +410,8 @@ export const IMPLEMENTED_COMMANDS = new Set([
   'music',
   'battle',
   'heal',
-  'damage'
+  'damage',
+  'save'
 ]);
 
 /**
@@ -643,7 +658,11 @@ export function defaultInput() {
       // unconditionally there, the way the D-pad works everywhere: a game you
       // cannot start because of a rebinding would be a trap. The game-over
       // screen keeps Start hardwired outright.
-      title: { A: 'confirm', B: 'none', SELECT: 'none', START: 'confirm' },
+      // SELECT defaults to 'continue' rather than 'none' -- harmless on a
+      // project that never saves (do_action ignores it there, same as any
+      // action bound somewhere it means nothing), and the natural free slot
+      // for it on a project that does.
+      title: { A: 'confirm', B: 'none', SELECT: 'continue', START: 'confirm' },
       gameover: { A: 'confirm', B: 'none', SELECT: 'none', START: 'confirm' },
       battle: { A: 'confirm', B: 'cancel', SELECT: 'none', START: 'none' }
     }
@@ -1571,6 +1590,30 @@ export function normalizeProject(raw) {
  * Capacity checks the Build panel surfaces before ever invoking the assembler,
  * so users see "too many metatiles" rather than raw nesasm output.
  */
+/**
+ * Whether a live `save` command survives to the ROM anywhere in the project —
+ * the single answer to "does this build need SAVE_ENABLED at all," asked by
+ * `generate.js` (whether to assemble engine/save.asm's body and set the
+ * header's battery bit), this validator's battery/title checks below, and the
+ * Map Forge's own gating of the command, so the three cannot end up with three
+ * different opinions about the same project. liveCommands + compiledPages,
+ * not allCommands: a Save switched off, or sitting inside a switched-off
+ * branch, is scaffolding the compiler already drops, and charging a project
+ * for the header bit or the title's Continue option over a command the ROM
+ * will never run would be exactly the "looks functional, does nothing" case
+ * this codebase refuses to ship the other way around.
+ */
+export function projectUsesSave(project) {
+  for (const event of projectEvents(project)) {
+    for (const page of compiledPages(event)) {
+      for (const command of liveCommands(page.commands, CHOICE_LIMITS.options)) {
+        if (command.op === 'save') return true;
+      }
+    }
+  }
+  return false;
+}
+
 export function validateProject(project) {
   const problems = [];
   const add = (severity, where, message) => problems.push({ severity, where, message });
@@ -1759,6 +1802,32 @@ export function validateProject(project) {
         'Map Forge',
         `${staleBattleMonsters} Start a battle command${staleBattleMonsters === 1 ? '' : 's'} name an actor that ` +
           'no longer exists.'
+      );
+    }
+  }
+
+  // Save is not RPG-only either -- an action project on a battery-capable
+  // board can save too -- so it is checked here rather than inside the
+  // RPG-only block above, the same reasoning Give/Take below already
+  // documents. Two ways a live Save reaches a build it cannot work on:
+  if (projectUsesSave(project)) {
+    const saveMapper = resolveMapper(project.cartridge.mapper);
+    if (!batteryCapable(saveMapper)) {
+      add(
+        'error',
+        'Build',
+        `${batteryUnsupportedReason(saveMapper)} Choose MMC1 or MMC3 in the Build panel, or remove the Save command.`
+      );
+    }
+    // Continue is a title-screen option (engine/title.asm); a save with no
+    // title to offer it from would be a ROM you cannot load a save in rather
+    // than a build error you can act on before shipping it.
+    if (project.project.titleMap === null || project.project.titleMap === undefined) {
+      add(
+        'error',
+        'Map Forge',
+        'A project with a Save command needs a title screen — Continue has nowhere to appear without one. ' +
+          'Set a title map, or remove the Save command.'
       );
     }
   }

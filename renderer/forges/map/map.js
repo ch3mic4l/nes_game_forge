@@ -21,6 +21,7 @@ import {
 } from '../../../shared/project.js';
 import { BOX_COLS, BOX_ROWS, FONT_BASE, wrapText } from '../../../shared/font.js';
 import { RPG_LIMITS, isMonsterActor } from '../../../shared/project.js';
+import { batteryCapable, resolveMapper } from '../../../shared/cartridge.js';
 import { createMetatilePanel } from './metatiles.js';
 import {
   describeCommand,
@@ -473,7 +474,11 @@ export function mount(container, app) {
       // Only an RPG has a party, so this is what decides whether Join is offered.
       party: store.project.project.gameType === 'rpg' ? store.project.party ?? [] : [],
       commonEvents: store.project.commonEvents ?? [],
-      songs: store.project.songs ?? []
+      songs: store.project.songs ?? [],
+      // Whether the current cartridge can even hold a save -- the same
+      // question batteryCapable (shared/cartridge.js) answers for the Build
+      // panel's mapper picker, asked here to decide whether Save is offered.
+      canSave: batteryCapable(resolveMapper(store.project.cartridge.mapper))
     };
   }
 

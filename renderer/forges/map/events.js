@@ -51,7 +51,9 @@ const offeredCommands = (context) =>
       // Nothing to call until at least one common event exists — offering it
       // sooner would be exactly the "looks functional, does nothing" case
       // this codebase refuses to ship, one authoring step earlier.
-      (entry.id !== 'call' || context.commonEvents?.length)
+      (entry.id !== 'call' || context.commonEvents?.length) &&
+      // Only a battery-capable cartridge has anywhere to write a save.
+      (entry.id !== 'save' || context.canSave)
   );
 
 const defaultCommand = (op, context = {}) => {
@@ -160,6 +162,8 @@ function describeEnabled(command, context = {}) {
       return `Heal ${command.value ?? 0}`;
     case 'damage':
       return `Damage ${command.value ?? 0}`;
+    case 'save':
+      return 'Save the game';
     case 'branch': {
       // Described down to its contents, because the event list's search runs
       // over exactly this text: a switch used only inside a branch has to be
@@ -700,6 +704,21 @@ export function editEvent(event, context) {
           tools
         ),
         el('p.hint', null, hint)
+      );
+    }
+
+    if (command.op === 'save') {
+      return el(
+        'div',
+        { style: { marginBottom: '6px', ...dim } },
+        el('div.field-row', null, el('span', { style: { color: 'var(--text-dim)' } }, 'Save the game'), tools),
+        el(
+          'p.hint',
+          null,
+          'Writes the one save slot to the cartridge\'s battery RAM: where the player is, the switches and ' +
+            'variables, the inventory and the party. This is the player\'s save, not the Map Forge\'s own — ' +
+            'that one still happens whenever you save this project.'
+        )
       );
     }
 

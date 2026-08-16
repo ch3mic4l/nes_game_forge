@@ -253,6 +253,28 @@ bt_owner_rec = bt_owner_ent+1
 cur_map     = bt_owner_rec+1               ; NO_MAP until a screen decides
 cur_song    = cur_map+1                    ; NO_SONG until set_music runs
 
+; Which of the title's two prompt strings is on screen right now -- sys_press_start
+; or sys_press_start_continue -- so title_tick's blink can reuse it without
+; re-deciding (and re-running save_check_valid) every 32 frames. Set once, by
+; title_draw, each time the title is (re)drawn. Unconditional rather than
+; .if SAVE_ENABLED: title_blit_prompt/title_prompt_write read through this
+; pointer either way, which costs one byte less per access than the label they
+; used to address directly ([ptr],y is smaller than abs,y).
+title_prompt_lo = cur_song+1
+title_prompt_hi = title_prompt_lo+1
+
+; The save record's table-driven copy (engine/save.asm): save_ptr is the
+; current field's RAM address, save_cursor is where in SRAM it lands, sv_idx
+; is which of SAVE_FIELD_COUNT fields is running and sv_len is its length --
+; one generic loop walks save_field_lo/hi/len (assets/save.inc) with these
+; rather than eighteen hand-written copies, in both directions.
+save_ptr_lo    = title_prompt_hi+1
+save_ptr_hi    = save_ptr_lo+1
+save_cursor_lo = save_ptr_hi+1
+save_cursor_hi = save_cursor_lo+1
+sv_idx         = save_cursor_hi+1
+sv_len         = sv_idx+1
+
 ; Which split program this frame runs. OFF disarms the counter entirely.
 SPL_OFF     = 0
 SPL_BOX     = 1             ; the message box: font in from tile row 24
@@ -503,6 +525,10 @@ ACT_ITEM    = 4
 ACT_PAUSE   = 5
 ACT_CANCEL  = 6
 ACT_CONFIRM = 7
+ACT_CONTINUE = 8            ; title only, and only where SAVE_ENABLED -- loads
+                            ; the one save slot; do_action ignores it anywhere
+                            ; else, the same as any action bound somewhere it
+                            ; means nothing
 
 NUM_STATES  = 6             ; gameplay, menu, dialogue, title, game over, battle
 NUM_BUTTONS = 4             ; A, B, Select, Start
@@ -625,6 +651,16 @@ OP_DAMAGE   = $11           ; assembled: gain_hearts/lose_hearts (combat.asm)
                             ; BATTLE_ENABLED inside script_op_heal/
                             ; script_op_damage rather than at dispatch, because
                             ; neither command is RPG-only the way Join is
+OP_SAVE     = $12           ; no operand -- one slot, nothing to name. Only
+                            ; assembled where SAVE_ENABLED is (engine/save.asm);
+                            ; validateProject refuses a live one elsewhere the
+                            ; opcode has nowhere to dispatch, the same shape as
+                            ; OP_JOIN/OP_BATTLE on a build with no battle bank
+
+; SAVE_MARKER (engine/save.asm) reads as a completed save only when it holds
+; exactly this value -- not 0 or 1 or $FF, each of which a blank or corrupt
+; chip could plausibly already hold.
+SAVE_MARKER_VALID = $A5
 ; Punctuation rather than a command: the compiler emits it, nothing authors it,
 ; and it is numbered out of the way of EVENT_COMMANDS so the two orders cannot
 ; grow into each other. It ends a then-branch by stepping over the else-branch.
@@ -656,6 +692,13 @@ BODY_B      = 15
 
 MAX_X       = 240           ; 256 - 16
 MAX_Y       = 224           ; 240 - 16
+; NOTE: shared/project.js normalizes a project's startY up to 239, eight more
+; than this. A project authored with a start Y past 224 can spawn the player
+; somewhere ordinary movement would never walk it to and this engine cannot
+; safely index (see save_check_valid, engine/save.asm, which refuses exactly
+; such a value coming back out of a save). Pre-existing, independent of
+; saving, and left alone here -- flagged, not fixed, the same as
+; player_hazard's action/RPG asymmetry.
 
 NO_SCREEN   = $FF           ; neighbour table: nothing that way
 

@@ -44,12 +44,15 @@ import {
   INPUT_STATES,
   effectiveTrigger,
   collisionIndex,
-  validateProject
+  validateProject,
+  projectUsesSave
 } from '../../shared/project.js';
+import { SAVE_FIELDS, saveBodySize, saveIdentity } from '../../shared/save.js';
 import {
   CHR_BANK_BYTES,
   PRG_SWITCH,
   SCREEN_REGION_BYTES,
+  batteryCapable,
   chrBanksFor,
   chrPayloadRegions,
   chrRegisterTable,
@@ -126,46 +129,110 @@ const TITLE_NAME_ROW = 10;
 const TITLE_PROMPT_ROW = 19;
 
 // Engine code in the fixed kernel, which shares its 8 KB bank with the lookup
-// tables. This must be an over-estimate: too low and checkCapacity() promises
-// table room the assembler then refuses.
+// tables. The reservation this leaves checkCapacity() must be an
+// over-estimate of the real code -- too low and it promises table room the
+// assembler then refuses -- but it is no longer one flat number, because a
+// single shared constant charges every project on every mapper for the most
+// expensive thing *any* project can turn on, whether or not this one does.
 //
-// Measured by building the sample and reading nesasm's usage for the kernel-lo
-// bank (prgLayout().kernelLoBank), minus that project's fixedBytes + tableBytes.
-// UNROM 512 is the high-water mark because banks.asm emits the most code for
-// it, and it has to be measured with *every* conditionally-assembled block
-// turned on at once — a project that leaves one off is not the worst case, and
-// an earlier version of this comment measured sample-rpg with its title
-// disabled and quoted a number 220 bytes short of the real ceiling, which
-// checkCapacity then handed straight to a "Bank overflow" from the assembler
-// instead of catching itself. 6952 bytes as last measured by building
-// sample-rpg on mapper 30 with a title screen added, the message box, the
-// event runner with its variables, branches, questions, triggers,
-// common-event calls (including script_op_call's own NO_COMMON_EVENT stop,
-// separate from the CALL_STACK_DEPTH skip it falls through to), Play music,
-// Start a battle, and Heal/Damage (script_op_heal/script_op_damage,
-// dispatched unconditionally since neither is RPG-only, plus gain_hearts/
-// lose_hearts and the RPG's own party_heal/party_damage — each jsr'd and
-// always returning, with the caller doing its own jmp to player_died, never
-// the callee) all in, and action combat and the RPG's kernel-side half
-// (script_op_battle, battle_end's script-resume and record-identity restore
-// paths, and init_session's own status clear on the defeat path — not the
-// battle system itself, which lives in a switchable bank, the whole reason
-// it can exist at all). That leaves 20 bytes of slack: the next thing to
-// grow the kernel measures again and raises this, rather than assuming the
-// number below is generous.
+// That stopped being a rounding error the day save/load (engine/save.asm,
+// MMC1/MMC3 only) needed ~370 extra bytes: raising one flat constant to cover
+// it took a 54-screen UxROM project — which never asked for a battery, was
+// building the day before, and was already only five bytes under the old
+// ceiling — and broke it, `The lookup tables need 806 bytes but only 441 are
+// free`. That project's own mapper has vastly more screen-storage capacity
+// than it was using; the shared kernel-lo table budget became the binding
+// wall before UxROM's own advertised capacity was ever in play. This is not
+// a one-off: the bigger a board's PRG and screen capacity, the sooner the
+// flat reservation becomes the real ceiling instead of the one the Build
+// panel's mapper hint promises, for *any* feature that grows the kernel
+// enough -- combat, the RPG kernel-side half and the title screen all still
+// charge every project the same way save/load did before this split. Making
+// the whole reservation a function of every conditional block, the way the
+// two terms below are of just this one, is real and worth doing, but it is
+// its own change of unknown size — noted here for whoever plans it, not
+// started.
 //
-// That 6952 figure is quoted here only to explain what a worst-case build
-// contains — it is a hand-copied snapshot, not the source of truth, and it
-// has already gone stale against this constant three times as the kernel
-// grew. test/unit/kernelbytes.test.js is the source of truth: it re-measures
-// all three RPG-capable boards from a real build on every run and fails the
-// moment any of them exceeds the constant below, so it cannot go stale the
-// way a comment can. Trust its output over this paragraph's number if the
-// two ever disagree, and re-measure by actually running it rather than
-// hand-editing either — build sample-rpg with a title on mapper 30, take
-// nesasm's usage for the bank holding `reset`, and subtract `reset - $C000`,
-// or just read what the test itself reports.
-export const KERNEL_CODE_BYTES = 6972;
+// kernelCodeBytes(project, mapper) is the single writer now, the way
+// fontBankSplit (shared/font.js) and tilesetLimit (shared/cartridge.js)
+// already are for their own conditional rules: checkCapacity() and
+// test/unit/kernelbytes.test.js both call it rather than importing a bare
+// number, so the two cannot end up with two different answers about the same
+// project the way a flat constant let them.
+//
+// The two pieces, each measured by building sample-rpg with a title and
+// every conditionally-assembled block heal/damage's own measurement already
+// covered (dialogue, action combat, the RPG battle system, branches,
+// questions, common-event calls, Play music, Start a battle, Heal/Damage) --
+// nesasm's kernel-lo usage minus that build's own fixedBytes + tableBytes:
+//
+// BASE_KERNEL_CODE_BYTES is the worst case with SAVE_ENABLED off, 6952 on
+// UNROM 512 (banks.asm emits the most code for it) — identical to the figure
+// this constant measured before save/load existed, because it is measuring
+// the same thing: every board this project's build charges nothing to for
+// code it never assembles.
+//
+// SAVE_KERNEL_ALLOWANCE is the extra a board pays only when save/load itself
+// assembles, derived from the difference save/load actually measures on the
+// two boards that can build it -- not guessed: MMC1 goes from 6757 to 7304
+// (+547), MMC3 from 6944 to 7496 (+552). The larger of the two, so one
+// allowance covers both rather than one being asked to guess the other's
+// cost. (This grew from an earlier +453/+458 once a review pass range-checked
+// every restored value load_apply_body trusts as a table index -- player_dir,
+// player_y, each live inv_items entry, each pc_level -- and widened the
+// identity from two bytes to four; then from +526/+531 once a further pass
+// added the pc_in_party bound and the jmp relay save_check_valid's own
+// branch-range fix needed once that bound pushed save_check_invalid out of a
+// bne's reach -- see engine/save.asm's own header comment and
+// shared/save.js's saveIdentity() for what each of those costs and why.
+// MMC1/MMC3's own SAVE_ENABLED-off figures stay exactly 6757/6944, not a
+// byte more: the pc_level and pc_in_party loops are gated `.if BATTLE_ENABLED`
+// and every other addition lives inside save.asm's own `.if SAVE_ENABLED`
+// block, the same lesson this function exists to generalize, applied to
+// itself again. This constant's own history is why a passing
+// kernelbytes.test.js run is not the same as having re-measured it: the
+// allowance drifted one round behind reality -- 531 recorded while the real
+// delta had already grown to 552 -- and the test still passed, because 531
+// still covered 552's own shortfall against a much looser bound than the one
+// below. Caught only by re-running the real measurement by hand and diffing
+// it against this comment's claim, not by the test going green.)
+//
+// KERNEL_SLACK is kept on the *total*, once, here — never inside either term
+// above, or a margin on each would compound into a bigger one than either was
+// meant to carry. It is deliberate headroom on top of an allowance that is
+// itself supposed to already equal the worst measured delta -- not a second,
+// looser allowance that a stale first one gets to quietly borrow from.
+// test/unit/kernelbytes.test.js enforces that distinction directly: the
+// margin between what kernelCodeBytes reserves for a saving project and what
+// the worst real board actually measures must not fall below KERNEL_SLACK,
+// which fails exactly the way this round's drift should have -- 531 against
+// a real 552 leaves a 7-byte margin, well under a 20-byte KERNEL_SLACK floor
+// -- rather than only when the margin goes negative and a real build starts
+// overflowing its bank.
+//
+// With both terms and the slack: a project with no Save command gets
+// 6952 + 0 + 20 = 6972, byte-for-byte the constant this was before save/load
+// existed. A project that saves gets 6952 + 552 + 20 = 7524, which covers
+// both MMC1's real 7304 and MMC3's real 7496 with margin to spare.
+//
+// These figures are quoted only to explain how kernelCodeBytes reached its
+// shape -- hand-copied snapshots, not the source of truth, and this
+// constant's own history (seven revisions before this one) is the reason not
+// to trust them blindly. test/unit/kernelbytes.test.js is the source of
+// truth: it re-measures every RPG-capable board, with and without a live
+// Save command, from a real build on every run, and fails the moment either
+// configuration exceeds what kernelCodeBytes reserves for it, or the margin
+// between reservation and reality erodes below KERNEL_SLACK. Trust its
+// output over this comment if the two ever disagree, and re-measure by
+// running it rather than hand-editing either.
+const BASE_KERNEL_CODE_BYTES = 6952;
+export const SAVE_KERNEL_ALLOWANCE = 552;
+export const KERNEL_SLACK = 20;
+
+export function kernelCodeBytes(project, mapper) {
+  const usesSave = projectUsesSave(project) && batteryCapable(mapper);
+  return BASE_KERNEL_CODE_BYTES + (usesSave ? SAVE_KERNEL_ALLOWANCE : 0) + KERNEL_SLACK;
+}
 const PLAYER_FRAMES = 8; // 4 directions x 2 walk frames
 const PLAYER_TILES = PLAYER_FRAMES * 4;
 
@@ -406,9 +473,11 @@ export function checkCapacity(project) {
   // pointers, tileset, bank, map) and 9 per map (base, encounter rate, four
   // formation slots, the two battle backdrop tiles, and the song).
   const tableBytes = 13 * flat.length + 9 * project.maps.length + entityBytes + spriteBytes;
-  const kernelFree = BANK_SIZE - KERNEL_CODE_BYTES - fixedBytes - tableBytes;
 
   const mapper = resolveMapper(project.cartridge.mapper);
+  const kernelBudget = kernelCodeBytes(project, mapper);
+  const kernelFree = BANK_SIZE - kernelBudget - fixedBytes - tableBytes;
+
   const layout = prgLayout(mapper);
   const bankedCode = codeRegionCount(project);
 
@@ -469,7 +538,7 @@ export function checkCapacity(project) {
       severity: 'error',
       where: 'Map Forge',
       message:
-        `The lookup tables need ${tableBytes} bytes but only ${BANK_SIZE - KERNEL_CODE_BYTES - fixedBytes} are ` +
+        `The lookup tables need ${tableBytes} bytes but only ${BANK_SIZE - kernelBudget - fixedBytes} are ` +
         'free alongside the engine code. Reduce the number of screens, actors or metasprites.'
     });
   }
@@ -577,10 +646,19 @@ export async function generateAssets({ dir, project, log = () => {} }) {
     log('note: the sprite table is empty, so a placeholder player was drawn into the ROM.');
   }
 
+  // This project's actual actor roster size -- computed once here and reused
+  // by every site in this function that needs it (NUM_ACTORS below, the
+  // screen-bank packing, the encounter table, the placed-entity filter), so
+  // it cannot drift into disagreeing with itself the way three independent
+  // `project.sprites.actors.length` expressions eventually would.
+  const actorCount = project.sprites.actors.length;
+
   // The HUD hearts, stamped after the placeholder check so an empty sprite table
   // is still recognised as empty. Two tiles, and only for a game that can hurt
   // the player — same conditional-reservation rule as the font.
   const usesCombat = projectUsesCombat(project);
+  const usesSave = projectUsesSave(project);
+  const saveIdentityValue = saveIdentity(project);
   if (usesCombat) {
     for (const tileset of tilesets) {
       for (const [index, tile] of Object.entries(HEART_TILES)) tileset.sprites[Number(index)] = tile;
@@ -713,6 +791,9 @@ export async function generateAssets({ dir, project, log = () => {} }) {
   const centred = (row, line) => 0x2000 + row * 32 + ((32 - Math.min(32, line.length)) >> 1);
   const nameAddr = centred(TITLE_NAME_ROW, text.system.sys_title);
   const promptAddr = centred(TITLE_PROMPT_ROW, text.system.sys_press_start);
+  // Its own centring: a different string, a different length, a different
+  // address to start it at so it still lands in the middle of the row.
+  const promptContinueAddr = centred(TITLE_PROMPT_ROW, text.system.sys_press_start_continue);
   // One attribute byte covers four tile rows, so each line of the title sits in
   // exactly one attribute row and the engine blanks that row to make it legible.
   const attrRow = (row) => 0x23c0 + (row >> 2) * 8;
@@ -734,6 +815,11 @@ export async function generateAssets({ dir, project, log = () => {} }) {
     // clamp that keeps a variable index inside it.
     `NUM_VARIABLES = ${RPG_LIMITS.variables}`,
     `NUM_TILESETS  = ${project.tilesets.length}`,
+    // This build's own actor roster size -- save_check_valid range-checks a
+    // restored inv_items entry against this before draw_actor_icon (engine/ui.asm)
+    // is allowed to index actor_anim_dir with it. See shared/save.js's saveIdentity
+    // for why the count is also folded into the save identity, not only checked here.
+    `NUM_ACTORS    = ${actorCount}`,
     // banks.asm has one routine for every discrete single-write mapper; which one
     // is in use shows up only as the register values in chr_bank_values below.
     `NUM_PRG_BANKS  = ${layout.dataBankCount}`,
@@ -782,6 +868,7 @@ export async function generateAssets({ dir, project, log = () => {} }) {
     `TITLE_FLAT_SCREEN = ${titleFlat}`,
     `TITLE_NAME_ADDR   = $${nameAddr.toString(16).toUpperCase()}`,
     `TITLE_PROMPT_ADDR = $${promptAddr.toString(16).toUpperCase()}`,
+    `TITLE_PROMPT_CONTINUE_ADDR = $${promptContinueAddr.toString(16).toUpperCase()}`,
     `TITLE_NAME_ATTR   = $${attrRow(TITLE_NAME_ROW).toString(16).toUpperCase()}`,
     `TITLE_PROMPT_ATTR = $${attrRow(TITLE_PROMPT_ROW).toString(16).toUpperCase()}`,
     // The rows themselves, for the split programs in engine/split.asm.
@@ -793,9 +880,80 @@ export async function generateAssets({ dir, project, log = () => {} }) {
     // The CHR bank a battle switches to, which is where the monster artwork
     // lives. Clamped to what survived the mapper's tileset limit.
     `BATTLE_TILESET = ${Math.min(project.rpg?.battleTilesetId ?? 0, Math.max(0, project.tilesets.length - 1))}`,
+    // Battery-backed save. Pays nothing when the project has no live Save
+    // command, the same rule COMBAT_ENABLED and TITLE_ENABLED already hold
+    // their own projects to — see engine/save.asm for what this gates, and
+    // shared/save.js for the identity's derivation (assets/save.inc holds
+    // the record's own field layout, generated from the same list). Four
+    // bytes, little-endian byte 0 first -- see saveIdentity's own comment
+    // for why 16 bits, then a second widening, stopped being enough, and for
+    // what this identity can and cannot guarantee on its own.
+    `SAVE_ENABLED = ${usesSave ? 1 : 0}`,
+    `SAVE_IDENTITY_0 = ${saveIdentityValue & 0xff}`,
+    `SAVE_IDENTITY_1 = ${(saveIdentityValue >> 8) & 0xff}`,
+    `SAVE_IDENTITY_2 = ${(saveIdentityValue >> 16) & 0xff}`,
+    `SAVE_IDENTITY_3 = ${(saveIdentityValue >> 24) & 0xff}`,
     ''
   ].join('\n');
   await fs.writeFile(path.join(assetsDir, 'config.inc'), config);
+
+  // --- save record layout ---------------------------------------------------
+  // One address equate per field, laid out back-to-back from SAVE_BASE in the
+  // order shared/save.js's SAVE_FIELDS lists them in — the single writer for
+  // this layout, so engine/save.asm never spells an offset by hand. Emitted
+  // even when the project has no Save command: the labels cost nothing
+  // unreferenced, and it keeps this file's shape independent of SAVE_ENABLED,
+  // the same reason every system string compiles unconditionally.
+  const SAVE_BASE = 0x6000;
+  let saveOffset = SAVE_BASE;
+  const saveFieldLines = SAVE_FIELDS.map((field) => {
+    const line = `SAVE_${field.ram.toUpperCase()} = $${saveOffset.toString(16).toUpperCase()}`;
+    saveOffset += field.size;
+    return line;
+  });
+  const saveBodyLen = saveBodySize();
+  // Three parallel tables, one entry per SAVE_FIELDS field, in the same order
+  // — the table-driven form of the same layout the equates above spell out.
+  // engine/save.asm's one generic copy routine walks these in both
+  // directions (RAM<->SRAM) rather than eighteen hand-written loops that
+  // could silently drift out of agreement with each other about what the
+  // record contains; LOW()/HIGH() resolve against the real engine symbol
+  // (constants.asm), the same way every other pointer table here does.
+  const chunkedDb = (values, perLine = 12) => {
+    const lines = [];
+    for (let i = 0; i < values.length; i += perLine) {
+      lines.push(`  .db ${values.slice(i, i + perLine).join(',')}`);
+    }
+    return lines.join('\n');
+  };
+  const saveInc = [
+    '; Generated -- the save record\'s layout in battery RAM. shared/save.js is',
+    '; the single writer; engine/save.asm addresses every field by these equates',
+    '; and the descriptor tables below.',
+    `SAVE_BASE = $${SAVE_BASE.toString(16).toUpperCase()}`,
+    ...saveFieldLines,
+    `SAVE_BODY_LEN = ${saveBodyLen}`,
+    // The body, then a two-byte checksum over it, then the four-byte project
+    // identity, then the one-byte marker last of all -- see engine/save.asm's
+    // write order (and why it invalidates the marker again, first, before
+    // any of this, on every save after the first).
+    `SAVE_CHECKSUM_LO = $${(SAVE_BASE + saveBodyLen).toString(16).toUpperCase()}`,
+    `SAVE_CHECKSUM_HI = $${(SAVE_BASE + saveBodyLen + 1).toString(16).toUpperCase()}`,
+    `SAVE_IDENTITY_0_ADDR = $${(SAVE_BASE + saveBodyLen + 2).toString(16).toUpperCase()}`,
+    `SAVE_IDENTITY_1_ADDR = $${(SAVE_BASE + saveBodyLen + 3).toString(16).toUpperCase()}`,
+    `SAVE_IDENTITY_2_ADDR = $${(SAVE_BASE + saveBodyLen + 4).toString(16).toUpperCase()}`,
+    `SAVE_IDENTITY_3_ADDR = $${(SAVE_BASE + saveBodyLen + 5).toString(16).toUpperCase()}`,
+    `SAVE_MARKER = $${(SAVE_BASE + saveBodyLen + 6).toString(16).toUpperCase()}`,
+    `SAVE_FIELD_COUNT = ${SAVE_FIELDS.length}`,
+    'save_field_lo:',
+    chunkedDb(SAVE_FIELDS.map((field) => `LOW(${field.ram})`)),
+    'save_field_hi:',
+    chunkedDb(SAVE_FIELDS.map((field) => `HIGH(${field.ram})`)),
+    'save_field_len:',
+    chunkedDb(SAVE_FIELDS.map((field) => field.size)),
+    ''
+  ].join('\n');
+  await fs.writeFile(path.join(assetsDir, 'save.inc'), saveInc);
 
   // --- palettes ------------------------------------------------------------
   const paletteBytes = [
@@ -851,7 +1009,6 @@ export async function generateAssets({ dir, project, log = () => {} }) {
   // --- screen bank assignment ----------------------------------------------
   // Decided before maps.inc is written, because the lookup tables there carry the
   // bank each screen lives in.
-  const actorCount = project.sprites.actors.length;
   const screenBank = new Array(flat.length).fill(0);
   const regionRanges = [];
   {
@@ -889,7 +1046,7 @@ export async function generateAssets({ dir, project, log = () => {} }) {
       // cost worth speaking of.
       `map_enc_rate:\n${dbBlock(project.maps.map((map) => map.encounters?.rate ?? 0))}`,
       `map_enc_actors:\n${dbBlock(
-        project.maps.flatMap((map) => encounterRow(map, project.sprites.actors.length)),
+        project.maps.flatMap((map) => encounterRow(map, actorCount)),
         RPG_ENCOUNTER_SLOTS
       )}`,
       `map_battle_sky:\n${dbBlock(project.maps.map((map) => map.battleSkyTile ?? 0))}`,

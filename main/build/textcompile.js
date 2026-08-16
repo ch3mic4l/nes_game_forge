@@ -253,6 +253,9 @@ export function compileText(project) {
         return [opIndex('heal'), damageAmount(command.value)];
       case 'damage':
         return [opIndex('damage'), damageAmount(command.value)];
+      // No operand: one save slot, so there is nothing to name.
+      case 'save':
+        return [opIndex('save')];
       case 'join':
         return [opIndex('join'), byte(command.member, 3)];
       case 'call': {
@@ -520,6 +523,11 @@ export function systemStrings(project) {
   return {
     sys_title: name || 'UNTITLED',
     sys_press_start: 'PRESS START',
+    // Shown instead of sys_press_start when a valid save exists (checked at
+    // runtime, since that is per-cartridge state no build-time flag can know)
+    // -- always compiled, the same "always emitted" rule every system string
+    // here follows, even for a project with no Save command to ever show it.
+    sys_press_start_continue: 'START:NEW  SELECT:CONTINUE',
     // One page, deliberately: a blank line would be a page break, and the box
     // would sit waiting for a press before it had said what the press is for.
     sys_game_over: 'GAME OVER\nPress Start to try again.'

@@ -156,7 +156,19 @@ switch_prg_bank:
 ;
 ; MMC1 is left in its power-on PRG mode: 16 KB switchable at $8000 with the last
 ; bank fixed at $C000, which is the layout the engine template assumes.
+;
+; Bit 4 of this same register is PRG-RAM disable, not part of the bank number
+; at all -- it only works to leave it alone here because this board never has
+; more than 16 KB units in prgUnits (shared/cartridge.js), so a bank index
+; never reaches 16 and bit 4 of A is already always clear before the shift.
+; That was true by accident before save/load existed to depend on it; the mask
+; below makes it true on purpose. It does not make a future MMC1 entry with
+; more than 16 PRG units correct -- that would alias two banks onto one
+; register value regardless -- but it does keep the failure a wrong screen
+; rather than the battery silently going write-protected mid-game, which is
+; the one of the two a player could not even notice happened.
 switch_prg_bank:
+  and #$0F                  ; hold PRG-RAM enabled -- see the comment above
   sta mmc_tmp
   ldx #5
 mmc1_prg_loop:
@@ -271,6 +283,16 @@ mapper_init:
   sta $A000
   lda #$00
   sta $E000                 ; acknowledge and disable the scanline IRQ
+  .if SAVE_ENABLED
+  ; $A001 bit 7 enables the WRAM chip at $6000-$7FFF; bit 6 write-protects it.
+  ; One write, here, for the whole session -- $80 enables and leaves it
+  ; writable, and nothing after boot ever needs it any other way. The
+  ; vendored emulator core treats $6000-$7FFF as plain RAM with no enable or
+  ; protect bits at all, so a save that works in-app and fails on real
+  ; hardware is exactly the failure a missing version of this write causes.
+  lda #$80
+  sta $A001
+  .endif
   rts
   .endif
 

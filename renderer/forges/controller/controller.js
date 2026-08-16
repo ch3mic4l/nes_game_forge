@@ -53,6 +53,15 @@ const ENGINE_SUPPORT = {
     menu: 'Spends the highlighted item and leaves the inventory open.',
     dialog: 'Ends the conversation.',
     title: 'Begins the game.'
+  },
+  continue: {
+    gameplay: null,
+    menu: null,
+    dialog: null,
+    title:
+      'Loads the save and resumes there. Only offered when the project can save (a battery-capable ' +
+      'cartridge with a Save command) and a valid save currently exists — otherwise this is ignored the ' +
+      'same as anywhere else.'
   }
 };
 

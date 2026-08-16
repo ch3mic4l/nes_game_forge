@@ -5,6 +5,7 @@ import path from 'node:path';
 import { generateAssets } from './generate.js';
 import { runNesasm } from './nesasm.js';
 import { applyHeaderPatch, headerPatch, resolveMapper } from '../../shared/cartridge.js';
+import { projectUsesSave } from '../../shared/project.js';
 
 const INES_HEADER = 16;
 
@@ -85,12 +86,14 @@ export async function buildProject({ dir, project, log = () => {}, settings = {}
   // applyHeaderPatch is a no-op for every mapper nesasm can already describe, so
   // "the assembler writes a correct header" still holds for all of them.
   const mapper = resolveMapper(project.cartridge.mapper);
-  if (Object.keys(headerPatch(mapper, project.cartridge)).length) {
-    applyHeaderPatch(bytes, mapper, project.cartridge);
+  const saveEnabled = projectUsesSave(project);
+  if (Object.keys(headerPatch(mapper, project.cartridge, saveEnabled)).length) {
+    applyHeaderPatch(bytes, mapper, project.cartridge, saveEnabled);
     await fs.writeFile(romPath, bytes);
     const notes = [
       mapper.nes2 ? `NES 2.0, ${mapper.nes2.chrRamSize / 1024} KB CHR-RAM` : null,
-      project.cartridge.mirroring === 'fourscreen' ? 'four-screen mirroring' : null
+      project.cartridge.mirroring === 'fourscreen' ? 'four-screen mirroring' : null,
+      saveEnabled ? 'battery-backed save' : null
     ].filter(Boolean);
     log(`Rewrote the header for ${mapper.name} (${notes.join(', ')}).`);
   }

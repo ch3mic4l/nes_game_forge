@@ -201,6 +201,9 @@ export const MAPPERS = [
     chrBankValues: [1, 2, 4, 8, 16],
     chrRegisterShift: null,
     switchableChr: true,
+    // Battery-backed WRAM at $6000-$7FFF, wired through the PRG-RAM-disable bit
+    // of MMC1's own bank register -- see switch_prg_bank in engine/banks.asm.
+    battery: true,
     supported: true,
     summary: 'Up to 128 KB of program and 128 KB of graphics: 16 tilesets and 7 screen banks.',
     hint: 'The mapper more NES games used than any other. Switches both graphics and screens, so pick it when you need both.'
@@ -220,6 +223,9 @@ export const MAPPERS = [
     // own CHR bank, switched in mid-frame where the text windows start — so on
     // this board a project that shows text keeps all 256 background tiles.
     scanlineIrq: true,
+    // Battery-backed WRAM at $6000-$7FFF, enabled once at boot by mapper_init's
+    // $A001 write -- see engine/banks.asm.
+    battery: true,
     supported: true,
     summary: 'Up to 512 KB of program and 256 KB of graphics: 32 tilesets and 15 screen banks.',
     hint: 'The largest cartridge on offer. Its scanline interrupt gives the message font its own graphics bank, so showing text costs no background tiles on this board.'
@@ -274,6 +280,29 @@ export function rpgUnsupportedReason(mapper) {
 
 export const RPG_MAPPERS = SUPPORTED_MAPPERS.filter(rpgCapable);
 
+/**
+ * Can this board hold a battery-backed save? Only MMC1 and MMC3 carry WRAM at
+ * $6000-$7FFF. This is deliberately its own flag rather than reusing
+ * `rpgCapable` — the two happen to name the same two boards today
+ * (`rpgCapable` is `hasSwitchablePrg && switchableChr`, which MMC1 and MMC3
+ * both satisfy), but they are different capabilities for different reasons: an
+ * *action* project on one of the other switchable-PRG-less boards has no
+ * battle system to miss, yet still cannot save, and a future board could gain
+ * one capability without the other. One flag doing two jobs is how "why can't
+ * I save on this board" and "why can't I have an RPG on this board" end up
+ * with the same wrong answer.
+ */
+export function batteryCapable(mapper) {
+  return Boolean(mapper.battery);
+}
+
+/** Why a board cannot hold a save, phrased for the Build panel's option title. */
+export function batteryUnsupportedReason(mapper) {
+  return `${mapper.name} has no battery-backed RAM at $6000-$7FFF, so there is nowhere to write a save.`;
+}
+
+export const BATTERY_MAPPERS = SUPPORTED_MAPPERS.filter(batteryCapable);
+
 /** The board a newly created project of this kind should start on. */
 export function defaultMapperFor(gameType) {
   return gameType === 'rpg' ? RPG_DEFAULT_MAPPER : DEFAULT_MAPPER;
@@ -294,21 +323,38 @@ export function chrBanksFor(mapper, count) {
  *
  * nesasm only understands iNES 1.0, which has no way to declare CHR-RAM or its
  * size, so a CHR-RAM board needs its header upgraded to NES 2.0 afterwards. This
- * returns an empty object for every mapper nesasm can already describe, which is
- * how the pipeline keeps "no post-processing" true for all of them.
+ * returns an empty object for every mapper nesasm can already describe with
+ * `saveEnabled` false, which is how the pipeline keeps "no post-processing"
+ * true for all of them.
+ *
+ * `saveEnabled` is the caller's own answer to "does this build's project use a
+ * live Save command" (`projectUsesSave` in shared/project.js) — not derived
+ * here, because this module knows nothing about event commands. Battery stays
+ * in iNES 1.0 rather than dragging MMC1/MMC3 into NES 2.0 the way CHR-RAM
+ * forces UNROM 512 to: NES 2.0 could declare the NVRAM size exactly, but
+ * nothing here needs a size more precise than "some," and pulling two more
+ * boards into the 2.0 path for no benefit a mapper this ordinary can use is
+ * not worth the byte-10 PRG-RAM-size field the nes2 branch below currently
+ * hardcodes to zero for its one existing customer.
  */
-export function headerPatch(mapper, cartridge) {
+export function headerPatch(mapper, cartridge, saveEnabled = false) {
   const mirroring = mirroringById(cartridge?.mirroring);
   const fourScreen = Boolean(mirroring.fourScreen && mapper.supportsFourScreen);
+  const battery = saveEnabled && batteryCapable(mapper);
 
   // Four-screen is header byte 6 bit 3, which nesasm has no directive for. On
   // UNROM 512 the mirroring bits are redefined: bit 3 alone means one-screen, and
   // four-screen needs bit 3 *and* bit 0 -- .inesmir already supplies bit 0.
-  const fourScreenPatch = fourScreen ? { 6: { or: 0x08 } } : {};
+  // Battery is bit 1, the same situation, and the two bits never collide: no
+  // battery-capable board offers four-screen and no four-screen board offers
+  // battery, but they are combined by OR rather than by whichever patch was
+  // built last, so that stops being an assumption this code depends on.
+  const byte6Or = (fourScreen ? 0x08 : 0) | (battery ? 0x02 : 0);
+  const byte6Patch = byte6Or ? { 6: { or: byte6Or } } : {};
 
-  if (!mapper.nes2) return fourScreenPatch;
+  if (!mapper.nes2) return byte6Patch;
   const patch = {
-    ...fourScreenPatch,
+    ...byte6Patch,
     // Byte 7 bits 3..2 == 0b10 is the NES 2.0 identifier. The mapper's high nibble
     // is already in bits 4..7 courtesy of .inesmap.
     7: { or: 0x08 },
@@ -330,8 +376,8 @@ export function headerPatch(mapper, cartridge) {
 }
 
 /** Apply headerPatch() to an assembled ROM in place, and return it. */
-export function applyHeaderPatch(bytes, mapper, cartridge) {
-  for (const [offset, rule] of Object.entries(headerPatch(mapper, cartridge))) {
+export function applyHeaderPatch(bytes, mapper, cartridge, saveEnabled = false) {
+  for (const [offset, rule] of Object.entries(headerPatch(mapper, cartridge, saveEnabled))) {
     const index = Number(offset);
     if (rule.set !== undefined) bytes[index] = rule.set;
     if (rule.or !== undefined) bytes[index] |= rule.or;

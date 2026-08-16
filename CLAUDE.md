@@ -198,7 +198,12 @@ capacity. Its single register carries the PRG bank in bits 0-4 and the CHR page 
 neither can be set without the other — `mapper_shadow` holds the last value written and both switch
 routines rewrite the whole byte. And because iNES cannot declare CHR-RAM, `applyHeaderPatch()` in
 `pipeline.js` rewrites the 16-byte header to NES 2.0 after assembly. `headerPatch()` returns `{}` for
-every other mapper, so "nesasm writes a correct header with no post-processing" still holds for them.
+every mapper that needs neither that nor a plain byte-6 bit set — battery on a project that never
+saves, four-screen on a board without the nametable RAM for it — so "nesasm writes a correct header
+with no post-processing" still holds for them. Battery-backed save (below) is the other bit-set case:
+iNES byte 6 bit 1, applied the same way four-screen's bit 3 already was, in preference to dragging
+MMC1 and MMC3 into the NES 2.0 path UNROM 512 alone needs for a size neither board's ordinary 8 KB of
+WRAM requires declaring precisely.
 
 **MMC3's scanline IRQ gives the font its own CHR bank** (`engine/split.asm`). On a board whose
 registry entry has `scanlineIrq: true` — only MMC3 — a project that shows text does *not* get the

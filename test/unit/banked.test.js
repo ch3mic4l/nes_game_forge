@@ -14,7 +14,7 @@ import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import NES from '../../renderer/emulator/core/nes.js';
-import { createProject, createMap, createScreen } from '../../shared/project.js';
+import { createProject } from '../../shared/project.js';
 import {
   SCREEN_REGION_BYTES,
   chrPayloadRegions,
@@ -161,16 +161,25 @@ test('the trampoline reaches the banked code and puts the screen bank back', asy
 // herself with Say, then Join, then a switch.
 //
 // The sample is one screen, though, and one screen fits inside the same 16 KB
-// PRG bank the code region already claims — so switch_prg_bank(BATTLE_BANK)
-// and switch_prg_bank(screen_bank[flat_screen]) select the very same bank on
-// the unmodified sample, and mtptr's target bytes read correctly whether or
-// not the trampoline restores anything, because nothing ever moved. Enough
-// padding screens ahead of Iris's own map push it into a *different* PRG
-// bank than BATTLE_BANK, so a missing restore is something this test can
-// actually see: the bytes at mtptr's address, read straight through the
-// mapper (nes.mmap.load, not nes.cpu.mem — reads at $8000+ are cartridge
-// reads, not the flat RAM array), rather than mtptr's own value, which a
-// broken restore never touches either way.
+// PRG bank the code region already claims on most boards — so
+// switch_prg_bank(BATTLE_BANK) and switch_prg_bank(screen_bank[flat_screen])
+// would select the very same bank on the unmodified sample there, and
+// mtptr's target bytes would read correctly whether or not the trampoline
+// restores anything, because nothing ever moved. Padding the map with enough
+// blank screens to push Iris's own past that shared bank is one way to make
+// a missing restore visible, and an earlier version of this test did that —
+// but "enough" screens to cross a PRG bank (~26, from the fixed 8 KB a
+// region holds) got more expensive than the kernel-lo table budget could
+// spare for a padding project the moment save/load grew that budget's other
+// side, which made the two requirements mutually exclusive on any board
+// where the code region and the first screen region share a PRG bank.
+//
+// UNROM 512 does not share one: it is the CHR-RAM board, so codeRegions()
+// (shared/cartridge.js) is sliced *after* chrPayloadRegions() takes the
+// first region for the tileset payload, landing the code region and the
+// first screen region on two different 16 KB banks by construction — no
+// padding, no screen-count arithmetic to keep in step with the kernel
+// growing, and a board this codebase already builds RPGs on regardless.
 test(
   'a Join command mid-script also restores the screen bank, with no redraw to hide it',
   { skip: !hasNesasm && 'nesasm not found on PATH' },
@@ -179,22 +188,7 @@ test(
     t.after(() => fs.promises.rm(dir, { recursive: true, force: true }));
     const project = await loadProject(SAMPLE_RPG);
     project.maps[0].encounters = { rate: 0, actorIds: [] };
-    // Push Iris's map into a PRG bank the code region does not occupy — see
-    // the comment above. ~26 screens fill one region on this mapper; three
-    // 4x3 maps (36) comfortably clears the one region left in the code
-    // region's own 16 KB bank, with margin kept deliberately tighter than an
-    // earlier version's 4x4 (48) once the kernel grew enough to make that
-    // padding itself the thing exceeding the lookup-table budget this test
-    // is not about.
-    for (let n = 0; n < 3; n++) {
-      const padding = createMap(90 + n, `Padding ${n}`);
-      padding.gridW = 4;
-      padding.gridH = 3;
-      padding.screens = Array.from({ length: 12 }, () => createScreen());
-      padding.tilesetId = project.maps[0].tilesetId;
-      project.maps.unshift(padding);
-    }
-    project.project.startMap = project.maps.length - 1; // still boot into Iris's map
+    project.cartridge.mapper = 30; // UNROM 512 -- see the comment above
     await saveProject(dir, project);
     const built = await buildProject({ dir, project, log: () => {} });
 

@@ -57,6 +57,7 @@
   .include "combat.asm"
   .include "title.asm"
   .include "rpg.asm"
+  .include "save.asm"
   .include "text.asm"
   .include "script.asm"
   .include "input.asm"

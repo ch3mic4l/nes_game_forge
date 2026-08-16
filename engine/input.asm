@@ -118,6 +118,10 @@ do_action:
   beq do_action_cancel
   cmp #ACT_PAUSE
   beq do_action_pause
+  .if SAVE_ENABLED
+  cmp #ACT_CONTINUE
+  beq do_action_continue
+  .endif
 do_action_none:
   rts
 
@@ -154,6 +158,19 @@ do_action_confirm_done:
   rts
 do_action_use:
   jmp use_item              ; the menu stays open, so a second item can be spent
+
+  .if SAVE_ENABLED
+; Title only -- "no valid save" means this option was never drawn, so a press
+; on any other state or with nothing to load has nothing to do, the same as
+; any action bound somewhere it is ignored.
+do_action_continue:
+  lda game_state
+  cmp #ST_TITLE
+  bne do_action_none
+  jsr save_check_valid
+  bne do_action_none
+  jmp continue_game
+  .endif
 
 do_action_cancel:
   lda game_state

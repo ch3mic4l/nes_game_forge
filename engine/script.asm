@@ -149,8 +149,14 @@ script_run_heal:
   jmp script_op_heal
 script_run_damage:
   cmp #OP_DAMAGE
-  bne script_run_bad
+  bne script_run_save
   jmp script_op_damage
+script_run_save:
+  .if SAVE_ENABLED
+  cmp #OP_SAVE
+  bne script_run_bad
+  jmp script_op_save
+  .endif
 script_run_bad:
   jmp script_finish         ; an opcode this engine cannot run stops the event
                             ; rather than being reinterpreted as another one
@@ -227,6 +233,25 @@ script_op_set:
   jsr script_arg
   jsr switch_set
   jmp script_next2
+
+  .if SAVE_ENABLED
+; Advances past an opcode with no operand at all -- Save (engine/save.asm) is
+; the only such command today, so this has one caller, but it is named the
+; same way script_next2/script_next3 are rather than inlined into that one
+; caller, so a future no-operand command finds it here instead of copying it
+; a second time or, worse, reaching for script_next2 because it is what is
+; already in scope. Gated on SAVE_ENABLED rather than assembled
+; unconditionally like script_next2/3: it has exactly one caller today and
+; that caller does not exist in a build with no Save command, so this would
+; otherwise be a few bytes every non-saving project paid for code it cannot
+; reach -- the same accidental-unconditional-cost mistake the kernel
+; reservation fix (main/build/generate.js's kernelCodeBytes) was written to
+; stop happening.
+script_next1:
+  lda #1
+  jsr script_skip
+  jmp script_run
+  .endif
 
 script_op_clear:
   jsr script_arg

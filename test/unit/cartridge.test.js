@@ -309,13 +309,26 @@ test('UxROM builds with seven switchable screen banks', async () => {
   assert.equal(rom.length, 16 + 8 * 16384 + 8192);
 });
 
+// Was failing for one round: raising the flat KERNEL_CODE_BYTES to cover
+// save/load broke this test's premise entirely, because 53 real screens (the
+// minimum to make NROM refuse and prove UxROM different) cost more of the
+// shared kernel-lo table budget than the flat constant left free for ANY
+// project, saving or not -- a real capacity regression on a project that
+// never asked to save. kernelCodeBytes (main/build/generate.js) fixed it by
+// making the reservation conditional on whether save/load actually
+// assembles for the project/mapper being built; a project with no Save
+// command (this one) gets exactly the budget it had before save/load
+// existed, which is what makes 53-54 real screens affordable here again.
+// Left as the historical record of why this test is written this way, not
+// current behaviour: it does not currently fail, and if it starts failing
+// again that is a real capacity problem to report, not a number to retune.
 test('UxROM holds far more screens than NROM, and they land in different banks', async () => {
   const nrom = await import('../../main/build/generate.js');
   const base = createProject('Big');
   // Three full 4x4 maps plus one 3x2, not four full 4x4 (64): the kernel's
-  // own lookup-table budget (KERNEL_CODE_BYTES) is a separate,
+  // own lookup-table budget (kernelCodeBytes) is a separate,
   // mapper-independent ceiling from the per-mapper screen-storage one this
-  // test is actually about, and 64 screens now overruns it before either
+  // test is actually about, and 64 screens overruns it before either
   // mapper's own capacity is exercised -- LIMITS.mapGrid caps a single map's
   // grid at 4x4, so reaching an exact total past NROM's ~52 without also
   // tripping that shared ceiling means more than one map.
@@ -364,13 +377,19 @@ test('UxROM holds far more screens than NROM, and they land in different banks',
   assert.equal(uxromCheck.dataBankCount, 7);
 });
 
+// Was failing for one round, same wall and same fix as the "UxROM holds far
+// more screens" test above -- see its comment. This one is specifically
+// about UxROM's own switched-in bank, so it could not have borrowed that
+// test's workaround (a mapper whose code region and first screen region
+// differ by construction) even temporarily; it needed kernelCodeBytes itself
+// fixed. Not current behaviour: this does not currently fail.
 test('a UxROM ROM boots into a screen that lives in a switched-in bank', async () => {
   // 54 screens across four maps -- three full 4x4 maps plus one 6-wide strip,
   // rather than four full 4x4 maps (64): the kernel's own lookup-table budget
-  // (KERNEL_CODE_BYTES) is a separate, mapper-independent ceiling from the
-  // per-mapper screen-storage one this test is actually about, and it is
-  // tighter now than it once was, so 64 screens overruns it before UxROM's
-  // own capacity is ever exercised. 54 keeps clear of that while still
+  // (kernelCodeBytes) is a separate, mapper-independent ceiling from the
+  // per-mapper screen-storage one this test is actually about, and 64
+  // screens overruns it before UxROM's own capacity is ever exercised. 54
+  // keeps clear of that while still
   // landing the start screen outside bank 0: about 26 screens fit per 8 KB
   // region and two regions share a 16 KB bank, so bank 0 holds roughly the
   // first 53, and the start screen is the very last of the 54 — boot only

@@ -21,7 +21,7 @@
     "title": {
       "A": "confirm",
       "B": "none",
-      "SELECT": "none",
+      "SELECT": "continue",
       "START": "confirm"
     },
     "gameover": {

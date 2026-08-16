@@ -2,7 +2,7 @@
 
 import { store } from '../../store.js';
 import { el, clear, fill, toast } from '../../ui.js';
-import { validateProject, LIMITS, RPG_LIMITS, reconcileCartridge } from '../../../shared/project.js';
+import { validateProject, LIMITS, RPG_LIMITS, reconcileCartridge, projectUsesSave } from '../../../shared/project.js';
 import {
   MAPPERS,
   mapperById,
@@ -11,6 +11,8 @@ import {
   resolveMapper,
   rpgCapable,
   rpgUnsupportedReason,
+  batteryCapable,
+  batteryUnsupportedReason,
   screenCapacity,
   tilesetLimit
 } from '../../../shared/cartridge.js';
@@ -295,6 +297,7 @@ export function mount(container, app) {
 
     const mapper = resolveMapper(project.cartridge.mapper);
     const isRpg = project.project.gameType === 'rpg';
+    const usesSave = projectUsesSave(project);
 
     const parts = [
       el('div.panel-head', { style: { paddingLeft: '0' } }, 'Cartridge'),
@@ -323,23 +326,28 @@ export function mount(container, app) {
           MAPPERS.map((entry) => {
             const board = mapperById(entry.id);
             const rpgBlocked = isRpg && board && !rpgCapable(board);
+            const saveBlocked = usesSave && board && !batteryCapable(board);
             const reason = !entry.supported
               ? entry.unsupportedReason
               : rpgBlocked
                 ? rpgUnsupportedReason(board)
-                : entry.hint;
+                : saveBlocked
+                  ? batteryUnsupportedReason(board)
+                  : entry.hint;
             return el(
               'option',
               {
                 value: entry.id,
                 selected: entry.id === mapper.id,
-                disabled: !entry.supported || rpgBlocked,
+                disabled: !entry.supported || rpgBlocked || saveBlocked,
                 title: reason
               },
               entry.supported
                 ? rpgBlocked
                   ? `${entry.label} — no battle system`
-                  : entry.label
+                  : saveBlocked
+                    ? `${entry.label} — no battery RAM`
+                    : entry.label
                 : `${entry.label} — not yet supported`
             );
           })

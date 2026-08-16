@@ -52,8 +52,24 @@ export class Emulator {
     // that repeated only half of it left the nametables unallocated, so the
     // first background write after a reset threw from inside the PPU.
     // `reloadROM()` is that sequence, written down once, upstream.
+    //
+    // The Reset button on real hardware never touches cartridge RAM at all —
+    // it pulses the CPU/PPU reset line, not the power rail, so $6000-$7FFF
+    // survives whether or not the board has a battery behind it (the battery's
+    // job is surviving a real power-off, not this). reloadROM() rebuilds the
+    // mapper from scratch and re-runs the CPU's own power-on RAM clear
+    // (boot_clear in engine/boot.asm), which only ever touches $0000-$07FF —
+    // $6000-$7FFF was never in that range either, so on this core the only
+    // reason to snapshot and restore it here is that `nes.mmap.loadROM()`
+    // (jsnes's own reset path) may zero its backing array; matching hardware
+    // means asserting that expectation rather than trusting it silently held.
+    // A creator using Reset to test a save depends on this: without it,
+    // Reset would look like a power cycle wiped the battery, which is not
+    // what pressing Reset does on a real console.
+    const battery = this.nes.cpu?.mem?.slice(0x6000, 0x8000) ?? null;
     if (this.nes.romData) this.nes.reloadROM();
     else this.nes.reset();
+    if (battery) this.nes.cpu.mem.set(battery, 0x6000);
     this.inFrame = false;
     this.frames = 0;
     this.instructions = 0;
