@@ -26,11 +26,11 @@ changes what a non-programmer can build.
 
 ## 1. Event system 2.0
 
-The vocabulary is the constraint. There are four page conditions (`EVENT_CONDITIONS`) and seven
-commands (`EVENT_COMMANDS`, minus `end`) in `shared/project.js:147`. Every one of them is
-implemented end to end — that invariant holds and must keep holding — but seven verbs is a small
-language, and quests, shops, puzzles, cutscenes and boss fights are all currently reachable only
-through the Code Forge.
+The vocabulary was the constraint. When this was written there were four page conditions
+(`EVENT_CONDITIONS`) and seven commands (`EVENT_COMMANDS`, minus `end`) in `shared/project.js`, and
+quests, shops, puzzles, cutscenes and boss fights were all reachable only through the Code Forge.
+There are now seven conditions and eighteen commands, and every one of them is implemented end to
+end — that invariant holds and must keep holding.
 
 - ~~Named 8-bit **variables** alongside the existing 64 switches (counters, quest stages, flags with
   more than two states)~~ — **done**: 16 of them, with Set/Add/Subtract commands and *is* / *is at
@@ -80,7 +80,14 @@ through the Code Forge.
   `ent_touched` (which a resumed script's own touch trigger needs put back, since the world never
   moved during the fight) — two redraw side effects a scripted battle now has to settle before it
   decides whether to resume anything, not two chances to get the ordering wrong.
-- Commands for **moving an actor**, and **healing/damaging** the party
+- ~~A command for **healing/damaging** the party~~ — **done**: `Heal` and `Damage`, each taking a
+  single 0-255 value, two commands rather than one signed one because `Damage 250` reads as an
+  author's intent in a way `Change HP by -250` does not. Which of the engine's two health models
+  either one touches is decided at assemble time by `BATTLE_ENABLED` — `player_hp` in an action
+  project, every recruited member's `pc_hp` in an RPG — rather than a third model invented for the
+  command, and `Heal 255` is the inn with no separate vocabulary of its own
+- Commands for **moving an actor** — the last one on this list, and the piece item 6's movement
+  routes are built out of: a route is this command with a list rather than a single step
 
 Every addition here lands in four places at once — `EVENT_COMMANDS`, the schema and normalizer, the
 compiler in `main/build/generate.js`, and `engine/script.asm` — and each one costs kernel bytes,
@@ -129,24 +136,36 @@ construction rather than by a flag somebody has to clear. It also settled where 
 from: `shared/enginesyms.js` parses them out of the `constants.asm` the build assembled, so engine
 RAM keeps exactly one definition.
 
-## 4. Cartridge save/load
+## 4. Cartridge save/load — **done**
 
 Progression is impractical for anything substantial that cannot survive power-off, and the RPG mode
-needs it most. Nothing in the codebase touches battery-backed PRG-RAM today.
+needs it most. Kept here for the reasoning rather than as outstanding work.
 
-- Battery-backed SRAM where the mapper permits it — which makes it a `shared/cartridge.js` question
-  first (which entries can declare it, what the iNES header byte 6 bit 1 and NES 2.0 PRG-RAM fields
-  must say), and `headerPatch()`'s problem after that
-- **Continue** on the title screen
-- One or a small fixed number of **slots**
-- **Autosave** at explicit event checkpoints, rather than anywhere
-- A compact **save record**: location, switches, variables, inventory, party, levels, HP/MP, XP, gold
-- **Checksum** plus a project/version identifier, so a stale or corrupt save is refused rather than
-  loaded as garbage
+- ~~Battery-backed SRAM where the mapper permits it — which makes it a `shared/cartridge.js`
+  question first, and `headerPatch()`'s problem after that~~ — **done**: a `battery` flag in the
+  registry, which MMC1 and MMC3 carry, and iNES byte 6 bit 1 set the same way four-screen's bit 3
+  already was, in preference to dragging either board into the NES 2.0 path UNROM 512 alone needs
+- ~~**Continue** on the title screen~~ — **done**, as a Controller Forge binding in the title state
+- ~~**Autosave** at explicit event checkpoints, rather than anywhere~~ — **done** in the form that
+  matters: `Save the game` is an event command, so a checkpoint is wherever an author puts one, and
+  there is no second "autosave" vocabulary to keep in agreement with it
+- ~~A compact **save record**: location, switches, variables, inventory, party, levels, HP/MP, XP,
+  gold~~ — **done**, and generated into `assets/save.inc` from `shared/save.js` rather than spelled
+  out at both ends
+- ~~**Checksum** plus a project/version identifier~~ — **done**, with the caveat that the identity
+  is what makes loading a foreign save *unlikely*; the range checks on every loaded field are the
+  actual guard, and every one of them is bounded by `NUM_*` rather than `MAX_*`
+- One or a small fixed number of **slots** — still one. The only bullet here not built
 
 The save record is a wire format between the engine and nothing else, but the single-writer rule
 still applies: its layout belongs in one generated header, not spelled out in both `engine/` and
-whatever writes it.
+whatever writes it. Two things learned building it are worth carrying forward. Writing is ordered
+marker-invalidate, body, checksum, marker-revalidate, so an interrupted write is always caught on
+the next load — at the deliberate cost that it also takes out whatever save was already in the slot.
+And the unit suite cannot prove any of the board-level part: the vendored jsnes core models no WRAM
+enable or write-protect at all, so `test/lua/run_sram_check.sh` drives two real Mesen invocations
+over a real power cycle against `sample-mmc1/` and `sample-mmc3/`, with `--break` modes that prove
+the check can still fail.
 
 ## 5. An RPG Database Forge
 
@@ -205,11 +224,12 @@ The blank-page problem is real, and RPG Maker solves it mostly by shipping conte
 - **Palette-swap** an existing sprite into a new one
 - **Validate** sprite size, palette count and tile budget as you draw
 - A small **MIT/CC0 starter library**: terrain, UI, monsters, effects, sound effects
-- **Starter projects** — action, dungeon crawl, RPG — beyond today's two fixtures
+- **Starter projects** — action, dungeon crawl, RPG — beyond today's demo fixtures
 
-Anything shipped here needs its license recorded in the repo, and the two existing fixtures
-(`sample/`, `sample-rpg/`) stay exactly as they are: tests are written against them and they may
-not be mutated.
+Anything shipped here needs its license recorded in the repo, and the four existing fixtures stay
+exactly as they are: tests are written against them and they may not be mutated. Only two of them
+are demos worth starting from — `sample/` and `sample-rpg/`; `sample-mmc1/` and `sample-mmc3/` exist
+to cover a board rather than to show a game, and are not what this item means.
 
 ---
 
@@ -217,12 +237,17 @@ not be mutated.
 
 1. ~~Event names, list and search; duplication; templates; play-from-here — item 2 plus the first
    piece of item 3~~ — **done**
-2. Variables, branching, choices, triggers, common events — item 1 — **in progress**: variables,
-   branching, choices, triggers, common events and Play music are done; starting a battle, moving
-   an actor, and healing/damaging the party are what is left
-3. SRAM save/load — item 4
+2. Variables, branching, choices, triggers, common events — item 1 — **nearly done**: everything
+   except **moving an actor**, which is the one command left in the whole vocabulary.
+   `EVENT_COMMANDS` and `IMPLEMENTED_COMMANDS` in `shared/project.js` are otherwise identical
+3. ~~SRAM save/load — item 4~~ — **done**, one slot
 4. Items, equipment, status effects, battle testing — item 5 plus the rest of item 3
 5. Movement routes and the audiovisual cutscene commands — item 6
+
+The rest of item 3 has a better claim on being next than its position suggests. Item 1 made 64
+switches and 16 variables the backbone of every condition, branch and question, and the only way to
+watch one at runtime is unlabelled bytes in the memory editor — which is what item 3's
+switch/variable inspector is, at no ROM cost and no kernel bytes.
 
 Stages 1 and 2 are the ones that change what the app *is*: together they move Forge from a capable
 NES construction toolkit toward building a complete game mostly through data and menus — with the

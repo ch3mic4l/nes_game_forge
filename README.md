@@ -33,9 +33,10 @@ All five Forges are built. The engine behind them is a top-down adventure; other
 genres would need new engine modules rather than new UI — or the Code Forge, which
 is the escape hatch when the UI does not offer what you want.
 
-Where this could go next — richer events, authoring tools for large projects, cartridge
-saves — is written down in [ROADMAP.md](ROADMAP.md). None of it is built; this table is
-the account of what is.
+Where this could go next is written down in [ROADMAP.md](ROADMAP.md), which is also
+where the reasoning behind what has already been built out of it lives — authoring
+tools for large projects, most of the event vocabulary, and cartridge saves have
+landed since it was written. This table is the account of what is.
 
 ### The Code Forge
 
@@ -267,6 +268,31 @@ hearts would take stay yours.
 Running out of hearts is **GAME OVER**, and Start from there goes back to the
 title — or straight into a new game if the project has no title. Either way it is
 a genuinely new game: hearts, bag and switches all reset.
+
+An event can change health directly, without anything having to hit anybody:
+**Heal** and **Damage** each take a number from 0 to 255, so a trap that costs two
+hearts and a spring that gives them back are both a single command. Which health
+they mean is whichever one the cartridge actually has — the player's hearts in an
+action game, every recruited party member's HP in an RPG — so the same command
+means the obvious thing in either. **Heal 255** is a full heal, and in an RPG it
+revives a fallen member the way an inn would. Damage that empties the bar ends the
+game exactly as walking into a spike would.
+
+## Saving
+
+Give the player a **Save the game** command anywhere in an event — at a checkpoint,
+in a bed, from a question with *Save* as one of the answers — and the cartridge
+keeps one slot of progress in battery-backed memory: where they were standing, the
+switches, the variables, the bag, and in an RPG the whole party's levels, HP and
+spells. **Continue** appears on the title screen as a Controller Forge binding, and
+loads it back.
+
+This needs a cartridge with a battery, which is **MMC1** or **MMC3** — the Build
+panel says so rather than letting the command look like it works. A save carries a
+checksum and a fingerprint of the project, so a save from a different game, or one
+interrupted by the power going off mid-write, is refused instead of loaded as
+nonsense. One slot, and one risk window: an interrupted write takes out whatever
+was already in the slot, not only the save being made.
 
 ## The title screen
 
