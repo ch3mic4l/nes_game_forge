@@ -368,7 +368,14 @@ export const EVENT_COMMANDS = [
   // name. Only offered on a board with battery-backed WRAM (batteryCapable,
   // shared/cartridge.js); validateProject refuses a live one elsewhere the
   // same way it refuses Join in a project with no party.
-  { id: 'save', label: 'Save the game', args: [] }
+  { id: 'save', label: 'Save the game', args: [] },
+  // [who, direction, distance in pixels]. The one command that makes something
+  // *happen* on the field rather than to the save state, and the piece item 6's
+  // movement routes are built out of: a route is this with a list of steps
+  // instead of one. It suspends the script the way Say does, because a walk the
+  // event did not wait for would read as a teleport -- the rest of the page
+  // would run in the frame the actor set off.
+  { id: 'move', label: 'Move actor', args: ['who', 'dir', 'dist'] }
 ];
 
 // A command can be switched off while you work out whether you want it, the way
@@ -411,8 +418,38 @@ export const IMPLEMENTED_COMMANDS = new Set([
   'battle',
   'heal',
   'damage',
-  'save'
+  'save',
+  'move'
 ]);
+
+/**
+ * Who a Move command moves. The order is the wire format: one byte of the
+ * command, `MOVE_SELF`/`MOVE_PLAYER` in `engine/constants.asm` at the other end.
+ *
+ * `self` is index 0 because it is the one that needs no explanation on a
+ * placement — the actor carrying the event is the actor the author is looking
+ * at. A common event run from a placement moves that placement's actor too,
+ * since `talk_ent` is whoever the conversation belongs to however deep the call
+ * stack is.
+ */
+export const MOVE_TARGETS = [
+  { id: 'self', label: 'This actor' },
+  { id: 'player', label: 'The player' }
+];
+
+/**
+ * Which way a Move command goes. The order is the wire format *and* the
+ * engine's own `DIR_*` order (`engine/constants.asm`), so the compiled byte is
+ * the direction the engine already stores in `ent_dir`/`player_dir` — a Move
+ * therefore sets facing by construction rather than by a second mapping that
+ * could disagree with the first.
+ */
+export const MOVE_DIRECTIONS = [
+  { id: 'down', label: 'Down' },
+  { id: 'up', label: 'Up' },
+  { id: 'left', label: 'Left' },
+  { id: 'right', label: 'Right' }
+];
 
 /**
  * What a question fits in, which is what the message box is: one option per text
@@ -963,6 +1000,21 @@ function normalizeEventCommand(raw, depth = 0) {
     // retarget a dangling or hand-edited call to whatever that one happens
     // to be.
     else if (arg === 'event') out.event = commonEventId(raw?.event) ?? NO_COMMON_EVENT_ID;
+    // A Move's who and direction are stored as their ids rather than their
+    // indices, so a project file says `"dir": "left"` and survives a later
+    // version inserting a direction into the middle of the list. The index is
+    // the wire format, and the compiler is where the id becomes one.
+    // An unrecognised id falls back to the first entry rather than being
+    // dropped: a Move that lost its direction is still a Move, and dropping it
+    // would erase whatever the page went on to do.
+    else if (arg === 'who') out.who = MOVE_TARGETS.some((entry) => entry.id === raw?.who) ? raw.who : MOVE_TARGETS[0].id;
+    else if (arg === 'dir')
+      out.dir = MOVE_DIRECTIONS.some((entry) => entry.id === raw?.dir) ? raw.dir : MOVE_DIRECTIONS[0].id;
+    // Pixels, and a whole byte of them: 16 is one metatile and 255 is just
+    // under the width of a screen, which is as far as a move could be asked to
+    // go without crossing an edge — and crossing one mid-event is what `warp`
+    // is for, not this.
+    else if (arg === 'dist') out.dist = clamp(raw?.dist, 0, 255, 0);
     // A song index, or `null` for Silence — the same shape map.songId is,
     // and deliberately not clamped against how many songs the project
     // actually has: buildProject compiles the project the app is holding
@@ -1608,6 +1660,37 @@ export function projectUsesSave(project) {
     for (const page of compiledPages(event)) {
       for (const command of liveCommands(page.commands, CHOICE_LIMITS.options)) {
         if (command.op === 'save') return true;
+      }
+    }
+  }
+  return false;
+}
+
+/**
+ * The same question for `move`, and asked for a harder reason than save's.
+ *
+ * Move is the most expensive command in this engine — a step routine, the
+ * collision probe around it, the accessors that let one copy of both serve an
+ * entity and the player, and the suspend/resume path — and the kernel bank has
+ * no room to carry it unconditionally. Measured on a clean tree: sample-rpg
+ * with one Save command leaves 161 free bytes in the kernel-lo bank on MMC3
+ * and 353 on MMC1, against roughly 400 for Move. Assembling it into every ROM
+ * would not merely tighten the capacity check, it would overflow the bank and
+ * fail the assembler, for projects that never use the command.
+ *
+ * So `MOVE_ENABLED` gates it the way `SAVE_ENABLED` gates engine/save.asm and
+ * `BATTLE_ENABLED` gates the battle bank: a project with no live Move assembles
+ * byte-for-byte as it did before the command existed, and one that has a Move
+ * pays for it and is told in plain language by checkCapacity if it cannot
+ * afford it. `liveCommands` + `compiledPages` for the same reason save uses
+ * them — a Move switched off, or inside a switched-off branch, is scaffolding
+ * the compiler already drops, and must not cost a project 400 bytes of kernel.
+ */
+export function projectUsesMove(project) {
+  for (const event of projectEvents(project)) {
+    for (const page of compiledPages(event)) {
+      for (const command of liveCommands(page.commands, CHOICE_LIMITS.options)) {
+        if (command.op === 'move') return true;
       }
     }
   }

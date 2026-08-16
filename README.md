@@ -219,6 +219,18 @@ an actor's own event would and comes back to the command after it once the commo
 pages. Common events are free to call each other, and the engine bounds how deep that can nest, so a
 pair that call one another back and forth unwind instead of freezing the game.
 
+**Move actor** walks somebody — the actor whose event it is, or the player — a set distance in one
+direction, and the event *waits* while it happens, so the command after it does not run until the
+walk is done. That is what makes a small cutscene possible: a guard steps aside, then says
+something. Distance is in pixels, 16 to the metatile. A walk that runs into a wall or the edge of
+the screen stops where it is and the event carries on rather than waiting forever — you cannot
+always tell from the editor what will be standing there when the scene actually plays.
+
+Move is the most expensive command in the engine, and it is only built into cartridges that use one.
+A project with no Move — or whose only Move is switched off — is exactly the ROM it would have been
+before the command existed. If a project cannot afford it, the Build panel says so in plain language
+rather than letting the assembler refuse it.
+
 Only commands the engine implements are offered. Anything a newer version of the
 Forge wrote is preserved through a save, so a project never loses work by being
 opened here.

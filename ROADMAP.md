@@ -86,8 +86,20 @@ end — that invariant holds and must keep holding.
   either one touches is decided at assemble time by `BATTLE_ENABLED` — `player_hp` in an action
   project, every recruited member's `pc_hp` in an RPG — rather than a third model invented for the
   command, and `Heal 255` is the inn with no separate vocabulary of its own
-- Commands for **moving an actor** — the last one on this list, and the piece item 6's movement
-  routes are built out of: a route is this command with a list rather than a single step
+- ~~Commands for **moving an actor**~~ — **done**: `Move actor` walks the event's own actor or the
+  player a set distance in one direction, and suspends the script the way `Say` does, because a walk
+  the event did not wait for would read as a teleport. A move blocked by a wall or the screen edge
+  abandons what it still owed and lets the event carry on, rather than waiting for something that is
+  never going to move — nothing else in the world is running. This is the piece item 6's movement
+  routes are built out of: a route is this with a list of steps instead of one.
+
+  It is also where this list ran into the wall it was always going to: **Move is ~395 bytes and the
+  kernel bank had 161 free.** Measured on a clean tree, `sample-rpg` with one Save command leaves 161
+  free bytes in the kernel-lo bank on MMC3, 353 on MMC1. Assembling Move unconditionally did not
+  tighten the capacity check, it overflowed the bank and failed the assembler for projects that never
+  use the command. So it is gated on `MOVE_ENABLED` the way save.asm is on `SAVE_ENABLED`, and
+  `kernelCodeBytes` gained a third term. A project with no live Move is byte-for-byte what it was
+  before the command existed.
 
 Every addition here lands in four places at once — `EVENT_COMMANDS`, the schema and normalizer, the
 compiler in `main/build/generate.js`, and `engine/script.asm` — and each one costs kernel bytes,
@@ -237,17 +249,24 @@ to cover a board rather than to show a game, and are not what this item means.
 
 1. ~~Event names, list and search; duplication; templates; play-from-here — item 2 plus the first
    piece of item 3~~ — **done**
-2. Variables, branching, choices, triggers, common events — item 1 — **nearly done**: everything
-   except **moving an actor**, which is the one command left in the whole vocabulary.
-   `EVENT_COMMANDS` and `IMPLEMENTED_COMMANDS` in `shared/project.js` are otherwise identical
+2. ~~Variables, branching, choices, triggers, common events — item 1~~ — **done**: `EVENT_COMMANDS`
+   and `IMPLEMENTED_COMMANDS` in `shared/project.js` are now identical, eighteen commands to seven
 3. ~~SRAM save/load — item 4~~ — **done**, one slot
 4. Items, equipment, status effects, battle testing — item 5 plus the rest of item 3
 5. Movement routes and the audiovisual cutscene commands — item 6
 
-The rest of item 3 has a better claim on being next than its position suggests. Item 1 made 64
-switches and 16 variables the backbone of every condition, branch and question, and the only way to
-watch one at runtime is unlabelled bytes in the memory editor — which is what item 3's
-switch/variable inspector is, at no ROM cost and no kernel bytes.
+**The kernel bank is the constraint on everything below this line, and it is close to full.** Move
+found it: ~395 bytes against 161 free on the worst battery board, and it only shipped by becoming
+conditional. A project with both Save and Move reserves 7924 of 8192. Item 6 is five more verbs of
+kernel code — fade, shake, sound effect, show/hide, tile change — and conditional assembly does not
+compose indefinitely, because a project that wants three of them is back where it started. The next
+one of them needs a decision first: a kernel diet, or a second banked region the way the battle
+system got one. Item 5 is mostly tables and editor work and is not blocked on that.
+
+The rest of item 3 also has a better claim on being next than its position suggests, for the same
+kind of reason it is cheap: it costs no ROM at all. Item 1 made 64 switches and 16 variables the
+backbone of every condition, branch and question, and the only way to watch one at runtime is
+unlabelled bytes in the memory editor — which is exactly what item 3's switch/variable inspector is.
 
 Stages 1 and 2 are the ones that change what the app *is*: together they move Forge from a capable
 NES construction toolkit toward building a complete game mostly through data and menus — with the

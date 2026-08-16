@@ -624,3 +624,243 @@ draw_metasprite_full:
   tax
 draw_metasprite_done:
   rts
+
+; ------------------------------------------------- scripted movement (OP_MOVE)
+;
+; A Move command walks one actor a fixed distance while the rest of the world
+; stays frozen, and the event that asked for it waits. mv_left is the whole
+; state: non-zero means a move is running, which is what ui_tick tests before it
+; dispatches on game_state, so this gets the frame instead of the message box's
+; own tick for as long as the walk lasts.
+;
+; Two rules the rest of this file already follows apply here too, and each is a
+; reason this is not simply "add the speed to the coordinate":
+;
+;   - A move that cannot finish must end, not hang. The event is suspended until
+;     mv_left reaches zero, so walking into a wall -- or into the edge of the
+;     screen -- ends the move where it stands and resumes the script, the same
+;     way script_op_call unwinds past CALL_STACK_DEPTH rather than hanging on a
+;     cycle. An author cannot see from the Map Forge that a patroller will be
+;     standing in the way at the moment the cutscene runs, so the engine must
+;     not require them to.
+;   - The last step is short. mv_step is the mover's speed except when less than
+;     that remains, or a Move of 5 at speed 2 would overshoot to 6 and the
+;     subtraction below would wrap mv_left round to 255.
+;
+; The player and an entity keep their position in different places, so the
+; coordinate is fetched into A, worked on, and stored back through one pair of
+; accessors -- one copy of the arithmetic and one probe, rather than two that
+; would have to agree. The probe points are the same leading-edge ones
+; entity_patrol uses, for the same reason: the body is the lower half of the
+; 16x16 cell.
+  .if MOVE_ENABLED
+move_tick:
+  jsr move_speed
+  cmp mv_left
+  bcc move_tick_step        ; a whole step still fits inside what is left
+  lda mv_left               ; the last one, and short
+move_tick_step:
+  sta mv_step
+
+  lda mv_dir
+  cmp #DIR_LEFT
+  bcs move_tick_horizontal
+
+  cmp #DIR_UP
+  beq move_tick_up
+  jsr move_get_y            ; down
+  clc
+  adc mv_step
+  cmp #MAX_Y+1
+  bcs move_wall
+  sta mv_tmp
+  clc
+  adc #BODY_B
+  sta probe_y
+  jmp move_tick_probe_v
+move_tick_up:
+  jsr move_get_y
+  sec
+  sbc mv_step
+  bcc move_wall
+  sta mv_tmp
+  clc
+  adc #BODY_T
+  sta probe_y
+move_tick_probe_v:
+  jsr move_get_x
+  clc
+  adc #BODY_L
+  sta probe_x
+  jsr probe_solid
+  bne move_wall
+  lda mv_tmp
+  jsr move_set_y
+  jmp move_advance
+
+; Sat between the two axes so each can reach the stop with an ordinary branch.
+; The first version of this routine put move_blocked after both and did not
+; assemble -- "branches are ±128 bytes", the trap CLAUDE.md already records
+; music.asm hitting.
+move_wall:
+  jmp move_blocked
+
+move_tick_horizontal:
+  cmp #DIR_LEFT
+  beq move_tick_left
+  jsr move_get_x            ; right
+  clc
+  adc mv_step
+  cmp #MAX_X+1
+  bcs move_wall
+  sta mv_tmp
+  clc
+  adc #BODY_R
+  sta probe_x
+  jmp move_tick_probe_h
+move_tick_left:
+  jsr move_get_x
+  sec
+  sbc mv_step
+  bcc move_wall
+  sta mv_tmp
+  clc
+  adc #BODY_L
+  sta probe_x
+move_tick_probe_h:
+  jsr move_get_y
+  clc
+  adc #BODY_B
+  sta probe_y
+  jsr probe_solid
+  bne move_wall
+  lda mv_tmp
+  jsr move_set_x
+  ; fall through
+
+; The step landed. Advance the walk cycle so the mover is animated rather than
+; sliding, then take it off what is owed.
+move_advance:
+  jsr move_animate
+  lda mv_left
+  sec
+  sbc mv_step
+  sta mv_left
+  bne move_tick_running
+  jmp move_finish
+move_tick_running:
+  rts
+
+; Blocked, at a wall or the screen edge. The distance still owed is abandoned
+; rather than retried: the thing in the way is not going to move, because
+; nothing else in the world is running.
+move_blocked:
+  lda #0
+  sta mv_left
+move_finish:
+  jmp script_resume
+
+; --------------------------------------------------- who is being moved
+;
+; MOVE_SELF is talk_ent, whoever the conversation belongs to -- which is right
+; through a common event too, since a call does not change whose event it is.
+; Each of these clobbers X and Y; move_tick owns neither across them.
+
+; A = the mover's x.
+move_get_x:
+  lda mv_who
+  bne move_get_x_player
+  ldx talk_ent
+  lda ent_x,x
+  rts
+move_get_x_player:
+  lda player_x
+  rts
+
+; A = the mover's y.
+move_get_y:
+  lda mv_who
+  bne move_get_y_player
+  ldx talk_ent
+  lda ent_y,x
+  rts
+move_get_y_player:
+  lda player_y
+  rts
+
+; A = the x to store.
+move_set_x:
+  ldx mv_who
+  bne move_set_x_player
+  ldx talk_ent
+  sta ent_x,x
+  rts
+move_set_x_player:
+  sta player_x
+  rts
+
+; A = the y to store.
+move_set_y:
+  ldx mv_who
+  bne move_set_y_player
+  ldx talk_ent
+  sta ent_y,x
+  rts
+move_set_y_player:
+  sta player_y
+  rts
+
+; A = the DIR_* to face. Called once, before the first step (script_op_move).
+move_face:
+  ldx mv_who
+  bne move_face_player
+  ldx talk_ent
+  sta ent_dir,x
+  rts
+move_face_player:
+  sta player_dir
+  rts
+
+; A = pixels this mover covers per frame.
+;
+; A speed of zero is a standing actor -- what every NPC is -- and a scripted
+; move must not inherit it, or mv_left would never come down and the event
+; would wait forever on a walk that never happens. One pixel a frame is the
+; slowest a move can be and still be one.
+move_speed:
+  lda mv_who
+  bne move_speed_player
+  ldx talk_ent
+  ldy ent_actor,x
+  lda actor_speed,y
+  bne move_speed_done
+  lda #1
+move_speed_done:
+  rts
+move_speed_player:
+  lda #PLAYER_SPEED
+  rts
+
+; Step the walk cycle, so a scripted move looks like walking rather than
+; sliding. The two sides keep their frame counter in different places -- an
+; entity's is ent_frame, driven by its actor's animation, and the player's is
+; the anim_frame/anim_timer pair update_player_anim owns -- so this is the one
+; place that difference is spelled out, the same as the accessors above.
+move_animate:
+  lda mv_who
+  bne move_animate_player
+  ldx talk_ent
+  jmp entity_animate
+move_animate_player:
+  inc anim_timer
+  lda anim_timer
+  cmp #ANIM_RATE
+  bcc move_animate_done
+  lda #0
+  sta anim_timer
+  lda anim_frame
+  eor #1
+  sta anim_frame
+move_animate_done:
+  rts
+  .endif

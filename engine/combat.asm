@@ -34,6 +34,10 @@ init_session:
   sta inv_sel
   sta items_used
   sta paused
+  .if MOVE_ENABLED
+  sta mv_left               ; a new game has nothing mid-walk, whatever the last
+                            ; one was doing when it ended
+  .endif
   sta talk_ent              ; NO_ENTITY is $FF, but boot re-writes it after this
   ldx #7
 init_session_switches:

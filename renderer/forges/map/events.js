@@ -20,6 +20,8 @@ import {
   IMPLEMENTED_COMMANDS,
   LIMITS,
   MAX_BRANCH_DEPTH,
+  MOVE_DIRECTIONS,
+  MOVE_TARGETS,
   RPG_LIMITS,
   actorMissing,
   compiledPages,
@@ -84,7 +86,14 @@ const defaultCommand = (op, context = {}) => {
       // Silence, the same default a brand-new map's own Music field has —
       // not song 0, which nothing here chose.
       out.song = null;
-    } else if (arg === 'monsters') {
+    } else if (arg === 'who') out.who = MOVE_TARGETS[0].id;
+    else if (arg === 'dir') out.dir = MOVE_DIRECTIONS[0].id;
+    // One metatile. Zero is the honest default for a number nobody has chosen
+    // yet everywhere else in this editor, but a Move of zero is the one command
+    // that would compile to nothing happening -- so a new one arrives having
+    // already picked the smallest distance that reads as a step.
+    else if (arg === 'dist') out.dist = 16;
+    else if (arg === 'monsters') {
       // Empty, not a formation of one nothing chose — the picker below warns
       // about an empty formation rather than this reaching for a monster.
       out.monsters = [];
@@ -164,6 +173,15 @@ function describeEnabled(command, context = {}) {
       return `Damage ${command.value ?? 0}`;
     case 'save':
       return 'Save the game';
+    case 'move': {
+      const who = MOVE_TARGETS.find((entry) => entry.id === command.who)?.label ?? MOVE_TARGETS[0].label;
+      const dir = (MOVE_DIRECTIONS.find((entry) => entry.id === command.dir)?.label ?? MOVE_DIRECTIONS[0].label)
+        .toLowerCase();
+      // A distance of zero is the one Move that does nothing, and the compiler
+      // does not drop it — the engine runs straight past it. Said here rather
+      // than only in the hint, because this line is what the event list shows.
+      return command.dist ? `Move ${who} ${dir} ${command.dist}px` : `Move ${who} ${dir} (0px — does nothing)`;
+    }
     case 'branch': {
       // Described down to its contents, because the event list's search runs
       // over exactly this text: a switch used only inside a branch has to be
@@ -701,6 +719,50 @@ export function editEvent(event, context) {
             command.op === 'heal' ? 'Heal' : 'Damage'
           ),
           valueInput(command.value ?? 0, (value) => (command.value = value)),
+          tools
+        ),
+        el('p.hint', null, hint)
+      );
+    }
+
+    if (command.op === 'move') {
+      const hint = command.dist
+        ? 'The event waits here until the walk finishes. It stops early at a wall or the edge of the screen, ' +
+          'so a route that is blocked on the day does not hang the game — 16 pixels is one metatile.'
+        : 'A distance of 0 does nothing and the event carries straight on. 16 pixels is one metatile.';
+      return el(
+        'div',
+        { style: { marginBottom: '6px', ...dim } },
+        el(
+          'div.field-row',
+          null,
+          el('span', { style: { flex: 'none', minWidth: '96px', color: 'var(--text-dim)' } }, 'Move'),
+          el(
+            'select',
+            { style: { flex: 'none' }, onchange: (fired) => (command.who = fired.target.value) },
+            MOVE_TARGETS.map((entry) =>
+              el('option', { value: entry.id, selected: entry.id === command.who }, entry.label)
+            )
+          ),
+          el(
+            'select',
+            { style: { flex: 'none' }, onchange: (fired) => (command.dir = fired.target.value) },
+            MOVE_DIRECTIONS.map((entry) =>
+              el('option', { value: entry.id, selected: entry.id === command.dir }, entry.label)
+            )
+          ),
+          // Pixels, whole ones, for the same reason warp's landing position is:
+          // this becomes a single byte, and the compiler and the schema round
+          // differently.
+          el('input', {
+            type: 'number',
+            min: 0,
+            max: 255,
+            value: command.dist,
+            title: 'Distance in pixels — 16 is one metatile',
+            style: { width: '70px' },
+            onchange: (fired) => (command.dist = wholeNumber(fired.target.value, 255))
+          }),
           tools
         ),
         el('p.hint', null, hint)

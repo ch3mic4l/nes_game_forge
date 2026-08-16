@@ -45,7 +45,8 @@ import {
   effectiveTrigger,
   collisionIndex,
   validateProject,
-  projectUsesSave
+  projectUsesSave,
+  projectUsesMove
 } from '../../shared/project.js';
 import { SAVE_FIELDS, saveBodySize, saveIdentity } from '../../shared/save.js';
 import {
@@ -210,10 +211,25 @@ const TITLE_PROMPT_ROW = 19;
 // -- rather than only when the margin goes negative and a real build starts
 // overflowing its bank.
 //
-// With both terms and the slack: a project with no Save command gets
-// 6952 + 0 + 20 = 6972, byte-for-byte the constant this was before save/load
-// existed. A project that saves gets 6952 + 552 + 20 = 7524, which covers
-// both MMC1's real 7304 and MMC3's real 7496 with margin to spare.
+// With the terms and the slack: a project with neither Save nor Move gets
+// 6952 + 0 + 0 + 20 = 6972, byte-for-byte the constant this was before
+// save/load existed. A project that saves gets 6952 + 552 + 20 = 7524.
+//
+// MOVE_KERNEL_ALLOWANCE is the third term, and the reason it is a term at all
+// rather than a rise in the base is measured rather than stylistic: on a clean
+// tree, sample-rpg with one Save command leaves 161 free bytes in the kernel-lo
+// bank on MMC3 and 353 on MMC1, and Move's implementation is about 400. Folding
+// it into the base would not have tightened the capacity check, it would have
+// overflowed the bank and failed nesasm outright -- for every project, whether
+// or not it moves anything. So engine/entities.asm's move_tick and
+// engine/script.asm's script_op_move sit inside `.if MOVE_ENABLED`, the same
+// shape save.asm already had, and only a project with a live Move pays.
+//
+// That makes this the first term where the *sum* is what to watch: a project
+// with both is 6952 + 552 + 400 + 20 = 7924, which is more than the kernel
+// bank can hold alongside sample-rpg's own tables. checkCapacity says so in
+// plain language before the assembler is reached, which is the whole point of
+// these figures being reserved rather than discovered.
 //
 // These figures are quoted only to explain how kernelCodeBytes reached its
 // shape -- hand-copied snapshots, not the source of truth, and this
@@ -227,11 +243,18 @@ const TITLE_PROMPT_ROW = 19;
 // running it rather than hand-editing either.
 const BASE_KERNEL_CODE_BYTES = 6952;
 export const SAVE_KERNEL_ALLOWANCE = 552;
+export const MOVE_KERNEL_ALLOWANCE = 400;
 export const KERNEL_SLACK = 20;
 
 export function kernelCodeBytes(project, mapper) {
   const usesSave = projectUsesSave(project) && batteryCapable(mapper);
-  return BASE_KERNEL_CODE_BYTES + (usesSave ? SAVE_KERNEL_ALLOWANCE : 0) + KERNEL_SLACK;
+  const usesMove = projectUsesMove(project);
+  return (
+    BASE_KERNEL_CODE_BYTES +
+    (usesSave ? SAVE_KERNEL_ALLOWANCE : 0) +
+    (usesMove ? MOVE_KERNEL_ALLOWANCE : 0) +
+    KERNEL_SLACK
+  );
 }
 const PLAYER_FRAMES = 8; // 4 directions x 2 walk frames
 const PLAYER_TILES = PLAYER_FRAMES * 4;
@@ -658,6 +681,7 @@ export async function generateAssets({ dir, project, log = () => {} }) {
   // the player — same conditional-reservation rule as the font.
   const usesCombat = projectUsesCombat(project);
   const usesSave = projectUsesSave(project);
+  const usesMove = projectUsesMove(project);
   const saveIdentityValue = saveIdentity(project);
   if (usesCombat) {
     for (const tileset of tilesets) {
@@ -893,6 +917,11 @@ export async function generateAssets({ dir, project, log = () => {} }) {
     `SAVE_IDENTITY_1 = ${(saveIdentityValue >> 8) & 0xff}`,
     `SAVE_IDENTITY_2 = ${(saveIdentityValue >> 16) & 0xff}`,
     `SAVE_IDENTITY_3 = ${(saveIdentityValue >> 24) & 0xff}`,
+    // Whether OP_MOVE's implementation is assembled at all. The most expensive
+    // command in the engine against a kernel bank with nothing spare -- see
+    // projectUsesMove (shared/project.js) for the measured numbers and why this
+    // could not simply be added to every ROM the way Heal and Damage were.
+    `MOVE_ENABLED = ${usesMove ? 1 : 0}`,
     ''
   ].join('\n');
   await fs.writeFile(path.join(assetsDir, 'config.inc'), config);

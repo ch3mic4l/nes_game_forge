@@ -24,6 +24,14 @@ script_start:
   sta script_active
   sta box_state
   sta call_depth            ; a fresh conversation starts with an empty stack
+  .if MOVE_ENABLED
+  sta mv_left               ; ...and with nothing walking. Nothing known can
+                            ; leave a move running -- the world is frozen for
+                            ; the whole of one and only move_tick clears it --
+                            ; but a stale counter here would have ui_tick
+                            ; stepping an actor on behalf of an event that
+                            ; ended, and resuming a script that is not there
+  .endif
   lda ent_event,x
   cmp #NO_EVENT
   beq script_start_done
@@ -154,8 +162,14 @@ script_run_damage:
 script_run_save:
   .if SAVE_ENABLED
   cmp #OP_SAVE
-  bne script_run_bad
+  bne script_run_move
   jmp script_op_save
+  .endif
+script_run_move:
+  .if MOVE_ENABLED
+  cmp #OP_MOVE
+  bne script_run_bad
+  jmp script_op_move
   .endif
 script_run_bad:
   jmp script_finish         ; an opcode this engine cannot run stops the event
@@ -374,6 +388,60 @@ script_op_damage:
   .endif
 script_op_damage_done:
   jmp script_next2
+
+; [OP_MOVE, who, DIR_*, distance]. Walks one actor a fixed distance with the
+; world otherwise frozen, and suspends the script exactly as OP_SAY does:
+; script_ptr is advanced past the whole command first, script_active is left
+; set, and this returns to the main loop with mv_left non-zero. ui_tick tests
+; that byte before it dispatches on game_state, so move_tick
+; (engine/entities.asm) gets the frame instead of the message box's own tick,
+; and move_tick is what calls script_resume once the walk is over.
+;
+; The facing is set here rather than in move_tick, once, before the first step:
+; a move that is blocked on its very first frame should still have turned to
+; look the way it tried to go, and doing it per-step would be re-deciding
+; something already decided -- the trap CLAUDE.md records as "deciding a state
+; inside several branches lets the last one win".
+;
+; A distance of zero does not suspend. There would be nothing to wait for, and
+; the only thing that ever resumes a Move is move_tick watching that counter
+; reach zero -- so returning with mv_left already zero would hang the event on a
+; tick that never comes. It falls through to the next command instead.
+  .if MOVE_ENABLED
+script_op_move:
+  ldy #1
+  lda [script_ptr_lo],y
+  sta mv_who
+  iny
+  lda [script_ptr_lo],y
+  sta mv_dir
+  iny
+  lda [script_ptr_lo],y
+  sta mv_left
+  lda #4
+  jsr script_skip
+  ; MOVE_SELF with nobody to be: defense in depth rather than a live case --
+  ; every event runs through start_dialog, which puts the slot it was given in
+  ; talk_ent, and the world is frozen for the whole of one, so nothing can
+  ; empty that slot mid-event. If it ever were empty, ent_x,x with x = $FF
+  ; would read and *write* a byte 240 past the end of the entity arrays. Stop
+  ; the event, the same answer script_run_bad gives an opcode it cannot run and
+  ; script_op_give gives a NO_ACTOR operand.
+  lda mv_who
+  bne script_op_move_ready
+  lda talk_ent
+  cmp #NO_ENTITY
+  bne script_op_move_ready
+  jmp script_finish
+script_op_move_ready:
+  lda mv_left
+  bne script_op_move_wait
+  jmp script_run
+script_op_move_wait:
+  lda mv_dir
+  jmp move_face             ; sets the mover's facing and returns to our caller,
+                            ; which suspends the script exactly as box_say does
+  .endif
 
 ; ------------------------------------------------------------------- calls
 ;

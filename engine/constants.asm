@@ -275,6 +275,30 @@ save_cursor_hi = save_cursor_lo+1
 sv_idx         = save_cursor_hi+1
 sv_len         = sv_idx+1
 
+; A scripted Move in progress (OP_MOVE, engine/script.asm; move_tick,
+; engine/entities.asm). mv_left is the whole state machine: non-zero means a
+; move is running, which is what ui_tick tests before it dispatches on
+; game_state, and reaching zero is what resumes the script. So there is no
+; separate "is a move active" flag to keep in step with the distance left --
+; the same reason box_state carries its own CLOSED rather than pairing a
+; counter with a boolean.
+;
+; mv_step is this frame's step, which is the mover's speed except on the last
+; frame, where it is whatever distance remains -- a Move of 5 with a speed of 2
+; must land on 5, not overshoot to 6 and wrap the subtraction. mv_tmp holds the
+; candidate coordinate across the probe, since probe_solid takes its arguments
+; in probe_x/probe_y and answers in A.
+;
+; `mv_`, not `move_`, because engine/player.asm already owns move_left/
+; move_right/move_up/move_down as the player's own direction setters -- a
+; `move_left` byte here would be a second definition of a label this engine
+; already jumps to, which is a collision nesasm has no reason to notice.
+mv_who         = sv_len+1
+mv_dir         = mv_who+1
+mv_left        = mv_dir+1
+mv_step        = mv_left+1
+mv_tmp         = mv_step+1
+
 ; Which split program this frame runs. OFF disarms the counter entirely.
 SPL_OFF     = 0
 SPL_BOX     = 1             ; the message box: font in from tile row 24
@@ -656,6 +680,18 @@ OP_SAVE     = $12           ; no operand -- one slot, nothing to name. Only
                             ; validateProject refuses a live one elsewhere the
                             ; opcode has nowhere to dispatch, the same shape as
                             ; OP_JOIN/OP_BATTLE on a build with no battle bank
+OP_MOVE     = $13           ; [who, DIR_*, distance in pixels] -- suspends the
+                            ; script the way OP_SAY does, and move_tick
+                            ; (engine/entities.asm) resumes it once the walk
+                            ; finishes or runs into something. The direction
+                            ; byte is a DIR_* because MOVE_DIRECTIONS
+                            ; (shared/project.js) is written in that order, so
+                            ; nothing has to translate it
+
+; OP_MOVE's first operand. MOVE_SELF is 0 for the same reason 'interact' is
+; trigger 0: it is the actor the author is looking at when they add the command.
+MOVE_SELF   = 0             ; whoever the conversation belongs to -- talk_ent
+MOVE_PLAYER = 1
 
 ; SAVE_MARKER (engine/save.asm) reads as a completed save only when it holds
 ; exactly this value -- not 0 or 1 or $FF, each of which a blank or corrupt

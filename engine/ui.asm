@@ -135,6 +135,19 @@ start_dialog:
 ; is not in the Controller Forge's table -- during play it always walks, and here
 ; it always moves the highlight -- so the menu reads the pad directly.
 ui_tick:
+  ; A scripted Move owns the frame ahead of whatever state it is running
+  ; inside. It is always ST_DIALOG in practice -- every event runs through
+  ; start_dialog -- but the test is on the move rather than on the state,
+  ; because the two answer different questions and a box may well be sitting
+  ; open above the actor doing the walking. Nothing types while it runs: Say
+  ; suspends until it is dismissed, so a box the script got past is finished
+  ; being drawn and simply holds.
+  .if MOVE_ENABLED
+  lda mv_left
+  beq ui_tick_state
+  jmp move_tick
+  .endif
+ui_tick_state:
   lda game_state
   cmp #ST_DIALOG
   bne ui_tick_gameover

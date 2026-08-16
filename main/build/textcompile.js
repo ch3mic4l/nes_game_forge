@@ -29,6 +29,8 @@ import {
   CHOICE_LIMITS,
   EVENT_COMMANDS,
   EVENT_CONDITIONS,
+  MOVE_DIRECTIONS,
+  MOVE_TARGETS,
   RPG_LIMITS,
   actorMissing,
   battleFormationSlice,
@@ -256,6 +258,17 @@ export function compileText(project) {
       // No operand: one save slot, so there is nothing to name.
       case 'save':
         return [opIndex('save')];
+      // [who, direction, distance]. Both selectors are stored in the project as
+      // ids and become their list positions here, which is the one place that
+      // mapping happens -- MOVE_DIRECTIONS is in the engine's own DIR_* order,
+      // so the byte written is the byte ent_dir wants. An id this version does
+      // not know (a project written by a later one) falls back to the first
+      // entry rather than compiling a byte past the end of either list.
+      case 'move': {
+        const who = Math.max(0, MOVE_TARGETS.findIndex((entry) => entry.id === command.who));
+        const dir = Math.max(0, MOVE_DIRECTIONS.findIndex((entry) => entry.id === command.dir));
+        return [opIndex('move'), who, dir, byte(command.dist, 255)];
+      }
       case 'join':
         return [opIndex('join'), byte(command.member, 3)];
       case 'call': {

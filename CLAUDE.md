@@ -487,6 +487,42 @@ the event rather than being reinterpreted as another one. Every command is now i
 is additionally hidden by the event editor unless the project has a party, because in an action
 build `OP_JOIN` is exactly such an opcode — the battle bank it calls into is not assembled.
 
+**`Move` is the first command conditionally assembled for a capacity reason rather than a hardware
+one.** `Say` waits for the player; `Move` waits for the *world*, which is the thing this engine had
+no shape for: `[OP_MOVE, who, DIR_*, distance]` suspends the script exactly as `OP_SAY` does, and
+`move_tick` (`engine/entities.asm`) steps the mover one frame at a time out of `ui_tick`, ahead of
+whatever state it is running inside, until the distance is paid off and it calls `script_resume`.
+`mv_left` is the whole state machine — non-zero *is* "a move is running" — so there is no separate
+flag to keep in step with the counter. Three rules hold it together:
+
+- **A move that cannot finish must end, not hang.** Walking into a wall or the screen edge abandons
+  the distance still owed and resumes the script, the same answer `script_op_call` gives a call
+  stack that has run out, and for the same reason: an author cannot see from the Map Forge that a
+  patroller will be standing in the way at the moment the cutscene runs.
+- **A distance of zero does not suspend at all.** The only thing that ever resumes a Move is
+  `move_tick` watching `mv_left` reach zero, so suspending with it already zero is a wait nothing
+  could ever end.
+- **The facing is set once, before the first step**, not per step — the "decide once, before
+  acting" trap below, and it is what makes a blocked move still turn to look the way it tried to go.
+
+The conditional part is the interesting one. Move is ~395 bytes and **the kernel bank has no room to
+carry it unconditionally**: measured on a clean tree, `sample-rpg` with one `Save` command leaves
+**161 free bytes** in the kernel-lo bank on MMC3 and 353 on MMC1. Assembling Move into every ROM did
+not tighten the capacity check, it overflowed the bank and failed nesasm outright, for projects that
+never move anything. So `projectUsesMove` (`shared/project.js`) drives a generated `MOVE_ENABLED` the
+way `projectUsesSave` drives `SAVE_ENABLED`, and `kernelCodeBytes` gained a third term,
+`MOVE_KERNEL_ALLOWANCE`. A project with no live Move — including one whose only Move is switched off,
+since the predicate reads `liveCommands` — assembles byte-for-byte as it did before the command
+existed, which `move.test.js` asserts by comparing two whole ROMs.
+
+**That makes the kernel bank's remaining headroom the constraint on item 1 and item 6 both.** The
+sum is what to watch now, not either term: a project with Save *and* Move reserves 7924 of the 8192
+byte bank, and the rest of the roadmap's cutscene verbs (fade, shake, sound effects, movement
+routes) are all kernel code with nowhere left to go. The next one of them needs a kernel diet, a
+second banked region the way the battle system got one, or the same conditional treatment — and
+conditional assembly does not compose indefinitely, because a project that wants three of them is
+back where it started.
+
 **A command that holds commands is not a special case to be named, it is a `nests: true` entry.**
 Two of them exist (`branch`, `choice`) and the third will be along. Anything asking a question of a
 whole event walks `allCommands` in `shared/eventrules.js` rather than a page's own list, and
