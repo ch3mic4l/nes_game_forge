@@ -2,6 +2,8 @@ node_modules/
 dist/
 sample/build/
 sample-rpg/build/
+sample-mmc1/build/
+sample-mmc3/build/
 *.nes
 *.fns
 .DS_Store

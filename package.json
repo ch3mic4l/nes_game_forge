@@ -13,7 +13,11 @@
     "build:sample": "node main/build/cli.js sample",
     "sample": "node tools/make-sample.js",
     "sample:rpg": "node tools/make-rpg-sample.js",
-    "build:sample:rpg": "node main/build/cli.js sample-rpg"
+    "build:sample:rpg": "node main/build/cli.js sample-rpg",
+    "sample:mmc1": "node tools/make-mmc1-sample.js",
+    "build:sample:mmc1": "node main/build/cli.js sample-mmc1",
+    "sample:mmc3": "node tools/make-mmc3-sample.js",
+    "build:sample:mmc3": "node main/build/cli.js sample-mmc3"
   },
   "devDependencies": {
     "electron": "^38.0.0"
