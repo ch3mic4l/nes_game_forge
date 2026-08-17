@@ -297,11 +297,6 @@ export function projectUsesText(project) {
 }
 
 /**
- * Can the player be hurt? True when any actor deals damage or a damage-type
- * metatile is actually painted on a screen (merely defining one costs nothing).
- * Drives the HUD hearts, the reserved heart sprites and the game-over screen.
- */
-/**
  * Does this build give the font its own CHR bank instead of stamping it into
  * every tileset? True on a board with a scanline interrupt (MMC3) when the
  * project shows text at all: the interrupt switches the font bank in where the
@@ -320,6 +315,17 @@ export function fontChrPages(project, mapper) {
   return fontBankSplit(project, mapper) ? 1 : 0;
 }
 
+/**
+ * Can the player be hurt? True when any actor deals damage or a damage-type
+ * metatile is actually painted on a screen (merely defining one costs
+ * nothing). Drives COMBAT_ENABLED, which gates whether combat.asm's contact
+ * and hazard checks (entity_contact, player_hazard) can ever fire at all —
+ * true for an RPG exactly as for an action project, since a monster's contact
+ * damage starts a fight there instead of taking a heart, and the check that
+ * decides whether to look still has to run. It does *not* by itself mean the
+ * action-mode heart HUD is drawn or its sprite tiles reserved — see
+ * projectUsesHeartArt, just below, for that.
+ */
 export function projectUsesCombat(project) {
   if ((project.sprites?.actors ?? []).some((actor) => (actor.damage ?? 0) > 0)) return true;
   const damaging = new Set(
@@ -357,4 +363,20 @@ export function projectUsesCombat(project) {
     }
   }
   return false;
+}
+
+/**
+ * Does this build draw the action-mode heart HUD and reserve its two sprite
+ * tiles ($FE/$FF)? draw_hud and hurt_player (engine/combat.asm) are gated
+ * `.if !BATTLE_ENABLED` -- the kernel diet that stops an RPG from assembling
+ * code for a health model it cannot use also means it never draws hearts, so
+ * an RPG must not keep the tiles reserved for a HUD that no longer exists:
+ * a project could paint real party/portrait art there and the validator would
+ * refuse it over a reservation the ROM does not contain. True exactly when
+ * projectUsesCombat is, minus an RPG -- an RPG whose monsters carry contact
+ * damage still needs COMBAT_ENABLED (that predicate, above), just not this
+ * one.
+ */
+export function projectUsesHeartArt(project) {
+  return projectUsesCombat(project) && project.project?.gameType !== 'rpg';
 }

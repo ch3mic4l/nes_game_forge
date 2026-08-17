@@ -264,29 +264,39 @@ Five things in the Map Forge for once there is more than a screenful:
 
 ## Health, damage and dying
 
-An actor with **contact damage** above zero costs the player a heart on touch; a
-metatile with the **Damage** collision type does the same to anyone standing on
-it. Either way the player is thrown clear, flickers, and is invincible for a
-second — long enough to get out of whatever hit them.
+An actor with **contact damage** above zero hurts the player on touch; a metatile
+with the **Damage** collision type does the same to anyone standing on it. Which
+health that means is whichever one the cartridge actually has. In an action game
+it costs a heart, throws the player clear, and starts a second of flicker and
+invincibility — long enough to get out of whatever hit them. In a turn-based RPG,
+walking into a damaging actor starts a fight instead of taking a hit directly, and
+a Damage metatile costs the whole party HP on the spot — no knockback, just a
+short cooldown so standing on it does not drain the party every frame.
 
-Hearts appear along the top of the screen. Actors have **hit points** too, so an
-attack takes one off and only the last one beats them; an actor left at one hit
-point behaves exactly as it did before health existed.
+Hearts appear along the top of the screen in an action game; a turn-based RPG
+shows HP in the battle box instead. Actors have **hit points** too, so an attack
+takes one off and only the last one beats them; an actor left at one hit point
+behaves exactly as it did before health existed.
 
 All of this is conditional. A game where nothing does damage draws no health bar
 and spends no tiles on one: `COMBAT_ENABLED` is off, and the two sprite tiles the
-hearts would take stay yours.
+hearts would take stay yours. A turn-based RPG never draws hearts at all, whatever
+deals damage — it shows HP in the battle box instead, so those two tiles are
+always free there, and the engine code that would have drawn them is not even
+assembled into the cartridge.
 
-Running out of hearts is **GAME OVER**, and Start from there goes back to the
-title — or straight into a new game if the project has no title. Either way it is
-a genuinely new game: hearts, bag and switches all reset.
+Running out of hearts is **GAME OVER** — in a turn-based RPG, that is every
+recruited party member reaching zero HP instead — and Start from there goes back
+to the title, or straight into a new game if the project has no title. Either way
+it is a genuinely new game: hearts (or the party), bag and switches all reset.
 
 An event can change health directly, without anything having to hit anybody:
 **Heal** and **Damage** each take a number from 0 to 255, so a trap that costs two
 hearts and a spring that gives them back are both a single command. Which health
 they mean is whichever one the cartridge actually has — the player's hearts in an
 action game, every recruited party member's HP in an RPG — so the same command
-means the obvious thing in either. **Heal 255** is a full heal, and in an RPG it
+means the obvious thing in either, and a painted Damage metatile now means exactly
+the same thing the command does. **Heal 255** is a full heal, and in an RPG it
 revives a fallen member the way an inn would. Damage that empties the bar ends the
 game exactly as walking into a spike would.
 

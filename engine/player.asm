@@ -4,14 +4,21 @@ update_player:
   lda #0
   sta moving
 
+  ; player_iframes counts down here regardless of which health model this
+  ; build has: an action game's own invincible window, and an RPG's cooldown
+  ; on its Damage-metatile hazard (player_hazard, engine/combat.asm) -- see
+  ; that routine's own header for why reusing this byte is what keeps a
+  ; standing player from being drained once a frame.
   lda player_iframes
   beq update_player_knock
   dec player_iframes
 update_player_knock:
+  .if !BATTLE_ENABLED
   lda kb_timer
   beq update_player_input
   jsr knockback_step        ; thrown clear of whatever hit you: no pad this frame
   jmp update_player_anim
+  .endif
 
 update_player_input:
   lda pad
@@ -52,6 +59,12 @@ update_player_anim:
   bne update_player_crossed
   jsr player_hazard         ; after moving, so stepping onto a spike costs a heart
   .if BATTLE_ENABLED
+  ; A lethal hit already ended the game (player_hazard's own jmp player_died,
+  ; engine/combat.asm) -- an encounter reaching its threshold on the very same
+  ; step must not then overwrite ST_GAMEOVER with ST_BATTLE, so this stops the
+  ; frame exactly as a screen edge or a fresh screen already does above.
+  lda game_state
+  bne update_player_crossed
   jsr check_encounter       ; ...and wandering monsters count the steps
   .endif
   lda moving

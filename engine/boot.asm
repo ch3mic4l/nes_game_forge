@@ -193,7 +193,9 @@ main_loop_draw:
   .endif                    ; already rebuilt it in ui_tick
   jsr build_oam
   jsr draw_entities
+  .if !BATTLE_ENABLED
   jsr draw_hud              ; over the parked slots draw_entities just left
+  .endif
   jsr draw_ui               ; on top of the frozen world, when one is open
 main_loop_ready:
   .if SPLIT_ENABLED

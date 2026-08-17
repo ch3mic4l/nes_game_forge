@@ -509,6 +509,88 @@ test('a killing Damage wipes the whole recruited party and reaches game over ' +
   );
 });
 
+// --- the Damage metatile ------------------------------------------------
+//
+// engine/combat.asm's player_hazard now agrees with the scripted Damage
+// command above about which health model an RPG means: the whole recruited
+// party's HP through rpg.asm's party_damage, not player_hp. Getting there
+// took two traps beyond the routing itself, both in player_hazard and
+// update_player -- see combat.asm's own header comment.
+
+test('standing on a Damage metatile drains the party on a cooldown, not every frame', {
+  skip: needsSample
+}, async (t) => {
+  const rom = await buildVariant(t, 'hazard-cooldown', (project) => {
+    project.maps[0].encounters = { rate: 0, actorIds: [] }; // isolate the hazard from a wandering fight
+    const damageId = 1;
+    project.metatiles[damageId].collision = 'damage';
+    project.maps[0].screens[0].metatiles = project.maps[0].screens[0].metatiles.map(() => damageId);
+  });
+  // The player starts standing on the tile, so boot()'s own frames already
+  // ran through one hit before this test gets control -- worth keeping, not
+  // working around, since it is exactly the "standing still costs a hit,
+  // then nothing until the cooldown is up" behaviour under test, one hit
+  // earlier than the rest of it.
+  const nes = boot(rom);
+  const max = nes.cpu.mem[PC_HP_MAX];
+  const afterBoot = nes.cpu.mem[PC_HP];
+  assert.ok(afterBoot < max, 'standing on the tile through boot should already have cost something');
+  assert.ok(afterBoot > max - 3, `boot alone cost ${max - afterBoot} HP, not roughly one hit`);
+
+  // Well inside IFRAME_TIME's 60-frame cooldown (engine/constants.asm): a
+  // naive routing with no cooldown, reusing player_hazard's action-mode body
+  // verbatim, would already be draining the party every frame here.
+  for (let i = 0; i < 15; i++) nes.frame();
+  assert.equal(nes.cpu.mem[PC_HP], afterBoot, 'HP dropped again well inside the cooldown window');
+
+  // Past a full cooldown window: exactly one more hit, not the continuous
+  // per-frame drain that would already have wiped the party by now.
+  for (let i = 0; i < 60; i++) nes.frame();
+  const afterSecondWindow = nes.cpu.mem[PC_HP];
+  assert.ok(afterSecondWindow > 0, 'the party was drained to zero standing still');
+  assert.ok(afterSecondWindow < afterBoot, 'a second cooldown window should have cost something too');
+  assert.ok(
+    afterSecondWindow > afterBoot - 3,
+    `the second window cost ${afterBoot - afterSecondWindow} HP, not roughly one hit`
+  );
+});
+
+test('a lethal Damage metatile hit does not lose the race to a wandering encounter on the same step', {
+  skip: needsSample
+}, async (t) => {
+  const rom = await buildVariant(t, 'hazard-vs-encounter', (project) => {
+    const damageId = 1;
+    project.metatiles[damageId].collision = 'damage';
+    // The whole screen open, one tile of Damage one column right of the start
+    // position, and the start position placed one pixel short of that column
+    // boundary -- so the very first frame the player moves is also the frame
+    // player_hazard's probe (taken after moving) lands on the Damage tile.
+    project.maps[0].screens[0].metatiles = project.maps[0].screens[0].metatiles.map(() => 0);
+    project.maps[0].screens[0].metatiles[114] = damageId;
+    project.project.startX = 23; // probe_x = startX+8 = 31, one pixel short of column 2
+    project.project.startY = 112;
+    // rate 1: the very first moving step already reaches the threshold, and
+    // every one of the four formation slots names the same monster so the
+    // roll always lands on a real encounter rather than sometimes finding an
+    // empty one -- otherwise this test would only exercise the race by luck.
+    project.maps[0].encounters = { rate: 1, actorIds: [0, 0, 0, 0] };
+  });
+  const nes = boot(rom);
+  nes.cpu.mem[PC_HP] = 1; // one hit from the tile is lethal
+
+  // One frame: the step that both crosses onto the Damage tile and makes
+  // enc_step reach the map's rate (moving becomes true on the very same
+  // frame) -- the exact race player_hazard's own game_state guard in
+  // update_player exists for.
+  nes.buttonDown(1, RIGHT);
+  nes.frame();
+  nes.buttonUp(1, RIGHT);
+  for (let i = 0; i < 30; i++) nes.frame();
+
+  assert.equal(nes.cpu.mem[GAME_STATE], ST_GAMEOVER, 'the lethal hit should have ended the game');
+  assert.notEqual(nes.cpu.mem[GAME_STATE], ST_BATTLE, 'an encounter due the same step must not overwrite game over');
+});
+
 test('enough experience raises a level, and a level restores you', {
   skip: needsSample
 }, async (t) => {

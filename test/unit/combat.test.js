@@ -11,17 +11,20 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import NES from '../../renderer/emulator/core/nes.js';
 import { loadProject, saveProject } from '../../main/project-io.js';
 import { buildProject } from '../../main/build/pipeline.js';
 import { generateAssets } from '../../main/build/generate.js';
+import { parseSymbolFile } from '../../main/build/symbols.js';
 import { createProject, RPG_LIMITS } from '../../shared/project.js';
 import { HEART_EMPTY_TILE, HEART_FULL_TILE } from '../../shared/font.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const SAMPLE = path.join(ROOT, 'sample');
 const hasRom = fs.existsSync(path.join(SAMPLE, 'build/game.nes'));
+const hasNesasm = spawnSync('nesasm', [], { stdio: 'ignore' }).error?.code !== 'ENOENT';
 
 // Engine RAM, from engine/constants.asm.
 const PLAYER_X = 0x10;
@@ -418,3 +421,49 @@ test('a killing Damage reaches game over, and the rest of the page does not run'
     'the command after the killing Damage ran on a dead session'
   );
 });
+
+// --- the kernel diet ---------------------------------------------------------
+//
+// hurt_player, lose_hearts, gain_hearts, the knockback and draw_hud
+// (engine/combat.asm) are gated `.if !BATTLE_ENABLED`: an RPG shows HP in
+// the battle box and starts a fight instead of taking a hit directly, so it
+// has no use for any of them, and not assembling them is what frees the
+// kernel-lo room Save and Move need together on MMC3 (kernelCodeBytes,
+// main/build/generate.js). The naive way to get this wrong is backwards --
+// inverted `.if` logic, or a call site (player.asm's knockback_step,
+// boot.asm's draw_hud) left unconditional -- and either mistake shows up
+// here as a symbol present or missing from the ROM's own .fns file, the
+// same way move.test.js's byte-identical-ROM test catches a disabled Move
+// that still cost bytes.
+
+test(
+  'the action-only health model assembles for an action project, and not for an RPG',
+  { skip: !hasNesasm && 'nesasm not found on PATH' },
+  async (t) => {
+    const actionDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'forge-diet-action-'));
+    t.after(() => fs.promises.rm(actionDir, { recursive: true, force: true }));
+    const action = createProject('Action');
+    await saveProject(actionDir, action);
+    const builtAction = await buildProject({ dir: actionDir, project: action, log: () => {} });
+    const actionSymbols = parseSymbolFile(await fs.promises.readFile(builtAction.symbolPath, 'utf8'));
+
+    const rpgDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'forge-diet-rpg-'));
+    t.after(() => fs.promises.rm(rpgDir, { recursive: true, force: true }));
+    const rpg = createProject('Quest', 'rpg');
+    await saveProject(rpgDir, rpg);
+    const builtRpg = await buildProject({ dir: rpgDir, project: rpg, log: () => {} });
+    const rpgSymbols = parseSymbolFile(await fs.promises.readFile(builtRpg.symbolPath, 'utf8'));
+
+    for (const name of ['hurt_player', 'lose_hearts', 'gain_hearts', 'knockback_dir', 'knockback_step', 'draw_hud']) {
+      assert.ok(actionSymbols[name] !== undefined, `an action project should still assemble ${name}`);
+      assert.equal(rpgSymbols[name], undefined, `an RPG project should not assemble ${name} -- it has no use for it`);
+    }
+    // player_hazard, entity_contact, player_died and init_session are shared by
+    // both health models -- present in both, just with a different body past
+    // BATTLE_ENABLED for the first two.
+    for (const name of ['player_hazard', 'entity_contact', 'player_died', 'init_session']) {
+      assert.ok(actionSymbols[name] !== undefined, `${name} should assemble for an action project`);
+      assert.ok(rpgSymbols[name] !== undefined, `${name} should assemble for an RPG too`);
+    }
+  }
+);

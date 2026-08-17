@@ -383,35 +383,60 @@ that alignment or keeping a copy. The outer eight pixels are overscan — tile r
 columns 0 and 31 — so the frame drawn there is decoration, and nothing the player has to see
 (the ▼ page prompt) goes in it.
 
-`engine/combat.asm` and `engine/title.asm` are always assembled but conditionally *reachable*:
-`COMBAT_ENABLED` and `TITLE_ENABLED` in `config.inc` gate them. Combat is on exactly when
-`projectUsesCombat` is true, which is also what decides whether the heart art is stamped into
-sprite tiles `$FE/$FF`. `init_session` is the single definition of "new game" — hearts, bag,
-counters, all 64 switches and all 16 variables — and both boot and the game-over path go through
-it. Where a game
-over *lands* is `restart_game`: the title if there is one, a new game if there is not.
+`engine/combat.asm` and `engine/title.asm` are conditionally *reachable* either way, but only
+`title.asm` is still always assembled. `COMBAT_ENABLED` and `TITLE_ENABLED` in `config.inc` gate what
+runs; `BATTLE_ENABLED` now also gates what *assembles* in `combat.asm` — see the kernel diet under
+"`Move` is the first command..." below for why, and `projectUsesHeartArt` (`shared/font.js`), not
+`projectUsesCombat`, for what decides the heart art stamped into sprite tiles `$FE/$FF`: an RPG's
+monsters can still carry contact damage (`COMBAT_ENABLED` on, driven by `projectUsesCombat` as
+before), but an RPG never draws the hearts that art is for. `init_session` is the single definition
+of "new game" — hearts, bag, counters, all 64 switches and all 16 variables — and both boot and the
+game-over path go through it. Where a game over *lands* is `restart_game`: the title if there is
+one, a new game if there is not.
 
 **`Heal`/`Damage` mean whichever of the engine's two health models the build actually has**,
 decided once, at assemble time, by `BATTLE_ENABLED` — never a third model invented for the
-command. In an action project that is `player_hp`, through `combat.asm`'s `gain_hearts`/
-`lose_hearts`; in an RPG it is every recruited member's `pc_hp` (`$0398+`, plain kernel RAM, no
-`call_battle` needed to reach it — see "The battle system" below), through `rpg.asm`'s
-`party_heal`/`party_damage`. `player_hazard` still takes a heart off `player_hp` on a Damage
-metatile even in an RPG — a pre-existing asymmetry with `entity_contact`'s own `BATTLE_ENABLED`
-divert, left alone here — but the scripted commands do not add a third disagreement of their own:
-an RPG's `Damage` never touches `player_hp`. `lose_hearts` and `party_damage` both end a killing
-hit with a `jmp` to `player_died` rather than a `jsr` that returns into `script_next` — the same
-trap `script_op_call`'s `NO_COMMON_EVENT_SLOT` stop already had to avoid — because a page that
-went on to run its next command over a dead session would read as "damage that sometimes forgets
-to end the game." `script_op_damage` deliberately does not route through `hurt_player`: a trap has
-no attacker for the knockback and must land regardless of the invincible window a physical hit
-would still be honouring. `Heal 255` is a full heal with no separate "inn" vocabulary, and — the
-one place the two models genuinely diverge — revives a fallen RPG party member the way an inn
-would, where `cast_heal` in battle never has to ask the question because it only ever heals
-whoever is already taking their turn. `projectUsesCombat` (`shared/font.js`) counts a live
-`Damage` command in an action project the same way it counts a damage actor or a painted metatile,
-because an author whose only damage source is this command still needs the hearts drawn — but not
-in an RPG, where `Damage` never reaches `player_hp` and so has nothing to do with that reservation.
+command, and never a third model for a *metatile* either. In an action project that is `player_hp`,
+through `combat.asm`'s `gain_hearts`/`lose_hearts`; in an RPG it is every recruited member's `pc_hp`
+(`$0398+`, plain kernel RAM, no `call_battle` needed to reach it — see "The battle system" below),
+through `rpg.asm`'s `party_heal`/`party_damage`. A Damage metatile now agrees with the scripted
+command about which model it means: `player_hazard` takes a heart off `player_hp` in an action
+project and a party-wide hit through `party_damage` in an RPG, the same `BATTLE_ENABLED` split
+`script_op_heal`/`script_op_damage` already made for the authored commands, applied to what a
+painted tile does instead of what an event says. Getting there took three traps, all in
+`player_hazard`/`update_player`, not just the routing:
+
+- **The RPG side needed its own cooldown**, not the knockback that comes with the action side's.
+  `player_iframes` already counts down once a frame in `update_player`, action or RPG alike, so
+  `player_hazard`'s `BATTLE_ENABLED` branch reuses it — set on a hit, read at the top of the routine
+  — rather than draining every recruited member at close to 60 Hz for as long as the player stands
+  on the tile.
+- **A lethal hit must stop the frame**, not merely end the game. `check_encounter` runs immediately
+  after `player_hazard` in `update_player`, and a wandering encounter reaching its threshold on the
+  very same step would overwrite the `ST_GAMEOVER` a party wipe just set with `ST_BATTLE` — so
+  `update_player` reads `game_state` back after `player_hazard` and stops there, the same "the rest
+  of this frame belongs to the transition" rule a screen edge or a fresh screen already apply above
+  it.
+- **A killing hit must `jmp player_died`, not return into it.** `party_damage` and `lose_hearts` both
+  only ever saturate and answer whether the hit was lethal; *deciding* the game is over is each
+  caller's own `jmp`, for the same reason `lose_hearts`' own header already explains a few lines
+  below and `script_op_call`'s `NO_COMMON_EVENT_SLOT` stop needed too — a callee that jumped there on
+  a caller's behalf would leave that caller's own return address sitting unpopped on the stack for
+  some unrelated `rts` to mis-pop later.
+
+The scripted `Damage` command follows the same `jmp player_died` rule for its own killing hit, and
+deliberately does not route through `hurt_player` either: a trap has no attacker for the knockback
+and must land regardless of the invincible window a physical hit would still be honouring. `Heal 255`
+is a full
+heal with no separate "inn" vocabulary, and — the one place the two models genuinely diverge —
+revives a fallen RPG party member the way an inn would, where `cast_heal` in battle never has to ask
+the question because it only ever heals whoever is already taking their turn. `projectUsesCombat`
+(`shared/font.js`) counts a live `Damage` command in an action project the same way it counts a
+damage actor or a painted metatile, because an author whose only damage source is this command still
+needs the hearts drawn — but not in an RPG, where `Damage` never reaches `player_hp` and, now, where
+nothing about combat reaches the hearts at all: `projectUsesHeartArt` answers false for every RPG
+regardless of what `projectUsesCombat` says, because `draw_hud` and `hurt_player` do not assemble
+there to draw them.
 
 **What makes an event run is a byte of the entity record**, `EVENT_TRIGGERS` in
 `shared/project.js` in wire order, `TRIG_*` in `engine/constants.asm` at the other end. `interact`
@@ -514,25 +539,52 @@ flag to keep in step with the counter. Three rules hold it together:
 
 The conditional part is the interesting one. Move is ~395 bytes and **the kernel bank has no room to
 carry it unconditionally**: measured on a clean tree, `sample-rpg` with one `Save` command leaves
-**142 free bytes** in the kernel-lo bank on MMC3 (161 before `switch_prg_bank`'s own interrupt-race
-fix, above, cost every MMC3 build with `SPLIT_ENABLED` 19 bytes) and 353 on MMC1. Assembling Move into every ROM did
-not tighten the capacity check, it overflowed the bank and failed nesasm outright, for projects that
-never move anything. So `projectUsesMove` (`shared/project.js`) drives a generated `MOVE_ENABLED` the
-way `projectUsesSave` drives `SAVE_ENABLED`, and `kernelCodeBytes` gained a third term,
+**411 free bytes** in the kernel-lo bank on MMC3 (142 before the kernel diet below freed 269 more;
+161 before that, `switch_prg_bank`'s own interrupt-race fix cost every MMC3 build with
+`SPLIT_ENABLED` 19 of those) and 622 on MMC1 (353 before the diet). Assembling Move into every ROM
+did not tighten the capacity check, it overflowed the bank and failed nesasm outright, for projects
+that never move anything. So `projectUsesMove` (`shared/project.js`) drives a generated
+`MOVE_ENABLED` the way `projectUsesSave` drives `SAVE_ENABLED`, and `kernelCodeBytes` gained a term,
 `MOVE_KERNEL_ALLOWANCE`. A project with no live Move — including one whose only Move is switched off,
 since the predicate reads `liveCommands` — assembles byte-for-byte as it did before the command
 existed, which `move.test.js` asserts by comparing two whole ROMs.
 
-**That makes the kernel bank's remaining headroom the constraint on item 1 and item 6 both.** The
-sum is what to watch now, not either term: a project with Save *and* Move on MMC3 with text also
-carries `SPLIT_LOCK_KERNEL_ALLOWANCE` (19 bytes, `switch_prg_bank`'s own interrupt-race fix, above —
-conditional the same way, since it costs nothing on a board or a project that never shows text on
-MMC3) and reserves 7943 of the 8192 byte bank, and the rest of the roadmap's cutscene verbs (fade,
-shake, sound effects, movement
-routes) are all kernel code with nowhere left to go. The next one of them needs a kernel diet, a
-second banked region the way the battle system got one, or the same conditional treatment — and
-conditional assembly does not compose indefinitely, because a project that wants three of them is
-back where it started.
+**That makes the kernel bank's remaining headroom the constraint on item 1 and item 6 both, and the
+269 bytes came from a kernel diet on item 1's own side of the ledger.** `engine/combat.asm`'s action-
+mode health model — `hurt_player`, `lose_hearts`, `gain_hearts`, the knockback, and `draw_hud` — is
+gated `.if !BATTLE_ENABLED`: an RPG never draws hearts or knocks the player back, it shows HP in the
+battle box and starts a fight instead, so none of that code has anything to do there. `player.asm`'s
+`knockback_step` call and `boot.asm`'s `draw_hud` call move with their targets, under the same gate.
+`projectUsesHeartArt` (`shared/font.js`) is a narrower predicate than `projectUsesCombat` for exactly
+this reason: an RPG whose monsters carry contact damage still needs `COMBAT_ENABLED` (that predicate
+still drives it), but never draws the hearts or reserves their two sprite tiles, so stamping and
+validating that reservation now asks the narrower question instead — a project could paint real
+party art over `$FE/$FF` in an RPG tileset that `projectUsesCombat` alone would still have refused.
+`kernelCodeBytes`'s own `BASE_KERNEL_CODE_BYTES` dropped by exactly those 269 bytes, on every
+RPG-capable board alike, which is what made room for Move at all: a project with Save *and* Move on
+MMC3 with text also carries `SPLIT_LOCK_KERNEL_ALLOWANCE` (19 bytes, `switch_prg_bank`'s own
+interrupt-race fix — conditional the same way, since it costs nothing on a board or a project that
+never shows text on MMC3) and reserves 7669 of the 8192 byte bank against a real measured 7641 — a
+28-byte margin, 8 of which is not slack at all but `BASE_KERNEL_CODE_BYTES`'s own cross-board
+conservatism (MMC3's own true base, with none of these terms, measures 6675 — eight less than the
+UNROM 512 figure this function charges every board). Getting this far needed a second fix alongside
+the diet: `checkCapacity`'s own `tableBytes` had been double-charging kernel-lo for every placed
+entity's *record*, which actually lives in the switchable window's own screen data (`emitScreens`)
+and was already correctly charged against screen capacity there — harmless while kernel-lo had room
+to spare, but exactly the kind of stale slop this codebase's own six-plus-revision history under
+`SAVE_KERNEL_ALLOWANCE` already warns about, caught the same way: by diffing the formula's claim
+against nesasm's real kernel-lo usage rather than trusting either number alone. Between the diet and
+that fix, the same combination went from **332 bytes** short of the kernel-lo bank to **12** — real
+progress, and not the pass/fail case closed: `checkCapacity` still refuses `sample-rpg` with a `Save`
+command *and* a `Move` command on MMC3, correctly, because the reservation genuinely does not fit
+without either giving MMC3 its own base (the per-mapper budgeting mentioned above, not done yet) or
+loosening the 20-byte `KERNEL_SLACK` floor `kernelbytes.test.js` enforces globally — and this is not
+the change to do either of those in. The rest of the roadmap's cutscene verbs (fade, shake, sound
+effects, movement routes) are all kernel code with nowhere left to go until one of those two happens;
+a second kernel diet (the already-conditional blocks in `engine/title.asm` are worth measuring, though
+they cost `sample-rpg` nothing today — it has no title screen) or a second banked region the way the
+battle system got one are the other options, and conditional assembly does not compose indefinitely
+regardless, because a project that wants three of these is back where it started.
 
 **A command that holds commands is not a special case to be named, it is a `nests: true` entry.**
 Two of them exist (`branch`, `choice`) and the third will be along. Anything asking a question of a

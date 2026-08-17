@@ -1,10 +1,12 @@
-; combat.asm -- the player's health in an action game.
+; combat.asm -- the player's health, in whichever of the engine's two models
+; this build actually has.
 ;
-; Three things can take a heart through hurt_player: an actor whose damage is
-; more than zero walking into you, a metatile the Map Forge marked Damage, and
-; nothing else -- the invincible window, the knockback and the way a game ends
-; are one implementation because all three share it. A scripted Damage command
-; is a fourth thing that can take a heart, and deliberately does not go through
+; An action game's model lives entirely in this file. Three things can take a
+; heart through hurt_player: an actor whose damage is more than zero walking
+; into you, a metatile the Map Forge marked Damage, and nothing else -- the
+; invincible window, the knockback and the way a game ends are one
+; implementation because all three share it. A scripted Damage command is a
+; fourth thing that can take a heart, and deliberately does not go through
 ; hurt_player: a trap that says "you take 2 hearts" has no attacker to knock
 ; back and must land every time, iframes included, so script_op_damage
 ; (engine/script.asm) calls lose_hearts directly -- the saturating store and
@@ -13,11 +15,24 @@
 ; disagree. A scripted Heal is the only way a heart is ever given back outside
 ; a new game, through gain_hearts, its saturating-add mirror.
 ;
-; None of this is conditional on the project: it is a few hundred bytes and the
-; alternative is two engines. What *is* conditional is whether it can ever fire
-; -- COMBAT_ENABLED is zero when no actor deals damage, no Damage metatile is
-; painted anywhere and no live Damage command is compiled in, and then the
-; hearts are not drawn and nothing calls in here.
+; None of that is conditional on whether anything can actually hurt the
+; player -- it is a few hundred bytes and the alternative is two engines. What
+; *is* conditional is whether it can ever fire -- COMBAT_ENABLED is zero when
+; no actor deals damage, no Damage metatile is painted anywhere and no live
+; Damage command is compiled in, and then the hearts are not drawn and
+; nothing calls in here.
+;
+; An RPG has no hearts at all: hurt_player, lose_hearts, gain_hearts and the
+; knockback (this file) plus draw_hud (below) are gated `.if !BATTLE_ENABLED`
+; and simply do not assemble there, which is what the kernel-lo bank needs the
+; room for -- see kernelCodeBytes (main/build/generate.js) for the byte count
+; and why it is a term of its own rather than a rise in the shared base. What
+; an RPG keeps is player_hazard (below) in its BATTLE_ENABLED form -- the
+; field's own Damage metatile, routed through rpg.asm's party_damage instead
+; -- and entity_contact, whose RPG branch starts a fight rather than taking a
+; heart. The scripted Heal/Damage commands already made exactly this split in
+; script.asm's script_op_heal/script_op_damage; this is the same rule applied
+; to what a painted metatile does instead of what an authored command does.
 
 ; Start a new life: full hearts, an empty bag, and every switch and variable back
 ; to zero. Run at boot and again whenever a game-over screen is dismissed, so
@@ -80,6 +95,7 @@ init_session_status:
   .endif
   rts
 
+  .if !BATTLE_ENABLED
 ; A = hearts to take, X = the entity slot responsible (MAX_ENTITIES or more when
 ; it was the floor, which knocks the player straight backwards instead).
 ; Does nothing while the player is still invincible from the last hit.
@@ -222,10 +238,20 @@ knockback_left:
   jmp move_left
 knockback_right_step:
   jmp move_right
+  .endif
 
 ; The floor, once per frame, from update_player. The probe is the middle of the
 ; body rather than a corner: standing with one pixel over a spike tile and
 ; taking damage for it reads as a bug.
+;
+; Which of the engine's two health models a hit lands on is decided here, at
+; assemble time, by BATTLE_ENABLED -- the same rule script_op_heal/
+; script_op_damage (engine/script.asm) already apply to the scripted
+; commands, applied to a painted metatile instead of an authored one. An RPG
+; keeps its own cooldown rather than losing it along with the knockback:
+; player_iframes still counts down once a frame in update_player regardless
+; of which model is built, so reusing it here is free, and without it a
+; player standing still on the tile would drain the party at close to 60 Hz.
 player_hazard:
   lda #COMBAT_ENABLED
   beq player_hazard_done
@@ -242,9 +268,19 @@ player_hazard:
   jsr probe_type
   cmp #COL_DAMAGE
   bne player_hazard_done
+  .if BATTLE_ENABLED
+  lda #IFRAME_TIME
+  sta player_iframes
+  lda #1
+  jsr party_damage
+  bne player_hazard_done    ; someone recruited is still standing
+  jmp player_died
+  .endif
+  .if !BATTLE_ENABLED
   ldx #MAX_ENTITIES         ; no actor to be thrown away from
   lda #1
   jmp hurt_player
+  .endif
 player_hazard_done:
   rts
 
@@ -293,10 +329,14 @@ player_died:
 
 ; --------------------------------------------------------------------- HUD
 
+  .if !BATTLE_ENABLED
 ; One sprite per heart along the top of the screen, appended to the shadow after
 ; draw_entities has parked what is left over. The art is stamped into sprite
 ; tiles $FE/$FF at build time from shared/font.js, so it costs the project two
-; tiles and only when something in it can actually hurt the player.
+; tiles and only when something in it can actually hurt the player -- and only
+; on this side of BATTLE_ENABLED: an RPG shows HP in the battle box instead
+; (projectUsesHeartArt, shared/font.js, is the predicate that follows this
+; split for the reservation itself).
 draw_hud:
   lda #COMBAT_ENABLED
   beq draw_hud_done
@@ -339,3 +379,4 @@ draw_hud_full:
   sty oam_idx
 draw_hud_done:
   rts
+  .endif

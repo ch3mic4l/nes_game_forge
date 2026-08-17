@@ -308,9 +308,16 @@ test('MOVE_KERNEL_ALLOWANCE still covers what Move actually costs', {
   skip: !hasRom && 'run `npm run sample` first'
 }, async (t) => {
   // The same rule kernelbytes.test.js enforces for SAVE_KERNEL_ALLOWANCE, and
-  // here for a sharper reason: this allowance was measured against a kernel
-  // bank with 161 free bytes on the worst battery board, so drift in it is not
-  // a tightened capacity check, it is an assembler failure for real projects.
+  // here for a sharper reason: this allowance is exactly its measured delta,
+  // 395, with no margin of its own -- KERNEL_SLACK is the only deliberate
+  // headroom kernelCodeBytes carries (see its own comment) -- so drift in it
+  // is not a tightened capacity check, it is an assembler failure for real
+  // projects. Even so, Save and Move together on MMC3 with text are 12 bytes
+  // short of the kernel-lo bank on the worst-fitting real project measured
+  // (sample-rpg): a kernel diet (engine/combat.asm, gated `.if !BATTLE_ENABLED`)
+  // closed most of that gap but not all of it, and the rest needs per-mapper
+  // budgeting this repository has not done yet -- see kernelCodeBytes's own
+  // comment for the numbers.
   const dir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'forge-move-cost-'));
   t.after(() => fs.promises.rm(dir, { recursive: true, force: true }));
 

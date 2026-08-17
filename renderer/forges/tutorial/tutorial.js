@@ -317,25 +317,33 @@ const TOPICS = [
       p(
         'An actor with ',
         b('contact damage'),
-        ' above zero costs the player a heart on touch; a metatile with the ',
+        ' above zero hurts the player on touch; a metatile with the ',
         b('Damage'),
-        ' collision type does the same to anyone standing on it. Either way the player is ',
-        'thrown clear, flickers, and is invincible for a second.'
+        ' collision type does the same to anyone standing on it. In an action project that costs ',
+        'a heart, throws the player clear, and starts a second of flicker and invincibility. In a ',
+        'turn-based RPG, walking into a damaging actor starts a fight instead of taking a hit ',
+        'directly, and a Damage metatile costs the whole party HP on the spot — no knockback, just ',
+        'a short cooldown so standing on it does not drain the party every frame.'
       ),
       p(
-        'Hearts appear along the top of the screen. Actors have hit points too: the ',
+        'Hearts appear along the top of the screen in an action project. Actors have hit points ',
+        'too: the ',
         b('Attack'),
         ' action beats the nearest actor within reach, taking one hit point per swing.'
       ),
       p(
         'Running out of hearts is ',
         b('GAME OVER'),
-        ', and Start from there returns to the title — or straight into a new game if there ',
-        'is no title. It is a genuinely new game: hearts, bag and switches all reset.'
+        ' — in a turn-based RPG, that is every recruited party member reaching zero HP instead — ',
+        'and Start from there returns to the title, or straight into a new game if there is no ',
+        'title. It is a genuinely new game: hearts (or the party), bag and switches all reset.'
       ),
       tip(
         'All of this is conditional. A game where nothing deals damage draws no health bar ',
-        'and spends nothing on one — the two sprite tiles the hearts would use stay yours.'
+        'and spends nothing on one — the two sprite tiles the hearts would use stay yours. A ',
+        'turn-based RPG never draws hearts at all, whatever deals damage: it shows HP in the ',
+        'battle box instead (see the Turn-based RPGs topic), so those two tiles are always free ',
+        'there.'
       )
     ]
   },

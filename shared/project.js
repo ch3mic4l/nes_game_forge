@@ -28,7 +28,7 @@ import {
   SPRITE_ARROW_TILE,
   fontBankSplit,
   projectUsesText,
-  projectUsesCombat
+  projectUsesHeartArt
 } from './font.js';
 
 export const ENGINE_VERSION = 1;
@@ -1751,7 +1751,13 @@ export function validateProject(project) {
       }
     }
   }
-  if (projectUsesCombat(project)) {
+  // projectUsesHeartArt, not projectUsesCombat: draw_hud (engine/combat.asm)
+  // is gated `.if !BATTLE_ENABLED`, so an RPG never draws the HUD hearts and
+  // must not have its own party/portrait art refused over a reservation the
+  // ROM does not contain, even though projectUsesCombat can still be true
+  // there (a monster's contact damage starts a fight rather than a heart, but
+  // COMBAT_ENABLED still has to be on for the check to run at all).
+  if (projectUsesHeartArt(project)) {
     for (const tileset of project.tilesets) {
       const occupied = tileset.sprites.tiles.findIndex(
         (tile, index) => index >= HEART_FULL_TILE && tile !== BLANK_TILE
