@@ -47,21 +47,26 @@ import {
   collisionIndex,
   validateProject,
   projectUsesSave,
-  projectUsesMove
+  projectUsesMove,
+  projectEvents,
+  allCommands
 } from '../../shared/project.js';
 import { SAVE_FIELDS, saveBodySize, saveIdentity } from '../../shared/save.js';
 import {
   CHR_BANK_BYTES,
   PRG_SWITCH,
   SCREEN_REGION_BYTES,
+  SUPPORTED_MAPPERS,
   batteryCapable,
   chrBanksFor,
   chrPayloadRegions,
   chrRegisterTable,
   codeRegions,
+  mirroringOptions,
   mirroringValue,
   prgLayout,
   resolveMapper,
+  rpgCapable,
   screenRegions,
   tilesetLimit
 } from '../../shared/cartridge.js';
@@ -162,138 +167,150 @@ const TITLE_PROMPT_ROW = 19;
 // number, so the two cannot end up with two different answers about the same
 // project the way a flat constant let them.
 //
-// The two pieces, each measured by building sample-rpg with a title and
-// every conditionally-assembled block heal/damage's own measurement already
+// The pieces, each measured by building sample-rpg with a title and every
+// conditionally-assembled block heal/damage's own measurement already
 // covered (dialogue, action combat, the RPG battle system, branches,
 // questions, common-event calls, Play music, Start a battle, Heal/Damage) --
 // nesasm's kernel-lo usage minus that build's own fixedBytes + tableBytes:
 //
-// BASE_KERNEL_CODE_BYTES is the worst case with nothing conditional turned
-// on -- no Save, no Move, no text on a split-font board -- 6683 on UNROM 512
-// (banks.asm emits the most code for it). It dropped by 269 bytes, on every
-// RPG-capable board alike, the day combat.asm's action-only health model
-// (hurt_player through the knockback, and draw_hud) was gated
-// `.if !BATTLE_ENABLED`: an RPG never draws hearts or knocks the player back
-// -- it shows HP in the battle box and starts a fight instead -- so it has no
-// use for that code and, now, no longer assembles it. See combat.asm's own
-// header for the split and player_hazard for what an RPG keeps instead
-// (routed through rpg.asm's party_damage).
+// BASE_KERNEL_CODE_BYTES_BY_MAPPER is the worst case with nothing
+// conditional turned on -- no Save, no Move, no text on a split-font board
+// -- measured per mapper rather than once. A single flat number, measured on
+// UNROM 512 because banks.asm emits the most code for it, used to be charged
+// to every board; MMC3's own switch_chr_bank/switch_prg_bank pair is smaller,
+// so that overcharged every MMC3 project by 8 bytes, and MMC1's by 195 --
+// both boards forced to carry UNROM 512's own combined PRG/CHR register
+// plumbing, which neither of them has. Only three mappers can be measured
+// this way at all: sample-rpg needs a mapper that switches both PRG and CHR
+// (rpgCapable() in shared/cartridge.js), which is exactly UNROM 512, MMC1 and
+// MMC3 -- the same three test/unit/kernelbytes.test.js already builds.
+//   UNROM 512: 6678   MMC1: 6483   MMC3: 6670
+// (MMC3's own figure excludes SPLIT_LOCK_KERNEL_ALLOWANCE, kept a separate
+// term below for the same reason it always was -- see its own paragraph.)
+// Every other supported mapper -- NROM, CNROM, GxROM, Color Dreams, UxROM --
+// cannot build an RPG at all, so this methodology cannot measure a base for
+// any of them; baseKernelCodeBytes() falls back to the largest of the three
+// figures above for a mapper this table has no entry for, which is not a
+// guess standing in for a measurement -- it is the exact same worst-case
+// number this function charged every board before this change, so a project
+// on one of those five reserves precisely the budget it always did.
+// codebuild.test.js's byte-identical NROM build and cartridge.test.js's
+// UxROM screen-count test both depend on that fallback never moving.
 //
-// SAVE_KERNEL_ALLOWANCE is the extra a board pays only when save/load itself
-// assembles, derived from the difference save/load actually measures on the
-// two boards that can build it -- not guessed: MMC1 goes from 6488 to 7035
-// (+547), MMC3 from 6694 to 7246 (+552, text always on for an RPG on a
-// split-font board -- see SPLIT_LOCK_KERNEL_ALLOWANCE below). The larger of
-// the two, so one allowance covers both rather than one being asked to guess
-// the other's cost. (This grew from an earlier +453/+458 once a review pass
-// range-checked every restored value load_apply_body trusts as a table index
-// -- player_dir, player_y, each live inv_items entry, each pc_level -- and
-// widened the identity from two bytes to four; then from +526/+531 once a
-// further pass added the pc_in_party bound and the jmp relay
-// save_check_valid's own branch-range fix needed once that bound pushed
-// save_check_invalid out of a bne's reach -- see engine/save.asm's own header
-// comment and shared/save.js's saveIdentity() for what each of those costs
-// and why. This constant's own history is why a passing kernelbytes.test.js
-// run is not the same as having re-measured it: the allowance drifted one
-// round behind reality -- 531 recorded while the real delta had already
-// grown to 552 -- and the test still passed, because 531 still covered 552's
-// own shortfall against a much looser bound than the one below. Caught only
-// by re-running the real measurement by hand and diffing it against this
-// comment's claim, not by the test going green.)
+// SAVE_KERNEL_ALLOWANCE_BY_MAPPER is the extra a board pays only when
+// save/load itself assembles, derived per board from the difference
+// save/load actually measures on the two boards that can build it at all --
+// not guessed, and not the larger of the two charged to both the way it used
+// to be, now that a per-mapper base makes a per-mapper allowance the same
+// kind of number: MMC1 goes from 6483 to 7030 (+547), MMC3 from 6689 to 7241
+// (+552, text always on for an RPG on a split-font board -- see
+// SPLIT_LOCK_KERNEL_ALLOWANCE below). (This grew from an earlier +453/+458
+// once a review pass range-checked every restored value load_apply_body
+// trusts as a table index -- player_dir, player_y, each live inv_items
+// entry, each pc_level -- and widened the identity from two bytes to four;
+// then from +526/+531 once a further pass added the pc_in_party bound and
+// the jmp relay save_check_valid's own branch-range fix needed once that
+// bound pushed save_check_invalid out of a bne's reach -- see
+// engine/save.asm's own header comment and shared/save.js's saveIdentity()
+// for what each of those costs and why. This constant's own history is why a
+// passing kernelbytes.test.js run is not the same as having re-measured it:
+// the allowance drifted one round behind reality -- 531 recorded while the
+// real delta had already grown to 552 -- and the test still passed, because
+// 531 still covered 552's own shortfall against a much looser bound than the
+// one below. Caught only by re-running the real measurement by hand and
+// diffing it against this comment's claim, not by the test going green.)
 //
 // SPLIT_LOCK_KERNEL_ALLOWANCE is a third term, MMC3-only and conditional the
-// same way: switch_prg_bank's critical section against the call_battle
-// interrupt race (engine/banks.asm, engine/split.asm — split_lock in
+// same way, and it stays a separate term rather than folding into MMC3's own
+// base: switch_prg_bank's critical section against the call_battle interrupt
+// race (engine/banks.asm, engine/split.asm — split_lock in
 // engine/constants.asm) is wrapped `.if SPLIT_ENABLED`, so only a project
 // that shows text on MMC3 (fontBankSplit) pays it, measured at 19 bytes.
 // Every RPG shows text unconditionally (projectUsesText returns true for the
 // game type alone, battle messages included), so this is really "every RPG
 // on MMC3" rather than a case that has to be sought out -- MMC3's own
-// SAVE_ENABLED-off figure above (6694) already has it baked in; the base
-// does not, or an RPG on any *other* board would be overcharged 19 bytes for
-// a fix its own ROM cannot contain. Folding it into BASE_KERNEL_CODE_BYTES
-// instead would charge every board on every mapper — UxROM included, which
-// never assembles a byte of it — for a fix that is a no-op everywhere but
-// MMC3-with-text; a UxROM project that fit 54 screens before would refuse to
-// build for a reason its own ROM cannot contain. This is the same reasoning
-// SAVE_KERNEL_ALLOWANCE above and MOVE_KERNEL_ALLOWANCE below are already
-// built on, applied to a fix instead of a feature.
+// SAVE_ENABLED-off figure above (6689) already has it baked in; the
+// per-mapper base does not, or an *action* project on MMC3 with no text
+// would be overcharged 19 bytes for a fix its own ROM cannot contain. This is
+// the same reasoning SAVE_KERNEL_ALLOWANCE_BY_MAPPER above and
+// MOVE_KERNEL_ALLOWANCE below are already built on, applied to a fix instead
+// of a feature -- and it is what "per-mapper base" does not subsume: a base
+// is a property of the board, this is a property of the board *and* whether
+// the project shows text, so it cannot become one more row in the base table
+// without overcharging every MMC3 project that carries no dialogue.
 //
-// KERNEL_SLACK is kept on the *total*, once, here — never inside either term
-// above, or a margin on each would compound into a bigger one than either was
-// meant to carry. It is deliberate headroom on top of an allowance that is
-// itself supposed to already equal the worst measured delta -- not a second,
-// looser allowance that a stale first one gets to quietly borrow from.
+// KERNEL_SLACK is kept on the *total*, once, here — never inside any term
+// above, or a margin on each would compound into a bigger one than any was
+// meant to carry. It is deliberate headroom on top of terms that are each
+// already supposed to equal their own worst measured delta -- not a second,
+// looser allowance that a stale term gets to quietly borrow from.
 // test/unit/kernelbytes.test.js enforces that distinction directly: the
-// margin between what kernelCodeBytes reserves for a saving project and what
-// the worst real board actually measures must not fall below KERNEL_SLACK,
-// which fails exactly the way this round's drift should have -- 531 against
-// a real 552 leaves a 7-byte margin, well under a 20-byte KERNEL_SLACK floor
-// -- rather than only when the margin goes negative and a real build starts
-// overflowing its bank.
+// margin between what kernelCodeBytes reserves for a project and what the
+// worst real board actually measures must not fall below KERNEL_SLACK.
 //
-// With the terms and the slack: a project with neither Save nor Move gets
-// 6683 + 0 + 0 + 0 + 20 = 6703. A project that saves gets 6683 + 552 + 0 + 20
-// = 7255; on MMC3 with text (every RPG there), add
-// SPLIT_LOCK_KERNEL_ALLOWANCE: 6683 + 552 + 19 + 20 = 7274.
-//
-// MOVE_KERNEL_ALLOWANCE is the next term, and the reason it is a term at all
-// rather than a rise in the base is measured rather than stylistic: on a
-// clean tree, sample-rpg with one Save command leaves 411 free bytes in the
-// kernel-lo bank on MMC3 (was 142 before the diet above freed 269 of them)
-// and 622 on MMC1 (was 353), and Move's implementation measures 395 bytes on
-// every board alike -- the same 395 on UNROM 512, MMC1 and MMC3, so unlike
-// BASE_KERNEL_CODE_BYTES this term needs no cross-board worst case at all.
-// Folding it into the base would not have tightened the capacity check, it
-// would have overflowed the bank and failed nesasm outright -- for every
-// project, whether or not it moves anything. So engine/entities.asm's
+// MOVE_KERNEL_ALLOWANCE stays a single flat constant rather than a per-mapper
+// table, and this is measured rather than stylistic: Move's implementation
+// costs exactly 395 bytes on every RPG-capable board alike -- UNROM 512,
+// MMC1 and MMC3 all go up by exactly 395 with a live Move and nothing else
+// turned on, so unlike the base this term has no cross-board difference to
+// capture. Folding it into any base would not have tightened the capacity
+// check, it would have overflowed the bank and failed nesasm outright -- for
+// every project, whether or not it moves anything. So engine/entities.asm's
 // move_tick and engine/script.asm's script_op_move sit inside
 // `.if MOVE_ENABLED`, the same shape save.asm already had, and only a
 // project with a live Move pays. The allowance is exactly 395, not 395 plus
-// a margin of its own: KERNEL_SLACK below is the *only* deliberate headroom
-// in this function, by design, and a second one folded into this term would
-// be exactly the "second, looser allowance" KERNEL_SLACK's own comment
-// already warns against -- SAVE_KERNEL_ALLOWANCE and
-// SPLIT_LOCK_KERNEL_ALLOWANCE are both already their exact measured deltas
-// for the same reason.
+// a margin of its own: KERNEL_SLACK is the *only* deliberate headroom in
+// this function, by design, and a second one folded into this term would be
+// exactly the "second, looser allowance" KERNEL_SLACK's own comment already
+// warns against.
 //
-// That makes this the first term where the *sum* is what to watch: a project
-// with Save and Move on MMC3-with-text reserves 6683 + 552 + 19 + 395 + 20 =
-// 7669, against a real measured 7641 -- a 28-byte margin, 8 of which is not
-// slack at all but BASE_KERNEL_CODE_BYTES's own cross-board conservatism
-// (MMC3's true base without any of these terms measures 6675, eight less
-// than the UNROM 512 figure this function charges every board; giving MMC3
-// its own base is the per-mapper budgeting a later change, not this one, is
-// for). That leaves this combination **12 bytes short** of the kernel-lo
-// bank once fixedBytes and tableBytes are added in for sample-rpg's own
-// table content, which checkCapacity still refuses in plain language before
-// the assembler is reached -- correctly: the reservation is not wrong, the
-// project genuinely does not fit inside a budget this function can promise
-// without either the per-mapper base above or loosening the 20-byte
-// KERNEL_SLACK floor test/unit/kernelbytes.test.js enforces globally,
-// neither of which belongs to this change. The diet, and checkCapacity's own
-// entityBytes fix beside it (see tableBytes, above -- a second, unrelated
-// 46-byte over-charge that had nothing to do with kernel code at all), did
-// close the vast majority of the *original* gap: before either, the same
-// combination -- sample-rpg with a Save command and a Move command, on
-// MMC3 -- was **332 bytes** short of the kernel-lo bank, not 12. Both fixes
-// were real and both were necessary to get this far; the remaining 12 is
-// reported here rather than forced shut, per this repository's own standing
-// instruction not to ship a number that only just fits by construction
-// rather than by measurement.
+// With per-mapper terms, every configuration this file can measure now
+// leaves exactly KERNEL_SLACK bytes of margin against its own real worst
+// case -- not a coincidence, but the point of measuring per board instead of
+// charging every board the same worst case: MMC3 with Save and Move (its own
+// base 6670, + SPLIT_LOCK_KERNEL_ALLOWANCE 19, + SAVE_KERNEL_ALLOWANCE 552,
+// + MOVE_KERNEL_ALLOWANCE 395, + KERNEL_SLACK 20 = 7656) reserves 20 bytes
+// over a real measured 7636; MMC1 with the same two features (its own base
+// 6483, + 547 + 395 + 20 = 7445) reserves 20 over a real measured 7425.
+// checkCapacity no longer refuses sample-rpg with a Save command *and* a
+// Move command on MMC3: the per-mapper base recovered 8 of the 12 bytes that
+// combination used to be short by (MMC3's true base is 8 less than the
+// UNROM 512 figure it used to be charged), and a second, unrelated fix --
+// entity_contact (engine/combat.asm) no longer reads player_iframes before
+// starting an RPG's contact battle, which happens to remove 2 instructions
+// (5 bytes) from the RPG build on every board -- closed the remaining 4 and
+// then some. nesasm now assembles this exact combination into the kernel-lo
+// bank with 21 bytes to spare (8171 of 8192, lookup tables included), which
+// is a real fit, not a promise: kernelbytes.test.js builds it and asserts
+// that figure directly, because 21 bytes is not a margin to lean on, it is
+// what happened to be left once every currently-measured term was paid for,
+// and the next byte the kernel-lo bank grows anywhere on this board reopens
+// the gap. When a project genuinely does not fit, checkCapacity names the
+// specific feature (or combination of active features -- see
+// kernelShortfallAdvice's own comment) or board that would close the gap,
+// instead of only reporting the shortfall -- and a board is only ever
+// offered if it can actually hold everything the project already has
+// (tilesets, screens, mirroring), not merely a smaller kernel-byte
+// reservation, or the "fix" would have reconcileCartridge (shared/project.js)
+// silently truncate something the moment it was applied.
 //
 // These figures are quoted only to explain how kernelCodeBytes reached its
-// shape -- hand-copied snapshots, not the source of truth, and this
-// constant's own history (eight revisions before this one) is the reason not
-// to trust them blindly. test/unit/kernelbytes.test.js is the source of
-// truth: it re-measures every RPG-capable board, with and without a live
-// Save command, from a real build on every run, and fails the moment either
-// configuration exceeds what kernelCodeBytes reserves for it, or the margin
-// between reservation and reality erodes below KERNEL_SLACK. Trust its
-// output over this comment if the two ever disagree, and re-measure by
+// shape -- hand-copied snapshots, not the source of truth, and
+// SAVE_KERNEL_ALLOWANCE's own history (eight revisions before this one) is
+// the reason not to trust them blindly. test/unit/kernelbytes.test.js is the
+// source of truth: it re-measures every RPG-capable board, with and without
+// a live Save command, from a real build on every run, and fails the moment
+// any configuration exceeds what kernelCodeBytes reserves for it, or the
+// margin between reservation and reality erodes below KERNEL_SLACK. Trust
+// its output over this comment if the two ever disagree, and re-measure by
 // running it rather than hand-editing either.
-const BASE_KERNEL_CODE_BYTES = 6683;
-export const SAVE_KERNEL_ALLOWANCE = 552;
+export const BASE_KERNEL_CODE_BYTES_BY_MAPPER = { 30: 6678, 1: 6483, 4: 6670 };
+const FALLBACK_BASE_KERNEL_CODE_BYTES = Math.max(...Object.values(BASE_KERNEL_CODE_BYTES_BY_MAPPER));
+export function baseKernelCodeBytes(mapper) {
+  return BASE_KERNEL_CODE_BYTES_BY_MAPPER[mapper.id] ?? FALLBACK_BASE_KERNEL_CODE_BYTES;
+}
+
+export const SAVE_KERNEL_ALLOWANCE_BY_MAPPER = { 1: 547, 4: 552 };
 export const MOVE_KERNEL_ALLOWANCE = 395;
 export const SPLIT_LOCK_KERNEL_ALLOWANCE = 19;
 export const KERNEL_SLACK = 20;
@@ -303,12 +320,140 @@ export function kernelCodeBytes(project, mapper) {
   const usesMove = projectUsesMove(project);
   const usesSplitLock = fontBankSplit(project, mapper);
   return (
-    BASE_KERNEL_CODE_BYTES +
-    (usesSave ? SAVE_KERNEL_ALLOWANCE : 0) +
+    baseKernelCodeBytes(mapper) +
+    (usesSave ? SAVE_KERNEL_ALLOWANCE_BY_MAPPER[mapper.id] : 0) +
     (usesMove ? MOVE_KERNEL_ALLOWANCE : 0) +
     (usesSplitLock ? SPLIT_LOCK_KERNEL_ALLOWANCE : 0) +
     KERNEL_SLACK
   );
+}
+
+/**
+ * A deep clone of `project` with every live occurrence of the given command
+ * opcodes -- across every placed entity's event and every common event,
+ * including inside a branch's two sides and a question's options, the same
+ * reach `allCommands` (shared/eventrules.js) gives every other "does this
+ * project use X" question -- switched off. What actually removing every
+ * Move or Save command from the project would leave, for kernelCodeBytes to
+ * answer every question about, including ones this function does not itself
+ * know to ask: fontBankSplit (shared/font.js) reads projectUsesText, which a
+ * command's own page can be the project's only source of, so disabling it
+ * can turn the split-lock term off too. kernelShortfallAdvice asks
+ * kernelCodeBytes rather than re-deriving what it already knows, which is
+ * the whole point of calling this first. Never touches `project` itself.
+ */
+function projectWithoutCommands(project, ops) {
+  const clone = structuredClone(project);
+  for (const event of projectEvents(clone)) {
+    for (const page of event.pages ?? []) {
+      for (const command of allCommands(page.commands)) {
+        if (ops.includes(command.op)) command.off = true;
+      }
+    }
+  }
+  return clone;
+}
+
+/**
+ * When a project's lookup tables do not fit alongside kernelCodeBytes's own
+ * reservation, name what would actually close the gap instead of only
+ * reporting the shortfall: dropping one active optional feature (Move,
+ * Save), dropping the smallest combination of them that frees enough when no
+ * single one does, or targeting another mapper that reserves less kernel
+ * code for the same feature set *and* can still hold everything the project
+ * already has. Every byte figure here is kernelCodeBytes's own answer on a
+ * hypothetical project with that combination's commands turned off
+ * (projectWithoutCommands), not a sum of the allowance constants -- summing
+ * them would miss a dependent term a removal can also switch off (see
+ * projectWithoutCommands's own comment), so this asks kernelCodeBytes
+ * directly instead of re-deriving what it already knows. A suggestion is
+ * only made when the byte count or board it names is actually large enough
+ * / capable enough to cover `deficit` on its own, so this never recommends
+ * something that would leave the project still short -- or, for a mapper,
+ * something that would silently truncate a tileset, a screen or the
+ * mirroring choice the moment the author applied it. Reads the project only;
+ * never mutates it.
+ */
+function kernelShortfallAdvice(project, mapper, deficit) {
+  const usesSave = projectUsesSave(project) && batteryCapable(mapper);
+  const usesMove = projectUsesMove(project);
+  // "Every" rather than "the": a project can carry more than one live Move or
+  // Save command (several actors, several pages), and removing just one of
+  // several does not free anything at all -- kernelCodeBytes only drops the
+  // term once *no* live occurrence remains (projectUsesSave/projectUsesMove).
+  const active = [];
+  if (usesMove) active.push({ op: 'move', label: 'every Move command' });
+  if (usesSave) active.push({ op: 'save', label: 'every Save command' });
+
+  const budget = kernelCodeBytes(project, mapper);
+  const freedByDropping = (ops) => budget - kernelCodeBytes(projectWithoutCommands(project, ops), mapper);
+
+  // Any one active feature that alone frees enough bytes is offered as its
+  // own choice -- dropping one thing is simpler than dropping several, and
+  // when more than one alone would do it the author gets to pick which.
+  const solo = active
+    .map((feature) => ({ feature, freed: freedByDropping([feature.op]) }))
+    .filter((entry) => entry.freed >= deficit);
+  if (solo.length) {
+    return `Try removing ${solo.map((entry) => `${entry.feature.label} (frees ${entry.freed} bytes)`).join(' or ')}.`;
+  }
+
+  // No single active feature covers the gap alone -- a project short by more
+  // than either one frees individually can still be short by less than what
+  // dropping both frees together, so look for the smallest combination that
+  // does (smallest count first, so this never asks an author to drop more
+  // than it has to; every subset rather than just "all of them", because a
+  // future third optional feature could make a two-of-three combination the
+  // tightest fit without either a single feature or all three together
+  // being it). Each combination's freed count comes from one
+  // projectWithoutCommands call with every op in it turned off together, not
+  // from adding up separately-measured single drops, so a dependent term two
+  // features would each have to give up on their own is not double-counted
+  // or missed.
+  let combo = null;
+  for (let mask = 1; mask < 1 << active.length; mask++) {
+    const chosen = active.filter((_, index) => mask & (1 << index));
+    if (chosen.length < 2) continue; // already covered by the solo case above
+    const freed = freedByDropping(chosen.map((feature) => feature.op));
+    if (freed < deficit) continue;
+    if (!combo || chosen.length < combo.chosen.length) combo = { chosen, freed };
+  }
+  if (combo) {
+    return `Try removing ${combo.chosen.map((feature) => feature.label).join(' and ')} together (frees ${combo.freed} bytes).`;
+  }
+
+  // No combination of active features closes the gap either -- see whether a
+  // mapper this project could still target, with everything it currently has
+  // intact, reserves enough less kernel code to fit. "Still target" means
+  // more than the RPG/battery gates kernelCodeBytes itself reads: a board
+  // that cannot hold every tileset, every screen (packed the same way the
+  // generator packs them) or the project's current mirroring choice would
+  // have reconcileCartridge silently truncate one of them the moment the
+  // author actually switched, which is not a fix, it is quiet data loss.
+  const isRpg = project.project?.gameType === 'rpg';
+  const wantsSave = projectUsesSave(project);
+  const { flat } = flattenScreens(project);
+  const bankedCode = codeRegionCount(project);
+  const actorCount = project.sprites.actors.length;
+  const alternative = SUPPORTED_MAPPERS.filter((candidate) => candidate.id !== mapper.id)
+    .filter((candidate) => !isRpg || rpgCapable(candidate))
+    .filter((candidate) => !wantsSave || batteryCapable(candidate))
+    .filter(
+      (candidate) =>
+        tilesetLimit(candidate, project.cartridge, fontChrPages(project, candidate)) >= project.tilesets.length
+    )
+    .filter((candidate) => mirroringOptions(candidate).some((entry) => entry.id === project.cartridge.mirroring))
+    .filter(
+      (candidate) => screenCapacityFor(candidate, project.tilesets.length, bankedCode, flat, actorCount) >= flat.length
+    )
+    .filter((candidate) => kernelCodeBytes(project, mapper) - kernelCodeBytes(project, candidate) >= deficit)
+    .sort((a, b) => kernelCodeBytes(project, a) - kernelCodeBytes(project, b))[0];
+  if (alternative) {
+    const saved = kernelCodeBytes(project, mapper) - kernelCodeBytes(project, alternative);
+    return `Try ${alternative.name} in the Build panel — it reserves ${saved} fewer bytes for the same features.`;
+  }
+
+  return 'Reduce the number of screens, actors or metasprites.';
 }
 const PLAYER_FRAMES = 8; // 4 directions x 2 walk frames
 const PLAYER_TILES = PLAYER_FRAMES * 4;
@@ -522,6 +667,35 @@ function checkCode(project) {
   return problems;
 }
 
+/**
+ * How many screens `mapper` can hold for this project's tileset count and
+ * banked-code claim, packed the same way the generator actually packs them
+ * -- the single writer both checkCapacity's own screen-count error and
+ * kernelShortfallAdvice's mapper-swap check call, so a board offered as
+ * roomier there cannot secretly be one that would truncate a screen here.
+ * Packs the real screens exactly as the generator will, then counts how many
+ * more entity-free screens would still fit in what is left of each region.
+ * Counting per region rather than on a total keeps boundary fragmentation in
+ * the number, so the figure quoted to the user is one the assembler will
+ * honour.
+ */
+function screenCapacityFor(mapper, tilesetCount, bankedCode, flat, actorCount) {
+  const spare = [];
+  let packed = 0;
+  for (const _region of screenRegions(mapper, tilesetCount, bankedCode)) {
+    let used = 0;
+    while (packed < flat.length) {
+      const size = screenRecordBytes(flat[packed], actorCount);
+      if (used + size > SCREEN_REGION_BYTES) break;
+      used += size;
+      packed++;
+    }
+    spare.push(SCREEN_REGION_BYTES - used);
+  }
+  const emptyScreen = SCREEN_BYTES + 1;
+  return packed + spare.reduce((total, free) => total + Math.floor(free / emptyScreen), 0);
+}
+
 /** Capacity checks that must pass before the assembler is worth running. */
 export function checkCapacity(project) {
   const text = compileText(project);
@@ -587,25 +761,8 @@ export function checkCapacity(project) {
   // Screens are packed into 8 KB regions of the switchable window, two per 16 KB
   // bank. Capacity is computed by the same packing the generator performs, so the
   // number quoted here is the number that will actually fit.
-  // Pack the real screens exactly as the generator will, then count how many more
-  // entity-free screens would still fit in what is left of each region. Counting
-  // per region rather than on a total keeps boundary fragmentation in the number,
-  // so the figure quoted to the user is one the assembler will honour.
   const actorCount = project.sprites.actors.length;
-  const spare = [];
-  let packed = 0;
-  for (const _region of screenRegions(mapper, project.tilesets.length, bankedCode)) {
-    let used = 0;
-    while (packed < flat.length) {
-      const size = screenRecordBytes(flat[packed], actorCount);
-      if (used + size > SCREEN_REGION_BYTES) break;
-      used += size;
-      packed++;
-    }
-    spare.push(SCREEN_REGION_BYTES - used);
-  }
-  const emptyScreen = SCREEN_BYTES + 1;
-  const capacity = packed + spare.reduce((total, free) => total + Math.floor(free / emptyScreen), 0);
+  const capacity = screenCapacityFor(mapper, project.tilesets.length, bankedCode, flat, actorCount);
 
   const musicBytes = musicSize(project.songs);
 
@@ -626,7 +783,7 @@ export function checkCapacity(project) {
       where: 'Map Forge',
       message:
         `The lookup tables need ${tableBytes} bytes but only ${BANK_SIZE - kernelBudget - fixedBytes} are ` +
-        'free alongside the engine code. Reduce the number of screens, actors or metasprites.'
+        `free alongside the engine code. ${kernelShortfallAdvice(project, mapper, -kernelFree)}`
     });
   }
   problems.push(...checkCode(project));

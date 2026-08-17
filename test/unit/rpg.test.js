@@ -591,6 +591,47 @@ test('a lethal Damage metatile hit does not lose the race to a wandering encount
   assert.notEqual(nes.cpu.mem[GAME_STATE], ST_BATTLE, 'an encounter due the same step must not overwrite game over');
 });
 
+// player_iframes (engine/combat.asm) is the action side's own invincible
+// window, and player_hazard reuses it purely as the RPG's floor-damage
+// cooldown -- see this file's own header comment. entity_contact used to
+// read that same byte before deciding whether to start a contact battle,
+// which meant a Damage metatile silently suppressed every monster encounter
+// for the ~60 frames after it hit: a player who stepped on a hazard could
+// then walk straight through a monster with no fight at all.
+test('touching a damaging actor still starts a fight inside a Damage metatile\'s cooldown', {
+  skip: needsSample
+}, async (t) => {
+  const rom = await buildVariant(t, 'hazard-then-touch', (project) => {
+    project.maps[0].encounters = { rate: 0, actorIds: [] }; // isolate from a wandering fight
+    const damageId = 1;
+    project.metatiles[damageId].collision = 'damage';
+    project.maps[0].screens[0].metatiles = project.maps[0].screens[0].metatiles.map(() => damageId);
+    // The slime (actorId 0, damage 1) one metatile right of the start
+    // position -- close enough to touch a handful of frames after boot,
+    // well inside IFRAME_TIME's 60-frame cooldown the floor hit standing at
+    // start already armed.
+    const slime = project.maps[0].screens[0].entities.find((e) => e.actorId === 0);
+    slime.x = project.project.startX + 16;
+    slime.y = project.project.startY;
+  });
+  const nes = boot(rom);
+  // boot()'s own 40 frames already took the floor hit standing at start (see
+  // the cooldown test above), so player_iframes is still well inside
+  // IFRAME_TIME here -- exactly the window entity_contact's bug left a
+  // contact battle unable to start in.
+  assert.ok(nes.cpu.mem[PC_HP] < nes.cpu.mem[PC_HP_MAX], 'the floor hit before this test began should have landed');
+
+  nes.buttonDown(1, RIGHT);
+  for (let i = 0; i < 20 && nes.cpu.mem[GAME_STATE] !== ST_BATTLE; i++) nes.frame();
+  nes.buttonUp(1, RIGHT);
+
+  assert.equal(
+    nes.cpu.mem[GAME_STATE],
+    ST_BATTLE,
+    "touching the slime inside the floor hazard's cooldown should still have started a fight"
+  );
+});
+
 test('enough experience raises a level, and a level restores you', {
   skip: needsSample
 }, async (t) => {
@@ -665,6 +706,15 @@ test('walking into a placed monster is a fight, and beating it removes it', {
       assert.fail('the beaten monster is back on the field');
     }
   }
+
+  // touch_encounter records the slot that started the fight in bt_from_ent
+  // (engine/rpg.asm), and battle_end deactivates exactly that entity after
+  // the redraw, so the next update_entities pass skips it -- the same slot
+  // cannot re-engage the instant control returns to the field. Another
+  // gameplay frame, standing right where the fight happened, is the direct
+  // check for that rather than an inference from the entity being gone.
+  nes.frame();
+  assert.equal(nes.cpu.mem[GAME_STATE], ST_GAMEPLAY, 'the field re-engaged the same slot on the very next frame');
 });
 
 test('coming back from a battle is not entering the screen again', {

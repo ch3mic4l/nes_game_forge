@@ -307,17 +307,21 @@ test('a switched-off Move costs a project nothing — not one byte of ROM', {
 test('MOVE_KERNEL_ALLOWANCE still covers what Move actually costs', {
   skip: !hasRom && 'run `npm run sample` first'
 }, async (t) => {
-  // The same rule kernelbytes.test.js enforces for SAVE_KERNEL_ALLOWANCE, and
-  // here for a sharper reason: this allowance is exactly its measured delta,
+  // The same rule kernelbytes.test.js enforces for SAVE_KERNEL_ALLOWANCE_BY_MAPPER,
+  // and here for a sharper reason: this allowance is exactly its measured delta,
   // 395, with no margin of its own -- KERNEL_SLACK is the only deliberate
   // headroom kernelCodeBytes carries (see its own comment) -- so drift in it
   // is not a tightened capacity check, it is an assembler failure for real
-  // projects. Even so, Save and Move together on MMC3 with text are 12 bytes
+  // projects. Save and Move together on MMC3 with text used to be a few bytes
   // short of the kernel-lo bank on the worst-fitting real project measured
-  // (sample-rpg): a kernel diet (engine/combat.asm, gated `.if !BATTLE_ENABLED`)
-  // closed most of that gap but not all of it, and the rest needs per-mapper
-  // budgeting this repository has not done yet -- see kernelCodeBytes's own
-  // comment for the numbers.
+  // (sample-rpg): a kernel diet (engine/combat.asm, gated `.if !BATTLE_ENABLED`),
+  // per-mapper budgeting (BASE_KERNEL_CODE_BYTES_BY_MAPPER) and a second,
+  // unrelated fix to entity_contact's own player_iframes check together closed
+  // it -- it now assembles with 21 bytes to spare, which kernelbytes.test.js
+  // asserts directly, not a margin to lean on. checkCapacity still names the
+  // feature or board that would close a gap like it whenever one remains,
+  // rather than only reporting the shortfall (kernelShortfallAdvice) -- see
+  // kernelCodeBytes's own comment for the numbers.
   const dir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'forge-move-cost-'));
   t.after(() => fs.promises.rm(dir, { recursive: true, force: true }));
 

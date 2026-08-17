@@ -423,6 +423,14 @@ painted tile does instead of what an event says. Getting there took three traps,
   below and `script_op_call`'s `NO_COMMON_EVENT_SLOT` stop needed too — a callee that jumped there on
   a caller's behalf would leave that caller's own return address sitting unpopped on the stack for
   some unrelated `rts` to mis-pop later.
+- **`player_iframes` is the floor hazard's cooldown, not a general "the player was just hurt" flag,
+  and only `player_hazard` may gate on it.** `entity_contact` (below) shared the same read at first —
+  a Damage metatile setting `player_iframes` then silently suppressed every contact battle for the
+  rest of `IFRAME_TIME`, since `entity_contact`'s check ran before the branch that tells
+  `touch_encounter` and `hurt_player` apart, so an RPG's monsters became briefly walk-through. Fixed
+  by moving the read inside `entity_contact`'s own `.if !BATTLE_ENABLED` block, where it belongs: an
+  RPG encounter has no invincible window to respect, only the action side's knockback does. See
+  `rpg.test.js`.
 
 The scripted `Damage` command follows the same `jmp player_died` rule for its own killing hit, and
 deliberately does not route through `hurt_player` either: a trap has no attacker for the knockback
@@ -560,31 +568,109 @@ this reason: an RPG whose monsters carry contact damage still needs `COMBAT_ENAB
 still drives it), but never draws the hearts or reserves their two sprite tiles, so stamping and
 validating that reservation now asks the narrower question instead — a project could paint real
 party art over `$FE/$FF` in an RPG tileset that `projectUsesCombat` alone would still have refused.
-`kernelCodeBytes`'s own `BASE_KERNEL_CODE_BYTES` dropped by exactly those 269 bytes, on every
-RPG-capable board alike, which is what made room for Move at all: a project with Save *and* Move on
-MMC3 with text also carries `SPLIT_LOCK_KERNEL_ALLOWANCE` (19 bytes, `switch_prg_bank`'s own
-interrupt-race fix — conditional the same way, since it costs nothing on a board or a project that
-never shows text on MMC3) and reserves 7669 of the 8192 byte bank against a real measured 7641 — a
-28-byte margin, 8 of which is not slack at all but `BASE_KERNEL_CODE_BYTES`'s own cross-board
-conservatism (MMC3's own true base, with none of these terms, measures 6675 — eight less than the
-UNROM 512 figure this function charges every board). Getting this far needed a second fix alongside
-the diet: `checkCapacity`'s own `tableBytes` had been double-charging kernel-lo for every placed
-entity's *record*, which actually lives in the switchable window's own screen data (`emitScreens`)
-and was already correctly charged against screen capacity there — harmless while kernel-lo had room
-to spare, but exactly the kind of stale slop this codebase's own six-plus-revision history under
-`SAVE_KERNEL_ALLOWANCE` already warns about, caught the same way: by diffing the formula's claim
-against nesasm's real kernel-lo usage rather than trusting either number alone. Between the diet and
-that fix, the same combination went from **332 bytes** short of the kernel-lo bank to **12** — real
-progress, and not the pass/fail case closed: `checkCapacity` still refuses `sample-rpg` with a `Save`
-command *and* a `Move` command on MMC3, correctly, because the reservation genuinely does not fit
-without either giving MMC3 its own base (the per-mapper budgeting mentioned above, not done yet) or
-loosening the 20-byte `KERNEL_SLACK` floor `kernelbytes.test.js` enforces globally — and this is not
-the change to do either of those in. The rest of the roadmap's cutscene verbs (fade, shake, sound
-effects, movement routes) are all kernel code with nowhere left to go until one of those two happens;
-a second kernel diet (the already-conditional blocks in `engine/title.asm` are worth measuring, though
-they cost `sample-rpg` nothing today — it has no title screen) or a second banked region the way the
-battle system got one are the other options, and conditional assembly does not compose indefinitely
-regardless, because a project that wants three of these is back where it started.
+`kernelCodeBytes`'s own base dropped by exactly those 269 bytes, on every RPG-capable board alike,
+which is what made room for Move at all: a project with Save *and* Move on MMC3 with text also
+carries `SPLIT_LOCK_KERNEL_ALLOWANCE` (19 bytes, `switch_prg_bank`'s own interrupt-race fix —
+conditional the same way, since it costs nothing on a board or a project that never shows text on
+MMC3) and, at this point in the history, reserved 7669 of the 8192 byte bank against a real measured
+7641 — a 28-byte margin, 8 of which was not slack at all but the base's own cross-board
+conservatism: it was one flat number (`BASE_KERNEL_CODE_BYTES`, measured on UNROM 512, the worst of
+the three RPG-capable boards because `banks.asm` emits the most code for its combined PRG/CHR
+register) charged to every board alike, and MMC3's own true base, with none of the conditional terms,
+measures 6675 — eight less than the UNROM 512 figure it was being charged. Getting this far needed a
+second fix alongside the diet: `checkCapacity`'s own `tableBytes` had been double-charging kernel-lo
+for every placed entity's *record*, which actually lives in the switchable window's own screen data
+(`emitScreens`) and was already correctly charged against screen capacity there — harmless while
+kernel-lo had room to spare, but exactly the kind of stale slop this codebase's own six-plus-revision
+history under `SAVE_KERNEL_ALLOWANCE` already warns about, caught the same way: by diffing the
+formula's claim against nesasm's real kernel-lo usage rather than trusting either number alone.
+Between the diet and that fix, the same combination went from **332 bytes** short of the kernel-lo
+bank to **12**.
+
+**Per-mapper budgeting (the "not done yet" above) closed 8 of those 12 bytes.** `BASE_KERNEL_CODE_BYTES`
+is now `BASE_KERNEL_CODE_BYTES_BY_MAPPER` in `main/build/generate.js`, one measured figure per
+RPG-capable board (UNROM 512, MMC1, MMC3 — the same three boards the paragraph above already names,
+now each charged only to its own board) rather than UNROM 512's worst-case number charged to all
+three; a mapper this table has no entry for — every non-RPG-capable board, which `sample-rpg` cannot
+even target, since it needs a mapper that switches both PRG and CHR — falls back to the largest of the
+three, so a project on one of those boards reserves exactly what it always did. That fallback is safe
+by construction (it is the largest of three real measurements), but was never itself checked against a
+real build on any of the five boards it stands in for until `kernelbytes.test.js` gained a test that
+does: `sample` (the action-adventure fixture, exercising combat and text, with a live Move command
+added) on NROM, CNROM, GxROM, Color Dreams and UxROM measures 493 to 532 bytes of margin under the
+fallback — comfortably safe, never under, and now a real assertion rather than an assumption.
+`SAVE_KERNEL_ALLOWANCE`
+became `SAVE_KERNEL_ALLOWANCE_BY_MAPPER` the same way, each battery-capable board's own measured delta
+(MMC1 547, MMC3 552) rather than the larger of the two charged to both — and, because a per-mapper term
+only stops a *stale* figure from hiding once it is checked for equality rather than merely "covers
+enough", `test/unit/kernelbytes.test.js` asserts each board's delta against its own allowance exactly,
+not with `<=`: a margin-only check left room for MMC1 to sit at the old shared 552 instead of its own
+547 and still pass, 5 bytes of silent slack that would have compounded with everything below.
+`MOVE_KERNEL_ALLOWANCE` and `SPLIT_LOCK_KERNEL_ALLOWANCE` stay single flat numbers — Move measures the
+same 395 bytes on every board alike, and the split-lock fix is already conditional on the one board
+that needs it, so neither has a per-board difference to capture, and folding either into a base would
+overcharge every project that never turns the feature on.
+
+**A second, unrelated fix freed another 5 bytes on every RPG-capable board, and it was enough to close
+what per-mapper budgeting alone did not.** `entity_contact` (`engine/combat.asm`) used to read
+`player_iframes` — the action side's own invincible window, reused by `player_hazard` purely as the
+RPG's floor-damage cooldown, see the trap list a few paragraphs up — before deciding whether a touched
+monster starts a fight at all, so a Damage metatile silently suppressed every contact battle for the
+rest of `IFRAME_TIME`: an RPG's monsters became briefly walk-through after any floor hit. Scoping that
+check to the action-only branch it actually belongs to (RPG encounters have no invincible window to
+respect) happens to remove those two instructions from the RPG build entirely, which is a real 5-byte
+saving nesasm confirms on every RPG-capable board — not a coincidence of one build, a property of the
+fix. With both changes, `sample-rpg` with Save and Move on MMC3 now reserves 6670 (base) + 19 (split
+lock) + 552 (save) + 395 (move) + 20 (`KERNEL_SLACK`) = 7656 against a real measured 7636 — a 20-byte
+margin, exactly `KERNEL_SLACK` and nothing more, which is true of every configuration this file
+measures now (see `test/unit/kernelbytes.test.js`), not a coincidence but the point of measuring per
+board instead of charging every board the same worst case. **`checkCapacity` no longer refuses
+`sample-rpg` with a `Save` command *and* a `Move` command on MMC3** — nesasm assembles it into the
+kernel-lo bank with room to spare, which is a real fix, not a loosened check: the recovered margin is
+exactly what per-mapper budgeting (8 bytes) and the `entity_contact` fix (5 bytes, times the two other
+terms this combination already carries no further multiplier of) account for against the old 12-byte
+shortfall, still measured rather than forced. It is also fragile — the next byte the kernel-lo bank
+grows anywhere, on this board, in this configuration, reopens it — so `kernelbytes.test.js` builds this
+exact combination and asserts the semantic invariant (it assembles, with at least `KERNEL_SLACK` bytes
+free) rather than the literal byte count on the day this was written: pinning the exact figure would
+fail on any harmless change elsewhere in the bank and invite loosening the assertion instead of
+investigating, so the test prints the real figure on failure and leaves the bound at what actually has
+to hold.
+
+Because the margin can still run out — on MMC3 in a bigger project, or the next feature this bank has
+no room for — `checkCapacity` names what would close a gap like this one instead of only reporting the
+shortfall: `kernelShortfallAdvice` (`main/build/generate.js`, beside `kernelCodeBytes`) offers dropping
+whichever active optional feature (Move, Save) alone would cover the deficit — "every" occurrence, not
+"the", since a project can carry more than one live Move or Save command and removing just one of
+several frees nothing at all — or, when no single feature does but dropping some of them together
+would, the smallest combination that does. Every byte figure this considers is `kernelCodeBytes`'s own
+answer on a hypothetical project with that combination's commands switched off
+(`projectWithoutCommands`, reaching inside a branch's two sides and a question's options the same way
+`allCommands` does for every other "does this project use X" question), not a sum of the allowance
+constants: summing missed a dependent term a removal can also turn off. `fontBankSplit`
+(`shared/font.js`) reads `projectUsesText`, and `projectUsesText` counts *any* event that survives to
+the ROM — a live Move-only one included, not just a `Say` — so on MMC3 an action project whose sole
+event is a Move command has that Move as its only reason `SPLIT_LOCK_KERNEL_ALLOWANCE` is paid at all;
+removing it frees 395 (Move) *and* 19 (split lock) together, 414 bytes, not 395. A deficit between the
+two — reproduced at exactly 397 — used to fall through past a fix that actually covered it, straight to
+a mapper suggestion or the generic message, because the old advice only ever summed the flat constants
+and had no way to know one of them implied the other. Asking `kernelCodeBytes` directly is what the
+single-writer rule this codebase holds everywhere else means here: this function has no business
+re-deriving a dependency `kernelCodeBytes` already encodes. Only once no combination of active features
+closes the gap does `kernelShortfallAdvice` look for a different mapper, and a candidate has to survive
+more than a smaller kernel-byte reservation to be offered: it must still hold every tileset, every
+screen (packed the same way the generator packs them) and the project's current mirroring choice, or
+`reconcileCartridge` (`shared/project.js`) would silently truncate one of them the moment the author
+actually switched — recommending MMC1 to a 17-tileset MMC3 project because it reserves 206 fewer kernel
+bytes, when MMC1 holds only 16 tilesets, is not a fix, it is quiet data loss dressed as advice. None of
+these checks mutate the project — `projectWithoutCommands` works on its own deep clone — they only read
+it, the same way `checkCapacity` itself does. The rest of the
+roadmap's cutscene verbs (fade, shake, sound effects, movement routes) are all kernel code with nowhere
+left to go until either MMC3 gets more margin from a second kernel diet (the already-conditional blocks
+in `engine/title.asm` are worth measuring, though they cost `sample-rpg` nothing today — it has no
+title screen) or a second banked region the way the battle system got one, and conditional assembly
+does not compose indefinitely regardless, because a project that wants three of these is back where it
+started.
 
 **A command that holds commands is not a special case to be named, it is a `nests: true` entry.**
 Two of them exist (`branch`, `choice`) and the third will be along. Anything asking a question of a

@@ -289,8 +289,15 @@ player_hazard_done:
 entity_contact:
   lda #COMBAT_ENABLED
   beq entity_contact_done
+  ; player_iframes is the action side's own invincible window -- it means
+  ; nothing to an RPG's encounter, which has no knockback or hit-cooldown
+  ; concept, so gating touch_encounter on it left a Damage metatile's
+  ; IFRAME_TIME (player_hazard, above) silently suppressing every contact
+  ; battle for the next ~60 frames, RPG monsters included. See combat.test.js.
+  .if !BATTLE_ENABLED
   lda player_iframes
   bne entity_contact_done
+  .endif
   ldy ent_actor,x
   lda actor_damage,y
   beq entity_contact_done
