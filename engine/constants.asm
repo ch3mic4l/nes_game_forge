@@ -299,6 +299,16 @@ mv_left        = mv_dir+1
 mv_step        = mv_left+1
 mv_tmp         = mv_step+1
 
+; Set by switch_prg_bank (engine/banks.asm, MMC3 builds only) for the handful
+; of instructions between selecting a mapper register and writing its value --
+; the window a stray interrupt in that gap would corrupt (see the Register
+; discipline comment at the top of split.asm). sei/php around that window
+; keep the scanline IRQ out, but NMI cannot be masked that way, so this flag
+; is how split_arm (called from NMI) knows to skip its own R1 write for the
+; frame rather than land inside the pair: at most one frame of the wrong CHR
+; bank on the split, never a half-selected PRG or CHR register.
+split_lock     = mv_tmp+1
+
 ; Which split program this frame runs. OFF disarms the counter entirely.
 SPL_OFF     = 0
 SPL_BOX     = 1             ; the message box: font in from tile row 24

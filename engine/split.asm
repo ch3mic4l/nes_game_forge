@@ -23,10 +23,14 @@
 ;   - The interrupts only ever select MMC3 register 1. If NMI lands between an
 ;     IRQ's $8000/$8001 pair (or vice versa), the re-selected register is the
 ;     one the interrupted write wanted anyway.
-;   - The mainline writes $8000/$8001 pairs too (switch_chr_bank, and
-;     switch_prg_bank on this board) but only ever with rendering off and the
-;     counter disabled -- redraw_screen and draw_battle_screen write $E000 the
-;     moment they force blank, which both disables and acknowledges it.
+;   - switch_chr_bank's $8000/$8001 pairs are only ever run with rendering off
+;     and the counter disabled -- redraw_screen and draw_battle_screen clear
+;     $2000 (NMI off, not merely masked) and write $E000 the moment they force
+;     blank, so neither interrupt source can fire during its loop at all.
+;     switch_prg_bank does NOT get that for free: call_battle (engine/banks.asm)
+;     calls it with rendering on and the picture live, every tick of a battle,
+;     so it carries its own protection -- php/sei against the IRQ, split_lock
+;     (checked at the top of split_arm, below) against NMI.
 ;   - The main thread owns split_mode and nothing else; a single store, so a
 ;     frame never sees half a decision.
 
@@ -95,7 +99,21 @@ split_select_store:
 ; tileset's art back for the top of the frame, then arm this frame's first
 ; entry. The counter only starts clocking when rendering does, so nothing can
 ; fire before the arm is complete.
+;
+; split_lock is the one thing that can pre-empt this: switch_prg_bank
+; (engine/banks.asm, on call_battle's path) owns MMC3's $8000 register
+; select for a handful of instructions, and NMI cannot be masked out of that
+; the way the scanline IRQ is. Landing here mid-pair would send the mainline's
+; pending value to R1 instead of the register it meant. So when the lock is
+; up, skip this frame's split entirely -- R1 stays wherever the last frame's
+; program left it (always "disabled", never mid-write; see irq: below), which
+; costs at most one frame of the wrong CHR bank on the split and never a
+; corrupted PRG or CHR register.
 split_arm:
+  lda split_lock
+  beq split_arm_unlocked
+  rts
+split_arm_unlocked:
   lda #1                      ; select R1, the $0800-$0FFF background slot
   sta $8000
   lda chr_r1

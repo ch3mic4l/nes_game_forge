@@ -27,7 +27,12 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { loadProject, saveProject } from '../../main/project-io.js';
 import { buildProject } from '../../main/build/pipeline.js';
-import { kernelCodeBytes, KERNEL_SLACK, SAVE_KERNEL_ALLOWANCE } from '../../main/build/generate.js';
+import {
+  kernelCodeBytes,
+  KERNEL_SLACK,
+  SAVE_KERNEL_ALLOWANCE,
+  SPLIT_LOCK_KERNEL_ALLOWANCE
+} from '../../main/build/generate.js';
 import { SUPPORTED_MAPPERS, rpgCapable, batteryCapable, prgLayout } from '../../shared/cartridge.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
@@ -278,14 +283,28 @@ test(
     assertAllowanceMatchesMeasuredDeltas(noSave, withSave);
 
     // The whole point of splitting the reservation: a project with no Save
-    // command gets the same budget on every board, battery-capable or not —
-    // it must never pay anything toward the save allowance just for
-    // targeting a board that could carry one.
-    const noSaveBudgets = new Set(noSave.map((entry) => kernelCodeBytes(entry.project, entry.mapper)));
-    assert.equal(
-      noSaveBudgets.size,
-      1,
-      `a project with no Save command should get the same budget on every board, got ${[...noSaveBudgets]}`
+    // command must never pay anything toward the save allowance just for
+    // targeting a board that could carry one. SPLIT_LOCK_KERNEL_ALLOWANCE is
+    // the same rule applied to a fix rather than a feature — every
+    // measurement here always shows text (dialogue is one of the blocks
+    // measureCodeBytes covers unconditionally), so MMC3, and only MMC3, pays
+    // it regardless of Save; every other board's no-save budget must still
+    // be identical to every other's, and MMC3's must differ from them by
+    // exactly that one term, not a stray byte either way.
+    const noSaveBudgets = [...new Set(noSave.map((entry) => kernelCodeBytes(entry.project, entry.mapper)))].sort(
+      (a, b) => a - b
     );
+    assert.ok(
+      noSaveBudgets.length <= 2,
+      'a project with no Save command should differ across boards by at most one term ' +
+        `(SPLIT_LOCK_KERNEL_ALLOWANCE, MMC3 only) — got budgets ${noSaveBudgets}`
+    );
+    if (noSaveBudgets.length === 2) {
+      assert.equal(
+        noSaveBudgets[1] - noSaveBudgets[0],
+        SPLIT_LOCK_KERNEL_ALLOWANCE,
+        'the only board-to-board gap a Save-free project should see is SPLIT_LOCK_KERNEL_ALLOWANCE, on MMC3'
+      );
+    }
   }
 );

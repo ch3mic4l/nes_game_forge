@@ -189,9 +189,30 @@ mmc1_prg_loop:
 ; The engine template needs $C000-$FFFF fixed, which is MMC3's PRG mode 0 -- the
 ; power-on default, set explicitly in mmc3_init so a soft reset cannot leave the
 ; other mode selected.
+;
+; Unlike switch_chr_bank, this is not only ever called under forced blank with
+; the counter disabled: call_battle (below) calls it with rendering on and the
+; picture live, every tick of a battle. An interrupt landing between one of
+; the select/value pairs below would send the value to whatever register that
+; interrupt's own $8000 write last selected instead -- split_arm and the
+; scanline IRQ (engine/split.asm) both only ever select R1, so the PRG bank
+; would silently stay wherever it was and call_battle would jsr into whatever
+; the switchable window actually holds. php/sei mask the scanline IRQ for the
+; pairs below and restore the caller's interrupt state exactly rather than
+; assuming it was on (this runs during boot too, before boot's own cli). NMI
+; cannot be masked that way, so split_lock is a flag NMI's split_arm checks
+; instead, skipping its own R1 write for a frame it would otherwise land
+; inside this pair -- costing at most one missed frame of the font split
+; rather than a corrupted register.
 switch_prg_bank:
   asl a                     ; 16 KB bank -> the first of its two 8 KB banks
   sta mmc_tmp               ; shared scratch; only one mapper family is ever built
+  .if SPLIT_ENABLED
+  php
+  sei
+  lda #1
+  sta split_lock
+  .endif
   lda #6
   sta $8000
   lda mmc_tmp
@@ -202,6 +223,11 @@ switch_prg_bank:
   clc
   adc #1
   sta $8001
+  .if SPLIT_ENABLED
+  lda #0
+  sta split_lock
+  plp
+  .endif
   rts
 
 ; Called from boot: PRG mode 0 (fixed $C000), and the CHR/IRQ state left alone.

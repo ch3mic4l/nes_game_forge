@@ -246,9 +246,16 @@ it, so on MMC3 the `$A0-$FF` reservation simply disappears (and the font page co
   the `chr_r1` shadow `switch_chr_bank` keeps) and arms the frame's split program; each IRQ applies
   one entry and arms the next. Because both interrupts only touch R1, one landing inside the
   other's `$8000/$8001` pair re-selects the register the interrupted write wanted anyway.
-- **The mainline touches mapper registers only under forced blank with the counter disabled** —
-  `redraw_screen` and `draw_battle_screen` write `$E000` the moment they blank, or an IRQ could
-  land inside `switch_chr_bank`'s register pairs.
+- **`switch_chr_bank`'s mapper-register pairs run only under forced blank with the counter
+  disabled** — `redraw_screen` and `draw_battle_screen` clear `$2000` (NMI off, not merely masked)
+  and write `$E000` the moment they blank, so neither interrupt source can land inside its register
+  pairs at all. `switch_prg_bank` does not get that guarantee for free: `call_battle`
+  (`engine/banks.asm`) calls it with rendering on and the picture live, every tick of a battle, so
+  it carries its own critical section — `php`/`sei` mask the scanline IRQ (restoring the caller's
+  interrupt state exactly, since this also runs during boot, before boot's own `cli`), and
+  `split_lock`, a flag `split_arm` checks before touching R1, stands in for masking NMI, which
+  `sei` cannot do. A stray NMI there costs at most one frame of the wrong CHR bank on the split,
+  never a half-selected PRG or CHR register.
 - **The split follows state, not events**: `split_select` recomputes `split_mode` from
   `game_state`/`box_state` every frame in one store, so no transition can leave a stale program
   armed. The split programs live in ROM, built from the same row constants that draw the windows.
@@ -507,7 +514,8 @@ flag to keep in step with the counter. Three rules hold it together:
 
 The conditional part is the interesting one. Move is ~395 bytes and **the kernel bank has no room to
 carry it unconditionally**: measured on a clean tree, `sample-rpg` with one `Save` command leaves
-**161 free bytes** in the kernel-lo bank on MMC3 and 353 on MMC1. Assembling Move into every ROM did
+**142 free bytes** in the kernel-lo bank on MMC3 (161 before `switch_prg_bank`'s own interrupt-race
+fix, above, cost every MMC3 build with `SPLIT_ENABLED` 19 bytes) and 353 on MMC1. Assembling Move into every ROM did
 not tighten the capacity check, it overflowed the bank and failed nesasm outright, for projects that
 never move anything. So `projectUsesMove` (`shared/project.js`) drives a generated `MOVE_ENABLED` the
 way `projectUsesSave` drives `SAVE_ENABLED`, and `kernelCodeBytes` gained a third term,
@@ -516,8 +524,11 @@ since the predicate reads `liveCommands` — assembles byte-for-byte as it did b
 existed, which `move.test.js` asserts by comparing two whole ROMs.
 
 **That makes the kernel bank's remaining headroom the constraint on item 1 and item 6 both.** The
-sum is what to watch now, not either term: a project with Save *and* Move reserves 7924 of the 8192
-byte bank, and the rest of the roadmap's cutscene verbs (fade, shake, sound effects, movement
+sum is what to watch now, not either term: a project with Save *and* Move on MMC3 with text also
+carries `SPLIT_LOCK_KERNEL_ALLOWANCE` (19 bytes, `switch_prg_bank`'s own interrupt-race fix, above —
+conditional the same way, since it costs nothing on a board or a project that never shows text on
+MMC3) and reserves 7943 of the 8192 byte bank, and the rest of the roadmap's cutscene verbs (fade,
+shake, sound effects, movement
 routes) are all kernel code with nowhere left to go. The next one of them needs a kernel diet, a
 second banked region the way the battle system got one, or the same conditional treatment — and
 conditional assembly does not compose indefinitely, because a project that wants three of them is

@@ -198,6 +198,19 @@ const TITLE_PROMPT_ROW = 19;
 // below. Caught only by re-running the real measurement by hand and diffing
 // it against this comment's claim, not by the test going green.)
 //
+// SPLIT_LOCK_KERNEL_ALLOWANCE is a fourth term, MMC3-only and conditional the
+// same way: switch_prg_bank's critical section against the call_battle
+// interrupt race (engine/banks.asm, engine/split.asm — split_lock in
+// engine/constants.asm) is wrapped `.if SPLIT_ENABLED`, so only a project that
+// shows text on MMC3 (fontBankSplit) pays it, measured at 19 bytes (MMC3
+// SAVE_ENABLED-off goes from 6944 to 6963). Folding it into
+// BASE_KERNEL_CODE_BYTES instead would charge every board on every mapper —
+// UxROM included, which never assembles a byte of it — for a fix that is a
+// no-op everywhere but MMC3-with-text; a UxROM project that fit 54 screens
+// before would refuse to build for a reason its own ROM cannot contain. This
+// is the same reasoning SAVE_KERNEL_ALLOWANCE and MOVE_KERNEL_ALLOWANCE
+// below are already built on, applied to a fix instead of a feature.
+//
 // KERNEL_SLACK is kept on the *total*, once, here — never inside either term
 // above, or a margin on each would compound into a bigger one than either was
 // meant to carry. It is deliberate headroom on top of an allowance that is
@@ -212,24 +225,28 @@ const TITLE_PROMPT_ROW = 19;
 // overflowing its bank.
 //
 // With the terms and the slack: a project with neither Save nor Move gets
-// 6952 + 0 + 0 + 20 = 6972, byte-for-byte the constant this was before
-// save/load existed. A project that saves gets 6952 + 552 + 20 = 7524.
+// 6952 + 0 + 0 + 0 + 20 = 6972, byte-for-byte the constant this was before
+// save/load existed. A project that saves gets 6952 + 552 + 0 + 20 = 7524; on
+// MMC3 with text, add SPLIT_LOCK_KERNEL_ALLOWANCE: 6952 + 552 + 19 + 20 = 7543.
 //
-// MOVE_KERNEL_ALLOWANCE is the third term, and the reason it is a term at all
+// MOVE_KERNEL_ALLOWANCE is the next term, and the reason it is a term at all
 // rather than a rise in the base is measured rather than stylistic: on a clean
-// tree, sample-rpg with one Save command leaves 161 free bytes in the kernel-lo
-// bank on MMC3 and 353 on MMC1, and Move's implementation is about 400. Folding
-// it into the base would not have tightened the capacity check, it would have
-// overflowed the bank and failed nesasm outright -- for every project, whether
-// or not it moves anything. So engine/entities.asm's move_tick and
-// engine/script.asm's script_op_move sit inside `.if MOVE_ENABLED`, the same
-// shape save.asm already had, and only a project with a live Move pays.
+// tree, sample-rpg with one Save command leaves 142 free bytes in the kernel-lo
+// bank on MMC3 (161 before SPLIT_LOCK_KERNEL_ALLOWANCE's own fix, above, cost
+// every MMC3 build with text 19 bytes) and 353 on MMC1, and Move's
+// implementation is about 400. Folding it into the base would not have
+// tightened the capacity check, it would have overflowed the bank and failed
+// nesasm outright -- for every project, whether or not it moves anything. So
+// engine/entities.asm's move_tick and engine/script.asm's script_op_move sit
+// inside `.if MOVE_ENABLED`, the same shape save.asm already had, and only a
+// project with a live Move pays.
 //
 // That makes this the first term where the *sum* is what to watch: a project
-// with both is 6952 + 552 + 400 + 20 = 7924, which is more than the kernel
-// bank can hold alongside sample-rpg's own tables. checkCapacity says so in
-// plain language before the assembler is reached, which is the whole point of
-// these figures being reserved rather than discovered.
+// with Save and Move on MMC3-with-text is 6952 + 552 + 19 + 400 + 20 = 7943,
+// which is more than the kernel bank can hold alongside sample-rpg's own
+// tables. checkCapacity says so in plain language before the assembler is
+// reached, which is the whole point of these figures being reserved rather
+// than discovered.
 //
 // These figures are quoted only to explain how kernelCodeBytes reached its
 // shape -- hand-copied snapshots, not the source of truth, and this
@@ -244,15 +261,18 @@ const TITLE_PROMPT_ROW = 19;
 const BASE_KERNEL_CODE_BYTES = 6952;
 export const SAVE_KERNEL_ALLOWANCE = 552;
 export const MOVE_KERNEL_ALLOWANCE = 400;
+export const SPLIT_LOCK_KERNEL_ALLOWANCE = 19;
 export const KERNEL_SLACK = 20;
 
 export function kernelCodeBytes(project, mapper) {
   const usesSave = projectUsesSave(project) && batteryCapable(mapper);
   const usesMove = projectUsesMove(project);
+  const usesSplitLock = fontBankSplit(project, mapper);
   return (
     BASE_KERNEL_CODE_BYTES +
     (usesSave ? SAVE_KERNEL_ALLOWANCE : 0) +
     (usesMove ? MOVE_KERNEL_ALLOWANCE : 0) +
+    (usesSplitLock ? SPLIT_LOCK_KERNEL_ALLOWANCE : 0) +
     KERNEL_SLACK
   );
 }
