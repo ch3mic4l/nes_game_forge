@@ -23,6 +23,8 @@ npm run sample:mmc1       # (re)write the MMC1 fixture to ./sample-mmc1
 npm run build:sample:mmc1 # assemble sample-mmc1/build/game.nes
 npm run sample:mmc3       # (re)write the MMC3 fixture to ./sample-mmc3
 npm run build:sample:mmc3 # assemble sample-mmc3/build/game.nes
+npm run sample:u512       # (re)write the UNROM 512 fixture to ./sample-u512
+npm run build:sample:u512 # assemble sample-u512/build/game.nes
 
 node --test test/unit/music.test.js                          # one test file
 node --test --test-name-pattern "door warps" test/unit/*.test.js   # one test
@@ -31,35 +33,49 @@ node main/build/cli.js <projectDir>                          # build any project
 Mesen --testRunner test/lua/engine_smoke.lua sample/build/game.nes   # exit 0 = pass
 test/lua/run_sram_check.sh [mesen-path]                             # battery save, both boards
 test/lua/run_sram_check.sh [mesen-path] --break=mmc3-a001            # ...and its negative control
+test/lua/run_flash_check.sh [mesen-path]                            # flash save, UNROM 512
+test/lua/run_flash_check.sh [mesen-path] --break=u512-no-erase       # ...and its negative controls
 ```
 
 Several tests **skip** unless `sample/build/game.nes` exists — run `npm run sample && npm run
 build:sample` first, and `npm run sample:rpg && npm run build:sample:rpg` for `rpg.test.js`.
 A skipped test is not a passing test; check the skip count.
 
-There are **four fixtures, deliberately**. `sample/` is the action-adventure one every engine test is
-written against; `sample-rpg/` is the turn-based one `rpg.test.js` drives; `sample-mmc1/` and
-`sample-mmc3/` are small battery-save fixtures, one per battery-capable board, that exist to cover a
-board rather than to demonstrate a game. They are separate projects, not variants of the other two,
-because `sample/` and `sample-rpg/` are mapper-agnostic by design — nothing about what they exercise
-depends on which board they happen to be built for — so pinning either of them to a specific mapper
-to reach it would narrow a fixture every other engine test already depends on, for the sake of a
-concern (a specific board's own register behaviour) that only the Mesen SRAM check has. That check —
-`test/lua/run_sram_check.sh`, driving `save_sram.lua` — is what these two exist to feed, and it is
-the only thing that consumes them. No test may mutate any of the four — variants go to `mkdtemp`
-directories — and no existing test is repointed at either new one: every engine test stays written
-against `sample/`.
+There are **five fixtures, deliberately**. `sample/` is the action-adventure one every engine test is
+written against; `sample-rpg/` is the turn-based one `rpg.test.js` drives; `sample-mmc1/`,
+`sample-mmc3/` and `sample-u512/` are small save-check fixtures, one per save-capable board, that exist
+to cover a board rather than to demonstrate a game. They are separate projects, not variants of the
+other two, because `sample/` and `sample-rpg/` are mapper-agnostic by design — nothing about what they
+exercise depends on which board they happen to be built for — so pinning any of them to a specific
+mapper to reach it would narrow a fixture every other engine test already depends on, for the sake of a
+concern (a specific board's own save behaviour) that only the Mesen save checks have. Those checks —
+`test/lua/run_sram_check.sh` and `test/lua/run_flash_check.sh`, driving `save_sram.lua` and
+`save_flash.lua` — are what these three exist to feed, and are the only things that consume them. No
+test may mutate any of the five — variants go to `mkdtemp` directories — and no existing test is
+repointed at any of the new ones: every engine test stays written against `sample/`.
 
-The two battery fixtures are **the same walk on two boards**: same 2x1 world, same saver at the same
-coordinates running the same page, differing only in mapper and in the `Say` the MMC3 one opens with
-(that board is the scanline-IRQ one, and a message box is what puts the font split to work during
+`sample-mmc1/` and `sample-mmc3/` are **the same walk on two boards**: same 2x1 world, same saver at the
+same coordinates running the same page, differing only in mapper and in the `Say` the MMC3 one opens
+with (that board is the scanline-IRQ one, and a message box is what puts the font split to work during
 real gameplay rather than only on the title). So the only thing that can make one pass and the other
-fail is the board's own register behaviour, which is the entire point of having two. Their saver page
-is guarded on the switch it sets — `Save` records where the player is standing, which for a `touch`
-trigger is on top of the actor that fired it, so Continue restores the player mid-contact and
-`spawn_entities` arms the trigger again during the load's own redraw. Without the guard the page
-re-runs a frame later and hands out a second gem, which is the engine behaving as specified but makes
-the restored bag impossible to assert exactly: a load that came back empty and a load that came back
+fail is the board's own register behaviour, which is the entire point of having two. `sample-u512/` is
+the same walk again, on a third board, mapper swapped and no opening `Say` (see
+`tools/make-u512-sample.js`'s own header for why not) — but it exists for a genuinely different reason
+than the first two: MMC1 and MMC3 differ only in *register encoding* for the same battery-WRAM medium,
+while UNROM 512 differs in the *save medium itself* — it has no battery-backed WRAM at all, and saves by
+reflashing its own PRG-ROM (`engine/flash.asm`) instead. `run_sram_check.sh` and `run_flash_check.sh`
+are consequently not one check with two runners; they exercise different engine code (`engine/save.asm`'s
+battery path vs its flash path) against different Mesen models (WRAM enable/write-protect gating vs a
+JEDEC flash state machine) and, for `run_flash_check.sh`, a form of persistence
+(`Core/NES/Mappers/Homebrew/FlashSST39SF040.h`'s own write-through, saved as an `.ips` patch keyed off
+the ROM's basename) that the SRAM check has no equivalent of at all.
+
+All three save-check fixtures' saver pages are guarded on the switch they set — `Save` records where the
+player is standing, which for a `touch` trigger is on top of the actor that fired it, so Continue
+restores the player mid-contact and `spawn_entities` arms the trigger again during the load's own
+redraw. Without the guard the page re-runs a frame later and hands out a second gem, which is the
+engine behaving as specified but makes the restored bag impossible to assert exactly: a load that came
+back empty and a load that came back
 correctly both read as "something in the bag" once the re-run has refilled it.
 
 `FORGE_SHOT=out.png` (optionally with `FORGE_SHOT_FORGE=map`) makes `npm run smoke` write a

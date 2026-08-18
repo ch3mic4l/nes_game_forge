@@ -17,7 +17,9 @@
     "sample:mmc1": "node tools/make-mmc1-sample.js",
     "build:sample:mmc1": "node main/build/cli.js sample-mmc1",
     "sample:mmc3": "node tools/make-mmc3-sample.js",
-    "build:sample:mmc3": "node main/build/cli.js sample-mmc3"
+    "build:sample:mmc3": "node main/build/cli.js sample-mmc3",
+    "sample:u512": "node tools/make-u512-sample.js",
+    "build:sample:u512": "node main/build/cli.js sample-u512"
   },
   "devDependencies": {
     "electron": "^38.0.0"

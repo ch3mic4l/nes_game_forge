@@ -304,17 +304,18 @@ game exactly as walking into a spike would.
 
 Give the player a **Save the game** command anywhere in an event — at a checkpoint,
 in a bed, from a question with *Save* as one of the answers — and the cartridge
-keeps one slot of progress in battery-backed memory: where they were standing, the
-switches, the variables, the bag, and in an RPG the whole party's levels, HP and
-spells. **Continue** appears on the title screen as a Controller Forge binding, and
-loads it back.
+keeps one slot of progress: where they were standing, the switches, the variables,
+the bag, and in an RPG the whole party's levels, HP and spells. **Continue** appears
+on the title screen as a Controller Forge binding, and loads it back.
 
-This needs a cartridge with a battery, which is **MMC1** or **MMC3** — the Build
-panel says so rather than letting the command look like it works. A save carries a
-checksum and a fingerprint of the project, so a save from a different game, or one
-interrupted by the power going off mid-write, is refused instead of loaded as
-nonsense. One slot, and one risk window: an interrupted write takes out whatever
-was already in the slot, not only the save being made.
+This needs a cartridge with somewhere to keep that slot: battery-backed memory on
+**MMC1** or **MMC3**, or, on **UNROM 512**, the cartridge's own program ROM, saved
+into directly the way a USB flash drive is — no battery required. The Build panel
+says which boards qualify rather than letting the command look like it works on one
+that does not. A save carries a checksum and a fingerprint of the project, so a save
+from a different game, or one interrupted by the power going off mid-write, is
+refused instead of loaded as nonsense. One slot, and one risk window: an interrupted
+write takes out whatever was already in the slot, not only the save being made.
 
 ## The title screen
 
