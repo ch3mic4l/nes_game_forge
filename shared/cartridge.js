@@ -316,20 +316,25 @@ export function flashSaveCapable(mapper) {
 }
 
 /**
- * TEMPORARY (phase 2.2 of the UNROM 512 flash-save work): does the engine
- * actually implement this board's save medium yet? Both media are real
- * hardware capabilities (`saveCapable`), but `engine/save.asm` addresses
- * `$6000` unconditionally, which is only correct for the battery medium --
- * flash save is phase 2.3's engine work (making `SAVE_BASE` media-dependent,
- * per the plan). Every caller that needs "can this project's Save command
- * actually work on this board *today*" should ask this, not `saveCapable`,
- * so that the day phase 2.3 lands, flipping `SAVE_FLASH_IMPLEMENTED` to
- * `true` (and giving `SAVE_KERNEL_ALLOWANCE_BY_MAPPER` a measured entry for
- * mapper 30) is the one place that needs to change. Pinned to `false` today
- * on purpose, not merely defaulted there: 2.3 must consciously flip it
- * rather than have it drift true as a side effect of something else.
+ * Does the engine actually implement this board's save medium? Both media
+ * are real hardware capabilities (`saveCapable`); this used to narrow that
+ * further, while flash save was still phase 2.3's unbuilt engine work, by
+ * pinning `SAVE_FLASH_IMPLEMENTED` to `false` -- every caller that needed
+ * "can this project's Save command actually work on this board *today*"
+ * asked this instead of `saveCapable`, so that flipping one constant here
+ * was the whole of turning it on. Phase 2.3 has now landed
+ * (`engine/flash.asm`, `SAVE_BASE` media-dependent in
+ * main/build/generate.js) and flipped it: every caller of this function is
+ * unchanged, which is what "the one place that needs to change" promised.
+ * Kept as its own function rather than folded away now that it agrees with
+ * `saveCapable` on every mapper -- deliberately dormant, not dead: a future
+ * save medium this engine cannot yet address on day one has exactly this
+ * same shape, and this is where its own `false` would go. Collapsing the
+ * two now would save one function and cost every caller above having to
+ * remember, unprompted, which question it actually meant to ask the day
+ * that happens again.
  */
-export const SAVE_FLASH_IMPLEMENTED = false;
+export const SAVE_FLASH_IMPLEMENTED = true;
 export function saveMediaImplemented(mapper) {
   if (mapper.saveMedia === 'flash') return SAVE_FLASH_IMPLEMENTED;
   return saveCapable(mapper);
@@ -361,17 +366,18 @@ export function reservesFlashSaveRegion(usesSave, mapper) {
 
 /**
  * Why a board cannot hold a save, phrased for the Build panel's option
- * title. Must be true of the board it names: a board with no save medium at
- * all gets the hardware answer, and a board whose medium exists but is not
- * implemented yet (see `saveMediaImplemented`) gets that answer instead --
- * conflating the two used to tell every non-battery board "no battery-backed
- * RAM," which was a half-answer the moment a second medium existed.
+ * title. Every caller gates this on `!saveCapable` or `!saveMediaImplemented`
+ * -- conflating the two used to tell every non-battery board "no
+ * battery-backed RAM," which was a half-answer the moment a second medium
+ * existed -- and with `SAVE_FLASH_IMPLEMENTED` now permanently true, those
+ * two predicates agree on every registered board, so a caller can only ever
+ * reach this with a board that has no save medium at all: this is the
+ * hardware answer alone now, not a branch on which kind of "no" applies.
+ * A board whose medium exists but is not implemented yet would need that
+ * second answer back -- the day a real one is declared, not before.
  */
 export function saveUnsupportedReason(mapper) {
-  if (!saveCapable(mapper)) {
-    return `${mapper.name} has no battery-backed RAM and no self-flashing program ROM, so there is nowhere to write a save.`;
-  }
-  return `${mapper.name} saves by flashing its own program ROM, which this version does not implement yet.`;
+  return `${mapper.name} has no battery-backed RAM and no self-flashing program ROM, so there is nowhere to write a save.`;
 }
 
 /** Why a board cannot hold a *battery-backed* save, phrased the same way. */
@@ -535,18 +541,18 @@ export function screenCapacity(mapper, bytesPerScreen, tilesetCount = 1, bankedC
  * keeps its battle system there too. Both come off the front, in that order, so
  * a region's identity does not move when the other one changes size.
  *
- * A flash-save build additionally gives up its last region: the sector is
- * the top 4 KB of it (plan 2.3 pins the exact bank/address once the engine
- * side lands), and regions only come in whole 8 KB units, so the flash
- * sector costs a whole region the same way a CHR-RAM tileset does. It comes
- * off the *back* rather than the front, unlike the CHR/code claims above,
- * specifically so it does not renumber any of them -- and so this reservation
- * cannot become automatic (folded into `prgLayout` or charged unconditionally
- * to every UNROM 512 project): only a project whose Save command actually
- * needs the sector may give up the region for it, or a project with no Save
- * command at all would pay 8 KB of screens it never uses. Callers must pass
- * `reserveFlashSave` themselves; there is no way to derive it from `mapper`
- * alone.
+ * A flash-save build additionally gives up its last region: the sector
+ * (engine/flash.asm) is the top 4 KB of it, `flashSaveSectorBank` below
+ * names which `prgBank` that region lives in, and regions only come in
+ * whole 8 KB units, so the flash sector costs a whole region the same way a
+ * CHR-RAM tileset does. It comes off the *back* rather than the front,
+ * unlike the CHR/code claims above, specifically so it does not renumber
+ * any of them -- and so this reservation cannot become automatic (folded
+ * into `prgLayout` or charged unconditionally to every UNROM 512 project):
+ * only a project whose Save command actually needs the sector may give up
+ * the region for it, or a project with no Save command at all would pay
+ * 8 KB of screens it never uses. Callers must pass `reserveFlashSave`
+ * themselves; there is no way to derive it from `mapper` alone.
  */
 export function screenRegions(mapper, tilesetCount = 1, bankedCode = 0, { reserveFlashSave = false } = {}) {
   const { regions } = prgLayout(mapper);
@@ -554,6 +560,22 @@ export function screenRegions(mapper, tilesetCount = 1, bankedCode = 0, { reserv
     chrPayloadRegions(mapper, tilesetCount).length + codeRegions(mapper, tilesetCount, bankedCode).length;
   const available = regions.slice(taken);
   return reserveFlashSave ? available.slice(0, -1) : available;
+}
+
+/**
+ * Which `prgBank` the flash save sector lives in -- the region
+ * `screenRegions` drops off the back whenever `reserveFlashSave` is set,
+ * independent of `tilesetCount`/`bankedCode` (the reservation always takes
+ * the very last entry of the *full* region list, regardless of how many
+ * more are also taken off the front). The single writer both
+ * `main/build/generate.js`'s `SAVE_BANK` equate and `main/build/pipeline.js`'s
+ * post-build all-`$FF` check read, so the engine's own idea of where the
+ * sector is and the JS-side check that it shipped erased cannot drift into
+ * naming two different banks.
+ */
+export function flashSaveSectorBank(mapper) {
+  const { regions } = prgLayout(mapper);
+  return regions[regions.length - 1].prgBank;
 }
 
 /**

@@ -885,6 +885,19 @@ Each of these cost real debugging time and now has a regression test. They are e
   two hung the whole game in the redraw loop. A counter that lives across a `jsr` needs a byte
   nothing downstream owns (`bt_vrow`), and the bug reached `main` because no test ever opened a
   list with two entries — the untested path was the broken one.
+- **A backward `.org` silently splices bytes into whatever already assembled there.** nesasm
+  places a bank's contents at file offset `address & (bank size - 1)`, with no check that the
+  address is actually inside the bank currently being assembled. Given an address *behind* the
+  bank's own base — `.org $0600` inside a `$C000`-based kernel bank, say — that arithmetic still
+  produces a valid, low, in-range offset, so nesasm overwrites whatever code already landed there
+  instead of refusing the file. Nothing about the exit code says so either: like the "exits 0
+  anyway" `.fail`/error-line quirk `parseNesasmErrors` (`main/build/nesasm.js`) already has to work
+  around, this one produces a ROM that assembled cleanly and runs wrong. Proved empirically before
+  `engine/flash.asm` was written — a real `.org` behind a bank's base measurably corrupts a
+  neighboring label's bytes, with nesasm reporting nothing — which is why that file's own driver is
+  position-independent (assembled at an ordinary address, copied to its real address at runtime)
+  rather than ever reserving a fixed low address for itself via `.org`. See `flash.asm`'s own
+  header comment for the relocation rules that position-independence requires.
 
 ## Conventions
 

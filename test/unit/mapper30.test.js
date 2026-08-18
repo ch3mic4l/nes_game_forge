@@ -1,9 +1,15 @@
 // UNROM 512 (iNES mapper 30) in the vendored emulator core.
 //
-// The ROMs here are hand-built byte arrays rather than assembled projects: the
-// Forge cannot yet *author* mapper 30 (that needs PRG bank switching and a
-// CHR-RAM tileset model in the engine), but it can run one, and this is what
-// keeps that working.
+// The ROMs here are hand-built byte arrays rather than assembled projects,
+// because this file's subject is the mapper implementation itself -- bank
+// switching, CHR-RAM paging, the flash chip's own command sequencing and
+// busy model -- not anything an authored project would exercise
+// incidentally. The Forge can author mapper 30 (engine and Tile Forge
+// support it, flash save included; see flashsave.test.js and
+// flashdriver.test.js for that side, driven through real builds), but a
+// hand-built ROM is what lets a test aim at one register write or one
+// chip-command byte directly, which an assembled project's own layout
+// would only ever reach by accident.
 
 import test from 'node:test';
 import assert from 'node:assert/strict';

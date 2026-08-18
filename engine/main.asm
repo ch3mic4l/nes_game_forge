@@ -57,6 +57,26 @@
   .include "combat.asm"
   .include "title.asm"
   .include "rpg.asm"
+  .include "flash.asm"
+; The check that actually closes the "something got appended to the
+; driver's tail" gap flash.asm's own comment (beside flash_commit_driver_end)
+; explains: placed here, after the whole file has already been assembled
+; rather than inside flash.asm's own .if SAVE_FLASH block, it sees the
+; location counter's *final* value for that file -- appended code
+; anywhere inside it, however far past flash_commit_driver_end, has
+; already been counted by the time this runs, which a check living inside
+; the file itself could never guarantee about content placed after its own
+; line. Two one-directional comparisons rather than a single `!=`, the same
+; restricted comparison nesasm's expression grammar already proves it
+; accepts (flash.asm's own driver-size guard uses `>` the same way).
+  .if SAVE_FLASH
+  .if * > flash_commit_driver_end
+  .fail
+  .endif
+  .if flash_commit_driver_end > *
+  .fail
+  .endif
+  .endif
   .include "save.asm"
   .include "text.asm"
   .include "script.asm"

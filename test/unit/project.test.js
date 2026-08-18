@@ -741,7 +741,7 @@ test('a Run common event command naming a deleted common event fails validation 
   assert.equal(live[0].op, 'call');
 });
 
-// --- save media (phase 2.2 of the UNROM 512 flash-save work) ---------------
+// --- save media (phases 2.2-2.3 of the UNROM 512 flash-save work) ----------
 
 function saveProjectFor(mapperId) {
   const project = createProject('Quest');
@@ -764,26 +764,19 @@ test('a live Save command refuses to build on a board with no save medium at all
   const message = errors.map((e) => e.message).find((m) => /save/.test(m));
   assert.ok(message, 'expected a Save-related error');
   assert.match(message, /no battery-backed RAM and no self-flashing program ROM/);
-  assert.match(message, /Choose MMC1 or MMC3 in the Build panel, or remove the Save command/);
+  assert.match(message, /Choose MMC1, MMC3 or UNROM 512 in the Build panel, or remove the Save command/);
 });
 
-// UNROM 512 genuinely can save (by flashing its own program ROM), which is
-// exactly why this cannot just widen the "can this board save" check the way
-// every other consumer's swap in this phase did: engine/save.asm still
-// addresses $6000 unconditionally, which is only correct for battery RAM,
-// so a live Save here has to keep failing loudly until phase 2.3 gives the
-// engine a flash driver -- see saveMediaImplemented (shared/cartridge.js).
-test('a live Save command on UNROM 512 is refused: the medium exists but is not implemented yet', () => {
-  const project = saveProjectFor(30);
-  const errors = validateProject(project).filter((p) => p.severity === 'error');
-  const message = errors.map((e) => e.message).find((m) => /UNROM 512/.test(m));
-  assert.ok(message, 'expected a Save-related error naming UNROM 512');
-  assert.match(message, /saves by flashing its own program ROM, which this version does not implement yet/);
-  assert.match(message, /Choose MMC1 or MMC3 in the Build panel, or remove the Save command/);
-});
-
-test('a live Save command on a battery-capable board (MMC1 or MMC3) is not refused', () => {
-  for (const mapperId of [1, 4]) {
+// UNROM 512 used to be refused here on purpose (phase 2.2: the medium was
+// real but engine/save.asm had no flash driver yet, see
+// saveMediaImplemented's own comment in shared/cartridge.js). Phase 2.3
+// gave it engine/flash.asm and flipped SAVE_FLASH_IMPLEMENTED, so it now
+// belongs in the same "not refused" bucket as the battery boards -- the
+// same swap the flag itself was built to make in one place, verified here
+// by the fact that this test needed no code change beyond adding 30 to the
+// list below.
+test('a live Save command on any save-capable board (MMC1, MMC3, UNROM 512) is not refused', () => {
+  for (const mapperId of [1, 4, 30]) {
     const project = saveProjectFor(mapperId);
     const errors = validateProject(project).filter((p) => p.severity === 'error');
     const saveErrors = errors.filter((e) => /save/.test(e.message));

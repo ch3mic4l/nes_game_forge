@@ -36,7 +36,7 @@ import {
   MOVE_KERNEL_ALLOWANCE,
   SPLIT_LOCK_KERNEL_ALLOWANCE
 } from '../../main/build/generate.js';
-import { SUPPORTED_MAPPERS, rpgCapable, batteryCapable, saveMediaImplemented, prgLayout } from '../../shared/cartridge.js';
+import { SUPPORTED_MAPPERS, rpgCapable, saveMediaImplemented, prgLayout } from '../../shared/cartridge.js';
 import { createTileset, createProject } from '../../shared/project.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
@@ -175,8 +175,14 @@ test(
   { skip: !hasNesasm && 'nesasm not found on PATH' },
   async (t) => {
     assert.ok(CAPABLE_MAPPERS.length > 0, 'no RPG-capable mapper is registered — rpgCapable() found nothing');
-    const batteryMappers = CAPABLE_MAPPERS.filter(batteryCapable);
-    assert.ok(batteryMappers.length > 0, 'no battery-capable mapper is registered — batteryCapable() found nothing');
+    // saveMediaImplemented, not batteryCapable: UNROM 512 saves too, by
+    // flashing its own PRG-ROM rather than battery RAM, and its own
+    // SAVE_KERNEL_ALLOWANCE_BY_MAPPER entry needs the same exact-delta
+    // measurement every battery board already gets below, or a stale flash
+    // figure could drift for as long as assertCovers's own ceiling (which
+    // only ever judges the *worst* board) happened not to notice.
+    const saveMappers = CAPABLE_MAPPERS.filter(saveMediaImplemented);
+    assert.ok(saveMappers.length > 0, 'no save-capable board is registered — saveMediaImplemented() found nothing');
 
     // Every RPG-capable board, nothing conditional turned on. This is also
     // what BASE_KERNEL_CODE_BYTES_BY_MAPPER is supposed to equal, board by
@@ -193,9 +199,9 @@ test(
       );
     }
 
-    // Only the battery-capable boards, a live Save command and nothing else.
+    // Only the save-capable boards, a live Save command and nothing else.
     const withSave = [];
-    for (const mapper of batteryMappers) {
+    for (const mapper of saveMappers) {
       const { project, codeBytes } = await measureCodeBytes(t, mapper, { withSave: true });
       withSave.push({ mapper, project, codeBytes });
       assertCovers({ mapper, codeBytes }, kernelCodeBytes(project, mapper), 'a live Save command');
@@ -248,12 +254,25 @@ test(
       );
     }
 
-    // Only the battery-capable boards, a live Save *and* a live Move command
-    // together — the combination that overflowed by 332 bytes before the
-    // kernel diet, and by 12 after it but before per-mapper budgeting. Not
-    // additive by assumption: measured as its own build, the same as every
-    // other configuration here.
-    for (const mapper of batteryMappers) {
+    // The battery boards, a live Save *and* a live Move command together --
+    // the combination that overflowed by 332 bytes before the kernel diet,
+    // and by 12 after it but before per-mapper budgeting. Not additive by
+    // assumption: measured as its own build, the same as every other
+    // configuration here.
+    //
+    // UNROM 512 is deliberately excluded here, not merely unmeasured: this
+    // combination on that board is a real, currently unfixed shortfall --
+    // sample-rpg with Save and Move together overflows kernel-lo bank 62 by
+    // enough that nesasm itself refuses it (`Bank overflow, offset > $1FFF!`
+    // in music.asm), confirmed by building past checkCapacity's own refusal
+    // and letting the assembler answer directly, the same way this file's
+    // own MMC3 story below was confirmed. That story closed by finding 12
+    // bytes; this one is roughly 155 short (a -29-byte code budget before
+    // 126 bytes of lookup tables are even added), which reads as a real gap
+    // rather than reservation conservatism, and closing it is not this
+    // phase's own work. Bracketed precisely, not just excluded here, by
+    // "sample-rpg with Save and Move on UNROM 512 does not build" below.
+    for (const mapper of saveMappers.filter((m) => m.id !== 30)) {
       const { project, codeBytes } = await measureCodeBytes(t, mapper, { withSave: true, withMove: true });
       assertCovers({ mapper, codeBytes }, kernelCodeBytes(project, mapper), 'a live Save command and a live Move command');
     }
@@ -483,36 +502,19 @@ test('a kernel-lo shortfall no single change would close falls back to the gener
   assert.match(message, /Reduce the number of screens, actors or metasprites\.$/);
 });
 
-// UNROM 512 saves by flashing its own program ROM, which the engine does not
-// implement yet (see saveMediaImplemented, shared/cartridge.js) -- so
-// kernelCodeBytes charges it *nothing* for a live Save command, the same as
-// a project with no Save at all. That makes it look artificially cheap to a
-// naive "how many kernel-lo bytes would switching save" comparison: on this
-// exact project (MMC3, a live Save, 119 filler actors) UNROM 512 appears to
-// free 563 bytes -- more than dropping Save itself frees (552) and enough to
-// close the 556-byte deficit here -- while the real number, MMC1, only frees
-// about 211. Recommending UNROM 512 would trade this shortfall for
-// validateProject's flash-unimplemented refusal, which is not a fix. Chosen
-// to fall between "Save alone would close it" (552) and the mapper branch
-// even being reached, so a regression in the candidate filter (reverting to
-// saveCapable) makes this fail rather than silently passing because no
-// candidate was ever evaluated.
-test('a mapper suggestion never recommends UNROM 512 to a project with a live Save command', async () => {
-  const project = await loadProject(SAMPLE_RPG);
-  project.cartridge.mapper = 4; // MMC3
-  project.project.titleMap = 0;
-  project.project.titleScreen = 0;
-  project.maps[0].screens[0].entities.push({
-    actorId: 0,
-    x: 16,
-    y: 16,
-    props: { event: { pages: [{ cond: { type: 'none', arg: 0 }, commands: [{ op: 'save' }] }] } }
-  });
-  inflate(project, 119); // a 556-byte deficit -- see the comment above for why
-  const message = kernelShortfallMessage(project);
-  assert.doesNotMatch(message, /UNROM 512/, 'UNROM 512 cannot actually run this project\'s Save command yet');
-  assert.match(message, /Reduce the number of screens, actors or metasprites\.$/);
-});
+// A retired guard, left as a comment rather than silently vanishing: through
+// phase 2.2, UNROM 512 was save-capable but not save-*implemented*
+// (saveMediaImplemented, shared/cartridge.js, was false for flash), which
+// made kernelCodeBytes charge it *nothing* for a live Save command --
+// artificially cheap to a naive "how many kernel-lo bytes would switching
+// save" comparison, and a test here (MMC3, a live Save, 119 filler actors,
+// a 556-byte deficit) pinned that UNROM 512 was never recommended for it
+// even though the buggy arithmetic alone would have suggested it saves 563
+// bytes. Phase 2.3 gave UNROM 512 a real, measured
+// SAVE_KERNEL_ALLOWANCE_BY_MAPPER entry (engine/flash.asm), so that
+// scenario no longer exists to guard against: every candidate's own
+// kernelCodeBytes now charges its real save cost, UNROM 512 included, and
+// whether it gets recommended is just real arithmetic like any other board.
 
 function saveAndMoveEvent() {
   return {
@@ -580,6 +582,81 @@ test(
         `KERNEL_SLACK (${KERNEL_SLACK}), the deliberate headroom kernelCodeBytes reserves on top of its own ` +
         're-measured terms. If this has genuinely eroded, re-measure the terms in the comment beside ' +
         'kernelCodeBytes rather than loosening this assertion.'
+    );
+  }
+);
+
+// The UNROM 512 mirror of the MMC3 story just above -- except this
+// combination does not close, and is not expected to (see the comment
+// excluding mapper 30 from the Save+Move loop earlier in this file, and the
+// flash-save landing report). Bracketed precisely rather than left as a
+// silent exclusion from that loop: Save alone fits and genuinely assembles,
+// Move alone fits and genuinely assembles, and only the combination is
+// refused -- by checkCapacity itself, before nesasm ever runs, exactly the
+// "the assembler is the capacity check" property this file's own header
+// comment describes for the case where the reservation actually is
+// accurate. kernelShortfallAdvice must name both commands and both of their
+// real byte figures, because at this exact deficit either alone would close
+// it (see the "offers both as a choice" test below for that same shape).
+// The deficit itself is deliberately not asserted: it will drift with any
+// unrelated change to kernel-lo, and pinning it would fail on a harmless
+// change elsewhere the same way a literal free-byte count would (see the
+// comment a few tests up). What must not drift silently is the *fact* of
+// the refusal and which two things it blames -- if a future kernel diet on
+// this board ever closes the gap, this test should fail and force a
+// conscious update, the same way flipping SAVE_FLASH_IMPLEMENTED itself
+// was a single flag someone had to notice and change.
+test(
+  'sample-rpg with Save and Move on UNROM 512 does not build -- a documented limitation, not a silent gap',
+  { skip: !hasNesasm && 'nesasm not found on PATH' },
+  async (t) => {
+    const saveOnly = await loadProject(SAMPLE_RPG);
+    saveOnly.cartridge.mapper = 30; // UNROM 512
+    saveOnly.project.titleMap = 0;
+    saveOnly.project.titleScreen = 0;
+    saveOnly.maps[0].screens[0].entities.push({
+      actorId: 0,
+      x: 16,
+      y: 16,
+      props: { event: { pages: [{ cond: { type: 'none', arg: 0 }, commands: [{ op: 'save' }] }] } }
+    });
+    const saveDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'forge-unrom512-save-'));
+    t.after(() => fsp.rm(saveDir, { recursive: true, force: true }));
+    await saveProject(saveDir, saveOnly);
+    const saveBuilt = await buildProject({ dir: saveDir, project: saveOnly, log: () => {} });
+    assert.ok(saveBuilt.romPath, 'Save alone should fit and assemble on UNROM 512');
+
+    const moveOnly = await loadProject(SAMPLE_RPG);
+    moveOnly.cartridge.mapper = 30;
+    moveOnly.project.titleMap = 0;
+    moveOnly.project.titleScreen = 0;
+    moveOnly.maps[0].screens[0].entities.push({
+      actorId: 0,
+      x: 16,
+      y: 16,
+      props: {
+        event: { pages: [{ cond: { type: 'none', arg: 0 }, commands: [{ op: 'move', who: 'self', dir: 'up', dist: 16 }] }] }
+      }
+    });
+    const moveDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'forge-unrom512-move-'));
+    t.after(() => fsp.rm(moveDir, { recursive: true, force: true }));
+    await saveProject(moveDir, moveOnly);
+    const moveBuilt = await buildProject({ dir: moveDir, project: moveOnly, log: () => {} });
+    assert.ok(moveBuilt.romPath, 'Move alone should fit and assemble on UNROM 512');
+
+    const both = await loadProject(SAMPLE_RPG);
+    both.cartridge.mapper = 30;
+    both.project.titleMap = 0;
+    both.project.titleScreen = 0;
+    both.maps[0].screens[0].entities.push(saveAndMoveEvent());
+    const message = kernelShortfallMessage(both);
+    assert.match(
+      message,
+      new RegExp(
+        `removing every Move command \\(frees ${MOVE_KERNEL_ALLOWANCE} bytes\\) or every Save command ` +
+          `\\(frees ${SAVE_KERNEL_ALLOWANCE_BY_MAPPER[30]} bytes\\)`
+      ),
+      'the refusal should name both commands and both of their real byte figures, not just report the deficit'
     );
   }
 );

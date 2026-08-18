@@ -4,7 +4,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { generateAssets } from './generate.js';
 import { runNesasm } from './nesasm.js';
-import { applyHeaderPatch, headerPatch, resolveMapper } from '../../shared/cartridge.js';
+import { applyHeaderPatch, flashSaveSectorBank, headerPatch, resolveMapper } from '../../shared/cartridge.js';
 import { projectUsesSave } from '../../shared/project.js';
 
 const INES_HEADER = 16;
@@ -41,6 +41,52 @@ export function inspectRom(bytes) {
     mapper: (bytes[6] >> 4) | (bytes[7] & 0xf0),
     resetVector
   };
+}
+
+/**
+ * The flash medium's own promise, checked against the assembled bytes
+ * rather than trusted from the region math alone: engine/flash.asm's
+ * driver erases before it programs, on the assumption that whatever is
+ * already in bank SAVE_BANK's $B000-$BFFF is safe to destroy. If the
+ * region reservation (shared/cartridge.js's reserveFlashSaveRegion) ever
+ * failed to keep screen data out of that region, this is what would catch
+ * it -- before the ROM ships, not the first time a player's save silently
+ * erases part of their own game. A pure function of the assembled bytes,
+ * not folded into buildProject's own body, so a test can hand it a
+ * deliberately non-blank sector without needing a project large enough to
+ * actually pack real screen data into bank 30 by accident.
+ *
+ * This *is* the exact region/byte overlap assertion, not a stand-in for
+ * one: it reads the literal bytes at `16 + SAVE_BANK*16384 + $3000`
+ * through `+$3FFF` out of the real assembled ROM, so anything that landed
+ * there -- a screen, a tileset payload, bank-count arithmetic gone wrong,
+ * anything -- fails this check by not being $FF, regardless of which
+ * upstream computation put it there. A bank-number check (does something
+ * claim bank 30) would be the wrong shape here on purpose: bank 30's own
+ * $8000-$9FFF stays legitimately available for screens (only its own
+ * $3000-$3FFF, $B000-$BFFF in CPU terms, is reserved), so "is bank 30 used"
+ * and "is the sector blank" are different questions, and only the second
+ * one is true both before the first save and false the moment anything
+ * collides with it. There is deliberately no separate overlap assertion
+ * anywhere else in the pipeline -- adding one would just be a second, less
+ * precise way of asking what this already answers byte-exactly.
+ *
+ * Throws the same shape buildProject's other checks do (`error.errors`, an
+ * array nesasm's own failures use too) rather than returning a verdict, so
+ * a caller cannot forget to check one.
+ */
+export function checkFlashSectorBlank(bytes, mapper) {
+  const sectorBank = flashSaveSectorBank(mapper);
+  const sectorOffset = INES_HEADER + sectorBank * 16384 + 0x3000;
+  const sector = bytes.subarray(sectorOffset, sectorOffset + 4096);
+  if (sector.length !== 4096 || !sector.every((byte) => byte === 0xff)) {
+    const message =
+      `The flash save sector (bank ${sectorBank}, $B000-$BFFF) did not ship blank -- something else ` +
+      'assembled into the region the flash driver erases on the first save.';
+    const error = new Error(message);
+    error.errors = [{ message }];
+    throw error;
+  }
 }
 
 export async function buildProject({ dir, project, log = () => {}, settings = {} }) {
@@ -100,6 +146,10 @@ export async function buildProject({ dir, project, log = () => {}, settings = {}
       saveEnabled ? (mapper.saveMedia === 'flash' ? 'flash save' : 'battery-backed save') : null
     ].filter(Boolean);
     log(`Rewrote the header for ${mapper.name} (${notes.join(', ')}).`);
+  }
+
+  if (saveEnabled && mapper.saveMedia === 'flash') {
+    checkFlashSectorBlank(bytes, mapper);
   }
 
   const inspection = inspectRom(bytes);

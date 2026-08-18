@@ -329,11 +329,13 @@ export function mount(container, app) {
             const rpgBlocked = isRpg && board && !rpgCapable(board);
             // saveCapable, not saveMediaImplemented: this option-disable is
             // for boards with no save medium at all (a structural fact), the
-            // same kind of thing rpgBlocked already checks. UNROM 512 has a
-            // real medium (flash) even though this version cannot drive it
-            // yet, so it stays selectable here and validateProject names the
-            // temporary reason in the panel's own problem list instead of a
-            // disabled option pretending the board simply cannot save.
+            // same kind of thing rpgBlocked already checks -- not "does the
+            // engine drive this board's medium today," which is what would
+            // matter if a future medium were ever declared before it works.
+            // Every registered board's medium is implemented today, so the
+            // two predicates currently agree everywhere and this distinction
+            // has nothing live to catch yet; it stays saveCapable because
+            // that is still the semantically correct question to ask here.
             const saveBlocked = usesSave && board && !saveCapable(board);
             const reason = !entry.supported
               ? entry.unsupportedReason

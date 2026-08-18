@@ -264,10 +264,11 @@ title_prompt_lo = cur_song+1
 title_prompt_hi = title_prompt_lo+1
 
 ; The save record's table-driven copy (engine/save.asm): save_ptr is the
-; current field's RAM address, save_cursor is where in SRAM it lands, sv_idx
-; is which of SAVE_FIELD_COUNT fields is running and sv_len is its length --
-; one generic loop walks save_field_lo/hi/len (assets/save.inc) with these
-; rather than eighteen hand-written copies, in both directions.
+; current field's RAM address, save_cursor is where in the record (SAVE_BASE,
+; media-dependent) it lands, sv_idx is which of SAVE_FIELD_COUNT fields is
+; running and sv_len is its length -- one generic loop walks
+; save_field_lo/hi/len (assets/save.inc) with these rather than eighteen
+; hand-written copies, in both directions.
 save_ptr_lo    = title_prompt_hi+1
 save_ptr_hi    = save_ptr_lo+1
 save_cursor_lo = save_ptr_hi+1
@@ -457,6 +458,36 @@ inv_items   = $0378  ; @size=MAX_ITEMS
 ; One page, so the NMI's drain loop can index the whole queue with X. Packets are
 ; [addr_hi, addr_lo, count, bytes...] and a zero addr_hi terminates.
 vram_buf    = $0400  ; @size=256
+
+; --------------------------------------------------- UNROM 512 flash save RAM
+; Console RAM the self-flashing driver runs from and the record it flashes
+; sits in -- see engine/flash.asm's own header for why the driver cannot
+; execute from ROM during a program or erase, and why that requires it to
+; run from true console RAM ($0000-$07FF) rather than anywhere the flash
+; chip's own busy overlay ($8000-$FFFF) can reach. Both are reserved
+; unconditionally, the same reasoning vram_buf and every other array on
+; this page already holds to:
+; the labels cost nothing on a board that never assembles .if SAVE_FLASH
+; code, and reserving them only there would leave this guard unable to see
+; them on every other build.
+;
+; $0600, not lower: ent_record (above) ends at $0527, and this leaves a
+; clean page boundary between the two rather than packing the driver
+; immediately after it purely to save 216 bytes nothing else wants.
+;
+; FLASH_DRIVER_MAX is a measured ceiling, not a guess: engine/flash.asm's
+; own .if guard fails the build the moment the assembled driver grows past
+; it, the same discipline KERNEL_SLACK enforces for the kernel bank as a
+; whole -- see that guard for the real measured size.
+FLASH_DRIVER_MAX = 160
+flash_driver     = $0600  ; @size=FLASH_DRIVER_MAX
+; SAVE_RECORD_LEN (config.inc) is the whole record -- body, checksum,
+; identity and marker together, the same span save.inc's own SAVE_BASE..
+; SAVE_MARKER equates lay out contiguously. This is the flash medium's
+; SAVE_BASE (main/build/generate.js): two independent literals that have to
+; agree on the number $0700, not one computed from the other, the same
+; situation MAX_ITEMS above is already in with shared/save.js's own copy.
+save_flash_buf   = $0700  ; @size=SAVE_RECORD_LEN
 
 ; Behaviours, in the same order as BEHAVIORS in shared/project.js.
 BEH_PLAYER  = 0

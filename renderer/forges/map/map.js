@@ -478,11 +478,13 @@ export function mount(container, app) {
       // Whether the current cartridge can even hold a save -- the same
       // question saveCapable (shared/cartridge.js) answers for the Build
       // panel's mapper picker, asked here to decide whether Save is offered.
-      // Deliberately saveCapable rather than saveMediaImplemented: a live
-      // Save on a board whose medium exists but is not implemented yet is
-      // still offered here, and validateProject is what refuses the build,
-      // the same reason the Build panel's own mapper picker does not disable
-      // UNROM 512 for this either.
+      // Deliberately saveCapable rather than saveMediaImplemented: this is
+      // "does the hardware have a save medium at all," a structural fact,
+      // not "does the engine drive it today" -- the two currently agree on
+      // every registered board, but a live Save on a board whose medium
+      // exists but is not implemented yet should still be offered here and
+      // refused by validateProject instead, the same reason the Build
+      // panel's own mapper picker does not disable a board like that.
       canSave: saveCapable(resolveMapper(store.project.cartridge.mapper))
     };
   }

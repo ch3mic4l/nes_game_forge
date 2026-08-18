@@ -1954,17 +1954,21 @@ export function validateProject(project) {
   // documents. Two ways a live Save reaches a build it cannot work on:
   if (projectUsesSave(project)) {
     const saveMapper = resolveMapper(project.cartridge.mapper);
-    // saveMediaImplemented, not saveCapable: UNROM 512 genuinely can save (by
-    // flashing its own program ROM), but the engine does not implement that
-    // medium yet (engine/save.asm addresses $6000 unconditionally, which is
-    // only correct for battery RAM) -- see saveMediaImplemented's own comment
-    // for the phase this is scoped to. Refusing here is what keeps the build
-    // from silently assembling a Save command that writes to open bus.
+    // saveMediaImplemented, not saveCapable: every registered board's medium
+    // is implemented today (engine/save.asm's SAVE_BASE is media-dependent --
+    // battery RAM at $6000, or a RAM buffer the flash driver commits, per
+    // board -- see main/build/generate.js), so the two predicates currently
+    // agree everywhere and this can only fire for a board with no save medium
+    // at all. Checking saveMediaImplemented rather than saveCapable directly
+    // is what keeps this refusal honest the day a future medium is declared
+    // before the engine actually drives it -- see saveMediaImplemented's own
+    // comment. Refusing here is what keeps the build from silently
+    // assembling a Save command that writes to open bus.
     if (!saveMediaImplemented(saveMapper)) {
       add(
         'error',
         'Build',
-        `${saveUnsupportedReason(saveMapper)} Choose MMC1 or MMC3 in the Build panel, or remove the Save command.`
+        `${saveUnsupportedReason(saveMapper)} Choose MMC1, MMC3 or UNROM 512 in the Build panel, or remove the Save command.`
       );
     }
     // Continue is a title-screen option (engine/title.asm); a save with no

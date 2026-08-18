@@ -1,6 +1,12 @@
-// The battery save record — its layout, size and identity, in one place.
+// The save record — its layout, size and identity, in one place, for either
+// medium the engine can hold it in.
 //
-// `engine/save.asm` writes and reads this shape at $6000+ in SRAM;
+// `engine/save.asm` writes and reads this shape at SAVE_BASE, which is
+// media-dependent (main/build/generate.js): battery RAM at $6000+ on MMC1
+// and MMC3, or a plain RAM buffer a flash driver commits to PRG-ROM on
+// UNROM 512 (engine/flash.asm). The shape this file describes is identical
+// either way -- only where it lives differs, and save.asm's own routines
+// address it as `SAVE_BASE,y` throughout for exactly that reason.
 // `main/build/generate.js` emits the field offsets, its total size and its
 // identity byte into `assets/save.inc` from the exact same list below, so the
 // engine never spells an offset that this module did not hand it. Neither

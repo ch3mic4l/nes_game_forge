@@ -61,6 +61,8 @@ import {
   chrPayloadRegions,
   chrRegisterTable,
   codeRegions,
+  flashSaveCapable,
+  flashSaveSectorBank,
   mirroringOptions,
   mirroringValue,
   prgLayout,
@@ -311,18 +313,36 @@ export function baseKernelCodeBytes(mapper) {
   return BASE_KERNEL_CODE_BYTES_BY_MAPPER[mapper.id] ?? FALLBACK_BASE_KERNEL_CODE_BYTES;
 }
 
-export const SAVE_KERNEL_ALLOWANCE_BY_MAPPER = { 1: 547, 4: 552 };
+// 30 (UNROM 512) is measured the same way as the other two, from a real
+// build of sample-rpg with and without a live Save command: 6678 -> 7397,
+// +719. Substantially larger than MMC1/MMC3's own allowance because flash
+// save is not just a checksum/marker-write difference from battery -- it
+// carries its own RAM-resident driver (engine/flash.asm: the JEDEC unlock
+// sequence, the erase, the 87-byte program loop, all position-independent)
+// plus save_media_fetch/commit's wrapper (the vblank wait, the forced
+// blank, the copy-to-RAM, the mapper_shadow save/restore) that battery's
+// save_media_fetch/commit reduce to a no-op. UNROM 512's own base (6678,
+// the largest of the three) is what leaves room for it: 719 against roughly
+// 1514 bytes of headroom before KERNEL_SLACK and the fallback base even
+// enter the picture.
+export const SAVE_KERNEL_ALLOWANCE_BY_MAPPER = { 1: 547, 4: 552, 30: 719 };
 export const MOVE_KERNEL_ALLOWANCE = 395;
 export const SPLIT_LOCK_KERNEL_ALLOWANCE = 19;
 export const KERNEL_SLACK = 20;
 
 export function kernelCodeBytes(project, mapper) {
   // saveMediaImplemented, not saveCapable: SAVE_KERNEL_ALLOWANCE_BY_MAPPER
-  // only has measured entries for the boards whose save/load code actually
-  // assembles today (engine/save.asm addresses $6000, only correct for
-  // battery RAM) -- a flash-capable-but-unimplemented board must cost
-  // nothing here the same way a project with no live Save costs nothing,
-  // or this would index the table with a mapper id it has no entry for.
+  // only has a measured entry for a board whose save/load code actually
+  // assembles -- every registered board's medium is implemented today,
+  // UNROM 512 (719, engine/flash.asm's driver plus save_media_fetch/
+  // commit's own wrapper) included, so this currently agrees with
+  // saveCapable everywhere. It stays saveMediaImplemented rather than
+  // collapsing to saveCapable for the same reason saveMediaImplemented's
+  // own comment gives: a board with no save medium at all must cost
+  // nothing here regardless, and a future medium declared before the
+  // engine drives it would need to cost nothing here too, exactly the
+  // shape this already handles and saveCapable alone would not -- it would
+  // index this table with a mapper id that has no entry for it yet.
   const usesSave = projectUsesSave(project) && saveMediaImplemented(mapper);
   const usesMove = projectUsesMove(project);
   const usesSplitLock = fontBankSplit(project, mapper);
@@ -1205,15 +1225,35 @@ export async function generateAssets({ dir, project, log = () => {} }) {
     // The CHR bank a battle switches to, which is where the monster artwork
     // lives. Clamped to what survived the mapper's tileset limit.
     `BATTLE_TILESET = ${Math.min(project.rpg?.battleTilesetId ?? 0, Math.max(0, project.tilesets.length - 1))}`,
-    // Battery-backed save. Pays nothing when the project has no live Save
-    // command, the same rule COMBAT_ENABLED and TITLE_ENABLED already hold
-    // their own projects to — see engine/save.asm for what this gates, and
+    // Save. Pays nothing when the project has no live Save command, the
+    // same rule COMBAT_ENABLED and TITLE_ENABLED already hold their own
+    // projects to — see engine/save.asm for what this gates, and
     // shared/save.js for the identity's derivation (assets/save.inc holds
     // the record's own field layout, generated from the same list). Four
     // bytes, little-endian byte 0 first -- see saveIdentity's own comment
     // for why 16 bits, then a second widening, stopped being enough, and for
     // what this identity can and cannot guarantee on its own.
     `SAVE_ENABLED = ${usesSave ? 1 : 0}`,
+    // Which medium SAVE_ENABLED means, for engine/save.asm's own
+    // save_media_fetch/save_media_commit to dispatch on -- a no-op pair on
+    // battery, the RAM-resident driver (engine/flash.asm) on flash. Always
+    // emitted, the same reasoning SAVE_ENABLED itself already documents:
+    // never referenced when it does not apply, so it costs nothing to name
+    // regardless of medium.
+    `SAVE_FLASH = ${usesSave && flashSaveCapable(mapper) ? 1 : 0}`,
+    // Bank 30's own $B000-$BFFF (shared/cartridge.js's flashSaveSectorBank,
+    // the same function main/build/pipeline.js's post-build all-$FF check
+    // reads) -- meaningless off a flash board, but harmless to name; nothing
+    // outside .if SAVE_FLASH ever reads it.
+    `SAVE_BANK = ${flashSaveCapable(mapper) ? flashSaveSectorBank(mapper) : 0}`,
+    // The whole record's length, body plus checksum plus identity plus
+    // marker -- SAVE_BODY_LEN below only covers the body, and lives inside
+    // assets/save.inc's own .if SAVE_ENABLED block, so engine/constants.asm's
+    // unconditional RAM reservation for the flash buffer (needed regardless
+    // of SAVE_ENABLED so test/unit/rammap.test.js can always audit it) has
+    // nothing else to size itself against. engine/flash.asm's own copy loop
+    // uses this too, rather than re-deriving SAVE_BODY_LEN+7 by hand.
+    `SAVE_RECORD_LEN = ${saveBodySize() + 7}`,
     `SAVE_IDENTITY_0 = ${saveIdentityValue & 0xff}`,
     `SAVE_IDENTITY_1 = ${(saveIdentityValue >> 8) & 0xff}`,
     `SAVE_IDENTITY_2 = ${(saveIdentityValue >> 16) & 0xff}`,
@@ -1234,7 +1274,17 @@ export async function generateAssets({ dir, project, log = () => {} }) {
   // even when the project has no Save command: the labels cost nothing
   // unreferenced, and it keeps this file's shape independent of SAVE_ENABLED,
   // the same reason every system string compiles unconditionally.
-  const SAVE_BASE = 0x6000;
+  //
+  // Media-dependent: $6000 is battery-backed WRAM, always mapped once
+  // mapper_init enables it, so the record lives there directly. $0700 is
+  // ordinary RAM -- the flash medium's own record never lives in RAM
+  // permanently; save_media_fetch/save_media_commit (engine/save.asm) copy
+  // it to and from the flash sector, so SAVE_BASE here just names the
+  // buffer they use, not where the record persists. Every routine that
+  // reads or writes SAVE_BASE only ever does so through `SAVE_BASE,y` or
+  // LOW/HIGH(SAVE_BASE) (engine/save.asm's own header comment lists all six
+  // sites), so this is genuinely the only place the address itself matters.
+  const SAVE_BASE = flashSaveCapable(mapper) ? 0x0700 : 0x6000;
   let saveOffset = SAVE_BASE;
   const saveFieldLines = SAVE_FIELDS.map((field) => {
     const line = `SAVE_${field.ram.toUpperCase()} = $${saveOffset.toString(16).toUpperCase()}`;
@@ -1245,7 +1295,8 @@ export async function generateAssets({ dir, project, log = () => {} }) {
   // Three parallel tables, one entry per SAVE_FIELDS field, in the same order
   // — the table-driven form of the same layout the equates above spell out.
   // engine/save.asm's one generic copy routine walks these in both
-  // directions (RAM<->SRAM) rather than eighteen hand-written loops that
+  // directions (RAM<->SAVE_BASE, media-dependent -- battery RAM or a flash
+  // driver's RAM buffer) rather than eighteen hand-written loops that
   // could silently drift out of agreement with each other about what the
   // record contains; LOW()/HIGH() resolve against the real engine symbol
   // (constants.asm), the same way every other pointer table here does.
@@ -1257,9 +1308,10 @@ export async function generateAssets({ dir, project, log = () => {} }) {
     return lines.join('\n');
   };
   const saveInc = [
-    '; Generated -- the save record\'s layout in battery RAM. shared/save.js is',
-    '; the single writer; engine/save.asm addresses every field by these equates',
-    '; and the descriptor tables below.',
+    '; Generated -- the save record\'s layout at SAVE_BASE, media-dependent',
+    '; (battery RAM or a flash driver\'s RAM buffer; see engine/save.asm\'s own',
+    '; header). shared/save.js is the single writer; engine/save.asm addresses',
+    '; every field by these equates and the descriptor tables below.',
     `SAVE_BASE = $${SAVE_BASE.toString(16).toUpperCase()}`,
     ...saveFieldLines,
     `SAVE_BODY_LEN = ${saveBodyLen}`,

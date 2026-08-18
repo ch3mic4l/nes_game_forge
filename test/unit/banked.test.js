@@ -236,18 +236,19 @@ test('screenCapacityFor’s delta is smaller than one region once real screens a
   assert.equal(capacityOff - capacityOn, 21, 'the delta at this boundary is 21, not a full region (26)');
 });
 
-// The other half of round 1's fix: reservesFlashSaveRegion gained
-// `&& saveMediaImplemented(mapper)` so that production never actually
-// removes a region from a project the engine cannot save on yet (see its
-// own comment, shared/cartridge.js). Every capacity test above forces
-// reserveFlashSave explicitly, which deliberately bypasses that clause --
-// none of them would notice if it were deleted. This is the same shape as
-// the vacuous-meter finding, one level up: tested the arithmetic the gate
-// controls, never the gate itself. A real UNROM 512 project with a live
-// Save command is the only way to ask the gate a question it can still get
-// wrong today (saveMediaImplemented(UNROM 512) is false, so this must stay
-// unreserved even though the board and the live Save are both real).
-test('a live Save command on UNROM 512 does not reserve the flash sector yet (saveMediaImplemented is false for flash)', async () => {
+// The other half of round 1's fix, re-pointed now that phase 2.3 flipped
+// SAVE_FLASH_IMPLEMENTED: reservesFlashSaveRegion's `&& saveMediaImplemented
+// (mapper)` clause used to keep production from ever actually removing a
+// region for a project the engine could not save on yet; now that the
+// engine can (engine/flash.asm), the same gate has to actually let the
+// reservation through for a real live-Save UNROM 512 project, or an author
+// gets a build that promises the sector's own 4 KB to screen data and a
+// driver that then erases whatever landed there. Every capacity test above
+// forces reserveFlashSave explicitly, which deliberately bypasses this
+// clause -- none of them would notice if it silently went back to always
+// false. This is the one that asks the gate the question it can still get
+// wrong, with no override.
+test('a live Save command on UNROM 512 reserves the flash sector, with no override supplied', async () => {
   const project = await loadProject(SAMPLE);
   project.cartridge.mapper = 30; // UNROM 512
   project.maps[0].screens[0].entities.push({
@@ -258,22 +259,22 @@ test('a live Save command on UNROM 512 does not reserve the flash sector yet (sa
   });
   const mapper = mapperById(30);
 
-  assert.equal(checkCapacity(project).reserveFlashSave, false);
+  assert.equal(checkCapacity(project).reserveFlashSave, true);
 
   // No override -- exactly how build.js's meter calls this.
   const ceiling = projectScreenCeiling(project, mapper);
-  const unreservedCeiling = projectScreenCeiling(project, mapper, { reserveFlashSave: false });
-  assert.equal(ceiling, unreservedCeiling, 'the meter must not reserve either, with no override supplied');
+  const reservedCeiling = projectScreenCeiling(project, mapper, { reserveFlashSave: true });
+  assert.equal(ceiling, reservedCeiling, 'the meter must reserve too, with no override supplied');
 });
 
 // The screen-bank emit path (main/build/generate.js's assignScreenBanks,
-// called from generateAssets) is the third consumer, and real production
-// behaviour never reaches it with reserveFlashSave: true -- that value is
-// gated on saveMediaImplemented (shared/cartridge.js), which is false for
-// flash until phase 2.3, so no real build can exercise this yet. Rather than
-// wait for the engine, assignScreenBanks takes reserveFlashSave as a plain
-// argument -- like screenRegions/screenCapacity's own option -- so the exact
-// function generateAssets calls is directly testable with an explicit true.
+// called from generateAssets) is the third consumer. Real production
+// reaches it with reserveFlashSave: true now (a live-Save UNROM 512 project
+// genuinely builds -- see flashsave.test.js for the end-to-end version), but
+// assignScreenBanks still takes reserveFlashSave as a plain argument -- like
+// screenRegions/screenCapacity's own option -- so the exact boundary (one
+// screen too many for the reserved region count) stays directly testable
+// without needing ~1,600 screens or a real nesasm build to reach it.
 //
 // tilesetCount is deliberately larger than UNROM 512's real 4-tileset ceiling
 // (chrPayloadRegions has no ceiling of its own; the schema enforces that, not

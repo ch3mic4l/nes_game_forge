@@ -236,7 +236,16 @@ wait_vblank_loop:
   beq wait_vblank_loop
   rts
 
-; Used while the NMI is disabled (during a screen redraw).
+; Safe with NMI enabled or disabled, unlike wait_vblank above it: this polls
+; PPUSTATUS ($2002) bit 7 directly rather than the vblank RAM byte NMI sets,
+; and nothing in this engine's own NMI handler (nmi, below) ever reads
+; $2002 -- so nothing consumes the flag this loop is waiting on out from
+; under it. wait_vblank, by contrast, genuinely does need NMI enabled: it
+; waits on vblank, and only NMI ever sets that byte, so a caller with NMI
+; disabled would spin forever. Used during a screen redraw (NMI disabled,
+; where wait_vblank could not be used at all) and, since save_media_commit
+; (engine/save.asm) needs to wait for vblank *before* it disables NMI and
+; forces blank, here too -- proved safe either way, not merely assumed.
 wait_vblank_poll:
   bit $2002
 wait_vblank_poll_loop:

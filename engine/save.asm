@@ -1,10 +1,21 @@
-; save.asm -- the one save slot, in battery-backed WRAM at $6000-$7FFF.
+; save.asm -- the one save slot, at SAVE_BASE, media-dependent: battery-backed
+; WRAM at $6000-$7FFF, or the flash medium's RAM buffer at $0700
+; (save_flash_buf, engine/constants.asm), actually persisted by
+; save_media_fetch/save_media_commit below and engine/flash.asm's driver.
 ;
-; WRAM itself is enabled once, at boot, by mapper_init (engine/banks.asm) --
+; Everything from here to those two routines addresses the record only as
+; `SAVE_BASE,y` or LOW/HIGH(SAVE_BASE) -- never a literal $6000 -- which is
+; what lets the same code serve both media unchanged; see save_media_fetch's
+; own comment for the medium split itself.
+;
+; Battery WRAM is enabled once, at boot, by mapper_init (engine/banks.asm) --
 ; MMC3's $A001 write and MMC1's PRG-RAM-disable bit, the two register facts
 ; the emulator's core cannot check for you. Nothing here toggles it off again:
 ; once enabled it stays enabled for the cartridge's whole session, the same
-; way the CHR/PRG mode bits mapper_init sets are never revisited.
+; way the CHR/PRG mode bits mapper_init sets are never revisited. The flash
+; medium has no such enable step -- SAVE_BASE there is ordinary RAM, always
+; addressable, and it is save_media_fetch/commit's own job to move a real
+; record into and out of it.
 ;
 ; The record, in address order, is the body, a two-byte checksum over it, a
 ; two-byte project identity, and a one-byte marker. Writing it is a four-step
@@ -14,6 +25,12 @@
 ;   2. Write the identity (unconditionally -- see script_op_save).
 ;   3. Write the body.
 ;   4. Compute and write the checksum, then the marker, last of all.
+;
+; script_op_save adds a fifth step after all four, for flash only:
+; save_media_commit actually programs the record built in RAM into the
+; sector. On battery the first four steps *are* the whole save -- they
+; already wrote directly into the medium the record lives in -- so that
+; fifth step is a no-op there.
 ;
 ; Step 1 is what makes overwriting an *existing* save interruption-safe, not
 ; only the very first one. Writing the marker last protects a save that has
@@ -30,8 +47,10 @@
 ; effect: a refused save is recoverable by playing on and saving again, and a
 ; hybrid of two different sessions' state is not recoverable at all.
 ;
-; A byte read out of SRAM is untrusted input. SRAM survives a reflash, a
-; corrupt write and a hand-edit. Anything restored from it that is then used
+; A byte read out of the record is untrusted input regardless of medium: SRAM
+; survives a reflash of the game, and a flash sector survives everything a
+; power loss mid-erase or a hand-edited cartridge dumper can leave behind.
+; Anything restored from it that is then used
 ; as an index -- a screen number, a party size, an actor id, a level, a
 ; direction, a Y coordinate -- must be checked against what *this build*
 ; actually has before it is used, never trusted because it came from a
@@ -72,7 +91,7 @@
   .include "assets/save.inc"
 
 ; A/X = the two-byte checksum of the SAVE_BODY_LEN body bytes already sitting
-; in SRAM (A = the first accumulator, X = the second). Two running sums, not
+; at SAVE_BASE (A = the first accumulator, X = the second). Two running sums, not
 ; one: sum1 is a plain running total and sum2 is a running total *of* sum1,
 ; so two bytes trading places -- or one byte lost from the middle of a
 ; partial write and another gained at the end -- change sum2 even on the
@@ -104,7 +123,92 @@ save_checksum_loop:
   ldx tmp2
   rts
 
-; Z set when the record in SRAM is one this build wrote, is not corrupt, and
+; Refreshes SAVE_BASE from wherever the record actually lives, before
+; anything below reads it. On battery, SAVE_BASE already addresses the
+; always-mapped SRAM directly -- mapper_init enabled it once, at boot, and
+; nothing since has moved it -- so there is nothing to fetch. On flash, the
+; record lives in bank SAVE_BANK's own ROM until this copies
+; SAVE_RECORD_LEN bytes of it out to save_flash_buf (SAVE_BASE for that
+; medium; engine/constants.asm), because the record is never resident in
+; RAM the rest of the time the way battery's is.
+;
+; An ordinary ROM read, same as any other bank switch: the chip is never
+; mid-operation here (only save_media_commit's own erase/program is), so
+; write_mapper_reg's identity-table trick is exactly as safe as it is
+; everywhere else in this engine. Clobbers A, X and Y; preserves nothing
+; else, the same as save_check_valid, whose head is this routine's only
+; caller today alongside script_op_save's own read of a stale buffer
+; nothing else in this file needs.
+;
+; Both this and save_media_commit below are wrapped whole, call site
+; included (see save_check_valid and script_op_save) rather than left
+; standing as a bare `rts` battery never uses: a no-op *function* is still
+; a jsr and an rts battery pays for on every save/load, which is exactly
+; the "must not move by a byte" MMC1/MMC3 output promises -- caught by
+; kernelbytes.test.js re-measuring a live Save command on MMC1 the first
+; time this was only conditional on the inside.
+  .if SAVE_FLASH
+save_media_fetch:
+  lda mapper_shadow
+  pha
+  lda #SAVE_BANK
+  jsr switch_prg_bank
+  ldy #0
+save_media_fetch_loop:
+  lda $B000,y
+  sta SAVE_BASE,y
+  iny
+  cpy #SAVE_RECORD_LEN
+  bne save_media_fetch_loop
+  pla
+  jsr write_mapper_reg
+  rts
+  .endif
+
+; The dangerous direction: erase-then-program bank SAVE_BANK's own sector
+; from whatever script_op_save has just finished composing at SAVE_BASE.
+; Battery media has no call site for this at all -- see the comment above
+; save_media_fetch -- because save_write_body already wrote the record
+; directly into the always-mapped SRAM it lives in, and there is no second
+; medium to commit it to.
+;
+; The whole operation runs under forced blank with NMI genuinely disabled
+; (a $2000 write, not merely masked -- see engine/split.asm's own register-
+; discipline comment for why "merely masked" is not the same thing) and IRQ
+; masked for good measure, even though this board has no IRQ source of its
+; own to mask: an interrupt vector fetch mid-operation would read chip
+; status as a vector, the same hazard an instruction fetch is, so this
+; costs nothing to close off anyway. php/plp bracket it rather than a bare
+; sei/cli, so a caller's interrupt state comes back exactly as it was
+; rather than this assuming it was on, the same discipline switch_prg_bank
+; already holds itself to for the identical reason.
+  .if SAVE_FLASH
+save_media_commit:
+  jsr wait_vblank_poll
+  php
+  sei
+  lda #$00
+  sta $2000                  ; NMI off, genuinely -- not merely masked
+  sta $2001                  ; rendering off
+  lda mapper_shadow
+  pha
+  ldx #0
+save_media_commit_copy:
+  lda flash_commit_driver,x
+  sta flash_driver,x
+  inx
+  cpx #flash_commit_driver_len
+  bne save_media_commit_copy
+  jsr flash_driver            ; see engine/flash.asm's own header for why
+                              ; this must run from here, never from ROM
+  pla
+  jsr write_mapper_reg        ; safe again: the operation is over
+  jsr enable_rendering
+  plp
+  rts
+  .endif
+
+; Z set when the record at SAVE_BASE is one this build wrote, is not corrupt, and
 ; names values this build can actually index with. Four gates, in order from
 ; cheapest to most expensive to check, any one of which refuses the record:
 ;
@@ -145,8 +249,11 @@ save_checksum_loop:
 ;      instead reads as a real check and refuses nothing a differently-sized
 ;      project's save would actually trip.
 ;
-; Clobbers A and X; preserves nothing else.
+; Clobbers A, X and Y; preserves nothing else.
 save_check_valid:
+  .if SAVE_FLASH
+  jsr save_media_fetch
+  .endif
   lda SAVE_MARKER
   cmp #SAVE_MARKER_VALID
   bne save_check_fail
@@ -177,8 +284,8 @@ save_check_fail:
 save_check_range:
   ; NUM_SCREENS/MAX_PARTY/MAX_ITEMS are this build's own ceilings -- the same
   ; take_door (engine/boot.asm) already refuses an out-of-range warp target
-  ; with, for the same reason: a value read out of SRAM has to earn its way
-  ; into a table index, never be trusted into one.
+  ; with, for the same reason: a value read out of the record has to earn its
+  ; way into a table index, never be trusted into one.
   lda SAVE_FLAT_SCREEN
   cmp #NUM_SCREENS
   bcs save_check_invalid
@@ -288,12 +395,13 @@ save_field_setup:
   tax
   rts
 
-; RAM -> SRAM, one field at a time: save_ptr walks the field's RAM home,
-; save_cursor walks the record body it is packed into, and both use the same
-; Y so neither needs its own byte counter. save_cursor starts at SAVE_BASE and
-; advances by each field's length as it finishes, which is what makes the
-; table's field *order* the record's byte layout -- exactly what
-; shared/save.js's SAVE_FIELDS already promises engine/save.asm will do.
+; Engine RAM -> the record at SAVE_BASE, one field at a time: save_ptr walks
+; the field's RAM home, save_cursor walks the record body it is packed into,
+; and both use the same Y so neither needs its own byte counter. save_cursor
+; starts at SAVE_BASE and advances by each field's length as it finishes,
+; which is what makes the table's field *order* the record's byte layout --
+; exactly what shared/save.js's SAVE_FIELDS already promises engine/save.asm
+; will do.
 save_write_body:
   lda #LOW(SAVE_BASE)
   sta save_cursor_lo
@@ -353,13 +461,19 @@ script_op_save:
   stx SAVE_CHECKSUM_HI
   lda #SAVE_MARKER_VALID
   sta SAVE_MARKER
+  .if SAVE_FLASH
+  jsr save_media_commit       ; see its own comment; no call site at all on
+                              ; battery, where the record above was already
+                              ; written to where it lives
+  .endif
   jmp script_next1
 
-; SRAM -> RAM, the mirror of save_write_body: same table, same field order,
-; same cursor arithmetic, only the direction of the one lda/sta pair inside
-; the byte loop is reversed. Only ever called from continue_game below, after
-; init_session -- never on its own, or a load would be applying a record on
-; top of whatever RAM happened to hold rather than a known-fresh session.
+; The record at SAVE_BASE -> engine RAM, the mirror of save_write_body: same
+; table, same field order, same cursor arithmetic, only the direction of the
+; one lda/sta pair inside the byte loop is reversed. Only ever called from
+; continue_game below, after init_session -- never on its own, or a load
+; would be applying a record on top of whatever RAM happened to hold rather
+; than a known-fresh session.
 load_apply_body:
   lda #LOW(SAVE_BASE)
   sta save_cursor_lo
