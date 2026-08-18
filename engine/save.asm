@@ -30,7 +30,18 @@
 ; save_media_commit actually programs the record built in RAM into the
 ; sector. On battery the first four steps *are* the whole save -- they
 ; already wrote directly into the medium the record lives in -- so that
-; fifth step is a no-op there.
+; fifth step is a no-op there. That fifth step is also the one genuinely
+; slow, power-loss-exposed operation this file has -- an erase-then-program
+; commit spanning tens of milliseconds with rendering off, unlike the plain
+; RAM writes above -- and engine/flash.asm's own header explains the second,
+; independent fact (its program loop's own ascending order) that combines
+; with this file's "marker last" to protect the *programming* half of that
+; commit the same strong way: a tear once the erase has finished reads back
+; as no save, never a corrupt one. A tear during the erase itself -- by
+; duration the larger part of that commit, not a brief prelude to it -- is
+; a different risk that ordering alone does not cover -- see flash.asm's
+; own header for the numbers, and this file's identity/checksum/range
+; gates below for what actually stands against it there.
 ;
 ; Step 1 is what makes overwriting an *existing* save interruption-safe, not
 ; only the very first one. Writing the marker last protects a save that has

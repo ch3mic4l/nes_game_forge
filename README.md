@@ -317,6 +317,26 @@ from a different game, or one interrupted by the power going off mid-write, is
 refused instead of loaded as nonsense. One slot, and one risk window: an interrupted
 write takes out whatever was already in the slot, not only the save being made.
 
+On **UNROM 512** that risk window is longer and worth knowing about specifically: a
+Save there uses a single 4 KB region of the cartridge's flash chip, and writing to
+flash means erasing that whole region before the replacement record can be written
+into it — there is no way to update one byte of an old save in place the way battery
+memory allows. Cutting power or resetting during that roughly 24-32 ms erase-and-write
+(the screen blanks briefly while it happens) can leave Continue unavailable until the
+next Save. Most of that time — around 18-25 ms of it — is the erase itself, and a cut
+during that part is a different risk than a cut during the shorter write that follows,
+not a smaller one: erase ordering inside the flash chip isn't something this app
+controls or can see, so a cut during it can leave the previous save's own completion
+marker still reading as valid over a body that has already been partly wiped. The
+save's internal checksum catches that in practice and refuses to load a record that
+doesn't add up, but that is a strong safeguard, not a guarantee. Once the erase has
+actually finished, the shorter write that follows is protected more simply: nothing
+marks a save complete until its very last byte, so a cut there is read back cleanly as
+*no save*, never as one that loads wrong. Either way this is a brief, occasional
+window, not a routine hazard, and flash wear levelling is intentionally not
+implemented — a cartridge's flash chip easily outlasts any plausible number of saves a
+player would make.
+
 ## The title screen
 
 Point **Title screen** in the Map Forge at any screen in the project and the

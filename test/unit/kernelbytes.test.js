@@ -153,11 +153,13 @@ function assertCovers(entry, budget, label) {
 // the table with `undefined`, the whole budget silently becomes NaN, and
 // every capacity comparison against it (`kernelFree < 0`, assertCovers's own
 // `<=`) reads as false -- a capacity check that always "passes" is worse
-// than one that fails loudly. Today this holds vacuously (only the two
-// battery boards are saveMediaImplemented and both are already measured
-// above); the day phase 2.3 flips SAVE_FLASH_IMPLEMENTED to true, this stops
-// being vacuous and starts requiring a measured entry for mapper 30 before
-// that flip is safe to ship.
+// than one that fails loudly. This is live for all three of today's
+// saveMediaImplemented() boards -- MMC1 and MMC3 on battery,
+// SAVE_FLASH_IMPLEMENTED now true so UNROM 512 on flash as well, each with
+// its own measured entry checked below -- and it stands guard against a
+// fourth: the day some future save medium's saveMediaImplemented() answers
+// true before this table has a matching measured entry for it, this is what
+// stops kernelCodeBytes from silently computing NaN for that board instead.
 test('every saveMediaImplemented() board has a finite SAVE_KERNEL_ALLOWANCE_BY_MAPPER entry', () => {
   for (const mapper of SUPPORTED_MAPPERS) {
     if (!saveMediaImplemented(mapper)) continue;

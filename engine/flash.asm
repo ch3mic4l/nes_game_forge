@@ -84,7 +84,65 @@ flash_commit_driver:
 
   ; --- program SAVE_RECORD_LEN bytes from the RAM buffer -------------------
   ; save_flash_buf (engine/constants.asm) is SAVE_BASE for a flash build --
-  ; the record save_write_body just finished composing there.
+  ; the record save_write_body just finished composing there, marker already
+  ; restored to SAVE_MARKER_VALID by script_op_save (engine/save.asm) before
+  ; this driver was ever invoked -- the chip only ever receives a complete,
+  ; already-valid buffer to program, never the RAM copy's own briefly
+  ; invalidated marker from earlier in that sequence.
+  ;
+  ; This loop runs x ascending, 0 to SAVE_RECORD_LEN-1, and that direction is
+  ; not incidental: SAVE_MARKER is generated as the record's last byte
+  ; (main/build/generate.js: `SAVE_BASE + saveBodyLen + 6`, one past
+  ; SAVE_RECORD_LEN's own `saveBodySize() + 7`), so ascending here means the
+  ; marker is the last byte this loop ever programs. That is what makes a
+  ; tear *during this loop* -- once the erase above has already finished --
+  ; safe in the strong sense: this sector's erase clears every byte to $FF,
+  ; byte programming can only clear bits further (never set one, see
+  ; fd_unlock's own header and mapper30.js's programFlashByte), and
+  ; save_check_valid accepts only an exact SAVE_MARKER_VALID byte -- so power
+  ; lost anywhere in this loop up to and including its second-to-last byte
+  ; leaves the marker at $FF, and the next boot reads that as *no save*, not
+  ; as a save silently loaded wrong.
+  ;
+  ; The erase above is a different risk this loop's own ordering does not
+  ; cover, and by duration it is the *larger* one, not a narrower one: the
+  ; SST39SF040 datasheet gives 18 ms typical / 25 ms maximum for the sector
+  ; erase against roughly 1.2-1.7 ms of device time for this loop's own 87
+  ; byte-program cycles (14-20 us each), so the erase is most of the
+  ; commit's real-world 24-32 ms window (phase 2.4's own review, CLAUDE.md),
+  ; not a brief prelude to it. It is also not instantaneous or ordered in
+  ; any way this engine controls, so a tear mid-erase can leave the
+  ; *previous* commit's own SAVE_MARKER_VALID byte still reading valid
+  ; while some of the body underneath it has already gone to $FF. That
+  ; record can present as valid-looking with a corrupted body -- what
+  ; stands between that and a load applying wrong values is
+  ; save_check_valid's identity, checksum and range gates (engine/save.asm's
+  ; own header), which is real, layered defence and not nothing, but is
+  ; explicitly not a proof against every case (see that header's own
+  ; admission on checksum/identity coincidences and wrong-but-in-range
+  ; values). So the honest claim spans both phases:
+  ; a tear during this program loop cannot produce a corrupt save; a tear
+  ; during the erase is subjected to validation that will normally catch
+  ; it, which is strong but not airtight. Not "always no save, never a
+  ; broken one" for the commit as a whole -- only for the phase this loop's
+  ; own ordering actually covers.
+  ; This comment has been wrong about that scope twice already, in opposite
+  ; directions -- first claiming the guarantee held for "any" tear, then
+  ; correcting that but calling the erase the "narrower" risk when it is
+  ; the larger one by duration. Both times the error was in an unquantified
+  ; comparative word standing in for a number that was available the whole
+  ; time (the datasheet timings above). Where a number exists, use it;
+  ; where one genuinely does not, say so rather than implying a magnitude.
+  ;
+  ; A slot ring or an atomic two-sector journal would remove the erase
+  ; window's own risk entirely; CLAUDE.md records why phase 2.4 costed both
+  ; and built neither. This loop's ordering is what makes living without one
+  ; tolerable for the phase it covers, and it is two independent facts --
+  ; the generated layout above, and this loop's own direction -- that happen
+  ; to agree rather than anything that enforces the other.
+  ; test/unit/flashmarkerorder.test.js pins both halves and negative-controls
+  ; each: reversing this loop, or moving the marker off the record's end,
+  ; fails its own test for its own reason.
   ldx #0
 fd_program_loop:
   jsr $0600+(fd_unlock-flash_commit_driver)
