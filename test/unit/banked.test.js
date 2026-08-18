@@ -15,7 +15,7 @@ import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import NES from '../../renderer/emulator/core/nes.js';
 import { Emulator, BUTTON } from '../../renderer/emulator/runcontrol.js';
-import { createProject, createMap } from '../../shared/project.js';
+import { createProject, createMap, projectScreenCeiling } from '../../shared/project.js';
 import {
   SCREEN_REGION_BYTES,
   chrPayloadRegions,
@@ -25,12 +25,20 @@ import {
   screenCapacity,
   screenRegions
 } from '../../shared/cartridge.js';
-import { generateAssets, codeRegionCount, flattenScreens } from '../../main/build/generate.js';
+import {
+  assignScreenBanks,
+  checkCapacity,
+  screenCapacityFor,
+  generateAssets,
+  codeRegionCount,
+  flattenScreens
+} from '../../main/build/generate.js';
 import { buildProject } from '../../main/build/pipeline.js';
 import { loadProject, saveProject } from '../../main/project-io.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const SAMPLE_RPG = path.join(ROOT, 'sample-rpg');
+const SAMPLE = path.join(ROOT, 'sample');
 // This test reads sample-rpg's checked-in project.json through loadProject
 // and builds its own ROM from scratch — it never touches
 // sample-rpg/build/game.nes, so gating it on that build artifact (the way
@@ -90,6 +98,201 @@ test('the quoted screen capacity drops by exactly one region', () => {
     screenCapacity(MMC1, 305, 1, 1),
     screenCapacity(MMC1, 305, 1, 0) - perRegion,
     'reserving a bank should cost the screens that fit in it, and no more'
+  );
+});
+
+// --- the flash save sector (phase 2.2 of the UNROM 512 flash-save work) ----
+//
+// The sector is bank 30's own concern (phase 2.3); this phase only has to
+// get the *region* math right -- one whole 8 KB region given up off the
+// back of the screen budget, only when a live Save command actually needs
+// it, and never charged to a project that has no Save at all.
+
+test('reserving the flash sector drops the quoted screen capacity by exactly one region, and costs nothing when not reserved', () => {
+  const perRegion = Math.floor(SCREEN_REGION_BYTES / 305);
+  assert.equal(
+    screenCapacity(UNROM512, 305, 1, 0, { reserveFlashSave: true }),
+    screenCapacity(UNROM512, 305, 1, 0) - perRegion,
+    'reserving the flash sector should cost exactly the screens that fit in the region it takes'
+  );
+  assert.equal(
+    screenCapacity(UNROM512, 305, 1, 0, { reserveFlashSave: false }),
+    screenCapacity(UNROM512, 305, 1, 0),
+    'explicitly passing reserveFlashSave: false must be identical to the default (omitted) case'
+  );
+});
+
+test('the flash sector comes off the back, so it never renumbers a CHR-RAM or code region', () => {
+  const plain = screenRegions(UNROM512, 3, 1);
+  const reserved = screenRegions(UNROM512, 3, 1, { reserveFlashSave: true });
+  assert.equal(reserved.length, plain.length - 1, 'exactly one region should be given up');
+  // Every region reserved still appears, in the same order, at the front --
+  // only the trailing one is missing. If the flash sector were taken off the
+  // front instead, this would fail: the CHR-RAM and code regions (taken off
+  // the front already, see the tests above) would shift down by one.
+  assert.deepEqual(reserved, plain.slice(0, -1), 'only the last region should be missing');
+});
+
+// The Build panel's meter (renderer/forges/build/build.js) cannot be driven
+// from a node:test process -- it needs a real `document` (see ui.js's el())
+// that this codebase has no jsdom-style stand-in for; renderer coverage
+// lives in the real-Electron smoke test instead. That is exactly what made
+// the previous version of this test vacuous: it re-implemented the meter's
+// expression here rather than calling build.js's own code, so dropping the
+// option from build.js itself would have left this test passing. The fix is
+// projectScreenCeiling (shared/project.js): build.js's meter is now a call
+// to that function and nothing else, so calling projectScreenCeiling here
+// *is* calling the production expression, not retyping it.
+//
+// An *earlier* version of the replacement asserted projectScreenCeiling
+// equals checkCapacity's own capacity outright -- which is false in
+// general. projectScreenCeiling is a nominal estimate (every screen assumed
+// to cost SCREEN_BYTES + 1); checkCapacity's own screenCapacityFor packs the
+// project's *real* screens, which cost more once they carry entities
+// (screenRecordBytes adds ENTITY_RECORD bytes per placed one). The two only
+// agree while packing wastes nothing beyond the per-region floor -- true of
+// `sample`/`sample-rpg` as they ship today, false the moment a screen in
+// either carries enough entities (measured: 8 entities on every screen of
+// `sample` already makes checkCapacity's real ceiling one screen lower than
+// the meter's). Asserting equality made the test a tripwire pointed at
+// ordinary fixture growth rather than at the flash-sector reservation, and
+// it documented a false claim (the meter never over-promises) as a passing
+// invariant.
+//
+// What survives entity density is the delta, *while neither side's real
+// screens reach into the region being removed*: reserving the flash sector
+// removes one whole region, and one region is worth exactly `perRegion`
+// *nominal* screens on both sides, however many *real* screens are already
+// packed into the regions that stay. That precondition holds for
+// `sample`/`sample-rpg` here -- the reserved region is always the last one
+// (see the "comes off the back" test above), and neither fixture packs
+// anywhere near that far, entity-dense or not. It does NOT hold once a
+// project's real screens are dense enough to actually use the region the
+// reservation takes: at that boundary, the delta is whatever the
+// reservation genuinely displaces, which can be smaller than `perRegion` --
+// see the dense-boundary test below, where the exact packer's delta is 21,
+// not 26. That is correct behaviour (the reservation is doing its job at
+// the boundary it exists to enforce), not a bug in this test.
+// projectScreenCeiling and screenCapacityFor (both exported specifically
+// for this) take reserveFlashSave as a plain argument, forced explicitly
+// rather than through reservesFlashSaveRegion's saveMediaImplemented gate --
+// production never reaches reserveFlashSave: true yet, so there is nowhere
+// else to force it from, the same reason assignScreenBanks's own test does
+// this below.
+test(
+  'reserving the flash sector changes projectScreenCeiling and checkCapacity’s own screenCapacityFor by the same one-region amount, real entity-bearing fixtures included',
+  async () => {
+    const perRegion = Math.floor(SCREEN_REGION_BYTES / 305);
+    const mapper = mapperById(30); // UNROM 512 -- the only board this reservation ever applies to
+    for (const fixture of [SAMPLE, SAMPLE_RPG]) {
+      const project = await loadProject(fixture);
+      project.cartridge.mapper = 30;
+      const bankedCode = codeRegionCount(project);
+      const { flat } = flattenScreens(project);
+      const actorCount = project.sprites.actors.length;
+      const label = fixture === SAMPLE ? 'sample' : 'sample-rpg';
+
+      const capacityOff = screenCapacityFor(mapper, project.tilesets.length, bankedCode, flat, actorCount, false);
+      const capacityOn = screenCapacityFor(mapper, project.tilesets.length, bankedCode, flat, actorCount, true);
+      assert.equal(
+        capacityOff - capacityOn,
+        perRegion,
+        `${label}: checkCapacity's own packer should lose exactly one region's worth of nominal screens`
+      );
+
+      const ceilingOff = projectScreenCeiling(project, mapper, { reserveFlashSave: false });
+      const ceilingOn = projectScreenCeiling(project, mapper, { reserveFlashSave: true });
+      assert.equal(
+        ceilingOff - ceilingOn,
+        perRegion,
+        `${label}: the Build panel's meter should lose exactly one region's worth of nominal screens`
+      );
+    }
+  }
+);
+
+// The dense boundary the delta test above deliberately does not reach:
+// reviewer's own reproduction. tilesetCount leaves 2 of UNROM 512's 62
+// regions for screens, and 42 screens at 8 entities each pack *exactly* to
+// the two-region ceiling with the reservation off (21 real screens fit in
+// one region, so 42 fills both with nothing left over) -- meaning the
+// reserved region is not idle here, unlike the sparse fixtures above. With
+// the reservation on, only 1 region remains, holding 21 of those same
+// screens, so the packer's delta is 21, not perRegion (26). Pinned exactly,
+// not just asserted "less than 26", because a delta that drifted to some
+// other wrong number would be just as real a bug as reverting to 26.
+test('screenCapacityFor’s delta is smaller than one region once real screens are dense enough to reach it', () => {
+  const mapper = mapperById(30); // UNROM 512
+  const tilesetCount = 60; // leaves exactly 2 of 62 regions for screens
+  const flat = Array.from({ length: 42 }, () => ({
+    screen: { entities: Array.from({ length: 8 }, () => ({ actorId: 0 })) }
+  }));
+  const actorCount = 1;
+
+  const capacityOff = screenCapacityFor(mapper, tilesetCount, 0, flat, actorCount, false);
+  const capacityOn = screenCapacityFor(mapper, tilesetCount, 0, flat, actorCount, true);
+  assert.equal(capacityOff, 42, 'without the reservation, all 42 dense screens should fit exactly');
+  assert.equal(capacityOn, 21, 'with the reservation, only the first region’s worth should fit');
+  assert.equal(capacityOff - capacityOn, 21, 'the delta at this boundary is 21, not a full region (26)');
+});
+
+// The other half of round 1's fix: reservesFlashSaveRegion gained
+// `&& saveMediaImplemented(mapper)` so that production never actually
+// removes a region from a project the engine cannot save on yet (see its
+// own comment, shared/cartridge.js). Every capacity test above forces
+// reserveFlashSave explicitly, which deliberately bypasses that clause --
+// none of them would notice if it were deleted. This is the same shape as
+// the vacuous-meter finding, one level up: tested the arithmetic the gate
+// controls, never the gate itself. A real UNROM 512 project with a live
+// Save command is the only way to ask the gate a question it can still get
+// wrong today (saveMediaImplemented(UNROM 512) is false, so this must stay
+// unreserved even though the board and the live Save are both real).
+test('a live Save command on UNROM 512 does not reserve the flash sector yet (saveMediaImplemented is false for flash)', async () => {
+  const project = await loadProject(SAMPLE);
+  project.cartridge.mapper = 30; // UNROM 512
+  project.maps[0].screens[0].entities.push({
+    actorId: 0,
+    x: 16,
+    y: 16,
+    props: { event: { pages: [{ cond: { type: 'none', arg: 0 }, commands: [{ op: 'save' }] }] } }
+  });
+  const mapper = mapperById(30);
+
+  assert.equal(checkCapacity(project).reserveFlashSave, false);
+
+  // No override -- exactly how build.js's meter calls this.
+  const ceiling = projectScreenCeiling(project, mapper);
+  const unreservedCeiling = projectScreenCeiling(project, mapper, { reserveFlashSave: false });
+  assert.equal(ceiling, unreservedCeiling, 'the meter must not reserve either, with no override supplied');
+});
+
+// The screen-bank emit path (main/build/generate.js's assignScreenBanks,
+// called from generateAssets) is the third consumer, and real production
+// behaviour never reaches it with reserveFlashSave: true -- that value is
+// gated on saveMediaImplemented (shared/cartridge.js), which is false for
+// flash until phase 2.3, so no real build can exercise this yet. Rather than
+// wait for the engine, assignScreenBanks takes reserveFlashSave as a plain
+// argument -- like screenRegions/screenCapacity's own option -- so the exact
+// function generateAssets calls is directly testable with an explicit true.
+//
+// tilesetCount is deliberately larger than UNROM 512's real 4-tileset ceiling
+// (chrPayloadRegions has no ceiling of its own; the schema enforces that, not
+// this pure function) so only 2 of its 62 regions are left for screens
+// instead of ~61 -- enough to make the reservation's effect observable with
+// a handful of screens rather than the ~1,600 a realistic sweep would need.
+test('assignScreenBanks refuses to fit a screen into the reserved flash sector', () => {
+  const mapper = mapperById(30); // UNROM 512
+  const tilesetCount = 60; // leaves exactly 2 of 62 regions for screens
+  const perRegion = Math.floor(SCREEN_REGION_BYTES / 305);
+  const flat = Array.from({ length: perRegion + 1 }, () => ({ screen: { entities: [] } }));
+
+  const unreserved = assignScreenBanks(mapper, tilesetCount, 0, false, flat, 0);
+  assert.equal(unreserved.regionRanges.length, 2, 'both leftover regions should be used');
+
+  assert.throws(
+    () => assignScreenBanks(mapper, tilesetCount, 0, true, flat, 0),
+    /did not fit/,
+    'with the sector reserved only one region is left, and these screens should not fit'
   );
 });
 

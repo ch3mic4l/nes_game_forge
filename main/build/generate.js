@@ -57,7 +57,6 @@ import {
   PRG_SWITCH,
   SCREEN_REGION_BYTES,
   SUPPORTED_MAPPERS,
-  batteryCapable,
   chrBanksFor,
   chrPayloadRegions,
   chrRegisterTable,
@@ -65,8 +64,10 @@ import {
   mirroringOptions,
   mirroringValue,
   prgLayout,
+  reservesFlashSaveRegion,
   resolveMapper,
   rpgCapable,
+  saveMediaImplemented,
   screenRegions,
   tilesetLimit
 } from '../../shared/cartridge.js';
@@ -316,7 +317,13 @@ export const SPLIT_LOCK_KERNEL_ALLOWANCE = 19;
 export const KERNEL_SLACK = 20;
 
 export function kernelCodeBytes(project, mapper) {
-  const usesSave = projectUsesSave(project) && batteryCapable(mapper);
+  // saveMediaImplemented, not saveCapable: SAVE_KERNEL_ALLOWANCE_BY_MAPPER
+  // only has measured entries for the boards whose save/load code actually
+  // assembles today (engine/save.asm addresses $6000, only correct for
+  // battery RAM) -- a flash-capable-but-unimplemented board must cost
+  // nothing here the same way a project with no live Save costs nothing,
+  // or this would index the table with a mapper id it has no entry for.
+  const usesSave = projectUsesSave(project) && saveMediaImplemented(mapper);
   const usesMove = projectUsesMove(project);
   const usesSplitLock = fontBankSplit(project, mapper);
   return (
@@ -375,7 +382,10 @@ function projectWithoutCommands(project, ops) {
  * never mutates it.
  */
 function kernelShortfallAdvice(project, mapper, deficit) {
-  const usesSave = projectUsesSave(project) && batteryCapable(mapper);
+  // saveMediaImplemented for the same reason kernelCodeBytes itself reads it:
+  // "active" below feeds freedByDropping, which calls kernelCodeBytes, so
+  // this must agree with what that function actually charges.
+  const usesSave = projectUsesSave(project) && saveMediaImplemented(mapper);
   const usesMove = projectUsesMove(project);
   // "Every" rather than "the": a project can carry more than one live Move or
   // Save command (several actors, several pages), and removing just one of
@@ -437,14 +447,25 @@ function kernelShortfallAdvice(project, mapper, deficit) {
   const actorCount = project.sprites.actors.length;
   const alternative = SUPPORTED_MAPPERS.filter((candidate) => candidate.id !== mapper.id)
     .filter((candidate) => !isRpg || rpgCapable(candidate))
-    .filter((candidate) => !wantsSave || batteryCapable(candidate))
+    // saveMediaImplemented, not saveCapable: recommending UNROM 512 to a
+    // project with a live Save command would just trade this shortfall for
+    // validateProject's flash-unimplemented refusal -- not a fix.
+    .filter((candidate) => !wantsSave || saveMediaImplemented(candidate))
     .filter(
       (candidate) =>
         tilesetLimit(candidate, project.cartridge, fontChrPages(project, candidate)) >= project.tilesets.length
     )
     .filter((candidate) => mirroringOptions(candidate).some((entry) => entry.id === project.cartridge.mirroring))
     .filter(
-      (candidate) => screenCapacityFor(candidate, project.tilesets.length, bankedCode, flat, actorCount) >= flat.length
+      (candidate) =>
+        screenCapacityFor(
+          candidate,
+          project.tilesets.length,
+          bankedCode,
+          flat,
+          actorCount,
+          reservesFlashSaveRegion(wantsSave, candidate)
+        ) >= flat.length
     )
     .filter((candidate) => kernelCodeBytes(project, mapper) - kernelCodeBytes(project, candidate) >= deficit)
     .sort((a, b) => kernelCodeBytes(project, a) - kernelCodeBytes(project, b))[0];
@@ -678,11 +699,18 @@ function checkCode(project) {
  * Counting per region rather than on a total keeps boundary fragmentation in
  * the number, so the figure quoted to the user is one the assembler will
  * honour.
+ *
+ * Exported, and taking `reserveFlashSave` as a plain argument, for the same
+ * reason assignScreenBanks is: checkCapacity's own `reserveFlashSave` is
+ * gated on saveMediaImplemented and so is always false in a real build
+ * today, so a test that wants "what would checkCapacity show with the
+ * reservation on" has to call the exact function checkCapacity calls, with
+ * the flip forced explicitly, rather than go through the gate.
  */
-function screenCapacityFor(mapper, tilesetCount, bankedCode, flat, actorCount) {
+export function screenCapacityFor(mapper, tilesetCount, bankedCode, flat, actorCount, reserveFlashSave = false) {
   const spare = [];
   let packed = 0;
-  for (const _region of screenRegions(mapper, tilesetCount, bankedCode)) {
+  for (const _region of screenRegions(mapper, tilesetCount, bankedCode, { reserveFlashSave })) {
     let used = 0;
     while (packed < flat.length) {
       const size = screenRecordBytes(flat[packed], actorCount);
@@ -694,6 +722,41 @@ function screenCapacityFor(mapper, tilesetCount, bankedCode, flat, actorCount) {
   }
   const emptyScreen = SCREEN_BYTES + 1;
   return packed + spare.reduce((total, free) => total + Math.floor(free / emptyScreen), 0);
+}
+
+/**
+ * Assigns each flattened screen to a PRG bank, packing regions front-to-back
+ * exactly as screenCapacityFor above counts them. Exported and taking
+ * `reserveFlashSave` as a plain argument -- like screenRegions/screenCapacity
+ * themselves -- so this, the actual code generateAssets runs for the
+ * screen-bank emit path, is directly testable with an explicit true, the
+ * same way finding 1's region arithmetic is: real production behaviour never
+ * reaches reserveFlashSave: true yet (see reservesFlashSaveRegion), so a
+ * black-box test of a real build could never exercise this otherwise.
+ */
+export function assignScreenBanks(mapper, tilesetCount, bankedCode, reserveFlashSave, flat, actorCount) {
+  const screenBank = new Array(flat.length).fill(0);
+  const regionRanges = [];
+  let cursor = 0;
+  for (const region of screenRegions(mapper, tilesetCount, bankedCode, { reserveFlashSave })) {
+    const from = cursor;
+    let used = 0;
+    while (cursor < flat.length) {
+      const size = screenRecordBytes(flat[cursor], actorCount);
+      if (used + size > SCREEN_REGION_BYTES) break;
+      used += size;
+      screenBank[cursor] = region.prgBank;
+      cursor++;
+    }
+    regionRanges.push({ region, from, to: cursor });
+    if (cursor >= flat.length) break;
+  }
+  if (cursor < flat.length) {
+    // checkCapacity() should have caught this; failing loudly beats emitting a
+    // ROM whose later screens silently point at the wrong bank.
+    throw new Error(`internal: ${flat.length - cursor} screens did not fit into ${mapper.name}'s PRG banks`);
+  }
+  return { screenBank, regionRanges };
 }
 
 /** Capacity checks that must pass before the assembler is worth running. */
@@ -741,6 +804,18 @@ export function checkCapacity(project) {
 
   const layout = prgLayout(mapper);
   const bankedCode = codeRegionCount(project);
+  // A live Save command on a flash-capable board gives up its last screen
+  // region for the flash sector (see screenRegions' own comment) -- gated on
+  // a live Save, not merely on the board, so a project with no Save at all
+  // never pays for it, and gated by reservesFlashSaveRegion itself on
+  // saveMediaImplemented, so the region is not actually removed from a
+  // project the engine cannot save on yet -- that combination is already
+  // refused by validateProject, and removing the region too would only stack
+  // a misleading "reduce screens" capacity error on top of the real one.
+  // Returned below rather than left a local: generateAssets calls
+  // checkCapacity first and reuses this exact value for the screen-bank
+  // emit path, so there is one computation, not two that could drift.
+  const reserveFlashSave = reservesFlashSaveRegion(projectUsesSave(project), mapper);
 
   // On a scanline-IRQ board the font rides in its own CHR page, which is one
   // page the tilesets cannot have. The schema already enforces this ceiling on
@@ -762,7 +837,7 @@ export function checkCapacity(project) {
   // bank. Capacity is computed by the same packing the generator performs, so the
   // number quoted here is the number that will actually fit.
   const actorCount = project.sprites.actors.length;
-  const capacity = screenCapacityFor(mapper, project.tilesets.length, bankedCode, flat, actorCount);
+  const capacity = screenCapacityFor(mapper, project.tilesets.length, bankedCode, flat, actorCount, reserveFlashSave);
 
   const musicBytes = musicSize(project.songs);
 
@@ -800,6 +875,7 @@ export function checkCapacity(project) {
   return {
     problems,
     capacity,
+    reserveFlashSave,
     screenCount: flat.length,
     musicBytes,
     textBytes: text.bytes,
@@ -808,7 +884,7 @@ export function checkCapacity(project) {
 }
 
 export async function generateAssets({ dir, project, log = () => {} }) {
-  const { problems, capacity, screenCount } = checkCapacity(project);
+  const { problems, capacity, reserveFlashSave, screenCount } = checkCapacity(project);
   const errors = problems.filter((problem) => problem.severity === 'error');
   if (errors.length) {
     const error = new Error(errors.map((problem) => `${problem.where}: ${problem.message}`).join('\n'));
@@ -1262,30 +1338,17 @@ export async function generateAssets({ dir, project, log = () => {} }) {
 
   // --- screen bank assignment ----------------------------------------------
   // Decided before maps.inc is written, because the lookup tables there carry the
-  // bank each screen lives in.
-  const screenBank = new Array(flat.length).fill(0);
-  const regionRanges = [];
-  {
-    let cursor = 0;
-    for (const region of screenRegions(mapper, project.tilesets.length, bankedCode)) {
-      const from = cursor;
-      let used = 0;
-      while (cursor < flat.length) {
-        const size = screenRecordBytes(flat[cursor], actorCount);
-        if (used + size > SCREEN_REGION_BYTES) break;
-        used += size;
-        screenBank[cursor] = region.prgBank;
-        cursor++;
-      }
-      regionRanges.push({ region, from, to: cursor });
-      if (cursor >= flat.length) break;
-    }
-    if (cursor < flat.length) {
-      // checkCapacity() should have caught this; failing loudly beats emitting a
-      // ROM whose later screens silently point at the wrong bank.
-      throw new Error(`internal: ${flat.length - cursor} screens did not fit into ${mapper.name}'s PRG banks`);
-    }
-  }
+  // bank each screen lives in. reserveFlashSave came back from checkCapacity
+  // above rather than being recomputed here, so this and checkCapacity's own
+  // screenCapacityFor call are provably looking at the same region list.
+  const { screenBank, regionRanges } = assignScreenBanks(
+    mapper,
+    project.tilesets.length,
+    bankedCode,
+    reserveFlashSave,
+    flat,
+    actorCount
+  );
 
   // --- maps ----------------------------------------------------------------
   const screenLabel = (index) => `screen_${index}`;

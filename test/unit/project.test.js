@@ -741,6 +741,56 @@ test('a Run common event command naming a deleted common event fails validation 
   assert.equal(live[0].op, 'call');
 });
 
+// --- save media (phase 2.2 of the UNROM 512 flash-save work) ---------------
+
+function saveProjectFor(mapperId) {
+  const project = createProject('Quest');
+  project.cartridge.mapper = mapperId;
+  project.project.titleMap = 0; // Save also requires a title, not the thing under test here
+  project.project.titleScreen = 0;
+  project.sprites.actors = [{ name: 'Sign', behavior: 'npc' }];
+  project.maps[0].screens[0].entities.push({
+    actorId: 0,
+    x: 0,
+    y: 0,
+    props: { event: { pages: [{ cond: { type: 'none', arg: 0 }, commands: [{ op: 'save' }] }] } }
+  });
+  return project;
+}
+
+test('a live Save command refuses to build on a board with no save medium at all', () => {
+  const project = saveProjectFor(0); // NROM -- no battery RAM, no flash chip
+  const errors = validateProject(project).filter((p) => p.severity === 'error');
+  const message = errors.map((e) => e.message).find((m) => /save/.test(m));
+  assert.ok(message, 'expected a Save-related error');
+  assert.match(message, /no battery-backed RAM and no self-flashing program ROM/);
+  assert.match(message, /Choose MMC1 or MMC3 in the Build panel, or remove the Save command/);
+});
+
+// UNROM 512 genuinely can save (by flashing its own program ROM), which is
+// exactly why this cannot just widen the "can this board save" check the way
+// every other consumer's swap in this phase did: engine/save.asm still
+// addresses $6000 unconditionally, which is only correct for battery RAM,
+// so a live Save here has to keep failing loudly until phase 2.3 gives the
+// engine a flash driver -- see saveMediaImplemented (shared/cartridge.js).
+test('a live Save command on UNROM 512 is refused: the medium exists but is not implemented yet', () => {
+  const project = saveProjectFor(30);
+  const errors = validateProject(project).filter((p) => p.severity === 'error');
+  const message = errors.map((e) => e.message).find((m) => /UNROM 512/.test(m));
+  assert.ok(message, 'expected a Save-related error naming UNROM 512');
+  assert.match(message, /saves by flashing its own program ROM, which this version does not implement yet/);
+  assert.match(message, /Choose MMC1 or MMC3 in the Build panel, or remove the Save command/);
+});
+
+test('a live Save command on a battery-capable board (MMC1 or MMC3) is not refused', () => {
+  for (const mapperId of [1, 4]) {
+    const project = saveProjectFor(mapperId);
+    const errors = validateProject(project).filter((p) => p.severity === 'error');
+    const saveErrors = errors.filter((e) => /save/.test(e.message));
+    assert.deepEqual(saveErrors, [], `mapper ${mapperId} should not refuse a live Save`);
+  }
+});
+
 test("a Give/Take's missing actor survives normalize instead of clamping to a real one", () => {
   const project = normalizeProject({
     maps: [

@@ -93,7 +93,11 @@ export async function buildProject({ dir, project, log = () => {}, settings = {}
     const notes = [
       mapper.nes2 ? `NES 2.0, ${mapper.nes2.chrRamSize / 1024} KB CHR-RAM` : null,
       project.cartridge.mirroring === 'fourscreen' ? 'four-screen mirroring' : null,
-      saveEnabled ? 'battery-backed save' : null
+      // The wording depends on which medium the header bit actually selected
+      // on this board -- battery RAM on MMC1/MMC3, the flashable
+      // configuration on UNROM 512 -- so it cannot be one fixed string once
+      // a second medium exists.
+      saveEnabled ? (mapper.saveMedia === 'flash' ? 'flash save' : 'battery-backed save') : null
     ].filter(Boolean);
     log(`Rewrote the header for ${mapper.name} (${notes.join(', ')}).`);
   }

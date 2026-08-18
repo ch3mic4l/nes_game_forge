@@ -59,7 +59,7 @@ const ENGINE_SUPPORT = {
     menu: null,
     dialog: null,
     title:
-      'Loads the save and resumes there. Only offered when the project can save (a battery-capable ' +
+      'Loads the save and resumes there. Only offered when the project can save (a save-capable ' +
       'cartridge with a Save command) and a valid save currently exists — otherwise this is ignored the ' +
       'same as anywhere else.'
   }

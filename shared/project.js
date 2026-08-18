@@ -16,8 +16,10 @@ import {
   tilesetLimit,
   rpgCapable,
   rpgUnsupportedReason,
-  batteryCapable,
-  batteryUnsupportedReason,
+  saveMediaImplemented,
+  saveUnsupportedReason,
+  reservesFlashSaveRegion,
+  screenCapacity,
   defaultMapperFor
 } from './cartridge.js';
 import {
@@ -365,7 +367,7 @@ export const EVENT_COMMANDS = [
   { id: 'heal', label: 'Heal', args: ['value'] },
   { id: 'damage', label: 'Damage', args: ['value'] },
   // No argument -- there is exactly one save slot, so there is nothing to
-  // name. Only offered on a board with battery-backed WRAM (batteryCapable,
+  // name. Only offered on a board with a save medium at all (saveCapable,
   // shared/cartridge.js); validateProject refuses a live one elsewhere the
   // same way it refuses Join in a project with no party.
   { id: 'save', label: 'Save the game', args: [] },
@@ -1667,6 +1669,57 @@ export function projectUsesSave(project) {
 }
 
 /**
+ * The screen ceiling the Build panel's meter shows. Extracted here, rather
+ * than left as an expression inline in the Build panel, specifically so the
+ * meter is a call to this function and nothing else: renderer/forges/build/
+ * build.js has no isRpg/bankedCode/reserveFlashSave logic of its own left to
+ * regress independently.
+ *
+ * This is a nominal estimate -- "how many screens of a fixed size fit" --
+ * not the exact packing checkCapacity's own screenCapacityFor performs
+ * (main/build/generate.js), which packs the project's *real* screens
+ * (screenRecordBytes adds bytes per placed entity) and only counts nominal
+ * screens into what is left over. The two agree whenever packing wastes
+ * nothing beyond the per-region floor, which is true of every screen in the
+ * fixtures this codebase ships, but an entity-dense project can pack fewer
+ * real screens than this estimate promises (measured: 8 entities on every
+ * screen of `sample` already makes checkCapacity's real ceiling one lower
+ * than this one). That is a pre-existing honesty gap in the meter -- not
+ * something the flash-save region reservation introduced, and not corrected
+ * here, since fixing the meter's formula is a separate concern from this
+ * schema refactor. What holds regardless of entity density, *while neither
+ * side's real screens actually reach into the region being removed*, is the
+ * delta: reserving the flash sector drops this function's answer and drops
+ * screenCapacityFor's by exactly one region's worth of nominal screens,
+ * each. That precondition is not automatic -- a project dense enough to
+ * fill the region the reservation takes gets a smaller delta on the exact
+ * side, correctly, because the reservation is displacing real data rather
+ * than idle space (test/unit/banked.test.js pins a case where the delta is
+ * 21, not a full region). Both the ordinary-fixture delta and that dense
+ * boundary are the invariant test/unit/banked.test.js checks -- equality
+ * between this function and screenCapacityFor is not, and does not hold in
+ * general.
+ *
+ * `reserveFlashSave` is normally left undefined -- computed from `project`
+ * via reservesFlashSaveRegion, which is what the meter itself always does.
+ * A caller may pass it explicitly to bypass that gate, the same reason
+ * assignScreenBanks's own reserveFlashSave is a plain argument: production
+ * reservesFlashSaveRegion is gated on saveMediaImplemented and so never
+ * reads true in a real build yet, so the delta test above has nowhere else
+ * to force it from.
+ */
+export function projectScreenCeiling(project, mapper, { reserveFlashSave } = {}) {
+  const bankedCode = project.project?.gameType === 'rpg' ? 1 : 0;
+  // 240 metatiles + 64 attribute bytes + 1 empty actor-list count byte --
+  // mirrors SCREEN_BYTES + 1 in main/build/generate.js (the +1 there is
+  // emitScreens' own `[placed.length]`, zero for a screen with no actors),
+  // which this module cannot import (it reaches for node:fs).
+  const bytesPerScreen = SCREEN_METATILES + 64 + 1;
+  const reserve = reserveFlashSave ?? reservesFlashSaveRegion(projectUsesSave(project), mapper);
+  return screenCapacity(mapper, bytesPerScreen, project.tilesets.length, bankedCode, { reserveFlashSave: reserve });
+}
+
+/**
  * The same question for `move`, and asked for a harder reason than save's.
  *
  * Move is the most expensive command in this engine — a step routine, the
@@ -1901,11 +1954,17 @@ export function validateProject(project) {
   // documents. Two ways a live Save reaches a build it cannot work on:
   if (projectUsesSave(project)) {
     const saveMapper = resolveMapper(project.cartridge.mapper);
-    if (!batteryCapable(saveMapper)) {
+    // saveMediaImplemented, not saveCapable: UNROM 512 genuinely can save (by
+    // flashing its own program ROM), but the engine does not implement that
+    // medium yet (engine/save.asm addresses $6000 unconditionally, which is
+    // only correct for battery RAM) -- see saveMediaImplemented's own comment
+    // for the phase this is scoped to. Refusing here is what keeps the build
+    // from silently assembling a Save command that writes to open bus.
+    if (!saveMediaImplemented(saveMapper)) {
       add(
         'error',
         'Build',
-        `${batteryUnsupportedReason(saveMapper)} Choose MMC1 or MMC3 in the Build panel, or remove the Save command.`
+        `${saveUnsupportedReason(saveMapper)} Choose MMC1 or MMC3 in the Build panel, or remove the Save command.`
       );
     }
     // Continue is a title-screen option (engine/title.asm); a save with no

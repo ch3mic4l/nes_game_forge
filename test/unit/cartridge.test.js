@@ -495,6 +495,54 @@ for (const mapper of SUPPORTED_MAPPERS) {
   });
 }
 
+// --- save media: battery and flash ------------------------------------------
+//
+// Header byte 6 bit 1 selects "this cartridge saves" on every save-capable
+// board, but what it wires to differs completely by board: battery RAM on
+// MMC1/MMC3, the flashable configuration on UNROM 512. headerPatch is the
+// single writer of that bit, so these pin it directly rather than through a
+// full build.
+
+test('headerPatch sets byte 6 bit 1 for a live Save on every save-capable board, battery or flash', () => {
+  for (const id of [1, 4, 30]) {
+    const mapper = mapperById(id);
+    const patch = headerPatch(mapper, undefined, true);
+    assert.equal(patch[6]?.or & 0x02, 0x02, `${mapper.name}: byte 6 bit 1 should be set for a live Save`);
+  }
+});
+
+test('headerPatch leaves byte 6 bit 1 clear with no live Save, on every board', () => {
+  for (const mapper of SUPPORTED_MAPPERS) {
+    const patch = headerPatch(mapper, undefined, false);
+    assert.equal((patch[6]?.or ?? 0) & 0x02, 0, `${mapper.name}: byte 6 bit 1 must stay clear with no Save`);
+  }
+});
+
+test('headerPatch never sets byte 6 bit 1 for a board with no save medium at all, even asked to', () => {
+  for (const id of [0, 2, 3, 11, 66]) {
+    const mapper = mapperById(id);
+    const patch = headerPatch(mapper, undefined, true);
+    assert.equal((patch[6]?.or ?? 0) & 0x02, 0, `${mapper.name}: has no save medium, so bit 1 must stay clear`);
+  }
+});
+
+test('four-screen and flash save co-occur on UNROM 512 and OR together to 0x0A', () => {
+  const patch = headerPatch(mapperById(30), { mirroring: 'fourscreen' }, true);
+  assert.equal(patch[6].or, 0x0a, 'bit 3 (four-screen) and bit 1 (flash save) both set');
+});
+
+test('a flash save never declares PRG-RAM/PRG-NVRAM: byte 10 stays 0x00', () => {
+  // The save sector lives in PRG-ROM, not in battery-backed PRG-RAM/NVRAM --
+  // bit 1 above only selects the flashable configuration, so byte 10 has
+  // nothing to declare either way. Pinned explicitly so a later "fix" that
+  // tries to describe the save capacity here gets caught: UNROM 512 is the
+  // only mapper with a `nes2` header at all, so this is its one customer.
+  const withSave = headerPatch(mapperById(30), undefined, true);
+  const withoutSave = headerPatch(mapperById(30), undefined, false);
+  assert.equal(withSave[10].set, 0x00);
+  assert.equal(withoutSave[10].set, 0x00);
+});
+
 // --- UNROM 512: CHR-RAM authoring -----------------------------------------
 //
 // The only board here with no CHR-ROM. Its tile data lives in program space and

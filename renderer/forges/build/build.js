@@ -2,7 +2,14 @@
 
 import { store } from '../../store.js';
 import { el, clear, fill, toast } from '../../ui.js';
-import { validateProject, LIMITS, RPG_LIMITS, reconcileCartridge, projectUsesSave } from '../../../shared/project.js';
+import {
+  validateProject,
+  LIMITS,
+  RPG_LIMITS,
+  reconcileCartridge,
+  projectUsesSave,
+  projectScreenCeiling
+} from '../../../shared/project.js';
 import {
   MAPPERS,
   mapperById,
@@ -11,19 +18,13 @@ import {
   resolveMapper,
   rpgCapable,
   rpgUnsupportedReason,
-  batteryCapable,
-  batteryUnsupportedReason,
-  screenCapacity,
+  saveCapable,
+  saveUnsupportedReason,
   tilesetLimit
 } from '../../../shared/cartridge.js';
 import { BLANK_TILE } from '../../../shared/chr.js';
 import { parseEquates } from '../../../shared/enginesyms.js';
 import { mountPlayer } from '../../emulator/player.js';
-
-// 240 metatile ids, 64 attribute bytes and an empty actor list. Mirrors
-// SCREEN_BYTES in main/build/generate.js, which the renderer cannot import
-// because that module reaches for node:fs.
-const SCREEN_BYTES_PER_SCREEN = 240 + 64 + 1;
 
 /**
  * How a party grows, and which graphics bank a battle is fought in.
@@ -326,13 +327,20 @@ export function mount(container, app) {
           MAPPERS.map((entry) => {
             const board = mapperById(entry.id);
             const rpgBlocked = isRpg && board && !rpgCapable(board);
-            const saveBlocked = usesSave && board && !batteryCapable(board);
+            // saveCapable, not saveMediaImplemented: this option-disable is
+            // for boards with no save medium at all (a structural fact), the
+            // same kind of thing rpgBlocked already checks. UNROM 512 has a
+            // real medium (flash) even though this version cannot drive it
+            // yet, so it stays selectable here and validateProject names the
+            // temporary reason in the panel's own problem list instead of a
+            // disabled option pretending the board simply cannot save.
+            const saveBlocked = usesSave && board && !saveCapable(board);
             const reason = !entry.supported
               ? entry.unsupportedReason
               : rpgBlocked
                 ? rpgUnsupportedReason(board)
                 : saveBlocked
-                  ? batteryUnsupportedReason(board)
+                  ? saveUnsupportedReason(board)
                   : entry.hint;
             return el(
               'option',
@@ -346,7 +354,7 @@ export function mount(container, app) {
                 ? rpgBlocked
                   ? `${entry.label} — no battle system`
                   : saveBlocked
-                    ? `${entry.label} — no battery RAM`
+                    ? `${entry.label} — no save storage`
                     : entry.label
                 : `${entry.label} — not yet supported`
             );
@@ -400,13 +408,11 @@ export function mount(container, app) {
       meter('Background tiles', bgUsed, tableTotal),
       meter('Sprite tiles', spriteUsed, tableTotal),
       meter('Metatiles used', metatilesUsed, LIMITS.metatiles),
-      // An RPG spends one of the switchable window's regions on its battle
-      // system, so the ceiling the meter shows has to know that.
-      meter(
-        'Screens',
-        screens,
-        screenCapacity(mapper, SCREEN_BYTES_PER_SCREEN, project.tilesets.length, isRpg ? 1 : 0)
-      ),
+      // projectScreenCeiling (shared/project.js) is the single expression
+      // for this meter, shared with the test that asserts it agrees with
+      // checkCapacity's own screen ceiling -- nothing here decides isRpg,
+      // bankedCode or reserveFlashSave on its own.
+      meter('Screens', screens, projectScreenCeiling(project, mapper)),
       isRpg ? rpgProgression(project) : null,
       lastBuild
         ? el(

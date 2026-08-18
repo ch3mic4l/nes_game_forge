@@ -21,7 +21,7 @@ import {
 } from '../../../shared/project.js';
 import { BOX_COLS, BOX_ROWS, FONT_BASE, wrapText } from '../../../shared/font.js';
 import { RPG_LIMITS, isMonsterActor } from '../../../shared/project.js';
-import { batteryCapable, resolveMapper } from '../../../shared/cartridge.js';
+import { saveCapable, resolveMapper } from '../../../shared/cartridge.js';
 import { createMetatilePanel } from './metatiles.js';
 import {
   describeCommand,
@@ -476,9 +476,14 @@ export function mount(container, app) {
       commonEvents: store.project.commonEvents ?? [],
       songs: store.project.songs ?? [],
       // Whether the current cartridge can even hold a save -- the same
-      // question batteryCapable (shared/cartridge.js) answers for the Build
+      // question saveCapable (shared/cartridge.js) answers for the Build
       // panel's mapper picker, asked here to decide whether Save is offered.
-      canSave: batteryCapable(resolveMapper(store.project.cartridge.mapper))
+      // Deliberately saveCapable rather than saveMediaImplemented: a live
+      // Save on a board whose medium exists but is not implemented yet is
+      // still offered here, and validateProject is what refuses the build,
+      // the same reason the Build panel's own mapper picker does not disable
+      // UNROM 512 for this either.
+      canSave: saveCapable(resolveMapper(store.project.cartridge.mapper))
     };
   }
 

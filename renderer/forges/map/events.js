@@ -54,7 +54,7 @@ const offeredCommands = (context) =>
       // sooner would be exactly the "looks functional, does nothing" case
       // this codebase refuses to ship, one authoring step earlier.
       (entry.id !== 'call' || context.commonEvents?.length) &&
-      // Only a battery-capable cartridge has anywhere to write a save.
+      // Only a save-capable cartridge has anywhere to write a save.
       (entry.id !== 'save' || context.canSave)
   );
 
@@ -777,9 +777,9 @@ export function editEvent(event, context) {
         el(
           'p.hint',
           null,
-          'Writes the one save slot to the cartridge\'s battery RAM: where the player is, the switches and ' +
-            'variables, the inventory and the party. This is the player\'s save, not the Map Forge\'s own — ' +
-            'that one still happens whenever you save this project.'
+          'Writes the one save slot to the cartridge: where the player is, the switches and variables, the ' +
+            'inventory and the party. This is the player\'s save, not the Map Forge\'s own — that one still ' +
+            'happens whenever you save this project.'
         )
       );
     }

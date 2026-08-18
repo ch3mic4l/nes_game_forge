@@ -36,7 +36,7 @@ import {
   MOVE_KERNEL_ALLOWANCE,
   SPLIT_LOCK_KERNEL_ALLOWANCE
 } from '../../main/build/generate.js';
-import { SUPPORTED_MAPPERS, rpgCapable, batteryCapable, prgLayout } from '../../shared/cartridge.js';
+import { SUPPORTED_MAPPERS, rpgCapable, batteryCapable, saveMediaImplemented, prgLayout } from '../../shared/cartridge.js';
 import { createTileset, createProject } from '../../shared/project.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
@@ -145,6 +145,30 @@ function assertCovers(entry, budget, label) {
       'this measurement is still the actual worst case rather than a stale, overly generous guess.'
   );
 }
+
+// The fail-closed half of kernelCodeBytes's own usesSave gate
+// (`projectUsesSave(project) && saveMediaImplemented(mapper)`, see its
+// comment): if a board's saveMediaImplemented() ever answers true without a
+// matching SAVE_KERNEL_ALLOWANCE_BY_MAPPER entry, kernelCodeBytes indexes
+// the table with `undefined`, the whole budget silently becomes NaN, and
+// every capacity comparison against it (`kernelFree < 0`, assertCovers's own
+// `<=`) reads as false -- a capacity check that always "passes" is worse
+// than one that fails loudly. Today this holds vacuously (only the two
+// battery boards are saveMediaImplemented and both are already measured
+// above); the day phase 2.3 flips SAVE_FLASH_IMPLEMENTED to true, this stops
+// being vacuous and starts requiring a measured entry for mapper 30 before
+// that flip is safe to ship.
+test('every saveMediaImplemented() board has a finite SAVE_KERNEL_ALLOWANCE_BY_MAPPER entry', () => {
+  for (const mapper of SUPPORTED_MAPPERS) {
+    if (!saveMediaImplemented(mapper)) continue;
+    assert.ok(
+      Number.isFinite(SAVE_KERNEL_ALLOWANCE_BY_MAPPER[mapper.id]),
+      `${mapper.name}: saveMediaImplemented() is true but SAVE_KERNEL_ALLOWANCE_BY_MAPPER[${mapper.id}] is ` +
+        `${SAVE_KERNEL_ALLOWANCE_BY_MAPPER[mapper.id]} -- kernelCodeBytes would silently compute NaN for a ` +
+        'live Save command on this board. Add a measured entry before shipping this combination.'
+    );
+  }
+});
 
 test(
   'kernelCodeBytes covers the real engine, on every RPG-capable board, in every conditional combination',
@@ -456,6 +480,37 @@ test('a kernel-lo shortfall no single change would close falls back to the gener
   project.project.titleScreen = 0;
   inflate(project, 300);
   const message = kernelShortfallMessage(project);
+  assert.match(message, /Reduce the number of screens, actors or metasprites\.$/);
+});
+
+// UNROM 512 saves by flashing its own program ROM, which the engine does not
+// implement yet (see saveMediaImplemented, shared/cartridge.js) -- so
+// kernelCodeBytes charges it *nothing* for a live Save command, the same as
+// a project with no Save at all. That makes it look artificially cheap to a
+// naive "how many kernel-lo bytes would switching save" comparison: on this
+// exact project (MMC3, a live Save, 119 filler actors) UNROM 512 appears to
+// free 563 bytes -- more than dropping Save itself frees (552) and enough to
+// close the 556-byte deficit here -- while the real number, MMC1, only frees
+// about 211. Recommending UNROM 512 would trade this shortfall for
+// validateProject's flash-unimplemented refusal, which is not a fix. Chosen
+// to fall between "Save alone would close it" (552) and the mapper branch
+// even being reached, so a regression in the candidate filter (reverting to
+// saveCapable) makes this fail rather than silently passing because no
+// candidate was ever evaluated.
+test('a mapper suggestion never recommends UNROM 512 to a project with a live Save command', async () => {
+  const project = await loadProject(SAMPLE_RPG);
+  project.cartridge.mapper = 4; // MMC3
+  project.project.titleMap = 0;
+  project.project.titleScreen = 0;
+  project.maps[0].screens[0].entities.push({
+    actorId: 0,
+    x: 16,
+    y: 16,
+    props: { event: { pages: [{ cond: { type: 'none', arg: 0 }, commands: [{ op: 'save' }] }] } }
+  });
+  inflate(project, 119); // a 556-byte deficit -- see the comment above for why
+  const message = kernelShortfallMessage(project);
+  assert.doesNotMatch(message, /UNROM 512/, 'UNROM 512 cannot actually run this project\'s Save command yet');
   assert.match(message, /Reduce the number of screens, actors or metasprites\.$/);
 });
 
