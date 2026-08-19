@@ -31,8 +31,10 @@ export function mount(container, app) {
     frame: 0,
     actor: 0,
     sheetTile: 0,
-    previewTime: 0,
-    previewFrame: 0,
+    // Separate clocks so pausing or advancing one tab's preview cannot move
+    // the other's frame out from under it while it's off-screen.
+    actorPreview: { time: 0, frame: 0 },
+    animPreview: { time: 0, frame: 0 },
     playing: true,
     // Which tileset's sprite table is on screen. Metasprites store tile indices,
     // so the same metasprite reads against whichever CHR bank a map banks in.
@@ -43,6 +45,30 @@ export function mount(container, app) {
 
   const sprites = () => store.project.sprites;
   const palettes = () => store.project.palettes.sprite;
+
+  const resetActorPreview = () => (state.actorPreview = { time: 0, frame: 0 });
+  const resetAnimPreview = () => (state.animPreview = { time: 0, frame: 0 });
+
+  // Which animation object each clock's frame index currently belongs to —
+  // the actual object reference, not a name or a selection index. A name can
+  // be shared by two distinct animations (or renamed without changing what
+  // it points at), and an index can stay in range while what it points at
+  // changes underneath it (undo restoring a different actor/animation at the
+  // same slot); an object reference is the one signal that can't lie about
+  // either. It also has the right shape for free: an ordinary tab switch,
+  // or picking an actor that happens to share the same idle animation as the
+  // last one, resolves to the *same* object, so nothing resets — but a
+  // genuine selection change, an edited idle field, or a structuredClone
+  // undo/redo (which never hands back an object that `===` an earlier one)
+  // resolves to a different one, and does. `repaintActorPreview`/
+  // `repaintAnimationPreview` recompute this on every call — tick or full
+  // render alike — and reset the clock exactly when it disagrees with what
+  // was remembered. This must only run from those two repaints, never from a
+  // tab switch on its own — that would reset the Animations clock out from
+  // under the very pause behaviour the separate clocks exist for, undoing
+  // that fix from the other direction.
+  let actorPreviewSubject;
+  let animPreviewSubject;
 
   const spriteTable = () => tilesetAt(store.project, state.tilesetId).sprites.tiles;
 
@@ -582,8 +608,22 @@ export function mount(container, app) {
       el('p.hint', null, 'The engine advances an actor’s animation exactly like this preview.')
     );
 
+    repaintAnimationPreview();
+  }
+
+  // The only part of the Animations tab that changes on every preview tick —
+  // the rest of the panel (the frame list, the Play checkbox, the Preview
+  // heading) depends on project data and `state.playing`, not on
+  // `state.animPreview`, so `stepPreview()` calls this alone instead of
+  // rebuilding the whole pane on every tick.
+  function repaintAnimationPreview() {
+    const animation = currentAnimation();
+    if (animation !== animPreviewSubject) {
+      animPreviewSubject = animation;
+      resetAnimPreview();
+    }
     const metasprite = animation?.frames.length
-      ? sprites().metasprites[animation.frames[state.previewFrame % animation.frames.length]?.metaspriteId]
+      ? sprites().metasprites[animation.frames[state.animPreview.frame % animation.frames.length]?.metaspriteId]
       : null;
     drawPreview(editCanvas, metasprite, { showGuides: true });
     drawPreviewOnly(previewCanvas, metasprite);
@@ -792,15 +832,27 @@ export function mount(container, app) {
         : el('p.hint', null, 'Actors are what the Map Forge places on a screen.')
     );
 
-    const animation = actor && actor.anims.idle !== null ? sprites().animations[actor.anims.idle] : null;
-    const metasprite = animation?.frames.length
-      ? sprites().metasprites[animation.frames[state.previewFrame % animation.frames.length]?.metaspriteId]
-      : null;
-
     fill(detailHost,
       el('div.panel-head', { style: { paddingLeft: '0' } }, 'Behaviour'),
       el('p.hint', null, describeBehavior(actor?.behavior))
     );
+    repaintActorPreview();
+  }
+
+  // The only part of the Actors tab that changes on every preview tick — the
+  // rest of the panel depends on project data, not on `state.actorPreview`, so
+  // `loop()` calls this alone instead of rebuilding the whole pane underneath
+  // whatever the player is doing with it.
+  function repaintActorPreview() {
+    const actor = currentActor();
+    const animation = actor && actor.anims.idle !== null ? sprites().animations[actor.anims.idle] : null;
+    if (animation !== actorPreviewSubject) {
+      actorPreviewSubject = animation;
+      resetActorPreview();
+    }
+    const metasprite = animation?.frames.length
+      ? sprites().metasprites[animation.frames[state.actorPreview.frame % animation.frames.length]?.metaspriteId]
+      : null;
     drawPreview(editCanvas, metasprite, { showGuides: true });
   }
 
@@ -908,24 +960,56 @@ export function mount(container, app) {
     else renderActorPane();
   }
 
-  // Drive the animation preview off the same clock the engine uses: one step
-  // per displayed frame, honouring each frame's duration.
+  // One tick of one preview clock: advance it by a displayed frame and, if
+  // that crosses the current frame's duration, move to the next frame and
+  // call back to repaint whatever depends on it. `clock` is one of
+  // `state.actorPreview` / `state.animPreview` — passed in rather than
+  // hardcoded so each tab's clock only ever advances while that tab is the
+  // one stepping, and the other tab's frame cannot move while it's not on
+  // screen. Used by both branches below, so there is exactly one definition
+  // of what "one tick" does to a clock — `loop()` calls it every
+  // `requestAnimationFrame`, and `stepPreview()` below (exposed for the smoke
+  // test) calls it synchronously, with no rAF or timer involved either way.
+  function advancePreviewFrame(animation, clock, onFrameChange) {
+    clock.time++;
+    const current = animation.frames[clock.frame % animation.frames.length];
+    if (clock.time >= current.duration) {
+      clock.time = 0;
+      clock.frame = (clock.frame + 1) % animation.frames.length;
+      onFrameChange();
+    }
+  }
+
+  // Only the Actors and Animations tabs have anything previewing at all — the
+  // Party tab has no animation of its own, so it is left out entirely rather
+  // than swept in by a catch-all "not metasprites" condition that used to
+  // rebuild it for no visual benefit. Each branch calls a canvas-only repaint
+  // (never `render()`), so a running preview cannot tear either panel out
+  // from under whoever is clicking or typing in it. `state.playing` — the
+  // Animations tab's own Play checkbox — pauses only that tab's preview, not
+  // Actors': Actors has no pause control of its own, so its preview simply
+  // always runs, which is harmless now that a tick repaints a canvas and
+  // nothing else. That also means there is no reachable state where a
+  // preview is frozen on a tab with no control to unfreeze it — and because
+  // each tab steps its own clock, a paused Animations preview stays on
+  // exactly the frame it was paused on no matter how long is spent on Actors
+  // in the meantime.
+  function stepPreview() {
+    if (state.tab === 'actors') {
+      const idleId = currentActor()?.anims.idle ?? null;
+      const animation = idleId !== null ? sprites().animations[idleId] : null;
+      if (animation?.frames.length) advancePreviewFrame(animation, state.actorPreview, repaintActorPreview);
+      return;
+    }
+    if (state.tab === 'animations' && state.playing) {
+      const animation = currentAnimation();
+      if (animation?.frames.length) advancePreviewFrame(animation, state.animPreview, repaintAnimationPreview);
+    }
+  }
+
   function loop() {
     raf = requestAnimationFrame(loop);
-    if (!state.playing) return;
-    const animation = state.tab === 'actors'
-      ? (currentActor()?.anims.idle ?? null) !== null
-        ? sprites().animations[currentActor().anims.idle]
-        : null
-      : currentAnimation();
-    if (!animation?.frames.length) return;
-    state.previewTime++;
-    const current = animation.frames[state.previewFrame % animation.frames.length];
-    if (state.previewTime >= current.duration) {
-      state.previewTime = 0;
-      state.previewFrame = (state.previewFrame + 1) % animation.frames.length;
-      if (state.tab !== 'metasprites') render();
-    }
+    stepPreview();
   }
 
   const root = el(
@@ -971,10 +1055,23 @@ export function mount(container, app) {
     },
     onProjectChange() {
       syncTiles();
+      // These clamps are about keeping the selected index inside the array,
+      // not about the preview clocks — undo/redo can swap in project data
+      // where the selected index is still in range but names something else
+      // entirely (undoing the deletion of actor/animation 0, say), which a
+      // bounds check alone can't see. `repaintActorPreview`/
+      // `repaintAnimationPreview`, called from `render()` below either way,
+      // already re-derive what each clock should be showing by name and
+      // reset it themselves when that disagrees with what was remembered.
       if (state.metasprite >= sprites().metasprites.length) state.metasprite = 0;
       if (state.animation >= sprites().animations.length) state.animation = 0;
       if (state.actor >= sprites().actors.length) state.actor = 0;
       render();
-    }
+    },
+    // The exact per-tick step `loop()` drives from `requestAnimationFrame`,
+    // exposed so the smoke test can advance the preview a known number of
+    // times deterministically instead of waiting on real frames — which a
+    // backgrounded or unfocused window delivers at an unpredictable rate.
+    stepPreview
   };
 }

@@ -459,9 +459,19 @@ narrower reason than `state.tab !== 'metasprites'` to call the expensive path at
 condition also reaches the `party` tab, but `renderPartyPane()`/`partyPanel()`
 (`sprite.js:834-835`, `battle.js:186`) has no animation preview of its own to advance in the first
 place, so the fix there is simply for `loop()` to stop rendering it, not to give it a pause control
-it has no use for. The Actors tab is the one that would actually benefit from the same `Play`/pause
-checkbox the Animations tab already has, rather than defaulting to a preview the page gives no way
-to stop.
+it has no use for.
+
+**Scope correction: this is not the Actors page's bug alone.** `renderAnimationPane()`
+(`sprite.js:419-590`) has the identical shape — `fill(listHost, …)` rebuilds the frame list and
+`fill(detailHost, …)` rebuilds the `Play` checkbox itself on the same tick, which means the one
+control that could stop the churn was itself getting torn down and recreated by it. The fix covers
+both tabs, with the pause control resolved the same way it is asked above: `state.playing` pauses
+only the Animations tab's own preview, since that is the tab whose control it is; the Actors tab has
+no pause control and its preview always runs, which is harmless once a tick only repaints a canvas.
+The two tabs also keep separate clocks (`state.actorPreview` / `state.animPreview`, each its own
+`{ time, frame }`), not one shared counter gated per tab — otherwise stepping the Actors preview
+while Animations sat paused would still move the frame Animations shows on return, and "paused"
+would only have held for as long as the user never left the tab.
 
 ---
 

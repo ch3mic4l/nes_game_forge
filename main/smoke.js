@@ -758,6 +758,140 @@ const scenario = (dir, sampleDir) => `
   }
   step('sprite forge tabs', 'animations and actors render');
 
+  // ROADMAP item 11: the Actors and Animations tabs' preview loops used to
+  // call the same fill() that builds their own buttons, fields and (on
+  // Animations) the Play checkbox itself on every animation tick, destroying
+  // and recreating them out from under whatever the player was doing with the
+  // page. stepPreview() is the exact per-tick step loop() drives from
+  // requestAnimationFrame (renderer/forges/sprite/sprite.js), exposed on the
+  // mounted Forge so this calls it a known number of times directly instead
+  // of waiting on real frames -- a backgrounded or unfocused window throttles
+  // requestAnimationFrame unpredictably, which made an earlier, elapsed-time
+  // version of this check flaky. 16 is the sample project's own idle
+  // animation's frame duration in ticks, so it reliably crosses exactly one
+  // frame boundary.
+  const spriteForge = window.__app.current;
+  const STEPS = 16;
+
+  // Still on the Actors tab from the loop above.
+  const findAddActorButton = () =>
+    [...document.querySelectorAll('#stage button.btn.btn-sm')].find((b) => b.textContent.trim() === '+');
+  const actorAddButton = findAddActorButton();
+  if (!actorAddButton) throw new Error('Actors tab has no "+" button to track');
+  const actorPreviewCanvas = document.querySelector('#stage .canvas-stage canvas.pixels');
+  const actorPreviewBefore = actorPreviewCanvas.toDataURL();
+  for (let i = 0; i < STEPS; i++) {
+    spriteForge.stepPreview();
+    if (findAddActorButton() !== actorAddButton) {
+      throw new Error('the Actors tab rebuilt its own "+" button while the preview was running -- item 11 regressed');
+    }
+  }
+  if (actorPreviewCanvas.toDataURL() === actorPreviewBefore) {
+    throw new Error(
+      'the Actors tab preview never animated -- a fix for item 11 must not silence the preview to stop the DOM churn'
+    );
+  }
+  step('sprite forge actors preview', 'panel DOM held steady across 16 ticks, preview still animates');
+
+  // Same check on the Animations tab, whose own Play checkbox is the control
+  // that a shared "not metasprites" render used to destroy every tick too.
+  [...document.querySelectorAll('#stage .tab')].find((t) => t.textContent === 'Animations').click();
+  await wait(150);
+  const findPlayCheckbox = () => document.querySelector('#stage input[type=checkbox]');
+  const playCheckbox = findPlayCheckbox();
+  if (!playCheckbox) throw new Error('Animations tab has no Play checkbox to track');
+  if (!playCheckbox.checked) throw new Error('expected the Animations preview to default to playing');
+  const animPreviewCanvas = document.querySelector('#stage .canvas-stage canvas.pixels');
+  const animPreviewBefore = animPreviewCanvas.toDataURL();
+  for (let i = 0; i < STEPS; i++) {
+    spriteForge.stepPreview();
+    if (findPlayCheckbox() !== playCheckbox) {
+      throw new Error('the Animations tab rebuilt its own Play checkbox while the preview was running -- item 11 regressed');
+    }
+  }
+  if (animPreviewCanvas.toDataURL() === animPreviewBefore) {
+    throw new Error(
+      'the Animations tab preview never animated -- a fix for item 11 must not silence the preview to stop the DOM churn'
+    );
+  }
+  step('sprite forge animations preview', 'Play checkbox held steady across 16 ticks, preview still animates');
+
+  // The two tabs' previews must have separate clocks, not just a separately
+  // gated shared one: pausing Animations and then stepping Actors must not
+  // move the frame Animations shows on return, or "paused" only holds while
+  // the user never leaves the tab. This check compares exact frame content
+  // before and after, unlike the two above, so it cannot tolerate the real
+  // requestAnimationFrame loop sneaking in extra ticks alongside the 16
+  // manual ones -- an even number of stray ticks on the sample's two-frame
+  // animation would land back on identical pixels and hide a shared clock.
+  // Tab clicks render synchronously (no await inside their handlers), so with
+  // no await wait(...) anywhere in this block, nothing yields to the event
+  // loop between capturing the paused snapshot and re-reading it -- the real
+  // loop cannot run a single callback in that span, and 16 manual steps are
+  // then the only thing that can move either clock.
+  playCheckbox.checked = false;
+  playCheckbox.dispatchEvent(new Event('change', { bubbles: true }));
+  const pausedAnimSnapshot = animPreviewCanvas.toDataURL();
+
+  [...document.querySelectorAll('#stage .tab')].find((t) => t.textContent === 'Actors').click();
+  for (let i = 0; i < STEPS; i++) spriteForge.stepPreview();
+
+  [...document.querySelectorAll('#stage .tab')].find((t) => t.textContent === 'Animations').click();
+  if (findPlayCheckbox()?.checked !== false) {
+    throw new Error('the Animations tab lost its own paused state after a visit to Actors');
+  }
+  const resumedAnimSnapshot = document.querySelector('#stage .canvas-stage canvas.pixels').toDataURL();
+  if (resumedAnimSnapshot !== pausedAnimSnapshot) {
+    throw new Error(
+      'a paused Animations preview moved while the Actors tab was stepping -- the two previews do not have separate clocks'
+    );
+  }
+  step('sprite forge preview clocks separated', 'pausing Animations then stepping Actors left its frame untouched');
+
+  // ROADMAP item 11 follow-up: the actor's own Idle animation select changes
+  // which animation actorPreview is showing without changing state.actor, so
+  // a reset keyed only to actor selection never saw it -- neither did an
+  // undo of the same edit, since the selected index stays in range either
+  // way. Deterministic, same style as above: the select's change handler is
+  // synchronous, so no wait() is needed here either.
+  //
+  // This does not assume the clock is at frame 0 when the block starts --
+  // it carries over whatever the earlier checks above left it at, correctly,
+  // since a tab visit alone must never reset it. So the baseline for "reset"
+  // is established here, by round-tripping Idle once before touching
+  // anything else, rather than assumed from a fresh mount.
+  [...document.querySelectorAll('#stage .tab')].find((t) => t.textContent === 'Actors').click();
+  const findIdleSelect = () =>
+    [...document.querySelectorAll('#stage .field')]
+      .find((f) => f.querySelector('.field-label')?.textContent === 'Idle animation')
+      ?.querySelector('select');
+  const idleSelect = findIdleSelect();
+  if (!idleSelect) throw new Error('Actors tab has no Idle animation select to track');
+  const setIdle = (value) => {
+    idleSelect.value = String(value);
+    idleSelect.dispatchEvent(new Event('change', { bubbles: true }));
+  };
+  setIdle(1); // Gem shine -- a different animation, so this is a genuine identity change
+  setIdle(0); // back to Slime idle -- another genuine identity change, and a known-fresh clock
+  const freshFrame0 = document.querySelector('#stage .canvas-stage canvas.pixels').toDataURL();
+
+  for (let i = 0; i < STEPS; i++) spriteForge.stepPreview();
+  const advancedFrame = document.querySelector('#stage .canvas-stage canvas.pixels').toDataURL();
+  if (advancedFrame === freshFrame0) {
+    throw new Error("the sample actor's idle animation never visibly changed frames -- cannot test the reset");
+  }
+
+  // The real check: round-trip Idle again after advancing, and confirm it
+  // lands back on the *same* fresh frame 0 captured above -- not just some
+  // frame, the specific one a genuine reset produces.
+  setIdle(1);
+  setIdle(0);
+  const afterReselect = document.querySelector('#stage .canvas-stage canvas.pixels').toDataURL();
+  if (afterReselect !== freshFrame0) {
+    throw new Error('switching the Idle animation away and back did not reset the preview to frame 0');
+  }
+  step('sprite forge actor idle identity reset', 'switching Idle away and back restarted its own preview clock');
+
   // --- Sound Forge -------------------------------------------------------
   window.__app.goTo('sound');
   await wait(350);
