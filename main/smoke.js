@@ -892,6 +892,35 @@ const scenario = (dir, sampleDir) => `
   }
   step('sprite forge actor idle identity reset', 'switching Idle away and back restarted its own preview clock');
 
+  // ROADMAP item 11 follow-up, second gap: two actors that share the same
+  // idle animation (Slime id 0 and Hunter id 2, both animation 0 in the
+  // sample project) must still reset the clock when switching between them.
+  // Tracking only the resolved animation reference misses this -- the
+  // animation itself does not change -- so the actor reference has to be
+  // tracked too. Still on Slime (actor 0) with a known-fresh clock from
+  // above, captured in freshFrame0.
+  for (let i = 0; i < STEPS; i++) spriteForge.stepPreview();
+  const beforeActorSwitch = document.querySelector('#stage .canvas-stage canvas.pixels').toDataURL();
+  if (beforeActorSwitch === freshFrame0) {
+    throw new Error('expected the actor preview to have advanced before switching actors');
+  }
+  const findActorSelect = () =>
+    [...document.querySelectorAll('#stage select')].find((s) => [...s.options].some((o) => o.textContent === 'Hunter'));
+  const actorSelect = findActorSelect();
+  if (!actorSelect) throw new Error('Actors tab has no actor select with a Hunter option to track');
+  actorSelect.value = '2'; // Hunter -- a different actor, same idle animation as Slime
+  actorSelect.dispatchEvent(new Event('change', { bubbles: true }));
+  const afterActorSwitch = document.querySelector('#stage .canvas-stage canvas.pixels').toDataURL();
+  if (afterActorSwitch !== freshFrame0) {
+    throw new Error('selecting an actor that shares the same idle animation did not reset the preview to frame 0');
+  }
+  actorSelect.value = '0'; // back to Slime, so nothing after this depends on which actor was left selected
+  actorSelect.dispatchEvent(new Event('change', { bubbles: true }));
+  step(
+    'sprite forge actor identity reset on shared animation',
+    'selecting an actor with the same idle animation still restarted the preview clock'
+  );
+
   // --- Sound Forge -------------------------------------------------------
   window.__app.goTo('sound');
   await wait(350);

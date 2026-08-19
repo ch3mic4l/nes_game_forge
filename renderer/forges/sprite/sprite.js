@@ -49,26 +49,31 @@ export function mount(container, app) {
   const resetActorPreview = () => (state.actorPreview = { time: 0, frame: 0 });
   const resetAnimPreview = () => (state.animPreview = { time: 0, frame: 0 });
 
-  // Which animation object each clock's frame index currently belongs to —
-  // the actual object reference, not a name or a selection index. A name can
-  // be shared by two distinct animations (or renamed without changing what
-  // it points at), and an index can stay in range while what it points at
-  // changes underneath it (undo restoring a different actor/animation at the
-  // same slot); an object reference is the one signal that can't lie about
-  // either. It also has the right shape for free: an ordinary tab switch,
-  // or picking an actor that happens to share the same idle animation as the
-  // last one, resolves to the *same* object, so nothing resets — but a
-  // genuine selection change, an edited idle field, or a structuredClone
-  // undo/redo (which never hands back an object that `===` an earlier one)
-  // resolves to a different one, and does. `repaintActorPreview`/
-  // `repaintAnimationPreview` recompute this on every call — tick or full
-  // render alike — and reset the clock exactly when it disagrees with what
-  // was remembered. This must only run from those two repaints, never from a
-  // tab switch on its own — that would reset the Animations clock out from
-  // under the very pause behaviour the separate clocks exist for, undoing
-  // that fix from the other direction.
-  let actorPreviewSubject;
-  let animPreviewSubject;
+  // What each clock's frame index currently belongs to — tracked by actual
+  // object reference, not a name or a selection index. A name can be shared
+  // by two distinct animations (or renamed without changing what it points
+  // at), and an index can stay in range while what it points at changes
+  // underneath it (undo restoring a different actor/animation at the same
+  // slot); an object reference is the one signal that can't lie about
+  // either. The Actors tab reaches its animation through two hops — actor,
+  // then that actor's idle field — so both are tracked and either changing
+  // resets the clock: tracking the animation alone missed a different actor
+  // being selected whose idle field happens to name the *same* animation as
+  // the last one, which is exactly the case object identity was supposed to
+  // catch. `repaintActorPreview`/`repaintAnimationPreview` recompute this on
+  // every call — tick or full render alike — and reset the clock exactly
+  // when what's now being previewed disagrees with what was remembered. An
+  // ordinary tab switch changes neither the selected actor/animation nor
+  // what it resolves to, so nothing resets there; a genuine selection
+  // change, an edited idle field, or a structuredClone undo/redo (which
+  // never hands back an object that `===` an earlier one) changes at least
+  // one of them, and does. This must only run from those two repaints, never
+  // from a tab switch on its own — that would reset the Animations clock out
+  // from under the very pause behaviour the separate clocks exist for,
+  // undoing that fix from the other direction.
+  let actorPreviewActor;
+  let actorPreviewAnimation;
+  let animPreviewAnimation;
 
   const spriteTable = () => tilesetAt(store.project, state.tilesetId).sprites.tiles;
 
@@ -618,8 +623,8 @@ export function mount(container, app) {
   // rebuilding the whole pane on every tick.
   function repaintAnimationPreview() {
     const animation = currentAnimation();
-    if (animation !== animPreviewSubject) {
-      animPreviewSubject = animation;
+    if (animation !== animPreviewAnimation) {
+      animPreviewAnimation = animation;
       resetAnimPreview();
     }
     const metasprite = animation?.frames.length
@@ -846,8 +851,9 @@ export function mount(container, app) {
   function repaintActorPreview() {
     const actor = currentActor();
     const animation = actor && actor.anims.idle !== null ? sprites().animations[actor.anims.idle] : null;
-    if (animation !== actorPreviewSubject) {
-      actorPreviewSubject = animation;
+    if (actor !== actorPreviewActor || animation !== actorPreviewAnimation) {
+      actorPreviewActor = actor;
+      actorPreviewAnimation = animation;
       resetActorPreview();
     }
     const metasprite = animation?.frames.length
@@ -1057,12 +1063,13 @@ export function mount(container, app) {
       syncTiles();
       // These clamps are about keeping the selected index inside the array,
       // not about the preview clocks — undo/redo can swap in project data
-      // where the selected index is still in range but names something else
-      // entirely (undoing the deletion of actor/animation 0, say), which a
-      // bounds check alone can't see. `repaintActorPreview`/
+      // where the selected index is still in range but points at something
+      // else entirely (undoing the deletion of actor/animation 0, say),
+      // which a bounds check alone can't see. `repaintActorPreview`/
       // `repaintAnimationPreview`, called from `render()` below either way,
-      // already re-derive what each clock should be showing by name and
-      // reset it themselves when that disagrees with what was remembered.
+      // already re-derive what each clock is now previewing by object
+      // reference and reset it themselves when that disagrees with what was
+      // remembered.
       if (state.metasprite >= sprites().metasprites.length) state.metasprite = 0;
       if (state.animation >= sprites().animations.length) state.animation = 0;
       if (state.actor >= sprites().actors.length) state.actor = 0;
