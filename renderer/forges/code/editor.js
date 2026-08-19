@@ -2,10 +2,9 @@
 // textarea on top of it.
 //
 // Why hand-rolled rather than a library: the app ships no runtime dependencies
-// and no bundler, and its CSP has no `unsafe-eval`, which the usual editors need
-// for their workers. The trade is deliberate — this handles the cases a 6502
-// source file actually presents (no wrapping, no folding, no autocomplete) and
-// nothing else.
+// and no bundler, which rules out the usual editors. The trade is deliberate —
+// this handles the cases a 6502 source file actually presents (no wrapping, no
+// folding, no autocomplete) and nothing else.
 //
 // The three layers must agree on metrics *exactly* or the caret drifts from the
 // text under it: same font, size, line height, padding and tab size, set in one

@@ -168,10 +168,12 @@ renderer, and `node:test` alike.
   the window if something recomputes the zoom: `fitZoom()` and `observeSize()` in `renderer/ui.js`
   are that something, and the Tile, Sprite and Map Forges plus the emulator all go through them.
   Two rules keep the observer from chasing itself — it watches the *border* box (a scrollbar
-  changes the content box, and the redraw changes the scrollbar), and it defers the redraw to the
-  next frame (a synchronous one raises "ResizeObserver loop completed", which the smoke test
-  counts as a renderer error). The smoke test resizes the real window and asserts the map screen
-  grew, because a hardcoded zoom looks perfectly correct at whatever size it was written for.
+  changes the content box, and the redraw changes the scrollbar), and it calls the redraw
+  synchronously from the callback rather than deferring it a frame (deferring would only trade
+  "ResizeObserver loop completed" — which the smoke test counts as a renderer error — for a redraw
+  that never arrives in a window whose frames are being throttled). The smoke test resizes the real
+  window and asserts the map screen grew, because a hardcoded zoom looks perfectly correct at
+  whatever size it was written for.
 
 Each Forge is a module exporting `mount(container, app)` and returning
 `{ destroy?, onProjectChange? }`; `renderer/app.js` holds the registry and lazily imports them.
@@ -369,13 +371,15 @@ fails to rename, so it also falls back on nesasm's own `# N error(s)` count. `bu
 one IPC channel that does not flatten its error through `fail()`, because the `{file, line}` array
 is what the deep-link needs.
 
-The editor (`renderer/forges/code/`) is hand-rolled — no runtime dependencies, no bundler, and a
-CSP with no `unsafe-eval` rules out Monaco and CodeMirror. `highlight.js` is a pure per-line
-tokenizer (nesasm has no multi-line construct), and its one invariant is that joining the tokens
-reproduces the line; a test asserts that over every line of the engine. Two metric rules in
-`editor.js`: the gutter, the highlight layer and the textarea must agree on every font and spacing
-value or the caret drifts off its character, and `gotoLine` sets the selection *before* the scroll
-because focusing a textarea scrolls it on the browser's terms and discards anything set first.
+The editor (`renderer/forges/code/`) is hand-rolled — no runtime dependencies and no bundler rule
+out Monaco and CodeMirror, not the CSP; CodeMirror 6 needs no `unsafe-eval` at all. `highlight.js`
+is a pure per-line tokenizer (nesasm has no multi-line construct), and its one invariant is that
+joining the tokens reproduces the line; a test asserts that over every line of the engine. Two
+metric rules in `editor.js`: the gutter, the highlight layer and the textarea must agree on every
+font and spacing value or the caret drifts off its character, and for an editable file `gotoLine`
+sets the selection *before* the scroll because focusing a textarea scrolls it on the browser's
+terms and discards anything set first — a read-only generated file's `gotoLine` does not set a
+selection at all, so it only scrolls.
 Typing commits to the store on a pause rather than per keystroke (an unusable undo stack) or on
 blur (a commit that may never come), so `saveProject` in `app.js` calls the mount contract's
 optional `flushPendingEdits()` first.
