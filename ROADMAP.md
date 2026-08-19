@@ -243,6 +243,226 @@ exactly as they are: tests are written against them and they may not be mutated.
 are demos worth starting from — `sample/` and `sample-rpg/`; `sample-mmc1/` and `sample-mmc3/` exist
 to cover a board rather than to show a game, and are not what this item means.
 
+## 9. Split-pane editing in the Code Forge
+
+Hand-written 6502 in the Code Forge nearly always needs a second file in view.
+`engine/constants.asm` is the single allocation map for zero page and the `$0300+` RAM arrays, so
+it is the file you are reading while you edit any other one; a user file in `code/user/` wants the
+engine routine it calls. Today the Forge is one editor behind a tab strip, so that is a tab flip
+per address rather than a glance.
+
+What already exists narrows most of this to a layout and active-selection problem rather than a
+second editor implementation: the Forge already builds a separate editor instance per opened file
+— `openFile()` and the `createEditor()` call in `renderer/forges/code/code.js` (around line 172),
+with each instance kept on its own tab object — and only one is shown at a time, chosen by
+`activeKey`. Showing two existing tabs' editors at once, side by side, is mostly deciding which two
+and wiring a divider between them. One case does not fall out of that for free: an override and the
+stock file it replaces are the same tab. `tabKey()`/`openFile()` key every engine file's tab as
+`engine:<name>` regardless of whether it has an override, and `loadText()` resolves that one buffer
+to the override text if one exists, stock otherwise (`findFile('overrides', name)?.text ?? (await
+readStock(name))`) — so there is only ever one buffer for that name, and opening it twice does not
+produce a stock pane and an override pane. Showing an override beside the stock it diverges from
+needs a second identity for the same file (a read-only stock-reference buffer, say), which is extra
+work this item would have to take on, not something the split delivers on its own.
+
+- The editor is hand-rolled on purpose: no bundler and no runtime dependencies is the constraint
+  that rules out Monaco and CodeMirror, not the CSP — CodeMirror 6 needs no `unsafe-eval` at all
+  (`EditorView.cspNonce` only adds a nonce to its generated stylesheets), so the missing
+  `unsafe-eval` is not even a supporting reason to exclude it. A split view gets built inside this
+  zero-dependency architecture rather than imported.
+- `editor.js`'s metric rule is per pane: the gutter, the highlight layer and the textarea must
+  agree on every font and spacing value or the caret drifts off its character. Two panes means two
+  sets of metrics that each have to hold, and a draggable divider changes the width under both.
+- `flushPendingEdits()` already iterates every open tab, not only the active one, so
+  `renderer/app.js`'s `saveProject` calling it before a save already captures whatever is typed in
+  a pane that is not focused — that part does not need new work. What does: the debounce timer
+  that schedules a tab's commit (`pendingCommit` in `code.js`) is a single shared timeout, not one
+  per tab, so a keystroke in one pane cancels the other pane's pending commit before it fires. A
+  save still catches both through the flush, but two live panes make it worth giving each its own
+  timer rather than relying on flush to paper over the shared one.
+- Undo has two layers, and the split has to keep their ordering sane, not just decide where the
+  cursor lands. `undoInFocusedEditor` in `renderer/app.js` (around lines 345-380) sends Ctrl+Z to
+  the focused textarea's own native undo stack first (`document.execCommand('undo')`), and only
+  falls back to the shared project stack (`store.js`'s whole-project `structuredClone` snapshots)
+  once that textarea's native history is empty. This ordering already exists today — an editor's
+  DOM node and its native undo history survive a tab switch, so edit tab A, edit tab B, switch back
+  to A and Ctrl+Z already undoes A's older native edit ahead of B's newer project commit — but one
+  pane visible at a time keeps it out of sight, since you are never watching both files change at
+  once. Two panes visible and being typed into make it obvious: undo in the focused pane exhausts
+  *that pane's* own older keystrokes before it ever reaches the project stack, regardless of which
+  pane made the most recent project-level commit, so a Ctrl+Z that looks like it should undo the
+  change you just watched happen in the other pane instead undoes your own earlier typing in this
+  one. The item needs an answer for that ordering, not only for where the cursor lands once a
+  project-level undo does fire.
+- The Build panel's error deep-link opens a file at a line (`openFile(kind, name, line)` and the
+  app-level `openFile` at the bottom of `code.js`), which calls both `gotoLine` and `markLine` on
+  the tab's editor. For an editable file `gotoLine` sets the selection before scrolling, because
+  focusing a textarea scrolls it on the browser's terms; a generated `.inc` file is read-only, so
+  `gotoLine` only scrolls, and the error stripe comes entirely from the separate `markLine` call.
+  With two panes, something has to decide which pane a deep-link lands in either way, and the
+  answer should not be "whichever was focused last" by accident.
+- `renderer/ui.js`'s `observeSize()`/`fitZoom()` — the machinery the Tile, Sprite and Map Forges
+  and the emulator use to recompute an integer zoom when their stage resizes — has no reason to
+  reach the Code Forge. The editor's panes are ordinary flex/CSS-sized boxes, not integer-zoomed
+  pixel canvases, so a divider can resize them with plain CSS and no resize handler at all. This
+  only becomes a real constraint if the split's own design adds measured redraw work — reflowing
+  the highlight layer against a pane's new pixel width, say — and even then it is a new instance of
+  the rule, not a reason to route through `observeSize()` itself.
+
+This is pure editor work — no engine change, no assembly, no kernel bytes, no capacity math,
+exactly like item 2 was. That matters because the kernel-lo bank is the binding constraint on item
+6's remaining cutscene commands — items 7 and 8 are editor and asset work with no kernel cost of
+their own, same as this one — and this item is not subject to it at all.
+
+## 10. The Map Forge's settings pane scrolls sideways
+
+This is a bug the user hit, not a capability gap: the right-hand panel in the Map Forge — the one
+holding the map's name, size, music, screen name and the "Actors on this screen" list — grows a
+horizontal scrollbar, and everything in it should simply fit the column.
+
+The cause is one specific row, not the panel in general. `renderEntities()`
+(`renderer/forges/map/map.js:851-912`) builds a single `.field-row` (line 856) that packs the
+"Actors on this screen (N/8)" heading and four buttons — `Find…`, `Switches…`, `Variables…`,
+`Common events…` (lines 866-911) — side by side, in a `display: flex` row with no `flex-wrap`
+(`app.css:370-374`). Only the four buttons are unable to wrap — `.btn` sets `white-space: nowrap`
+(`app.css:160`) — the heading itself is ordinary wrapping text. Measured live via computed styles
+against the 272px-wide right column (`gridTemplateColumns: '300px 1fr 272px'`, `map.js:1366`):
+`.panel-body`'s own content box, after its 12px-a-side padding (`app.css:344-349`) and the ~16px
+Chromium reserves for its vertical scrollbar once `overflow-y: auto` has something to scroll, comes
+to 232px, not the ~248px a padding-only estimate would suggest. Against that 232px, the row itself
+measures a 411px `scrollWidth` — an excess of about 179px — and that number is fully accounted for
+by its five children's own rendered widths plus the row's `6px` gaps: the four buttons come to
+53+77+79+118 = 327px of un-shrinkable `white-space: nowrap` content, the heading — `white-space:
+normal`, so it wraps down to its longest unbreakable word rather than forcing width — still
+contributes 60px, and 4×6px of gap adds the remaining 24px, for 327+60+24 = 411px, matching the
+measurement exactly. `.panel-body` only declares `overflow-y: auto`; it never sets `overflow-x`,
+but because one axis is `auto`, the CSS overflow property's own defined behavior computes the
+other axis's initial `visible` value to `auto` as well — confirmed live (`getComputedStyle(body)
+.overflowX` reads `"auto"`) — so the panel gets a horizontal scrollbar by that general rule, not by
+any explicit choice about this content. No other row in the panel overflows — the "Screens across /
+down" row's two number inputs and the "Map" row's select plus two buttons both fit; it is
+specifically this one five-child row that doesn't.
+
+The heading is not the cause, and giving it `flex: '1'` inline (`map.js:860`, overriding the
+class's own `flex: none` that every other `.panel-head` in this Forge keeps — `map.js:1095`,
+`1310`, `1313`, `1427`, all plain section titles as the sole child of their row) is what lets it
+shrink to that 60px minimum instead of forcing its own full text width; without it, the row would
+overflow by even more. The four buttons are the entire reason this row cannot fit: at 327px of
+nowrap content plus the three gaps between them (18px), they alone already need 345px against a
+232px budget — before the heading and the fourth gap that separates it from the first button
+(60px + 6px = 66px) bring the row to its full 411px.
+
+Re-arranging this means giving that row somewhere to put its buttons other than beside the
+heading it's attached to — `flex-wrap: wrap` on the row so the buttons flow onto a second line
+within the fixed-width column (the panel already scrolls vertically, so wrapped content is handled
+for free), or splitting the heading onto its own line and letting the four buttons wrap as a
+toolbar underneath it, which would also make it look like every other `.panel-head` in the file.
+Either way the fix is contained to this one row and the panel it sits in: the right-hand column's
+*width* is untouched by both options, so it does not touch `fitZoom()`/`observeSize()`
+(`renderer/ui.js`) at all — those govern the *middle* column's `mapStage`, a separate grid track
+from this one, and nothing about wrapping a row's height reaches across a `display: grid` root
+into a sibling column. Verified live, not assumed: the map canvas's own zoom fit is driven by
+`observeSize(mapStage, renderScreen)` (`map.js:1432`), which watches `mapStage` alone.
+
+## 11. The Sprite Forge's Actors page does not accept clicks
+
+Also a bug, and the user's report of it is that they cannot click on anything on the Actors page.
+The user's own hypothesis — that the animation preview playing is what causes it — is correct in
+substance, though the actual mechanism is more specific than "an animation is running": the
+preview clock is tearing down and rebuilding the exact controls the user is trying to click, on a
+cadence this item works out precisely below — and, separately from clicking, destroying whatever
+currently has focus every time it does.
+
+`state.playing` defaults to `true` (`sprite.js:36`) and there is no control to turn it off from
+the Actors page — the only `Play` checkbox that touches it lives in the Animations tab's own pane
+(`renderAnimationPane`, `sprite.js:569-583`). `loop()` (`sprite.js:913-929`) runs every animation
+frame regardless of which tab is open; once the current frame's duration elapses it advances
+`state.previewFrame` and, for any tab but `metasprites`, calls `render()` (line 927) — which
+covers `actors` (and, by the same blanket condition, `party`). `render()` (`sprite.js:896-909`)
+calls `renderActorPane()` for the Actors tab, and that function does not merely repaint a preview
+canvas: `fill(listHost, …)` (line 606) and `fill(detailHost, …)` (line 800) rebuild the *entire*
+actor picker, the `+`/`✕` buttons, the Name/Behaviour/Speed/HP/Contact-damage fields and every
+animation-slot `<select>` from scratch on every one of those ticks. `fill()`
+(`renderer/ui.js:52-54`) is `clear(node)` — which removes every child — followed by a fresh
+`append()`; there is no diffing, so this is a literal destroy-and-recreate of the DOM nodes under
+the pointer, not just a re-render of their contents. That breaks the page two independent ways.
+First, clicking: a `click` needs the same element to receive both `mousedown` and `mouseup` for
+*that element's own* handler to fire — if the two land on different elements the browser may still
+synthesize a `click` on a common ancestor, but the button that was actually pressed is gone by
+`mouseup`, so its `onclick` (the thing that would add the actor, or delete it) never runs
+regardless of what bubbles where. Second, typing and selecting: rebuilding also
+destroys whatever currently has focus even when a click *did* land cleanly — the Name text input
+(`sprite.js:692-698`), the Behaviour/animation-slot `<select>`s (700-709, 752-778) and the
+Speed/HP/Contact-damage number inputs (710-743) are all torn out and recreated by the same
+`fill(listHost, …)` call, so a field the player has just focused, or a `<select>` currently showing
+its open dropdown, can be yanked out from under them mid-interaction independent of whether any
+click failed at all.
+
+The cadence is real but throttling-dependent, so it is worth being precise about what is fixed and
+what varies. `state.previewTime` advances once per `requestAnimationFrame` callback, not per
+elapsed wall-clock time, so a frame's `duration` — authored per animation frame, clamped 1-255 with
+a default of 8 (`shared/project.js:1369`) — counts *rendered frames*, not milliseconds, and the
+real-world rebuild interval is `duration / callback rate` — the rate `requestAnimationFrame` is
+actually delivering, not the display's physical refresh rate, which the browser is free to
+throttle it below. `loop()` tracks exactly one animation at a time — whichever actor is currently
+selected — so there is no scenario where several animations' rebuilds compound; the interval is
+set entirely by that one animation's duration and however fast callbacks are arriving. In the
+ordinary, focused, foreground case the callback rate tracks the physical refresh rate directly, so
+for the sample project's own Slime idle animation (two 16-tick frames — `sample/sprites.json`),
+that is ~267ms at an ordinary 60Hz display, or ~133ms at 120Hz; the shortest legal duration of 1
+would rebuild on every delivered callback regardless of what that rate is. A live measurement in
+this session's own automated test window caught the "+" button replaced by a new DOM node 11 times
+in 1.5 seconds — about 136ms apart on average. Dividing that by the 16-tick duration gives a
+callback rate of roughly 117/s, not explained by "more than one animation" (`loop()` only ever
+tracks the one) but consistent with an unthrottled ~120Hz foreground window. A second attempt at
+the same measurement, moments later in the same environment, caught only 0-2 replacements over as
+long — the same physical display, but a collapsed callback rate — alongside `document.hasFocus()`
+reading `false` while `document.visibilityState` stayed `"visible"` (not hidden), consistent with
+Chromium throttling `requestAnimationFrame` for a window that has lost input focus, though this
+session's own instrumentation didn't isolate the exact mechanism responsible, only the correlation.
+That divergence is exactly why the formula has to be stated against the callback rate and not the
+refresh rate: the physical display never changed between the two measurements, only the rate
+`requestAnimationFrame` was actually delivered at. So the defensible claim is `duration / callback
+rate`, with 60Hz/120Hz as what that rate equals in the unthrottled, focused case — not a single
+generalized millisecond number, and not an assumption that the display's rated refresh always
+applies.
+
+Severity: this is not a roadmap nicety, but the two failure modes above are not equally severe, and
+the item should not blur them together. Focus/selection loss is deterministic and unconditional:
+every rebuild destroys a focused text input or an open `<select>` regardless of timing, refresh
+rate, or luck, so any field edit that outlasts one rebuild interval is disrupted every time. Click
+loss is probabilistic: only a click whose `mousedown`-to-`mouseup` window straddles a rebuild loses
+its handler. At 60Hz with the sample project's 16-tick duration (~267ms between rebuilds), nothing
+established here shows a *majority* of clicks being lost — an ordinary deliberate click is well
+under 267ms, so most single clicks should land clean at that rate. That is short of what the user
+actually reported: not "some clicks fail," but that they could not click on anything on the page at
+all. Two things could close that gap, and this item should leave the question open rather than pick
+a side to make the story tidy: a high-refresh display roughly halves the interval for every step up
+(~133ms at 120Hz, proportionally less at higher rates still), which alone narrows things
+considerably without fully explaining a *total* loss of interaction; or something beyond the
+mechanism traced here — a shorter-duration animation on the user's actual project, repeated
+rebuilds compounding with the focus/selection loss into something that reads as "nothing works" even
+when individual clicks are landing, or a factor this investigation didn't find — is also doing work.
+Either way, an actor with any short-duration idle animation (which the schema's own default of 8
+and every actor in the sample project both make the ordinary case, not an edge case) makes its own
+settings page fight the pointer and the keyboard several times a second while genuinely focused,
+which is unambiguously a real defect regardless of exactly how it adds up to "unusable" — the fix
+should confirm, rather than assume, which of the above accounts for the reported severity.
+
+What fixing it costs: the loop only needs to repaint the preview surface — `drawPreview(editCanvas,
+…)`, already called at the end of `renderActorPane()` (line 804) purely from canvas pixels, costs
+nothing structurally. The expensive part, `fill(listHost, …)` / `fill(detailHost, …)`, has nothing
+to do with which animation frame is showing and should only run when the underlying data actually
+changes — an actor added, renamed, or its fields edited. That means separating "advance the clock
+and repaint the canvas" from "rebuild the panel" in `renderActorPane()`, and giving `loop()` a
+narrower reason than `state.tab !== 'metasprites'` to call the expensive path at all — that blanket
+condition also reaches the `party` tab, but `renderPartyPane()`/`partyPanel()`
+(`sprite.js:834-835`, `battle.js:186`) has no animation preview of its own to advance in the first
+place, so the fix there is simply for `loop()` to stop rendering it, not to give it a pause control
+it has no use for. The Actors tab is the one that would actually benefit from the same `Play`/pause
+checkbox the Animations tab already has, rather than defaulting to a preview the page gives no way
+to stop.
+
 ---
 
 ## Suggested order
@@ -267,6 +487,11 @@ The rest of item 3 also has a better claim on being next than its position sugge
 kind of reason it is cheap: it costs no ROM at all. Item 1 made 64 switches and 16 variables the
 backbone of every condition, branch and question, and the only way to watch one at runtime is
 unlabelled bytes in the memory editor — which is exactly what item 3's switch/variable inspector is.
+
+Item 9 costs no ROM either, for the same reason: it is pure editor work, so it can land at any
+point in this order without waiting on the kernel-bank question above. Items 10 and 11 are bug
+fixes in that same ROM-free, kernel-free renderer code, so the same is true of them, and there is
+no reason to defer either one to a particular stage.
 
 Stages 1 and 2 are the ones that change what the app *is*: together they move Forge from a capable
 NES construction toolkit toward building a complete game mostly through data and menus — with the
