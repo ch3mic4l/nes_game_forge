@@ -4,7 +4,7 @@ import { el, clear, fill, toast, fitZoom, observeSize } from '../ui.js';
 import { Emulator, BUTTON } from './runcontrol.js';
 import { applyStartOverride } from './testplay.js';
 import { AudioOut } from './audio.js';
-import { cpuPanel, disassemblyPanel, memoryPanel, ppuPanel } from './panels.js';
+import { cpuPanel, disassemblyPanel, memoryPanel, ppuPanel, switchesPanel } from './panels.js';
 
 const SCREEN_W = 256;
 const SCREEN_H = 240;
@@ -49,11 +49,17 @@ function keyMap(bindings) {
  * @param {Uint8Array} options.rom
  * @param {object} [options.symbols] label -> address, from the build's .fns
  * @param {object} [options.ram] engine constants, from the build's constants.asm
+ * @param {number} [options.numVariables] NUM_VARIABLES, from the build's config.inc
+ * @param {string[]} [options.switchNames] project.switches — authoring names, for the debugger
+ * @param {string[]} [options.variableNames] project.variables, likewise
  * @param {{screen: number, x: number, y: number, label?: string}} [options.startAt]
  *   where to start the player instead of the project's own start — a test-play
  *   override poked into RAM after boot, never compiled into the ROM
  */
-export function mountPlayer(container, { rom, symbols = {}, ram = null, startAt = null, app, onExit }) {
+export function mountPlayer(
+  container,
+  { rom, symbols = {}, ram = null, numVariables = null, switchNames = [], variableNames = [], startAt = null, app, onExit }
+) {
   const labelsByAddress = new Map();
   for (const [name, address] of Object.entries(symbols)) {
     if (!labelsByAddress.has(address)) labelsByAddress.set(address, name);
@@ -298,6 +304,8 @@ export function mountPlayer(container, { rom, symbols = {}, ram = null, startAt 
       debugBody.append(panels.cpu.node, el('div', { style: { height: '10px' } }), panels.disassembly.node);
     } else if (id === 'memory') {
       debugBody.append(panels.memory.node);
+    } else if (id === 'switches') {
+      debugBody.append(panels.switches.node);
     } else {
       debugBody.append(panels.ppu.node);
     }
@@ -314,10 +322,12 @@ export function mountPlayer(container, { rom, symbols = {}, ram = null, startAt 
       panels.disassembly = disassemblyPanel(emulator, labelsByAddress);
       panels.memory = memoryPanel(emulator);
       panels.ppu = ppuPanel(emulator);
+      panels.switches = switchesPanel(emulator, { ram, numVariables, switchNames, variableNames });
       fill(debugTabs,
         ...[
           ['code', 'Code'],
           ['memory', 'Memory'],
+          ['switches', 'Switches'],
           ['ppu', 'PPU']
         ].map(([id, label]) =>
           el('button.tab', { dataset: { tab: id }, onclick: () => selectTab(id) }, label)
@@ -434,5 +444,14 @@ export function mountPlayer(container, { rom, symbols = {}, ram = null, startAt 
     audio.destroy();
   }
 
-  return { destroy, emulator };
+  return {
+    destroy,
+    emulator,
+    // The exact refresh `tick()` drives periodically while the debugger is
+    // open, exposed so the smoke test can force one deterministically instead
+    // of waiting on however many requestAnimationFrame callbacks a throttled
+    // or unfocused window actually delivers — the same reasoning sprite.js
+    // exposes stepPreview() for.
+    refreshPanels
+  };
 }

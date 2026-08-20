@@ -135,8 +135,18 @@ to the thing under test without playing up to it.
 - ~~**Play from here**: boot at the currently selected screen and position~~ — **done**, as the Map
   Forge's ▶ Test tool
 - **Battle-test** a selected encounter without walking into it
-- A runtime **switch/variable inspector** (the debugger already reads engine RAM; this is a labelled
-  view of it, and item 1's variables make it much more useful)
+- ~~A runtime **switch/variable inspector** (the debugger already reads engine RAM; this is a labelled
+  view of it, and item 1's variables make it much more useful)~~ — **done**: a Switches tab in the
+  emulator's debugger, listing all 64 switches and the project's variables by their project names —
+  an unnamed one still shows by its index rather than being unwatchable — with values read live from
+  engine RAM and each row editable as a debug poke, the same as the Memory tab's own click-to-edit
+  byte. The switch address, the variable address and the switch count come from the build's own
+  `constants.asm`; the variable count comes from the generated `config.inc` (`NUM_VARIABLES`, which
+  `constants.asm` deliberately does not define). `RPG_LIMITS.switches`/`.variables` in
+  `shared/project.js` are still a second copy of those counts, unrelated to this change — the
+  inspector's own contribution is simply that it reads the build's equate rather than adding a third.
+  The honesty rule holds the same way play from here's does: nothing is compiled into the ROM, and a
+  reset restores whatever the game itself set.
 - Toggles for **invincibility**, **encounters off**, **collision off**
 - **Reload the ROM** while keeping the selected test scenario
 - **Screenshot / GIF capture** from the emulator panel
@@ -147,6 +157,17 @@ engine RAM once the ROM is running and the build knows nothing about it, so the 
 construction rather than by a flag somebody has to clear. It also settled where the addresses come
 from: `shared/enginesyms.js` parses them out of the `constants.asm` the build assembled, so engine
 RAM keeps exactly one definition.
+
+The switch/variable inspector settled the honesty pattern a second time, for a labelled RAM view with
+a write path rather than a one-way read: values are read and poked straight through
+`emulator.peek`/`emulator.poke`, nothing about that reaches the ROM, and a reset restores whatever the
+game itself set — the same shape play from here already settled, applied to a control the user can
+leave toggled rather than a one-shot warp. What each remaining bullet actually has to touch in the
+engine is not settled by this and differs per bullet: `player_iframes` counts down once a frame in
+`update_player` rather than staying poked, so invincibility is not a single write-and-forget switch;
+encounter behaviour reads the ROM-backed `map_enc_rate` (`engine/rpg.asm`); collision probes
+`mt_collision` (`engine/player.asm`) directly; and Battle-test has to assemble a formation and call
+into `battle_begin` (`engine/rpg.asm`) safely, which is orchestration, not a byte to poke.
 
 ## 4. Cartridge save/load — **done**
 
@@ -539,9 +560,15 @@ one of them needs a decision first: a kernel diet, or a second banked region the
 system got one. Item 5 is mostly tables and editor work and is not blocked on that.
 
 The rest of item 3 also has a better claim on being next than its position suggests, for the same
-kind of reason it is cheap: it costs no ROM at all. Item 1 made 64 switches and 16 variables the
-backbone of every condition, branch and question, and the only way to watch one at runtime is
-unlabelled bytes in the memory editor — which is exactly what item 3's switch/variable inspector is.
+kind of reason it was cheap: none of the remaining bullets cost any ROM either. Item 1 made 64
+switches and 16 variables the backbone of every condition, branch and question, and item 3's
+switch/variable inspector — above — is now the labelled way to watch them at runtime, rather than
+unlabelled bytes in the memory editor. Battle-test and the invincibility/encounters-off/collision-off
+toggles get the same outside-the-ROM honesty pattern the inspector just settled a second time — a
+poke through `emulator.peek`/`emulator.poke` that never reaches the ROM and that a reset undoes — but
+each is still its own engine problem: `player_iframes` counts down every frame rather than staying
+poked, encounters read `map_enc_rate`, collision reads `mt_collision`, and Battle-test has to invoke
+`battle_begin` with a prepared formation. None of that is settled by the inspector.
 
 Item 9 costs no ROM either, for the same reason: it is pure editor work, so it can land at any
 point in this order without waiting on the kernel-bank question above. Items 10 and 11 were bug

@@ -1,9 +1,11 @@
-// Debugger panels: CPU registers, disassembly, memory, and PPU viewers.
+// Debugger panels: CPU registers, disassembly, memory, PPU viewers, and the
+// switch/variable inspector.
 
 import { el, clear, fill } from '../ui.js';
 import { disassembleRange, alignBefore } from './disasm.js';
 import { decodeTile } from '../../shared/chr.js';
 import { NES_PALETTE } from '../../shared/nespalette.js';
+import { inspectorProblem, switchBit, switchAddress, variableAddress, labelFor, clampByte } from '../../shared/switchvars.js';
 
 const hex2 = (value) => (value & 0xff).toString(16).padStart(2, '0').toUpperCase();
 const hex4 = (value) => (value & 0xffff).toString(16).padStart(4, '0').toUpperCase();
@@ -532,5 +534,122 @@ export function ppuPanel(emulator) {
   );
 
   refresh();
+  return { node, refresh };
+}
+
+// -------------------------------------------------- switches and variables
+
+/**
+ * A labelled view of the engine's 64 switches and its variables -- the same
+ * bytes the Memory tab already shows as unlabelled hex, read and poked the
+ * same way (`emulator.peek`/`emulator.poke`), so this replaces nothing the
+ * Memory tab could do and only makes it readable. Editing here is a debug
+ * poke exactly like the Memory tab's click-to-edit byte, never anything the
+ * built ROM knows about: a reset restores whatever the game itself set.
+ *
+ * @param {import('./runcontrol.js').Emulator} emulator
+ * @param {{ram: object|null, numVariables: number|null, switchNames?: string[], variableNames?: string[]}} build
+ *   `ram` is the build's own constants.asm, parsed; `numVariables` is
+ *   NUM_VARIABLES out of its config.inc. Both travel with the build rather
+ *   than a remembered constant, so a Code Forge override or a changed
+ *   `RPG_LIMITS.variables` is read correctly rather than guessed at.
+ */
+export function switchesPanel(emulator, { ram, numVariables, switchNames = [], variableNames = [] }) {
+  const problem = inspectorProblem({ ram, numVariables });
+  const body = el('div', { style: mono });
+  const node = el('div', null, body);
+
+  // The row DOM is built exactly once, the first time refresh() finds the
+  // panel actually attached (see refresh() below). Every refresh after that
+  // updates each row's existing input in place rather than rebuilding it --
+  // the same defect class ROADMAP item 11 fixed for the Sprite Forge's
+  // preview loop: a periodic rebuild tears down whatever the user is
+  // currently focused in, and a variable input that loses focus mid-edit
+  // loses the edit before it ever reaches RAM.
+  let built = false;
+  const switches = []; // { input, address, mask }, by switch index
+  const variables = []; // { input, address }, by variable index
+
+  function switchRow(index) {
+    const { mask } = switchBit(index);
+    const address = switchAddress(ram, index);
+    const input = el('input', {
+      type: 'checkbox',
+      checked: (emulator.peek(address) & mask) !== 0,
+      onchange: (event) => {
+        const current = emulator.peek(address);
+        emulator.poke(address, event.target.checked ? current | mask : current & ~mask);
+      }
+    });
+    switches[index] = { input, address, mask };
+    return el(
+      'label.check',
+      { dataset: { switch: index }, style: { padding: '2px 0' } },
+      input,
+      labelFor(switchNames, index, 'Switch')
+    );
+  }
+
+  function variableRow(index) {
+    const address = variableAddress(ram, index);
+    const input = el('input', {
+      type: 'number',
+      min: 0,
+      max: 255,
+      value: emulator.peek(address),
+      style: { width: '58px' },
+      title: 'Poked directly into RAM, like the Memory tab -- a reset restores whatever the game itself set',
+      onchange: (event) => {
+        const next = clampByte(event.target.value);
+        emulator.poke(address, next);
+        event.target.value = next;
+      }
+    });
+    variables[index] = { input, address };
+    return el(
+      'div.field-row',
+      { dataset: { variable: index }, style: { padding: '2px 0' } },
+      el('span', { style: { flex: '1' } }, labelFor(variableNames, index, 'Variable')),
+      input
+    );
+  }
+
+  function build() {
+    if (problem) {
+      fill(body, el('p.hint', { style: { color: 'var(--red)' } }, problem));
+      built = true; // nothing will ever make this build readable, so stop rebuilding it every refresh
+      return;
+    }
+    fill(body,
+      el(
+        'p.hint',
+        { style: { marginBottom: '8px' } },
+        'Poked directly into RAM, exactly like the Memory tab — a reset restores whatever the game itself set.'
+      ),
+      el('div.panel-head', { style: { paddingLeft: '0' } }, `Switches (${ram.NUM_SWITCHES})`),
+      Array.from({ length: ram.NUM_SWITCHES }, (_, index) => switchRow(index)),
+      el('div.panel-head', { style: { paddingLeft: '0', marginTop: '10px' } }, `Variables (${numVariables})`),
+      Array.from({ length: numVariables }, (_, index) => variableRow(index))
+    );
+    built = true;
+  }
+
+  // Values only -- no DOM created or destroyed, so a focused input is left
+  // alone entirely rather than merely restored after the fact.
+  function updateValues() {
+    if (problem) return;
+    for (const { input, address, mask } of switches) input.checked = (emulator.peek(address) & mask) !== 0;
+    for (const { input, address } of variables) {
+      if (document.activeElement === input) continue; // mid-edit -- do not clobber
+      input.value = emulator.peek(address);
+    }
+  }
+
+  function refresh() {
+    if (!node.isConnected) return;
+    if (!built) build();
+    else updateValues();
+  }
+
   return { node, refresh };
 }

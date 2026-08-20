@@ -229,15 +229,23 @@ export function mount(container, app) {
       if (loaded.ok) symbols = loaded.value;
     }
 
-    // Where the engine keeps the bytes a test-play override pokes. Read out of
+    // Where the engine keeps the bytes a test-play override pokes, and what
+    // the debugger's switch/variable inspector reads and pokes. Read out of
     // the build rather than remembered here, so it is the constants.asm that
-    // assembled *this* ROM — the Code Forge can have overridden it.
+    // assembled *this* ROM — the Code Forge can have overridden it. Needed on
+    // every run, not only "play from here", because the inspector has to work
+    // whether or not that started this session.
     let ram = null;
-    if (startAt) {
-      const source = await window.forge.code.readGenerated(store.dir, 'constants.asm');
-      if (source.ok) ram = parseEquates(source.value);
-      else write(`Could not read the engine constants: ${source.error}`, 'warn');
-    }
+    const source = await window.forge.code.readGenerated(store.dir, 'constants.asm');
+    if (source.ok) ram = parseEquates(source.value);
+    else write(`Could not read the engine constants: ${source.error}`, 'warn');
+
+    // NUM_VARIABLES is generated into config.inc from RPG_LIMITS.variables — not
+    // constants.asm — so how many variables the inspector can show is read from
+    // there rather than the JS constant, the same single-writer reasoning.
+    let numVariables = null;
+    const config = await window.forge.code.readGenerated(store.dir, 'assets/config.inc');
+    if (config.ok) numVariables = parseEquates(config.value).NUM_VARIABLES ?? null;
 
     logStage.style.display = 'none';
     playHost.style.display = 'block';
@@ -247,6 +255,9 @@ export function mount(container, app) {
       rom: new Uint8Array(rom.value),
       symbols,
       ram,
+      numVariables,
+      switchNames: store.project.switches,
+      variableNames: store.project.variables,
       startAt,
       app,
       onExit: () => {

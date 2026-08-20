@@ -1229,6 +1229,103 @@ const scenario = (dir, sampleDir) => `
   if (!playCanvas) throw new Error('the play view never showed a 256x240 screen');
   step('build & play UI', 'emulator mounted in the Build panel');
 
+  // --- switch/variable inspector: a labelled view of the same engine RAM the
+  // Memory tab already shows as unlabelled hex (ROADMAP item 3) ------------
+  const debugBtn = [...document.querySelectorAll('#stage button')].find((b) => b.textContent.includes('Debugger'));
+  if (!debugBtn) throw new Error('debugger toggle button not found');
+  debugBtn.click();
+  await wait(150);
+  const switchesTab = document.querySelector('#stage [data-tab="switches"]');
+  if (!switchesTab) throw new Error('the Switches tab was not offered in the debugger');
+  switchesTab.click();
+  await wait(150);
+
+  const switchRows = [...document.querySelectorAll('#stage [data-switch]')];
+  if (switchRows.length !== 64) throw new Error('expected 64 switch rows, saw ' + switchRows.length);
+  const namedRow = switchRows.find((row) => row.textContent.indexOf('Chest opened') !== -1);
+  if (!namedRow) throw new Error('the named switch from the sample project was not shown labelled');
+  // No regex literal here: \d would reach this template literal's own parser
+  // (see the "No backticks in this scenario" note above), not the renderer.
+  const isUnnamedSwitchLabel = (text) =>
+    text.indexOf('Switch ') === 0 && [...text.slice(7)].every((ch) => ch >= '0' && ch <= '9') && text.length > 7;
+  const unnamedRow = switchRows.find((row) => isUnnamedSwitchLabel(row.textContent.trim()));
+  if (!unnamedRow) throw new Error('an unnamed switch should still appear, labelled by its index');
+
+  const varRows = [...document.querySelectorAll('#stage [data-variable]')];
+  if (varRows.length !== 16) throw new Error('expected 16 variable rows (NUM_VARIABLES), saw ' + varRows.length);
+
+  const buildEmu = window.__app.current.player.emulator;
+  // switches = $0390 (engine/constants.asm): bit 0 of byte 0 is switch 0, the
+  // sample's own "Chest opened" -- unset on a fresh boot.
+  if (buildEmu.peek(0x0390) & 1) throw new Error('switch 0 should start off on a fresh boot');
+  const chestCheckbox = namedRow.querySelector('input[type="checkbox"]');
+  if (chestCheckbox.checked) throw new Error('the labelled row disagrees with engine RAM before any edit');
+
+  // Poke a different switch directly, the way a running game would, then force
+  // a refresh by leaving the tab and coming back -- proving the panel actually
+  // reads RAM on refresh rather than only rendering once at open.
+  buildEmu.poke(0x0390, 0x04); // switch 2 on
+  document.querySelector('#stage [data-tab="memory"]').click();
+  await wait(80);
+  switchesTab.click();
+  await wait(80);
+  const switch2 = document.querySelector('#stage [data-switch="2"] input');
+  if (!switch2.checked) throw new Error('the panel did not pick up a switch changed in RAM on refresh');
+
+  // And the write path: clicking the checkbox has to poke RAM, not just the DOM.
+  const namedCheckbox = document.querySelector('#stage [data-switch="0"] input');
+  namedCheckbox.click();
+  await wait(80);
+  if (!(buildEmu.peek(0x0390) & 1)) throw new Error('toggling the labelled switch row did not poke engine RAM');
+
+  // variables = $0500 (engine/constants.asm): one byte per counter.
+  const varInput = document.querySelector('#stage [data-variable="0"] input');
+  varInput.value = '42';
+  varInput.dispatchEvent(new Event('change', { bubbles: true }));
+  await wait(80);
+  if (buildEmu.peek(0x0500) !== 42) throw new Error('editing the labelled variable row did not poke engine RAM');
+
+  // A periodic refresh (the same 30-frame tick the CPU/PPU panels already use)
+  // must not tear down a variable input the user is still typing into -- the
+  // exact defect class ROADMAP item 11 already fixed once for the Sprite
+  // Forge's preview loop, now checked here so it cannot come back in the
+  // inspector's own refresh. Driven through refreshPanels() itself -- the
+  // exact per-tick call the run loop makes -- rather than waiting on real
+  // requestAnimationFrame callbacks, which a throttled or unfocused window
+  // may never deliver 30 of: a wait-based version of this assertion can pass
+  // by never actually exercising a refresh at all.
+  const focusInput = document.querySelector('#stage [data-variable="3"] input');
+  focusInput.focus();
+  focusInput.value = '77';
+  focusInput.dispatchEvent(new Event('input', { bubbles: true })); // typing, not yet committed
+  for (let i = 0; i < 3; i++) window.__app.current.player.refreshPanels();
+  if (document.activeElement !== focusInput) {
+    throw new Error('the variable input lost focus during a periodic refresh while mid-edit');
+  }
+  if (focusInput.value !== '77') {
+    throw new Error('a periodic refresh clobbered a variable input mid-edit: now shows "' + focusInput.value + '"');
+  }
+  if (buildEmu.peek(0x0503) !== 0) throw new Error('an uncommitted edit should not have reached RAM yet');
+  focusInput.dispatchEvent(new Event('change', { bubbles: true })); // commit
+  await wait(80);
+  if (buildEmu.peek(0x0503) !== 77) throw new Error('committing the edit after the refresh did not poke engine RAM');
+
+  // A fractional entry must be truncated the same way emulator.poke's own
+  // "& 0xff" truncates it, so the field and RAM cannot disagree.
+  const fracInput = document.querySelector('#stage [data-variable="4"] input');
+  fracInput.value = '42.9';
+  fracInput.dispatchEvent(new Event('change', { bubbles: true }));
+  await wait(80);
+  if (fracInput.value !== '42') throw new Error('a fractional entry should display truncated, saw "' + fracInput.value + '"');
+  if (buildEmu.peek(0x0504) !== 42) {
+    throw new Error('a fractional entry should poke the truncated integer, RAM has ' + buildEmu.peek(0x0504));
+  }
+
+  step(
+    'switch/variable inspector',
+    '64 switches + 16 variables, labelled, read/poked live, survives a mid-edit refresh, truncates fractions'
+  );
+
   // --- play from here: the Map Forge's Test tool, clicked for real ---------
   // The whole path only exists in the app: the tool reads the selected screen,
   // the Build panel reads the engine constants back out of the build over IPC,
