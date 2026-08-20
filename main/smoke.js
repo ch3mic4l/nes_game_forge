@@ -99,6 +99,20 @@ const scenario = (dir, sampleDir) => `
   }
   step('map forge mounted', canvases.length + ' canvases, screen at ' + screenCanvas.width / 256 + 'x');
 
+  // The right-hand settings panel must not grow a horizontal scrollbar — see
+  // ROADMAP.md item 10.
+  const settingsPanelBody = document.querySelector('#mapSettingsPanel');
+  if (!settingsPanelBody) throw new Error('map settings panel body not found');
+  if (settingsPanelBody.scrollWidth > settingsPanelBody.clientWidth) {
+    throw new Error(
+      'map settings panel scrolls sideways: scrollWidth ' +
+        settingsPanelBody.scrollWidth +
+        ' > clientWidth ' +
+        settingsPanelBody.clientWidth
+    );
+  }
+  step('map settings panel does not scroll sideways', settingsPanelBody.clientWidth + 'px wide, no overflow');
+
   store.commit('smoke metatile', (project) => {
     project.metatiles[1].tiles = [1, 1, 1, 1];
     project.metatiles[1].collision = 'solid';

@@ -314,13 +314,16 @@ exactly like item 2 was. That matters because the kernel-lo bank is the binding 
 6's remaining cutscene commands — items 7 and 8 are editor and asset work with no kernel cost of
 their own, same as this one — and this item is not subject to it at all.
 
-## 10. The Map Forge's settings pane scrolls sideways
+## 10. The Map Forge's settings pane scrolls sideways — **done**
 
 This is a bug the user hit, not a capability gap: the right-hand panel in the Map Forge — the one
 holding the map's name, size, music, screen name and the "Actors on this screen" list — grows a
 horizontal scrollbar, and everything in it should simply fit the column.
 
-The cause is one specific row, not the panel in general. `renderEntities()`
+**The diagnosis below describes the code as it stood before the fix** — kept as the record of why,
+not as a description of what ships today; see "Fixed" below for the current shape.
+
+The cause was one specific row, not the panel in general. `renderEntities()`
 (`renderer/forges/map/map.js:851-912`) builds a single `.field-row` (line 856) that packs the
 "Actors on this screen (N/8)" heading and four buttons — `Find…`, `Switches…`, `Variables…`,
 `Common events…` (lines 866-911) — side by side, in a `display: flex` row with no `flex-wrap`
@@ -364,7 +367,23 @@ from this one, and nothing about wrapping a row's height reaches across a `displ
 into a sibling column. Verified live, not assumed: the map canvas's own zoom fit is driven by
 `observeSize(mapStage, renderScreen)` (`map.js:1432`), which watches `mapStage` alone.
 
-## 11. The Sprite Forge's Actors page does not accept clicks
+**Fixed: the second of the two shapes above** — the heading onto its own line, the buttons into a
+wrapping toolbar underneath. `renderEntities()` (`map.js`) now emits the "Actors on this screen
+(N/8)" heading as a standalone `.panel-head` with `{ style: { paddingLeft: '0' } }` and no `flex`
+override, the sole child of its own row exactly like the other three headings in this file
+(`map.js:1095`, `1310`, `1313`). The four buttons moved into a `.field-row.wrap` row underneath it,
+same order, labels, `title`s and `onclick` handlers as before. The wrap behaviour is a modifier —
+`.field-row.wrap { flex-wrap: wrap; margin-bottom: 12px; }` in `app.css`, next to the shared
+`.field-row` rule rather than on it, so every other `.field-row` in the app keeps its un-wrapped
+layout unchanged. `main/smoke.js` now asserts this holds: the settings panel body
+(`#mapSettingsPanel`, an id added so the assertion can name that specific panel rather than the
+first `.panel-body` the DOM happens to yield, which on this page is actually the *left* metatile
+panel) measures a 271px `clientWidth` against the 272px right column, with `scrollWidth` no greater
+than that — confirmed to actually catch the regression by reverting `.field-row.wrap` to a plain
+`.field-row` and re-running: `scrollWidth` 357px against the same 271px `clientWidth`, the assertion
+fails, and restoring the class makes it pass again.
+
+## 11. The Sprite Forge's Actors page does not accept clicks — **done**
 
 Also a bug, and the user's report of it is that they cannot click on anything on the Actors page.
 The user's own hypothesis — that the animation preview playing is what causes it — is correct in
@@ -373,7 +392,14 @@ preview clock is tearing down and rebuilding the exact controls the user is tryi
 cadence this item works out precisely below — and, separately from clicking, destroying whatever
 currently has focus every time it does.
 
-`state.playing` defaults to `true` (`sprite.js:36`) and there is no control to turn it off from
+**The diagnosis and cadence analysis below describe the code as it stood before the fix**
+(`511a149^`) — kept as the record of why, not as a description of what ships today; see "Fixed"
+below for the current shape. Every line number cited between here and "Fixed" is relative to that
+pre-fix commit, not current code — `state.previewTime`/`state.previewFrame` in particular no longer
+exist, having been split into the separate `state.actorPreview`/`state.animPreview` clocks the
+"Fixed" paragraph describes.
+
+`state.playing` defaulted to `true` (`sprite.js:36`) and there was no control to turn it off from
 the Actors page — the only `Play` checkbox that touches it lives in the Animations tab's own pane
 (`renderAnimationPane`, `sprite.js:569-583`). `loop()` (`sprite.js:913-929`) runs every animation
 frame regardless of which tab is open; once the current frame's duration elapses it advances
@@ -473,6 +499,25 @@ The two tabs also keep separate clocks (`state.actorPreview` / `state.animPrevie
 while Animations sat paused would still move the frame Animations shows on return, and "paused"
 would only have held for as long as the user never left the tab.
 
+**Fixed**, in two commits. `511a149` shipped the separation above — `stepPreview()` now calls
+`advancePreviewFrame(animation, clock, repaintFn)`, which advances the clock every tick but calls
+`repaintFn` (`repaintActorPreview()`/`repaintAnimationPreview()`) only on the tick where the clock
+crosses into a new displayed frame. Those repaint helpers redraw `editCanvas` alone for the Actors
+tab and both `editCanvas` and `previewCanvas` for Animations, and also carry the identity check that
+resets a clock on a genuine selection change — the animation object reference currently being
+previewed changing rather than a selection index merely staying in range — so they are not pure
+canvas painters, but neither the tick path nor the helpers it calls reach `render()` or the `fill()`
+calls anymore. `fill(listHost, …)`/`fill(detailHost, …)` still run wherever they always did outside
+the tick — non-exhaustively: initial mount, a tab switch, an actor or animation selection change
+(both call `render()` directly from their `<select>`'s `onchange`), a resize-driven `render()`, and
+an actual project edit — they simply no longer run *on the tick itself*. `ce7e2b8` closed a gap
+that identity rule left open: the Actors
+tab was tracking only the resolved idle *animation*'s reference, not the actor's, so two actors that
+happen to share one idle animation — Slime and Hunter both point at animation 0 in the sample
+project — resolved to the same object and left the preview clock unreset when switching between
+them. `repaintActorPreview()` now compares both the actor object and its resolved animation,
+resetting on either changing.
+
 ---
 
 ## Suggested order
@@ -499,9 +544,10 @@ backbone of every condition, branch and question, and the only way to watch one 
 unlabelled bytes in the memory editor — which is exactly what item 3's switch/variable inspector is.
 
 Item 9 costs no ROM either, for the same reason: it is pure editor work, so it can land at any
-point in this order without waiting on the kernel-bank question above. Items 10 and 11 are bug
-fixes in that same ROM-free, kernel-free renderer code, so the same is true of them, and there is
-no reason to defer either one to a particular stage.
+point in this order without waiting on the kernel-bank question above. Items 10 and 11 were bug
+fixes in that same ROM-free, kernel-free renderer code, which is why neither needed to wait on a
+particular stage — and both are now fixed: item 10 above, item 11 in commits `511a149` and
+`ce7e2b8`.
 
 Stages 1 and 2 are the ones that change what the app *is*: together they move Forge from a capable
 NES construction toolkit toward building a complete game mostly through data and menus — with the

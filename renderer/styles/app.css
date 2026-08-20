@@ -373,6 +373,11 @@ textarea {
   gap: 6px;
 }
 
+.field-row.wrap {
+  flex-wrap: wrap;
+  margin-bottom: 12px;
+}
+
 select,
 textarea,
 input[type='text'],

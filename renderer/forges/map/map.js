@@ -853,13 +853,13 @@ export function mount(container, app) {
     const actors = store.project.sprites.actors;
     fill(entityList,
       el(
-        'div.field-row',
+        'div.panel-head',
+        { style: { paddingLeft: '0' } },
+        `Actors on this screen (${screen.entities.length}/${LIMITS.entitiesPerScreen})`
+      ),
+      el(
+        'div.field-row.wrap',
         null,
-        el(
-          'div.panel-head',
-          { style: { paddingLeft: '0', flex: '1' } },
-          `Actors on this screen (${screen.entities.length}/${LIMITS.entitiesPerScreen})`
-        ),
         // Searching for something is a project-wide question — a warp's
         // destination is somewhere else by definition — so this jumps the whole
         // Forge rather than filtering the list below it.
@@ -1424,7 +1424,7 @@ export function mount(container, app) {
       ),
       mapStage
     ),
-    el('div.panel', null, el('div.panel-head', null, 'Map'), el('div.panel-body', null, mapSettings))
+    el('div.panel', null, el('div.panel-head', null, 'Map'), el('div.panel-body#mapSettingsPanel', null, mapSettings))
   );
 
   container.append(root);
