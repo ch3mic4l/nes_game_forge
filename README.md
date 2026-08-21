@@ -25,7 +25,7 @@ npm run smoke      # end-to-end: boots the real UI and drives it
 | **Controller Forge** | Done — buttons bound to engine actions per game state, plus keyboard bindings for the player |
 | **Code Forge** | Done — the engine's 6502 source in a tabbed editor with syntax highlighting; edits are kept per project, and you can add your own `.asm` files |
 | **Build & Play** | Done — generates assembly, assembles with `nesasm`, verifies the ROM, plays it in-app |
-| **Emulator + debugger** | Done — breakpoints, step/over/out, scanline & frame step, disassembly with symbols, memory editor, a labelled switch/variable inspector, PPU viewers |
+| **Emulator + debugger** | Done — breakpoints, step/over/out, scanline & frame step, disassembly with symbols, memory editor, a labelled switch/variable inspector, PPU viewers, invincibility/encounters-off/collision-off test toggles (collision-off is terrain only — screen transitions, damage tiles and door triggers still work; invincibility covers floor hazards only in an RPG, not battle damage) |
 | **Turn-based RPG mode** | Done — party, spells, monster stats, encounters, FF-style menu battles with XP, gold, levels, elements and drops |
 | **Tutorial** | Done — a guided tour of every Forge under 🎓 Learn in the rail, with jumps into the Forge each topic explains |
 

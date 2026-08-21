@@ -1,11 +1,39 @@
 import { app, BrowserWindow, protocol, Menu, shell, dialog } from 'electron';
 import path from 'node:path';
+import os from 'node:os';
 import fs from 'node:fs/promises';
+import { mkdtempSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { registerIpc, unsavedChanges, waitForSave } from './ipc.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 export const ROOT = path.resolve(__dirname, '..');
+
+// Smoke opens and creates throwaway temp projects, and both project:open and
+// project:create call rememberProject() (main/settings.js), which writes into
+// the same settings.json the real app reads its recent-projects list from.
+// main/smoke.js already cleans up the temp project directories it creates,
+// but that leaves settings.json holding dangling paths forever -- and since
+// the list is capped at ten, enough smoke runs would eventually evict a
+// real recent project rather than one of its own. Isolating userData here,
+// before app.whenReady(), keeps every settings write inside a directory
+// nothing but smoke itself ever reads, so the real settings.json is never
+// opened at all. Must happen this early: Electron refuses app.setPath() once
+// the app is ready.
+//
+// mkdtempSync, not a fixed path: app.setPath() throws if the directory does
+// not already exist (Electron's own contract), so a fixed path only ever
+// worked here because something had already created it once -- a fresh
+// checkout or CI machine would throw on the very first smoke run. A fixed
+// path shared by every invocation also means every run reuses the same
+// Chromium profile: stale settings, lock files a still-running or crashed
+// previous instance left behind, and a real race if two runs ever overlap.
+// mkdtempSync is synchronous and safe this early (no event loop / IPC to
+// await yet), and guarantees the directory both exists and is this run's
+// alone.
+if (process.env.FORGE_SMOKE) {
+  app.setPath('userData', mkdtempSync(path.join(os.tmpdir(), 'nes-game-forge-smoke-userdata-')));
+}
 
 // ES modules cannot be fetched over file:// (opaque origin, CORS-blocked), so the
 // app is served from a privileged custom scheme instead.

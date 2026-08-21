@@ -147,7 +147,27 @@ to the thing under test without playing up to it.
   inspector's own contribution is simply that it reads the build's equate rather than adding a third.
   The honesty rule holds the same way play from here's does: nothing is compiled into the ROM, and a
   reset restores whatever the game itself set.
-- Toggles for **invincibility**, **encounters off**, **collision off**
+- ~~Toggles for **invincibility**, **encounters off**, **collision off**~~ — **done**: a Toggles tab
+  beside Switches, three checkboxes over one mechanism rather than three — a per-instruction PC trap
+  table (`Emulator.configureTestOverrides`/`applyTestIntercept`, `renderer/emulator/runcontrol.js`) that
+  either pokes a RAM byte at the trapped PC (invincibility, at `update_player`'s own entry, so it can
+  only ever coincide with a gameplay frame that was already going to decrement `player_iframes`) or
+  redirects execution past a routine onto its own real exit tail (collision, at `probe_solid`'s entry;
+  encounters, at `check_encounter`'s), never fabricating the flags or the `rts` that tail would have
+  produced anyway. Collision off is deliberately global — every `probe_solid` caller, not just the
+  player — since restricting it to the player would mean sniffing the return address off the stack.
+  `shared/testoverrides.js` resolves and validates every target — a build missing a required symbol; a
+  poke address outside internal CPU RAM or a trap/target outside cartridge PRG space (nothing else is
+  something the 6502 or `Emulator.poke` can safely land on); a redirect that aliases its own trap (the
+  one case that can never advance — a *distinct* target, forward or backward, still executes with real
+  cycles, so nothing beyond that self-alias is rejected on address order); two toggles sharing a trap; or
+  a redirect landing on *any* toggle's own trap symbol, checked before any of those toggles are
+  invalidated for a different reason, which would otherwise re-enter that toggle's routine with the wrong
+  return address still on the stack — refusing every one of those rather than arming it. `toggleProblem`
+  and `resolveOverrideTargets` are both thin views onto that one resolution, not two separate
+  implementations of it, so there is no second place for them to disagree.
+  Same honesty rule as the inspector above: the toggle is debugger configuration and survives a Reset
+  like a breakpoint would, but the RAM itself is exactly what a fresh boot sets.
 - **Reload the ROM** while keeping the selected test scenario
 - **Screenshot / GIF capture** from the emulator panel
 
@@ -162,12 +182,11 @@ The switch/variable inspector settled the honesty pattern a second time, for a l
 a write path rather than a one-way read: values are read and poked straight through
 `emulator.peek`/`emulator.poke`, nothing about that reaches the ROM, and a reset restores whatever the
 game itself set — the same shape play from here already settled, applied to a control the user can
-leave toggled rather than a one-shot warp. What each remaining bullet actually has to touch in the
-engine is not settled by this and differs per bullet: `player_iframes` counts down once a frame in
-`update_player` rather than staying poked, so invincibility is not a single write-and-forget switch;
-encounter behaviour reads the ROM-backed `map_enc_rate` (`engine/rpg.asm`); collision probes
-`mt_collision` (`engine/player.asm`) directly; and Battle-test has to assemble a formation and call
-into `battle_begin` (`engine/rpg.asm`) safely, which is orchestration, not a byte to poke.
+leave toggled rather than a one-shot warp. What the invincibility/encounters-off/collision-off toggles
+actually had to touch in the engine was not settled by this and differed per toggle — see item 3's own
+entry above for how each one landed. Battle-test remains the one bullet this does not settle at all: it
+has to assemble a formation and call into `battle_begin` (`engine/rpg.asm`) safely, which is
+orchestration, not a byte to poke or a PC to trap.
 
 ## 4. Cartridge save/load — **done**
 
@@ -565,10 +584,16 @@ switches and 16 variables the backbone of every condition, branch and question, 
 switch/variable inspector — above — is now the labelled way to watch them at runtime, rather than
 unlabelled bytes in the memory editor. Battle-test and the invincibility/encounters-off/collision-off
 toggles get the same outside-the-ROM honesty pattern the inspector just settled a second time — a
-poke through `emulator.peek`/`emulator.poke` that never reaches the ROM and that a reset undoes — but
-each is still its own engine problem: `player_iframes` counts down every frame rather than staying
-poked, encounters read `map_enc_rate`, collision reads `mt_collision`, and Battle-test has to invoke
-`battle_begin` with a prepared formation. None of that is settled by the inspector.
+poke or PC redirect through `emulator.peek`/`emulator.poke`/`emulator.configureTestOverrides` that
+never reaches the ROM, so a reset restores exactly the RAM the game itself set — but each is still its
+own engine problem: `player_iframes` counts down every gameplay update rather than staying poked, so
+invincibility traps `update_player`'s own entry rather than a fixed point in the frame; encounters and
+collision have no such byte to hold at all and instead redirect execution past `check_encounter` and
+`probe_solid`; and Battle-test has to invoke `battle_begin` with a prepared formation. **The toggle
+itself is debugger configuration, not game state, so — like a breakpoint — it survives a reset rather
+than being cleared by it**: only the RAM/ROM half of the honesty rule is what a reset restores, and the
+checkbox stays visibly on so nothing is silently still active. None of that is settled by the
+inspector.
 
 Item 9 costs no ROM either, for the same reason: it is pure editor work, so it can land at any
 point in this order without waiting on the kernel-bank question above. Items 10 and 11 were bug

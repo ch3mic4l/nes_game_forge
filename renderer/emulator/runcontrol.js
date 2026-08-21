@@ -4,6 +4,7 @@
 // nes.frame() does but can stop between any two instructions.
 
 import NES from './core/nes.js';
+import { resolveOverrideTargets, TOGGLE_NAMES } from '../../shared/testoverrides.js';
 
 export const BUTTON = {
   A: 0,
@@ -34,15 +35,80 @@ export class Emulator {
     this.lastBreak = null;
     this.crashed = null;
     this.onBreak = null;
+
+    // Debugger-side test overrides (invincibility, encounters off, collision
+    // off) -- see shared/testoverrides.js. `testOverrides` is the tester's own
+    // intent (the checkbox state); it survives loadROM/reset the same way
+    // breakpoints already do, because it is the debugger's own configuration,
+    // not part of the game. `overrideTargets`/`interceptsByTrap` are resolved
+    // *addresses*, which are only valid for the ROM they were resolved
+    // against -- loadROM invalidates them below, and the caller must call
+    // configureTestOverrides() again after every load, including a reload of
+    // the same ROM, or the toggles simply stay inert rather than risk running
+    // against another build's addresses.
+    this.testOverrides = Object.fromEntries(TOGGLE_NAMES.map((name) => [name, false]));
+    this.overrideTargets = null;
+    this.interceptsByTrap = new Map();
   }
 
   loadROM(bytes) {
+    // Invalidated before the loader runs, not after: a throw partway through
+    // `nes.loadROM()` (a malformed ROM, say) can still have mutated mapper/PPU
+    // state on the way to throwing, and the caller is expected to treat that
+    // throw as "this Emulator is done" -- but if it doesn't, the *previous*
+    // ROM's resolved addresses must not still be armed against whatever this
+    // one left behind.
+    this.overrideTargets = null;
+    this.interceptsByTrap = new Map();
     this.nes.loadROM(bytes);
     this.inFrame = false;
     this.frames = 0;
     this.instructions = 0;
     this.crashed = null;
     this.installWatchHooks();
+  }
+
+  /**
+   * Resolve invincibility/encounters/collision targets against this build's
+   * `ram` (parsed constants.asm) and `symbols` (parsed game.fns), and arm the
+   * per-instruction intercept table. Call this after every loadROM() -- a
+   * fresh load clears any previously resolved targets so a toggle can never
+   * run against a stale address from a different build.
+   */
+  configureTestOverrides({ ram, symbols }) {
+    this.overrideTargets = resolveOverrideTargets({ ram, symbols });
+    this.interceptsByTrap = new Map();
+    for (const [name, spec] of Object.entries(this.overrideTargets)) {
+      if (spec) this.interceptsByTrap.set(spec.trap, { name, spec });
+    }
+  }
+
+  /** Merge a partial update into the toggle booleans -- {collision: true} leaves the others alone. */
+  setTestOverrides(partial) {
+    Object.assign(this.testOverrides, partial);
+  }
+
+  /**
+   * Apply an armed intercept at the current PC, if any is active here.
+   * @returns {boolean} true when the trapped instruction must NOT execute
+   *   this call, because the intercept already redirected past it
+   */
+  applyTestIntercept() {
+    if (!this.interceptsByTrap.size) return false;
+    const hit = this.interceptsByTrap.get(this.pc);
+    if (!hit || !this.testOverrides[hit.name]) return false;
+    const { spec } = hit;
+    if (spec.kind === 'poke') {
+      this.poke(spec.address, spec.value);
+      return false; // the trapped instruction still runs this same call
+    }
+    // 'redirect': land on the target and stop here -- this step IS the
+    // control-flow transition, observable to breakpoints, runToAddress,
+    // stepOut and stepOver exactly like any other step, because nothing
+    // downstream can tell it apart from one.
+    if (typeof spec.setAcc === 'number') this.nes.cpu.REG_ACC = spec.setAcc;
+    this.nes.cpu.REG_PC = (spec.target - 1) & 0xffff;
+    return true;
   }
 
   reset() {
@@ -131,7 +197,13 @@ export class Emulator {
   }
 
   /**
-   * Execute exactly one CPU instruction (or one chunk of DMA halt cycles).
+   * Advance by one step: ordinarily one CPU instruction (or one chunk of DMA
+   * halt cycles), but a redirect intercept (shared/testoverrides.js) makes
+   * the intercept itself the step instead — landing on the target PC costs no
+   * CPU/PPU/APU cycles and executes no instruction at all, so that this step
+   * is the observable control-flow transition breakpoints, runToAddress,
+   * stepOut and stepOver all see, rather than something silently folded into
+   * the next one.
    * @returns {boolean} true when the PPU finished a frame
    */
   stepInstruction() {
@@ -139,10 +211,14 @@ export class Emulator {
     const { cpu, ppu, papu } = this.nes;
 
     if (cpu.cyclesToHalt === 0) {
-      const cycles = cpu.emulate();
-      papu.clockFrameCounter(cycles, cpu.apuCatchupCycles);
-      cpu.apuCatchupCycles = 0;
-      this.instructions++;
+      // Checked here, not in a DMA-halt chunk, so a halt cannot re-apply the
+      // same intercept several times over while it counts down.
+      if (!this.applyTestIntercept()) {
+        const cycles = cpu.emulate();
+        papu.clockFrameCounter(cycles, cpu.apuCatchupCycles);
+        cpu.apuCatchupCycles = 0;
+        this.instructions++;
+      }
     } else {
       const chunk = Math.min(cpu.cyclesToHalt, 8);
       for (let i = 0; i < chunk; i++) ppu.advanceDots(3);

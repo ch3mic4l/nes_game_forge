@@ -6,6 +6,7 @@ import { disassembleRange, alignBefore } from './disasm.js';
 import { decodeTile } from '../../shared/chr.js';
 import { NES_PALETTE } from '../../shared/nespalette.js';
 import { inspectorProblem, switchBit, switchAddress, variableAddress, labelFor, clampByte } from '../../shared/switchvars.js';
+import { toggleUnavailableReason } from '../../shared/testoverrides.js';
 
 const hex2 = (value) => (value & 0xff).toString(16).padStart(2, '0').toUpperCase();
 const hex4 = (value) => (value & 0xffff).toString(16).padStart(4, '0').toUpperCase();
@@ -651,5 +652,95 @@ export function switchesPanel(emulator, { ram, numVariables, switchNames = [], v
     else updateValues();
   }
 
+  return { node, refresh };
+}
+
+// ------------------------------------------------------------- test overrides
+
+const TOGGLE_COPY = {
+  invincibility: {
+    label: 'Invincibility',
+    on: (battleEnabled) =>
+      battleEnabled
+        ? 'Invincible to floor hazards only — battle damage is not affected.'
+        : 'Invincible — no contact or floor damage.'
+  },
+  collision: {
+    label: 'Collision off',
+    on: () =>
+      'Terrain does not block the player or any moving actor — patrols, chasers and scripted Move walk ' +
+      'through walls and water. Screen transitions and map boundaries are unchanged, damage tiles still ' +
+      'hurt, and door triggers still fire: none of those were ever gated by this collision check.'
+  },
+  encounters: {
+    label: 'Encounters off',
+    on: () => 'Wandering encounters off — placed monsters still trigger a fight on contact.'
+  }
+};
+
+/**
+ * The invincibility / encounters-off / collision-off toggles (ROADMAP item 3).
+ * All three are debugger-side intercepts armed by `emulator.configureTestOverrides`
+ * when the build was loaded (`shared/testoverrides.js`) -- this panel only ever
+ * flips `emulator.setTestOverrides`, the same "poke, never the ROM" honesty rule
+ * the switch/variable inspector above already holds: a reset restores whatever
+ * the game itself set, and the toggle itself survives the reset exactly like a
+ * breakpoint does, staying visible on screen so nothing is silently active.
+ *
+ * @param {import('./runcontrol.js').Emulator} emulator
+ * @param {{ram: object|null, symbols: object, battleEnabled: boolean}} build
+ *   `battleEnabled` is generated `BATTLE_ENABLED` out of the build's own
+ *   `config.inc` -- the single source for "is this an RPG-battle build," kept
+ *   separate from whether `check_encounter` merely happens to exist in the
+ *   symbol table (a Code Forge override can remove or rename it either way).
+ */
+export function togglesPanel(emulator, { ram, symbols, battleEnabled }) {
+  const body = el('div', { style: mono });
+  const node = el('div', null, body);
+  const rows = {}; // name -> input
+
+  const reasonFor = (name) => toggleUnavailableReason(name, { ram, symbols, battleEnabled });
+
+  function toggleRow(name) {
+    const reason = reasonFor(name);
+    const copy = TOGGLE_COPY[name];
+    const input = el('input', {
+      type: 'checkbox',
+      disabled: Boolean(reason),
+      checked: emulator.testOverrides[name] && !reason,
+      onchange: (event) => emulator.setTestOverrides({ [name]: event.target.checked })
+    });
+    rows[name] = input;
+    return el(
+      'div',
+      { dataset: { toggle: name }, style: { padding: '4px 0' } },
+      el('label.check', null, input, copy.label),
+      el('p.hint', { style: { margin: '2px 0 0 20px' } }, reason ? `Unavailable: ${reason}.` : copy.on(battleEnabled))
+    );
+  }
+
+  function build() {
+    fill(
+      body,
+      el(
+        'p.hint',
+        { style: { marginBottom: '8px' } },
+        'Debugger-only; the ROM is never modified. A reset restores whatever the game itself set, but ' +
+          'the toggle itself stays on, the same as a breakpoint would.'
+      ),
+      ...Object.keys(TOGGLE_COPY).map(toggleRow)
+    );
+  }
+
+  function refresh() {
+    if (!node.isConnected) return;
+    for (const [name, input] of Object.entries(rows)) {
+      const reason = reasonFor(name);
+      input.disabled = Boolean(reason);
+      input.checked = emulator.testOverrides[name] && !reason;
+    }
+  }
+
+  build();
   return { node, refresh };
 }

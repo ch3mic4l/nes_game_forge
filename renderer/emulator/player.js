@@ -4,7 +4,7 @@ import { el, clear, fill, toast, fitZoom, observeSize } from '../ui.js';
 import { Emulator, BUTTON } from './runcontrol.js';
 import { applyStartOverride } from './testplay.js';
 import { AudioOut } from './audio.js';
-import { cpuPanel, disassemblyPanel, memoryPanel, ppuPanel, switchesPanel } from './panels.js';
+import { cpuPanel, disassemblyPanel, memoryPanel, ppuPanel, switchesPanel, togglesPanel } from './panels.js';
 
 const SCREEN_W = 256;
 const SCREEN_H = 240;
@@ -52,13 +52,27 @@ function keyMap(bindings) {
  * @param {number} [options.numVariables] NUM_VARIABLES, from the build's config.inc
  * @param {string[]} [options.switchNames] project.switches — authoring names, for the debugger
  * @param {string[]} [options.variableNames] project.variables, likewise
+ * @param {boolean} [options.battleEnabled] generated BATTLE_ENABLED out of the build's
+ *   config.inc — whether this is an RPG-battle build, for the invincibility/encounters-off
+ *   toggles' own wording. Kept separate from symbol presence: see shared/testoverrides.js.
  * @param {{screen: number, x: number, y: number, label?: string}} [options.startAt]
  *   where to start the player instead of the project's own start — a test-play
  *   override poked into RAM after boot, never compiled into the ROM
  */
 export function mountPlayer(
   container,
-  { rom, symbols = {}, ram = null, numVariables = null, switchNames = [], variableNames = [], startAt = null, app, onExit }
+  {
+    rom,
+    symbols = {},
+    ram = null,
+    numVariables = null,
+    switchNames = [],
+    variableNames = [],
+    battleEnabled = false,
+    startAt = null,
+    app,
+    onExit
+  }
 ) {
   const labelsByAddress = new Map();
   for (const [name, address] of Object.entries(symbols)) {
@@ -133,7 +147,17 @@ export function mountPlayer(
       let hit = null;
       while (owedFrames >= 1 && !hit) {
         owedFrames -= 1;
-        hit = emulator.runFrame().hit;
+        const result = emulator.runFrame();
+        // A trap that redirects to itself (a malformed symbol table -- see
+        // shared/testoverrides.js) never advances the PPU, so runFrame() never
+        // sees a frame end and gives up instead of hanging. That is a real
+        // failure, not a quiet no-op: treated as one here, through the same
+        // path an actual thrown crash already takes, rather than silently
+        // looping forever with "Running" on screen and nothing moving.
+        if (result.exhausted) {
+          throw new Error('the emulator did not complete a frame (a stuck intercept or runaway loop)');
+        }
+        hit = result.hit;
       }
       audio.flush();
       if (hit) {
@@ -255,7 +279,8 @@ export function mountPlayer(
       {
         onclick: () =>
           stepAnd(() => {
-            emulator.runFrame();
+            const result = emulator.runFrame();
+            if (result.exhausted) throw new Error('the emulator did not complete a frame (a stuck intercept or runaway loop)');
             audio.flush();
           }, 'Stepped one frame')
       },
@@ -306,6 +331,8 @@ export function mountPlayer(
       debugBody.append(panels.memory.node);
     } else if (id === 'switches') {
       debugBody.append(panels.switches.node);
+    } else if (id === 'toggles') {
+      debugBody.append(panels.toggles.node);
     } else {
       debugBody.append(panels.ppu.node);
     }
@@ -323,11 +350,13 @@ export function mountPlayer(
       panels.memory = memoryPanel(emulator);
       panels.ppu = ppuPanel(emulator);
       panels.switches = switchesPanel(emulator, { ram, numVariables, switchNames, variableNames });
+      panels.toggles = togglesPanel(emulator, { ram, symbols, battleEnabled });
       fill(debugTabs,
         ...[
           ['code', 'Code'],
           ['memory', 'Memory'],
           ['switches', 'Switches'],
+          ['toggles', 'Toggles'],
           ['ppu', 'PPU']
         ].map(([id, label]) =>
           el('button.tab', { dataset: { tab: id }, onclick: () => selectTab(id) }, label)
@@ -404,8 +433,17 @@ export function mountPlayer(
 
   // -------------------------------------------------------------- startup
 
+  // Resolved test-override targets are only valid for the ROM they were
+  // resolved against (shared/testoverrides.js), so every loadROM() below is
+  // paired with this — including the start-override fallback, which reloads
+  // the same bytes fresh rather than playing on from a part-way boot.
+  function configureOverrides() {
+    emulator.configureTestOverrides({ ram, symbols });
+  }
+
   try {
     emulator.loadROM(rom);
+    configureOverrides();
   } catch (error) {
     status.textContent = `Could not load the ROM: ${error.message}`;
     toast(`Could not load the ROM: ${error.message}`, 'error');
@@ -425,6 +463,7 @@ export function mountPlayer(
       toast(`Playing from ${startedFrom}`, 'success');
     } catch (error) {
       emulator.loadROM(rom);
+      configureOverrides();
       toast(`Could not start from there: ${error.message}. Playing from the start.`, 'error');
     }
   }

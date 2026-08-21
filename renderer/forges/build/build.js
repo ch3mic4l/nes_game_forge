@@ -244,8 +244,18 @@ export function mount(container, app) {
     // constants.asm — so how many variables the inspector can show is read from
     // there rather than the JS constant, the same single-writer reasoning.
     let numVariables = null;
+    let battleEnabled = false;
     const config = await window.forge.code.readGenerated(store.dir, 'assets/config.inc');
-    if (config.ok) numVariables = parseEquates(config.value).NUM_VARIABLES ?? null;
+    if (config.ok) {
+      const configEquates = parseEquates(config.value);
+      numVariables = configEquates.NUM_VARIABLES ?? null;
+      // Whether this build is RPG-battle-shaped, for the invincibility/
+      // encounters-off toggles' own wording (shared/testoverrides.js) --
+      // read from the generator's own answer rather than inferred from
+      // which symbols happen to be in game.fns, which a Code Forge override
+      // can rename or remove independently of the game type.
+      battleEnabled = configEquates.BATTLE_ENABLED === 1;
+    }
 
     logStage.style.display = 'none';
     playHost.style.display = 'block';
@@ -256,6 +266,7 @@ export function mount(container, app) {
       symbols,
       ram,
       numVariables,
+      battleEnabled,
       switchNames: store.project.switches,
       variableNames: store.project.variables,
       startAt,

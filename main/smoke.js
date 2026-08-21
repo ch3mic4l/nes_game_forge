@@ -10,7 +10,7 @@ import { unsavedChanges } from './ipc.js';
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
-const scenario = (dir, sampleDir) => `
+const scenario = (dir, sampleDir, sampleRpgDir) => `
 (async () => {
   const report = { steps: [] };
   const step = (name, detail) => report.steps.push({ name, detail });
@@ -1326,6 +1326,121 @@ const scenario = (dir, sampleDir) => `
     '64 switches + 16 variables, labelled, read/poked live, survives a mid-edit refresh, truncates fractions'
   );
 
+  // --- invincibility / encounters-off / collision-off toggles (ROADMAP item 3,
+  // after the inspector above) -- a click has to move real Emulator state, not
+  // just the checkbox's own DOM, or an unwired control would pass this test by
+  // producing no console error and nothing else. --------------------------
+  const togglesTab = document.querySelector('#stage [data-tab="toggles"]');
+  if (!togglesTab) throw new Error('the Toggles tab was not offered in the debugger');
+  togglesTab.click();
+  await wait(150);
+
+  const toggleRows = [...document.querySelectorAll('#stage [data-toggle]')];
+  if (toggleRows.length !== 3) throw new Error('expected 3 toggle rows, saw ' + toggleRows.length);
+
+  // sample/ is an action build: encounters off has nothing to operate on
+  // (no check_encounter at all) and must say so rather than look clickable.
+  const encountersInput = document.querySelector('#stage [data-toggle="encounters"] input');
+  if (!encountersInput.disabled) throw new Error('encounters off should be disabled on an action build');
+  const encountersHint = document.querySelector('#stage [data-toggle="encounters"] .hint');
+  if (!encountersHint || encountersHint.textContent.indexOf('no wandering encounters') === -1) {
+    throw new Error('the disabled encounters toggle did not say why');
+  }
+
+  const invincibilityInput = document.querySelector('#stage [data-toggle="invincibility"] input');
+  const collisionInput = document.querySelector('#stage [data-toggle="collision"] input');
+  if (invincibilityInput.disabled || collisionInput.disabled) {
+    throw new Error('invincibility and collision off should both be available on any build');
+  }
+  if (buildEmu.testOverrides.invincibility || buildEmu.testOverrides.collision) {
+    throw new Error('a fresh build should not have any toggle on already');
+  }
+
+  // setTestOverrides() merges the boolean regardless of whether anything was
+  // ever resolved/armed -- it would do that even if mountPlayer's own call to
+  // configureTestOverrides() were deleted entirely, leaving the checkbox
+  // fully wired to DOM and completely inert against the running ROM. This is
+  // the check that catches exactly that: a resolved spec, and the matching
+  // trap actually present in the armed table, before any click happens.
+  function assertArmed(emulator, name) {
+    const spec = emulator.overrideTargets && emulator.overrideTargets[name];
+    if (!spec) throw new Error('the mounted emulator never resolved a ' + name + ' override target');
+    if (!emulator.interceptsByTrap.has(spec.trap)) {
+      throw new Error("the " + name + " trap address is not armed in the mounted emulator's intercept table");
+    }
+  }
+  assertArmed(buildEmu, 'invincibility');
+  assertArmed(buildEmu, 'collision');
+
+  invincibilityInput.click();
+  await wait(50);
+  if (!buildEmu.testOverrides.invincibility) throw new Error('clicking the invincibility checkbox did not arm the Emulator override');
+  if (buildEmu.testOverrides.collision) throw new Error('clicking invincibility should not have also armed collision');
+
+  collisionInput.click();
+  await wait(50);
+  if (!buildEmu.testOverrides.collision) throw new Error('clicking the collision checkbox did not arm the Emulator override');
+
+  invincibilityInput.click(); // back off
+  await wait(50);
+  if (buildEmu.testOverrides.invincibility) throw new Error('unchecking invincibility did not disarm the Emulator override');
+  if (!buildEmu.testOverrides.collision) throw new Error('unchecking invincibility should not have also disarmed collision');
+
+  step('invincibility/encounters-off/collision-off toggles', '3 rows, RPG-only encounters labelled unavailable, clicks reach Emulator state');
+
+  // --- the same Toggles tab, against an RPG build: the action sample above
+  // can only ever show encounters off *disabled*, so nothing yet has clicked
+  // it while it is live. Reusing the exact project.open + store.open +
+  // buildAndPlay path already exercised for the action sample, just pointed
+  // at sample-rpg -- not a special-cased flow. ------------------------------
+  const sampleRpg = await window.forge.project.open(${JSON.stringify(sampleRpgDir)});
+  if (!sampleRpg.ok) throw new Error('open sample-rpg: ' + sampleRpg.error);
+  window.__app.store.open(sampleRpg.value.dir, sampleRpg.value.project);
+  await wait(200);
+  window.__app.goTo('build');
+  await wait(300);
+  await window.__app.current.buildAndPlay();
+  await wait(1200);
+  const rpgPlayCanvas = [...document.querySelectorAll('#stage canvas')].find(
+    (c) => c.width === 256 && c.height === 240
+  );
+  if (!rpgPlayCanvas) throw new Error('the RPG build never showed a 256x240 screen');
+
+  const rpgDebugBtn = [...document.querySelectorAll('#stage button')].find((b) => b.textContent.includes('Debugger'));
+  if (!rpgDebugBtn) throw new Error('debugger toggle button not found on the RPG build');
+  rpgDebugBtn.click();
+  await wait(150);
+  const rpgTogglesTab = document.querySelector('#stage [data-tab="toggles"]');
+  if (!rpgTogglesTab) throw new Error('the Toggles tab was not offered for the RPG build');
+  rpgTogglesTab.click();
+  await wait(150);
+
+  const rpgEncountersInput = document.querySelector('#stage [data-toggle="encounters"] input');
+  if (!rpgEncountersInput) throw new Error('the encounters row was not offered for the RPG build');
+  if (rpgEncountersInput.disabled) throw new Error('encounters off should be enabled on an RPG build (BATTLE_ENABLED)');
+  const rpgEncountersHint = document.querySelector('#stage [data-toggle="encounters"] .hint');
+  if (!rpgEncountersHint || rpgEncountersHint.textContent.indexOf('Wandering encounters off') === -1) {
+    throw new Error('the RPG build should show the "on" copy, not the action-build unavailability message');
+  }
+
+  const rpgEmu = window.__app.current.player.emulator;
+  if (rpgEmu.testOverrides.encounters) throw new Error('a fresh RPG build should not have encounters on already');
+  assertArmed(rpgEmu, 'encounters');
+  rpgEncountersInput.click();
+  await wait(50);
+  if (!rpgEmu.testOverrides.encounters) throw new Error('clicking the RPG encounters checkbox did not arm the Emulator override');
+  rpgEncountersInput.click();
+  await wait(50);
+  if (rpgEmu.testOverrides.encounters) throw new Error('unchecking the RPG encounters checkbox did not disarm the Emulator override');
+
+  step('encounters-off toggle on an RPG build', 'enabled with the RPG copy, clicks reach Emulator state');
+
+  // Back to the action sample for the rest of this scenario: the RPG
+  // excursion above was self-contained, and "play from here" below expects
+  // the action sample's own map layout.
+  window.__app.store.open(sample.value.dir, sample.value.project);
+  await wait(200);
+
   // --- play from here: the Map Forge's Test tool, clicked for real ---------
   // The whole path only exists in the app: the tool reads the selected screen,
   // the Build panel reads the engine constants back out of the build over IPC,
@@ -1396,10 +1511,17 @@ export async function runSmoke(window) {
     recursive: true,
     filter: (source) => !source.includes(`${path.sep}build`)
   });
+  // Only the encounters-off toggle needs an RPG build (BATTLE_ENABLED) to be
+  // offered at all -- the action sample above never exercises it.
+  const sampleRpgCopy = path.join(scratch, 'SampleRpg.forge');
+  await fs.cp(path.join(REPO_ROOT, 'sample-rpg'), sampleRpgCopy, {
+    recursive: true,
+    filter: (source) => !source.includes(`${path.sep}build`)
+  });
 
   try {
     await new Promise((resolve) => window.webContents.once('did-finish-load', resolve));
-    const report = await window.webContents.executeJavaScript(scenario(dir, sampleCopy));
+    const report = await window.webContents.executeJavaScript(scenario(dir, sampleCopy, sampleRpgCopy));
     for (const entry of report.steps) console.log(`  ok  ${entry.name}${entry.detail ? ` — ${entry.detail}` : ''}`);
 
     // The window's close handler decides whether to interrupt the X with a
