@@ -49,7 +49,8 @@ import {
   projectUsesSave,
   projectUsesMove,
   projectEvents,
-  allCommands
+  allCommands,
+  mapEncounterFormation
 } from '../../shared/project.js';
 import { SAVE_FIELDS, saveBodySize, saveIdentity } from '../../shared/save.js';
 import {
@@ -127,14 +128,6 @@ export const codeRegionCount = (project) => (project.project?.gameType === 'rpg'
 // Where the two title lines sit, in tile rows. Clear of the overscan at both
 // ends, and far enough apart to read as a title and a prompt rather than a
 // paragraph.
-// Encounter formations are a fixed four slots per map so the engine can index
-// with a shift; $FF is an empty slot.
-const RPG_ENCOUNTER_SLOTS = 4;
-const encounterRow = (map, actorCount) => {
-  const ids = (map.encounters?.actorIds ?? []).filter((id) => id < actorCount).slice(0, RPG_ENCOUNTER_SLOTS);
-  return [...ids, ...new Array(RPG_ENCOUNTER_SLOTS - ids.length).fill(0xff)];
-};
-
 const TITLE_NAME_ROW = 10;
 const TITLE_PROMPT_ROW = 19;
 
@@ -1415,8 +1408,8 @@ export async function generateAssets({ dir, project, log = () => {} }) {
       // cost worth speaking of.
       `map_enc_rate:\n${dbBlock(project.maps.map((map) => map.encounters?.rate ?? 0))}`,
       `map_enc_actors:\n${dbBlock(
-        project.maps.flatMap((map) => encounterRow(map, actorCount)),
-        RPG_ENCOUNTER_SLOTS
+        project.maps.flatMap((map) => mapEncounterFormation(map, actorCount)),
+        RPG_LIMITS.encounterActors
       )}`,
       `map_battle_sky:\n${dbBlock(project.maps.map((map) => map.battleSkyTile ?? 0))}`,
       `map_battle_ground:\n${dbBlock(project.maps.map((map) => map.battleGroundTile ?? 0))}`,

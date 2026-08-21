@@ -250,16 +250,24 @@ export class Emulator {
     return false;
   }
 
-  /** Run until the current subroutine returns. */
+  /**
+   * Run until the current subroutine returns.
+   * @returns {boolean} true when a real rts popped the stack above the
+   *   starting depth; false when a breakpoint or the instruction-limit
+   *   exhausted first -- both a caller that treats "stepped out" as a
+   *   completion boundary (battletest.js's own use of this) must not mistake
+   *   for one, since either can leave the callee only partway executed.
+   */
   stepOut() {
     const startDepth = this.nes.cpu.REG_SP;
     const limit = 2_000_000;
     for (let i = 0; i < limit; i++) {
       const opcode = this.peek(this.pc);
       this.stepInstruction();
-      if (opcode === 0x60 && this.nes.cpu.REG_SP > startDepth) return;
-      if (this.checkBreak()) return;
+      if (opcode === 0x60 && this.nes.cpu.REG_SP > startDepth) return true;
+      if (this.checkBreak()) return false;
     }
+    return false;
   }
 
   stepScanline() {

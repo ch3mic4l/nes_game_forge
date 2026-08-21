@@ -71,8 +71,11 @@ const TRAP_SYMBOL = {
 // program counter value: valid only inside cartridge PRG space ($8000-$FFFF),
 // since that is the only range nesasm ever places a label in -- landing the
 // 6502 anywhere below it means executing whatever bytes happen to be in RAM.
-const isRamAddress = (value) => Number.isInteger(value) && value >= 0 && value < 0x2000;
-const isCodeAddress = (value) => Number.isInteger(value) && value >= 0x8000 && value <= 0xffff;
+// Exported for renderer/emulator/battletest.js, which pokes RAM and jumps to
+// a symbol the same way this module's own redirects do, and validates both
+// the same way -- one definition of "usable," not two that could drift.
+export const isRamAddress = (value) => Number.isInteger(value) && value >= 0 && value < 0x2000;
+export const isCodeAddress = (value) => Number.isInteger(value) && value >= 0x8000 && value <= 0xffff;
 
 // A trap that redirects to itself is the one case that never reaches a
 // genuinely new instruction: stepInstruction() would see the same PC again,

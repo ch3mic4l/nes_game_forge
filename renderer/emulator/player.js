@@ -3,6 +3,7 @@
 import { el, clear, fill, toast, fitZoom, observeSize } from '../ui.js';
 import { Emulator, BUTTON } from './runcontrol.js';
 import { applyStartOverride } from './testplay.js';
+import { applyBattleTest } from './battletest.js';
 import { AudioOut } from './audio.js';
 import { cpuPanel, disassemblyPanel, memoryPanel, ppuPanel, switchesPanel, togglesPanel } from './panels.js';
 
@@ -58,6 +59,10 @@ function keyMap(bindings) {
  * @param {{screen: number, x: number, y: number, label?: string}} [options.startAt]
  *   where to start the player instead of the project's own start — a test-play
  *   override poked into RAM after boot, never compiled into the ROM
+ * @param {{formation: number[], label?: string}} [options.battleTest]
+ *   fire this formation as a battle immediately after `startAt` lands
+ *   (renderer/emulator/battletest.js) — ROADMAP item 3's "battle-test a
+ *   selected encounter without walking into it"
  */
 export function mountPlayer(
   container,
@@ -70,6 +75,7 @@ export function mountPlayer(
     variableNames = [],
     battleEnabled = false,
     startAt = null,
+    battleTest = null,
     app,
     onExit
   }
@@ -465,6 +471,21 @@ export function mountPlayer(
       emulator.loadROM(rom);
       configureOverrides();
       toast(`Could not start from there: ${error.message}. Playing from the start.`, 'error');
+    }
+  }
+
+  // Fired immediately after startAt lands, on the same "gives up rather than
+  // continue from a mutated middle" philosophy: applyBattleTest can throw
+  // after already poking some RAM (a formation overwritten mid-frame, say),
+  // and there is no sensible "continue playing" from that half state.
+  if (battleTest) {
+    try {
+      applyBattleTest(emulator, battleTest.formation, { ram, symbols });
+      toast(`Battle-test: ${battleTest.label ?? 'started'}`, 'success');
+    } catch (error) {
+      emulator.loadROM(rom);
+      configureOverrides();
+      toast(`Could not start the battle-test: ${error.message}. Playing from the start.`, 'error');
     }
   }
 

@@ -499,6 +499,26 @@ export const RPG_LIMITS = {
 export const battleFormationSlice = (monsters) =>
   (Array.isArray(monsters) ? monsters : []).slice(0, RPG_LIMITS.monstersPerBattle);
 
+/**
+ * The formation one map's own wandering-encounter table actually places, as
+ * four `mon_slot_actor` values ($FF = empty slot, the same sentinel the
+ * engine's own RAM array uses): `map.encounters.actorIds`, trimmed to ids
+ * that still index a real actor — a deleted or out-of-range one is dropped,
+ * not merely truncated, unlike `battleFormationSlice` above, which enforces
+ * only the slot count for a different question (an authored formation's own
+ * length). The single writer for both `main/build/generate.js`'s
+ * `map_enc_actors` table and anything else that needs to know what a map's
+ * wandering table would actually place — a debugger poke into
+ * `mon_slot_actor` included, since the shape already matches. Reading
+ * `map.encounters.actorIds` directly instead can test a monster the shipped
+ * ROM never places, or hand the battle bank an actor id past the end of its
+ * own tables.
+ */
+export const mapEncounterFormation = (map, actorCount) => {
+  const ids = (map?.encounters?.actorIds ?? []).filter((id) => id < actorCount).slice(0, RPG_LIMITS.encounterActors);
+  return [...ids, ...new Array(RPG_LIMITS.encounterActors - ids.length).fill(0xff)];
+};
+
 // ---------------------------------------------------------------------------
 // Defaults
 // ---------------------------------------------------------------------------

@@ -134,7 +134,38 @@ to the thing under test without playing up to it.
 
 - ~~**Play from here**: boot at the currently selected screen and position~~ — **done**, as the Map
   Forge's ▶ Test tool
-- **Battle-test** a selected encounter without walking into it
+- ~~**Battle-test** a selected encounter without walking into it~~ — **done**: a Battle-test
+  section in the Map Forge's Battles panel, two entry points (the map's own wandering-encounter
+  table, or a hand-picked formation), firing straight into `battle_begin` (`engine/rpg.asm`) via a
+  redirect through a real `jsr` target (`check_encounter`) rather than a fabricated call, with a
+  two-stage completion boundary checked against real results (`stepOut()`'s own return, then a
+  program-address rendezvous with the next `main_loop`) and postconditions covering the *durable*
+  mutations the entity pass that boundary waits through can make without touching the formation at
+  all: the fight's own metadata (`bt_esc`/`bt_from_ent`), the field (`flat_screen` *and*
+  `player_x`/`player_y` — a door back to the same screen still relocates the player without changing
+  `flat_screen`), a newly armed event (`pending_ent`), and the bag (`inv_count`/`inv_items` *and*
+  `pickups` — a pickup against an already-full bag leaves the first two unchanged while `pickups`
+  still counts it and the entity still vanishes). Deliberately not among them: `ent_hurt`, an
+  entity's position/direction/animation frame, `ent_touched`, and the scratch bytes patrol/chase/
+  contact routines use, all of which the entity pass can genuinely still change — and, on a door,
+  `screen_fresh` and the destination screen's own freshly `spawn_entities`-built arrays. None of
+  those are checked because every one of them is transient on both ways a fight can end: on victory
+  or flee, `battle_end` (`engine/rpg.asm`) redraws the screen itself, and that redraw's own
+  `spawn_entities` rebuilds the whole entity array from the map data fresh; on defeat, `battle_finish`
+  (`engine/battleturn.asm`) jumps straight to `player_died` instead, bypassing `battle_end` entirely,
+  and the array is rebuilt only later, when `restart_game` (`engine/title.asm`) redraws after the
+  game-over screen — the same distinction CLAUDE.md's own battle-statuses passage already draws for
+  `pc_status`, cleared at `battle_end` for the two normal exits and at `init_session` for defeat
+  precisely because `battle_finish` skips `battle_end` there. Either way the state this cares about
+  is discarded before the player is back in control, regardless of what the entity pass did to it on
+  the way in. A postcondition here would be asserting on a value already scheduled
+  to be thrown away before the player ever sees it — checking it would not catch a real defect, only
+  add a false one the moment some other change nudges a scratch byte. The map-table entry point
+  itself is read through the same `mapEncounterFormation` (`shared/project.js`) the compiler calls,
+  not filtered by whether an actor currently deals contact damage the way the hand-picked entry
+  point's own candidate list is — an actor already sitting in a map's table keeps compiling into
+  real wandering encounters after its damage is edited to zero, so the button that tests it must
+  not disagree with the ROM about that
 - ~~A runtime **switch/variable inspector** (the debugger already reads engine RAM; this is a labelled
   view of it, and item 1's variables make it much more useful)~~ — **done**: a Switches tab in the
   emulator's debugger, listing all 64 switches and the project's variables by their project names —
@@ -184,9 +215,18 @@ a write path rather than a one-way read: values are read and poked straight thro
 game itself set — the same shape play from here already settled, applied to a control the user can
 leave toggled rather than a one-shot warp. What the invincibility/encounters-off/collision-off toggles
 actually had to touch in the engine was not settled by this and differed per toggle — see item 3's own
-entry above for how each one landed. Battle-test remains the one bullet this does not settle at all: it
-has to assemble a formation and call into `battle_begin` (`engine/rpg.asm`) safely, which is
-orchestration, not a byte to poke or a PC to trap.
+entry above for how each one landed. Battle-test needed a third shape rather than either of those two:
+assembling a formation and calling into `battle_begin` (`engine/rpg.asm`) safely is orchestration, not
+a byte to poke or a PC to trap. The honesty rule still holds — nothing here is compiled into the ROM,
+and the redirect reuses a real `jsr` target (`check_encounter`) so the stack already holds the return
+address `battle_begin`'s own `rts` needs, rather than fabricating a call frame — but "safely" turned out
+to mean checking the completion boundary against real results instead of inferred ones (`stepOut()`'s
+own return value, then a program-address rendezvous with the next `main_loop` rather than a bare
+`runFrame()`, since a single PPU frame edge does not reliably land after `update_entities` has run), and
+treating the entity pass main_loop still runs afterward as a real hazard rather than something to dodge:
+an overlapping monster, door or pickup can mutate the fight's own metadata, the field, or the bag out
+from under it exactly as it could for a real wandering encounter, and battle-test now detects each of
+those rather than reporting success on top of a corrupted world.
 
 ## 4. Cartridge save/load — **done**
 

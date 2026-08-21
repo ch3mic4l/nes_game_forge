@@ -209,9 +209,13 @@ export function mount(container, app) {
   }
 
   /**
-   * @param {{startAt?: {screen: number, x: number, y: number, label?: string}}} [options]
+   * @param {{startAt?: {screen: number, x: number, y: number, label?: string},
+   *   battleTest?: {formation: number[], label?: string}}} [options]
    *   `startAt` is the Map Forge's "play from here": where to put the player
-   *   once the ROM is running. It changes nothing about the ROM being built.
+   *   once the ROM is running. `battleTest` is its "fire this fight now"
+   *   sibling (ROADMAP item 3's last bullet) — fired immediately after
+   *   `startAt` lands, through renderer/emulator/battletest.js. Neither
+   *   changes anything about the ROM being built.
    */
   async function buildAndPlay(options = {}) {
     const result = (await build({ silent: true })) ?? lastBuild;
@@ -219,7 +223,7 @@ export function mount(container, app) {
     await play(result, options);
   }
 
-  async function play(result, { startAt = null } = {}) {
+  async function play(result, { startAt = null, battleTest = null } = {}) {
     const rom = await window.forge.build.readRom(result.romPath);
     if (!rom.ok) return toast(rom.error, 'error');
 
@@ -270,6 +274,7 @@ export function mount(container, app) {
       switchNames: store.project.switches,
       variableNames: store.project.variables,
       startAt,
+      battleTest,
       app,
       onExit: () => {
         emulator?.destroy?.();

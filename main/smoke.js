@@ -1222,7 +1222,62 @@ const scenario = (dir, sampleDir, sampleRpgDir) => `
   window.__app.goTo('build');
   await wait(300);
   await window.__app.current.buildAndPlay();
-  await wait(1200);
+  // The run loop paces itself by wall-clock time (renderer/emulator/player.js),
+  // so a fixed sleep here is a bet on how fast this machine actually delivers
+  // requestAnimationFrame callbacks -- a bet a throttled or contended window
+  // can lose outright, landing every read below on RAM from before
+  // init_session has run at all (still $FF, the NES's own power-on fill)
+  // rather than on a genuinely booted game. This is exactly the "fixed sleep
+  // is a bet" the until() helper above exists to avoid.
+  //
+  // A readiness predicate must exclude the power-on fill, not merely differ
+  // from the idle value -- this line has cost three rounds learning that the
+  // hard way, so the rule, not just the third patch, belongs here:
+  //
+  //   The NES's own power-on RAM state (engine/boot.asm's comment, and what
+  //   jsnes fills fresh RAM with) is $FF, not $00 and not whatever an "idle"
+  //   reading of a byte happens to look like. A predicate is only safe once
+  //   it is checked against BOTH: the value the byte holds before init runs
+  //   (which is $FF, unconditionally, for every byte in $0000-$07FF, until
+  //   boot_clear's own sweep reaches it) AND the value some *other* boot step
+  //   writes before the one this cares about (boot_clear's own zero fill,
+  //   here). "differs from 0" is not that check -- $FF differs from 0 too.
+  //
+  // Two failures already happened on this exact line from skipping that:
+  // game_state (0) is what boot_clear itself writes, so ST_GAMEPLAY/RPG's
+  // own target is indistinguishable from "not booted yet"; and player_hp
+  // reading "!== 0" is ALSO satisfied by $FF, the power-on fill it starts at
+  // -- so a throttled renderer could observe the exact boot_clear boundary
+  // where game_state ($25) has just been zeroed but player_hp ($4E, later in
+  // the same $0000-$07FF sweep) has not, and wrongly call that "booted".
+  // Proven empirically, not assumed: stepping this ROM instruction by
+  // instruction from reset, player_hp reads $FF (satisfying "!== 0") for
+  // 16614 straight instructions before it is genuinely in range.
+  //
+  // player_hp ($4E) is still the right byte -- init_session sets it to
+  // MAX_HEARTS unconditionally, for both action and RPG builds -- but the
+  // predicate has to be its real range, 1-6 (shared/project.js's own clamp
+  // on maxHearts), which $FF fails and 0 fails and only a genuine post-init
+  // value satisfies.
+  //
+  // game_state itself is safe to poll here, unlike the RPG build's own
+  // target below: ST_TITLE (3) is written only once, in the .if
+  // TITLE_ENABLED block that runs strictly after init_session (boot.asm),
+  // and boot_clear only ever writes 0 -- never 3 -- so nothing before that
+  // one write can produce it by coincidence. Also verified empirically, not
+  // merely read off the source: game_state reaches 3 at instruction 16729,
+  // after player_hp is already in its valid range (16614) -- there is no
+  // window where this build's own game_state target arrives early.
+  await until(
+    'the sample to boot into its title screen',
+    () => {
+      const emulator = window.__app.current?.player?.emulator;
+      if (!emulator) return false;
+      const playerHp = emulator.peek(0x004e);
+      return playerHp >= 1 && playerHp <= 6 && emulator.peek(0x0025) === 3;
+    },
+    20000
+  );
   const playCanvas = [...document.querySelectorAll('#stage canvas')].find(
     (c) => c.width === 256 && c.height === 240
   );
@@ -1400,7 +1455,30 @@ const scenario = (dir, sampleDir, sampleRpgDir) => `
   window.__app.goTo('build');
   await wait(300);
   await window.__app.current.buildAndPlay();
-  await wait(1200);
+  // sample-rpg has no title screen (project.titleMap is null), so game_state
+  // settles at ST_GAMEPLAY = 0 once boot finishes -- the same value
+  // boot_clear itself writes as part of its blanket $0000-$07FF clear,
+  // before mapper_init, chr_ram_init, load_palette or init_session have run
+  // at all, so game_state alone cannot tell "booted" from "not booted yet"
+  // here. See the general rule and its evidence above (the action sample's
+  // own readiness poll): a readiness predicate must exclude the power-on
+  // fill, not merely differ from the idle value -- player_hp reading "!== 0"
+  // is NOT that check, since $FF (what it holds at power-on) also satisfies
+  // it. player_hp's real range is 1-6 (MAX_HEARTS, clamped by
+  // shared/project.js), which only a genuine init_session run produces;
+  // proven empirically for this exact build too, not assumed from the
+  // action sample alone: player_hp reads $FF (an old "!== 0" pass) for
+  // 16649 straight instructions from reset before it is genuinely in range.
+  await until(
+    'the RPG build to boot into gameplay',
+    () => {
+      const emulator = window.__app.current?.player?.emulator;
+      if (!emulator) return false;
+      const playerHp = emulator.peek(0x004e);
+      return playerHp >= 1 && playerHp <= 6 && emulator.peek(0x0025) === 0;
+    },
+    20000
+  );
   const rpgPlayCanvas = [...document.querySelectorAll('#stage canvas')].find(
     (c) => c.width === 256 && c.height === 240
   );
@@ -1434,6 +1512,162 @@ const scenario = (dir, sampleDir, sampleRpgDir) => `
   if (rpgEmu.testOverrides.encounters) throw new Error('unchecking the RPG encounters checkbox did not disarm the Emulator override');
 
   step('encounters-off toggle on an RPG build', 'enabled with the RPG copy, clicks reach Emulator state');
+
+  // --- battle-test: fire a chosen encounter from the Map Forge without
+  // walking into it (ROADMAP item 3's last bullet), on the RPG build still
+  // open above. Both entry points, and both checked against real Emulator
+  // RAM -- a toast alone cannot tell "started the requested fight" apart
+  // from "silently failed and fell back to playing from the start". -------
+  await window.__app.goTo('map');
+  await wait(300);
+  const battleTestHead = [...document.querySelectorAll('#stage .panel-head')].find(
+    (h) => h.textContent.trim() === 'Battle-test'
+  );
+  if (!battleTestHead) throw new Error('the Map Forge did not offer a Battle-test section for the RPG build');
+  const tableBtn = [...document.querySelectorAll('#stage button')].find((b) => b.textContent.includes("This map's table"));
+  if (!tableBtn) throw new Error("the map's own table battle-test button was not offered");
+  if (tableBtn.disabled) throw new Error("Starfall Plain's encounter table should not read as empty");
+  tableBtn.click();
+  await until('battle-test (map table) to build and boot', () => window.__app.current?.player?.emulator, 60000);
+  const tableEmu = window.__app.current.player.emulator;
+  // Engine RAM, from engine/constants.asm: game_state ($25), bt_phase ($53),
+  // mon_slot_actor ($03BC, 4 bytes). Starfall Plain's own table
+  // (sample-rpg/maps/0.json: encounters.actorIds = [0], Slime) compiles to
+  // [0, $FF, $FF, $FF].
+  if (tableEmu.peek(0x0025) !== 5) {
+    throw new Error('battle-test (map table) did not land in ST_BATTLE, game_state is ' + tableEmu.peek(0x0025));
+  }
+  // bt_phase is deliberately not asserted here: the moment .emulator exists,
+  // setRunning(true) has already scheduled the real run loop
+  // (renderer/emulator/player.js), and until() polls for it on real 25ms
+  // setTimeout boundaries -- real wall-clock time a throttled or contended
+  // window can use to have already ticked a real battle frame forward,
+  // legitimately advancing bt_phase past BP_INTRO before this read. That
+  // exact postcondition is already covered deterministically, with no rAF in
+  // the loop at all, by test/unit/battletest.test.js.
+  const tableFormation = [0, 1, 2, 3].map((slot) => tableEmu.peek(0x03bc + slot));
+  if (tableFormation.join(',') !== '0,255,255,255') {
+    throw new Error("battle-test (map table) formation was [" + tableFormation.join(',') + '], expected [0,255,255,255]');
+  }
+  step('battle-test: map encounter table', 'Slime formation landed, ST_BATTLE/BP_INTRO confirmed in Emulator RAM');
+
+  // Second entry point: an arbitrary formation picked by hand -- proves the
+  // free-form picker's checkboxes actually reach the compiled formation the
+  // emulator receives, not just the map's own table.
+  await window.__app.goTo('map');
+  await wait(300);
+  const snakeCheckbox = [...document.querySelectorAll('#stage label.check')]
+    .find((label) => label.textContent.includes('Snake'))
+    ?.querySelector('input');
+  if (!snakeCheckbox) throw new Error('the free-form battle-test picker did not offer Snake');
+  snakeCheckbox.click();
+  await wait(100);
+  const formationBtn = [...document.querySelectorAll('#stage button')].find((b) => b.textContent.includes('Chosen formation'));
+  if (!formationBtn) throw new Error('the "chosen formation" battle-test button was not offered');
+  if (formationBtn.disabled) throw new Error('picking Snake should have enabled the chosen-formation button');
+  formationBtn.click();
+  await until('battle-test (chosen formation) to build and boot', () => window.__app.current?.player?.emulator, 60000);
+  const pickEmu = window.__app.current.player.emulator;
+  if (pickEmu.peek(0x0025) !== 5) {
+    throw new Error('battle-test (chosen formation) did not land in ST_BATTLE, game_state is ' + pickEmu.peek(0x0025));
+  }
+  const pickFormation = [0, 1, 2, 3].map((slot) => pickEmu.peek(0x03bc + slot));
+  if (pickFormation.join(',') !== '3,255,255,255') {
+    throw new Error(
+      "battle-test (chosen formation) formation was [" + pickFormation.join(',') + '], expected [3,255,255,255] (Snake alone)'
+    );
+  }
+  step('battle-test: chosen formation', 'Snake-alone formation reaches the emulator, distinct from the map table');
+
+  // A second map, with its own distinct encounter table -- proving the "This
+  // map's table" entry point reads whichever map is actually selected
+  // (state.mapIndex) rather than always Starfall Plain at index 0, which the
+  // steps above alone cannot tell apart from a hardcoded map 0.
+  await window.__app.goTo('map');
+  await wait(300);
+  document.querySelector('#stage [title="Add a map"]').click();
+  await wait(150);
+  const newMapSlot0 = document.querySelector('#stage [data-encounter-slot="0"]');
+  if (!newMapSlot0) throw new Error('the new map has no encounter-table slot 0 to configure');
+  const snakeOption = [...newMapSlot0.options].find((o) => o.textContent === 'Snake');
+  if (!snakeOption) throw new Error('the new map’s encounter-table slot did not offer Snake');
+  newMapSlot0.value = snakeOption.value;
+  newMapSlot0.dispatchEvent(new Event('change', { bubbles: true }));
+  await wait(150);
+  const secondMapBtn = [...document.querySelectorAll('#stage button')].find((b) => b.textContent.includes("This map's table"));
+  if (!secondMapBtn) throw new Error("the second map's own table battle-test button was not offered");
+  if (secondMapBtn.disabled) throw new Error("the second map's encounter table should not read as empty after being set");
+  secondMapBtn.click();
+  await until('battle-test (second map) to build and boot', () => window.__app.current?.player?.emulator, 60000);
+  const secondMapEmu = window.__app.current.player.emulator;
+  if (secondMapEmu.peek(0x0025) !== 5) {
+    throw new Error('battle-test (second map) did not land in ST_BATTLE, game_state is ' + secondMapEmu.peek(0x0025));
+  }
+  const secondMapFormation = [0, 1, 2, 3].map((slot) => secondMapEmu.peek(0x03bc + slot));
+  if (secondMapFormation.join(',') !== '3,255,255,255') {
+    throw new Error(
+      'battle-test (second map) formation was [' +
+        secondMapFormation.join(',') +
+        '], expected [3,255,255,255] (Snake, this map’s own table) -- not Starfall Plain’s'
+    );
+  }
+  step('battle-test: second map’s own table', "Snake formation from the newly added map, not Starfall Plain's Slime");
+
+  // A monster's damage edited down to zero must not hide "This map's table":
+  // mapEncounterFormation (shared/project.js), the compiler's own single
+  // writer for what a map's wandering table contains, does not filter by
+  // damage at all, so Starfall Plain's compiled table still runs a real
+  // Slime encounter regardless of what Slime's own damage now reads. Gating
+  // the button on isMonsterActor (damage > 0) independently -- which an
+  // earlier version of this feature did -- is the exact "three places give
+  // three different answers" trap CLAUDE.md's effectiveTrigger section
+  // describes, just for "what does this map encounter" instead of triggers.
+  // battleTest() (renderer/forges/map/map.js) navigates to the Build panel
+  // to fire the fight it just clicked, so the previous step ends there, not
+  // on the Map Forge -- back to map before looking for anything in it.
+  await window.__app.goTo('map');
+  await wait(300);
+  store.commit('smoke zero every actor damage', (project) => {
+    project.sprites.actors.forEach((actor) => (actor.damage = 0));
+  });
+  await wait(120);
+  const mapSelect = [...document.querySelectorAll('#stage select')].find((s) =>
+    [...s.options].some((o) => o.textContent === 'Starfall Plain')
+  );
+  if (!mapSelect) throw new Error('the map selector no longer offers Starfall Plain');
+  mapSelect.value = '0';
+  mapSelect.dispatchEvent(new Event('change', { bubbles: true }));
+  await wait(150);
+  const zeroDamageBtn = [...document.querySelectorAll('#stage button')].find((b) => b.textContent.includes("This map's table"));
+  if (!zeroDamageBtn) {
+    throw new Error(
+      "the map's own table button disappeared once every actor read as non-hostile, even though Starfall " +
+        "Plain's compiled table still places a real Slime encounter"
+    );
+  }
+  if (zeroDamageBtn.disabled) throw new Error("Starfall Plain's own table should still read non-empty after a damage edit alone");
+  // The hand-picked picker is correctly narrower, and should say so instead
+  // of offering checkboxes for nothing.
+  const noHostileHint = [...document.querySelectorAll('#stage p.hint')].some((p) =>
+    p.textContent.includes('nothing to hand-pick a formation from')
+  );
+  if (!noHostileHint) throw new Error('the free-form picker should explain why it is offering nothing, once no actor reads as hostile');
+  zeroDamageBtn.click();
+  await until('battle-test (zero-damage actor) to build and boot', () => window.__app.current?.player?.emulator, 60000);
+  const zeroDamageEmu = window.__app.current.player.emulator;
+  if (zeroDamageEmu.peek(0x0025) !== 5) {
+    throw new Error('battle-test (zero-damage actor) did not land in ST_BATTLE, game_state is ' + zeroDamageEmu.peek(0x0025));
+  }
+  const zeroDamageFormation = [0, 1, 2, 3].map((slot) => zeroDamageEmu.peek(0x03bc + slot));
+  if (zeroDamageFormation.join(',') !== '0,255,255,255') {
+    throw new Error(
+      'battle-test (zero-damage actor) formation was [' + zeroDamageFormation.join(',') + '], expected [0,255,255,255] (Slime)'
+    );
+  }
+  step(
+    'battle-test: a zero-damage actor already in the table',
+    "the map's own table stays offered and fires the real compiled encounter, even once no actor reads as hostile"
+  );
 
   // Back to the action sample for the rest of this scenario: the RPG
   // excursion above was self-contained, and "play from here" below expects

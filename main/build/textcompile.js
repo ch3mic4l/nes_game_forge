@@ -70,8 +70,8 @@ export const NO_EVENT = 0xff;
 // so a screen change and a Play music command reach the engine's NO_SONG
 // through the same byte, no matter which one decided it.
 export const NO_SONG = 0xff;
-// An empty formation slot: the same sentinel main/build/generate.js's
-// encounterRow pads a map's own (random) encounter table with, so
+// An empty formation slot: the same sentinel shared/project.js's
+// mapEncounterFormation pads a map's own (random) encounter table with, so
 // mon_slot_actor reads one byte shape regardless of which of the two ever
 // filled it.
 export const NO_ACTOR = 0xff;

@@ -20,7 +20,7 @@ import {
   effectiveTrigger
 } from '../../../shared/project.js';
 import { BOX_COLS, BOX_ROWS, FONT_BASE, wrapText } from '../../../shared/font.js';
-import { RPG_LIMITS, isMonsterActor } from '../../../shared/project.js';
+import { RPG_LIMITS, isMonsterActor, mapEncounterFormation } from '../../../shared/project.js';
 import { saveCapable, resolveMapper } from '../../../shared/cartridge.js';
 import { createMetatilePanel } from './metatiles.js';
 import {
@@ -114,7 +114,11 @@ export function mount(container, app) {
     actorId: 0,
     painting: false,
     rectStart: null,
-    rectEnd: null
+    rectEnd: null,
+    // The free-form battle-test picker's own selection -- ephemeral debugger
+    // state, not project data, so it is never committed and simply resets on
+    // remount like the rest of `state` does.
+    battleTestPicks: []
   };
 
   const currentMap = () => store.project.maps[Math.min(state.mapIndex, store.project.maps.length - 1)];
@@ -310,6 +314,29 @@ export function mount(container, app) {
     const label = `${flat[screen].label} at ${x},${y}`;
     await app.goTo('build');
     await app.current?.buildAndPlay?.({ startAt: { screen, x, y, label } });
+  }
+
+  /**
+   * Fire `formation` as a battle right now, without walking into it
+   * (ROADMAP item 3's last bullet).
+   *
+   * Reuses "play from here"'s own startAt to reach a stable, freshly-drawn
+   * ST_GAMEPLAY -- battle-test does not care where on the map this happens,
+   * so it uses the project's own authored ⚑ Start rather than asking the
+   * tester to click one, and gets the same past-the-title, past-any-stray-
+   * world-tick handling that gives it for free. renderer/emulator/
+   * battletest.js's own applyBattleTest does the rest once there.
+   */
+  async function battleTest(formation, label) {
+    const { startMap, startScreen, startX, startY } = store.project.project;
+    const flat = flatScreens(store.project);
+    const screen = flat.findIndex((entry) => entry.mapIndex === startMap && entry.screenIndex === startScreen);
+    if (screen < 0) return;
+    await app.goTo('build');
+    await app.current?.buildAndPlay?.({
+      startAt: { screen, x: startX, y: startY, label: `⚑ Start` },
+      battleTest: { formation, label }
+    });
   }
 
   function onPointerDown(event) {
@@ -1119,13 +1146,25 @@ export function mount(container, app) {
           ? 'A roll every this many steps, and the formation is picked from the list below.'
           : 'No wandering monsters on this map. Walking into a placed monster still starts a fight — one you cannot run from.'
       ),
-      // Only hostile actors are offered: a formation slot pointing at a gem
-      // would compile, and then stand there being a gem.
-      hostile.length
-        ? Array.from({ length: RPG_LIMITS.encounterActors }, (_, slot) =>
-            el(
+      // Only hostile actors are offered as new choices: a formation slot
+      // pointing at a gem would compile, and then stand there being a gem.
+      // The rows themselves are shown whenever there is anything to add OR
+      // anything already there to see or clear -- not only when hostile is
+      // non-empty. mapEncounterFormation (shared/project.js), the compiler's
+      // own single writer for this table, does not filter by damage at all:
+      // an actor already sitting in a slot keeps compiling into real
+      // wandering encounters after its damage is edited down to zero, so
+      // collapsing these rows to a hint in that case would strand an author
+      // unable to see or clear what the ROM still ships -- the same trap
+      // battleTestSection below was fixed against.
+      hostile.length || encounters.actorIds.length
+        ? Array.from({ length: RPG_LIMITS.encounterActors }, (_, slot) => {
+            const slotId = encounters.actorIds[slot];
+            const stranded = slotId !== undefined && !hostile.some((entry) => entry.id === slotId);
+            return el(
               'select',
               {
+                'data-encounter-slot': slot,
                 style: { marginBottom: '4px' },
                 onchange: (event) => {
                   const ids = [...encounters.actorIds];
@@ -1134,13 +1173,111 @@ export function mount(container, app) {
                   setMap('Change encounter table', { encounters: { ...encounters, actorIds: ids.filter((id) => id !== undefined) } });
                 }
               },
-              el('option', { value: '', selected: encounters.actorIds[slot] === undefined }, `Slot ${slot + 1} — empty`),
+              el('option', { value: '', selected: slotId === undefined }, `Slot ${slot + 1} — empty`),
+              hostile.map(({ actor, id }) => el('option', { value: id, selected: id === slotId }, actor.name)),
+              stranded
+                ? el(
+                    'option',
+                    { value: slotId, selected: true },
+                    `${store.project.sprites.actors[slotId]?.name ?? `#${slotId}`} (no longer reads as a monster)`
+                  )
+                : null
+            );
+          })
+        : el('p.hint', { style: { color: 'var(--accent)' } }, 'No actor deals damage yet, so none can be added to this table.'),
+      battleTestSection(map, hostile)
+    );
+  }
+
+  /**
+   * The two battle-test entry points (ROADMAP item 3's last bullet): this
+   * map's own wandering table, and an arbitrary formation. Both fire through
+   * the same battleTest() above; only where the formation comes from differs.
+   *
+   * The map's own table is read through mapEncounterFormation
+   * (shared/project.js) rather than raw map.encounters.actorIds -- the same
+   * filtering main/build/generate.js's compiled map_enc_actors table applies
+   * (a deleted or out-of-range actor id is dropped, not just truncated), so
+   * this can never test a monster the shipped ROM would not actually place.
+   *
+   * "This map's table" is gated on tableEmpty alone, never on hostile: the
+   * compiler's mapEncounterFormation does not filter by isMonsterActor/damage
+   * at all -- an actor's damage only decides whether *touching it as a placed
+   * entity* starts a contact fight, a different question the wandering table
+   * has no concept of -- so an actor already sitting in this map's encounter
+   * table keeps firing real wandering encounters after its damage is edited
+   * down to zero, whether or not hostile still lists it. Gating this button
+   * on hostile.length (as an earlier version did) hid it in exactly that
+   * case: the ROM still shipped the fight, and the one tool for previewing
+   * it disappeared. hostile only bounds the *hand-picked* formation below,
+   * which is a genuinely different, broader tool ("any plausible monster
+   * formation") than "what does this map's table actually contain".
+   */
+  function battleTestSection(map, hostile) {
+    const actorCount = store.project.sprites.actors.length;
+    const tableFormation = mapEncounterFormation(map, actorCount);
+    const tableEmpty = tableFormation.every((id) => id === 0xff);
+    if (tableEmpty && !hostile.length) return null; // genuinely nothing either entry point could fire
+    const nameOf = (id) => hostile.find((entry) => entry.id === id)?.actor.name ?? `#${id}`;
+
+    const picks = state.battleTestPicks.filter((id) => hostile.some((entry) => entry.id === id));
+    const togglePick = (id) => {
+      if (picks.includes(id)) state.battleTestPicks = picks.filter((pick) => pick !== id);
+      else if (picks.length < RPG_LIMITS.monstersPerBattle) state.battleTestPicks = [...picks, id];
+      renderMapSettings();
+    };
+
+    return el(
+      'div',
+      { style: { marginTop: '10px' } },
+      el('div.panel-head', { style: { paddingLeft: '0' } }, 'Battle-test'),
+      el('p.hint', { style: { marginBottom: '6px' } }, 'Fires a fight right now, from ⚑ Start — nothing about the project changes.'),
+      el(
+        'div.field-row',
+        { style: { marginBottom: '10px' } },
+        el(
+          'button.btn.btn-sm',
+          {
+            disabled: tableEmpty,
+            title: tableEmpty ? "This map's encounter table has no monster it would actually place" : '',
+            onclick: () => battleTest(tableFormation, `${map.name}'s encounter table`)
+          },
+          "▶ This map's table"
+        )
+      ),
+      hostile.length
+        ? [
+            el(
+              'div',
+              { style: { marginBottom: '4px' } },
               hostile.map(({ actor, id }) =>
-                el('option', { value: id, selected: id === encounters.actorIds[slot] }, actor.name)
+                el(
+                  'label.check',
+                  { style: { display: 'inline-block', marginRight: '10px' } },
+                  el('input', {
+                    type: 'checkbox',
+                    checked: picks.includes(id),
+                    disabled: !picks.includes(id) && picks.length >= RPG_LIMITS.monstersPerBattle,
+                    onchange: () => togglePick(id)
+                  }),
+                  actor.name
+                )
               )
+            ),
+            el(
+              'button.btn.btn-sm',
+              {
+                disabled: picks.length === 0,
+                onclick: () => battleTest(picks, picks.map(nameOf).join(' + '))
+              },
+              '▶ Chosen formation'
             )
+          ]
+        : el(
+            'p.hint',
+            { style: { color: 'var(--accent)' } },
+            'No actor deals damage yet, so there is nothing to hand-pick a formation from.'
           )
-        : el('p.hint', { style: { color: 'var(--accent)' } }, 'No actor deals damage yet, so nothing can be encountered.')
     );
   }
 
