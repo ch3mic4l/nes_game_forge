@@ -102,7 +102,31 @@ project JSON
   → build/game.nes + game.fns
 ```
 
-`main/build/cli.js` runs exactly this without Electron, which is how the tests build ROMs.
+`main/build/cli.js` runs exactly this without Electron, which is what the package's own
+`build:sample`/`build:sample:rpg`/etc. scripts use it for — not the tests, which call `buildProject`
+directly (below).
+
+The renderer already refuses a second, reentrant call to its own `build()` from the same Build Forge
+mount (a plain `building` boolean, checked before it ever dispatches) — but that only protects one
+mount against itself, and resets the moment a fresh mount replaces it, which is exactly the case a
+genuinely concurrent build needs protecting against. `main/build/buildgate.js`'s `createBuildGate()`
+is what actually closes that: it allows exactly one in-flight **`build:run` IPC call** per project
+directory (canonicalized with `realpathSync`, so a symlink and its target count as the same one),
+refusing a second request outright rather than queuing it. Queuing would not mean re-reading the
+project when the queued request's turn finally came — `build()` (`renderer/forges/build/build.js`)
+clones the project *before* dispatching, and `ipcRenderer.invoke` serializes that clone again on the
+way over, so a queued request already carries a fixed snapshot from the moment it was made. The risk
+is the opposite one: the longer that snapshot sits waiting its turn, the more likely it no longer
+matches what the user is actually looking at by the time it finally builds, silently reintroducing
+the staleness a scenario resolves against (below) one layer further out. This has to live in the
+main process rather than the renderer: the renderer is exactly what gets destroyed if the user
+navigates away mid-build, so a per-mount flag there cannot stop a second, concurrent caller from
+racing `generate.js`'s own `fs.rm(buildDir)` the way a main-process gate on the IPC channel can. It
+only covers that one channel, though: unit and Lua tests import `buildProject`
+(`main/build/pipeline.js`) directly, bypassing both this gate and `main/build/cli.js` entirely, and
+`npm run smoke` is the only thing that actually goes through `build:run` and is covered by it. There
+is no CI configuration in this repository — `main/build/cli.js`'s own bypass, regenerating the
+checked-in fixtures' ROMs by hand, is the same one described above.
 
 ### The single-writer rule
 
@@ -137,6 +161,23 @@ Anything the 6502 engine and the JavaScript tooling both depend on has **one** d
   button, and the engine indexes it with `game_state * NUM_BUTTONS`. `ACT_*` and `ST_*` in
   `engine/constants.asm` are those orders written down, so adding an action or a state means
   editing both ends in the same change.
+- Describing and resolving a test scenario → `shared/playscenario.js` — not the stored scenario
+  itself, which is `renderer/app.js`'s own `playScenario`/`rememberPlayScenario` (the record shape
+  `{startAt, battleTest, toggles}` and its merge semantics), and not which toggles exist, which is
+  `shared/testoverrides.js`'s `TOGGLE_NAMES`. `describePlayScenario` turns Map Forge's raw numeric
+  choice (a flat screen index, actor ids) into a name/position description at the moment a scenario
+  is picked ("the map named World, screen 5", "the actors named Slime, Bat");
+  `resolveStartAt`/`resolveFormation` turn a remembered description back into a live target later,
+  against whatever project is actually in hand then — an unnamed screen has no name to resolve by
+  and falls back to its remembered position within its map instead, unaffected by whether that
+  screen is later given one; renaming the map, a *named* screen, or the actor actually being
+  tracked, though, makes resolution refuse rather than follow it. Only a *different* one renamed
+  onto the old name is what "follows the name" describes. Never keep the raw indices
+  themselves across that gap and re-use them directly — a screen or an actor's numeric position is
+  not its identity (`createScreen()`'s own comment says so for screens; `sprites.actors` renumbers
+  every later actor on a delete for the identical reason), so anything that round-trips through a
+  cached index instead of this file's own name-based lookup will silently point at different
+  content the moment the project is edited in between.
 - Engine RAM addresses → `engine/constants.asm`. Tooling that has to know where a byte lives
   *parses* them (`parseEquates` in `shared/enginesyms.js`) out of the `constants.asm` in `build/`,
   which is the copy that assembled the ROM in hand — a Code Forge override of it included. The

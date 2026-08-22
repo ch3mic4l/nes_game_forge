@@ -4,6 +4,7 @@ import { store } from './store.js';
 import { el, clear, fill, toast, showModal, confirmModal } from './ui.js';
 import { GAME_TYPES } from '../shared/project.js';
 import { RPG_DEFAULT_MAPPER, mapperById } from '../shared/cartridge.js';
+import { TOGGLE_NAMES } from '../shared/testoverrides.js';
 
 const FORGES = [
   {
@@ -81,6 +82,19 @@ const dom = {
 let activeForgeId = 'tile';
 let mounted = null;
 
+// The selected test scenario (ROADMAP item 3's "Reload the ROM" bullet) —
+// session state, not project state: it lives here, at the same altitude as
+// `mounted`/`activeForgeId`, specifically because the Build Forge's own
+// module is exactly what gets destroyed by the edit this feature exists to
+// let the user make (leave to fix something, come back). Never touches
+// `store` — a test scenario is debugger configuration, not saved game data,
+// and stuffing it into the project would mean either polluting every undo
+// snapshot with it or hand-excluding it from structuredClone/save, both
+// worse than a plain variable that was never going to be saved anyway.
+// Cleared on project open/close so a description resolved against one
+// project's names never lingers to be resolved against a different one.
+let playScenario = null;
+
 export const app = {
   store,
   setStatus(message, kind = '') {
@@ -102,6 +116,33 @@ export const app = {
   /** The currently mounted Forge, for menu actions and the smoke test. */
   get current() {
     return mounted;
+  },
+  /** The remembered scenario, or null if none has been chosen this session. */
+  get playScenario() {
+    return playScenario;
+  },
+  /**
+   * Merge a partial update into the remembered scenario — `{toggles:
+   * {invincibility: true}}` leaves `startAt`/`battleTest` and the other two
+   * toggles alone, which is what lets the debugger's toggle checkboxes echo
+   * into this record live, one flip at a time, without each write clobbering
+   * whatever a *different* flip just wrote. A fresh scenario choice (Map
+   * Forge's own call) replaces `startAt`/`battleTest` and all three toggles
+   * at once instead, by passing every field explicitly.
+   */
+  rememberPlayScenario(patch) {
+    // TOGGLE_NAMES (shared/testoverrides.js) is the single writer for which
+    // toggles exist -- built from it rather than a hardcoded {invincibility,
+    // collision, encounters} literal, so a future fourth toggle is not
+    // silently missing from what a scenario remembers just because this
+    // object forgot to grow with it.
+    const toggles = Object.fromEntries(TOGGLE_NAMES.map((name) => [name, playScenario?.toggles?.[name] ?? false]));
+    Object.assign(toggles, patch.toggles);
+    playScenario = {
+      startAt: 'startAt' in patch ? patch.startAt : (playScenario?.startAt ?? null),
+      battleTest: 'battleTest' in patch ? patch.battleTest : (playScenario?.battleTest ?? null),
+      toggles
+    };
   }
 };
 
@@ -327,8 +368,10 @@ function refreshChrome() {
 store.subscribe((detail) => {
   refreshChrome();
   if (detail.type === 'open') {
+    playScenario = null;
     selectForge(activeForgeId);
   } else if (detail.type === 'close') {
+    playScenario = null;
     renderWelcome();
   } else if (detail.type === 'undo' || detail.type === 'redo') {
     mounted?.onProjectChange?.(detail);

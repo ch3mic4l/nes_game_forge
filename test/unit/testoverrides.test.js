@@ -25,6 +25,7 @@ import {
   toggleProblem,
   resolveOverrideTargets,
   toggleUnavailableReason,
+  applyDesiredToggles,
   REQUIRED_RAM,
   REQUIRED_SYMBOLS,
   TOGGLE_NAMES
@@ -1010,4 +1011,32 @@ test('the toggle itself survives reset, like a breakpoint -- only the RAM is wha
   // from a cold load should equally prove it survives a reset.
   run(emulator, 20);
   assert.equal(emulator.peek(build.ram.player_hp), hearts, 'invincibility should still be protecting the player after the reset');
+});
+
+// =====================================================================
+// applyDesiredToggles (ROADMAP item 3's "Reload the ROM" bullet) -- the
+// scenario's own toggle booleans, filtered by what a *new* build can still
+// support. A caller of toggleUnavailableReason, not a second vocabulary for
+// the same question, so these are unit tests of the split it computes rather
+// than a re-test of toggleUnavailableReason itself.
+// =====================================================================
+
+test('applyDesiredToggles arms what still resolves and reports the rest with toggleUnavailableReason\'s own sentence', { skip: skipSample }, () => {
+  const build = { ...SAMPLE_BUILD, battleEnabled: false }; // encounters is unavailable on a non-battle build regardless of symbols
+  const result = applyDesiredToggles({ invincibility: true, encounters: true, collision: false }, build);
+
+  assert.deepEqual(result.unavailable.map((entry) => entry.name), ['encounters']);
+  assert.equal(result.unavailable[0].reason, toggleUnavailableReason('encounters', build));
+  assert.ok(!result.armed.includes('collision'), 'a toggle that was not desired must not be armed regardless of availability');
+});
+
+test('applyDesiredToggles never reports or arms a toggle that was not desired', () => {
+  const result = applyDesiredToggles({ invincibility: false, collision: false, encounters: false }, { ram: {}, symbols: {}, battleEnabled: false });
+  assert.deepEqual(result, { armed: [], unavailable: [] });
+});
+
+test('applyDesiredToggles arms a toggle whose build genuinely supports it', { skip: skipSample }, () => {
+  const build = { ...SAMPLE_BUILD, battleEnabled: false };
+  const result = applyDesiredToggles({ invincibility: true }, build);
+  assert.deepEqual(result, { armed: ['invincibility'], unavailable: [] });
 });

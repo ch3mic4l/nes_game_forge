@@ -1720,6 +1720,376 @@ const scenario = (dir, sampleDir, sampleRpgDir) => `
   }
   step('the built ROM is unchanged', 'reset boots the title at the authored start');
 
+  // --- Reload the ROM while keeping the selected test scenario (ROADMAP
+  // item 3's last bullet-but-one), driven through the real player and Build
+  // panel. Reuses the exact scenario "play from here" above already proved
+  // lands correctly -- screen 3 at 48,64 -- rather than re-deriving one, so
+  // a failure here is about Reload Test, not about a second, independent
+  // scenario setup. ---------------------------------------------------------
+  const findButton = (text) => [...document.querySelectorAll('#stage button')].find((b) => b.textContent.trim() === text);
+  const isHidden = (el) => !el || el.offsetParent === null || getComputedStyle(el).display === 'none';
+
+  await window.__app.current.buildAndPlayScenario({ startAt: { screen: 3, x: 48, y: 64 } });
+  await until('the reload scenario to build and boot', () => window.__app.current?.player?.emulator, 60000);
+  let reloadEmu = window.__app.current.player.emulator;
+  if (reloadEmu.peek(0x0016) !== 3 || reloadEmu.peek(0x0010) !== 48 || reloadEmu.peek(0x0011) !== 64) {
+    throw new Error('buildAndPlayScenario did not start the reload scenario where asked');
+  }
+
+  // A real, observable edit to the assembled ROM's own bytes -- a tile
+  // pixel, not project metadata a build could ignore -- so a passing Reload
+  // Test can only mean a fresh build actually ran, not that the same bytes
+  // were quietly remounted.
+  const beforeBytes = Array.from(reloadEmu.nes.romData).join(',');
+  store.commit('smoke tile edit before reload', (project) => {
+    const tiles = project.tilesets[0].background.tiles;
+    tiles[0] = (tiles[0] === '1'.repeat(64) ? '2' : '1').repeat(64);
+  });
+  await wait(150);
+
+  const reloadBtn = findButton('↻ Reload Test');
+  if (!reloadBtn) throw new Error('the in-player Reload Test control was not offered on a scenario-bound session');
+  reloadBtn.click();
+  await until(
+    'Reload Test to mount a new emulator instance',
+    () => window.__app.current?.player?.emulator && window.__app.current.player.emulator !== reloadEmu,
+    60000
+  );
+  reloadEmu = window.__app.current.player.emulator;
+  if (reloadEmu.peek(0x0016) !== 3 || reloadEmu.peek(0x0010) !== 48 || reloadEmu.peek(0x0011) !== 64) {
+    throw new Error('Reload Test did not resume the same scenario after rebuilding');
+  }
+  if (Array.from(reloadEmu.nes.romData).join(',') === beforeBytes) {
+    throw new Error('Reload Test did not actually rebuild -- the loaded ROM bytes are unchanged');
+  }
+  step('Reload Test: rebuild + resume', 'a real edit reached the new ROM and the scenario resumed at screen 3, 48,64');
+
+  // --- production play() actually forwards isLive() into
+  // preparePlaySession's own read sequence, not just accepts and ignores
+  // the parameter (round 8 review's finding 2). Calling the real
+  // reloadTest() directly with a predicate that lets the coordinator's own
+  // checkpoint pass exactly once, then turns false, proves the checks
+  // *inside play()'s own reads* see it too: if production play() dropped
+  // isLive on the floor, this predicate would only ever be called once and
+  // the reload would still succeed. -------------------------------------
+  let isLiveCalls = 0;
+  const staleWorldOutcome = await window.__app.current.reloadTest({
+    isLive: () => {
+      isLiveCalls += 1;
+      return isLiveCalls <= 1; // true only for the coordinator's own checkpoint in runReloadTest
+    }
+  });
+  if (staleWorldOutcome.ok) {
+    throw new Error("reloadTest reported success even though isLive() had already turned false during play()'s own reads");
+  }
+  if (isLiveCalls <= 1) {
+    throw new Error('isLive() was checked only once -- production play() never re-checked it during its own read sequence at all');
+  }
+  if (window.__app.current.player.emulator !== reloadEmu) {
+    throw new Error('a reload whose own isLive() check failed mid-flight must not mount a new player');
+  }
+  step(
+    'Reload Test: isLive threaded into play()',
+    "a predicate that turns false during play()'s own reads is honored there, not only before play() is called (checked " +
+      isLiveCalls +
+      ' times)'
+  );
+
+  // Arm a toggle, reload again, and prove the *new* emulator instance has it
+  // armed -- the end-to-end proof of onChange -> rememberPlayScenario ->
+  // desiredToggles -> play() -> applyDesiredToggles that no dependency-
+  // injected unit test can reach on its own.
+  findButton('🐞 Debugger').click();
+  await wait(150);
+  document.querySelector('#stage [data-tab="toggles"]').click();
+  await wait(150);
+  const reloadInvincibility = document.querySelector('#stage [data-toggle="invincibility"] input');
+  if (!reloadInvincibility) throw new Error('the invincibility toggle was not offered on the reload scenario session');
+  reloadInvincibility.click();
+  await wait(50);
+  if (!reloadEmu.testOverrides.invincibility) throw new Error('arming invincibility before a reload did not reach Emulator state');
+
+  const reloadBtn2 = findButton('↻ Reload Test');
+  reloadBtn2.click();
+  await until(
+    'a second Reload Test to mount yet another emulator instance',
+    () => window.__app.current?.player?.emulator && window.__app.current.player.emulator !== reloadEmu,
+    60000
+  );
+  const toggledEmu = window.__app.current.player.emulator;
+  if (!toggledEmu.testOverrides.invincibility) throw new Error('Reload Test did not re-arm invincibility on the new build');
+  const invincibilitySpec = toggledEmu.overrideTargets && toggledEmu.overrideTargets.invincibility;
+  if (!invincibilitySpec || !toggledEmu.interceptsByTrap.has(invincibilitySpec.trap)) {
+    throw new Error("invincibility reads armed but its trap is not in the new emulator's own intercept table");
+  }
+  step('Reload Test: toggle re-arming', 'invincibility armed before a reload is armed again on the new build');
+
+  // --- an unsupported toggle is cleared from the remembered scenario, not
+  // merely left un-armed (round 8 review's finding 3). "encounters" never
+  // resolves on sample's own action build -- no battle system at all, so
+  // toggleUnavailableReason refuses it regardless of anything a rebuild
+  // could change -- forcing it into the scenario directly (bypassing the
+  // UI, which never lets you check a disabled box) simulates "desired but
+  // unsupported" without needing a build that only sometimes supports it. -
+  window.__app.rememberPlayScenario({ toggles: { encounters: true } });
+  if (!window.__app.playScenario.toggles.encounters) {
+    throw new Error('rememberPlayScenario did not record the desired-but-unsupported toggle for this test to mean anything');
+  }
+  const toggleClearReloadBtn = findButton('↻ Reload Test');
+  if (!toggleClearReloadBtn) throw new Error('the in-player Reload Test control was not offered for the toggle-clearing scenario');
+  toggleClearReloadBtn.click();
+  await until(
+    'the toggle-clearing reload to mount a new emulator instance',
+    () => window.__app.current?.player?.emulator && window.__app.current.player.emulator !== toggledEmu,
+    60000
+  );
+  let toggleClearedEmu = window.__app.current.player.emulator;
+  if (toggleClearedEmu.testOverrides.encounters) {
+    throw new Error('encounters should not have armed on an action build with no battle system at all');
+  }
+  if (window.__app.playScenario.toggles.encounters !== false) {
+    throw new Error('an unsupported desired toggle must be cleared from the remembered scenario, not merely left un-armed');
+  }
+  // And it must stay cleared: a later reload must not "remember" wanting it
+  // again and report the identical loss a second time.
+  const secondToggleClearReloadBtn = findButton('↻ Reload Test');
+  secondToggleClearReloadBtn.click();
+  await until(
+    'a second toggle-clearing reload to mount yet another emulator instance',
+    () => window.__app.current?.player?.emulator && window.__app.current.player.emulator !== toggleClearedEmu,
+    60000
+  );
+  toggleClearedEmu = window.__app.current.player.emulator;
+  if (window.__app.playScenario.toggles.encounters !== false) {
+    throw new Error('the cleared toggle must stay cleared across a later reload, not silently come back');
+  }
+  step('Reload Test: unsupported toggle cleared', 'a desired-but-unsupported toggle is cleared from the remembered scenario and stays cleared');
+
+  // Ordinary Play must keep meaning exactly "play from the project's own
+  // start": it must neither read nor overwrite the remembered scenario, and
+  // the Build panel's own Reload Test control must stay hidden while any
+  // player -- ordinary or scenario-bound -- is showing.
+  findButton('✕ Close').click();
+  await wait(150);
+  if (isHidden(findButton('↻ Reload Test'))) {
+    throw new Error("the Build panel's Reload Test control should be visible once no player is showing and a scenario is remembered");
+  }
+  const scenarioBefore = JSON.stringify(window.__app.playScenario);
+  findButton('▶ Build & Play').click(); // a real DOM click -- proves the wrapped onclick, not a direct function call
+  await until('ordinary Build & Play to boot', () => window.__app.current?.player?.emulator, 60000);
+  const ordinaryEmu = window.__app.current.player.emulator;
+  await until('the ordinary session to reach its own title screen', () => ordinaryEmu.peek(0x0025) === 3, 20000);
+  if (ordinaryEmu.peek(0x0016) === 3 && ordinaryEmu.peek(0x0010) === 48) {
+    throw new Error("ordinary Build & Play resumed the remembered scenario instead of the project's own start");
+  }
+  if (JSON.stringify(window.__app.playScenario) !== scenarioBefore) {
+    throw new Error('an ordinary Play session must not overwrite the remembered scenario');
+  }
+  if (!isHidden(findButton('↻ Reload Test'))) {
+    throw new Error("the Build panel's Reload Test control should stay hidden while an ordinary session is showing too");
+  }
+  step('ordinary Play vs. scenario', 'Build & Play always starts fresh, and never reads or clobbers the remembered scenario');
+
+  findButton('✕ Close').click();
+  await wait(150);
+  findButton('↻ Reload Test').click();
+  await until(
+    'the final Reload Test to resume the original scenario after an intervening ordinary session',
+    () => window.__app.current?.player?.emulator && window.__app.current.player.emulator !== ordinaryEmu,
+    60000
+  );
+  const finalEmu = window.__app.current.player.emulator;
+  if (finalEmu.peek(0x0016) !== 3 || finalEmu.peek(0x0010) !== 48 || finalEmu.peek(0x0011) !== 64) {
+    throw new Error('the scenario did not survive an intervening ordinary Play session');
+  }
+  step('scenario survives ordinary Play', 'Reload Test still resumes screen 3, 48,64 after an intervening ordinary session');
+
+  // startedFrom must not lie when battleTest's own fallback discards a
+  // successful startAt (a real, pre-existing defect fixed alongside this
+  // feature -- see player.js). Driven through the *initial* scenario-bound
+  // call, not a reload: resolveFormation would refuse an all-$FF formation
+  // before player.js's own fallback could ever run, so only the first play
+  // -- which receives raw, unresolved options -- can actually reach it.
+  await window.__app.current.buildAndPlayScenario({
+    startAt: { screen: 3, x: 48, y: 64 },
+    battleTest: { formation: [255, 255, 255, 255], label: 'deliberately empty' }
+  });
+  await until(
+    'the broken battle-test scenario to fall back to the authored start',
+    () => {
+      const emulator = window.__app.current?.player?.emulator;
+      if (!emulator) return false;
+      const playerHp = emulator.peek(0x004e);
+      return playerHp >= 1 && playerHp <= 6 && emulator.peek(0x0025) === 3;
+    },
+    20000
+  );
+  const statusText = document.querySelector('#statusText').textContent;
+  if (statusText.includes('Playing from')) {
+    throw new Error('status line read "' + statusText + '" for a session that fell back to the authored start');
+  }
+  // The status text alone only proves the lie is gone, not that the fallback
+  // actually landed where it claims. It reloaded fresh, so it is back at the
+  // title (flat_screen there is wherever the *title* art lives, not the
+  // authored gameplay start -- sample's own titleScreen, not its
+  // startScreen) -- a real Start press is what actually proves position, the
+  // same way "the built ROM is unchanged" above already proved it after its
+  // own reset. Pressed straight on the Emulator (BUTTON, imported earlier in
+  // this scenario for exactly this) rather than through a keyboard event and
+  // the Controller Forge's own rebindable layer: an earlier step in this
+  // same run rebinds Start, and this has no business depending on whatever
+  // that left the binding as. Not screen 3, 48,64, which is where startAt
+  // had already landed the player before the battle-test fallback discarded
+  // it.
+  const fellBackTitleEmu = window.__app.current.player.emulator;
+  // Held well past a single frame, not pulsed: the run loop paces itself by
+  // wall-clock time (renderer/emulator/player.js), and a throttled or
+  // contended window can deliver rAF callbacks far slower than 60fps -- a
+  // brief press risks landing between two real ticks and never being seen
+  // as a press at all by the engine's own frame-by-frame input read.
+  fellBackTitleEmu.setButton(BUTTON.START, true);
+  await wait(1000);
+  fellBackTitleEmu.setButton(BUTTON.START, false);
+  await until(
+    'the battle-test fallback session to get past its own title screen',
+    () => window.__app.current?.player?.emulator?.peek(0x0025) === 0,
+    20000
+  );
+  const fellBackEmu = window.__app.current.player.emulator;
+  if (fellBackEmu.peek(0x0016) !== 0 || fellBackEmu.peek(0x0010) !== 112 || fellBackEmu.peek(0x0011) !== 112) {
+    throw new Error(
+      'the battle-test fallback did not land at the authored start (screen 0, 112,112) -- was at screen ' +
+        fellBackEmu.peek(0x0016) +
+        ', ' +
+        fellBackEmu.peek(0x0010) +
+        ',' +
+        fellBackEmu.peek(0x0011)
+    );
+  }
+  step('startedFrom regression', 'a battle-test fallback after a successful startAt no longer claims "Playing from" the discarded position, and genuinely lands at screen 0, 112,112');
+
+  // --- build() clones store.project before dispatching, rather than handing
+  // through a live reference (review finding 5): rename the scenario's own
+  // map in the very same synchronous tick as the reload click -- everything
+  // from the click down to window.forge.build.run's own dispatch, including
+  // build()'s own clone if it really is one, is a synchronous prefix that
+  // has already run by the time the next line of this script executes (JS
+  // does not yield mid-statement, and a DOM click calls its handler
+  // synchronously). preparePlaySession/resolveStartAt only ever see the
+  // build's own returned project: if that is a frozen clone, this rename
+  // cannot reach it and the reload resumes exactly as before; if it were a
+  // live reference, resolution would look for the map under a name it no
+  // longer has and the reload would never mount a new player at all. -------
+  await window.__app.current.buildAndPlayScenario({ startAt: { screen: 3, x: 48, y: 64 } });
+  await until('the clone-race scenario to build and boot', () => window.__app.current?.player?.emulator, 60000);
+  let cloneRaceEmu = window.__app.current.player.emulator;
+  if (cloneRaceEmu.peek(0x0016) !== 3 || cloneRaceEmu.peek(0x0010) !== 48 || cloneRaceEmu.peek(0x0011) !== 64) {
+    throw new Error('clone-race scenario setup did not start where asked');
+  }
+  const cloneRaceReloadBtn = findButton('↻ Reload Test');
+  if (!cloneRaceReloadBtn) throw new Error('the in-player Reload Test control was not offered for the clone-race scenario');
+  cloneRaceReloadBtn.click();
+  store.commit('smoke rename the scenario map immediately after the reload click', (project) => {
+    project.maps[0].name += ' (renamed mid-reload)';
+  });
+  await until(
+    'the clone-race Reload Test to mount a new emulator instance',
+    () => window.__app.current?.player?.emulator && window.__app.current.player.emulator !== cloneRaceEmu,
+    60000
+  );
+  cloneRaceEmu = window.__app.current.player.emulator;
+  if (cloneRaceEmu.peek(0x0016) !== 3 || cloneRaceEmu.peek(0x0010) !== 48 || cloneRaceEmu.peek(0x0011) !== 64) {
+    throw new Error('the clone-race reload did not resume the pre-edit scenario');
+  }
+  step('build() clones before dispatch', 'a map renamed in the same tick as the reload click never reaches resolution against a stale live reference');
+  store.commit('smoke undo the clone-race rename', (project) => {
+    project.maps[0].name = project.maps[0].name.replace(' (renamed mid-reload)', '');
+  });
+
+  // --- one in-flight build per project directory, in the main process
+  // (round 6/7's mechanism 1): two real, unawaited window.forge.build.run
+  // calls for the same directory prove the actual IPC wiring is what
+  // refuses the second one, not merely the extracted gate object tested in
+  // isolation, and not the renderer's own per-mount "building" flag, which
+  // this bypasses entirely by calling the bridge directly. --------------
+  const gateDir = window.__app.store.dir;
+  const gateProject = window.__app.store.project;
+  const firstGateCall = window.forge.build.run(gateDir, gateProject);
+  const secondGateCall = window.forge.build.run(gateDir, gateProject);
+  const [firstGateResult, secondGateResult] = await Promise.all([firstGateCall, secondGateCall]);
+  if (secondGateResult.ok) {
+    throw new Error('a second, concurrent build:run for the same directory should have been refused');
+  }
+  if (!/already running/.test(secondGateResult.error || '')) {
+    throw new Error('the refused build did not carry the expected message, got: ' + secondGateResult.error);
+  }
+  if (!firstGateResult.ok) {
+    throw new Error('the first, legitimate build:run call should have succeeded: ' + firstGateResult.error);
+  }
+  step('main-process build gate', 'a second, unawaited build:run for the same directory is refused by the real IPC handler while the first is in flight');
+
+  // --- a failed scenario-bound build must not fall back to a stale
+  // lastBuild (round 7's own finding 1, and round 8 review's finding 4: the
+  // earlier fix had no direct regression test). Two things had to be worked
+  // out to make this a real test rather than an accidental pass:
+  //
+  // First, which failure to force. build() itself sets lastBuild = null
+  // whenever *it* is the one that fails (an assemble or capacity error), so
+  // that path can never exercise a stale fallback at all -- there is
+  // nothing left to fall back to either way, bug or no bug (a broken Code
+  // Forge override, and a deliberate capacity overflow, were both tried and
+  // rejected for exactly this reason before landing here). The one path
+  // that returns null *without* touching lastBuild is build()'s own
+  // per-mount "building" guard, which fires for a second, reentrant call
+  // while an earlier one is still genuinely in flight.
+  //
+  // Second, how to force reentrancy without a timing hook: everything from
+  // a synchronous call down to build()'s own setBusy(true) runs before
+  // either promise's first await (the same synchronous-dispatch guarantee
+  // the build-gate test above already relies on), so firing a second call
+  // immediately after the first, with neither awaited yet, guarantees the
+  // second sees building === true. The second call also targets a
+  // deliberately different, recognisable position: if it wrongly fell
+  // through to lastBuild, it would try to land there instead of wherever
+  // the legitimate first call is headed, and it resolves near-instantly
+  // (a synchronous guard, not a real assemble), so checking state right
+  // after it settles is checking before the slower, legitimate call could
+  // possibly have finished on its own.
+  const playerBeforeReentrant = window.__app.current.player;
+  const legitimateReentrantCall = window.__app.current.buildAndPlayScenario({ startAt: { screen: 3, x: 48, y: 64 } });
+  const refusedReentrantCall = window.__app.current.buildAndPlayScenario({ startAt: { screen: 0, x: 200, y: 8 } });
+  await refusedReentrantCall;
+  if (window.__app.current.player !== playerBeforeReentrant) {
+    throw new Error(
+      'a reentrant scenario-bound build, refused by the per-mount "building" guard, still ended up mounting a player from a stale lastBuild'
+    );
+  }
+  await legitimateReentrantCall;
+  // The ordering bug this same reentrancy exposed (round 9 review): the
+  // refused call B used to call rememberPlayScenario() before build() ever
+  // checked "building", so B's own (never-mounted) screen 0,200,8 was still
+  // what got remembered, clobbering A's, even though A -- not B -- is what
+  // actually mounted moments later. build.js now records only once its own
+  // build() has been accepted, so the remembered scenario has to agree with
+  // what is genuinely running: A's screen 3, 48,64, never B's.
+  const mountedEmu = window.__app.current.player.emulator;
+  if (mountedEmu.peek(0x0016) !== 3 || mountedEmu.peek(0x0010) !== 48 || mountedEmu.peek(0x0011) !== 64) {
+    throw new Error('the legitimate reentrant call did not end up mounted at screen 3, 48,64');
+  }
+  const rememberedStart = window.__app.playScenario?.startAt;
+  if (!rememberedStart || rememberedStart.x !== 48 || rememberedStart.y !== 64) {
+    throw new Error(
+      'the remembered scenario is ' +
+        JSON.stringify(rememberedStart) +
+        " -- expected the mounted call's own 48,64, not the refused call's 200,8"
+    );
+  }
+  step(
+    'stale-ROM regression',
+    'a reentrant scenario-bound build refused by the "building" guard, with a real lastBuild already present, mounts nothing, ' +
+      "and the remembered scenario matches what actually mounted, not the refused call's own"
+  );
+
   return report;
 })()
 `;

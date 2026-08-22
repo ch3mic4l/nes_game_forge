@@ -270,3 +270,23 @@ export function toggleUnavailableReason(toggle, { ram, symbols, battleEnabled })
   if (toggle === 'encounters' && !battleEnabled) return 'no wandering encounters in this build';
   return toggleProblem(toggle, { ram, symbols });
 }
+
+/**
+ * Which of a remembered scenario's desired toggles (ROADMAP item 3's "Reload
+ * the ROM" bullet) a *new* build can still support, and why the rest can't
+ * be re-armed — a caller of `toggleUnavailableReason`, not a second
+ * vocabulary for the same question. Pure so the split can be asserted
+ * without a DOM-bound `mountPlayer` in the way; the caller still owns
+ * actually calling `emulator.setTestOverrides` for each armed name.
+ */
+export function applyDesiredToggles(desiredToggles, { ram, symbols, battleEnabled }) {
+  const armed = [];
+  const unavailable = [];
+  for (const name of TOGGLE_NAMES) {
+    if (!desiredToggles?.[name]) continue;
+    const reason = toggleUnavailableReason(name, { ram, symbols, battleEnabled });
+    if (reason) unavailable.push({ name, reason });
+    else armed.push(name);
+  }
+  return { armed, unavailable };
+}

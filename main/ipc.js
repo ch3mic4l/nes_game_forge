@@ -4,9 +4,16 @@ import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { createProjectAt, loadProject, saveProject, isProjectDir } from './project-io.js';
 import { getSettings, setSettings, rememberProject } from './settings.js';
+import { createBuildGate } from './build/buildgate.js';
 
 const ok = (value) => ({ ok: true, value });
 const fail = (error) => ({ ok: false, error: error instanceof Error ? error.message : String(error) });
+
+// One gate for the process's lifetime, not per registerIpc() call (there is
+// only ever one window, but this is what makes that not load-bearing: a
+// second in-flight build for the same directory is refused no matter which
+// window or how many times registerIpc() itself has run).
+const buildGate = createBuildGate();
 
 // The project only ever lives in the renderer, but the window's `close` handler
 // has to decide whether to stop the close *synchronously* — it cannot ask and
@@ -108,19 +115,21 @@ export function registerIpc({ getWindow }) {
   });
 
   ipcMain.handle('build:run', async (_event, dir, data) => {
-    try {
-      const { buildProject } = await import('./build/pipeline.js');
-      const log = (line) => {
-        const win = window();
-        if (win && !win.isDestroyed()) win.webContents.send('build:log', line);
-      };
-      return ok(await buildProject({ dir, project: data, log, settings: await getSettings() }));
-    } catch (error) {
-      // Unlike every other channel, a failed build carries structure worth
-      // keeping: nesasm reports `file:line: message`, and the Code Forge opens
-      // exactly that. fail() would flatten it all into one string.
-      return { ...fail(error), errors: error.errors ?? null, problems: error.problems ?? null };
-    }
+    return buildGate.runGated(dir, async () => {
+      try {
+        const { buildProject } = await import('./build/pipeline.js');
+        const log = (line) => {
+          const win = window();
+          if (win && !win.isDestroyed()) win.webContents.send('build:log', line);
+        };
+        return ok(await buildProject({ dir, project: data, log, settings: await getSettings() }));
+      } catch (error) {
+        // Unlike every other channel, a failed build carries structure worth
+        // keeping: nesasm reports `file:line: message`, and the Code Forge opens
+        // exactly that. fail() would flatten it all into one string.
+        return { ...fail(error), errors: error.errors ?? null, problems: error.problems ?? null };
+      }
+    });
   });
 
   // --- Code Forge ----------------------------------------------------------

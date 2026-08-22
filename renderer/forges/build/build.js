@@ -23,7 +23,10 @@ import {
   tilesetLimit
 } from '../../../shared/cartridge.js';
 import { BLANK_TILE } from '../../../shared/chr.js';
-import { parseEquates } from '../../../shared/enginesyms.js';
+import { describePlayScenario, resolveStartAt, resolveFormation } from '../../../shared/playscenario.js';
+import { runReloadTest } from '../../../shared/reloadcoordinator.js';
+import { preparePlaySession } from '../../../shared/playsession.js';
+import { TOGGLE_NAMES } from '../../../shared/testoverrides.js';
 import { mountPlayer } from '../../emulator/player.js';
 
 /**
@@ -95,6 +98,13 @@ export function mount(container, app) {
   let building = false;
   let lastBuild = null;
   let emulator = null;
+  // Flipped by this mount's own destroy(), below -- the reload coordinator's
+  // "did the world I started in survive" check (ROADMAP item 3's "Reload the
+  // ROM" bullet), combined there with whatever liveness the caller (an
+  // in-player Reload) supplies of its own. Not a lock: nothing here refuses
+  // navigation, it only refuses to act, afterward, as though navigation
+  // hadn't happened.
+  let destroyed = false;
 
   const log = el('div', {
     style: {
@@ -154,6 +164,7 @@ export function mount(container, app) {
     buttons.play.disabled = busy;
     buttons.mesen.disabled = busy || !lastBuild;
     buttons.reveal.disabled = busy || !lastBuild;
+    buttons.reloadTest.disabled = busy;
   }
 
   async function build({ silent = false } = {}) {
@@ -172,7 +183,16 @@ export function mount(container, app) {
       }
     }
 
-    const result = await window.forge.build.run(store.dir, store.project);
+    // Cloned here, at the exact point this dispatches, not read again later:
+    // store.commit mutates the live project in place, so a reader that came
+    // back to store.project after this await could see edits made *during*
+    // assembly (an earlier actor deleted, say, which renumbers every later
+    // one) that the ROM about to come back never reflected. Carrying this
+    // clone forward on the result is what lets the reload coordinator
+    // resolve a scenario against what was actually built, not against
+    // whatever the project has since become.
+    const project = structuredClone(store.project);
+    const result = await window.forge.build.run(store.dir, project);
     setBusy(false);
 
     if (!result.ok) {
@@ -198,91 +218,192 @@ export function mount(container, app) {
       return null;
     }
 
-    lastBuild = result.value;
+    lastBuild = { ...result.value, project };
     buttons.mesen.disabled = false;
     buttons.reveal.disabled = false;
     write('');
     write(`Ready: ${result.value.romPath}`, 'good');
     app.setStatus(`Built ${(result.value.size / 1024).toFixed(0)} KB ROM`, 'ready');
     renderSummary();
-    return result.value;
+    return lastBuild;
+  }
+
+  /** The ordinary toolbar/menu path: always plays from the project's own
+   * authored start. Never reads or writes app.playScenario -- a control
+   * named "Build & Play" has to keep meaning exactly that, not "resume
+   * whatever was last remembered," or its own label would be lying about
+   * what it does depending on session history nothing on the button shows. */
+  async function buildAndPlay() {
+    // Falling back to the last good build on a failed rebuild is defensible
+    // here and nowhere else in this file: ordinary Play carries no numeric
+    // identity resolved against a particular build's own payload, so the
+    // worst case is playing a ROM that is one edit behind -- exactly what
+    // this button already did before this feature existed. A scenario-bound
+    // play has no such fallback (see buildAndPlayScenario below) because it
+    // does carry one.
+    const result = (await build({ silent: true })) ?? lastBuild;
+    if (!result) return;
+    await play(result, {});
   }
 
   /**
-   * @param {{startAt?: {screen: number, x: number, y: number, label?: string},
-   *   battleTest?: {formation: number[], label?: string}}} [options]
-   *   `startAt` is the Map Forge's "play from here": where to put the player
-   *   once the ROM is running. `battleTest` is its "fire this fight now"
-   *   sibling (ROADMAP item 3's last bullet) — fired immediately after
-   *   `startAt` lands, through renderer/emulator/battletest.js. Neither
-   *   changes anything about the ROM being built.
+   * Map Forge's own entry point: "play from here" and "battle-test this
+   * formation now" (ROADMAP item 3's last two bullets). Deliberately a
+   * separate function from buildAndPlay() above, not one function with an
+   * optional argument -- a stray value reaching the ordinary path (the
+   * historical shape of this bug: `onclick: buildAndPlay` forwards the click
+   * event itself as `options`) can then never be mistaken for a real
+   * scenario, because the ordinary path no longer has any scenario-writing
+   * code in it to reach at all.
+   *
+   * @param {{startAt?: {screen: number, x: number, y: number},
+   *   battleTest?: {formation: number[], label?: string}}} options raw,
+   *   numeric Map Forge choices -- converted once, here, into the name/
+   *   position description the remembered scenario actually stores
+   *   (shared/playscenario.js's describePlayScenario), against the project
+   *   as it stands *now*. This first play is given the original numeric
+   *   options unchanged, not round-tripped through resolution: resolving
+   *   "did this description hold" is only a real question once time and
+   *   edits could have passed, which is true of a reload, never of the
+   *   instant the description was created from this same project.
    */
-  async function buildAndPlay(options = {}) {
-    const result = (await build({ silent: true })) ?? lastBuild;
+  async function buildAndPlayScenario(options) {
+    // Described eagerly (pure, no side effect, against the project as it
+    // stands right now) but not *recorded* yet -- see below for why
+    // recording has to wait.
+    const described = describePlayScenario(options, store.project);
+    // No `?? lastBuild` fallback: this scenario's numeric ids were just
+    // described against the *current* project, and playing them against an
+    // older, already-built ROM that never assembled that project is exactly
+    // the "resolves to different content" failure the whole identity design
+    // (shared/playscenario.js) exists to prevent -- a stale ROM is not a
+    // degraded version of the right answer here, it is a wrong one.
+    const result = await build({ silent: true });
     if (!result) return;
-    await play(result, options);
+    // Recorded only now, once build() has actually accepted and produced
+    // this ROM -- not before it ran. Recording it up front looks harmless
+    // ("it's only a setter, nothing reads it until later") but is exactly
+    // the reasoning that let a *refused* reentrant call win: build()'s own
+    // per-mount "building" guard rejects a second, overlapping call with no
+    // other side effect at all, so if that call had already recorded its
+    // own scenario before reaching build(), it would still overwrite
+    // whatever the call that's actually about to mount had just recorded,
+    // moments earlier -- the next Reload Test would then resume a scenario
+    // the user never got to see start. A scenario whose build was refused
+    // or otherwise failed is not a degraded version of the right answer
+    // either, for the identical reason the ROM fallback above isn't.
+    app.rememberPlayScenario({
+      startAt: described.startAt,
+      battleTest: described.battleTest,
+      toggles: Object.fromEntries(TOGGLE_NAMES.map((name) => [name, false]))
+    });
+    await play(result, { ...options, scenarioBound: true });
   }
 
-  async function play(result, { startAt = null, battleTest = null } = {}) {
-    const rom = await window.forge.build.readRom(result.romPath);
-    if (!rom.ok) return toast(rom.error, 'error');
+  /**
+   * Rebuild the project and relaunch the remembered test scenario (ROADMAP
+   * item 3's "Reload the ROM" bullet), reusing play()'s own startup path
+   * rather than a second copy of it. `isLive` is folded together here with
+   * this mount's own `destroyed` flag before being handed to the shared,
+   * dependency-injected coordinator (shared/reloadcoordinator.js) and, from
+   * there, into play() itself for its own second check after its
+   * asynchronous reads -- one predicate, checked at both places a visible
+   * effect could otherwise land on a world that has moved on.
+   */
+  async function reloadTest({ isLive: callerIsLive = () => true } = {}) {
+    const isLive = () => !destroyed && callerIsLive();
+    return runReloadTest({
+      isLive,
+      hasPlayer: () => Boolean(emulator),
+      build: () => build({ silent: true }),
+      resolveScenario: (project) => ({
+        startAt: resolveStartAt(app.playScenario?.startAt ?? null, project),
+        battleTest: resolveFormation(app.playScenario?.battleTest ?? null, project)
+      }),
+      play: (result, options) => play(result, options),
+      toast,
+      // A thunk, not a captured value: read at the point play() actually
+      // needs it, not before the build -- a toggle flipped on the
+      // still-visible, paused player while its own rebuild is in flight
+      // (the build can easily be the longest part of this whole operation)
+      // must reach the session that build produces.
+      desiredToggles: () => app.playScenario?.toggles
+    });
+  }
 
-    let symbols = {};
-    if (result.symbolPath) {
-      const loaded = await window.forge.build.readSymbols(result.symbolPath);
-      if (loaded.ok) symbols = loaded.value;
+  /**
+   * @returns {Promise<{ok: boolean, reason?: string}>} a real outcome, not
+   *   assumed -- the reload coordinator (runReloadTest) has to know whether
+   *   this actually mounted a player before it can tell its own caller
+   *   whether to restore a paused session's run state (round 7 review's
+   *   findings 2/3: this used to return undefined on every path, which
+   *   read as success even when readRom itself had just failed).
+   */
+  async function play(
+    result,
+    { startAt = null, battleTest = null, desiredToggles = null, scenarioBound = false, isLive = () => true } = {}
+  ) {
+    // preparePlaySession (shared/playsession.js) owns the isLive() check
+    // after each of its own reads -- Close or a Forge navigation can land
+    // during any one of them, not only during the build that preceded this
+    // call, so a single check before mounting was never enough.
+    const prepared = await preparePlaySession({
+      readRom: () => window.forge.build.readRom(result.romPath),
+      readSymbols: () =>
+        result.symbolPath ? window.forge.build.readSymbols(result.symbolPath) : Promise.resolve({ ok: true, value: {} }),
+      // Where the engine keeps the bytes a test-play override pokes, and what
+      // the debugger's switch/variable inspector reads and pokes. Read out of
+      // the build rather than remembered here, so it is the constants.asm
+      // that assembled *this* ROM — the Code Forge can have overridden it.
+      readConstants: () => window.forge.code.readGenerated(store.dir, 'constants.asm'),
+      readConfig: () => window.forge.code.readGenerated(store.dir, 'assets/config.inc'),
+      isLive
+    });
+
+    if (!prepared.ok) {
+      // A `reason` means a genuine failure (readRom itself failed) worth
+      // telling someone about; its absence means isLive() caught this
+      // first -- nobody is left to hear a toast either way.
+      if (prepared.reason) toast(prepared.reason, 'error');
+      return { ok: false, reason: prepared.reason };
     }
-
-    // Where the engine keeps the bytes a test-play override pokes, and what
-    // the debugger's switch/variable inspector reads and pokes. Read out of
-    // the build rather than remembered here, so it is the constants.asm that
-    // assembled *this* ROM — the Code Forge can have overridden it. Needed on
-    // every run, not only "play from here", because the inspector has to work
-    // whether or not that started this session.
-    let ram = null;
-    const source = await window.forge.code.readGenerated(store.dir, 'constants.asm');
-    if (source.ok) ram = parseEquates(source.value);
-    else write(`Could not read the engine constants: ${source.error}`, 'warn');
-
-    // NUM_VARIABLES is generated into config.inc from RPG_LIMITS.variables — not
-    // constants.asm — so how many variables the inspector can show is read from
-    // there rather than the JS constant, the same single-writer reasoning.
-    let numVariables = null;
-    let battleEnabled = false;
-    const config = await window.forge.code.readGenerated(store.dir, 'assets/config.inc');
-    if (config.ok) {
-      const configEquates = parseEquates(config.value);
-      numVariables = configEquates.NUM_VARIABLES ?? null;
-      // Whether this build is RPG-battle-shaped, for the invincibility/
-      // encounters-off toggles' own wording (shared/testoverrides.js) --
-      // read from the generator's own answer rather than inferred from
-      // which symbols happen to be in game.fns, which a Code Forge override
-      // can rename or remove independently of the game type.
-      battleEnabled = configEquates.BATTLE_ENABLED === 1;
-    }
+    if (prepared.constantsWarning) write(`Could not read the engine constants: ${prepared.constantsWarning}`, 'warn');
 
     logStage.style.display = 'none';
     playHost.style.display = 'block';
+    refreshReloadVisibility();
     clear(playHost);
     emulator?.destroy?.();
     emulator = mountPlayer(playHost, {
-      rom: new Uint8Array(rom.value),
-      symbols,
-      ram,
-      numVariables,
-      battleEnabled,
+      rom: new Uint8Array(prepared.rom),
+      symbols: prepared.symbols,
+      ram: prepared.ram,
+      numVariables: prepared.numVariables,
+      battleEnabled: prepared.battleEnabled,
       switchNames: store.project.switches,
       variableNames: store.project.variables,
       startAt,
       battleTest,
+      desiredToggles,
+      scenarioBound,
+      onReload: scenarioBound ? reloadTest : undefined,
+      onToggleChange: scenarioBound ? (name, checked) => app.rememberPlayScenario({ toggles: { [name]: checked } }) : undefined,
       app,
       onExit: () => {
         emulator?.destroy?.();
         emulator = null;
         playHost.style.display = 'none';
         logStage.style.display = 'block';
+        refreshReloadVisibility();
       }
     });
+    // mountPlayer's own outcome, not assumed -- a ROM that failed to load
+    // (emulator.loadROM throwing) already toasted from inside mountPlayer,
+    // but still has to be reported back up through here and, from here,
+    // through runReloadTest, or a failed mount reads as a successful reload
+    // to whoever is deciding whether to restore a paused session.
+    if (!emulator.ok) return { ok: false, reason: emulator.reason };
+    return { ok: true };
   }
 
   async function openInMesen() {
@@ -472,13 +593,42 @@ export function mount(container, app) {
   }
 
   buttons.build = el('button.btn', { onclick: () => build() }, '⚙ Build ROM');
-  buttons.play = el('button.btn.btn-accent', { onclick: buildAndPlay }, '▶ Build & Play');
+  // Wrapped rather than `onclick: buildAndPlay` -- a bare function reference
+  // as a DOM handler receives the click event as its first argument, and
+  // buildAndPlay() now takes none at all, so nothing here has anywhere left
+  // for a stray event object to land.
+  buttons.play = el('button.btn.btn-accent', { onclick: () => buildAndPlay() }, '▶ Build & Play');
   buttons.mesen = el('button.btn', { disabled: true, onclick: openInMesen }, 'Open in Mesen');
   buttons.reveal = el(
     'button.btn',
     { disabled: true, onclick: () => lastBuild && window.forge.build.revealRom(lastBuild.romPath) },
     'Show file'
   );
+  // Hidden whenever a player is showing -- this toolbar sits above
+  // logStage/playHost both and is always rendered regardless of which one
+  // is visible, so nothing about layout does this for free; refreshReload
+  // Visibility() is called at both places playHost's own display toggles --
+  // and whenever there is no scenario to resume. Its own title carries the
+  // same two disclosures the in-player sibling's does (shared/
+  // playscenario.js's naming rule; that Reload clears breakpoints/
+  // watchpoints), because the two are one action reachable from two places,
+  // not two different promises.
+  buttons.reloadTest = el(
+    'button.btn.btn-sm',
+    {
+      title:
+        'Rebuilds and restarts the ROM with the same test scenario. Breakpoints and watchpoints are cleared. ' +
+        'The test scenario is remembered by name, and resuming follows the name.',
+      onclick: () => reloadTest()
+    },
+    '↻ Reload Test'
+  );
+
+  function refreshReloadVisibility() {
+    const scenario = app.playScenario;
+    const hasScenario = Boolean(scenario && (scenario.startAt || scenario.battleTest));
+    buttons.reloadTest.style.display = playHost.style.display === 'block' || !hasScenario ? 'none' : '';
+  }
 
   const root = el(
     'div.forge',
@@ -486,7 +636,16 @@ export function mount(container, app) {
     el(
       'div.panel',
       { style: { borderRight: 'none' } },
-      el('div.toolbar', null, buttons.build, buttons.play, el('span.sep'), buttons.mesen, buttons.reveal),
+      el(
+        'div.toolbar',
+        null,
+        buttons.build,
+        buttons.play,
+        buttons.reloadTest,
+        el('span.sep'),
+        buttons.mesen,
+        buttons.reveal
+      ),
       logStage,
       playHost
     ),
@@ -496,10 +655,12 @@ export function mount(container, app) {
   container.append(root);
   write('Press Build to assemble the project into a .nes ROM.');
   renderSummary();
+  refreshReloadVisibility();
   app.setMeta('Build');
 
   return {
     destroy() {
+      destroyed = true;
       unsubscribe?.();
       emulator?.destroy?.();
       app.setMeta('');
@@ -507,6 +668,8 @@ export function mount(container, app) {
     onProjectChange: renderSummary,
     build,
     buildAndPlay,
+    buildAndPlayScenario,
+    reloadTest,
     openInMesen,
     /**
      * The mounted emulator, for the smoke test: whether "play from here" put

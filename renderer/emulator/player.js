@@ -5,7 +5,8 @@ import { Emulator, BUTTON } from './runcontrol.js';
 import { applyStartOverride } from './testplay.js';
 import { applyBattleTest } from './battletest.js';
 import { AudioOut } from './audio.js';
-import { cpuPanel, disassemblyPanel, memoryPanel, ppuPanel, switchesPanel, togglesPanel } from './panels.js';
+import { cpuPanel, disassemblyPanel, memoryPanel, ppuPanel, switchesPanel, togglesPanel, TOGGLE_COPY } from './panels.js';
+import { applyDesiredToggles } from '../../shared/testoverrides.js';
 
 const SCREEN_W = 256;
 const SCREEN_H = 240;
@@ -63,6 +64,20 @@ function keyMap(bindings) {
  *   fire this formation as a battle immediately after `startAt` lands
  *   (renderer/emulator/battletest.js) — ROADMAP item 3's "battle-test a
  *   selected encounter without walking into it"
+ * @param {object} [options.desiredToggles] the scenario's own invincibility/
+ *   collision/encounters booleans (ROADMAP item 3's "Reload the ROM" bullet),
+ *   re-armed against *this* build right after `configureOverrides()` below —
+ *   only ever passed on a scenario-bound session (see `scenarioBound`)
+ * @param {boolean} [options.scenarioBound] whether this session was launched
+ *   from a remembered test scenario rather than the project's own start —
+ *   gates whether the in-player "Reload Test" control renders at all and
+ *   whether toggle checkboxes echo into it, so an ordinary session (no
+ *   scenario at all) can never overwrite one left over from an earlier test
+ * @param {(options: {isLive: () => boolean}) => Promise<{ok: boolean}>} [options.onReload]
+ *   rebuild and relaunch this same scenario (build.js's own coordinator);
+ *   only meaningful, and only wired to a visible control, when scenarioBound
+ * @param {(name: string, checked: boolean) => void} [options.onToggleChange]
+ *   echoes a toggle checkbox into the session's remembered scenario
  */
 export function mountPlayer(
   container,
@@ -76,6 +91,10 @@ export function mountPlayer(
     battleEnabled = false,
     startAt = null,
     battleTest = null,
+    desiredToggles = null,
+    scenarioBound = false,
+    onReload,
+    onToggleChange,
     app,
     onExit
   }
@@ -105,6 +124,15 @@ export function mountPlayer(
   });
 
   let running = false;
+  // Flipped by this mount's own destroy(), below -- checked by the in-player
+  // Reload button's onclick after its own await, because by the time that
+  // continuation resumes, either "✕ Close" or a Forge navigation (which tears
+  // this player down the same way) can have already made restoring run state
+  // here meaningless: nothing showing it survived to be paused or resumed.
+  // Also handed to the reload coordinator as this session's own liveness
+  // predicate (renderer/forges/build/build.js), combined there with the
+  // Build Forge mount's own equivalent flag.
+  let torndown = false;
   let animationHandle = null;
   let debuggerOpen = false;
   // 'fit' scales the screen to whatever room the stage has; 1-3 pin it.
@@ -303,6 +331,36 @@ export function mountPlayer(
       },
       '⟳ Reset'
     ),
+    // Only rendered on a scenario-bound session (see mountPlayer's own doc
+    // comment) -- an ordinary session has no scenario to reload into, and
+    // showing the control anyway would either do nothing or, worse, invent
+    // one. onclick owns wasRunning/pause/restore itself rather than the
+    // coordinator, because by the time its own `await` resolves this exact
+    // player instance may already be gone (Close, or a Forge navigation
+    // that tears it down the same way) -- `torndown` is what notices that.
+    reload: scenarioBound
+      ? el(
+          'button.btn.btn-sm',
+          {
+            title:
+              'Rebuilds and restarts the ROM with the same test scenario. Breakpoints and watchpoints are ' +
+              'cleared. The test scenario is remembered by name, and resuming follows the name.',
+            onclick: async () => {
+              buttons.reload.disabled = true;
+              const wasRunning = running;
+              setRunning(false);
+              try {
+                const outcome = await onReload({ isLive: () => !torndown });
+                if (torndown) return; // this exact session is already gone; nothing left to restore
+                if (!outcome.ok && wasRunning) setRunning(true);
+              } finally {
+                if (!torndown) buttons.reload.disabled = false;
+              }
+            }
+          },
+          '↻ Reload Test'
+        )
+      : null,
     mute: el(
       'button.btn.btn-sm',
       {
@@ -356,7 +414,12 @@ export function mountPlayer(
       panels.memory = memoryPanel(emulator);
       panels.ppu = ppuPanel(emulator);
       panels.switches = switchesPanel(emulator, { ram, numVariables, switchNames, variableNames });
-      panels.toggles = togglesPanel(emulator, { ram, symbols, battleEnabled });
+      panels.toggles = togglesPanel(emulator, {
+        ram,
+        symbols,
+        battleEnabled,
+        onChange: scenarioBound ? onToggleChange : undefined
+      });
       fill(debugTabs,
         ...[
           ['code', 'Code'],
@@ -401,6 +464,7 @@ export function mountPlayer(
         buttons.frame,
         el('span.sep'),
         buttons.reset,
+        buttons.reload,
         buttons.mute,
         buttons.debug,
         el('span.sep'),
@@ -453,7 +517,38 @@ export function mountPlayer(
   } catch (error) {
     status.textContent = `Could not load the ROM: ${error.message}`;
     toast(`Could not load the ROM: ${error.message}`, 'error');
-    return { destroy };
+    // ok: false, not just a bare {destroy} -- play() (renderer/forges/build/
+    // build.js) has to be able to tell this apart from a real mount, or a
+    // ROM that failed to load reads as a session that succeeded, the same
+    // "failure with a success wrapped around it" shape round 7 review's
+    // finding 2 already fixed one layer up, in play() itself.
+    return { destroy, ok: false, reason: error.message };
+  }
+
+  // Re-arm whichever of the scenario's toggles this build can still support,
+  // right after configureOverrides() -- which is what just resolved whether
+  // each one even has a target to arm against *this* build. Only ever
+  // non-null on a scenario-bound session; an ordinary one has nothing to
+  // re-arm and nothing to report having lost.
+  if (desiredToggles) {
+    const { armed, unavailable } = applyDesiredToggles(desiredToggles, { ram, symbols, battleEnabled });
+    for (const name of armed) emulator.setTestOverrides({ [name]: true });
+    // Cleared from the remembered scenario, not merely left un-armed here:
+    // otherwise the next reload retries the exact same toggle against a
+    // build it still cannot support and reports the identical loss again,
+    // and a *later* build that happens to support it again would silently
+    // re-enable a toggle whose own checkbox has been showing unchecked and
+    // disabled this whole time -- a toggle the tester never re-armed on
+    // purpose coming back on its own.
+    for (const { name } of unavailable) onToggleChange?.(name, false);
+    if (unavailable.length) {
+      toast(
+        unavailable
+          .map(({ name, reason }) => `${TOGGLE_COPY[name]?.label ?? name} could not be re-armed: ${reason}.`)
+          .join(' '),
+        'error'
+      );
+    }
   }
 
   // The cartridge still starts where the project says; this moves the player
@@ -485,6 +580,13 @@ export function mountPlayer(
     } catch (error) {
       emulator.loadROM(rom);
       configureOverrides();
+      // startedFrom was set above when startAt landed, but this fallback just
+      // discarded that landing along with everything else -- reloading fresh
+      // from the authored start, same as the startAt catch block already
+      // does. Leaving startedFrom set would have the status line beneath
+      // claim "Playing from <startAt's label>" for a session that is
+      // actually sitting at the project's own start.
+      startedFrom = null;
       toast(`Could not start the battle-test: ${error.message}. Playing from the start.`, 'error');
     }
   }
@@ -496,6 +598,7 @@ export function mountPlayer(
   app?.setStatus?.(startedFrom ? `Playing from ${startedFrom}` : 'Playing');
 
   function destroy() {
+    torndown = true;
     running = false;
     stopWatchingStage();
     if (animationHandle) cancelAnimationFrame(animationHandle);
@@ -507,6 +610,7 @@ export function mountPlayer(
   return {
     destroy,
     emulator,
+    ok: true,
     // The exact refresh `tick()` drives periodically while the debugger is
     // open, exposed so the smoke test can force one deterministically instead
     // of waiting on however many requestAnimationFrame callbacks a throttled

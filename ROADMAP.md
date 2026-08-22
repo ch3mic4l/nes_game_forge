@@ -199,7 +199,41 @@ to the thing under test without playing up to it.
   implementations of it, so there is no second place for them to disagree.
   Same honesty rule as the inspector above: the toggle is debugger configuration and survives a Reset
   like a breakpoint would, but the RAM itself is exactly what a fresh boot sets.
-- **Reload the ROM** while keeping the selected test scenario
+- ~~**Reload the ROM** while keeping the selected test scenario~~ — **done**: a "↻ Reload Test"
+  control, in the running player's own toolbar and, once no player is showing, on the Build panel
+  too, that rebuilds the project and relaunches whichever scenario last actually built
+  successfully — a scenario the tester picked but whose own build then failed or was refused is
+  never recorded over the one before it, only a completed build's own scenario replaces it. The
+  scenario is a **description, not a reference** — "the map named World, screen 5, at x,y", "the
+  actors currently named Slime, Slime, Bat" — resolved fresh, every time, against the exact project
+  the ROM in hand was actually built from (the build's own returned payload, never a second, later
+  read of the live project: `store.commit` mutates in place, so an actor deleted mid-build can shift
+  every later one's id out from under a resolution that read the project a moment too late). Once
+  reloaded, every label a control shows is rendered from that same resolved answer, never a string
+  cached at the moment the scenario was chosen — a rename that happens to land back on the
+  remembered name reads as "follows the name," not as staleness, and two things sharing a name
+  refuses rather than guesses. The very first play is the one exception: it still shows Map Forge's
+  own label, computed once when the scenario was picked, since nothing has had a chance to go stale
+  yet — narrowing the claim to reload rather than making the first play re-resolve too, since the
+  latter would be a code change with its own review to go through, not a documentation fix.
+  A persistent, opaque id per map/screen/actor — the alternative that would make identity provable
+  instead of merely followed — was considered and declined: a project-schema migration, carried by
+  every saved project forever, to serve a feature whose entire state is thrown away the moment the
+  project closes. `shared/playscenario.js` owns describing a chosen scenario and resolving a
+  remembered one back — not the stored record itself, which is `renderer/app.js`'s own
+  `playScenario`/`rememberPlayScenario`, and not which toggles exist, which is
+  `shared/testoverrides.js`'s `TOGGLE_NAMES`. That file explains why a numeric position isn't
+  identity (`createScreen()`'s own comment; `sprites.actors` renumbering on delete); the declined-ids
+  decision above is recorded here, in this roadmap, not there — item 7's map reordering is the likely
+  place to revisit it, being exactly the kind of structural edit a rename can't survive. Ordinary
+  ▶ Build & Play still means only the project's own
+  authored start, deliberately and unconditionally — Map Forge's play-from-here and battle-test
+  buttons go through a separate entry point, so the ordinary button can never start meaning something
+  else depending on session history nothing on it shows. The three toggles above are re-armed against
+  the new build the same way; whichever one the new build cannot support is reported by name —
+  reusing `toggleUnavailableReason`'s own sentence, not a second vocabulary for it — and cleared from
+  the remembered scenario rather than silently retried on every later reload or silently re-enabled
+  the moment a later build happens to support it again
 - **Screenshot / GIF capture** from the emulator panel
 
 The honesty rule applies here: a test-play override must not be able to end up in a built ROM. Play
@@ -227,6 +261,34 @@ treating the entity pass main_loop still runs afterward as a real hazard rather 
 an overlapping monster, door or pickup can mutate the fight's own metadata, the field, or the bag out
 from under it exactly as it could for a real wandering encounter, and battle-test now detects each of
 those rather than reporting success on top of a corrupted world.
+
+Reload Test needed a fourth shape again: not a byte to poke, a PC to trap, or a formation to
+assemble, but the exact rebuild-and-remount `play()` already does for an ordinary Play, called a
+second time. Two things had to be closed for calling it a second time to be honest. First, whether
+the world a reload started in survived its own `await`s — Close, or a Forge navigation, can land
+while the rebuild or the remount's own reads are still in flight, and a check only right before
+mounting missed that; the fix is one predicate, checked after every `await` on both the coordinator's
+own side and inside `play()`'s read sequence, not a lock on anything. Second, one concurrent
+`build:run` per project directory, refused rather than queued, in the main process — the only thing
+that survives the Forge that started a build being destroyed mid-flight, and the only place
+`generate.js`'s own `fs.rm(buildDir)` can actually be protected. Three limits were disclosed rather
+than closed, all
+pre-existing and none of this feature's making, and not all the same shape of problem: a build's own
+status line is renderer-local, set directly by whichever call to `app.setStatus` happens to run
+last, and `build:log`'s own broadcast (`main/ipc.js`, the one thing here that actually crosses the
+IPC boundary) carries no request identity at all — either can still be overwritten or interleaved by
+a later, unrelated build, and a project can still be edited while a build is running, exactly as it
+always could. Only the last of those needs the heavy fix: closing it for real is an app-wide
+operation lock across Save, project open/close and every editing surface — designed, costed and
+rejected as a test-tool feature wearing an app-wide concurrency feature's clothes, not a gap left by
+oversight. The first two are narrower and simply were not built: a request id threaded through
+`build:log`'s own messages, and a status write that checks it is still the build that mattered
+before landing, would close both without locking anything. Two real, pre-existing defects turned up
+on the way
+and are fixed alongside this rather than left for later: the status line could read "Playing from
+`<screen>`" after a battle-test's own fallback discarded that landing and reloaded to the authored
+start instead (`startedFrom` was never cleared on that path); and, before the directory gate above,
+nothing stopped two builds targeting the same project from racing each other's `fs.rm(buildDir)`.
 
 ## 4. Cartridge save/load — **done**
 

@@ -657,7 +657,7 @@ export function switchesPanel(emulator, { ram, numVariables, switchNames = [], v
 
 // ------------------------------------------------------------- test overrides
 
-const TOGGLE_COPY = {
+export const TOGGLE_COPY = {
   invincibility: {
     label: 'Invincibility',
     on: (battleEnabled) =>
@@ -693,8 +693,12 @@ const TOGGLE_COPY = {
  *   `config.inc` -- the single source for "is this an RPG-battle build," kept
  *   separate from whether `check_encounter` merely happens to exist in the
  *   symbol table (a Code Forge override can remove or rename it either way).
+ * @param {(name: string, checked: boolean) => void} [onChange] echoed into the
+ *   session's remembered test scenario (ROADMAP item 3's "Reload the ROM"
+ *   bullet) when this session is scenario-bound -- only ever passed then, so
+ *   an ordinary session's own checkbox has nowhere to write.
  */
-export function togglesPanel(emulator, { ram, symbols, battleEnabled }) {
+export function togglesPanel(emulator, { ram, symbols, battleEnabled, onChange }) {
   const body = el('div', { style: mono });
   const node = el('div', null, body);
   const rows = {}; // name -> input
@@ -708,7 +712,10 @@ export function togglesPanel(emulator, { ram, symbols, battleEnabled }) {
       type: 'checkbox',
       disabled: Boolean(reason),
       checked: emulator.testOverrides[name] && !reason,
-      onchange: (event) => emulator.setTestOverrides({ [name]: event.target.checked })
+      onchange: (event) => {
+        emulator.setTestOverrides({ [name]: event.target.checked });
+        onChange?.(name, event.target.checked);
+      }
     });
     rows[name] = input;
     return el(

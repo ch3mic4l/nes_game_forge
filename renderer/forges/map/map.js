@@ -313,7 +313,7 @@ export function mount(container, app) {
     const y = cell.row * METATILE_PX;
     const label = `${flat[screen].label} at ${x},${y}`;
     await app.goTo('build');
-    await app.current?.buildAndPlay?.({ startAt: { screen, x, y, label } });
+    await app.current?.buildAndPlayScenario?.({ startAt: { screen, x, y, label } });
   }
 
   /**
@@ -333,7 +333,7 @@ export function mount(container, app) {
     const screen = flat.findIndex((entry) => entry.mapIndex === startMap && entry.screenIndex === startScreen);
     if (screen < 0) return;
     await app.goTo('build');
-    await app.current?.buildAndPlay?.({
+    await app.current?.buildAndPlayScenario?.({
       startAt: { screen, x: startX, y: startY, label: `⚑ Start` },
       battleTest: { formation, label }
     });

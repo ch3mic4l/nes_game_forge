@@ -25,7 +25,7 @@ npm run smoke      # end-to-end: boots the real UI and drives it
 | **Controller Forge** | Done — buttons bound to engine actions per game state, plus keyboard bindings for the player |
 | **Code Forge** | Done — the engine's 6502 source in a tabbed editor with syntax highlighting; edits are kept per project, and you can add your own `.asm` files |
 | **Build & Play** | Done — generates assembly, assembles with `nesasm`, verifies the ROM, plays it in-app |
-| **Emulator + debugger** | Done — breakpoints, step/over/out, scanline & frame step, disassembly with symbols, memory editor, a labelled switch/variable inspector, PPU viewers, invincibility/encounters-off/collision-off test toggles (collision-off is terrain only — screen transitions, damage tiles and door triggers still work; invincibility covers floor hazards only in an RPG, not battle damage) |
+| **Emulator + debugger** | Done — breakpoints, step/over/out, scanline & frame step, disassembly with symbols, memory editor, a labelled switch/variable inspector, PPU viewers, invincibility/encounters-off/collision-off test toggles (collision-off is terrain only — screen transitions, damage tiles and door triggers still work; invincibility covers floor hazards only in an RPG, not battle damage), and a "↻ Reload Test" control that rebuilds the project and resumes whichever play-from-here or battle-test scenario is running — a named map, screen or actor is found again by that name even after other changes elsewhere, but renaming the one actually being tracked makes it refuse rather than guess, and an unnamed screen has no name to follow at all, so it's found again by its position within its map instead, which resizing that map can retarget or lose (ordinary ▶ Build & Play always starts fresh from the project's own start instead; a build that fails leaves whatever was already running untouched) |
 | **Turn-based RPG mode** | Done — party, spells, monster stats, encounters, FF-style menu battles with XP, gold, levels, elements and drops |
 | **Tutorial** | Done — a guided tour of every Forge under 🎓 Learn in the rail, with jumps into the Forge each topic explains |
 
@@ -261,6 +261,16 @@ Five things in the Map Forge for once there is more than a screenful:
   do it: it still starts where ⚑ Start says, and the player is moved once the ROM
   is already running — which is why ⟳ Reset in the player drops you back at the
   real start, and why nothing you could ship can carry a test position.
+- **↻ Reload Test**, next to ⟳ Reset once ▶ Test or a battle-test has one running,
+  rebuilds the project and puts you back in the same test. A named map, screen
+  or actor is found again by that name even after other changes elsewhere — but
+  renaming the one actually being tracked makes it refuse rather than guess, and
+  two things sharing a name it can no longer tell apart refuses too. An unnamed
+  screen has no name to follow at all, so it's found again by its position
+  within its map instead, which resizing that map can retarget or lose.
+  Elsewhere, ▶ Build & Play always starts from the
+  project's own ⚑ Start instead, whether or not a test is running — only this
+  button resumes one.
 
 ## Health, damage and dying
 
