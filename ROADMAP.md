@@ -127,7 +127,7 @@ skipping — specifically to make larger projects survivable
 Note that names cost ROM if they reach the build, and they should not: they are authoring metadata,
 so they belong in the project JSON and nowhere in `assets/`.
 
-## 3. Test-play tools
+## 3. Test-play tools — **done**
 
 Build-and-play and the debugger are already strong. What is missing is the *creator* half — getting
 to the thing under test without playing up to it.
@@ -234,7 +234,96 @@ to the thing under test without playing up to it.
   reusing `toggleUnavailableReason`'s own sentence, not a second vocabulary for it — and cleared from
   the remembered scenario rather than silently retried on every later reload or silently re-enabled
   the moment a later build happens to support it again
-- **Screenshot / GIF capture** from the emulator panel
+- ~~**Screenshot / GIF capture** from the emulator panel~~ — **done**: 📷 Shot and ⏺ Record in the
+  player's own toolbar, both unconditional — unlike ↻ Reload Test above, neither has anything to do
+  with a test scenario — saving through the same `files:writeBinary` IPC the Tile Forge's CHR and
+  palette export already used, so there is no new IPC channel and no capture-specific main-process
+  code (that file did gain a try/catch — see the defects fixed on the way, below). The honesty rule
+  is satisfied trivially here and worth saying anyway: both capture what the player already drew,
+  nothing is poked, nothing is compiled, and the ROM is never read. Shot writes the canvas at its
+  native 256×240 through `canvas.toBlob`, deliberately unscaled: the zoom control is a viewing
+  choice and *Fit* depends on the window's size, so scaling by it would make one button produce a
+  different file depending on how big the window happened to be. Record needs a GIF encoder, and the
+  same constraint the Code Forge's editor hit applies — no runtime dependencies, no bundler — so
+  `renderer/emulator/gif.js` is one, about 300 lines of LZW and block framing, with
+  `renderer/emulator/capture.js` holding the recorder's own policy beside it. Neither is in
+  `shared/`: both are DOM-free and Node-free and `node:test` imports them directly, but `shared/` is
+  for facts the main process, the renderer and the tests must all agree on, and neither of these is
+  one — calling them shared would claim a constraint that does not exist. **The encoding is
+  incremental, and that is the load-bearing decision**: encoding 300 buffered frames at Stop is a
+  multi-second freeze, while encoding each frame as it is captured spreads the identical work across
+  the recording at 20 Hz and makes the recorder's memory the compressed output rather than 300 raw
+  frames (74 MB). Everything else follows from doing it live — the global colour table is built as
+  colours are discovered and written at the end (indices are only ever appended, so a table that is
+  still growing cannot invalidate anything already encoded), the table is always emitted at its full
+  256 entries and every image declares LZW minimum code size 8, because the code size is written
+  into each image block long before the final table size is known; each frame is its own LZW stream,
+  Clear first and EOI last, with a Clear whenever the code table reaches 4096; and a colour arriving
+  after the table is full maps to the nearest one already in it by squared RGB distance, cached by
+  colour so a repeated arrival costs a lookup rather than a 256-entry scan. That fallback is
+  defensive rather than reachable: the eight emphasis tables the vendored PPU builds over the
+  64-colour palette collapse to 233 distinct RGB values once the emphasis factors round, so nothing
+  this emulator can put on screen fills a 256-entry table, and only synthetic test input exercises
+  the substitution at all. It is written and tested anyway because "fewer than 256" is a property of
+  the current palette tables rather than of the format, and the alternative to substituting is
+  refusing a recording after fifteen seconds of it. Frames are diffed to a bounding box with
+  disposal method 1; **transparency was deliberately not used**, though it would compress better,
+  because it needs a permanently reserved index that nearest-colour matching must never return and
+  getting that wrong punches holes in the picture — bounding boxes carry most of the benefit with
+  none of that failure mode. A frame identical to its predecessor still writes a 1×1 sub-image of
+  that pixel's own colour, a visual no-op, because dropping it would silently shorten the
+  recording's own clock. The rate is a compatibility choice, not an arithmetic one: GIF's delay unit
+  is 1/100 s, so 60.0988 fps has no uniform delay at all, and while alternating 1 and 2 cs would
+  approximate its average on paper, short delays are exactly where decoders disagree — Chromium's
+  own treats 2 cs as its floor and other implementations pick different thresholds. Every third
+  frame is 20.03 emulated frames a second, and a uniform delay of 5 plays them back at 20 — 0.16%
+  slow, at a delay comfortably clear of the short-delay thresholds decoders disagree about. What
+  gets kept is *emulated* frames, however they were produced: Record keeps the frame already on
+  screen immediately, so a recording stopped at once is a one-frame GIF rather than an empty file;
+  pausing records no gap; and `stepAnd`'s own `writeFrame` — the presentation-only push that makes
+  single-stepping visible — is excluded by a flag, or the Frame button would record a duplicate and
+  an instruction step would record a *partial* frame. `onFrame` itself only copies a due frame onto
+  a queue and encodes nothing: it runs inside `emulator.runFrame()`, possibly several times per
+  animation callback, and an exception thrown there is caught by the run loop and shown as
+  `Crashed:` — a recorder bug wearing an emulator crash's clothes. `drainCapture()`, called after
+  the frame loop and after a step, does the indexing and the LZW inside its own try/catch, so a
+  capture failure stops the recording and says so while the game keeps running. The queue is bounded
+  at eight frames rather than the four `tick()` can owe, because `stepOver`/`stepOut` can complete
+  many frames before returning, and overflowing it **stops the recording with its own reason**
+  rather than dropping frames (which corrupts the clock) or holding 74 MB. The 300-frame cap is
+  named in the toast for the same reason: a cap nobody mentions looks like a bug when the recording
+  ends by itself, and either reason is now toasted *before* the save is attempted, not after it
+  succeeds — a cancelled dialog left the recording stopped with no explanation at all. A recording
+  in flight is discarded, with a toast, on teardown and explicitly at the top of ↻ Reload Test's own
+  handler before it awaits anything, because a *failed* reload keeps the existing player alive and
+  teardown alone would leave a recording running across a rebuild it cannot represent. **The most
+  useful thing this bullet produced is a test, not a feature.** `test/lib/gifdecode.js` is a GIF
+  decoder written against the spec, and the unit tests decode what the encoder produced and assert
+  every composited frame is pixel-identical to what went in — except the one case that cannot be, a
+  frame carrying more colours than the table holds, where the nearest-colour substitution is
+  asserted against an independently computed expectation instead — but the encoder and that decoder
+  were written by the same agent in the same sitting, and the LZW code-width growth rule had to be
+  changed in *both at once* to make the round trip pass. That is a bug shape a round trip cannot
+  see: a pair wrong in the same direction passes every round-trip test of ours while producing a
+  file no decoder but ours has any reason to accept. So the smoke test decodes the recording a
+  second time with **Chromium's own `ImageDecoder`**, and the planted proof is exact — the
+  code-width rule was deliberately shifted one step early on both sides, the then-current 562-test
+  unit suite and the round-trip smoke check both passed straight through it, and Chromium's decoder
+  rejected the file outright. Node has no image decoder so this cannot be a unit test, but the smoke
+  test is already a real Chromium, and a decoder written by nobody in this repository is worth more
+  here than any number of round trips through our own. Two real pre-existing defects were fixed on
+  the way: `files:writeBinary` and `files:readBinary` had no try/catch, so a dialog or filesystem
+  throw rejected the invoke instead of returning `{ok:false}` — an unhandled rejection and a lost
+  capture — and the Tile Forge's own CHR and palette export, which only ever looked at the success
+  case, had to learn to show the error that conversion now hands it; and `main/smoke.js` had been
+  finding the *hidden* one of the two "↻ Reload Test" buttons that exist in the DOM at once (the
+  Build panel's and the player's). That still reached the reload itself, so the step looked like it
+  worked — what it silently skipped was everything the visible player button's own handler wraps
+  around it, which is now where the recording is discarded. One limit is disclosed rather than
+  closed: the `fail(error)` conversion in `main/ipc.js` is not covered by any test, because reaching
+  the real handler means opening a real native dialog — the smoke test replaces that handler in the
+  main process precisely so the bytes the real button sent can be decoded and compared, which is the
+  trade that made every other assertion here possible.
 
 The honesty rule applies here: a test-play override must not be able to end up in a built ROM. Play
 from here settled the shape the rest of these should follow — `renderer/emulator/testplay.js` pokes
@@ -669,7 +758,7 @@ resetting on either changing.
 2. ~~Variables, branching, choices, triggers, common events — item 1~~ — **done**: `EVENT_COMMANDS`
    and `IMPLEMENTED_COMMANDS` in `shared/project.js` are now identical, eighteen commands to seven
 3. ~~SRAM save/load — item 4~~ — **done**, one slot
-4. Items, equipment, status effects, battle testing — item 5 plus the rest of item 3
+4. Items, equipment, status effects, battle testing — item 5
 5. Movement routes and the audiovisual cutscene commands — item 6
 
 **The kernel bank is the constraint on everything below this line, and it is close to full.** Move

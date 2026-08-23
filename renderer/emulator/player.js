@@ -7,6 +7,7 @@ import { applyBattleTest } from './battletest.js';
 import { AudioOut } from './audio.js';
 import { cpuPanel, disassemblyPanel, memoryPanel, ppuPanel, switchesPanel, togglesPanel, TOGGLE_COPY } from './panels.js';
 import { applyDesiredToggles } from '../../shared/testoverrides.js';
+import { createRecorder } from './capture.js';
 
 const SCREEN_W = 256;
 const SCREEN_H = 240;
@@ -14,6 +15,11 @@ const SCREEN_H = 240;
 // The gap between the screen and the key hint below it; the fit calculation has
 // to subtract exactly what the stylesheet lays out.
 const HINT_GAP = 10;
+
+// GIF's delay unit is 1/100s and cannot express 60.0988fps; every third
+// emulated frame is kept (capture.js), which is 20.03fps against this delay
+// -- 0.16% slow, the closest a GIF gets (see the capture design doc).
+const GIF_DELAY_CS = 5;
 
 const DEFAULT_BINDINGS = {
   up: 'ArrowUp',
@@ -119,6 +125,23 @@ export function mountPlayer(
         pixels[i] = 0xff000000 | ((value & 0xff) << 16) | (value & 0xff00) | ((value >> 16) & 0xff);
       }
       context.putImageData(image, 0, 0);
+      // A copy, not the bare reference: jsnes reuses this same Uint32Array
+      // every frame, and the PPU keeps writing into it (the pre-render
+      // line's own lookahead touches row 0) even once this frame is done and
+      // nothing is stepping. Storing the reference would let "the frame on
+      // screen right now" quietly drift into a not-yet-shown frame by the
+      // time Shot or Record actually reads it -- exactly the kind of stale
+      // read the honesty rule (canvas.toBlob for Shot, never a fresh
+      // emulator read) exists to rule out. putImageData above already froze
+      // the canvas from this same source data, so this keeps the two in
+      // sync rather than letting the canvas stay correct while this drifts.
+      lastFrameBuffer = buffer.slice();
+      // Only a *completed* frame is ever offered -- stepAnd()'s own
+      // presentation write reaches this same callback (nes.ui.writeFrame is
+      // onFrame itself) but sets `presenting` around it precisely so it never
+      // gets here. onFrame only copies (offerFrame does the copy, onto a
+      // queue); the encoding happens later, in drainCapture().
+      if (recorder && !presenting) recorder.offerFrame(buffer);
     },
     onAudioSample: (left, right) => audio.push(left, right)
   });
@@ -135,6 +158,15 @@ export function mountPlayer(
   let torndown = false;
   let animationHandle = null;
   let debuggerOpen = false;
+  // A copy of the raw 0xRRGGBB buffer onFrame last received -- see the copy
+  // inside onFrame itself for why this cannot be the bare jsnes reference.
+  let lastFrameBuffer = new Uint32Array(SCREEN_W * SCREEN_H);
+  // Non-null exactly while a GIF recording is in progress; owns the
+  // capture.js session for that recording (see startRecording/finishRecording
+  // below). `presenting` is true only around stepAnd()'s synthetic
+  // writeFrame() call, so the frame it produces is never offered to it.
+  let recorder = null;
+  let presenting = false;
   // 'fit' scales the screen to whatever room the stage has; 1-3 pin it.
   let zoom = 'fit';
   let panelTimer = 0;
@@ -194,6 +226,7 @@ export function mountPlayer(
         hit = result.hit;
       }
       audio.flush();
+      drainCapture();
       if (hit) {
         setRunning(false);
         const where = labelsByAddress.get(hit.address);
@@ -225,14 +258,164 @@ export function mountPlayer(
       return;
     }
     // Push whatever the PPU has produced so far so single-stepping is visible.
-    emulator.nes.ui.writeFrame(emulator.nes.ppu.buffer);
+    // This is a duplicate of the Frame button's own last real frame, or a
+    // partial frame after an instruction/scanline step -- either way not
+    // something the emulator actually completed, so `presenting` keeps the
+    // capture hook in onFrame from seeing it (only a real runFrame() inside
+    // `action()` above, as the Frame button's own action does, offers a frame).
+    presenting = true;
+    try {
+      emulator.nes.ui.writeFrame(emulator.nes.ppu.buffer);
+    } finally {
+      presenting = false;
+    }
     status.textContent = label;
     refreshPanels();
+    drainCapture();
   }
 
   function refreshPanels() {
     if (!debuggerOpen) return;
     for (const panel of Object.values(panels)) panel?.refresh?.();
+  }
+
+  // ------------------------------------------------------------- capture
+
+  /** `${slug(project name)}-YYYYMMDD-HHMMSS.ext}` -- repeated captures never each prompt an overwrite. */
+  function captureFilename(extension) {
+    // project.project.name, not project.name -- the schema nests authoring
+    // metadata (name, engineVersion, gameType, ...) under its own "project"
+    // key (shared/project.js), the same field renderer/app.js's own chrome
+    // reads for the title bar. Reading the wrong level silently always fell
+    // back to 'game', which nothing here noticed until a review caught it.
+    const rawName = app?.store?.project?.project?.name || 'game';
+    const slug = rawName.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || 'game';
+    const now = new Date();
+    const pad = (n) => String(n).padStart(2, '0');
+    const stamp =
+      `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}` +
+      `-${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`;
+    return `${slug}-${stamp}.${extension}`;
+  }
+
+  /**
+   * canvas.toBlob is asynchronous and writeBinary awaits a native dialog,
+   * either of which can resume into a mount that no longer exists -- so
+   * `torndown` is checked before the IPC call and after every await, the same
+   * predicate the Reload button already uses. A dialog already open cannot be
+   * retracted; this only stops a dead mount's DOM from being touched and a
+   * toast from landing in a session that is gone.
+   */
+  function takeScreenshot() {
+    if (torndown) return;
+    canvas.toBlob(async (blob) => {
+      if (torndown) return;
+      if (!blob) return toast('Could not save the screenshot: the canvas produced no image data.', 'error');
+      try {
+        const bytes = new Uint8Array(await blob.arrayBuffer());
+        if (torndown) return;
+        const result = await window.forge.files.writeBinary(captureFilename('png'), bytes);
+        if (torndown) return;
+        if (!result.ok) return toast(result.error, 'error');
+        if (result.value) toast('Screenshot saved', 'success'); // null value: the save dialog was cancelled -- silent
+      } catch (error) {
+        if (!torndown) toast(`Could not save the screenshot: ${error.message}`, 'error');
+      }
+    }, 'image/png');
+  }
+
+  function setRecordIdle() {
+    buttons.record.textContent = '⏺ Record';
+  }
+
+  // Kept frames * the fixed 20fps sampling rate (GIF_DELAY_CS = 5cs = 1/20s),
+  // not performance.now() -- the button's own title already promises "records
+  // emulated frames, not wall-clock": pausing for ten seconds must not move
+  // this number when the GIF itself gains no frames and no delay in that time.
+  function updateRecordLabel() {
+    buttons.record.textContent = `⏹ Stop (${Math.round(recorder.frameCount / 20)} s)`;
+  }
+
+  function startRecording() {
+    recorder = createRecorder({ width: SCREEN_W, height: SCREEN_H, delayCs: GIF_DELAY_CS });
+    recorder.start(lastFrameBuffer); // the frame on screen right now -- a recording stopped immediately is a one-frame GIF, never zero
+    updateRecordLabel();
+  }
+
+  /**
+   * Drains whatever capture.js has queued into the GIF encoder. Called from
+   * tick() after its frame loop and from stepAnd() -- always in its own
+   * try/catch, never nested inside either caller's, so a recorder failure
+   * stops the recording and toasts rather than reading as "Crashed: ..." or
+   * killing the run loop.
+   */
+  function drainCapture() {
+    if (!recorder) return;
+    try {
+      recorder.drain();
+    } catch (error) {
+      recorder = null;
+      setRecordIdle();
+      toast(`Recording stopped: ${error.message}`, 'error');
+      return;
+    }
+    // Checked before hitCap(): capture.js's own keep() can only ever set one
+    // of the two per call, but queue overflow is the more surprising of the
+    // two to a user (a cap is expected; a step running further than 8
+    // pending frames is not), so it gets checked first on principle even
+    // though the two can never both be true here.
+    if (recorder.queueOverflowed()) {
+      finishRecording('overflow');
+      return;
+    }
+    if (recorder.hitCap()) {
+      finishRecording('cap');
+      return;
+    }
+    updateRecordLabel();
+  }
+
+  /** Abandons an in-flight recording with nothing written -- teardown, a failed-open reload, or a fresh Reload Test. */
+  function discardRecording(reason) {
+    if (!recorder) return;
+    recorder.discard();
+    recorder = null;
+    setRecordIdle();
+    toast(`Recording discarded: ${reason}.`, 'info');
+  }
+
+  /**
+   * Finalizes and saves the GIF. `reason` is null for an explicit Stop
+   * click, 'cap' for drainCapture() hitting the 300-frame cap, or 'overflow'
+   * for a step (stepOver()/stepOut()) running further than the pending
+   * queue can hold -- capture.js stops itself rather than dropping frames
+   * (which would corrupt the recording's own clock) or growing unbounded.
+   */
+  async function finishRecording(reason) {
+    const active = recorder;
+    if (!active) return;
+    recorder = null;
+    setRecordIdle();
+    // The reason a recording stopped is not contingent on whether its file
+    // then got saved: an automatic stop (cap/overflow) must say why even if
+    // the save dialog is cancelled or the write fails right after, so this
+    // fires unconditionally, before the save is even attempted.
+    if (reason === 'overflow') {
+      toast(`A step ran further than the recorder can hold; recording stopped after ${active.frameCount} frames.`, 'error');
+    } else if (reason === 'cap') {
+      toast(`Recording hit the 300-frame cap (~15s) after ${active.frameCount} frames.`, 'success');
+    }
+    try {
+      const bytes = active.finish();
+      if (torndown) return;
+      const result = await window.forge.files.writeBinary(captureFilename('gif'), bytes);
+      if (torndown) return;
+      if (!result.ok) return toast(result.error, 'error');
+      if (!result.value) return; // the save dialog was cancelled -- silent
+      toast(`Saved ${active.frameCount} frames.`, 'success');
+    } catch (error) {
+      if (!torndown) toast(`Could not save the recording: ${error.message}`, 'error');
+    }
   }
 
   // --------------------------------------------------------------- input
@@ -346,6 +529,12 @@ export function mountPlayer(
               'Rebuilds and restarts the ROM with the same test scenario. Breakpoints and watchpoints are ' +
               'cleared. The test scenario is remembered by name, and resuming follows the name.',
             onclick: async () => {
+              // Before anything is awaited: a failed reload keeps this exact
+              // player alive, so a recording it left running would otherwise
+              // still be going once the reload gives up -- reflecting a
+              // rebuild it cannot represent. Explicit here rather than left to
+              // destroy(), which never runs on a failed reload at all.
+              discardRecording('the test is reloading');
               buttons.reload.disabled = true;
               const wasRunning = running;
               setRunning(false);
@@ -373,6 +562,23 @@ export function mountPlayer(
       '🔊 Sound'
     ),
     debug: el('button.btn.btn-sm', { onclick: () => toggleDebugger() }, '🐞 Debugger'),
+    // Unconditional, unlike buttons.reload above -- neither of these has
+    // anything to do with a test scenario, so both show on every session.
+    shot: el(
+      'button.btn.btn-sm',
+      { title: 'Save a PNG of the screen, at its native 256x240', onclick: () => takeScreenshot() },
+      '📷 Shot'
+    ),
+    record: el(
+      'button.btn.btn-sm',
+      {
+        title:
+          'Record a GIF of what plays out on screen (every 3rd emulated frame, up to 300 frames / ~15s). ' +
+          'Stepping an instruction or a scanline records nothing -- only frames the emulator actually completes are kept.',
+        onclick: () => (recorder ? finishRecording(null) : startRecording())
+      },
+      '⏺ Record'
+    ),
     exit: el('button.btn.btn-sm', { onclick: () => onExit?.() }, '✕ Close')
   };
 
@@ -467,6 +673,9 @@ export function mountPlayer(
         buttons.reload,
         buttons.mute,
         buttons.debug,
+        el('span.sep'),
+        buttons.shot,
+        buttons.record,
         el('span.sep'),
         ...['fit', 1, 2, 3].map((value) =>
           el(
@@ -600,6 +809,7 @@ export function mountPlayer(
   function destroy() {
     torndown = true;
     running = false;
+    discardRecording('the player closed');
     stopWatchingStage();
     if (animationHandle) cancelAnimationFrame(animationHandle);
     window.removeEventListener('keydown', onKeyDown);

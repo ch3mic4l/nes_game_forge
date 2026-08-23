@@ -239,20 +239,28 @@ export function registerIpc({ getWindow }) {
   });
 
   ipcMain.handle('files:readBinary', async (_event, filters) => {
-    const result = await dialog.showOpenDialog(window(), { properties: ['openFile'], filters });
-    if (result.canceled || !result.filePaths.length) return ok(null);
-    const file = result.filePaths[0];
-    const bytes = await fs.readFile(file);
-    return ok({
-      name: path.basename(file),
-      data: bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength)
-    });
+    try {
+      const result = await dialog.showOpenDialog(window(), { properties: ['openFile'], filters });
+      if (result.canceled || !result.filePaths.length) return ok(null);
+      const file = result.filePaths[0];
+      const bytes = await fs.readFile(file);
+      return ok({
+        name: path.basename(file),
+        data: bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength)
+      });
+    } catch (error) {
+      return fail(error);
+    }
   });
 
   ipcMain.handle('files:writeBinary', async (_event, name, bytes) => {
-    const result = await dialog.showSaveDialog(window(), { defaultPath: name });
-    if (result.canceled || !result.filePath) return ok(null);
-    await fs.writeFile(result.filePath, Buffer.from(bytes));
-    return ok(result.filePath);
+    try {
+      const result = await dialog.showSaveDialog(window(), { defaultPath: name });
+      if (result.canceled || !result.filePath) return ok(null);
+      await fs.writeFile(result.filePath, Buffer.from(bytes));
+      return ok(result.filePath);
+    } catch (error) {
+      return fail(error);
+    }
   });
 }

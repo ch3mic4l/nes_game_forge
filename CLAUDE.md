@@ -920,6 +920,35 @@ worklet reports its buffer depth back so `AudioOut.driftRatio()` can trim the pa
 ~93 ms cushion — that feedback, not the ring buffer's size, is what absorbs the residual clock skew
 between `performance.now()` and the audio hardware.
 
+**Capture is read-only of what was already drawn, and the encoder never runs inside the
+emulator.** 📷 Shot is `canvas.toBlob` on the player's own canvas; ⏺ Record drives
+`renderer/emulator/capture.js` (the recorder's policy: keep the frame on screen at Record, then
+every third one, a pending queue bounded at 8, a 300-frame cap) over `renderer/emulator/gif.js`
+(the GIF format itself — always a full 256-entry global colour table with LZW minimum code size
+8, one independent LZW stream per frame, bounding-box diffs with disposal 1 and no transparent
+index, nearest-colour substitution once the table fills). Neither belongs in `shared/`: both are
+DOM-free and Node-free and `node:test` imports them directly, but nothing outside the renderer
+has to agree with them. Two rules hold the recorder together. `onFrame` **copies and queues,
+nothing more** — it runs inside `emulator.runFrame()`, which `tick()` can call four times in one
+animation callback and `stepOut()` far more, so encoding there is unbounded work in the run
+loop, and an exception there is caught by `tick()` and displayed as `Crashed:`, which is a
+recorder bug wearing an emulator crash's clothes; `drainCapture()` encodes afterwards inside its
+own try/catch. And the copy is not defensive style: jsnes hands `onFrame` its **one reused PPU
+buffer**, whose pre-render lookahead writes row 0 before the next frame, so a stored reference
+turns into a frame that was correct on the canvas and wrong in the file. `stepAnd`'s own
+`writeFrame` — presentation only, so single-stepping is visible — is excluded from sampling by a
+flag, or the Frame button records a duplicate and an instruction step records a partial frame.
+**And the GIF's real test is Chromium's, not ours.** `test/lib/gifdecode.js` decodes what `gif.js`
+produced and the unit tests assert pixel-identity, except in the one case that cannot be exact — a
+frame carrying more colours than the table holds, where the nearest-colour substitution is asserted
+against an independently computed expectation instead. But both files were written together and
+their LZW code-width rule had to be fixed in both at once, and a matched-pair error there passes
+every round trip of ours while producing a file nothing else need accept. The smoke test therefore
+decodes the same bytes with the platform's own `ImageDecoder`; a deliberate one-step shift of that
+rule in both files passed the then-current 562-test unit suite and was caught only there. Any
+change to `gif.js` has to keep that check, and a new format written the same way should get one
+like it.
+
 ## Testing
 
 Three independent layers, all of which should pass before calling a change done:

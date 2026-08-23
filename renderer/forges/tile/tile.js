@@ -627,7 +627,8 @@ export function mount(container, app) {
   async function exportChr() {
     const bytes = encodeTiles(tilesetAt(store.project, state.tilesetId)[state.table].tiles);
     const result = await window.forge.files.writeBinary(`${state.table}.chr`, bytes);
-    if (result.ok && result.value) toast(`Wrote ${bytes.length} bytes`, 'success');
+    if (!result.ok) return toast(result.error, 'error');
+    if (result.value) toast(`Wrote ${bytes.length} bytes`, 'success');
   }
 
   async function importPal() {
@@ -652,7 +653,8 @@ export function mount(container, app) {
   async function exportPal() {
     const bytes = Uint8Array.from(palette());
     const result = await window.forge.files.writeBinary(`palette${state.activePalette}.pal`, bytes);
-    if (result.ok && result.value) toast('Palette written', 'success');
+    if (!result.ok) return toast(result.error, 'error');
+    if (result.value) toast('Palette written', 'success');
   }
 
   async function clearRegion() {

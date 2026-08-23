@@ -6,7 +6,10 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { ipcMain } from 'electron';
 import { unsavedChanges } from './ipc.js';
+import { decodePng } from '../test/lib/pngdecode.js';
+import { decodeGif } from '../test/lib/gifdecode.js';
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -1728,6 +1731,18 @@ const scenario = (dir, sampleDir, sampleRpgDir) => `
   // scenario setup. ---------------------------------------------------------
   const findButton = (text) => [...document.querySelectorAll('#stage button')].find((b) => b.textContent.trim() === text);
   const isHidden = (el) => !el || el.offsetParent === null || getComputedStyle(el).display === 'none';
+  // Two "↻ Reload Test" buttons exist in the DOM at once once a player is
+  // mounted: the Build panel's own standalone control (build.js's own
+  // buttons.reloadTest, kept in the DOM and hidden via CSS by
+  // refreshReloadVisibility() while a player is showing) and the in-player
+  // one (player.js's buttons.reload). findButton() picks the first DOM
+  // match, which is the hidden Build-panel one -- harmless for the
+  // rebuild+resume assertions below (both call reloadTest(), just one
+  // directly and one through discardRecording() first), but wrong for
+  // anything that needs the in-player control specifically, since the
+  // Build panel's own button has no recording to discard at all.
+  const findVisibleButton = (text) =>
+    [...document.querySelectorAll('#stage button')].find((b) => b.textContent.trim() === text && !isHidden(b));
 
   await window.__app.current.buildAndPlayScenario({ startAt: { screen: 3, x: 48, y: 64 } });
   await until('the reload scenario to build and boot', () => window.__app.current?.player?.emulator, 60000);
@@ -1747,9 +1762,35 @@ const scenario = (dir, sampleDir, sampleRpgDir) => `
   });
   await wait(150);
 
-  const reloadBtn = findButton('↻ Reload Test');
+  const reloadBtn = findVisibleButton('↻ Reload Test');
   if (!reloadBtn) throw new Error('the in-player Reload Test control was not offered on a scenario-bound session');
+
+  // Finding 9: a recording in flight when Reload Test fires must be
+  // discarded, not left running against a rebuild it cannot represent --
+  // started here, right before the same click already under test above for
+  // its own rebuild+resume behaviour. discardRecording() runs synchronously,
+  // at the very top of the reload's own onclick, before anything is
+  // awaited, so both the button label and the toast are checkable
+  // immediately after the click returns, with no wait needed.
+  const reloadRecordButton = findButton('⏺ Record');
+  if (!reloadRecordButton) throw new Error('no Record button available for the reload-discard check');
+  reloadRecordButton.click();
+  if (reloadRecordButton.textContent.indexOf('⏹ Stop') !== 0) {
+    throw new Error('Record did not switch to Stop before the reload-discard check');
+  }
+
   reloadBtn.click();
+  if (reloadRecordButton.textContent !== '⏺ Record') {
+    throw new Error(
+      'Reload Test did not immediately discard the in-flight recording (button still reads "' + reloadRecordButton.textContent + '")'
+    );
+  }
+  const sawReloadDiscardToast = [...document.querySelectorAll('#toastHost .toast')].some((node) =>
+    node.textContent.includes('Recording discarded: the test is reloading')
+  );
+  if (!sawReloadDiscardToast) throw new Error('Reload Test did not toast that the in-flight recording was discarded');
+  step('Reload Test discards an in-flight recording', 'Record started, Reload Test clicked, discarded synchronously with a toast');
+
   await until(
     'Reload Test to mount a new emulator instance',
     () => window.__app.current?.player?.emulator && window.__app.current.player.emulator !== reloadEmu,
@@ -2090,6 +2131,94 @@ const scenario = (dir, sampleDir, sampleRpgDir) => `
       "and the remembered scenario matches what actually mounted, not the refused call's own"
   );
 
+  // --- Screenshot + GIF capture (ROADMAP item 3's last bullet), driven
+  // through the player's real toolbar buttons. A fresh player is mounted
+  // (rather than reusing the one the reentrancy check above left behind,
+  // which can be paused on an arbitrary, possibly visually-uniform instant
+  // after all that rebuilding) and left running for a moment first, so the
+  // screen a pixel-identity check runs against is known to hold real,
+  // varied content -- a mutated Shot/Record that quietly saved a blank
+  // image must have something non-blank to differ from. Pausing after that
+  // means the canvas cannot change out from under either snapshot: the run
+  // loop is entirely requestAnimationFrame-driven, so with running stopped
+  // nothing but this script's own synchronous clicks moves the emulator at
+  // all -- the same reasoning the sprite-preview checks above rely on. The
+  // real byte-for-byte comparison happens back in the main process, once the
+  // saved bytes have been captured through the files:writeBinary override
+  // below -- what this collects is the *expected* side of that comparison,
+  // read from the same canvas the buttons are about to save. -------------
+  window.__app.goTo('build');
+  await wait(200);
+  await window.__app.current.buildAndPlay();
+  await until('a fresh player to boot for the capture checks', () => window.__app.current?.player?.emulator, 60000);
+  // A fixed sleep here is a fallible assertion, not a setup step: nothing
+  // establishes that a frame with real, varied content actually arrived
+  // before Pause freezes the canvas, so under sufficiently delayed
+  // animation scheduling a blank-screenshot mutation could compare blank
+  // against blank and pass. Poll for the condition that actually matters --
+  // the canvas holding more than one distinct colour -- and let until()'s
+  // own timeout fail the step rather than silently proceeding on a screen
+  // that never left its initial, uniform state.
+  const canvasHasVariedContent = () => {
+    const canvas = document.querySelector('#stage .canvas-stage canvas.pixels');
+    if (!canvas) return false;
+    const ctx = canvas.getContext('2d');
+    const data = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
+    const first = (data[0] << 16) | (data[1] << 8) | data[2];
+    for (let i = 4; i < data.length; i += 4) {
+      if (((data[i] << 16) | (data[i + 1] << 8) | data[i + 2]) !== first) return true;
+    }
+    return false;
+  };
+  await until('the canvas to hold more than one distinct colour (real gameplay frames rendering)', canvasHasVariedContent, 5000);
+  const pauseButton = findButton('⏸ Pause');
+  if (pauseButton) pauseButton.click();
+  // Finding 10: the project name lives at project.project.name (see
+  // renderer/app.js's own chrome, which reads the identical field) -- captured
+  // here, at the same moment as the pixels below, so the main process can
+  // check the filenames it receives actually used it.
+  report.expectedProjectName = window.__app.store.project.project.name;
+  const rgbaToPacked = (data) => {
+    const out = new Array(data.length / 4);
+    for (let i = 0, p = 0; i < data.length; i += 4, p++) out[p] = (data[i] << 16) | (data[i + 1] << 8) | data[i + 2];
+    return out;
+  };
+  const screenCanvasPixels = () => {
+    const canvas = document.querySelector('#stage .canvas-stage canvas.pixels');
+    const ctx = canvas.getContext('2d');
+    return rgbaToPacked(ctx.getImageData(0, 0, canvas.width, canvas.height).data);
+  };
+
+  const shotButton = findButton('📷 Shot');
+  if (!shotButton) throw new Error('the player toolbar has no Shot button');
+  report.shotPixels = screenCanvasPixels();
+  shotButton.click();
+
+  const recordButton = findButton('⏺ Record');
+  const frameButton = findButton('Frame');
+  if (!recordButton) throw new Error('the player toolbar has no Record button');
+  if (!frameButton) throw new Error('the player toolbar has no Frame button');
+  const gifSnapshots = [screenCanvasPixels()]; // the frame on screen at the instant Record is clicked
+  recordButton.click();
+  if (recordButton.textContent.indexOf('⏹ Stop') !== 0) {
+    throw new Error('Record did not switch the button to Stop, saw "' + recordButton.textContent + '"');
+  }
+  const GIF_STEPS = 10;
+  for (let gifStep = 0; gifStep < GIF_STEPS; gifStep++) {
+    frameButton.click();
+    gifSnapshots.push(screenCanvasPixels());
+  }
+  recordButton.click();
+  if (recordButton.textContent !== '⏺ Record') {
+    throw new Error('Stop did not return the button to its idle label, saw "' + recordButton.textContent + '"');
+  }
+  report.gifSnapshots = gifSnapshots;
+  report.gifSteps = GIF_STEPS;
+  step(
+    'screenshot + GIF captured through the real toolbar',
+    'Shot clicked, ' + GIF_STEPS + ' frames stepped between Record and Stop'
+  );
+
   return report;
 })()
 `;
@@ -2105,6 +2234,27 @@ export async function runSmoke(window) {
   window.webContents.on('render-process-gone', (_event, details) =>
     problems.push(`renderer gone: ${details.reason}`)
   );
+
+  // The seam for files:writeBinary lives here, in the harness, not in
+  // shipping code: the Save dialog is native and cannot be driven, and
+  // window.forge is exposed through contextBridge, so the page itself has no
+  // way to replace files.writeBinary. Overriding the real main-process
+  // handler captures the exact bytes the real Shot/Record buttons sent over
+  // the real IPC channel -- proof the feature works end to end, not just
+  // that the renderer *tried* to save something. `failNextWrite` is how the
+  // "one designated capture whose handler throws" case (below) is forced,
+  // without a test hook anywhere in player.js itself.
+  const capturedWrites = [];
+  let failNextWrite = false;
+  ipcMain.removeHandler('files:writeBinary');
+  ipcMain.handle('files:writeBinary', async (_event, name, bytes) => {
+    if (failNextWrite) {
+      failNextWrite = false;
+      throw new Error('smoke: forced writeBinary failure');
+    }
+    capturedWrites.push({ name, bytes: Buffer.from(bytes) });
+    return { ok: true, value: `/smoke/fake/${name}` };
+  });
 
   const scratch = await fs.mkdtemp(path.join(os.tmpdir(), 'forge-smoke-'));
   const dir = path.join(scratch, 'Smoke.forge');
@@ -2127,6 +2277,174 @@ export async function runSmoke(window) {
     await new Promise((resolve) => window.webContents.once('did-finish-load', resolve));
     const report = await window.webContents.executeJavaScript(scenario(dir, sampleCopy, sampleRpgCopy));
     for (const entry of report.steps) console.log(`  ok  ${entry.name}${entry.detail ? ` — ${entry.detail}` : ''}`);
+
+    // The Shot/Record buttons clicked inside the scenario above kick off
+    // their own async save (canvas.toBlob, then writeBinary) that the
+    // scenario's own script never awaits -- it returns as soon as the click
+    // handlers have fired, not once they've finished -- so the write can
+    // still be in flight once executeJavaScript resolves here. Poll rather
+    // than assume, the same reasoning `until()` inside the scenario already
+    // uses for everything else that crosses a promise.
+    const waitForWrite = async (label, matches, ms = 4000) => {
+      for (let waited = 0; waited < ms; waited += 25) {
+        const found = capturedWrites.find(matches);
+        if (found) return found;
+        await new Promise((resolve) => setTimeout(resolve, 25));
+      }
+      throw new Error(`timed out waiting for ${label}`);
+    };
+
+    // Finding 10: the filename must actually use the project's own name --
+    // matches player.js's own captureFilename() slug exactly, so a filename
+    // that silently fell back to "game-..." (the bug: reading
+    // project.name instead of project.project.name) is caught here rather
+    // than by nothing at all.
+    const slugify = (name) => name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || 'game';
+    const expectedSlug = slugify(report.expectedProjectName || '');
+
+    const pngWrite = await waitForWrite('the screenshot PNG over files:writeBinary', (w) => w.name.endsWith('.png'));
+    if (!pngWrite.name.startsWith(`${expectedSlug}-`)) {
+      problems.push(
+        `the screenshot filename "${pngWrite.name}" does not start with the project's own slug "${expectedSlug}-" ` +
+          `(project.project.name was "${report.expectedProjectName}")`
+      );
+    }
+    const decodedPng = decodePng(pngWrite.bytes);
+    if (decodedPng.width !== 256 || decodedPng.height !== 240) {
+      problems.push(`the screenshot PNG is ${decodedPng.width}x${decodedPng.height}, expected the native 256x240`);
+    } else {
+      // All four channels: the canvas's own alpha is always 255 by
+      // construction (onFrame ORs in 0xff000000), so an encoder that wrote
+      // correct RGB but alpha 0 -- a fully transparent screenshot -- must
+      // fail here rather than being let through by an RGB-only comparison.
+      let pngMismatches = 0;
+      for (let i = 0; i < report.shotPixels.length; i++) {
+        const packed = (decodedPng.pixels[i * 4] << 16) | (decodedPng.pixels[i * 4 + 1] << 8) | decodedPng.pixels[i * 4 + 2];
+        const alpha = decodedPng.pixels[i * 4 + 3];
+        if (packed !== report.shotPixels[i] || alpha !== 255) pngMismatches++;
+      }
+      if (pngMismatches) {
+        problems.push(`the screenshot PNG differs from the canvas (RGB or alpha) at ${pngMismatches} of ${report.shotPixels.length} pixels`);
+      } else {
+        console.log('  ok  screenshot PNG is pixel- and alpha-identical to the canvas it was taken from (256x240)');
+      }
+    }
+
+    const gifWrite = await waitForWrite('the GIF recording over files:writeBinary', (w) => w.name.endsWith('.gif'));
+    if (!gifWrite.name.startsWith(`${expectedSlug}-`)) {
+      problems.push(
+        `the GIF filename "${gifWrite.name}" does not start with the project's own slug "${expectedSlug}-" ` +
+          `(project.project.name was "${report.expectedProjectName}")`
+      );
+    }
+    const decodedGif = decodeGif(gifWrite.bytes);
+    const expectedGifFrames = 1 + Math.floor(report.gifSteps / 3);
+    if (decodedGif.frames.length !== expectedGifFrames) {
+      problems.push(
+        `the GIF has ${decodedGif.frames.length} frames, expected ${expectedGifFrames} ` +
+          `(1 immediate + every 3rd of ${report.gifSteps} stepped frames)`
+      );
+    } else {
+      let badFrame = -1;
+      let badFrameReason = '';
+      for (let k = 0; k < decodedGif.frames.length; k++) {
+        // Every frame's delay, not just frame 0 -- emitting 5cs for the
+        // first frame and anything at all for the rest must not pass.
+        if (decodedGif.frames[k].delayCs !== 5) {
+          badFrame = k;
+          badFrameReason = `delay is ${decodedGif.frames[k].delayCs} centiseconds, expected 5`;
+          break;
+        }
+        // Sampling rule: the immediate frame, then every 3rd stepped one --
+        // gifSnapshots[0] is the immediate frame, gifSnapshots[3], [6], [9]
+        // are what capture.js's own every-third rule should have kept.
+        const expectedSnapshot = report.gifSnapshots[k * 3];
+        const decodedPixels = decodedGif.frames[k].pixels;
+        let mismatches = 0;
+        for (let i = 0; i < expectedSnapshot.length; i++) {
+          if (decodedPixels[i] !== expectedSnapshot[i]) mismatches++;
+        }
+        if (mismatches) {
+          badFrame = k;
+          badFrameReason = `differs from the canvas snapshot the sampling rule says was kept, at ${mismatches} of ${expectedSnapshot.length} pixels`;
+          break;
+        }
+      }
+      if (badFrame !== -1) {
+        problems.push(`decoded GIF frame ${badFrame} ${badFrameReason}`);
+      } else {
+        console.log(`  ok  GIF recording: ${decodedGif.frames.length} frames, exactly as the sampling rule predicts, pixel-identical to their source frames, every delay 5cs`);
+      }
+    }
+
+    // --- Rev 4: cross-check the same GIF with Chromium's own ImageDecoder
+    // (WebCodecs), a decoder written by nobody in this repository. gif.js
+    // and test/lib/gifdecode.js were written in the same sitting, and their
+    // LZW code-width rule was fixed in both at once to make their own round
+    // trip pass -- exactly the bug shape a self-consistent round trip cannot
+    // see: if the pair is wrong in the same direction, every test above
+    // still passes and every real viewer still fails. This runs in the
+    // renderer (WebCodecs is a web API, unavailable in the main process),
+    // so the bytes captured through the files:writeBinary override above
+    // have to be handed back in, base64-encoded through the script text. ---
+    const imageDecoderResult = await window.webContents.executeJavaScript(`(async () => {
+      if (typeof ImageDecoder === 'undefined') return { unavailable: true, reason: 'ImageDecoder is not defined' };
+      const bytes = Uint8Array.from(atob(${JSON.stringify(gifWrite.bytes.toString('base64'))}), (c) => c.charCodeAt(0));
+      const decoder = new ImageDecoder({ data: bytes, type: 'image/gif' });
+      await decoder.tracks.ready;
+      const track = decoder.tracks.selectedTrack;
+      if (!track) return { unavailable: true, reason: 'no selected track' };
+      const frameCount = track.frameCount;
+      const frames = [];
+      for (let i = 0; i < frameCount; i++) {
+        const { image } = await decoder.decode({ frameIndex: i });
+        const buf = new Uint8Array(image.allocationSize());
+        await image.copyTo(buf);
+        // Chromium's own byte order for this decode path (verified against
+        // a known frame's own colour): BGRX/BGRA, not RGBA -- read generically
+        // off image.format rather than assuming, in case that ever changes.
+        const bgrFirst = image.format && image.format.startsWith('BGR');
+        const pixels = new Array(image.codedWidth * image.codedHeight);
+        for (let p = 0; p < pixels.length; p++) {
+          const o = p * 4;
+          pixels[p] = bgrFirst ? (buf[o + 2] << 16) | (buf[o + 1] << 8) | buf[o] : (buf[o] << 16) | (buf[o + 1] << 8) | buf[o + 2];
+        }
+        frames.push({ width: image.codedWidth, height: image.codedHeight, format: image.format, durationUs: image.duration, pixels });
+        image.close();
+      }
+      return { unavailable: false, frameCount, frames };
+    })()`);
+    if (imageDecoderResult.unavailable) {
+      problems.push(
+        `Chromium's ImageDecoder (WebCodecs) is unavailable in the renderer (${imageDecoderResult.reason}) -- the GIF cannot be cross-checked against an independent decoder`
+      );
+    } else if (imageDecoderResult.frameCount !== expectedGifFrames) {
+      problems.push(`ImageDecoder reports ${imageDecoderResult.frameCount} frames, expected ${expectedGifFrames}`);
+    } else {
+      let badImageDecoderFrame = -1;
+      for (let k = 0; k < imageDecoderResult.frames.length && badImageDecoderFrame === -1; k++) {
+        const frame = imageDecoderResult.frames[k];
+        if (frame.durationUs !== 50000) {
+          problems.push(`ImageDecoder frame ${k} duration is ${frame.durationUs}us, expected 50000us (50ms, matching the encoder's delayCs of 5)`);
+          badImageDecoderFrame = k;
+          continue;
+        }
+        const expectedSnapshot = report.gifSnapshots[k * 3];
+        let mismatches = 0;
+        for (let i = 0; i < expectedSnapshot.length; i++) {
+          if (frame.pixels[i] !== expectedSnapshot[i]) mismatches++;
+        }
+        if (mismatches) {
+          problems.push(`ImageDecoder frame ${k} (format ${frame.format}) differs from the canvas snapshot at ${mismatches} of ${expectedSnapshot.length} pixels`);
+          badImageDecoderFrame = k;
+        }
+      }
+      if (badImageDecoderFrame === -1) {
+        console.log(
+          `  ok  Chromium's own ImageDecoder independently decodes the GIF: ${imageDecoderResult.frameCount} frames, pixel-identical to their source frames, each 50ms`
+        );
+      }
+    }
 
     // The window's close handler decides whether to interrupt the X with a
     // "save first?" question using only what the renderer last reported. If that
@@ -2293,6 +2611,329 @@ export async function runSmoke(window) {
       );
     } else {
       console.log(`  ok  content follows the window — map screen ${seen.map((e) => `${e.zoom}x`).join(' → ')}`);
+    }
+
+    // --- a files:writeBinary that rejects must toast, not crash or leave an
+    // unhandled rejection (Rev 2, finding 5's renderer half; the main-process
+    // fail() half above is not reachable this way -- see this file's own
+    // header comment on that). The resize test above navigated off the Build
+    // Forge, so a fresh player is mounted first. ---------------------------
+    await window.webContents.executeJavaScript(`(async () => {
+      window.__app.goTo('build');
+      await new Promise((resolve) => setTimeout(resolve, 200));
+      await window.__app.current.buildAndPlay();
+      const started = Date.now();
+      while (!(window.__app.current && window.__app.current.player && window.__app.current.player.emulator) && Date.now() - started < 60000) {
+        await new Promise((resolve) => setTimeout(resolve, 25));
+      }
+      if (!(window.__app.current && window.__app.current.player && window.__app.current.player.emulator)) {
+        throw new Error('buildAndPlay did not mount a player for the capture error/teardown checks');
+      }
+      return true;
+    })()`);
+
+    // Finding 3: "keeps the player running" has to mean the run state, not
+    // merely that the player/emulator objects still exist -- a screenshot
+    // failure path that called setRunning(false) while still toasting would
+    // pass an existence-only check. Confirmed running beforehand too, so
+    // this fails loudly if the freshly mounted player was not.
+    const isRunningScript = `(() => document.querySelector('#stage .status-meta')?.textContent === 'Running')()`;
+    const runningBeforeForcedFailure = await window.webContents.executeJavaScript(isRunningScript);
+    if (!runningBeforeForcedFailure) {
+      throw new Error('the freshly mounted player is not running before the forced writeBinary failure check');
+    }
+
+    const problemsBeforeForcedFailure = problems.length;
+    failNextWrite = true;
+    await window.webContents.executeJavaScript(`(() => {
+      const shotButton = [...document.querySelectorAll('#stage button')].find((b) => b.textContent.trim() === '📷 Shot');
+      if (!shotButton) throw new Error('no Shot button to force a writeBinary failure through');
+      shotButton.click();
+      return true;
+    })()`);
+    // The rejected invoke's own catch runs asynchronously in the renderer --
+    // poll for the toast rather than betting on a fixed delay.
+    let afterForcedFailure = { sawErrorToast: false, playerAlive: false, stillRunning: false };
+    for (let waited = 0; waited < 3000 && !afterForcedFailure.sawErrorToast; waited += 50) {
+      afterForcedFailure = await window.webContents.executeJavaScript(`(() => {
+        const toasts = [...document.querySelectorAll('#toastHost .toast')];
+        return {
+          sawErrorToast: toasts.some(
+            (node) => node.className.includes('error') && node.textContent.includes('smoke: forced writeBinary failure')
+          ),
+          playerAlive: !!(window.__app.current && window.__app.current.player && window.__app.current.player.emulator),
+          stillRunning: document.querySelector('#stage .status-meta')?.textContent === 'Running'
+        };
+      })()`);
+      if (!afterForcedFailure.sawErrorToast) await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    if (!afterForcedFailure.sawErrorToast) {
+      problems.push('a forced files:writeBinary failure did not produce a matching error toast');
+    }
+    if (!afterForcedFailure.playerAlive) {
+      problems.push('a forced files:writeBinary failure left no live player mounted');
+    }
+    if (!afterForcedFailure.stillRunning) {
+      problems.push('a forced files:writeBinary failure left the player not running (status is not "Running")');
+    }
+    if (problems.length === problemsBeforeForcedFailure) {
+      console.log(
+        '  ok  a forced files:writeBinary failure toasts an error, keeps the player running, and raises no console error (an unhandled rejection would have)'
+      );
+    }
+
+    // --- Finding 11: a null canvas.toBlob() result (a real, if rare,
+    // browser outcome -- an unsupported or failed encode) must route
+    // through the same toast path as any other capture failure, not be
+    // silently swallowed. toBlob is monkey-patched here, in the harness,
+    // for exactly the one call the Shot click below makes -- there is no
+    // other way to force a real browser API to hand back null, the same
+    // reasoning as the files:writeBinary override above. No shipping-code
+    // hook: the patch lives only in this injected script. --------------
+    await window.webContents.executeJavaScript(`(() => {
+      const original = HTMLCanvasElement.prototype.toBlob;
+      HTMLCanvasElement.prototype.toBlob = function (callback, ...rest) {
+        HTMLCanvasElement.prototype.toBlob = original;
+        callback(null);
+      };
+      const shotButton = [...document.querySelectorAll('#stage button')].find((b) => b.textContent.trim() === '📷 Shot');
+      if (!shotButton) throw new Error('no Shot button for the null-blob check');
+      shotButton.click();
+      return true;
+    })()`);
+    let sawNullBlobToast = false;
+    for (let waited = 0; waited < 3000 && !sawNullBlobToast; waited += 50) {
+      sawNullBlobToast = await window.webContents.executeJavaScript(`(() => {
+        return [...document.querySelectorAll('#toastHost .toast')].some(
+          (node) => node.className.includes('error') && node.textContent.includes('the canvas produced no image data')
+        );
+      })()`);
+      if (!sawNullBlobToast) await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    if (!sawNullBlobToast) {
+      problems.push('a null canvas.toBlob() result did not produce the expected error toast');
+    } else {
+      console.log(
+        '  ok  a null canvas.toBlob() result (a real, if rare, browser outcome) toasts an error rather than being silently swallowed'
+      );
+    }
+
+    // --- Finding 4: the player's own 300-frame cap handling, driven
+    // through the real Frame button. Frame goes through stepAnd(), which
+    // calls drainCapture() after every single click, so the queue drains
+    // exactly as it does in real use and never gets a chance to overflow
+    // (the pending-queue limit) before the cap itself can fire. 900 real
+    // frames is comfortably past the ~897 offers the 300-frame cap needs
+    // (kept every 3rd offer). No test hook, no injectable cap -- this is
+    // the real button, the real capture.js, the real 300. ----------------
+    const writesBeforeCapCheck = capturedWrites.length;
+    const capCheck = await window.webContents.executeJavaScript(`(async () => {
+      window.__app.goTo('build');
+      await new Promise((resolve) => setTimeout(resolve, 200));
+      await window.__app.current.buildAndPlay();
+      const mountDeadline = Date.now() + 60000;
+      while (!(window.__app.current && window.__app.current.player && window.__app.current.player.emulator) && Date.now() < mountDeadline) {
+        await new Promise((resolve) => setTimeout(resolve, 25));
+      }
+      if (!(window.__app.current && window.__app.current.player && window.__app.current.player.emulator)) {
+        throw new Error('buildAndPlay did not mount a player for the cap check');
+      }
+      const pauseButton = [...document.querySelectorAll('#stage button')].find((b) => b.textContent === '⏸ Pause');
+      if (pauseButton) pauseButton.click(); // only this script's own Frame clicks may advance a frame from here on
+      const recordButton = [...document.querySelectorAll('#stage button')].find((b) => b.textContent.trim() === '⏺ Record');
+      const frameButton = [...document.querySelectorAll('#stage button')].find((b) => b.textContent.trim() === 'Frame');
+      if (!recordButton) throw new Error('no Record button for the cap check');
+      if (!frameButton) throw new Error('no Frame button for the cap check');
+      recordButton.click();
+      if (recordButton.textContent.indexOf('⏹ Stop') !== 0) throw new Error('Record did not switch to Stop before the cap check');
+      for (let i = 0; i < 900; i++) frameButton.click();
+      // Finding 1 (phase 5): the reason a recording stopped must toast even
+      // if the save that follows is cancelled or fails -- deleting the
+      // reason toast used to still pass here, since nothing checked for it.
+      const sawCapReasonToast = [...document.querySelectorAll('#toastHost .toast')].some((node) =>
+        node.textContent.includes('Recording hit the 300-frame cap')
+      );
+      return { idleAfter900: recordButton.textContent === '⏺ Record', finalLabel: recordButton.textContent, sawCapReasonToast };
+    })()`);
+    if (!capCheck.idleAfter900) {
+      problems.push(
+        `900 real Frame clicks did not stop the recording on their own (the 300-frame cap) -- button still reads "${capCheck.finalLabel}"`
+      );
+    }
+    if (!capCheck.sawCapReasonToast) {
+      problems.push('the 300-frame cap did not toast why the recording stopped, independent of whether the file saved');
+    }
+    let capWrite = null;
+    for (let waited = 0; waited < 4000 && !capWrite; waited += 25) {
+      capWrite = capturedWrites.slice(writesBeforeCapCheck).find((w) => w.name.endsWith('.gif'));
+      if (!capWrite) await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+    if (!capWrite) {
+      problems.push("the player's own 300-frame cap did not result in a GIF being sent over files:writeBinary");
+    } else {
+      const decodedCapGif = decodeGif(capWrite.bytes);
+      if (decodedCapGif.frames.length !== 300) {
+        problems.push(`the cap-triggered GIF has ${decodedCapGif.frames.length} frames, expected exactly 300`);
+      } else {
+        console.log(
+          "  ok  the player's own 300-frame cap: 900 real Frame clicks (through stepAnd(), draining normally) stopped the recording on their own and sent a 300-frame GIF"
+        );
+      }
+    }
+
+    // --- Phase 5, finding 3: the player-side integration of the recorder's
+    // queue-overflow policy (finish, save, reason toast) -- capture.test.js
+    // already exercises the *recorder's own* overflow policy directly, but
+    // nothing drove it through the real player. It is reachable: stepOut()
+    // (runcontrol.js) is a synchronous loop of up to 2,000,000
+    // stepInstruction() calls that only stops on an RTS popping the stack
+    // above where it started, or a breakpoint. Invoked from the very top of
+    // main_loop -- itself entered by a bare `jmp`, never a `jsr`, and the
+    // only routine main_loop calls that waits on real time (wait_vblank)
+    // waits for exactly one vblank before returning -- no subroutine call
+    // reachable from there returns above that starting depth, so the loop
+    // runs to its full instruction ceiling, spanning far more than the ~24
+    // real frames (8 pending slots * capture.js's SAMPLE_EVERY=3) the
+    // recorder's queue can hold before it stops itself. runToAddress() is
+    // not a test-only hook: testplay.js and battletest.js already use it in
+    // shipping code for the identical purpose (landing exactly on
+    // main_loop's own address) via the same MAIN_LOOP = 'main_loop' symbol
+    // name. -----------------------------------------------------------
+    const stepOutBuild = await window.webContents.executeJavaScript(`(async () => {
+      const built = await window.__app.current.build({ silent: true });
+      if (!built || !built.symbolPath) throw new Error('no symbolPath from a silent build for the stepOut overflow check');
+      const symbolsResult = await window.forge.build.readSymbols(built.symbolPath);
+      if (!symbolsResult.ok) throw new Error('could not read symbols for the stepOut overflow check: ' + symbolsResult.error);
+      const mainLoopAddress = symbolsResult.value.main_loop;
+      if (mainLoopAddress === undefined) throw new Error('no main_loop symbol in the build');
+      return mainLoopAddress;
+    })()`);
+    const writesBeforeStepOutCheck = capturedWrites.length;
+    const stepOutCheck = await window.webContents.executeJavaScript(`(async () => {
+      await window.__app.current.buildAndPlay();
+      const mountDeadline = Date.now() + 60000;
+      while (!(window.__app.current && window.__app.current.player && window.__app.current.player.emulator) && Date.now() < mountDeadline) {
+        await new Promise((resolve) => setTimeout(resolve, 25));
+      }
+      if (!(window.__app.current && window.__app.current.player && window.__app.current.player.emulator)) {
+        throw new Error('buildAndPlay did not mount a player for the stepOut overflow check');
+      }
+      const pauseButton = [...document.querySelectorAll('#stage button')].find((b) => b.textContent === '⏸ Pause');
+      if (pauseButton) pauseButton.click();
+
+      const emulator = window.__app.current.player.emulator;
+      const landed = emulator.runToAddress(${stepOutBuild}, { frames: 60 });
+      if (!landed) throw new Error('runToAddress(main_loop) did not land within 60 frames');
+      if (emulator.pc !== ${stepOutBuild}) throw new Error('emulator.pc is $' + emulator.pc.toString(16) + ', not at main_loop ($${stepOutBuild.toString(16)})');
+
+      const recordButton = [...document.querySelectorAll('#stage button')].find((b) => b.textContent.trim() === '⏺ Record');
+      const outButton = [...document.querySelectorAll('#stage button')].find((b) => b.textContent.trim() === '⤴ Out');
+      if (!recordButton) throw new Error('no Record button for the stepOut overflow check');
+      if (!outButton) throw new Error('no Out button for the stepOut overflow check');
+      recordButton.click();
+      if (recordButton.textContent.indexOf('⏹ Stop') !== 0) throw new Error('Record did not switch to Stop before the stepOut overflow check');
+
+      outButton.click(); // synchronous: stepOut() runs its full loop, then drainCapture() reacts to the overflow, before this line returns control
+
+      const sawOverflowToast = [...document.querySelectorAll('#toastHost .toast')].some((node) =>
+        node.textContent.includes('A step ran further than the recorder can hold')
+      );
+      return { idleAfterOut: recordButton.textContent === '⏺ Record', finalLabel: recordButton.textContent, sawOverflowToast };
+    })()`);
+    if (!stepOutCheck.idleAfterOut) {
+      problems.push(
+        `stepOut() from the top of main_loop did not stop the recording on its own (the queue-overflow policy) -- button still reads "${stepOutCheck.finalLabel}"`
+      );
+    }
+    if (!stepOutCheck.sawOverflowToast) {
+      problems.push('stepOut() overflow did not toast why the recording stopped, independent of whether the file saved');
+    }
+    let stepOutWrite = null;
+    for (let waited = 0; waited < 4000 && !stepOutWrite; waited += 25) {
+      stepOutWrite = capturedWrites.slice(writesBeforeStepOutCheck).find((w) => w.name.endsWith('.gif'));
+      if (!stepOutWrite) await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+    if (!stepOutWrite) {
+      problems.push('stepOut() overflow did not result in a GIF being sent over files:writeBinary');
+    } else {
+      console.log(
+        `  ok  stepOut() from the top of main_loop overflows the recorder's pending queue: stopped itself, toasted why, and sent a ${decodeGif(stepOutWrite.bytes).frames.length}-frame GIF`
+      );
+    }
+
+    // --- Finding 8: the elapsed label must come from kept frames, not
+    // wall-clock time -- the button's own title already promises "records
+    // emulated frames." A wait with nothing stepped can't distinguish the
+    // two by itself: updateRecordLabel() only runs from
+    // startRecording()/drainCapture(), so the label plainly cannot change
+    // while neither runs. The real test needs exactly one more real frame
+    // *after* a long real wait: capture.js samples every 3rd offered frame
+    // (SAMPLE_EVERY -- confirmed above, since the cap check's own 900 clicks
+    // produced exactly 300 kept), and start() already consumes the first
+    // slot via its own immediate keep(), so this one frame lands on
+    // offeredSinceKeep=1 and keeps nothing new. A frame-derived label must
+    // therefore read identically to the instant Record was clicked; a
+    // wall-clock-derived one gets its one chance here to show the
+    // unaccounted real time the moment it next recomputes. ---------------
+    const writesBeforeLabelCheck = capturedWrites.length;
+    const labelCheck = await window.webContents.executeJavaScript(`(async () => {
+      const recordButton = [...document.querySelectorAll('#stage button')].find((b) => b.textContent.trim() === '⏺ Record');
+      const frameButton = [...document.querySelectorAll('#stage button')].find((b) => b.textContent.trim() === 'Frame');
+      if (!recordButton) throw new Error('no Record button for the elapsed-label check');
+      if (!frameButton) throw new Error('no Frame button for the elapsed-label check');
+      recordButton.click();
+      if (recordButton.textContent.indexOf('⏹ Stop') !== 0) throw new Error('Record did not switch to Stop before the elapsed-label check');
+      const labelAtStart = recordButton.textContent;
+      await new Promise((resolve) => setTimeout(resolve, 3000));
+      frameButton.click();
+      const labelAfterOneFrame = recordButton.textContent;
+      recordButton.click(); // Stop -- this throwaway recording's own GIF is only waited for below, never inspected
+      return { labelAtStart, labelAfterOneFrame };
+    })()`);
+    if (labelCheck.labelAfterOneFrame !== labelCheck.labelAtStart) {
+      problems.push(
+        `the Record button's elapsed label changed after one real frame following a 3s real wait ` +
+          `("${labelCheck.labelAtStart}" -> "${labelCheck.labelAfterOneFrame}"), even though that one frame could not ` +
+          `have added a kept frame -- it is tracking wall-clock time, not kept frames`
+      );
+    } else {
+      console.log(
+        "  ok  the Record button's elapsed label tracks kept frames, not wall-clock time (unchanged across a 3s real wait plus one frame that kept nothing new)"
+      );
+    }
+    // Wait for this check's own Stop to land before the next check takes its
+    // own capturedWrites snapshot, so a write that is really this one's own
+    // can never be mistaken for something the next check sent.
+    for (let waited = 0; waited < 4000 && capturedWrites.length === writesBeforeLabelCheck; waited += 25) {
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+    if (capturedWrites.length === writesBeforeLabelCheck) {
+      problems.push("the elapsed-label check's own Stop did not send a GIF over files:writeBinary");
+    }
+
+    // --- tearing the player down mid-recording discards it: nothing is sent
+    // over files:writeBinary, and the discard itself toasts (Rev 2, finding
+    // 4; Rev 3, finding 5's discard-policy half). -------------------------
+    const writesBeforeTeardown = capturedWrites.length;
+    await window.webContents.executeJavaScript(`(() => {
+      const recordButton = [...document.querySelectorAll('#stage button')].find((b) => b.textContent.trim() === '⏺ Record');
+      if (!recordButton) throw new Error('no Record button to start the teardown-mid-recording check with');
+      recordButton.click();
+      if (recordButton.textContent.indexOf('⏹ Stop') !== 0) throw new Error('Record did not switch to Stop before teardown');
+      return true;
+    })()`);
+    await window.webContents.executeJavaScript("window.__app.goTo('map'); true"); // tears the player down mid-recording
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    const sawDiscardToast = await window.webContents.executeJavaScript(`(() => {
+      return [...document.querySelectorAll('#toastHost .toast')].some((node) =>
+        node.textContent.includes('Recording discarded: the player closed')
+      );
+    })()`);
+    if (!sawDiscardToast) problems.push('tearing the player down mid-recording did not toast that the recording was discarded');
+    if (capturedWrites.length !== writesBeforeTeardown) {
+      problems.push('tearing the player down mid-recording still sent something over files:writeBinary');
+    } else if (sawDiscardToast) {
+      console.log('  ok  tearing the player down mid-recording discards it -- nothing sent over files:writeBinary, and it toasts');
     }
 
     if (process.env.FORGE_SHOT) {
