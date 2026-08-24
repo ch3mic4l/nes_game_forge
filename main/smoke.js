@@ -775,6 +775,55 @@ const scenario = (dir, sampleDir, sampleRpgDir) => `
   }
   step('sprite forge tabs', 'animations and actors render');
 
+  // The over-cap delete warning, through the real confirmation dialog.
+  // overCapDeleteWarning is unit-tested for its wording; what only the real
+  // window can show is that it reaches the author at the moment of the edit —
+  // which is the whole point of putting it here rather than trusting the
+  // Build panel's refusal, since validateProject is rendered only by the
+  // Build Forge and a project reopens in whichever Forge was last active.
+  {
+    const spriteStore = window.__app.store;
+    const before = spriteStore.project.sprites.actors.length;
+    spriteStore.commit('Smoke: over the actor ceiling', (project) => {
+      const template = project.sprites.actors[0];
+      // LIMITS.actors is 255; one past it is what the warning is about.
+      while (project.sprites.actors.length <= 255) {
+        project.sprites.actors.push({ ...structuredClone(template), id: project.sprites.actors.length });
+      }
+    });
+    await wait(250);
+    const deleteButton = [...document.querySelectorAll('#stage button.btn.btn-sm')].find(
+      (b) => b.textContent.trim() === '✕'
+    );
+    if (!deleteButton) throw new Error('Actors tab has no delete button');
+    deleteButton.click();
+    await until('the delete confirmation', () => document.querySelector('#modalHost p'));
+    const confirmText = document.querySelector('#modalHost p').textContent;
+    if (!/actor ceiling/.test(confirmText) || !/not preserved/.test(confirmText)) {
+      throw new Error('the delete confirmation did not warn about the actor ceiling: ' + confirmText);
+    }
+    // Cancel: this check must not actually delete anything.
+    const cancel = [...document.querySelectorAll('#modalHost button')].find((b) => b.textContent.trim() === 'Cancel');
+    if (!cancel) throw new Error('the delete confirmation has no Cancel button');
+    cancel.click();
+    await until('the confirmation to close', () => document.querySelector('#modalHost').hidden);
+    // Truncate back rather than store.undo(): open() holds the caller's
+    // project object by reference and commit() mutates it in place, but undo()
+    // swaps this.project for a *clone* — so undoing would leave the object
+    // sample.value.project still points at carrying all 255 extra actors, and
+    // the Build & Play step further down re-opens exactly that object. Since
+    // this only ever pushed, setting the length back restores the original
+    // entries themselves.
+    spriteStore.commit('Smoke: back under the actor ceiling', (project) => {
+      project.sprites.actors.length = before;
+    });
+    await wait(200);
+    if (spriteStore.project.sprites.actors.length !== before) {
+      throw new Error('the over-cap roster was not restored: ' + spriteStore.project.sprites.actors.length);
+    }
+    step('over-cap delete warning', 'reaches the real confirmation, and nothing was deleted');
+  }
+
   // ROADMAP item 11: the Actors and Animations tabs' preview loops used to
   // call the same fill() that builds their own buttons, fields and (on
   // Animations) the Play checkbox itself on every animation tick, destroying

@@ -19,6 +19,8 @@ import {
   AUTHOR_NAME_MAX,
   createMap,
   createScreen,
+  EVENT_CONDITIONS,
+  overCapDeleteWarning,
   screenLabel,
   entityLabel,
   flatScreens,
@@ -27,6 +29,7 @@ import {
   renumberSongDeletion,
   renumberActorDeletion,
   battleFormationSlice,
+  NO_ACTOR,
   liveCommands,
   compiledPages,
   projectEvents,
@@ -41,6 +44,7 @@ import { buildProject } from '../../main/build/pipeline.js';
 import { resolveMapper, rpgCapable } from '../../shared/cartridge.js';
 import { flattenScreens } from '../../main/build/generate.js';
 import { compileText, opIndex, OP_JUMP } from '../../main/build/textcompile.js';
+import { battleTables } from '../../main/build/battletables.js';
 import { FONT_BASE } from '../../shared/font.js';
 import { BLANK_TILE } from '../../shared/chr.js';
 import { spawnSync } from 'node:child_process';
@@ -630,6 +634,456 @@ test('deleting an actor renumbers Give/Take item as well as a battle formation, 
   assert.equal(branch.then[0].actor, null, 'a Give item nested in a branch names the deleted actor the same way');
   assert.equal(branch.else[0].actor, 2, 'a reference below the deleted actor inside a branch should not move');
   assert.equal(choice.options[0].commands[0].actor, 1, 'a reference inside a question option should renumber too');
+});
+
+// --- the two references renumberActorDeletion used to walk straight past ----
+//
+// Both are the same defect as the Give/Take one above, found by enumerating
+// every place an actor id is used as an item: a stored index is not an
+// identity, so a reference nobody renumbers silently comes to mean whichever
+// actor now sits at that number. Neither had a test, which is why both
+// survived.
+
+test('deleting an actor renumbers a monster’s drop, and does not leave it pointing at its neighbour', () => {
+  const project = createProject('Quest', 'rpg');
+  project.sprites.actors = [
+    { name: 'A', damage: 1, battle: { drop: 2, dropPct: 50 } }, // drops "C" — above the deletion
+    { name: 'B', damage: 1, battle: { drop: null, dropPct: 0 } }, // the one about to go
+    { name: 'C', damage: 1, battle: { drop: 1, dropPct: 50 } }, // drops exactly the deleted actor
+    { name: 'D', damage: 1, battle: { drop: 0, dropPct: 50 } } // drops "A" — below the deletion
+  ];
+
+  renumberActorDeletion(project, 1); // delete "B"
+
+  const [a, b, c, d] = project.sprites.actors;
+  assert.equal(a.battle.drop, 1, 'a drop naming an actor above the deleted one should shift down, not stay on the number');
+  assert.equal(c.battle.drop, null, 'a drop naming exactly the deleted actor should read as missing, the same as Give/Take');
+  assert.equal(d.battle.drop, 0, 'a drop naming an actor below the deleted one should not move');
+  assert.equal(b.battle.drop, null, 'a drop that already named nothing should stay naming nothing');
+});
+
+test('deleting an actor renumbers Carrying item conditions, on a page and inside a branch', () => {
+  const project = createProject('Quest', 'rpg');
+  project.sprites.actors = [{ name: 'A' }, { name: 'B' }, { name: 'C' }, { name: 'D' }];
+  project.maps[0].screens[0].entities = [
+    {
+      actorId: 0,
+      x: 0,
+      y: 0,
+      props: {
+        event: {
+          pages: [
+            {
+              cond: { type: 'hasItem', arg: 2 }, // above the deletion
+              commands: [
+                {
+                  op: 'branch',
+                  cond: { type: 'hasItem', arg: 1 }, // exactly the deleted actor
+                  then: [
+                    // A branch inside a branch: the nesting allCommands exists for.
+                    { op: 'branch', cond: { type: 'hasItem', arg: 3 }, then: [], else: [] }
+                  ],
+                  else: []
+                },
+                {
+                  op: 'choice',
+                  options: [
+                    {
+                      text: 'Yes',
+                      commands: [{ op: 'branch', cond: { type: 'hasItem', arg: 2 }, then: [], else: [] }]
+                    }
+                  ]
+                }
+              ]
+            },
+            { cond: { type: 'hasItem', arg: 1 }, commands: [] },
+            // Not an actor reference at all — switch 2 must come through untouched.
+            { cond: { type: 'switchOn', arg: 2 }, commands: [] }
+          ]
+        }
+      }
+    }
+  ];
+  // A common event is not reached by walking a placement's commands — a `call`
+  // names it by id rather than holding its pages — so an implementation that
+  // walked placed actors alone would pass every assertion above while leaving
+  // the original bug intact in exactly the bodies authored once and used
+  // everywhere. projectEvents() covers both; this is what says so.
+  project.commonEvents = [
+    {
+      id: 0,
+      name: 'Reward',
+      event: {
+        pages: [
+          {
+            cond: { type: 'hasItem', arg: 2 },
+            commands: [{ op: 'branch', cond: { type: 'hasItem', arg: 1 }, then: [], else: [] }]
+          }
+        ]
+      }
+    }
+  ];
+
+  renumberActorDeletion(project, 1); // delete "B"
+
+  const pages = project.maps[0].screens[0].entities[0].props.event.pages;
+  const [outerBranch, choice] = pages[0].commands;
+  assert.equal(pages[0].cond.arg, 1, 'a page condition naming an actor above the deleted one should shift down');
+  assert.equal(
+    outerBranch.cond.arg,
+    NO_ACTOR,
+    'a branch condition naming exactly the deleted actor should stop naming an actor at all'
+  );
+  assert.equal(outerBranch.then[0].cond.arg, 2, 'a condition nested two branches deep should renumber too');
+  assert.equal(
+    choice.options[0].commands[0].cond.arg,
+    1,
+    'a condition inside a question option should renumber the same way'
+  );
+  assert.equal(pages[1].cond.arg, NO_ACTOR, 'a second page naming exactly the deleted actor gets the same answer');
+  assert.equal(pages[2].cond.type, 'switchOn', 'a switch condition is not an actor reference');
+  assert.equal(pages[2].cond.arg, 2, 'a switch condition’s argument must not be renumbered as if it were an actor');
+
+  const commonPage = project.commonEvents[0].event.pages[0];
+  assert.equal(commonPage.cond.arg, 1, 'a common event’s own page condition should renumber, not only a placement’s');
+  assert.equal(
+    commonPage.commands[0].cond.arg,
+    NO_ACTOR,
+    'a branch condition inside a common event should be marked missing the same way'
+  );
+});
+
+test('a map’s wandering-encounter table is renumbered when an actor is deleted', () => {
+  const project = createProject('Quest', 'rpg');
+  project.sprites.actors = [{ name: 'A' }, { name: 'B' }, { name: 'C' }];
+  project.maps = [createMap(0, 'World'), createMap(1, 'Cave')];
+  project.maps[0].encounters = { rate: 8, actorIds: [0, 1, 2] };
+  project.maps[1].encounters = { rate: 8, actorIds: [1] }; // only the doomed actor
+
+  renumberActorDeletion(project, 1); // delete "B"
+
+  // The battle-formation answer, for the same reason: the table is a list, so
+  // the deleted id drops out of it rather than becoming a sentinel, and the
+  // ids above it shift down. mapEncounterFormation's own `id < actorCount`
+  // filter only ever catches the first of the two failures — an id that went
+  // out of range. An id that used to mean B and now means C is still in
+  // range, so nothing downstream can see it.
+  assert.deepEqual(
+    project.maps[0].encounters.actorIds,
+    [0, 1],
+    'the deleted actor drops out of the table and C shifts down — 1 must not silently keep meaning "whoever is at 1"'
+  );
+  assert.deepEqual(
+    project.maps[1].encounters.actorIds,
+    [],
+    'a table whose only entry was the deleted actor empties out rather than retargeting'
+  );
+});
+
+test('a reference already marked missing is a fixed point, not decremented again by the next deletion', () => {
+  const project = createProject('Quest', 'rpg');
+  project.sprites.actors = [{ name: 'A' }, { name: 'B' }, { name: 'C' }, { name: 'D' }];
+  project.maps[0].screens[0].entities = [
+    {
+      actorId: 0,
+      x: 0,
+      y: 0,
+      props: {
+        event: {
+          pages: [
+            {
+              cond: { type: 'hasItem', arg: 1 },
+              // An authored formation already holding the empty-slot sentinel —
+              // a hand-edited project, or one written by a later version.
+              commands: [{ op: 'battle', monsters: [NO_ACTOR, 2] }]
+            }
+          ]
+        }
+      }
+    }
+  ];
+
+  renumberActorDeletion(project, 1); // delete "B" — the condition becomes missing
+  const page = project.maps[0].screens[0].entities[0].props.event.pages[0];
+  assert.equal(page.cond.arg, NO_ACTOR, 'the first deletion marks the condition missing');
+
+  renumberActorDeletion(project, 0); // now delete "A", from underneath it
+  assert.equal(
+    page.cond.arg,
+    NO_ACTOR,
+    'a condition already marked missing must stay exactly NO_ACTOR — walked down once per later deletion it ' +
+      'drifts to $FE, $FD, … and comes back into range the moment the roster grows again'
+  );
+  assert.deepEqual(
+    page.commands[0].monsters,
+    [NO_ACTOR, 0],
+    'an empty formation slot is the same sentinel and must not be walked either — while the real id beside it ' +
+      'shifts once per deletion (2 → 1 → 0), the sentinel stays put; walked, it would read $FD by now'
+  );
+});
+
+test('a Carrying item condition that names nothing normalizes to NO_ACTOR, never to actor 0', () => {
+  // Everything actorMissing calls missing, which is exactly what the Map
+  // Forge's own select now renders as "Missing actor". If normalization
+  // disagrees with that display the editor shows one thing and the ROM asks
+  // after another — the disagreement the select was added to prevent.
+  const condition = (arg) =>
+    normalizeProject({
+      project: { name: 'Q', gameType: 'rpg' },
+      maps: [
+        {
+          screens: [
+            {
+              entities: [
+                { actorId: 0, x: 0, y: 0, props: { event: { pages: [{ cond: { type: 'hasItem', arg }, commands: [{ op: 'say', text: 'hi' }] }] } } }
+              ]
+            }
+          ]
+        }
+      ]
+    }).maps[0].screens[0].entities[0].props.event.pages[0].cond;
+
+  for (const raw of [null, undefined, -1, -0.4, 2.4, '2', 'gem', {}, NaN, Infinity]) {
+    assert.equal(
+      condition(raw).arg,
+      NO_ACTOR,
+      `a condition argument of ${JSON.stringify(raw) ?? String(raw)} names no actor, so it must normalize to the ` +
+        'sentinel rather than being rounded or floored into a real actor id'
+    );
+  }
+  // A real reference is untouched, sentinel included.
+  assert.equal(condition(2).arg, 2, 'a genuine actor id must survive normalization unchanged');
+  assert.equal(condition(0).arg, 0, 'actor 0 is a real actor, not a missing one');
+  assert.equal(condition(NO_ACTOR).arg, NO_ACTOR, 'the sentinel itself round-trips');
+});
+
+test('the actor roster is capped one short of the sentinel, so $FF can never name a real actor', () => {
+  // NO_ACTOR is what every scalar actor reference means by "nothing" and what
+  // every list pads an empty slot with. It is a byte, so the only way it can
+  // stay unambiguous is for the roster never to reach it — the same rule
+  // MAX_TABLE already applies to the compiled events table.
+  assert.equal(LIMITS.actors, NO_ACTOR, 'the cap is the sentinel: ids run 0..NO_ACTOR-1');
+  assert.equal(LIMITS.actors - 1, 0xfe, 'so the highest legal actor id is $FE');
+});
+
+test('a roster past the cap is refused, and a full one is not', () => {
+  const project = createProject('Quest', 'action');
+  const roster = (count) => Array.from({ length: count }, (_, id) => ({ name: `A${id}` }));
+
+  project.sprites.actors = roster(LIMITS.actors);
+  assert.deepEqual(
+    validateProject(project).filter((problem) => /actors but/.test(problem.message)),
+    [],
+    'exactly LIMITS.actors is legal — the cap is a ceiling, not a limit one below it'
+  );
+
+  project.sprites.actors = roster(LIMITS.actors + 1);
+  const errors = validateProject(project).filter((problem) => /actors but/.test(problem.message));
+  assert.equal(errors.length, 1, 'one actor past the cap should be refused');
+  assert.equal(errors[0].severity, 'error', 'an id that collides with the sentinel cannot be compiled at all');
+  assert.equal(errors[0].where, 'Sprite Forge', 'the roster is edited in the Sprite Forge');
+  assert.match(errors[0].message, new RegExp(String(LIMITS.actors)), 'the message should say what the ceiling is');
+});
+
+test('a project arriving over the cap keeps its actors; references to them are byte-clamped, and it says so', async (t) => {
+  // LIMITS.actors + 2, not + 1: at + 1 the highest id is 255, which is still
+  // byte-representable, so the old version of this test passed without ever
+  // exercising a reference that cannot be encoded at all. 257 actors means a
+  // highest id of 256, which is what actually forces the question.
+  //
+  // The contract this pins is deliberately narrower than "everything is
+  // preserved", which is what an earlier comment here claimed and which was
+  // never true: the actor *records* survive a round trip, so nothing is
+  // deleted behind the author's back and the build is refused instead — but a
+  // *reference* is a single byte in the ROM, and every reference field clamps
+  // to one on load. Why those clamps stay rather than being widened is argued
+  // where they live (normalizeProject, shared/project.js); the short version
+  // is that the byte invariant belongs to this boundary and widening would
+  // move the narrowing burden onto five separate consumers. It is *not* that
+  // a widened value could corrupt a ROM — it could not, and the build
+  // assertions at the end of this test are what say so.
+  const over = LIMITS.actors + 2;
+  const last = over - 1; // id 256 — one past what a byte can name
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'forge-overcap-'));
+  t.after(() => fs.rm(dir, { recursive: true, force: true }));
+
+  const authored = createProject('Quest', 'action');
+  authored.sprites.actors = Array.from({ length: over }, (_, id) => ({
+    id,
+    name: `A${id}`,
+    behavior: 'npc',
+    speed: 1,
+    hp: 1,
+    anims: {},
+    battle: {}
+  }));
+  authored.sprites.actors[0].battle = { drop: last, dropPct: 50 };
+  authored.maps[0].encounters = { rate: 8, actorIds: [last] };
+  authored.maps[0].screens[0].entities = [
+    {
+      actorId: last,
+      x: 0,
+      y: 0,
+      props: {
+        event: {
+          pages: [
+            {
+              // A Carrying item condition is a reference too, through its own
+              // normalizer rather than the generic clamp — so it needs its own
+              // assertion or widening actorConditionArg would slip past this.
+              cond: { type: 'hasItem', arg: last },
+              commands: [
+                { op: 'give', actor: last },
+                // And a formation, which clamps in a fifth place again.
+                { op: 'battle', monsters: [last] }
+              ]
+            }
+          ]
+        }
+      }
+    }
+  ];
+
+  await saveProject(dir, authored);
+  const loaded = await loadProject(dir); // a real round trip, not normalizeProject in isolation
+
+  // What is preserved: the records. Truncating them would erase real,
+  // drawable work and leave every reference to it dangling — placements
+  // included, which nothing validates.
+  assert.equal(loaded.sprites.actors.length, over, 'every actor survives the round trip');
+  assert.equal(loaded.sprites.actors[last].name, `A${last}`, 'including the ones past the ceiling');
+
+  // What is not: any reference naming them. Every one of the six kinds clamps
+  // to $FF, and each is asserted separately because each has its own
+  // normalizer — widening any single one of them has to fail here.
+  const entity = loaded.maps[0].screens[0].entities[0];
+  const page = entity.props.event.pages[0];
+  assert.equal(entity.actorId, 0xff, 'a placement above the byte range clamps');
+  assert.equal(page.commands[0].actor, 0xff, 'so does a Give');
+  assert.deepEqual(page.commands[1].monsters, [0xff], 'so does a battle formation');
+  assert.equal(page.cond.arg, 0xff, 'so does a Carrying item condition');
+  assert.deepEqual(loaded.maps[0].encounters.actorIds, [0xff], 'so does an encounter table entry');
+  assert.equal(loaded.sprites.actors[0].battle.drop, 0xff, 'so does a drop');
+
+  // And the author is told, in the refusal.
+  const errors = validateProject(loaded).filter((problem) => /actors but/.test(problem.message));
+  assert.equal(errors.length, 1, 'the build is refused');
+  assert.match(errors[0].message, /not preserved/, 'the refusal must say that references above the ceiling do not survive');
+
+  // Refusal precedes emission, pinned against a real build rather than
+  // inferred from validateProject alone. This ordering is what keeps a
+  // schema-clamped reference from being the only thing between a non-byte and
+  // a .db, so it is load-bearing for the clamps' own justification and must
+  // not be left to a reading of generateAssets. Needs no nesasm: the throw
+  // happens in generateAssets, the first thing buildProject calls.
+  await assert.rejects(
+    () => buildProject({ dir, project: loaded, log: () => {} }),
+    /actors but/,
+    'an over-cap project must be refused by the build, not merely reported by validateProject'
+  );
+  await assert.rejects(
+    () => fs.access(path.join(dir, 'build')),
+    'the refusal must come before any asset is written — generateAssets throws before it creates build/'
+  );
+});
+
+test('the delete confirmation says what deleting while over the ceiling costs', () => {
+  // The build refusal is not reachable from the Sprite Forge: validateProject
+  // is rendered only by the Build Forge (renderer/forges/build/build.js), and
+  // a project reopens in whichever Forge was last active. So an author can
+  // open an over-cap project, go straight to Actors and delete, having never
+  // seen it. This is the string that meets them where the edit actually
+  // happens; it is a pure function so it can be asserted here as well as
+  // through the real dialog in `npm run smoke`.
+  const project = createProject('Quest', 'action');
+  const roster = (count) => Array.from({ length: count }, (_, id) => ({ name: `A${id}` }));
+
+  project.sprites.actors = roster(LIMITS.actors);
+  assert.equal(overCapDeleteWarning(project), '', 'a legal roster gets no warning — every reference is representable');
+
+  project.sprites.actors = roster(LIMITS.actors + 1);
+  const warning = overCapDeleteWarning(project);
+  assert.match(warning, new RegExp(String(LIMITS.actors)), 'it should name the ceiling');
+  assert.match(warning, new RegExp(String(LIMITS.actors - 1)), 'and the highest id a reference can still name');
+  assert.match(warning, /not preserved/, 'and say plainly that those references do not survive');
+});
+
+test('the missing-item sentinel survives normalization and reaches the ROM as NO_ACTOR', () => {
+  // The in-memory assertions above would all still pass if a later
+  // normalization or compiler change quietly turned the sentinel into 0 —
+  // which is the one thing renumberActorDeletion's whole rationale depends on
+  // not happening. This is the round trip: delete, normalize, compile, and
+  // read the operand the engine will actually see.
+  const project = createProject('Quest', 'rpg');
+  project.sprites.actors = [{ name: 'Gem' }, { name: 'Relic' }];
+  project.maps[0].screens[0].entities = [
+    {
+      actorId: 0,
+      x: 0,
+      y: 0,
+      props: {
+        event: {
+          pages: [
+            { cond: { type: 'hasItem', arg: 1 }, commands: [{ op: 'say', text: 'You have the relic.' }] },
+            { cond: { type: 'none', arg: 0 }, commands: [{ op: 'say', text: 'Nothing here.' }] }
+          ]
+        }
+      }
+    }
+  ];
+
+  renumberActorDeletion(project, 1);
+  project.sprites.actors.splice(1, 1);
+
+  const [event] = compileText(normalizeProject(project)).events;
+  // A page header is [cond, arg, value, body length].
+  assert.equal(event[0], EVENT_CONDITIONS.findIndex((entry) => entry.id === 'hasItem'), 'page 1 is still the Carrying item page');
+  assert.equal(
+    event[1],
+    NO_ACTOR,
+    'the condition must reach the ROM as NO_ACTOR — as 0 it would ask after whichever actor now sits at id 0'
+  );
+});
+
+test('a monster whose drop no longer names an actor is a warning, not a refusal', () => {
+  const project = createProject('Quest', 'rpg');
+  project.sprites.actors = [{ name: 'Slime', damage: 1, battle: { drop: 7, dropPct: 50 } }];
+
+  const problems = validateProject(project);
+  const aboutDrop = problems.filter((problem) => /drop/i.test(problem.message));
+  assert.equal(aboutDrop.length, 1, 'a drop past the end of the actor list should be reported exactly once');
+  assert.equal(
+    aboutDrop[0].severity,
+    'warning',
+    'a monster that drops nothing still fights, so this is the stale-reference warning, not the Give/Take refusal'
+  );
+  assert.equal(aboutDrop[0].where, 'Sprite Forge', 'the drop is edited in the Sprite Forge, so that is who it names');
+
+  // renumberActorDeletion's own null is the other way to get here, and reads
+  // as deliberate rather than stale: nothing to warn about.
+  project.sprites.actors[0].battle.drop = null;
+  assert.deepEqual(
+    validateProject(project).filter((problem) => /drop/i.test(problem.message)),
+    [],
+    'a drop of "Nothing" is a choice, not a dangling reference'
+  );
+});
+
+test('a drop past the end of the actor list compiles to “nothing”, not an out-of-range id', () => {
+  const project = createProject('Quest', 'rpg');
+  project.sprites.actors = [
+    { name: 'Slime', hp: 1, damage: 1, battle: { drop: 7, dropPct: 50 } },
+    { name: 'Gem', hp: 1, damage: 0, battle: { drop: null, dropPct: 0 } }
+  ];
+
+  const row = /^mon_drop:\n(.*)$/m.exec(battleTables(project));
+  assert.ok(row, 'battleTables should emit a mon_drop table');
+  assert.equal(
+    row[1].trim(),
+    '.db $FF,$FF',
+    'an unresolvable drop must reach roll_drop as $FF the way a stale mon_spell id already does — add_item does ' +
+      'not range-check what it is handed'
+  );
 });
 
 test('a live Give/Take with a missing actor blocks the build; a switched-off one does not', () => {

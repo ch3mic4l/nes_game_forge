@@ -12,7 +12,8 @@ import {
   ELEMENTS,
   RPG_LIMITS,
   tilesetAt,
-  renumberActorDeletion
+  renumberActorDeletion,
+  overCapDeleteWarning
 } from '../../../shared/project.js';
 import { battleSection, partyPanel } from './battle.js';
 import { drawSheet, sheetIndexFromEvent } from '../../widgets/sheet.js';
@@ -669,9 +670,20 @@ export function mount(container, app) {
         el(
           'button.btn.btn-sm',
           {
+            // The roster is capped one short of NO_ACTOR (LIMITS.actors), so
+            // no actor can ever be given the id every reference uses to mean
+            // "nothing". Disabled with the reason rather than presented as a
+            // button that silently does nothing, the same as the Tile Forge's
+            // own Add at the mapper's tileset ceiling.
+            disabled: sprites().actors.length >= LIMITS.actors,
+            title:
+              sprites().actors.length >= LIMITS.actors
+                ? `${LIMITS.actors} actors is the ceiling — id $FF is reserved to mean “no actor”.`
+                : 'Add an actor',
             onclick: () => {
               store.commit('Add actor', (project) => {
                 const id = project.sprites.actors.length;
+                if (id >= LIMITS.actors) return;
                 const anims = {};
                 for (const { id } of ANIM_SLOTS) anims[id] = null;
                 if (project.sprites.animations.length) anims.idle = 0;
@@ -695,10 +707,18 @@ export function mount(container, app) {
           {
             disabled: !actor,
             onclick: async () => {
+              // The over-cap warning belongs here, not only in the Build
+              // panel's refusal: validateProject is rendered only by the
+              // Build Forge, so an author can open an over-cap project
+              // straight into this tab and delete without having seen it.
+              // overCapDeleteWarning (shared/project.js) is empty for every
+              // ordinary project, so this reads exactly as it always did.
+              const overCap = overCapDeleteWarning(store.project);
               if (
                 !(await confirmModal(
                   'Delete actor',
-                  `Delete "${actor.name}"? Anywhere it was placed on a map will be cleared too.`,
+                  `Delete "${actor.name}"? Anywhere it was placed on a map will be cleared too.` +
+                    (overCap ? ` ${overCap}` : ''),
                   'Delete'
                 ))
               ) {

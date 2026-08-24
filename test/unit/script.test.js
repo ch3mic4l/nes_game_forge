@@ -44,7 +44,8 @@ import {
   availableTriggers,
   effectiveTrigger,
   NO_COMMON_EVENT_ID,
-  commonEventId
+  commonEventId,
+  renumberActorDeletion
 } from '../../shared/project.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
@@ -1114,6 +1115,68 @@ test('Give item / Take item compile to NO_ACTOR when the actor is missing', () =
   // own tables past their end.
   const [stale] = compileText(page([{ op: 'take', actor: 5 }])).events;
   assert.deepEqual(stale.slice(4, 6), [OP_TAKE, NO_ACTOR], 'an actor past the end of the list falls back to NO_ACTOR');
+});
+
+test('a Carrying item page whose actor was deleted never runs, with both actor 0 and the old id in the bag', {
+  skip: !hasRom && 'run `npm run sample` first'
+}, async (t) => {
+  // The end of the claim renumberActorDeletion's rationale makes: a page that
+  // asked after a deleted item "simply never runs". Everything else about
+  // that claim is checked in JS -- the mutation, the normalization, the
+  // compiled operand -- and none of it reaches the one step that actually
+  // decides the player's experience, which is what has_item does with $FF
+  // once the ROM is running. This is the whole path in one go: delete the
+  // actor the way the Sprite Forge does, save and reload so real
+  // normalization runs over it, build, and hand the running game a bag
+  // chosen to catch either way this can go wrong.
+  //
+  // The bag holds **both** candidates, which is the point. Actor 0 is what
+  // the sentinel would have collapsed to; RELIC is what the reference would
+  // still be if it were never rewritten at all. Carrying only one of them
+  // would leave this passing on any nonzero byte -- including the original
+  // RELIC id -- so it would show "did not become actor 0" while reading as
+  // proof of something stronger. With both in the bag, each failure mode
+  // selects the deleted-item page and the assertion below fires. What pins
+  // the operand to exactly $FF rather than merely "a byte neither of these"
+  // is the compile-side test in project.test.js; this is the behavioural
+  // half, and the two are worth having separately.
+  const dir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'forge-hasitem-'));
+  t.after(() => fs.promises.rm(dir, { recursive: true, force: true }));
+  const project = await loadProject(SAMPLE);
+  const slime = project.sprites.actors[0];
+  project.sprites.actors.push({ ...structuredClone(slime), id: NPC, name: 'Chest', behavior: 'npc' });
+  const RELIC = NPC + 1;
+  project.sprites.actors.push({ ...structuredClone(slime), id: RELIC, name: 'Relic', behavior: 'pickup' });
+  project.maps[0].screens[0].entities = [
+    chest([
+      { cond: { type: 'hasItem', arg: RELIC }, commands: [{ op: 'setSwitch', switch: 0 }, { op: 'say', text: 'You have the relic.' }] },
+      { cond: { type: 'none', arg: 0 }, commands: [{ op: 'setSwitch', switch: 1 }, { op: 'say', text: 'Nothing here.' }] }
+    ])
+  ];
+
+  // Delete the Relic exactly as the Sprite Forge does: renumber every
+  // reference, then take it out of the roster. RELIC is the last actor, so
+  // nothing else shifts -- the only thing this changes is the condition.
+  renumberActorDeletion(project, RELIC);
+  project.sprites.actors.splice(RELIC, 1);
+
+  await saveProject(dir, project);
+  const reloaded = await loadProject(dir); // through normalizeProject, not around it
+  const built = await buildProject({ dir, project: reloaded, log: () => {} });
+  const nes = boot(built.romPath);
+
+  nes.cpu.mem[INV_ITEMS] = 0; // what the sentinel must not have collapsed to
+  nes.cpu.mem[INV_ITEMS + 1] = RELIC; // what it must not still be
+  nes.cpu.mem[INV_COUNT] = 2;
+
+  assert.ok(talkThrough(nes), 'the conversation should run and end');
+  assert.equal(
+    switchOn(nes, 0),
+    false,
+    'the page asking after the deleted Relic ran: its condition is either still the Relic id, or collapsed to ' +
+      'actor 0 — both are in the bag, so either one selects this page'
+  );
+  assert.equal(switchOn(nes, 1), true, 'the page below it is what should have run instead');
 });
 
 test('a branch nested deeper than the editor offers still survives a round trip', async (t) => {

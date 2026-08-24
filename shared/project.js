@@ -36,6 +36,34 @@ import {
 export const ENGINE_VERSION = 1;
 export const PROJECT_FORMAT = 1;
 
+/**
+ * The byte that means "names no actor" — a formation slot nothing filled, a
+ * Give/Take whose actor does not resolve, a monster's drop that no longer
+ * names one, and a Carrying item condition whose actor was deleted.
+ *
+ * It lives here rather than in main/build/textcompile.js (which is where it
+ * used to, and which now re-exports it) because the compiler stopped being
+ * its only user: `renumberActorDeletion` writes it too, and
+ * `mapEncounterFormation` was already padding with a bare `0xff` that only
+ * textcompile's own comment tied back to this. Three literals meaning one
+ * thing is exactly what the single-writer rule is about, and this side of the
+ * boundary is the one both the schema and the compiler can import from.
+ *
+ * **It is above `LIMITS` because `LIMITS.actors` is derived from it.** A
+ * sentinel that shares its value space with real ids is only unambiguous if
+ * the ids never reach it, so the roster is capped at exactly this many
+ * actors — ids `0..$FE`. Before that cap existed, actor 255 was creatable and
+ * collided: `actorByte` had always truncated such a reference to "missing" at
+ * compile time, and once `renumberActorDeletion` made `$FF` a fixed point
+ * that truncation widened into deletion-time data loss, with the two kinds of
+ * reference disagreeing about the same deletion (a list filtered id 255 out;
+ * a scalar read it as already-missing and left it). Capping the roster is the
+ * same answer `MAX_TABLE` already gives for the compiled events table, and it
+ * closes both at the source rather than teaching every `$FF` comparison in
+ * the engine and the compiler to mean two things.
+ */
+export const NO_ACTOR = 0xff;
+
 /** Hard limits imposed by the NES and by the template engine. */
 export const LIMITS = {
   tilesPerTable: 256,
@@ -52,8 +80,35 @@ export const LIMITS = {
   // used. The real ceiling is the 255-entry compiled events table it shares
   // with every placed actor's own event; this is the authoring-side cap that
   // keeps the list itself readable well below that.
-  commonEvents: 32
+  commonEvents: 32,
+  // Ids 0..$FE. Deliberately the sentinel's own value rather than a literal
+  // 255: the cap exists *because* NO_ACTOR is a byte in the same space, so
+  // writing the two independently is how they would drift apart. Every actor
+  // reference in the engine is a byte index, so this is a real ceiling rather
+  // than an authoring convenience — though capacity (checkCapacity's
+  // per-actor table bytes, and battletables' 30 bytes an actor in the banked
+  // region) refuses a project far below it long before this does.
+  actors: NO_ACTOR
 };
+
+/**
+ * What deleting an actor costs while the roster is over `LIMITS.actors`, or an
+ * empty string when it is not.
+ *
+ * A pure string rather than a line inside the Sprite Forge's confirmation so
+ * it can be asserted directly; `npm run smoke` covers the other half, that it
+ * actually reaches the dialog. It exists because the build refusal does not
+ * reach this path: `validateProject` is rendered only by the Build Forge, and
+ * a project reopens in whichever Forge was last active, so an over-cap
+ * project can be opened and edited from the Actors tab by somebody who has
+ * never seen the refusal — and the deletion is where the references go.
+ */
+export const overCapDeleteWarning = (project) =>
+  (project?.sprites?.actors?.length ?? 0) > LIMITS.actors
+    ? `This project is over the ${LIMITS.actors}-actor ceiling, so references to any actor above id ` +
+      `${LIMITS.actors - 1} are not preserved — deleting an actor now will not bring them back. Bring the ` +
+      'roster under the ceiling first if you need them.'
+    : '';
 
 export const SCREEN_METATILES = LIMITS.screenCols * LIMITS.screenRows; // 240
 
@@ -516,7 +571,7 @@ export const battleFormationSlice = (monsters) =>
  */
 export const mapEncounterFormation = (map, actorCount) => {
   const ids = (map?.encounters?.actorIds ?? []).filter((id) => id < actorCount).slice(0, RPG_LIMITS.encounterActors);
-  return [...ids, ...new Array(RPG_LIMITS.encounterActors - ids.length).fill(0xff)];
+  return [...ids, ...new Array(RPG_LIMITS.encounterActors - ids.length).fill(NO_ACTOR)];
 };
 
 // ---------------------------------------------------------------------------
@@ -659,6 +714,13 @@ export function renumberSongDeletion(project, index) {
   return project;
 }
 
+// Which page/branch conditions name an actor, read off EVENT_CONDITIONS rather
+// than spelled out, so a second actor-argument condition added there is
+// renumbered below without this having to be told about it.
+const ACTOR_CONDITIONS = new Set(
+  EVENT_CONDITIONS.filter((entry) => entry.arg === 'actor').map((entry) => entry.id)
+);
+
 /**
  * What every reference to an actor becomes once `index` is gone from
  * `project.sprites.actors`: renumbered down by one for everything above it,
@@ -680,26 +742,114 @@ export function renumberSongDeletion(project, index) {
  * what actually stops a *live* one with a missing actor from reaching a
  * build; a disabled one keeps its scaffolding, missing actor and all.
  *
- * Walked through `allCommands`, not each page's own list, since a battle or
- * a give/take can be sitting inside a branch or a question same as any other
- * command — the same reason renumberSongDeletion walks it that way.
+ * **A monster's drop and a Carrying item condition are references too**, and
+ * both used to come through here untouched — so deleting an actor silently
+ * repointed every one of them at whichever actor slid into that number. They
+ * are handled here for the identical reason the three above are; that they
+ * were missed is not a sign they are different in kind, only that neither is
+ * a command and the walk only ever looked at commands.
+ *
+ * `battle.drop` takes the Give/Take answer exactly: `null` when it names the
+ * deleted actor, shifted down when it names one above. It can afford to,
+ * because `null` is already what "Nothing" means in that field
+ * (normalizeActor keeps it, and battleTables compiles it to NO_ACTOR), so
+ * nothing new has to be taught what a missing drop looks like.
+ *
+ * A condition cannot take that answer, and this is the one place the two
+ * diverge: `normalizeCondition` clamps `cond.arg` to a number, so a `null`
+ * written here would come back as **0** on the project's next save and point
+ * at actor 0 — the very silent repoint this is fixing, arrived at the long
+ * way round. So the condition gets `NO_ACTOR` instead: the same "names no
+ * actor" byte `actorByte` already compiles a missing Give/Take to, in the
+ * only representation `cond.arg` has. `actorMissing` answers true for it on
+ * any ordinary roster, so the Map Forge shows it as missing and
+ * `EVENT_CONDITIONS`' own `has_item` (engine/script.asm) can never match it
+ * — a page asking after a deleted item simply never runs, which is what the
+ * author last meant by it.
+ *
+ * Which conditions count as actor references is read off `EVENT_CONDITIONS`
+ * (`arg === 'actor'`) rather than spelled `hasItem` here, so a second one
+ * added there is renumbered without this remembering to be told.
+ *
+ * **`NO_ACTOR` is a fixed point.** Every reference below stops at it rather
+ * than walking it down with the ids around it, because it is not an id — it
+ * is the byte that means there is no id. Walked once per later deletion it
+ * decays $FF → $FE → $FD, staying out of range for the roster of the day and
+ * quietly coming back *into* range the moment the project grows enough
+ * actors, at which point a condition that was marked missing starts asking
+ * after a real item again. That is the same silent retarget this whole
+ * routine exists to stop, arriving one deletion at a time. The guard covers
+ * the two places $FF is genuinely the field's own "nothing" — a condition
+ * (written here) and an empty formation or encounter slot (what
+ * `mapEncounterFormation` pads with and `encodeCommand` compiles to) — and
+ * `battle.drop` as well, whose own "nothing" is `null` but which can still
+ * be holding $FF from a hand-edited project. One rule, applied to every
+ * reference, rather than a per-field exception to remember.
+ *
+ * A map's wandering-encounter table (`map.encounters.actorIds`) gets the
+ * battle-formation answer rather than the Give/Take one, for the reason that
+ * distinction already turns on: it is a list, so the deleted id can simply
+ * drop out of it and leave a shorter table behind, where a field naming
+ * exactly one actor has nowhere to fall back to. It is the third instance of
+ * this same defect and the worst-hidden of the three, because
+ * `mapEncounterFormation`'s own `id < actorCount` filter catches the harmless
+ * half — an id that fell out of range — and cannot see the harmful half at
+ * all: an id that used to mean the deleted actor and now means its
+ * neighbour is still perfectly in range, so nothing downstream, validation
+ * included, has anything to notice.
+ *
+ * Walked through `allCommands`, not each page's own list, since a battle, a
+ * give/take or a *branch's own condition* can be sitting inside another
+ * branch or a question same as any other command — the same reason
+ * renumberSongDeletion walks it that way, and the same page-plus-nested-
+ * conditions walk `usedSwitches` (renderer/forges/map/templates.js) already
+ * performs for switches. A switch that was invisible to that walk got handed
+ * out twice; a condition invisible to this one comes to ask about the wrong
+ * item.
  *
  * Placed actors are renumbered separately, inline where they are deleted —
  * this only ever needs to run alongside that, never instead of it.
  *
  * Mutates `project` and returns it. The caller removes
- * `project.sprites.actors[index]` itself, before or after calling this —
- * nothing here reads that list.
+ * `project.sprites.actors[index]` itself, before or after calling this: the
+ * actor list is now walked (for each actor's own `battle.drop`) but never
+ * measured, so either order gives the same answer.
  */
 export function renumberActorDeletion(project, index) {
+  // The one shift, in one place: an id above the hole moves down, and the
+  // sentinel is left exactly where it is (see NO_ACTOR is a fixed point above).
+  const shift = (id) => (id !== NO_ACTOR && id > index ? id - 1 : id);
+  const renumberCondition = (cond) => {
+    if (!cond || !ACTOR_CONDITIONS.has(cond.type) || typeof cond.arg !== 'number') return;
+    if (cond.arg === NO_ACTOR) return; // already marked missing; not an id to walk
+    if (cond.arg === index) cond.arg = NO_ACTOR;
+    else cond.arg = shift(cond.arg);
+  };
+  for (const actor of project.sprites?.actors ?? []) {
+    const drop = actor.battle?.drop;
+    if (typeof drop !== 'number' || drop === NO_ACTOR) continue; // already "Nothing", or never a reference
+    if (drop === index) actor.battle.drop = null;
+    else actor.battle.drop = shift(drop);
+  }
+  for (const map of project.maps ?? []) {
+    const ids = map.encounters?.actorIds;
+    if (!Array.isArray(ids)) continue;
+    map.encounters.actorIds = ids.filter((id) => id !== index).map(shift);
+  }
   for (const event of projectEvents(project)) {
     for (const page of event.pages ?? []) {
+      renumberCondition(page.cond);
       for (const command of allCommands(page.commands)) {
+        renumberCondition(command.cond); // a branch's own, which a page's editor also writes
         if (command.op === 'battle' && Array.isArray(command.monsters)) {
-          command.monsters = command.monsters.filter((id) => id !== index).map((id) => (id > index ? id - 1 : id));
-        } else if ((command.op === 'give' || command.op === 'take') && typeof command.actor === 'number') {
+          command.monsters = command.monsters.filter((id) => id !== index).map(shift);
+        } else if (
+          (command.op === 'give' || command.op === 'take') &&
+          typeof command.actor === 'number' &&
+          command.actor !== NO_ACTOR // a hand-edited $FF here means "nothing" too
+        ) {
           if (command.actor === index) command.actor = null;
-          else if (command.actor > index) command.actor -= 1;
+          else command.actor = shift(command.actor);
         }
       }
     }
@@ -1122,11 +1272,42 @@ export function conditionArgLimit(type) {
  * they are the same three bytes in the same order in the ROM, so they are the
  * same object here — one shape, one clamp, one encoder, one engine routine.
  */
+/**
+ * A Carrying item condition's argument, canonicalized.
+ *
+ * `clamp` is wrong for this one field, and quietly so: it folds `null`,
+ * `undefined` and anything non-numeric to its fallback of **0**, and rounds a
+ * fraction or a numeric string into whatever whole number is nearest. Every
+ * one of those is a value `actorMissing` calls missing and the Map Forge's
+ * own select therefore renders as "Missing actor" — so a hand-edited
+ * condition could display as missing and, on the project's very next save,
+ * become a live reference to actor 0 (or to whatever `2.4` rounds to). That
+ * is precisely the editor-shows-one-thing, ROM-does-another disagreement the
+ * select was added to prevent, reintroduced through the back door.
+ *
+ * So anything that is not already a whole, non-negative, in-range id becomes
+ * `NO_ACTOR` instead: the same answer `renumberActorDeletion` writes for a
+ * deleted actor, and the same one `actorByte` compiles a missing Give/Take
+ * to. This is deliberately the roster-*blind* half of `actorMissing`'s
+ * question — normalization has no actor list in hand — so an id that is
+ * structurally fine but past the end of a short roster is left alone here and
+ * caught downstream exactly as it is today, by `actorMissing` at display and
+ * validation time. `has_item` (engine/script.asm) only ever compares, so
+ * either way such a page simply never matches.
+ */
+const actorConditionArg = (raw, id) =>
+  Number.isInteger(raw) && raw >= 0 && raw <= conditionArgLimit(id) ? raw : NO_ACTOR;
+
 function normalizeCondition(raw) {
   const condition = EVENT_CONDITIONS.find((entry) => entry.id === raw?.type) ?? EVENT_CONDITIONS[0];
   const cond = {
     type: condition.id,
-    arg: condition.arg ? clamp(raw?.arg, 0, conditionArgLimit(condition.id), 0) : 0
+    arg:
+      condition.arg === 'actor'
+        ? actorConditionArg(raw?.arg, condition.id)
+        : condition.arg
+          ? clamp(raw?.arg, 0, conditionArgLimit(condition.id), 0)
+          : 0
   };
   // Only conditions that compare against a number carry the value byte, and
   // only they get the field — exactly as `off` is kept only when it is true.
@@ -1639,6 +1820,50 @@ export function normalizeProject(raw) {
     sprites: {
       metasprites: (raw.sprites?.metasprites ?? []).map(normalizeMetasprite),
       animations: (raw.sprites?.animations ?? []).map(normalizeAnimation),
+      // Not sliced to LIMITS.actors, unlike commonEvents above and a
+      // question's options: an actor past the cap is real content, and
+      // dropping it here would take every reference to it with it —
+      // silently, since a placement naming a missing actor is not validated
+      // anywhere. validateProject refuses the build instead, which keeps the
+      // work and puts the choice of what to delete where it belongs.
+      //
+      // This preserves the actor *records*, and deliberately promises no more
+      // than that. Every field that *names* an actor — a placement's
+      // `actorId`, a Give/Take's `actor`, a formation id, an encounter id, a
+      // drop, a Carrying item condition — clamps to one byte, so a reference
+      // to an actor above id $FE cannot survive and is not meant to.
+      //
+      // Keeping those clamps is a judgement, and worth stating honestly
+      // because the obvious argument for it is wrong: a widened value could
+      // *not* reach a `.db`. `generateAssets` (main/build/generate.js) runs
+      // `checkCapacity` — which includes `validateProject`, which refuses an
+      // over-cap roster — and throws before it writes anything, so the
+      // pipeline is already closed. The real reasons are:
+      //
+      // - The byte invariant is this boundary's own job. `normalizeEntity`
+      //   below says it outright: everything the generator compiles is
+      //   clamped here because a bad value here becomes a bad byte in the ROM.
+      //   Widening would leave `generateAssets`' internal ordering as the only
+      //   thing between a 256 and `dbBlock` — a single layer, where this
+      //   codebase deliberately keeps several (`actorByte` sanitises a
+      //   Give/Take *as well as* validateProject refusing one, precisely
+      //   because buildProject compiles the project the app is holding rather
+      //   than one that has passed validation).
+      // - It is not a one-line change. The narrowing would have to move to
+      //   every consumer that turns a reference into a byte — `emitScreens`
+      //   admits a placement on `actorId < actorCount`, `actorByte` returns an
+      //   in-roster id unchanged, `mapEncounterFormation` filters the same
+      //   way, `mon_drop` asks `actorMissing`, `encodeCondition` calls
+      //   `byte()` — several of which are correct today only because the
+      //   schema clamped first.
+      //
+      // What widening would genuinely buy, stated rather than waved away:
+      // `shift` (renumberActorDeletion) would track an over-cap reference
+      // correctly *down* into range as the author deleted actors, instead of
+      // it sitting on $FF and reading as missing. That is a real benefit, and
+      // it is being declined because it accrues only inside a state no
+      // version of this app can create, and only until the roster is legal
+      // again.
       actors: (raw.sprites?.actors ?? []).map(normalizeActor)
     },
     songs: (Array.isArray(raw.songs) ? raw.songs : []).map((song, index) =>
@@ -1903,6 +2128,36 @@ export function validateProject(project) {
         }
       }
     }
+    // A monster's drop is the one actor reference that is a *field* rather
+    // than a command, so neither the battle-formation walk below nor the
+    // give/take check outside this block can see it — which is how it went
+    // unrenumbered and unvalidated for as long as it did.
+    //
+    // A warning, not an error, and deliberately not the severity a live
+    // Give/Take with a missing actor gets. That one is fatal because
+    // script_op_give (engine/script.asm) *stops the event* on NO_ACTOR:
+    // everything the author wrote after the Give silently never runs, which
+    // is invisible from the Map Forge. A drop has no such knock-on — the
+    // monster fights exactly as before and simply hands out nothing, since
+    // battleTables compiles an unresolvable drop to NO_ACTOR and roll_drop
+    // takes its early exit. That is the stale-reference shape, and it gets
+    // the stale-reference severity: the same one staleBattleMonsters below
+    // and the encounter table just above already use.
+    //
+    // `null` is not this. It is "Nothing" chosen on purpose in the Sprite
+    // Forge, and it is also the mark renumberActorDeletion leaves — warning
+    // about it would turn every deletion into a build complaint.
+    for (const actor of project.sprites.actors) {
+      const drop = actor.battle?.drop;
+      if (drop === null || drop === undefined) continue;
+      if (actorMissing(project.sprites.actors, drop)) {
+        add(
+          'warning',
+          'Sprite Forge',
+          `${actor.name} is set to drop an actor that no longer exists, so it will leave nothing behind.`
+        );
+      }
+    }
     // Walked the same way renumberSongDeletion and renumberActorDeletion
     // are: a battle command can be sitting inside a branch or a question,
     // not only on a page's own list. An empty formation is checked here,
@@ -2002,6 +2257,53 @@ export function validateProject(project) {
           'Set a title map, or remove the Save command.'
       );
     }
+  }
+
+  // Not RPG-only: every build compiles actor references through the same
+  // NO_ACTOR byte, so the ceiling that keeps that byte unambiguous applies to
+  // an action project exactly as much.
+  //
+  // An error rather than a truncation on load. normalizeProject deliberately
+  // keeps every actor it is handed (see its own note): a 256th actor is real,
+  // drawable, placeable data a later version could legitimately support, not
+  // the kind of unreachable scaffolding choiceOptionsSlice drops — and
+  // silently deleting it would leave every reference to it dangling,
+  // placements included, which nothing validates and which would reach the
+  // generator as an index past the end of the actor tables. Refusing the
+  // build and keeping the data lets the author decide which actor goes.
+  //
+  // The message says what over-cap editing costs. It is not, however, what
+  // reaches the author first: validateProject is rendered only by the Build
+  // Forge, and a project reopens in whichever Forge was last active, so
+  // somebody can open an over-cap project, go straight to the Sprite Forge
+  // and delete without ever having seen this. `overCapDeleteWarning` (above)
+  // is what covers that path, at the confirmation for the edit itself; this
+  // message is the account in the place the ceiling is actually explained.
+  //
+  // The policy — above the ceiling, references are simply not preserved — is
+  // one rule, chosen over three narrower remedies. Restricting which actor
+  // may be deleted, or refusing deletion outright, would make validation's
+  // own instruction impossible to follow; carrying provenance to tell a real
+  // actor 255 from the NO_ACTOR sentinel would teach every $FF comparison in
+  // the schema, the compiler and the engine to mean two things. And a
+  // guarantee that covered only *some* over-cap projects would be harder to
+  // state than none: at 257 actors a load has already clamped references to
+  // actor 256 onto the same $FF a real actor 255's references sit on, so
+  // preserving one and mangling the other reads as arbitrary. That last point
+  // is a reason, not a proof — at exactly 256 actors nothing has been clamped
+  // onto $FF and a narrower guarantee would be perfectly coherent. One rule
+  // for every over-cap project is a choice, made because a rule that changes
+  // shape at 257 is worse to explain than one that does not.
+  if (project.sprites.actors.length > LIMITS.actors) {
+    add(
+      'error',
+      'Sprite Forge',
+      `This project has ${project.sprites.actors.length} actors but the Forge holds ${LIMITS.actors} ` +
+        `(ids 0-${LIMITS.actors - 1}) — id $FF is reserved to mean “no actor”. Delete ` +
+        `${project.sprites.actors.length - LIMITS.actors} of them. The extra actors are kept, but references ` +
+        `to any actor above id ${LIMITS.actors - 1} are not preserved: a reference is a single byte, so it ` +
+        'cannot name them, and editing the roster while over the ceiling will not bring them back.'
+    );
   }
 
   // Give item / Take item is a base-engine command (engine/ui.asm's

@@ -211,6 +211,11 @@ export function describeCondition(cond, { actors = [], switches = [], variables 
     const name = variables[cond.arg]?.trim() || `variable ${cond.arg}`;
     return `${entry.label.replace('Variable', name)} ${cond.value ?? 0}`;
   }
+  // The same "does this resolve" question Give/Take above asks, and the same
+  // wording: after an actor is deleted, renumberActorDeletion (shared/project.js)
+  // leaves a condition that named it pointing at NO_ACTOR, and reading that
+  // back as "actor 255" would describe a number rather than the fact.
+  if (actorMissing(actors, cond.arg)) return `${entry.label}: (missing actor)`;
   return `${entry.label}: ${actors[cond.arg]?.name ?? `actor ${cond.arg}`}`;
 }
 
@@ -378,6 +383,17 @@ export function editEvent(event, context) {
         style: { flex: '1' },
         onchange: (fired) => (cond.arg = Number(fired.target.value))
       },
+      // An actor deleted out from under this condition leaves NO_ACTOR behind
+      // (renumberActorDeletion, shared/project.js), and an id past the end of
+      // the list can arrive from a hand-edited project the same way. Either
+      // way it needs an option of its own, for exactly the reason the
+      // Give/Take select below already has one: with none, the browser
+      // renders the first actor as selected while `cond.arg` still names
+      // nothing, so the editor shows the page asking after one item and the
+      // ROM asks after another.
+      actorMissing(context.actors, cond.arg)
+        ? el('option', { value: cond.arg ?? '', selected: true }, 'Missing actor')
+        : null,
       context.actors.map((actor, id) => el('option', { value: id, selected: id === cond.arg }, actor.name))
     );
   }
