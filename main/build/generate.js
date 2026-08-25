@@ -7,6 +7,7 @@
 import fs from 'node:fs/promises';
 import { readdirSync } from 'node:fs';
 import path from 'node:path';
+import { isDeepStrictEqual } from 'node:util';
 import { fileURLToPath } from 'node:url';
 import { encodeTiles, tileFromString, BLANK_TILE } from '../../shared/chr.js';
 import { normalizeSong } from '../../shared/audio.js';
@@ -33,7 +34,17 @@ import {
 } from '../../shared/font.js';
 import { compileSong, songTables } from './songcompile.js';
 import { NO_EVENT, compileText, textTables, songByte } from './textcompile.js';
-import { battleTables, checkBattleTables } from './battletables.js';
+import {
+  battleTables,
+  battleCodeOverridden,
+  battleRegionBytes,
+  battleRegionPlacementOverridden,
+  battleRegionRelocates,
+  battleTableBytes,
+  battleRegionCeiling,
+  battleShortfallAdvice,
+  checkBattleTables
+} from './battletables.js';
 import {
   LIMITS,
   RPG_LIMITS,
@@ -46,6 +57,7 @@ import {
   effectiveTrigger,
   collisionIndex,
   validateProject,
+  reconcileCartridge,
   projectUsesSave,
   projectUsesMove,
   projectEvents,
@@ -55,6 +67,7 @@ import {
 import { SAVE_FIELDS, saveBodySize, saveIdentity } from '../../shared/save.js';
 import {
   CHR_BANK_BYTES,
+  NESASM_BANK_BYTES,
   PRG_SWITCH,
   SCREEN_REGION_BYTES,
   SUPPORTED_MAPPERS,
@@ -375,6 +388,171 @@ function projectWithoutCommands(project, ops) {
 }
 
 /**
+ * The boards this project could switch to without losing something in the
+ * move -- the candidate list every "would a different mapper fix this?"
+ * answer is drawn from, shared by kernelShortfallAdvice and
+ * battleShortfallAdvice (main/build/battletables.js) so the two cannot reach
+ * different conclusions about whether the same switch is safe.
+ *
+ * This asks the authorities rather than restating their rules. An earlier
+ * version was a chain of hand-written filters -- tileset limit, mirroring,
+ * screens, save medium -- and the trouble with that shape is that it is a
+ * list someone has to keep complete. It was already missing three rules when
+ * it was reviewed: art in the tilesets' $A0-$FF, which only a scanline-IRQ
+ * board leaves to the author; sprite tile $FD, which a split-font board
+ * reserves for the battle targeting cursor, so *entering* MMC3 can break a
+ * project too; and a monster's battle art block running past $A0, which is an
+ * error off MMC3 even when the tileset's own upper slots are empty. Three
+ * misses in one pass is the shape of a rule that should not be a list.
+ *
+ * So the test is behavioural, and there are exactly two questions:
+ *
+ *  - **Does the switch cost anything?** reconcileCartridge (shared/project.js)
+ *    is the single writer for what changes when the cartridge changes -- it
+ *    truncates tilesets past the new board's limit and resets a mirroring the
+ *    new board does not offer. If it alters the project at all, the switch is
+ *    lossy, and a "fix" that silently drops a tileset is not a fix. Comparing
+ *    before and after catches that without this function knowing what any of
+ *    those limits are.
+ *  - **Does the switch introduce a new error, and does the result still fit
+ *    the banks this can measure?** Not "would it build", which is stronger
+ *    than what is actually checked: a project being advised may keep errors it
+ *    already had, and hand-written code is unmeasurable (see the guard at the
+ *    top). validateProject answers every content rule at once, including all
+ *    three the old chain missed and any added later; the capacity questions it
+ *    does not own are asked directly -- the tileset ceiling checkCapacity uses
+ *    (font page included, which reconcileCartridge's own does not), screens,
+ *    kernel-lo, and for an RPG the banked code region. A board that fixed one
+ *    bounded bank by overflowing another was offered by the old chain, in both
+ *    directions.
+ *
+ * The validation half compares error sets rather than counting them, and that
+ * is not fussiness. A project being advised is a project with a problem, and
+ * it may well have unrelated ones too -- a live Save with no title screen, say
+ * -- which every board shares. Rejecting a candidate for an error it merely
+ * inherited would mean a project with one unrelated mistake gets no mapper
+ * advice at all, silently. Only an error the *switch introduces* disqualifies
+ * a board. Errors are keyed by their rendered text, which can call the same
+ * rule "new" when a message quotes the board's own name; that direction is the
+ * safe one -- a board wrongly withheld is weaker advice, a board wrongly
+ * offered is wrong advice.
+ *
+ * checkCapacity is deliberately NOT called here, even though it would answer
+ * the capacity half in one line: it calls kernelShortfallAdvice, which calls
+ * this, which would call it again. The three fit checks below are its own
+ * arithmetic, reached directly.
+ */
+export function switchableMappers(project, mapper, { checkBattleRegion = true } = {}) {
+  // Hand-written 6502 makes every "it would fit" below a guess, so no board is
+  // offered at all when the project carries any. The fit checks are the whole
+  // value of this function, and two of the three read models of stock code:
+  // kernelCodeBytes measures the stock kernel, battleRegionBytes the stock
+  // battle system. A Code Forge override replaces one of those files, and even
+  // a plain user file lands in kernel-lo through assets/usercode.inc -- so a
+  // candidate can save enough *modelled* bytes to pass while the real,
+  // unmeasured code still overflows. Recommending a board on that basis is the
+  // same guess CLAUDE.md refuses to make about user code anywhere else, just
+  // aimed at the Build panel's mapper select instead of a capacity number.
+  //
+  // Withholding is the graceful failure: the advice that survives is the
+  // feature- and content-removal kind, which stays true regardless. This also
+  // closes the same overclaim in kernelShortfallAdvice, which had it first.
+  if ((project.code?.overrides ?? []).length || (project.code?.files ?? []).length) return [];
+
+  const isRpg = project.project?.gameType === 'rpg';
+  const wantsSave = projectUsesSave(project);
+  const { flat } = flattenScreens(project);
+  const bankedCode = codeRegionCount(project);
+  const actorCount = project.sprites.actors.length;
+  const { fixedBytes, tableBytes } = kernelTableBytes(project);
+
+  return SUPPORTED_MAPPERS.filter((candidate) => candidate.id !== mapper.id)
+    .filter((candidate) => !isRpg || rpgCapable(candidate))
+    // saveMediaImplemented, not saveCapable: recommending UNROM 512 to a
+    // project with a live Save command would just trade this shortfall for
+    // validateProject's flash-unimplemented refusal -- not a fix.
+    .filter((candidate) => !wantsSave || saveMediaImplemented(candidate))
+    .filter((candidate) => {
+      // Lossless? reconcileCartridge works in place, so this is done on a
+      // clone -- nothing here may touch the project it is advising about.
+      const moved = structuredClone(project);
+      moved.cartridge.mapper = candidate.id;
+      reconcileCartridge(moved);
+      const before = structuredClone(project);
+      before.cartridge.mapper = candidate.id;
+      // isDeepStrictEqual, not JSON.stringify: string comparison would depend
+      // on key order and would silently drop any key reconcileCartridge set to
+      // undefined, which is exactly the kind of change this is here to notice.
+      // node:util is fine in this file -- generate.js already reaches for
+      // node:fs and is the Node-side half of this check for that reason.
+      if (!isDeepStrictEqual(moved, before)) return false;
+      // Still valid? Warnings are fine -- they do not stop a build -- and so
+      // are errors this project already had before the switch was considered.
+      // Counted, not a Set: two identical error texts collapse to one under
+      // set membership, so a switch that added a *second* copy of an error the
+      // project already had once would read as having introduced nothing.
+      // Multiplicity is cheap to keep and the rule is "introduced no errors",
+      // not "introduced no new kinds of error".
+      //
+      // No test covers this, and that is stated rather than left to be
+      // discovered: no reachable case was found. Every mapper-dependent error
+      // validateProject raises is gated on the board as a whole (the font
+      // range, sprite $FD), so the count for a given text goes 0 -> n or
+      // n -> 0, never 1 -> 2, and set membership and this agree on all of
+      // those. It is kept because it is free and because the day a per-item
+      // mapper-dependent rule appears, the Set version fails silently and in
+      // the unsafe direction -- offering a board that breaks the project.
+      const errorKey = (problem) => `${problem.where}: ${problem.message}`;
+      const tally = (list) => {
+        const counts = new Map();
+        for (const problem of list) {
+          if (problem.severity !== 'error') continue;
+          const key = errorKey(problem);
+          counts.set(key, (counts.get(key) ?? 0) + 1);
+        }
+        return counts;
+      };
+      const existing = tally(validateProject(project));
+      for (const [key, count] of tally(validateProject(moved))) {
+        if (count > (existing.get(key) ?? 0)) return false;
+      }
+      // Still fits? Three banks, asked in the same terms checkCapacity asks.
+      if (
+        screenCapacityFor(
+          candidate,
+          moved.tilesets.length,
+          bankedCode,
+          flat,
+          actorCount,
+          reservesFlashSaveRegion(wantsSave, candidate)
+        ) < flat.length
+      ) {
+        return false;
+      }
+      // The tileset ceiling checkCapacity enforces, which is NOT the one
+      // reconcileCartridge applies: reconcile calls tilesetLimit without the
+      // font-page term, so on MMC3 it will happily keep 32 tilesets that
+      // checkCapacity then refuses because the split font costs a CHR page.
+      // Losslessness therefore cannot stand in for this one.
+      if (moved.tilesets.length > tilesetLimit(candidate, moved.cartridge, fontChrPages(moved, candidate))) {
+        return false;
+      }
+      if (kernelCodeBytes(moved, candidate) + fixedBytes + tableBytes > BANK_SIZE) return false;
+      // The one fit check a caller may waive, and only the caller that owns
+      // this bank does. battleShortfallAdvice needs to tell "no board is safe
+      // to switch to" apart from "safe boards exist, none has room" -- they
+      // deserve different sentences, and with the check applied here both
+      // arrive as an empty list. Every other caller keeps it, so a board that
+      // fixed kernel-lo by overflowing the battle region is still never
+      // offered.
+      if (checkBattleRegion && bankedCode && battleRegionBytes(moved, candidate) > battleRegionCeiling(candidate)) {
+        return false;
+      }
+      return true;
+    });
+}
+
+/**
  * When a project's lookup tables do not fit alongside kernelCodeBytes's own
  * reservation, name what would actually close the gap instead of only
  * reporting the shortfall: dropping one active optional feature (Move,
@@ -446,60 +624,11 @@ function kernelShortfallAdvice(project, mapper, deficit) {
   }
 
   // No combination of active features closes the gap either -- see whether a
-  // mapper this project could still target, with everything it currently has
-  // intact, reserves enough less kernel code to fit. "Still target" means
-  // more than the RPG/battery gates kernelCodeBytes itself reads: a board
-  // that cannot hold every tileset, every screen (packed the same way the
-  // generator packs them) or the project's current mirroring choice would
-  // have reconcileCartridge silently truncate one of them the moment the
-  // author actually switched, which is not a fix, it is quiet data loss.
-  // Hand-written 6502 makes "it would fit on that board" a guess, so no board
-  // is offered at all when the project carries any. kernelCodeBytes measures
-  // the *stock* kernel, and a Code Forge override replaces one of the files it
-  // measured -- while even a plain user file lands in this same bank through
-  // assets/usercode.inc. A candidate can therefore reserve enough *modelled*
-  // bytes to look like a fix while the real, unmeasured code still overflows.
-  // Recommending a board on that basis is the same guess this codebase refuses
-  // to make about user code anywhere else (see checkCode and CLAUDE.md on why
-  // hand-written code sits outside checkCapacity's byte math), just aimed at
-  // the Build panel's mapper select instead of at a byte count.
-  //
-  // Withholding is the graceful failure: the feature-removal advice above is
-  // unaffected and stays true either way. This is a deliberate reduction in
-  // what existing projects are told -- a project carrying any Code Forge file
-  // stops receiving mapper suggestions it used to receive -- on the grounds
-  // that those suggestions were never checkable.
-  if ((project.code?.overrides ?? []).length || (project.code?.files ?? []).length) {
-    return 'Reduce the number of screens, actors or metasprites.';
-  }
-
-  const isRpg = project.project?.gameType === 'rpg';
-  const wantsSave = projectUsesSave(project);
-  const { flat } = flattenScreens(project);
-  const bankedCode = codeRegionCount(project);
-  const actorCount = project.sprites.actors.length;
-  const alternative = SUPPORTED_MAPPERS.filter((candidate) => candidate.id !== mapper.id)
-    .filter((candidate) => !isRpg || rpgCapable(candidate))
-    // saveMediaImplemented, not saveCapable: recommending UNROM 512 to a
-    // project with a live Save command would just trade this shortfall for
-    // validateProject's flash-unimplemented refusal -- not a fix.
-    .filter((candidate) => !wantsSave || saveMediaImplemented(candidate))
-    .filter(
-      (candidate) =>
-        tilesetLimit(candidate, project.cartridge, fontChrPages(project, candidate)) >= project.tilesets.length
-    )
-    .filter((candidate) => mirroringOptions(candidate).some((entry) => entry.id === project.cartridge.mirroring))
-    .filter(
-      (candidate) =>
-        screenCapacityFor(
-          candidate,
-          project.tilesets.length,
-          bankedCode,
-          flat,
-          actorCount,
-          reservesFlashSaveRegion(wantsSave, candidate)
-        ) >= flat.length
-    )
+  // mapper this project could still target reserves enough less kernel code
+  // to fit. Which boards those are is switchableMappers below, shared with
+  // the banked code region's own advice so the two cannot come to different
+  // conclusions about whether a switch is safe.
+  const alternative = switchableMappers(project, mapper)
     .filter((candidate) => kernelCodeBytes(project, mapper) - kernelCodeBytes(project, candidate) >= deficit)
     .sort((a, b) => kernelCodeBytes(project, a) - kernelCodeBytes(project, b))[0];
   if (alternative) {
@@ -792,12 +921,17 @@ export function assignScreenBanks(mapper, tilesetCount, bankedCode, reserveFlash
   return { screenBank, regionRanges };
 }
 
-/** Capacity checks that must pass before the assembler is worth running. */
-export function checkCapacity(project) {
-  const text = compileText(project);
-  const problems = [...validateProject(project), ...text.problems, ...checkBattleTables(project)];
+/**
+ * The kernel-lo bank's mapper-independent occupants: the fixed tables, and the
+ * lookup tables this project's own content generates. Neither depends on the
+ * cartridge, which is exactly why they are extracted -- switchableMappers has
+ * to ask "would kernel-lo still fit on that board", and the only term that
+ * changes across boards is kernelCodeBytes. Computing these twice, once here
+ * and once there, is how the check that refuses a build and the advice about
+ * how to fix it come to disagree about the same project.
+ */
+export function kernelTableBytes(project) {
   const { flat } = flattenScreens(project);
-
   // maps.inc holds four neighbour tables, four screen pointer tables and the
   // actor-list *pointers*; everything else in bank 0 is fixed size. The input
   // table is one byte per button per game state, so it grows when a state is
@@ -830,6 +964,16 @@ export function checkCapacity(project) {
   // this formula's own claim against nesasm's real kernel-lo usage rather
   // than trusting either checkCapacity or kernelCodeBytes alone.
   const tableBytes = 13 * flat.length + 9 * project.maps.length + spriteBytes;
+  return { fixedBytes, tableBytes };
+}
+
+/** Capacity checks that must pass before the assembler is worth running. */
+export function checkCapacity(project) {
+  const text = compileText(project);
+  const problems = [...validateProject(project), ...text.problems, ...checkBattleTables(project)];
+  const { flat } = flattenScreens(project);
+
+  const { fixedBytes, tableBytes } = kernelTableBytes(project);
 
   const mapper = resolveMapper(project.cartridge.mapper);
   const kernelBudget = kernelCodeBytes(project, mapper);
@@ -892,6 +1036,97 @@ export function checkCapacity(project) {
       message:
         `The lookup tables need ${tableBytes} bytes but only ${BANK_SIZE - kernelBudget - fixedBytes} are ` +
         `free alongside the engine code. ${kernelShortfallAdvice(project, mapper, -kernelFree)}`
+    });
+  }
+  // The other bank with a budget: the switchable code region holding
+  // engine/battle.asm and the tables battletables.js generates for it. Raised
+  // here rather than inside checkBattleTables, which is otherwise the natural
+  // home for a battle-system problem, because the two ask different kinds of
+  // question. checkBattleTables asks whether the battle *data* is coherent --
+  // nobody starts in the party, a spell learned past the level cap -- and
+  // answers without knowing anything about the cartridge. This is capacity: it
+  // needs the mapper, the region size and the layout, none of which that
+  // function takes or should have to. Giving it a mapper argument to host one
+  // piece of arithmetic would put capacity math in two files.
+  //
+  // Attributed to the Sprite Forge because that is where every input to these
+  // tables is edited today -- monsters, spells and the party all live in
+  // renderer/forges/sprite/battle.js. One input does not: “Highest level” is a
+  // Build panel field, and one of the larger levers (five bytes per party
+  // member per level), so battleShortfallAdvice names the panel explicitly
+  // whenever lowering it is one of the fixes, rather than leaving `where` to
+  // send the author to the wrong Forge for it. ATTRIBUTION
+  // WILL HAVE TO WIDEN IN PHASE 5: item records land in this same region with
+  // the Database Forge as their editing home, so once project.items exists
+  // this `where` can no longer name one Forge for every input.
+  if (bankedCode && !battleRegionPlacementOverridden(project)) {
+    // Refuse only what is knowable. With the stock battle code the region's
+    // contents are exact (see battleRegionBytes), so the whole figure is
+    // checked. With a Code Forge override of battle.asm the base term is a
+    // measurement of a file that is no longer being assembled -- and refusing
+    // on it would do the very thing CLAUDE.md's rule against sizing
+    // hand-written 6502 exists to prevent: turn away a project that fits,
+    // because someone's smaller custom battle system was charged for the
+    // engine's larger one. So an override project is checked against the one
+    // bound that holds no matter what it assembles to: the generated tables
+    // alone, which the override cannot shrink. Anything past that the
+    // assembler answers, with the .fail after the include as the backstop.
+    const overridden = battleCodeOverridden(project);
+    const regionCeiling = battleRegionCeiling(mapper);
+    // ...unless main.asm itself is overridden, in which case there is nothing
+    // to check against. assets/code.inc -- the region's own .bank/.org, the
+    // tables, the include of battle.asm and the end-of-region .fail -- reaches
+    // the ROM only because main.asm includes it, so an overriding main may put
+    // the tables somewhere else entirely. Refusing on "the tables alone do not
+    // fit *this* region" would then turn away a project that fits fine. The
+    // assembler is the only check left, and the .fail is not part of it either,
+    // having gone with the include.
+    const regionBytes = overridden ? battleTableBytes(project) : battleRegionBytes(project, mapper);
+    if (regionBytes > regionCeiling) {
+      problems.push({
+        severity: 'error',
+        where: 'Sprite Forge',
+        message:
+          (overridden
+            ? `The battle system’s tables alone need ${regionBytes} bytes but its program bank holds ` +
+              `${regionCeiling}, before this project’s own battle code is counted at all. `
+            : `The battle system needs ${regionBytes} bytes but its program bank holds ${regionCeiling}. `) +
+          battleShortfallAdvice(project, mapper, regionBytes - regionCeiling, {
+            // checkBattleRegion: false -- this advice applies that test itself,
+            // so it can distinguish a board with no room from no board at all.
+            alternatives: switchableMappers(project, mapper, { checkBattleRegion: false }),
+            exact: !overridden
+          })
+      });
+    }
+  }
+  // The end-of-region guard's own blind spot, said out loud rather than left
+  // for someone to discover in a corrupted ROM. A relocating override finishes
+  // inside the region's bounds having written somewhere else entirely, and the
+  // `.fail` -- which can only read the final location counter -- sees nothing.
+  //
+  // A warning, not an error, for two reasons that both matter: the arithmetic
+  // above is still right (the tables are emitted from assets/battle.inc before
+  // any override is reached), and the finding itself is lexical -- it says the
+  // file's text contains something shaped like a relocation, not that the
+  // token really is a directive, still less that it is ever assembled. A label
+  // named `org`, a `.org` inside `.if 0` and nesasm's own `* .org` whole-line
+  // comment all trip it while assembling perfectly legitimately.
+  // battleRegionRelocates' own comment lists what it cannot see; the message
+  // below says the same thing to the user, because a warning that sounds like
+  // a verdict is worse than none.
+  if (bankedCode && battleRegionRelocates(project)) {
+    problems.push({
+      severity: 'warning',
+      where: 'Code Forge',
+      message:
+        'This project’s override of the battle system contains text that looks like a .bank or .org ' +
+        'relocation, which if it is one may write outside its own program bank. Neither the capacity check ' +
+        'nor the guard at the end of that bank can bound where those bytes land, and the assembler only ' +
+        'objects if they land somewhere with no room for them. This is a read of the file’s text, not a ' +
+        'check of the build: what it found may be a label or a comment rather than a directive, it does not ' +
+        'know whether a real directive is ever assembled, and it cannot see a relocation reached through ' +
+        '.include or produced by a macro at all.'
     });
   }
   problems.push(...checkCode(project));
@@ -1119,15 +1354,120 @@ export async function generateAssets({ dir, project, log = () => {} }) {
     path.join(assetsDir, 'battle.inc'),
     codeSlots.length ? battleTables(project) : '; Generated -- not an RPG, so there is no battle system.\n'
   );
+  // The region's assembler-side tripwire, for the one class of overrun the JS
+  // side above cannot see and nesasm does not catch either.
+  //
+  // Be precise about what this does and does not cover, because a .fail that
+  // cannot be reached is worse than none -- it reads as coverage. Three cases:
+  //
+  //  - The tables grow too big. checkCapacity refuses that above, exactly,
+  //    before the assembler runs. That is the primary mechanism.
+  //  - A Code Forge *override* of battle.asm is simply too big. nesasm's own
+  //    per-byte bank check catches that first, at the instruction that crosses
+  //    the boundary -- `Bank overflow, offset > $1FFF!` against battle.asm.
+  //    Raw assembler output, but pointing at the file the user actually
+  //    edited, and no check placed *after* the content can beat it to the
+  //    punch. This guard is unreachable for that case, by construction.
+  //  - An override that *relocates* -- its own `.bank`/`.org` -- and finishes
+  //    outside the region. Nothing trips nesasm's per-byte check, because the
+  //    bytes land in a bank with room for them. This is the case, and it is
+  //    not hypothetical: verified by stripping this guard and running nesasm
+  //    by hand, an override ending `.bank 1 / .org $A000` and an override
+  //    ending `.bank 2 / .org $C000` both assemble with exit 0, no reported
+  //    errors and a complete 163856-byte ROM -- battle code silently spliced
+  //    over screen data in the first case and over the kernel in the second.
+  //    The second is the backward-`.org` splice CLAUDE.md already documents as
+  //    a real, empirically proven nesasm behaviour, the one engine/flash.asm
+  //    is position-independent to avoid. With the guard, both are refused.
+  //
+  // So the condition is "did the location counter finish inside this region",
+  // not "is the content too big" -- two one-directional comparisons, the same
+  // shape and the same reason as engine/main.asm's flash guard: nesasm v3.1's
+  // expression grammar is limited, and `>` with the constant on either side is
+  // what it has been proved to accept.
+  //
+  // Be exact about the limits, because there are two and neither is closable
+  // here. `.if` can see neither the current bank nor the assembler's history,
+  // so this bounds where the region *ends up*, not where the assembler *went*:
+  //
+  //  - A relocation to the same address in a different bank (`.bank 5 /
+  //    .org $8000`) lands back inside these bounds.
+  //  - Worse, and confirmed on a real build: an override can relocate, emit
+  //    bytes elsewhere, and RETURN before this runs. On UNROM 512, ending an
+  //    override `.bank 0 / .org $8000 / .db $AA,$BB,$CC,$DD / .bank 1 /
+  //    .org $B000` overwrites four bytes of the CHR payload already emitted at
+  //    bank 0, finishes tidily inside the region, and ships the corruption in
+  //    a ROM that assembled cleanly. The final counter is all this can read,
+  //    and the final counter is fine.
+  //
+  // That second one is why checkCapacity warns separately whenever an override
+  // of a battle-region source contains a `.bank` or `.org` at all
+  // (battleRegionRelocates, main/build/battletables.js). A text scan is not a
+  // guess about hand-written code the way sizing it would be, and a warning
+  // costs nothing when it misfires. Neither mechanism turns this guard into a
+  // complete one; together they mean nothing is claimed that is not true.
+  //
+  // Placed after both includes for the reason engine/main.asm's flash guard
+  // spells out: a check sees only the counter's value at its own line, so it
+  // has to sit after everything it bounds has already assembled.
+  // `.include "battle.asm"` resolves to the override when there is one, so it
+  // is the override this bounds.
+  //
+  // Emitted into this generated file rather than into engine/main.asm on
+  // purpose, and it buys something: an override of a file the guard lived in
+  // would take the guard away with it, and battle.asm -- the file most likely
+  // to be overridden here -- is exactly such a file. assets/code.inc is
+  // regenerated every build and cannot be overridden.
+  //
+  // It is NOT proof against an override of main.asm, and that is worth saying
+  // rather than leaving implied: this file reaches the ROM only because
+  // main.asm includes it, so a custom main that drops the include drops the
+  // guard too. checkCapacity withdraws its own refusal in that case for the
+  // same reason (see battleRegionPlacementOverridden), which leaves the
+  // assembler alone -- the ordinary consequence of taking over the file that
+  // decides the whole ROM layout.
+  //
+  // The bounds come from the region rather than from literals, because the org
+  // is not a per-board constant at all: it is $8000 on MMC1 and MMC3, and on
+  // UNROM 512 it depends on how many regions the CHR-RAM payloads took off the
+  // front first -- $8000 when `max(1, tilesetCount)` is even and $A000 when it
+  // is odd, the same parity rule the two-region note in CLAUDE.md turns on.
+  // (An earlier version of this comment said flatly "$A000 on UNROM 512",
+  // which is only what sample-rpg's own three tilesets happen to produce.)
+  // Reading codeSlots[0].org is what makes the guard right on all of them. The upper
+  // bound is the region's *true* end, deliberately not the JS budget's ceiling
+  // (which holds BATTLE_SLACK back): a backstop that refused a build the
+  // hardware would have accepted is a bug, and the slack exists so the JS
+  // check speaks first, not so this one fires early.
+  //
+  // A tripped `.fail` prints an ordinary nesasm error block and then exits 0
+  // -- the quirk main/build/nesasm.js already works around -- so
+  // parseNesasmErrors picks it up by its `# N error(s)` count and reports it
+  // against this file and this line, which is what puts the Build panel's deep
+  // link on the comment above it.
+  const codeFloor = codeSlots.length ? codeSlots[0].org : 0;
+  const codeCeiling = codeFloor + NESASM_BANK_BYTES;
+  const asHex = (value) => `$${value.toString(16).toUpperCase()}`;
   await fs.writeFile(
     path.join(assetsDir, 'code.inc'),
     codeSlots.length
       ? [
           '; Generated -- the switchable bank holding engine/battle.asm.',
           `  .bank ${codeSlots[0].nesasmBank}`,
-          `  .org $${codeSlots[0].org.toString(16).toUpperCase()}`,
+          `  .org ${asHex(codeFloor)}`,
           '  .include "assets/battle.inc"',
           '  .include "battle.asm"',
+          '; The battle system did not finish inside its own program bank. An',
+          '; override of battle.asm in the Code Forge has relocated with its own',
+          '; .bank/.org and left code somewhere it does not belong -- over screen',
+          '; data, or over the engine kernel. Remove the relocation; $C000 is',
+          '; mapped at all times, so a user routine never needs one.',
+          `  .if * > ${asHex(codeCeiling)}`,
+          '  .fail',
+          '  .endif',
+          `  .if ${asHex(codeFloor)} > *`,
+          '  .fail',
+          '  .endif',
           ''
         ].join('\n')
       : '; Generated -- this project reserves no banked code region.\n'

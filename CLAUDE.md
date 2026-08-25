@@ -862,6 +862,148 @@ everything else in `engine/battle.asm` + `battleui.asm` + `battleturn.asm` on th
 Calling *out* of the bank is free — the kernel is permanently mapped — so the battle system uses
 `vram_open`/`vram_push`, `draw_metasprite` and `add_item` directly.
 
+**That region has a capacity check, and unlike the kernel's it is exact.** Nothing bounded it until
+`battleRegionBytes`/`battleRegionCeiling` (`main/build/battletables.js`) — overflowing it surfaced
+as raw nesasm output attributed to whatever line happened to fall past the end, which is the thing
+this codebase's own convention refuses to show a user. The budget lives beside the tables it sizes
+rather than beside `kernelCodeBytes`, for a hard reason: `generate.js` reaches for `node:fs`, so the
+renderer cannot import it, and the Build panel's meter would need a second copy of the arithmetic —
+the drift the check exists to prevent, one layer out. `battletables.js` imports only from `shared/`
+and must stay that way; `renderer/forges/build/build.js` importing it is the same move
+`renderer/forges/sound/sound.js` already makes with `main/build/songcompile.js`.
+
+`BASE_BATTLE_CODE_BYTES_BY_MAPPER` is per board from the outset (UNROM 512 3821, MMC1 3821, MMC3
+3867) rather than one flat number split later — the mistake `BASE_KERNEL_CODE_BYTES` made and
+`BASE_KERNEL_CODE_BYTES_BY_MAPPER` had to undo. MMC3's extra 46 bytes are the `.if SPLIT_ENABLED`
+blocks inside the region itself (`battle.asm`'s split arm, `battleui.asm`'s sprite targeting
+cursor), and they need **no** separate conditional term the way `SPLIT_LOCK_KERNEL_ALLOWANCE` does:
+`SPLIT_ENABLED` is `fontBankSplit`, `projectUsesText` is true for `gameType === 'rpg'` on the game
+type alone, and this region exists only for an RPG — so there is no MMC3-RPG-without-the-split to
+overcharge. Every board that can reach the region has its own measured entry, because `codeRegions()`
+hands back nothing unless the project is an RPG and an RPG needs `rpgCapable()`; the fallback in
+`baseBattleCodeBytes` stands in for no real board and exists only so an unmeasured one cannot make
+the budget `NaN` and silently stop the refusal firing. `test/unit/bankedbytes.test.js` asserts it is
+unreachable.
+
+**A different board can help here, which is the opposite of how it first reads.** The ceiling never
+moves — every RPG-capable board gives this region the same 8 KB — but the stock code inside it does,
+and MMC3 spends 46 more bytes of it. So an MMC3 project over by 1 to 46 bytes fits unchanged on MMC1
+or UNROM 512, and a flat "changing mapper does not help" is false advice in exactly the band where
+advice matters. `battleShortfallAdvice` therefore *computes* the claim and only makes it when no
+candidate fits.
+
+Which boards are candidates is `switchableMappers` (`main/build/generate.js`), extracted from
+`kernelShortfallAdvice` so both answers to "would a different mapper fix this?" come from one place.
+**It asks the authorities rather than restating their rules**, and that shape was arrived at the
+hard way: as a hand-written filter chain it was already missing three rules when reviewed — art in
+the tilesets' `$A0-$FF` (only a scanline-IRQ board leaves that range to the author), sprite tile
+`$FD` (a split-font board reserves it for the battle targeting cursor, so *entering* MMC3 can break
+a project too), and a monster's battle-art block running past `$A0` (an error off MMC3 even when the
+tileset's own upper slots are empty). Three misses in one pass is the sign of a rule that should not
+be a list. So there are two questions instead: does `reconcileCartridge` change the project (if it
+does, the switch silently costs a tileset or a mirroring choice — and the *result* validates
+cleanly, which is what makes that case invisible to every other check), and would the result still
+build — `validateProject` for every content rule at once, plus the three capacity questions it does
+not own: screens, kernel-lo and the banked code region. A board that fixed one bounded bank by
+overflowing another used to be offered in both directions. Errors are compared before against after,
+not merely counted: a project being advised may carry unrelated errors every board shares, and
+rejecting a candidate for one it merely inherited would cost the author every suggestion over a
+mistake that has nothing to do with the switch.
+
+**No board is offered at all to a project carrying hand-written 6502.** Two of the three fit checks
+read models of stock code — `kernelCodeBytes` measures the stock kernel, `battleRegionBytes` the
+stock battle system — and a Code Forge override replaces one of those files, while even a plain user
+file lands in kernel-lo through `assets/usercode.inc`. A candidate can therefore save enough
+*modelled* bytes to pass while the real code still overflows, which is the same guess this codebase
+refuses to make about user code anywhere else, aimed at the mapper select instead of at a byte
+count. Withholding degrades gracefully: the feature- and content-removal advice stays true either
+way. Note this also closes the same overclaim in `kernelShortfallAdvice`, which had it first.
+
+The exactness is the part worth keeping, with one qualification. `kernelCodeBytes` must
+over-estimate — it shares its bank with lookup tables it models by hand — but this region has two
+occupants, and `battleTableBytes` counts the second off `battleTables`' own emitted output rather
+than modelling it, so that half cannot drift. The other half, the stock engine code, is a
+hand-measured constant like any other: **exact today, and held there by the equality assertion in
+`bankedbytes.test.js` rather than by construction.** Across five table-varying variants on all three
+boards — fifteen builds — `base + battleTableBytes` equals nesasm's reported usage **to the byte**,
+which is why the test asserts equality rather than a margin band, and why `BATTLE_SLACK` is buffer
+against stock-code growth rather than headroom for an estimate to be wrong in.
+
+**Exact for the *stock* battle code, and that qualifier is load-bearing.** A Code Forge override of
+`battle.asm` — or of `battleui.asm`/`battleturn.asm`, which it includes — is hand-written 6502 whose
+assembled size cannot be known from its text, so the base term becomes a measurement of a file that
+is no longer being assembled. `battleCodeOverridden` is the single predicate for that. The rule
+about hand-written code cuts **both** ways: a guess would "either refuse a project that fits or
+promise room the assembler then denies". So an override project is not refused on the stock base at
+all — that would turn away someone's *smaller* battle system for the engine's larger one — it is
+checked against the one bound an override cannot move, the generated tables alone. Past that the
+assembler answers, with the `.fail` below as the backstop. The advice changes with it: a reduction
+that would close an exact deficit is only "the least that could fit" when the base is unknown, and
+no board can be said to fit either.
+
+**Overriding `main.asm` is a weaker guarantee again, and gets its own predicate.**
+`battleRegionPlacementOverridden` / `BATTLE_REGION_PLACEMENT_SOURCES`, separate from the size
+question above because the two license different amounts of arithmetic. An override of `battle.asm`
+leaves the tables where they are, so "the tables alone must fit" survives it. An override of
+`main.asm` does not: `assets/code.inc` — the region's own `.bank`/`.org`, the tables, the include of
+`battle.asm` and the end-of-region `.fail` — reaches the ROM only because `main.asm` includes it, so
+a custom main may put the tables somewhere else entirely, or nowhere. **No capacity refusal is
+raised at all in that case**, because the tables-only bound assumes exactly the placement the author
+has taken over, and refusing on it would turn away a project that fits. The `.fail` goes with the
+include, so this is the one case where neither the JS check nor the assembler backstop covers this
+region — the ordinary consequence of taking over the file that decides the ROM's whole layout, not a
+hole in either mechanism. The meter still shows the stock-based figure, under a hint
+saying which number it is — the tables half is as real as ever, and hiding the meter would leave an
+RPG author with nothing.
+`battleTableBytes` therefore *throws* on a directive it cannot size instead of skipping it — the
+count is complete only while `.db` is the sole storage directive `battleTables` emits, which is a
+property of the emit and not of the counter.
+
+**The `.fail` in the generated `assets/code.inc` covers exactly one residual class, and it is worth
+knowing which.** An override of `battle.asm` that is simply too big is caught by nesasm's own
+per-byte bank check first — no guard placed after the content can beat it — so this one bounds
+something else: an override that *relocates* with its own `.bank`/`.org` and finishes outside the
+region. Nothing trips nesasm's per-byte check there, because the bytes land in a bank with room for
+them. Verified by stripping the guard and running nesasm by hand: an override ending
+`.bank 1 / .org $A000` and one ending `.bank 2 / .org $C000` both assemble with exit 0, no reported
+errors and a complete ROM, with battle code silently written over screen data and over the kernel —
+the second being the backward-`.org` splice this file already documents under the 6502 traps. Hence
+two one-directional `>` comparisons (nesasm's grammar, the same restriction `engine/main.asm`'s
+flash guard works within): the condition is "did the counter finish inside this region", not "is the
+content too big".
+
+**The guard bounds where the region ends up, not where the assembler went, and there are two escapes
+it cannot close.** `.if` can see neither the current bank nor any history. A relocation to the same
+*address* in a different bank lands back inside the bounds; and — confirmed on a real build — an
+override can relocate, write, and *return*: on UNROM 512, ending an override `.bank 0 / .org $8000 /
+.db $AA,$BB,$CC,$DD / .bank 1 / .org $B000` overwrites four bytes of the CHR payload already emitted
+at bank 0, finishes tidily inside the region, and ships that corruption in a ROM that assembled with
+no error at all. So `checkCapacity` additionally *warns* when an override of a battle-region source
+contains a **token shaped like** a `.bank`/`.org` relocation (`battleRegionRelocates`) — which is a
+weaker claim than "contains a directive", deliberately, and the message says so: the scan is one
+file's text, so it sees a label named `org` or a `.org` inside `.if 0` and cannot see a relocation
+reached through `.include` or produced by a macro at all. A text scan is not the kind of guess this
+codebase refuses to make about hand-written 6502 — refusing to *size* it would be; noticing its text
+contains something spelled `.org` is a fact about the text — and a warning that misfires costs
+nothing, which is why the false positives are kept rather than filtered. It is per *token* rather
+than anchored to the start of a line, because `BANK 0`, `bt_lab .org`, `.locallab: .org` and
+`zz_b:.org` (nesasm needs no whitespace after a label's colon) all relocate and an anchored match
+sees only the last. Neither mechanism makes the
+guard complete; together they mean nothing is claimed that is not true. The guard is emitted into the
+generated file rather than added to `engine/main.asm` on purpose — `main.asm` is a stock engine file
+an override could replace, taking the guard with it.
+
+**When 8 KB genuinely runs out — a note, not something to do now.**
+`codeRegions(mapper, tilesetCount, bankedCode)` already takes a `bankedCode` count and hands back
+two adjacent regions for `bankedCode = 2`. Regions alternate `{prgBank, org:$8000}`,
+`{prgBank, org:$A000}`, so the two are **co-mapped** — both live at once, one 16 KB switch — only
+when the slice starts on an even index. That index is `chrPayloadRegions().length`: 0 on the CHR-ROM
+boards, but `max(1, tilesetCount)` on UNROM 512, so on that board co-mapping holds only when
+`max(1, tilesetCount)` is even. Note the `max`, which is what makes a zero-tileset project *not*
+co-map despite zero being even. Checked rather than reasoned: UNROM 512 co-maps at tileset counts 2
+and 4, and not at 0, 1 or 3; MMC1 and MMC3 always co-map. Anything relying on this must check, not
+assume.
+
 Not everything the battle bank writes needs the bank switched in to *read*: `pc_hp`, `pc_hp_max`
 and `pc_in_party` (`$0398+`) are plain kernel RAM like any other engine array, so `rpg.asm`'s
 `party_heal`/`party_damage` — the field's `Heal`/`Damage` commands, on an RPG build — touch them

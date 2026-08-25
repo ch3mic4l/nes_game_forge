@@ -10,6 +10,10 @@ import { ipcMain } from 'electron';
 import { unsavedChanges } from './ipc.js';
 import { decodePng } from '../test/lib/pngdecode.js';
 import { decodeGif } from '../test/lib/gifdecode.js';
+import { loadProject } from './project-io.js';
+import { checkCapacity } from './build/generate.js';
+import { battleRegionBytes, battleRegionCeiling } from './build/battletables.js';
+import { resolveMapper } from '../shared/cartridge.js';
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -1506,6 +1510,68 @@ const scenario = (dir, sampleDir, sampleRpgDir) => `
   await wait(200);
   window.__app.goTo('build');
   await wait(300);
+
+  // The Build panel's "Battle system" meter, read out of the DOM it actually
+  // rendered. This has to happen here rather than in a unit test: the
+  // invariant is that the *renderer* shows the same two numbers the capacity
+  // check decides on, and a unit test that calls battleRegionBytes itself
+  // proves only that the function agrees with the function. An earlier version
+  // of this check lived in test/unit/bankedbytes.test.js and never imported
+  // the renderer at all, so changing the meter's expression would not have
+  // failed it. The main process asserts the numbers below; all this does is
+  // report what was on screen.
+  //
+  // sample-rpg is the only RPG the smoke test opens, and the meter is RPG-only
+  // (a project that is not one reserves no such region), so this is the one
+  // place the meter is on screen at all.
+  const readBattleMeter = () => {
+    // Any .kv in the document whose label is exactly "Battle system" -- the
+    // Build panel's summary div carries no id, and the meter's own label is
+    // unique, so matching on it beats depending on the container's shape.
+    const row = [...document.querySelectorAll('.kv')].find(
+      (node) => node.firstElementChild && node.firstElementChild.textContent.trim() === 'Battle system'
+    );
+    if (!row) return null;
+    // Split rather than match: this whole scenario is a template literal, so a
+    // regex escape here would be eaten before the renderer ever sees it.
+    const parts = row.lastElementChild.textContent.split('/');
+    if (parts.length !== 2) return null;
+    const used = Number(parts[0].trim());
+    const total = Number(parts[1].trim());
+    return Number.isFinite(used) && Number.isFinite(total) ? { used, total } : null;
+  };
+  const meterFits = readBattleMeter();
+  if (!meterFits) throw new Error('the Build panel showed no "Battle system" meter for an RPG project');
+
+  // ...and again past the ceiling, so the boundary itself is crossed on screen
+  // rather than only the comfortable side of it being checked. Enough actors
+  // to overflow an 8 KB region; the exact count does not matter, only that the
+  // meter and the capacity check change their minds about the same project.
+  window.__app.store.commit('smoke: overflow the battle region', (draft) => {
+    const template = draft.sprites.actors[draft.sprites.actors.length - 1];
+    for (let i = 0; i < 200; i++) {
+      draft.sprites.actors.push({ ...structuredClone(template), id: draft.sprites.actors.length, name: 'M' + i });
+    }
+  });
+  await wait(300);
+  const meterOver = readBattleMeter();
+  if (!meterOver) throw new Error('the "Battle system" meter vanished once the project overflowed');
+  report.battleMeter = { fits: meterFits, over: meterOver, overProject: structuredClone(window.__app.store.project) };
+  step(
+    'Build panel battle-system meter rendered',
+    meterFits.used + '/' + meterFits.total + ' fitting, ' + meterOver.used + '/' + meterOver.total + ' overflowing'
+  );
+
+  // Back to the pristine project before anything is built. Re-read from disk
+  // rather than reusing the object already handed to store.open, so nothing
+  // the commit above touched can survive into the build below.
+  const sampleRpgAgain = await window.forge.project.open(${JSON.stringify(sampleRpgDir)});
+  if (!sampleRpgAgain.ok) throw new Error('re-open sample-rpg: ' + sampleRpgAgain.error);
+  window.__app.store.open(sampleRpgAgain.value.dir, sampleRpgAgain.value.project);
+  await wait(200);
+  window.__app.goTo('build');
+  await wait(300);
+
   await window.__app.current.buildAndPlay();
   // sample-rpg has no title screen (project.titleMap is null), so game_state
   // settles at ST_GAMEPLAY = 0 once boot finishes -- the same value
@@ -2326,6 +2392,57 @@ export async function runSmoke(window) {
     await new Promise((resolve) => window.webContents.once('did-finish-load', resolve));
     const report = await window.webContents.executeJavaScript(scenario(dir, sampleCopy, sampleRpgCopy));
     for (const entry of report.steps) console.log(`  ok  ${entry.name}${entry.detail ? ` — ${entry.detail}` : ''}`);
+
+    // The Build panel's battle-system meter, checked against the capacity
+    // check itself rather than against the expression the meter already uses.
+    // That is the whole point of doing it here: the renderer computed those
+    // two numbers in its own process, and the invariant is that they are the
+    // numbers the build decides on -- a unit test calling battleRegionBytes
+    // would only prove the function agrees with itself, which is exactly what
+    // the earlier version of this check did while claiming more.
+    const meter = report.battleMeter;
+    if (!meter) throw new Error('the scenario reported no battle-system meter');
+    const refusesRegion = (project) =>
+      checkCapacity(project).problems.some(
+        (problem) => problem.severity === 'error' && /battle system/i.test(problem.message)
+      );
+    // The fitting side: read the fixture copy from disk here rather than
+    // trusting a project marshalled back out of the renderer, so both halves
+    // of the comparison come from independent sources.
+    const pristine = await loadProject(sampleRpgCopy);
+    const pristineMapper = resolveMapper(pristine.cartridge.mapper);
+    if (
+      meter.fits.used !== battleRegionBytes(pristine, pristineMapper) ||
+      meter.fits.total !== battleRegionCeiling(pristineMapper)
+    ) {
+      throw new Error(
+        `the Build panel showed ${meter.fits.used}/${meter.fits.total} for the battle region, but the ` +
+          `capacity check says ${battleRegionBytes(pristine, pristineMapper)}/${battleRegionCeiling(pristineMapper)}`
+      );
+    }
+    if (meter.fits.used > meter.fits.total) throw new Error('the pristine RPG fixture should not overflow its region');
+    if (refusesRegion(pristine)) throw new Error('the pristine RPG fixture should not be refused');
+
+    // ...and the overflowing side, so the boundary is crossed on screen.
+    const overMapper = resolveMapper(meter.overProject.cartridge.mapper);
+    if (
+      meter.over.used !== battleRegionBytes(meter.overProject, overMapper) ||
+      meter.over.total !== battleRegionCeiling(overMapper)
+    ) {
+      throw new Error(
+        `the Build panel showed ${meter.over.used}/${meter.over.total} for the overflowing project, but the ` +
+          `capacity check says ${battleRegionBytes(meter.overProject, overMapper)}/${battleRegionCeiling(overMapper)}`
+      );
+    }
+    if (meter.over.used <= meter.over.total) throw new Error('the overflow case never actually overflowed the meter');
+    if (!refusesRegion(meter.overProject)) {
+      throw new Error('the meter read over-full but checkCapacity did not refuse — the panel is promising room the build denies');
+    }
+    console.log(
+      `  ok  battle-system meter agrees with checkCapacity — ${meter.fits.used}/${meter.fits.total} accepted, ` +
+        `${meter.over.used}/${meter.over.total} refused`
+    );
+    report.steps.push({ name: 'battle-system meter agrees with checkCapacity' });
 
     // The Shot/Record buttons clicked inside the scenario above kick off
     // their own async save (canvas.toBlob, then writeBinary) that the

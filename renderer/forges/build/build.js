@@ -1,6 +1,18 @@
 // Build & Play — runs the pipeline, shows what it did, and boots the result.
 
 import { store } from '../../store.js';
+// main/build/battletables.js is pure -- it imports only from shared/ -- which
+// is what lets the renderer share the exact expression checkCapacity refuses
+// on rather than keep a second copy of it. Same precedent as
+// renderer/forges/sound/sound.js importing compileSong from
+// main/build/songcompile.js. See that file's own header before adding an
+// import to it.
+import {
+  battleCodeOverridden,
+  battleRegionBytes,
+  battleRegionCeiling,
+  battleRegionPlacementOverridden
+} from '../../../main/build/battletables.js';
 import { el, clear, fill, toast } from '../../ui.js';
 import {
   validateProject,
@@ -563,6 +575,45 @@ export function mount(container, app) {
       // checkCapacity's own screen ceiling -- nothing here decides isRpg,
       // bankedCode or reserveFlashSave on its own.
       meter('Screens', screens, projectScreenCeiling(project, mapper)),
+      // The battle system's own 8 KB program bank: engine/battle.asm plus the
+      // tables battletables.js generates for it. RPG-only, because a project
+      // that is not one reserves no such region at all (codeRegionCount).
+      //
+      // battleRegionBytes/battleRegionCeiling (main/build/battletables.js) are
+      // the single expression for this meter, shared with checkCapacity's own
+      // refusal and with the test that asserts the two agree -- exactly the
+      // projectScreenCeiling arrangement above, for exactly the same reason.
+      // Nothing here computes a ceiling of its own, so this meter cannot come
+      // to promise room the build then denies.
+      //
+      // Unlike the Screens meter this one is exact rather than nominal: the
+      // region has only two occupants and battleTableBytes counts the second
+      // off its real emitted output, so what this shows is what nesasm will
+      // report. It reads about half full on an untouched RPG, which is honest
+      // -- the engine's own battle code is most of it before an author adds a
+      // single monster.
+      //
+      // Exact for the *stock* battle code, that is. A Code Forge override of
+      // battle.asm (or of battleui.asm/battleturn.asm, which it includes) is
+      // hand-written 6502, whose size cannot be known from its text, so the
+      // base term becomes a measurement of a file that is no longer being
+      // assembled. The meter still shows -- the tables half is as real as
+      // ever, and hiding it would leave an RPG author with nothing at all --
+      // but it says which it is, the same way this panel labels anything else
+      // that is not quite what it appears to be.
+      isRpg ? meter('Battle system', battleRegionBytes(project, mapper), battleRegionCeiling(mapper)) : null,
+      isRpg && (battleCodeOverridden(project) || battleRegionPlacementOverridden(project))
+        ? el(
+            'p.hint',
+            { style: { marginTop: '-6px', color: 'var(--accent)' } },
+            battleRegionPlacementOverridden(project)
+              ? 'This project overrides main.asm, which is what puts the battle system in that bank at all — ' +
+                'so where it ends up is yours to decide and this figure may not describe it. The assembler ' +
+                'is the only check.'
+              : 'This project overrides the battle system’s own source, so that figure counts the stock code ' +
+                'rather than yours. The assembler is the real check for it.'
+          )
+        : null,
       isRpg ? rpgProgression(project) : null,
       lastBuild
         ? el(
