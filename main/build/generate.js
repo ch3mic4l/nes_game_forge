@@ -453,6 +453,26 @@ function kernelShortfallAdvice(project, mapper, deficit) {
   // generator packs them) or the project's current mirroring choice would
   // have reconcileCartridge silently truncate one of them the moment the
   // author actually switched, which is not a fix, it is quiet data loss.
+  // Hand-written 6502 makes "it would fit on that board" a guess, so no board
+  // is offered at all when the project carries any. kernelCodeBytes measures
+  // the *stock* kernel, and a Code Forge override replaces one of the files it
+  // measured -- while even a plain user file lands in this same bank through
+  // assets/usercode.inc. A candidate can therefore reserve enough *modelled*
+  // bytes to look like a fix while the real, unmeasured code still overflows.
+  // Recommending a board on that basis is the same guess this codebase refuses
+  // to make about user code anywhere else (see checkCode and CLAUDE.md on why
+  // hand-written code sits outside checkCapacity's byte math), just aimed at
+  // the Build panel's mapper select instead of at a byte count.
+  //
+  // Withholding is the graceful failure: the feature-removal advice above is
+  // unaffected and stays true either way. This is a deliberate reduction in
+  // what existing projects are told -- a project carrying any Code Forge file
+  // stops receiving mapper suggestions it used to receive -- on the grounds
+  // that those suggestions were never checkable.
+  if ((project.code?.overrides ?? []).length || (project.code?.files ?? []).length) {
+    return 'Reduce the number of screens, actors or metasprites.';
+  }
+
   const isRpg = project.project?.gameType === 'rpg';
   const wantsSave = projectUsesSave(project);
   const { flat } = flattenScreens(project);

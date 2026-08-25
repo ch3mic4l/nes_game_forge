@@ -466,6 +466,58 @@ test('a kernel-lo shortfall neither Save nor Move would close, but a roomier boa
   assert.match(message, /Try MMC1 in the Build panel/);
 });
 
+// A mapper suggestion is unverifiable the moment the project carries any
+// hand-written 6502, so it is withheld rather than guessed.
+//
+// kernelCodeBytes measures the *stock* kernel. A Code Forge override replaces
+// one of the files it measured, and even a plain user file lands in this same
+// bank through assets/usercode.inc -- so a candidate board can reserve enough
+// *modelled* bytes to look like a fix while the real, unmeasured code still
+// overflows. That is the same guess this codebase refuses to make about user
+// code anywhere else (checkCode leaves it out of the byte math for exactly this
+// reason), just aimed at the Build panel's mapper select instead of at a byte
+// count.
+//
+// This is a deliberate reduction in what existing projects are told: a project
+// carrying any Code Forge file stops receiving mapper suggestions it used to
+// receive. The advice that remains -- drop a feature, reduce content -- is
+// unaffected and stays true either way.
+//
+// The same project without the code is asserted first, so this cannot pass by
+// the suggestion having vanished for some unrelated reason.
+test('a mapper suggestion is withheld from a project carrying hand-written code', async () => {
+  const base = await loadProject(SAMPLE_RPG);
+  base.cartridge.mapper = 30; // UNROM 512 -- the case above proves MMC1 is offered here
+  base.project.titleMap = 0;
+  base.project.titleScreen = 0;
+  inflate(base, 120);
+
+  assert.match(
+    kernelShortfallMessage(structuredClone(base)),
+    /Try MMC1 in the Build panel/,
+    'the control: without any Code Forge content this project is told to try MMC1'
+  );
+
+  for (const [label, code] of [
+    ['an override of an engine file', { overrides: [{ name: 'player.asm', text: '; mine\n' }], files: [] }],
+    ['a user file of its own', { overrides: [], files: [{ name: 'mine.asm', text: '; mine\n' }] }]
+  ]) {
+    const project = structuredClone(base);
+    project.code = code;
+    const message = kernelShortfallMessage(project);
+    assert.doesNotMatch(
+      message,
+      /Build panel/,
+      `with ${label} the kernel size is unmeasurable, so no board may be recommended — got: ${message}`
+    );
+    assert.match(
+      message,
+      /Reduce the number of screens, actors or metasprites\.$/,
+      'the fallback advice still applies and stays true regardless of what the hand-written code assembles to'
+    );
+  }
+});
+
 // A mapper suggestion that survives the kernel-byte check alone is not
 // necessarily safe: it also has to hold what the project actually has.
 // Reproduction from review: an MMC3 RPG with 17 tilesets and a small kernel
