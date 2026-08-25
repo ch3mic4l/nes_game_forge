@@ -426,6 +426,48 @@ Start with **items, equipment and a few general status effects**. Not RPG Maker'
 its size is a feature of a PC engine with no ROM budget, and `battletables.js` has to precompute
 anything the 6502 would otherwise need a multiply for.
 
+Staged in six phases. The first two are done, and they landed in the opposite order to their
+numbering — the renumbering defects were found while scoping the rest and fixed first, so phase 2's
+commit precedes phase 1's.
+
+- ~~**1. A capacity check for the banked battle region**~~ — **done** (`f7f3f28`). The 8 KB region
+  `codeRegions()` takes off the switchable window had no bound on it at all: overflowing it was
+  reported by nesasm against whatever line fell past the end, which is exactly the raw assembler
+  output this project's capacity checks exist so nobody sees. `battleRegionBytes`/
+  `battleRegionCeiling` (`main/build/battletables.js`) bound it, with per-board base constants, a
+  Build-panel meter, a generated `.fail` backstop and a warning for the relocating override neither
+  can catch. It comes first because everything below adds tables to that region, and adding to an
+  unbounded bank is how the overflow arrives unexplained. CLAUDE.md's *The battle system* section
+  carries the reasoning; it is not repeated here.
+- ~~**2. Three references that survived an actor deletion**~~ — **done** (`5e103f4`). `battle.drop`,
+  a `Carrying` condition and a map's encounter table each silently re-pointed at whichever actor
+  slid into the vacated number. Fixed before the database work rather than after, because phase 3
+  moves two of those references to a new id space and carrying a known repointing bug across that
+  move would make it far harder to see.
+- **3. `project.items[]`, and nothing else.** The schema, `normalizeProject`, the actor/item
+  discriminator, the migration and its compatibility matrix, `validateProject`'s rules, and
+  `renumberItemDeletion` — with `battle.drop` and Give/Take **moved out of** `renumberActorDeletion`
+  rather than duplicated, since two functions renumbering the same reference is how the two answers
+  drift apart. Plus the metasprite-deletion coupling and `firstPickup()` in `templates.js`.
+  Deliberately **no engine change**: the ROM should assemble byte-for-byte identically at the end of
+  this phase, which is a check worth actually running.
+- **4. The engine side.** Item tables, the icon, a real `use_item`, the battle item list, **both**
+  pickup paths (`entity_pickup` *and* `do_interact` — the second is the one that gets forgotten),
+  drops, and the save bound retarget with `SAVE_LAYOUT_VERSION` 1 → 2.
+- **5. The Database Forge**, with its Items page.
+- **6. Docs**, including the compatibility break stated below.
+
+Two constraints shape phases 4 to 6, and both are cheaper to know up front than to rediscover:
+
+- **The kernel-lo bank has almost nothing left on MMC3.** `sample-rpg` with a live `Save` and a live
+  `Move` currently reserves exactly `KERNEL_SLACK` and no more. Phase 4 is kernel code, so it needs
+  its headroom measured *before* it is designed, not after it fails to assemble — and the answer may
+  be that some of it has to be conditionally assembled the way `Move` already is, or moved into the
+  banked region the battle system uses.
+- **`SAVE_LAYOUT_VERSION` 1 → 2 breaks existing saves.** That is a deliberate choice, not a silent
+  migration, and phase 6 has to say so plainly rather than leaving an author to discover it when a
+  save will not load.
+
 ## 6. Cutscene and presentation commands
 
 Event pages become dramatically more capable with a handful of presentation verbs, none of which
