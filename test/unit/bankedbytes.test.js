@@ -343,6 +343,16 @@ test('the meter’s expression and checkCapacity refuse on the same projects', a
 // worse than no advice at all.
 test('the refusal names a change that actually closes the gap', async () => {
   const base = await loadProject(SAMPLE_RPG);
+  // A title screen, so this case's kernel-lo pressure (below, via
+  // switchableMappers) matches what it always has: sample-rpg as checked in
+  // carries none, and TITLE_KERNEL_ALLOWANCE_BY_MAPPER (main/build/
+  // generate.js) means a titleless project no longer pays for one. Without
+  // this, enough actors to overflow the *battle* region (this test's own
+  // loop, unrelated to kernel-lo) stops being enough to also overflow
+  // kernel-lo on every other candidate board, and the "no board is a safe
+  // switch" premise below silently stops holding.
+  base.project.titleMap = 0;
+  base.project.titleScreen = 0;
   const mapper = SUPPORTED_MAPPERS.find((entry) => entry.id === base.cartridge.mapper);
   const project = structuredClone(base);
   const template = project.sprites.actors[project.sprites.actors.length - 1];
@@ -779,6 +789,15 @@ test('switchableMappers offers only boards the project survives switching to', a
   //    must not be offered however roomy its other banks are.
   const heavy = structuredClone(base);
   heavy.cartridge.mapper = 1;
+  // A real title screen, not a titleless one: kernelCodeBytes now charges a
+  // live Save command's forced title cost whether or not titleMap is set
+  // (see its own comment beside `usesTitle`), so the kernel-lo totals below
+  // are identical either way -- but a titleless Save project is not the
+  // valid build this case is about, and leaving it titleless would make
+  // "needs a title screen" a second, unrelated-looking pre-existing error
+  // alongside the one the block below deliberately adds.
+  heavy.project.titleMap = 0;
+  heavy.project.titleScreen = 0;
   heavy.maps[0].screens[0].entities.push({
     actorId: 0,
     x: 16,
@@ -791,6 +810,14 @@ test('switchableMappers offers only boards the project survives switching to', a
       }
     }
   });
+  // No filler content needed: sample-rpg's own Save+Move combination on
+  // UNROM 512 already overflows kernel-lo by 155 bytes on its own, now that
+  // the forced title cost is actually charged -- this is the same documented
+  // shortfall test/unit/kernelbytes.test.js's own "does not build" test
+  // covers, re-derived here rather than assumed. Before finding 1 of the
+  // phase4a round-2 review, this needed 12 filler actors to reach a real
+  // deficit at all, because a titleless project was undercharged by exactly
+  // the title term; that undercharge is what this whole case is now free of.
   const { fixedBytes, tableBytes } = kernelTableBytes(heavy);
   const u512 = resolveMapper(30);
   assert.ok(
@@ -800,10 +827,22 @@ test('switchableMappers offers only boards the project survives switching to', a
   assert.ok(!offers(heavy, mmc1).includes(30), 'a board that overflows kernel-lo must not be offered');
 
   // ...and an error the project ALREADY has must not suppress advice, or one
-  // unrelated mistake silently costs the author every mapper suggestion. This
-  // project has exactly that: a live Save with no title screen, on every board.
+  // unrelated mistake silently costs the author every mapper suggestion.
+  // Genuinely unrelated to capacity, unlike an earlier version of this case
+  // (a live Save with no title screen) that the phase4a round-2 review
+  // flagged: that error and the thing being tested here were the same fact
+  // once a live Save started charging kernel-lo for its own forced title
+  // cost, which made the test's premise and its guard the same thing. A
+  // dangling `call` has nothing to do with any bounded bank -- it is a
+  // Run-common-event reference to an id no live common event holds, caught
+  // by validateProject's own liveCommonEventIds check, and touches no byte
+  // count kernelTableBytes or kernelCodeBytes reads.
+  heavy.maps[0].screens[0].entities[heavy.maps[0].screens[0].entities.length - 1].props.event.pages[0].commands.push({
+    op: 'call',
+    event: 9999
+  });
   assert.ok(
-    validateProject(heavy).some((entry) => entry.severity === 'error'),
+    validateProject(heavy).some((entry) => /Run common event/.test(entry.message)),
     'this case needs a pre-existing, board-independent error to be meaningful'
   );
   assert.ok(offers(heavy, mmc1).length > 0, 'a pre-existing error must not rule out every board');

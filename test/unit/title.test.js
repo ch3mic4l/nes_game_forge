@@ -15,10 +15,12 @@ import { fileURLToPath } from 'node:url';
 import NES from '../../renderer/emulator/core/nes.js';
 import { loadProject, saveProject } from '../../main/project-io.js';
 import { buildProject } from '../../main/build/pipeline.js';
-import { generateAssets } from '../../main/build/generate.js';
-import { createProject } from '../../shared/project.js';
-import { FONT_BASE } from '../../shared/font.js';
+import { generateAssets, kernelCodeBytes } from '../../main/build/generate.js';
+import { createProject, validateProject } from '../../shared/project.js';
+import { FONT_BASE, projectUsesEffectiveTitle, projectUsesText } from '../../shared/font.js';
 import { systemStrings } from '../../main/build/textcompile.js';
+import { bindableStates } from '../../renderer/forges/controller/controller.js';
+import { resolveMapper } from '../../shared/cartridge.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const SAMPLE = path.join(ROOT, 'sample');
@@ -226,4 +228,99 @@ test('a project with no title screen boots straight into the game', async (t) =>
   await generateAssets({ dir, project: createProject('Direct') });
   const config = await fs.promises.readFile(path.join(dir, 'build/assets/config.inc'), 'utf8');
   assert.match(config, /TITLE_ENABLED = 0/);
+});
+
+// projectUsesEffectiveTitle (shared/font.js) is the single answer every real
+// consumer asks now -- kernelCodeBytes, generateAssets's own titleEnabled,
+// validateProject, projectUsesText, bindableStates and the Map Forge's own
+// picker -- not by source text (a grep for who calls it breaks on any
+// harmless refactor and invites loosening the check rather than
+// investigating, the same trap this codebase's own worst test failures
+// already warn about), but behaviourally: every consumer's real answer has
+// to agree with it, on the same projects.
+//
+// Three shapes matter, not two: titleless and titled are the ordinary
+// cases, but a project can also carry a *stale* titleMap a hand edit or a
+// deleted map left behind -- one that names no map the project still has.
+// This branch shipped two different bugs about that exact shape, in
+// opposite directions, and both are asserted directly below rather than
+// trusted to the matrix alone:
+//
+//  - validateProject once approved a stale titleMap on a live-Save project
+//    (a bare `titleMap !== null` check reads a stale reference the same as
+//    a real one) -- a Save build with no Continue path, which is precisely
+//    what its own message exists to prevent. Fixed in round 4.
+//  - kernelCodeBytes then charged that same stale-but-Save-less project for
+//    a title screen `TITLE_ENABLED = 0` means will never be in the ROM --
+//    the overcharge this whole branch exists to remove, reintroduced by
+//    round 4's own fix landing in only one of several consumers. Fixed in
+//    round 5, by moving every consumer onto the one effective predicate
+//    instead of leaving a loose one for some of them to keep reading.
+test('projectUsesEffectiveTitle and its consumers agree, including on a stale titleMap that names no real map', async (t) => {
+  const cases = [
+    { label: 'titleless', titleMap: null, effective: false },
+    { label: 'titled', titleMap: 0, effective: true },
+    // createProject('Matrix') makes exactly one map (id 0), so 99 names none.
+    { label: 'stale titleMap (names no real map)', titleMap: 99, effective: false }
+  ];
+
+  for (const { label, titleMap, effective } of cases) {
+    const project = createProject('Matrix');
+    project.cartridge.mapper = 1; // MMC1
+    project.project.titleMap = titleMap;
+    project.project.titleScreen = 0;
+
+    assert.equal(projectUsesEffectiveTitle(project), effective, `${label}: projectUsesEffectiveTitle`);
+    assert.equal(
+      bindableStates(project).includes('title'),
+      effective,
+      `${label}: bindableStates (renderer/forges/controller/controller.js) disagrees`
+    );
+    // createProject('Matrix') is action-type with no combat, dialogue or
+    // events, so a title screen is the only thing that could make this true.
+    assert.equal(projectUsesText(project), effective, `${label}: projectUsesText (shared/font.js) disagrees`);
+
+    const dir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'forge-titlematrix-'));
+    t.after(() => fs.promises.rm(dir, { recursive: true, force: true }));
+    await generateAssets({ dir, project });
+    const config = await fs.promises.readFile(path.join(dir, 'build/assets/config.inc'), 'utf8');
+    assert.match(
+      config,
+      new RegExp(`TITLE_ENABLED = ${effective ? 1 : 0}\\b`),
+      `${label}: generateAssets's titleEnabled disagrees`
+    );
+  }
+
+  // The round-5 regression, reproduced directly: a stale titleMap with no
+  // Save must be budgeted exactly as if titleless -- not "close", equal,
+  // since kernelCodeBytes's own OR is supposed to add nothing at all here.
+  const mapper = resolveMapper(1);
+  const titleless = createProject('Matrix');
+  titleless.cartridge.mapper = 1;
+  const stale = createProject('Matrix');
+  stale.cartridge.mapper = 1;
+  stale.project.titleMap = 99;
+  stale.project.titleScreen = 0;
+  assert.equal(
+    kernelCodeBytes(stale, mapper),
+    kernelCodeBytes(titleless, mapper),
+    'a stale titleMap with no Save command must reserve exactly the same kernel-lo budget as an actual titleless project'
+  );
+
+  // The other differing case, and round 4's own regression guard: a stale
+  // titleMap *with* a live Save command must still fail validation.
+  const staleWithSave = structuredClone(stale);
+  staleWithSave.maps[0].screens[0].entities.push({
+    actorId: 0,
+    x: 16,
+    y: 16,
+    props: { event: { pages: [{ cond: { type: 'none', arg: 0 }, commands: [{ op: 'save' }] }] } }
+  });
+  const missingTitleError = validateProject(staleWithSave).some(
+    (problem) => problem.severity === 'error' && /needs a title screen/.test(problem.message)
+  );
+  assert.ok(
+    missingTitleError,
+    'a stale titleMap with a live Save command must still fail validation -- round 4 must not regress'
+  );
 });

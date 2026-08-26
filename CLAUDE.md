@@ -674,15 +674,14 @@ bank to **12**.
 is now `BASE_KERNEL_CODE_BYTES_BY_MAPPER` in `main/build/generate.js`, one measured figure per
 RPG-capable board (UNROM 512, MMC1, MMC3 — the same three boards the paragraph above already names,
 now each charged only to its own board) rather than UNROM 512's worst-case number charged to all
-three; a mapper this table has no entry for — every non-RPG-capable board, which `sample-rpg` cannot
-even target, since it needs a mapper that switches both PRG and CHR — falls back to the largest of the
-three, so a project on one of those boards reserves exactly what it always did. That fallback is safe
-by construction (it is the largest of three real measurements), but was never itself checked against a
-real build on any of the five boards it stands in for until `kernelbytes.test.js` gained a test that
-does: `sample` (the action-adventure fixture, exercising combat and text, with a live Move command
-added) on NROM, CNROM, GxROM, Color Dreams and UxROM measures 493 to 532 bytes of margin under the
-fallback — comfortably safe, never under, and now a real assertion rather than an assumption.
-`SAVE_KERNEL_ALLOWANCE`
+three; a mapper this table has no entry for — every non-RPG-capable board — falls back to the largest
+of the three. Being the largest of three RPG-capable boards' own figures says nothing by itself about
+five *different* boards that cannot even build an RPG; what actually establishes the fallback is safe
+for them is `kernelbytes.test.js` building real ROMs on all five and checking real usage against it
+directly, not the arithmetic that produced the figure in the first place: `sample` (the
+action-adventure fixture, exercising combat and text, with a live Move command added) on NROM, CNROM,
+GxROM, Color Dreams and UxROM measures 505 to 544 bytes of margin under the fallback — comfortably
+safe, never under. `SAVE_KERNEL_ALLOWANCE`
 became `SAVE_KERNEL_ALLOWANCE_BY_MAPPER` the same way, each battery-capable board's own measured delta
 (MMC1 547, MMC3 552) rather than the larger of the two charged to both — and, because a per-mapper term
 only stops a *stale* figure from hiding once it is checked for equality rather than merely "covers
@@ -694,6 +693,46 @@ same 395 bytes on every board alike, and the split-lock fix is already condition
 that needs it, so neither has a per-board difference to capture, and folding either into a base would
 overcharge every project that never turns the feature on.
 
+**A title screen turned out to be exactly this same mistake, hiding inside the base itself.**
+`BASE_KERNEL_CODE_BYTES_BY_MAPPER`'s three figures were each measured by building `sample-rpg` with a
+title screen forced on — including for the "nothing conditional turned on" no-Save baseline that
+anchors the table, which does not itself carry a live Save command — so every RPG-capable board's base
+secretly included `engine/title.asm`'s own cost whether or not a project actually had one. `sample-rpg`
+as checked in does not (`titleMap: null`), so this was a real, measured overcharge on the fixture the
+whole budget is calibrated against, invisible only because no measurement had ever forced title *off*.
+`TITLE_KERNEL_ALLOWANCE_BY_MAPPER` carves it back out, the `SAVE_KERNEL_ALLOWANCE_BY_MAPPER` shape
+rather than `MOVE_KERNEL_ALLOWANCE`'s: UNROM 512 and MMC1 both measure 212 bytes for a title screen,
+but MMC3 measures 224, because MMC3 is the only board with `SPLIT_ENABLED` and `engine/split.asm`'s
+`split_select` carries its own `.if TITLE_ENABLED` branch — five instructions deciding whether the
+current frame's font-CHR split program is the title one — that neither other board ever assembles at
+all. `engine/title.asm` itself has no MMC3-specific branch anywhere in it, so its own cost is identical
+on all three boards; the other 12 bytes are exactly that one extra branch, elsewhere, that only a
+split-font board with a title screen pays.
+
+The recovery has an exception, and it is not a small one: a project with a live Save command needs a
+title screen in every valid build regardless of what `titleMap` currently says (`validateProject`
+refuses a titleless Save project outright — "Continue has nowhere to appear without one"), so
+`kernelCodeBytes` charges the title term whenever `projectUsesSave` is true even before the project is
+otherwise valid. A titleless project *with* a live Save therefore recovers nothing from this split — it
+was never being undercharged for a title it is required to have, only for one it had not gotten around
+to setting yet. `sample-rpg` with Save and Move on MMC3 is exactly this case, which is why its own
+combined total, below, is unchanged from before the split. What moved is every other titleless
+project's budget, on every board: 212 to 224 fewer bytes reserved than before, real headroom recovered
+rather than slack invented, because `sample-rpg`'s own no-Save baseline measurement never had a title
+to pay for in the first place.
+
+The five non-RPG-capable boards inherit this the same way they inherit the base: `titleKernelAllowance`
+falls back to the largest measured figure — MMC3's 224 — for a board this table has no entry for, the
+same reasoning `baseKernelCodeBytes`'s own fallback already uses above. None of those five boards has a
+scanline IRQ, so their own real title cost is 212, same as UNROM 512 and MMC1 — meaning the fallback
+deliberately over-charges every titled project on those boards by 12 bytes. That is not slack that
+crept in unnoticed; it is what a fallback is *for*: it cannot know it is looking at a board whose real
+cost is lower, so it charges the worst one on record, the same trade the base term's own fallback
+already makes. Measured, not assumed: `kernelbytes.test.js` builds `sample` title-off and title-on on
+all five boards and asserts each term against its own real measurement rather than only the combined
+total, so a regression in the base could no longer hide behind slack the title term happened to be
+carrying, or the other way around.
+
 **A second, unrelated fix freed another 5 bytes on every RPG-capable board, and it was enough to close
 what per-mapper budgeting alone did not.** `entity_contact` (`engine/combat.asm`) used to read
 `player_iframes` — the action side's own invincible window, reused by `player_hazard` purely as the
@@ -703,8 +742,8 @@ rest of `IFRAME_TIME`: an RPG's monsters became briefly walk-through after any f
 check to the action-only branch it actually belongs to (RPG encounters have no invincible window to
 respect) happens to remove those two instructions from the RPG build entirely, which is a real 5-byte
 saving nesasm confirms on every RPG-capable board — not a coincidence of one build, a property of the
-fix. With both changes, `sample-rpg` with Save and Move on MMC3 now reserves 6670 (base) + 19 (split
-lock) + 552 (save) + 395 (move) + 20 (`KERNEL_SLACK`) = 7656 against a real measured 7636 — a 20-byte
+fix. With both changes, `sample-rpg` with Save and Move on MMC3 now reserves 6446 (base) + 224 (title)
++ 19 (split lock) + 552 (save) + 395 (move) + 20 (`KERNEL_SLACK`) = 7656 against a real measured 7636 — a 20-byte
 margin, exactly `KERNEL_SLACK` and nothing more, which is true of every configuration this file
 measures now (see `test/unit/kernelbytes.test.js`), not a coincidence but the point of measuring per
 board instead of charging every board the same worst case. **`checkCapacity` no longer refuses
@@ -749,11 +788,15 @@ bytes, when MMC1 holds only 16 tilesets, is not a fix, it is quiet data loss dre
 these checks mutate the project — `projectWithoutCommands` works on its own deep clone — they only read
 it, the same way `checkCapacity` itself does. The rest of the
 roadmap's cutscene verbs (fade, shake, sound effects, movement routes) are all kernel code with nowhere
-left to go until either MMC3 gets more margin from a second kernel diet (the already-conditional blocks
-in `engine/title.asm` are worth measuring, though they cost `sample-rpg` nothing today — it has no
-title screen) or a second banked region the way the battle system got one, and conditional assembly
-does not compose indefinitely regardless, because a project that wants three of these is back where it
-started.
+left to go until either MMC3 gets more margin or a second banked region the way the battle system got
+one, and conditional assembly does not compose indefinitely regardless, because a project that wants
+three of these is back where it started. The second kernel diet this paragraph used to point at as
+future work — measuring `engine/title.asm`'s already-conditional blocks — has happened
+(`TITLE_KERNEL_ALLOWANCE_BY_MAPPER`, two sections up), and it is real margin recovered on every board,
+but it does not touch *this* scenario: the project this paragraph is about already carries a live Save
+command to reach MMC3's tight margin at all, and Save needs a title screen in every valid build, so it
+was already paying the title term either way. The diet's margin lands on a titleless project instead —
+not nothing, but not this one.
 
 **A command that holds commands is not a special case to be named, it is a `nests: true` entry.**
 Two of them exist (`branch`, `choice`) and the third will be along. Anything asking a question of a

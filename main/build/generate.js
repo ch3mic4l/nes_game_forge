@@ -30,7 +30,8 @@ import {
   fontChrPages,
   projectUsesCombat,
   projectUsesHeartArt,
-  projectUsesText
+  projectUsesText,
+  projectUsesEffectiveTitle
 } from '../../shared/font.js';
 import { compileSong, songTables } from './songcompile.js';
 import { NO_EVENT, compileText, textTables, songByte } from './textcompile.js';
@@ -176,35 +177,87 @@ const TITLE_PROMPT_ROW = 19;
 // number, so the two cannot end up with two different answers about the same
 // project the way a flat constant let them.
 //
-// The pieces, each measured by building sample-rpg with a title and every
+// The pieces, each measured by building sample-rpg with every
 // conditionally-assembled block heal/damage's own measurement already
 // covered (dialogue, action combat, the RPG battle system, branches,
 // questions, common-event calls, Play music, Start a battle, Heal/Damage) --
 // nesasm's kernel-lo usage minus that build's own fixedBytes + tableBytes:
 //
 // BASE_KERNEL_CODE_BYTES_BY_MAPPER is the worst case with nothing
-// conditional turned on -- no Save, no Move, no text on a split-font board
-// -- measured per mapper rather than once. A single flat number, measured on
-// UNROM 512 because banks.asm emits the most code for it, used to be charged
-// to every board; MMC3's own switch_chr_bank/switch_prg_bank pair is smaller,
-// so that overcharged every MMC3 project by 8 bytes, and MMC1's by 195 --
-// both boards forced to carry UNROM 512's own combined PRG/CHR register
-// plumbing, which neither of them has. Only three mappers can be measured
-// this way at all: sample-rpg needs a mapper that switches both PRG and CHR
-// (rpgCapable() in shared/cartridge.js), which is exactly UNROM 512, MMC1 and
-// MMC3 -- the same three test/unit/kernelbytes.test.js already builds.
-//   UNROM 512: 6678   MMC1: 6483   MMC3: 6670
+// conditional turned on -- no title screen, no Save, no Move, no text on a
+// split-font board -- measured per mapper rather than once. A single flat
+// number, measured on UNROM 512 because banks.asm emits the most code for
+// it, used to be charged to every board; MMC3's own switch_chr_bank/
+// switch_prg_bank pair is smaller, so that overcharged every MMC3 project by
+// 8 bytes, and MMC1's by 195 -- both boards forced to carry UNROM 512's own
+// combined PRG/CHR register plumbing, which neither of them has. Only three
+// mappers can be measured this way at all: sample-rpg needs a mapper that
+// switches both PRG and CHR (rpgCapable() in shared/cartridge.js), which is
+// exactly UNROM 512, MMC1 and MMC3 -- the same three test/unit/kernelbytes.
+// test.js already builds.
+//   UNROM 512: 6466   MMC1: 6271   MMC3: 6446
 // (MMC3's own figure excludes SPLIT_LOCK_KERNEL_ALLOWANCE, kept a separate
-// term below for the same reason it always was -- see its own paragraph.)
+// term below for the same reason it always was -- see its own paragraph. A
+// title-off sample-rpg still shows text on MMC3 -- projectUsesText is true
+// for the RPG game type alone, regardless of titleMap -- so the raw
+// title-off measurement, 6465, already has SPLIT_LOCK_KERNEL_ALLOWANCE's 19
+// bytes baked in exactly as the old title-on raw measurement did; 6446 is
+// that measurement with the same 19 bytes subtracted back out, the same
+// bookkeeping the old 6670 already did against its own raw 6689.)
 // Every other supported mapper -- NROM, CNROM, GxROM, Color Dreams, UxROM --
 // cannot build an RPG at all, so this methodology cannot measure a base for
 // any of them; baseKernelCodeBytes() falls back to the largest of the three
 // figures above for a mapper this table has no entry for, which is not a
-// guess standing in for a measurement -- it is the exact same worst-case
-// number this function charged every board before this change, so a project
-// on one of those five reserves precisely the budget it always did.
-// codebuild.test.js's byte-identical NROM build and cartridge.test.js's
-// UxROM screen-count test both depend on that fallback never moving.
+// guess standing in for a measurement -- it is the same shape this function
+// has always used for an unmeasured board, so a project on one of those
+// five still reserves a safe over-estimate rather than nothing.
+// codebuild.test.js's byte-identical NROM build depends on this fallback
+// staying a safe over-estimate (it changed value, from 6678 to 6466, the
+// day the title term below was carved out of it -- see that term's own
+// paragraph for why NROM's own byte-identical build is unaffected: NROM's
+// build carries no title screen, so nothing here changes what it emits).
+// cartridge.test.js's UxROM screen-count test depends on the fallback the
+// same way.
+//
+// TITLE_KERNEL_ALLOWANCE_BY_MAPPER is the extra a board pays only when the
+// project actually has a title screen that resolves (projectUsesEffectiveTitle,
+// shared/font.js) -- OR, independent of that, has a live Save command, which
+// needs one in every valid build regardless of whether titleMap happens to
+// resolve yet; see kernelCodeBytes's own comment beside `usesTitle` for why
+// charging on projectUsesEffectiveTitle alone undercharges an in-progress,
+// still-invalid Save project by exactly this term. Carved out of the base above rather than
+// left baked into it, because every measurement that produced the old base
+// numbers (6678/6483/6670) forced `titleMap = 0` unconditionally, even for
+// the "nothing conditional" baseline, so *every* RPG project on every board
+// used to be charged for `engine/title.asm`'s code whether or not it had a
+// title screen. sample-rpg as checked in has `titleMap: null` -- no title
+// screen -- so this was a real, measured overcharge on the fixture this
+// very budget is calibrated against, not a hypothetical one. Measured the
+// same way as every other term: sample-rpg's "no Save, no Move" baseline
+// built once with a title screen and once without, on each board --
+//   UNROM 512: 6678 - 6466 = 212   MMC1: 6483 - 6271 = 212   MMC3: 6689 - 6465 = 224
+// MMC3 pays 12 bytes more than the other two, and it is not slack: MMC3 is
+// the only board with SPLIT_ENABLED (see split.asm's own header), and
+// engine/split.asm's split_select carries its own `.if TITLE_ENABLED` block
+// -- five instructions deciding whether the current frame's font-CHR split
+// program is the title one -- that MMC1 and UNROM 512 never assemble at
+// all, because split.asm's entire body is conditional on SPLIT_ENABLED and
+// neither board ever sets it. engine/title.asm itself has no MMC3-specific
+// branch anywhere in it (checked: no SPLIT_ENABLED/split_ reference in that
+// file), so its own cost is identical on all three boards; the other 12
+// bytes are exactly this one extra branch, elsewhere, that only a
+// split-font board with a title screen pays. A flat constant would either
+// undercharge MMC3 by 12 bytes (unsafe -- promising table room the
+// assembler then refuses) or overcharge the other two by the same 12
+// (safe, but a term is supposed to equal its board's own real cost, the
+// same standard SAVE_KERNEL_ALLOWANCE_BY_MAPPER's own multi-revision
+// history below already holds every other term to), so this is the
+// SAVE_KERNEL_ALLOWANCE_BY_MAPPER shape, not the flat MOVE_KERNEL_ALLOWANCE
+// one. Every other supported mapper falls back to the largest of the three
+// figures for the same reason baseKernelCodeBytes's own fallback does -- an
+// action project on NROM, CNROM, GxROM, Color Dreams or UxROM can have a
+// title screen too, and this term must still be a safe over-estimate for
+// it.
 //
 // SAVE_KERNEL_ALLOWANCE_BY_MAPPER is the extra a board pays only when
 // save/load itself assembles, derived per board from the difference
@@ -213,7 +266,18 @@ const TITLE_PROMPT_ROW = 19;
 // to be, now that a per-mapper base makes a per-mapper allowance the same
 // kind of number: MMC1 goes from 6483 to 7030 (+547), MMC3 from 6689 to 7241
 // (+552, text always on for an RPG on a split-font board -- see
-// SPLIT_LOCK_KERNEL_ALLOWANCE below). (This grew from an earlier +453/+458
+// SPLIT_LOCK_KERNEL_ALLOWANCE below). Both sides of that subtraction carry a
+// title screen (validateProject refuses a live Save with no title screen —
+// "Continue has nowhere to appear without one" — so a project that pays
+// SAVE_KERNEL_ALLOWANCE always pays TITLE_KERNEL_ALLOWANCE too), which is
+// exactly why splitting the title cost out of the base above left this
+// delta unchanged: 6483 and 7030 are both title-on figures, so the 547
+// between them is the cost of save/load alone, with title's own cost
+// present -- and cancelling out -- on both sides. Re-measured directly
+// against the new title-off base after the split (title forced on for both
+// the with-Save and without-Save sides, kernelbytes.test.js's own
+// `measureCodeBytes(..., { withTitle: true })`) rather than assumed: still
+// 547/552/719, to the byte. (This grew from an earlier +453/+458
 // once a review pass range-checked every restored value load_apply_body
 // trusts as a table index -- player_dir, player_y, each live inv_items
 // entry, each pc_level -- and widened the identity from two bytes to four;
@@ -313,23 +377,35 @@ const TITLE_PROMPT_ROW = 19;
 // margin between reservation and reality erodes below KERNEL_SLACK. Trust
 // its output over this comment if the two ever disagree, and re-measure by
 // running it rather than hand-editing either.
-export const BASE_KERNEL_CODE_BYTES_BY_MAPPER = { 30: 6678, 1: 6483, 4: 6670 };
+export const BASE_KERNEL_CODE_BYTES_BY_MAPPER = { 30: 6466, 1: 6271, 4: 6446 };
 const FALLBACK_BASE_KERNEL_CODE_BYTES = Math.max(...Object.values(BASE_KERNEL_CODE_BYTES_BY_MAPPER));
 export function baseKernelCodeBytes(mapper) {
   return BASE_KERNEL_CODE_BYTES_BY_MAPPER[mapper.id] ?? FALLBACK_BASE_KERNEL_CODE_BYTES;
 }
 
+export const TITLE_KERNEL_ALLOWANCE_BY_MAPPER = { 30: 212, 1: 212, 4: 224 };
+const FALLBACK_TITLE_KERNEL_ALLOWANCE = Math.max(...Object.values(TITLE_KERNEL_ALLOWANCE_BY_MAPPER));
+export function titleKernelAllowance(mapper) {
+  return TITLE_KERNEL_ALLOWANCE_BY_MAPPER[mapper.id] ?? FALLBACK_TITLE_KERNEL_ALLOWANCE;
+}
+
 // 30 (UNROM 512) is measured the same way as the other two, from a real
 // build of sample-rpg with and without a live Save command: 6678 -> 7397,
-// +719. Substantially larger than MMC1/MMC3's own allowance because flash
+// +719 -- both sides carrying a title screen, since Save requires one; 6678
+// is base (6466) + title (212), not the base alone (see the title-split
+// paragraph above for why that distinction now matters: folding a title-on
+// baseline back into a bare "base" figure is exactly the mistake that
+// undercharged every titleless project before this file's own base/title
+// split). Substantially larger than MMC1/MMC3's own allowance because flash
 // save is not just a checksum/marker-write difference from battery -- it
 // carries its own RAM-resident driver (engine/flash.asm: the JEDEC unlock
 // sequence, the erase, the 87-byte program loop, all position-independent)
 // plus save_media_fetch/commit's wrapper (the vblank wait, the forced
 // blank, the copy-to-RAM, the mapper_shadow save/restore) that battery's
-// save_media_fetch/commit reduce to a no-op. UNROM 512's own base (6678,
-// the largest of the three) is what leaves room for it: 719 against roughly
-// 1514 bytes of headroom before KERNEL_SLACK and the fallback base even
+// save_media_fetch/commit reduce to a no-op. UNROM 512's own base-plus-title
+// (6678, the largest of the three, and title-on because Save requires it)
+// is what leaves room for it: 719 against roughly 1514 bytes of headroom
+// before KERNEL_SLACK and the fallback base even
 // enter the picture.
 export const SAVE_KERNEL_ALLOWANCE_BY_MAPPER = { 1: 547, 4: 552, 30: 719 };
 export const MOVE_KERNEL_ALLOWANCE = 395;
@@ -351,9 +427,38 @@ export function kernelCodeBytes(project, mapper) {
   // index this table with a mapper id that has no entry for it yet.
   const usesSave = projectUsesSave(project) && saveMediaImplemented(mapper);
   const usesMove = projectUsesMove(project);
+  // projectUsesSave(project), not the narrower usesSave just above: a live
+  // Save command needs a title screen in *every* valid build of this
+  // project (validateProject refuses one with no title regardless of which
+  // mapper is selected — "Continue has nowhere to appear without one" is
+  // not conditional on saveMediaImplemented, which is a separate refusal),
+  // so a titleless Save project has to be budgeted as the only thing it can
+  // legally become, not as the invalid thing it currently is. Charging
+  // usesSave alone would undercharge it by exactly TITLE_KERNEL_ALLOWANCE
+  // right up until the author adds the title screen they are already being
+  // told they must -- which is what let a mapper get recommended, and the
+  // Build panel's own meter show room, for a project that both stops
+  // fitting and stops being buildable at all the moment that happens. This
+  // is deliberately not "withhold the advice instead": the same wrong
+  // number also feeds checkCapacity's pass/fail and the meter directly, and
+  // patching only the one consumer that happened to surface it would leave
+  // the other two silently wrong. Using the OR rather than requiring both
+  // means dropping Save (projectWithoutCommands, kernelShortfallAdvice)
+  // correctly frees title's own cost too when nothing else on the project
+  // asked for a title — the two terms are correlated, not summed twice: a
+  // project that also set a real, resolving titleMap of its own keeps
+  // paying for it even once Save is gone. The *effective* predicate, not
+  // the loose one: a stale titleMap that names no real map assembles to
+  // TITLE_ENABLED = 0 regardless of what the loose check says, and charging
+  // for a title screen that will not be in the ROM is exactly the
+  // overcharge this whole term exists to remove -- round 4 fixed
+  // validateProject's own version of this mistake and left this one, its
+  // mirror image, in place.
+  const usesTitle = projectUsesEffectiveTitle(project) || projectUsesSave(project);
   const usesSplitLock = fontBankSplit(project, mapper);
   return (
     baseKernelCodeBytes(mapper) +
+    (usesTitle ? titleKernelAllowance(mapper) : 0) +
     (usesSave ? SAVE_KERNEL_ALLOWANCE_BY_MAPPER[mapper.id] : 0) +
     (usesMove ? MOVE_KERNEL_ALLOWANCE : 0) +
     (usesSplitLock ? SPLIT_LOCK_KERNEL_ALLOWANCE : 0) +
@@ -585,7 +690,17 @@ function kernelShortfallAdvice(project, mapper, deficit) {
   const active = [];
   if (usesMove) active.push({ op: 'move', label: 'every Move command' });
   if (usesSave) active.push({ op: 'save', label: 'every Save command' });
-
+  // A title screen is not offered here even though it is now its own term in
+  // kernelCodeBytes: this list is specifically "commands projectWithoutCommands
+  // can switch off", and a title screen is content on a map, not a command --
+  // there is no opcode to disable the way `move.off = true` disables a Move.
+  // It would also be misleading advice on its own terms even if it could be
+  // named: a project that reaches this function with a live Save command
+  // cannot drop its title screen at all (validateProject refuses a Save with
+  // no title screen), and "delete your title screen" is not a comparable
+  // suggestion to "remove every Move command" for a project that has neither
+  // -- it is the one piece of content on the whole map, not one command among
+  // several. Left out on purpose, not missed.
   const budget = kernelCodeBytes(project, mapper);
   const freedByDropping = (ops) => budget - kernelCodeBytes(projectWithoutCommands(project, ops), mapper);
 
@@ -1482,7 +1597,15 @@ export async function generateAssets({ dir, project, log = () => {} }) {
   // because the compiler is the only side that knows how long they are.
   const text = compileText(project);
   const titleMap = project.project.titleMap;
-  const titleEnabled = titleMap !== null && titleMap !== undefined && mapBase[titleMap] !== undefined;
+  // projectUsesEffectiveTitle (shared/font.js) is the single writer for
+  // this -- an earlier version of this line duplicated its own
+  // mapBase[titleMap] !== undefined check inline instead of calling it,
+  // reasoning that mapBase was already in hand from flattening a few lines
+  // up so the duplicate cost nothing extra. That missed the actual point:
+  // a second implementation of the same fact is exactly the drift this
+  // codebase's single-writer rule exists to prevent, "costs nothing to
+  // compute" notwithstanding.
+  const titleEnabled = projectUsesEffectiveTitle(project);
   const titleFlat = titleEnabled
     ? Math.min((mapBase[titleMap] ?? 0) + (project.project.titleScreen ?? 0), flat.length - 1)
     : 0;

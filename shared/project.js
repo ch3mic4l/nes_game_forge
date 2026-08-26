@@ -30,7 +30,8 @@ import {
   SPRITE_ARROW_TILE,
   fontBankSplit,
   projectUsesText,
-  projectUsesHeartArt
+  projectUsesHeartArt,
+  projectUsesEffectiveTitle
 } from './font.js';
 
 export const ENGINE_VERSION = 1;
@@ -2725,8 +2726,15 @@ export function validateProject(project) {
     }
     // Continue is a title-screen option (engine/title.asm); a save with no
     // title to offer it from would be a ROM you cannot load a save in rather
-    // than a build error you can act on before shipping it.
-    if (project.project.titleMap === null || project.project.titleMap === undefined) {
+    // than a build error you can act on before shipping it. The effective
+    // form, not the loose one: a stale titleMap that names no real map
+    // normalizes to null on load, but this validator runs against whatever
+    // it is handed, including a project that has not been through that
+    // clamp -- and generateAssets's own titleEnabled would compute 0 for
+    // that project regardless of what the loose predicate says, so
+    // approving it here would be exactly the false negative this check
+    // exists to catch.
+    if (!projectUsesEffectiveTitle(project)) {
       add(
         'error',
         'Map Forge',

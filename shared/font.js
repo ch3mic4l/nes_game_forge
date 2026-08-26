@@ -265,6 +265,58 @@ export function wrapText(text, cols = BOX_COLS, rows = BOX_ROWS) {
 // ---------------------------------------------------------------- predicates
 
 /**
+ * Does this project have a title screen that will actually be in the ROM —
+ * `titleMap` set, *and* resolving to a map this project still has. Every
+ * real consumer wants this, the effective question, not the raw value of
+ * `titleMap` on its own: `kernelCodeBytes` (`main/build/generate.js`) budgets
+ * `TITLE_KERNEL_ALLOWANCE_BY_MAPPER` against it, `generateAssets`'s own
+ * `titleEnabled` *is* it (this function is that check's single writer now —
+ * an earlier version duplicated it inline there, reasoning that the
+ * `mapBase` it needed was already in hand from flattening the project's
+ * screens for other reasons, so the duplicate cost nothing extra; that
+ * missed the actual point, which is that a second implementation of the
+ * same fact is exactly the drift this codebase's single-writer rule exists
+ * to prevent), `validateProject`'s live-Save-needs-a-title-screen check
+ * reads it directly, and so do `projectUsesText` just below,
+ * `controller.js`'s title-row visibility and `map.js`'s own title-screen
+ * picker.
+ *
+ * A project can carry a `titleMap` that names nothing — a hand edit, or a
+ * map deleted without clearing the title that pointed at it.
+ * `normalizeProject` cleans this up on load (a stale value is reset to
+ * `null`), but a caller that reaches a project before or without going
+ * through that clamp sees the stale value as-is, and a bare `titleMap !==
+ * null` check cannot tell a stale reference from a real one. Both classes
+ * of bug this predicate exists to prevent were exactly that mistake, made
+ * in opposite directions: `validateProject` once approved a titleless-in-
+ * effect Save project because a stale `titleMap` still read as non-null
+ * (Continue with nowhere to appear — the first fix), and `kernelCodeBytes`
+ * once charged the same stale project for a title screen that
+ * `TITLE_ENABLED = 0` means will not be in the ROM (an overcharge
+ * introduced *by* that first fix, in kernelCodeBytes's own OR against a
+ * live Save — the second). There is no consumer left that wants the loose,
+ * raw-intent answer instead: a title a stale reference no longer resolves
+ * to is not a title screen that will exist in the ROM by any measure this
+ * codebase's own build cares about, so there is nothing for a separate loose
+ * predicate to be right about that this one is not.
+ *
+ * Single-writer by convention, not by anything a test can enforce: every
+ * consumer is meant to import this rather than re-inline the same check,
+ * but a behavioural test that feeds every consumer the same projects and
+ * compares answers (see `test/unit/title.test.js`) can only ever catch a
+ * consumer whose *answer* has drifted — it cannot tell a real import apart
+ * from a consumer that happened to paste back the identical logic, since
+ * the two are behaviourally indistinguishable by construction. That gap is
+ * closed by review, not by this file, and is a known limit rather than an
+ * oversight: this comment is the record of it, not a promise the tests
+ * cover it.
+ */
+export function projectUsesEffectiveTitle(project) {
+  const titleMap = project.project?.titleMap;
+  return titleMap !== null && titleMap !== undefined && project.maps?.[titleMap] !== undefined;
+}
+
+/**
  * Does any part of the project put text on screen? True as soon as an entity
  * carries dialogue or an event, a title screen is chosen, the game is a
  * turn-based RPG (battles are text), or combat can reach the game-over screen.
@@ -273,7 +325,7 @@ export function wrapText(text, cols = BOX_COLS, rows = BOX_ROWS) {
  */
 export function projectUsesText(project) {
   if (project.project?.gameType === 'rpg') return true;
-  if (project.project?.titleMap !== null && project.project?.titleMap !== undefined) return true;
+  if (projectUsesEffectiveTitle(project)) return true;
   if (projectUsesCombat(project)) return true;
   for (const map of project.maps ?? []) {
     for (const screen of map.screens ?? []) {

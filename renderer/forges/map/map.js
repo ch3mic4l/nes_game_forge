@@ -19,7 +19,7 @@ import {
   availableTriggers,
   effectiveTrigger
 } from '../../../shared/project.js';
-import { BOX_COLS, BOX_ROWS, FONT_BASE, wrapText } from '../../../shared/font.js';
+import { BOX_COLS, BOX_ROWS, FONT_BASE, wrapText, projectUsesEffectiveTitle } from '../../../shared/font.js';
 import { RPG_LIMITS, isMonsterActor, mapEncounterFormation } from '../../../shared/project.js';
 import { saveCapable, resolveMapper } from '../../../shared/cartridge.js';
 import { createMetatilePanel } from './metatiles.js';
@@ -1073,7 +1073,13 @@ export function mount(container, app) {
             renderMapSettings();
           }
         },
-        el('option', { value: '', selected: titleMap === null || titleMap === undefined }, 'None — start playing at once'),
+        // The effective predicate, not the loose one: a stale titleMap
+        // (naming a map since deleted) resolves to no real option below, so
+        // without this "None" would be left unselected too and the native
+        // <select> would show nothing chosen at all -- misleading on top of
+        // being wrong, since TITLE_ENABLED assembles to 0 for that project
+        // regardless.
+        el('option', { value: '', selected: !projectUsesEffectiveTitle(store.project) }, 'None — start playing at once'),
         options.map((entry, index) =>
           el('option', { value: index, selected: index === currentIndex }, entry.label)
         )
@@ -1081,7 +1087,7 @@ export function mount(container, app) {
       el(
         'p.hint',
         { style: { marginTop: '6px' } },
-        titleMap === null || titleMap === undefined
+        !projectUsesEffectiveTitle(store.project)
           ? 'With no title screen the game begins the moment the cartridge boots.'
           : 'The game’s name and “PRESS START” are written over this screen. Metatile rows 4–5 and ' +
             '8–9 are recoloured to background palette 0 to keep the text readable, so leave them ' +

@@ -3,8 +3,10 @@
 // tables, and checkCapacity() trusts it to leave room for both. It is a
 // function of the project and mapper: save/load (engine/save.asm) only
 // assembles where the project has a live Save command on a battery-capable
-// board, Move only where the project has a live Move command, and the base
-// itself is now per mapper rather than one flat number shared by every board
+// board, Move only where the project has a live Move command, the title
+// screen (engine/title.asm) only where the project has one that resolves
+// (projectUsesEffectiveTitle), and the base itself is now per mapper rather
+// than one flat number shared by every board
 // -- see the long comment beside kernelCodeBytes for why a shared base
 // overcharged every board but the one it was measured on. A measurement
 // taken on only one configuration, or on only one of the RPG-capable boards,
@@ -29,8 +31,10 @@ import { buildProject } from '../../main/build/pipeline.js';
 import {
   kernelCodeBytes,
   baseKernelCodeBytes,
+  titleKernelAllowance,
   checkCapacity,
   BASE_KERNEL_CODE_BYTES_BY_MAPPER,
+  TITLE_KERNEL_ALLOWANCE_BY_MAPPER,
   KERNEL_SLACK,
   SAVE_KERNEL_ALLOWANCE_BY_MAPPER,
   MOVE_KERNEL_ALLOWANCE,
@@ -63,21 +67,32 @@ const CAPABLE_MAPPERS = SUPPORTED_MAPPERS.filter(rpgCapable);
  * heal/damage's own measurement already covered (dialogue, action combat,
  * the RPG battle system, branches, questions, common-event calls, Play
  * music, Start a battle, Heal/Damage), plus a live Save and/or Move command
- * per `withSave`/`withMove` -- the whole point is nothing conditional is
- * left out of whichever configuration is being measured. Returns the real
+ * per `withSave`/`withMove`, and a title screen per `withTitle` -- the whole
+ * point is nothing conditional is left out of whichever configuration is
+ * being measured. The baseline is title-*off*: `withTitle` defaults to
+ * false, because a title screen is no longer baked unconditionally into
+ * BASE_KERNEL_CODE_BYTES_BY_MAPPER (see the long comment in generate.js) and
+ * sample-rpg as checked in has none. `withSave` forces a title on
+ * regardless of `withTitle`, because validateProject refuses a live Save
+ * command with no title screen ("Continue has nowhere to appear without
+ * one") -- there is no way to measure Save without one. Returns the real
  * kernel code size: nesasm's own usage for the kernel-lo bank, minus
  * everything before `reset` in it (the lookup tables — kernel_lo.inc,
  * palettes, metatiles, sprites, input, maps, chrtables — `reset` being the
  * first label of boot.asm, the first file of engine code included after
  * them), measured off the real assembly rather than recomputed by hand here.
  */
-async function measureCodeBytes(t, mapper, { withSave = false, withMove = false } = {}) {
+async function measureCodeBytes(t, mapper, { withSave = false, withMove = false, withTitle = false } = {}) {
   const dir = await fsp.mkdtemp(path.join(os.tmpdir(), 'forge-kernelbytes-'));
   t.after(() => fsp.rm(dir, { recursive: true, force: true }));
   const project = await loadProject(SAMPLE_RPG);
   project.cartridge.mapper = mapper.id;
-  project.project.titleMap = 0;
-  project.project.titleScreen = 0;
+  if (withTitle || withSave) {
+    project.project.titleMap = 0;
+    project.project.titleScreen = 0;
+  } else {
+    project.project.titleMap = null;
+  }
   const commands = [];
   if (withSave) commands.push({ op: 'save' });
   if (withMove) commands.push({ op: 'move', who: 'self', dir: 'up', dist: 16 });
@@ -160,6 +175,43 @@ function assertCovers(entry, budget, label) {
 // fourth: the day some future save medium's saveMediaImplemented() answers
 // true before this table has a matching measured entry for it, this is what
 // stops kernelCodeBytes from silently computing NaN for that board instead.
+// A titleless project with a live Save command is not a build
+// validateProject will ever pass -- "A project with a Save command needs a
+// title screen" fires regardless of the mapper -- so kernelCodeBytes must
+// price it as the only thing it can legally become, not as the invalid
+// thing it currently is. Charging only on whether titleMap happened to be
+// set yet (dropped in the phase4a round-2 review) undercharged a titleless
+// Save project by exactly
+// TITLE_KERNEL_ALLOWANCE_BY_MAPPER, which let a mapper be recommended and
+// the Build panel's own meter show room for a project that both stops
+// fitting and stops being buildable the moment the author adds the title
+// screen they are already required to. Pure JS, no nesasm build needed --
+// this is a claim about kernelCodeBytes's own arithmetic, not about what
+// nesasm assembles.
+test('a live Save command charges the title allowance even while titleMap is still null', () => {
+  for (const mapper of CAPABLE_MAPPERS) {
+    const titleless = createProject('RPG', 'rpg');
+    titleless.cartridge.mapper = mapper.id;
+    titleless.project.titleMap = null;
+    titleless.maps[0].screens[0].entities.push({
+      actorId: 0,
+      x: 16,
+      y: 16,
+      props: { event: { pages: [{ cond: { type: 'none', arg: 0 }, commands: [{ op: 'save' }] }] } }
+    });
+    const titled = structuredClone(titleless);
+    titled.project.titleMap = 0;
+    titled.project.titleScreen = 0;
+
+    assert.equal(
+      kernelCodeBytes(titleless, mapper),
+      kernelCodeBytes(titled, mapper),
+      `${mapper.name}: a live Save command should charge the same kernel-lo budget whether or not titleMap is ` +
+        'set yet -- the valid form of this project always carries a title screen'
+    );
+  }
+});
+
 test('every saveMediaImplemented() board has a finite SAVE_KERNEL_ALLOWANCE_BY_MAPPER entry', () => {
   for (const mapper of SUPPORTED_MAPPERS) {
     if (!saveMediaImplemented(mapper)) continue;
@@ -186,14 +238,17 @@ test(
     const saveMappers = CAPABLE_MAPPERS.filter(saveMediaImplemented);
     assert.ok(saveMappers.length > 0, 'no save-capable board is registered — saveMediaImplemented() found nothing');
 
-    // Every RPG-capable board, nothing conditional turned on. This is also
-    // what BASE_KERNEL_CODE_BYTES_BY_MAPPER is supposed to equal, board by
-    // board — the direct form of that claim, not a consequence of it.
+    // Every RPG-capable board, nothing conditional turned on -- title-off,
+    // the new meaning of "nothing conditional" now that a title screen is
+    // its own term rather than baked unconditionally into the base (see the
+    // long comment beside kernelCodeBytes). This is also what
+    // BASE_KERNEL_CODE_BYTES_BY_MAPPER is supposed to equal, board by board
+    // — the direct form of that claim, not a consequence of it.
     const noSave = [];
     for (const mapper of CAPABLE_MAPPERS) {
       const { project, codeBytes } = await measureCodeBytes(t, mapper);
       noSave.push({ mapper, project, codeBytes });
-      assertCovers({ mapper, codeBytes }, kernelCodeBytes(project, mapper), 'no Save, no Move');
+      assertCovers({ mapper, codeBytes }, kernelCodeBytes(project, mapper), 'no Save, no Move, no title');
       assert.equal(
         baseKernelCodeBytes(mapper),
         BASE_KERNEL_CODE_BYTES_BY_MAPPER[mapper.id],
@@ -201,14 +256,48 @@ test(
       );
     }
 
-    // Only the save-capable boards, a live Save command and nothing else.
+    // Every RPG-capable board again, this time with a title screen and
+    // nothing else -- the direct measurement TITLE_KERNEL_ALLOWANCE_BY_MAPPER
+    // is supposed to equal, and also the correct title-on baseline the
+    // Save delta below has to diff against (Save always carries a title, so
+    // diffing it against the title-*off* baseline above would silently fold
+    // the title's own cost into the save figure).
+    const noSaveTitle = [];
+    for (const mapper of CAPABLE_MAPPERS) {
+      const { project, codeBytes } = await measureCodeBytes(t, mapper, { withTitle: true });
+      noSaveTitle.push({ mapper, project, codeBytes });
+      assertCovers({ mapper, codeBytes }, kernelCodeBytes(project, mapper), 'a title screen, no Save, no Move');
+      const noSaveEntry = noSave.find((entry) => entry.mapper.id === mapper.id);
+      const delta = codeBytes - noSaveEntry.codeBytes;
+      // Equality, not <=, for the same reason every other term here is: a
+      // <= check would let a stale, over-large figure hide behind
+      // assertCovers's own worst-board-only ceiling the same way
+      // SAVE_KERNEL_ALLOWANCE_BY_MAPPER's own history (below) already warns
+      // against.
+      assert.equal(
+        delta,
+        TITLE_KERNEL_ALLOWANCE_BY_MAPPER[mapper.id],
+        `${mapper.name}: a title screen costs ${delta} bytes of kernel code (${noSaveEntry.codeBytes} -> ${codeBytes}), ` +
+          `but TITLE_KERNEL_ALLOWANCE_BY_MAPPER[${mapper.id}] reserves ` +
+          `${TITLE_KERNEL_ALLOWANCE_BY_MAPPER[mapper.id]} — a per-mapper allowance must equal this board's own ` +
+          'measured delta exactly. Re-measure and correct it (see the comment beside kernelCodeBytes).'
+      );
+    }
+
+    // Only the save-capable boards, a live Save command and nothing else --
+    // diffed against the title-*on* baseline just above, not the title-off
+    // one, because validateProject requires a title screen alongside any
+    // live Save command: both sides of this subtraction carry the same
+    // title cost, so it cancels out and this delta is save/load's own cost
+    // alone, exactly as it was before the title term existed to conflate it
+    // with.
     const withSave = [];
     for (const mapper of saveMappers) {
       const { project, codeBytes } = await measureCodeBytes(t, mapper, { withSave: true });
       withSave.push({ mapper, project, codeBytes });
       assertCovers({ mapper, codeBytes }, kernelCodeBytes(project, mapper), 'a live Save command');
-      const noSaveEntry = noSave.find((entry) => entry.mapper.id === mapper.id);
-      const delta = codeBytes - noSaveEntry.codeBytes;
+      const noSaveTitleEntry = noSaveTitle.find((entry) => entry.mapper.id === mapper.id);
+      const delta = codeBytes - noSaveTitleEntry.codeBytes;
       // Equality, not <=: a per-mapper allowance is supposed to equal that
       // board's own exact measured delta, not merely cover it -- a <= check
       // alone lets a stale, over-large figure (say, MMC1 left at the old
@@ -221,7 +310,7 @@ test(
       assert.equal(
         delta,
         SAVE_KERNEL_ALLOWANCE_BY_MAPPER[mapper.id],
-        `${mapper.name}: save/load costs ${delta} bytes of kernel code (${noSaveEntry.codeBytes} -> ${codeBytes}), ` +
+        `${mapper.name}: save/load costs ${delta} bytes of kernel code (${noSaveTitleEntry.codeBytes} -> ${codeBytes}), ` +
           `but SAVE_KERNEL_ALLOWANCE_BY_MAPPER[${mapper.id}] reserves ` +
           `${SAVE_KERNEL_ALLOWANCE_BY_MAPPER[mapper.id]} — a per-mapper allowance must equal this board's own ` +
           'measured delta exactly. Re-measure and correct it (see the comment beside kernelCodeBytes).'
@@ -316,6 +405,23 @@ test('a mapper kernelbytes cannot measure falls back to the largest measured per
   }
 });
 
+// The same shape for the title term: an action project with a title screen
+// is exactly as reachable on NROM, CNROM, GxROM, Color Dreams or UxROM as it
+// is on any RPG-capable board (a title has nothing to do with rpgCapable()),
+// so this term needs a safe fallback too, not just the base it sits beside.
+test('a mapper the title term cannot measure falls back to the largest measured per-mapper allowance', () => {
+  const unmeasured = SUPPORTED_MAPPERS.filter((mapper) => !(mapper.id in TITLE_KERNEL_ALLOWANCE_BY_MAPPER));
+  assert.ok(unmeasured.length > 0, 'expected at least one supported mapper outside the measured set (e.g. NROM)');
+  const worst = Math.max(...Object.values(TITLE_KERNEL_ALLOWANCE_BY_MAPPER));
+  for (const mapper of unmeasured) {
+    assert.equal(
+      titleKernelAllowance(mapper),
+      worst,
+      `${mapper.name}: an unmeasured mapper should fall back to the largest measured title allowance (${worst})`
+    );
+  }
+});
+
 // The fallback base is known to be safe (over-reserved, never under) purely
 // by construction -- it is the largest of three real measurements -- but
 // nothing before this assembled a real project on any of the five mappers it
@@ -326,44 +432,112 @@ test('a mapper kernelbytes cannot measure falls back to the largest measured per
 // fallback still covers the real usage.
 const FALLBACK_MAPPERS = SUPPORTED_MAPPERS.filter((mapper) => !(mapper.id in BASE_KERNEL_CODE_BYTES_BY_MAPPER));
 
+/**
+ * Builds `sample` -- the action-adventure fixture, not sample-rpg, since
+ * these five boards cannot target an RPG at all -- on `mapper` with
+ * `titleMap` forced to either present or absent, and a live Move command
+ * added only when `withMove` says so, returning nesasm's own kernel-lo
+ * code-byte usage the same way measureCodeBytes does for the RPG-capable
+ * boards above.
+ */
+async function measureFallbackCodeBytes(t, mapper, { titled, withMove = false } = {}) {
+  const dir = await fsp.mkdtemp(path.join(os.tmpdir(), 'forge-fallback-'));
+  t.after(() => fsp.rm(dir, { recursive: true, force: true }));
+  const project = await loadProject(SAMPLE);
+  project.cartridge.mapper = mapper.id;
+  if (titled) {
+    project.project.titleMap = 0;
+    project.project.titleScreen = 0;
+  } else {
+    project.project.titleMap = null;
+  }
+  if (withMove) {
+    const slime = project.sprites.actors[0];
+    project.maps[0].screens[0].entities.push({
+      actorId: slime.id,
+      x: 16,
+      y: 16,
+      props: {
+        event: { pages: [{ cond: { type: 'none', arg: 0 }, commands: [{ op: 'move', who: 'self', dir: 'up', dist: 16 }] }] }
+      }
+    });
+  }
+  await saveProject(dir, project);
+  const lines = [];
+  const built = await buildProject({ dir, project, log: (line) => lines.push(line) });
+
+  const { kernelLoBank } = prgLayout(mapper);
+  const bankLine = lines.find((line) => new RegExp(`^BANK\\s+${kernelLoBank}\\s`).test(line));
+  assert.ok(bankLine, `${mapper.name}: nesasm's usage table never mentioned bank ${kernelLoBank} (kernel-lo)`);
+  const used = Number(bankLine.match(/(\d+)\/\s*(\d+)\s*$/)?.[1]);
+  const symbols = await fsp.readFile(built.symbolPath, 'utf8');
+  const resetAddr = parseInt(symbols.match(/^reset\s*=\s*\$([0-9A-Fa-f]+)/m)[1], 16);
+  return { project, codeBytes: used - (resetAddr - 0xc000) };
+}
+
+// Building only a title-on sample (the fixture's own checked-in state) used
+// to fold two claims into one number: the fallback base covering title-off
+// usage, and the fallback title allowance covering the title delta. Either
+// term could regress while the other's slack silently absorbed it and this
+// test stayed green -- exactly the "a single combined figure masks a
+// regression in either half" gap the phase4a round-2 review found here.
+// Building both variants and asserting each term against its own real
+// measurement is what closes that, the same way the RPG-capable boards'
+// own per-mapper terms are checked individually above rather than only in
+// combination.
+//
+// The base/title pair below is measured with Move switched *off*: an
+// earlier version of this test always carried a live Move command (395
+// bytes) yet compared the result against `baseKernelCodeBytes(mapper)`
+// alone -- a term that claims nothing about Move at all. That passed only
+// because the five fallback boards' shared base happens to be generous
+// enough to absorb 395 bytes of code it was never charged for measuring,
+// which is exactly the failure mode this codebase's own SAVE_KERNEL_ALLOWANCE
+// history warns about: a comparison that happens to hold today would have
+// rejected a correctly *tightened* base tomorrow, for a reason that had
+// nothing to do with the base being wrong. Base and title are measured
+// clean of Move so each assertion below is checking the thing its own
+// constant actually claims to be; the "everything real fits" sanity check
+// that used to ride along on the title-on variant now gets its own
+// title-on-and-Move build instead, checked against kernelCodeBytes's own
+// combined answer for that same project (base + title + Move + slack), so
+// Move's own flat allowance is still exercised on these boards rather than
+// silently untested here.
 test(
-  'the fallback base safely over-reserves for every mapper it stands in for',
+  'the fallback base and the fallback title allowance each safely over-reserve on their own, for every mapper they stand in for',
   { skip: !hasNesasm && 'nesasm not found on PATH' },
   async (t) => {
     assert.ok(FALLBACK_MAPPERS.length > 0, 'expected at least one unmeasured mapper (e.g. NROM)');
     for (const mapper of FALLBACK_MAPPERS) {
-      const dir = await fsp.mkdtemp(path.join(os.tmpdir(), 'forge-fallback-'));
-      t.after(() => fsp.rm(dir, { recursive: true, force: true }));
-      const project = await loadProject(SAMPLE);
-      project.cartridge.mapper = mapper.id;
-      const slime = project.sprites.actors[0];
-      project.maps[0].screens[0].entities.push({
-        actorId: slime.id,
-        x: 16,
-        y: 16,
-        props: {
-          event: { pages: [{ cond: { type: 'none', arg: 0 }, commands: [{ op: 'move', who: 'self', dir: 'up', dist: 16 }] }] }
-        }
-      });
-      await saveProject(dir, project);
-      const lines = [];
-      const built = await buildProject({ dir, project, log: (line) => lines.push(line) });
-
-      const { kernelLoBank } = prgLayout(mapper);
-      const bankLine = lines.find((line) => new RegExp(`^BANK\\s+${kernelLoBank}\\s`).test(line));
-      assert.ok(bankLine, `${mapper.name}: nesasm's usage table never mentioned bank ${kernelLoBank} (kernel-lo)`);
-      const used = Number(bankLine.match(/(\d+)\/\s*(\d+)\s*$/)?.[1]);
-      const symbols = await fsp.readFile(built.symbolPath, 'utf8');
-      const resetAddr = parseInt(symbols.match(/^reset\s*=\s*\$([0-9A-Fa-f]+)/m)[1], 16);
-      const codeBytes = used - (resetAddr - 0xc000);
-      const budget = kernelCodeBytes(project, mapper);
+      const off = await measureFallbackCodeBytes(t, mapper, { titled: false });
+      const on = await measureFallbackCodeBytes(t, mapper, { titled: true });
+      const base = baseKernelCodeBytes(mapper);
+      const titleAllowance = titleKernelAllowance(mapper);
+      const titleDelta = on.codeBytes - off.codeBytes;
 
       assert.ok(
-        codeBytes <= budget,
-        `${mapper.name}: real kernel code (${codeBytes} bytes, with a live Move command) exceeds the fallback ` +
-          `budget (${budget}) -- the fallback is supposed to be a safe over-estimate for every mapper it stands ` +
-          "in for; if this board's own code has grown past it, it needs its own measured entry in " +
+        off.codeBytes <= base,
+        `${mapper.name}: real title-off kernel code (${off.codeBytes} bytes) exceeds the fallback base (${base}) ` +
+          "-- if this board's own code has grown past it, it needs its own measured entry in " +
           'BASE_KERNEL_CODE_BYTES_BY_MAPPER instead of the shared fallback.'
+      );
+      assert.ok(
+        titleDelta <= titleAllowance,
+        `${mapper.name}: a title screen really costs ${titleDelta} bytes of kernel code (${off.codeBytes} -> ` +
+          `${on.codeBytes}), which exceeds the fallback title allowance (${titleAllowance}) -- if this board's ` +
+          'own title cost has grown past it, it needs its own measured entry in ' +
+          'TITLE_KERNEL_ALLOWANCE_BY_MAPPER instead of the shared fallback.'
+      );
+      // The combined claim these two terms exist to support: a real,
+      // title-on, Move-carrying build still fits inside what kernelCodeBytes
+      // reserves for it. A build of its own, not derived from `on` above,
+      // so Move's own 395-byte allowance is genuinely exercised on these
+      // boards rather than assumed from the RPG-capable boards' own coverage.
+      const onWithMove = await measureFallbackCodeBytes(t, mapper, { titled: true, withMove: true });
+      assert.ok(
+        onWithMove.codeBytes <= kernelCodeBytes(onWithMove.project, mapper),
+        `${mapper.name}: real kernel code (${onWithMove.codeBytes} bytes, title on, with a live Move command) ` +
+          `exceeds the fallback budget (${kernelCodeBytes(onWithMove.project, mapper)})`
       );
     }
   }
@@ -386,6 +560,19 @@ function kernelShortfallMessage(project) {
   const error = problems.find((p) => p.severity === 'error' && /lookup tables/.test(p.message));
   assert.ok(error, 'expected checkCapacity to refuse this project over kernel-lo capacity');
   return error.message;
+}
+
+// The deficit checkCapacity's own refusal names -- "need {tableBytes} bytes
+// but only {free} are free" -- pulled from the same message
+// kernelShortfallMessage returns rather than recomputed by hand here, so a
+// test asserting a specific deficit band is asserting the real refusal, not
+// a parallel calculation of it that could drift from what checkCapacity
+// actually decided.
+function kernelShortfallDeficit(project) {
+  const message = kernelShortfallMessage(project);
+  const match = message.match(/need (\d+) bytes but only (-?\d+) are free/);
+  assert.ok(match, `could not parse a deficit out of: ${message}`);
+  return Number(match[1]) - Number(match[2]);
 }
 
 function inflate(project, count) {
@@ -432,7 +619,37 @@ test('a kernel-lo shortfall Move alone would not close by its own allowance can 
     y: 16,
     props: { event: { pages: [{ cond: { type: 'none', arg: 0 }, commands: [{ op: 'move', who: 'self', dir: 'up', dist: 16 }] }] } }
   });
-  inflate(project, 131); // the exact deficit (397 bytes) the review reproduced
+  // 159, not the original 131: this project carries no title screen, and
+  // MMC3's own base dropped by 224 bytes (TITLE_KERNEL_ALLOWANCE_BY_MAPPER)
+  // once title stopped being baked unconditionally into every board's base
+  // -- see the long comment beside kernelCodeBytes. The extra 28 filler
+  // actors (8 bytes of tableBytes each, 224 bytes total) restore the same
+  // 397-byte deficit the original inflate(131) produced against the old,
+  // title-inflated base; re-derived and confirmed against a real
+  // checkCapacity() run, not assumed from the arithmetic alone.
+  inflate(project, 159); // the exact deficit (397 bytes) the review reproduced
+  // The message assertion below would still pass if drift ever dropped the
+  // deficit to, say, 200 bytes -- solo's own freed figure (414, Move's own
+  // cost plus the split-lock it also turns off) covers any deficit up to
+  // 414, not only the one this case is calibrated for. That is not what
+  // this test is supposed to demonstrate: the band a deficit has to sit in
+  // for split-lock's own extra 19 bytes to be the thing making the
+  // difference is strictly above Move's own allowance alone (395) and at
+  // or below the combined figure (414) -- below 395 and Move alone already
+  // covers it without split-lock in the picture at all, and above 414
+  // neither figure would close the gap. Asserted directly, per the phase4a
+  // round-2 review, rather than left implicit in the message match below.
+  const deficit = kernelShortfallDeficit(project);
+  assert.ok(
+    deficit > MOVE_KERNEL_ALLOWANCE,
+    `deficit ${deficit} must exceed MOVE_KERNEL_ALLOWANCE (${MOVE_KERNEL_ALLOWANCE}) alone, or this case does ` +
+      'not exercise split-lock being freed alongside Move at all'
+  );
+  assert.ok(
+    deficit <= MOVE_KERNEL_ALLOWANCE + SPLIT_LOCK_KERNEL_ALLOWANCE,
+    `deficit ${deficit} must not exceed MOVE_KERNEL_ALLOWANCE + SPLIT_LOCK_KERNEL_ALLOWANCE ` +
+      `(${MOVE_KERNEL_ALLOWANCE + SPLIT_LOCK_KERNEL_ALLOWANCE}), or dropping Move would not close the gap either`
+  );
   const message = kernelShortfallMessage(project);
   assert.match(message, /removing every Move command \(frees 414 bytes\)/);
 });
@@ -452,6 +669,11 @@ test('a kernel-lo shortfall a live Save command alone would close names Save, wi
   const message = kernelShortfallMessage(project);
   assert.match(message, new RegExp(`removing every Save command \\(frees ${SAVE_KERNEL_ALLOWANCE_BY_MAPPER[1]} bytes\\)`));
   assert.doesNotMatch(message, /Move command/, 'this project never turns Move on, so it must not be offered as a fix');
+  // Title is now its own kernelCodeBytes term, but it is content on a map,
+  // not a command projectWithoutCommands can switch off -- and this project
+  // could not drop it anyway (validateProject requires one alongside a live
+  // Save). kernelShortfallAdvice must never suggest it.
+  assert.doesNotMatch(message, /title/i, 'a title screen is not a droppable command and must never be offered as a fix');
 });
 
 test('a kernel-lo shortfall neither Save nor Move would close, but a roomier board would, names that board', async () => {

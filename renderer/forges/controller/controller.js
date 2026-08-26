@@ -4,6 +4,7 @@
 import { store } from '../../store.js';
 import { el, fill, field, toast } from '../../ui.js';
 import { ACTIONS, BUTTONS, INPUT_STATES } from '../../../shared/project.js';
+import { projectUsesEffectiveTitle } from '../../../shared/font.js';
 
 // What the engine does with each action, in each game state. A `null` means the
 // engine ignores that action there — a bound button that does nothing is worth
@@ -84,12 +85,16 @@ const STATE_LABELS = {
 // added there first so the compiled table has a row for it, and appears here
 // only once there is something in the ROM to bind. Showing a row for a state the
 // engine cannot enter would be offering a control that does nothing — which is
-// why the title row also depends on the project actually having a title screen.
-const bindableStates = (project) =>
+// why the title row also depends on the project actually having a title screen
+// that resolves: a stale titleMap naming no real map assembles to
+// TITLE_ENABLED = 0, so ST_TITLE is exactly as unreachable as if titleMap
+// were null, and the row would be offering a binding for a state the ROM
+// can never enter.
+export const bindableStates = (project) =>
   INPUT_STATES.filter(
     (state) =>
       state in STATE_LABELS &&
-      (state !== 'title' || (project.project.titleMap !== null && project.project.titleMap !== undefined))
+      (state !== 'title' || projectUsesEffectiveTitle(project))
   );
 
 const BUTTON_LABELS = { A: 'A', B: 'B', SELECT: 'Select', START: 'Start' };
