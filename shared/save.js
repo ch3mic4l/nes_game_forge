@@ -18,7 +18,7 @@
 // which is exactly the point: a reordered or resized record must not be read
 // as an old one's.
 
-import { RPG_LIMITS } from './project.js';
+import { RPG_LIMITS, projectUsesItems } from './project.js';
 
 /**
  * `inv_items`' size (engine/constants.asm's `MAX_ITEMS`). Hardcoded there,
@@ -36,8 +36,24 @@ export const MAX_ITEMS = 8;
  * of deriving `saveIdentity` from the sizes below; this one covers the part
  * that cannot be derived, a change to what the bytes mean rather than how many
  * there are.
+ *
+ * 1 -> 2 (phase 4b): `inv_items`' own bytes can now mean an item id rather
+ * than an actor id (engine/save.asm's `.if ITEMS_ENABLED` bound switches
+ * between NUM_ITEMS and NUM_ACTORS on exactly this). `SAVE_FIELDS` below is
+ * unchanged -- same field, same size -- which is exactly the case this
+ * version exists for: a meaning change `saveIdentity`'s derived sizes cannot
+ * catch on their own. The bump is engine-wide and unconditional, for every
+ * project built with this engine version, regardless of whether that
+ * particular project's own `ITEMS_ENABLED` happens to be on: the
+ * *capability* exists in the binary the moment this ships, so any save from
+ * the prior engine version must stop validating, not only saves from
+ * projects that use items. What an author sees: nothing special -- an old
+ * save fails `save_check_valid`'s very first identity compare and is
+ * treated exactly like a foreign or corrupted one, the same path a save from
+ * a different project already takes. The title screen simply does not offer
+ * Continue.
  */
-export const SAVE_LAYOUT_VERSION = 1;
+export const SAVE_LAYOUT_VERSION = 2;
 
 /**
  * Every field the record carries, and the RAM array or scalar it comes from.
@@ -139,6 +155,17 @@ export function saveBodySize() {
  * loads -- already decides whether the battle system assembles at all, so
  * the two must be kept in lockstep by hand if that predicate ever changes.)
  *
+ * Phase 4b adds `itemsEnabled` and `itemCount`, the identical shape of fact
+ * `battleEnabled`/`actorCount` already are: `save_check_valid`'s own
+ * enabled-path bound switches from NUM_ACTORS to NUM_ITEMS on exactly
+ * `itemsEnabled`, so two builds that agree on every other count here but
+ * disagree on which economy `inv_items` holds must not collide -- and
+ * `SAVE_LAYOUT_VERSION`'s own bump to 2 already invalidates every save from
+ * before this capability existed at all (see its own docstring), which is a
+ * different, coarser guarantee than this one: the version bump separates
+ * old engine from new; `itemsEnabled`/`itemCount` separate two same-version
+ * projects whose bags mean different things from each other.
+ *
  * Folded with a small multiplicative hash (each value XORed in after
  * multiplying the running hash by 33 — a shape often called djb2) rather
  * than a weighted sum, because the weighted sum this replaced collided on
@@ -184,6 +211,19 @@ export function saveIdentity(project) {
   const maxLevel = project?.rpg?.maxLevel ?? 0;
   const partyCount = (project?.party ?? []).length;
   const battleEnabled = project?.project?.gameType === 'rpg' ? 1 : 0;
+  // Phase 4: itemsEnabled distinguishes a project whose bag holds item ids
+  // from an otherwise-identically-shaped one whose bag still holds legacy
+  // actor ids -- save_check_valid's own bound switches between NUM_ITEMS and
+  // NUM_ACTORS on this exact fact (engine/save.asm), so two projects that
+  // agree on every other count here but disagree on it must not collide.
+  // itemCount only when enabled -- an items-disabled project's item catalog
+  // (if any items[] entries exist despite ITEMS_ENABLED being computed from
+  // `.length > 0`, which it cannot, but a future predicate change should not
+  // silently start folding in a fact save_check_valid never bounds against)
+  // is not one save_check_valid ever bounds against, so it must not be part
+  // of what makes two builds' identities differ.
+  const itemsEnabled = projectUsesItems(project) ? 1 : 0;
+  const itemCount = itemsEnabled ? (project?.items ?? []).length : 0;
   let hashLo = SAVE_LAYOUT_VERSION;
   let hashHi = SAVE_LAYOUT_VERSION;
   for (const value of [
@@ -195,7 +235,9 @@ export function saveIdentity(project) {
     actorCount,
     maxLevel,
     partyCount,
-    battleEnabled
+    battleEnabled,
+    itemsEnabled,
+    itemCount
   ]) {
     hashLo = (hashLo * 33) ^ (value & 0xffff);
     hashLo &= 0xffff;

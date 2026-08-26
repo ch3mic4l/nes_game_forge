@@ -38,7 +38,8 @@ import {
   KERNEL_SLACK,
   SAVE_KERNEL_ALLOWANCE_BY_MAPPER,
   MOVE_KERNEL_ALLOWANCE,
-  SPLIT_LOCK_KERNEL_ALLOWANCE
+  SPLIT_LOCK_KERNEL_ALLOWANCE,
+  ITEM_KERNEL_ALLOWANCE
 } from '../../main/build/generate.js';
 import { SUPPORTED_MAPPERS, rpgCapable, saveMediaImplemented, prgLayout } from '../../shared/cartridge.js';
 import { createTileset, createProject } from '../../shared/project.js';
@@ -82,11 +83,15 @@ const CAPABLE_MAPPERS = SUPPORTED_MAPPERS.filter(rpgCapable);
  * first label of boot.asm, the first file of engine code included after
  * them), measured off the real assembly rather than recomputed by hand here.
  */
-async function measureCodeBytes(t, mapper, { withSave = false, withMove = false, withTitle = false } = {}) {
+async function measureCodeBytes(t, mapper, { withSave = false, withMove = false, withTitle = false, withItems = true } = {}) {
   const dir = await fsp.mkdtemp(path.join(os.tmpdir(), 'forge-kernelbytes-'));
   t.after(() => fsp.rm(dir, { recursive: true, force: true }));
   const project = await loadProject(SAMPLE_RPG);
   project.cartridge.mapper = mapper.id;
+  // sample-rpg carries one live item by default; withItems: false strips it
+  // so a caller can isolate ITEM_KERNEL_ALLOWANCE's own delta the same way
+  // withSave/withMove/withTitle isolate theirs.
+  if (!withItems) project.items = [];
   if (withTitle || withSave) {
     project.project.titleMap = 0;
     project.project.titleScreen = 0;
@@ -256,6 +261,31 @@ test(
       );
     }
 
+    // Round 4 finding (Medium 6): ITEM_KERNEL_ALLOWANCE's own comment
+    // claimed this file measured its exact delta on every RPG-capable
+    // board, when in fact nothing here had ever isolated it -- the only
+    // equality involving it lived in the combined MMC3 Save+Move test below,
+    // which cannot separate the item term from every other term in the same
+    // equation. sample-rpg carries one live item by default, so "no Save, no
+    // Move, no title" above is not "no items" -- this is the direct
+    // isolation, the same shape as the title/save/move deltas already are:
+    // measure with items stripped, diff against the noSave baseline (which
+    // already has them), and assert equality, per board, not merely covered
+    // by assertCovers' own worst-board-only margin.
+    for (const mapper of CAPABLE_MAPPERS) {
+      const { codeBytes } = await measureCodeBytes(t, mapper, { withItems: false });
+      const noSaveEntry = noSave.find((entry) => entry.mapper.id === mapper.id);
+      const delta = noSaveEntry.codeBytes - codeBytes;
+      assert.equal(
+        delta,
+        ITEM_KERNEL_ALLOWANCE,
+        `${mapper.name}: sample-rpg's one item costs ${delta} bytes of kernel code (${codeBytes} -> ` +
+          `${noSaveEntry.codeBytes}), but ITEM_KERNEL_ALLOWANCE reserves ${ITEM_KERNEL_ALLOWANCE} — this ` +
+          'allowance must equal an item’s real cost exactly, on every board. Re-measure and correct it (see ' +
+          'the comment beside kernelCodeBytes).'
+      );
+    }
+
     // Every RPG-capable board again, this time with a title screen and
     // nothing else -- the direct measurement TITLE_KERNEL_ALLOWANCE_BY_MAPPER
     // is supposed to equal, and also the correct title-on baseline the
@@ -363,6 +393,21 @@ test(
     // rather than reservation conservatism, and closing it is not this
     // phase's own work. Bracketed precisely, not just excluded here, by
     // "sample-rpg with Save and Move on UNROM 512 does not build" below.
+    //
+    // MMC3 joined UNROM 512's exclusion for one revision of this file, for
+    // the identical reason UNROM 512 stays excluded: sample-rpg carries a
+    // live item, and ITEM_KERNEL_ALLOWANCE (16 bytes, measured,
+    // main/build/generate.js) plus item_metasprite's own table byte was real
+    // cost the combination's 21-byte real margin (1 byte of modelled
+    // headroom beyond KERNEL_SLACK) did not have. A kernel diet in
+    // engine/player.asm (the four movement direction routines' identical
+    // two-corner probe-and-commit tail, collapsed into one shared routine
+    // per axis -- see the long comment beside "sample-rpg with Save, Move
+    // and its one live item builds on MMC3 again" below) recovered enough
+    // real kernel-lo headroom that this combination now leaves exactly
+    // KERNEL_SLACK bytes of margin again, the same shape every other
+    // per-mapper term in this file already holds to, so MMC3 rejoins this
+    // loop rather than staying excluded.
     for (const mapper of saveMappers.filter((m) => m.id !== 30)) {
       const { project, codeBytes } = await measureCodeBytes(t, mapper, { withSave: true, withMove: true });
       assertCovers({ mapper, codeBytes }, kernelCodeBytes(project, mapper), 'a live Save command and a live Move command');
@@ -375,13 +420,23 @@ test(
     // per-mapper base -- not a stray byte either way, and not folded into the
     // base itself (see the comment beside kernelCodeBytes for why it stays a
     // separate term).
+    //
+    // Phase 4b: sample-rpg (what measureCodeBytes always builds) carries one
+    // live item, so "no Save, no Move, no title" is not "no items" -- every
+    // measurement in this whole function unconditionally includes
+    // ITEM_KERNEL_ALLOWANCE. That cancels out in every *other* delta this
+    // test computes (both sides of each subtraction carry it equally), but
+    // not here: baseKernelCodeBytes is a static, pre-items constant with no
+    // item cost of its own to cancel against, so it has to be added back in
+    // by hand on this one comparison.
     const mmc3 = noSave.find((entry) => entry.mapper.id === 4);
     if (mmc3) {
       assert.equal(
-        mmc3.codeBytes - baseKernelCodeBytes(mmc3.mapper),
+        mmc3.codeBytes - baseKernelCodeBytes(mmc3.mapper) - ITEM_KERNEL_ALLOWANCE,
         SPLIT_LOCK_KERNEL_ALLOWANCE,
         "MMC3's own no-Save measurement should exceed its per-mapper base by exactly SPLIT_LOCK_KERNEL_ALLOWANCE " +
-          '(every RPG shows text, so every MMC3 RPG pays the interrupt-race fix)'
+          'plus ITEM_KERNEL_ALLOWANCE (every RPG shows text, so every MMC3 RPG pays the interrupt-race fix, and ' +
+          'sample-rpg always carries a live item)'
       );
     }
   }
@@ -593,7 +648,11 @@ test('a kernel-lo shortfall a live Move command alone would close names Move', a
     y: 16,
     props: { event: { pages: [{ cond: { type: 'none', arg: 0 }, commands: [{ op: 'move', who: 'self', dir: 'up', dist: 16 }] }] } }
   });
-  inflate(project, 70);
+  // 80, not the original 70: MMC3's own base dropped 70 bytes with the
+  // kernel diet's movement-tail dedup (engine/player.asm), so the old count
+  // no longer produces any deficit at all; re-derived against a real
+  // checkCapacity() run, not assumed from the base delta alone.
+  inflate(project, 80);
   const message = kernelShortfallMessage(project);
   assert.match(message, /removing every Move command/);
   assert.doesNotMatch(message, /Save command/, 'this project never turns Save on, so it must not be offered as a fix');
@@ -619,15 +678,14 @@ test('a kernel-lo shortfall Move alone would not close by its own allowance can 
     y: 16,
     props: { event: { pages: [{ cond: { type: 'none', arg: 0 }, commands: [{ op: 'move', who: 'self', dir: 'up', dist: 16 }] }] } }
   });
-  // 159, not the original 131: this project carries no title screen, and
-  // MMC3's own base dropped by 224 bytes (TITLE_KERNEL_ALLOWANCE_BY_MAPPER)
-  // once title stopped being baked unconditionally into every board's base
-  // -- see the long comment beside kernelCodeBytes. The extra 28 filler
-  // actors (8 bytes of tableBytes each, 224 bytes total) restore the same
-  // 397-byte deficit the original inflate(131) produced against the old,
-  // title-inflated base; re-derived and confirmed against a real
-  // checkCapacity() run, not assumed from the arithmetic alone.
-  inflate(project, 159); // the exact deficit (397 bytes) the review reproduced
+  // 169, not the original 159: the kernel diet's movement-tail dedup
+  // (engine/player.asm) dropped MMC3's own base by a further 70 bytes, so
+  // 159's own deficit (397 before the diet) fell to 327 -- under
+  // MOVE_KERNEL_ALLOWANCE alone, which no longer exercises split-lock being
+  // freed alongside it at all. Re-derived against a real checkCapacity()
+  // run, not assumed from the base delta alone: 169 lands the deficit at
+  // 407, inside the (395, 414] band this case exists to reproduce.
+  inflate(project, 169); // deficit 407, strictly above 395 and at or below 414
   // The message assertion below would still pass if drift ever dropped the
   // deficit to, say, 200 bytes -- solo's own freed figure (414, Move's own
   // cost plus the split-lock it also turns off) covers any deficit up to
@@ -683,7 +741,13 @@ test('a kernel-lo shortfall neither Save nor Move would close, but a roomier boa
   project.project.titleScreen = 0;
   // No Save, no Move: kernelShortfallAdvice must skip straight past the
   // feature-drop branch (neither is live) to the mapper-swap one.
-  inflate(project, 120);
+  // 128, not the original 120: the kernel diet's movement-tail dedup
+  // (engine/player.asm) dropped every board's own base by 70 bytes alike, so
+  // 120 no longer produces any deficit. Re-derived against a real
+  // checkCapacity() run: 128 lands a 12-byte deficit, comfortably inside the
+  // narrow window (deficits 4-20, out of 195 bytes MMC1 would save) where
+  // MMC1 is still offered before the fallback message takes over above it.
+  inflate(project, 128);
   const message = kernelShortfallMessage(project);
   assert.match(message, /Try MMC1 in the Build panel/);
 });
@@ -712,7 +776,7 @@ test('a mapper suggestion is withheld from a project carrying hand-written code'
   base.cartridge.mapper = 30; // UNROM 512 -- the case above proves MMC1 is offered here
   base.project.titleMap = 0;
   base.project.titleScreen = 0;
-  inflate(base, 120);
+  inflate(base, 128); // see the identical recalibration note on the case above
 
   assert.match(
     kernelShortfallMessage(structuredClone(base)),
@@ -756,7 +820,12 @@ test('a mapper suggestion never recommends a board that cannot hold this project
   project.project.titleMap = 0;
   project.project.titleScreen = 0;
   while (project.tilesets.length < 17) project.tilesets.push(createTileset(project.tilesets.length));
-  inflate(project, 120); // forces a kernel-lo shortfall MMC1's own savings would otherwise "cover"
+  // 126, not the original 120: the kernel diet's movement-tail dedup
+  // (engine/player.asm) dropped MMC3's own base by 70 bytes, so 120 no
+  // longer produces a deficit at all. Re-derived against a real
+  // checkCapacity() run: 126 lands a 7-byte deficit, comfortably inside what
+  // MMC1's own savings would otherwise "cover".
+  inflate(project, 126); // forces a kernel-lo shortfall MMC1's own savings would otherwise "cover"
   const before = structuredClone(project);
   const message = kernelShortfallMessage(project);
   assert.doesNotMatch(
@@ -810,55 +879,113 @@ function saveAndMoveEvent() {
   };
 }
 
-// The known outcome this whole change was scoped against: sample-rpg with a
-// live Save command *and* a live Move command, on MMC3, used to be short of
-// the kernel-lo bank (332 bytes before the kernel diet, 12 after it, 4 after
-// per-mapper budgeting) even though nesasm itself could assemble the real
-// code into the bank with room left over. The entity_contact fix beside this
-// one (engine/combat.asm — an RPG's touch_encounter must not be gated on
-// player_iframes, the action side's own invincible window) happens to free 5
-// bytes of kernel code on every RPG-capable board, which is enough on its
-// own to close this specific 4-byte gap: this combination now builds clean.
-// That is fragile, not fixed — the margin is real but thin, and the point of
-// this test is the semantic invariant (it assembles, with at least
-// KERNEL_SLACK bytes free) rather than the exact figure on the day it was
-// written: pinning the literal byte count would fail on any harmless change
-// elsewhere in the bank (a fixture table growing by one entry, unrelated
-// code shrinking) and invite loosening the assertion rather than
-// investigating, which is the opposite of what a capacity regression test is
-// for. The failure message still prints the real figure, so a genuine
-// regression stays as diagnosable as a literal assertion would have been.
+// The outcome this whole change was scoped against, and its history in three
+// parts. sample-rpg with a live Save command *and* a live Move command, on
+// MMC3, used to be short of the kernel-lo bank (332 bytes before the kernel
+// diet, 12 after it, 4 after per-mapper budgeting) even though nesasm itself
+// could assemble the real code into the bank with room left over; the
+// entity_contact fix (engine/combat.asm) closed that specific gap, down to a
+// real, measured 21 bytes free (1 byte of modelled headroom beyond
+// KERNEL_SLACK). Phase 4b's own ITEM_KERNEL_ALLOWANCE (16 bytes, measured on
+// all three RPG-capable boards -- see main/build/generate.js) was real cost
+// sample-rpg was always going to pay the moment items[] stopped being
+// schema-only, and it reopened the gap: 16 (code) + 1 (item_metasprite
+// table) = 17 bytes the 21-byte margin did not have, exactly the capacity
+// wall the phase 4 design document's §6 predicted. checkCapacity was correct
+// to refuse it then -- a build inside KERNEL_SLACK is exactly the "fits
+// today, breaks on the next harmless change" case that margin exists to rule
+// out.
+//
+// The kernel diet closed it again, this time with real headroom rather than
+// a single spare byte. engine/player.asm's four direction routines
+// (move_left_inside/move_right_inside/move_up_inside/move_down_inside) each
+// ended with an identical two-corner probe-and-commit tail, differing only
+// in which body-offset constant fed the first probe and which of
+// player_x/player_y the result committed to; move_horizontal_probe and
+// move_vertical_probe are that shared tail now, with each _inside label
+// falling into its axis's tail by `jmp` (not `jsr`) so the tail's own `rts`
+// still returns to whichever caller originally `jsr`'d move_left et al. --
+// removing genuine duplication, not changing behaviour, which is why this is
+// a size fix and every functional movement test in this suite still holds.
+// This is the same shape as two earlier kernel diets in this codebase's
+// history (the `.if !BATTLE_ENABLED` split that freed 269 bytes, and the
+// entity_contact fix above that freed 5): real duplication found and
+// removed, re-measured rather than assumed.
+//
+// checkCapacity now accepts this exact combination again -- Save, Move and
+// sample-rpg's one live item, on MMC3. The assertion below is `free >=
+// KERNEL_SLACK`, not `>`: a perfectly calibrated model whose project exactly
+// fills the bank leaves exactly KERNEL_SLACK free, and that is a legitimate
+// build a `>` check would wrongly refuse. What this actually guards against
+// is kernelCodeBytes under-reserving -- confirmed by sabotage: reverting the
+// diet while keeping the diet's smaller constants let checkCapacity accept a
+// build that really had only 4 real bytes free, and this is the assertion
+// that caught it. That is reservation-versus-reality drift, the same thing
+// assertCovers checks elsewhere in this file, not a claim about how much
+// headroom this particular build happens to have today -- which is why the
+// literal free-byte count is not pinned here either.
 test(
-  'sample-rpg with Save and Move on MMC3 now builds, with room to spare',
+  'sample-rpg with Save, Move and its one live item builds on MMC3 again, with real headroom, after the kernel diet',
   { skip: !hasNesasm && 'nesasm not found on PATH' },
   async (t) => {
-    const dir = await fsp.mkdtemp(path.join(os.tmpdir(), 'forge-savemove-mmc3-'));
-    t.after(() => fsp.rm(dir, { recursive: true, force: true }));
     const project = await loadProject(SAMPLE_RPG);
     project.cartridge.mapper = 4; // MMC3
     project.project.titleMap = 0;
     project.project.titleScreen = 0;
     project.maps[0].screens[0].entities.push(saveAndMoveEvent());
-    const { problems } = checkCapacity(project);
+    assert.ok(project.items.length > 0, 'this case needs sample-rpg\'s own live item still in play');
+
     assert.deepEqual(
-      problems.filter((p) => p.severity === 'error'),
+      checkCapacity(project).problems.filter((p) => p.severity === 'error'),
       [],
-      'checkCapacity should no longer refuse this combination'
+      'Save, Move and sample-rpg\'s one live item should fit on MMC3 after the kernel diet'
     );
+
+    const dir = await fsp.mkdtemp(path.join(os.tmpdir(), 'forge-savemove-mmc3-'));
+    t.after(() => fsp.rm(dir, { recursive: true, force: true }));
     await saveProject(dir, project);
     const lines = [];
     const built = await buildProject({ dir, project, log: (line) => lines.push(line) });
-    assert.ok(built.romPath, 'nesasm should have assembled a ROM');
+    assert.ok(built.romPath, 'nesasm should assemble this exact configuration into a ROM');
     const bankLine = lines.find((line) => /^BANK\s+30\s/.test(line));
     assert.ok(bankLine, "MMC3's own kernel-lo bank (30) should appear in nesasm's usage table");
     const free = Number(bankLine.match(/\d+\/\s*(\d+)\s*$/)?.[1]);
     assert.ok(
       free >= KERNEL_SLACK,
-      `MMC3's kernel-lo bank has only ${free} bytes free (${bankLine.trim()}) -- expected at least ` +
-        `KERNEL_SLACK (${KERNEL_SLACK}), the deliberate headroom kernelCodeBytes reserves on top of its own ` +
-        're-measured terms. If this has genuinely eroded, re-measure the terms in the comment beside ' +
-        'kernelCodeBytes rather than loosening this assertion.'
+      `expected at least KERNEL_SLACK (${KERNEL_SLACK}) bytes free in kernel-lo, got ${free}`
     );
+
+    // The design's own mitigations (drop Move; switch to MMC1) still work
+    // too, for a project whose content leaves less headroom than
+    // sample-rpg's own does today.
+    const droppedMove = structuredClone(project);
+    droppedMove.maps[0].screens[0].entities.at(-1).props.event.pages[0].commands =
+      droppedMove.maps[0].screens[0].entities.at(-1).props.event.pages[0].commands.filter((c) => c.op !== 'move');
+    assert.deepEqual(
+      checkCapacity(droppedMove).problems.filter((p) => p.severity === 'error'),
+      [],
+      'dropping Move should still be a real fix for a tighter build'
+    );
+
+    const onMmc1 = structuredClone(project);
+    onMmc1.cartridge.mapper = 1;
+    assert.deepEqual(
+      checkCapacity(onMmc1).problems.filter((p) => p.severity === 'error'),
+      [],
+      'the same combination should still fit comfortably on MMC1'
+    );
+    {
+      const mmc1Dir = await fsp.mkdtemp(path.join(os.tmpdir(), 'forge-savemove-mmc1-'));
+      t.after(() => fsp.rm(mmc1Dir, { recursive: true, force: true }));
+      await saveProject(mmc1Dir, onMmc1);
+      const mmc1Lines = [];
+      const mmc1Built = await buildProject({ dir: mmc1Dir, project: onMmc1, log: (line) => mmc1Lines.push(line) });
+      assert.ok(mmc1Built.romPath, 'nesasm should have assembled a ROM on MMC1');
+      const mmc1BankLine = mmc1Lines.find((line) => /^BANK\s+14\s/.test(line));
+      assert.ok(mmc1BankLine, "MMC1's own kernel-lo bank (14) should appear in nesasm's usage table");
+      const mmc1Free = Number(mmc1BankLine.match(/\d+\/\s*(\d+)\s*$/)?.[1]);
+      assert.ok(mmc1Free >= KERNEL_SLACK, `expected at least KERNEL_SLACK (${KERNEL_SLACK}) free, got ${mmc1Free}`);
+    }
   }
 );
 

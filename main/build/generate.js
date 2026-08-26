@@ -61,9 +61,13 @@ import {
   reconcileCartridge,
   projectUsesSave,
   projectUsesMove,
+  projectUsesItems,
   projectEvents,
   allCommands,
-  mapEncounterFormation
+  mapEncounterFormation,
+  itemMissing,
+  NO_ITEM,
+  NO_METASPRITE
 } from '../../shared/project.js';
 import { SAVE_FIELDS, saveBodySize, saveIdentity } from '../../shared/save.js';
 import {
@@ -367,6 +371,34 @@ const TITLE_PROMPT_ROW = 19;
 // reservation, or the "fix" would have reconcileCartridge (shared/project.js)
 // silently truncate something the moment it was applied.
 //
+// The paragraph above predates two later changes that moved every figure it
+// quotes, and is kept for its shape (per-mapper budgeting recovering a
+// bounded, named amount) rather than its numbers. Phase 4b costed items[]
+// for real (ITEM_KERNEL_ALLOWANCE, 16 bytes, measured on all three
+// RPG-capable boards) and reopened the MMC3 Save+Move gap it had just
+// closed -- sample-rpg carries one live item, so this combination went from
+// 21 real bytes free back to short by 16. A kernel diet closed it again:
+// engine/player.asm's four movement direction routines
+// (move_left_inside/move_right_inside/move_up_inside/move_down_inside) each
+// ended in an identical two-corner probe-and-commit tail, differing only in
+// which body-offset constant fed the first probe and which of
+// player_x/player_y the result committed to. move_horizontal_probe and
+// move_vertical_probe are that shared tail now, with each _inside label
+// falling into its axis's tail by `jmp` rather than `jsr` so the tail's own
+// `rts` still returns to whichever caller originally `jsr`'d move_left et
+// al. -- removing duplication, not changing behaviour. It dropped every
+// RPG-capable board's own base by 70 bytes alike (BASE_KERNEL_CODE_BYTES_BY_
+// MAPPER above is now { 30: 6396, 1: 6201, 4: 6376 }; MMC3's own stored
+// figure still has SPLIT_LOCK_KERNEL_ALLOWANCE subtracted out, per this
+// paragraph's own convention), which reopened sample-rpg's Save+Move+item
+// combination on MMC3 with real headroom rather than landing back at a
+// single spare byte: test/unit/kernelbytes.test.js's own
+// "...builds on MMC3 again, with real headroom, after the kernel diet" is
+// the direct check. Every other term this file computes (title, save, move,
+// split-lock, item) is unchanged by the diet -- the dedup sits in
+// unconditional code no conditional term's own delta subtraction is
+// sensitive to, confirmed by re-measuring each one rather than assumed.
+//
 // These figures are quoted only to explain how kernelCodeBytes reached its
 // shape -- hand-copied snapshots, not the source of truth, and
 // SAVE_KERNEL_ALLOWANCE's own history (eight revisions before this one) is
@@ -377,7 +409,7 @@ const TITLE_PROMPT_ROW = 19;
 // margin between reservation and reality erodes below KERNEL_SLACK. Trust
 // its output over this comment if the two ever disagree, and re-measure by
 // running it rather than hand-editing either.
-export const BASE_KERNEL_CODE_BYTES_BY_MAPPER = { 30: 6466, 1: 6271, 4: 6446 };
+export const BASE_KERNEL_CODE_BYTES_BY_MAPPER = { 30: 6396, 1: 6201, 4: 6376 };
 const FALLBACK_BASE_KERNEL_CODE_BYTES = Math.max(...Object.values(BASE_KERNEL_CODE_BYTES_BY_MAPPER));
 export function baseKernelCodeBytes(mapper) {
   return BASE_KERNEL_CODE_BYTES_BY_MAPPER[mapper.id] ?? FALLBACK_BASE_KERNEL_CODE_BYTES;
@@ -410,6 +442,19 @@ export function titleKernelAllowance(mapper) {
 export const SAVE_KERNEL_ALLOWANCE_BY_MAPPER = { 1: 547, 4: 552, 30: 719 };
 export const MOVE_KERNEL_ALLOWANCE = 395;
 export const SPLIT_LOCK_KERNEL_ALLOWANCE = 19;
+// Phase 4b: item_metasprite's own draw_item_icon routine (gated on
+// ITEMS_ENABLED as a whole routine, not just its callers -- see
+// engine/ui.asm) plus add_item's centralized NO_ITEM guard, gated by
+// projectUsesItems -- see the phase 4 design document's §3 for the
+// pre-implementation estimate (16 bytes) this matched exactly. Flat, not
+// per-mapper: nothing this term covers branches on SPLIT_ENABLED or any
+// other mapper-specific fact, the same reasoning that keeps
+// MOVE_KERNEL_ALLOWANCE flat rather than *_BY_MAPPER. Measured on all three
+// RPG-capable boards, isolated per board -- test/unit/kernelbytes.test.js's
+// own combinatorial test, which diffs a with-items build against an
+// items-stripped one and asserts equality, the same shape every other
+// allowance here is measured by -- rather than trusted from the estimate.
+export const ITEM_KERNEL_ALLOWANCE = 16;
 export const KERNEL_SLACK = 20;
 
 export function kernelCodeBytes(project, mapper) {
@@ -456,12 +501,14 @@ export function kernelCodeBytes(project, mapper) {
   // mirror image, in place.
   const usesTitle = projectUsesEffectiveTitle(project) || projectUsesSave(project);
   const usesSplitLock = fontBankSplit(project, mapper);
+  const usesItems = projectUsesItems(project);
   return (
     baseKernelCodeBytes(mapper) +
     (usesTitle ? titleKernelAllowance(mapper) : 0) +
     (usesSave ? SAVE_KERNEL_ALLOWANCE_BY_MAPPER[mapper.id] : 0) +
     (usesMove ? MOVE_KERNEL_ALLOWANCE : 0) +
     (usesSplitLock ? SPLIT_LOCK_KERNEL_ALLOWANCE : 0) +
+    (usesItems ? ITEM_KERNEL_ALLOWANCE : 0) +
     KERNEL_SLACK
   );
 }
@@ -1060,6 +1107,10 @@ export function kernelTableBytes(project) {
     3 * Math.max(1, animations.length) +
     2 * animations.reduce((total, entry) => total + entry.frames.length, 0) +
     8 * Math.max(1, actors.length); // behavior, speed, hp, damage, 4 anim slots
+  // item_metasprite (assets/items.inc) -- one byte per item, gated the same
+  // way the code that reads it is: a project with no items pays nothing,
+  // matching itemTables' own "emit nothing at all when disabled" rule.
+  const itemBytes = projectUsesItems(project) ? Math.max(1, (project.items ?? []).length) : 0;
   // 13 bytes per screen of lookup tables (4 neighbours, 4 data pointers, 2
   // actor-list pointers, tileset, bank, map) and 9 per map (base, encounter
   // rate, four formation slots, the two battle backdrop tiles, and the song).
@@ -1078,7 +1129,7 @@ export function kernelTableBytes(project) {
   // nesasm assembles into the bank with room left over. Caught by comparing
   // this formula's own claim against nesasm's real kernel-lo usage rather
   // than trusting either checkCapacity or kernelCodeBytes alone.
-  const tableBytes = 13 * flat.length + 9 * project.maps.length + spriteBytes;
+  const tableBytes = 13 * flat.length + 9 * project.maps.length + spriteBytes + itemBytes;
   return { fixedBytes, tableBytes };
 }
 
@@ -1355,6 +1406,12 @@ export async function generateAssets({ dir, project, log = () => {} }) {
   // it cannot drift into disagreeing with itself the way three independent
   // `project.sprites.actors.length` expressions eventually would.
   const actorCount = project.sprites.actors.length;
+  // Whether the bag holds item ids or legacy actor ids for this build --
+  // drives ITEMS_ENABLED, item_metasprite's emission, the pickup paths'
+  // dual code, and item_chosen/draw_list_item_name's own dual reads.
+  // Computed once here for the same drift-avoidance reason actorCount is.
+  const itemsEnabled = projectUsesItems(project);
+  const itemCount = project.items?.length ?? 0;
 
   // The HUD hearts, stamped after the placeholder check so an empty sprite table
   // is still recognised as empty. Two tiles, and only for a game that can hurt
@@ -1637,10 +1694,25 @@ export async function generateAssets({ dir, project, log = () => {} }) {
     `NUM_VARIABLES = ${RPG_LIMITS.variables}`,
     `NUM_TILESETS  = ${project.tilesets.length}`,
     // This build's own actor roster size -- save_check_valid range-checks a
-    // restored inv_items entry against this before draw_actor_icon (engine/ui.asm)
-    // is allowed to index actor_anim_dir with it. See shared/save.js's saveIdentity
-    // for why the count is also folded into the save identity, not only checked here.
+    // restored inv_items entry against this, under `.if !ITEMS_ENABLED`,
+    // before draw_actor_icon (engine/ui.asm) is allowed to index
+    // actor_anim_dir with it. Stays live (not dead once ITEMS_ENABLED
+    // exists) precisely because a project with no items[] still falls back
+    // to this exact legacy check -- see shared/save.js's saveIdentity for
+    // why the count is also folded into the save identity, not only checked
+    // here.
     `NUM_ACTORS    = ${actorCount}`,
+    // This build's own item catalogue size -- save_check_valid's enabled-path
+    // bound (`.if ITEMS_ENABLED`), the sibling of NUM_ACTORS just above for
+    // the same restored-inv_items-entry reason, once the bag holds item ids
+    // rather than actor ids.
+    `NUM_ITEMS     = ${itemCount}`,
+    // Whether the bag holds item ids (draw_item_icon, add_item's NO_ITEM
+    // guard, item_chosen/draw_list_item_name's enabled reads, and the save
+    // bound above) or legacy actor ids. projectUsesItems (shared/project.js)
+    // is the single writer; see its own docstring for why this is
+    // `.length > 0` rather than "has at least one item that resolves".
+    `ITEMS_ENABLED = ${itemsEnabled ? 1 : 0}`,
     // banks.asm has one routine for every discrete single-write mapper; which one
     // is in use shows up only as the register values in chr_bank_values below.
     `NUM_PRG_BANKS  = ${layout.dataBankCount}`,
@@ -1842,6 +1914,7 @@ export async function generateAssets({ dir, project, log = () => {} }) {
   const playerTiles = Array.from({ length: PLAYER_TILES }, (_, index) => index);
   const playerActor = project.sprites.actors.find((actor) => actor.behavior === 'player');
   await fs.writeFile(path.join(assetsDir, 'sprites.inc'), spriteTables(project, playerTiles));
+  await fs.writeFile(path.join(assetsDir, 'items.inc'), itemTables(project, itemsEnabled));
 
   // --- music ---------------------------------------------------------------
   await fs.writeFile(path.join(assetsDir, 'music.inc'), songTables(project.songs ?? []));
@@ -1922,12 +1995,29 @@ export async function generateAssets({ dir, project, log = () => {} }) {
   );
 
   // --- screen data ---------------------------------------------------------
+  // actorId -> item id, for a placed pickup entity's own record byte below.
+  // Safe to build as a plain first-wins map: validateProject already refuses
+  // a build where two items share an actorId (see its own "each item must
+  // name a different actor" check), so this is 1:1 for any project that
+  // reaches this function at all -- generateAssets calls checkCapacity
+  // (which includes validateProject's errors) and throws before emission
+  // ever starts.
+  const itemIdForActor = new Map();
+  if (itemsEnabled) {
+    for (const item of project.items ?? []) {
+      if (typeof item.actorId === 'number' && !itemIdForActor.has(item.actorId)) {
+        itemIdForActor.set(item.actorId, item.id);
+      }
+    }
+  }
   let droppedEntities = 0;
   const emitScreens = (from, to) => {
     const chunks = [
       '; Generated -- per screen: 240 metatile ids, 64 attribute bytes, then the',
-      '; actor list as a count followed by (actor, x, y, door screen, door x,',
-      '; door y, event, trigger, hide switch).'
+      '; actor list as a count followed by (actor, x, y, door screen (or, for',
+      '; a pickup actor under ITEMS_ENABLED, the item id it grants -- behavior',
+      '; is exclusive, so the two meanings never collide), door x, door y,',
+      '; event, trigger, hide switch).'
     ];
     for (let index = from; index < to; index++) {
       const { screen } = flat[index];
@@ -1940,7 +2030,19 @@ export async function generateAssets({ dir, project, log = () => {} }) {
       droppedEntities += screen.entities.length - placed.length;
       const bytes = [placed.length];
       for (const entity of placed) {
-        const target = Math.min(entity.props?.toScreen ?? 0, Math.max(0, flat.length - 1));
+        // A pickup actor's own record byte is the item it grants under
+        // ITEMS_ENABLED, not a door target -- and deliberately NOT run
+        // through the door clamp below, which would silently corrupt an
+        // item id above the screen count on any project with fewer than 255
+        // screens (every real one). NO_ITEM for a pickup actor no item's
+        // actorId names (see validateProject's own warning for this case).
+        // Every other behaviour keeps today's door-target expression,
+        // unchanged, entity_door being the field's only reader of it.
+        const actor = project.sprites.actors[entity.actorId];
+        const target =
+          itemsEnabled && actor?.behavior === 'pickup'
+            ? itemIdForActor.get(entity.actorId) ?? NO_ITEM
+            : Math.min(entity.props?.toScreen ?? 0, Math.max(0, flat.length - 1));
         bytes.push(
           entity.actorId,
           entity.x,
@@ -2109,12 +2211,11 @@ function spriteTables(project, playerTiles) {
   // Four animations per actor, indexed by facing (down, up, left, right).
   // A slot the Sprite Forge left empty falls back to the idle animation, and
   // an actor with nothing at all is marked $FF so the engine draws nothing.
-  const animFor = (actor, slot) => {
-    const value = actor.anims?.[slot];
-    if (value !== null && value !== undefined) return value;
-    const idle = actor.anims?.idle;
-    return idle === null || idle === undefined ? 0xff : idle;
-  };
+  // animFor is module-scoped (below spriteTables) rather than local to it --
+  // resolveItemIcon needs the identical fallback chain to reproduce what
+  // draw_actor_icon already draws for a migrated item's legacy icon, and a
+  // second copy of this exact logic is the drift single-writer exists to
+  // prevent.
   const animTable = list.flatMap((actor) => [
     animFor(actor, 'walkDown'),
     animFor(actor, 'walkUp'),
@@ -2123,6 +2224,100 @@ function spriteTables(project, playerTiles) {
   ]);
   chunks.push(`actor_anim_dir:\n${dbBlock(animTable, 4)}`);
 
+  return `${chunks.join('\n')}\n`;
+}
+
+// A slot the Sprite Forge left empty falls back to the idle animation, and
+// an actor with nothing at all is marked $FF so the engine draws nothing.
+// Module-scoped: both spriteTables' own actor_anim_dir table and
+// resolveItemIcon below (item.js) need the identical fallback chain --
+// resolveItemIcon reproduces what draw_actor_icon already draws for a
+// migrated item's legacy icon, so a second copy of this logic would be
+// exactly the drift single-writer exists to prevent.
+function animFor(actor, slot) {
+  const value = actor.anims?.[slot];
+  if (value !== null && value !== undefined) return value;
+  const idle = actor.anims?.idle;
+  return idle === null || idle === undefined ? 0xff : idle;
+}
+
+/**
+ * item_metasprite[itemId] -- the icon draw_item_icon (engine/ui.asm) draws.
+ * `item.metaspriteId`:
+ *
+ * - `NO_METASPRITE` ($FF): an author's explicit "no icon". Passed through.
+ * - a real, in-range value: used as-is.
+ * - an out-of-range value (a stale reference, or a hand-edited project):
+ *   degraded to NO_METASPRITE rather than resurrected as "unset" -- doing
+ *   the latter would silently reinterpret a broken explicit choice as
+ *   "please derive one for me", which is a bigger behaviour change than
+ *   refusing to draw a corrupt index. The same "a bad reference becomes
+ *   nothing, not garbage" rule screenRecordBytes already applies to a stale
+ *   entity.actorId.
+ * - `null` (not set): derived from the backing actor's own resting frame,
+ *   reproducing draw_actor_icon's *exact* runtime behaviour for a migrated
+ *   item -- animFor's own idle/walkDown fallback, then frame 0 of whatever
+ *   animation that resolves to. The one easy-to-miss case: an animation
+ *   that exists but has zero frames is explicitly permitted (the Sprite
+ *   Forge allows it, and spriteTables emits a one-byte `.db $00` stub for
+ *   it), and draw_actor_icon dereferences that stub as if it were real
+ *   frame data -- drawing metasprite 0, not nothing. This function
+ *   reproduces that exactly (`frames.length ? frames[0].metaspriteId : 0`),
+ *   not the more intuitive but wrong "no frames means no icon".
+ */
+export function resolveItemIcon(item, actor, animations, metasprites) {
+  // Round 5 had a defensive `Math.min(metasprites.length, LIMITS.metasprites)`
+  // ceiling here, on the reasoning that buildProject compiles the project the
+  // app is holding rather than one that has passed validateProject. Round 6
+  // sabotage-testing found that reasoning does not hold for THIS function:
+  // metaspriteId is a byte (0-255), so the only value the clamp could ever
+  // treat differently from a plain `< metasprites.length` bound is 255 --
+  // and 255 is NO_METASPRITE's own value, so both branches return the
+  // identical byte either way. There is no input this clamp changes the
+  // output for; it read as protection while protecting nothing, which is
+  // worse than no code at all. Removed rather than kept as inert ceremony.
+  //
+  // The real guarantee that a *real* metasprite id here is never 255 is
+  // LIMITS.metasprites (shared/project.js) plus validateProject's own
+  // over-cap refusal, upstream of this function entirely -- a project that
+  // reaches generation has already been refused if it could produce the
+  // ambiguity. This function needs no bound of its own to enforce that; it
+  // would be redundant even if it could distinguish the values, which it
+  // provably cannot.
+  if (item.metaspriteId === NO_METASPRITE) return NO_METASPRITE;
+  if (item.metaspriteId !== null) {
+    return item.metaspriteId < metasprites.length ? item.metaspriteId : NO_METASPRITE;
+  }
+  if (!actor) return NO_METASPRITE; // no backing actor at all -- nothing to derive from
+  const animId = animFor(actor, 'walkDown');
+  if (animId === 0xff) return NO_METASPRITE;
+  const frames = animations[animId]?.frames ?? [];
+  return frames.length ? frames[0].metaspriteId : 0;
+}
+
+/**
+ * `assets/items.inc`: the ITEMS_ENABLED-only kernel-lo table an item's icon
+ * comes from. Its own file (not folded into spriteTables' sprites.inc)
+ * because items are `project.items`, not `project.sprites` -- keeping the
+ * two apart is what keeps spriteTables itself scoped to what its own name
+ * says. Included in main.asm right after sprites.inc, the same kernel-lo
+ * region every other lookup table already lives in.
+ *
+ * Emits nothing (not even a stub) when `enabled` is false: a project with no
+ * items pays zero bytes for this table, and nothing downstream references
+ * item_metasprite in that build at all (draw_menu's own `.if ITEMS_ENABLED`
+ * dual path never reads it) -- see kernelTableBytes' matching charge.
+ */
+function itemTables(project, enabled) {
+  if (!enabled) return '; Generated -- ITEMS_ENABLED is off; nothing to emit.\n';
+  const { actors, metasprites, animations } = project.sprites;
+  const items = project.items ?? [];
+  const chunks = ['; Generated -- item lookup tables (kernel-lo, ITEMS_ENABLED only).'];
+  chunks.push(
+    `item_metasprite:\n${dbBlock(
+      items.map((item) => resolveItemIcon(item, actors[item.actorId], animations, metasprites))
+    )}`
+  );
   return `${chunks.join('\n')}\n`;
 }
 

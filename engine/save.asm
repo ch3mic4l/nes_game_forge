@@ -325,15 +325,27 @@ save_check_range:
   bcs save_check_invalid
   ; Each *live* inv_items entry -- only the first inv_count of them are ever
   ; read (draw_menu, engine/ui.asm, stops at inv_count) -- is used unchecked
-  ; as an actor id by draw_actor_icon, which indexes actor_anim_dir past the
-  ; actor table if it names one this build does not have. inv_count itself
-  ; was just bounded above, so this loop's own bound is trustworthy.
+  ; by draw_item_icon (ITEMS_ENABLED) or draw_actor_icon (legacy), which
+  ; index item_metasprite or actor_anim_dir respectively past their own end
+  ; if the byte names one this build does not have. NUM_ITEMS/NUM_ACTORS is
+  ; the same MAX_*-vs-NUM_* distinction this file's own header already
+  ; explains: which one bounds a restored entry depends on which economy
+  ; this build's ROM actually assembled, not on which one the save happens
+  ; to have come from -- a save cannot switch ITEMS_ENABLED after the fact,
+  ; so this reads the flag the same way generateAssets decided it, once, at
+  ; assemble time. inv_count itself was just bounded above, so this loop's
+  ; own bound is trustworthy.
   ldy #0
 save_check_inv_loop:
   cpy SAVE_INV_COUNT
   beq save_check_inv_done
   lda SAVE_INV_ITEMS,y
+  .if ITEMS_ENABLED
+  cmp #NUM_ITEMS
+  .endif
+  .if !ITEMS_ENABLED
   cmp #NUM_ACTORS
+  .endif
   bcs save_check_invalid
   iny
   bne save_check_inv_loop     ; inv_count <= MAX_ITEMS (8), never wraps Y

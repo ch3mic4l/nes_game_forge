@@ -501,6 +501,17 @@ NO_ANIM     = $FF
 NO_ENTITY   = $FF           ; talk_ent: nobody is speaking
 NO_EVENT    = $FF           ; ent_event: this actor has nothing to say
 NO_ACTOR    = $FF           ; mon_slot_actor: an empty formation slot
+NO_ITEM     = $FF           ; inv_items under ITEMS_ENABLED, and every
+                            ; give/take/Carrying/drop operand -- an item
+                            ; that does not exist. Matches shared/project.js's
+                            ; own NO_ITEM; same value as NO_ACTOR by
+                            ; convention (both $FF), not by any relationship
+                            ; between the two id spaces.
+NO_METASPRITE = $FF         ; item_metasprite: no icon, whether because none
+                            ; was ever set and legacy derivation found
+                            ; nothing to derive from, or because an author
+                            ; explicitly chose no icon. Matches
+                            ; shared/project.js's own NO_METASPRITE.
 NO_COMMON_EVENT = $FF       ; OP_CALL's own operand: the named common event
                             ; does not resolve to a table slot -- see
                             ; script_op_call

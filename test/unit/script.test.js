@@ -26,6 +26,7 @@ import {
   NO_SONG,
   OP_BATTLE,
   NO_ACTOR,
+  NO_ITEM,
   NO_COMMON_EVENT_SLOT,
   opIndex
 } from '../../main/build/textcompile.js';
@@ -167,8 +168,8 @@ const switchOn = (nes, n) => Boolean(nes.cpu.mem[SWITCHES + (n >> 3)] & (1 << (n
 // interact action's 20-pixel reach between one conversation and the next, and a
 // test that has to chase its subject is testing the chase.
 const NPC = 4; // appended by buildWith, after the sample's four actors
-const GEM = 1; // the actor id -- what a compiled Give/Take byte and INV_ITEMS still hold
-const GEM_ITEM = 0; // the item id that backs it -- what a Give/Take/Carrying is authored with now
+const GEM = 1; // the actor id that backs the gem item, unused as a compiled byte since phase 4b
+const GEM_ITEM = 0; // the item id -- what a Give/Take/Carrying is authored with, compiles to, and INV_ITEMS holds
 
 /**
  * A one-screen project with whatever actors the caller places, built and booted.
@@ -219,7 +220,7 @@ test('a page guarded by the switch it sets runs exactly once', {
 
   assert.ok(talkThrough(nes), 'the first conversation never ended');
   assert.equal(nes.cpu.mem[INV_COUNT], 1, 'the chest did not give the gem');
-  assert.equal(nes.cpu.mem[INV_ITEMS], 1, 'the bag should hold the gem actor');
+  assert.equal(nes.cpu.mem[INV_ITEMS], GEM_ITEM, 'the bag should hold the gem item, not the actor that backs it');
   assert.equal(switchOn(nes, 5), true, 'the chest did not set its switch');
 
   assert.ok(talkThrough(nes), 'the second conversation never ended');
@@ -285,12 +286,12 @@ function indexOfBytes(haystack, needle) {
   return -1;
 }
 
-test('script_op_give stops the event on NO_ACTOR rather than indexing the bag or carrying on', {
+test('script_op_give stops the event on NO_ITEM rather than indexing the bag or carrying on', {
   skip: !hasRom && 'run `npm run sample` first'
 }, async (t) => {
   // validateProject already refuses to let a *live* unresolvable Give reach
   // buildProject (the test above), so there is no project this test could
-  // author that would compile NO_ACTOR through the front door — which is
+  // author that would compile NO_ITEM through the front door — which is
   // exactly the point: the guard this proves is for whatever validateProject
   // does not see, a hand-edited or later-version ROM among them. So this
   // builds an ordinary, valid ROM and patches the one byte a corrupt project
@@ -320,7 +321,7 @@ test('script_op_give stops the event on NO_ACTOR rather than indexing the bag or
   const [compiled] = compileText(normalizeProject(structuredClone(project))).events;
   const giveAt = compiled.indexOf(OP_GIVE);
   assert.notEqual(giveAt, -1, 'the compiled event has no OP_GIVE to find');
-  assert.equal(compiled[giveAt + 1], GEM, "OP_GIVE's own argument should be the actor id right after it");
+  assert.equal(compiled[giveAt + 1], GEM_ITEM, "OP_GIVE's own argument should be the item id right after it");
 
   const romBytes = fs.readFileSync(romPath);
   const at = indexOfBytes(romBytes, compiled);
@@ -332,7 +333,7 @@ test('script_op_give stops the event on NO_ACTOR rather than indexing the bag or
   );
 
   const patched = Uint8Array.from(romBytes);
-  patched[at + giveAt + 1] = NO_ACTOR;
+  patched[at + giveAt + 1] = NO_ITEM;
   const patchedPath = path.join(path.dirname(romPath), 'patched.nes');
   await fs.promises.writeFile(patchedPath, patched);
 
@@ -341,7 +342,7 @@ test('script_op_give stops the event on NO_ACTOR rather than indexing the bag or
   const nes = boot(patchedPath);
 
   assert.ok(talkThrough(nes), 'the conversation never ended');
-  assert.equal(nes.cpu.mem[INV_COUNT], 0, 'a NO_ACTOR byte reached add_item and indexed the bag with it');
+  assert.equal(nes.cpu.mem[INV_COUNT], 0, 'a NO_ITEM byte reached add_item and indexed the bag with it');
   assert.equal(
     nes.cpu.mem[SWITCHES] & (1 << TOUCHED_SWITCH),
     0,
@@ -1090,12 +1091,15 @@ test('Start a battle compiles to a fixed, NO_ACTOR-padded formation', () => {
   assert.deepEqual(tooMany.slice(4, 9), [OP_BATTLE, 1, 2, 1, 2], 'a fifth monster should be dropped, not overflow the command');
 });
 
-test('Give item / Take item compile to NO_ACTOR when the item is missing', () => {
+test('Give item / Take item compile to the item id directly, NO_ITEM when it is missing', () => {
   const OP_GIVE = opIndex('give');
   const OP_TAKE = opIndex('take');
   const project = createProject('Quest', 'rpg');
-  project.sprites.actors = [{ name: 'Gem', damage: 0 }];
-  project.items = [{ id: 0, name: 'Gem', actorId: 0, metaspriteId: null }];
+  // actorId deliberately does not equal the item's own id: an identity
+  // mapping (item 0 backed by actor 0) would pass whether this compiled to
+  // the item id or resolved through the backing actor, proving nothing.
+  project.sprites.actors = [{ name: 'Decoy', damage: 0 }, { name: 'Gem', damage: 0 }];
+  project.items = [{ id: 0, name: 'Gem', actorId: 1, metaspriteId: null }];
   const page = (commands) => {
     project.maps[0].screens[0].entities = [
       { actorId: 0, x: 0, y: 0, props: { event: { pages: [{ cond: { type: 'none', arg: 0 }, commands }] } } }
@@ -1104,19 +1108,19 @@ test('Give item / Take item compile to NO_ACTOR when the item is missing', () =>
   };
 
   const [named] = compileText(page([{ op: 'give', item: 0 }])).events;
-  assert.deepEqual(named.slice(4, 6), [OP_GIVE, 0], 'a live item compiles to the actor id it backs');
+  assert.deepEqual(named.slice(4, 6), [OP_GIVE, 0], 'a live item compiles to its own id (0), not the actor id (1) that backs it');
 
   // renumberItemDeletion's mark for "this used to name an item" -- not 0,
   // which a real item could actually be sitting at.
   const [missing] = compileText(page([{ op: 'give', item: null }])).events;
-  assert.deepEqual(missing.slice(4, 6), [OP_GIVE, NO_ACTOR], 'a missing item compiles to NO_ACTOR rather than actor 0');
+  assert.deepEqual(missing.slice(4, 6), [OP_GIVE, NO_ITEM], 'a missing item compiles to NO_ITEM rather than item 0');
 
   // Defensive: buildProject compiles the project the app is holding rather
   // than one freshly normalized, so a hand-edited or stale id past the end
   // of the item list has to fall back the same way, not index the engine's
   // own tables past their end.
   const [stale] = compileText(page([{ op: 'take', item: 5 }])).events;
-  assert.deepEqual(stale.slice(4, 6), [OP_TAKE, NO_ACTOR], 'an item past the end of the list falls back to NO_ACTOR');
+  assert.deepEqual(stale.slice(4, 6), [OP_TAKE, NO_ITEM], 'an item past the end of the list falls back to NO_ITEM');
 });
 
 test('a Carrying item page whose backing actor was deleted never runs, with both actor 0 and the old id in the bag', {
@@ -2476,7 +2480,7 @@ test('common events compile into the same table a placement’s own event does',
   // Common events are pushed first, so "Reward" lands at table slot 0 and the
   // two placements' own events -- pushed after -- land at slots 1 and 2.
   assert.equal(built.events.length, 3);
-  assert.deepEqual(built.events[0], [0, 0, 0, 3, /* give */ 2, GEM, OP_END, EVT_PAGES_END]);
+  assert.deepEqual(built.events[0], [0, 0, 0, 3, /* give */ 2, /* item id */ 0, OP_END, EVT_PAGES_END]);
   for (const event of built.events.slice(1)) {
     assert.deepEqual(event.slice(4), [OP_CALL, 0, OP_END, EVT_PAGES_END], 'call, then slot 0, then end');
   }
@@ -2717,7 +2721,7 @@ test('deleting a common event in the built ROM still runs what the survivor name
   });
   assert.ok(talkThrough(nes), 'the conversation never ended');
   assert.equal(nes.cpu.mem[INV_COUNT], 1);
-  assert.equal(nes.cpu.mem[INV_ITEMS], GEM, 'the call ran C instead of the B it was authored to name');
+  assert.equal(nes.cpu.mem[INV_ITEMS], GEM_ITEM, 'the call ran C instead of the B it was authored to name');
 });
 
 test('a call reaches into a common event and comes back to the command after it', {
@@ -2771,7 +2775,7 @@ test('a call reaches into a common event and comes back to the command after it'
   assert.equal(nes.cpu.mem[INV_COUNT], 3);
   assert.deepEqual(
     [...nes.cpu.mem.slice(INV_ITEMS, INV_ITEMS + 3)],
-    [0, GEM, HUNTER],
+    [SLIME_ITEM, GEM_ITEM, HUNTER_ITEM_LOCAL],
     'the bag should read Slime, Gem, Hunter — before, inside the call, and after it'
   );
 });

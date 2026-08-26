@@ -33,9 +33,10 @@ import {
   battleFormationSlice,
   NO_ACTOR,
   NO_ITEM,
-  itemByte,
+  NO_METASPRITE,
   itemMissing,
   itemPickerOptions,
+  projectUsesItems,
   liveCommands,
   compiledPages,
   projectEvents,
@@ -947,22 +948,137 @@ test('renumberMetaspriteDeletion: a party member’s metaspriteId is the ordinar
   assert.equal(already.metaspriteId, null, 'a party member already drawing nothing should stay that way');
 });
 
-test('renumberMetaspriteDeletion: an item’s metaspriteId is the ordinary nullable fixed point', () => {
+// Round 5 finding: before LIMITS.metasprites existed, a real metasprite
+// could legitimately be assigned id 255 -- byte-identical to NO_METASPRITE.
+// fixedPoint's old check order tested "is this the sentinel" before "is
+// this the exact index being deleted", so deleting a real metasprite 255
+// matched the sentinel branch first and returned NO_METASPRITE
+// unconditionally -- which for a party member (whose exact-match answer is
+// `null`, not NO_METASPRITE, a value with no meaning in that field) left the
+// reference stale at 255 rather than cleared to null. Constructed directly
+// here (bypassing the UI cap and validateProject, both editor-level
+// safeguards) to exercise renumberMetaspriteDeletion's own logic the way an
+// already-over-cap or hand-edited project could still reach it -- the fix
+// (checking the exact match first) does not depend on the cap catching this
+// upstream.
+test('renumberMetaspriteDeletion: deleting a real metasprite 255 clears a party member’s reference to it, not leaves it stale at 255', () => {
+  const project = createProject('Quest', 'rpg');
+  project.party = [{ ...createPartyMember(0, 'Exact255'), metaspriteId: 255 }];
+
+  renumberMetaspriteDeletion(project, 255);
+
+  assert.equal(
+    project.party[0].metaspriteId,
+    null,
+    'deleting the real metasprite this party member points at must clear the reference to null (draws nothing), ' +
+      'not leave it stale at 255 -- which, post-deletion, names an id that no longer exists'
+  );
+});
+
+// Round 7 finding: the fix above (round 5) only closed the ambiguity for the
+// id *being deleted*. A party member referencing a real, *surviving*
+// metasprite 255 while some other index is deleted never reaches the
+// exact-match branch at all -- it used to fall into the sentinel-preservation
+// branch, which fired for both callers unconditionally, leaving 255
+// un-shifted. This is the recovery path an over-cap project is specifically
+// steered into (validateProject's own message: "delete N of them"), so a
+// party member's icon silently corrupting on exactly that path is the worst
+// place for this bug to live.
+test('renumberMetaspriteDeletion: a party member referencing a surviving real metasprite 255 shifts down like any other reference, when a different metasprite is deleted', () => {
+  const project = createProject('Quest', 'rpg');
+  // 256 metasprites (ids 0-255): an over-cap array validateProject would
+  // refuse to build, constructed directly to exercise the deletion recovery
+  // path an author would actually be told to take.
+  project.sprites.metasprites = Array.from({ length: 256 }, (_, id) => ({ id, name: `M${id}`, tiles: [] }));
+  project.party = [{ ...createPartyMember(0, 'Surviving255'), metaspriteId: 255 }];
+
+  // Delete index 0 -- unrelated to 255, the case the exact-match branch
+  // cannot reach at all.
+  renumberMetaspriteDeletion(project, 0);
+  project.sprites.metasprites.splice(0, 1);
+
+  assert.equal(
+    project.party[0].metaspriteId,
+    254,
+    'a real metasprite 255 must shift to 254 like any other surviving reference above the deleted index -- ' +
+      'staying at 255 would point past the end of the now-255-entry array'
+  );
+  assert.ok(
+    project.party[0].metaspriteId < project.sprites.metasprites.length,
+    'the shifted reference must be a valid index into the array as it now stands'
+  );
+});
+
+test('renumberMetaspriteDeletion: an item’s exact-match case is NO_METASPRITE, not the party member’s null -- deleting an item’s chosen icon must not silently show the backing actor’s art instead', () => {
   const project = createProject('Quest', 'rpg');
   project.items = [
     { id: 0, name: 'Below', actorId: null, metaspriteId: 1 },
-    { id: 1, name: 'Exact', actorId: null, metaspriteId: 2 },
+    { id: 1, name: 'Exact', actorId: 5, metaspriteId: 2 },
     { id: 2, name: 'Above', actorId: null, metaspriteId: 4 },
-    { id: 3, name: 'AlreadyNothing', actorId: null, metaspriteId: null }
+    { id: 3, name: 'AlreadyNothing', actorId: null, metaspriteId: NO_METASPRITE },
+    { id: 4, name: 'Unset', actorId: null, metaspriteId: null }
   ];
 
   renumberMetaspriteDeletion(project, 2);
 
-  const [below, exact, above, already] = project.items;
+  const [below, exact, above, alreadyNothing, unset] = project.items;
   assert.equal(below.metaspriteId, 1, 'an item below the deleted metasprite should not move');
-  assert.equal(exact.metaspriteId, null, 'an item naming exactly the deleted metasprite loses its icon, not a substitute one');
+  // Not null: for an item, null now means "derive one from the backing
+  // actor" (normalizeItem's own field comment), not "no icon" -- returning
+  // null here would silently swap in actor 5's own art the next time this
+  // item's icon is drawn, which is the exact regression finding 1 (round 4)
+  // found: the fixedPoint helper's *shift* path already special-cased
+  // NO_METASPRITE, but its *exact-deletion* path did not, and a test right
+  // here enshrined the wrong result until now.
+  assert.equal(
+    exact.metaspriteId,
+    NO_METASPRITE,
+    'an item naming exactly the deleted metasprite must become NO_METASPRITE (no icon), not null (derive from the actor)'
+  );
   assert.equal(above.metaspriteId, 3, 'an item above the deleted metasprite should shift down');
-  assert.equal(already.metaspriteId, null, 'an item already carrying no icon should stay that way');
+  assert.equal(alreadyNothing.metaspriteId, NO_METASPRITE, 'an item already carrying NO_METASPRITE should stay that way');
+  assert.equal(unset.metaspriteId, null, 'an item that was never set should stay unset, not become NO_METASPRITE');
+});
+
+// Round 4 finding (Medium 4): a malformed explicit metaspriteId must not
+// normalize into real, working-looking artwork. normalizeItem used the
+// generic numeric clamp() before this, which rounds and clamps into range
+// by design -- clamp(-1, 0, 255, 0) is 0, a real metasprite, not "no icon"
+// -- contradicting the field's own documented rule (the comment right above
+// it in normalizeItem) that a malformed explicit reference becomes
+// NO_METASPRITE, the same as an out-of-range one already correctly did.
+test('normalizeItem: a malformed explicit metaspriteId becomes NO_METASPRITE, not a rounded/clamped real metasprite', () => {
+  const project = normalizeProject({
+    items: [
+      { id: 0, name: 'Negative', metaspriteId: -1 },
+      { id: 1, name: 'Fractional', metaspriteId: 2.4 },
+      { id: 2, name: 'NotANumber', metaspriteId: 'oops' },
+      { id: 3, name: 'TooHigh', metaspriteId: 300 },
+      { id: 4, name: 'ExplicitNone', metaspriteId: NO_METASPRITE },
+      { id: 5, name: 'RealValue', metaspriteId: 7 },
+      { id: 6, name: 'Unset', metaspriteId: null }
+    ]
+  });
+  const [negative, fractional, notANumber, tooHigh, explicitNone, realValue, unset] = project.items;
+  assert.equal(negative.metaspriteId, NO_METASPRITE, '-1 must not clamp to metasprite 0');
+  assert.equal(fractional.metaspriteId, NO_METASPRITE, '2.4 must not round to metasprite 2 -- an id is a whole number or nothing');
+  assert.equal(notANumber.metaspriteId, NO_METASPRITE, '"oops" must not fall back to metasprite 0');
+  assert.equal(tooHigh.metaspriteId, NO_METASPRITE, '300 is out of range and must not clamp into range');
+  assert.equal(explicitNone.metaspriteId, NO_METASPRITE, 'NO_METASPRITE itself is a legitimate explicit value and must survive normalization');
+  assert.equal(realValue.metaspriteId, 7, 'a real, in-range value must still pass through unchanged');
+  assert.equal(unset.metaspriteId, null, 'null must stay null, not become NO_METASPRITE -- unset and explicitly-none are different things');
+});
+
+// A round-trip proof, not just a normalization-time one: a malformed value
+// saved once (which normalization already fixes) must not somehow resurface
+// as real artwork on a later load either -- normalizeProject is idempotent
+// on its own output, so this is really the same guarantee seen twice, but
+// it is the shape an actual save/load cycle exercises.
+test('normalizeItem: the NO_METASPRITE fallback survives a normalize/save/normalize round trip', () => {
+  const once = normalizeProject({ items: [{ id: 0, name: 'Bad', metaspriteId: -5 }] });
+  assert.equal(once.items[0].metaspriteId, NO_METASPRITE);
+  const twice = normalizeProject(JSON.parse(JSON.stringify(once)));
+  assert.equal(twice.items[0].metaspriteId, NO_METASPRITE, 'a second normalization pass must not change the already-correct sentinel');
 });
 
 test('a battle formation’s empty-slot sentinel is a fixed point, not decremented again by the next actor deletion', () => {
@@ -1433,14 +1549,16 @@ test('the delete confirmation says what deleting while over the ceiling costs', 
   assert.match(warning, /not preserved/, 'and say plainly that those references do not survive');
 });
 
-test('the missing-item sentinel survives normalization and reaches the ROM as NO_ACTOR', () => {
+test('the missing-item sentinel survives normalization and reaches the ROM as NO_ITEM', () => {
   // The in-memory assertions above would all still pass if a later
   // normalization or compiler change quietly turned the sentinel into 0 —
   // which is the one thing renumberItemDeletion's whole rationale depends on
   // not happening. This is the round trip: delete, normalize, compile, and
-  // read the operand the engine will actually see. NO_ACTOR, not NO_ITEM: a
-  // Carrying condition still compiles to an *actor* byte (itemByte), the
-  // same wire format engine/script.asm's has_item always read.
+  // read the operand the engine will actually see. NO_ITEM (phase 4b): a
+  // Carrying condition compiles to the item id directly now (itemMissing),
+  // not an actor byte reached through the backing actor — has_item
+  // (engine/script.asm) does a byte-equality scan of inv_items, which holds
+  // item ids under ITEMS_ENABLED, so this is the wire format that matters.
   const project = createProject('Quest', 'rpg');
   project.sprites.actors = [{ name: 'Gem' }, { name: 'Relic' }];
   project.items = [{ id: 0, name: 'Gem', actorId: 0 }, { id: 1, name: 'Relic', actorId: 1 }];
@@ -1468,8 +1586,8 @@ test('the missing-item sentinel survives normalization and reaches the ROM as NO
   assert.equal(event[0], EVENT_CONDITIONS.findIndex((entry) => entry.id === 'hasItem'), 'page 1 is still the Carrying item page');
   assert.equal(
     event[1],
-    NO_ACTOR,
-    'the condition must reach the ROM as NO_ACTOR — as 0 it would ask after whichever actor now sits at item 0'
+    NO_ITEM,
+    'the condition must reach the ROM as NO_ITEM — as 0 it would ask after whichever item now sits at id 0'
   );
 });
 
@@ -1487,18 +1605,16 @@ test('the missing-item sentinel survives normalization and reaches the ROM as NO
 // convention (kernelbytes.test.js, bankedbytes.test.js) refuses to loosen
 // reflexively when hit.
 //
-// Instead: build the synthesized scenario -- take, a page-level hasItem, a
-// hasItem nested inside a branch, give, and a non-null battle.drop, with
-// item ids deliberately unequal to the actor ids they back (a bug that
-// emitted the item id directly, or an identity mapping, would slip past an
-// equal-ids project) -- and assert each compiled operand equals
-// `project.items[id].actorId`, computed from the project rather than
-// written as a literal here. It fails the moment any of the three itemByte
-// call sites (Give/Take, Carrying, mon_drop) drifts from the other two, it
-// pins the scenario itself rather than whatever sample/ happens to author
-// today, and it stays true across a legitimate phase 4 change to what
-// `inv_items` stores, unlike a hash of the assembled ROM would.
-test('Give, Take, a nested Carrying condition, and a monster’s drop all compile to items[id].actorId, computed from the project', () => {
+// Phase 4b rewrite: Give/Take, Carrying and mon_drop no longer resolve
+// through the backing actor at all -- they compile to the item id directly
+// (itemMissing's existence check, NO_ITEM for anything that fails it). This
+// test now asserts that directly: build the synthesized scenario -- take, a
+// page-level hasItem, a hasItem nested inside a branch, give, and a
+// non-null battle.drop -- and assert each compiled operand equals the item
+// id itself, computed from the project rather than written as a literal
+// here. It fails the moment any of the three sites (Give/Take, Carrying,
+// mon_drop) drifts from the other two.
+test('Give, Take, a nested Carrying condition, and a monster’s drop all compile to the item id directly', () => {
   const project = createProject('Compile', 'rpg');
   project.sprites.actors = [
     { name: 'Player', behavior: 'player' },
@@ -1507,16 +1623,15 @@ test('Give, Take, a nested Carrying condition, and a monster’s drop all compil
     { name: 'C', behavior: 'npc' },
     { name: 'Monster', damage: 1, battle: { atk: 4, def: 2 } }
   ];
-  // Deliberately not the identity mapping: item ids run 0, 1, 2 while the
-  // actors they back run the other way round (3, 2, 1). A bug that emitted
-  // the item id directly instead of resolving through `actorId` would
-  // produce a wrong-but-plausible byte here, not an obviously-broken one.
+  // actorId deliberately does not track item id -- a bug that resolved
+  // through the backing actor (the pre-4b behaviour) would produce a
+  // wrong-but-plausible byte here, not an obviously-broken one.
   project.items = [
-    { id: 0, name: 'Zero', actorId: 3, metaspriteId: null }, // backs C
-    { id: 1, name: 'One', actorId: 2, metaspriteId: null }, // backs B
-    { id: 2, name: 'Two', actorId: 1, metaspriteId: null } // backs A
+    { id: 0, name: 'Zero', actorId: 3, metaspriteId: null }, // backs C -- irrelevant to what this compiles to now
+    { id: 1, name: 'One', actorId: 2, metaspriteId: null },
+    { id: 2, name: 'Two', actorId: 1, metaspriteId: null }
   ];
-  project.sprites.actors[4].battle.drop = 1; // Monster drops item 1 (backs B)
+  project.sprites.actors[4].battle.drop = 1; // Monster drops item 1
   project.sprites.actors[4].battle.dropPct = 20;
   project.maps[0].screens[0].entities = [
     {
@@ -1556,11 +1671,7 @@ test('Give, Take, a nested Carrying condition, and a monster’s drop all compil
 
   // Page header: [cond, arg, value, bodyLength].
   assert.equal(event[0], HAS_ITEM, 'the page condition is still Carrying');
-  assert.equal(
-    event[1],
-    normalized.items[0].actorId,
-    'the page-level Carrying operand equals items[0].actorId, computed from the project — not a literal 3'
-  );
+  assert.equal(event[1], 0, 'the page-level Carrying operand equals item id 0 directly');
 
   // Positions, not indexOf: opcode and condition-index values are both
   // small enumerated ints (EVENT_COMMANDS' and EVENT_CONDITIONS' own row
@@ -1574,11 +1685,11 @@ test('Give, Take, a nested Carrying condition, and a monster’s drop all compil
   // searched for.
   const giveAt = 4; // right after the 4-byte page header
   assert.equal(event[giveAt], OP_GIVE, 'the first command is still Give');
-  assert.equal(event[giveAt + 1], normalized.items[2].actorId, 'Give’s operand equals items[2].actorId');
+  assert.equal(event[giveAt + 1], 2, 'Give’s operand equals item id 2 directly');
 
   const takeAt = giveAt + 2; // Give is a 2-byte command: opcode, operand
   assert.equal(event[takeAt], OP_TAKE, 'the second command is still Take');
-  assert.equal(event[takeAt + 1], normalized.items[1].actorId, 'Take’s operand equals items[1].actorId');
+  assert.equal(event[takeAt + 1], 1, 'Take’s operand equals item id 1 directly');
 
   // A branch's own header is [OP_IF-shaped: opcode, cond, arg, value, ...],
   // the same header a page carries, so the nested condition's arg sits two
@@ -1588,21 +1699,16 @@ test('Give, Take, a nested Carrying condition, and a monster’s drop all compil
   assert.equal(event[branchAt + 1], HAS_ITEM, 'the nested condition is still Carrying');
   assert.equal(
     event[branchAt + 2],
-    normalized.items[2].actorId,
-    'the nested Carrying operand equals items[2].actorId, the same item Give named — proving the two sites agree'
+    2,
+    'the nested Carrying operand equals item id 2 directly, the same item Give named — proving the two sites agree'
   );
 
-  // mon_drop, the third and last itemByte call site — a different function
-  // in a different file (main/build/battletables.js), asked the identical
-  // question about the same item space.
+  // mon_drop, the third and last site asking the identical question about
+  // the same item space, in a different file (main/build/battletables.js).
   const row = /^mon_drop:\n(.*)$/m.exec(battleTables(normalized));
   assert.ok(row, 'battleTables should emit a mon_drop table');
   const dropBytes = row[1].trim().replace(/^\.db /, '').split(',').map((s) => parseInt(s.replace('$', ''), 16));
-  assert.equal(
-    dropBytes[4],
-    normalized.items[1].actorId,
-    'the Monster’s (actor 4) drop compiles to items[1].actorId, computed from the project'
-  );
+  assert.equal(dropBytes[4], 1, 'the Monster’s (actor 4) drop compiles to item id 1 directly');
 });
 
 test('a monster whose drop no longer names an actor is a warning, not a refusal', () => {
@@ -1792,83 +1898,100 @@ test('two items sharing a backing actor is refused — each item must name a dif
   project.items.push({ id: 2, name: 'Ceremonial Key', actorId: 0, metaspriteId: null });
   const three = validateProject(project).filter((p) => /more than one item/.test(p.message));
   assert.equal(three.length, 1, 'three items sharing one actor is still one error, naming the one actor involved');
+
+  // Round 4 finding (Medium 5): a stale in-range actorId -- real when the
+  // item was authored, orphaned since the actor was deleted -- is a
+  // different kind of "does not resolve" than NO_ACTOR, but the same shape:
+  // two items that both landed on the identical no-longer-real actorId must
+  // not read as "sharing an actor" any more than two independently
+  // NO_ACTOR-marked items do above. The only actor in this project is index
+  // 0; actorId 7 names nothing.
+  project.items[0].actorId = 7;
+  project.items[1].actorId = 7;
+  project.items[2].actorId = 7;
+  assert.deepEqual(
+    validateProject(project).filter((p) => /more than one item/.test(p.message)),
+    [],
+    'three items that all carry the identical stale actorId must not read as sharing a real actor'
+  );
 });
 
-// --- itemPickerOptions (round 3): the single writer of what an item-naming
+// --- itemPickerOptions (phase 4b): the single writer of what an item-naming
 // <select> offers, extracted after the Map Forge's Carrying and Give/Take
 // selects and the Sprite Forge's Drops select were each found keeping their
 // own copy of the same filter -- the exact effectiveTrigger-shaped drift
 // CLAUDE.md already warns about. One helper, tested here directly; all
 // three pickers only ever render its output now.
+//
+// Round 3 rewrite: existence and pickup-backing became two separate
+// questions (shared/project.js's itemMissing docstring). An item whose
+// actorId is null or names a deleted actor is not an "orphan" any more --
+// it is an ordinary, fully valid item that simply has no physical pickup,
+// so it is offered exactly like any other. `missing` now only ever
+// represents a selectedId that names no real item at all.
 
-test('itemPickerOptions: a healthy item is offered', () => {
-  const actors = [{ name: 'Player' }, { name: 'A' }];
-  const items = [{ id: 0, name: 'Healthy', actorId: 1, metaspriteId: null }];
-
-  const { healthy, missing } = itemPickerOptions(items, actors, null);
-
-  assert.deepEqual(
-    healthy,
-    [{ value: 0, label: 'Healthy', selected: false }],
-    'an item whose actorId resolves is offered as an ordinary option'
-  );
-  assert.ok(missing, 'a selectedId of null does not resolve, so there is something to represent');
-});
-
-test('itemPickerOptions: the currently-selected orphan is represented once, as the missing entry, and not also as an ordinary option', () => {
-  const actors = [{ name: 'Player' }, { name: 'A' }];
+test('itemPickerOptions: every item is offered, regardless of whether it has a physical pickup', () => {
   const items = [
-    { id: 0, name: 'Healthy', actorId: 1, metaspriteId: null },
-    { id: 1, name: 'OrphanSelected', actorId: null, metaspriteId: null }, // the one selectedId names
-    { id: 2, name: 'OrphanOther', actorId: 5, metaspriteId: null } // out of range -- also an orphan, not selected
+    { id: 0, name: 'Backed', actorId: 1, metaspriteId: null },
+    { id: 1, name: 'ScriptOnly', actorId: null, metaspriteId: null }, // never placed, only ever Given
+    { id: 2, name: 'StaleBacking', actorId: 5, metaspriteId: null } // named actor no longer exists
   ];
 
-  const { healthy, missing } = itemPickerOptions(items, actors, 1);
+  const { healthy, missing } = itemPickerOptions(items, null);
 
   assert.deepEqual(
-    missing,
-    { value: 1, label: 'Missing item', selected: true },
-    'the selected orphan is represented as the missing entry, naming its own id'
-  );
-  assert.ok(
-    !healthy.some((option) => option.value === 1),
-    'the selected orphan must not additionally appear in the ordinary list -- a single-select would then carry ' +
-      'two selected <option>s and show whichever is later in the DOM, which is the round-2 defect this replaces'
-  );
-  // Doubles as "another orphan is not newly selectable": id 2 names no
-  // actor either, but nothing selected it -- it must not be offered at all.
-  assert.ok(
-    !healthy.some((option) => option.value === 2),
-    'an orphan that is not the current selection is excluded outright, not merely left unselected -- otherwise ' +
-      'it would still be offered as an ordinary, working-looking choice a click could newly select into NO_ACTOR'
+    healthy,
+    [
+      { value: 0, label: 'Backed', selected: false },
+      { value: 1, label: 'ScriptOnly', selected: false },
+      { value: 2, label: 'StaleBacking', selected: false }
+    ],
+    'actorId is optional metadata now -- it must not gate whether an item is offered at all'
   );
   assert.deepEqual(
-    healthy,
-    [{ value: 0, label: 'Healthy', selected: false }],
-    'only the genuinely healthy item remains offered'
+    missing,
+    { value: null, label: 'Missing item', selected: true },
+    'a selectedId of null names no real item, so there is something to represent'
+  );
+});
+
+test('itemPickerOptions: a selectedId naming no real item is the only case that produces a missing entry', () => {
+  const items = [
+    { id: 0, name: 'One', actorId: null, metaspriteId: null },
+    { id: 1, name: 'Two', actorId: null, metaspriteId: null }
+  ];
+
+  assert.equal(itemPickerOptions(items, 1).missing, null, 'a real id, even with no pickup backing, has nothing to represent as missing');
+  assert.deepEqual(
+    itemPickerOptions(items, 99).missing,
+    { value: 99, label: 'Missing item', selected: true },
+    'an out-of-range id is still missing'
+  );
+  assert.deepEqual(
+    itemPickerOptions(items, undefined).missing,
+    { value: undefined, label: 'Missing item', selected: true },
+    'undefined is still missing'
   );
 });
 
 test('itemPickerOptions: selected-ness lands on exactly one option, healthy or missing, never both or neither', () => {
-  const actors = [{ name: 'Player' }, { name: 'A' }, { name: 'B' }];
   const items = [
     { id: 0, name: 'One', actorId: 1, metaspriteId: null },
-    { id: 1, name: 'Two', actorId: 2, metaspriteId: null },
-    { id: 2, name: 'OrphanOther', actorId: null, metaspriteId: null }
+    { id: 1, name: 'Two', actorId: null, metaspriteId: null }
   ];
   const countSelected = (result) => (result.healthy.filter((o) => o.selected).length + (result.missing?.selected ? 1 : 0));
 
-  // A healthy selection: the missing entry is absent, one healthy option is selected.
-  assert.equal(countSelected(itemPickerOptions(items, actors, 1)), 1, 'selecting a healthy item selects exactly it');
-  assert.equal(itemPickerOptions(items, actors, 1).missing, null, 'a healthy selection has nothing to represent as missing');
-
-  // An orphan selection: the missing entry carries the selection, no healthy option does.
-  assert.equal(countSelected(itemPickerOptions(items, actors, 2)), 1, 'selecting an orphan selects exactly the missing entry');
+  // A real selection, backed or not: the missing entry is absent, one
+  // healthy option is selected either way.
+  assert.equal(countSelected(itemPickerOptions(items, 0)), 1, 'selecting a backed item selects exactly it');
+  assert.equal(itemPickerOptions(items, 0).missing, null, 'a real selection has nothing to represent as missing');
+  assert.equal(countSelected(itemPickerOptions(items, 1)), 1, 'selecting a script-only item selects exactly it, same as a backed one');
+  assert.equal(itemPickerOptions(items, 1).missing, null, 'a script-only item is not missing');
 
   // A selection naming nothing at all (null, or past the end of the list):
   // still exactly one selected entry, on the missing placeholder.
-  assert.equal(countSelected(itemPickerOptions(items, actors, null)), 1, 'selecting nothing still selects exactly the missing entry');
-  assert.equal(countSelected(itemPickerOptions(items, actors, 99)), 1, 'an out-of-range id still selects exactly the missing entry');
+  assert.equal(countSelected(itemPickerOptions(items, null)), 1, 'selecting nothing still selects exactly the missing entry');
+  assert.equal(countSelected(itemPickerOptions(items, 99)), 1, 'an out-of-range id still selects exactly the missing entry');
 });
 
 test('a Run common event command naming a deleted common event fails validation and cannot build', {

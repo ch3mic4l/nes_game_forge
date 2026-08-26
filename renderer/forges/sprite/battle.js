@@ -59,7 +59,7 @@ export function battleSection(actor, index, rerender) {
   // `battle.drop` is not null: this field's own "Nothing" already covers
   // that case as a deliberate choice, not a broken reference, so this is
   // the one caller-specific decision the shared helper leaves to the field.
-  const dropOptions = itemPickerOptions(store.project.items, store.project.sprites.actors, battle.drop);
+  const dropOptions = itemPickerOptions(store.project.items, battle.drop);
 
   return el(
     'div',

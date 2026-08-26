@@ -357,13 +357,22 @@ entity_chase_done:
   rts
 
 ; Vanish when the player walks into it, and go into the bag the menu shows.
+; Under ITEMS_ENABLED, ent_to_scr carries the item this placement grants
+; instead of a door target -- behavior is exclusive, so a pickup actor never
+; needs ent_to_scr's other meaning, and generate.js's emitScreens is the
+; single writer that decides which one a given placement's byte is.
 entity_pickup:
   jsr entity_touching_player
   bne entity_pickup_done
   lda #0
   sta ent_active,x
   inc pickups
+  .if ITEMS_ENABLED
+  lda ent_to_scr,x
+  .endif
+  .if !ITEMS_ENABLED
   lda ent_actor,x
+  .endif
   jsr add_item
 entity_pickup_done:
   rts

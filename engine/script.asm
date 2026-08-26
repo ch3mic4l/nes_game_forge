@@ -210,16 +210,22 @@ script_op_say:
   jsr script_skip
   jmp box_say               ; suspends here; the box drives the rest
 
-; NO_ACTOR is what actorByte (main/build/textcompile.js) compiles a Give/Take
-; whose actor does not resolve to -- validateProject refuses a build over a
-; *live* command like that, but buildProject compiles the project the app is
-; holding rather than one that has passed validation, the same reason a
+; NO_ITEM ($FF, the same value NO_ACTOR always was) is what
+; main/build/textcompile.js compiles a Give/Take naming an item that
+; itemMissing says does not exist to -- validateProject refuses a build over
+; a *live* command like that, but buildProject compiles the project the app
+; is holding rather than one that has passed validation, the same reason a
 ; battle formation's own actor ids are checked again here rather than
-; trusted. add_item/remove_item have no such check of their own: they take
-; whatever byte they are handed and index the actor tables with it, so a
-; command the compiler deliberately marked "nothing to give" must never
-; reach them, or the byte that meant "nothing" becomes an id past the end of
-; every actor-indexed table the inventory then draws from.
+; trusted. Under ITEMS_ENABLED, add_item (engine/ui.asm) now also refuses a
+; NO_ITEM operand centrally, so this check and that one are redundant for
+; Give specifically -- kept here anyway because it is cheap, because
+; remove_item (what Take calls) has no check of its own regardless, and
+; because a build with ITEMS_ENABLED false still reads this operand as a
+; legacy actor id, where add_item's own guard does not fire at all: a
+; command the compiler deliberately marked "nothing to give/take" must never
+; reach add_item/remove_item on that path, or the byte that meant "nothing"
+; becomes an id past the end of the actor-indexed tables the inventory then
+; draws from.
 ;
 ; script_finish, not script_next2: the opcode is recognised but its operand
 ; names nothing, which is the same situation script_run_bad's unknown-opcode
@@ -231,14 +237,14 @@ script_op_say:
 ; conversation would say so.
 script_op_give:
   jsr script_arg
-  cmp #NO_ACTOR
+  cmp #NO_ITEM
   beq script_finish
   jsr add_item
   jmp script_next2
 
 script_op_take:
   jsr script_arg
-  cmp #NO_ACTOR
+  cmp #NO_ITEM
   beq script_finish
   jsr remove_item
   jmp script_next2
@@ -426,7 +432,7 @@ script_op_move:
   ; empty that slot mid-event. If it ever were empty, ent_x,x with x = $FF
   ; would read and *write* a byte 240 past the end of the entity arrays. Stop
   ; the event, the same answer script_run_bad gives an opcode it cannot run and
-  ; script_op_give gives a NO_ACTOR operand.
+  ; script_op_give gives a NO_ITEM operand.
   lda mv_who
   bne script_op_move_ready
   lda talk_ent
@@ -463,7 +469,7 @@ script_op_move_wait:
 ; There are two different reasons a call can fail to run, and they get two
 ; different answers. NO_COMMON_EVENT -- the compiler could not give this
 ; `call` a table slot at all, because nothing it names is live -- is the same
-; situation script_op_give/script_op_take's own NO_ACTOR is in: a recognised
+; situation script_op_give/script_op_take's own NO_ITEM is in: a recognised
 ; command whose operand names nothing, which stops the event exactly as
 ; script_run_bad does for an opcode this engine cannot run at all, rather
 ; than silently not doing the thing the page said it would and carrying on

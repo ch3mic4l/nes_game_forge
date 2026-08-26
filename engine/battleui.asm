@@ -451,10 +451,17 @@ draw_list_spell_char:
   dec bt_tmp2
   bne draw_list_spell_char
   rts
+; bt_list holds item ids under ITEMS_ENABLED, legacy actor ids otherwise --
+; item_name and mon_name are keyed to match, item_chosen's own reasoning.
 draw_list_item_name:
   ldy bt_tmp
 draw_list_item_char:
+  .if ITEMS_ENABLED
+  lda item_name,y
+  .endif
+  .if !ITEMS_ENABLED
   lda mon_name,y
+  .endif
   jsr vram_push
   iny
   dec bt_tmp2

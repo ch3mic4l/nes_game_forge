@@ -17,8 +17,30 @@
 // main/build/songcompile.js. It imports only from `shared/`; keep it that way,
 // or the meter loses the one expression it shares with the check that refuses
 // the build.
+//
+// mon_heal and mon_name coexist with item_heal and item_name (phase 4)
+// rather than the item-keyed tables replacing the actor-keyed ones. They
+// look redundant in isolation, but they are not: mon_name still has a second
+// reader with nothing to do with items (push_combatant_name, naming which
+// monster is acting or being hit in battle text), and item_chosen /
+// draw_list_item_name both branch on ITEMS_ENABLED at the engine level -- a
+// project with no items[] at all still has a bag that holds legacy actor
+// ids, and reading an item-keyed table with an actor id in hand would be
+// wrong, not merely mismatched. Deleting either table would break the
+// disabled path's byte-for-byte promise to master. Banked-region headroom
+// (~3870 free bytes, measured) is why carrying both costs nothing worth
+// economizing.
 
-import { ELEMENTS, RPG_LIMITS, SPELL_KINDS, SPELL_SCOPES, itemByte, isMonsterActor } from '../../shared/project.js';
+import {
+  ELEMENTS,
+  RPG_LIMITS,
+  SPELL_KINDS,
+  SPELL_SCOPES,
+  NO_ITEM,
+  itemMissing,
+  isMonsterActor,
+  projectUsesItems
+} from '../../shared/project.js';
 import { NESASM_BANK_BYTES } from '../../shared/cartridge.js';
 import { textToTiles } from '../../shared/font.js';
 
@@ -97,23 +119,29 @@ export function battleTables(project) {
   chunks.push(`mon_gold:\n${dbRows(battle((b) => b.gold ?? 0))}`);
   chunks.push(`mon_weak:\n${dbRows(battle((b) => elementIndex(b.weak)))}`);
   chunks.push(`mon_strong:\n${dbRows(battle((b) => elementIndex(b.strong)))}`);
-  // $FF is "leaves nothing behind". An id that names no item gets it too,
-  // exactly as mon_spell below already treats a stale spell id, and for a
-  // harder reason: roll_drop (engine/battleturn.asm) hands this byte
-  // straight to add_item, which range-checks nothing, so an out-of-range id
-  // ends up in inv_items and draw_actor_icon (engine/ui.asm) indexes
-  // actor_anim_dir past its end with it. `b.drop` is an item id now, not an
-  // actor id directly, so this has to resolve through project.items the same
-  // way main/build/textcompile.js's Give/Take and Carrying-condition
-  // compilation do -- itemByte is the one function all three call, so none
-  // of them can resolve a drop differently than the others do. validateProject
-  // warns about one of these, but buildProject compiles the project the app
-  // is holding rather than one that has passed validation, so this still has
-  // to not hand add_item a byte that indexes the actor tables past their end.
+  // NO_ITEM ($FF) is "leaves nothing behind" -- for a drop that names no
+  // item at all (null) and for one itemMissing says does not exist alike,
+  // exactly as mon_spell below already treats a stale spell id the same as
+  // no spell. `b.drop` is an item id now, and reaches the ROM as one
+  // directly -- the same resolution main/build/textcompile.js's Give/Take
+  // and Carrying-condition compilation use (itemMissing), so none of the
+  // three can resolve a drop differently than the others do. Under
+  // ITEMS_ENABLED, roll_drop (engine/battleturn.asm) hands this byte
+  // straight to add_item, which now itself refuses NO_ITEM centrally (see
+  // engine/ui.asm) -- so this only has to avoid handing add_item a byte that
+  // is neither NO_ITEM nor a real item id, which itemMissing already
+  // guarantees regardless of whether the project has passed validateProject
+  // (buildProject compiles the project the app is holding, not one that has
+  // passed validation).
   chunks.push(
-    `mon_drop:\n${dbRows(battle((b) => itemByte(project.items, actors, b.drop)))}`
+    `mon_drop:\n${dbRows(battle((b) => (itemMissing(project.items, b.drop) ? NO_ITEM : b.drop)))}`
   );
   chunks.push(`mon_drop_pct:\n${dbRows(battle((b) => b.dropPct ?? 0))}`);
+  // The ITEMS_ENABLED-false path's own table: item_chosen (engine/
+  // battleturn.asm) still reads this, keyed by actor id, when a project has
+  // no items[] at all and the bag still holds legacy actor ids. Stays
+  // alongside item_heal below rather than being replaced by it -- see this
+  // file's own header note on why both tables exist.
   chunks.push(`mon_heal:\n${dbRows(battle((b) => b.heal ?? 0))}`);
   // Background art on the battle tileset. $FF means "no block art"; the engine
   // falls back to the actor's own metasprite, so every actor can fight.
@@ -133,6 +161,46 @@ export function battleTables(project) {
   // anchored to a 4x4 grid: a block that size lies inside one attribute cell.
   chunks.push(`mon_attr:\n${dbRows(battle((b) => (b.battlePalette ?? 2) * 0x55))}`);
   chunks.push(`mon_name:\n${dbRows(actors.flatMap((actor) => nameTiles(actor.name)), NAME_LIMIT)}`);
+
+  // --- items (ITEMS_ENABLED path only) ---------------------------------------
+  // item_chosen and draw_list_item_name (engine/battleturn.asm,
+  // engine/battleui.asm) read these when a project's bag holds item ids;
+  // mon_heal/mon_name above stay exactly as they are for the disabled path,
+  // where the bag still holds legacy actor ids -- see this file's own header
+  // note on why an ITEMS_ENABLED-false project needs both tables to keep
+  // working unmodified.
+  //
+  // Emitted only when projectUsesItems(project) is true -- round 4 finding:
+  // dbRows([]) still emits a one-byte ".db $00" stub for an empty array, so
+  // pushing these unconditionally cost every items-disabled RPG 2 real
+  // banked bytes (and shifted every label after them) for two tables
+  // nothing in that build ever reads, silently breaking the
+  // items-disabled-and-no-Save byte-identity promise for any RPG -- a defect
+  // the action-only pinned baseline (items.test.js) could never have caught,
+  // since it never exercises the battle region at all.
+  if (projectUsesItems(project)) {
+    const items = project.items ?? [];
+    // Only the battle item list ever draws an item's name; built from the
+    // item's own name field directly, not resolved through a backing actor --
+    // unlike mon_name, this has no legacy economy to reproduce, since nothing
+    // drew an item-specific name before this table existed.
+    chunks.push(`item_name:\n${dbRows(items.flatMap((item) => nameTiles(item.name)), NAME_LIMIT)}`);
+    // item_chosen's enabled-path heal amount. Phase 4b's own source here is
+    // deliberately still the backing actor's battle.heal -- items[] has no
+    // effect field yet, so there is nothing else to derive this from -- which
+    // reproduces today's actor-reuse economy exactly, just keyed by item id
+    // instead of actor id. Only phase 4c, once items[] gains a real effect
+    // field, changes this line's source; the table's existence, size and every
+    // reader of it are unchanged by that later change.
+    chunks.push(
+      `item_heal:\n${dbRows(
+        items.map((item) => {
+          const actor = typeof item.actorId === 'number' ? actors[item.actorId] : undefined;
+          return actor?.battle?.heal ?? 0;
+        })
+      )}`
+    );
+  }
 
   // --- spells ---------------------------------------------------------------
   chunks.push(`NUM_SPELLS = ${spells.length}`);

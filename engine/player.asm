@@ -89,6 +89,27 @@ update_player_crossed:
 
 ; ------------------------------------------------------------- directions
 
+; The two axes probe the player's body at both corners leading the move and
+; commit new_pos into the moved coordinate -- identical in shape between
+; left/right and between up/down, differing only in which corner offset and
+; which coordinate is written. move_horizontal_probe / move_vertical_probe
+; are that shared tail; each _inside label sets up new_pos and the first
+; probe coordinate, then falls into its axis's tail with a jmp (not jsr) so
+; the tail's own rts returns to whichever caller originally jsr'd move_left
+; et al. -- the stack is exactly as it would be if each routine still ended
+; with its own rts. probe_solid returns with Z describing A-COL_DAMAGE, not
+; A itself (see its own header), so the bne here after jsr probe_solid must
+; keep meaning "blocked" without any register touched in between.
+;
+; move_right_inside and move_down_inside jmp to a tail label on the very
+; next line -- a plain fallthrough would reclaim those 3 bytes each (6
+; total). Left as jmp, deliberately: the bank has 74 free bytes, so 6 more is
+; not the difference between fitting and not, and a fallthrough would make
+; physical adjacency load-bearing and invisible -- inserting anything between
+; move_down_inside and move_vertical_probe would silently break move_down
+; with no assembler error, where all four entry routines ending the same
+; explicit way cannot be silently broken by that kind of edit.
+
 move_left:
   lda #DIR_LEFT
   sta player_dir
@@ -102,24 +123,7 @@ move_left_inside:
   sta new_pos
   clc
   adc #BODY_L
-  sta probe_x
-  lda player_y
-  clc
-  adc #BODY_T
-  sta probe_y
-  jsr probe_solid
-  bne move_left_done
-  lda player_y
-  clc
-  adc #BODY_B
-  sta probe_y
-  jsr probe_solid
-  bne move_left_done
-  lda new_pos
-  sta player_x
-  inc moving
-move_left_done:
-  rts
+  jmp move_horizontal_probe
 
 move_right:
   lda #DIR_RIGHT
@@ -135,22 +139,34 @@ move_right_inside:
   lda new_pos
   clc
   adc #BODY_R
+  jmp move_horizontal_probe
+
+; A = the probe point's x (already offset by BODY_L or BODY_R). new_pos is
+; the candidate player_x a caller has already stored.
+move_horizontal_probe:
   sta probe_x
   lda player_y
   clc
   adc #BODY_T
   sta probe_y
   jsr probe_solid
-  bne move_right_done
+  bne move_horizontal_done
   lda player_y
   clc
   adc #BODY_B
   sta probe_y
   jsr probe_solid
-  bne move_right_done
+  bne move_horizontal_done
   lda new_pos
   sta player_x
   inc moving
+; move_left_done / move_right_done: kept as aliases on this same address (no
+; bytes emitted) rather than deleted -- a Code Forge user file is free to
+; reference a stock engine label, and these two existed before the dedup.
+; Still semantically honest: this is the same rts reached in the same
+; circumstances the old move_left_inside/move_right_inside ended in.
+move_horizontal_done:
+move_left_done:
 move_right_done:
   rts
 
@@ -167,24 +183,7 @@ move_up_inside:
   sta new_pos
   clc
   adc #BODY_T
-  sta probe_y
-  lda player_x
-  clc
-  adc #BODY_L
-  sta probe_x
-  jsr probe_solid
-  bne move_up_done
-  lda player_x
-  clc
-  adc #BODY_R
-  sta probe_x
-  jsr probe_solid
-  bne move_up_done
-  lda new_pos
-  sta player_y
-  inc moving
-move_up_done:
-  rts
+  jmp move_vertical_probe
 
 move_down:
   lda #DIR_DOWN
@@ -200,22 +199,31 @@ move_down_inside:
   lda new_pos
   clc
   adc #BODY_B
+  jmp move_vertical_probe
+
+; A = the probe point's y (already offset by BODY_T or BODY_B). new_pos is
+; the candidate player_y a caller has already stored.
+move_vertical_probe:
   sta probe_y
   lda player_x
   clc
   adc #BODY_L
   sta probe_x
   jsr probe_solid
-  bne move_down_done
+  bne move_vertical_done
   lda player_x
   clc
   adc #BODY_R
   sta probe_x
   jsr probe_solid
-  bne move_down_done
+  bne move_vertical_done
   lda new_pos
   sta player_y
   inc moving
+; move_up_done / move_down_done: the same aliasing move_horizontal_done makes
+; above, for the same reason.
+move_vertical_done:
+move_up_done:
 move_down_done:
   rts
 

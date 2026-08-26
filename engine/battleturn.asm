@@ -214,13 +214,21 @@ spell_chosen_all:
   sta bt_phase
   rts
 
-; An item was picked: spend it and heal whoever is acting.
+; An item was picked: spend it and heal whoever is acting. bt_list holds item
+; ids under ITEMS_ENABLED, legacy actor ids otherwise -- item_heal and
+; mon_heal are keyed to match, so this is the one place that needs to know
+; which economy is live; the arithmetic below is identical either way.
 item_chosen:
   ldx bt_sel
   lda bt_list,x
   sta bt_arg
   tay
+  .if ITEMS_ENABLED
+  lda item_heal,y
+  .endif
+  .if !ITEMS_ENABLED
   lda mon_heal,y
+  .endif
   beq item_chosen_none      ; not a potion, so nothing to do with it here
   sta bt_tmp
   lda bt_arg
@@ -845,7 +853,7 @@ award_xp_next:
 roll_drop:
   ldy mon_slot_actor,x
   lda mon_drop,y
-  cmp #$FF
+  cmp #NO_ITEM
   beq roll_drop_done
   sta bt_tmp
   lda mon_drop_pct,y

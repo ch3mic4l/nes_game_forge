@@ -34,8 +34,8 @@ import {
   RPG_LIMITS,
   actorMissing,
   actorByte,
-  itemByte,
   itemMissing,
+  NO_ITEM,
   battleFormationSlice,
   NO_ACTOR,
   choiceLabel,
@@ -80,14 +80,17 @@ export const NO_SONG = 0xff;
 // filled it. Defined there rather than here now that the schema writes it
 // too (renumberActorDeletion), and re-exported so every existing importer of
 // it still reads the same one byte from the same definition.
-export { NO_ACTOR };
-// actorByte/itemByte/itemMissing moved to shared/project.js beside
+export { NO_ACTOR, NO_ITEM };
+// actorByte/itemMissing moved to shared/project.js beside
 // actorMissing/NO_ACTOR for the identical reason: shared/project.js's own
-// migration and validateProject need to resolve an item id to the actor
-// byte it compiles to, and shared/ cannot import from main/build/. Kept
-// re-exported here so every existing importer of actorByte still reads the
-// same one function from the same definition.
-export { actorByte, itemByte, itemMissing };
+// migration and validateProject need this same resolution, and shared/
+// cannot import from main/build/. Kept re-exported here so every existing
+// importer of actorByte still reads the same one function from the same
+// definition. `itemByte` does not survive this phase — Give/Take, Carrying
+// and a monster's drop all carry the item id directly on the wire now (see
+// encodeCondition/encodeCommand below and battletables.js's mon_drop), so
+// nothing resolves an item id to an actor byte at compile time any more.
+export { actorByte, itemMissing };
 // OP_CALL's own operand: the table slot the named common event would occupy,
 // or this when nothing resolves -- deleted since, never live to begin with,
 // or a `call` never given a target. Named apart from shared/project.js's own
@@ -214,17 +217,22 @@ export function compileText(project) {
     return bytes;
   };
 
-  // A Carrying condition's `arg` is an item id now, not an actor id, so it
-  // cannot be resolved by the generic byte() clamp below at all — there is
-  // no way to reach the actor byte the engine still expects without
-  // consulting project.items. itemByte is the same resolution give/take
-  // uses below, and the same one main/build/battletables.js's mon_drop
-  // table applies to battle.drop: three sites reaching the same answer
-  // through the one function, so none of them can drift from the others.
+  // A Carrying condition's `arg` is an item id, and reaches the ROM as one
+  // directly — `has_item` (engine/script.asm) does a byte-equality scan of
+  // `inv_items`, which holds item ids under ITEMS_ENABLED (main/build/
+  // generate.js), so this cannot go through the generic byte() clamp below
+  // either (that clamps against an *actor*-shaped ceiling). NO_ITEM, not a
+  // clamp, for anything itemMissing says does not exist — the same
+  // resolution give/take uses below, and the same one battletables.js's
+  // mon_drop table applies to battle.drop: three sites reaching the same
+  // answer through the one function, so none of them can drift from the
+  // others. NO_ITEM and NO_ACTOR are both $FF, so this is byte-compatible
+  // with an ITEMS_ENABLED-false build reading the identical operand as an
+  // actor id it happens to already refuse the same way.
   const encodeCondition = (cond) => [
     condIndex(cond?.type),
     cond?.type === 'hasItem'
-      ? itemByte(project.items, project.sprites?.actors, cond?.arg)
+      ? (itemMissing(project.items, cond?.arg) ? NO_ITEM : cond.arg)
       : byte(cond?.arg, conditionArgLimit(cond?.type)),
     byte(cond?.value)
   ];
@@ -242,7 +250,13 @@ export function compileText(project) {
         ];
       case 'give':
       case 'take':
-        return [opIndex(command.op), itemByte(project.items, project.sprites?.actors, command.item)];
+        // The item id directly, NO_ITEM for one itemMissing says does not
+        // exist — see encodeCondition's comment above for why this no
+        // longer resolves through the backing actor at all.
+        return [
+          opIndex(command.op),
+          itemMissing(project.items, command.item) ? NO_ITEM : command.item
+        ];
       case 'setSwitch':
       case 'clearSwitch':
         return [opIndex(command.op), byte(command.switch, 63)];

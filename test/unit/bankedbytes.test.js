@@ -837,15 +837,38 @@ test('switchableMappers offers only boards the project survives switching to', a
   // Run-common-event reference to an id no live common event holds, caught
   // by validateProject's own liveCommonEventIds check, and touches no byte
   // count kernelTableBytes or kernelCodeBytes reads.
-  heavy.maps[0].screens[0].entities[heavy.maps[0].screens[0].entities.length - 1].props.event.pages[0].commands.push({
-    op: 'call',
-    event: 9999
+  //
+  // Deliberately a *lighter* clone of `heavy`, Save only, not the Save+Move
+  // combination above -- phase 4b measured `heavy`'s own MMC3 margin at just
+  // 1 byte before items existed at all (kernelCodeBytes + kernelTableBytes,
+  // this project's own numbers), so ITEM_KERNEL_ALLOWANCE's real, measured
+  // 16-byte code cost (main/build/generate.js) alone tips it negative --
+  // correctly: this is exactly the capacity wall the phase 4 design document
+  // (§6) predicts for Save+Move+items on MMC3, not a bug in this test's
+  // premise. Reusing `heavy` here would make this case test the capacity
+  // wall by accident instead of the thing it is actually about -- whether a
+  // pre-existing, board-independent error suppresses every suggestion --
+  // which needs a project with real headroom on at least one candidate so a
+  // non-empty `offers()` result is possible at all.
+  const lightlyBroken = structuredClone(base);
+  lightlyBroken.cartridge.mapper = 1;
+  lightlyBroken.project.titleMap = 0;
+  lightlyBroken.project.titleScreen = 0;
+  lightlyBroken.maps[0].screens[0].entities.push({
+    actorId: 0,
+    x: 16,
+    y: 16,
+    props: {
+      event: {
+        pages: [{ cond: { type: 'none', arg: 0 }, commands: [{ op: 'save' }, { op: 'call', event: 9999 }] }]
+      }
+    }
   });
   assert.ok(
-    validateProject(heavy).some((entry) => /Run common event/.test(entry.message)),
+    validateProject(lightlyBroken).some((entry) => /Run common event/.test(entry.message)),
     'this case needs a pre-existing, board-independent error to be meaningful'
   );
-  assert.ok(offers(heavy, mmc1).length > 0, 'a pre-existing error must not rule out every board');
+  assert.ok(offers(lightlyBroken, mmc1).length > 0, 'a pre-existing error must not rule out every board');
 
   // 4. The quiet-data-loss case, and the only one validateProject cannot see:
   //    UNROM 512 holds four tilesets, so switching an eight-tileset project to

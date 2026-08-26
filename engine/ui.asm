@@ -19,10 +19,20 @@
 
 ; ------------------------------------------------------------- inventory
 
-; Add the actor id in A to the bag. A full bag keeps what it has; the pickup is
-; still counted and still disappears, exactly as it did before there was a bag.
-; Preserves X, clobbers Y.
+; Add the actor id (or, under ITEMS_ENABLED, the item id) in A to the bag. A
+; full bag keeps what it has; the pickup is still counted and still
+; disappears, exactly as it did before there was a bag. Under ITEMS_ENABLED,
+; NO_ITEM (an unbacked pickup, or an unresolved Give) is refused here rather
+; than entered as a phantom bag slot -- guarded centrally, once, rather than
+; at every caller: script_op_give already screens its own operand before
+; reaching here, but the two field pickup paths (entity_pickup, do_interact)
+; do not, and this is the one place both of them funnel through. Preserves X,
+; clobbers Y.
 add_item:
+  .if ITEMS_ENABLED
+  cmp #NO_ITEM
+  beq add_item_done
+  .endif
   ldy inv_count
   cpy #MAX_ITEMS
   bcs add_item_done
@@ -254,7 +264,12 @@ draw_menu_placed:
 draw_menu_item:
   ldx ui_slot
   lda inv_items,x
+  .if ITEMS_ENABLED
+  jsr draw_item_icon
+  .endif
+  .if !ITEMS_ENABLED
   jsr draw_actor_icon
+  .endif
 
   inc ui_slot
   lda ui_slot
@@ -305,3 +320,27 @@ draw_actor_icon:
   jmp draw_metasprite
 draw_actor_icon_done:
   rts
+
+; A = item id. Draws that item's own icon at de_ex/de_ey -- item_metasprite
+; (assets/items.inc), computed once at generation time by generate.js's
+; resolveItemIcon (an explicit metaspriteId, or a legacy derivation from the
+; backing actor's own resting frame for a migrated item that never set one).
+; No facing to resolve, unlike draw_actor_icon: an item has one icon, not
+; four animations, which is why this is the simpler of the two rather than a
+; variant of it.
+;
+; The whole routine, not just its one caller above, is gated on
+; ITEMS_ENABLED: item_metasprite itself is not emitted at all when items are
+; disabled (generate.js's itemTables writes nothing, not even a stub), so an
+; unconditionally-assembled reference to it here would be an undefined
+; symbol the moment a project has no items.
+  .if ITEMS_ENABLED
+draw_item_icon:
+  tay
+  lda item_metasprite,y
+  cmp #NO_METASPRITE
+  beq draw_item_icon_done
+  jmp draw_metasprite
+draw_item_icon_done:
+  rts
+  .endif

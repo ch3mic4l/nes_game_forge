@@ -249,7 +249,13 @@ do_interact_loop:
   lda #0
   sta ent_active,x
   inc pickups
+  ; Same ent_to_scr overload entity_pickup uses -- see its own comment.
+  .if ITEMS_ENABLED
+  lda ent_to_scr,x
+  .endif
+  .if !ITEMS_ENABLED
   lda ent_actor,x
+  .endif
   jmp add_item
 do_interact_next:
   inx

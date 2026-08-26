@@ -154,7 +154,9 @@ test('a collected pickup goes into the bag, and confirm spends it', {
 
   assert.equal(nes.cpu.mem[PICKUPS], 1, 'walking onto the gem did not collect it');
   assert.equal(nes.cpu.mem[INV_COUNT], 1, 'the gem did not reach the bag');
-  assert.equal(nes.cpu.mem[INV_ITEMS], 1, 'the bag should hold the gem actor (id 1)');
+  // The bag holds the item id (0, sample's own "Gem"), not the actor id (1)
+  // it used to hold before phase 4b retargeted the bag to item ids.
+  assert.equal(nes.cpu.mem[INV_ITEMS], 0, 'the bag should hold the gem item (id 0)');
 
   const worldSprites = liveSprites(nes).length;
   tap(nes, SELECT);
@@ -221,10 +223,18 @@ test('the highlight walks the bag, and spending an item closes the gap', {
 
   const project = await loadProject(SAMPLE);
   const gem = project.sprites.actors.find((actor) => actor.behavior === 'pickup');
+  const gemItem = project.items.find((item) => item.actorId === gem.id);
+  assert.ok(gemItem, 'the sample fixture should already have an item backing the gem');
   // A second pickup actor, so the bag holds two telltale ids rather than three
   // copies of one and the shuffle is visible.
   const relic = { ...structuredClone(gem), id: project.sprites.actors.length, name: 'Relic' };
   project.sprites.actors.push(relic);
+  // ...and its own item: an unbacked pickup actor is refused at add_item
+  // (engine/ui.asm's centralized NO_ITEM guard, phase 4b), so a second
+  // pickup actor with no item of its own would silently not enter the bag
+  // at all rather than filling it with a second, distinguishable id.
+  const relicItem = { id: project.items.length, name: 'Relic', actorId: relic.id, metaspriteId: null };
+  project.items.push(relicItem);
 
   const place = (actorId, x, y) => ({ actorId, x, y, props: { toScreen: 0, toX: 112, toY: 112 } });
   // All three inside the interact action's 20-pixel reach of the player start and
@@ -243,8 +253,8 @@ test('the highlight walks the bag, and spending an item closes the gap', {
   assert.equal(nes.cpu.mem[INV_COUNT], 3, 'three interacts should have filled the bag');
   assert.deepEqual(
     [...nes.cpu.mem.slice(INV_ITEMS, INV_ITEMS + 3)],
-    [gem.id, relic.id, gem.id],
-    'the bag should hold what was collected, in the order it was collected'
+    [gemItem.id, relicItem.id, gemItem.id],
+    'the bag should hold the item ids of what was collected, in the order it was collected'
   );
 
   tap(nes, SELECT);
@@ -269,6 +279,6 @@ test('the highlight walks the bag, and spending an item closes the gap', {
   tap(nes, A); // spending from the middle of the bag closes up over the gap
   assert.equal(nes.cpu.mem[INV_COUNT], 1);
   assert.equal(nes.cpu.mem[ITEMS_USED], 2);
-  assert.equal(nes.cpu.mem[INV_ITEMS], relic.id, 'the relic should have moved down into slot 0');
+  assert.equal(nes.cpu.mem[INV_ITEMS], relicItem.id, 'the relic should have moved down into slot 0');
   assert.equal(nes.cpu.mem[INV_SEL], 0);
 });

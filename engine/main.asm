@@ -43,6 +43,7 @@
   .include "assets/palettes.inc"
   .include "assets/metatiles.inc"
   .include "assets/sprites.inc"
+  .include "assets/items.inc"
   .include "assets/input.inc"
   .include "assets/maps.inc"
   .include "assets/chrtables.inc"

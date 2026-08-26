@@ -560,15 +560,15 @@ test(
 );
 
 test(
-  'a restored inv_items entry naming no actor this build has is refused',
+  'a restored inv_items entry naming no item this build has is refused',
   { skip: !hasNesasm && 'nesasm not found on PATH' },
   async (t) => {
     // Give an item first, so inv_count > 0 and the corrupted slot is one the
     // live-entries loop actually walks -- corrupting an unused slot would
     // prove nothing, since draw_menu never reads past inv_count either. Item
-    // 0 is sample-rpg's own "Potion", backed by actor 1 -- inv_items still
-    // holds the actor byte it always has (see itemByte's own docstring),
-    // only the authoring field naming it changed.
+    // 0 is sample-rpg's own "Potion" -- sample-rpg has a live item, so
+    // ITEMS_ENABLED is true for this build and inv_items now holds the item
+    // id directly (0), not the actor id (1) it used to back it with.
     const romPath = await buildSaveable(t, [{ op: 'give', item: 0 }, { op: 'save' }]);
     const nes = boot(romPath);
     tap(nes, START);
@@ -579,8 +579,9 @@ test(
       'the Give command should have left a live inventory entry to corrupt'
     );
 
-    // This build has 5 actors (the RPG's 4 plus the Saver pushed on in
-    // buildSaveable): 200 names none of them.
+    // This build has 1 item (sample-rpg's Potion, NUM_ITEMS = 1): 200 names
+    // none of them, and refuses under the ITEMS_ENABLED bound (NUM_ITEMS)
+    // rather than the legacy actor one (NUM_ACTORS) this build never reads.
     corruptAndReseal(nes, SAVE_INV_ITEMS_OFFSET, 200);
 
     powerCycle(nes);
@@ -588,7 +589,42 @@ test(
     assert.equal(
       nes.cpu.mem[GAME_STATE],
       ST_TITLE,
-      "a live inv_items entry naming no actor this build has must be refused"
+      "a live inv_items entry naming no item this build has must be refused"
+    );
+  }
+);
+
+test(
+  // Deliverable 4 (phase 4 design, §8): direct RAM-level coverage that the
+  // bound is really NUM_ITEMS and not still NUM_ACTORS. A corruption value
+  // past both (the test above, 200) cannot tell the two apart -- it fails
+  // either way. 1 is a real, valid actor id in this 5-actor build (sample-rpg's
+  // 4 plus the Saver) but not a valid item id in this 1-item build
+  // (NUM_ITEMS = 1, ids 0 only), so this only fails if the enabled-path
+  // bound genuinely switched to NUM_ITEMS rather than silently staying
+  // NUM_ACTORS under the new .if ITEMS_ENABLED branch.
+  'a restored inv_items entry naming a real actor but no real item is still refused',
+  { skip: !hasNesasm && 'nesasm not found on PATH' },
+  async (t) => {
+    const romPath = await buildSaveable(t, [{ op: 'give', item: 0 }, { op: 'save' }]);
+    const nes = boot(romPath);
+    tap(nes, START);
+    touchSaver(nes, () => nes.cpu.mem[SRAM_BASE + SAVE_MARKER_OFFSET] === SAVE_MARKER_VALID);
+    assert.equal(nes.cpu.mem[SRAM_BASE + SAVE_MARKER_OFFSET], SAVE_MARKER_VALID, 'the real save never completed');
+    assert.ok(
+      nes.cpu.mem[SRAM_BASE + SAVE_INV_COUNT_OFFSET] > 0,
+      'the Give command should have left a live inventory entry to corrupt'
+    );
+
+    corruptAndReseal(nes, SAVE_INV_ITEMS_OFFSET, 1);
+
+    powerCycle(nes);
+    tap(nes, SELECT);
+    assert.equal(
+      nes.cpu.mem[GAME_STATE],
+      ST_TITLE,
+      'an inv_items entry of 1 must be refused under NUM_ITEMS (=1, ids 0 only) even though actor 1 is real -- ' +
+        'a pass here would mean save_check_valid is still bounding this build against NUM_ACTORS'
     );
   }
 );

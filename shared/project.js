@@ -67,17 +67,39 @@ export const NO_ACTOR = 0xff;
 
 /**
  * The byte that means "names no item" — the same role `NO_ACTOR` plays, one
- * id space over. Nothing compiles an item id onto the wire directly in this
- * phase (see `itemByte` below: every reference still resolves through to an
- * *actor* byte), but Give/Take's `item` field, a Carrying condition's `arg`
- * and `battle.drop` are all one-byte JS fields carrying an item id now, and
- * a later phase is where `inv_items` itself starts holding item ids
- * directly. Bounding the id space to a byte now, with its own sentinel,
- * means that phase inherits a clean ceiling instead of rediscovering the
- * exact defect `NO_ACTOR`'s own docstring already describes fixing once —
- * an id 255 becoming creatable and colliding with "nothing."
+ * id space over. `inv_items`, Give/Take's `item` field, a Carrying
+ * condition's `arg` and `battle.drop` all carry an item id directly now
+ * (`.if ITEMS_ENABLED` in the engine; `main/build/textcompile.js` and
+ * `main/build/battletables.js` on the compiler side) — bounding the id space
+ * to a byte, with its own sentinel, meant this phase inherited a clean
+ * ceiling instead of rediscovering the exact defect `NO_ACTOR`'s own
+ * docstring already describes fixing once — an id 255 becoming creatable
+ * and colliding with "nothing."
  */
 export const NO_ITEM = 0xff;
+
+/**
+ * The byte that means "names no metasprite" — one id space over from
+ * `NO_ACTOR`/`NO_ITEM`, for an item's own `metaspriteId`. Two things share
+ * this value on purpose: `null` still means "not set — derive an icon from
+ * the backing actor" (generate.js's own legacy fallback), while
+ * `NO_METASPRITE` is how an author says "this item explicitly has no icon"
+ * once there is an editor to say it with. `renumberMetaspriteDeletion`
+ * treats both as fixed points — `null` because it never named a real
+ * metasprite to begin with, `NO_METASPRITE` because it is a sentinel, not an
+ * index, and shifting it the way a real reference above a deleted slot
+ * shifts would silently turn "no icon" into a real, wrong one. The matching
+ * engine-side equate lives in `engine/constants.asm`, hand-written like
+ * `NO_ACTOR`/`NO_ANIM`/`NO_ENTITY`/`NO_MAP` already are — that whole family
+ * is independent per-array literals that agree with their JS counterpart by
+ * convention and comment, not by generation, and this one follows it.
+ *
+ * Defined here, before `LIMITS`, for the same reason `NO_ACTOR`/`NO_ITEM`
+ * already are: `LIMITS.metasprites` below is this value, not a literal 255,
+ * the identical shape as `LIMITS.actors`/`LIMITS.items` and for the
+ * identical reason — see `LIMITS`' own comment on that field.
+ */
+export const NO_METASPRITE = 0xff;
 
 /** Hard limits imposed by the NES and by the template engine. */
 export const LIMITS = {
@@ -106,7 +128,20 @@ export const LIMITS = {
   actors: NO_ACTOR,
   // Ids 0..$FE, same shape and same reason as `actors` above, one id space
   // over: `NO_ITEM` is a byte in this space too.
-  items: NO_ITEM
+  items: NO_ITEM,
+  // Ids 0..$FE, the identical shape again, one id space further over. Round
+  // 5 finding: before this existed, a metasprite array was genuinely
+  // uncapped (no LIMITS entry, and the Sprite Forge's own Add button never
+  // checked one), so a project could reach 256 real metasprites — id 255
+  // among them, which is byte-identical to NO_METASPRITE. From that point,
+  // an item's derived icon computing to a real metasprite 255 and an item's
+  // own explicit "no icon" were the same byte, with no way to tell them
+  // apart at generation time or at deletion time (renumberMetaspriteDeletion's
+  // fixed-point check for the sentinel would fire for a real reference to
+  // metasprite 255 too). Capping the id space the same way actors/items
+  // already are closes it the same way: a real metasprite can never again
+  // be assigned the sentinel's own value.
+  metasprites: NO_METASPRITE
 };
 
 /**
@@ -324,100 +359,76 @@ export const actorMissing = (actors, id) =>
   id === null || id === undefined || !Number.isInteger(id) || id < 0 || id >= (actors?.length ?? 0);
 
 /**
- * The byte a Give item / Take item command's `item`, a Carrying condition's
- * `arg`, or a `battle.drop` becomes: NO_ACTOR for anything `actorMissing`
- * says does not resolve — `null`, or any other id no actor sits at — and the
- * actor's own id otherwise. Defined here rather than in
- * main/build/textcompile.js (where it used to live, and which now re-exports
- * it) for the same reason `NO_ACTOR` itself moved there once
- * `renumberActorDeletion` needed to write it: `itemByte`/`itemMissing`
- * below, the migration and `validateProject` all need this same resolution
- * and shared/ cannot import from main/build/.
+ * The byte a formation slot, an entity placement, or any other directly-typed
+ * actor reference becomes: NO_ACTOR for anything `actorMissing` says does not
+ * resolve — `null`, or any other id no actor sits at — and the actor's own
+ * id otherwise. Defined here rather than in main/build/textcompile.js (where
+ * it used to live, and which now re-exports it) for the same reason
+ * `NO_ACTOR` itself moved there once `renumberActorDeletion` needed to write
+ * it: `itemMissing` below, the migration and `validateProject` all need this
+ * same resolution and shared/ cannot import from main/build/.
  */
 export function actorByte(actors, id) {
   return actorMissing(actors, id) ? NO_ACTOR : id;
 }
 
 /**
- * The byte an item id compiles to, once resolved through the one actor it
- * backs: `items[id].actorId`, run through `actorByte` exactly as if that
- * actor id had been named directly. This is deliberately still an *actor*
- * byte — nothing in this phase changes what the engine reads on the wire
- * (`inv_items` is still one actor id per carried item), only what the
- * schema and compiler resolve *from* before reaching it. An item that does
- * not resolve (bad id, or an id whose `actorId` does not name a real actor)
- * compiles to `NO_ACTOR`, the same byte an unresolvable actor reference
- * already compiled to before items existed — one sentinel, asked for the
- * same reason, one hop further out.
+ * Whether an item id exists in `project.items` — nothing more. This is
+ * deliberately narrower than it used to be: before Give/Take/Carrying/drops
+ * carried item ids directly on the wire, an item's validity as a *reference*
+ * and its `actorId`'s own resolution were the same question, because the
+ * compiler had nowhere else to go but through the backing actor. Now that
+ * the wire carries the item id itself, those are two separate questions —
+ * see the comment on `items[].actorId` in `normalizeItem` for the second
+ * one, which is about whether an item has a *physical pickup*, not whether
+ * it exists. An item with `actorId: null` (never placed in the world, only
+ * ever granted by script) is a fully valid, ordinary item under this
+ * function — ordinary, ungated existence is genuinely all that matters to
+ * Give/Take, Carrying, and a monster's drop, and conflating it with pickup
+ * backing (as this function used to) made deleting a pickup's placement
+ * read as breaking every unrelated script reference to the same item, when
+ * `renumberActorDeletion` was already doing the right thing underneath
+ * (nulling `actorId`, keeping the item).
  */
-export function itemByte(items, actors, id) {
-  const item =
-    Number.isInteger(id) && id >= 0 && id < (items?.length ?? 0) ? items[id] : null;
-  return item ? actorByte(actors, item.actorId) : NO_ACTOR;
-}
+export const itemMissing = (items, id) =>
+  !(Number.isInteger(id) && id >= 0 && id < (items?.length ?? 0));
 
 /**
- * Whether an item id resolves all the way through to a real actor — the
- * item-space equivalent of `actorMissing`, and the single question
- * `validateProject`, the compiler's own `itemByte` and the Map/Sprite
- * Forges' selects all ask about an item reference. Folds two failure
- * shapes into one answer on purpose: an id that names no item at all reads
- * identically to one that names an item nothing backs (`actorId` null, or
- * naming an actor that no longer exists) — both compile to `NO_ACTOR`, so
- * both are "missing" for exactly the same reason `actorMissing` already
- * gives one answer to "deleted" and "never valid."
- */
-export const itemMissing = (items, actors, id) => {
-  const item =
-    Number.isInteger(id) && id >= 0 && id < (items?.length ?? 0) ? items[id] : undefined;
-  return !item || actorMissing(actors, item.actorId);
-};
-
-/**
- * The single writer for what an item-naming `<select>` offers: which items
- * may be picked ordinarily, and how the id currently named is represented
- * if it is not one of them. Three call sites used to compute this
- * separately — the Map Forge's Carrying and Give/Take selects
- * (renderer/forges/map/events.js) and the Sprite Forge's Drops select
- * (renderer/forges/sprite/battle.js) — which is the exact shape CLAUDE.md
- * already warns about for `effectiveTrigger`: three places deciding the
- * same question is how the editor comes to show one thing and the ROM run
- * another. One of the three drifted first (round 2) and stayed
- * undetected because nothing exercised the *other* two copies to disagree
- * with it — the bug was in the shape shared by all three, not in any one
- * of them.
+ * The single writer for what an item-naming `<select>` offers: every real
+ * item, plus how the id currently named is represented if it names none of
+ * them. Three call sites used to compute this separately — the Map Forge's
+ * Carrying and Give/Take selects (renderer/forges/map/events.js) and the
+ * Sprite Forge's Drops select (renderer/forges/sprite/battle.js) — the exact
+ * shape CLAUDE.md already warns about for `effectiveTrigger`.
  *
  * Returns `{ healthy, missing }`:
  *
- * - `healthy` is every item whose own `actorId` resolves
- *   (`!actorMissing(actors, item.actorId)`), each already shaped as
- *   `{ value, label, selected }`. An orphan — `actorId` null, or naming an
- *   actor that no longer exists — is excluded outright, not merely left
- *   unselected: leaving it in would let it render as an ordinary,
- *   working-looking choice a click could newly select into the identical
- *   `NO_ACTOR` trap the missing entry below exists to make visible instead.
- * - `missing` is `null` when `selectedId` names a healthy item — there is
- *   nothing more to represent — or `{ value, label, selected: true }` when
- *   it does not, covering a stale/out-of-range id and `null`/`undefined`
- *   alike, the same as `itemMissing` already does for exactly that reason.
- *   A caller with its own meaning for `null` — the Drops select's
+ * - `healthy` is every item in `project.items`, each shaped as `{ value,
+ *   label, selected }`. An item with no physical pickup (`actorId: null`,
+ *   or naming a deleted actor) is not excluded — it is a normal item that
+ *   simply can never be picked up off the map, which is a legitimate,
+ *   supported authoring choice (a key handed over only in a cutscene, say),
+ *   not the broken-reference case `missing` exists to surface.
+ * - `missing` is `null` when `selectedId` names a real item, or
+ *   `{ value, label, selected: true }` when it does not — a stale/
+ *   out-of-range id, or `null`/`undefined`, exactly what `itemMissing` now
+ *   answers. A caller with its own meaning for `null` — the Drops select's
  *   "Nothing," a deliberate, legitimate choice rather than a broken
- *   reference — decides whether to render this entry at all for that case,
- *   the same guard it already carries; this function only ever describes
- *   the item-reference half of the picker, not a field's own null
- *   affordance.
+ *   reference — decides whether to render this entry at all for that case.
  *
  * Across `healthy` and `missing` together, at most one entry is ever
- * `selected` — `selectedId` names exactly one thing, healthy or not — so a
- * caller can render `missing` (if present) followed by `healthy` and never
- * produce two selected `<option>`s for a single-select to disagree about
- * which one it shows.
+ * `selected` — `selectedId` names exactly one thing — so a caller can
+ * render `missing` (if present) followed by `healthy` and never produce two
+ * selected `<option>`s for a single-select to disagree about which one it
+ * shows.
  */
-export function itemPickerOptions(items, actors, selectedId) {
-  const healthy = (items ?? [])
-    .filter((item) => !actorMissing(actors, item.actorId))
-    .map((item) => ({ value: item.id, label: item.name, selected: item.id === selectedId }));
-  const missing = itemMissing(items, actors, selectedId)
+export function itemPickerOptions(items, selectedId) {
+  const healthy = (items ?? []).map((item) => ({
+    value: item.id,
+    label: item.name,
+    selected: item.id === selectedId
+  }));
+  const missing = itemMissing(items, selectedId)
     ? { value: selectedId, label: 'Missing item', selected: true }
     : null;
   return { healthy, missing };
@@ -969,9 +980,8 @@ export function renumberActorDeletion(project, index) {
  * that field.
  *
  * Deleting an item never touches `project.sprites.actors`: nothing on an
- * actor names an item (see the discriminator note on `itemByte` above — the
- * link is `item.actorId`, one direction only), so there is nothing on the
- * actor side for this function to fix up.
+ * actor names an item — the link is `item.actorId`, one direction only —
+ * so there is nothing on the actor side for this function to fix up.
  *
  * Mutates `project` and returns it. The caller removes `project.items[index]`
  * itself, before or after calling this, the same contract
@@ -1030,11 +1040,19 @@ export function renumberItemDeletion(project, index) {
  * field. It does not widen into a general metasprite-reference audit beyond
  * the three consumers named above.
  *
- * The party member and item cases are the ordinary `shift`/fixed-point
- * treatment: nullable already, so a reference to the deleted metasprite
- * becomes `null` ("draws nothing" — a party member already supports this,
- * "Not drawn" in the Sprite Forge's battle tab) and everything above it
- * shifts down.
+ * The party member and item cases are both the `shift`/fixed-point
+ * treatment, but not the identical one: a party member's `null` already
+ * means "draws nothing" ("Not drawn" in the Sprite Forge's battle tab), so a
+ * reference to the deleted metasprite becomes `null` there. An item's
+ * `null` means something else now (§ its own field comment in
+ * `normalizeItem`: "not set — derive one from the backing actor"), so
+ * mapping a deleted-metasprite reference to `null` there would silently
+ * turn "this item had its own icon" into "derive one from the actor
+ * instead" — swapping in unrelated art rather than clearing the icon, the
+ * identical silent-repoint shape this function exists to close, reached
+ * through its own fixed-point case instead of a missed one. An item's exact
+ * match becomes `NO_METASPRITE` (explicit "no icon") instead; everything
+ * above the deleted index shifts down the same way for both.
  *
  * **The animation-frame case is different, because it has no sentinel.**
  * `normalizeAnimation` clamps a missing or malformed `metaspriteId` to `0`
@@ -1061,9 +1079,47 @@ export function renumberItemDeletion(project, index) {
  */
 export function renumberMetaspriteDeletion(project, index) {
   const shift = (id) => (id > index ? id - 1 : id);
-  const fixedPoint = (id) => {
+  // Two things fixedPoint has to get right independently, and round 7 found
+  // it had conflated them: what happens on an *exact match* (the reference
+  // named precisely the metasprite just deleted), and whether NO_METASPRITE
+  // ($FF) is a *sentinel this field even has* at all.
+  //
+  // `onExactMatch` is the first -- party members and items genuinely differ
+  // here: a party member's null already means "draws nothing", so its own
+  // reference to the deleted metasprite becomes null; an item's null means
+  // "derive an icon from the backing actor" now, so mapping its own
+  // reference to null there would silently swap in unrelated art instead of
+  // clearing the icon -- it needs NO_METASPRITE, the sentinel that actually
+  // means "no icon" for an item.
+  //
+  // `preserveSentinel` is the second, and round 4's own fix (checking the
+  // exact match before the sentinel, so the two checks can never disagree
+  // about which applies to a real metasprite 255) did not go far enough:
+  // it only closed the ambiguity for the id *being deleted*. A party member
+  // referencing a real, surviving metasprite 255 while some *other* index is
+  // deleted never hits the exact-match branch at all -- it falls through to
+  // "is this the sentinel", and that check fired unconditionally for both
+  // callers, preserving 255 instead of shifting it down like every other
+  // real reference above the deleted slot. For an item that is correct
+  // (NO_METASPRITE genuinely means something there, so it must never shift).
+  // For a party member it is not: 255 there is only ever a real index --
+  // this field has no "no icon" sentinel of its own, `null` already owns
+  // that meaning -- so it must shift exactly like any other id. This is why
+  // the fix from round 5 to test with metasprite 255 named the wrong
+  // property; it is the recovery path (delete index 0, not 255) that
+  // actually exercises this, and round 4's fixture only ever deleted 255
+  // itself.
+  const fixedPoint = (id, onExactMatch, preserveSentinel) => {
     if (id === null || id === undefined) return null;
-    if (id === index) return null;
+    if (id === index) return onExactMatch;
+    // NO_METASPRITE ($FF) is an item's explicit "no icon", not a real index
+    // -- shifting it the way a real reference above the deleted slot shifts
+    // would silently turn "no icon" into a real, wrong one the next time a
+    // metasprite below it is deleted. Item-only: a party member's
+    // metaspriteId has no sentinel of its own (null already means "draws
+    // nothing"), so 255 there is always a real id and must shift with
+    // everything else.
+    if (preserveSentinel && id === NO_METASPRITE) return NO_METASPRITE;
     return shift(id);
   };
   for (const animation of project.sprites?.animations ?? []) {
@@ -1072,10 +1128,10 @@ export function renumberMetaspriteDeletion(project, index) {
       .map((frame) => ({ ...frame, metaspriteId: shift(frame.metaspriteId) }));
   }
   for (const member of project.party ?? []) {
-    member.metaspriteId = fixedPoint(member.metaspriteId);
+    member.metaspriteId = fixedPoint(member.metaspriteId, null, false);
   }
   for (const item of project.items ?? []) {
-    item.metaspriteId = fixedPoint(item.metaspriteId);
+    item.metaspriteId = fixedPoint(item.metaspriteId, NO_METASPRITE, true);
   }
   return project;
 }
@@ -1464,8 +1520,9 @@ function normalizeEventCommand(raw, depth = 0, itemCtx = EMPTY_ITEM_CTX) {
     // holds a list to drop the id from the way a battle formation does. Not
     // 0 or any other number — a real item could be sitting at either — and
     // not dropping the command outright either, which would erase whatever
-    // else the event went on to do. `itemByte` is the other half: NO_ACTOR
-    // for a missing item, the same as songByte's NO_SONG.
+    // else the event went on to do. `main/build/textcompile.js`'s own
+    // encoding is the other half: NO_ITEM for an item that does not exist
+    // (itemMissing), the same as songByte's NO_SONG.
     //
     // Which raw field this reads is decided by property presence, not `??`:
     // an explicit `item: null` is a deliberately cleared target and must not
@@ -2057,24 +2114,45 @@ function normalizeItem(raw, id) {
     id,
     name: typeof raw?.name === 'string' && raw.name ? raw.name : `Item ${id}`,
     // Safe-by-default rather than clamped-to-a-real-actor: a garbage or
-    // out-of-range value becomes `NO_ACTOR`, not actor 0. `itemByte`/
-    // `itemMissing` already treat `NO_ACTOR` as "does not resolve," the
-    // same answer they give `null`, so this is the roster-blind half of
-    // that question — resolution correctness is validateProject's job, not
-    // normalization's, exactly as `actorConditionArg` already does it for a
-    // condition's own actor-typed argument.
+    // out-of-range value becomes `NO_ACTOR`, not actor 0 — `actorMissing`
+    // already treats `NO_ACTOR` as "does not resolve," the same answer it
+    // gives `null`, so this is the roster-blind half of that question.
+    // Resolution correctness (does this actorId still name a real, live
+    // actor) is validateProject's job, not normalization's, exactly as
+    // `actorConditionArg` already does it for a condition's own actor-typed
+    // argument. `actorId` is optional metadata now, not a requirement for
+    // the item itself to be valid — see `itemMissing`'s own docstring for
+    // why existence and pickup-backing are two separate questions.
     actorId:
       raw?.actorId === null || raw?.actorId === undefined
         ? null
         : Number.isInteger(raw.actorId) && raw.actorId >= 0 && raw.actorId <= LIMITS.actors - 1
           ? raw.actorId
           : NO_ACTOR,
-    // The icon. Nothing draws it yet — see itemByte's own docstring, this
-    // phase changes nothing the engine reads — but it is a real metasprite
-    // reference the moment it is set, so metasprite deletion has to know
-    // about it: see renumberMetaspriteDeletion.
+    // The icon. `null` means "not set — derive one from the backing actor's
+    // own resting frame at generation time" (generate.js's resolveItemIcon,
+    // reproducing what draw_actor_icon already drew for a migrated item
+    // before this table existed, empty-animation stub included). An explicit
+    // value 0-255 is used as-is (255 is `NO_METASPRITE`, an author's own
+    // explicit "no icon", distinct from "not set yet"). Anything else --
+    // out of range, fractional, not a number at all -- is not resurrected as
+    // `null` and not rounded/clamped into a real, working-looking metasprite
+    // id either: both would silently reinterpret a malformed or stale
+    // explicit choice as something it was not, the identical mistake this
+    // same shape already refuses one field up for `actorId` (falling back to
+    // `NO_ACTOR`, not actor 0). Structurally, not via the generic numeric
+    // `clamp()`: that helper rounds and clamps into range by design, which
+    // is exactly wrong here — `clamp(-1, 0, 255, 0)` is 0, a real,
+    // working-looking metasprite, not "no icon" — so this checks
+    // `Number.isInteger` itself rather than rounding into one. Either way it
+    // is a real metasprite reference the moment it is not `null`, so
+    // metasprite deletion has to know about it: see renumberMetaspriteDeletion.
     metaspriteId:
-      raw?.metaspriteId === null || raw?.metaspriteId === undefined ? null : clamp(raw.metaspriteId, 0, 255, 0)
+      raw?.metaspriteId === null || raw?.metaspriteId === undefined
+        ? null
+        : Number.isInteger(raw.metaspriteId) && raw.metaspriteId >= 0 && raw.metaspriteId <= 255
+          ? raw.metaspriteId
+          : NO_METASPRITE
   };
 }
 
@@ -2130,10 +2208,10 @@ function walkRawCommandList(list, onCommand, onCond) {
  * Give still needs an item synthesized for it, or that reference has
  * nothing to migrate onto and quietly becomes unresolvable.
  *
- * Ids are assigned in ascending actor-id order — deterministic, but per
- * `itemByte`'s own docstring the order carries no semantic weight, since
- * every reference resolves through the explicit `actorId` field rather than
- * through numeric position. Capped at `LIMITS.items`: an over-cap actor
+ * Ids are assigned in ascending actor-id order — deterministic, but the
+ * order carries no semantic weight, since every reference is compiled
+ * through the item's own id, not through numeric position. Capped at
+ * `LIMITS.items`: an over-cap actor
  * roster (already its own `validateProject` error) must not manufacture an
  * over-cap item list as a side effect that nothing in this phase's UI could
  * then reduce — deleting an actor only nulls the orphaned item's `actorId`,
@@ -2467,6 +2545,31 @@ export function projectUsesMove(project) {
   return false;
 }
 
+/**
+ * Whether this project's `items[]` engine machinery -- the bag holding item
+ * ids rather than actor ids, the icon table, the enabled-path battle tables
+ * -- is worth assembling at all. Drives the generated `ITEMS_ENABLED` flag
+ * the same way `projectUsesMove` drives `MOVE_ENABLED`: `kernelCodeBytes`
+ * charges `ITEM_KERNEL_ALLOWANCE` only when this is true, and every dual
+ * `.if ITEMS_ENABLED`/`.else` site in the engine falls back to exactly
+ * today's actor-id economy when it is false.
+ *
+ * Deliberately `.length > 0`, not "has at least one item that resolves to a
+ * real actor" (an earlier draft of this predicate, and wrong): existence and
+ * pickup-backing are two separate questions now (see `itemMissing`'s own
+ * docstring), so gating the whole feature on resolution would make one
+ * unrelated item's actor getting deleted elsewhere in the project silently
+ * flip a *different*, otherwise-untouched pickup between the item economy
+ * and the legacy one -- a non-local dependency an author editing one item
+ * could accidentally trigger on a completely different placement. An
+ * `items[]` array that exists at all, even with every entry orphaned, is a
+ * deliberate authoring choice this predicate takes at face value, matching
+ * how little `projectUsesMove` itself filters.
+ */
+export function projectUsesItems(project) {
+  return (project.items?.length ?? 0) > 0;
+}
+
 export function validateProject(project) {
   const problems = [];
   const add = (severity, where, message) => problems.push({ severity, where, message });
@@ -2608,27 +2711,26 @@ export function validateProject(project) {
     //
     // A warning, not an error, and deliberately not the severity a live
     // Give/Take with a missing item gets. That one is fatal because
-    // script_op_give (engine/script.asm) *stops the event* on NO_ACTOR:
+    // script_op_give (engine/script.asm) *stops the event* on NO_ITEM:
     // everything the author wrote after the Give silently never runs, which
     // is invisible from the Map Forge. A drop has no such knock-on — the
     // monster fights exactly as before and simply hands out nothing, since
-    // `itemByte` compiles an unresolvable drop to NO_ACTOR and roll_drop
-    // takes its early exit. That is the stale-reference shape, and it gets
-    // the stale-reference severity: the same one staleBattleMonsters below
-    // and the encounter table just above already use.
+    // battletables.js compiles an unresolvable drop to NO_ITEM directly and
+    // roll_drop takes its early exit. That is the stale-reference shape, and
+    // it gets the stale-reference severity: the same one staleBattleMonsters
+    // below and the encounter table just above already use.
     //
     // `null` is not this. It is "Nothing" chosen on purpose in the Sprite
     // Forge, and it is also the mark renumberItemDeletion leaves — warning
     // about it would turn every deletion into a build complaint.
     //
-    // itemMissing, not actorMissing: `battle.drop` names an item now, and an
-    // item that resolves to no index in `project.items` reads the same as
-    // one whose `actorId` no longer names a real actor — both compile to
-    // NO_ACTOR, so both are this same warning.
+    // itemMissing now asks only "does this item id exist" — a drop naming an
+    // item with no physical pickup (actorId null or stale) is not this
+    // warning's business; that item still exists and still gets dropped.
     for (const actor of project.sprites.actors) {
       const drop = actor.battle?.drop;
       if (drop === null || drop === undefined) continue;
-      if (itemMissing(project.items, project.sprites.actors, drop)) {
+      if (itemMissing(project.items, drop)) {
         add(
           'warning',
           'Sprite Forge',
@@ -2798,8 +2900,8 @@ export function validateProject(project) {
   // version, or a hand-edited items array (which normalizeProject now keeps
   // in full rather than silently truncating, precisely so this check can
   // still see it), still can, and the ceiling is a real one: every
-  // reference to an item is a single byte one hop further out through
-  // `itemByte`. Attributed to 'Sprite Forge' for lack of a better home —
+  // reference to an item is a single byte carrying the item id directly.
+  // Attributed to 'Sprite Forge' for lack of a better home —
   // items have no editor of their own yet, so the message says so rather
   // than pointing at a Delete control this version does not offer, and
   // deliberately does not suggest trimming the actor roster: an
@@ -2819,22 +2921,54 @@ export function validateProject(project) {
     );
   }
 
-  // Each item may name at most one backing actor — the direction `itemByte`
-  // resolves in, and the one a later phase needs to go the other way,
-  // mapping a picked-up actor back to the one item it grants. Two items
-  // sharing an `actorId` would make that reverse lookup silently
-  // first-match dependent, which is worse than refusing the build: the
-  // author would see one item drawn, given and validated, while a second
-  // item quietly named the same actor and never worked the way its own
-  // Give/Take/Carrying references implied.
+  // The metasprite-space sibling of the two ceilings above, and round 5's own
+  // fix: before LIMITS.metasprites existed, this array was genuinely
+  // uncapped, so a project could reach a real metasprite 255 — the exact
+  // value NO_METASPRITE (an item's own explicit "no icon") already uses, with
+  // no way for a derived icon or an explicit reference to tell the two apart.
+  // Ordinarily this cannot happen now — the Sprite Forge's own Add button
+  // stops at the ceiling — but a project written by a later version, or a
+  // hand-edited one (normalizeProject keeps the array in full rather than
+  // silently truncating it, precisely so this check can still see it), still
+  // can. Refusing the build rather than silently slicing keeps the same
+  // promise the actor/item ceilings above already make: a 256th metasprite
+  // is real, drawable, placeable content, not scaffolding to drop.
+  if (project.sprites.metasprites.length > LIMITS.metasprites) {
+    add(
+      'error',
+      'Sprite Forge',
+      `This project has ${project.sprites.metasprites.length} metasprites but the Forge holds ` +
+        `${LIMITS.metasprites} (ids 0-${LIMITS.metasprites - 1}) — id $FF is reserved to mean “no icon”. Delete ` +
+        `${project.sprites.metasprites.length - LIMITS.metasprites} of them before this can build.`
+    );
+  }
+
+  // Each item may name at most one backing actor. This is what makes the
+  // forward direction safe to build without a collision rule of its own:
+  // main/build/generate.js's emitScreens resolves a placed pickup actor's id
+  // to the one item it grants (actorId -> item id, the reverse of the field
+  // itself), and that lookup is only ever correct if it is 1:1. Two items
+  // sharing an `actorId` would make it silently first-match dependent, which
+  // is worse than refusing the build: the author would see one item drawn,
+  // given and validated, while a second item quietly named the same actor
+  // and never worked the way its own Give/Take/Carrying references implied,
+  // and a pickup of that actor would silently grant whichever item happened
+  // to be found first.
   const actorIdCounts = new Map();
   for (const item of project.items) {
-    // NO_ACTOR is not a real actor id -- it is normalizeItem's own fallback
-    // for a malformed actorId, the same sentinel an orphaned item's null
-    // already means. Counting it here would report two independently
-    // malformed items as "sharing" an actor, which is a real problem but a
-    // different one this message does not describe.
-    if (item.actorId === null || item.actorId === undefined || item.actorId === NO_ACTOR) continue;
+    // actorMissing, not a check against NO_ACTOR alone -- round 4 finding:
+    // NO_ACTOR is one way an actorId fails to resolve, but not the only one.
+    // A stale in-range id (an actor that existed when the item was authored
+    // and was deleted since, or a hand-edited/later-version project) passes
+    // the old `!== NO_ACTOR` check and got counted, so two items both
+    // orphaned onto the same no-longer-real actorId (say, both left at a
+    // stale `actorId: 7` after actor 7 was deleted) raised "actor backs more
+    // than one item" for an actor that does not exist, in a relationship
+    // (the pickup reverse lookup) that never reads a non-resolving actorId
+    // at all. Two independently malformed/stale items are a real problem,
+    // same as the comment this replaces already said -- just not the one
+    // this message describes, so they must not be counted here either way.
+    if (actorMissing(project.sprites.actors, item.actorId)) continue;
     actorIdCounts.set(item.actorId, (actorIdCounts.get(item.actorId) ?? 0) + 1);
   }
   const sharedActorItems = [...actorIdCounts.values()].filter((count) => count > 1).length;
@@ -2847,22 +2981,46 @@ export function validateProject(project) {
     );
   }
 
+  // A placed pickup actor that no item's actorId names: walking into it (or
+  // interacting with it) resolves to NO_ITEM and grants nothing -- still
+  // vanishes off the map and still counts toward `pickups`, but never enters
+  // the bag or shows a menu row. That is a real, if narrow, behaviour a
+  // hand-authored project can hit (main/build/generate.js's emitScreens is
+  // where it happens), and it is exactly the kind of silent "looks like a
+  // pickup, does something else" case this codebase prefers to name rather
+  // than let an author discover in play. A warning, not an error: nothing is
+  // actually broken -- an actor is allowed to be scenery that merely
+  // disappears, and this only flags the case an author might not have meant.
+  const backedActorIds = new Set(
+    project.items.filter((item) => typeof item.actorId === 'number').map((item) => item.actorId)
+  );
+  const unbackedPickups = project.sprites.actors.filter(
+    (actor, id) => actor.behavior === 'pickup' && !backedActorIds.has(id)
+  );
+  for (const actor of unbackedPickups) {
+    add(
+      'warning',
+      'Sprite Forge',
+      `${actor.name} has behaviour Pickup but no item names it — picking it up will disappear and count ` +
+        'toward the pickup total, but will not be held in the bag. Give an item this actorId if that is not intended.'
+    );
+  }
+
   // Give item / Take item is a base-engine command (engine/ui.asm's
   // add_item/inv_items, driven by OP_GIVE/OP_TAKE in every build), not one
   // BATTLE_ENABLED gates the way the battle checks above are -- an action
   // project offers it too, so this runs unconditionally rather than inside
-  // the RPG-only block. itemMissing is the same "does this resolve"
-  // question the compiler (itemByte) and the Map Forge's own select ask;
-  // checking only for `null` here would miss an id past the end of the
-  // item list that was never produced by a deletion at all, or an item
-  // whose own `actorId` no longer names a real actor.
+  // the RPG-only block. itemMissing is the same "does this exist" question
+  // the compiler (main/build/textcompile.js) and the Map Forge's own select
+  // ask; checking only for `null` here would miss an id past the end of the
+  // item list that was never produced by a deletion at all.
   let missingGiveTake = 0;
   for (const event of projectEvents(project)) {
     for (const page of compiledPages(event)) {
       for (const command of liveCommands(page.commands, CHOICE_LIMITS.options)) {
         if (
           (command.op === 'give' || command.op === 'take') &&
-          itemMissing(project.items, project.sprites.actors, command.item)
+          itemMissing(project.items, command.item)
         ) {
           missingGiveTake++;
         }

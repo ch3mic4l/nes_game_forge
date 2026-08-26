@@ -175,6 +175,11 @@ export function mount(container, app) {
   function addMetasprite() {
     store.commit('Add metasprite', (project) => {
       const id = project.sprites.metasprites.length;
+      // Capped one short of NO_METASPRITE (LIMITS.metasprites), the same
+      // shape as the actor roster's own Add guard just below in this file --
+      // no metasprite may ever be given the id NO_METASPRITE uses to mean
+      // "no icon" (round 5).
+      if (id >= LIMITS.metasprites) return;
       project.sprites.metasprites.push({
         id,
         name: `Metasprite ${id}`,
@@ -291,7 +296,21 @@ export function mount(container, app) {
               )
             : [el('option', null, 'No metasprites yet')]
         ),
-        el('button.btn.btn-sm', { title: 'Add a 16x16 metasprite', onclick: addMetasprite }, '+'),
+        el(
+          'button.btn.btn-sm',
+          {
+            // Disabled with the reason rather than presented as a button
+            // that silently does nothing, the same as the actor roster's
+            // own Add a few panels over.
+            disabled: sprites().metasprites.length >= LIMITS.metasprites,
+            title:
+              sprites().metasprites.length >= LIMITS.metasprites
+                ? `${LIMITS.metasprites} metasprites is the ceiling — id $FF is reserved to mean “no icon”.`
+                : 'Add a 16x16 metasprite',
+            onclick: addMetasprite
+          },
+          '+'
+        ),
         el(
           'button.btn.btn-sm',
           {

@@ -451,22 +451,59 @@ commit precedes phase 1's.
   drift apart. Plus the metasprite-deletion coupling and `firstPickup()` in `templates.js`.
   Deliberately **no engine change**: the ROM should assemble byte-for-byte identically at the end of
   this phase, which is a check worth actually running.
-- **4. The engine side.** Item tables, the icon, a real `use_item`, the battle item list, **both**
-  pickup paths (`entity_pickup` *and* `do_interact` — the second is the one that gets forgotten),
-  drops, and the save bound retarget with `SAVE_LAYOUT_VERSION` 1 → 2.
+- **4. The engine side.** Turned out to need its own budget prerequisite and then a split, once real
+  measurement (below) showed why — three slices, not one:
+  - ~~**4a. The kernel budget prerequisite**~~ — **done** (`9eda25f`). A titleless RPG was being
+    charged 212–224 bytes of kernel-lo for title-screen code it never assembled
+    (`BASE_KERNEL_CODE_BYTES_BY_MAPPER` had baked in a title-on measurement unconditionally). Phase
+    4 could not be designed against a budget that was wrong by that much, so this had to land first.
+  - **4b. The id retarget.** — **done**. The bag holds item ids instead of actor ids; item tables
+    (icon, name — the enabled-path `mon_heal`/`mon_name` siblings, `item_heal`/`item_name`, still
+    sourced from the backing actor's own `battle.heal`, unchanged from the actor-reuse economy);
+    **both** pickup paths retargeted (`entity_pickup` *and* `do_interact` — the second is the one
+    that gets forgotten); Give, Take, drops and Carrying compile to the item id directly; the save
+    bound retargeted, with `SAVE_LAYOUT_VERSION` 1 → 2. `use_item` itself is untouched by this
+    slice — it never read what the bag byte meant, only shifted and counted it, so retargeting what
+    the byte means cost it nothing, which is what let this land as a self-contained slice rather
+    than needing 4c alongside it. See CLAUDE.md's entity-record paragraph (`ent_to_scr`) and its
+    kernel-budget section (`ITEM_KERNEL_ALLOWANCE`) for the mechanism and the real, measured cost.
+  - **4c. The effects.** — designed, not built. `use_item` gains a real effect (Heal or Damage,
+    reusing the same `BATTLE_ENABLED` split the scripted commands already resolve through — no third
+    health model), and the battle item list reads item tables instead of `mon_heal`/`mon_name`.
+    Design work found three things that have to be gotten right before implementation, not after:
+    the field-used effect dispatch must not `jsr` into a routine that can `jmp player_died` on a
+    lethal hit — the identical return-address trap `script_op_damage`'s own header already
+    documents avoiding; the register reload that follows an applied effect has to stay inside the
+    same `.if ITEMS_ENABLED` branch that needed it, or an items-disabled build silently gains bytes
+    it shouldn't; and the battle item list's own filter (to whichever effects it can apply
+    consistently, so nothing in that menu is ever a silent no-op) can leave the menu enterable with
+    nothing in it unless the filtered count, not the raw bag count, decides whether to open it.
 - **5. The Database Forge**, with its Items page.
 - **6. Docs**, including the compatibility break stated below.
 
-Two constraints shape phases 4 to 6, and both are cheaper to know up front than to rediscover:
+Two constraints shaped phases 4 to 6, and both were cheaper to know up front than to rediscover —
+one is now a measured fact rather than a forecast:
 
-- **The kernel-lo bank has almost nothing left on MMC3.** `sample-rpg` with a live `Save` and a live
-  `Move` currently reserves exactly `KERNEL_SLACK` and no more. Phase 4 is kernel code, so it needs
-  its headroom measured *before* it is designed, not after it fails to assemble — and the answer may
-  be that some of it has to be conditionally assembled the way `Move` already is, or moved into the
-  banked region the battle system uses.
-- **`SAVE_LAYOUT_VERSION` 1 → 2 breaks existing saves.** That is a deliberate choice, not a silent
-  migration, and phase 6 has to say so plainly rather than leaving an author to discover it when a
-  save will not load.
+- **The kernel-lo bank had almost nothing left on MMC3.** `sample-rpg` with a live `Save` and a live
+  `Move` reserved exactly `KERNEL_SLACK` and no more, before phase 4 existed. It needed its headroom
+  measured before phase 4 was designed, not after it failed to assemble — and the measurement said
+  so precisely: `ITEM_KERNEL_ALLOWANCE` is 16 bytes, real and unconditional the moment a project has
+  any item, which is more than that margin had. `sample-rpg` with a live `Save` *and* a live `Move`,
+  on MMC3, was refused by items in 4b, and closed again within the same phase by a kernel diet in
+  `engine/player.asm` — the four movement direction routines' identical two-corner probe-and-commit
+  tail, collapsed into one shared routine per axis, recovering 70 bytes on every RPG-capable board.
+  The combination now builds with **74 real bytes free**, not merely the single spare byte it had
+  before items existed — headroom, though not much: nowhere near enough for another feature on the
+  scale of `MOVE_KERNEL_ALLOWANCE`'s own 395 bytes. This is not the constraint's last word either —
+  the margin has now closed and reopened three times on this one board, and the next byte the bank
+  grows anywhere, in this configuration, reopens it again. See CLAUDE.md's own kernel-budget section
+  for the arithmetic and why each closing has been the mechanism working, not a hole in it.
+- **`SAVE_LAYOUT_VERSION` 1 → 2 breaks existing saves.** That was a deliberate choice, not a silent
+  migration, landed in 4b rather than deferred to phase 6: the capability exists in the engine the
+  moment 4b ships, so the break has to be unconditional and immediate, not phased in alongside the
+  Database Forge. An old save is treated exactly like a foreign one — no message, no crash, Continue
+  simply is not offered. Phase 6 still owes this the author-facing sentence; the mechanism itself is
+  already in place.
 
 ## 6. Cutscene and presentation commands
 

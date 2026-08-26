@@ -535,6 +535,47 @@ is index 0 because it is what every event did before the byte existed, and **a t
 rather than a set** — `do_talk` requires `TRIG_INTERACT`, or an entry event could be replayed by
 walking up to whatever carried it and pressing the button.
 
+**A placed entity's own record has a second field whose meaning depends on the actor's
+behaviour, not just its trigger.** `ent_to_scr` (`engine/constants.asm`) is written unconditionally
+for every placement (`spawn_entities`) and read by exactly one routine, `entity_door` — so for a
+pickup actor, item 5's own id retarget (phase 4) repurposes the same byte to carry the item that
+placement grants instead of a meaningless door target. Behaviour is exclusive (never both `door`
+and `pickup`), so the two meanings never collide, and `emitScreens` (`main/build/generate.js`) is
+the single writer that decides which one a given placement's byte is. The one trap in the reuse:
+the door-target clamp (`Math.min(entity.props?.toScreen ?? 0, Math.max(0, flat.length - 1))`,
+`emitScreens`) must never run for a pickup actor's byte — an item id above the current screen count
+would be silently corrupted into a real, wrong screen number by a clamp meant for the other meaning
+entirely.
+
+`NO_ACTOR == NO_ITEM == $FF` is what let most of that retarget reach the ROM with **no engine code
+change at all**: Give, Take, a monster's drop, and a Carrying condition all used to resolve an item
+id to the actor byte it backed (`itemByte`, since deleted) before compiling it; once the compiler
+stops resolving and hands over the item id directly, every sentinel comparison already in the
+engine — `script_op_give`'s `cmp #NO_ITEM` (renamed from `NO_ACTOR` for clarity; both are `$FF`,
+so the rename cost nothing), `roll_drop`'s identical compare — keeps working unexamined, because
+both sentinels were always the same byte. Only the compiler's choice of *which* function resolves
+an authored reference changed, never what the engine compares it against.
+
+The same id-space-capping shape `NO_ACTOR`/`NO_ITEM` already use closed a second, unrelated
+collision the retarget's own icon table (`item_metasprite`) surfaced: before `LIMITS.metasprites`
+existed, a metasprite array was genuinely uncapped, so a project could reach a real metasprite 255 —
+byte-identical to `NO_METASPRITE`, an item's own "explicitly no icon". `LIMITS.metasprites =
+NO_METASPRITE` (`shared/project.js`) closes it the same way `LIMITS.actors`/`LIMITS.items` already
+do: the cap *is* the sentinel's own value, not a literal 255 that could drift from it. An
+already-over-cap project (a later version's, or hand-edited) is refused by `validateProject` with a
+named error and left intact rather than silently sliced — a 256th metasprite is real, drawable
+content, the identical policy the actor and item ceilings already hold to.
+
+**`SAVE_LAYOUT_VERSION` goes 1 → 2 for this same phase**, because `inv_items`' own bytes can now
+mean an item id rather than an actor id, and that is a change to what the bytes mean, not how many
+there are — precisely the case `saveIdentity`'s own derived sizes cannot catch, which is what the
+version byte exists for. The break is unconditional and engine-wide: the moment this ships, *any*
+save from the prior engine version fails `save_check_valid`'s very first identity compare,
+regardless of whether that particular project uses items. What an author sees is nothing special —
+the old save is treated exactly like a foreign or corrupted one, which is to say the title screen
+simply does not offer Continue. No message, no crash: the existing "this record does not belong to
+this build" path doing the job it already did for every other case.
+
 **Neither of the other two starts a conversation itself.** Both arm `pending_ent`, and `main_loop`
 is the single place it becomes one. Touch fires from inside `update_entities`, which is still
 walking the other seven slots — starting there leaves the pickups, doors and contact damage below
@@ -742,11 +783,14 @@ rest of `IFRAME_TIME`: an RPG's monsters became briefly walk-through after any f
 check to the action-only branch it actually belongs to (RPG encounters have no invincible window to
 respect) happens to remove those two instructions from the RPG build entirely, which is a real 5-byte
 saving nesasm confirms on every RPG-capable board — not a coincidence of one build, a property of the
-fix. With both changes, `sample-rpg` with Save and Move on MMC3 now reserves 6446 (base) + 224 (title)
-+ 19 (split lock) + 552 (save) + 395 (move) + 20 (`KERNEL_SLACK`) = 7656 against a real measured 7636 — a 20-byte
+fix. With both changes, `sample-rpg` with Save and Move on MMC3 now reserves 6376 (base) + 224 (title)
++ 19 (split lock) + 552 (save) + 395 (move) + 20 (`KERNEL_SLACK`) = 7586 against a real measured 7566 — a 20-byte
 margin, exactly `KERNEL_SLACK` and nothing more, which is true of every configuration this file
 measures now (see `test/unit/kernelbytes.test.js`), not a coincidence but the point of measuring per
-board instead of charging every board the same worst case. **`checkCapacity` no longer refuses
+board instead of charging every board the same worst case. (The base here is 6376, not the 6446 this
+passage originally measured — a kernel diet moved the base since, described a few paragraphs down; the
+20-byte margin itself is untouched, because the diet moved what the base counts, not how the calibration
+holds it to account.) **`checkCapacity` no longer refuses
 `sample-rpg` with a `Save` command *and* a `Move` command on MMC3** — nesasm assembles it into the
 kernel-lo bank with room to spare, which is a real fix, not a loosened check: the recovered margin is
 exactly what per-mapper budgeting (8 bytes) and the `entity_contact` fix (5 bytes, times the two other
@@ -758,6 +802,77 @@ free) rather than the literal byte count on the day this was written: pinning th
 fail on any harmless change elsewhere in the bank and invite loosening the assertion instead of
 investigating, so the test prints the real figure on failure and leaves the bound at what actually has
 to hold.
+
+**"The next byte... reopens it" was not a hedge — it was a prediction, and item 5's own phase 4 is
+what cashed it in.** The 20-byte figure just above answers one question — is `kernelCodeBytes`'s own
+*estimate* of the engine's code size accurate? — and it was exactly right, no slop either way. It is
+not the number `checkCapacity` actually refuses or admits a build on. That gate is the *combined*
+one — `kernelCodeBytes` (the calibrated estimate above, `KERNEL_SLACK` already folded in) plus the
+project's lookup tables, against the bank's 8192 bytes outright — and for this exact configuration it
+had already fallen to a single spare byte before phase 4 touched anything: 7656 (code, including
+`KERNEL_SLACK`) + 409 (fixed tables) + 126 (this project's own lookup tables) = 8191. `sample-rpg`
+carries one live item (its migrated Gem), and phase 4's id retarget (below) is real kernel code the
+moment the engine reads `project.items` at all: `ITEM_KERNEL_ALLOWANCE` is 16 bytes, flat across
+boards, measured exactly — not estimated — on all three RPG-capable boards, with an equality
+assertion per board in `test/unit/kernelbytes.test.js`, the identical discipline every other
+allowance here is held to. 16 (code) plus 1 (`item_metasprite`'s own table entry) is 17 bytes against
+the one spare byte that combined total had: **`checkCapacity` refused `sample-rpg` with a `Save`
+command *and* a `Move` command on MMC3 again**, this time by items rather than by the arithmetic this
+section already walked through. This was not a regression the fix above failed to anticipate — it was
+that fix's own fragility clause arriving on schedule, and the mechanism built to catch exactly this kind
+of regression did its job: `checkCapacity` refused with real, actionable advice from
+`kernelShortfallAdvice` (below), which still offers this shape of advice to any project that does
+overflow — drop every Move and free 395 bytes, or every Save and free 552 — and the identical project
+built on MMC1 with room to spare (302 bytes of headroom before items existed, comfortably absorbing 16
+more). `test/unit/kernelbytes.test.js` asserted the refusal itself *and* built both mitigations to
+confirm they were real rather than assumed — that test has since been renamed and rewritten (below) to
+assert the opposite, once the diet a few paragraphs down closed the gap again; no test in this file
+asserts an MMC3 refusal for this combination any more. An author who hits a combination like this is not
+stuck; they are told, correctly, which is what all of this machinery is for.
+
+**A third diet closed the gap items reopened.** `engine/player.asm`'s four movement direction routines
+(`move_left_inside`/`move_right_inside`/`move_up_inside`/`move_down_inside`) each ended in an identical
+two-corner probe-and-commit tail, differing only in which body-offset constant fed the first probe and
+which of `player_x`/`player_y` the result committed to — `move_horizontal_probe` and
+`move_vertical_probe` are that shared tail now, entered by `jmp` (not `jsr`) from each `_inside` label
+so the tail's single `rts` still returns to whichever caller originally `jsr`'d `move_left` et al. This
+is the same shape as the two earlier diets already described above (the `.if !BATTLE_ENABLED` split
+that freed 269 bytes, and the `entity_contact` fix that freed 5): real duplication found and removed,
+which — unlike those two — does move ROM bytes by design (that is the point: a 70-byte saving), so it is
+confirmed as behaviour-preserving rather than byte-identical: every engine-RAM movement assertion in the
+test suite stayed green unmodified, `probe_solid`'s "Z describes A-COL_DAMAGE, not A" contract is
+preserved exactly at the shared tails' own `bne`, and `player_dir` is still set before a move is
+attempted in each entry routine rather than in the shared tail. It dropped every RPG-capable board's own
+base by exactly 70 bytes alike (`BASE_KERNEL_CODE_BYTES_BY_MAPPER`: UNROM 512 6466 → 6396, MMC1 6271 →
+6201, MMC3 6446 → 6376 — `git show` against this branch's own base commit, not assumed), which let
+`sample-rpg` with Save, Move and its one live item build again on MMC3, with **74 real bytes free**
+(`kernelCodeBytes=7602` against a real measured 7582 in the code-only comparison — a 20-byte margin,
+exactly `KERNEL_SLACK`, unchanged — and nesasm's own usage table reading `8118/74` against the bank's
+8192 once the project's lookup tables are included too) — headroom, not the single spare byte the
+combination had before items existed, or the outright refusal (short by 16 modelled bytes before nesasm
+ever runs) items left it at.
+
+A follow-up round then restored one thing the dedup had removed and wrote down one tradeoff it had left
+unstated, and neither may cost a single ROM byte — confirmed the way a zero-byte claim has to be, by
+comparing whole ROMs before and after on three
+representative projects (an items-disabled action build, an items-disabled RPG, and `sample-rpg` with
+Save, Move and its live item on MMC3): all three hashed identically. Two adjacent `jmp`s in
+`move_right_inside`/`move_down_inside` each reach a tail label on the very next line rather than falling
+through into it, at a cost of 6 bytes total: deliberate, not an oversight, because the bank had 74 free
+bytes without them and a fallthrough would make physical adjacency between an entry routine and its tail
+load-bearing and invisible — inserting anything between `move_down_inside` and `move_vertical_probe`
+would silently break `move_down` with no assembler error. The four deleted labels
+(`move_left_done`/`move_right_done`/`move_up_done`/`move_down_done`) survive as zero-byte aliases
+stacked on `move_horizontal_done`/`move_vertical_done`, because a Code Forge user file is free to
+reference a stock engine label and these four existed before the dedup; confirmed both ways, not just
+asserted — a user file with `jsr move_left_done` assembles with the aliases in place and fails
+(`Undefined symbol in operand field!`) without them. This is the third time this exact configuration has
+been closed and reopened on this one board — closed by per-mapper budgeting and the `entity_contact`
+fix, reopened by items (the prediction's first, documented cash-in, in the paragraph just above), closed
+again by this diet — and the file's own prediction is standing again rather than retired: 74 bytes is real,
+working margin, not indefinite margin — nowhere near enough for another feature on the scale of
+`MOVE_KERNEL_ALLOWANCE`'s own 395 bytes, and the next byte the kernel-lo bank grows anywhere, on this
+board, in this configuration, reopens it a second time.
 
 Because the margin can still run out — on MMC3 in a bigger project, or the next feature this bank has
 no room for — `checkCapacity` names what would close a gap like this one instead of only reporting the

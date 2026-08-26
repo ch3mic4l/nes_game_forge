@@ -159,9 +159,9 @@ function describeEnabled(command, context = {}) {
     case 'say':
       return `Say “${(command.text ?? '').trim().slice(0, 40) || '…'}”`;
     case 'give':
-      return itemMissing(items, actors, command.item) ? 'Give (missing item)' : `Give ${itemName(command.item)}`;
+      return itemMissing(items, command.item) ? 'Give (missing item)' : `Give ${itemName(command.item)}`;
     case 'take':
-      return itemMissing(items, actors, command.item) ? 'Take (missing item)' : `Take ${itemName(command.item)}`;
+      return itemMissing(items, command.item) ? 'Take (missing item)' : `Take ${itemName(command.item)}`;
     case 'setSwitch':
       return `Turn on ${switchName(command.switch)}`;
     case 'clearSwitch':
@@ -232,7 +232,7 @@ export function describeCondition(cond, { actors = [], items = [], switches = []
   // wording: after an item is deleted, renumberItemDeletion (shared/project.js)
   // leaves a condition that named it pointing at NO_ITEM, and reading that
   // back as "item 255" would describe a number rather than the fact.
-  if (itemMissing(items, actors, cond.arg)) return `${entry.label}: (missing item)`;
+  if (itemMissing(items, cond.arg)) return `${entry.label}: (missing item)`;
   return `${entry.label}: ${items[cond.arg]?.name ?? `item ${cond.arg}`}`;
 }
 
@@ -404,7 +404,7 @@ export function editEvent(event, context) {
     // own copy of the filter (the shape CLAUDE.md already warns about for
     // effectiveTrigger: three places deciding this separately is how the
     // editor comes to show one thing and the ROM run another).
-    const { healthy, missing } = itemPickerOptions(context.items, context.actors, cond.arg);
+    const { healthy, missing } = itemPickerOptions(context.items, cond.arg);
     return el(
       'select',
       {
@@ -823,7 +823,7 @@ export function editEvent(event, context) {
       // itemPickerOptions (shared/project.js) is the single writer here too
       // -- see the Carrying select above for why this is not a second copy
       // of the same filter.
-      const { healthy, missing } = itemPickerOptions(context.items, context.actors, command.item);
+      const { healthy, missing } = itemPickerOptions(context.items, command.item);
       controls.push(
         el(
           'select',

@@ -886,8 +886,10 @@ test('ITEM heals from the bag, spends the potion, and cures poison', {
   skip: needsSample
 }, () => {
   const nes = boot();
-  // A potion in the bag, as if it had been picked up on the field.
-  nes.cpu.mem[INV_ITEMS] = 1;
+  // A potion in the bag, as if it had been picked up on the field. Item id 0
+  // (sample-rpg's own "Potion") -- the bag holds item ids under
+  // ITEMS_ENABLED (phase 4b), not the actor id (1) that used to back it.
+  nes.cpu.mem[INV_ITEMS] = 0;
   nes.cpu.mem[INV_COUNT] = 1;
   assert.ok(walkIntoEncounter(nes));
   waitForMenu(nes);
@@ -920,7 +922,8 @@ test('a certain drop lands in the bag on victory', {
   const state = pressThrough(nes, 120);
   assert.equal(state, ST_GAMEPLAY, 'the fight never ended');
   assert.ok(nes.cpu.mem[INV_COUNT] >= 1, 'a certain drop never dropped');
-  assert.equal(nes.cpu.mem[INV_ITEMS], 1, 'the drop should be the potion the slime carries');
+  // Item id 0, not actor id 1 -- the bag holds item ids under ITEMS_ENABLED.
+  assert.equal(nes.cpu.mem[INV_ITEMS], 0, 'the drop should be the potion the slime carries');
 });
 
 test('a group spell reaches every monster in the formation at once', {
