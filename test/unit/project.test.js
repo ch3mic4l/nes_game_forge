@@ -28,8 +28,14 @@ import {
   commonEventId,
   renumberSongDeletion,
   renumberActorDeletion,
+  renumberItemDeletion,
+  renumberMetaspriteDeletion,
   battleFormationSlice,
   NO_ACTOR,
+  NO_ITEM,
+  itemByte,
+  itemMissing,
+  itemPickerOptions,
   liveCommands,
   compiledPages,
   projectEvents,
@@ -582,7 +588,7 @@ test('deleting a song renumbers every reference, including one nested inside a b
   assert.equal(silence.song, null, 'Silence should stay Silence');
 });
 
-test('deleting an actor renumbers Give/Take item as well as a battle formation, nested or not', () => {
+test('deleting an actor renumbers a battle formation, nested or not, and never touches Give/Take', () => {
   const project = createProject('Quest', 'rpg');
   project.sprites.actors = [{ name: 'A' }, { name: 'B' }, { name: 'C' }, { name: 'D' }];
   project.maps[0].screens[0].entities = [
@@ -596,18 +602,18 @@ test('deleting an actor renumbers Give/Take item as well as a battle formation, 
             {
               cond: { type: 'none', arg: 0 },
               commands: [
-                { op: 'give', actor: 1 }, // names the actor about to be deleted
-                { op: 'take', actor: 2 }, // above it — should shift down
+                { op: 'give', item: 1 }, // an item id — must not be touched by actor renumbering
+                { op: 'take', item: 2 },
                 { op: 'battle', monsters: [1, 2, 3] },
                 {
                   op: 'branch',
                   cond: { type: 'none', arg: 0 },
-                  then: [{ op: 'give', actor: 1 }],
-                  else: [{ op: 'take', actor: 3 }]
+                  then: [{ op: 'battle', monsters: [1] }],
+                  else: [{ op: 'battle', monsters: [3] }]
                 },
                 {
                   op: 'choice',
-                  options: [{ text: 'Take it', commands: [{ op: 'give', actor: 2 }] }]
+                  options: [{ text: 'Fight', commands: [{ op: 'battle', monsters: [2] }] }]
                 }
               ]
             }
@@ -620,51 +626,128 @@ test('deleting an actor renumbers Give/Take item as well as a battle formation, 
   renumberActorDeletion(project, 1); // delete "B"
 
   const commands = project.maps[0].screens[0].entities[0].props.event.pages[0].commands;
-  // Nothing is dropped -- a Give/Take naming exactly the deleted actor
-  // becomes visibly missing (actor: null) rather than erasing whatever else
-  // the event went on to do.
   assert.deepEqual(
     commands.map((c) => c.op),
     ['give', 'take', 'battle', 'branch', 'choice']
   );
   const [give, take, battle, branch, choice] = commands;
-  assert.equal(give.actor, null, 'a Give item command naming exactly the deleted actor should read as missing');
-  assert.equal(take.actor, 1, 'a Take item command naming an actor above the deleted one should shift down');
+  // Give/Take is an item reference now, moved entirely out of actor-deletion
+  // renumbering (see renumberItemDeletion below) — an actor deletion must
+  // leave it exactly as it found it, id 1/2 and all, even though those
+  // happen to be actor-shaped numbers here.
+  assert.equal(give.item, 1, 'a Give item command is not touched by renumberActorDeletion at all');
+  assert.equal(take.item, 2, 'a Take item command is not touched by renumberActorDeletion at all');
   assert.deepEqual(battle.monsters, [1, 2], 'the deleted actor drops out of the formation and the rest shift down');
-  assert.equal(branch.then[0].actor, null, 'a Give item nested in a branch names the deleted actor the same way');
-  assert.equal(branch.else[0].actor, 2, 'a reference below the deleted actor inside a branch should not move');
-  assert.equal(choice.options[0].commands[0].actor, 1, 'a reference inside a question option should renumber too');
+  assert.deepEqual(branch.then[0].monsters, [], 'a formation naming exactly the deleted actor empties out, nested');
+  assert.deepEqual(branch.else[0].monsters, [2], 'a formation above the deleted actor shifts down, nested');
+  assert.deepEqual(
+    choice.options[0].commands[0].monsters,
+    [1],
+    'a formation inside a question option should renumber too'
+  );
 });
 
-// --- the two references renumberActorDeletion used to walk straight past ----
+// --- three references renumberActorDeletion used to walk straight past, or
+// has grown a new case for since ----------------------------------------
 //
-// Both are the same defect as the Give/Take one above, found by enumerating
-// every place an actor id is used as an item: a stored index is not an
-// identity, so a reference nobody renumbers silently comes to mean whichever
-// actor now sits at that number. Neither had a test, which is why both
-// survived.
+// The drop and Carrying cases below were the same defect as the Give/Take
+// one, found by enumerating every place an actor id was used as an item: a
+// stored index is not an identity, so a reference nobody renumbers silently
+// comes to mean whichever actor now sits at that number. All three moved to
+// renumberItemDeletion once items existed to be the reference's true id
+// space (see the tests below) — what stays here, tested last, is the new
+// case actor deletion gained instead: project.items[].actorId.
 
-test('deleting an actor renumbers a monster’s drop, and does not leave it pointing at its neighbour', () => {
+test('deleting an actor renumbers a project.items[].actorId, and does not leave it pointing at its neighbour', () => {
   const project = createProject('Quest', 'rpg');
-  project.sprites.actors = [
-    { name: 'A', damage: 1, battle: { drop: 2, dropPct: 50 } }, // drops "C" — above the deletion
-    { name: 'B', damage: 1, battle: { drop: null, dropPct: 0 } }, // the one about to go
-    { name: 'C', damage: 1, battle: { drop: 1, dropPct: 50 } }, // drops exactly the deleted actor
-    { name: 'D', damage: 1, battle: { drop: 0, dropPct: 50 } } // drops "A" — below the deletion
+  project.sprites.actors = [{ name: 'A' }, { name: 'B' }, { name: 'C' }, { name: 'D' }];
+  project.items = [
+    { id: 0, name: 'Above', actorId: 2 }, // names "C" — above the deletion
+    { id: 1, name: 'Exactly', actorId: 1 }, // names exactly the deleted actor
+    { id: 2, name: 'Below', actorId: 0 }, // names "A" — below the deletion
+    { id: 3, name: 'Orphan', actorId: null } // already names nothing
   ];
 
   renumberActorDeletion(project, 1); // delete "B"
 
-  const [a, b, c, d] = project.sprites.actors;
-  assert.equal(a.battle.drop, 1, 'a drop naming an actor above the deleted one should shift down, not stay on the number');
-  assert.equal(c.battle.drop, null, 'a drop naming exactly the deleted actor should read as missing, the same as Give/Take');
-  assert.equal(d.battle.drop, 0, 'a drop naming an actor below the deleted one should not move');
-  assert.equal(b.battle.drop, null, 'a drop that already named nothing should stay naming nothing');
+  const [above, exactly, below, orphan] = project.items;
+  assert.equal(above.actorId, 1, 'an item naming an actor above the deleted one should shift down, not stay on the number');
+  assert.equal(exactly.actorId, null, 'an item naming exactly the deleted actor becomes an orphan, not deleted');
+  assert.equal(below.actorId, 0, 'an item naming an actor below the deleted one should not move');
+  assert.equal(orphan.actorId, null, 'an item that already named nothing should stay naming nothing');
 });
 
-test('deleting an actor renumbers Carrying item conditions, on a page and inside a branch', () => {
+test('an already-migrated project’s custom item names, ordering, extra records and references survive normalization unchanged', () => {
+  // normalize(normalize(x)) === normalize(x) alone would still pass an
+  // implementation that unconditionally rebuilds the same deterministic
+  // item list every time -- it would just rebuild the same wrong thing
+  // twice. This pins the stronger claim: once items[] exists, whatever an
+  // author actually did to it (renamed one, reordered them, added one
+  // nothing references yet) is exactly what a load-then-save round trip
+  // hands back, not a fresh derivation from the current actor roster.
+  const raw = {
+    project: { name: 'Custom', gameType: 'rpg' },
+    sprites: {
+      actors: [
+        { name: 'Hero', behavior: 'player' },
+        { name: 'Slime', behavior: 'patroller', damage: 1, battle: { drop: 2, dropPct: 20 } },
+        { name: 'Relic', behavior: 'pickup' }
+      ]
+    },
+    // Deliberately out of actor-id order, custom-named, and with a third
+    // entry ("Trinket") no reference in the project names at all -- an item
+    // an author added by hand (or a future Database Forge will) ahead of
+    // anything pointing at it yet.
+    items: [
+      { id: 0, name: 'Ye Olde Relic', actorId: 2, metaspriteId: 3 },
+      { id: 1, name: 'Slime Goo', actorId: 1, metaspriteId: null },
+      { id: 2, name: 'Trinket', actorId: null, metaspriteId: null }
+    ],
+    maps: [
+      {
+        screens: [
+          {
+            entities: [
+              {
+                actorId: 0,
+                x: 0,
+                y: 0,
+                props: { event: { pages: [{ cond: { type: 'hasItem', arg: 0 }, commands: [{ op: 'give', item: 1 }] }] } }
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  };
+
+  const once = normalizeProject(raw);
+  assert.equal(once.items.length, 3, 'no item was synthesized or dropped');
+  assert.deepEqual(
+    once.items.map((i) => i.name),
+    ['Ye Olde Relic', 'Slime Goo', 'Trinket'],
+    'custom names and their order survive exactly as authored'
+  );
+  assert.equal(once.items[2].actorId, null, 'the unreferenced extra record is preserved, orphan and all');
+
+  const twice = normalizeProject(structuredClone(once));
+  assert.deepEqual(twice.items, once.items, 'a second normalization changes nothing about the items list');
+  assert.deepEqual(
+    twice.maps[0].screens[0].entities[0].props.event,
+    once.maps[0].screens[0].entities[0].props.event,
+    'the references naming those items are untouched by a second pass too'
+  );
+});
+
+test('deleting an item renumbers Give/Take, a monster’s drop, and Carrying conditions, nested or not', () => {
   const project = createProject('Quest', 'rpg');
-  project.sprites.actors = [{ name: 'A' }, { name: 'B' }, { name: 'C' }, { name: 'D' }];
+  project.sprites.actors = [
+    { name: 'A', damage: 1, battle: { drop: 2, dropPct: 50 } }, // drops item "C" — above the deletion
+    { name: 'B', damage: 1, battle: { drop: null, dropPct: 0 } }, // already names nothing
+    { name: 'C', damage: 1, battle: { drop: 1, dropPct: 50 } }, // drops exactly the deleted item
+    { name: 'D', damage: 1, battle: { drop: 0, dropPct: 50 } } // drops item "A" — below the deletion
+  ];
+  project.items = [{ id: 0, name: 'A' }, { id: 1, name: 'B' }, { id: 2, name: 'C' }, { id: 3, name: 'D' }];
   project.maps[0].screens[0].entities = [
     {
       actorId: 0,
@@ -676,14 +759,16 @@ test('deleting an actor renumbers Carrying item conditions, on a page and inside
             {
               cond: { type: 'hasItem', arg: 2 }, // above the deletion
               commands: [
+                { op: 'give', item: 1 }, // names the item about to be deleted
+                { op: 'take', item: 2 }, // above it — should shift down
                 {
                   op: 'branch',
-                  cond: { type: 'hasItem', arg: 1 }, // exactly the deleted actor
+                  cond: { type: 'hasItem', arg: 1 }, // exactly the deleted item
                   then: [
                     // A branch inside a branch: the nesting allCommands exists for.
-                    { op: 'branch', cond: { type: 'hasItem', arg: 3 }, then: [], else: [] }
+                    { op: 'branch', cond: { type: 'hasItem', arg: 3 }, then: [{ op: 'give', item: 1 }], else: [] }
                   ],
-                  else: []
+                  else: [{ op: 'take', item: 3 }]
                 },
                 {
                   op: 'choice',
@@ -697,7 +782,7 @@ test('deleting an actor renumbers Carrying item conditions, on a page and inside
               ]
             },
             { cond: { type: 'hasItem', arg: 1 }, commands: [] },
-            // Not an actor reference at all — switch 2 must come through untouched.
+            // Not an item reference at all — switch 2 must come through untouched.
             { cond: { type: 'switchOn', arg: 2 }, commands: [] }
           ]
         }
@@ -724,31 +809,48 @@ test('deleting an actor renumbers Carrying item conditions, on a page and inside
     }
   ];
 
-  renumberActorDeletion(project, 1); // delete "B"
+  renumberItemDeletion(project, 1); // delete item "B"
+
+  const [a, b, c, d] = project.sprites.actors;
+  assert.equal(a.battle.drop, 1, 'a drop naming an item above the deleted one should shift down, not stay on the number');
+  assert.equal(c.battle.drop, null, 'a drop naming exactly the deleted item should read as missing, the same as Give/Take');
+  assert.equal(d.battle.drop, 0, 'a drop naming an item below the deleted one should not move');
+  assert.equal(b.battle.drop, null, 'a drop that already named nothing should stay naming nothing');
 
   const pages = project.maps[0].screens[0].entities[0].props.event.pages;
-  const [outerBranch, choice] = pages[0].commands;
-  assert.equal(pages[0].cond.arg, 1, 'a page condition naming an actor above the deleted one should shift down');
+  const [give, take, outerBranch, choice] = pages[0].commands;
+  assert.equal(pages[0].cond.arg, 1, 'a page condition naming an item above the deleted one should shift down');
+  // Nothing is dropped -- a Give/Take naming exactly the deleted item becomes
+  // visibly missing (item: null) rather than erasing whatever else the event
+  // went on to do.
+  assert.equal(give.item, null, 'a Give item command naming exactly the deleted item should read as missing');
+  assert.equal(take.item, 1, 'a Take item command naming an item above the deleted one should shift down');
   assert.equal(
     outerBranch.cond.arg,
-    NO_ACTOR,
-    'a branch condition naming exactly the deleted actor should stop naming an actor at all'
+    NO_ITEM,
+    'a branch condition naming exactly the deleted item should stop naming an item at all'
   );
   assert.equal(outerBranch.then[0].cond.arg, 2, 'a condition nested two branches deep should renumber too');
+  assert.equal(
+    outerBranch.then[0].then[0].item,
+    null,
+    'a Give item nested two branches deep and naming the deleted item should read as missing too'
+  );
+  assert.equal(outerBranch.else[0].item, 2, 'a Take item below the deleted one, nested in a branch, should shift down');
   assert.equal(
     choice.options[0].commands[0].cond.arg,
     1,
     'a condition inside a question option should renumber the same way'
   );
-  assert.equal(pages[1].cond.arg, NO_ACTOR, 'a second page naming exactly the deleted actor gets the same answer');
-  assert.equal(pages[2].cond.type, 'switchOn', 'a switch condition is not an actor reference');
-  assert.equal(pages[2].cond.arg, 2, 'a switch condition’s argument must not be renumbered as if it were an actor');
+  assert.equal(pages[1].cond.arg, NO_ITEM, 'a second page naming exactly the deleted item gets the same answer');
+  assert.equal(pages[2].cond.type, 'switchOn', 'a switch condition is not an item reference');
+  assert.equal(pages[2].cond.arg, 2, 'a switch condition’s argument must not be renumbered as if it were an item');
 
   const commonPage = project.commonEvents[0].event.pages[0];
   assert.equal(commonPage.cond.arg, 1, 'a common event’s own page condition should renumber, not only a placement’s');
   assert.equal(
     commonPage.commands[0].cond.arg,
-    NO_ACTOR,
+    NO_ITEM,
     'a branch condition inside a common event should be marked missing the same way'
   );
 });
@@ -780,7 +882,90 @@ test('a map’s wandering-encounter table is renumbered when an actor is deleted
   );
 });
 
-test('a reference already marked missing is a fixed point, not decremented again by the next deletion', () => {
+// --- renumberMetaspriteDeletion (round 2, item 4) — imported since it was
+// written, never called by any test until now. Three consumers, one
+// deletion, exact/above/below for each, plus the nullable fixed point for
+// the two that have one. An animation frame has no sentinel of its own, so
+// its exact-match case is a removal rather than a null, unlike the other
+// two — see the function's own docstring for why.
+
+test('renumberMetaspriteDeletion: an animation frame naming exactly the deleted metasprite is removed, not clamped', () => {
+  const project = createProject('Quest');
+  project.sprites.animations = [
+    {
+      id: 0,
+      name: 'Walk',
+      loop: true,
+      frames: [
+        { metaspriteId: 1, duration: 8 }, // below the deletion — must not move
+        { metaspriteId: 2, duration: 8 }, // exactly the deleted metasprite — must be dropped
+        { metaspriteId: 3, duration: 8 }, // above — shifts down to 2
+        { metaspriteId: 4, duration: 8 } // above — shifts down to 3
+      ]
+    }
+  ];
+
+  renumberMetaspriteDeletion(project, 2);
+
+  assert.deepEqual(
+    project.sprites.animations[0].frames,
+    [
+      { metaspriteId: 1, duration: 8 },
+      { metaspriteId: 2, duration: 8 },
+      { metaspriteId: 3, duration: 8 }
+    ],
+    'the frame naming exactly metasprite 2 is removed outright, and the two above it shift down by one'
+  );
+});
+
+test('renumberMetaspriteDeletion: an animation can lose every frame, which the Sprite Forge already permits', () => {
+  const project = createProject('Quest');
+  project.sprites.animations = [
+    { id: 0, name: 'Blink', loop: true, frames: [{ metaspriteId: 5, duration: 4 }] }
+  ];
+
+  renumberMetaspriteDeletion(project, 5);
+
+  assert.deepEqual(project.sprites.animations[0].frames, [], 'an animation whose only frame named the deleted metasprite ends up empty, not clamped to a substitute');
+});
+
+test('renumberMetaspriteDeletion: a party member’s metaspriteId is the ordinary nullable fixed point', () => {
+  const project = createProject('Quest', 'rpg');
+  project.party = [
+    { ...createPartyMember(0, 'Below'), metaspriteId: 1 },
+    { ...createPartyMember(1, 'Exact'), metaspriteId: 2 },
+    { ...createPartyMember(2, 'Above'), metaspriteId: 4 },
+    { ...createPartyMember(3, 'AlreadyNothing'), metaspriteId: null }
+  ];
+
+  renumberMetaspriteDeletion(project, 2);
+
+  const [below, exact, above, already] = project.party;
+  assert.equal(below.metaspriteId, 1, 'a party member below the deleted metasprite should not move');
+  assert.equal(exact.metaspriteId, null, 'a party member naming exactly the deleted metasprite reads as "Not drawn"');
+  assert.equal(above.metaspriteId, 3, 'a party member above the deleted metasprite should shift down');
+  assert.equal(already.metaspriteId, null, 'a party member already drawing nothing should stay that way');
+});
+
+test('renumberMetaspriteDeletion: an item’s metaspriteId is the ordinary nullable fixed point', () => {
+  const project = createProject('Quest', 'rpg');
+  project.items = [
+    { id: 0, name: 'Below', actorId: null, metaspriteId: 1 },
+    { id: 1, name: 'Exact', actorId: null, metaspriteId: 2 },
+    { id: 2, name: 'Above', actorId: null, metaspriteId: 4 },
+    { id: 3, name: 'AlreadyNothing', actorId: null, metaspriteId: null }
+  ];
+
+  renumberMetaspriteDeletion(project, 2);
+
+  const [below, exact, above, already] = project.items;
+  assert.equal(below.metaspriteId, 1, 'an item below the deleted metasprite should not move');
+  assert.equal(exact.metaspriteId, null, 'an item naming exactly the deleted metasprite loses its icon, not a substitute one');
+  assert.equal(above.metaspriteId, 3, 'an item above the deleted metasprite should shift down');
+  assert.equal(already.metaspriteId, null, 'an item already carrying no icon should stay that way');
+});
+
+test('a battle formation’s empty-slot sentinel is a fixed point, not decremented again by the next actor deletion', () => {
   const project = createProject('Quest', 'rpg');
   project.sprites.actors = [{ name: 'A' }, { name: 'B' }, { name: 'C' }, { name: 'D' }];
   project.maps[0].screens[0].entities = [
@@ -792,7 +977,7 @@ test('a reference already marked missing is a fixed point, not decremented again
         event: {
           pages: [
             {
-              cond: { type: 'hasItem', arg: 1 },
+              cond: { type: 'none', arg: 0 },
               // An authored formation already holding the empty-slot sentinel —
               // a hand-edited project, or one written by a later version.
               commands: [{ op: 'battle', monsters: [NO_ACTOR, 2] }]
@@ -803,33 +988,68 @@ test('a reference already marked missing is a fixed point, not decremented again
     }
   ];
 
-  renumberActorDeletion(project, 1); // delete "B" — the condition becomes missing
-  const page = project.maps[0].screens[0].entities[0].props.event.pages[0];
-  assert.equal(page.cond.arg, NO_ACTOR, 'the first deletion marks the condition missing');
-
+  renumberActorDeletion(project, 1); // delete "B"
   renumberActorDeletion(project, 0); // now delete "A", from underneath it
-  assert.equal(
-    page.cond.arg,
-    NO_ACTOR,
-    'a condition already marked missing must stay exactly NO_ACTOR — walked down once per later deletion it ' +
-      'drifts to $FE, $FD, … and comes back into range the moment the roster grows again'
-  );
+  const page = project.maps[0].screens[0].entities[0].props.event.pages[0];
   assert.deepEqual(
     page.commands[0].monsters,
     [NO_ACTOR, 0],
-    'an empty formation slot is the same sentinel and must not be walked either — while the real id beside it ' +
+    'an empty formation slot is the sentinel and must not be walked either — while the real id beside it ' +
       'shifts once per deletion (2 → 1 → 0), the sentinel stays put; walked, it would read $FD by now'
   );
 });
 
-test('a Carrying item condition that names nothing normalizes to NO_ACTOR, never to actor 0', () => {
-  // Everything actorMissing calls missing, which is exactly what the Map
-  // Forge's own select now renders as "Missing actor". If normalization
+test('a reference already marked missing is a fixed point, not decremented again by the next item deletion', () => {
+  const project = createProject('Quest', 'rpg');
+  project.items = [{ id: 0, name: 'A' }, { id: 1, name: 'B' }, { id: 2, name: 'C' }, { id: 3, name: 'D' }];
+  project.maps[0].screens[0].entities = [
+    {
+      actorId: 0,
+      x: 0,
+      y: 0,
+      props: {
+        event: {
+          pages: [{ cond: { type: 'hasItem', arg: 1 }, commands: [{ op: 'give', item: NO_ITEM }] }]
+        }
+      }
+    }
+  ];
+
+  renumberItemDeletion(project, 1); // delete item "B" — the condition becomes missing
+  const page = project.maps[0].screens[0].entities[0].props.event.pages[0];
+  assert.equal(page.cond.arg, NO_ITEM, 'the first deletion marks the condition missing');
+
+  renumberItemDeletion(project, 0); // now delete item "A", from underneath it
+  assert.equal(
+    page.cond.arg,
+    NO_ITEM,
+    'a condition already marked missing must stay exactly NO_ITEM — walked down once per later deletion it ' +
+      'drifts to $FE, $FD, … and comes back into range the moment the item list grows again'
+  );
+  assert.equal(
+    page.commands[0].item,
+    NO_ITEM,
+    'a hand-edited Give/Take already holding NO_ITEM must not be walked as if it were a real id either'
+  );
+});
+
+test('a Carrying item condition that names nothing normalizes to NO_ITEM, never to item 0', () => {
+  // Everything itemMissing calls missing, which is exactly what the Map
+  // Forge's own select now renders as "Missing item". If normalization
   // disagrees with that display the editor shows one thing and the ROM asks
   // after another — the disagreement the select was added to prevent.
+  //
+  // items: [] (present, even empty) is deliberate: it puts this project past
+  // the migration and onto the plain "a Carrying number is already an item
+  // id" path (see normalizeCondition), which is the one `itemConditionArg`
+  // actually governs — roster-blind, the same as `actorConditionArg` always
+  // was. The migration's own translation of a raw legacy actor id has a
+  // separate test below, because resolving *that* genuinely depends on
+  // which actors exist, unlike this one.
   const condition = (arg) =>
     normalizeProject({
       project: { name: 'Q', gameType: 'rpg' },
+      items: [{ id: 0, name: 'Key' }, { id: 1, name: 'Potion' }, { id: 2, name: 'Map' }],
       maps: [
         {
           screens: [
@@ -846,15 +1066,228 @@ test('a Carrying item condition that names nothing normalizes to NO_ACTOR, never
   for (const raw of [null, undefined, -1, -0.4, 2.4, '2', 'gem', {}, NaN, Infinity]) {
     assert.equal(
       condition(raw).arg,
-      NO_ACTOR,
-      `a condition argument of ${JSON.stringify(raw) ?? String(raw)} names no actor, so it must normalize to the ` +
-        'sentinel rather than being rounded or floored into a real actor id'
+      NO_ITEM,
+      `a condition argument of ${JSON.stringify(raw) ?? String(raw)} names no item, so it must normalize to the ` +
+        'sentinel rather than being rounded or floored into a real item id'
     );
   }
   // A real reference is untouched, sentinel included.
-  assert.equal(condition(2).arg, 2, 'a genuine actor id must survive normalization unchanged');
-  assert.equal(condition(0).arg, 0, 'actor 0 is a real actor, not a missing one');
-  assert.equal(condition(NO_ACTOR).arg, NO_ACTOR, 'the sentinel itself round-trips');
+  assert.equal(condition(2).arg, 2, 'a genuine item id must survive normalization unchanged');
+  assert.equal(condition(0).arg, 0, 'item 0 is a real item, not a missing one');
+  assert.equal(condition(NO_ITEM).arg, NO_ITEM, 'the sentinel itself round-trips');
+});
+
+test('a Carrying item condition migrated from a raw actor id resolves through the migration’s own map, never to item 0', () => {
+  // The migration path (no items[] on the raw project) is a different
+  // mechanism from the one above: it translates a *raw actor id* into the
+  // item the migration created for it, so whether a value "resolves" here
+  // genuinely depends on which actors exist — unlike itemConditionArg, this
+  // is not roster-blind.
+  const project = normalizeProject({
+    project: { name: 'Q', gameType: 'rpg' },
+    sprites: { actors: [{ name: 'Torch', behavior: 'pickup' }] },
+    maps: [
+      {
+        screens: [
+          {
+            entities: [
+              {
+                actorId: 0,
+                x: 0,
+                y: 0,
+                props: {
+                  event: {
+                    pages: [
+                      { cond: { type: 'hasItem', arg: 0 }, commands: [{ op: 'say', text: 'real' }] },
+                      { cond: { type: 'hasItem', arg: 99 }, commands: [{ op: 'say', text: 'stale' }] },
+                      { cond: { type: 'hasItem', arg: 'gem' }, commands: [{ op: 'say', text: 'garbage' }] }
+                    ]
+                  }
+                }
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  });
+  const [real, stale, garbage] = project.maps[0].screens[0].entities[0].props.event.pages;
+  assert.equal(project.items.length, 1, 'the migration creates exactly one item for the one pickup actor');
+  assert.equal(real.cond.arg, 0, 'a raw actor id the migration mapped to an item resolves to that item’s id');
+  assert.equal(stale.cond.arg, NO_ITEM, 'a raw actor id past the end of the roster has no item to resolve to');
+  assert.equal(garbage.cond.arg, NO_ITEM, 'a non-numeric raw value has no item to resolve to either');
+});
+
+// --- correction #2: the migration's own reference-collecting walk has to
+// find a Carrying condition wherever one sits, mirroring renumberActorDeletion's
+// renumberCondition(page.cond) called apart from its allCommands loop --------
+//
+// Every actor below is `npc`, deliberately not `pickup`: the only way it ends
+// up in project.items at all is if migrateItemsFromActors' own walk actually
+// visits the condition naming it. A test that used a pickup actor here (as
+// the test above does, for a different reason) could not tell "the walk ran"
+// from "the actor was going to get an item anyway" -- which is exactly how
+// this gap went uncaught: the existing page-level coverage happened to use a
+// pickup actor. Two referenced actors per test, not one, so the assertion
+// pins the *correct* item id each resolves to (0 and 1, in ascending actor-id
+// order) rather than merely "not the old actor id" -- a bug that mapped both
+// to the same item, or swapped them, would still pass a single-actor check.
+
+test('the migration walks a page’s own Carrying condition, not only its commands’ (correction #2)', () => {
+  const project = normalizeProject({
+    project: { name: 'Q', gameType: 'rpg' },
+    sprites: {
+      actors: [
+        { name: 'Player', behavior: 'player' },
+        { name: 'A', behavior: 'npc' },
+        { name: 'B', behavior: 'npc' }
+      ]
+    },
+    maps: [
+      {
+        screens: [
+          {
+            entities: [
+              {
+                actorId: 0,
+                x: 0,
+                y: 0,
+                props: {
+                  event: {
+                    pages: [
+                      { cond: { type: 'hasItem', arg: 1 }, commands: [{ op: 'say', text: 'A' }] },
+                      { cond: { type: 'hasItem', arg: 2 }, commands: [{ op: 'say', text: 'B' }] },
+                      { cond: { type: 'none', arg: 0 }, commands: [{ op: 'say', text: 'neither' }] }
+                    ]
+                  }
+                }
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  });
+  assert.equal(
+    project.items.length,
+    2,
+    'A and B are named only by their own page conditions, so an item exists for either only if the migration ' +
+      'walked page.cond directly'
+  );
+  const [pageA, pageB] = project.maps[0].screens[0].entities[0].props.event.pages;
+  assert.equal(pageA.cond.arg, 0, 'actor A (raw id 1) must migrate to item 0, the correct id -- not merely a changed one');
+  assert.equal(pageB.cond.arg, 1, 'actor B (raw id 2) must migrate to item 1');
+});
+
+test('the migration walks a branch’s own Carrying condition, nested inside a page (correction #2)', () => {
+  const project = normalizeProject({
+    project: { name: 'Q', gameType: 'rpg' },
+    sprites: {
+      actors: [
+        { name: 'Player', behavior: 'player' },
+        { name: 'A', behavior: 'npc' },
+        { name: 'B', behavior: 'npc' }
+      ]
+    },
+    maps: [
+      {
+        screens: [
+          {
+            entities: [
+              {
+                actorId: 0,
+                x: 0,
+                y: 0,
+                props: {
+                  event: {
+                    pages: [
+                      {
+                        cond: { type: 'none', arg: 0 },
+                        commands: [
+                          {
+                            op: 'branch',
+                            cond: { type: 'hasItem', arg: 1 },
+                            then: [],
+                            // A branch inside a branch: the nesting allCommands (and this
+                            // walk) already has to support elsewhere in this file.
+                            else: [{ op: 'branch', cond: { type: 'hasItem', arg: 2 }, then: [], else: [] }]
+                          }
+                        ]
+                      }
+                    ]
+                  }
+                }
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  });
+  assert.equal(
+    project.items.length,
+    2,
+    'A and B are named only by branch conditions, so an item exists for either only if the migration walked ' +
+      'command.cond inside walkRawCommandList'
+  );
+  const [outer] = project.maps[0].screens[0].entities[0].props.event.pages[0].commands;
+  assert.equal(outer.cond.arg, 0, 'actor A (raw id 1), named by the outer branch, must migrate to item 0');
+  assert.equal(outer.else[0].cond.arg, 1, 'actor B (raw id 2), named two branches deep, must migrate to item 1');
+});
+
+test('the migration walks a Carrying condition nested inside a question’s option (correction #2)', () => {
+  const project = normalizeProject({
+    project: { name: 'Q', gameType: 'rpg' },
+    sprites: {
+      actors: [
+        { name: 'Player', behavior: 'player' },
+        { name: 'A', behavior: 'npc' },
+        { name: 'B', behavior: 'npc' }
+      ]
+    },
+    maps: [
+      {
+        screens: [
+          {
+            entities: [
+              {
+                actorId: 0,
+                x: 0,
+                y: 0,
+                props: {
+                  event: {
+                    pages: [
+                      {
+                        cond: { type: 'none', arg: 0 },
+                        commands: [
+                          {
+                            op: 'choice',
+                            options: [
+                              { text: 'Yes', commands: [{ op: 'branch', cond: { type: 'hasItem', arg: 1 }, then: [], else: [] }] },
+                              { text: 'No', commands: [{ op: 'branch', cond: { type: 'hasItem', arg: 2 }, then: [], else: [] }] }
+                            ]
+                          }
+                        ]
+                      }
+                    ]
+                  }
+                }
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  });
+  assert.equal(
+    project.items.length,
+    2,
+    'A and B are named only inside a question’s options, so an item exists for either only if the migration ' +
+      'walk recurses into option.commands, not only command.then/else'
+  );
+  const [choice] = project.maps[0].screens[0].entities[0].props.event.pages[0].commands;
+  assert.equal(choice.options[0].commands[0].cond.arg, 0, 'option "Yes" — actor A (raw id 1) — must migrate to item 0');
+  assert.equal(choice.options[1].commands[0].cond.arg, 1, 'option "No" — actor B (raw id 2) — must migrate to item 1');
 });
 
 test('the actor roster is capped one short of the sentinel, so $FF can never name a real actor', () => {
@@ -917,7 +1350,6 @@ test('a project arriving over the cap keeps its actors; references to them are b
     anims: {},
     battle: {}
   }));
-  authored.sprites.actors[0].battle = { drop: last, dropPct: 50 };
   authored.maps[0].encounters = { rate: 8, actorIds: [last] };
   authored.maps[0].screens[0].entities = [
     {
@@ -926,23 +1358,18 @@ test('a project arriving over the cap keeps its actors; references to them are b
       y: 0,
       props: {
         event: {
-          pages: [
-            {
-              // A Carrying item condition is a reference too, through its own
-              // normalizer rather than the generic clamp — so it needs its own
-              // assertion or widening actorConditionArg would slip past this.
-              cond: { type: 'hasItem', arg: last },
-              commands: [
-                { op: 'give', actor: last },
-                // And a formation, which clamps in a fifth place again.
-                { op: 'battle', monsters: [last] }
-              ]
-            }
-          ]
+          pages: [{ cond: { type: 'none', arg: 0 }, commands: [{ op: 'battle', monsters: [last] }] }]
         }
       }
     }
   ];
+  // An item is the fourth kind of actor reference now — Give/Take, Carrying
+  // and a monster's drop moved to the *item* id space this phase (see
+  // renumberItemDeletion), so they no longer clamp against LIMITS.actors at
+  // all; project.items[].actorId is the one genuinely new actor reference
+  // this phase adds, and it needs its own assertion for the identical
+  // reason the other three do — widening it would slip past every one below.
+  authored.items = [{ id: 0, name: 'Loot', actorId: last }];
 
   await saveProject(dir, authored);
   const loaded = await loadProject(dir); // a real round trip, not normalizeProject in isolation
@@ -953,17 +1380,15 @@ test('a project arriving over the cap keeps its actors; references to them are b
   assert.equal(loaded.sprites.actors.length, over, 'every actor survives the round trip');
   assert.equal(loaded.sprites.actors[last].name, `A${last}`, 'including the ones past the ceiling');
 
-  // What is not: any reference naming them. Every one of the six kinds clamps
-  // to $FF, and each is asserted separately because each has its own
+  // What is not: any reference naming them. Every one of the four kinds
+  // clamps to $FF, and each is asserted separately because each has its own
   // normalizer — widening any single one of them has to fail here.
   const entity = loaded.maps[0].screens[0].entities[0];
   const page = entity.props.event.pages[0];
   assert.equal(entity.actorId, 0xff, 'a placement above the byte range clamps');
-  assert.equal(page.commands[0].actor, 0xff, 'so does a Give');
-  assert.deepEqual(page.commands[1].monsters, [0xff], 'so does a battle formation');
-  assert.equal(page.cond.arg, 0xff, 'so does a Carrying item condition');
+  assert.deepEqual(page.commands[0].monsters, [0xff], 'so does a battle formation');
   assert.deepEqual(loaded.maps[0].encounters.actorIds, [0xff], 'so does an encounter table entry');
-  assert.equal(loaded.sprites.actors[0].battle.drop, 0xff, 'so does a drop');
+  assert.equal(loaded.items[0].actorId, 0xff, 'so does an item’s own backing actor');
 
   // And the author is told, in the refusal.
   const errors = validateProject(loaded).filter((problem) => /actors but/.test(problem.message));
@@ -1011,11 +1436,14 @@ test('the delete confirmation says what deleting while over the ceiling costs', 
 test('the missing-item sentinel survives normalization and reaches the ROM as NO_ACTOR', () => {
   // The in-memory assertions above would all still pass if a later
   // normalization or compiler change quietly turned the sentinel into 0 —
-  // which is the one thing renumberActorDeletion's whole rationale depends on
+  // which is the one thing renumberItemDeletion's whole rationale depends on
   // not happening. This is the round trip: delete, normalize, compile, and
-  // read the operand the engine will actually see.
+  // read the operand the engine will actually see. NO_ACTOR, not NO_ITEM: a
+  // Carrying condition still compiles to an *actor* byte (itemByte), the
+  // same wire format engine/script.asm's has_item always read.
   const project = createProject('Quest', 'rpg');
   project.sprites.actors = [{ name: 'Gem' }, { name: 'Relic' }];
+  project.items = [{ id: 0, name: 'Gem', actorId: 0 }, { id: 1, name: 'Relic', actorId: 1 }];
   project.maps[0].screens[0].entities = [
     {
       actorId: 0,
@@ -1032,8 +1460,8 @@ test('the missing-item sentinel survives normalization and reaches the ROM as NO
     }
   ];
 
-  renumberActorDeletion(project, 1);
-  project.sprites.actors.splice(1, 1);
+  renumberItemDeletion(project, 1);
+  project.items.splice(1, 1);
 
   const [event] = compileText(normalizeProject(project)).events;
   // A page header is [cond, arg, value, body length].
@@ -1041,7 +1469,139 @@ test('the missing-item sentinel survives normalization and reaches the ROM as NO
   assert.equal(
     event[1],
     NO_ACTOR,
-    'the condition must reach the ROM as NO_ACTOR — as 0 it would ask after whichever actor now sits at id 0'
+    'the condition must reach the ROM as NO_ACTOR — as 0 it would ask after whichever actor now sits at item 0'
+  );
+});
+
+// --- the byte-identity proof, kept as a live regression instead of a pinned
+// hash (round 2's decision on the golden-hash question) --------------------
+//
+// A pinned whole-ROM sha256 records what was emitted the day it was written,
+// which cannot tell "correct" from "consistently wrong" -- the thing that
+// actually proved correctness during phase 3 was a before/after rebuild
+// against the pre-migration code, and that proof cannot be repeated once
+// this is committed. Pinning its *result* is not the same as keeping the
+// proof, and phase 4 changes these exact bytes on purpose (inv_items
+// becomes item-keyed), so the constant's first encounter with drift would
+// be a legitimate change -- exactly the kind of bound this codebase's own
+// convention (kernelbytes.test.js, bankedbytes.test.js) refuses to loosen
+// reflexively when hit.
+//
+// Instead: build the synthesized scenario -- take, a page-level hasItem, a
+// hasItem nested inside a branch, give, and a non-null battle.drop, with
+// item ids deliberately unequal to the actor ids they back (a bug that
+// emitted the item id directly, or an identity mapping, would slip past an
+// equal-ids project) -- and assert each compiled operand equals
+// `project.items[id].actorId`, computed from the project rather than
+// written as a literal here. It fails the moment any of the three itemByte
+// call sites (Give/Take, Carrying, mon_drop) drifts from the other two, it
+// pins the scenario itself rather than whatever sample/ happens to author
+// today, and it stays true across a legitimate phase 4 change to what
+// `inv_items` stores, unlike a hash of the assembled ROM would.
+test('Give, Take, a nested Carrying condition, and a monster’s drop all compile to items[id].actorId, computed from the project', () => {
+  const project = createProject('Compile', 'rpg');
+  project.sprites.actors = [
+    { name: 'Player', behavior: 'player' },
+    { name: 'A', behavior: 'npc' },
+    { name: 'B', behavior: 'npc' },
+    { name: 'C', behavior: 'npc' },
+    { name: 'Monster', damage: 1, battle: { atk: 4, def: 2 } }
+  ];
+  // Deliberately not the identity mapping: item ids run 0, 1, 2 while the
+  // actors they back run the other way round (3, 2, 1). A bug that emitted
+  // the item id directly instead of resolving through `actorId` would
+  // produce a wrong-but-plausible byte here, not an obviously-broken one.
+  project.items = [
+    { id: 0, name: 'Zero', actorId: 3, metaspriteId: null }, // backs C
+    { id: 1, name: 'One', actorId: 2, metaspriteId: null }, // backs B
+    { id: 2, name: 'Two', actorId: 1, metaspriteId: null } // backs A
+  ];
+  project.sprites.actors[4].battle.drop = 1; // Monster drops item 1 (backs B)
+  project.sprites.actors[4].battle.dropPct = 20;
+  project.maps[0].screens[0].entities = [
+    {
+      actorId: 0,
+      x: 0,
+      y: 0,
+      props: {
+        event: {
+          pages: [
+            {
+              cond: { type: 'hasItem', arg: 0 }, // page-level Carrying: item 0
+              commands: [
+                { op: 'give', item: 2 },
+                { op: 'take', item: 1 },
+                {
+                  op: 'branch',
+                  cond: { type: 'hasItem', arg: 2 }, // nested Carrying: item 2
+                  then: [{ op: 'say', text: 'x' }],
+                  else: []
+                }
+              ]
+            }
+          ]
+        }
+      }
+    }
+  ];
+
+  const normalized = normalizeProject(project);
+  const built = compileText(normalized);
+  const [event] = built.events;
+
+  const OP_GIVE = opIndex('give');
+  const OP_TAKE = opIndex('take');
+  const OP_BRANCH = opIndex('branch');
+  const HAS_ITEM = EVENT_CONDITIONS.findIndex((entry) => entry.id === 'hasItem');
+
+  // Page header: [cond, arg, value, bodyLength].
+  assert.equal(event[0], HAS_ITEM, 'the page condition is still Carrying');
+  assert.equal(
+    event[1],
+    normalized.items[0].actorId,
+    'the page-level Carrying operand equals items[0].actorId, computed from the project — not a literal 3'
+  );
+
+  // Positions, not indexOf: opcode and condition-index values are both
+  // small enumerated ints (EVENT_COMMANDS' and EVENT_CONDITIONS' own row
+  // order), so a blind indexOf can match an unrelated byte that happens to
+  // carry the same small value elsewhere in the event — here, opIndex('take')
+  // and this project's own Carrying-condition index collide numerically,
+  // and indexOf(OP_TAKE) found the page header's own arg byte first. The
+  // page header is a fixed 4 bytes and the command list's order is exactly
+  // what this test authored (give, then take, then the branch), each a
+  // known width, so the next command's position is computable rather than
+  // searched for.
+  const giveAt = 4; // right after the 4-byte page header
+  assert.equal(event[giveAt], OP_GIVE, 'the first command is still Give');
+  assert.equal(event[giveAt + 1], normalized.items[2].actorId, 'Give’s operand equals items[2].actorId');
+
+  const takeAt = giveAt + 2; // Give is a 2-byte command: opcode, operand
+  assert.equal(event[takeAt], OP_TAKE, 'the second command is still Take');
+  assert.equal(event[takeAt + 1], normalized.items[1].actorId, 'Take’s operand equals items[1].actorId');
+
+  // A branch's own header is [OP_IF-shaped: opcode, cond, arg, value, ...],
+  // the same header a page carries, so the nested condition's arg sits two
+  // bytes after the branch opcode.
+  const branchAt = takeAt + 2; // Take is also a 2-byte command
+  assert.equal(event[branchAt], OP_BRANCH, 'the third command is still the branch');
+  assert.equal(event[branchAt + 1], HAS_ITEM, 'the nested condition is still Carrying');
+  assert.equal(
+    event[branchAt + 2],
+    normalized.items[2].actorId,
+    'the nested Carrying operand equals items[2].actorId, the same item Give named — proving the two sites agree'
+  );
+
+  // mon_drop, the third and last itemByte call site — a different function
+  // in a different file (main/build/battletables.js), asked the identical
+  // question about the same item space.
+  const row = /^mon_drop:\n(.*)$/m.exec(battleTables(normalized));
+  assert.ok(row, 'battleTables should emit a mon_drop table');
+  const dropBytes = row[1].trim().replace(/^\.db /, '').split(',').map((s) => parseInt(s.replace('$', ''), 16));
+  assert.equal(
+    dropBytes[4],
+    normalized.items[1].actorId,
+    'the Monster’s (actor 4) drop compiles to items[1].actorId, computed from the project'
   );
 });
 
@@ -1069,7 +1629,7 @@ test('a monster whose drop no longer names an actor is a warning, not a refusal'
   );
 });
 
-test('a drop past the end of the actor list compiles to “nothing”, not an out-of-range id', () => {
+test('a drop past the end of the item list compiles to “nothing”, not an out-of-range id', () => {
   const project = createProject('Quest', 'rpg');
   project.sprites.actors = [
     { name: 'Slime', hp: 1, damage: 1, battle: { drop: 7, dropPct: 50 } },
@@ -1086,7 +1646,7 @@ test('a drop past the end of the actor list compiles to “nothing”, not an ou
   );
 });
 
-test('a live Give/Take with a missing actor blocks the build; a switched-off one does not', () => {
+test('a live Give/Take with a missing item blocks the build; a switched-off one does not', () => {
   const project = createProject('Quest', 'rpg');
   project.sprites.actors = [{ name: 'Gem' }];
   project.maps[0].screens[0].entities.push({
@@ -1094,7 +1654,7 @@ test('a live Give/Take with a missing actor blocks the build; a switched-off one
     x: 0,
     y: 0,
     props: {
-      event: { pages: [{ cond: { type: 'none', arg: 0 }, commands: [{ op: 'give', actor: null }] }] }
+      event: { pages: [{ cond: { type: 'none', arg: 0 }, commands: [{ op: 'give', item: null }] }] }
     }
   });
   const errors = validateProject(project).filter((p) => p.severity === 'error');
@@ -1127,7 +1687,7 @@ test('the give/take check applies to an action project too, and now refuses a bu
     actorId: 0,
     x: 0,
     y: 0,
-    props: { event: { pages: [{ cond: { type: 'none', arg: 0 }, commands: [{ op: 'give', actor: 99 }] }] } }
+    props: { event: { pages: [{ cond: { type: 'none', arg: 0 }, commands: [{ op: 'give', item: 99 }] }] } }
   });
 
   const errors = validateProject(project).filter((p) => p.severity === 'error');
@@ -1142,6 +1702,173 @@ test('the give/take check applies to an action project too, and now refuses a bu
     /do not name a real/,
     'buildProject should refuse this project rather than compiling actor 99 into the ROM as-is'
   );
+});
+
+test('normalizeProject keeps an already-present over-cap items array in full, so validateProject can still see it', () => {
+  // Round 2, item 2: this used to slice(0, LIMITS.items) an *already-present*
+  // raw.items array on load, the same way project.sprites.actors deliberately
+  // does not for the identical reason -- silently truncating here would erase
+  // the over-cap condition before validateProject ever ran, so the refusal
+  // above could never fire for a hand-edited or later-version project, only
+  // for one this version's own (capped) migration produced, which cannot
+  // happen. The migration's own cap (migrateItemsFromActors) is a separate,
+  // correct case: what it *derives* is capped there on purpose (round 1, Q2).
+  const over = LIMITS.items + 5;
+  const raw = {
+    project: { name: 'Over', gameType: 'rpg' },
+    items: Array.from({ length: over }, (_, id) => ({ id, name: `Item ${id}`, actorId: null }))
+  };
+  const project = normalizeProject(raw);
+  assert.equal(project.items.length, over, 'every item survives normalization, not just the first LIMITS.items');
+  assert.equal(project.items[over - 1].name, `Item ${over - 1}`, 'including the ones past the ceiling');
+  assert.ok(
+    validateProject(project).some((p) => /items but/.test(p.message)),
+    'with the full list preserved, the over-cap refusal can actually fire'
+  );
+});
+
+test('an over-cap items list is refused, the same way an over-cap actor roster already is', () => {
+  const project = createProject('Quest', 'rpg');
+  project.items = Array.from({ length: LIMITS.items + 1 }, (_, id) => ({ id, name: `Item ${id}`, actorId: null }));
+
+  const errors = validateProject(project).filter((p) => /items but/.test(p.message));
+  assert.equal(errors.length, 1, 'an over-cap items list should be refused exactly once');
+  assert.equal(errors[0].severity, 'error');
+  assert.equal(errors[0].where, 'Sprite Forge', 'items have no editor of their own yet, so this is attributed there');
+  assert.doesNotMatch(
+    errors[0].message,
+    /delete/i,
+    'the message must not tell the author to delete items through a control this version does not offer'
+  );
+  assert.doesNotMatch(
+    errors[0].message,
+    /actor roster|the actors/i,
+    'the message must not send the author to trim actors -- an already-migrated items array does not shrink ' +
+      'when actors do, so that would fix the wrong list'
+  );
+
+  project.items.length = LIMITS.items;
+  assert.deepEqual(
+    validateProject(project).filter((p) => /items but/.test(p.message)),
+    [],
+    'exactly at the cap is legal'
+  );
+});
+
+test('two items sharing a backing actor is refused — each item must name a different actor', () => {
+  const project = createProject('Quest', 'rpg');
+  project.sprites.actors = [{ name: 'Key' }];
+  project.items = [
+    { id: 0, name: 'Rusty Key', actorId: 0, metaspriteId: null },
+    { id: 1, name: 'Shiny Key', actorId: 0, metaspriteId: null }
+  ];
+
+  const errors = validateProject(project).filter((p) => /more than one item/.test(p.message));
+  assert.equal(errors.length, 1, 'two items naming the same actor should be refused exactly once, not once per item');
+  assert.equal(errors[0].severity, 'error');
+
+  // Orphaned items (actorId: null) do not collide with each other -- "names
+  // no actor" is not "names the same actor twice".
+  project.items[1].actorId = null;
+  assert.deepEqual(
+    validateProject(project).filter((p) => /more than one item/.test(p.message)),
+    [],
+    'null does not count as a shared actorId'
+  );
+
+  // Round 2, item 5: NO_ACTOR ($FF) is normalizeItem's own fallback for a
+  // malformed actorId, not a real one -- two independently malformed items
+  // must not be reported as "sharing" an actor they neither one names.
+  project.items[0].actorId = NO_ACTOR;
+  project.items[1].actorId = NO_ACTOR;
+  assert.deepEqual(
+    validateProject(project).filter((p) => /more than one item/.test(p.message)),
+    [],
+    'two items that both fell back to NO_ACTOR must not read as sharing an actor'
+  );
+
+  project.items[0].actorId = 0;
+  project.items[1].actorId = 0;
+  project.items.push({ id: 2, name: 'Ceremonial Key', actorId: 0, metaspriteId: null });
+  const three = validateProject(project).filter((p) => /more than one item/.test(p.message));
+  assert.equal(three.length, 1, 'three items sharing one actor is still one error, naming the one actor involved');
+});
+
+// --- itemPickerOptions (round 3): the single writer of what an item-naming
+// <select> offers, extracted after the Map Forge's Carrying and Give/Take
+// selects and the Sprite Forge's Drops select were each found keeping their
+// own copy of the same filter -- the exact effectiveTrigger-shaped drift
+// CLAUDE.md already warns about. One helper, tested here directly; all
+// three pickers only ever render its output now.
+
+test('itemPickerOptions: a healthy item is offered', () => {
+  const actors = [{ name: 'Player' }, { name: 'A' }];
+  const items = [{ id: 0, name: 'Healthy', actorId: 1, metaspriteId: null }];
+
+  const { healthy, missing } = itemPickerOptions(items, actors, null);
+
+  assert.deepEqual(
+    healthy,
+    [{ value: 0, label: 'Healthy', selected: false }],
+    'an item whose actorId resolves is offered as an ordinary option'
+  );
+  assert.ok(missing, 'a selectedId of null does not resolve, so there is something to represent');
+});
+
+test('itemPickerOptions: the currently-selected orphan is represented once, as the missing entry, and not also as an ordinary option', () => {
+  const actors = [{ name: 'Player' }, { name: 'A' }];
+  const items = [
+    { id: 0, name: 'Healthy', actorId: 1, metaspriteId: null },
+    { id: 1, name: 'OrphanSelected', actorId: null, metaspriteId: null }, // the one selectedId names
+    { id: 2, name: 'OrphanOther', actorId: 5, metaspriteId: null } // out of range -- also an orphan, not selected
+  ];
+
+  const { healthy, missing } = itemPickerOptions(items, actors, 1);
+
+  assert.deepEqual(
+    missing,
+    { value: 1, label: 'Missing item', selected: true },
+    'the selected orphan is represented as the missing entry, naming its own id'
+  );
+  assert.ok(
+    !healthy.some((option) => option.value === 1),
+    'the selected orphan must not additionally appear in the ordinary list -- a single-select would then carry ' +
+      'two selected <option>s and show whichever is later in the DOM, which is the round-2 defect this replaces'
+  );
+  // Doubles as "another orphan is not newly selectable": id 2 names no
+  // actor either, but nothing selected it -- it must not be offered at all.
+  assert.ok(
+    !healthy.some((option) => option.value === 2),
+    'an orphan that is not the current selection is excluded outright, not merely left unselected -- otherwise ' +
+      'it would still be offered as an ordinary, working-looking choice a click could newly select into NO_ACTOR'
+  );
+  assert.deepEqual(
+    healthy,
+    [{ value: 0, label: 'Healthy', selected: false }],
+    'only the genuinely healthy item remains offered'
+  );
+});
+
+test('itemPickerOptions: selected-ness lands on exactly one option, healthy or missing, never both or neither', () => {
+  const actors = [{ name: 'Player' }, { name: 'A' }, { name: 'B' }];
+  const items = [
+    { id: 0, name: 'One', actorId: 1, metaspriteId: null },
+    { id: 1, name: 'Two', actorId: 2, metaspriteId: null },
+    { id: 2, name: 'OrphanOther', actorId: null, metaspriteId: null }
+  ];
+  const countSelected = (result) => (result.healthy.filter((o) => o.selected).length + (result.missing?.selected ? 1 : 0));
+
+  // A healthy selection: the missing entry is absent, one healthy option is selected.
+  assert.equal(countSelected(itemPickerOptions(items, actors, 1)), 1, 'selecting a healthy item selects exactly it');
+  assert.equal(itemPickerOptions(items, actors, 1).missing, null, 'a healthy selection has nothing to represent as missing');
+
+  // An orphan selection: the missing entry carries the selection, no healthy option does.
+  assert.equal(countSelected(itemPickerOptions(items, actors, 2)), 1, 'selecting an orphan selects exactly the missing entry');
+
+  // A selection naming nothing at all (null, or past the end of the list):
+  // still exactly one selected entry, on the missing placeholder.
+  assert.equal(countSelected(itemPickerOptions(items, actors, null)), 1, 'selecting nothing still selects exactly the missing entry');
+  assert.equal(countSelected(itemPickerOptions(items, actors, 99)), 1, 'an out-of-range id still selects exactly the missing entry');
 });
 
 test('a Run common event command naming a deleted common event fails validation and cannot build', {
@@ -1238,7 +1965,10 @@ test('a live Save command on any save-capable board (MMC1, MMC3, UNROM 512) is n
   }
 });
 
-test("a Give/Take's missing actor survives normalize instead of clamping to a real one", () => {
+test("a Give/Take's missing item survives normalize instead of clamping to a real one", () => {
+  // No raw.items here at all -- the migration path. A raw actor: null has
+  // nothing for actorToItem to resolve, so it stays null rather than
+  // clamping to item 0.
   const project = normalizeProject({
     maps: [
       {
@@ -1258,9 +1988,69 @@ test("a Give/Take's missing actor survives normalize instead of clamping to a re
     ]
   });
   const [command] = project.maps[0].screens[0].entities[0].props.event.pages[0].commands;
-  assert.equal(command.actor, null, 'the generic byte clamp would have turned this into actor 0 -- a real actor id');
+  assert.equal(command.item, null, 'the generic byte clamp would have turned this into item 0 -- a real item id');
   // And a second pass leaves it exactly where the first one did.
   assert.deepEqual(normalizeProject(structuredClone(project)).maps, project.maps);
+});
+
+test("a Give/Take's explicit item: null is preserved, once items[] already exists, rather than resurrecting a legacy actor", () => {
+  // Correction #7: property presence decides which raw field wins, and an
+  // explicit `item: null` must not fall back to a conflicting legacy
+  // `actor` and resurrect it -- the new field always wins outright.
+  const project = normalizeProject({
+    items: [{ id: 0, name: 'Key' }],
+    maps: [
+      {
+        screens: [
+          {
+            entities: [
+              {
+                actorId: 0,
+                x: 0,
+                y: 0,
+                props: {
+                  event: {
+                    pages: [{ cond: { type: 'none', arg: 0 }, commands: [{ op: 'give', item: null, actor: 0 }] }]
+                  }
+                }
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  });
+  const [command] = project.maps[0].screens[0].entities[0].props.event.pages[0].commands;
+  assert.equal(command.item, null, 'an explicit item: null must be kept, not overridden by a conflicting legacy actor');
+});
+
+test('a legacy-only actor on an already-migrated project resolves to missing, never synthesizing a new item', () => {
+  // Correction #7's fourth bullet: once items[] exists, a stray legacy
+  // `actor` field (no `item` present at all) resolves to missing rather
+  // than growing the items list outside the one-time migration.
+  const project = normalizeProject({
+    items: [{ id: 0, name: 'Key', actorId: 5 }],
+    sprites: { actors: [{ name: 'A' }, { name: 'B' }, { name: 'C' }, { name: 'D' }, { name: 'E' }, { name: 'F' }] },
+    maps: [
+      {
+        screens: [
+          {
+            entities: [
+              {
+                actorId: 0,
+                x: 0,
+                y: 0,
+                props: { event: { pages: [{ cond: { type: 'none', arg: 0 }, commands: [{ op: 'give', actor: 5 }] }] } }
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  });
+  const [command] = project.maps[0].screens[0].entities[0].props.event.pages[0].commands;
+  assert.equal(command.item, null, 'a legacy actor reference on an already-migrated project resolves to missing');
+  assert.equal(project.items.length, 1, 'no new item was synthesized for it');
 });
 
 test('a title screen pointing at a deleted map falls back to none', () => {
@@ -1747,6 +2537,7 @@ test('every part of a project survives being written and read back', async (t) =
   draft.sprites.metasprites.push({ name: 'Hero', tiles: [{ tile: 3, x: 0, y: 0, palette: 1 }] });
   draft.sprites.animations.push({ name: 'Walk', frames: [{ metaspriteId: 0, duration: 6 }] });
   draft.sprites.actors.push({ name: 'Innkeeper', behavior: 'npc', animationId: 0, damage: 2 });
+  draft.items.push({ id: 0, name: 'Room key', actorId: 0, metaspriteId: 0 });
   draft.input.states.gameplay.A = 'interact';
   draft.input.states.menu.START = 'cancel';
   draft.party[0].name = 'Ilse';
@@ -1795,4 +2586,50 @@ test('every part of a project survives being written and read back', async (t) =
     assert.deepEqual(reopened[part], project[part], `${part} did not survive the round trip`);
   }
   assert.deepEqual(reopened, project);
+});
+
+test('items.json is always written, including when empty, so a missing file and an empty array stay distinguishable', async (t) => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'forge-itemsjson-'));
+  t.after(() => fs.rm(dir, { recursive: true, force: true }));
+
+  // Round 2, item 6: a project with no pickup actor migrates to `[]` either
+  // way, so the assertions below could not tell "the discriminator branched
+  // and produced an empty result" from "it always returns [] regardless of
+  // whether items.json is even read." A pickup actor is what makes the two
+  // paths actually diverge: present-and-empty must stay empty (no
+  // re-synthesis), while absent must synthesize an item for it.
+  const draft = createProject('Items discriminator');
+  draft.sprites.actors.push({ name: 'Torch', behavior: 'pickup' });
+  draft.items = []; // already migrated, deliberately holding none
+
+  await saveProject(dir, draft);
+  const itemsPath = path.join(dir, 'items.json');
+  const onDisk = JSON.parse(await fs.readFile(itemsPath, 'utf8'));
+  assert.deepEqual(onDisk, [], 'items.json exists and holds an empty array, not being skipped entirely');
+
+  // With items.json present and empty, a pickup actor sitting right there
+  // must NOT be re-synthesized into an item -- "already migrated" means no
+  // synthesis, ever, even when synthesis would have found something to do.
+  const stillEmpty = await loadProject(dir);
+  assert.deepEqual(stillEmpty.items, [], 'an already-migrated project with no items stays empty, not re-derived from its pickup actor');
+
+  // The discriminator itself: remove the file to simulate a project saved
+  // before it existed, and confirm the load path actually branches on its
+  // presence rather than always reading `[]` regardless -- with the file
+  // gone, that same pickup actor must now be synthesized into an item.
+  await fs.rm(itemsPath);
+  const migrated = await loadProject(dir);
+  assert.equal(migrated.items.length, 1, 'a missing items.json must trigger the migration, which finds the pickup actor');
+  assert.equal(migrated.items[0].actorId, 0, 'the synthesized item backs the Torch actor');
+
+  // And once items.json exists again (any save writes it), reopening the
+  // project must not silently vanish a real item by re-deriving from actors.
+  await saveProject(dir, migrated);
+  assert.deepEqual(
+    JSON.parse(await fs.readFile(itemsPath, 'utf8')),
+    [{ id: 0, name: 'Torch', actorId: 0, metaspriteId: null }],
+    'a real item survives being written to items.json'
+  );
+  const reloaded = await loadProject(dir);
+  assert.deepEqual(reloaded.items, migrated.items, 'and survives being read back, unchanged by a second load');
 });

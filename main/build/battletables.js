@@ -18,7 +18,7 @@
 // or the meter loses the one expression it shares with the check that refuses
 // the build.
 
-import { ELEMENTS, RPG_LIMITS, SPELL_KINDS, SPELL_SCOPES, actorMissing, isMonsterActor } from '../../shared/project.js';
+import { ELEMENTS, RPG_LIMITS, SPELL_KINDS, SPELL_SCOPES, itemByte, isMonsterActor } from '../../shared/project.js';
 import { NESASM_BANK_BYTES } from '../../shared/cartridge.js';
 import { textToTiles } from '../../shared/font.js';
 
@@ -97,19 +97,21 @@ export function battleTables(project) {
   chunks.push(`mon_gold:\n${dbRows(battle((b) => b.gold ?? 0))}`);
   chunks.push(`mon_weak:\n${dbRows(battle((b) => elementIndex(b.weak)))}`);
   chunks.push(`mon_strong:\n${dbRows(battle((b) => elementIndex(b.strong)))}`);
-  // $FF is "leaves nothing behind". An id that names no actor gets it too,
+  // $FF is "leaves nothing behind". An id that names no item gets it too,
   // exactly as mon_spell below already treats a stale spell id, and for a
   // harder reason: roll_drop (engine/battleturn.asm) hands this byte
   // straight to add_item, which range-checks nothing, so an out-of-range id
   // ends up in inv_items and draw_actor_icon (engine/ui.asm) indexes
-  // actor_anim_dir past its end with it. validateProject warns about one of
-  // these, but buildProject compiles the project the app is holding rather
-  // than one that has passed validation -- the same reason actorByte
-  // (main/build/textcompile.js) sanitises a Give/Take actor here as well as
-  // there. actorMissing is that same "does this resolve" question, asked
-  // once, rather than a fourth hand-written bound.
+  // actor_anim_dir past its end with it. `b.drop` is an item id now, not an
+  // actor id directly, so this has to resolve through project.items the same
+  // way main/build/textcompile.js's Give/Take and Carrying-condition
+  // compilation do -- itemByte is the one function all three call, so none
+  // of them can resolve a drop differently than the others do. validateProject
+  // warns about one of these, but buildProject compiles the project the app
+  // is holding rather than one that has passed validation, so this still has
+  // to not hand add_item a byte that indexes the actor tables past their end.
   chunks.push(
-    `mon_drop:\n${dbRows(battle((b) => (actorMissing(actors, b.drop) ? 0xff : b.drop)))}`
+    `mon_drop:\n${dbRows(battle((b) => itemByte(project.items, actors, b.drop)))}`
   );
   chunks.push(`mon_drop_pct:\n${dbRows(battle((b) => b.dropPct ?? 0))}`);
   chunks.push(`mon_heal:\n${dbRows(battle((b) => b.heal ?? 0))}`);

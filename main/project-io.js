@@ -77,6 +77,13 @@ export async function saveProject(dir, data) {
   await writeJson(path.join(dir, 'palettes.json'), project.palettes);
   await writeJson(path.join(dir, 'metatiles.json'), project.metatiles);
   await writeJson(path.join(dir, 'sprites.json'), project.sprites);
+  // Always written, including when empty: presence vs. absence of this file
+  // (not its content) is the migration discriminator normalizeProject reads
+  // — an empty array means "already migrated, has no items today," which
+  // must stay distinguishable from a project that has never seen items.json
+  // at all. A conditional write here would collapse that distinction the
+  // first time an author deleted their last item.
+  await writeJson(path.join(dir, 'items.json'), project.items);
   await writeJson(path.join(dir, 'input.json'), project.input);
   await writeJson(path.join(dir, 'party.json'), project.party);
   await writeJson(path.join(dir, 'spells.json'), project.spells);
@@ -209,6 +216,11 @@ export async function loadProject(dir) {
     palettes: await readJson(path.join(dir, 'palettes.json')),
     metatiles: await readJson(path.join(dir, 'metatiles.json')),
     sprites: await readJson(path.join(dir, 'sprites.json')),
+    // `readJson`'s fallback is `null`, not `[]`, on purpose here: a project
+    // saved before items.json existed must read back as "no items array at
+    // all" so normalizeProject's migration runs, not as "already migrated,
+    // zero items."
+    items: await readJson(path.join(dir, 'items.json')),
     input: await readJson(path.join(dir, 'input.json')),
     party: await readJson(path.join(dir, 'party.json')),
     spells: await readJson(path.join(dir, 'spells.json')),

@@ -303,6 +303,14 @@ project.sprites = {
   ]
 };
 
+// The one item this project hands out, backed by the Gem pickup above.
+// createProject() already supplies `items: []`, so without this the Chest's
+// Give below would resolve to nothing the moment this generator's own
+// output is loaded (see phase 3 round 2, item 1): an item-schema project is
+// "already migrated" the instant it has an items array at all, so a legacy
+// `actor`-valued Give never gets translated for one, only authored directly.
+project.items = [{ id: 0, name: 'Gem', actorId: 1, metaspriteId: null }];
+
 const setMetatile = (id, name, tiles, palette, collision) => {
   Object.assign(project.metatiles[id], { name, tiles, palette, collision });
 };
@@ -410,7 +418,7 @@ screens[2].entities = [
             cond: { type: 'switchOff', arg: 0 },
             commands: [
               { op: 'say', text: 'The lid gives, and a gem glitters up at you.' },
-              { op: 'give', actor: 1 },
+              { op: 'give', item: 0 },
               { op: 'setSwitch', switch: 0 }
             ]
           },

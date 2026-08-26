@@ -495,6 +495,7 @@ export function mount(container, app) {
   function eventContext() {
     return {
       actors: store.project.sprites.actors,
+      items: store.project.items ?? [],
       switches: store.project.switches ?? [],
       variables: store.project.variables ?? [],
       screens: flatScreens(store.project).map((entry) => entry.label),

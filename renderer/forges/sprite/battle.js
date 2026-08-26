@@ -13,7 +13,8 @@ import {
   SPELL_SCOPES,
   createPartyMember,
   createSpell,
-  isMonsterActor
+  isMonsterActor,
+  itemPickerOptions
 } from '../../../shared/project.js';
 import { FONT_BASE } from '../../../shared/font.js';
 import { drawSheet, sheetIndexFromEvent, SHEET_COLS } from '../../widgets/sheet.js';
@@ -51,6 +52,14 @@ export function battleSection(actor, index, rerender) {
   };
 
   const hostile = isMonsterActor(actor);
+  // itemPickerOptions (shared/project.js) is the single writer of which
+  // items a picker offers and how the currently-named one is represented if
+  // it does not resolve -- the Map Forge's Carrying and Give/Take selects
+  // ask it the identical question. `missing` is only rendered below when
+  // `battle.drop` is not null: this field's own "Nothing" already covers
+  // that case as a deliberate choice, not a broken reference, so this is
+  // the one caller-specific decision the shared helper leaves to the field.
+  const dropOptions = itemPickerOptions(store.project.items, store.project.sprites.actors, battle.drop);
 
   return el(
     'div',
@@ -103,9 +112,10 @@ export function battleSection(actor, index, rerender) {
           'select',
           { onchange: (event) => set('drop', event.target.value === '' ? null : Number(event.target.value)) },
           el('option', { value: '', selected: battle.drop === null || battle.drop === undefined }, 'Nothing'),
-          store.project.sprites.actors.map((entry, id) =>
-            el('option', { value: id, selected: id === battle.drop }, entry.name)
-          )
+          battle.drop !== null && battle.drop !== undefined && dropOptions.missing
+            ? el('option', { value: dropOptions.missing.value, selected: true }, dropOptions.missing.label)
+            : null,
+          dropOptions.healthy.map((option) => el('option', { value: option.value, selected: option.selected }, option.label))
         )
       ),
       field('Chance %', number(battle.dropPct ?? 10, 0, 100, (value) => set('dropPct', value)))

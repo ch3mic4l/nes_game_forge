@@ -229,7 +229,7 @@ project.sprites.actors = [
       atk: 6, def: 2, acc: 170, eva: 4, speed: 3,
       mp: 0, xp: 6, gold: 4,
       weak: 'fire', strong: 'ice',
-      drop: 1, dropPct: 40, heal: 0,
+      drop: 0, dropPct: 40, heal: 0,
       // The block art at $20 of the battle tileset, four tiles square.
       battleTile: 0x20, battleW: 4, battleH: 4, battlePalette: 3
     }
@@ -279,6 +279,14 @@ project.sprites.actors = [
     }
   }
 ];
+
+// The one item this project's battle drop hands out, backed by the Potion
+// pickup above. createProject() already supplies `items: []`, which is what
+// makes an actor-valued `drop` above resolve to nothing the moment this
+// generator's own output is loaded rather than migrated (see phase 3 round
+// 2, item 1) -- so this has to be authored directly, the same as the four
+// action-project generators' own items array.
+project.items = [{ id: 0, name: 'Potion', actorId: 1, metaspriteId: null }];
 
 // --- the party --------------------------------------------------------------
 project.party = [

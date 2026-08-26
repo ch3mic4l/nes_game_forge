@@ -565,8 +565,11 @@ test(
   async (t) => {
     // Give an item first, so inv_count > 0 and the corrupted slot is one the
     // live-entries loop actually walks -- corrupting an unused slot would
-    // prove nothing, since draw_menu never reads past inv_count either.
-    const romPath = await buildSaveable(t, [{ op: 'give', actor: 1 }, { op: 'save' }]);
+    // prove nothing, since draw_menu never reads past inv_count either. Item
+    // 0 is sample-rpg's own "Potion", backed by actor 1 -- inv_items still
+    // holds the actor byte it always has (see itemByte's own docstring),
+    // only the authoring field naming it changed.
+    const romPath = await buildSaveable(t, [{ op: 'give', item: 0 }, { op: 'save' }]);
     const nes = boot(romPath);
     tap(nes, START);
     touchSaver(nes, () => nes.cpu.mem[SRAM_BASE + SAVE_MARKER_OFFSET] === SAVE_MARKER_VALID);

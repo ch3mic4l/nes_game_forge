@@ -64,6 +64,20 @@ export const PROJECT_FORMAT = 1;
  */
 export const NO_ACTOR = 0xff;
 
+/**
+ * The byte that means "names no item" — the same role `NO_ACTOR` plays, one
+ * id space over. Nothing compiles an item id onto the wire directly in this
+ * phase (see `itemByte` below: every reference still resolves through to an
+ * *actor* byte), but Give/Take's `item` field, a Carrying condition's `arg`
+ * and `battle.drop` are all one-byte JS fields carrying an item id now, and
+ * a later phase is where `inv_items` itself starts holding item ids
+ * directly. Bounding the id space to a byte now, with its own sentinel,
+ * means that phase inherits a clean ceiling instead of rediscovering the
+ * exact defect `NO_ACTOR`'s own docstring already describes fixing once —
+ * an id 255 becoming creatable and colliding with "nothing."
+ */
+export const NO_ITEM = 0xff;
+
 /** Hard limits imposed by the NES and by the template engine. */
 export const LIMITS = {
   tilesPerTable: 256,
@@ -88,7 +102,10 @@ export const LIMITS = {
   // than an authoring convenience — though capacity (checkCapacity's
   // per-actor table bytes, and battletables' 30 bytes an actor in the banked
   // region) refuses a project far below it long before this does.
-  actors: NO_ACTOR
+  actors: NO_ACTOR,
+  // Ids 0..$FE, same shape and same reason as `actors` above, one id space
+  // over: `NO_ITEM` is a byte in this space too.
+  items: NO_ITEM
 };
 
 /**
@@ -250,7 +267,7 @@ export const EVENT_CONDITIONS = [
   { id: 'none', label: 'Always', arg: null },
   { id: 'switchOn', label: 'Switch is on', arg: 'switch' },
   { id: 'switchOff', label: 'Switch is off', arg: 'switch' },
-  { id: 'hasItem', label: 'Carrying item', arg: 'actor' },
+  { id: 'hasItem', label: 'Carrying item', arg: 'item' },
   { id: 'varEquals', label: 'Variable is', arg: 'variable', value: true },
   { id: 'varAtLeast', label: 'Variable is at least', arg: 'variable', value: true },
   { id: 'varUnder', label: 'Variable is under', arg: 'variable', value: true }
@@ -289,14 +306,14 @@ export const EVENT_TRIGGERS = [
 export const isMonsterActor = (actor) => (actor?.damage ?? 0) > 0;
 
 /**
- * Whether a Give item / Take item command's `actor` still names a real
- * actor — the single question the compiler (`actorByte`,
- * main/build/textcompile.js), `validateProject` below and the Map Forge's
- * own select (`giveTargetMissing`, renderer/forges/map/events.js) all ask,
- * so an id that does not resolve reads the same way no matter which of them
- * is asking. Not merely `null` — the mark `renumberActorDeletion` leaves —
- * but any id no actor currently sits at: a project written by a later
- * version, or a hand-edited one, can hold one that was never `null` to
+ * Whether a Give item / Take item command's `item`, a Carrying condition, or
+ * a `battle.drop` — every one of them an *item* reference now — still names
+ * a real actor once resolved through it. The single question the compiler
+ * (`actorByte` below), `validateProject` and the Map Forge's own selects all
+ * ask, so an id that does not resolve reads the same way no matter which of
+ * them is asking. Not merely `null` — the mark `renumberActorDeletion`
+ * leaves — but any id no actor currently sits at: a project written by a
+ * later version, or a hand-edited one, can hold one that was never `null` to
  * begin with. Validating against "is this the deletion sentinel" instead of
  * "does this resolve" is exactly the gap that let an out-of-range id pass
  * review, compile to NO_ACTOR, and still reach `add_item` with a byte that
@@ -304,6 +321,106 @@ export const isMonsterActor = (actor) => (actor?.damage ?? 0) > 0;
  */
 export const actorMissing = (actors, id) =>
   id === null || id === undefined || !Number.isInteger(id) || id < 0 || id >= (actors?.length ?? 0);
+
+/**
+ * The byte a Give item / Take item command's `item`, a Carrying condition's
+ * `arg`, or a `battle.drop` becomes: NO_ACTOR for anything `actorMissing`
+ * says does not resolve — `null`, or any other id no actor sits at — and the
+ * actor's own id otherwise. Defined here rather than in
+ * main/build/textcompile.js (where it used to live, and which now re-exports
+ * it) for the same reason `NO_ACTOR` itself moved there once
+ * `renumberActorDeletion` needed to write it: `itemByte`/`itemMissing`
+ * below, the migration and `validateProject` all need this same resolution
+ * and shared/ cannot import from main/build/.
+ */
+export function actorByte(actors, id) {
+  return actorMissing(actors, id) ? NO_ACTOR : id;
+}
+
+/**
+ * The byte an item id compiles to, once resolved through the one actor it
+ * backs: `items[id].actorId`, run through `actorByte` exactly as if that
+ * actor id had been named directly. This is deliberately still an *actor*
+ * byte — nothing in this phase changes what the engine reads on the wire
+ * (`inv_items` is still one actor id per carried item), only what the
+ * schema and compiler resolve *from* before reaching it. An item that does
+ * not resolve (bad id, or an id whose `actorId` does not name a real actor)
+ * compiles to `NO_ACTOR`, the same byte an unresolvable actor reference
+ * already compiled to before items existed — one sentinel, asked for the
+ * same reason, one hop further out.
+ */
+export function itemByte(items, actors, id) {
+  const item =
+    Number.isInteger(id) && id >= 0 && id < (items?.length ?? 0) ? items[id] : null;
+  return item ? actorByte(actors, item.actorId) : NO_ACTOR;
+}
+
+/**
+ * Whether an item id resolves all the way through to a real actor — the
+ * item-space equivalent of `actorMissing`, and the single question
+ * `validateProject`, the compiler's own `itemByte` and the Map/Sprite
+ * Forges' selects all ask about an item reference. Folds two failure
+ * shapes into one answer on purpose: an id that names no item at all reads
+ * identically to one that names an item nothing backs (`actorId` null, or
+ * naming an actor that no longer exists) — both compile to `NO_ACTOR`, so
+ * both are "missing" for exactly the same reason `actorMissing` already
+ * gives one answer to "deleted" and "never valid."
+ */
+export const itemMissing = (items, actors, id) => {
+  const item =
+    Number.isInteger(id) && id >= 0 && id < (items?.length ?? 0) ? items[id] : undefined;
+  return !item || actorMissing(actors, item.actorId);
+};
+
+/**
+ * The single writer for what an item-naming `<select>` offers: which items
+ * may be picked ordinarily, and how the id currently named is represented
+ * if it is not one of them. Three call sites used to compute this
+ * separately — the Map Forge's Carrying and Give/Take selects
+ * (renderer/forges/map/events.js) and the Sprite Forge's Drops select
+ * (renderer/forges/sprite/battle.js) — which is the exact shape CLAUDE.md
+ * already warns about for `effectiveTrigger`: three places deciding the
+ * same question is how the editor comes to show one thing and the ROM run
+ * another. One of the three drifted first (round 2) and stayed
+ * undetected because nothing exercised the *other* two copies to disagree
+ * with it — the bug was in the shape shared by all three, not in any one
+ * of them.
+ *
+ * Returns `{ healthy, missing }`:
+ *
+ * - `healthy` is every item whose own `actorId` resolves
+ *   (`!actorMissing(actors, item.actorId)`), each already shaped as
+ *   `{ value, label, selected }`. An orphan — `actorId` null, or naming an
+ *   actor that no longer exists — is excluded outright, not merely left
+ *   unselected: leaving it in would let it render as an ordinary,
+ *   working-looking choice a click could newly select into the identical
+ *   `NO_ACTOR` trap the missing entry below exists to make visible instead.
+ * - `missing` is `null` when `selectedId` names a healthy item — there is
+ *   nothing more to represent — or `{ value, label, selected: true }` when
+ *   it does not, covering a stale/out-of-range id and `null`/`undefined`
+ *   alike, the same as `itemMissing` already does for exactly that reason.
+ *   A caller with its own meaning for `null` — the Drops select's
+ *   "Nothing," a deliberate, legitimate choice rather than a broken
+ *   reference — decides whether to render this entry at all for that case,
+ *   the same guard it already carries; this function only ever describes
+ *   the item-reference half of the picker, not a field's own null
+ *   affordance.
+ *
+ * Across `healthy` and `missing` together, at most one entry is ever
+ * `selected` — `selectedId` names exactly one thing, healthy or not — so a
+ * caller can render `missing` (if present) followed by `healthy` and never
+ * produce two selected `<option>`s for a single-select to disagree about
+ * which one it shows.
+ */
+export function itemPickerOptions(items, actors, selectedId) {
+  const healthy = (items ?? [])
+    .filter((item) => !actorMissing(actors, item.actorId))
+    .map((item) => ({ value: item.id, label: item.name, selected: item.id === selectedId }));
+  const missing = itemMissing(items, actors, selectedId)
+    ? { value: selectedId, label: 'Missing item', selected: true }
+    : null;
+  return { healthy, missing };
+}
 
 /**
  * Which triggers mean something for this actor, in this project.
@@ -354,8 +471,8 @@ export function effectiveTrigger(entity, actor, project) {
 export const EVENT_COMMANDS = [
   { id: 'end', label: 'End', args: [] },
   { id: 'say', label: 'Show text', args: ['text'] },
-  { id: 'give', label: 'Give item', args: ['actor'] },
-  { id: 'take', label: 'Take item', args: ['actor'] },
+  { id: 'give', label: 'Give item', args: ['item'] },
+  { id: 'take', label: 'Take item', args: ['item'] },
   { id: 'setSwitch', label: 'Turn switch on', args: ['switch'] },
   { id: 'clearSwitch', label: 'Turn switch off', args: ['switch'] },
   { id: 'warp', label: 'Warp player', args: ['screen', 'x', 'y'] },
@@ -716,9 +833,22 @@ export function renumberSongDeletion(project, index) {
 
 // Which page/branch conditions name an actor, read off EVENT_CONDITIONS rather
 // than spelled out, so a second actor-argument condition added there is
-// renumbered below without this having to be told about it.
+// renumbered below without this having to be told about it. Empty today:
+// `hasItem` (the one condition that used to sit here) names an *item* now —
+// see ITEM_CONDITIONS below and renumberItemDeletion — so this currently
+// renumbers nothing. It stays rather than being deleted for the same reason
+// the mapper registry keeps `supported`/`unsupportedReason` fields no entry
+// currently exercises: it is the mechanism a future actor-argument condition
+// would need, declared once so adding one there is enough.
 const ACTOR_CONDITIONS = new Set(
   EVENT_CONDITIONS.filter((entry) => entry.arg === 'actor').map((entry) => entry.id)
+);
+
+// Which page/branch conditions name an item, the same data-driven shape
+// ACTOR_CONDITIONS already used before `hasItem` moved into this space. Used
+// by renumberItemDeletion below.
+const ITEM_CONDITIONS = new Set(
+  EVENT_CONDITIONS.filter((entry) => entry.arg === 'item').map((entry) => entry.id)
 );
 
 /**
@@ -728,91 +858,55 @@ const ACTOR_CONDITIONS = new Set(
  * and renumberSongDeletion gives a song. Left alone, an id above the deleted
  * one silently repoints at whichever actor now happens to sit there, and an
  * id equal to it survives pointing at nothing — indistinguishable, from
- * inside the command, from a project that still has that actor.
+ * inside the reference, from a project that still has that actor.
  *
  * A Start a battle command's formation is a list, so the deleted id is
  * simply removed from it — a battle with monsters left over is still a
- * battle. Give item and Take item name exactly one actor with no such list
- * to fall back into, so their `actor` becomes `null` instead — visibly
- * missing rather than deleted or silently repointed, the same shape a Play
- * music command's `song` already is for a deleted song (normalizeEventCommand
- * above, and actorByte in main/build/textcompile.js at the other end).
- * Dropping the command outright was tried and rejected: it erases whatever
- * else the event went on to do. validateProject's own give/take check is
- * what actually stops a *live* one with a missing actor from reaching a
- * build; a disabled one keeps its scaffolding, missing actor and all.
+ * battle. A map's wandering-encounter table (`map.encounters.actorIds`) gets
+ * the identical answer for the identical reason.
  *
- * **A monster's drop and a Carrying item condition are references too**, and
- * both used to come through here untouched — so deleting an actor silently
- * repointed every one of them at whichever actor slid into that number. They
- * are handled here for the identical reason the three above are; that they
- * were missed is not a sign they are different in kind, only that neither is
- * a command and the walk only ever looked at commands.
+ * **Give item, Take item, a Carrying condition and `battle.drop` are not
+ * walked here any more.** Every one of those names an *item* now, not an
+ * actor directly — `renumberItemDeletion` below is where they are
+ * renumbered, against `project.items[]`, not `project.sprites.actors`. Two
+ * functions renumbering the same reference is how the two answers drift
+ * apart, so each reference is walked in exactly one of them.
  *
- * `battle.drop` takes the Give/Take answer exactly: `null` when it names the
- * deleted actor, shifted down when it names one above. It can afford to,
- * because `null` is already what "Nothing" means in that field
- * (normalizeActor keeps it, and battleTables compiles it to NO_ACTOR), so
- * nothing new has to be taught what a missing drop looks like.
- *
- * A condition cannot take that answer, and this is the one place the two
- * diverge: `normalizeCondition` clamps `cond.arg` to a number, so a `null`
- * written here would come back as **0** on the project's next save and point
- * at actor 0 — the very silent repoint this is fixing, arrived at the long
- * way round. So the condition gets `NO_ACTOR` instead: the same "names no
- * actor" byte `actorByte` already compiles a missing Give/Take to, in the
- * only representation `cond.arg` has. `actorMissing` answers true for it on
- * any ordinary roster, so the Map Forge shows it as missing and
- * `EVENT_CONDITIONS`' own `has_item` (engine/script.asm) can never match it
- * — a page asking after a deleted item simply never runs, which is what the
- * author last meant by it.
- *
- * Which conditions count as actor references is read off `EVENT_CONDITIONS`
- * (`arg === 'actor'`) rather than spelled `hasItem` here, so a second one
- * added there is renumbered without this remembering to be told.
+ * **`project.items[].actorId` is walked here instead**, and it is the one
+ * new case this phase adds to this function rather than moving out of it: an
+ * item's `actorId` genuinely names an actor, so deleting that actor is this
+ * function's question to answer, the same as any other actor reference.
+ * Unlike a Give/Take command, an item has no "the reference itself is gone"
+ * shape to fall into — the item record survives, orphaned, `actorId` set to
+ * `null` exactly the way `battle.drop` used to fall to `null` here before it
+ * became an item reference. An orphaned item is not deleted, because nothing
+ * about losing its backing actor makes the item record itself meaningless —
+ * `validateProject`'s item rules (see below) are what tell an author a Give
+ * or Carrying naming it no longer resolves.
  *
  * **`NO_ACTOR` is a fixed point.** Every reference below stops at it rather
  * than walking it down with the ids around it, because it is not an id — it
  * is the byte that means there is no id. Walked once per later deletion it
  * decays $FF → $FE → $FD, staying out of range for the roster of the day and
  * quietly coming back *into* range the moment the project grows enough
- * actors, at which point a condition that was marked missing starts asking
- * after a real item again. That is the same silent retarget this whole
- * routine exists to stop, arriving one deletion at a time. The guard covers
- * the two places $FF is genuinely the field's own "nothing" — a condition
- * (written here) and an empty formation or encounter slot (what
- * `mapEncounterFormation` pads with and `encodeCommand` compiles to) — and
- * `battle.drop` as well, whose own "nothing" is `null` but which can still
- * be holding $FF from a hand-edited project. One rule, applied to every
- * reference, rather than a per-field exception to remember.
+ * actors, at which point a reference that was marked missing starts naming a
+ * real actor again. That is the same silent retarget this whole routine
+ * exists to stop, arriving one deletion at a time.
  *
- * A map's wandering-encounter table (`map.encounters.actorIds`) gets the
- * battle-formation answer rather than the Give/Take one, for the reason that
- * distinction already turns on: it is a list, so the deleted id can simply
- * drop out of it and leave a shorter table behind, where a field naming
- * exactly one actor has nowhere to fall back to. It is the third instance of
- * this same defect and the worst-hidden of the three, because
- * `mapEncounterFormation`'s own `id < actorCount` filter catches the harmless
- * half — an id that fell out of range — and cannot see the harmful half at
- * all: an id that used to mean the deleted actor and now means its
- * neighbour is still perfectly in range, so nothing downstream, validation
- * included, has anything to notice.
- *
- * Walked through `allCommands`, not each page's own list, since a battle, a
- * give/take or a *branch's own condition* can be sitting inside another
- * branch or a question same as any other command — the same reason
- * renumberSongDeletion walks it that way, and the same page-plus-nested-
- * conditions walk `usedSwitches` (renderer/forges/map/templates.js) already
- * performs for switches. A switch that was invisible to that walk got handed
- * out twice; a condition invisible to this one comes to ask about the wrong
- * item.
+ * Walked through `allCommands`, not each page's own list, since a battle or a
+ * *branch's own condition* can be sitting inside another branch or a
+ * question same as any other command — the same reason renumberSongDeletion
+ * walks it that way, and the same page-plus-nested-conditions walk
+ * `usedSwitches` (renderer/forges/map/templates.js) already performs for
+ * switches. A switch that was invisible to that walk got handed out twice; a
+ * condition invisible to this one comes to ask about the wrong actor.
  *
  * Placed actors are renumbered separately, inline where they are deleted —
  * this only ever needs to run alongside that, never instead of it.
  *
  * Mutates `project` and returns it. The caller removes
  * `project.sprites.actors[index]` itself, before or after calling this: the
- * actor list is now walked (for each actor's own `battle.drop`) but never
+ * actor list is now walked (for each item's own `actorId`) but never
  * measured, so either order gives the same answer.
  */
 export function renumberActorDeletion(project, index) {
@@ -825,11 +919,10 @@ export function renumberActorDeletion(project, index) {
     if (cond.arg === index) cond.arg = NO_ACTOR;
     else cond.arg = shift(cond.arg);
   };
-  for (const actor of project.sprites?.actors ?? []) {
-    const drop = actor.battle?.drop;
-    if (typeof drop !== 'number' || drop === NO_ACTOR) continue; // already "Nothing", or never a reference
-    if (drop === index) actor.battle.drop = null;
-    else actor.battle.drop = shift(drop);
+  for (const item of project.items ?? []) {
+    if (typeof item.actorId !== 'number' || item.actorId === NO_ACTOR) continue;
+    if (item.actorId === index) item.actorId = null;
+    else item.actorId = shift(item.actorId);
   }
   for (const map of project.maps ?? []) {
     const ids = map.encounters?.actorIds;
@@ -843,16 +936,145 @@ export function renumberActorDeletion(project, index) {
         renumberCondition(command.cond); // a branch's own, which a page's editor also writes
         if (command.op === 'battle' && Array.isArray(command.monsters)) {
           command.monsters = command.monsters.filter((id) => id !== index).map(shift);
-        } else if (
-          (command.op === 'give' || command.op === 'take') &&
-          typeof command.actor === 'number' &&
-          command.actor !== NO_ACTOR // a hand-edited $FF here means "nothing" too
-        ) {
-          if (command.actor === index) command.actor = null;
-          else command.actor = shift(command.actor);
         }
       }
     }
+  }
+  return project;
+}
+
+/**
+ * What every reference to an *item* becomes once `index` is gone from
+ * `project.items`: the item-space sibling of `renumberActorDeletion` above,
+ * covering exactly the three references that moved out of it — Give item /
+ * Take item's `item`, a Carrying condition's `arg`, and every actor's
+ * `battle.drop` — because all three now name an id in `project.items`, not
+ * `project.sprites.actors`.
+ *
+ * Same shape throughout: an id above the deleted one shifts down, an id
+ * equal to it becomes `NO_ITEM`/`null` (missing, not deleted or silently
+ * repointed), and `NO_ITEM` is a fixed point for the identical reason
+ * `NO_ACTOR` is one in `renumberActorDeletion` — walking it down would let it
+ * decay back into range as the item list shrinks further.
+ *
+ * Give/Take gets `null` (matching how `command.actor` used to fall to `null`
+ * here before it was an item reference — a Play music command's `song` is
+ * the same shape for a deleted song). A Carrying condition cannot take
+ * `null` — `normalizeCondition` clamps `cond.arg` to a number, so a `null`
+ * written here would come back as item 0 on the next save, the very silent
+ * repoint this routine exists to stop. It gets `NO_ITEM` instead, the same
+ * "names nothing" byte `itemMissing` already treats a missing item id as.
+ * `battle.drop` also gets `null`, matching what "Nothing" already means in
+ * that field.
+ *
+ * Deleting an item never touches `project.sprites.actors`: nothing on an
+ * actor names an item (see the discriminator note on `itemByte` above — the
+ * link is `item.actorId`, one direction only), so there is nothing on the
+ * actor side for this function to fix up.
+ *
+ * Mutates `project` and returns it. The caller removes `project.items[index]`
+ * itself, before or after calling this, the same contract
+ * `renumberActorDeletion` documents.
+ */
+export function renumberItemDeletion(project, index) {
+  const shift = (id) => (id !== NO_ITEM && id > index ? id - 1 : id);
+  const renumberCondition = (cond) => {
+    if (!cond || !ITEM_CONDITIONS.has(cond.type) || typeof cond.arg !== 'number') return;
+    if (cond.arg === NO_ITEM) return; // already marked missing; not an id to walk
+    if (cond.arg === index) cond.arg = NO_ITEM;
+    else cond.arg = shift(cond.arg);
+  };
+  for (const actor of project.sprites?.actors ?? []) {
+    const drop = actor.battle?.drop;
+    if (typeof drop !== 'number' || drop === NO_ITEM) continue; // already "Nothing", or never a reference
+    if (drop === index) actor.battle.drop = null;
+    else actor.battle.drop = shift(drop);
+  }
+  for (const event of projectEvents(project)) {
+    for (const page of event.pages ?? []) {
+      renumberCondition(page.cond);
+      for (const command of allCommands(page.commands)) {
+        renumberCondition(command.cond); // a branch's own, which a page's editor also writes
+        if (
+          (command.op === 'give' || command.op === 'take') &&
+          typeof command.item === 'number' &&
+          command.item !== NO_ITEM // a hand-edited $FF here means "nothing" too
+        ) {
+          if (command.item === index) command.item = null;
+          else command.item = shift(command.item);
+        }
+      }
+    }
+  }
+  return project;
+}
+
+/**
+ * What every reference to a metasprite becomes once `index` is gone from
+ * `project.sprites.metasprites`. Three consumers exist — an animation
+ * frame's `metaspriteId`, a party member's `metaspriteId`, and (as of this
+ * phase) an item's `metaspriteId` — and the Sprite Forge's own delete
+ * handler renumbered none of them before now: it spliced the array and
+ * re-stamped every remaining metasprite's own `id` by position, but nothing
+ * that *names* a metasprite. Left alone, an id above the deleted one
+ * silently repoints at whichever metasprite now happens to sit there, the
+ * identical defect `renumberActorDeletion`/`renumberSongDeletion` already
+ * exist to prevent one id space over.
+ *
+ * Fixing this now, rather than leaving it as a standalone finding, is a
+ * direct consequence of `item.metaspriteId` existing at all: shipping a
+ * third silently-broken consumer of the same field, when the first two are
+ * already documented and the fix is the same `shift`/fixed-point shape every
+ * other reference in this file already uses, is worse than not adding the
+ * field. It does not widen into a general metasprite-reference audit beyond
+ * the three consumers named above.
+ *
+ * The party member and item cases are the ordinary `shift`/fixed-point
+ * treatment: nullable already, so a reference to the deleted metasprite
+ * becomes `null` ("draws nothing" — a party member already supports this,
+ * "Not drawn" in the Sprite Forge's battle tab) and everything above it
+ * shifts down.
+ *
+ * **The animation-frame case is different, because it has no sentinel.**
+ * `normalizeAnimation` clamps a missing or malformed `metaspriteId` to `0`
+ * — there has never been a "this frame draws nothing" state in the schema,
+ * unlike the nullable party-member/item fields. Clamping a frame that named
+ * the *deleted* metasprite to that same `0` would silently retarget it to
+ * unrelated art — worst when deleting index 0 itself, where every orphaned
+ * frame would land on whatever slid into 0's place, which is the identical
+ * silent-repoint defect this function exists to close, reintroduced through
+ * its one hard case. So instead of clamping, a frame naming exactly the
+ * deleted metasprite is **dropped** from its animation, and every frame
+ * above it is shifted down like any other reference. An animation can end
+ * up with fewer frames, including none: that is a state the Sprite Forge
+ * already permits today (its frame list splices frames out one at a time,
+ * and a fresh animation is created with zero frames whenever no metasprite
+ * exists yet to default one to), so this reaches nothing new. The visible
+ * result — an animation that plays shorter, or not at all, until the author
+ * adds a frame back — is a glitch the author can see and fix in the Sprite
+ * Forge's own preview, not a silent wrong reference the way the unfixed bug
+ * was.
+ *
+ * Mutates `project` and returns it. The caller removes
+ * `project.sprites.metasprites[index]` itself, before or after calling this.
+ */
+export function renumberMetaspriteDeletion(project, index) {
+  const shift = (id) => (id > index ? id - 1 : id);
+  const fixedPoint = (id) => {
+    if (id === null || id === undefined) return null;
+    if (id === index) return null;
+    return shift(id);
+  };
+  for (const animation of project.sprites?.animations ?? []) {
+    animation.frames = (animation.frames ?? [])
+      .filter((frame) => frame?.metaspriteId !== index)
+      .map((frame) => ({ ...frame, metaspriteId: shift(frame.metaspriteId) }));
+  }
+  for (const member of project.party ?? []) {
+    member.metaspriteId = fixedPoint(member.metaspriteId);
+  }
+  for (const item of project.items ?? []) {
+    item.metaspriteId = fixedPoint(item.metaspriteId);
   }
   return project;
 }
@@ -947,6 +1169,7 @@ export function createProject(name = 'Untitled Game', gameType = 'action') {
     },
     metatiles: Array.from({ length: LIMITS.metatiles }, (_, id) => createMetatile(id)),
     maps: [createMap(0, 'World')],
+    items: [],
     sprites: { metasprites: [], animations: [], actors: [] },
     songs: [],
     input: defaultInput(),
@@ -1145,7 +1368,7 @@ export function commonEventId(raw) {
  */
 export const NO_COMMON_EVENT_ID = -1;
 
-function normalizeEventCommand(raw, depth = 0) {
+function normalizeEventCommand(raw, depth = 0, itemCtx = EMPTY_ITEM_CTX) {
   const command = EVENT_COMMANDS.find((entry) => entry.id === raw?.op);
   if (!command || command.id === 'end') return null;
   if (command.nests && depth >= BRANCH_DEPTH_LIMIT) {
@@ -1154,7 +1377,9 @@ function normalizeEventCommand(raw, depth = 0) {
   // Every list of commands inside this one, wherever it hangs: a branch's two
   // sides and a question's options are the same recursion with different names.
   const inner = (list) =>
-    (Array.isArray(list) ? list : []).map((entry) => normalizeEventCommand(entry, depth + 1)).filter(Boolean);
+    (Array.isArray(list) ? list : [])
+      .map((entry) => normalizeEventCommand(entry, depth + 1, itemCtx))
+      .filter(Boolean);
   const out = { op: command.id };
   // Only when it is actually off, so a project that has never used the toggle
   // is byte-for-byte what it was before the toggle existed.
@@ -1196,7 +1421,7 @@ function normalizeEventCommand(raw, depth = 0) {
     // byte clamp here and a real one in the compiler.
     else if (arg === 'song') out.song = raw?.song === null || raw?.song === undefined ? null : clamp(raw?.song, 0, 255, 0);
     else if (arg === 'branch') {
-      out.cond = normalizeCondition(raw?.cond);
+      out.cond = normalizeCondition(raw?.cond, itemCtx);
       out.then = inner(raw?.then);
       out.else = inner(raw?.else);
     } else if (arg === 'choice') {
@@ -1232,15 +1457,39 @@ function normalizeEventCommand(raw, depth = 0) {
       if (!out.monsters.length) return null;
     }
     // A Give item / Take item target, or `null` for one that no longer names
-    // an actor -- the same shape 'song' is, and for the same reason: actor
-    // deletion (renumberActorDeletion) has exactly one thing it can do with
-    // a Give/Take that named the actor being removed, since neither command
+    // an item -- the same shape 'song' is, and for the same reason: item
+    // deletion (renumberItemDeletion) has exactly one thing it can do with a
+    // Give/Take that named the item being removed, since neither command
     // holds a list to drop the id from the way a battle formation does. Not
-    // 0 or any other number — a real actor could be sitting at either — and
+    // 0 or any other number — a real item could be sitting at either — and
     // not dropping the command outright either, which would erase whatever
-    // else the event went on to do. `actorByte` (main/build/textcompile.js)
-    // is the other half: NO_ACTOR for null, the same as songByte's NO_SONG.
-    else if (arg === 'actor') out.actor = raw?.actor === null || raw?.actor === undefined ? null : clamp(raw?.actor, 0, 255, 0);
+    // else the event went on to do. `itemByte` is the other half: NO_ACTOR
+    // for a missing item, the same as songByte's NO_SONG.
+    //
+    // Which raw field this reads is decided by property presence, not `??`:
+    // an explicit `item: null` is a deliberately cleared target and must not
+    // fall back to a legacy `actor` value and resurrect it. A conflicting
+    // `item` and `actor` on the same raw command: the new field wins outright
+    // and the legacy value is discarded, never merged or preferred by type.
+    //
+    // A raw command carrying only the legacy `actor` field is what a
+    // pre-item-schema project's data looks like. `itemCtx.migrating` is true
+    // for exactly one pass — normalizeProject's one-time migration, run only
+    // when the project has no `items` array yet — and only there does
+    // `itemCtx.actorToItem` exist, mapping every actor id the migration found
+    // referenced to the item it created for it. Every other load (an
+    // `items` array already exists, so this is not a migration) resolves a
+    // stray legacy `actor` to missing rather than growing the items list
+    // outside that one deterministic pass: synthesizing more items here would
+    // make "how many items does this project have" depend on which commands
+    // happen to still carry the old field, not on `project.items` itself.
+    else if (arg === 'item') {
+      const hasItemProp = raw && typeof raw === 'object' && Object.hasOwn(raw, 'item');
+      const hasActorProp = raw && typeof raw === 'object' && Object.hasOwn(raw, 'actor');
+      if (hasItemProp) out.item = nullableItemRef(raw.item);
+      else if (hasActorProp) out.item = itemCtx.migrating ? itemCtx.actorToItem.get(raw.actor) ?? null : null;
+      else out.item = null;
+    }
     // Heal/Damage's value goes through damageAmount (shared/eventrules.js)
     // rather than the generic clamp below: encodeCommand and
     // projectUsesCombat (shared/font.js) both have to agree with whatever
@@ -1273,42 +1522,81 @@ export function conditionArgLimit(type) {
  * same object here — one shape, one clamp, one encoder, one engine routine.
  */
 /**
- * A Carrying item condition's argument, canonicalized.
+ * A reference-typed condition argument (an actor id, an item id), whichever
+ * of the two `sentinel` is: not already a whole, non-negative, in-range id
+ * becomes `sentinel` instead of folding to 0 the way the generic `clamp`
+ * below would.
  *
- * `clamp` is wrong for this one field, and quietly so: it folds `null`,
+ * `clamp` is wrong for this kind of field, and quietly so: it folds `null`,
  * `undefined` and anything non-numeric to its fallback of **0**, and rounds a
  * fraction or a numeric string into whatever whole number is nearest. Every
- * one of those is a value `actorMissing` calls missing and the Map Forge's
- * own select therefore renders as "Missing actor" — so a hand-edited
+ * one of those is a value `actorMissing`/`itemMissing` calls missing and the
+ * Map Forge's own select therefore renders as "Missing" — so a hand-edited
  * condition could display as missing and, on the project's very next save,
- * become a live reference to actor 0 (or to whatever `2.4` rounds to). That
- * is precisely the editor-shows-one-thing, ROM-does-another disagreement the
+ * become a live reference to id 0 (or to whatever `2.4` rounds to). That is
+ * precisely the editor-shows-one-thing, ROM-does-another disagreement the
  * select was added to prevent, reintroduced through the back door.
  *
- * So anything that is not already a whole, non-negative, in-range id becomes
- * `NO_ACTOR` instead: the same answer `renumberActorDeletion` writes for a
- * deleted actor, and the same one `actorByte` compiles a missing Give/Take
- * to. This is deliberately the roster-*blind* half of `actorMissing`'s
- * question — normalization has no actor list in hand — so an id that is
- * structurally fine but past the end of a short roster is left alone here and
- * caught downstream exactly as it is today, by `actorMissing` at display and
- * validation time. `has_item` (engine/script.asm) only ever compares, so
- * either way such a page simply never matches.
+ * This is deliberately the roster-*blind* half of `actorMissing`/
+ * `itemMissing`'s question — normalization has no actor or item list in hand
+ * — so an id that is structurally fine but past the end of a short list is
+ * left alone here and caught downstream exactly as it is today, by
+ * `actorMissing`/`itemMissing` at display and validation time. `has_item`
+ * (engine/script.asm) only ever compares, so either way such a page simply
+ * never matches.
  */
-const actorConditionArg = (raw, id) =>
-  Number.isInteger(raw) && raw >= 0 && raw <= conditionArgLimit(id) ? raw : NO_ACTOR;
+const referenceConditionArg = (raw, id, sentinel) =>
+  Number.isInteger(raw) && raw >= 0 && raw <= conditionArgLimit(id) ? raw : sentinel;
+const actorConditionArg = (raw, id) => referenceConditionArg(raw, id, NO_ACTOR);
+const itemConditionArg = (raw, id) => referenceConditionArg(raw, id, NO_ITEM);
 
-function normalizeCondition(raw) {
+/**
+ * A Give/Take target, canonicalized: `null` for a deliberately cleared or
+ * absent value (preserved, not folded to a sentinel — see the `item` branch
+ * of `normalizeEventCommand`, which is the only caller), `NO_ITEM` for
+ * anything present but structurally invalid, and the id itself otherwise.
+ * The nullable sibling of `referenceConditionArg` above, for the one field
+ * that — unlike a condition's `arg` — genuinely has a `null` state of its
+ * own to preserve. Bounded to 255 (not `LIMITS.items`) for the identical
+ * reason `conditionArgLimit`'s own default is 255: this is the raw wire
+ * width, not the roster ceiling, and the two happen to be one apart only
+ * because `NO_ITEM` sits at the top of the byte.
+ */
+const nullableItemRef = (raw) => {
+  if (raw === null || raw === undefined) return null;
+  return Number.isInteger(raw) && raw >= 0 && raw <= 255 ? raw : NO_ITEM;
+};
+
+// The itemCtx normalizeEventCommand/normalizeCondition never actually need
+// one, i.e. every caller outside normalizeProject's own migration pass —
+// `migrating: false` short-circuits the `item` branch's legacy-actor lookup
+// straight to `null` without ever touching `actorToItem`, so this is safe to
+// hand out as a shared default instead of threading a fresh empty context
+// through every non-migrating call site.
+const EMPTY_ITEM_CTX = Object.freeze({ migrating: false, actorToItem: null });
+
+function normalizeCondition(raw, itemCtx = EMPTY_ITEM_CTX) {
   const condition = EVENT_CONDITIONS.find((entry) => entry.id === raw?.type) ?? EVENT_CONDITIONS[0];
-  const cond = {
-    type: condition.id,
-    arg:
-      condition.arg === 'actor'
-        ? actorConditionArg(raw?.arg, condition.id)
-        : condition.arg
-          ? clamp(raw?.arg, 0, conditionArgLimit(condition.id), 0)
-          : 0
-  };
+  let arg;
+  if (condition.arg === 'actor') {
+    arg = actorConditionArg(raw?.arg, condition.id);
+  } else if (condition.arg === 'item') {
+    // Same property-presence rule normalizeEventCommand's `item` branch
+    // uses, and for the same reason: `hasItem` keeps its field name
+    // (`arg`), so there is no separate legacy field to fall back to here —
+    // once `project.items` exists, `arg`'s number *is* an item id, full
+    // stop. The only place this reads as an actor id is inside
+    // normalizeProject's own one-time migration, where `itemCtx.migrating`
+    // is true and `raw.arg` is still whatever the pre-item-schema project
+    // wrote — a raw actor id needing translation through `actorToItem`
+    // before it is a valid item id at all.
+    arg = itemCtx.migrating
+      ? (typeof raw?.arg === 'number' ? itemCtx.actorToItem.get(raw.arg) : undefined) ?? NO_ITEM
+      : itemConditionArg(raw?.arg, condition.id);
+  } else {
+    arg = condition.arg ? clamp(raw?.arg, 0, conditionArgLimit(condition.id), 0) : 0;
+  }
+  const cond = { type: condition.id, arg };
   // Only conditions that compare against a number carry the value byte, and
   // only they get the field — exactly as `off` is kept only when it is true.
   // Every page in every existing project would otherwise gain a `value: 0` on
@@ -1317,16 +1605,18 @@ function normalizeCondition(raw) {
   return cond;
 }
 
-function normalizeEventPage(raw) {
+function normalizeEventPage(raw, itemCtx = EMPTY_ITEM_CTX) {
   return {
-    cond: normalizeCondition(raw?.cond),
-    commands: (Array.isArray(raw?.commands) ? raw.commands : []).map((entry) => normalizeEventCommand(entry)).filter(Boolean)
+    cond: normalizeCondition(raw?.cond, itemCtx),
+    commands: (Array.isArray(raw?.commands) ? raw.commands : [])
+      .map((entry) => normalizeEventCommand(entry, 0, itemCtx))
+      .filter(Boolean)
   };
 }
 
 /** An event is a list of pages; the engine runs the first whose condition holds. */
-function normalizeEvent(raw) {
-  const pages = (Array.isArray(raw?.pages) ? raw.pages : []).map(normalizeEventPage);
+function normalizeEvent(raw, itemCtx = EMPTY_ITEM_CTX) {
+  const pages = (Array.isArray(raw?.pages) ? raw.pages : []).map((page) => normalizeEventPage(page, itemCtx));
   return pages.length ? { pages } : null;
 }
 
@@ -1417,20 +1707,20 @@ export function liveCommonEventIds(project) {
  * defect `usedSwitches` already had to be taught to see through once, for a
  * different reference hiding in a different place.
  */
-function normalizeCommonEvents(raw, rawSeq) {
+function normalizeCommonEvents(raw, rawSeq, itemCtx = EMPTY_ITEM_CTX) {
   const source = (Array.isArray(raw) ? raw : []).slice(0, LIMITS.commonEvents);
   const { ids, seq } = resolveCommonEventIds(source, rawSeq);
   const commonEvents = source.map((entry, index) => ({
     id: ids[index],
     name: normalizeLabel(entry?.name, `Common event ${index + 1}`),
-    event: normalizeEvent(entry?.event)
+    event: normalizeEvent(entry?.event, itemCtx)
   }));
   return { commonEvents, commonEventSeq: seq };
 }
 
-function normalizeEntity(raw) {
+function normalizeEntity(raw, itemCtx = EMPTY_ITEM_CTX) {
   const props = raw?.props && typeof raw.props === 'object' ? { ...raw.props } : {};
-  const event = normalizeEvent(props.event);
+  const event = normalizeEvent(props.event, itemCtx);
   // An unknown trigger becomes the one every event had before triggers existed,
   // rather than being dropped: a project written by a later version keeps its
   // events, and they run the way this version's engine knows how to run them.
@@ -1466,7 +1756,7 @@ function normalizeEntity(raw) {
   };
 }
 
-function normalizeScreen(raw) {
+function normalizeScreen(raw, itemCtx = EMPTY_ITEM_CTX) {
   const screen = createScreen();
   screen.name = authorName(raw?.name);
   const source = Array.isArray(raw?.metatiles) ? raw.metatiles : [];
@@ -1474,7 +1764,7 @@ function normalizeScreen(raw) {
     screen.metatiles[i] = clamp(source[i], 0, LIMITS.metatiles - 1, 0);
   }
   if (Array.isArray(raw?.entities)) {
-    screen.entities = raw.entities.slice(0, LIMITS.entitiesPerScreen).map(normalizeEntity);
+    screen.entities = raw.entities.slice(0, LIMITS.entitiesPerScreen).map((entity) => normalizeEntity(entity, itemCtx));
   }
   return screen;
 }
@@ -1515,12 +1805,12 @@ export function entityLabel(project, entity) {
   return entity?.props?.name?.trim() || actor?.name || `Actor ${entity?.actorId ?? 0}`;
 }
 
-function normalizeMap(raw, id) {
+function normalizeMap(raw, id, itemCtx = EMPTY_ITEM_CTX) {
   const gridW = clamp(raw?.gridW, 1, LIMITS.mapGrid, 1);
   const gridH = clamp(raw?.gridH, 1, LIMITS.mapGrid, 1);
   const count = gridW * gridH;
   const screens = [];
-  for (let i = 0; i < count; i++) screens.push(normalizeScreen(raw?.screens?.[i]));
+  for (let i = 0; i < count; i++) screens.push(normalizeScreen(raw?.screens?.[i], itemCtx));
   return {
     id,
     name: typeof raw?.name === 'string' && raw.name ? raw.name : `Map ${id}`,
@@ -1574,7 +1864,7 @@ function normalizeAnimation(raw, id) {
 
 const elementId = (value) => (ELEMENTS.some((e) => e.id === value) ? value : 'none');
 
-function normalizeActor(raw, id) {
+function normalizeActor(raw, id, itemCtx = EMPTY_ITEM_CTX) {
   const anims = {};
   for (const { id: slot } of ANIM_SLOTS) {
     const value = raw?.anims?.[slot];
@@ -1602,8 +1892,24 @@ function normalizeActor(raw, id) {
       gold: clamp(battle.gold, 0, 255, 2),
       weak: elementId(battle.weak),
       strong: elementId(battle.strong),
-      // What this monster may leave behind: another actor, used as an item.
-      drop: battle.drop === null || battle.drop === undefined ? null : clamp(battle.drop, 0, 255, 0),
+      // What this monster may leave behind: an item id, resolved through
+      // `roll_drop`/`mon_drop` (main/build/battletables.js) to the actor it
+      // backs. Carrying and Give/Take keep their field names across the
+      // item-schema migration, so there is no separate legacy field to
+      // inspect here the way `normalizeEventCommand`'s `item` branch has —
+      // once `project.items` exists, this number *is* an item id. Inside
+      // normalizeProject's own one-time migration (`itemCtx.migrating`),
+      // the raw value is still a pre-item-schema actor id and needs
+      // translating through `actorToItem` first, the same as `hasItem`'s
+      // `cond.arg` does in `normalizeCondition`. `NO_ITEM` (not a clamped-
+      // but-wrong item 0) for anything present but structurally invalid —
+      // the same discipline `nullableItemRef` applies for Give/Take.
+      drop:
+        battle.drop === null || battle.drop === undefined
+          ? null
+          : itemCtx.migrating
+            ? (typeof battle.drop === 'number' ? itemCtx.actorToItem.get(battle.drop) : undefined) ?? null
+            : (Number.isInteger(battle.drop) && battle.drop >= 0 && battle.drop <= 255 ? battle.drop : NO_ITEM),
       dropPct: clamp(battle.dropPct, 0, 100, 10),
       // How much this actor heals when used from the bag. 0 = not a potion.
       heal: clamp(battle.heal, 0, 255, 0),
@@ -1745,6 +2051,138 @@ export function normalizeCode(raw) {
   return { overrides, files };
 }
 
+function normalizeItem(raw, id) {
+  return {
+    id,
+    name: typeof raw?.name === 'string' && raw.name ? raw.name : `Item ${id}`,
+    // Safe-by-default rather than clamped-to-a-real-actor: a garbage or
+    // out-of-range value becomes `NO_ACTOR`, not actor 0. `itemByte`/
+    // `itemMissing` already treat `NO_ACTOR` as "does not resolve," the
+    // same answer they give `null`, so this is the roster-blind half of
+    // that question — resolution correctness is validateProject's job, not
+    // normalization's, exactly as `actorConditionArg` already does it for a
+    // condition's own actor-typed argument.
+    actorId:
+      raw?.actorId === null || raw?.actorId === undefined
+        ? null
+        : Number.isInteger(raw.actorId) && raw.actorId >= 0 && raw.actorId <= LIMITS.actors - 1
+          ? raw.actorId
+          : NO_ACTOR,
+    // The icon. Nothing draws it yet — see itemByte's own docstring, this
+    // phase changes nothing the engine reads — but it is a real metasprite
+    // reference the moment it is set, so metasprite deletion has to know
+    // about it: see renumberMetaspriteDeletion.
+    metaspriteId:
+      raw?.metaspriteId === null || raw?.metaspriteId === undefined ? null : clamp(raw.metaspriteId, 0, 255, 0)
+  };
+}
+
+/**
+ * Walks a *raw*, unnormalized project's maps and common events for every
+ * actor id a give/take command, a Carrying condition, or an actor's own
+ * `battle.drop` names — used only by the one-time item migration below,
+ * before any of those fields have been normalized into the shapes this file
+ * otherwise assumes. `onCond` is called for a page's own condition
+ * separately from `onCommand`'s walk of that page's commands, mirroring
+ * `renumberActorDeletion`'s `renumberCondition(page.cond)` — `allCommands`
+ * (shared/eventrules.js) takes a command list and never yields a page's own
+ * condition, so a walk that only called `onCommand` inside `allCommands`
+ * would miss every page-level Carrying condition, migrating a branch's own
+ * but not the page guarding it.
+ */
+function walkRawEvent(event, onCommand, onCond) {
+  for (const page of Array.isArray(event?.pages) ? event.pages : []) {
+    onCond(page.cond);
+    walkRawCommandList(page.commands, onCommand, onCond);
+  }
+}
+function walkRawCommandList(list, onCommand, onCond) {
+  for (const command of Array.isArray(list) ? list : []) {
+    if (!command || typeof command !== 'object') continue;
+    onCommand(command);
+    onCond(command.cond); // a branch's own condition, same as page.cond above
+    walkRawCommandList(command.then, onCommand, onCond);
+    walkRawCommandList(command.else, onCommand, onCond);
+    for (const option of Array.isArray(command.options) ? command.options : []) {
+      walkRawCommandList(option.commands, onCommand, onCond);
+    }
+  }
+}
+
+/**
+ * The one-time item migration: builds `project.items` and the actor→item
+ * map that lets a pre-item-schema project's Give/Take, Carrying and
+ * `battle.drop` values be translated rather than lost. Runs only when
+ * `raw.items` is not an array — the migration discriminator (see
+ * `normalizeProject`) — and never again after: re-running this on an
+ * already-migrated project would make "how many items exist" depend on
+ * which references still happen to resolve rather than on `project.items`
+ * itself, and would reshuffle ids a later edit may already have built on.
+ *
+ * The item set is the union of two things, not just one: every actor with
+ * `behavior === 'pickup'`, and every actor id actually named by a
+ * give/take, a Carrying condition, or a `battle.drop`, live or not, found
+ * anywhere in the project (`walkRawEvent`, above). The union matters
+ * because nothing before this phase required a Give/Take to name a
+ * `pickup`-behavior actor — `actorMissing` only ever checked the index was
+ * in range — so a project that hands out, say, a `patroller`'s id through
+ * Give still needs an item synthesized for it, or that reference has
+ * nothing to migrate onto and quietly becomes unresolvable.
+ *
+ * Ids are assigned in ascending actor-id order — deterministic, but per
+ * `itemByte`'s own docstring the order carries no semantic weight, since
+ * every reference resolves through the explicit `actorId` field rather than
+ * through numeric position. Capped at `LIMITS.items`: an over-cap actor
+ * roster (already its own `validateProject` error) must not manufacture an
+ * over-cap item list as a side effect that nothing in this phase's UI could
+ * then reduce — deleting an actor only nulls the orphaned item's `actorId`,
+ * it does not remove the item.
+ */
+function migrateItemsFromActors(raw) {
+  const rawActors = Array.isArray(raw.sprites?.actors) ? raw.sprites.actors : [];
+  const referenced = new Set();
+  const noteActorId = (id) => {
+    if (Number.isInteger(id) && id >= 0 && id < rawActors.length) referenced.add(id);
+  };
+  rawActors.forEach((actor, id) => {
+    if (actor?.behavior === 'pickup') referenced.add(id);
+  });
+  const onCommand = (command) => {
+    if ((command.op === 'give' || command.op === 'take') && typeof command.actor === 'number') {
+      noteActorId(command.actor);
+    }
+  };
+  const onCond = (cond) => {
+    if (cond?.type === 'hasItem' && typeof cond.arg === 'number') noteActorId(cond.arg);
+  };
+  for (const map of Array.isArray(raw.maps) ? raw.maps : []) {
+    for (const screen of Array.isArray(map?.screens) ? map.screens : []) {
+      for (const entity of Array.isArray(screen?.entities) ? screen.entities : []) {
+        walkRawEvent(entity?.props?.event, onCommand, onCond);
+      }
+    }
+  }
+  for (const entry of Array.isArray(raw.commonEvents) ? raw.commonEvents : []) {
+    walkRawEvent(entry?.event, onCommand, onCond);
+  }
+  for (const actor of rawActors) {
+    if (typeof actor?.battle?.drop === 'number') noteActorId(actor.battle.drop);
+  }
+
+  const orderedActorIds = [...referenced].sort((a, b) => a - b).slice(0, LIMITS.items);
+  const actorToItem = new Map(orderedActorIds.map((actorId, itemId) => [actorId, itemId]));
+  const items = orderedActorIds.map((actorId, itemId) => ({
+    id: itemId,
+    name: (typeof rawActors[actorId]?.name === 'string' && rawActors[actorId].name) || `Item ${itemId}`,
+    actorId,
+    // Deliberately not seeded from the backing actor's own animation.
+    // Nothing draws an item's icon in this phase, so seeding one now would
+    // be a mechanism built ahead of any consumer of it.
+    metaspriteId: null
+  }));
+  return { items, itemCtx: { migrating: true, actorToItem } };
+}
+
 /** Fill in defaults and clamp everything so the UI can trust the shape. */
 export function normalizeProject(raw) {
   const base = createProject(raw?.project?.name || 'Untitled Game');
@@ -1783,7 +2221,39 @@ export function normalizeProject(raw) {
 
   const tilesets = normalizeTilesets(raw.tilesets, resolveMapper(cartridge.mapper), cartridge);
 
-  const maps = (Array.isArray(raw.maps) && raw.maps.length ? raw.maps : base.maps).map(normalizeMap);
+  // The migration discriminator: no schema version field exists anywhere in
+  // this file (compatibility here is always structural), and presence vs.
+  // absence of `raw.items` is it. An array — even an empty one — means this
+  // project has already been through the migration (or was authored fresh
+  // in the new shape), so every reference below is already an item id and
+  // gets normalized as one, with no synthesis. Anything else (missing,
+  // `null`, not an array) means a pre-item-schema project: `Give`/`Take`/
+  // Carrying/`battle.drop` still hold actor ids, and migrateItemsFromActors
+  // both builds `project.items` from them and hands back the translation
+  // table (`itemCtx.actorToItem`) that lets every one of those raw actor
+  // ids become the item id it now means.
+  // Not sliced to LIMITS.items, unlike the migration branch below: an
+  // already-present items array is real content an author (or a later
+  // version) put there, and truncating it here would silently take the
+  // over-cap error meant to report it with it — validateProject's own
+  // items-length check would never see the entries this dropped before it
+  // ever ran. The same reasoning `sprites.actors` below already applies to
+  // the identical shape one id space over. `migrateItemsFromActors` is a
+  // different case: what it *derives* is capped there deliberately (Q2 in
+  // the round-1 review), because nothing before this phase could have
+  // authored an over-cap items array by hand for that path to preserve.
+  let items;
+  let itemCtx;
+  if (Array.isArray(raw.items)) {
+    items = raw.items.map((entry, id) => normalizeItem(entry, id));
+    itemCtx = EMPTY_ITEM_CTX;
+  } else {
+    ({ items, itemCtx } = migrateItemsFromActors(raw));
+  }
+
+  const maps = (Array.isArray(raw.maps) && raw.maps.length ? raw.maps : base.maps).map((map, id) =>
+    normalizeMap(map, id, itemCtx)
+  );
   if (project.startMap >= maps.length) project.startMap = 0;
   if (project.startScreen >= maps[project.startMap].screens.length) project.startScreen = 0;
   // A map pointing at a tileset that the mapper change removed falls back to the
@@ -1805,7 +2275,7 @@ export function normalizeProject(raw) {
   // An RPG always has someone to play as; an action game has no party at all.
   if (project.gameType === 'rpg' && !party.length) party.push(createPartyMember(0, 'Hero'));
 
-  const { commonEvents, commonEventSeq } = normalizeCommonEvents(raw.commonEvents, raw.commonEventSeq);
+  const { commonEvents, commonEventSeq } = normalizeCommonEvents(raw.commonEvents, raw.commonEventSeq, itemCtx);
 
   return {
     format: PROJECT_FORMAT,
@@ -1817,6 +2287,7 @@ export function normalizeProject(raw) {
       normalizeMetatile(raw.metatiles?.[id], id)
     ),
     maps,
+    items,
     sprites: {
       metasprites: (raw.sprites?.metasprites ?? []).map(normalizeMetasprite),
       animations: (raw.sprites?.animations ?? []).map(normalizeAnimation),
@@ -1864,7 +2335,7 @@ export function normalizeProject(raw) {
       // it is being declined because it accrues only inside a state no
       // version of this app can create, and only until the roster is legal
       // again.
-      actors: (raw.sprites?.actors ?? []).map(normalizeActor)
+      actors: (raw.sprites?.actors ?? []).map((actor, id) => normalizeActor(actor, id, itemCtx))
     },
     songs: (Array.isArray(raw.songs) ? raw.songs : []).map((song, index) =>
       normalizeSong(song, `Song ${index}`)
@@ -2128,33 +2599,39 @@ export function validateProject(project) {
         }
       }
     }
-    // A monster's drop is the one actor reference that is a *field* rather
+    // A monster's drop is the one item reference that is a *field* rather
     // than a command, so neither the battle-formation walk below nor the
-    // give/take check outside this block can see it — which is how it went
-    // unrenumbered and unvalidated for as long as it did.
+    // give/take check outside this block can see it — which is how the
+    // actor-shaped version of this defect went unrenumbered and unvalidated
+    // for as long as it did.
     //
     // A warning, not an error, and deliberately not the severity a live
-    // Give/Take with a missing actor gets. That one is fatal because
+    // Give/Take with a missing item gets. That one is fatal because
     // script_op_give (engine/script.asm) *stops the event* on NO_ACTOR:
     // everything the author wrote after the Give silently never runs, which
     // is invisible from the Map Forge. A drop has no such knock-on — the
     // monster fights exactly as before and simply hands out nothing, since
-    // battleTables compiles an unresolvable drop to NO_ACTOR and roll_drop
+    // `itemByte` compiles an unresolvable drop to NO_ACTOR and roll_drop
     // takes its early exit. That is the stale-reference shape, and it gets
     // the stale-reference severity: the same one staleBattleMonsters below
     // and the encounter table just above already use.
     //
     // `null` is not this. It is "Nothing" chosen on purpose in the Sprite
-    // Forge, and it is also the mark renumberActorDeletion leaves — warning
+    // Forge, and it is also the mark renumberItemDeletion leaves — warning
     // about it would turn every deletion into a build complaint.
+    //
+    // itemMissing, not actorMissing: `battle.drop` names an item now, and an
+    // item that resolves to no index in `project.items` reads the same as
+    // one whose `actorId` no longer names a real actor — both compile to
+    // NO_ACTOR, so both are this same warning.
     for (const actor of project.sprites.actors) {
       const drop = actor.battle?.drop;
       if (drop === null || drop === undefined) continue;
-      if (actorMissing(project.sprites.actors, drop)) {
+      if (itemMissing(project.items, project.sprites.actors, drop)) {
         add(
           'warning',
           'Sprite Forge',
-          `${actor.name} is set to drop an actor that no longer exists, so it will leave nothing behind.`
+          `${actor.name} is set to drop an item that no longer exists, so it will leave nothing behind.`
         );
       }
     }
@@ -2306,21 +2783,78 @@ export function validateProject(project) {
     );
   }
 
+  // The item-space sibling of the actor ceiling above. Ordinarily this
+  // cannot happen — the one-time migration (normalizeProject) caps what it
+  // derives at LIMITS.items, so a project built by this version's own UI
+  // never grows one over-cap on its own — but a project written by a later
+  // version, or a hand-edited items array (which normalizeProject now keeps
+  // in full rather than silently truncating, precisely so this check can
+  // still see it), still can, and the ceiling is a real one: every
+  // reference to an item is a single byte one hop further out through
+  // `itemByte`. Attributed to 'Sprite Forge' for lack of a better home —
+  // items have no editor of their own yet, so the message says so rather
+  // than pointing at a Delete control this version does not offer, and
+  // deliberately does not suggest trimming the actor roster: an
+  // already-migrated items array does not shrink when actors do (deleting
+  // one only nulls the orphaned item's actorId — see
+  // renumberActorDeletion), so that advice would send the author to fix
+  // the wrong list. Revisit the attribution once the Database Forge
+  // (phase 5) gives items a Forge of their own.
+  if (project.items.length > LIMITS.items) {
+    add(
+      'error',
+      'Sprite Forge',
+      `This project has ${project.items.length} items but the Forge holds ${LIMITS.items} ` +
+        `(ids 0-${LIMITS.items - 1}) — id $FF is reserved to mean “no item”. This version has no items editor to ` +
+        'remove any with, so bring the items list itself under the ceiling by hand (items.json) or in a version ' +
+        'with a Database Forge before this can build.'
+    );
+  }
+
+  // Each item may name at most one backing actor — the direction `itemByte`
+  // resolves in, and the one a later phase needs to go the other way,
+  // mapping a picked-up actor back to the one item it grants. Two items
+  // sharing an `actorId` would make that reverse lookup silently
+  // first-match dependent, which is worse than refusing the build: the
+  // author would see one item drawn, given and validated, while a second
+  // item quietly named the same actor and never worked the way its own
+  // Give/Take/Carrying references implied.
+  const actorIdCounts = new Map();
+  for (const item of project.items) {
+    // NO_ACTOR is not a real actor id -- it is normalizeItem's own fallback
+    // for a malformed actorId, the same sentinel an orphaned item's null
+    // already means. Counting it here would report two independently
+    // malformed items as "sharing" an actor, which is a real problem but a
+    // different one this message does not describe.
+    if (item.actorId === null || item.actorId === undefined || item.actorId === NO_ACTOR) continue;
+    actorIdCounts.set(item.actorId, (actorIdCounts.get(item.actorId) ?? 0) + 1);
+  }
+  const sharedActorItems = [...actorIdCounts.values()].filter((count) => count > 1).length;
+  if (sharedActorItems) {
+    add(
+      'error',
+      'Sprite Forge',
+      `${sharedActorItems} actor${sharedActorItems === 1 ? ' backs more than one item' : 's back more than one item each'} ` +
+        '— each item must name a different actor.'
+    );
+  }
+
   // Give item / Take item is a base-engine command (engine/ui.asm's
   // add_item/inv_items, driven by OP_GIVE/OP_TAKE in every build), not one
   // BATTLE_ENABLED gates the way the battle checks above are -- an action
   // project offers it too, so this runs unconditionally rather than inside
-  // the RPG-only block. actorMissing is the same "does this resolve"
-  // question the compiler (actorByte) and the Map Forge's own select ask;
+  // the RPG-only block. itemMissing is the same "does this resolve"
+  // question the compiler (itemByte) and the Map Forge's own select ask;
   // checking only for `null` here would miss an id past the end of the
-  // actor list that was never produced by a deletion at all.
+  // item list that was never produced by a deletion at all, or an item
+  // whose own `actorId` no longer names a real actor.
   let missingGiveTake = 0;
   for (const event of projectEvents(project)) {
     for (const page of compiledPages(event)) {
       for (const command of liveCommands(page.commands, CHOICE_LIMITS.options)) {
         if (
           (command.op === 'give' || command.op === 'take') &&
-          actorMissing(project.sprites.actors, command.actor)
+          itemMissing(project.items, project.sprites.actors, command.item)
         ) {
           missingGiveTake++;
         }
@@ -2332,7 +2866,7 @@ export function validateProject(project) {
       'error',
       'Map Forge',
       `${missingGiveTake} Give item / Take item command${missingGiveTake === 1 ? '' : 's'} do not name a real ` +
-        'actor. Pick an actor or switch the command off.'
+        'item. Pick an item or switch the command off.'
     );
   }
 

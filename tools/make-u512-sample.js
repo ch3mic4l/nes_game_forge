@@ -172,6 +172,11 @@ project.sprites = {
   ]
 };
 
+// The one item this project hands out, backed by the Gem pickup above. See
+// tools/make-sample.js's own comment on why this has to be authored, not left
+// for the migration: createProject() already supplies `items: []`.
+project.items = [{ id: 0, name: 'Gem', actorId: 0, metaspriteId: null }];
+
 project.metatiles[1] = { ...project.metatiles[1], name: 'Grass', tiles: [1, 1, 1, 1], palette: 0, collision: 'open' };
 project.metatiles[2] = { ...project.metatiles[2], name: 'Wall', tiles: [2, 2, 2, 2], palette: 1, collision: 'solid' };
 
@@ -205,7 +210,7 @@ east.entities = [
             commands: [
               { op: 'setSwitch', switch: 0 },
               { op: 'setVar', variable: 0, value: 7 },
-              { op: 'give', actor: 0 },
+              { op: 'give', item: 0 },
               { op: 'save' }
             ]
           }

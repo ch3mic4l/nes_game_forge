@@ -13,6 +13,7 @@ import {
   RPG_LIMITS,
   tilesetAt,
   renumberActorDeletion,
+  renumberMetaspriteDeletion,
   overCapDeleteWarning
 } from '../../../shared/project.js';
 import { battleSection, partyPanel } from './battle.js';
@@ -300,6 +301,7 @@ export function mount(container, app) {
               if (!(await confirmModal('Delete metasprite', `Delete "${metasprite.name}"?`, 'Delete'))) return;
               const index = state.metasprite;
               store.commit('Delete metasprite', (project) => {
+                renumberMetaspriteDeletion(project, index);
                 project.sprites.metasprites.splice(index, 1);
                 project.sprites.metasprites.forEach((entry, position) => (entry.id = position));
               });

@@ -33,6 +33,9 @@ import {
   MOVE_TARGETS,
   RPG_LIMITS,
   actorMissing,
+  actorByte,
+  itemByte,
+  itemMissing,
   battleFormationSlice,
   NO_ACTOR,
   choiceLabel,
@@ -78,6 +81,13 @@ export const NO_SONG = 0xff;
 // too (renumberActorDeletion), and re-exported so every existing importer of
 // it still reads the same one byte from the same definition.
 export { NO_ACTOR };
+// actorByte/itemByte/itemMissing moved to shared/project.js beside
+// actorMissing/NO_ACTOR for the identical reason: shared/project.js's own
+// migration and validateProject need to resolve an item id to the actor
+// byte it compiles to, and shared/ cannot import from main/build/. Kept
+// re-exported here so every existing importer of actorByte still reads the
+// same one function from the same definition.
+export { actorByte, itemByte, itemMissing };
 // OP_CALL's own operand: the table slot the named common event would occupy,
 // or this when nothing resolves -- deleted since, never live to begin with,
 // or a `call` never given a target. Named apart from shared/project.js's own
@@ -110,24 +120,6 @@ export function songByte(songs, id) {
   if (id === null || id === undefined) return NO_SONG;
   const n = Number(id);
   return Number.isInteger(n) && n >= 0 && n < (songs?.length ?? 0) ? n : NO_SONG;
-}
-
-/**
- * The byte a Give item / Take item command's `actor` becomes: NO_ACTOR for
- * anything `actorMissing` (shared/project.js) says does not resolve —
- * `null` (renumberActorDeletion's mark for a deleted actor), or any other
- * id no actor sits at, the same shape songByte gives a stale or absent
- * song. `actorMissing` is also what validateProject asks, so the two agree
- * on the same question rather than one trusting a sentinel the other
- * merely happens to write. engine/script.asm's script_op_give/
- * script_op_take are the other half — a live command with an unresolvable
- * actor is a validateProject error, but buildProject compiles the project
- * the app is holding rather than one that has passed validation, so this
- * still has to not hand add_item/remove_item a byte that indexes the
- * actor tables past their end.
- */
-export function actorByte(actors, id) {
-  return actorMissing(actors, id) ? NO_ACTOR : id;
 }
 
 /**
@@ -222,9 +214,18 @@ export function compileText(project) {
     return bytes;
   };
 
+  // A Carrying condition's `arg` is an item id now, not an actor id, so it
+  // cannot be resolved by the generic byte() clamp below at all — there is
+  // no way to reach the actor byte the engine still expects without
+  // consulting project.items. itemByte is the same resolution give/take
+  // uses below, and the same one main/build/battletables.js's mon_drop
+  // table applies to battle.drop: three sites reaching the same answer
+  // through the one function, so none of them can drift from the others.
   const encodeCondition = (cond) => [
     condIndex(cond?.type),
-    byte(cond?.arg, conditionArgLimit(cond?.type)),
+    cond?.type === 'hasItem'
+      ? itemByte(project.items, project.sprites?.actors, cond?.arg)
+      : byte(cond?.arg, conditionArgLimit(cond?.type)),
     byte(cond?.value)
   ];
 
@@ -241,7 +242,7 @@ export function compileText(project) {
         ];
       case 'give':
       case 'take':
-        return [opIndex(command.op), actorByte(project.sprites?.actors, command.actor)];
+        return [opIndex(command.op), itemByte(project.items, project.sprites?.actors, command.item)];
       case 'setSwitch':
       case 'clearSwitch':
         return [opIndex(command.op), byte(command.switch, 63)];

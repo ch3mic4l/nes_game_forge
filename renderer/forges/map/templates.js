@@ -75,10 +75,24 @@ export function recruitable(project) {
   return party.findIndex((member) => !member.startsInParty);
 }
 
-/** The first actor that behaves like a collectable, for a template to hand over. */
+/**
+ * The first item whose backing actor behaves like a collectable, for a
+ * template to hand over — `null` when the project has none, never `0`.
+ * Falling back to `0` used to hand the Chest and Locked-gate templates a
+ * real reference the moment a project had *any* actors at all: id 0 is
+ * whatever happens to sit first in the roster, usually the player, so an
+ * author who had drawn no pickup yet got a chest that gives away the
+ * player character rather than one that visibly asks to be pointed at
+ * something. `itemMissing` reads `null` as exactly what it is — nothing to
+ * give yet — so the Map Forge's own picker shows "Missing item" instead of
+ * a plausible-looking wrong one, the same repointing phase 2 already fixed
+ * one id space over.
+ */
 const firstPickup = (project) => {
-  const index = (project.sprites?.actors ?? []).findIndex((actor) => actor.behavior === 'pickup');
-  return index < 0 ? 0 : index;
+  const items = project.items ?? [];
+  const actors = project.sprites?.actors ?? [];
+  const item = items.find((entry) => actors[entry.actorId]?.behavior === 'pickup');
+  return item ? item.id : null;
 };
 
 /**
@@ -97,7 +111,7 @@ export const EVENT_TEMPLATES = [
           cond: { type: 'switchOff', arg: free },
           commands: [
             { op: 'say', text: 'The lid gives.' },
-            { op: 'give', actor: firstPickup(project) },
+            { op: 'give', item: firstPickup(project) },
             { op: 'setSwitch', switch: free }
           ]
         },

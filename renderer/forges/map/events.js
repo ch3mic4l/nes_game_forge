@@ -23,7 +23,8 @@ import {
   MOVE_DIRECTIONS,
   MOVE_TARGETS,
   RPG_LIMITS,
-  actorMissing,
+  itemMissing,
+  itemPickerOptions,
   compiledPages,
   damageAmount,
   enabledCommands,
@@ -97,7 +98,14 @@ const defaultCommand = (op, context = {}) => {
       // Empty, not a formation of one nothing chose — the picker below warns
       // about an empty formation rather than this reaching for a monster.
       out.monsters = [];
-    } else out[arg] = 0;
+    }
+    // `null` (Missing item), not item 0 — the same reason 'song' above
+    // defaults to Silence rather than song 0: nothing here has chosen an
+    // item, and falling into the generic `out[arg] = 0` below would hand a
+    // brand-new Give/Take a real, plausible-looking reference nobody picked,
+    // the same defect `firstPickup` (templates.js) used to have.
+    else if (arg === 'item') out.item = null;
+    else out[arg] = 0;
   }
   return out;
 };
@@ -130,8 +138,17 @@ const describeList = (list, context) =>
     .join('; ') || 'nothing';
 
 function describeEnabled(command, context = {}) {
-  const { actors = [], switches = [], variables = [], screens = [], party = [], commonEvents = [], songs = [] } =
-    context;
+  const {
+    actors = [],
+    items = [],
+    switches = [],
+    variables = [],
+    screens = [],
+    party = [],
+    commonEvents = [],
+    songs = []
+  } = context;
+  const itemName = (id) => items[id]?.name ?? `item ${id}`;
   const actorName = (id) => actors[id]?.name ?? `actor ${id}`;
   const switchName = (n) => switches[n]?.trim() || `switch ${n}`;
   const varName = (n) => variables[n]?.trim() || `variable ${n}`;
@@ -142,9 +159,9 @@ function describeEnabled(command, context = {}) {
     case 'say':
       return `Say “${(command.text ?? '').trim().slice(0, 40) || '…'}”`;
     case 'give':
-      return actorMissing(actors, command.actor) ? 'Give (missing actor)' : `Give ${actorName(command.actor)}`;
+      return itemMissing(items, actors, command.item) ? 'Give (missing item)' : `Give ${itemName(command.item)}`;
     case 'take':
-      return actorMissing(actors, command.actor) ? 'Take (missing actor)' : `Take ${actorName(command.actor)}`;
+      return itemMissing(items, actors, command.item) ? 'Take (missing item)' : `Take ${itemName(command.item)}`;
     case 'setSwitch':
       return `Turn on ${switchName(command.switch)}`;
     case 'clearSwitch':
@@ -201,7 +218,7 @@ function describeEnabled(command, context = {}) {
 }
 
 /** How a page's condition reads. */
-export function describeCondition(cond, { actors = [], switches = [], variables = [] } = {}) {
+export function describeCondition(cond, { actors = [], items = [], switches = [], variables = [] } = {}) {
   const entry = EVENT_CONDITIONS.find((item) => item.id === cond?.type) ?? EVENT_CONDITIONS[0];
   if (!entry.arg) return entry.label;
   if (entry.arg === 'switch') return `${entry.label}: ${switches[cond.arg]?.trim() || `switch ${cond.arg}`}`;
@@ -212,11 +229,11 @@ export function describeCondition(cond, { actors = [], switches = [], variables 
     return `${entry.label.replace('Variable', name)} ${cond.value ?? 0}`;
   }
   // The same "does this resolve" question Give/Take above asks, and the same
-  // wording: after an actor is deleted, renumberActorDeletion (shared/project.js)
-  // leaves a condition that named it pointing at NO_ACTOR, and reading that
-  // back as "actor 255" would describe a number rather than the fact.
-  if (actorMissing(actors, cond.arg)) return `${entry.label}: (missing actor)`;
-  return `${entry.label}: ${actors[cond.arg]?.name ?? `actor ${cond.arg}`}`;
+  // wording: after an item is deleted, renumberItemDeletion (shared/project.js)
+  // leaves a condition that named it pointing at NO_ITEM, and reading that
+  // back as "item 255" would describe a number rather than the fact.
+  if (itemMissing(items, actors, cond.arg)) return `${entry.label}: (missing item)`;
+  return `${entry.label}: ${items[cond.arg]?.name ?? `item ${cond.arg}`}`;
 }
 
 /**
@@ -377,24 +394,25 @@ export function editEvent(event, context) {
         valueInput(cond.value ?? 0, (value) => (cond.value = value))
       ];
     }
+    // Only 'item' (Carrying) reaches here today — EVENT_CONDITIONS has no
+    // other arg shape left once switch and variable are handled above.
+    //
+    // itemPickerOptions (shared/project.js) is the single writer of which
+    // items this offers and how cond.arg is represented if it does not
+    // resolve — the Give/Take select below and the Sprite Forge's Drops
+    // select ask it the identical question, rather than each keeping its
+    // own copy of the filter (the shape CLAUDE.md already warns about for
+    // effectiveTrigger: three places deciding this separately is how the
+    // editor comes to show one thing and the ROM run another).
+    const { healthy, missing } = itemPickerOptions(context.items, context.actors, cond.arg);
     return el(
       'select',
       {
         style: { flex: '1' },
         onchange: (fired) => (cond.arg = Number(fired.target.value))
       },
-      // An actor deleted out from under this condition leaves NO_ACTOR behind
-      // (renumberActorDeletion, shared/project.js), and an id past the end of
-      // the list can arrive from a hand-edited project the same way. Either
-      // way it needs an option of its own, for exactly the reason the
-      // Give/Take select below already has one: with none, the browser
-      // renders the first actor as selected while `cond.arg` still names
-      // nothing, so the editor shows the page asking after one item and the
-      // ROM asks after another.
-      actorMissing(context.actors, cond.arg)
-        ? el('option', { value: cond.arg ?? '', selected: true }, 'Missing actor')
-        : null,
-      context.actors.map((actor, id) => el('option', { value: id, selected: id === cond.arg }, actor.name))
+      missing ? el('option', { value: missing.value ?? '', selected: true }, missing.label) : null,
+      healthy.map((option) => el('option', { value: option.value, selected: option.selected }, option.label))
     );
   }
 
@@ -802,23 +820,16 @@ export function editEvent(event, context) {
 
     const controls = [];
     if (command.op === 'give' || command.op === 'take') {
+      // itemPickerOptions (shared/project.js) is the single writer here too
+      // -- see the Carrying select above for why this is not a second copy
+      // of the same filter.
+      const { healthy, missing } = itemPickerOptions(context.items, context.actors, command.item);
       controls.push(
         el(
           'select',
-          { style: { flex: '1' }, onchange: (fired) => (command.actor = Number(fired.target.value)) },
-          // A reference the actor list no longer has -- its actor was
-          // deleted out from under it (renumberActorDeletion) -- gets its
-          // own option rather than being left to fall on whichever option
-          // the browser renders first while `command.actor` keeps pointing
-          // at nothing: that would show one actor being given and compile a
-          // give of another, the editor and the ROM disagreeing about what
-          // the command does.
-          actorMissing(context.actors, command.actor)
-            ? el('option', { value: command.actor ?? '', selected: true }, 'Missing actor')
-            : null,
-          context.actors.map((actor, id) =>
-            el('option', { value: id, selected: id === command.actor }, actor.name)
-          )
+          { style: { flex: '1' }, onchange: (fired) => (command.item = Number(fired.target.value)) },
+          missing ? el('option', { value: missing.value ?? '', selected: true }, missing.label) : null,
+          healthy.map((option) => el('option', { value: option.value, selected: option.selected }, option.label))
         )
       );
     } else if (command.op === 'setSwitch' || command.op === 'clearSwitch') {

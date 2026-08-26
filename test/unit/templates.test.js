@@ -43,12 +43,12 @@ test('a switch counts as used wherever it can hide', () => {
   assert.equal(firstFreeSwitch(project), 0);
 
   // A condition's arg only counts when the condition is about a switch —
-  // "Carrying item" puts an actor id in the same field.
+  // "Carrying item" puts an item id in the same field.
   const carrying = createProject('Carrying');
   carrying.maps[0].screens[0].entities = [
     { actorId: 0, x: 0, y: 0, props: { event: { pages: [{ cond: { type: 'hasItem', arg: 7 }, commands: [] }] } } }
   ];
-  assert.equal(usedSwitches(carrying).has(7), false, 'an actor id is not a switch');
+  assert.equal(usedSwitches(carrying).has(7), false, 'an item id is not a switch');
 });
 
 test('a switch hides just as well inside a branch or an answer', () => {
@@ -153,6 +153,10 @@ test('all switches spent means no free switch, not switch zero', () => {
 test('every template builds an event the engine can actually run', () => {
   const project = createProject('Templates', 'rpg');
   project.sprites.actors = [{ name: 'Gem', behavior: 'pickup' }];
+  // A real project always reaches this point already migrated (`store.project`
+  // is normalized); this test builds one by hand, so it has to set the item
+  // a real one would already carry for the pickup above.
+  project.items = [{ id: 0, name: 'Gem', actorId: 0, metaspriteId: null }];
   project.party.push(createPartyMember(1, 'Mage')); // so Recruit is buildable
 
   for (const template of EVENT_TEMPLATES) {
@@ -223,7 +227,22 @@ test('a template hands over an actual pickup where the project has one', () => {
     { name: 'Villager', behavior: 'npc' },
     { name: 'Gem', behavior: 'pickup' }
   ];
+  project.items = [{ id: 0, name: 'Gem', actorId: 1, metaspriteId: null }];
   const chest = EVENT_TEMPLATES.find((entry) => entry.id === 'chest').build(project, 0);
   const give = chest.pages[0].commands.find((command) => command.op === 'give');
-  assert.equal(give.actor, 1, 'the gem, not the villager');
+  assert.equal(give.item, 0, 'the gem’s item, not the villager');
+});
+
+test('a template with no pickup at all hands over a reference itemMissing calls missing, never item 0', () => {
+  // firstPickup() (renderer/forges/map/templates.js) used to fall back to
+  // actor 0 -- usually the player -- when the project had no pickup yet.
+  // Porting that `?? 0` into the item id space would repeat the same defect
+  // one id space over; it must fall back to `null` instead.
+  const project = createProject('Empty');
+  const chest = EVENT_TEMPLATES.find((entry) => entry.id === 'chest').build(project, 0);
+  const give = chest.pages[0].commands.find((command) => command.op === 'give');
+  assert.equal(give.item, null, 'nothing to give yet should read as missing, not item 0');
+
+  const gate = EVENT_TEMPLATES.find((entry) => entry.id === 'lockedGate').build(project, 0);
+  assert.equal(gate.pages[0].cond.arg, null, 'nothing to carry yet should read as missing, not item 0');
 });

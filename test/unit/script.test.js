@@ -167,7 +167,8 @@ const switchOn = (nes, n) => Boolean(nes.cpu.mem[SWITCHES + (n >> 3)] & (1 << (n
 // interact action's 20-pixel reach between one conversation and the next, and a
 // test that has to chase its subject is testing the chase.
 const NPC = 4; // appended by buildWith, after the sample's four actors
-const GEM = 1;
+const GEM = 1; // the actor id -- what a compiled Give/Take byte and INV_ITEMS still hold
+const GEM_ITEM = 0; // the item id that backs it -- what a Give/Take/Carrying is authored with now
 
 /**
  * A one-screen project with whatever actors the caller places, built and booted.
@@ -205,7 +206,7 @@ test('a page guarded by the switch it sets runs exactly once', {
         cond: { type: 'switchOff', arg: 5 },
         commands: [
           { op: 'say', text: 'A gem sits inside.' },
-          { op: 'give', actor: GEM },
+          { op: 'give', item: GEM_ITEM },
           { op: 'setSwitch', switch: 5 }
         ]
       },
@@ -233,12 +234,12 @@ test('Take removes what Give handed over, and Carrying gates on it', {
       // Only reachable while the gem is in the bag, and it takes it back — so
       // page one runs, then page two, then page one again, forever.
       {
-        cond: { type: 'hasItem', arg: GEM },
-        commands: [{ op: 'say', text: 'You hand it over.' }, { op: 'take', actor: GEM }]
+        cond: { type: 'hasItem', arg: GEM_ITEM },
+        commands: [{ op: 'say', text: 'You hand it over.' }, { op: 'take', item: GEM_ITEM }]
       },
       {
         cond: { type: 'none', arg: 0 },
-        commands: [{ op: 'say', text: 'Here, take this.' }, { op: 'give', actor: GEM }]
+        commands: [{ op: 'say', text: 'Here, take this.' }, { op: 'give', item: GEM_ITEM }]
       }
     ])
   ]);
@@ -253,10 +254,10 @@ test('Take removes what Give handed over, and Carrying gates on it', {
   assert.equal(nes.cpu.mem[INV_COUNT], 1, 'an empty bag should fall through to the second page again');
 });
 
-test('a Give naming an actor past the end of the list does not pass validation', () => {
-  // Not renumberActorDeletion's null -- a plain out-of-range id, the shape a
+test('a Give naming an item past the end of the list does not pass validation', () => {
+  // Not renumberItemDeletion's null -- a plain out-of-range id, the shape a
   // project written by a later version or a hand-edited one can hold
-  // without ever having gone through a deletion at all. actorMissing
+  // without ever having gone through a deletion at all. itemMissing
   // (shared/project.js) has to catch this the same way it catches null.
   const project = createProject('Quest');
   project.sprites.actors = [{ name: 'Sign', behavior: 'npc' }];
@@ -264,12 +265,12 @@ test('a Give naming an actor past the end of the list does not pass validation',
     actorId: 0,
     x: 0,
     y: 0,
-    props: { event: { pages: [{ cond: { type: 'none', arg: 0 }, commands: [{ op: 'give', actor: 99 }] }] } }
+    props: { event: { pages: [{ cond: { type: 'none', arg: 0 }, commands: [{ op: 'give', item: 99 }] }] } }
   });
   const errors = validateProject(project).filter((p) => p.severity === 'error');
   assert.ok(
     errors.some((p) => /do not name a real/.test(p.message)),
-    'a Give past the end of the actor list should not pass validation'
+    'a Give past the end of the item list should not pass validation'
   );
 });
 
@@ -308,7 +309,7 @@ test('script_op_give stops the event on NO_ACTOR rather than indexing the bag or
         cond: { type: 'none', arg: 0 },
         commands: [
           { op: 'say', text: 'Here.' },
-          { op: 'give', actor: GEM },
+          { op: 'give', item: GEM_ITEM },
           { op: 'setSwitch', switch: TOUCHED_SWITCH }
         ]
       }
@@ -1089,11 +1090,12 @@ test('Start a battle compiles to a fixed, NO_ACTOR-padded formation', () => {
   assert.deepEqual(tooMany.slice(4, 9), [OP_BATTLE, 1, 2, 1, 2], 'a fifth monster should be dropped, not overflow the command');
 });
 
-test('Give item / Take item compile to NO_ACTOR when the actor is missing', () => {
+test('Give item / Take item compile to NO_ACTOR when the item is missing', () => {
   const OP_GIVE = opIndex('give');
   const OP_TAKE = opIndex('take');
   const project = createProject('Quest', 'rpg');
   project.sprites.actors = [{ name: 'Gem', damage: 0 }];
+  project.items = [{ id: 0, name: 'Gem', actorId: 0, metaspriteId: null }];
   const page = (commands) => {
     project.maps[0].screens[0].entities = [
       { actorId: 0, x: 0, y: 0, props: { event: { pages: [{ cond: { type: 'none', arg: 0 }, commands }] } } }
@@ -1101,45 +1103,51 @@ test('Give item / Take item compile to NO_ACTOR when the actor is missing', () =
     return project;
   };
 
-  const [named] = compileText(page([{ op: 'give', actor: 0 }])).events;
-  assert.deepEqual(named.slice(4, 6), [OP_GIVE, 0], 'a live actor compiles to its own id');
+  const [named] = compileText(page([{ op: 'give', item: 0 }])).events;
+  assert.deepEqual(named.slice(4, 6), [OP_GIVE, 0], 'a live item compiles to the actor id it backs');
 
-  // renumberActorDeletion's mark for "this used to name an actor" -- not 0,
-  // which a real actor could actually be sitting at.
-  const [missing] = compileText(page([{ op: 'give', actor: null }])).events;
-  assert.deepEqual(missing.slice(4, 6), [OP_GIVE, NO_ACTOR], 'a missing actor compiles to NO_ACTOR rather than 0');
+  // renumberItemDeletion's mark for "this used to name an item" -- not 0,
+  // which a real item could actually be sitting at.
+  const [missing] = compileText(page([{ op: 'give', item: null }])).events;
+  assert.deepEqual(missing.slice(4, 6), [OP_GIVE, NO_ACTOR], 'a missing item compiles to NO_ACTOR rather than actor 0');
 
   // Defensive: buildProject compiles the project the app is holding rather
   // than one freshly normalized, so a hand-edited or stale id past the end
-  // of the actor list has to fall back the same way, not index the engine's
+  // of the item list has to fall back the same way, not index the engine's
   // own tables past their end.
-  const [stale] = compileText(page([{ op: 'take', actor: 5 }])).events;
-  assert.deepEqual(stale.slice(4, 6), [OP_TAKE, NO_ACTOR], 'an actor past the end of the list falls back to NO_ACTOR');
+  const [stale] = compileText(page([{ op: 'take', item: 5 }])).events;
+  assert.deepEqual(stale.slice(4, 6), [OP_TAKE, NO_ACTOR], 'an item past the end of the list falls back to NO_ACTOR');
 });
 
-test('a Carrying item page whose actor was deleted never runs, with both actor 0 and the old id in the bag', {
+test('a Carrying item page whose backing actor was deleted never runs, with both actor 0 and the old id in the bag', {
   skip: !hasRom && 'run `npm run sample` first'
 }, async (t) => {
   // The end of the claim renumberActorDeletion's rationale makes: a page that
-  // asked after a deleted item "simply never runs". Everything else about
-  // that claim is checked in JS -- the mutation, the normalization, the
-  // compiled operand -- and none of it reaches the one step that actually
-  // decides the player's experience, which is what has_item does with $FF
-  // once the ROM is running. This is the whole path in one go: delete the
-  // actor the way the Sprite Forge does, save and reload so real
-  // normalization runs over it, build, and hand the running game a bag
-  // chosen to catch either way this can go wrong.
+  // asked after an item whose backing actor is gone "simply never runs".
+  // Everything else about that claim is checked in JS -- the mutation, the
+  // normalization, the compiled operand -- and none of it reaches the one
+  // step that actually decides the player's experience, which is what
+  // has_item does with $FF once the ROM is running. This is the whole path
+  // in one go: delete the actor the way the Sprite Forge does (which now
+  // orphans the item's actorId rather than touching the Carrying condition
+  // at all -- see renumberActorDeletion's project.items[].actorId case),
+  // save and reload so real normalization runs over it, build, and hand the
+  // running game a bag chosen to catch either way this can go wrong.
   //
   // The bag holds **both** candidates, which is the point. Actor 0 is what
-  // the sentinel would have collapsed to; RELIC is what the reference would
-  // still be if it were never rewritten at all. Carrying only one of them
-  // would leave this passing on any nonzero byte -- including the original
-  // RELIC id -- so it would show "did not become actor 0" while reading as
-  // proof of something stronger. With both in the bag, each failure mode
-  // selects the deleted-item page and the assertion below fires. What pins
-  // the operand to exactly $FF rather than merely "a byte neither of these"
-  // is the compile-side test in project.test.js; this is the behavioural
-  // half, and the two are worth having separately.
+  // the sentinel would have collapsed to; RELIC is what item.actorId would
+  // still hold, unrenumbered, if renumberActorDeletion's new case were never
+  // written at all -- and that value stays a real, resolvable actor id after
+  // the splice (sample has an actor sitting right above RELIC, which shifts
+  // down to fill the hole), so a stuck reference silently comes to mean that
+  // actor rather than reading as out of range. Carrying only "actor 0" would
+  // leave this passing on any nonzero byte -- including the original RELIC
+  // id -- so it would show "did not become actor 0" while reading as proof
+  // of something stronger. With both candidates in the bag, either failure
+  // mode selects the deleted-item page and the assertion below fires. What
+  // pins the operand to exactly $FF rather than merely "a byte neither of
+  // these" is the compile-side test in project.test.js; this is the
+  // behavioural half, and the two are worth having separately.
   const dir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'forge-hasitem-'));
   t.after(() => fs.promises.rm(dir, { recursive: true, force: true }));
   const project = await loadProject(SAMPLE);
@@ -1147,16 +1155,19 @@ test('a Carrying item page whose actor was deleted never runs, with both actor 0
   project.sprites.actors.push({ ...structuredClone(slime), id: NPC, name: 'Chest', behavior: 'npc' });
   const RELIC = NPC + 1;
   project.sprites.actors.push({ ...structuredClone(slime), id: RELIC, name: 'Relic', behavior: 'pickup' });
+  const RELIC_ITEM = project.items.length;
+  project.items.push({ id: RELIC_ITEM, name: 'Relic', actorId: RELIC, metaspriteId: null });
   project.maps[0].screens[0].entities = [
     chest([
-      { cond: { type: 'hasItem', arg: RELIC }, commands: [{ op: 'setSwitch', switch: 0 }, { op: 'say', text: 'You have the relic.' }] },
+      { cond: { type: 'hasItem', arg: RELIC_ITEM }, commands: [{ op: 'setSwitch', switch: 0 }, { op: 'say', text: 'You have the relic.' }] },
       { cond: { type: 'none', arg: 0 }, commands: [{ op: 'setSwitch', switch: 1 }, { op: 'say', text: 'Nothing here.' }] }
     ])
   ];
 
-  // Delete the Relic exactly as the Sprite Forge does: renumber every
-  // reference, then take it out of the roster. RELIC is the last actor, so
-  // nothing else shifts -- the only thing this changes is the condition.
+  // Delete the Relic actor exactly as the Sprite Forge does: renumber every
+  // reference (which now includes orphaning the item above), then take it
+  // out of the roster. The Carrying condition's own arg (an item id) is
+  // untouched either way -- what this exercises is item.actorId.
   renumberActorDeletion(project, RELIC);
   project.sprites.actors.splice(RELIC, 1);
 
@@ -1166,15 +1177,15 @@ test('a Carrying item page whose actor was deleted never runs, with both actor 0
   const nes = boot(built.romPath);
 
   nes.cpu.mem[INV_ITEMS] = 0; // what the sentinel must not have collapsed to
-  nes.cpu.mem[INV_ITEMS + 1] = RELIC; // what it must not still be
+  nes.cpu.mem[INV_ITEMS + 1] = RELIC; // what item.actorId must not silently still be
   nes.cpu.mem[INV_COUNT] = 2;
 
   assert.ok(talkThrough(nes), 'the conversation should run and end');
   assert.equal(
     switchOn(nes, 0),
     false,
-    'the page asking after the deleted Relic ran: its condition is either still the Relic id, or collapsed to ' +
-      'actor 0 — both are in the bag, so either one selects this page'
+    'the page asking after the orphaned Relic item ran: its backing actorId either still names the deleted slot ' +
+      '(now some other real actor) or collapsed to actor 0 — both are in the bag, so either one selects this page'
   );
   assert.equal(switchOn(nes, 1), true, 'the page below it is what should have run instead');
 });
@@ -2369,7 +2380,7 @@ test('a long page that is declined is stepped over exactly', {
   // this one cannot, which is what makes it the case worth writing down.
   const filler = [
     ...Array.from({ length: 83 }, () => ({ op: 'setVar', variable: 5, value: 1 })),
-    { op: 'give', actor: GEM }
+    { op: 'give', item: GEM_ITEM }
   ];
   const { nes } = await buildWith(t, [
     chest([
@@ -2435,14 +2446,18 @@ test('a branch with nothing live inside it is not a live command', () => {
 // "a gem!" half is authored once, off to the side, and reached by name.
 
 const HUNTER = 2; // Hunter, the sample's chaser -- a second distinct give target
+const HUNTER_ITEM = 1; // sample's migration only creates an item for Gem; these
+// tests need a second one of their own, pushed onto project.items in their
+// own tweak below rather than authored in sample itself.
 
 test('common events compile into the same table a placement’s own event does', () => {
   const project = createProject('Common');
   project.sprites.actors = [{ name: 'Sign', behavior: 'npc' }, { name: 'Gem' }];
+  project.items = [{ id: 0, name: 'Gem', actorId: GEM, metaspriteId: null }];
   project.commonEvents = [
     {
       name: 'Reward',
-      event: { pages: [{ cond: { type: 'none', arg: 0 }, commands: [{ op: 'give', actor: GEM }] }] }
+      event: { pages: [{ cond: { type: 'none', arg: 0 }, commands: [{ op: 'give', item: 0 }] }] }
     }
   ];
   const caller = () => ({
@@ -2694,9 +2709,10 @@ test('deleting a common event in the built ROM still runs what the survivor name
   // ids. Talking to the chest has to give the Gem that B hands over, not the
   // Hunter that C would -- C being the thing that slid into B's old row.
   const { nes } = await buildWith(t, [chest([{ cond: { type: 'none', arg: 0 }, commands: [{ op: 'call', event: 1 }] }])], (project) => {
+    project.items.push({ id: HUNTER_ITEM, name: 'Hunter', actorId: HUNTER, metaspriteId: null });
     project.commonEvents = [
-      { id: 1, name: 'B', event: { pages: [{ cond: { type: 'none', arg: 0 }, commands: [{ op: 'give', actor: GEM }] }] } },
-      { id: 2, name: 'C', event: { pages: [{ cond: { type: 'none', arg: 0 }, commands: [{ op: 'give', actor: HUNTER }] }] } }
+      { id: 1, name: 'B', event: { pages: [{ cond: { type: 'none', arg: 0 }, commands: [{ op: 'give', item: GEM_ITEM }] }] } },
+      { id: 2, name: 'C', event: { pages: [{ cond: { type: 'none', arg: 0 }, commands: [{ op: 'give', item: HUNTER_ITEM }] }] } }
     ];
   });
   assert.ok(talkThrough(nes), 'the conversation never ended');
@@ -2707,6 +2723,11 @@ test('deleting a common event in the built ROM still runs what the survivor name
 test('a call reaches into a common event and comes back to the command after it', {
   skip: !hasRom && 'run `npm run sample` first'
 }, async (t) => {
+  // sample's migration only creates an item for Gem (id 0); Slime and
+  // Hunter need items of their own, pushed in the tweak below in this exact
+  // order so SLIME_ITEM/HUNTER_ITEM_LOCAL match what lands in project.items.
+  const SLIME_ITEM = 1;
+  const HUNTER_ITEM_LOCAL = 2;
   const { nes } = await buildWith(
     t,
     [
@@ -2715,15 +2736,17 @@ test('a call reaches into a common event and comes back to the command after it'
           cond: { type: 'none', arg: 0 },
           commands: [
             { op: 'say', text: 'Before.' },
-            { op: 'give', actor: 0 }, // Slime
+            { op: 'give', item: SLIME_ITEM }, // Slime
             { op: 'call', event: 0 },
-            { op: 'give', actor: HUNTER },
+            { op: 'give', item: HUNTER_ITEM_LOCAL },
             { op: 'say', text: 'After.' }
           ]
         }
       ])
     ],
     (project) => {
+      project.items.push({ id: SLIME_ITEM, name: 'Slime', actorId: 0, metaspriteId: null });
+      project.items.push({ id: HUNTER_ITEM_LOCAL, name: 'Hunter', actorId: HUNTER, metaspriteId: null });
       project.commonEvents = [
         {
           name: 'Reward',
@@ -2731,7 +2754,7 @@ test('a call reaches into a common event and comes back to the command after it'
             pages: [
               {
                 cond: { type: 'none', arg: 0 },
-                commands: [{ op: 'say', text: 'Reward!' }, { op: 'give', actor: GEM }]
+                commands: [{ op: 'say', text: 'Reward!' }, { op: 'give', item: GEM_ITEM }]
               }
             ]
           }
