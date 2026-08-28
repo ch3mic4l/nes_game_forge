@@ -12,6 +12,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import NES from '../../renderer/emulator/core/nes.js';
+import { Emulator, BUTTON } from '../../renderer/emulator/runcontrol.js';
 import { loadProject, saveProject } from '../../main/project-io.js';
 import { buildProject } from '../../main/build/pipeline.js';
 import { createProject } from '../../shared/project.js';
@@ -30,6 +31,8 @@ const PLAYER_Y = 0x11;
 const FLAT_SCREEN = 0x16;
 const GAME_STATE = 0x25;
 const INV_COUNT = 0x37;
+const INV_SEL = 0x38;
+const ITEMS_USED = 0x39;
 const BOX_STATE = 0x40;
 const BT_PHASE = 0x53;
 const BT_SEL = 0x55;
@@ -37,7 +40,9 @@ const BT_TARGET = 0x56;
 const BT_COUNT = 0x5b;
 const GOLD_LO = 0x63;
 const PARTY_SIZE = 0x65;
+const BT_LEN = 0x6b;
 const INV_ITEMS = 0x378;
+const BT_LIST = 0x3e4;
 const SWITCHES = 0x390;
 const PC_HP = 0x398;
 const PC_HP_MAX = 0x39c;
@@ -55,6 +60,7 @@ const PC_STATUS = 0x3f0;
 const MON_STATUS = 0x3f4;
 
 const ST_GAMEPLAY = 0;
+const ST_MENU = 1;
 const ST_GAMEOVER = 4;
 const ST_BATTLE = 5;
 
@@ -72,9 +78,11 @@ const BC_FIGHT = 0;
 const BC_MAGIC = 1;
 const BC_ITEM = 2;
 const BC_RUN = 3;
+const NUM_COMMANDS = 4;
 
 const A = 0;
 const B = 1;
+const SELECT = 2;
 const START = 3;
 const UP = 4;
 const DOWN = 5;
@@ -905,6 +913,485 @@ test('ITEM heals from the bag, spends the potion, and cures poison', {
   assert.equal(nes.cpu.mem[INV_COUNT], 0, 'the potion should be spent');
   assert.equal(nes.cpu.mem[PC_STATUS], 0, 'a potion should flush the poison out');
 });
+
+// ROADMAP item 5 phase 4c round 3, design deliverable 5 (phase4-design.md
+// §8): build_item_list (engine/battleui.asm) now filters the battle ITEM
+// menu to kind == heal and amount > 0 -- what item_chosen can actually spend
+// consistently. A damage-kind item or a zero-amount heal item is a real,
+// valid item everywhere else; it must simply never be a selectable row in
+// that one menu.
+test(
+  'the battle ITEM menu lists only what it can spend consistently, while a damage-kind and a zero-amount item stay usable everywhere else',
+  { skip: needsSample },
+  async (t) => {
+    // Round 3b review, K2: the original fixture put the sole qualifying
+    // Potion first, so a filter whose scan stops at the first *rejected*
+    // item (rather than skipping it and continuing) had nothing to expose
+    // it -- and no positive-amount `none`-kind item existed to tell "requires
+    // heal" apart from "merely rejects damage" (a `none` item with a
+    // nonzero amount is a legal record, since Amount is only *disabled* in
+    // the UI for kind `none`, not zeroed underneath). This bag interleaves
+    // two qualifying heals between three different kinds of reject, with a
+    // reject first, so both gaps have somewhere to show up.
+    const rom = await buildVariant(t, 'twomenu', (project) => {
+      project.items.push({ id: 1, name: 'Bomb', actorId: null, metaspriteId: null, effect: { kind: 'damage', amount: 5 } });
+      project.items.push({ id: 2, name: 'Dud', actorId: null, metaspriteId: null, effect: { kind: 'heal', amount: 0 } });
+      project.items.push({ id: 3, name: 'Charm', actorId: null, metaspriteId: null, effect: { kind: 'none', amount: 7 } });
+      project.items.push({ id: 4, name: 'Ether', actorId: null, metaspriteId: null, effect: { kind: 'heal', amount: 8 } });
+    });
+
+    // Bag order: Bomb (reject: wrong kind), Potion (accept), Dud (reject:
+    // right kind, wrong amount), Charm (reject: wrong kind, a legal
+    // positive-amount `none`), Ether (accept) -- a reject leads, both
+    // rejection branches (kind and amount) sit before a later accept they
+    // must not swallow, and no two accepts are adjacent. A scan that stops
+    // at any reject, on either branch, or a predicate that merely excludes
+    // `damage` instead of requiring `heal`, each has a concrete,
+    // distinguishing outcome to be wrong about.
+    const battleNes = boot(rom);
+    battleNes.cpu.mem[INV_ITEMS] = 1; // Bomb
+    battleNes.cpu.mem[INV_ITEMS + 1] = 0; // Potion
+    battleNes.cpu.mem[INV_ITEMS + 2] = 2; // Dud
+    battleNes.cpu.mem[INV_ITEMS + 3] = 3; // Charm
+    battleNes.cpu.mem[INV_ITEMS + 4] = 4; // Ether
+    battleNes.cpu.mem[INV_COUNT] = 5;
+    assert.ok(walkIntoEncounter(battleNes));
+    waitForMenu(battleNes);
+    chooseCommand(battleNes, BC_ITEM);
+    assert.equal(battleNes.cpu.mem[BT_PHASE], BP_ITEMS, 'ITEM should open the bag -- real items are still in it');
+    assert.equal(
+      battleNes.cpu.mem[BT_LEN],
+      2,
+      'exactly the Potion and the Ether should be listed -- a scan that stops at the leading Bomb would see 0, ' +
+        'and a scan that stops at the Dud or the Charm (both sitting between the two accepts) would see 1'
+    );
+    assert.equal(battleNes.cpu.mem[BT_LIST], 0, 'the first listed row should be the Potion (id 0), in bag order');
+    assert.equal(
+      battleNes.cpu.mem[BT_LIST + 1],
+      4,
+      'the second listed row should be the Ether (id 4) -- a predicate that merely excludes `damage`, rather ' +
+        'than requiring `heal`, would have also listed the Charm (id 3, kind `none`, amount 7) here instead'
+    );
+    assert.equal(battleNes.cpu.mem[INV_COUNT], 5, 'merely opening the list must not spend or drop anything from the bag');
+
+    // The field: the Bomb, the Dud and the Charm all remain real, spendable
+    // items there, via the same use_item (engine/ui.asm) round 2 already
+    // covers -- this menu's own filter has nothing to do with what the
+    // field applies.
+    const fieldNes = boot(rom);
+    fieldNes.cpu.mem[INV_ITEMS] = 1; // the Bomb
+    fieldNes.cpu.mem[INV_COUNT] = 1;
+    fieldNes.cpu.mem[INV_SEL] = 0;
+    for (let i = 0; i < 4; i++) fieldNes.cpu.mem[PC_HP + i] = 10;
+    tap(fieldNes, SELECT);
+    assert.equal(fieldNes.cpu.mem[GAME_STATE], ST_MENU);
+    tap(fieldNes, A);
+    assert.equal(fieldNes.cpu.mem[INV_COUNT], 0, 'the Bomb should be spent from the field even though the battle menu never lists it');
+    assert.ok(fieldNes.cpu.mem[PC_HP] < 10, 'the Bomb’s own damage should have applied to the recruited member');
+
+    fieldNes.cpu.mem[INV_ITEMS] = 2; // the Dud
+    fieldNes.cpu.mem[INV_COUNT] = 1;
+    fieldNes.cpu.mem[INV_SEL] = 0;
+    tap(fieldNes, SELECT);
+    tap(fieldNes, A);
+    assert.equal(fieldNes.cpu.mem[INV_COUNT], 0, 'the Dud should be spent from the field too -- kind alone decides, not the amount');
+    assert.equal(fieldNes.cpu.mem[ITEMS_USED], 2, 'both field uses so far should have counted as spent');
+
+    fieldNes.cpu.mem[INV_ITEMS] = 3; // the Charm
+    fieldNes.cpu.mem[INV_COUNT] = 1;
+    fieldNes.cpu.mem[INV_SEL] = 0;
+    tap(fieldNes, SELECT);
+    tap(fieldNes, A);
+    assert.equal(fieldNes.cpu.mem[INV_COUNT], 1, 'a none-kind item is a key item, kept rather than spent, on the field too');
+    assert.equal(fieldNes.cpu.mem[ITEMS_USED], 2, 'a kept key item must not count as spent');
+  }
+);
+
+// Finding 5 (phase4-design.md §9): the filter can leave bt_len at 0 while
+// inv_count is still positive -- a bag holding only field-only-kind items.
+// battle_menu_item now decides whether to open BP_ITEMS from the *filtered*
+// bt_len, not raw inv_count (engine/battleui.asm), so this bag must not
+// reach the broken state the design describes: BT_PHASE staying at
+// BP_MENU (Items simply does not open) rather than opening onto an empty
+// list whose row-select code would index a stale bt_list[0] and whose Up
+// press would underflow bt_sel to $FF (battle_list_up's own `lda bt_len /
+// sbc #1`, which computes 0 - 1 = $FF when bt_len is genuinely zero).
+test(
+  'a bag of only field-only-kind items does not open the battle ITEM menu into a stale or underflowing list -- finding 5',
+  { skip: needsSample },
+  async (t) => {
+    const rom = await buildVariant(t, 'itemsonlyfield', (project) => {
+      project.items.push({ id: 1, name: 'Bomb', actorId: null, metaspriteId: null, effect: { kind: 'damage', amount: 5 } });
+      project.items.push({ id: 2, name: 'Dud', actorId: null, metaspriteId: null, effect: { kind: 'heal', amount: 0 } });
+    });
+    const nes = boot(rom);
+    nes.cpu.mem[INV_ITEMS] = 1; // the Bomb
+    nes.cpu.mem[INV_ITEMS + 1] = 2; // the Dud
+    nes.cpu.mem[INV_COUNT] = 2; // no Potion in the bag at all -- nothing qualifies
+
+    assert.ok(walkIntoEncounter(nes));
+    waitForMenu(nes);
+
+    // Poke a stale value into bt_list, standing in for whatever an earlier
+    // list build (a previous battle's spell or item list) left behind --
+    // the exact leftover finding 5 warns a fresh, empty build could still be
+    // read through.
+    nes.cpu.mem[BT_LIST] = 77;
+
+    chooseCommand(nes, BC_ITEM);
+    assert.equal(nes.cpu.mem[BT_PHASE], BP_MENU, 'Items should not open at all -- nothing in the bag qualifies for this menu');
+    assert.equal(nes.cpu.mem[BT_LEN], 0, 'the filtered length should read the real, freshly computed zero, not a stale nonzero leftover');
+    assert.equal(nes.cpu.mem[BT_SEL], BC_ITEM, 'the highlight should still be sitting on ITEM in the main battle menu, not moved into a list');
+
+    // Up must still behave like the ordinary battle menu's own wraparound,
+    // never like the list's -- no $FF, ever.
+    tap(nes, UP, 4);
+    assert.notEqual(nes.cpu.mem[BT_SEL], 0xff, 'the highlight must never underflow to $FF');
+    assert.ok(nes.cpu.mem[BT_SEL] < NUM_COMMANDS, 'the highlight should stay a real battle-menu command');
+    assert.equal(nes.cpu.mem[BT_PHASE], BP_MENU, 'still the main battle menu -- Items never opened');
+  }
+);
+
+// Round 5, B1: the gap ROADMAP.md itself named as outstanding after round 4c.
+// item_chosen (engine/battleturn.asm) reads `bt_list,x` to find which item a
+// selected row names, then reads item_heal,y (y = that item's own id) for its
+// amount -- three separate places a wrong implementation could substitute a
+// different item, a different order, or a different amount and still look
+// right. Round 6 review found the amount read was not actually covered:
+// sample-rpg's own Potion is item id 0, and this test used to select it, so
+// an unindexed `lda item_heal` (always reading item_heal[0], Potion's own
+// slot) coincidentally produced the same answer as the correct `lda
+// item_heal,y`. Potion is excluded from this bag entirely now -- both
+// accepted items are freshly authored with nonzero ids, so item_heal[0]
+// is never the right answer for either of them, and an unindexed read is
+// forced to disagree.
+//
+// The bag: Bomb(1, reject: kind), Tonic(4, accept, heal 12), Dud(2, reject:
+// amount), Ether(3, accept, heal 8). Filtered list, in bag-scan order: [4,
+// 3] -- Tonic (the higher id) comes first, already non-ascending without
+// forcing it, which is what an id-sorting implementation would get wrong.
+// Selecting row 1 (Ether, id 3) means inv_items[1] is Tonic (4), not Ether
+// -- a `bt_list,x` -> `inv_items,x` substitution would read the wrong slot
+// entirely, and even the two accepted items' own amounts (12 vs 8) differ,
+// so a substitution that happened to land on the other accepted item would
+// still show up as the wrong heal.
+test(
+  'item_chosen maps a selected, filtered battle row back to the correct item and amount -- not by index into inv_items, not by sorted id order, not by item 0\'s own amount',
+  { skip: needsSample },
+  async (t) => {
+    const rom = await buildVariant(t, 'rowmapping', (project) => {
+      project.items.push({ id: 1, name: 'Bomb', actorId: null, metaspriteId: null, effect: { kind: 'damage', amount: 5 } });
+      project.items.push({ id: 2, name: 'Dud', actorId: null, metaspriteId: null, effect: { kind: 'heal', amount: 0 } });
+      project.items.push({ id: 3, name: 'Ether', actorId: null, metaspriteId: null, effect: { kind: 'heal', amount: 8 } });
+      project.items.push({ id: 4, name: 'Tonic', actorId: null, metaspriteId: null, effect: { kind: 'heal', amount: 12 } });
+    });
+    const nes = boot(rom);
+    nes.cpu.mem[INV_ITEMS] = 1; // Bomb
+    nes.cpu.mem[INV_ITEMS + 1] = 4; // Tonic
+    nes.cpu.mem[INV_ITEMS + 2] = 2; // Dud
+    nes.cpu.mem[INV_ITEMS + 3] = 3; // Ether
+    nes.cpu.mem[INV_COUNT] = 4;
+    assert.ok(walkIntoEncounter(nes));
+    waitForMenu(nes);
+    nes.cpu.mem[PC_HP] = 5;
+
+    chooseCommand(nes, BC_ITEM);
+    assert.equal(nes.cpu.mem[BT_PHASE], BP_ITEMS, 'ITEM should open the bag');
+    assert.equal(nes.cpu.mem[BT_LEN], 2, 'only the Tonic and the Ether should be listed');
+    assert.equal(nes.cpu.mem[BT_LIST], 4, 'row 0 should be the Tonic (id 4) -- it comes first in bag order');
+    assert.equal(nes.cpu.mem[BT_LIST + 1], 3, 'row 1 should be the Ether (id 3) -- bt_list must not be sorted by id');
+
+    // Select row 1 (the Ether), not row 0 -- open_menu/battle_menu_item
+    // already reset bt_sel to 0, so this is a real D-pad move, not a poke.
+    tap(nes, DOWN, 4);
+    assert.equal(nes.cpu.mem[BT_SEL], 1, 'DOWN should move the highlight onto row 1');
+    tap(nes, A, 10);
+
+    const expected = Math.min(5 + 8, nes.cpu.mem[PC_HP_MAX]);
+    assert.equal(
+      nes.cpu.mem[PC_HP],
+      expected,
+      'the Ether’s own heal (8) should have applied -- reading inv_items,x at x=1 would have found Tonic ' +
+        'instead (applying 12), a sorted bt_list would have applied Tonic’s own 12 too, and an unindexed ' +
+        'item_heal read would have applied item 0’s own amount (Potion, 20) regardless of which item was chosen'
+    );
+    assert.equal(nes.cpu.mem[INV_COUNT], 3, 'exactly one item (the Ether) should have been removed');
+    assert.deepEqual(
+      [...nes.cpu.mem.slice(INV_ITEMS, INV_ITEMS + 3)],
+      [1, 4, 2],
+      'the bag should close up over the Ether’s own slot (index 3), leaving Bomb, Tonic, Dud in their original order'
+    );
+  }
+);
+
+// ROADMAP item 5 phase 4c round 2, design deliverable 6: the field menu's
+// own use_item (engine/ui.asm), not item_chosen -- this is a different call
+// site with its own register-clobber hazard. party_heal (engine/rpg.asm)
+// returns with X = MAX_PARTY, not inv_sel, so use_item's own reload of
+// inv_sel after jsr use_item_apply is load-bearing: without it, the shift
+// loop that closes the bag over the spent slot starts from the wrong X. A
+// "does healing happen" test cannot see this -- the heal amount is read
+// from inv_items,x using the *original* X, before use_item_apply ever runs,
+// so it applies correctly either way. Only the bag's own post-state (which
+// item survived, in which slot) tells the two apart, which is why this
+// asserts that and not just the HP delta.
+test(
+  'use_item (field menu) removes the correct slot, not X = MAX_PARTY -- the register-clobber bug a "does healing happen" test would miss',
+  { skip: needsSample },
+  async (t) => {
+    const rom = await buildVariant(t, 'itemslot', (project) => {
+      project.items.push({ id: 1, name: 'Ether', actorId: null, metaspriteId: null, effect: { kind: 'heal', amount: 5 } });
+    });
+    const nes = boot(rom);
+    // Potion (id 0) at slot 0, Ether (id 1) at slot 1 -- inv_sel points at
+    // slot 0, the non-last slot. If the register clobber reappeared, X
+    // would be MAX_PARTY (4) at the top of the shift loop instead of 0;
+    // cpx inv_count (2) is already true there, so the loop would exit on
+    // its first check, nothing would actually shift, and the wrong item
+    // (Potion) would still be sitting in slot 0 where Ether belongs.
+    nes.cpu.mem[INV_ITEMS] = 0;
+    nes.cpu.mem[INV_ITEMS + 1] = 1;
+    nes.cpu.mem[INV_COUNT] = 2;
+    nes.cpu.mem[INV_SEL] = 0;
+    nes.cpu.mem[PC_HP] = 5;
+
+    tap(nes, SELECT);
+    assert.equal(nes.cpu.mem[GAME_STATE], ST_MENU, 'SELECT should open the field menu');
+    tap(nes, A);
+
+    assert.equal(nes.cpu.mem[INV_COUNT], 1, 'exactly one item should remain');
+    assert.equal(
+      nes.cpu.mem[INV_ITEMS],
+      1,
+      'the Ether (id 1) should have shifted down into slot 0 -- if this is still 0 (the Potion), the shift never ' +
+        'ran, the exact symptom of use_item_apply’s own X clobber leaking into it'
+    );
+    const expected = Math.min(5 + 20, nes.cpu.mem[PC_HP_MAX]);
+    assert.equal(nes.cpu.mem[PC_HP], expected, 'the selected Potion’s own heal (20) should still have applied');
+  }
+);
+
+// Round 2b review, H2: only the lethal Damage path (finding 4, below) had a
+// test on the RPG side -- party_damage's *alive* return (the `bne
+// use_item_apply_alive` branch) had no coverage of its own. A caller that
+// treated every non-zero party_damage result as lethal, or that never
+// actually applied the damage at all, would still have passed everything
+// else in this file.
+test(
+  'a non-lethal field-used Damage item lowers party HP without ending the game -- party_damage’s alive return',
+  { skip: needsSample },
+  async (t) => {
+    // Round 2b review round 2 (J2): amount 2, not 1 -- item_effect_kind and
+    // item_effect_amount (engine/ui.asm's use_item_apply) are read by the
+    // identical instruction regardless of game type, so a stand-in that
+    // hardcodes every damage item to exactly one point would have applied 1
+    // here too and passed this test unnoticed if it had used amount 1.
+    const rom = await buildVariant(t, 'nonlethaldamage', (project) => {
+      project.items.push({ id: 1, name: 'Rock', actorId: null, metaspriteId: null, effect: { kind: 'damage', amount: 2 } });
+    });
+    const nes = boot(rom);
+    nes.cpu.mem[INV_ITEMS] = 1; // the Rock
+    nes.cpu.mem[INV_COUNT] = 1;
+    nes.cpu.mem[INV_SEL] = 0;
+    nes.cpu.mem[PC_HP] = 5;
+
+    tap(nes, SELECT);
+    assert.equal(nes.cpu.mem[GAME_STATE], ST_MENU, 'SELECT should open the field menu');
+    tap(nes, A);
+
+    assert.equal(nes.cpu.mem[PC_HP], 3, 'the Rock’s own 2 points of damage should have applied to the recruited member, not 1');
+    assert.equal(nes.cpu.mem[INV_COUNT], 0, 'the Rock should be spent');
+    assert.equal(nes.cpu.mem[ITEMS_USED], 1);
+    assert.equal(nes.cpu.mem[GAME_STATE], ST_MENU, 'a non-lethal Damage item must not end the game');
+  }
+);
+
+// Round 2c review, ride-along P2: amount 2 (above) is below every plausible
+// hardcoded-small-constant mutation, including a clamp-to-3 -- 2 is already
+// under 3, so clamping to 3 would leave it unchanged and this test alone
+// could not tell a real 2 from a clamped one. Amount 4, deliberately above
+// 3, closes that: a clamp-to-3 mutation would apply 3 instead of 4 and land
+// at 2 HP, not the real 1.
+test(
+  'a non-lethal field-used Damage item above 3 applies its own real amount, not a clamp to 3',
+  { skip: needsSample },
+  async (t) => {
+    const rom = await buildVariant(t, 'nonlethaldamage4', (project) => {
+      project.items.push({ id: 1, name: 'Boulder', actorId: null, metaspriteId: null, effect: { kind: 'damage', amount: 4 } });
+    });
+    const nes = boot(rom);
+    nes.cpu.mem[INV_ITEMS] = 1; // the Boulder
+    nes.cpu.mem[INV_COUNT] = 1;
+    nes.cpu.mem[INV_SEL] = 0;
+    nes.cpu.mem[PC_HP] = 5;
+
+    tap(nes, SELECT);
+    assert.equal(nes.cpu.mem[GAME_STATE], ST_MENU, 'SELECT should open the field menu');
+    tap(nes, A);
+
+    assert.equal(nes.cpu.mem[PC_HP], 1, 'the Boulder’s own 4 points of damage should have applied in full, not clamped to 3 (which would leave 2)');
+    assert.equal(nes.cpu.mem[GAME_STATE], ST_MENU, 'still non-lethal -- 5 - 4 = 1, not dead');
+  }
+);
+
+// Finding 4 (phase 4 design §9): use_item_apply must never jump to
+// player_died itself -- it is reached by jsr, so a jmp there would strand
+// its own return address (back into use_item's shift logic) for some
+// unrelated rts to mis-pop later. "It didn't crash" proves nothing here --
+// the corruption is silent until something else happens to pop that stray
+// address. The direct proof is the stack itself: the instant PC reaches
+// player_died, its return address must not point back inside use_item at
+// all, which it would if use_item_apply had jumped there mid-call.
+//
+// Round 2b review, H3: the address-range check alone is weaker than it
+// looks. A caller-side path that jumps to player_died while use_item_apply's
+// own one-byte `pha` result is still sitting unpopped on the stack pushes
+// the return-address read one byte further down than it should be -- that
+// misread also lands outside [useItemStart, useItemEnd], for the wrong
+// reason, and would still pass. Two more checks close that: the stack
+// POINTER itself must match a second, independently measured occurrence of
+// the identical call depth (dispatch_input, entered by `jsr` from main_loop
+// exactly once, the same depth player_died sits at through use_item's own
+// jmp chain) -- a leftover pha leaves SP one lower than that, which a
+// one-sided range check on the address it produces cannot catch. And the
+// bag itself must already show the spend (inv_count decremented, items_used
+// incremented) by the moment PC reaches player_died, since a jump that
+// happens before use_item's own shift/pla runs would land here too early to
+// have done either.
+//
+// Round 2b review round 2 (J3): even those additions admit one more wrong
+// implementation -- one that pla's, detects death, and jumps to player_died
+// AFTER dec inv_count/inc items_used but BEFORE the highlight-repair block
+// (`lda inv_sel / cmp inv_count / ...`) that pulls inv_sel back when the
+// spent slot was the last one. A single-item bag hides this completely:
+// spending the only item leaves inv_sel at 0 whether or not the repair ran,
+// because inv_sel started at 0 and the repair's own result for a now-empty
+// bag is also 0. A two-item bag with the lethal item in the *last* slot
+// makes the repair's own effect (pulling inv_sel from 1 back to 0) visible,
+// and the surviving item's slot proves the shift/dec ran at all.
+test(
+  'a lethal field-used Damage item ends up back in the real return chain, not stranded inside use_item -- finding 4',
+  { skip: needsSample },
+  async (t) => {
+    const dir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'forge-lethaluse-'));
+    t.after(() => fs.promises.rm(dir, { recursive: true, force: true }));
+    const project = await loadProject(SAMPLE);
+    project.items.push({ id: 1, name: 'Bomb', actorId: null, metaspriteId: null, effect: { kind: 'damage', amount: 255 } });
+    await saveProject(dir, project);
+    const built = await buildProject({ dir, project, log: () => {} });
+
+    const symbols = fs.readFileSync(built.symbolPath, 'utf8');
+    const addrOf = (label) => {
+      const match = symbols.match(new RegExp(`^${label}\\s*=\\s*\\$([0-9A-Fa-f]+)`, 'm'));
+      assert.ok(match, `${label} should be a named symbol in game.fns`);
+      return parseInt(match[1], 16);
+    };
+    const useItemStart = addrOf('use_item');
+    const useItemEnd = addrOf('use_item_done');
+    const playerDiedAddr = addrOf('player_died');
+    const dispatchInputAddr = addrOf('dispatch_input');
+    assert.ok(useItemEnd > useItemStart, 'use_item_done should sit after use_item in the assembled ROM');
+
+    const emulator = new Emulator({ onFrame: () => {} });
+    emulator.loadROM(new Uint8Array(fs.readFileSync(built.romPath)));
+    const nes = emulator.nes;
+    const frame = () => nes.frame();
+    for (let i = 0; i < 40; i++) frame();
+
+    // sample-rpg's own item 0 (the Potion) sits harmlessly in slot 0; the
+    // Bomb sits in slot 1, the *last* slot -- the one arrangement that makes
+    // a skipped highlight repair observable.
+    nes.cpu.mem[INV_ITEMS] = 0; // the Potion, unused, proves the shift/order
+    nes.cpu.mem[INV_ITEMS + 1] = 1; // the Bomb
+    nes.cpu.mem[INV_COUNT] = 2;
+    for (let i = 0; i < 4; i++) nes.cpu.mem[PC_HP + i] = 1; // one hit wipes whoever is recruited
+
+    emulator.setButton(BUTTON.SELECT, true);
+    frame();
+    emulator.setButton(BUTTON.SELECT, false);
+    for (let i = 0; i < 12; i++) frame();
+    assert.equal(nes.cpu.mem[GAME_STATE], ST_MENU, 'SELECT should open the field menu');
+
+    // open_menu (engine/ui.asm) resets inv_sel to 0 unconditionally on
+    // open, so pointing at the last slot needs one RIGHT press after
+    // opening, not a direct poke beforehand -- poking inv_sel before SELECT
+    // is exactly what the original, single-item version of this test did,
+    // and is exactly why it never noticed the highlight repair could be
+    // skipped: slot 0 was already where open_menu was going to put it.
+    emulator.setButton(BUTTON.RIGHT, true);
+    frame();
+    emulator.setButton(BUTTON.RIGHT, false);
+    for (let i = 0; i < 4; i++) frame();
+    assert.equal(nes.cpu.mem[INV_SEL], 1, 'RIGHT should move the highlight onto the Bomb, the last slot');
+
+    // Baseline: SP the instant dispatch_input is entered on an ordinary
+    // frame, before the lethal item is even used. dispatch_input is one jsr
+    // deep from main_loop (`jsr dispatch_input`, 2 bytes); player_died below
+    // is reached from inside that same, still-unreturned call, through
+    // dispatch_input's own `txa`/`pha` (engine/input.asm's dispatch_loop,
+    // "the handlers use X to walk the entity slots", 1 byte) and its `jsr
+    // do_action` (2 bytes) -- do_action_confirm, use_item and use_item_apply
+    // add nothing further of their own once use_item_apply's jsr/rts and
+    // use_item's pha/pla have each balanced, so a correct implementation
+    // reaches player_died exactly 3 bytes deeper than dispatch_input's own
+    // entry point. That +3 is this file's own structure, not a guess -- a
+    // second, independently measured occurrence of dispatch_input's own
+    // depth is what it is measured against, rather than a literal SP value
+    // that would say nothing about why it should be that number.
+    assert.ok(
+      emulator.runToAddress(dispatchInputAddr, { frames: 10 }),
+      'dispatch_input should run every ordinary frame while sitting in the menu'
+    );
+    const expectedSp = (nes.cpu.REG_SP - 3) & 0xff;
+    for (let i = 0; i < 4; i++) frame(); // let this frame finish cleanly before the real button press
+
+    emulator.breakpoints.add(playerDiedAddr);
+    emulator.setButton(BUTTON.A, true);
+    const reached = emulator.runToAddress(playerDiedAddr, { frames: 10 });
+    emulator.setButton(BUTTON.A, false);
+    assert.ok(reached, 'player_died should be reached within a few frames of confirming the lethal item');
+    assert.equal(emulator.pc, playerDiedAddr);
+
+    // By the time PC reaches player_died, use_item's own shift loop, dec/inc
+    // and the highlight fixup have already run (they all sit between the
+    // pha and the jmp), so the spend must already be fully visible -- a jump
+    // reached before the fixup completed would land here having done the
+    // dec/inc but skipped exactly the highlight repair, which is what the
+    // inv_sel assertion below exists to catch.
+    assert.equal(nes.cpu.mem[INV_COUNT], 1, 'the lethal Bomb should already be removed from the bag by the time player_died runs');
+    assert.equal(nes.cpu.mem[ITEMS_USED], 1, 'items_used should already be bumped by the time player_died runs');
+    assert.equal(
+      nes.cpu.mem[INV_SEL],
+      0,
+      'spending the last slot (1) should have pulled inv_sel back to 0 by the time player_died runs -- a jump ' +
+        'reached after the dec/inc but before the highlight repair would leave inv_sel stranded at 1, past the ' +
+        'end of the one remaining item'
+    );
+    assert.equal(nes.cpu.mem[INV_ITEMS], 0, 'the surviving Potion should still be sitting in slot 0, untouched');
+
+    // The instant PC lands on player_died, read the return address sitting
+    // on top of the stack -- exactly what an rts right here would jump to.
+    const sp = nes.cpu.REG_SP & 0xff;
+    const lo = nes.cpu.mem[0x100 | ((sp + 1) & 0xff)];
+    const hi = nes.cpu.mem[0x100 | ((sp + 2) & 0xff)];
+    const returnAddr = (((hi << 8) | lo) + 1) & 0xffff;
+    assert.ok(
+      returnAddr < useItemStart || returnAddr > useItemEnd,
+      `the stack's own return address (0x${returnAddr.toString(16)}) falls inside use_item ` +
+        `(0x${useItemStart.toString(16)}-0x${useItemEnd.toString(16)}) -- a stray jsr use_item_apply return address ` +
+        'is still sitting on the stack, exactly finding 4'
+    );
+    assert.equal(
+      sp,
+      expectedSp,
+      `the stack pointer at player_died (0x${sp.toString(16)}) does not match dispatch_input's own baseline depth ` +
+        `(0x${expectedSp.toString(16)}) -- a leftover pha byte would leave it exactly one lower than this`
+    );
+
+    for (let i = 0; i < 20; i++) frame();
+    assert.equal(nes.cpu.mem[GAME_STATE], ST_GAMEOVER, 'the lethal hit should still reach game over normally');
+  }
+);
 
 test('a certain drop lands in the bag on victory', {
   skip: needsSample

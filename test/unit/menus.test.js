@@ -22,6 +22,7 @@ const hasRom = fs.existsSync(ROM_PATH);
 // Engine RAM, from engine/constants.asm.
 const PLAYER_X = 0x10;
 const PLAYER_Y = 0x11;
+const PLAYER_HP = 0x4e;
 const PICKUPS = 0x24;
 const GAME_STATE = 0x25;
 const DEFEATED = 0x27;
@@ -40,7 +41,9 @@ const OAM = 0x200;
 const ST_GAMEPLAY = 0;
 const ST_MENU = 1;
 const ST_DIALOG = 2;
+const ST_GAMEOVER = 4;
 const NO_ENTITY = 0xff;
+const MAX_HEARTS = 3; // sample's own project.project.maxHearts (the schema default)
 
 // jsnes button numbers.
 const A = 0;
@@ -145,8 +148,25 @@ test('the item action opens the inventory, which freezes the world', {
 
 test('a collected pickup goes into the bag, and confirm spends it', {
   skip: !hasRom && 'run `npm run sample` first'
-}, () => {
-  const nes = boot();
+}, async (t) => {
+  const dir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'forge-menu-spend-'));
+  t.after(() => fs.promises.rm(dir, { recursive: true, force: true }));
+
+  // The fixture's own Gem has no battle.heal, so it migrated to kind `none`
+  // -- and round 2 (engine/ui.asm's use_item) means a `none`-kind item is a
+  // key item confirm no longer spends. This test is about the generic
+  // collect/spend flow, not key-item semantics (see "a key item (kind none)
+  // is not consumed by the confirm action" for that), so it needs a Gem
+  // confirm genuinely removes.
+  const project = await loadProject(SAMPLE);
+  const gemActor = project.sprites.actors.find((actor) => actor.behavior === 'pickup');
+  const gemItem = project.items.find((item) => item.actorId === gemActor.id);
+  assert.ok(gemItem, 'the sample fixture should already have an item backing the gem');
+  gemItem.effect = { kind: 'heal', amount: 5 };
+  await saveProject(dir, project);
+  const built = await buildProject({ dir, project, log: () => {} });
+
+  const nes = boot(built.romPath);
   const gem = walkToTheGem(nes);
   assert.ok(gem >= 0, 'the gem did not spawn');
   assert.ok(walkToEntity(nes, gem), 'could not reach the gem');
@@ -225,6 +245,13 @@ test('the highlight walks the bag, and spending an item closes the gap', {
   const gem = project.sprites.actors.find((actor) => actor.behavior === 'pickup');
   const gemItem = project.items.find((item) => item.actorId === gem.id);
   assert.ok(gemItem, 'the sample fixture should already have an item backing the gem');
+  // The fixture's own Gem has no battle.heal, so it migrated to kind `none`
+  // -- and round 2 (engine/ui.asm's use_item) means a `none`-kind item is a
+  // key item that confirm no longer spends at all. This test is about the
+  // bag's own shift/highlight mechanic, not effect application, so it needs
+  // an item confirm genuinely removes -- heal-kind, not the fixture's own
+  // default.
+  gemItem.effect = { kind: 'heal', amount: 5 };
   // A second pickup actor, so the bag holds two telltale ids rather than three
   // copies of one and the shuffle is visible.
   const relic = { ...structuredClone(gem), id: project.sprites.actors.length, name: 'Relic' };
@@ -281,4 +308,192 @@ test('the highlight walks the bag, and spending an item closes the gap', {
   assert.equal(nes.cpu.mem[ITEMS_USED], 2);
   assert.equal(nes.cpu.mem[INV_ITEMS], relicItem.id, 'the relic should have moved down into slot 0');
   assert.equal(nes.cpu.mem[INV_SEL], 0);
+});
+
+// ROADMAP item 5 phase 4c round 2: a kind-`none` item is a real key item --
+// confirm must not shift it out of the bag at all, a genuine behaviour
+// change from before this round (use_item used to remove anything
+// regardless of what it was). The fixture's own Gem migrates to kind
+// `none` (its backing actor has no battle.heal), so this needs no item of
+// its own to construct.
+test('a key item (kind none) is not consumed by the confirm action', { skip: !hasRom && 'run `npm run sample` first' }, async (t) => {
+  const dir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'forge-keyitem-'));
+  t.after(() => fs.promises.rm(dir, { recursive: true, force: true }));
+
+  const project = await loadProject(SAMPLE);
+  const gem = project.sprites.actors.find((actor) => actor.behavior === 'pickup');
+  const gemItem = project.items.find((item) => item.actorId === gem.id);
+  assert.equal(gemItem.effect.kind, 'none', 'sanity: the fixture’s own Gem should still be a plain key item');
+
+  await saveProject(dir, project);
+  const built = await buildProject({ dir, project, log: () => {} });
+  const nes = boot(built.romPath);
+
+  nes.cpu.mem[INV_ITEMS] = gemItem.id;
+  nes.cpu.mem[INV_COUNT] = 1;
+  nes.cpu.mem[INV_SEL] = 0;
+
+  tap(nes, SELECT);
+  assert.equal(nes.cpu.mem[GAME_STATE], ST_MENU);
+  tap(nes, A);
+
+  assert.equal(nes.cpu.mem[INV_COUNT], 1, 'a key item must not be removed from the bag');
+  assert.equal(nes.cpu.mem[INV_ITEMS], gemItem.id, 'the same item should still be sitting in slot 0');
+  assert.equal(nes.cpu.mem[ITEMS_USED], 0, 'items_used must not increment for a key item -- nothing was actually spent');
+  assert.equal(nes.cpu.mem[GAME_STATE], ST_MENU, 'the menu should still be open -- confirm on a key item is a no-op, not a close');
+});
+
+// Round 2b review, H2: none of round 2's own tests ever read player_hp at
+// all -- "a collected pickup goes into the bag, and confirm spends it" and
+// "the highlight walks the bag" both use a heal-kind Gem but only assert the
+// bag's own bookkeeping (inv_count, items_used). Swapping use_item_apply's
+// own `jsr gain_hearts` and `jsr lose_hearts` -- so a Heals item hurts the
+// player and a Damages item heals them -- passed the entire suite before
+// this gap was found. These three tests, plus the RPG one beside them in
+// rpg.test.js, are what actually observe the effect, not just the bag.
+async function buildActionItemVariant(t, kind, amount) {
+  const dir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'forge-actioneffect-'));
+  t.after(() => fs.promises.rm(dir, { recursive: true, force: true }));
+  const project = await loadProject(SAMPLE);
+  const item = { id: project.items.length, name: 'Test item', actorId: null, metaspriteId: null, effect: { kind, amount } };
+  project.items.push(item);
+  await saveProject(dir, project);
+  const built = await buildProject({ dir, project, log: () => {} });
+  return { item, romPath: built.romPath };
+}
+
+// Round 2b review round 2 (J2): three concrete wrong implementations passed
+// the tests above, named by the reviewer --
+//   1. Heal was only ever tested saturating, so an implementation that
+//      always full-heals (ignoring the item's own amount entirely) passed.
+//   2. Every Damage test used amount 1, so replacing `lda
+//      item_effect_amount,y` with the same-sized `lda #1 / nop` -- silently
+//      hardcoding every damage item to exactly one point regardless of what
+//      it is actually authored as -- passed every one of them.
+//   3. Every lethal Damage case started at 1 HP, so the same `lda #1 / nop`
+//      mutation also passed the lethal cases (1 - 1 = 0, still dead) even
+//      though it had applied the wrong number to get there.
+// Distinct amounts and starting HPs below close all three at once.
+test('action Heal actually raises player_hp, saturating at MAX_HEARTS rather than overflowing', {
+  skip: !hasRom && 'run `npm run sample` first'
+}, async (t) => {
+  const { item, romPath } = await buildActionItemVariant(t, 'heal', 100); // far more than MAX_HEARTS can hold
+  const nes = boot(romPath);
+
+  nes.cpu.mem[INV_ITEMS] = item.id;
+  nes.cpu.mem[INV_COUNT] = 1;
+  nes.cpu.mem[INV_SEL] = 0;
+  nes.cpu.mem[PLAYER_HP] = 1;
+
+  tap(nes, SELECT);
+  assert.equal(nes.cpu.mem[GAME_STATE], ST_MENU);
+  tap(nes, A);
+
+  assert.equal(nes.cpu.mem[PLAYER_HP], MAX_HEARTS, 'the heal should have raised player_hp, saturating at MAX_HEARTS rather than wrapping past it');
+  assert.equal(nes.cpu.mem[INV_COUNT], 0, 'the potion should be spent');
+  assert.equal(nes.cpu.mem[ITEMS_USED], 1);
+});
+
+// J2, bullet 1: the saturating case alone cannot tell a real heal from an
+// implementation that always sets player_hp to MAX_HEARTS outright, ignoring
+// the item's own amount -- and a non-saturating case that still happens to
+// land exactly on MAX_HEARTS by addition (an earlier draft of this test did:
+// 1 HP + a heal of 2 = 3, which is also this fixture's own MAX_HEARTS) is
+// exactly as blind to that mutation as the saturating case, for the same
+// reason. The result here (2) must not equal MAX_HEARTS (3) or an
+// always-full-heal implementation passes unnoticed.
+test('action Heal raises player_hp by exactly its own amount when it does not saturate', {
+  skip: !hasRom && 'run `npm run sample` first'
+}, async (t) => {
+  const { item, romPath } = await buildActionItemVariant(t, 'heal', 1);
+  const nes = boot(romPath);
+
+  nes.cpu.mem[INV_ITEMS] = item.id;
+  nes.cpu.mem[INV_COUNT] = 1;
+  nes.cpu.mem[INV_SEL] = 0;
+  nes.cpu.mem[PLAYER_HP] = 1;
+
+  tap(nes, SELECT);
+  assert.equal(nes.cpu.mem[GAME_STATE], ST_MENU);
+  tap(nes, A);
+
+  assert.equal(
+    nes.cpu.mem[PLAYER_HP],
+    2,
+    'a heal of 1 from 1 HP should reach exactly 2, not an unconditional full heal to MAX_HEARTS (3)'
+  );
+});
+
+// J2, bullet 2: amount 2, not 1 -- a `lda #1 / nop` stand-in for `lda
+// item_effect_amount,y` would apply 1 point here and land on 2, not 1.
+test('action Damage, non-lethal, actually lowers player_hp by its own amount without ending the game', {
+  skip: !hasRom && 'run `npm run sample` first'
+}, async (t) => {
+  const { item, romPath } = await buildActionItemVariant(t, 'damage', 2);
+  const nes = boot(romPath);
+
+  nes.cpu.mem[INV_ITEMS] = item.id;
+  nes.cpu.mem[INV_COUNT] = 1;
+  nes.cpu.mem[INV_SEL] = 0;
+  nes.cpu.mem[PLAYER_HP] = MAX_HEARTS;
+
+  tap(nes, SELECT);
+  assert.equal(nes.cpu.mem[GAME_STATE], ST_MENU);
+  tap(nes, A);
+
+  assert.equal(nes.cpu.mem[PLAYER_HP], MAX_HEARTS - 2, 'the item\'s own 2 points of damage should have applied, not 1');
+  assert.equal(nes.cpu.mem[GAME_STATE], ST_MENU, 'a non-lethal Damage item must not end the game');
+  assert.equal(nes.cpu.mem[INV_COUNT], 0, 'the bomb should be spent');
+  assert.equal(nes.cpu.mem[ITEMS_USED], 1);
+});
+
+// J2, bullet 3: starting HP is not 1, and the amount overkills rather than
+// matching it exactly -- a `lda #1 / nop` stand-in would leave 1 HP
+// standing (alive), which this test would catch on its own; the exact-HP
+// case just below is what a *correct* amount load but a carry-based
+// alive/dead check (rather than reloading player_hp and testing it for
+// zero) would still get wrong.
+test('action Damage, lethal (overkill), reaches game over', {
+  skip: !hasRom && 'run `npm run sample` first'
+}, async (t) => {
+  const { item, romPath } = await buildActionItemVariant(t, 'damage', 100);
+  const nes = boot(romPath);
+
+  nes.cpu.mem[INV_ITEMS] = item.id;
+  nes.cpu.mem[INV_COUNT] = 1;
+  nes.cpu.mem[INV_SEL] = 0;
+  nes.cpu.mem[PLAYER_HP] = 2;
+
+  tap(nes, SELECT);
+  assert.equal(nes.cpu.mem[GAME_STATE], ST_MENU);
+  tap(nes, A);
+
+  assert.equal(nes.cpu.mem[GAME_STATE], ST_GAMEOVER, 'a lethal field-used Damage item should reach game over');
+  assert.equal(nes.cpu.mem[PLAYER_HP], 0);
+});
+
+// J2, bullet 3's own named gap: lose_hearts' internal subtraction sets the
+// carry flag to "amount <= original HP", which is true both when the player
+// survives AND when the hit lands exactly on their last point -- a caller
+// that branched on that carry directly, instead of reloading player_hp and
+// testing it for zero, would treat an exact kill as a survival. Overkill
+// (above) cannot see this: it only exercises amount > HP, where the carry
+// flag and "did player_hp become zero" happen to agree anyway.
+test('action Damage, lethal (exact HP), reaches game over', {
+  skip: !hasRom && 'run `npm run sample` first'
+}, async (t) => {
+  const { item, romPath } = await buildActionItemVariant(t, 'damage', 3);
+  const nes = boot(romPath);
+
+  nes.cpu.mem[INV_ITEMS] = item.id;
+  nes.cpu.mem[INV_COUNT] = 1;
+  nes.cpu.mem[INV_SEL] = 0;
+  nes.cpu.mem[PLAYER_HP] = 3;
+
+  tap(nes, SELECT);
+  assert.equal(nes.cpu.mem[GAME_STATE], ST_MENU);
+  tap(nes, A);
+
+  assert.equal(nes.cpu.mem[GAME_STATE], ST_GAMEOVER, 'damage exactly equal to the player\'s own HP should still be lethal, not treated as a survival');
+  assert.equal(nes.cpu.mem[PLAYER_HP], 0);
 });

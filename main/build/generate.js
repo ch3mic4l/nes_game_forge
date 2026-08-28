@@ -66,6 +66,8 @@ import {
   allCommands,
   mapEncounterFormation,
   itemMissing,
+  canBackItem,
+  ITEM_EFFECT_KINDS,
   NO_ITEM,
   NO_METASPRITE
 } from '../../shared/project.js';
@@ -341,63 +343,80 @@ const TITLE_PROMPT_ROW = 19;
 // exactly the "second, looser allowance" KERNEL_SLACK's own comment already
 // warns against.
 //
-// With per-mapper terms, every configuration this file can measure now
-// leaves exactly KERNEL_SLACK bytes of margin against its own real worst
-// case -- not a coincidence, but the point of measuring per board instead of
-// charging every board the same worst case: MMC3 with Save and Move (its own
-// base 6670, + SPLIT_LOCK_KERNEL_ALLOWANCE 19, + SAVE_KERNEL_ALLOWANCE 552,
-// + MOVE_KERNEL_ALLOWANCE 395, + KERNEL_SLACK 20 = 7656) reserves 20 bytes
-// over a real measured 7636; MMC1 with the same two features (its own base
-// 6483, + 547 + 395 + 20 = 7445) reserves 20 over a real measured 7425.
-// checkCapacity no longer refuses sample-rpg with a Save command *and* a
-// Move command on MMC3: the per-mapper base recovered 8 of the 12 bytes that
-// combination used to be short by (MMC3's true base is 8 less than the
-// UNROM 512 figure it used to be charged), and a second, unrelated fix --
-// entity_contact (engine/combat.asm) no longer reads player_iframes before
-// starting an RPG's contact battle, which happens to remove 2 instructions
-// (5 bytes) from the RPG build on every board -- closed the remaining 4 and
-// then some. nesasm now assembles this exact combination into the kernel-lo
-// bank with 21 bytes to spare (8171 of 8192, lookup tables included), which
-// is a real fit, not a promise: kernelbytes.test.js builds it and asserts
-// that figure directly, because 21 bytes is not a margin to lean on, it is
-// what happened to be left once every currently-measured term was paid for,
-// and the next byte the kernel-lo bank grows anywhere on this board reopens
-// the gap. When a project genuinely does not fit, checkCapacity names the
-// specific feature (or combination of active features -- see
+// HISTORICAL -- every figure in this paragraph and the next is superseded;
+// see the "current state" paragraph below for what actually holds today.
+// Kept only for the shape of the story (per-mapper budgeting recovering a
+// bounded, named amount, and a specific combination's fit moving back and
+// forth as later changes cost or freed real bytes), not for any number in
+// it to be read as still true. When per-mapper terms first shipped, every
+// configuration this file could measure left exactly KERNEL_SLACK bytes of
+// margin against its own real worst case: MMC3 with Save and Move (base
+// 6670 at the time + SPLIT_LOCK_KERNEL_ALLOWANCE 19 + SAVE_KERNEL_ALLOWANCE
+// 552 + MOVE_KERNEL_ALLOWANCE 395 + KERNEL_SLACK 20 = 7656) reserved 20
+// bytes over a real measured 7636; MMC1 with the same two features (base
+// 6483 at the time + 547 + 395 + 20 = 7445) reserved 20 over a real
+// measured 7425. At that same point, checkCapacity had just stopped
+// refusing sample-rpg with a Save command *and* a Move command on MMC3: the
+// per-mapper base had recovered 8 of the 12 bytes that combination used to
+// be short by (MMC3's true base was 8 less than the UNROM 512 figure it
+// used to be charged), and a second, unrelated fix -- entity_contact
+// (engine/combat.asm) no longer reading player_iframes before starting an
+// RPG's contact battle, which happened to remove 2 instructions (5 bytes)
+// from the RPG build on every board -- had closed the remaining 4 and then
+// some. nesasm assembled that exact combination into the kernel-lo bank
+// with 21 bytes to spare (8171 of 8192, lookup tables included) at that
+// point in history. When a project genuinely does not fit, checkCapacity
+// names the specific feature (or combination of active features -- see
 // kernelShortfallAdvice's own comment) or board that would close the gap,
 // instead of only reporting the shortfall -- and a board is only ever
 // offered if it can actually hold everything the project already has
 // (tilesets, screens, mirroring), not merely a smaller kernel-byte
 // reservation, or the "fix" would have reconcileCartridge (shared/project.js)
-// silently truncate something the moment it was applied.
+// silently truncate something the moment it was applied. That part is not
+// historical -- it is still exactly how the advice works today.
 //
-// The paragraph above predates two later changes that moved every figure it
-// quotes, and is kept for its shape (per-mapper budgeting recovering a
-// bounded, named amount) rather than its numbers. Phase 4b costed items[]
-// for real (ITEM_KERNEL_ALLOWANCE, 16 bytes, measured on all three
-// RPG-capable boards) and reopened the MMC3 Save+Move gap it had just
-// closed -- sample-rpg carries one live item, so this combination went from
-// 21 real bytes free back to short by 16. A kernel diet closed it again:
-// engine/player.asm's four movement direction routines
-// (move_left_inside/move_right_inside/move_up_inside/move_down_inside) each
-// ended in an identical two-corner probe-and-commit tail, differing only in
-// which body-offset constant fed the first probe and which of
-// player_x/player_y the result committed to. move_horizontal_probe and
-// move_vertical_probe are that shared tail now, with each _inside label
-// falling into its axis's tail by `jmp` rather than `jsr` so the tail's own
-// `rts` still returns to whichever caller originally `jsr`'d move_left et
-// al. -- removing duplication, not changing behaviour. It dropped every
-// RPG-capable board's own base by 70 bytes alike (BASE_KERNEL_CODE_BYTES_BY_
-// MAPPER above is now { 30: 6396, 1: 6201, 4: 6376 }; MMC3's own stored
-// figure still has SPLIT_LOCK_KERNEL_ALLOWANCE subtracted out, per this
-// paragraph's own convention), which reopened sample-rpg's Save+Move+item
-// combination on MMC3 with real headroom rather than landing back at a
-// single spare byte: test/unit/kernelbytes.test.js's own
-// "...builds on MMC3 again, with real headroom, after the kernel diet" is
-// the direct check. Every other term this file computes (title, save, move,
-// split-lock, item) is unchanged by the diet -- the dedup sits in
-// unconditional code no conditional term's own delta subtraction is
-// sensitive to, confirmed by re-measuring each one rather than assumed.
+// HISTORICAL, continued -- three changes since have each moved the same
+// combination's fit, and none of the figures above reflect any of them.
+// Phase 4b costed items[] for real (ITEM_KERNEL_ALLOWANCE, 16 bytes,
+// measured on all three RPG-capable boards) and reopened the MMC3
+// Save+Move gap the paragraph above had just closed -- sample-rpg carries
+// one live item, so this combination went from 21 real bytes free back to
+// short by 16 (change one). A kernel diet closed it again: engine/
+// player.asm's four movement direction routines (move_left_inside/
+// move_right_inside/move_up_inside/move_down_inside) each ended in an
+// identical two-corner probe-and-commit tail, differing only in which
+// body-offset constant fed the first probe and which of player_x/player_y
+// the result committed to. move_horizontal_probe and move_vertical_probe
+// are that shared tail now, with each _inside label falling into its
+// axis's tail by `jmp` rather than `jsr` so the tail's own `rts` still
+// returns to whichever caller originally `jsr`'d move_left et al. --
+// removing duplication, not changing behaviour. It dropped every
+// RPG-capable board's own base by 70 bytes alike, which reopened sample-
+// rpg's Save+Move+item combination on MMC3 with real headroom rather than
+// landing back at a single spare byte (change two). Phase 4c round 2 then
+// spent that headroom and reopened the same gap a third time:
+// engine/ui.asm's use_item_apply is real engine code the field menu's
+// "spend an item" action always needed, gated by the identical
+// ITEMS_ENABLED toggle phase 4b's own item cost already shares, and
+// ITEM_EFFECT_KERNEL_ALLOWANCE_BY_GAME_TYPE.rpg (60 bytes, measured) is
+// exactly what it costs -- short by 8 bytes this time (change three).
+// Unlike the first two, this one was not chased with a further diet: the
+// outcome was decided deliberately rather than discovered as a surprise,
+// and accepted as a documented limitation the same way UNROM 512's own
+// Save+Move shortfall already is.
+//
+// CURRENT STATE, as of phase 4c round 2: sample-rpg with a live Save
+// command, a live Move command and its one live item does NOT build on
+// MMC3 -- test/unit/kernelbytes.test.js's "...does not build on MMC3 --
+// round 2 reopened the gap the kernel diet had closed" is the check for
+// exactly this combination, and it asserts the refusal, not a fit. Every
+// other RPG-capable configuration (MMC1, and MMC3 without this exact
+// combination) still measures the same KERNEL_SLACK margin the first
+// historical paragraph above describes the shape of; this is the one
+// corner where the margin ran out. BASE_KERNEL_CODE_BYTES_BY_MAPPER's real
+// current values are declared just below this comment, not quoted here --
+// the two paragraphs above already show what happens when a number gets
+// copied into prose instead of read from its own declaration.
 //
 // These figures are quoted only to explain how kernelCodeBytes reached its
 // shape -- hand-copied snapshots, not the source of truth, and
@@ -455,6 +474,40 @@ export const SPLIT_LOCK_KERNEL_ALLOWANCE = 19;
 // items-stripped one and asserts equality, the same shape every other
 // allowance here is measured by -- rather than trusted from the estimate.
 export const ITEM_KERNEL_ALLOWANCE = 16;
+// use_item_apply and the ITEMS_ENABLED half of use_item (engine/ui.asm) --
+// round 2's own cost, kept as its own named constant separate from
+// ITEM_KERNEL_ALLOWANCE (phase 4b's) for the identical reason
+// SAVE_KERNEL_ALLOWANCE_BY_MAPPER and MOVE_KERNEL_ALLOWANCE are two
+// constants rather than one: each commit's byte accounting stays
+// self-contained, and each is independently what kernelShortfallAdvice
+// would attribute a drop to. Gated by the same predicate as
+// ITEM_KERNEL_ALLOWANCE (usesItems below) -- use_item_apply is assembled
+// whenever ITEMS_ENABLED is true, regardless of which kinds any particular
+// item actually carries.
+//
+// Flat across boards -- measured identically on all eight registered
+// boards for an action project and all three RPG-capable boards for an
+// RPG, in test/unit/kernelbytes.test.js -- but NOT flat across game type,
+// which no other allowance here has needed to be: use_item_apply's damage
+// branch calls party_damage (RPG, BATTLE_ENABLED) or lose_hearts plus a
+// zero-page lda of player_hp (action, !BATTLE_ENABLED), and those two
+// bodies are not the same size. Measured exactly: 63 bytes for an action
+// project, 60 for an RPG. Splitting by game type here rather than
+// reserving the flat worst case for both is the identical move
+// BASE_KERNEL_CODE_BYTES_BY_MAPPER already made once per-board variance
+// was discovered instead of charging every board the worst one's figure --
+// asserted exactly (not merely "covers enough"), the same discipline
+// every other allowance here is held to.
+export const ITEM_EFFECT_KERNEL_ALLOWANCE_BY_GAME_TYPE = { action: 63, rpg: 60 };
+const FALLBACK_ITEM_EFFECT_KERNEL_ALLOWANCE = Math.max(...Object.values(ITEM_EFFECT_KERNEL_ALLOWANCE_BY_GAME_TYPE));
+// A project not yet through normalizeProject (the app is holding one mid-edit,
+// same reasoning kernelCodeBytes' own callers already have to live with
+// elsewhere) can carry a gameType this table has no entry for -- falls back
+// to the larger of the two measured figures, the identical shape
+// baseKernelCodeBytes' own fallback already uses for an unmeasured mapper.
+export function itemEffectKernelAllowance(project) {
+  return ITEM_EFFECT_KERNEL_ALLOWANCE_BY_GAME_TYPE[project.project?.gameType] ?? FALLBACK_ITEM_EFFECT_KERNEL_ALLOWANCE;
+}
 export const KERNEL_SLACK = 20;
 
 export function kernelCodeBytes(project, mapper) {
@@ -508,7 +561,7 @@ export function kernelCodeBytes(project, mapper) {
     (usesSave ? SAVE_KERNEL_ALLOWANCE_BY_MAPPER[mapper.id] : 0) +
     (usesMove ? MOVE_KERNEL_ALLOWANCE : 0) +
     (usesSplitLock ? SPLIT_LOCK_KERNEL_ALLOWANCE : 0) +
-    (usesItems ? ITEM_KERNEL_ALLOWANCE : 0) +
+    (usesItems ? ITEM_KERNEL_ALLOWANCE + itemEffectKernelAllowance(project) : 0) +
     KERNEL_SLACK
   );
 }
@@ -1107,10 +1160,11 @@ export function kernelTableBytes(project) {
     3 * Math.max(1, animations.length) +
     2 * animations.reduce((total, entry) => total + entry.frames.length, 0) +
     8 * Math.max(1, actors.length); // behavior, speed, hp, damage, 4 anim slots
-  // item_metasprite (assets/items.inc) -- one byte per item, gated the same
-  // way the code that reads it is: a project with no items pays nothing,
-  // matching itemTables' own "emit nothing at all when disabled" rule.
-  const itemBytes = projectUsesItems(project) ? Math.max(1, (project.items ?? []).length) : 0;
+  // item_metasprite, item_effect_kind, item_effect_amount (assets/items.inc)
+  // -- one byte per item per table, gated the same way the code that reads
+  // them is: a project with no items pays nothing, matching itemTables' own
+  // "emit nothing at all when disabled" rule.
+  const itemBytes = projectUsesItems(project) ? 3 * Math.max(1, (project.items ?? []).length) : 0;
   // 13 bytes per screen of lookup tables (4 neighbours, 4 data pointers, 2
   // actor-list pointers, tileset, bank, map) and 9 per map (base, encounter
   // rate, four formation slots, the two battle backdrop tiles, and the song).
@@ -2040,7 +2094,7 @@ export async function generateAssets({ dir, project, log = () => {} }) {
         // unchanged, entity_door being the field's only reader of it.
         const actor = project.sprites.actors[entity.actorId];
         const target =
-          itemsEnabled && actor?.behavior === 'pickup'
+          itemsEnabled && canBackItem(actor)
             ? itemIdForActor.get(entity.actorId) ?? NO_ITEM
             : Math.min(entity.props?.toScreen ?? 0, Math.max(0, flat.length - 1));
         bytes.push(
@@ -2308,6 +2362,13 @@ export function resolveItemIcon(item, actor, animations, metasprites) {
  * item_metasprite in that build at all (draw_menu's own `.if ITEMS_ENABLED`
  * dual path never reads it) -- see kernelTableBytes' matching charge.
  */
+// item_effect_kind's own index into ITEM_EFFECT_KINDS -- the JS-side order
+// EFFECT_NONE/EFFECT_HEAL/EFFECT_DAMAGE (engine/constants.asm) is that same
+// order written down by hand, the identical relationship BEHAVIORS/ACTIONS
+// already have with BEH_*/ACT_*. A kind's number is spelled in exactly one
+// of those two places -- here, deriving it, never as a literal alongside it.
+const effectKindIndex = (kind) => Math.max(0, ITEM_EFFECT_KINDS.findIndex((entry) => entry.id === kind));
+
 function itemTables(project, enabled) {
   if (!enabled) return '; Generated -- ITEMS_ENABLED is off; nothing to emit.\n';
   const { actors, metasprites, animations } = project.sprites;
@@ -2318,6 +2379,11 @@ function itemTables(project, enabled) {
       items.map((item) => resolveItemIcon(item, actors[item.actorId], animations, metasprites))
     )}`
   );
+  // use_item_apply's own two tables (engine/ui.asm) -- kind and amount kept
+  // separate rather than packed, matching how every other per-item table
+  // here is one byte per item, one concept per table.
+  chunks.push(`item_effect_kind:\n${dbBlock(items.map((item) => effectKindIndex(item.effect?.kind)))}`);
+  chunks.push(`item_effect_amount:\n${dbBlock(items.map((item) => item.effect?.amount ?? 0))}`);
   return `${chunks.join('\n')}\n`;
 }
 

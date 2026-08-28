@@ -377,6 +377,52 @@ export function fontChrPages(project, mapper) {
  * decides whether to look still has to run. It does *not* by itself mean the
  * action-mode heart HUD is drawn or its sprite tiles reserved — see
  * projectUsesHeartArt, just below, for that.
+ *
+ * Round 2b review, J1: a fourth damage source joined the other three without
+ * this predicate learning about it. engine/ui.asm's use_item_apply (round 2)
+ * reaches lose_hearts/player_died for any action-project item whose effect
+ * is `damage` with a positive amount, the moment that item is ever spent —
+ * and unlike the scripted command below, there is no live/dead branch
+ * concept for an item to hide inside: itemTables (main/build/generate.js)
+ * compiles every entry in project.items into item_effect_kind/
+ * item_effect_amount unconditionally, and use_item applies whichever one
+ * ends up in the bag with no regard for whether anything currently placed
+ * grants it. projectUsesItems (shared/project.js) already treats "any item
+ * is defined" as enough to turn ITEMS_ENABLED on, with no reachability
+ * question asked of it; this follows the identical policy rather than
+ * inventing a narrower one; asking whether some pickup or Give command can
+ * actually reach a given item today would just be a second, competing answer
+ * to the exact question projectUsesItems already owns, and one that could
+ * fall out of date the moment a Map Forge placement changed. An RPG's own
+ * damage-kind items land on party HP through party_damage instead
+ * (engine/rpg.asm), never player_hp, so they must not count here —
+ * BATTLE_ENABLED already reserves that art on its own account, the same
+ * carve-out the scripted Damage command below already makes.
+ *
+ * Asked twice now (round 6 review, and once before it): should a live
+ * `heal`-kind item in an action project count here too, the same way a
+ * `damage`-kind one does? No, deliberately, and this is the answer written
+ * down so it stops being re-derived. `use_item_apply`'s heal branch really
+ * does call `gain_hearts` regardless of `COMBAT_ENABLED` (see
+ * engine/combat.asm's own header for why that gate has nothing to do with
+ * it) — but a heal cannot create the injury, the death, or the reason to
+ * ever look at player_hp that this predicate exists to reserve hearts for.
+ * In the overwhelmingly common case — no damage source anywhere in the
+ * project — `player_hp` starts at `MAX_HEARTS` and nothing can ever lower
+ * it, so a heal-only item is completely inert: gain_hearts on an
+ * already-full value is a no-op, visible or not. Counting it would reserve
+ * two sprite tiles and kernel bytes for a HUD that could only ever show
+ * "full, unchanging," the identical waste `projectUsesHeartArt` exists to
+ * avoid in the other direction. This is not a quieter version of the
+ * damage-item defect J1 found: that defect was a real, reachable gameplay
+ * effect (the player could die) with no art to show it happening; a
+ * heal-only project has no effect to hide in the first place. The one
+ * narrow gap — a save from an earlier version of the project that did have
+ * a damage source, loaded after the author removed it, could have
+ * `player_hp` below max with no HUD to show a heal doing something — is a
+ * Forge-side warning to consider, not a reason to reserve art for every
+ * heal-only project on the strength of a stale save nothing else here
+ * accounts for either.
  */
 export function projectUsesCombat(project) {
   if ((project.sprites?.actors ?? []).some((actor) => (actor.damage ?? 0) > 0)) return true;
@@ -390,22 +436,25 @@ export function projectUsesCombat(project) {
       }
     }
   }
-  // A scripted Damage command reaches player_hp/hearts only in an action
-  // project -- in an RPG it lands on pc_hp instead (engine/script.asm's
-  // script_op_damage), which this predicate has nothing to do with:
-  // BATTLE_ENABLED reserves the party art on its own. Only a command that
-  // survives to the ROM counts, the same rule projectUsesText applies just
-  // above -- via liveCommands rather than compiledPages, because a live
-  // Damage sitting inside a switched-off branch would be exactly the "looks
-  // functional, does nothing" case this codebase refuses to charge for. And
-  // only one that would actually emit a nonzero byte: a Damage dropped onto a
-  // page and left at its untouched default of 0 subtracts nothing, and
-  // damageAmount (shared/eventrules.js) is the same clamp encodeCommand
-  // (main/build/textcompile.js) applies to what it writes, so this cannot
-  // reserve the hearts for a command the compiled ROM leaves harmless. Heal
-  // never enters this predicate at all -- it cannot hurt anybody, at any
-  // value.
   if (project.project?.gameType !== 'rpg') {
+    if ((project.items ?? []).some((item) => item.effect?.kind === 'damage' && (item.effect?.amount ?? 0) > 0)) {
+      return true;
+    }
+    // A scripted Damage command reaches player_hp/hearts only in an action
+    // project -- in an RPG it lands on pc_hp instead (engine/script.asm's
+    // script_op_damage), which this predicate has nothing to do with:
+    // BATTLE_ENABLED reserves the party art on its own. Only a command that
+    // survives to the ROM counts, the same rule projectUsesText applies just
+    // above -- via liveCommands rather than compiledPages, because a live
+    // Damage sitting inside a switched-off branch would be exactly the "looks
+    // functional, does nothing" case this codebase refuses to charge for. And
+    // only one that would actually emit a nonzero byte: a Damage dropped onto a
+    // page and left at its untouched default of 0 subtracts nothing, and
+    // damageAmount (shared/eventrules.js) is the same clamp encodeCommand
+    // (main/build/textcompile.js) applies to what it writes, so this cannot
+    // reserve the hearts for a command the compiled ROM leaves harmless. Heal
+    // never enters this predicate at all -- it cannot hurt anybody, at any
+    // value.
     for (const event of projectEvents(project)) {
       for (const page of compiledPages(event)) {
         for (const command of liveCommands(page.commands, BOX_ROWS)) {

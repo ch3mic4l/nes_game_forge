@@ -21,6 +21,7 @@ npm run smoke      # end-to-end: boots the real UI and drives it
 | **Tile Forge** | Done — pixel editor, 1×1/2×2/4×4 regions, palettes, image import with dithering, CHR/PAL import & export |
 | **Map Forge** | Done — metatile editor, screen painting, multi-screen maps, collision overlay, actor placement, player start, dialogue and events |
 | **Sprite Forge** | Done — metasprite assembly, animation timeline with live preview, actors bound to behaviours |
+| **Items Forge** | Done — name, effect (None for a key item, or Heals/Damages with an amount) and, optionally, the linked Pickup actor; also reachable via a scripted Give item command or a monster's drop |
 | **Sound Forge** | Done — tracker for all four channels, instruments, order list, preview through the same replayer the ROM agrees with |
 | **Controller Forge** | Done — buttons bound to engine actions per game state, plus keyboard bindings for the player |
 | **Code Forge** | Done — the engine's 6502 source in a tabbed editor with syntax highlighting; edits are kept per project, and you can add your own `.asm` files |
@@ -29,7 +30,7 @@ npm run smoke      # end-to-end: boots the real UI and drives it
 | **Turn-based RPG mode** | Done — party, spells, monster stats, encounters, FF-style menu battles with XP, gold, levels, elements and drops |
 | **Tutorial** | Done — a guided tour of every Forge under 🎓 Learn in the rail, with jumps into the Forge each topic explains |
 
-All five Forges are built. The engine behind them is a top-down adventure; other
+All six Forges are built. The engine behind them is a top-down adventure; other
 genres would need new engine modules rather than new UI — or the Code Forge, which
 is the escape hatch when the UI does not offer what you want.
 
@@ -85,7 +86,7 @@ tool. The engine runs up to eight per screen and respawns them on entry.
 |---|---|
 | Patroller | Walks in a straight line, reverses at a wall or the screen edge |
 | Chaser | Steps towards the player on each axis, so walls deflect rather than stop it |
-| Pickup | Disappears when touched, counts up, and goes into the inventory |
+| Pickup | Disappears when touched and counts up either way; goes into the inventory too, unless the project has items authored and none of them names this actor, or the bag is already full |
 | Door | Warps the player to another screen and position, set in the Map Forge |
 | NPC | Stands still. What a chest or a standing character wants: it can be talked to and never wanders out of reach |
 | Player | Marks the player actor; spawned from the Map Forge start position |
@@ -105,8 +106,8 @@ change. Every action runs:
 | Interact | Collects a nearby pickup without walking onto it, or talks to any other actor in reach — showing its dialogue if it has any |
 | Dash | Doubles walking speed while held |
 | Pause | Freezes the player and every actor until pressed again |
-| Item | Opens the inventory — the pickups you are carrying — and closes it again |
-| Confirm | Spends the highlighted item, or turns the page of a conversation — or answers the question it is asking |
+| Item | Opens the inventory — the items you are carrying, however they were collected — and closes it again |
+| Confirm | Spends the highlighted item and applies its effect (a key item is kept, not spent), or turns the page of a conversation — or answers the question it is asking |
 | Cancel | Closes the inventory, or turns the page of a conversation — or answers the question it is asking |
 
 The table has one row per **game state**, and the state decides which row the
@@ -116,12 +117,12 @@ engine reads. There are three, and the two beyond `gameplay` are what `Item`,
 | State | Entered by | While it is open |
 |---|---|---|
 | Walking around | — | The world runs |
-| In a menu | The `Item` action | The world freezes; your pickups are laid out along the top and the D-pad picks one |
+| In a menu | The `Item` action | The world freezes; your items are laid out along the top and the D-pad picks one |
 | Reading dialogue | Interacting with an actor that is not a pickup | The world freezes and the actor speaks; if it asks something, the D-pad moves the cursor between the answers |
 
 The menu draws no box and no text: all 256 background tiles of a tileset belong
 to the Tile Forge, and the engine will not take tiles for a menu. It is drawn
-with sprites made of art the project already has — the pickups you are carrying,
+with sprites made of art the project already has — the items you are carrying,
 laid out along the top.
 
 Dialogue is where the engine does spend tiles, and only if you ask it to. Give a
@@ -421,8 +422,15 @@ background tiles on the battle tileset — and it appears as a proper monster
 portrait; leave it off and the engine draws its ordinary animation as sprites, so
 every actor you already have can fight without being redrawn.
 
-An **item** is just an actor with a *Heals* value: pick it up on the field and it
-appears in the battle's ITEM list.
+An **item** is authored in the **Items Forge**: a name, an effect (None for a
+key item that is only ever carried, or Heals/Damages, each with an amount) and,
+optionally, the Pickup actor that grants it on the field — it also reaches the
+bag through a scripted Give item command or a monster's drop. Spending it from
+the field menu applies Heals or Damages either way, and leaves a key item in
+the bag untouched; in battle, the ITEM list only ever offers a Heals item with
+a real amount, since nothing in this phase implements a targeted battle attack
+— a Damages item, or a Heals item left at Amount 0, is real and spendable on
+the field but never appears as a choice there.
 
 ```sh
 npm run sample:rpg          # write the RPG demo to ./sample-rpg

@@ -356,11 +356,15 @@ entity_chase_probe_v:
 entity_chase_done:
   rts
 
-; Vanish when the player walks into it, and go into the bag the menu shows.
-; Under ITEMS_ENABLED, ent_to_scr carries the item this placement grants
-; instead of a door target -- behavior is exclusive, so a pickup actor never
-; needs ent_to_scr's other meaning, and generate.js's emitScreens is the
-; single writer that decides which one a given placement's byte is.
+; Vanish when the player walks into it, always, and try to go into the bag
+; the menu shows -- add_item (engine/ui.asm) is what actually decides that,
+; and refuses silently (nothing added, no error) for an unbacked pickup
+; (ITEMS_ENABLED's own NO_ITEM guard) or when the bag already holds
+; MAX_ITEMS; `pickups` still counts the vanish either way. Under
+; ITEMS_ENABLED, ent_to_scr carries the item this placement grants instead
+; of a door target -- behavior is exclusive, so a pickup actor never needs
+; ent_to_scr's other meaning, and generate.js's emitScreens is the single
+; writer that decides which one a given placement's byte is.
 entity_pickup:
   jsr entity_touching_player
   bne entity_pickup_done

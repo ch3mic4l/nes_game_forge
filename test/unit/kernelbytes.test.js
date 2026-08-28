@@ -39,10 +39,12 @@ import {
   SAVE_KERNEL_ALLOWANCE_BY_MAPPER,
   MOVE_KERNEL_ALLOWANCE,
   SPLIT_LOCK_KERNEL_ALLOWANCE,
-  ITEM_KERNEL_ALLOWANCE
+  ITEM_KERNEL_ALLOWANCE,
+  ITEM_EFFECT_KERNEL_ALLOWANCE_BY_GAME_TYPE,
+  itemEffectKernelAllowance
 } from '../../main/build/generate.js';
 import { SUPPORTED_MAPPERS, rpgCapable, saveMediaImplemented, prgLayout } from '../../shared/cartridge.js';
-import { createTileset, createProject } from '../../shared/project.js';
+import { createTileset, createProject, projectUsesItems } from '../../shared/project.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const SAMPLE_RPG = path.join(ROOT, 'sample-rpg');
@@ -272,17 +274,30 @@ test(
     // measure with items stripped, diff against the noSave baseline (which
     // already has them), and assert equality, per board, not merely covered
     // by assertCovers' own worst-board-only margin.
+    //
+    // Round 2 (ROADMAP item 5 phase 4c): use_item_apply (engine/ui.asm) is
+    // gated by the identical ITEMS_ENABLED toggle this test already strips
+    // to isolate ITEM_KERNEL_ALLOWANCE, so the same delta now carries both
+    // allowances together -- there is no toggle that turns one on without
+    // the other. ITEM_EFFECT_KERNEL_ALLOWANCE_BY_GAME_TYPE.rpg (60), not
+    // the flat worst case (63, action): sample-rpg is an RPG project, and
+    // itemEffectKernelAllowance's whole reason to exist as a per-game-type
+    // table rather than one flat number is that the two really do differ,
+    // so asserting the RPG figure here and the action figure below is what
+    // keeps this an equality check rather than a >= that would let either
+    // side's slack hide.
     for (const mapper of CAPABLE_MAPPERS) {
       const { codeBytes } = await measureCodeBytes(t, mapper, { withItems: false });
       const noSaveEntry = noSave.find((entry) => entry.mapper.id === mapper.id);
       const delta = noSaveEntry.codeBytes - codeBytes;
+      const expected = ITEM_KERNEL_ALLOWANCE + ITEM_EFFECT_KERNEL_ALLOWANCE_BY_GAME_TYPE.rpg;
       assert.equal(
         delta,
-        ITEM_KERNEL_ALLOWANCE,
+        expected,
         `${mapper.name}: sample-rpg's one item costs ${delta} bytes of kernel code (${codeBytes} -> ` +
-          `${noSaveEntry.codeBytes}), but ITEM_KERNEL_ALLOWANCE reserves ${ITEM_KERNEL_ALLOWANCE} — this ` +
-          'allowance must equal an item’s real cost exactly, on every board. Re-measure and correct it (see ' +
-          'the comment beside kernelCodeBytes).'
+          `${noSaveEntry.codeBytes}), but ITEM_KERNEL_ALLOWANCE + ITEM_EFFECT_KERNEL_ALLOWANCE_BY_GAME_TYPE.rpg ` +
+          `reserves ${expected} — this allowance must equal an item’s real cost exactly, on every board. ` +
+          're-measure and correct it (see the comment beside kernelCodeBytes).'
       );
     }
 
@@ -394,21 +409,24 @@ test(
     // phase's own work. Bracketed precisely, not just excluded here, by
     // "sample-rpg with Save and Move on UNROM 512 does not build" below.
     //
-    // MMC3 joined UNROM 512's exclusion for one revision of this file, for
-    // the identical reason UNROM 512 stays excluded: sample-rpg carries a
-    // live item, and ITEM_KERNEL_ALLOWANCE (16 bytes, measured,
-    // main/build/generate.js) plus item_metasprite's own table byte was real
-    // cost the combination's 21-byte real margin (1 byte of modelled
-    // headroom beyond KERNEL_SLACK) did not have. A kernel diet in
+    // MMC3 joined UNROM 512's exclusion once already, for one revision of
+    // this file, for the identical reason UNROM 512 stays excluded:
+    // sample-rpg carries a live item, and ITEM_KERNEL_ALLOWANCE (16 bytes,
+    // measured, main/build/generate.js) plus item_metasprite's own table
+    // byte was real cost the combination's 21-byte real margin (1 byte of
+    // modelled headroom beyond KERNEL_SLACK) did not have. A kernel diet in
     // engine/player.asm (the four movement direction routines' identical
     // two-corner probe-and-commit tail, collapsed into one shared routine
-    // per axis -- see the long comment beside "sample-rpg with Save, Move
-    // and its one live item builds on MMC3 again" below) recovered enough
-    // real kernel-lo headroom that this combination now leaves exactly
-    // KERNEL_SLACK bytes of margin again, the same shape every other
-    // per-mapper term in this file already holds to, so MMC3 rejoins this
-    // loop rather than staying excluded.
-    for (const mapper of saveMappers.filter((m) => m.id !== 30)) {
+    // per axis) recovered enough real kernel-lo headroom that this
+    // combination briefly closed again, with real headroom rather than a
+    // single spare byte -- and round 2 (ROADMAP item 5 phase 4c,
+    // use_item_apply) spent exactly that headroom and 8 bytes more.
+    // ITEM_EFFECT_KERNEL_ALLOWANCE_BY_GAME_TYPE.rpg (60 bytes, measured) is
+    // real cost the diet's own margin did not have room for a second time,
+    // the identical shape this exclusion already documents for UNROM 512 --
+    // see "sample-rpg with Save, Move and its one live item does not build
+    // on MMC3" below, the direct mirror of the UNROM 512 test just past it.
+    for (const mapper of saveMappers.filter((m) => m.id !== 30 && m.id !== 4)) {
       const { project, codeBytes } = await measureCodeBytes(t, mapper, { withSave: true, withMove: true });
       assertCovers({ mapper, codeBytes }, kernelCodeBytes(project, mapper), 'a live Save command and a live Move command');
     }
@@ -424,19 +442,22 @@ test(
     // Phase 4b: sample-rpg (what measureCodeBytes always builds) carries one
     // live item, so "no Save, no Move, no title" is not "no items" -- every
     // measurement in this whole function unconditionally includes
-    // ITEM_KERNEL_ALLOWANCE. That cancels out in every *other* delta this
-    // test computes (both sides of each subtraction carry it equally), but
-    // not here: baseKernelCodeBytes is a static, pre-items constant with no
-    // item cost of its own to cancel against, so it has to be added back in
-    // by hand on this one comparison.
+    // ITEM_KERNEL_ALLOWANCE, and, since round 2, ITEM_EFFECT_KERNEL_ALLOWANCE
+    // too (use_item_apply is gated by the identical ITEMS_ENABLED toggle).
+    // That cancels out in every *other* delta this test computes (both
+    // sides of each subtraction carry it equally), but not here:
+    // baseKernelCodeBytes is a static, pre-items constant with no item cost
+    // of its own to cancel against, so both have to be added back in by
+    // hand on this one comparison -- sample-rpg is an RPG project, so the
+    // game-type-specific figure (.rpg) is the one that applies.
     const mmc3 = noSave.find((entry) => entry.mapper.id === 4);
     if (mmc3) {
       assert.equal(
-        mmc3.codeBytes - baseKernelCodeBytes(mmc3.mapper) - ITEM_KERNEL_ALLOWANCE,
+        mmc3.codeBytes - baseKernelCodeBytes(mmc3.mapper) - ITEM_KERNEL_ALLOWANCE - ITEM_EFFECT_KERNEL_ALLOWANCE_BY_GAME_TYPE.rpg,
         SPLIT_LOCK_KERNEL_ALLOWANCE,
         "MMC3's own no-Save measurement should exceed its per-mapper base by exactly SPLIT_LOCK_KERNEL_ALLOWANCE " +
-          'plus ITEM_KERNEL_ALLOWANCE (every RPG shows text, so every MMC3 RPG pays the interrupt-race fix, and ' +
-          'sample-rpg always carries a live item)'
+          'plus ITEM_KERNEL_ALLOWANCE plus ITEM_EFFECT_KERNEL_ALLOWANCE_BY_GAME_TYPE.rpg (every RPG shows text, ' +
+          'so every MMC3 RPG pays the interrupt-race fix, and sample-rpg always carries a live item)'
       );
     }
   }
@@ -597,6 +618,66 @@ test(
     }
   }
 );
+
+// ROADMAP item 5 phase 4c round 2: ITEM_EFFECT_KERNEL_ALLOWANCE_BY_GAME_TYPE's
+// own direct isolation, on every registered board -- not just the three
+// RPG-capable ones the sample-rpg-based test above already covers. An action
+// project needs this measured too: use_item_apply's damage branch differs in
+// size between BATTLE_ENABLED (party_damage) and !BATTLE_ENABLED
+// (lose_hearts plus a zero-page read of player_hp), so the action-side figure
+// is a real, independent measurement, not assumed from the RPG one.
+async function measureItemEffectCodeBytes(t, mapper, withItems) {
+  const dir = await fsp.mkdtemp(path.join(os.tmpdir(), 'forge-itemeffect-'));
+  t.after(() => fsp.rm(dir, { recursive: true, force: true }));
+  const project = createProject('Effect', 'action');
+  project.cartridge.mapper = mapper.id;
+  project.sprites.actors.push({ id: 0, name: 'Potion', behavior: 'pickup', speed: 1, hp: 1, anims: {} });
+  project.items = withItems
+    ? [{ id: 0, name: 'Potion', actorId: 0, metaspriteId: null, effect: { kind: 'heal', amount: 30 } }]
+    : [];
+  project.maps[0].screens[0].entities.push({ actorId: 0, x: 16, y: 16, props: {} });
+  await saveProject(dir, project);
+  const lines = [];
+  const built = await buildProject({ dir, project, log: (line) => lines.push(line) });
+  const { kernelLoBank } = prgLayout(mapper);
+  const bankLine = lines.find((line) => new RegExp(`^BANK\\s+${kernelLoBank}\\s`).test(line));
+  assert.ok(bankLine, `${mapper.name}: nesasm's usage table never mentioned bank ${kernelLoBank} (kernel-lo)`);
+  const used = Number(bankLine.match(/(\d+)\/\s*(\d+)\s*$/)?.[1]);
+  const symbols = await fsp.readFile(built.symbolPath, 'utf8');
+  const resetAddr = parseInt(symbols.match(/^reset\s*=\s*\$([0-9A-Fa-f]+)/m)[1], 16);
+  return { project, codeBytes: used - (resetAddr - 0xc000) };
+}
+
+test(
+  'ITEM_EFFECT_KERNEL_ALLOWANCE_BY_GAME_TYPE.action is exact, on every registered board',
+  { skip: !hasNesasm && 'nesasm not found on PATH' },
+  async (t) => {
+    for (const mapper of SUPPORTED_MAPPERS) {
+      const without = await measureItemEffectCodeBytes(t, mapper, false);
+      const withItems = await measureItemEffectCodeBytes(t, mapper, true);
+      const delta = withItems.codeBytes - without.codeBytes;
+      const expected = ITEM_KERNEL_ALLOWANCE + ITEM_EFFECT_KERNEL_ALLOWANCE_BY_GAME_TYPE.action;
+      assert.equal(
+        delta,
+        expected,
+        `${mapper.name}: an action project's one item costs ${delta} bytes of kernel code (${without.codeBytes} -> ` +
+          `${withItems.codeBytes}), but ITEM_KERNEL_ALLOWANCE + ITEM_EFFECT_KERNEL_ALLOWANCE_BY_GAME_TYPE.action ` +
+          `reserves ${expected} — re-measure and correct it (see the comment beside kernelCodeBytes).`
+      );
+      assert.equal(
+        itemEffectKernelAllowance(withItems.project),
+        ITEM_EFFECT_KERNEL_ALLOWANCE_BY_GAME_TYPE.action,
+        `${mapper.name}: itemEffectKernelAllowance should read the action figure straight out of the table for an action project`
+      );
+    }
+  }
+);
+
+test('itemEffectKernelAllowance falls back to the larger measured figure for a gameType the table has no entry for', () => {
+  const bogus = { project: { gameType: 'not-a-real-game-type' } };
+  const worst = Math.max(...Object.values(ITEM_EFFECT_KERNEL_ALLOWANCE_BY_GAME_TYPE));
+  assert.equal(itemEffectKernelAllowance(bogus), worst, 'an unrecognized gameType must fall back to the larger of the two measured figures, never undercharge');
+});
 
 // --- feature-aware capacity errors -----------------------------------------
 //
@@ -879,53 +960,39 @@ function saveAndMoveEvent() {
   };
 }
 
-// The outcome this whole change was scoped against, and its history in three
-// parts. sample-rpg with a live Save command *and* a live Move command, on
-// MMC3, used to be short of the kernel-lo bank (332 bytes before the kernel
-// diet, 12 after it, 4 after per-mapper budgeting) even though nesasm itself
-// could assemble the real code into the bank with room left over; the
-// entity_contact fix (engine/combat.asm) closed that specific gap, down to a
-// real, measured 21 bytes free (1 byte of modelled headroom beyond
-// KERNEL_SLACK). Phase 4b's own ITEM_KERNEL_ALLOWANCE (16 bytes, measured on
-// all three RPG-capable boards -- see main/build/generate.js) was real cost
-// sample-rpg was always going to pay the moment items[] stopped being
-// schema-only, and it reopened the gap: 16 (code) + 1 (item_metasprite
-// table) = 17 bytes the 21-byte margin did not have, exactly the capacity
-// wall the phase 4 design document's §6 predicted. checkCapacity was correct
-// to refuse it then -- a build inside KERNEL_SLACK is exactly the "fits
-// today, breaks on the next harmless change" case that margin exists to rule
-// out.
+// The outcome this whole change was scoped against, and its history in four
+// parts now, not three. sample-rpg with a live Save command *and* a live
+// Move command, on MMC3, used to be short of the kernel-lo bank (332 bytes
+// before the kernel diet, 12 after it, 4 after per-mapper budgeting) even
+// though nesasm itself could assemble the real code into the bank with room
+// left over; the entity_contact fix (engine/combat.asm) closed that specific
+// gap, down to a real, measured 21 bytes free (1 byte of modelled headroom
+// beyond KERNEL_SLACK). Phase 4b's own ITEM_KERNEL_ALLOWANCE (16 bytes,
+// measured on all three RPG-capable boards -- see main/build/generate.js)
+// was real cost sample-rpg was always going to pay the moment items[]
+// stopped being schema-only, and it reopened the gap: 16 (code) + 1
+// (item_metasprite table) = 17 bytes the 21-byte margin did not have,
+// exactly the capacity wall the phase 4 design document's §6 predicted.
 //
-// The kernel diet closed it again, this time with real headroom rather than
-// a single spare byte. engine/player.asm's four direction routines
-// (move_left_inside/move_right_inside/move_up_inside/move_down_inside) each
-// ended with an identical two-corner probe-and-commit tail, differing only
-// in which body-offset constant fed the first probe and which of
-// player_x/player_y the result committed to; move_horizontal_probe and
-// move_vertical_probe are that shared tail now, with each _inside label
-// falling into its axis's tail by `jmp` (not `jsr`) so the tail's own `rts`
-// still returns to whichever caller originally `jsr`'d move_left et al. --
-// removing genuine duplication, not changing behaviour, which is why this is
-// a size fix and every functional movement test in this suite still holds.
-// This is the same shape as two earlier kernel diets in this codebase's
-// history (the `.if !BATTLE_ENABLED` split that freed 269 bytes, and the
-// entity_contact fix above that freed 5): real duplication found and
-// removed, re-measured rather than assumed.
+// The kernel diet (engine/player.asm's four direction routines, an
+// identical two-corner probe-and-commit tail collapsed into one shared
+// routine per axis) closed it again, with real headroom rather than a
+// single spare byte -- 74 real bytes free, at the time phase 4c round 1
+// shipped.
 //
-// checkCapacity now accepts this exact combination again -- Save, Move and
-// sample-rpg's one live item, on MMC3. The assertion below is `free >=
-// KERNEL_SLACK`, not `>`: a perfectly calibrated model whose project exactly
-// fills the bank leaves exactly KERNEL_SLACK free, and that is a legitimate
-// build a `>` check would wrongly refuse. What this actually guards against
-// is kernelCodeBytes under-reserving -- confirmed by sabotage: reverting the
-// diet while keeping the diet's smaller constants let checkCapacity accept a
-// build that really had only 4 real bytes free, and this is the assertion
-// that caught it. That is reservation-versus-reality drift, the same thing
-// assertCovers checks elsewhere in this file, not a claim about how much
-// headroom this particular build happens to have today -- which is why the
-// literal free-byte count is not pinned here either.
+// Round 2 (ROADMAP item 5 phase 4c, engine/ui.asm's use_item_apply) spent
+// that headroom and reopened the gap a third time, by design rather than by
+// accident: use_item_apply is real engine code this phase always needed,
+// gated by the same ITEMS_ENABLED toggle as everything phase 4b already
+// charged, and ITEM_EFFECT_KERNEL_ALLOWANCE_BY_GAME_TYPE.rpg (60 bytes,
+// measured on all three RPG-capable boards) is exactly what it costs. The
+// user decided this outcome explicitly rather than asking for another kernel
+// diet: sample-rpg with Save, Move and its one live item no longer fits on
+// MMC3, and that is accepted as a real, documented limitation -- the
+// identical shape "sample-rpg with Save and Move on UNROM 512 does not
+// build" below already holds to, not a silent gap.
 test(
-  'sample-rpg with Save, Move and its one live item builds on MMC3 again, with real headroom, after the kernel diet',
+  'sample-rpg with Save, Move and its one live item does not build on MMC3 -- round 2 reopened the gap the kernel diet had closed, a documented limitation',
   { skip: !hasNesasm && 'nesasm not found on PATH' },
   async (t) => {
     const project = await loadProject(SAMPLE_RPG);
@@ -935,36 +1002,26 @@ test(
     project.maps[0].screens[0].entities.push(saveAndMoveEvent());
     assert.ok(project.items.length > 0, 'this case needs sample-rpg\'s own live item still in play');
 
-    assert.deepEqual(
-      checkCapacity(project).problems.filter((p) => p.severity === 'error'),
-      [],
-      'Save, Move and sample-rpg\'s one live item should fit on MMC3 after the kernel diet'
+    const message = kernelShortfallMessage(project);
+    assert.match(
+      message,
+      new RegExp(
+        `removing every Move command \\(frees ${MOVE_KERNEL_ALLOWANCE} bytes\\) or every Save command ` +
+          `\\(frees ${SAVE_KERNEL_ALLOWANCE_BY_MAPPER[4]} bytes\\)`
+      ),
+      'the refusal should name both commands and both of their real byte figures, not just report the deficit'
     );
 
-    const dir = await fsp.mkdtemp(path.join(os.tmpdir(), 'forge-savemove-mmc3-'));
-    t.after(() => fsp.rm(dir, { recursive: true, force: true }));
-    await saveProject(dir, project);
-    const lines = [];
-    const built = await buildProject({ dir, project, log: (line) => lines.push(line) });
-    assert.ok(built.romPath, 'nesasm should assemble this exact configuration into a ROM');
-    const bankLine = lines.find((line) => /^BANK\s+30\s/.test(line));
-    assert.ok(bankLine, "MMC3's own kernel-lo bank (30) should appear in nesasm's usage table");
-    const free = Number(bankLine.match(/\d+\/\s*(\d+)\s*$/)?.[1]);
-    assert.ok(
-      free >= KERNEL_SLACK,
-      `expected at least KERNEL_SLACK (${KERNEL_SLACK}) bytes free in kernel-lo, got ${free}`
-    );
-
-    // The design's own mitigations (drop Move; switch to MMC1) still work
-    // too, for a project whose content leaves less headroom than
-    // sample-rpg's own does today.
+    // The design's own mitigations (drop Move; switch to MMC1) still work,
+    // exactly as they did before round 2 -- this is what checkCapacity's own
+    // advice above names, confirmed as a real fix rather than merely claimed.
     const droppedMove = structuredClone(project);
     droppedMove.maps[0].screens[0].entities.at(-1).props.event.pages[0].commands =
       droppedMove.maps[0].screens[0].entities.at(-1).props.event.pages[0].commands.filter((c) => c.op !== 'move');
     assert.deepEqual(
       checkCapacity(droppedMove).problems.filter((p) => p.severity === 'error'),
       [],
-      'dropping Move should still be a real fix for a tighter build'
+      'dropping Move should still be a real fix'
     );
 
     const onMmc1 = structuredClone(project);
@@ -1060,6 +1117,40 @@ test(
           `\\(frees ${SAVE_KERNEL_ALLOWANCE_BY_MAPPER[30]} bytes\\)`
       ),
       'the refusal should name both commands and both of their real byte figures, not just report the deficit'
+    );
+
+    // sample-rpg carries one live item by default, so `both` above exercises
+    // the item-bearing reservation (ITEM_KERNEL_ALLOWANCE included) -- not
+    // the item-free one ROADMAP.md's own "Suggested order" section cites this
+    // test for. The two are close enough (17 bytes apart at last measurement:
+    // ITEM_KERNEL_ALLOWANCE plus item_metasprite's own one-byte table entry)
+    // that a future saving landing between them would let the item-free
+    // configuration fit while `both` above kept refusing and kept passing --
+    // the exact silent-drift failure this file's header comment describes,
+    // just relocated to a sentence in ROADMAP.md instead of a constant here.
+    // Isolated the same way withItems does in measureCodeBytes above, rather
+    // than reused from a shared helper, because this is the one place that
+    // needs the *refusal* to survive the strip, not the code-byte count.
+    const bothItemFree = await loadProject(SAMPLE_RPG);
+    bothItemFree.cartridge.mapper = 30;
+    bothItemFree.project.titleMap = 0;
+    bothItemFree.project.titleScreen = 0;
+    bothItemFree.items = [];
+    assert.equal(
+      projectUsesItems(bothItemFree),
+      false,
+      'this case exists to isolate the item-free reservation -- confirm the strip actually turned usesItems off'
+    );
+    bothItemFree.maps[0].screens[0].entities.push(saveAndMoveEvent());
+    const itemFreeMessage = kernelShortfallMessage(bothItemFree);
+    assert.match(
+      itemFreeMessage,
+      new RegExp(
+        `removing every Move command \\(frees ${MOVE_KERNEL_ALLOWANCE} bytes\\) or every Save command ` +
+          `\\(frees ${SAVE_KERNEL_ALLOWANCE_BY_MAPPER[30]} bytes\\)`
+      ),
+      'the item-free configuration must still be refused on UNROM 512 -- if this ever fits, ROADMAP.md\'s ' +
+        '"Suggested order" section is citing a test that no longer backs its claim'
     );
   }
 );

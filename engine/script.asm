@@ -817,7 +817,8 @@ switch_clear:
   ldy switch_y
   rts
 
-; A = actor id. Returns A = 0 (Z set) when the bag holds one.
+; A = item id under ITEMS_ENABLED, the legacy backing-actor id otherwise.
+; Returns A = 0 (Z set) when the bag holds one.
 has_item:
   sta script_tmp
   ldx inv_count

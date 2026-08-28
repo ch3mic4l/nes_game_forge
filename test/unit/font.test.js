@@ -134,6 +134,45 @@ test('a live Damage command counts as combat in an action project, but not in an
   assert.equal(projectUsesCombat(rpg), false, "an RPG's Damage command does not touch player_hp");
 });
 
+// Round 2b review, J1: a fourth damage source (engine/ui.asm's
+// use_item_apply, round 2) reaches player_hp/hearts in an action project the
+// same way a damaging actor, a painted metatile or a live scripted Damage
+// command already do -- and unlike the scripted command, an item's effect
+// has no live/dead branch to hide inside: itemTables (generate.js) compiles
+// every item unconditionally, and use_item applies whichever one is ever
+// spent. Before this fix, an action project whose only damage source was a
+// damage-kind item built and ran with COMBAT_ENABLED off entirely: no heart
+// HUD, no reserved sprite tiles, and -- because projectUsesText also calls
+// this predicate -- no font either, so a lethal hit's own game-over message
+// would have no glyphs to draw it with.
+test('a damage-kind item counts as combat in an action project, but not in an RPG', () => {
+  const project = createProject('Bomb-carrier');
+  project.items.push({ id: 0, name: 'Bomb', actorId: null, metaspriteId: null, effect: { kind: 'damage', amount: 5 } });
+  assert.equal(projectUsesCombat(project), true, 'a damage-kind item should reserve the hearts');
+  assert.equal(projectUsesText(project), true, 'combat can reach the game-over screen, so it needs the font too');
+
+  // Structurally identical item, but an RPG's damage-kind item lands on
+  // pc_hp through party_damage (engine/rpg.asm), never player_hp --
+  // BATTLE_ENABLED reserves that art on its own account, the same carve-out
+  // the scripted Damage command already gets a few tests up.
+  const rpg = createProject('Bomb-carrier RPG', 'rpg');
+  rpg.items.push({ id: 0, name: 'Bomb', actorId: null, metaspriteId: null, effect: { kind: 'damage', amount: 5 } });
+  assert.equal(projectUsesCombat(rpg), false, "an RPG's damage-kind item does not touch player_hp");
+});
+
+test('a damage-kind item left at amount 0, or a heal-kind item, does not turn combat on', () => {
+  const project = createProject('Dud-carrier');
+  project.items.push({ id: 0, name: 'Dud', actorId: null, metaspriteId: null, effect: { kind: 'damage', amount: 0 } });
+  assert.equal(projectUsesCombat(project), false, 'a damage amount of 0 cannot hurt the player');
+
+  project.items[0].effect.amount = 5;
+  assert.equal(projectUsesCombat(project), true, 'raising it off zero should reserve the hearts, the same as any other damage source appearing');
+
+  const healOnly = createProject('Potion-carrier');
+  healOnly.items.push({ id: 0, name: 'Potion', actorId: null, metaspriteId: null, effect: { kind: 'heal', amount: 20 } });
+  assert.equal(projectUsesCombat(healOnly), false, 'a heal-kind item cannot hurt anybody, at any amount');
+});
+
 test('a switched-off Damage command does not turn combat on', () => {
   const project = createProject('Trapper');
   project.maps[0].screens[0].entities.push({

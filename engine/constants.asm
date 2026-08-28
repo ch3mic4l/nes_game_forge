@@ -449,8 +449,10 @@ TRIG_TOUCH  = 1
 TRIG_ENTER  = 2             ; the screen loaded
 
 ; ------------------------------------------------------------ inventory RAM
-; One actor id per item carried, oldest first. Not a per-screen array: the bag
-; travels with the player, so it survives a screen change.
+; One id per item carried, oldest first -- an item id under ITEMS_ENABLED, or
+; the legacy backing-actor id on the disabled economy, which never gained a
+; real item id space of its own. Not a per-screen array: the bag travels with
+; the player, so it survives a screen change.
 MAX_ITEMS   = 8
 inv_items   = $0378  ; @size=MAX_ITEMS
 
@@ -515,6 +517,15 @@ NO_METASPRITE = $FF         ; item_metasprite: no icon, whether because none
 NO_COMMON_EVENT = $FF       ; OP_CALL's own operand: the named common event
                             ; does not resolve to a table slot -- see
                             ; script_op_call
+
+; An item's effect, in the same order as ITEM_EFFECT_KINDS in
+; shared/project.js -- item_effect_kind (engine/ui.asm's use_item_apply)
+; indexes this order directly, so a kind's number is spelled here and
+; nowhere else.
+EFFECT_NONE   = 0
+EFFECT_HEAL   = 1
+EFFECT_DAMAGE = 2
+
 TOUCH_RANGE = 12            ; how close counts as touching, in pixels
 REACH_RANGE = 20            ; how far attack and interact reach
 

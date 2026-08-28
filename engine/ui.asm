@@ -5,7 +5,7 @@
 ; row of input_actions, which is what makes Item, Cancel and Confirm mean
 ; something.
 ;
-; The menu is drawn entirely with sprites -- the pickups you are carrying, laid
+; The menu is drawn entirely with sprites -- the items you are carrying, laid
 ; out along the top -- because a tileset's 256 background tiles all belong to the
 ; Tile Forge and the engine takes none of them for a menu. Dialogue is the
 ; exception, and only when a project asks for it: an actor with something to say
@@ -41,10 +41,10 @@ add_item:
 add_item_done:
   rts
 
-; A = actor id. Take the first one of those out of the bag, if there is one --
-; the Take command. Shares use_item's shape: the bag closes up over the gap, so
-; the row on screen never has a hole in it and the highlight never points past
-; the end.
+; A = item id under ITEMS_ENABLED, the legacy backing-actor id otherwise. Take
+; the first one of those out of the bag, if there is one -- the Take command.
+; Shares use_item's shape: the bag closes up over the gap, so the row on
+; screen never has a hole in it and the highlight never points past the end.
 remove_item:
   sta script_tmp
   ldx #0
@@ -98,15 +98,40 @@ close_ui:
   sta game_state
   rts
 
+; use_item_apply's own return code -- purely internal to this file, not part
+; of any wire format, so these three values answer to nothing but the cmp
+; that reads them a few lines down.
+USE_ITEM_NONE  = 0
+USE_ITEM_ALIVE = 1
+USE_ITEM_DIED  = 2
+
 ; The confirm action, in the menu: spend the highlighted item. The bag closes up
 ; over the gap, so the row on screen never has a hole in it and the highlight
-; never points past the end.
+; never points past the end. Under ITEMS_ENABLED, an item's effect is applied
+; first -- a key item (kind none) is not spent at all, since use_item_apply
+; found nothing to do; heal and damage are both spent regardless of which
+; health model applied them.
+;
+; The lethal jmp to player_died is use_item's own, not use_item_apply's --
+; see use_item_apply's own header for why, and CLAUDE.md's script_op_damage
+; entry for the identical rule this mirrors. use_item is itself reached by a
+; jmp (do_action_confirm, engine/input.asm), never a jsr, which is what
+; makes that jmp safe here: there is no return address of use_item's own on
+; the stack to strand.
 use_item:
   lda inv_count
   beq use_item_done         ; an empty bag has nothing to spend
   ldx inv_sel
   cpx inv_count
   bcs use_item_done
+  .if ITEMS_ENABLED
+  lda inv_items,x
+  jsr use_item_apply          ; clobbers X (party_heal/party_damage do)
+  cmp #USE_ITEM_NONE
+  beq use_item_done            ; a key item: nothing applied, nothing spent
+  pha                          ; remember alive-vs-died across the shift below, which clobbers A
+  ldx inv_sel                  ; reload explicitly -- X is not trustworthy after use_item_apply
+  .endif
 use_item_shift:
   inx
   cpx inv_count
@@ -119,14 +144,82 @@ use_item_shifted:
   inc items_used
   lda inv_sel               ; spending the last item pulls the highlight back
   cmp inv_count
-  bcc use_item_done
+  bcc use_item_highlight_done
   ldx inv_count
   beq use_item_first
   dex
 use_item_first:
   stx inv_sel
+use_item_highlight_done:
+  .if ITEMS_ENABLED
+  pla
+  cmp #USE_ITEM_DIED
+  bne use_item_done
+  jmp player_died
+  .endif
 use_item_done:
   rts
+
+; A = item id. Applies its effect, if it has one. Returns a result in A --
+; USE_ITEM_NONE, USE_ITEM_ALIVE or USE_ITEM_DIED (below) -- for use_item to
+; act on. Never jumps to player_died itself: the jsr that reached this
+; routine left a return address on the stack that only use_item, in tail
+; position from do_action_confirm, may abandon -- the same reason
+; script_op_damage's own jmp to player_died is that routine's own, not
+; party_damage's or lose_hearts', and precisely finding 4 from the phase 4
+; design's own review: its first draft had this routine jump to
+; player_died directly, stranding use_item's jsr use_item_apply return
+; address for some unrelated rts to mis-pop later. A two-state carry
+; protocol cannot say "applied, and lethal" as a third thing distinct from
+; "applied" and "not applied" without a second flag riding along beside it,
+; which is exactly the shape this return-code avoids: one value in A, three
+; cases, one cmp/beq each at the call site. Clobbers X (party_heal/
+; party_damage do); the caller reloads inv_sel itself rather than trusting
+; this routine's X on return.
+;
+; The whole routine, not just its one call site, is gated on ITEMS_ENABLED
+; -- item_effect_kind/item_effect_amount (assets/items.inc) are not even
+; emitted (not a stub, nothing) when items are disabled, the identical
+; "guard the definition, not just the callers" fix draw_item_icon already
+; needed for the same reason (round 3 finding, main/build/generate.js's
+; itemTables).
+  .if ITEMS_ENABLED
+use_item_apply:
+  tay
+  lda item_effect_kind,y
+  cmp #EFFECT_HEAL
+  bne use_item_apply_damage
+  lda item_effect_amount,y
+  .if BATTLE_ENABLED
+  jsr party_heal
+  .endif
+  .if !BATTLE_ENABLED
+  jsr gain_hearts
+  .endif
+  lda #USE_ITEM_ALIVE
+  rts
+use_item_apply_damage:
+  cmp #EFFECT_DAMAGE
+  bne use_item_apply_none
+  lda item_effect_amount,y
+  .if BATTLE_ENABLED
+  jsr party_damage
+  bne use_item_apply_alive   ; someone recruited is still standing
+  .endif
+  .if !BATTLE_ENABLED
+  jsr lose_hearts
+  lda player_hp
+  bne use_item_apply_alive
+  .endif
+  lda #USE_ITEM_DIED
+  rts
+use_item_apply_alive:
+  lda #USE_ITEM_ALIVE
+  rts
+use_item_apply_none:
+  lda #USE_ITEM_NONE
+  rts
+  .endif
 
 ; -------------------------------------------------------------- dialogue
 

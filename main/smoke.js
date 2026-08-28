@@ -81,12 +81,18 @@ const scenario = (dir, sampleDir, sampleRpgDir) => `
   step('save/load round trip', 'identical');
 
   // Visit every Forge so a syntax error in any module is caught here.
-  for (const id of ['sprite', 'map', 'sound', 'controller', 'code', 'build', 'tutorial', 'tile']) {
+  // window.__app.forgeIds (renderer/app.js) is the FORGES registry's own ids,
+  // not a second hand-written list here -- a hardcoded array in this file
+  // agreeing with FORGES by hand is exactly the single-writer violation that
+  // let the Items Forge almost ship unvisited by this very step.
+  const forgeIds = window.__app.forgeIds;
+  if (!forgeIds.length) throw new Error('window.__app.forgeIds returned nothing -- the registry is not reaching this test');
+  for (const id of forgeIds) {
     window.__app.goTo(id);
     await wait(140);
     if (!document.querySelector('#stage').children.length) throw new Error(id + ' forge mounted nothing');
   }
-  step('all forges mount', 'ok');
+  step('all forges mount', 'ok (' + forgeIds.join(', ') + ')');
 
   // --- Map Forge ---------------------------------------------------------
   window.__app.goTo('map');
@@ -990,6 +996,300 @@ const scenario = (dir, sampleDir, sampleRpgDir) => `
     'sprite forge actor identity reset on shared animation',
     'selecting an actor with the same idle animation still restarted the preview clock'
   );
+
+  // --- Items Forge: round 1d finding D2, round 1e finding E3 --------------
+  // The delete race only a real async modal and a real undo can prove: the
+  // item a confirmation names must still be the item deleted (or nothing
+  // deleted at all) even if the project changes while that confirmation is
+  // still open. A unit test cannot reproduce this -- the bug is entirely in
+  // the ordering between a real await and a real, independently-firing
+  // onProjectChange, not in any pure function's output.
+  //
+  // Round 1e finding E3: this used to run on the already-opened sample
+  // project. store.open() holds the caller's project object by reference
+  // and commit() mutates it in place, so pushing A and B mutated
+  // sample.value.project.items directly; store.undo() then swapped
+  // store.project for a *clone* that excluded B, and the restore commit
+  // after this block reset that clone back to the original items -- leaving
+  // sample.value.project itself (the object every later sample-based step
+  // reopens by reference, not from disk) still carrying A and B, with their
+  // hardcoded ids colliding with the sample's own Gem. The restoration
+  // assertion never caught it because it read store.project (the clone),
+  // not sample.value.project (the thing actually reused later). Reopening
+  // the very first project this scenario created (at dir, unused again
+  // after its own early save/reload steps, well before the sample project
+  // is ever opened) sidesteps the whole hazard: this runs against a
+  // disposable object nothing else in this scenario reads from.
+  {
+    const forItemsRace = await window.forge.project.open(${JSON.stringify(dir)});
+    if (!forItemsRace.ok) throw new Error('reopen for the items delete-race test: ' + forItemsRace.error);
+    window.__app.store.open(forItemsRace.value.dir, forItemsRace.value.project);
+    await wait(200);
+    window.__app.goTo('items');
+    await wait(200);
+    const itemsStore = window.__app.store;
+    itemsStore.commit('smoke: add A', (project) => {
+      project.items.push({ id: 0, name: 'A', actorId: null, metaspriteId: null, effect: { kind: 'none', amount: 0 } });
+    });
+    await wait(150);
+    itemsStore.commit('smoke: add B', (project) => {
+      project.items.push({ id: 1, name: 'B', actorId: null, metaspriteId: null, effect: { kind: 'none', amount: 0 } });
+    });
+    await wait(150);
+
+    const findItemListSelect = () =>
+      [...document.querySelectorAll('#stage select')].find((s) => [...s.options].some((o) => o.textContent === 'B'));
+    const listSelect = findItemListSelect();
+    if (!listSelect) throw new Error('Items Forge has no item list select with a B option');
+    const bOptionIndex = [...listSelect.options].findIndex((o) => o.textContent === 'B');
+    if (bOptionIndex === -1) throw new Error('B is not among the item list’s own options');
+    listSelect.value = String(bOptionIndex);
+    listSelect.dispatchEvent(new Event('change', { bubbles: true }));
+    await wait(150);
+
+    const deleteButton = [...document.querySelectorAll('#stage button.btn.btn-sm')].find((b) => b.title === 'Delete');
+    if (!deleteButton) throw new Error('Items Forge has no Delete button');
+    deleteButton.click();
+    await until('the delete confirmation', () => document.querySelector('#modalHost p'));
+    const confirmText = document.querySelector('#modalHost p').textContent;
+    if (confirmText.indexOf('"B"') === -1) {
+      throw new Error('the delete confirmation did not name B: ' + confirmText);
+    }
+
+    // The race itself: while the confirmation for B is open, undo the Add of
+    // B. store.undo() restores a structuredClone snapshot -- entirely new
+    // objects -- so the exact item this dialog captured before the await no
+    // longer exists anywhere in the live project once this line runs.
+    itemsStore.undo();
+    await wait(150);
+
+    const confirmButton = [...document.querySelectorAll('#modalHost button')].find(
+      (b) => b.textContent.trim() === 'Delete'
+    );
+    if (!confirmButton) throw new Error('the delete confirmation has no Delete button');
+    confirmButton.click();
+    await until('the confirmation to close', () => document.querySelector('#modalHost').hidden);
+    await wait(150);
+
+    // B was undone away before the confirmation was answered, so it must be
+    // gone regardless of anything this test does; the only question that
+    // proves D2 is fixed is whether A -- correctly named in a confirmation
+    // that had already resolved by the time the project changed -- survived.
+    const namesAfter = itemsStore.project.items.map((i) => i.name);
+    if (namesAfter.indexOf('B') !== -1) throw new Error('B should already be gone (undone), but is still present: ' + JSON.stringify(namesAfter));
+    if (namesAfter.indexOf('A') === -1) {
+      throw new Error('the wrong item was deleted -- A should have survived, items are now: ' + JSON.stringify(namesAfter));
+    }
+    // Round 1e finding E4: the toast used to say the item "no longer
+    // exists", which is false in the common case this guards -- an undo of
+    // some unrelated edit leaves the same logical item present as a new
+    // object, and indexOf legitimately can't tell "deleted" from "the
+    // project changed underneath the confirmation". The wording has to say
+    // the true, general thing instead.
+    const toastText = [...document.querySelectorAll('#toastHost .toast')].map((n) => n.textContent).join(' | ');
+    if (toastText.indexOf('changed') === -1 || toastText.toLowerCase().indexOf('try again') === -1) {
+      throw new Error('expected a toast explaining the project changed and asking to try again, saw: ' + toastText);
+    }
+    step('Items Forge delete race', 'undoing the add mid-confirmation deleted nothing, A survived, toast shown');
+  }
+
+  // Round 1f finding F2: the race step above has no positive control --
+  // every one of its assertions is also satisfied by a Delete button that
+  // is a permanent no-op (B's absence comes from the undo, not from any
+  // real deletion; A surviving is what doing nothing produces; the toast
+  // is the abandon path's own text). Confirmed the hard way: replacing
+  // indexOf's result with a hardcoded -1 still passed every assertion
+  // above. This is the missing control -- one ordinary confirmed
+  // deletion, no intervening undo.
+  //
+  // Round 1g finding G2: this used to run in the same disposable project as
+  // the race step above, right after it, with C hardcoded to id 1 on the
+  // assumption that A (the race step's own leftover) was still sitting at
+  // id 0. That made the two steps order-dependent for no real reason, and
+  // worse: a future refactor that hoisted "add A" into something shared by
+  // both steps could let the race step's own "A survived" check pass
+  // falsely against a deletion that removed the wrong item, since some A
+  // would still be present either way. Reopening dir fresh -- the same
+  // on-disk project the race step's own reopen read, still untouched on
+  // disk because none of that step's mutations were ever saved -- gives
+  // this its own independent, empty, actually-asserted starting point
+  // instead: neither step can borrow the other's state or mask its
+  // failure.
+  {
+    const forPositiveControl = await window.forge.project.open(${JSON.stringify(dir)});
+    if (!forPositiveControl.ok) throw new Error('reopen for the items positive-control test: ' + forPositiveControl.error);
+    window.__app.store.open(forPositiveControl.value.dir, forPositiveControl.value.project);
+    await wait(200);
+    window.__app.goTo('items');
+    await wait(200);
+    const itemsStore = window.__app.store;
+    if (itemsStore.project.items.length !== 0) {
+      throw new Error('expected a fresh reopen to start with no items, saw: ' + JSON.stringify(itemsStore.project.items));
+    }
+    if (itemsStore.project.commonEvents.length !== 0 || itemsStore.project.sprites.actors.length !== 0) {
+      throw new Error('expected a fresh reopen to start with no common events or actors either');
+    }
+    //
+    // Round 1g finding G1: this used to claim deleting C "exercises both
+    // renumberItemDeletion's exact-match path (nothing targets C) and its
+    // shift path" -- a contradiction in the same sentence (nothing named C,
+    // so the exact-match path was never reached at all), and a real gap: a
+    // handler that shifts only Give/Take references greater than the
+    // deleted id, ignoring exact matches and ignoring Carrying conditions
+    // and monster drops entirely, passed this smoke test before this fix.
+    // That handler's worst failure mode is silent, not a crash: a reference
+    // left at C's old id after C is gone now names whatever the restamp
+    // moved into that slot -- D -- so a Give/Take/Carrying/drop that used
+    // to name C would silently start naming D instead, and that wrong
+    // reference reaches the ROM. So this now names C directly from four
+    // separate places -- a Give command, a Take command, a Carrying
+    // condition, and a monster's drop -- covering both remaining code paths
+    // in renumberItemDeletion (the Give/Take loop and the two it does not
+    // touch), and asserts each becomes NO_ITEM/null rather than following
+    // to D. D and E (below) are the shift half of the same proof, kept
+    // separately: a handler could satisfy the shift checks while still
+    // getting every exact match wrong, or vice versa, so neither stands in
+    // for the other.
+    itemsStore.commit('smoke: add C, and four references naming it directly', (project) => {
+      project.items.push({ id: 0, name: 'C', actorId: null, metaspriteId: null, effect: { kind: 'none', amount: 0 } });
+      project.sprites.actors.push({ id: 0, name: 'Monster', behavior: 'npc', damage: 1, battle: { drop: 0 } });
+      project.commonEvents.push({
+        id: 0,
+        name: 'Give C',
+        event: { pages: [{ cond: { type: 'none', arg: 0 }, commands: [{ op: 'give', item: 0 }] }] }
+      });
+      project.commonEvents.push({
+        id: 1,
+        name: 'Take C, Carrying C',
+        event: { pages: [{ cond: { type: 'hasItem', arg: 0 }, commands: [{ op: 'take', item: 0 }] }] }
+      });
+    });
+    await wait(150);
+    itemsStore.commit('smoke: add D and E, and a reference to each', (project) => {
+      project.items.push({ id: 1, name: 'D', actorId: null, metaspriteId: null, effect: { kind: 'none', amount: 0 } });
+      project.items.push({ id: 2, name: 'E', actorId: null, metaspriteId: null, effect: { kind: 'none', amount: 0 } });
+      project.commonEvents.push({
+        id: 2,
+        name: 'Give D',
+        event: { pages: [{ cond: { type: 'none', arg: 0 }, commands: [{ op: 'give', item: 1 }] }] }
+      });
+      project.commonEvents.push({
+        id: 3,
+        name: 'Take E',
+        event: { pages: [{ cond: { type: 'none', arg: 0 }, commands: [{ op: 'take', item: 2 }] }] }
+      });
+    });
+    await wait(150);
+    const giveCCommand = () => itemsStore.project.commonEvents[0].event.pages[0].commands[0];
+    const takeCCommand = () => itemsStore.project.commonEvents[1].event.pages[0].commands[0];
+    const carryingCCond = () => itemsStore.project.commonEvents[1].event.pages[0].cond;
+    const monsterDrop = () => itemsStore.project.sprites.actors[0].battle.drop;
+    const giveDCommand = () => itemsStore.project.commonEvents[2].event.pages[0].commands[0];
+    const takeECommand = () => itemsStore.project.commonEvents[3].event.pages[0].commands[0];
+    // Round 1 review, ride-along P3: this used to hardcode 255, duplicating
+    // shared/project.js's own NO_ITEM. Importing the real constant means a
+    // sentinel change cannot make this smoke test silently disagree with
+    // production.
+    const { NO_ITEM: NO_ITEM_SENTINEL } = await import('../shared/project.js');
+
+    const findOptionByText = (text) =>
+      [...document.querySelectorAll('#stage select')].find((s) => [...s.options].some((o) => o.textContent === text));
+    const listSelectForC = findOptionByText('C');
+    if (!listSelectForC) throw new Error('Items Forge has no item list select with a C option');
+    const cOptionIndex = [...listSelectForC.options].findIndex((o) => o.textContent === 'C');
+    listSelectForC.value = String(cOptionIndex);
+    listSelectForC.dispatchEvent(new Event('change', { bubbles: true }));
+    await wait(150);
+
+    const deleteButtonForC = [...document.querySelectorAll('#stage button.btn.btn-sm')].find((b) => b.title === 'Delete');
+    if (!deleteButtonForC) throw new Error('Items Forge has no Delete button for the positive-control delete');
+    deleteButtonForC.click();
+    await until('the C delete confirmation', () => document.querySelector('#modalHost p'));
+    const cConfirmText = document.querySelector('#modalHost p').textContent;
+    if (cConfirmText.indexOf('"C"') === -1) throw new Error('the delete confirmation did not name C: ' + cConfirmText);
+    const confirmButtonForC = [...document.querySelectorAll('#modalHost button')].find(
+      (b) => b.textContent.trim() === 'Delete'
+    );
+    if (!confirmButtonForC) throw new Error('the C delete confirmation has no Delete button');
+    confirmButtonForC.click();
+    await until('the C confirmation to close', () => document.querySelector('#modalHost').hidden);
+    await wait(150);
+
+    function assertPostDeleteState(label) {
+      const items = itemsStore.project.items;
+      const names = items.map((i) => i.name);
+      if (JSON.stringify(names) !== JSON.stringify(['D', 'E'])) {
+        throw new Error(label + ': expected exactly D and E to remain after deleting C, got: ' + JSON.stringify(names));
+      }
+      items.forEach((entry, position) => {
+        if (entry.id !== position) {
+          throw new Error(label + ': id restamp did not run -- ' + entry.name + ' has id ' + entry.id + ' at position ' + position);
+        }
+      });
+      if (giveCCommand().item !== null) {
+        throw new Error(label + ': the Give command naming C directly must become null, not follow to D -- got ' + giveCCommand().item);
+      }
+      if (takeCCommand().item !== null) {
+        throw new Error(label + ': the Take command naming C directly must become null, not follow to D -- got ' + takeCCommand().item);
+      }
+      if (carryingCCond().arg !== NO_ITEM_SENTINEL) {
+        throw new Error(label + ': the Carrying condition naming C directly must become NO_ITEM, not follow to D -- got ' + carryingCCond().arg);
+      }
+      if (monsterDrop() !== null) {
+        throw new Error(label + ': the monster’s drop naming C directly must become null, not follow to D -- got ' + monsterDrop());
+      }
+      if (giveDCommand().item !== 0) {
+        throw new Error(label + ': the Give command should still name D (now id 0) after C was deleted, but names ' + giveDCommand().item);
+      }
+      if (takeECommand().item !== 1) {
+        throw new Error(label + ': the Take command should still name E (now id 1) after C was deleted, but names ' + takeECommand().item);
+      }
+    }
+    assertPostDeleteState('after delete');
+    step(
+      'Items Forge positive-control delete',
+      'C deleted, D/E survived with restamped ids; the four references naming C directly became NO_ITEM/null, and the Give/Take shifts for D and E followed correctly'
+    );
+
+    // Undo must restore the array and every reference together, and redo
+    // must re-apply all of them -- not just the array, which a shift-only
+    // or a restamp-only implementation could still get half right.
+    itemsStore.undo();
+    await wait(150);
+    const namesAfterUndo = itemsStore.project.items.map((i) => i.name);
+    if (JSON.stringify(namesAfterUndo) !== JSON.stringify(['C', 'D', 'E'])) {
+      throw new Error('undo should restore C, D, E in order, got: ' + JSON.stringify(namesAfterUndo));
+    }
+    if (giveCCommand().item !== 0) throw new Error('undo should restore the Give-C command to id 0, got ' + giveCCommand().item);
+    if (takeCCommand().item !== 0) throw new Error('undo should restore the Take-C command to id 0, got ' + takeCCommand().item);
+    if (carryingCCond().arg !== 0) throw new Error('undo should restore the Carrying-C condition to id 0, got ' + carryingCCond().arg);
+    if (monsterDrop() !== 0) throw new Error('undo should restore the monster’s drop to id 0, got ' + monsterDrop());
+    if (giveDCommand().item !== 1) throw new Error('undo should restore the Give command to D’s original id 1, got ' + giveDCommand().item);
+    if (takeECommand().item !== 2) throw new Error('undo should restore the Take command to E’s original id 2, got ' + takeECommand().item);
+
+    itemsStore.redo();
+    await wait(150);
+    assertPostDeleteState('after redo');
+    step('Items Forge positive-control delete: undo/redo', 'the item array and all four references tracked the delete and its reversal together');
+  }
+
+  // Round 1e finding E3's own verification, not just reasoning about it: the
+  // shared sample fixture must carry no trace of either Items Forge block
+  // above, checked directly rather than assumed from "neither referenced
+  // it".
+  const sampleItemNames = sample.value.project.items.map((i) => i.name);
+  for (const stray of ['A', 'B', 'C', 'D', 'E']) {
+    if (sampleItemNames.indexOf(stray) !== -1) {
+      throw new Error('the sample fixture was contaminated by the items tests: ' + JSON.stringify(sampleItemNames));
+    }
+  }
+
+  // Back to the sample project, unmodified: this block never touched
+  // sample.value.project, so re-opening it is a clean switch of context, not
+  // a restoration of anything -- the steps below expect the sample's own
+  // song data, same as before this block ran.
+  window.__app.store.open(sample.value.dir, sample.value.project);
+  await wait(200);
 
   // --- Sound Forge -------------------------------------------------------
   window.__app.goTo('sound');

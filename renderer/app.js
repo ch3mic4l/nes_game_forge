@@ -22,6 +22,13 @@ const FORGES = [
     load: () => import('./forges/sprite/sprite.js')
   },
   {
+    id: 'items',
+    label: 'Items',
+    glyph: '🎒',
+    title: 'Items Forge',
+    load: () => import('./forges/items/items.js')
+  },
+  {
     id: 'map',
     label: 'Map',
     glyph: '🗺',
@@ -107,6 +114,18 @@ export const app = {
   toast,
   showModal,
   goTo: (id) => selectForge(id),
+  /**
+   * Every real Forge id, in rail order — the single source `main/smoke.js`'s
+   * "visit every Forge" step reads instead of keeping its own hand-written
+   * list. `FORGES` itself stays module-private (its `load` closures are not
+   * something a test needs, or should be able to call directly), so this is
+   * the ids alone, in the same shape a second hardcoded array would have
+   * been guessing at. Filters out `{ separator: true }` rail dividers, which
+   * carry no `id` and mount nothing.
+   */
+  get forgeIds() {
+    return FORGES.filter((entry) => !entry.separator).map((entry) => entry.id);
+  },
   /**
    * A Forge holding an edit it has not committed to the store yet says so here.
    * Nothing else can: the store emits no event until the commit lands, and the

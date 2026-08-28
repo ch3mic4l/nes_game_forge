@@ -34,7 +34,7 @@ const ENGINE_SUPPORT = {
     dialog: null
   },
   item: {
-    gameplay: 'Opens the inventory: the pickups you are carrying, laid out along the top.',
+    gameplay: 'Opens the inventory: the items you are carrying, laid out along the top.',
     menu: 'Closes the inventory again.',
     dialog: null
   },
@@ -51,7 +51,7 @@ const ENGINE_SUPPORT = {
   },
   confirm: {
     gameplay: null,
-    menu: 'Spends the highlighted item and leaves the inventory open.',
+    menu: 'Spends the highlighted item (a key item is kept, not spent) and leaves the inventory open.',
     dialog: 'Ends the conversation.',
     title: 'Begins the game.'
   },

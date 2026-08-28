@@ -70,7 +70,7 @@ export function battleSection(actor, index, rerender) {
       { style: { marginBottom: '10px', color: hostile ? 'var(--text-faint)' : 'var(--accent)' } },
       hostile
         ? 'Contact damage above zero is what marks this actor a monster. These numbers decide how the fight goes.'
-        : 'Contact damage is zero, so this actor never starts a fight. It can still be an item: give it a Heals value and it works from the bag.'
+        : 'Contact damage is zero, so this actor never starts a fight. Items — including what they heal or damage for — are authored in the Items Forge now; set this actor’s Behaviour to Pickup and choose it there as an item’s “Collected from”, or hand one out with a scripted Give item command.'
     ),
     row(
       field('Attack', number(battle.atk ?? 4, 0, 255, (value) => set('atk', value))),
@@ -84,8 +84,7 @@ export function battleSection(actor, index, rerender) {
     ),
     row(
       field('Experience', number(battle.xp ?? 4, 0, 65535, (value) => set('xp', value))),
-      field('Gold', number(battle.gold ?? 2, 0, 255, (value) => set('gold', value))),
-      field('Heals', number(battle.heal ?? 0, 0, 255, (value) => set('heal', value), 'Used from the bag'))
+      field('Gold', number(battle.gold ?? 2, 0, 255, (value) => set('gold', value)))
     ),
     row(
       field('Weak to', select(ELEMENTS, battle.weak ?? 'none', (value) => set('weak', value))),

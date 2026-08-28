@@ -22,7 +22,7 @@ import NES from '../../renderer/emulator/core/nes.js';
 import { loadProject, saveProject } from '../../main/project-io.js';
 import { buildProject } from '../../main/build/pipeline.js';
 import { generateAssets, resolveItemIcon } from '../../main/build/generate.js';
-import { createProject, validateProject, LIMITS, NO_METASPRITE } from '../../shared/project.js';
+import { createProject, createScreen, normalizeProject, validateProject, LIMITS, NO_METASPRITE } from '../../shared/project.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const SAMPLE = path.join(ROOT, 'sample');
@@ -31,15 +31,22 @@ const hasRom = fssync.existsSync(path.join(SAMPLE, 'build/game.nes'));
 // Engine RAM, from engine/constants.asm.
 const PLAYER_X = 0x10;
 const PLAYER_Y = 0x11;
+const PLAYER_HP = 0x4e;
 const PICKUPS = 0x24;
+const GAME_STATE = 0x25;
 const INV_COUNT = 0x37;
+const INV_SEL = 0x38;
 const ENT_ACTIVE = 0x300;
 const ENT_ACTOR = 0x308;
 const ENT_X = 0x310;
 const ENT_Y = 0x318;
+const INV_ITEMS = 0x378;
+
+const ST_MENU = 1;
 
 const A = 0;
 const B = 1;
+const SELECT = 2;
 const UP = 4;
 const DOWN = 5;
 
@@ -146,6 +153,51 @@ test('validateProject warns about a pickup actor no item names', async (t) => {
   );
 });
 
+// Round 1d, finding D3: canBackItem (shared/project.js) is supposed to be
+// the single writer of "which actors can back an item", but generate.js's
+// own emitScreens still spelled out `actor?.behavior === 'pickup'` itself.
+// A sabotage of canBackItem that only breaks a validateProject/migration
+// test proves nothing about whether the generator actually shares it -- so
+// this exercises emitScreens directly, through the real generateAssets
+// entry point, and reads the actual emitted screens.inc byte back.
+test('emitScreens: a placed pickup actor’s record byte carries the item id it grants -- exercises the generator directly, not validateProject', async () => {
+  const project = createProject('Pickup', 'action');
+  project.sprites.actors = [{ id: 0, name: 'Torch', behavior: 'pickup', speed: 1, hp: 1, anims: {} }];
+  project.items = [{ id: 0, name: 'Torch item', actorId: 0, metaspriteId: null, effect: { kind: 'none', amount: 0 } }];
+  // A second screen, and an explicit toScreen on the placement, so the door-
+  // target fallback (Math.min(toScreen, flat.length - 1)) would produce a
+  // *different* byte (1) than the item id (0) if emitScreens ever took that
+  // branch -- with only one screen the fallback clamps to 0 regardless of
+  // toScreen, which would make the two branches indistinguishable and let a
+  // broken canBackItem pass this test by coincidence, the exact shape of
+  // false confidence the round 1c sabotage was called out for.
+  project.maps[0].screens.push(createScreen());
+  project.maps[0].screens[0].entities.push({ actorId: 0, x: 16, y: 16, props: { toScreen: 1 } });
+
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'forge-pickup-target-'));
+  try {
+    await generateAssets({ dir, project });
+    const text = await fs.readFile(path.join(dir, 'build/assets/screens.inc'), 'utf8');
+    const row = /screen_0_ent:\n((?:\s*\.db .*\n?)+)/m.exec(text);
+    assert.ok(row, 'screens.inc should emit an entity record for screen 0');
+    const bytes = row[1]
+      .trim()
+      .split('\n')
+      .flatMap((line) => line.replace(/^\s*\.db\s*/, '').split(',').map((s) => parseInt(s.replace('$', ''), 16)));
+    // [count, actorId, x, y, target, toX, toY, event, trigger, hideSwitch]
+    assert.equal(bytes[0], 1, 'exactly one entity should be placed on screen 0');
+    assert.equal(bytes[1], 0, 'sanity: the placed entity is actor 0 (Torch)');
+    assert.equal(
+      bytes[4],
+      0,
+      'a pickup actor’s record byte must carry the item id (0) it grants, not the door-target fallback (which ' +
+        'would be 1 here) -- this only holds if emitScreens actually asks canBackItem, not its own inlined check'
+    );
+  } finally {
+    await fs.rm(dir, { recursive: true, force: true });
+  }
+});
+
 test('entity_pickup (touch) refuses an unbacked pickup: it vanishes and counts, but never enters the bag', {
   skip: !hasRom && 'run `npm run sample` first'
 }, async (t) => {
@@ -180,12 +232,109 @@ test('do_interact refuses an unbacked pickup the same way: it vanishes and count
   const slot = findSlot(nes, fake.id);
   assert.notEqual(slot, -1, 'the interact-only Fake pickup did not spawn');
 
-  assert.ok(walkToEntity(nes, slot), 'could not reach the interact-only Fake pickup');
+  // Placed exactly 16px away -- inside REACH_RANGE (20), outside TOUCH_RANGE
+  // (12) -- so the player is already close enough to interact with no walk
+  // needed. walkToEntity's own chase closes to within ~2px, which is
+  // *inside* TOUCH_RANGE and would collect through entity_pickup during the
+  // approach, before B is ever pressed -- exercising the touch path instead
+  // of do_interact's own. Asserting nothing has been collected yet, right
+  // before the tap, is what proves the tap -- not the approach -- is what
+  // fires.
+  assert.equal(nes.cpu.mem[PICKUPS], 0, 'nothing should be collected yet -- the pickup is out of touch range');
+  assert.equal(nes.cpu.mem[INV_COUNT], 0, 'nothing should be in the bag yet');
+  assert.equal(nes.cpu.mem[ENT_ACTIVE + slot], 1, 'the pickup must still be on the map before interacting');
+
   tap(nes, B); // B is bound to interact
 
   assert.equal(nes.cpu.mem[PICKUPS], 1, 'interacting with it should still count toward pickups');
   assert.equal(nes.cpu.mem[INV_COUNT], 0, 'an unbacked pickup must not enter the bag via do_interact either');
   assert.equal(nes.cpu.mem[ENT_ACTIVE + slot], 0, 'it should still vanish off the map');
+});
+
+// Round 6 review (P1): the two tests above -- and every other unbacked-
+// pickup assertion in this file -- build from `sample`, which has a live
+// item, so ITEMS_ENABLED is always 1 there. Nothing exercised the disabled
+// economy at all, where "unbacked" does not mean what it means above:
+// add_item's own NO_ITEM guard is itself `.if ITEMS_ENABLED` and simply does
+// not assemble when a project has no items, so entity_pickup's legacy
+// actor-id path (ent_actor,x) reaches add_item unconditionally and the
+// pickup genuinely enters the bag. validateProject's warning is gated on
+// projectUsesItems for the identical reason (shared/project.js), so it must
+// stay silent here too -- these two are what prove both halves of that at
+// once, on each collection path.
+async function buildItemsFreePickup(t, mode) {
+  const project = createProject('NoItems', 'action');
+  // Actor id 0 is a filler, pushed first and never placed on any screen, so
+  // it can never be collected -- its only job is to push the Gem to a
+  // nonzero id. Actor id 0 and "the byte a broken add_item call always
+  // writes" (`lda #0` instead of `lda ent_actor,x`) are the same value, so a
+  // Gem left at id 0 would let that bug pass this test unnoticed.
+  project.sprites.actors.push({ id: 0, name: 'Filler', behavior: 'npc', speed: 1, hp: 1, anims: {} });
+  project.sprites.actors.push({ id: 1, name: 'Gem', behavior: 'pickup', speed: 1, hp: 1, anims: {} });
+  const x = mode === 'touch' ? project.project.startX : project.project.startX - 16;
+  project.maps[0].screens[0].entities.push({ actorId: 1, x, y: project.project.startY, props: {} });
+  assert.equal(project.items.length, 0, 'sanity: this project must have no items at all -- ITEMS_ENABLED must be 0');
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'forge-noitems-pickup-'));
+  t.after(() => fs.rm(dir, { recursive: true, force: true }));
+  await saveProject(dir, project);
+  const built = await buildProject({ dir, project, log: () => {} });
+  return { project, romPath: built.romPath };
+}
+
+test('validateProject stays silent about a Pickup actor in a project with no items at all', async () => {
+  const project = createProject('NoItems', 'action');
+  project.sprites.actors.push({ id: 0, name: 'Gem', behavior: 'pickup', speed: 1, hp: 1, anims: {} });
+  project.maps[0].screens[0].entities.push({ actorId: 0, x: 0, y: 0, props: {} });
+
+  const warnings = validateProject(project).filter(
+    (entry) => entry.severity === 'warning' && /has behaviour Pickup but no item names it/.test(entry.message)
+  );
+  assert.equal(
+    warnings.length,
+    0,
+    'a project with no items has no ITEMS_ENABLED economy for "unbacked" to mean anything in -- warning about it ' +
+      'would tell an author the actor will not enter the bag, when it actually will'
+  );
+});
+
+test('entity_pickup (touch) enters the bag with the actor’s own id when the project has no items -- the disabled economy', async (t) => {
+  const { romPath } = await buildItemsFreePickup(t, 'touch');
+  const nes = boot(romPath);
+
+  assert.equal(nes.cpu.mem[PICKUPS], 1, 'walking onto it should count toward pickups');
+  assert.equal(nes.cpu.mem[INV_COUNT], 1, 'with no items authored, add_item has no NO_ITEM guard to refuse it with -- it must enter the bag');
+  assert.equal(
+    nes.cpu.mem[INV_ITEMS],
+    1,
+    'the bag should hold the actor’s own id (1, a deliberately nonzero id) -- there is no item id space in this ' +
+      'economy, and a stray zero here would be indistinguishable from add_item writing a hardcoded #0'
+  );
+});
+
+test('do_interact enters the bag with the actor’s own id when the project has no items -- the disabled economy', async (t) => {
+  const { romPath } = await buildItemsFreePickup(t, 'interact');
+  const nes = boot(romPath);
+  const slot = findSlot(nes, 1);
+  assert.notEqual(slot, -1, 'the interact-only Gem did not spawn');
+
+  // See the sibling unbacked-pickup test's own comment: placed 16px away --
+  // inside REACH_RANGE, outside TOUCH_RANGE -- so no walk is needed, and
+  // walkToEntity's ~2px approach would collect through entity_pickup before
+  // B is ever pressed, exercising the touch path instead of do_interact's.
+  assert.equal(nes.cpu.mem[PICKUPS], 0, 'nothing should be collected yet -- the pickup is out of touch range');
+  assert.equal(nes.cpu.mem[INV_COUNT], 0, 'nothing should be in the bag yet');
+  assert.equal(nes.cpu.mem[ENT_ACTIVE + slot], 1, 'the pickup must still be on the map before interacting');
+
+  tap(nes, B); // B is bound to interact
+
+  assert.equal(nes.cpu.mem[PICKUPS], 1, 'interacting with it should count toward pickups');
+  assert.equal(nes.cpu.mem[INV_COUNT], 1, 'with no items authored, do_interact’s own add_item call must enter the bag too');
+  assert.equal(
+    nes.cpu.mem[INV_ITEMS],
+    1,
+    'the bag should hold the actor’s own id (1, a deliberately nonzero id) -- a stray zero here would be ' +
+      'indistinguishable from add_item writing a hardcoded #0'
+  );
 });
 
 // --------------------------------------------------------------------------
@@ -353,6 +502,68 @@ test('an item with an explicit but out-of-range metaspriteId degrades to NO_META
     0xff,
     'a stale explicit reference must not silently fall back to "unset" and re-derive from the actor -- it becomes no icon'
   );
+});
+
+// Deliverable 3, effect half (phase4-design.md §8): recorded there as 4c's
+// own, deferred until items[] actually gained an effect field -- a project
+// shaped exactly like phase 3's migration output (no `effect` key at all,
+// `actorId` naming a real actor) built under the new implementation. The
+// icon half above stops at generateAssets, because icon derivation
+// (resolveItemIcon) is itself a build-time step; effect derivation
+// (deriveItemEffect) is a one-time NORMALIZATION step instead, so this goes
+// one level further than a bare normalizeProject() call already covers
+// (test/unit/project.test.js's own "normalizeItem: effect derives heal...")
+// -- it builds a real ROM from the migrated result and confirms the
+// migrated amount actually reaches player_hp through use_item, proving the
+// migration is not just correct in the returned object but reaches the
+// assembled engine.
+test('a phase-3-shaped item (no effect field, actorId naming a real actor) migrates and builds into a working Heals item', {
+  skip: !hasRom && 'run `npm run sample` first'
+}, async (t) => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'forge-migrate-effect-'));
+  t.after(() => fs.rm(dir, { recursive: true, force: true }));
+
+  const raw = createProject('Migrated');
+  // Round 6 review (P4): 30, from 1 HP with a 3-heart maximum, saturates --
+  // a hardcoded full heal, or any migrated amount >= 2, all produce the
+  // identical result of 3, so that combination could not actually
+  // distinguish a correct migration reaching the engine from a wrong one.
+  // 1 is deliberately below the ceiling: 1 HP + a heal of 1 lands at 2,
+  // which only the exact migrated amount can produce.
+  raw.sprites.actors.push({ id: 0, name: 'Backer', behavior: 'pickup', speed: 1, hp: 1, battle: { heal: 1 }, anims: {} });
+  raw.maps[0].screens[0].entities.push({ actorId: 0, x: 16, y: 16, props: {} });
+  // Exactly phase 3's own shape: no `effect` key at all, `metaspriteId`
+  // absent too -- what an old project file loaded for the first time under
+  // this implementation looks like, before normalizeItem ever touches it.
+  raw.items = [{ id: 0, name: 'Potion', actorId: 0 }];
+
+  const project = normalizeProject(raw);
+  assert.deepEqual(
+    project.items[0].effect,
+    { kind: 'heal', amount: 1 },
+    'the one-time migration should have derived heal/1 from the backing actor’s battle.heal'
+  );
+
+  await saveProject(dir, project);
+  const built = await buildProject({ dir, project, log: () => {} });
+  const nes = boot(built.romPath);
+
+  nes.cpu.mem[INV_ITEMS] = 0;
+  nes.cpu.mem[INV_COUNT] = 1;
+  nes.cpu.mem[INV_SEL] = 0;
+  nes.cpu.mem[PLAYER_HP] = 1;
+
+  tap(nes, SELECT);
+  assert.equal(nes.cpu.mem[GAME_STATE], ST_MENU, 'SELECT should open the field menu');
+  tap(nes, A);
+
+  assert.equal(
+    nes.cpu.mem[PLAYER_HP],
+    2,
+    'the migrated item should heal exactly the amount battle.heal named (1 HP -> 2), not 0 and not an ' +
+      'unconditional full heal to the 3-heart maximum'
+  );
+  assert.equal(nes.cpu.mem[INV_COUNT], 0, 'a heal-kind item should still be spent, same as an authored one');
 });
 
 // --------------------------------------------------------------------------

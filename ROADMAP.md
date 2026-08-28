@@ -426,9 +426,10 @@ Start with **items, equipment and a few general status effects**. Not RPG Maker'
 its size is a feature of a PC engine with no ROM budget, and `battletables.js` has to precompute
 anything the 6502 would otherwise need a multiply for.
 
-Staged in six phases. The first two are done, and they landed in the opposite order to their
-numbering — the renumbering defects were found while scoping the rest and fixed first, so phase 2's
-commit precedes phase 1's.
+Staged in six phases. Phases 1 and 2 landed in the opposite order to their numbering — the
+renumbering defects were found while scoping the rest and fixed first, so phase 2's commit precedes
+phase 1's. Phases 1 through 5 are now built; phase 6 (docs) is current for the developer-facing half
+and still owes an author-facing sentence.
 
 - ~~**1. A capacity check for the banked battle region**~~ — **done** (`f7f3f28`). The 8 KB region
   `codeRegions()` takes off the switchable window had no bound on it at all: overflowing it was
@@ -458,28 +459,76 @@ commit precedes phase 1's.
     (`BASE_KERNEL_CODE_BYTES_BY_MAPPER` had baked in a title-on measurement unconditionally). Phase
     4 could not be designed against a budget that was wrong by that much, so this had to land first.
   - **4b. The id retarget.** — **done**. The bag holds item ids instead of actor ids; item tables
-    (icon, name — the enabled-path `mon_heal`/`mon_name` siblings, `item_heal`/`item_name`, still
-    sourced from the backing actor's own `battle.heal`, unchanged from the actor-reuse economy);
-    **both** pickup paths retargeted (`entity_pickup` *and* `do_interact` — the second is the one
-    that gets forgotten); Give, Take, drops and Carrying compile to the item id directly; the save
-    bound retargeted, with `SAVE_LAYOUT_VERSION` 1 → 2. `use_item` itself is untouched by this
-    slice — it never read what the bag byte meant, only shifted and counted it, so retargeting what
-    the byte means cost it nothing, which is what let this land as a self-contained slice rather
-    than needing 4c alongside it. See CLAUDE.md's entity-record paragraph (`ent_to_scr`) and its
+    (icon, name — the enabled-path `mon_heal`/`mon_name` siblings, `item_heal`/`item_name`, at this
+    point in the history still sourced from the backing actor's own `battle.heal`, unchanged from
+    the actor-reuse economy — 4c below is what later moved `item_heal`'s own source onto
+    `items[].effect` directly, once that field existed to read); **both** pickup paths retargeted
+    (`entity_pickup` *and* `do_interact` — the second is the one that gets forgotten); Give, Take,
+    drops and Carrying compile to the item id directly; the save bound retargeted, with
+    `SAVE_LAYOUT_VERSION` 1 → 2. `use_item` itself is untouched by this slice — it never read what
+    the bag byte meant, only shifted and counted it, so retargeting what the byte means cost it
+    nothing, which is what let this land as a self-contained slice rather than needing 4c alongside
+    it. See CLAUDE.md's entity-record paragraph (`ent_to_scr`) and its
     kernel-budget section (`ITEM_KERNEL_ALLOWANCE`) for the mechanism and the real, measured cost.
-  - **4c. The effects.** — designed, not built. `use_item` gains a real effect (Heal or Damage,
-    reusing the same `BATTLE_ENABLED` split the scripted commands already resolve through — no third
-    health model), and the battle item list reads item tables instead of `mon_heal`/`mon_name`.
-    Design work found three things that have to be gotten right before implementation, not after:
-    the field-used effect dispatch must not `jsr` into a routine that can `jmp player_died` on a
-    lethal hit — the identical return-address trap `script_op_damage`'s own header already
-    documents avoiding; the register reload that follows an applied effect has to stay inside the
-    same `.if ITEMS_ENABLED` branch that needed it, or an items-disabled build silently gains bytes
-    it shouldn't; and the battle item list's own filter (to whichever effects it can apply
-    consistently, so nothing in that menu is ever a silent no-op) can leave the menu enterable with
-    nothing in it unless the filtered count, not the raw bag count, decides whether to open it.
-- **5. The Database Forge**, with its Items page.
-- **6. Docs**, including the compatibility break stated below.
+  - **4c. The effects.** — **done**.
+    `items[].effect` is `{kind, amount}` (`none`/`heal`/`damage`, `ITEM_EFFECT_KINDS` in
+    `shared/project.js` the wire format for `EFFECT_*` in `engine/constants.asm`), migrated once at
+    normalization from the backing actor's `battle.heal`. `use_item` (`engine/ui.asm`, every game
+    type) now reads it before spending anything: a `none`-kind item is a key item, kept rather than
+    spent; `heal`/`damage` apply through whichever health model the build has (`BATTLE_ENABLED`:
+    `party_heal`/`party_damage`; otherwise `gain_hearts`/`lose_hearts`) and are spent either way, no
+    third health model invented. `use_item_apply` returns a three-state result rather than `jmp
+    player_died` on a lethal hit itself — the return-address trap the phase's own design review
+    (§9) had already found and corrected in the design document, before any of this was written; the
+    implementation never carried it, and the only time the buggy shape actually ran was a deliberate
+    sabotage rebuild during review, to confirm the regression test catches it. Round 4c review found
+    CLAUDE.md's own 6502-traps list crediting this to an "early version" as if it had shipped and
+    been caught in testing — that section is explicitly traps that "cost real debugging time," which
+    this one never did, so the entry was removed from that list rather than reworded; the mechanism
+    itself (why `use_item_apply` must never `jmp player_died` and `use_item` may) is described
+    accurately in CLAUDE.md's item-semantics section instead. The battle
+    item list (`build_item_list`, `engine/battleui.asm`) filters to `kind == heal AND amount > 0`,
+    and `battle_menu_item` decides whether to open Items from that filtered count rather than the
+    raw bag count — the second thing design review flagged, also fixed before implementation, also
+    never shipped broken. Two small item-conditional capacity terms came out of measuring rather
+    than estimating this: `ITEM_EFFECT_KERNEL_ALLOWANCE_BY_GAME_TYPE` (kernel-lo, split by game type
+    because `BATTLE_ENABLED` picks a differently-sized damage branch, not because any board differs)
+    and `ITEM_LIST_FILTER_BATTLE_ALLOWANCE` (17 bytes, the banked battle-code region, uniform across
+    boards). See CLAUDE.md's item-semantics section for the full mechanism and the kernel-budget
+    section for what this closed and reopened on MMC3. Round 4c's own review left one piece of
+    verification outstanding — no test proved `item_chosen`'s own `bt_list,x` read
+    (`engine/battleturn.asm`) maps a selected, filtered row back to the *correct* item id when the
+    bag holds a non-contiguous mix of listed and filtered-out items, confirmed by sabotage that
+    reading `inv_items,x` directly instead was caught only by the items-disabled pinned
+    byte-identity hash, which fires on any ROM change at all and asserts nothing about the mapping
+    itself. Round 5 closed the row and removal half: a bag whose accepted items sit
+    non-contiguously in the bag (rejects interleaved between them) and in non-ascending id order,
+    selecting a non-first row with real D-pad input rather than a poke, asserting the bag closed up
+    over the right slot — sabotage confirmed both a `bt_list,x` → `inv_items,x` substitution and a
+    build that sorted the accepted ids by value are each caught. That round's own amount-applied
+    assertion did not yet earn its claim, though: the selected item was `sample-rpg`'s own item id 0
+    (Potion), so `item_heal`'s unindexed byte 0 happens to be the right answer regardless of whether
+    `item_heal,y` is actually indexed by the chosen item — round 6 review caught this by sabotaging
+    exactly that read (`lda item_heal,y` → `lda item_heal`) and finding all tests still passed.
+    Fixed by excluding item 0 from the bag entirely and using two freshly authored items with
+    distinct nonzero ids and distinct amounts, so an unindexed read, a substitution, and a sort each
+    produce a different, wrong, and now-caught answer. Phase 4c's own §8 test deliverables are now
+    all built: the effect half of deliverable 3 (a phase-3-shaped item, no `effect` field at all,
+    migrating correctly and building into a working item) was the other genuinely outstanding one
+    and is now covered too — deliverable 4 (direct `NUM_ITEMS` save-bound coverage) turned out to
+    already exist in `test/unit/save.test.js` from an earlier round, not outstanding as this
+    paragraph once had it.
+- **5. The Items Forge** — **done**, for items. A dedicated Forge (`renderer/forges/items/items.js`,
+  registered in `renderer/app.js`'s `FORGES`, not a page inside a larger shell) rather than the
+  multi-domain "Database Forge" the phase's own framing first imagined — name, effect (kind and
+  amount) and the linked Pickup actor ("Collected from") are all authored there. Equipment, skills,
+  status-condition generalization, encounter tables and classes/selectable growth profiles — the
+  rest of this phase's original scope (line-for-line, above) — are not built and stay open roadmap
+  items of their own if this generalizes further.
+- **6. Docs** — the developer-facing half (CLAUDE.md, this file) is current as of phase 4c's own
+  implementation. The compatibility break stated below still owes an author-facing sentence
+  somewhere in the app itself (a Continue that silently stops appearing is not yet explained to
+  whoever hits it) — that half is still outstanding.
 
 Two constraints shaped phases 4 to 6, and both were cheaper to know up front than to rediscover —
 one is now a measured fact rather than a forecast:
@@ -492,12 +541,17 @@ one is now a measured fact rather than a forecast:
   on MMC3, was refused by items in 4b, and closed again within the same phase by a kernel diet in
   `engine/player.asm` — the four movement direction routines' identical two-corner probe-and-commit
   tail, collapsed into one shared routine per axis, recovering 70 bytes on every RPG-capable board.
-  The combination now builds with **74 real bytes free**, not merely the single spare byte it had
-  before items existed — headroom, though not much: nowhere near enough for another feature on the
-  scale of `MOVE_KERNEL_ALLOWANCE`'s own 395 bytes. This is not the constraint's last word either —
-  the margin has now closed and reopened three times on this one board, and the next byte the bank
-  grows anywhere, in this configuration, reopens it again. See CLAUDE.md's own kernel-budget section
-  for the arithmetic and why each closing has been the mechanism working, not a hole in it.
+  That headroom (**74 real bytes free**, not merely the single spare byte it had before items
+  existed) was real but not durable, and the prediction that it wouldn't last came true within the
+  same phase: 4c's own `use_item_apply` spent it, and this exact combination — `sample-rpg` with a
+  live `Save` *and* a live `Move`, on MMC3 — now refuses again, by 8 bytes
+  (`kernelCodeBytes` = 7662, "the lookup tables need 129 bytes but only 121 are free"). Unlike the
+  two earlier reopenings on this board, this one was not chased with another diet: it is accepted as
+  a documented limitation, the same way UNROM 512's own `Save`+`Move` shortfall already was —
+  `checkCapacity`'s own advice (drop every `Move`, or every `Save`, or switch to MMC1, which still
+  builds this combination with room to spare) is what an author in this exact corner is told. See
+  CLAUDE.md's own kernel-budget section for the arithmetic and why each closing and reopening has
+  been the mechanism working, not a hole in it.
 - **`SAVE_LAYOUT_VERSION` 1 → 2 breaks existing saves.** That was a deliberate choice, not a silent
   migration, landed in 4b rather than deferred to phase 6: the capability exists in the engine the
   moment 4b ships, so the break has to be unconditional and immediate, not phased in alongside the
@@ -842,11 +896,25 @@ resetting on either changing.
 
 **The kernel bank is the constraint on everything below this line, and it is close to full.** Move
 found it: ~395 bytes against 161 free on the worst battery board, and it only shipped by becoming
-conditional. A project with both Save and Move reserves 7924 of 8192. Item 6 is five more verbs of
+conditional. A project with both Save and Move reserves 7742 of 8192 on UNROM 512, the worst of the
+three RPG-capable boards — refused outright there, by `checkCapacity` before nesasm ever runs, once
+the project's own tables are added on top (`test/unit/kernelbytes.test.js`) — and 7586 of 8192 on
+MMC3, the tightest board this combination actually builds on. Item 6 is five more verbs of
 kernel code — fade, shake, sound effect, show/hide, tile change — and conditional assembly does not
 compose indefinitely, because a project that wants three of them is back where it started. The next
-one of them needs a decision first: a kernel diet, or a second banked region the way the battle
-system got one. Item 5 is mostly tables and editor work and is not blocked on that.
+one of them needs the same decision three kernel diets have already bought time against rather than
+settled: another diet — there may not be one left to find — or a second banked region the way the
+battle system got one. Item 5 was mostly tables and editor work; phase 4c no longer is either — it is
+**done** (round 6 closed the verification gaps round 4c left outstanding, above), and it
+cost 76 real bytes of kernel-lo (`ITEM_KERNEL_ALLOWANCE` 16 +
+`ITEM_EFFECT_KERNEL_ALLOWANCE_BY_GAME_TYPE.rpg` 60, both measured, not the 65-75 estimated here
+before implementation) plus a further 17 in the separate banked battle-code region. That kernel-lo
+cost is exactly what this
+paragraph predicted would happen: `sample-rpg` with Save and Move on MMC3 now refuses for real, by 8
+bytes, and — unlike item 6's own verbs below, still waiting on a diet or a second banked region —
+this one is not blocked on finding either: the refusal is accepted as a documented limitation
+(`checkCapacity` still offers dropping Move, dropping Save, or switching to MMC1), not a gate on
+shipping.
 
 The rest of item 3 also has a better claim on being next than its position suggests, for the same
 kind of reason it was cheap: none of the remaining bullets cost any ROM either. Item 1 made 64

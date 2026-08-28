@@ -16,7 +16,7 @@
 // (ROADMAP.md item 1), and a template that compiles to nothing is exactly what
 // this codebase refuses to ship.
 
-import { RPG_LIMITS, allCommands, projectEvents } from '../../../shared/project.js';
+import { RPG_LIMITS, allCommands, projectEvents, canBackItem } from '../../../shared/project.js';
 
 /**
  * Which switches the project already spends. Every place a switch number can
@@ -91,7 +91,7 @@ export function recruitable(project) {
 const firstPickup = (project) => {
   const items = project.items ?? [];
   const actors = project.sprites?.actors ?? [];
-  const item = items.find((entry) => actors[entry.actorId]?.behavior === 'pickup');
+  const item = items.find((entry) => canBackItem(actors[entry.actorId]));
   return item ? item.id : null;
 };
 

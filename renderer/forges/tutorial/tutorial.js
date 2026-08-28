@@ -387,10 +387,24 @@ const TOPICS = [
       p(
         'Members past the first are recruited in play with an event’s ',
         b('Party member joins'),
-        ' command, and an ',
+        ' command. An ',
         b('item'),
-        ' is just an actor with a Heals value: pick it up on the field and it appears in ',
-        'battle under ITEM.'
+        ' is authored in the Items Forge — its name and what it heals or damages — and reaches the bag three ',
+        'ways: a scripted ',
+        b('Give item'),
+        ' command, walking into or interacting with the Pickup actor named under the Items Forge’s own ',
+        b('Collected from'),
+        ', or as a monster’s drop on victory. Spending it from the field menu applies ',
+        b('Heals'),
+        ' or ',
+        b('Damages'),
+        ' either way. In battle under ITEM, only a ',
+        b('Heals'),
+        ' item with a real Amount is listed — a ',
+        b('Damages'),
+        ' item, or a ',
+        b('Heals'),
+        ' item left at Amount 0, never appears as a choice there; both still work from the field menu.'
       )
     ]
   },
@@ -438,7 +452,7 @@ const TOPICS = [
           ['Dash', 'Doubles walking speed while held'],
           ['Pause', 'Freezes everything until pressed again'],
           ['Item', 'Opens and closes the inventory'],
-          ['Confirm', 'Spends the highlighted item, or turns a dialogue page'],
+          ['Confirm', 'Spends the highlighted item (a key item is kept, not spent), or turns a dialogue page'],
           ['Cancel', 'Closes the inventory, or turns a dialogue page']
         ]
       ),

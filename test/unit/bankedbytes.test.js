@@ -52,6 +52,7 @@ import {
   BASE_BATTLE_CODE_BYTES_BY_MAPPER,
   BATTLE_REGION_SOURCES,
   BATTLE_SLACK,
+  ITEM_LIST_FILTER_BATTLE_ALLOWANCE,
   battleCodeOverridden,
   battleRegionPlacementOverridden,
   battleRegionRelocates,
@@ -210,6 +211,14 @@ test('every RPG-capable board’s measured base equals nesasm’s own usage minu
   // it. One build per variant per board, all in mkdtemp directories.
   const variants = [
     ['stock', () => {}],
+    // Round 3b review, K1: every other variant here keeps sample-rpg's one
+    // live item, so ITEM_LIST_FILTER_BATTLE_ALLOWANCE's own conditional term
+    // (battleRegionBytes, gated on projectUsesItems) was never exercised at
+    // 0 -- the exact blind spot that let the 17 bytes get folded into the
+    // unconditional base in the first place. project.items = [] is the same
+    // proven-safe strip kernelbytes.test.js already uses for the identical
+    // purpose on the kernel-lo side.
+    ['no items', (p) => { p.items = []; }],
     ['+6 actors', (p) => {
       const list = p.sprites.actors;
       const last = list[list.length - 1];
@@ -230,24 +239,55 @@ test('every RPG-capable board’s measured base equals nesasm’s own usage minu
     for (const [label, mutate] of variants) {
       const { project, used, predicted } = await measureRegion(t, mapper, mutate);
       const tables = battleTableBytes(project);
+      const itemAllowance = project.items?.length > 0 ? ITEM_LIST_FILTER_BATTLE_ALLOWANCE : 0;
       // Equality, not <=. The model has no estimation error to absorb: the
-      // region holds stock code plus tables, and the tables are counted off
-      // the single writer's real output rather than modelled. A <= check here
-      // would let the base drift upward silently, exactly the way MMC1's SAVE
-      // allowance sat at MMC3's larger figure under kernelbytes.test.js's own
-      // margin band. The real figures are in the message so a legitimate
-      // change to battle.asm fails this with a re-measurement rather than an
+      // region holds stock code plus tables plus (when items exist) the
+      // filter allowance, and the tables are counted off the single writer's
+      // real output rather than modelled. A <= check here would let the base
+      // drift upward silently, exactly the way MMC1's SAVE allowance sat at
+      // MMC3's larger figure under kernelbytes.test.js's own margin band.
+      // The real figures are in the message so a legitimate change to
+      // battle.asm fails this with a re-measurement rather than an
       // investigation.
       assert.equal(
         used,
         predicted,
         `${mapper.name} (${label}): nesasm used ${used} bytes of the banked code region but the byte math ` +
-          `predicts ${predicted} (base ${baseBattleCodeBytes(mapper)} + ${tables} table bytes). ` +
-          `If engine/battle.asm, battleui.asm or battleturn.asm changed on purpose, re-measure: the new base ` +
-          `for this board is ${used - tables}. If they did not, battleTableBytes has lost count of what ` +
-          'battleTables emits.'
+          `predicts ${predicted} (base ${baseBattleCodeBytes(mapper)} + ${tables} table bytes + ${itemAllowance} ` +
+          `item-filter allowance). If engine/battle.asm, battleui.asm or battleturn.asm changed on purpose, ` +
+          `re-measure: the new base for this board is ${used - tables - itemAllowance}. If they did not, ` +
+          'battleTableBytes has lost count of what battleTables emits, or ITEM_LIST_FILTER_BATTLE_ALLOWANCE ' +
+          'needs re-measuring.'
       );
     }
+  }
+});
+
+// Round 3b review, K1: ITEM_LIST_FILTER_BATTLE_ALLOWANCE's own direct
+// isolation, on every RPG-capable board -- the combined equality test above
+// covers it (its own "no items" variant now exercises the term at 0), but a
+// dedicated delta the same shape as kernelbytes.test.js's own
+// ITEM_KERNEL_ALLOWANCE isolation is what the review specifically asked for:
+// measure with items stripped, diff against a with-items baseline, and
+// assert equality against the named constant directly, rather than only
+// through the combined base+tables+allowance sum.
+test('ITEM_LIST_FILTER_BATTLE_ALLOWANCE is exact, on every RPG-capable board', {
+  skip: !hasNesasm && 'nesasm not found on PATH'
+}, async (t) => {
+  for (const mapper of CAPABLE_MAPPERS) {
+    const withItems = await measureRegion(t, mapper);
+    const noItems = await measureRegion(t, mapper, (p) => { p.items = []; });
+    const codeWithItems = withItems.used - battleTableBytes(withItems.project);
+    const codeWithoutItems = noItems.used - battleTableBytes(noItems.project);
+    const delta = codeWithItems - codeWithoutItems;
+    assert.equal(
+      delta,
+      ITEM_LIST_FILTER_BATTLE_ALLOWANCE,
+      `${mapper.name}: sample-rpg's one item costs ${delta} bytes of banked code (${codeWithoutItems} -> ` +
+        `${codeWithItems}), but ITEM_LIST_FILTER_BATTLE_ALLOWANCE reserves ${ITEM_LIST_FILTER_BATTLE_ALLOWANCE} ` +
+        '— this allowance must equal the filter’s real cost exactly, on every board. Re-measure and correct it ' +
+        '(see the comment beside BASE_BATTLE_CODE_BYTES_BY_MAPPER).'
+    );
   }
 });
 

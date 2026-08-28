@@ -34,8 +34,11 @@ import {
   NO_ACTOR,
   NO_ITEM,
   NO_METASPRITE,
+  ITEM_EFFECT_KINDS,
   itemMissing,
   itemPickerOptions,
+  canBackItem,
+  itemActorOptions,
   projectUsesItems,
   liveCommands,
   compiledPages,
@@ -1081,6 +1084,182 @@ test('normalizeItem: the NO_METASPRITE fallback survives a normalize/save/normal
   assert.equal(twice.items[0].metaspriteId, NO_METASPRITE, 'a second normalization pass must not change the already-correct sentinel');
 });
 
+// ROADMAP item 5, phase 4c round 1: items[].effect, the one-time migration
+// from the backing actor's raw battle.heal (phase4-design.md §5). These
+// mirror the metaspriteId tests just above -- same one-time-derivation
+// shape, same idempotence guarantee, one field over. Round 2 is what wrote
+// this order down as EFFECT_NONE/HEAL/DAMAGE (engine/constants.asm) and gave
+// it a reader (use_item_apply, engine/ui.asm) -- this array's order is that
+// equates list's own wire format, so `none` staying index 0 is not just a
+// migration default any more, it is what a later engine change must not
+// silently reorder.
+test('ITEM_EFFECT_KINDS: none stays index 0, the wire-format engine/constants.asm’s EFFECT_* equates spell out', () => {
+  assert.equal(ITEM_EFFECT_KINDS[0].id, 'none', 'none must stay first -- it is what every item meant before this field existed');
+  assert.ok(ITEM_EFFECT_KINDS.some((entry) => entry.id === 'heal'));
+  assert.ok(ITEM_EFFECT_KINDS.some((entry) => entry.id === 'damage'));
+});
+
+test('normalizeItem: effect derives heal from the backing actor’s battle.heal when unset', () => {
+  const project = normalizeProject({
+    sprites: { actors: [{ id: 0, name: 'Backer', behavior: 'pickup', battle: { heal: 30 } }] },
+    items: [{ id: 0, name: 'Potion', actorId: 0 }]
+  });
+  assert.deepEqual(project.items[0].effect, { kind: 'heal', amount: 30 });
+});
+
+test('normalizeItem: effect derives none when the backing actor has no positive battle.heal', () => {
+  const zero = normalizeProject({
+    sprites: { actors: [{ id: 0, name: 'Backer', behavior: 'pickup', battle: { heal: 0 } }] },
+    items: [{ id: 0, name: 'Key', actorId: 0 }]
+  });
+  assert.deepEqual(zero.items[0].effect, { kind: 'none', amount: 0 });
+
+  const noBacker = normalizeProject({ items: [{ id: 0, name: 'ScriptOnly', actorId: null }] });
+  assert.deepEqual(noBacker.items[0].effect, { kind: 'none', amount: 0 }, 'no actorId at all must not throw and must derive none');
+
+  const staleBacker = normalizeProject({ items: [{ id: 0, name: 'Stale', actorId: 5 }] });
+  assert.deepEqual(staleBacker.items[0].effect, { kind: 'none', amount: 0 }, 'an actorId naming no real actor must derive none, not throw');
+});
+
+// Round 1b review finding A1: NO_ACTOR is LIMITS.actors itself (255), so an
+// over-cap, 256-plus-actor roster has a REAL raw actor sitting at that exact
+// index -- the identical sentinel-aliasing trap LIMITS.metasprites =
+// NO_METASPRITE already exists to close one id space over. An item whose
+// actorId does not resolve (out of range, or garbage) normalizes to
+// NO_ACTOR, and indexing rawActors with that sentinel's own numeric value
+// must not silently read actor 255's real battle.heal.
+test('normalizeItem: effect derivation must not alias NO_ACTOR into a real actor at index 255 on an over-cap roster', () => {
+  const actors = Array.from({ length: 256 }, (_, id) => ({ id, name: `Actor ${id}`, behavior: 'npc' }));
+  actors[255].battle = { heal: 77 }; // a real, positive heal sitting at NO_ACTOR's own numeric value
+  const project = normalizeProject({
+    sprites: { actors },
+    // 9999 is garbage and out of range -- normalizeItem's own actorId
+    // fallback turns it into NO_ACTOR (255), which must not then be used to
+    // index actor 255's very real battle.heal.
+    items: [{ id: 0, name: 'Garbage actorId', actorId: 9999 }]
+  });
+  assert.equal(project.items[0].actorId, NO_ACTOR, 'sanity: the garbage actorId should normalize to NO_ACTOR');
+  assert.deepEqual(
+    project.items[0].effect,
+    { kind: 'none', amount: 0 },
+    'must derive none, not alias into actor 255’s real battle.heal just because NO_ACTOR happens to equal 255'
+  );
+});
+
+test('normalizeItem: an explicit effect is used as-is and is never re-derived from the backing actor again', () => {
+  const project = normalizeProject({
+    sprites: { actors: [{ id: 0, name: 'Backer', behavior: 'pickup', battle: { heal: 99 } }] },
+    items: [{ id: 0, name: 'Bomb', actorId: 0, effect: { kind: 'damage', amount: 12 } }]
+  });
+  assert.deepEqual(
+    project.items[0].effect,
+    { kind: 'damage', amount: 12 },
+    'an explicit effect must win over the backing actor’s battle.heal, not be overridden by it'
+  );
+
+  // The idempotence guarantee itself: save the normalized project back
+  // (effect is now explicit) and normalize again with the actor's heal
+  // changed underneath it -- a re-derivation would silently overwrite a
+  // later items editor's own value, which is exactly what this field's
+  // one-time-at-normalization design (phase4-design.md §5) exists to avoid.
+  const resaved = JSON.parse(JSON.stringify(project));
+  resaved.sprites.actors[0].battle.heal = 200;
+  const reloaded = normalizeProject(resaved);
+  assert.deepEqual(
+    reloaded.items[0].effect,
+    { kind: 'damage', amount: 12 },
+    'once effect is explicit, it must not be re-derived from the actor on a later normalize'
+  );
+});
+
+test('normalizeItem: an unrecognized explicit effect kind falls back to none, the same safe-default shape actorId/metaspriteId already use', () => {
+  const project = normalizeProject({ items: [{ id: 0, name: 'Weird', effect: { kind: 'poison', amount: 5 } }] });
+  assert.equal(project.items[0].effect.kind, 'none', 'an unrecognized kind must not be resurrected or crash normalization');
+  assert.equal(project.items[0].effect.amount, 5, 'amount is independent of kind and still clamped/kept on its own');
+});
+
+test('normalizeItem: an explicit effect amount is clamped through damageAmount, matching Heal/Damage command values', () => {
+  const project = normalizeProject({
+    items: [
+      { id: 0, name: 'Negative', effect: { kind: 'heal', amount: -10 } },
+      { id: 1, name: 'TooHigh', effect: { kind: 'heal', amount: 999 } },
+      { id: 2, name: 'Fractional', effect: { kind: 'heal', amount: 4.6 } },
+      { id: 3, name: 'NotANumber', effect: { kind: 'heal', amount: 'oops' } }
+    ]
+  });
+  const [negative, tooHigh, fractional, notANumber] = project.items;
+  assert.equal(negative.effect.amount, 0, 'a negative amount must clamp to 0, not go negative');
+  assert.equal(tooHigh.effect.amount, 255, '999 must clamp to the byte ceiling');
+  assert.equal(fractional.effect.amount, 5, '4.6 must round the same way damageAmount already does for Heal/Damage commands');
+  assert.equal(notANumber.effect.amount, 0, 'a non-numeric amount must not throw and must become 0');
+});
+
+test('migrateItemsFromActors: a legacy pre-item-schema project’s synthesized item also derives its effect from the backing actor’s battle.heal', () => {
+  // No `items` array at all -- the pre-item-schema discriminator, so this
+  // goes through migrateItemsFromActors rather than normalizeItem.
+  const project = normalizeProject({
+    sprites: { actors: [{ id: 0, name: 'Torch', behavior: 'pickup', battle: { heal: 15 } }] }
+  });
+  assert.equal(project.items.length, 1, 'the pickup actor should synthesize exactly one item');
+  assert.deepEqual(project.items[0].effect, { kind: 'heal', amount: 15 }, 'the synthesized item should derive its effect the same way normalizeItem’s own migration does');
+});
+
+test('validateProject: an item’s effect is only refused when present and malformed -- absent is tolerated like metaspriteId: null already is', () => {
+  const base = createProject('Effects');
+  base.sprites.actors.push({ id: 0, name: 'Backer', behavior: 'pickup', battle: { heal: 10 } });
+
+  const missing = structuredClone(base);
+  missing.items = [{ id: 0, name: 'Legacy', actorId: 0, metaspriteId: null }]; // no `effect` key at all
+  assert.ok(
+    !validateProject(missing).some((p) => /effect/i.test(p.message)),
+    'an item built before this field existed (no `effect` key) must not be refused'
+  );
+
+  const wellFormed = structuredClone(base);
+  wellFormed.items = [{ id: 0, name: 'Fine', actorId: 0, metaspriteId: null, effect: { kind: 'heal', amount: 10 } }];
+  assert.ok(
+    !validateProject(wellFormed).some((p) => /effect/i.test(p.message)),
+    'a well-formed explicit effect must not be refused'
+  );
+
+  const badKind = structuredClone(base);
+  badKind.items = [{ id: 0, name: 'BadKind', actorId: 0, metaspriteId: null, effect: { kind: 'poison', amount: 5 } }];
+  const badKindProblems = validateProject(badKind);
+  assert.ok(
+    badKindProblems.some((p) => p.severity === 'error' && /effect/i.test(p.message)),
+    'an item with an unrecognized explicit effect kind must be refused'
+  );
+
+  const badAmount = structuredClone(base);
+  badAmount.items = [{ id: 0, name: 'BadAmount', actorId: 0, metaspriteId: null, effect: { kind: 'heal', amount: 999 } }];
+  const badAmountProblems = validateProject(badAmount);
+  assert.ok(
+    badAmountProblems.some((p) => p.severity === 'error' && /effect/i.test(p.message)),
+    'an item with an out-of-range explicit effect amount must be refused'
+  );
+
+  // Round 1b review finding A2: main/project-io.js's saveProject normalizes
+  // its own local copy of whatever it is handed and writes that to disk --
+  // it never hands the normalized project back to the live renderer store,
+  // so re-saving from the same session leaves this refusal in place forever.
+  // Only closing and reopening the project actually runs loadProject (and so
+  // normalizeProject) fresh. The advice must say so, and must attribute the
+  // problem to the Items Forge now that one exists (round 1b) rather than
+  // the Sprite Forge, which never edited this field.
+  const effectProblem = badKindProblems.find((p) => /effect/i.test(p.message));
+  assert.equal(effectProblem.where, 'Items Forge', 'a malformed effect is an Items Forge problem now that one exists');
+  assert.doesNotMatch(
+    effectProblem.message,
+    /re-save/i,
+    'must not tell the author to re-save -- saveProject normalizes a local copy and never updates the live session'
+  );
+  assert.match(
+    effectProblem.message,
+    /close and reopen/i,
+    'must tell the author to actually reload the project, since that is what runs normalizeProject again'
+  );
+});
+
 test('a battle formation’s empty-slot sentinel is a fixed point, not decremented again by the next actor deletion', () => {
   const project = createProject('Quest', 'rpg');
   project.sprites.actors = [{ name: 'A' }, { name: 'B' }, { name: 'C' }, { name: 'D' }];
@@ -1711,6 +1890,128 @@ test('Give, Take, a nested Carrying condition, and a monster’s drop all compil
   assert.equal(dropBytes[4], 1, 'the Monster’s (actor 4) drop compiles to item id 1 directly');
 });
 
+// ROADMAP item 5, phase 4c round 1d (finding D1): item_heal's source moved
+// from the backing actor's battle.heal to items[].effect. Compatibility is
+// the thing that has to be proven here, not inferred from a passing build --
+// for a project migrated from the pre-4c economy, effect.amount was itself
+// derived from this exact battle.heal (shared/project.js's deriveItemEffect),
+// so the emitted table must still be byte-identical to what the old
+// backing-actor derivation would have produced.
+function itemHealBytes(project) {
+  const row = /^item_heal:\n((?:\s*\.db .*\n?)+)/m.exec(battleTables(project));
+  assert.ok(row, 'battleTables should emit an item_heal table');
+  return row[1]
+    .trim()
+    .split('\n')
+    .flatMap((line) => line.replace(/^\s*\.db\s*/, '').split(',').map((s) => parseInt(s.replace('$', ''), 16)));
+}
+
+test('item_heal stays byte-identical to the old backing-actor derivation for a project migrated from the pre-4c economy', () => {
+  const project = normalizeProject({
+    project: { gameType: 'rpg' },
+    sprites: {
+      actors: [
+        { name: 'Potion', behavior: 'pickup', battle: { heal: 30 } },
+        { name: 'Ether', behavior: 'pickup', battle: { heal: 0 } }, // migrates to kind 'none', amount 0
+        { name: 'Slime', damage: 1, battle: {} } // not a pickup -- never referenced, no item synthesized
+      ]
+    }
+  });
+  assert.equal(project.items.length, 2, 'sanity: exactly the two pickup actors migrate into items');
+
+  // The pre-4c formula, recomputed directly against the same raw actor
+  // roster rather than by re-invoking removed code.
+  const oldDerivation = project.items.map((item) => {
+    const actor = typeof item.actorId === 'number' ? project.sprites.actors[item.actorId] : undefined;
+    return actor?.battle?.heal ?? 0;
+  });
+
+  const emitted = itemHealBytes(project);
+  assert.deepEqual(
+    emitted,
+    oldDerivation,
+    'item_heal must emit exactly what the old backing-actor derivation would have, for a project that has not touched effect since migrating'
+  );
+  assert.deepEqual(emitted, [30, 0], 'sanity: matches the actors’ own battle.heal values directly');
+});
+
+// Round 1e review finding E2: the two cases above never told item_heal's
+// real source (items[].effect) apart from the pre-4c one it replaced
+// (actors[item.actorId].battle.heal) -- a damage-kind edit reads 0 under
+// either formula, so it passed a counterexample that reads the actor and
+// merely gates on kind. The only shape that discriminates the two sources is
+// a heal-kind item whose effect.amount no longer matches its backing actor's
+// battle.heal; the three cases after it close the same gap for actorId null,
+// a deleted backing actor, and the normalization boundary.
+test('item_heal reads an item’s own effect.amount directly, not the backing actor’s battle.heal gated by kind', () => {
+  const project = normalizeProject({
+    project: { gameType: 'rpg' },
+    sprites: { actors: [{ name: 'Potion', behavior: 'pickup', battle: { heal: 30 } }] }
+  });
+  assert.deepEqual(project.items[0].effect, { kind: 'heal', amount: 30 }, 'sanity: migrated as a heal-30 potion');
+
+  // Still heal-kind, still naming the same actor (whose battle.heal is still
+  // 30) -- only effect.amount itself changes, simulating an Items Forge
+  // edit. A formula that reads the actor gated on kind would still emit 30;
+  // only reading effect.amount directly emits 99.
+  project.items[0].effect = { kind: 'heal', amount: 99 };
+
+  assert.deepEqual(
+    itemHealBytes(project),
+    [99],
+    'item_heal must follow effect.amount (99) even though the backing actor’s own battle.heal (30) is unchanged and the kind is still heal'
+  );
+});
+
+// The exact scenario finding D1 named: "changing a migrated potion to
+// Damages 12 still healed its old actor amount". Kept alongside the
+// discriminating case above, not in place of it -- this alone cannot tell
+// the two sources apart (both formulas emit 0 for a non-heal kind), but it
+// is still real coverage for the specific bug D1 reported.
+test('item_heal emits 0 for a damage-kind item, not the migrated actor’s battle.heal it came from', () => {
+  const project = normalizeProject({
+    project: { gameType: 'rpg' },
+    sprites: { actors: [{ name: 'Potion', behavior: 'pickup', battle: { heal: 30 } }] }
+  });
+  project.items[0].effect = { kind: 'damage', amount: 12 };
+
+  assert.deepEqual(
+    itemHealBytes(project),
+    [0],
+    'a damage-kind item must emit 0 for item_heal -- not 30, the actor’s old battle.heal it was migrated from'
+  );
+});
+
+test('item_heal reads a heal-kind item’s own effect.amount when actorId is null -- a script-only item has no actor to fall back to at all', () => {
+  const project = normalizeProject({
+    items: [{ id: 0, name: 'Elixir', actorId: null, effect: { kind: 'heal', amount: 50 } }]
+  });
+  assert.deepEqual(itemHealBytes(project), [50], 'a script-only heal item must emit its own amount, not 0 from a missing actor');
+});
+
+test('item_heal reads a heal-kind item’s own effect.amount even when its backing actor no longer exists', () => {
+  const project = normalizeProject({
+    // actorId 5 names nothing -- the actor this item was migrated from was
+    // deleted since, the same stale-reference shape renumberActorDeletion
+    // already handles for every other actor-typed field.
+    items: [{ id: 0, name: 'Old Potion', actorId: 5, effect: { kind: 'heal', amount: 40 } }]
+  });
+  assert.deepEqual(
+    itemHealBytes(project),
+    [40],
+    'a deleted backing actor must not zero out an already-migrated effect -- the migration is one-time and effect is now independent of actorId'
+  );
+});
+
+test('item_heal reflects normalizeItem’s own amount clamp -- an out-of-range effect.amount reaches item_heal as 255, not the raw value', () => {
+  const project = normalizeProject({
+    sprites: { actors: [{ name: 'Potion', behavior: 'pickup', battle: { heal: 30 } }] },
+    items: [{ id: 0, name: 'Potion', actorId: 0, effect: { kind: 'heal', amount: 999 } }]
+  });
+  assert.equal(project.items[0].effect.amount, 255, 'sanity: normalizeItem clamps the explicit amount to a byte');
+  assert.deepEqual(itemHealBytes(project), [255], 'item_heal must carry the normalized 255, not the raw out-of-range 999');
+});
+
 test('a monster whose drop no longer names an actor is a warning, not a refusal', () => {
   const project = createProject('Quest', 'rpg');
   project.sprites.actors = [{ name: 'Slime', damage: 1, battle: { drop: 7, dropPct: 50 } }];
@@ -1840,11 +2141,11 @@ test('an over-cap items list is refused, the same way an over-cap actor roster a
   const errors = validateProject(project).filter((p) => /items but/.test(p.message));
   assert.equal(errors.length, 1, 'an over-cap items list should be refused exactly once');
   assert.equal(errors[0].severity, 'error');
-  assert.equal(errors[0].where, 'Sprite Forge', 'items have no editor of their own yet, so this is attributed there');
-  assert.doesNotMatch(
+  assert.equal(errors[0].where, 'Items Forge', 'items now have an editor of their own (round 1b) -- attributed there');
+  assert.match(
     errors[0].message,
     /delete/i,
-    'the message must not tell the author to delete items through a control this version does not offer'
+    'the message should point at the Delete control the Items Forge now offers'
   );
   assert.doesNotMatch(
     errors[0].message,
@@ -1992,6 +2293,67 @@ test('itemPickerOptions: selected-ness lands on exactly one option, healthy or m
   // still exactly one selected entry, on the missing placeholder.
   assert.equal(countSelected(itemPickerOptions(items, null)), 1, 'selecting nothing still selects exactly the missing entry');
   assert.equal(countSelected(itemPickerOptions(items, 99)), 1, 'an out-of-range id still selects exactly the missing entry');
+});
+
+// ROADMAP item 5, phase 4c round 1c: itemActorOptions, the reverse direction
+// of itemPickerOptions above -- which actor an item's own `actorId` can name.
+// Same {healthy, missing} shape, same "selected-ness lands exactly once"
+// discipline.
+
+test('canBackItem: only a pickup-behaviour actor qualifies', () => {
+  assert.equal(canBackItem({ behavior: 'pickup' }), true);
+  for (const behavior of ['patroller', 'chaser', 'door', 'npc', 'player']) {
+    assert.equal(canBackItem({ behavior }), false, `${behavior} must not qualify`);
+  }
+  assert.equal(canBackItem(null), false, 'a missing actor must not throw and must not qualify');
+  assert.equal(canBackItem(undefined), false);
+});
+
+test('itemActorOptions: only pickup actors are offered, and null is a legitimate script-only selection with nothing missing', () => {
+  const actors = [
+    { name: 'Torch', behavior: 'pickup' },
+    { name: 'Slime', behavior: 'chaser' },
+    { name: 'Gem', behavior: 'pickup' }
+  ];
+
+  const { healthy, missing } = itemActorOptions(actors, null);
+  assert.deepEqual(
+    healthy,
+    [
+      { value: 0, label: 'Torch', selected: false },
+      { value: 2, label: 'Gem', selected: false }
+    ],
+    'Slime (chaser) must be excluded outright -- nothing reads an item’s actorId for a non-pickup behaviour'
+  );
+  assert.equal(missing, null, 'null is script-only, a legitimate value with nothing to warn about');
+});
+
+test('itemActorOptions: a real selection, backed or script-only, produces no missing entry and selects exactly one option', () => {
+  const actors = [{ name: 'Torch', behavior: 'pickup' }];
+  const countSelected = (result) => result.healthy.filter((o) => o.selected).length + (result.missing?.selected ? 1 : 0);
+
+  assert.equal(countSelected(itemActorOptions(actors, 0)), 1, 'selecting the one eligible actor selects exactly it');
+  assert.equal(itemActorOptions(actors, 0).missing, null);
+});
+
+test('itemActorOptions: a stale actorId (no longer resolves at all) is missing, distinct from one that resolves but is not a pickup', () => {
+  const actors = [{ name: 'Torch', behavior: 'pickup' }, { name: 'Slime', behavior: 'chaser' }];
+
+  const stale = itemActorOptions(actors, 99);
+  assert.deepEqual(stale.missing, { value: 99, label: 'Missing actor', selected: true }, 'out of range entirely -- a stale reference');
+
+  const ineligible = itemActorOptions(actors, 1);
+  assert.deepEqual(
+    ineligible.missing,
+    { value: 1, label: 'Slime (not a Pickup actor)', selected: true },
+    'resolves to a real actor, but one whose behaviour changed away from pickup since -- must still show the true stored value, ' +
+      'and must say why it is not in the healthy list rather than reading as an unexplained stale reference'
+  );
+  assert.equal(
+    ineligible.healthy.some((o) => o.selected),
+    false,
+    'the ineligible actor must not also appear selected among the healthy (pickup-only) options'
+  );
 });
 
 test('a Run common event command naming a deleted common event fails validation and cannot build', {
@@ -2750,7 +3112,7 @@ test('items.json is always written, including when empty, so a missing file and 
   await saveProject(dir, migrated);
   assert.deepEqual(
     JSON.parse(await fs.readFile(itemsPath, 'utf8')),
-    [{ id: 0, name: 'Torch', actorId: 0, metaspriteId: null }],
+    [{ id: 0, name: 'Torch', actorId: 0, metaspriteId: null, effect: { kind: 'none', amount: 0 } }],
     'a real item survives being written to items.json'
   );
   const reloaded = await loadProject(dir);

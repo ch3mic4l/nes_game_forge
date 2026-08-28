@@ -166,9 +166,32 @@ battle_menu_magic:
   sta bt_phase
   jmp draw_list
 
+; Phase 4c round 3, finding 5 (phase4-design.md §9): whether Items opens must
+; be decided from the *filtered* list, not raw inv_count, because
+; build_item_list (below) can now leave bt_len at 0 while inv_count is still
+; positive -- a bag holding only damage-kind or zero-amount items. Deciding
+; from inv_count alone would open BP_ITEMS onto an empty list: the row-select
+; code would index a stale bt_list[0] left over from whatever list was built
+; last, and Up would underflow bt_sel to $FF. The ITEMS_ENABLED-false path
+; keeps the old inv_count check exactly, below, because build_item_list never
+; filters there -- bt_len always equals inv_count exactly, so the two checks
+; can never disagree and the byte-identity promise for that path holds.
+; build_spell_list never needed this ordering fix -- pc_spells IS the
+; membership test build_spell_list applies, so gating on it before building
+; can never disagree with what building produces; items introduce a second,
+; independent filter inv_count knows nothing about, which is what makes this
+; a new requirement rather than a precedent build_spell_list already had to
+; solve.
 battle_menu_item:
+  .if ITEMS_ENABLED
+  jsr build_item_list       ; build first, so the gate below sees the real count
+  lda bt_len
+  beq battle_menu_done
+  .endif
+  .if !ITEMS_ENABLED
   lda inv_count
   beq battle_menu_done
+  .endif
   jsr hide_cursor
   lda #0
   sta bt_sel
@@ -355,7 +378,19 @@ build_spell_next:
 build_spell_done:
   rts
 
-; The bag, which in an RPG is where potions live: an actor with a heal value.
+; The bag, which in an RPG is where potions live.
+;
+; Phase 4c round 3: under ITEMS_ENABLED, filtered to kind == heal and
+; amount > 0 -- what item_chosen (engine/battleturn.asm) can actually spend
+; consistently. A damage-kind or zero-amount item is a real, valid item on
+; the field and for Give/Take/Carrying/drops; it is just never a selectable
+; row here, so no row in this menu is ever a silent no-op (CLAUDE.md's "looks
+; functional, does something else" rule; phase 4 design's "two menus, made
+; consistent" section). The ITEMS_ENABLED-false path is untouched -- exactly
+; today's unfiltered straight copy, mon_heal == 0 items included -- because
+; that path's own pre-phase-4 inconsistency is explicitly out of this
+; phase's scope, and fixing it would break the disabled-path byte-identity
+; promise for content this phase promises not to touch.
 build_item_list:
   lda #0
   sta bt_len
@@ -364,9 +399,19 @@ build_item_slot:
   cpy inv_count
   bcs build_item_done
   lda inv_items,y
+  .if ITEMS_ENABLED
+  tax
+  lda item_effect_kind,x
+  cmp #EFFECT_HEAL
+  bne build_item_next
+  lda item_effect_amount,x
+  beq build_item_next
+  txa
+  .endif
   ldx bt_len
   sta bt_list,x
   inc bt_len
+build_item_next:
   iny
   cpy #MAX_ITEMS
   bne build_item_slot

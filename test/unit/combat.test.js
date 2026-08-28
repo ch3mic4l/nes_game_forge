@@ -158,6 +158,36 @@ test('a game with nothing dangerous in it pays for no hearts', async (t) => {
   assert.ok([...chr.slice(heartsAt, heartsAt + 32)].every((byte) => byte === 0), 'hearts were stamped anyway');
 });
 
+// Round 2b review, J1: a damage-kind item (engine/ui.asm's use_item_apply,
+// round 2) is a fourth way to reach player_hp, alongside a damaging actor, a
+// painted metatile and a live scripted Damage command -- and it is the one
+// projectUsesCombat (shared/font.js) did not know about until this fix. This
+// asserts the generated build artifacts directly, the same way "a game with
+// nothing dangerous in it pays for no hearts" above does for the three
+// sources it already knew, rather than trusting the predicate's own boolean
+// in isolation: config.inc must actually flip COMBAT_ENABLED on, and the
+// hearts must actually land in the CHR this project's only tileset ships.
+test('an action project whose only damage source is a damage-kind item still pays for the hearts', async (t) => {
+  const dir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'forge-itemcombat-'));
+  t.after(() => fs.promises.rm(dir, { recursive: true, force: true }));
+  const project = createProject('Bomb-carrier');
+  // No actor deals damage and no metatile is painted -- the item is the only
+  // thing in this project that can hurt the player.
+  project.items.push({ id: 0, name: 'Bomb', actorId: null, metaspriteId: null, effect: { kind: 'damage', amount: 5 } });
+  await generateAssets({ dir, project });
+
+  const config = await fs.promises.readFile(path.join(dir, 'build/assets/config.inc'), 'utf8');
+  assert.match(config, /COMBAT_ENABLED = 1/, 'a damage-kind item should turn combat on');
+
+  const chr = await fs.promises.readFile(path.join(dir, 'build/assets/tiles0.chr'));
+  const heartsAt = 4096 + HEART_FULL_TILE * 16;
+  assert.ok(
+    [...chr.slice(heartsAt, heartsAt + 32)].some((byte) => byte !== 0),
+    'the hearts should be stamped into the sprite table -- a damage-kind item can reach player_hp exactly as ' +
+      'a damaging actor or a painted metatile already can'
+  );
+});
+
 // --- taking damage ----------------------------------------------------------
 
 test('touching something harmful costs one heart per invincible window', {

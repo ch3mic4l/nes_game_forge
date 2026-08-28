@@ -1,26 +1,44 @@
 ; combat.asm -- the player's health, in whichever of the engine's two models
 ; this build actually has.
 ;
-; An action game's model lives entirely in this file. Three things can take a
+; An action game's model lives entirely in this file. Two things can take a
 ; heart through hurt_player: an actor whose damage is more than zero walking
-; into you, a metatile the Map Forge marked Damage, and nothing else -- the
-; invincible window, the knockback and the way a game ends are one
-; implementation because all three share it. A scripted Damage command is a
-; fourth thing that can take a heart, and deliberately does not go through
-; hurt_player: a trap that says "you take 2 hearts" has no attacker to knock
-; back and must land every time, iframes included, so script_op_damage
-; (engine/script.asm) calls lose_hearts directly -- the saturating store and
-; the death check hurt_player itself falls into, factored out so there is
-; still one implementation of what losing a heart means, not two that can
-; disagree. A scripted Heal is the only way a heart is ever given back outside
-; a new game, through gain_hearts, its saturating-add mirror.
+; into you, and a metatile the Map Forge marked Damage -- the invincible
+; window, the knockback and the way a game ends are one implementation
+; because both share it. A scripted Damage command is a third thing that can
+; take a heart, and deliberately does not go through hurt_player: a trap that
+; says "you take 2 hearts" has no attacker to knock back and must land every
+; time, iframes included, so script_op_damage (engine/script.asm) calls
+; lose_hearts directly -- the saturating store and the death check
+; hurt_player itself falls into, factored out so there is still one
+; implementation of what losing a heart means, not two that can disagree. A
+; field-used damage-kind item is a fourth, the identical shape: use_item_apply
+; (engine/ui.asm) calls lose_hearts directly too, for the same reason -- an
+; item has no attacker to knock back either. A scripted Heal used to be the
+; only way a heart was ever given back outside a new game; use_item_apply's
+; own heal-kind branch calls gain_hearts the same direct way, so a heal-kind
+; item is the second.
 ;
 ; None of that is conditional on whether anything can actually hurt the
-; player -- it is a few hundred bytes and the alternative is two engines. What
-; *is* conditional is whether it can ever fire -- COMBAT_ENABLED is zero when
-; no actor deals damage, no Damage metatile is painted anywhere and no live
-; Damage command is compiled in, and then the hearts are not drawn and
-; nothing calls in here.
+; player -- it is a few hundred bytes and the alternative is two engines.
+; COMBAT_ENABLED is a runtime gate, not an assembly one: hurt_player,
+; lose_hearts, gain_hearts and the knockback all exist in every action-mode
+; build regardless of it, gated only by `.if !BATTLE_ENABLED`. What
+; COMBAT_ENABLED actually gates, at runtime, is the world's own three ways of
+; reaching them uninvited -- player_hazard and entity_contact (both below,
+; the floor-tile and actor-contact checks) and draw_hud's own decision to
+; spend two sprites on hearts -- and it is zero exactly when
+; projectUsesCombat (shared/font.js) is false: no actor deals damage, no
+; Damage metatile is painted anywhere, no live Damage command is compiled in,
+; and no item's own effect is a positive-amount `damage`. It does *not* gate
+; use_item_apply's own calls into lose_hearts/gain_hearts -- those run
+; whenever ITEMS_ENABLED is on and a spent item's effect is `damage`/`heal`,
+; independent of whether the world can hurt the player at all. A project
+; whose only item is a `heal`-kind one is the case that shows it:
+; COMBAT_ENABLED is 0, no hearts are drawn, and a field-used Heal still
+; raises player_hp -- harmlessly, since nothing in that project can ever
+; lower it, but invisibly, since the HUD that would show the number does not
+; exist there.
 ;
 ; An RPG has no hearts at all: hurt_player, lose_hearts, gain_hearts and the
 ; knockback (this file) plus draw_hud (below) are gated `.if !BATTLE_ENABLED`

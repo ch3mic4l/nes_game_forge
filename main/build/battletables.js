@@ -185,20 +185,19 @@ export function battleTables(project) {
     // unlike mon_name, this has no legacy economy to reproduce, since nothing
     // drew an item-specific name before this table existed.
     chunks.push(`item_name:\n${dbRows(items.flatMap((item) => nameTiles(item.name)), NAME_LIMIT)}`);
-    // item_chosen's enabled-path heal amount. Phase 4b's own source here is
-    // deliberately still the backing actor's battle.heal -- items[] has no
-    // effect field yet, so there is nothing else to derive this from -- which
-    // reproduces today's actor-reuse economy exactly, just keyed by item id
-    // instead of actor id. Only phase 4c, once items[] gains a real effect
-    // field, changes this line's source; the table's existence, size and every
-    // reader of it are unchanged by that later change.
+    // item_chosen's enabled-path heal amount. Phase 4c: items[] now carries
+    // its own `effect` field (shared/project.js's normalizeItem), so this
+    // reads that directly rather than the backing actor's battle.heal --
+    // phase 4b's economy, kept alive only as `effect`'s own one-time
+    // migration source (deriveItemEffect), not read again here. A `damage`
+    // or `none` kind contributes 0: `use_item_apply` (round 2) is what will
+    // actually spend a damage-kind item, and this table is item_chosen's
+    // heal-only reader, so anything that is not a positive heal has nothing
+    // for it to apply. The table's existence, size and every reader of it
+    // (item_chosen, engine/battleturn.asm) are unchanged from 4b -- only the
+    // source of each row moved.
     chunks.push(
-      `item_heal:\n${dbRows(
-        items.map((item) => {
-          const actor = typeof item.actorId === 'number' ? actors[item.actorId] : undefined;
-          return actor?.battle?.heal ?? 0;
-        })
-      )}`
+      `item_heal:\n${dbRows(items.map((item) => (item.effect?.kind === 'heal' ? item.effect.amount : 0)))}`
     );
   }
 
@@ -411,6 +410,45 @@ export function checkBattleTables(project) {
 // split to overcharge, which is precisely the case that forced the kernel's
 // split-lock term out of MMC3's base. Here it is a property of the board.
 export const BASE_BATTLE_CODE_BYTES_BY_MAPPER = { 30: 3821, 1: 3821, 4: 3867 };
+
+// Phase 4c round 3, finding 6 (phase4-design.md §9), corrected round 3b
+// (review K1): the two-menu-consistency filter (build_item_list's kind/
+// amount check, plus battle_menu_item's own build-before-deciding fix for
+// finding 5) cost 17 bytes, measured with nesasm on all three boards --
+// §5's own estimate of "roughly 25-30 bytes" was a guess and overshot the
+// real figure. Uniform across boards because neither change branches on
+// SPLIT_ENABLED or anything else board-specific: MMC3 is still exactly 46
+// bytes above the other two, the paragraph above's own SPLIT_ENABLED delta,
+// undisturbed by this round.
+//
+// This was folded straight into BASE_BATTLE_CODE_BYTES_BY_MAPPER the first
+// time, and that was wrong: every new instruction in both routines sits
+// behind `.if ITEMS_ENABLED` (build_item_list's own filter block, and
+// battle_menu_item's `jsr build_item_list` gate), so an item-free RPG's ROM
+// never assembles a single byte of it -- confirmed directly, against real
+// nesasm usage on MMC3: an item-free build assembles the region at 4320
+// bytes, sample-rpg with its one live item at 4348, a 28-byte gap that is
+// exactly the 17-byte code term plus the 11 bytes battleTableBytes already
+// (and correctly) attributes to the item tables (item_name/item_heal).
+// Those two figures are what nesasm actually assembled, not this file's own
+// estimate of it -- battleRegionBytes() now predicts the identical numbers
+// on both sides of that gap (bankedbytes.test.js asserts the equality), but
+// before this fix it did not: conflating "what the estimator currently
+// outputs" with "what the ROM actually contains" is the distinction whose
+// absence let the unconditional folding above ship in the first place.
+// Charging every project the 17 unconditionally is the
+// identical mistake BASE_KERNEL_CODE_BYTES_BY_MAPPER's own base once made
+// with a title screen it hadn't yet learned to charge conditionally
+// (TITLE_KERNEL_ALLOWANCE_BY_MAPPER, generate.js) -- here it overcharges
+// instead of undercharging, but the failure mode is just as real: an
+// item-free project's Build-panel meter and checkCapacity's own estimate
+// both grow by 17 bytes the assembled ROM never spends, and a project
+// sitting in that exact 1-17 byte band would be refused for a shortfall
+// that does not exist. Flat, not per-mapper, for the identical reason
+// ITEM_KERNEL_ALLOWANCE (generate.js) is flat rather than *_BY_MAPPER:
+// nothing this term covers branches on SPLIT_ENABLED or any other
+// mapper-specific fact, only on ITEMS_ENABLED.
+export const ITEM_LIST_FILTER_BATTLE_ALLOWANCE = 17;
 
 // Deliberate headroom, and its job is NOT the job KERNEL_SLACK does. There is
 // no estimation error here for it to absorb -- see the exactness note above --
@@ -679,7 +717,11 @@ export function battleRegionPlacementOverridden(project) {
  * numbers are exactly what a meter renders.
  */
 export function battleRegionBytes(project, mapper) {
-  return baseBattleCodeBytes(mapper) + battleTableBytes(project);
+  return (
+    baseBattleCodeBytes(mapper) +
+    battleTableBytes(project) +
+    (projectUsesItems(project) ? ITEM_LIST_FILTER_BATTLE_ALLOWANCE : 0)
+  );
 }
 
 // `mapper` is taken and deliberately unused: the ceiling is one nesasm bank on

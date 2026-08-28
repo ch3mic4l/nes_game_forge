@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-An Electron app for building NES games through a UI (five "Forges": Tile, Sprite, Map, Sound,
+An Electron app for building NES games through a UI (six "Forges": Tile, Sprite, Items, Map, Sound,
 Controller — plus the Code Forge, the escape hatch for hand-written 6502), which compiles a
 project into a real `.nes` ROM with `nesasm` and plays it in a built-in emulator with a debugger. See `README.md` for the user-facing description and the
 current feature status table.
@@ -217,10 +217,16 @@ renderer, and `node:test` alike.
   whatever size it was written for.
 
 Each Forge is a module exporting `mount(container, app)` and returning
-`{ destroy?, onProjectChange? }`; `renderer/app.js` holds the registry and lazily imports them.
-`renderer/store.js` is the single project state: `commit()` for a discrete edit,
-`beginStroke()`/`touch()`/`endStroke()` so a drag is one undo entry. Undo is whole-project
-`structuredClone` snapshots.
+`{ destroy?, onProjectChange? }`; `renderer/app.js`'s `FORGES` array is the single writer for which
+Forges exist and lazily imports them — the Items Forge (`renderer/forges/items/items.js`, item 5's
+own place to author an item's name, effect and backing Pickup actor) is one of these, not a special
+case. `app.forgeIds` is that registry's own derived getter (`FORGES.filter(...).map((f) => f.id)`),
+not a second writer of its own — it exists so `main/smoke.js`'s "visit every Forge" step can read
+`FORGES` without a hand-maintained list of its own agreeing with it by hand, which is exactly the
+kind of drift that let the Items Forge almost ship unvisited by that very test. `renderer/store.js`
+is the single project state:
+`commit()` for a discrete edit, `beginStroke()`/`touch()`/`endStroke()` so a drag is one undo entry.
+Undo is whole-project `structuredClone` snapshots.
 
 ### The engine
 
@@ -527,7 +533,15 @@ damage actor or a painted metatile, because an author whose only damage source i
 needs the hearts drawn — but not in an RPG, where `Damage` never reaches `player_hp` and, now, where
 nothing about combat reaches the hearts at all: `projectUsesHeartArt` answers false for every RPG
 regardless of what `projectUsesCombat` says, because `draw_hud` and `hurt_player` do not assemble
-there to draw them.
+there to draw them. Item 5's own phase 4c added a fourth source to that same list: an action-project
+item whose `effect` is `{kind: 'damage', amount > 0}` reaches `player_hp` too, through
+`use_item_apply` (below), the moment it is ever spent — and unlike the scripted command, an item's
+effect has no live/dead branch to hide inside, since every item in `project.items` is compiled
+unconditionally, so `projectUsesCombat` counts any such item regardless of whether a pickup or a
+`Give` currently makes it reachable, the same policy `projectUsesItems` already holds for turning
+`ITEMS_ENABLED` on at all. An RPG's own damage-kind items are excluded from this count the same way
+its `Damage` command already is — they land on party HP through `party_damage` (`engine/rpg.asm`)
+instead, and need no heart-HUD reservation.
 
 **What makes an event run is a byte of the entity record**, `EVENT_TRIGGERS` in
 `shared/project.js` in wire order, `TRIG_*` in `engine/constants.asm` at the other end. `interact`
@@ -575,6 +589,93 @@ regardless of whether that particular project uses items. What an author sees is
 the old save is treated exactly like a foreign or corrupted one, which is to say the title screen
 simply does not offer Continue. No message, no crash: the existing "this record does not belong to
 this build" path doing the job it already did for every other case.
+
+**An item's own effect is `{kind, amount}`, `kind` one of `none`/`heal`/`damage`.**
+`ITEM_EFFECT_KINDS` (`shared/project.js`) is the wire format the same way `BEHAVIORS`/`ACTIONS`
+already are: its array order is `EFFECT_NONE`/`EFFECT_HEAL`/`EFFECT_DAMAGE` in
+`engine/constants.asm` written down by hand, so a kind's number is spelled in exactly one of those
+two places. `none` stays index 0 because it is what every item meant before this field existed, and
+`normalizeItem`'s own one-time migration — at normalization, not re-derived on every build — falls
+back to it whenever an item's backing actor never had a positive `battle.heal` to derive a `heal`
+from. `item_heal` (`main/build/battletables.js`, the RPG battle ITEM menu's own table) used to read
+`actor.battle.heal` directly off the backing actor every build; it now reads `item.effect.amount`
+(when `kind` is `heal`, else 0) straight off the item, the migration having already moved that number
+onto the item once. The table's existence, size and only reader (`item_chosen`,
+`engine/battleturn.asm`) are unchanged — only where each row's number comes from moved.
+
+**`use_item` (`engine/ui.asm`) is the field/menu "spend an item" action, in every game type, and it
+is the only place `none` genuinely means *key item*.** Before this phase, confirming on any
+highlighted item shifted the bag over it and bumped `items_used` unconditionally, whatever it was.
+Now it calls `use_item_apply` first, which reads `item_effect_kind`/`item_effect_amount` and answers
+one of three states in `A` — `USE_ITEM_NONE`, `USE_ITEM_ALIVE`, `USE_ITEM_DIED` — because a two-state
+carry protocol cannot say "applied, and lethal" as a third thing distinct from "applied" and "not
+applied" without a second flag riding beside it. A `none`-kind item makes `use_item` skip the
+shift/`items_used` step entirely: it is kept, not spent, regardless of `amount` (a positive amount on
+a `none`-kind record is a legal, if inert, thing to author — kind alone decides). `heal` and `damage`
+both apply, through whichever health model the build has — `BATTLE_ENABLED`: `party_heal`/
+`party_damage`; otherwise `gain_hearts`/`lose_hearts` — and are spent either way, no third model
+invented for the field the way `Heal`/`Damage` already refuse one for a metatile. **`use_item_apply`
+is reached by `jsr` and must never itself `jmp player_died`** — the identical shape "a killing hit
+must `jmp player_died`, not return into it" already documents a few paragraphs up, which the design
+draft for this routine got wrong the same way before any of it was written: §5's own code sketch had
+`use_item_apply` `jmp player_died` directly, copying `lose_hearts`'/`party_damage`'s call shape
+without copying the constraint that makes it safe. Design review (§9) caught it and corrected the
+routine to a three-state return before implementation started, so the constraint below is what the
+shipped code has always done, not a fix for something that ran broken. The constraint is about whose
+return address is at stake, not about whether one exists on the
+stack at all — those are different claims, and only the first is what makes the `jmp` safe.
+`dispatch_input`'s own `dispatch_loop` reaches `use_item` by `jsr do_action` (`engine/input.asm`),
+which then falls to `do_action_confirm` and `do_action_use` by ordinary same-subroutine branches
+(`cmp`/`beq`), not by `jmp` — `do_action_use` is what actually does `jmp use_item`. That `jsr`'s own
+return address is genuinely still sitting on the stack the entire time `use_item`, `use_item_apply`
+and `player_died` run: nothing between them ever resets the stack pointer (`txs` appears exactly
+once in this codebase, in `boot.asm`, at boot), and `player_died` itself ends `jmp box_say`, one more
+tail call rather than a fresh push. So there *is* an outstanding return address underneath all of
+this — `do_action`'s — and it is not stranded: it is exactly what some later `rts`, once the whole
+chain of tail calls finally unwinds, correctly returns through, back into `dispatch_loop` to continue
+reading buttons. What `use_item_apply` must never do is add a *second*, real return address of its
+own (the one its own `jsr` pushed) and then abandon that one with a `jmp` — `use_item` may safely
+`jmp player_died` only because `use_item` itself was reached by `jmp`, so it never had a return
+address of its own to begin with; `use_item_apply` was reached by `jsr`, so it does, and returning
+its three-state result with `rts` is what keeps that address matched to the call that pushed it.
+`use_item` itself performs the `jmp player_died` after `pla`-ing that result back across the
+shift/highlight-repair it runs in between (a `pha` at the top of the routine, popped once at the
+very end, is what carries the decision across code that clobbers `A`).
+
+**The RPG battle ITEM menu does not list everything `use_item` can spend.** `build_item_list`
+(`engine/battleui.asm`) filters the bag to `kind == heal AND amount > 0` — exactly what `item_chosen`
+can apply consistently — so a `damage`-kind item or a `heal`-kind item left at `Amount` 0 is a real,
+valid item on the field and for Give/Take/Carrying/drops; it simply never appears as a selectable row
+in that one menu, so no row there is ever a silent no-op. The filter can leave the list empty while
+the bag itself is not (every carried item is field-only-kind), which raised a second problem the
+filter alone does not solve: `battle_menu_item` decides whether to open the Items page from the
+*filtered* list length, not raw `inv_count`, building the list first so the gate sees the real count
+— deciding from `inv_count` alone would open onto an empty list whose row-select code indexes a stale
+entry left over from whatever was drawn last, and whose Up press underflows the selection to `$FF`.
+`build_spell_list` never needed this ordering, and it is worth knowing why rather than assuming the
+two menus share it: a spell's own membership test (`pc_spells`, a bitmask) already is what building
+the list applies, so gating on it before building can never disagree with what building produces.
+Items introduce a second, independent filter `inv_count` knows nothing about, which is what makes the
+build-before-deciding ordering a genuinely new requirement here, not a precedent already proven
+elsewhere. The `ITEMS_ENABLED`-false path keeps both routines exactly as they were — an unfiltered
+`build_item_list`, and `battle_menu_item`'s original `inv_count` check — because that economy has no
+`effect` field to filter on at all, and preserving it byte-for-byte is the same promise every other
+`ITEMS_ENABLED`-false path in this document already holds to.
+
+**Two capacity terms follow the item's own kind/amount reader into their respective banks, both
+item-conditional and both flat across boards** (see the kernel-budget narrative below for why a term
+earns its own name only once real variance is measured). `ITEM_EFFECT_KERNEL_ALLOWANCE_BY_GAME_TYPE`
+(`main/build/generate.js`) is `use_item_apply`'s own kernel-lo cost, split by *game type* rather than
+by board — the first allowance in this file split that way — because `BATTLE_ENABLED` picks a
+genuinely differently-sized damage branch (`party_damage` vs `lose_hearts` plus a zero-page read of
+`player_hp`), not because any board differs: 63 bytes for an action project, 60 for an RPG, each
+measured on every board of its own type. `ITEM_LIST_FILTER_BATTLE_ALLOWANCE` (17 bytes,
+`main/build/battletables.js`) is `build_item_list`'s and `battle_menu_item`'s combined cost in the
+banked battle-code region, uniform across all three RPG-capable boards because neither routine
+branches on `SPLIT_ENABLED` or anything else board-specific — `BASE_BATTLE_CODE_BYTES_BY_MAPPER`
+itself did not move for this: the term is its own line beside the base, not folded into it, the fix
+for exactly the mistake `TITLE_KERNEL_ALLOWANCE_BY_MAPPER` already had to undo on the kernel side —
+charging every project a cost that only `ITEMS_ENABLED` builds actually pay.
 
 **Neither of the other two starts a conversation itself.** Both arm `pending_ent`, and `main_loop`
 is the single place it becomes one. Touch fires from inside `update_entities`, which is still
@@ -873,6 +974,31 @@ again by this diet — and the file's own prediction is standing again rather th
 working margin, not indefinite margin — nowhere near enough for another feature on the scale of
 `MOVE_KERNEL_ALLOWANCE`'s own 395 bytes, and the next byte the kernel-lo bank grows anywhere, on this
 board, in this configuration, reopens it a second time.
+
+**HISTORICAL as of the paragraph above — the prediction came true, and this time nothing closed it
+again.** Item 5's own phase 4c, round 2, is what spent the 74 bytes: `engine/ui.asm`'s `use_item_apply`
+gave the field menu's "spend an item" action a real reader for what an item's effect does, and that
+code is gated by the identical `ITEMS_ENABLED` toggle `ITEM_KERNEL_ALLOWANCE` above already shares, so
+it landed as a second, item-conditional term rather than a fourth diet —
+`ITEM_EFFECT_KERNEL_ALLOWANCE_BY_GAME_TYPE` (`main/build/generate.js`), described in the item-semantics
+section above ("An item's own effect is..."). This exact combination — `sample-rpg` with Save, Move and its one live item, on MMC3 —
+now refuses again, for real, with `kernelCodeBytes` at 7662 and `checkCapacity` reporting "the lookup
+tables need 129 bytes but only 121 are free alongside the engine code" — 8 bytes short. Unlike the two
+earlier reopenings, this one was not chased with another diet: the outcome was decided rather than
+discovered, and accepted as a documented limitation the same way UNROM 512's own Save+Move shortfall
+already was above. `test/unit/kernelbytes.test.js`'s `'sample-rpg with Save, Move and its one live item
+does not build on MMC3 -- round 2 reopened the gap the kernel diet had closed, a documented limitation'`
+is the test now; it asserts the refusal itself, naming both Move's and Save's real byte figures, not a
+successful build. Every other specifically measured RPG-capable configuration — MMC1 with this
+identical combination included, which still measures a real, error-free build — holds the same
+`KERNEL_SLACK` margin the paragraphs above describe the shape of. That leaves two specifically tracked
+feature combinations where it does
+not, not one: UNROM 512's own Save+Move shortfall, named two sentences up and unrelated to items — it
+was never closed by any of the diets above, and stays a documented limitation on that board regardless
+of what happens on this one — and this MMC3 Save+Move+item combination. Both are accepted rather than
+gaps in the mechanism: `checkCapacity` refuses each for real, honest reasons, and each has its own
+test asserting the refusal, but the margin has run out in exactly two of the feature combinations this
+file specifically tracks, not exactly one.
 
 Because the margin can still run out — on MMC3 in a bigger project, or the next feature this bank has
 no room for — `checkCapacity` names what would close a gap like this one instead of only reporting the

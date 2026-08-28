@@ -209,6 +209,38 @@ export const BEHAVIORS = [
 export const canTalk = (actor) => Boolean(actor) && !['pickup', 'door', 'player'].includes(actor.behavior);
 
 /**
+ * What an item does when it is used or spent — `none` for a key item, a
+ * pickup with only Give/Take/Carrying semantics, or a stale/legacy item
+ * nothing else populates. The order is the wire format the same way
+ * `BEHAVIORS`/`EVENT_TRIGGERS` already are: a later round's `EFFECT_*`
+ * equates in `engine/constants.asm` are this list written down, so `none`
+ * stays index 0 for the same reason `interact` does in `EVENT_TRIGGERS` — it
+ * is what every item meant before this field existed, and `normalizeItem`'s
+ * own migration (below) falls back to it whenever an item's backing actor
+ * never had a positive `battle.heal` to derive one from. Round 2
+ * (`use_item_apply`, engine/ui.asm) gave the field/menu "spend an item"
+ * action (`use_item`, every game type) a real reader for all three kinds:
+ * `none` is a key item, kept rather than spent; `heal` and `damage` both
+ * apply and are spent, through whichever health model the build has. `heal`
+ * is also read by `item_heal` (`main/build/battletables.js`), the RPG battle
+ * ITEM menu (`item_chosen`, engine/battleturn.asm) — but round 3's
+ * `build_item_list` (engine/battleui.asm) filters that menu's own list to
+ * `kind == heal AND amount > 0` first, so `item_chosen` only ever sees a row
+ * it can actually spend; a `damage`-kind item or a `heal`-kind item left at
+ * Amount 0 is a real, valid item everywhere else, it simply never appears
+ * there as a choice. See `effectHint` (renderer/forges/items/items.js) for
+ * the one thing still worth telling the author: `damage` has no
+ * battle-menu presence at all, by design, so it is field-only in an RPG.
+ * See `normalizeItem`'s own comment on why the migration that populates
+ * this field is one-time rather than re-derived on every build.
+ */
+export const ITEM_EFFECT_KINDS = [
+  { id: 'none', label: 'No effect' },
+  { id: 'heal', label: 'Heals' },
+  { id: 'damage', label: 'Damages' }
+];
+
+/**
  * The animation an actor draws, chosen by which way it is facing. Every one of
  * these is read by the engine (`actor_anim_dir`, four entries per actor, with
  * left and right sharing `walkSide`); an unset slot falls back to `idle`.
@@ -431,6 +463,76 @@ export function itemPickerOptions(items, selectedId) {
   const missing = itemMissing(items, selectedId)
     ? { value: selectedId, label: 'Missing item', selected: true }
     : null;
+  return { healthy, missing };
+}
+
+/**
+ * Whether `actor` is the kind of thing an item can be collected from at
+ * all — the single writer for a question that used to be inlined three
+ * times (`migrateItemsFromActors`'s synthesis, `validateProject`'s
+ * unbacked-pickup warning below, and now the Items Forge's own actor
+ * picker), each spelling out `behavior === 'pickup'` independently rather
+ * than asking one function. Only `pickup` qualifies: `entity_door`
+ * (engine/entities.asm) is `ent_to_scr`'s one reader, and a pickup
+ * placement is the one case `emitScreens` (main/build/generate.js)
+ * repurposes that same byte to carry an item id instead of a door target —
+ * every other behaviour never reads it as anything, so naming one of them
+ * as an item's `actorId` would be a choice with no engine path behind it at
+ * all, the "looks functional, does nothing" shape this codebase refuses
+ * elsewhere.
+ */
+export const canBackItem = (actor) => actor?.behavior === 'pickup';
+
+/**
+ * Which actor an item is collected from — the pickup half of `itemMissing`'s
+ * "two separate questions" (does this item exist vs. does it have a
+ * physical pickup), the reverse direction of `itemPickerOptions` above (that
+ * one picks an item for a reference; this picks the one actor field an item
+ * itself carries). Returns `{ healthy, missing }` in the identical shape:
+ *
+ * - `healthy` is every `canBackItem` actor, `{ value, label, selected }`.
+ *   A `patroller`/`chaser`/`door`/`npc`/`player` actor is excluded outright
+ *   rather than offered and silently doing nothing if chosen.
+ * - `missing` covers both ways `selectedActorId` can fail to be a live,
+ *   eligible choice: it names no actor at all (`actorMissing`), or it names
+ *   a real actor whose behaviour has since changed away from `pickup` (an
+ *   author changed the actor after linking it) — either way the select
+ *   must still show the true stored value rather than silently rendering a
+ *   different option selected, the same reasoning `itemPickerOptions`
+ *   already documents. `null` (script-only — no physical pickup at all,
+ *   normalizeItem's own "optional metadata" state) is not `missing`: it is
+ *   a normal, legitimate value with nothing to warn about, so a caller
+ *   renders an explicit "None (script-only)" entry for it itself, the same
+ *   way the Drops select renders its own "Nothing" for `itemPickerOptions`.
+ *
+ * Two items naming the same actor is a real conflict (one pickup can only
+ * grant one item) — `validateProject`'s own "actor backs more than one
+ * item" check already refuses that at build time, so this function does not
+ * duplicate it by excluding an actor another item already claims: the
+ * picker offers every eligible actor and lets the existing build-time
+ * refusal, not a second inline rule here, be the single place that conflict
+ * is decided.
+ */
+export function itemActorOptions(actors, selectedActorId) {
+  const eligible = (actors ?? [])
+    .map((actor, id) => ({ actor, id }))
+    .filter(({ actor }) => canBackItem(actor));
+  const healthy = eligible.map(({ actor, id }) => ({
+    value: id,
+    label: actor.name,
+    selected: id === selectedActorId
+  }));
+  const selectedIsEligible = eligible.some(({ id }) => id === selectedActorId);
+  const missing =
+    selectedActorId !== null && selectedActorId !== undefined && !selectedIsEligible
+      ? {
+          value: selectedActorId,
+          label: actorMissing(actors, selectedActorId)
+            ? 'Missing actor'
+            : `${actors[selectedActorId].name} (not a Pickup actor)`,
+          selected: true
+        }
+      : null;
   return { healthy, missing };
 }
 
@@ -2109,7 +2211,54 @@ export function normalizeCode(raw) {
   return { overrides, files };
 }
 
-function normalizeItem(raw, id) {
+// normalizeItem's own effect vocabulary guard: an unrecognized `kind` (a
+// hand-edited project, or one written by a later version with a kind this
+// one does not know) falls back to `none` rather than being resurrected as
+// something it was not — the same safe-default shape `actorId`'s own
+// `NO_ACTOR` fallback and `metaspriteId`'s `NO_METASPRITE` fallback already
+// use just above and below this function, not the "refuse the build"
+// treatment `LIMITS.items`'s own ceiling gets, because unlike an over-cap
+// items array a bad `kind` string destroys no real content by being
+// defaulted away.
+function normalizeEffectKind(raw) {
+  return ITEM_EFFECT_KINDS.some((entry) => entry.id === raw) ? raw : ITEM_EFFECT_KINDS[0].id;
+}
+
+/**
+ * The one-time migration source for an item's `effect`, shared by
+ * `normalizeItem` (an item with no `raw.effect` yet) and
+ * `migrateItemsFromActors` (an item synthesized for the first time, which by
+ * definition has no `raw.effect` to read at all). Both derive the same
+ * heal-or-nothing default from the backing actor's own *raw*, unnormalized
+ * `battle.heal` — the pre-item-schema economy this field replaces, and the
+ * same source `main/build/battletables.js`'s 4b-era `item_heal` table
+ * already reads on every build (see the design notes on why this migration
+ * is one-time rather than a per-build re-derivation like that table's own).
+ * `actorId` is the item's own already-resolved actorId — `null` or
+ * `NO_ACTOR` explicitly, not merely "falsy" or "out of range": `NO_ACTOR`
+ * is `LIMITS.actors` itself (255), the identical sentinel-aliasing trap
+ * `LIMITS.metasprites = NO_METASPRITE` already exists to close one id space
+ * over. An over-cap, 256-plus-actor project has a real raw actor sitting at
+ * index 255 — indexing `rawActors` with the sentinel's own numeric value
+ * would silently read *that* actor's `battle.heal` instead of deriving
+ * "none," and the wrong effect would then be written back as an explicit
+ * value that survives even after the roster is brought back under the cap.
+ * Guarded explicitly rather than relying on `rawActors[255]` happening to be
+ * `undefined` (true only while the roster stays under 255 actors).
+ */
+function deriveItemEffect(rawActors, actorId) {
+  if (actorId === null || actorId === NO_ACTOR) return { kind: 'none', amount: 0 };
+  const heal = damageAmount(rawActors[actorId]?.battle?.heal ?? 0);
+  return heal > 0 ? { kind: 'heal', amount: heal } : { kind: 'none', amount: 0 };
+}
+
+function normalizeItem(raw, id, rawActors) {
+  const actorId =
+    raw?.actorId === null || raw?.actorId === undefined
+      ? null
+      : Number.isInteger(raw.actorId) && raw.actorId >= 0 && raw.actorId <= LIMITS.actors - 1
+        ? raw.actorId
+        : NO_ACTOR;
   return {
     id,
     name: typeof raw?.name === 'string' && raw.name ? raw.name : `Item ${id}`,
@@ -2123,12 +2272,7 @@ function normalizeItem(raw, id) {
     // argument. `actorId` is optional metadata now, not a requirement for
     // the item itself to be valid — see `itemMissing`'s own docstring for
     // why existence and pickup-backing are two separate questions.
-    actorId:
-      raw?.actorId === null || raw?.actorId === undefined
-        ? null
-        : Number.isInteger(raw.actorId) && raw.actorId >= 0 && raw.actorId <= LIMITS.actors - 1
-          ? raw.actorId
-          : NO_ACTOR,
+    actorId,
     // The icon. `null` means "not set — derive one from the backing actor's
     // own resting frame at generation time" (generate.js's resolveItemIcon,
     // reproducing what draw_actor_icon already drew for a migrated item
@@ -2152,7 +2296,25 @@ function normalizeItem(raw, id) {
         ? null
         : Number.isInteger(raw.metaspriteId) && raw.metaspriteId >= 0 && raw.metaspriteId <= 255
           ? raw.metaspriteId
-          : NO_METASPRITE
+          : NO_METASPRITE,
+    // One-time, at normalization, exactly like `actorId`/`metaspriteId`
+    // above — not re-derived from the backing actor on every build. Once a
+    // project has been saved back with an explicit `effect` object (even
+    // `{kind:'none', amount:0}`), `raw.effect` is no longer undefined on the
+    // next load, so this branch never re-fires — the same idempotence every
+    // other field here already has. Re-deriving on every build instead would
+    // let a future items editor's own value be silently overwritten the next
+    // time the project is built, which is exactly the bug this shape avoids.
+    // No `?? []` fallback here: every current caller passes `rawActors`
+    // (normalizeProject always does), and a future call site that forgets to
+    // must fail loudly (a crash on a missing array) rather than silently
+    // derive `none` for every item — the same "let a caller that skips the
+    // real question be told so, not defaulted past" reasoning this file
+    // applies elsewhere.
+    effect:
+      raw?.effect && typeof raw.effect === 'object'
+        ? { kind: normalizeEffectKind(raw.effect.kind), amount: damageAmount(raw.effect.amount) }
+        : deriveItemEffect(rawActors, actorId)
   };
 }
 
@@ -2224,7 +2386,7 @@ function migrateItemsFromActors(raw) {
     if (Number.isInteger(id) && id >= 0 && id < rawActors.length) referenced.add(id);
   };
   rawActors.forEach((actor, id) => {
-    if (actor?.behavior === 'pickup') referenced.add(id);
+    if (canBackItem(actor)) referenced.add(id);
   });
   const onCommand = (command) => {
     if ((command.op === 'give' || command.op === 'take') && typeof command.actor === 'number') {
@@ -2257,7 +2419,12 @@ function migrateItemsFromActors(raw) {
     // Deliberately not seeded from the backing actor's own animation.
     // Nothing draws an item's icon in this phase, so seeding one now would
     // be a mechanism built ahead of any consumer of it.
-    metaspriteId: null
+    metaspriteId: null,
+    // A freshly-synthesized item has no `raw.effect` to read at all — this
+    // is the same one-time derivation `normalizeItem`'s own "not set yet"
+    // branch falls back to, applied at the moment the item itself is first
+    // created rather than on a later load.
+    effect: deriveItemEffect(rawActors, actorId)
   }));
   return { items, itemCtx: { migrating: true, actorToItem } };
 }
@@ -2321,10 +2488,15 @@ export function normalizeProject(raw) {
   // different case: what it *derives* is capped there deliberately (Q2 in
   // the round-1 review), because nothing before this phase could have
   // authored an over-cap items array by hand for that path to preserve.
+  // Threaded into normalizeItem the same way migrateItemsFromActors already
+  // reads it directly: an item's effect migration (normalizeItem's own
+  // "not set yet" branch) needs the backing actor's *raw* battle.heal, which
+  // only exists on this unnormalized array.
+  const rawActors = Array.isArray(raw.sprites?.actors) ? raw.sprites.actors : [];
   let items;
   let itemCtx;
   if (Array.isArray(raw.items)) {
-    items = raw.items.map((entry, id) => normalizeItem(entry, id));
+    items = raw.items.map((entry, id) => normalizeItem(entry, id, rawActors));
     itemCtx = EMPTY_ITEM_CTX;
   } else {
     ({ items, itemCtx } = migrateItemsFromActors(raw));
@@ -2901,23 +3073,20 @@ export function validateProject(project) {
   // in full rather than silently truncating, precisely so this check can
   // still see it), still can, and the ceiling is a real one: every
   // reference to an item is a single byte carrying the item id directly.
-  // Attributed to 'Sprite Forge' for lack of a better home —
-  // items have no editor of their own yet, so the message says so rather
-  // than pointing at a Delete control this version does not offer, and
-  // deliberately does not suggest trimming the actor roster: an
-  // already-migrated items array does not shrink when actors do (deleting
-  // one only nulls the orphaned item's actorId — see
-  // renumberActorDeletion), so that advice would send the author to fix
-  // the wrong list. Revisit the attribution once the Database Forge
-  // (phase 5) gives items a Forge of their own.
+  // Attributed to 'Items Forge' now that one exists (ROADMAP item 5 phase 4c
+  // round 1b) — it is where the Delete control this message now points at
+  // actually lives. Deliberately does not suggest trimming the actor roster
+  // instead: an already-migrated items array does not shrink when actors do
+  // (deleting one only nulls the orphaned item's actorId — see
+  // renumberActorDeletion), so that advice would send the author to fix the
+  // wrong list.
   if (project.items.length > LIMITS.items) {
     add(
       'error',
-      'Sprite Forge',
+      'Items Forge',
       `This project has ${project.items.length} items but the Forge holds ${LIMITS.items} ` +
-        `(ids 0-${LIMITS.items - 1}) — id $FF is reserved to mean “no item”. This version has no items editor to ` +
-        'remove any with, so bring the items list itself under the ceiling by hand (items.json) or in a version ' +
-        'with a Database Forge before this can build.'
+        `(ids 0-${LIMITS.items - 1}) — id $FF is reserved to mean “no item”. Delete ` +
+        `${project.items.length - LIMITS.items} of them before this can build.`
     );
   }
 
@@ -2991,18 +3160,69 @@ export function validateProject(project) {
   // than let an author discover in play. A warning, not an error: nothing is
   // actually broken -- an actor is allowed to be scenery that merely
   // disappears, and this only flags the case an author might not have meant.
-  const backedActorIds = new Set(
-    project.items.filter((item) => typeof item.actorId === 'number').map((item) => item.actorId)
-  );
-  const unbackedPickups = project.sprites.actors.filter(
-    (actor, id) => actor.behavior === 'pickup' && !backedActorIds.has(id)
-  );
+  //
+  // Round 6 review (P1): this whole warning means something only under
+  // ITEMS_ENABLED (projectUsesItems). `add_item`'s own NO_ITEM guard
+  // (engine/ui.asm) is itself gated `.if ITEMS_ENABLED` and does not
+  // assemble at all in a project with no items -- there, entity_pickup
+  // passes the actor's own id (ent_actor,x, not an item id -- there is no
+  // item id space in that economy), and add_item takes it unconditionally.
+  // So a "Pickup with no backing item" in an items-free project is not
+  // unbacked in any sense the disabled economy recognises: it always enters
+  // the bag, by its own actor id, exactly as it did before phase 4b. The
+  // set below is legitimately empty whenever the project has no items --
+  // not because no actor could ever qualify, but because "backed by an
+  // item" is a question only the enabled economy asks at all.
+  const backedActorIds = projectUsesItems(project)
+    ? new Set(project.items.filter((item) => typeof item.actorId === 'number').map((item) => item.actorId))
+    : null;
+  const unbackedPickups = backedActorIds
+    ? project.sprites.actors.filter((actor, id) => canBackItem(actor) && !backedActorIds.has(id))
+    : [];
   for (const actor of unbackedPickups) {
     add(
       'warning',
       'Sprite Forge',
       `${actor.name} has behaviour Pickup but no item names it — picking it up will disappear and count ` +
         'toward the pickup total, but will not be held in the bag. Give an item this actorId if that is not intended.'
+    );
+  }
+
+  // The Items Forge's own effect select only ever writes a recognized
+  // ITEM_EFFECT_KINDS id and a number clamped to 0-255 -- so a *missing*
+  // `effect` (every hand-built item literal already in this test suite,
+  // predating this field, included) is not flagged here: it is the same
+  // "not set" state `metaspriteId: null` already tolerates, not a broken
+  // value. What this does refuse is an `effect` that is *present* but does
+  // not name a real kind or a byte-range amount — reachable only through a
+  // hand-edited project, or one written by a later version with a kind this
+  // one does not know, never through this version's own editor. Unlike
+  // `actorId`/`metaspriteId`, an unrecognized `kind` has no safe sentinel
+  // byte `item_heal` (`main/build/battletables.js`, its one reader so far)
+  // could fall back to — there is no "invalid effect" equate the way
+  // `NO_ACTOR`/`NO_METASPRITE` already are — so a malformed *explicit* value
+  // reaching that table's `.db` emission would be a generator bug, not a
+  // wrong-but-harmless byte.
+  let malformedEffects = 0;
+  for (const item of project.items) {
+    if (item.effect === undefined || item.effect === null) continue;
+    const validKind = ITEM_EFFECT_KINDS.some((entry) => entry.id === item.effect.kind);
+    const validAmount = Number.isInteger(item.effect.amount) && item.effect.amount >= 0 && item.effect.amount <= 255;
+    if (!validKind || !validAmount) malformedEffects++;
+  }
+  if (malformedEffects) {
+    add(
+      'error',
+      'Items Forge',
+      // Not "re-save": main/project-io.js's saveProject normalizes its own
+      // local copy of whatever the renderer handed it and writes *that* to
+      // disk, but never hands the normalized project back to the live
+      // store -- so saving again leaves this session refusing the same
+      // build forever. Only closing and reopening the project (or the
+      // View ▸ Reload item, which discards the same way) runs loadProject
+      // fresh and actually gets a normalized copy back into the session.
+      `${malformedEffects} item${malformedEffects === 1 ? ' has' : 's have'} an effect this version cannot ` +
+        'compile — close and reopen the project so it can be normalized again; re-saving alone will not fix it.'
     );
   }
 
