@@ -813,7 +813,10 @@ export function editEvent(event, context) {
           null,
           'Writes the one save slot to the cartridge: where the player is, the switches and variables, the ' +
             'inventory and the party. This is the player\'s save, not the Map Forge\'s own — that one still ' +
-            'happens whenever you save this project.'
+            'happens whenever you save this project. An existing save can also just stop working: updating ' +
+            'Forge, or a structural change to the project (adding a map, a screen or an actor, for instance), ' +
+            'can make it incompatible with a later build — Continue then simply won\'t appear, with no message ' +
+            'to say why.'
         )
       );
     }

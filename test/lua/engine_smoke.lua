@@ -12,6 +12,9 @@ local PLAYER_Y    = 0x11
 local PLAYER_DIR  = 0x12
 local FLAT_SCREEN = 0x16
 local FRAME_CNT   = 0x1B
+local GAME_STATE  = 0x25
+
+local ST_TITLE = 3
 
 local EXIT_TIMEOUT       = 99
 local EXIT_NO_BOOT       = 2
@@ -19,6 +22,7 @@ local EXIT_NO_MOVE       = 3
 local EXIT_NO_COLLISION  = 4
 local EXIT_NO_TRANSITION = 5
 local EXIT_BAD_RETURN    = 6
+local EXIT_TITLE_STUCK   = 7
 
 local frame = 0
 local phase = 1
@@ -61,10 +65,60 @@ local function onFrame()
       fail(EXIT_NO_BOOT, "frame counter never advanced -- the NMI is not running")
       return
     end
+    -- A project with a title screen (TITLE_ENABLED) boots onto it rather than
+    -- into gameplay, and the world does not run while game_state stays
+    -- ST_TITLE -- so phase 2's held-right walk would never move the player
+    -- and this would misreport as EXIT_NO_MOVE. Press through it here,
+    -- conditionally, the same way boot() (test/unit/items.test.js) does for
+    -- the JS-side tests; a titleless project never sees game_state == ST_TITLE
+    -- at all and falls straight through to the unconditional path below,
+    -- unchanged from before this phase existed.
+    if read(GAME_STATE) == ST_TITLE then
+      pass("booted to the title -- pressing Start before the walk begins")
+      held = { start = true }
+      mark = frame
+      phase = 1.5
+      return
+    end
     note.startX = read(PLAYER_X)
     note.startY = read(PLAYER_Y)
     note.startScreen = read(FLAT_SCREEN)
     pass(string.format("booted at x=%d y=%d screen=%d", note.startX, note.startY, note.startScreen))
+    phase = 2
+    held = { right = true }
+    mark = frame
+    return
+  end
+
+  -- 1.5: confirm Start actually cleared the title before trusting anything
+  -- read after it -- a press that silently does nothing must not fall
+  -- through into phase 2's walk and misreport as EXIT_NO_MOVE, so it gets
+  -- its own exit code instead. note.startX/Y/startScreen are captured here,
+  -- not in phase 1, because engine/boot.asm points flat_screen at the
+  -- title's own flat screen number for as long as game_state is ST_TITLE
+  -- (TITLE_FLAT_SCREEN, not START_SCREEN) -- reading it before the press
+  -- would make every later phase compare screen crossings against the title
+  -- map instead of the world the player is actually about to walk. Player
+  -- x/y happen to already hold START_X/START_Y even before the press (boot
+  -- sets them once, unconditionally, ahead of the title override), but they
+  -- are re-read here too rather than relied on to still match after
+  -- start_game (engine/title.asm) has run its own reset.
+  if phase == 1.5 then
+    if frame - mark < 6 then return end
+    held = {}
+    -- Start is a single press, not a hold -- 6 frames is comfortably longer
+    -- than one input poll needs, and the remaining wait to frame 20 is dead
+    -- time for start_game's own reset (engine/title.asm) to land before the
+    -- check below, not more of the press.
+    if frame - mark < 20 then return end
+    if read(GAME_STATE) == ST_TITLE then
+      fail(EXIT_TITLE_STUCK, "pressed Start for 6 frames and released, but the title still hadn't cleared 14 frames later")
+      return
+    end
+    note.startX = read(PLAYER_X)
+    note.startY = read(PLAYER_Y)
+    note.startScreen = read(FLAT_SCREEN)
+    pass(string.format("Start cleared the title -- x=%d y=%d screen=%d", note.startX, note.startY, note.startScreen))
     phase = 2
     held = { right = true }
     mark = frame

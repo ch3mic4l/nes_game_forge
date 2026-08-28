@@ -339,9 +339,25 @@ This needs a cartridge with somewhere to keep that slot: battery-backed memory o
 **MMC1** or **MMC3**, or, on **UNROM 512**, the cartridge's own program ROM, saved
 into directly the way a USB flash drive is — no battery required. The Build panel
 says which boards qualify rather than letting the command look like it works on one
-that does not. A save carries a checksum and a fingerprint of the project, so a save
-from a different game, or one interrupted by the power going off mid-write, is
-refused instead of loaded as nonsense. One slot, and one risk window: an interrupted
+that does not. A save carries a checksum, which catches a write the power cut off
+partway through, and a fingerprint — a small hash fold of the save format itself and
+the project's own counted facts (its screens, maps, actors and the rest of what a save
+trusts as an index), not a literal record of each one. A save whose fingerprint doesn't
+match the build trying to load it is always refused. A matching fingerprint is not
+enough on its own, though: the save still has to pass its own checksum, and then a
+further set of checks that range-bound every value it is about to be trusted as — a
+screen number, a party size, a direction — before it actually loads; those later checks
+are what keep a save that gets this far from crashing the game, not what make it
+correct, so a save that passes every one of them can still hand back a project state
+nothing in that playthrough actually earned. Two projects share a fingerprint for
+certain when they agree on the save format and every one of those counted facts — that
+case passes every time, by construction, whatever their content differs on — and, more
+rarely, even when they do not agree on all of them, because folding many facts into a
+small fingerprint is a compact summary rather than an exact one, and a small chance of
+two different shapes folding to the same value is the cost of keeping the fingerprint
+that small; the range checks above are what stand behind it either way, not this fold alone.
+An ordinary Forge update that changes neither the save format nor any counted fact
+leaves an existing save's fingerprint exactly as it was. One slot, and one risk window: an interrupted
 write takes out whatever was already in the slot, not only the save being made.
 
 On **UNROM 512** that risk window is longer and worth knowing about specifically: a

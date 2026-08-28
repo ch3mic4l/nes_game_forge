@@ -567,6 +567,20 @@ export function mount(container, app) {
               'The engine only draws nametable 0, so the extra nametables are unused for now.'
           )
         : null,
+      // A passive, standing note rather than a warning: it is a property of
+      // how saves work, not an alert about this particular build, so it uses
+      // the same plain p.hint styling as the mapper summary above it rather
+      // than the four-screen notice's accent colour, and it says nothing at
+      // all on a project with no live Save command.
+      usesSave
+        ? el(
+            'p.hint',
+            null,
+            'This project uses Save. A Forge update, or a structural change to the project, can make an ' +
+              'existing save incompatible with a later build — Continue then simply stops appearing, with no ' +
+              'message to say why.'
+          )
+        : null,
       meter('Background tiles', bgUsed, tableTotal),
       meter('Sprite tiles', spriteUsed, tableTotal),
       meter('Metatiles used', metatilesUsed, LIMITS.metatiles),

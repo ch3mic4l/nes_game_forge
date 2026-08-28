@@ -525,10 +525,36 @@ and still owes an author-facing sentence.
   status-condition generalization, encounter tables and classes/selectable growth profiles — the
   rest of this phase's original scope (line-for-line, above) — are not built and stay open roadmap
   items of their own if this generalizes further.
-- **6. Docs** — the developer-facing half (CLAUDE.md, this file) is current as of phase 4c's own
-  implementation. The compatibility break stated below still owes an author-facing sentence
-  somewhere in the app itself (a Continue that silently stops appearing is not yet explained to
-  whoever hits it) — that half is still outstanding.
+- **6. Docs** — **done**. The developer-facing half (CLAUDE.md, this file) is current as of phase
+  4c's own implementation. The author-facing half now has a standing, true sentence in three places
+  an author actually reaches: the Map Forge's own Save-command hint
+  (`renderer/forges/map/events.js`), the README's Saving section, and a passive note in the Build
+  panel's Cartridge panel that only appears on a project with a live Save command. All three say the
+  same thing — a Forge update, or a structural change to the project (its maps, screens, actors, and
+  so on — not its content), can make an existing save incompatible, and Continue then simply stops
+  appearing with no message — which is the claim `saveIdentity()` (`shared/save.js`) actually backs:
+  it folds `SAVE_LAYOUT_VERSION` and structural counts, not ROM bytes or project content, so two
+  projects (or two builds of one project) that agree on every count it folds in still pass its check
+  every time, by construction, regardless of how different their content is — an earlier draft of
+  this sentence said "the exact build that wrote it," which is false for exactly that reason, and was
+  corrected before anything shipped. None of the three names a version number, matching
+  `SAVE_LAYOUT_VERSION`'s own role as an internal mechanism an author never needs to track by hand.
+
+  `validateProject` was considered and rejected as a fourth surface — not because it is structurally
+  unable to condition on anything (it already gates a validation error of its own on
+  `projectUsesSave(project)`, `shared/project.js:2982` — a Save-using project on a board with no save
+  medium), but because a standing, unconditional warning on every Save-using project belongs to a
+  channel meant for things the author must fix, and this is neither: `validateProject` has no save
+  file to look at, so it cannot say whether *this* author's *next* build will actually break *an*
+  existing save, only that the capability for that exists in general — noise dressed as a finding.
+
+  What this satisfies, and what it deliberately does not: the author is reachable, but only
+  proactively — at authoring or build time, never at the moment of actual confusion, which happens
+  outside the app (in Mesen, or on real hardware, after a later rebuild). The player is not reachable
+  by any author-facing text at all — nothing shipped here changes the ROM. A player who loses
+  Continue gets the one signal the engine already gives for free: the title's prompt differs. A
+  considered, costed option to make that signal say something more specific is recorded below
+  instead of built.
 
 Two constraints shaped phases 4 to 6, and both were cheaper to know up front than to rediscover —
 one is now a measured fact rather than a forecast:
@@ -556,8 +582,40 @@ one is now a measured fact rather than a forecast:
   migration, landed in 4b rather than deferred to phase 6: the capability exists in the engine the
   moment 4b ships, so the break has to be unconditional and immediate, not phased in alongside the
   Database Forge. An old save is treated exactly like a foreign one — no message, no crash, Continue
-  simply is not offered. Phase 6 still owes this the author-facing sentence; the mechanism itself is
-  already in place.
+  simply is not offered. Phase 6 closed the author-facing half of this (above): three surfaces state
+  the standing rule — a Forge update or a structural project change can invalidate a save — with no
+  version number anywhere an author sees it, since the number is exactly what `saveIdentity()`
+  (`shared/save.js`) exists to make unnecessary for anyone to track by hand.
+
+  A player-facing ROM string was considered for the same gap and deliberately not built, the same way
+  CLAUDE.md's own AxROM/MMC5 mappers and its flash-save slot ring were each costed and declined rather
+  than merely skipped. `title_pick_prompt` (`engine/title.asm`) already branches on `save_check_valid` and
+  picks one of two prompt strings, so a third, generic string — something like "NO COMPATIBLE SAVE"
+  in place of the plain Start prompt — would need no reason-tracking (`save_check_valid`'s own
+  pass/fail has no cause to distinguish between, and a truthful generic string does not have to invent
+  one) and no migration path of its own.
+
+  The string itself is not the constraint an earlier draft of this entry claimed. It is new text data
+  compiled into `assets/text.inc`, which `engine/main.asm` includes after `assets/kernel_hi.inc`'s own
+  `.bank`/`.org $E000` — the kernel-**hi** bank, not the kernel-lo bank the 8-byte MMC3
+  Save+Move+item shortfall (CLAUDE.md's own kernel-budget section) actually belongs to. That draft cited
+  the kernel-lo shortfall as this string's cost; it is simply the wrong bank, and the error is corrected
+  here rather than left standing. Measured instead: `sample-rpg` with a live `Save` and its one live
+  item, titled, on MMC3, leaves kernel-hi (bank 31, `$E000`) at nesasm's own reported
+  **`385/7807`** (used/free — the 8192-byte bank size is nowhere in nesasm's own line; it only ever
+  reports used and free, which sum to it). Adding a live `Move` command changes kernel-hi by exactly +4 bytes (confirmed by
+  building the same project with and without `Move` on MMC1, the one board this exact combination can
+  still reach nesasm on: 385 → 389), because `Move`'s only kernel-hi cost is its own four-byte compiled
+  event opcode (`OP_MOVE` plus three operands) — the ~395-byte engine cost that actually makes MMC3
+  refuse this combination is entirely in kernel-lo, gated by `MOVE_KERNEL_ALLOWANCE`, and never touches
+  kernel-hi at all. So this is not a costed deferral: kernel-hi has room for a string like this many
+  times over, on every board.
+
+  The deferral rests on one reason, not two: the player already receives the only honest signal this
+  mechanism can give without it — the title's own prompt already differs between the two cases
+  (`sys_press_start` vs `sys_press_start_continue`), true today and costing nothing further. A more
+  specific string would be a real, cheap, buildable improvement, not one blocked by any bank's
+  capacity — it simply has not been judged worth doing yet.
 
 ## 6. Cutscene and presentation commands
 
