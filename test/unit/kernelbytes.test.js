@@ -42,6 +42,7 @@ import {
   TURN_KERNEL_ALLOWANCE,
   WAIT_KERNEL_ALLOWANCE,
   SHAKE_KERNEL_ALLOWANCE,
+  VISIBLE_KERNEL_ALLOWANCE,
   SPLIT_LOCK_KERNEL_ALLOWANCE,
   ITEM_KERNEL_ALLOWANCE,
   ITEM_EFFECT_KERNEL_ALLOWANCE_BY_GAME_TYPE,
@@ -98,6 +99,7 @@ async function measureCodeBytes(
     withTurn = false,
     withWait = false,
     withShake = false,
+    withVisible = false,
     withTitle = false,
     withItems = true
   } = {}
@@ -122,6 +124,7 @@ async function measureCodeBytes(
   if (withTurn) commands.push({ op: 'turn', who: 'self', dir: 'up' });
   if (withWait) commands.push({ op: 'wait', frames: 30 });
   if (withShake) commands.push({ op: 'shake', frames: 30 });
+  if (withVisible) commands.push({ op: 'visible', state: 'hidden' });
   if (commands.length) {
     project.maps[0].screens[0].entities.push({
       actorId: 0,
@@ -498,6 +501,45 @@ test(
         `${mapper.name}: Shake+Wait costs ${delta} bytes of kernel code (${noSaveEntry.codeBytes} -> ${codeBytes}), ` +
           `but SHAKE_KERNEL_ALLOWANCE + WAIT_KERNEL_ALLOWANCE reserves ${SHAKE_KERNEL_ALLOWANCE + WAIT_KERNEL_ALLOWANCE} ` +
           '— the two must be purely additive, since Shake shares no code with Wait.'
+      );
+    }
+
+    // Every RPG-capable board, a live Show/Hide command and nothing else.
+    // Show/Hide shares no dependent term with Move/Turn/Wait/Shake/Face --
+    // no other command calls script_op_visible or reads ENT_HIDDEN -- so
+    // this delta should be VISIBLE_KERNEL_ALLOWANCE and nothing else, the
+    // identical shape the Shake-only block above already asserts.
+    for (const mapper of CAPABLE_MAPPERS) {
+      const { project, codeBytes } = await measureCodeBytes(t, mapper, { withVisible: true });
+      assertCovers({ mapper, codeBytes }, kernelCodeBytes(project, mapper), 'a live Show/Hide command');
+      const noSaveEntry = noSave.find((entry) => entry.mapper.id === mapper.id);
+      const delta = codeBytes - noSaveEntry.codeBytes;
+      assert.equal(
+        delta,
+        VISIBLE_KERNEL_ALLOWANCE,
+        `${mapper.name}: Show/Hide-only costs ${delta} bytes of kernel code (${noSaveEntry.codeBytes} -> ${codeBytes}), ` +
+          `but VISIBLE_KERNEL_ALLOWANCE reserves ${VISIBLE_KERNEL_ALLOWANCE} — this allowance must equal Show/Hide's ` +
+          'real cost exactly, on every board.'
+      );
+    }
+
+    // Every RPG-capable board, live Shake and Show/Hide together. The same
+    // "cannot rule out shared conditional code from two isolated deltas
+    // alone" review finding the Shake+Wait block above already answers,
+    // applied to this pair: Show/Hide touches no code Shake also touches, so
+    // this delta should be exactly SHAKE_KERNEL_ALLOWANCE +
+    // VISIBLE_KERNEL_ALLOWANCE, purely additive.
+    for (const mapper of CAPABLE_MAPPERS) {
+      const { project, codeBytes } = await measureCodeBytes(t, mapper, { withShake: true, withVisible: true });
+      assertCovers({ mapper, codeBytes }, kernelCodeBytes(project, mapper), 'live Shake and Show/Hide commands together');
+      const noSaveEntry = noSave.find((entry) => entry.mapper.id === mapper.id);
+      const delta = codeBytes - noSaveEntry.codeBytes;
+      assert.equal(
+        delta,
+        SHAKE_KERNEL_ALLOWANCE + VISIBLE_KERNEL_ALLOWANCE,
+        `${mapper.name}: Shake+Show/Hide costs ${delta} bytes of kernel code (${noSaveEntry.codeBytes} -> ${codeBytes}), ` +
+          `but SHAKE_KERNEL_ALLOWANCE + VISIBLE_KERNEL_ALLOWANCE reserves ${SHAKE_KERNEL_ALLOWANCE + VISIBLE_KERNEL_ALLOWANCE} ` +
+          '— the two must be purely additive, since Show/Hide shares no code with Shake.'
       );
     }
 
@@ -1531,4 +1573,71 @@ test('a kernel-lo shortfall neither Shake nor Wait alone would close, but both t
   assert.ok(deficit <= combined, `deficit ${deficit} must not exceed the combined figure (${combined}), or dropping both would not close the gap either`);
   const message = kernelShortfallMessage(project);
   assert.match(message, new RegExp(`removing every Wait command and every Shake command together \\(frees ${combined} bytes\\)`));
+});
+
+// Show/Hide's own solo case: it shares no dependent term with anything (no
+// Face-like companion routine another command also calls), the identical
+// shape Shake's own solo test above already is. This is the test that fails
+// if active.push({ op: 'visible', ... }) is missing from
+// kernelShortfallAdvice: without it, Show/Hide is never considered at all
+// and the message falls through to a mapper suggestion or the generic one
+// instead of naming it.
+test('a kernel-lo shortfall a live Show/Hide command alone would close names Show/Hide', () => {
+  const project = createProject('Action', 'action');
+  project.cartridge.mapper = 1; // MMC1 -- no split-lock to complicate the arithmetic
+  project.maps[0].screens[0].entities.push({
+    actorId: 0,
+    x: 16,
+    y: 16,
+    props: { event: { pages: [{ cond: { type: 'none', arg: 0 }, commands: [{ op: 'visible', state: 'hidden' }] }] } }
+  });
+  inflate(project, 188);
+  const deficit = kernelShortfallDeficit(project);
+  assert.ok(
+    deficit <= VISIBLE_KERNEL_ALLOWANCE,
+    `deficit ${deficit} must not exceed VISIBLE_KERNEL_ALLOWANCE (${VISIBLE_KERNEL_ALLOWANCE}) or this case does not exercise Show/Hide alone closing the gap`
+  );
+  const message = kernelShortfallMessage(project);
+  assert.match(message, new RegExp(`removing every Show/Hide command \\(frees ${VISIBLE_KERNEL_ALLOWANCE} bytes\\)`));
+  assert.doesNotMatch(message, /Shake command/, 'this project never turns Shake on, so it must not be offered as a fix');
+  assert.doesNotMatch(message, /Wait command/, 'this project never turns Wait on, so it must not be offered as a fix');
+});
+
+// The combination half: Shake and Show/Hide together, purely additive since
+// neither shares a dependent term with the other -- SHAKE_KERNEL_ALLOWANCE +
+// VISIBLE_KERNEL_ALLOWANCE = 65 + 49 = 114. Sized so neither command alone
+// (65, 49) covers the deficit but dropping both together does. n=186
+// measured directly, landing a 71-byte deficit -- strictly above both solo
+// figures and at or below the combined one.
+test('a kernel-lo shortfall neither Shake nor Show/Hide alone would close, but both together would, names the combination', () => {
+  const project = createProject('Action', 'action');
+  project.cartridge.mapper = 1; // MMC1 -- no split-lock to complicate the arithmetic
+  project.maps[0].screens[0].entities.push({
+    actorId: 0,
+    x: 16,
+    y: 16,
+    props: {
+      event: {
+        pages: [
+          {
+            cond: { type: 'none', arg: 0 },
+            commands: [
+              { op: 'shake', frames: 30 },
+              { op: 'visible', state: 'hidden' }
+            ]
+          }
+        ]
+      }
+    }
+  });
+  inflate(project, 186);
+  const deficit = kernelShortfallDeficit(project);
+  const combined = SHAKE_KERNEL_ALLOWANCE + VISIBLE_KERNEL_ALLOWANCE;
+  assert.ok(
+    deficit > SHAKE_KERNEL_ALLOWANCE && deficit > VISIBLE_KERNEL_ALLOWANCE,
+    `deficit ${deficit} must exceed both Shake alone (${SHAKE_KERNEL_ALLOWANCE}) and Show/Hide alone (${VISIBLE_KERNEL_ALLOWANCE}), or this case does not exercise the combination at all`
+  );
+  assert.ok(deficit <= combined, `deficit ${deficit} must not exceed the combined figure (${combined}), or dropping both would not close the gap either`);
+  const message = kernelShortfallMessage(project);
+  assert.match(message, new RegExp(`removing every Shake command and every Show/Hide command together \\(frees ${combined} bytes\\)`));
 });

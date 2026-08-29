@@ -46,7 +46,8 @@ import {
   entityLabel,
   screenLabel,
   liveCommonEvents,
-  commonEventId
+  commonEventId,
+  VISIBLE_STATES
 } from '../../shared/project.js';
 import { damageAmount } from '../../shared/eventrules.js';
 
@@ -298,6 +299,15 @@ export function compileText(project) {
         return [opIndex('wait'), byte(command.frames, 255)];
       case 'shake':
         return [opIndex('shake'), byte(command.frames, 255)];
+      // [state]. Self only -- no who/dir resolution the way move/turn need,
+      // since there is exactly one entity this can mean. An id this version
+      // does not know falls back to the first entry (Hidden), the same
+      // "still compiles to something, never dropped" rule move/turn's own
+      // who/dir resolution already follows.
+      case 'visible': {
+        const state = Math.max(0, VISIBLE_STATES.findIndex((entry) => entry.id === command.state));
+        return [opIndex('visible'), state];
+      }
       case 'join':
         return [opIndex('join'), byte(command.member, 3)];
       case 'call': {

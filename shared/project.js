@@ -685,7 +685,22 @@ export const EVENT_COMMANDS = [
   // out the shake, not an exact one -- the two counters tick on different
   // schedules (Wait in the frozen-world tick, Shake every NMI), so they are
   // not guaranteed to end on the same frame.
-  { id: 'shake', label: 'Shake screen', args: ['frames'] }
+  { id: 'shake', label: 'Shake screen', args: ['frames'] },
+  // [state]. Self only -- the actor whose event is running, resolved through
+  // talk_ent the same way Move/Turn's own 'self' already is; there is no
+  // other entity this command could mean, so there is no 'who' to author.
+  // One command with a Shown/Hidden selector rather than two opcodes, the
+  // same shape Turn's own direction picker already has, since Show and Hide
+  // are the two positions of one flag rather than independent actions.
+  // Hidden means invisible but otherwise fully alive: AI, contact and
+  // interaction all keep running, only the sprite stops being drawn -- so a
+  // hidden NPC can still be talked to and a hidden damage actor can still
+  // hurt the player. Does not suspend, the same instant shape Turn already
+  // has. Hiding does not survive leaving the screen: spawn_entities makes
+  // every placement visible again on the next redraw, so an author who wants
+  // an actor permanently gone already has switches and page conditions for
+  // exactly that.
+  { id: 'visible', label: 'Show/hide actor', args: ['state'] }
 ];
 
 // A command can be switched off while you work out whether you want it, the way
@@ -732,7 +747,8 @@ export const IMPLEMENTED_COMMANDS = new Set([
   'move',
   'turn',
   'wait',
-  'shake'
+  'shake',
+  'visible'
 ]);
 
 /**
@@ -762,6 +778,21 @@ export const MOVE_DIRECTIONS = [
   { id: 'up', label: 'Up' },
   { id: 'left', label: 'Left' },
   { id: 'right', label: 'Right' }
+];
+
+/**
+ * A Show/Hide command's own state. The order is the wire format: `hidden` is
+ * index 0 to match `OP_VISIBLE`'s state byte (`engine/constants.asm`), and
+ * `ENT_HIDDEN` is set when the byte is 0, not 1 — a Show/Hide command with no
+ * state chosen yet therefore hides, the same "the author is looking at the
+ * verb that names the feature" reasoning `self` gets for being index 0 above.
+ * There is no `player` entry the way `MOVE_TARGETS` has one: the player has
+ * no `ent_active`/`draw_entities` presence at all, so "hide the player" has
+ * no engine meaning to give it.
+ */
+export const VISIBLE_STATES = [
+  { id: 'hidden', label: 'Hidden' },
+  { id: 'shown', label: 'Shown' }
 ];
 
 /**
@@ -1591,6 +1622,10 @@ function normalizeEventCommand(raw, depth = 0, itemCtx = EMPTY_ITEM_CTX) {
     else if (arg === 'who') out.who = MOVE_TARGETS.some((entry) => entry.id === raw?.who) ? raw.who : MOVE_TARGETS[0].id;
     else if (arg === 'dir')
       out.dir = MOVE_DIRECTIONS.some((entry) => entry.id === raw?.dir) ? raw.dir : MOVE_DIRECTIONS[0].id;
+    // Same id-not-index reasoning as 'who'/'dir' above, for the same reason:
+    // a Show/Hide that lost its state is still a Show/Hide, not dropped.
+    else if (arg === 'state')
+      out.state = VISIBLE_STATES.some((entry) => entry.id === raw?.state) ? raw.state : VISIBLE_STATES[0].id;
     // Pixels, and a whole byte of them: 16 is one metatile and 255 is just
     // under the width of a screen, which is as far as a move could be asked to
     // go without crossing an edge — and crossing one mid-event is what `warp`
@@ -2801,6 +2836,27 @@ export function projectUsesShake(project) {
     for (const page of compiledPages(event)) {
       for (const command of liveCommands(page.commands, CHOICE_LIMITS.options)) {
         if (command.op === 'shake') return true;
+      }
+    }
+  }
+  return false;
+}
+
+/**
+ * Drives the generated `VISIBLE_ENABLED`, the same shape and the same reason
+ * `projectUsesShake` drives `SHAKE_ENABLED`: `script_op_visible`
+ * (engine/script.asm) and the `ENT_HIDDEN` check `draw_entities`
+ * (engine/entities.asm) gains are real kernel-lo code with nowhere to go
+ * unconditionally in a project that never hides anything. Shares no
+ * dependent term with Move/Turn/Wait/Shake — there is no routine two of
+ * these commands both call — so it needs no companion predicate the way
+ * Turn needs `projectUsesFace`.
+ */
+export function projectUsesVisible(project) {
+  for (const event of projectEvents(project)) {
+    for (const page of compiledPages(event)) {
+      for (const command of liveCommands(page.commands, CHOICE_LIMITS.options)) {
+        if (command.op === 'visible') return true;
       }
     }
   }

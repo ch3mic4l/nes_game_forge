@@ -192,8 +192,14 @@ script_run_wait:
 script_run_shake:
   .if SHAKE_ENABLED
   cmp #OP_SHAKE
-  bne script_run_bad
+  bne script_run_visible
   jmp script_op_shake
+  .endif
+script_run_visible:
+  .if VISIBLE_ENABLED
+  cmp #OP_VISIBLE
+  bne script_run_bad
+  jmp script_op_visible
   .endif
 script_run_bad:
   jmp script_finish         ; an opcode this engine cannot run stops the event
@@ -552,6 +558,62 @@ script_op_shake:
   beq script_op_shake_done
   sta shake_left
 script_op_shake_done:
+  jmp script_next2
+  .endif
+
+; [OP_VISIBLE, state]. Self only -- there is exactly one entity this command
+; can ever mean, the actor whose event is running, so it is resolved through
+; talk_ent the same way MOVE_SELF already is rather than spending a "who"
+; byte on an operand that could only ever hold one value. Does not suspend:
+; the decision is instant, the same shape OP_TURN already has. Hidden means
+; invisible but otherwise fully alive -- ENT_HIDDEN (engine/constants.asm) is
+; the only bit draw_entities tests; AI, contact and interaction never look at
+; it, so a hidden actor keeps patrolling, keeps dealing contact damage and
+; can still be talked to, attacked or collected. Hiding is not permanence:
+; spawn_entities writes ENT_PRESENT alone on every redraw, so a hidden actor
+; comes back visible the moment the screen is left and re-entered -- an
+; author who wants an actor permanently gone already has switches and page
+; conditions for exactly that.
+;
+; MOVE_SELF with nobody to be: the identical defense-in-depth
+; script_op_move/script_op_turn already carry, applied to the same talk_ent
+; path -- not a live case (every event runs through start_dialog, which puts
+; a real slot in talk_ent for the whole frozen duration of one), only the
+; same insurance those two commands already buy.
+  .if VISIBLE_ENABLED
+script_op_visible:
+  lda talk_ent
+  cmp #NO_ENTITY
+  bne script_op_visible_ready
+  jmp script_finish
+script_op_visible_ready:
+  ldx talk_ent
+  ldy #1
+  lda [script_ptr_lo],y      ; state: 0 = hidden, 1 = shown
+  bne script_op_visible_shown
+  ; This ORs the bit into whatever talk_ent's own slot already holds -- and
+  ; that is only safe because the slot is guaranteed occupied. Hiding an
+  ; EMPTY slot (ent_active == 0) would OR in ENT_HIDDEN alone, producing the
+  ; invalid value 2 -- present bit clear, hidden bit set -- which every one
+  ; of the nine plain beq/bne occupancy checks in this engine would read as
+  ; alive, since none of them are exactly zero. Nothing today can reach that:
+  ; a running script always has a real owner in talk_ent for as long as it
+  ; runs (start_dialog sets it before script_start, and the world is frozen
+  ; the whole time), and the one path that could otherwise leave a stale
+  ; slot behind a battle either resolves talk_ent to the respawned owner's
+  ; current slot (battle_end_owner_loop, engine/rpg.asm) or leaves it
+  ; NO_ENTITY, which the guard above already turns into script_finish rather
+  ; than a write here. A future command able to despawn the actor whose own
+  ; script is still running would need an occupied-slot guard at this write;
+  ; adding one now would spend bytes defending a state nothing can produce.
+  lda ent_active,x
+  ora #ENT_HIDDEN
+  jmp script_op_visible_store
+script_op_visible_shown:
+  lda ent_active,x
+  and #$FD                  ; clears ENT_HIDDEN (bit 1), preserves bit 0
+script_op_visible_store:
+  sta ent_active,x
   jmp script_next2
   .endif
 

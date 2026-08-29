@@ -564,6 +564,93 @@ const scenario = (dir, sampleDir, sampleRpgDir) => `
   await wait(200);
   step('shake authoring', 'Shake wired its frame count (77, then edited to 133), not dist');
 
+  // Show/Hide, a select rather than a number field -- the lexical-scan gap
+  // this whole family of steps exists to close applies just as much to an
+  // onchange on a <select> as to one on an <input type=number>. 'shown' is
+  // the value to switch to first because it is NOT VISIBLE_STATES[0]
+  // ('hidden'): confirming the row starts at the default and then moves off
+  // it rules out a handler that merely renders whichever option happens to
+  // be first regardless of the stored value.
+  rowButton(0, 'Edit event…').click();
+  await until('the event editor', () => document.querySelector('#modalHost .btn-accent'));
+  const addVisible = [...document.querySelectorAll('#modalHost select')].find((node) =>
+    node.textContent.includes('Add a command')
+  );
+  addVisible.value = 'visible';
+  addVisible.dispatchEvent(new Event('change', { bubbles: true }));
+  await wait(200);
+  const findVisibleRow = () =>
+    [...document.querySelectorAll('#modalHost .field-row')].find(
+      (node) => node.querySelector('span')?.textContent === 'This actor is'
+    );
+  const selectedLabel = (select) => select.options[select.selectedIndex]?.textContent;
+  const firstVisibleRow = findVisibleRow();
+  if (!firstVisibleRow) throw new Error('adding a Show/Hide command produced no row');
+  const firstVisibleSelect = firstVisibleRow.querySelector('select');
+  if (!firstVisibleSelect) throw new Error('the Show/Hide row offered no state select');
+  if (firstVisibleSelect.value !== 'hidden') {
+    throw new Error('a freshly added Show/Hide command should default to Hidden: ' + firstVisibleSelect.value);
+  }
+  // The value alone is not the whole UI: a select whose 'hidden'/'shown'
+  // options carry swapped display labels would pass every value check above
+  // while showing the author the opposite of what they picked.
+  if (selectedLabel(firstVisibleSelect) !== 'Hidden') {
+    throw new Error('value hidden must display as label Hidden: saw ' + JSON.stringify(selectedLabel(firstVisibleSelect)));
+  }
+  // The footgun has to actually be on screen, not just accurate in the
+  // source -- a hint that said the right thing but never rendered, or was
+  // deleted outright, would be invisible to an author relying on it.
+  const visibleHint = firstVisibleRow.parentElement?.querySelector('p.hint');
+  if (!visibleHint || visibleHint.textContent.indexOf('AI, contact damage and interaction all keep running') === -1) {
+    throw new Error('the Show/Hide row is missing its AI/contact/interaction warning: ' + JSON.stringify(visibleHint?.textContent));
+  }
+  if (visibleHint.textContent.indexOf('does not survive leaving the screen') === -1) {
+    throw new Error('the Show/Hide row is missing its does-not-survive-a-redraw warning: ' + JSON.stringify(visibleHint.textContent));
+  }
+  firstVisibleSelect.value = 'shown';
+  firstVisibleSelect.dispatchEvent(new Event('change', { bubbles: true }));
+  await wait(120);
+  document.querySelector('#modalHost .btn-accent').click();
+  await wait(300);
+  const visibleCommands = store.project.maps[0].screens[3].entities[0].props.event.pages[0].commands;
+  const visibleAdded = visibleCommands[visibleCommands.length - 1];
+  if (visibleAdded?.op !== 'visible' || visibleAdded.state !== 'shown') {
+    throw new Error('the Show/Hide command saved as ' + JSON.stringify(visibleAdded));
+  }
+  if ('frames' in visibleAdded || 'dist' in visibleAdded || 'who' in visibleAdded || 'dir' in visibleAdded) {
+    throw new Error('a Show/Hide command must not carry Move/Turn/Wait/Shake-only fields: ' + JSON.stringify(visibleAdded));
+  }
+
+  // Reopen and edit back to the other value -- the same "genuinely tracking
+  // the input, not echoing the first change" proof Shake's own 77 -> 133
+  // step above relies on.
+  rowButton(0, 'Edit event…').click();
+  await until('the event editor', () => document.querySelector('#modalHost .btn-accent'));
+  const secondVisibleRow = findVisibleRow();
+  if (!secondVisibleRow) throw new Error('the saved Show/Hide command produced no row when reopened');
+  const secondVisibleSelect = secondVisibleRow.querySelector('select');
+  if (secondVisibleSelect.value !== 'shown') {
+    throw new Error('the reopened Show/Hide row did not show the value it was saved with: ' + secondVisibleSelect.value);
+  }
+  if (selectedLabel(secondVisibleSelect) !== 'Shown') {
+    throw new Error('value shown must display as label Shown: saw ' + JSON.stringify(selectedLabel(secondVisibleSelect)));
+  }
+  secondVisibleSelect.value = 'hidden';
+  secondVisibleSelect.dispatchEvent(new Event('change', { bubbles: true }));
+  await wait(120);
+  document.querySelector('#modalHost .btn-accent').click();
+  await wait(300);
+  const visibleCommandsAgain = store.project.maps[0].screens[3].entities[0].props.event.pages[0].commands;
+  const visibleEdited = visibleCommandsAgain[visibleCommandsAgain.length - 1];
+  if (visibleEdited?.op !== 'visible' || visibleEdited.state !== 'hidden') {
+    throw new Error('the edited Show/Hide command saved as ' + JSON.stringify(visibleEdited));
+  }
+  store.undo();
+  await wait(200);
+  store.undo();
+  await wait(200);
+  step('show/hide authoring', 'Show/Hide wired its state select (defaulted Hidden, set Shown, then edited back to Hidden)');
+
   // The trigger, which is the one part of an event that lives on the placement
   // rather than in the event. Only the real panel can show the select is wired
   // to the store and that the hint under it follows the choice.

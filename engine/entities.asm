@@ -67,7 +67,8 @@ spawn_loop:
   bne spawn_next            ; switch_split exists
 
 spawn_place:
-  lda #1
+  lda #ENT_PRESENT           ; visible by default -- ENT_HIDDEN is never set
+                              ; here, so Hide never survives a redraw
   sta ent_active,x
   lda ent_spawn_rec
   sta ent_record,x          ; which record this slot came from, not which slot
@@ -543,6 +544,10 @@ draw_entities:
 draw_entities_loop:
   lda ent_active,x
   beq draw_entities_next
+  .if VISIBLE_ENABLED
+  and #ENT_HIDDEN            ; the only reader of this bit -- AI, contact and
+  bne draw_entities_next     ; interaction all keep testing bit 0 alone
+  .endif
   jsr draw_one_entity
 draw_entities_next:
   inx

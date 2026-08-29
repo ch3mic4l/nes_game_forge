@@ -674,11 +674,13 @@ conclusion from this same 220, not the stale 223.)
   confirming the shared queue's one-vblank budget still holds when a fade packet and a text-box
   packet are both open on the same frame — bounded (513 DMA + 480 + 480 ≈ 1473 of ~2273 cycles, with
   room to spare) rather than unknown, but a real constraint, not a non-issue.
-- **Screen shake and palette flash.** Shake is cheap: `boot.asm`'s NMI already writes `$2005` twice
-  every vblank -- (0,0) when nothing is shaking, a small offset for N frames when something is, since
-  Shake perturbs that existing write site rather than adding a new one. Flash reuses Fade's own
-  producer/transport almost entirely — a short ramp to a target color and back. Estimated
-  **~50-100 bytes**, contingent on Fade landing first for flash.
+- **Screen shake and palette flash.** Screen shake has shipped: `boot.asm`'s NMI already wrote `$2005`
+  twice every vblank -- (0,0) when nothing is shaking, a small offset for N frames when something is,
+  since Shake perturbs that existing write site rather than adding a new one — measured at
+  **65 bytes** (`SHAKE_KERNEL_ALLOWANCE`), identically on all three RPG-capable boards, exactly the
+  cheap shape this section predicted before it was built. Palette flash has not shipped: it would reuse
+  Fade's own producer/transport almost entirely — a short ramp to a target color and back. Estimated
+  **~50-100 bytes**, contingent on Fade landing first.
 - **Play a sound effect or music sting.** These are different features costed separately. A true
   **sound effect** (independent of whatever song is playing, borrowing an APU channel briefly) is
   genuinely new and touches `music_tick`, which runs unconditionally every frame including during
@@ -692,19 +694,47 @@ conclusion from this same 220, not the stale 223.)
   exists (see the first slice below), an author can already build a sting as an authored sequence —
   Play music (the sting) → Wait (its known duration) → Play music (the original) — with no new
   opcode. That second option is the one worth taking.
-- **Show / hide an actor.** `draw_entities` already skips any slot with `ent_active == 0`. Reusing
-  `ent_active` directly is nearly free (**~15-30 bytes**) but conflates "hidden" with "gone" — the
-  same flag also gates `update_entities`'s own AI (`entity_patrol`/`entity_chase`) and every contact
-  path (`entity_contact`, `entity_trigger_touch`, and the `do_talk`/`do_attack`/`do_interact` loops),
-  so a hidden actor also stops wandering, stops dealing contact damage, and stops being talkable or
-  interactable. (Actors do not block the player's own movement at all today — `probe_solid` only ever
-  reads `mtptr`'s metatile data, never an entity's position — so "blocking" was never one of the
-  things at stake here; that earlier draft of this line overstated it.) A dedicated hidden-flag array
-  keeps `draw_entities`'s own gate separate from AI/contact/interaction and costs a little more
-  (**~40-60 bytes**), but whether that separation is the *right* behavior — should a hidden actor
-  still wander and still deal contact damage while invisible, or should hiding suspend all of it — is
-  a semantic choice nobody has made yet, not something the dedicated flag settles by being more
-  correct. Costing this further should wait on that decision, not assume the answer.
+- **Show / hide an actor.** Built. The semantic choice this bullet used to say nobody had made yet is
+  made: hidden means invisible but otherwise fully alive. `draw_entities` (`engine/entities.asm`) is
+  the *only* reader of the hidden bit; `update_entities`'s own AI (`entity_patrol`/`entity_chase`),
+  every contact path (`entity_contact`, `entity_trigger_touch`), and the `do_talk`/`do_attack`/
+  `do_interact` loops all keep testing `ent_active` for occupancy alone and never look at it — so a
+  hidden actor keeps wandering, keeps dealing contact damage, and stays talkable, attackable and
+  collectible. Hide-as-despawn (`ent_active = 0`, this bullet's own earlier "nearly free" option) was
+  rejected on purpose, not merely costed differently: it is already indistinguishable from a collected
+  pickup or a beaten enemy, and an author who wants an actor gone for good already has switches and
+  page conditions for exactly that — a command that only reproduces what those already do would not be
+  pulling its weight under the name "Hide". (Actors still do not block the player's own movement at
+  all — `probe_solid` only ever reads `mtptr`'s metatile data, never an entity's position — so hiding
+  one changes nothing about that either way.)
+
+  The hidden bit is packed into `ent_active` itself (`ENT_PRESENT` = 1, `ENT_HIDDEN` = 2,
+  `engine/constants.asm`) rather than a dedicated array, because a second array is one more thing
+  `spawn_entities` and every future writer has to remember to keep in sync with the first — a packed
+  bit cannot drift out of sync with itself. That reuse works only because every one of `ent_active`'s
+  nine reads is a plain `beq`/`bne` on zero, never a `cmp #1` or an arithmetic use — confirmed by
+  tracing every one before relying on it, not assumed — so a slot holding 3 still reads as occupied
+  everywhere unchanged.
+
+  `Show`/`Hide` compiles to one opcode with a state operand (`[OP_VISIBLE, state]`, 0 = hidden,
+  1 = shown), not two opcodes, since the two are positions of one flag rather than independent
+  actions — the same shape Turn's own direction picker already has. Targeting is self only, resolved
+  through `talk_ent` the way Move/Turn's own `self` already is: there is exactly one entity this
+  command can mean, so there is no "who" byte to spend on it. Naming a *different* placed actor by
+  record — a lever hiding a gate elsewhere on the screen — is a real, wanted capability this slice
+  deliberately does not build: it needs genuinely new targeting infrastructure (a linear scan of
+  `ent_record` the way `battle_end_owner_loop` already does, plus a Map Forge actor picker), not a
+  byte squeezed out of the self-only operand, so it is a scoped decision to leave for its own slice
+  rather than an oversight here.
+
+  Hiding does not survive a screen change: `spawn_entities` writes `ENT_PRESENT` alone on every
+  redraw, so a hidden actor comes back visible the next time the screen loads, warped back to, or
+  returned to from battle. This is the intended behaviour, confirmed rather than assumed — Hide is a
+  this-visit-only tool, and permanence is what switches and page conditions are already for.
+
+  Cost: **49 bytes**, measured identically on all three RPG-capable boards (`script_op_visible` and
+  its dispatch-chain entry in `script.asm`, plus the `ENT_HIDDEN` check in `draw_entities`), not the
+  15-60 this bullet used to estimate before either option was built.
 - **Change a tile or metatile on the current screen.** Two different features hiding under one name.
   A purely visual change that reverts on the next redraw reuses `vram_buf` exactly as `box_close`
   already rebuilds message-box rows out of `[mtptr]`/`mt_tl`/`mt_tr` — **~40-70 bytes**. A change that
@@ -770,11 +800,12 @@ On MMC1's worst measured case (`Save`+`Move`, **220 bytes free** — re-measured
 tree; 3 fewer than this section first recorded, because `battle_end`'s own talk_ent fix above is
 unconditional kernel-lo cost on every RPG build, including this one): `Turn`+`Wait` cost **99 bytes,
 measured**, not the ~50-80 this section estimated before either was built — leaving **121 bytes**,
-not the ~140-170 the estimate implied. `Show`/`Hide` (~15-60b) still probably fits in what is left;
-`Fade` (~80-150b, mostly the ramp producer, not the transport) does not fit alongside both. Still
-roughly **two to three of the seven** in that worst case, but the real remaining room is tighter than
-the pre-implementation estimate suggested, and planning the next verb off that estimate rather than
-the measured 121 would overstate how much is actually left.
+not the ~140-170 the estimate implied. `Show`/`Hide` has since shipped too, at a measured **49
+bytes**, not the ~15-60 this section estimated before it was built — leaving **72 bytes**, not enough
+for `Fade` (~80-150b, mostly the ramp producer, not the transport) alongside both. Confirmed **two of
+the seven** fit in that worst case (`Turn`+`Wait`, `Show`/`Hide`), not merely "probably" any more, but
+the real remaining room is tighter than the pre-implementation estimate suggested, and planning the
+next verb off that estimate rather than the measured 72 would overstate how much is actually left.
 Without `Save`+`Move` active, `sample-rpg` as checked in measured nesasm's own **`6818/1374`** free on
 the same board (re-measured against the current tree; 3 fewer than this section first recorded, the
 identical `battle_end` cost above, not an arithmetic adjustment of the old number) — comfortably fits
@@ -1132,10 +1163,10 @@ the project's own tables are added on top (`test/unit/kernelbytes.test.js`) — 
 MMC3, the tightest board this combination actually builds on. Item 6 turned out not to be one
 undifferentiated block of kernel code once it was actually costed (see its own section below):
 `Turn` and `Wait` shipped as cheap, ordinary conditional kernel-lo commands needing no structural
-decision at all, and `Show`/`Hide` and screen shake are costed the same way and expected to fit the
-same manner — accepting a refusal in the tightest configurations as a documented limitation, the
-identical shape `Save`+`Move` already has, rather than a blocker. `Fade` and a sound effect are not
-costed to a final figure yet, but expected the same way: ordinary conditional kernel-lo code that most
+decision at all, and `Show`/`Hide` and screen shake have since shipped the same way too — screen
+shake at a measured 65 bytes, `Show`/`Hide` at a measured 49 — fitting everywhere measured, with no
+documented-limitation refusal required from either. That treatment belongs to `Save`+`Move` alone.
+`Fade` and a sound effect are not costed to a final figure yet, but expected the same way: ordinary conditional kernel-lo code that most
 projects, on most boards, can simply have — a diet or a second banked region would only be needed to
 also cover the *tightest* configuration (or to guarantee every configuration universally), not to
 build the verb at all, the same distinction `Save`+`Move`'s own accepted refusal already draws. A

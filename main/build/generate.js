@@ -64,6 +64,7 @@ import {
   projectUsesTurn,
   projectUsesWait,
   projectUsesShake,
+  projectUsesVisible,
   projectUsesFace,
   projectUsesItems,
   projectEvents,
@@ -514,6 +515,14 @@ export const WAIT_KERNEL_ALLOWANCE = 48;
 // stomp a shake already running, the identical "zero means nothing happens"
 // rule Wait/Heal/Damage already hold to) added its own beq and label.
 export const SHAKE_KERNEL_ALLOWANCE = 65;
+// script_op_visible and its dispatch-chain entry in script_run
+// (engine/script.asm) plus the ENT_HIDDEN check in draw_entities
+// (engine/entities.asm). Flat across boards for the identical reason
+// SHAKE_KERNEL_ALLOWANCE is: nothing here branches on SPLIT_ENABLED or any
+// other mapper-specific fact -- measured identically (49) on UNROM 512,
+// MMC1 and MMC3. Shares no dependent term with anything else -- no other
+// command calls script_op_visible or reads ENT_HIDDEN.
+export const VISIBLE_KERNEL_ALLOWANCE = 49;
 export const SPLIT_LOCK_KERNEL_ALLOWANCE = 19;
 // Phase 4b: item_metasprite's own draw_item_icon routine (gated on
 // ITEMS_ENABLED as a whole routine, not just its callers -- see
@@ -582,6 +591,7 @@ export function kernelCodeBytes(project, mapper) {
   const usesTurn = projectUsesTurn(project);
   const usesWait = projectUsesWait(project);
   const usesShake = projectUsesShake(project);
+  const usesVisible = projectUsesVisible(project);
   const usesFace = projectUsesFace(project);
   // projectUsesSave(project), not the narrower usesSave just above: a live
   // Save command needs a title screen in *every* valid build of this
@@ -621,6 +631,7 @@ export function kernelCodeBytes(project, mapper) {
     (usesTurn ? TURN_KERNEL_ALLOWANCE : 0) +
     (usesWait ? WAIT_KERNEL_ALLOWANCE : 0) +
     (usesShake ? SHAKE_KERNEL_ALLOWANCE : 0) +
+    (usesVisible ? VISIBLE_KERNEL_ALLOWANCE : 0) +
     (usesFace ? FACE_KERNEL_ALLOWANCE : 0) +
     (usesSplitLock ? SPLIT_LOCK_KERNEL_ALLOWANCE : 0) +
     (usesItems ? ITEM_KERNEL_ALLOWANCE + itemEffectKernelAllowance(project) : 0) +
@@ -848,6 +859,7 @@ function kernelShortfallAdvice(project, mapper, deficit) {
   const usesTurn = projectUsesTurn(project);
   const usesWait = projectUsesWait(project);
   const usesShake = projectUsesShake(project);
+  const usesVisible = projectUsesVisible(project);
   // "Every" rather than "the": a project can carry more than one live Move or
   // Save command (several actors, several pages), and removing just one of
   // several does not free anything at all -- kernelCodeBytes only drops the
@@ -857,6 +869,7 @@ function kernelShortfallAdvice(project, mapper, deficit) {
   if (usesTurn) active.push({ op: 'turn', label: 'every Turn command' });
   if (usesWait) active.push({ op: 'wait', label: 'every Wait command' });
   if (usesShake) active.push({ op: 'shake', label: 'every Shake command' });
+  if (usesVisible) active.push({ op: 'visible', label: 'every Show/Hide command' });
   if (usesSave) active.push({ op: 'save', label: 'every Save command' });
   // A title screen is not offered here even though it is now its own term in
   // kernelCodeBytes: this list is specifically "commands projectWithoutCommands
@@ -1548,6 +1561,7 @@ export async function generateAssets({ dir, project, log = () => {} }) {
   const usesTurn = projectUsesTurn(project);
   const usesWait = projectUsesWait(project);
   const usesShake = projectUsesShake(project);
+  const usesVisible = projectUsesVisible(project);
   const usesFace = projectUsesFace(project);
   const saveIdentityValue = saveIdentity(project);
   if (usesHeartArt) {
@@ -1948,6 +1962,10 @@ export async function generateAssets({ dir, project, log = () => {} }) {
     // No companion *_ENABLED the way Turn has FACE_ENABLED: nothing else calls
     // into Shake's own code.
     `SHAKE_ENABLED = ${usesShake ? 1 : 0}`,
+    // OP_VISIBLE, the same shape again -- see projectUsesVisible
+    // (shared/project.js). No companion *_ENABLED: nothing else calls
+    // script_op_visible or reads ENT_HIDDEN.
+    `VISIBLE_ENABLED = ${usesVisible ? 1 : 0}`,
     `FACE_ENABLED = ${usesFace ? 1 : 0}`,
     ''
   ].join('\n');

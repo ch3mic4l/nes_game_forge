@@ -371,6 +371,18 @@ NUM_NOTES   = 96
 ; ------------------------------------------------------------ entity RAM
 ; Eight parallel arrays at $0300, one byte per slot.
 MAX_ENTITIES = 8
+; ent_active packs two facts into one byte rather than two arrays: bit 0 is
+; "this slot is occupied at all" (every one of the nine existing reads of
+; ent_active is `lda ent_active,x` immediately followed by beq/bne, never a
+; cmp #1 or an arithmetic use, so a slot holding ENT_HIDDEN|ENT_PRESENT still
+; reads as occupied everywhere unchanged) and bit 1, ENT_HIDDEN, is
+; script_op_visible's own flag -- invisible but otherwise fully alive: AI,
+; contact and interaction all keep reading bit 0 and never look at bit 1.
+; Only draw_entities tests ENT_HIDDEN, because a second array would be one
+; more thing spawn_entities and every future writer has to keep in sync, and
+; a packed bit cannot drift out of sync with itself.
+ENT_PRESENT = $01
+ENT_HIDDEN  = $02
 ent_active  = $0300  ; @size=MAX_ENTITIES
 ent_actor   = $0308  ; @size=MAX_ENTITIES
 ent_x       = $0310  ; @size=MAX_ENTITIES
@@ -801,6 +813,13 @@ OP_SHAKE    = $16           ; [frames] -- does not suspend, the same instant
                             ; ui_tick, because the shake must keep running
                             ; after the world unfreezes -- see shake_left's
                             ; own comment below.
+OP_VISIBLE  = $17           ; [state] -- self only, resolved through talk_ent
+                            ; the way OP_MOVE/OP_TURN's own MOVE_SELF already
+                            ; is; there is only one target this command can
+                            ; ever mean, so there is no "who" byte to spend.
+                            ; Does not suspend, the same instant shape OP_TURN
+                            ; already has. state 0 = hidden, 1 = shown -- see
+                            ; ENT_HIDDEN below for what hidden actually means.
 
 ; OP_MOVE/OP_TURN's first operand. MOVE_SELF is 0 for the same reason
 ; 'interact' is trigger 0: it is the actor the author is looking at when they

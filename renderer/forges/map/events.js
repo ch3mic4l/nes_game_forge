@@ -22,6 +22,7 @@ import {
   MAX_BRANCH_DEPTH,
   MOVE_DIRECTIONS,
   MOVE_TARGETS,
+  VISIBLE_STATES,
   RPG_LIMITS,
   itemMissing,
   itemPickerOptions,
@@ -89,6 +90,10 @@ export const defaultCommand = (op, context = {}) => {
       out.song = null;
     } else if (arg === 'who') out.who = MOVE_TARGETS[0].id;
     else if (arg === 'dir') out.dir = MOVE_DIRECTIONS[0].id;
+    // Hidden -- the verb an author reaches for this command to get, the
+    // identical "the author is looking at the feature they added" reasoning
+    // 'who' above gets for defaulting to 'self'.
+    else if (arg === 'state') out.state = VISIBLE_STATES[0].id;
     // One metatile. Zero is the honest default for a number nobody has chosen
     // yet everywhere else in this editor, but a Move of zero is the one command
     // that would compile to nothing happening -- so a new one arrives having
@@ -215,6 +220,8 @@ function describeEnabled(command, context = {}) {
       return command.frames ? `Wait ${command.frames} frames` : 'Wait 0 frames (does nothing)';
     case 'shake':
       return command.frames ? `Shake screen for ${command.frames} frames` : 'Shake screen for 0 frames (does nothing)';
+    case 'visible':
+      return command.state === 'shown' ? 'Show this actor' : 'Hide this actor';
     case 'branch': {
       // Described down to its contents, because the event list's search runs
       // over exactly this text: a switch used only inside a branch has to be
@@ -911,6 +918,34 @@ export function editEvent(event, context) {
               'player, entities and any sprite-based UI hold still. Because it does not pause, following ' +
               'a Shake with a Wait of the same length only roughly covers the shake’s duration, not exactly.'
             : 'A shake of 0 does nothing and the event carries straight on.'
+        )
+      );
+    }
+
+    if (command.op === 'visible') {
+      return el(
+        'div',
+        { style: { marginBottom: '6px', ...dim } },
+        el(
+          'div.field-row',
+          null,
+          el('span', { style: { flex: 'none', minWidth: '96px', color: 'var(--text-dim)' } }, 'This actor is'),
+          el(
+            'select',
+            { style: { flex: 'none' }, onchange: (fired) => (command.state = fired.target.value) },
+            VISIBLE_STATES.map((entry) =>
+              el('option', { value: entry.id, selected: entry.id === command.state }, entry.label)
+            )
+          ),
+          tools
+        ),
+        el(
+          'p.hint',
+          null,
+          'Only the sprite disappears — AI, contact damage and interaction all keep running on a hidden ' +
+            'actor, so a hidden NPC can still be talked to and a hidden damage actor can still hurt the ' +
+            'player. Hiding does not survive leaving the screen: the actor is visible again the next time ' +
+            'this screen is drawn. For an actor gone for good, use a switch and a page condition instead.'
         )
       );
     }
