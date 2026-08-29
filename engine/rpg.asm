@@ -227,6 +227,18 @@ battle_end_owner_loop:
   bne battle_end_owner_next
   lda #1
   sta ent_touched,x
+  ; The same slot X just resolved is who the resumed script's own MOVE_SELF/
+  ; talk_ent checks (script_op_move, script_op_turn) need to see -- battle_begin
+  ; sets talk_ent to NO_ENTITY unconditionally on the way in, and nothing
+  ; between there and here ever put it back. Without this a Move or Turn
+  ; targeting "self" right after a battle reads talk_ent as NO_ENTITY, takes
+  ; its own defense-in-depth guard for a real one, and jmp script_finish's the
+  ; whole rest of the page -- silently, the same actor still standing right
+  ; here in X. stx, not restoring bt_owner_ent's own pre-battle value: this is
+  ; exactly the "ask the field which slot the record landed in now" bt_owner_rec
+  ; itself exists for, so talk_ent gets the *current* slot, not the one that
+  ; may already have been reshuffled out from under it.
+  stx talk_ent
   jmp battle_end_no_restore   ; records are unique per screen; nothing more to find
 battle_end_owner_next:
   inx

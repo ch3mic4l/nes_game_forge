@@ -59,7 +59,7 @@ const offeredCommands = (context) =>
       (entry.id !== 'save' || context.canSave)
   );
 
-const defaultCommand = (op, context = {}) => {
+export const defaultCommand = (op, context = {}) => {
   const entry = EVENT_COMMANDS.find((command) => command.id === op);
   const out = { op };
   for (const arg of entry.args) {
@@ -94,6 +94,10 @@ const defaultCommand = (op, context = {}) => {
     // that would compile to nothing happening -- so a new one arrives having
     // already picked the smallest distance that reads as a step.
     else if (arg === 'dist') out.dist = 16;
+    // Half a second at 60 fps, for the identical reason 'dist' above does not
+    // arrive at 0: a Wait of 0 does nothing and the honest zero-default would
+    // make a freshly-added one a no-op.
+    else if (arg === 'frames') out.frames = 30;
     else if (arg === 'monsters') {
       // Empty, not a formation of one nothing chose — the picker below warns
       // about an empty formation rather than this reaching for a monster.
@@ -199,6 +203,16 @@ function describeEnabled(command, context = {}) {
       // than only in the hint, because this line is what the event list shows.
       return command.dist ? `Move ${who} ${dir} ${command.dist}px` : `Move ${who} ${dir} (0px — does nothing)`;
     }
+    case 'turn': {
+      const who = MOVE_TARGETS.find((entry) => entry.id === command.who)?.label ?? MOVE_TARGETS[0].label;
+      const dir = (MOVE_DIRECTIONS.find((entry) => entry.id === command.dir)?.label ?? MOVE_DIRECTIONS[0].label)
+        .toLowerCase();
+      return `Turn ${who} to face ${dir}`;
+    }
+    // A frame count of zero is the one Wait that does nothing, the same
+    // reason a zero-distance Move says so in its own summary line above.
+    case 'wait':
+      return command.frames ? `Wait ${command.frames} frames` : 'Wait 0 frames (does nothing)';
     case 'branch': {
       // Described down to its contents, because the event list's search runs
       // over exactly this text: a switch used only inside a branch has to be
@@ -800,6 +814,69 @@ export function editEvent(event, context) {
           tools
         ),
         el('p.hint', null, hint)
+      );
+    }
+
+    if (command.op === 'turn') {
+      return el(
+        'div',
+        { style: { marginBottom: '6px', ...dim } },
+        el(
+          'div.field-row',
+          null,
+          el('span', { style: { flex: 'none', minWidth: '96px', color: 'var(--text-dim)' } }, 'Turn'),
+          el(
+            'select',
+            { style: { flex: 'none' }, onchange: (fired) => (command.who = fired.target.value) },
+            MOVE_TARGETS.map((entry) =>
+              el('option', { value: entry.id, selected: entry.id === command.who }, entry.label)
+            )
+          ),
+          el(
+            'select',
+            { style: { flex: 'none' }, onchange: (fired) => (command.dir = fired.target.value) },
+            MOVE_DIRECTIONS.map((entry) =>
+              el('option', { value: entry.id, selected: entry.id === command.dir }, entry.label)
+            )
+          ),
+          tools
+        ),
+        el(
+          'p.hint',
+          null,
+          'Sets the facing at once, without walking — the event carries straight on to the next command ' +
+            'on the same frame.'
+        )
+      );
+    }
+
+    if (command.op === 'wait') {
+      return el(
+        'div',
+        { style: { marginBottom: '6px', ...dim } },
+        el(
+          'div.field-row',
+          null,
+          el('span', { style: { flex: 'none', minWidth: '96px', color: 'var(--text-dim)' } }, 'Wait'),
+          el('input', {
+            type: 'number',
+            min: 0,
+            max: 255,
+            value: command.frames,
+            title: 'Frames — 60 is one second',
+            style: { width: '70px' },
+            onchange: (fired) => (command.frames = wholeNumber(fired.target.value, 255))
+          }),
+          el('span', { style: { color: 'var(--text-dim)' } }, 'frames'),
+          tools
+        ),
+        el(
+          'p.hint',
+          null,
+          command.frames
+            ? 'The event pauses here, with the world frozen, until this many frames pass — 60 is one second.'
+            : 'A wait of 0 does nothing and the event carries straight on.'
+        )
       );
     }
 

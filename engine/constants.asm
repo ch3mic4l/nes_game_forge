@@ -310,6 +310,21 @@ mv_tmp         = mv_step+1
 ; bank on the split, never a half-selected PRG or CHR register.
 split_lock     = mv_tmp+1
 
+; A scripted Wait in progress (OP_WAIT, engine/script.asm; wait_tick,
+; engine/entities.asm). The same "the counter is the whole state" shape
+; mv_left already is: non-zero means a wait is running, and reaching zero is
+; what resumes the script. mv_left and wt_left can never both be non-zero --
+; the script suspends on whichever of Move or Wait it hits first, and cannot
+; reach the other until that one resumes -- see wait_tick's own comment.
+;
+; Chained after split_lock, not after mv_tmp: wt_left is new, so it goes at
+; the tail of the allocation map rather than pushing split_lock -- a symbol
+; that pre-dates it -- one byte further along. A switched-off Wait must cost
+; a project not one byte, including the byte of every *other* symbol's own
+; address changing underneath it; putting the new symbol anywhere but the end
+; of the chain is exactly how that happens by accident.
+wt_left        = split_lock+1
+
 ; Which split program this frame runs. OFF disarms the counter entirely.
 SPL_OFF     = 0
 SPL_BOX     = 1             ; the message box: font in from tile row 24
@@ -750,9 +765,21 @@ OP_MOVE     = $13           ; [who, DIR_*, distance in pixels] -- suspends the
                             ; byte is a DIR_* because MOVE_DIRECTIONS
                             ; (shared/project.js) is written in that order, so
                             ; nothing has to translate it
+OP_TURN     = $14           ; [who, DIR_*] -- Move's own facing decision
+                            ; (move_face, engine/entities.asm) made reachable
+                            ; on its own. Does not suspend: script_op_turn
+                            ; (engine/script.asm) applies it and runs straight
+                            ; on to the next command, the same instant shape
+                            ; OP_SET_SW already has.
+OP_WAIT     = $15           ; [frames] -- suspends the script like OP_MOVE,
+                            ; but pauses the world rather than walking anyone.
+                            ; wait_tick (engine/entities.asm), hooked into
+                            ; ui_tick the same way move_tick already is,
+                            ; resumes it once the count reaches zero.
 
-; OP_MOVE's first operand. MOVE_SELF is 0 for the same reason 'interact' is
-; trigger 0: it is the actor the author is looking at when they add the command.
+; OP_MOVE/OP_TURN's first operand. MOVE_SELF is 0 for the same reason
+; 'interact' is trigger 0: it is the actor the author is looking at when they
+; add the command.
 MOVE_SELF   = 0             ; whoever the conversation belongs to -- talk_ent
 MOVE_PLAYER = 1
 

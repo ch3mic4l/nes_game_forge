@@ -31,7 +31,7 @@ import {
   normalizeProject,
   projectUsesMove
 } from '../../shared/project.js';
-import { MOVE_KERNEL_ALLOWANCE } from '../../main/build/generate.js';
+import { MOVE_KERNEL_ALLOWANCE, FACE_KERNEL_ALLOWANCE } from '../../main/build/generate.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const SAMPLE = path.join(ROOT, 'sample');
@@ -304,15 +304,21 @@ test('a switched-off Move costs a project nothing — not one byte of ROM', {
   );
 });
 
-test('MOVE_KERNEL_ALLOWANCE still covers what Move actually costs', {
+test('MOVE_KERNEL_ALLOWANCE + FACE_KERNEL_ALLOWANCE still cover what Move actually costs', {
   skip: !hasRom && 'run `npm run sample` first'
 }, async (t) => {
   // The same rule kernelbytes.test.js enforces for SAVE_KERNEL_ALLOWANCE_BY_MAPPER,
-  // and here for a sharper reason: this allowance is exactly its measured delta,
-  // 395, with no margin of its own -- KERNEL_SLACK is the only deliberate
-  // headroom kernelCodeBytes carries (see its own comment) -- so drift in it
-  // is not a tightened capacity check, it is an assembler failure for real
-  // projects. Save and Move together on MMC3 with text used to be a few bytes
+  // and here for a sharper reason: these two allowances sum to exactly the
+  // measured delta, 395, with no margin of their own -- KERNEL_SLACK is the
+  // only deliberate headroom kernelCodeBytes carries (see its own comment) --
+  // so drift in either is not a tightened capacity check, it is an assembler
+  // failure for real projects. move_face split out into its own
+  // FACE_KERNEL_ALLOWANCE with item 6's Turn/Wait first slice (so a Turn-only
+  // project pays for it without also paying for the rest of Move), which is
+  // why this measures against the sum rather than MOVE_KERNEL_ALLOWANCE
+  // alone: this project has no live Turn, so it still pays both terms
+  // together, and the sum is what covers it. Save and Move together on MMC3
+  // with text used to be a few bytes
   // short of the kernel-lo bank on the worst-fitting real project measured
   // (sample-rpg): a kernel diet (engine/combat.asm, gated `.if !BATTLE_ENABLED`),
   // per-mapper budgeting (BASE_KERNEL_CODE_BYTES_BY_MAPPER) and a second,
@@ -353,16 +359,17 @@ test('MOVE_KERNEL_ALLOWANCE still covers what Move actually costs', {
   ]);
   const without = await usage([{ op: 'setSwitch', switch: 5 }]);
   const cost = withMove - without;
+  const allowance = MOVE_KERNEL_ALLOWANCE + FACE_KERNEL_ALLOWANCE;
 
   assert.ok(
-    cost <= MOVE_KERNEL_ALLOWANCE,
-    `Move now costs ${cost} bytes of kernel but MOVE_KERNEL_ALLOWANCE only reserves ` +
-      `${MOVE_KERNEL_ALLOWANCE} — checkCapacity is promising table room the assembler will refuse. ` +
+    cost <= allowance,
+    `Move now costs ${cost} bytes of kernel but MOVE_KERNEL_ALLOWANCE + FACE_KERNEL_ALLOWANCE only reserves ` +
+      `${allowance} — checkCapacity is promising table room the assembler will refuse. ` +
       'Re-measure and raise it (see the comment beside kernelCodeBytes).'
   );
   assert.ok(
-    cost > MOVE_KERNEL_ALLOWANCE - 120,
-    `Move costs ${cost} bytes but MOVE_KERNEL_ALLOWANCE reserves ${MOVE_KERNEL_ALLOWANCE} — so much ` +
+    cost > allowance - 120,
+    `Move costs ${cost} bytes but MOVE_KERNEL_ALLOWANCE + FACE_KERNEL_ALLOWANCE reserves ${allowance} — so much ` +
       'slack that it has stopped tracking the engine, which hides the next regression the way a ' +
       'too-low one causes it. Re-measure and lower it.'
   );

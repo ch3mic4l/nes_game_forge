@@ -823,7 +823,17 @@ move_set_y_player:
   sta player_y
   rts
 
-; A = the DIR_* to face. Called once, before the first step (script_op_move).
+  .endif
+
+; A = the DIR_* to face. Called once, before the first step -- by
+; script_op_move (engine/script.asm), and directly by script_op_turn, since a
+; Turn *is* this decision made outside a walk. Gated on FACE_ENABLED rather
+; than MOVE_ENABLED: a Turn-only project needs this with no scripted Move at
+; all, and a Move-only project must keep paying for it exactly as before --
+; projectUsesFace (shared/project.js) is `projectUsesMove || projectUsesTurn`,
+; so this assembles whenever either does, measured and charged once either
+; way rather than folded into MOVE_KERNEL_ALLOWANCE or TURN_KERNEL_ALLOWANCE.
+  .if FACE_ENABLED
 move_face:
   ldx mv_who
   bne move_face_player
@@ -833,7 +843,9 @@ move_face:
 move_face_player:
   sta player_dir
   rts
+  .endif
 
+  .if MOVE_ENABLED
 ; A = pixels this mover covers per frame.
 ;
 ; A speed of zero is a standing actor -- what every NPC is -- and a scripted
@@ -875,5 +887,18 @@ move_animate_player:
   eor #1
   sta anim_frame
 move_animate_done:
+  rts
+  .endif
+
+; A scripted Wait (OP_WAIT, engine/script.asm), hooked into ui_tick the same
+; way move_tick already is. wt_left is the whole state, the identical shape
+; mv_left already is for a Move: no coordinate to walk and no wall to run
+; into, so there is nothing here but the countdown and the resume.
+  .if WAIT_ENABLED
+wait_tick:
+  dec wt_left
+  bne wait_tick_running
+  jmp script_resume
+wait_tick_running:
   rts
   .endif

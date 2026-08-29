@@ -51,6 +51,9 @@ const PC_LEVEL = 0x3a8;
 const PC_XP_LO = 0x3ac;
 const PC_IN_PARTY = 0x3b4;
 const PC_SPELLS = 0x3b8;
+const ENT_X = 0x310;
+const ENT_Y = 0x318;
+const ENT_DIR = 0x320;
 const MON_SLOT_ACTOR = 0x3bc;
 const MON_HP = 0x3c0;
 const MON_ALIVE = 0x3c8;
@@ -166,6 +169,18 @@ function talkThrough(nes, budget = 30) {
     for (let i = 0; i < 20; i++) nes.frame();
   }
   return nes.cpu.mem[GAME_STATE] === ST_GAMEPLAY;
+}
+
+// engine/constants.asm
+const ENT_ACTIVE = 0x300;
+const ENT_ACTOR = 0x308;
+
+/** Which entity slot the given actor id currently occupies, or -1. */
+function findBossSlot(nes, actorId) {
+  for (let slot = 0; slot < 8; slot++) {
+    if (nes.cpu.mem[ENT_ACTIVE + slot] === 1 && nes.cpu.mem[ENT_ACTOR + slot] === actorId) return slot;
+  }
+  return -1;
 }
 
 /** Run frames until it is a party member's turn to choose. */
@@ -1643,6 +1658,177 @@ test('a Start a battle command suspends the script, and winning resumes it', {
   assert.ok(nes.cpu.mem[PLAYER_X] < before, 'the player cannot move after the scripted battle');
 });
 
+// battle_begin (this file) captures talk_ent into bt_owner_ent/bt_owner_rec
+// and then unconditionally clears talk_ent to NO_ENTITY on the way into a
+// fight -- correct for a random or contact-damage encounter, neither of
+// which ever set it. battle_end's own owner loop restores ent_touched,x for
+// the resolved slot but, before this fix, never put talk_ent back -- so a
+// resumed script's own MOVE_SELF/talk_ent defense-in-depth check
+// (script_op_move, script_op_turn -- see their own comments) read NO_ENTITY,
+// mistook it for the real "nobody to be" case, and silently jmp
+// script_finish'd: neither the Move/Turn nor anything after it on the page
+// ran. Pre-existing on master for Move; Turn inherited it unmodified because
+// it shares the identical defense-in-depth shape. Both are tested here
+// because Move is the one that had been shipping silently broken -- an
+// assertion that only checked the facing (or the position) would pass on a
+// build that still drops every command after it, which is the actual
+// symptom, so both the movement/facing effect AND the switch after it are
+// asserted.
+test('a Move self right after winning a scripted battle still runs, and so does the command after it', {
+  skip: needsSample
+}, async (t) => {
+  let bossId;
+  const rom = await buildVariant(t, 'battle-move-self', (project) => {
+    project.maps[0].encounters = { rate: 0, actorIds: [] };
+    bossId = project.sprites.actors.length;
+    project.sprites.actors.push({
+      ...structuredClone(project.sprites.actors[2]),
+      id: bossId,
+      name: 'Boss Door',
+      damage: 0
+    });
+    project.maps[0].screens[0].entities.push({
+      actorId: bossId,
+      x: 176,
+      y: 32,
+      props: {
+        trigger: 'touch',
+        event: {
+          pages: [
+            {
+              cond: { type: 'none', arg: 0 },
+              commands: [
+                { op: 'battle', monsters: [0] },
+                { op: 'move', who: 'self', dir: 'up', dist: 16 },
+                { op: 'setSwitch', switch: 5 }
+              ]
+            }
+          ]
+        }
+      }
+    });
+  });
+
+  const nes = boot(rom);
+  walkTo(nes, 176, 32);
+  for (let i = 0; i < 30 && nes.cpu.mem[GAME_STATE] !== ST_BATTLE; i++) nes.frame();
+  assert.equal(nes.cpu.mem[GAME_STATE], ST_BATTLE, 'touching the boss did not start the scripted fight');
+  for (let i = 0; i < 12; i++) nes.frame();
+
+  const startHp = nes.cpu.mem[MON_HP];
+  chooseCommand(nes, BC_FIGHT);
+  tap(nes, A, 20);
+  for (let round = 0; round < 12 && nes.cpu.mem[MON_HP] === startHp; round++) {
+    if (nes.cpu.mem[BT_PHASE] === BP_MENU) chooseCommand(nes, BC_FIGHT);
+    tap(nes, A, 20);
+  }
+  // pressThrough only presses while game_state is ST_BATTLE, so it stops the
+  // instant battle_end hands off -- which, correctly, is ST_DIALOG here (the
+  // Move now suspends), not ST_GAMEPLAY yet. Settling further is what tells
+  // "the script correctly resumed and is walking" apart from "the script
+  // silently terminated" -- the bug this test exists for makes battle_end
+  // land on ST_GAMEPLAY immediately, skipping the Move (and the suspend)
+  // entirely, so asserting ST_GAMEPLAY right after pressThrough would have
+  // passed on the *broken* build and failed on the fixed one.
+  pressThrough(nes);
+  for (let i = 0; i < 60 && nes.cpu.mem[GAME_STATE] !== ST_GAMEPLAY; i++) nes.frame();
+  assert.equal(nes.cpu.mem[GAME_STATE], ST_GAMEPLAY, 'the conversation never finished settling');
+
+  const bossSlot = findBossSlot(nes, bossId);
+  assert.notEqual(bossSlot, -1, 'the boss should still be on the field after winning');
+  // Y, not merely "X unchanged": an implementation that skips the Move
+  // entirely and falls straight through to SetSwitch would also leave X at
+  // 176 (nothing moved it sideways either way), so an X-only check cannot
+  // tell "the Move ran and only touched Y, as authored" apart from "the Move
+  // never ran at all." Y actually reaching 16 is the one value only a real,
+  // executed Move up produces.
+  assert.equal(
+    nes.cpu.mem[ENT_Y + bossSlot],
+    16,
+    'the boss must have actually walked up 16px -- Move up changes Y from 32 to 16'
+  );
+  assert.equal(
+    nes.cpu.mem[ENT_X + bossSlot],
+    176,
+    'the boss must not have silently moved sideways -- Move up only touches Y'
+  );
+  assert.ok(
+    nes.cpu.mem[SWITCHES] & (1 << 5),
+    'the command after the Move must still have run -- a silently terminated page would leave this off ' +
+      'even though the boss itself is still standing right there'
+  );
+});
+
+test('a Turn self right after winning a scripted battle still runs, and so does the command after it', {
+  skip: needsSample
+}, async (t) => {
+  let bossId;
+  const rom = await buildVariant(t, 'battle-turn-self', (project) => {
+    project.maps[0].encounters = { rate: 0, actorIds: [] };
+    bossId = project.sprites.actors.length;
+    project.sprites.actors.push({
+      ...structuredClone(project.sprites.actors[2]),
+      id: bossId,
+      name: 'Boss Door',
+      damage: 0
+    });
+    project.maps[0].screens[0].entities.push({
+      actorId: bossId,
+      x: 176,
+      y: 32,
+      props: {
+        trigger: 'touch',
+        event: {
+          pages: [
+            {
+              cond: { type: 'none', arg: 0 },
+              commands: [
+                { op: 'battle', monsters: [0] },
+                { op: 'turn', who: 'self', dir: 'up' },
+                { op: 'setSwitch', switch: 5 }
+              ]
+            }
+          ]
+        }
+      }
+    });
+  });
+
+  const nes = boot(rom);
+  walkTo(nes, 176, 32);
+  for (let i = 0; i < 30 && nes.cpu.mem[GAME_STATE] !== ST_BATTLE; i++) nes.frame();
+  assert.equal(nes.cpu.mem[GAME_STATE], ST_BATTLE, 'touching the boss did not start the scripted fight');
+  for (let i = 0; i < 12; i++) nes.frame();
+
+  const startHp = nes.cpu.mem[MON_HP];
+  chooseCommand(nes, BC_FIGHT);
+  tap(nes, A, 20);
+  for (let round = 0; round < 12 && nes.cpu.mem[MON_HP] === startHp; round++) {
+    if (nes.cpu.mem[BT_PHASE] === BP_MENU) chooseCommand(nes, BC_FIGHT);
+    tap(nes, A, 20);
+  }
+  // Turn does not suspend, so unlike Move above, battle_end handing off
+  // straight to ST_GAMEPLAY here is the correct outcome either way -- the
+  // bug and the fix both leave state ST_GAMEPLAY, since script_finish is
+  // where both the broken and the working path end up, just by different
+  // routes. What actually distinguishes them is whether the facing and the
+  // switch got set on the way, which the assertions below check.
+  const state = pressThrough(nes);
+  assert.equal(state, ST_GAMEPLAY, 'the battle never ended');
+
+  const bossSlot = findBossSlot(nes, bossId);
+  assert.notEqual(bossSlot, -1, 'the boss should still be on the field after winning');
+  assert.equal(
+    nes.cpu.mem[ENT_DIR + bossSlot],
+    1 /* DIR_UP, engine/constants.asm */,
+    'the Turn right after the battle must have set the boss’s facing'
+  );
+  assert.ok(
+    nes.cpu.mem[SWITCHES] & (1 << 5),
+    'the command after the Turn must still have run -- a silently terminated page would leave this off'
+  );
+});
+
 test('winning does not re-arm the boss even when its own event reshuffles entity slots', {
   skip: needsSample
 }, async (t) => {
@@ -1699,7 +1885,8 @@ test('winning does not re-arm the boss even when its own event reshuffles entity
               cond: { type: 'none', arg: 0 },
               commands: [
                 { op: 'setSwitch', switch: HIDE_SWITCH },
-                { op: 'battle', monsters: [0] }
+                { op: 'battle', monsters: [0] },
+                { op: 'turn', who: 'self', dir: 'up' }
               ]
             }
           ]
@@ -1743,6 +1930,23 @@ test('winning does not re-arm the boss even when its own event reshuffles entity
   // again; the fix leaves the world running.
   for (let i = 0; i < 60; i++) nes.frame();
   assert.equal(nes.cpu.mem[GAME_STATE], ST_GAMEPLAY, 'the boss re-armed itself and the battle restarted');
+
+  // The Turn after Battle is what actually exercises battle_end's own
+  // resolve-by-record comment, not merely ent_touched -- restoring talk_ent
+  // from the *pre-battle* bt_owner_ent (the boss's old slot, one higher than
+  // its resolved slot now that Early Bird no longer takes one ahead of it)
+  // would apply this Turn to whatever now sits in that stale slot instead of
+  // the boss, and the boss's own facing would stay the boot default. Neither
+  // the Move/Turn tests above nor the reshuffle itself, without this
+  // follow-up command, can see that: both apply "self" to a slot that never
+  // moved, and this is the one scenario where "self" and "the pre-battle
+  // slot" name two different things.
+  assert.equal(
+    nes.cpu.mem[ENT_DIR + bossSlot],
+    1 /* DIR_UP, engine/constants.asm */,
+    'the Turn right after the battle must have set the boss’s own facing at its post-reshuffle slot, not ' +
+      'whatever now sits in its stale pre-battle one'
+  );
 });
 
 test('a random encounter that lands on a touch event does not suppress it', {

@@ -287,6 +287,15 @@ export function compileText(project) {
         const dir = Math.max(0, MOVE_DIRECTIONS.findIndex((entry) => entry.id === command.dir));
         return [opIndex('move'), who, dir, byte(command.dist, 255)];
       }
+      // [who, DIR_*]. Same who/dir resolution as 'move' above, for the same
+      // reason -- the compiled byte is what ent_dir/player_dir already wants.
+      case 'turn': {
+        const who = Math.max(0, MOVE_TARGETS.findIndex((entry) => entry.id === command.who));
+        const dir = Math.max(0, MOVE_DIRECTIONS.findIndex((entry) => entry.id === command.dir));
+        return [opIndex('turn'), who, dir];
+      }
+      case 'wait':
+        return [opIndex('wait'), byte(command.frames, 255)];
       case 'join':
         return [opIndex('join'), byte(command.member, 3)];
       case 'call': {

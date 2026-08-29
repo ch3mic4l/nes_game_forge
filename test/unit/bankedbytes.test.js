@@ -851,13 +851,16 @@ test('switchableMappers offers only boards the project survives switching to', a
     }
   });
   // No filler content needed: sample-rpg's own Save+Move combination on
-  // UNROM 512 already overflows kernel-lo by 155 bytes on its own, now that
+  // UNROM 512 already overflows kernel-lo by 167 bytes on its own, now that
   // the forced title cost is actually charged -- this is the same documented
   // shortfall test/unit/kernelbytes.test.js's own "does not build" test
-  // covers, re-derived here rather than assumed. Before finding 1 of the
-  // phase4a round-2 review, this needed 12 filler actors to reach a real
-  // deficit at all, because a titleless project was undercharged by exactly
-  // the title term; that undercharge is what this whole case is now free of.
+  // covers, re-derived here rather than assumed (that file's own comment
+  // beside the figure has the full history of how it moved; this one only
+  // needs the current number, checked directly above rather than repeated
+  // by hand). Before finding 1 of the phase4a round-2 review, this needed 12
+  // filler actors to reach a real deficit at all, because a titleless
+  // project was undercharged by exactly the title term; that undercharge is
+  // what this whole case is now free of.
   const { fixedBytes, tableBytes } = kernelTableBytes(heavy);
   const u512 = resolveMapper(30);
   assert.ok(

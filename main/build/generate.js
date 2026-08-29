@@ -61,6 +61,9 @@ import {
   reconcileCartridge,
   projectUsesSave,
   projectUsesMove,
+  projectUsesTurn,
+  projectUsesWait,
+  projectUsesFace,
   projectUsesItems,
   projectEvents,
   allCommands,
@@ -428,7 +431,16 @@ const TITLE_PROMPT_ROW = 19;
 // margin between reservation and reality erodes below KERNEL_SLACK. Trust
 // its output over this comment if the two ever disagree, and re-measure by
 // running it rather than hand-editing either.
-export const BASE_KERNEL_CODE_BYTES_BY_MAPPER = { 30: 6396, 1: 6201, 4: 6376 };
+//
+// +3 on each board, this round: battle_end (engine/rpg.asm) now restores
+// talk_ent to the resolved owner slot before a resumed script continues --
+// without it, a Move or Turn targeting "self" right after a scripted battle
+// read talk_ent as still NO_ENTITY (battle_begin clears it unconditionally
+// and nothing put it back) and silently jmp script_finish'd the whole rest
+// of the page. battle_end is unconditional kernel code (BATTLE_ENABLED
+// alone, not gated by MOVE_ENABLED/TURN_ENABLED), so this is a base cost
+// every RPG project pays, not a new named allowance term.
+export const BASE_KERNEL_CODE_BYTES_BY_MAPPER = { 30: 6399, 1: 6204, 4: 6379 };
 const FALLBACK_BASE_KERNEL_CODE_BYTES = Math.max(...Object.values(BASE_KERNEL_CODE_BYTES_BY_MAPPER));
 export function baseKernelCodeBytes(mapper) {
   return BASE_KERNEL_CODE_BYTES_BY_MAPPER[mapper.id] ?? FALLBACK_BASE_KERNEL_CODE_BYTES;
@@ -459,7 +471,35 @@ export function titleKernelAllowance(mapper) {
 // before KERNEL_SLACK and the fallback base even
 // enter the picture.
 export const SAVE_KERNEL_ALLOWANCE_BY_MAPPER = { 1: 547, 4: 552, 30: 719 };
-export const MOVE_KERNEL_ALLOWANCE = 395;
+// move_tick/move_get_x/y/move_set_x/y/move_speed/move_animate only --
+// move_face moved out to its own FACE_KERNEL_ALLOWANCE below (item 6's
+// Turn/Wait first slice), so this dropped from the 395 bytes it measured
+// before that split: 379, measured (not derived) the same way every figure
+// below is -- build sample-rpg with and without the command, on all three
+// RPG-capable boards, and read nesasm's own kernel-lo BANK line each time.
+// All four deltas below (this one included) came out identical to the byte
+// on MMC1, MMC3 and UNROM 512, which is what justifies each staying a flat
+// constant rather than *_BY_MAPPER the way SAVE_KERNEL_ALLOWANCE_BY_MAPPER
+// has to be -- nothing any of these four gate on branches by board.
+export const MOVE_KERNEL_ALLOWANCE = 379;
+// move_face alone (engine/entities.asm), gated on FACE_ENABLED
+// (projectUsesFace = projectUsesMove || projectUsesTurn) -- charged once
+// whenever either Move or Turn is live, never twice when both are. Measured
+// by isolating it two ways that have to agree: MOVE_KERNEL_ALLOWANCE (379)
+// plus this (16) sums to the pre-split 395 exactly, and a build with both
+// Move and Turn live measures exactly MOVE_KERNEL_ALLOWANCE +
+// TURN_KERNEL_ALLOWANCE + this (379 + 35 + 16 = 430) -- not 430 + 16 again --
+// confirming the routine is charged once, not twice, when both commands are.
+export const FACE_KERNEL_ALLOWANCE = 16;
+// script_op_turn plus its own dispatch-chain entry in script_run
+// (engine/script.asm) -- not move_face, which is FACE_KERNEL_ALLOWANCE.
+export const TURN_KERNEL_ALLOWANCE = 35;
+// script_op_wait, wait_tick, both dispatch-chain entries (script_run and
+// ui_tick), and script_start's own wt_left clear. Additive with
+// TURN_KERNEL_ALLOWANCE exactly (35 + 48 = 99, the real measured delta of a
+// build with both live and neither Move), because Wait touches no code Turn
+// or Face also touch.
+export const WAIT_KERNEL_ALLOWANCE = 48;
 export const SPLIT_LOCK_KERNEL_ALLOWANCE = 19;
 // Phase 4b: item_metasprite's own draw_item_icon routine (gated on
 // ITEMS_ENABLED as a whole routine, not just its callers -- see
@@ -525,6 +565,9 @@ export function kernelCodeBytes(project, mapper) {
   // index this table with a mapper id that has no entry for it yet.
   const usesSave = projectUsesSave(project) && saveMediaImplemented(mapper);
   const usesMove = projectUsesMove(project);
+  const usesTurn = projectUsesTurn(project);
+  const usesWait = projectUsesWait(project);
+  const usesFace = projectUsesFace(project);
   // projectUsesSave(project), not the narrower usesSave just above: a live
   // Save command needs a title screen in *every* valid build of this
   // project (validateProject refuses one with no title regardless of which
@@ -560,6 +603,9 @@ export function kernelCodeBytes(project, mapper) {
     (usesTitle ? titleKernelAllowance(mapper) : 0) +
     (usesSave ? SAVE_KERNEL_ALLOWANCE_BY_MAPPER[mapper.id] : 0) +
     (usesMove ? MOVE_KERNEL_ALLOWANCE : 0) +
+    (usesTurn ? TURN_KERNEL_ALLOWANCE : 0) +
+    (usesWait ? WAIT_KERNEL_ALLOWANCE : 0) +
+    (usesFace ? FACE_KERNEL_ALLOWANCE : 0) +
     (usesSplitLock ? SPLIT_LOCK_KERNEL_ALLOWANCE : 0) +
     (usesItems ? ITEM_KERNEL_ALLOWANCE + itemEffectKernelAllowance(project) : 0) +
     KERNEL_SLACK
@@ -760,9 +806,9 @@ export function switchableMappers(project, mapper, { checkBattleRegion = true } 
 /**
  * When a project's lookup tables do not fit alongside kernelCodeBytes's own
  * reservation, name what would actually close the gap instead of only
- * reporting the shortfall: dropping one active optional feature (Move,
- * Save), dropping the smallest combination of them that frees enough when no
- * single one does, or targeting another mapper that reserves less kernel
+ * reporting the shortfall: dropping one active optional feature (Move, Turn,
+ * Wait, Save), dropping the smallest combination of them that frees enough
+ * when no single one does, or targeting another mapper that reserves less kernel
  * code for the same feature set *and* can still hold everything the project
  * already has. Every byte figure here is kernelCodeBytes's own answer on a
  * hypothetical project with that combination's commands turned off
@@ -783,12 +829,16 @@ function kernelShortfallAdvice(project, mapper, deficit) {
   // this must agree with what that function actually charges.
   const usesSave = projectUsesSave(project) && saveMediaImplemented(mapper);
   const usesMove = projectUsesMove(project);
+  const usesTurn = projectUsesTurn(project);
+  const usesWait = projectUsesWait(project);
   // "Every" rather than "the": a project can carry more than one live Move or
   // Save command (several actors, several pages), and removing just one of
   // several does not free anything at all -- kernelCodeBytes only drops the
   // term once *no* live occurrence remains (projectUsesSave/projectUsesMove).
   const active = [];
   if (usesMove) active.push({ op: 'move', label: 'every Move command' });
+  if (usesTurn) active.push({ op: 'turn', label: 'every Turn command' });
+  if (usesWait) active.push({ op: 'wait', label: 'every Wait command' });
   if (usesSave) active.push({ op: 'save', label: 'every Save command' });
   // A title screen is not offered here even though it is now its own term in
   // kernelCodeBytes: this list is specifically "commands projectWithoutCommands
@@ -1477,6 +1527,9 @@ export async function generateAssets({ dir, project, log = () => {} }) {
   const usesHeartArt = projectUsesHeartArt(project);
   const usesSave = projectUsesSave(project);
   const usesMove = projectUsesMove(project);
+  const usesTurn = projectUsesTurn(project);
+  const usesWait = projectUsesWait(project);
+  const usesFace = projectUsesFace(project);
   const saveIdentityValue = saveIdentity(project);
   if (usesHeartArt) {
     for (const tileset of tilesets) {
@@ -1865,6 +1918,14 @@ export async function generateAssets({ dir, project, log = () => {} }) {
     // projectUsesMove (shared/project.js) for the measured numbers and why this
     // could not simply be added to every ROM the way Heal and Damage were.
     `MOVE_ENABLED = ${usesMove ? 1 : 0}`,
+    // OP_TURN and OP_WAIT, the same shape as MOVE_ENABLED and each other --
+    // see projectUsesTurn/projectUsesWait (shared/project.js). FACE_ENABLED
+    // gates move_face (engine/entities.asm) on its own: both Move and Turn
+    // call it, so it must assemble whenever either does and be charged
+    // exactly once when both do.
+    `TURN_ENABLED = ${usesTurn ? 1 : 0}`,
+    `WAIT_ENABLED = ${usesWait ? 1 : 0}`,
+    `FACE_ENABLED = ${usesFace ? 1 : 0}`,
     ''
   ].join('\n');
   await fs.writeFile(path.join(assetsDir, 'config.inc'), config);

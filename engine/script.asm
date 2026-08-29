@@ -32,6 +32,12 @@ script_start:
                             ; stepping an actor on behalf of an event that
                             ; ended, and resuming a script that is not there
   .endif
+  .if WAIT_ENABLED
+  sta wt_left                ; the identical reasoning, for a wait: nothing
+                            ; known can leave one running into a fresh
+                            ; conversation, and a stale counter here would
+                            ; have ui_tick resuming a script that is not there
+  .endif
   lda ent_event,x
   cmp #NO_EVENT
   beq script_start_done
@@ -168,8 +174,20 @@ script_run_save:
 script_run_move:
   .if MOVE_ENABLED
   cmp #OP_MOVE
-  bne script_run_bad
+  bne script_run_turn
   jmp script_op_move
+  .endif
+script_run_turn:
+  .if TURN_ENABLED
+  cmp #OP_TURN
+  bne script_run_wait
+  jmp script_op_turn
+  .endif
+script_run_wait:
+  .if WAIT_ENABLED
+  cmp #OP_WAIT
+  bne script_run_bad
+  jmp script_op_wait
   .endif
 script_run_bad:
   jmp script_finish         ; an opcode this engine cannot run stops the event
@@ -447,6 +465,63 @@ script_op_move_wait:
   lda mv_dir
   jmp move_face             ; sets the mover's facing and returns to our caller,
                             ; which suspends the script exactly as box_say does
+  .endif
+
+; [OP_TURN, who, DIR_*]. Move's own facing decision (move_face,
+; engine/entities.asm), reachable on its own -- and, unlike OP_MOVE, this
+; does not suspend: the decision is made and applied in one instant, so
+; script_next3 runs the rest of the page on the same frame, the same shape
+; OP_SET_SW already has. Reuses mv_who as a scratch parameter to move_face
+; rather than a byte of its own -- safe because Turn and a scripted Move can
+; never be in flight at once (only one command in one page is ever "current"),
+; so nothing is reading mv_who on Turn's behalf that a Move could still care
+; about.
+  .if TURN_ENABLED
+script_op_turn:
+  ldy #1
+  lda [script_ptr_lo],y
+  sta mv_who
+  ; MOVE_SELF with nobody to be: the identical defense-in-depth
+  ; script_op_move's own comment explains, applied to the same write
+  ; (move_face's ent_dir,x) reached through the same mv_who/talk_ent path.
+  bne script_op_turn_ready
+  lda talk_ent
+  cmp #NO_ENTITY
+  bne script_op_turn_ready
+  jmp script_finish
+script_op_turn_ready:
+  iny
+  lda [script_ptr_lo],y
+  jsr move_face
+  jmp script_next3
+  .endif
+
+; [OP_WAIT, frames]. Suspends the script exactly as OP_MOVE does -- script_ptr
+; advanced past the whole command first, script_active left set, and this
+; returns with wt_left non-zero for ui_tick to find. wait_tick
+; (engine/entities.asm) is what calls script_resume once the count reaches
+; zero; nothing here walks a coordinate or probes anything, so there is no
+; "blocked" case the way a Move can hit a wall.
+;
+; A frame count of zero does not suspend, for the identical reason a Move of
+; distance zero does not: the only thing that would ever resume it is
+; wait_tick watching wt_left reach zero, and returning with it already zero
+; would hang the event on a tick that never comes.
+  .if WAIT_ENABLED
+script_op_wait:
+  ldy #1
+  lda [script_ptr_lo],y
+  sta wt_left
+  lda #2
+  jsr script_skip
+  lda wt_left
+  bne script_op_wait_suspend
+  jmp script_run
+script_op_wait_suspend:
+  rts                        ; reached by jmp from script_run, so this unwinds
+                              ; to whatever called into the script this frame --
+                              ; the same "reached by jmp" discipline move_face's
+                              ; own trailing rts already relies on
   .endif
 
 ; ------------------------------------------------------------------- calls

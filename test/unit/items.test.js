@@ -386,7 +386,22 @@ test('a project with no items and no Save is byte-identical to the pre-phase-4b 
 // Re-pinned the same way and for the same reason as PINNED_BASELINE_HASH
 // above: a worktree at master (9eda25f) with only the player.asm dedup
 // applied, no other phase 4b change.
-const PINNED_RPG_BASELINE_HASH = '14ad62e9f02e67c6ecc5d722cc89749c7ba430e4b5917b66ba1dcc18ee4e9a85';
+//
+// Re-pinned again, from a worktree at master (aa8c628) with only
+// engine/rpg.asm's battle_end fix applied (a `git apply` of that one file's
+// diff, confirmed 12 inserted lines and nothing else touched, then this exact
+// build run against it) -- no other change from item 6's own Turn/Wait slice.
+// The fix: battle_end's owner loop restores ent_touched,x for the resolved
+// slot on the way out of a scripted battle, but never restored talk_ent --
+// so a Move or Turn command targeting "self" right after the battle read
+// talk_ent as still NO_ENTITY (battle_begin clears it unconditionally on the
+// way in) and silently jmp script_finish'd the rest of the page. This is
+// unconditional kernel code (BATTLE_ENABLED alone), so it moves every RPG
+// build's hash regardless of whether that project uses Move, Turn or
+// neither -- confirmed the size did not change (still 147472) while the
+// hash did, consistent with a few bytes inserted mid-bank shifting every
+// label after them rather than growing the ROM itself.
+const PINNED_RPG_BASELINE_HASH = '8f16d8211397e3bb07576799879094ef54bcbfa1562a1a74d934bee1ab9323e3';
 const PINNED_RPG_BASELINE_SIZE = 147472;
 
 test('an RPG with no items and no Save is byte-identical to the pre-round-4 master build', async (t) => {

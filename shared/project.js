@@ -663,7 +663,20 @@ export const EVENT_COMMANDS = [
   // instead of one. It suspends the script the way Say does, because a walk the
   // event did not wait for would read as a teleport -- the rest of the page
   // would run in the frame the actor set off.
-  { id: 'move', label: 'Move actor', args: ['who', 'dir', 'dist'] }
+  { id: 'move', label: 'Move actor', args: ['who', 'dir', 'dist'] },
+  // [who, direction]. Move's own facing decision (move_face, engine/entities.asm)
+  // made reachable on its own, for a beat that turns without walking -- "face the
+  // NPC toward the player before speaking." who/dir reuse MOVE_TARGETS/
+  // MOVE_DIRECTIONS exactly, the same way Move's own operands do. Unlike Move
+  // this does not suspend: the facing is decided and applied in the same frame,
+  // the same instant shape setSwitch/setVar already have, so the rest of the
+  // page keeps running.
+  { id: 'turn', label: 'Turn actor', args: ['who', 'dir'] },
+  // [frames]. Suspends the script the way Move does, but pauses the whole world
+  // rather than walking anyone -- a beat before the next line, or after a
+  // transition. A frame count of 0 does not suspend at all, for the identical
+  // reason a Move of distance 0 does not: nothing would ever resume it.
+  { id: 'wait', label: 'Wait', args: ['frames'] }
 ];
 
 // A command can be switched off while you work out whether you want it, the way
@@ -707,7 +720,9 @@ export const IMPLEMENTED_COMMANDS = new Set([
   'heal',
   'damage',
   'save',
-  'move'
+  'move',
+  'turn',
+  'wait'
 ]);
 
 /**
@@ -1571,6 +1586,9 @@ function normalizeEventCommand(raw, depth = 0, itemCtx = EMPTY_ITEM_CTX) {
     // go without crossing an edge — and crossing one mid-event is what `warp`
     // is for, not this.
     else if (arg === 'dist') out.dist = clamp(raw?.dist, 0, 255, 0);
+    // Frames, a whole byte of them, and a Wait of 0 is legal (it just never
+    // suspends -- see script_op_wait, engine/script.asm).
+    else if (arg === 'frames') out.frames = clamp(raw?.frames, 0, 255, 0);
     // A song index, or `null` for Silence — the same shape map.songId is,
     // and deliberately not clamped against how many songs the project
     // actually has: buildProject compiles the project the app is holding
@@ -2715,6 +2733,61 @@ export function projectUsesMove(project) {
     }
   }
   return false;
+}
+
+/**
+ * Drives the generated `TURN_ENABLED`, the same shape and the same reason
+ * `projectUsesMove` drives `MOVE_ENABLED`: `script_op_turn` is real kernel-lo
+ * code with nowhere to go unconditionally in a project that never turns
+ * anyone. Kept separate from `projectUsesMove` rather than folded into it —
+ * `move_face` (engine/entities.asm), the routine both commands actually call
+ * to set a facing, is gated on its own predicate below (`projectUsesFace`)
+ * precisely so a Turn-only project pays for `script_op_turn` and
+ * `move_face` and nothing of `move_tick`'s own ~379 bytes, and a Move-only
+ * project keeps paying for `move_face` without also paying for
+ * `script_op_turn`.
+ */
+export function projectUsesTurn(project) {
+  for (const event of projectEvents(project)) {
+    for (const page of compiledPages(event)) {
+      for (const command of liveCommands(page.commands, CHOICE_LIMITS.options)) {
+        if (command.op === 'turn') return true;
+      }
+    }
+  }
+  return false;
+}
+
+/**
+ * Drives the generated `WAIT_ENABLED`. `script_op_wait` and `wait_tick`
+ * (engine/entities.asm, hooked into `ui_tick` the same way `move_tick`
+ * already is) are real kernel-lo code, so a project with no live Wait must
+ * not pay for either, the identical reasoning `projectUsesMove` already
+ * documents for `Move`.
+ */
+export function projectUsesWait(project) {
+  for (const event of projectEvents(project)) {
+    for (const page of compiledPages(event)) {
+      for (const command of liveCommands(page.commands, CHOICE_LIMITS.options)) {
+        if (command.op === 'wait') return true;
+      }
+    }
+  }
+  return false;
+}
+
+/**
+ * Drives the generated `FACE_ENABLED`, gating `move_face` (engine/entities.asm)
+ * on its own rather than bundling it into either `MOVE_ENABLED` or
+ * `TURN_ENABLED` alone. `move_face` is the one routine both `Move` (setting
+ * facing once before the first step, script_op_move) and `Turn` (the whole
+ * command) call, so it must assemble whenever either is live and must be
+ * measured and charged exactly once when both are — never zero times (a
+ * Turn-only project silently missing the routine it calls) and never twice
+ * (a project with both commands double-charged for one routine).
+ */
+export function projectUsesFace(project) {
+  return projectUsesMove(project) || projectUsesTurn(project);
 }
 
 /**

@@ -238,17 +238,36 @@ start_dialog:
 ; is not in the Controller Forge's table -- during play it always walks, and here
 ; it always moves the highlight -- so the menu reads the pad directly.
 ui_tick:
-  ; A scripted Move owns the frame ahead of whatever state it is running
-  ; inside. It is always ST_DIALOG in practice -- every event runs through
-  ; start_dialog -- but the test is on the move rather than on the state,
-  ; because the two answer different questions and a box may well be sitting
-  ; open above the actor doing the walking. Nothing types while it runs: Say
-  ; suspends until it is dismissed, so a box the script got past is finished
-  ; being drawn and simply holds.
+  ; A scripted Move or Wait owns the frame ahead of whatever state it is
+  ; running inside. It is always ST_DIALOG in practice -- every event runs
+  ; through start_dialog -- but the test is on the counter rather than on the
+  ; state, because the two answer different questions and a box may well be
+  ; sitting open above the actor doing the walking (or the wait). Nothing
+  ; types while either runs: Say suspends until it is dismissed, so a box the
+  ; script got past is finished being drawn and simply holds.
+  ;
+  ; Two separate hard-coded checks, not one dispatcher over a table of
+  ; suspend flags and resume routines: mv_left and wt_left can never both be
+  ; non-zero (a page suspends on whichever of Move or Wait it reaches first,
+  ; and cannot reach the other until that one resumes -- script_op_move and
+  ; script_op_wait each advance script_ptr past their own command before
+  ; suspending, so there is exactly one command "current" at a time), so a
+  ; generalised dispatcher would trade two flat `lda`/`beq`/`jmp` triplets --
+  ; cheaper in bytes than a table lookup already is at this size -- for
+  ; indirection that has nothing to dispatch over yet. The same reasoning
+  ; script.asm's own header already gives for a compare chain over a jump
+  ; table: a table is a second place an order has to be kept in step with
+  ; something else, for two entries that do not need one.
   .if MOVE_ENABLED
   lda mv_left
-  beq ui_tick_state
+  beq ui_tick_wait
   jmp move_tick
+  .endif
+ui_tick_wait:
+  .if WAIT_ENABLED
+  lda wt_left
+  beq ui_tick_state
+  jmp wait_tick
   .endif
 ui_tick_state:
   lda game_state

@@ -315,7 +315,10 @@ across wraparound because each generation is written into a sector that was just
 value needs a bit to go 0 → 1 without an erase in between, so there is no counter value clear-only
 programming cannot express. That design is genuinely atomic and still costs an estimated 155-225
 bytes — 65-94% of the same headroom — and would push the already-refused `sample-rpg` + Save + Move
-combination (currently ~155 bytes short on this board) to roughly 310-380 bytes short. Neither was
+combination (currently 167 bytes short on this board — re-measured against the current tree, not the
+~155 this passage previously estimated; `battle_end`'s own talk_ent fix, item 6's Turn/Wait slice,
+added 3 more unconditional kernel-lo bytes to every RPG build, on top of whatever else moved it
+before) to roughly 322-392 bytes short. Neither was
 built. If atomic flash saving becomes a real requirement, the A/B journal is where to start — not the
 ring — and the adjacent sector is already sitting there reserved for exactly it.
 
@@ -831,9 +834,14 @@ enough", `test/unit/kernelbytes.test.js` asserts each board's delta against its 
 not with `<=`: a margin-only check left room for MMC1 to sit at the old shared 552 instead of its own
 547 and still pass, 5 bytes of silent slack that would have compounded with everything below.
 `MOVE_KERNEL_ALLOWANCE` and `SPLIT_LOCK_KERNEL_ALLOWANCE` stay single flat numbers — Move measures the
-same 395 bytes on every board alike, and the split-lock fix is already conditional on the one board
+same bytes on every board alike, and the split-lock fix is already conditional on the one board
 that needs it, so neither has a per-board difference to capture, and folding either into a base would
-overcharge every project that never turns the feature on.
+overcharge every project that never turns the feature on. (`MOVE_KERNEL_ALLOWANCE` itself is 379 as of
+item 6's Turn/Wait first slice, not the 395 this section originally measured — `move_face`, the routine
+Move and the new `Turn` command both call to set a facing, moved out to its own `FACE_KERNEL_ALLOWANCE`
+[16] so a Turn-only project pays for it without also paying for the rest of Move. 379 + 16 = 395: the
+figures below that total a Move-only project's cost are unchanged by the split, only the constant named
+`MOVE_KERNEL_ALLOWANCE` moved.)
 
 **A title screen turned out to be exactly this same mistake, hiding inside the base itself.**
 `BASE_KERNEL_CODE_BYTES_BY_MAPPER`'s three figures were each measured by building `sample-rpg` with a
@@ -884,14 +892,17 @@ rest of `IFRAME_TIME`: an RPG's monsters became briefly walk-through after any f
 check to the action-only branch it actually belongs to (RPG encounters have no invincible window to
 respect) happens to remove those two instructions from the RPG build entirely, which is a real 5-byte
 saving nesasm confirms on every RPG-capable board — not a coincidence of one build, a property of the
-fix. With both changes, `sample-rpg` with Save and Move on MMC3 now reserves 6376 (base) + 224 (title)
-+ 19 (split lock) + 552 (save) + 395 (move) + 20 (`KERNEL_SLACK`) = 7586 against a real measured 7566 — a 20-byte
+fix. With both changes, `sample-rpg` with Save and Move on MMC3 now reserves 6379 (base) + 224 (title)
++ 19 (split lock) + 552 (save) + 395 (move) + 20 (`KERNEL_SLACK`) = 7589 against a real measured 7569 — a 20-byte
 margin, exactly `KERNEL_SLACK` and nothing more, which is true of every configuration this file
 measures now (see `test/unit/kernelbytes.test.js`), not a coincidence but the point of measuring per
-board instead of charging every board the same worst case. (The base here is 6376, not the 6446 this
-passage originally measured — a kernel diet moved the base since, described a few paragraphs down; the
-20-byte margin itself is untouched, because the diet moved what the base counts, not how the calibration
-holds it to account.) **`checkCapacity` no longer refuses
+board instead of charging every board the same worst case. (The base here is 6379, not the 6446 this
+passage originally measured — a kernel diet moved the base to 6376, described a few paragraphs down,
+and `battle_end`'s own talk_ent fix, item 6's Turn/Wait slice, moved it a further +3 to 6379 since
+that routine is unconditional kernel-lo cost on every RPG build; re-measured against the current tree
+rather than adjusted by arithmetic. The 20-byte margin itself is untouched throughout, because each
+change moved what the base counts, not how the calibration holds it to account.) **`checkCapacity` no
+longer refuses
 `sample-rpg` with a `Save` command *and* a `Move` command on MMC3** — nesasm assembles it into the
 kernel-lo bank with room to spare, which is a real fix, not a loosened check: the recovered margin is
 exactly what per-mapper budgeting (8 bytes) and the `entity_contact` fix (5 bytes, times the two other
@@ -971,9 +982,9 @@ asserted — a user file with `jsr move_left_done` assembles with the aliases in
 been closed and reopened on this one board — closed by per-mapper budgeting and the `entity_contact`
 fix, reopened by items (the prediction's first, documented cash-in, in the paragraph just above), closed
 again by this diet — and the file's own prediction is standing again rather than retired: 74 bytes is real,
-working margin, not indefinite margin — nowhere near enough for another feature on the scale of
-`MOVE_KERNEL_ALLOWANCE`'s own 395 bytes, and the next byte the kernel-lo bank grows anywhere, on this
-board, in this configuration, reopens it a second time.
+working margin, not indefinite margin — nowhere near enough for another feature on the scale of Move's
+own ~395 bytes, and the next byte the kernel-lo bank grows anywhere, on this board, in this
+configuration, reopens it a second time.
 
 **HISTORICAL as of the paragraph above — the prediction came true, and this time nothing closed it
 again.** Item 5's own phase 4c, round 2, is what spent the 74 bytes: `engine/ui.asm`'s `use_item_apply`
@@ -982,8 +993,11 @@ code is gated by the identical `ITEMS_ENABLED` toggle `ITEM_KERNEL_ALLOWANCE` ab
 it landed as a second, item-conditional term rather than a fourth diet —
 `ITEM_EFFECT_KERNEL_ALLOWANCE_BY_GAME_TYPE` (`main/build/generate.js`), described in the item-semantics
 section above ("An item's own effect is..."). This exact combination — `sample-rpg` with Save, Move and its one live item, on MMC3 —
-now refuses again, for real, with `kernelCodeBytes` at 7662 and `checkCapacity` reporting "the lookup
-tables need 129 bytes but only 121 are free alongside the engine code" — 8 bytes short. Unlike the two
+now refuses again, for real, with `kernelCodeBytes` at 7665 and `checkCapacity` reporting "the lookup
+tables need 129 bytes but only 118 are free alongside the engine code" — 11 bytes short (both
+re-measured against the current tree; `battle_end`'s own talk_ent fix, item 6's Turn/Wait slice, is
+unconditional kernel-lo cost on every RPG build, 3 more than the 8-byte shortfall this section
+originally recorded). Unlike the two
 earlier reopenings, this one was not chased with another diet: the outcome was decided rather than
 discovered, and accepted as a documented limitation the same way UNROM 512's own Save+Move shortfall
 already was above. `test/unit/kernelbytes.test.js`'s `'sample-rpg with Save, Move and its one live item
@@ -1003,8 +1017,9 @@ file specifically tracks, not exactly one.
 Because the margin can still run out — on MMC3 in a bigger project, or the next feature this bank has
 no room for — `checkCapacity` names what would close a gap like this one instead of only reporting the
 shortfall: `kernelShortfallAdvice` (`main/build/generate.js`, beside `kernelCodeBytes`) offers dropping
-whichever active optional feature (Move, Save) alone would cover the deficit — "every" occurrence, not
-"the", since a project can carry more than one live Move or Save command and removing just one of
+whichever active optional feature (Move, Turn, Wait, Save) alone would cover the deficit — "every"
+occurrence, not "the", since a project can carry more than one live Move or Save command and removing
+just one of
 several frees nothing at all — or, when no single feature does but dropping some of them together
 would, the smallest combination that does. Every byte figure this considers is `kernelCodeBytes`'s own
 answer on a hypothetical project with that combination's commands switched off
@@ -1027,11 +1042,17 @@ screen (packed the same way the generator packs them) and the project's current 
 actually switched — recommending MMC1 to a 17-tileset MMC3 project because it reserves 206 fewer kernel
 bytes, when MMC1 holds only 16 tilesets, is not a fix, it is quiet data loss dressed as advice. None of
 these checks mutate the project — `projectWithoutCommands` works on its own deep clone — they only read
-it, the same way `checkCapacity` itself does. The rest of the
-roadmap's cutscene verbs (fade, shake, sound effects, movement routes) are all kernel code with nowhere
-left to go until either MMC3 gets more margin or a second banked region the way the battle system got
-one, and conditional assembly does not compose indefinitely regardless, because a project that wants
-three of these is back where it started. The second kernel diet this paragraph used to point at as
+it, the same way `checkCapacity` itself does. `Turn` and `Wait` — item 6's first slice — have since
+shipped: cheap enough (99 bytes together, measured) to need no structural decision at all, on every
+board, and screen shake and Show/Hide were costed the same way and are expected to fit the same
+manner once built — a documented-limitation refusal in the tightest configurations, the same shape
+`Save`+`Move` already has, not a blocker. Only fade and a sound effect are still genuinely open on
+this front: real kernel code with nowhere left to go on the tightest boards until either MMC3 gets
+more margin or a second banked region the way the battle system got one, and conditional assembly
+does not compose indefinitely regardless. The route-authoring and Map Forge preview half of "Move /
+turn / wait routes" is a different thing again: pure compiler/UI work with no engine cost at all,
+never blocked on kernel-lo margin the way this paragraph's other examples are, and still open for a
+different reason (nobody has built it yet, not that there is nowhere for it to go). The second kernel diet this paragraph used to point at as
 future work — measuring `engine/title.asm`'s already-conditional blocks — has happened
 (`TITLE_KERNEL_ALLOWANCE_BY_MAPPER`, two sections up), and it is real margin recovered on every board,
 but it does not touch *this* scenario: the project this paragraph is about already carries a live Save

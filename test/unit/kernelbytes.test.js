@@ -38,6 +38,9 @@ import {
   KERNEL_SLACK,
   SAVE_KERNEL_ALLOWANCE_BY_MAPPER,
   MOVE_KERNEL_ALLOWANCE,
+  FACE_KERNEL_ALLOWANCE,
+  TURN_KERNEL_ALLOWANCE,
+  WAIT_KERNEL_ALLOWANCE,
   SPLIT_LOCK_KERNEL_ALLOWANCE,
   ITEM_KERNEL_ALLOWANCE,
   ITEM_EFFECT_KERNEL_ALLOWANCE_BY_GAME_TYPE,
@@ -85,7 +88,11 @@ const CAPABLE_MAPPERS = SUPPORTED_MAPPERS.filter(rpgCapable);
  * first label of boot.asm, the first file of engine code included after
  * them), measured off the real assembly rather than recomputed by hand here.
  */
-async function measureCodeBytes(t, mapper, { withSave = false, withMove = false, withTitle = false, withItems = true } = {}) {
+async function measureCodeBytes(
+  t,
+  mapper,
+  { withSave = false, withMove = false, withTurn = false, withWait = false, withTitle = false, withItems = true } = {}
+) {
   const dir = await fsp.mkdtemp(path.join(os.tmpdir(), 'forge-kernelbytes-'));
   t.after(() => fsp.rm(dir, { recursive: true, force: true }));
   const project = await loadProject(SAMPLE_RPG);
@@ -103,6 +110,8 @@ async function measureCodeBytes(t, mapper, { withSave = false, withMove = false,
   const commands = [];
   if (withSave) commands.push({ op: 'save' });
   if (withMove) commands.push({ op: 'move', who: 'self', dir: 'up', dist: 16 });
+  if (withTurn) commands.push({ op: 'turn', who: 'self', dir: 'up' });
+  if (withWait) commands.push({ op: 'wait', frames: 30 });
   if (commands.length) {
     project.maps[0].screens[0].entities.push({
       actorId: 0,
@@ -365,7 +374,13 @@ test(
     // Every RPG-capable board, a live Move command and nothing else.
     // MOVE_KERNEL_ALLOWANCE is deliberately one flat number rather than a
     // per-mapper table (see its own comment) — this is what backs that claim
-    // directly, board by board, rather than trusting it stayed true.
+    // directly, board by board, rather than trusting it stayed true. A
+    // Move-only project also assembles move_face (FACE_ENABLED, since
+    // projectUsesFace is projectUsesMove || projectUsesTurn), so the real
+    // delta is the two allowances together, not MOVE_KERNEL_ALLOWANCE alone
+    // -- asserting against the sum here is what proves move_face was not
+    // silently dropped by the split, the same way the Turn-only block below
+    // proves it was not silently duplicated.
     const withMove = [];
     for (const mapper of CAPABLE_MAPPERS) {
       const { project, codeBytes } = await measureCodeBytes(t, mapper, { withMove: true });
@@ -374,19 +389,108 @@ test(
       const noSaveEntry = noSave.find((entry) => entry.mapper.id === mapper.id);
       const delta = codeBytes - noSaveEntry.codeBytes;
       // Equality, not <=, the same reasoning SAVE_KERNEL_ALLOWANCE_BY_MAPPER's
-      // own check above already applies: MOVE_KERNEL_ALLOWANCE's comment
-      // claims it is exactly 395 on every measured board, with no margin of
-      // its own (KERNEL_SLACK is the only deliberate headroom this function
-      // carries) -- a <= check would let a stale, over-large figure (395
-      // quietly raised to, say, 400) pass by overcharging every project that
+      // own check above already applies: MOVE_KERNEL_ALLOWANCE + FACE_KERNEL_
+      // ALLOWANCE claim to sum to Move's exact real cost on every measured
+      // board, with no margin of their own (KERNEL_SLACK is the only
+      // deliberate headroom this function carries) -- a <= check would let a
+      // stale, over-large figure pass by overcharging every project that
       // moves anything, the same way a stale SAVE allowance could hide
       // behind assertCovers's own ceiling.
       assert.equal(
         delta,
-        MOVE_KERNEL_ALLOWANCE,
+        MOVE_KERNEL_ALLOWANCE + FACE_KERNEL_ALLOWANCE,
         `${mapper.name}: Move costs ${delta} bytes of kernel code (${noSaveEntry.codeBytes} -> ${codeBytes}), but ` +
-          `MOVE_KERNEL_ALLOWANCE reserves ${MOVE_KERNEL_ALLOWANCE} — this allowance must equal Move's real cost ` +
+          `MOVE_KERNEL_ALLOWANCE + FACE_KERNEL_ALLOWANCE reserves ` +
+          `${MOVE_KERNEL_ALLOWANCE + FACE_KERNEL_ALLOWANCE} — this must equal Move's real cost ` +
           'exactly, on every board. Re-measure and correct it (see the comment beside kernelCodeBytes).'
+      );
+    }
+
+    // Every RPG-capable board, a live Turn command and nothing else. Turn
+    // also pulls in move_face (FACE_ENABLED), so this proves the opposite
+    // direction from the Move block above: a Turn-only project pays for
+    // TURN_KERNEL_ALLOWANCE and FACE_KERNEL_ALLOWANCE, and *not* for
+    // MOVE_KERNEL_ALLOWANCE's own ~379 bytes of move_tick/move_get_x/y/
+    // move_set_x/y/move_speed/move_animate, which a Turn-only project never
+    // calls at all. A test that only ever built Move (or only ever built
+    // Turn stacked on top of Move) could not tell "Turn-only pays the whole
+    // of MOVE_ENABLED's old bundle" apart from "Turn-only pays its own
+    // share" -- this is the configuration that tells them apart.
+    for (const mapper of CAPABLE_MAPPERS) {
+      const { project, codeBytes } = await measureCodeBytes(t, mapper, { withTurn: true });
+      assertCovers({ mapper, codeBytes }, kernelCodeBytes(project, mapper), 'a live Turn command');
+      const noSaveEntry = noSave.find((entry) => entry.mapper.id === mapper.id);
+      const delta = codeBytes - noSaveEntry.codeBytes;
+      assert.equal(
+        delta,
+        TURN_KERNEL_ALLOWANCE + FACE_KERNEL_ALLOWANCE,
+        `${mapper.name}: Turn-only costs ${delta} bytes of kernel code (${noSaveEntry.codeBytes} -> ${codeBytes}), ` +
+          `but TURN_KERNEL_ALLOWANCE + FACE_KERNEL_ALLOWANCE reserves ` +
+          `${TURN_KERNEL_ALLOWANCE + FACE_KERNEL_ALLOWANCE} — a Turn-only project must pay for exactly its own ` +
+          "opcode plus move_face, never Move's own ~379-byte machinery it never calls."
+      );
+    }
+
+    // Every RPG-capable board, a live Wait command and nothing else. Wait
+    // touches no code Move, Turn or Face also touch, so this is the plainest
+    // of the four new configurations: its delta should be WAIT_KERNEL_
+    // ALLOWANCE and nothing else.
+    for (const mapper of CAPABLE_MAPPERS) {
+      const { project, codeBytes } = await measureCodeBytes(t, mapper, { withWait: true });
+      assertCovers({ mapper, codeBytes }, kernelCodeBytes(project, mapper), 'a live Wait command');
+      const noSaveEntry = noSave.find((entry) => entry.mapper.id === mapper.id);
+      const delta = codeBytes - noSaveEntry.codeBytes;
+      assert.equal(
+        delta,
+        WAIT_KERNEL_ALLOWANCE,
+        `${mapper.name}: Wait-only costs ${delta} bytes of kernel code (${noSaveEntry.codeBytes} -> ${codeBytes}), ` +
+          `but WAIT_KERNEL_ALLOWANCE reserves ${WAIT_KERNEL_ALLOWANCE} — this allowance must equal Wait's real ` +
+          'cost exactly, on every board.'
+      );
+    }
+
+    // Every RPG-capable board, live Turn and Wait together, no Move. Proves
+    // the two commands' allowances are genuinely additive -- Wait touching
+    // no code Turn or Face touch means this delta should be exactly the sum
+    // of the two configurations just measured above, not something less
+    // (which would mean the two share cost this model is not counting) or
+    // more (which would mean one is somehow being charged twice).
+    for (const mapper of CAPABLE_MAPPERS) {
+      const { project, codeBytes } = await measureCodeBytes(t, mapper, { withTurn: true, withWait: true });
+      assertCovers({ mapper, codeBytes }, kernelCodeBytes(project, mapper), 'live Turn and Wait commands together');
+      const noSaveEntry = noSave.find((entry) => entry.mapper.id === mapper.id);
+      const delta = codeBytes - noSaveEntry.codeBytes;
+      assert.equal(
+        delta,
+        TURN_KERNEL_ALLOWANCE + FACE_KERNEL_ALLOWANCE + WAIT_KERNEL_ALLOWANCE,
+        `${mapper.name}: Turn+Wait costs ${delta} bytes of kernel code (${noSaveEntry.codeBytes} -> ${codeBytes}), ` +
+          `but TURN_KERNEL_ALLOWANCE + FACE_KERNEL_ALLOWANCE + WAIT_KERNEL_ALLOWANCE reserves ` +
+          `${TURN_KERNEL_ALLOWANCE + FACE_KERNEL_ALLOWANCE + WAIT_KERNEL_ALLOWANCE} — Turn and Wait must be ` +
+          'purely additive, since Wait touches no code Turn or Face also touch.'
+      );
+    }
+
+    // Every RPG-capable board, live Turn and Move together, no Wait. The one
+    // configuration that actually exercises FACE_ENABLED's whole reason for
+    // existing: both commands call move_face, so this delta must be
+    // MOVE_KERNEL_ALLOWANCE + TURN_KERNEL_ALLOWANCE + FACE_KERNEL_ALLOWANCE
+    // -- FACE_KERNEL_ALLOWANCE counted once, not twice. A gating mistake that
+    // charged move_face per-command rather than per-project would show up
+    // here as a delta FACE_KERNEL_ALLOWANCE too high; one that dropped it
+    // when either command's own predicate alone controlled it would show up
+    // as too low.
+    for (const mapper of CAPABLE_MAPPERS) {
+      const { project, codeBytes } = await measureCodeBytes(t, mapper, { withTurn: true, withMove: true });
+      assertCovers({ mapper, codeBytes }, kernelCodeBytes(project, mapper), 'live Turn and Move commands together');
+      const noSaveEntry = noSave.find((entry) => entry.mapper.id === mapper.id);
+      const delta = codeBytes - noSaveEntry.codeBytes;
+      assert.equal(
+        delta,
+        MOVE_KERNEL_ALLOWANCE + TURN_KERNEL_ALLOWANCE + FACE_KERNEL_ALLOWANCE,
+        `${mapper.name}: Turn+Move costs ${delta} bytes of kernel code (${noSaveEntry.codeBytes} -> ${codeBytes}), ` +
+          'but MOVE_KERNEL_ALLOWANCE + TURN_KERNEL_ALLOWANCE + FACE_KERNEL_ALLOWANCE reserves ' +
+          `${MOVE_KERNEL_ALLOWANCE + TURN_KERNEL_ALLOWANCE + FACE_KERNEL_ALLOWANCE} — move_face must be charged ` +
+          'exactly once when both commands that call it are live, never zero times and never twice.'
       );
     }
 
@@ -403,8 +507,17 @@ test(
     // in music.asm), confirmed by building past checkCapacity's own refusal
     // and letting the assembler answer directly, the same way this file's
     // own MMC3 story below was confirmed. That story closed by finding 12
-    // bytes; this one is roughly 155 short (a -29-byte code budget before
-    // 126 bytes of lookup tables are even added), which reads as a real gap
+    // bytes; this one is 167 short (checkCapacity: "the lookup tables need
+    // 129 bytes but only -38 are free alongside the engine code"). This
+    // comment used to record 155, but that was already stale before this
+    // session touched anything: rebuilding the identical scenario at the
+    // commit before item 6 (a worktree at aa8c628) gives "-35 are free",
+    // a true pre-existing deficit of 164, not 155. Of the 12-byte gap
+    // between the two recorded figures, only 3 are battle_end's own
+    // talk_ent fix (item 6's Turn/Wait slice, unconditional kernel-lo cost
+    // on every RPG build) -- the other 9 were this comment drifting from
+    // reality before that fix ever existed, caught only by re-measuring
+    // rather than arithmetic on the old number. Which reads as a real gap
     // rather than reservation conservatism, and closing it is not this
     // phase's own work. Bracketed precisely, not just excluded here, by
     // "sample-rpg with Save and Move on UNROM 512 does not build" below.
@@ -690,6 +803,14 @@ test('itemEffectKernelAllowance falls back to the larger measured figure for a g
 // with plain dummy actors (8 bytes of tableBytes each, nothing any
 // conditionally-assembled code path reads) purely to control the size of the
 // shortfall.
+//
+// Any specific deficit figure named in a comment below is descriptive, not
+// asserted -- these tests check the recommendation checkCapacity gives
+// (which feature, which board, or the fallback), not the literal byte count
+// that provoked it. That is exactly why such a figure can rot unnoticed: a
+// kernel-lo change moves the number, the assertions never touch it, and the
+// suite stays green while the comment quietly goes stale. Re-measure rather
+// than adjust by arithmetic when correcting one.
 
 function kernelShortfallMessage(project) {
   const { problems } = checkCapacity(project);
@@ -762,10 +883,14 @@ test('a kernel-lo shortfall Move alone would not close by its own allowance can 
   // 169, not the original 159: the kernel diet's movement-tail dedup
   // (engine/player.asm) dropped MMC3's own base by a further 70 bytes, so
   // 159's own deficit (397 before the diet) fell to 327 -- under
-  // MOVE_KERNEL_ALLOWANCE alone, which no longer exercises split-lock being
-  // freed alongside it at all. Re-derived against a real checkCapacity()
-  // run, not assumed from the base delta alone: 169 lands the deficit at
-  // 407, inside the (395, 414] band this case exists to reproduce.
+  // MOVE_KERNEL_ALLOWANCE + FACE_KERNEL_ALLOWANCE (what dropping this
+  // project's only Move, and so its only reason to assemble move_face,
+  // actually frees), which no longer exercises split-lock being freed
+  // alongside it at all. Re-derived against a real checkCapacity() run, not
+  // assumed from the base delta alone: 169 lands the deficit at 407, inside
+  // the (395, 414] band this case exists to reproduce -- 395 = 379 + 16,
+  // unchanged by the Turn/Wait first slice's move_face split, since a
+  // project with a live Move and no Turn still pays both terms together.
   inflate(project, 169); // deficit 407, strictly above 395 and at or below 414
   // The message assertion below would still pass if drift ever dropped the
   // deficit to, say, 200 bytes -- solo's own freed figure (414, Move's own
@@ -779,15 +904,17 @@ test('a kernel-lo shortfall Move alone would not close by its own allowance can 
   // neither figure would close the gap. Asserted directly, per the phase4a
   // round-2 review, rather than left implicit in the message match below.
   const deficit = kernelShortfallDeficit(project);
+  const moveAlone = MOVE_KERNEL_ALLOWANCE + FACE_KERNEL_ALLOWANCE;
   assert.ok(
-    deficit > MOVE_KERNEL_ALLOWANCE,
-    `deficit ${deficit} must exceed MOVE_KERNEL_ALLOWANCE (${MOVE_KERNEL_ALLOWANCE}) alone, or this case does ` +
-      'not exercise split-lock being freed alongside Move at all'
+    deficit > moveAlone,
+    `deficit ${deficit} must exceed MOVE_KERNEL_ALLOWANCE + FACE_KERNEL_ALLOWANCE (${moveAlone}) alone, or this ` +
+      'case does not exercise split-lock being freed alongside Move at all'
   );
   assert.ok(
-    deficit <= MOVE_KERNEL_ALLOWANCE + SPLIT_LOCK_KERNEL_ALLOWANCE,
-    `deficit ${deficit} must not exceed MOVE_KERNEL_ALLOWANCE + SPLIT_LOCK_KERNEL_ALLOWANCE ` +
-      `(${MOVE_KERNEL_ALLOWANCE + SPLIT_LOCK_KERNEL_ALLOWANCE}), or dropping Move would not close the gap either`
+    deficit <= moveAlone + SPLIT_LOCK_KERNEL_ALLOWANCE,
+    'deficit ' +
+      `${deficit} must not exceed MOVE_KERNEL_ALLOWANCE + FACE_KERNEL_ALLOWANCE + SPLIT_LOCK_KERNEL_ALLOWANCE ` +
+      `(${moveAlone + SPLIT_LOCK_KERNEL_ALLOWANCE}), or dropping Move would not close the gap either`
   );
   const message = kernelShortfallMessage(project);
   assert.match(message, /removing every Move command \(frees 414 bytes\)/);
@@ -825,9 +952,28 @@ test('a kernel-lo shortfall neither Save nor Move would close, but a roomier boa
   // 128, not the original 120: the kernel diet's movement-tail dedup
   // (engine/player.asm) dropped every board's own base by 70 bytes alike, so
   // 120 no longer produces any deficit. Re-derived against a real
-  // checkCapacity() run: 128 lands a 12-byte deficit, comfortably inside the
-  // narrow window (deficits 4-20, out of 195 bytes MMC1 would save) where
-  // MMC1 is still offered before the fallback message takes over above it.
+  // checkCapacity() run: 128 currently lands a 77-byte kernel-lo deficit (12
+  // at the last measurement of this figure -- re-measured, not adjusted by
+  // arithmetic, per this file's own note above on why that matters here).
+  //
+  // "Comfortably inside the narrow window ... out of 195 bytes MMC1 would
+  // save" was never actually why 128 works, and this file's own re-check
+  // found that out rather than assuming it: 77 is nowhere close to 195, yet
+  // 128 is already within one filler actor of failing. The real ceiling is a
+  // different bank. inflate()'s dummy actors are also monster stat entries
+  // battleTables compiles into the banked battle-code region
+  // (main/build/battletables.js), which MMC1 shares the identical
+  // 8172-byte ceiling for regardless of kernel-lo -- each filler actor costs
+  // it 30 bytes there. At 128 fillers (132 actors total) that region has
+  // exactly 30 bytes free on MMC1; at 129 it is exactly full (still fits);
+  // at 130 it overflows by 30, and MMC1 stops being offered a full 102
+  // kernel-lo bytes before its own 195-byte saving would ever have run out
+  // (confirmed directly: switchableMappers(project, u512) returns [1] at 129
+  // fillers and [] at 130). So the window this test actually sits inside is
+  // one filler actor's worth of headroom in the banked battle region, not a
+  // kernel-lo byte band -- the two banks merely happen to both grow with the
+  // same inflate() call, and the smaller one has always been the one that
+  // runs out first.
   inflate(project, 128);
   const message = kernelShortfallMessage(project);
   assert.match(message, /Try MMC1 in the Build panel/);
@@ -889,7 +1035,7 @@ test('a mapper suggestion is withheld from a project carrying hand-written code'
 // necessarily safe: it also has to hold what the project actually has.
 // Reproduction from review: an MMC3 RPG with 17 tilesets and a small kernel
 // shortfall reserves 206 fewer bytes of kernel code on MMC1 -- comfortably
-// enough to close a 12-byte gap -- but MMC1 holds only 16 tilesets, so
+// enough to close a 72-byte gap -- but MMC1 holds only 16 tilesets, so
 // switching would have reconcileCartridge (shared/project.js) silently
 // truncate the seventeenth the moment the author actually clicked it. The
 // advice must check tileset capacity (and, by the same reasoning, screen
@@ -904,8 +1050,13 @@ test('a mapper suggestion never recommends a board that cannot hold this project
   // 126, not the original 120: the kernel diet's movement-tail dedup
   // (engine/player.asm) dropped MMC3's own base by 70 bytes, so 120 no
   // longer produces a deficit at all. Re-derived against a real
-  // checkCapacity() run: 126 lands a 7-byte deficit, comfortably inside what
-  // MMC1's own savings would otherwise "cover".
+  // checkCapacity() run: 126 currently lands a 72-byte deficit (7 at the
+  // last measurement of this figure), comfortably inside the 206 bytes
+  // MMC1's own savings would otherwise "cover" -- unlike the UNROM 512 case
+  // above, this project's 126 fillers leave the banked battle-code region on
+  // MMC1 with 90 bytes to spare, so the tileset ceiling below is genuinely
+  // the only thing ruling MMC1 out here, not a second, unnoticed capacity
+  // wall.
   inflate(project, 126); // forces a kernel-lo shortfall MMC1's own savings would otherwise "cover"
   const before = structuredClone(project);
   const message = kernelShortfallMessage(project);
@@ -1006,7 +1157,7 @@ test(
     assert.match(
       message,
       new RegExp(
-        `removing every Move command \\(frees ${MOVE_KERNEL_ALLOWANCE} bytes\\) or every Save command ` +
+        `removing every Move command \\(frees ${MOVE_KERNEL_ALLOWANCE + FACE_KERNEL_ALLOWANCE} bytes\\) or every Save command ` +
           `\\(frees ${SAVE_KERNEL_ALLOWANCE_BY_MAPPER[4]} bytes\\)`
       ),
       'the refusal should name both commands and both of their real byte figures, not just report the deficit'
@@ -1113,7 +1264,7 @@ test(
     assert.match(
       message,
       new RegExp(
-        `removing every Move command \\(frees ${MOVE_KERNEL_ALLOWANCE} bytes\\) or every Save command ` +
+        `removing every Move command \\(frees ${MOVE_KERNEL_ALLOWANCE + FACE_KERNEL_ALLOWANCE} bytes\\) or every Save command ` +
           `\\(frees ${SAVE_KERNEL_ALLOWANCE_BY_MAPPER[30]} bytes\\)`
       ),
       'the refusal should name both commands and both of their real byte figures, not just report the deficit'
@@ -1146,7 +1297,7 @@ test(
     assert.match(
       itemFreeMessage,
       new RegExp(
-        `removing every Move command \\(frees ${MOVE_KERNEL_ALLOWANCE} bytes\\) or every Save command ` +
+        `removing every Move command \\(frees ${MOVE_KERNEL_ALLOWANCE + FACE_KERNEL_ALLOWANCE} bytes\\) or every Save command ` +
           `\\(frees ${SAVE_KERNEL_ALLOWANCE_BY_MAPPER[30]} bytes\\)`
       ),
       'the item-free configuration must still be refused on UNROM 512 -- if this ever fits, ROADMAP.md\'s ' +
@@ -1183,4 +1334,84 @@ test('a kernel-lo shortfall neither Save nor Move alone would close, but both to
   inflate(project, 88);
   const message = kernelShortfallMessage(project);
   assert.match(message, /removing every Move command and every Save command together \(frees 947 bytes\)/);
+});
+
+// Turn and Wait were added to kernelShortfallAdvice's own active-feature list
+// alongside Move and Save, but every advice test above only ever exercises
+// Move and Save -- dropping either new active.push (op: 'turn' or op:
+// 'wait') would leave every one of them green. This is the solo half of
+// closing that gap: a project with a live Wait and nothing else active
+// (no Move, no Turn, no Save), sized so dropping Wait alone -- and nothing
+// else, since Wait never touches move_face -- covers the deficit. If the
+// 'wait' push were missing, kernelShortfallAdvice would never consider
+// dropping Wait at all and this project would instead get a mapper
+// suggestion or the generic "reduce content" message. n=190 measured
+// directly against a real checkCapacity() run, not assumed: it lands a
+// 37-byte deficit, comfortably under WAIT_KERNEL_ALLOWANCE (48) alone.
+test('a kernel-lo shortfall a live Wait command alone would close names Wait', () => {
+  const project = createProject('Action', 'action');
+  project.cartridge.mapper = 1; // MMC1 -- no split-lock to complicate the arithmetic
+  project.maps[0].screens[0].entities.push({
+    actorId: 0,
+    x: 16,
+    y: 16,
+    props: { event: { pages: [{ cond: { type: 'none', arg: 0 }, commands: [{ op: 'wait', frames: 30 }] }] } }
+  });
+  inflate(project, 190);
+  const deficit = kernelShortfallDeficit(project);
+  assert.ok(deficit <= WAIT_KERNEL_ALLOWANCE, `deficit ${deficit} must not exceed WAIT_KERNEL_ALLOWANCE (${WAIT_KERNEL_ALLOWANCE}) or this case does not exercise Wait alone closing the gap`);
+  const message = kernelShortfallMessage(project);
+  assert.match(message, new RegExp(`removing every Wait command \\(frees ${WAIT_KERNEL_ALLOWANCE} bytes\\)`));
+  assert.doesNotMatch(message, /Turn command/, 'this project never turns Turn on, so it must not be offered as a fix');
+  assert.doesNotMatch(message, /Move command/, 'this project never turns Move on, so it must not be offered as a fix');
+});
+
+// The dependent-combination half: a project with both a live Turn and a live
+// Wait, and no Move, so Turn is the project's only reason move_face
+// assembles at all -- dropping Turn alone already frees TURN_KERNEL_ALLOWANCE
+// + FACE_KERNEL_ALLOWANCE together (51), the identical "dropping one command
+// silently also drops a dependent term" shape the Move+split-lock case above
+// already proves, applied to Turn+Face instead of Move+split-lock. Sized so
+// neither Turn alone (51) nor Wait alone (48) covers the deficit, but
+// dropping both together does, because with neither command left, Face has
+// no more reason to assemble either: TURN_KERNEL_ALLOWANCE + WAIT_KERNEL_ALLOWANCE
+// + FACE_KERNEL_ALLOWANCE = 35 + 48 + 16 = 99. This is the test that fails if
+// *either* new active.push line is missing: with only one of Turn/Wait in
+// `active`, the combo loop below (which requires at least two chosen
+// features) never runs, and the message falls straight through to a mapper
+// suggestion or the generic one instead of naming either command. n=186
+// measured directly, landing a 56-byte deficit -- strictly above both solo
+// figures (51, 48) and at or below the combined one (99).
+test('a kernel-lo shortfall neither Turn nor Wait alone would close, but both together would, names the combination', () => {
+  const project = createProject('Action', 'action');
+  project.cartridge.mapper = 1; // MMC1 -- no split-lock to complicate the arithmetic
+  project.maps[0].screens[0].entities.push({
+    actorId: 0,
+    x: 16,
+    y: 16,
+    props: {
+      event: {
+        pages: [
+          {
+            cond: { type: 'none', arg: 0 },
+            commands: [
+              { op: 'turn', who: 'self', dir: 'left' },
+              { op: 'wait', frames: 30 }
+            ]
+          }
+        ]
+      }
+    }
+  });
+  inflate(project, 186);
+  const deficit = kernelShortfallDeficit(project);
+  const turnAlone = TURN_KERNEL_ALLOWANCE + FACE_KERNEL_ALLOWANCE;
+  const combined = TURN_KERNEL_ALLOWANCE + WAIT_KERNEL_ALLOWANCE + FACE_KERNEL_ALLOWANCE;
+  assert.ok(
+    deficit > turnAlone && deficit > WAIT_KERNEL_ALLOWANCE,
+    `deficit ${deficit} must exceed both Turn alone (${turnAlone}) and Wait alone (${WAIT_KERNEL_ALLOWANCE}), or this case does not exercise the combination at all`
+  );
+  assert.ok(deficit <= combined, `deficit ${deficit} must not exceed the combined figure (${combined}), or dropping both would not close the gap either`);
+  const message = kernelShortfallMessage(project);
+  assert.match(message, new RegExp(`removing every Turn command and every Wait command together \\(frees ${combined} bytes\\)`));
 });

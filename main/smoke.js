@@ -419,6 +419,90 @@ const scenario = (dir, sampleDir, sampleRpgDir) => `
   await wait(200);
   step('questions', 'Ask authored with a labelled answer and a command inside another');
 
+  // Turn, added the way a user adds one: pick it out of the command list,
+  // drive both of its real selects, save. Neither field is exercised by
+  // events.test.js's own coverage of this command -- that file's lexical
+  // scan of events.js can only see which property name a handler's source
+  // text assigns to, never whether the handler actually fires (an onchange
+  // renamed to onchanged, for instance, would leave every string that scan
+  // looks for untouched while the control went completely inert) -- so this
+  // is the one place that promise is actually kept: real <select> elements,
+  // real change events, and the saved command read back out of the store.
+  rowButton(0, 'Edit event…').click();
+  await until('the event editor', () => document.querySelector('#modalHost .btn-accent'));
+  const addTurn = [...document.querySelectorAll('#modalHost select')].find((node) =>
+    node.textContent.includes('Add a command')
+  );
+  if (!addTurn) throw new Error('the event editor offered no command list');
+  addTurn.value = 'turn';
+  addTurn.dispatchEvent(new Event('change', { bubbles: true }));
+  await wait(200);
+  // The label span reads exactly "Turn" -- setSwitch/clearSwitch's own rows
+  // are labelled "Turn switch on"/"Turn switch off", which a plain
+  // textContent.includes('Turn') would also match, so this has to be exact.
+  const turnRow = [...document.querySelectorAll('#modalHost .field-row')].find(
+    (node) => node.querySelector('span')?.textContent === 'Turn'
+  );
+  if (!turnRow) throw new Error('adding a Turn command produced no row');
+  const [turnWho, turnDir] = turnRow.querySelectorAll('select');
+  if (!turnWho || !turnDir) throw new Error('the Turn row did not offer both of its selects');
+  // Away from both commands' own defaults (self/down), so a select that
+  // silently failed to reach the command -- or that reached the wrong field
+  // -- cannot pass by coincidentally already matching what got saved.
+  turnWho.value = 'player';
+  turnWho.dispatchEvent(new Event('change', { bubbles: true }));
+  await wait(120);
+  turnDir.value = 'left';
+  turnDir.dispatchEvent(new Event('change', { bubbles: true }));
+  await wait(120);
+  document.querySelector('#modalHost .btn-accent').click();
+  await wait(300);
+  const turnCommands = store.project.maps[0].screens[3].entities[0].props.event.pages[0].commands;
+  const turnAdded = turnCommands[turnCommands.length - 1];
+  if (turnAdded?.op !== 'turn' || turnAdded.who !== 'player' || turnAdded.dir !== 'left') {
+    throw new Error('the Turn command saved as ' + JSON.stringify(turnAdded));
+  }
+  if ('dist' in turnAdded || 'frames' in turnAdded) {
+    throw new Error('a Turn must not carry Move/Wait-only fields: ' + JSON.stringify(turnAdded));
+  }
+  store.undo();
+  await wait(200);
+
+  // Wait, the same way -- one real number input this time, and the one thing
+  // worth confirming is which field it landed in: a Wait input mistakenly
+  // wired to command.dist instead of command.frames is exactly the defect a
+  // lexical scan of the handler's own source cannot rule out.
+  rowButton(0, 'Edit event…').click();
+  await until('the event editor', () => document.querySelector('#modalHost .btn-accent'));
+  const addWait = [...document.querySelectorAll('#modalHost select')].find((node) =>
+    node.textContent.includes('Add a command')
+  );
+  addWait.value = 'wait';
+  addWait.dispatchEvent(new Event('change', { bubbles: true }));
+  await wait(200);
+  const waitRow = [...document.querySelectorAll('#modalHost .field-row')].find(
+    (node) => node.querySelector('span')?.textContent === 'Wait'
+  );
+  if (!waitRow) throw new Error('adding a Wait command produced no row');
+  const waitFrames = waitRow.querySelector('input[type=number]');
+  if (!waitFrames) throw new Error('the Wait row offered no frame-count input');
+  waitFrames.value = '40';
+  waitFrames.dispatchEvent(new Event('change', { bubbles: true }));
+  await wait(120);
+  document.querySelector('#modalHost .btn-accent').click();
+  await wait(300);
+  const waitCommands = store.project.maps[0].screens[3].entities[0].props.event.pages[0].commands;
+  const waitAdded = waitCommands[waitCommands.length - 1];
+  if (waitAdded?.op !== 'wait' || waitAdded.frames !== 40) {
+    throw new Error('the Wait command saved as ' + JSON.stringify(waitAdded));
+  }
+  if ('dist' in waitAdded) {
+    throw new Error('the frame-count input wrote to command.dist instead of command.frames: ' + JSON.stringify(waitAdded));
+  }
+  store.undo();
+  await wait(200);
+  step('turn/wait authoring', 'Turn wired both selects (who, dir); Wait wired its frame count, not dist');
+
   // The trigger, which is the one part of an event that lives on the placement
   // rather than in the event. Only the real panel can show the select is wired
   // to the store and that the hint under it follows the choice.

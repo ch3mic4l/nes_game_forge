@@ -29,7 +29,7 @@ changes what a non-programmer can build.
 The vocabulary was the constraint. When this was written there were four page conditions
 (`EVENT_CONDITIONS`) and seven commands (`EVENT_COMMANDS`, minus `end`) in `shared/project.js`, and
 quests, shops, puzzles, cutscenes and boss fights were all reachable only through the Code Forge.
-There are now seven conditions and eighteen commands, and every one of them is implemented end to
+There are now seven conditions and 21 commands, and every one of them is implemented end to
 end — that invariant holds and must keep holding.
 
 - ~~Named 8-bit **variables** alongside the existing 64 switches (counters, quest stages, flags with
@@ -570,8 +570,10 @@ one is now a measured fact rather than a forecast:
   That headroom (**74 real bytes free**, not merely the single spare byte it had before items
   existed) was real but not durable, and the prediction that it wouldn't last came true within the
   same phase: 4c's own `use_item_apply` spent it, and this exact combination — `sample-rpg` with a
-  live `Save` *and* a live `Move`, on MMC3 — now refuses again, by 8 bytes
-  (`kernelCodeBytes` = 7662, "the lookup tables need 129 bytes but only 121 are free"). Unlike the
+  live `Save` *and* a live `Move`, on MMC3 — now refuses again, by 11 bytes
+  (`kernelCodeBytes` = 7665, "the lookup tables need 129 bytes but only 118 are free" — both re-measured
+  against the current tree; `battle_end`'s own talk_ent fix, item 6's Turn/Wait slice, is unconditional
+  kernel-lo cost on every RPG build, including this one). Unlike the
   two earlier reopenings on this board, this one was not chased with another diet: it is accepted as
   a documented limitation, the same way UNROM 512's own `Save`+`Move` shortfall already was —
   `checkCapacity`'s own advice (drop every `Move`, or every `Save`, or switch to MMC1, which still
@@ -597,7 +599,7 @@ one is now a measured fact rather than a forecast:
 
   The string itself is not the constraint an earlier draft of this entry claimed. It is new text data
   compiled into `assets/text.inc`, which `engine/main.asm` includes after `assets/kernel_hi.inc`'s own
-  `.bank`/`.org $E000` — the kernel-**hi** bank, not the kernel-lo bank the 8-byte MMC3
+  `.bank`/`.org $E000` — the kernel-**hi** bank, not the kernel-lo bank the 11-byte MMC3
   Save+Move+item shortfall (CLAUDE.md's own kernel-budget section) actually belongs to. That draft cited
   the kernel-lo shortfall as this string's cost; it is simply the wrong bank, and the error is corrected
   here rather than left standing. Measured instead: `sample-rpg` with a live `Save` and its one live
@@ -633,6 +635,175 @@ need anything the PPU cannot do:
 Two engine constraints shape all of these: nothing but `text.asm` may write to the nametable while
 rendering is on, so a tile change is a `vram_buf` packet capped at one row per frame; and a fade or
 a flash is a palette write, which is a vblank job.
+
+**This item is blocked in a way items 1-5 were not, and it was measured rather than estimated before
+anything was built.** All seven verbs are kernel-lo code, and that bank has almost nothing left:
+`sample-rpg` with a live `Save` and a live `Move`, on MMC1, is nesasm's own measured
+**`7972/220`** (used/free, bank 14) — and on MMC3 the same combination is already refused before
+nesasm ever runs (`checkCapacity`: "the lookup tables need 129 bytes but only 118 are free"). 220
+bytes on the board's *better* case is the entire budget item 6 has to work inside, before a single
+verb is built. (Re-measured against the current tree — this was `7969/223`/"only 121 are free" before
+`battle_end`'s own talk_ent fix, item 6's Turn/Wait slice, added 3 more unconditional kernel-lo bytes
+to every RPG build; the "before anything was built" framing describes the methodology this section
+used, not a frozen historical snapshot, and the live figure below draws its own "121 bytes left"
+conclusion from this same 220, not the stale 223.)
+
+**Per-verb costing, from reading the engine rather than guessing:**
+
+- **Move / turn / wait routes, with a Map Forge preview.** `Move` itself already shipped (379
+  measured bytes, `MOVE_KERNEL_ALLOWANCE`) — a sunk cost. The "route" and "preview" are Map Forge
+  authoring/compiler work with no engine cost at all, since a route compiles to a linear sequence of
+  per-leg opcodes on one page and `script_resume` already chains suspending commands correctly. The
+  real remaining engine cost is two small opcodes: `Turn` (store a `DIR_*` into `ent_dir,x` /
+  `player_dir`) and `Wait` (a countdown ticked from `ui_tick` the same way `move_tick` already is,
+  calling `script_resume` at zero — no coordinate math, no collision). Estimated ~50-80 bytes
+  combined before either was built; measured since, on all three RPG-capable boards, identically:
+  **`Turn`-only 51 bytes** (`TURN_KERNEL_ALLOWANCE` 35 + `FACE_KERNEL_ALLOWANCE` 16, `move_face`
+  pulled out of what `MOVE_KERNEL_ALLOWANCE` charged as one combined 395-byte figure before this
+  split so a Turn-only project pays for it without paying for the rest of `Move`), **`Wait`-only 48
+  bytes** (`WAIT_KERNEL_ALLOWANCE`, touching no code `Turn`
+  or `Face` also touch), and **`Turn`+`Wait` together 99 bytes** — exactly the sum of the two, on
+  every board, confirming they cost nothing to combine. This is item 6's first slice; see below.
+- **Fade in/out.** Not a new vblank write path: `vram_buf`'s `vram_open`/`vram_push`/`vram_end`
+  (`engine/text.asm`) take an arbitrary PPU address handed to them at the call site and write it
+  straight to `$2006` in `vram_drain` — nothing about them is nametable-specific, so a fade packet
+  addressed at `$3F00` drains through the exact same NMI queue a message box's own rows do, with zero
+  new NMI code. `text.asm`'s own comment measures the real cost of that transport: "32 bytes is ~480
+  cycles of drain," not a smaller figure guessed from write count alone. The real, new work is a
+  per-tick palette-ramp *producer* (something has to compute each step's darkened palette bytes) and
+  confirming the shared queue's one-vblank budget still holds when a fade packet and a text-box
+  packet are both open on the same frame — bounded (513 DMA + 480 + 480 ≈ 1473 of ~2273 cycles, with
+  room to spare) rather than unknown, but a real constraint, not a non-issue.
+- **Screen shake and palette flash.** Shake is cheap: `boot.asm`'s NMI already writes `$2005` twice
+  every vblank (currently always to (0,0)); shake perturbs that existing write site with a small
+  offset for N frames. Flash reuses Fade's own producer/transport almost entirely — a short ramp to
+  a target color and back. Estimated **~50-100 bytes**, contingent on Fade landing first for flash.
+- **Play a sound effect or music sting.** These are different features costed separately. A true
+  **sound effect** (independent of whatever song is playing, borrowing an APU channel briefly) is
+  genuinely new and touches `music_tick`, which runs unconditionally every frame including during
+  battle and dialogue — real, always-paid branching, not free-when-off. Estimated **~150-300 bytes**.
+  A **music sting**, checked against `engine/music.asm` directly rather than assumed, is *not* a
+  small wrapper on `set_music`/`OP_MUSIC`: `set_music` only ever replaces the current song outright —
+  there is no completion signal in the stream format (a song loops forever via its own `$FF jump`)
+  and no memory of what was playing before. A sting that auto-restores the previous song needs either
+  a real retention-and-restoration mechanism (new RAM for what to restore, and a way to detect the
+  sting has finished — genuinely new, **~150-300 bytes**) or costs *nothing at all*: once `Wait`
+  exists (see the first slice below), an author can already build a sting as an authored sequence —
+  Play music (the sting) → Wait (its known duration) → Play music (the original) — with no new
+  opcode. That second option is the one worth taking.
+- **Show / hide an actor.** `draw_entities` already skips any slot with `ent_active == 0`. Reusing
+  `ent_active` directly is nearly free (**~15-30 bytes**) but conflates "hidden" with "gone" — the
+  same flag also gates `update_entities`'s own AI (`entity_patrol`/`entity_chase`) and every contact
+  path (`entity_contact`, `entity_trigger_touch`, and the `do_talk`/`do_attack`/`do_interact` loops),
+  so a hidden actor also stops wandering, stops dealing contact damage, and stops being talkable or
+  interactable. (Actors do not block the player's own movement at all today — `probe_solid` only ever
+  reads `mtptr`'s metatile data, never an entity's position — so "blocking" was never one of the
+  things at stake here; that earlier draft of this line overstated it.) A dedicated hidden-flag array
+  keeps `draw_entities`'s own gate separate from AI/contact/interaction and costs a little more
+  (**~40-60 bytes**), but whether that separation is the *right* behavior — should a hidden actor
+  still wander and still deal contact damage while invisible, or should hiding suspend all of it — is
+  a semantic choice nobody has made yet, not something the dedicated flag settles by being more
+  correct. Costing this further should wait on that decision, not assume the answer.
+- **Change a tile or metatile on the current screen.** Two different features hiding under one name.
+  A purely visual change that reverts on the next redraw reuses `vram_buf` exactly as `box_close`
+  already rebuilds message-box rows out of `[mtptr]`/`mt_tl`/`mt_tr` — **~40-70 bytes**. A change that
+  *persists* past a redraw (a burned bush staying burned) needs a new per-screen override-tracking
+  mechanism, since screen data is ROM on every board except UNROM 512's CHR-RAM tilesets, which is a
+  different kind of RAM entirely — **~150-300+ bytes**, and an open RAM-budget question. Which
+  reading is meant should be settled before this verb is costed further.
+- **Basic camera / scroll control.** Confirmed larger than the other six, and not really the same
+  *kind* of thing. `boot.asm`'s NMI writes `$2005` twice every vblank, always resetting to (0,0) —
+  there is no live scrolling today, and the whole rendering model is one full 256×240 nametable per
+  authored screen with hard transitions (`cross_left/right/up/down`; the MMC3 split section's own
+  note that "the engine only draws nametable 0"). Real scrolling needs adjacent-screen data available
+  before the camera reaches an edge — double-buffered nametable content streamed in under the vblank
+  budget, touching `redraw_screen`, the mirroring model, and UNROM 512's CHR-RAM streaming path.
+  Floor estimate **500-1000+ bytes**, likely conservative, and it deserves its own design pass rather
+  than being bundled into this item's costing at all.
+
+**The structural question: a fourth kernel diet, a second banked region, or per-verb conditional
+assembly that does not compose indefinitely.**
+
+*A fourth diet is real but not sufficient.* `entity_patrol` (`engine/entities.asm:155-220`, AI
+wandering) and `move_tick` (`entities.asm:670-765`, scripted `Move`) are the same shape: get a
+coordinate, add or subtract a step, bounds-check with a branch to a "blocked" handler, offset for
+the body, one corner probe through `probe_solid`, commit or bail — a genuinely separate duplication
+from the one `player.asm`'s own diet already collapsed (that one probed two corners; these each
+probe one). They differ in backing storage (`ent_x,x`/`ent_y,x` direct-indexed vs. `move_tick`'s
+`move_get_x`/`move_get_y` accessors, needed because a `Move` can target the player or an entity) and
+in what "blocked" means (patrol turns and keeps going; `Move` ends the walk). A merge is possible but
+adds real `jsr` overhead to `entity_patrol`'s own hot path where none exists today. Estimated
+**~20-50 bytes** against a calibration of the third diet's actual 70-byte yield collapsing *four*
+routines rather than two — real money, worth taking whenever someone is already in that code, but an
+order of magnitude short of what even the cheap verbs alone need.
+
+*A second banked region is mechanically viable, not impossible — this corrects an earlier draft of
+this section that overstated the block.* `call_battle`'s own trampoline (`engine/banks.asm`) is safe
+because battle fully owns the screen and never touches `mtptr` while its bank is switched in.
+Cutscene verbs are not uniformly like that: `ui_tick`'s own comment states a scripted `Move` "is
+always `ST_DIALOG` in practice," and `main_loop` skips ordinary `update_player` entirely whenever
+`game_state != 0` — so `update_player` is never the conflict. The real one is narrower: `move_tick`
+itself calls `probe_solid`, which dereferences `[mtptr_lo],y` — the *current screen's* metatile data,
+living in the same switchable window a banked cutscene region would occupy. A **nested** trampoline
+closes this, not a whole-verb one: a fixed-kernel helper switches the PRG bank to screen data, calls
+`probe_solid`, switches back to the cutscene bank, and `rts`s — the return address stays valid on the
+stack throughout, exactly `call_battle`'s own "the restore is the return" discipline applied per
+probe call instead of per verb-invocation. That costs kernel bytes for the helper plus two bank
+switches on every probe call `Move` or a screen-aware tile-change makes — an expensive design, not an
+impossible one. `Wait`, `Turn`, `Fade`'s own producer, `Show`/`Hide`, and shake/flash have **no**
+`mtptr` conflict at all and could use the ordinary, unnested trampoline shape safely today. On board
+exclusion: the earlier draft's claim that this excludes every non-`rpgCapable()` board is wrong, and
+was checked rather than repeated. `rpgCapable(mapper)` is `hasSwitchablePrg(mapper) &&
+mapper.switchableChr`; `codeRegions()` — the mechanism a banked region reuses — needs only
+`hasSwitchablePrg` (confirmed directly: it never reads `switchableChr` or `chrRam` except through
+`chrPayloadRegions`, which returns `[]` on every non-CHR-RAM board including UxROM). UxROM
+(`prgUnits: 8`, `switchableChr: false`) has a switchable PRG window and could host a banked cutscene
+region despite never being RPG-capable. The boards genuinely excluded are the four with
+`prgSwitch: PRG_SWITCH.none` and a single fixed 32 KB image — NROM, CNROM, GxROM, Color Dreams — not
+the five non-RPG-capable ones. The recommendation below is unchanged from the earlier draft, but now
+rests on real cost (per-probe bank-switch overhead, and covering only a subset of the seven verbs)
+rather than on an impossibility that turned out not to be real.
+
+*Per-verb conditional assembly, checked against the measured numbers rather than left qualitative.*
+On MMC1's worst measured case (`Save`+`Move`, **220 bytes free** — re-measured against the current
+tree; 3 fewer than this section first recorded, because `battle_end`'s own talk_ent fix above is
+unconditional kernel-lo cost on every RPG build, including this one): `Turn`+`Wait` cost **99 bytes,
+measured**, not the ~50-80 this section estimated before either was built — leaving **121 bytes**,
+not the ~140-170 the estimate implied. `Show`/`Hide` (~15-60b) still probably fits in what is left;
+`Fade` (~80-150b, mostly the ramp producer, not the transport) does not fit alongside both. Still
+roughly **two to three of the seven** in that worst case, but the real remaining room is tighter than
+the pre-implementation estimate suggested, and planning the next verb off that estimate rather than
+the measured 121 would overstate how much is actually left.
+Without `Save`+`Move` active, `sample-rpg` as checked in measured nesasm's own **`6818/1374`** free on
+the same board (re-measured against the current tree; 3 fewer than this section first recorded, the
+identical `battle_end` cost above, not an arithmetic adjustment of the old number) — comfortably fits
+all six smaller verbs' combined high end (~700-900 bytes, excluding camera/scroll) with margin. MMC3's worst case is already negative before item 6 exists at all. So "does not compose
+indefinitely" (CLAUDE.md) is now a number: on this codebase's own reference scenario, kernel-lo has
+room for roughly a third of the item, not all of it, and that is board- and configuration-dependent
+rather than a fixed ceiling.
+
+**Recommendation: do not make a banked region item 6's primary vehicle.** Ship the verbs that are
+cheap and need no `mtptr` access (`Turn`, `Wait`, `Show`/`Hide`, shake) as ordinary conditional
+kernel-lo code on every board — none of them need banking, and keeping them universal avoids trading
+away NROM/CNROM/GxROM/Color Dreams action projects' access to cutscenes at all, which the
+banked-region path would cost for no reason on the verbs that don't structurally require it. Cost
+`Fade` and sound-effect/sting on their own merits later — they may end up conditional kernel-lo too,
+hitting the same documented-limitation wall `Save`+`Move` already does on MMC3's worst case, which is
+this codebase's own precedented, acceptable outcome rather than a defect. Take the
+`entity_patrol`/`move_tick` diet opportunistically rather than counting on it. Split camera/scroll out
+of this item entirely into its own future roadmap entry — it is a different kind of thing than the
+other six, not a bigger version of the same thing.
+
+- ~~**First slice: the `Turn` and `Wait` commands**~~ — **done**. Two new opcodes, each authorable on
+  their own in the Map Forge's event editor. Needs no structural decision — both are cheap enough to
+  fit even MMC1's worst measured case with margin, and touch no `mtptr`-dependent code at all. See
+  `test/unit/kernelbytes.test.js` for the measured, per-configuration byte cost. **Not done**: the
+  "Move / turn / wait routes" verb this was meant to complete also named a *route* — a sequence of
+  legs authored and previewed together — and a Map Forge preview for it, at line 647 above. Neither
+  is built. The individual commands exist and can already be chained by hand, one at a time, on a
+  page; what is still open is the authoring convenience (one "route" tool instead of adding Move/Turn/
+  Wait commands one by one) and the preview itself, both pure Map Forge/compiler work with no engine
+  cost — see the costing above, which already separated this out.
 
 ## 7. Map organization and reuse
 
@@ -947,31 +1118,44 @@ resetting on either changing.
 1. ~~Event names, list and search; duplication; templates; play-from-here — item 2 plus the first
    piece of item 3~~ — **done**
 2. ~~Variables, branching, choices, triggers, common events — item 1~~ — **done**: `EVENT_COMMANDS`
-   and `IMPLEMENTED_COMMANDS` in `shared/project.js` are now identical, eighteen commands to seven
+   and `IMPLEMENTED_COMMANDS` in `shared/project.js` are now identical, 21 commands to seven
 3. ~~SRAM save/load — item 4~~ — **done**, one slot
 4. Items, equipment, status effects, battle testing — item 5
 5. Movement routes and the audiovisual cutscene commands — item 6
 
 **The kernel bank is the constraint on everything below this line, and it is close to full.** Move
 found it: ~395 bytes against 161 free on the worst battery board, and it only shipped by becoming
-conditional. A project with both Save and Move reserves 7742 of 8192 on UNROM 512, the worst of the
+conditional. A project with both Save and Move reserves 7745 of 8192 on UNROM 512, the worst of the
 three RPG-capable boards — refused outright there, by `checkCapacity` before nesasm ever runs, once
-the project's own tables are added on top (`test/unit/kernelbytes.test.js`) — and 7586 of 8192 on
-MMC3, the tightest board this combination actually builds on. Item 6 is five more verbs of
-kernel code — fade, shake, sound effect, show/hide, tile change — and conditional assembly does not
-compose indefinitely, because a project that wants three of them is back where it started. The next
-one of them needs the same decision three kernel diets have already bought time against rather than
-settled: another diet — there may not be one left to find — or a second banked region the way the
-battle system got one. Item 5 was mostly tables and editor work; phase 4c no longer is either — it is
+the project's own tables are added on top (`test/unit/kernelbytes.test.js`) — and 7589 of 8192 on
+MMC3, the tightest board this combination actually builds on. Item 6 turned out not to be one
+undifferentiated block of kernel code once it was actually costed (see its own section below):
+`Turn` and `Wait` shipped as cheap, ordinary conditional kernel-lo commands needing no structural
+decision at all, and `Show`/`Hide` and screen shake are costed the same way and expected to fit the
+same manner — accepting a refusal in the tightest configurations as a documented limitation, the
+identical shape `Save`+`Move` already has, rather than a blocker. `Fade` and a sound effect are not
+costed to a final figure yet, but expected the same way: ordinary conditional kernel-lo code that most
+projects, on most boards, can simply have — a diet or a second banked region would only be needed to
+also cover the *tightest* configuration (or to guarantee every configuration universally), not to
+build the verb at all, the same distinction `Save`+`Move`'s own accepted refusal already draws. A
+persistent tile change and camera/scroll are the two genuinely still open for a different reason —
+nobody has designed either mechanism yet (a per-screen override-tracking scheme for the tile change, a
+wholly new streamed-scrolling rendering path for the camera), so neither has a real kernel-lo cost to
+weigh against a diet or a banked region in the first place; camera/scroll in particular is a different
+kind of thing entirely, not merely a bigger verb. Item 5 was mostly tables
+and editor work; phase 4c no longer is either — it is
 **done** (round 6 closed the verification gaps round 4c left outstanding, above), and it
 cost 76 real bytes of kernel-lo (`ITEM_KERNEL_ALLOWANCE` 16 +
 `ITEM_EFFECT_KERNEL_ALLOWANCE_BY_GAME_TYPE.rpg` 60, both measured, not the 65-75 estimated here
 before implementation) plus a further 17 in the separate banked battle-code region. That kernel-lo
 cost is exactly what this
-paragraph predicted would happen: `sample-rpg` with Save and Move on MMC3 now refuses for real, by 8
-bytes, and — unlike item 6's own verbs below, still waiting on a diet or a second banked region —
-this one is not blocked on finding either: the refusal is accepted as a documented limitation
-(`checkCapacity` still offers dropping Move, dropping Save, or switching to MMC1), not a gate on
+paragraph predicted would happen: `sample-rpg` with Save and Move on MMC3 now refuses for real, by 11
+bytes (re-measured against the current tree — `battle_end`'s own talk_ent fix, item 6's Turn/Wait
+slice, added 3 more unconditional bytes on top of the 8 this paragraph originally recorded) —
+this one is not blocked on finding a diet or a banked region, unlike the persistent-tile-change and
+camera/scroll verbs above, which have no built mechanism to even measure yet: the refusal is accepted
+as a documented limitation (`checkCapacity` still offers dropping Move, dropping Save, or switching to
+MMC1), not a gate on
 shipping.
 
 The rest of item 3 also has a better claim on being next than its position suggests, for the same
