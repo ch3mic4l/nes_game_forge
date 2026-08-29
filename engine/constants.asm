@@ -325,6 +325,25 @@ split_lock     = mv_tmp+1
 ; of the chain is exactly how that happens by accident.
 wt_left        = split_lock+1
 
+; A scripted Shake in progress (OP_SHAKE, engine/script.asm; the shake block
+; inside nmi_scroll, engine/boot.asm). Unlike mv_left/wt_left, this is ticked
+; from NMI rather than a frozen-world tick, because Shake does not suspend
+; the script: the world keeps running while it counts down, so it must keep
+; counting down after the world unfreezes too, which ui_tick could not do --
+; ui_tick only runs while game_state is non-zero. Reaching zero simply stops
+; applying an offset; nothing resumes, because nothing was suspended.
+;
+; Shake also has no "world is frozen" invariant protecting it from a screen
+; change mid-count the way mv_left/wt_left's own suspend does, so
+; vram_reset (engine/text.asm) clears this explicitly on every real redraw
+; rather than relying on it decrementing to zero naturally -- see its own
+; comment.
+;
+; Chained after wt_left for the identical reason wt_left itself was chained
+; after split_lock: a switched-off Shake must not move any other symbol's
+; address, including wt_left's.
+shake_left     = wt_left+1
+
 ; Which split program this frame runs. OFF disarms the counter entirely.
 SPL_OFF     = 0
 SPL_BOX     = 1             ; the message box: font in from tile row 24
@@ -776,6 +795,12 @@ OP_WAIT     = $15           ; [frames] -- suspends the script like OP_MOVE,
                             ; wait_tick (engine/entities.asm), hooked into
                             ; ui_tick the same way move_tick already is,
                             ; resumes it once the count reaches zero.
+OP_SHAKE    = $16           ; [frames] -- does not suspend, the same instant
+                            ; shape OP_TURN already has. shake_tick
+                            ; (engine/boot.asm's nmi_scroll) ticks in NMI, not
+                            ; ui_tick, because the shake must keep running
+                            ; after the world unfreezes -- see shake_left's
+                            ; own comment below.
 
 ; OP_MOVE/OP_TURN's first operand. MOVE_SELF is 0 for the same reason
 ; 'interact' is trigger 0: it is the actor the author is looking at when they

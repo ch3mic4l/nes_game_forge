@@ -153,10 +153,33 @@ test("the Turn editor's own onchange handlers write who and dir, and nothing els
 
 test("the Wait editor's own onchange handler writes frames, not dist", () => {
   const source = fs.readFileSync(EVENTS_JS_PATH, 'utf8');
-  const block = editorBlock(source, "if (command.op === 'wait') {", "if (command.op === 'save') {");
+  const block = editorBlock(source, "if (command.op === 'wait') {", "if (command.op === 'shake') {");
   const count = (needle) => block.split(needle).length - 1;
   assert.equal(count('command.frames = wholeNumber(fired.target.value, 255)'), 1, 'the frame-count input should write frames through the same whole-number clamp every other byte field uses');
   assert.equal(count('command.dist'), 0, 'a Wait input writing to command.dist instead of command.frames would leave this at 1, not 0');
   assert.equal(count('command.who'), 0, 'a Wait names no actor and must never write one');
   assert.equal(count('command.dir'), 0, 'a Wait has no direction and must never write one');
+});
+
+// -------------------------------------------------------- Shake authoring
+//
+// defaultCommand and describeCommand only -- the actual onchange wiring is
+// covered by main/smoke.js's own real, Electron-driven 'shake authoring'
+// step, not a lexical scan here: round 2 review of the Turn/Wait scans above
+// found they cannot tell a wired 'onchange' from an inert 'onchanged', which
+// is exactly the class of defect that matters for a control like this one.
+
+test('a freshly-added Shake defaults to a real duration, not 0 -- a 0-frame Shake does nothing', () => {
+  const command = defaultCommand('shake');
+  assert.equal(command.op, 'shake');
+  assert.equal(command.frames, 30, 'a brand-new Shake must default to half a second, the same reasoning Wait already gets');
+  assert.equal(command.who, undefined, 'a Shake names no actor and must not carry one');
+  assert.equal(command.dir, undefined, 'a Shake has no direction and must not carry one');
+  assert.equal(command.dist, undefined, 'a Shake has no distance operand and must not carry one');
+});
+
+test('a Shake summarises its frame count, and says so plainly when it is 0', () => {
+  assert.equal(describeCommand({ op: 'shake', frames: 45 }), 'Shake screen for 45 frames');
+  assert.equal(describeCommand({ op: 'shake', frames: 0 }), 'Shake screen for 0 frames (does nothing)', 'a 0-frame Shake must read as a no-op, the same way a 0px Move and a 0-frame Wait already do');
+  assert.equal(describeCommand({ op: 'shake', frames: 10, off: true }), '(off) Shake screen for 10 frames');
 });

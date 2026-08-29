@@ -63,6 +63,7 @@ import {
   projectUsesMove,
   projectUsesTurn,
   projectUsesWait,
+  projectUsesShake,
   projectUsesFace,
   projectUsesItems,
   projectEvents,
@@ -500,6 +501,19 @@ export const TURN_KERNEL_ALLOWANCE = 35;
 // build with both live and neither Move), because Wait touches no code Turn
 // or Face also touch.
 export const WAIT_KERNEL_ALLOWANCE = 48;
+// The shake block inside nmi_scroll (engine/boot.asm) plus script_op_shake
+// and its dispatch-chain entry in script_run (engine/script.asm) plus the
+// shake_left clear in vram_reset (engine/text.asm). Flat across boards --
+// nothing here branches on SPLIT_ENABLED or anything else mapper-specific,
+// the same reasoning MOVE_KERNEL_ALLOWANCE/TURN_KERNEL_ALLOWANCE/
+// WAIT_KERNEL_ALLOWANCE are flat -- and shares no dependent term with
+// anything else the way Move/Turn share FACE_KERNEL_ALLOWANCE, since no
+// other command calls into Shake's own code. Measured on all three
+// RPG-capable boards, identically -- 65, not the 63 this first measured
+// before script_op_shake's own zero-operand check (a Shake of 0 must not
+// stomp a shake already running, the identical "zero means nothing happens"
+// rule Wait/Heal/Damage already hold to) added its own beq and label.
+export const SHAKE_KERNEL_ALLOWANCE = 65;
 export const SPLIT_LOCK_KERNEL_ALLOWANCE = 19;
 // Phase 4b: item_metasprite's own draw_item_icon routine (gated on
 // ITEMS_ENABLED as a whole routine, not just its callers -- see
@@ -567,6 +581,7 @@ export function kernelCodeBytes(project, mapper) {
   const usesMove = projectUsesMove(project);
   const usesTurn = projectUsesTurn(project);
   const usesWait = projectUsesWait(project);
+  const usesShake = projectUsesShake(project);
   const usesFace = projectUsesFace(project);
   // projectUsesSave(project), not the narrower usesSave just above: a live
   // Save command needs a title screen in *every* valid build of this
@@ -605,6 +620,7 @@ export function kernelCodeBytes(project, mapper) {
     (usesMove ? MOVE_KERNEL_ALLOWANCE : 0) +
     (usesTurn ? TURN_KERNEL_ALLOWANCE : 0) +
     (usesWait ? WAIT_KERNEL_ALLOWANCE : 0) +
+    (usesShake ? SHAKE_KERNEL_ALLOWANCE : 0) +
     (usesFace ? FACE_KERNEL_ALLOWANCE : 0) +
     (usesSplitLock ? SPLIT_LOCK_KERNEL_ALLOWANCE : 0) +
     (usesItems ? ITEM_KERNEL_ALLOWANCE + itemEffectKernelAllowance(project) : 0) +
@@ -831,6 +847,7 @@ function kernelShortfallAdvice(project, mapper, deficit) {
   const usesMove = projectUsesMove(project);
   const usesTurn = projectUsesTurn(project);
   const usesWait = projectUsesWait(project);
+  const usesShake = projectUsesShake(project);
   // "Every" rather than "the": a project can carry more than one live Move or
   // Save command (several actors, several pages), and removing just one of
   // several does not free anything at all -- kernelCodeBytes only drops the
@@ -839,6 +856,7 @@ function kernelShortfallAdvice(project, mapper, deficit) {
   if (usesMove) active.push({ op: 'move', label: 'every Move command' });
   if (usesTurn) active.push({ op: 'turn', label: 'every Turn command' });
   if (usesWait) active.push({ op: 'wait', label: 'every Wait command' });
+  if (usesShake) active.push({ op: 'shake', label: 'every Shake command' });
   if (usesSave) active.push({ op: 'save', label: 'every Save command' });
   // A title screen is not offered here even though it is now its own term in
   // kernelCodeBytes: this list is specifically "commands projectWithoutCommands
@@ -1529,6 +1547,7 @@ export async function generateAssets({ dir, project, log = () => {} }) {
   const usesMove = projectUsesMove(project);
   const usesTurn = projectUsesTurn(project);
   const usesWait = projectUsesWait(project);
+  const usesShake = projectUsesShake(project);
   const usesFace = projectUsesFace(project);
   const saveIdentityValue = saveIdentity(project);
   if (usesHeartArt) {
@@ -1925,6 +1944,10 @@ export async function generateAssets({ dir, project, log = () => {} }) {
     // exactly once when both do.
     `TURN_ENABLED = ${usesTurn ? 1 : 0}`,
     `WAIT_ENABLED = ${usesWait ? 1 : 0}`,
+    // OP_SHAKE, the same shape again -- see projectUsesShake (shared/project.js).
+    // No companion *_ENABLED the way Turn has FACE_ENABLED: nothing else calls
+    // into Shake's own code.
+    `SHAKE_ENABLED = ${usesShake ? 1 : 0}`,
     `FACE_ENABLED = ${usesFace ? 1 : 0}`,
     ''
   ].join('\n');

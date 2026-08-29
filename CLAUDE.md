@@ -1044,9 +1044,9 @@ bytes, when MMC1 holds only 16 tilesets, is not a fix, it is quiet data loss dre
 these checks mutate the project — `projectWithoutCommands` works on its own deep clone — they only read
 it, the same way `checkCapacity` itself does. `Turn` and `Wait` — item 6's first slice — have since
 shipped: cheap enough (99 bytes together, measured) to need no structural decision at all, on every
-board, and screen shake and Show/Hide were costed the same way and are expected to fit the same
-manner once built — a documented-limitation refusal in the tightest configurations, the same shape
-`Save`+`Move` already has, not a blocker. Only fade and a sound effect are still genuinely open on
+board, and screen shake — since built, in exactly the shape predicted — and Show/Hide, costed the
+same way, are expected to fit the same manner: a documented-limitation refusal in the tightest
+configurations, the same shape `Save`+`Move` already has, not a blocker. Only fade and a sound effect are still genuinely open on
 this front: real kernel code with nowhere left to go on the tightest boards until either MMC3 gets
 more margin or a second banked region the way the battle system got one, and conditional assembly
 does not compose indefinitely regardless. The route-authoring and Map Forge preview half of "Move /

@@ -213,6 +213,8 @@ function describeEnabled(command, context = {}) {
     // reason a zero-distance Move says so in its own summary line above.
     case 'wait':
       return command.frames ? `Wait ${command.frames} frames` : 'Wait 0 frames (does nothing)';
+    case 'shake':
+      return command.frames ? `Shake screen for ${command.frames} frames` : 'Shake screen for 0 frames (does nothing)';
     case 'branch': {
       // Described down to its contents, because the event list's search runs
       // over exactly this text: a switch used only inside a branch has to be
@@ -876,6 +878,39 @@ export function editEvent(event, context) {
           command.frames
             ? 'The event pauses here, with the world frozen, until this many frames pass — 60 is one second.'
             : 'A wait of 0 does nothing and the event carries straight on.'
+        )
+      );
+    }
+
+    if (command.op === 'shake') {
+      return el(
+        'div',
+        { style: { marginBottom: '6px', ...dim } },
+        el(
+          'div.field-row',
+          null,
+          el('span', { style: { flex: 'none', minWidth: '96px', color: 'var(--text-dim)' } }, 'Shake'),
+          el('input', {
+            type: 'number',
+            min: 0,
+            max: 255,
+            value: command.frames,
+            title: 'Frames — 60 is one second',
+            style: { width: '70px' },
+            onchange: (fired) => (command.frames = wholeNumber(fired.target.value, 255))
+          }),
+          el('span', { style: { color: 'var(--text-dim)' } }, 'frames'),
+          tools
+        ),
+        el(
+          'p.hint',
+          null,
+          command.frames
+            ? 'Shakes the screen for this many frames — 60 is one second. Unlike Wait, this does not ' +
+              'pause the game: the world keeps moving while it shakes. Only the background moves — the ' +
+              'player, entities and any sprite-based UI hold still. Because it does not pause, following ' +
+              'a Shake with a Wait of the same length only roughly covers the shake’s duration, not exactly.'
+            : 'A shake of 0 does nothing and the event carries straight on.'
         )
       );
     }

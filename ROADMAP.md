@@ -675,9 +675,10 @@ conclusion from this same 220, not the stale 223.)
   packet are both open on the same frame — bounded (513 DMA + 480 + 480 ≈ 1473 of ~2273 cycles, with
   room to spare) rather than unknown, but a real constraint, not a non-issue.
 - **Screen shake and palette flash.** Shake is cheap: `boot.asm`'s NMI already writes `$2005` twice
-  every vblank (currently always to (0,0)); shake perturbs that existing write site with a small
-  offset for N frames. Flash reuses Fade's own producer/transport almost entirely — a short ramp to
-  a target color and back. Estimated **~50-100 bytes**, contingent on Fade landing first for flash.
+  every vblank -- (0,0) when nothing is shaking, a small offset for N frames when something is, since
+  Shake perturbs that existing write site rather than adding a new one. Flash reuses Fade's own
+  producer/transport almost entirely — a short ramp to a target color and back. Estimated
+  **~50-100 bytes**, contingent on Fade landing first for flash.
 - **Play a sound effect or music sting.** These are different features costed separately. A true
   **sound effect** (independent of whatever song is playing, borrowing an APU channel briefly) is
   genuinely new and touches `music_tick`, which runs unconditionally every frame including during

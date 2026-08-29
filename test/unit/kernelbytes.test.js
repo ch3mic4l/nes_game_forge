@@ -41,6 +41,7 @@ import {
   FACE_KERNEL_ALLOWANCE,
   TURN_KERNEL_ALLOWANCE,
   WAIT_KERNEL_ALLOWANCE,
+  SHAKE_KERNEL_ALLOWANCE,
   SPLIT_LOCK_KERNEL_ALLOWANCE,
   ITEM_KERNEL_ALLOWANCE,
   ITEM_EFFECT_KERNEL_ALLOWANCE_BY_GAME_TYPE,
@@ -91,7 +92,15 @@ const CAPABLE_MAPPERS = SUPPORTED_MAPPERS.filter(rpgCapable);
 async function measureCodeBytes(
   t,
   mapper,
-  { withSave = false, withMove = false, withTurn = false, withWait = false, withTitle = false, withItems = true } = {}
+  {
+    withSave = false,
+    withMove = false,
+    withTurn = false,
+    withWait = false,
+    withShake = false,
+    withTitle = false,
+    withItems = true
+  } = {}
 ) {
   const dir = await fsp.mkdtemp(path.join(os.tmpdir(), 'forge-kernelbytes-'));
   t.after(() => fsp.rm(dir, { recursive: true, force: true }));
@@ -112,6 +121,7 @@ async function measureCodeBytes(
   if (withMove) commands.push({ op: 'move', who: 'self', dir: 'up', dist: 16 });
   if (withTurn) commands.push({ op: 'turn', who: 'self', dir: 'up' });
   if (withWait) commands.push({ op: 'wait', frames: 30 });
+  if (withShake) commands.push({ op: 'shake', frames: 30 });
   if (commands.length) {
     project.maps[0].screens[0].entities.push({
       actorId: 0,
@@ -446,6 +456,48 @@ test(
         `${mapper.name}: Wait-only costs ${delta} bytes of kernel code (${noSaveEntry.codeBytes} -> ${codeBytes}), ` +
           `but WAIT_KERNEL_ALLOWANCE reserves ${WAIT_KERNEL_ALLOWANCE} — this allowance must equal Wait's real ` +
           'cost exactly, on every board.'
+      );
+    }
+
+    // Every RPG-capable board, a live Shake command and nothing else. Shake
+    // shares no dependent term with Move/Turn/Face the way Wait does not
+    // either -- nothing else calls into Shake's own code -- so this delta
+    // should be SHAKE_KERNEL_ALLOWANCE and nothing else, the identical shape
+    // the Wait-only block above already asserts.
+    for (const mapper of CAPABLE_MAPPERS) {
+      const { project, codeBytes } = await measureCodeBytes(t, mapper, { withShake: true });
+      assertCovers({ mapper, codeBytes }, kernelCodeBytes(project, mapper), 'a live Shake command');
+      const noSaveEntry = noSave.find((entry) => entry.mapper.id === mapper.id);
+      const delta = codeBytes - noSaveEntry.codeBytes;
+      assert.equal(
+        delta,
+        SHAKE_KERNEL_ALLOWANCE,
+        `${mapper.name}: Shake-only costs ${delta} bytes of kernel code (${noSaveEntry.codeBytes} -> ${codeBytes}), ` +
+          `but SHAKE_KERNEL_ALLOWANCE reserves ${SHAKE_KERNEL_ALLOWANCE} — this allowance must equal Shake's real ` +
+          'cost exactly, on every board.'
+      );
+    }
+
+    // Every RPG-capable board, live Shake and Wait together. Review finding:
+    // the two isolated deltas just measured (Shake-only, Wait-only) cannot by
+    // themselves rule out an implementation that shares conditional code
+    // between the two commands -- both would still measure correctly in
+    // isolation while the real combined build cost less than their sum. Shake
+    // touches no code Wait also touches (no dependent term the way Turn+Move
+    // share FACE_KERNEL_ALLOWANCE), so this delta should be exactly
+    // SHAKE_KERNEL_ALLOWANCE + WAIT_KERNEL_ALLOWANCE, the identical
+    // "purely additive" shape the Turn+Wait combination below already proves.
+    for (const mapper of CAPABLE_MAPPERS) {
+      const { project, codeBytes } = await measureCodeBytes(t, mapper, { withShake: true, withWait: true });
+      assertCovers({ mapper, codeBytes }, kernelCodeBytes(project, mapper), 'live Shake and Wait commands together');
+      const noSaveEntry = noSave.find((entry) => entry.mapper.id === mapper.id);
+      const delta = codeBytes - noSaveEntry.codeBytes;
+      assert.equal(
+        delta,
+        SHAKE_KERNEL_ALLOWANCE + WAIT_KERNEL_ALLOWANCE,
+        `${mapper.name}: Shake+Wait costs ${delta} bytes of kernel code (${noSaveEntry.codeBytes} -> ${codeBytes}), ` +
+          `but SHAKE_KERNEL_ALLOWANCE + WAIT_KERNEL_ALLOWANCE reserves ${SHAKE_KERNEL_ALLOWANCE + WAIT_KERNEL_ALLOWANCE} ` +
+          '— the two must be purely additive, since Shake shares no code with Wait.'
       );
     }
 
@@ -1414,4 +1466,69 @@ test('a kernel-lo shortfall neither Turn nor Wait alone would close, but both to
   assert.ok(deficit <= combined, `deficit ${deficit} must not exceed the combined figure (${combined}), or dropping both would not close the gap either`);
   const message = kernelShortfallMessage(project);
   assert.match(message, new RegExp(`removing every Turn command and every Wait command together \\(frees ${combined} bytes\\)`));
+});
+
+// Shake's own solo case: it shares no dependent term with anything (no
+// Face-like companion routine another command also calls), so this is the
+// plainest possible case, the same shape Wait's own solo test above already
+// is. This is the test that fails if active.push({ op: 'shake', ... }) is
+// missing from kernelShortfallAdvice: without it, Shake is never considered
+// at all and the message falls through to a mapper suggestion or the
+// generic one instead of naming it.
+test('a kernel-lo shortfall a live Shake command alone would close names Shake', () => {
+  const project = createProject('Action', 'action');
+  project.cartridge.mapper = 1; // MMC1 -- no split-lock to complicate the arithmetic
+  project.maps[0].screens[0].entities.push({
+    actorId: 0,
+    x: 16,
+    y: 16,
+    props: { event: { pages: [{ cond: { type: 'none', arg: 0 }, commands: [{ op: 'shake', frames: 30 }] }] } }
+  });
+  inflate(project, 184);
+  const deficit = kernelShortfallDeficit(project);
+  assert.ok(deficit <= SHAKE_KERNEL_ALLOWANCE, `deficit ${deficit} must not exceed SHAKE_KERNEL_ALLOWANCE (${SHAKE_KERNEL_ALLOWANCE}) or this case does not exercise Shake alone closing the gap`);
+  const message = kernelShortfallMessage(project);
+  assert.match(message, new RegExp(`removing every Shake command \\(frees ${SHAKE_KERNEL_ALLOWANCE} bytes\\)`));
+  assert.doesNotMatch(message, /Turn command/, 'this project never turns Turn on, so it must not be offered as a fix');
+  assert.doesNotMatch(message, /Wait command/, 'this project never turns Wait on, so it must not be offered as a fix');
+});
+
+// The combination half: Shake and Wait together, purely additive since
+// neither shares a dependent term with the other (unlike Turn+Move's own
+// FACE_KERNEL_ALLOWANCE) -- SHAKE_KERNEL_ALLOWANCE + WAIT_KERNEL_ALLOWANCE =
+// 65 + 48 = 113. Sized so neither command alone (65, 48) covers the deficit
+// but dropping both together does. n=186 measured directly, landing a
+// 70-byte deficit (1516 - 1446) -- strictly above both solo figures and at
+// or below the combined one.
+test('a kernel-lo shortfall neither Shake nor Wait alone would close, but both together would, names the combination', () => {
+  const project = createProject('Action', 'action');
+  project.cartridge.mapper = 1; // MMC1 -- no split-lock to complicate the arithmetic
+  project.maps[0].screens[0].entities.push({
+    actorId: 0,
+    x: 16,
+    y: 16,
+    props: {
+      event: {
+        pages: [
+          {
+            cond: { type: 'none', arg: 0 },
+            commands: [
+              { op: 'shake', frames: 30 },
+              { op: 'wait', frames: 30 }
+            ]
+          }
+        ]
+      }
+    }
+  });
+  inflate(project, 186);
+  const deficit = kernelShortfallDeficit(project);
+  const combined = SHAKE_KERNEL_ALLOWANCE + WAIT_KERNEL_ALLOWANCE;
+  assert.ok(
+    deficit > SHAKE_KERNEL_ALLOWANCE && deficit > WAIT_KERNEL_ALLOWANCE,
+    `deficit ${deficit} must exceed both Shake alone (${SHAKE_KERNEL_ALLOWANCE}) and Wait alone (${WAIT_KERNEL_ALLOWANCE}), or this case does not exercise the combination at all`
+  );
+  assert.ok(deficit <= combined, `deficit ${deficit} must not exceed the combined figure (${combined}), or dropping both would not close the gap either`);
+  const message = kernelShortfallMessage(project);
+  assert.match(message, new RegExp(`removing every Wait command and every Shake command together \\(frees ${combined} bytes\\)`));
 });

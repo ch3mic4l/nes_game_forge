@@ -186,8 +186,14 @@ script_run_turn:
 script_run_wait:
   .if WAIT_ENABLED
   cmp #OP_WAIT
-  bne script_run_bad
+  bne script_run_shake
   jmp script_op_wait
+  .endif
+script_run_shake:
+  .if SHAKE_ENABLED
+  cmp #OP_SHAKE
+  bne script_run_bad
+  jmp script_op_shake
   .endif
 script_run_bad:
   jmp script_finish         ; an opcode this engine cannot run stops the event
@@ -522,6 +528,31 @@ script_op_wait_suspend:
                               ; to whatever called into the script this frame --
                               ; the same "reached by jmp" discipline move_face's
                               ; own trailing rts already relies on
+  .endif
+
+; [OP_SHAKE, frames]. Sets shake_left and runs straight on -- the same instant
+; shape OP_TURN already has, so script_next2 rather than a suspend. The
+; counting and the perturbation itself live in nmi_scroll (engine/boot.asm);
+; this command only arms it.
+;
+; A frame count of zero skips the store rather than overwriting shake_left
+; with it: every other command in this engine treats a zero operand as
+; "nothing happens" (Wait 0 does not suspend, Heal 0 and Damage 0 do
+; nothing), and the event editor's own hint already promises the same for
+; Shake -- "a shake of 0 does nothing." Without this, Shake 0 would cancel
+; whatever Shake is already running (including one from an earlier, unrelated
+; event) by stomping shake_left to 0 out from under it, making zero the one
+; operand in this engine that actively *does* something -- and CLAUDE.md's
+; own convention is that an action with nothing to do is ignored, never
+; reinterpreted.
+  .if SHAKE_ENABLED
+script_op_shake:
+  ldy #1
+  lda [script_ptr_lo],y
+  beq script_op_shake_done
+  sta shake_left
+script_op_shake_done:
+  jmp script_next2
   .endif
 
 ; ------------------------------------------------------------------- calls

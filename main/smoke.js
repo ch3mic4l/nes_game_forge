@@ -503,6 +503,67 @@ const scenario = (dir, sampleDir, sampleRpgDir) => `
   await wait(200);
   step('turn/wait authoring', 'Turn wired both selects (who, dir); Wait wired its frame count, not dist');
 
+  // Shake, the same way as Wait -- one real number input, and the same
+  // dist-vs-frames question a lexical scan cannot answer. 77, not 25 or 30:
+  // neither the default (30) nor close enough to it, or to any of Shake's
+  // own named constants (SHAKE_KERNEL_ALLOWANCE 65, WAIT_KERNEL_ALLOWANCE 48,
+  // the +/-2px perturbation, PPUMASK_ON's own $1E=30 decimal) for a handler
+  // hard-coding one of those to pass by coincidence.
+  rowButton(0, 'Edit event…').click();
+  await until('the event editor', () => document.querySelector('#modalHost .btn-accent'));
+  const addShake = [...document.querySelectorAll('#modalHost select')].find((node) =>
+    node.textContent.includes('Add a command')
+  );
+  addShake.value = 'shake';
+  addShake.dispatchEvent(new Event('change', { bubbles: true }));
+  await wait(200);
+  const findShakeRow = () =>
+    [...document.querySelectorAll('#modalHost .field-row')].find((node) => node.querySelector('span')?.textContent === 'Shake');
+  const firstShakeRow = findShakeRow();
+  if (!firstShakeRow) throw new Error('adding a Shake command produced no row');
+  const firstShakeFrames = firstShakeRow.querySelector('input[type=number]');
+  if (!firstShakeFrames) throw new Error('the Shake row offered no frame-count input');
+  firstShakeFrames.value = '77';
+  firstShakeFrames.dispatchEvent(new Event('change', { bubbles: true }));
+  await wait(120);
+  document.querySelector('#modalHost .btn-accent').click();
+  await wait(300);
+  const shakeCommands = store.project.maps[0].screens[3].entities[0].props.event.pages[0].commands;
+  const shakeAdded = shakeCommands[shakeCommands.length - 1];
+  if (shakeAdded?.op !== 'shake' || shakeAdded.frames !== 77) {
+    throw new Error('the Shake command saved as ' + JSON.stringify(shakeAdded));
+  }
+  if ('dist' in shakeAdded || 'who' in shakeAdded || 'dir' in shakeAdded) {
+    throw new Error('a Shake must not carry Move/Turn-only fields: ' + JSON.stringify(shakeAdded));
+  }
+
+  // Edited to a second, equally distinctive value -- rules out a handler
+  // that merely echoes whatever was typed on the FIRST change back to the
+  // same fixed 77 every time, rather than genuinely tracking the input.
+  rowButton(0, 'Edit event…').click();
+  await until('the event editor', () => document.querySelector('#modalHost .btn-accent'));
+  const secondShakeRow = findShakeRow();
+  if (!secondShakeRow) throw new Error('the saved Shake command produced no row when reopened');
+  const secondShakeFrames = secondShakeRow.querySelector('input[type=number]');
+  if (String(secondShakeFrames.value) !== '77') {
+    throw new Error('the reopened Shake row did not show the value it was saved with: ' + secondShakeFrames.value);
+  }
+  secondShakeFrames.value = '133';
+  secondShakeFrames.dispatchEvent(new Event('change', { bubbles: true }));
+  await wait(120);
+  document.querySelector('#modalHost .btn-accent').click();
+  await wait(300);
+  const shakeCommandsAgain = store.project.maps[0].screens[3].entities[0].props.event.pages[0].commands;
+  const shakeEdited = shakeCommandsAgain[shakeCommandsAgain.length - 1];
+  if (shakeEdited?.op !== 'shake' || shakeEdited.frames !== 133) {
+    throw new Error('the edited Shake command saved as ' + JSON.stringify(shakeEdited));
+  }
+  store.undo();
+  await wait(200);
+  store.undo();
+  await wait(200);
+  step('shake authoring', 'Shake wired its frame count (77, then edited to 133), not dist');
+
   // The trigger, which is the one part of an event that lives on the placement
   // rather than in the event. Only the real panel can show the select is wired
   // to the store and that the hint under it follows the choice.

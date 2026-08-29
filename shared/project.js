@@ -676,7 +676,16 @@ export const EVENT_COMMANDS = [
   // rather than walking anyone -- a beat before the next line, or after a
   // transition. A frame count of 0 does not suspend at all, for the identical
   // reason a Move of distance 0 does not: nothing would ever resume it.
-  { id: 'wait', label: 'Wait', args: ['frames'] }
+  { id: 'wait', label: 'Wait', args: ['frames'] },
+  // [frames]. Unlike Wait, does not pause anything -- the world keeps running
+  // while the screen shakes, the same instant shape Turn already has. Only the
+  // PPU's own background scroll moves; sprites (the player, entities, any
+  // sprite-based UI) hold still, a known, accepted limitation. Because it does
+  // not suspend, "Shake N" followed by "Wait N" is an approximation of waiting
+  // out the shake, not an exact one -- the two counters tick on different
+  // schedules (Wait in the frozen-world tick, Shake every NMI), so they are
+  // not guaranteed to end on the same frame.
+  { id: 'shake', label: 'Shake screen', args: ['frames'] }
 ];
 
 // A command can be switched off while you work out whether you want it, the way
@@ -722,7 +731,8 @@ export const IMPLEMENTED_COMMANDS = new Set([
   'save',
   'move',
   'turn',
-  'wait'
+  'wait',
+  'shake'
 ]);
 
 /**
@@ -2770,6 +2780,27 @@ export function projectUsesWait(project) {
     for (const page of compiledPages(event)) {
       for (const command of liveCommands(page.commands, CHOICE_LIMITS.options)) {
         if (command.op === 'wait') return true;
+      }
+    }
+  }
+  return false;
+}
+
+/**
+ * Drives the generated `SHAKE_ENABLED`, the same shape and the same reason
+ * `projectUsesWait` drives `WAIT_ENABLED`: the perturbation code in
+ * `nmi_scroll` (engine/boot.asm) and `script_op_shake` (engine/script.asm)
+ * are real kernel-lo code with nowhere to go unconditionally in a project
+ * that never shakes anything. Unlike Move/Turn, Shake shares no dependent
+ * term with anything else (there is no `FACE_ENABLED`-style routine two
+ * commands both call), so it needs no companion predicate the way Turn
+ * needs `projectUsesFace`.
+ */
+export function projectUsesShake(project) {
+  for (const event of projectEvents(project)) {
+    for (const page of compiledPages(event)) {
+      for (const command of liveCommands(page.commands, CHOICE_LIMITS.options)) {
+        if (command.op === 'shake') return true;
       }
     }
   }

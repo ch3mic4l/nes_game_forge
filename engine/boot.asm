@@ -300,11 +300,65 @@ nmi_scroll:
   ; $2000 is rewritten *after* the drain, not before: a $2006 write copies its
   ; high byte into the PPU's `t` register, nametable-select bits and all, so the
   ; scroll reset below is not enough on its own to undo a queued write.
+  ;
+  ; Screen shake (item 6). PPUSCROLL's X is a 9-bit unsigned coordinate --
+  ; $2005 supplies the low 8 bits, PPUCTRL bit 0 supplies bit 8 -- not a plain
+  ; byte a caller can wrap on its own the way OAM's 8-bit X can under ADC.
+  ; PPUCTRL_ON ($88) has bit 0 clear, so a -2 pixel offset is the 9-bit value
+  ; 510, composed as PPUCTRL bit 0 SET together with $2005=$FE.
+  ;
+  ; The sign alternates on shake_left's own low bit, not frame_cnt's. frame_cnt
+  ; is a wall clock unrelated to when any particular Shake started, so deriving
+  ; sign from it would make two identical Shakes look different (or, for a
+  ; short one, land entirely on one phase) purely from accumulated timing that
+  ; has nothing to do with the authored effect. shake_left's own bit is
+  ; effect-local -- it decrements every active frame of *this* shake, so which
+  ; phase a given frame shows depends only on how many frames of this shake
+  ; are left, the same way a duration-1 shake always lands on the same phase
+  ; regardless of when it was triggered.
+  ;
+  ; Every active frame shows +2 or -2 -- there is no zero phase -- so a
+  ; 2-pixel sliver of whatever nametable is horizontally adjacent (never
+  ; drawn by this engine; see CLAUDE.md's own note on nametable 0) is visible
+  ; at the left or right screen edge for the whole shake, alternating sides.
+  ; Accepted and documented, the same way CLAUDE.md already accepts the MMC3
+  ; split's own one-line real-hardware sliver and the overscan columns: a
+  ; real, small, known cost, not a defect to chase out.
+  ;
+  ; Background only: PPU scrolling moves the nametable, not OAM. The player,
+  ; entities and any sprite-based UI hold still while the world shakes around
+  ; them -- a known, accepted v1 limitation (costed and rejected: syncing
+  ; sprites needs the OAM DMA above reordered behind the shake decision, plus
+  ; a per-frame cost of roughly 1,500-1,600 cycles against a ~2,273-cycle
+  ; vblank budget that already spends 513 on that same DMA).
+  .if SHAKE_ENABLED
+  lda shake_left
+  beq nmi_scroll_no_shake
+  dec shake_left
+  lda shake_left
+  and #1
+  bne nmi_scroll_shake_neg
+  lda #PPUCTRL_ON
+  sta $2000
+  lda #2
+  jmp nmi_scroll_shake_x
+nmi_scroll_shake_neg:
+  lda #PPUCTRL_ON|1
+  sta $2000
+  lda #$FE
+nmi_scroll_shake_x:
+  sta $2005
+  lda #$00
+  sta $2005
+  jmp nmi_scroll_done
+nmi_scroll_no_shake:
+  .endif
   lda #PPUCTRL_ON
   sta $2000
   lda #$00                  ; this engine draws one screen at a time
   sta $2005
   sta $2005
+nmi_scroll_done:
 
   .if SPLIT_ENABLED
   jsr split_arm             ; art back in for the top, first IRQ armed

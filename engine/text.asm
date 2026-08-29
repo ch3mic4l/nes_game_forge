@@ -34,6 +34,21 @@ vram_reset:
   sta vram_len
   sta vram_ready
   sta vram_buf              ; the terminator
+  ; A shake does not suspend the script (script_op_shake, engine/script.asm),
+  ; so nothing stops a warp or a screen edge crossing from landing mid-shake
+  ; the way mv_left/wt_left are protected by the world being frozen for their
+  ; whole duration. Both real callers of this routine -- redraw_screen
+  ; (engine/screens.asm) and draw_battle_screen (engine/battle.asm) -- reach
+  ; here well before their own later enable_rendering call re-enables NMI, so
+  ; the very next NMI sees this clear rather than one more stale shaken
+  ; frame. Deliberately not enable_rendering itself: save.asm's own call to
+  ; it is the flash-commit path re-enabling rendering with no screen change,
+  ; and clearing there would cancel a shake on UNROM 512's flash save while
+  ; leaving one running through MMC1/MMC3's battery save -- a mapper-
+  ; dependent difference in what Shake does.
+  .if SHAKE_ENABLED
+  sta shake_left
+  .endif
   rts
 
 ; Open a packet: A = address high byte, Y = address low byte. The count starts

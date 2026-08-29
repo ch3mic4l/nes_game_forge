@@ -296,6 +296,8 @@ export function compileText(project) {
       }
       case 'wait':
         return [opIndex('wait'), byte(command.frames, 255)];
+      case 'shake':
+        return [opIndex('shake'), byte(command.frames, 255)];
       case 'join':
         return [opIndex('join'), byte(command.member, 3)];
       case 'call': {
