@@ -142,7 +142,17 @@ Anything the 6502 engine and the JavaScript tooling both depend on has **one** d
   `engine/music.asm`, the compiler in `main/build/songcompile.js`, the preview replayer in
   `renderer/forges/sound/replayer.js`). `test/unit/music.test.js` runs the built ROM in the
   emulator, records every write to `$4000-$400F`, and asserts it is byte-identical to the
-  replayer's. If you change one implementation, change all three or that test fails.
+  replayer's. If you change one implementation, change all three or that test fails. `songByte`,
+  `NO_SONG`, `songTimeline` and `songFrameLength` (a song's own length in frames, one full pass
+  through its authored order) live here too, not in `main/build/textcompile.js`, because
+  `shared/project.js`'s `validateProject` needs the identical resolution and cannot import
+  upward from `main/build/` — `textcompile.js` re-exports `NO_SONG`/`songByte` verbatim so its
+  existing importers (`main/build/generate.js`, `test/unit/script.test.js`) keep working
+  unmodified. The `Sting` scripted command (item 6) is not a fourth implementation of the format:
+  it plays an existing song through the same unmodified driver, pausing and resuming whichever
+  song was already playing — see `handoff-sting/design-sting.md` for the full design and
+  `engine/music.asm`'s own `sting_snapshot`/`sting_restore`/`sting_tick` comments for the
+  mechanisms.
 - The NES palette → `shared/nespalette.js`, shared by the editors *and* the emulator, so the
   in-app preview matches the editors by construction.
 - The message font → `shared/font.js`: the glyph art, the character-to-tile mapping, the window
@@ -1059,6 +1069,30 @@ this file pins. That is the opposite of MMC3's identical shortfall: there, dropp
 the gap (88 free without it, against 11 short with it). So advice of the shape "drop your items to fit
 Save+Move" is correct on MMC3 and wrong on UNROM 512, and the two boards' documented limitations should
 not be read as the same kind of shortfall.
+
+**Item 6's sound-effect slice turns that same MMC3 Save+Move-no-item row — 88 free, currently
+fitting — into a third, unrelated documented limitation.** A live `Sting` command costs
+`STING_KERNEL_ALLOWANCE`: 175 bytes, measured (not the item-6 design pass's own 176-byte
+pre-implementation estimate) identically on all three RPG-capable boards
+(`test/unit/kernelbytes.test.js`), real engine code
+(`engine/music.asm`'s `sting_snapshot`/`sting_restore`/`sting_tick` plus the `force_trig`/
+cancellation-check/`music_stop`-clear additions to `music_channel`/`music_play`/`music_stop`,
+`engine/script.asm`'s `script_op_sting`, and the `main_loop` call site in `engine/boot.asm`) with
+nowhere unconditional to go, `.if STING_ENABLED`-gated so a Sting-free project pays none of it.
+175 exceeds MMC3's own 88-byte margin on this row by nearly double — not a close call either
+board's own margin could plausibly recover from without a real diet, the same shape the two
+refusals above already are. `'sample-rpg with Save, Move (no item) and a live Sting does not build
+on MMC3 -- a documented limitation'` is the test (`test/unit/kernelbytes.test.js`); it asserts the
+refusal and that `kernelShortfallAdvice` names Sting with its real freed-byte figure, and confirms
+dropping the Sting command alone is a real fix with an actual nesasm build, the same discipline the
+Save+Move+item test above already holds itself to. Unlike the items asymmetry just described,
+Sting's own dependent-term interaction is the *Move* precedent, not a new one: on MMC3, a project
+whose sole live event is a Sting-only command is that project's only reason `fontBankSplit` turns
+`SPLIT_LOCK_KERNEL_ALLOWANCE` on at all, so `kernelShortfallAdvice` correctly reports removing it
+frees `STING_KERNEL_ALLOWANCE + SPLIT_LOCK_KERNEL_ALLOWANCE` (175 + 19 = 194) together in that
+case — `kernelCodeBytes`-derived, not summed from the flat constants, the identical reasoning this
+file's own dependent-term passages already give for Move/Turn's shared `FACE_KERNEL_ALLOWANCE` and
+Fade/Flash's shared `PALETTE_FX_KERNEL_ALLOWANCE`.
 
 Because the margin can still run out — on MMC3 in a bigger project, or the next feature this bank has
 no room for — `checkCapacity` names what would close a gap like this one instead of only reporting the

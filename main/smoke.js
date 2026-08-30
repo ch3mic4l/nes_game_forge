@@ -865,6 +865,121 @@ const scenario = (dir, sampleDir, sampleRpgDir) => `
   await wait(200);
   step('flash authoring', 'Flash rendered with no field to configure, and the outside-the-modal summary exact final segment read "Flash the screen"');
 
+  // Sting, item 6's sound-effect slice (handoff-sting/design-sting.md §12, test 16, round-1
+  // finding 12): a real Map Forge scenario, not just compiler/engine unit tests, because a
+  // handler wired to the wrong DOM event (onchanged instead of onchange) or a dropdown that still
+  // offers Silence are both invisible to a test that constructs commands directly -- the same
+  // "compiler/engine tests alone cannot stand in for real control wiring" precedent the Turn/Wait
+  // slice's own seventh finding already established, which Flash's own scenario above already
+  // exercises for a field-free command; this is the equivalent for one with a real select.
+  //
+  // This scenario's own project is the fresh one window.forge.project.create made at the very
+  // start (window.__app.store.open above) -- the checked-in sample project (with its own real
+  // song, opened later, past this point in the scenario, for the encounters-off toggle) is not
+  // yet in the store here, so this section authors its own song directly through the store the
+  // same way it draws into tile 0 above, rather than depending on one arriving from elsewhere.
+  store.commit('smoke: add a song for the Sting scenario', (project) => {
+    project.songs = project.songs ?? [];
+    project.songs.push({
+      name: 'Fanfare',
+      tempo: { framesPerRow: 6 },
+      instruments: [{ duty: 2, volEnv: [15], sustain: 0 }],
+      patterns: [{ id: 0, rows: 8, channels: {} }],
+      order: [0],
+      loop: 0
+    });
+  });
+  await wait(150);
+
+  // Captured before the editor opens, the same reason Flash's own preFlashRow is (finding 5):
+  // Flash's own section just above ends with two store.undo() calls unwinding its add and edit
+  // entirely, so the accumulated summary is back to its pre-Flash state by this point.
+  const preStingRow = [...document.querySelectorAll('#stage [data-entity="0"] p.hint')].find((node) => /^[0-9]+[.] /.test(node.textContent.trim()));
+  if (!preStingRow) throw new Error('could not find the accumulated pre-Sting summary row to compare against');
+  const preStingSegments = preStingRow.textContent.split(';').map((segment) => segment.trim());
+
+  rowButton(0, 'Edit event…').click();
+  await until('the event editor', () => document.querySelector('#modalHost .btn-accent'));
+  const addSting = [...document.querySelectorAll('#modalHost select')].find((node) =>
+    node.textContent.includes('Add a command')
+  );
+  addSting.value = 'sting';
+  addSting.dispatchEvent(new Event('change', { bubbles: true }));
+  await wait(200);
+  // 'Sound sting' -- EVENT_COMMANDS' own label (shared/project.js), the same generic-path row
+  // shape 'music'/'call'/'warp' already render (a labelled span plus a select), not Flash's own
+  // special-cased "nothing to configure" row.
+  const findStingRow = () =>
+    [...document.querySelectorAll('#modalHost .field-row')].find((node) => node.querySelector('span')?.textContent === 'Sound sting');
+  const firstStingRow = findStingRow();
+  if (!firstStingRow) throw new Error('adding a Sting command produced no row');
+  const stingSelect = firstStingRow.querySelector('select');
+  if (!stingSelect) throw new Error('a fresh Sting row must offer a song select -- there is something to configure, unlike Flash');
+  // No Silence option: unlike 'music', there is no silence-equivalent sting, so offering one here
+  // would let an author pick something that compiles to NO_SONG and gets refused at build time
+  // with no signal at authoring time -- design-sting.md §10.
+  const stingOptionLabels = [...stingSelect.options].map((option) => option.textContent);
+  if (stingOptionLabels.includes('Silence')) {
+    throw new Error('the Sting song select must not offer Silence: ' + JSON.stringify(stingOptionLabels));
+  }
+  // A fresh Sting defaults to no song chosen (defaultCommand's own 'song' arg default,
+  // renderer/forges/map/events.js) -- the select must show that as "Missing song" rather than
+  // silently landing on whichever real song the browser renders first.
+  if (!stingOptionLabels.includes('Missing song')) {
+    throw new Error('a freshly added, not-yet-configured Sting must show a Missing song placeholder: ' + JSON.stringify(stingOptionLabels));
+  }
+
+  // Pick the song this section authored above ("Fanfare") through the real onchange handler,
+  // not a hand-constructed command.
+  const fanfareOption = [...stingSelect.options].find((option) => option.textContent === 'Fanfare');
+  if (!fanfareOption) throw new Error('the Sting select did not offer the song this section added: ' + JSON.stringify(stingOptionLabels));
+  stingSelect.value = fanfareOption.value;
+  stingSelect.dispatchEvent(new Event('change', { bubbles: true }));
+  await wait(200);
+
+  const stingSummaryRow = () =>
+    [...document.querySelectorAll('#stage [data-entity="0"] p.hint')].find((node) => node.textContent.includes('Sting'));
+  document.querySelector('#modalHost .btn-accent').click();
+  await wait(300);
+  const stingCommands = store.project.maps[0].screens[3].entities[0].props.event.pages[0].commands;
+  const stingAdded = stingCommands[stingCommands.length - 1];
+  if (stingAdded?.op !== 'sting' || stingAdded?.song !== 0) {
+    throw new Error('the Sting command saved as ' + JSON.stringify(stingAdded) + ' -- mutation through the real select onchange did not land');
+  }
+  // Exact segment list, the same "not merely includes/ends-with" discipline Flash's own check
+  // above explains (finding 5) -- a malformed summary that prepends garbage before a
+  // correct-looking tail would pass a substring check and fail this one.
+  const stingSummary = stingSummaryRow();
+  const stingSummarySegments = (stingSummary?.textContent ?? '').split(';').map((segment) => segment.trim());
+  const expectedStingSegments = [...preStingSegments, 'Sting: Fanfare'];
+  if (JSON.stringify(stingSummarySegments) !== JSON.stringify(expectedStingSegments)) {
+    throw new Error(
+      'the event-list summary outside the modal was not exactly the pre-Sting segments plus "Sting: Fanfare": expected ' +
+        JSON.stringify(expectedStingSegments) + ', saw ' + JSON.stringify(stingSummarySegments)
+    );
+  }
+
+  // Reopen and confirm the row still shows the same song selected -- the same round-trip proof
+  // every other verb's own field already gets.
+  rowButton(0, 'Edit event…').click();
+  await until('the event editor', () => document.querySelector('#modalHost .btn-accent'));
+  const secondStingRow = findStingRow();
+  if (!secondStingRow) throw new Error('the saved Sting command produced no row when reopened');
+  const secondStingSelect = secondStingRow.querySelector('select');
+  const secondStingSelected = secondStingSelect?.options[secondStingSelect.selectedIndex]?.textContent;
+  if (secondStingSelected !== 'Fanfare') {
+    throw new Error('the reopened Sting row did not still show Fanfare selected: ' + JSON.stringify(secondStingSelected));
+  }
+  document.querySelector('#modalHost .btn-accent').click();
+  await wait(300);
+  store.undo(); // the Save
+  await wait(200);
+  store.undo(); // the Add
+  await wait(200);
+  store.undo(); // this section's own "add a song" commit, so the project is left as it was found
+  await wait(200);
+  step('sting authoring', 'Sting offered a song select with no Silence option, a fresh one showed Missing song, a real selection landed through onchange, and the outside-the-modal summary exact final segment read "Sting: Fanfare"');
+
   // The trigger, which is the one part of an event that lives on the placement
   // rather than in the event. Only the real panel can show the select is wired
   // to the store and that the hint under it follows the choice.

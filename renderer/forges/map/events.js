@@ -195,6 +195,15 @@ function describeEnabled(command, context = {}) {
       return `Run ${commonEventName(command.event)}`;
     case 'music':
       return command.song === null || command.song === undefined ? 'Silence' : `Play ${songName(command.song)}`;
+    // Unlike 'music', null is not a legitimate reading here -- there is no
+    // silence-equivalent sting -- so an unresolved reference (never chosen,
+    // or chosen and since deleted) reads as an explicit error state rather
+    // than being folded into songName's own "song N" fallback the way a
+    // stale music reference would be.
+    case 'sting':
+      return command.song === null || command.song === undefined || !(context.songs ?? [])[command.song]
+        ? 'Sting: (choose a song)'
+        : `Sting: ${songName(command.song)}`;
     case 'battle':
       return (command.monsters ?? []).length
         ? `Battle ${command.monsters.map(actorName).join(', ')}`
@@ -1104,6 +1113,30 @@ export function editEvent(event, context) {
             }
           },
           el('option', { value: '', selected: command.song === null || command.song === undefined }, 'Silence'),
+          songs.map((song, index) =>
+            el('option', { value: index, selected: index === command.song }, song.name)
+          )
+        )
+      );
+    } else if (command.op === 'sting') {
+      // Mirrors 'music' above almost exactly (same songs list, same onchange
+      // shape) but drops the Silence option -- there is no silence-equivalent
+      // sting -- and, per 'call's own callTargetMissing precedent for a stale
+      // reference, shows a "Missing song" option whenever the current value
+      // does not resolve, covering both "never chosen" (null) and "chosen,
+      // then deleted" (an index songs no longer has) identically, so an
+      // author opening an old project sees why the command is flagged rather
+      // than a dropdown that silently shows nothing selected.
+      const songs = context.songs ?? [];
+      const stingSongMissing = command.song === null || command.song === undefined || !songs[command.song];
+      controls.push(
+        el(
+          'select',
+          {
+            style: { flex: '1' },
+            onchange: (fired) => (command.song = Number(fired.target.value))
+          },
+          stingSongMissing ? el('option', { value: command.song ?? '', selected: true }, 'Missing song') : null,
           songs.map((song, index) =>
             el('option', { value: index, selected: index === command.song }, song.name)
           )

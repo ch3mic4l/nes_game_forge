@@ -70,6 +70,7 @@ import {
   projectUsesPaletteFx,
   projectUsesFace,
   projectUsesItems,
+  projectUsesSting,
   projectEvents,
   allCommands,
   mapEncounterFormation,
@@ -617,6 +618,28 @@ const FALLBACK_ITEM_EFFECT_KERNEL_ALLOWANCE = Math.max(...Object.values(ITEM_EFF
 export function itemEffectKernelAllowance(project) {
   return ITEM_EFFECT_KERNEL_ALLOWANCE_BY_GAME_TYPE[project.project?.gameType] ?? FALLBACK_ITEM_EFFECT_KERNEL_ALLOWANCE;
 }
+// sting_snapshot/sting_restore/sting_tick, the main_loop call site, script_op_sting, and the
+// force_trig/cancellation-check/music_stop-clear additions to music_channel/music_play/music_stop
+// (engine/music.asm, engine/script.asm, engine/boot.asm) -- see handoff-sting/design-sting.md §7.
+// Flat across boards, the same reasoning MOVE_KERNEL_ALLOWANCE/SHAKE_KERNEL_ALLOWANCE/etc. are:
+// nothing here branches on SPLIT_ENABLED or any other mapper-specific fact -- measured 175 on all
+// three RPG-capable boards, exactly, not merely close. Measured the same way every other allowance
+// here is: build sample-rpg with and without a live Sting, isolated against a baseline that already
+// carries a surviving text-triggering event so MMC3's own SPLIT_LOCK_KERNEL_ALLOWANCE stays out of
+// this delta -- test/unit/kernelbytes.test.js asserts the three boards agree exactly.
+//
+// Not the design's own 176-byte pre-implementation estimate: implementation deviated from
+// design-sting.md §7's script_op_sting sketch by 5 bytes (43 -> 38) after finding its own cited
+// "script_op_give/NO_ITEM family shape" was mischaracterized -- the real family precedent (also
+// script_op_call's own NO_COMMON_EVENT check) stops the event via script_finish on a
+// recognised-command-naming-nothing operand, not skip-and-continue, which needs no duplicated
+// skip-and-jmp-script_run block at all. See handoff-sting/sting-implementation-report.md for the
+// full reasoning; the remaining 4-byte gap between the hand-adjusted estimate (171) and the real
+// measurement (175) is named, not just measured: the design's own byte-cost table priced the four
+// cur_song/mus_enabled loads and stores in sting_snapshot/sting_restore as two-byte zero-page
+// instructions, but nesasm assembles each as a three-byte absolute instruction, so 171 + 4 = 175 --
+// exactly the kind of small addressing-mode slip measurement exists to catch rather than trust.
+export const STING_KERNEL_ALLOWANCE = 175;
 export const KERNEL_SLACK = 20;
 
 export function kernelCodeBytes(project, mapper) {
@@ -672,6 +695,7 @@ export function kernelCodeBytes(project, mapper) {
   const usesTitle = projectUsesEffectiveTitle(project) || projectUsesSave(project);
   const usesSplitLock = fontBankSplit(project, mapper);
   const usesItems = projectUsesItems(project);
+  const usesSting = projectUsesSting(project);
   return (
     baseKernelCodeBytes(mapper) +
     (usesTitle ? titleKernelAllowance(mapper) : 0) +
@@ -687,6 +711,7 @@ export function kernelCodeBytes(project, mapper) {
     (usesFace ? FACE_KERNEL_ALLOWANCE : 0) +
     (usesSplitLock ? SPLIT_LOCK_KERNEL_ALLOWANCE : 0) +
     (usesItems ? ITEM_KERNEL_ALLOWANCE + itemEffectKernelAllowance(project) : 0) +
+    (usesSting ? STING_KERNEL_ALLOWANCE : 0) +
     KERNEL_SLACK
   );
 }
@@ -914,6 +939,7 @@ function kernelShortfallAdvice(project, mapper, deficit) {
   const usesVisible = projectUsesVisible(project);
   const usesFade = projectUsesFade(project);
   const usesFlash = projectUsesFlash(project);
+  const usesSting = projectUsesSting(project);
   // "Every" rather than "the": a project can carry more than one live Move or
   // Save command (several actors, several pages), and removing just one of
   // several does not free anything at all -- kernelCodeBytes only drops the
@@ -926,6 +952,7 @@ function kernelShortfallAdvice(project, mapper, deficit) {
   if (usesVisible) active.push({ op: 'visible', label: 'every Show/Hide command' });
   if (usesFade) active.push({ op: 'fade', label: 'every Fade command' });
   if (usesFlash) active.push({ op: 'flash', label: 'every Flash command' });
+  if (usesSting) active.push({ op: 'sting', label: 'every Sting command' });
   if (usesSave) active.push({ op: 'save', label: 'every Save command' });
   // A title screen is not offered here even though it is now its own term in
   // kernelCodeBytes: this list is specifically "commands projectWithoutCommands
@@ -1622,6 +1649,7 @@ export async function generateAssets({ dir, project, log = () => {} }) {
   const usesFlash = projectUsesFlash(project);
   const usesPaletteFx = projectUsesPaletteFx(project);
   const usesFace = projectUsesFace(project);
+  const usesSting = projectUsesSting(project);
   const saveIdentityValue = saveIdentity(project);
   if (usesHeartArt) {
     for (const tileset of tilesets) {
@@ -2039,6 +2067,10 @@ export async function generateAssets({ dir, project, log = () => {} }) {
     // exactly once when both do -- see projectUsesPaletteFx.
     `PALETTE_FX_ENABLED = ${usesPaletteFx ? 1 : 0}`,
     `FACE_ENABLED = ${usesFace ? 1 : 0}`,
+    // OP_STING, the same shape again -- see projectUsesSting (shared/project.js). Gates
+    // sting_snapshot/sting_restore/sting_tick and script_op_sting, plus the force_trig/
+    // cancellation-check/music_stop-clear additions inside music_channel/music_play/music_stop.
+    `STING_ENABLED = ${usesSting ? 1 : 0}`,
     ''
   ].join('\n');
   await fs.writeFile(path.join(assetsDir, 'config.inc'), config);

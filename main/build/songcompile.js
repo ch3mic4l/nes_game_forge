@@ -10,25 +10,11 @@ import {
   OP_LOOP,
   OP_INSTRUMENT,
   PERIOD_TABLE,
-  normalizeSong
+  normalizeSong,
+  songTimeline
 } from '../../shared/audio.js';
 
 const MAX_DURATION = 255;
-
-/**
- * Flatten the order list into a single row timeline, and note which row the
- * loop returns to.
- */
-function timeline(song) {
-  const rows = [];
-  let loopRow = 0;
-  song.order.forEach((patternId, orderIndex) => {
-    if (orderIndex === song.loop) loopRow = rows.length;
-    const pattern = song.patterns[patternId] ?? song.patterns[0];
-    for (let row = 0; row < pattern.rows; row++) rows.push({ pattern, row });
-  });
-  return { rows, loopRow };
-}
 
 /**
  * One channel's events. A cell starts a new event; anything after it sustains
@@ -37,7 +23,7 @@ function timeline(song) {
  * point restarts there.
  */
 function channelEvents(song, channelId) {
-  const { rows, loopRow } = timeline(song);
+  const { rows, loopRow } = songTimeline(song);
   const events = [];
   let current = null;
   let loopEventIndex = 0;

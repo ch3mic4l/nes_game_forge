@@ -216,8 +216,14 @@ script_run_fade:
 script_run_flash:
   .if FLASH_ENABLED
   cmp #OP_FLASH
-  bne script_run_bad
+  bne script_run_sting
   jmp script_op_flash
+  .endif
+script_run_sting:
+  .if STING_ENABLED
+  cmp #OP_STING
+  bne script_run_bad
+  jmp script_op_sting
   .endif
 script_run_bad:
   jmp script_finish         ; an opcode this engine cannot run stops the event
@@ -716,6 +722,62 @@ script_op_flash:
   lda #1
   jsr script_skip              ; past the opcode alone -- no operand to skip
   jmp script_run
+  .endif
+
+; [OP_STING, song index or NO_SONG, duration in frames]. Pauses whatever song
+; is playing, plays the named one alone, and resumes the original where it
+; left off once the duration elapses -- design-sting.md is the full design.
+; Does not suspend, the same instant shape OP_FLASH just above has.
+;
+; A duration of 0 can only mean the song operand was NO_SONG -- normalizeSong
+; (shared/audio.js) guarantees every real, normalized song a positive
+; duration, so the compiler never emits 0 for a real one (main/build/
+; textcompile.js). That is the same shape script_op_give/take's own NO_ITEM
+; check and script_op_call's own NO_COMMON_EVENT check are already in: a
+; recognised command whose operand names nothing stops the event
+; (script_finish) rather than being silently skipped -- skipping would carry
+; on to whatever comes after as if the sting had played, with nothing about
+; the conversation saying it hadn't (script_op_give's own comment makes this
+; argument in full). script_finish is well out of branch range from here, the
+; same reason script_op_call's own identical check a few hundred bytes below
+; uses this bne-then-jmp shape rather than a direct beq.
+;
+; The two real operands are held on the stack, not in a register, across both
+; sting_snapshot and music_play: both clobber X (sting_snapshot runs it 0
+; through 23, music_play loops it 0 through MUS_CHANNELS), so anything held
+; in X would not survive either call.
+  .if STING_ENABLED
+script_op_sting:
+  ldy #2
+  lda [script_ptr_lo],y      ; duration operand (offset 2) -- read first, so
+                               ; the NO_SONG check below can act on it before
+                               ; anything is pushed or skipped
+  bne script_op_sting_go
+  jmp script_finish
+script_op_sting_go:
+  pha                          ; push duration (nonzero -- real work to do)
+  dey                            ; y = 1
+  lda [script_ptr_lo],y          ; song operand (offset 1)
+  pha                              ; push song (on top of duration)
+  lda #3
+  jsr script_skip                   ; advance past the whole command
+  lda sting_left
+  bne script_op_sting_armed           ; already mid-sting: skip the snapshot
+                                        ; (a second sting replaces the first
+                                        ; outright, design-sting.md §5
+                                        ; mechanism 4)
+  jsr sting_snapshot
+script_op_sting_armed:
+  pla                                   ; pop song
+  jsr music_play                          ; plays the sting; harmlessly
+                                            ; re-triggers music_play's own
+                                            ; cancellation check on sting_left,
+                                            ; which the next two lines
+                                            ; immediately overwrite anyway
+  pla                                        ; pop duration
+  sta sting_left
+  jmp script_run                              ; non-suspending: continue the
+                                                ; same page, same frame
   .endif
 
 ; ------------------------------------------------------------------- calls

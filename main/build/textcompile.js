@@ -51,6 +51,7 @@ import {
   VISIBLE_STATES
 } from '../../shared/project.js';
 import { damageAmount } from '../../shared/eventrules.js';
+import { NO_SONG, songByte, songFrameLength } from '../../shared/audio.js';
 
 // String control codes, matching engine/constants.asm.
 export const TXT_END = 0x00;
@@ -71,11 +72,17 @@ export const OP_CALL = opIndex('call');
 export const OP_MUSIC = opIndex('music');
 export const OP_BATTLE = opIndex('battle');
 
+export const OP_STING = opIndex('sting');
+
 export const NO_EVENT = 0xff;
-// A map's own songId is $FF for the same reason (see generate.js's maps.inc),
-// so a screen change and a Play music command reach the engine's NO_SONG
-// through the same byte, no matter which one decided it.
-export const NO_SONG = 0xff;
+// NO_SONG/songByte moved to shared/audio.js (handoff-sting/design-sting.md §4): a map's own
+// songId is $FF for the same reason (see generate.js's maps.inc), so a screen change and a Play
+// music (or Sting) command reach the engine's NO_SONG through the same byte, no matter which one
+// decided it -- and shared/project.js's validateProject needs the identical resolution for its own
+// Sting refusal, which shared/ cannot get by importing main/build/. Re-exported here, verbatim,
+// rather than requiring every existing importer of these two names from this module
+// (main/build/generate.js, test/unit/script.test.js) to change what they import from.
+export { NO_SONG, songByte };
 // An empty formation slot: the same sentinel shared/project.js's
 // mapEncounterFormation pads a map's own (random) encounter table with, so
 // mon_slot_actor reads one byte shape regardless of which of the two ever
@@ -111,21 +118,6 @@ export const MAX_TABLE = 255; // $FF is the "none" marker in both tables
 // branch. `script_skip` adds it to the pointer, so 255 is the whole of it.
 export const MAX_BODY = 255;
 export const OP_JUMP = 0xfe; // the compiler's own punctuation; see constants.asm
-
-/**
- * The byte a song id becomes: NO_SONG for Silence, or for an id that is not a
- * live song any more — deleted since, or never valid to begin with. Shared by
- * a map's own songId (generate.js's map_song table) and a Play music command's
- * argument, so the two reach the same answer for the same value rather than
- * one clamping loosely in the schema and the other trusting it outright.
- * Takes `songs` rather than a whole project because generate.js calls this
- * once per map from inside a `.map()`, not once for the whole project.
- */
-export function songByte(songs, id) {
-  if (id === null || id === undefined) return NO_SONG;
-  const n = Number(id);
-  return Number.isInteger(n) && n >= 0 && n < (songs?.length ?? 0) ? n : NO_SONG;
-}
 
 /**
  * Authored text as engine bytes: pages of wrapped lines, then a terminator.
@@ -358,6 +350,20 @@ export function compileText(project) {
       }
       case 'music':
         return [OP_MUSIC, songByte(project.songs, command.song)];
+      case 'sting': {
+        // NO_SONG (never chosen, or a deleted song) is refused by validateProject (shared/
+        // project.js) whenever the command is live -- this fallback exists for a hand-edited or
+        // later-version project that bypasses that check, and compiles to a duration of 0, which
+        // script_op_sting's own runtime guard (engine/script.asm) reads as "stop the event"
+        // (jmp script_finish, the same script_op_give/NO_ITEM family shape) rather than
+        // snapshotting a song that would never come back. See handoff-sting/design-sting.md §4/§7.
+        const songIndex = songByte(project.songs, command.song);
+        if (songIndex === NO_SONG) return [OP_STING, NO_SONG, 0];
+        // > 255 is also a validateProject error (shared/project.js); this Math.min is the
+        // compiler's own matching guard so a hand-edited or later-version project cannot silently
+        // wrap a long sting's duration into a short, wrong one.
+        return [OP_STING, songIndex, Math.min(songFrameLength(project.songs[songIndex]), 255)];
+      }
       case 'battle': {
         // Up to RPG_LIMITS.monstersPerBattle actor ids, NO_ACTOR-padded --
         // the same fixed-width, no-count shape generate.js's encounterRow

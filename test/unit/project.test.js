@@ -53,7 +53,8 @@ import { loadProject, saveProject } from '../../main/project-io.js';
 import { buildProject } from '../../main/build/pipeline.js';
 import { resolveMapper, rpgCapable } from '../../shared/cartridge.js';
 import { flattenScreens } from '../../main/build/generate.js';
-import { compileText, opIndex, OP_JUMP } from '../../main/build/textcompile.js';
+import { compileText, opIndex, OP_JUMP, OP_STING } from '../../main/build/textcompile.js';
+import { createSong, songFrameLength } from '../../shared/audio.js';
 import { battleTables } from '../../main/build/battletables.js';
 import { FONT_BASE } from '../../shared/font.js';
 import { BLANK_TILE } from '../../shared/chr.js';
@@ -2108,6 +2109,147 @@ test('the give/take check applies to an action project too, and now refuses a bu
     buildProject({ dir, project, log: () => {} }),
     /do not name a real/,
     'buildProject should refuse this project rather than compiling actor 99 into the ROM as-is'
+  );
+});
+
+// Sting (item 6, sound-effect slice): design-sting.md §10/§12 test 13, round-1 finding 9, round-2
+// finding 4. Unlike 'music', NO_SONG is never a legitimate reading for a live Sting -- there is no
+// silence-equivalent sting -- so both "never chosen" and "chosen, then deleted" collapse to the
+// identical refusal, the Give/Take shape (itemMissing above), not music's own silent-NO_SONG
+// fallback. songByte's own behavior means null and an out-of-range index produce the same NO_SONG
+// sentinel, which is why one test covers both.
+test('a live Sting naming no song, or a deleted one, blocks the build; a switched-off one does not', () => {
+  const project = createProject('Fanfare', 'rpg');
+  project.songs = [{ name: 'Theme' }];
+  const page = (commands) => {
+    project.maps[0].screens[0].entities = [
+      { actorId: 0, x: 0, y: 0, props: { event: { pages: [{ cond: { type: 'none', arg: 0 }, commands }] } } }
+    ];
+    return project;
+  };
+
+  // (a) never chosen.
+  page([{ op: 'sting', song: null }]);
+  let errors = validateProject(project).filter((p) => p.severity === 'error');
+  assert.equal(errors.length, 1);
+  assert.match(errors[0].message, /Sound sting command.*do not name a real/);
+
+  // (b) chosen, then deleted -- an index past the end of the (one-song) list. songByte collapses
+  // this to the identical NO_SONG sentinel (a), so the message is identical too.
+  page([{ op: 'sting', song: 5 }]);
+  errors = validateProject(project).filter((p) => p.severity === 'error');
+  assert.equal(errors.length, 1);
+  assert.match(errors[0].message, /Sound sting command.*do not name a real/);
+
+  // (c) switched off: scaffolding that names nothing real must not be what stands between an
+  // author and a build, the same escape hatch Give/Take's own check already gives.
+  page([{ op: 'sting', song: null, off: true }]);
+  assert.deepEqual(validateProject(project).filter((p) => p.severity === 'error'), []);
+});
+
+test('a Sting song must resolve its own first pass within 255 frames, both sides of the boundary', () => {
+  // The boundary itself, not merely "close to it" (round-1 code review finding 1): 51 rows at
+  // framesPerRow 5 is exactly 255 frames (accepted), and 64 rows at framesPerRow 4 is exactly 256
+  // (refused). Landing on the two integers either side of the real ceiling is what actually
+  // distinguishes the two classic off-by-one validators a looser pair of fixtures (252/258, this
+  // test's own first draft) cannot: `frames >= 255` (wrongly refusing the legal value 255) and
+  // `frames > 256` (wrongly accepting the illegal value 256) both pass against 252/258, and both
+  // are confirmed below to fail against 255/256 before this test is trusted.
+  const project = createProject('Overlong', 'rpg');
+  const songAt = (rows, framesPerRow) => ({
+    ...createSong('Long'),
+    tempo: { framesPerRow },
+    patterns: [{ id: 0, rows, channels: {} }],
+    order: [0]
+  });
+  const accepted = songAt(51, 5); // 51 * 5 = 255
+  const refused = songAt(64, 4); // 64 * 4 = 256
+  const page = (song) => {
+    project.songs = [song];
+    project.maps[0].screens[0].entities = [
+      { actorId: 0, x: 0, y: 0, props: { event: { pages: [{ cond: { type: 'none', arg: 0 }, commands: [{ op: 'sting', song: 0 }] }] } } }
+    ];
+    return project;
+  };
+
+  assert.equal(songFrameLength(accepted), 255, 'sanity: the fixture itself lands where the test says it does');
+  assert.equal(songFrameLength(refused), 256);
+
+  page(accepted);
+  assert.deepEqual(
+    validateProject(project).filter((p) => p.severity === 'error'),
+    [],
+    'a song resolving in exactly 255 frames must not be refused'
+  );
+
+  page(refused);
+  const errors = validateProject(project).filter((p) => p.severity === 'error');
+  assert.equal(errors.length, 1);
+  assert.match(errors[0].message, /Sound sting command.*255 frames/);
+});
+
+test('a Sting invalid or overlong reference is refused however deep it is nested, inside a common event too', () => {
+  // The recursion case round-2 finding 4 asked for explicitly: none of the top-level cases above
+  // can catch a validator that scans only a page's own top-level commands, or one that walks map
+  // events but skips common events entirely -- both omissions need a case placed exactly where the
+  // sabotage would live, not merely claimed against a case that happens to pass anyway.
+  const project = createProject('Nested Fanfare', 'rpg');
+  project.songs = [{ name: 'Theme' }];
+  project.commonEvents = [
+    {
+      id: 0,
+      name: 'Alarm',
+      event: {
+        pages: [
+          {
+            cond: { type: 'none', arg: 0 },
+            commands: [{ op: 'branch', cond: { type: 'none', arg: 0 }, then: [{ op: 'sting', song: 5 }], else: [] }]
+          }
+        ]
+      }
+    }
+  ];
+  project.maps[0].screens[0].entities = [];
+
+  // (f) live, nested two levels deep (common event -> branch), naming a deleted song.
+  let errors = validateProject(project).filter((p) => p.severity === 'error');
+  assert.equal(errors.length, 1, 'a nested, live, invalid Sting inside a common event should be refused');
+  assert.match(errors[0].message, /Sound sting command.*do not name a real/);
+
+  // (g) its switched-off counterpart, at the identical nested location -- liveness still applies
+  // correctly once recursion and common-event placement are both in play together.
+  project.commonEvents[0].event.pages[0].commands[0].then[0].off = true;
+  assert.deepEqual(
+    validateProject(project).filter((p) => p.severity === 'error'),
+    [],
+    'the identical nested reference, switched off, must not be refused'
+  );
+});
+
+test('validateProject\'s Sting duration check normalizes a malformed song exactly the way compileSong does', () => {
+  // (h), round-2 finding 2: songFrameLength(rawSong) has to normalize its own input, not assume a
+  // caller already did -- proven here by comparing validateProject's own decision (and, for an
+  // accepted one, the compiler's own compiled duration byte) against a deliberately malformed raw
+  // song with no tempo at all, which normalizeSong (shared/audio.js) coerces to framesPerRow 6 and
+  // a single default 32-row pattern -- 192 frames, well under the ceiling.
+  const project = createProject('Malformed', 'rpg');
+  project.songs = [{ name: 'No Tempo At All' }]; // no order, no patterns, no tempo
+  project.maps[0].screens[0].entities = [
+    { actorId: 0, x: 0, y: 0, props: { event: { pages: [{ cond: { type: 'none', arg: 0 }, commands: [{ op: 'sting', song: 0 }] }] } } }
+  ];
+
+  assert.deepEqual(
+    validateProject(project).filter((p) => p.severity === 'error'),
+    [],
+    'a malformed song that normalizes to a legal duration must not be refused'
+  );
+
+  const [compiled] = compileText(project).events;
+  assert.deepEqual(
+    compiled.slice(4, 7),
+    [OP_STING, 0, 192],
+    'the compiled duration must match what songFrameLength computes for the identical raw song, ' +
+      'proving its own internal normalization actually ran'
   );
 });
 

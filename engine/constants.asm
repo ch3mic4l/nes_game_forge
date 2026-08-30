@@ -559,6 +559,26 @@ TRIG_INTERACT = 0           ; the interact action, in reach -- what every event
 TRIG_TOUCH  = 1
 TRIG_ENTER  = 2             ; the screen loaded
 
+; ------------------------------------------------------------- sting RAM
+; Six arrays' worth of shadowed channel state (24 contiguous bytes, indexed
+; identically to mus_ptr_lo,x for x=0..23 -- this only works because those
+; six arrays are declared back-to-back in exactly this order in the music RAM
+; block above, with no gap and no seventh array inserted between any two of
+; them; moving one, or adding a new per-channel music array later, silently
+; breaks sting_snapshot/sting_restore's shared loop without an assembler
+; error), then the two flags and the countdown, then the shared retrigger
+; array force_trig also uses (music_channel, engine/music.asm) -- four bytes,
+; one per channel, self-clearing on use. Appended right after ent_record
+; (above, ending $0527) rather than reusing either of the two smaller
+; confirmed-free blocks elsewhere on this page ($035C-$035F, 4 bytes; the
+; documented $03D8-$03E3, 12 bytes) -- the convention this file's own
+; comments hold to elsewhere. See design-sting.md §6.
+sting_shadow        = $0528  ; @size=24, mirrors mus_ptr_lo..mus_note
+sting_shadow_song   = $0540  ; the shadowed cur_song
+sting_shadow_enabled = $0541 ; the shadowed mus_enabled
+sting_left          = $0542  ; frames left on the sting; 0 = idle
+force_trig          = $0543  ; @size=MUS_CHANNELS
+
 ; ------------------------------------------------------------ inventory RAM
 ; One id per item carried, oldest first -- an item id under ITEMS_ENABLED, or
 ; the legacy backing-actor id on the disabled economy, which never gained a
@@ -586,7 +606,9 @@ vram_buf    = $0400  ; @size=256
 ;
 ; $0600, not lower: ent_record (above) ends at $0527, and this leaves a
 ; clean page boundary between the two rather than packing the driver
-; immediately after it purely to save 216 bytes nothing else wants.
+; immediately after it purely to save the space -- sting RAM (above) now
+; uses 31 of those bytes, and flash_driver still starts cleanly at the next
+; page regardless of how many of the rest anything else ever claims.
 ;
 ; FLASH_DRIVER_MAX is a measured ceiling, not a guess: engine/flash.asm's
 ; own .if guard fails the build the moment the assembled driver grows past
@@ -901,6 +923,28 @@ OP_FLASH    = $19           ; no operand -- flash the screen to FLASH_COLOR
                             ; OP_SHAKE already have -- see flash_tick's own
                             ; comment (engine/entities.asm) for why it ticks
                             ; from main_loop rather than ui_tick.
+OP_STING    = $1A           ; [song index or NO_SONG, duration in frames] --
+                            ; pauses the current song, plays the named one
+                            ; alone through the unmodified driver, and resumes
+                            ; the original where it left off once the duration
+                            ; elapses -- unless something else asks the driver
+                            ; to play a song in the meantime, which cancels
+                            ; the resume rather than seaming into it (see
+                            ; music_play's own cancellation check below). Does
+                            ; not suspend, the same instant shape OP_FLASH
+                            ; already has. A duration of 0 means the operand
+                            ; is NO_SONG -- normalizeSong (shared/audio.js)
+                            ; guarantees every real, normalized song has a
+                            ; positive duration, so 0 cannot arise any other
+                            ; way -- and script_op_sting stops the event
+                            ; (jmp script_finish) rather than snapshotting a
+                            ; song that would never come back, the same
+                            ; family shape script_op_give/NO_ITEM and
+                            ; script_op_call/NO_COMMON_EVENT already use for
+                            ; a recognised command whose operand names
+                            ; nothing: stop, don't silently continue. See
+                            ; script_op_sting (engine/script.asm) and
+                            ; design-sting.md.
 
 ; OP_FADE's own operand. FADE_NONE is 0, unlike OP_TURN/OP_VISIBLE's own
 ; categorical operands, because both of Fade's real directions are highly

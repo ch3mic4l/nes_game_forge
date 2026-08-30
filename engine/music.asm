@@ -62,6 +62,22 @@ apply_map_music_done:
 ; rule a Code Forge routine calling this directly has no way to know.
 music_play:
   sta cur_song
+  .if STING_ENABLED
+  ; A sting borrows cur_song for its own duration (script_op_sting, engine/
+  ; script.asm), so any request that reaches here while one is playing is, by
+  ; definition, a request for something other than the sting itself --
+  ; set_music's own dedup above already caught a repeat request for the sting
+  ; song and never called this. Cancel it: A is preserved around the check
+  ; since the song index just stored is still needed below. See
+  ; design-sting.md §5, mechanism 2.
+  pha
+  lda sting_left
+  beq music_play_no_cancel
+  lda #0
+  sta sting_left
+music_play_no_cancel:
+  pla
+  .endif
   cmp #NO_SONG
   beq music_stop
   asl a
@@ -104,6 +120,14 @@ music_stop:
   sta cur_song
   lda #0
   sta mus_enabled
+  .if STING_ENABLED
+  ; init_session calls this directly, bypassing music_play/set_music entirely
+  ; -- without this, a sting mid-flight at a game over or a fresh boot would
+  ; leave sting_left counting down into the new session and eventually splice
+  ; the old session's own shadowed song state over it. A is already 0 from
+  ; the line above. See design-sting.md §5, mechanism 2.
+  sta sting_left
+  .endif
   lda #$30                  ; constant volume, zero
   sta $4000
   sta $4004
@@ -127,6 +151,20 @@ music_tick_done:
 music_channel:
   lda #0
   sta mus_trig,x
+  .if STING_ENABLED
+  ; A sting resume (sting_restore below) copies the shadowed mus_* arrays
+  ; back, but a copied mus_trig would be worthless -- the clear just above
+  ; erases it before music_apply ever runs. force_trig is a second,
+  ; self-clearing flag checked after that clear, so a restored note actually
+  ; re-hits the APU. See design-sting.md §5, mechanism 1.
+  lda force_trig,x
+  beq music_channel_noforce
+  lda #0
+  sta force_trig,x
+  lda #1
+  sta mus_trig,x
+music_channel_noforce:
+  .endif
   lda mus_dur,x
   bne music_channel_tick
   jsr music_read_event
@@ -327,3 +365,90 @@ music_volume_read:
   and #$0F
   sta mus_vol
   rts
+
+; ------------------------------------------------------------------ sting
+; Shape (b): the whole song pauses, plays a second, short song alone through
+; this same unmodified driver, and resumes exactly where it left off. See
+; design-sting.md for the full design; script_op_sting (engine/script.asm) is
+; the trigger, sting_tick below is what counts the duration down and calls
+; sting_restore when it reaches zero.
+
+  .if STING_ENABLED
+
+; Copies the six contiguous per-channel arrays (mus_ptr_lo..mus_note, 24
+; bytes, mus_trig excluded -- see music_channel's own force_trig comment for
+; why a copied mus_trig would be worthless) into sting_shadow, plus cur_song
+; and mus_enabled. Only called when sting_left == 0 (script_op_sting,
+; mechanism 4) -- a second sting arriving mid-first must not re-snapshot the
+; first sting's own state over the real song's already-shadowed one.
+sting_snapshot:
+  ldx #0
+sting_snapshot_loop:
+  lda mus_ptr_lo,x
+  sta sting_shadow,x
+  inx
+  cpx #24
+  bne sting_snapshot_loop
+  lda cur_song
+  sta sting_shadow_song
+  lda mus_enabled
+  sta sting_shadow_enabled
+  rts
+
+; The mirror copy-back, plus force-retriggering every channel (so the
+; restored notes are actually heard, not just shadowed correctly -- mechanism
+; 1) and, if the restored state was Silence, re-silencing the hardware
+; explicitly (mechanism 3): mus_enabled going back to 0 alone stops
+; music_tick from ever touching the APU again, so the sting's own last
+; written values would otherwise ring forever. The retrigger loop runs only
+; on the audible branch -- retriggering into a restored Silence would arm
+; force_trig for a channel music_channel will not visit again until some
+; later, unrelated song starts, which is harmless (a stale flag is consumed
+; inertly on that song's own first tick) but pointless to pay for, kept as
+; state hygiene rather than a correctness requirement. See design-sting.md
+; §5, mechanisms 3 and 5.
+sting_restore:
+  ldx #0
+sting_restore_loop:
+  lda sting_shadow,x
+  sta mus_ptr_lo,x
+  inx
+  cpx #24
+  bne sting_restore_loop
+  lda sting_shadow_song
+  sta cur_song
+  lda sting_shadow_enabled
+  sta mus_enabled
+  beq sting_restore_silence
+  ldx #0
+sting_retrig_loop:
+  lda #1
+  sta force_trig,x
+  inx
+  cpx #MUS_CHANNELS
+  bne sting_retrig_loop
+  rts
+sting_restore_silence:
+  lda #$30                  ; the same four writes music_stop makes
+  sta $4000
+  sta $4004
+  sta $400C
+  lda #0
+  sta $4008
+  rts
+
+; Ticked unconditionally from main_loop, immediately after music_tick (engine/
+; boot.asm) -- the relative order is load-bearing: music_tick has to apply
+; this frame's sting audio before this counter decides whether that was the
+; sting's last frame, or the resume would run one frame early and drop the
+; sting's own final note. See design-sting.md §3/§7.
+sting_tick:
+  lda sting_left
+  beq sting_tick_rts
+  dec sting_left
+  bne sting_tick_rts
+  jsr sting_restore
+sting_tick_rts:
+  rts
+
+  .endif

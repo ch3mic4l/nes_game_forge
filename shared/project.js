@@ -6,7 +6,7 @@
 // hand-edited or older project never crashes the UI.
 
 import { BLANK_TILE } from './chr.js';
-import { normalizeSong } from './audio.js';
+import { normalizeSong, NO_SONG, songByte, songFrameLength } from './audio.js';
 import { allCommands, choiceOptionsSlice, compiledPages, damageAmount, liveCommands, projectEvents } from './eventrules.js';
 import {
   DEFAULT_MAPPER,
@@ -732,7 +732,21 @@ export const EVENT_COMMANDS = [
   // operand, matching Fade's own "smallest wire format" precedent: the
   // colour (FLASH_COLOR) and hold (FLASH_TOTAL_FRAMES) are engine
   // constants, not authored.
-  { id: 'flash', label: 'Flash screen', args: [] }
+  { id: 'flash', label: 'Flash screen', args: [] },
+  // [song]. Pauses whatever song is currently playing, plays the named one alone through the
+  // unmodified driver, and resumes the original exactly where it left off once the sting's own
+  // length has elapsed -- provided nothing else asks the driver to play a song in the meantime
+  // (engine/music.asm's set_music dedup only catches a repeat request for the sting itself; any
+  // other request, the original field song included, cancels the resume rather than seaming into
+  // it). Does not suspend the script, the same non-suspending shape Turn/Shake/Visible/Flash
+  // already have -- an author who needs the script to hold for the fanfare composes Sting then
+  // Wait. No duration operand: the compiler measures the referenced song's own length (one full
+  // pass through its authored order, songFrameLength in shared/audio.js) and bakes it in, so the
+  // duration can never drift from the song the way an author-supplied one could. Unlike `music`,
+  // null/Silence is not a legitimate choice here -- there is no silence-equivalent sting -- so a
+  // live Sting naming nothing, or a song since deleted, is refused by validateProject rather than
+  // silently compiling to NO_SONG the way a stale `music` reference still does.
+  { id: 'sting', label: 'Sound sting', args: ['song'] }
 ];
 
 // A command can be switched off while you work out whether you want it, the way
@@ -782,7 +796,8 @@ export const IMPLEMENTED_COMMANDS = new Set([
   'shake',
   'visible',
   'fade',
-  'flash'
+  'flash',
+  'sting'
 ]);
 
 /**
@@ -2980,6 +2995,25 @@ export function projectUsesFlash(project) {
 }
 
 /**
+ * Drives the generated `STING_ENABLED`: `sting_snapshot`/`sting_restore`/`sting_tick`
+ * (engine/music.asm), `script_op_sting` (engine/script.asm), the `main_loop` call site
+ * (engine/boot.asm), and the `force_trig`/cancellation-check/`music_stop` additions to
+ * `music_channel`/`music_play`/`music_stop` (engine/music.asm) are all real kernel-lo code with
+ * nowhere to go unconditionally in a project that never stings anything. See
+ * handoff-sting/design-sting.md §8.
+ */
+export function projectUsesSting(project) {
+  for (const event of projectEvents(project)) {
+    for (const page of compiledPages(event)) {
+      for (const command of liveCommands(page.commands, CHOICE_LIMITS.options)) {
+        if (command.op === 'sting') return true;
+      }
+    }
+  }
+  return false;
+}
+
+/**
  * Drives the generated `PALETTE_FX_ENABLED`, gating `fade_apply_palette` and
  * the NMI PPUADDR fix (engine/entities.asm, engine/boot.asm) on their own
  * rather than bundling them into either `FADE_ENABLED` or `FLASH_ENABLED`
@@ -3543,6 +3577,46 @@ export function validateProject(project) {
       'Map Forge',
       `${missingGiveTake} Give item / Take item command${missingGiveTake === 1 ? '' : 's'} do not name a real ` +
         'item. Pick an item or switch the command off.'
+    );
+  }
+
+  // A Sting naming nothing, or a song since deleted, is the Give/Take shape (itemMissing above),
+  // not music's own silent-NO_SONG-for-Silence shape -- Silence is a legitimate `music` choice,
+  // but there is no silence-equivalent sting, so NO_SONG here can only mean "never picked" or
+  // "picked, then deleted." songByte collapses both to NO_SONG identically, which is why one check
+  // catches both. songFrameLength (shared/audio.js) is the same duration textcompile.js's own
+  // 'sting' case computes, imported from the one shared place rather than reimplemented here, so
+  // the two can never independently drift on what a given song's duration is.
+  let missingStings = 0;
+  let overlongStings = 0;
+  for (const event of projectEvents(project)) {
+    for (const page of compiledPages(event)) {
+      for (const command of liveCommands(page.commands, CHOICE_LIMITS.options)) {
+        if (command.op !== 'sting') continue;
+        const songIndex = songByte(project.songs, command.song);
+        if (songIndex === NO_SONG) {
+          missingStings++;
+        } else if (songFrameLength(project.songs[songIndex]) > 255) {
+          overlongStings++;
+        }
+      }
+    }
+  }
+  if (missingStings) {
+    add(
+      'error',
+      'Map Forge',
+      `${missingStings} Sound sting command${missingStings === 1 ? '' : 's'} do not name a real ` +
+        'song. Pick a song or switch the command off.'
+    );
+  }
+  if (overlongStings) {
+    add(
+      'error',
+      'Map Forge',
+      `${overlongStings} Sound sting command${overlongStings === 1 ? '' : 's'} name a song that ` +
+        'takes longer than 255 frames (4.25s) to complete its own first pass. Shorten the song ' +
+        'or pick a different one.'
     );
   }
 

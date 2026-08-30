@@ -143,3 +143,47 @@ export function normalizeSong(raw, name = 'Song') {
     loop: clamp(raw.loop, 0, order.length - 1, 0)
   };
 }
+
+/** No song: Silence for `music`, and an unresolved/deleted reference for `sting`. */
+export const NO_SONG = 0xff;
+
+/** Resolve an authored song reference to a compiled byte, NO_SONG for anything that doesn't. */
+export function songByte(songs, id) {
+  if (id === null || id === undefined) return NO_SONG;
+  const n = Number(id);
+  return Number.isInteger(n) && n >= 0 && n < (songs?.length ?? 0) ? n : NO_SONG;
+}
+
+/**
+ * Flatten the order list into a single row timeline, and note which row the loop returns to.
+ * Moved from main/build/songcompile.js's own private timeline(): purely structural (song order
+ * and pattern row counts, the loop index), no per-channel note/instrument data, so it has no
+ * main/build dependency and can be shared by the compiler and validateProject alike. Takes an
+ * ALREADY-NORMALIZED song, the same boundary compileSong's own caller always assumed --
+ * songFrameLength below is the raw-song entry point every other caller should use instead.
+ */
+export function songTimeline(normalizedSong) {
+  const rows = [];
+  let loopRow = 0;
+  normalizedSong.order.forEach((patternId, orderIndex) => {
+    if (orderIndex === normalizedSong.loop) loopRow = rows.length;
+    const pattern = normalizedSong.patterns[patternId] ?? normalizedSong.patterns[0];
+    for (let row = 0; row < pattern.rows; row++) rows.push({ pattern, row });
+  });
+  return { rows, loopRow };
+}
+
+/**
+ * A song's own duration as a Sting: one full pass through every row of song.order before the
+ * first loop-back -- rows.length, not loopRow (see handoff-sting/design-sting.md §4: loopRow is
+ * the loop's *target*, not the point the first loop-back happens). Normalizes its own input --
+ * the single place this boundary is enforced, not duplicated at each call site -- so a direct
+ * caller (the compiler, validateProject) can hand it a raw, possibly hand-edited or legacy song
+ * exactly the way compileSong's own callers already can, and get the identical duration
+ * compileSong itself would compute. Returns frames, uncapped; the 255-frame Sting ceiling is
+ * enforced by callers, not here, so this stays a fact about the song, not a policy about Sting.
+ */
+export function songFrameLength(rawSong) {
+  const song = normalizeSong(rawSong);
+  return songTimeline(song).rows.length * song.tempo.framesPerRow;
+}

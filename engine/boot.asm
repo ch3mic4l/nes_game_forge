@@ -103,6 +103,21 @@ main_loop:
   jsr wait_vblank
   jsr read_pad
   jsr music_tick            ; music keeps playing while the world is paused
+  .if STING_ENABLED
+  jsr sting_tick             ; must come after music_tick -- music_tick is
+                              ; what actually plays this frame's sting audio,
+                              ; and sting_tick's own countdown decides, on the
+                              ; same frame, whether that was the sting's last
+                              ; one. The reverse order would run sting_restore
+                              ; before this frame's music_tick, so the resumed
+                              ; song would play one frame early and the
+                              ; sting's own final frame of audio would be
+                              ; silently dropped -- see design-sting.md §3/§7.
+                              ; Placed immediately after music_tick as a
+                              ; source-adjacency convention, not because
+                              ; anything downstream (flash_tick included)
+                              ; depends on the exact distance between them.
+  .endif
   .if FLASH_ENABLED
   jsr flash_tick             ; a Flash burst keeps counting down whether the
                               ; world is frozen or running -- see its own

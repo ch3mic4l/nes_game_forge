@@ -49,10 +49,12 @@ import {
   SPLIT_LOCK_KERNEL_ALLOWANCE,
   ITEM_KERNEL_ALLOWANCE,
   ITEM_EFFECT_KERNEL_ALLOWANCE_BY_GAME_TYPE,
-  itemEffectKernelAllowance
+  itemEffectKernelAllowance,
+  STING_KERNEL_ALLOWANCE
 } from '../../main/build/generate.js';
 import { SUPPORTED_MAPPERS, rpgCapable, saveMediaImplemented, prgLayout } from '../../shared/cartridge.js';
 import { createTileset, createProject, projectUsesItems } from '../../shared/project.js';
+import { createSong } from '../../shared/audio.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const SAMPLE_RPG = path.join(ROOT, 'sample-rpg');
@@ -105,6 +107,7 @@ async function measureCodeBytes(
     withVisible = false,
     withFade = false,
     withFlash = false,
+    withSting = false,
     withTitle = false,
     withItems = true
   } = {}
@@ -132,6 +135,13 @@ async function measureCodeBytes(
   if (withVisible) commands.push({ op: 'visible', state: 'hidden' });
   if (withFade) commands.push({ op: 'fade', dir: 'out' });
   if (withFlash) commands.push({ op: 'flash' });
+  if (withSting) {
+    // sample-rpg carries no songs by default -- add one only if none exists,
+    // so a caller that also wants withItems-style isolation against a
+    // project that already has songs is not surprised by an extra one.
+    if (!project.songs?.length) project.songs = [createSong('Sting Song')];
+    commands.push({ op: 'sting', song: 0 });
+  }
   if (commands.length) {
     project.maps[0].screens[0].entities.push({
       actorId: 0,
@@ -2033,3 +2043,125 @@ test('a kernel-lo shortfall with no live Flash command never names Flash as drop
     'this project never turns Flash on, so it must never be offered as a fix -- neither solo nor as part of a combination'
   );
 });
+
+// ------------------------------------------------------------------ Sting
+// Item 6, sound-effect slice (handoff-sting/design-sting.md §12, tests 3/15). Two questions this
+// file's own discipline already applies to every other allowance: is STING_KERNEL_ALLOWANCE flat
+// across every RPG-capable board (equality, not merely covered), and does the split-lock dependent
+// term ride along with it correctly (design-sting.md §8, the identical shape projectUsesFace's own
+// comment already describes for Move/Turn)?
+
+test(
+  'STING_KERNEL_ALLOWANCE covers the real, isolated cost of a live Sting exactly, on every RPG-capable board',
+  { skip: !hasNesasm && 'nesasm not found on PATH' },
+  async (t) => {
+    // withMove: true as the baseline on both sides, not a no-command baseline: a bare Sting-only
+    // delta on MMC3 would also turn split-lock on (any surviving event does, projectUsesText), so
+    // comparing against a baseline that already has a different, surviving event (Move) isolates
+    // Sting's own cost from split-lock's -- split-lock is already charged on both sides of this
+    // diff and cancels out, the same isolation this file's own ITEM_KERNEL_ALLOWANCE measurement
+    // above already uses against the noSave baseline.
+    for (const mapper of CAPABLE_MAPPERS) {
+      const without = await measureCodeBytes(t, mapper, { withMove: true });
+      const withSting = await measureCodeBytes(t, mapper, { withMove: true, withSting: true });
+      const delta = withSting.codeBytes - without.codeBytes;
+      assert.equal(
+        delta,
+        STING_KERNEL_ALLOWANCE,
+        `${mapper.name}: a live Sting costs ${delta} bytes of kernel code (${without.codeBytes} -> ` +
+          `${withSting.codeBytes}), but STING_KERNEL_ALLOWANCE reserves ${STING_KERNEL_ALLOWANCE} — this ` +
+          'allowance must equal Sting\'s real cost exactly, on every board (design-sting.md §8 claims it is ' +
+          'flat; this is what actually proves it, not merely assumes it). Re-measure and correct it.'
+      );
+    }
+  }
+);
+
+// The dependent-term case round-1 finding 11 added: on MMC3, a project whose *sole* live event is
+// a Sting-only command is the project's only reason fontBankSplit (shared/font.js) turns
+// SPLIT_LOCK_KERNEL_ALLOWANCE on at all -- projectUsesText counts any surviving event, a
+// Sting-only one included, the identical shape CLAUDE.md already documents for a Move-only event
+// (and the test above it, in this file). Calibrated the same way that one was: a deficit strictly
+// above STING_KERNEL_ALLOWANCE alone (175) and at or below the combined figure (194 = 175 + 19),
+// so 175 alone provably would not close the gap but 194 does -- inflate(169) lands it at 190,
+// found by direct measurement against a real checkCapacity() run, not derived by arithmetic.
+test('a kernel-lo shortfall Sting alone would not close by its own allowance can still close when dropping it also turns off split-lock', () => {
+  const project = createProject('Action', 'action');
+  project.cartridge.mapper = 4; // MMC3
+  project.songs = [createSong('Fanfare')];
+  // The project's only event, and its only command -- the project's sole reason projectUsesText
+  // (and so fontBankSplit) is true at all.
+  project.maps[0].screens[0].entities.push({
+    actorId: 0,
+    x: 16,
+    y: 16,
+    props: { event: { pages: [{ cond: { type: 'none', arg: 0 }, commands: [{ op: 'sting', song: 0 }] }] } }
+  });
+  inflate(project, 169); // deficit 190, strictly above 175 and at or below 194
+  const deficit = kernelShortfallDeficit(project);
+  assert.ok(
+    deficit > STING_KERNEL_ALLOWANCE,
+    `deficit ${deficit} must exceed STING_KERNEL_ALLOWANCE (${STING_KERNEL_ALLOWANCE}) alone, or this case ` +
+      'does not exercise split-lock being freed alongside Sting at all'
+  );
+  assert.ok(
+    deficit <= STING_KERNEL_ALLOWANCE + SPLIT_LOCK_KERNEL_ALLOWANCE,
+    `deficit ${deficit} must not exceed STING_KERNEL_ALLOWANCE + SPLIT_LOCK_KERNEL_ALLOWANCE ` +
+      `(${STING_KERNEL_ALLOWANCE + SPLIT_LOCK_KERNEL_ALLOWANCE}), or dropping Sting would not close the gap either`
+  );
+  const message = kernelShortfallMessage(project);
+  assert.match(
+    message,
+    new RegExp(`removing every Sting command \\(frees ${STING_KERNEL_ALLOWANCE + SPLIT_LOCK_KERNEL_ALLOWANCE} bytes\\)`),
+    'an implementation that sums the flat STING_KERNEL_ALLOWANCE constant directly instead of asking ' +
+      'kernelCodeBytes what a Sting-free version of the project would actually cost would report ' +
+      `${STING_KERNEL_ALLOWANCE} alone here, wrong by exactly the split-lock term`
+  );
+});
+
+// design-sting.md §9: the new documented limitation Sting creates. MMC3 Save+Move-no-item has
+// exactly 88 free (handoff-costing/costing-report.md Part 1's own MMC3 table, and CLAUDE.md's own
+// documented figure) -- STING_KERNEL_ALLOWANCE (175) exceeds that by more than double, so a live
+// Sting on this exact configuration is a clean, unambiguous NO FIT, not a close call.
+test(
+  'sample-rpg with Save, Move (no item) and a live Sting does not build on MMC3 -- a documented limitation',
+  { skip: !hasNesasm && 'nesasm not found on PATH' },
+  async (t) => {
+    const project = await loadProject(SAMPLE_RPG);
+    project.cartridge.mapper = 4; // MMC3
+    project.project.titleMap = 0;
+    project.project.titleScreen = 0;
+    project.items = []; // isolate the no-item row this refusal actually lands on
+    project.songs = [createSong('Fanfare')];
+    project.maps[0].screens[0].entities.push(saveAndMoveEvent());
+    project.maps[0].screens[0].entities.push({
+      actorId: 0,
+      x: 32,
+      y: 32,
+      props: { event: { pages: [{ cond: { type: 'none', arg: 0 }, commands: [{ op: 'sting', song: 0 }] }] } }
+    });
+
+    const message = kernelShortfallMessage(project);
+    assert.match(
+      message,
+      // Not anchored to "removing every Sting command" at the start of the message: this
+      // configuration also carries a live Move and a live Save, both real droppable fixes of
+      // their own, so the advice offers all three ("...or every Sting command (frees N bytes)
+      // or...") -- Sting's own presence and its real byte figure are what this asserts, not
+      // where in the list it happens to land.
+      new RegExp(`every Sting command \\(frees ${STING_KERNEL_ALLOWANCE} bytes\\)`),
+      'the refusal should name Sting and its real byte figure, the same discipline every other documented ' +
+        'limitation in this file is held to'
+    );
+
+    // Confirm the design's own stated mitigation: dropping Sting alone is a real fix, the exact
+    // same shape checkCapacity's own advice already offers for Move/Save elsewhere.
+    const droppedSting = structuredClone(project);
+    droppedSting.maps[0].screens[0].entities.pop();
+    const dir = await fsp.mkdtemp(path.join(os.tmpdir(), 'forge-sting-limitation-'));
+    t.after(() => fsp.rm(dir, { recursive: true, force: true }));
+    await saveProject(dir, droppedSting);
+    const built = await buildProject({ dir, project: droppedSting, log: () => {} });
+    assert.ok(built.romPath, 'dropping the Sting command should still be a real fix');
+  }
+);
