@@ -82,6 +82,34 @@ export function drawCollisionOverlay(context, screen, metatiles, zoom) {
   }
 }
 
+/**
+ * Switch-bound tile overlay (design-tile.md §10). Always draws a small
+ * corner marker at every bound cell -- distinct from the collision tint's
+ * own full-cell fill so the two overlays stay legible together -- and, when
+ * `previewOn`, additionally draws the *substitute* metatile's own art over
+ * the cell via `renderer.draw`, independent of any runtime switch state
+ * since this is pure Map Forge preview.
+ */
+export function drawBoundTileOverlay(context, screen, metatiles, zoom, previewOn, renderer) {
+  const size = METATILE_PX * zoom;
+  const bound = screen.boundTiles ?? [];
+  for (const entry of bound) {
+    const x = entry.col * size;
+    const y = entry.row * size;
+    if (previewOn) {
+      renderer.draw(context, entry.metatileId, x, y, size);
+    }
+    const markerSize = Math.max(4, Math.round(size * 0.35));
+    context.fillStyle = 'rgba(255, 215, 64, 0.9)';
+    context.beginPath();
+    context.moveTo(x, y);
+    context.lineTo(x + markerSize, y);
+    context.lineTo(x, y + markerSize);
+    context.closePath();
+    context.fill();
+  }
+}
+
 /** 16x16 metatile grid, with the 32x32 attribute blocks drawn more strongly. */
 export function drawGridOverlay(context, zoom) {
   const size = METATILE_PX * zoom;

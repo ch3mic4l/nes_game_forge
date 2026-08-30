@@ -50,10 +50,15 @@ import {
   ITEM_KERNEL_ALLOWANCE,
   ITEM_EFFECT_KERNEL_ALLOWANCE_BY_GAME_TYPE,
   itemEffectKernelAllowance,
-  STING_KERNEL_ALLOWANCE
+  STING_KERNEL_ALLOWANCE,
+  BOUND_TILE_KERNEL_ALLOWANCE,
+  BOUND_TILE_RECORD,
+  screenCapacityFor,
+  flattenScreens,
+  kernelTableBytes
 } from '../../main/build/generate.js';
 import { SUPPORTED_MAPPERS, rpgCapable, saveMediaImplemented, prgLayout } from '../../shared/cartridge.js';
-import { createTileset, createProject, projectUsesItems } from '../../shared/project.js';
+import { createTileset, createProject, projectUsesItems, projectUsesBoundTiles } from '../../shared/project.js';
 import { createSong } from '../../shared/audio.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
@@ -109,7 +114,8 @@ async function measureCodeBytes(
     withFlash = false,
     withSting = false,
     withTitle = false,
-    withItems = true
+    withItems = true,
+    withBoundTiles = false
   } = {}
 ) {
   const dir = await fsp.mkdtemp(path.join(os.tmpdir(), 'forge-kernelbytes-'));
@@ -149,6 +155,15 @@ async function measureCodeBytes(
       y: 16,
       props: { event: { pages: [{ cond: { type: 'none', arg: 0 }, commands }] } }
     });
+  }
+  // Screen data, not a command -- reuses whatever is already painted at (0,0)
+  // as its own substitute, which trivially shares the painted cell's palette
+  // (validateProject's own range->duplicate->palette rule), so this needs no
+  // second metatile slot of its own.
+  if (withBoundTiles) {
+    const screen = project.maps[0].screens[0];
+    const paintedId = screen.metatiles[0];
+    screen.boundTiles = [{ switchId: 0, row: 0, col: 0, metatileId: paintedId }];
   }
   await saveProject(dir, project);
   const lines = [];
@@ -2163,5 +2178,117 @@ test(
     await saveProject(dir, droppedSting);
     const built = await buildProject({ dir, project: droppedSting, log: () => {} });
     assert.ok(built.romPath, 'dropping the Sting command should still be a real fix');
+  }
+);
+
+// ------------------------------------------------------------- Bound tiles
+// design-tile.md §7/§8/§9. Unlike Move/Sting, a bound tile is authored screen
+// data, not an event command -- it adds no dialogue, event or title content
+// of its own, so it never turns projectUsesText (and so fontBankSplit) on by
+// itself: on sample-rpg, projectUsesText is already true unconditionally
+// (gameType === 'rpg'), and on a fresh action project a bound tile alone
+// still leaves it false. There is therefore no split-lock dependent term to
+// isolate against here the way Move/Sting both need -- a bare baseline is
+// the correct isolation, the same one ITEM_KERNEL_ALLOWANCE's own
+// measurement already uses.
+//
+// bound_row_lo/bound_row_hi (the 15+15-entry table BOUND_TILE_ENABLED emits
+// into metatiles.inc) live in the *pre-reset* portion of the kernel-lo bank
+// -- the lookup tables measureCodeBytes deliberately strips out via the
+// reset symbol's own address -- so they are counted by kernelTableBytes'
+// own fixedBytes term, not by this delta at all; only code from
+// bound_tile_lookup/rebuild_bound_cache/tile_switch_changed/
+// queue_or_defer_flip/flip_cell_blocked/flip_emit/flip_emit_packet/flip_tick
+// and their .if BOUND_TILE_ENABLED call sites shows up here.
+test(
+  'BOUND_TILE_KERNEL_ALLOWANCE covers the real, isolated cost of a live bound tile exactly, on every RPG-capable board',
+  { skip: !hasNesasm && 'nesasm not found on PATH' },
+  async (t) => {
+    for (const mapper of CAPABLE_MAPPERS) {
+      const without = await measureCodeBytes(t, mapper, {});
+      const withBound = await measureCodeBytes(t, mapper, { withBoundTiles: true });
+      const delta = withBound.codeBytes - without.codeBytes;
+      assert.equal(
+        delta,
+        BOUND_TILE_KERNEL_ALLOWANCE,
+        `${mapper.name}: a live bound tile costs ${delta} bytes of kernel code (${without.codeBytes} -> ` +
+          `${withBound.codeBytes}), but BOUND_TILE_KERNEL_ALLOWANCE reserves ${BOUND_TILE_KERNEL_ALLOWANCE} — ` +
+          'this allowance must equal the real cost exactly, on every board. Re-measure and correct it.'
+      );
+    }
+  }
+);
+
+// design-tile.md §9's own new documented-limitation ledger paragraph: MMC3
+// Save+Move-no-item has 88 bytes free (CLAUDE.md's own documented figure,
+// the row Sting's own documented limitation already lands on) --
+// BOUND_TILE_KERNEL_ALLOWANCE plus the fixed/table terms a bound tile also
+// carries (design-tile.md §8's own occupancy accounting) exceeds that by a
+// wide margin, so a live bound tile on this exact configuration is a clean
+// NO FIT, the same shape as Sting's own refusal a few tests up.
+test(
+  'sample-rpg with Save, Move (no item) and a live bound tile does not build on MMC3 -- a documented limitation',
+  { skip: !hasNesasm && 'nesasm not found on PATH' },
+  async (t) => {
+    const project = await loadProject(SAMPLE_RPG);
+    project.cartridge.mapper = 4; // MMC3
+    project.project.titleMap = 0;
+    project.project.titleScreen = 0;
+    project.items = []; // isolate the no-item row this refusal actually lands on
+    project.maps[0].screens[0].entities.push(saveAndMoveEvent());
+    const paintedId = project.maps[0].screens[0].metatiles[0];
+    project.maps[0].screens[0].boundTiles = [{ switchId: 0, row: 0, col: 0, metatileId: paintedId }];
+
+    const message = kernelShortfallMessage(project);
+    assert.match(
+      message,
+      new RegExp(`every switch-bound tile \\(frees \\d+ bytes\\)`),
+      'the refusal should name switch-bound tiles as one of its droppable fixes, the same discipline every ' +
+        'other documented limitation in this file is held to'
+    );
+
+    // Confirm the design's own stated mitigation: dropping the bound tile
+    // alone is a real fix.
+    const droppedBound = structuredClone(project);
+    droppedBound.maps[0].screens[0].boundTiles = [];
+    const dir = await fsp.mkdtemp(path.join(os.tmpdir(), 'forge-boundtile-limitation-mmc3-'));
+    t.after(() => fsp.rm(dir, { recursive: true, force: true }));
+    await saveProject(dir, droppedBound);
+    const built = await buildProject({ dir, project: droppedBound, log: () => {} });
+    assert.ok(built.romPath, 'dropping the bound tile should still be a real fix');
+  }
+);
+
+// design-tile.md §9: MMC1 Save+Move+item is the one RPG-capable-board
+// configuration comfortable enough (220 bytes free, per this file's own
+// Save+Move+item narrative) to absorb everything else measured against it --
+// until a bound tile is added on top, per the design's own occupancy
+// accounting.
+test(
+  'sample-rpg with Save, Move and its one live item does not build on MMC1 once a bound tile is added -- a documented limitation',
+  { skip: !hasNesasm && 'nesasm not found on PATH' },
+  async (t) => {
+    const project = await loadProject(SAMPLE_RPG);
+    project.cartridge.mapper = 1; // MMC1
+    project.project.titleMap = 0;
+    project.project.titleScreen = 0;
+    project.maps[0].screens[0].entities.push(saveAndMoveEvent());
+    const paintedId = project.maps[0].screens[0].metatiles[0];
+    project.maps[0].screens[0].boundTiles = [{ switchId: 0, row: 0, col: 0, metatileId: paintedId }];
+
+    const message = kernelShortfallMessage(project);
+    assert.match(
+      message,
+      new RegExp(`every switch-bound tile \\(frees \\d+ bytes\\)`),
+      'the refusal should name switch-bound tiles as one of its droppable fixes'
+    );
+
+    const droppedBound = structuredClone(project);
+    droppedBound.maps[0].screens[0].boundTiles = [];
+    const dir = await fsp.mkdtemp(path.join(os.tmpdir(), 'forge-boundtile-limitation-mmc1-'));
+    t.after(() => fsp.rm(dir, { recursive: true, force: true }));
+    await saveProject(dir, droppedBound);
+    const built = await buildProject({ dir, project: droppedBound, log: () => {} });
+    assert.ok(built.romPath, 'dropping the bound tile should still be a real fix, leaving Save+Move+item to build as before');
   }
 );

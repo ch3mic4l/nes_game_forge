@@ -155,6 +155,25 @@ const KNOWN_MAX_SIZES = {
   bt_list: 8
 };
 
+/**
+ * Deliberate zero-page aliases -- two names for the same byte(s), on
+ * purpose, because the caller of one never runs while the caller of the
+ * other is live and zero page has nothing spare left to give a second
+ * scratch pointer of its own. `bdptr_lo`/`bdptr_hi` (engine/constants.asm,
+ * design-tile.md §3/§11) reuse `spawn_entities`' own `esptr_lo`/`esptr_hi`
+ * for exactly this reason -- see esptr_lo's own comment for the lifetime
+ * contract that makes it safe. An entry here is a claim that has to keep
+ * being true; it is not a way to silence a real collision.
+ */
+const KNOWN_ALIASES = new Map([
+  ['bdptr_lo', 'esptr_lo'],
+  ['bdptr_hi', 'esptr_hi']
+]);
+
+function isKnownAlias(a, b) {
+  return KNOWN_ALIASES.get(a) === b || KNOWN_ALIASES.get(b) === a;
+}
+
 /** Resolve one KNOWN_MAX_SIZES entry to a number, against the same `symbols` the RAM addresses themselves resolved through. */
 function resolveKnownSize(spec, symbols) {
   if (typeof spec === 'number') return spec;
@@ -180,10 +199,18 @@ function scanEquates(text, pending) {
     const hex = expr.match(/^\$([0-9A-Fa-f]+)$/);
     const dec = expr.match(/^(\d+)$/);
     const sum = expr.match(/^([A-Za-z_][A-Za-z0-9_]*)\s*\+\s*([A-Za-z_][A-Za-z0-9_]*|\d+)$/);
+    // BOUND_BOX_FIRST_CELL = BOX_MT_ROW*16 (engine/constants.asm) is the first
+    // equate to need this: a deliberate multiplicative relationship, kept as
+    // an expression rather than the literal 192 so the two can never drift
+    // apart (see that equate's own comment). Not a RAM address itself --
+    // isRamName excludes it downstream -- but scanEquates parses every `NAME
+    // = expr` line in the file, so it still has to fit a grammar shape.
+    const product = expr.match(/^([A-Za-z_][A-Za-z0-9_]*)\s*\*\s*([A-Za-z_][A-Za-z0-9_]*|\d+)$/);
     const bare = expr.match(/^([A-Za-z_][A-Za-z0-9_]*)$/);
     if (hex) pending.set(name, { kind: 'literal', value: parseInt(hex[1], 16) });
     else if (dec) pending.set(name, { kind: 'literal', value: parseInt(dec[1], 10) });
     else if (sum) pending.set(name, { kind: 'sum', base: sum[1], add: sum[2] });
+    else if (product) pending.set(name, { kind: 'product', base: product[1], mul: product[2] });
     else if (bare) pending.set(name, { kind: 'bare', ref: bare[1] });
     else {
       // A future equate genuinely can need a wider grammar than this -- the
@@ -192,7 +219,7 @@ function scanEquates(text, pending) {
       // audit the way `continue` here would.
       throw new Error(
         `${name} = ${expr} does not fit the restricted equate grammar this guard parses (literal $hex/decimal, ` +
-          `a bare name, or name+token). Widen scanEquates deliberately, or fix the line.`
+          `a bare name, name+token, or name*token). Widen scanEquates deliberately, or fix the line.`
       );
     }
   }
@@ -220,6 +247,11 @@ function resolveEquates(pending, symbols) {
         const add = /^\d+$/.test(spec.add) ? parseInt(spec.add, 10) : symbols.get(spec.add);
         if (base === undefined || add === undefined) continue;
         value = base + add;
+      } else if (spec.kind === 'product') {
+        const base = symbols.get(spec.base);
+        const mul = /^\d+$/.test(spec.mul) ? parseInt(spec.mul, 10) : symbols.get(spec.mul);
+        if (base === undefined || mul === undefined) continue;
+        value = base * mul;
       } else {
         const v = symbols.get(spec.ref);
         if (v === undefined) continue;
@@ -336,6 +368,18 @@ function auditRamMap(constantsText, configText) {
     for (let i = 1; i < intervals.length; i++) {
       const prev = intervals[i - 1];
       const cur = intervals[i];
+      if (isKnownAlias(prev.name, cur.name)) {
+        // A real alias occupies exactly the same bytes as what it aliases --
+        // anything else (a different size, or a start that only partly
+        // overlaps) is not the documented relationship and must still fail.
+        assert.equal(
+          `${prev.start}:${prev.size}`,
+          `${cur.start}:${cur.size}`,
+          `${prev.name} and ${cur.name} are a documented alias but no longer occupy the same bytes -- ` +
+            'either the alias has drifted into a real collision, or KNOWN_ALIASES needs updating'
+        );
+        continue;
+      }
       assert.ok(
         prev.end < cur.start,
         `${prev.name} ($${prev.start.toString(16)}, ${prev.size} byte${prev.size === 1 ? '' : 's'}, through ` +

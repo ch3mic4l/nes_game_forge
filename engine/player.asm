@@ -244,7 +244,11 @@ probe_type:
   clc
   adc tmp
   tay
+  .if BOUND_TILE_ENABLED
+  jsr bound_tile_lookup
+  .else
   lda [mtptr_lo],y
+  .endif
   tay
   lda mt_collision,y
   rts

@@ -71,6 +71,7 @@ import {
   projectUsesFace,
   projectUsesItems,
   projectUsesSting,
+  projectUsesBoundTiles,
   projectEvents,
   allCommands,
   mapEncounterFormation,
@@ -640,6 +641,38 @@ export function itemEffectKernelAllowance(project) {
 // instructions, but nesasm assembles each as a three-byte absolute instruction, so 171 + 4 = 175 --
 // exactly the kind of small addressing-mode slip measurement exists to catch rather than trust.
 export const STING_KERNEL_ALLOWANCE = 175;
+// design-tile.md §8: bound_tile_lookup, rebuild_bound_cache, the
+// script_op_set/script_op_clear hooks, tile_switch_changed,
+// queue_or_defer_flip (with dedupe), flip_cell_blocked, flip_emit/
+// flip_emit_packet, flip_tick plus its main_loop call site, the four
+// draw_screen/probe_type/text_close_step lookup-swap call sites, and the
+// vram_reset pending-queue clear -- measured per-board
+// (kernelbytes.test.js), flat across MMC1/MMC3/UNROM 512 exactly as
+// STING_KERNEL_ALLOWANCE's own comment already found for a different
+// feature. Not the design's own 382-byte estimate: nesasm's symbol table
+// (game.fns, a real build) puts bound_tile_lookup+rebuild_bound_cache
+// (engine/screens.asm) at 93 bytes -- not 90, corrected in code-fixes
+// round 1: the routine's own tail, `stx bind_count` (rbc_done), is a
+// 3-byte absolute store, not a 2-byte zero-page one, since bind_count lives
+// at $0557, outside zero page -- the exact "$0300+ addressing costs 3
+// bytes, not 2" pattern STING_KERNEL_ALLOWANCE's own comment already found
+// for cur_song/mus_enabled; the first measurement counted the label span
+// bound_tile_lookup..rbc_done rather than through rbc_done's own body, and
+// undercounted by those same 3 bytes. The script.asm block --
+// flip_cell_blocked through tile_switch_changed -- measures 218, a few
+// bytes under the design's 225 estimate; flip_tick (engine/entities.asm)
+// measures exactly the estimated 54. The remaining 23 bytes are the four
+// lookup-swap call sites (each trades a 2-byte `lda [mtptr_lo],y` for a
+// 3-byte `jsr bound_tile_lookup`, +1 apiece = 4), the two new unconditional
+// call sites (`jsr rebuild_bound_cache` in redraw_screen, `jsr flip_tick`
+// in main_loop, 3 bytes each = 6), the vram_reset clear (`sta
+// flip_pending_count`, 3 bytes -- absolute, not zero-page, the same pattern
+// as rbc_done's own `stx bind_count` above), and the script_op_set/
+// script_op_clear pha/pla/jsr wrapping (5 bytes each site = 10). 93 + 54 +
+// 218 + 23 = 388 exactly, with nothing left unaccounted -- see
+// handoff-tile/tile-code-fixes1-report.md for the full symbol-span trace
+// this correction came from.
+export const BOUND_TILE_KERNEL_ALLOWANCE = 388;
 export const KERNEL_SLACK = 20;
 
 export function kernelCodeBytes(project, mapper) {
@@ -696,6 +729,7 @@ export function kernelCodeBytes(project, mapper) {
   const usesSplitLock = fontBankSplit(project, mapper);
   const usesItems = projectUsesItems(project);
   const usesSting = projectUsesSting(project);
+  const usesBoundTiles = projectUsesBoundTiles(project);
   return (
     baseKernelCodeBytes(mapper) +
     (usesTitle ? titleKernelAllowance(mapper) : 0) +
@@ -712,6 +746,7 @@ export function kernelCodeBytes(project, mapper) {
     (usesSplitLock ? SPLIT_LOCK_KERNEL_ALLOWANCE : 0) +
     (usesItems ? ITEM_KERNEL_ALLOWANCE + itemEffectKernelAllowance(project) : 0) +
     (usesSting ? STING_KERNEL_ALLOWANCE : 0) +
+    (usesBoundTiles ? BOUND_TILE_KERNEL_ALLOWANCE : 0) +
     KERNEL_SLACK
   );
 }
@@ -820,6 +855,10 @@ export function switchableMappers(project, mapper, { checkBattleRegion = true } 
   const bankedCode = codeRegionCount(project);
   const actorCount = project.sprites.actors.length;
   const { fixedBytes, tableBytes } = kernelTableBytes(project);
+  // Computed once and reused for every candidate: switching mapper candidates
+  // never changes which screens author bound tiles, only cartridge fields
+  // (design-tile.md §8).
+  const boundTilesEnabled = projectUsesBoundTiles(project);
 
   return SUPPORTED_MAPPERS.filter((candidate) => candidate.id !== mapper.id)
     .filter((candidate) => !isRpg || rpgCapable(candidate))
@@ -879,7 +918,8 @@ export function switchableMappers(project, mapper, { checkBattleRegion = true } 
           bankedCode,
           flat,
           actorCount,
-          reservesFlashSaveRegion(wantsSave, candidate)
+          reservesFlashSaveRegion(wantsSave, candidate),
+          boundTilesEnabled
         ) < flat.length
       ) {
         return false;
@@ -927,6 +967,12 @@ export function switchableMappers(project, mapper, { checkBattleRegion = true } 
  * mirroring choice the moment the author applied it. Reads the project only;
  * never mutates it.
  */
+function projectWithoutBoundTiles(project) {
+  const clone = structuredClone(project);
+  for (const map of clone.maps) for (const screen of map.screens) screen.boundTiles = [];
+  return clone;
+}
+
 function kernelShortfallAdvice(project, mapper, deficit) {
   // saveMediaImplemented for the same reason kernelCodeBytes itself reads it:
   // "active" below feeds freedByDropping, which calls kernelCodeBytes, so
@@ -940,20 +986,31 @@ function kernelShortfallAdvice(project, mapper, deficit) {
   const usesFade = projectUsesFade(project);
   const usesFlash = projectUsesFlash(project);
   const usesSting = projectUsesSting(project);
+  // design-tile.md §8: its own local declaration, independent of
+  // kernelCodeBytes's/generateAssets's own locals of the same name -- the
+  // usesSting three-scope precedent, not a value threaded across a function
+  // boundary.
+  const usesBoundTiles = projectUsesBoundTiles(project);
   // "Every" rather than "the": a project can carry more than one live Move or
   // Save command (several actors, several pages), and removing just one of
   // several does not free anything at all -- kernelCodeBytes only drops the
   // term once *no* live occurrence remains (projectUsesSave/projectUsesMove).
   const active = [];
-  if (usesMove) active.push({ op: 'move', label: 'every Move command' });
-  if (usesTurn) active.push({ op: 'turn', label: 'every Turn command' });
-  if (usesWait) active.push({ op: 'wait', label: 'every Wait command' });
-  if (usesShake) active.push({ op: 'shake', label: 'every Shake command' });
-  if (usesVisible) active.push({ op: 'visible', label: 'every Show/Hide command' });
-  if (usesFade) active.push({ op: 'fade', label: 'every Fade command' });
-  if (usesFlash) active.push({ op: 'flash', label: 'every Flash command' });
-  if (usesSting) active.push({ op: 'sting', label: 'every Sting command' });
-  if (usesSave) active.push({ op: 'save', label: 'every Save command' });
+  if (usesMove) active.push({ label: 'every Move command', strip: (p) => projectWithoutCommands(p, ['move']) });
+  if (usesTurn) active.push({ label: 'every Turn command', strip: (p) => projectWithoutCommands(p, ['turn']) });
+  if (usesWait) active.push({ label: 'every Wait command', strip: (p) => projectWithoutCommands(p, ['wait']) });
+  if (usesShake) active.push({ label: 'every Shake command', strip: (p) => projectWithoutCommands(p, ['shake']) });
+  if (usesVisible) {
+    active.push({ label: 'every Show/Hide command', strip: (p) => projectWithoutCommands(p, ['visible']) });
+  }
+  if (usesFade) active.push({ label: 'every Fade command', strip: (p) => projectWithoutCommands(p, ['fade']) });
+  if (usesFlash) active.push({ label: 'every Flash command', strip: (p) => projectWithoutCommands(p, ['flash']) });
+  if (usesSting) active.push({ label: 'every Sting command', strip: (p) => projectWithoutCommands(p, ['sting']) });
+  // design-tile.md §8, finding 5: bound tiles are the first strippable
+  // feature that is authored screen data, not an event command -- its own
+  // strip cannot go through projectWithoutCommands at all.
+  if (usesBoundTiles) active.push({ label: 'every switch-bound tile', strip: (p) => projectWithoutBoundTiles(p) });
+  if (usesSave) active.push({ label: 'every Save command', strip: (p) => projectWithoutCommands(p, ['save']) });
   // A title screen is not offered here even though it is now its own term in
   // kernelCodeBytes: this list is specifically "commands projectWithoutCommands
   // can switch off", and a title screen is content on a map, not a command --
@@ -965,14 +1022,33 @@ function kernelShortfallAdvice(project, mapper, deficit) {
   // suggestion to "remove every Move command" for a project that has neither
   // -- it is the one piece of content on the whole map, not one command among
   // several. Left out on purpose, not missed.
-  const budget = kernelCodeBytes(project, mapper);
-  const freedByDropping = (ops) => budget - kernelCodeBytes(projectWithoutCommands(project, ops), mapper);
+  //
+  // design-tile.md §8, finding 5: compares full kernel-lo occupancy
+  // (kernelCodeBytes + fixedBytes + tableBytes), the exact quantity
+  // checkCapacity's own kernelFree is computed from, not kernelCodeBytes
+  // alone -- bound tiles are the first strippable feature whose removal also
+  // changes kernelTableBytes's own fixedBytes (the 30-byte row table) and
+  // tableBytes (the 2-bytes/screen pointer table). For every existing
+  // command-only strip, removing the command never touches screen.boundTiles/
+  // screen.entities/anything else kernelTableBytes reads, so this reduces
+  // algebraically to the identical kernelCodeBytes-only delta the shipped
+  // function already computed -- every existing command-only advice string is
+  // unchanged by this switch.
+  const occupancy = (proj) => {
+    const { fixedBytes, tableBytes } = kernelTableBytes(proj);
+    return kernelCodeBytes(proj, mapper) + fixedBytes + tableBytes;
+  };
+  const budget = occupancy(project);
+  const freedByDropping = (features) => {
+    const stripped = features.reduce((p, feature) => feature.strip(p), project);
+    return budget - occupancy(stripped);
+  };
 
   // Any one active feature that alone frees enough bytes is offered as its
   // own choice -- dropping one thing is simpler than dropping several, and
   // when more than one alone would do it the author gets to pick which.
   const solo = active
-    .map((feature) => ({ feature, freed: freedByDropping([feature.op]) }))
+    .map((feature) => ({ feature, freed: freedByDropping([feature]) }))
     .filter((entry) => entry.freed >= deficit);
   if (solo.length) {
     return `Try removing ${solo.map((entry) => `${entry.feature.label} (frees ${entry.freed} bytes)`).join(' or ')}.`;
@@ -985,16 +1061,15 @@ function kernelShortfallAdvice(project, mapper, deficit) {
   // than it has to; every subset rather than just "all of them", because a
   // future third optional feature could make a two-of-three combination the
   // tightest fit without either a single feature or all three together
-  // being it). Each combination's freed count comes from one
-  // projectWithoutCommands call with every op in it turned off together, not
-  // from adding up separately-measured single drops, so a dependent term two
-  // features would each have to give up on their own is not double-counted
-  // or missed.
+  // being it). Each combination's freed count comes from stripping every
+  // chosen feature off the SAME project together, not from adding up
+  // separately-measured single drops, so a dependent term two features would
+  // each have to give up on their own is not double-counted or missed.
   let combo = null;
   for (let mask = 1; mask < 1 << active.length; mask++) {
     const chosen = active.filter((_, index) => mask & (1 << index));
     if (chosen.length < 2) continue; // already covered by the solo case above
-    const freed = freedByDropping(chosen.map((feature) => feature.op));
+    const freed = freedByDropping(chosen);
     if (freed < deficit) continue;
     if (!combo || chosen.length < combo.chosen.length) combo = { chosen, freed };
   }
@@ -1170,10 +1245,26 @@ function triggerIndex(entity, actor, project) {
   return Math.max(0, EVENT_TRIGGERS.findIndex((entry) => entry.id === trigger));
 }
 
-/** Bytes one screen occupies: metatiles, attributes, then its actor list. */
-function screenRecordBytes(entry, actorCount) {
+// switch, cell index, metatile -- design-tile.md §4.
+export const BOUND_TILE_RECORD = 3;
+
+/**
+ * Bytes one screen occupies: metatiles, attributes, the actor list, and --
+ * only when boundTilesEnabled, since a feature-free project cannot emit
+ * records that do not exist and so cannot be charged for them (design-tile.md
+ * §8, finding 6; byte identity picks this direction, not the `_ent`-shaped
+ * unconditional one) -- its own switch-bound tile list.
+ */
+function screenRecordBytes(entry, actorCount, boundTilesEnabled = false) {
   const placed = entry.screen.entities.filter((entity) => entity.actorId < actorCount);
-  return SCREEN_BYTES + 1 + ENTITY_RECORD * placed.length;
+  const bound = boundTilesEnabled ? entry.screen.boundTiles ?? [] : [];
+  return (
+    SCREEN_BYTES +
+    1 +
+    ENTITY_RECORD * placed.length +
+    (boundTilesEnabled ? 1 : 0) +
+    BOUND_TILE_RECORD * bound.length
+  );
 }
 
 /** A tile table short of 256 entries (a hand-edited project) pads with blanks. */
@@ -1226,6 +1317,35 @@ function checkCode(project) {
         'The assembler enforces the bank limits; any overflow names the file and line.'
     });
   }
+  // design-tile.md §11, finding 13, §12 test 18: esptr_lo/esptr_hi's shared-
+  // scratch lifetime (bdptr_lo/bdptr_hi aliased onto it, engine/constants.asm)
+  // is provably safe against every *stock* call graph -- spawn_entities and
+  // rebuild_bound_cache/tile_switch_changed each set and fully consume it
+  // inside one call, never nested, never touched by NMI. An entities.asm
+  // override that legally stashes esptr_lo/esptr_hi across its own calls
+  // (nothing in stock code overwrites the pointer between calls today) is
+  // silently broken the instant the same project also turns
+  // BOUND_TILE_ENABLED on, because a Turn switch command anywhere in that
+  // project's events can now clobber the override's own assumption with no
+  // assembler error. A grep-level scan of the override's own text for the
+  // token esptr_lo/esptr_hi is a weaker claim than "this override actually
+  // stashes it across a call" -- the same "weaker-claim-but-true" spirit
+  // battleRegionRelocates already uses for a different override risk -- but
+  // it is a fact about the text, not a guess about behaviour this codebase
+  // is otherwise forbidden from sizing, and a false positive costs nothing.
+  const entitiesOverride = code.overrides.find((file) => file.name === 'entities.asm');
+  if (entitiesOverride && projectUsesBoundTiles(project) && /\besptr_(lo|hi)\b/.test(String(entitiesOverride.text ?? ''))) {
+    problems.push({
+      severity: 'warning',
+      where: 'Code Forge',
+      message:
+        'This project’s override of entities.asm references esptr_lo/esptr_hi, and a live switch-bound ' +
+        'tile is also present. esptr_lo/esptr_hi is shared, aliased scratch (bdptr_lo/bdptr_hi, ' +
+        'engine/constants.asm): rebuild_bound_cache and tile_switch_changed set and consume it inside one ' +
+        'call whenever a Turn switch command runs, so an override that stashes esptr_lo/esptr_hi across its ' +
+        'own calls will have it silently clobbered, with no assembler error.'
+    });
+  }
   return problems;
 }
 
@@ -1248,20 +1368,31 @@ function checkCode(project) {
  * reservation on" has to call the exact function checkCapacity calls, with
  * the flip forced explicitly, rather than go through the gate.
  */
-export function screenCapacityFor(mapper, tilesetCount, bankedCode, flat, actorCount, reserveFlashSave = false) {
+export function screenCapacityFor(
+  mapper,
+  tilesetCount,
+  bankedCode,
+  flat,
+  actorCount,
+  reserveFlashSave = false,
+  boundTilesEnabled = false
+) {
   const spare = [];
   let packed = 0;
   for (const _region of screenRegions(mapper, tilesetCount, bankedCode, { reserveFlashSave })) {
     let used = 0;
     while (packed < flat.length) {
-      const size = screenRecordBytes(flat[packed], actorCount);
+      const size = screenRecordBytes(flat[packed], actorCount, boundTilesEnabled);
       if (used + size > SCREEN_REGION_BYTES) break;
       used += size;
       packed++;
     }
     spare.push(SCREEN_REGION_BYTES - used);
   }
-  const emptyScreen = SCREEN_BYTES + 1;
+  // design-tile.md §8, finding 6: an enabled project's own empty screen still
+  // carries a 1-byte .db 0 bound record, so this divisor needs +2, not +1,
+  // under the same gate screenRecordBytes' own +1 already uses.
+  const emptyScreen = SCREEN_BYTES + 1 + (boundTilesEnabled ? 1 : 0);
   return packed + spare.reduce((total, free) => total + Math.floor(free / emptyScreen), 0);
 }
 
@@ -1275,7 +1406,15 @@ export function screenCapacityFor(mapper, tilesetCount, bankedCode, flat, actorC
  * reaches reserveFlashSave: true yet (see reservesFlashSaveRegion), so a
  * black-box test of a real build could never exercise this otherwise.
  */
-export function assignScreenBanks(mapper, tilesetCount, bankedCode, reserveFlashSave, flat, actorCount) {
+export function assignScreenBanks(
+  mapper,
+  tilesetCount,
+  bankedCode,
+  reserveFlashSave,
+  flat,
+  actorCount,
+  boundTilesEnabled = false
+) {
   const screenBank = new Array(flat.length).fill(0);
   const regionRanges = [];
   let cursor = 0;
@@ -1283,7 +1422,7 @@ export function assignScreenBanks(mapper, tilesetCount, bankedCode, reserveFlash
     const from = cursor;
     let used = 0;
     while (cursor < flat.length) {
-      const size = screenRecordBytes(flat[cursor], actorCount);
+      const size = screenRecordBytes(flat[cursor], actorCount, boundTilesEnabled);
       if (used + size > SCREEN_REGION_BYTES) break;
       used += size;
       screenBank[cursor] = region.prgBank;
@@ -1307,16 +1446,27 @@ export function assignScreenBanks(mapper, tilesetCount, bankedCode, reserveFlash
  * to ask "would kernel-lo still fit on that board", and the only term that
  * changes across boards is kernelCodeBytes. Computing these twice, once here
  * and once there, is how the check that refuses a build and the advice about
- * how to fix it come to disagree about the same project.
+ * how to fix it come to disagree about the same project. Two of the terms
+ * below are the first in this function to depend on whether an *optional
+ * feature* is in use, where every other term here is unconditional --
+ * bound_row_lo/hi (fixedBytes) and the screen_bound_lo/hi pointer table
+ * (tableBytes), both design-tile.md §8 (finding 6), both gated on
+ * projectUsesBoundTiles since a feature-free project emits neither.
  */
 export function kernelTableBytes(project) {
   const { flat } = flattenScreens(project);
+  const boundTilesEnabled = projectUsesBoundTiles(project);
   // maps.inc holds four neighbour tables, four screen pointer tables and the
   // actor-list *pointers*; everything else in bank 0 is fixed size. The input
   // table is one byte per button per game state, so it grows when a state is
   // added — deriving it here rather than writing a constant keeps this honest.
   const fixedBytes =
-    32 + 5 * LIMITS.metatiles + PLAYER_TILES + 1 + INPUT_STATES.length * BUTTONS.length;
+    32 +
+    5 * LIMITS.metatiles +
+    PLAYER_TILES +
+    1 +
+    INPUT_STATES.length * BUTTONS.length +
+    (boundTilesEnabled ? 30 : 0);
   const { metasprites, animations, actors } = project.sprites;
   const spriteBytes =
     3 * Math.max(1, metasprites.length) +
@@ -1347,7 +1497,12 @@ export function kernelTableBytes(project) {
   // nesasm assembles into the bank with room left over. Caught by comparing
   // this formula's own claim against nesasm's real kernel-lo usage rather
   // than trusting either checkCapacity or kernelCodeBytes alone.
-  const tableBytes = 13 * flat.length + 9 * project.maps.length + spriteBytes + itemBytes;
+  // screen_bound_lo/hi (2 bytes/screen, design-tile.md §4/§8) -- the same
+  // bucket screen_ent_lo/hi already lives in (part of the 13-bytes/screen
+  // term above), unlike that term conditional on the feature being used at
+  // all.
+  const boundTileBytes = boundTilesEnabled ? 2 * flat.length : 0;
+  const tableBytes = 13 * flat.length + 9 * project.maps.length + spriteBytes + itemBytes + boundTileBytes;
   return { fixedBytes, tableBytes };
 }
 
@@ -1398,7 +1553,16 @@ export function checkCapacity(project) {
   // bank. Capacity is computed by the same packing the generator performs, so the
   // number quoted here is the number that will actually fit.
   const actorCount = project.sprites.actors.length;
-  const capacity = screenCapacityFor(mapper, project.tilesets.length, bankedCode, flat, actorCount, reserveFlashSave);
+  const boundTilesEnabled = projectUsesBoundTiles(project);
+  const capacity = screenCapacityFor(
+    mapper,
+    project.tilesets.length,
+    bankedCode,
+    flat,
+    actorCount,
+    reserveFlashSave,
+    boundTilesEnabled
+  );
 
   const musicBytes = musicSize(project.songs);
 
@@ -1650,6 +1814,10 @@ export async function generateAssets({ dir, project, log = () => {} }) {
   const usesPaletteFx = projectUsesPaletteFx(project);
   const usesFace = projectUsesFace(project);
   const usesSting = projectUsesSting(project);
+  // design-tile.md §8: its own local declaration, the usesSting three-scope
+  // precedent (generateAssets computes its own local usesMove at line 1755 to
+  // emit MOVE_ENABLED below, the identical shape).
+  const usesBoundTiles = projectUsesBoundTiles(project);
   const saveIdentityValue = saveIdentity(project);
   if (usesHeartArt) {
     for (const tileset of tilesets) {
@@ -2071,6 +2239,17 @@ export async function generateAssets({ dir, project, log = () => {} }) {
     // sting_snapshot/sting_restore/sting_tick and script_op_sting, plus the force_trig/
     // cancellation-check/music_stop-clear additions inside music_channel/music_play/music_stop.
     `STING_ENABLED = ${usesSting ? 1 : 0}`,
+    // Switch-bound tiles (design-tile.md §8): bound_tile_lookup,
+    // rebuild_bound_cache, the script_op_set/script_op_clear hooks,
+    // tile_switch_changed, queue_or_defer_flip, flip_cell_blocked, flip_emit/
+    // flip_emit_packet, flip_tick and its main_loop call, the text_close_step
+    // resolver swap, and the vram_reset pending-queue clear. BOUND_CAP is
+    // generated from LIMITS.boundTilesPerScreen (shared/project.js) rather
+    // than hand-spelled in engine/constants.asm the way MAX_ENTITIES
+    // currently is for LIMITS.entitiesPerScreen -- a stronger single-writer
+    // guarantee than that existing precedent.
+    `BOUND_TILE_ENABLED = ${usesBoundTiles ? 1 : 0}`,
+    `BOUND_CAP = ${LIMITS.boundTilesPerScreen}`,
     ''
   ].join('\n');
   await fs.writeFile(path.join(assetsDir, 'config.inc'), config);
@@ -2166,6 +2345,22 @@ export async function generateAssets({ dir, project, log = () => {} }) {
       `mt_bl:\n${dbBlock(column((m) => m.tiles[2]))}`,
       `mt_br:\n${dbBlock(column((m) => m.tiles[3]))}`,
       `mt_collision:\n${dbBlock(column((m) => collisionIndex(m.collision)))}`,
+      // design-tile.md §7/§8: the 15-entry nametable-address table
+      // flip_emit_packet indexes by metatile row (0-14) to compute a bound
+      // cell's own top/bottom packet addresses. Kernel-lo FIXED table data
+      // (kernelTableBytes' own 30-byte fixedBytes term), not code -- emitted
+      // only when the project uses the feature at all, matching every other
+      // BOUND_TILE_ENABLED-gated emission.
+      ...(usesBoundTiles
+        ? [
+            `bound_row_lo:\n${dbBlock(
+              Array.from({ length: 15 }, (_, row) => ((row * 64) & 0xff))
+            )}`,
+            `bound_row_hi:\n${dbBlock(
+              Array.from({ length: 15 }, (_, row) => (0x20 + ((row * 64) >> 8)))
+            )}`
+          ]
+        : []),
       ''
     ].join('\n')
   );
@@ -2208,7 +2403,8 @@ export async function generateAssets({ dir, project, log = () => {} }) {
     bankedCode,
     reserveFlashSave,
     flat,
-    actorCount
+    actorCount,
+    usesBoundTiles
   );
 
   // --- maps ----------------------------------------------------------------
@@ -2250,6 +2446,15 @@ export async function generateAssets({ dir, project, log = () => {} }) {
       `screen_at_hi:\n${pointerBlock(flat, (i) => `HIGH(${screenLabel(i)}_attr)`)}`,
       `screen_ent_lo:\n${pointerBlock(flat, (i) => `LOW(${screenLabel(i)}_ent)`)}`,
       `screen_ent_hi:\n${pointerBlock(flat, (i) => `HIGH(${screenLabel(i)}_ent)`)}`,
+      // design-tile.md §4/§8: emitted only when the project uses the feature
+      // at all -- a feature-free project cannot emit records that do not
+      // exist, so it cannot be charged for them (byte identity).
+      ...(usesBoundTiles
+        ? [
+            `screen_bound_lo:\n${pointerBlock(flat, (i) => `LOW(${screenLabel(i)}_bound)`)}`,
+            `screen_bound_hi:\n${pointerBlock(flat, (i) => `HIGH(${screenLabel(i)}_bound)`)}`
+          ]
+        : []),
       ''
     ].join('\n')
   );
@@ -2320,6 +2525,20 @@ export async function generateAssets({ dir, project, log = () => {} }) {
         );
       }
       chunks.push(`${screenLabel(index)}_ent:\n${dbBlock(bytes, ENTITY_RECORD)}`);
+
+      // design-tile.md §4: count-prefixed, exactly the _ent shape -- switch,
+      // cell index (row*16+col, the identical row-major index draw_screen/
+      // probe_type/text_close_step already compute), substitute metatile.
+      // Emitted only when the project uses the feature at all, matching the
+      // screen_bound_lo/hi pointer table's own gate above.
+      if (usesBoundTiles) {
+        const boundBytes = [];
+        const bound = screen.boundTiles ?? [];
+        for (const entry of bound) {
+          boundBytes.push(entry.switchId, entry.row * LIMITS.screenCols + entry.col, entry.metatileId);
+        }
+        chunks.push(`${screenLabel(index)}_bound:\n${dbBlock([bound.length, ...boundBytes], BOUND_TILE_RECORD)}`);
+      }
     }
     return `${chunks.join('\n')}\n`;
   };

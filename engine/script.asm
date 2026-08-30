@@ -305,7 +305,14 @@ script_op_take:
 
 script_op_set:
   jsr script_arg
+  .if BOUND_TILE_ENABLED
+  pha
+  .endif
   jsr switch_set
+  .if BOUND_TILE_ENABLED
+  pla
+  jsr tile_switch_changed
+  .endif
   jmp script_next2
 
   .if SAVE_ENABLED
@@ -329,7 +336,14 @@ script_next1:
 
 script_op_clear:
   jsr script_arg
+  .if BOUND_TILE_ENABLED
+  pha
+  .endif
   jsr switch_clear
+  .if BOUND_TILE_ENABLED
+  pla
+  jsr tile_switch_changed
+  .endif
 script_next2:
   lda #2
   jsr script_skip
@@ -1147,6 +1161,156 @@ switch_clear:
   sta switches,y
   ldy switch_y
   rts
+
+  .if BOUND_TILE_ENABLED
+; --------------------------------------------------- switch-bound tiles
+; design-tile.md §7. Hooked from script_op_set/script_op_clear only --
+; switch_set/switch_clear themselves stay untouched, since they preserve
+; X/Y for spawn_entities' sake and are query/flag primitives, not a place
+; for vram work.
+
+; A = cell index. Returns carry SET iff the message box currently owns this
+; cell's rows (row 12-14) and is not closed -- i.e., an immediate write
+; there would corrupt the box's own art. Preserves Y (never written).
+flip_cell_blocked:
+  cpy #BOUND_BOX_FIRST_CELL
+  bcc fcb_free
+  lda box_state
+  beq fcb_free                ; BOX_CLOSED (0): the box owns nothing right now
+  sec
+  rts
+fcb_free:
+  clc
+  rts
+
+; bnd_match_cell = cell index. A = resolved metatile id. Writes both
+; nametable rows. Address computation folded directly into the write, so
+; only one (lo, hi) pair is ever held at a time -- the bottom row's address
+; is the top row's plus 32, computed after the top packet is already
+; queued, reusing X (untouched across vram_open/push/end, all three of
+; which preserve it).
+flip_emit_packet:
+  sta bnd_mt
+  lda bnd_match_cell
+  and #$0F
+  asl a
+  sta bnd_col2
+  lda bnd_match_cell
+  lsr a
+  lsr a
+  lsr a
+  lsr a                      ; row, 0-14
+  tax
+  lda bound_row_lo,x
+  clc
+  adc bnd_col2
+  pha                         ; top row's low byte -- needed again for the bottom row
+  tay
+  lda bound_row_hi,x
+  jsr vram_open                ; opens the top-row packet
+  ldy bnd_mt
+  lda mt_tl,y
+  jsr vram_push
+  lda mt_tr,y
+  jsr vram_push
+  jsr vram_end
+  pla
+  clc
+  adc #32
+  tay
+  lda bound_row_hi,x            ; X still holds row -- vram_open/push/end all preserve it
+  jsr vram_open                  ; opens the bottom-row packet
+  ldy bnd_mt
+  lda mt_bl,y
+  jsr vram_push
+  lda mt_br,y
+  jsr vram_push
+  jmp vram_end
+
+; A = cell index. Resolves the cell's current metatile and hands off to the
+; packet writer.
+flip_emit:
+  sta bnd_match_cell
+  tay
+  jsr bound_tile_lookup       ; A = resolved metatile id (cache-correct either
+                                ; way -- rebuild_bound_cache already ran this
+                                ; frame, from tile_switch_changed below)
+  jsr flip_emit_packet
+  rts
+
+; A = cell index. Queues an immediate flip if the box does not own the cell
+; and the per-frame budget is available; otherwise defers it into the
+; pending queue, deduped so a cell already pending is never pushed twice.
+queue_or_defer_flip:
+  tay
+  jsr flip_cell_blocked       ; carry set iff the box currently owns this cell's rows
+  bcs qf_pending
+  lda flip_budget
+  beq qf_pending
+  dec flip_budget
+  tya
+  jmp flip_emit
+qf_pending:
+  tya
+  ldx #0
+qf_dedupe_scan:
+  cpx flip_pending_count
+  beq qf_dedupe_append
+  cmp flip_pending_idx,x
+  beq qf_dedupe_done           ; already pending -- the eventual drain re-resolves the latest state
+  inx
+  bne qf_dedupe_scan
+qf_dedupe_append:
+  cpx #BOUND_CAP
+  bcs qf_dedupe_done           ; unreachable given the authoring cap; kept as insurance
+  sta flip_pending_idx,x
+  inc flip_pending_count
+qf_dedupe_done:
+  rts
+
+; A = switch number just set/cleared. Rebuilds the active-tile cache in
+; full (cheap, <=8 entries, RAM only, no budget check -- collision is
+; correct on this same frame, unconditionally) and then walks the ROM
+; table a second time, filtering to entries bound to the changed switch,
+; queuing or deferring a visual flip for each.
+tile_switch_changed:
+  sta bnd_switch
+  jsr rebuild_bound_cache
+  ldy flat_screen
+  lda screen_bound_lo,y
+  sta bdptr_lo
+  lda screen_bound_hi,y
+  sta bdptr_hi
+  ldy #0
+  lda [bdptr_lo],y
+  beq tsc_done
+  sta bnd_scan_left
+  iny
+tsc_loop:
+  lda [bdptr_lo],y
+  iny
+  cmp bnd_switch
+  bne tsc_skip
+  lda [bdptr_lo],y            ; cell index -- stashed BEFORE any push
+  sta bnd_match_cell
+  tya
+  pha                          ; save only the ROM-record cursor; nothing else is pushed
+  lda bnd_match_cell
+  jsr queue_or_defer_flip       ; ordinary balanced call -- clobbers X/Y freely, that's fine
+  pla                            ; cursor back
+  tay
+  iny
+  iny                              ; step past cell index + metatile
+  jmp tsc_next
+tsc_skip:
+  iny
+  iny
+tsc_next:
+  dec bnd_scan_left
+  bne tsc_loop
+tsc_done:
+  rts
+  .endif
 
 ; A = item id under ITEMS_ENABLED, the legacy backing-actor id otherwise.
 ; Returns A = 0 (Z set) when the bag holds one.

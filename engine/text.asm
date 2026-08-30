@@ -94,6 +94,16 @@ vram_reset:
                                 ; routine's own guaranteed forced blank
 vram_reset_no_flash:
   .endif
+  .if BOUND_TILE_ENABLED
+  ; design-tile.md §7 -- A is already 0 here on every path above (untouched
+  ; from this routine's own opening lda #0 with FLASH_ENABLED off; loaded from
+  ; flash_left and found zero on the vram_reset_no_flash branch; or left at 0
+  ; by vram_drain's own last instruction before rts otherwise). A pending
+  ; backlog queued for the screen just departed must not survive into
+  ; whatever nametable redraw_screen or draw_battle_screen is about to write
+  ; -- this is the one shared choke point both go through first.
+  sta flip_pending_count
+  .endif
   rts
 
 ; Open a packet: A = address high byte, Y = address low byte. The count starts
@@ -598,7 +608,13 @@ text_close_cell:
   clc
   adc box_col
   tay
+  .if BOUND_TILE_ENABLED
+  jsr bound_tile_lookup     ; design-tile.md §6 -- a bound tile in rows 12-14
+                            ; must show its own current substitute here too,
+                            ; not the raw ROM metatile the box is closing over
+  .else
   lda [mtptr_lo],y
+  .endif
   tay
   lda tmp2
   bne text_close_bottom

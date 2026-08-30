@@ -1065,6 +1065,44 @@ fade_apply_store:
 ; all, so flash_tick_confirm cannot run either. There is therefore no path by
 ; which flash_tick_confirm observes FLASH_PENDING before the NMI that drains
 ; it has already run, and no vram_ready re-check belongs here.
+  .if BOUND_TILE_ENABLED
+; design-tile.md §7. Ticked unconditionally from main_loop, non-suspending,
+; every frame regardless of game state -- a switch flip queued during
+; dialogue must still be eligible to drain the instant the box closes, and
+; the box's own close sequence does not itself call this routine. Resets
+; the per-frame visual-flip budget, then drains at most one pending entry
+; (the front of the queue only -- if it is still box-owned, the whole
+; drain waits, preserving FIFO order among distinct pending cells rather
+; than skipping ahead).
+flip_tick:
+  lda #FLIP_BUDGET_CAP
+  sta flip_budget
+flip_tick_drain:
+  lda flip_pending_count
+  beq flip_tick_done
+  lda flip_budget
+  beq flip_tick_done
+  ldy flip_pending_idx         ; peek the front of the queue
+  jsr flip_cell_blocked
+  bcs flip_tick_done            ; still box-owned -- wait for it, do not skip ahead
+  dec flip_budget
+  tya
+  jsr flip_emit
+  ldx #0
+flip_tick_shift:
+  inx
+  cpx flip_pending_count
+  bcs flip_tick_shift_done
+  lda flip_pending_idx,x
+  sta flip_pending_idx-1,x
+  jmp flip_tick_shift
+flip_tick_shift_done:
+  dec flip_pending_count
+  jmp flip_tick_drain
+flip_tick_done:
+  rts
+  .endif
+
   .if FLASH_ENABLED
 flash_tick:
   lda flash_left

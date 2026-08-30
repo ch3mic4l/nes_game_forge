@@ -500,6 +500,26 @@ NMI's drain and is what the screen shows — an author who needs the opposite ha
 with an explicit `Wait`. A third independent producer must re-open both the byte-count and
 cycle-budget arithmetic above, not assume either bound still holds.
 
+**A live switch-bound tile is that third producer, and the prediction above is what it cashes
+in.** `flip_tick` (`engine/entities.asm`) ticks unconditionally from `main_loop`, exactly the way
+`flash_tick` already does, and `main_loop` calls it *before* `flash_tick` — so on a frame where a
+flip, a Flash edge and one of the frozen-world four all land together, the flip's own packets are
+queued first, Flash's second, and whichever of `move_tick`/`wait_tick`/`fade_tick`/`text_tick` is
+running third. A flip's own packet pair is small — `flip_emit_packet` writes the bound cell's top
+row (`mt_tl`/`mt_tr`) and bottom row (`mt_bl`/`mt_br`) as two separate `vram_open`/`vram_push`/
+`vram_end` calls, each a 3-byte header plus a 2-byte body — so the worst case is now
+`2 * (3 + 2) + 2 * (3 + 32) + 1` shared terminator = 81 bytes including the terminator, up from
+71, of `vram_buf`'s 256 bytes. The cycle bound is not re-derived here by hand — nesasm's own instruction timing for two more small
+packets is a few dozen cycles at most against a ~2273-cycle vblank window that already had slack
+to spare at 71/256 bytes — but it is not assumed either:
+`test/lua/bound_tile_nmi_timing.lua.template` (built and run by
+`test/lua/build_bound_tile_nmi_roms.mjs`, driven by `test/lua/run_bound_tile_nmi_check.sh`) proves
+this exact three-producer frame — a flip queued via a real, already-cached switch toggle, re-armed
+at the instant `flip_tick`'s own drain reads it so it lands on the identical frame as a Flash edge
+and the message box's own raise row — against real Mesen timing, the same "prove the workload,
+then trust the deadline" two-phase shape `flash_nmi_timing.lua.template` already established. A
+fourth independent producer must re-open this accounting again, not assume it still holds.
+
 `box_close` keeps no copy of what the box covered: the box is tile rows 24-29, which is exactly
 metatile rows 12-14 with no half-row left over, so it rebuilds those rows straight out of
 `[mtptr]` + `mt_tl/tr/bl/br` and the attributes out of `[atptr]`. Moving the box means keeping
@@ -1093,6 +1113,39 @@ frees `STING_KERNEL_ALLOWANCE + SPLIT_LOCK_KERNEL_ALLOWANCE` (175 + 19 = 194) to
 case — `kernelCodeBytes`-derived, not summed from the flat constants, the identical reasoning this
 file's own dependent-term passages already give for Move/Turn's shared `FACE_KERNEL_ALLOWANCE` and
 Fade/Flash's shared `PALETTE_FX_KERNEL_ALLOWANCE`.
+
+**Switch-bound tiles (design-tile.md) are a fourth documented limitation, and the first strippable
+feature that is authored screen data rather than an event command.** A cell reads as a different
+metatile while its bound switch is set — no new opcode; the mechanism hooks the existing Turn
+switch on/off commands (`script_op_set`/`script_op_clear` → `tile_switch_changed`) and a shared
+`bound_tile_lookup` primitive `draw_screen`/`probe_type`/`text_close_step` all call instead of
+reading `[mtptr_lo],y` directly, with a non-suspending flip (`flip_tick`, one budget slot per
+frame, a deduped FIFO queue for whatever does not fit) for a switch toggled while the screen is
+already on display. `BOUND_TILE_KERNEL_ALLOWANCE` is 388 bytes, measured (not design-tile.md's own
+382-byte estimate) identically on all three RPG-capable boards (`test/unit/kernelbytes.test.js`) —
+flat the way `STING_KERNEL_ALLOWANCE` is, and for the same reason (no board-specific branch in any
+of the new routines) rather than because every allowance in this file happens to be flat. Unlike
+Move/Sting, a bound tile never turns `projectUsesText` (and so `fontBankSplit`) on by itself — it
+adds no dialogue, event or title content of its own — so it carries no split-lock dependent term.
+It carries a *different* dependent pair instead, both inside `kernelTableBytes` rather than
+`kernelCodeBytes`: a 30-byte fixed table (`bound_row_lo`/`bound_row_hi`, the per-metatile-row
+nametable-address table `flip_emit_packet` indexes) and 2 bytes per screen (`screen_bound_lo`/`hi`,
+the pointer table alongside `screen_ent_lo`/`hi`) — both zero unless the feature is used at all, so
+`kernelShortfallAdvice`'s own `occupancy()` helper compares full kernel-lo occupancy
+(`kernelCodeBytes + fixedBytes + tableBytes`) rather than `kernelCodeBytes` alone for this one
+feature, the first time that distinction has mattered: every existing command-only strip leaves
+`kernelTableBytes` untouched, so summing the flat constant already gave the right answer for all of
+them. A one-screen, one-binding project's full occupancy cost is therefore 388 + 30 + 2 = 420 bytes,
+comfortably past both existing documented shortfalls: MMC3 Save+Move-no-item (88 free) and MMC1
+Save+Move+item (220 free) are both refused the moment a live bound tile is added on top —
+`'sample-rpg with Save, Move (no item) and a live bound tile does not build on MMC3'` and `'...does
+not build on MMC1 once a bound tile is added'` are the tests (`test/unit/kernelbytes.test.js`); both
+assert the refusal, that `kernelShortfallAdvice` names "every switch-bound tile" with its real freed
+byte figure, and confirm dropping the one bound tile alone is a real fix with an actual nesasm
+build. MMC1's own Save+Move+item row is the interesting one: every other feature measured against it
+in this file left it comfortable, and a bound tile is the first to close it — not because MMC1 is
+special, but because 420 bytes is the largest single addition any feature in this ledger has made at
+once.
 
 Because the margin can still run out — on MMC3 in a bigger project, or the next feature this bank has
 no room for — `checkCapacity` names what would close a gap like this one instead of only reporting the

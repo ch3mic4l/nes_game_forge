@@ -47,7 +47,11 @@ draw_screen_top:
   clc
   adc ds_base
   tay
+  .if BOUND_TILE_ENABLED
+  jsr bound_tile_lookup
+  .else
   lda [mtptr_lo],y
+  .endif
   tay
   lda mt_tl,y
   sta $2007
@@ -63,7 +67,11 @@ draw_screen_bottom:
   clc
   adc ds_base
   tay
+  .if BOUND_TILE_ENABLED
+  jsr bound_tile_lookup
+  .else
   lda [mtptr_lo],y
+  .endif
   tay
   lda mt_bl,y
   sta $2007
@@ -137,6 +145,13 @@ redraw_screen_no_fade_reload:
   lda screen_tileset,y
   jsr switch_chr_bank
   jsr set_screen_ptr
+  .if BOUND_TILE_ENABLED
+  jsr rebuild_bound_cache   ; design-tile.md §6 -- the screen bank is mapped by
+                            ; set_screen_ptr above, so the ROM bound-tile table
+                            ; is safe to read; must run before draw_screen, whose
+                            ; own consult depends on this cache already being
+                            ; correct for the switches currently set
+  .endif
   jsr apply_map_music       ; the map decides, but only when it has changed --
                             ; see engine/music.asm
   jsr spawn_entities        ; each screen refills its actors on entry
@@ -147,3 +162,71 @@ redraw_screen_no_fade_reload:
   jsr wait_vblank_poll
   jsr enable_rendering
   rts
+
+  .if BOUND_TILE_ENABLED
+; ----------------------------------------------------- switch-bound tiles
+; design-tile.md §6. Y = cell index (0-239) in, A = resolved metatile id out
+; (ROM, or the active-cache override). Preserves X. Clobbers Y. The one
+; routine draw_screen's two loops, probe_type (player.asm) and
+; text_close_step (text.asm) all call -- their own index arithmetic all
+; computes this identical row-major cell index.
+bound_tile_lookup:
+  sty btl_idx
+  ldy #0
+btl_scan:
+  cpy bind_count
+  beq btl_miss
+  lda bind_idx,y
+  cmp btl_idx
+  beq btl_hit
+  iny
+  bne btl_scan            ; safe: Y never reaches 0 again within BOUND_CAP iterations
+btl_miss:
+  ldy btl_idx
+  lda [mtptr_lo],y
+  rts
+btl_hit:
+  lda bind_mt,y
+  rts
+
+; Rebuilds the active-tile cache for flat_screen from its ROM bound-tile
+; table. Called from redraw_screen (a full rebuild on every screen entry)
+; and from tile_switch_changed (engine/script.asm, also a full rebuild --
+; see design-tile.md §3 for why re-walking <=8 ROM entries per flip is cheap
+; enough not to need an incremental diff). Takes no parameters; the
+; switch-matching pass is tile_switch_changed's own, separate walk.
+rebuild_bound_cache:
+  ldx #0                    ; active-cache write cursor
+  ldy flat_screen
+  lda screen_bound_lo,y
+  sta bdptr_lo
+  lda screen_bound_hi,y
+  sta bdptr_hi
+  ldy #0
+  lda [bdptr_lo],y          ; this screen's own authored-binding count (0-8)
+  beq rbc_done
+  sta bnd_scan_left
+  iny
+rbc_loop:
+  lda [bdptr_lo],y          ; this entry's switch
+  iny
+  jsr switch_test           ; preserves X and Y; Z set when the switch is off
+  beq rbc_skip
+  lda [bdptr_lo],y          ; cell index
+  sta bind_idx,x
+  iny
+  lda [bdptr_lo],y          ; substitute metatile
+  sta bind_mt,x
+  iny
+  inx
+  jmp rbc_next
+rbc_skip:
+  iny
+  iny
+rbc_next:
+  dec bnd_scan_left
+  bne rbc_loop
+rbc_done:
+  stx bind_count
+  rts
+  .endif

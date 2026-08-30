@@ -37,6 +37,7 @@ import {
   MetatileRenderer,
   drawCollisionOverlay,
   drawGridOverlay,
+  drawBoundTileOverlay,
   METATILE_PX,
   SCREEN_PX_W,
   SCREEN_PX_H
@@ -93,6 +94,7 @@ const TOOLS = [
   { id: 'pick', label: '💧 Pick', title: 'Pick up the metatile under the cursor, then return to Stamp' },
   { id: 'start', label: '⚑ Start', title: 'Place where the player begins' },
   { id: 'entity', label: '☗ Actor', title: 'Place an actor' },
+  { id: 'bind', label: '🔗 Bind', title: 'Bind a cell to a switch' },
   {
     id: 'play',
     label: '▶ Test',
@@ -111,6 +113,12 @@ export function mount(container, app) {
     zoom: 'fit',
     showGrid: true,
     showCollision: false,
+    // Switch-bound tiles (design-tile.md §10): the Bind tool's own panel
+    // selection. boundMetatile stays null (the "Choose a metatile"
+    // placeholder) until a real hover-filtered choice replaces it.
+    boundSwitch: firstFreeSwitch(store.project) ?? 0,
+    boundMetatile: null,
+    boundPreview: false,
     actorId: 0,
     painting: false,
     rectStart: null,
@@ -127,11 +135,75 @@ export function mount(container, app) {
   // ------------------------------------------------------------- canvases
 
   const canvas = el('canvas.pixels', { style: { cursor: 'crosshair' } });
-  const overlay = el('canvas', { style: { position: 'absolute', inset: '0', pointerEvents: 'none' } });
+  const overlay = el('canvas', {
+    dataset: { mapOverlay: '' },
+    style: { position: 'absolute', inset: '0', pointerEvents: 'none' }
+  });
   const navigator = el('div', { style: { display: 'grid', gap: '4px', justifyContent: 'start' } });
   const entityList = el('div');
   const mapSettings = el('div');
   const cursorInfo = el('span.status-meta');
+
+  // ------------------------------------------------- switch-bound tiles (§10)
+  const boundSwitchSelect = el('select', {
+    dataset: { bindField: 'switch' },
+    title: 'Which switch this binding follows',
+    onchange: (event) => {
+      state.boundSwitch = Number(event.target.value);
+    }
+  });
+  const boundMetatileSelect = el('select', {
+    dataset: { bindField: 'metatile' },
+    title: 'The substitute metatile shown while the switch is set',
+    onchange: (event) => {
+      state.boundMetatile = event.target.value === '' ? null : Number(event.target.value);
+    }
+  });
+  const boundPreviewCheckbox = el('input', {
+    type: 'checkbox',
+    dataset: { bindPreview: '' },
+    checked: state.boundPreview,
+    onchange: (event) => {
+      state.boundPreview = event.target.checked;
+      renderScreen();
+    }
+  });
+
+  /** The switch select's own options -- RPG_LIMITS.switches entries, the
+   * hideSwitchSelect label precedent ("<switch name> is set"). Rebuilt from
+   * renderAll() so a rename via the Switches... editor is reflected here too.
+   */
+  function renderBoundSwitchOptions() {
+    const names = store.project.switches ?? [];
+    fill(
+      boundSwitchSelect,
+      Array.from({ length: RPG_LIMITS.switches }, (_, n) =>
+        el('option', { value: n, selected: n === state.boundSwitch }, `${names[n]?.trim() || `switch ${n}`} is set`)
+      )
+    );
+  }
+
+  /**
+   * The metatile select's own options -- filtered to the palette group of
+   * whatever is painted at `cell`, recomputed on every onPointerMove while
+   * state.tool === 'bind'. Option 0 is always the "Choose a metatile"
+   * placeholder (a real option, value "", not merely a placeholder string).
+   */
+  function renderBoundMetatileOptions(cell) {
+    const screen = currentScreen();
+    const paintedId = cell ? screen.metatiles[cell.row * LIMITS.screenCols + cell.col] : undefined;
+    const painted = paintedId !== undefined ? store.project.metatiles[paintedId] : undefined;
+    const candidates = store.project.metatiles
+      .map((metatile, id) => ({ id, metatile }))
+      .filter(({ metatile }) => !painted || metatile.palette === painted.palette);
+    fill(
+      boundMetatileSelect,
+      el('option', { value: '', selected: state.boundMetatile === null }, 'Choose a metatile'),
+      candidates.map(({ id, metatile }) =>
+        el('option', { value: id, selected: id === state.boundMetatile }, metatile.name?.trim() || `Metatile ${id}`)
+      )
+    );
+  }
   const mapStage = el(
     'div.canvas-stage',
     { style: { flexDirection: 'column', gap: `${NAV_GAP}px` } },
@@ -168,6 +240,7 @@ export function mount(container, app) {
 
     if (state.showCollision) drawCollisionOverlay(layer, currentScreen(), store.project.metatiles, zoom);
     if (state.showGrid) drawGridOverlay(layer, zoom);
+    drawBoundTileOverlay(layer, currentScreen(), store.project.metatiles, zoom, state.boundPreview, renderer);
 
     // Actors placed on this screen.
     for (const entity of currentScreen().entities) {
@@ -387,6 +460,48 @@ export function mount(container, app) {
       return;
     }
 
+    if (state.tool === 'bind') {
+      // design-tile.md §10. Left-click: add (or refuse). Right-click: remove
+      // (the identical shape `stamp`'s own right-click-to-erase already has).
+      // "Edit" is not a third gesture -- right-click to remove, then
+      // left-click to re-add with the panel's newly chosen switch/metatile.
+      const { mapIndex, screenIndex } = state;
+      const screen = currentScreen();
+      const boundTiles = screen.boundTiles ?? [];
+      const existingIndex = boundTiles.findIndex((entry) => entry.row === cell.row && entry.col === cell.col);
+      if (event.button === 2) {
+        if (existingIndex === -1) return; // nothing to remove -- the stamp-tool no-op shape
+        store.commit('Remove bound tile', (project) => {
+          project.maps[mapIndex].screens[screenIndex].boundTiles.splice(existingIndex, 1);
+        });
+        renderScreen();
+        return;
+      }
+      if (existingIndex !== -1) {
+        toast('This cell is already bound. Right-click to remove it first.', 'error');
+        return;
+      }
+      if (state.boundMetatile === null) {
+        toast('Choose a substitute metatile first.', 'error');
+        return;
+      }
+      if (boundTiles.length >= LIMITS.boundTilesPerScreen) {
+        toast(`A screen can hold at most ${LIMITS.boundTilesPerScreen} switch-bound tiles.`, 'error');
+        return;
+      }
+      const { boundSwitch, boundMetatile } = state;
+      store.commit('Bind tile', (project) => {
+        project.maps[mapIndex].screens[screenIndex].boundTiles.push({
+          switchId: boundSwitch,
+          row: cell.row,
+          col: cell.col,
+          metatileId: boundMetatile
+        });
+      });
+      renderScreen();
+      return;
+    }
+
     if (state.tool === 'play') {
       if (event.button === 0) playFromHere(cell); // a right-click should not start a build
       return;
@@ -425,7 +540,19 @@ export function mount(container, app) {
   function onPointerMove(event) {
     const cell = cellFromEvent(event);
     const metatile = store.project.metatiles[currentScreen().metatiles[cell.row * LIMITS.screenCols + cell.col]];
-    cursorInfo.textContent = `col ${cell.col} row ${cell.row} · ${metatile?.name ?? '?'} · ${metatile?.collision ?? ''}`;
+    let hint = `col ${cell.col} row ${cell.row} · ${metatile?.name ?? '?'} · ${metatile?.collision ?? ''}`;
+    // Switch-bound tiles (design-tile.md §10): the collision-changes hint,
+    // the effectiveTrigger divergence-hint idiom.
+    const boundHere = (currentScreen().boundTiles ?? []).find((entry) => entry.row === cell.row && entry.col === cell.col);
+    if (boundHere) {
+      const switchNames = store.project.switches ?? [];
+      const switchName = switchNames[boundHere.switchId]?.trim() || `switch ${boundHere.switchId}`;
+      const substitute = store.project.metatiles[boundHere.metatileId];
+      const substituteName = substitute?.name?.trim() || `Metatile ${boundHere.metatileId}`;
+      hint += ` · bound to ${switchName} (becomes ${substituteName}/${substitute?.collision ?? '?'} when set)`;
+    }
+    cursorInfo.textContent = hint;
+    if (state.tool === 'bind') renderBoundMetatileOptions(cell);
     if (!state.painting) return;
     if (state.tool === 'rect') {
       state.rectEnd = cell;
@@ -1480,6 +1607,8 @@ export function mount(container, app) {
   function renderAll() {
     renderer.rebuild(store.project, currentMap().tilesetId);
     metatilePanel.render();
+    renderBoundSwitchOptions();
+    renderBoundMetatileOptions(null);
     renderNavigator(); // before renderScreen: the fit subtracts the navigator's height
     renderScreen();
     renderMapSettings();
@@ -1543,6 +1672,15 @@ export function mount(container, app) {
           }),
           'Collision'
         ),
+        el(
+          'label.check',
+          null,
+          boundPreviewCheckbox,
+          'Preview: switches on'
+        ),
+        el('span.field-label', null, 'Bind'),
+        boundSwitchSelect,
+        boundMetatileSelect,
         el('span.sep'),
         el('span.field-label', null, 'Zoom'),
         ...['fit', 1, 2, 3].map((zoom) =>

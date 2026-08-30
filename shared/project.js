@@ -109,6 +109,8 @@ export const LIMITS = {
   screenRows: 15, // metatiles down a screen (15 * 16px = 240px)
   mapGrid: 4, // screens per axis
   entitiesPerScreen: 8,
+  boundTilesPerScreen: 8, // switch-bound tiles (design-tile.md §10) -- matches
+                          // entitiesPerScreen's own precedent
   palettes: 4,
   metaspriteTiles: 16,
   animationFrames: 32,
@@ -1018,7 +1020,7 @@ export function createScreen() {
   // An unnamed screen is the empty string, not "Screen 3": the number is where
   // it sits in the map and changes when the map is resized, so storing it would
   // leave a name that quietly lies. `screenLabel` supplies the fallback.
-  return { name: '', metatiles: new Array(SCREEN_METATILES).fill(0), entities: [] };
+  return { name: '', metatiles: new Array(SCREEN_METATILES).fill(0), entities: [], boundTiles: [] };
 }
 
 export function createMap(id, name = 'World') {
@@ -2067,6 +2069,16 @@ function normalizeScreen(raw, itemCtx = EMPTY_ITEM_CTX) {
   if (Array.isArray(raw?.entities)) {
     screen.entities = raw.entities.slice(0, LIMITS.entitiesPerScreen).map((entity) => normalizeEntity(entity, itemCtx));
   }
+  // Switch-bound tiles (design-tile.md §10) -- clamp-on-load, the identical
+  // shape normalizeEntity already uses above.
+  if (Array.isArray(raw?.boundTiles)) {
+    screen.boundTiles = raw.boundTiles.slice(0, LIMITS.boundTilesPerScreen).map((bound) => ({
+      switchId: clamp(bound?.switchId, 0, RPG_LIMITS.switches - 1, 0),
+      row: clamp(bound?.row, 0, LIMITS.screenRows - 1, 0),
+      col: clamp(bound?.col, 0, LIMITS.screenCols - 1, 0),
+      metatileId: clamp(bound?.metatileId, 0, LIMITS.metatiles - 1, 0)
+    }));
+  }
   return screen;
 }
 
@@ -3014,6 +3026,19 @@ export function projectUsesSting(project) {
 }
 
 /**
+ * Drives the generated `BOUND_TILE_ENABLED`. A genuinely different shape
+ * from every sibling predicate above: a switch-bound tile is authored screen
+ * data (`screen.boundTiles`), not a command inside an event, so there is no
+ * `projectEvents`/`compiledPages`/`liveCommands` walk to reuse -- this walks
+ * every screen of every map directly. See design-tile.md §8.
+ */
+export function projectUsesBoundTiles(project) {
+  return project.maps.some((map) =>
+    map.screens.some((screen) => (screen.boundTiles ?? []).length > 0)
+  );
+}
+
+/**
  * Drives the generated `PALETTE_FX_ENABLED`, gating `fade_apply_palette` and
  * the NMI PPUADDR fix (engine/entities.asm, engine/boot.asm) on their own
  * rather than bundling them into either `FADE_ENABLED` or `FLASH_ENABLED`
@@ -3081,6 +3106,81 @@ export function validateProject(project) {
           `${screenLabel(project, mapIndex, index)} has ${screen.entities.length} entities; ` +
             `the engine allows ${LIMITS.entitiesPerScreen}.`
         );
+      }
+
+      // Switch-bound tiles (design-tile.md §10): range, then duplicate-cell,
+      // then palette, in that order -- each later check trusts the fields
+      // the earlier one already refused, since normalization clamps a
+      // project loaded through it but validateProject is not the only door a
+      // project reaches it through (a hand-edited file, or one saved by a
+      // later version, loaded with no normalization pass in between).
+      const bound = screen.boundTiles ?? [];
+      if (bound.length > LIMITS.boundTilesPerScreen) {
+        add(
+          'error',
+          'Map Forge',
+          `${screenLabel(project, mapIndex, index)} has ${bound.length} switch-bound tiles; ` +
+            `the engine allows ${LIMITS.boundTilesPerScreen}.`
+        );
+      }
+
+      // Range validation, defense in depth -- every entry that fails is
+      // refused AND excluded from the duplicate/palette checks below, which
+      // would otherwise index screen.metatiles/project.metatiles unsafely.
+      const inRange = [];
+      bound.forEach((entry, i) => {
+        const badSwitch =
+          !Number.isInteger(entry.switchId) || entry.switchId < 0 || entry.switchId >= RPG_LIMITS.switches;
+        const badRow = !Number.isInteger(entry.row) || entry.row < 0 || entry.row >= LIMITS.screenRows;
+        const badCol = !Number.isInteger(entry.col) || entry.col < 0 || entry.col >= LIMITS.screenCols;
+        const badMetatile =
+          !Number.isInteger(entry.metatileId) || entry.metatileId < 0 || entry.metatileId >= LIMITS.metatiles;
+        if (badSwitch || badRow || badCol || badMetatile) {
+          add(
+            'error',
+            'Map Forge',
+            `${screenLabel(project, mapIndex, index)} has an invalid switch-bound tile (entry ${i}): ` +
+              'switch, row, column or metatile is out of range.'
+          );
+        } else {
+          inRange.push(entry);
+        }
+      });
+
+      // Two bindings at the same cell would silently mean "whichever ROM
+      // entry the engine's cache scan finds first" -- ambiguous authored
+      // state, refused rather than left to an implementation detail
+      // (bound_tile_lookup's own scan order).
+      const seenCells = new Set();
+      for (const entry of inRange) {
+        const key = `${entry.row},${entry.col}`;
+        if (seenCells.has(key)) {
+          add(
+            'error',
+            'Map Forge',
+            `${screenLabel(project, mapIndex, index)} has two switch-bound tiles at row ${entry.row}, ` +
+              `col ${entry.col}. Remove one.`
+          );
+        }
+        seenCells.add(key);
+      }
+
+      // The palette question, resolved as costing option (a): the substitute
+      // must share the palette group the target cell is CURRENTLY painted
+      // with, so draw_screen never needs to touch the attribute byte.
+      for (const entry of inRange) {
+        const paintedId = screen.metatiles[entry.row * LIMITS.screenCols + entry.col];
+        const painted = project.metatiles[paintedId];
+        const substitute = project.metatiles[entry.metatileId];
+        if (painted && substitute && painted.palette !== substitute.palette) {
+          add(
+            'error',
+            'Map Forge',
+            `${screenLabel(project, mapIndex, index)} row ${entry.row}, col ${entry.col}: the ` +
+              `switch-bound substitute uses a different palette group than what is painted there. ` +
+              'Repaint the cell or choose a same-palette substitute.'
+          );
+        }
       }
     });
   });

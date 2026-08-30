@@ -118,6 +118,16 @@ main_loop:
                               ; anything downstream (flash_tick included)
                               ; depends on the exact distance between them.
   .endif
+  .if BOUND_TILE_ENABLED
+  jsr flip_tick               ; design-tile.md §7 -- a fresh per-frame visual-
+                              ; flip budget must be available before
+                              ; dispatch_input, so any script code that frame
+                              ; (a Turn switch command) sees flip_budget
+                              ; already reset. Placed after sting_tick for the
+                              ; same source-adjacency reason, unrelated to
+                              ; flash_tick's own real ordering requirement
+                              ; below.
+  .endif
   .if FLASH_ENABLED
   jsr flash_tick             ; a Flash burst keeps counting down whether the
                               ; world is frozen or running -- see its own

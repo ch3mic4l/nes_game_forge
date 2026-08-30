@@ -236,6 +236,36 @@ test('screenCapacityFor’s delta is smaller than one region once real screens a
   assert.equal(capacityOff - capacityOn, 21, 'the delta at this boundary is 21, not a full region (26)');
 });
 
+// design-tile.md §8, finding 6: screenRecordBytes' own bound-tile terms
+// (screenCapacityFor's own boundTilesEnabled param, threaded from
+// checkCapacity) -- a per-screen "any bound records at all" header byte plus
+// BOUND_TILE_RECORD (3) bytes per authored bound tile, both zero unless the
+// feature is switched on, matching every other conditional term this file's
+// own delta tests already hold to the same real-packing-boundary discipline.
+// 52 screens at the LIMITS.boundTilesPerScreen ceiling (8 each) across
+// exactly 2 regions: bare screens cost 305 bytes (SCREEN_BYTES + 1), which
+// packs 26 per region (7930/8176 used) -- all 52 fit with boundTilesEnabled
+// off. With it on, each screen costs 329 (305 + 1 header + 3*8 records),
+// which packs only 24 per region (7896/8176) -- 2 fewer per region, 4 fewer
+// overall.
+test('screenCapacityFor charges a bound-tile header and per-record cost only when boundTilesEnabled, at a real packing boundary', () => {
+  const mapper = mapperById(30); // UNROM 512
+  const tilesetCount = 60; // leaves exactly 2 of 62 regions for screens
+  const flat = Array.from({ length: 52 }, () => ({
+    screen: {
+      entities: [],
+      boundTiles: Array.from({ length: 8 }, (_, i) => ({ switchId: 0, row: 0, col: i, metatileId: 0 }))
+    }
+  }));
+  const actorCount = 1;
+
+  const capacityOff = screenCapacityFor(mapper, tilesetCount, 0, flat, actorCount, false, false);
+  const capacityOn = screenCapacityFor(mapper, tilesetCount, 0, flat, actorCount, false, true);
+  assert.equal(capacityOff, 52, 'with the feature off, bound-tile authoring on the screens must cost nothing at all');
+  assert.equal(capacityOn, 48, 'with the feature on, each region should pack 2 fewer of these bound-tile-heavy screens');
+  assert.equal(capacityOff - capacityOn, 4, 'the delta at this boundary is 4 (2 fewer per region, 2 regions), not a full region');
+});
+
 // The other half of round 1's fix, re-pointed now that phase 2.3 flipped
 // SAVE_FLASH_IMPLEMENTED: reservesFlashSaveRegion's `&& saveMediaImplemented
 // (mapper)` clause used to keep production from ever actually removing a

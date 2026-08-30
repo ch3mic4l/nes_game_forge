@@ -147,8 +147,11 @@ const scenario = (dir, sampleDir, sampleRpgDir) => `
     // Spelled out rather than built by createScreen, so this is also the check
     // that a screen literal knows every field: the round trip below compares
     // this against what normalization produced on the way back off disk.
+    // boundTiles: [] added alongside entities when switch-bound tiles shipped
+    // (design-tile.md §10) -- normalizeScreen always sets it, so this literal
+    // has to carry it too or the round-trip comparison below would diverge.
     while (map.screens.length < 4) {
-      map.screens.push({ name: '', metatiles: new Array(240).fill(0), entities: [] });
+      map.screens.push({ name: '', metatiles: new Array(240).fill(0), entities: [], boundTiles: [] });
     }
   });
   await wait(250);
@@ -2698,6 +2701,184 @@ const scenario = (dir, sampleDir, sampleRpgDir) => `
     throw new Error('after a reset the player is at ' + testEmu.peek(0x0010) + ',' + testEmu.peek(0x0011));
   }
   step('the built ROM is unchanged', 'reset boots the title at the authored start');
+
+  // --- Map Forge: switch-bound tiles, the Bind tool (design-tile.md §10) ---
+  await window.__app.goTo('map');
+  await wait(300);
+  const bindThumbs = [...document.querySelectorAll('#stage canvas')].filter((c) => c.width === 64 && c.height === 60);
+  if (!bindThumbs.length) throw new Error('the navigator showed no screens for the bind-tool scenario');
+  bindThumbs[0].click();
+  await wait(150);
+
+  // A same-palette substitute, set up the same way other smoke sections
+  // establish controlled fixture state (store.commit, undone at the end).
+  // Picked at (boundPaintedId + 1) mod 64 rather than a hardcoded id: in
+  // the sample fixture itself, cells (0,0) and (1,0) both happen to already be
+  // painted with metatile 2 -- reusing that same id as the "substitute"
+  // would make the original and the substitute literally the same
+  // metatile, and every fingerprint check below would pass whether or not
+  // the preview actually draws anything at all. Repointed with a visually
+  // distinct tile pattern so validateProject's palette rule is satisfied
+  // and the substitute is a real, different one from whatever is painted.
+  const boundPaintedId = store.project.maps[0].screens[0].metatiles[0];
+  const boundPaintedPalette = store.project.metatiles[boundPaintedId].palette;
+  const boundSubstituteId = (boundPaintedId + 1) % 64;
+  if (boundSubstituteId === store.project.maps[0].screens[0].metatiles[1]) {
+    throw new Error('the chosen substitute metatile (' + boundSubstituteId + ') collides with what is already painted at (1,0) -- pick a different offset');
+  }
+  const substituteBefore = JSON.stringify(store.project.metatiles[boundSubstituteId]);
+  store.commit('smoke bind-tool substitute metatile', (project) => {
+    const substitute = project.metatiles[boundSubstituteId];
+    substitute.palette = boundPaintedPalette;
+    substitute.tiles = [1, 1, 1, 1];
+  });
+  await wait(120);
+
+  document.querySelector('#stage [data-tool="bind"]').click();
+  await wait(150);
+
+  const bindCanvas = document.querySelector('#stage .canvas-stage canvas.pixels');
+  const bindBox = bindCanvas.getBoundingClientRect();
+  const clickBindCell = (col, row, button) => {
+    bindCanvas.dispatchEvent(new PointerEvent('pointerdown', {
+      bubbles: true,
+      button: button || 0,
+      clientX: bindBox.left + ((col + 0.5) / 16) * bindBox.width,
+      clientY: bindBox.top + ((row + 0.5) / 15) * bindBox.height
+    }));
+  };
+  const hoverBindCell = (col, row) => {
+    bindCanvas.dispatchEvent(new PointerEvent('pointermove', {
+      bubbles: true,
+      clientX: bindBox.left + ((col + 0.5) / 16) * bindBox.width,
+      clientY: bindBox.top + ((row + 0.5) / 15) * bindBox.height
+    }));
+  };
+  const bindToastTexts = () => [...document.querySelectorAll('#toastHost .toast')].map((n) => n.textContent);
+
+  // Left-click with no substitute chosen yet: refused with a toast, nothing added.
+  clickBindCell(0, 0);
+  await wait(80);
+  if (!bindToastTexts().some((t) => t.includes('Choose a substitute metatile first'))) {
+    throw new Error('binding with no metatile chosen should have toasted, saw: ' + JSON.stringify(bindToastTexts()));
+  }
+  if ((store.project.maps[0].screens[0].boundTiles || []).length !== 0) {
+    throw new Error('a refused bind must not have added anything');
+  }
+
+  // Choose the switch and the substitute. The metatile select is filtered to
+  // whatever is hovered (renderBoundMetatileOptions), so hover (0,0) first.
+  const boundSwitchSelect = document.querySelector('#stage [data-bind-field="switch"]');
+  const boundMetatileSelect = document.querySelector('#stage [data-bind-field="metatile"]');
+  if (!boundSwitchSelect || !boundMetatileSelect) throw new Error('the Bind tool panel is missing its switch/metatile selects');
+  boundSwitchSelect.value = '3';
+  boundSwitchSelect.dispatchEvent(new Event('change', { bubbles: true }));
+  hoverBindCell(0, 0);
+  await wait(80);
+  const boundMetatileOption = [...boundMetatileSelect.options].find((o) => o.value === String(boundSubstituteId));
+  if (!boundMetatileOption) throw new Error('the substitute metatile (id ' + boundSubstituteId + ') was not offered -- palette filtering may be wrong');
+  boundMetatileSelect.value = String(boundSubstituteId);
+  boundMetatileSelect.dispatchEvent(new Event('change', { bubbles: true }));
+
+  clickBindCell(0, 0);
+  await wait(120);
+  let bound = store.project.maps[0].screens[0].boundTiles || [];
+  if (bound.length !== 1 || bound[0].switchId !== 3 || bound[0].row !== 0 || bound[0].col !== 0 || bound[0].metatileId !== boundSubstituteId) {
+    throw new Error('binding (0,0) to switch 3 / substitute metatile did not land as authored: ' + JSON.stringify(bound));
+  }
+  step('Bind tool: add a binding', JSON.stringify(bound[0]));
+
+  // A second left-click on the same, now-bound cell: refused with a toast.
+  clickBindCell(0, 0);
+  await wait(80);
+  if (!bindToastTexts().some((t) => t.includes('already bound'))) {
+    throw new Error('binding an already-bound cell should have toasted, saw: ' + JSON.stringify(bindToastTexts()));
+  }
+  if (store.project.maps[0].screens[0].boundTiles.length !== 1) throw new Error('a refused duplicate bind must not add a second entry');
+
+  // Fill up to the per-screen cap (LIMITS.boundTilesPerScreen = 8), then
+  // confirm the 9th is refused.
+  for (let col = 1; col <= 7; col++) clickBindCell(col, 0);
+  await wait(150);
+  bound = store.project.maps[0].screens[0].boundTiles;
+  if (bound.length !== 8) throw new Error('expected 8 bound tiles after filling the row, saw ' + bound.length);
+  clickBindCell(8, 0);
+  await wait(80);
+  if (!bindToastTexts().some((t) => t.includes('at most 8 switch-bound tiles'))) {
+    throw new Error('exceeding the per-screen cap should have toasted, saw: ' + JSON.stringify(bindToastTexts()));
+  }
+  if (store.project.maps[0].screens[0].boundTiles.length !== 8) throw new Error('a refused over-cap bind must not add a 9th entry');
+  step('Bind tool: per-screen cap', '8 accepted, a 9th refused with a toast');
+
+  // Right-click removes; the preview checkbox is a pure view toggle.
+  clickBindCell(0, 0, 2);
+  await wait(80);
+  bound = store.project.maps[0].screens[0].boundTiles;
+  if (bound.length !== 7) throw new Error('right-click should have removed the (0,0) binding, saw ' + bound.length + ' left');
+  if (bound.some((b) => b.row === 0 && b.col === 0)) throw new Error('the (0,0) binding should be gone after right-click');
+
+  // Cell (1,0) is still bound (switch 3 / the substitute metatile,
+  // untouched by the (0,0) removal above) -- a real pixel fingerprint at
+  // its centre, off the corner marker drawBoundTileOverlay always draws, is
+  // what actually proves the preview checkbox draws the *substitute's* own
+  // art rather than merely toggling something transparent on, or -- the
+  // sharper failure a bare alpha check cannot tell apart from success --
+  // silently redrawing the *original* painted metatile instead. The
+  // substitute's own fixture tiles ([1,1,1,1], set up above, on an id
+  // guaranteed different from whatever is really painted at (1,0)) are
+  // deliberately distinct, so comparing the overlay's own
+  // pixel against the main canvas's (which always shows the real painted
+  // art, preview or not) is what actually distinguishes "drew the
+  // substitute" from "drew a copy of the original and merely wasn't blank".
+  const boundCanvas = document.querySelector('#stage .canvas-stage canvas.pixels');
+  const boundOverlay = document.querySelector('#stage [data-map-overlay]');
+  if (!boundOverlay) throw new Error('the Bind tool overlay canvas was not found');
+  const pixelAt = (canvasEl, col, row) => {
+    const context = canvasEl.getContext('2d');
+    const px = Math.floor(((col + 0.5) / 16) * canvasEl.width);
+    const py = Math.floor(((row + 0.5) / 15) * canvasEl.height);
+    return [...context.getImageData(px, py, 1, 1).data];
+  };
+
+  const boundPreviewCheckbox = document.querySelector('#stage [data-bind-preview]');
+  if (!boundPreviewCheckbox) throw new Error('the Bind tool preview checkbox was not offered');
+  if (pixelAt(boundOverlay, 1, 0)[3] !== 0) throw new Error('with the preview off, a bound cell must show only the corner marker, not the substitute’s own art');
+  const originalPixel = pixelAt(boundCanvas, 1, 0);
+  boundPreviewCheckbox.click();
+  if (!boundPreviewCheckbox.checked) throw new Error('the preview checkbox should be checked after one click');
+  await wait(80);
+  const previewPixel = pixelAt(boundOverlay, 1, 0);
+  if (previewPixel[3] === 0) throw new Error('with the preview on, the bound cell should show the substitute metatile’s own art, not stay transparent');
+  if (JSON.stringify(previewPixel) === JSON.stringify(originalPixel)) {
+    throw new Error('the preview is showing the original painted metatile’s own colour, not the substitute’s -- ' + JSON.stringify(previewPixel));
+  }
+  boundPreviewCheckbox.click();
+  if (boundPreviewCheckbox.checked) throw new Error('the preview checkbox should be unchecked after a second click');
+  await wait(80);
+  if (pixelAt(boundOverlay, 1, 0)[3] !== 0) throw new Error('unchecking the preview should stop drawing the substitute’s own art');
+  step('Bind tool: remove + preview toggle', '7 remain after removing (0,0); preview checkbox toggles cleanly, showing the real substitute’s own colour');
+
+  // Undo everything back out: the fixture metatile commit, the eight binds
+  // (cols 0-7), and the one removal (col 0) -- ten commits in all -- leaving
+  // the project exactly as it was before this scenario touched it.
+  for (let i = 0; i < 10; i++) store.undo();
+  await wait(150);
+  if ((store.project.maps[0].screens[0].boundTiles || []).length !== 0) {
+    throw new Error('undo should have unwound every binding, ' + store.project.maps[0].screens[0].boundTiles.length + ' remain');
+  }
+  if (JSON.stringify(store.project.metatiles[boundSubstituteId]) !== substituteBefore) {
+    throw new Error('undo should have restored the substitute metatile to its original state, not left the fixture commit in place');
+  }
+  step('Bind tool: undo', 'every binding and the fixture metatile edit unwound');
+
+  // Back to the Build panel: window.__app.current must be the build mount
+  // (buildAndPlayScenario lives there, not on the Map Forge's own mount --
+  // map.js only ever calls it through app.current) for the Reload Test flow
+  // just below, which assumes it is already there the way it was right
+  // after "play from here" above -- this scenario's own goTo('map') calls
+  // moved window.__app.current away from it.
+  await window.__app.goTo('build');
+  await wait(200);
 
   // --- Reload the ROM while keeping the selected test scenario (ROADMAP
   // item 3's last bullet-but-one), driven through the real player and Build

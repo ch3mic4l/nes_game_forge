@@ -32,7 +32,14 @@ pad_new     = $18           ; buttons pressed this frame only
 pad_last    = $19
 vblank      = $1A           ; set by NMI, cleared by the main loop
 frame_cnt   = $1B
-esptr_lo    = $1C           ; this screen's actor list
+esptr_lo    = $1C           ; this screen's actor list, OR (switch-bound tiles,
+                             ; design-tile.md §3) this screen's bound-tile table --
+                             ; shared synchronous scratch, valid only for the
+                             ; duration of one call to spawn_entities,
+                             ; rebuild_bound_cache, or tile_switch_changed, never
+                             ; across two. A Code Forge override that stashes
+                             ; esptr across its own calls is no longer safe once
+                             ; BOUND_TILE_ENABLED -- see design-tile.md §11.
 esptr_hi    = $1D
 msptr_lo    = $1E           ; metasprite tile list being drawn
 msptr_hi    = $1F
@@ -579,6 +586,54 @@ sting_shadow_enabled = $0541 ; the shadowed mus_enabled
 sting_left          = $0542  ; frames left on the sting; 0 = idle
 force_trig          = $0543  ; @size=MUS_CHANNELS
 
+; --------------------------------------------------- switch-bound tiles RAM
+; See design-tile.md §5. bdptr_lo/hi are the ONE zero-page pointer this feature
+; needs -- (zp),Y indirect addressing is a hard 6502 requirement, and zero page
+; is already fully allocated, so this aliases esptr_lo/hi (above) rather than
+; claiming a byte that does not exist. Everything else lives here, at $0547,
+; the first free byte after ent_record/sting RAM's own $0527-$0546 span.
+bdptr_lo          = esptr_lo   ; aliased -- see esptr_lo's own comment above
+bdptr_hi          = esptr_hi
+
+; bind_idx/bind_mt: the CURRENT screen's active (switch-on) bindings only,
+; resolved at redraw and kept live by tile_switch_changed. bound_tile_lookup
+; (screens.asm/player.asm/text.asm's shared consult) scans only this, never
+; ROM, never switch_test.
+bind_idx          = $0547  ; @size=BOUND_CAP -- cell index (0-239)
+bind_mt           = $054F  ; @size=BOUND_CAP -- substitute metatile id
+bind_count        = $0557  ; how many of the above are live, 0-BOUND_CAP
+
+; Scratch shared by rebuild_bound_cache and tile_switch_changed's own scan --
+; the two never run nested inside one another, so one byte serves both call
+; sites without collision.
+bnd_scan_left     = $0558
+
+; The switch tile_switch_changed is processing this call -- must survive its
+; own jsr rebuild_bound_cache (which clobbers A/X/Y freely) and its own cmp
+; bnd_switch per ROM entry.
+bnd_switch        = $0559
+
+; A matched entry's cell index, held across the balanced push/pull around
+; queue_or_defer_flip and reused by flip_emit/flip_emit_packet.
+bnd_match_cell    = $055A
+
+; bound_tile_lookup's own Y-preserving scratch.
+btl_idx           = $055B
+
+; flip_emit_packet's own scratch: the resolved metatile id (needed four times,
+; across two vram_open calls that each clobber Y) and the doubled column
+; offset.
+bnd_mt            = $055C
+bnd_col2          = $055D
+
+; The per-frame visual flip budget and its pending carry-over queue -- one
+; entry per DISTINCT cell (the dedupe in queue_or_defer_flip makes duplicates
+; structurally impossible).
+flip_budget       = $055E
+flip_pending_idx  = $055F  ; @size=BOUND_CAP -- cell indices awaiting their own
+                            ; visual write, oldest first
+flip_pending_count = $0567
+
 ; ------------------------------------------------------------ inventory RAM
 ; One id per item carried, oldest first -- an item id under ITEMS_ENABLED, or
 ; the legacy backing-actor id on the disabled economy, which never gained a
@@ -606,8 +661,9 @@ vram_buf    = $0400  ; @size=256
 ;
 ; $0600, not lower: ent_record (above) ends at $0527, and this leaves a
 ; clean page boundary between the two rather than packing the driver
-; immediately after it purely to save the space -- sting RAM (above) now
-; uses 31 of those bytes, and flash_driver still starts cleanly at the next
+; immediately after it purely to save the space -- sting RAM plus the
+; switch-bound tiles RAM above it (design-tile.md §5) now use 64 of those
+; bytes ($0528-$0567), and flash_driver still starts cleanly at the next
 ; page regardless of how many of the rest anything else ever claims.
 ;
 ; FLASH_DRIVER_MAX is a measured ceiling, not a guess: engine/flash.asm's
@@ -791,6 +847,22 @@ BOX_TEXT_ROWS = 4           ; keep in step with BOX_ROWS in shared/font.js
 BOX_TEXT_LO   = $22         ; low byte of the first character cell
 BOX_ATTR_LO   = $F0         ; attribute bytes 48-63 cover tile rows 24-31
 BOX_MT_ROW    = 12          ; metatile row the box starts on
+
+; Switch-bound tiles (design-tile.md §6/§7). The first cell index the message
+; box owns while it is open -- an arithmetic expression against BOX_MT_ROW,
+; never the literal 192, so the two can never drift apart.
+BOUND_BOX_FIRST_CELL = BOX_MT_ROW*16
+
+; The per-frame visual-flip budget (design-tile.md §7) -- a tuning knob, not a
+; correctness requirement. Raising it trades vram_buf/NMI-cycle margin (priced
+; in design-tile.md §7's own producer-budget analysis) for a shorter worst-case
+; visual latency (§7's "worst-case visual latency" note). 1 is the value that
+; analysis was measured against; changing it needs a fresh pass of that
+; accounting and a fresh Mesen run (test/lua/bound_tile_nmi_timing.lua.template
+; + build_bound_tile_nmi_roms.mjs + run_bound_tile_nmi_check.sh) before it can
+; be trusted.
+FLIP_BUDGET_CAP = 1
+
 ; The page arrow goes in the last text row's right-hand padding column, not on
 ; the frame below it: tile row 29 and columns 0 and 31 are inside the overscan a
 ; TV throws away, and so is the frame that runs through them. Losing decoration
