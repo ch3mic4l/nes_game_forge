@@ -468,6 +468,28 @@ after the OAM DMA. Three rules hold it together:
   the PPU's `t` register, nametable-select bits included, so resetting `$2005` alone leaves the
   screen scrolled to a different nametable.
 
+**Flash is the first producer allowed to write `vram_buf` outside `ui_tick`'s own priority
+chain, which makes "one producer per frame" a bound of two, not one, and it has to be counted
+rather than assumed.** `flash_tick` (`engine/entities.asm`) ticks unconditionally from
+`main_loop`, alongside `music_tick`, specifically so a non-suspending Flash burst keeps
+counting down across the frozen/gameplay boundary the way Shake's own countdown already does —
+but unlike Shake (a pure PPUSCROLL trick with no producer at all), Flash's own packet-building
+code runs on the mainline and can share a frame with whichever *one* of `move_tick`/`wait_tick`/
+`fade_tick`/`text_tick` `ui_tick`'s own frozen-world dispatch is running that frame (those four
+remain mutually exclusive among themselves, unchanged). The bound is therefore at most two
+packets per frame, not one: `2 * (3-byte header + 32-byte body) + 1` shared terminator = 71 of
+`vram_buf`'s 256 bytes, and roughly 1670-1740 cycles of full NMI time in the worst case (two
+32-byte packets, the OAM DMA, both register save/restore and the PPUADDR fix) against the
+~2273-cycle vblank window — measured against real hardware timing via the Mesen Lua layer, not
+jsnes, which does not enforce this deadline the way a deliberately slow drain would need to be
+caught. Ordering matters and is deterministic, not incidental: `main_loop` calls `flash_tick`
+before `settle_owed`/`dispatch_input`/`ui_tick`, so on a frame where both a Flash edge and one
+of the frozen-world four target the same address (Flash and a coincident Fade step, both
+`$3F00`), Flash's packet is queued first and Fade's second, so Fade's write lands last in that
+NMI's drain and is what the screen shows — an author who needs the opposite has to sequence
+with an explicit `Wait`. A third independent producer must re-open both the byte-count and
+cycle-budget arithmetic above, not assume either bound still holds.
+
 `box_close` keeps no copy of what the box covered: the box is tile rows 24-29, which is exactly
 metatile rows 12-14 with no half-row left over, so it rebuilds those rows straight out of
 `[mtptr]` + `mt_tl/tr/bl/br` and the attributes out of `[atptr]`. Moving the box means keeping

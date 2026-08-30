@@ -29,6 +29,21 @@
 
 ; Drop everything queued. Called after a redraw, which rewrites the whole
 ; nametable and so makes any pending write meaningless.
+;
+; vram_reset now requires forced blank for its entire call -- it clobbers A,
+; X and Y, and, when FLASH_ENABLED, may leave the PPU's internal address
+; register pointed inside palette space; a caller must establish its own
+; non-palette PPUADDR (or otherwise write more VRAM) before re-enabling
+; rendering. Shipped 8beba40 code only ever loaded/stored A here; the Flash
+; addition below is what first widens the contract, because
+; fade_apply_palette and vram_drain both use X (vram_drain uses Y too) as
+; loop counters with no save/restore of their own. Both real callers
+; (redraw_screen, engine/screens.asm; draw_battle_screen, engine/battle.asm)
+; are safe regardless: each already reloads every working register it needs,
+; and each reaches its own further $2006/$2007 setup before writing another
+; VRAM byte or calling enable_rendering, so neither the widened clobber nor a
+; stale palette-space PPUADDR is ever observed. Whoever adds a third caller
+; must keep both of those true.
 vram_reset:
   lda #0
   sta vram_len
@@ -48,6 +63,36 @@ vram_reset:
   ; dependent difference in what Shake does.
   .if SHAKE_ENABLED
   sta shake_left
+  .endif
+  ; A Flash burst does not suspend either (script_op_flash, engine/script.asm)
+  ; and so has no "world is frozen" protection from a redraw landing mid-count
+  ; -- the same exposure Shake has above. Unlike a scroll offset, though, a
+  ; palette write is not self-healing: nothing else in redraw_screen/
+  ; draw_battle_screen touches $3F00-$3F1F, so clearing flash_left alone
+  ; would leave the PPU's own palette RAM sitting at FLASH_COLOR forever.
+  ; flash_left != 0 covers every outstanding case at once -- mid-hold
+  ; (1..FLASH_ARM_VALUE) and FLASH_PENDING (the restore queued by the very
+  ; last flash_tick call, not yet drained) alike -- because whatever was
+  ; previously queued was just discarded by this routine's own clear above
+  ; regardless of which case it was; there is nothing to distinguish. The fix
+  ; queues a FRESH restore packet (reading the CURRENT fade_step, so a Flash
+  ; on a Fade-darkened screen restores to darkened, not to bright) and drains
+  ; it NOW, synchronously, in place -- not left for the next NMI, which would
+  ; show the redrawn screen with the old white palette for one whole extra
+  ; frame. vram_drain's own vram_drain_done already re-zeroes vram_len/
+  ; vram_ready when it finishes, so main_loop's own end-of-frame handshake
+  ; has nothing left to re-arm.
+  .if FLASH_ENABLED
+  lda flash_left
+  beq vram_reset_no_flash      ; genuinely idle -- nothing outstanding
+  lda #0
+  sta flash_left
+  jsr fade_apply_palette       ; queue a fresh restore packet -- the shared,
+                                ; PALETTE_FX_ENABLED-gated routine
+                                ; (engine/entities.asm)
+  jsr vram_drain                ; drain it now, synchronously, under this
+                                ; routine's own guaranteed forced blank
+vram_reset_no_flash:
   .endif
   rts
 

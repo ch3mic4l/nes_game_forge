@@ -366,12 +366,48 @@ fade_left   = fade_target+1    ; frames until the next step is applied
 fade_reload = fade_left+1      ; non-zero: the next redraw_screen must reload
                                 ; palette_data before re-enabling rendering
 
+; A scripted Flash in progress (OP_FLASH, engine/script.asm; flash_tick,
+; engine/entities.asm, ticked unconditionally from main_loop, not ui_tick --
+; see flash_tick's own header for why Flash does not suspend and cannot join
+; mv_left/wt_left/fade_left's own mutual exclusion). flash_left is the whole
+; state machine, one byte, three kinds of value: 0 is idle; 1..FLASH_ARM_VALUE
+; is counting down through the arm-and-hold (FLASH_ARM_VALUE itself is the
+; tick flash_tick recognises as "just armed, push the flash colour now");
+; FLASH_PENDING is a distinct, nonzero sentinel meaning "the restore packet
+; was queued on the previous tick, not yet confirmed drained by the following
+; NMI" -- a redraw racing that exact window (vram_reset, engine/text.asm)
+; must still see something outstanding, which a bare 0 could not tell it.
+;
+; Chained after fade_reload for the identical reason fade_step itself was
+; chained after shake_left: a switched-off Flash must not move any other
+; symbol's address, including fade_reload's.
+flash_left  = fade_reload+1
+
 ; The $10-per-row darken trick reaches solid black in at most this many
 ; subtractions from any starting row; the hold between steps is an engine
 ; constant, not authored -- see OP_FADE below and shared/project.js's
 ; FADE_DIRECTIONS for why the wire format carries no duration of its own.
 FADE_STEPS       = 4
 FADE_STEP_FRAMES = 6
+
+; Flash's own engine constants, none of them authored -- see OP_FLASH below
+; and shared/project.js's EVENT_COMMANDS comment for why Flash's wire format
+; carries no colour or duration operand at all. FLASH_COLOR ($30) is the
+; brightest white row 3 hue 0 of the NES master palette has
+; (shared/nespalette.js's own RAW table); it is a fixed constant, never
+; derived from project data, so it needs no isUnsafeColor-style clamp the way
+; Fade's own ramp does. FLASH_TOTAL_FRAMES is the visible hold, in NMI
+; drains, between the flash colour landing and the restore landing;
+; FLASH_ARM_VALUE is one more than that -- the value flash_left is armed to,
+; and the edge flash_tick's first tick since arming recognises -- because the
+; arming tick itself only queues the flash-on packet and does not yet count
+; as a held frame. FLASH_PENDING ($FF) is chosen the same way this codebase's
+; NO_ACTOR/NO_ITEM sentinels already are: a value the ordinary counting range
+; (0..FLASH_ARM_VALUE) can never reach on its own.
+FLASH_COLOR      = $30
+FLASH_TOTAL_FRAMES = 6
+FLASH_ARM_VALUE  = FLASH_TOTAL_FRAMES+1
+FLASH_PENDING    = $FF
 
 ; Which split program this frame runs. OFF disarms the counter entirely.
 SPL_OFF     = 0
@@ -858,6 +894,13 @@ OP_FADE     = $18           ; [direction] -- suspends the script exactly as
                             ; out (to black), 2 = in (from black), matching
                             ; FADE_DIRECTIONS' own array order in
                             ; shared/project.js exactly.
+OP_FLASH    = $19           ; no operand -- flash the screen to FLASH_COLOR
+                            ; and back, a fixed engine-timed burst with no
+                            ; configuration surface at all. Does not suspend,
+                            ; the same instant shape OP_TURN/OP_VISIBLE/
+                            ; OP_SHAKE already have -- see flash_tick's own
+                            ; comment (engine/entities.asm) for why it ticks
+                            ; from main_loop rather than ui_tick.
 
 ; OP_FADE's own operand. FADE_NONE is 0, unlike OP_TURN/OP_VISIBLE's own
 ; categorical operands, because both of Fade's real directions are highly

@@ -44,6 +44,8 @@ import {
   SHAKE_KERNEL_ALLOWANCE,
   VISIBLE_KERNEL_ALLOWANCE,
   FADE_KERNEL_ALLOWANCE,
+  FLASH_KERNEL_ALLOWANCE,
+  PALETTE_FX_KERNEL_ALLOWANCE,
   SPLIT_LOCK_KERNEL_ALLOWANCE,
   ITEM_KERNEL_ALLOWANCE,
   ITEM_EFFECT_KERNEL_ALLOWANCE_BY_GAME_TYPE,
@@ -102,6 +104,7 @@ async function measureCodeBytes(
     withShake = false,
     withVisible = false,
     withFade = false,
+    withFlash = false,
     withTitle = false,
     withItems = true
   } = {}
@@ -128,6 +131,7 @@ async function measureCodeBytes(
   if (withShake) commands.push({ op: 'shake', frames: 30 });
   if (withVisible) commands.push({ op: 'visible', state: 'hidden' });
   if (withFade) commands.push({ op: 'fade', dir: 'out' });
+  if (withFlash) commands.push({ op: 'flash' });
   if (commands.length) {
     project.maps[0].screens[0].entities.push({
       actorId: 0,
@@ -546,11 +550,20 @@ test(
       );
     }
 
-    // Every RPG-capable board, a live Fade command and nothing else. Fade
-    // shares no dependent term with Move/Turn/Wait/Shake/Show-Hide/Face --
-    // nothing else calls script_op_fade, fade_tick or fade_apply_palette --
-    // so this delta should be FADE_KERNEL_ALLOWANCE and nothing else, the
-    // identical shape the Shake-only and Show/Hide-only blocks above assert.
+    // Every RPG-capable board, a live Fade command and nothing else.
+    // fade_apply_palette and the NMI PPUADDR fix are now gated on the
+    // derived PALETTE_FX_ENABLED (handoff-flash/design-flash.md §4), shared
+    // with Flash, so a Fade-only build's real delta is
+    // FADE_KERNEL_ALLOWANCE + PALETTE_FX_KERNEL_ALLOWANCE, not
+    // FADE_KERNEL_ALLOWANCE alone -- the ROM is unchanged from before Flash
+    // existed (the re-gate moved which named constant a byte is counted
+    // under, never which bytes assemble), but the expression this test
+    // checks against has to move with it.
+    // Captures D_fade/D_flash/D_both per mapper as they are measured below,
+    // for the explicit three-equation solve + non-tautology check
+    // (design-flash.md §4/§9 test 12) after the loops finish -- reusing
+    // these real deltas rather than rebuilding the same four ROMs again.
+    const paletteFxSolveData = [];
     for (const mapper of CAPABLE_MAPPERS) {
       const { project, codeBytes } = await measureCodeBytes(t, mapper, { withFade: true });
       assertCovers({ mapper, codeBytes }, kernelCodeBytes(project, mapper), 'a live Fade command');
@@ -558,31 +571,140 @@ test(
       const delta = codeBytes - noSaveEntry.codeBytes;
       assert.equal(
         delta,
-        FADE_KERNEL_ALLOWANCE,
+        FADE_KERNEL_ALLOWANCE + PALETTE_FX_KERNEL_ALLOWANCE,
         `${mapper.name}: Fade-only costs ${delta} bytes of kernel code (${noSaveEntry.codeBytes} -> ${codeBytes}), ` +
-          `but FADE_KERNEL_ALLOWANCE reserves ${FADE_KERNEL_ALLOWANCE} — this allowance must equal Fade's real ` +
+          `but FADE_KERNEL_ALLOWANCE + PALETTE_FX_KERNEL_ALLOWANCE reserves ` +
+          `${FADE_KERNEL_ALLOWANCE + PALETTE_FX_KERNEL_ALLOWANCE} — this allowance must equal Fade's real ` +
           'cost exactly, on every board.'
       );
+      paletteFxSolveData.push({ mapper, dFade: delta });
     }
 
     // Every RPG-capable board, live Shake and Fade together -- a real build,
     // not a sum of constants (design-fade.md's own §14 test 13). Shake
     // touches no code Fade also touches, so this delta should be exactly
-    // SHAKE_KERNEL_ALLOWANCE + FADE_KERNEL_ALLOWANCE, the identical
-    // "purely additive" shape the Shake+Wait and Shake+Show/Hide
-    // combinations above already prove.
+    // SHAKE_KERNEL_ALLOWANCE + FADE_KERNEL_ALLOWANCE + PALETTE_FX_KERNEL_ALLOWANCE
+    // (the shared term Fade alone still pays, per the Fade-only assertion
+    // just above), the identical "purely additive" shape the Shake+Wait and
+    // Shake+Show/Hide combinations above already prove.
     for (const mapper of CAPABLE_MAPPERS) {
       const { project, codeBytes } = await measureCodeBytes(t, mapper, { withShake: true, withFade: true });
       assertCovers({ mapper, codeBytes }, kernelCodeBytes(project, mapper), 'live Shake and Fade commands together');
       const noSaveEntry = noSave.find((entry) => entry.mapper.id === mapper.id);
       const delta = codeBytes - noSaveEntry.codeBytes;
+      const combined = SHAKE_KERNEL_ALLOWANCE + FADE_KERNEL_ALLOWANCE + PALETTE_FX_KERNEL_ALLOWANCE;
       assert.equal(
         delta,
-        SHAKE_KERNEL_ALLOWANCE + FADE_KERNEL_ALLOWANCE,
+        combined,
         `${mapper.name}: Shake+Fade costs ${delta} bytes of kernel code (${noSaveEntry.codeBytes} -> ${codeBytes}), ` +
-          `but SHAKE_KERNEL_ALLOWANCE + FADE_KERNEL_ALLOWANCE reserves ${SHAKE_KERNEL_ALLOWANCE + FADE_KERNEL_ALLOWANCE} ` +
-          '— the two must be purely additive, since Shake shares no code with Fade.'
+          `but SHAKE_KERNEL_ALLOWANCE + FADE_KERNEL_ALLOWANCE + PALETTE_FX_KERNEL_ALLOWANCE reserves ${combined} ` +
+          '— the two must be purely additive, since Shake shares no code with Fade or with Flash\'s own shared term.'
       );
+    }
+
+    // Every RPG-capable board, a live Flash command and nothing else, then
+    // Flash and Fade together -- the three-equation measurement
+    // handoff-flash/design-flash.md §4 specifies. D_fade (above, ==
+    // FADE_KERNEL_ALLOWANCE + PALETTE_FX_KERNEL_ALLOWANCE), D_flash and
+    // D_both are three real, independent deltas; PALETTE_FX_KERNEL_ALLOWANCE
+    // = D_fade + D_flash - D_both, FADE_KERNEL_ALLOWANCE = D_fade -
+    // PALETTE_FX_KERNEL_ALLOWANCE, FLASH_KERNEL_ALLOWANCE = D_flash -
+    // PALETTE_FX_KERNEL_ALLOWANCE. This block asserts D_flash and D_both
+    // directly against the shipped constants' own combinations, and a
+    // separate test below (the non-tautology requirement, design-flash.md
+    // §9 test 12) re-solves the system from these same three deltas and
+    // asserts the *exported* constants equal the solved values, not merely
+    // that some self-consistent triple exists.
+    for (const mapper of CAPABLE_MAPPERS) {
+      const flashOnly = await measureCodeBytes(t, mapper, { withFlash: true });
+      assertCovers({ mapper, codeBytes: flashOnly.codeBytes }, kernelCodeBytes(flashOnly.project, mapper), 'a live Flash command');
+      const noSaveEntry = noSave.find((entry) => entry.mapper.id === mapper.id);
+      const flashDelta = flashOnly.codeBytes - noSaveEntry.codeBytes;
+      assert.equal(
+        flashDelta,
+        FLASH_KERNEL_ALLOWANCE + PALETTE_FX_KERNEL_ALLOWANCE,
+        `${mapper.name}: Flash-only costs ${flashDelta} bytes of kernel code (${noSaveEntry.codeBytes} -> ` +
+          `${flashOnly.codeBytes}), but FLASH_KERNEL_ALLOWANCE + PALETTE_FX_KERNEL_ALLOWANCE reserves ` +
+          `${FLASH_KERNEL_ALLOWANCE + PALETTE_FX_KERNEL_ALLOWANCE} — this allowance must equal Flash's real ` +
+          'cost exactly, on every board.'
+      );
+
+      const both = await measureCodeBytes(t, mapper, { withFade: true, withFlash: true });
+      assertCovers({ mapper, codeBytes: both.codeBytes }, kernelCodeBytes(both.project, mapper), 'live Flash and Fade commands together');
+      const bothDelta = both.codeBytes - noSaveEntry.codeBytes;
+      const combined = FADE_KERNEL_ALLOWANCE + FLASH_KERNEL_ALLOWANCE + PALETTE_FX_KERNEL_ALLOWANCE;
+      assert.equal(
+        bothDelta,
+        combined,
+        `${mapper.name}: Flash+Fade costs ${bothDelta} bytes of kernel code (${noSaveEntry.codeBytes} -> ` +
+          `${both.codeBytes}), but FADE_KERNEL_ALLOWANCE + FLASH_KERNEL_ALLOWANCE + PALETTE_FX_KERNEL_ALLOWANCE ` +
+          `reserves ${combined} — this is NOT the sum of two independently-measured "alone" figures ` +
+          '(that would double-count the shared PALETTE_FX_KERNEL_ALLOWANCE term); the shared routine assembles ' +
+          'exactly once regardless of how many of Fade/Flash are live.'
+      );
+
+      const entry = paletteFxSolveData.find((e) => e.mapper.id === mapper.id);
+      entry.dFlash = flashDelta;
+      entry.dBoth = bothDelta;
+    }
+
+    // The explicit three-equation solve, and the non-tautology requirement
+    // (design-flash.md §4/§9 test 12): compute PALETTE_FX_KERNEL_ALLOWANCE/
+    // FADE_KERNEL_ALLOWANCE/FLASH_KERNEL_ALLOWANCE purely from the three real
+    // measured deltas above -- no reference to the exported constants at
+    // all in this arithmetic -- then assert the *exported* constants equal
+    // what was just solved for, on every board, and that the solved values
+    // are themselves identical across boards (the "flat, not per-mapper"
+    // claim, checked rather than assumed). Re-substituting solved values
+    // back into the same three equations they came from would be
+    // tautological; comparing against the real exports is what catches a
+    // shipped constant that has drifted from the solve.
+    let solvedPaletteFx = null;
+    let solvedFadeOwn = null;
+    let solvedFlashOwn = null;
+    for (const { mapper, dFade, dFlash, dBoth } of paletteFxSolveData) {
+      const paletteFx = dFade + dFlash - dBoth;
+      const fadeOwn = dFade - paletteFx;
+      const flashOwn = dFlash - paletteFx;
+      assert.equal(
+        paletteFx + fadeOwn,
+        dFade,
+        `${mapper.name}: the solved PALETTE_FX_KERNEL_ALLOWANCE (${paletteFx}) + FADE_KERNEL_ALLOWANCE (${fadeOwn}) ` +
+          `must reproduce the real measured Fade-only delta (${dFade})`
+      );
+      assert.equal(
+        paletteFx + flashOwn,
+        dFlash,
+        `${mapper.name}: the solved PALETTE_FX_KERNEL_ALLOWANCE (${paletteFx}) + FLASH_KERNEL_ALLOWANCE (${flashOwn}) ` +
+          `must reproduce the real measured Flash-only delta (${dFlash})`
+      );
+      assert.equal(
+        paletteFx,
+        PALETTE_FX_KERNEL_ALLOWANCE,
+        `${mapper.name}: the exported PALETTE_FX_KERNEL_ALLOWANCE (${PALETTE_FX_KERNEL_ALLOWANCE}) must equal the ` +
+          `value solved from real measurements (${paletteFx}), not merely satisfy the equations it came from`
+      );
+      assert.equal(
+        fadeOwn,
+        FADE_KERNEL_ALLOWANCE,
+        `${mapper.name}: the exported FADE_KERNEL_ALLOWANCE (${FADE_KERNEL_ALLOWANCE}) must equal the value solved ` +
+          `from real measurements (${fadeOwn})`
+      );
+      assert.equal(
+        flashOwn,
+        FLASH_KERNEL_ALLOWANCE,
+        `${mapper.name}: the exported FLASH_KERNEL_ALLOWANCE (${FLASH_KERNEL_ALLOWANCE}) must equal the value ` +
+          `solved from real measurements (${flashOwn})`
+      );
+      if (solvedPaletteFx === null) {
+        solvedPaletteFx = paletteFx;
+        solvedFadeOwn = fadeOwn;
+        solvedFlashOwn = flashOwn;
+      } else {
+        assert.equal(paletteFx, solvedPaletteFx, `${mapper.name}: PALETTE_FX_KERNEL_ALLOWANCE must solve to the identical figure on every board (flat, not per-mapper)`);
+        assert.equal(fadeOwn, solvedFadeOwn, `${mapper.name}: FADE_KERNEL_ALLOWANCE must solve to the identical figure on every board (flat, not per-mapper)`);
+        assert.equal(flashOwn, solvedFlashOwn, `${mapper.name}: FLASH_KERNEL_ALLOWANCE must solve to the identical figure on every board (flat, not per-mapper)`);
+      }
     }
 
     // Every RPG-capable board, live Turn and Wait together, no Move. Proves
@@ -1711,12 +1833,16 @@ test('a kernel-lo shortfall neither Shake nor Show/Hide alone would close, but b
   assert.match(message, new RegExp(`removing every Shake command and every Show/Hide command together \\(frees ${combined} bytes\\)`));
 });
 
-// Fade's own solo case: it shares no dependent term with anything (no
-// Face-like companion routine another command also calls), the identical
-// shape Shake's own solo test above already is. This is the test that fails
-// if active.push({ op: 'fade', ... }) is missing from kernelShortfallAdvice:
-// without it, Fade is never considered at all and the message falls through
-// to a mapper suggestion or the generic one instead of naming it.
+// Fade's own solo case, no Flash anywhere in the project: dropping the only
+// live Fade command turns off both FADE_ENABLED and PALETTE_FX_ENABLED (no
+// Flash keeps the shared term charged), so the real freed figure is
+// FADE_KERNEL_ALLOWANCE + PALETTE_FX_KERNEL_ALLOWANCE -- 146 + 55 = 201, the
+// same total the bare FADE_KERNEL_ALLOWANCE used to be before the re-gate,
+// which is why n=190 below still lands the identical deficit it always has.
+// This is the test that fails if active.push({ op: 'fade', ... }) is
+// missing from kernelShortfallAdvice: without it, Fade is never considered
+// at all and the message falls through to a mapper suggestion or the
+// generic one instead of naming it.
 test('a kernel-lo shortfall a live Fade command alone would close names Fade', () => {
   const project = createProject('Action', 'action');
   project.cartridge.mapper = 1; // MMC1 -- no split-lock to complicate the arithmetic
@@ -1728,19 +1854,24 @@ test('a kernel-lo shortfall a live Fade command alone would close names Fade', (
   });
   inflate(project, 190);
   const deficit = kernelShortfallDeficit(project);
-  assert.ok(deficit <= FADE_KERNEL_ALLOWANCE, `deficit ${deficit} must not exceed FADE_KERNEL_ALLOWANCE (${FADE_KERNEL_ALLOWANCE}) or this case does not exercise Fade alone closing the gap`);
+  const freed = FADE_KERNEL_ALLOWANCE + PALETTE_FX_KERNEL_ALLOWANCE;
+  assert.ok(deficit <= freed, `deficit ${deficit} must not exceed FADE_KERNEL_ALLOWANCE + PALETTE_FX_KERNEL_ALLOWANCE (${freed}) or this case does not exercise Fade alone closing the gap`);
   const message = kernelShortfallMessage(project);
-  assert.match(message, new RegExp(`removing every Fade command \\(frees ${FADE_KERNEL_ALLOWANCE} bytes\\)`));
+  assert.match(message, new RegExp(`removing every Fade command \\(frees ${freed} bytes\\)`));
   assert.doesNotMatch(message, /Turn command/, 'this project never turns Turn on, so it must not be offered as a fix');
   assert.doesNotMatch(message, /Shake command/, 'this project never turns Shake on, so it must not be offered as a fix');
+  assert.doesNotMatch(message, /Flash command/, 'this project never turns Flash on, so it must not be offered as a fix');
 });
 
 // The combination half: Shake and Fade together, purely additive since
 // neither shares a dependent term with the other -- SHAKE_KERNEL_ALLOWANCE +
-// FADE_KERNEL_ALLOWANCE = 65 + 201 = 266. Sized so neither command alone
-// (65, 201) covers the deficit but dropping both together does. n=190
-// measured directly, landing a 255-byte deficit -- strictly above both solo
-// figures and at or below the combined one.
+// FADE_KERNEL_ALLOWANCE + PALETTE_FX_KERNEL_ALLOWANCE = 65 + 146 + 55 = 266,
+// the identical 266 this combination has always measured (no Flash anywhere
+// in this project, so the shared term is charged once, for Fade alone, the
+// same as the solo case just above). Sized so neither command alone (65,
+// 201) covers the deficit but dropping both together does. n=190 measured
+// directly, landing a 255-byte deficit -- strictly above both solo figures
+// and at or below the combined one.
 test('a kernel-lo shortfall neither Shake nor Fade alone would close, but both together would, names the combination', () => {
   const project = createProject('Action', 'action');
   project.cartridge.mapper = 1; // MMC1 -- no split-lock to complicate the arithmetic
@@ -1764,14 +1895,64 @@ test('a kernel-lo shortfall neither Shake nor Fade alone would close, but both t
   });
   inflate(project, 190);
   const deficit = kernelShortfallDeficit(project);
-  const combined = SHAKE_KERNEL_ALLOWANCE + FADE_KERNEL_ALLOWANCE;
+  const fadeAlone = FADE_KERNEL_ALLOWANCE + PALETTE_FX_KERNEL_ALLOWANCE;
+  const combined = SHAKE_KERNEL_ALLOWANCE + fadeAlone;
   assert.ok(
-    deficit > SHAKE_KERNEL_ALLOWANCE && deficit > FADE_KERNEL_ALLOWANCE,
-    `deficit ${deficit} must exceed both Shake alone (${SHAKE_KERNEL_ALLOWANCE}) and Fade alone (${FADE_KERNEL_ALLOWANCE}), or this case does not exercise the combination at all`
+    deficit > SHAKE_KERNEL_ALLOWANCE && deficit > fadeAlone,
+    `deficit ${deficit} must exceed both Shake alone (${SHAKE_KERNEL_ALLOWANCE}) and Fade alone (${fadeAlone}), or this case does not exercise the combination at all`
   );
   assert.ok(deficit <= combined, `deficit ${deficit} must not exceed the combined figure (${combined}), or dropping both would not close the gap either`);
   const message = kernelShortfallMessage(project);
   assert.match(message, new RegExp(`removing every Shake command and every Fade command together \\(frees ${combined} bytes\\)`));
+});
+
+// item 6's own new-slice case: dropping Fade when a live Flash is ALSO
+// present frees only FADE_KERNEL_ALLOWANCE -- the shared PALETTE_FX_ENABLED
+// term stays charged because Flash keeps it alive, so this is genuinely a
+// smaller freed figure than the Fade-alone case above (146, not 201) despite
+// both projects dropping "every Fade command." This is the non-tautology
+// case design-flash.md §4 calls out explicitly: summing the bare
+// FADE_KERNEL_ALLOWANCE here (as if the shared term always came along for
+// free) would overstate what dropping Fade actually buys once Flash is
+// also live.
+test('a kernel-lo shortfall with both Flash and Fade live: dropping Fade alone frees only FADE_KERNEL_ALLOWANCE, not the shared term', () => {
+  const project = createProject('Action', 'action');
+  project.cartridge.mapper = 1; // MMC1 -- no split-lock to complicate the arithmetic
+  project.maps[0].screens[0].entities.push({
+    actorId: 0,
+    x: 16,
+    y: 16,
+    props: {
+      event: {
+        pages: [
+          {
+            cond: { type: 'none', arg: 0 },
+            commands: [
+              { op: 'flash' },
+              { op: 'fade', dir: 'out' }
+            ]
+          }
+        ]
+      }
+    }
+  });
+  inflate(project, 170);
+  const deficit = kernelShortfallDeficit(project);
+  assert.ok(
+    deficit > FLASH_KERNEL_ALLOWANCE,
+    `deficit ${deficit} must exceed FLASH_KERNEL_ALLOWANCE (${FLASH_KERNEL_ALLOWANCE}) alone, or Flash would also be offered as a solo drop, muddying what this test isolates`
+  );
+  assert.ok(
+    deficit <= FADE_KERNEL_ALLOWANCE,
+    `deficit ${deficit} must not exceed FADE_KERNEL_ALLOWANCE (${FADE_KERNEL_ALLOWANCE}) alone, or this case does not exercise "drop Fade alone" closing the gap on its own`
+  );
+  const message = kernelShortfallMessage(project);
+  assert.match(message, new RegExp(`removing every Fade command \\(frees ${FADE_KERNEL_ALLOWANCE} bytes\\)`));
+  assert.doesNotMatch(
+    message,
+    new RegExp(`frees ${FADE_KERNEL_ALLOWANCE + PALETTE_FX_KERNEL_ALLOWANCE} bytes`),
+    'dropping Fade here must not claim the Fade-alone (no-Flash) figure -- Flash keeps the shared term charged'
+  );
 });
 
 // Round 2, item 4e: the negative control the earlier positive-only tests
@@ -1811,5 +1992,44 @@ test('a kernel-lo shortfall with no live Fade command never names Fade as droppa
     message,
     /Fade command/,
     'this project never turns Fade on, so it must never be offered as a fix -- neither solo nor as part of a combination'
+  );
+});
+
+// design-flash.md §9 test 15: the identical negative control for Flash,
+// mirroring Fade's own shape and its own comment's honesty above. A project
+// with no live Flash command anywhere, but a real, similarly-sized kernel-lo
+// deficit reached through Shake alone, must never have the advice mention
+// Flash -- neither solo nor as part of any offered combination. This is a
+// genuine, user-visible negative control, but -- the same class of
+// overclaim Fade's own comment above was corrected to avoid -- it does NOT
+// catch an active.push({ op: 'flash', ... }) left ungated on usesFlash the
+// way its own earlier wording claimed: freedByDropping recomputes Flash's
+// own freed-byte count from projectWithoutCommands regardless of whether it
+// was gated onto `active` in the first place, and dropping a command that
+// was never live frees exactly 0 bytes here (this project has no live Flash
+// to drop), so `freed >= deficit` filters an ungated Flash entry out of both
+// `solo` and every combo just as reliably as a correctly-gated one would --
+// the real, already-valid Shake-solo candidate is found first and returned
+// either way, so this fixture cannot distinguish the two implementations at
+// all. What this test actually verifies is the user-visible outcome: no
+// advice ever names a command the project does not use.
+test('a kernel-lo shortfall with no live Flash command never names Flash as droppable advice', () => {
+  const project = createProject('Action', 'action');
+  project.cartridge.mapper = 1; // MMC1 -- no split-lock to complicate the arithmetic
+  project.maps[0].screens[0].entities.push({
+    actorId: 0,
+    x: 16,
+    y: 16,
+    props: { event: { pages: [{ cond: { type: 'none', arg: 0 }, commands: [{ op: 'shake', frames: 30 }] }] } }
+  });
+  inflate(project, 184); // the identical Shake-solo deficit measured above
+  const deficit = kernelShortfallDeficit(project);
+  assert.ok(deficit <= SHAKE_KERNEL_ALLOWANCE, `deficit ${deficit} must not exceed SHAKE_KERNEL_ALLOWANCE (${SHAKE_KERNEL_ALLOWANCE}) or this case does not exercise Shake alone closing the gap`);
+  const message = kernelShortfallMessage(project);
+  assert.match(message, new RegExp(`removing every Shake command \\(frees ${SHAKE_KERNEL_ALLOWANCE} bytes\\)`));
+  assert.doesNotMatch(
+    message,
+    /Flash command/,
+    'this project never turns Flash on, so it must never be offered as a fix -- neither solo nor as part of a combination'
   );
 });

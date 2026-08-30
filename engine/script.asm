@@ -210,8 +210,14 @@ script_run_visible:
 script_run_fade:
   .if FADE_ENABLED
   cmp #OP_FADE
-  bne script_run_bad
+  bne script_run_flash
   jmp script_op_fade
+  .endif
+script_run_flash:
+  .if FLASH_ENABLED
+  cmp #OP_FLASH
+  bne script_run_bad
+  jmp script_op_flash
   .endif
 script_run_bad:
   jmp script_finish         ; an opcode this engine cannot run stops the event
@@ -687,6 +693,29 @@ script_op_fade_suspend:
                               ; this frame -- the same "reached by jmp"
                               ; discipline script_op_wait's own trailing rts
                               ; already relies on
+  .endif
+
+; [OP_FLASH], no operand. Does not suspend -- the same instant shape OP_TURN/
+; OP_SHAKE/OP_VISIBLE already have, unlike OP_FADE just above: a flash
+; decorates whatever happens next rather than gating it, so the rest of the
+; page runs on the same frame this command does. flash_tick
+; (engine/entities.asm), ticked unconditionally from main_loop rather than
+; from ui_tick's frozen-world dispatch, is what actually pushes the palette
+; packets later; this routine only arms the countdown.
+;
+; script_next1 (above) is gated on SAVE_ENABLED alone and has one caller,
+; script_op_save -- reusing it here would leave a Flash-only project (no
+; live Save command) referencing an unassembled symbol. The two-instruction
+; skip-and-continue it wraps is duplicated inline instead, rather than
+; widening script_next1's own gate to a project-wide "either" flag for the
+; sake of three bytes.
+  .if FLASH_ENABLED
+script_op_flash:
+  lda #FLASH_ARM_VALUE
+  sta flash_left
+  lda #1
+  jsr script_skip              ; past the opcode alone -- no operand to skip
+  jmp script_run
   .endif
 
 ; ------------------------------------------------------------------- calls

@@ -946,6 +946,7 @@ fade_tick_done:
   jmp script_resume
 fade_tick_rts:
   rts
+  .endif
 
 ; Push one 32-byte packet at $3F00-$3F1F: every background and sprite
 ; palette, darkened by fade_step*$10 and clamped safe, through the same
@@ -979,6 +980,16 @@ fade_tick_rts:
 ; computed byte is exactly $0D, force it to $0F too. Falling into this check
 ; after the borrow branch's own lda #$0F is deliberate, not wasted work --
 ; $0F never equals $0D, so the compare simply fails harmlessly on that path.
+;
+; Gated on PALETTE_FX_ENABLED (usesFade || usesFlash), not FADE_ENABLED alone
+; -- Flash's own restore step (flash_tick, below) and vram_reset's own
+; cancellation block (engine/text.asm) both call this directly, with no
+; wrapper and no FADE_ENABLED/.else branch, because a project with a live
+; Flash and no Fade still needs this exact routine and PALETTE_FX_ENABLED is
+; true whenever FLASH_ENABLED is. The gate token is the only thing that
+; changed from the routine's own shipped 8beba40 form -- not one byte of the
+; body below, so a Fade-only build assembles identically to before.
+  .if PALETTE_FX_ENABLED
 fade_apply_palette:
   lda fade_step
   asl a
@@ -1005,5 +1016,102 @@ fade_apply_store:
   inx
   cpx #32
   bne fade_apply_loop
+  jmp vram_end
+  .endif
+
+; A scripted Flash (OP_FLASH, engine/script.asm), ticked unconditionally from
+; main_loop -- alongside music_tick, before settle_owed/dispatch_input/
+; ui_tick -- rather than from ui_tick's own frozen-world dispatch. Flash does
+; not suspend the script (script_op_flash only arms flash_left and falls
+; straight through), so it has to keep counting down whether the world is
+; frozen or running, which ui_tick cannot do: it only runs while game_state is
+; non-zero. Because the packet-building code here is ordinary mainline 6502,
+; not a pure register trick the way Shake's own NMI-side countdown is, it can
+; share a frame with whichever ONE of move_tick/wait_tick/fade_tick/text_tick
+; ui_tick's own dispatch is running that frame -- this routine's own call site
+; in main_loop runs first, so on a frame where both this and one of those four
+; want $3F00 (Flash and a coincident Fade step), this routine's packet is
+; queued first and the other one second, and the one queued second is what
+; the following NMI drains last -- see CLAUDE.md's own two-producer
+; invariant paragraph for the full accounting.
+;
+; flash_left is the whole state machine, one byte, three kinds of value: 0 is
+; idle; 1..FLASH_ARM_VALUE counts down through the arm-and-hold, with
+; FLASH_ARM_VALUE itself the edge that means "just armed, push the flash
+; colour now"; FLASH_PENDING is a distinct sentinel meaning "the restore
+; packet was queued on the tick that just ran, not yet confirmed drained by
+; the following NMI." That third state exists because a bare 0 written the
+; instant the restore is queued would look identical, to vram_reset's own
+; cancellation check (engine/text.asm), to "nothing was ever armed" -- and a
+; redraw landing in that exact window would then discard the queued packet
+; and never rebuild it, stranding the palette at FLASH_COLOR permanently.
+; FLASH_PENDING survives exactly one more tick (flash_tick_confirm, below)
+; before clearing to genuinely-idle 0.
+;
+; flash_tick_confirm never needs to re-check vram_ready before concluding the
+; restore is already drained, because main_loop's own wait_vblank call is a
+; hard barrier between one frame's body and the next's: if an NMI interrupts
+; a long hold-terminal frame before main_loop_ready has set vram_ready, that
+; NMI sees vram_ready still clear and skips the drain (vram_drain's own "a
+; frame that ran long" case) -- but the mainline still finishes that frame's
+; own body, sets vram_ready, and then loops back through wait_vblank before
+; flash_tick can run again on the confirm tick. wait_vblank cannot return
+; until *another* NMI actually fires, and that next NMI sees vram_ready set
+; and drains the restore before wait_vblank's own caller -- hence
+; flash_tick_confirm -- ever gets to run. If instead an NMI lands after the
+; vram_ready store but before wait_vblank is reached, it drains even earlier,
+; and the only cost is one extra frame of hold before main_loop reaches the
+; confirm tick. If NMI is disabled entirely, wait_vblank cannot return at
+; all, so flash_tick_confirm cannot run either. There is therefore no path by
+; which flash_tick_confirm observes FLASH_PENDING before the NMI that drains
+; it has already run, and no vram_ready re-check belongs here.
+  .if FLASH_ENABLED
+flash_tick:
+  lda flash_left
+  beq flash_tick_rts          ; idle -- nothing to do
+  cmp #FLASH_PENDING
+  beq flash_tick_confirm      ; last tick queued the restore -- this tick just
+                                ; confirms the intervening NMI already drained
+                                ; it, per the wait_vblank barrier proof above
+  cmp #FLASH_ARM_VALUE
+  bne flash_tick_hold          ; not the tick that just armed it
+  jsr flash_apply_on           ; first tick since arming: push the flash colour
+flash_tick_hold:
+  dec flash_left
+  bne flash_tick_rts           ; more hold frames remain
+  lda #FLASH_PENDING
+  sta flash_left               ; NOT 0 -- a redraw landing on THIS exact frame,
+                                ; before the NMI that drains the packet below
+                                ; has run, must still see something
+                                ; outstanding (vram_reset, engine/text.asm)
+  jsr fade_apply_palette        ; queues the restore packet -- the shared,
+                                ; PALETTE_FX_ENABLED-gated routine above, not a
+                                ; Flash-only duplicate
+  rts
+flash_tick_confirm:
+  lda #0
+  sta flash_left                ; genuinely idle now -- the restore is drained
+  rts
+flash_tick_rts:
+  rts
+
+; Push one 32-byte packet at $3F00-$3F1F, every entry set to the single fixed
+; FLASH_COLOR constant -- no source table, no subtraction, no clamp, unlike
+; fade_apply_palette above: FLASH_COLOR is a hand-picked engine constant, not
+; derived from project data, so there is no path by which this write can ever
+; produce an unsafe byte. A is loaded once, outside the loop -- vram_push
+; preserves A (it only ever touches X/Y internally), so there is no need to
+; reload the same constant on every one of the 32 iterations.
+flash_apply_on:
+  lda #$3F
+  ldy #$00
+  jsr vram_open
+  ldx #0
+  lda #FLASH_COLOR
+flash_apply_on_loop:
+  jsr vram_push
+  inx
+  cpx #32
+  bne flash_apply_on_loop
   jmp vram_end
   .endif

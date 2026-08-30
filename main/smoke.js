@@ -764,6 +764,107 @@ const scenario = (dir, sampleDir, sampleRpgDir) => `
   await wait(200);
   step('fade authoring', 'Fade wired its direction select (defaulted none, set out, then edited to in) and its outside-the-modal summary tracked all three');
 
+  // Flash, the one command with no operand at all. §9 test 16 (the modal
+  // half): a row that silently renders no field could either mean
+  // "correctly configuration-free" or "the field exists in the data model
+  // but the UI forgot to expose it," so this asserts absence directly
+  // (no input/select anywhere in the row) rather than merely not looking
+  // for one. §9 test 17 (the outside-the-modal half, finding 10): close
+  // the modal and check the real collapsed summary reads exactly "Flash
+  // the screen" -- a case 'flash' in the summary function that is missing,
+  // stale or generic would pass the modal-only half and only fail here.
+  //
+  // Captured before the editor opens (finding 5). Fade's own section above
+  // ends with three store.undo() calls that unwind Fade's command entirely
+  // back out of this page (its add plus two edits), so by this point the
+  // accumulated line no longer mentions Fade at all -- selecting by a verb
+  // name is not reliable here. dialogueEditor (map.js) renders exactly one
+  // p.hint per event page, each starting "N. <condition> -> ..."
+  // (map.js's own template literal), which distinguishes it from the
+  // unrelated "<actor> @ x,y" placement hint rendered just above it -- this
+  // fixture has exactly one page, so the first match is the whole summary.
+  // No backslash escapes in this regex (this whole scenario is one big
+  // template literal, so \d/\.\/s here would be silently eaten by the
+  // outer literal's own escape processing before this code ever runs --
+  // the identical trap CLAUDE.md already documents for finding 8's own
+  // apostrophe) -- character classes [0-9] and [.] need no escaping.
+  const preFlashRow = [...document.querySelectorAll('#stage [data-entity="0"] p.hint')].find((node) => /^[0-9]+[.] /.test(node.textContent.trim()));
+  if (!preFlashRow) throw new Error('could not find the accumulated pre-Flash summary row to compare against');
+  const preFlashSegments = preFlashRow.textContent.split(';').map((segment) => segment.trim());
+
+  rowButton(0, 'Edit event…').click();
+  await until('the event editor', () => document.querySelector('#modalHost .btn-accent'));
+  const addFlash = [...document.querySelectorAll('#modalHost select')].find((node) =>
+    node.textContent.includes('Add a command')
+  );
+  addFlash.value = 'flash';
+  addFlash.dispatchEvent(new Event('change', { bubbles: true }));
+  await wait(200);
+  const findFlashRow = () =>
+    [...document.querySelectorAll('#modalHost .field-row')].find((node) => node.querySelector('span')?.textContent === 'Flash the screen');
+  const firstFlashRow = findFlashRow();
+  if (!firstFlashRow) throw new Error('adding a Flash command produced no row');
+  // input:not([type=checkbox]) excludes the universal switch-off toggle
+  // every command row's own tools column carries (commandRow's own toggle,
+  // renderer/forges/map/events.js) -- that one is not a configuration
+  // field, it is the same "off without deleting" control every other verb's
+  // row already has too.
+  if (firstFlashRow.querySelector('input:not([type=checkbox])') || firstFlashRow.querySelector('select')) {
+    throw new Error('a Flash row must have no configuration input or select -- there is nothing to configure');
+  }
+  const flashHint = firstFlashRow.parentElement?.querySelector('p.hint');
+  if (!flashHint || flashHint.textContent.indexOf('Flashes the whole screen') === -1) {
+    throw new Error('the fresh Flash row is missing its own explanatory hint: ' + JSON.stringify(flashHint?.textContent));
+  }
+
+  const flashSummaryRow = () =>
+    [...document.querySelectorAll('#stage [data-entity="0"] p.hint')].find((node) => node.textContent.includes('Flash'));
+  document.querySelector('#modalHost .btn-accent').click();
+  await wait(300);
+  const flashCommands = store.project.maps[0].screens[3].entities[0].props.event.pages[0].commands;
+  const flashAdded = flashCommands[flashCommands.length - 1];
+  if (flashAdded?.op !== 'flash') throw new Error('the Flash command saved as ' + JSON.stringify(flashAdded));
+  if (Object.keys(flashAdded).some((key) => key !== 'op' && key !== 'off')) {
+    throw new Error('a Flash command must carry no fields beyond op -- there is nothing to configure: ' + JSON.stringify(flashAdded));
+  }
+  // This entity's own page has accumulated every earlier verb's own smoke
+  // command by this point (turn/wait, shake, show/hide, fade), so the real
+  // summary line concatenates all of them with semicolons -- the same
+  // reason Fade's own check above matches a substring rather than the whole
+  // line. The post-save summary must equal exactly the pre-Flash segment list plus
+  // one new final segment -- not merely "ends with the expected phrase"
+  // (finding 5), which a malformed summary like "Wrong; Flash the screen"
+  // would also satisfy despite the Flash command contributing a spurious
+  // extra segment and an incorrect one.
+  const flashSummary = flashSummaryRow();
+  const flashSummarySegments = (flashSummary?.textContent ?? '').split(';').map((segment) => segment.trim());
+  const expectedFlashSegments = [...preFlashSegments, 'Flash the screen'];
+  if (JSON.stringify(flashSummarySegments) !== JSON.stringify(expectedFlashSegments)) {
+    throw new Error(
+      'the event-list summary outside the modal was not exactly the pre-Flash segments plus "Flash the screen": expected ' +
+        JSON.stringify(expectedFlashSegments) + ', saw ' + JSON.stringify(flashSummarySegments)
+    );
+  }
+
+  // Reopen and confirm the row still renders identically -- the same
+  // "nothing to lose on a round trip" proof every other verb's own
+  // edit-and-reopen step gives for its own field, here applied to a row
+  // with no field to lose at all.
+  rowButton(0, 'Edit event…').click();
+  await until('the event editor', () => document.querySelector('#modalHost .btn-accent'));
+  const secondFlashRow = findFlashRow();
+  if (!secondFlashRow) throw new Error('the saved Flash command produced no row when reopened');
+  if (secondFlashRow.querySelector('input:not([type=checkbox])') || secondFlashRow.querySelector('select')) {
+    throw new Error('the reopened Flash row must still have no configuration input or select');
+  }
+  document.querySelector('#modalHost .btn-accent').click();
+  await wait(300);
+  store.undo();
+  await wait(200);
+  store.undo();
+  await wait(200);
+  step('flash authoring', 'Flash rendered with no field to configure, and the outside-the-modal summary exact final segment read "Flash the screen"');
+
   // The trigger, which is the one part of an event that lives on the placement
   // rather than in the event. Only the real panel can show the select is wired
   // to the store and that the hint under it follows the choice.

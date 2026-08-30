@@ -236,6 +236,10 @@ function describeEnabled(command, context = {}) {
       return command.dir === 'none'
         ? 'Fade (does nothing)'
         : FADE_DIRECTIONS.find((entry) => entry.id === command.dir)?.label ?? FADE_DIRECTIONS[0].label;
+    // No operand at all, the same "nothing to configure" shape 'save' has
+    // above -- every Flash command does the one thing it can do.
+    case 'flash':
+      return 'Flash the screen';
     case 'branch': {
       // Described down to its contents, because the event list's search runs
       // over exactly this text: a switch used only inside a branch has to be
@@ -1009,6 +1013,21 @@ export function editEvent(event, context) {
             'Forge, or a structural change to the project (adding a map, a screen or an actor, for instance), ' +
             'can make it incompatible with a later build — Continue then simply won\'t appear, with no message ' +
             'to say why.'
+        )
+      );
+    }
+
+    if (command.op === 'flash') {
+      return el(
+        'div',
+        { style: { marginBottom: '6px', ...dim } },
+        el('div.field-row', null, el('span', { style: { color: 'var(--text-dim)' } }, 'Flash the screen'), tools),
+        el(
+          'p.hint',
+          null,
+          'Flashes the whole screen — background and sprites alike — to white and back, a short, fixed ' +
+            'burst with nothing to configure. Unlike Fade, this does not pause the game: the world keeps ' +
+            'running while it flashes, the same way Shake does not pause it either.'
         )
       );
     }

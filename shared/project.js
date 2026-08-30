@@ -716,7 +716,23 @@ export const EVENT_COMMANDS = [
   // Fade the other way; the palette is never restored implicitly by the
   // engine except at a new session (a fresh game or a Continue), where it is
   // always restored regardless of any fade left running.
-  { id: 'fade', label: 'Fade screen', args: ['fadeDir'] }
+  { id: 'fade', label: 'Fade screen', args: ['fadeDir'] },
+  // No operand at all -- flash the screen to a fixed white and back, a
+  // short, engine-timed burst with no configuration surface. Unlike Fade,
+  // there is no index-0-inert question to answer: Flash has exactly one
+  // action it can take, so a freshly placed command does the one thing it
+  // can do rather than needing a harmless default value picked for it. Does
+  // not suspend the script -- a flash decorates whatever happens next
+  // (a hit reaction, a lightning strike) rather than gating it the way
+  // Fade's own fade-then-warp idiom does -- and its own countdown
+  // (flash_left, engine/constants.asm) ticks unconditionally from
+  // main_loop rather than from the frozen-world ui_tick dispatch every
+  // other suspending/non-suspending verb above uses, so it keeps counting
+  // down whether the world is frozen or running. No colour or duration
+  // operand, matching Fade's own "smallest wire format" precedent: the
+  // colour (FLASH_COLOR) and hold (FLASH_TOTAL_FRAMES) are engine
+  // constants, not authored.
+  { id: 'flash', label: 'Flash screen', args: [] }
 ];
 
 // A command can be switched off while you work out whether you want it, the way
@@ -765,7 +781,8 @@ export const IMPLEMENTED_COMMANDS = new Set([
   'wait',
   'shake',
   'visible',
-  'fade'
+  'fade',
+  'flash'
 ]);
 
 /**
@@ -2912,15 +2929,16 @@ export function projectUsesVisible(project) {
 /**
  * Drives the generated `FADE_ENABLED`, the same shape and the same reason
  * `projectUsesShake`/`projectUsesVisible` drive their own flags:
- * `script_op_fade`, `fade_tick` and `fade_apply_palette` (engine/script.asm,
- * engine/entities.asm) plus the PPUADDR cleanup in `nmi` and the
- * `fade_reload`/`redraw_screen` hookup (engine/boot.asm, engine/screens.asm,
- * engine/combat.asm) are real kernel-lo code with nowhere to go
- * unconditionally in a project that never fades anything. Shares no
- * dependent term with any other verb — there is no routine Fade and, say,
- * Shake both call — so it needs no companion predicate the way Turn needs
- * `projectUsesFace`. `liveCommands` + `compiledPages`, not a top-level scan
- * of `page.commands`: both already recurse into a branch's two sides and a
+ * `script_op_fade`, `fade_tick` and the `fade_reload`/`redraw_screen` hookup
+ * (engine/script.asm, engine/entities.asm, engine/boot.asm, engine/screens.asm,
+ * engine/combat.asm) are Fade-owned kernel-lo code with nowhere to go
+ * unconditionally in a project that never fades anything. `fade_apply_palette`
+ * and the NMI PPUADDR cleanup are deliberately *not* driven by this flag on
+ * their own — Flash's own `flash_tick`/`vram_reset` cancellation calls the
+ * identical routine, so both are gated on the shared `PALETTE_FX_ENABLED`
+ * (`projectUsesPaletteFx`, below) instead; see that predicate's own comment
+ * for why. `liveCommands` + `compiledPages`, not a top-level scan of
+ * `page.commands`: both already recurse into a branch's two sides and a
  * choice's own options (`shared/eventrules.js`), and `projectEvents` already
  * yields every common event as well as every placed actor's own event, so a
  * Fade reachable only through one of those is found here by construction,
@@ -2936,6 +2954,43 @@ export function projectUsesFade(project) {
     }
   }
   return false;
+}
+
+/**
+ * Drives the generated `FLASH_ENABLED`, the identical shape and reason
+ * `projectUsesFade` drives its own flag: `script_op_flash`, `flash_tick` and
+ * `flash_apply_on` (engine/script.asm, engine/entities.asm) plus the
+ * `main_loop` hook and `vram_reset`'s own cancellation glue (engine/boot.asm,
+ * engine/text.asm) are real kernel-lo code with nowhere to go unconditionally
+ * in a project that never flashes anything. Shares one dependent term with
+ * Fade — `fade_apply_palette` and the NMI PPUADDR fix, both re-gated on
+ * `PALETTE_FX_ENABLED` below rather than bundled into `FLASH_ENABLED` or
+ * `FADE_ENABLED` alone — the identical `projectUsesFace` shape `projectUsesFade`'s
+ * own comment already cites for Move/Turn.
+ */
+export function projectUsesFlash(project) {
+  for (const event of projectEvents(project)) {
+    for (const page of compiledPages(event)) {
+      for (const command of liveCommands(page.commands, CHOICE_LIMITS.options)) {
+        if (command.op === 'flash') return true;
+      }
+    }
+  }
+  return false;
+}
+
+/**
+ * Drives the generated `PALETTE_FX_ENABLED`, gating `fade_apply_palette` and
+ * the NMI PPUADDR fix (engine/entities.asm, engine/boot.asm) on their own
+ * rather than bundling them into either `FADE_ENABLED` or `FLASH_ENABLED`
+ * alone — the identical shape `projectUsesFace` already uses for
+ * `move_face`. `fade_apply_palette` is the one routine both Fade's own
+ * `fade_tick` and Flash's own `flash_tick`/`vram_reset` cancellation call, so
+ * it must assemble whenever either is live and must be charged exactly once
+ * when both are.
+ */
+export function projectUsesPaletteFx(project) {
+  return projectUsesFade(project) || projectUsesFlash(project);
 }
 
 /**

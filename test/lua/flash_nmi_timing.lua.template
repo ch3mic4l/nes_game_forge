@@ -1,0 +1,378 @@
+-- flash_nmi_timing.lua.template -- Mesen (cycle-accurate) proof that the
+-- worst-case two-producer NMI (a Say's own text_tick row plus Flash's own
+-- on-edge, sharing one frame per design-flash.md's own overlap rule) still
+-- finishes inside vblank, against real hardware timing rather than jsnes's
+-- own pixel-eventual-correctness -- see §9 test 8. jsnes does not enforce a
+-- hard vblank deadline, so a mechanically-correct but too-slow drain would
+-- still pass every behavioural test in test/unit/flash.test.js; only a
+-- cycle-accurate core can fail this the way real hardware would.
+--
+-- This is a TEMPLATE, not the script Mesen runs directly.
+-- test/lua/build_flash_nmi_roms.mjs instantiates it into the same output
+-- directory as the ROM it built, substituting the four __PLACEHOLDER__
+-- tokens below with addresses resolved fresh out of that exact build's own
+-- game.fns (nmi_rti, main_loop_ready, flash_tick) or measured against the
+-- booted ROM (flash_left, a computed expression in engine/constants.asm --
+-- `flash_left = fade_reload+1` -- that shared/enginesyms.js's parseEquates
+-- cannot resolve; the builder injects `.db flash_left` into a Code Forge
+-- user file and reads the emitted byte back out of the booted ROM, the same
+-- technique test/unit/flash.test.js's own header comment documents doing by
+-- hand once). Never edit the substituted addresses directly in the
+-- generated file -- edit this template and re-run the build script, or a
+-- stale generated copy left lying around will silently diverge from the
+-- build it claims to describe.
+--
+--   node test/lua/build_flash_nmi_roms.mjs [outDir]
+--   Mesen --testRunner <outDir>/flash_nmi_timing.lua <outDir>/flash_nmi.nes
+--
+-- (test/lua/run_flash_nmi_check.sh does both steps.)
+local NMI_RTI          = __NMI_RTI__          -- zero-byte label on nmi's own rti (engine/boot.asm)
+local MAIN_LOOP_READY  = __MAIN_LOOP_READY__  -- engine/boot.asm's own end-of-main_loop label,
+                                                -- reached after flash_tick/settle_owed/
+                                                -- dispatch_input/ui_tick have all run for the
+                                                -- frame, immediately before the frame's own NMI
+local FLASH_TICK       = __FLASH_TICK__       -- engine/entities.asm's own flash_tick -- see the
+                                                -- arming discussion below
+local FLASH_LEFT       = __FLASH_LEFT__       -- see the header comment above
+
+-- Engine RAM, from engine/constants.asm.
+local GAME_STATE  = 0x25
+local VRAM_LEN    = 0x3c
+local VRAM_BUF    = 0x0400
+
+local ST_TITLE  = 3
+local ST_DIALOG = 2
+local FLASH_ARM_VALUE = 7 -- engine/constants.asm's FLASH_TOTAL_FRAMES (6) + 1
+
+-- Both producers' packets, queued and still undrained the instant
+-- main_loop_ready is reached: Say's own text_tick row and Flash's own
+-- on-edge packet, 35 bytes (32 content + 3-byte header) each -- design-flash.md's
+-- own "71 of 256 bytes including the terminator" bound (finding 6 there).
+-- vram_len == 70 is the cursor sitting just past both full packets (indices
+-- 0-69); vram_buf[70] == 0 is vram_end's own terminator at the next byte.
+-- Anchoring on this exact shape, not merely "some traffic happened", is what
+-- makes the deadline check below actually mean "the worst case was
+-- exercised" rather than passing on a degenerated one-producer frame.
+local EXPECTED_VRAM_LEN = 70
+
+-- Round-2 finding 2: vram_len == 70 plus a zero terminator does not by
+-- itself prove two genuine 32-byte packets -- a wrong flash_apply_on that
+-- writes $00 as its own address-high byte can still advance the cursor to
+-- 70 and land the terminator in the right place, producing an artificially
+-- short NMI that this check would otherwise wave through. main_loop calls
+-- flash_tick before settle_owed/dispatch_input/ui_tick (CLAUDE.md's own
+-- ordering), so Flash's packet is always queued first (indices 0-34) and
+-- the text row's second (indices 35-69): each packet's own header is
+-- [addr_hi, addr_lo, count, ...32 bytes...]. Flash always targets palette
+-- RAM at $3F00, so its own header's address-high byte is the fixed,
+-- derivable $3F; the text row targets some byte inside the nametable/
+-- attribute range $2000-$23FF, so its own header's address-high byte must
+-- fall in $20-$23. Both counts must read 32.
+local FLASH_PACKET_HEADER_HI    = 0x3F
+local TEXT_ROW_HEADER_HI_MIN    = 0x20
+local TEXT_ROW_HEADER_HI_MAX    = 0x23
+local PACKET_BODY_COUNT         = 32
+
+-- NTSC NES vblank: scanlines 241-260 inclusive, 341 dots (0-340) per
+-- scanline. rti's own remaining execution (6 CPU cycles -- the callback
+-- fires as rti *begins*, per finding 4's own instruction) is added to the
+-- sampled dot before checking it is still inside a scanline, not past the
+-- end of one. NTSC's PPU runs at 3 dots per CPU cycle, so 6 CPU cycles is 18
+-- PPU dots, not 6 -- adding the raw cycle count to a dot value understates
+-- the true remaining time by a factor of 3 and was finding 3's own bug. The
+-- carry below walks the sum across as many scanline boundaries as it takes
+-- (18 dots can only ever cross at most one, but the loop makes no assumption
+-- about that) rather than checking a single `>= DOTS_PER_SCANLINE` band.
+local VBLANK_FIRST_SCANLINE = 241
+local VBLANK_LAST_SCANLINE  = 260
+local DOTS_PER_SCANLINE     = 341
+local PPU_DOTS_PER_CPU_CYCLE = 3
+local RTI_REMAINING_CYCLES  = 6
+local RTI_REMAINING_DOTS    = RTI_REMAINING_CYCLES * PPU_DOTS_PER_CPU_CYCLE
+
+local EXIT_TIMEOUT         = 99
+local EXIT_NO_BOOT         = 2
+local EXIT_NEVER_DIALOG    = 3
+local EXIT_NEVER_ARMED     = 4
+local EXIT_DEADLINE_MISS   = 5
+local EXIT_STALE_ANCHOR    = 6
+local EXIT_WORKLOAD_SHORT  = 7
+
+local frame = 0
+local phase = 1
+local held = {}
+local mark = 0
+local dialogOpen = false
+local armed = false
+local checkedDeadline = false
+local checkedAnchor = false
+local checkedWorkload = false
+
+local function log(message)
+  emu.log(string.format("[%5d] %s", frame, message))
+end
+
+local function fail(code, message)
+  log("FAIL: " .. message)
+  emu.stop(code)
+end
+
+local function pass(message)
+  log("ok   " .. message)
+end
+
+local function read(address)
+  return emu.read(address, emu.memType.nesMemory)
+end
+
+local function write(address, value)
+  emu.write(address, value, emu.memType.nesMemory)
+end
+
+local function onInput()
+  emu.setInput(held, 0)
+end
+
+-- Round-2 finding 2: arming used to write FLASH_LEFT directly from the
+-- endFrame callback below, at whatever CPU-cycle moment Mesen happens to
+-- fire endFrame relative to main_loop's own flash_tick/main_loop_ready
+-- sequence. An order probe (inserting a not-checkedWorkload fail() at the
+-- top of onNmiRti's armed branch) proved that moment lands *after* this
+-- frame's own main_loop_ready, so the write only ever armed flash_tick for
+-- the *next* frame while the very next nmi_rti -- the one this check
+-- actually measured -- was already the ordinary, un-worked-loaded one
+-- draining nothing: an easy frame passing as the worst case, vacuously.
+-- Hooking the write directly to flash_tick's own exec instead removes the
+-- ambiguity entirely -- the poke happens the instruction before flash_tick
+-- reads flash_left, so this exact flash_tick call is guaranteed to consume
+-- it into FLASH_ARM_VALUE's own edge this same frame, and this frame's own
+-- main_loop_ready (reached later in the same main_loop pass, before the
+-- loop returns to wait_vblank for the next NMI) is therefore guaranteed to
+-- observe the resulting workload before the deadline-checked NMI can.
+local function onFlashTick()
+  if not dialogOpen or armed then return end
+  armed = true
+  write(FLASH_LEFT, FLASH_ARM_VALUE)
+  pass("Flash armed the instruction before flash_tick's own read -- watching for this frame's main_loop_ready then the next nmi_rti")
+end
+
+-- Fires the first time the CPU executes main_loop_ready after Flash has been
+-- armed for this exact frame -- one frame before the NMI this check's own
+-- deadline assertion cares about, and the only point in the whole frame
+-- where both producers' packets are queued but not yet drained. Proves the
+-- worst-case workload was genuinely exercised rather than merely hoped for:
+-- a schedule that drifted out of the box-raise/full-row phase, or an
+-- nmi_rti anchor that has gone stale and is silently watching the wrong
+-- instruction, would previously still report PASS on a strictly easier
+-- frame. This is what closes that gap.
+local function onMainLoopReady()
+  if not armed or checkedWorkload then return end
+  checkedWorkload = true
+  local vramLen = read(VRAM_LEN)
+  local terminator = read(VRAM_BUF + EXPECTED_VRAM_LEN)
+  if vramLen ~= EXPECTED_VRAM_LEN then
+    fail(EXIT_WORKLOAD_SHORT, string.format(
+      "main_loop_ready: vram_len is %d, not %d -- the two-producer workload (Say's own row plus Flash's on-edge) did not both queue this frame",
+      vramLen, EXPECTED_VRAM_LEN))
+    return
+  end
+  if terminator ~= 0 then
+    fail(EXIT_WORKLOAD_SHORT, string.format(
+      "main_loop_ready: vram_buf[%d] is %d, not the terminator (0) -- the queue shape does not match two full packets",
+      EXPECTED_VRAM_LEN, terminator))
+    return
+  end
+  -- Round-2 finding 2: len/terminator alone cannot tell two genuine
+  -- 32-byte packets apart from a wrong implementation that merely advances
+  -- the cursor to the same place -- e.g. a flash_apply_on that opens its
+  -- own packet with a $00 address-high byte still lands the terminator at
+  -- index 70. Check both packets' own header shape directly.
+  local pkt0Hi, pkt0Count = read(VRAM_BUF + 0), read(VRAM_BUF + 2)
+  local pkt1Hi, pkt1Count = read(VRAM_BUF + 35), read(VRAM_BUF + 37)
+  if pkt0Hi ~= FLASH_PACKET_HEADER_HI then
+    fail(EXIT_WORKLOAD_SHORT, string.format(
+      "main_loop_ready: packet 0's own address-high byte is 0x%02x, not Flash's own $%02x -- Flash's own packet (queued first, ahead of settle_owed/dispatch_input/ui_tick) did not queue as expected",
+      pkt0Hi, FLASH_PACKET_HEADER_HI))
+    return
+  end
+  if pkt0Count ~= PACKET_BODY_COUNT then
+    fail(EXIT_WORKLOAD_SHORT, string.format(
+      "main_loop_ready: packet 0's own count is %d, not %d -- not a genuine full packet",
+      pkt0Count, PACKET_BODY_COUNT))
+    return
+  end
+  if pkt1Hi < TEXT_ROW_HEADER_HI_MIN or pkt1Hi > TEXT_ROW_HEADER_HI_MAX then
+    fail(EXIT_WORKLOAD_SHORT, string.format(
+      "main_loop_ready: packet 1's own address-high byte is 0x%02x, not a nametable/attribute address ($%02x-$%02x) -- the text row's own packet (queued second, from ui_tick's own text_tick) did not queue as expected",
+      pkt1Hi, TEXT_ROW_HEADER_HI_MIN, TEXT_ROW_HEADER_HI_MAX))
+    return
+  end
+  if pkt1Count ~= PACKET_BODY_COUNT then
+    fail(EXIT_WORKLOAD_SHORT, string.format(
+      "main_loop_ready: packet 1's own count is %d, not %d -- not a genuine full packet",
+      pkt1Count, PACKET_BODY_COUNT))
+    return
+  end
+  pass(string.format(
+    "main_loop_ready workload confirmed: vram_len=%d, packet 0 = [$%02x, count %d], packet 1 = [$%02x, count %d] -- both producers genuinely queued full packets before the drain",
+    vramLen, pkt0Hi, pkt0Count, pkt1Hi, pkt1Count))
+end
+
+-- Fires every time the CPU executes nmi's own rti. Only meaningful once
+-- Flash has genuinely been armed for this exact frame's own NMI -- before
+-- that, ordinary frames also reach here and have nothing to prove.
+local function onNmiRti()
+  if not armed or checkedDeadline then return end
+  -- Round-2 finding 2: this NMI may only be accepted as the measured one
+  -- once main_loop_ready's own workload check has actually run for this
+  -- frame. Without this gate, an armed-but-not-yet-worked-loaded NMI (the
+  -- exact vacuous-pass scenario the order probe demonstrated) would fall
+  -- through to the deadline check below, find nothing outstanding
+  -- (vram_len == 0 trivially, since nothing was ever queued), sail inside
+  -- vblank with room to spare, and report PASS having proven nothing.
+  if not checkedWorkload then
+    checkedDeadline = true
+    fail(EXIT_WORKLOAD_SHORT, "nmi_rti reached before this frame's own main_loop_ready workload check -- the callback order was reversed (Flash armed too late, or main_loop_ready was never reached this frame), so this NMI cannot be the measured one")
+    return
+  end
+  checkedDeadline = true
+  -- emu.getState()'s own Map format returns a flat table keyed by the full
+  -- dotted path as one string (confirmed empirically: state.ppu is nil,
+  -- state["ppu.scanline"] is not) -- not a nested state.ppu.scanline table.
+  local state = emu.getState()
+  local scanline = state["ppu.scanline"]
+  local cycle = state["ppu.cycle"]
+  local vramLen = read(VRAM_LEN)
+  log(string.format(
+    "nmi_rti reached: scanline=%d cycle=%d (+%d rti dots remaining) vram_len=%d",
+    scanline, cycle, RTI_REMAINING_DOTS, vramLen
+  ))
+  if vramLen ~= 0 then
+    fail(EXIT_DEADLINE_MISS, string.format("vram_len should be 0 right after the drain, saw %d", vramLen))
+    return
+  end
+  if scanline < VBLANK_FIRST_SCANLINE or scanline > VBLANK_LAST_SCANLINE then
+    fail(EXIT_DEADLINE_MISS, string.format("nmi_rti landed on scanline %d, outside vblank (%d-%d)", scanline, VBLANK_FIRST_SCANLINE, VBLANK_LAST_SCANLINE))
+    return
+  end
+  local finishDot = cycle + RTI_REMAINING_DOTS
+  local finishScanline = scanline
+  while finishDot >= DOTS_PER_SCANLINE do
+    finishDot = finishDot - DOTS_PER_SCANLINE
+    finishScanline = finishScanline + 1
+  end
+  if finishScanline > VBLANK_LAST_SCANLINE then
+    fail(EXIT_DEADLINE_MISS, string.format("rti's own remaining %d dots push past vblank (from scanline %d, cycle %d, landing on scanline %d)", RTI_REMAINING_DOTS, scanline, cycle, finishScanline))
+    return
+  end
+  pass(string.format("the two-producer NMI finished at scanline %d, cycle %d (rti settles on scanline %d) -- inside vblank (%d-%d) with room to spare", scanline, cycle, finishScanline, VBLANK_FIRST_SCANLINE, VBLANK_LAST_SCANLINE))
+  log("all phases passed")
+  emu.stop(0)
+end
+
+-- Static, in-sandbox preflight: prove NMI_RTI genuinely still names nmi's
+-- own rti instruction ($40) rather than a stale address left over from a
+-- shift in engine/boot.asm's own kernel-lo layout. This reads the ROM byte
+-- directly rather than waiting for a CPU-execute callback at that address to
+-- fire -- a sufficiently stale address may not correspond to any real
+-- instruction boundary the CPU ever actually reaches, in which case the exec
+-- callback would simply never fire and the run would time out instead of
+-- failing with a clear diagnosis. Checking the byte directly, once, before
+-- anything else runs, means a stale anchor is reported as exactly that.
+local function onFrame()
+  frame = frame + 1
+  if not checkedAnchor then
+    checkedAnchor = true
+    local nmiByte = read(NMI_RTI)
+    if nmiByte ~= 0x40 then
+      fail(EXIT_STALE_ANCHOR, string.format(
+        "byte at NMI_RTI (0x%04x) is 0x%02x, not rti ($40) -- this address is stale (engine/boot.asm's kernel-lo layout shifted since the build this address was resolved from); re-run build_flash_nmi_roms.mjs",
+        NMI_RTI, nmiByte))
+      return
+    end
+    pass(string.format("NMI_RTI anchor verified: byte at 0x%04x is $40 (rti)", NMI_RTI))
+  end
+  if frame > 2000 then
+    fail(EXIT_TIMEOUT, "timed out in phase " .. phase)
+    return
+  end
+
+  if phase == 1 then
+    if frame < 30 then return end
+    if read(GAME_STATE) == ST_TITLE then
+      pass("booted to the title -- pressing Start")
+      held = { start = true }
+      mark = frame
+      phase = 1.5
+      return
+    end
+    pass("booted straight into gameplay")
+    phase = 2
+    held = { b = true }
+    mark = frame
+    return
+  end
+
+  if phase == 1.5 then
+    if frame - mark < 6 then return end
+    held = {}
+    if frame - mark < 20 then return end
+    if read(GAME_STATE) == ST_TITLE then
+      fail(EXIT_NO_BOOT, "pressed Start but the title never cleared")
+      return
+    end
+    pass("Start cleared the title")
+    phase = 2
+    held = { b = true }
+    mark = frame
+    return
+  end
+
+  -- 2: press B once -- the actor sits immediately next to the player's own
+  -- start position (the identical placement test/unit/flash.test.js's own
+  -- buildWith uses), so one press is enough to open the box.
+  if phase == 2 then
+    if frame - mark < 1 then return end
+    held = {}
+    phase = 3
+    mark = frame
+    return
+  end
+
+  -- 3: confirm the box actually opened, then mark Flash ready to arm at the
+  -- next flash_tick call -- landing during the box's multi-frame *raise*
+  -- (each tick of which queues a genuine 32-byte row), not the later
+  -- character-typing phase, which queues only a handful of bytes and would
+  -- not exercise the two-full-packet worst case this check means to prove.
+  -- onFlashTick (above) does the actual poke, at the precise instruction
+  -- boundary flash_tick's own read needs it at.
+  if phase == 3 then
+    if frame - mark < 2 then return end
+    if read(GAME_STATE) ~= ST_DIALOG then
+      fail(EXIT_NEVER_DIALOG, "the message box never opened")
+      return
+    end
+    dialogOpen = true
+    pass("dialog confirmed open during the box's own raise sequence -- Flash will arm at the next flash_tick call")
+    phase = 4
+    mark = frame
+    return
+  end
+
+  if phase == 4 then
+    if checkedDeadline then return end
+    if frame - mark > 10 then
+      if not armed then
+        fail(EXIT_NEVER_ARMED, "flash_tick was never reached after the dialog opened")
+      else
+        fail(EXIT_NEVER_ARMED, "nmi_rti was never reached after arming Flash")
+      end
+    end
+  end
+end
+
+emu.addEventCallback(onFrame, emu.eventType.endFrame)
+emu.addEventCallback(onInput, emu.eventType.inputPolled)
+emu.addMemoryCallback(onFlashTick, emu.callbackType.exec, FLASH_TICK)
+emu.addMemoryCallback(onMainLoopReady, emu.callbackType.exec, MAIN_LOOP_READY)
+emu.addMemoryCallback(onNmiRti, emu.callbackType.exec, NMI_RTI)

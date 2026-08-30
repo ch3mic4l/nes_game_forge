@@ -103,6 +103,16 @@ main_loop:
   jsr wait_vblank
   jsr read_pad
   jsr music_tick            ; music keeps playing while the world is paused
+  .if FLASH_ENABLED
+  jsr flash_tick             ; a Flash burst keeps counting down whether the
+                              ; world is frozen or running -- see its own
+                              ; header (engine/entities.asm) for why this
+                              ; call must come before settle_owed/
+                              ; dispatch_input/ui_tick: that ordering is what
+                              ; makes a coincident Fade step win a shared NMI,
+                              ; a documented, tested contract (test/unit/
+                              ; flash.test.js), not an incidental placement
+  .endif
   ; What the last frame left owed, settled before the buttons are read into
   ; actions. It has to be before them and not merely before the world: an
   ; interact reaches start_dialog and an event is free to warp, so a button on
@@ -305,22 +315,30 @@ nmi:
   beq nmi_scroll            ; skipping leaves the writes for the next vblank
   jsr vram_drain
 
-  ; Fade's own packets are the first producer into vram_buf whose own address
-  ; ends inside palette space ($3F00-$3F1F): after vram_drain finishes a
-  ; 32-byte packet from $3F00, the PPU's internal VRAM address register (v) is
-  ; left at $3F20 -- still a palette mirror. Real hardware (and emulators
-  ; modelling it faithfully) documents a real risk of visible corruption when
-  ; v is left pointing into $3F00-$3FFF at the moment rendering resumes. Every
-  ; other producer in this engine is safe from this by accident of what it
-  ; draws -- text.asm's packets all end inside nametable space ($2000-$23FF),
-  ; so nobody had to think about this before Fade. The fix is two more $2006
-  ; writes with NO following $2007 -- moving v without touching any actual
-  ; VRAM byte. This runs after *any* drain, not only a Fade one: tracking
-  ; "was the packet just drained a palette one" would cost more bytes than the
-  ; few cycles this costs to run unconditionally, and gating the whole block
-  ; on FADE_ENABLED already means a project with no Fade command pays nothing
-  ; for it at all.
-  .if FADE_ENABLED
+  ; Fade's own packets were the first producer into vram_buf whose own
+  ; address ends inside palette space ($3F00-$3F1F): after vram_drain
+  ; finishes a 32-byte packet from $3F00, the PPU's internal VRAM address
+  ; register (v) is left at $3F20 -- still a palette mirror. Real hardware
+  ; (and emulators modelling it faithfully) documents a real risk of visible
+  ; corruption when v is left pointing into $3F00-$3FFF at the moment
+  ; rendering resumes. Every other producer in this engine is safe from this
+  ; by accident of what it draws -- text.asm's packets all end inside
+  ; nametable space ($2000-$23FF), so nobody had to think about this before
+  ; Fade. The fix is two more $2006 writes with NO following $2007 -- moving v
+  ; without touching any actual VRAM byte. This runs after *any* drain, not
+  ; only a palette one: tracking "was the packet just drained a palette one"
+  ; would cost more bytes than the few cycles this costs to run
+  ; unconditionally, and gating the whole block on PALETTE_FX_ENABLED already
+  ; means a project using neither Fade nor Flash pays nothing for it at all.
+  ;
+  ; Gated on PALETTE_FX_ENABLED (usesFade || usesFlash), not FADE_ENABLED
+  ; alone -- Flash's own packets (flash_apply_on/fade_apply_palette,
+  ; engine/entities.asm) end in palette space too, and this is the identical
+  ; hazard for them. One physical copy of this block, labels unchanged, so a
+  ; Fade-only build still assembles byte-identically to before: PALETTE_FX_
+  ; ENABLED is true under exactly the same condition FADE_ENABLED alone used
+  ; to be for that configuration.
+  .if PALETTE_FX_ENABLED
 nmi_fade_ppuaddr:
   lda #$00
   sta $2006
@@ -405,6 +423,19 @@ nmi_scroll_done:
   pla
   tax
   pla
+nmi_rti:                    ; zero bytes -- a Mesen CPU-execute callback keyed
+                            ; to this symbol is test/lua's own anchor for
+                            ; asserting the whole two-producer NMI still
+                            ; finishes inside vblank. build_flash_nmi_roms.mjs
+                            ; resolves this symbol's address out of that
+                            ; build's own game.fns and stamps it into
+                            ; flash_nmi_timing.lua.template each run -- it is
+                            ; not hand-copied into the checked-in Lua the way
+                            ; this comment used to claim -- and the generated
+                            ; script itself preflights the resolved address by
+                            ; reading the byte there back and refusing to
+                            ; proceed unless it is still $40 (rti); see the
+                            ; two-producer invariant paragraph in CLAUDE.md
   rti
 
   .if !SPLIT_ENABLED

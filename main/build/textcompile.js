@@ -319,6 +319,10 @@ export function compileText(project) {
         const dir = Math.max(0, FADE_DIRECTIONS.findIndex((entry) => entry.id === command.dir));
         return [opIndex('fade'), dir];
       }
+      // No operand -- flash the screen once, toward a fixed engine colour
+      // and back, the same "nothing to resolve" shape 'save' already has.
+      case 'flash':
+        return [opIndex('flash')];
       case 'join':
         return [opIndex('join'), byte(command.member, 3)];
       case 'call': {
