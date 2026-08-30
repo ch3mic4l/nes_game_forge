@@ -961,8 +961,15 @@ built on MMC1 with room to spare (302 bytes of headroom before items existed, co
 more). `test/unit/kernelbytes.test.js` asserted the refusal itself *and* built both mitigations to
 confirm they were real rather than assumed — that test has since been renamed and rewritten (below) to
 assert the opposite, once the diet a few paragraphs down closed the gap again; no test in this file
-asserts an MMC3 refusal for this combination any more. An author who hits a combination like this is not
-stuck; they are told, correctly, which is what all of this machinery is for.
+asserts an MMC3 refusal for this combination any more. That MMC1 comfort, though, is specific to the
+Save+Move+item combination alone, not to MMC1 in general — no test asserts this either, it is a
+measurement, not a test: the item-6 costing pass later measured MMC1's own Save+Move+item row refused
+by `checkCapacity` at **296 bytes short** (need 129 table bytes, signed free −167) the moment every
+shipped verb — Turn, Wait, Shake, Show/Hide, Fade, Flash — is also live on the same project. The plain
+Save+Move+item row on MMC1 still fits with 220 free, and ALL-verbs+Move+item with no Save fits with 483
+free, so the refusal needs the whole stack at once, not any one piece of it. An author who hits a
+combination like this is not stuck; they are told, correctly, which is what all of this machinery is
+for.
 
 **A third diet closed the gap items reopened.** `engine/player.asm`'s four movement direction routines
 (`move_left_inside`/`move_right_inside`/`move_up_inside`/`move_down_inside`) each ended in an identical
@@ -1025,16 +1032,33 @@ discovered, and accepted as a documented limitation the same way UNROM 512's own
 already was above. `test/unit/kernelbytes.test.js`'s `'sample-rpg with Save, Move and its one live item
 does not build on MMC3 -- round 2 reopened the gap the kernel diet had closed, a documented limitation'`
 is the test now; it asserts the refusal itself, naming both Move's and Save's real byte figures, not a
-successful build. Every other specifically measured RPG-capable configuration — MMC1 with this
-identical combination included, which still measures a real, error-free build — holds the same
-`KERNEL_SLACK` margin the paragraphs above describe the shape of. That leaves two specifically tracked
-feature combinations where it does
-not, not one: UNROM 512's own Save+Move shortfall, named two sentences up and unrelated to items — it
-was never closed by any of the diets above, and stays a documented limitation on that board regardless
-of what happens on this one — and this MMC3 Save+Move+item combination. Both are accepted rather than
-gaps in the mechanism: `checkCapacity` refuses each for real, honest reasons, and each has its own
-test asserting the refusal, but the margin has run out in exactly two of the feature combinations this
-file specifically tracks, not exactly one.
+successful build. Every other specifically measured RPG-capable configuration that fits — MMC1 with
+this identical Save+Move+item combination included, which still measures a real, error-free build —
+holds the same `KERNEL_SLACK` margin the paragraphs above describe the shape of. That use of MMC1 as
+the comfortable counterpart is specific to the plain Save+Move+item combination, not to MMC1 in
+general: the item-6 costing pass found that same row loses it once every shipped verb is also live
+on the same project too, 296 bytes short (see
+above, under item 5's own phase 4c narrative). That leaves two feature combinations tracked by their
+own refusal-asserting test in this file — not one: UNROM 512's own Save+Move shortfall, named
+earlier in this paragraph and unrelated to items — it was never closed by any of the diets above,
+and stays a documented limitation on that board regardless of what happens on this one — and this MMC3
+Save+Move+item combination. Both are accepted rather than gaps in the mechanism: `checkCapacity`
+refuses each for real, honest reasons, and each has its own test asserting the refusal, so the margin
+has run out in exactly two of the feature combinations a dedicated test in this file tracks, not
+exactly one — not the only two refusals this file documents, just the only two with a test of their
+own. The item-6 costing pass measured two further refusals beyond these: MMC1's own
+ALL-verbs+Save+Move+item row (296 short, above) and UNROM 512's own Save+Move row with no item live at
+all (88 short, next paragraph). Neither deficit is pinned by a test in this file — the existing UNROM
+512 test does already assert that item-free combination stays refused, but only checks the advice
+message's shape, not this number.
+
+The item-6 costing pass confirmed "unrelated to items" directly, and turned up an asymmetry this file
+had not stated: measuring UNROM 512's own Save+Move combination with no item live at all still finds it
+refused, 88 bytes short (need 126, only 38 free) — a costing-pass measurement, not a figure any test in
+this file pins. That is the opposite of MMC3's identical shortfall: there, dropping the item does close
+the gap (88 free without it, against 11 short with it). So advice of the shape "drop your items to fit
+Save+Move" is correct on MMC3 and wrong on UNROM 512, and the two boards' documented limitations should
+not be read as the same kind of shortfall.
 
 Because the margin can still run out — on MMC3 in a bigger project, or the next feature this bank has
 no room for — `checkCapacity` names what would close a gap like this one instead of only reporting the
