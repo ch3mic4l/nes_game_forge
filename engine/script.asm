@@ -38,6 +38,12 @@ script_start:
                             ; conversation, and a stale counter here would
                             ; have ui_tick resuming a script that is not there
   .endif
+  .if FADE_ENABLED
+  sta fade_left              ; and nothing mid-fade either -- fade_step is
+                            ; deliberately NOT cleared here: it is the
+                            ; palette's actual current darkness, which must
+                            ; survive into whatever the new script does next
+  .endif
   lda ent_event,x
   cmp #NO_EVENT
   beq script_start_done
@@ -198,8 +204,14 @@ script_run_shake:
 script_run_visible:
   .if VISIBLE_ENABLED
   cmp #OP_VISIBLE
-  bne script_run_bad
+  bne script_run_fade
   jmp script_op_visible
+  .endif
+script_run_fade:
+  .if FADE_ENABLED
+  cmp #OP_FADE
+  bne script_run_bad
+  jmp script_op_fade
   .endif
 script_run_bad:
   jmp script_finish         ; an opcode this engine cannot run stops the event
@@ -615,6 +627,66 @@ script_op_visible_shown:
 script_op_visible_store:
   sta ent_active,x
   jmp script_next2
+  .endif
+
+; [OP_FADE, direction]. Suspends the script exactly as OP_WAIT/OP_MOVE do --
+; there is something to wait for (the ramp reaching its target) and nothing to
+; walk. fade_tick (engine/entities.asm) is what calls script_resume once the
+; ramp completes.
+;
+; Decide the whole outcome -- direction, target step, suspend or not -- while
+; the operand is still the only thing in the accumulator, and only call
+; script_skip once that decision is already made and safely stored in RAM.
+; Reading the operand a second time after script_ptr has already moved would
+; read the wrong byte entirely, the same hazard script_op_wait's own "store
+; before skip" shape already avoids for a one-byte operand; this one needs the
+; discipline held a little longer, because the operand has to be resolved into
+; a target step and compared against fade_step before anything is worth
+; storing at all.
+;
+; Neither FADE_NONE nor "already at the requested target" suspends, for the
+; identical reason a Move of distance 0 does not: the only thing that would
+; ever resume this is fade_tick watching fade_left reach zero, and returning
+; with it already zero would hang the event on a tick that never comes. Both
+; cases fall through leaving fade_left untouched, which script_start's own
+; clear (and fade_tick's own terminal-step clear) already guarantee is 0
+; whenever a script is about to run its next command.
+  .if FADE_ENABLED
+script_op_fade:
+  ldy #1
+  lda [script_ptr_lo],y      ; direction: 0 none, 1 out, 2 in -- read once,
+                              ; and not touched again until it is fully
+                              ; resolved into a target step below
+  cmp #FADE_NONE
+  beq script_op_fade_skip    ; nothing to do -- skip past the operand and go
+  cmp #FADE_OUT
+  bne script_op_fade_dir_in
+  lda #FADE_STEPS
+  jmp script_op_fade_target
+script_op_fade_dir_in:
+  lda #0
+script_op_fade_target:
+  cmp fade_step
+  beq script_op_fade_skip    ; already there: nothing to wait for, the
+                              ; identical reason a Move of distance 0 does
+                              ; not suspend
+  sta fade_target
+  lda #FADE_STEP_FRAMES
+  sta fade_left               ; only touched once a real ramp is committed to
+script_op_fade_skip:
+  lda #2
+  jsr script_skip             ; past the opcode and the operand -- reached
+                              ; only after every decision above is already
+                              ; final and, if a ramp was armed, already in RAM
+  lda fade_left
+  bne script_op_fade_suspend
+  jmp script_run              ; FADE_NONE or already-there: carry straight on
+script_op_fade_suspend:
+  rts                         ; reached by jmp from script_run, so this
+                              ; unwinds to whatever called into the script
+                              ; this frame -- the same "reached by jmp"
+                              ; discipline script_op_wait's own trailing rts
+                              ; already relies on
   .endif
 
 ; ------------------------------------------------------------------- calls

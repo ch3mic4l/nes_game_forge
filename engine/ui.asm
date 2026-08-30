@@ -266,8 +266,18 @@ ui_tick:
 ui_tick_wait:
   .if WAIT_ENABLED
   lda wt_left
-  beq ui_tick_state
+  beq ui_tick_fade
   jmp wait_tick
+  .endif
+ui_tick_fade:
+  ; A scripted Fade suspends too, and joins this same priority chain for the
+  ; identical reason Move/Wait do -- mv_left, wt_left and fade_left can never
+  ; more than one be non-zero at a time, so this is one more flat `lda`/`beq`/
+  ; `jmp` triplet rather than a second mechanism.
+  .if FADE_ENABLED
+  lda fade_left
+  beq ui_tick_state
+  jmp fade_tick
   .endif
 ui_tick_state:
   lda game_state

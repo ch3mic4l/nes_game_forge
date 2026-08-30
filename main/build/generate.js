@@ -65,6 +65,7 @@ import {
   projectUsesWait,
   projectUsesShake,
   projectUsesVisible,
+  projectUsesFade,
   projectUsesFace,
   projectUsesItems,
   projectEvents,
@@ -523,6 +524,26 @@ export const SHAKE_KERNEL_ALLOWANCE = 65;
 // MMC1 and MMC3. Shares no dependent term with anything else -- no other
 // command calls script_op_visible or reads ENT_HIDDEN.
 export const VISIBLE_KERNEL_ALLOWANCE = 49;
+// script_op_fade, fade_tick and fade_apply_palette (engine/script.asm,
+// engine/entities.asm), both dispatch-chain entries (script_run and
+// ui_tick), script_start's own fade_left clear, the fade_reload arm in
+// init_session and its consumption in redraw_screen (engine/combat.asm,
+// engine/screens.asm), the PPUADDR cleanup in nmi (engine/boot.asm) and
+// reset's own fade_reload clear right after cold boot's init_session call.
+// Flat across boards, the same reasoning SHAKE_KERNEL_ALLOWANCE/
+// VISIBLE_KERNEL_ALLOWANCE are: nothing here branches on SPLIT_ENABLED, a
+// CHR/PRG bank, or any other mapper-specific fact -- every routine reads
+// palette_data (a plain ROM table, same address on every board) and writes
+// only through vram_push/vram_open/vram_end or raw $2006 writes, machinery
+// every board already shares. Measured on all three RPG-capable boards,
+// isolated per board, test/unit/kernelbytes.test.js's own combinatorial
+// shape (diffing a with-Fade build against a Fade-stripped one and asserting
+// equality) -- identically 201 on UNROM 512, MMC1 and MMC3, and additive
+// with SHAKE_KERNEL_ALLOWANCE exactly (a combined Fade+Shake build measures
+// 266 = 201 + 65, not less). Not trusted from design-fade.md's own
+// pre-measurement estimate (~174-183) -- the real figure landed higher, as
+// that document's own §12 says plainly it might.
+export const FADE_KERNEL_ALLOWANCE = 201;
 export const SPLIT_LOCK_KERNEL_ALLOWANCE = 19;
 // Phase 4b: item_metasprite's own draw_item_icon routine (gated on
 // ITEMS_ENABLED as a whole routine, not just its callers -- see
@@ -592,6 +613,7 @@ export function kernelCodeBytes(project, mapper) {
   const usesWait = projectUsesWait(project);
   const usesShake = projectUsesShake(project);
   const usesVisible = projectUsesVisible(project);
+  const usesFade = projectUsesFade(project);
   const usesFace = projectUsesFace(project);
   // projectUsesSave(project), not the narrower usesSave just above: a live
   // Save command needs a title screen in *every* valid build of this
@@ -632,6 +654,7 @@ export function kernelCodeBytes(project, mapper) {
     (usesWait ? WAIT_KERNEL_ALLOWANCE : 0) +
     (usesShake ? SHAKE_KERNEL_ALLOWANCE : 0) +
     (usesVisible ? VISIBLE_KERNEL_ALLOWANCE : 0) +
+    (usesFade ? FADE_KERNEL_ALLOWANCE : 0) +
     (usesFace ? FACE_KERNEL_ALLOWANCE : 0) +
     (usesSplitLock ? SPLIT_LOCK_KERNEL_ALLOWANCE : 0) +
     (usesItems ? ITEM_KERNEL_ALLOWANCE + itemEffectKernelAllowance(project) : 0) +
@@ -860,6 +883,7 @@ function kernelShortfallAdvice(project, mapper, deficit) {
   const usesWait = projectUsesWait(project);
   const usesShake = projectUsesShake(project);
   const usesVisible = projectUsesVisible(project);
+  const usesFade = projectUsesFade(project);
   // "Every" rather than "the": a project can carry more than one live Move or
   // Save command (several actors, several pages), and removing just one of
   // several does not free anything at all -- kernelCodeBytes only drops the
@@ -870,6 +894,7 @@ function kernelShortfallAdvice(project, mapper, deficit) {
   if (usesWait) active.push({ op: 'wait', label: 'every Wait command' });
   if (usesShake) active.push({ op: 'shake', label: 'every Shake command' });
   if (usesVisible) active.push({ op: 'visible', label: 'every Show/Hide command' });
+  if (usesFade) active.push({ op: 'fade', label: 'every Fade command' });
   if (usesSave) active.push({ op: 'save', label: 'every Save command' });
   // A title screen is not offered here even though it is now its own term in
   // kernelCodeBytes: this list is specifically "commands projectWithoutCommands
@@ -1562,6 +1587,7 @@ export async function generateAssets({ dir, project, log = () => {} }) {
   const usesWait = projectUsesWait(project);
   const usesShake = projectUsesShake(project);
   const usesVisible = projectUsesVisible(project);
+  const usesFade = projectUsesFade(project);
   const usesFace = projectUsesFace(project);
   const saveIdentityValue = saveIdentity(project);
   if (usesHeartArt) {
@@ -1966,6 +1992,10 @@ export async function generateAssets({ dir, project, log = () => {} }) {
     // (shared/project.js). No companion *_ENABLED: nothing else calls
     // script_op_visible or reads ENT_HIDDEN.
     `VISIBLE_ENABLED = ${usesVisible ? 1 : 0}`,
+    // OP_FADE, the same shape again -- see projectUsesFade (shared/project.js).
+    // No companion *_ENABLED: nothing else calls script_op_fade, fade_tick or
+    // fade_apply_palette.
+    `FADE_ENABLED = ${usesFade ? 1 : 0}`,
     `FACE_ENABLED = ${usesFace ? 1 : 0}`,
     ''
   ].join('\n');

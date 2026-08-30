@@ -907,3 +907,103 @@ wait_tick:
 wait_tick_running:
   rts
   .endif
+
+; A scripted Fade (OP_FADE, engine/script.asm), hooked into ui_tick at the
+; identical priority-chain position mv_left/wt_left already occupy. Unlike
+; those two, fade_step must persist between steps -- it is the palette's
+; current darkness level, not merely "how much longer" -- so this decides, on
+; the very step that reaches fade_target, whether to reload the hold timer
+; (more steps remain) or clear it to zero and resume (this was the terminal
+; step) -- never both. Reloading unconditionally before checking would leave
+; fade_left non-zero forever, which would have ui_tick keep dispatching in
+; here every later frame, the ramp oscillate past fade_target, and
+; script_resume fire again every time the oscillation happened to land back
+; on target -- resuming a script that had already moved on.
+  .if FADE_ENABLED
+fade_tick:
+  dec fade_left
+  bne fade_tick_rts
+  lda fade_step
+  cmp fade_target
+  bcc fade_tick_darken        ; fade_step < target: darkening
+  dec fade_step               ; fade_step > target: lightening
+  jmp fade_apply
+fade_tick_darken:
+  inc fade_step
+fade_apply:
+  jsr fade_apply_palette
+  lda fade_step
+  cmp fade_target
+  beq fade_tick_done          ; this was the terminal step
+  lda #FADE_STEP_FRAMES        ; more steps remain -- reload the hold timer,
+  sta fade_left                ; and nothing else: fade_left staying non-zero
+  rts                          ; is exactly what tells ui_tick to come back
+fade_tick_done:
+  lda #0
+  sta fade_left                ; the terminal step's own signature: fade_left
+                                ; at 0 is what stops ui_tick dispatching into
+                                ; this routine again next frame
+  jmp script_resume
+fade_tick_rts:
+  rts
+
+; Push one 32-byte packet at $3F00-$3F1F: every background and sprite
+; palette, darkened by fade_step*$10 and clamped safe, through the same
+; vram_buf queue box_open already uses -- the identical mechanism the message
+; box uses to mutate PPU memory safely while rendering is on. No RAM shadow
+; of "the current palette" is kept: palette_data (the project's own ROM
+; table) never changes on its own, so every step recomputes from it directly.
+;
+; Sprites are included deliberately -- a cutscene fade that dimmed the
+; background but left every sprite at full brightness would look broken, not
+; stylised, and there is no code reason to split it: one producer packet, one
+; vram_open, one loop, one vram_end.
+;
+; Subtracting $10 moves a colour down one luma row while preserving its hue
+; nibble (the NES palette byte's high nibble selects one of four luma rows,
+; the low nibble a hue within it) until there is no dimmer row left, at which
+; point the borrow is clamped to $0F -- the "duplicates of black collapse
+; onto $0F" convention this codebase's own default palette data already uses
+; -- never $00 (a real, medium-grey colour in row 0) and never $0D (every
+; row's own "blacker than black" column, which isUnsafeColor,
+; shared/nespalette.js, flags and the Tile Forge's picker refuses to offer,
+; but which a hand-edited or foreign project could still carry).
+;
+; The borrow clamp alone is not enough: a source byte whose row digit is 1,
+; 2 or 3 and whose hue nibble is $D ($1D, $2D, $3D -- each one rejected by
+; isUnsafeColor and so unreachable through the Tile Forge's picker for
+; normal authoring, but still reachable through hand-edited or foreign
+; project data) subtracts *cleanly*, no borrow at all, straight down
+; to $0D at the step where its row digit reaches 0. So a second, independent
+; check runs after the subtraction regardless of whether it borrowed: if the
+; computed byte is exactly $0D, force it to $0F too. Falling into this check
+; after the borrow branch's own lda #$0F is deliberate, not wasted work --
+; $0F never equals $0D, so the compare simply fails harmlessly on that path.
+fade_apply_palette:
+  lda fade_step
+  asl a
+  asl a
+  asl a
+  asl a
+  sta tmp2                    ; the amount to subtract this step (fade_step*$10)
+  lda #$3F
+  ldy #$00
+  jsr vram_open
+  ldx #0
+fade_apply_loop:
+  lda palette_data,x
+  sec
+  sbc tmp2
+  bcs fade_apply_check        ; no borrow: fell cleanly within the target row
+  lda #$0F                    ; borrowed past row 0: clamp to safe black
+fade_apply_check:
+  cmp #$0D                    ; a clean (non-borrowing) subtraction can still
+  bne fade_apply_store        ; land exactly on the blacker-than-black column
+  lda #$0F                    ; -- $1D/$2D/$3D minus $10 all do this
+fade_apply_store:
+  jsr vram_push
+  inx
+  cpx #32
+  bne fade_apply_loop
+  jmp vram_end
+  .endif

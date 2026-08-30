@@ -29,6 +29,7 @@ import {
   CHOICE_LIMITS,
   EVENT_COMMANDS,
   EVENT_CONDITIONS,
+  FADE_DIRECTIONS,
   MOVE_DIRECTIONS,
   MOVE_TARGETS,
   RPG_LIMITS,
@@ -307,6 +308,16 @@ export function compileText(project) {
       case 'visible': {
         const state = Math.max(0, VISIBLE_STATES.findIndex((entry) => entry.id === command.state));
         return [opIndex('visible'), state];
+      }
+      // [direction]. Self-contained -- no who/dir resolution the way
+      // move/turn need, since a fade always means the whole screen. An id
+      // this version does not know falls back to the first entry
+      // (FADE_DIRECTIONS[0], 'none' -- does nothing), the same "still
+      // compiles to something, never dropped" rule move/turn/visible's own
+      // resolution already follows.
+      case 'fade': {
+        const dir = Math.max(0, FADE_DIRECTIONS.findIndex((entry) => entry.id === command.dir));
+        return [opIndex('fade'), dir];
       }
       case 'join':
         return [opIndex('join'), byte(command.member, 3)];

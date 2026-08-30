@@ -71,6 +71,26 @@ init_session:
   sta mv_left               ; a new game has nothing mid-walk, whatever the last
                             ; one was doing when it ended
   .endif
+  .if FADE_ENABLED
+  ; init_session cannot call load_palette directly -- two of its three
+  ; non-boot callers (restart_game, continue_game) can reach here with
+  ; rendering genuinely on (the previous frame was a live game-over or title
+  ; screen), and load_palette writes raw $2006/$2007 with no forced-blank
+  ; guarantee of its own. So this only resets the *logical* fade state and
+  ; arms a flag; the actual palette restore happens in redraw_screen, under
+  ; its own guaranteed forced blank, which every one of this routine's
+  ; callers reaches immediately afterward with nothing in between.
+  sta fade_step
+  sta fade_target
+  sta fade_left              ; and no countdown left running either, the same
+                            ; defensive-clear reasoning mv_left's own clear
+                            ; above already applies
+  lda #1
+  sta fade_reload             ; "the next redraw_screen must reload the
+                              ; palette" -- consumed there, under its own
+                              ; forced blank, never here
+  lda #0                      ; restore A = 0 for the rest of this routine
+  .endif
   sta talk_ent              ; NO_ENTITY is $FF, but boot re-writes it after this
   ldx #7
 init_session_switches:

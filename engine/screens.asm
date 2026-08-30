@@ -107,6 +107,32 @@ redraw_screen:
   ; before anything is drawn. A no-op on cartridges with only one bank.
   jsr vram_reset            ; the whole nametable is about to be rewritten, so
                             ; anything still queued for it is stale
+  .if FADE_ENABLED
+  ; init_session (engine/combat.asm) is fade_reload's only writer -- a
+  ; one-shot "the next redraw_screen must reload the palette" flag, because
+  ; init_session itself cannot safely call load_palette directly: two of its
+  ; three non-boot callers (restart_game, continue_game) can reach it with
+  ; rendering genuinely on, and load_palette writes raw $2006/$2007 with no
+  ; forced-blank guarantee of its own. This routine is always under forced
+  ; blank for its whole body ($2000/$2001 cleared above, enable_rendering not
+  ; called until the last line), so it is the one safe place to consume the
+  ; flag -- right here, after vram_reset so an intervening redraw cannot drop
+  ; it first, and before draw_screen's own nametable/attribute writes (which
+  ; is also what leaves the PPU's VRAM address safely out of palette space by
+  ; the time rendering resumes -- no separate cleanup needed here the way the
+  ; NMI path needed one).
+  ;
+  ; A plain redraw (a warp, a screen edge, a battle returning) never sets this
+  ; flag, so it stays 0 here and this branch is skipped -- which is exactly
+  ; "a plain redraw with a fade at level N must not restore brightness," the
+  ; sticky property a completed fade depends on.
+  lda fade_reload
+  beq redraw_screen_no_fade_reload
+  lda #0
+  sta fade_reload
+  jsr load_palette
+redraw_screen_no_fade_reload:
+  .endif
   ldy flat_screen
   lda screen_tileset,y
   jsr switch_chr_bank

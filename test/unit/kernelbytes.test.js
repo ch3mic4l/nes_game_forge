@@ -43,6 +43,7 @@ import {
   WAIT_KERNEL_ALLOWANCE,
   SHAKE_KERNEL_ALLOWANCE,
   VISIBLE_KERNEL_ALLOWANCE,
+  FADE_KERNEL_ALLOWANCE,
   SPLIT_LOCK_KERNEL_ALLOWANCE,
   ITEM_KERNEL_ALLOWANCE,
   ITEM_EFFECT_KERNEL_ALLOWANCE_BY_GAME_TYPE,
@@ -100,6 +101,7 @@ async function measureCodeBytes(
     withWait = false,
     withShake = false,
     withVisible = false,
+    withFade = false,
     withTitle = false,
     withItems = true
   } = {}
@@ -125,6 +127,7 @@ async function measureCodeBytes(
   if (withWait) commands.push({ op: 'wait', frames: 30 });
   if (withShake) commands.push({ op: 'shake', frames: 30 });
   if (withVisible) commands.push({ op: 'visible', state: 'hidden' });
+  if (withFade) commands.push({ op: 'fade', dir: 'out' });
   if (commands.length) {
     project.maps[0].screens[0].entities.push({
       actorId: 0,
@@ -543,6 +546,45 @@ test(
       );
     }
 
+    // Every RPG-capable board, a live Fade command and nothing else. Fade
+    // shares no dependent term with Move/Turn/Wait/Shake/Show-Hide/Face --
+    // nothing else calls script_op_fade, fade_tick or fade_apply_palette --
+    // so this delta should be FADE_KERNEL_ALLOWANCE and nothing else, the
+    // identical shape the Shake-only and Show/Hide-only blocks above assert.
+    for (const mapper of CAPABLE_MAPPERS) {
+      const { project, codeBytes } = await measureCodeBytes(t, mapper, { withFade: true });
+      assertCovers({ mapper, codeBytes }, kernelCodeBytes(project, mapper), 'a live Fade command');
+      const noSaveEntry = noSave.find((entry) => entry.mapper.id === mapper.id);
+      const delta = codeBytes - noSaveEntry.codeBytes;
+      assert.equal(
+        delta,
+        FADE_KERNEL_ALLOWANCE,
+        `${mapper.name}: Fade-only costs ${delta} bytes of kernel code (${noSaveEntry.codeBytes} -> ${codeBytes}), ` +
+          `but FADE_KERNEL_ALLOWANCE reserves ${FADE_KERNEL_ALLOWANCE} — this allowance must equal Fade's real ` +
+          'cost exactly, on every board.'
+      );
+    }
+
+    // Every RPG-capable board, live Shake and Fade together -- a real build,
+    // not a sum of constants (design-fade.md's own §14 test 13). Shake
+    // touches no code Fade also touches, so this delta should be exactly
+    // SHAKE_KERNEL_ALLOWANCE + FADE_KERNEL_ALLOWANCE, the identical
+    // "purely additive" shape the Shake+Wait and Shake+Show/Hide
+    // combinations above already prove.
+    for (const mapper of CAPABLE_MAPPERS) {
+      const { project, codeBytes } = await measureCodeBytes(t, mapper, { withShake: true, withFade: true });
+      assertCovers({ mapper, codeBytes }, kernelCodeBytes(project, mapper), 'live Shake and Fade commands together');
+      const noSaveEntry = noSave.find((entry) => entry.mapper.id === mapper.id);
+      const delta = codeBytes - noSaveEntry.codeBytes;
+      assert.equal(
+        delta,
+        SHAKE_KERNEL_ALLOWANCE + FADE_KERNEL_ALLOWANCE,
+        `${mapper.name}: Shake+Fade costs ${delta} bytes of kernel code (${noSaveEntry.codeBytes} -> ${codeBytes}), ` +
+          `but SHAKE_KERNEL_ALLOWANCE + FADE_KERNEL_ALLOWANCE reserves ${SHAKE_KERNEL_ALLOWANCE + FADE_KERNEL_ALLOWANCE} ` +
+          '— the two must be purely additive, since Shake shares no code with Fade.'
+      );
+    }
+
     // Every RPG-capable board, live Turn and Wait together, no Move. Proves
     // the two commands' allowances are genuinely additive -- Wait touching
     // no code Turn or Face touch means this delta should be exactly the sum
@@ -723,7 +765,7 @@ const FALLBACK_MAPPERS = SUPPORTED_MAPPERS.filter((mapper) => !(mapper.id in BAS
  * code-byte usage the same way measureCodeBytes does for the RPG-capable
  * boards above.
  */
-async function measureFallbackCodeBytes(t, mapper, { titled, withMove = false } = {}) {
+async function measureFallbackCodeBytes(t, mapper, { titled, withMove = false, withFade = false } = {}) {
   const dir = await fsp.mkdtemp(path.join(os.tmpdir(), 'forge-fallback-'));
   t.after(() => fsp.rm(dir, { recursive: true, force: true }));
   const project = await loadProject(SAMPLE);
@@ -742,6 +784,17 @@ async function measureFallbackCodeBytes(t, mapper, { titled, withMove = false } 
       y: 16,
       props: {
         event: { pages: [{ cond: { type: 'none', arg: 0 }, commands: [{ op: 'move', who: 'self', dir: 'up', dist: 16 }] }] }
+      }
+    });
+  }
+  if (withFade) {
+    const slime = project.sprites.actors[0];
+    project.maps[0].screens[0].entities.push({
+      actorId: slime.id,
+      x: 32,
+      y: 32,
+      props: {
+        event: { pages: [{ cond: { type: 'none', arg: 0 }, commands: [{ op: 'fade', dir: 'out' }] }] }
       }
     });
   }
@@ -821,6 +874,22 @@ test(
         onWithMove.codeBytes <= kernelCodeBytes(onWithMove.project, mapper),
         `${mapper.name}: real kernel code (${onWithMove.codeBytes} bytes, title on, with a live Move command) ` +
           `exceeds the fallback budget (${kernelCodeBytes(onWithMove.project, mapper)})`
+      );
+
+      // Round-1 review, finding 4 (accepted in reduced form): no verb since
+      // Move (Turn/Wait/Shake/Visible) ever added its own fallback build, so
+      // Fade did not either -- a mapper-conditional Fade block on any of
+      // these five boards could pass every equality loop above (which only
+      // exercises the three RPG-capable boards) while still overflowing the
+      // real kernel-lo bank here. Same shape as the Move-only build just
+      // above, not a new per-verb discipline: one more real build, titled
+      // with both a live Move and a live Fade command together, checked
+      // against kernelCodeBytes's own combined answer for that project.
+      const onWithMoveAndFade = await measureFallbackCodeBytes(t, mapper, { titled: true, withMove: true, withFade: true });
+      assert.ok(
+        onWithMoveAndFade.codeBytes <= kernelCodeBytes(onWithMoveAndFade.project, mapper),
+        `${mapper.name}: real kernel code (${onWithMoveAndFade.codeBytes} bytes, title on, with live Move and Fade ` +
+          `commands) exceeds the fallback budget (${kernelCodeBytes(onWithMoveAndFade.project, mapper)})`
       );
     }
   }
@@ -1640,4 +1709,107 @@ test('a kernel-lo shortfall neither Shake nor Show/Hide alone would close, but b
   assert.ok(deficit <= combined, `deficit ${deficit} must not exceed the combined figure (${combined}), or dropping both would not close the gap either`);
   const message = kernelShortfallMessage(project);
   assert.match(message, new RegExp(`removing every Shake command and every Show/Hide command together \\(frees ${combined} bytes\\)`));
+});
+
+// Fade's own solo case: it shares no dependent term with anything (no
+// Face-like companion routine another command also calls), the identical
+// shape Shake's own solo test above already is. This is the test that fails
+// if active.push({ op: 'fade', ... }) is missing from kernelShortfallAdvice:
+// without it, Fade is never considered at all and the message falls through
+// to a mapper suggestion or the generic one instead of naming it.
+test('a kernel-lo shortfall a live Fade command alone would close names Fade', () => {
+  const project = createProject('Action', 'action');
+  project.cartridge.mapper = 1; // MMC1 -- no split-lock to complicate the arithmetic
+  project.maps[0].screens[0].entities.push({
+    actorId: 0,
+    x: 16,
+    y: 16,
+    props: { event: { pages: [{ cond: { type: 'none', arg: 0 }, commands: [{ op: 'fade', dir: 'out' }] }] } }
+  });
+  inflate(project, 190);
+  const deficit = kernelShortfallDeficit(project);
+  assert.ok(deficit <= FADE_KERNEL_ALLOWANCE, `deficit ${deficit} must not exceed FADE_KERNEL_ALLOWANCE (${FADE_KERNEL_ALLOWANCE}) or this case does not exercise Fade alone closing the gap`);
+  const message = kernelShortfallMessage(project);
+  assert.match(message, new RegExp(`removing every Fade command \\(frees ${FADE_KERNEL_ALLOWANCE} bytes\\)`));
+  assert.doesNotMatch(message, /Turn command/, 'this project never turns Turn on, so it must not be offered as a fix');
+  assert.doesNotMatch(message, /Shake command/, 'this project never turns Shake on, so it must not be offered as a fix');
+});
+
+// The combination half: Shake and Fade together, purely additive since
+// neither shares a dependent term with the other -- SHAKE_KERNEL_ALLOWANCE +
+// FADE_KERNEL_ALLOWANCE = 65 + 201 = 266. Sized so neither command alone
+// (65, 201) covers the deficit but dropping both together does. n=190
+// measured directly, landing a 255-byte deficit -- strictly above both solo
+// figures and at or below the combined one.
+test('a kernel-lo shortfall neither Shake nor Fade alone would close, but both together would, names the combination', () => {
+  const project = createProject('Action', 'action');
+  project.cartridge.mapper = 1; // MMC1 -- no split-lock to complicate the arithmetic
+  project.maps[0].screens[0].entities.push({
+    actorId: 0,
+    x: 16,
+    y: 16,
+    props: {
+      event: {
+        pages: [
+          {
+            cond: { type: 'none', arg: 0 },
+            commands: [
+              { op: 'shake', frames: 30 },
+              { op: 'fade', dir: 'out' }
+            ]
+          }
+        ]
+      }
+    }
+  });
+  inflate(project, 190);
+  const deficit = kernelShortfallDeficit(project);
+  const combined = SHAKE_KERNEL_ALLOWANCE + FADE_KERNEL_ALLOWANCE;
+  assert.ok(
+    deficit > SHAKE_KERNEL_ALLOWANCE && deficit > FADE_KERNEL_ALLOWANCE,
+    `deficit ${deficit} must exceed both Shake alone (${SHAKE_KERNEL_ALLOWANCE}) and Fade alone (${FADE_KERNEL_ALLOWANCE}), or this case does not exercise the combination at all`
+  );
+  assert.ok(deficit <= combined, `deficit ${deficit} must not exceed the combined figure (${combined}), or dropping both would not close the gap either`);
+  const message = kernelShortfallMessage(project);
+  assert.match(message, new RegExp(`removing every Shake command and every Fade command together \\(frees ${combined} bytes\\)`));
+});
+
+// Round 2, item 4e: the negative control the earlier positive-only tests
+// could not provide on their own. A project with no live Fade command at
+// all, but a real, similarly-sized kernel-lo deficit reached through Shake
+// alone, must never have the advice mention Fade -- neither as a solo drop
+// nor as part of any offered combination.
+//
+// Sabotage-tested (round-1 fixes, finding 29 follow-on): an ungated
+// `active.push({ op: 'fade', ... })` -- dropping the `if (usesFade)` check
+// entirely -- still passes this test. `freedByDropping` recomputes the
+// candidate's own freed-byte count from `projectWithoutCommands` against
+// this real project, not from whether it was gated onto `active` in the
+// first place, and dropping a command that was never live to begin with
+// frees exactly 0 bytes; `freed >= deficit` then filters it out of both
+// `solo` and every combo regardless of how it got onto `active`. So this
+// test's real value is narrower than "catches the missing `usesFade` gate":
+// what it actually catches is a defect that bypasses that self-correcting
+// filter outright -- for instance, a message-string builder that mentions
+// Fade unconditionally alongside whatever real candidate closed the gap,
+// rather than only a candidate that survived the `freed >= deficit` check.
+test('a kernel-lo shortfall with no live Fade command never names Fade as droppable advice', () => {
+  const project = createProject('Action', 'action');
+  project.cartridge.mapper = 1; // MMC1 -- no split-lock to complicate the arithmetic
+  project.maps[0].screens[0].entities.push({
+    actorId: 0,
+    x: 16,
+    y: 16,
+    props: { event: { pages: [{ cond: { type: 'none', arg: 0 }, commands: [{ op: 'shake', frames: 30 }] }] } }
+  });
+  inflate(project, 184); // the identical Shake-solo deficit measured above
+  const deficit = kernelShortfallDeficit(project);
+  assert.ok(deficit <= SHAKE_KERNEL_ALLOWANCE, `deficit ${deficit} must not exceed SHAKE_KERNEL_ALLOWANCE (${SHAKE_KERNEL_ALLOWANCE}) or this case does not exercise Shake alone closing the gap`);
+  const message = kernelShortfallMessage(project);
+  assert.match(message, new RegExp(`removing every Shake command \\(frees ${SHAKE_KERNEL_ALLOWANCE} bytes\\)`));
+  assert.doesNotMatch(
+    message,
+    /Fade command/,
+    'this project never turns Fade on, so it must never be offered as a fix -- neither solo nor as part of a combination'
+  );
 });

@@ -700,7 +700,23 @@ export const EVENT_COMMANDS = [
   // every placement visible again on the next redraw, so an author who wants
   // an actor permanently gone already has switches and page conditions for
   // exactly that.
-  { id: 'visible', label: 'Show/hide actor', args: ['state'] }
+  { id: 'visible', label: 'Show/hide actor', args: ['state'] },
+  // [direction]. A cutscene primitive: ramps every one of the 32 live palette
+  // bytes toward black over a handful of frames, or back. Suspends the
+  // script the way Wait/Move do -- there is something to wait for (the ramp
+  // reaching its target) and nothing to walk -- not the instant shape
+  // Shake/Turn/Visible have. Unlike every other categorical-operand command
+  // shipped so far, direction 0 is an explicit no-op ('none'): both of
+  // Fade's real directions are highly visible, so neither is a safe default
+  // for a freshly placed, not-yet-configured command. No duration operand:
+  // the ramp's own pacing (FADE_STEPS/FADE_STEP_FRAMES, engine/constants.asm)
+  // is an engine constant, not authored, keeping the wire format to the
+  // smallest surface a suspending command has shipped with. A completed fade
+  // is sticky -- it survives a warp, a battle, anything -- until an explicit
+  // Fade the other way; the palette is never restored implicitly by the
+  // engine except at a new session (a fresh game or a Continue), where it is
+  // always restored regardless of any fade left running.
+  { id: 'fade', label: 'Fade screen', args: ['fadeDir'] }
 ];
 
 // A command can be switched off while you work out whether you want it, the way
@@ -748,7 +764,8 @@ export const IMPLEMENTED_COMMANDS = new Set([
   'turn',
   'wait',
   'shake',
-  'visible'
+  'visible',
+  'fade'
 ]);
 
 /**
@@ -793,6 +810,27 @@ export const MOVE_DIRECTIONS = [
 export const VISIBLE_STATES = [
   { id: 'hidden', label: 'Hidden' },
   { id: 'shown', label: 'Shown' }
+];
+
+/**
+ * A Fade command's own direction. The order is the wire format: `FADE_NONE`/
+ * `FADE_OUT`/`FADE_IN` in `engine/constants.asm`, in exactly this order.
+ *
+ * Unlike `MOVE_DIRECTIONS`/`VISIBLE_STATES`, index 0 is an explicit no-op
+ * rather than a real, harmless default: every direction Turn could face is
+ * imperceptible when it is already facing that way, and both of Show/Hide's
+ * states are meaningful, but Fade's two real values are both highly visible,
+ * so neither is a safe default for a freshly placed, not-yet-configured
+ * command. This follows the magnitude commands' own "zero is inert"
+ * convention (`Wait 0`/`Shake 0` do nothing) and this codebase's existing
+ * `kind`-style enumerations where index 0 is an explicit `none`
+ * (`ITEM_EFFECT_KINDS`, above), rather than the way Turn/Show-Hide give a
+ * fresh command a harmless default by having no do-nothing value at all.
+ */
+export const FADE_DIRECTIONS = [
+  { id: 'none', label: '(does nothing)' },
+  { id: 'out', label: 'Fade out (to black)' },
+  { id: 'in', label: 'Fade in (from black)' }
 ];
 
 /**
@@ -1626,6 +1664,14 @@ function normalizeEventCommand(raw, depth = 0, itemCtx = EMPTY_ITEM_CTX) {
     // a Show/Hide that lost its state is still a Show/Hide, not dropped.
     else if (arg === 'state')
       out.state = VISIBLE_STATES.some((entry) => entry.id === raw?.state) ? raw.state : VISIBLE_STATES[0].id;
+    // Same id-not-index reasoning as 'who'/'dir'/'state' above. Falls back to
+    // FADE_DIRECTIONS[0] ('none'), which is also what a freshly authored Fade
+    // command starts as — a degenerate value doing nothing is exactly the
+    // guarantee Wait/Shake already give a fresh command, achieved here the
+    // way item effects give it (an explicit `none` at index 0) rather than
+    // the way Turn/Show-Hide give it (no such value needed at all).
+    else if (arg === 'fadeDir')
+      out.dir = FADE_DIRECTIONS.some((entry) => entry.id === raw?.dir) ? raw.dir : FADE_DIRECTIONS[0].id;
     // Pixels, and a whole byte of them: 16 is one metatile and 255 is just
     // under the width of a screen, which is as far as a move could be asked to
     // go without crossing an edge — and crossing one mid-event is what `warp`
@@ -2857,6 +2903,35 @@ export function projectUsesVisible(project) {
     for (const page of compiledPages(event)) {
       for (const command of liveCommands(page.commands, CHOICE_LIMITS.options)) {
         if (command.op === 'visible') return true;
+      }
+    }
+  }
+  return false;
+}
+
+/**
+ * Drives the generated `FADE_ENABLED`, the same shape and the same reason
+ * `projectUsesShake`/`projectUsesVisible` drive their own flags:
+ * `script_op_fade`, `fade_tick` and `fade_apply_palette` (engine/script.asm,
+ * engine/entities.asm) plus the PPUADDR cleanup in `nmi` and the
+ * `fade_reload`/`redraw_screen` hookup (engine/boot.asm, engine/screens.asm,
+ * engine/combat.asm) are real kernel-lo code with nowhere to go
+ * unconditionally in a project that never fades anything. Shares no
+ * dependent term with any other verb — there is no routine Fade and, say,
+ * Shake both call — so it needs no companion predicate the way Turn needs
+ * `projectUsesFace`. `liveCommands` + `compiledPages`, not a top-level scan
+ * of `page.commands`: both already recurse into a branch's two sides and a
+ * choice's own options (`shared/eventrules.js`), and `projectEvents` already
+ * yields every common event as well as every placed actor's own event, so a
+ * Fade reachable only through one of those is found here by construction,
+ * the identical machinery every other `projectUses*` predicate in this file
+ * already relies on.
+ */
+export function projectUsesFade(project) {
+  for (const event of projectEvents(project)) {
+    for (const page of compiledPages(event)) {
+      for (const command of liveCommands(page.commands, CHOICE_LIMITS.options)) {
+        if (command.op === 'fade') return true;
       }
     }
   }

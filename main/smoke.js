@@ -651,6 +651,119 @@ const scenario = (dir, sampleDir, sampleRpgDir) => `
   await wait(200);
   step('show/hide authoring', 'Show/Hide wired its state select (defaulted Hidden, set Shown, then edited back to Hidden)');
 
+  // Fade, a select over FADE_DIRECTIONS -- the identical shape Show/Hide's
+  // own select already proves, but with one property unique to Fade among
+  // this codebase's categorical-operand verbs: index 0 ('none') is a genuine
+  // no-op rather than a harmless default, so a freshly added row must default
+  // there rather than to 'out' or 'in', either of which would darken the
+  // screen the instant an author placed the command before choosing anything.
+  // 'out' is the value to switch to first because it is NOT FADE_DIRECTIONS[0]
+  // ('none') -- confirming the row starts at the default and then moves off
+  // it rules out a handler that merely renders whichever option happens to be
+  // first regardless of the stored value, the same proof Show/Hide's own
+  // hidden -> shown step already relies on.
+  rowButton(0, 'Edit event…').click();
+  await until('the event editor', () => document.querySelector('#modalHost .btn-accent'));
+  const addFade = [...document.querySelectorAll('#modalHost select')].find((node) =>
+    node.textContent.includes('Add a command')
+  );
+  addFade.value = 'fade';
+  addFade.dispatchEvent(new Event('change', { bubbles: true }));
+  await wait(200);
+  const findFadeRow = () =>
+    [...document.querySelectorAll('#modalHost .field-row')].find((node) => node.querySelector('span')?.textContent === 'Fade');
+  const firstFadeRow = findFadeRow();
+  if (!firstFadeRow) throw new Error('adding a Fade command produced no row');
+  const firstFadeSelect = firstFadeRow.querySelector('select');
+  if (!firstFadeSelect) throw new Error('the Fade row offered no direction select');
+  if (firstFadeSelect.value !== 'none') {
+    throw new Error('a freshly added Fade command should default to none (does nothing): ' + firstFadeSelect.value);
+  }
+  if (selectedLabel(firstFadeSelect) !== '(does nothing)') {
+    throw new Error('value none must display as label (does nothing): saw ' + JSON.stringify(selectedLabel(firstFadeSelect)));
+  }
+  const fadeHint = firstFadeRow.parentElement?.querySelector('p.hint');
+  if (!fadeHint || fadeHint.textContent.indexOf('(does nothing)') === -1) {
+    throw new Error('the fresh Fade row is missing its does-nothing hint: ' + JSON.stringify(fadeHint?.textContent));
+  }
+
+  // The event-list summary rendered outside the modal (map.js's own
+  // dialogueEditor, under the placed actor's panel) is what an author
+  // actually reads without opening the editor at all -- round-1, finding 5:
+  // a wrong describeEnabled that always says "Fade (does nothing)", swaps
+  // the out/in labels, or omits the summary entirely would pass every
+  // check above and every unit test while the Map Forge lies about the
+  // saved command out here. Saved with the still-default 'none' first
+  // (cheap while here), then re-checked after the out save and the in save
+  // below.
+  const fadeSummaryRow = () =>
+    [...document.querySelectorAll('#stage [data-entity="0"] p.hint')].find((node) => node.textContent.includes('Fade'));
+  document.querySelector('#modalHost .btn-accent').click();
+  await wait(300);
+  const fadeSummaryNone = fadeSummaryRow();
+  if (!fadeSummaryNone || fadeSummaryNone.textContent.indexOf('Fade (does nothing)') === -1) {
+    throw new Error('the event-list summary outside the modal did not read Fade (does nothing): ' + JSON.stringify(fadeSummaryNone?.textContent));
+  }
+
+  rowButton(0, 'Edit event…').click();
+  await until('the event editor', () => document.querySelector('#modalHost .btn-accent'));
+  const noneFadeRow = findFadeRow();
+  if (!noneFadeRow) throw new Error('the saved Fade command produced no row when reopened');
+  const noneFadeSelect = noneFadeRow.querySelector('select');
+  noneFadeSelect.value = 'out';
+  noneFadeSelect.dispatchEvent(new Event('change', { bubbles: true }));
+  await wait(120);
+  document.querySelector('#modalHost .btn-accent').click();
+  await wait(300);
+  const fadeCommands = store.project.maps[0].screens[3].entities[0].props.event.pages[0].commands;
+  const fadeAdded = fadeCommands[fadeCommands.length - 1];
+  if (fadeAdded?.op !== 'fade' || fadeAdded.dir !== 'out') {
+    throw new Error('the Fade command saved as ' + JSON.stringify(fadeAdded));
+  }
+  if ('frames' in fadeAdded || 'dist' in fadeAdded || 'who' in fadeAdded || 'state' in fadeAdded) {
+    throw new Error('a Fade command must not carry Move/Turn/Wait/Shake/Visible-only fields: ' + JSON.stringify(fadeAdded));
+  }
+  const fadeSummaryOut = fadeSummaryRow();
+  if (!fadeSummaryOut || fadeSummaryOut.textContent.indexOf('Fade out (to black)') === -1) {
+    throw new Error('the event-list summary outside the modal did not read Fade out (to black): ' + JSON.stringify(fadeSummaryOut?.textContent));
+  }
+
+  // Reopen, confirm the round trip, then edit a second time -- the same
+  // "genuinely tracking the input, not echoing the first change" proof
+  // Shake's own 77 -> 133 and Show/Hide's own hidden -> shown steps rely on.
+  rowButton(0, 'Edit event…').click();
+  await until('the event editor', () => document.querySelector('#modalHost .btn-accent'));
+  const secondFadeRow = findFadeRow();
+  if (!secondFadeRow) throw new Error('the saved Fade command produced no row when reopened');
+  const secondFadeSelect = secondFadeRow.querySelector('select');
+  if (secondFadeSelect.value !== 'out') {
+    throw new Error('the reopened Fade row did not show the value it was saved with: ' + secondFadeSelect.value);
+  }
+  if (selectedLabel(secondFadeSelect) !== 'Fade out (to black)') {
+    throw new Error('value out must display as label Fade out (to black): saw ' + JSON.stringify(selectedLabel(secondFadeSelect)));
+  }
+  secondFadeSelect.value = 'in';
+  secondFadeSelect.dispatchEvent(new Event('change', { bubbles: true }));
+  await wait(120);
+  document.querySelector('#modalHost .btn-accent').click();
+  await wait(300);
+  const fadeCommandsAgain = store.project.maps[0].screens[3].entities[0].props.event.pages[0].commands;
+  const fadeEdited = fadeCommandsAgain[fadeCommandsAgain.length - 1];
+  if (fadeEdited?.op !== 'fade' || fadeEdited.dir !== 'in') {
+    throw new Error('the edited Fade command saved as ' + JSON.stringify(fadeEdited));
+  }
+  const fadeSummaryIn = fadeSummaryRow();
+  if (!fadeSummaryIn || fadeSummaryIn.textContent.indexOf('Fade in (from black)') === -1) {
+    throw new Error('the event-list summary outside the modal did not read Fade in (from black) after the second save: ' + JSON.stringify(fadeSummaryIn?.textContent));
+  }
+  store.undo();
+  await wait(200);
+  store.undo();
+  await wait(200);
+  store.undo();
+  await wait(200);
+  step('fade authoring', 'Fade wired its direction select (defaulted none, set out, then edited to in) and its outside-the-modal summary tracked all three');
+
   // The trigger, which is the one part of an event that lives on the placement
   // rather than in the event. Only the real panel can show the select is wired
   // to the store and that the hint under it follows the choice.

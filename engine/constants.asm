@@ -344,6 +344,35 @@ wt_left        = split_lock+1
 ; address, including wt_left's.
 shake_left     = wt_left+1
 
+; A scripted Fade in progress (OP_FADE, engine/script.asm; fade_tick,
+; engine/entities.asm). Suspends the script the way mv_left/wt_left already do --
+; see script.asm's own header for why mv_left, wt_left and fade_left can never
+; more than one be non-zero at a time. fade_step is the palette's current
+; darkness level (0 = the project's own palette, FADE_STEPS = fully black);
+; unlike mv_left/wt_left it must persist between steps, because the ramp has
+; somewhere to remember *where it is*, not just *how much longer*. fade_reload
+; is unrelated to the ramp itself -- it is a one-shot "the next redraw_screen
+; must reload the palette from ROM" flag, set only by init_session (and
+; cleared again by reset right after cold boot's own call, so it cannot leak
+; into the session's first ordinary redraw) and consumed only by
+; redraw_screen.
+;
+; Chained after shake_left for the identical reason shake_left itself was
+; chained after wt_left: a switched-off Fade must not move any other symbol's
+; address, including shake_left's.
+fade_step   = shake_left+1     ; 0..FADE_STEPS, current darkness level
+fade_target = fade_step+1      ; 0..FADE_STEPS, where this ramp is headed
+fade_left   = fade_target+1    ; frames until the next step is applied
+fade_reload = fade_left+1      ; non-zero: the next redraw_screen must reload
+                                ; palette_data before re-enabling rendering
+
+; The $10-per-row darken trick reaches solid black in at most this many
+; subtractions from any starting row; the hold between steps is an engine
+; constant, not authored -- see OP_FADE below and shared/project.js's
+; FADE_DIRECTIONS for why the wire format carries no duration of its own.
+FADE_STEPS       = 4
+FADE_STEP_FRAMES = 6
+
 ; Which split program this frame runs. OFF disarms the counter entirely.
 SPL_OFF     = 0
 SPL_BOX     = 1             ; the message box: font in from tile row 24
@@ -820,6 +849,23 @@ OP_VISIBLE  = $17           ; [state] -- self only, resolved through talk_ent
                             ; Does not suspend, the same instant shape OP_TURN
                             ; already has. state 0 = hidden, 1 = shown -- see
                             ; ENT_HIDDEN below for what hidden actually means.
+OP_FADE     = $18           ; [direction] -- suspends the script exactly as
+                            ; OP_WAIT/OP_MOVE do, because a cutscene fade has
+                            ; something to wait for and nothing to walk; see
+                            ; fade_step's own comment above and script_op_fade
+                            ; (engine/script.asm). direction 0 = none (does
+                            ; nothing -- a fresh, unconfigured command), 1 =
+                            ; out (to black), 2 = in (from black), matching
+                            ; FADE_DIRECTIONS' own array order in
+                            ; shared/project.js exactly.
+
+; OP_FADE's own operand. FADE_NONE is 0, unlike OP_TURN/OP_VISIBLE's own
+; categorical operands, because both of Fade's real directions are highly
+; visible and neither is a safe do-nothing default for a freshly placed
+; command -- see shared/project.js's FADE_DIRECTIONS comment.
+FADE_NONE   = 0
+FADE_OUT    = 1
+FADE_IN     = 2
 
 ; OP_MOVE/OP_TURN's first operand. MOVE_SELF is 0 for the same reason
 ; 'interact' is trigger 0: it is the actor the author is looking at when they

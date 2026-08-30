@@ -17,6 +17,7 @@ import {
   CHOICE_LIMITS,
   EVENT_COMMANDS,
   EVENT_CONDITIONS,
+  FADE_DIRECTIONS,
   IMPLEMENTED_COMMANDS,
   LIMITS,
   MAX_BRANCH_DEPTH,
@@ -94,6 +95,11 @@ export const defaultCommand = (op, context = {}) => {
     // identical "the author is looking at the feature they added" reasoning
     // 'who' above gets for defaulting to 'self'.
     else if (arg === 'state') out.state = VISIBLE_STATES[0].id;
+    // '(does nothing)' -- unlike 'who'/'dir'/'state' above, Fade's own index
+    // 0 is a genuine no-op rather than a harmless default: both of Fade's
+    // real directions are highly visible, so neither is safe for a freshly
+    // placed, not-yet-configured command the way DIR_DOWN or Hidden are.
+    else if (arg === 'fadeDir') out.dir = FADE_DIRECTIONS[0].id;
     // One metatile. Zero is the honest default for a number nobody has chosen
     // yet everywhere else in this editor, but a Move of zero is the one command
     // that would compile to nothing happening -- so a new one arrives having
@@ -222,6 +228,14 @@ function describeEnabled(command, context = {}) {
       return command.frames ? `Shake screen for ${command.frames} frames` : 'Shake screen for 0 frames (does nothing)';
     case 'visible':
       return command.state === 'shown' ? 'Show this actor' : 'Hide this actor';
+    // A direction of 'none' is the one Fade that does nothing, the same
+    // reason a zero-distance Move/Wait/Shake says so in its own summary line
+    // above -- 'out'/'in' already read as full sentences on their own
+    // ("Fade out (to black)"), but 'none' alone ("(does nothing)") would not.
+    case 'fade':
+      return command.dir === 'none'
+        ? 'Fade (does nothing)'
+        : FADE_DIRECTIONS.find((entry) => entry.id === command.dir)?.label ?? FADE_DIRECTIONS[0].label;
     case 'branch': {
       // Described down to its contents, because the event list's search runs
       // over exactly this text: a switch used only inside a branch has to be
@@ -946,6 +960,37 @@ export function editEvent(event, context) {
             'actor, so a hidden NPC can still be talked to and a hidden damage actor can still hurt the ' +
             'player. Hiding does not survive leaving the screen: the actor is visible again the next time ' +
             'this screen is drawn. For an actor gone for good, use a switch and a page condition instead.'
+        )
+      );
+    }
+
+    if (command.op === 'fade') {
+      return el(
+        'div',
+        { style: { marginBottom: '6px', ...dim } },
+        el(
+          'div.field-row',
+          null,
+          el('span', { style: { flex: 'none', minWidth: '96px', color: 'var(--text-dim)' } }, 'Fade'),
+          el(
+            'select',
+            { style: { flex: 'none' }, onchange: (fired) => (command.dir = fired.target.value) },
+            FADE_DIRECTIONS.map((entry) =>
+              el('option', { value: entry.id, selected: entry.id === command.dir }, entry.label)
+            )
+          ),
+          tools
+        ),
+        el(
+          'p.hint',
+          null,
+          command.dir === 'none'
+            ? 'Fade (does nothing) — pick a direction to fade the screen out or back in.'
+            : 'Ramps the whole screen — background and sprites alike — toward black or back, over a ' +
+              'handful of frames. The event pauses here, with the world frozen, until the fade finishes. ' +
+              'A completed fade sticks: it survives a warp, a battle, anything, until an explicit Fade the ' +
+              'other way brings it back — only starting a new game or loading a save always restores full ' +
+              'brightness regardless.'
         )
       );
     }

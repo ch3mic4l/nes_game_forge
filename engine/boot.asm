@@ -47,6 +47,15 @@ boot_wait2:
   jsr load_palette
 
   jsr init_session          ; hearts, bag and switches, exactly as a restart does
+  .if FADE_ENABLED
+  lda #0
+  sta fade_reload            ; consumed by nobody here -- reset draws the
+                              ; first screen itself (below) and already ran
+                              ; load_palette moments earlier, so a flag left
+                              ; armed from cold boot would otherwise survive
+                              ; into the first real redraw_screen call of the
+                              ; session and wrongly reload the palette there
+  .endif
 
   lda #START_SCREEN         ; place the player where the Map Forge said
   sta flat_screen
@@ -295,6 +304,29 @@ nmi:
   lda vram_ready            ; a frame that ran long has not finished appending;
   beq nmi_scroll            ; skipping leaves the writes for the next vblank
   jsr vram_drain
+
+  ; Fade's own packets are the first producer into vram_buf whose own address
+  ; ends inside palette space ($3F00-$3F1F): after vram_drain finishes a
+  ; 32-byte packet from $3F00, the PPU's internal VRAM address register (v) is
+  ; left at $3F20 -- still a palette mirror. Real hardware (and emulators
+  ; modelling it faithfully) documents a real risk of visible corruption when
+  ; v is left pointing into $3F00-$3FFF at the moment rendering resumes. Every
+  ; other producer in this engine is safe from this by accident of what it
+  ; draws -- text.asm's packets all end inside nametable space ($2000-$23FF),
+  ; so nobody had to think about this before Fade. The fix is two more $2006
+  ; writes with NO following $2007 -- moving v without touching any actual
+  ; VRAM byte. This runs after *any* drain, not only a Fade one: tracking
+  ; "was the packet just drained a palette one" would cost more bytes than the
+  ; few cycles this costs to run unconditionally, and gating the whole block
+  ; on FADE_ENABLED already means a project with no Fade command pays nothing
+  ; for it at all.
+  .if FADE_ENABLED
+nmi_fade_ppuaddr:
+  lda #$00
+  sta $2006
+  sta $2006
+nmi_fade_ppuaddr_done:
+  .endif
 
 nmi_scroll:
   ; $2000 is rewritten *after* the drain, not before: a $2006 write copies its
