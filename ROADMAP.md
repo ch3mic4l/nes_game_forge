@@ -624,17 +624,23 @@ one is now a measured fact rather than a forecast:
 Event pages become dramatically more capable with a handful of presentation verbs, none of which
 need anything the PPU cannot do:
 
-- Move / turn / wait **routes** for an actor, with a preview in the Map Forge
-- **Fade** in and out (palette ramp)
-- **Screen shake** and **palette flash**
-- Play a **sound effect** or music sting
-- **Show / hide** an actor
-- **Change a tile or metatile** on the current screen
-- Basic **camera / scroll** control
+- ~~**`Move`, `Turn`, `Wait`** commands~~ — shipped, individually; routes for an actor (chaining them
+  into one authored, previewed unit, with a preview in the Map Forge) are still open, see below
+- ~~**Fade** in and out (palette ramp)~~ — shipped
+- ~~**Screen shake**~~ — shipped — and ~~**palette flash**~~ — shipped
+- Play a **sound effect** or ~~music sting~~ — the sting shipped as `Sting`; a true sound effect is
+  still open, see below
+- ~~**Show / hide** an actor~~ — shipped
+- ~~**Change a tile or metatile** on the current screen~~ — shipped
+- Basic **camera / scroll** control — split into its own item, see item 12 below
 
 Two engine constraints shape all of these: nothing but `text.asm` may write to the nametable while
-rendering is on, so a tile change is a `vram_buf` packet capped at one row per frame; and a fade or
-a flash is a palette write, which is a vblank job.
+rendering is on, so any tile change goes through the `vram_buf` queue — the legacy producers (a
+message box's own rows, a purely visual redraw) are each capped at one 32-byte row per frame, while
+switch-bound tiles' own `flip_tick` is capped differently, at `FLIP_BUDGET_CAP` (1) cell per frame,
+each cell costing two small packets (`flip_emit_packet`'s top-row and bottom-row writes, a 3-byte
+header plus a 2-byte body each) rather than one 32-byte row; and a fade or a flash is a palette write,
+which is a vblank job.
 
 **This item is blocked in a way items 1-5 were not, and it was measured rather than estimated before
 anything was built.** All seven verbs are kernel-lo code, and that bank has almost nothing left:
@@ -664,7 +670,7 @@ conclusion from this same 220, not the stale 223.)
   bytes** (`WAIT_KERNEL_ALLOWANCE`, touching no code `Turn`
   or `Face` also touch), and **`Turn`+`Wait` together 99 bytes** — exactly the sum of the two, on
   every board, confirming they cost nothing to combine. This is item 6's first slice; see below.
-- **Fade in/out.** Not a new vblank write path: `vram_buf`'s `vram_open`/`vram_push`/`vram_end`
+- ~~**Fade in/out.** Not a new vblank write path: `vram_buf`'s `vram_open`/`vram_push`/`vram_end`
   (`engine/text.asm`) take an arbitrary PPU address handed to them at the call site and write it
   straight to `$2006` in `vram_drain` — nothing about them is nametable-specific, so a fade packet
   addressed at `$3F00` drains through the exact same NMI queue a message box's own rows do, with zero
@@ -673,19 +679,42 @@ conclusion from this same 220, not the stale 223.)
   per-tick palette-ramp *producer* (something has to compute each step's darkened palette bytes) and
   confirming the shared queue's one-vblank budget still holds when a fade packet and a text-box
   packet are both open on the same frame — bounded (513 DMA + 480 + 480 ≈ 1473 of ~2273 cycles, with
-  room to spare) rather than unknown, but a real constraint, not a non-issue.
+  room to spare) rather than unknown, but a real constraint, not a non-issue.~~ — **done**, with one
+  correction to the prediction: the vram_buf-reuse half was right — `fade_tick`
+  (`engine/entities.asm`) is a per-tick palette-ramp producer riding the identical
+  `vram_open`/`vram_push`/`vram_end` transport — but "with no new NMI code" was wrong.
+  `nmi_fade_ppuaddr` (`engine/boot.asm`, gated `.if PALETTE_FX_ENABLED`) is real new NMI code: two
+  more `$2006` writes with no following `$2007`, run after any drain to move the PPU's internal VRAM
+  address off a palette mirror, because Fade is the first producer whose own packets can end inside
+  palette space (`$3F00-$3F1F`) — every earlier producer's packets end inside nametable space, so
+  nobody had to think about this before Fade. Measured cost: `FADE_KERNEL_ALLOWANCE` 146 bytes
+  (`script_op_fade` and `fade_tick` only, plus dispatch/init glue — explicitly *not*
+  `fade_apply_palette` or the NMI fix) plus `PALETTE_FX_KERNEL_ALLOWANCE` 55 (`fade_apply_palette`'s
+  own body *plus* that NMI PPUADDR fix, shared with Flash, charged once whenever either is live, the
+  same dependent-term shape Move/Turn share via `FACE_KERNEL_ALLOWANCE`) — 201 total for a
+  **Fade-only** build (`main/build/generate.js`'s
+  own comment on the constant: "the whole, unchanged, shipped Fade-only delta"), equality-asserted in
+  `test/unit/kernelbytes.test.js`. With Flash also live the combined figure is 146 + 98
+  (`FLASH_KERNEL_ALLOWANCE`) + 55 = **299**, the shared 55 charged once rather than twice
+  (`test/unit/kernelbytes.test.js`'s own both-live assertion). See CLAUDE.md's "Flash is the first
+  producer allowed to write `vram_buf` outside `ui_tick`'s own priority chain" passage for how a Fade
+  step and a Flash edge share a frame.
 - **Screen shake and palette flash.** Screen shake has shipped: `boot.asm`'s NMI already wrote `$2005`
   twice every vblank -- (0,0) when nothing is shaking, a small offset for N frames when something is,
   since Shake perturbs that existing write site rather than adding a new one — measured at
   **65 bytes** (`SHAKE_KERNEL_ALLOWANCE`), identically on all three RPG-capable boards, exactly the
-  cheap shape this section predicted before it was built. Palette flash has not shipped: it would reuse
-  Fade's own producer/transport almost entirely — a short ramp to a target color and back. Estimated
-  **~50-100 bytes**, contingent on Fade landing first.
-- **Play a sound effect or music sting.** These are different features costed separately. A true
-  **sound effect** (independent of whatever song is playing, borrowing an APU channel briefly) is
-  genuinely new and touches `music_tick`, which runs unconditionally every frame including during
-  battle and dialogue — real, always-paid branching, not free-when-off. Estimated **~150-300 bytes**.
-  A **music sting**, checked against `engine/music.asm` directly rather than assumed, is *not* a
+  cheap shape this section predicted before it was built. ~~Palette flash has not shipped: it would
+  reuse Fade's own producer/transport almost entirely — a short ramp to a target color and back.
+  Estimated **~50-100 bytes**, contingent on Fade landing first.~~ — **done**: it did reuse Fade's
+  producer/transport, sharing `PALETTE_FX_KERNEL_ALLOWANCE` (55) the way predicted, plus its own
+  `FLASH_KERNEL_ALLOWANCE` of 98 bytes (`main/build/generate.js`, equality-asserted in
+  `test/unit/kernelbytes.test.js`) — inside the estimated band. The novelty the estimate didn't
+  anticipate: `flash_tick` never suspends, ticking unconditionally from `main_loop` so a Flash burst
+  keeps counting down across the frozen/gameplay boundary, which made "one `vram_buf` producer per
+  frame" a counted bound of two packets (71 of 256 bytes) rather than one — see CLAUDE.md's "Flash is
+  the first producer allowed to write `vram_buf` outside `ui_tick`'s own priority chain" passage.
+- **Play a sound effect or music sting.** These are different features costed separately.
+  ~~A **music sting**, checked against `engine/music.asm` directly rather than assumed, is *not* a
   small wrapper on `set_music`/`OP_MUSIC`: `set_music` only ever replaces the current song outright —
   there is no completion signal in the stream format (a song loops forever via its own `$FF jump`)
   and no memory of what was playing before. A sting that auto-restores the previous song needs either
@@ -693,7 +722,22 @@ conclusion from this same 220, not the stale 223.)
   sting has finished — genuinely new, **~150-300 bytes**) or costs *nothing at all*: once `Wait`
   exists (see the first slice below), an author can already build a sting as an authored sequence —
   Play music (the sting) → Wait (its known duration) → Play music (the original) — with no new
-  opcode. That second option is the one worth taking.
+  opcode. That second option is the one worth taking.~~ — **this corrects an earlier draft of this
+  section**: the authored-Wait-sequence option was *not* taken. The real retention-and-restoration
+  mechanism was built instead — `sting_snapshot`/`sting_restore`/`sting_tick` in `engine/music.asm`,
+  pausing and resuming whatever song was already playing through the unmodified driver, `.if
+  STING_ENABLED`-gated — at a measured `STING_KERNEL_ALLOWANCE` of 175 bytes (`main/build/
+  generate.js`, equality-asserted in `test/unit/kernelbytes.test.js`), landing inside the
+  ~150-300-byte band the rejected option's estimate carried. Those 175 bytes are why MMC3 now has a
+  third documented-limitation refusal (`sample-rpg` with Save, Move and a live Sting, no item —
+  tested in `kernelbytes.test.js`), and on an MMC3 project whose sole live event is a Sting-only
+  command, `kernelShortfallAdvice` correctly frees 175 + 19 = 194 bytes together via the dependent
+  `SPLIT_LOCK_KERNEL_ALLOWANCE` term. See `handoff-sting/design-sting.md` for the full design and
+  CLAUDE.md's own `sting_snapshot`/`sting_restore`/`sting_tick` passage for the mechanism. A true
+  **sound effect** (independent of whatever song is playing, borrowing an APU channel briefly) is
+  genuinely new and touches `music_tick`, which runs unconditionally every frame including during
+  battle and dialogue — real, always-paid branching, not free-when-off. Estimated **~150-300 bytes**,
+  and this remains open.
 - **Show / hide an actor.** Built. The semantic choice this bullet used to say nobody had made yet is
   made: hidden means invisible but otherwise fully alive. `draw_entities` (`engine/entities.asm`) is
   the *only* reader of the hidden bit; `update_entities`'s own AI (`entity_patrol`/`entity_chase`),
@@ -735,22 +779,32 @@ conclusion from this same 220, not the stale 223.)
   Cost: **49 bytes**, measured identically on all three RPG-capable boards (`script_op_visible` and
   its dispatch-chain entry in `script.asm`, plus the `ENT_HIDDEN` check in `draw_entities`), not the
   15-60 this bullet used to estimate before either option was built.
-- **Change a tile or metatile on the current screen.** Two different features hiding under one name.
-  A purely visual change that reverts on the next redraw reuses `vram_buf` exactly as `box_close`
-  already rebuilds message-box rows out of `[mtptr]`/`mt_tl`/`mt_tr` — **~40-70 bytes**. A change that
-  *persists* past a redraw (a burned bush staying burned) needs a new per-screen override-tracking
-  mechanism, since screen data is ROM on every board except UNROM 512's CHR-RAM tilesets, which is a
-  different kind of RAM entirely — **~150-300+ bytes**, and an open RAM-budget question. Which
-  reading is meant should be settled before this verb is costed further.
-- **Basic camera / scroll control.** Confirmed larger than the other six, and not really the same
-  *kind* of thing. `boot.asm`'s NMI writes `$2005` twice every vblank, always resetting to (0,0) —
-  there is no live scrolling today, and the whole rendering model is one full 256×240 nametable per
-  authored screen with hard transitions (`cross_left/right/up/down`; the MMC3 split section's own
-  note that "the engine only draws nametable 0"). Real scrolling needs adjacent-screen data available
-  before the camera reaches an edge — double-buffered nametable content streamed in under the vblank
-  budget, touching `redraw_screen`, the mirroring model, and UNROM 512's CHR-RAM streaming path.
-  Floor estimate **500-1000+ bytes**, likely conservative, and it deserves its own design pass rather
-  than being bundled into this item's costing at all.
+- ~~**Change a tile or metatile on the current screen.** Two different features hiding under one
+  name. A purely visual change that reverts on the next redraw reuses `vram_buf` exactly as
+  `box_close` already rebuilds message-box rows out of `[mtptr]`/`mt_tl`/`mt_tr` — **~40-70 bytes**.
+  A change that *persists* past a redraw (a burned bush staying burned) needs a new per-screen
+  override-tracking mechanism, since screen data is ROM on every board except UNROM 512's CHR-RAM
+  tilesets, which is a different kind of RAM entirely — **~150-300+ bytes**, and an open RAM-budget
+  question. Which reading is meant should be settled before this verb is costed further.~~ —
+  **done**, settled by a third design neither of the two readings above anticipated: a cell reads as
+  a different metatile while its bound switch is set, with no new opcode — the mechanism rides the
+  existing `Turn` switch on/off commands (`script_op_set`/`script_op_clear` → `tile_switch_changed`)
+  through a shared `bound_tile_lookup` primitive that `draw_screen`/`probe_type`/`text_close_step`
+  all call instead of reading `[mtptr_lo],y` directly, with a non-suspending `flip_tick` (one budget
+  slot per frame, a deduped FIFO queue for whatever does not fit) for a switch toggled while the
+  screen is already on display. Persistence falls out of deriving the tile from switch state rather
+  than tracking an override — battle-return, game-over and Continue are correct by construction, with
+  no save-format change. Measured cost: `BOUND_TILE_KERNEL_ALLOWANCE` 388 bytes, plus a 30-byte fixed
+  table (`bound_row_lo`/`bound_row_hi`) and 2 bytes per screen (`screen_bound_lo`/`hi`) —
+  `main/build/generate.js`, equality-asserted in `test/unit/kernelbytes.test.js` — landing well past
+  the ~150-300+ estimate for the persistent reading, and this is authored screen data, the first
+  strippable feature that isn't an event command. It closed two previously-comfortable rows: MMC3
+  Save+Move-no-item and MMC1 Save+Move+item are both refused once a live bound tile is added (both
+  refusals tested in `kernelbytes.test.js`). See CLAUDE.md's "Switch-bound tiles (design-tile.md)"
+  passage for the full mechanism.
+- ~~Basic **camera / scroll** control~~ — split out into its own roadmap entry; see item 12 below.
+  This corrects an earlier draft of this section, which bundled camera/scroll into item 6's own
+  costing before splitting it out was actually done.
 
 **The structural question: a fourth kernel diet, a second banked region, or per-verb conditional
 assembly that does not compose indefinitely.**
@@ -796,35 +850,68 @@ rests on real cost (per-probe bank-switch overhead, and covering only a subset o
 rather than on an impossibility that turned out not to be real.
 
 *Per-verb conditional assembly, checked against the measured numbers rather than left qualitative.*
-On MMC1's worst measured case (`Save`+`Move`, **220 bytes free** — re-measured against the current
-tree; 3 fewer than this section first recorded, because `battle_end`'s own talk_ent fix above is
-unconditional kernel-lo cost on every RPG build, including this one): `Turn`+`Wait` cost **99 bytes,
-measured**, not the ~50-80 this section estimated before either was built — leaving **121 bytes**,
-not the ~140-170 the estimate implied. `Show`/`Hide` has since shipped too, at a measured **49
-bytes**, not the ~15-60 this section estimated before it was built — leaving **72 bytes**, not enough
-for `Fade` (~80-150b, mostly the ramp producer, not the transport) alongside both. Confirmed **two of
-the seven** fit in that worst case (`Turn`+`Wait`, `Show`/`Hide`), not merely "probably" any more, but
-the real remaining room is tighter than the pre-implementation estimate suggested, and planning the
-next verb off that estimate rather than the measured 72 would overstate how much is actually left.
-Without `Save`+`Move` active, `sample-rpg` as checked in measured nesasm's own **`6818/1374`** free on
-the same board (re-measured against the current tree; 3 fewer than this section first recorded, the
-identical `battle_end` cost above, not an arithmetic adjustment of the old number) — comfortably fits
-all six smaller verbs' combined high end (~700-900 bytes, excluding camera/scroll) with margin. MMC3's worst case is already negative before item 6 exists at all. So "does not compose
-indefinitely" (CLAUDE.md) is now a number: on this codebase's own reference scenario, kernel-lo has
-room for roughly a third of the item, not all of it, and that is board- and configuration-dependent
-rather than a fixed ceiling.
+**The paragraph below is now measured history, not live budget — it predates `Fade`, palette flash,
+`Sting` and switch-bound tiles all shipping, and only ever costed `Turn`/`Wait`/`Show`/`Hide` against
+the MMC1 worst case.** It is kept rather than deleted per this file's own convention for superseded
+analysis, followed by what the fuller picture looks like now. On MMC1's worst measured case
+(`Save`+`Move`, **220 bytes free** — re-measured against the current tree; 3 fewer than this section
+first recorded, because `battle_end`'s own talk_ent fix above is unconditional kernel-lo cost on every
+RPG build, including this one): `Turn`+`Wait` cost **99 bytes, measured**, not the ~50-80 this section
+estimated before either was built — leaving **121 bytes**, not the ~140-170 the estimate implied.
+`Show`/`Hide` has since shipped too, at a measured **49 bytes**, not the ~15-60 this section estimated
+before it was built — leaving **72 bytes**, not enough for `Fade` (~80-150b, mostly the ramp producer,
+not the transport, was the estimate at the time) alongside both. Confirmed **two of the seven** fit in
+that worst case (`Turn`+`Wait`, `Show`/`Hide`), not merely "probably" any more, but the real remaining
+room is tighter than the pre-implementation estimate suggested, and planning the next verb off that
+estimate rather than the measured 72 would overstate how much is actually left. Without `Save`+`Move`
+active, `sample-rpg` as checked in measured nesasm's own **`6818/1374`** free on the same board
+(re-measured against the current tree; 3 fewer than this section first recorded, the identical
+`battle_end` cost above, not an arithmetic adjustment of the old number) — comfortably fits all six
+smaller verbs' combined high end (~700-900 bytes, excluding camera/scroll) with margin. MMC3's worst
+case is already negative before item 6 exists at all. So "does not compose indefinitely" (CLAUDE.md)
+is now a number: on this codebase's own reference scenario, kernel-lo has room for roughly a third of
+the item, not all of it, and that is board- and configuration-dependent rather than a fixed ceiling.
+
+**What actually happened once `Fade`, `Flash`, `Sting` and switch-bound tiles were each costed and
+shipped: exactly the pattern this paragraph predicted — most of them fit as ordinary conditional
+kernel-lo code, and the tightest combinations hit the same kind of documented-limitation wall
+`Save`+`Move` already did, rather than being blocked outright.** `Fade` alone measures 146
+(`FADE_KERNEL_ALLOWANCE`) + 55 (`PALETTE_FX_KERNEL_ALLOWANCE`, shared with Flash) = 201 bytes — well
+past the 72 bytes this scenario's `Turn`+`Wait`+`Show`/`Hide` combination leaves, confirming "not
+enough for Fade" while correcting the estimate that produced it. `Sting` (175 bytes,
+`STING_KERNEL_ALLOWANCE`) created MMC3's third documented-limitation refusal
+(`sample-rpg` with Save, Move, no item, and a live Sting — `test/unit/kernelbytes.test.js`). Switch-
+bound tiles (388 bytes plus table costs) closed two previously-comfortable rows outright: MMC3
+Save+Move-no-item and MMC1 Save+Move+item are both refused once a live bound tile is added (CLAUDE.md,
+"Switch-bound tiles (design-tile.md)"). And the item-6 costing pass that measured all this also found
+combinations this paragraph never considered: MMC1's own Save+Move+item row, comfortable with 220
+bytes free on its own, is refused by 296 bytes once every verb included in that earlier costing pass
+(`Turn`, `Wait`, Shake, `Show`/`Hide`, `Fade`, `Flash` — that pass predates `Sting` and switch-bound
+tiles, so it is not literally every shipped verb as of today) is also live on the same project
+(CLAUDE.md, near "the item-6 costing pass"), while the same combination with no `Save` fits with 483
+bytes free — confirming again that it is `Save`+`Move` specifically, not the verb count alone, that
+closes the gap. None of this needed a fourth kernel diet or a banked region to ship; each refusal is
+an accepted, documented limitation the same way `Save`+`Move` already was.
 
 **Recommendation: do not make a banked region item 6's primary vehicle.** Ship the verbs that are
 cheap and need no `mtptr` access (`Turn`, `Wait`, `Show`/`Hide`, shake) as ordinary conditional
 kernel-lo code on every board — none of them need banking, and keeping them universal avoids trading
 away NROM/CNROM/GxROM/Color Dreams action projects' access to cutscenes at all, which the
-banked-region path would cost for no reason on the verbs that don't structurally require it. Cost
+banked-region path would cost for no reason on the verbs that don't structurally require it. ~~Cost
 `Fade` and sound-effect/sting on their own merits later — they may end up conditional kernel-lo too,
 hitting the same documented-limitation wall `Save`+`Move` already does on MMC3's worst case, which is
-this codebase's own precedented, acceptable outcome rather than a defect. Take the
-`entity_patrol`/`move_tick` diet opportunistically rather than counting on it. Split camera/scroll out
-of this item entirely into its own future roadmap entry — it is a different kind of thing than the
-other six, not a bigger version of the same thing.
+this codebase's own precedented, acceptable outcome rather than a defect.~~ — **done**: `Fade` and
+`Sting` (the music-sting half of "sound-effect/sting") were both costed and shipped, each as ordinary
+conditional kernel-lo code, and each landed on MMC3's tightest rows as an accepted documented
+limitation rather than a defect — exactly the outcome this recommendation predicted (see above). Their
+byte figures didn't land the same way relative to their own pre-implementation estimates, though:
+`Sting` (175 bytes) fit inside the ~150-300 estimate the rejected retention-mechanism option carried,
+while `Fade`'s real Fade-only total (201 bytes — `FADE_KERNEL_ALLOWANCE` 146 +
+`PALETTE_FX_KERNEL_ALLOWANCE` 55, above) exceeded the ~80-150 this section originally estimated for
+it. A true sound effect remains uncosted and open. Take the `entity_patrol`/
+`move_tick` diet opportunistically rather than counting on it. ~~Split camera/scroll out of this item
+entirely into its own future roadmap entry — it is a different kind of thing than the other six, not
+a bigger version of the same thing.~~ — **done**: see item 12 below.
 
 - ~~**First slice: the `Turn` and `Wait` commands**~~ — **done**. Two new opcodes, each authorable on
   their own in the Map Forge's event editor. Needs no structural decision — both are cheap enough to
@@ -1145,6 +1232,30 @@ resetting on either changing.
 
 ---
 
+## 12. Camera / scroll control
+
+Split out of item 6, where it originally lived as one of seven cutscene/presentation bullets. Item
+6's own recommendation ("Split camera/scroll out of this item entirely into its own future roadmap
+entry — it is a different kind of thing than the other six, not a bigger version of the same thing")
+is executed here.
+
+**Confirmed larger than item 6's other six verbs, and not really the same *kind* of thing.**
+`boot.asm`'s NMI writes `$2005` twice every vblank, resetting to (0,0) on the no-shake path — with
+`SHAKE_ENABLED` and a live shake, it writes a transient ±2-pixel horizontal offset instead (`$02` or
+the 9-bit `$FE` representation, `$00` vertically) for as many frames as the shake lasts, not (0,0). No
+project has a persistent camera coordinate or live scrolling either way: Shake's offset is a
+self-clearing perturbation of this same write site, not a camera position, and the whole rendering
+model is one full 256×240 nametable per authored screen with
+hard transitions (`cross_left/right/up/down`; the MMC3 split section's own note that "the engine only
+draws nametable 0"). Real scrolling needs adjacent-screen data available before the camera reaches an
+edge — double-buffered nametable content streamed in under the vblank budget, touching
+`redraw_screen`, the mirroring model, and UNROM 512's CHR-RAM streaming path. Floor estimate
+**500-1000+ bytes**, likely conservative, and it deserves its own design pass rather than being
+bundled into another item's costing. Nothing about this estimate has been revisited since the split;
+no design work has started.
+
+---
+
 ## Suggested order
 
 1. ~~Event names, list and search; duplication; templates; play-from-here — item 2 plus the first
@@ -1165,16 +1276,37 @@ undifferentiated block of kernel code once it was actually costed (see its own s
 `Turn` and `Wait` shipped as cheap, ordinary conditional kernel-lo commands needing no structural
 decision at all, and `Show`/`Hide` and screen shake have since shipped the same way too — screen
 shake at a measured 65 bytes, `Show`/`Hide` at a measured 49 — fitting everywhere measured, with no
-documented-limitation refusal required from either. That treatment belongs to `Save`+`Move` alone.
-`Fade` and a sound effect are not costed to a final figure yet, but expected the same way: ordinary conditional kernel-lo code that most
-projects, on most boards, can simply have — a diet or a second banked region would only be needed to
-also cover the *tightest* configuration (or to guarantee every configuration universally), not to
-build the verb at all, the same distinction `Save`+`Move`'s own accepted refusal already draws. A
-persistent tile change and camera/scroll are the two genuinely still open for a different reason —
-nobody has designed either mechanism yet (a per-screen override-tracking scheme for the tile change, a
-wholly new streamed-scrolling rendering path for the camera), so neither has a real kernel-lo cost to
-weigh against a diet or a banked region in the first place; camera/scroll in particular is a different
-kind of thing entirely, not merely a bigger verb. Item 5 was mostly tables
+documented-limitation refusal required from either. ~~That treatment belongs to `Save`+`Move`
+alone.~~ — no longer true, and this corrects an earlier draft of this section: `Sting` and
+switch-bound tiles have since shipped and each added a documented-limitation refusal of its own (below
+and item 6's own section, above); `Show`/`Hide` itself has not required such a refusal so far.
+~~`Fade` and a sound effect are not costed to a final figure yet, but expected the same way: ordinary
+conditional kernel-lo code that most projects, on most boards, can simply have — a diet or a second
+banked region would only be needed to also cover the *tightest* configuration (or to guarantee every
+configuration universally), not to build the verb at all, the same distinction `Save`+`Move`'s own
+accepted refusal already draws. A persistent tile change and camera/scroll are the two genuinely
+still open for a different reason — nobody has designed either mechanism yet (a per-screen
+override-tracking scheme for the tile change, a wholly new streamed-scrolling rendering path for the
+camera), so neither has a real kernel-lo cost to weigh against a diet or a banked region in the first
+place; camera/scroll in particular is a different kind of thing entirely, not merely a bigger
+verb.~~ — both halves of this are now false, and this corrects an earlier draft of this section.
+`Fade` shipped and was costed exactly as expected — ordinary conditional kernel-lo code
+(`FADE_KERNEL_ALLOWANCE` 146 + the shared `PALETTE_FX_KERNEL_ALLOWANCE` 55) that most projects, on
+most boards, simply have. `Flash` shipped alongside it (`FLASH_KERNEL_ALLOWANCE` 98, sharing the same
+55). The music-sting half of "sound effect or sting" also shipped — not as the authored-Wait-sequence
+option this file once recommended, but as a real retention-and-restoration mechanism
+(`STING_KERNEL_ALLOWANCE` 175) — and, on MMC3's tightest row, landed exactly where the "diet or
+banked region only needed for the tightest configuration" distinction predicted: a third accepted
+documented limitation, not a blocker (item 6's own section, above). A true sound effect, independent
+of `Sting`, remains uncosted and open. The persistent-tile-change reading was settled, and shipped, as
+switch-bound tiles — a third design neither of item 6's original two readings anticipated
+(`BOUND_TILE_KERNEL_ALLOWANCE` 388, plus a 30-byte fixed table and 2 bytes/screen), closing two
+previously-comfortable rows on its own (item 6's own section, above; CLAUDE.md's "Switch-bound tiles
+(design-tile.md)" passage). Camera/scroll is the one item-6 verb that was never designed and is now
+split into its own roadmap entry — item 12 — for exactly the "different kind of thing entirely"
+reason given above; it has no kernel-lo cost to weigh yet because no mechanism has been designed.
+What remains open under item 6 itself: the route-authoring/preview convenience for `Move`/`Turn`/
+`Wait` (pure Map Forge/compiler work, no engine cost) and a true sound effect. Item 5 was mostly tables
 and editor work; phase 4c no longer is either — it is
 **done** (round 6 closed the verification gaps round 4c left outstanding, above), and it
 cost 76 real bytes of kernel-lo (`ITEM_KERNEL_ALLOWANCE` 16 +
@@ -1184,11 +1316,12 @@ cost is exactly what this
 paragraph predicted would happen: `sample-rpg` with Save and Move on MMC3 now refuses for real, by 11
 bytes (re-measured against the current tree — `battle_end`'s own talk_ent fix, item 6's Turn/Wait
 slice, added 3 more unconditional bytes on top of the 8 this paragraph originally recorded) —
-this one is not blocked on finding a diet or a banked region, unlike the persistent-tile-change and
-camera/scroll verbs above, which have no built mechanism to even measure yet: the refusal is accepted
-as a documented limitation (`checkCapacity` still offers dropping Move, dropping Save, or switching to
-MMC1), not a gate on
-shipping.
+this one is not blocked on finding a diet or a banked region, unlike camera/scroll (item 12), which
+still has no built mechanism to even measure: the refusal is accepted as a documented limitation
+(`checkCapacity` still offers dropping Move, dropping Save, or switching to MMC1), not a gate on
+shipping. (The persistent-tile-change comparison this sentence used to draw no longer applies: that
+reading shipped as switch-bound tiles, and item 6's own section above and CLAUDE.md now measure its
+cost directly rather than leaving it undesigned.)
 
 The rest of item 3 also has a better claim on being next than its position suggests, for the same
 kind of reason it was cheap: none of the remaining bullets cost any ROM either. Item 1 made 64

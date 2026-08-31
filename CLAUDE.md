@@ -1181,10 +1181,15 @@ board, and screen shake — since built, in exactly the shape predicted — and 
 shipped too, cheaper than either: 49 bytes, measured identically on all three RPG-capable boards, with
 no dependent term of its own (nothing else calls `script_op_visible` or reads `ENT_HIDDEN`). Cheap
 enough that it never needed the documented-limitation treatment `Save`+`Move` and the tightest
-Shake/Wait combinations do — it just fits, on every board, in every combination measured. Only fade and a sound effect are still genuinely open on
-this front: real kernel code with nowhere left to go on the tightest boards until either MMC3 gets
-more margin or a second banked region the way the battle system got one, and conditional assembly
-does not compose indefinitely regardless. The route-authoring and Map Forge preview half of "Move /
+Shake/Wait combinations do — it just fits, on every board, in every combination measured. Fade has
+since shipped too — `FADE_KERNEL_ALLOWANCE` 146 plus the `PALETTE_FX_KERNEL_ALLOWANCE` 55 it shares
+with Flash, both measured — landing exactly where this paragraph predicted: ordinary conditional
+kernel-lo code, cheap enough for most boards and most projects but a real cost on the tightest ones
+(see the switch-bound-tiles and Sting passages above for what "the tightest ones" now means in
+practice). Only a true sound effect is still genuinely open on this front: real kernel code with
+nowhere left to go on the tightest boards until either MMC3 gets more margin or a second banked
+region the way the battle system got one, and conditional assembly does not compose indefinitely
+regardless. The route-authoring and Map Forge preview half of "Move /
 turn / wait routes" is a different thing again: pure compiler/UI work with no engine cost at all,
 never blocked on kernel-lo margin the way this paragraph's other examples are, and still open for a
 different reason (nobody has built it yet, not that there is nowhere for it to go). The second kernel diet this paragraph used to point at as
