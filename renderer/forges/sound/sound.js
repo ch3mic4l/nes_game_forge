@@ -6,10 +6,10 @@
 
 import { store } from '../../store.js';
 import { el, clear, fill, field, toast, confirmModal } from '../../ui.js';
-import { CHANNELS, NUM_NOTES, noteName, createSong, createPattern, createInstrument, MAX_INSTRUMENTS } from '../../../shared/audio.js';
-import { compileSong } from '../../../main/build/songcompile.js';
-import { renumberSongDeletion } from '../../../shared/project.js';
-import { Replayer } from './replayer.js';
+import { CHANNELS, NUM_NOTES, noteName, createSong, createPattern, createInstrument, MAX_INSTRUMENTS, normalizeSfx, SFX_MAX_STEPS } from '../../../shared/audio.js';
+import { compileSong, compileSfx } from '../../../main/build/songcompile.js';
+import { renumberSongDeletion, renumberSfxDeletion, LIMITS } from '../../../shared/project.js';
+import { Replayer, SfxReplayer } from './replayer.js';
 import { Synth } from './synth.js';
 
 // FamiTracker-style two-octave keyboard.
@@ -22,6 +22,7 @@ const KEYS = {
 
 export function mount(container, app) {
   const state = {
+    mode: 'song', // 'song' | 'sfx'
     song: 0,
     pattern: 0,
     channel: 0,
@@ -29,17 +30,79 @@ export function mount(container, app) {
     octave: 4,
     instrument: 0,
     playing: false,
-    playRow: -1
+    playRow: -1,
+    effect: 0,
+    sfxPlaying: false
   };
 
   const synth = new Synth();
   let replayer = null;
   let timer = null;
   let frameInPlayback = 0;
+  let sfxReplayer = null;
+  let sfxTimer = null;
 
   const songs = () => store.project.songs;
   const song = () => songs()[state.song] ?? null;
   const pattern = () => song()?.patterns[state.pattern] ?? null;
+
+  const effects = () => store.project.sfx;
+  const effect = () => effects()[state.effect] ?? null;
+
+  function editEffect(label, mutate) {
+    const index = state.effect;
+    store.commit(label, (project) => mutate(project.sfx[index], project));
+    render();
+  }
+
+  // ------------------------------------------------------------- sfx preview
+
+  function stopSfx() {
+    state.sfxPlaying = false;
+    if (sfxTimer) clearInterval(sfxTimer);
+    sfxTimer = null;
+    synth.silence();
+    render();
+  }
+
+  async function playSfx() {
+    const current = effect();
+    if (!current) return;
+    if (!(await synth.start())) {
+      toast(`Sound unavailable: ${synth.failed}`, 'error');
+      return;
+    }
+    synth.resume();
+
+    const compiled = compileSfx(current);
+    sfxReplayer = new SfxReplayer(compiled);
+    // The authored duration operand a live sfx command would compile — the
+    // sum of every step's own duration, the same figure sfxFrameLength
+    // (shared/audio.js) computes and the same one a build clamps to 255.
+    const totalFrames = Math.min(
+      normalizeSfx(current).steps.reduce((total, step) => total + step.duration, 0),
+      255
+    );
+    sfxReplayer.trigger(totalFrames);
+    state.sfxPlaying = true;
+    // Driven off the replayer's own state, not an independent countdown --
+    // sfx_state's own two-phase shape (engine/music.asm's sfx_channel_tick):
+    // state 1 plays for `frames` ticks, then one further tick resolves state
+    // 2's own cleanup write (silence, since this previews over nothing) and
+    // returns to state 0. Stopping here on the same tick that just applied
+    // that write, rather than skipping it, is exactly the "apply the final
+    // frame before silencing it" ordering the ROM's own cleanup phase holds
+    // to -- an independent frame counter that stopped one tick early would
+    // silence the preview in the same callback that applied its own final
+    // playing frame, never letting the cleanup tick's write reach the synth
+    // at all.
+    sfxTimer = setInterval(() => {
+      if (!state.sfxPlaying) return;
+      synth.apply(sfxReplayer.tick());
+      if (sfxReplayer.state === 0) stopSfx();
+    }, 1000 / 60);
+    render();
+  }
 
   // ---------------------------------------------------------------- edits
 
@@ -522,10 +585,198 @@ export function mount(container, app) {
     );
   }
 
+  // -------------------------------------------------------------- effects
+
+  const effectsSidebar = el('div');
+  const effectsSteps = el('div', { style: { fontFamily: 'var(--mono)', fontSize: '12px' } });
+
+  function renderEffectsSteps() {
+    clear(effectsSteps);
+    const current = effect();
+    if (!current) {
+      effectsSteps.append(el('p.hint', null, 'Create an effect to start editing it.'));
+      return;
+    }
+    // current.steps is already normalized -- every entry in project.sfx
+    // passed through normalizeSfx at creation (below) or at load time
+    // (normalizeProject, shared/project.js) -- so this reads the real,
+    // stored array directly rather than a second, possibly-drifted copy.
+    effectsSteps.append(
+      el('div.panel-head', { style: { paddingLeft: '0' } }, 'Steps'),
+      ...current.steps.map((step, index) =>
+        el(
+          'div.field-row',
+          { style: { marginBottom: '4px' } },
+          el('span', { style: { width: '18px', display: 'inline-block' } }, String(index)),
+          el(
+            'select',
+            {
+              title: 'Note, or Rest for silence',
+              onchange: (fired) => {
+                const raw = fired.target.value;
+                editEffect('Edit effect step', (entry) => {
+                  entry.steps[index].note = raw === '' ? null : Number(raw);
+                });
+              }
+            },
+            el('option', { value: '', selected: step.note === null }, 'Rest'),
+            Array.from({ length: 16 }, (_, note) =>
+              el('option', { value: note, selected: note === step.note }, `Note ${note}`)
+            )
+          ),
+          el('input', {
+            type: 'number',
+            min: 1,
+            max: 255,
+            value: step.duration,
+            title: 'Duration in frames',
+            style: { width: '64px' },
+            onchange: (fired) => {
+              const value = Math.max(1, Math.min(255, Math.round(Number(fired.target.value)) || 1));
+              editEffect('Edit effect step', (entry) => (entry.steps[index].duration = value));
+            }
+          }),
+          el(
+            'button.btn.btn-sm',
+            {
+              disabled: current.steps.length <= 1,
+              onclick: () => editEffect('Remove effect step', (entry) => entry.steps.splice(index, 1))
+            },
+            '✕'
+          )
+        )
+      ),
+      el(
+        'button.btn.btn-sm',
+        {
+          disabled: current.steps.length >= SFX_MAX_STEPS,
+          onclick: () =>
+            editEffect('Add effect step', (entry) => entry.steps.push({ note: 0, duration: 10 }))
+        },
+        '+ Add step'
+      ),
+      el('p.hint', { style: { marginTop: '8px' } }, `${current.steps.length}/${SFX_MAX_STEPS} steps`)
+    );
+  }
+
+  function renderEffectsSidebar() {
+    const current = effect();
+    fill(
+      effectsSidebar,
+      el(
+        'div.field-row',
+        { style: { marginBottom: '8px' } },
+        el(
+          'select',
+          {
+            onchange: (event) => {
+              stopSfx();
+              state.effect = Number(event.target.value);
+              render();
+            }
+          },
+          effects().length
+            ? effects().map((entry, index) => el('option', { value: index, selected: index === state.effect }, entry.name))
+            : [el('option', null, 'No effects yet')]
+        ),
+        el(
+          'button.btn.btn-sm',
+          {
+            title: 'Add an effect',
+            disabled: effects().length >= LIMITS.sfx,
+            onclick: () => {
+              store.commit('Add effect', (project) => {
+                project.sfx.push(normalizeSfx({}, `Effect ${project.sfx.length}`));
+              });
+              state.effect = effects().length - 1;
+              render();
+            }
+          },
+          '+'
+        ),
+        el(
+          'button.btn.btn-sm',
+          {
+            disabled: !current,
+            onclick: async () => {
+              if (!(await confirmModal('Delete effect', `Delete "${current.name}"?`, 'Delete'))) return;
+              stopSfx();
+              const index = state.effect;
+              store.commit('Delete effect', (project) => {
+                project.sfx.splice(index, 1);
+                renumberSfxDeletion(project, index);
+              });
+              state.effect = Math.max(0, state.effect - 1);
+              render();
+            }
+          },
+          '✕'
+        )
+      ),
+      current
+        ? el(
+            'div',
+            null,
+            field(
+              'Name',
+              el('input', {
+                type: 'text',
+                value: current.name,
+                onchange: (event) =>
+                  editEffect('Rename effect', (entry) => (entry.name = event.target.value.trim() || 'Effect'))
+              })
+            ),
+            field(
+              'Volume',
+              el('input', {
+                type: 'number',
+                min: 0,
+                max: 15,
+                value: current.volume,
+                onchange: (event) => {
+                  const value = Math.max(0, Math.min(15, Math.round(Number(event.target.value)) || 0));
+                  editEffect('Change effect volume', (entry) => (entry.volume = value));
+                }
+              })
+            )
+          )
+        : el('p.hint', null, 'An effect is a short burst on the noise channel, stolen from whatever song is playing.')
+    );
+    renderEffectsSteps();
+  }
+
+  const effectsTransport = el('span', null, '▶ Preview');
+  const effectsPlayButton = el(
+    'button.btn.btn-accent',
+    { onclick: () => (state.sfxPlaying ? stopSfx() : playSfx()) },
+    effectsTransport
+  );
+
+  const effectsPanel = el(
+    'div.forge',
+    { style: { gridTemplateColumns: '1fr 320px' } },
+    el(
+      'div.panel',
+      { style: { borderRight: 'none' } },
+      el('div.toolbar', null, effectsPlayButton),
+      el('div.panel-body', { style: { background: 'var(--bg-0)' } }, effectsSteps)
+    ),
+    el('div.panel', null, el('div.panel-head', null, 'Effect'), el('div.panel-body', null, effectsSidebar))
+  );
+
   function render() {
-    renderGrid();
-    renderSidebar();
-    transport.textContent = state.playing ? '⏸ Stop' : '▶ Play';
+    if (state.mode === 'song') {
+      renderGrid();
+      renderSidebar();
+      transport.textContent = state.playing ? '⏸ Stop' : '▶ Play';
+    } else {
+      renderEffectsSidebar();
+      effectsTransport.textContent = state.sfxPlaying ? '⏸ Stop' : '▶ Preview';
+    }
+    songPanel.hidden = state.mode !== 'song';
+    effectsPanel.hidden = state.mode !== 'sfx';
+    modeSongButton.classList.toggle('active', state.mode === 'song');
+    modeSfxButton.classList.toggle('active', state.mode === 'sfx');
   }
 
   const transport = el('span', null, '▶ Play');
@@ -535,7 +786,7 @@ export function mount(container, app) {
     transport
   );
 
-  const root = el(
+  const songPanel = el(
     'div.forge',
     { style: { gridTemplateColumns: '1fr 320px' } },
     el(
@@ -557,6 +808,31 @@ export function mount(container, app) {
     el('div.panel', null, el('div.panel-head', null, 'Song'), el('div.panel-body', null, sidebar))
   );
 
+  // Both transports share the same Synth, so switching tabs without
+  // stopping whichever one is actually playing lets an outgoing hidden
+  // transport resume writing a frame later and race/overwrite the one the
+  // author just switched to. Stopping both, not just the outgoing one, is
+  // simpler and cannot be gotten backward the way stopping only "the other
+  // one" already was (code review round 1, finding 1).
+  const modeSongButton = el(
+    'button.btn.btn-sm',
+    { onclick: () => { stop(); stopSfx(); state.mode = 'song'; render(); } },
+    'Songs'
+  );
+  const modeSfxButton = el(
+    'button.btn.btn-sm',
+    { onclick: () => { stop(); stopSfx(); state.mode = 'sfx'; render(); } },
+    'Effects'
+  );
+
+  const root = el(
+    'div',
+    null,
+    el('div.button-row', { style: { marginBottom: '8px' } }, modeSongButton, modeSfxButton),
+    songPanel,
+    effectsPanel
+  );
+
   container.append(root);
   render();
   app.setMeta('Sound Forge');
@@ -564,6 +840,7 @@ export function mount(container, app) {
   return {
     destroy() {
       stop();
+      stopSfx();
       synth.destroy();
       window.removeEventListener('keydown', onKeyDown);
       app.setMeta('');
@@ -572,6 +849,7 @@ export function mount(container, app) {
       if (state.song >= songs().length) state.song = Math.max(0, songs().length - 1);
       const current = song();
       if (current && state.pattern >= current.patterns.length) state.pattern = 0;
+      if (state.effect >= effects().length) state.effect = Math.max(0, effects().length - 1);
       render();
     }
   };

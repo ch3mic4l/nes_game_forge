@@ -983,6 +983,92 @@ const scenario = (dir, sampleDir, sampleRpgDir) => `
   await wait(200);
   step('sting authoring', 'Sting offered a song select with no Silence option, a fresh one showed Missing song, a real selection landed through onchange, and the outside-the-modal summary exact final segment read "Sting: Fanfare"');
 
+  // SFX (design-sfx.md §7 test 21), same shape and same real territory as the
+  // Sting section directly above: a real Map Forge scenario, not just
+  // compiler/engine unit tests, because a select wired to the wrong DOM event
+  // is invisible to a test that constructs commands directly. defaultCommand/
+  // describeCommand's own null-vs-real-effect behavior is already unit-tested
+  // (test/unit/events.test.js); this is the "a real select's onchange
+  // actually reaches the project, and the outside-the-modal summary reflects
+  // it" proof that only a real DOM interaction can give.
+  store.commit('smoke: add an effect for the SFX scenario', (project) => {
+    project.sfx = project.sfx ?? [];
+    project.sfx.push({ name: 'Blip', volume: 10, steps: [{ note: 8, duration: 10 }] });
+  });
+  await wait(150);
+
+  const preSfxRow = [...document.querySelectorAll('#stage [data-entity="0"] p.hint')].find((node) => /^[0-9]+[.] /.test(node.textContent.trim()));
+  if (!preSfxRow) throw new Error('could not find the accumulated pre-SFX summary row to compare against');
+  const preSfxSegments = preSfxRow.textContent.split(';').map((segment) => segment.trim());
+
+  rowButton(0, 'Edit event…').click();
+  await until('the event editor', () => document.querySelector('#modalHost .btn-accent'));
+  const addSfx = [...document.querySelectorAll('#modalHost select')].find((node) =>
+    node.textContent.includes('Add a command')
+  );
+  addSfx.value = 'sfx';
+  addSfx.dispatchEvent(new Event('change', { bubbles: true }));
+  await wait(200);
+  const findSfxRow = () =>
+    [...document.querySelectorAll('#modalHost .field-row')].find((node) => node.querySelector('span')?.textContent === 'Play a sound effect');
+  const firstSfxRow = findSfxRow();
+  if (!firstSfxRow) throw new Error('adding an SFX command produced no row');
+  const sfxSelect = firstSfxRow.querySelector('select');
+  if (!sfxSelect) throw new Error('a fresh SFX row must offer an effect select');
+  const sfxOptionLabels = [...sfxSelect.options].map((option) => option.textContent);
+  // A fresh SFX defaults to no effect chosen (defaultCommand's own 'sfx' arg
+  // default, renderer/forges/map/events.js) -- confirmed here as "Missing
+  // effect" in the real select, the same discipline Sting's own "Missing
+  // song" check above already holds itself to.
+  if (!sfxOptionLabels.includes('Missing effect')) {
+    throw new Error('a freshly added, not-yet-configured SFX must show a Missing effect placeholder: ' + JSON.stringify(sfxOptionLabels));
+  }
+
+  const blipOption = [...sfxSelect.options].find((option) => option.textContent === 'Blip');
+  if (!blipOption) throw new Error('the SFX select did not offer the effect this section added: ' + JSON.stringify(sfxOptionLabels));
+  sfxSelect.value = blipOption.value;
+  sfxSelect.dispatchEvent(new Event('change', { bubbles: true }));
+  await wait(200);
+
+  const sfxSummaryRow = () =>
+    [...document.querySelectorAll('#stage [data-entity="0"] p.hint')].find((node) => node.textContent.includes('Play a sound effect'));
+  document.querySelector('#modalHost .btn-accent').click();
+  await wait(300);
+  const sfxCommands = store.project.maps[0].screens[3].entities[0].props.event.pages[0].commands;
+  const sfxAdded = sfxCommands[sfxCommands.length - 1];
+  if (sfxAdded?.op !== 'sfx' || sfxAdded?.sfx !== 0) {
+    throw new Error('the SFX command saved as ' + JSON.stringify(sfxAdded) + ' -- mutation through the real select onchange did not land');
+  }
+  const sfxSummary = sfxSummaryRow();
+  const sfxSummarySegments = (sfxSummary?.textContent ?? '').split(';').map((segment) => segment.trim());
+  const expectedSfxSegments = [...preSfxSegments, 'Play a sound effect: Blip'];
+  if (JSON.stringify(sfxSummarySegments) !== JSON.stringify(expectedSfxSegments)) {
+    throw new Error(
+      'the event-list summary outside the modal was not exactly the pre-SFX segments plus "Play a sound effect: Blip": expected ' +
+        JSON.stringify(expectedSfxSegments) + ', saw ' + JSON.stringify(sfxSummarySegments)
+    );
+  }
+
+  // Reopen and confirm the row still shows the same effect selected.
+  rowButton(0, 'Edit event…').click();
+  await until('the event editor', () => document.querySelector('#modalHost .btn-accent'));
+  const secondSfxRow = findSfxRow();
+  if (!secondSfxRow) throw new Error('the saved SFX command produced no row when reopened');
+  const secondSfxSelect = secondSfxRow.querySelector('select');
+  const secondSfxSelected = secondSfxSelect?.options[secondSfxSelect.selectedIndex]?.textContent;
+  if (secondSfxSelected !== 'Blip') {
+    throw new Error('the reopened SFX row did not still show Blip selected: ' + JSON.stringify(secondSfxSelected));
+  }
+  document.querySelector('#modalHost .btn-accent').click();
+  await wait(300);
+  store.undo(); // the Save
+  await wait(200);
+  store.undo(); // the Add
+  await wait(200);
+  store.undo(); // this section's own "add an effect" commit
+  await wait(200);
+  step('sfx authoring', 'a fresh SFX showed Missing effect, a real selection landed through onchange, and the outside-the-modal summary exact final segment read "Play a sound effect: Blip"');
+
   // Route, added the way a user adds one -- and the one command whose row
   // also has to prove its own preview is actually wired into the DOM and
   // reacts to state, not merely that a pure trace-model helper exists
@@ -2206,6 +2292,286 @@ const scenario = (dir, sampleDir, sampleRpgDir) => `
     throw new Error('undo left row 4 as ' + JSON.stringify(restored) + ', expected note ' + beforeNote);
   }
   step('note entry', 'wrote note ' + written.note + ', undo restored ' + restored.note);
+
+  // --- Sound Forge: Effects tab (design-sfx.md §7 test 21) --------------
+  // The "not merely find the tab and selector" ask: add an effect, edit its
+  // steps and volume, and click Preview -- an inert selector or a preview
+  // that silently no-ops would still pass a smoke step that only checks
+  // controls exist, which is exactly finding 6's own complaint about round
+  // 1's plan for this feature.
+  // songPanel stays in the DOM (hidden, not removed) once the Effects tab is
+  // active, so every lookup below is scoped to visible elements only
+  // (offsetParent === null for anything under a hidden ancestor) -- an
+  // unscoped query would silently pick the Song panel's own same-shaped Name/
+  // volume/number fields instead of the Effects tab's.
+  const visible = (node) => node.offsetParent !== null;
+  const beforeEffectCount = store.project.sfx?.length ?? 0;
+  const modeButtons = [...soundStage.querySelectorAll('button')].filter(visible);
+  const effectsTabButton = modeButtons.find((node) => node.textContent === 'Effects');
+  if (!effectsTabButton) throw new Error('the Sound Forge offers no Effects tab');
+  effectsTabButton.click();
+  await wait(200);
+
+  const addEffectButton = [...soundStage.querySelectorAll('button')].filter(visible).find((node) => node.title === 'Add an effect');
+  if (!addEffectButton) throw new Error('the Effects tab offers no Add-effect button');
+  addEffectButton.click();
+  await wait(200);
+  if ((store.project.sfx?.length ?? 0) !== beforeEffectCount + 1) {
+    throw new Error('clicking Add an effect did not add one to the project');
+  }
+
+  const effectNameInput = [...soundStage.querySelectorAll('input[type="text"]')].filter(visible)[0];
+  if (!effectNameInput) throw new Error('the Effects tab offers no Name field once an effect exists');
+  effectNameInput.value = 'Smoke Blip';
+  effectNameInput.dispatchEvent(new Event('change', { bubbles: true }));
+  await wait(150);
+  const newEffectIndex = store.project.sfx.length - 1;
+  if (store.project.sfx[newEffectIndex].name !== 'Smoke Blip') {
+    throw new Error('renaming the effect through the real input did not reach the project');
+  }
+
+  const volumeInput = [...soundStage.querySelectorAll('input[type="number"]')].filter(visible).find((node) => Number(node.max) === 15 && Number(node.min) === 0);
+  if (!volumeInput) throw new Error('the Effects tab offers no volume field');
+  volumeInput.value = '9';
+  volumeInput.dispatchEvent(new Event('change', { bubbles: true }));
+  await wait(150);
+  if (store.project.sfx[newEffectIndex].volume !== 9) {
+    throw new Error('changing volume through the real input did not reach the project');
+  }
+
+  const stepsBefore = store.project.sfx[newEffectIndex].steps.length;
+  const addStepButton = [...soundStage.querySelectorAll('button')].filter(visible).find((node) => node.textContent === '+ Add step');
+  if (!addStepButton) throw new Error('the Effects tab offers no Add-step button');
+  addStepButton.click();
+  await wait(150);
+  if (store.project.sfx[newEffectIndex].steps.length !== stepsBefore + 1) {
+    throw new Error('clicking Add step did not add one to the effect');
+  }
+  // Edit the freshly-added step's own duration, through its real input.
+  const stepDurationInputs = [...soundStage.querySelectorAll('input[type="number"]')].filter(visible).filter((node) => Number(node.max) === 255);
+  const lastDurationInput = stepDurationInputs[stepDurationInputs.length - 1];
+  if (!lastDurationInput) throw new Error('the new step offers no duration field');
+  lastDurationInput.value = '20';
+  lastDurationInput.dispatchEvent(new Event('change', { bubbles: true }));
+  await wait(150);
+  if (store.project.sfx[newEffectIndex].steps[stepsBefore].duration !== 20) {
+    throw new Error('editing the new step duration through the real input did not reach the project');
+  }
+
+  // Code review round 1, finding 6 (design test 20a): both editor-boundary
+  // gates exist in code but the smoke scenario never actually reached
+  // either one -- adding a single effect and a single step proves the
+  // buttons work, never that they disable at the real boundary. Driven for
+  // real here: the step gate tops out at 8, cheap to reach with real
+  // clicks; the effect-count gate tops out at LIMITS.sfx (255), too many to
+  // click through one at a time, so the bulk of the fill is a direct
+  // store.commit (the same shape this section already uses to author the
+  // Sting scenario's own song) and only the boundary-crossing click itself
+  // is real DOM.
+  const { SFX_MAX_STEPS } = await import('../shared/audio.js');
+  const { LIMITS } = await import('../shared/project.js');
+
+  // sound.js's own render() uses fill() (clear + append) on every change, so
+  // a button reference captured before a change is a detached node
+  // afterward -- the identical "re-found fresh, never cached across a
+  // change" discipline the route-authoring section elsewhere in this file
+  // already follows. addStepButton/addEffectButton above are fine for the
+  // single click each got immediately after being queried; every lookup
+  // from here on re-queries the live DOM instead of reusing either one.
+  const currentAddStepButton = () => [...soundStage.querySelectorAll('button')].filter(visible).find((node) => node.textContent === '+ Add step');
+  const currentAddEffectButton = () => [...soundStage.querySelectorAll('button')].filter(visible).find((node) => node.title === 'Add an effect');
+
+  while (store.project.sfx[newEffectIndex].steps.length < SFX_MAX_STEPS) {
+    const button = currentAddStepButton();
+    if (!button) throw new Error('lost the Add step button mid-loop');
+    button.click();
+    await wait(80);
+  }
+  if (store.project.sfx[newEffectIndex].steps.length !== SFX_MAX_STEPS) {
+    throw new Error('expected exactly ' + SFX_MAX_STEPS + ' steps, got ' + store.project.sfx[newEffectIndex].steps.length);
+  }
+  if (!currentAddStepButton().disabled) {
+    throw new Error('Add step must disable once an effect reaches ' + SFX_MAX_STEPS + ' steps');
+  }
+  const stepsAtCap = store.project.sfx[newEffectIndex].steps.length;
+  currentAddStepButton().click(); // a disabled button's click must be a no-op -- the control itself refuses, not merely the caller choosing not to press it
+  await wait(80);
+  if (store.project.sfx[newEffectIndex].steps.length !== stepsAtCap) {
+    throw new Error('a disabled Add step button still added a step when clicked');
+  }
+
+  store.commit('smoke: fill the effects list to one below the cap', (project) => {
+    while (project.sfx.length < LIMITS.sfx - 1) {
+      project.sfx.push({ name: 'Filler ' + project.sfx.length, volume: 10, steps: [{ note: 0, duration: 1 }] });
+    }
+  });
+  await wait(150);
+  if (store.project.sfx.length !== LIMITS.sfx - 1) {
+    throw new Error('expected ' + (LIMITS.sfx - 1) + ' effects one below the cap, got ' + store.project.sfx.length);
+  }
+  if (currentAddEffectButton().disabled) {
+    throw new Error('Add an effect must still be enabled one below LIMITS.sfx');
+  }
+  currentAddEffectButton().click(); // the real boundary-crossing click: LIMITS.sfx - 1 -> LIMITS.sfx
+  await wait(150);
+  if (store.project.sfx.length !== LIMITS.sfx) {
+    throw new Error('expected exactly LIMITS.sfx (' + LIMITS.sfx + ') effects after the boundary click, got ' + store.project.sfx.length);
+  }
+  if (!currentAddEffectButton().disabled) {
+    throw new Error('Add an effect must disable once the project reaches LIMITS.sfx');
+  }
+  const effectsAtCap = store.project.sfx.length;
+  currentAddEffectButton().click(); // disabled -- must be a no-op
+  await wait(80);
+  if (store.project.sfx.length !== effectsAtCap) {
+    throw new Error('a disabled Add an effect button still added one when clicked');
+  }
+  step(
+    'sfx editor boundary gates',
+    'steps disabled at ' + SFX_MAX_STEPS + '/' + SFX_MAX_STEPS + ', a 9th click did nothing; effects disabled at ' +
+      LIMITS.sfx + '/' + LIMITS.sfx + ' (LIMITS.sfx), a click past the cap did nothing'
+  );
+  // Undo the fill and the boundary-crossing add before Preview runs, so the
+  // effect this section previews is still the small one it authored, not a
+  // 255-entry list.
+  store.undo(); // the boundary-crossing Add
+  await wait(150);
+  store.undo(); // the fill-to-cap commit
+  await wait(150);
+
+  // Preview: confirms the Synth/SfxReplayer path actually runs, not merely
+  // that a preview button exists. Web Audio may or may not have a real
+  // device in whatever environment this runs in, so both outcomes --
+  // audible playback (the button reads Stop, then returns to Preview on its
+  // own once the short effect finishes) and a graceful "Sound unavailable"
+  // toast -- are accepted; only a silent no-op or a thrown error is not.
+  //
+  // Code review round 1, finding 1: the preview used to call stopSfx() in
+  // the same timer callback that applied the final *playing* tick, which
+  // skips SfxReplayer's own state-2 cleanup tick entirely -- the editor-side
+  // version of the exact final-frame bug the ROM's own two-phase state
+  // machine exists to avoid. Synth.prototype.apply is monkey-patched here to
+  // record every write batch the preview actually sends, so this test
+  // observes the cleanup interval directly rather than merely the button
+  // eventually reading "Preview" again -- the same distinction the review
+  // draws between "returns to Preview" (passes even with the bug, since
+  // stopSfx() unconditionally sets the text) and "the cleanup tick's own
+  // write reached the synth" (the thing actually in question).
+  const synthModule = await import('./forges/sound/synth.js');
+  const originalApply = synthModule.Synth.prototype.apply;
+  const applyCalls = [];
+  synthModule.Synth.prototype.apply = function (writes) {
+    applyCalls.push(writes);
+    return originalApply.call(this, writes);
+  };
+
+  const previewButton = [...soundStage.querySelectorAll('button.btn-accent')].filter(visible).find((node) => node.textContent.includes('Preview'));
+  if (!previewButton) throw new Error('the Effects tab offers no Preview button');
+  previewButton.click();
+  await wait(150);
+  const wentToStop = previewButton.textContent.includes('Stop');
+  const unavailableToast = [...document.querySelectorAll('.toast, [class*="toast"]')].some((node) => node.textContent.includes('Sound unavailable'));
+  if (!wentToStop && !unavailableToast) {
+    synthModule.Synth.prototype.apply = originalApply;
+    throw new Error('clicking Preview neither started playback nor reported Sound unavailable -- it looks like a silent no-op');
+  }
+  if (wentToStop) {
+    // A short effect (one 1-frame rest step from Add effect, plus the
+    // 20-frame step this section added and edited, well under a second):
+    // wait it out rather than clicking Stop, so this also confirms the
+    // preview timer stops itself once the effect ends.
+    await until('the preview to stop on its own', () => !previewButton.textContent.includes('Stop'), 3000);
+
+    // By this point the effect carries all 8 steps the boundary-gate check
+    // above grew it to: the seeded 1-frame rest step, the first added step
+    // (edited to 20 frames), and six more added steps at their own default
+    // 10 frames each (sound.js's own Add step default) -- 1 + 20 + 6*10 = 81
+    // playing frames, plus exactly one more call for the state-2 cleanup
+    // tick -- 82 total. Derived dynamically below from the project's own
+    // step durations rather than hardcoded, so this stays correct however
+    // many steps the effect actually carries. The cleanup call's own write
+    // must be the silence write (sfx_tick_cleanup_silence's own
+    // $400C = $30, previewing over nothing), and it must be a call of its
+    // own, not folded into (or dropped from) the final playing frame's call.
+    const totalFrames = store.project.sfx[newEffectIndex].steps.reduce((total, step) => total + step.duration, 0);
+    if (applyCalls.length !== totalFrames + 1) {
+      synthModule.Synth.prototype.apply = originalApply;
+      throw new Error(
+        'expected ' + (totalFrames + 1) + ' Synth.apply calls (playing frames + the cleanup tick), saw ' + applyCalls.length
+      );
+    }
+    const cleanupWrites = applyCalls[applyCalls.length - 1];
+    if (cleanupWrites.length !== 1 || cleanupWrites[0][0] !== 0x400c || cleanupWrites[0][1] !== 0x30) {
+      synthModule.Synth.prototype.apply = originalApply;
+      throw new Error('the cleanup tick own write was not exactly $400C = $30: ' + JSON.stringify(cleanupWrites));
+    }
+  }
+  synthModule.Synth.prototype.apply = originalApply;
+  step(
+    'sfx effects tab',
+    'added an effect, renamed it, set its volume, added and edited a step, and previewed it (' +
+      (wentToStop
+        ? 'audible, ' + applyCalls.length + ' Synth.apply calls incl. the state-2 cleanup tick own $400C=$30'
+        : 'Sound unavailable, handled gracefully') +
+      ')'
+  );
+
+  // Code review round 1, finding 1: the mode buttons used to each stop the
+  // *incoming* transport instead of the outgoing one (clicking Effects
+  // called only stopSfx(), leaving a song transport running; clicking Songs
+  // called only stop(), leaving an SFX preview running). Both share one
+  // Synth, so an unstopped outgoing transport can resume writing a frame
+  // later and race the newly selected one. Proven here by starting the song
+  // transport, switching to Effects (which must stop it), switching back to
+  // Songs, and confirming the Play button reads "Play" rather than a stale
+  // "Stop" left over from a transport that was never actually stopped --
+  // under the pre-fix code (clicking Effects only stopping the SFX side),
+  // state.playing would still read true and this would show "Stop" with
+  // nobody having clicked Play again.
+  // modeButtons was captured above while still in Songs mode, so its own
+  // "Songs" entry is a stable, already-visible-then reference -- the
+  // songsTabButton declared further below (near the section's own cleanup)
+  // is not yet in scope at this point in the script.
+  const songsTabButtonEarly = modeButtons.find((node) => node.textContent === 'Songs');
+  if (!songsTabButtonEarly) throw new Error('could not find the Songs tab button to start the transport-isolation check');
+  songsTabButtonEarly.click();
+  await wait(150);
+  const songPlayButton = [...soundStage.querySelectorAll('button.btn-accent')].filter(visible).find((node) => node.textContent.includes('Play') || node.textContent.includes('Stop'));
+  if (!songPlayButton) throw new Error('could not find the Song tab own Play button');
+  songPlayButton.click();
+  await wait(150);
+  if (songPlayButton.textContent !== '⏸ Stop') throw new Error('clicking Play did not start the song transport');
+  effectsTabButton.click();
+  await wait(150);
+  // The Song panel stays in the DOM (hidden) once the Effects tab is
+  // active, same as every other lookup in this section -- read the button's
+  // own textContent directly rather than through the visible() filter,
+  // which would find nothing once its panel is hidden.
+  const songTransportAfterTabAway = songPlayButton.textContent;
+  if (songTransportAfterTabAway !== '▶ Play') {
+    throw new Error('switching to the Effects tab did not stop the outgoing song transport -- Play button still reads ' + JSON.stringify(songTransportAfterTabAway));
+  }
+  step('sfx/song transport isolation', 'starting the song transport then switching to Effects stopped it -- Play reads "▶ Play", not a stale "⏸ Stop"');
+
+  // Leave the Effects tab back on Songs, and the added effect (plus every
+  // step this section added driving the boundary gate above) undone, so
+  // later steps see the sample's own sound data unchanged. Undoing by count
+  // stopped being safe once the step-boundary loop above added a variable
+  // number of its own commits (however many clicks it took to reach
+  // SFX_MAX_STEPS) -- undoing until the effect itself is gone is robust to
+  // that either way.
+  let undoGuard = 0;
+  while ((store.project.sfx?.length ?? 0) > beforeEffectCount && undoGuard < 20) {
+    store.undo();
+    await wait(120);
+    undoGuard++;
+  }
+  if ((store.project.sfx?.length ?? 0) !== beforeEffectCount) {
+    throw new Error('undo did not fully unwind this section own effect -- expected ' + beforeEffectCount + ' effects, got ' + store.project.sfx?.length);
+  }
+  const songsTabButton = [...soundStage.querySelectorAll('button')].find((node) => node.textContent === 'Songs');
+  if (songsTabButton) songsTabButton.click();
+  await wait(150);
 
   // --- Controller Forge --------------------------------------------------
   window.__app.goTo('controller');

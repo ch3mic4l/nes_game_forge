@@ -53,7 +53,7 @@ import {
   legWithWho
 } from '../../shared/project.js';
 import { damageAmount } from '../../shared/eventrules.js';
-import { NO_SONG, songByte, songFrameLength } from '../../shared/audio.js';
+import { NO_SONG, songByte, songFrameLength, NO_SFX, sfxByte, sfxFrameLength } from '../../shared/audio.js';
 
 // String control codes, matching engine/constants.asm.
 export const TXT_END = 0x00;
@@ -75,6 +75,7 @@ export const OP_MUSIC = opIndex('music');
 export const OP_BATTLE = opIndex('battle');
 
 export const OP_STING = opIndex('sting');
+export const OP_SFX = opIndex('sfx');
 
 export const NO_EVENT = 0xff;
 // NO_SONG/songByte moved to shared/audio.js (handoff-sting/design-sting.md §4): a map's own
@@ -365,6 +366,14 @@ export function compileText(project) {
         // compiler's own matching guard so a hand-edited or later-version project cannot silently
         // wrap a long sting's duration into a short, wrong one.
         return [OP_STING, songIndex, Math.min(songFrameLength(project.songs[songIndex]), 255)];
+      }
+      case 'sfx': {
+        // Identical NO_SFX-fallback shape to 'sting' above, one format over: validateProject
+        // refuses a live, unresolved reference; this exists for a hand-edited or later-version
+        // project that bypasses that check.
+        const sfxIndex = sfxByte(project.sfx, command.sfx);
+        if (sfxIndex === NO_SFX) return [OP_SFX, NO_SFX, 0];
+        return [OP_SFX, sfxIndex, Math.min(sfxFrameLength(project.sfx[sfxIndex]), 255)];
       }
       case 'battle': {
         // Up to RPG_LIMITS.monstersPerBattle actor ids, NO_ACTOR-padded --

@@ -641,6 +641,7 @@ export function mount(container, app) {
       party: store.project.project.gameType === 'rpg' ? store.project.party ?? [] : [],
       commonEvents: store.project.commonEvents ?? [],
       songs: store.project.songs ?? [],
+      sfx: store.project.sfx ?? [],
       // Whether the current cartridge can even hold a save -- the same
       // question saveCapable (shared/cartridge.js) answers for the Build
       // panel's mapper picker, asked here to decide whether Save is offered.

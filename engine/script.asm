@@ -222,8 +222,14 @@ script_run_flash:
 script_run_sting:
   .if STING_ENABLED
   cmp #OP_STING
-  bne script_run_bad
+  bne script_run_sfx
   jmp script_op_sting
+  .endif
+script_run_sfx:
+  .if SFX_ENABLED
+  cmp #OP_SFX
+  bne script_run_bad
+  jmp script_op_sfx
   .endif
 script_run_bad:
   jmp script_finish         ; an opcode this engine cannot run stops the event
@@ -792,6 +798,65 @@ script_op_sting_armed:
   sta sting_left
   jmp script_run                              ; non-suspending: continue the
                                                 ; same page, same frame
+  .endif
+
+  .if SFX_ENABLED
+
+; [OP_SFX, id, duration in frames]. Does not suspend, the same instant shape
+; OP_STING already has. A duration of 0 can only mean the id operand was
+; NO_SFX -- the identical "recognised command naming nothing stops the
+; event" family script_op_give/take, script_op_call and script_op_sting
+; already are; see design-sfx.md §3.7/§3.9.
+;
+; Unlike script_op_sting, no register needs to survive a jsr across this
+; routine's own body: nothing below clobbers X, so there is nothing to
+; push/pop.
+script_op_sfx:
+  ldy #2
+  lda [script_ptr_lo],y
+  bne script_op_sfx_go
+  jmp script_finish
+script_op_sfx_go:
+  sta sfx_left
+  ldy #1
+  lda [script_ptr_lo],y       ; sfx id
+  tay
+  lda sfx_ptr_table_lo,y
+  sta ptr_lo
+  lda sfx_ptr_table_hi,y
+  sta ptr_hi
+  ldy #0
+  lda [ptr_lo],y               ; the compiled stream's own leading volume byte
+  sta sfx_volume
+  lda ptr_lo
+  clc
+  adc #1
+  sta sfx_ptr_lo
+  lda ptr_hi
+  adc #0
+  sta sfx_ptr_hi
+  lda #0
+  sta sfx_dur                  ; force sfx_read_event on the very next tick,
+                                ; the identical "duration 0 forces an
+                                ; immediate read" convention music_play's own
+                                ; channel-init loop already relies on
+  lda #1
+  sta sfx_state                ; playing -- this also correctly re-arms a
+                                ; second SFX replacing a first mid-flight
+                                ; (design-sfx.md §3.4), with no separate
+                                ; guard needed
+  lda #$0F
+  sta $4015                    ; the only value this engine ever writes here
+                                ; (music_play's own success path) -- safe
+                                ; unconditionally even on a true cold boot,
+                                ; since init_session's own jsr music_stop
+                                ; already stamps every channel's volume
+                                ; register silent before main_loop ever
+                                ; runs. See design-sfx.md §3.3, finding 2.
+  lda #3
+  jsr script_skip
+  jmp script_run                ; non-suspending: continue the same page,
+                                 ; same frame
   .endif
 
 ; ------------------------------------------------------------------- calls

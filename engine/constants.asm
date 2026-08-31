@@ -425,6 +425,10 @@ SPL_TITLE   = 3             ; the title's two text bands
 ; ------------------------------------------------------------- music RAM
 ; Six parallel arrays, one byte per channel, at $0340.
 MUS_CHANNELS = 4
+; The channel a sound effect steals -- noise, music_apply's own highest index
+; (cpx #2 / beq triangle / bcs noise). Fixed at assemble time; see
+; design-sfx.md §3.1 for why fixed rather than author-chosen per effect.
+SFX_CHANNEL = 3
 mus_ptr_lo  = $0340  ; @size=MUS_CHANNELS
 mus_ptr_hi  = $0344  ; @size=MUS_CHANNELS
 mus_dur     = $0348         ; frames left on the current event  @size=MUS_CHANNELS
@@ -634,6 +638,33 @@ flip_pending_idx  = $055F  ; @size=BOUND_CAP -- cell indices awaiting their own
                             ; visual write, oldest first
 flip_pending_count = $0567
 
+; ---------------------------------------------------------------------- sfx RAM
+; One channel's worth of playback state for a fixed-volume, single-channel
+; sound effect stolen onto SFX_CHANNEL -- deliberately NOT part of the mus_*
+; arrays (engine/music.asm's own driver state): keeping this fully disjoint
+; from mus_ptr_lo..mus_note is what lets an SFX steal, pause, and hand back a
+; channel regardless of whether a song, Silence, or a Sting is underneath it
+; with only two small ownership guards elsewhere (music_stop, sting_restore_
+; silence) -- see design-sfx.md §3.3/§3.4. sfx_ptr_lo/hi are copied into the
+; shared zero-page ptr_lo/ptr_hi scratch for the duration of each indirect
+; read, the identical convention music_read_event's own mus_ptr_lo,x ->
+; ptr_lo copy-in/copy-out already uses -- (zp),Y addressing is a hard 6502
+; requirement and zero page is already fully allocated. Appended right after
+; the switch-bound-tiles RAM above, in the confirmed-unused $0568-$05FF gap
+; (152 bytes) before flash_driver's own page boundary at $0600.
+sfx_state    = $0568        ; 0 idle / 1 playing / 2 cleanup-pending -- the
+                             ; OWNERSHIP signal every guard checks; see
+                             ; design-sfx.md §3.3
+sfx_ptr_lo   = $0569
+sfx_ptr_hi   = $056A
+sfx_dur      = $056B        ; frames left on the current step
+sfx_note     = $056C        ; last note read; $FF = resting
+sfx_trig     = $056D        ; a new note started this tick -- write the period
+                             ; registers; mirrors mus_trig,x's own role
+sfx_left     = $056E        ; frames left on the whole PLAYING phase; a pure
+                             ; countdown, not an ownership flag -- see §3.3
+sfx_volume   = $056F        ; fixed for the whole effect, read once at trigger
+
 ; ------------------------------------------------------------ inventory RAM
 ; One id per item carried, oldest first -- an item id under ITEMS_ENABLED, or
 ; the legacy backing-actor id on the disabled economy, which never gained a
@@ -703,6 +734,8 @@ NO_METASPRITE = $FF         ; item_metasprite: no icon, whether because none
                             ; nothing to derive from, or because an author
                             ; explicitly chose no icon. Matches
                             ; shared/project.js's own NO_METASPRITE.
+NO_SFX      = $FF           ; project.sfx has nothing at this index. Matches
+                            ; shared/audio.js's own NO_SFX.
 NO_COMMON_EVENT = $FF       ; OP_CALL's own operand: the named common event
                             ; does not resolve to a table slot -- see
                             ; script_op_call
@@ -1017,6 +1050,16 @@ OP_STING    = $1A           ; [song index or NO_SONG, duration in frames] --
                             ; nothing: stop, don't silently continue. See
                             ; script_op_sting (engine/script.asm) and
                             ; design-sting.md.
+OP_SFX      = $1B           ; [id, duration in frames] -- a short, fixed-
+                            ; volume, single-channel burst on SFX_CHANNEL; the
+                            ; running song's other three channels, or a live
+                            ; Sting, continue untouched. Duration is never
+                            ; authored: the compiler measures the effect's own
+                            ; total length (sfxFrameLength, shared/audio.js)
+                            ; and bakes it in. Does not suspend, the same
+                            ; instant shape OP_STING already has. See
+                            ; script_op_sfx (engine/script.asm) and
+                            ; design-sfx.md.
 
 ; OP_FADE's own operand. FADE_NONE is 0, unlike OP_TURN/OP_VISIBLE's own
 ; categorical operands, because both of Fade's real directions are highly

@@ -187,3 +187,60 @@ export function songFrameLength(rawSong) {
   const song = normalizeSong(rawSong);
   return songTimeline(song).rows.length * song.tempo.framesPerRow;
 }
+
+/** No effect: sfx has nothing at this index -- the same role NO_SONG plays one format over. */
+export const NO_SFX = 0xff;
+
+// The step-count ceiling lives here, not in shared/project.js's LIMITS object: shared/project.js
+// already imports FROM shared/audio.js (NO_SONG/songByte/songFrameLength, and now
+// NO_SFX/sfxByte/sfxFrameLength/normalizeSfx too), so audio.js importing LIMITS back out of
+// project.js would be the exact cycle CLAUDE.md's own single-writer discipline exists to prevent.
+//
+// This is an AUTHORING/product limit, not a format-addressing one, unlike NUM_NOTES/
+// MAX_INSTRUMENTS/MAX_PERIOD above, which really are format/hardware ceilings (96 real notes, the
+// 3-bit $F0-$F7 instrument-select range, an 11-bit APU period register). Nothing about the compiled
+// stream caps step count at 8: sfx_ptr_lo/hi is a genuine 16-bit pointer, sfx_read_event has no
+// fixed-size buffer to overflow, and the whole-effect duration compileSfx/script_op_sfx bake into
+// the command operand is computed separately from step count (sfxFrameLength sums whatever steps
+// exist). Eight is chosen purely to keep an authored effect reading as "a coin/jump/hit," not a
+// melody -- SFX_MAX_STEPS is what stops the editor from offering more and what normalizeSfx
+// truncates an over-cap list down to on load. See design-sfx.md §3.2.
+export const SFX_MAX_STEPS = 8;
+
+/** Resolve an authored sfx reference to a compiled byte, NO_SFX for anything that doesn't. */
+export function sfxByte(sfxList, id) {
+  if (id === null || id === undefined) return NO_SFX;
+  const n = Number(id);
+  return Number.isInteger(n) && n >= 0 && n < (sfxList?.length ?? 0) ? n : NO_SFX;
+}
+
+/** Fill in defaults so a hand-edited or older effect never crashes the UI. Truncates an over-cap
+ *  steps list to SFX_MAX_STEPS -- an authoring limit with no outside reference to corrupt, the
+ *  identical shape normalizeSong's own instrument-list slicing and a choice's own extra-options
+ *  truncation already are, not the preserve-and-refuse shape an id space (LIMITS.sfx) needs. */
+export function normalizeSfx(raw, name = 'Effect') {
+  const clamp = (value, min, max, fallback) => {
+    const number = Number(value);
+    return Number.isFinite(number) ? Math.max(min, Math.min(max, Math.round(number))) : fallback;
+  };
+
+  const rawSteps = Array.isArray(raw?.steps) && raw.steps.length ? raw.steps : [{ note: null, duration: 1 }];
+  const steps = rawSteps.slice(0, SFX_MAX_STEPS).map((step) => ({
+    note: step?.note === null || step?.note === undefined ? null : clamp(step.note, 0, 15, 0),
+    duration: clamp(step?.duration, 1, 255, 1)
+  }));
+
+  return {
+    name: typeof raw?.name === 'string' && raw.name ? raw.name : name,
+    volume: clamp(raw?.volume, 0, 15, 15),
+    steps
+  };
+}
+
+/** A raw SFX's own total length in frames -- the sum of every step's duration, uncapped; the
+ *  255-frame ceiling (one countdown byte) is enforced by callers, the identical split
+ *  songFrameLength already holds to. */
+export function sfxFrameLength(rawSfx) {
+  const sfx = normalizeSfx(rawSfx);
+  return sfx.steps.reduce((total, step) => total + step.duration, 0);
+}

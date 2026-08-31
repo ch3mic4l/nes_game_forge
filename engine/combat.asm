@@ -111,6 +111,19 @@ init_session_vars:          ; are the same kind of state and outlive a screen
                               ; can itself be Silence, and set_music only calls
                               ; back into music_play/music_stop when something
                               ; has actually changed
+  .if SFX_ENABLED
+  lda #0
+  sta sfx_state                ; the real session boundary -- unlike an
+  sta sfx_left                  ; ordinary Play-Silence, a new session
+                                  ; really does end whatever SFX was
+                                  ; mid-flight
+  lda #$30
+  sta $400C                        ; finish the job music_stop's own call,
+                                    ; a moment ago, may have deliberately
+                                    ; skipped (see engine/music.asm's own
+                                    ; ownership guard). See design-sfx.md
+                                    ; §3.3, finding 4.
+  .endif
   .if BATTLE_ENABLED
   lda #0
   sta enc_step

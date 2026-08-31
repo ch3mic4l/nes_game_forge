@@ -33,7 +33,7 @@ import {
   projectUsesText,
   projectUsesEffectiveTitle
 } from '../../shared/font.js';
-import { compileSong, songTables } from './songcompile.js';
+import { compileSong, songTables, compileSfx, sfxTables } from './songcompile.js';
 import { NO_EVENT, compileText, textTables, songByte } from './textcompile.js';
 import {
   battleTables,
@@ -71,6 +71,8 @@ import {
   projectUsesFace,
   projectUsesItems,
   projectUsesSting,
+  projectUsesSfx,
+  projectUsesAudioFx,
   projectUsesBoundTiles,
   projectEvents,
   allCommands,
@@ -145,6 +147,15 @@ function musicSize(songs) {
   );
   const instruments = list.length ? (normalizeSong(list[0]).instruments.length || 1) : 1;
   return 192 + instruments * 5 + 32 + streams + 4 * Math.max(1, list.length) * 2;
+}
+
+/** Bytes the compiled sound effects will occupy: each effect's own compiled stream plus the one
+ *  2-byte pointer-table entry it owns. Unconditional -- an authored, unreferenced effect still
+ *  compiles, mirroring musicSize's own identical, pre-existing behavior for songs. See
+ *  design-sfx.md §3.10. */
+function sfxSize(sfxList) {
+  const list = sfxList?.length ? sfxList : [];
+  return list.reduce((total, sfx) => total + compileSfx(sfx).bytes.length + 2, 0);
 }
 const BANK_SIZE = 8192;
 
@@ -640,7 +651,48 @@ export function itemEffectKernelAllowance(project) {
 // cur_song/mus_enabled loads and stores in sting_snapshot/sting_restore as two-byte zero-page
 // instructions, but nesasm assembles each as a three-byte absolute instruction, so 171 + 4 = 175 --
 // exactly the kind of small addressing-mode slip measurement exists to catch rather than trust.
-export const STING_KERNEL_ALLOWANCE = 175;
+//
+// Split into two terms once SFX shipped and needed the same force_trig check-and-clear block
+// (engine/music.asm, music_channel) Sting already paid for -- design-sfx.md §3.6. The 175 total is
+// preserved exactly (STING_KERNEL_ALLOWANCE_STANDALONE + AUDIO_FX_KERNEL_ALLOWANCE below); a
+// Sting-only project's own kernel-lo byte count does not move by one byte from this split, the
+// identical MOVE_KERNEL_ALLOWANCE -> MOVE_KERNEL_ALLOWANCE + FACE_KERNEL_ALLOWANCE precedent.
+// Measured (test/unit/kernelbytes.test.js): a Sting-only build's own delta over its no-Sting-no-Sfx
+// baseline is 175 on every RPG-capable board, unchanged; the music_channel..music_channel_tick
+// label-span diff below is what splits that 175 into this term (160) and AUDIO_FX_KERNEL_ALLOWANCE
+// (15) rather than guessing which side of the split each byte belongs to.
+export const STING_KERNEL_ALLOWANCE_STANDALONE = 160;
+// force_trig's own check-and-self-clear inside music_channel (engine/music.asm) -- shared by
+// Sting and SFX, gated AUDIO_FX_ENABLED rather than STING_ENABLED alone. Already fully paid by
+// STING_KERNEL_ALLOWANCE_STANDALONE + this term summing to the historical 175 for a Sting-only
+// project; charged once, not twice, for a project with both live -- see design-sfx.md §3.6.
+// Measured directly, not by subtraction: nesasm's own symbol table gives the music_channel..
+// music_channel_tick label span as 13 bytes with neither feature live and 28 with either live
+// (Sting-only, Sfx-only or both -- identical either way, confirming the block assembles once
+// regardless of which flag turned AUDIO_FX_ENABLED on) -- 28 - 13 = 15, matching design-sfx.md's
+// own estimate exactly, on every RPG-capable board.
+export const AUDIO_FX_KERNEL_ALLOWANCE = 15;
+// sting_restore_silence's own ownership guard (ldy sfx_state / bne skip, engine/music.asm) -- a
+// genuine Sting x SFX interaction term, not SFX-standalone code: the guard is nested inside the
+// shipped outer `.if STING_ENABLED` block, so it can only ever assemble when BOTH STING_ENABLED
+// and SFX_ENABLED are true. See design-sfx.md §3.6.
+// Measured directly: nesasm's own symbol table gives the sting_restore_silence..sting_tick label
+// span as 17 bytes on a Sting-only build and 22 on a both-live build -- 22 - 17 = 5, matching
+// design-sfx.md's own estimate exactly, on every RPG-capable board.
+export const STING_SFX_INTERACTION_ALLOWANCE = 5;
+// The restructured music_tick, script_op_sfx (including its sfx_state/$4015 writes), the
+// two-phase sfx_channel_tick/sfx_read_event/sfx_apply, the script_run dispatch entry, music_stop's
+// own ownership guard, and init_session's new session-boundary clear (engine/music.asm,
+// engine/script.asm, engine/combat.asm) -- real kernel-lo code with nowhere to go unconditionally
+// in a project that never plays a sound effect. Excludes sting_restore_silence's own guard (see
+// STING_SFX_INTERACTION_ALLOWANCE above) -- that 5 bytes is not SFX-standalone cost. See
+// design-sfx.md §3.6/§8.
+// Measured, not the design's own 283-byte estimate: an SFX-only build's own delta over its
+// no-Sting-no-Sfx baseline is 310 on every RPG-capable board (test/unit/kernelbytes.test.js);
+// 310 - AUDIO_FX_KERNEL_ALLOWANCE (15) = 295. Consistent with the both-live measurement too: 160 +
+// 295 + 15 + 5 = 475, exactly the measured both-live delta on every board. The 12-byte gap from the
+// design's own 283 is a real, declared deviation -- see sfx-implementation-report.md.
+export const SFX_KERNEL_ALLOWANCE_STANDALONE = 295;
 // design-tile.md §8: bound_tile_lookup, rebuild_bound_cache, the
 // script_op_set/script_op_clear hooks, tile_switch_changed,
 // queue_or_defer_flip (with dedupe), flip_cell_blocked, flip_emit/
@@ -729,6 +781,8 @@ export function kernelCodeBytes(project, mapper) {
   const usesSplitLock = fontBankSplit(project, mapper);
   const usesItems = projectUsesItems(project);
   const usesSting = projectUsesSting(project);
+  const usesSfx = projectUsesSfx(project);
+  const usesAudioFx = projectUsesAudioFx(project); // = usesSting || usesSfx
   const usesBoundTiles = projectUsesBoundTiles(project);
   return (
     baseKernelCodeBytes(mapper) +
@@ -745,7 +799,10 @@ export function kernelCodeBytes(project, mapper) {
     (usesFace ? FACE_KERNEL_ALLOWANCE : 0) +
     (usesSplitLock ? SPLIT_LOCK_KERNEL_ALLOWANCE : 0) +
     (usesItems ? ITEM_KERNEL_ALLOWANCE + itemEffectKernelAllowance(project) : 0) +
-    (usesSting ? STING_KERNEL_ALLOWANCE : 0) +
+    (usesSting ? STING_KERNEL_ALLOWANCE_STANDALONE : 0) +
+    (usesSfx ? SFX_KERNEL_ALLOWANCE_STANDALONE : 0) +
+    (usesAudioFx ? AUDIO_FX_KERNEL_ALLOWANCE : 0) +
+    (usesSting && usesSfx ? STING_SFX_INTERACTION_ALLOWANCE : 0) +
     (usesBoundTiles ? BOUND_TILE_KERNEL_ALLOWANCE : 0) +
     KERNEL_SLACK
   );
@@ -986,6 +1043,7 @@ function kernelShortfallAdvice(project, mapper, deficit) {
   const usesFade = projectUsesFade(project);
   const usesFlash = projectUsesFlash(project);
   const usesSting = projectUsesSting(project);
+  const usesSfx = projectUsesSfx(project);
   // design-tile.md §8: its own local declaration, independent of
   // kernelCodeBytes's/generateAssets's own locals of the same name -- the
   // usesSting three-scope precedent, not a value threaded across a function
@@ -1006,6 +1064,7 @@ function kernelShortfallAdvice(project, mapper, deficit) {
   if (usesFade) active.push({ label: 'every Fade command', strip: (p) => projectWithoutCommands(p, ['fade']) });
   if (usesFlash) active.push({ label: 'every Flash command', strip: (p) => projectWithoutCommands(p, ['flash']) });
   if (usesSting) active.push({ label: 'every Sting command', strip: (p) => projectWithoutCommands(p, ['sting']) });
+  if (usesSfx) active.push({ label: 'every Play a sound effect command', strip: (p) => projectWithoutCommands(p, ['sfx']) });
   // design-tile.md §8, finding 5: bound tiles are the first strippable
   // feature that is authored screen data, not an event command -- its own
   // strip cannot go through projectWithoutCommands at all.
@@ -1565,6 +1624,7 @@ export function checkCapacity(project) {
   );
 
   const musicBytes = musicSize(project.songs);
+  const sfxBytes = sfxSize(project.sfx);
 
   if (flat.length > capacity) {
     problems.push({
@@ -1678,14 +1738,15 @@ export function checkCapacity(project) {
     });
   }
   problems.push(...checkCode(project));
-  // Music and text share the $E000 half of the fixed kernel, above the vectors.
-  if (musicBytes + text.bytes > BANK_SIZE - 64) {
+  // Music, sound effects and text share the $E000 half of the fixed kernel, above the vectors.
+  if (musicBytes + sfxBytes + text.bytes > BANK_SIZE - 64) {
     problems.push({
       severity: 'error',
-      where: musicBytes > text.bytes ? 'Sound Forge' : 'Map Forge',
+      where: musicBytes + sfxBytes > text.bytes ? 'Sound Forge' : 'Map Forge',
       message:
-        `The songs compile to ${musicBytes} bytes and the dialogue to ${text.bytes}, which together do not fit ` +
-        `the ${BANK_SIZE}-byte music and text bank. Shorten a song, or cut some dialogue.`
+        `The songs and sound effects compile to ${musicBytes + sfxBytes} bytes (${musicBytes} music, ` +
+        `${sfxBytes} effects) and the dialogue to ${text.bytes}, which together do not fit the ` +
+        `${BANK_SIZE}-byte music and text bank. Shorten a song or effect, or cut some dialogue.`
     });
   }
   return {
@@ -1694,6 +1755,7 @@ export function checkCapacity(project) {
     reserveFlashSave,
     screenCount: flat.length,
     musicBytes,
+    sfxBytes,
     textBytes: text.bytes,
     dataBankCount: layout.dataBankCount
   };
@@ -1814,6 +1876,8 @@ export async function generateAssets({ dir, project, log = () => {} }) {
   const usesPaletteFx = projectUsesPaletteFx(project);
   const usesFace = projectUsesFace(project);
   const usesSting = projectUsesSting(project);
+  const usesSfx = projectUsesSfx(project);
+  const usesAudioFx = projectUsesAudioFx(project); // = usesSting || usesSfx
   // design-tile.md §8: its own local declaration, the usesSting three-scope
   // precedent (generateAssets computes its own local usesMove at line 1755 to
   // emit MOVE_ENABLED below, the identical shape).
@@ -2239,6 +2303,15 @@ export async function generateAssets({ dir, project, log = () => {} }) {
     // sting_snapshot/sting_restore/sting_tick and script_op_sting, plus the force_trig/
     // cancellation-check/music_stop-clear additions inside music_channel/music_play/music_stop.
     `STING_ENABLED = ${usesSting ? 1 : 0}`,
+    // OP_SFX -- see projectUsesSfx (shared/project.js). Gates the restructured music_tick,
+    // script_op_sfx, sfx_channel_tick/sfx_read_event/sfx_apply, music_stop's own ownership guard,
+    // and init_session's session-boundary clear. See design-sfx.md §3.6/§3.8.
+    `SFX_ENABLED = ${usesSfx ? 1 : 0}`,
+    // The one piece genuinely shared between Sting and SFX -- force_trig's own check-and-clear
+    // inside music_channel, plus sting_restore_silence's own SFX-ownership guard (which needs BOTH
+    // flags, not this one alone -- see STING_SFX_INTERACTION_ALLOWANCE, main/build/generate.js).
+    // See design-sfx.md §3.5.
+    `AUDIO_FX_ENABLED = ${usesAudioFx ? 1 : 0}`,
     // Switch-bound tiles (design-tile.md §8): bound_tile_lookup,
     // rebuild_bound_cache, the script_op_set/script_op_clear hooks,
     // tile_switch_changed, queue_or_defer_flip, flip_cell_blocked, flip_emit/
@@ -2372,7 +2445,10 @@ export async function generateAssets({ dir, project, log = () => {} }) {
   await fs.writeFile(path.join(assetsDir, 'items.inc'), itemTables(project, itemsEnabled));
 
   // --- music ---------------------------------------------------------------
-  await fs.writeFile(path.join(assetsDir, 'music.inc'), songTables(project.songs ?? []));
+  await fs.writeFile(
+    path.join(assetsDir, 'music.inc'),
+    songTables(project.songs ?? []) + sfxTables(project.sfx ?? [])
+  );
 
   // --- dialogue and events -------------------------------------------------
   await fs.writeFile(path.join(assetsDir, 'text.inc'), textTables(text));

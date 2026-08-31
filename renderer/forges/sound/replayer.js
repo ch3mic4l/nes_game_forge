@@ -13,6 +13,93 @@ import { OP_REST, OP_LOOP, OP_INSTRUMENT, PERIOD_TABLE, NUM_NOTES, envelopeVolum
 
 const SILENT = 0xff;
 
+/**
+ * A JavaScript implementation of engine/music.asm's sfx_channel_tick/
+ * sfx_read_event/sfx_apply (design-sfx.md §3.3/§5.2) -- a fixed-volume,
+ * single-channel burst stolen onto the noise channel. Deliberately narrower
+ * than Replayer above: it models only the SFX-owned writes ($400C/$400E/
+ * $400F, never $4000/$4004/$4008), and only the silence-underneath cleanup
+ * path (sfx_tick_cleanup_silence) -- previewing an effect in the Sound Forge
+ * plays it over silence, not over a live song, so the hand-back-into-a-song
+ * branch (the jmp music_channel tail call, only reachable when mus_enabled is
+ * true at the moment the effect ends) has nothing to preview against and is
+ * asserted directly off the real ROM trace in test/unit/music.test.js instead
+ * of being predicted here.
+ */
+export class SfxReplayer {
+  /** @param {{bytes: number[]}} compiled — compileSfx's own output. */
+  constructor(compiled) {
+    this.bytes = compiled.bytes;
+    this.volume = this.bytes[0] & 0x0f;
+    this.reset();
+  }
+
+  reset() {
+    this.state = 0; // 0 idle / 1 playing / 2 cleanup-pending -- mirrors sfx_state exactly
+    this.pointer = 1; // past the leading volume byte
+    this.dur = 0;
+    this.note = SILENT;
+    this.trig = false;
+    this.left = 0;
+  }
+
+  /** Arms the effect. `frames` is the authored duration operand (sfx_left). */
+  trigger(frames) {
+    this.pointer = 1;
+    this.dur = 0; // forces sfx_read_event on the very next tick
+    this.note = SILENT;
+    this.trig = false;
+    this.state = 1;
+    this.left = frames;
+  }
+
+  readEvent() {
+    const opcode = this.bytes[this.pointer];
+    if (opcode === OP_REST) {
+      this.note = SILENT;
+    } else {
+      this.note = opcode;
+      this.trig = true;
+    }
+    this.dur = this.bytes[this.pointer + 1] ?? 0;
+    this.pointer += 2;
+  }
+
+  apply(writes) {
+    if (this.note === SILENT) {
+      writes.push([0x400c, 0x30]);
+      return;
+    }
+    writes.push([0x400c, 0x30 | this.volume]);
+    if (this.trig) {
+      this.trig = false;
+      writes.push([0x400e, 15 - (this.note & 0x0f)]);
+      writes.push([0x400f, 0x08]);
+    }
+  }
+
+  /**
+   * Advance one frame. Returns the writes it made, as [address, value] --
+   * empty while idle, exactly like sfx_channel_tick doing nothing at all
+   * when sfx_state is 0.
+   */
+  tick() {
+    const writes = [];
+    if (this.state === 0) return writes;
+    if (this.state === 2) {
+      this.state = 0;
+      writes.push([0x400c, 0x30]); // sfx_tick_cleanup_silence
+      return writes;
+    }
+    if (this.dur === 0) this.readEvent();
+    this.dur = (this.dur - 1) & 0xff;
+    this.apply(writes);
+    this.left = (this.left - 1) & 0xff;
+    if (this.left === 0) this.state = 2;
+    return writes;
+  }
+}
+
 export class Replayer {
   /**
    * @param {{channels: Array<{bytes: number[], loopOffset: number}>, instruments: object[]}} song

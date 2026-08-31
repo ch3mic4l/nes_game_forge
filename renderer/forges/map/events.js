@@ -253,6 +253,9 @@ export const defaultCommand = (op, context = {}) => {
     // brand-new Give/Take a real, plausible-looking reference nobody picked,
     // the same defect `firstPickup` (templates.js) used to have.
     else if (arg === 'item') out.item = null;
+    // `null` (Missing effect), not effect 0 -- the identical 'item'/'song'
+    // reasoning just above: nothing here has chosen an effect yet.
+    else if (arg === 'sfx') out.sfx = null;
     else out[arg] = 0;
   }
   return out;
@@ -337,6 +340,10 @@ function describeEnabled(command, context = {}) {
       return command.song === null || command.song === undefined || !(context.songs ?? [])[command.song]
         ? 'Sting: (choose a song)'
         : `Sting: ${songName(command.song)}`;
+    case 'sfx':
+      return command.sfx === null || command.sfx === undefined || !(context.sfx ?? [])[command.sfx]
+        ? 'Play a sound effect (missing effect)'
+        : `Play a sound effect: ${(context.sfx ?? [])[command.sfx]?.name?.trim() || `effect ${command.sfx}`}`;
     case 'battle':
       return (command.monsters ?? []).length
         ? `Battle ${command.monsters.map(actorName).join(', ')}`
@@ -1559,6 +1566,28 @@ export function editEvent(event, context) {
           stingSongMissing ? el('option', { value: command.song ?? '', selected: true }, 'Missing song') : null,
           songs.map((song, index) =>
             el('option', { value: index, selected: index === command.song }, song.name)
+          )
+        )
+      );
+    } else if (command.op === 'sfx') {
+      // Mirrors 'sting' immediately above: same "Missing effect" fallback for
+      // both never-chosen (null) and chosen-then-deleted (a stale index) --
+      // renumberSfxDeletion nulls the former case out from under a deleted
+      // reference, so only the null branch is reachable in practice, but the
+      // stale-index check stays for the identical defense-in-depth reason
+      // 'sting' keeps it.
+      const effects = context.sfx ?? [];
+      const sfxMissing = command.sfx === null || command.sfx === undefined || !effects[command.sfx];
+      controls.push(
+        el(
+          'select',
+          {
+            style: { flex: '1' },
+            onchange: (fired) => (command.sfx = Number(fired.target.value))
+          },
+          sfxMissing ? el('option', { value: command.sfx ?? '', selected: true }, 'Missing effect') : null,
+          effects.map((effect, index) =>
+            el('option', { value: index, selected: index === command.sfx }, effect.name)
           )
         )
       );

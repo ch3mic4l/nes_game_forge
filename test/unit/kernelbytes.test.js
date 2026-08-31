@@ -50,7 +50,10 @@ import {
   ITEM_KERNEL_ALLOWANCE,
   ITEM_EFFECT_KERNEL_ALLOWANCE_BY_GAME_TYPE,
   itemEffectKernelAllowance,
-  STING_KERNEL_ALLOWANCE,
+  STING_KERNEL_ALLOWANCE_STANDALONE,
+  AUDIO_FX_KERNEL_ALLOWANCE,
+  STING_SFX_INTERACTION_ALLOWANCE,
+  SFX_KERNEL_ALLOWANCE_STANDALONE,
   BOUND_TILE_KERNEL_ALLOWANCE,
   BOUND_TILE_RECORD,
   screenCapacityFor,
@@ -118,6 +121,7 @@ async function measureCodeBytes(
     withFade = false,
     withFlash = false,
     withSting = false,
+    withSfx = false,
     withTitle = false,
     withItems = true,
     withBoundTiles = false
@@ -153,6 +157,14 @@ async function measureCodeBytes(
     // project that already has songs is not surprised by an extra one.
     if (!project.songs?.length) project.songs = [createSong('Sting Song')];
     commands.push({ op: 'sting', song: 0 });
+  }
+  if (withSfx) {
+    // Mirrors withSting's own shape: seed one short effect only if the
+    // project does not already carry one, so a caller combining withSfx with
+    // some other isolation (withItems: false, say) is not surprised by an
+    // extra effect appearing in project.sfx.
+    if (!project.sfx?.length) project.sfx = [{ name: 'Boop', volume: 10, steps: [{ note: 5, duration: 4 }] }];
+    commands.push({ op: 'sfx', sfx: 0 });
   }
   if (commands.length) {
     project.maps[0].screens[0].entities.push({
@@ -190,7 +202,14 @@ async function measureCodeBytes(
   assert.ok(resetMatch, `${mapper.name}: reset should be a named symbol in game.fns`);
   const resetAddr = parseInt(resetMatch[1], 16);
 
-  return { project, codeBytes: used - (resetAddr - 0xc000) };
+  return { project, codeBytes: used - (resetAddr - 0xc000), symbols };
+}
+
+/** The address a label was assembled at, straight out of nesasm's own game.fns. */
+function symbolAddr(symbols, label) {
+  const m = symbols.match(new RegExp(`^${label}\\s*=\\s*\\$([0-9A-Fa-f]+)`, 'm'));
+  assert.ok(m, `label ${label} not found in game.fns`);
+  return parseInt(m[1], 16);
 }
 
 /**
@@ -2122,13 +2141,20 @@ test(
       const without = await measureCodeBytes(t, mapper, { withMove: true });
       const withSting = await measureCodeBytes(t, mapper, { withMove: true, withSting: true });
       const delta = withSting.codeBytes - without.codeBytes;
+      // STING_KERNEL_ALLOWANCE itself no longer exists as a single constant --
+      // split into STING_KERNEL_ALLOWANCE_STANDALONE + AUDIO_FX_KERNEL_ALLOWANCE
+      // once SFX shipped and needed the same force_trig block (design-sfx.md
+      // §3.6/§7 test 10) -- the two sum to the identical historical 175 a
+      // Sting-only project has always paid, asserted directly here rather than
+      // only in the dedicated force_trig re-gate test below.
       assert.equal(
         delta,
-        STING_KERNEL_ALLOWANCE,
+        STING_KERNEL_ALLOWANCE_STANDALONE + AUDIO_FX_KERNEL_ALLOWANCE,
         `${mapper.name}: a live Sting costs ${delta} bytes of kernel code (${without.codeBytes} -> ` +
-          `${withSting.codeBytes}), but STING_KERNEL_ALLOWANCE reserves ${STING_KERNEL_ALLOWANCE} — this ` +
-          'allowance must equal Sting\'s real cost exactly, on every board (design-sting.md §8 claims it is ' +
-          'flat; this is what actually proves it, not merely assumes it). Re-measure and correct it.'
+          `${withSting.codeBytes}), but STING_KERNEL_ALLOWANCE_STANDALONE + AUDIO_FX_KERNEL_ALLOWANCE reserves ` +
+          `${STING_KERNEL_ALLOWANCE_STANDALONE + AUDIO_FX_KERNEL_ALLOWANCE} — this must equal Sting's real cost ` +
+          'exactly, on every board (design-sting.md §8 claims it is flat; this is what actually proves it, not ' +
+          'merely assumes it). Re-measure and correct it.'
       );
     }
   }
@@ -2157,28 +2183,28 @@ test('a kernel-lo shortfall Sting alone would not close by its own allowance can
   inflate(project, 169); // deficit 190, strictly above 175 and at or below 194
   const deficit = kernelShortfallDeficit(project);
   assert.ok(
-    deficit > STING_KERNEL_ALLOWANCE,
-    `deficit ${deficit} must exceed STING_KERNEL_ALLOWANCE (${STING_KERNEL_ALLOWANCE}) alone, or this case ` +
+    deficit > (STING_KERNEL_ALLOWANCE_STANDALONE + AUDIO_FX_KERNEL_ALLOWANCE),
+    `deficit ${deficit} must exceed (STING_KERNEL_ALLOWANCE_STANDALONE + AUDIO_FX_KERNEL_ALLOWANCE) (${(STING_KERNEL_ALLOWANCE_STANDALONE + AUDIO_FX_KERNEL_ALLOWANCE)}) alone, or this case ` +
       'does not exercise split-lock being freed alongside Sting at all'
   );
   assert.ok(
-    deficit <= STING_KERNEL_ALLOWANCE + SPLIT_LOCK_KERNEL_ALLOWANCE,
-    `deficit ${deficit} must not exceed STING_KERNEL_ALLOWANCE + SPLIT_LOCK_KERNEL_ALLOWANCE ` +
-      `(${STING_KERNEL_ALLOWANCE + SPLIT_LOCK_KERNEL_ALLOWANCE}), or dropping Sting would not close the gap either`
+    deficit <= (STING_KERNEL_ALLOWANCE_STANDALONE + AUDIO_FX_KERNEL_ALLOWANCE) + SPLIT_LOCK_KERNEL_ALLOWANCE,
+    `deficit ${deficit} must not exceed (STING_KERNEL_ALLOWANCE_STANDALONE + AUDIO_FX_KERNEL_ALLOWANCE) + SPLIT_LOCK_KERNEL_ALLOWANCE ` +
+      `(${(STING_KERNEL_ALLOWANCE_STANDALONE + AUDIO_FX_KERNEL_ALLOWANCE) + SPLIT_LOCK_KERNEL_ALLOWANCE}), or dropping Sting would not close the gap either`
   );
   const message = kernelShortfallMessage(project);
   assert.match(
     message,
-    new RegExp(`removing every Sting command \\(frees ${STING_KERNEL_ALLOWANCE + SPLIT_LOCK_KERNEL_ALLOWANCE} bytes\\)`),
-    'an implementation that sums the flat STING_KERNEL_ALLOWANCE constant directly instead of asking ' +
+    new RegExp(`removing every Sting command \\(frees ${(STING_KERNEL_ALLOWANCE_STANDALONE + AUDIO_FX_KERNEL_ALLOWANCE) + SPLIT_LOCK_KERNEL_ALLOWANCE} bytes\\)`),
+    'an implementation that sums the flat (STING_KERNEL_ALLOWANCE_STANDALONE + AUDIO_FX_KERNEL_ALLOWANCE) constant directly instead of asking ' +
       'kernelCodeBytes what a Sting-free version of the project would actually cost would report ' +
-      `${STING_KERNEL_ALLOWANCE} alone here, wrong by exactly the split-lock term`
+      `${(STING_KERNEL_ALLOWANCE_STANDALONE + AUDIO_FX_KERNEL_ALLOWANCE)} alone here, wrong by exactly the split-lock term`
   );
 });
 
 // design-sting.md §9: the new documented limitation Sting creates. MMC3 Save+Move-no-item has
 // exactly 88 free (handoff-costing/costing-report.md Part 1's own MMC3 table, and CLAUDE.md's own
-// documented figure) -- STING_KERNEL_ALLOWANCE (175) exceeds that by more than double, so a live
+// documented figure) -- (STING_KERNEL_ALLOWANCE_STANDALONE + AUDIO_FX_KERNEL_ALLOWANCE) (175) exceeds that by more than double, so a live
 // Sting on this exact configuration is a clean, unambiguous NO FIT, not a close call.
 test(
   'sample-rpg with Save, Move (no item) and a live Sting does not build on MMC3 -- a documented limitation',
@@ -2206,7 +2232,7 @@ test(
       // their own, so the advice offers all three ("...or every Sting command (frees N bytes)
       // or...") -- Sting's own presence and its real byte figure are what this asserts, not
       // where in the list it happens to land.
-      new RegExp(`every Sting command \\(frees ${STING_KERNEL_ALLOWANCE} bytes\\)`),
+      new RegExp(`every Sting command \\(frees ${(STING_KERNEL_ALLOWANCE_STANDALONE + AUDIO_FX_KERNEL_ALLOWANCE)} bytes\\)`),
       'the refusal should name Sting and its real byte figure, the same discipline every other documented ' +
         'limitation in this file is held to'
     );
@@ -2220,6 +2246,468 @@ test(
     await saveProject(dir, droppedSting);
     const built = await buildProject({ dir, project: droppedSting, log: () => {} });
     assert.ok(built.romPath, 'dropping the Sting command should still be a real fix');
+  }
+);
+
+// -------------------------------------------------------------------- SFX
+// design-sfx.md §7 tests 9-12/15. The decomposition mirrors Sting's own
+// (STING_KERNEL_ALLOWANCE_STANDALONE + AUDIO_FX_KERNEL_ALLOWANCE, above): a
+// third, exclusive term for SFX's own standalone code, sharing the same
+// AUDIO_FX_KERNEL_ALLOWANCE (force_trig's check-and-clear block in
+// music_channel, now gated AUDIO_FX_ENABLED = usesSting || usesSfx rather
+// than STING_ENABLED alone), plus a fourth, genuinely-both-live-only term
+// (STING_SFX_INTERACTION_ALLOWANCE, sting_restore_silence's own ownership
+// guard, nested inside the shipped `.if STING_ENABLED` block so it can only
+// ever assemble when both flags are true).
+
+test(
+  'SFX_KERNEL_ALLOWANCE_STANDALONE + AUDIO_FX_KERNEL_ALLOWANCE covers the real, isolated cost of a live SFX exactly (no Sting live), on every RPG-capable board',
+  { skip: !hasNesasm && 'nesasm not found on PATH' },
+  async (t) => {
+    // withMove: true as the baseline on both sides, the identical isolation
+    // STING_KERNEL_ALLOWANCE's own test above already uses, for the same
+    // reason: a bare no-command baseline would still leave the delta
+    // uncontaminated here (SFX turns on no split-lock dependency of its own
+    // that a bare baseline would hide), but matching the Sting test's own
+    // shape keeps the two directly comparable.
+    for (const mapper of CAPABLE_MAPPERS) {
+      const without = await measureCodeBytes(t, mapper, { withMove: true });
+      const withSfx = await measureCodeBytes(t, mapper, { withMove: true, withSfx: true });
+      const delta = withSfx.codeBytes - without.codeBytes;
+      const expected = SFX_KERNEL_ALLOWANCE_STANDALONE + AUDIO_FX_KERNEL_ALLOWANCE;
+      assert.equal(
+        delta,
+        expected,
+        `${mapper.name}: a live SFX (no Sting live) costs ${delta} bytes of kernel code (${without.codeBytes} -> ` +
+          `${withSfx.codeBytes}), but SFX_KERNEL_ALLOWANCE_STANDALONE + AUDIO_FX_KERNEL_ALLOWANCE reserves ` +
+          `${expected} — this must equal SFX's real cost exactly, on every board (design-sfx.md §7 test 9). ` +
+          'Re-measure and correct it.'
+      );
+    }
+  }
+);
+
+// design-sfx.md §7 test 10: the force_trig re-gate (.if STING_ENABLED -> .if
+// AUDIO_FX_ENABLED in music_channel) must not change a Sting-only project's
+// own measured cost -- the direct, checked form of §3.6's "the re-gate is a
+// no-op for a Sting-only project" claim. STING_KERNEL_ALLOWANCE_STANDALONE +
+// AUDIO_FX_KERNEL_ALLOWANCE summing to exactly 175 (the historical flat
+// STING_KERNEL_ALLOWANCE every Sting-only project paid before SFX existed)
+// is what this test actually checks; a real nesasm build against the
+// implementation as shipped, not merely an arithmetic identity between two
+// constants. Also confirms STING_SFX_INTERACTION_ALLOWANCE costs a
+// Sting-only project nothing: the nested `.if SFX_ENABLED` guard inside
+// sting_restore_silence collapses away identically to any other
+// SFX_ENABLED-gated block when SFX is not live, and this same
+// before/after-style comparison (against the pre-SFX historical figure)
+// already exercises that.
+test(
+  'the force_trig re-gate does not change a Sting-only project\'s own measured kernel-lo cost, on every RPG-capable board',
+  { skip: !hasNesasm && 'nesasm not found on PATH' },
+  async (t) => {
+    for (const mapper of CAPABLE_MAPPERS) {
+      const without = await measureCodeBytes(t, mapper, { withMove: true });
+      const withSting = await measureCodeBytes(t, mapper, { withMove: true, withSting: true });
+      const delta = withSting.codeBytes - without.codeBytes;
+      assert.equal(
+        delta,
+        STING_KERNEL_ALLOWANCE_STANDALONE + AUDIO_FX_KERNEL_ALLOWANCE,
+        `${mapper.name}: a live Sting (no SFX live) costs ${delta} bytes, but ` +
+          `STING_KERNEL_ALLOWANCE_STANDALONE + AUDIO_FX_KERNEL_ALLOWANCE reserves ` +
+          `${STING_KERNEL_ALLOWANCE_STANDALONE + AUDIO_FX_KERNEL_ALLOWANCE} -- the historical flat 175 a ` +
+          'Sting-only project has always paid must not move now that force_trig\'s own gate reads ' +
+          'AUDIO_FX_ENABLED instead of STING_ENABLED alone (design-sfx.md §7 test 10).'
+      );
+      assert.equal(delta, 175, `${mapper.name}: the historical Sting-only figure itself must not have moved`);
+    }
+  }
+);
+
+// design-sfx.md §7 test 11: AUDIO_FX_KERNEL_ALLOWANCE and
+// STING_SFX_INTERACTION_ALLOWANCE measured directly off nesasm's own symbol
+// table, by label-address span, rather than derived from subtracting two
+// larger kernel-total deltas -- the "game.fns lists labels, not individual
+// instructions" correction (design-sfx.md §7 test 11's own round-4 finding)
+// means a subtraction-based measurement here would have to assume no other
+// term shifted between the two builds it diffs, which a direct span
+// measurement does not need to assume at all. One board is enough: neither
+// span depends on anything board-specific (no mapper branches inside
+// music_channel or sting_restore_silence), so this is a property of the
+// source text nesasm assembles identically everywhere, not a per-board fact.
+test(
+  'AUDIO_FX_KERNEL_ALLOWANCE and STING_SFX_INTERACTION_ALLOWANCE match their own real, isolated code spans in game.fns',
+  { skip: !hasNesasm && 'nesasm not found on PATH' },
+  async (t) => {
+    const mapper = CAPABLE_MAPPERS[0];
+
+    // AUDIO_FX_KERNEL_ALLOWANCE: the music_channel..music_channel_tick span
+    // (the force_trig check-and-clear block plus the two instructions ahead
+    // of it that exist either way) grows by exactly this much once the
+    // block assembles -- confirmed identical whether Sting alone, SFX alone,
+    // or both turn AUDIO_FX_ENABLED on, since the guard reads that one
+    // combined flag rather than either feature's own.
+    const neither = await measureCodeBytes(t, mapper, { withMove: true });
+    const stingOnly = await measureCodeBytes(t, mapper, { withMove: true, withSting: true });
+    const sfxOnly = await measureCodeBytes(t, mapper, { withMove: true, withSfx: true });
+    const both = await measureCodeBytes(t, mapper, { withMove: true, withSting: true, withSfx: true });
+
+    const spanNeither = symbolAddr(neither.symbols, 'music_channel_tick') - symbolAddr(neither.symbols, 'music_channel');
+    const spanStingOnly = symbolAddr(stingOnly.symbols, 'music_channel_tick') - symbolAddr(stingOnly.symbols, 'music_channel');
+    const spanSfxOnly = symbolAddr(sfxOnly.symbols, 'music_channel_tick') - symbolAddr(sfxOnly.symbols, 'music_channel');
+    const spanBoth = symbolAddr(both.symbols, 'music_channel_tick') - symbolAddr(both.symbols, 'music_channel');
+
+    assert.equal(spanStingOnly, spanSfxOnly, 'the force_trig block must assemble identically whether Sting or SFX is what turned AUDIO_FX_ENABLED on');
+    assert.equal(spanStingOnly, spanBoth, 'the force_trig block must assemble exactly once, not once per feature, when both are live');
+    assert.equal(
+      spanStingOnly - spanNeither,
+      AUDIO_FX_KERNEL_ALLOWANCE,
+      `music_channel's own force_trig block spans ${spanStingOnly - spanNeither} bytes, but AUDIO_FX_KERNEL_ALLOWANCE reserves ${AUDIO_FX_KERNEL_ALLOWANCE}`
+    );
+
+    // STING_SFX_INTERACTION_ALLOWANCE: the sting_restore_silence..sting_tick
+    // span (which only exists at all on a Sting-live build) grows by exactly
+    // this much once SFX is also live and the nested ownership guard
+    // assembles.
+    const spanStingOnlyRestore = symbolAddr(stingOnly.symbols, 'sting_tick') - symbolAddr(stingOnly.symbols, 'sting_restore_silence');
+    const spanBothRestore = symbolAddr(both.symbols, 'sting_tick') - symbolAddr(both.symbols, 'sting_restore_silence');
+    assert.equal(
+      spanBothRestore - spanStingOnlyRestore,
+      STING_SFX_INTERACTION_ALLOWANCE,
+      `sting_restore_silence's own span grows by ${spanBothRestore - spanStingOnlyRestore} bytes once SFX joins Sting, but STING_SFX_INTERACTION_ALLOWANCE reserves ${STING_SFX_INTERACTION_ALLOWANCE}`
+    );
+  }
+);
+
+// design-sfx.md §7 test 12: both live at once -- the combined delta must
+// equal all four terms, the shared term charged once and the interaction
+// term charged once, mirroring the existing 'a route whose only leg is
+// Turn...' test's shape for a different dependent pair. A companion test
+// drops only Sting from the same both-live project and asserts the freed
+// byte count is STING_KERNEL_ALLOWANCE_STANDALONE + STING_SFX_INTERACTION_
+// ALLOWANCE exactly -- not also AUDIO_FX_KERNEL_ALLOWANCE, since SFX is
+// still live and the shared term must still be charged.
+test(
+  'a live Sting and a live SFX together cost exactly the sum of all four allowance terms, on every RPG-capable board',
+  { skip: !hasNesasm && 'nesasm not found on PATH' },
+  async (t) => {
+    for (const mapper of CAPABLE_MAPPERS) {
+      const without = await measureCodeBytes(t, mapper, { withMove: true });
+      const both = await measureCodeBytes(t, mapper, { withMove: true, withSting: true, withSfx: true });
+      const delta = both.codeBytes - without.codeBytes;
+      const expected =
+        STING_KERNEL_ALLOWANCE_STANDALONE + SFX_KERNEL_ALLOWANCE_STANDALONE + AUDIO_FX_KERNEL_ALLOWANCE + STING_SFX_INTERACTION_ALLOWANCE;
+      assert.equal(
+        delta,
+        expected,
+        `${mapper.name}: a live Sting and a live SFX together cost ${delta} bytes (${without.codeBytes} -> ` +
+          `${both.codeBytes}), but the sum of all four terms reserves ${expected} — the shared term must be ` +
+          'charged exactly once and the interaction term exactly once, never zero times and never twice.'
+      );
+    }
+  }
+);
+
+test(
+  'dropping only Sting from a project with both live frees STING_KERNEL_ALLOWANCE_STANDALONE + STING_SFX_INTERACTION_ALLOWANCE, not AUDIO_FX_KERNEL_ALLOWANCE too',
+  { skip: !hasNesasm && 'nesasm not found on PATH' },
+  async (t) => {
+    const mapper = CAPABLE_MAPPERS[0];
+    const both = await measureCodeBytes(t, mapper, { withMove: true, withSting: true, withSfx: true });
+    const sfxOnly = await measureCodeBytes(t, mapper, { withMove: true, withSfx: true });
+    const delta = both.codeBytes - sfxOnly.codeBytes;
+    assert.equal(
+      delta,
+      STING_KERNEL_ALLOWANCE_STANDALONE + STING_SFX_INTERACTION_ALLOWANCE,
+      `${mapper.name}: dropping only Sting from a both-live project frees ${delta} bytes, but ` +
+        `STING_KERNEL_ALLOWANCE_STANDALONE + STING_SFX_INTERACTION_ALLOWANCE is ` +
+        `${STING_KERNEL_ALLOWANCE_STANDALONE + STING_SFX_INTERACTION_ALLOWANCE} — SFX is still live, so the ` +
+        'shared AUDIO_FX_KERNEL_ALLOWANCE term must still be charged and must not appear in this delta.'
+    );
+  }
+);
+
+// design-sfx.md §3.12/§7 test 15 -- DECLARED DEVIATION from the design's own
+// matrix (see sfx-implementation-report.md for the full account, including
+// its own code-review-round-1 correction note). The design estimated
+// SFX_KERNEL_ALLOWANCE_STANDALONE at 283 and predicted two rows as FIT
+// controls on that estimate: MMC1 Save+Move-no-item (a razor-thin +1 free)
+// and MMC3 ALL-7-verbs-only-no-Save/Move-w/-item with Sting already live
+// (+205 free). The real, measured figure is 295 (12 bytes higher --
+// main/build/generate.js's own comment on SFX_KERNEL_ALLOWANCE_STANDALONE
+// has the full measurement). That correctly moves ONE of the design's two
+// predicted fit controls into a real refusal: MMC1 Save+Move-no-item, a
+// genuine 31-byte deficit with SFX alone (this row legitimately carries a
+// title screen, since it has a live Save command).
+//
+// **The other one — MMC3's own ALL-7-only-w/-item row with both Sting and
+// SFX live — does not actually flip, and code review round 1's finding 3
+// caught why: the fixture below used to force a title screen onto every
+// row unconditionally, including this one and the two ALL-7+Move+item-no-
+// Save refusals just below, none of which has a live Save command or any
+// other reason to carry a title at all** (handoff-costing/costing-
+// report.md's own Part 1 table is a set of deltas from its "no Save/Move,
+// no title, w/ item" baseline). A forced title costs a real, uncredited
+// ~224 bytes (TITLE_KERNEL_ALLOWANCE_BY_MAPPER on MMC3) that has nothing to
+// do with SFX. Corrected: `assertSfxRefusal` now takes a `noTitle` option,
+// passed for every row whose own name does not include Save. With it, the
+// two ALL-7+Move+item-no-Save rows (MMC3, UNROM 512) remain genuinely
+// refused -- smaller, real deficits (41 and 42 bytes short, not the
+// previous inflated figures) -- but the both-live control now FITS, exactly
+// as the design originally predicted, restored below as its own dedicated
+// test rather than kept as a wrong refusal.
+//
+// Construction note: each remaining refusal row below combines its
+// row-defining commands (Save/Move/the seven shipped verbs) onto one placed
+// actor's own event page -- mirroring saveAndMoveEvent's existing precedent
+// -- with SFX (and Sting, where the row calls for it) authored onto a
+// second, separate placed actor -- mirroring the existing Sting
+// documented-limitation test's own convention of pushing a second entity
+// beside saveAndMoveEvent(). This does not reproduce handoff-costing/
+// costing-report.md's Part 1 rows byte-for-byte (an extra placed entity
+// costs its own few bytes of screen table data a single-entity construction
+// would not -- though empirically, for the both-live row, this difference
+// turned out to be negligible: both constructions produced identical
+// need/free figures once the title bug above was the only thing actually
+// separating them from Part 1's own row), so the exact "need N / free M"
+// figures asserted below are this construction's own real, measured
+// numbers, not Part 1's -- what is being confirmed is the verdict (refused,
+// and why) against a real checkCapacity() run, not a reproduction of an
+// unrelated report's own byte count.
+
+function allSevenVerbsCommands() {
+  return [
+    { op: 'turn', who: 'self', dir: 'up' },
+    { op: 'wait', frames: 10 },
+    { op: 'shake', frames: 10 },
+    { op: 'visible', state: 'hidden' },
+    { op: 'visible', state: 'shown' },
+    { op: 'fade', dir: 'out' },
+    { op: 'flash' }
+  ];
+}
+
+function commandsEvent(commands, x = 16, y = 16) {
+  return { actorId: 0, x, y, props: { event: { pages: [{ cond: { type: 'none', arg: 0 }, commands }] } } };
+}
+
+function sfxCommandEvent(project, x = 80, y = 80) {
+  if (!project.sfx?.length) project.sfx = [{ name: 'Boop', volume: 10, steps: [{ note: 5, duration: 4 }] }];
+  return commandsEvent([{ op: 'sfx', sfx: 0 }], x, y);
+}
+
+/**
+ * Builds `sample-rpg` on `mapper` with `rowCommands` on one placed actor,
+ * plus a live SFX command on a second (and, if `withSting`, a live Sting on
+ * a third) -- confirms checkCapacity() refuses it, that the refusal names
+ * "Play a sound effect" with its real freed-byte figure, and that dropping
+ * just the SFX command is a real, buildable fix (an actual nesasm build,
+ * not only the JS-side prediction), the identical discipline the existing
+ * Sting/bound-tile documented-limitation tests already hold themselves to.
+ *
+ * `noTitle` (code review round 1, finding 3): a title screen used to be
+ * forced on unconditionally here, for every row, including ones whose own
+ * named `handoff-costing/costing-report.md` Part 1 baseline never carried
+ * one -- every row in that report is a delta from its own "no Save/Move, no
+ * title, w/ item" baseline, and only a live Save command actually requires
+ * one (validateProject). Forcing a title onto a title-free row adds a real,
+ * uncredited ~224-byte cost (TITLE_KERNEL_ALLOWANCE_BY_MAPPER on MMC3) that
+ * has nothing to do with SFX at all -- pass `noTitle: true` for any row
+ * whose name does not include Save.
+ */
+async function assertSfxRefusal(t, mapperId, rowCommands, { noItem = false, withSting = false, noTitle = false, mapperLabel } = {}) {
+  const project = await loadProject(SAMPLE_RPG);
+  project.cartridge.mapper = mapperId;
+  if (noTitle) {
+    project.project.titleMap = null;
+  } else {
+    project.project.titleMap = 0;
+    project.project.titleScreen = 0;
+  }
+  if (noItem) project.items = [];
+  if (rowCommands.length) project.maps[0].screens[0].entities.push(commandsEvent(rowCommands));
+  if (withSting) {
+    project.songs = [createSong('Fanfare')];
+    project.maps[0].screens[0].entities.push(commandsEvent([{ op: 'sting', song: 0 }], 96, 96));
+  }
+  project.maps[0].screens[0].entities.push(sfxCommandEvent(project));
+
+  const message = kernelShortfallMessage(project);
+  assert.match(
+    message,
+    new RegExp(`every Play a sound effect command \\(frees ${SFX_KERNEL_ALLOWANCE_STANDALONE + AUDIO_FX_KERNEL_ALLOWANCE + (withSting ? STING_SFX_INTERACTION_ALLOWANCE - AUDIO_FX_KERNEL_ALLOWANCE : 0)} bytes\\)`),
+    `${mapperLabel}: the refusal should name Play a sound effect and its real freed-byte figure -- got: ${message}`
+  );
+
+  const droppedSfx = structuredClone(project);
+  droppedSfx.maps[0].screens[0].entities.pop();
+  const dir = await fsp.mkdtemp(path.join(os.tmpdir(), 'forge-sfx-limitation-'));
+  t.after(() => fsp.rm(dir, { recursive: true, force: true }));
+  await saveProject(dir, droppedSfx);
+  const built = await buildProject({ dir, project: droppedSfx, log: () => {} });
+  assert.ok(built.romPath, `${mapperLabel}: dropping the SFX command alone should still be a real fix`);
+}
+
+test(
+  'sample-rpg with Save, Move (no item) and a live SFX does not build on MMC3 -- the already-known documented limitation, now also reached by SFX',
+  { skip: !hasNesasm && 'nesasm not found on PATH' },
+  async (t) => {
+    await assertSfxRefusal(t, 4, [{ op: 'save' }, { op: 'move', who: 'self', dir: 'up', dist: 16 }], {
+      noItem: true,
+      mapperLabel: 'MMC3'
+    });
+  }
+);
+
+test(
+  'sample-rpg with Save, Move and its one live item does not build on MMC1 once a live SFX is added -- newly refused, per SFX_KERNEL_ALLOWANCE_STANDALONE\'s own real measurement',
+  { skip: !hasNesasm && 'nesasm not found on PATH' },
+  async (t) => {
+    await assertSfxRefusal(t, 1, [{ op: 'save' }, { op: 'move', who: 'self', dir: 'up', dist: 16 }], { mapperLabel: 'MMC1' });
+  }
+);
+
+// DECLARED DEVIATION (see the section comment above): the design predicted
+// this exact row -- MMC1 Save+Move-no-item -- as a razor-thin FIT control at
+// its own 298-byte estimate (+1 free). The real, measured
+// SFX_KERNEL_ALLOWANCE_STANDALONE (295, not 283) moves the real marginal
+// cost to 310, which refuses this row too (a real, measured 31-byte
+// deficit) -- so this test asserts the real outcome, a sixth refusal, in
+// place of the design's own now-superseded fit-control test.
+test(
+  'sample-rpg with Save and Move, no item, does not build on MMC1 once a live SFX is added -- DEVIATION: the design predicted this row as a +1 fit control at its own 283-byte SFX estimate; the real, measured 295-byte figure refuses it instead',
+  { skip: !hasNesasm && 'nesasm not found on PATH' },
+  async (t) => {
+    await assertSfxRefusal(t, 1, [{ op: 'save' }, { op: 'move', who: 'self', dir: 'up', dist: 16 }], {
+      noItem: true,
+      mapperLabel: 'MMC1'
+    });
+  }
+);
+
+test(
+  'sample-rpg with every shipped verb, Move and its one live item, no Save, does not build on MMC3 once a live SFX is added',
+  { skip: !hasNesasm && 'nesasm not found on PATH' },
+  async (t) => {
+    await assertSfxRefusal(t, 4, [...allSevenVerbsCommands(), { op: 'move', who: 'self', dir: 'up', dist: 16 }], {
+      noTitle: true,
+      mapperLabel: 'MMC3'
+    });
+  }
+);
+
+test(
+  'sample-rpg with a live Save command and its one live item does not build on UNROM 512 once a live SFX is added',
+  { skip: !hasNesasm && 'nesasm not found on PATH' },
+  async (t) => {
+    await assertSfxRefusal(t, 30, [{ op: 'save' }], { mapperLabel: 'UNROM 512' });
+  }
+);
+
+test(
+  'sample-rpg with every shipped verb, Move and its one live item, no Save, does not build on UNROM 512 once a live SFX is added',
+  { skip: !hasNesasm && 'nesasm not found on PATH' },
+  async (t) => {
+    await assertSfxRefusal(t, 30, [...allSevenVerbsCommands(), { op: 'move', who: 'self', dir: 'up', dist: 16 }], {
+      noTitle: true,
+      mapperLabel: 'UNROM 512'
+    });
+  }
+);
+
+test(
+  'sample-rpg with Save, Move and its one live item does not build on MMC1 with a live Sting AND a live SFX together',
+  { skip: !hasNesasm && 'nesasm not found on PATH' },
+  async (t) => {
+    await assertSfxRefusal(t, 1, [{ op: 'save' }, { op: 'move', who: 'self', dir: 'up', dist: 16 }], {
+      withSting: true,
+      mapperLabel: 'MMC1'
+    });
+  }
+);
+
+// CORRECTED, code review round 1 finding 3 (annotates, does not silently
+// replace, the "DECLARED DEVIATION" this test used to be -- see
+// sfx-implementation-report.md's own §3 correction note for the full
+// account). The previous version of this test built its "both-live" row
+// with a title screen forced on unconditionally -- the same shape every
+// other assertSfxRefusal-based row in this file uses -- but
+// handoff-costing/costing-report.md's own MMC3 "ALL 7 shipped verbs only,
+// no Save/Move, w/ item" row (+668 signed-free, the row this control is
+// named after) is a delta from that report's own "no Save/Move, no title,
+// w/ item" baseline: no live Save command means no title is required
+// (validateProject) and none was ever part of the row being measured.
+// Forcing one on added a real, uncredited ~224-byte cost
+// (TITLE_KERNEL_ALLOWANCE_BY_MAPPER on MMC3) that produced the previous
+// "51-byte deficit" — a real number, but for a different, title-bearing
+// project than the one named.
+//
+// Verified directly, both ways the review asked for (per the brief's own
+// item 3): a title-free reconstruction FITS regardless of whether the row's
+// commands sit on one placed actor (the shape the named Part 1 row
+// describes) or split across separate ones (assertSfxRefusal's own shape,
+// used everywhere else in this file) -- real checkCapacity() output:
+//
+//   single event,   titleMap=0:    need 129, free  78  -- REFUSED (the old, title-inflated figure)
+//   single event,   titleMap=null: FITS
+//   separate actors, titleMap=0:    need 129, free  78  -- REFUSED (identical to the single-event figure --
+//                                                           confirms entity placement was never the variable)
+//   separate actors, titleMap=null: FITS
+//
+// So the reviewer's conclusion (the both-live control fits) is confirmed,
+// but its proposed mechanism (single-event vs. separate-actor placement)
+// is not what actually explains the previous refusal -- the title screen
+// is. There is consequently no separate, valid "additional documented
+// limitation" to keep from the old separate-actor construction (the brief's
+// own fallback, item 3): once the title bug is fixed, that shape fits too,
+// confirmed above, so nothing about placing these commands on separate
+// actors is itself a real capacity limitation in this row. The old refusal
+// test is replaced outright rather than kept and relabeled.
+test(
+  'sample-rpg with every shipped verb and its one live item, no Save/Move, still builds on MMC3 with a live Sting AND a live SFX together, single event -- restores the named both-live fit control',
+  { skip: !hasNesasm && 'nesasm not found on PATH' },
+  async (t) => {
+    const project = await loadProject(SAMPLE_RPG);
+    project.cartridge.mapper = 4; // MMC3
+    project.project.titleMap = null; // no Save live -- matches the named row's own Part 1 baseline exactly
+    project.songs = [createSong('Fanfare')];
+    project.sfx = [{ name: 'Boop', volume: 10, steps: [{ note: 5, duration: 4 }] }];
+    // Single event, per the review's own "one event carrying the live
+    // command set" reconstruction -- every command on one placed actor.
+    project.maps[0].screens[0].entities.push(
+      commandsEvent([...allSevenVerbsCommands(), { op: 'sting', song: 0 }, { op: 'sfx', sfx: 0 }])
+    );
+
+    const dir = await fsp.mkdtemp(path.join(os.tmpdir(), 'forge-sfx-bothlive-fits-'));
+    t.after(() => fsp.rm(dir, { recursive: true, force: true }));
+    await saveProject(dir, project);
+    const built = await buildProject({ dir, project, log: () => {} });
+    assert.ok(built.romPath, 'the named both-live fit control must still build once the title-screen fixture bug is corrected');
+  }
+);
+
+// A real fits-with-SFX-live control, replacing the two the design's own
+// estimate predicted but real measurement refused (above): sample-rpg as
+// checked in -- no Save, no Move, no title, its one live item still in
+// place -- plus a live SFX command and nothing else. This is the baseline
+// isolation test 9 above already measures the delta against, so it is
+// already known to fit (assertCovers passes there); this test additionally
+// confirms it as a real, buildable ROM rather than only a kernelCodeBytes
+// prediction, on the board with the least headroom of the three
+// (MMC3, per BASE_KERNEL_CODE_BYTES_BY_MAPPER).
+test(
+  'sample-rpg with its one live item and a live SFX and nothing else still builds on MMC3 -- a fits control',
+  { skip: !hasNesasm && 'nesasm not found on PATH' },
+  async (t) => {
+    const project = await loadProject(SAMPLE_RPG);
+    project.cartridge.mapper = 4; // MMC3
+    project.project.titleMap = null;
+    project.maps[0].screens[0].entities.push(sfxCommandEvent(project));
+
+    const dir = await fsp.mkdtemp(path.join(os.tmpdir(), 'forge-sfx-fits-'));
+    t.after(() => fsp.rm(dir, { recursive: true, force: true }));
+    await saveProject(dir, project);
+    const built = await buildProject({ dir, project, log: () => {} });
+    assert.ok(built.romPath, 'a comfortably margined row must still build once a live SFX is added');
   }
 );
 

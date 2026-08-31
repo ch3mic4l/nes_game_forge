@@ -40,6 +40,7 @@ import {
   canBackItem,
   itemActorOptions,
   projectUsesItems,
+  projectUsesSfx,
   liveCommands,
   compiledPages,
   projectEvents,
@@ -2793,7 +2794,10 @@ const FIXED_OPCODE_WIDTH = {
   // silently paper over a bug where a route opcode leaked into the output.
   move: 4,
   turn: 3,
-  wait: 2
+  wait: 2,
+  // [opcode, id, duration] -- the identical [opcode, song, duration] shape
+  // OP_STING already has, one format over.
+  sfx: 3
 };
 
 /**
@@ -2901,6 +2905,7 @@ test('liveCommands and encodeBody agree on the actual sequence of compiled opcod
   const project = createProject('Quest', 'rpg');
   project.sprites.actors = [{ name: 'Slime', damage: 5 }];
   project.party = [{ id: 0, name: 'Hero', spells: [] }];
+  project.sfx = [{ name: 'Boop', volume: 10, steps: [{ note: 5, duration: 10 }] }];
 
   // A resolvable common event, id 0 by resolveCommonEventIds' own default
   // (no explicit `id`, commonEventSeq starts at 0) -- present for every
@@ -3003,6 +3008,10 @@ test('liveCommands and encodeBody agree on the actual sequence of compiled opcod
           { op: 'wait', frames: 10 }
         ]
       }
+    ],
+    'a live Play a sound effect command, then a switched-off one': [
+      one('sfx', { sfx: 0 }),
+      one('sfx', { sfx: 0, off: true })
     ]
   };
 
@@ -3065,7 +3074,10 @@ test('liveCommands and encodeBody agree on the actual sequence of compiled opcod
         { op: 'move', dir: 'down', dist: 8 },
         one('say'), // unadmitted -- must be silently dropped by both sides
         { op: 'turn', dir: 'left' },
-        { op: 'wait', frames: 5 }
+        { op: 'wait', frames: 5 },
+        one('sfx', { sfx: 0 }) // unadmitted, per design-sfx.md §3.8/§7 (finding 9): an sfx
+                                // command sitting in a raw route leg must never make
+                                // SFX_ENABLED disagree with the compiled byte stream
       ]
     }
   ];
@@ -3074,9 +3086,22 @@ test('liveCommands and encodeBody agree on the actual sequence of compiled opcod
   const independentlyExpected = ['move', 'turn', 'wait'];
   assert.deepEqual(routeCompiled, independentlyExpected, 'the compiler must silently drop the unadmitted leg');
   assert.deepEqual(routeLive, independentlyExpected, 'liveCommands must silently drop the unadmitted leg too');
+
+  // The direct SFX_ENABLED-level proof design-sfx.md §7 test 16 asks for: an sfx command
+  // sitting only in an illegal route leg must never turn projectUsesSfx on, since the
+  // compiled stream (routeCompiled above) never contains it either.
+  const illegalLegProject = createProject('Quest', 'action');
+  illegalLegProject.maps[0].screens[0].entities = [
+    { actorId: 0, x: 0, y: 0, props: { event: { pages: [{ cond: { type: 'none', arg: 0 }, commands: routeWithIllegalLeg }] } } }
+  ];
+  assert.equal(
+    projectUsesSfx(illegalLegProject),
+    false,
+    'an sfx command reachable only through an illegal route leg must not enable SFX_ENABLED'
+  );
 });
 
-// EVENT_COMMANDS' own OP_END..OP_STING values, hand-copied from
+// EVENT_COMMANDS' own OP_END..OP_SFX values, hand-copied from
 // engine/constants.asm the same way this file's own PLAYER_X/GAME_STATE-
 // style tests already hardcode engine RAM addresses elsewhere -- "a test
 // that reads the file it is checking proves nothing."
@@ -3107,7 +3132,8 @@ const ENGINE_OPCODES = {
   visible: 0x17,
   fade: 0x18,
   flash: 0x19,
-  sting: 0x1a
+  sting: 0x1a,
+  sfx: 0x1b
 };
 
 test('EVENT_COMMANDS: every real-opcode entry keeps its engine constant value; the virtual tail is contiguous and last', () => {

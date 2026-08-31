@@ -6,7 +6,17 @@
 // hand-edited or older project never crashes the UI.
 
 import { BLANK_TILE } from './chr.js';
-import { normalizeSong, NO_SONG, songByte, songFrameLength } from './audio.js';
+import {
+  normalizeSong,
+  NO_SONG,
+  songByte,
+  songFrameLength,
+  normalizeSfx,
+  NO_SFX,
+  sfxByte,
+  sfxFrameLength,
+  SFX_MAX_STEPS
+} from './audio.js';
 import {
   allCommands,
   choiceOptionsSlice,
@@ -151,7 +161,14 @@ export const LIMITS = {
   // metasprite 255 too). Capping the id space the same way actors/items
   // already are closes it the same way: a real metasprite can never again
   // be assigned the sentinel's own value.
-  metasprites: NO_METASPRITE
+  metasprites: NO_METASPRITE,
+  // Ids 0..$FE, the identical shape again, one id space further over: NO_SFX
+  // is a byte in this space too, so the cap is the sentinel's own value.
+  sfx: NO_SFX,
+  // Re-exported from shared/audio.js for display/UI purposes only --
+  // shared/audio.js is the single writer (SFX_MAX_STEPS, an authoring limit,
+  // not a format one), this is an alias, not a second definition.
+  sfxSteps: SFX_MAX_STEPS
 };
 
 /**
@@ -595,7 +612,7 @@ export function effectiveTrigger(entity, actor, project) {
  * Event commands, in the order the compiled bytecode uses -- for every entry
  * whose opcode byte is opIndex(id) (main/build/textcompile.js), that byte
  * IS this array's own position, not a constant declared anywhere in JS.
- * engine/constants.asm hand-writes OP_END..OP_STING in this identical
+ * engine/constants.asm hand-writes OP_END..OP_SFX in this identical
  * order, so the array is split into a real prefix (every entry backed by an
  * actual engine OP_* constant, contiguous from index 0) and a virtual tail
  * (entries marked `virtual: true`, backed by no opcode at all -- currently
@@ -769,6 +786,15 @@ export const EVENT_COMMANDS = [
   // live Sting naming nothing, or a song since deleted, is refused by validateProject rather than
   // silently compiling to NO_SONG the way a stale `music` reference still does.
   { id: 'sting', label: 'Sound sting', args: ['song'] },
+  // [id, duration in frames]. A short, fixed-volume, single-channel burst on a
+  // dedicated stolen channel (SFX_CHANNEL, engine/constants.asm) -- the running
+  // song's other three channels, or a live Sting, continue completely untouched.
+  // Duration is never authored: the compiler measures the effect's own total
+  // length (sfxFrameLength, shared/audio.js) and bakes it in, the identical
+  // single-writer shape Sting's own duration operand already has. Does not
+  // suspend the script, the same instant shape Turn/Shake/Visible/Flash/Sting
+  // already share. See design-sfx.md for the full design.
+  { id: 'sfx', label: 'Play a sound effect', args: ['sfx'] },
   // [who, {legs: [...]}]. An authoring convenience over Move/Turn/Wait: a route
   // holds an ordered list of legs, each a real move/turn/wait record, and
   // compiles to exactly what hand-chaining the same commands would -- no new
@@ -858,6 +884,7 @@ export const IMPLEMENTED_COMMANDS = new Set([
   'fade',
   'flash',
   'sting',
+  'sfx',
   'route'
 ]);
 
@@ -1126,6 +1153,27 @@ export function renumberSongDeletion(project, index) {
         if (command.op !== 'music') continue;
         if (command.song === index) command.song = null;
         else if (command.song > index) command.song -= 1;
+      }
+    }
+  }
+  return project;
+}
+
+/**
+ * The sfx-space sibling of renumberSongDeletion above: project.sfx is a wholly
+ * separate list from project.songs, so this walks command.op === 'sfx' only and
+ * cannot inherit that function's own (pre-existing, out-of-scope) gap for
+ * Sting's own `song` field. allCommands, not liveCommands -- a switched-off
+ * command's reference must still track a deletion, so a switch back on does
+ * not silently point at the wrong effect.
+ */
+export function renumberSfxDeletion(project, index) {
+  for (const event of projectEvents(project)) {
+    for (const page of event.pages ?? []) {
+      for (const command of allCommands(page.commands)) {
+        if (command.op !== 'sfx') continue;
+        if (command.sfx === index) command.sfx = null;
+        else if (command.sfx > index) command.sfx -= 1;
       }
     }
   }
@@ -1518,6 +1566,7 @@ export function createProject(name = 'Untitled Game', gameType = 'action') {
     items: [],
     sprites: { metasprites: [], animations: [], actors: [] },
     songs: [],
+    sfx: [],
     input: defaultInput(),
     switches: [], // names only; the engine just sees 64 bits
     variables: [], // and 16 bytes, likewise named only for the author's benefit
@@ -1781,6 +1830,9 @@ function normalizeEventCommand(raw, depth = 0, itemCtx = EMPTY_ITEM_CTX) {
     // main/build/textcompile.js), the same reason 'warp's screen is a loose
     // byte clamp here and a real one in the compiler.
     else if (arg === 'song') out.song = raw?.song === null || raw?.song === undefined ? null : clamp(raw?.song, 0, 255, 0);
+    // Same nullable shape as 'song' above, for the identical reason: "never
+    // chosen" and "effect 0" must stay distinguishable.
+    else if (arg === 'sfx') out.sfx = raw?.sfx === null || raw?.sfx === undefined ? null : clamp(raw?.sfx, 0, 255, 0);
     else if (arg === 'branch') {
       out.cond = normalizeCondition(raw?.cond, itemCtx);
       out.then = inner(raw?.then);
@@ -2819,6 +2871,9 @@ export function normalizeProject(raw) {
     songs: (Array.isArray(raw.songs) ? raw.songs : []).map((song, index) =>
       normalizeSong(song, `Song ${index}`)
     ),
+    sfx: (Array.isArray(raw.sfx) ? raw.sfx : []).map((entry, index) =>
+      normalizeSfx(entry, `Effect ${index}`)
+    ),
     input: normalizeInput(raw.input),
     switches: (Array.isArray(raw.switches) ? raw.switches : [])
       .slice(0, RPG_LIMITS.switches)
@@ -3098,6 +3153,37 @@ export function projectUsesSting(project) {
     }
   }
   return false;
+}
+
+/**
+ * Drives the generated `SFX_ENABLED`: the restructured `music_tick`, `script_op_sfx`,
+ * `sfx_channel_tick`/`sfx_read_event`/`sfx_apply`, and the ownership guards inside
+ * `music_stop`/`init_session` (engine/music.asm, engine/script.asm, engine/combat.asm) are all real
+ * kernel-lo code with nowhere to go unconditionally in a project that never plays a sound effect.
+ * `sfx` is found here through `liveCommands`' own branch/choice recursion only -- an `sfx` command
+ * sitting in a raw route leg is not an admitted leg (`ROUTE_LEG_OPS` is `move`/`turn`/`wait` only,
+ * shared/eventrules.js), dropped identically by normalization and by the compiler's own route case,
+ * so it never counts on either side. See design-sfx.md §3.8.
+ */
+export function projectUsesSfx(project) {
+  for (const event of projectEvents(project)) {
+    for (const page of compiledPages(event)) {
+      for (const command of liveCommands(page.commands, CHOICE_LIMITS.options)) {
+        if (command.op === 'sfx') return true;
+      }
+    }
+  }
+  return false;
+}
+
+/**
+ * Drives the generated `AUDIO_FX_ENABLED` -- the one genuinely shared piece of code between Sting
+ * and SFX, the `force_trig` check-and-self-clear inside `music_channel` (engine/music.asm), gated
+ * on whichever of the two features is live rather than folded permanently into `STING_ENABLED`.
+ * See design-sfx.md §3.5.
+ */
+export function projectUsesAudioFx(project) {
+  return projectUsesSting(project) || projectUsesSfx(project);
 }
 
 /**
@@ -3792,6 +3878,56 @@ export function validateProject(project) {
       `${overlongStings} Sound sting command${overlongStings === 1 ? '' : 's'} name a song that ` +
         'takes longer than 255 frames (4.25s) to complete its own first pass. Shorten the song ' +
         'or pick a different one.'
+    );
+  }
+
+  // A Play a sound effect command naming nothing, or an effect since deleted, is the identical
+  // Sting shape above, one format over: a live command promising to play a specific effect at a
+  // specific moment is a promise the ROM must be able to keep, checked at build time rather than
+  // silently swallowed at runtime.
+  let missingSfx = 0;
+  let overlongSfx = 0;
+  for (const event of projectEvents(project)) {
+    for (const page of compiledPages(event)) {
+      for (const command of liveCommands(page.commands, CHOICE_LIMITS.options)) {
+        if (command.op !== 'sfx') continue;
+        const sfxIndex = sfxByte(project.sfx, command.sfx);
+        if (sfxIndex === NO_SFX) {
+          missingSfx++;
+        } else if (sfxFrameLength(project.sfx[sfxIndex]) > 255) {
+          overlongSfx++;
+        }
+      }
+    }
+  }
+  if (missingSfx) {
+    add(
+      'error',
+      'Map Forge',
+      `${missingSfx} Play a sound effect command${missingSfx === 1 ? '' : 's'} do not name a real ` +
+        'effect. Pick an effect or switch the command off.'
+    );
+  }
+  if (overlongSfx) {
+    add(
+      'error',
+      'Map Forge',
+      `${overlongSfx} Play a sound effect command${overlongSfx === 1 ? '' : 's'} name an effect ` +
+        'that takes longer than 255 frames (4.25s) to play. Shorten the effect or pick a different ' +
+        'one.'
+    );
+  }
+
+  // The sfx-space sibling of LIMITS.items' own over-cap check above: a project holding more
+  // effects than LIMITS.sfx allows (hand-edited, or authored by a later version) is refused with a
+  // named, actionable count, not silently truncated.
+  if (project.sfx.length > LIMITS.sfx) {
+    add(
+      'error',
+      'Sound Forge',
+      `This project has ${project.sfx.length} sound effects but the Forge holds ${LIMITS.sfx} ` +
+        `(ids 0-${LIMITS.sfx - 1}) — id $FF is reserved to mean "no effect". Delete ` +
+        `${project.sfx.length - LIMITS.sfx} of them before this can build.`
     );
   }
 

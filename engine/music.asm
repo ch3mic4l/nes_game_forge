@@ -131,17 +131,47 @@ music_stop:
   lda #$30                  ; constant volume, zero
   sta $4000
   sta $4004
+  .if SFX_ENABLED
+  ; An ordinary Play-Silence (or a map transition to a Silence map) reaches
+  ; here through music_play's own NO_SONG branch -- not only init_session's
+  ; own session-reset call -- so this must not clobber an active SFX's own
+  ; note. init_session (engine/combat.asm) is the actual session boundary
+  ; and force-silences $400C itself, immediately after this call, once the
+  ; effect is genuinely being cancelled. See design-sfx.md §3.3, finding 4.
+  ldy sfx_state
+  bne music_stop_skip_noise
+  .endif
   sta $400C
+music_stop_skip_noise:
   lda #0
   sta $4008
   rts
 
 music_tick:
+  .if SFX_ENABLED
   lda mus_enabled
+  ora sfx_state
+  .else
+  lda mus_enabled
+  .endif
   beq music_tick_done
   ldx #0
 music_tick_loop:
+  .if SFX_ENABLED
+  cpx #SFX_CHANNEL
+  bne music_tick_normal
+  lda sfx_state
+  beq music_tick_normal        ; not stolen right now -- this index's own
+                                ; song channel ticks normally below
+  jsr sfx_channel_tick
+  jmp music_tick_next
+music_tick_normal:
+  lda mus_enabled
+  beq music_tick_next          ; Silence -- do not run this channel's normal
+                                ; logic against a stopped song's stale state
+  .endif
   jsr music_channel
+music_tick_next:
   inx
   cpx #MUS_CHANNELS
   bne music_tick_loop
@@ -151,12 +181,14 @@ music_tick_done:
 music_channel:
   lda #0
   sta mus_trig,x
-  .if STING_ENABLED
+  .if AUDIO_FX_ENABLED
   ; A sting resume (sting_restore below) copies the shadowed mus_* arrays
   ; back, but a copied mus_trig would be worthless -- the clear just above
   ; erases it before music_apply ever runs. force_trig is a second,
   ; self-clearing flag checked after that clear, so a restored note actually
-  ; re-hits the APU. See design-sting.md §5, mechanism 1.
+  ; re-hits the APU. Shared with SFX's own hand-back (sfx_channel_tick,
+  ; below) -- gated AUDIO_FX_ENABLED (Sting or SFX live), not STING_ENABLED
+  ; alone. See design-sting.md §5, mechanism 1, and design-sfx.md §3.5.
   lda force_trig,x
   beq music_channel_noforce
   lda #0
@@ -432,7 +464,16 @@ sting_restore_silence:
   lda #$30                  ; the same four writes music_stop makes
   sta $4000
   sta $4004
+  .if SFX_ENABLED
+  ldy sfx_state
+  bne sting_restore_skip_sfx   ; SFX owns (or is a frame from
+                                          ; finishing with) the noise channel
+                                          ; -- its own cleanup phase silences
+                                          ; it, not this restore. See
+                                          ; design-sfx.md §3.3.
+  .endif
   sta $400C
+sting_restore_skip_sfx:
   lda #0
   sta $4008
   rts
@@ -449,6 +490,135 @@ sting_tick:
   bne sting_tick_rts
   jsr sting_restore
 sting_tick_rts:
+  rts
+
+  .endif
+
+; -------------------------------------------------------------------- sfx
+; Shape (a): a short, fixed-volume, single-channel burst stolen onto
+; SFX_CHANNEL. See design-sfx.md for the full design; script_op_sfx
+; (engine/script.asm) is the trigger, music_tick above is what diverts
+; SFX_CHANNEL to sfx_channel_tick whenever sfx_state != 0.
+
+  .if SFX_ENABLED
+
+; Entered from music_tick (above) whenever sfx_state != 0 and X = SFX_CHANNEL
+; -- independent of mus_enabled by construction, which is the whole point:
+; see design-sfx.md §3.3 for why the top-level gate alone is not enough.
+; Two-phase, not a single decrement-and-handback -- see design-sfx.md §3.3,
+; finding 1, for why a same-frame resolution would silence the effect's own
+; final note before it was ever heard.
+sfx_channel_tick:
+  lda sfx_state
+  cmp #1
+  beq sfx_channel_tick_playing
+  ; sfx_state == 2: the cleanup frame -- resolve exactly once, then idle.
+  lda #0
+  sta sfx_state
+  lda mus_enabled
+  beq sfx_tick_cleanup_silence
+  lda #1
+  sta force_trig+SFX_CHANNEL   ; hand back -- see design-sfx.md §3.4 for what
+                                ; the channel resumes into
+  jmp music_channel            ; tail-call, not rts -- retriggers the same
+                                ; X = SFX_CHANNEL this same tick, so the
+                                ; final SFX note gets exactly one frame
+                                ; instead of two. X is untouched since entry;
+                                ; music_channel's own trailing rts pops the
+                                ; return address music_tick_loop's own jsr
+                                ; sfx_channel_tick pushed, landing back at
+                                ; "jmp music_tick_next" exactly as an
+                                ; ordinary rts here would have -- see
+                                ; design-sfx.md §3.3 for the full trace.
+sfx_tick_cleanup_silence:
+  lda #$30
+  sta $400C                    ; nothing else will touch this register again
+                                ; until a real song resumes or another SFX fires
+  rts
+sfx_channel_tick_playing:
+  lda sfx_dur
+  bne sfx_channel_tick_apply
+  jsr sfx_read_event
+sfx_channel_tick_apply:
+  dec sfx_dur
+  jsr sfx_apply              ; write this frame's audio BEFORE deciding
+                              ; whether this was the effect's last playing
+                              ; frame -- the identical ordering sting_tick's
+                              ; own header comment already requires of
+                              ; music_tick/sting_tick, for the identical
+                              ; reason: apply first, or the final frame of
+                              ; audio is silenced before it is ever heard
+  dec sfx_left
+  bne sfx_channel_tick_done
+  lda #2
+  sta sfx_state                ; one more frame needed before resolving
+                                ; hand-back vs. silence -- see §3.3
+sfx_channel_tick_done:
+  rts
+
+; Pulls one note/duration pair off the current effect's own stream. No
+; instrument opcode, no loop -- see design-sfx.md §3.2 for why this is
+; genuinely separate code from music_read_event, not a shared reader.
+sfx_read_event:
+  lda sfx_ptr_lo
+  sta ptr_lo
+  lda sfx_ptr_hi
+  sta ptr_hi
+  ldy #0
+  lda [ptr_lo],y
+  cmp #MUS_REST
+  beq sfx_read_rest
+  sta sfx_note
+  lda #1
+  sta sfx_trig
+  jmp sfx_read_duration
+sfx_read_rest:
+  lda #$FF
+  sta sfx_note
+sfx_read_duration:
+  ldy #1
+  lda [ptr_lo],y
+  sta sfx_dur
+  lda ptr_lo
+  clc
+  adc #2
+  sta sfx_ptr_lo
+  lda ptr_hi
+  adc #0
+  sta sfx_ptr_hi
+  rts
+
+; The single stolen channel's own APU write -- fixed volume (sfx_volume, read
+; once at trigger), no instrument/envelope lookup at all. Hardcodes $400C/
+; $400E/$400F rather than X-indexing: X is always SFX_CHANNEL here, so the
+; generic mus_reg-computation music_apply_noise needs is dead weight this
+; routine does not pay for. and #$0F kept as defense-in-depth even though the
+; schema stores a canonical 0-15 note.
+sfx_apply:
+  lda sfx_note
+  cmp #$FF
+  bne sfx_apply_sounding
+  lda #$30
+  sta $400C
+  rts
+sfx_apply_sounding:
+  lda #$30
+  ora sfx_volume
+  sta $400C
+  lda sfx_trig
+  beq sfx_apply_done
+  lda #0
+  sta sfx_trig
+  lda sfx_note
+  and #$0F
+  sta tmp
+  lda #15
+  sec
+  sbc tmp
+  sta $400E
+  lda #$08
+  sta $400F
+sfx_apply_done:
   rts
 
   .endif

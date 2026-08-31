@@ -183,3 +183,25 @@ test('a Shake summarises its frame count, and says so plainly when it is 0', () 
   assert.equal(describeCommand({ op: 'shake', frames: 0 }), 'Shake screen for 0 frames (does nothing)', 'a 0-frame Shake must read as a no-op, the same way a 0px Move and a 0-frame Wait already do');
   assert.equal(describeCommand({ op: 'shake', frames: 10, off: true }), '(off) Shake screen for 10 frames');
 });
+
+// ---------------------------------------------------------- SFX authoring
+//
+// design-sfx.md §7 test 20: a freshly-added Play-a-sound-effect command must
+// name no effect (null), never effect 0 -- the identical 'item'/'song'
+// reasoning defaultCommand already applies elsewhere, so a brand-new command
+// reads as "not yet configured" rather than a real, plausible-looking choice
+// nobody actually picked.
+
+test('a freshly-added Play a sound effect command names no effect, never effect 0', () => {
+  const command = defaultCommand('sfx');
+  assert.equal(command.op, 'sfx');
+  assert.equal(command.sfx, null, 'a brand-new sfx command must not silently pick effect 0');
+});
+
+test('a Play a sound effect command shows the real effect name, or Missing effect for a null or stale reference', () => {
+  const context = { sfx: [{ name: 'Boop' }, { name: 'Zap' }] };
+  assert.equal(describeCommand({ op: 'sfx', sfx: 1 }, context), 'Play a sound effect: Zap');
+  assert.equal(describeCommand({ op: 'sfx', sfx: null }, context), 'Play a sound effect (missing effect)');
+  assert.equal(describeCommand({ op: 'sfx', sfx: 99 }, context), 'Play a sound effect (missing effect)', 'a stale, out-of-range reference must read as missing too');
+  assert.equal(describeCommand({ op: 'sfx', sfx: 0, off: true }, context), '(off) Play a sound effect: Boop');
+});

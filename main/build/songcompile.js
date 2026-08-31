@@ -11,7 +11,8 @@ import {
   OP_INSTRUMENT,
   PERIOD_TABLE,
   normalizeSong,
-  songTimeline
+  songTimeline,
+  normalizeSfx
 } from '../../shared/audio.js';
 
 const MAX_DURATION = 255;
@@ -165,6 +166,59 @@ export function songTables(songs) {
       body.push(`  .dw ${name}_loop`);
       chunks.push(body.join('\n'));
     }
+  });
+
+  return `${chunks.join('\n')}\n`;
+}
+
+// ------------------------------------------------------------------- sfx
+
+/**
+ * A genuinely separate, smaller format from compileSong's -- one channel, fixed
+ * volume, no instrument/envelope, no loop opcode. [volume][note-or-REST, duration]...
+ * plus a defensive trailing REST,0 (see design-sfx.md §3.2). Pure; sfxSize/sfxTables
+ * (main/build/generate.js) and SfxReplayer (renderer/forges/sound/) both read this
+ * same output, so the ROM, the capacity meter and the preview cannot drift.
+ */
+export function compileSfx(rawSfx) {
+  const sfx = normalizeSfx(rawSfx);
+  const bytes = [sfx.volume & 0x0f];
+  for (const step of sfx.steps) {
+    bytes.push(step.note === null ? OP_REST : step.note, step.duration);
+  }
+  bytes.push(OP_REST, 0); // defensive terminator, see design-sfx.md §3.2
+  return { bytes };
+}
+
+/**
+ * Emit the pointer table (one 2-byte entry per effect, not per channel -- there is
+ * exactly one channel, fixed at assemble time) and every effect's own compiled
+ * stream. Unconditional, the same as songTables above: an authored-but-unreferenced
+ * effect still compiles, mirroring songs' own existing behavior (design-sfx.md §3.10).
+ * Emits both labels with zero .db bytes for an empty list -- script_op_sfx's own
+ * source can reference them even when no effect is authored (a live command naming a
+ * deleted effect), and nesasm needs the symbols to resolve regardless of whether that
+ * path is ever reached at runtime.
+ */
+export function sfxTables(sfxList) {
+  const list = sfxList?.length ? sfxList : [];
+  const compiled = list.map((sfx) => compileSfx(sfx));
+  const label = (index) => `sfx${index}`;
+
+  const chunks = ['; Generated -- sound effect streams.'];
+  chunks.push(
+    compiled.length
+      ? `sfx_ptr_table_lo:\n  .db ${compiled.map((_, index) => `LOW(${label(index)})`).join(',')}`
+      : 'sfx_ptr_table_lo:'
+  );
+  chunks.push(
+    compiled.length
+      ? `sfx_ptr_table_hi:\n  .db ${compiled.map((_, index) => `HIGH(${label(index)})`).join(',')}`
+      : 'sfx_ptr_table_hi:'
+  );
+
+  compiled.forEach((sfx, index) => {
+    chunks.push(`${label(index)}:\n${dbBlock(sfx.bytes)}`);
   });
 
   return `${chunks.join('\n')}\n`;
