@@ -632,8 +632,8 @@ need anything the PPU cannot do:
   and CLAUDE.md's own routes note under the `nests: true` paragraph.
 - ~~**Fade** in and out (palette ramp)~~ — shipped
 - ~~**Screen shake**~~ — shipped — and ~~**palette flash**~~ — shipped
-- Play a **sound effect** or ~~music sting~~ — the sting shipped as `Sting`; a true sound effect is
-  still open, see below
+- ~~Play a **sound effect** or music sting~~ — **done**: the sting shipped as `Sting`, and the true
+  sound effect shipped too, as the `Sfx` command (`OP_SFX`) — see the costing below.
 - ~~**Show / hide** an actor~~ — shipped
 - ~~**Change a tile or metatile** on the current screen~~ — shipped
 - Basic **camera / scroll** control — split into its own item, see item 12 below
@@ -744,19 +744,34 @@ conclusion from this same 220, not the stale 223.)
   opcode. That second option is the one worth taking.~~ — **this corrects an earlier draft of this
   section**: the authored-Wait-sequence option was *not* taken. The real retention-and-restoration
   mechanism was built instead — `sting_snapshot`/`sting_restore`/`sting_tick` in `engine/music.asm`,
-  pausing and resuming whatever song was already playing through the unmodified driver, `.if
-  STING_ENABLED`-gated — at a measured `STING_KERNEL_ALLOWANCE` of 175 bytes (`main/build/
-  generate.js`, equality-asserted in `test/unit/kernelbytes.test.js`), landing inside the
-  ~150-300-byte band the rejected option's estimate carried. Those 175 bytes are why MMC3 now has a
+  pausing and resuming whatever song was already playing through the unmodified driver, at a measured
+  175 bytes total (`main/build/generate.js`, equality-asserted in `test/unit/kernelbytes.test.js`),
+  landing inside the ~150-300-byte band the rejected option's estimate carried. (`STING_KERNEL_ALLOWANCE`
+  itself no longer exists as a single constant — item 6's sound-effect slice, below, decomposed it into
+  `STING_KERNEL_ALLOWANCE_STANDALONE` 160, `.if STING_ENABLED`-gated so a Sting-free project pays none
+  of it, plus the shared `AUDIO_FX_KERNEL_ALLOWANCE` 15, `.if AUDIO_FX_ENABLED`-gated instead so an
+  SFX-only project pays it too — summing to the same 175 for a Sting-only project, so every figure in
+  this paragraph still holds.) Those 175 bytes are why MMC3 now has a
   third documented-limitation refusal (`sample-rpg` with Save, Move and a live Sting, no item —
   tested in `kernelbytes.test.js`), and on an MMC3 project whose sole live event is a Sting-only
   command, `kernelShortfallAdvice` correctly frees 175 + 19 = 194 bytes together via the dependent
-  `SPLIT_LOCK_KERNEL_ALLOWANCE` term. See `handoff-sting/design-sting.md` for the full design and
-  CLAUDE.md's own `sting_snapshot`/`sting_restore`/`sting_tick` passage for the mechanism. A true
+  `SPLIT_LOCK_KERNEL_ALLOWANCE` term. See `handoff-sting/design-sting.md` for the full design
+  and CLAUDE.md's own `sting_snapshot`/`sting_restore`/`sting_tick` passage for the mechanism. ~~A true
   **sound effect** (independent of whatever song is playing, borrowing an APU channel briefly) is
   genuinely new and touches `music_tick`, which runs unconditionally every frame including during
   battle and dialogue — real, always-paid branching, not free-when-off. Estimated **~150-300 bytes**,
-  and this remains open.
+  and this remains open.~~ — **done**: it shipped as the `Sfx` command (`OP_SFX`), a fixed noise-channel
+  (`SFX_CHANNEL = 3`) burst with its own two-phase cleanup that hands the channel back to whatever the
+  music system was doing. Both predictions in the struck-through text were wrong, and this corrects
+  them explicitly rather than dropping them. The estimate: standalone cost measured at
+  `SFX_KERNEL_ALLOWANCE_STANDALONE` 295 bytes plus the shared `AUDIO_FX_KERNEL_ALLOWANCE` 15 — 310 for
+  an SFX-free-of-Sting project, exceeding the ~150-300 band's own top; with a live Sting too the total
+  is 475 (`STING_SFX_INTERACTION_ALLOWANCE` 5 more on top of both standalone terms), matched
+  independently by measurement. The "always-paid branching, not free-when-off" claim: also wrong — the
+  shipped feature is `.if SFX_ENABLED`-gated the same as every other verb, and a cross-tree ROM hash
+  comparison (`handoff-sfx/sfx-implementation-report.md` §4) proves an SFX-free `sample/` build is
+  byte-for-byte identical with and without the feature in the tree. See CLAUDE.md's own SFX passage and
+  `handoff-sfx/design-sfx.md` for the mechanism.
 - **Show / hide an actor.** Built. The semantic choice this bullet used to say nobody had made yet is
   made: hidden means invisible but otherwise fully alive. `draw_entities` (`engine/entities.asm`) is
   the *only* reader of the hidden bit; `update_entities`'s own AI (`entity_patrol`/`entity_chase`),
@@ -891,26 +906,31 @@ case is already negative before item 6 exists at all. So "does not compose indef
 is now a number: on this codebase's own reference scenario, kernel-lo has room for roughly a third of
 the item, not all of it, and that is board- and configuration-dependent rather than a fixed ceiling.
 
-**What actually happened once `Fade`, `Flash`, `Sting` and switch-bound tiles were each costed and
-shipped: exactly the pattern this paragraph predicted — most of them fit as ordinary conditional
-kernel-lo code, and the tightest combinations hit the same kind of documented-limitation wall
-`Save`+`Move` already did, rather than being blocked outright.** `Fade` alone measures 146
-(`FADE_KERNEL_ALLOWANCE`) + 55 (`PALETTE_FX_KERNEL_ALLOWANCE`, shared with Flash) = 201 bytes — well
-past the 72 bytes this scenario's `Turn`+`Wait`+`Show`/`Hide` combination leaves, confirming "not
-enough for Fade" while correcting the estimate that produced it. `Sting` (175 bytes,
-`STING_KERNEL_ALLOWANCE`) created MMC3's third documented-limitation refusal
+**What actually happened once `Fade`, `Flash`, `Sting`, switch-bound tiles and the `Sfx` sound effect
+were each costed and shipped: exactly the pattern this paragraph predicted — most of them fit as
+ordinary conditional kernel-lo code, and the tightest combinations hit the same kind of
+documented-limitation wall `Save`+`Move` already did, rather than being blocked outright.** `Fade`
+alone measures 146 (`FADE_KERNEL_ALLOWANCE`) + 55 (`PALETTE_FX_KERNEL_ALLOWANCE`, shared with Flash) =
+201 bytes — well past the 72 bytes this scenario's `Turn`+`Wait`+`Show`/`Hide` combination leaves,
+confirming "not enough for Fade" while correcting the estimate that produced it. `Sting` (175 bytes —
+`STING_KERNEL_ALLOWANCE_STANDALONE` 160 + the shared `AUDIO_FX_KERNEL_ALLOWANCE` 15, the constant's
+own decomposition once `Sfx` shipped) created MMC3's third documented-limitation refusal
 (`sample-rpg` with Save, Move, no item, and a live Sting — `test/unit/kernelbytes.test.js`). Switch-
 bound tiles (388 bytes plus table costs) closed two previously-comfortable rows outright: MMC3
 Save+Move-no-item and MMC1 Save+Move+item are both refused once a live bound tile is added (CLAUDE.md,
-"Switch-bound tiles (design-tile.md)"). And the item-6 costing pass that measured all this also found
-combinations this paragraph never considered: MMC1's own Save+Move+item row, comfortable with 220
-bytes free on its own, is refused by 296 bytes once every verb included in that earlier costing pass
-(`Turn`, `Wait`, Shake, `Show`/`Hide`, `Fade`, `Flash` — that pass predates `Sting` and switch-bound
-tiles, so it is not literally every shipped verb as of today) is also live on the same project
-(CLAUDE.md, near "the item-6 costing pass"), while the same combination with no `Save` fits with 483
-bytes free — confirming again that it is `Save`+`Move` specifically, not the verb count alone, that
-closes the gap. None of this needed a fourth kernel diet or a banked region to ship; each refusal is
-an accepted, documented limitation the same way `Save`+`Move` already was.
+"Switch-bound tiles (design-tile.md)"). `Sfx` (`SFX_KERNEL_ALLOWANCE_STANDALONE` 295, plus the shared
+`AUDIO_FX_KERNEL_ALLOWANCE` 15 — 310 Sting-free) closed five more rows across all three RPG-capable
+boards on its own standalone cost alone, the largest set of refusals any single verb in this ledger has
+produced (CLAUDE.md's own SFX passage, and item 6's own section above). And the item-6 costing pass
+that measured all this also found combinations this paragraph never considered: MMC1's own
+Save+Move+item row, comfortable with 220 bytes free on its own, is refused by 296 bytes once every verb
+included in that earlier costing pass (`Turn`, `Wait`, Shake, `Show`/`Hide`, `Fade`, `Flash` — that
+pass predates `Sting`, switch-bound tiles and `Sfx`, so it is not literally every shipped verb as of
+today) is also live on the same project (CLAUDE.md, near "the item-6 costing pass"), while the same
+combination with no `Save` fits with 483 bytes free — confirming again that it is `Save`+`Move`
+specifically, not the verb count alone, that closes the gap. None of this needed a fourth kernel diet
+or a banked region to ship, `Sfx` included; each refusal is an accepted, documented limitation the same
+way `Save`+`Move` already was.
 
 **Recommendation: do not make a banked region item 6's primary vehicle.** Ship the verbs that are
 cheap and need no `mtptr` access (`Turn`, `Wait`, `Show`/`Hide`, shake) as ordinary conditional
@@ -927,7 +947,12 @@ byte figures didn't land the same way relative to their own pre-implementation e
 `Sting` (175 bytes) fit inside the ~150-300 estimate the rejected retention-mechanism option carried,
 while `Fade`'s real Fade-only total (201 bytes — `FADE_KERNEL_ALLOWANCE` 146 +
 `PALETTE_FX_KERNEL_ALLOWANCE` 55, above) exceeded the ~80-150 this section originally estimated for
-it. A true sound effect remains uncosted and open. Take the `entity_patrol`/
+it. The true sound effect has since shipped too (item 6's own section, above), and it is the second of
+these three to miss its own estimate, by a smaller margin than `Fade`'s: `SFX_KERNEL_ALLOWANCE_STANDALONE`
+measured 295 bytes against the same ~150-300 band the SFX estimate had been pinned to, so a Sting-free
+SFX project's real marginal cost (310, with the shared `AUDIO_FX_KERNEL_ALLOWANCE` 15 added) clears the
+band's own top by 10 bytes — a real overrun, but well inside `Fade`'s own 51-byte one (201 against its
+~80-150 band's top of 150). Take the `entity_patrol`/
 `move_tick` diet opportunistically rather than counting on it. ~~Split camera/scroll out of this item
 entirely into its own future roadmap entry — it is a different kind of thing than the other six, not
 a bigger version of the same thing.~~ — **done**: see item 12 below.
@@ -1319,10 +1344,18 @@ verb.~~ — both halves of this are now false, and this corrects an earlier draf
 most boards, simply have. `Flash` shipped alongside it (`FLASH_KERNEL_ALLOWANCE` 98, sharing the same
 55). The music-sting half of "sound effect or sting" also shipped — not as the authored-Wait-sequence
 option this file once recommended, but as a real retention-and-restoration mechanism
-(`STING_KERNEL_ALLOWANCE` 175) — and, on MMC3's tightest row, landed exactly where the "diet or
+(`STING_KERNEL_ALLOWANCE` 175, since decomposed into `STING_KERNEL_ALLOWANCE_STANDALONE` 160 + the
+shared `AUDIO_FX_KERNEL_ALLOWANCE` 15 by the sound-effect slice below — same 175 sum for a Sting-only
+project) — and, on MMC3's tightest row, landed exactly where the "diet or
 banked region only needed for the tightest configuration" distinction predicted: a third accepted
-documented limitation, not a blocker (item 6's own section, above). A true sound effect, independent
-of `Sting`, remains uncosted and open. The persistent-tile-change reading was settled, and shipped, as
+documented limitation, not a blocker (item 6's own section, above). The true sound effect,
+independent of `Sting`, has since shipped too, as the `Sfx` command — costed at
+`SFX_KERNEL_ALLOWANCE_STANDALONE` 295 bytes (310 with the shared `AUDIO_FX_KERNEL_ALLOWANCE` 15;
+475 with a live `Sting` too, `STING_SFX_INTERACTION_ALLOWANCE` 5 more) — and it landed the same way:
+five new documented-limitation refusals across MMC1, MMC3 and UNROM 512, each with its own named test
+in `test/unit/kernelbytes.test.js`, and two fits controls confirming the both-live combination and an
+item-plus-SFX-only combination still build. See item 6's own section, above, and CLAUDE.md's SFX
+passage for the full figures. The persistent-tile-change reading was settled, and shipped, as
 switch-bound tiles — a third design neither of item 6's original two readings anticipated
 (`BOUND_TILE_KERNEL_ALLOWANCE` 388, plus a 30-byte fixed table and 2 bytes/screen), closing two
 previously-comfortable rows on its own (item 6's own section, above; CLAUDE.md's "Switch-bound tiles
@@ -1331,8 +1364,9 @@ split into its own roadmap entry — item 12 — for exactly the "different kind
 reason given above; it has no kernel-lo cost to weigh yet because no mechanism has been designed.
 ~~What remains open under item 6 itself: the route-authoring/preview convenience for `Move`/`Turn`/
 `Wait` (pure Map Forge/compiler work, no engine cost) and a true sound effect.~~ — **done**
-(`b36093e`): the route-authoring/preview convenience shipped, at zero engine cost, exactly as
-predicted here. What remains open under item 6 itself is now only a true sound effect. Item 5 was mostly tables
+(`b36093e`, `84482ef`): the route-authoring/preview convenience shipped at zero engine cost, exactly as
+predicted here, and the true sound effect shipped too, as the `Sfx` command (above). Item 6 is now
+complete: every verb, the routes tool, switch-bound tiles, `Sting` and the SFX. Item 5 was mostly tables
 and editor work; phase 4c no longer is either — it is
 **done** (round 6 closed the verification gaps round 4c left outstanding, above), and it
 cost 76 real bytes of kernel-lo (`ITEM_KERNEL_ALLOWANCE` 16 +

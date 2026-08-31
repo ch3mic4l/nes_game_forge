@@ -152,7 +152,15 @@ Anything the 6502 engine and the JavaScript tooling both depend on has **one** d
   it plays an existing song through the same unmodified driver, pausing and resuming whichever
   song was already playing — see `handoff-sting/design-sting.md` for the full design and
   `engine/music.asm`'s own `sting_snapshot`/`sting_restore`/`sting_tick` comments for the
-  mechanisms.
+  mechanisms. The `Sfx` scripted command (item 6's last verb) is a genuinely separate, smaller
+  format beside the music one, not a variant of it, with its own single-writer contract:
+  `shared/audio.js` owns it (`NO_SFX`, `SFX_MAX_STEPS`, `sfxByte`, `normalizeSfx`,
+  `sfxFrameLength`), and it is implemented three times the same way the music format is — the
+  6502 driver's `sfx_*` routines in `engine/music.asm`, `compileSfx`/`sfxTables` in
+  `main/build/songcompile.js`, and `SfxReplayer` in `renderer/forges/sound/replayer.js` — held
+  byte-identical by `test/unit/sfx.test.js`'s own golden trace, 25 tests covering the ROM's APU
+  writes diffed against the replayer frame-by-frame, all four channel groups, the cleanup frame,
+  and `$4015` write interception. See `handoff-sfx/design-sfx.md` for the full design.
 - The NES palette → `shared/nespalette.js`, shared by the editors *and* the emulator, so the
   in-app preview matches the editors by construction.
 - The message font → `shared/font.js`: the glyph art, the character-to-tile mapping, the window
@@ -430,6 +438,15 @@ shape it fails to recognise reads as a successful build until the ROM that was n
 fails to rename, so it also falls back on nesasm's own `# N error(s)` count. `build:run` is the
 one IPC channel that does not flatten its error through `fail()`, because the `{file, line}` array
 is what the deep-link needs.
+
+**nesasm v3.1 also crashes outright on a long label**, an undocumented limit found while building the
+SFX feature: a label of 31 or more characters aborts the assembler with a glibc `_FORTIFY_SOURCE`
+buffer-overflow error (exit 134) rather than reporting a normal error line; 30 characters assembles
+cleanly. Found by binary search after two new engine labels reached 32 characters
+(`handoff-sfx/sfx-implementation-report.md` §2); both were renamed to 24 characters or fewer and no
+other change was needed. Unlike the "6502 traps" list below, this one has no regression test — it is
+recorded here as a known assembler limit to keep new labels under, not a claim this codebase actively
+guards against.
 
 The editor (`renderer/forges/code/`) is hand-rolled — no runtime dependencies and no bundler rule
 out Monaco and CodeMirror, not the CSP; CodeMirror 6 needs no `unsafe-eval` at all. `highlight.js`
@@ -1090,16 +1107,24 @@ the gap (88 free without it, against 11 short with it). So advice of the shape "
 Save+Move" is correct on MMC3 and wrong on UNROM 512, and the two boards' documented limitations should
 not be read as the same kind of shortfall.
 
-**Item 6's sound-effect slice turns that same MMC3 Save+Move-no-item row — 88 free, currently
+**A live `Sting` command turns that same MMC3 Save+Move-no-item row — 88 free, currently
 fitting — into a third, unrelated documented limitation.** A live `Sting` command costs
-`STING_KERNEL_ALLOWANCE`: 175 bytes, measured (not the item-6 design pass's own 176-byte
-pre-implementation estimate) identically on all three RPG-capable boards
+175 bytes — `STING_KERNEL_ALLOWANCE_STANDALONE` 160 plus the shared `AUDIO_FX_KERNEL_ALLOWANCE` 15,
+the pair the SFX slice below decomposed the historical flat `STING_KERNEL_ALLOWANCE` constant into
+(same 175 sum for a Sting-only project, so every figure in this passage still holds) — measured (not
+the item-6 design pass's own 176-byte pre-implementation estimate) identically on all three
+RPG-capable boards
 (`test/unit/kernelbytes.test.js`), real engine code
 (`engine/music.asm`'s `sting_snapshot`/`sting_restore`/`sting_tick` plus the `force_trig`/
 cancellation-check/`music_stop`-clear additions to `music_channel`/`music_play`/`music_stop`,
 `engine/script.asm`'s `script_op_sting`, and the `main_loop` call site in `engine/boot.asm`) with
-nowhere unconditional to go, `.if STING_ENABLED`-gated so a Sting-free project pays none of it.
-175 exceeds MMC3's own 88-byte margin on this row by nearly double — not a close call either
+nowhere unconditional to go — but the gate no longer matches the flat 175 figure as a single unit.
+`STING_KERNEL_ALLOWANCE_STANDALONE`'s own 160 bytes are `.if STING_ENABLED`-gated so a Sting-free
+project pays none of them; the shared `AUDIO_FX_KERNEL_ALLOWANCE` 15 (`force_trig`, the same block
+the SFX passage below reaches from the other side) is `.if AUDIO_FX_ENABLED`-gated instead
+(`engine/music.asm`'s own comment there: "gated AUDIO_FX_ENABLED (Sting or SFX live), not
+STING_ENABLED alone"), so an SFX-only project pays it too. A project with neither feature live pays
+neither term. 175 exceeds MMC3's own 88-byte margin on this row by nearly double — not a close call either
 board's own margin could plausibly recover from without a real diet, the same shape the two
 refusals above already are. `'sample-rpg with Save, Move (no item) and a live Sting does not build
 on MMC3 -- a documented limitation'` is the test (`test/unit/kernelbytes.test.js`); it asserts the
@@ -1109,7 +1134,8 @@ Save+Move+item test above already holds itself to. Unlike the items asymmetry ju
 Sting's own dependent-term interaction is the *Move* precedent, not a new one: on MMC3, a project
 whose sole live event is a Sting-only command is that project's only reason `fontBankSplit` turns
 `SPLIT_LOCK_KERNEL_ALLOWANCE` on at all, so `kernelShortfallAdvice` correctly reports removing it
-frees `STING_KERNEL_ALLOWANCE + SPLIT_LOCK_KERNEL_ALLOWANCE` (175 + 19 = 194) together in that
+frees `(STING_KERNEL_ALLOWANCE_STANDALONE + AUDIO_FX_KERNEL_ALLOWANCE) + SPLIT_LOCK_KERNEL_ALLOWANCE`
+(160 + 15 + 19 = 194) together in that
 case — `kernelCodeBytes`-derived, not summed from the flat constants, the identical reasoning this
 file's own dependent-term passages already give for Move/Turn's shared `FACE_KERNEL_ALLOWANCE` and
 Fade/Flash's shared `PALETTE_FX_KERNEL_ALLOWANCE`.
@@ -1123,7 +1149,8 @@ reading `[mtptr_lo],y` directly, with a non-suspending flip (`flip_tick`, one bu
 frame, a deduped FIFO queue for whatever does not fit) for a switch toggled while the screen is
 already on display. `BOUND_TILE_KERNEL_ALLOWANCE` is 388 bytes, measured (not design-tile.md's own
 382-byte estimate) identically on all three RPG-capable boards (`test/unit/kernelbytes.test.js`) —
-flat the way `STING_KERNEL_ALLOWANCE` is, and for the same reason (no board-specific branch in any
+flat the way `STING_KERNEL_ALLOWANCE_STANDALONE`/`AUDIO_FX_KERNEL_ALLOWANCE` are, and for the same
+reason (no board-specific branch in any
 of the new routines) rather than because every allowance in this file happens to be flat. Unlike
 Move/Sting, a bound tile never turns `projectUsesText` (and so `fontBankSplit`) on by itself — it
 adds no dialogue, event or title content of its own — so it carries no split-lock dependent term.
@@ -1146,6 +1173,66 @@ build. MMC1's own Save+Move+item row is the interesting one: every other feature
 in this file left it comfortable, and a bound tile is the first to close it — not because MMC1 is
 special, but because 420 bytes is the largest single addition any feature in this ledger has made at
 once.
+
+**A true sound effect (item 6's last verb, the `Sfx` command / `OP_SFX`) is a fifth documented
+limitation, and the first feature costed as four separate allowance terms rather than one or two.**
+`SFX_CHANNEL = 3` (`engine/constants.asm`) fixes the stolen channel to the noise channel; a two-phase
+`sfx_state` machine (idle / playing / cleanup) writes `$4015 = $0F` on every trigger and tail-`jmp`s
+into `music_channel` on the cleanup tick so the interrupted song resumes with no dropped frame — the
+session-boundary clear lives in `init_session`, not `music_stop`, because a Play-music→Silence
+transition routes through `music_stop` and must not cancel an in-flight SFX; `music_stop` and
+`sting_restore_skip_sfx` carry their own ownership guards instead. Mechanism depth is in
+`handoff-sfx/design-sfx.md` and `engine/music.asm`'s own comments, not duplicated here. The cost is
+`SFX_KERNEL_ALLOWANCE_STANDALONE` 295 bytes plus the same shared `AUDIO_FX_KERNEL_ALLOWANCE` 15 Sting
+already pays (`AUDIO_FX_ENABLED = usesSting || usesSfx`, `projectUsesAudioFx` in `shared/project.js`)
+— 310 for a Sting-free project — plus `STING_SFX_INTERACTION_ALLOWANCE` 5 more when both are live at
+once (475 total). The three aggregate totals — Sting-only 175, SFX-only 310, both-live 475 — are each
+equality-asserted per board in `test/unit/kernelbytes.test.js`; the two component terms inside them,
+`AUDIO_FX_KERNEL_ALLOWANCE` and `STING_SFX_INTERACTION_ALLOWANCE`, are instead span-measured directly
+off `game.fns` on a single board, with the test's own comment recording why one board is enough —
+neither span depends on anything board-specific (no mapper branch inside `music_channel` or
+`sting_restore_silence`), so it is a property of the source text nesasm assembles identically
+everywhere, not a per-board fact to re-check on every capable board. The Sting-free marginal cost (310) exceeds
+even the ~150-300-byte pre-implementation estimate's own top.
+
+That standalone cost alone — not a dependent-term sum, unlike Sting's interaction with the split lock
+— is now large enough to close rows on its own: five new documented-limitation refusals, each with
+its own named test in `test/unit/kernelbytes.test.js` — MMC1 Save+Move+item (newly refused), MMC1
+Save+Move-no-item (a **declared deviation**: the design predicted this row as a razor-thin fit control
+at its own 283-byte SFX estimate, and the real, measured 295 refuses it instead, 31 bytes short), MMC3
+ALL-7-verbs+Move+item-no-Save (41 bytes short), and UNROM 512 both Save-only-w/-item and
+ALL-7+Move+item (42 bytes short) — plus the MMC3 Save+Move-no-item row Sting's own passage above
+already documents, now also reachable by a live SFX alone with no Sting in the picture, and MMC1
+Save+Move+item refused a second way with Sting *and* SFX both live together. Two fits controls confirm
+the boundary is real rather than over-drawn: `sample-rpg` with its one live item plus a live SFX and
+nothing else still builds on MMC3 (the board with the least headroom of the three), and — after a
+fixture correction below — the combination the design most wanted to prove, every shipped verb plus
+the one live item with Sting *and* SFX both live, still builds on MMC3 too.
+
+The both-live fit control's own history is worth recording where these refusal rows are cited: code
+review round 1 first reported that control as refused, but the coder's own four-run comparison (single
+event vs. separate actors, crossed with a title screen forced on vs. off) found the real cause was
+`assertSfxRefusal` forcing a title screen onto rows whose own named baseline
+(`handoff-costing/costing-report.md`) never carried one — an uncredited ~224-byte
+`TITLE_KERNEL_ALLOWANCE_BY_MAPPER` cost on MMC3 that has nothing to do with SFX. A `noTitle` option
+fixed the fixture; with it, the both-live control fits, restoring the design's original prediction.
+The same title-inflation bug turned out to affect the two ALL-7-verb refusal rows too: MMC3's
+old, title-inflated figure (`need 129, free −136`) corrected to the real `need 129, free 88` — still
+refused, but by the 41 bytes named above, not the inflated one — and UNROM 512's `need 129, free −125`
+corrected to `need 129, free 87`, refused by the real 42 bytes. Full account in
+`handoff-sfx/sfx-code-fixes1-report.md` §3, annotated in place in
+`handoff-sfx/sfx-implementation-report.md`.
+
+The dependent-term note Sting's own passage above already makes applies here too — dropping a
+project's *only* live audio-fx command frees the shared `AUDIO_FX_KERNEL_ALLOWANCE` 15 along with that
+command's own standalone term. `assertSfxRefusal` (`test/unit/kernelbytes.test.js`) covers the SFX
+direction of this: its own message assertion checks 310 when dropping SFX with no Sting live, and only
+`SFX_KERNEL_ALLOWANCE_STANDALONE + STING_SFX_INTERACTION_ALLOWANCE` (300) when Sting is still live,
+since the shared term is still owed to the Sting that remains — the helper always constructs and drops
+an SFX command, never a Sting one. The mirror-image Sting-only case (175, the historical flat figure
+holding as `STING_KERNEL_ALLOWANCE_STANDALONE + AUDIO_FX_KERNEL_ALLOWANCE`) is covered separately, by
+the dedicated Sting tests (`'STING_KERNEL_ALLOWANCE covers the real, isolated cost of a live Sting
+exactly, on every RPG-capable board'` and its neighbors).
 
 Because the margin can still run out — on MMC3 in a bigger project, or the next feature this bank has
 no room for — `checkCapacity` names what would close a gap like this one instead of only reporting the
@@ -1186,10 +1273,13 @@ since shipped too — `FADE_KERNEL_ALLOWANCE` 146 plus the `PALETTE_FX_KERNEL_AL
 with Flash, both measured — landing exactly where this paragraph predicted: ordinary conditional
 kernel-lo code, cheap enough for most boards and most projects but a real cost on the tightest ones
 (see the switch-bound-tiles and Sting passages above for what "the tightest ones" now means in
-practice). Only a true sound effect is still genuinely open on this front: real kernel code with
-nowhere left to go on the tightest boards until either MMC3 gets more margin or a second banked
-region the way the battle system got one, and conditional assembly does not compose indefinitely
-regardless. ~~The route-authoring and Map Forge preview half of "Move /
+practice). The true sound effect has since shipped too, landing exactly in the shape this paragraph
+predicted rather than the more pessimistic one it also raised as a possibility: ordinary conditional
+kernel-lo code (`SFX_KERNEL_ALLOWANCE_STANDALONE` 295 plus the shared `AUDIO_FX_KERNEL_ALLOWANCE` 15),
+real cost on the tightest boards — five documented-limitation refusals, see the SFX passage above — but
+no banked region or further kernel diet needed to ship it at all. Conditional assembly still does not
+compose indefinitely, and the margin these refusals spend from is real, but "nowhere left to go" turned
+out to overstate it. ~~The route-authoring and Map Forge preview half of "Move /
 turn / wait routes" is a different thing again: pure compiler/UI work with no engine cost at all,
 never blocked on kernel-lo margin the way this paragraph's other examples are, and still open for a
 different reason (nobody has built it yet, not that there is nowhere for it to go).~~ — **done**
@@ -1216,8 +1306,10 @@ not nothing, but not this one.
 **A command that holds commands is not a special case to be named, it is a `nests: true` entry.**
 ~~Two of them exist (`branch`, `choice`) and the third will be along.~~ — **done**: the third
 arrived as `route` (`b36093e`), and it is not just a third `nests: true` entry — it is
-`EVENT_COMMANDS`' first `virtual: true` one, appended immediately after `sting`, at the end of the
-array. Array position is the wire opcode for every real, `OP_*`-backed entry (`opIndex(id)`,
+`EVENT_COMMANDS`' first `virtual: true` one, at the end of the array. It arrived immediately after
+`sting` originally; the SFX slice then inserted the real `sfx` entry immediately before the virtual
+tail, per the catalog rule this same passage states below, so `route` is now immediately after `sfx`
+and still the array's last entry. Array position is the wire opcode for every real, `OP_*`-backed entry (`opIndex(id)`,
 `main/build/textcompile.js`); the catalog is a contiguous real prefix followed by a contiguous
 virtual tail, and a unit test (`'EVENT_COMMANDS: every real-opcode entry keeps its engine constant
 value; the virtual tail is contiguous and last'`, `test/unit/project.test.js`) pins both halves
