@@ -1305,6 +1305,173 @@ no design work has started.
 
 ---
 
+## 13. The Magic Forge
+
+Users create magic spells: set their **animations**, **damage/heal ranges**, the **type of magic**
+(damage, status effect, or heal), and the **damage type** (fire, ice, wind, water, holy, dark). Part
+of this is real machinery already shipped and only needs a home of its own; part is genuinely new. The
+item states which is which rather than reading as one undifferentiated feature.
+
+**Already exists.** `project.spells` (`shared/project.js`, cap `RPG_LIMITS.spells = 32`) is a real,
+compiled record today — `{id, name, mpCost, kind, amount, element, scope}` (`createSpell`) — authored
+inside the Sprite Forge's battle page (`renderer/forges/sprite/battle.js`: add, rename, MP cost, kind,
+amount, element, scope), with which spells a party member learns at which level on that same page's
+party tab — one bitmask byte per member per level, up to eight spells each (`battletables.js`).
+`SPELL_KINDS` (damage / heal / poison) is already append-only wire format (`SK_*` in
+`engine/constants.asm`), and poison is already a real status effect, not a placeholder: it ignores
+`amount` and deals a fixed 2 HP after each of the victim's turns until cured by a heal or the battle
+ends (`pc_status`/`mon_slot_status`, ticked by `battle_message_done`). `ELEMENTS` (`shared/project.js`)
+is live in the engine, not decorative — `spell_element` plus per-monster `mon_weak`/`mon_strong`
+tables (`battletables.js`), applied by `battleturn.asm`'s spell-damage rule: half again into a
+weakness, half into a strength ("elements only describe monsters" — the party carries no weakness of
+its own). `SPELL_SCOPES` (one / all) is likewise live both ways: monsters cast the same spells the
+party does (`cast_spell`/`cast_heal`/`cast_all` take either side, `other_side` decides reach). Item 5's
+own scope list already names "Skills and their effects" and "Status conditions (poison is already a
+status bit; this generalizes it)" as bullets its shipped phases never started: item 5 itself is "done,
+for items" — its Items Forge shipped, while equipment, skills and status-condition generalization
+stayed unbuilt, open roadmap items of their own (item 5's own accounting, above) — this item is where
+those two still-open threads pick up, not a new one.
+
+The precedent for pulling this authoring surface out into its own Forge is item 5's own Items Forge
+(`renderer/forges/items/items.js`): one `FORGES` entry in `renderer/app.js` — the single writer for
+which Forges exist — visited by `npm run smoke` via `app.forgeIds`, documented in CLAUDE.md. A Magic
+Forge is the same shape: move spell authoring (and the party's learned-spells tab) out from under the
+Sprite Forge's battle page into its own place in the rail.
+
+The current battle routines (`engine/battle.asm`, `battleui.asm`, `battleturn.asm` —
+`BATTLE_REGION_SOURCES`, `main/build/battletables.js`) and every table `battletables.js` emits already
+live in the **banked battle region**, not kernel-lo — unlike item 6's verbs, which had to fight
+kernel-lo's exhausted margin (above), this region has its own separate, exact capacity check
+(`battleRegionBytes`, `BASE_BATTLE_CODE_BYTES_BY_MAPPER`, `BATTLE_SLACK`,
+`test/unit/bankedbytes.test.js`) and roughly 4 KB of stock code in its 8 KB ceiling today. Most
+conventional battle-side additions — new fields on a spell or a monster, new table rows — are expected
+to draw from that same headroom. Animation is the one exception this item cannot promise a placement
+for yet: `draw_metasprite` (`engine/entities.asm`) is banked-region-adjacent code the way the rest of
+the engine's entity drawing is, but `PALETTE_FX` reuse is not — `PALETTE_FX_KERNEL_ALLOWANCE`
+(`main/build/generate.js`) is real kernel-lo cost, with its own gated code in `engine/entities.asm` and
+`engine/boot.asm`'s NMI. Whichever mechanism the shared animation design (below) actually picks decides
+which bank pays for it, and that stays open until it does. Anything the 6502 would need a multiply for
+is precomputed into tables by `battletables.js` rather than computed at runtime, which is also where
+this item's own new table bytes would land and grow.
+
+**Genuinely new in this item:**
+
+1. **The Forge itself** — moving spell authoring out of the Sprite Forge's battle page into a
+   dedicated Magic Forge, the Items Forge shape above.
+2. **Spell animations** — nothing exists today: casting is message lines and HP changes, with no
+   per-spell visual at all. This is the least-designed part of the item, and stays that way here
+   rather than being forced to a figure: what an animation even *is* on the battle screen —
+   a metasprite flipbook drawn over the target (`draw_metasprite`, `engine/entities.asm`), a palette
+   flash reusing the existing `PALETTE_FX` machinery (`PALETTE_FX_ENABLED`, shared by `Fade`/`Flash`),
+   or something else entirely — is an open design question this item records rather than settles.
+3. **Damage/heal ranges (min-max)** — `spell.amount` is one flat byte today (`normalizeSpell` clamps
+   it 1-255), with no range at all. The battle engine already has a real RNG (`rng_next`,
+   `engine/rpg.asm`), so rolling a range is a table-shape and engine-arithmetic question, not a
+   new-mechanism one. `SAVE_LAYOUT_VERSION` (`shared/save.js`, currently 2) only matters here if some
+   new per-spell state ends up serialized to a save record — flagged as a check this item owes, not
+   a cost already known to be owed.
+4. **Generalizing status effects beyond poison** — `SPELL_KINDS` being append-only means new kinds
+   are additive by construction. The storage is not the constraint: `pc_status`/`mon_slot_status`
+   already allocate one whole byte per combatant, with only bit 0 defined (`engine/constants.asm`'s
+   own "Status bits" comment) — seven bits already sit spare in that byte. What is single-status
+   today is the *logic*, not the storage: `poison_target` writes the whole value `1` rather than a
+   bit, `combatant_status` treats any nonzero byte as poison, and heals clear the byte outright.
+   Generalizing means assigning and preserving individual bits and extending the cure/tick/message
+   flow to more than one condition at once — the RAM arrays themselves only need to grow past eight
+   boolean statuses, or once a status needs its own payload beyond a single bit.
+5. **The element list is settled scope, not an open question.** The user's ask (31 Aug 2026) is
+   explicit: water and holy are distinct damage types, not relabelings of the shipped earth and
+   light — both pairs exist side by side. `water` and `holy` are **appended** as two new entries to
+   `ELEMENTS`, keeping every existing one (`none`, `fire`, `ice`, `wind`, `earth`, `light`, `dark`
+   all stay), growing the list to `none`, `fire`, `ice`, `wind`, `earth`, `light`, `dark`, `water`,
+   `holy`. Appending is also the mechanically safe direction, worth recording alongside the decision:
+   element ids live in project JSON and the array's index is the wire format compiled into
+   `mon_weak`/`mon_strong`/`spell_element` (`elementIndex`, `battletables.js`), so appending at the
+   end only ever adds new index values and leaves every existing one untouched — additive and
+   zero-break for every project already using `earth`/`light`. Renaming or replacing an existing
+   entry's id would have broken those projects instead, which is why appending is the one this item
+   commits to.
+
+---
+
+## 14. The Monster Forge
+
+Set monsters' **animations**, **tile maps for RPG battles**, **sprites for the overworld**, **HP**,
+**MP**, **magic resistances and weaknesses**, **how much damage they do**, **how much MP they have**,
+**how much XP, gold and items dropped when defeated**, and **what level the monster is at**. This
+Forge is an even more lopsided UI-reorganization item than item 13: almost every stat the user lists
+already exists on the actor's own `battle` record, authored today in the same Sprite Forge pages. A
+monster *is* an actor with a battle record — item 5's own opening sentence ("Reusing actors as
+monsters and items is a genuinely clever economy, and it will not scale as the system grows",
+`ROADMAP.md`'s own item 5 above) is exactly the framing, and this item is that sentence coming due for
+monsters the way item 5's shipped phases were for items.
+
+**Already exists**, per actor (`shared/project.js`'s `normalizeActor`, `actor.battle`, emitted as
+`mon_*` tables keyed by actor id in `main/build/battletables.js`):
+
+- **HP** (`actor.hp` → `mon_hp`), edited on the actor's own general panel
+  (`renderer/forges/sprite/sprite.js`, "Hit points") rather than the battle sub-page — it is general
+  actor data, not battle-specific, worth noting for the Forge-boundary question below. **MP**
+  (`battle.mp` → `mon_mp` — what the monster's own spell-casting spends) is edited on the battle
+  sub-page instead (`renderer/forges/sprite/battle.js`, "Magic points").
+- **Damage dealt and the rest of the combat statline**: `atk`/`def`/`acc`/`eva`/`speed` (→
+  `mon_atk`/`mon_def`/`mon_acc`/`mon_eva`/`mon_speed`), all labeled fields on the battle page today
+  (Attack, Defence, Speed, Accuracy, Evasion).
+- **Magic weakness and resistance**: `weak`/`strong`, one element each (→ `mon_weak`/`mon_strong`),
+  consumed live by `battleturn.asm`'s spell-damage rule — the same mechanism item 13's own
+  "Already exists" paragraph names for spells casting *into* it.
+- **XP** (`battle.xp`, 16-bit → `mon_xp_lo`/`mon_xp_hi`), **gold** (`battle.gold` → `mon_gold`), and
+  the **item drop**: `drop` (an item id, `NO_ITEM` sentinel) plus `dropPct` (→
+  `mon_drop`/`mon_drop_pct`, rolled by `roll_drop` in `engine/battleturn.asm`).
+- **Battle art — the user's "tile maps for RPG battles," already real**: `battleTile`/`battleW`/
+  `battleH` (→ `mon_tile`/`mon_w`/`mon_h`) is a block of background tiles on the battle tileset,
+  capped at `RPG_LIMITS.battleArtTiles` = 12 tiles wide or tall. One attribute byte
+  (`battlePalette` → `mon_attr`) tints the monster's anchored 4x4-tile attribute cell
+  (`draw_battle_attr`, `engine/battle.asm` — its own header comment: art is "anchored to a four-row,
+  four-column grid precisely so that one attribute byte covers all of it"). That cell is separate from
+  the 12-tile width/height cap, so it covers a block up to 4x4 exactly but not a larger one — a block
+  drawn past 4x4 is real, shipped capability, but tinting all of it is not; the routine writes exactly
+  one `mon_attr` byte and never reads `mon_w`/`mon_h`. `mon_tile = $FF` means no block art at all
+  — `draw_monsters` (`engine/battle.asm`) falls back to drawing the actor's own metasprite instead,
+  which is what lets every actor in a project fight without being redrawn for it.
+- **Overworld sprites and animations**: the actor's own metasprites and animations
+  (`project.sprites`), the Sprite Forge's core business already.
+- The monster's own **spell**: `spellId` → `mon_spell`, `$FF` meaning it only ever swings
+  (`monster_turn`, `engine/battleturn.asm` — a coin flip between casting and attacking when it can
+  afford the MP) — worth naming here since item 13 is where spells themselves get their Forge.
+
+**Genuinely new in the user's ask:**
+
+1. **The Forge itself** — monster authoring pulled out of the Sprite Forge's battle page into a
+   dedicated Monster Forge, the same Items Forge precedent item 13 already cites. Where the two
+   Forges' boundary actually falls is a real design question this item should record rather than
+   assume: the Sprite Forge would presumably keep the actor's overworld half (metasprites,
+   animations, `behavior`, `speed`, contact `damage`), but a monster *is* an actor —
+   `project.sprites.actors` is one array, and deleting an actor (`sprite.js`'s "Delete actor",
+   `project.sprites.actors.splice`) deletes whatever battle record it carried with it. A Monster
+   Forge cannot own a monster independently of the actor underneath it the way the Items Forge owns
+   an item independently of its backing Pickup actor.
+2. **Monster level** — nothing exists today. Party members have levels and a level curve
+   (`battletables.js` precomputes per-level stats into `pc_hp_at`/`pc_mp_at`/`pc_atk_at`/`pc_def_at`
+   and the XP curve into `xp_next_lo`/`xp_next_hi`); monsters have flat, hand-set stats with no level
+   dimension at all (`mon_hp`/`mon_atk`/etc. are one value per actor). What a monster's level would
+   *mean* — display metadata beside its name, a stat-scaling input that derives the rest of the
+   statline, or a curve of its own — is an open design question this item records rather than
+   settles. If it does settle on anything derived, the no-multiply rule already governing every other
+   RPG table applies here too: a scaling level is `battletables.js` build-time cost, not new engine
+   code.
+3. **Battle-side animations** — battle art is a static block today, with no motion and no
+   attack/cast animation on a monster at all. This shares the same open "what is an animation on the
+   battle screen" question item 13 records for spells (metasprite flipbook vs. `PALETTE_FX` reuse vs.
+   something else) rather than restating it — the two items would want one shared answer, not two
+   separately designed ones.
+
+**Shared with item 13, not repeated here**: which bank future engine work in either Forge would draw
+from — item 13's own paragraph above, which this item's battle-side animations (point 3) are equally
+subject to, not a separate claim; and item 5's scope list is where both Forges' threads originate.
+
+---
+
 ## Suggested order
 
 1. ~~Event names, list and search; duplication; templates; play-from-here — item 2 plus the first
