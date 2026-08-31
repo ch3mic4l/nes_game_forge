@@ -1189,10 +1189,23 @@ kernel-lo code, cheap enough for most boards and most projects but a real cost o
 practice). Only a true sound effect is still genuinely open on this front: real kernel code with
 nowhere left to go on the tightest boards until either MMC3 gets more margin or a second banked
 region the way the battle system got one, and conditional assembly does not compose indefinitely
-regardless. The route-authoring and Map Forge preview half of "Move /
+regardless. ~~The route-authoring and Map Forge preview half of "Move /
 turn / wait routes" is a different thing again: pure compiler/UI work with no engine cost at all,
 never blocked on kernel-lo margin the way this paragraph's other examples are, and still open for a
-different reason (nobody has built it yet, not that there is nowhere for it to go). The second kernel diet this paragraph used to point at as
+different reason (nobody has built it yet, not that there is nowhere for it to go).~~ — **done**
+(`b36093e`): the route-authoring/preview half of "Move / turn / wait routes" shipped, exactly the
+different thing this paragraph already said it was — pure compiler/UI work with no engine cost at
+all, proven rather than only argued by two separate pieces of evidence: the full-ROM route-vs-
+hand-chain test (`test/unit/routes.test.js`) builds a route and the same legs hand-chained as two
+temporary projects and asserts their compiled ROMs byte-identical, and the one-time cross-tree gate
+(`handoff-routes/routes-implementation-report.md`) built the route-free `sample/` project from a
+clean `git worktree add` at `6a44850` and from the implementation tree, recording the identical
+SHA-256 for both — that second comparison is what actually establishes zero engine bytes; the first
+establishes only that a route compiles the same as hand-chaining it. "Never blocked on kernel-lo margin"
+survives unchanged as the reason it *could* ship at zero bytes — that part was never in question;
+what was open was only that nobody had built it yet, and now it is. See this file's own routes note
+under the `nests: true` paragraph below, and `handoff-routes/design-routes.md` for the mechanism.
+The second kernel diet this paragraph used to point at as
 future work — measuring `engine/title.asm`'s already-conditional blocks — has happened
 (`TITLE_KERNEL_ALLOWANCE_BY_MAPPER`, two sections up), and it is real margin recovered on every board,
 but it does not touch *this* scenario: the project this paragraph is about already carries a live Save
@@ -1201,7 +1214,30 @@ was already paying the title term either way. The diet's margin lands on a title
 not nothing, but not this one.
 
 **A command that holds commands is not a special case to be named, it is a `nests: true` entry.**
-Two of them exist (`branch`, `choice`) and the third will be along. Anything asking a question of a
+~~Two of them exist (`branch`, `choice`) and the third will be along.~~ — **done**: the third
+arrived as `route` (`b36093e`), and it is not just a third `nests: true` entry — it is
+`EVENT_COMMANDS`' first `virtual: true` one, appended immediately after `sting`, at the end of the
+array. Array position is the wire opcode for every real, `OP_*`-backed entry (`opIndex(id)`,
+`main/build/textcompile.js`); the catalog is a contiguous real prefix followed by a contiguous
+virtual tail, and a unit test (`'EVENT_COMMANDS: every real-opcode entry keeps its engine constant
+value; the virtual tail is contiguous and last'`, `test/unit/project.test.js`) pins both halves
+directly, so a future engine-backed command has to insert immediately before the virtual tail and a
+future virtual one has to append after it. `route` holds one `who` and an ordered list of legs, each
+a real `move`/`turn`/`wait` record; `routeLegs`/`ROUTE_LEG_OPS` (`shared/eventrules.js`) is the
+single admission filter shared by the seven consumers that actually admit or reject a leg by it: the
+normalizer, `isLive`, `liveCommands`' own recursion, the compiler, the Map Forge editor's own row
+canonicalization, its summary line, and the preview's trace model — so none of *those* can disagree
+about what a route may hold. `allCommands` is the deliberate exception: its own route branch walks
+`command.legs` raw, unfiltered, because it answers "what is mentioned" (for renumbering and
+content-wide scans) rather than "what compiles," the same way it already walks a switched-off
+branch's contents. `liveCommands` recurses into a route's admitted legs
+*instead of* yielding the route command itself, because `encodeCommand`'s own `'route'` case
+(`main/build/textcompile.js`) writes no opcode of its own, only its legs' bytes, through the same
+`move`/`turn`/`wait` cases a standalone command already uses — so an authored route and the same
+commands hand-chained compile byte-identical, at zero engine cost. See
+`handoff-routes/design-routes.md` for the full design.
+
+Anything asking a question of a
 whole event walks `allCommands` in `shared/eventrules.js` rather than a page's own list, and
 anything asking how deep it may go asks `nests`. Both rules are there because the same defect
 happened twice: `usedSwitches` in `templates.js` read only the top level, so a switch set inside a

@@ -624,8 +624,12 @@ one is now a measured fact rather than a forecast:
 Event pages become dramatically more capable with a handful of presentation verbs, none of which
 need anything the PPU cannot do:
 
-- ~~**`Move`, `Turn`, `Wait`** commands~~ — shipped, individually; routes for an actor (chaining them
-  into one authored, previewed unit, with a preview in the Map Forge) are still open, see below
+- ~~**`Move`, `Turn`, `Wait`** commands~~ — shipped, individually; ~~routes for an actor (chaining
+  them into one authored, previewed unit, with a preview in the Map Forge) are still open, see
+  below~~ — **done** (`b36093e`): `route` shipped as `EVENT_COMMANDS`' last entry, the catalog's
+  first `virtual: true` member, flattening to the same Move/Turn/Wait opcodes hand-chaining would
+  emit — zero engine bytes, proven by a cross-tree ROM diff — with a Map Forge preview. See below
+  and CLAUDE.md's own routes note under the `nests: true` paragraph.
 - ~~**Fade** in and out (palette ramp)~~ — shipped
 - ~~**Screen shake**~~ — shipped — and ~~**palette flash**~~ — shipped
 - Play a **sound effect** or ~~music sting~~ — the sting shipped as `Sting`; a true sound effect is
@@ -657,10 +661,25 @@ conclusion from this same 220, not the stale 223.)
 **Per-verb costing, from reading the engine rather than guessing:**
 
 - **Move / turn / wait routes, with a Map Forge preview.** `Move` itself already shipped (379
-  measured bytes, `MOVE_KERNEL_ALLOWANCE`) — a sunk cost. The "route" and "preview" are Map Forge
+  measured bytes, `MOVE_KERNEL_ALLOWANCE`) — a sunk cost. ~~The "route" and "preview" are Map Forge
   authoring/compiler work with no engine cost at all, since a route compiles to a linear sequence of
-  per-leg opcodes on one page and `script_resume` already chains suspending commands correctly. The
-  real remaining engine cost is two small opcodes: `Turn` (store a `DIR_*` into `ent_dir,x` /
+  per-leg opcodes on one page and `script_resume` already chains suspending commands correctly.~~ —
+  **done** (`b36093e`): the prediction held exactly, proven rather than only argued by two separate
+  pieces of evidence — the full-ROM route-vs-hand-chain test (`test/unit/routes.test.js`) builds a
+  route and the same legs hand-chained as two temporary projects and asserts their compiled ROMs
+  byte-identical, and the one-time cross-tree gate
+  (`handoff-routes/routes-implementation-report.md`) built the route-free `sample/` project from a
+  clean `git worktree add` at `6a44850` and from the implementation tree, recording the identical
+  SHA-256 for both; that second comparison is what actually establishes zero engine bytes, the first
+  only that a route compiles the same as hand-chaining it. `route` is `EVENT_COMMANDS`'s last entry,
+  the catalog's first `virtual: true` member (no `OP_*` constant, no dispatch code of its own); its
+  compiler case (`main/build/textcompile.js`) flattens each admitted leg (`routeLegs`,
+  `shared/eventrules.js`) straight through `encodeCommand`'s existing `move`/`turn`/`wait` cases with
+  no framing byte, so an authored route and the same commands hand-chained compile byte-identical.
+  The Map Forge preview draws a route's trace on a placed, self-targeting entity and refuses with an
+  honest caption otherwise. See CLAUDE.md's own routes note (under the `nests: true` paragraph) and
+  `handoff-routes/design-routes.md` for the mechanism. The real remaining engine cost was always the
+  two small opcodes: `Turn` (store a `DIR_*` into `ent_dir,x` /
   `player_dir`) and `Wait` (a countdown ticked from `ui_tick` the same way `move_tick` already is,
   calling `script_resume` at zero — no coordinate math, no collision). Estimated ~50-80 bytes
   combined before either was built; measured since, on all three RPG-capable boards, identically:
@@ -916,13 +935,18 @@ a bigger version of the same thing.~~ — **done**: see item 12 below.
 - ~~**First slice: the `Turn` and `Wait` commands**~~ — **done**. Two new opcodes, each authorable on
   their own in the Map Forge's event editor. Needs no structural decision — both are cheap enough to
   fit even MMC1's worst measured case with margin, and touch no `mtptr`-dependent code at all. See
-  `test/unit/kernelbytes.test.js` for the measured, per-configuration byte cost. **Not done**: the
+  `test/unit/kernelbytes.test.js` for the measured, per-configuration byte cost. ~~**Not done**: the
   "Move / turn / wait routes" verb this was meant to complete also named a *route* — a sequence of
   legs authored and previewed together — and a Map Forge preview for it, at line 647 above. Neither
   is built. The individual commands exist and can already be chained by hand, one at a time, on a
   page; what is still open is the authoring convenience (one "route" tool instead of adding Move/Turn/
   Wait commands one by one) and the preview itself, both pure Map Forge/compiler work with no engine
-  cost — see the costing above, which already separated this out.
+  cost — see the costing above, which already separated this out.~~ — **done** (`b36093e`): both the
+  route tool and the preview shipped, as a second, later slice on top of this one. The honest history
+  stands — this first slice shipped only the individual `Turn`/`Wait` commands, chainable by hand one
+  at a time; the route-authoring convenience and its Map Forge preview followed afterward, at zero
+  further engine cost, exactly as the costing above already separated out. See the costing bullet
+  above and CLAUDE.md's own routes note for the mechanism.
 
 ## 7. Map organization and reuse
 
@@ -1305,8 +1329,10 @@ previously-comfortable rows on its own (item 6's own section, above; CLAUDE.md's
 (design-tile.md)" passage). Camera/scroll is the one item-6 verb that was never designed and is now
 split into its own roadmap entry — item 12 — for exactly the "different kind of thing entirely"
 reason given above; it has no kernel-lo cost to weigh yet because no mechanism has been designed.
-What remains open under item 6 itself: the route-authoring/preview convenience for `Move`/`Turn`/
-`Wait` (pure Map Forge/compiler work, no engine cost) and a true sound effect. Item 5 was mostly tables
+~~What remains open under item 6 itself: the route-authoring/preview convenience for `Move`/`Turn`/
+`Wait` (pure Map Forge/compiler work, no engine cost) and a true sound effect.~~ — **done**
+(`b36093e`): the route-authoring/preview convenience shipped, at zero engine cost, exactly as
+predicted here. What remains open under item 6 itself is now only a true sound effect. Item 5 was mostly tables
 and editor work; phase 4c no longer is either — it is
 **done** (round 6 closed the verification gaps round 4c left outstanding, above), and it
 cost 76 real bytes of kernel-lo (`ITEM_KERNEL_ALLOWANCE` 16 +
