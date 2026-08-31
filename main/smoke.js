@@ -983,6 +983,333 @@ const scenario = (dir, sampleDir, sampleRpgDir) => `
   await wait(200);
   step('sting authoring', 'Sting offered a song select with no Silence option, a fresh one showed Missing song, a real selection landed through onchange, and the outside-the-modal summary exact final segment read "Sting: Fanfare"');
 
+  // Route, added the way a user adds one -- and the one command whose row
+  // also has to prove its own preview is actually wired into the DOM and
+  // reacts to state, not merely that a pure trace-model helper exists
+  // somewhere (design-routes.md test 13/finding 6): a preview canvas never
+  // appended to the modal, or a caption that renders once and never
+  // refreshes on who changing, would both look correct in a source read.
+  rowButton(0, 'Edit event…').click();
+  await until('the event editor', () => document.querySelector('#modalHost .btn-accent'));
+  const addRoute = [...document.querySelectorAll('#modalHost select')].find((node) =>
+    node.textContent.includes('Add a command')
+  );
+  addRoute.value = 'route';
+  addRoute.dispatchEvent(new Event('change', { bubbles: true }));
+  await wait(200);
+  // rerender() replaces the whole modal body (fill = clear + append) on
+  // every change, so a DOM reference captured before a change is a detached
+  // node afterward -- everything here is re-found fresh, never cached
+  // across a dispatchEvent, the same discipline every other verb's own
+  // section in this file already follows.
+  const findRouteRow = () =>
+    [...document.querySelectorAll('#modalHost .field-row')].find((node) => node.querySelector('span')?.textContent === 'Route');
+  const findRouteBlockNow = () => {
+    const header = findRouteRow();
+    return header ? header.parentElement : null;
+  };
+  if (!findRouteRow()) throw new Error('adding a Route command produced no row');
+
+  // A fresh route defaults to who: self, on a placement-owned edit -- so the
+  // preview must show a canvas, not a caption, from the very first render.
+  if (!findRouteBlockNow().querySelector('canvas[data-route-preview="canvas"]')) {
+    throw new Error('a fresh route (who: self, on a placement) should preview as a canvas trace, not a caption');
+  }
+  if (findRouteBlockNow().querySelector('p[data-route-preview="caption"]')) {
+    throw new Error('a fresh route (who: self) must not show the no-trace caption');
+  }
+
+  // The leg-adding control: derived from ROUTE_LEG_OPS, offering exactly
+  // Move/Turn/Wait -- add one of each of the two this test drives.
+  const findAddLeg = () =>
+    [...findRouteBlockNow().querySelectorAll('select')].find((node) => node.textContent.includes('Add a leg'));
+  const legOptions = [...findAddLeg().options].filter((option) => option.value !== '').map((option) => option.textContent);
+  if (legOptions.join(',') !== 'Move actor,Turn actor,Wait') {
+    throw new Error('the leg-adding control offered ' + legOptions.join(',') + ', expected exactly Move/Turn/Wait');
+  }
+  findAddLeg().value = 'move';
+  findAddLeg().dispatchEvent(new Event('change', { bubbles: true }));
+  await wait(150);
+  const findMoveLegRow = () =>
+    [...findRouteBlockNow().querySelectorAll('.field-row')].find((node) => node.querySelector('span')?.textContent === 'Move');
+  const moveLegRow = findMoveLegRow();
+  if (!moveLegRow) throw new Error('adding a Move leg produced no row');
+  const moveLegSelects = moveLegRow.querySelectorAll('select');
+  const moveLegDist = moveLegRow.querySelector('input[type=number]');
+  if (moveLegSelects.length !== 1 || !moveLegDist) {
+    throw new Error('a Move leg row must offer exactly one select (direction, no who) and a distance input, saw ' + moveLegSelects.length + ' selects');
+  }
+  // Captured before a leg-field-only edit (not a structural add or a who
+  // toggle) specifically to prove the preview refreshes on its own -- round
+  // 1's own defect was that the four leg handlers mutated the leg but never
+  // called rerender(), so the preview kept showing the old trace until an
+  // unrelated structural/who change happened to rerender it anyway. Every
+  // check below happens strictly before this section's own later Add-a-leg
+  // and who-toggle steps, which would otherwise mask exactly this defect the
+  // same way the original smoke step did.
+  const canvasBeforeDirEdit = findRouteBlockNow().querySelector('canvas[data-route-preview="canvas"]');
+  if (!canvasBeforeDirEdit) throw new Error('expected a trace canvas to already be present before editing the Move leg’s direction');
+  const [moveLegDir] = moveLegSelects;
+  moveLegDir.value = 'right';
+  moveLegDir.dispatchEvent(new Event('change', { bubbles: true }));
+  await wait(120);
+  const canvasAfterDirEdit = findRouteBlockNow().querySelector('canvas[data-route-preview="canvas"]');
+  if (!canvasAfterDirEdit || canvasAfterDirEdit === canvasBeforeDirEdit) {
+    throw new Error('changing the Move leg’s direction did not refresh the preview -- the dir handler must call rerender()');
+  }
+
+  const canvasBeforeDistEdit = canvasAfterDirEdit;
+  findMoveLegRow().querySelector('input[type=number]').value = '24';
+  findMoveLegRow().querySelector('input[type=number]').dispatchEvent(new Event('change', { bubbles: true }));
+  await wait(120);
+  const canvasAfterDistEdit = findRouteBlockNow().querySelector('canvas[data-route-preview="canvas"]');
+  if (!canvasAfterDistEdit || canvasAfterDistEdit === canvasBeforeDistEdit) {
+    throw new Error('changing the Move leg’s distance did not refresh the preview -- the dist handler must call rerender()');
+  }
+  // The fixed limitation note must render alongside the canvas for a
+  // drawable trace, not just the canvas alone -- round 1 made caption and
+  // canvas mutually exclusive and never rendered this note for the
+  // drawable case at all.
+  if (!findRouteBlockNow().querySelector('p[data-route-preview="limitation-note"]')) {
+    throw new Error('a drawable route preview must render the fixed "cannot know runtime blocking" note alongside its canvas');
+  }
+
+  findAddLeg().value = 'wait';
+  findAddLeg().dispatchEvent(new Event('change', { bubbles: true }));
+  await wait(150);
+  const findWaitLegRow = () =>
+    [...findRouteBlockNow().querySelectorAll('.field-row')].find((node) => node.querySelector('span')?.textContent === 'Wait');
+  const waitLegRow = findWaitLegRow();
+  if (!waitLegRow) throw new Error('adding a Wait leg produced no row');
+  if (!waitLegRow.querySelector('input[type=number]')) throw new Error('a Wait leg row must offer a frame-count input');
+  const canvasBeforeFramesEdit = findRouteBlockNow().querySelector('canvas[data-route-preview="canvas"]');
+  findWaitLegRow().querySelector('input[type=number]').value = '15';
+  findWaitLegRow().querySelector('input[type=number]').dispatchEvent(new Event('change', { bubbles: true }));
+  await wait(150);
+  const canvasAfterFramesEdit = findRouteBlockNow().querySelector('canvas[data-route-preview="canvas"]');
+  if (!canvasAfterFramesEdit || canvasAfterFramesEdit === canvasBeforeFramesEdit) {
+    throw new Error('changing the Wait leg’s frame count did not refresh the preview -- the frames handler must call rerender()');
+  }
+
+  // Toggle who to the player: the preview must swap to the no-trace caption.
+  const routeWhoSelect = findRouteRow().querySelector('select');
+  if (!routeWhoSelect) throw new Error('the route header row offered no who select');
+  routeWhoSelect.value = 'player';
+  routeWhoSelect.dispatchEvent(new Event('change', { bubbles: true }));
+  await wait(150);
+  const afterPlayerBlock = findRouteBlockNow();
+  const playerCaption = afterPlayerBlock?.querySelector('p[data-route-preview="caption"]');
+  if (!playerCaption || playerCaption.textContent.toLowerCase().indexOf('player') === -1) {
+    throw new Error('switching who to the player must swap the preview to a caption naming the player, saw ' + JSON.stringify(playerCaption?.textContent));
+  }
+  if (afterPlayerBlock.querySelector('canvas[data-route-preview="canvas"]')) {
+    throw new Error('a who: player route must not still show a trace canvas');
+  }
+
+  // And back to self: the preview must swap back to a canvas.
+  findRouteRow().querySelector('select').value = 'self';
+  findRouteRow().querySelector('select').dispatchEvent(new Event('change', { bubbles: true }));
+  await wait(150);
+  const afterSelfBlock = findRouteBlockNow();
+  if (!afterSelfBlock.querySelector('canvas[data-route-preview="canvas"]')) {
+    throw new Error('switching who back to self must swap the preview back to a trace canvas');
+  }
+  if (afterSelfBlock.querySelector('p[data-route-preview="caption"]')) {
+    throw new Error('a who: self route on a placement must not show the no-trace caption');
+  }
+
+  document.querySelector('#modalHost .btn-accent').click();
+  await wait(300);
+  const routeCommands = store.project.maps[0].screens[3].entities[0].props.event.pages[0].commands;
+  const routeAdded = routeCommands[routeCommands.length - 1];
+  if (routeAdded?.op !== 'route' || routeAdded.who !== 'self') {
+    throw new Error('the Route command saved as ' + JSON.stringify(routeAdded));
+  }
+  if (
+    routeAdded.legs?.length !== 2 ||
+    routeAdded.legs[0].op !== 'move' ||
+    routeAdded.legs[0].dir !== 'right' ||
+    routeAdded.legs[0].dist !== 24 ||
+    routeAdded.legs[1].op !== 'wait' ||
+    routeAdded.legs[1].frames !== 15
+  ) {
+    throw new Error("the Route command's legs saved as " + JSON.stringify(routeAdded.legs));
+  }
+  if ('who' in routeAdded.legs[0]) {
+    throw new Error('a leg must never carry its own who: ' + JSON.stringify(routeAdded.legs[0]));
+  }
+  // No regex literal here: this whole scenario is a template literal, so a
+  // backslash-escaped paren would be eaten by its own parser before the
+  // renderer ever saw it -- a plain substring check sidesteps that entirely.
+  const routeSummaryRow = [...document.querySelectorAll('#stage [data-entity="0"] p.hint')].find((node) =>
+    node.textContent.includes('Route (This actor): Move This actor right 24px; Wait 15 frames')
+  );
+  if (!routeSummaryRow) {
+    throw new Error('the outside-the-modal summary did not read the authored route as expected');
+  }
+  // Just one undo, unlike Turn/Wait/Sting's own two-or-three above: adding
+  // the route, adding its legs and toggling who all mutate only the modal's
+  // own local draft (editEvent's own rerender(), never store.commit) --
+  // the only store.commit in this whole section is the Save at the end.
+  store.undo(); // the Save
+  await wait(200);
+  step('route authoring', 'Route offered exactly Move/Turn/Wait to add, wired a Move and a Wait leg with no who field, and the preview canvas/caption swapped correctly on who self<->player in both directions');
+
+  // Two fixtures proving the row tools (Remove/Duplicate) act on the right
+  // leg once an unadmitted one is canonicalized away, not on whatever
+  // raw-array index a filtered position happens to share with it (the
+  // round-2 defect round-3's canonicalization fix closed). The illegal leg
+  // cannot be authored through this editor's own UI at all -- the
+  // leg-adding control only ever offers the three admitted ops -- so it is
+  // injected directly, via store.commit, the same "store.commit() never
+  // runs normalizeProject" vehicle design-routes.md itself names.
+  const findLegRows = (block) =>
+    [...block.querySelectorAll('.field-row')].filter((node) => {
+      const label = node.querySelector('span')?.textContent;
+      return label === 'Move' || label === 'Turn' || label === 'Wait';
+    });
+  const findRouteBlock = () => {
+    const header = [...document.querySelectorAll('#modalHost .field-row')].find(
+      (node) => node.querySelector('span')?.textContent === 'Route'
+    );
+    return header ? header.parentElement : null;
+  };
+  const legButton = (row, label) => [...row.querySelectorAll('button')].find((node) => node.textContent === label);
+
+  // Fixture A -- the illegal leg sits first. Raw [say, move, turn]; visible
+  // [Move, Turn]. Remove on the visible Turn row (filtered position 1): a
+  // correct implementation removes Turn, leaving visible [Move] and stored
+  // legs [move]. Round 2's own bug spliced the RAW array at index 1 -- move,
+  // not turn -- leaving raw [say, turn] and a visible Turn-only row.
+  store.commit('smoke: inject illegal-leg-first route fixture', (project) => {
+    project.maps[0].screens[3].entities[0].props.event = {
+      pages: [
+        {
+          cond: { type: 'none', arg: 0 },
+          commands: [
+            {
+              op: 'route',
+              who: 'self',
+              legs: [
+                { op: 'say', text: 'illegal' },
+                { op: 'move', dir: 'down', dist: 16 },
+                { op: 'turn', dir: 'left' }
+              ]
+            }
+          ]
+        }
+      ]
+    };
+  });
+  await wait(150);
+  rowButton(0, 'Edit event…').click();
+  await until('the event editor', () => document.querySelector('#modalHost .btn-accent'));
+  const fixtureABlock = findRouteBlock();
+  if (!fixtureABlock) throw new Error('fixture A: opening a route with an illegal leg produced no route row at all');
+  const fixtureALegsBefore = findLegRows(fixtureABlock).map((row) => row.querySelector('span').textContent);
+  if (fixtureALegsBefore.join(',') !== 'Move,Turn') {
+    throw new Error('fixture A: expected the visible legs to be exactly Move,Turn before any edit, saw ' + fixtureALegsBefore.join(','));
+  }
+  const fixtureATurnRow = findLegRows(fixtureABlock)[1];
+  const fixtureARemove = legButton(fixtureATurnRow, '✕'); // the row tools' own remove glyph
+  if (!fixtureARemove) throw new Error('fixture A: the visible Turn row offered no Remove button');
+  fixtureARemove.click();
+  await wait(200);
+  const fixtureALegsAfter = findLegRows(findRouteBlock()).map((row) => row.querySelector('span').textContent);
+  if (fixtureALegsAfter.join(',') !== 'Move') {
+    throw new Error(
+      'fixture A: after Remove on the visible Turn row, expected exactly [Move] to remain, saw [' +
+        fixtureALegsAfter.join(',') +
+        '] -- round 2’s own bug would instead leave [Turn] here, having spliced Move out of the raw array'
+    );
+  }
+  document.querySelector('#modalHost .btn-accent').click();
+  await wait(300);
+  const fixtureARoute = store.project.maps[0].screens[3].entities[0].props.event.pages[0].commands[0];
+  if (
+    fixtureARoute?.op !== 'route' ||
+    fixtureARoute.legs?.length !== 1 ||
+    fixtureARoute.legs[0].op !== 'move' ||
+    fixtureARoute.legs[0].dir !== 'down' ||
+    fixtureARoute.legs[0].dist !== 16
+  ) {
+    throw new Error('fixture A: the persisted route was ' + JSON.stringify(fixtureARoute));
+  }
+  store.undo(); // the Save
+  await wait(200);
+  store.undo(); // this fixture's own injection commit
+  await wait(200);
+
+  // Fixture B -- the illegal leg sits between the two admitted ones. Raw
+  // [move, say, turn]; visible [Move, Turn]. Duplicate on the visible Turn
+  // row: a correct implementation duplicates Turn, leaving visible
+  // [Move, Turn, Turn]. Round 2's own bug would duplicate the hidden say leg
+  // at raw index 1, leaving the visible list unchanged at [Move, Turn].
+  store.commit('smoke: inject illegal-leg-between route fixture', (project) => {
+    project.maps[0].screens[3].entities[0].props.event = {
+      pages: [
+        {
+          cond: { type: 'none', arg: 0 },
+          commands: [
+            {
+              op: 'route',
+              who: 'self',
+              legs: [
+                { op: 'move', dir: 'down', dist: 16 },
+                { op: 'say', text: 'illegal' },
+                { op: 'turn', dir: 'left' }
+              ]
+            }
+          ]
+        }
+      ]
+    };
+  });
+  await wait(150);
+  rowButton(0, 'Edit event…').click();
+  await until('the event editor', () => document.querySelector('#modalHost .btn-accent'));
+  const fixtureBBlock = findRouteBlock();
+  if (!fixtureBBlock) throw new Error('fixture B: opening a route with an illegal leg produced no route row at all');
+  const fixtureBLegsBefore = findLegRows(fixtureBBlock).map((row) => row.querySelector('span').textContent);
+  if (fixtureBLegsBefore.join(',') !== 'Move,Turn') {
+    throw new Error('fixture B: expected the visible legs to be exactly Move,Turn before any edit, saw ' + fixtureBLegsBefore.join(','));
+  }
+  const fixtureBTurnRow = findLegRows(fixtureBBlock)[1];
+  const fixtureBDuplicate = legButton(fixtureBTurnRow, '⧉'); // the row tools' own duplicate glyph
+  if (!fixtureBDuplicate) throw new Error('fixture B: the visible Turn row offered no Duplicate button');
+  fixtureBDuplicate.click();
+  await wait(200);
+  const fixtureBLegsAfter = findLegRows(findRouteBlock()).map((row) => row.querySelector('span').textContent);
+  if (fixtureBLegsAfter.join(',') !== 'Move,Turn,Turn') {
+    throw new Error(
+      'fixture B: after Duplicate on the visible Turn row, expected [Move,Turn,Turn], saw [' +
+        fixtureBLegsAfter.join(',') +
+        '] -- round 2’s own bug would leave the visible list unchanged, having duplicated the hidden say instead'
+    );
+  }
+  document.querySelector('#modalHost .btn-accent').click();
+  await wait(300);
+  const fixtureBRoute = store.project.maps[0].screens[3].entities[0].props.event.pages[0].commands[0];
+  if (
+    fixtureBRoute?.op !== 'route' ||
+    fixtureBRoute.legs?.length !== 3 ||
+    fixtureBRoute.legs[0].op !== 'move' ||
+    fixtureBRoute.legs[1].op !== 'turn' ||
+    fixtureBRoute.legs[2].op !== 'turn' ||
+    fixtureBRoute.legs[1].dir !== 'left' ||
+    fixtureBRoute.legs[2].dir !== 'left'
+  ) {
+    throw new Error('fixture B: the persisted route was ' + JSON.stringify(fixtureBRoute));
+  }
+  store.undo(); // the Save
+  await wait(200);
+  store.undo(); // this fixture's own injection commit
+  await wait(200);
+  step(
+    'route row-tool canonicalization',
+    'illegal-leg-first: Remove on the visible Turn row correctly removed Turn, not the hidden leg; illegal-leg-between: Duplicate on the visible Turn row correctly duplicated Turn, not the hidden leg -- both asserted from DOM order before Save and store.project after it, never the modal’s own draft'
+  );
+
   // The trigger, which is the one part of an event that lives on the placement
   // rather than in the event. Only the real panel can show the select is wired
   // to the store and that the hint under it follows the choice.

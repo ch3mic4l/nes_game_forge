@@ -1304,6 +1304,51 @@ test('nesting past what any project could hold fails by name, not by stack', () 
   assert.doesNotThrow(() => normalizeProject(withNesting(60)));
 });
 
+test('a route at the exact nesting boundary throws the same way branch/choice do -- the 200-vs-60 check above never exercises this', () => {
+  // The test above's own base case is a plain `say`, which is not
+  // `nests: true`, so its throw at 200 levels happens purely from the
+  // branch/choice wrapping, before the base command's own flag is ever
+  // consulted -- it would pass identically even if `route` carried no
+  // `nests: true` at all. This isolates route's own guard directly: a
+  // chain of exactly BRANCH_DEPTH_LIMIT (64) wrapping levels puts the
+  // route's own normalizeEventCommand call at depth === 64, the first
+  // point `command.nests && depth >= BRANCH_DEPTH_LIMIT` trips for it --
+  // not merely "deep enough that something upstream already threw."
+  const deepRoute = (levels) => {
+    let command = {
+      op: 'route',
+      who: 'self',
+      legs: [{ op: 'move', dir: 'down', dist: 8 }]
+    };
+    for (let level = 0; level < levels; level++) {
+      command =
+        level % 2
+          ? { op: 'branch', cond: { type: 'none', arg: 0 }, then: [command], else: [] }
+          : { op: 'choice', options: [{ text: 'On', commands: [command] }] };
+    }
+    return command;
+  };
+  const withRouteNesting = (levels) => ({
+    maps: [
+      {
+        screens: [
+          {
+            entities: [
+              {
+                actorId: 0,
+                props: { event: { pages: [{ cond: { type: 'none', arg: 0 }, commands: [deepRoute(levels)] }] } }
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  });
+
+  assert.throws(() => normalizeProject(withRouteNesting(64)), /nests event commands more than 64 deep/);
+  assert.doesNotThrow(() => normalizeProject(withRouteNesting(63)));
+});
+
 // ------------------------------------------------------------------ triggers
 //
 // Everything above is about what an event says. A trigger is about when it runs,

@@ -618,8 +618,19 @@ export function mount(container, app) {
     renderAll();
   }
 
-  /** The names and labels the event editor needs to read as English. */
-  function eventContext() {
+  /**
+   * The names and labels the event editor needs to read as English.
+   *
+   * `place`, its first parameter, carries route-preview context and is only
+   * ever passed by the two placement-owned editEvent call sites (the "Edit
+   * event…" button and the "Start from a template" flow) -- `{ project,
+   * tilesetId, screen, x, y }`, enough for the event editor to build its own
+   * fresh MetatileRenderer and trace a route from the placement's own
+   * position. The common-event editor calls this with no argument, so
+   * `place` is undefined there: a common event has no single caller or
+   * screen to preview from.
+   */
+  function eventContext(place) {
     return {
       actors: store.project.sprites.actors,
       items: store.project.items ?? [],
@@ -640,7 +651,8 @@ export function mount(container, app) {
       // exists but is not implemented yet should still be offered here and
       // refused by validateProject instead, the same reason the Build
       // panel's own mapper picker does not disable a board like that.
-      canSave: saveCapable(resolveMapper(store.project.cartridge.mapper))
+      canSave: saveCapable(resolveMapper(store.project.cartridge.mapper)),
+      place
     };
   }
 
@@ -783,7 +795,16 @@ export function mount(container, app) {
           'button.btn.btn-sm',
           {
             onclick: async () => {
-              const result = await editEvent(event, eventContext());
+              const result = await editEvent(
+                event,
+                eventContext({
+                  project: store.project,
+                  tilesetId: currentMap().tilesetId,
+                  screen: currentScreen(),
+                  x: entity.x,
+                  y: entity.y
+                })
+              );
               if (result !== undefined) setEntityProp(index, 'Edit event', { event: result });
             }
           },
@@ -928,7 +949,16 @@ export function mount(container, app) {
     });
     if (!chosen) return;
 
-    const result = await editEvent(chosen.build(store.project, free), eventContext());
+    const result = await editEvent(
+      chosen.build(store.project, free),
+      eventContext({
+        project: store.project,
+        tilesetId: currentMap().tilesetId,
+        screen: currentScreen(),
+        x: entity.x,
+        y: entity.y
+      })
+    );
     if (result !== undefined) setEntityProp(index, `Event from ${chosen.label}`, { event: result });
   }
 

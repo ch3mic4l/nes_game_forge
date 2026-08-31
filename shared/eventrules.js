@@ -9,6 +9,47 @@
 // `project.js` re-exports both, so the schema stays the one place to look.
 
 /**
+ * The only ops a route's own `legs` may hold. A route's legs are real,
+ * normalized move/turn/wait command records — not an arbitrary nested list
+ * the way a branch's `then`/`else` or a choice's own options are — so this
+ * is a fixed, small vocabulary rather than a depth-limited recursion into
+ * `EVENT_COMMANDS` as a whole. See design-routes.md §3.1/§3.3.
+ */
+export const ROUTE_LEG_OPS = new Set(['move', 'turn', 'wait']);
+
+/**
+ * The legs a route may actually hold, compile, or count — the single
+ * admission filter every reader of a route's actual `.legs` array shares,
+ * seven of them: the normalizer (shared/project.js), `isLive`,
+ * `liveCommands`' recursion (both above), the compiler
+ * (main/build/textcompile.js), the editor's own row canonicalization
+ * (renderer/forges/map/events.js's commandRow, which reassigns
+ * `command.legs` to this function's own result at render time), the
+ * summary line (`describeEnabled`'s route case, same file), and the
+ * preview's pure trace-model function (`routeTrace`, same file). The
+ * editor's leg-*adding* dropdown is a separate, smaller thing: it filters
+ * the static `EVENT_COMMANDS` catalog through `ROUTE_LEG_OPS` (the `Set`
+ * above) directly, not this function, since there is no `.legs` array to
+ * filter when deciding what may be added. Defends a live, not-yet-normalized
+ * project the same way `choiceOptionsSlice` already defends a live choice —
+ * `buildProject` compiles whatever the app is holding, not a freshly
+ * normalized copy.
+ */
+export const routeLegs = (legs) =>
+  (Array.isArray(legs) ? legs : []).filter((leg) => ROUTE_LEG_OPS.has(leg?.op));
+
+/**
+ * A route leg as the move/turn/wait command it actually is, with the
+ * route's own `who` injected — legs never store their own `who`
+ * (design-routes.md §3.2). Used identically by the compiler
+ * (main/build/textcompile.js's 'route' case) and the Map Forge's own
+ * describeCommand, so the ROM and the editor's summary line can never
+ * disagree about which who a leg means.
+ */
+export const legWithWho = (leg, who) =>
+  leg.op === 'move' || leg.op === 'turn' ? { ...leg, who } : leg;
+
+/**
  * Whether a command would do anything if the page it is on ran.
  *
  * `!== true` rather than a truthiness test, to match the schema exactly:
@@ -34,6 +75,14 @@ const isLive = (command) => {
   // there — but a question with two empty options still stops the conversation
   // and waits to be answered, which is a thing that happened on screen.
   if (command.op === 'choice') return (command.options ?? []).length > 0;
+  // A route is asked about its contents the same way a branch is: a route
+  // with nothing live inside it (empty, every leg switched off, or every leg
+  // an illegal op routeLegs already filters out) is not a thing that
+  // happened on the page, and must not keep a page "alive" the way an empty
+  // branch must not. routeLegs, not a raw command.legs.some(...), so a
+  // live-but-unadmitted leg is never read as making the route live — it
+  // would compile to nothing were the project built as-is.
+  if (command.op === 'route') return routeLegs(command.legs).some(isLive);
   return true;
 };
 
@@ -59,6 +108,12 @@ export function* allCommands(list) {
     yield* allCommands(command.then);
     yield* allCommands(command.else);
     for (const option of command.options ?? []) yield* allCommands(option.commands);
+    // The third shape this walk has to know about. Deliberately NOT filtered
+    // through routeLegs -- allCommands answers "what is mentioned," not
+    // "what compiles," and an illegally-shaped leg about to be dropped at
+    // normalize time costs nothing to have briefly been visited by a
+    // renumbering walk that finds nothing on it relevant to renumber.
+    yield* allCommands(command.legs);
   }
 }
 
@@ -110,16 +165,22 @@ export const choiceOptionsSlice = (options, limit) => (Array.isArray(options) ? 
  * all; `allCommands` is the walk that does not care.
  *
  * Structural liveness only — off, nesting, and this one option limit — not
- * per-opcode semantic validity. A `call` naming a common event id nothing
- * defines is structurally live (not switched off, not past a limit) and is
- * yielded here, even though `encodeCommand`'s own 'call' case
- * (main/build/textcompile.js) resolves the reference and compiles it away
- * when it does not. Telling the two apart would mean threading the live
- * common event table through this traversal for the sake of one opcode;
- * an empty battle formation and a missing give/take actor are the same
- * shape of gap, both left to validateProject's own per-opcode checks rather
- * than folded in here. A caller comparing this against a real compile has
- * to know that `call` in particular can lie in the optimistic direction.
+ * per-opcode semantic validity. `call` used to be a documented exception
+ * here (a dangling reference used to compile away while this generator kept
+ * yielding it regardless) but is not any longer: encodeCommand's own 'call'
+ * case (main/build/textcompile.js) always emits [OP_CALL,
+ * NO_COMMON_EVENT_SLOT] for a reference that does not resolve, so a live
+ * `call` this generator yields always agrees with what actually compiles
+ * (test/unit/project.test.js's own dangling-call assertions pin this).
+ *
+ * A route is the one deliberate departure from "yield the command, then
+ * recurse into whatever it holds" every other container above follows —
+ * not a new exception, but the same "yield what encodeBody emits" contract
+ * applied correctly to a container that emits nothing of its own: branch
+ * and choice are yielded because encodeBody genuinely writes an
+ * OP_IF/OP_CHOICE byte for them, while a route contributes no opcode at
+ * all, so this recurses into its admitted legs instead of yielding the
+ * wrapper. See the route branch below and design-routes.md §5.2.
  */
 export function* liveCommands(list, choiceOptionLimit) {
   if (!Number.isInteger(choiceOptionLimit) || choiceOptionLimit < 0) {
@@ -129,6 +190,17 @@ export function* liveCommands(list, choiceOptionLimit) {
     );
   }
   for (const command of enabledCommands({ commands: list })) {
+    // A route contributes no opcode of its own -- encodeBody's route case
+    // (main/build/textcompile.js) emits nothing but its own admitted legs'
+    // bytes -- so this recurses into them INSTEAD OF yielding the route
+    // command itself. routeLegs, not raw command.legs: the same admission
+    // filter isLive's route branch and the compiler's route case already
+    // apply, so a live, not-yet-normalized route holding a disallowed leg
+    // op is never counted as though it compiled to something it will not.
+    if (command.op === 'route') {
+      yield* liveCommands(routeLegs(command.legs), choiceOptionLimit);
+      continue;
+    }
     yield command;
     yield* liveCommands(command.then, choiceOptionLimit);
     yield* liveCommands(command.else, choiceOptionLimit);

@@ -25,17 +25,147 @@ import {
   MOVE_TARGETS,
   VISIBLE_STATES,
   RPG_LIMITS,
+  ROUTE_LEG_OPS,
   itemMissing,
   itemPickerOptions,
   compiledPages,
   damageAmount,
   enabledCommands,
   commonEventId,
-  isMonsterActor
+  isMonsterActor,
+  routeLegs,
+  legWithWho
 } from '../../../shared/project.js';
+import { MetatileRenderer, SCREEN_PX_W, SCREEN_PX_H } from './render.js';
 
 /** What a number field is worth as an engine byte: whole, and inside the range. */
 const wholeNumber = (raw, max) => Math.max(0, Math.min(max, Math.round(Number(raw) || 0)));
+
+// The route preview's own fixed, modest zoom -- not the Forge's main-stage
+// fitZoom()/observeSize(), which exist to keep the pixel-exact editing
+// canvas correctly sized against the window. This is a small, non-resizable
+// reference thumbnail inside a dialog, closer in spirit to
+// MetatileRenderer's own precomputed per-metatile canvases than to the
+// Forge's live stage.
+const ROUTE_PREVIEW_ZOOM = 0.5;
+
+// A Move/Turn leg's own DIR_* id as a unit displacement -- the same mapping
+// MOVE_DIRECTIONS' own engine-order encodes, spelled out here because the
+// preview needs the vector, not the wire index.
+const ROUTE_LEG_DELTA = { down: [0, 1], up: [0, -1], left: [-1, 0], right: [1, 0] };
+
+/**
+ * The route preview's pure model: given a route command and optional
+ * placement context (`{ screen, x, y, ... }`, or undefined for a common
+ * event), what caption (if any, when nothing can be traced) and what trace
+ * instructions to draw. No DOM, no canvas — see design-routes.md §10.
+ *
+ * routeLegs is applied here too, even though the editor's own row rendering
+ * already canonicalizes `command.legs` before this can ever be called on a
+ * rendered row (commandRow's own route branch) — this is deliberate,
+ * redundant defense in depth, the same belt-and-suspenders precedent
+ * describeEnabled's own route case already sets, so this function stays
+ * correct in isolation regardless of what a future caller guarantees about
+ * its input.
+ */
+export function routeTrace(command, place) {
+  if (!place) {
+    return {
+      caption:
+        "This is a common event — it can be called from anywhere, so there's no single screen or " +
+        'starting position to preview from.',
+      instructions: []
+    };
+  }
+  if (command.who === 'player') {
+    return {
+      caption:
+        "This route moves the player, not this actor — the Map Forge doesn't know where the player " +
+        "will be standing, so there's nothing accurate to draw.",
+      instructions: []
+    };
+  }
+  let x = place.x;
+  let y = place.y;
+  const instructions = [];
+  for (const leg of routeLegs(command.legs)) {
+    if (leg.off === true) continue;
+    if (leg.op === 'move') {
+      const [dx, dy] = ROUTE_LEG_DELTA[leg.dir] ?? ROUTE_LEG_DELTA[MOVE_DIRECTIONS[0].id];
+      if (leg.dist > 0) {
+        const to = { x: x + dx * leg.dist, y: y + dy * leg.dist };
+        instructions.push({ kind: 'segment', from: { x, y }, to });
+        x = to.x;
+        y = to.y;
+      } else {
+        // A zero-length segment paints no visible pixel on a canvas -- an
+        // explicit point instruction is what keeps a real, live, authored
+        // "stand here for a beat" leg from reading as though it were never
+        // authored at all.
+        instructions.push({ kind: 'point', at: { x, y } });
+      }
+    } else if (leg.op === 'turn') {
+      instructions.push({ kind: 'facing', at: { x, y }, dir: leg.dir });
+    } else if (leg.op === 'wait') {
+      instructions.push({ kind: 'pause', at: { x, y }, frames: leg.frames });
+    }
+  }
+  return { caption: null, instructions };
+}
+
+/**
+ * Turns routeTrace's own instructions into canvas calls -- a thin, dumb draw
+ * step over the pure model above. Exported so a test can pin the arrowhead's
+ * own orientation and the pause glyph's own frame-count text against a fake
+ * 2d-context object (this file has no DOM available under node:test) without
+ * needing a real canvas or the modal around it.
+ */
+export function drawRouteTrace(context2d, instructions, zoom) {
+  context2d.strokeStyle = '#ffd740';
+  context2d.fillStyle = '#ffd740';
+  context2d.lineWidth = 2;
+  for (const instruction of instructions) {
+    if (instruction.kind === 'segment') {
+      context2d.beginPath();
+      context2d.moveTo(instruction.from.x * zoom, instruction.from.y * zoom);
+      context2d.lineTo(instruction.to.x * zoom, instruction.to.y * zoom);
+      context2d.stroke();
+    } else if (instruction.kind === 'point') {
+      context2d.beginPath();
+      context2d.arc(instruction.at.x * zoom, instruction.at.y * zoom, 3, 0, Math.PI * 2);
+      context2d.fill();
+    } else if (instruction.kind === 'facing') {
+      // A directional arrowhead, oriented by dir -- undirected would say
+      // "the actor turns here" without saying which way, the one thing a
+      // Turn leg actually authors.
+      const [dx, dy] = ROUTE_LEG_DELTA[instruction.dir] ?? ROUTE_LEG_DELTA[MOVE_DIRECTIONS[0].id];
+      const cx = instruction.at.x * zoom;
+      const cy = instruction.at.y * zoom;
+      const len = 7;
+      const perp = { x: -dy, y: dx };
+      const tip = { x: cx + dx * len, y: cy + dy * len };
+      const backLeft = { x: cx - dx * len * 0.4 + perp.x * len * 0.6, y: cy - dy * len * 0.4 + perp.y * len * 0.6 };
+      const backRight = { x: cx - dx * len * 0.4 - perp.x * len * 0.6, y: cy - dy * len * 0.4 - perp.y * len * 0.6 };
+      context2d.beginPath();
+      context2d.moveTo(tip.x, tip.y);
+      context2d.lineTo(backLeft.x, backLeft.y);
+      context2d.lineTo(backRight.x, backRight.y);
+      context2d.closePath();
+      context2d.fill();
+    } else if (instruction.kind === 'pause') {
+      // The circle marks the position; the frame count is what an author
+      // actually authored, so it is drawn too, not just implied by a marker
+      // indistinguishable from any other Wait.
+      context2d.beginPath();
+      context2d.arc(instruction.at.x * zoom, instruction.at.y * zoom, 5, 0, Math.PI * 2);
+      context2d.stroke();
+      context2d.font = '8px sans-serif';
+      context2d.textAlign = 'center';
+      context2d.textBaseline = 'bottom';
+      context2d.fillText(String(instruction.frames), instruction.at.x * zoom, instruction.at.y * zoom - 6);
+    }
+  }
+}
 
 /** Move an item within its list, or do nothing at the ends. */
 function moveWithin(list, from, to) {
@@ -79,6 +209,9 @@ export const defaultCommand = (op, context = {}) => {
         { text: 'Yes', commands: [] },
         { text: 'No', commands: [] }
       ];
+    } else if (arg === 'route') {
+      out.who = MOVE_TARGETS[0].id;
+      out.legs = [];
     } else if (arg === 'event') {
       // A common event's *id*, not its row in the list — ids survive a
       // deletion elsewhere in the list undisturbed, positions do not. 0 would
@@ -249,6 +382,20 @@ function describeEnabled(command, context = {}) {
     // above -- every Flash command does the one thing it can do.
     case 'flash':
       return 'Flash the screen';
+    case 'route': {
+      const who = MOVE_TARGETS.find((entry) => entry.id === command.who)?.label ?? MOVE_TARGETS[0].label;
+      // routeLegs here too, not just `.filter(leg => leg.off !== true)`: keeps
+      // this summary honest about a live, not-yet-normalized route holding an
+      // illegal leg -- it describes exactly what would compile, not what is
+      // merely present in memory. Reusing describeEnabled itself for each leg
+      // (via legWithWho) means a leg's own summary text is exactly what the
+      // same command would say standing alone.
+      const legs = routeLegs(command.legs).filter((leg) => leg.off !== true);
+      if (!legs.length) return `Route (${who}): nothing — every leg is off`;
+      return `Route (${who}): ${legs
+        .map((leg) => describeEnabled(legWithWho(leg, command.who), context))
+        .join('; ')}`;
+    }
     case 'branch': {
       // Described down to its contents, because the event list's search runs
       // over exactly this text: a switch used only inside a branch has to be
@@ -298,6 +445,21 @@ export function editEvent(event, context) {
   if (!draft.pages.length) draft.pages.push({ cond: { type: 'none', arg: 0 }, commands: [] });
 
   const body = el('div', { style: { minWidth: '520px' } });
+
+  // Built once, the first time a route's own preview needs it, and reused
+  // across every route row and every rerender() for the rest of this modal
+  // session -- context.place's own project/tilesetId never change while the
+  // modal is open, so one MetatileRenderer serves every route in this event.
+  // See design-routes.md §5.4/§10 for why this is a fresh, modal-local
+  // renderer rather than map.js's own live instance.
+  let previewRenderer;
+  function getPreviewRenderer() {
+    if (!context.place) return null;
+    if (!previewRenderer) {
+      previewRenderer = new MetatileRenderer().rebuild(context.place.project, context.place.tilesetId);
+    }
+    return previewRenderer;
+  }
 
   const rerender = () => {
     fill(body,
@@ -383,8 +545,8 @@ export function editEvent(event, context) {
             'p.hint',
             { style: { color: 'var(--accent)', margin: '0 0 6px' } },
             'Nothing here would run, so this page is not built — everything is switched off, or ' +
-              'the only thing left is a branch with nothing live inside it. A page that matches ' +
-              'and does nothing would swallow every page below it.'
+              'the only thing left is a branch or a route with nothing live inside it. A page ' +
+              'that matches and does nothing would swallow every page below it.'
           )
         : null,
       unreachable
@@ -692,6 +854,264 @@ export function editEvent(event, context) {
               },
               '+ Answer'
             )
+      );
+    }
+
+    // A route's legs are a fixed, small vocabulary (move/turn/wait), never
+    // another route, a branch or a choice -- so unlike branch/choice above,
+    // there is no addCommand()/offeredCommands() call anywhere in this
+    // block, only the dedicated leg-adding control below.
+    if (command.op === 'route') {
+      // Canonicalize the DRAFT to its admitted legs, at the moment this row
+      // renders -- a real removal, not a filtered view of data that is
+      // still there. store.commit() never runs normalizeProject, so an
+      // unadmitted leg reaching this draft from a hand-edited or
+      // bypassed-normalization file would otherwise survive in memory
+      // indefinitely; this is the one moment the editor can honestly
+      // reconcile what it renders with what would actually compile. Cancel
+      // discards the whole draft regardless, so this can never reach
+      // store.project without the author choosing Save -- and Save writing
+      // exactly the admitted list is no loss, because that is what a
+      // save/load round-trip through normalizeProject would already have
+      // produced on its own. From here on, command.legs IS the admitted
+      // list -- position is simply that array's own index, so listTools
+      // needs no route-specific index translation.
+      command.legs = routeLegs(command.legs);
+
+      const who = el(
+        'select',
+        {
+          style: { flex: 'none' },
+          onchange: (fired) => {
+            command.who = fired.target.value;
+            rerender();
+          }
+        },
+        MOVE_TARGETS.map((entry) => el('option', { value: entry.id, selected: entry.id === command.who }, entry.label))
+      );
+
+      const legRow = (leg, index) => {
+        const legDim = leg.off ? { opacity: '0.55' } : null;
+        const legToggle = el(
+          'label.check',
+          { title: leg.off ? 'Switched off — not built' : 'Switch this leg off without deleting it' },
+          el('input', {
+            type: 'checkbox',
+            checked: !leg.off,
+            onchange: (fired) => {
+              if (fired.target.checked) delete leg.off;
+              else leg.off = true;
+              rerender();
+            }
+          })
+        );
+        const legTools = [legToggle, ...listTools(command.legs, index, { what: 'leg', onChange: rerender })];
+        if (leg.op === 'move') {
+          const hint = leg.dist
+            ? 'The event waits here until the walk finishes. It stops early at a wall or the edge of ' +
+              'the screen. 16 pixels is one metatile.'
+            : 'A distance of 0 does nothing and the event carries straight on. 16 pixels is one metatile.';
+          return el(
+            'div',
+            { style: { marginBottom: '6px', ...legDim } },
+            el(
+              'div.field-row',
+              null,
+              el('span', { style: { flex: 'none', minWidth: '56px', color: 'var(--text-dim)' } }, 'Move'),
+              el(
+                'select',
+                {
+                  style: { flex: 'none' },
+                  onchange: (fired) => {
+                    leg.dir = fired.target.value;
+                    rerender();
+                  }
+                },
+                MOVE_DIRECTIONS.map((entry) => el('option', { value: entry.id, selected: entry.id === leg.dir }, entry.label))
+              ),
+              el('input', {
+                type: 'number',
+                min: 0,
+                max: 255,
+                value: leg.dist,
+                title: 'Distance in pixels — 16 is one metatile',
+                style: { width: '70px' },
+                onchange: (fired) => {
+                  leg.dist = wholeNumber(fired.target.value, 255);
+                  rerender();
+                }
+              }),
+              legTools
+            ),
+            el('p.hint', null, hint)
+          );
+        }
+        if (leg.op === 'turn') {
+          return el(
+            'div',
+            { style: { marginBottom: '6px', ...legDim } },
+            el(
+              'div.field-row',
+              null,
+              el('span', { style: { flex: 'none', minWidth: '56px', color: 'var(--text-dim)' } }, 'Turn'),
+              el(
+                'select',
+                {
+                  style: { flex: 'none' },
+                  onchange: (fired) => {
+                    leg.dir = fired.target.value;
+                    rerender();
+                  }
+                },
+                MOVE_DIRECTIONS.map((entry) => el('option', { value: entry.id, selected: entry.id === leg.dir }, entry.label))
+              ),
+              legTools
+            ),
+            el(
+              'p.hint',
+              null,
+              'Sets the facing at once, without walking — the route carries straight on to the next leg ' +
+                'on the same frame.'
+            )
+          );
+        }
+        // wait
+        return el(
+          'div',
+          { style: { marginBottom: '6px', ...legDim } },
+          el(
+            'div.field-row',
+            null,
+            el('span', { style: { flex: 'none', minWidth: '56px', color: 'var(--text-dim)' } }, 'Wait'),
+            el('input', {
+              type: 'number',
+              min: 0,
+              max: 255,
+              value: leg.frames,
+              title: 'Frames — 60 is one second',
+              style: { width: '70px' },
+              onchange: (fired) => {
+                leg.frames = wholeNumber(fired.target.value, 255);
+                rerender();
+              }
+            }),
+            el('span', { style: { color: 'var(--text-dim)' } }, 'frames'),
+            legTools
+          ),
+          el(
+            'p.hint',
+            null,
+            leg.frames
+              ? 'The route pauses here, with the world frozen, until this many frames pass — 60 is one second.'
+              : 'A wait of 0 does nothing and the route carries straight on.'
+          )
+        );
+      };
+
+      // Reuses EVENT_COMMANDS' own id/label pairs for Move/Turn/Wait rather
+      // than a second, hand-written three-item list that could drift from
+      // those labels. defaultCommand() gives a leg the identical
+      // never-a-silent-no-op defaults a standalone Move/Turn/Wait already
+      // gets (16px, not 0px; 30 frames, not 0) -- reused rather than
+      // reinvented as a literal zero, which would silently add a leg that
+      // does nothing the moment it is added.
+      const addLeg = el(
+        'div.field-row',
+        { style: { marginTop: '6px' } },
+        el(
+          'select',
+          {
+            value: '',
+            onchange: (fired) => {
+              if (!fired.target.value) return;
+              const leg = defaultCommand(fired.target.value, context);
+              delete leg.who;
+              command.legs.push(leg);
+              rerender();
+            }
+          },
+          el('option', { value: '' }, '+ Add a leg…'),
+          EVENT_COMMANDS.filter((entry) => ROUTE_LEG_OPS.has(entry.id)).map((entry) =>
+            el('option', { value: entry.id }, entry.label)
+          )
+        )
+      );
+
+      const { caption, instructions } = routeTrace(command, context.place);
+      // Caption and canvas are mutually exclusive only across the three
+      // no-trace states (no place, who: player, dead route via caption ===
+      // null's absence never happening for those) -- the drawable self case
+      // gets the canvas PLUS the fixed honesty note every drawable trace
+      // carries (authored distance only -- runtime blocking is not
+      // simulated), and a second, conditional note when this route is only
+      // ever reached through a branch/choice (depth > 0), since the preview
+      // cannot know whether that ancestor condition currently holds.
+      const preview = caption
+        ? el(
+            'p.hint',
+            { dataset: { routePreview: 'caption' }, style: { margin: '6px 0 0' } },
+            caption
+          )
+        : (() => {
+            const canvas = el('canvas', {
+              dataset: { routePreview: 'canvas' },
+              width: Math.round(SCREEN_PX_W * ROUTE_PREVIEW_ZOOM),
+              height: Math.round(SCREEN_PX_H * ROUTE_PREVIEW_ZOOM),
+              style: {
+                display: 'block',
+                marginTop: '6px',
+                border: '1px solid var(--line)',
+                background: '#000'
+              }
+            });
+            const context2d = canvas.getContext('2d');
+            const renderer = getPreviewRenderer();
+            if (renderer && context.place) renderer.drawScreen(context2d, context.place.screen, ROUTE_PREVIEW_ZOOM);
+            drawRouteTrace(context2d, instructions, ROUTE_PREVIEW_ZOOM);
+            return el(
+              'div',
+              null,
+              canvas,
+              el(
+                'p.hint',
+                { dataset: { routePreview: 'limitation-note' }, style: { margin: '4px 0 0' } },
+                'This traces the full authored distance of each leg. A wall, the screen edge, or ' +
+                  'another actor can cut a Move short at runtime — the preview cannot know that.'
+              ),
+              depth > 0
+                ? el(
+                    'p.hint',
+                    { dataset: { routePreview: 'conditional-note' }, style: { margin: '2px 0 0' } },
+                    'This route only runs if this page’s page condition — and any surrounding If/Ask — allow it.'
+                  )
+                : null
+            );
+          })();
+
+      return el(
+        'div',
+        {
+          style: {
+            marginBottom: '8px',
+            padding: '8px',
+            background: 'var(--bg-1)',
+            border: '1px solid var(--line)',
+            borderRadius: 'var(--radius)',
+            ...dim
+          }
+        },
+        el(
+          'div.field-row',
+          { style: { marginBottom: '6px' } },
+          el('span', { style: { flex: 'none', color: 'var(--text-dim)' } }, 'Route'),
+          who,
+          tools
+        ),
+        command.legs.length
+          ? command.legs.map((leg, index) => legRow(leg, index))
+          : el('p.hint', null, 'This route has no legs yet.'),
+        addLeg,
+        preview
       );
     }
 

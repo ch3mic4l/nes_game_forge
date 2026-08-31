@@ -58,7 +58,7 @@ import {
   kernelTableBytes
 } from '../../main/build/generate.js';
 import { SUPPORTED_MAPPERS, rpgCapable, saveMediaImplemented, prgLayout } from '../../shared/cartridge.js';
-import { createTileset, createProject, projectUsesItems, projectUsesBoundTiles } from '../../shared/project.js';
+import { createTileset, createProject, projectUsesItems, projectUsesBoundTiles, projectUsesTurn } from '../../shared/project.js';
 import { createSong } from '../../shared/audio.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
@@ -107,6 +107,11 @@ async function measureCodeBytes(
     withSave = false,
     withMove = false,
     withTurn = false,
+    // A route whose only leg is Turn -- kept separate from withTurn, never
+    // combined with it in the same call, so this measures a route-wrapped
+    // Turn in total isolation the same way withTurn alone measures a bare
+    // one. See design-routes.md §13 test 6: this must cost identically.
+    withRouteTurn = false,
     withWait = false,
     withShake = false,
     withVisible = false,
@@ -136,6 +141,7 @@ async function measureCodeBytes(
   if (withSave) commands.push({ op: 'save' });
   if (withMove) commands.push({ op: 'move', who: 'self', dir: 'up', dist: 16 });
   if (withTurn) commands.push({ op: 'turn', who: 'self', dir: 'up' });
+  if (withRouteTurn) commands.push({ op: 'route', who: 'self', legs: [{ op: 'turn', dir: 'up' }] });
   if (withWait) commands.push({ op: 'wait', frames: 30 });
   if (withShake) commands.push({ op: 'shake', frames: 30 });
   if (withVisible) commands.push({ op: 'visible', state: 'hidden' });
@@ -858,6 +864,42 @@ test(
     }
   }
 );
+
+// design-routes.md §13 test 6: a route contributes no kernel-lo code of its
+// own -- every byte a route-wrapped Turn costs has to be exactly what a bare
+// Turn already costs (TURN_KERNEL_ALLOWANCE + FACE_KERNEL_ALLOWANCE, the
+// identical figure the bare-Turn measured-delta block above already pins on
+// every RPG-capable board), never a second, route-specific allowance. One
+// board is enough here -- the bare-Turn figure is already proven per-board
+// above; this test's own job is narrower, proving the wrapping itself adds
+// nothing, which does not need re-proving on every board to be trustworthy.
+// The sabotage this guards against: an implementation that never extends
+// liveCommands/projectUsesTurn to recurse into a route's own legs at all,
+// which would measure a delta of 0 here instead of TURN_KERNEL_ALLOWANCE +
+// FACE_KERNEL_ALLOWANCE -- a route would then contribute nothing to the
+// predicates, silently building a project that never actually enables
+// TURN_ENABLED/FACE_ENABLED for a Turn the author placed inside a route.
+test('a route whose only leg is Turn measures exactly TURN_KERNEL_ALLOWANCE + FACE_KERNEL_ALLOWANCE, identically to a standalone Turn', {
+  skip: !hasNesasm && 'nesasm not found on PATH'
+}, async (t) => {
+  const mapper = CAPABLE_MAPPERS[0];
+  const { codeBytes: baseline } = await measureCodeBytes(t, mapper, {});
+  const { project, codeBytes: withRouteTurn } = await measureCodeBytes(t, mapper, { withRouteTurn: true });
+  assert.equal(
+    projectUsesTurn(project),
+    true,
+    `${mapper.name}: a route whose only leg is Turn must turn projectUsesTurn on`
+  );
+  const delta = withRouteTurn - baseline;
+  assert.equal(
+    delta,
+    TURN_KERNEL_ALLOWANCE + FACE_KERNEL_ALLOWANCE,
+    `${mapper.name}: a route-wrapped Turn-only project costs ${delta} bytes of kernel code (${baseline} -> ` +
+      `${withRouteTurn}), but TURN_KERNEL_ALLOWANCE + FACE_KERNEL_ALLOWANCE reserves ` +
+      `${TURN_KERNEL_ALLOWANCE + FACE_KERNEL_ALLOWANCE} — a route contributes no kernel-lo code of its own, so ` +
+      "this must equal the bare Turn's own measured cost exactly, not a route-specific allowance and not zero."
+  );
+});
 
 // Mappers sample-rpg cannot target at all (rpgCapable() is false — no
 // switchable PRG, or no switchable CHR) fall back to the largest measured

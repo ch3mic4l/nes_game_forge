@@ -2784,7 +2784,16 @@ const FIXED_OPCODE_WIDTH = {
   music: 2,
   battle: 1 + RPG_LIMITS.monstersPerBattle,
   heal: 2,
-  damage: 2
+  damage: 2,
+  // [opcode, who, dir, dist] / [opcode, who, dir] / [opcode, frames] -- the
+  // same per-leg byte figures design-routes.md's own §3.4 gives, matching
+  // what a route's legs compile to exactly as well as what a bare Move/
+  // Turn/Wait command does. No `route` entry: no byte ever decodes as one
+  // (route is `virtual: true`, EVENT_COMMANDS) -- adding one here would
+  // silently paper over a bug where a route opcode leaked into the output.
+  move: 4,
+  turn: 3,
+  wait: 2
 };
 
 /**
@@ -2977,6 +2986,23 @@ test('liveCommands and encodeBody agree on the actual sequence of compiled opcod
         then: [{ op: 'branch', cond: { type: 'none', arg: 0 }, then: [one('say')], else: [] }],
         else: []
       }
+    ],
+    // A route contributes no opcode of its own -- liveCommands recurses into
+    // its admitted legs INSTEAD OF yielding the wrapper (design-routes.md
+    // §5.2), so the live/compiled sequences here are just move/turn/wait,
+    // never 'route'. See the dedicated block below the loop for the same
+    // scenario checked against an independently hand-written expected
+    // sequence, not just against each other.
+    'a route, flattened to its own legs with no opcode of its own': [
+      {
+        op: 'route',
+        who: 'self',
+        legs: [
+          { op: 'move', dir: 'down', dist: 16 },
+          { op: 'turn', dir: 'up' },
+          { op: 'wait', frames: 10 }
+        ]
+      }
     ]
   };
 
@@ -3020,6 +3046,107 @@ test('liveCommands and encodeBody agree on the actual sequence of compiled opcod
   assert.deepEqual(danglingCompiled, ['say', 'call', 'give'], 'an unresolved call still gets its own bytes, carrying NO_COMMON_EVENT_SLOT');
   assert.deepEqual(danglingLive, ['say', 'call', 'give'], 'liveCommands is not expected to resolve a call target, but still yields it structurally');
   assert.deepEqual(danglingLive, danglingCompiled, 'no filtering needed any more -- the two sequences agree on a dangling call directly');
+
+  // A route holding an unadmitted leg -- a live, not-yet-normalized shape
+  // only reachable by constructing it directly here, never through the
+  // editor or normalizeProject -- checked against a THIRD, independently
+  // hand-written expected sequence (never derived by calling routeLegs or
+  // any other shared code), not just compiledCompiled === liveCompiled
+  // against each other. A shared-but-wrong routeLegs implementation (an
+  // accidentally widened ROUTE_LEG_OPS admitting 'say', say) would make
+  // both compiledSequence's real-byte decode and liveSequence's schema walk
+  // agree on the same wrong answer -- this is what catches that a
+  // self-consistent-but-wrong pair cannot.
+  const routeWithIllegalLeg = [
+    {
+      op: 'route',
+      who: 'self',
+      legs: [
+        { op: 'move', dir: 'down', dist: 8 },
+        one('say'), // unadmitted -- must be silently dropped by both sides
+        { op: 'turn', dir: 'left' },
+        { op: 'wait', frames: 5 }
+      ]
+    }
+  ];
+  const routeCompiled = compiledSequence(routeWithIllegalLeg);
+  const routeLive = liveSequence(routeWithIllegalLeg);
+  const independentlyExpected = ['move', 'turn', 'wait'];
+  assert.deepEqual(routeCompiled, independentlyExpected, 'the compiler must silently drop the unadmitted leg');
+  assert.deepEqual(routeLive, independentlyExpected, 'liveCommands must silently drop the unadmitted leg too');
+});
+
+// EVENT_COMMANDS' own OP_END..OP_STING values, hand-copied from
+// engine/constants.asm the same way this file's own PLAYER_X/GAME_STATE-
+// style tests already hardcode engine RAM addresses elsewhere -- "a test
+// that reads the file it is checking proves nothing."
+const ENGINE_OPCODES = {
+  end: 0x00,
+  say: 0x01,
+  give: 0x02,
+  take: 0x03,
+  setSwitch: 0x04,
+  clearSwitch: 0x05,
+  warp: 0x06,
+  join: 0x07,
+  setVar: 0x08,
+  addVar: 0x09,
+  subVar: 0x0a,
+  branch: 0x0b,
+  choice: 0x0c,
+  call: 0x0d,
+  music: 0x0e,
+  battle: 0x0f,
+  heal: 0x10,
+  damage: 0x11,
+  save: 0x12,
+  move: 0x13,
+  turn: 0x14,
+  wait: 0x15,
+  shake: 0x16,
+  visible: 0x17,
+  fade: 0x18,
+  flash: 0x19,
+  sting: 0x1a
+};
+
+test('EVENT_COMMANDS: every real-opcode entry keeps its engine constant value; the virtual tail is contiguous and last', () => {
+  // The rule design-routes.md §3.0 states as a standing invariant, made
+  // mechanically checkable rather than merely asserted in prose: a
+  // contiguous OP_*-backed real prefix, in engine/constants.asm order,
+  // starting at index 0, followed by a contiguous `virtual: true` tail
+  // (currently just `route`). A future engine-backed command must be
+  // inserted immediately before the virtual tail, never after any virtual
+  // entry; a future virtual command must be appended after it.
+  for (const [id, expected] of Object.entries(ENGINE_OPCODES)) {
+    assert.equal(
+      opIndex(id),
+      expected,
+      `${id} must compile to $${expected.toString(16).padStart(2, '0')}, matching engine/constants.asm's OP_${id.toUpperCase()}`
+    );
+  }
+
+  const real = EVENT_COMMANDS.filter((entry) => !entry.virtual);
+  const virtual = EVENT_COMMANDS.filter((entry) => entry.virtual);
+
+  assert.equal(real.length, Object.keys(ENGINE_OPCODES).length, 'every real-opcode entry must be marked virtual:false (the default)');
+  assert.deepEqual(
+    real.map((entry) => entry.id),
+    Object.keys(ENGINE_OPCODES),
+    'real entries must stay contiguous from index 0, in engine/constants.asm order'
+  );
+  assert.deepEqual(
+    EVENT_COMMANDS.map((entry) => entry.id).slice(0, real.length),
+    real.map((entry) => entry.id),
+    'the real prefix must occupy indices 0..real.length-1 exactly -- nothing virtual may sit among them'
+  );
+  assert.ok(
+    virtual.every((entry, i) => EVENT_COMMANDS.indexOf(entry) === real.length + i),
+    'virtual entries must form one contiguous tail immediately after the real entries, in array order'
+  );
+  // Today's one virtual entry, named directly so a silent second one (or a
+  // renamed one) is caught rather than only a count.
+  assert.deepEqual(virtual.map((entry) => entry.id), ['route']);
 });
 
 test('liveCommands refuses to walk without a choice-option limit', () => {

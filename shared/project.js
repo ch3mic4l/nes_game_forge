@@ -7,7 +7,15 @@
 
 import { BLANK_TILE } from './chr.js';
 import { normalizeSong, NO_SONG, songByte, songFrameLength } from './audio.js';
-import { allCommands, choiceOptionsSlice, compiledPages, damageAmount, liveCommands, projectEvents } from './eventrules.js';
+import {
+  allCommands,
+  choiceOptionsSlice,
+  compiledPages,
+  damageAmount,
+  liveCommands,
+  projectEvents,
+  routeLegs
+} from './eventrules.js';
 import {
   DEFAULT_MAPPER,
   resolveMapper,
@@ -583,7 +591,19 @@ export function effectiveTrigger(entity, actor, project) {
   return allowed ? wanted : EVENT_TRIGGERS[0].id;
 }
 
-/** Event commands, in the order the compiled bytecode uses. */
+/**
+ * Event commands, in the order the compiled bytecode uses -- for every entry
+ * whose opcode byte is opIndex(id) (main/build/textcompile.js), that byte
+ * IS this array's own position, not a constant declared anywhere in JS.
+ * engine/constants.asm hand-writes OP_END..OP_STING in this identical
+ * order, so the array is split into a real prefix (every entry backed by an
+ * actual engine OP_* constant, contiguous from index 0) and a virtual tail
+ * (entries marked `virtual: true`, backed by no opcode at all -- currently
+ * only `route`). A future engine-backed command is inserted immediately
+ * before the virtual tail, never after any virtual entry, so it only ever
+ * shifts entries nothing computes an opIndex() for; a future virtual
+ * command is appended after the existing virtual tail, shifting nothing.
+ */
 export const EVENT_COMMANDS = [
   { id: 'end', label: 'End', args: [] },
   { id: 'say', label: 'Show text', args: ['text'] },
@@ -748,7 +768,39 @@ export const EVENT_COMMANDS = [
   // null/Silence is not a legitimate choice here -- there is no silence-equivalent sting -- so a
   // live Sting naming nothing, or a song since deleted, is refused by validateProject rather than
   // silently compiling to NO_SONG the way a stale `music` reference still does.
-  { id: 'sting', label: 'Sound sting', args: ['song'] }
+  { id: 'sting', label: 'Sound sting', args: ['song'] },
+  // [who, {legs: [...]}]. An authoring convenience over Move/Turn/Wait: a route
+  // holds an ordered list of legs, each a real move/turn/wait record, and
+  // compiles to exactly what hand-chaining the same commands would -- no new
+  // opcode, no framing, see design-routes.md. `who` lives once, on the route,
+  // not per leg (design-routes.md §3.2); a leg's own `who` field, if
+  // normalizeEventCommand's reused move/turn handling stamped one, is deleted
+  // before storage, since nothing ever reads it there.
+  //
+  // `nests: true` -- a route holds real commands (its legs), and `nests`
+  // means exactly and only "the command holds a list of commands, whatever
+  // it calls them" (see this array's own comment on the flag, a few entries
+  // up). It therefore shares BRANCH_DEPTH_LIMIT/MAX_BRANCH_DEPTH with
+  // branch/choice -- a route 64 levels deep throws the identical error a
+  // branch that deep already does, and the editor stops offering it at
+  // MAX_BRANCH_DEPTH the same way. The leg vocabulary restriction (only
+  // move/turn/wait, never another route or a branch/choice) is a SEPARATE
+  // fact, enforced entirely by routeLegs/ROUTE_LEG_OPS (shared/eventrules.js)
+  // -- nests only gates depth, never vocabulary, for any container.
+  //
+  // virtual: true -- this entry carries no engine OP_* constant and no
+  // dispatch code; encodeCommand's 'route' case (main/build/textcompile.js)
+  // emits a route's legs directly, with no opcode byte of its own. Every
+  // real (OP_*-backed) entry in this array stays contiguous from index 0, in
+  // engine/constants.asm order; every virtual entry (currently only this
+  // one) forms one contiguous tail after them. A future engine-backed
+  // command is inserted immediately before this entry, never after -- that
+  // gives it the next sequential opcode and only shifts virtual entries,
+  // whose own opIndex() value is never computed by anything; a future
+  // virtual command is appended after it, shifting nothing.
+  // test/unit/project.test.js's own ordinal test enforces both halves of
+  // this directly.
+  { id: 'route', label: 'Follow a route', args: ['route'], nests: true, virtual: true }
 ];
 
 // A command can be switched off while you work out whether you want it, the way
@@ -762,7 +814,10 @@ export {
   choiceOptionsSlice,
   damageAmount,
   liveCommands,
-  projectEvents
+  projectEvents,
+  ROUTE_LEG_OPS,
+  routeLegs,
+  legWithWho
 } from './eventrules.js';
 
 /**
@@ -771,7 +826,10 @@ export {
  * survives a round trip through this one — but the Map Forge only offers these,
  * because a command that silently does nothing is exactly what this codebase
  * refuses to ship. `join` is implemented, but only an RPG has a party to join,
- * so the event editor additionally hides it in an action project.
+ * so the event editor additionally hides it in an action project. `route` is
+ * the first entry here with no `OP_*` of its own (`virtual: true`,
+ * EVENT_COMMANDS) — it is offered because it compiles away into opcodes the
+ * engine already runs, not because the engine ever sees an opcode for it.
  */
 export const IMPLEMENTED_COMMANDS = new Set([
   'say',
@@ -799,7 +857,8 @@ export const IMPLEMENTED_COMMANDS = new Set([
   'visible',
   'fade',
   'flash',
-  'sting'
+  'sting',
+  'route'
 ]);
 
 /**
@@ -1744,6 +1803,22 @@ function normalizeEventCommand(raw, depth = 0, itemCtx = EMPTY_ITEM_CTX) {
       // compile to a box that comes up, offers nothing and takes the player's
       // answer as option zero, which is somewhere past the end of the command.
       if (!out.options.length) return null;
+    } else if (arg === 'route') {
+      out.who = MOVE_TARGETS.some((entry) => entry.id === raw?.who) ? raw.who : MOVE_TARGETS[0].id;
+      // routeLegs (shared/eventrules.js) is the single admission filter every
+      // consumer of .legs shares -- applied to the RAW list before
+      // normalizing, not after: normalizing an illegally-nested branch here
+      // first (via the generic `inner()` a container's contents would
+      // otherwise go through) would do real recursive work, and possibly
+      // trip BRANCH_DEPTH_LIMIT, for content about to be discarded anyway.
+      out.legs = routeLegs(raw?.legs)
+        .map((leg) => normalizeEventCommand(leg, depth + 1, itemCtx))
+        .filter(Boolean)
+        // who lives on the route, not the leg -- see the field comment above.
+        .map((leg) => {
+          if (leg.op === 'move' || leg.op === 'turn') delete leg.who;
+          return leg;
+        });
     } else if (arg === 'monsters') {
       // Loosely clamped here and bounded for real at compile time, the same
       // reason 'warp's screen is: buildProject compiles the project the app

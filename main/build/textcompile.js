@@ -48,7 +48,9 @@ import {
   screenLabel,
   liveCommonEvents,
   commonEventId,
-  VISIBLE_STATES
+  VISIBLE_STATES,
+  routeLegs,
+  legWithWho
 } from '../../shared/project.js';
 import { damageAmount } from '../../shared/eventrules.js';
 import { NO_SONG, songByte, songFrameLength } from '../../shared/audio.js';
@@ -440,6 +442,20 @@ export function compileText(project) {
           ...options.map((option) => internString(choiceLabel(option.text))),
           ...bodies.flatMap((body, index) => [lengths[index], ...body, OP_JUMP, past[index]])
         ];
+      }
+      case 'route': {
+        // Zero framing: no opcode, no length byte, nothing route-specific at
+        // all. The compiled bytes ARE the legs' own bytes, in order -- what
+        // makes a route byte-identical to the same legs hand-chained.
+        // routeLegs (shared/eventrules.js, via shared/project.js's
+        // re-export) is the same admission filter isLive/liveCommands
+        // already apply, so an illegally-shaped leg in a live,
+        // not-yet-normalized project is never compiled here either.
+        // legWithWho injects the route's own `who`, the same helper the
+        // editor's describeCommand uses, so the two can never disagree
+        // about which who a leg means.
+        const legs = routeLegs(command.legs).map((leg) => legWithWho(leg, command.who));
+        return encodeBody(legs, `${where} → Route`);
       }
       default:
         return null;

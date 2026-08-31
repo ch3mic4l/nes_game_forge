@@ -765,7 +765,7 @@ export function kernelCodeBytes(project, mapper) {
  * kernelCodeBytes rather than re-deriving what it already knows, which is
  * the whole point of calling this first. Never touches `project` itself.
  */
-function projectWithoutCommands(project, ops) {
+export function projectWithoutCommands(project, ops) {
   const clone = structuredClone(project);
   for (const event of projectEvents(clone)) {
     for (const page of event.pages ?? []) {
