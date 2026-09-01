@@ -290,10 +290,10 @@ builders (`buildReorderTranslate`, `buildAppendCanonicalizeTranslate`, `buildDel
 entry, never two.
 
 A same-count reorder is the case `screenCount`/`mapCount` cannot see: it leaves both untouched, so a
-cartridge save would still pass `saveIdentity`'s checks (`shared/save.js`, above) while its own
+cartridge save would still pass `saveIdentity`'s checks (`shared/save.js`, below) while its own
 `flat_screen` byte named a different room. `saveCompatToken`, drawn by `drawSaveCompatToken` and
 folded into `saveIdentity` only when nonzero, closes that gap — see the `SAVE_LAYOUT_VERSION`
-passage above for how it differs from a layout-version bump.
+passage below for how it differs from a layout-version bump.
 
 Mechanism depth — the map-space fixups, the duplicated-map/screen self/external target split
 (`rewriteClonedRange` for a duplicated map or a screen promoted into a new map, `buildCloneTranslate`
@@ -461,62 +461,6 @@ reserves, and must be raised if the engine grows.
 error *before* the assembler runs. Adding per-screen or per-actor data means updating the byte
 math there too.
 
-### The Code Forge
-
-The user's own 6502, in `project.code`: `overrides` are edited copies of engine files, `files` are
-new sources. It lives in the project — not beside it — so undo, the dirty dot and saving are the
-ones every other Forge already uses, and a per-project override cannot leak into another project.
-On disk it is raw `.asm` under `code/engine/` and `code/user/`, two folders rather than one so
-which kind a file is never depends on the engine's current file list.
-
-Three rules hold it together:
-
-- **The engine folder is the single writer of what a stock file is.** `engineFileNames()` in
-  `generate.js` is that list; `checkCapacity` uses it to refuse a user file that would collide
-  with an engine name, and to *warn* rather than fail on an override naming a file this version
-  does not ship — a project saved by a later version still has to build.
-- **Overrides are copied in at their own name and their own line numbers.** The generator writes
-  the stock engine in first and the overrides over the top, so nesasm's `file:line` refers to
-  exactly what the editor shows, and the Build panel's error line can open it. `build/` is
-  `rm -rf`'d every build, so editing files *there* is not a feature — it is data loss.
-- **`assets/usercode.inc` is always emitted**, empty or not, and `engine/main.asm` includes it
-  unconditionally in the kernel-lo bank. A project with no code of its own therefore assembles
-  byte-for-byte identically to one built before the Forge existed, which `codebuild.test.js`
-  asserts directly. $C000 is permanently mapped on every supported mapper, so a user label is
-  callable from anywhere with no banking to think about.
-
-Hand-written code is **deliberately outside `checkCapacity`'s byte math**: how much a source file
-assembles to cannot be known from its text, and a guess would either refuse a project that fits
-or promise room the assembler then denies. The assembler is the capacity check, which is why
-`parseNesasmErrors` in `nesasm.js` matters — nesasm v3.1 reports errors across three lines
-(`#[2] file`, then `line bank:addr source`, then the message) and **exits 0 anyway**. A message
-shape it fails to recognise reads as a successful build until the ROM that was never written
-fails to rename, so it also falls back on nesasm's own `# N error(s)` count. `build:run` is the
-one IPC channel that does not flatten its error through `fail()`, because the `{file, line}` array
-is what the deep-link needs.
-
-**nesasm v3.1 also crashes outright on a long label**, an undocumented limit found while building the
-SFX feature: a label of 31 or more characters aborts the assembler with a glibc `_FORTIFY_SOURCE`
-buffer-overflow error (exit 134) rather than reporting a normal error line; 30 characters assembles
-cleanly. Found by binary search after two new engine labels reached 32 characters
-(`handoff-sfx/sfx-implementation-report.md` §2); both were renamed to 24 characters or fewer and no
-other change was needed. Unlike the "6502 traps" list below, this one has no regression test — it is
-recorded here as a known assembler limit to keep new labels under, not a claim this codebase actively
-guards against.
-
-The editor (`renderer/forges/code/`) is hand-rolled — no runtime dependencies and no bundler rule
-out Monaco and CodeMirror, not the CSP; CodeMirror 6 needs no `unsafe-eval` at all. `highlight.js`
-is a pure per-line tokenizer (nesasm has no multi-line construct), and its one invariant is that
-joining the tokens reproduces the line; a test asserts that over every line of the engine. Two
-metric rules in `editor.js`: the gutter, the highlight layer and the textarea must agree on every
-font and spacing value or the caret drifts off its character, and for an editable file `gotoLine`
-sets the selection *before* the scroll because focusing a textarea scrolls it on the browser's
-terms and discards anything set first — a read-only generated file's `gotoLine` does not set a
-selection at all, so it only scrolls.
-Typing commits to the store on a pause rather than per keystroke (an unusable undo stack) or on
-blur (a commit that may never come), so `saveProject` in `app.js` calls the mount contract's
-optional `flushPendingEdits()` first.
-
 `engine/constants.asm` is the single allocation map for zero page and the `$0300+` RAM arrays.
 New engine state goes there; a collision is silent and will present as an unrelated bug.
 
@@ -674,6 +618,15 @@ unconditionally, so `projectUsesCombat` counts any such item regardless of wheth
 its `Damage` command already is — they land on party HP through `party_damage` (`engine/rpg.asm`)
 instead, and need no heart-HUD reservation.
 
+An internal movement-code dedup's `move_right_inside`/`move_down_inside` (`engine/player.asm`)
+deliberately `jmp` to their shared tail on the very next line rather than falling through into it,
+even though a fallthrough would reclaim a few more bytes: fallthrough would make physical adjacency
+between an entry routine and its tail load-bearing and invisible, so inserting anything between
+`move_down_inside` and `move_vertical_probe` would silently break `move_down` with no assembler
+error.
+
+### The event system
+
 **What makes an event run is a byte of the entity record**, `EVENT_TRIGGERS` in
 `shared/project.js` in wire order, `TRIG_*` in `engine/constants.asm` at the other end. `interact`
 is index 0 because it is what every event did before the byte existed, and **a trigger is a choice
@@ -793,41 +746,6 @@ its three-state result with `rts` is what keeps that address matched to the call
 shift/highlight-repair it runs in between (a `pha` at the top of the routine, popped once at the
 very end, is what carries the decision across code that clobbers `A`).
 
-**The RPG battle ITEM menu does not list everything `use_item` can spend.** `build_item_list`
-(`engine/battleui.asm`) filters the bag to `kind == heal AND amount > 0` — exactly what `item_chosen`
-can apply consistently — so a `damage`-kind item or a `heal`-kind item left at `Amount` 0 is a real,
-valid item on the field and for Give/Take/Carrying/drops; it simply never appears as a selectable row
-in that one menu, so no row there is ever a silent no-op. The filter can leave the list empty while
-the bag itself is not (every carried item is field-only-kind), which raised a second problem the
-filter alone does not solve: `battle_menu_item` decides whether to open the Items page from the
-*filtered* list length, not raw `inv_count`, building the list first so the gate sees the real count
-— deciding from `inv_count` alone would open onto an empty list whose row-select code indexes a stale
-entry left over from whatever was drawn last, and whose Up press underflows the selection to `$FF`.
-`build_spell_list` never needed this ordering, and it is worth knowing why rather than assuming the
-two menus share it: a spell's own membership test (`pc_spells`, a bitmask) already is what building
-the list applies, so gating on it before building can never disagree with what building produces.
-Items introduce a second, independent filter `inv_count` knows nothing about, which is what makes the
-build-before-deciding ordering a genuinely new requirement here, not a precedent already proven
-elsewhere. The `ITEMS_ENABLED`-false path keeps both routines exactly as they were — an unfiltered
-`build_item_list`, and `battle_menu_item`'s original `inv_count` check — because that economy has no
-`effect` field to filter on at all, and preserving it byte-for-byte is the same promise every other
-`ITEMS_ENABLED`-false path in this document already holds to.
-
-**Two capacity terms follow the item's own kind/amount reader into their respective banks, both
-item-conditional and both flat across boards** (see the kernel-budget narrative below for why a term
-earns its own name only once real variance is measured). `ITEM_EFFECT_KERNEL_ALLOWANCE_BY_GAME_TYPE`
-(`main/build/generate.js`) is `use_item_apply`'s own kernel-lo cost, split by *game type* rather than
-by board — the first allowance in this file split that way — because `BATTLE_ENABLED` picks a
-genuinely differently-sized damage branch (`party_damage` vs `lose_hearts` plus a zero-page read of
-`player_hp`), not because any board differs: 63 bytes for an action project, 60 for an RPG, each
-measured on every board of its own type. `ITEM_LIST_FILTER_BATTLE_ALLOWANCE` (17 bytes,
-`main/build/battletables.js`) is `build_item_list`'s and `battle_menu_item`'s combined cost in the
-banked battle-code region, uniform across all three RPG-capable boards because neither routine
-branches on `SPLIT_ENABLED` or anything else board-specific — `BASE_BATTLE_CODE_BYTES_BY_MAPPER`
-itself did not move for this: the term is its own line beside the base, not folded into it, the fix
-for exactly the mistake `TITLE_KERNEL_ALLOWANCE_BY_MAPPER` already had to undo on the kernel side —
-charging every project a cost that only `ITEMS_ENABLED` builds actually pay.
-
 **Neither of the other two starts a conversation itself.** Both arm `pending_ent`, and `main_loop`
 is the single place it becomes one. Touch fires from inside `update_entities`, which is still
 walking the other seven slots — starting there leaves the pickups, doors and contact damage below
@@ -920,148 +838,6 @@ flag to keep in step with the counter. Three rules hold it together:
   could ever end.
 - **The facing is set once, before the first step**, not per step — the "decide once, before
   acting" trap below, and it is what makes a blocked move still turn to look the way it tried to go.
-
-The conditional part is the interesting one: Move is measured, not guessed, because hand-written
-code that assembles to an unknown size is exactly what the Code Forge's own capacity philosophy
-(above) refuses to model — the kernel-lo bank is a fixed 8,192-byte region shared by engine code
-and every project's own lookup tables, and `checkCapacity` (`main/build/generate.js`) has to know
-both halves exactly. Five rules hold that model together, and they are the ones any change to this
-ledger has to keep:
-
-- **A conditional feature's cost is a separate generated allowance, never folded into a base.**
-  `kernelCodeBytes` charges Move, Turn, Wait, Save, Sting, Sfx, switch-bound tiles, Fade/Flash and
-  the MMC3-only split-lock fix as their own named `*_KERNEL_ALLOWANCE` terms, each gated on the
-  predicate that turns the feature on (`projectUsesMove`, `projectUsesSave`, …) — a project that
-  never uses a feature assembles byte-for-byte as if the feature did not exist, which
-  `move.test.js`, `codebuild.test.js` and their neighbours assert by comparing whole ROMs.
-- **A term that varies by mapper is measured per mapper**, in a `*_BY_MAPPER` table
-  (`BASE_KERNEL_CODE_BYTES_BY_MAPPER`, `TITLE_KERNEL_ALLOWANCE_BY_MAPPER`,
-  `SAVE_KERNEL_ALLOWANCE_BY_MAPPER`), not charged to every board at whichever board's figure is
-  largest. Base and title fall back to the largest measured figure for a mapper their table has no
-  entry for (`?? FALLBACK_...`), and `kernelbytes.test.js` builds real ROMs on those boards to
-  confirm the fallback still leaves real margin. **Save has no fallback** — it indexes
-  `SAVE_KERNEL_ALLOWANCE_BY_MAPPER[mapper.id]` directly, deliberately: a newly implemented save
-  medium with no measured entry must fail loudly rather than silently inherit another board's
-  figure.
-- **Individual allowance deltas are equality-asserted against nesasm's real usage, per board, not
-  margin-checked.** `kernelbytes.test.js` measures each named constant's own isolated delta with
-  `assert.equal`, not `<=` — a margin check would let a stale, too-generous figure sit undetected
-  until the day a project actually needed the bytes it silently claimed. The *combined*
-  reservation is checked differently: `assertCovers` requires the real margin to sit between
-  `KERNEL_SLACK` and `KERNEL_SLACK * 2` — under it, the reservation has fallen behind the engine;
-  over it, the term has stopped tracking closely enough to catch the next regression.
-  (`bankedbytes.test.js` holds the same discipline for the separate banked battle-region ledger,
-  not for these kernel-lo allowances.)
-- **`kernelShortfallAdvice` (`main/build/generate.js`) prices a removal by disabling every live
-  occurrence of a command — nested inside a branch or a choice option, and inside a common event,
-  not just top-level — and asking what the resulting project's full kernel-lo occupancy
-  (`kernelCodeBytes + fixedBytes + tableBytes`) would be (`projectWithoutCommands`), never by
-  summing the flat allowance constants.** Summing under-counts: on MMC3, a project whose only live
-  event is a Move (or a Sting) is that project's only reason `SPLIT_LOCK_KERNEL_ALLOWANCE` is paid
-  at all, so removing it has to free the term *and* the split lock together, and only the
-  counterfactual-occupancy approach knows that.
-- **A mapper offered as a fix must still hold every tileset, every screen and the project's
-  mirroring choice** — a smaller kernel-lo reservation alone is not a valid suggestion if
-  `reconcileCartridge` would silently truncate one of those the moment the author switched.
-
-Current allowance figures (`main/build/generate.js` unless noted; each named code allowance is a
-delta `kernelbytes.test.js` measures exactly, on every board named — the base, the derived table
-sizes, the route zero-cost proof and `KERNEL_SLACK` itself are each checked their own way, below):
-
-- `BASE_KERNEL_CODE_BYTES_BY_MAPPER = { 30 (UNROM 512): 6399, 1 (MMC1): 6204, 4 (MMC3): 6379 }` —
-  the stock RPG-capable kernel with nothing conditional turned on; a non-RPG-capable mapper falls
-  back to the largest of the three.
-- `TITLE_KERNEL_ALLOWANCE_BY_MAPPER = { 30: 212, 1: 212, 4: 224 }`, charged whenever a project has
-  a title screen — MMC3 costs 12 bytes more because it is the only board with `SPLIT_ENABLED`, and
-  `split_select` carries an extra `.if TITLE_ENABLED` branch neither other board assembles. A
-  project with a live `Save` command pays this term even if `titleMap` is currently unset, because
-  `validateProject` requires a title wherever Save is live.
-- `SAVE_KERNEL_ALLOWANCE_BY_MAPPER = { 1: 547, 4: 552, 30: 719 }` — UNROM 512's own entry costs
-  more because that board's Save path is a flash-rewrite driver rather than battery-WRAM (see the
-  flash-save passage under "The engine").
-- `MOVE_KERNEL_ALLOWANCE = 379` plus `FACE_KERNEL_ALLOWANCE = 16` (the facing-set routine Move and
-  `Turn` share, charged once whenever either is live) — 395 total for a Move-only project.
-- `SPLIT_LOCK_KERNEL_ALLOWANCE = 19`, MMC3-only, charged whenever `projectUsesText` is true on that
-  board — which includes a project whose only live event is a Move or a Sting command, not just
-  dialogue.
-- `ITEM_KERNEL_ALLOWANCE = 16` (flat across boards) plus 3 `kernelTableBytes` bytes *per item*
-  (`item_metasprite`, `item_effect_kind`, `item_effect_amount`, one byte each in
-  `assets/items.inc`); `ITEM_EFFECT_KERNEL_ALLOWANCE_BY_GAME_TYPE = { action: 63, rpg: 60 }` for
-  `use_item_apply`.
-- `STING_KERNEL_ALLOWANCE_STANDALONE = 160` plus the shared `AUDIO_FX_KERNEL_ALLOWANCE = 15`
-  (paid by Sting or Sfx, either one); `SFX_KERNEL_ALLOWANCE_STANDALONE = 295`;
-  `STING_SFX_INTERACTION_ALLOWANCE = 5` more when both are live at once. Aggregate cost: Sting-only
-  175, Sfx-only 310, both live 475.
-- `BOUND_TILE_KERNEL_ALLOWANCE = 388`, plus a 30-byte fixed table (`bound_row_lo`/`bound_row_hi`)
-  and 2 `kernelTableBytes` bytes per screen (`screen_bound_lo`/`hi`) — not the only allowance with
-  a table cost (items have one too, above), but the first `kernelShortfallAdvice` offers to drop
-  whose removal changes both code and table occupancy at once, which is why its advice compares
-  full kernel-lo occupancy (`kernelCodeBytes + fixedBytes + tableBytes`), not `kernelCodeBytes`
-  alone.
-- `TURN_KERNEL_ALLOWANCE = 35` composes with the shared `FACE_KERNEL_ALLOWANCE` above (Move+Turn
-  together cost 379+35+16=430, the shared facing routine charged once); `WAIT_KERNEL_ALLOWANCE =
-  48` shares no code with Turn beyond that same facing routine (35+16+48=99 for Turn+Wait both
-  live, neither Move).
-  `SHAKE_KERNEL_ALLOWANCE = 65` and `VISIBLE_KERNEL_ALLOWANCE = 49` (Show/Hide) are each flat, with
-  no dependent term of their own.
-- `FADE_KERNEL_ALLOWANCE = 146` and `FLASH_KERNEL_ALLOWANCE = 98` each name their own routine's
-  cost; both share `PALETTE_FX_KERNEL_ALLOWANCE = 55` (`fade_apply_palette` plus the NMI PPUADDR
-  fix, charged once whenever either Fade or Flash is live, never twice when both are) — 201 total
-  for a Fade-only project, the unchanged shipped figure from before the two were split apart.
-- A `route` (`handoff-routes/design-routes.md`) compiles to the identical bytes as hand-chaining
-  the same `move`/`turn`/`wait` commands — zero additional kernel cost, proven by
-  `test/unit/routes.test.js`'s byte-identical-ROM comparison and confirmed with a cross-tree
-  SHA-256 gate.
-- `KERNEL_SLACK = 20` — the floor `assertCovers` (`kernelbytes.test.js`) holds every measured
-  configuration's real margin to (`margin >= KERNEL_SLACK`), not a target to merely clear: a
-  correctly measured per-mapper base should leave *exactly* `KERNEL_SLACK` once every conditional
-  term is accounted for. `assertCovers` also enforces a ceiling at `KERNEL_SLACK * 2` — not more
-  headroom to spend, but a drift alarm: a margin that wide means some term has stopped tracking
-  the engine closely enough to catch the next regression.
-- Stock label stability: an internal movement-code dedup removed
-  `move_left_done`/`move_right_done`/`move_up_done`/`move_down_done` as standalone labels, but they
-  survive as zero-byte aliases on `move_horizontal_done`/`move_vertical_done` — a Code Forge user
-  file that references any of the four by name still assembles.
-- The same dedup's `move_right_inside`/`move_down_inside` (`engine/player.asm`) deliberately `jmp`
-  to their shared tail on the very next line rather than falling through into it, even though a
-  fallthrough would reclaim a few more bytes: fallthrough would make physical adjacency between an
-  entry routine and its tail load-bearing and invisible, so inserting anything between
-  `move_down_inside` and `move_vertical_probe` would silently break `move_down` with no assembler
-  error.
-
-**Documented limitations — combinations `checkCapacity` refuses today, each with its own named
-test rather than a silent gap:**
-
-- MMC3, `Save` + `Move` + one live item: 11 bytes short. Test:
-  `'sample-rpg with Save, Move and its one live item does not build on MMC3 -- round 2 reopened the
-  gap the kernel diet had closed, a documented limitation'` (`kernelbytes.test.js`). The identical
-  combination fits on MMC1 with 220 bytes free.
-- UNROM 512, `Save` + `Move`, no item: 88 bytes short (need 126, only 38 free) — genuinely
-  unrelated to items; dropping an item does not close this one the way it closes MMC3's.
-- MMC3, `Save` + `Move` (no item) + a live `Sting`: documented limitation. Test:
-  `'sample-rpg with Save, Move (no item) and a live Sting does not build on MMC3 -- a documented
-  limitation'`.
-- A live switch-bound tile (marginal cost `388 + 30 + 2 × screen count` — 420 bytes on this
-  project's one screen, the largest single feature cost in this ledger) reopens two different
-  rows: MMC3's `Save` + `Move`, no item (already 88-free without the tile) and MMC1's `Save` +
-  `Move` + one live item (previously comfortable at 220 free). Documented limitation on both
-  boards, but two different configurations, not the same one. Tests: `'sample-rpg with Save, Move
-  (no item) and a live bound tile does not build on MMC3'` / `'sample-rpg with Save, Move and its
-  one live item does not build on MMC1 once a bound tile is added'`.
-- A live `Sfx` command adds five more refusal rows on its own: MMC1 Save+Move+item; MMC1
-  Save+Move-no-item (31 short); MMC3 ALL-7-verbs+Move+item-no-Save (41 short); UNROM 512
-  Save-only-with-item and ALL-7-verbs+Move+item (42 short); and it reopens MMC3's
-  Save+Move-no-item row a second, independent way (alongside Sting), and MMC1's Save+Move+item row
-  a second way (with Sting and Sfx both live).
-- Two fits controls confirm the boundary is real, not over-drawn: `sample-rpg`'s one live item plus
-  a live Sfx alone still builds on MMC3 (the tightest of the three boards), and the seven item-6
-  commands (Turn, Wait, Shake, both Show/Hide, Fade, Flash) plus that item with Sting *and* Sfx
-  both live still builds on MMC3 too — with no Save, no Move and no title live on that row; those
-  exclusions are load-bearing, since every refusal row above carries Save and/or Move.
-
-`kernelShortfallAdvice` names a real, buildable fix for every refusal above (which live command(s)
-to drop, or occasionally a different mapper) — a refusal here is `checkCapacity` doing its job on a
-bank that is, by design, allowed to run out, not a bug in the mechanism.
 
 **A command that holds commands is not a special case to be named, it is a `nests: true` entry.**
 ~~Two of them exist (`branch`, `choice`) and the third will be along.~~ — **done**: the third
@@ -1171,6 +947,202 @@ what makes "this happened already" expressible. `switch_test` / `switch_set` / `
 and `switch_split` builds its mask by shifting rather than indexing a table for exactly that
 reason: `spawn_entities` calls `switch_test` with the entity slot in X and the record cursor in Y,
 and reloading Y after the test would set the flags from the reload rather than from the switch.
+
+### The kernel budget
+
+Move's mechanism is described under "The event system" above. The conditional part is the interesting one: Move is measured, not guessed, because hand-written
+code that assembles to an unknown size is exactly what the Code Forge's own capacity philosophy
+(below, under "The Code Forge") refuses to model — the kernel-lo bank is a fixed 8,192-byte region
+shared by engine code
+and every project's own lookup tables, and `checkCapacity` (`main/build/generate.js`) has to know
+both halves exactly. Five rules hold that model together, and they are the ones any change to this
+ledger has to keep:
+
+- **A conditional feature's cost is a separate generated allowance, never folded into a base.**
+  `kernelCodeBytes` charges Move, Turn, Wait, Save, Sting, Sfx, switch-bound tiles, Fade/Flash and
+  the MMC3-only split-lock fix as their own named `*_KERNEL_ALLOWANCE` terms, each gated on the
+  predicate that turns the feature on (`projectUsesMove`, `projectUsesSave`, …) — a project that
+  never uses a feature assembles byte-for-byte as if the feature did not exist, which
+  `move.test.js`, `codebuild.test.js` and their neighbours assert by comparing whole ROMs.
+- **A term that varies by mapper is measured per mapper**, in a `*_BY_MAPPER` table
+  (`BASE_KERNEL_CODE_BYTES_BY_MAPPER`, `TITLE_KERNEL_ALLOWANCE_BY_MAPPER`,
+  `SAVE_KERNEL_ALLOWANCE_BY_MAPPER`), not charged to every board at whichever board's figure is
+  largest. Base and title fall back to the largest measured figure for a mapper their table has no
+  entry for (`?? FALLBACK_...`), and `kernelbytes.test.js` builds real ROMs on those boards to
+  confirm the fallback still leaves real margin. **Save has no fallback** — it indexes
+  `SAVE_KERNEL_ALLOWANCE_BY_MAPPER[mapper.id]` directly, deliberately: a newly implemented save
+  medium with no measured entry must fail loudly rather than silently inherit another board's
+  figure.
+- **Individual allowance deltas are equality-asserted against nesasm's real usage, per board, not
+  margin-checked.** `kernelbytes.test.js` measures each named constant's own isolated delta with
+  `assert.equal`, not `<=` — a margin check would let a stale, too-generous figure sit undetected
+  until the day a project actually needed the bytes it silently claimed. The *combined*
+  reservation is checked differently: `assertCovers` requires the real margin to sit between
+  `KERNEL_SLACK` and `KERNEL_SLACK * 2` — under it, the reservation has fallen behind the engine;
+  over it, the term has stopped tracking closely enough to catch the next regression.
+  (`bankedbytes.test.js` holds the same discipline for the separate banked battle-region ledger,
+  not for these kernel-lo allowances.)
+- **`kernelShortfallAdvice` (`main/build/generate.js`) prices a removal by disabling every live
+  occurrence of a command — nested inside a branch or a choice option, and inside a common event,
+  not just top-level — and asking what the resulting project's full kernel-lo occupancy
+  (`kernelCodeBytes + fixedBytes + tableBytes`) would be (`projectWithoutCommands`), never by
+  summing the flat allowance constants.** Summing under-counts: on MMC3, a project whose only live
+  event is a Move (or a Sting) is that project's only reason `SPLIT_LOCK_KERNEL_ALLOWANCE` is paid
+  at all, so removing it has to free the term *and* the split lock together, and only the
+  counterfactual-occupancy approach knows that.
+- **A mapper offered as a fix must still hold every tileset, every screen and the project's
+  mirroring choice** — a smaller kernel-lo reservation alone is not a valid suggestion if
+  `reconcileCartridge` would silently truncate one of those the moment the author switched.
+
+Current allowance figures (`main/build/generate.js` unless noted; each named code allowance is a
+delta `kernelbytes.test.js` measures exactly, on every board named — the base, the derived table
+sizes, the route zero-cost proof and `KERNEL_SLACK` itself are each checked their own way, below):
+
+- `BASE_KERNEL_CODE_BYTES_BY_MAPPER = { 30 (UNROM 512): 6399, 1 (MMC1): 6204, 4 (MMC3): 6379 }` —
+  the stock RPG-capable kernel with nothing conditional turned on; a non-RPG-capable mapper falls
+  back to the largest of the three.
+- `TITLE_KERNEL_ALLOWANCE_BY_MAPPER = { 30: 212, 1: 212, 4: 224 }`, charged whenever a project has
+  a title screen — MMC3 costs 12 bytes more because it is the only board with `SPLIT_ENABLED`, and
+  `split_select` carries an extra `.if TITLE_ENABLED` branch neither other board assembles. A
+  project with a live `Save` command pays this term even if `titleMap` is currently unset, because
+  `validateProject` requires a title wherever Save is live.
+- `SAVE_KERNEL_ALLOWANCE_BY_MAPPER = { 1: 547, 4: 552, 30: 719 }` — UNROM 512's own entry costs
+  more because that board's Save path is a flash-rewrite driver rather than battery-WRAM (see the
+  flash-save passage under "The engine").
+- `MOVE_KERNEL_ALLOWANCE = 379` plus `FACE_KERNEL_ALLOWANCE = 16` (the facing-set routine Move and
+  `Turn` share, charged once whenever either is live) — 395 total for a Move-only project.
+- `SPLIT_LOCK_KERNEL_ALLOWANCE = 19`, MMC3-only, charged whenever `projectUsesText` is true on that
+  board — which includes a project whose only live event is a Move or a Sting command, not just
+  dialogue.
+- `ITEM_KERNEL_ALLOWANCE = 16` (flat across boards) plus 3 `kernelTableBytes` bytes *per item*
+  (`item_metasprite`, `item_effect_kind`, `item_effect_amount`, one byte each in
+  `assets/items.inc`); `ITEM_EFFECT_KERNEL_ALLOWANCE_BY_GAME_TYPE = { action: 63, rpg: 60 }` for
+  `use_item_apply`.
+- `STING_KERNEL_ALLOWANCE_STANDALONE = 160` plus the shared `AUDIO_FX_KERNEL_ALLOWANCE = 15`
+  (paid by Sting or Sfx, either one); `SFX_KERNEL_ALLOWANCE_STANDALONE = 295`;
+  `STING_SFX_INTERACTION_ALLOWANCE = 5` more when both are live at once. Aggregate cost: Sting-only
+  175, Sfx-only 310, both live 475.
+- `BOUND_TILE_KERNEL_ALLOWANCE = 388`, plus a 30-byte fixed table (`bound_row_lo`/`bound_row_hi`)
+  and 2 `kernelTableBytes` bytes per screen (`screen_bound_lo`/`hi`) — not the only allowance with
+  a table cost (items have one too, above), but the first `kernelShortfallAdvice` offers to drop
+  whose removal changes both code and table occupancy at once, which is why its advice compares
+  full kernel-lo occupancy (`kernelCodeBytes + fixedBytes + tableBytes`), not `kernelCodeBytes`
+  alone.
+- `TURN_KERNEL_ALLOWANCE = 35` composes with the shared `FACE_KERNEL_ALLOWANCE` above (Move+Turn
+  together cost 379+35+16=430, the shared facing routine charged once); `WAIT_KERNEL_ALLOWANCE =
+  48` shares no code with Turn beyond that same facing routine (35+16+48=99 for Turn+Wait both
+  live, neither Move).
+  `SHAKE_KERNEL_ALLOWANCE = 65` and `VISIBLE_KERNEL_ALLOWANCE = 49` (Show/Hide) are each flat, with
+  no dependent term of their own.
+- `FADE_KERNEL_ALLOWANCE = 146` and `FLASH_KERNEL_ALLOWANCE = 98` each name their own routine's
+  cost; both share `PALETTE_FX_KERNEL_ALLOWANCE = 55` (`fade_apply_palette` plus the NMI PPUADDR
+  fix, charged once whenever either Fade or Flash is live, never twice when both are) — 201 total
+  for a Fade-only project, the unchanged shipped figure from before the two were split apart.
+- A `route` (`handoff-routes/design-routes.md`) compiles to the identical bytes as hand-chaining
+  the same `move`/`turn`/`wait` commands — zero additional kernel cost, proven by
+  `test/unit/routes.test.js`'s byte-identical-ROM comparison and confirmed with a cross-tree
+  SHA-256 gate.
+- `KERNEL_SLACK = 20` — the floor `assertCovers` (`kernelbytes.test.js`) holds every measured
+  configuration's real margin to (`margin >= KERNEL_SLACK`), not a target to merely clear: a
+  correctly measured per-mapper base should leave *exactly* `KERNEL_SLACK` once every conditional
+  term is accounted for. `assertCovers` also enforces a ceiling at `KERNEL_SLACK * 2` — not more
+  headroom to spend, but a drift alarm: a margin that wide means some term has stopped tracking
+  the engine closely enough to catch the next regression.
+
+**Documented limitations — combinations `checkCapacity` refuses today, each with its own named
+test rather than a silent gap:**
+
+- MMC3, `Save` + `Move` + one live item: 11 bytes short. Test:
+  `'sample-rpg with Save, Move and its one live item does not build on MMC3 -- round 2 reopened the
+  gap the kernel diet had closed, a documented limitation'` (`kernelbytes.test.js`). The identical
+  combination fits on MMC1 with 220 bytes free.
+- UNROM 512, `Save` + `Move`, no item: 88 bytes short (need 126, only 38 free) — genuinely
+  unrelated to items; dropping an item does not close this one the way it closes MMC3's.
+- MMC3, `Save` + `Move` (no item) + a live `Sting`: documented limitation. Test:
+  `'sample-rpg with Save, Move (no item) and a live Sting does not build on MMC3 -- a documented
+  limitation'`.
+- A live switch-bound tile (marginal cost `388 + 30 + 2 × screen count` — 420 bytes on this
+  project's one screen, the largest single feature cost in this ledger) reopens two different
+  rows: MMC3's `Save` + `Move`, no item (already 88-free without the tile) and MMC1's `Save` +
+  `Move` + one live item (previously comfortable at 220 free). Documented limitation on both
+  boards, but two different configurations, not the same one. Tests: `'sample-rpg with Save, Move
+  (no item) and a live bound tile does not build on MMC3'` / `'sample-rpg with Save, Move and its
+  one live item does not build on MMC1 once a bound tile is added'`.
+- A live `Sfx` command adds five more refusal rows on its own: MMC1 Save+Move+item; MMC1
+  Save+Move-no-item (31 short); MMC3 ALL-7-verbs+Move+item-no-Save (41 short); UNROM 512
+  Save-only-with-item and ALL-7-verbs+Move+item (42 short); and it reopens MMC3's
+  Save+Move-no-item row a second, independent way (alongside Sting), and MMC1's Save+Move+item row
+  a second way (with Sting and Sfx both live).
+- Two fits controls confirm the boundary is real, not over-drawn: `sample-rpg`'s one live item plus
+  a live Sfx alone still builds on MMC3 (the tightest of the three boards), and the seven item-6
+  commands (Turn, Wait, Shake, both Show/Hide, Fade, Flash) plus that item with Sting *and* Sfx
+  both live still builds on MMC3 too — with no Save, no Move and no title live on that row; those
+  exclusions are load-bearing, since every refusal row above carries Save and/or Move.
+
+`kernelShortfallAdvice` names a real, buildable fix for every refusal above (which live command(s)
+to drop, or occasionally a different mapper) — a refusal here is `checkCapacity` doing its job on a
+bank that is, by design, allowed to run out, not a bug in the mechanism.
+
+### The Code Forge
+
+The user's own 6502, in `project.code`: `overrides` are edited copies of engine files, `files` are
+new sources. It lives in the project — not beside it — so undo, the dirty dot and saving are the
+ones every other Forge already uses, and a per-project override cannot leak into another project.
+On disk it is raw `.asm` under `code/engine/` and `code/user/`, two folders rather than one so
+which kind a file is never depends on the engine's current file list.
+
+Three rules hold it together:
+
+- **The engine folder is the single writer of what a stock file is.** `engineFileNames()` in
+  `generate.js` is that list; `checkCapacity` uses it to refuse a user file that would collide
+  with an engine name, and to *warn* rather than fail on an override naming a file this version
+  does not ship — a project saved by a later version still has to build.
+- **Overrides are copied in at their own name and their own line numbers.** The generator writes
+  the stock engine in first and the overrides over the top, so nesasm's `file:line` refers to
+  exactly what the editor shows, and the Build panel's error line can open it. `build/` is
+  `rm -rf`'d every build, so editing files *there* is not a feature — it is data loss.
+- **`assets/usercode.inc` is always emitted**, empty or not, and `engine/main.asm` includes it
+  unconditionally in the kernel-lo bank. A project with no code of its own therefore assembles
+  byte-for-byte identically to one built before the Forge existed, which `codebuild.test.js`
+  asserts directly. $C000 is permanently mapped on every supported mapper, so a user label is
+  callable from anywhere with no banking to think about.
+
+Hand-written code is **deliberately outside `checkCapacity`'s byte math**: how much a source file
+assembles to cannot be known from its text, and a guess would either refuse a project that fits
+or promise room the assembler then denies. The assembler is the capacity check, which is why
+`parseNesasmErrors` in `nesasm.js` matters — nesasm v3.1 reports errors across three lines
+(`#[2] file`, then `line bank:addr source`, then the message) and **exits 0 anyway**. A message
+shape it fails to recognise reads as a successful build until the ROM that was never written
+fails to rename, so it also falls back on nesasm's own `# N error(s)` count. `build:run` is the
+one IPC channel that does not flatten its error through `fail()`, because the `{file, line}` array
+is what the deep-link needs.
+
+**nesasm v3.1 also crashes outright on a long label**, an undocumented limit found while building the
+SFX feature: a label of 31 or more characters aborts the assembler with a glibc `_FORTIFY_SOURCE`
+buffer-overflow error (exit 134) rather than reporting a normal error line; 30 characters assembles
+cleanly. Found by binary search after two new engine labels reached 32 characters
+(`handoff-sfx/sfx-implementation-report.md` §2); both were renamed to 24 characters or fewer and no
+other change was needed. Unlike the "6502 traps" list below, this one has no regression test — it is
+recorded here as a known assembler limit to keep new labels under, not a claim this codebase actively
+guards against.
+
+The editor (`renderer/forges/code/`) is hand-rolled — no runtime dependencies and no bundler rule
+out Monaco and CodeMirror, not the CSP; CodeMirror 6 needs no `unsafe-eval` at all. `highlight.js`
+is a pure per-line tokenizer (nesasm has no multi-line construct), and its one invariant is that
+joining the tokens reproduces the line; a test asserts that over every line of the engine. Two
+metric rules in `editor.js`: the gutter, the highlight layer and the textarea must agree on every
+font and spacing value or the caret drifts off its character, and for an editable file `gotoLine`
+sets the selection *before* the scroll because focusing a textarea scrolls it on the browser's
+terms and discards anything set first — a read-only generated file's `gotoLine` does not set a
+selection at all, so it only scrolls.
+Typing commits to the store on a pause rather than per keystroke (an unusable undo stack) or on
+blur (a commit that may never come), so `saveProject` in `app.js` calls the mount contract's
+optional `flushPendingEdits()` first.
+
+- Stock label stability: an internal movement-code dedup removed
+  `move_left_done`/`move_right_done`/`move_up_done`/`move_down_done` as standalone labels, but they
+  survive as zero-byte aliases on `move_horizontal_done`/`move_vertical_done` — a Code Forge user
+  file that references any of the four by name still assembles.
 
 ### The battle system
 
@@ -1376,6 +1348,41 @@ Three shapes worth keeping:
 Anything the engine would need a multiply for is a table instead: `main/build/battletables.js`
 precomputes per-level stats and the experience curve, and pads every name to `RPG_LIMITS.nameLength`
 so the engine needs no length byte.
+
+**The RPG battle ITEM menu does not list everything `use_item` can spend.** `build_item_list`
+(`engine/battleui.asm`) filters the bag to `kind == heal AND amount > 0` — exactly what `item_chosen`
+can apply consistently — so a `damage`-kind item or a `heal`-kind item left at `Amount` 0 is a real,
+valid item on the field and for Give/Take/Carrying/drops; it simply never appears as a selectable row
+in that one menu, so no row there is ever a silent no-op. The filter can leave the list empty while
+the bag itself is not (every carried item is field-only-kind), which raised a second problem the
+filter alone does not solve: `battle_menu_item` decides whether to open the Items page from the
+*filtered* list length, not raw `inv_count`, building the list first so the gate sees the real count
+— deciding from `inv_count` alone would open onto an empty list whose row-select code indexes a stale
+entry left over from whatever was drawn last, and whose Up press underflows the selection to `$FF`.
+`build_spell_list` never needed this ordering, and it is worth knowing why rather than assuming the
+two menus share it: a spell's own membership test (`pc_spells`, a bitmask) already is what building
+the list applies, so gating on it before building can never disagree with what building produces.
+Items introduce a second, independent filter `inv_count` knows nothing about, which is what makes the
+build-before-deciding ordering a genuinely new requirement here, not a precedent already proven
+elsewhere. The `ITEMS_ENABLED`-false path keeps both routines exactly as they were — an unfiltered
+`build_item_list`, and `battle_menu_item`'s original `inv_count` check — because that economy has no
+`effect` field to filter on at all, and preserving it byte-for-byte is the same promise every other
+`ITEMS_ENABLED`-false path in this document already holds to.
+
+**Two capacity terms follow the item's own kind/amount reader into their respective banks, both
+item-conditional and both flat across boards** (see "The kernel budget" above for why a term
+earns its own name only once real variance is measured). `ITEM_EFFECT_KERNEL_ALLOWANCE_BY_GAME_TYPE`
+(`main/build/generate.js`) is `use_item_apply`'s own kernel-lo cost, split by *game type* rather than
+by board — the first allowance in this file split that way — because `BATTLE_ENABLED` picks a
+genuinely differently-sized damage branch (`party_damage` vs `lose_hearts` plus a zero-page read of
+`player_hp`), not because any board differs: 63 bytes for an action project, 60 for an RPG, each
+measured on every board of its own type. `ITEM_LIST_FILTER_BATTLE_ALLOWANCE` (17 bytes,
+`main/build/battletables.js`) is `build_item_list`'s and `battle_menu_item`'s combined cost in the
+banked battle-code region, uniform across all three RPG-capable boards because neither routine
+branches on `SPLIT_ENABLED` or anything else board-specific — `BASE_BATTLE_CODE_BYTES_BY_MAPPER`
+itself did not move for this: the term is its own line beside the base, not folded into it, the fix
+for exactly the mistake `TITLE_KERNEL_ALLOWANCE_BY_MAPPER` already had to undo on the kernel side —
+charging every project a cost that only `ITEMS_ENABLED` builds actually pay.
 
 ### The emulator
 
