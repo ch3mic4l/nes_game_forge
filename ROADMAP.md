@@ -1356,6 +1356,10 @@ edge — double-buffered nametable content streamed in under the vblank budget, 
 bundled into another item's costing. Nothing about this estimate has been revisited since the split;
 no design work has started.
 
+Item 15 (Large streamed worlds) is the world-scale half this mechanism would exist to serve — a
+continuous authored world instead of a grid of disjoint screens — and is blocked on this item without
+restating its analysis.
+
 ---
 
 ## 13. The Magic Forge
@@ -1525,6 +1529,186 @@ subject to, not a separate claim; and item 5's scope list is where both Forges' 
 
 ---
 
+## 15. Large streamed worlds
+
+The user's own ask: "I want to be able to build large overworlds for RPG games with tile streaming
+or levels like Mario Brothers 3 with tile streaming."
+
+**Blocked on item 12; this is the world-scale half, not a rewrite of it.** Item 12 (Camera / scroll
+control) stays exactly what it is — the engine-side rendering path: streaming nametable content in
+ahead of the camera, the mirroring model, the vblank budget, its own 500-1000+ byte floor estimate.
+Nothing about that analysis is restated here. This item is the *world-scale* half that would consume
+it: a continuous authored world in place of a grid of disjoint 256×240 screens, the data layout and
+capacity a large world needs, and the Map Forge tooling to author one. Item 12's mechanism has
+nothing to stream between without a world model bigger than the current 4×4-screen map, and this
+item's world model has nothing to render smoothly without item 12's mechanism — so this item cannot
+ship first, and building item 12 alone buys smoother transitions between existing screens, not an
+SMB3-scale level.
+
+**Non-goal: this is not platformer physics.** The user's SMB3 reference is about *streaming a wide
+level*, not about becoming a side-scrolling platformer. `update_player` (`engine/player.asm`) is
+four-direction top-down movement driven by axis-aligned collision probes; gravity, jumping, terminal
+velocity and side-on collision response are a different movement model entirely, not a bigger map.
+What this item would buy is a wide, continuously-scrolling world walked top-down the way every
+screen in this engine already works today — not a game that plays like SMB3.
+
+**What the world model is today, and what streaming would ask of it.** A map is `gridW × gridH`
+screens, capped at `LIMITS.mapGrid = 4` (`shared/project.js`) — 16 screens per map, maximum. A
+screen is `LIMITS.screenCols × LIMITS.screenRows` = 16×15 metatiles, `SCREEN_METATILES` = 240
+(`shared/project.js`), one full 256×240 nametable, drawn all at once under forced blank by
+`redraw_screen`, with hard transitions at the edges (`cross_left`/`cross_right`/`cross_up`/
+`cross_down`). CLAUDE.md's own note under four-screen mirroring says outright that "the engine only
+draws nametable 0," which is exactly why UNROM 512's four-screen mirroring "buys nothing yet" today
+— a streamed camera drawing ahead into the nametable the player is not currently looking at is what
+would finally cash that in. `set_screen_ptr` (`engine/screens.asm`) selects and points at the current
+field screen's PRG data, and `redraw_screen` (same file) selects that field screen's CHR tileset —
+but neither is the *only* place a bank gets switched: `switch_prg_bank` is also called from
+`call_battle` and the CHR-RAM upload path (`engine/banks.asm`) and the flash-save path
+(`engine/save.asm`), and `switch_chr_bank` is also called from boot (`engine/boot.asm`), the same
+CHR-RAM upload path, and `draw_battle_screen` (`engine/battle.asm`). Streaming would have to
+coordinate with all of those, not only with the field-screen path — needing the *next* screen's data
+while the player still stands on this one means two screens' bytes live at once, possibly in two
+different banks, while whichever of those other switches can still legitimately fire mid-stream keeps
+working too. That coordination is a real design question this item poses, not one it answers.
+
+Storage is flat and uncompressed everywhere in this pipeline — there is no compression anywhere, for
+anything. `SCREEN_BYTES` (`main/build/generate.js`) is 240 metatiles + 64 attribute bytes = 304,
+plus a count byte for placed entities (one more with switch-bound tiles live). Screens pack into
+8 KB regions of the switchable PRG window and may not straddle one: `SCREEN_REGION_BYTES`
+(`shared/cartridge.js`) is `NESASM_BANK_BYTES - 16` = 8176, so 26 screens fit per region at 305
+bytes each, after `chrPayloadRegions()` (UNROM 512's tilesets) and `codeRegions()` (an RPG's battle
+bank) take theirs off the front. A bigger *authored* world does not, by itself, break this packing —
+it is just more screens in more regions; what changes is which screens have to be resident and
+switched in as the camera moves, and that is item 12's question, not this item's.
+
+**The binding constraint on world size today is the fixed per-screen kernel-lo lookup tables, not
+the one-byte reference format and not PRG capacity — and a large-world design has to reckon with
+that ordering, not the format alone.** `kernelTableBytes(project)` (`main/build/generate.js`)
+charges every screen and map against the fixed kernel-lo bank regardless of board: **13 bytes per
+screen** (four neighbour indices, four data pointers, two actor-list pointers, tileset, bank, map)
+**plus 9 bytes per map** (base, encounter rate, four formation slots, two battle-backdrop tiles, the
+song), on top of sprite/animation/item tables and whatever engine code the board needs.
+`checkCapacity` refuses the project outright once that total exceeds what is left beside the engine
+code — a real, thrown build error, not a soft warning. Measured directly against `checkCapacity` at
+`de19269` (not estimated): a minimal stock project's maximum buildable screen count is **113 on
+MMC1** (refused at 114 — `checkCapacity` reports "The lookup tables need 1568 bytes but only 1559 are
+free alongside the engine code"), **100 on MMC3** (refused at 101), **99 on UNROM 512 and UxROM**
+(refused at 100 — `baseKernelCodeBytes` measures 6399 bytes of stock engine code on UNROM 512 against
+MMC3's 6379, and UxROM has no measured entry of its own in `BASE_KERNEL_CODE_BYTES_BY_MAPPER` so it
+falls back to the largest figure on record, UNROM 512's 6399 — 20 bytes more engine code than MMC3
+leaves one fewer screen's worth of table room), and **52 on the unbanked boards** — NROM-256, CNROM,
+GxROM, Color Dreams — where the limit is plain screen-region packing rather than the kernel-lo table
+budget ("This project has 53
+screens but NROM-256 holds 52"). A stock project is therefore refused at roughly a hundred screens on
+the best board, nowhere near the 256 a one-byte reference could otherwise name, and every real
+project's own content (actors, metasprites, items, switch-bound tiles) only lowers those figures
+further.
+
+**The one-byte reference ceiling is real as a *format* fact, but unreachable in a successful build
+today because the table budget refuses first.** Every flat screen reference in this engine is one
+byte, everywhere it appears: a door's `ent_to_scr` (`engine/constants.asm`), a warp command's
+compiled operand (`main/build/textcompile.js`'s own `byte(command.screen, screenCount - 1)`), and
+the save record's `flat_screen` (`SAVE_FIELDS`, `shared/save.js`, `size: 1`) — 256 addressable
+screens, flat indices 0-255. And nothing in this codebase caps the number of maps a project may have
+independent of that table budget: `LIMITS` (`shared/project.js`) caps screens *per map* (`mapGrid =
+4`, 16 screens) but has no `LIMITS.maps` entry; `validateProject`'s only map-count rule is "a project
+needs at least one map"; `addMapCore`/`duplicateMapCore` (item 7) impose no ceiling of their own
+either. So there genuinely is no explicit `flatLength <= 256` rule anywhere — but there does not need
+to be one today, because a minimal project constructed directly against `checkCapacity` and pushed to
+257 screens on MMC3 (the boundary a byte cannot express) is refused at "The lookup tables need 3508
+bytes but only 1384 are free alongside the engine code," on the same table-budget grounds as every
+other oversized project, roughly 150 screens before the reference format would even become the
+constraint. Door and warp targets are also clamped before any byte-masking could matter: `byte(value,
+limit)` (`main/build/textcompile.js`) and `resolveEntityByte`'s own `Math.min(...)`
+(`main/build/generate.js`) both bound a stored operand against the *project's own current screen
+count* — a limit that would itself need to exceed 255 before a legitimate target of 256 could survive
+those clamps at all, at which point (and only then) `hex()`'s `` `${value & 0xff}` `` would mask it
+to the wrong screen with no error. That chain is real as a description of the arithmetic, but the
+capacity gate above prevents any real project from reaching it — there is no current build that
+silently points a door or warp at the wrong screen.
+
+**So the two constraints are ordered, and that ordering is the point.** A design for large streamed
+worlds has to move or compress the fixed per-screen kernel-lo tables *before* the one-byte ceiling is
+even reachable — and the moment such a design does that, the byte ceiling stops being latent and
+starts being live, needing either an explicit refusal past 256 screens or a wider reference format
+(a second byte, a bank-plus-index split, or similar) touching the engine, the compiler, and every one
+of the ~17 sites item 7's own design doc already inventories as holding a screen reference. Neither
+of those — the table-budget redesign or the reference-format decision — is designed here; naming the
+order they would have to be tackled in is as far as this item goes.
+
+**The rendering budget is already tight before a fourth `vram_buf` producer exists.** CLAUDE.md's own
+accounting of `vram_buf` (the queue every mid-frame nametable write goes through) is at three
+independent producers today — `flip_tick`, `flash_tick`, and whichever one of `move_tick`/
+`wait_tick`/`fade_tick`/`text_tick` the frozen-world dispatch is running — at 81 of `vram_buf`'s 256
+bytes in the worst case, and CLAUDE.md's own two-producer figure (Flash alone) already measured
+1670-1740 cycles of full NMI time against a ~2273-cycle vblank window, with the third producer adding
+only "a few dozen cycles" more rather than being fully re-measured. That passage's own words: "A
+fourth independent producer must re-open this accounting again, not assume it still holds." Column or
+row streaming for a moving camera is that fourth producer, and unlike the other three it would not
+tick occasionally — it would run continuously for as long as the camera moves, which is a different
+shape of load than an occasional flip or Flash burst and the single sharpest engine-side constraint
+on this item, already written down before this item existed to name it. Separately, on MMC3 the
+scanline IRQ is already spoken for — `engine/split.asm` owns it for the font CHR bank split — so a
+status bar, the obvious companion to a scrolling level, would contend with it on that board.
+
+**The kernel-lo bank has essentially no room left for this as ordinary conditional code.** CLAUDE.md
+documents a dozen distinct feature combinations `checkCapacity` already refuses outright, each with
+its own named test in `test/unit/kernelbytes.test.js` — UNROM 512's Save+Move with no item; MMC3's
+Save+Move with no item, independently refused by a live Sting, a live SFX, or a live switch-bound
+tile alone; MMC1's Save+Move+item, independently refused by SFX alone or a bound tile alone, and also
+refused when Sting and SFX are both live together (Sting alone does not close that particular row —
+it costs 175 against 220 bytes free there, `CLAUDE.md`'s own figures); and more. Where one of these
+combinations does fit, the recorded margins are narrow — MMC3's own Save+Move-no-item row held 88
+free before Sting, SFX and a bound tile each separately closed it, and the file's own history records
+an earlier point where a Save+Move combination held exactly `KERNEL_SLACK` (20 bytes) and nothing
+more; where a combination is refused instead, the shortfall runs from 11 bytes (MMC3's Save+Move+item,
+round 2) up into the hundreds — switch-bound tiles alone add 388 bytes of kernel code plus a 30-byte
+fixed table plus 2 bytes per screen, a minimum 420-byte total in a one-screen project and more in a
+larger one. Item 12's own floor estimate for the rendering path alone is 500-1000+ bytes — bigger than
+every fitting margin this bank has shown in any documented row, and comparable to or larger than most
+of the refusals too. The obvious conclusion: this
+almost certainly cannot ship as ordinary conditional kernel-lo code the way every item 6 verb did. The
+precedent for what to do instead already exists in this codebase: the RPG battle system lives in its
+own switchable PRG bank (`codeRegions()`, `shared/cartridge.js`), with its own separate, exact
+capacity check (`battleRegionBytes`, `BASE_BATTLE_CODE_BYTES_BY_MAPPER`, `BATTLE_SLACK`,
+`main/build/battletables.js`, asserted in `test/unit/bankedbytes.test.js`) rather than fighting
+kernel-lo's exhausted margin. Naming that precedent is as far as this item goes; which bank a
+streaming driver would live in, and what it would cost, is undesigned.
+
+**This is likely to be board-gated, for capacity reasons rather than register ones.** `rpgCapable()`
+(`shared/cartridge.js`) is the existing precedent for a whole feature gated on what a board can
+physically do — an RPG needs PRG *and* CHR switching, not merely "any mapper." A large streamed world
+plausibly needs the same shape of gate (a banked streaming driver needs somewhere to live, adjacent
+screen data needs bank headroom to hold), but which boards would qualify and by what rule is not
+decided here — only that the shape of the eventual gate already has a precedent to follow.
+
+**What this would inherit from item 7, and what it would strand.** Item 7 (Map organization and
+reuse) just shipped the operations for handling *many* discrete maps on the current model of disjoint
+screens addressed by a single flat index. Not every one of those operations shares a single
+mechanism, though — the corrected item-7 section above is specific about this, and item 15 has to
+stay consistent with it: the structural edits (reorder, duplicate a map, duplicate/promote a screen,
+delete, resize) hold every flat reference correct across the edit through `remapScreenReferences`
+(`shared/project.js`); region copy/paste (`pasteRegionCore`) is its own commit-free core that never
+calls it — pasted content keeps whatever references it already carried, unchanged; and a folder is
+metadata only (`map.folder`), addressing no screen and invoking no remap at all. A continuous
+streamed world is a different data model underneath the same Forge: authoring a seamlessly-scrolling
+region is not the same operation as placing a screen in a grid slot, so none of item 7's specific
+operations — remap-based or not — would carry over as an automatic inheritance; each would need its
+own answer for whatever a continuous world's authoring unit turns out to be. What *would* carry over
+cleanly is the discipline item 7 established across all of them regardless of mechanism: one
+commit-free core per structural edit, one `store.commit` per user action, every stored reference kept
+correct (or deliberately left alone, as paste and folders already are) in the same step. Item 7's own
+remaining open piece — the world overview showing starts, warps and event markers, sliced out of
+`handoff-maporg/design-maporg.md`'s own §12 (not this roadmap's item 12) — is a natural companion
+here: a world large enough to need streaming is a world too big to see all of on the Map Forge's own
+screen-by-screen picker.
+
+Nothing about any figure in this item has been designed against; no code exists for it. Like item 12
+before it, this is written down so the constraints are on record, not because a mechanism has been
+chosen.
+
+---
+
 ## Suggested order
 
 1. ~~Event names, list and search; duplication; templates; play-from-here — item 2 plus the first
@@ -1539,6 +1723,11 @@ Item 7 (map organization and reuse) is not part of this kernel-bank-ordered sequ
 later, on its own, and costs zero engine bytes (`sample/` builds to an identical ROM hash before and
 after) — pure editor and data-model work with nothing to weigh against the kernel-lo budget the rest
 of this section is about.
+
+Item 15 (large streamed worlds) is further out than anything below this line: it is blocked on item
+12, and item 12 itself — like camera/scroll generally, further down this section — has no built
+mechanism yet to even measure a kernel-lo cost for. Item 15 is not a candidate for "next" until item
+12 has a real design and a real figure.
 
 **The kernel bank is the constraint on everything below this line, and it is close to full.** Move
 found it: ~395 bytes against 161 free on the worst battery board, and it only shipped by becoming
