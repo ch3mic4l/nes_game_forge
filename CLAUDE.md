@@ -1521,8 +1521,11 @@ the drift the check exists to prevent, one layer out. `battletables.js` imports 
 and must stay that way; `renderer/forges/build/build.js` importing it is the same move
 `renderer/forges/sound/sound.js` already makes with `main/build/songcompile.js`.
 
-`BASE_BATTLE_CODE_BYTES_BY_MAPPER` is per board from the outset (UNROM 512 3821, MMC1 3821, MMC3
-3867) rather than one flat number split later — the mistake `BASE_KERNEL_CODE_BYTES` made and
+`BASE_BATTLE_CODE_BYTES_BY_MAPPER` is per board from the outset (UNROM 512 3835, MMC1 3835, MMC3
+3881 — each +14 from the battle-side saturation fixes, the `bcs`-before-`cmp` guard `gain_hearts`
+and `party_heal` already had, applied to `item_chosen`/`cast_heal`/`cast_heal_mon` plus a
+saturate-to-255 in `spell_damage_weak` and `physical_damage_noise`; see
+`handoff-battlemath/battlemath-report.md`) rather than one flat number split later — the mistake `BASE_KERNEL_CODE_BYTES` made and
 `BASE_KERNEL_CODE_BYTES_BY_MAPPER` had to undo. MMC3's extra 46 bytes are the `.if SPLIT_ENABLED`
 blocks inside the region itself (`battle.asm`'s split arm, `battleui.asm`'s sprite targeting
 cursor), and they need **no** separate conditional term the way `SPLIT_LOCK_KERNEL_ALLOWANCE` does:

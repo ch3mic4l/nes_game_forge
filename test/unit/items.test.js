@@ -401,7 +401,19 @@ test('a project with no items and no Save is byte-identical to the pre-phase-4b 
 // neither -- confirmed the size did not change (still 147472) while the
 // hash did, consistent with a few bytes inserted mid-bank shifting every
 // label after them rather than growing the ROM itself.
-const PINNED_RPG_BASELINE_HASH = '8f16d8211397e3bb07576799879094ef54bcbfa1562a1a74d934bee1ab9323e3';
+//
+// Re-pinned again for the battle-math saturation fixes
+// (handoff-battlemath/battlemath-report.md): item_chosen, cast_heal,
+// cast_heal_mon, spell_damage_weak and physical_damage_noise each gained the
+// carry guard gain_hearts/party_heal already had, +14 bytes of unconditional
+// banked battle code on every RPG build, items or not -- which is exactly the
+// region this baseline includes. The only file in that change that reaches
+// the ROM is engine/battleturn.asm (the battletables.js constants feed
+// checkCapacity's refusal math, not emitted bytes), so the tree this was
+// pinned from is master plus that one file's diff and nothing else
+// ROM-visible. Size unchanged (still 147472): bytes inserted mid-bank shift
+// every label after them rather than growing the padded ROM.
+const PINNED_RPG_BASELINE_HASH = '5180bfc7a74f1e07c98573a29c7e6f358cc8d30aa277c4c6835b374e2d72d723';
 const PINNED_RPG_BASELINE_SIZE = 147472;
 
 test('an RPG with no items and no Save is byte-identical to the pre-round-4 master build', async (t) => {

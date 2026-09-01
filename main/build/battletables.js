@@ -409,7 +409,7 @@ export function checkBattleTables(project) {
 // this region on MMC3 pays those 46 bytes -- there is no MMC3-RPG-without-the-
 // split to overcharge, which is precisely the case that forced the kernel's
 // split-lock term out of MMC3's base. Here it is a property of the board.
-export const BASE_BATTLE_CODE_BYTES_BY_MAPPER = { 30: 3821, 1: 3821, 4: 3867 };
+export const BASE_BATTLE_CODE_BYTES_BY_MAPPER = { 30: 3835, 1: 3835, 4: 3881 };
 
 // Phase 4c round 3, finding 6 (phase4-design.md §9), corrected round 3b
 // (review K1): the two-menu-consistency filter (build_item_list's kind/

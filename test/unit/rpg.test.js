@@ -56,7 +56,9 @@ const ENT_Y = 0x318;
 const ENT_DIR = 0x320;
 const MON_SLOT_ACTOR = 0x3bc;
 const MON_HP = 0x3c0;
+const MON_SLOT_MAX = 0x3c4;
 const MON_ALIVE = 0x3c8;
+const RNG = 0x62;
 const TURN_ORDER = 0x3cc;
 const MON_SLOT_MP = 0x3ec;
 const PC_STATUS = 0x3f0;
@@ -927,6 +929,150 @@ test('ITEM heals from the bag, spends the potion, and cures poison', {
   assert.equal(nes.cpu.mem[PC_HP], expected, 'the potion should heal twenty, capped at the maximum');
   assert.equal(nes.cpu.mem[INV_COUNT], 0, 'the potion should be spent');
   assert.equal(nes.cpu.mem[PC_STATUS], 0, 'a potion should flush the poison out');
+});
+
+// --- saturation at the top of a byte ----------------------------------------
+//
+// The battle-side heals and multipliers each add in eight bits and then compare
+// against a maximum -- and an add that carries past 255 hands the comparison a
+// wrapped low byte smaller than either operand, so the clamp accepts a wrong,
+// low answer. gain_hearts (engine/combat.asm) and party_heal (engine/rpg.asm)
+// both guard this with a `bcs` to the clamp before the `cmp`; these four tests
+// pin the same guard onto the battle side. Every fixture is chosen so the
+// correct answer and the wrapped answer are far apart (253 vs 14, 0 vs 211...),
+// and the maxima sit *below* 255 so an implementation that saturated to 255
+// instead of the member's own max would fail too.
+
+test('a potion used near the top of a byte clamps to the max instead of wrapping', {
+  skip: needsSample
+}, () => {
+  const nes = boot();
+  nes.cpu.mem[INV_ITEMS] = 0; // the potion, by item id
+  nes.cpu.mem[INV_COUNT] = 1;
+  assert.ok(walkIntoEncounter(nes));
+  waitForMenu(nes);
+  // 250 + 20 carries past 255; the wrapped byte would be 14, and 14 < 253
+  // sails straight through the one-comparison clamp.
+  nes.cpu.mem[PC_HP] = 250;
+  nes.cpu.mem[PC_HP_MAX] = 253;
+
+  chooseCommand(nes, BC_ITEM);
+  assert.equal(nes.cpu.mem[BT_PHASE], BP_ITEMS, 'ITEM should open the bag');
+  tap(nes, A, 10);
+
+  assert.equal(nes.cpu.mem[PC_HP], 253, 'a potion at high HP should clamp to the max, not wrap below it');
+  assert.equal(nes.cpu.mem[INV_COUNT], 0, 'the potion should still be spent');
+});
+
+test('a heal spell cast near the top of a byte clamps to the max instead of wrapping', {
+  skip: needsSample
+}, () => {
+  const nes = boot();
+  assert.ok(walkIntoEncounter(nes));
+  waitForMenu(nes);
+  nes.cpu.mem[PC_SPELLS] |= 2; // Mend, granted the way its level would
+  nes.cpu.mem[PC_MP] = 20;
+  // 250 + 18 carries; the wrapped byte would be 12.
+  nes.cpu.mem[PC_HP] = 250;
+  nes.cpu.mem[PC_HP_MAX] = 253;
+
+  chooseCommand(nes, BC_MAGIC);
+  assert.equal(nes.cpu.mem[BT_PHASE], BP_SPELLS);
+  tap(nes, DOWN, 4); // past Ember to Mend
+  tap(nes, A, 6);
+  tap(nes, A, 10);
+
+  assert.equal(nes.cpu.mem[PC_HP], 253, 'Mend at high HP should clamp to the max, not wrap below it');
+  assert.equal(nes.cpu.mem[PC_MP], 16, 'the clamped cast still costs its four MP');
+});
+
+test('a monster healing itself near the top of a byte clamps to its own max', {
+  skip: needsSample
+}, async (t) => {
+  const rom = await buildVariant(t, 'monheal', (project) => {
+    project.maps[0].encounters = { rate: 0, actorIds: [] };
+    // The snake casts Mend instead of Venom, and cannot brute-force the fight
+    // ending before it does; the party can sit through sixty rounds of it.
+    project.sprites.actors[3].battle = { ...project.sprites.actors[3].battle, atk: 0, spellId: 1 };
+    project.party[0].baseHp = 200;
+  });
+  const nes = boot(rom);
+  // The snake waits in the bottom-left corner, and a walked-into fight refuses
+  // RUN -- which is what makes stalling rounds possible at all.
+  walkTo(nes, 32, 112);
+  walkTo(nes, 32, 208, 300);
+  assert.equal(nes.cpu.mem[GAME_STATE], ST_BATTLE, 'walking into the snake did not start a fight');
+  for (let i = 0; i < 12; i++) nes.frame();
+
+  // 250 + 18 carries; the wrapped byte would be 12. Only the snake's own Mend
+  // ever touches its HP from here: the party only stalls with refused RUNs.
+  nes.cpu.mem[MON_HP] = 250;
+  nes.cpu.mem[MON_SLOT_MAX] = 253;
+
+  let healed = false;
+  for (let round = 0; round < 60 && !healed; round++) {
+    if (nes.cpu.mem[GAME_STATE] !== ST_BATTLE) break;
+    if (nes.cpu.mem[BT_PHASE] === BP_MENU) chooseCommand(nes, BC_RUN);
+    else tap(nes, A, 12);
+    healed = nes.cpu.mem[MON_HP] !== 250;
+  }
+  assert.ok(healed, 'sixty rounds and the snake never cast Mend on itself');
+  assert.equal(nes.cpu.mem[MON_HP], 253, 'a monster healing at high HP should clamp to its own max, not wrap');
+});
+
+test('a weakness hit at 171 or more saturates instead of dealing less than the plain hit', {
+  skip: needsSample
+}, async (t) => {
+  const rom = await buildVariant(t, 'weakover', (project) => {
+    project.maps[0].encounters = { rate: 0, actorIds: [] };
+    // Ember into the slime's fire weakness: 200 * 1.5 = 300, which wraps to 44
+    // in eight bits -- *less* than the unmodified 200 -- and saturates to 255.
+    project.spells[0].amount = 200;
+  });
+  const nes = boot(rom);
+  walkTo(nes, 160, 176);
+  walkTo(nes, 176, 176, 200);
+  assert.equal(nes.cpu.mem[GAME_STATE], ST_BATTLE);
+  waitForMenu(nes);
+  nes.cpu.mem[MON_HP] = 255; // saturated damage is exactly its whole HP
+
+  chooseCommand(nes, BC_MAGIC);
+  tap(nes, A, 6);  // Ember is the first row
+  tap(nes, A, 10); // aim it at the slime
+
+  assert.equal(nes.cpu.mem[MON_HP], 0, 'a saturated weakness hit should take all 255, not a wrapped 44');
+  assert.equal(nes.cpu.mem[MON_ALIVE], 0, 'and 255 damage into 255 HP is a kill');
+});
+
+test('a physical attack of 253 or more survives its own noise roll instead of wrapping', {
+  skip: needsSample
+}, async (t) => {
+  const rom = await buildVariant(t, 'atkover', (project) => {
+    project.maps[0].encounters = { rate: 0, actorIds: [] };
+    // Attack 255 against defence 0 leaves bt_tmp at 255 before the 0-3 noise
+    // roll is added; any nonzero roll used to wrap the hardest possible hit
+    // down to a scratch of 0-2.
+    project.party[0].baseAtk = 255;
+    project.party[0].atkPerLevel = 0;
+    project.sprites.actors[0].battle = { ...project.sprites.actors[0].battle, def: 0 };
+  });
+  const nes = boot(rom);
+  walkTo(nes, 160, 176);
+  walkTo(nes, 176, 176, 200);
+  assert.equal(nes.cpu.mem[GAME_STATE], ST_BATTLE);
+  waitForMenu(nes);
+
+  chooseCommand(nes, BC_FIGHT);
+  assert.equal(nes.cpu.mem[BT_PHASE], BP_TARGET);
+  // Nothing advances the LFSR in battle but the rolls themselves, so seeding it
+  // here makes the attack deterministic: $B8 -> $01 (roll_hit: 1 < acc-eva, a
+  // hit) -> $02 (noise 2, the roll that used to wrap 255 + 2 down to 1).
+  nes.cpu.mem[MON_HP] = 255;
+  nes.cpu.mem[RNG] = 0xb8;
+  tap(nes, A, 20);
+
+  assert.equal(nes.cpu.mem[MON_HP], 0, 'a 255-attack hit should saturate at 255 damage, not wrap to 1');
+  assert.equal(nes.cpu.mem[MON_ALIVE], 0, 'and 255 damage into 255 HP is a kill');
 });
 
 // ROADMAP item 5 phase 4c round 3, design deliverable 5 (phase4-design.md

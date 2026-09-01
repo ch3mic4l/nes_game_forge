@@ -239,8 +239,10 @@ item_chosen:
   lda pc_hp,x
   clc
   adc bt_tmp
+  bcs item_chosen_max       ; wrapped past 255: certainly over this member's max
   cmp pc_hp_max,x
   bcc item_chosen_store
+item_chosen_max:
   lda pc_hp_max,x
 item_chosen_store:
   sta pc_hp,x
@@ -332,8 +334,10 @@ cast_heal:
   lda pc_hp,x
   clc
   adc bt_tmp
+  bcs cast_heal_max         ; wrapped past 255: certainly over this member's max
   cmp pc_hp_max,x
   bcc cast_heal_store
+cast_heal_max:
   lda pc_hp_max,x
 cast_heal_store:
   sta pc_hp,x
@@ -347,8 +351,10 @@ cast_heal_mon:
   lda mon_slot_hp,x
   clc
   adc bt_tmp
+  bcs cast_heal_mon_max     ; wrapped past 255: certainly over this slot's max
   cmp mon_slot_max,x
   bcc cast_heal_mon_store
+cast_heal_mon_max:
   lda mon_slot_max,x
 cast_heal_mon_store:
   sta mon_slot_hp,x
@@ -548,6 +554,10 @@ physical_damage_noise:
   and #3
   clc
   adc bt_tmp
+  bcc physical_damage_store
+  lda #$FF                  ; an attack of 253+ carried past 255: saturate, or the
+                            ; noise roll turns the hardest hit into a scratch
+physical_damage_store:
   sta bt_dmg_lo
   lda #0
   sta bt_dmg_hi
@@ -627,6 +637,11 @@ spell_damage_weak:
   lsr a
   clc
   adc bt_dmg_lo
+  bcc spell_damage_weak_store
+  lda #$FF                  ; carried past 255: saturate rather than wrap -- there
+                            ; is no high byte to promote into (bt_dmg_hi doubles
+                            ; as the XP accumulator and $FF means "no number")
+spell_damage_weak_store:
   sta bt_dmg_lo
   rts
 spell_damage_strong:
