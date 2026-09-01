@@ -602,8 +602,11 @@ columns 0 and 31 — so the frame drawn there is decoration, and nothing the pla
 
 `engine/combat.asm` and `engine/title.asm` are conditionally *reachable* either way, but only
 `title.asm` is still always assembled. `COMBAT_ENABLED` and `TITLE_ENABLED` in `config.inc` gate what
-runs; `BATTLE_ENABLED` now also gates what *assembles* in `combat.asm` — see the kernel diet under
-"`Move` is the first command..." below for why, and `projectUsesHeartArt` (`shared/font.js`), not
+runs; `BATTLE_ENABLED` now also gates what *assembles* in `combat.asm` — the same conditional-
+allowance discipline the kernel-lo capacity ledger below applies to every optional feature (an
+RPG's action-only health code has no call site once combat routes through the battle bank, so
+keeping it assembled would burn kernel-lo space for dead code) — and `projectUsesHeartArt`
+(`shared/font.js`), not
 `projectUsesCombat`, for what decides the heart art stamped into sprite tiles `$FE/$FF`: an RPG's
 monsters can still carry contact damage (`COMBAT_ENABLED` on, driven by `projectUsesCombat` as
 before), but an RPG never draws the hearts that art is for. `init_session` is the single definition
@@ -918,466 +921,147 @@ flag to keep in step with the counter. Three rules hold it together:
 - **The facing is set once, before the first step**, not per step — the "decide once, before
   acting" trap below, and it is what makes a blocked move still turn to look the way it tried to go.
 
-The conditional part is the interesting one. Move is ~395 bytes and **the kernel bank has no room to
-carry it unconditionally**: measured on a clean tree, `sample-rpg` with one `Save` command leaves
-**411 free bytes** in the kernel-lo bank on MMC3 (142 before the kernel diet below freed 269 more;
-161 before that, `switch_prg_bank`'s own interrupt-race fix cost every MMC3 build with
-`SPLIT_ENABLED` 19 of those) and 622 on MMC1 (353 before the diet). Assembling Move into every ROM
-did not tighten the capacity check, it overflowed the bank and failed nesasm outright, for projects
-that never move anything. So `projectUsesMove` (`shared/project.js`) drives a generated
-`MOVE_ENABLED` the way `projectUsesSave` drives `SAVE_ENABLED`, and `kernelCodeBytes` gained a term,
-`MOVE_KERNEL_ALLOWANCE`. A project with no live Move — including one whose only Move is switched off,
-since the predicate reads `liveCommands` — assembles byte-for-byte as it did before the command
-existed, which `move.test.js` asserts by comparing two whole ROMs.
+The conditional part is the interesting one: Move is measured, not guessed, because hand-written
+code that assembles to an unknown size is exactly what the Code Forge's own capacity philosophy
+(above) refuses to model — the kernel-lo bank is a fixed 8,192-byte region shared by engine code
+and every project's own lookup tables, and `checkCapacity` (`main/build/generate.js`) has to know
+both halves exactly. Five rules hold that model together, and they are the ones any change to this
+ledger has to keep:
 
-**That makes the kernel bank's remaining headroom the constraint on item 1 and item 6 both, and the
-269 bytes came from a kernel diet on item 1's own side of the ledger.** `engine/combat.asm`'s action-
-mode health model — `hurt_player`, `lose_hearts`, `gain_hearts`, the knockback, and `draw_hud` — is
-gated `.if !BATTLE_ENABLED`: an RPG never draws hearts or knocks the player back, it shows HP in the
-battle box and starts a fight instead, so none of that code has anything to do there. `player.asm`'s
-`knockback_step` call and `boot.asm`'s `draw_hud` call move with their targets, under the same gate.
-`projectUsesHeartArt` (`shared/font.js`) is a narrower predicate than `projectUsesCombat` for exactly
-this reason: an RPG whose monsters carry contact damage still needs `COMBAT_ENABLED` (that predicate
-still drives it), but never draws the hearts or reserves their two sprite tiles, so stamping and
-validating that reservation now asks the narrower question instead — a project could paint real
-party art over `$FE/$FF` in an RPG tileset that `projectUsesCombat` alone would still have refused.
-`kernelCodeBytes`'s own base dropped by exactly those 269 bytes, on every RPG-capable board alike,
-which is what made room for Move at all: a project with Save *and* Move on MMC3 with text also
-carries `SPLIT_LOCK_KERNEL_ALLOWANCE` (19 bytes, `switch_prg_bank`'s own interrupt-race fix —
-conditional the same way, since it costs nothing on a board or a project that never shows text on
-MMC3) and, at this point in the history, reserved 7669 of the 8192 byte bank against a real measured
-7641 — a 28-byte margin, 8 of which was not slack at all but the base's own cross-board
-conservatism: it was one flat number (`BASE_KERNEL_CODE_BYTES`, measured on UNROM 512, the worst of
-the three RPG-capable boards because `banks.asm` emits the most code for its combined PRG/CHR
-register) charged to every board alike, and MMC3's own true base, with none of the conditional terms,
-measures 6675 — eight less than the UNROM 512 figure it was being charged. Getting this far needed a
-second fix alongside the diet: `checkCapacity`'s own `tableBytes` had been double-charging kernel-lo
-for every placed entity's *record*, which actually lives in the switchable window's own screen data
-(`emitScreens`) and was already correctly charged against screen capacity there — harmless while
-kernel-lo had room to spare, but exactly the kind of stale slop this codebase's own six-plus-revision
-history under `SAVE_KERNEL_ALLOWANCE` already warns about, caught the same way: by diffing the
-formula's claim against nesasm's real kernel-lo usage rather than trusting either number alone.
-Between the diet and that fix, the same combination went from **332 bytes** short of the kernel-lo
-bank to **12**.
+- **A conditional feature's cost is a separate generated allowance, never folded into a base.**
+  `kernelCodeBytes` charges Move, Turn, Wait, Save, Sting, Sfx, switch-bound tiles, Fade/Flash and
+  the MMC3-only split-lock fix as their own named `*_KERNEL_ALLOWANCE` terms, each gated on the
+  predicate that turns the feature on (`projectUsesMove`, `projectUsesSave`, …) — a project that
+  never uses a feature assembles byte-for-byte as if the feature did not exist, which
+  `move.test.js`, `codebuild.test.js` and their neighbours assert by comparing whole ROMs.
+- **A term that varies by mapper is measured per mapper**, in a `*_BY_MAPPER` table
+  (`BASE_KERNEL_CODE_BYTES_BY_MAPPER`, `TITLE_KERNEL_ALLOWANCE_BY_MAPPER`,
+  `SAVE_KERNEL_ALLOWANCE_BY_MAPPER`), not charged to every board at whichever board's figure is
+  largest. Base and title fall back to the largest measured figure for a mapper their table has no
+  entry for (`?? FALLBACK_...`), and `kernelbytes.test.js` builds real ROMs on those boards to
+  confirm the fallback still leaves real margin. **Save has no fallback** — it indexes
+  `SAVE_KERNEL_ALLOWANCE_BY_MAPPER[mapper.id]` directly, deliberately: a newly implemented save
+  medium with no measured entry must fail loudly rather than silently inherit another board's
+  figure.
+- **Individual allowance deltas are equality-asserted against nesasm's real usage, per board, not
+  margin-checked.** `kernelbytes.test.js` measures each named constant's own isolated delta with
+  `assert.equal`, not `<=` — a margin check would let a stale, too-generous figure sit undetected
+  until the day a project actually needed the bytes it silently claimed. The *combined*
+  reservation is checked differently: `assertCovers` requires the real margin to sit between
+  `KERNEL_SLACK` and `KERNEL_SLACK * 2` — under it, the reservation has fallen behind the engine;
+  over it, the term has stopped tracking closely enough to catch the next regression.
+  (`bankedbytes.test.js` holds the same discipline for the separate banked battle-region ledger,
+  not for these kernel-lo allowances.)
+- **`kernelShortfallAdvice` (`main/build/generate.js`) prices a removal by disabling every live
+  occurrence of a command — nested inside a branch or a choice option, and inside a common event,
+  not just top-level — and asking what the resulting project's full kernel-lo occupancy
+  (`kernelCodeBytes + fixedBytes + tableBytes`) would be (`projectWithoutCommands`), never by
+  summing the flat allowance constants.** Summing under-counts: on MMC3, a project whose only live
+  event is a Move (or a Sting) is that project's only reason `SPLIT_LOCK_KERNEL_ALLOWANCE` is paid
+  at all, so removing it has to free the term *and* the split lock together, and only the
+  counterfactual-occupancy approach knows that.
+- **A mapper offered as a fix must still hold every tileset, every screen and the project's
+  mirroring choice** — a smaller kernel-lo reservation alone is not a valid suggestion if
+  `reconcileCartridge` would silently truncate one of those the moment the author switched.
 
-**Per-mapper budgeting (the "not done yet" above) closed 8 of those 12 bytes.** `BASE_KERNEL_CODE_BYTES`
-is now `BASE_KERNEL_CODE_BYTES_BY_MAPPER` in `main/build/generate.js`, one measured figure per
-RPG-capable board (UNROM 512, MMC1, MMC3 — the same three boards the paragraph above already names,
-now each charged only to its own board) rather than UNROM 512's worst-case number charged to all
-three; a mapper this table has no entry for — every non-RPG-capable board — falls back to the largest
-of the three. Being the largest of three RPG-capable boards' own figures says nothing by itself about
-five *different* boards that cannot even build an RPG; what actually establishes the fallback is safe
-for them is `kernelbytes.test.js` building real ROMs on all five and checking real usage against it
-directly, not the arithmetic that produced the figure in the first place: `sample` (the
-action-adventure fixture, exercising combat and text, with a live Move command added) on NROM, CNROM,
-GxROM, Color Dreams and UxROM measures 505 to 544 bytes of margin under the fallback — comfortably
-safe, never under. `SAVE_KERNEL_ALLOWANCE`
-became `SAVE_KERNEL_ALLOWANCE_BY_MAPPER` the same way, each battery-capable board's own measured delta
-(MMC1 547, MMC3 552) rather than the larger of the two charged to both — and, because a per-mapper term
-only stops a *stale* figure from hiding once it is checked for equality rather than merely "covers
-enough", `test/unit/kernelbytes.test.js` asserts each board's delta against its own allowance exactly,
-not with `<=`: a margin-only check left room for MMC1 to sit at the old shared 552 instead of its own
-547 and still pass, 5 bytes of silent slack that would have compounded with everything below.
-`MOVE_KERNEL_ALLOWANCE` and `SPLIT_LOCK_KERNEL_ALLOWANCE` stay single flat numbers — Move measures the
-same bytes on every board alike, and the split-lock fix is already conditional on the one board
-that needs it, so neither has a per-board difference to capture, and folding either into a base would
-overcharge every project that never turns the feature on. (`MOVE_KERNEL_ALLOWANCE` itself is 379 as of
-item 6's Turn/Wait first slice, not the 395 this section originally measured — `move_face`, the routine
-Move and the new `Turn` command both call to set a facing, moved out to its own `FACE_KERNEL_ALLOWANCE`
-[16] so a Turn-only project pays for it without also paying for the rest of Move. 379 + 16 = 395: the
-figures below that total a Move-only project's cost are unchanged by the split, only the constant named
-`MOVE_KERNEL_ALLOWANCE` moved.)
+Current allowance figures (`main/build/generate.js` unless noted; each named code allowance is a
+delta `kernelbytes.test.js` measures exactly, on every board named — the base, the derived table
+sizes, the route zero-cost proof and `KERNEL_SLACK` itself are each checked their own way, below):
 
-**A title screen turned out to be exactly this same mistake, hiding inside the base itself.**
-`BASE_KERNEL_CODE_BYTES_BY_MAPPER`'s three figures were each measured by building `sample-rpg` with a
-title screen forced on — including for the "nothing conditional turned on" no-Save baseline that
-anchors the table, which does not itself carry a live Save command — so every RPG-capable board's base
-secretly included `engine/title.asm`'s own cost whether or not a project actually had one. `sample-rpg`
-as checked in does not (`titleMap: null`), so this was a real, measured overcharge on the fixture the
-whole budget is calibrated against, invisible only because no measurement had ever forced title *off*.
-`TITLE_KERNEL_ALLOWANCE_BY_MAPPER` carves it back out, the `SAVE_KERNEL_ALLOWANCE_BY_MAPPER` shape
-rather than `MOVE_KERNEL_ALLOWANCE`'s: UNROM 512 and MMC1 both measure 212 bytes for a title screen,
-but MMC3 measures 224, because MMC3 is the only board with `SPLIT_ENABLED` and `engine/split.asm`'s
-`split_select` carries its own `.if TITLE_ENABLED` branch — five instructions deciding whether the
-current frame's font-CHR split program is the title one — that neither other board ever assembles at
-all. `engine/title.asm` itself has no MMC3-specific branch anywhere in it, so its own cost is identical
-on all three boards; the other 12 bytes are exactly that one extra branch, elsewhere, that only a
-split-font board with a title screen pays.
+- `BASE_KERNEL_CODE_BYTES_BY_MAPPER = { 30 (UNROM 512): 6399, 1 (MMC1): 6204, 4 (MMC3): 6379 }` —
+  the stock RPG-capable kernel with nothing conditional turned on; a non-RPG-capable mapper falls
+  back to the largest of the three.
+- `TITLE_KERNEL_ALLOWANCE_BY_MAPPER = { 30: 212, 1: 212, 4: 224 }`, charged whenever a project has
+  a title screen — MMC3 costs 12 bytes more because it is the only board with `SPLIT_ENABLED`, and
+  `split_select` carries an extra `.if TITLE_ENABLED` branch neither other board assembles. A
+  project with a live `Save` command pays this term even if `titleMap` is currently unset, because
+  `validateProject` requires a title wherever Save is live.
+- `SAVE_KERNEL_ALLOWANCE_BY_MAPPER = { 1: 547, 4: 552, 30: 719 }` — UNROM 512's own entry costs
+  more because that board's Save path is a flash-rewrite driver rather than battery-WRAM (see the
+  flash-save passage under "The engine").
+- `MOVE_KERNEL_ALLOWANCE = 379` plus `FACE_KERNEL_ALLOWANCE = 16` (the facing-set routine Move and
+  `Turn` share, charged once whenever either is live) — 395 total for a Move-only project.
+- `SPLIT_LOCK_KERNEL_ALLOWANCE = 19`, MMC3-only, charged whenever `projectUsesText` is true on that
+  board — which includes a project whose only live event is a Move or a Sting command, not just
+  dialogue.
+- `ITEM_KERNEL_ALLOWANCE = 16` (flat across boards) plus 3 `kernelTableBytes` bytes *per item*
+  (`item_metasprite`, `item_effect_kind`, `item_effect_amount`, one byte each in
+  `assets/items.inc`); `ITEM_EFFECT_KERNEL_ALLOWANCE_BY_GAME_TYPE = { action: 63, rpg: 60 }` for
+  `use_item_apply`.
+- `STING_KERNEL_ALLOWANCE_STANDALONE = 160` plus the shared `AUDIO_FX_KERNEL_ALLOWANCE = 15`
+  (paid by Sting or Sfx, either one); `SFX_KERNEL_ALLOWANCE_STANDALONE = 295`;
+  `STING_SFX_INTERACTION_ALLOWANCE = 5` more when both are live at once. Aggregate cost: Sting-only
+  175, Sfx-only 310, both live 475.
+- `BOUND_TILE_KERNEL_ALLOWANCE = 388`, plus a 30-byte fixed table (`bound_row_lo`/`bound_row_hi`)
+  and 2 `kernelTableBytes` bytes per screen (`screen_bound_lo`/`hi`) — not the only allowance with
+  a table cost (items have one too, above), but the first `kernelShortfallAdvice` offers to drop
+  whose removal changes both code and table occupancy at once, which is why its advice compares
+  full kernel-lo occupancy (`kernelCodeBytes + fixedBytes + tableBytes`), not `kernelCodeBytes`
+  alone.
+- `TURN_KERNEL_ALLOWANCE = 35` composes with the shared `FACE_KERNEL_ALLOWANCE` above (Move+Turn
+  together cost 379+35+16=430, the shared facing routine charged once); `WAIT_KERNEL_ALLOWANCE =
+  48` shares no code with Turn beyond that same facing routine (35+16+48=99 for Turn+Wait both
+  live, neither Move).
+  `SHAKE_KERNEL_ALLOWANCE = 65` and `VISIBLE_KERNEL_ALLOWANCE = 49` (Show/Hide) are each flat, with
+  no dependent term of their own.
+- `FADE_KERNEL_ALLOWANCE = 146` and `FLASH_KERNEL_ALLOWANCE = 98` each name their own routine's
+  cost; both share `PALETTE_FX_KERNEL_ALLOWANCE = 55` (`fade_apply_palette` plus the NMI PPUADDR
+  fix, charged once whenever either Fade or Flash is live, never twice when both are) — 201 total
+  for a Fade-only project, the unchanged shipped figure from before the two were split apart.
+- A `route` (`handoff-routes/design-routes.md`) compiles to the identical bytes as hand-chaining
+  the same `move`/`turn`/`wait` commands — zero additional kernel cost, proven by
+  `test/unit/routes.test.js`'s byte-identical-ROM comparison and confirmed with a cross-tree
+  SHA-256 gate.
+- `KERNEL_SLACK = 20` — the floor `assertCovers` (`kernelbytes.test.js`) holds every measured
+  configuration's real margin to (`margin >= KERNEL_SLACK`), not a target to merely clear: a
+  correctly measured per-mapper base should leave *exactly* `KERNEL_SLACK` once every conditional
+  term is accounted for. `assertCovers` also enforces a ceiling at `KERNEL_SLACK * 2` — not more
+  headroom to spend, but a drift alarm: a margin that wide means some term has stopped tracking
+  the engine closely enough to catch the next regression.
+- Stock label stability: an internal movement-code dedup removed
+  `move_left_done`/`move_right_done`/`move_up_done`/`move_down_done` as standalone labels, but they
+  survive as zero-byte aliases on `move_horizontal_done`/`move_vertical_done` — a Code Forge user
+  file that references any of the four by name still assembles.
+- The same dedup's `move_right_inside`/`move_down_inside` (`engine/player.asm`) deliberately `jmp`
+  to their shared tail on the very next line rather than falling through into it, even though a
+  fallthrough would reclaim a few more bytes: fallthrough would make physical adjacency between an
+  entry routine and its tail load-bearing and invisible, so inserting anything between
+  `move_down_inside` and `move_vertical_probe` would silently break `move_down` with no assembler
+  error.
 
-The recovery has an exception, and it is not a small one: a project with a live Save command needs a
-title screen in every valid build regardless of what `titleMap` currently says (`validateProject`
-refuses a titleless Save project outright — "Continue has nowhere to appear without one"), so
-`kernelCodeBytes` charges the title term whenever `projectUsesSave` is true even before the project is
-otherwise valid. A titleless project *with* a live Save therefore recovers nothing from this split — it
-was never being undercharged for a title it is required to have, only for one it had not gotten around
-to setting yet. `sample-rpg` with Save and Move on MMC3 is exactly this case, which is why its own
-combined total, below, is unchanged from before the split. What moved is every other titleless
-project's budget, on every board: 212 to 224 fewer bytes reserved than before, real headroom recovered
-rather than slack invented, because `sample-rpg`'s own no-Save baseline measurement never had a title
-to pay for in the first place.
+**Documented limitations — combinations `checkCapacity` refuses today, each with its own named
+test rather than a silent gap:**
 
-The five non-RPG-capable boards inherit this the same way they inherit the base: `titleKernelAllowance`
-falls back to the largest measured figure — MMC3's 224 — for a board this table has no entry for, the
-same reasoning `baseKernelCodeBytes`'s own fallback already uses above. None of those five boards has a
-scanline IRQ, so their own real title cost is 212, same as UNROM 512 and MMC1 — meaning the fallback
-deliberately over-charges every titled project on those boards by 12 bytes. That is not slack that
-crept in unnoticed; it is what a fallback is *for*: it cannot know it is looking at a board whose real
-cost is lower, so it charges the worst one on record, the same trade the base term's own fallback
-already makes. Measured, not assumed: `kernelbytes.test.js` builds `sample` title-off and title-on on
-all five boards and asserts each term against its own real measurement rather than only the combined
-total, so a regression in the base could no longer hide behind slack the title term happened to be
-carrying, or the other way around.
+- MMC3, `Save` + `Move` + one live item: 11 bytes short. Test:
+  `'sample-rpg with Save, Move and its one live item does not build on MMC3 -- round 2 reopened the
+  gap the kernel diet had closed, a documented limitation'` (`kernelbytes.test.js`). The identical
+  combination fits on MMC1 with 220 bytes free.
+- UNROM 512, `Save` + `Move`, no item: 88 bytes short (need 126, only 38 free) — genuinely
+  unrelated to items; dropping an item does not close this one the way it closes MMC3's.
+- MMC3, `Save` + `Move` (no item) + a live `Sting`: documented limitation. Test:
+  `'sample-rpg with Save, Move (no item) and a live Sting does not build on MMC3 -- a documented
+  limitation'`.
+- A live switch-bound tile (marginal cost `388 + 30 + 2 × screen count` — 420 bytes on this
+  project's one screen, the largest single feature cost in this ledger) reopens two different
+  rows: MMC3's `Save` + `Move`, no item (already 88-free without the tile) and MMC1's `Save` +
+  `Move` + one live item (previously comfortable at 220 free). Documented limitation on both
+  boards, but two different configurations, not the same one. Tests: `'sample-rpg with Save, Move
+  (no item) and a live bound tile does not build on MMC3'` / `'sample-rpg with Save, Move and its
+  one live item does not build on MMC1 once a bound tile is added'`.
+- A live `Sfx` command adds five more refusal rows on its own: MMC1 Save+Move+item; MMC1
+  Save+Move-no-item (31 short); MMC3 ALL-7-verbs+Move+item-no-Save (41 short); UNROM 512
+  Save-only-with-item and ALL-7-verbs+Move+item (42 short); and it reopens MMC3's
+  Save+Move-no-item row a second, independent way (alongside Sting), and MMC1's Save+Move+item row
+  a second way (with Sting and Sfx both live).
+- Two fits controls confirm the boundary is real, not over-drawn: `sample-rpg`'s one live item plus
+  a live Sfx alone still builds on MMC3 (the tightest of the three boards), and the seven item-6
+  commands (Turn, Wait, Shake, both Show/Hide, Fade, Flash) plus that item with Sting *and* Sfx
+  both live still builds on MMC3 too — with no Save, no Move and no title live on that row; those
+  exclusions are load-bearing, since every refusal row above carries Save and/or Move.
 
-**A second, unrelated fix freed another 5 bytes on every RPG-capable board, and it was enough to close
-what per-mapper budgeting alone did not.** `entity_contact` (`engine/combat.asm`) used to read
-`player_iframes` — the action side's own invincible window, reused by `player_hazard` purely as the
-RPG's floor-damage cooldown, see the trap list a few paragraphs up — before deciding whether a touched
-monster starts a fight at all, so a Damage metatile silently suppressed every contact battle for the
-rest of `IFRAME_TIME`: an RPG's monsters became briefly walk-through after any floor hit. Scoping that
-check to the action-only branch it actually belongs to (RPG encounters have no invincible window to
-respect) happens to remove those two instructions from the RPG build entirely, which is a real 5-byte
-saving nesasm confirms on every RPG-capable board — not a coincidence of one build, a property of the
-fix. With both changes, `sample-rpg` with Save and Move on MMC3 now reserves 6379 (base) + 224 (title)
-+ 19 (split lock) + 552 (save) + 395 (move) + 20 (`KERNEL_SLACK`) = 7589 against a real measured 7569 — a 20-byte
-margin, exactly `KERNEL_SLACK` and nothing more, which is true of every configuration this file
-measures now (see `test/unit/kernelbytes.test.js`), not a coincidence but the point of measuring per
-board instead of charging every board the same worst case. (The base here is 6379, not the 6446 this
-passage originally measured — a kernel diet moved the base to 6376, described a few paragraphs down,
-and `battle_end`'s own talk_ent fix, item 6's Turn/Wait slice, moved it a further +3 to 6379 since
-that routine is unconditional kernel-lo cost on every RPG build; re-measured against the current tree
-rather than adjusted by arithmetic. The 20-byte margin itself is untouched throughout, because each
-change moved what the base counts, not how the calibration holds it to account.) **`checkCapacity` no
-longer refuses
-`sample-rpg` with a `Save` command *and* a `Move` command on MMC3** — nesasm assembles it into the
-kernel-lo bank with room to spare, which is a real fix, not a loosened check: the recovered margin is
-exactly what per-mapper budgeting (8 bytes) and the `entity_contact` fix (5 bytes, times the two other
-terms this combination already carries no further multiplier of) account for against the old 12-byte
-shortfall, still measured rather than forced. It is also fragile — the next byte the kernel-lo bank
-grows anywhere, on this board, in this configuration, reopens it — so `kernelbytes.test.js` builds this
-exact combination and asserts the semantic invariant (it assembles, with at least `KERNEL_SLACK` bytes
-free) rather than the literal byte count on the day this was written: pinning the exact figure would
-fail on any harmless change elsewhere in the bank and invite loosening the assertion instead of
-investigating, so the test prints the real figure on failure and leaves the bound at what actually has
-to hold.
-
-**"The next byte... reopens it" was not a hedge — it was a prediction, and item 5's own phase 4 is
-what cashed it in.** The 20-byte figure just above answers one question — is `kernelCodeBytes`'s own
-*estimate* of the engine's code size accurate? — and it was exactly right, no slop either way. It is
-not the number `checkCapacity` actually refuses or admits a build on. That gate is the *combined*
-one — `kernelCodeBytes` (the calibrated estimate above, `KERNEL_SLACK` already folded in) plus the
-project's lookup tables, against the bank's 8192 bytes outright — and for this exact configuration it
-had already fallen to a single spare byte before phase 4 touched anything: 7656 (code, including
-`KERNEL_SLACK`) + 409 (fixed tables) + 126 (this project's own lookup tables) = 8191. `sample-rpg`
-carries one live item (its migrated Gem), and phase 4's id retarget (below) is real kernel code the
-moment the engine reads `project.items` at all: `ITEM_KERNEL_ALLOWANCE` is 16 bytes, flat across
-boards, measured exactly — not estimated — on all three RPG-capable boards, with an equality
-assertion per board in `test/unit/kernelbytes.test.js`, the identical discipline every other
-allowance here is held to. 16 (code) plus 1 (`item_metasprite`'s own table entry) is 17 bytes against
-the one spare byte that combined total had: **`checkCapacity` refused `sample-rpg` with a `Save`
-command *and* a `Move` command on MMC3 again**, this time by items rather than by the arithmetic this
-section already walked through. This was not a regression the fix above failed to anticipate — it was
-that fix's own fragility clause arriving on schedule, and the mechanism built to catch exactly this kind
-of regression did its job: `checkCapacity` refused with real, actionable advice from
-`kernelShortfallAdvice` (below), which still offers this shape of advice to any project that does
-overflow — drop every Move and free 395 bytes, or every Save and free 552 — and the identical project
-built on MMC1 with room to spare (302 bytes of headroom before items existed, comfortably absorbing 16
-more). `test/unit/kernelbytes.test.js` asserted the refusal itself *and* built both mitigations to
-confirm they were real rather than assumed — that test has since been renamed and rewritten (below) to
-assert the opposite, once the diet a few paragraphs down closed the gap again; no test in this file
-asserts an MMC3 refusal for this combination any more. That MMC1 comfort, though, is specific to the
-Save+Move+item combination alone, not to MMC1 in general — no test asserts this either, it is a
-measurement, not a test: the item-6 costing pass later measured MMC1's own Save+Move+item row refused
-by `checkCapacity` at **296 bytes short** (need 129 table bytes, signed free −167) the moment every
-shipped verb — Turn, Wait, Shake, Show/Hide, Fade, Flash — is also live on the same project. The plain
-Save+Move+item row on MMC1 still fits with 220 free, and ALL-verbs+Move+item with no Save fits with 483
-free, so the refusal needs the whole stack at once, not any one piece of it. An author who hits a
-combination like this is not stuck; they are told, correctly, which is what all of this machinery is
-for.
-
-**A third diet closed the gap items reopened.** `engine/player.asm`'s four movement direction routines
-(`move_left_inside`/`move_right_inside`/`move_up_inside`/`move_down_inside`) each ended in an identical
-two-corner probe-and-commit tail, differing only in which body-offset constant fed the first probe and
-which of `player_x`/`player_y` the result committed to — `move_horizontal_probe` and
-`move_vertical_probe` are that shared tail now, entered by `jmp` (not `jsr`) from each `_inside` label
-so the tail's single `rts` still returns to whichever caller originally `jsr`'d `move_left` et al. This
-is the same shape as the two earlier diets already described above (the `.if !BATTLE_ENABLED` split
-that freed 269 bytes, and the `entity_contact` fix that freed 5): real duplication found and removed,
-which — unlike those two — does move ROM bytes by design (that is the point: a 70-byte saving), so it is
-confirmed as behaviour-preserving rather than byte-identical: every engine-RAM movement assertion in the
-test suite stayed green unmodified, `probe_solid`'s "Z describes A-COL_DAMAGE, not A" contract is
-preserved exactly at the shared tails' own `bne`, and `player_dir` is still set before a move is
-attempted in each entry routine rather than in the shared tail. It dropped every RPG-capable board's own
-base by exactly 70 bytes alike (`BASE_KERNEL_CODE_BYTES_BY_MAPPER`: UNROM 512 6466 → 6396, MMC1 6271 →
-6201, MMC3 6446 → 6376 — `git show` against this branch's own base commit, not assumed), which let
-`sample-rpg` with Save, Move and its one live item build again on MMC3, with **74 real bytes free**
-(`kernelCodeBytes=7602` against a real measured 7582 in the code-only comparison — a 20-byte margin,
-exactly `KERNEL_SLACK`, unchanged — and nesasm's own usage table reading `8118/74` against the bank's
-8192 once the project's lookup tables are included too) — headroom, not the single spare byte the
-combination had before items existed, or the outright refusal (short by 16 modelled bytes before nesasm
-ever runs) items left it at.
-
-A follow-up round then restored one thing the dedup had removed and wrote down one tradeoff it had left
-unstated, and neither may cost a single ROM byte — confirmed the way a zero-byte claim has to be, by
-comparing whole ROMs before and after on three
-representative projects (an items-disabled action build, an items-disabled RPG, and `sample-rpg` with
-Save, Move and its live item on MMC3): all three hashed identically. Two adjacent `jmp`s in
-`move_right_inside`/`move_down_inside` each reach a tail label on the very next line rather than falling
-through into it, at a cost of 6 bytes total: deliberate, not an oversight, because the bank had 74 free
-bytes without them and a fallthrough would make physical adjacency between an entry routine and its tail
-load-bearing and invisible — inserting anything between `move_down_inside` and `move_vertical_probe`
-would silently break `move_down` with no assembler error. The four deleted labels
-(`move_left_done`/`move_right_done`/`move_up_done`/`move_down_done`) survive as zero-byte aliases
-stacked on `move_horizontal_done`/`move_vertical_done`, because a Code Forge user file is free to
-reference a stock engine label and these four existed before the dedup; confirmed both ways, not just
-asserted — a user file with `jsr move_left_done` assembles with the aliases in place and fails
-(`Undefined symbol in operand field!`) without them. This is the third time this exact configuration has
-been closed and reopened on this one board — closed by per-mapper budgeting and the `entity_contact`
-fix, reopened by items (the prediction's first, documented cash-in, in the paragraph just above), closed
-again by this diet — and the file's own prediction is standing again rather than retired: 74 bytes is real,
-working margin, not indefinite margin — nowhere near enough for another feature on the scale of Move's
-own ~395 bytes, and the next byte the kernel-lo bank grows anywhere, on this board, in this
-configuration, reopens it a second time.
-
-**HISTORICAL as of the paragraph above — the prediction came true, and this time nothing closed it
-again.** Item 5's own phase 4c, round 2, is what spent the 74 bytes: `engine/ui.asm`'s `use_item_apply`
-gave the field menu's "spend an item" action a real reader for what an item's effect does, and that
-code is gated by the identical `ITEMS_ENABLED` toggle `ITEM_KERNEL_ALLOWANCE` above already shares, so
-it landed as a second, item-conditional term rather than a fourth diet —
-`ITEM_EFFECT_KERNEL_ALLOWANCE_BY_GAME_TYPE` (`main/build/generate.js`), described in the item-semantics
-section above ("An item's own effect is..."). This exact combination — `sample-rpg` with Save, Move and its one live item, on MMC3 —
-now refuses again, for real, with `kernelCodeBytes` at 7665 and `checkCapacity` reporting "the lookup
-tables need 129 bytes but only 118 are free alongside the engine code" — 11 bytes short (both
-re-measured against the current tree; `battle_end`'s own talk_ent fix, item 6's Turn/Wait slice, is
-unconditional kernel-lo cost on every RPG build, 3 more than the 8-byte shortfall this section
-originally recorded). Unlike the two
-earlier reopenings, this one was not chased with another diet: the outcome was decided rather than
-discovered, and accepted as a documented limitation the same way UNROM 512's own Save+Move shortfall
-already was above. `test/unit/kernelbytes.test.js`'s `'sample-rpg with Save, Move and its one live item
-does not build on MMC3 -- round 2 reopened the gap the kernel diet had closed, a documented limitation'`
-is the test now; it asserts the refusal itself, naming both Move's and Save's real byte figures, not a
-successful build. Every other specifically measured RPG-capable configuration that fits — MMC1 with
-this identical Save+Move+item combination included, which still measures a real, error-free build —
-holds the same `KERNEL_SLACK` margin the paragraphs above describe the shape of. That use of MMC1 as
-the comfortable counterpart is specific to the plain Save+Move+item combination, not to MMC1 in
-general: the item-6 costing pass found that same row loses it once every shipped verb is also live
-on the same project too, 296 bytes short (see
-above, under item 5's own phase 4c narrative). That leaves two feature combinations tracked by their
-own refusal-asserting test in this file — not one: UNROM 512's own Save+Move shortfall, named
-earlier in this paragraph and unrelated to items — it was never closed by any of the diets above,
-and stays a documented limitation on that board regardless of what happens on this one — and this MMC3
-Save+Move+item combination. Both are accepted rather than gaps in the mechanism: `checkCapacity`
-refuses each for real, honest reasons, and each has its own test asserting the refusal, so the margin
-has run out in exactly two of the feature combinations a dedicated test in this file tracks, not
-exactly one — not the only two refusals this file documents, just the only two with a test of their
-own. The item-6 costing pass measured two further refusals beyond these: MMC1's own
-ALL-verbs+Save+Move+item row (296 short, above) and UNROM 512's own Save+Move row with no item live at
-all (88 short, next paragraph). Neither deficit is pinned by a test in this file — the existing UNROM
-512 test does already assert that item-free combination stays refused, but only checks the advice
-message's shape, not this number.
-
-The item-6 costing pass confirmed "unrelated to items" directly, and turned up an asymmetry this file
-had not stated: measuring UNROM 512's own Save+Move combination with no item live at all still finds it
-refused, 88 bytes short (need 126, only 38 free) — a costing-pass measurement, not a figure any test in
-this file pins. That is the opposite of MMC3's identical shortfall: there, dropping the item does close
-the gap (88 free without it, against 11 short with it). So advice of the shape "drop your items to fit
-Save+Move" is correct on MMC3 and wrong on UNROM 512, and the two boards' documented limitations should
-not be read as the same kind of shortfall.
-
-**A live `Sting` command turns that same MMC3 Save+Move-no-item row — 88 free, currently
-fitting — into a third, unrelated documented limitation.** A live `Sting` command costs
-175 bytes — `STING_KERNEL_ALLOWANCE_STANDALONE` 160 plus the shared `AUDIO_FX_KERNEL_ALLOWANCE` 15,
-the pair the SFX slice below decomposed the historical flat `STING_KERNEL_ALLOWANCE` constant into
-(same 175 sum for a Sting-only project, so every figure in this passage still holds) — measured (not
-the item-6 design pass's own 176-byte pre-implementation estimate) identically on all three
-RPG-capable boards
-(`test/unit/kernelbytes.test.js`), real engine code
-(`engine/music.asm`'s `sting_snapshot`/`sting_restore`/`sting_tick` plus the `force_trig`/
-cancellation-check/`music_stop`-clear additions to `music_channel`/`music_play`/`music_stop`,
-`engine/script.asm`'s `script_op_sting`, and the `main_loop` call site in `engine/boot.asm`) with
-nowhere unconditional to go — but the gate no longer matches the flat 175 figure as a single unit.
-`STING_KERNEL_ALLOWANCE_STANDALONE`'s own 160 bytes are `.if STING_ENABLED`-gated so a Sting-free
-project pays none of them; the shared `AUDIO_FX_KERNEL_ALLOWANCE` 15 (`force_trig`, the same block
-the SFX passage below reaches from the other side) is `.if AUDIO_FX_ENABLED`-gated instead
-(`engine/music.asm`'s own comment there: "gated AUDIO_FX_ENABLED (Sting or SFX live), not
-STING_ENABLED alone"), so an SFX-only project pays it too. A project with neither feature live pays
-neither term. 175 exceeds MMC3's own 88-byte margin on this row by nearly double — not a close call either
-board's own margin could plausibly recover from without a real diet, the same shape the two
-refusals above already are. `'sample-rpg with Save, Move (no item) and a live Sting does not build
-on MMC3 -- a documented limitation'` is the test (`test/unit/kernelbytes.test.js`); it asserts the
-refusal and that `kernelShortfallAdvice` names Sting with its real freed-byte figure, and confirms
-dropping the Sting command alone is a real fix with an actual nesasm build, the same discipline the
-Save+Move+item test above already holds itself to. Unlike the items asymmetry just described,
-Sting's own dependent-term interaction is the *Move* precedent, not a new one: on MMC3, a project
-whose sole live event is a Sting-only command is that project's only reason `fontBankSplit` turns
-`SPLIT_LOCK_KERNEL_ALLOWANCE` on at all, so `kernelShortfallAdvice` correctly reports removing it
-frees `(STING_KERNEL_ALLOWANCE_STANDALONE + AUDIO_FX_KERNEL_ALLOWANCE) + SPLIT_LOCK_KERNEL_ALLOWANCE`
-(160 + 15 + 19 = 194) together in that
-case — `kernelCodeBytes`-derived, not summed from the flat constants, the identical reasoning this
-file's own dependent-term passages already give for Move/Turn's shared `FACE_KERNEL_ALLOWANCE` and
-Fade/Flash's shared `PALETTE_FX_KERNEL_ALLOWANCE`.
-
-**Switch-bound tiles (design-tile.md) are a fourth documented limitation, and the first strippable
-feature that is authored screen data rather than an event command.** A cell reads as a different
-metatile while its bound switch is set — no new opcode; the mechanism hooks the existing Turn
-switch on/off commands (`script_op_set`/`script_op_clear` → `tile_switch_changed`) and a shared
-`bound_tile_lookup` primitive `draw_screen`/`probe_type`/`text_close_step` all call instead of
-reading `[mtptr_lo],y` directly, with a non-suspending flip (`flip_tick`, one budget slot per
-frame, a deduped FIFO queue for whatever does not fit) for a switch toggled while the screen is
-already on display. `BOUND_TILE_KERNEL_ALLOWANCE` is 388 bytes, measured (not design-tile.md's own
-382-byte estimate) identically on all three RPG-capable boards (`test/unit/kernelbytes.test.js`) —
-flat the way `STING_KERNEL_ALLOWANCE_STANDALONE`/`AUDIO_FX_KERNEL_ALLOWANCE` are, and for the same
-reason (no board-specific branch in any
-of the new routines) rather than because every allowance in this file happens to be flat. Unlike
-Move/Sting, a bound tile never turns `projectUsesText` (and so `fontBankSplit`) on by itself — it
-adds no dialogue, event or title content of its own — so it carries no split-lock dependent term.
-It carries a *different* dependent pair instead, both inside `kernelTableBytes` rather than
-`kernelCodeBytes`: a 30-byte fixed table (`bound_row_lo`/`bound_row_hi`, the per-metatile-row
-nametable-address table `flip_emit_packet` indexes) and 2 bytes per screen (`screen_bound_lo`/`hi`,
-the pointer table alongside `screen_ent_lo`/`hi`) — both zero unless the feature is used at all, so
-`kernelShortfallAdvice`'s own `occupancy()` helper compares full kernel-lo occupancy
-(`kernelCodeBytes + fixedBytes + tableBytes`) rather than `kernelCodeBytes` alone for this one
-feature, the first time that distinction has mattered: every existing command-only strip leaves
-`kernelTableBytes` untouched, so summing the flat constant already gave the right answer for all of
-them. A one-screen, one-binding project's full occupancy cost is therefore 388 + 30 + 2 = 420 bytes,
-comfortably past both existing documented shortfalls: MMC3 Save+Move-no-item (88 free) and MMC1
-Save+Move+item (220 free) are both refused the moment a live bound tile is added on top —
-`'sample-rpg with Save, Move (no item) and a live bound tile does not build on MMC3'` and `'...does
-not build on MMC1 once a bound tile is added'` are the tests (`test/unit/kernelbytes.test.js`); both
-assert the refusal, that `kernelShortfallAdvice` names "every switch-bound tile" with its real freed
-byte figure, and confirm dropping the one bound tile alone is a real fix with an actual nesasm
-build. MMC1's own Save+Move+item row is the interesting one: every other feature measured against it
-in this file left it comfortable, and a bound tile is the first to close it — not because MMC1 is
-special, but because 420 bytes is the largest single addition any feature in this ledger has made at
-once.
-
-**A true sound effect (item 6's last verb, the `Sfx` command / `OP_SFX`) is a fifth documented
-limitation, and the first feature costed as four separate allowance terms rather than one or two.**
-`SFX_CHANNEL = 3` (`engine/constants.asm`) fixes the stolen channel to the noise channel; a two-phase
-`sfx_state` machine (idle / playing / cleanup) writes `$4015 = $0F` on every trigger and tail-`jmp`s
-into `music_channel` on the cleanup tick so the interrupted song resumes with no dropped frame — the
-session-boundary clear lives in `init_session`, not `music_stop`, because a Play-music→Silence
-transition routes through `music_stop` and must not cancel an in-flight SFX; `music_stop` and
-`sting_restore_skip_sfx` carry their own ownership guards instead. Mechanism depth is in
-`handoff-sfx/design-sfx.md` and `engine/music.asm`'s own comments, not duplicated here. The cost is
-`SFX_KERNEL_ALLOWANCE_STANDALONE` 295 bytes plus the same shared `AUDIO_FX_KERNEL_ALLOWANCE` 15 Sting
-already pays (`AUDIO_FX_ENABLED = usesSting || usesSfx`, `projectUsesAudioFx` in `shared/project.js`)
-— 310 for a Sting-free project — plus `STING_SFX_INTERACTION_ALLOWANCE` 5 more when both are live at
-once (475 total). The three aggregate totals — Sting-only 175, SFX-only 310, both-live 475 — are each
-equality-asserted per board in `test/unit/kernelbytes.test.js`; the two component terms inside them,
-`AUDIO_FX_KERNEL_ALLOWANCE` and `STING_SFX_INTERACTION_ALLOWANCE`, are instead span-measured directly
-off `game.fns` on a single board, with the test's own comment recording why one board is enough —
-neither span depends on anything board-specific (no mapper branch inside `music_channel` or
-`sting_restore_silence`), so it is a property of the source text nesasm assembles identically
-everywhere, not a per-board fact to re-check on every capable board. The Sting-free marginal cost (310) exceeds
-even the ~150-300-byte pre-implementation estimate's own top.
-
-That standalone cost alone — not a dependent-term sum, unlike Sting's interaction with the split lock
-— is now large enough to close rows on its own: five new documented-limitation refusals, each with
-its own named test in `test/unit/kernelbytes.test.js` — MMC1 Save+Move+item (newly refused), MMC1
-Save+Move-no-item (a **declared deviation**: the design predicted this row as a razor-thin fit control
-at its own 283-byte SFX estimate, and the real, measured 295 refuses it instead, 31 bytes short), MMC3
-ALL-7-verbs+Move+item-no-Save (41 bytes short), and UNROM 512 both Save-only-w/-item and
-ALL-7+Move+item (42 bytes short) — plus the MMC3 Save+Move-no-item row Sting's own passage above
-already documents, now also reachable by a live SFX alone with no Sting in the picture, and MMC1
-Save+Move+item refused a second way with Sting *and* SFX both live together. Two fits controls confirm
-the boundary is real rather than over-drawn: `sample-rpg` with its one live item plus a live SFX and
-nothing else still builds on MMC3 (the board with the least headroom of the three), and — after a
-fixture correction below — the combination the design most wanted to prove, every shipped verb plus
-the one live item with Sting *and* SFX both live, still builds on MMC3 too.
-
-The both-live fit control's own history is worth recording where these refusal rows are cited: code
-review round 1 first reported that control as refused, but the coder's own four-run comparison (single
-event vs. separate actors, crossed with a title screen forced on vs. off) found the real cause was
-`assertSfxRefusal` forcing a title screen onto rows whose own named baseline
-(`handoff-costing/costing-report.md`) never carried one — an uncredited ~224-byte
-`TITLE_KERNEL_ALLOWANCE_BY_MAPPER` cost on MMC3 that has nothing to do with SFX. A `noTitle` option
-fixed the fixture; with it, the both-live control fits, restoring the design's original prediction.
-The same title-inflation bug turned out to affect the two ALL-7-verb refusal rows too: MMC3's
-old, title-inflated figure (`need 129, free −136`) corrected to the real `need 129, free 88` — still
-refused, but by the 41 bytes named above, not the inflated one — and UNROM 512's `need 129, free −125`
-corrected to `need 129, free 87`, refused by the real 42 bytes. Full account in
-`handoff-sfx/sfx-code-fixes1-report.md` §3, annotated in place in
-`handoff-sfx/sfx-implementation-report.md`.
-
-The dependent-term note Sting's own passage above already makes applies here too — dropping a
-project's *only* live audio-fx command frees the shared `AUDIO_FX_KERNEL_ALLOWANCE` 15 along with that
-command's own standalone term. `assertSfxRefusal` (`test/unit/kernelbytes.test.js`) covers the SFX
-direction of this: its own message assertion checks 310 when dropping SFX with no Sting live, and only
-`SFX_KERNEL_ALLOWANCE_STANDALONE + STING_SFX_INTERACTION_ALLOWANCE` (300) when Sting is still live,
-since the shared term is still owed to the Sting that remains — the helper always constructs and drops
-an SFX command, never a Sting one. The mirror-image Sting-only case (175, the historical flat figure
-holding as `STING_KERNEL_ALLOWANCE_STANDALONE + AUDIO_FX_KERNEL_ALLOWANCE`) is covered separately, by
-the dedicated Sting tests (`'STING_KERNEL_ALLOWANCE covers the real, isolated cost of a live Sting
-exactly, on every RPG-capable board'` and its neighbors).
-
-Because the margin can still run out — on MMC3 in a bigger project, or the next feature this bank has
-no room for — `checkCapacity` names what would close a gap like this one instead of only reporting the
-shortfall: `kernelShortfallAdvice` (`main/build/generate.js`, beside `kernelCodeBytes`) offers dropping
-whichever active optional feature (Move, Turn, Wait, Save) alone would cover the deficit — "every"
-occurrence, not "the", since a project can carry more than one live Move or Save command and removing
-just one of
-several frees nothing at all — or, when no single feature does but dropping some of them together
-would, the smallest combination that does. Every byte figure this considers is `kernelCodeBytes`'s own
-answer on a hypothetical project with that combination's commands switched off
-(`projectWithoutCommands`, reaching inside a branch's two sides and a question's options the same way
-`allCommands` does for every other "does this project use X" question), not a sum of the allowance
-constants: summing missed a dependent term a removal can also turn off. `fontBankSplit`
-(`shared/font.js`) reads `projectUsesText`, and `projectUsesText` counts *any* event that survives to
-the ROM — a live Move-only one included, not just a `Say` — so on MMC3 an action project whose sole
-event is a Move command has that Move as its only reason `SPLIT_LOCK_KERNEL_ALLOWANCE` is paid at all;
-removing it frees 395 (Move) *and* 19 (split lock) together, 414 bytes, not 395. A deficit between the
-two — reproduced at exactly 397 — used to fall through past a fix that actually covered it, straight to
-a mapper suggestion or the generic message, because the old advice only ever summed the flat constants
-and had no way to know one of them implied the other. Asking `kernelCodeBytes` directly is what the
-single-writer rule this codebase holds everywhere else means here: this function has no business
-re-deriving a dependency `kernelCodeBytes` already encodes. Only once no combination of active features
-closes the gap does `kernelShortfallAdvice` look for a different mapper, and a candidate has to survive
-more than a smaller kernel-byte reservation to be offered: it must still hold every tileset, every
-screen (packed the same way the generator packs them) and the project's current mirroring choice, or
-`reconcileCartridge` (`shared/project.js`) would silently truncate one of them the moment the author
-actually switched — recommending MMC1 to a 17-tileset MMC3 project because it reserves 206 fewer kernel
-bytes, when MMC1 holds only 16 tilesets, is not a fix, it is quiet data loss dressed as advice. None of
-these checks mutate the project — `projectWithoutCommands` works on its own deep clone — they only read
-it, the same way `checkCapacity` itself does. `Turn` and `Wait` — item 6's first slice — have since
-shipped: cheap enough (99 bytes together, measured) to need no structural decision at all, on every
-board, and screen shake — since built, in exactly the shape predicted — and Show/Hide has since
-shipped too, cheaper than either: 49 bytes, measured identically on all three RPG-capable boards, with
-no dependent term of its own (nothing else calls `script_op_visible` or reads `ENT_HIDDEN`). Cheap
-enough that it never needed the documented-limitation treatment `Save`+`Move` and the tightest
-Shake/Wait combinations do — it just fits, on every board, in every combination measured. Fade has
-since shipped too — `FADE_KERNEL_ALLOWANCE` 146 plus the `PALETTE_FX_KERNEL_ALLOWANCE` 55 it shares
-with Flash, both measured — landing exactly where this paragraph predicted: ordinary conditional
-kernel-lo code, cheap enough for most boards and most projects but a real cost on the tightest ones
-(see the switch-bound-tiles and Sting passages above for what "the tightest ones" now means in
-practice). The true sound effect has since shipped too, landing exactly in the shape this paragraph
-predicted rather than the more pessimistic one it also raised as a possibility: ordinary conditional
-kernel-lo code (`SFX_KERNEL_ALLOWANCE_STANDALONE` 295 plus the shared `AUDIO_FX_KERNEL_ALLOWANCE` 15),
-real cost on the tightest boards — five documented-limitation refusals, see the SFX passage above — but
-no banked region or further kernel diet needed to ship it at all. Conditional assembly still does not
-compose indefinitely, and the margin these refusals spend from is real, but "nowhere left to go" turned
-out to overstate it. ~~The route-authoring and Map Forge preview half of "Move /
-turn / wait routes" is a different thing again: pure compiler/UI work with no engine cost at all,
-never blocked on kernel-lo margin the way this paragraph's other examples are, and still open for a
-different reason (nobody has built it yet, not that there is nowhere for it to go).~~ — **done**
-(`b36093e`): the route-authoring/preview half of "Move / turn / wait routes" shipped, exactly the
-different thing this paragraph already said it was — pure compiler/UI work with no engine cost at
-all, proven rather than only argued by two separate pieces of evidence: the full-ROM route-vs-
-hand-chain test (`test/unit/routes.test.js`) builds a route and the same legs hand-chained as two
-temporary projects and asserts their compiled ROMs byte-identical, and the one-time cross-tree gate
-(`handoff-routes/routes-implementation-report.md`) built the route-free `sample/` project from a
-clean `git worktree add` at `6a44850` and from the implementation tree, recording the identical
-SHA-256 for both — that second comparison is what actually establishes zero engine bytes; the first
-establishes only that a route compiles the same as hand-chaining it. "Never blocked on kernel-lo margin"
-survives unchanged as the reason it *could* ship at zero bytes — that part was never in question;
-what was open was only that nobody had built it yet, and now it is. See this file's own routes note
-under the `nests: true` paragraph below, and `handoff-routes/design-routes.md` for the mechanism.
-The second kernel diet this paragraph used to point at as
-future work — measuring `engine/title.asm`'s already-conditional blocks — has happened
-(`TITLE_KERNEL_ALLOWANCE_BY_MAPPER`, two sections up), and it is real margin recovered on every board,
-but it does not touch *this* scenario: the project this paragraph is about already carries a live Save
-command to reach MMC3's tight margin at all, and Save needs a title screen in every valid build, so it
-was already paying the title term either way. The diet's margin lands on a titleless project instead —
-not nothing, but not this one.
+`kernelShortfallAdvice` names a real, buildable fix for every refusal above (which live command(s)
+to drop, or occasionally a different mapper) — a refusal here is `checkCapacity` doing its job on a
+bank that is, by design, allowed to run out, not a bug in the mechanism.
 
 **A command that holds commands is not a special case to be named, it is a `nests: true` entry.**
 ~~Two of them exist (`branch`, `choice`) and the third will be along.~~ — **done**: the third
