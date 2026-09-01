@@ -19,6 +19,7 @@ import {
   AUTHOR_NAME_MAX,
   createMap,
   createScreen,
+  createTileset,
   EVENT_CONDITIONS,
   overCapDeleteWarning,
   screenLabel,
@@ -45,23 +46,63 @@ import {
   compiledPages,
   projectEvents,
   CHOICE_LIMITS,
-  EVENT_COMMANDS
+  EVENT_COMMANDS,
+  MOVE_TARGETS,
+  MOVE_DIRECTIONS,
+  VISIBLE_STATES,
+  FADE_DIRECTIONS,
+  liveCommonEvents,
+  choiceLabel,
+  // ROADMAP item 7 phase 1 (handoff-maporg/design-maporg.md) --------------
+  remapScreenReferences,
+  reorderMapsCore,
+  // ROADMAP item 7 phase 2 -------------------------------------------------
+  addMapCore,
+  duplicateMapCore,
+  // ROADMAP item 7 phase 3 -------------------------------------------------
+  deleteMapCore,
+  buildDeleteMapTranslate,
+  buildResizeTranslate,
+  buildPerMapTranslate,
+  growOrShrinkMap,
+  auditDroppedReferences,
+  FALLBACK_SCREEN,
+  // ROADMAP item 7 phase 4 -------------------------------------------------
+  nameForNewMapFromSource,
+  buildCloneTranslate,
+  applyCloneTranslate,
+  duplicateScreenViaGrowthCore,
+  duplicateScreenIntoNewMapCore,
+  // ROADMAP item 7 phase 5 -------------------------------------------------
+  clampPasteOrigin,
+  buildRegionClip,
+  pasteRegionCore,
+  pasteCapacityProblem
 } from '../../shared/project.js';
+import { resolveStartAt } from '../../shared/playscenario.js';
 import fs from 'node:fs/promises';
+import fsSync from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { loadProject, saveProject } from '../../main/project-io.js';
 import { buildProject } from '../../main/build/pipeline.js';
 import { resolveMapper, rpgCapable } from '../../shared/cartridge.js';
-import { flattenScreens } from '../../main/build/generate.js';
-import { compileText, opIndex, OP_JUMP, OP_STING } from '../../main/build/textcompile.js';
-import { createSong, songFrameLength } from '../../shared/audio.js';
+import { flattenScreens, resolveEntityByte, checkCapacity } from '../../main/build/generate.js';
+import { compileText, opIndex, OP_JUMP, OP_STING, encodeString } from '../../main/build/textcompile.js';
+import { createSong, songFrameLength, songByte, sfxByte, sfxFrameLength } from '../../shared/audio.js';
 import { battleTables } from '../../main/build/battletables.js';
 import { FONT_BASE } from '../../shared/font.js';
 import { BLANK_TILE } from '../../shared/chr.js';
 import { spawnSync } from 'node:child_process';
+import NES from '../../renderer/emulator/core/nes.js';
+import { saveIdentity } from '../../shared/save.js';
+import { decodeCommand, decodeBody, decodeEvent } from '../lib/eventdecoder.js';
 
 const hasNesasm = spawnSync('nesasm', [], { stdio: 'ignore' }).error?.code !== 'ENOENT';
+const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
+const SAMPLE = path.join(ROOT, 'sample');
+const SAMPLE_RPG = path.join(ROOT, 'sample-rpg');
 
 test('a new project satisfies its own schema', () => {
   const project = createProject('Demo');
@@ -3413,3 +3454,3322 @@ test('items.json is always written, including when empty, so a missing file and 
   const reloaded = await loadProject(dir);
   assert.deepEqual(reloaded.items, migrated.items, 'and survives being read back, unchanged by a second load');
 });
+
+// ---------------------------------------------------------------------------
+// ROADMAP item 7 -- map organization and reuse, phase 1
+// (handoff-maporg/design-maporg.md, handoff-maporg/maporg-phase-plan.md)
+//
+// The shared mechanism (remapScreenReferences, canonicalizeFlat,
+// buildReorderTranslate, reorderMapsCore, the save-compatibility token), the
+// test-only wire decoder (test/lib/eventdecoder.js), and Reorder Maps -- the
+// simplest complete operation the mechanism supports, called through the
+// SAME commit-free core (reorderMapsCore) the real Map Forge handler wraps
+// in its own store.commit, not a second copy of its body. Delete/Resize/
+// Duplicate/paste/folders are later phases and are not tested here.
+// ---------------------------------------------------------------------------
+
+// Fix round 1, finding 2: no test-local reorder body here any more.
+// reorderMapsCore (shared/project.js) is the one commit-free core both
+// renderer/forges/map/map.js's reorderMaps (wrapped in its own single
+// store.commit) and every test below call directly -- sabotaging it is
+// sabotaging the exact function production runs, not an independent copy
+// of its body.
+
+// §11 test 1 (Fix round 1, finding 5: widened with a Branch `else` Warp and
+// a common-event Warp, nested inside a branch there too -- the reviewer's
+// own point that production reaches both `else` and `project.commonEvents`
+// via `projectEvents`/`allCommands`, but the fixture advertised as walking
+// "every reference kind from the inventory" never actually authored either,
+// so a walker that silently dropped one would still have passed.)
+test('remapScreenReferences walks every reference kind from the inventory, isolated', () => {
+  const project = createProject('Remap inventory');
+  const mapA = createMap(0, 'A');
+  mapA.gridW = 2;
+  mapA.gridH = 1;
+  const a0 = createScreen();
+  const a1 = createScreen();
+  mapA.screens = [a0, a1]; // flat 0, 1
+  const mapB = createMap(1, 'B');
+  const b0 = createScreen();
+  mapB.screens = [b0]; // flat 2
+  const mapC = createMap(2, 'C');
+  const c0 = createScreen();
+  mapC.screens = [c0]; // flat 3
+  project.maps = [mapA, mapB, mapC];
+
+  const doorSelf = { actorId: 0, x: 0, y: 0, props: { toScreen: 1, event: null } }; // same map (A -> A)
+  const doorExternal = { actorId: 0, x: 0, y: 0, props: { toScreen: 2, event: null } }; // different map (A -> B)
+  a0.entities = [doorSelf, doorExternal];
+
+  const topWarpEntity = {
+    actorId: 0, x: 0, y: 0,
+    props: {
+      toScreen: 0,
+      event: { pages: [{ cond: { type: 'none', arg: 0 }, commands: [{ op: 'warp', screen: 0, x: 0, y: 0 }] }] }
+    }
+  };
+  b0.entities = [topWarpEntity];
+
+  const branchWarpEntity = {
+    actorId: 0, x: 0, y: 0,
+    props: {
+      toScreen: 0,
+      event: {
+        pages: [{
+          cond: { type: 'none', arg: 0 },
+          commands: [
+            {
+              op: 'branch',
+              cond: { type: 'none', arg: 0 },
+              then: [{ op: 'warp', screen: 3, x: 0, y: 0 }],
+              // A second warp, in the branch's OTHER side, with its own
+              // target distinguishable from the `then` warp's (2, not 3) --
+              // production reaches this only because remapScreenReferences
+              // walks allCommands rather than just a page's then-side.
+              else: [{ op: 'warp', screen: 2, x: 0, y: 0 }]
+            }
+          ]
+        }]
+      }
+    }
+  };
+  const choiceWarpEntity = {
+    actorId: 0, x: 0, y: 0,
+    props: {
+      toScreen: 0,
+      event: {
+        pages: [{
+          cond: { type: 'none', arg: 0 },
+          commands: [
+            { op: 'choice', options: [{ text: 'Go', commands: [{ op: 'warp', screen: 1, x: 0, y: 0 }] }] }
+          ]
+        }]
+      }
+    }
+  };
+  c0.entities = [branchWarpEntity, choiceWarpEntity];
+
+  // A common event -- reached only by walking project.commonEvents
+  // (projectEvents), not any placement's own entities -- holding a Warp
+  // nested inside a branch, own target (0) distinguishable from every
+  // other warp above.
+  project.commonEvents = [
+    {
+      id: 0,
+      name: 'Nested Warp Event',
+      event: {
+        pages: [{
+          cond: { type: 'none', arg: 0 },
+          commands: [
+            { op: 'branch', cond: { type: 'none', arg: 0 }, then: [{ op: 'warp', screen: 0, x: 0, y: 0 }], else: [] }
+          ]
+        }]
+      }
+    }
+  ];
+
+  const translate = (i) => 3 - i; // a known rule: reverse the whole flat order
+  remapScreenReferences(project, translate);
+
+  assert.equal(doorSelf.props.toScreen, 2, 'self-referential door remaps by the given translate');
+  assert.equal(doorExternal.props.toScreen, 1, 'cross-map door remaps by the given translate');
+  assert.equal(topWarpEntity.props.event.pages[0].commands[0].screen, 3, 'a top-level warp remaps');
+  assert.equal(
+    branchWarpEntity.props.event.pages[0].commands[0].then[0].screen,
+    0,
+    "a warp nested inside a branch's then side remaps"
+  );
+  assert.equal(
+    branchWarpEntity.props.event.pages[0].commands[0].else[0].screen,
+    1,
+    "a warp nested inside a branch's else side remaps"
+  );
+  assert.equal(
+    choiceWarpEntity.props.event.pages[0].commands[0].options[0].commands[0].screen,
+    2,
+    'a warp nested inside a choice option remaps'
+  );
+  assert.equal(
+    project.commonEvents[0].event.pages[0].commands[0].then[0].screen,
+    3,
+    'a warp nested inside a common event (itself nested in a branch) remaps'
+  );
+});
+
+// §11 test 2
+test('a door\'s props.toScreen is remapped even when its actor is not currently door-behaved', () => {
+  const project = createProject('Pickup byte');
+  project.sprites.actors = [{ name: 'Chest', behavior: 'pickup' }];
+  project.maps = [createMap(0, 'A'), createMap(1, 'B')];
+  const entity = { actorId: 0, x: 0, y: 0, props: { toScreen: 0, event: null } };
+  project.maps[0].screens[0].entities = [entity];
+
+  const translate = (i) => (i === 0 ? 1 : 0);
+  remapScreenReferences(project, translate);
+
+  assert.equal(entity.props.toScreen, 1, "a pickup-behaved entity's toScreen is still rewritten, not skipped");
+});
+
+// §11 test 3
+test(
+  'canonicalizeFlat resolves a pre-edit out-of-range value to its already-effective target, not to the fallback',
+  () => {
+    const project = createProject('Canonicalize');
+    project.maps = [0, 1, 2, 3].map((i) => createMap(i, `M${i}`)); // 4 maps, 1 screen each -> flat 0..3
+    const door = { actorId: 0, x: 0, y: 0, props: { toScreen: 255, event: null } }; // effective target: screen 3
+    const warpEntity = {
+      actorId: 0, x: 0, y: 0,
+      props: {
+        toScreen: 0,
+        event: {
+          pages: [{
+            cond: { type: 'none', arg: 0 },
+            commands: [
+              { op: 'choice', options: [{ text: 'Go', commands: [{ op: 'warp', screen: 255, x: 0, y: 0 }] }] }
+            ]
+          }]
+        }
+      }
+    };
+    project.maps[0].screens[0].entities = [door, warpEntity];
+
+    // Move map 3's content to new flat position 2 -- nonzero, deliberately
+    // distinct from FALLBACK_SCREEN's own value of 0.
+    const result = reorderMapsCore(project, [0, 1, 3, 2]);
+
+    assert.equal(door.props.toScreen, 2, "a pre-edit out-of-range door byte follows its already-effective target");
+    assert.equal(
+      warpEntity.props.event.pages[0].commands[0].options[0].commands[0].screen,
+      2,
+      'the identical resolution applies to a nested warp'
+    );
+    assert.equal(
+      result.droppedTargets.length,
+      0,
+      'a value already resolved to a real, surviving screen must never be reported as dropped'
+    );
+  }
+);
+
+// §11 test 5
+test(
+  "a maps-only reorder leaves titleScreen/startScreen untouched -- only titleMap/startMap move, and droppedTargets is always empty",
+  () => {
+    const project = createProject('Title reorder');
+    const mapA = createMap(0, 'A');
+    const mapB = createMap(1, 'B');
+    mapB.gridW = 1;
+    mapB.gridH = 3;
+    mapB.screens = [createScreen(), createScreen(), createScreen()];
+    project.maps = [mapA, mapB];
+    project.project.titleMap = 1;
+    project.project.titleScreen = 2;
+    project.project.startMap = 1;
+    project.project.startScreen = 2;
+
+    const result = reorderMapsCore(project, [1, 0]); // swap map order
+
+    assert.equal(project.project.titleMap, 0, 'titleMap follows the map it named to its new position');
+    assert.equal(project.project.titleScreen, 2, 'titleScreen is untouched -- the map itself did not change');
+    assert.equal(project.project.startMap, 0, 'startMap follows the map it named to its new position');
+    assert.equal(project.project.startScreen, 2, 'startScreen is untouched -- the map itself did not change');
+    assert.equal(result.droppedTargets.length, 0, 'a reorder is a total bijection -- nothing is ever dropped');
+  }
+);
+
+// §11 test 6
+test(
+  'reorder preserves the content every stored reference points at -- self and cross-map doors, warps nested in a ' +
+    'branch and a choice, title and start',
+  () => {
+    const project = createProject('Content preservation', 'action');
+    const alpha = createMap(0, 'Alpha');
+    alpha.gridW = 1;
+    alpha.gridH = 2;
+    const a0 = createScreen();
+    a0.name = 'A0';
+    const a1 = createScreen();
+    a1.name = 'A1';
+    alpha.screens = [a0, a1];
+
+    const beta = createMap(1, 'Beta');
+    const b0 = createScreen();
+    b0.name = 'B0';
+    beta.screens = [b0];
+
+    const gamma = createMap(2, 'Gamma');
+    const g0 = createScreen();
+    g0.name = 'G0';
+    gamma.screens = [g0];
+
+    project.maps = [alpha, beta, gamma]; // flat: A0=0, A1=1, B0=2, G0=3
+
+    const doorSelf = { actorId: 0, x: 0, y: 0, props: { toScreen: 1, event: null } }; // -> A1
+    const doorExternal = { actorId: 0, x: 0, y: 0, props: { toScreen: 3, event: null } }; // -> G0
+    a0.entities = [doorSelf, doorExternal];
+
+    const branchWarpEntity = {
+      actorId: 0, x: 0, y: 0,
+      props: {
+        toScreen: 0,
+        event: {
+          pages: [{
+            cond: { type: 'none', arg: 0 },
+            commands: [
+              { op: 'branch', cond: { type: 'none', arg: 0 }, then: [{ op: 'warp', screen: 1, x: 0, y: 0 }], else: [] } // -> A1
+            ]
+          }]
+        }
+      }
+    };
+    b0.entities = [branchWarpEntity];
+
+    const choiceWarpEntity = {
+      actorId: 0, x: 0, y: 0,
+      props: {
+        toScreen: 0,
+        event: {
+          pages: [{
+            cond: { type: 'none', arg: 0 },
+            commands: [
+              { op: 'choice', options: [{ text: 'Go', commands: [{ op: 'warp', screen: 2, x: 0, y: 0 }] }] } // -> B0
+            ]
+          }]
+        }
+      }
+    };
+    g0.entities = [choiceWarpEntity];
+
+    project.project.titleMap = 1; // Beta
+    project.project.titleScreen = 0; // B0
+    project.project.startMap = 2; // Gamma
+    project.project.startScreen = 0; // G0
+
+    reorderMapsCore(project, [2, 0, 1]); // new order: Gamma, Alpha, Beta
+
+    const flatNow = flatScreens(project);
+    const flatIndexOf = (screen) => flatNow.findIndex((entry) => entry.screen === screen);
+    const mapIndexOf = (screen) => flatNow.find((entry) => entry.screen === screen).mapIndex;
+
+    assert.equal(doorSelf.props.toScreen, flatIndexOf(a1), "the self-referential door still names A1's content");
+    assert.equal(doorExternal.props.toScreen, flatIndexOf(g0), "the cross-map door still names Gamma's content");
+    assert.equal(
+      branchWarpEntity.props.event.pages[0].commands[0].then[0].screen,
+      flatIndexOf(a1),
+      "the branch-nested warp still names A1's content"
+    );
+    assert.equal(
+      choiceWarpEntity.props.event.pages[0].commands[0].options[0].commands[0].screen,
+      flatIndexOf(b0),
+      "the choice-nested warp still names B0's content"
+    );
+    assert.equal(project.project.titleMap, mapIndexOf(b0), 'titleMap still names Beta');
+    assert.equal(project.project.titleScreen, 0, 'titleScreen -- per-map -- is unaffected by a maps-only reorder');
+    assert.equal(project.project.startMap, mapIndexOf(g0), 'startMap still names Gamma');
+    assert.equal(project.project.startScreen, 0);
+  }
+);
+
+// §11 test 24
+test(
+  'decoder corpus round-trip: every real opcode, encoded then decoded, on a pinned valid MMC1/RPG project',
+  () => {
+    const project = createProject('Corpus', 'rpg');
+    project.cartridge.mapper = 1; // MMC1: RPG-capable and save-capable in one choice
+    project.project.titleMap = 0;
+    project.project.titleScreen = 0;
+
+    project.sprites.actors = [
+      { name: 'Player', behavior: 'player' },
+      { name: 'NPC', behavior: 'npc' },
+      { name: 'Monster', behavior: 'npc', damage: 1, battle: { atk: 4, def: 2 } }
+    ];
+    project.items = [{ id: 0, name: 'Potion', actorId: null, metaspriteId: null, effect: { kind: 'none', amount: 0 } }];
+    project.songs = [createSong('Song A'), createSong('Song B')];
+    project.sfx = [
+      { name: 'Effect A', volume: 15, steps: [{ note: 5, duration: 10 }] },
+      { name: 'Effect B', volume: 15, steps: [{ note: 7, duration: 12 }] }
+    ];
+    project.commonEvents = [
+      { id: 0, name: 'First', event: { pages: [{ cond: { type: 'none', arg: 0 }, commands: [{ op: 'setSwitch', switch: 5 }] }] } },
+      { id: 1, name: 'Second', event: { pages: [{ cond: { type: 'none', arg: 0 }, commands: [{ op: 'setSwitch', switch: 6 }] }] } }
+    ];
+    project.commonEventSeq = 2;
+
+    project.maps[0].name = 'Home';
+    project.maps[0].gridW = 1;
+    project.maps[0].gridH = 2;
+    const home0 = createScreen();
+    const home1 = createScreen();
+    project.maps[0].screens = [home0, home1]; // flat 0, 1 -- warp targets flat 1
+
+    const commands = [
+      { op: 'say', text: 'Corpus dialogue line one.' },
+      { op: 'give', item: 0 },
+      { op: 'take', item: 0 },
+      { op: 'setSwitch', switch: 3 },
+      { op: 'clearSwitch', switch: 4 },
+      { op: 'setVar', variable: 1, value: 5 },
+      { op: 'addVar', variable: 2, value: 6 },
+      { op: 'subVar', variable: 3, value: 7 },
+      { op: 'heal', value: 10 },
+      { op: 'damage', value: 20 },
+      { op: 'save' },
+      { op: 'move', who: 'self', dir: 'up', dist: 40 },
+      { op: 'turn', who: 'player', dir: 'left' },
+      { op: 'wait', frames: 30 },
+      { op: 'shake', frames: 15 },
+      { op: 'visible', state: 'hidden' },
+      { op: 'fade', dir: 'out' },
+      { op: 'flash' },
+      { op: 'join', member: 0 },
+      { op: 'call', event: 1 }, // the SECOND live common event
+      { op: 'music', song: 0 },
+      {
+        op: 'route',
+        who: 'player',
+        legs: [
+          { op: 'move', dir: 'right', dist: 99 }, // distinct from the standalone move above
+          { op: 'turn', dir: 'down' } // distinct from the standalone turn above
+        ]
+      },
+      { op: 'sting', song: 1 }, // the SECOND song
+      { op: 'sfx', sfx: 1 }, // the SECOND effect
+      { op: 'battle', monsters: [2] }, // fewer than RPG_LIMITS.monstersPerBattle
+      {
+        op: 'branch',
+        cond: { type: 'none', arg: 0 },
+        then: [{ op: 'warp', screen: 1, x: 50, y: 60 }],
+        else: [{
+          op: 'choice',
+          options: [
+            { text: 'Empty', commands: [] },
+            {
+              text: 'Nested',
+              commands: [{
+                op: 'choice',
+                options: [
+                  { text: 'Inner A', commands: [{ op: 'setSwitch', switch: 10 }] },
+                  { text: 'Inner B', commands: [] }
+                ]
+              }]
+            }
+          ]
+        }]
+      }
+    ];
+
+    project.maps[0].screens[0].entities = [
+      { actorId: 1, x: 0, y: 0, props: { event: { pages: [{ cond: { type: 'none', arg: 0 }, commands }] } } }
+    ];
+
+    const built = normalizeProject(project);
+    // normalizeProject rebuilds every screen object fresh -- home1 above is
+    // the pre-normalize object; the warp's decoded target is compared
+    // against the live one this test actually compiles against.
+    const home1Ref = built.maps[0].screens[1];
+    const errors = validateProject(built).filter((p) => p.severity === 'error');
+    assert.deepEqual(
+      errors,
+      [],
+      'the corpus fixture must be legal on its own terms, not merely large enough to host every opcode'
+    );
+
+    const compiled = compileText(built);
+    const flat = flattenScreens(built).flat;
+    const entity = built.maps[0].screens[0].entities[0];
+    const bytes = compiled.events[compiled.eventFor.get(entity)];
+
+    const decoded = decodeEvent(bytes, { strings: compiled.strings, flat });
+    const body = decoded[0].body;
+    let i = 0;
+    const next = () => body[i++];
+    const labelBytes = (text) => encodeString(choiceLabel(text)).bytes;
+
+    assert.deepEqual(next().text, encodeString('Corpus dialogue line one.').bytes, 'say');
+    assert.deepEqual(next().raw, [0], 'give item 0');
+    assert.deepEqual(next().raw, [0], 'take item 0');
+    assert.deepEqual(next().raw, [3], 'setSwitch');
+    assert.deepEqual(next().raw, [4], 'clearSwitch');
+    assert.deepEqual(next().raw, [1, 5], 'setVar');
+    assert.deepEqual(next().raw, [2, 6], 'addVar');
+    assert.deepEqual(next().raw, [3, 7], 'subVar');
+    assert.deepEqual(next().raw, [10], 'heal');
+    assert.deepEqual(next().raw, [20], 'damage');
+    assert.deepEqual(next().raw, [], 'save');
+    assert.deepEqual(
+      next().raw,
+      [MOVE_TARGETS.findIndex((e) => e.id === 'self'), MOVE_DIRECTIONS.findIndex((e) => e.id === 'up'), 40],
+      'move'
+    );
+    assert.deepEqual(
+      next().raw,
+      [MOVE_TARGETS.findIndex((e) => e.id === 'player'), MOVE_DIRECTIONS.findIndex((e) => e.id === 'left')],
+      'turn'
+    );
+    assert.deepEqual(next().raw, [30], 'wait');
+    assert.deepEqual(next().raw, [15], 'shake');
+    assert.deepEqual(next().raw, [VISIBLE_STATES.findIndex((e) => e.id === 'hidden')], 'visible');
+    assert.deepEqual(next().raw, [FADE_DIRECTIONS.findIndex((e) => e.id === 'out')], 'fade');
+    assert.deepEqual(next().raw, [], 'flash');
+    assert.deepEqual(next().raw, [0], 'join');
+
+    const callSlot = liveCommonEvents(built).findIndex((entry) => entry.id === built.commonEvents[1].id);
+    assert.notEqual(callSlot, 0, "a hardcoded-to-slot-0 decoder must not coincidentally pass");
+    assert.deepEqual(next().raw, [callSlot], 'call');
+
+    assert.deepEqual(next().raw, [0], 'music, song 0');
+
+    // route: zero framing -- its two legs decode as ordinary move/turn entries.
+    assert.deepEqual(
+      next().raw,
+      [MOVE_TARGETS.findIndex((e) => e.id === 'player'), MOVE_DIRECTIONS.findIndex((e) => e.id === 'right'), 99],
+      "the route's first leg"
+    );
+    assert.deepEqual(
+      next().raw,
+      [MOVE_TARGETS.findIndex((e) => e.id === 'player'), MOVE_DIRECTIONS.findIndex((e) => e.id === 'down')],
+      "the route's second leg"
+    );
+
+    const stingIndex = songByte(built.songs, 1);
+    assert.notEqual(stingIndex, 0, "a hardcoded-to-index-0 decoder must not coincidentally pass");
+    const sting = next();
+    assert.equal(sting.raw[0], stingIndex, 'sting index');
+    assert.equal(
+      sting.raw[1],
+      Math.min(songFrameLength(built.songs[stingIndex]), 255),
+      "sting duration, re-derived from the AUTHORED target"
+    );
+
+    const sfxIndex = sfxByte(built.sfx, 1);
+    assert.notEqual(sfxIndex, 0, "a hardcoded-to-index-0 decoder must not coincidentally pass");
+    const sfx = next();
+    assert.equal(sfx.raw[0], sfxIndex, 'sfx index');
+    assert.equal(
+      sfx.raw[1],
+      Math.min(sfxFrameLength(built.sfx[sfxIndex]), 255),
+      "sfx duration, re-derived from the AUTHORED target"
+    );
+
+    const battle = next();
+    assert.equal(battle.raw.length, RPG_LIMITS.monstersPerBattle, 'battle is fixed-width');
+    assert.equal(battle.raw[0], 2, "battle's one authored, real monster id");
+    for (let k = 1; k < RPG_LIMITS.monstersPerBattle; k++) {
+      assert.equal(battle.raw[k], NO_ACTOR, 'every unauthored battle slot is NO_ACTOR-padded');
+    }
+
+    const branchIndex = i; // captured BEFORE next() advances -- branch's own position in `body`
+    const branch = next();
+    assert.equal(branch.form, 'branch');
+    assert.equal(branch.then.length, 1);
+    assert.equal(branch.then[0].form, 'warp');
+    assert.equal(branch.then[0].target, home1Ref, "the branch's warp resolves to the real, known target screen");
+    assert.equal(branch.then[0].x, 50);
+    assert.equal(branch.then[0].y, 60);
+
+    assert.equal(branch.else.length, 1);
+    const choice = branch.else[0];
+    assert.equal(choice.form, 'choice');
+    assert.deepEqual(choice.labels, [labelBytes('Empty'), labelBytes('Nested')]);
+    assert.deepEqual(choice.options[0], [], 'a legal, zero-length option body');
+    assert.equal(choice.options[1].length, 1);
+    const nestedChoice = choice.options[1][0];
+    assert.equal(nestedChoice.form, 'choice', 'recursion, two levels deep');
+    assert.deepEqual(nestedChoice.labels, [labelBytes('Inner A'), labelBytes('Inner B')]);
+    assert.equal(nestedChoice.options[0].length, 1);
+    assert.deepEqual(nestedChoice.options[0][0].raw, [10]);
+    assert.deepEqual(nestedChoice.options[1], []);
+    // past: each option's own value is the total size of every record after
+    // it -- the last option's is always 0, provably, not merely consumed.
+    assert.equal(choice.past[choice.past.length - 1], 0, "the last option's own past is always 0");
+    assert.ok(choice.past[0] > 0, "a non-last option's own past is provably nonzero");
+    assert.equal(nestedChoice.past[nestedChoice.past.length - 1], 0);
+    assert.ok(nestedChoice.past[0] > 0);
+
+    assert.equal(i, body.length, 'every real opcode in the corpus was decoded -- decodeEvent returned with no error');
+
+    // Fix round 1, finding 4 (strengthened, Fix round 2, finding 2): the
+    // negative control -- prove decodeEvent actually VALIDATES past, not
+    // merely consumes it. Round 1's own locator scanned for the first
+    // [recordLength=2, OP_JUMP, past] byte pattern anywhere in the event and
+    // never established it was unique or that it belonged to THIS Choice's
+    // option 0 -- the review is right that another empty, non-final option
+    // with the identical trailing size (or a later corpus addition placing
+    // one earlier) would satisfy the same scan, silently changing which
+    // decoder path this control actually proves.
+    //
+    // Derived instead, DIRECTLY from the decoded structure this test already
+    // has in hand -- no byte-pattern search, so no coincidental match is
+    // possible: option 0's own `past` byte's absolute offset in `bytes` is
+    // exactly the page header (4) + the size of every top-level command
+    // decoded before `branch` + the branch's own header (5: op/cond/arg/
+    // value/thenLen) + `then`'s own bytes + the OP_JUMP/elseLen pair (2) +
+    // the choice's own header (2: op/count, plus one string id per option)
+    // + option 0's own [recordLength, ...body, OP_JUMP] prefix. Every term
+    // is read off the decoded tree's own `.size`/`.labels`/`.options`
+    // fields, not assumed.
+    const precedingBytes = body.slice(0, branchIndex).reduce((sum, command) => sum + command.size, 0);
+    const branchByteOffset = 4 + precedingBytes;
+    const thenBytes = branch.then.reduce((sum, command) => sum + command.size, 0);
+    const elseByteOffset = branchByteOffset + 5 + thenBytes + 2;
+    const choiceHeaderBytes = 2 + choice.labels.length; // op, count, one string id per option
+    const option0BodyBytes = choice.options[0].reduce((sum, command) => sum + command.size, 0);
+    const pastByteIndex = elseByteOffset + choiceHeaderBytes + 1 + option0BodyBytes + 1; // recordLength, body, OP_JUMP, [past]
+
+    const expectedPast0 = choice.past[0];
+    assert.equal(
+      bytes[pastByteIndex],
+      expectedPast0,
+      "the derived offset must land on option 0's own past byte, confirmed against its already-decoded value " +
+        '-- proof the offset is structurally correct, not merely plausible'
+    );
+
+    const corrupted = bytes.slice();
+    const corruptedPast0 = expectedPast0 === 1 ? 2 : 1; // a different, still-nonzero value
+    corrupted[pastByteIndex] = corruptedPast0;
+    assert.throws(
+      () => decodeEvent(corrupted, { strings: compiled.strings, flat }),
+      new RegExp(`past=${corruptedPast0}, expected ${expectedPast0}\\b`),
+      'a Choice option whose past byte is wrong but nonzero must be rejected, not silently treated as merely consumed'
+    );
+  }
+);
+
+// §11 test 7 (also exercises §7 item 2's decoder and its resolveEntityByte helper)
+test(
+  "the decoder proves reorder preserves compiled semantics -- a warp's target across maps, a Say and a Choice " +
+    "label whose raw compiled ids are provably forced to shift, and a pickup entity's item byte, untouched",
+  () => {
+    const project = createProject('Semantic reorder', 'action');
+    project.sprites.actors = [
+      { name: 'NPC', behavior: 'npc' },
+      { name: 'Chest', behavior: 'pickup' }
+    ];
+    project.items = [{ id: 0, name: 'Key', actorId: 1, metaspriteId: null, effect: { kind: 'none', amount: 0 } }];
+
+    const mapA = createMap(0, 'MapA');
+    const a0 = createScreen();
+    mapA.screens = [a0];
+    const mapB = createMap(1, 'MapB');
+    const b0 = createScreen();
+    mapB.screens = [b0];
+    project.maps = [mapA, mapB]; // flat: A0=0, B0=1
+
+    // (b)/(c): map A authors a unique string before the shared one; map B
+    // authors only the shared one -- internString's own dedup-by-content
+    // order (not which placement authors it) is what forces the shared
+    // string's raw id to differ once the reorder changes which map compiles
+    // first. The identical construction is applied to a Choice label,
+    // nested inside a branch's then, per Fix round 3 finding 3.
+    const entityA = {
+      actorId: 0, x: 0, y: 0,
+      props: {
+        toScreen: 0,
+        event: {
+          pages: [{
+            cond: { type: 'none', arg: 0 },
+            commands: [
+              { op: 'say', text: 'Only in A' },
+              { op: 'say', text: 'Hello' },
+              { op: 'warp', screen: 1, x: 10, y: 20 }, // (a) cross-map: A -> B
+              { op: 'say', text: 'Unique before choice' },
+              {
+                op: 'branch',
+                cond: { type: 'none', arg: 0 },
+                then: [{ op: 'choice', options: [{ text: 'Yes', commands: [] }] }],
+                else: []
+              }
+            ]
+          }]
+        }
+      }
+    };
+    const entityB = {
+      actorId: 0, x: 0, y: 0,
+      props: {
+        toScreen: 0,
+        event: {
+          pages: [{
+            cond: { type: 'none', arg: 0 },
+            commands: [
+              { op: 'say', text: 'Hello' },
+              {
+                op: 'branch',
+                cond: { type: 'none', arg: 0 },
+                then: [{ op: 'choice', options: [{ text: 'Yes', commands: [] }] }],
+                else: []
+              }
+            ]
+          }]
+        }
+      }
+    };
+    const pickupEntity = { actorId: 1, x: 0, y: 0, props: { toScreen: 5, event: null } };
+    a0.entities = [entityA, pickupEntity];
+    b0.entities = [entityB];
+
+    const built = normalizeProject(project);
+    const entityARef = built.maps[0].screens[0].entities[0];
+    const pickupRef = built.maps[0].screens[0].entities[1];
+    // normalizeProject rebuilds every screen object fresh -- b0 above is
+    // the pre-normalize object; track the live one this test actually
+    // reorders and decodes against.
+    const b0Ref = built.maps[1].screens[0];
+
+    const idOf = (strings, text) => {
+      const bytes = encodeString(text).bytes;
+      return strings.findIndex((entry) => entry.length === bytes.length && entry.every((v, i) => v === bytes[i]));
+    };
+
+    const before = compileText(built);
+    const flatBefore = flattenScreens(built).flat;
+    const helloBefore = idOf(before.strings, 'Hello');
+    const yesBefore = idOf(before.strings, choiceLabel('Yes'));
+
+    const itemIdForActorBefore = new Map(
+      built.items.filter((item) => typeof item.actorId === 'number').map((item) => [item.actorId, item.id])
+    );
+    const pickupResultBefore = resolveEntityByte(
+      pickupRef,
+      built.sprites.actors[pickupRef.actorId],
+      projectUsesItems(built),
+      itemIdForActorBefore,
+      flatBefore.length
+    );
+
+    reorderMapsCore(built, [1, 0]); // MapB, MapA -- B's own content now compiles first
+
+    const after = compileText(built);
+    const flatAfter = flattenScreens(built).flat;
+    const helloAfter = idOf(after.strings, 'Hello');
+    const yesAfter = idOf(after.strings, choiceLabel('Yes'));
+
+    assert.notEqual(helloBefore, -1);
+    assert.notEqual(helloAfter, -1);
+    assert.notEqual(helloBefore, helloAfter, "the shared Say string's raw compiled id must genuinely shift");
+    assert.notEqual(yesBefore, -1);
+    assert.notEqual(yesAfter, -1);
+    assert.notEqual(yesBefore, yesAfter, "the shared Choice label's raw compiled id must genuinely shift");
+
+    const decodedBefore = decodeEvent(before.events[before.eventFor.get(entityARef)], {
+      strings: before.strings,
+      flat: flatBefore
+    });
+    const decodedAfter = decodeEvent(after.events[after.eventFor.get(entityARef)], {
+      strings: after.strings,
+      flat: flatAfter
+    });
+    assert.deepEqual(
+      decodedBefore,
+      decodedAfter,
+      "entity A's decoded event is semantically identical before and after the reorder"
+    );
+
+    // The warp's own raw byte is required to change (B moved from flat 1 to
+    // flat 0), but its decoded target is the SAME SCREEN OBJECT either way.
+    const warpBefore = decodedBefore[0].body.find((c) => c.form === 'warp');
+    const warpAfter = decodedAfter[0].body.find((c) => c.form === 'warp');
+    assert.equal(warpBefore.target, b0Ref);
+    assert.equal(warpAfter.target, b0Ref);
+    // The raw screen byte's own position in the compiled event -- computed
+    // from decodedBefore's own command sizes rather than hand-counted, since
+    // the shape (4-byte page header, then each command in author order) is
+    // identical in both builds; only some operand VALUES differ.
+    let screenByteAt = 4; // the page header
+    for (const command of decodedBefore[0].body) {
+      if (command.form === 'warp') break;
+      screenByteAt += command.size;
+    }
+    screenByteAt += 1; // opcode, then the screen operand
+    assert.notEqual(
+      before.events[before.eventFor.get(entityARef)][screenByteAt],
+      after.events[after.eventFor.get(entityARef)][screenByteAt],
+      "the warp's own raw compiled screen byte is required to differ"
+    );
+
+    const itemIdForActorAfter = new Map(
+      built.items.filter((item) => typeof item.actorId === 'number').map((item) => [item.actorId, item.id])
+    );
+    const pickupResultAfter = resolveEntityByte(
+      pickupRef,
+      built.sprites.actors[pickupRef.actorId],
+      projectUsesItems(built),
+      itemIdForActorAfter,
+      flatAfter.length
+    );
+    assert.equal(pickupResultBefore.kind, 'item');
+    assert.equal(pickupResultAfter.kind, 'item');
+    assert.equal(
+      pickupResultBefore.itemId,
+      pickupResultAfter.itemId,
+      "a pickup entity's compiled byte is an item id, never routed through flat[...], untouched by a screen reorder"
+    );
+  }
+);
+
+/** The four compiled SAVE_IDENTITY_N bytes generate.js emits into assets/config.inc, read back
+ *  out of a real build -- the actual compiled artifact, not a second JS-level recomputation of
+ *  shared/save.js's own saveIdentity() (already what test 20's own JS-level half checks). */
+async function readSaveIdentityBytes(dir) {
+  const text = await fs.readFile(path.join(dir, 'build', 'assets', 'config.inc'), 'utf8');
+  return [0, 1, 2, 3].map((i) => {
+    const match = new RegExp(`SAVE_IDENTITY_${i}\\s*=\\s*(\\d+)`).exec(text);
+    assert.ok(match, `SAVE_IDENTITY_${i} not found in config.inc`);
+    return Number(match[1]);
+  });
+}
+
+// §11 test 8 (Fix round 1, finding 3: both halves the design spells out --
+// the token-change assertions, deterministic rather than probabilistic, and
+// the save-enabled half's own opposite claim, previously entirely absent.)
+test(
+  'reorder then its own inverse permutation is a byte-identical ROM round trip on a save-free fixture ' +
+    '(the token changes on each application, deterministically); the opposite holds on a save-enabled ' +
+    'variant, whose compiled SAVE_IDENTITY bytes must differ after the identical round trip',
+  { skip: !hasNesasm && 'nesasm not found on PATH' },
+  async (t) => {
+    const dir1 = await fs.mkdtemp(path.join(os.tmpdir(), 'forge-reorder-'));
+    t.after(() => fs.rm(dir1, { recursive: true, force: true }));
+    const project = await loadProject(SAMPLE);
+    // Save-free AND title-free, stated directly per design §7 item 3/§11 test
+    // 8's own pin: SAVE_ENABLED never assembles, so saveCompatToken's own
+    // (genuinely changing, twice) value never reaches a single compiled byte.
+    project.project.titleMap = null;
+    project.project.titleScreen = 0;
+    await saveProject(dir1, project);
+    const built1 = await buildProject({ dir: dir1, project, log: () => {} });
+    const romA = await fs.readFile(built1.romPath);
+
+    // Both draws known in advance, so "the token genuinely changed on each
+    // reorder" is provable by construction, never a probabilistic
+    // t1 !== t2 comparison that could pass on a broken implementation by
+    // sheer luck (or fail on a correct one at 1/65535) -- the same
+    // deterministic-mock discipline test 21 already uses.
+    const queue = [0.1, 0.9];
+    t.mock.method(Math, 'random', () => queue.shift());
+
+    const newMapOrder = [1, 0]; // sample/ has exactly two maps
+    reorderMapsCore(project, newMapOrder);
+    const tokenAfterFirst = project.project.saveCompatToken;
+    assert.equal(
+      tokenAfterFirst,
+      1 + Math.floor(0.1 * 0xffff),
+      'the first reorder must redraw a token equal to its own mocked draw'
+    );
+
+    reorderMapsCore(project, newMapOrder); // [1,0] is its own inverse
+    const tokenAfterSecond = project.project.saveCompatToken;
+    assert.equal(
+      tokenAfterSecond,
+      1 + Math.floor(0.9 * 0xffff),
+      'the second (inverse) reorder must ALSO redraw a token -- it does not restore the pre-round-trip value'
+    );
+    assert.notEqual(
+      tokenAfterFirst,
+      tokenAfterSecond,
+      'known by construction of the two queued mock draws, not a runtime coincidence -- each reorder is its own qualifying edit'
+    );
+    t.mock.restoreAll();
+
+    const dir2 = await fs.mkdtemp(path.join(os.tmpdir(), 'forge-reorder-'));
+    t.after(() => fs.rm(dir2, { recursive: true, force: true }));
+    await saveProject(dir2, project);
+    const built2 = await buildProject({ dir: dir2, project, log: () => {} });
+    const romB = await fs.readFile(built2.romPath);
+
+    assert.deepEqual(
+      [...romA],
+      [...romB],
+      'a reorder composed with its own exact inverse must build byte-identical ROMs on a save-free project -- ' +
+        'the token changed twice above, but never reached a compiled byte since SAVE_ENABLED is off'
+    );
+
+    // The OPPOSITE claim, on a save-enabled variant of the identical
+    // round trip -- design §11 test 8's own second, separate assertion,
+    // folded into this test rather than a new one since it shares the same
+    // round-trip fixture shape. Per §6.10's own explicit policy: two
+    // qualifying edits draw two independent tokens, and no attempt is made
+    // to recognize a round trip as a no-op -- so a save-enabled project's
+    // compiled SAVE_IDENTITY_0..3 bytes are REQUIRED to differ before and
+    // after, even though the map order returns to exactly what it was. This
+    // is the intended behavior, not a bug the save-free half above somehow
+    // missed.
+    const dirSaveA = await fs.mkdtemp(path.join(os.tmpdir(), 'forge-reorder-save-'));
+    t.after(() => fs.rm(dirSaveA, { recursive: true, force: true }));
+    const saveEnabledProject = await loadProject(SAMPLE);
+    saveEnabledProject.cartridge.mapper = 1; // MMC1 -- save-capable; sample/ ships on NROM
+    saveEnabledProject.project.titleMap = 1; // sample/'s own Title map -- Save needs one
+    saveEnabledProject.project.titleScreen = 0;
+    saveEnabledProject.maps[0].screens[0].entities.push({
+      actorId: 0,
+      x: 16,
+      y: 16,
+      props: { event: { pages: [{ cond: { type: 'none', arg: 0 }, commands: [{ op: 'save' }] }] } }
+    });
+    await saveProject(dirSaveA, saveEnabledProject);
+    await buildProject({ dir: dirSaveA, project: saveEnabledProject, log: () => {} });
+    const identityBeforeRoundTrip = await readSaveIdentityBytes(dirSaveA);
+
+    reorderMapsCore(saveEnabledProject, newMapOrder);
+    reorderMapsCore(saveEnabledProject, newMapOrder); // the identical round trip
+
+    const dirSaveB = await fs.mkdtemp(path.join(os.tmpdir(), 'forge-reorder-save-'));
+    t.after(() => fs.rm(dirSaveB, { recursive: true, force: true }));
+    await saveProject(dirSaveB, saveEnabledProject);
+    await buildProject({ dir: dirSaveB, project: saveEnabledProject, log: () => {} });
+    const identityAfterRoundTrip = await readSaveIdentityBytes(dirSaveB);
+
+    assert.notDeepEqual(
+      identityBeforeRoundTrip,
+      identityAfterRoundTrip,
+      'a save-enabled project\'s compiled SAVE_IDENTITY_0..3 bytes must differ after the identical round trip, ' +
+        'per §6.10\'s own policy -- this is intentional, not the save-free half\'s claim failing to hold here too'
+    );
+  }
+);
+
+// -------- shared harness for tests 20/21 -- mirrors test/unit/save.test.js's
+// own buildSaveable/boot/tap/touchSaver (lines 93-200), duplicated here per
+// this repository's own per-file convention (every other ROM-booting test
+// file duplicates its own `boot`, never imports one from a sibling file).
+
+// Engine RAM, from engine/constants.asm.
+const REORDER_PLAYER_X = 0x10;
+const REORDER_GAME_STATE = 0x25;
+const REORDER_SRAM_BASE = 0x6000;
+const REORDER_SRAM_SIZE = 0x2000;
+const REORDER_SAVE_MARKER_OFFSET = 0x56;
+const REORDER_SAVE_MARKER_VALID = 0xa5;
+const REORDER_ST_GAMEPLAY = 0;
+const REORDER_ST_TITLE = 3;
+const REORDER_A = 0;
+const REORDER_SELECT = 2;
+const REORDER_START = 3;
+const REORDER_RIGHT = 7;
+const REORDER_LEFT = 6;
+const REORDER_DOWN = 5;
+const REORDER_UP = 4;
+
+function reorderBoot(romPath, frames = 60) {
+  const nes = new NES({ onFrame: () => {}, emulateSound: false });
+  nes.loadROM(new Uint8Array(fsSync.readFileSync(romPath)));
+  for (let i = 0; i < frames; i++) nes.frame();
+  return nes;
+}
+
+const reorderTap = (nes, button, frames = 10) => {
+  nes.buttonDown(1, button);
+  nes.frame();
+  nes.buttonUp(1, button);
+  for (let i = 0; i < frames; i++) nes.frame();
+};
+
+function reorderWalkUntil(nes, targetX, targetY, until, budget = 400) {
+  for (let i = 0; i < budget; i++) {
+    if (until()) return true;
+    if (nes.cpu.mem[REORDER_GAME_STATE] !== REORDER_ST_GAMEPLAY) return false;
+    const dx = targetX - nes.cpu.mem[REORDER_PLAYER_X];
+    const dy = targetY - nes.cpu.mem[0x11];
+    let button = null;
+    if (dx > 1) button = REORDER_RIGHT;
+    else if (dx < -1) button = REORDER_LEFT;
+    else if (dy > 1) button = REORDER_DOWN;
+    else if (dy < -1) button = REORDER_UP;
+    if (button === null) return until();
+    nes.buttonDown(1, button);
+    nes.frame();
+    nes.buttonUp(1, button);
+    if (until()) return true;
+  }
+  return until();
+}
+
+function reorderTouchSaver(nes, x, y, until = () => nes.cpu.mem[REORDER_SRAM_BASE + REORDER_SAVE_MARKER_OFFSET] === REORDER_SAVE_MARKER_VALID) {
+  const touched = reorderWalkUntil(nes, x, y, until);
+  assert.ok(touched, 'walking to the saver never satisfied the given condition');
+  for (let i = 0; i < 10; i++) nes.frame();
+}
+
+/**
+ * sample-rpg with MMC1, a title, a live Save on a touch-triggered NPC, and a
+ * SECOND map (one screen) so there is something real to reorder against --
+ * design-maporg.md §11 test 20/21's own "two/three maps of one screen each."
+ */
+async function buildReorderSaveable(t, mutate) {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'forge-reordersave-'));
+  t.after(() => fs.rm(dir, { recursive: true, force: true }));
+  const project = await loadProject(SAMPLE_RPG);
+  project.cartridge.mapper = 1; // MMC1
+  project.project.titleMap = 0;
+  project.project.titleScreen = 0;
+  project.maps[0].encounters = { rate: 0, actorIds: [] }; // a wandering monster must not race this
+  const saverId = project.sprites.actors.length;
+  project.sprites.actors.push({ name: 'Saver', behavior: 'npc', hp: 1, damage: 0 });
+  project.maps[0].screens[0].entities.push({
+    actorId: saverId,
+    x: 64,
+    y: 96,
+    props: {
+      trigger: 'touch',
+      event: { pages: [{ cond: { type: 'none', arg: 0 }, commands: [{ op: 'save' }] }] }
+    }
+  });
+  project.maps.push(createMap(project.maps.length, 'Second'));
+  if (mutate) mutate(project);
+  await saveProject(dir, project);
+  const built = await buildProject({ dir, project, log: () => {} });
+  return { project, romPath: built.romPath };
+}
+
+// Fix round 1, finding 1 (High): a permanent regression test for the
+// token-zero backward-compatibility promise -- shared/save.js's own
+// conditional push (`if (saveCompatToken) values.push(saveCompatToken)`) is
+// the ONLY protection for the claim that a project with `saveCompatToken
+// === 0` folds the identical eleven-value sequence it always did, and
+// nothing else in this test file pins it permanently. The reviewer's own
+// finding is right that "field absent equals field explicitly zero" is
+// vacuous: normalizeProject/saveIdentity's own `?? 0` collapses both inputs
+// to the identical zero, so an unconditional `values.push(saveCompatToken)`
+// sabotage folds twelve values either way and that equality still passes.
+//
+// The golden below is a deliberate wire-compatibility pin, not a value
+// derived from this tree's own current code: computed once, from a clean
+// `git worktree add` at `8e3e1c9` (the commit item 7 was written against,
+// before shared/save.js knew saveCompatToken existed at all), on the
+// IDENTICAL fixture built here. It must only ever change on an intentional
+// SAVE_LAYOUT_VERSION-class break -- an accidental extra fold term (the
+// unconditional-push sabotage this test's own sabotage evidence applies)
+// must fail this test, not have the golden quietly updated to match it.
+test(
+  'saveIdentity: a token-zero project folds the pre-item-7 identity sequence, byte-identical to the pinned ' +
+    'golden computed from 8e3e1c9',
+  () => {
+    const project = createProject('Golden', 'rpg');
+    project.maps.push(createMap(1, 'Second'));
+    project.sprites.actors.push({ name: 'Monster', damage: 1 });
+    project.items.push({
+      id: 0,
+      name: 'Potion',
+      actorId: null,
+      metaspriteId: null,
+      effect: { kind: 'none', amount: 0 }
+    });
+
+    // Fix round 2, finding 1: every project-dependent value saveIdentity
+    // folds, pinned and asserted individually BEFORE the opaque hash
+    // comparison below. This fixture appends to createProject's own RPG
+    // defaults (starter party, rpg.maxLevel, the initial 1-map/1-screen
+    // shape) rather than assigning a fully synthetic tuple, so a later,
+    // unrelated product change to one of those defaults (a second starter
+    // party member, a different maxLevel default, a different starter-map
+    // shape) would otherwise move this golden's own input while leaving the
+    // legacy fold contract untouched -- an opaque hash mismatch with no
+    // local evidence of what drifted. Each assertion below fails locally
+    // and legibly on the specific field that moved instead. Only the
+    // global layout constants saveIdentity also folds (RPG_LIMITS.variables/
+    // party, MAX_ITEMS, SAVE_LAYOUT_VERSION) are left implicit -- an
+    // intentional change to one of those IS the compatibility-class break
+    // this golden exists to force a deliberate update for.
+    const screenCount = project.maps.reduce((total, map) => total + map.screens.length, 0);
+    assert.equal(screenCount, 2, 'screenCount input must stay pinned at 2 (two maps, one screen each)');
+    assert.equal(project.maps.length, 2, 'mapCount input must stay pinned at 2');
+    assert.equal(project.sprites.actors.length, 1, 'actorCount input must stay pinned at 1');
+    assert.equal(project.rpg.maxLevel, 15, "maxLevel input must stay pinned at 15 (createProject's own RPG default)");
+    assert.equal(
+      project.party.length,
+      1,
+      "partyCount input must stay pinned at 1 (createProject's own RPG starter party)"
+    );
+    assert.equal(project.project.gameType, 'rpg', 'battleEnabled input must stay pinned at rpg (gameType)');
+    assert.equal(projectUsesItems(project), true, 'itemsEnabled input must stay pinned at true');
+    assert.equal(project.items.length, 1, 'itemCount input must stay pinned at 1');
+    assert.equal(project.project.saveCompatToken, 0, 'the golden fixture is token-zero by construction');
+
+    assert.equal(
+      saveIdentity(project),
+      2144726128, // computed at 8e3e1c9 on this identical, now fully pinned, fixture; see the comment above
+      "saveIdentity must fold the pre-item-7 sequence exactly for a token-zero project -- an old cartridge save's " +
+        'own identity bytes were computed against this fold, and must still validate against it'
+    );
+  }
+);
+
+// §11 test 20
+test(
+  'saveCompatToken/saveIdentity: a same-flat-count reorder redraws the token and changes identity',
+  () => {
+    const project = createProject('Token JS', 'rpg');
+    project.cartridge.mapper = 1;
+    project.project.titleMap = 0;
+    project.maps = [createMap(0, 'A'), createMap(1, 'B')];
+    assert.equal(project.project.saveCompatToken, 0);
+    const before = saveIdentity(project);
+
+    reorderMapsCore(project, [1, 0]); // screenCount/mapCount both unchanged
+
+    assert.ok(Number.isInteger(project.project.saveCompatToken));
+    assert.ok(project.project.saveCompatToken >= 1 && project.project.saveCompatToken <= 0xffff);
+    const after = saveIdentity(project);
+    assert.notEqual(before, after, "a redrawn token must change saveIdentity's output");
+
+    // The width-hole fix: an out-of-range stored token must not fold as its
+    // own & 0xffff alias -- it falls back to 0, the same "no qualifying edit"
+    // default a project that never performed one already has.
+    const raw = createProject('Clamp');
+    raw.project.saveCompatToken = 0x10001; // 65537 -- aliases 1 under & 0xffff
+    const normalized = normalizeProject(raw);
+    assert.equal(normalized.project.saveCompatToken, 0, 'an out-of-range stored token falls back to 0');
+  }
+);
+
+// §11 test 20 (b)/(c): full integration + negative control
+test(
+  'save-compat token: a reorder invalidates a cartridge save; rebuilding the unreordered project accepts the ' +
+    'identical save (negative control)',
+  { skip: !hasNesasm && 'nesasm not found on PATH' },
+  async (t) => {
+    const { project, romPath: romPath1 } = await buildReorderSaveable(t);
+    const nes = reorderBoot(romPath1);
+    reorderTap(nes, REORDER_START);
+    reorderTouchSaver(nes, 64, 96);
+    assert.equal(
+      nes.cpu.mem[REORDER_SRAM_BASE + REORDER_SAVE_MARKER_OFFSET],
+      REORDER_SAVE_MARKER_VALID,
+      'the real save never completed'
+    );
+    const foreignBattery = nes.cpu.mem.slice(REORDER_SRAM_BASE, REORDER_SRAM_BASE + REORDER_SRAM_SIZE);
+
+    // (b) the reordered build.
+    const reordered = structuredClone(project);
+    reorderMapsCore(reordered, [1, 0]); // swap the two maps -- screenCount/mapCount both unchanged
+    const dirReordered = await fs.mkdtemp(path.join(os.tmpdir(), 'forge-reordersave-b-'));
+    t.after(() => fs.rm(dirReordered, { recursive: true, force: true }));
+    await saveProject(dirReordered, reordered);
+    const builtReordered = await buildProject({ dir: dirReordered, project: reordered, log: () => {} });
+    const other = reorderBoot(builtReordered.romPath);
+    other.cpu.mem.set(foreignBattery, REORDER_SRAM_BASE);
+    reorderTap(other, REORDER_SELECT);
+    assert.equal(
+      other.cpu.mem[REORDER_GAME_STATE],
+      REORDER_ST_TITLE,
+      'a save from before the reorder must be refused, not misapplied'
+    );
+
+    // (c) the negative control -- the identical save, on a build from the
+    // UNREORDERED project, proving the refusal above is caused by the
+    // reorder's token redraw and not by unrelated build nondeterminism.
+    const dirSame = await fs.mkdtemp(path.join(os.tmpdir(), 'forge-reordersave-c-'));
+    t.after(() => fs.rm(dirSame, { recursive: true, force: true }));
+    await saveProject(dirSame, project);
+    const builtSame = await buildProject({ dir: dirSame, project, log: () => {} });
+    const same = reorderBoot(builtSame.romPath);
+    same.cpu.mem.set(foreignBattery, REORDER_SRAM_BASE);
+    reorderTap(same, REORDER_SELECT);
+    assert.equal(
+      same.cpu.mem[REORDER_GAME_STATE],
+      REORDER_ST_GAMEPLAY,
+      'the identical save on an unreordered rebuild must still be accepted'
+    );
+  }
+);
+
+// §11 test 21
+test(
+  'undo then a genuinely different reorder redraws a different token -- deterministic, no residual probabilism',
+  { skip: !hasNesasm && 'nesasm not found on PATH' },
+  async (t) => {
+    const { project } = await buildReorderSaveable(t, (p) => {
+      p.maps.push(createMap(p.maps.length, 'Third')); // [Starfall Plain(A), Second(B), Third(C)]
+    });
+
+    const preReorderSnapshot = structuredClone(project);
+
+    // Both draws known in advance, so t2 !== t1 is provable by construction,
+    // never a runtime coincidence -- Fix round 3, finding 6.
+    const queue = [0.00002, 0.99998];
+    t.mock.method(Math, 'random', () => queue.shift());
+
+    reorderMapsCore(project, [1, 0, 2]); // [A,B,C] -> [B,A,C]
+    const t1 = project.project.saveCompatToken;
+    assert.equal(t1, 1 + Math.floor(0.00002 * 0xffff));
+
+    const dir1 = await fs.mkdtemp(path.join(os.tmpdir(), 'forge-undo21-a-'));
+    t.after(() => fs.rm(dir1, { recursive: true, force: true }));
+    await saveProject(dir1, project);
+    const built1 = await buildProject({ dir: dir1, project, log: () => {} });
+    const nes = reorderBoot(built1.romPath);
+    reorderTap(nes, REORDER_START);
+    reorderTouchSaver(nes, 64, 96);
+    const foreignBattery = nes.cpu.mem.slice(REORDER_SRAM_BASE, REORDER_SRAM_BASE + REORDER_SRAM_SIZE);
+
+    // Undo -- store.undo()'s own whole-project structuredClone restore, done
+    // by hand here since this test drives the project object directly rather
+    // than through renderer/store.js.
+    const restored = structuredClone(preReorderSnapshot);
+    assert.equal(restored.project.saveCompatToken, 0, 'undo genuinely restores the pre-reorder token');
+
+    reorderMapsCore(restored, [2, 0, 1]); // a DIFFERENT reorder: [A,B,C] -> [C,A,B]
+    const t2 = restored.project.saveCompatToken;
+    assert.equal(t2, 1 + Math.floor(0.99998 * 0xffff));
+    assert.notEqual(t2, t1, 'known by construction of the two queued mock draws, not a runtime coincidence');
+
+    const dir2 = await fs.mkdtemp(path.join(os.tmpdir(), 'forge-undo21-b-'));
+    t.after(() => fs.rm(dir2, { recursive: true, force: true }));
+    await saveProject(dir2, restored);
+    const built2 = await buildProject({ dir: dir2, project: restored, log: () => {} });
+    const other = reorderBoot(built2.romPath);
+    other.cpu.mem.set(foreignBattery, REORDER_SRAM_BASE);
+    reorderTap(other, REORDER_SELECT);
+    assert.equal(
+      other.cpu.mem[REORDER_GAME_STATE],
+      REORDER_ST_TITLE,
+      'the save from the undone branch must be refused after a different, genuinely reordered rebuild'
+    );
+  }
+);
+
+// ---------------------------------------------------------------------------
+// ROADMAP item 7 -- map organization and reuse, phase 2
+// (handoff-maporg/design-maporg.md §4.2/§4.3/§6.2/§9, handoff-maporg/maporg-phase-plan.md)
+//
+// The append operations: Add Map and Duplicate Map, both funneling through
+// the shared buildAppendCanonicalizeTranslate primitive, and the
+// duplicate-name validateProject warning. Per this phase's own house rule
+// (carried forward from phase 1's round-1 review): every operation gets a
+// commit-free core in shared/project.js (addMapCore, duplicateMapCore) that
+// both renderer/forges/map/map.js's single store.commit and the tests below
+// call -- no test-local mirror of a renderer function. Delete/Resize/
+// Duplicate-screen/paste/folders are later phases and are not tested here.
+// ---------------------------------------------------------------------------
+
+// §11 test 4
+test(
+  'duplicate-append canonicalizes a pre-existing out-of-range value against the PRE-append flat count, ' +
+    'not the post-append one',
+  () => {
+    const project = createProject('Duplicate canonicalize');
+    const map = createMap(0, 'Home');
+    map.gridW = 1;
+    map.gridH = 3;
+    map.screens = [createScreen(), createScreen(), createScreen()]; // flat 0, 1, 2
+    project.maps = [map];
+    const door = { actorId: 0, x: 0, y: 0, props: { toScreen: 255, event: null } }; // effective target: screen 2
+    map.screens[0].entities = [door];
+
+    const clone = duplicateMapCore(project, 0);
+
+    assert.equal(project.maps.length, 2, 'duplicate appends a second map');
+    assert.equal(project.maps[1].screens.length, 3, 'screenCount doubles');
+    assert.equal(
+      door.props.toScreen,
+      2,
+      "the original door's pre-existing out-of-range value follows its own already-resolved, pre-edit " +
+        'effective target -- not the new, post-append last screen (5), which re-clamping against the ' +
+        'larger count would silently produce'
+    );
+
+    // Fix round 1, finding 1: the coverage gap the review names -- nothing
+    // previously asserted anything about the CLONE's own copy of the
+    // identical out-of-range value. It must resolve to the CLONE's own
+    // last screen, by object-derived flat position (never a hardcoded
+    // number), proving the canonicalizing pass reaches the clone's own
+    // freshly-cloned operands too, not only the rest of the project.
+    const clonedDoor = clone.screens[0].entities[0];
+    const cloneScreen2FlatIndex = flatScreens(project).findIndex((entry) => entry.screen === clone.screens[2]);
+    assert.equal(
+      clonedDoor.props.toScreen,
+      cloneScreen2FlatIndex,
+      "the clone's own copy of the out-of-range door resolves to the CLONE's own last screen, not the original's"
+    );
+  }
+);
+
+// §11 test 9
+test(
+  'duplicate map: self-referential doors and nested Warps (top-level, branch, choice) follow the copy; ' +
+    'external references do not; the original is completely unchanged',
+  () => {
+    const project = createProject('Duplicate split');
+    // A multi-screen Precursor map ahead of the one being duplicated -- so
+    // the source map's own flat range starts at a nonzero, non-mapIndex
+    // offset (3, not 1). An implementation that derived the source's own
+    // flat base from `mapIndex` directly, rather than summing every
+    // preceding map's own screen count, would coincidentally still be
+    // correct at mapIndex 0 (both give 0) and only be caught here.
+    const precursor = createMap(0, 'Precursor');
+    precursor.gridW = 1;
+    precursor.gridH = 3;
+    precursor.screens = [createScreen(), createScreen(), createScreen()]; // flat 0, 1, 2
+    const mapA = createMap(1, 'A');
+    mapA.gridW = 1;
+    mapA.gridH = 2;
+    const a0 = createScreen();
+    const a1 = createScreen();
+    mapA.screens = [a0, a1]; // flat 3, 4
+    const mapB = createMap(2, 'B');
+    const b0 = createScreen();
+    mapB.screens = [b0]; // flat 5
+    project.maps = [precursor, mapA, mapB];
+    const mapAIndex = 1;
+
+    const doorSelf = { actorId: 0, x: 0, y: 0, props: { toScreen: 4, event: null } }; // A -> A1 (self)
+    const doorExternal = { actorId: 0, x: 0, y: 0, props: { toScreen: 5, event: null } }; // A -> B0 (external)
+    const warpEntity = {
+      actorId: 0, x: 0, y: 0,
+      props: {
+        toScreen: 0,
+        event: {
+          pages: [{
+            cond: { type: 'none', arg: 0 },
+            commands: [
+              { op: 'warp', screen: 4, x: 0, y: 0 }, // top-level, self
+              {
+                op: 'branch',
+                cond: { type: 'none', arg: 0 },
+                then: [{ op: 'warp', screen: 5, x: 0, y: 0 }], // branch-then, external
+                // Fix round 1, finding 2: a self-referential warp in the
+                // branch's OTHER side, whose translated value must differ
+                // from its authored one (4 -> a real, different flat index)
+                // -- a walker that enters `then` but never `else` (or vice
+                // versa) would leave this one stale, and the fixture's own
+                // only other branch-nested warp (then, above) is external,
+                // whose correct outcome is "unchanged" and so cannot catch
+                // a walker that skips a whole branch side.
+                else: [{ op: 'warp', screen: 4, x: 0, y: 0 }] // branch-else, self
+              },
+              { op: 'choice', options: [{ text: 'Go', commands: [{ op: 'warp', screen: 4, x: 0, y: 0 }] }] } // choice-nested, self
+            ]
+          }]
+        }
+      }
+    };
+    a0.entities = [doorSelf, doorExternal, warpEntity];
+
+    // Item 7 phase 5, design §8: whole-map Duplicate structuredClone's the
+    // whole source map object, so folder should already come along for
+    // free, with no code change of its own -- proven here directly rather
+    // than assumed, since a `folder`-less fixture (every other one in this
+    // file, written before §8 existed) could never have caught its absence.
+    mapA.folder = 'Dungeons';
+
+    const originalSnapshot = structuredClone(mapA);
+    assert.equal(project.project.saveCompatToken, 0);
+
+    const clone = duplicateMapCore(project, mapAIndex);
+
+    assert.equal(clone.folder, 'Dungeons', "the copy's own folder came along for free with structuredClone(sourceMap)");
+
+    assert.deepEqual(mapA, originalSnapshot, "the original map's own entities and events are completely unchanged");
+    assert.equal(
+      project.project.saveCompatToken,
+      0,
+      'Duplicate Map never redraws the token -- screenCount already moves (§6.10), the identical argument ' +
+        "addMapCore's own policy already makes"
+    );
+
+    const flatNow = flatScreens(project);
+    const cloneA1FlatIndex = flatNow.findIndex((entry) => entry.screen === clone.screens[1]);
+    const b0FlatIndex = flatNow.findIndex((entry) => entry.screen === b0);
+
+    const [cloneDoorSelf, cloneDoorExternal, cloneWarpEntity] = clone.screens[0].entities;
+    assert.equal(
+      cloneDoorSelf.props.toScreen,
+      cloneA1FlatIndex,
+      "the copy's self-referential door points at the copy's own screen 1, not the original's"
+    );
+    assert.equal(
+      cloneDoorExternal.props.toScreen,
+      b0FlatIndex,
+      "the copy's external door still points at the same external target the original's does"
+    );
+
+    const [topWarp, branchCmd, choiceCmd] = cloneWarpEntity.props.event.pages[0].commands;
+    assert.equal(topWarp.screen, cloneA1FlatIndex, "the copy's top-level self-referential warp follows the copy");
+    assert.equal(
+      branchCmd.then[0].screen,
+      b0FlatIndex,
+      "the copy's branch-then external warp stays pointed at the external target"
+    );
+    assert.equal(
+      branchCmd.else[0].screen,
+      cloneA1FlatIndex,
+      "the copy's branch-else self-referential warp follows the copy -- proving the walker enters BOTH branch sides"
+    );
+    assert.equal(
+      choiceCmd.options[0].commands[0].screen,
+      cloneA1FlatIndex,
+      "the copy's choice-nested self-referential warp follows the copy"
+    );
+  }
+);
+
+// §11 test 10
+test(
+  "duplicate map: the auto-suffixed name avoids §4.3's collision, verified against resolveStartAt " +
+    '(not merely a cosmetic string check)',
+  () => {
+    const project = createProject('Duplicate naming');
+    const dungeon = createMap(0, 'Dungeon');
+    project.maps = [dungeon];
+
+    const remembered = { mapName: 'Dungeon', screenIndex: 0, screenName: '', x: 0, y: 0 };
+    const before = resolveStartAt(remembered, project);
+    assert.equal(before.ok, true, 'sanity: the scenario resolves before duplicating at all');
+
+    const clone = duplicateMapCore(project, 0);
+    assert.equal(clone.name, 'Dungeon copy', 'the copy is auto-suffixed, never a verbatim name collision');
+
+    const after = resolveStartAt(remembered, project);
+    assert.equal(
+      after.ok,
+      true,
+      "resolveStartAt must still resolve after duplicating -- the copy's own name must not collide with the source's"
+    );
+
+    // Fix round 1, finding 3: the required sequence is "copy", "copy 2",
+    // "copy 3", ... -- a destination already holding BOTH "Dungeon" and
+    // "Dungeon copy" must produce exactly "Dungeon copy 2" next. A helper
+    // whose loop special-cases its own first numbered iteration to mean
+    // "no number" skips "copy 2" entirely and produces "copy 3" here
+    // instead -- invisible to the single-duplicate fixture above, which
+    // never has "copy" already taken when it runs.
+    const collisionProject = createProject('Duplicate naming collision');
+    collisionProject.maps = [createMap(0, 'Dungeon'), createMap(1, 'Dungeon copy')];
+    const secondClone = duplicateMapCore(collisionProject, 0);
+    assert.equal(
+      secondClone.name,
+      'Dungeon copy 2',
+      'with "Dungeon" and "Dungeon copy" both already taken, the next candidate must be "Dungeon copy 2"'
+    );
+  }
+);
+
+// §11 test 17
+test(
+  'validateProject warns on duplicate map names and duplicate same-map screen names, excluding empty ' +
+    'names and cross-map collisions',
+  () => {
+    const warningsOf = (project) => validateProject(project).filter((p) => p.severity === 'warning');
+
+    // (a) two maps sharing a name -- warns.
+    {
+      const project = createProject('Dup names A');
+      project.maps = [createMap(0, 'Same'), createMap(1, 'Same')];
+      const warnings = warningsOf(project);
+      assert.ok(
+        warnings.some((w) => /map name/.test(w.message)),
+        'two same-named maps must produce a map-name warning'
+      );
+    }
+
+    // (b) two non-empty-named screens on the SAME map -- warns.
+    {
+      const project = createProject('Dup names B');
+      const map = createMap(0, 'Home');
+      map.gridW = 1;
+      map.gridH = 2;
+      const s0 = createScreen();
+      s0.name = 'Vault';
+      const s1 = createScreen();
+      s1.name = 'Vault';
+      map.screens = [s0, s1];
+      project.maps = [map];
+      const warnings = warningsOf(project);
+      assert.ok(
+        warnings.some((w) => /screen name/.test(w.message)),
+        'two same-named screens on the same map must produce a screen-name warning'
+      );
+    }
+
+    // (c) two screens on DIFFERENT maps sharing a name -- does not warn.
+    {
+      const project = createProject('Dup names C');
+      const mapA = createMap(0, 'A');
+      const sa = createScreen();
+      sa.name = 'Vault';
+      mapA.screens = [sa];
+      const mapB = createMap(1, 'B');
+      const sb = createScreen();
+      sb.name = 'Vault';
+      mapB.screens = [sb];
+      project.maps = [mapA, mapB];
+      const warnings = warningsOf(project);
+      assert.ok(
+        !warnings.some((w) => /screen name/.test(w.message)),
+        'the same screen name in two DIFFERENT maps must not warn -- screenLabel already disambiguates ' +
+          'by map name, and resolveStartAt is scoped per-map'
+      );
+    }
+
+    // (d) an ordinary multi-screen map, every screen unnamed except one -- does not warn at all.
+    {
+      const project = createProject('Dup names D');
+      const map = createMap(0, 'Home');
+      map.gridW = 1;
+      map.gridH = 3;
+      const s0 = createScreen(); // unnamed
+      const s1 = createScreen(); // unnamed
+      const s2 = createScreen();
+      s2.name = 'Boss Room';
+      map.screens = [s0, s1, s2];
+      project.maps = [map];
+      assert.deepEqual(
+        warningsOf(project),
+        [],
+        'empty screen names must be excluded from the count entirely, or this fires on nearly every ordinary project'
+      );
+    }
+  }
+);
+
+// §11 test 25
+test(
+  'Add Map keeps a pre-existing out-of-range operand at its effective target, never redraws the token, ' +
+    'and never collides names after a Delete',
+  () => {
+    // (a)/(b): out-of-range door and nested warp keep their effective target; no token redraw.
+    {
+      const project = createProject('Add map canonicalize');
+      const map = createMap(0, 'Home');
+      map.gridW = 1;
+      map.gridH = 3;
+      map.screens = [createScreen(), createScreen(), createScreen()]; // flat 0, 1, 2
+      project.maps = [map];
+      const door = { actorId: 0, x: 0, y: 0, props: { toScreen: 255, event: null } };
+      const warpEntity = {
+        actorId: 0, x: 0, y: 0,
+        props: {
+          toScreen: 0,
+          event: {
+            pages: [{
+              cond: { type: 'none', arg: 0 },
+              commands: [
+                { op: 'branch', cond: { type: 'none', arg: 0 }, then: [{ op: 'warp', screen: 255, x: 0, y: 0 }], else: [] }
+              ]
+            }]
+          }
+        }
+      };
+      map.screens[0].entities = [door, warpEntity];
+      assert.equal(project.project.saveCompatToken, 0);
+
+      addMapCore(project);
+
+      assert.equal(project.maps.length, 2, 'a new map was appended');
+      assert.equal(
+        door.props.toScreen,
+        2,
+        "the door's pre-existing out-of-range value follows its own already-resolved, pre-edit effective " +
+          'target -- not the new map\'s own single screen (3), which re-clamping against the larger count ' +
+          'would silently produce'
+      );
+      assert.equal(
+        warpEntity.props.event.pages[0].commands[0].then[0].screen,
+        2,
+        "the nested warp's pre-existing out-of-range value follows the identical resolution"
+      );
+      assert.equal(
+        project.project.saveCompatToken,
+        0,
+        'Add Map never redraws the token -- screenCount already moves (§6.10)'
+      );
+    }
+
+    // (c) the delete-then-add naming collision the round-3 self-check found.
+    {
+      const project = createProject('Add map naming');
+      project.maps = [createMap(0, 'Dungeon'), createMap(1, 'Map 1')];
+      project.maps.splice(0, 1); // delete "Dungeon" -- one map remains, "Map 1", at array length 1
+      const newMap = addMapCore(project);
+      assert.notEqual(
+        newMap.name,
+        'Map 1',
+        'the literal `Map ${project.maps.length}` collision (length is back down to 1) must not recur'
+      );
+      assert.ok(
+        project.maps.every((m) => m === newMap || m.name !== newMap.name),
+        "the new map's name must be distinct from every surviving map's, per nameForNewMap's own scan"
+      );
+      // Fix round 1, finding 4: "not Map 1" plus uniqueness alone passes a
+      // helper that scans from zero and returns "Map 0" -- itself a real,
+      // if different, contract violation (the scan is specified to start
+      // from existingMaps.length, not 0). Assert the derived literal the
+      // specified scan actually produces: existingMaps.length is 1 ("Map
+      // 1" survives), so the scan starts there, finds "Map 1" taken, and
+      // must land on "Map 2".
+      assert.equal(newMap.name, 'Map 2', "nameForNewMap's scan must start from existingMaps.length (1), not 0");
+    }
+  }
+);
+
+// ---------------------------------------------------------------------------
+// ROADMAP item 7 -- map organization and reuse, phase 3
+// (handoff-maporg/design-maporg.md §4.2/§6.1.3/§6.1.4/§6.4/§6.8/§6.9)
+//
+// Delete Map and Resize Map: the retrofit of two already-shipped operations
+// that today restructure the map list with zero reference repair. Per this
+// slice's own house rule: every operation is a commit-free core in
+// shared/project.js (deleteMapCore, growOrShrinkMap) that both
+// renderer/forges/map/map.js's single store.commit and the tests below call
+// -- no test-local mirror of a renderer function.
+// ---------------------------------------------------------------------------
+
+// §11 test 18
+test(
+  'deleteMapCore applies the three-case map-space policy to startMap/titleMap, repairs every flat-space ' +
+    'reference (including through DROPPED_SCREEN/FALLBACK_SCREEN), and never defaults an already-null titleMap',
+  () => {
+    // Case A (referenced index > mapIndex: decrements) and Case B (referenced
+    // index < mapIndex: unchanged), exercised together so a wrong
+    // implementation that decrements every reference regardless of side
+    // cannot pass both at once. Also the first place DROPPED_SCREEN/
+    // FALLBACK_SCREEN get genuinely exercised (phase 1's own recorded gap):
+    // a door on a surviving screen names a screen that belongs to the map
+    // being deleted.
+    {
+      const project = createProject('Delete map space');
+      const alpha = createMap(0, 'Alpha');
+      alpha.gridW = 1;
+      alpha.gridH = 1;
+      const a0 = createScreen();
+      a0.name = 'A0';
+      alpha.screens = [a0];
+
+      const beta = createMap(1, 'Beta'); // deleted
+      const b0 = createScreen();
+      b0.name = 'B0';
+      const b1 = createScreen();
+      b1.name = 'B1';
+      beta.screens = [b0, b1];
+
+      const gamma = createMap(2, 'Gamma');
+      const g0 = createScreen();
+      g0.name = 'G0';
+      gamma.screens = [g0];
+
+      project.maps = [alpha, beta, gamma]; // flat: A0=0, B0=1, B1=2, G0=3
+
+      const doorToDeleted = { actorId: 0, x: 0, y: 0, props: { toScreen: 1, event: null } }; // -> B0, about to be deleted
+      const doorSurvives = { actorId: 0, x: 0, y: 0, props: { toScreen: 3, event: null } }; // -> G0, survives
+      a0.entities = [doorToDeleted, doorSurvives];
+
+      const branchWarpEntity = {
+        actorId: 0, x: 0, y: 0,
+        props: {
+          toScreen: 0,
+          event: {
+            pages: [{
+              cond: { type: 'none', arg: 0 },
+              commands: [
+                {
+                  op: 'branch',
+                  cond: { type: 'none', arg: 0 },
+                  // Code review round 1, finding 2: every reference that travels the
+                  // DROPPED_SCREEN path elsewhere in this test is a door -- the Warp-
+                  // specific conditional in remapScreenReferences' own dropped branch
+                  // (shared/project.js) was never actually reached. This nested Warp
+                  // (then side) targets B1, about to be deleted, so it must resolve to
+                  // FALLBACK_SCREEN below; the else side keeps its own already-proven
+                  // surviving-target case, so both the walk (branch nesting) and the
+                  // Warp dropped branch are proved by the same entity.
+                  then: [{ op: 'warp', screen: 2, x: 0, y: 0 }], // -> B1, about to be deleted
+                  else: [{ op: 'warp', screen: 0, x: 0, y: 0 }] // -> A0, survives
+                }
+              ]
+            }]
+          }
+        }
+      };
+      g0.entities = [branchWarpEntity];
+
+      project.project.startMap = 0; // Case B: < mapIndex (1) -- must stay unchanged
+      project.project.startScreen = 0;
+      project.project.titleMap = 2; // Case A: > mapIndex (1) -- must decrement
+      project.project.titleScreen = 0;
+
+      deleteMapCore(project, 1);
+
+      assert.equal(project.maps.length, 2, 'Beta was removed');
+      assert.equal(project.maps[0], alpha, "Alpha's own object identity is untouched");
+      assert.equal(project.maps[1], gamma, "Gamma survives, now at position 1 -- its own object identity is untouched");
+
+      const flatNow = flatScreens(project);
+      const flatIndexOf = (screen) => flatNow.findIndex((entry) => entry.screen === screen);
+
+      assert.equal(
+        doorToDeleted.props.toScreen,
+        FALLBACK_SCREEN(project),
+        "a reference to a screen that belonged to the deleted map redirects to FALLBACK_SCREEN, not some " +
+          'coincidentally-similar surviving index'
+      );
+      assert.notEqual(
+        doorToDeleted.props.toScreen,
+        1,
+        'the dropped reference must not merely keep its own stale raw value by accident'
+      );
+      assert.equal(doorSurvives.props.toScreen, flatIndexOf(g0), "the cross-map door still names Gamma's content");
+      assert.equal(
+        branchWarpEntity.props.event.pages[0].commands[0].else[0].screen,
+        flatIndexOf(a0),
+        "the branch-else-nested warp still names Alpha's content"
+      );
+      assert.equal(
+        branchWarpEntity.props.event.pages[0].commands[0].then[0].screen,
+        FALLBACK_SCREEN(project),
+        "the branch-then-nested warp targeted a screen belonging to the deleted map -- it redirects to " +
+          'FALLBACK_SCREEN through the Warp-specific dropped branch of remapScreenReferences, not merely the ' +
+          'door branch already proven above (code review round 1, finding 2)'
+      );
+      assert.notEqual(
+        branchWarpEntity.props.event.pages[0].commands[0].then[0].screen,
+        2,
+        'the dropped nested warp must not merely keep its own stale raw value by accident'
+      );
+
+      assert.equal(project.project.startMap, 0, 'Case B: startMap (0) is below mapIndex (1) -- unchanged');
+      assert.equal(project.project.startScreen, 0, 'startMap never named the deleted map -- startScreen is untouched');
+      assert.equal(project.project.titleMap, project.maps.indexOf(gamma), 'Case A: titleMap (2) is above mapIndex (1) -- decrements to Gamma\'s new position');
+      assert.equal(project.project.titleScreen, 0, "titleMap didn't become null -- titleScreen is untouched");
+    }
+
+    // Mirror of the fixture above: startMap > mapIndex (must decrement) and a
+    // non-null titleMap < mapIndex (must stay unchanged) -- code review
+    // round 1, finding 1. The fixture above split Case A onto titleMap and
+    // Case B onto startMap; nothing exercised the OPPOSITE pairing, so this
+    // field-specific implementation passed every original fixture:
+    //   startMap = old === mapIndex ? 0 : old;                       // never decrements when old > mapIndex
+    //   titleMap = old === null ? null : old === mapIndex ? null : old - 1;  // always decrements, even when old < mapIndex
+    // Both fields need all three cases across the fixture set, not three
+    // cases split between them.
+    {
+      const project = createProject('Delete map space mirror');
+      const alpha = createMap(0, 'Alpha');
+      const a0 = createScreen();
+      a0.name = 'A0';
+      alpha.screens = [a0];
+
+      const beta = createMap(1, 'Beta'); // deleted
+      const b0 = createScreen();
+      b0.name = 'B0';
+      beta.screens = [b0];
+
+      const gamma = createMap(2, 'Gamma');
+      const g0 = createScreen();
+      g0.name = 'G0';
+      gamma.screens = [g0];
+
+      project.maps = [alpha, beta, gamma]; // flat: A0=0, B0=1, G0=2
+
+      project.project.startMap = 2; // Case A: > mapIndex (1) -- must decrement
+      project.project.startScreen = 0;
+      project.project.titleMap = 0; // Case B: < mapIndex (1), non-null -- must stay unchanged
+      project.project.titleScreen = 0;
+
+      deleteMapCore(project, 1);
+
+      assert.equal(project.maps.length, 2, 'Beta was removed');
+      assert.equal(project.maps[0], alpha, "Alpha's own object identity is untouched");
+      assert.equal(project.maps[1], gamma, "Gamma survives, now at position 1");
+
+      assert.equal(
+        project.project.startMap,
+        project.maps.indexOf(gamma),
+        "Case A: startMap (2) is above mapIndex (1) -- decrements to Gamma's new position. The field-specific " +
+          'sabotage above (startMap = old === mapIndex ? 0 : old) would leave this at 2, never decrementing'
+      );
+      assert.equal(project.project.startScreen, 0, 'startMap never named the deleted map -- startScreen is untouched');
+      assert.equal(
+        project.project.titleMap,
+        0,
+        'Case B: titleMap (0) is below mapIndex (1), non-null -- stays unchanged. The field-specific sabotage ' +
+          'above (titleMap = old === mapIndex ? null : old - 1) would decrement this to -1 unconditionally'
+      );
+      assert.equal(project.project.titleScreen, 0, 'titleMap never became null -- titleScreen is untouched');
+    }
+
+    // Case C: referenced index === mapIndex (the deleted map itself). Both
+    // startMap and titleMap point AT the map being deleted, in the same
+    // fixture, so a wrong implementation that only handles one of the two
+    // fields cannot pass by accident. Deliberately the LAST of three maps
+    // (mapIndex 2), not the first: closing self-check exercise finding --
+    // with mapIndex 0, a sabotaged implementation that drops the ===
+    // mapIndex case entirely (falls through to "> mapIndex ? decrement :
+    // unchanged") produces "unchanged" (0), which coincidentally equals the
+    // correct fallback (0) too, so the bug is invisible. mapIndex 2 makes
+    // "unchanged" (2) and "always decrement" (1) both distinguishable, real,
+    // in-range wrong values against the correct fallback (0).
+    {
+      const project = createProject('Delete map target');
+      const before0 = createMap(0, 'Before0');
+      const p0 = createScreen();
+      p0.name = 'P0';
+      before0.screens = [p0];
+
+      const before1 = createMap(1, 'Before1');
+      const q0 = createScreen();
+      q0.name = 'Q0';
+      before1.screens = [q0];
+      const doorToDoomed = { actorId: 0, x: 0, y: 0, props: { toScreen: 2, event: null } }; // -> X0, about to be deleted
+      q0.entities = [doorToDoomed];
+
+      const doomed = createMap(2, 'Doomed'); // deleted -- mapIndex 2, the LAST map
+      const x0 = createScreen();
+      x0.name = 'X0';
+      doomed.screens = [x0];
+
+      project.maps = [before0, before1, doomed]; // flat: P0=0, Q0=1, X0=2
+
+      project.project.startMap = 2; // === mapIndex
+      project.project.startScreen = 1; // nonzero, to prove the fallback actually resets it
+      project.project.titleMap = 2; // === mapIndex
+      project.project.titleScreen = 1; // nonzero, to prove the fallback actually resets it
+
+      deleteMapCore(project, 2);
+
+      assert.equal(project.maps.length, 2);
+      assert.equal(project.maps[0], before0, "Before0's own object identity is untouched");
+      assert.equal(project.maps[1], before1, "Before1's own object identity is untouched");
+      assert.equal(project.project.startMap, 0, 'Case C: startMap named the deleted map -- falls back to 0 of the surviving array');
+      assert.equal(project.project.startScreen, 0, 'startMap fell back -- startScreen resets to 0 alongside it');
+      assert.equal(project.project.titleMap, null, 'Case C: titleMap named the deleted map -- falls back to null (titleless is legal)');
+      assert.equal(project.project.titleScreen, 0, 'titleMap just became null -- titleScreen resets to 0');
+      assert.equal(
+        doorToDoomed.props.toScreen,
+        FALLBACK_SCREEN(project),
+        "a surviving screen's own reference to the deleted map's content redirects to FALLBACK_SCREEN"
+      );
+    }
+
+    // The 7th, independent fixture: titleMap is null from the START (never
+    // set), and an UNRELATED map is deleted. A wrong implementation that
+    // defaults any null titleMap to map 0 on delete -- e.g. `oldTitleMap ?? 0`
+    // as a defensive fallback, mistaking titleless for an error case -- is
+    // invisible to every fixture above, since all three start from a
+    // non-null title.
+    {
+      const project = createProject('Delete map null title');
+      const p = createMap(0, 'P');
+      const p0 = createScreen();
+      p.screens = [p0];
+      const q = createMap(1, 'Q');
+      const q0 = createScreen();
+      q.screens = [q0];
+      const r = createMap(2, 'R'); // deleted -- unrelated to title/start
+      const r0 = createScreen();
+      r.screens = [r0];
+      project.maps = [p, q, r]; // flat: P0=0, Q0=1, R0=2
+
+      const doorAcross = { actorId: 0, x: 0, y: 0, props: { toScreen: 1, event: null } }; // -> Q0, survives
+      p0.entities = [doorAcross];
+
+      project.project.titleMap = null;
+      project.project.titleScreen = 7; // deliberately nonzero, stale data with no titleMap to interpret it under
+      project.project.startMap = 0; // < mapIndex (2) -- Case B again, cheap extra coverage
+      project.project.startScreen = 0;
+
+      deleteMapCore(project, 2);
+
+      assert.equal(project.maps.length, 2);
+      assert.equal(project.project.titleMap, null, 'an already-null titleMap must stay strictly null, never defaulted to a real map');
+      assert.equal(
+        project.project.titleScreen,
+        0,
+        'per design §6.8, titleScreen is reset whenever the post-op titleMap is null'
+      );
+
+      const flatNow = flatScreens(project);
+      const flatIndexOf = (screen) => flatNow.findIndex((entry) => entry.screen === screen);
+      assert.equal(doorAcross.props.toScreen, flatIndexOf(q0), "the cross-map door still names Q's content");
+    }
+  }
+);
+
+// §11 test 19
+test(
+  'growOrShrinkMap relocates startScreen/titleScreen through the per-map diff on a grow, falls back to per-map ' +
+    '0 on a shrink, and repairs every flat-space reference project-wide either way',
+  () => {
+    // Design fix round 1, finding 9's own binding correction to this test's
+    // fixture requirements: the resized map must sit SECOND OR LATER in
+    // project.maps (nonzero flat base), never first. On a first map, flat
+    // and per-map coordinates are numerically identical for every screen it
+    // holds, so an implementation that wires flatTranslate into the
+    // startScreen/titleScreen fixup instead of the dedicated perMapTranslate
+    // would be invisible on a first-map fixture. Away sits before Home
+    // specifically to make that bug produce a visibly wrong, in-range value
+    // (see the sabotage evidence in the phase 3 report). Beyond sits after
+    // Home so the flat-space shift is proven on content on BOTH sides of the
+    // resized map, not only downstream of it.
+    //
+    // Grow: [a,b,c,d] (2x2) -> [a,b,new,c,d,new] (3x2), design §6.9's own
+    // shape. c's old per-map index (row1,col0 = 2) must become 3 in the new
+    // grid.
+    {
+      const project = createProject('Resize grow');
+      const away = createMap(0, 'Away');
+      const e0 = createScreen();
+      e0.name = 'e0';
+      const e1 = createScreen();
+      e1.name = 'e1';
+      away.screens = [e0, e1];
+
+      const home = createMap(1, 'Home'); // the resized map -- flat base 2, not 0
+      home.gridW = 2;
+      home.gridH = 2;
+      const a = createScreen();
+      a.name = 'a';
+      const b = createScreen();
+      b.name = 'b';
+      const c = createScreen();
+      c.name = 'c';
+      const d = createScreen();
+      d.name = 'd';
+      home.screens = [a, b, c, d]; // per-map: a=0, b=1, c=2, d=3
+
+      const beyond = createMap(2, 'Beyond');
+      const f0 = createScreen();
+      f0.name = 'f0';
+      beyond.screens = [f0];
+
+      project.maps = [away, home, beyond]; // flat before: e0=0, e1=1, a=2, b=3, c=4, d=5, f0=6
+
+      const doorToC = { actorId: 0, x: 0, y: 0, props: { toScreen: 4, event: null } }; // -> c, old flat index
+      const doorToF = { actorId: 0, x: 0, y: 0, props: { toScreen: 6, event: null } }; // -> f0, old flat index, a map AFTER Home
+      e0.entities = [doorToC, doorToF];
+
+      // Code review round 1, finding 3: start and title must sit on
+      // DIFFERENT screens with DIFFERENT correct results, or an
+      // implementation that computes one relocation and assigns it to both
+      // fields passes anyway:
+      //   const next = perMapTranslate(oldStartScreen);
+      //   if (wasStartHere) startScreen = next === DROPPED_SCREEN ? 0 : next;
+      //   if (wasTitleHere) titleScreen = next === DROPPED_SCREEN ? 0 : next;
+      // -- the reviewer's own operand-alias sabotage. start sits on c (per-map
+      // 2 -> 3), title sits on d (per-map 3 -> 4); the alias above would
+      // compute c's own relocation (3) and wrongly assign it to titleScreen
+      // too, instead of d's (4).
+      project.project.startMap = 1; // Home
+      project.project.startScreen = 2; // c, at its OLD per-map index
+      project.project.titleMap = 1; // Home
+      project.project.titleScreen = 3; // d, at its OWN, DIFFERENT old per-map index
+
+      growOrShrinkMap(project, 1, 3, 2);
+
+      assert.equal(home.gridW, 3);
+      assert.equal(home.gridH, 2);
+      assert.equal(home.screens.length, 6);
+      assert.equal(home.screens[3], c, "c's own object identity lands at the new per-map index 3, design's own shape");
+      assert.equal(home.screens[4], d, "d's own object identity lands at the new per-map index 4");
+
+      assert.equal(
+        project.project.startScreen,
+        3,
+        "startScreen named c by its OLD per-map index (2) -- the grow relocates it to c's new per-map index (3). " +
+          "On this fixture (Home at nonzero flat base 2), an implementation that mistakenly translates through " +
+          'flat-space instead of per-map-space would land on 2 (canonicalizeFlat(2, 7) resolves to a, not c) -- ' +
+          'a real, in-range, distinguishably WRONG value, not merely a range-clamp escape'
+      );
+      assert.equal(
+        project.project.titleScreen,
+        4,
+        "titleScreen named d by its OWN OLD per-map index (3), DIFFERENT from startScreen's -- the grow relocates " +
+          "it to d's new per-map index (4). An implementation that reuses startScreen's own relocated value (3) " +
+          "for titleScreen too (the operand-alias sabotage) would leave this at 3, not 4"
+      );
+      assert.equal(project.project.startMap, 1, 'a resize never touches startMap -- the map itself still exists');
+      assert.equal(project.project.titleMap, 1, 'a resize never touches titleMap -- the map itself still exists');
+
+      const flatNow = flatScreens(project);
+      const flatIndexOf = (screen) => flatNow.findIndex((entry) => entry.screen === screen);
+      assert.equal(doorToC.props.toScreen, flatIndexOf(c), "the door's own flat-space reference to c also relocates");
+      assert.equal(
+        doorToF.props.toScreen,
+        flatIndexOf(f0),
+        "Beyond's own flat base shifted (Home grew by 2 screens) -- the door to f0, AFTER Home, follows it project-wide"
+      );
+    }
+
+    // Shrink: 2x2 -> 1x1, only 'a' survives; b, c, d are all dropped. Both
+    // startScreen and titleScreen point at different dropped cells, so a
+    // wrong implementation that only handles one of the two fields cannot
+    // pass by accident. A flat-space reference from elsewhere in the
+    // project to a dropped cell is also exercised here -- the flat-space
+    // DROPPED_SCREEN/FALLBACK_SCREEN path, distinct from the per-map
+    // fallback startScreen/titleScreen use. Home again sits second, not
+    // first, for the identical reason as the grow fixture above.
+    {
+      const project = createProject('Resize shrink');
+      const away = createMap(0, 'Away');
+      const e0 = createScreen();
+      e0.name = 'e0';
+      const e1 = createScreen();
+      e1.name = 'e1';
+      away.screens = [e0, e1];
+
+      const home = createMap(1, 'Home'); // the resized map -- flat base 2, not 0
+      home.gridW = 2;
+      home.gridH = 2;
+      const a = createScreen();
+      a.name = 'a';
+      const b = createScreen();
+      b.name = 'b';
+      const c = createScreen();
+      c.name = 'c';
+      const d = createScreen();
+      d.name = 'd';
+      home.screens = [a, b, c, d];
+
+      const beyond = createMap(2, 'Beyond');
+      const f0 = createScreen();
+      f0.name = 'f0';
+      beyond.screens = [f0];
+
+      project.maps = [away, home, beyond]; // flat before: e0=0, e1=1, a=2, b=3, c=4, d=5, f0=6
+
+      const doorToB = { actorId: 0, x: 0, y: 0, props: { toScreen: 3, event: null } }; // -> b, about to be dropped
+      const doorToF = { actorId: 0, x: 0, y: 0, props: { toScreen: 6, event: null } }; // -> f0, survives, base shifts down
+      e0.entities = [doorToB, doorToF];
+
+      project.project.startMap = 1; // Home
+      project.project.startScreen = 1; // b, dropped, per-map index -- a flat-vs-per-map bug would misread this
+      // as flat index 1, which is Away's own e1, a real surviving screen unrelated to Home entirely
+      project.project.titleMap = 1; // Home
+      project.project.titleScreen = 2; // c, dropped, a DIFFERENT dropped cell than startScreen's -- a flat-vs-per-map
+      // bug would misread this as flat index 2, which is Home's own 'a', KEPT by the shrink but at the wrong slot
+
+      growOrShrinkMap(project, 1, 1, 1);
+
+      assert.equal(home.gridW, 1);
+      assert.equal(home.gridH, 1);
+      assert.equal(home.screens.length, 1);
+      assert.equal(home.screens[0], a);
+
+      assert.equal(
+        project.project.startScreen,
+        0,
+        'startScreen named a dropped cell (per-map) -- falls back to per-map position 0, not the flat-space ' +
+          "misreading (1) that would resolve to Away's own e1, a real, surviving, unrelated screen"
+      );
+      assert.equal(
+        project.project.titleScreen,
+        0,
+        'titleScreen named a DIFFERENT dropped cell -- also falls back to per-map position 0, not the ' +
+          "flat-space misreading (2) that would resolve to Home's own kept screen 'a' at the wrong per-map slot"
+      );
+
+      const flatNow = flatScreens(project);
+      const flatIndexOf = (screen) => flatNow.findIndex((entry) => entry.screen === screen);
+      assert.equal(
+        doorToB.props.toScreen,
+        FALLBACK_SCREEN(project),
+        "a project-wide reference to a screen the shrink dropped redirects to FALLBACK_SCREEN, the flat-space " +
+          'path, independent of the per-map fallback startScreen/titleScreen use'
+      );
+      assert.equal(
+        doorToF.props.toScreen,
+        flatIndexOf(f0),
+        "Beyond's own flat base shifted down (Home shrank by 3 screens) -- the surviving door to f0 follows it"
+      );
+    }
+  }
+);
+
+// §11 test 22
+test(
+  'auditDroppedReferences counts surviving REFERENCES, not discarded screens -- the two numbers provably ' +
+    'disagree, and a reference living on its own soon-to-be-discarded screen is excluded',
+  () => {
+    // (a) delete a map with 5 screens and zero incoming references: the
+    // audit must report 0, not 5 -- the exact shape of round 1's own
+    // category error (counting screens the translate would drop, not
+    // references that would resolve to DROPPED_SCREEN).
+    {
+      const project = createProject('Audit delete zero refs');
+      const doomed = createMap(0, 'Doomed');
+      doomed.screens = [createScreen(), createScreen(), createScreen(), createScreen(), createScreen()];
+      const other = createMap(1, 'Other');
+      other.screens = [createScreen()]; // no entities at all -- nothing references anything
+      project.maps = [doomed, other];
+
+      const translate = buildDeleteMapTranslate(project, 0);
+      const discarded = new Set(doomed.screens);
+      assert.equal(auditDroppedReferences(project, translate, discarded), 0, '5 discarded screens, 0 references -- the audit must report 0');
+    }
+
+    // (b) delete a map with exactly 1 screen but TEN distinct incoming
+    // doors/warps, split across placed entities AND common events: the
+    // audit must report 10, not 1. Code review round 1, finding 4: widened
+    // beyond the original all-top-level-door shape, which left a wrong audit
+    // that only ever scans `entity.props.toScreen` on map screens and only
+    // top-level `page.commands` in common events indistinguishable from the
+    // real one (it would still return exactly 10 here). This fixture now
+    // also exercises: a dropped-target Warp nested under a Branch on a
+    // SURVIVING screen; one nested under a Choice option on a SURVIVING
+    // screen; a NESTED (branch) common-event Warp, not only a top-level one;
+    // and a Warp on the DISCARDED screen itself, whose exclusion must keep
+    // the count at 10 rather than 11 or 12 -- proving the exclusion guard
+    // covers the Warp walk, not only the door check.
+    {
+      const project = createProject('Audit delete ten refs');
+      const doomed = createMap(0, 'Doomed');
+      const target = createScreen();
+      // A reference living ON the discarded screen itself -- both a door AND
+      // a nested warp, each targeting the screen's own (about to be deleted)
+      // flat position. Both would independently register as DROPPED_SCREEN
+      // if evaluated, so if the exclusion guard were missing (or only
+      // applied to the door check, not the warp walk), the count below would
+      // read 11 or 12, not 10.
+      target.entities = [{
+        actorId: 0, x: 0, y: 0,
+        props: {
+          toScreen: 0, // self -- would be DROPPED_SCREEN if this screen weren't itself excluded
+          event: {
+            pages: [{
+              cond: { type: 'none', arg: 0 },
+              commands: [{ op: 'warp', screen: 0, x: 0, y: 0 }] // self -- same reasoning, the Warp branch specifically
+            }]
+          }
+        }
+      }];
+      doomed.screens = [target];
+
+      const other = createMap(1, 'Other');
+      const plainDoorScreens = Array.from({ length: 6 }, () => {
+        const screen = createScreen();
+        screen.entities = [{ actorId: 0, x: 0, y: 0, props: { toScreen: 0, event: null } }]; // -> target, raw flat 0
+        return screen;
+      });
+      const branchScreen = createScreen(); // a dropped-target Warp nested under a Branch, on a SURVIVING screen
+      const choiceScreen = createScreen(); // a dropped-target Warp nested under a Choice option, on a SURVIVING screen
+      other.screens = [...plainDoorScreens, branchScreen, choiceScreen];
+      const branchFlat = other.screens.length - 2; // computed structurally, never hardcoded against the array shape
+      const choiceFlat = other.screens.length - 1;
+      branchScreen.entities = [{
+        actorId: 0, x: 0, y: 0,
+        props: {
+          toScreen: 1 + branchFlat, // self -- a real, surviving target, so the door check contributes nothing extra
+          event: {
+            pages: [{
+              cond: { type: 'none', arg: 0 },
+              commands: [
+                { op: 'branch', cond: { type: 'none', arg: 0 }, then: [{ op: 'warp', screen: 0, x: 0, y: 0 }], else: [] } // -> target
+              ]
+            }]
+          }
+        }
+      }];
+      choiceScreen.entities = [{
+        actorId: 0, x: 0, y: 0,
+        props: {
+          toScreen: 1 + choiceFlat, // self -- a real, surviving target, so the door check contributes nothing extra
+          event: {
+            pages: [{
+              cond: { type: 'none', arg: 0 },
+              commands: [
+                { op: 'choice', options: [{ text: 'Go', commands: [{ op: 'warp', screen: 0, x: 0, y: 0 }] }] } // -> target
+              ]
+            }]
+          }
+        }
+      }];
+      project.maps = [doomed, other];
+
+      project.commonEvents = [
+        {
+          id: 0,
+          name: 'Common top-level',
+          event: {
+            pages: [{
+              cond: { type: 'none', arg: 0 },
+              commands: [{ op: 'warp', screen: 0, x: 0, y: 0 }] // -> target, raw flat 0, top-level
+            }]
+          }
+        },
+        {
+          id: 1,
+          name: 'Common nested',
+          event: {
+            pages: [{
+              cond: { type: 'none', arg: 0 },
+              commands: [
+                { op: 'branch', cond: { type: 'none', arg: 0 }, then: [{ op: 'warp', screen: 0, x: 0, y: 0 }], else: [] } // -> target, nested
+              ]
+            }]
+          }
+        }
+      ];
+
+      // 6 plain doors + 1 branch-nested warp + 1 choice-nested warp on Other,
+      // + 1 top-level and 1 nested common-event warp = 10. Target's own
+      // self-referential door+warp are excluded entirely (its own screen is
+      // discarded), so they contribute 0, not 2.
+      const translate = buildDeleteMapTranslate(project, 0);
+      const discarded = new Set(doomed.screens);
+      assert.equal(
+        auditDroppedReferences(project, translate, discarded),
+        10,
+        '1 discarded screen, 10 references (6 doors + branch-nested + choice-nested + top-level common-event + ' +
+          "nested common-event) -- the audit must report 10, and the discarded screen's own door+warp must not " +
+          'inflate it to 11 or 12'
+      );
+    }
+
+    // (c) a reference whose OWN screen is inside the discarded set is
+    // excluded entirely -- it leaves with its own screen, not "redirected".
+    {
+      const project = createProject('Audit delete own-screen excluded');
+      const doomed = createMap(0, 'Doomed');
+      const sA = createScreen();
+      const sB = createScreen();
+      sA.entities = [{ actorId: 0, x: 0, y: 0, props: { toScreen: 1, event: null } }]; // sA -> sB, BOTH discarded
+      doomed.screens = [sA, sB];
+
+      const survivor = createMap(1, 'Survivor');
+      const sC = createScreen();
+      sC.entities = [{ actorId: 0, x: 0, y: 0, props: { toScreen: 0, event: null } }]; // sC (survives) -> sA, discarded
+      survivor.screens = [sC];
+
+      project.maps = [doomed, survivor];
+
+      const translate = buildDeleteMapTranslate(project, 0);
+      const discarded = new Set([sA, sB]);
+      assert.equal(
+        auditDroppedReferences(project, translate, discarded),
+        1,
+        "only sC's reference counts -- sA's own reference to sB is excluded because sA itself is discarded"
+      );
+    }
+
+    // Repeat (a) and (b) against Resize-shrink's own discardedScreens set,
+    // built the same way growOrShrinkMap's dry run builds it.
+    {
+      // (a) again: a shrink dropping 5 screens, 0 incoming references.
+      const project = createProject('Audit resize zero refs');
+      const home = createMap(0, 'Home');
+      home.gridW = 6;
+      home.gridH = 1;
+      home.screens = Array.from({ length: 6 }, () => createScreen());
+      project.maps = [home];
+
+      const oldScreens = home.screens;
+      const newScreens = [oldScreens[0]]; // shrink to 1x1 -- keep only the first
+      const translate = buildResizeTranslate(project, 0, newScreens);
+      const discarded = new Set(oldScreens.filter((s) => !newScreens.includes(s)));
+      assert.equal(discarded.size, 5);
+      assert.equal(auditDroppedReferences(project, translate, discarded), 0, '5 discarded screens, 0 references -- the audit must report 0');
+    }
+    {
+      // (b) again: a shrink dropping exactly 1 screen, 10 incoming references.
+      const project = createProject('Audit resize ten refs');
+      const home = createMap(0, 'Home');
+      home.gridW = 2;
+      home.gridH = 1;
+      const kept = createScreen();
+      const dropped = createScreen();
+      home.screens = [kept, dropped]; // flat: kept=0, dropped=1
+
+      const other = createMap(1, 'Other');
+      other.screens = Array.from({ length: 8 }, () => {
+        const screen = createScreen();
+        screen.entities = [{ actorId: 0, x: 0, y: 0, props: { toScreen: 1, event: null } }]; // -> dropped, raw flat 1
+        return screen;
+      });
+      project.maps = [home, other];
+
+      project.commonEvents = Array.from({ length: 2 }, (_, i) => ({
+        id: i,
+        name: `Common ${i}`,
+        event: {
+          pages: [{
+            cond: { type: 'none', arg: 0 },
+            commands: [{ op: 'warp', screen: 1, x: 0, y: 0 }] // -> dropped, raw flat 1
+          }]
+        }
+      }));
+
+      const oldScreens = home.screens;
+      const newScreens = [kept]; // shrink to 1x1 -- drop the second screen
+      const translate = buildResizeTranslate(project, 0, newScreens);
+      const discarded = new Set(oldScreens.filter((s) => !newScreens.includes(s)));
+      assert.equal(discarded.size, 1);
+      assert.equal(
+        auditDroppedReferences(project, translate, discarded),
+        10,
+        '1 discarded screen, 10 references (8 doors + 2 common-event warps) -- the audit must report 10'
+      );
+    }
+  }
+);
+
+// ---------------------------------------------------------------------------
+// ROADMAP item 7 -- map organization and reuse, phase 4
+// (handoff-maporg/design-maporg.md §6.2/§6.2.1/§6.9.1)
+//
+// Duplicate Screen: the most intricate operation in this design. Two
+// independently reviewable risks share one UI entry point -- §6.9.1's
+// index-space correction (a naive reuse of growOrShrinkMap's generic
+// translate mis-routes a self-reference the moment growth actually
+// relocates the source) and §6.2.1's four-question all-maps-full fallback.
+// Per this slice's own house rule: every operation is a commit-free core in
+// shared/project.js (duplicateScreenViaGrowthCore, duplicateScreenIntoNewMapCore)
+// that both the renderer's single store.commit and the tests below call --
+// no test-local mirror of a renderer function.
+//
+// Cross-phase decision (declared, per the brief's own explicit ask): design
+// §6.2.1 says the new map's metadata copy includes `folder`, but `folder`
+// is item 7 phase 5's own field (design §8) and does not exist in this tree
+// yet. This phase copies only the metadata that exists today (tilesetId,
+// songId, battleSkyTile, battleGroundTile, encounters) and deliberately
+// omits `folder` -- see the phase 4 report for the full reasoning and the
+// exact note phase 5's brief must carry as a result.
+// ---------------------------------------------------------------------------
+
+// §11 test 11
+test(
+  'duplicate screen naming: an auto-suffixed non-empty name avoids §4.3\'s collision (verified against ' +
+    'resolveStartAt, not merely a cosmetic string check), and an unnamed screen stays unnamed with no §9 warning',
+  () => {
+    // (a) a named screen
+    {
+      const project = createProject('Screen naming a');
+      const map = createMap(0, 'Home');
+      const s0 = createScreen();
+      s0.name = 'Boss Room';
+      map.screens = [s0]; // 1x1 -- room to grow
+      project.maps = [map];
+
+      const remembered = { mapName: 'Home', screenIndex: 0, screenName: 'Boss Room', x: 0, y: 0 };
+      const before = resolveStartAt(remembered, project);
+      assert.equal(before.ok, true, 'sanity: the scenario resolves before duplicating at all');
+
+      const { cloneScreen } = duplicateScreenViaGrowthCore(project, 0, s0);
+      assert.equal(cloneScreen.name, 'Boss Room copy', 'the copy is auto-suffixed, scoped to the destination map');
+
+      const after = resolveStartAt(remembered, project);
+      assert.equal(
+        after.ok,
+        true,
+        "resolveStartAt must still resolve after duplicating -- the copy's own name must not collide with the source's"
+      );
+    }
+
+    // (b) an unnamed screen
+    {
+      const project = createProject('Screen naming b');
+      const map = createMap(0, 'Home');
+      const s0 = createScreen(); // name: '' by default
+      map.screens = [s0];
+      project.maps = [map];
+
+      const { cloneScreen } = duplicateScreenViaGrowthCore(project, 0, s0);
+      assert.equal(
+        cloneScreen.name,
+        '',
+        "an unnamed screen's copy stays unnamed -- never synthesized into a non-empty name, which would " +
+          'manufacture a collision-prone identity where none was ever authored'
+      );
+
+      const problems = validateProject(project);
+      assert.ok(
+        !problems.some((p) => /screen name.*used more than once/i.test(p.message)),
+        "two same-map screens both named '' must not trigger the §9 duplicate-name warning -- empty names are " +
+          'excluded from that count by construction'
+      );
+    }
+  }
+);
+
+// §11 test 12
+test(
+  'duplicate screen: no blank-cell reuse exists -- the grid always grows, and a pre-existing blank cell stays ' +
+    'exactly createScreen()-shaped, never silently claimed',
+  () => {
+    const project = createProject('Duplicate screen no blank reuse');
+    const map = createMap(0, 'Home');
+    map.gridW = 2;
+    map.gridH = 2;
+    const a = createScreen();
+    a.name = 'a';
+    a.metatiles[0] = 5; // real, non-default content -- proves the CLONE actually holds a's own content
+    const b = createScreen();
+    b.name = 'b';
+    b.metatiles[0] = 9; // real, non-default content -- b must not be even loosely blank-shaped itself, or a sabotage
+    // that reuses "the first blank-looking cell" (a looser check than design's own full content-equality
+    // one) could silently pick b instead of the ACTUAL blank cell this fixture means to protect, and this
+    // test's own assertions -- scoped to `blank` alone -- would never notice
+    const blank = createScreen(); // stays exactly createScreen()-shaped -- a real, referenceable screen, not free real estate
+    const d = createScreen();
+    d.name = 'd';
+    map.screens = [a, b, blank, d]; // per-map: a=0, b=1, blank=2, d=3
+    project.maps = [map]; // single map -- flat === per-map here
+
+    const doorToBlank = { actorId: 0, x: 0, y: 0, props: { toScreen: 2, event: null } }; // -> blank, OLD flat index
+    d.entities = [doorToBlank];
+
+    const { cloneScreen } = duplicateScreenViaGrowthCore(project, 0, a);
+
+    assert.equal(map.gridW, 3, 'the grid grew (2x2 -> 3x2), never reusing the blank cell in place');
+    assert.equal(map.gridH, 2);
+    assert.equal(map.screens.length, 6);
+    assert.ok(map.screens.includes(blank), "the pre-existing blank cell's own object identity survives");
+    assert.deepEqual(
+      blank,
+      createScreen(),
+      "the pre-existing blank cell is STILL exactly createScreen()-shaped afterward -- untouched, not silently " +
+        "claimed by the duplicate's own content"
+    );
+    assert.notEqual(cloneScreen, blank, 'the clone is a newly-grown cell, a distinct object from the pre-existing blank one');
+    assert.equal(cloneScreen.metatiles[0], 5, "the clone genuinely holds a's own content");
+
+    const flatNow = flatScreens(project);
+    const flatIndexOf = (screen) => flatNow.findIndex((entry) => entry.screen === screen);
+    assert.equal(
+      doorToBlank.props.toScreen,
+      flatIndexOf(blank),
+      "the door to the pre-existing blank cell still names IT (by object identity, tracked through the resize's " +
+        "own per-map diff), never the newly-grown cell that received the duplicate's content"
+    );
+  }
+);
+
+// §11 test 13
+test(
+  "cross-tileset duplicate returns a warning from the operation's own return value, never from " +
+    'checkCapacity/validateProject',
+  () => {
+    const project = createProject('Cross tileset duplicate');
+    project.cartridge.mapper = 3; // CNROM -- allows more than one tileset
+    project.tilesets.push(createTileset(1, 'Dungeon set'));
+
+    const sourceMap = createMap(0, 'Source');
+    sourceMap.tilesetId = 0;
+    const sourceScreen = sourceMap.screens[0];
+
+    const targetMap = createMap(1, 'Target');
+    targetMap.tilesetId = 1; // DIFFERENT tileset than the source map
+    project.maps = [sourceMap, targetMap]; // targetMap has room (1x1 < 4x4)
+
+    const { cloneScreen, warning } = duplicateScreenViaGrowthCore(project, 1, sourceScreen);
+
+    assert.notEqual(cloneScreen, undefined);
+    assert.equal(
+      warning,
+      'This map uses a different tileset — the copied art may not look the same here.',
+      "the operation's own return value carries the warning when the destination map's tilesetId differs " +
+        'from the source map\'s'
+    );
+
+    const problems = checkCapacity(project).problems;
+    assert.ok(
+      !problems.some((p) => /different tileset|copied art|look the same/i.test(p.message)),
+      'the information must not survive into checkCapacity/validateProject output at all -- not even as a ' +
+        'warning -- since nothing in the schema records where a metatile id came from'
+    );
+
+    // Code review round 1, finding 5: the same-tileset NEGATIVE control.
+    // Without this, an implementation that returns CROSS_TILESET_WARNING
+    // unconditionally -- regardless of whether the destination's tilesetId
+    // actually differs -- passes the positive case above outright.
+    const sameTilesetProject = createProject('Same tileset duplicate');
+    sameTilesetProject.cartridge.mapper = 3;
+    sameTilesetProject.tilesets.push(createTileset(1, 'Unused set'));
+    const sourceMap2 = createMap(0, 'Source2');
+    sourceMap2.tilesetId = 0;
+    const sourceScreen2 = sourceMap2.screens[0];
+    const targetMap2 = createMap(1, 'Target2');
+    targetMap2.tilesetId = 0; // the SAME tileset as the source map
+    sameTilesetProject.maps = [sourceMap2, targetMap2];
+
+    const { warning: sameTilesetWarning } = duplicateScreenViaGrowthCore(sameTilesetProject, 1, sourceScreen2);
+    assert.equal(
+      sameTilesetWarning,
+      null,
+      'an ordinary same-tileset duplicate must return no warning at all, not merely a falsy-but-truthy string'
+    );
+  }
+);
+
+// §11 test 23
+test(
+  "duplicateScreenViaGrowthCore: a forced width-grow relocates the SOURCE, and the CLONE's own self-references " +
+    "route to the clone itself, never to the source's new position",
+  () => {
+    const project = createProject('Forced width-grow duplicate');
+    const home = createMap(0, 'Home');
+    home.gridW = 2;
+    home.gridH = 2;
+    const p0 = createScreen();
+    p0.name = 'p0';
+    const p1 = createScreen();
+    p1.name = 'p1';
+    const p2 = createScreen();
+    p2.name = 'p2';
+    // Code review round 1, finding 2: the source sits at per-map index 3
+    // (row 1, col 1), not 2 -- under the same 2x2 -> 3x2 growth this makes
+    // the raw self-reference (3), the clone's own new flat position (2),
+    // and the relocated original's new flat position (4) three genuinely
+    // DISTINGUISHABLE values. At index 2, the clone happened to land at
+    // exactly the source's own OLD flat index too, so a sabotage that
+    // simply leaves a self-reference's raw value untouched (never routing
+    // it anywhere) coincidentally produced the correct answer -- invisible
+    // to that fixture. Index 3 rules that out: "untouched" (3), "clone" (2)
+    // and "relocated original" (4) can no longer agree by accident.
+    const source = createScreen();
+    source.name = 'source';
+    home.screens = [p0, p1, p2, source]; // per-map: p0=0, p1=1, p2=2, source=3
+
+    const away = createMap(1, 'Away');
+    const e0 = createScreen();
+    e0.name = 'e0';
+    away.screens = [e0];
+
+    project.maps = [home, away]; // flat before: p0=0, p1=1, p2=2, source=3, e0=4
+
+    const selfDoor = { actorId: 0, x: 0, y: 0, props: { toScreen: 3, event: null } }; // -> source itself
+    const externalDoor = { actorId: 0, x: 0, y: 0, props: { toScreen: 4, event: null } }; // -> e0
+    const eventEntity = {
+      actorId: 0, x: 0, y: 0,
+      props: {
+        toScreen: 0,
+        event: {
+          pages: [{
+            cond: { type: 'none', arg: 0 },
+            commands: [
+              { op: 'warp', screen: 3, x: 0, y: 0 }, // top-level, self
+              {
+                op: 'branch',
+                cond: { type: 'none', arg: 0 },
+                then: [{ op: 'warp', screen: 4, x: 0, y: 0 }], // nested, external
+                else: []
+              },
+              { op: 'choice', options: [{ text: 'Go', commands: [{ op: 'warp', screen: 3, x: 0, y: 0 }] }] } // nested, self
+            ]
+          }]
+        }
+      }
+    };
+    source.entities = [selfDoor, externalDoor, eventEntity];
+
+    // Code review round 1, finding 4: non-default art and a real binding, so
+    // a shallow clone that shares metatiles/boundTiles with the source
+    // (`{ ...sourceScreen, entities: structuredClone(sourceScreen.entities) }`
+    // -- everything else, art included, left aliased) is discriminable.
+    source.metatiles[0] = 7;
+    source.boundTiles = [{ row: 0, col: 0, switchId: 0, metatileId: 3 }];
+
+    assert.equal(project.project.saveCompatToken, 0);
+
+    const { cloneScreen } = duplicateScreenViaGrowthCore(project, 0, source);
+
+    assert.equal(cloneScreen.metatiles[0], 7, "the clone's own metatiles genuinely hold the source's own content");
+    assert.deepEqual(cloneScreen.boundTiles, [{ row: 0, col: 0, switchId: 0, metatileId: 3 }], "the clone's own boundTiles genuinely hold the source's own content");
+    assert.notEqual(cloneScreen.metatiles, source.metatiles, 'distinct array, not aliased with the source');
+    assert.notEqual(cloneScreen.boundTiles, source.boundTiles, 'distinct array, not aliased with the source');
+    cloneScreen.metatiles[0] = 99; // mutate the CLONE's own art after duplication
+    cloneScreen.boundTiles[0].metatileId = 55; // mutate a nested binding object too
+    assert.equal(source.metatiles[0], 7, "mutating the clone's own art must not affect the SOURCE's");
+    assert.equal(
+      source.boundTiles[0].metatileId,
+      3,
+      "mutating the clone's own binding must not affect the SOURCE's nested binding object either"
+    );
+
+    assert.equal(home.gridW, 3);
+    assert.equal(home.gridH, 2);
+    assert.equal(home.screens.length, 6);
+    assert.equal(
+      home.screens[4],
+      source,
+      "the SOURCE's own object identity relocated to per-map index 4, design's own worked trace ([a,b,c,d] -> [a,b,new,c,d,new]) one row down"
+    );
+    assert.notEqual(cloneScreen, source, 'the clone is a distinct screen object from the (relocated) original');
+
+    const flatNow = flatScreens(project);
+    const flatIndexOf = (screen) => flatNow.findIndex((entry) => entry.screen === screen);
+    const cloneFlat = flatIndexOf(cloneScreen);
+    const sourceFlat = flatIndexOf(source);
+    const e0Flat = flatIndexOf(e0);
+    assert.notEqual(cloneFlat, sourceFlat, 'the clone and the relocated original occupy different, distinguishable positions');
+    // The three candidate answers a plausible wrong implementation could
+    // produce -- the raw, untranslated value (3); the clone's own new
+    // position (2, correct); the relocated original's own new position
+    // (4) -- are pairwise distinct, so none of the three sabotages below
+    // can coincide with the correct answer by accident.
+    assert.equal(cloneFlat, 2);
+    assert.equal(sourceFlat, 4);
+    assert.notEqual(cloneFlat, 3, 'sanity: the raw stored value (3) must not itself equal the correct answer');
+    assert.notEqual(sourceFlat, 3, 'sanity: the raw stored value (3) must not itself equal the relocated-original answer either');
+
+    // The CLONE's own self-references route to the CLONE's own new flat
+    // position, never to the (also-relocated) ORIGINAL's, and never left at
+    // their own raw, untranslated value -- precisely the two defects a
+    // naive reuse of growOrShrinkMap's generic translate, or a translate
+    // that simply leaves a self-reference's raw value alone, would each
+    // produce.
+    const cloneSelfDoor = cloneScreen.entities[0];
+    const cloneExternalDoor = cloneScreen.entities[1];
+    const cloneEvent = cloneScreen.entities[2];
+    assert.equal(cloneSelfDoor.props.toScreen, cloneFlat, "the clone's own self-door routes to the CLONE itself");
+    assert.notEqual(cloneSelfDoor.props.toScreen, 3, '...never left at its own raw, untranslated value');
+    assert.notEqual(cloneSelfDoor.props.toScreen, sourceFlat, '...never to the relocated ORIGINAL');
+    assert.equal(cloneExternalDoor.props.toScreen, e0Flat, "the clone's own external door still resolves to e0, unchanged in content");
+    assert.equal(
+      cloneEvent.props.event.pages[0].commands[0].screen,
+      cloneFlat,
+      "the clone's own top-level warp (self) routes to the clone itself"
+    );
+    assert.equal(
+      cloneEvent.props.event.pages[0].commands[1].then[0].screen,
+      e0Flat,
+      "the clone's own branch-then-nested warp (external) still resolves to e0"
+    );
+    assert.equal(
+      cloneEvent.props.event.pages[0].commands[2].options[0].commands[0].screen,
+      cloneFlat,
+      "the clone's own choice-nested warp (self) also routes to the clone itself"
+    );
+
+    // The ORIGINAL source's own references: correctly relocated to ITS OWN
+    // new position by the ordinary generic growOrShrinkMap walk, run BEFORE
+    // the clone's content ever existed -- proving that walk still works
+    // correctly on the untouched original, unaffected by the clone's
+    // presence.
+    assert.equal(selfDoor.props.toScreen, sourceFlat, "the ORIGINAL's own self-door still names itself, at its own new position");
+    assert.notEqual(selfDoor.props.toScreen, cloneFlat, "...never the clone's position");
+    assert.equal(externalDoor.props.toScreen, e0Flat, "the ORIGINAL's own external door still resolves to e0");
+    assert.equal(
+      eventEntity.props.event.pages[0].commands[0].screen,
+      sourceFlat,
+      "the ORIGINAL's own top-level warp still names itself"
+    );
+    assert.equal(
+      eventEntity.props.event.pages[0].commands[1].then[0].screen,
+      e0Flat,
+      "the ORIGINAL's own branch-nested warp still resolves to e0"
+    );
+    assert.equal(
+      eventEntity.props.event.pages[0].commands[2].options[0].commands[0].screen,
+      sourceFlat,
+      "the ORIGINAL's own choice-nested warp still names itself"
+    );
+
+    // growth-routed duplicate is mechanically a resize, so it redraws
+    // saveCompatToken unconditionally -- deterministic here, not merely
+    // probable: drawSaveCompatToken's own range is [1, 0xffff] and can
+    // never draw 0, so a fresh project's default 0 is guaranteed to change.
+    assert.notEqual(
+      project.project.saveCompatToken,
+      0,
+      'growth-routed duplicate redraws saveCompatToken -- it is, mechanically, a resize'
+    );
+  }
+);
+
+// growthTarget policy coverage -- not a §11-numbered design test, since
+// growthTarget's own direction policy is this phase's own declared
+// deviation (design-maporg.md only specifies "grows by one row or column,"
+// never which). Code review round 1, finding 3: every growth fixture
+// elsewhere in this phase happens to be 1x1 or 2x2, so all of them take the
+// width-tie branch. An implementation hardcoded to `{ newWidth: gridW + 1,
+// newHeight: gridH }` passes every one of them, and from a valid 4x1 map --
+// which the UI still considers to have room -- produces an invalid 5x1 grid
+// beyond LIMITS.mapGrid.
+test(
+  'duplicateScreenViaGrowthCore: growthTarget grows the SMALLER dimension (never always width), and never ' +
+    'exceeds LIMITS.mapGrid on either axis',
+  () => {
+    const project = createProject('Width-dominant growth');
+    const home = createMap(0, 'Home');
+    home.gridW = LIMITS.mapGrid; // 4 -- already at the cap on this axis; a hardcoded width-grow would overflow it
+    home.gridH = 1; // the only axis with room
+    home.screens = Array.from({ length: home.gridW * home.gridH }, () => createScreen());
+    const source = home.screens[0];
+    project.maps = [home];
+
+    duplicateScreenViaGrowthCore(project, 0, source);
+
+    assert.equal(home.gridW, LIMITS.mapGrid, "width did not grow -- it was already at the cap, and a correct " +
+      "policy grows the map's own SMALLER dimension, not always width");
+    assert.equal(home.gridH, 2, 'height grew by one -- the only axis with room');
+    assert.ok(home.gridW <= LIMITS.mapGrid, 'width must never exceed LIMITS.mapGrid');
+    assert.ok(home.gridH <= LIMITS.mapGrid, 'height must never exceed LIMITS.mapGrid');
+    assert.equal(home.screens.length, LIMITS.mapGrid * 2);
+  }
+);
+
+// §11 test 27
+test(
+  'the every-map-4x4 fallback: duplicateScreenIntoNewMapCore\'s four observable choices, each proven ' +
+    'independently, including that the clone and its mutable children are genuinely distinct objects',
+  () => {
+    const project = createProject('Every map full fallback');
+    project.tilesets.push(createTileset(1, 'Dungeon set'));
+    project.songs.push(createSong('Theme'));
+
+    const dungeon = createMap(0, 'Dungeon');
+    dungeon.gridW = 4;
+    dungeon.gridH = 4;
+    dungeon.screens = Array.from({ length: 16 }, () => createScreen());
+    dungeon.tilesetId = 1; // non-default, so copying is a real, discriminating check
+    dungeon.songId = 0;
+    dungeon.battleSkyTile = 5;
+    dungeon.battleGroundTile = 7;
+    dungeon.encounters = { rate: 30, actorIds: [2, 5] };
+    // Item 7 phase 5, design §8: the obligation phase 4 handed forward --
+    // folder did not exist when this test was first written, so a non-null
+    // value here is what actually exercises the newMap.folder copy this
+    // phase adds; a fixture that never sets it could not catch its absence.
+    dungeon.folder = 'Dungeons';
+    const source = dungeon.screens[0];
+    source.name = 'Boss Room'; // non-empty -- actually exercises nameForDuplicateScreen's non-empty branch
+    // Code review round 1, finding 4: non-default art and a real binding, so
+    // a shallow clone that shares metatiles/boundTiles with the source is
+    // discriminable on this route too.
+    source.metatiles[0] = 7;
+    source.boundTiles = [{ row: 0, col: 0, switchId: 0, metatileId: 3 }];
+
+    // A second, DIFFERENTLY-NAMED existing map already claiming the exact
+    // string nameForNewMapFromSource would otherwise produce
+    // ("Dungeon copy"), forcing the numbered " copy 2" branch -- not merely
+    // asserted blindly. Also full (4x4), and also this fixture's own
+    // external target for the source's own external references.
+    const dungeonCopy = createMap(1, 'Dungeon copy');
+    dungeonCopy.gridW = 4;
+    dungeonCopy.gridH = 4;
+    dungeonCopy.screens = Array.from({ length: 16 }, () => createScreen());
+    project.maps = [dungeon, dungeonCopy]; // every map genuinely 4x4 -- flat: dungeon 0-15, dungeonCopy 16-31
+
+    // Four Warps in total on the source: one self and one external at the
+    // top level, one self and one external nested inside a branch.
+    const selfDoor = { actorId: 0, x: 0, y: 0, props: { toScreen: 0, event: null } }; // -> source itself
+    const externalDoor = { actorId: 0, x: 0, y: 0, props: { toScreen: 16, event: null } }; // -> dungeonCopy.screens[0]
+    const eventEntity = {
+      actorId: 0, x: 0, y: 0,
+      props: {
+        toScreen: 0,
+        event: {
+          pages: [{
+            cond: { type: 'none', arg: 0 },
+            commands: [
+              { op: 'warp', screen: 0, x: 0, y: 0 }, // top-level, self
+              { op: 'warp', screen: 16, x: 0, y: 0 }, // top-level, external
+              {
+                op: 'branch',
+                cond: { type: 'none', arg: 0 },
+                then: [{ op: 'warp', screen: 0, x: 0, y: 0 }], // nested, self
+                else: [{ op: 'warp', screen: 16, x: 0, y: 0 }] // nested, external
+              }
+            ]
+          }]
+        }
+      }
+    };
+    // Code review round 1, finding 1: a door to a NEIGHBOR screen in the
+    // source's own original map -- neither the source screen itself, nor a
+    // screen on a different map. This is the case the correct SINGLETON
+    // source range ([sourceFlatIndex, sourceFlatIndex + 1)) and a wrong
+    // WHOLE-SOURCE-MAP range ([sourceMapStart, sourceMapStart + sourceMap.
+    // screens.length)) disagree on: every other "external" reference this
+    // fixture already authors targets flat 16, the OTHER map entirely, which
+    // both a correct and a whole-map-range implementation classify
+    // identically (external either way). A same-map neighbor is the one
+    // reference a whole-map-range bug would wrongly treat as "self" and
+    // shift by the append delta.
+    const neighborDoor = { actorId: 0, x: 0, y: 0, props: { toScreen: 1, event: null } }; // -> dungeon.screens[1], a neighbor, NOT the source
+    source.entities = [selfDoor, externalDoor, eventEntity, neighborDoor];
+
+    // Incoming references from elsewhere, already pointing AT the source --
+    // proving the original stays reachable after the promotion.
+    const incomingDoor = { actorId: 0, x: 0, y: 0, props: { toScreen: 0, event: null } }; // -> source
+    dungeonCopy.screens[1].entities = [incomingDoor];
+    const incomingWarpEntity = {
+      actorId: 0, x: 0, y: 0,
+      props: {
+        toScreen: 0,
+        event: {
+          pages: [{
+            cond: { type: 'none', arg: 0 },
+            commands: [
+              { op: 'branch', cond: { type: 'none', arg: 0 }, then: [{ op: 'warp', screen: 0, x: 0, y: 0 }], else: [] } // -> source, nested
+            ]
+          }]
+        }
+      }
+    };
+    dungeonCopy.screens[2].entities = [incomingWarpEntity];
+
+    // An out-of-range door elsewhere: pre-append flat count is 32
+    // (16 + 16), so its effective target is canonicalizeFlat(255, 32) = 31
+    // -- dungeonCopy's own last screen, a specific, known screen.
+    const outOfRangeDoor = { actorId: 0, x: 0, y: 0, props: { toScreen: 255, event: null } };
+    dungeonCopy.screens[3].entities = [outOfRangeDoor];
+
+    assert.equal(project.project.saveCompatToken, 0);
+    const sourceSnapshotBefore = structuredClone(source);
+
+    const { newMap, cloneScreen } = duplicateScreenIntoNewMapCore(project, source);
+
+    // The new map is genuinely 1x1.
+    assert.equal(newMap.gridW, 1);
+    assert.equal(newMap.gridH, 1);
+    assert.equal(newMap.screens.length, 1);
+    assert.equal(newMap.screens[0], cloneScreen);
+
+    // Metadata copied from the SOURCE MAP, not createMap's own generic
+    // defaults -- folder now included, item 7 phase 5's own obligation
+    // from phase 4, closing the gap the phase-4 fixture (which never set
+    // folder at all) could not catch.
+    assert.equal(newMap.tilesetId, 1, "tilesetId copied from the source map, not createMap's own default (0)");
+    assert.equal(newMap.songId, 0, "songId copied from the source map, not createMap's own default (null)");
+    assert.equal(newMap.battleSkyTile, 5);
+    assert.equal(newMap.battleGroundTile, 7);
+    assert.deepEqual(newMap.encounters, { rate: 30, actorIds: [2, 5] }, 'encounters copied in CONTENT');
+    assert.notEqual(newMap.encounters, dungeon.encounters, 'but not the same object reference -- structuredClone, not aliased');
+    assert.equal(newMap.folder, 'Dungeons', "folder copied from the source map, not createMap's own default (null)");
+
+    // The new map's own name: nameForNewMapFromSource's own collision-
+    // checked output, forced onto the numbered branch by the fixture's own
+    // "Dungeon copy" map.
+    assert.equal(newMap.name, 'Dungeon copy 2');
+
+    // The screen's own name, carried unsuffixed into the new map's own
+    // (always-empty) namespace.
+    assert.equal(cloneScreen.name, 'Boss Room');
+
+    const flatNow = flatScreens(project);
+    const flatIndexOf = (screen) => flatNow.findIndex((entry) => entry.screen === screen);
+    const cloneFlat = flatIndexOf(cloneScreen);
+    const externalFlat = flatIndexOf(dungeonCopy.screens[0]);
+
+    // Each of the four Warps individually, on the CLONE.
+    const cloneSelfDoor = cloneScreen.entities[0];
+    const cloneExternalDoor = cloneScreen.entities[1];
+    const cloneEvent = cloneScreen.entities[2];
+    assert.equal(cloneSelfDoor.props.toScreen, cloneFlat, "the clone's own self-door resolves to the clone's own singleton position");
+    assert.equal(cloneExternalDoor.props.toScreen, externalFlat, "the clone's own external door resolves, unchanged in content, to the same external screen");
+    assert.equal(cloneEvent.props.event.pages[0].commands[0].screen, cloneFlat, "the clone's own top-level self-warp resolves to the clone");
+    assert.equal(cloneEvent.props.event.pages[0].commands[1].screen, externalFlat, "the clone's own top-level external-warp resolves, unchanged, to the external screen");
+    assert.equal(
+      cloneEvent.props.event.pages[0].commands[2].then[0].screen,
+      cloneFlat,
+      "the clone's own branch-then nested self-warp resolves to the clone"
+    );
+    assert.equal(
+      cloneEvent.props.event.pages[0].commands[2].else[0].screen,
+      externalFlat,
+      "the clone's own branch-else nested external-warp resolves, unchanged, to the external screen"
+    );
+
+    // Code review round 1, finding 1: the clone's own copy of a door to a
+    // NEIGHBOR in the source's own original map (dungeon.screens[1], not
+    // the source screen itself) must stay aimed at that neighbor -- it is
+    // external under the correct SINGLETON range. A whole-source-map-range
+    // implementation would wrongly classify it as "self" (it falls inside
+    // [0,16), the whole source map's own flat range) and shift it by the
+    // append delta instead.
+    const cloneNeighborDoor = cloneScreen.entities[3];
+    assert.equal(
+      cloneNeighborDoor.props.toScreen,
+      flatIndexOf(dungeon.screens[1]),
+      "the clone's own neighbor-door stays aimed at dungeon.screens[1] -- external under the singleton range, " +
+        'not shifted by a whole-source-map-range bug'
+    );
+
+    // The pre-existing incoming door/warp still resolve to the ORIGINAL
+    // screen's content, untouched -- the original stays reachable.
+    const sourceFlat = flatIndexOf(source);
+    assert.equal(incomingDoor.props.toScreen, sourceFlat, 'the pre-existing incoming door still names the ORIGINAL source screen');
+    assert.equal(
+      incomingWarpEntity.props.event.pages[0].commands[0].then[0].screen,
+      sourceFlat,
+      'the pre-existing incoming nested warp still names the ORIGINAL source screen'
+    );
+
+    // The pre-existing out-of-range door: its own pre-append effective
+    // target (31), canonicalized -- never redirected to the new map's own
+    // screen (which the append's own growth could otherwise make look
+    // plausible if canonicalization ran against the wrong, POST-append count).
+    assert.equal(outOfRangeDoor.props.toScreen, 31);
+
+    // No saveCompatToken redraw -- append, screenCount already moves.
+    assert.equal(project.project.saveCompatToken, 0, 'the all-maps-full fallback is an append -- it never redraws saveCompatToken');
+
+    // No aliasing: reference inequality, AND the stronger behavioral proof.
+    assert.notEqual(cloneScreen, source, 'the clone is a distinct screen object from the source');
+    cloneScreen.entities[0].x += 1; // mutate the CLONE's own entity after duplication
+    assert.equal(
+      source.entities[0].x,
+      sourceSnapshotBefore.entities[0].x,
+      "mutating the clone's own entity must not affect the SOURCE's -- proving they are genuinely distinct objects, not aliased"
+    );
+
+    // Code review round 1, finding 4: the same no-aliasing proof, extended
+    // to the screen's own mutable art/binding arrays -- a shallow clone
+    // (`{ ...sourceScreen, entities: structuredClone(...) }`, leaving
+    // metatiles/boundTiles shared with the source) passes every assertion
+    // above and is only caught here.
+    assert.equal(cloneScreen.metatiles[0], 7, "the clone's own metatiles genuinely hold the source's own content");
+    assert.deepEqual(cloneScreen.boundTiles, [{ row: 0, col: 0, switchId: 0, metatileId: 3 }], "the clone's own boundTiles genuinely hold the source's own content");
+    assert.notEqual(cloneScreen.metatiles, source.metatiles, 'distinct array, not aliased with the source');
+    assert.notEqual(cloneScreen.boundTiles, source.boundTiles, 'distinct array, not aliased with the source');
+    cloneScreen.metatiles[0] = 99; // mutate the CLONE's own art after duplication
+    cloneScreen.boundTiles[0].metatileId = 55; // mutate a nested binding object too
+    assert.equal(source.metatiles[0], 7, "mutating the clone's own art must not affect the SOURCE's");
+    assert.equal(
+      source.boundTiles[0].metatileId,
+      3,
+      "mutating the clone's own binding must not affect the SOURCE's nested binding object either"
+    );
+  }
+);
+
+// ---------------------------------------------------------------------------
+// ROADMAP item 7 -- map organization and reuse, phase 5 (the last one)
+// (handoff-maporg/design-maporg.md §6.3/§8/§10)
+//
+// Region copy/paste and folders -- the two remaining pieces of the design
+// with no dependency on each other -- plus the closing draw-site census
+// (test 26), which spans every operation this design defines and can only
+// be completed now that all ten exist. Per this slice's own house rule:
+// pasteRegionCore/buildRegionClip/clampPasteOrigin are the commit-free
+// cores both the renderer's single store.commit and the tests below call.
+// ---------------------------------------------------------------------------
+
+// buildRegionClip -- the copy side of §6.3, not itself a §11-numbered test
+// (14/15/16 all specify PASTE behavior; nothing in the design's own test
+// plan names a dedicated copy-side test). Self-check finding: every fixture
+// in this section originally constructed its own `clip` object as a literal,
+// never actually calling buildRegionClip against a real screen -- meaning a
+// bug in the copy-side reader itself (row/col swapped, the wrong screen
+// read, boundTiles filtered with an off-by-one) would have passed every
+// paste-focused fixture below, since none of them exercise the function
+// that actually reads a rectangle off a screen. Closed directly.
+test(
+  "buildRegionClip reads a rectangle off a screen correctly -- metatiles row-major relative to the rectangle, " +
+    'and only the boundTiles entries actually inside it, also made relative',
+  () => {
+    const project = createProject('Build region clip');
+    const map = createMap(0, 'Home');
+    map.tilesetId = 3;
+    const screen = map.screens[0];
+    project.maps = [map];
+
+    // A distinctive 3x2 pattern at origin (row 2, col 1) -- every cell a
+    // different value, so a row/col transposition bug cannot hide behind a
+    // symmetric fixture.
+    const pattern = [11, 12, 13, 21, 22, 23];
+    for (let r = 0; r < 2; r++) {
+      for (let c = 0; c < 3; c++) screen.metatiles[(2 + r) * LIMITS.screenCols + (1 + c)] = pattern[r * 3 + c];
+    }
+
+    screen.boundTiles = [
+      { row: 2, col: 2, switchId: 5, metatileId: 9 }, // inside the rectangle -- relative (0,1)
+      { row: 5, col: 5, switchId: 1, metatileId: 2 } // outside the rectangle -- must be excluded entirely
+    ];
+
+    const clip = buildRegionClip(project, 0, 0, 2, 1, 3, 2);
+    assert.equal(clip.width, 3);
+    assert.equal(clip.height, 2);
+    assert.deepEqual(clip.metatiles, pattern, 'metatile ids read row-major, relative to the rectangle');
+    assert.deepEqual(
+      clip.boundTiles,
+      [{ row: 0, col: 1, switchId: 5, metatileId: 9 }],
+      'only the binding actually inside the rectangle is included, and its own row/col are made relative'
+    );
+    assert.equal(clip.sourceTilesetId, 3, "the source MAP's own tilesetId, for the cross-tileset warning");
+  }
+);
+
+// pasteRegionCore's optional entity payload -- design §6.3's own "second,
+// optional step," with no dedicated §11 test number (unlike the
+// metatile/boundTiles half, tests 14-16). Real, shipped code deserves real
+// coverage regardless of test-plan numbering -- self-check finding, closed
+// directly rather than left as smoke-only (which never even exercised the
+// "include actors" checkbox).
+test(
+  "pasteRegionCore: the optional entity payload is cloned onto the destination (a distinct object, not the " +
+    'same reference)',
+  () => {
+    const project = createProject('Paste with entities');
+    const map = createMap(0, 'Home');
+    const screen = map.screens[0];
+    project.maps = [map];
+
+    const clip = { width: 1, height: 1, metatiles: [0], boundTiles: [], sourceTilesetId: 0 };
+    const entityA = { actorId: 0, x: 10, y: 20, props: {} };
+    const entityB = { actorId: 1, x: 30, y: 40, props: {} };
+    const { warning } = pasteRegionCore(project, 0, 0, 0, 0, clip, [entityA, entityB]);
+    assert.equal(warning, null);
+    assert.equal(screen.entities.length, 2);
+    assert.deepEqual(screen.entities[0], entityA, 'the pasted entity holds the same content');
+    assert.notEqual(screen.entities[0], entityA, 'but is a distinct clone, not the same object reference');
+    assert.deepEqual(screen.entities[1], entityB);
+    assert.notEqual(screen.entities[1], entityB);
+  }
+);
+
+// Code review round 1, finding 3: an atomic capacity policy -- check both
+// caps BEFORE mutating anything, refuse the whole paste if either would be
+// exceeded, and report why in plain language naming the limit. Two
+// controls, exactly as the fix brief names them: eight retained
+// out-of-rectangle bindings plus one copied binding; and fewer free actor
+// slots than copied actors. Both assert the destination is COMPLETELY
+// unchanged (metatiles included -- nothing may be half-applied) and that
+// the refusal is reported, distinguishable from success.
+test(
+  'pasteRegionCore/pasteCapacityProblem refuse the WHOLE paste, atomically, when the combined binding count ' +
+    'would exceed LIMITS.boundTilesPerScreen -- the destination is left completely unchanged',
+  () => {
+    const project = createProject('Paste bindings over cap');
+    const map = createMap(0, 'Home');
+    const screen = map.screens[0];
+    project.maps = [map];
+
+    // Eight retained bindings, all OUTSIDE the 1x1 rectangle about to be
+    // pasted at (0,0) -- every one individually valid, per-screen, before
+    // the paste.
+    screen.boundTiles = Array.from({ length: LIMITS.boundTilesPerScreen }, (_, i) => ({
+      row: 5,
+      col: i,
+      switchId: 0,
+      metatileId: 1
+    }));
+    const beforeBoundTiles = structuredClone(screen.boundTiles);
+    const beforeMetatiles = screen.metatiles.slice();
+
+    // One copied binding -- 8 retained + 1 copied = 9, one over the limit.
+    const clip = {
+      width: 1,
+      height: 1,
+      metatiles: [9], // non-default -- if the metatile write happened despite the refusal, this would show it
+      boundTiles: [{ row: 0, col: 0, switchId: 1, metatileId: 2 }],
+      sourceTilesetId: 0
+    };
+
+    const problem = pasteCapacityProblem(project, 0, 0, 0, 0, clip);
+    assert.ok(problem, 'pasteCapacityProblem must report a problem BEFORE any commit would even be attempted');
+    assert.ok(problem.includes('9'), 'names the combined count that would result (8 retained + 1 copied)');
+    assert.ok(problem.includes(String(LIMITS.boundTilesPerScreen)), 'names the actual limit');
+
+    const outcome = pasteRegionCore(project, 0, 0, 0, 0, clip);
+    assert.ok(outcome.refused, 'pasteRegionCore itself refuses too -- the same check, not a second implementation');
+    assert.equal(outcome.warning, undefined, 'a refusal is not a warning -- distinguishable from success');
+    assert.deepEqual(screen.boundTiles, beforeBoundTiles, 'no bindings changed -- the refusal is atomic');
+    assert.deepEqual(screen.metatiles, beforeMetatiles, 'no metatiles written either -- nothing half-applied');
+  }
+);
+
+test(
+  'pasteRegionCore/pasteCapacityProblem refuse the WHOLE paste, atomically, when fewer actor slots remain than ' +
+    'were copied -- the destination is left completely unchanged, never a silent partial paste',
+  () => {
+    const project = createProject('Paste entities over cap');
+    const map = createMap(0, 'Home');
+    const screen = map.screens[0];
+    project.maps = [map];
+    // One free slot; two actors were copied.
+    for (let i = 0; i < LIMITS.entitiesPerScreen - 1; i++) screen.entities.push({ actorId: 0, x: 0, y: 0, props: {} });
+    const beforeEntities = structuredClone(screen.entities);
+    const beforeMetatiles = screen.metatiles.slice();
+
+    const clip = { width: 1, height: 1, metatiles: [9], boundTiles: [], sourceTilesetId: 0 };
+    const extra = [
+      { actorId: 0, x: 1, y: 1, props: {} },
+      { actorId: 0, x: 2, y: 2, props: {} }
+    ];
+
+    const problem = pasteCapacityProblem(project, 0, 0, 0, 0, clip, extra);
+    assert.ok(problem);
+    assert.ok(problem.includes(String(LIMITS.entitiesPerScreen + 1)), 'names the combined count that would result');
+    assert.ok(problem.includes(String(LIMITS.entitiesPerScreen)), 'names the actual limit');
+
+    const outcome = pasteRegionCore(project, 0, 0, 0, 0, clip, extra);
+    assert.ok(outcome.refused);
+    assert.equal(outcome.warning, undefined);
+    assert.deepEqual(
+      screen.entities,
+      beforeEntities,
+      'not one of the two copied actors was added -- a silent partial paste (one added, one dropped) is exactly ' +
+        'the defect this control catches'
+    );
+    assert.deepEqual(screen.metatiles, beforeMetatiles, 'no metatiles written either');
+  }
+);
+
+// §11 test 14
+test(
+  'boundTiles paste is destination-rectangle REPLACE, not overlay',
+  () => {
+    const project = createProject('Paste boundTiles replace');
+    const map = createMap(0, 'Home');
+    const screen = map.screens[0];
+    project.maps = [map];
+
+    screen.boundTiles = [
+      { row: 2, col: 3, switchId: 0, metatileId: 9 }, // inside the pasted rectangle, source has NO binding here
+      { row: 0, col: 0, switchId: 1, metatileId: 4 } // outside the pasted rectangle -- must survive untouched
+    ];
+
+    const clip = {
+      width: 3,
+      height: 3,
+      metatiles: new Array(9).fill(5),
+      boundTiles: [{ row: 0, col: 0, switchId: 2, metatileId: 7 }], // relative (0,0) -> destination (1,2)
+      sourceTilesetId: map.tilesetId
+    };
+    // Paste at row 1, col 2 -- rectangle spans rows 1-3, cols 2-4, which
+    // includes (2,3) but not (0,0).
+    const { warning } = pasteRegionCore(project, 0, 0, 1, 2, clip);
+    assert.equal(warning, null);
+
+    assert.deepEqual(
+      screen.boundTiles,
+      [
+        { row: 0, col: 0, switchId: 1, metatileId: 4 }, // untouched -- outside the pasted rectangle
+        { row: 1, col: 2, switchId: 2, metatileId: 7 } // the source's own binding, offset by the paste origin
+      ],
+      "the destination's own pre-existing binding inside the rectangle is genuinely CLEARED (not merely " +
+        "overwritten by a source binding -- there wasn't one to overwrite with), and the source's own " +
+        'binding is written in on top'
+    );
+  }
+);
+
+// §11 test 15
+test(
+  'copy/paste region respects SCREEN_METATILES bounds and does not corrupt adjacent content',
+  () => {
+    const project = createProject('Paste edge clamp');
+    const map = createMap(0, 'Home');
+    const screen = map.screens[0];
+    project.maps = [map];
+
+    // A deterministic, non-uniform pattern across the whole screen, so
+    // "outside the pasted rectangle" is provable byte-for-byte, not merely
+    // assumed to still be all-zero.
+    screen.metatiles = screen.metatiles.map((_, i) => i % 60);
+    const before = screen.metatiles.slice();
+
+    const width = 3;
+    const height = 3;
+    const clip = { width, height, metatiles: new Array(width * height).fill(63), boundTiles: [], sourceTilesetId: 0 };
+    // An origin chosen to run past BOTH edges at once.
+    const originRow = LIMITS.screenRows - 1; // 14
+    const originCol = LIMITS.screenCols - 1; // 15
+    pasteRegionCore(project, 0, 0, originRow, originCol, clip);
+
+    const expectedRow = LIMITS.screenRows - height; // 12 -- clamped fully on-screen
+    const expectedCol = LIMITS.screenCols - width; // 13
+    for (let r = 0; r < height; r++) {
+      for (let c = 0; c < width; c++) {
+        assert.equal(
+          screen.metatiles[(expectedRow + r) * LIMITS.screenCols + (expectedCol + c)],
+          63,
+          `pasted cell (row ${expectedRow + r}, col ${expectedCol + c}) must hold the clip's own content`
+        );
+      }
+    }
+
+    // Everything outside the clamped rectangle is byte-identical to before
+    // the paste -- an off-by-one in the row/col-to-flat-index arithmetic
+    // would bleed into a neighboring row or column, invisible in a
+    // paste-in-the-middle test but real here.
+    for (let i = 0; i < SCREEN_METATILES; i++) {
+      const row = Math.floor(i / LIMITS.screenCols);
+      const col = i % LIMITS.screenCols;
+      const inside = row >= expectedRow && row < expectedRow + height && col >= expectedCol && col < expectedCol + width;
+      if (!inside) assert.equal(screen.metatiles[i], before[i], `metatile ${i} outside the pasted rectangle must be unchanged`);
+    }
+  }
+);
+
+// §11 test 16
+test(
+  'map.folder round-trips through save/load, normalizes idempotently, and is ignored by the build',
+  { skip: !hasNesasm && 'nesasm not found on PATH' },
+  async (t) => {
+    // (a) build-invisibility: a project with map.folder set vs the identical
+    // project with it deleted entirely must produce byte-identical ROMs.
+    const base = await loadProject(SAMPLE);
+    const withFolder = structuredClone(base);
+    withFolder.maps[0].folder = 'Dungeons';
+    const dirA = await fs.mkdtemp(path.join(os.tmpdir(), 'forge-folder-a-'));
+    t.after(() => fs.rm(dirA, { recursive: true, force: true }));
+    await saveProject(dirA, withFolder);
+    const builtA = await buildProject({ dir: dirA, project: withFolder, log: () => {} });
+    const romA = await fs.readFile(builtA.romPath);
+
+    const withoutFolder = structuredClone(base);
+    delete withoutFolder.maps[0].folder;
+    const dirB = await fs.mkdtemp(path.join(os.tmpdir(), 'forge-folder-b-'));
+    t.after(() => fs.rm(dirB, { recursive: true, force: true }));
+    await saveProject(dirB, withoutFolder);
+    const builtB = await buildProject({ dir: dirB, project: withoutFolder, log: () => {} });
+    const romB = await fs.readFile(builtB.romPath);
+
+    assert.deepEqual(romA, romB, 'map.folder must reach zero compiled bytes, present or absent');
+
+    // (b) saveProject/loadProject round-trips a project with map.folder set
+    // -- closes the gap an implementation missing normalizeMap's own
+    // round-trip would fall into (round 1's own build-only check could
+    // never see this, since it never reloads the project at all).
+    const dirC = await fs.mkdtemp(path.join(os.tmpdir(), 'forge-folder-c-'));
+    t.after(() => fs.rm(dirC, { recursive: true, force: true }));
+    const project = createProject('Folder round trip');
+    project.maps[0].folder = 'Dungeons';
+    await saveProject(dirC, project);
+    const reloaded = await loadProject(dirC);
+    assert.equal(
+      reloaded.maps[0].folder,
+      'Dungeons',
+      "the reloaded project's own folder survives a real save/load round trip -- the exact real-world path an " +
+        'author hits every session'
+    );
+
+    // (c) normalizeProject is idempotent on its own output.
+    const normalizedOnce = normalizeProject({ maps: [{ folder: 'Dungeons' }] });
+    const normalizedTwice = normalizeProject(normalizedOnce);
+    assert.equal(
+      normalizedTwice.maps[0].folder,
+      'Dungeons',
+      'folder survives a second normalization pass unchanged'
+    );
+  }
+);
+
+// §11 test 26
+test(
+  'the draw-site census: saveCompatToken is redrawn on exactly the five qualifying structural edits, ' +
+    'and never on the five non-qualifying ones',
+  (t) => {
+    // Five distinct, pre-seeded fractional values -- one per qualifying
+    // draw, consumed strictly in the order the five qualifying fixtures
+    // run below -- so each draw is individually distinguishable and the
+    // resulting token is checked against its own known, predicted value,
+    // never merely "changed."
+    const queue = [0.11, 0.22, 0.33, 0.44, 0.55];
+    let callCount = 0;
+    t.mock.method(Math, 'random', () => {
+      callCount++;
+      return queue.shift();
+    });
+    const predictedToken = (fraction) => 1 + Math.floor(fraction * 0xffff);
+
+    // --- Qualifying: exactly one draw, token equals the mocked draw's own value ---
+
+    {
+      // reorder (§6.7)
+      const project = createProject('Census reorder');
+      project.maps = [createMap(0, 'A'), createMap(1, 'B')];
+      const before = callCount;
+      reorderMapsCore(project, [1, 0]);
+      assert.equal(callCount - before, 1, 'reorder must draw exactly once');
+      assert.equal(project.project.saveCompatToken, predictedToken(0.11));
+    }
+    {
+      // delete map (§6.8)
+      const project = createProject('Census delete');
+      project.maps = [createMap(0, 'A'), createMap(1, 'B')];
+      const before = callCount;
+      deleteMapCore(project, 0);
+      assert.equal(callCount - before, 1, 'delete map must draw exactly once');
+      assert.equal(project.project.saveCompatToken, predictedToken(0.22));
+    }
+    {
+      // grow-resize (§6.9)
+      const project = createProject('Census grow');
+      const map = createMap(0, 'A');
+      map.gridW = 1;
+      map.gridH = 1;
+      project.maps = [map];
+      const before = callCount;
+      growOrShrinkMap(project, 0, 2, 1);
+      assert.equal(callCount - before, 1, 'grow-resize must draw exactly once');
+      assert.equal(project.project.saveCompatToken, predictedToken(0.33));
+    }
+    {
+      // shrink-resize (§6.9)
+      const project = createProject('Census shrink');
+      const map = createMap(0, 'A');
+      map.gridW = 2;
+      map.gridH = 1;
+      map.screens = [createScreen(), createScreen()];
+      project.maps = [map];
+      const before = callCount;
+      growOrShrinkMap(project, 0, 1, 1);
+      assert.equal(callCount - before, 1, 'shrink-resize must draw exactly once');
+      assert.equal(project.project.saveCompatToken, predictedToken(0.44));
+    }
+    {
+      // growth-routed single-screen duplicate (§6.9.1)
+      const project = createProject('Census growth-duplicate');
+      const map = createMap(0, 'A'); // 1x1 -- room to grow
+      project.maps = [map];
+      const source = map.screens[0];
+      const before = callCount;
+      duplicateScreenViaGrowthCore(project, 0, source);
+      assert.equal(callCount - before, 1, 'growth-routed duplicate must draw exactly once -- it is, mechanically, a resize');
+      assert.equal(project.project.saveCompatToken, predictedToken(0.55));
+    }
+
+    // --- Non-qualifying: zero draws, saveCompatToken unchanged from its pre-commit value ---
+
+    {
+      // append-only whole-map duplicate (§6.2)
+      const project = createProject('Census whole-map duplicate');
+      project.maps = [createMap(0, 'A')];
+      const tokenBefore = project.project.saveCompatToken;
+      const before = callCount;
+      duplicateMapCore(project, 0);
+      assert.equal(callCount - before, 0, 'whole-map duplicate must never draw -- screenCount already moves');
+      assert.equal(project.project.saveCompatToken, tokenBefore);
+    }
+    {
+      // Add Map (§6.2)
+      const project = createProject('Census add map');
+      const tokenBefore = project.project.saveCompatToken;
+      const before = callCount;
+      addMapCore(project);
+      assert.equal(callCount - before, 0, 'Add Map must never draw -- screenCount already moves');
+      assert.equal(project.project.saveCompatToken, tokenBefore);
+    }
+    {
+      // a folder-name edit (§8) -- a bare field write, no shared core of its
+      // own (there is nothing to remap or repair), matching the design's
+      // own framing exactly.
+      const project = createProject('Census folder edit');
+      project.maps = [createMap(0, 'A')];
+      const tokenBefore = project.project.saveCompatToken;
+      const before = callCount;
+      project.maps[0].folder = 'Dungeons';
+      assert.equal(callCount - before, 0, 'a folder edit must never draw');
+      assert.equal(project.project.saveCompatToken, tokenBefore);
+    }
+    {
+      // a region paste (§6.3)
+      const project = createProject('Census paste');
+      project.maps = [createMap(0, 'A')];
+      const tokenBefore = project.project.saveCompatToken;
+      const before = callCount;
+      const clip = { width: 1, height: 1, metatiles: [5], boundTiles: [], sourceTilesetId: 0 };
+      pasteRegionCore(project, 0, 0, 0, 0, clip);
+      assert.equal(callCount - before, 0, 'a region paste must never draw -- no screen identity or count changes');
+      assert.equal(project.project.saveCompatToken, tokenBefore);
+    }
+    {
+      // the all-maps-full fallback, duplicate-screen-into-a-brand-new-map
+      // (§6.2.1) -- the tenth fixture, an append like whole-map Duplicate
+      // and Add Map and covered by the identical argument, never
+      // separately asserted before this test.
+      const project = createProject('Census new-map fallback');
+      project.maps = [createMap(0, 'A')];
+      const source = project.maps[0].screens[0];
+      const tokenBefore = project.project.saveCompatToken;
+      const before = callCount;
+      duplicateScreenIntoNewMapCore(project, source);
+      assert.equal(callCount - before, 0, 'the all-maps-full fallback must never draw -- it is an append, like the other two');
+      assert.equal(project.project.saveCompatToken, tokenBefore);
+    }
+  }
+);

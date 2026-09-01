@@ -126,6 +126,988 @@ const scenario = (dir, sampleDir, sampleRpgDir) => `
   }
   step('map settings panel does not scroll sideways', settingsPanelBody.clientWidth + 'px wide, no overflow');
 
+  // --- Map Forge: Reorder Maps (ROADMAP item 7 phase 1, design-maporg.md
+  // §6.7/§12). Isolated at the very top of this section -- before any actor
+  // is placed -- and fully undone afterward, so the rest of this section's
+  // own actor-index-sensitive setup (below) runs against the exact same
+  // baseline it always has.
+  store.commit('smoke reorder: second map', (project) => {
+    project.maps.push({
+      id: project.maps.length,
+      name: 'Second Map',
+      gridW: 1,
+      gridH: 1,
+      screens: [{ name: '', metatiles: new Array(240).fill(0), entities: [], boundTiles: [] }],
+      songId: null,
+      tilesetId: 0,
+      battleSkyTile: 0,
+      battleGroundTile: 0,
+      encounters: { rate: 0, actorIds: [] }
+    });
+  });
+  await wait(150);
+
+  store.commit('smoke reorder: door', (project) => {
+    project.sprites.actors.push({ name: 'Gate', behavior: 'door', speed: 0 });
+    const doorActorId = project.sprites.actors.length - 1;
+    const targetFlat = project.maps[0].screens.length; // map 0's own screen count -- the second map's own first flat index
+    project.maps[0].screens[0].entities.push({
+      actorId: doorActorId,
+      x: 32,
+      y: 32,
+      props: { toScreen: targetFlat, toX: 112, toY: 112, dialogue: '', event: null, trigger: 'interact', hideSwitch: null }
+    });
+  });
+  await wait(150);
+
+  window.__app.goTo('map');
+  await wait(300);
+
+  const mapPickerSelect = () => document.querySelectorAll('#mapSettingsPanel select')[0];
+  const doorTargetSelect = () =>
+    [...document.querySelectorAll('#mapSettingsPanel select')].find((s) =>
+      [...s.querySelectorAll('option')].some((option) => option.textContent.startsWith('→ '))
+    );
+  const mapOptionNames = () => [...mapPickerSelect().querySelectorAll('option')].map((option) => option.textContent);
+
+  const beforeReorderOrder = mapOptionNames();
+  if (beforeReorderOrder.length !== 2 || beforeReorderOrder[0] !== 'World' || beforeReorderOrder[1] !== 'Second Map') {
+    throw new Error('unexpected map picker order before reorder: ' + JSON.stringify(beforeReorderOrder));
+  }
+  const doorLabelBefore = doorTargetSelect()?.selectedOptions[0]?.textContent;
+  if (!doorLabelBefore || !doorLabelBefore.includes('Second Map')) {
+    throw new Error('the door does not start out targeting the second map, got ' + doorLabelBefore);
+  }
+
+  const moveLaterButton = [...document.querySelectorAll('#mapSettingsPanel button')].find(
+    (node) => node.title === 'Move this map later'
+  );
+  if (!moveLaterButton) throw new Error('no "move this map later" reorder control found in the Map Forge');
+  moveLaterButton.click();
+  await wait(250);
+
+  const afterReorderOrder = mapOptionNames();
+  if (afterReorderOrder[0] !== 'Second Map' || afterReorderOrder[1] !== 'World') {
+    throw new Error('the map picker did not reflect the new order: ' + JSON.stringify(afterReorderOrder));
+  }
+  // The reordered map (World, carrying the door) is where the selection
+  // followed it to -- its target should still name "Second Map" by name,
+  // not merely have some option selected.
+  const doorLabelAfter = doorTargetSelect()?.selectedOptions[0]?.textContent;
+  if (!doorLabelAfter || !doorLabelAfter.includes('Second Map')) {
+    throw new Error("the door's target no longer names the second map after reorder, got " + doorLabelAfter);
+  }
+  step('reorder maps', 'picker order changed and the door still names the same map: ' + doorLabelAfter);
+
+  // Fully undo this section's own three commits (second map, door, reorder)
+  // so the rest of this Map Forge section's own actor-index-sensitive setup
+  // (below) is unaffected by it.
+  store.undo();
+  store.undo();
+  store.undo();
+  await wait(200);
+  if (store.project.maps.length !== 1 || store.project.sprites.actors.length !== 0) {
+    throw new Error('the reorder smoke setup did not fully undo, leaving stray state for the rest of this section');
+  }
+
+  // --- Map Forge: Duplicate Map (ROADMAP item 7 phase 2, design-maporg.md
+  // §6.2/§12). Driven from the same 1-map baseline the reorder cleanup just
+  // restored, and undone afterward so this section's own actor-index-
+  // sensitive setup (below) is unaffected by it.
+  const duplicateButton = [...document.querySelectorAll('#mapSettingsPanel button')].find(
+    (node) => node.title === 'Duplicate this map'
+  );
+  if (!duplicateButton) throw new Error('no "Duplicate this map" control found in the Map Forge');
+  duplicateButton.click();
+  await wait(250);
+
+  const afterDuplicateOrder = mapOptionNames();
+  if (afterDuplicateOrder.length !== 2) {
+    throw new Error('duplicating a map did not grow the map picker: ' + JSON.stringify(afterDuplicateOrder));
+  }
+  if (afterDuplicateOrder[1] !== 'World copy') {
+    throw new Error("the duplicated map's name is not visibly auto-suffixed: " + JSON.stringify(afterDuplicateOrder));
+  }
+  step(
+    'duplicate map',
+    'map count grew to ' + afterDuplicateOrder.length + ', new map named "' + afterDuplicateOrder[1] + '"'
+  );
+
+  store.undo();
+  await wait(200);
+  if (store.project.maps.length !== 1) {
+    throw new Error('the duplicate-map smoke setup did not fully undo, leaving stray state for the rest of this section');
+  }
+
+  // --- Map Forge: Delete Map audit-UI wiring (ROADMAP item 7 phase 3,
+  // design-maporg.md §6.4/§6.8/§12). Driven from the same 1-map baseline the
+  // duplicate-map cleanup just restored, and undone afterward. A map with
+  // exactly one screen but THREE distinct incoming doors proves the
+  // confirmation shows the real reference count (3), not the discarded
+  // screen count (1) -- the two numbers must provably disagree, or nothing
+  // here proves which one the dialog displays.
+  {
+    const mapStore = window.__app.store;
+    mapStore.commit('smoke delete-audit: doomed map', (project) => {
+      project.maps.push({
+        id: project.maps.length,
+        name: 'Doomed',
+        gridW: 1,
+        gridH: 1,
+        screens: [{ name: '', metatiles: new Array(240).fill(0), entities: [], boundTiles: [] }],
+        songId: null,
+        tilesetId: 0,
+        battleSkyTile: 0,
+        battleGroundTile: 0,
+        encounters: { rate: 0, actorIds: [] }
+      });
+    });
+    await wait(150);
+
+    mapStore.commit('smoke delete-audit: three doors into the doomed map', (project) => {
+      project.sprites.actors.push({ name: 'Gate', behavior: 'door', speed: 0 });
+      const doorActorId = project.sprites.actors.length - 1;
+      const doomedFlat = project.maps[0].screens.length; // World's own screen count -- Doomed's first flat index
+      const doorTo = (x) => ({
+        actorId: doorActorId,
+        x,
+        y: 32,
+        props: { toScreen: doomedFlat, toX: 112, toY: 112, dialogue: '', event: null, trigger: 'interact', hideSwitch: null }
+      });
+      project.maps[0].screens[0].entities.push(doorTo(16), doorTo(32), doorTo(48));
+    });
+    await wait(150);
+
+    window.__app.goTo('map');
+    await wait(300);
+
+    const doomedIndex = [...mapPickerSelect().querySelectorAll('option')].findIndex(
+      (o) => o.textContent === 'Doomed'
+    );
+    if (doomedIndex < 0) throw new Error('the doomed map does not appear in the map picker');
+    mapPickerSelect().value = String(doomedIndex);
+    mapPickerSelect().dispatchEvent(new Event('change', { bubbles: true }));
+    await wait(200);
+
+    const deleteMapButton = [...document.querySelectorAll('#mapSettingsPanel button')].find(
+      (node) => node.title === 'Delete this map'
+    );
+    if (!deleteMapButton) throw new Error('no "Delete this map" control found in the Map Forge');
+    deleteMapButton.click();
+    await until('the delete map confirmation', () => document.querySelector('#modalHost p'));
+    const deleteConfirmText = document.querySelector('#modalHost p').textContent;
+    if (!deleteConfirmText.includes('3 doors/warps')) {
+      throw new Error('the delete map confirmation did not show the real reference count (3): ' + deleteConfirmText);
+    }
+    const deleteCancel = [...document.querySelectorAll('#modalHost button')].find(
+      (b) => b.textContent.trim() === 'Cancel'
+    );
+    if (!deleteCancel) throw new Error('the delete map confirmation has no Cancel button');
+    const mapsBeforeDeleteCancel = mapStore.project.maps.length;
+    deleteCancel.click();
+    await until('the delete map confirmation to close', () => document.querySelector('#modalHost').hidden);
+    if (mapStore.project.maps.length !== mapsBeforeDeleteCancel) {
+      throw new Error('Cancel on the delete map confirmation must not commit anything');
+    }
+    step(
+      'delete map audit-UI wiring',
+      'confirmation showed the real reference count (3, not the discarded screen count 1), and Cancel committed nothing'
+    );
+  }
+
+  store.undo();
+  store.undo();
+  await wait(200);
+  if (store.project.maps.length !== 1 || store.project.sprites.actors.length !== 0) {
+    throw new Error('the delete-map audit smoke setup did not fully undo, leaving stray state for the rest of this section');
+  }
+
+  // --- Map Forge: Resize Map (shrink) audit-UI wiring (ROADMAP item 7 phase
+  // 3, design-maporg.md §6.4/§6.9/§12). Same shape as the delete case above,
+  // against growOrShrinkMap's own dry-run audit instead.
+  {
+    const mapStore = window.__app.store;
+    mapStore.commit('smoke resize-audit: shrinker map', (project) => {
+      project.maps.push({
+        id: project.maps.length,
+        name: 'Shrinker',
+        gridW: 2,
+        gridH: 1,
+        screens: [
+          { name: '', metatiles: new Array(240).fill(0), entities: [], boundTiles: [] }, // kept
+          { name: '', metatiles: new Array(240).fill(0), entities: [], boundTiles: [] } // dropped by the shrink
+        ],
+        songId: null,
+        tilesetId: 0,
+        battleSkyTile: 0,
+        battleGroundTile: 0,
+        encounters: { rate: 0, actorIds: [] }
+      });
+    });
+    await wait(150);
+
+    const shrinkerIndex = mapStore.project.maps.length - 1;
+    mapStore.commit('smoke resize-audit: three doors into the cell about to be dropped', (project) => {
+      project.sprites.actors.push({ name: 'Gate', behavior: 'door', speed: 0 });
+      const doorActorId = project.sprites.actors.length - 1;
+      const droppedFlat = project.maps[0].screens.length + 1; // World's screens, then Shrinker's 2nd (dropped) cell
+      const doorTo = (x) => ({
+        actorId: doorActorId,
+        x,
+        y: 32,
+        props: { toScreen: droppedFlat, toX: 112, toY: 112, dialogue: '', event: null, trigger: 'interact', hideSwitch: null }
+      });
+      project.maps[0].screens[0].entities.push(doorTo(16), doorTo(32), doorTo(48));
+    });
+    await wait(150);
+
+    window.__app.goTo('map');
+    await wait(300);
+
+    const shrinkerOption = [...mapPickerSelect().querySelectorAll('option')].findIndex(
+      (o) => o.textContent === 'Shrinker'
+    );
+    if (shrinkerOption < 0) throw new Error('the shrinker map does not appear in the map picker');
+    mapPickerSelect().value = String(shrinkerOption);
+    mapPickerSelect().dispatchEvent(new Event('change', { bubbles: true }));
+    await wait(200);
+
+    const gridInputs = [...document.querySelectorAll('#mapSettingsPanel input[type=number]')];
+    if (gridInputs.length !== 2) throw new Error('expected 2 grid-size inputs in the Map Forge, saw ' + gridInputs.length);
+    const [gridWInput] = gridInputs;
+    gridWInput.value = '1'; // gridW 2 -> 1, gridH stays 1: drops exactly the 2nd cell
+    gridWInput.dispatchEvent(new Event('change', { bubbles: true }));
+
+    await until('the shrink-resize confirmation', () => document.querySelector('#modalHost p'));
+    const resizeConfirmText = document.querySelector('#modalHost p').textContent;
+    if (!resizeConfirmText.includes('3 doors/warps')) {
+      throw new Error('the shrink-resize confirmation did not show the real reference count (3): ' + resizeConfirmText);
+    }
+    const resizeCancel = [...document.querySelectorAll('#modalHost button')].find(
+      (b) => b.textContent.trim() === 'Cancel'
+    );
+    if (!resizeCancel) throw new Error('the shrink-resize confirmation has no Cancel button');
+    const shrinkerBefore = {
+      gridW: mapStore.project.maps[shrinkerIndex].gridW,
+      screens: mapStore.project.maps[shrinkerIndex].screens.length
+    };
+    resizeCancel.click();
+    await until('the shrink-resize confirmation to close', () => document.querySelector('#modalHost').hidden);
+    const shrinkerAfter = mapStore.project.maps[shrinkerIndex];
+    if (shrinkerAfter.gridW !== shrinkerBefore.gridW || shrinkerAfter.screens.length !== shrinkerBefore.screens) {
+      throw new Error('Cancel on the shrink-resize confirmation must not commit anything');
+    }
+    step(
+      'resize map (shrink) audit-UI wiring',
+      'confirmation showed the real reference count (3, not the discarded screen count 1), and Cancel committed nothing'
+    );
+  }
+
+  store.undo();
+  store.undo();
+  await wait(200);
+  if (store.project.maps.length !== 1 || store.project.sprites.actors.length !== 0) {
+    throw new Error('the resize-audit smoke setup did not fully undo, leaving stray state for the rest of this section');
+  }
+
+  // --- Map Forge: Duplicate Screen -- the three-branch UI routing matrix
+  // (ROADMAP item 7 phase 4, design-maporg.md §6.2/§12). Three real branches
+  // share one "⧉ Duplicate screen" control; each case is proven separately
+  // so the button's own branching genuinely discriminates all three
+  // outcomes, not merely that one endpoint is reachable in isolation.
+  // Driven from the same 1-map, 1x1 baseline the resize-audit cleanup just
+  // restored, each case isolated with its own setup and undo.
+
+  // Case 1: the current map has room -- grows in place, no prompt, no new map.
+  {
+    const mapStore = window.__app.store;
+    window.__app.goTo('map');
+    await wait(300);
+
+    const beforeMapCount = mapStore.project.maps.length;
+    const beforeScreenCount = mapStore.project.maps[0].screens.length;
+
+    const duplicateScreenButton = [...document.querySelectorAll('#mapSettingsPanel button')].find(
+      (node) => node.title === 'Duplicate screen'
+    );
+    if (!duplicateScreenButton) throw new Error('no "Duplicate screen" control found in the Map Forge');
+    duplicateScreenButton.click();
+    await wait(250);
+
+    if (mapStore.project.maps.length !== beforeMapCount) {
+      throw new Error('room-to-grow duplicate must not create a new map, saw map count ' + mapStore.project.maps.length);
+    }
+    if (mapStore.project.maps[0].screens.length !== beforeScreenCount + 1) {
+      throw new Error(
+        'room-to-grow duplicate must grow the current map by exactly one cell, saw ' +
+          mapStore.project.maps[0].screens.length +
+          ' screens, expected ' +
+          (beforeScreenCount + 1)
+      );
+    }
+    step('duplicate screen: room-to-grow', 'the current map grew in place, and the map count stayed unchanged');
+
+    mapStore.undo();
+    await wait(200);
+    if (mapStore.project.maps.length !== 1 || mapStore.project.maps[0].screens.length !== beforeScreenCount) {
+      throw new Error('the room-to-grow smoke setup did not fully undo, leaving stray state for the rest of this section');
+    }
+  }
+
+  // Case 2: the current map is full, but a DIFFERENT map has room -- a
+  // target-map picker appears; the chosen map grows, never the full one.
+  {
+    const mapStore = window.__app.store;
+    mapStore.commit('smoke duplicate-screen: fill World to 4x4', (project) => {
+      const world = project.maps[0];
+      world.gridW = 4;
+      world.gridH = 4;
+      while (world.screens.length < 16) {
+        world.screens.push({ name: '', metatiles: new Array(240).fill(0), entities: [], boundTiles: [] });
+      }
+    });
+    await wait(150);
+    mapStore.commit('smoke duplicate-screen: a second map with room', (project) => {
+      project.maps.push({
+        id: project.maps.length,
+        name: 'Second Map',
+        gridW: 1,
+        gridH: 1,
+        screens: [{ name: '', metatiles: new Array(240).fill(0), entities: [], boundTiles: [] }],
+        songId: null,
+        tilesetId: 0,
+        battleSkyTile: 0,
+        battleGroundTile: 0,
+        encounters: { rate: 0, actorIds: [] }
+      });
+    });
+    await wait(150);
+
+    window.__app.goTo('map');
+    await wait(300);
+    mapPickerSelect().value = '0'; // World -- the full one
+    mapPickerSelect().dispatchEvent(new Event('change', { bubbles: true }));
+    await wait(200);
+
+    const beforeMapCount = mapStore.project.maps.length;
+    const secondMapBefore = mapStore.project.maps[1].screens.length;
+
+    const duplicateScreenButton = [...document.querySelectorAll('#mapSettingsPanel button')].find(
+      (node) => node.title === 'Duplicate screen'
+    );
+    if (!duplicateScreenButton) throw new Error('no "Duplicate screen" control found in the Map Forge');
+    duplicateScreenButton.click();
+    await until('the target-map picker', () => document.querySelector('#modalHost button'));
+
+    const secondMapButton = [...document.querySelectorAll('#modalHost button')].find(
+      (b) => b.textContent.trim() === 'Second Map'
+    );
+    if (!secondMapButton) throw new Error('the target-map picker did not offer "Second Map", the only map with room');
+    secondMapButton.click();
+    await until('the target-map picker to close', () => document.querySelector('#modalHost').hidden);
+
+    if (mapStore.project.maps.length !== beforeMapCount) {
+      throw new Error('choosing a target map must not create a new map, saw map count ' + mapStore.project.maps.length);
+    }
+    if (mapStore.project.maps[1].screens.length !== secondMapBefore + 1) {
+      throw new Error('choosing "Second Map" from the picker must grow ITS OWN grid, not something else');
+    }
+    if (mapStore.project.maps[0].screens.length !== 16) {
+      throw new Error('the full map ("World") must be untouched by this branch');
+    }
+    step('duplicate screen: full-but-another-has-room', 'the target-map picker appeared, and the CHOSEN map grew, not the full one');
+
+    mapStore.undo(); // duplicate into "Second Map"
+    mapStore.undo(); // "Second Map" pushed
+    mapStore.undo(); // World filled to 4x4
+    await wait(200);
+    if (mapStore.project.maps.length !== 1 || mapStore.project.maps[0].screens.length !== 1) {
+      throw new Error('the full-but-another-has-room smoke setup did not fully undo, leaving stray state for the rest of this section');
+    }
+  }
+
+  // Case 3: every map is full -- falls straight through to the all-maps-full
+  // fallback, no prompt: a brand-new 1x1 map appears.
+  {
+    const mapStore = window.__app.store;
+    mapStore.commit('smoke duplicate-screen: fill World to 4x4 again', (project) => {
+      const world = project.maps[0];
+      world.gridW = 4;
+      world.gridH = 4;
+      while (world.screens.length < 16) {
+        world.screens.push({ name: '', metatiles: new Array(240).fill(0), entities: [], boundTiles: [] });
+      }
+    });
+    await wait(150);
+
+    window.__app.goTo('map');
+    await wait(300);
+    mapPickerSelect().value = '0';
+    mapPickerSelect().dispatchEvent(new Event('change', { bubbles: true }));
+    await wait(200);
+
+    const beforeMapCount = mapStore.project.maps.length;
+    const worldName = mapStore.project.maps[0].name;
+
+    const duplicateScreenButton = [...document.querySelectorAll('#mapSettingsPanel button')].find(
+      (node) => node.title === 'Duplicate screen'
+    );
+    if (!duplicateScreenButton) throw new Error('no "Duplicate screen" control found in the Map Forge');
+    duplicateScreenButton.click();
+    await wait(300);
+
+    if (mapStore.project.maps.length !== beforeMapCount + 1) {
+      throw new Error('the all-full fallback must create exactly one new map, saw map count ' + mapStore.project.maps.length);
+    }
+    const newMap = mapStore.project.maps[mapStore.project.maps.length - 1];
+    if (newMap.gridW !== 1 || newMap.gridH !== 1 || newMap.screens.length !== 1) {
+      throw new Error('the all-full fallback map must be 1x1, saw ' + newMap.gridW + 'x' + newMap.gridH);
+    }
+    if (!newMap.name.startsWith(worldName)) {
+      throw new Error("the new map's own name must visibly derive from the source map's own name, saw '" + newMap.name + "'");
+    }
+    step('duplicate screen: all-full fallback', 'a new 1x1 map appeared, named "' + newMap.name + '"');
+
+    mapStore.undo(); // duplicateScreenIntoNewMap
+    mapStore.undo(); // World filled to 4x4
+    await wait(200);
+    if (mapStore.project.maps.length !== 1 || mapStore.project.maps[0].screens.length !== 1) {
+      throw new Error('the all-full smoke setup did not fully undo, leaving stray state for the rest of this section');
+    }
+  }
+
+  // --- Map Forge: Region copy/paste, through the real canvas (ROADMAP item
+  // 7 phase 5, design-maporg.md §6.3/§12; code review round 1, findings 1-3
+  // -- a chosen destination origin, a snapshot immune to a post-Copy edit
+  // and guarded by the roster, and Include actors actually ticked). Driven
+  // from the same 1-map baseline the duplicate-screen matrix cleanup just
+  // restored, and undone afterward.
+  {
+    const mapStore = window.__app.store;
+    window.__app.goTo('map');
+    await wait(300);
+
+    mapStore.commit('smoke paste: a second, destination screen, and an actor to include', (project) => {
+      const world = project.maps[0];
+      while (world.screens.length < 2) {
+        world.screens.push({ name: '', metatiles: new Array(240).fill(0), entities: [], boundTiles: [] });
+      }
+      world.gridW = 2;
+      world.gridH = 1;
+      // Metatile 5 given a real, visually distinct appearance -- every
+      // metatile in a fresh project defaults to tiles:[0,0,0,0], palette:0
+      // (createMetatile's own shape), identical to metatile 0 (the
+      // background every unpainted cell already shows), so a different ID
+      // alone would be invisible in a rendered thumbnail. A dedicated tile
+      // (index 2, untouched by any other smoke step) is painted a solid,
+      // uniform color-index-3 across all 64 of its own pixels -- not merely
+      // a partial pattern -- so the check below is immune to exactly where
+      // in the (downscaled, 16px -> 4px) thumbnail cell a sample lands.
+      project.tilesets[0].background.tiles[2] = '3'.repeat(64);
+      project.metatiles[5].tiles = [2, 2, 2, 2];
+      project.metatiles[5].palette = 2; // DEFAULT_BG_PALETTES[2]'s own slot 3 (0x37) differs from palette 0's (0x00)
+      // A distinctive, non-default pattern on the SOURCE screen (0) only --
+      // the destination (1) stays all-zero, so a successful paste is
+      // unmistakable there.
+      world.screens[0].metatiles[0] = 5; // row 0, col 0
+      world.screens[0].metatiles[1] = 5; // row 0, col 1
+      world.screens[0].metatiles[16] = 5; // row 1, col 0
+      world.screens[0].metatiles[17] = 5; // row 1, col 1
+      // An actor placed well inside the rectangle about to be copied.
+      // props.name carries real content (entityLabel reads it) -- a NESTED
+      // field a shallow {...entity} copy would still share a reference to
+      // with the source, unlike x/y, which are top-level primitives a
+      // shallow copy already copies independently.
+      project.sprites.actors.push({ name: 'Copyable', behavior: 'npc', speed: 0 });
+      world.screens[0].entities.push({
+        actorId: project.sprites.actors.length - 1,
+        x: 8,
+        y: 8,
+        props: { name: 'Original Label' }
+      });
+    });
+    await wait(150);
+
+    const selectToolButton = document.querySelector('#stage [data-tool="select"]');
+    if (!selectToolButton) throw new Error('no Select tool button found in the Map Forge');
+    selectToolButton.click();
+    await wait(150);
+
+    const dragSelect = (fromCol, fromRow, toCol, toRow) => {
+      const canvas = document.querySelector('#stage .canvas-stage canvas.pixels');
+      const box = canvas.getBoundingClientRect();
+      const pointAt = (col, row) => ({
+        clientX: box.left + ((col + 0.5) / 16) * box.width,
+        clientY: box.top + ((row + 0.5) / 15) * box.height
+      });
+      canvas.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, button: 0, ...pointAt(fromCol, fromRow) }));
+      canvas.dispatchEvent(new PointerEvent('pointermove', { bubbles: true, ...pointAt(toCol, toRow) }));
+      canvas.dispatchEvent(new PointerEvent('pointerup', { bubbles: true }));
+    };
+
+    // Drag-select the 2x2 rectangle at (0,0)-(1,1), where the distinctive
+    // pattern and the actor above both live.
+    dragSelect(0, 0, 1, 1);
+    await wait(150);
+
+    const includeActorsCheckbox = [...document.querySelectorAll('#stage label.check')]
+      .find((l) => l.textContent.includes('Include actors'))
+      ?.querySelector('input');
+    if (!includeActorsCheckbox) throw new Error('no "Include actors" checkbox appeared after selecting a region');
+    includeActorsCheckbox.click();
+    await wait(80);
+
+    const copyButton = [...document.querySelectorAll('#stage button.btn.btn-sm')].find((b) => b.textContent.trim() === 'Copy');
+    if (!copyButton) throw new Error('no Copy button appeared after selecting a region');
+    copyButton.click();
+    await wait(150);
+
+    // Finding 1's first control (code review round 2, finding 1): edit the
+    // copied actor AFTER Copy. If the clipboard retained a live reference
+    // instead of a snapshot, the paste below would reflect this new
+    // position (20,20) instead of the original (8,8) -- but x/y are
+    // top-level primitives, so even a WRONG shallow {...entity} copy
+    // already copies them independently and would still pass this half of
+    // the control. Mutating props.name too is what a shallow copy cannot
+    // survive: {...entity}.props is the SAME object as the source's, so a
+    // shallow-copy implementation would leak this nested edit into the
+    // clipboard right alongside the live x/y it never had to begin with.
+    // (20,20) is deliberately kept INSIDE the (0,0)-(1,1) source rectangle,
+    // unlike round 1's (200,200) -- the roster-guard control below re-copies
+    // this same rectangle, and an edit that moved the actor OUT of it would
+    // make that re-copy see zero entities, silently breaking that control's
+    // own premise rather than this one's.
+    mapStore.commit('smoke paste: edit the copied actor after Copy', (project) => {
+      const entity = project.maps[0].screens[0].entities[0];
+      entity.x = 20;
+      entity.y = 20;
+      entity.props.name = 'Edited Label';
+    });
+    await wait(120);
+
+    // Switch to the destination screen (1) via its own navigator thumbnail.
+    const thumbsBefore = [...document.querySelectorAll('#stage canvas')].filter((c) => c.width === 64 && c.height === 60);
+    if (thumbsBefore.length !== 2) {
+      throw new Error('expected 2 screens in the navigator for the paste smoke case, saw ' + thumbsBefore.length);
+    }
+    thumbsBefore[1].click();
+    await wait(150);
+
+    // Finding 2's control: select a DIFFERENT rectangle on the DESTINATION
+    // screen -- (5,5)-(6,6), nowhere near the source's own (0,0)-(1,1) --
+    // and paste there. A renderer that always reused the copied origin
+    // could only ever land back at (0,0); this proves a genuinely chosen
+    // destination.
+    dragSelect(5, 5, 6, 6);
+    await wait(150);
+
+    const beforeMetatiles = mapStore.project.maps[0].screens[1].metatiles.slice();
+    const beforeThumb = [...document.querySelectorAll('#stage canvas')].filter((c) => c.width === 64 && c.height === 60)[1].toDataURL();
+
+    const pasteButton = [...document.querySelectorAll('#stage button.btn.btn-sm')].find((b) =>
+      b.textContent.trim().startsWith('Paste region')
+    );
+    if (!pasteButton) throw new Error('no "Paste region" button appeared on the destination screen');
+    pasteButton.click();
+    await wait(200);
+
+    const destScreen = mapStore.project.maps[0].screens[1];
+    const afterMetatiles = destScreen.metatiles;
+    // The rectangle must land at (5,5)-(6,6), the CHOSEN destination
+    // selection -- never at (0,0), the source's own copied origin.
+    if (afterMetatiles[0] === 5 || afterMetatiles[1] === 5 || afterMetatiles[16] === 5 || afterMetatiles[17] === 5) {
+      throw new Error('the pasted region landed at the copied origin (0,0) instead of the chosen destination selection');
+    }
+    const chosenIdx = (row, col) => row * 16 + col;
+    if (
+      afterMetatiles[chosenIdx(5, 5)] !== 5 ||
+      afterMetatiles[chosenIdx(5, 6)] !== 5 ||
+      afterMetatiles[chosenIdx(6, 5)] !== 5 ||
+      afterMetatiles[chosenIdx(6, 6)] !== 5
+    ) {
+      throw new Error(
+        'the pasted region did not land at the chosen destination selection (5,5)-(6,6): ' + JSON.stringify(afterMetatiles.slice(0, 20))
+      );
+    }
+    if (JSON.stringify(afterMetatiles) === JSON.stringify(beforeMetatiles)) {
+      throw new Error('the destination screen did not change at all after pasting');
+    }
+    const afterThumb = [...document.querySelectorAll('#stage canvas')].filter((c) => c.width === 64 && c.height === 60)[1].toDataURL();
+    if (afterThumb === beforeThumb) {
+      throw new Error("the destination screen's own rendered thumbnail did not change after pasting");
+    }
+
+    // The pasted actor must reflect its ORIGINAL (8,8) position, offset by
+    // the real delta from the copied origin (0,0) to the chosen one (5,5)
+    // -- 5*16=80 on each axis, landing at (88,88) -- never the post-Copy
+    // edit (20,20), which is exactly finding 1's own defect shape.
+    const pastedEntity = destScreen.entities.find((e) => e.actorId === mapStore.project.sprites.actors.length - 1);
+    if (!pastedEntity) throw new Error('the copied actor was not pasted onto the destination screen at all');
+    if (pastedEntity.x !== 88 || pastedEntity.y !== 88) {
+      throw new Error(
+        'the pasted actor did not reflect its ORIGINAL, pre-edit position -- saw (' + pastedEntity.x + ',' + pastedEntity.y + '), expected (88,88)'
+      );
+    }
+    // Code review round 2, finding 1: the pasted actor's NESTED props must
+    // also reflect the original, pre-edit snapshot -- a shallow
+    // {...entity} copy would share the live props object and leak
+    // 'Edited Label' into the clipboard even though x/y came through clean.
+    if (pastedEntity.props.name !== 'Original Label') {
+      throw new Error(
+        "the pasted actor's nested props leaked the post-Copy edit -- saw props.name=" +
+          JSON.stringify(pastedEntity.props.name) +
+          ', expected "Original Label" (proves the clipboard snapshot is not a shallow copy)'
+      );
+    }
+    step(
+      'region copy/paste',
+      'selected a 2x2 rectangle with an actor, copied it (Include actors ticked), edited the copied actor ' +
+        "afterward -- both its top-level x/y and its nested props.name -- pasted at a CHOSEN destination " +
+        "selection (5,5)-(6,6) on a different screen -- the paste reflected the original pre-edit actor " +
+        "position AND nested props, not the edit, and the destination's own rendered thumbnail changed"
+    );
+
+    // Finding 1's second control: change the actor roster after Copy. A
+    // fresh Copy (with the actor still on-screen) followed by a roster
+    // change must make Paste unavailable -- the copied actorId can no
+    // longer be trusted to still name the same actor. Every element below
+    // is re-queried fresh -- the panel has re-rendered several times since
+    // the references captured earlier were taken, so those are stale.
+    [...document.querySelectorAll('#stage canvas')].filter((c) => c.width === 64 && c.height === 60)[0].click(); // back to the source screen
+    await wait(120);
+    dragSelect(0, 0, 1, 1);
+    await wait(150);
+    const includeActorsCheckboxAgain = [...document.querySelectorAll('#stage label.check')]
+      .find((l) => l.textContent.includes('Include actors'))
+      ?.querySelector('input');
+    if (!includeActorsCheckboxAgain) throw new Error('no "Include actors" checkbox appeared after re-selecting the source region');
+    if (!includeActorsCheckboxAgain.checked) includeActorsCheckboxAgain.click();
+    await wait(80);
+    const copyButtonAgain = [...document.querySelectorAll('#stage button.btn.btn-sm')].find((b) => b.textContent.trim() === 'Copy');
+    if (!copyButtonAgain) throw new Error('no Copy button appeared after re-selecting the source region');
+    copyButtonAgain.click();
+    await wait(150);
+    if (![...document.querySelectorAll('#stage button.btn.btn-sm')].some((b) => b.textContent.trim().startsWith('Paste region'))) {
+      throw new Error('Paste region should be offered immediately after a fresh Copy, before any roster change');
+    }
+    // Code review round 2, finding 1: a SAME-LENGTH record edit, not an
+    // append -- a guard comparing project.sprites.actors.length (rather than
+    // the full rosterOf(project) content) would pass this unchanged, since
+    // the array's length never moves. Renaming the existing actor changes
+    // what actorId 0 names without changing how many actors there are.
+    mapStore.commit('smoke paste: the roster changes after Copy (same-length record edit)', (project) => {
+      project.sprites.actors[0].name = 'Renamed';
+    });
+    await wait(150);
+    if ([...document.querySelectorAll('#stage button.btn.btn-sm')].some((b) => b.textContent.trim().startsWith('Paste region'))) {
+      throw new Error(
+        'Paste region must be withdrawn once the actor roster changes after a Copy that included actors -- ' +
+          'even a same-length record edit, not merely a length change'
+      );
+    }
+    step(
+      'region copy/paste: roster guard',
+      'Paste region was withdrawn the moment the actor roster changed after Copy, via a same-length record edit ' +
+        '(a rename), not merely an append -- proving the guard compares full roster content, not array length'
+    );
+
+    document.querySelector('#stage [data-tool="stamp"]')?.click(); // restore the default tool for later sections
+    await wait(100);
+
+    mapStore.undo(); // "smoke paste: the roster changes after Copy (same-length record edit)"
+    mapStore.undo(); // "Paste region" (the pasteButton click)
+    mapStore.undo(); // "smoke paste: edit the copied actor after Copy"
+    mapStore.undo(); // "smoke paste: a second, destination screen, and an actor to include"
+    await wait(200);
+    if (mapStore.project.maps[0].screens.length !== 1 || mapStore.project.sprites.actors.length !== 0) {
+      throw new Error('the region-paste smoke setup did not fully undo, leaving stray state for the rest of this section');
+    }
+  }
+
+  // --- Map Forge: an over-cap region paste is refused through the REAL
+  // renderer path (code review round 2, finding 2) -- proves the capacity
+  // preflight runs BEFORE store.commit (no undo entry opened for a no-op)
+  // and that the refusal actually reaches the author (a toast), not merely
+  // that the shared core refuses when called directly, which is all the
+  // two unit tests for fix 3 of the previous round could ever show.
+  {
+    const mapStore = window.__app.store;
+    const { LIMITS: limits } = await import('../shared/project.js');
+
+    mapStore.commit('smoke paste over cap: a destination already full of actors, and a source actor to copy', (project) => {
+      const world = project.maps[0];
+      while (world.screens.length < 2) {
+        world.screens.push({ name: '', metatiles: new Array(240).fill(0), entities: [], boundTiles: [] });
+      }
+      world.gridW = 2;
+      world.gridH = 1;
+      project.sprites.actors.push({ name: 'OneTooMany', behavior: 'npc', speed: 0 });
+      const actorId = project.sprites.actors.length - 1;
+      // The source screen (0) carries one actor, well inside the rectangle
+      // about to be copied.
+      world.screens[0].entities.push({ actorId, x: 8, y: 8, props: {} });
+      // The destination screen (1) is already AT LIMITS.entitiesPerScreen --
+      // pasting even one more actor must be refused outright.
+      for (let i = 0; i < limits.entitiesPerScreen; i++) {
+        world.screens[1].entities.push({ actorId, x: i, y: i, props: {} });
+      }
+    });
+    await wait(150);
+
+    window.__app.goTo('map');
+    await wait(300);
+
+    const selectToolButton = document.querySelector('#stage [data-tool="select"]');
+    if (!selectToolButton) throw new Error('no Select tool button found in the Map Forge');
+    selectToolButton.click();
+    await wait(150);
+
+    const dragSelect = (fromCol, fromRow, toCol, toRow) => {
+      const canvas = document.querySelector('#stage .canvas-stage canvas.pixels');
+      const box = canvas.getBoundingClientRect();
+      const pointAt = (col, row) => ({
+        clientX: box.left + ((col + 0.5) / 16) * box.width,
+        clientY: box.top + ((row + 0.5) / 15) * box.height
+      });
+      canvas.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, button: 0, ...pointAt(fromCol, fromRow) }));
+      canvas.dispatchEvent(new PointerEvent('pointermove', { bubbles: true, ...pointAt(toCol, toRow) }));
+      canvas.dispatchEvent(new PointerEvent('pointerup', { bubbles: true }));
+    };
+
+    dragSelect(0, 0, 1, 1); // a 2x2 rectangle around the one source actor
+    await wait(150);
+    const includeActorsCheckbox = [...document.querySelectorAll('#stage label.check')]
+      .find((l) => l.textContent.includes('Include actors'))
+      ?.querySelector('input');
+    if (!includeActorsCheckbox) throw new Error('no "Include actors" checkbox appeared after selecting a region');
+    if (!includeActorsCheckbox.checked) includeActorsCheckbox.click();
+    await wait(80);
+    const copyButton = [...document.querySelectorAll('#stage button.btn.btn-sm')].find((b) => b.textContent.trim() === 'Copy');
+    if (!copyButton) throw new Error('no Copy button appeared after selecting a region');
+    copyButton.click();
+    await wait(150);
+
+    const thumbs = [...document.querySelectorAll('#stage canvas')].filter((c) => c.width === 64 && c.height === 60);
+    if (thumbs.length !== 2) throw new Error('expected 2 screens in the navigator for the over-cap paste smoke case, saw ' + thumbs.length);
+    thumbs[1].click(); // the destination, already full
+    await wait(150);
+
+    const beforeEntities = mapStore.project.maps[0].screens[1].entities.length;
+    const beforeUndoLength = mapStore.undoStack.length;
+
+    const pasteButton = [...document.querySelectorAll('#stage button.btn.btn-sm')].find((b) =>
+      b.textContent.trim().startsWith('Paste region')
+    );
+    if (!pasteButton) throw new Error('no "Paste region" button appeared on the destination screen');
+    pasteButton.click();
+    await wait(200);
+
+    if (mapStore.project.maps[0].screens[1].entities.length !== beforeEntities) {
+      throw new Error('an over-cap paste must leave the destination screen completely unchanged');
+    }
+    if (mapStore.undoStack.length !== beforeUndoLength) {
+      throw new Error(
+        'an over-cap paste must never open an undo entry for a no-op -- the capacity preflight must run BEFORE store.commit'
+      );
+    }
+    const toastTexts = [...document.querySelectorAll('#toastHost .toast')].map((n) => n.textContent);
+    if (!toastTexts.some((t) => t.includes('actors') && t.includes(String(limits.entitiesPerScreen)))) {
+      throw new Error('the over-cap refusal must reach the author as a plain-language toast, saw: ' + JSON.stringify(toastTexts));
+    }
+    step(
+      'region copy/paste: over-cap refusal',
+      'a paste that would exceed LIMITS.entitiesPerScreen left the destination completely unchanged, opened no ' +
+        'undo entry, and reported a plain-language toast'
+    );
+
+    document.querySelector('#stage [data-tool="stamp"]')?.click();
+    await wait(100);
+
+    mapStore.undo(); // "smoke paste over cap: a destination already full of actors, and a source actor to copy"
+    await wait(200);
+    if (mapStore.project.maps[0].screens.length !== 1 || mapStore.project.sprites.actors.length !== 0) {
+      throw new Error('the over-cap paste smoke setup did not fully undo, leaving stray state for the rest of this section');
+    }
+  }
+
+  // --- Map Forge: an empty included-actor selection is NOT roster-guarded
+  // (code review round 2, finding 3) -- [] is truthy in JS, so a clip built
+  // with Include actors ticked over a rectangle with no actor in it must
+  // still be treated as carrying zero actors, not as actor-bearing. Proves
+  // that a later roster edit does NOT withdraw an ordinary metatile paste
+  // when the copied selection never had an actor to guard in the first
+  // place, unlike the actor-bearing case just above, which correctly DOES
+  // withdraw it.
+  {
+    const mapStore = window.__app.store;
+
+    mapStore.commit('smoke paste empty selection: an actor placed OUTSIDE the rectangle about to be copied', (project) => {
+      const world = project.maps[0];
+      while (world.screens.length < 2) {
+        world.screens.push({ name: '', metatiles: new Array(240).fill(0), entities: [], boundTiles: [] });
+      }
+      world.gridW = 2;
+      world.gridH = 1;
+      project.sprites.actors.push({ name: 'Elsewhere', behavior: 'npc', speed: 0 });
+      // Well outside the (10,10)-(11,11) rectangle selected below.
+      world.screens[0].entities.push({ actorId: project.sprites.actors.length - 1, x: 8, y: 8, props: {} });
+    });
+    await wait(150);
+
+    window.__app.goTo('map');
+    await wait(300);
+
+    const selectToolButton = document.querySelector('#stage [data-tool="select"]');
+    if (!selectToolButton) throw new Error('no Select tool button found in the Map Forge');
+    selectToolButton.click();
+    await wait(150);
+
+    const dragSelect = (fromCol, fromRow, toCol, toRow) => {
+      const canvas = document.querySelector('#stage .canvas-stage canvas.pixels');
+      const box = canvas.getBoundingClientRect();
+      const pointAt = (col, row) => ({
+        clientX: box.left + ((col + 0.5) / 16) * box.width,
+        clientY: box.top + ((row + 0.5) / 15) * box.height
+      });
+      canvas.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, button: 0, ...pointAt(fromCol, fromRow) }));
+      canvas.dispatchEvent(new PointerEvent('pointermove', { bubbles: true, ...pointAt(toCol, toRow) }));
+      canvas.dispatchEvent(new PointerEvent('pointerup', { bubbles: true }));
+    };
+
+    dragSelect(10, 10, 11, 11); // a 2x2 rectangle with no actor inside it
+    await wait(150);
+    const includeActorsCheckbox = [...document.querySelectorAll('#stage label.check')]
+      .find((l) => l.textContent.includes('Include actors'))
+      ?.querySelector('input');
+    if (!includeActorsCheckbox) throw new Error('no "Include actors" checkbox appeared after selecting an empty region');
+    if (!includeActorsCheckbox.checked) includeActorsCheckbox.click();
+    await wait(80);
+    const copyButton = [...document.querySelectorAll('#stage button.btn.btn-sm')].find((b) => b.textContent.trim() === 'Copy');
+    if (!copyButton) throw new Error('no Copy button appeared after selecting an empty region');
+    copyButton.click();
+    await wait(150);
+
+    if (![...document.querySelectorAll('#stage button.btn.btn-sm')].some((b) => b.textContent.trim().startsWith('Paste region'))) {
+      throw new Error('Paste region should be offered immediately after Copy of an empty-actor selection');
+    }
+
+    // The roster changes -- an ordinary metatile-only clip (entities: [],
+    // not actor-bearing) must NOT withdraw Paste for this, unlike the
+    // actor-bearing control above.
+    mapStore.commit('smoke paste empty selection: the roster changes after Copy', (project) => {
+      project.sprites.actors.push({ name: 'Intruder', behavior: 'npc', speed: 0 });
+    });
+    await wait(150);
+    if (![...document.querySelectorAll('#stage button.btn.btn-sm')].some((b) => b.textContent.trim().startsWith('Paste region'))) {
+      throw new Error(
+        'Paste region must NOT be withdrawn by a roster change when the copied selection carried entities: [] -- ' +
+          'an empty array has nothing roster-shaped to guard'
+      );
+    }
+    step(
+      'region copy/paste: empty-selection roster guard skip',
+      'a clip built with Include actors ticked over a rectangle with no actor inside it stayed offered as Paste ' +
+        'through a later roster change, proving entities.length > 0 -- not bare truthiness of [] -- is what the guard checks'
+    );
+
+    document.querySelector('#stage [data-tool="stamp"]')?.click(); // restore the default tool for later sections
+    await wait(100);
+
+    mapStore.undo(); // "smoke paste empty selection: the roster changes after Copy"
+    mapStore.undo(); // "smoke paste empty selection: an actor placed OUTSIDE the rectangle about to be copied"
+    await wait(200);
+    if (mapStore.project.maps[0].screens.length !== 1 || mapStore.project.sprites.actors.length !== 0) {
+      throw new Error('the empty-selection paste smoke setup did not fully undo, leaving stray state for the rest of this section');
+    }
+  }
+
+  // --- Map Forge: interleaved-folder reorder (ROADMAP item 7 phase 5,
+  // design-maporg.md §8/§12) -- proves the picker is an ORDERED,
+  // folder-prefixed list, never an <optgroup>-style regroup that could hide
+  // a real reorder. [A(X), B(Y), C(X)] -> swap B/C -> picker reads
+  // "[X] World, [X] C, [Y] B" in that exact order, the folder label
+  // "[X]" repeating rather than the two X-folder maps being drawn together.
+  {
+    const mapStore = window.__app.store;
+    mapStore.commit('smoke interleaved-folder: World gets folder X', (project) => {
+      project.maps[0].folder = 'X';
+    });
+    await wait(120);
+    mapStore.commit('smoke interleaved-folder: add B (folder Y)', (project) => {
+      project.maps.push({
+        id: project.maps.length,
+        name: 'B',
+        folder: 'Y',
+        gridW: 1,
+        gridH: 1,
+        screens: [{ name: '', metatiles: new Array(240).fill(0), entities: [], boundTiles: [] }],
+        songId: null,
+        tilesetId: 0,
+        battleSkyTile: 0,
+        battleGroundTile: 0,
+        encounters: { rate: 0, actorIds: [] }
+      });
+    });
+    await wait(120);
+    mapStore.commit('smoke interleaved-folder: add C (folder X)', (project) => {
+      project.maps.push({
+        id: project.maps.length,
+        name: 'C',
+        folder: 'X',
+        gridW: 1,
+        gridH: 1,
+        screens: [{ name: '', metatiles: new Array(240).fill(0), entities: [], boundTiles: [] }],
+        songId: null,
+        tilesetId: 0,
+        battleSkyTile: 0,
+        battleGroundTile: 0,
+        encounters: { rate: 0, actorIds: [] }
+      });
+    });
+    await wait(150);
+
+    window.__app.goTo('map');
+    await wait(300);
+
+    const beforeInterleavedOrder = mapOptionNames();
+    const expectedBefore = ['[X] World', '[Y] B', '[X] C'];
+    if (JSON.stringify(beforeInterleavedOrder) !== JSON.stringify(expectedBefore)) {
+      throw new Error('unexpected picker order before the interleaved-folder reorder: ' + JSON.stringify(beforeInterleavedOrder));
+    }
+
+    // Select B (position 1) and move it later, swapping with C (position 2).
+    mapPickerSelect().value = '1';
+    mapPickerSelect().dispatchEvent(new Event('change', { bubbles: true }));
+    await wait(150);
+    const moveLaterButton = [...document.querySelectorAll('#mapSettingsPanel button')].find(
+      (node) => node.title === 'Move this map later'
+    );
+    if (!moveLaterButton) throw new Error('no "move this map later" reorder control found for the interleaved-folder case');
+    moveLaterButton.click();
+    await wait(250);
+
+    const afterInterleavedOrder = mapOptionNames();
+    const expectedAfter = ['[X] World', '[X] C', '[Y] B'];
+    if (JSON.stringify(afterInterleavedOrder) !== JSON.stringify(expectedAfter)) {
+      throw new Error(
+        'the picker after reorder must read ' +
+          JSON.stringify(expectedAfter) +
+          ' -- proving it is never an optgroup-style regroup that could hide a real reorder -- saw ' +
+          JSON.stringify(afterInterleavedOrder)
+      );
+    }
+    step('interleaved-folder reorder', 'the picker read ' + JSON.stringify(afterInterleavedOrder) + ', never regrouped by folder');
+
+    mapStore.undo(); // reorder
+    mapStore.undo(); // add C
+    mapStore.undo(); // add B
+    mapStore.undo(); // World gets folder X
+    await wait(200);
+    if (mapStore.project.maps.length !== 1 || mapStore.project.maps[0].folder) {
+      throw new Error('the interleaved-folder smoke setup did not fully undo, leaving stray state for the rest of this section');
+    }
+  }
+
   store.commit('smoke metatile', (project) => {
     project.metatiles[1].tiles = [1, 1, 1, 1];
     project.metatiles[1].collision = 'solid';
@@ -167,6 +1149,34 @@ const scenario = (dir, sampleDir, sampleRpgDir) => `
     throw new Error('maps did not survive the disk round trip');
   }
   step('map round trip', 'identical');
+
+  // Folder round trip through the REAL save/open IPC path (ROADMAP item 7
+  // phase 5, design-maporg.md §8/§12) -- the picker's own rendered,
+  // folder-prefixed label, not just the raw field the unit tests already
+  // prove round-trips through loadProject/saveProject called directly.
+  store.commit('smoke folder', (project) => {
+    project.maps[0].folder = 'Dungeons';
+  });
+  await wait(200);
+  const folderOptionText = mapPickerSelect().querySelector('option').textContent;
+  if (folderOptionText !== '[Dungeons] World') {
+    throw new Error('the map picker did not show the folder-prefixed label, saw: ' + JSON.stringify(folderOptionText));
+  }
+  const folderRoundTrip = await window.forge.project.save(store.dir, store.project);
+  if (!folderRoundTrip.ok) throw new Error('save after setting a folder: ' + folderRoundTrip.error);
+  const folderReloaded = await window.forge.project.open(store.dir);
+  if (folderReloaded.value.project.maps[0].folder !== 'Dungeons') {
+    throw new Error(
+      'folder did not survive the real save/open IPC round trip, saw: ' +
+        JSON.stringify(folderReloaded.value.project.maps[0].folder)
+    );
+  }
+  step('folder round trip', 'the picker showed "[Dungeons] World", and the real save/open IPC round trip preserved it');
+  store.undo();
+  await wait(200);
+  if (store.project.maps[0].folder) {
+    throw new Error('the folder smoke setup did not fully undo, leaving stray state for the rest of this section');
+  }
 
   // Naming a screen has to reach every menu that offers one, which is the whole
   // point of it: the label is built in one place so a warp, a door and the

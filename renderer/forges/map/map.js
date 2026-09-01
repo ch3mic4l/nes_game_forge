@@ -8,7 +8,6 @@ import { el, clear, fill, field, toast, confirmModal, showModal, fitZoom, observ
 import {
   LIMITS,
   createScreen,
-  createMap,
   COLLISION_TYPES,
   AUTHOR_NAME_MAX,
   flatScreens,
@@ -17,7 +16,21 @@ import {
   canTalk,
   EVENT_TRIGGERS,
   availableTriggers,
-  effectiveTrigger
+  effectiveTrigger,
+  reorderMapsCore,
+  addMapCore,
+  duplicateMapCore,
+  deleteMapCore,
+  buildDeleteMapTranslate,
+  buildResizeTranslate,
+  auditDroppedReferences,
+  growOrShrinkMap,
+  duplicateScreenViaGrowthCore,
+  duplicateScreenIntoNewMapCore,
+  clampPasteOrigin,
+  buildRegionClip,
+  pasteRegionCore,
+  pasteCapacityProblem
 } from '../../../shared/project.js';
 import { BOX_COLS, BOX_ROWS, FONT_BASE, wrapText, projectUsesEffectiveTitle } from '../../../shared/font.js';
 import { RPG_LIMITS, isMonsterActor, mapEncounterFormation } from '../../../shared/project.js';
@@ -87,9 +100,44 @@ const rosterOf = (project) => JSON.stringify(project.sprites.actors);
 const clipboardIsHere = () =>
   Boolean(clipboard) && clipboard.dir === store.dir && rosterOf(store.project) === clipboard.roster;
 
+// A second, analogous module-level clipboard for a rectangular metatile
+// region (design §6.3) -- not a reuse of `clipboard` above, since a region
+// copy and an actor copy are different shapes and pasting one where the
+// other is expected should not silently coerce. Guarded the identical way:
+// metatile ids, like actor ids, have no portable meaning across two
+// different open projects. `originRow`/`originCol` (where it was copied
+// from) and, when the optional "include actors" step was used, `entities`
+// (each one's own original, absolute x/y, so the delta to a paste target is
+// computed once, at paste time, from wherever the rectangle actually lands)
+// ride alongside `buildRegionClip`'s own {width, height, metatiles,
+// boundTiles, sourceTilesetId} shape.
+let regionClipboard = null;
+// Code review round 2, finding 3: "carries entities" means a NON-EMPTY
+// array, not merely a truthy one -- Include actors ticked over a rectangle
+// with no actor in it produces entities: [], and [] is truthy in JS, so a
+// bare `entities ?`/`!entities ||` check (round 1's own shape) treated an
+// ordinary metatile-only clip as actor-bearing, withdrawing Paste on every
+// later roster edit for no reason. One predicate, used everywhere "does
+// this clip actually carry an actor" is asked, so the two call sites below
+// cannot independently drift back into the same truthiness mistake.
+const clipHasActors = (entities) => Boolean(entities && entities.length > 0);
+
+// Code review round 1, finding 1: whenever the clip carries entities, the
+// SAME roster guard the actor clipboard's own clipboardIsHere() already
+// uses -- an actorId has no meaning once the roster it was copied against
+// has changed (an edit to a copied actor, or a delete that renumbers
+// everyone after it). A region with no entities has nothing roster-shaped
+// to guard, so the check is skipped entirely for that case, not merely
+// vacuously true against a stale signature.
+const regionClipboardIsHere = () =>
+  Boolean(regionClipboard) &&
+  regionClipboard.dir === store.dir &&
+  (!clipHasActors(regionClipboard.entities) || rosterOf(store.project) === regionClipboard.roster);
+
 const TOOLS = [
   { id: 'stamp', label: '▪ Stamp', title: 'Paint the selected metatile' },
   { id: 'rect', label: '▭ Rect', title: 'Fill a rectangle' },
+  { id: 'select', label: '▦ Select', title: 'Select a rectangle to copy' },
   { id: 'fill', label: '🪣 Fill', title: 'Flood fill matching metatiles' },
   { id: 'pick', label: '💧 Pick', title: 'Pick up the metatile under the cursor, then return to Stamp' },
   { id: 'start', label: '⚑ Start', title: 'Place where the player begins' },
@@ -123,6 +171,11 @@ export function mount(container, app) {
     painting: false,
     rectStart: null,
     rectEnd: null,
+    // The Select tool's own finalized rectangle (design §6.3) -- distinct
+    // from rectStart/rectEnd, which only ever describe a drag in progress
+    // (shared with the Rect fill tool). Cleared whenever the screen changes.
+    regionSelection: null,
+    copyIncludeEntities: false,
     // The free-form battle-test picker's own selection -- ephemeral debugger
     // state, not project data, so it is never committed and simply resets on
     // remount like the rest of `state` does.
@@ -284,6 +337,17 @@ export function mount(container, app) {
         (maxRow - minRow + 1) * METATILE_PX * zoom
       );
     }
+
+    // The Select tool's own finalized selection, once the drag has ended --
+    // distinct styling from the in-progress drag rectangle above.
+    if (state.regionSelection) {
+      const { row, col, width, height } = state.regionSelection;
+      layer.strokeStyle = '#3ca0ff';
+      layer.lineWidth = 2;
+      layer.setLineDash([4, 3]);
+      layer.strokeRect(col * METATILE_PX * zoom, row * METATILE_PX * zoom, width * METATILE_PX * zoom, height * METATILE_PX * zoom);
+      layer.setLineDash([]);
+    }
   }
 
   function renderNavigator() {
@@ -305,6 +369,7 @@ export function mount(container, app) {
         title: screen.name?.trim() ? `Screen ${index} — ${screen.name}` : `Screen ${index}`,
         onclick: () => {
           state.screenIndex = index;
+          state.regionSelection = null; // a selection made on one screen means nothing on another
           renderScreen();
           renderNavigator();
           renderEntities();
@@ -412,6 +477,22 @@ export function mount(container, app) {
     });
   }
 
+  /**
+   * A real mouse/touch pointerdown always has a capturable pointer, but a
+   * synthetically dispatched PointerEvent (browser automation, some
+   * accessibility tooling) does not, and `setPointerCapture` throws
+   * `NotFoundError` for one -- uncaught, that crashes the whole Forge mid-
+   * drag. Losing capture only means a drag that leaves the canvas stops
+   * tracking; the ordinary pointerup on the canvas itself still ends it.
+   */
+  function trySetPointerCapture(event) {
+    try {
+      canvas.setPointerCapture(event.pointerId);
+    } catch {
+      // Best-effort only -- see the comment above.
+    }
+  }
+
   function onPointerDown(event) {
     if (event.button > 2) return;
     event.preventDefault();
@@ -507,11 +588,11 @@ export function mount(container, app) {
       return;
     }
 
-    if (state.tool === 'rect') {
+    if (state.tool === 'rect' || state.tool === 'select') {
       state.rectStart = cell;
       state.rectEnd = cell;
       state.painting = true;
-      canvas.setPointerCapture(event.pointerId);
+      trySetPointerCapture(event);
       renderScreen();
       return;
     }
@@ -534,7 +615,7 @@ export function mount(container, app) {
     state.paintId = id;
     paintCell(cell, id);
     renderScreen();
-    canvas.setPointerCapture(event.pointerId);
+    trySetPointerCapture(event);
   }
 
   function onPointerMove(event) {
@@ -554,7 +635,7 @@ export function mount(container, app) {
     cursorInfo.textContent = hint;
     if (state.tool === 'bind') renderBoundMetatileOptions(cell);
     if (!state.painting) return;
-    if (state.tool === 'rect') {
+    if (state.tool === 'rect' || state.tool === 'select') {
       state.rectEnd = cell;
       renderScreen();
       return;
@@ -565,6 +646,19 @@ export function mount(container, app) {
   function onPointerUp() {
     if (!state.painting) return;
     state.painting = false;
+
+    if (state.tool === 'select' && state.rectStart && state.rectEnd) {
+      const minCol = Math.min(state.rectStart.col, state.rectEnd.col);
+      const maxCol = Math.max(state.rectStart.col, state.rectEnd.col);
+      const minRow = Math.min(state.rectStart.row, state.rectEnd.row);
+      const maxRow = Math.max(state.rectStart.row, state.rectEnd.row);
+      state.regionSelection = { row: minRow, col: minCol, width: maxCol - minCol + 1, height: maxRow - minRow + 1 };
+      state.rectStart = null;
+      state.rectEnd = null;
+      renderScreen();
+      renderEntities(); // the Select tool's own copy panel lives in the entity/tool sidebar
+      return;
+    }
 
     if (state.tool === 'rect' && state.rectStart && state.rectEnd) {
       const minCol = Math.min(state.rectStart.col, state.rectEnd.col);
@@ -595,26 +689,192 @@ export function mount(container, app) {
 
   // --------------------------------------------------------- right panel
 
-  function resizeMap(newWidth, newHeight) {
+  /**
+   * One undo entry for the whole edit -- `reorderMapsCore`
+   * (shared/project.js) is the commit-free core (the permutation,
+   * `remapScreenReferences`, the `titleMap`/`startMap` update, the token
+   * draw); this is nothing but that function wrapped in the one
+   * `store.commit` it needs (Fix round 1, finding 2 -- previously this body
+   * was duplicated here and in the unit tests, two independently
+   * maintained copies of the same logic).
+   */
+  function reorderMaps(newMapOrder) {
+    store.commit('Reorder maps', (project) => {
+      reorderMapsCore(project, newMapOrder);
+    });
+  }
+
+  /**
+   * The simplest gesture that still needs the full mechanism: swap the
+   * current map with its immediate neighbor. A drag-to-reorder list would
+   * be a strictly nicer version of the identical operation -- reorderMaps
+   * itself takes an arbitrary permutation -- so this is a UI-only choice,
+   * not a limit of the mechanism.
+   */
+  function moveMapBy(delta) {
     const index = state.mapIndex;
-    store.commit('Resize map', (project) => {
-      const map = project.maps[index];
-      const screens = [];
+    const target = index + delta;
+    if (target < 0 || target >= store.project.maps.length) return;
+    const order = store.project.maps.map((_, i) => i);
+    [order[index], order[target]] = [order[target], order[index]];
+    reorderMaps(order);
+    state.mapIndex = target;
+    renderAll();
+  }
+
+  /**
+   * `addMapCore` (shared/project.js) is the commit-free core (a fresh,
+   * empty, collision-avoiding-named map, plus the project-wide
+   * append-canonicalizing pass) -- this is nothing but that function
+   * wrapped in the one `store.commit` it needs, closing the real shipped
+   * handler's own gap (a bare `project.maps.push` with no reference repair
+   * at all, design §4.2).
+   */
+  function addMap() {
+    let newMap;
+    store.commit('Add map', (project) => {
+      newMap = addMapCore(project);
+    });
+    state.mapIndex = store.project.maps.indexOf(newMap);
+    state.screenIndex = 0;
+    renderAll();
+  }
+
+  /**
+   * `duplicateMapCore` (shared/project.js) is the commit-free core (clone,
+   * auto-suffixed name, append, the project-wide append-canonicalizing
+   * pass, the clone's own self/external split) -- this is nothing but that
+   * function wrapped in the one `store.commit` it needs.
+   */
+  function duplicateMap(mapIndex) {
+    let clone;
+    store.commit('Duplicate map', (project) => {
+      clone = duplicateMapCore(project, mapIndex);
+    });
+    state.mapIndex = store.project.maps.indexOf(clone);
+    state.screenIndex = 0;
+    renderAll();
+  }
+
+  /**
+   * A shrink can drop screens no longer in the resized map's own grid --
+   * the same reference-repairing retrofit `deleteMap` needs (design
+   * §6.9/§6.4). A grow only ever adds blank screens, so it drops nothing
+   * and needs no confirmation; only a shrink runs the dry-run audit and
+   * asks. The `newScreens` rebuild here deliberately duplicates
+   * `growOrShrinkMap`'s own loop rather than sharing it, exactly as
+   * design §6.9 does -- a read-only dry run must never risk mutating the
+   * live project it is only trying to describe.
+   */
+  async function resizeMap(newWidth, newHeight) {
+    const index = state.mapIndex;
+    const map = store.project.maps[index];
+    const shrinking = newWidth * newHeight < map.gridW * map.gridH;
+    if (shrinking) {
+      const oldScreens = map.screens;
+      const newScreens = [];
       for (let row = 0; row < newHeight; row++) {
         for (let col = 0; col < newWidth; col++) {
-          screens.push(
-            row < map.gridH && col < map.gridW ? map.screens[row * map.gridW + col] : createScreen()
+          newScreens.push(
+            row < map.gridH && col < map.gridW ? oldScreens[row * map.gridW + col] : createScreen()
           );
         }
       }
-      map.gridW = newWidth;
-      map.gridH = newHeight;
-      map.screens = screens;
-      if (project.project.startMap === index && project.project.startScreen >= screens.length) {
-        project.project.startScreen = 0;
+      const dryTranslate = buildResizeTranslate(store.project, index, newScreens);
+      const discarded = new Set(oldScreens.filter((screen) => !newScreens.includes(screen)));
+      const wouldDrop = auditDroppedReferences(store.project, dryTranslate, discarded);
+      if (wouldDrop > 0) {
+        const message = `Shrinking this map will drop ${wouldDrop} door${
+          wouldDrop === 1 ? '' : 's'
+        }/warp${wouldDrop === 1 ? '' : 's'} that point at a screen being removed. Continue?`;
+        if (!(await confirmModal('Resize map', message, 'Resize'))) return;
       }
+    }
+    store.commit('Resize map', (project) => {
+      growOrShrinkMap(project, index, newWidth, newHeight);
     });
     if (state.screenIndex >= currentMap().screens.length) state.screenIndex = 0;
+    renderAll();
+  }
+
+  /**
+   * §6.9.1's own thin wrapper: one store.commit around
+   * duplicateScreenViaGrowthCore. `mapIndex` names the DESTINATION map --
+   * not necessarily the currently-open one (the target-map-picker branch of
+   * duplicateScreen(), below, can name a different map).
+   */
+  function duplicateScreenViaGrowth(mapIndex, sourceScreen) {
+    let outcome;
+    store.commit('Duplicate screen', (project) => {
+      outcome = duplicateScreenViaGrowthCore(project, mapIndex, sourceScreen);
+    });
+    return outcome;
+  }
+
+  /** §6.2.1's own thin wrapper: one store.commit around duplicateScreenIntoNewMapCore. */
+  function duplicateScreenIntoNewMap(sourceScreen) {
+    let outcome;
+    store.commit('Duplicate screen', (project) => {
+      outcome = duplicateScreenIntoNewMapCore(project, sourceScreen);
+    });
+    return outcome;
+  }
+
+  /**
+   * "⧉ Duplicate screen" -- design §6.2/§12's three-step preference order,
+   * one UI entry point: grow the CURRENT map if it has room, no prompt;
+   * otherwise offer a target-map picker among any OTHER map with room;
+   * otherwise (every map already 4x4) fall straight through to the
+   * brand-new-map fallback, no prompt -- there is nothing left to choose
+   * between.
+   */
+  async function duplicateScreen() {
+    const sourceIndex = state.mapIndex;
+    const sourceMap = store.project.maps[sourceIndex];
+    const sourceScreen = currentScreen();
+    const hasRoom = (map) => map.gridW * map.gridH < LIMITS.mapGrid ** 2;
+
+    if (hasRoom(sourceMap)) {
+      const { cloneScreen, warning } = duplicateScreenViaGrowth(sourceIndex, sourceScreen);
+      if (warning) toast(warning);
+      state.screenIndex = currentMap().screens.indexOf(cloneScreen);
+      renderAll();
+      return;
+    }
+
+    const candidates = store.project.maps
+      .map((map, index) => ({ map, index }))
+      .filter(({ map, index }) => index !== sourceIndex && hasRoom(map));
+
+    if (candidates.length > 0) {
+      const chosenIndex = await showModal({
+        title: 'Duplicate screen into…',
+        body: () =>
+          el(
+            'div',
+            { style: { minWidth: '280px' } },
+            el(
+              'p.hint',
+              { style: { marginBottom: '10px' } },
+              `"${sourceMap.name}" is already full (4×4 screens). Pick another map with room:`
+            )
+          ),
+        actions: candidates.map(({ map, index }) => ({ label: map.name, onClick: () => index })).concat([
+          { label: 'Cancel', value: null }
+        ])
+      });
+      if (chosenIndex === null || chosenIndex === undefined) return;
+      const { cloneScreen, warning } = duplicateScreenViaGrowth(chosenIndex, sourceScreen);
+      if (warning) toast(warning);
+      state.mapIndex = chosenIndex;
+      state.screenIndex = currentMap().screens.indexOf(cloneScreen);
+      renderAll();
+      return;
+    }
+
+    const { newMap, cloneScreen } = duplicateScreenIntoNewMap(sourceScreen);
+    state.mapIndex = store.project.maps.indexOf(newMap);
+    state.screenIndex = 0;
     renderAll();
   }
 
@@ -722,6 +982,101 @@ export function mount(container, app) {
       project.maps[mapIndex].screens[screenIndex].entities.push(copy);
     });
     renderScreen();
+    renderEntities();
+  }
+
+  /**
+   * Fills `regionClipboard` from `state.regionSelection` (design §6.3). Pure
+   * read -- no commit. When "Include actors" is checked, every entity whose
+   * own top-left pixel falls inside the selected rectangle rides along too,
+   * kept at its own absolute `x`/`y` (never pre-offset) so `pasteRegion`
+   * below can compute the delta once, from wherever the paste actually
+   * lands, exactly the way `buildCloneTranslate`'s own "compute once, from
+   * final positions" discipline already works elsewhere in this file.
+   *
+   * Code review round 1, finding 1: the selected entities are
+   * `structuredClone`d here, at copy time -- a bare `.filter()` would retain
+   * the LIVE source objects, so editing a copied actor after Copy (or
+   * anything else touching that same live object) would silently change
+   * what a later Paste produces. A roster signature rides alongside them
+   * too, the same `rosterOf` the actor clipboard already guards with,
+   * checked by `regionClipboardIsHere()` whenever the clip carries entities.
+   */
+  function copyRegion() {
+    const { mapIndex, screenIndex, regionSelection } = state;
+    if (!regionSelection) return;
+    const { row, col, width, height } = regionSelection;
+    const clip = buildRegionClip(store.project, mapIndex, screenIndex, row, col, width, height);
+    const originX = col * METATILE_PX;
+    const originY = row * METATILE_PX;
+    const entities = state.copyIncludeEntities
+      ? currentScreen()
+          .entities.filter(
+            (entity) =>
+              entity.x >= originX &&
+              entity.x < originX + width * METATILE_PX &&
+              entity.y >= originY &&
+              entity.y < originY + height * METATILE_PX
+          )
+          .map((entity) => structuredClone(entity))
+      : null;
+    regionClipboard = {
+      dir: store.dir,
+      ...clip,
+      originRow: row,
+      originCol: col,
+      entities,
+      roster: clipHasActors(entities) ? rosterOf(store.project) : null
+    };
+    toast(`Copied ${width}×${height}${entities ? ` (${entities.length} actor${entities.length === 1 ? '' : 's'})` : ''}.`);
+    // Copy mutates only the closure-local regionClipboard, not store.project,
+    // so no store.commit fires to trigger onProjectChange's own renderAll()
+    // -- without this, the new Paste region button (and the withdrawal of an
+    // old one, when a fresh Copy carries no actors) would not appear until
+    // some UNRELATED interaction happened to redraw the sidebar next.
+    renderEntities();
+  }
+
+  /**
+   * Pastes `regionClipboard` onto the current screen. Code review round 1,
+   * finding 2: the destination origin is the CURRENT screen's own
+   * `state.regionSelection`, when it has one -- the Select tool already
+   * exists and needs no new gesture, an author simply selects a rectangle
+   * on the destination the same way they did on the source -- falling back
+   * to the copied origin when the destination has no selection of its own
+   * (the original "just a button" behavior, still correct for "paste back
+   * where it came from"). `clampPasteOrigin` and the entity delta below are
+   * therefore genuinely live in production now, not merely reachable from a
+   * unit test.
+   *
+   * Code review round 1, finding 3: the atomic capacity check
+   * (`pasteCapacityProblem`) runs BEFORE `store.commit` -- a refused paste
+   * must not even open an undo entry for a no-op.
+   */
+  function pasteRegion() {
+    if (!regionClipboardIsHere()) return;
+    const { mapIndex, screenIndex, regionSelection } = state;
+    const destOriginRow = regionSelection ? regionSelection.row : regionClipboard.originRow;
+    const destOriginCol = regionSelection ? regionSelection.col : regionClipboard.originCol;
+    const { row, col } = clampPasteOrigin(destOriginRow, destOriginCol, regionClipboard.width, regionClipboard.height);
+    const entitiesToAdd = regionClipboard.entities
+      ? regionClipboard.entities.map((entity) => ({
+          ...structuredClone(entity),
+          x: entity.x + (col - regionClipboard.originCol) * METATILE_PX,
+          y: entity.y + (row - regionClipboard.originRow) * METATILE_PX
+        }))
+      : undefined;
+
+    const problem = pasteCapacityProblem(store.project, mapIndex, screenIndex, destOriginRow, destOriginCol, regionClipboard, entitiesToAdd);
+    if (problem) return toast(problem, 'error');
+
+    let outcome;
+    store.commit('Paste region', (project) => {
+      outcome = pasteRegionCore(project, mapIndex, screenIndex, destOriginRow, destOriginCol, regionClipboard, entitiesToAdd);
+    });
+    if (outcome.warning) toast(outcome.warning);
+    renderScreen();
+    renderNavigator();
     renderEntities();
   }
 
@@ -1096,6 +1451,60 @@ export function mount(container, app) {
           'Common events…'
         )
       ),
+      // The Select tool's own copy/paste panel (design §6.3) -- only shown
+      // while that tool is active, so it doesn't clutter every other tool's
+      // own sidebar with controls that have nothing to act on yet.
+      state.tool === 'select'
+        ? el(
+            'div.panel',
+            {
+              style: {
+                marginBottom: '8px',
+                padding: '8px',
+                border: '1px solid var(--line)',
+                borderRadius: 'var(--radius)'
+              }
+            },
+            el('div.panel-head', { style: { paddingLeft: '0' } }, 'Copy/paste region'),
+            state.regionSelection
+              ? el(
+                  'p.hint',
+                  null,
+                  `Selected ${state.regionSelection.width}×${state.regionSelection.height} at row ${state.regionSelection.row}, col ${state.regionSelection.col}.`
+                )
+              : el('p.hint', null, 'Drag on the screen to select a rectangle.'),
+            state.regionSelection
+              ? el(
+                  'div.field-row',
+                  null,
+                  el(
+                    'label.check',
+                    null,
+                    el('input', {
+                      type: 'checkbox',
+                      checked: state.copyIncludeEntities,
+                      onchange: (event) => (state.copyIncludeEntities = event.target.checked)
+                    }),
+                    'Include actors'
+                  ),
+                  el('button.btn.btn-sm', { onclick: () => copyRegion() }, 'Copy')
+                )
+              : null,
+            regionClipboardIsHere()
+              ? el(
+                  'button.btn.btn-sm',
+                  {
+                    style: { marginTop: '6px' },
+                    title: state.regionSelection
+                      ? 'Paste the copied region onto this screen, at the current selection'
+                      : 'Paste the copied region onto this screen, at the position it was copied from',
+                    onclick: () => pasteRegion()
+                  },
+                  `Paste region (${regionClipboard.width}×${regionClipboard.height})`
+                )
+              : null
+          )
+        : null,
       // Only once something has been copied *here*: an always-present Paste
       // that usually cannot do anything is worse than no button at all.
       clipboardIsHere()
@@ -1461,27 +1870,51 @@ export function mount(container, app) {
               onchange: (event) => {
                 state.mapIndex = Number(event.target.value);
                 state.screenIndex = 0;
+                state.regionSelection = null;
                 renderAll();
               }
             },
             store.project.maps.map((entry, index) =>
-              el('option', { value: index, selected: index === state.mapIndex }, entry.name)
+              el(
+                'option',
+                { value: index, selected: index === state.mapIndex },
+                entry.folder ? `[${entry.folder}] ${entry.name}` : entry.name
+              )
             )
           ),
           el(
             'button.btn.btn-sm',
             {
+              title: 'Move this map earlier',
+              disabled: state.mapIndex === 0,
+              onclick: () => moveMapBy(-1)
+            },
+            '▲'
+          ),
+          el(
+            'button.btn.btn-sm',
+            {
+              title: 'Move this map later',
+              disabled: state.mapIndex >= store.project.maps.length - 1,
+              onclick: () => moveMapBy(1)
+            },
+            '▼'
+          ),
+          el(
+            'button.btn.btn-sm',
+            {
               title: 'Add a map',
-              onclick: () => {
-                store.commit('Add map', (project) => {
-                  project.maps.push(createMap(project.maps.length, `Map ${project.maps.length}`));
-                });
-                state.mapIndex = store.project.maps.length - 1;
-                state.screenIndex = 0;
-                renderAll();
-              }
+              onclick: addMap
             },
             '+'
+          ),
+          el(
+            'button.btn.btn-sm',
+            {
+              title: 'Duplicate this map',
+              onclick: () => duplicateMap(state.mapIndex)
+            },
+            '⧉'
           ),
           el(
             'button.btn.btn-sm',
@@ -1489,15 +1922,23 @@ export function mount(container, app) {
               title: 'Delete this map',
               onclick: async () => {
                 if (store.project.maps.length === 1) return toast('A project needs at least one map.', 'error');
-                if (!(await confirmModal('Delete map', `Delete "${map.name}" and everything on it?`, 'Delete'))) return;
                 const index = state.mapIndex;
+                const dryTranslate = buildDeleteMapTranslate(store.project, index);
+                const discarded = new Set(
+                  flatScreens(store.project).filter((entry) => entry.mapIndex === index).map((entry) => entry.screen)
+                );
+                const wouldDrop = auditDroppedReferences(store.project, dryTranslate, discarded);
+                const warning =
+                  wouldDrop > 0
+                    ? ` This will drop ${wouldDrop} door${wouldDrop === 1 ? '' : 's'}/warp${
+                        wouldDrop === 1 ? '' : 's'
+                      } that point at a screen being removed.`
+                    : '';
+                if (!(await confirmModal('Delete map', `Delete "${map.name}" and everything on it?${warning}`, 'Delete')))
+                  return;
                 store.commit('Delete map', (project) => {
-                  project.maps.splice(index, 1);
+                  deleteMapCore(project, index);
                   project.maps.forEach((entry, position) => (entry.id = position));
-                  if (project.project.startMap >= project.maps.length) {
-                    project.project.startMap = 0;
-                    project.project.startScreen = 0;
-                  }
                 });
                 state.mapIndex = 0;
                 state.screenIndex = 0;
@@ -1518,6 +1959,28 @@ export function mount(container, app) {
             const value = event.target.value.trim() || `Map ${index}`;
             store.commit('Rename map', (project) => {
               project.maps[index].name = value;
+            });
+            renderMapSettings();
+          }
+        })
+      ),
+      // Display-only grouping label (design §8) -- never sorts or regroups
+      // project.maps' own array order, only prefixes the picker's own
+      // labels below. '' (not just a bare empty string) is normalized to
+      // null by store.commit's own next round trip, same as every other
+      // optional name field in this Forge.
+      field(
+        'Folder',
+        el('input', {
+          type: 'text',
+          value: map.folder ?? '',
+          maxLength: AUTHOR_NAME_MAX,
+          placeholder: 'none — e.g. Dungeons',
+          onchange: (event) => {
+            const index = state.mapIndex;
+            const value = event.target.value.trim();
+            store.commit('Change map folder', (project) => {
+              project.maps[index].folder = value || null;
             });
             renderMapSettings();
           }
@@ -1594,20 +2057,32 @@ export function mount(container, app) {
       // what it buys is every warp, door and search result reading as a place.
       field(
         `Screen ${state.screenIndex} name`,
-        el('input', {
-          type: 'text',
-          value: currentScreen().name ?? '',
-          maxLength: AUTHOR_NAME_MAX,
-          placeholder: 'unnamed — e.g. Cave mouth',
-          onchange: (event) => {
-            const { mapIndex, screenIndex } = state;
-            const value = event.target.value;
-            store.commit('Rename screen', (project) => {
-              project.maps[mapIndex].screens[screenIndex].name = value.trim().slice(0, AUTHOR_NAME_MAX);
-            });
-            renderAll();
-          }
-        })
+        el(
+          'div.field-row',
+          null,
+          el('input', {
+            type: 'text',
+            value: currentScreen().name ?? '',
+            maxLength: AUTHOR_NAME_MAX,
+            placeholder: 'unnamed — e.g. Cave mouth',
+            onchange: (event) => {
+              const { mapIndex, screenIndex } = state;
+              const value = event.target.value;
+              store.commit('Rename screen', (project) => {
+                project.maps[mapIndex].screens[screenIndex].name = value.trim().slice(0, AUTHOR_NAME_MAX);
+              });
+              renderAll();
+            }
+          }),
+          el(
+            'button.btn.btn-sm',
+            {
+              title: 'Duplicate screen',
+              onclick: () => duplicateScreen()
+            },
+            '⧉'
+          )
+        )
       ),
       el('div.panel-head', { style: { paddingLeft: '0' } }, 'Player start'),
       el('p.hint', null, `${screenLabel(store.project, startMap, startScreen)} · x ${startX}, y ${startY}`),

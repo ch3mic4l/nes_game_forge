@@ -224,9 +224,19 @@ export function saveIdentity(project) {
   // of what makes two builds' identities differ.
   const itemsEnabled = projectUsesItems(project) ? 1 : 0;
   const itemCount = itemsEnabled ? (project?.items ?? []).length : 0;
-  let hashLo = SAVE_LAYOUT_VERSION;
-  let hashHi = SAVE_LAYOUT_VERSION;
-  for (const value of [
+  // ROADMAP item 7 (handoff-maporg/design-maporg.md §6.10): a structural edit
+  // that reorders/deletes/resizes screens can leave screenCount/mapCount --
+  // the only order-adjacent facts already folded in above -- completely
+  // unchanged (any permutation, most concretely), which would otherwise let
+  // save_check_valid (engine/save.asm) accept a cartridge record whose
+  // flat_screen byte no longer names the room it was saved in. saveCompatToken
+  // is a project-wide nonce, independently redrawn by the operation itself
+  // (see drawSaveCompatToken) on every edit that needs this -- pushed only
+  // when nonzero, so a project that has never performed one folds the
+  // identical sequence this function already computed before this field
+  // existed, byte-identical.
+  const saveCompatToken = project?.project?.saveCompatToken ?? 0;
+  const values = [
     RPG_LIMITS.variables,
     RPG_LIMITS.party,
     MAX_ITEMS,
@@ -238,7 +248,11 @@ export function saveIdentity(project) {
     battleEnabled,
     itemsEnabled,
     itemCount
-  ]) {
+  ];
+  if (saveCompatToken) values.push(saveCompatToken);
+  let hashLo = SAVE_LAYOUT_VERSION;
+  let hashHi = SAVE_LAYOUT_VERSION;
+  for (const value of values) {
     hashLo = (hashLo * 33) ^ (value & 0xffff);
     hashLo &= 0xffff;
     hashHi = (hashHi * 33) ^ (hashLo & 0xffff);

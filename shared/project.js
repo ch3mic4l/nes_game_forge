@@ -1123,7 +1123,13 @@ export function createMap(id, name = 'World') {
     // switches CHR banks before it draws. Ignored outside RPG projects.
     battleSkyTile: 0,
     battleGroundTile: 0,
-    encounters: { rate: 0, actorIds: [] } // rate 0 = no random encounters here
+    encounters: { rate: 0, actorIds: [] }, // rate 0 = no random encounters here
+    // Display-only grouping label for the Map Forge's own picker (design
+    // §8, item 7 phase 5) -- null means "no folder," the same convention
+    // every other optional grouping field in this schema already uses
+    // (e.g. hideSwitch's null = "always here"). Read by nothing in
+    // main/build/ -- §10's own zero-compiler-impact argument.
+    folder: null
   };
 }
 
@@ -1178,6 +1184,956 @@ export function renumberSfxDeletion(project, index) {
     }
   }
   return project;
+}
+
+// ---------------------------------------------------------------------------
+// Screen/map reference remapping (ROADMAP item 7, handoff-maporg/design-maporg.md)
+// ---------------------------------------------------------------------------
+//
+// A pure renumber, the same shape the song/sfx/actor/item renumber family
+// above already is, generalized from "delete -> shift by one" to "an
+// arbitrary permutation, known in advance by the operation itself" (§5 of
+// the design). No persistent per-map/per-screen id is added; every stored
+// screen reference is instead rewritten in the same commit that performs a
+// structural edit (reorder today; delete/resize/duplicate in later phases).
+
+/**
+ * A screen that no longer exists after the current edit -- module-local and
+ * never serialized, so it needs no wire representation and no
+ * NO_ACTOR/NO_ITEM-shaped exported constant (design §6.1). Reorder never
+ * produces this (a bijection drops nothing); later phases' delete/resize
+ * translate-builders do.
+ */
+const DROPPED_SCREEN = Symbol('DROPPED_SCREEN');
+
+/**
+ * The screen a reference falls back to when its target is genuinely dropped
+ * by the current edit: flat index 0, the project's own first screen --
+ * always in range for any non-empty project, stable across further edits in
+ * the same session the way "whichever index is currently last" is not, and
+ * the same screen titleScreen/startScreen already fall back to on their own
+ * out-of-range clamp (normalizeProject). There is no engine-side "do
+ * nothing" a door/warp target could hold instead (unlike NO_ACTOR/NO_ITEM,
+ * entity_door unconditionally treats its operand as a real screen), so
+ * adding a NO_SCREEN sentinel would mean new engine dispatch this design
+ * does not add (design §6.4/§10).
+ */
+export function FALLBACK_SCREEN(project) {
+  return 0;
+}
+
+/**
+ * Resolves a raw stored flat-screen value the way the compiler's own clamp
+ * already does at build time (main/build/generate.js's
+ * Math.min(toScreen, flat.length-1), main/build/textcompile.js's
+ * byte(command.screen, screenCount-1)) -- against `flatLengthBefore`, the
+ * flat count as it stood before the current edit began, because that is the
+ * count the stored value's own meaning was last resolved against. Every
+ * translate-builder below canonicalizes through this before looking up
+ * where the resolved screen went, so DROPPED_SCREEN means exactly "this
+ * screen was removed by the current edit" -- never "the stored number
+ * already happened to be too big" (design §6.1, Fix round 1 finding 4).
+ */
+export function canonicalizeFlat(value, flatLengthBefore) {
+  return Math.max(0, Math.min(value | 0, flatLengthBefore - 1));
+}
+
+/**
+ * Rewrites every stored screen reference in `project` through `translate` --
+ * a function from an old flat screen index to either a new flat screen
+ * index, or DROPPED_SCREEN. The caller supplies `translate`; this function
+ * is the single place that knows *which fields* to walk, not how any
+ * particular operation computes its own permutation. Mutates `project` in
+ * place and returns `{ project, droppedTargets }`, matching
+ * renumberActorDeletion's own contract of mutating and handing the project
+ * back, with `droppedTargets` added for the callers that need to report what
+ * was redirected (design §6.4).
+ *
+ * `translate` must be TOTAL over every raw stored value this function can
+ * encounter -- there is no third answer ("leave it alone"): a reference this
+ * function does not resolve is a reference this function is wrong about, not
+ * one that is safe to skip. Every translate-builder canonicalizes its input
+ * (canonicalizeFlat, above) before answering, for exactly that reason.
+ *
+ * `titleMap`/`titleScreen` and `startMap`/`startScreen` are deliberately NOT
+ * touched here -- they are not flat-space (see the `screenIndex` column of
+ * §3's inventory), and how they move depends on which operation is running
+ * (reorder's map-space permutation is a direct index lookup with no
+ * translate at all; delete/resize's per-map fixup is a later phase's own,
+ * harder mechanism). Folding either in here would force every caller of
+ * this function -- including a future one that only ever touches flat space
+ * -- to also supply translates it may not have.
+ */
+export function remapScreenReferences(project, translate) {
+  const droppedTargets = [];
+
+  // 1. Door targets -- every placed entity, every map, every screen, whether
+  //    or not its actor is currently door-behaved. props.toScreen is only
+  //    ever screen-shaped at the schema level (a pickup actor's granted item
+  //    comes from project.items[].actorId, a completely different field), so
+  //    walking it unconditionally here is correct, not merely permitted.
+  for (const map of project.maps) {
+    for (const screen of map.screens) {
+      for (const entity of screen.entities ?? []) {
+        const old = entity.props?.toScreen ?? 0;
+        const next = translate(old);
+        if (next === DROPPED_SCREEN) {
+          droppedTargets.push({ kind: 'door', entity });
+          entity.props.toScreen = FALLBACK_SCREEN(project);
+        } else {
+          entity.props.toScreen = next;
+        }
+      }
+    }
+  }
+
+  // 2. Warp command operands, wherever a warp sits -- allCommands, not a
+  //    page's own top level: a switch set inside a branch was once invisible
+  //    to a top-level-only walk (see usedSwitches' own history), and an
+  //    answer is a second place for a reference to hide, a choice option a
+  //    third.
+  for (const event of projectEvents(project)) {
+    for (const page of event.pages ?? []) {
+      for (const command of allCommands(page.commands)) {
+        if (command.op !== 'warp') continue;
+        const next = translate(command.screen);
+        if (next === DROPPED_SCREEN) {
+          droppedTargets.push({ kind: 'warp', command });
+          command.screen = FALLBACK_SCREEN(project);
+        } else {
+          command.screen = next;
+        }
+      }
+    }
+  }
+
+  return { project, droppedTargets };
+}
+
+/**
+ * Builds `translate` for Reorder Maps -- a total bijection over the whole
+ * project's flat screen order. `newMapOrder` is an array of OLD
+ * `project.maps` indices, in their new order: `newMapOrder[i]` names which
+ * old map ends up at new position `i`. Built from the project's PRE-mutation
+ * state (`flatScreens(project)`, called before `project.maps` is reassigned)
+ * so the caller's own sequence is always "capture translate, mutate
+ * project.maps, call remapScreenReferences" -- never mutate-then-build.
+ *
+ * A reorder never drops anything: every screen that existed before still
+ * exists after, just possibly at a different map. `droppedTargets` from a
+ * reorder's own `remapScreenReferences` call is therefore always empty by
+ * construction (design §6.1.1/§6.4).
+ */
+export function buildReorderTranslate(project, newMapOrder) {
+  const before = flatScreens(project); // OLD project.maps order
+  const reordered = newMapOrder.map((oldIndex) => project.maps[oldIndex]);
+  // A shallow spread, not a clone -- flatScreens only ever reads .maps/.screens,
+  // so probing the new order this way costs nothing and mutates nothing. The
+  // real mutation (project.maps = reordered) is the caller's job, after this
+  // function has already captured both `before` and `after` from the
+  // pre-mutation state.
+  const probe = { ...project, maps: reordered };
+  const after = flatScreens(probe); // NEW order, screen objects unchanged
+  const afterIndexOf = new Map(after.map((entry, i) => [entry.screen, i]));
+
+  return (oldFlat) => {
+    const canonical = canonicalizeFlat(oldFlat, before.length);
+    const screen = before[canonical]?.screen;
+    if (!screen) return DROPPED_SCREEN; // only when before.length === 0 -- an empty project, unreachable in practice
+    return afterIndexOf.get(screen); // always found -- reorder drops nothing
+  };
+}
+
+/**
+ * A fresh save-compatibility token: uniform in [1, 0xFFFF], never 0 (which
+ * saveIdentity's own conditional fold, shared/save.js, reserves to mean "no
+ * qualifying structural edit has ever touched this project"). A
+ * REPLACEMENT, drawn independently of the field's own previous value on
+ * every qualifying edit -- never an increment -- which is what makes an
+ * undo-then-different-structural-edit branch land on a different value than
+ * the branch that was undone, almost always (not always: two independent
+ * draws collide at 1/65535, a real, stated, non-zero probability, design
+ * §6.10). Math.random() is sufficient here -- this is a collision-avoidance
+ * value, not a security credential.
+ */
+export function drawSaveCompatToken() {
+  return 1 + Math.floor(Math.random() * 0xffff);
+}
+
+/**
+ * The commit-free core of Reorder Maps (design §6.7): permutes
+ * `project.maps` to `newMapOrder` and repairs every stored reference, in
+ * place, with no `store.commit` of its own -- the same commit-free-core
+ * shape the phase plan already schedules for Resize Map's own
+ * `growOrShrinkMap` in phase 3, established here first (Fix round 1,
+ * finding 2) so both the renderer's one commit and a test call the
+ * IDENTICAL function rather than two independently maintained copies of
+ * its body. `renderer/forges/map/map.js`'s `reorderMaps` wraps this in
+ * exactly one `store.commit`; it is DOM-free and Node-free by construction,
+ * so `shared/project.js` is where it belongs, not the renderer module.
+ *
+ * `titleMap`/`startMap` are map-space, not flat-space, so they move by the
+ * permutation directly (`newMapOrder.indexOf(...)`), with no translate at
+ * all; `titleScreen`/`startScreen` are per-map, and a maps-only reorder
+ * never touches a map's own `screens` array, so neither needs any change
+ * (§6.5/§6.6). Returns `remapScreenReferences`'s own result -- always
+ * `droppedTargets: []` here, since a reorder is a total bijection that
+ * drops nothing, but the caller gets the real value rather than an assumed
+ * one.
+ */
+export function reorderMapsCore(project, newMapOrder) {
+  const translate = buildReorderTranslate(project, newMapOrder); // built from the PRE-mutation state
+  const oldTitleMap = project.project.titleMap;
+  const oldStartMap = project.project.startMap;
+
+  project.maps = newMapOrder.map((oldIndex) => project.maps[oldIndex]);
+
+  const result = remapScreenReferences(project, translate);
+  project.project.titleMap = oldTitleMap === null ? null : newMapOrder.indexOf(oldTitleMap);
+  project.project.startMap = newMapOrder.indexOf(oldStartMap);
+  // titleScreen/startScreen: untouched -- see the function comment above.
+  project.project.saveCompatToken = drawSaveCompatToken();
+  return result;
+}
+
+// ---------------------------------------------------------------------------
+// The bare-append operations (ROADMAP item 7 phase 2, design-maporg.md §4.2/
+// §6.2): Add Map and Duplicate Map. A third, phase 4, is
+// duplicate-screen-into-a-new-map -- all three funnel through the one
+// shared primitive below, never a second implementation of it.
+// ---------------------------------------------------------------------------
+
+/**
+ * Shared by all three bare-append operations this design defines (Add Map,
+ * Duplicate Map, and phase 4's duplicate-screen-into-a-new-map fallback):
+ * `beforeAppendFlatLength` is captured BEFORE anything is pushed. Every
+ * surviving old flat index keeps EXACTLY its old numeric value after an
+ * append (nothing moved), so the only real work this does is resolving
+ * pre-existing garbage (canonicalizeFlat) to its already-effective target
+ * -- never DROPPED_SCREEN, since append removes nothing (design §6.2).
+ */
+export function buildAppendCanonicalizeTranslate(beforeAppendFlatLength) {
+  return (oldFlat) => canonicalizeFlat(oldFlat, beforeAppendFlatLength);
+}
+
+/**
+ * The first untaken "Map N" name, scanning rather than trusting
+ * `project.maps.length` directly -- the real shipped handler's own
+ * `Map ${project.maps.length}` template collides after a Delete (two maps,
+ * delete the first, Add Map again: length is back to 1, so the new map is
+ * named "Map 1", identical to the surviving original). Mirrors
+ * `nameForDuplicateScreen`'s own scan-for-the-first-untaken-candidate
+ * discipline, one level over (design §6.2).
+ */
+export function nameForNewMap(existingMaps) {
+  const taken = new Set(existingMaps.map((m) => m.name.trim()));
+  for (let n = existingMaps.length; ; n++) {
+    const candidate = `Map ${n}`;
+    if (!taken.has(candidate)) return candidate;
+  }
+}
+
+/**
+ * A duplicated screen's own name, auto-suffixed to avoid the collision §4.3
+ * identifies (`resolveStartAt`, shared/playscenario.js, refuses to resolve
+ * a remembered scenario the moment two same-map screens share a name) --
+ * scoped only to non-empty source names, since an empty name has no
+ * identity to collide, and giving the copy a synthetic non-empty name
+ * would invent a collision-prone identity where none was ever authored
+ * (design §6.2, Fix round 1 finding 6).
+ *
+ * Reused verbatim for a duplicated MAP's own name too (`duplicateMapCore`,
+ * below), passed `project.maps` in place of a destination screens array --
+ * both a screen and a map record carry a plain `.name` field, and a map's
+ * own name can never be blanked to `''` (`map.js`'s own rename handler, `||
+ * `Map ${index}``), so the empty-name early return is simply unreachable in
+ * that context, never a behavior change. `project.maps`, captured before
+ * the clone is pushed, always already contains the source map's own name,
+ * so the collision check always triggers there -- this is the SAME
+ * algorithm design's own prose describes for a duplicated map's name
+ * ("`${source.name} copy`, then ` copy 2`, ` copy 3`, ... — the first name
+ * not already used by any existing map"), so calling this rather than
+ * writing a second, near-identical implementation keeps the naming
+ * discipline to one function, not two.
+ */
+export function nameForDuplicateScreen(sourceName, destinationMapScreens) {
+  const trimmed = sourceName.trim();
+  if (!trimmed) return ''; // unnamed stays unnamed -- nothing to collide
+  const taken = new Set(destinationMapScreens.map((s) => s.name.trim()).filter(Boolean));
+  if (!taken.has(trimmed)) return trimmed;
+  // Fix round 1, finding 3: the unsuffixed "copy" candidate is generated on
+  // its own, once, before the numbered loop starts at 2 -- a loop that
+  // instead special-cased n===2 to mean "no number" skipped "copy 2"
+  // entirely (copy, then copy 3, copy 4, ...) whenever "copy" itself was
+  // already taken, contradicting design-maporg.md's own prose ("copy, then
+  // copy 2, copy 3, ...", stated at both §6.2 and §6.2.1).
+  const first = `${trimmed} copy`;
+  if (!taken.has(first)) return first;
+  for (let n = 2; ; n++) {
+    const candidate = `${trimmed} copy ${n}`;
+    if (!taken.has(candidate)) return candidate;
+  }
+}
+
+/**
+ * The self-referential/external split for a freshly-appended clone's own
+ * operands, applied AFTER a project-wide canonicalizing pass has already
+ * run (so every value read here is already a real, in-range, resolved
+ * flat index -- this never resolves garbage, that already happened).
+ * `sourceFlatRange` is the source content's own flat range at the moment
+ * of the clone (a half-open `[start, end)` interval); `delta` is how far
+ * the clone's own copy of that range sits from it (`newBase - oldBase`). A
+ * reference inside the range is "self" -- it followed the content being
+ * cloned -- and is redirected by `delta`; everything else is external and
+ * stays exactly where the canonicalizing pass already correctly resolved
+ * it, unaffected by the clone's own presence (design §6.2).
+ *
+ * `allCommands`, not a page's own top level: a copied nested Warp sitting
+ * inside a branch or a choice option must follow the identical split a
+ * top-level one does, or it stays aimed at the original forever.
+ * `project.commonEvents` is deliberately never touched here -- a common
+ * event is not "the copy's own," it is a project-wide, id-referenced body
+ * any placement's `call` can reach, so it is untouched by this function no
+ * matter which map is being duplicated.
+ */
+export function rewriteClonedRange(copyScreens, sourceFlatRange, delta) {
+  const inRange = (flat) => flat >= sourceFlatRange[0] && flat < sourceFlatRange[1];
+  for (const screen of copyScreens) {
+    for (const entity of screen.entities ?? []) {
+      const target = entity.props?.toScreen ?? 0;
+      if (inRange(target)) entity.props.toScreen = target + delta;
+      // else: external -- already correctly canonicalized above, untouched here.
+      if (entity.props?.event) {
+        for (const page of entity.props.event.pages ?? []) {
+          for (const command of allCommands(page.commands)) {
+            if (command.op !== 'warp' || !inRange(command.screen)) continue;
+            command.screen += delta;
+          }
+        }
+      }
+    }
+  }
+}
+
+/**
+ * The commit-free core of Add Map (design §4.2/§6.2): a fresh, empty map
+ * has no self-referential/external split to worry about (nothing about it
+ * can be "self"), so the whole fix is the shared append-canonicalizing
+ * pass -- closing the real shipped handler's own gap (a bare
+ * `project.maps.push` with no reference repair at all, and a naming
+ * template that collides with a surviving map's name after a Delete).
+ * `renderer/forges/map/map.js`'s `addMap()` wraps this in exactly one
+ * `store.commit`; the unit tests call it directly -- one body, not two.
+ * No `saveCompatToken` redraw -- `screenCount`/`mapCount` already strictly
+ * grow on any append, already refusing an old save without the token's
+ * help (§6.10).
+ */
+export function addMapCore(project) {
+  const beforeAppendFlatLength = flatScreens(project).length;
+  const newMap = createMap(project.maps.length, nameForNewMap(project.maps));
+  project.maps.push(newMap);
+  remapScreenReferences(project, buildAppendCanonicalizeTranslate(beforeAppendFlatLength));
+  return newMap;
+}
+
+/**
+ * The commit-free core of Duplicate Map (design §6.2): always appended to
+ * the end of `project.maps`, never inserted in the middle. Clones the
+ * source map, names it via `nameForDuplicateScreen` (`project.maps`,
+ * captured before the clone is pushed, already contains the source's own
+ * name, so the collision check always triggers the " copy"/" copy N"
+ * suffix), appends, runs the shared canonicalizing pass (reaches the
+ * clone's own freshly-cloned operands too, not just the rest of the
+ * project -- deliberate and necessary, so a copied out-of-range value
+ * resolves to its already-effective target rather than the append's own
+ * growth), then the self/external split over the clone's own screens only.
+ * `titleMap`/`titleScreen`/`startMap`/`startScreen`: untouched -- they name
+ * a specific map by its old array index, unaffected by an append. No
+ * `saveCompatToken` redraw, the identical argument `addMapCore` already
+ * makes. `renderer/forges/map/map.js`'s `duplicateMap()` wraps this in
+ * exactly one `store.commit`; the unit tests call it directly.
+ */
+export function duplicateMapCore(project, mapIndex) {
+  const sourceMap = project.maps[mapIndex];
+  const oldBase = project.maps.slice(0, mapIndex).reduce((sum, m) => sum + m.screens.length, 0);
+  const sourceFlatRange = [oldBase, oldBase + sourceMap.screens.length];
+  const beforeAppendFlatLength = flatScreens(project).length;
+
+  const clone = structuredClone(sourceMap);
+  clone.name = nameForDuplicateScreen(sourceMap.name, project.maps);
+  project.maps.push(clone);
+
+  remapScreenReferences(project, buildAppendCanonicalizeTranslate(beforeAppendFlatLength));
+
+  const newBase = beforeAppendFlatLength; // append -- the clone's own screens start exactly here
+  rewriteClonedRange(clone.screens, sourceFlatRange, newBase - oldBase);
+
+  return clone;
+}
+
+// ---------------------------------------------------------------------------
+// Delete Map and Resize Map (ROADMAP item 7 phase 3, design-maporg.md
+// §4.2/§6.1.3/§6.1.4/§6.4/§6.8/§6.9): the retrofit of two ALREADY-SHIPPED
+// operations that today restructure project.maps with zero reference
+// repair -- the actual bug item 7 exists to fix, not a hypothetical one.
+// ---------------------------------------------------------------------------
+
+/**
+ * Builds `translate` for the Delete Map retrofit -- the flat-space half
+ * only (design §6.1.3). Every surviving screen keeps whatever new flat
+ * index it lands at after the deleted map's own screens are spliced out;
+ * a reference whose canonicalized target belonged to the deleted map
+ * becomes DROPPED_SCREEN. Has no opinion about `startMap`/`titleMap`,
+ * which name a *map*, not a screen -- `deleteMapCore` (below) applies that
+ * fixup separately, in map-space, after calling this.
+ */
+export function buildDeleteMapTranslate(project, mapIndexToDelete) {
+  const before = flatScreens(project);
+  const survivingScreens = new Set(
+    before.filter((entry) => entry.mapIndex !== mapIndexToDelete).map((entry) => entry.screen)
+  );
+  const probe = { ...project, maps: project.maps.filter((_, i) => i !== mapIndexToDelete) };
+  const after = flatScreens(probe);
+  const afterIndexOf = new Map(after.map((entry, i) => [entry.screen, i]));
+
+  return (oldFlat) => {
+    const canonical = canonicalizeFlat(oldFlat, before.length);
+    const screen = before[canonical]?.screen;
+    if (!screen || !survivingScreens.has(screen)) return DROPPED_SCREEN;
+    return afterIndexOf.get(screen);
+  };
+}
+
+/**
+ * Builds `translate` for the Resize Map retrofit -- the flat-space half
+ * only (design §6.1.4). `newScreens` is the resized map's own new screens
+ * array (`growOrShrinkMap`'s own row/column-preserving rebuild, below). A
+ * grow never drops anything (`newScreens` is a superset of the map's old
+ * screens, plus fresh blanks nothing yet references); a shrink drops
+ * exactly the screens the rebuild leaves out. Every screen belonging to
+ * *another* map simply follows its own (possibly shifted, since every map
+ * after this one's flat base moves when this map's own screen count
+ * changes) new flat position via the diff -- the identical mechanism a
+ * reorder or a delete already uses.
+ */
+export function buildResizeTranslate(project, mapIndex, newScreens) {
+  const before = flatScreens(project); // pre-resize, whole project
+  const keptFromResizedMap = new Set(newScreens);
+  const probe = {
+    ...project,
+    maps: project.maps.map((m, i) => (i === mapIndex ? { ...m, screens: newScreens } : m))
+  };
+  const after = flatScreens(probe);
+  const afterIndexOf = new Map(after.map((entry, i) => [entry.screen, i]));
+
+  return (oldFlat) => {
+    const canonical = canonicalizeFlat(oldFlat, before.length);
+    const entry = before[canonical];
+    if (!entry) return DROPPED_SCREEN;
+    if (entry.mapIndex === mapIndex && !keptFromResizedMap.has(entry.screen)) return DROPPED_SCREEN; // a shrink dropped it
+    return afterIndexOf.get(entry.screen);
+  };
+}
+
+/**
+ * The per-map object-identity diff (design §6.9) -- the same idea as the
+ * flat-space translate-builders above, one level down, applied to a single
+ * map's own `screens` array instead of the whole project's flat list. What
+ * `startScreen`/`titleScreen` (per-map fields) need when the map they
+ * point into is the one being resized: which per-map position now holds
+ * the same screen content, or DROPPED_SCREEN if the resize's own rebuild
+ * left it out (a shrink) or the stored value was already out of range
+ * (hand-edited or pre-existing garbage).
+ */
+export function buildPerMapTranslate(oldScreens, newScreens) {
+  const newIndexOf = new Map(newScreens.map((screen, i) => [screen, i]));
+  return (oldPerMapIndex) => {
+    const screen = oldScreens[oldPerMapIndex];
+    if (!screen) return DROPPED_SCREEN;
+    const next = newIndexOf.get(screen);
+    return next === undefined ? DROPPED_SCREEN : next;
+  };
+}
+
+/**
+ * The real reference audit (design §6.4, Fix round 2 finding 4) -- pure,
+ * no mutation, callable as a dry run before any commit exists. Counts
+ * every SURVIVING reference (a door's `props.toScreen`, a warp command's
+ * `screen`, wherever `allCommands` finds one, including every common
+ * event) whose canonicalized-and-translated target comes back
+ * DROPPED_SCREEN. `discardedScreens` is the set of screen objects the
+ * operation is about to remove; a reference living ON one of those screens
+ * is leaving with its own screen, not being "redirected," and is excluded
+ * from the count for that reason -- this is what makes the answer a count
+ * of REFERENCES, not a count of deleted SCREENS (round 1's own category
+ * error: `before.filter((_, i) => dryTranslate(i) === DROPPED_SCREEN).length`
+ * counts how many screens the deleted map itself contains, not how many
+ * surviving references point at it).
+ */
+export function auditDroppedReferences(project, translate, discardedScreens) {
+  let count = 0;
+  const checkScreen = (screen) => {
+    if (discardedScreens.has(screen)) return;
+    for (const entity of screen.entities ?? []) {
+      if (translate(entity.props?.toScreen ?? 0) === DROPPED_SCREEN) count++;
+      for (const page of entity.props?.event?.pages ?? []) {
+        for (const command of allCommands(page.commands)) {
+          if (command.op === 'warp' && translate(command.screen) === DROPPED_SCREEN) count++;
+        }
+      }
+    }
+  };
+  for (const map of project.maps) for (const screen of map.screens) checkScreen(screen);
+  // Common events are never discarded by a screen operation -- always
+  // audited, with no screen-ownership exclusion to apply.
+  for (const entry of project.commonEvents ?? []) {
+    for (const page of entry.event?.pages ?? []) {
+      for (const command of allCommands(page.commands)) {
+        if (command.op === 'warp' && translate(command.screen) === DROPPED_SCREEN) count++;
+      }
+    }
+  }
+  return count;
+}
+
+/**
+ * The commit-free core of Delete Map (design §6.8): the flat-space remap
+ * (`buildDeleteMapTranslate`, above) plus the map-space fixup
+ * `buildDeleteMapTranslate` cannot cover -- it only ever answers "where did
+ * this screen go," never "which map was that in." The map-space policy,
+ * stated absolutely, for both `startMap` and `titleMap`:
+ *
+ *   - referenced index `< mapIndex` (the deleted map's own position):
+ *     UNCHANGED -- nothing before a deleted position shifts in an
+ *     ordinary array splice.
+ *   - referenced index `> mapIndex`: DECREMENTS by 1 -- the same shift
+ *     every other array-position reference in this file already applies
+ *     on a delete (renumberActorDeletion's own shift).
+ *   - referenced index `=== mapIndex` (the deleted map itself): `titleMap`
+ *     falls back to `null` (a titleless project is already a legal,
+ *     supported state); `startMap` falls back to 0 of the SURVIVING array
+ *     (every project must have a start position, so it cannot go to
+ *     `null`), `startScreen` reset to 0 alongside it.
+ *
+ * `titleScreen` is reset to 0 only when `titleMap` just became `null`
+ * (nothing left to point into); otherwise the title map itself was
+ * untouched by this delete (only OTHER maps' positions in `project.maps`
+ * shifted), so `titleScreen` needs no change at all.
+ */
+export function deleteMapCore(project, mapIndex) {
+  const translate = buildDeleteMapTranslate(project, mapIndex); // built from the PRE-mutation state
+  const oldTitleMap = project.project.titleMap;
+  const oldStartMap = project.project.startMap;
+
+  project.maps.splice(mapIndex, 1);
+
+  const result = remapScreenReferences(project, translate); // flat-space: doors, warps
+
+  project.project.titleMap =
+    oldTitleMap === null
+      ? null
+      : oldTitleMap === mapIndex
+        ? null
+        : oldTitleMap > mapIndex
+          ? oldTitleMap - 1
+          : oldTitleMap;
+  project.project.startMap = oldStartMap === mapIndex ? 0 : oldStartMap > mapIndex ? oldStartMap - 1 : oldStartMap;
+  if (oldStartMap === mapIndex) project.project.startScreen = 0;
+  if (project.project.titleMap === null) project.project.titleScreen = 0;
+
+  project.project.saveCompatToken = drawSaveCompatToken();
+  return result;
+}
+
+/**
+ * The commit-free core of Resize Map (design §6.9, Fix round 2 finding 2)
+ * -- extracted specifically so phase 4's single-screen-duplicate-via-growth
+ * can share it inside its own, single `store.commit` rather than nesting a
+ * second commit or duplicating this logic; its own return shape (the
+ * screens array and a full `flatScreens()` snapshot from both before and
+ * after) is what that later caller needs to build a dedicated clone
+ * translation on top of. Builds the map's own new `screens` array with the
+ * existing row/column-preserving rebuild (kept screens stay at their own
+ * row/col; new cells fill with `createScreen()`), remaps every flat-space
+ * reference project-wide, then -- only when the map being resized is the
+ * start or title map -- relocates `startScreen`/`titleScreen` to wherever
+ * their own screen content now sits, via the per-map diff, falling back to
+ * per-map position 0 if a shrink dropped it. `startMap`/`titleMap`
+ * themselves are never touched by a resize -- the map itself still exists,
+ * at the same array position.
+ */
+export function growOrShrinkMap(project, mapIndex, newWidth, newHeight) {
+  const map = project.maps[mapIndex];
+  const oldScreens = map.screens;
+  const flatBefore = flatScreens(project); // captured before any mutation below
+
+  const newScreens = [];
+  for (let row = 0; row < newHeight; row++) {
+    for (let col = 0; col < newWidth; col++) {
+      newScreens.push(row < map.gridH && col < map.gridW ? oldScreens[row * map.gridW + col] : createScreen());
+    }
+  }
+
+  const flatTranslate = buildResizeTranslate(project, mapIndex, newScreens);
+  const perMapTranslate = buildPerMapTranslate(oldScreens, newScreens);
+
+  const wasStartHere = project.project.startMap === mapIndex;
+  const wasTitleHere = project.project.titleMap === mapIndex;
+  const oldStartScreen = project.project.startScreen;
+  const oldTitleScreen = project.project.titleScreen;
+
+  map.gridW = newWidth;
+  map.gridH = newHeight;
+  map.screens = newScreens;
+
+  const result = remapScreenReferences(project, flatTranslate); // doors, warps, project-wide
+
+  if (wasStartHere) {
+    const next = perMapTranslate(oldStartScreen);
+    project.project.startScreen = next === DROPPED_SCREEN ? 0 : next;
+  }
+  if (wasTitleHere) {
+    const next = perMapTranslate(oldTitleScreen);
+    project.project.titleScreen = next === DROPPED_SCREEN ? 0 : next;
+  }
+
+  project.project.saveCompatToken = drawSaveCompatToken(); // unconditional; every caller inherits this
+
+  const flatAfter = flatScreens(project); // AFTER mutation + remap -- every screen's real final position
+  return { oldScreens, newScreens, flatBefore, flatAfter, result };
+}
+
+// ---------------------------------------------------------------------------
+// Duplicate Screen (ROADMAP item 7 phase 4, design-maporg.md §6.2/§6.2.1/
+// §6.9.1): the most intricate operation in this design -- two independently
+// reviewable risks (§6.9.1's index-space correction, §6.2.1's four-question
+// fallback) sharing one UI entry point.
+// ---------------------------------------------------------------------------
+
+const CROSS_TILESET_WARNING = 'This map uses a different tileset — the copied art may not look the same here.';
+
+/**
+ * Which row or column a single-screen duplicate grows the map by, when the
+ * map has room (design §6.2's own step 1, `gridW * gridH < LIMITS.mapGrid **
+ * 2`). Not specified by the design beyond "by one row or column" -- this
+ * picks the currently-smaller dimension (keeping the grid as square as
+ * possible), tying toward width, and never exceeds LIMITS.mapGrid on either
+ * axis. Matches every worked example in the design (a 2x2 map's own forced
+ * growth is always traced as a width-grow, 2x2 -> 3x2).
+ */
+function growthTarget(map) {
+  if (map.gridW <= map.gridH && map.gridW < LIMITS.mapGrid) return { newWidth: map.gridW + 1, newHeight: map.gridH };
+  return { newWidth: map.gridW, newHeight: map.gridH + 1 };
+}
+
+/**
+ * §6.2.1's own naming function for the brand-new map the all-maps-full
+ * fallback creates -- a third sibling in the same naming-discipline family
+ * as `nameForNewMap` (Add Map) and `nameForDuplicateScreen` (screens, and --
+ * phase 2's own precedent -- whole-map Duplicate's copy too): scan for the
+ * first untaken `${source.name} copy`/` copy 2`/` copy 3`/... candidate
+ * rather than trusting a raw count. A map's own name can never be blanked to
+ * `''` (the rename handler's own `|| Map ${index}` fallback), so unlike
+ * `nameForDuplicateScreen` this needs no empty-name early return at all.
+ */
+export function nameForNewMapFromSource(sourceMap, existingMaps) {
+  const trimmed = sourceMap.name.trim();
+  const taken = new Set(existingMaps.map((m) => m.name.trim()).filter(Boolean));
+  if (!taken.has(`${trimmed} copy`)) return `${trimmed} copy`;
+  for (let n = 2; ; n++) {
+    const candidate = `${trimmed} copy ${n}`;
+    if (!taken.has(candidate)) return candidate;
+  }
+}
+
+/**
+ * §6.9.1's own resolution of Fix round 2, finding 2: a naive reuse of
+ * `growOrShrinkMap`'s generic flat-space translate mis-routes a self-
+ * reference the moment growth actually relocates the source screen -- the
+ * generic translate can only ever answer "where did the OLD target end up,"
+ * which for a self-reference is "wherever the ORIGINAL source screen moved
+ * to," never "the clone's own new position." This dedicated translate is
+ * built from the source's own SEMANTIC old-target identity instead:
+ * `flatBefore`/`flatAfter` are `growOrShrinkMap`'s own returned snapshots --
+ * before any mutation, and after the resize's mutation + generic remap have
+ * both already run, but BEFORE the clone's own content has been written into
+ * `cloneScreen` (so `flatAfter` already correctly maps every OTHER screen,
+ * `sourceScreen` included, to its final position).
+ */
+export function buildCloneTranslate(flatBefore, sourceScreen, flatAfter, cloneScreen) {
+  const afterIndexOf = new Map(flatAfter.map((entry, i) => [entry.screen, i]));
+  const cloneNewFlat = afterIndexOf.get(cloneScreen);
+  return (oldFlatOnSource) => {
+    // oldFlatOnSource is the RAW, still-original operand structuredClone
+    // copied verbatim from the source -- canonicalize against the PRE-resize
+    // flat order, the order it was actually authored against.
+    const canonical = canonicalizeFlat(oldFlatOnSource, flatBefore.length);
+    const targetScreen = flatBefore[canonical]?.screen;
+    if (targetScreen === sourceScreen) return cloneNewFlat; // self -- route to the clone itself
+    return afterIndexOf.get(targetScreen); // external -- wherever the resize's own remap already put it
+  };
+}
+
+/** Applies `buildCloneTranslate`'s own translate to the clone's freshly-copied operands. */
+export function applyCloneTranslate(cloneScreen, translate) {
+  for (const entity of cloneScreen.entities ?? []) {
+    entity.props.toScreen = translate(entity.props?.toScreen ?? 0);
+    for (const page of entity.props?.event?.pages ?? []) {
+      for (const command of allCommands(page.commands)) {
+        if (command.op === 'warp') command.screen = translate(command.screen);
+      }
+    }
+  }
+}
+
+/**
+ * The commit-free core of single-screen duplicate via grid growth (design
+ * §6.9.1): wraps phase 3's `growOrShrinkMap` as a sub-step of ONE commit
+ * (never a nested second commit), so growth-routed duplicate mechanically
+ * redraws `saveCompatToken` too -- not a separately-asserted policy, a
+ * direct consequence of which underlying primitive this routes through
+ * (§6.9.1's own "append never redraws the token; grow always does" rule).
+ * `mapIndex` names the DESTINATION map -- the currently-open one if it has
+ * room, or the map chosen from the target-map picker if not; `sourceScreen`
+ * may belong to a different map than the destination (the picker case),
+ * which is exactly when the two maps' tilesets can legitimately differ.
+ */
+export function duplicateScreenViaGrowthCore(project, mapIndex, sourceScreen) {
+  const destMap = project.maps[mapIndex];
+  const sourceMap = project.maps.find((m) => m.screens.includes(sourceScreen));
+  const crossTileset = sourceMap.tilesetId !== destMap.tilesetId;
+
+  // Cloned BEFORE growOrShrinkMap runs -- a defect in the design's own
+  // assembled §6.9.1 code sketch, found and corrected during phase 4
+  // implementation (see the phase 4 report). growOrShrinkMap's own generic
+  // remap walks the WHOLE project, sourceScreen's own live entities
+  // included whenever sourceScreen belongs to the map being resized (the
+  // ordinary case) or otherwise has any reference this resize's flat-space
+  // translate touches -- it correctly rewrites them in place for the
+  // ORIGINAL (exactly as intended; see test 23's own assertions on the
+  // untouched original). Cloning AFTER that walk would silently copy the
+  // already-translated values instead of the raw, pre-resize ones
+  // buildCloneTranslate is built to interpret via flatBefore, corrupting
+  // exactly the self-reference case this whole mechanism exists to get
+  // right. Capturing the clone first, from the still-untouched live
+  // screen, is what actually gives buildCloneTranslate the "raw stored
+  // value... copied verbatim" its own doc comment already claims.
+  const cloned = structuredClone(sourceScreen);
+
+  const { newWidth, newHeight } = growthTarget(destMap);
+  const { oldScreens, newScreens, flatBefore, flatAfter } = growOrShrinkMap(project, mapIndex, newWidth, newHeight);
+  // The blank cell growth introduced: present in newScreens, absent from
+  // oldScreens -- the first one in row-major order.
+  const cloneScreen = newScreens.find((s) => !oldScreens.includes(s));
+
+  // Overwrite the blank cell's OWN fields in place -- preserves its object
+  // identity, so flatAfter's already-computed position for it stays valid.
+  cloneScreen.metatiles = cloned.metatiles;
+  cloneScreen.entities = cloned.entities;
+  cloneScreen.boundTiles = cloned.boundTiles;
+  cloneScreen.name = nameForDuplicateScreen(sourceScreen.name, destMap.screens);
+
+  const cloneTranslate = buildCloneTranslate(flatBefore, sourceScreen, flatAfter, cloneScreen);
+  applyCloneTranslate(cloneScreen, cloneTranslate);
+
+  return { cloneScreen, warning: crossTileset ? CROSS_TILESET_WARNING : null };
+}
+
+/**
+ * The commit-free core of §6.2.1's all-maps-full fallback: promote a single
+ * screen to its own brand-new 1x1 map. The four observable choices the
+ * design's own review names, decided once here: the new map's metadata
+ * (copied from the source map, not createMap's generic defaults -- "the
+ * copy behaves like the original," applied uniformly); the new map's own
+ * name (`nameForNewMapFromSource`, collision-checked); the screen's own
+ * name in its new per-map namespace (`nameForDuplicateScreen`, called even
+ * though the new map's own screens array is always empty of names in
+ * practice -- the uniform rule is what makes this trustworthy, not a
+ * case-by-case judgment that this call happens to be safe to skip); and the
+ * captured source range (a SINGLETON -- only the one screen being promoted
+ * counts as "self," never the rest of its source map).
+ *
+ * `folder` is now copied too (item 7 phase 5, design §8) -- the obligation
+ * phase 4 handed forward, implemented here alongside the other five
+ * metadata copies, once `map.folder` actually exists.
+ */
+export function duplicateScreenIntoNewMapCore(project, sourceScreen) {
+  const beforeFlat = flatScreens(project); // pre-append, whole project
+  const sourceFlatIndex = beforeFlat.findIndex((e) => e.screen === sourceScreen);
+  const sourceMap = beforeFlat[sourceFlatIndex].map;
+  const sourceFlatRange = [sourceFlatIndex, sourceFlatIndex + 1]; // singleton -- this screen only
+
+  const newMap = createMap(project.maps.length, nameForNewMapFromSource(sourceMap, project.maps));
+  newMap.tilesetId = sourceMap.tilesetId;
+  newMap.songId = sourceMap.songId;
+  newMap.battleSkyTile = sourceMap.battleSkyTile;
+  newMap.battleGroundTile = sourceMap.battleGroundTile;
+  newMap.encounters = structuredClone(sourceMap.encounters);
+  newMap.folder = sourceMap.folder;
+
+  const cloned = structuredClone(sourceScreen);
+  cloned.name = nameForDuplicateScreen(sourceScreen.name, newMap.screens); // identity here -- see above
+  newMap.screens = [cloned]; // replaces createMap's own blank default screen
+
+  project.maps.push(newMap);
+
+  // Project-wide canonicalizing pass -- reaches the clone's own (still raw)
+  // operands too, exactly like every other append site.
+  remapScreenReferences(project, buildAppendCanonicalizeTranslate(beforeFlat.length));
+
+  // Self/external split, scoped to the SINGLETON source range above -- not
+  // the whole source map's range, since only one screen moved.
+  const afterFlat = flatScreens(project);
+  const newFlatIndex = afterFlat.findIndex((e) => e.screen === cloned);
+  rewriteClonedRange([cloned], sourceFlatRange, newFlatIndex - sourceFlatIndex);
+
+  // No saveCompatToken redraw -- append, screenCount already moves, the
+  // identical argument every other append site in this design makes. This
+  // path never returns a cross-tileset warning either: tilesetId is always
+  // copied verbatim from the source map above, so the new map's tileset is,
+  // by construction, always the one the screen was authored against.
+  return { newMap, cloneScreen: cloned };
+}
+
+// ---------------------------------------------------------------------------
+// Region copy/paste (ROADMAP item 7 phase 5, design-maporg.md §6.3):
+// metatiles + attributes (screenAttributes is a pure function of metatiles,
+// so copying ids is copying attributes for free), boundTiles clear-then-add
+// replace semantics, an optional entity payload the renderer computes and
+// hands in already-positioned.
+// ---------------------------------------------------------------------------
+
+/**
+ * Where a copied rectangle actually lands, clamped fully on-screen -- the
+ * same clamp shape `normalizeScreen` already applies to `SCREEN_METATILES`.
+ * A pure function of its own inputs (never the live project), so the
+ * renderer can call it once to compute an entity-payload's own delta and
+ * `pasteRegionCore` can call it again internally and always agree.
+ */
+export function clampPasteOrigin(row, col, width, height) {
+  return {
+    row: Math.max(0, Math.min(row, LIMITS.screenRows - height)),
+    col: Math.max(0, Math.min(col, LIMITS.screenCols - width))
+  };
+}
+
+/**
+ * Reads a rectangle off a screen into the clipboard shape design §6.3
+ * specifies: metatile ids row-major relative to the rectangle, and only the
+ * `boundTiles` entries that actually fall inside it, relative too.
+ * `sourceTilesetId` is what the cross-tileset warning compares against on
+ * paste. Pure -- no mutation, callable freely to preview a selection.
+ */
+export function buildRegionClip(project, mapIndex, screenIndex, row, col, width, height) {
+  const map = project.maps[mapIndex];
+  const screen = map.screens[screenIndex];
+  const metatiles = [];
+  for (let r = 0; r < height; r++) {
+    for (let c = 0; c < width; c++) {
+      metatiles.push(screen.metatiles[(row + r) * LIMITS.screenCols + (col + c)]);
+    }
+  }
+  const boundTiles = (screen.boundTiles ?? [])
+    .filter((entry) => entry.row >= row && entry.row < row + height && entry.col >= col && entry.col < col + width)
+    .map((entry) => ({ row: entry.row - row, col: entry.col - col, switchId: entry.switchId, metatileId: entry.metatileId }));
+  return { width, height, metatiles, boundTiles, sourceTilesetId: map.tilesetId };
+}
+
+/**
+ * Whether pasting `clip` (+ `entitiesToAdd`, if any) at `originRow`/
+ * `originCol` would exceed either of the destination screen's own capacity
+ * limits, checked BEFORE anything mutates (code review round 1, finding 3).
+ * Two individually valid screens can produce a combined binding count over
+ * `LIMITS.boundTilesPerScreen` (every retained out-of-rectangle binding plus
+ * every copied one), and a copied actor group can exceed
+ * `LIMITS.entitiesPerScreen` alongside whatever the destination already
+ * holds -- this codebase's own convention for an over-cap author action is
+ * to refuse outright, naming the limit and the count, never a silent
+ * partial application (the same policy `LIMITS.metasprites`/`LIMITS.actors`
+ * already hold to). Returns a plain-language refusal message, or `null` if
+ * the paste fits. Shared by `pasteRegionCore`'s own internal safety net and
+ * the renderer's preflight (the same "check before committing" shape
+ * Delete Map's/Resize-shrink's own `auditDroppedReferences` dry run
+ * already uses) -- one body, not two.
+ */
+export function pasteCapacityProblem(project, mapIndex, screenIndex, originRow, originCol, clip, entitiesToAdd) {
+  const map = project.maps[mapIndex];
+  const screen = map.screens[screenIndex];
+  const { row, col } = clampPasteOrigin(originRow, originCol, clip.width, clip.height);
+
+  const retainedBindings = (screen.boundTiles ?? []).filter(
+    (entry) => entry.row < row || entry.row >= row + clip.height || entry.col < col || entry.col >= col + clip.width
+  ).length;
+  const totalBindings = retainedBindings + clip.boundTiles.length;
+  if (totalBindings > LIMITS.boundTilesPerScreen) {
+    return `Pasting here would leave ${totalBindings} switch-bound tiles on this screen, but the limit is ${LIMITS.boundTilesPerScreen}. Paste refused.`;
+  }
+
+  if (entitiesToAdd) {
+    const totalEntities = screen.entities.length + entitiesToAdd.length;
+    if (totalEntities > LIMITS.entitiesPerScreen) {
+      return `Pasting here would leave ${totalEntities} actors on this screen, but the limit is ${LIMITS.entitiesPerScreen}. Paste refused.`;
+    }
+  }
+
+  return null;
+}
+
+/**
+ * The commit-free core of Paste Region (design §6.3). `clip` is
+ * `buildRegionClip`'s own shape; `entitiesToAdd`, if given, is an array of
+ * ALREADY-POSITIONED entity objects (the renderer computes each one's own
+ * `x`/`y` -- pixel-space, `METATILE_PX`-scaled -- ahead of the call, using
+ * `clampPasteOrigin`'s own answer for the delta, since pixel constants are a
+ * renderer concern this module stays free of).
+ *
+ * `pasteCapacityProblem` runs FIRST, before any mutation -- atomic (code
+ * review round 1, finding 3): metatiles, bindings and entities all land, or
+ * none do. A refused paste returns `{ refused: <message> }` and leaves the
+ * screen byte-for-byte untouched.
+ *
+ * `boundTiles` is destination-rectangle REPLACE, not overlay (Fix round 1,
+ * finding 8): every existing binding whose own `(row, col)` falls inside the
+ * pasted rectangle is cleared first, then the clipboard's own bindings are
+ * written back on top, offset by the paste origin -- a cell the source never
+ * bound ends up unbound at the destination too, not left holding whatever
+ * the destination happened to have.
+ *
+ * No `saveCompatToken` redraw -- paste changes no screen's own identity or
+ * count, so `screenCount`/`mapCount` are both untouched (§6.10's own
+ * qualifying-edit list; §11 test 26's own non-qualifying fixture for this).
+ */
+export function pasteRegionCore(project, mapIndex, screenIndex, originRow, originCol, clip, entitiesToAdd) {
+  const problem = pasteCapacityProblem(project, mapIndex, screenIndex, originRow, originCol, clip, entitiesToAdd);
+  if (problem) return { refused: problem };
+
+  const map = project.maps[mapIndex];
+  const screen = map.screens[screenIndex];
+  const { row, col } = clampPasteOrigin(originRow, originCol, clip.width, clip.height);
+
+  for (let r = 0; r < clip.height; r++) {
+    for (let c = 0; c < clip.width; c++) {
+      screen.metatiles[(row + r) * LIMITS.screenCols + (col + c)] = clip.metatiles[r * clip.width + c];
+    }
+  }
+
+  screen.boundTiles = (screen.boundTiles ?? []).filter(
+    (entry) => entry.row < row || entry.row >= row + clip.height || entry.col < col || entry.col >= col + clip.width
+  );
+  for (const entry of clip.boundTiles) {
+    screen.boundTiles.push({
+      row: row + entry.row,
+      col: col + entry.col,
+      switchId: entry.switchId,
+      metatileId: entry.metatileId
+    });
+  }
+
+  if (entitiesToAdd) {
+    for (const entity of entitiesToAdd) screen.entities.push(structuredClone(entity));
+  }
+
+  return { warning: map.tilesetId !== clip.sourceTilesetId ? CROSS_TILESET_WARNING : null, row, col };
 }
 
 // Which page/branch conditions name an actor, read off EVENT_CONDITIONS rather
@@ -1551,7 +2507,13 @@ export function createProject(name = 'Untitled Game', gameType = 'action') {
       startY: 112,
       maxHearts: 3, // action mode's HUD; an RPG shows HP in the battle box
       titleMap: null, // null = boot straight into gameplay
-      titleScreen: 0
+      titleScreen: 0,
+      // Redrawn (never incremented) by every structural edit that can
+      // desynchronize a cartridge save from the project's current screen
+      // layout without also changing screenCount/mapCount -- see
+      // drawSaveCompatToken and shared/save.js's saveIdentity. 0 means "no
+      // such edit has happened yet," which is why a fresh project starts here.
+      saveCompatToken: 0
     },
     cartridge: { mapper: defaultMapperFor(type), mirroring: 'vertical' },
     tilesets: rpg
@@ -2269,7 +3231,13 @@ function normalizeMap(raw, id, itemCtx = EMPTY_ITEM_CTX) {
       actorIds: (Array.isArray(raw?.encounters?.actorIds) ? raw.encounters.actorIds : [])
         .slice(0, RPG_LIMITS.encounterActors)
         .map((id) => clamp(id, 0, 255, 0))
-    }
+    },
+    // Design §8's own round-trip half: without this, a project saved with a
+    // folder name, then reloaded, loses it silently -- createMap's own
+    // default only covers a map created fresh in the current session, and
+    // any field normalizeMap does not explicitly copy is simply absent from
+    // every map read back off disk.
+    folder: typeof raw?.folder === 'string' ? raw.folder.trim().slice(0, AUTHOR_NAME_MAX) : null
   };
 }
 
@@ -2733,7 +3701,20 @@ export function normalizeProject(raw) {
       raw.project?.titleMap === null || raw.project?.titleMap === undefined
         ? null
         : clamp(raw.project.titleMap, 0, 63, 0),
-    titleScreen: clamp(raw.project?.titleScreen, 0, LIMITS.mapGrid ** 2 - 1, 0)
+    titleScreen: clamp(raw.project?.titleScreen, 0, LIMITS.mapGrid ** 2 - 1, 0),
+    // A plain integer in [0, 0xFFFF] or 0 -- never rounded/clamped into that
+    // range the way the generic clamp() above would (clamp(-1, 0, 0xffff, 0)
+    // is 0, which is also the "no qualifying edit" default, so that would
+    // silently make an out-of-range value indistinguishable from one that was
+    // never drawn at all). The upper bound matches shared/save.js's own
+    // fold width (value & 0xffff) exactly, so no legal stored value can ever
+    // alias a different one against that mask -- see drawSaveCompatToken.
+    saveCompatToken:
+      Number.isInteger(raw.project?.saveCompatToken) &&
+      raw.project.saveCompatToken >= 0 &&
+      raw.project.saveCompatToken <= 0xffff
+        ? raw.project.saveCompatToken
+        : 0
   };
 
   const cartridge = normalizeCartridge(raw.cartridge);
@@ -3968,6 +4949,56 @@ export function validateProject(project) {
       `${danglingCalls} Run common event command${danglingCalls === 1 ? '' : 's'} name a common event that no ` +
         'longer exists or has nothing left in it. Pick another common event or switch the command off.'
     );
+  }
+
+  // ROADMAP item 7 (design-maporg.md §4.3/§9): resolveStartAt (shared/
+  // playscenario.js) refuses to resolve a remembered ▶ Test scenario the
+  // moment two maps, or two screens within the same map, share a name --
+  // "more than one map/screen is named X." Nothing is actually broken at
+  // compile time (screens still compile fine with duplicate names), so this
+  // is a warning, the same "warn, don't block" shape the pickup-actor-with-
+  // no-item warning already uses.
+  const mapNameCounts = new Map();
+  for (const map of project.maps) {
+    const name = map.name.trim();
+    mapNameCounts.set(name, (mapNameCounts.get(name) ?? 0) + 1);
+  }
+  const dupMapNames = [...mapNameCounts.values()].filter((n) => n > 1).length;
+  if (dupMapNames) {
+    add(
+      'warning',
+      'Map Forge',
+      `${dupMapNames} map name${dupMapNames === 1 ? ' is' : 's are'} used more than once — ` +
+        "the remembered ▶ Test scenario can't tell two same-named maps apart and will refuse to resolve."
+    );
+  }
+
+  // Screens: scoped per-map (screenLabel already disambiguates ACROSS maps
+  // via the map.name prefix, and resolveStartAt's own screensNamed lookup
+  // is scoped to one map -- a same name in two DIFFERENT maps is not a
+  // collision either of them can observe), and only non-empty trimmed
+  // names are counted at all -- an unnamed screen has no name to collide
+  // with anything; resolveStartAt never calls screensNamed for one. Without
+  // this exclusion the check would fire on nearly every ordinary
+  // multi-screen map, since createScreen() defaults every screen's name to
+  // '' and most stay that way.
+  for (const map of project.maps) {
+    const screenNameCounts = new Map();
+    for (const screen of map.screens) {
+      const name = screen.name.trim();
+      if (!name) continue;
+      screenNameCounts.set(name, (screenNameCounts.get(name) ?? 0) + 1);
+    }
+    const dupScreenNames = [...screenNameCounts.values()].filter((n) => n > 1).length;
+    if (dupScreenNames) {
+      add(
+        'warning',
+        'Map Forge',
+        `"${map.name}" has ${dupScreenNames} screen name${dupScreenNames === 1 ? '' : 's'} used more than ` +
+          "once — the remembered ▶ Test scenario can't tell same-named screens apart within this map and " +
+          'will refuse to resolve.'
+      );
+    }
   }
 
   return problems;

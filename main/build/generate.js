@@ -1761,6 +1761,25 @@ export function checkCapacity(project) {
   };
 }
 
+/**
+ * What a placed entity's own record byte (`ent_to_scr`) means, resolved
+ * exactly once so emitScreens (below) and anything checking the same
+ * question against a different build (test/lib/eventdecoder.js's own
+ * consumer, handoff-maporg/design-maporg.md §7 item 2) get the identical
+ * answer. Behaviour is exclusive -- a pickup actor's byte is the item it
+ * grants under ITEMS_ENABLED, never a door target; every other behaviour
+ * keeps the door-target expression `entity_door` is the only reader of --
+ * so the two meanings never collide, and this is the single place that
+ * decides which one a given placement's byte is (verbatim extraction of the
+ * inline ternary this replaces; no ROM-visible change).
+ */
+export function resolveEntityByte(entity, actor, itemsEnabled, itemIdForActor, flatLength) {
+  if (itemsEnabled && canBackItem(actor)) {
+    return { kind: 'item', itemId: itemIdForActor.get(entity.actorId) ?? NO_ITEM };
+  }
+  return { kind: 'screen', flatIndex: Math.min(entity.props?.toScreen ?? 0, Math.max(0, flatLength - 1)) };
+}
+
 export async function generateAssets({ dir, project, log = () => {} }) {
   const { problems, capacity, reserveFlashSave, screenCount } = checkCapacity(project);
   const errors = problems.filter((problem) => problem.severity === 'error');
@@ -2580,10 +2599,8 @@ export async function generateAssets({ dir, project, log = () => {} }) {
         // Every other behaviour keeps today's door-target expression,
         // unchanged, entity_door being the field's only reader of it.
         const actor = project.sprites.actors[entity.actorId];
-        const target =
-          itemsEnabled && canBackItem(actor)
-            ? itemIdForActor.get(entity.actorId) ?? NO_ITEM
-            : Math.min(entity.props?.toScreen ?? 0, Math.max(0, flat.length - 1));
+        const resolved = resolveEntityByte(entity, actor, itemsEnabled, itemIdForActor, flat.length);
+        const target = resolved.kind === 'item' ? resolved.itemId : resolved.flatIndex;
         bytes.push(
           entity.actorId,
           entity.x,
