@@ -41,6 +41,11 @@ Several tests **skip** unless `sample/build/game.nes` exists — run `npm run sa
 build:sample` first, and `npm run sample:rpg && npm run build:sample:rpg` for `rpg.test.js`.
 A skipped test is not a passing test; check the skip count.
 
+`test/unit/docs.test.js` checks CLAUDE.md itself: every `handoff-*/*.md` pointer it names must
+exist on disk *and* be tracked by git, and the file must stay under a 135,000-character budget
+(`fs.readFileSync(..., 'utf8').length`, not byte length — Claude Code's own limit is on
+characters) kept below the tool's 150,000-character hard limit for margin.
+
 There are **five fixtures, deliberately**. `sample/` is the action-adventure one every engine test is
 written against; `sample-rpg/` is the turn-based one `rpg.test.js` drives; `sample-mmc1/`,
 `sample-mmc3/` and `sample-u512/` are small save-check fixtures, one per save-capable board, that exist
