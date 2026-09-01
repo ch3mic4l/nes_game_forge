@@ -19,7 +19,7 @@ npm run smoke      # end-to-end: boots the real UI and drives it
 | Area | State |
 |---|---|
 | **Tile Forge** | Done — pixel editor, 1×1/2×2/4×4 regions, palettes, image import with dithering, CHR/PAL import & export |
-| **Map Forge** | Done — metatile editor, screen painting, multi-screen maps, collision overlay, actor placement, player start, dialogue and events |
+| **Map Forge** | Done — metatile editor, screen painting, multi-screen maps, collision overlay, actor placement, player start, dialogue and events; reorder and duplicate maps and screens, and organize maps with folder labels once a project outgrows one screenful (see below) |
 | **Sprite Forge** | Done — metasprite assembly, animation timeline with live preview, actors bound to behaviours |
 | **Items Forge** | Done — name, effect (None for a key item, or Heals/Damages with an amount) and, optionally, the linked Pickup actor; also reachable via a scripted Give item command or a monster's drop |
 | **Sound Forge** | Done — tracker for all four channels, instruments, order list, preview through the same replayer the ROM agrees with |
@@ -238,7 +238,7 @@ opened here.
 
 ### Working on a project with a lot in it
 
-Five things in the Map Forge for once there is more than a screenful:
+Things worth knowing about the Map Forge once a project is more than a screenful:
 
 - **Template…** writes the two-page pattern above for you — a chest, a one-off
   greeting, a gate that opens for whoever carries the key, or (in an RPG) a
@@ -251,6 +251,40 @@ Five things in the Map Forge for once there is more than a screenful:
 - **Name a screen** and **name a placed actor**, and they read that way
   everywhere: warp targets, door targets, the title-screen picker, search results.
   Both are for you — neither reaches the ROM.
+- **▲ ▼** next to the map picker move the current map earlier or later in the
+  list — every door, warp and title/start setting anywhere in the project
+  still points at the same room afterward, in one undo. **⧉** beside them
+  duplicates the whole map under an auto-suffixed name: a door or warp inside
+  the copied map that pointed *within* it now points at the corresponding
+  screen in the copy, and one that pointed elsewhere in the project still
+  points at that same original screen — the project's own title and start
+  stay on the originals, never on a copy.
+- **Folder**, in a map's own settings, groups it under a label of your choosing —
+  the map picker then reads `[Dungeons] Cave 1` instead of just `Cave 1`. It's
+  a flat label, not a tree, and it's for you: it never reaches the ROM.
+- **⧉** next to a screen's own name duplicates just that screen. It grows the
+  current map to fit if there's room; if not, it offers a picker of another map
+  with room; if every map is already full (4×4), it promotes the screen straight
+  to a brand-new map of its own. On the copy, a door or warp that pointed back
+  at the screen being duplicated now points at the copy itself instead; one
+  that pointed anywhere else still points at that same original screen.
+  Duplicating across two maps with different tilesets warns that the art may
+  not look the same on the copy.
+- **▦ Select** drags out a rectangle of metatiles — and, with **Include actors**
+  checked, whatever is placed inside it — to **Copy**, then **Paste region**
+  drops it anywhere: the same screen, a different screen, even a different map.
+  Pasting into a map with a different tileset warns the art may not match;
+  pasting more switch-bound tiles or actors than a screen can hold is refused
+  outright, with the exact count, rather than silently dropping some of them.
+- **Deleting a map** always asks you to confirm first, and now says how many
+  doors and warps elsewhere in the project point at a screen it's about to
+  remove, if any do. **Shrinking one** small enough to drop screens off its
+  grid asks the same way, but only when a door or warp actually points at a
+  screen the resize would remove — shrinking off only unreferenced screens
+  commits with no prompt, and growing never prompts at all. Say yes to either
+  and every reference is repaired in the same step, not left pointing at
+  whatever now happens to sit
+  at the old number.
 - **⧉** copies an actor with its dialogue and its event, **+⧉** drops another one
   beside it, and inside an event, ↑ ↓ ⧉ reorder and duplicate pages and commands.
   The checkbox on a command switches it **off** without deleting it: it stays in

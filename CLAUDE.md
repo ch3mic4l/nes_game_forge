@@ -193,9 +193,21 @@ Anything the 6502 engine and the JavaScript tooling both depend on has **one** d
   onto the old name is what "follows the name" describes. Never keep the raw indices
   themselves across that gap and re-use them directly — a screen or an actor's numeric position is
   not its identity (`createScreen()`'s own comment says so for screens; `sprites.actors` renumbers
-  every later actor on a delete for the identical reason), so anything that round-trips through a
-  cached index instead of this file's own name-based lookup will silently point at different
-  content the moment the project is edited in between.
+  every later actor on a delete for the identical reason, and item 7's map/screen reorder,
+  duplicate and delete operations are a second, larger family of renumbering behind the identical
+  fact). This subsystem needed no reorder-awareness of its own to survive that family: `mapsNamed`
+  and `screensNamed` (`shared/playscenario.js`) resolve by current name at call time, and an unnamed
+  screen resolves by its position within its *own* map's `screens` array — a value item 7's map
+  reorder never touches, since reordering `project.maps` moves a map's slot in that outer array, not
+  a screen's slot within its own map — so name-resolution already treated "the map or screen moved"
+  as an ordinary edit it was built to survive, before item 7 ever existed. So anything that
+  round-trips through a cached index instead of this file's own name-based lookup will silently
+  point at different content the moment the project is edited in between.
+- Rewriting every stored flat-screen reference after a map/screen structural edit →
+  `remapScreenReferences(project, translate)` in `shared/project.js` (item 7, "Map organization and
+  reuse"). It is the single place that knows *which fields* hold a flat screen reference; it does
+  not know how any operation computes its own permutation, which each caller supplies as `translate`.
+  See the fuller passage below, near `renderer/store.js`.
 - Engine RAM addresses → `engine/constants.asm`. Tooling that has to know where a byte lives
   *parses* them (`parseEquates` in `shared/enginesyms.js`) out of the `constants.asm` in `build/`,
   which is the copy that assembled the ROM in hand — a Code Forge override of it included. The
@@ -245,6 +257,50 @@ kind of drift that let the Items Forge almost ship unvisited by that very test. 
 is the single project state:
 `commit()` for a discrete edit, `beginStroke()`/`touch()`/`endStroke()` so a drag is one undo entry.
 Undo is whole-project `structuredClone` snapshots.
+
+**Map organization and reuse (ROADMAP item 7) is what makes a store commit that restructures the
+map list safe.** Before it, Delete Map and Resize Map had shipped restructuring `project.maps` with
+zero reference repair — a real, already-shipped bug, not a hypothetical one — and Add Map was a bare
+`project.maps.push` with no reference repair to speak of either. `remapScreenReferences(project,
+translate)` in `shared/project.js` is the one new primitive: the single place that knows *which
+fields* hold a flat screen reference — every placed entity's `props.toScreen`, and every `warp`
+command's `screen` operand, reached through `allCommands` so a warp nested inside a branch or a
+choice option is not missed (the identical defect `usedSwitches` once had against a switch set
+inside a branch). It does not know how any operation computes its own permutation — the caller
+supplies `translate`, and `translate` must be **total** over every raw stored value it can
+encounter: there is deliberately no third "leave it alone" answer, because a reference the function
+does not resolve is a reference it is wrong about, not one safe to skip. It mutates `project` in
+place and returns `{ project, droppedTargets }` for the callers that need to report what got
+redirected. `canonicalizeFlat(value, flatLengthBefore)` resolves a raw stored operand against the
+flat count as it stood *before* the edit, so a stale out-of-range operand keeps the target the
+compiler already gave it rather than being re-clamped onto whatever the edit just appended.
+`titleMap`/`titleScreen` and `startMap`/`startScreen` are deliberately **not** handled by
+`remapScreenReferences` — they are map-space, not flat-space, and how they move depends on which
+operation is running, so each operation (reorder's direct map-space lookup, delete/resize's own
+per-map fixup) fixes them itself.
+
+**One body, not two.** Every operation — `reorderMapsCore`, `addMapCore`, `duplicateMapCore`,
+`deleteMapCore`, `growOrShrinkMap`, `duplicateScreenViaGrowthCore`,
+`duplicateScreenIntoNewMapCore`, `pasteRegionCore` — is a commit-free core in `shared/project.js`
+that both the renderer's one `store.commit` and the unit tests call directly, alongside translate
+builders (`buildReorderTranslate`, `buildAppendCanonicalizeTranslate`, `buildDeleteMapTranslate`,
+`buildResizeTranslate`, `buildPerMapTranslate`, `buildCloneTranslate`) and the audit helper
+`auditDroppedReferences`. `renderer/forges/map/map.js` wraps each core in exactly one
+`store.commit()`, so restructuring the map list and repairing every reference it holds is one undo
+entry, never two.
+
+A same-count reorder is the case `screenCount`/`mapCount` cannot see: it leaves both untouched, so a
+cartridge save would still pass `saveIdentity`'s checks (`shared/save.js`, above) while its own
+`flat_screen` byte named a different room. `saveCompatToken`, drawn by `drawSaveCompatToken` and
+folded into `saveIdentity` only when nonzero, closes that gap — see the `SAVE_LAYOUT_VERSION`
+passage above for how it differs from a layout-version bump.
+
+Mechanism depth — the map-space fixups, the duplicated-map/screen self/external target split
+(`rewriteClonedRange` for a duplicated map or a screen promoted into a new map, `buildCloneTranslate`
+for a growth-routed screen clone; region copy/paste has no such split at all — `pasteRegionCore`
+copies metatiles, bound tiles and already-positioned entities verbatim, calling neither), `map.folder`,
+the world overview this design deliberately sliced out — is `handoff-maporg/design-maporg.md`, not
+here.
 
 ### The engine
 
@@ -623,15 +679,21 @@ walking up to whatever carried it and pressing the button.
 
 **A placed entity's own record has a second field whose meaning depends on the actor's
 behaviour, not just its trigger.** `ent_to_scr` (`engine/constants.asm`) is written unconditionally
-for every placement (`spawn_entities`) and read by exactly one routine, `entity_door` — so for a
-pickup actor, item 5's own id retarget (phase 4) repurposes the same byte to carry the item that
-placement grants instead of a meaningless door target. Behaviour is exclusive (never both `door`
-and `pickup`), so the two meanings never collide, and `emitScreens` (`main/build/generate.js`) is
-the single writer that decides which one a given placement's byte is. The one trap in the reuse:
-the door-target clamp (`Math.min(entity.props?.toScreen ?? 0, Math.max(0, flat.length - 1))`,
-`emitScreens`) must never run for a pickup actor's byte — an item id above the current screen count
-would be silently corrupted into a real, wrong screen number by a clamp meant for the other meaning
-entirely.
+for every placement (`spawn_entities`). `entity_door` (`engine/entities.asm`) reads it as a
+flat-screen target; under `ITEMS_ENABLED`, both `entity_pickup` (`engine/entities.asm`) and the
+interact-button pickup path in `do_interact` (`engine/input.asm`) instead read it as the item id a
+pickup actor's placement grants — so for a pickup actor, item 5's own id retarget (phase 4)
+repurposes the same byte to carry that item id instead of a meaningless door target. Behaviour is
+exclusive (never both `door` and `pickup`), so the two meanings never collide, and
+`resolveEntityByte(entity, actor,
+itemsEnabled, itemIdForActor, flatLength)` (`main/build/generate.js`) is the single place that
+decides which one a given placement's byte is — a verbatim extraction of the inline ternary
+`emitScreens` used to carry, with no ROM-visible change, so the same question resolves identically
+for `emitScreens` and for `test/lib/eventdecoder.js`'s consumer (below). The one trap in the reuse:
+the door-target clamp (`Math.min(entity.props?.toScreen ?? 0, Math.max(0, flatLength - 1))`, now
+inside `resolveEntityByte`) must never run for a pickup actor's byte — an item id above the current
+screen count would be silently corrupted into a real, wrong screen number by a clamp meant for the
+other meaning entirely.
 
 `NO_ACTOR == NO_ITEM == $FF` is what let most of that retarget reach the ROM with **no engine code
 change at all**: Give, Take, a monster's drop, and a Carrying condition all used to resolve an item
@@ -661,6 +723,20 @@ regardless of whether that particular project uses items. What an author sees is
 the old save is treated exactly like a foreign or corrupted one, which is to say the title screen
 simply does not offer Continue. No message, no crash: the existing "this record does not belong to
 this build" path doing the job it already did for every other case.
+
+**Item 7's `saveCompatToken` (`shared/save.js`'s `saveIdentity`, drawn by `drawSaveCompatToken` in
+`shared/project.js`) closes a narrower hole the same way, and is deliberately not a second
+`SAVE_LAYOUT_VERSION` bump.** A structural edit that reorders, deletes or resizes maps can leave
+`screenCount`/`mapCount` — the only order-adjacent facts `saveIdentity` already folds in —
+completely unchanged, which would otherwise let `save_check_valid` accept a cartridge record whose
+`flat_screen` byte no longer names the room it was saved in. A version bump breaks *every* prior
+save unconditionally, the instant it ships, whether or not a given project's screens ever moved;
+`saveCompatToken` breaks a save only for a project that actually performed one of the five
+qualifying structural edits (reorder, delete map, grow-resize, shrink-resize, growth-routed
+duplicate screen — `reorderMapsCore`/`deleteMapCore`/`growOrShrinkMap` are the three call sites,
+`growOrShrinkMap` shared by grow, shrink and the growth-routed duplicate). It is a random nonce in
+`[1, 0xffff]`, folded into `saveIdentity`'s hash only when nonzero, so a project that never performs
+a qualifying edit computes byte-identically to what it did before the field existed.
 
 **An item's own effect is `{kind, amount}`, `kind` one of `none`/`heal`/`damage`.**
 `ITEM_EFFECT_KINDS` (`shared/project.js`) is the wire format the same way `BEHAVIORS`/`ACTIONS`
@@ -1663,6 +1739,20 @@ decodes the same bytes with the platform's own `ImageDecoder`; a deliberate one-
 rule in both files passed the then-current 562-test unit suite and was caught only there. Any
 change to `gif.js` has to keep that check, and a new format written the same way should get one
 like it.
+
+**Item 7's `test/lib/eventdecoder.js` is a comparable test-only layer for a different wire format.**
+It walks the actual bytes `encodeCommand`/`encodeEvent` (`main/build/textcompile.js`) produce,
+opcode by opcode: `decodeCommand` handles `branch`, `choice`, `warp` and `say` explicitly (each has
+its own compiled shape a generic width can't express), gives `sting`/`sfx`/`battle` their real
+exceptional widths, and falls back to `EVENT_COMMANDS[opcode].args.length` for every other, generic
+command — deliberately schema-driven for that remainder, not independent of `EVENT_COMMANDS.args`.
+An exhaustive corpus in `test/unit/project.test.js` exercises every real `encodeCommand` case against
+it. It resolves a warp's raw screen operand to a real screen *object* (out of a flattened project,
+the same shape `flatScreens` returns), so two builds can be compared by object identity rather than
+by an index a reorder/duplicate/delete/resize is required to change. Like `gif.js`/`gifdecode.js`
+above, it lives beside the tests that use it — never exported from `main/build/`, and never imported
+by it (design §7 item 2) — so a change to the wire format has to keep this decoder in step, not the
+other way around.
 
 ## Testing
 

@@ -15,7 +15,8 @@ Two things are deliberately *not* on it:
 
 - **Visual map layers.** The NES has one background tile per cell. Arbitrary layers would mean
   build-time compositing, duplicate CHR tiles and palette-conflict resolution, for something the
-  hardware cannot show. Better map *organization* (item 7) buys far more per unit of work.
+  hardware cannot show. Better map *organization* (item 7, now shipped) bought far more per unit of
+  work than layers would have.
 - **A full character generator.** RPG Maker's is enormous and assumes arbitrary bitmaps. The
   NES-shaped version of the same idea is item 8, and it is much smaller.
 
@@ -224,8 +225,13 @@ to the thing under test without playing up to it.
   `playScenario`/`rememberPlayScenario`, and not which toggles exist, which is
   `shared/testoverrides.js`'s `TOGGLE_NAMES`. That file explains why a numeric position isn't
   identity (`createScreen()`'s own comment; `sprites.actors` renumbering on delete); the declined-ids
-  decision above is recorded here, in this roadmap, not there — item 7's map reordering is the likely
-  place to revisit it, being exactly the kind of structural edit a rename can't survive. Ordinary
+  decision above is recorded here, in this roadmap, not there. **The revisit has since happened:**
+  item 7's design (`handoff-maporg/design-maporg.md` §5) considered a persistent opaque id per
+  map/screen/actor again, for exactly this reordering, and declined it a second time — reorder,
+  duplicate, delete and resize are all a pure renumber over the flat/map/per-map index spaces, no new
+  identity field on `project.maps[]`/`map.screens[]`. `saveCompatToken` (§6.10) is explicitly not
+  such an id: a project-wide, independently-redrawn nonce for the save record's own compatibility
+  check, not a per-map or per-screen identity. Ordinary
   ▶ Build & Play still means only the project's own
   authored start, deliberately and unconditionally — Map Forge's play-from-here and battle-test
   buttons go through a separate entry point, so the ordinary button can never start meaning something
@@ -976,18 +982,64 @@ a bigger version of the same thing.~~ — **done**: see item 12 below.
 ## 7. Map organization and reuse
 
 The Map Forge already has stamp, rectangle, fill, picker, start and actor tools
-(`renderer/forges/map/map.js:31`). What it lacks is everything about handling *many* maps:
+(`renderer/forges/map/map.js:31`). What it lacked was everything about handling *many* maps. Five of
+six items below are now complete: duplicate, copy/paste, folders and safe reorder shipped as
+`de19269`, in five reviewed phases against `handoff-maporg/design-maporg.md`; named screens
+predated item 7 (landing with item 2) and this commit added only their ambiguity warnings; the
+sixth, the world overview, was deliberately sliced out. CLAUDE.md's own item-7 passage (near
+`renderer/store.js`) carries the mechanism; it is not repeated here.
 
-- **Duplicate** a screen or a whole map
-- **Copy/paste** a rectangular region
-- Map **folders** or a tree
-- **Reorder** maps safely, updating every warp and event reference
-- **Named screens** (shared with item 2)
-- A **world overview** showing starts, warps and event markers
+- ~~**Duplicate** a screen or a whole map~~ — **done**: a whole map (`duplicateMapCore`), and a
+  single screen by three routes — grow the destination map to fit it, pick a different map with
+  room, or promote it to a brand-new map of its own.
+- ~~**Copy/paste** a rectangular region~~ — **done** (`pasteRegionCore`): art, bindings and
+  optionally the actors placed in it.
+- ~~Map **folders** or a tree~~ — **done**, as folders: `map.folder`, a display-only grouping label
+  for the Map Forge's own picker (`null` meaning no folder). Not a tree — a flat label a map either
+  has or does not.
+- ~~**Reorder** maps safely, updating every warp and event reference~~ — **done**: see the paragraph
+  below.
+- ~~**Named screens** (shared with item 2)~~ — the field itself (`createScreen()`'s `name`,
+  `screenLabel`) predates item 7, landing with item 2. What item 7 added is `validateProject`'s
+  ambiguity warning: two maps, or two screens within one map, sharing a name is what breaks the ▶
+  Test tool's remembered-scenario resolution (`shared/playscenario.js`'s `resolveStartAt`, which
+  refuses rather than guesses). `validateProject` emits the warning as a nonblocking entry the Build
+  Forge shows under Problems (`renderer/forges/build/build.js`'s `renderSummary`) — duplicate names
+  still compile fine, the warning is just telling you why a remembered scenario touching one of them
+  would refuse.
+- A **world overview** showing starts, warps and event markers — **still open**, deliberately sliced
+  out of the design (§12): `renderer/forges/map/eventlist.js`'s `buildEventIndex` can already supply
+  searchable event/actor rows, useful input for the event-marker portion, but it reads neither
+  `project.project.startMap` nor `startScreen` and folds warp targets into human-readable command
+  text rather than structured marker records — a world overview still needs explicit start and
+  structured warp-marker extraction of its own. Building one before folders had settled risked
+  rework too. Item 7 is not wholly done; this is the remaining piece.
 
-Reordering is the one with teeth: screen indices are referenced by warps, doors and compiled event
-bytecode, so the rename has to be a single operation over the project, and a test should assert no
-reference survives pointing at the wrong screen.
+Reordering was the one with teeth, and the prediction held: screen indices are referenced by warps,
+doors and compiled event bytecode, so the operation had to rewrite every stored reference in the
+same commit, and it does. `remapScreenReferences(project, translate)` (`shared/project.js`) is that
+one primitive — the single place that knows which fields hold a flat screen reference, walking
+`allCommands` so a warp nested inside a branch or a choice option is not missed. The structural
+map/screen edit cores use it wherever a flat reference can move (reorder, delete, grow/shrink,
+growth-routed screen duplicate); region paste has its own commit-free core (`pasteRegionCore`) that
+never calls it, and a folder or screen-name edit is a plain metadata write, not a remapping core at
+all. It also turned out to be the fix for two already-shipped bugs, not just new work: Delete Map and
+Resize Map had been restructuring `project.maps` with zero reference repair since they first shipped,
+and item 7 is the retrofit that finally repairs them. The suite grew from 880 to 914 tests — 34 new
+`test(...)` declarations added to `test/unit/project.test.js` and none removed (`git diff -U0
+de19269^ de19269`), not the commit message's own "914 (from 891)"/"27 plus five controls," which
+does not square with either the diff or the parent commit's own reported count. Reading the 34
+themselves: `remapScreenReferences`/`canonicalizeFlat` mechanics, reorder's self/cross-map/branch/
+choice reference preservation and its own byte-identical round trip, `saveCompatToken`/`saveIdentity`
+behavior across several edits including a same-count reorder, the structural cores' own edit
+contracts (naming collisions, atomic paste-capacity refusal, `map.folder` round-tripping) — a broader
+set than reference preservation alone. That reorder case is guarded outside the flat-reference remap
+by a project-wide `saveCompatToken`, itself stored
+in project JSON (`project.project.saveCompatToken`) and folded into `saveIdentity`
+(`shared/save.js`) because a reorder leaves `screenCount`/`mapCount` unchanged. The approved design
+had two real bugs, found
+only by implementing it, both fixed in the code and in the design document's own §15 changelog. Zero
+engine bytes: `sample/` builds to an identical ROM hash before and after.
 
 ## 8. NES-constrained asset assistance
 
@@ -999,10 +1051,11 @@ The blank-page problem is real, and RPG Maker solves it mostly by shipping conte
 - A small **MIT/CC0 starter library**: terrain, UI, monsters, effects, sound effects
 - **Starter projects** — action, dungeon crawl, RPG — beyond today's demo fixtures
 
-Anything shipped here needs its license recorded in the repo, and the four existing fixtures stay
+Anything shipped here needs its license recorded in the repo, and the five existing fixtures stay
 exactly as they are: tests are written against them and they may not be mutated. Only two of them
-are demos worth starting from — `sample/` and `sample-rpg/`; `sample-mmc1/` and `sample-mmc3/` exist
-to cover a board rather than to show a game, and are not what this item means.
+are demos worth starting from — `sample/` and `sample-rpg/`; `sample-mmc1/`, `sample-mmc3/` and
+`sample-u512/` exist to cover a board rather than to show a game (CLAUDE.md's own "five fixtures,
+deliberately" passage), and are not what this item means.
 
 ## 9. Split-pane editing in the Code Forge
 
@@ -1479,8 +1532,13 @@ subject to, not a separate claim; and item 5's scope list is where both Forges' 
 2. ~~Variables, branching, choices, triggers, common events — item 1~~ — **done**: `EVENT_COMMANDS`
    and `IMPLEMENTED_COMMANDS` in `shared/project.js` are now identical, 21 commands to seven
 3. ~~SRAM save/load — item 4~~ — **done**, one slot
-4. Items, equipment, status effects, battle testing — item 5
-5. Movement routes and the audiovisual cutscene commands — item 6
+4. ~~Items, equipment, status effects, battle testing — item 5~~ — **done**
+5. ~~Movement routes and the audiovisual cutscene commands — item 6~~ — **done**
+
+Item 7 (map organization and reuse) is not part of this kernel-bank-ordered sequence: it landed
+later, on its own, and costs zero engine bytes (`sample/` builds to an identical ROM hash before and
+after) — pure editor and data-model work with nothing to weigh against the kernel-lo budget the rest
+of this section is about.
 
 **The kernel bank is the constraint on everything below this line, and it is close to full.** Move
 found it: ~395 bytes against 161 free on the worst battery board, and it only shipped by becoming
