@@ -37,6 +37,7 @@ import {
   TITLE_KERNEL_ALLOWANCE_BY_MAPPER,
   KERNEL_SLACK,
   SAVE_KERNEL_ALLOWANCE_BY_MAPPER,
+  SAVE_BATTLE_KERNEL_ALLOWANCE,
   MOVE_KERNEL_ALLOWANCE,
   FACE_KERNEL_ALLOWANCE,
   TURN_KERNEL_ALLOWANCE,
@@ -84,29 +85,37 @@ const hasNesasm = spawnSync('nesasm', [], { stdio: 'ignore' }).error?.code !== '
 const CAPABLE_MAPPERS = SUPPORTED_MAPPERS.filter(rpgCapable);
 
 /**
- * Builds sample-rpg on `mapper` with every conditionally-assembled block
- * heal/damage's own measurement already covered (dialogue, action combat,
- * the RPG battle system, branches, questions, common-event calls, Play
- * music, Start a battle, Heal/Damage), plus a live Save and/or Move command
- * per `withSave`/`withMove`, and a title screen per `withTitle` -- the whole
- * point is nothing conditional is left out of whichever configuration is
- * being measured. The baseline is title-*off*: `withTitle` defaults to
- * false, because a title screen is no longer baked unconditionally into
- * BASE_KERNEL_CODE_BYTES_BY_MAPPER (see the long comment in generate.js) and
- * sample-rpg as checked in has none. `withSave` forces a title on
- * regardless of `withTitle`, because validateProject refuses a live Save
- * command with no title screen ("Continue has nowhere to appear without
- * one") -- there is no way to measure Save without one. Returns the real
- * kernel code size: nesasm's own usage for the kernel-lo bank, minus
- * everything before `reset` in it (the lookup tables — kernel_lo.inc,
- * palettes, metatiles, sprites, input, maps, chrtables — `reset` being the
- * first label of boot.asm, the first file of engine code included after
- * them), measured off the real assembly rather than recomputed by hand here.
+ * Builds `fixture` (sample-rpg by default) on `mapper` with every
+ * conditionally-assembled block heal/damage's own measurement already
+ * covered (dialogue, action combat, the RPG battle system, branches,
+ * questions, common-event calls, Play music, Start a battle, Heal/Damage),
+ * plus a live Save and/or Move command per `withSave`/`withMove`, and a
+ * title screen per `withTitle` -- the whole point is nothing conditional is
+ * left out of whichever configuration is being measured. The baseline is
+ * title-*off*: `withTitle` defaults to false, because a title screen is no
+ * longer baked unconditionally into BASE_KERNEL_CODE_BYTES_BY_MAPPER (see
+ * the long comment in generate.js) and sample-rpg as checked in has none.
+ * `withSave` forces a title on regardless of `withTitle`, because
+ * validateProject refuses a live Save command with no title screen
+ * ("Continue has nowhere to appear without one") -- there is no way to
+ * measure Save without one. `fixture` defaults to SAMPLE_RPG rather than
+ * being required, so every existing call site keeps measuring the identical
+ * project it always has -- only the SAVE_KERNEL_ALLOWANCE_BY_MAPPER prose
+ * census's own action-side measurement below passes SAMPLE explicitly, to
+ * isolate the RPG-only supplement's own cost (SAVE_BATTLE_KERNEL_ALLOWANCE,
+ * main/build/generate.js) rather than duplicate this whole helper for one
+ * different `loadProject` argument. Returns the real kernel code size:
+ * nesasm's own usage for the kernel-lo bank, minus everything before
+ * `reset` in it (the lookup tables — kernel_lo.inc, palettes, metatiles,
+ * sprites, input, maps, chrtables — `reset` being the first label of
+ * boot.asm, the first file of engine code included after them), measured
+ * off the real assembly rather than recomputed by hand here.
  */
 async function measureCodeBytes(
   t,
   mapper,
   {
+    fixture = SAMPLE_RPG,
     withSave = false,
     withMove = false,
     withTurn = false,
@@ -129,7 +138,7 @@ async function measureCodeBytes(
 ) {
   const dir = await fsp.mkdtemp(path.join(os.tmpdir(), 'forge-kernelbytes-'));
   t.after(() => fsp.rm(dir, { recursive: true, force: true }));
-  const project = await loadProject(SAMPLE_RPG);
+  const project = await loadProject(fixture);
   project.cartridge.mapper = mapper.id;
   // sample-rpg carries one live item by default; withItems: false strips it
   // so a caller can isolate ITEM_KERNEL_ALLOWANCE's own delta the same way
@@ -316,11 +325,17 @@ test(
   async (t) => {
     assert.ok(CAPABLE_MAPPERS.length > 0, 'no RPG-capable mapper is registered — rpgCapable() found nothing');
     // saveMediaImplemented, not batteryCapable: UNROM 512 saves too, by
-    // flashing its own PRG-ROM rather than battery RAM, and its own
-    // SAVE_KERNEL_ALLOWANCE_BY_MAPPER entry needs the same exact-delta
-    // measurement every battery board already gets below, or a stale flash
-    // figure could drift for as long as assertCovers's own ceiling (which
-    // only ever judges the *worst* board) happened not to notice.
+    // flashing its own PRG-ROM rather than battery RAM, and its own two Save
+    // terms need the same exact-delta measurements every battery board
+    // already gets below, or a stale flash figure could drift for as long as
+    // assertCovers's own ceiling (which only ever judges the *worst* board)
+    // happened not to notice. Two separate measurements, not one, since the
+    // Save allowance split (main/build/generate.js): the RPG-project loop
+    // below pins SAVE_KERNEL_ALLOWANCE_BY_MAPPER[mapper] +
+    // SAVE_BATTLE_KERNEL_ALLOWANCE (the RPG *total*), and the action-project
+    // loop after it pins SAVE_KERNEL_ALLOWANCE_BY_MAPPER[mapper] alone (the
+    // *base* term) -- each establishes a different half of the split, and
+    // neither on its own would catch the other drifting.
     const saveMappers = CAPABLE_MAPPERS.filter(saveMediaImplemented);
     assert.ok(saveMappers.length > 0, 'no save-capable board is registered — saveMediaImplemented() found nothing');
 
@@ -408,13 +423,21 @@ test(
       );
     }
 
-    // Only the save-capable boards, a live Save command and nothing else --
-    // diffed against the title-*on* baseline just above, not the title-off
-    // one, because validateProject requires a title screen alongside any
-    // live Save command: both sides of this subtraction carry the same
-    // title cost, so it cancels out and this delta is save/load's own cost
-    // alone, exactly as it was before the title term existed to conflate it
-    // with.
+    // Only the save-capable boards, a live Save command and nothing else, on
+    // sample-rpg (an RPG project) -- diffed against the title-*on* baseline
+    // just above, not the title-off one, because validateProject requires a
+    // title screen alongside any live Save command: both sides of this
+    // subtraction carry the same title cost, so it cancels out and this
+    // delta is save/load's own cost alone, exactly as it was before the
+    // title term existed to conflate it with. This is the RPG *total*:
+    // save_check_valid (engine/save.asm) assembles an extra `.if
+    // BATTLE_ENABLED` range-check block for an RPG that an action project's
+    // build does not, so the real delta here is
+    // SAVE_KERNEL_ALLOWANCE_BY_MAPPER[mapper] + SAVE_BATTLE_KERNEL_ALLOWANCE,
+    // not the base term alone (see the action-only loop below for the other
+    // half of that split, and the long comment beside
+    // SAVE_KERNEL_ALLOWANCE_BY_MAPPER in generate.js for why the split exists
+    // at all).
     const withSave = [];
     for (const mapper of saveMappers) {
       const { project, codeBytes } = await measureCodeBytes(t, mapper, { withSave: true });
@@ -422,24 +445,114 @@ test(
       assertCovers({ mapper, codeBytes }, kernelCodeBytes(project, mapper), 'a live Save command');
       const noSaveTitleEntry = noSaveTitle.find((entry) => entry.mapper.id === mapper.id);
       const delta = codeBytes - noSaveTitleEntry.codeBytes;
-      // Equality, not <=: a per-mapper allowance is supposed to equal that
-      // board's own exact measured delta, not merely cover it -- a <= check
-      // alone lets a stale, over-large figure (say, MMC1 left at the old
-      // shared 552 instead of its own true 547) pass silently with a wider
-      // margin than KERNEL_SLACK was ever meant to leave, which is exactly
-      // the drift assertCovers's own ceiling exists to catch but, per
-      // mapper, does not: assertCovers only ever judges the *worst* board's
-      // margin, so a non-worst board's allowance can sit wrong indefinitely
-      // underneath it.
+      const expected = SAVE_KERNEL_ALLOWANCE_BY_MAPPER[mapper.id] + SAVE_BATTLE_KERNEL_ALLOWANCE;
+      // Equality, not <=: the two allowances together are supposed to equal
+      // this board's own exact measured RPG-total delta, not merely cover it
+      // -- a <= check alone lets a stale, over-large figure (say, MMC1 left
+      // at the old shared 552 instead of its own true 547) pass silently
+      // with a wider margin than KERNEL_SLACK was ever meant to leave, which
+      // is exactly the drift assertCovers's own ceiling exists to catch but,
+      // per mapper, does not: assertCovers only ever judges the *worst*
+      // board's margin, so a non-worst board's allowance can sit wrong
+      // indefinitely underneath it.
+      assert.equal(
+        delta,
+        expected,
+        `${mapper.name}: save/load costs ${delta} bytes of kernel code on an RPG project ` +
+          `(${noSaveTitleEntry.codeBytes} -> ${codeBytes}), but SAVE_KERNEL_ALLOWANCE_BY_MAPPER[${mapper.id}] + ` +
+          `SAVE_BATTLE_KERNEL_ALLOWANCE reserves ${expected} — the RPG total must equal this board's own measured ` +
+          'delta exactly. Re-measure and correct it (see the comment beside SAVE_KERNEL_ALLOWANCE_BY_MAPPER in ' +
+          'generate.js).'
+      );
+    }
+
+    // The action-project half of the same split: an action project pays only
+    // SAVE_KERNEL_ALLOWANCE_BY_MAPPER's own base figure, never the RPG
+    // supplement above, because save_check_valid's `.if BATTLE_ENABLED`
+    // range-check block does not assemble outside an RPG at all. This is the
+    // measurement that was missing entirely before this change -- the RPG
+    // loop above was the only one ever run against SAVE_KERNEL_ALLOWANCE_BY_MAPPER,
+    // so an action project's real, smaller Save cost had never actually been
+    // checked against what kernelCodeBytes charges it. Same methodology as
+    // the RPG loop (title-on baseline subtracted on both sides), against
+    // `sample`, the action fixture, instead of `sample-rpg`.
+    const actionNoSaveTitle = [];
+    for (const mapper of saveMappers) {
+      const { codeBytes } = await measureCodeBytes(t, mapper, { fixture: SAMPLE, withTitle: true });
+      actionNoSaveTitle.push({ mapper, codeBytes });
+    }
+    // Deliberately no assertCovers call here, unlike every other loop in this
+    // test -- discovered while implementing this split, not assumed: building
+    // this exact project (action, on an RPG-capable board) and comparing the
+    // *absolute* kernelCodeBytes(project, mapper) against real usage surfaces
+    // a real, pre-existing, unrelated overcharge in baseKernelCodeBytes
+    // itself, which is measured exclusively against sample-rpg and applied
+    // unconditionally to action projects on the same board too -- an action
+    // project with no title, no Save and nothing else conditional already
+    // reserves 270-282 bytes more than nesasm actually uses, on all three
+    // RPG-capable boards, entirely independent of Save. No existing test
+    // before this change ever built an action project on an RPG-capable
+    // mapper and checked it against kernelCodeBytes at all (every other
+    // action-side check in this file — see ITEM_EFFECT_KERNEL_ALLOWANCE_BY_
+    // GAME_TYPE.action's own test above — is a delta, which cancels the base
+    // term out and so never surfaced this). Calling assertCovers here would
+    // conflate that separate, out-of-scope defect with this change's own
+    // correctness; the delta-equality assertion below is what this change is
+    // actually responsible for; the exact-delta assertion above -- the
+    // RPG-side sum -- is unaffected and keeps its own assertCovers call.
+    const actionWithSave = [];
+    for (const mapper of saveMappers) {
+      const { codeBytes } = await measureCodeBytes(t, mapper, { fixture: SAMPLE, withSave: true });
+      actionWithSave.push({ mapper, codeBytes });
+      const baselineEntry = actionNoSaveTitle.find((entry) => entry.mapper.id === mapper.id);
+      const delta = codeBytes - baselineEntry.codeBytes;
       assert.equal(
         delta,
         SAVE_KERNEL_ALLOWANCE_BY_MAPPER[mapper.id],
-        `${mapper.name}: save/load costs ${delta} bytes of kernel code (${noSaveTitleEntry.codeBytes} -> ${codeBytes}), ` +
-          `but SAVE_KERNEL_ALLOWANCE_BY_MAPPER[${mapper.id}] reserves ` +
-          `${SAVE_KERNEL_ALLOWANCE_BY_MAPPER[mapper.id]} — a per-mapper allowance must equal this board's own ` +
-          'measured delta exactly. Re-measure and correct it (see the comment beside kernelCodeBytes).'
+        `${mapper.name}: save/load costs ${delta} bytes of kernel code on an action project ` +
+          `(${baselineEntry.codeBytes} -> ${codeBytes}), but SAVE_KERNEL_ALLOWANCE_BY_MAPPER[${mapper.id}] reserves ` +
+          `${SAVE_KERNEL_ALLOWANCE_BY_MAPPER[mapper.id]} — the base term alone must equal an action project's own ` +
+          'measured delta exactly, with no RPG supplement folded in. Re-measure and correct it (see the comment ' +
+          'beside SAVE_KERNEL_ALLOWANCE_BY_MAPPER in generate.js).'
       );
     }
+
+    // SAVE_BATTLE_KERNEL_ALLOWANCE's own flatness claim, proven rather than
+    // assumed: its comment in generate.js argues the RPG-only supplement is
+    // identical on every board because the `.if BATTLE_ENABLED` block it
+    // charges for has no mapper-specific instruction in it -- this is the
+    // assertion that would catch it if that ever stopped being true. Derived
+    // from the two loops just above (RPG total minus action base, per board)
+    // rather than hardcoded, so a change to either underlying measurement
+    // re-proves flatness against the same real numbers rather than a second,
+    // independently-drifting copy of them.
+    const supplements = saveMappers.map((mapper) => {
+      const rpgEntry = withSave.find((entry) => entry.mapper.id === mapper.id);
+      const actionEntry = actionWithSave.find((entry) => entry.mapper.id === mapper.id);
+      const actionBaselineEntry = actionNoSaveTitle.find((entry) => entry.mapper.id === mapper.id);
+      const rpgBaselineEntry = noSaveTitle.find((entry) => entry.mapper.id === mapper.id);
+      return {
+        mapper,
+        supplement:
+          rpgEntry.codeBytes - rpgBaselineEntry.codeBytes - (actionEntry.codeBytes - actionBaselineEntry.codeBytes)
+      };
+    });
+    for (const entry of supplements) {
+      assert.equal(
+        entry.supplement,
+        SAVE_BATTLE_KERNEL_ALLOWANCE,
+        `${entry.mapper.name}: the RPG-only Save supplement measures ${entry.supplement} bytes, but ` +
+          `SAVE_BATTLE_KERNEL_ALLOWANCE reserves ${SAVE_BATTLE_KERNEL_ALLOWANCE} — this term claims to be flat ` +
+          'across every board; re-measure all three and confirm before assuming a single board drifted.'
+      );
+    }
+    assert.ok(
+      supplements.every((entry) => entry.supplement === supplements[0].supplement),
+      `SAVE_BATTLE_KERNEL_ALLOWANCE is supposed to be flat across boards, but measured ` +
+        `${supplements.map((entry) => `${entry.mapper.name}=${entry.supplement}`).join(', ')} — if these genuinely ` +
+        'disagree, the term needs to become SAVE_BATTLE_KERNEL_ALLOWANCE_BY_MAPPER instead (see its own comment ' +
+        'in generate.js for why it is flat today and what would change that).'
+    );
 
     // Every RPG-capable board, a live Move command and nothing else.
     // MOVE_KERNEL_ALLOWANCE is deliberately one flat number rather than a
@@ -1293,7 +1406,10 @@ test('a kernel-lo shortfall Move alone would not close by its own allowance can 
 
 test('a kernel-lo shortfall a live Save command alone would close names Save, with that board’s own allowance', async () => {
   const project = await loadProject(SAMPLE_RPG);
-  project.cartridge.mapper = 1; // MMC1 — its own SAVE_KERNEL_ALLOWANCE_BY_MAPPER entry is 547, not MMC3's 552
+  // MMC1 -- an RPG project's real Save cost here is the sum of the two Save
+  // terms (511 + 36 = 547), not SAVE_KERNEL_ALLOWANCE_BY_MAPPER[1] alone
+  // (511) -- MMC3's own RPG total is 552 (516 + 36).
+  project.cartridge.mapper = 1;
   project.project.titleMap = 0;
   project.project.titleScreen = 0;
   project.maps[0].screens[0].entities.push({
@@ -1304,7 +1420,10 @@ test('a kernel-lo shortfall a live Save command alone would close names Save, wi
   });
   inflate(project, 100);
   const message = kernelShortfallMessage(project);
-  assert.match(message, new RegExp(`removing every Save command \\(frees ${SAVE_KERNEL_ALLOWANCE_BY_MAPPER[1]} bytes\\)`));
+  assert.match(
+    message,
+    new RegExp(`removing every Save command \\(frees ${SAVE_KERNEL_ALLOWANCE_BY_MAPPER[1] + SAVE_BATTLE_KERNEL_ALLOWANCE} bytes\\)`)
+  );
   assert.doesNotMatch(message, /Move command/, 'this project never turns Move on, so it must not be offered as a fix');
   // Title is now its own kernelCodeBytes term, but it is content on a map,
   // not a command projectWithoutCommands can switch off -- and this project
@@ -1530,7 +1649,7 @@ test(
       message,
       new RegExp(
         `removing every Move command \\(frees ${MOVE_KERNEL_ALLOWANCE + FACE_KERNEL_ALLOWANCE} bytes\\) or every Save command ` +
-          `\\(frees ${SAVE_KERNEL_ALLOWANCE_BY_MAPPER[4]} bytes\\)`
+          `\\(frees ${SAVE_KERNEL_ALLOWANCE_BY_MAPPER[4] + SAVE_BATTLE_KERNEL_ALLOWANCE} bytes\\)`
       ),
       'the refusal should name both commands and both of their real byte figures, not just report the deficit'
     );
@@ -1637,7 +1756,7 @@ test(
       message,
       new RegExp(
         `removing every Move command \\(frees ${MOVE_KERNEL_ALLOWANCE + FACE_KERNEL_ALLOWANCE} bytes\\) or every Save command ` +
-          `\\(frees ${SAVE_KERNEL_ALLOWANCE_BY_MAPPER[30]} bytes\\)`
+          `\\(frees ${SAVE_KERNEL_ALLOWANCE_BY_MAPPER[30] + SAVE_BATTLE_KERNEL_ALLOWANCE} bytes\\)`
       ),
       'the refusal should name both commands and both of their real byte figures, not just report the deficit'
     );
@@ -1670,7 +1789,7 @@ test(
       itemFreeMessage,
       new RegExp(
         `removing every Move command \\(frees ${MOVE_KERNEL_ALLOWANCE + FACE_KERNEL_ALLOWANCE} bytes\\) or every Save command ` +
-          `\\(frees ${SAVE_KERNEL_ALLOWANCE_BY_MAPPER[30]} bytes\\)`
+          `\\(frees ${SAVE_KERNEL_ALLOWANCE_BY_MAPPER[30] + SAVE_BATTLE_KERNEL_ALLOWANCE} bytes\\)`
       ),
       'the item-free configuration must still be refused on UNROM 512 -- if this ever fits, ROADMAP.md\'s ' +
         '"Suggested order" section is citing a test that no longer backs its claim'

@@ -286,17 +286,17 @@ const TITLE_PROMPT_ROW = 19;
 // title screen too, and this term must still be a safe over-estimate for
 // it.
 //
-// SAVE_KERNEL_ALLOWANCE_BY_MAPPER is the extra a board pays only when
-// save/load itself assembles, derived per board from the difference
-// save/load actually measures on the two boards that can build it at all --
-// not guessed, and not the larger of the two charged to both the way it used
-// to be, now that a per-mapper base makes a per-mapper allowance the same
-// kind of number: MMC1 goes from 6483 to 7030 (+547), MMC3 from 6689 to 7241
-// (+552, text always on for an RPG on a split-font board -- see
-// SPLIT_LOCK_KERNEL_ALLOWANCE below). Both sides of that subtraction carry a
-// title screen (validateProject refuses a live Save with no title screen —
-// "Continue has nowhere to appear without one" — so a project that pays
-// SAVE_KERNEL_ALLOWANCE always pays TITLE_KERNEL_ALLOWANCE too), which is
+// SAVE_KERNEL_ALLOWANCE_BY_MAPPER + SAVE_BATTLE_KERNEL_ALLOWANCE together are
+// the extra a board pays only when save/load itself assembles, derived per
+// board from the difference save/load actually measures on the two boards
+// that can build it at all -- not guessed, and not the larger of the two
+// charged to both the way it used to be, now that a per-mapper base makes a
+// per-mapper allowance the same kind of number: MMC1 goes from 6483 to 7030
+// (+547), MMC3 from 6689 to 7241 (+552, text always on for an RPG on a
+// split-font board -- see SPLIT_LOCK_KERNEL_ALLOWANCE below). Both sides of
+// that subtraction carry a title screen (validateProject refuses a live Save
+// with no title screen — "Continue has nowhere to appear without one" — so a
+// project that pays this always pays TITLE_KERNEL_ALLOWANCE too), which is
 // exactly why splitting the title cost out of the base above left this
 // delta unchanged: 6483 and 7030 are both title-on figures, so the 547
 // between them is the cost of save/load alone, with title's own cost
@@ -312,13 +312,65 @@ const TITLE_PROMPT_ROW = 19;
 // the jmp relay save_check_valid's own branch-range fix needed once that
 // bound pushed save_check_invalid out of a bne's reach -- see
 // engine/save.asm's own header comment and shared/save.js's saveIdentity()
-// for what each of those costs and why. This constant's own history is why a
+// for what each of those costs and why. This figure's own history is why a
 // passing kernelbytes.test.js run is not the same as having re-measured it:
 // the allowance drifted one round behind reality -- 531 recorded while the
 // real delta had already grown to 552 -- and the test still passed, because
 // 531 still covered 552's own shortfall against a much looser bound than the
 // one below. Caught only by re-running the real measurement by hand and
 // diffing it against this comment's claim, not by the test going green.)
+//
+// That 547/552/719 figure is the RPG *total* -- what an RPG project on each
+// board actually pays for save/load -- and it used to be
+// SAVE_KERNEL_ALLOWANCE_BY_MAPPER's own value directly. It no longer is.
+// save_check_valid (engine/save.asm) wraps its own pc_level range check and
+// its pc_in_party-vs-PARTY_SIZE check in `.if BATTLE_ENABLED` -- the *only*
+// game-type-varying code anywhere in the Save path (grepped: the sole
+// `.if BATTLE_ENABLED` in that file) -- so an action project's real Save
+// cost is smaller than an RPG's, on every board, and by the same amount:
+// measured directly (build `sample` and `sample-rpg`, each with a live Save
+// command and nothing else, on all three boards, title-on baseline
+// subtracted out on both sides the identical way the paragraph above
+// already does) gives 511/516/683 for action, 547/552/719 for RPG -- a flat
+// 36-byte gap on every board. `SAVE_KERNEL_ALLOWANCE_BY_MAPPER` now holds
+// the smaller, action-side figure -- the cost of the Save code every
+// save-capable board assembles regardless of game type -- and
+// `SAVE_BATTLE_KERNEL_ALLOWANCE` (below) is the RPG-only supplement
+// `kernelCodeBytes` adds on top to reach the same 547/552/719 total for an
+// RPG. Before this split, an action project with a live Save was overcharged
+// by 36 bytes on every board -- a real, measurable violation of this file's
+// own "a conditional feature's cost is a separate generated allowance,
+// never folded into a base" rule (CLAUDE.md, "The kernel budget"), caught
+// only once someone actually measured Save's cost against `sample` rather
+// than only ever against `sample-rpg`, the way every measurement above this
+// line always had been.
+//
+// SAVE_BATTLE_KERNEL_ALLOWANCE is that RPG-only supplement, and it is a flat
+// constant, not `*_BY_MAPPER`, on purpose: a term earns per-mapper treatment
+// only once real variance between boards is measured (the same standard the
+// title paragraph above already holds itself to, in the opposite direction —
+// MMC3's own extra 12 bytes there is exactly the kind of measured difference
+// that earns a `*_BY_MAPPER` shape), and there is none here to earn it. The
+// 36-byte gap is identical on MMC1, MMC3 and UNROM 512 -- three boards whose
+// own `SAVE_KERNEL_ALLOWANCE_BY_MAPPER` figures differ by hundreds of bytes
+// from each other -- because the `.if BATTLE_ENABLED` block it charges for
+// is a plain RAM range check with no mapper-specific instruction in it: no
+// register layout, no bank-switch shape, nothing that reads differently on
+// a board whose Save medium is battery-WRAM versus one whose medium is a
+// flash driver. `test/unit/kernelbytes.test.js` equality-asserts this figure
+// on all three boards independently (not merely once and assumed to
+// generalize), specifically to keep the flatness a measured claim rather
+// than a structural assumption -- if a future change to save_check_valid
+// ever makes this block's own size depend on the mapper, the test that
+// would catch it is already in place, and this constant becomes
+// `*_BY_MAPPER` at that point, on real evidence, the same way every other
+// term in this file already earned its own shape. Declared below, beside
+// `SAVE_KERNEL_ALLOWANCE_BY_MAPPER` itself, not here -- this whole comment
+// block is prose introducing every term before any of their real
+// declarations begin (see BASE_KERNEL_CODE_BYTES_BY_MAPPER's own export a
+// little further down), and the two Save terms' declarations stay adjacent
+// to each other the way the rest of this file already keeps a term's
+// declaration next to its own explanatory comment.
 //
 // SPLIT_LOCK_KERNEL_ALLOWANCE is a third term, MMC3-only and conditional the
 // same way, and it stays a separate term rather than folding into MMC3's own
@@ -484,11 +536,16 @@ export function titleKernelAllowance(mapper) {
 // plus save_media_fetch/commit's wrapper (the vblank wait, the forced
 // blank, the copy-to-RAM, the mapper_shadow save/restore) that battery's
 // save_media_fetch/commit reduce to a no-op. UNROM 512's own base-plus-title
-// (6678, the largest of the three, and title-on because Save requires it)
-// is what leaves room for it: 719 against roughly 1514 bytes of headroom
-// before KERNEL_SLACK and the fallback base even
-// enter the picture.
-export const SAVE_KERNEL_ALLOWANCE_BY_MAPPER = { 1: 547, 4: 552, 30: 719 };
+// (6678, the largest of the three, and title-on because Save requires it) is
+// what leaves room for the RPG total (719 = this constant's own action-side
+// 683 plus SAVE_BATTLE_KERNEL_ALLOWANCE's 36, below -- see the split's own
+// paragraph above) against roughly 1514 bytes of headroom before
+// KERNEL_SLACK and the fallback base even enter the picture.
+export const SAVE_KERNEL_ALLOWANCE_BY_MAPPER = { 1: 511, 4: 516, 30: 683 };
+// The RPG-only supplement the paragraph above this table derives -- flat,
+// not *_BY_MAPPER, and why, is argued there in full; this is only the
+// declaration, kept next to the table it supplements.
+export const SAVE_BATTLE_KERNEL_ALLOWANCE = 36;
 // move_tick/move_get_x/y/move_set_x/y/move_speed/move_animate only --
 // move_face moved out to its own FACE_KERNEL_ALLOWANCE below (item 6's
 // Turn/Wait first slice), so this dropped from the 395 bytes it measured
@@ -731,16 +788,38 @@ export function kernelCodeBytes(project, mapper) {
   // saveMediaImplemented, not saveCapable: SAVE_KERNEL_ALLOWANCE_BY_MAPPER
   // only has a measured entry for a board whose save/load code actually
   // assembles -- every registered board's medium is implemented today,
-  // UNROM 512 (719, engine/flash.asm's driver plus save_media_fetch/
-  // commit's own wrapper) included, so this currently agrees with
-  // saveCapable everywhere. It stays saveMediaImplemented rather than
-  // collapsing to saveCapable for the same reason saveMediaImplemented's
-  // own comment gives: a board with no save medium at all must cost
-  // nothing here regardless, and a future medium declared before the
-  // engine drives it would need to cost nothing here too, exactly the
-  // shape this already handles and saveCapable alone would not -- it would
-  // index this table with a mapper id that has no entry for it yet.
+  // UNROM 512 (683 base + 36 RPG supplement = 719 total, engine/flash.asm's
+  // driver plus save_media_fetch/commit's own wrapper) included, so this
+  // currently agrees with saveCapable everywhere. It stays saveMediaImplemented
+  // rather than collapsing to saveCapable for the same reason
+  // saveMediaImplemented's own comment gives: a board with no save medium at
+  // all must cost nothing here regardless, and a future medium declared
+  // before the engine drives it would need to cost nothing here too, exactly
+  // the shape this already handles and saveCapable alone would not -- it
+  // would index this table with a mapper id that has no entry for it yet.
   const usesSave = projectUsesSave(project) && saveMediaImplemented(mapper);
+  // The RPG-only supplement (SAVE_BATTLE_KERNEL_ALLOWANCE, above) is gated on
+  // whether save_check_valid's own `.if BATTLE_ENABLED` range-check block
+  // actually assembles -- which is *not* simply `gameType === 'rpg'`.
+  // BATTLE_ENABLED (assets/config.inc) is `codeRegions(mapper, tilesetCount,
+  // codeRegionCount(project)).length > 0`, and codeRegionCount(project) is
+  // exactly the gameType === 'rpg' test -- but codeRegions can still come
+  // back empty for a CHR-RAM board whose tileset payloads have already
+  // claimed every switchable region, a strictly narrower condition than
+  // "is an RPG". Mirrored here rather than assumed equivalent: reconcileCartridge
+  // (shared/project.js) already forces gameType === 'rpg' to imply
+  // rpgCapable(mapper), and every registered rpgCapable mapper leaves this
+  // equal to gameType === 'rpg' at every reachable tileset count today --
+  // MMC1/MMC3 are CHR-ROM, so chrPayloadRegions never claims a switchable
+  // region from them at all, and UNROM 512's own tilesetLimit ceiling (at
+  // most 4 tilesets) never comes close to exhausting its 62 switchable
+  // regions -- but that equivalence rests on facts about the current mapper
+  // registry, not on anything this function can see on its own, so it
+  // recomputes the real predicate instead of trusting the proxy to keep
+  // holding for a mapper not yet registered. Charging a project for bytes
+  // that would not actually assemble is exactly the overcharge this whole
+  // split exists to remove.
+  const usesSaveBattle = usesSave && codeRegions(mapper, project.tilesets.length, codeRegionCount(project)).length > 0;
   const usesMove = projectUsesMove(project);
   const usesTurn = projectUsesTurn(project);
   const usesWait = projectUsesWait(project);
@@ -788,6 +867,7 @@ export function kernelCodeBytes(project, mapper) {
     baseKernelCodeBytes(mapper) +
     (usesTitle ? titleKernelAllowance(mapper) : 0) +
     (usesSave ? SAVE_KERNEL_ALLOWANCE_BY_MAPPER[mapper.id] : 0) +
+    (usesSaveBattle ? SAVE_BATTLE_KERNEL_ALLOWANCE : 0) +
     (usesMove ? MOVE_KERNEL_ALLOWANCE : 0) +
     (usesTurn ? TURN_KERNEL_ALLOWANCE : 0) +
     (usesWait ? WAIT_KERNEL_ALLOWANCE : 0) +

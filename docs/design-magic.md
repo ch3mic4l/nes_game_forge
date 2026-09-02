@@ -826,21 +826,36 @@ dispatch-chain work lands here like everything else in this table — only its *
 **Kernel-lo** (round 1 review, High 3 — omitted from the round-1 draft entirely). The new
 `call_battle` call site §5 adds lives in `continue_game` (`engine/save.asm`), which is **kernel**
 code, not banked, and — like every other save/load-only code path — is gated on save being live at
-all. Kernel-lo capacity already has a named term for exactly this shape,
-`SAVE_KERNEL_ALLOWANCE_BY_MAPPER` (`main/build/generate.js:491`, currently `{1: 547, 4: 552, 30:
-719}`), equality-pinned per board by `test/unit/kernelbytes.test.js:411-440` — the save/load delta
-between a title-on baseline with and without a live Save command. `BE_RESTORE`'s own call site
-(`lda #BE_RESTORE / jsr call_battle`-shaped, matching the existing three entry points' own per-site
-cost) is unconditionally part of that same save/load code path (it only exists because `continue_game`
-exists), so it is `SAVE_KERNEL_ALLOWANCE_BY_MAPPER`'s own delta that grows, board by board — **not**
-the banked-region base, and **not** `bankedbytes.test.js`. This is a genuinely separate ledger from
-the banked-region table above, priced separately because `kernelbytes.test.js`'s own discipline
-(equality per mapper, not a margin) is what would catch a stale figure here, the same way
-`bankedbytes.test.js`'s equality catches one in the banked base.
+all.
+
+**The ledger this section prices against has since split into two terms, landed as a prerequisite to
+this design before any of the runtime work below existed** (`handoff-magic/phase4-design.md`'s own
+"Phase sequencing" — an implementation report, not part of this shipped design, but the change it
+describes is real and already in the tree). `SAVE_KERNEL_ALLOWANCE_BY_MAPPER` (`main/build/generate.js`)
+was measured exclusively against `sample-rpg` and charged in full to action projects too — a real,
+pre-existing, independently-discovered overcharge unrelated to this design, now corrected: the
+constant holds only the action-side base (`{1: 511, 4: 516, 30: 683}`), and a new flat term,
+`SAVE_BATTLE_KERNEL_ALLOWANCE` (currently `36`), carries the RPG-only supplement — the `.if
+BATTLE_ENABLED` range-check block in `save_check_valid` that only an RPG assembles. Flat, not
+`*_BY_MAPPER`, because the 36-byte gap measures identical on all three boards and the block it charges
+for has no mapper-specific instruction in it; `test/unit/kernelbytes.test.js` equality-pins both the
+base (per mapper) and the supplement (once, proven flat across all three) independently. Together they
+still sum to the same `{1: 547, 4: 552, 30: 719}` this section's own estimates below were already
+written against — nothing about that total, or the conclusion it supports, changes.
+
+`BE_RESTORE`'s own call site (`lda #BE_RESTORE / jsr call_battle`-shaped, matching the existing three
+entry points' own per-site cost) is itself `.if BATTLE_ENABLED`-gated — it can only ever call a
+routine that does not assemble outside an RPG — which is exactly `SAVE_BATTLE_KERNEL_ALLOWANCE`'s own
+predicate, not `SAVE_KERNEL_ALLOWANCE_BY_MAPPER`'s. So it is `SAVE_BATTLE_KERNEL_ALLOWANCE` that grows
+once `BE_RESTORE` ships (from `36` to its own real post-call-site figure), **not**
+`SAVE_KERNEL_ALLOWANCE_BY_MAPPER`, and **not** the banked-region base or `bankedbytes.test.js` either.
+This is a genuinely separate ledger from the banked-region table above, priced separately because
+`kernelbytes.test.js`'s own discipline (equality per mapper, not a margin) is what would catch a stale
+figure here, the same way `bankedbytes.test.js`'s equality catches one in the banked base.
 
 | Item | Where it lands | Estimate |
 |---|---|---|
-| `BE_RESTORE`'s own `call_battle` call site in `continue_game` | Kernel-lo, `engine/save.asm`, save-conditional | A handful of bytes, matching `BE_INIT`/`BE_TICK`/`BE_JOIN`'s own known-small per-call-site cost, added to `SAVE_KERNEL_ALLOWANCE_BY_MAPPER` on every save-capable board (MMC1, MMC3, UNROM 512 — every RPG-capable board is save-capable) |
+| `BE_RESTORE`'s own `call_battle` call site in `continue_game` | Kernel-lo, `engine/save.asm`, save-and-`BATTLE_ENABLED`-conditional | A handful of bytes, matching `BE_INIT`/`BE_TICK`/`BE_JOIN`'s own known-small per-call-site cost, added to `SAVE_BATTLE_KERNEL_ALLOWANCE` (flat, not per-mapper) once `BE_RESTORE` ships |
 
 **Total estimated banked-region growth: well under 200 bytes in the worst case.** Round 1 review,
 Low 8: the previous draft named MMC1/UNROM 512 as the tightest board at 3806 bytes free before this
@@ -853,8 +868,10 @@ back it. **`bankedbytes.test.js` rows this is expected to move**: `BASE_BATTLE_C
 (re-measure after `roll_spell_amount`/`mod8`/`BE_RESTORE`'s banked loop land — a real, small,
 all-three-boards-alike delta the same way the name-stride slice's own +50 was), and the equality
 assertion that pins it. **`kernelbytes.test.js` rows this is separately expected to move**:
-`SAVE_KERNEL_ALLOWANCE_BY_MAPPER`'s own equality assertion, on every save-capable board, per the
-kernel-lo table above. No existing `bankedbytes.test.js`/`kernelbytes.test.js` "documented
+`SAVE_BATTLE_KERNEL_ALLOWANCE`'s own equality (and flatness) assertions, on every save-capable board,
+per the kernel-lo table above — not `SAVE_KERNEL_ALLOWANCE_BY_MAPPER`'s, which is unaffected by
+`BE_RESTORE` and already re-measured as part of the prerequisite split described above. No existing
+`bankedbytes.test.js`/`kernelbytes.test.js` "documented
 limitation" row is expected to flip in either direction, given the size of both ledgers' headroom
 relative to these estimates, but the implementer re-measures both rather than assumes (house rule,
 restated: only nesasm's own output is ever called measured).
@@ -902,11 +919,21 @@ delete index 0) as the base fixture, plus:
 
 ### §11.2a `kernelbytes.test.js` (round 1 review, High 3 — new; the save change is kernel, not banked)
 
-- Re-measure `SAVE_KERNEL_ALLOWANCE_BY_MAPPER` on every save-capable RPG board (MMC1, MMC3,
-  UNROM 512 — all three), equality-asserted per mapper, matching `kernelbytes.test.js:411-440`'s
-  existing "title-on-with-Save minus title-on-without-Save" delta technique exactly — `BE_RESTORE`'s
-  own call site is unconditionally part of that same delta, so no new measurement *technique* is
-  needed, only a re-run of the existing one now that the delta itself has grown.
+- **Corrected**: the term this re-measures is `SAVE_BATTLE_KERNEL_ALLOWANCE`, not
+  `SAVE_KERNEL_ALLOWANCE_BY_MAPPER` — the Save allowance split as its own prerequisite before any of
+  this phase's runtime code existed (see §10's own updated kernel-lo passage above), and
+  `SAVE_KERNEL_ALLOWANCE_BY_MAPPER` is the action-side base, which `BE_RESTORE` never touches.
+  Re-measure `SAVE_BATTLE_KERNEL_ALLOWANCE` on every save-capable RPG board (MMC1, MMC3, UNROM 512 —
+  all three), equality-asserted once for the (already-proven-flat) term rather than per mapper,
+  matching `kernelbytes.test.js`'s existing "title-on-with-Save minus title-on-without-Save" delta
+  technique exactly — `BE_RESTORE`'s own call site is unconditionally part of that same delta (it is
+  `.if BATTLE_ENABLED`-gated, the identical predicate the supplement itself is charged under), so no
+  new measurement *technique* is needed, only a re-run of the existing one now that the delta itself
+  has grown. This claim is narrower than it originally was and is worth restating precisely: it was
+  never true that a single, undivided `SAVE_KERNEL_ALLOWANCE_BY_MAPPER` figure could be re-measured
+  this way and remain correct for both game types at once — that was a real, separate defect the
+  prerequisite fixed — but restricted to the term `BE_RESTORE` actually grows, the "no new technique"
+  claim holds.
 - Extend `kernelbytes.test.js`'s existing conditional-combination coverage (the "documented
   limitation" rows for Save+Move and similar tight combinations, on the boards where they already
   bite) to confirm none of them silently gets worse purely from `BE_RESTORE`'s own added bytes —
