@@ -484,8 +484,8 @@ nesasm banks are 8 KB, so `engine/main.asm`'s layout matters:
 | n+ | one `tilesN.chr` per tileset, emitted into `assets/chr.inc` |
 
 where `n` is `prgUnits * 2`. `shared/cartridge.js`'s `prgLayout()` is the single writer for that
-mapping; `KERNEL_CODE_BYTES` in `generate.js` is the engine-code allowance the capacity check
-reserves, and must be raised if the engine grows.
+mapping; `kernelCodeBytes()` in `generate.js` is the engine-code allowance the capacity check
+reserves, and must be re-measured if the engine grows — see "The kernel budget" below.
 
 `generate.js`'s `checkCapacity()` computes that split and reports overflow as a plain-language
 error *before* the assembler runs. Adding per-screen or per-actor data means updating the byte
@@ -711,10 +711,10 @@ old modal's own filter-without-shift bug on purpose — a deliberate regression 
 that no longer exists, not a stale one — with a sanity assertion that the model really does get the
 fixture wrong.
 
-**`SAVE_LAYOUT_VERSION` goes 1 → 2 for this same phase**, because `inv_items`' own bytes can now
-mean an item id rather than an actor id, and that is a change to what the bytes mean, not how many
-there are — precisely the case `saveIdentity`'s own derived sizes cannot catch, which is what the
-version byte exists for. The break is unconditional and engine-wide: the moment this ships, *any*
+**`SAVE_LAYOUT_VERSION` is 2**, bumped from 1 when `inv_items`' own bytes started meaning an item
+id rather than an actor id — a change to what the bytes mean, not how many
+there are, precisely the case `saveIdentity`'s own derived sizes cannot catch and what the
+version byte exists for. Such a bump is unconditional and engine-wide: *any*
 save from the prior engine version fails `save_check_valid`'s very first identity compare,
 regardless of whether that particular project uses items. What an author sees is nothing special —
 the old save is treated exactly like a foreign or corrupted one, which is to say the title screen
@@ -881,12 +881,9 @@ flag to keep in step with the counter. Three rules hold it together:
   acting" trap below, and it is what makes a blocked move still turn to look the way it tried to go.
 
 **A command that holds commands is not a special case to be named, it is a `nests: true` entry.**
-~~Two of them exist (`branch`, `choice`) and the third will be along.~~ — **done**: the third
-arrived as `route` (`b36093e`), and it is not just a third `nests: true` entry — it is
-`EVENT_COMMANDS`' first `virtual: true` one, at the end of the array. It arrived immediately after
-`sting` originally; the SFX slice then inserted the real `sfx` entry immediately before the virtual
-tail, per the catalog rule this same passage states below, so `route` is now immediately after `sfx`
-and still the array's last entry. Array position is the wire opcode for every real, `OP_*`-backed entry (`opIndex(id)`,
+Three exist — `branch`, `choice` and `route`, the last of which is also `EVENT_COMMANDS`' only
+`virtual: true` entry and the array's final one.
+Array position is the wire opcode for every real, `OP_*`-backed entry (`opIndex(id)`,
 `main/build/textcompile.js`); the catalog is a contiguous real prefix followed by a contiguous
 virtual tail, and a unit test (`'EVENT_COMMANDS: every real-opcode entry keeps its engine constant
 value; the virtual tail is contiguous and last'`, `test/unit/project.test.js`) pins both halves
@@ -996,7 +993,7 @@ code that assembles to an unknown size is exactly what the Code Forge's own capa
 (below, under "The Code Forge") refuses to model — the kernel-lo bank is a fixed 8,192-byte region
 shared by engine code
 and every project's own lookup tables, and `checkCapacity` (`main/build/generate.js`) has to know
-both halves exactly. Five rules hold that model together, and they are the ones any change to this
+both halves exactly. Six rules hold that model together, and they are the ones any change to this
 ledger has to keep:
 
 - **A conditional feature's cost is a separate generated allowance, never folded into a base.**
@@ -1013,7 +1010,20 @@ ledger has to keep:
   confirm the fallback still leaves real margin. **Save has no fallback** — it indexes
   `SAVE_KERNEL_ALLOWANCE_BY_MAPPER[mapper.id]` directly, deliberately: a newly implemented save
   medium with no measured entry must fail loudly rather than silently inherit another board's
-  figure.
+  figure. The converse rule matters as much: **a term stays flat until real variance is measured**,
+  which is why Save's own RPG supplement is a bare `SAVE_BATTLE_KERNEL_ALLOWANCE` and not a fourth
+  table — the same standard `TITLE_KERNEL_ALLOWANCE_BY_MAPPER` met in the opposite direction, its
+  MMC3 entry earning per-mapper shape on a measured 12-byte difference.
+- **A term measured against one game type and charged to both is wrong for the one it was not
+  measured on, and no delta-based test can see it.** `SAVE_KERNEL_ALLOWANCE_BY_MAPPER` was measured
+  only against `sample-rpg` and overcharged every action project 36 bytes until it was split;
+  `BASE_KERNEL_CODE_BYTES_BY_MAPPER` has the identical defect *today*, unfixed, overcharging action
+  projects 270 bytes on MMC1 and UNROM 512 and 282 on MMC3 — measured, with the cause and the shape
+  of a fix, in `docs/kernel-base-overcharge-report.md`. The reason neither was caught is worth
+  keeping even after the second is fixed: every absolute `assertCovers` check runs against
+  `sample-rpg`, and every action-side check is a *delta* between two action builds, which cancels
+  the base term out. A new allowance needs at least one absolute check on each game type it can be
+  charged to.
 - **Individual allowance deltas are equality-asserted against nesasm's real usage, per board, not
   margin-checked.** `kernelbytes.test.js` measures each named constant's own isolated delta with
   `assert.equal`, not `<=` — a margin check would let a stale, too-generous figure sit undetected
@@ -1041,15 +1051,33 @@ sizes, the route zero-cost proof and `KERNEL_SLACK` itself are each checked thei
 
 - `BASE_KERNEL_CODE_BYTES_BY_MAPPER = { 30 (UNROM 512): 6399, 1 (MMC1): 6204, 4 (MMC3): 6379 }` —
   the stock RPG-capable kernel with nothing conditional turned on; a non-RPG-capable mapper falls
-  back to the largest of the three.
+  back to the largest of the three. Read *RPG-capable* literally: these are `BATTLE_ENABLED`
+  figures, measured on `sample-rpg`, and an action project on the same board is charged all of them
+  — a known 270/282-byte overcharge, open and unfixed, written up in
+  `docs/kernel-base-overcharge-report.md`. The direction is safe (the assembler is never promised
+  room it will refuse), but an action project is denied roughly 20 screens of table space it really
+  has.
 - `TITLE_KERNEL_ALLOWANCE_BY_MAPPER = { 30: 212, 1: 212, 4: 224 }`, charged whenever a project has
   a title screen — MMC3 costs 12 bytes more because it is the only board with `SPLIT_ENABLED`, and
   `split_select` carries an extra `.if TITLE_ENABLED` branch neither other board assembles. A
   project with a live `Save` command pays this term even if `titleMap` is currently unset, because
   `validateProject` requires a title wherever Save is live.
-- `SAVE_KERNEL_ALLOWANCE_BY_MAPPER = { 1: 547, 4: 552, 30: 719 }` — UNROM 512's own entry costs
-  more because that board's Save path is a flash-rewrite driver rather than battery-WRAM (see the
-  flash-save passage under "The engine").
+- `SAVE_KERNEL_ALLOWANCE_BY_MAPPER = { 1: 511, 4: 516, 30: 683 }` plus
+  `SAVE_BATTLE_KERNEL_ALLOWANCE = 36` — Save's cost is **two** terms, not one. The table is the
+  action-side base every save-capable board pays regardless of game type (UNROM 512's own entry
+  costs more because that board's Save path is a flash-rewrite driver rather than battery-WRAM, see
+  the flash-save passage under "The engine"); the flat supplement is the RPG-only extra, charged
+  when `save_check_valid`'s own `.if BATTLE_ENABLED` range-check block — the sole `BATTLE_ENABLED`
+  gate in `engine/save.asm` — actually assembles. Together they sum to the RPG totals
+  `{1: 547, 4: 552, 30: 719}` those boards paid when this was one undivided term, so no capacity
+  refusal moved when it split; what changed is that an action project stopped being overcharged 36
+  bytes on every board. The supplement is flat rather than `*_BY_MAPPER` because the gap measures
+  identical on all three boards — the block is a plain RAM range check with no mapper-specific
+  instruction in it — and `kernelbytes.test.js` equality-asserts it on each board independently, so
+  the flatness stays a measured claim rather than a structural assumption. Its gate is **not**
+  `gameType === 'rpg'`: `kernelCodeBytes` recomputes `codeRegions(...).length > 0`, the real
+  predicate `BATTLE_ENABLED` is emitted from, which is strictly narrower for a CHR-RAM board whose
+  tileset payloads have claimed every switchable region.
 - `MOVE_KERNEL_ALLOWANCE = 379` plus `FACE_KERNEL_ALLOWANCE = 16` (the facing-set routine Move and
   `Turn` share, charged once whenever either is live) — 395 total for a Move-only project.
 - `SPLIT_LOCK_KERNEL_ALLOWANCE = 19`, MMC3-only, charged whenever `projectUsesText` is true on that
@@ -1608,8 +1636,7 @@ Each of these cost real debugging time and now has a regression test. They are e
 - Generated output (`build/`, `sample/build/`) is never hand-edited; change the generator or the
   authored source instead.
 - When the UI offers something the engine does not implement, label it as such in the UI rather
-  than letting it look functional. There is no such case left: the Controller Forge's
-  `Item`/`Cancel`/`Confirm` were the last one, and `engine/ui.asm` now implements them. The
+  than letting it look functional. No such case remains; the
   surviving form of the same idea is narrower — an action bound in a state it means nothing in
   (confirm while walking around) is labelled "ignored here" rather than silently doing nothing.
 - Capacity limits are enforced in the generator with messages naming the Forge responsible, so
