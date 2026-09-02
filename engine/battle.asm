@@ -492,10 +492,14 @@ draw_panel_slot:
   lda #BT_PANEL_COL
   sta bt_col
   jsr seek_at
+  lda #LOW(pc_name)
+  sta ptr_lo
+  lda #HIGH(pc_name)
+  sta ptr_hi
   txa
   jsr name_offset_pc
 draw_panel_char:
-  lda pc_name,y
+  lda [ptr_lo],y
   sta $2007
   iny
   dec bt_tmp2
@@ -506,19 +510,42 @@ draw_panel_next:
   bne draw_panel_slot
   rts
 
-; A = member index; returns Y = its first glyph and bt_tmp2 = NAME_LEN.
+; A = an entry's index into whichever name table the caller has already based
+; at ptr_lo/ptr_hi (the generic 16-bit pointer, engine/constants.asm). Adds
+; index * NAME_LEN into that pointer -- as a 16-bit address, not the 8-bit
+; offset this used to hand back, which silently wrapped at index 26 (NAME_LEN
+; is 10; 26*10 = 260, and the discarded carry left every reader pointing four
+; glyphs into the next entry). Returns Y = 0 and bt_tmp2 = NAME_LEN as before,
+; so every consumer's loop is unchanged in shape: lda [ptr_lo],y / iny /
+; dec bt_tmp2 / bne.
+;
+; Adds NAME_LEN into the pointer `index` times rather than a shift-add, so the
+; loop stays parameterized by NAME_LEN (config.inc's single writer for it,
+; via assets/battle.inc) instead of a decomposition baked in for whatever
+; NAME_LEN happens to be today. Preserves X, which draw_panel's own caller
+; relies on across the call.
+;
+; Cost is bounded by the largest legal index, LIMITS.actors/items = 254: at
+; most 254 sixteen-bit adds, each ~18 cycles (~22 on the roughly one-in-26
+; that carry) -- worst case is under 4,700 cycles, and draw_list calls this at
+; most four times in one tick (under 18,800 cycles), push_combatant_name once
+; per message. Both stay comfortably inside a frame's ~29,780-cycle NTSC
+; budget, with the rest of that frame's own work still to run.
 name_offset_pc:
-  sta bt_tmp2
-  lda #0
-  ldy bt_tmp2
+  tay
   beq name_offset_pc_len
 name_offset_pc_stride:
   clc
+  lda ptr_lo
   adc #NAME_LEN
+  sta ptr_lo
+  bcc name_offset_pc_nocarry
+  inc ptr_hi
+name_offset_pc_nocarry:
   dey
   bne name_offset_pc_stride
 name_offset_pc_len:
-  tay
+  ldy #0
   lda #NAME_LEN
   sta bt_tmp2
   rts

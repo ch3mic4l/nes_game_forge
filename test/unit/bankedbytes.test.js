@@ -52,7 +52,9 @@ import {
   BASE_BATTLE_CODE_BYTES_BY_MAPPER,
   BATTLE_REGION_SOURCES,
   BATTLE_SLACK,
+  BATTLE_STRINGS,
   ITEM_LIST_FILTER_BATTLE_ALLOWANCE,
+  checkBattleStringsCapacity,
   battleCodeOverridden,
   battleRegionPlacementOverridden,
   battleRegionRelocates,
@@ -198,6 +200,98 @@ test('battleTableBytes refuses a directive it cannot size instead of skipping it
         'it (main/build/battletables.js) — otherwise the region’s capacity check silently undercounts.'
     );
   }
+});
+
+// push_battle_string (engine/battleui.asm) accumulates index * MSG_COLS the
+// same 8-bit way name_offset_pc used to before handoff-namestride/
+// brief-namestride.md's fix -- safe today only because BATTLE_STRINGS has 11
+// entries (max offset 120 of 256), not because anything stops a 22nd. Out of
+// scope for an engine change (the brief's own call); checkBattleStringsCapacity
+// is the guard instead, so a 22nd string fails the build rather than leaving a
+// comment nobody reads. A wrong implementation that merely checked
+// `list.length > 256` (bytes and entries conflated) would still pass a plain
+// "throws somewhere past 256 entries" test — the boundary asserted here is
+// entries * MSG_COLS, at the exact entry count (22) where 22*12=264 first
+// exceeds 256, with 21*12=252 as the fits control one entry below it.
+test('checkBattleStringsCapacity refuses a BATTLE_STRINGS list past the 256-byte range push_battle_string can address', () => {
+  const entry = ['FILLER', 'filler'];
+  assert.throws(
+    () => checkBattleStringsCapacity(Array.from({ length: 22 }, () => entry)),
+    /BATTLE_STRINGS has 22 entries/,
+    '22 entries * 12 columns = 264 bytes, past the 256 push_battle_string can address'
+  );
+  assert.doesNotThrow(
+    () => checkBattleStringsCapacity(Array.from({ length: 21 }, () => entry)),
+    '21 entries * 12 columns = 252 bytes must still fit'
+  );
+  // The real, shipped list must never be the one that finds this out at
+  // runtime -- battleTables() calls the guard unconditionally on every build.
+  assert.doesNotThrow(() => checkBattleStringsCapacity());
+});
+
+// Round 1 review: the assertions above call the exported helper directly, so
+// deleting the checkBattleStringsCapacity() call at the top of battleTables
+// left every one of them green while a real build would emit an overlong
+// table again -- exactly the wrong implementation this suite is supposed to
+// catch. battleTables(project, battleStrings) takes an injectable strings
+// list (default BATTLE_STRINGS, so the real build path -- and its golden
+// hash in items.test.js -- is untouched) that both the guard call and the
+// table/constant emission read, so a fabricated over-limit list can drive
+// the call site itself rather than the helper in isolation.
+//
+// Wrong-implementation sentence: removing the checkBattleStringsCapacity()
+// call at the top of battleTables fails this test.
+test('battleTables itself refuses an over-limit strings list, not just the helper called in isolation', async () => {
+  const project = await loadProject(SAMPLE_RPG);
+  const entry = ['FILLER', 'filler'];
+  assert.throws(
+    () => battleTables(project, Array.from({ length: 22 }, () => entry)),
+    /BATTLE_STRINGS has 22 entries/,
+    'battleTables must refuse through its own call site, not merely via the helper called directly'
+  );
+  // The default path -- no injected list -- must still build the real
+  // battle tables, unaffected by the parameter existing at all.
+  assert.doesNotThrow(() => battleTables(project));
+});
+
+// Round 2 review: battleTables(project, battleStrings) emits from the
+// injected list, but battleTableBytes(project) kept calling
+// battleTables(project) with the *default* -- so for an injected list the
+// byte counter and the emission it is supposed to be counting could
+// disagree (harmless for real builds, since nothing ever injected a list
+// through the counter, but exactly the drift this file exists to catch).
+// The round-1 call-site test above cannot see this: its only injected case
+// (22 entries) throws before any emission happens. battleTableBytes now
+// takes the identical injectable parameter and passes it straight through.
+//
+// Wrong-implementation sentence: an implementation of battleTableBytes that
+// accepts the second parameter but keeps calling battleTables(project)
+// internally (ignoring it) would still make the first assertion below pass
+// by coincidence if the two counts merely happened to match some default --
+// the second assertion is what actually catches it: it demands the specific,
+// non-zero *delta* a 21-entry injected list must cost over the real,
+// 11-entry default, which an implementation that silently ignores the
+// parameter cannot produce (its own delta would be zero).
+test('battleTableBytes counts what its own injected list emits, not the default list', async () => {
+  const project = await loadProject(SAMPLE_RPG);
+  const MSG_COLS = 12; // main/build/battletables.js's own module-private constant
+  const list21 = Array.from({ length: 21 }, () => ['FILLER', 'filler']);
+
+  const counted = battleTableBytes(project, list21);
+  assert.equal(
+    counted,
+    emittedBytes(battleTables(project, list21)),
+    'battleTableBytes(project, list) must count exactly what battleTables(project, list) itself emits'
+  );
+
+  const baseline = battleTableBytes(project);
+  assert.equal(
+    counted - baseline,
+    (21 - BATTLE_STRINGS.length) * MSG_COLS,
+    `a 21-entry injected list must cost exactly its own ${21 - BATTLE_STRINGS.length} extra entries over the ` +
+      `real, ${BATTLE_STRINGS.length}-entry default -- an implementation that silently counts the default ` +
+      'list regardless of what was injected would show zero delta here, not this figure'
+  );
 });
 
 test('every RPG-capable board’s measured base equals nesasm’s own usage minus the table bytes', {

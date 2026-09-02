@@ -413,7 +413,24 @@ test('a project with no items and no Save is byte-identical to the pre-phase-4b 
 // pinned from is master plus that one file's diff and nothing else
 // ROM-visible. Size unchanged (still 147472): bytes inserted mid-bank shift
 // every label after them rather than growing the padded ROM.
-const PINNED_RPG_BASELINE_HASH = '5180bfc7a74f1e07c98573a29c7e6f358cc8d30aa277c4c6835b374e2d72d723';
+//
+// Re-pinned again for the namestride fix
+// (handoff-namestride/brief-namestride.md): name_offset_pc used to hand back
+// an 8-bit offset a caller added to a table label, which silently wrapped at
+// index 26 (NAME_LEN=10; 26*10=260). It now advances a 16-bit table pointer
+// (ptr_lo/ptr_hi) in place, and its four consumers -- draw_panel, both
+// push_combatant_name branches, and draw_list_name's item/legacy branch --
+// were rewritten to load that pointer and dereference it instead of indexing
+// the table array directly. draw_list_name's item/legacy branch is
+// unconditional battle-region code that runs whether or not ITEMS_ENABLED is
+// on (it is the same routine that also draws the spell list and, under
+// !ITEMS_ENABLED, the legacy actor-id list), so the fix moves every RPG
+// build's hash regardless of whether that project has any items -- exactly
+// the region this baseline includes. Size unchanged (still 147472): the
+// banked region grew by 50 bytes of code but the padded ROM's overall size
+// did not move, consistent with bytes inserted mid-bank shifting every label
+// after them rather than growing the ROM itself.
+const PINNED_RPG_BASELINE_HASH = '11ae1dc40badcf8d317692cc75c5423fac2506bfec8d9a8670f23ebe68bfa572';
 const PINNED_RPG_BASELINE_SIZE = 147472;
 
 test('an RPG with no items and no Save is byte-identical to the pre-round-4 master build', async (t) => {

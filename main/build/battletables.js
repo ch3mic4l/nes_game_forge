@@ -94,7 +94,8 @@ export function nameTiles(name) {
  * Every table the battle bank needs. Returns assembly source; the caller decides
  * which `.bank` it lands in.
  */
-export function battleTables(project) {
+export function battleTables(project, battleStrings = BATTLE_STRINGS) {
+  checkBattleStringsCapacity(battleStrings);
   const actors = project.sprites.actors;
   const party = project.party ?? [];
   const spells = project.spells ?? [];
@@ -256,10 +257,10 @@ export function battleTables(project) {
   // --- the engine's own words ----------------------------------------------
   chunks.push(`NAME_LEN = ${NAME_LIMIT}`);
   chunks.push(`CMD_NAME_LEN = ${CMD_LEN}`);
-  BATTLE_STRINGS.forEach(([name], index) => chunks.push(`BS_${name} = ${index}`));
+  battleStrings.forEach(([name], index) => chunks.push(`BS_${name} = ${index}`));
   chunks.push(
     `bs_text:\n${dbRows(
-      BATTLE_STRINGS.flatMap(([, text]) => textToTiles(text.padEnd(MSG_COLS, ' ').slice(0, MSG_COLS)).tiles),
+      battleStrings.flatMap(([, text]) => textToTiles(text.padEnd(MSG_COLS, ' ').slice(0, MSG_COLS)).tiles),
       MSG_COLS
     )}`
   );
@@ -299,6 +300,26 @@ export const BATTLE_STRINGS = [
 export const BATTLE_COMMANDS = ['FIGHT', 'MAGIC', 'ITEM', 'RUN'];
 export const CMD_LEN = 8;
 const MSG_COLS = 12;
+
+/**
+ * push_battle_string (engine/battleui.asm) accumulates index * MSG_COLS the
+ * same 8-bit way name_offset_pc used to before the fix in
+ * handoff-namestride/brief-namestride.md -- safe today only because
+ * BATTLE_STRINGS has 11 entries (max offset 120 of 256), not because
+ * anything stops a 22nd. It is out of scope for an engine change (the brief's
+ * own call): a 22nd string is the same wraparound, so this fails the build
+ * at the 22nd string instead, rather than leaving a comment nobody reads.
+ */
+export function checkBattleStringsCapacity(list = BATTLE_STRINGS) {
+  if (list.length * MSG_COLS > 256) {
+    throw new Error(
+      `BATTLE_STRINGS has ${list.length} entries at ${MSG_COLS} columns each ` +
+        `(${list.length * MSG_COLS} bytes) -- past the 256-byte range push_battle_string ` +
+        '(engine/battleui.asm) can address with its 8-bit index * MSG_COLS stride. ' +
+        'See handoff-namestride/brief-namestride.md.'
+    );
+  }
+}
 
 /** Problems that would make the battle system unbuildable, in plain language. */
 export function checkBattleTables(project) {
@@ -409,7 +430,7 @@ export function checkBattleTables(project) {
 // this region on MMC3 pays those 46 bytes -- there is no MMC3-RPG-without-the-
 // split to overcharge, which is precisely the case that forced the kernel's
 // split-lock term out of MMC3's base. Here it is a property of the board.
-export const BASE_BATTLE_CODE_BYTES_BY_MAPPER = { 30: 3835, 1: 3835, 4: 3881 };
+export const BASE_BATTLE_CODE_BYTES_BY_MAPPER = { 30: 3885, 1: 3885, 4: 3931 };
 
 // Phase 4c round 3, finding 6 (phase4-design.md §9), corrected round 3b
 // (review K1): the two-menu-consistency filter (build_item_list's kind/
@@ -497,8 +518,8 @@ export function baseBattleCodeBytes(mapper) {
  * battleTables and this fails loudly at the next build instead of quietly
  * undercounting the region by two bytes a row.
  */
-export function battleTableBytes(project) {
-  return emittedBytes(battleTables(project));
+export function battleTableBytes(project, battleStrings = BATTLE_STRINGS) {
+  return emittedBytes(battleTables(project, battleStrings));
 }
 
 /**

@@ -479,38 +479,46 @@ draw_list_end:
   bne draw_list_row
   rts
 
-; A = the list index whose name goes into the open packet.
+; A = the list index whose name goes into the open packet. The table base has
+; to be chosen before name_offset_pc runs (it now advances a 16-bit pointer
+; rather than handing back an 8-bit offset the caller applies afterward), so
+; the bt_phase branch that used to run after the call now runs before it.
+; bt_list holds item ids under ITEMS_ENABLED, legacy actor ids otherwise --
+; item_name and mon_name are keyed to match, item_chosen's own reasoning.
 draw_list_name:
   tax
   lda bt_list,x
-  jsr name_offset_pc        ; the same stride for every name table
-  sty bt_tmp
+  sta bt_tmp                ; the entry's own id, while ptr_lo/hi is chosen
   lda bt_phase
   cmp #BP_SPELLS
-  bne draw_list_item_name
-  ldy bt_tmp
-draw_list_spell_char:
-  lda spell_name,y
-  jsr vram_push
-  iny
-  dec bt_tmp2
-  bne draw_list_spell_char
-  rts
-; bt_list holds item ids under ITEMS_ENABLED, legacy actor ids otherwise --
-; item_name and mon_name are keyed to match, item_chosen's own reasoning.
-draw_list_item_name:
-  ldy bt_tmp
-draw_list_item_char:
+  bne draw_list_name_item
+  lda #LOW(spell_name)
+  sta ptr_lo
+  lda #HIGH(spell_name)
+  sta ptr_hi
+  jmp draw_list_name_go
+draw_list_name_item:
   .if ITEMS_ENABLED
-  lda item_name,y
+  lda #LOW(item_name)
+  sta ptr_lo
+  lda #HIGH(item_name)
+  sta ptr_hi
   .endif
   .if !ITEMS_ENABLED
-  lda mon_name,y
+  lda #LOW(mon_name)
+  sta ptr_lo
+  lda #HIGH(mon_name)
+  sta ptr_hi
   .endif
+draw_list_name_go:
+  lda bt_tmp
+  jsr name_offset_pc         ; the same stride for every name table
+draw_list_name_char:
+  lda [ptr_lo],y
   jsr vram_push
   iny
   dec bt_tmp2
-  bne draw_list_item_char
+  bne draw_list_name_char
   rts
 
 ; ------------------------------------------------------------- the message
@@ -610,9 +618,15 @@ battle_say:
 push_combatant_name:
   cmp #MAX_PARTY
   bcs push_combatant_monster
+  sta bt_tmp                 ; the party slot, while ptr_lo/hi is loaded
+  lda #LOW(pc_name)
+  sta ptr_lo
+  lda #HIGH(pc_name)
+  sta ptr_hi
+  lda bt_tmp
   jsr name_offset_pc
 push_pc_char:
-  lda pc_name,y
+  lda [ptr_lo],y
   jsr vram_push
   iny
   dec bt_tmp2
@@ -623,9 +637,15 @@ push_combatant_monster:
   sbc #MAX_PARTY
   tax
   lda mon_slot_actor,x
-  jsr name_offset_pc        ; same stride, different table
+  sta bt_tmp                 ; the actor id, while ptr_lo/hi is loaded
+  lda #LOW(mon_name)
+  sta ptr_lo
+  lda #HIGH(mon_name)
+  sta ptr_hi
+  lda bt_tmp
+  jsr name_offset_pc          ; same stride, different table
 push_mon_char:
-  lda mon_name,y
+  lda [ptr_lo],y
   jsr vram_push
   iny
   dec bt_tmp2

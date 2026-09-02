@@ -17,7 +17,8 @@ import { loadProject, saveProject } from '../../main/project-io.js';
 import { buildProject } from '../../main/build/pipeline.js';
 import { createProject } from '../../shared/project.js';
 import { checkCapacity } from '../../main/build/generate.js';
-import { statAt, xpCurve } from '../../main/build/battletables.js';
+import { statAt, xpCurve, nameTiles, NAME_LIMIT } from '../../main/build/battletables.js';
+import { parseSymbolFile } from '../../main/build/symbols.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const SAMPLE = path.join(ROOT, 'sample-rpg');
@@ -35,12 +36,15 @@ const INV_SEL = 0x38;
 const ITEMS_USED = 0x39;
 const BOX_STATE = 0x40;
 const BT_PHASE = 0x53;
+const BT_ACTOR = 0x54;
 const BT_SEL = 0x55;
 const BT_TARGET = 0x56;
 const BT_COUNT = 0x5b;
 const GOLD_LO = 0x63;
 const PARTY_SIZE = 0x65;
 const BT_LEN = 0x6b;
+const MSG_ROW = 21; // engine/constants.asm -- the message area and the lists share these rows
+const MSG_COL = 2; // engine/constants.asm
 const INV_ITEMS = 0x378;
 const BT_LIST = 0x3e4;
 const SWITCHES = 0x390;
@@ -69,6 +73,8 @@ const ST_MENU = 1;
 const ST_GAMEOVER = 4;
 const ST_BATTLE = 5;
 
+const MAX_PARTY = 4; // engine/constants.asm -- combatant indices 0-3 party, 4-7 monsters
+
 const BOX_PAGEWAIT = 3;
 const BOX_ENDWAIT = 6;
 
@@ -77,6 +83,7 @@ const BP_MENU = 1;
 const BP_TARGET = 2;
 const BP_SPELLS = 3;
 const BP_ITEMS = 4;
+const BP_MESSAGE = 6;
 const BP_DONE = 11;
 
 const BC_FIGHT = 0;
@@ -191,14 +198,54 @@ function waitForMenu(nes, budget = 900) {
   assert.equal(nes.cpu.mem[BT_PHASE], BP_MENU, 'the menu never came round');
 }
 
-/** A build of the sample with `mutate` applied, in a temp dir the test owns. */
-async function buildVariant(t, name, mutate) {
+/**
+ * `count` tiles of the nametable at $2000, starting at (row, col) -- the raw
+ * tile ids battle.asm/battleui.asm actually wrote, comparable directly to
+ * nameTiles()'s output. Reads engine RAM cannot see: a wrong offset into
+ * pc_name/mon_name/item_name/spell_name still leaves every RAM byte correct,
+ * since the bug (handoff-namestride/brief-namestride.md) is in what
+ * name_offset_pc hands a consumer, not in any table's own contents.
+ */
+function nametableRow(nes, row, col, count) {
+  const out = [];
+  for (let i = 0; i < count; i++) out.push(nes.ppu.vramMem[0x2000 + row * 32 + col + i]);
+  return out;
+}
+
+/**
+ * Pads `project.sprites.actors` with harmless filler entries so the next
+ * actor pushed lands at exactly `targetId`. sprites.actors is indexed by id
+ * (CLAUDE.md: "sprites.actors renumbers every later actor on a delete for
+ * the identical reason"), and mon_name/mon_hp/etc (main/build/
+ * battletables.js) are emitted one row per array position -- so id === array
+ * index has to hold for a filler to land where its own id says it does.
+ */
+function padActorsTo(project, targetId) {
+  const actors = project.sprites.actors;
+  const template = structuredClone(actors[0]);
+  while (actors.length < targetId) {
+    const id = actors.length;
+    actors.push({ ...structuredClone(template), id, name: `F${id}`, damage: 0, hp: 1 });
+  }
+}
+
+/**
+ * A build of the sample with `mutate` applied, in a temp dir the test owns.
+ * Returns the full buildProject() result (romPath, symbolPath) -- most
+ * callers only want romPath, so buildVariant below is the common case.
+ */
+async function buildVariantFull(t, name, mutate) {
   const dir = await fs.promises.mkdtemp(path.join(os.tmpdir(), `forge-${name}-`));
   t.after(() => fs.promises.rm(dir, { recursive: true, force: true }));
   const project = await loadProject(SAMPLE);
   mutate(project);
   await saveProject(dir, project);
-  const built = await buildProject({ dir, project, log: () => {} });
+  return buildProject({ dir, project, log: () => {} });
+}
+
+/** A build of the sample with `mutate` applied, in a temp dir the test owns. */
+async function buildVariant(t, name, mutate) {
+  const built = await buildVariantFull(t, name, mutate);
   return built.romPath;
 }
 
@@ -2230,3 +2277,219 @@ test("an entry event's own battle does not suppress an unrelated touch entity un
     "the bystander's touch event never ran once the world resumed"
   );
 });
+
+// --- the namestride fix (handoff-namestride/brief-namestride.md) -----------
+//
+// name_offset_pc (engine/battle.asm) used to hand back an 8-bit offset a
+// caller added to a name table's own label -- index * NAME_LEN computed with
+// the carry discarded. NAME_LEN is 10, so index 26 produced 260, which
+// wrapped to offset 4: four glyphs into the *next* entry's own name rather
+// than the start of entry 26's. name_offset_pc now advances a 16-bit table
+// pointer (ptr_lo/ptr_hi) in place instead.
+//
+// Both tests below read the nametable the ROM actually wrote, not engine RAM
+// -- the bug is in what a consumer was told to point at, not in any table's
+// own contents, so every RAM byte stays correct throughout and cannot see
+// it. Each fixture is chosen so the wrapped, wrong read and the real, right
+// one are obviously different strings -- never a name that is all spaces, a
+// name shared between the two entries the wrap would blend, or an index
+// whose wrapped offset happens to land on padding, any of which could pass
+// by accident.
+//
+// Round 1 review, finding 2: an implementation that computes index*NAME_LEN
+// correctly as a real 16-bit product, but then adds the product's low byte
+// into ptr_lo and the product's high byte into ptr_hi as two *independent*
+// additions (each with its own carry-clear) rather than chaining the carry
+// from the first add into the second, is wrong exactly when
+// LOW(table) + index*NAME_LEN >= 256 -- and passes everything else, since
+// the missing carry is silently absorbed whenever that sum stays under 256.
+// Both tests below therefore pick their low-index control to *also* force
+// that carry, and assertForcesCarry proves it against the real address in
+// this build's own game.fns before checking a single glyph -- a fixture
+// that merely assumes the carry happens is exactly the vacuous-pass trap
+// the coder's own round-0 report already named for a different case.
+
+/**
+ * Reads `label`'s address out of this build's own game.fns (never hardcoded
+ * -- a filler count or an engine edit can move where a table lands) and
+ * asserts that reading entry `index` of a `stride`-byte-wide table based
+ * there genuinely requires a carry out of the low byte:
+ * LOW(base) + index*stride >= 256. Without this, a fixture that merely looks
+ * plausible could stop forcing the carry the moment something upstream
+ * moves the table, and go silently vacuous.
+ */
+function assertForcesCarry(symbolPath, label, index, stride) {
+  const symbols = parseSymbolFile(fs.readFileSync(symbolPath, 'utf8'));
+  const base = symbols[label];
+  assert.equal(typeof base, 'number', `${label} should be a named symbol in this build's game.fns`);
+  const lowSum = (base & 0xff) + index * stride;
+  assert.ok(
+    lowSum >= 256,
+    `this fixture does not force a carry out of ptr_lo: LOW(${label})=${base & 0xff} (from $${base.toString(16)}) ` +
+      `+ ${index}*${stride} = ${lowSum}, under 256 -- pick a different index`
+  );
+}
+
+test(
+  'a monster at actor id 26 draws its own name when it attacks, and a low-index monster (one that also forces a ' +
+    'carry out of ptr_lo) in the same fight still draws correctly',
+  { skip: needsSample },
+  async (t) => {
+    const built = await buildVariantFull(t, 'namestride-monster', (project) => {
+      project.maps[0].encounters = { rate: 0, actorIds: [] };
+      padActorsTo(project, 26);
+      const template = structuredClone(project.sprites.actors[0]);
+      // Actor 23: needs to land LOW(mon_name) + 23*NAME_LEN(10) >= 256 in
+      // *this* build (this project's own extra actors and entities move
+      // mon_name from the stock build's address -- 23 is chosen against
+      // this variant's own real address, asserted below, not the stock
+      // figure) -- this index needs the carry a plausible-but-wrong
+      // implementation could still drop (finding 2), and it stays under 26
+      // so it also still proves the low-index case the round-0 brief
+      // required.
+      project.sprites.actors[23] = {
+        ...template,
+        id: 23,
+        name: 'IMP23',
+        damage: 1,
+        hp: 40,
+        battle: { ...template.battle, speed: 150, acc: 255, eva: 0 }
+      };
+      // Actor 26 is the round-0 wrap: 26 * NAME_LEN(10) = 260, and the
+      // discarded carry left the old 8-bit routine at offset 4 -- four
+      // glyphs into actor 0's own name ("Slime"). Very high speed and
+      // accuracy so it reliably gets an early, message-producing turn
+      // without depending on a roll.
+      project.sprites.actors.push({
+        ...template,
+        id: 26,
+        name: 'GHOUL',
+        damage: 1,
+        hp: 60,
+        battle: { ...template.battle, speed: 250, acc: 255, eva: 0 }
+      });
+      project.maps[0].screens[0].entities.push({
+        actorId: 26,
+        x: 112,
+        y: 144,
+        props: { name: '', toScreen: 0, toX: 112, toY: 112, dialogue: '', event: null, trigger: 'interact', hideSwitch: null }
+      });
+    });
+
+    assertForcesCarry(built.symbolPath, 'mon_name', 23, NAME_LIMIT);
+
+    const nes = boot(built.romPath);
+    walkTo(nes, 112, 144, 200);
+    for (let i = 0; i < 30 && nes.cpu.mem[GAME_STATE] !== ST_BATTLE; i++) nes.frame();
+    assert.equal(nes.cpu.mem[GAME_STATE], ST_BATTLE, 'walking into actor 26 did not start a fight');
+
+    // The one-frame formation-edit window the twomon test above also uses:
+    // battle_begin runs mid-frame and the intro tick runs on the next one, so
+    // there is exactly one frame left in which a second monster can still be
+    // seated. Actor 23 (well under the wrap, and asserted above to force the
+    // carry) is the low-index control this same battle now also proves.
+    assert.equal(nes.cpu.mem[BT_PHASE], BP_INTRO, 'the intro already ran');
+    nes.cpu.mem[MON_SLOT_ACTOR + 1] = 23;
+    for (let i = 0; i < 12; i++) nes.frame();
+    assert.equal(nes.cpu.mem[BT_COUNT], 2, 'the second monster was not seated');
+    assert.equal(nes.cpu.mem[MON_ALIVE + 1], 1);
+
+    const seen = {};
+    for (let round = 0; round < 200 && Object.keys(seen).length < 2; round++) {
+      const phase = nes.cpu.mem[BT_PHASE];
+      if (phase === BP_MENU) {
+        chooseCommand(nes, BC_FIGHT);
+        tap(nes, A, 20); // confirm whichever target is highlighted -- who gets hit is not this test's question
+        continue;
+      }
+      if (phase === BP_MESSAGE) {
+        const actor = nes.cpu.mem[BT_ACTOR];
+        if (actor >= MAX_PARTY && !(actor in seen)) {
+          for (let i = 0; i < 4; i++) nes.frame(); // the queued packet drains on the next vblank
+          seen[actor] = nametableRow(nes, MSG_ROW, MSG_COL, NAME_LIMIT);
+        }
+        tap(nes, A, 10);
+        continue;
+      }
+      nes.frame();
+    }
+
+    assert.equal(
+      Object.keys(seen).length,
+      2,
+      'both monsters never got a message-naming turn -- combatant indices seen: ' + Object.keys(seen).join(',')
+    );
+    assert.deepEqual(
+      seen[4],
+      nameTiles('GHOUL'),
+      'actor 26 must draw its own name -- a wrong implementation would draw "e     Poti" here instead ' +
+        '(actor 0\'s own chars 4-9, "Slime" padded, followed by actor 1\'s chars 0-3, "Poti" from "Potion")'
+    );
+    assert.deepEqual(
+      seen[5],
+      nameTiles('IMP23'),
+      'the low-index, carry-forcing control (actor 23) must still draw correctly in the same battle -- an ' +
+        'implementation that drops the carry from ptr_lo into ptr_hi would draw from 256 bytes before the ' +
+        'correct address here instead'
+    );
+  }
+);
+
+test(
+  'an item at id 26 draws its own name in the battle ITEM list, and a low-index item in the same bag still draws correctly',
+  { skip: needsSample },
+  async (t) => {
+    const built = await buildVariantFull(t, 'namestride-item', (project) => {
+      // sample-rpg's own Potion is item id 0 (migrated from actor 1's heal
+      // stat on load); left in the project but not put in the bag here --
+      // item 14 is this build's low-index control instead, chosen (like
+      // actor 18 above) to also force a carry out of ptr_lo: LOW(item_name)
+      // in the stock build is $78 (120), and 120 + 14*NAME_LEN(10) = 260 >=
+      // 256 (finding 2). Verified against this build's own real address
+      // below, not assumed from the stock figure. Fillers 1..13 and 15..25
+      // land item 26 at the round-0 wrap: 26 * NAME_LEN(10) = 260, offset 4
+      // -- four glyphs into item 0's own name ("Potion").
+      for (let id = project.items.length; id < 26; id++) {
+        if (id === 14) {
+          project.items.push({ id, name: 'GEM14', actorId: null, metaspriteId: null, effect: { kind: 'heal', amount: 5 } });
+        } else {
+          project.items.push({ id, name: `I${id}`, actorId: null, metaspriteId: null, effect: { kind: 'heal', amount: 1 } });
+        }
+      }
+      project.items.push({
+        id: 26,
+        name: 'ELIXIR26',
+        actorId: null,
+        metaspriteId: null,
+        effect: { kind: 'heal', amount: 30 }
+      });
+    });
+
+    assertForcesCarry(built.symbolPath, 'item_name', 14, NAME_LIMIT);
+
+    const nes = boot(built.romPath);
+    nes.cpu.mem[INV_ITEMS] = 14; // GEM14 -- the low-index, carry-forcing control
+    nes.cpu.mem[INV_ITEMS + 1] = 26; // the round-0 wrap
+    nes.cpu.mem[INV_COUNT] = 2;
+    assert.ok(walkIntoEncounter(nes));
+    waitForMenu(nes);
+    chooseCommand(nes, BC_ITEM);
+    assert.equal(nes.cpu.mem[BT_PHASE], BP_ITEMS, 'ITEM should open the bag');
+    assert.equal(nes.cpu.mem[BT_LEN], 2, 'both items should be listed -- build_item_list admits both (kind heal, amount > 0)');
+    for (let i = 0; i < 4; i++) nes.frame(); // the queued rows drain on the next vblank
+
+    assert.deepEqual(
+      nametableRow(nes, MSG_ROW, MSG_COL, NAME_LIMIT),
+      nameTiles('GEM14'),
+      'the low-index, carry-forcing control (item 14) must still draw correctly in the same list -- an ' +
+        'implementation that drops the carry from ptr_lo into ptr_hi would draw from 256 bytes before the ' +
+        'correct address here instead'
+    );
+    assert.deepEqual(
+      nametableRow(nes, MSG_ROW + 1, MSG_COL, NAME_LIMIT),
+      nameTiles('ELIXIR26'),
+      'item 26 must draw its own name -- a wrong implementation would draw "on    I1  " here instead ' +
+        '(item 0\'s own chars 4-9, "Potion" padded, followed by item 1\'s chars 0-3, "I1  ")'
+    );
+  }
+);
