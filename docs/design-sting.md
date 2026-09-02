@@ -1,9 +1,9 @@
 # Design: the `Sting` cutscene verb (item 6, sound effect slice)
 
-Status: design only, no code written, no tracked file touched. Companion precedent: Fade
-(`handoff-fade/design-fade.md`) and Flash (`handoff-flash/design-flash.md`) are the designs this
+Status: design only, no code written, no tracked file touched. Companion precedent: the Fade and
+Flash designs are what this
 slice is required to build on, both in mechanism (the frozen-vs-unfrozen split, the shared-array
-copy trick) and in document format. The costing pass (`handoff-costing/costing-report.md`, closed
+copy trick) and in document format. The costing pass (closed
 after three review rounds) priced this exact shape — shape (b), "the whole song pauses, the sting
 plays alone through the unmodified driver, then the song resumes exactly where it left off" — at
 **145-157 kernel-lo bytes**, and its Part 2 "Sound effect / sting" section is reused verbatim
@@ -15,11 +15,11 @@ short; UNROM 512 Save+Move-no-item refused at 88 short) — neither of those two
 disturbed by anything here, since Sting is a kernel-hi/`$0300+`/kernel-lo cost with its own,
 separate documented limitation (below), not an addition to either existing one.
 
-**Revised twice.** Round 1 against `handoff-sting/sting-design-review1.md` (12 findings, all
+**Revised twice.** Round 1 against that round's own review (12 findings, all
 confirmed by the orchestrator against engine/compiler source before the fix brief was written) —
 three findings (2, 4, and the destructive-`NO_SONG` half of 8) were real defects that would have
 shipped broken or silently refused-when-it-shouldn't. Round 2 against
-`handoff-sting/sting-design-review2.md` (1 high, 3 medium, 2 low, all confirmed) — the high finding
+that round's own review (1 high, 3 medium, 2 low, all confirmed) — the high finding
 would have broken two existing files' own module loading outright (§4); the mediums fixed a
 normalization-boundary gap, a charging sketch that didn't fit the real shape of `generate.js`, and
 a test that didn't exercise the recursion it claimed to guard; the lows corrected two sabotage
@@ -79,8 +79,8 @@ siblings, and `validateProject`'s Give/Take and `call` refusal checks. `main/bui
 field-editor cases. `main/build/generate.js`'s `MOVE_ENABLED` generation site, `kernelShortfallAdvice`
 in full, the `musicBytes`/kernel-hi budget check, and the flat-vs-per-mapper allowance constant
 styles. `main/smoke.js`'s real Flash-authoring scenario (the exact DOM-selector shape a Sting smoke
-scenario has to match, round-1 finding 12). `handoff-fade/design-fade.md` and
-`handoff-flash/design-flash.md` in full, as the format template. For round 2: `main/build/
+scenario has to match, round-1 finding 12). The Fade and Flash designs, in full, as the format
+template. For round 2: `main/build/
 generate.js`'s own import line for `songByte` (line 37) and the exact line numbers/local-scope
 shape of `kernelCodeBytes` (622, one `return` expression starting at 675), `kernelShortfallAdvice`
 (905), and `generateAssets` (1511) — each independently computing its own local `usesMove` (round-2
@@ -844,7 +844,7 @@ construction.
 
 ## §9. The new documented limitation
 
-**MMC3 Save+Move-no-item, at exactly 88 free (`handoff-costing/costing-report.md`, Part 1's own
+**MMC3 Save+Move-no-item, at exactly 88 free (the costing pass's own report, Part 1's own
 MMC3 table), is where Sting creates a clean NO FIT.** `STING_KERNEL_ALLOWANCE` (176, or even the
 costed low end of 145) exceeds 88 either way — this is not close. Per Part 3's own fit matrix
 (reused verbatim, both sting shapes create "the same one new refusal as visual-only tile change on
@@ -1035,10 +1035,10 @@ actually exercises this wiring against the real editor.
 ## §12. Test plan
 
 Each item names the wrong implementation it exists to catch, per the sabotage discipline
-established in `handoff-fade/design-fade.md`/`handoff-flash/design-flash.md`. Items marked
-**(round 1)** are new or substantially rewritten against `sting-design-review1.md`; items noting a
+established in the Fade and Flash designs. Items marked
+**(round 1)** are new or substantially rewritten against round 1's own review; items noting a
 **round-2** correction had their sabotage claim narrowed or their case list extended against
-`sting-design-review2.md` without changing what they were already correctly catching.
+round 2's own review without changing what they were already correctly catching.
 
 1. **Byte identity — a sting-free project assembles identically to one built before Sting
    existed** (`test/unit/move.test.js`'s own `assert.deepEqual([...fs.readFileSync(...)], ...)`
@@ -1394,7 +1394,7 @@ later with zero engine-side change if it's ever prioritized.
 
 ## Round 1 revisions
 
-Against `handoff-sting/sting-design-review1.md`, all 12 findings, all confirmed by the orchestrator
+Against that round's own review, all 12 findings, all confirmed by the orchestrator
 before the fix brief was written. Recorded in the costing report's own convention: what moved, and
 why.
 
@@ -1493,7 +1493,7 @@ to match rather than left stale.
 
 ## Round 2 revisions
 
-Against `handoff-sting/sting-design-review2.md`, 1 high + 3 medium + 2 low, all confirmed by the
+Against that round's own review, 1 high + 3 medium + 2 low, all confirmed by the
 orchestrator before the fix brief was written. None of these findings moved engine-code bytes —
 `STING_KERNEL_ALLOWANCE` stays 176 — so there is no new reconciliation to perform; each finding is
 a JS-module-graph, layering, charging-site, or test-contract correction.
@@ -1567,7 +1567,7 @@ a JS-module-graph, layering, charging-site, or test-contract correction.
 
 ## Round 3 revisions
 
-Against `handoff-sting/sting-design-review3.md`, 2 low, both purely textual, both confirmed by the
+Against that round's own review, 2 low, both purely textual, both confirmed by the
 orchestrator. No design, mechanism, or byte-total change; 176 stands.
 
 1. **Low — §3 still stated the immediate-adjacency contract round-2 finding 5 had already demoted

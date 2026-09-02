@@ -8,3 +8,9 @@ sample-u512/build/
 *.nes
 *.fns
 .DS_Store
+
+# Orchestration paper trail (briefs, review rounds, reports) -- local working
+# notes, not part of the project. The handful of docs CLAUDE.md points at for
+# mechanism depth live in docs/ instead, which stays tracked.
+handoff-*/
+HANDOFF-*.md

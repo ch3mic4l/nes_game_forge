@@ -1,15 +1,15 @@
 # Design: Map organization and reuse (item 7 — "the reorder with teeth")
 
 Status: design only, no code written, no tracked file touched. Written against HEAD `8e3e1c9`.
-**Revised five times**, against `handoff-maporg/maporg-design-review1.md` (ten findings, five High),
-`handoff-maporg/maporg-design-review2.md` (seven findings, three High),
-`handoff-maporg/maporg-design-review3.md` (seven findings, two High),
-`handoff-maporg/maporg-design-review4.md` (three findings, one High), and
-`handoff-maporg/maporg-design-review5.md` (five narrow pins, no blocking finding — **verdict: ready for
+**Revised five times**, against five review rounds (round 1: ten findings, five High;
+round 2: seven findings, three High;
+round 3: seven findings, two High;
+round 4: three findings, one High; and
+round 5: five narrow pins, no blocking finding — **verdict: ready for
 implementation**) — see the "Fix round 1" through "Fix round 5" entries in §15 for what moved and why in
 each. Companion precedent:
-`handoff-routes/design-routes.md` (the closest shipped neighbor in shape — a pure compiler/UI feature,
-argued for zero engine cost, with a byte-identity proof) and `handoff-tile/design-tile.md` (a Map Forge
+`docs/design-routes.md` (the closest shipped neighbor in shape — a pure compiler/UI feature,
+argued for zero engine cost, with a byte-identity proof) and the Tile Forge's own design (a Map Forge
 authoring + preview feature). This design follows both for depth and format but departs from the
 routes precedent on one central point: routes proved a **zero-byte, zero-order-change** authoring
 convenience. Reorder and duplicate are **real structural edits** — they are supposed to change the
@@ -49,8 +49,8 @@ the correction.
 passage at lines 195-236 (the "considered and declined" persistent-id discussion, which explicitly
 names item 7 as the place to revisit it). `CLAUDE.md`'s `shared/playscenario.js` bullet, the routes
 passage, the Map Forge / store sections, and the single-writer/allCommands/`fill()` house rules.
-`handoff-routes/design-routes.md` in full, for the nearest shipped precedent's shape and rigor.
-`handoff-maporg/maporg-design-review1.md` in full, for this revision.
+`docs/design-routes.md` in full, for the nearest shipped precedent's shape and rigor.
+Round 1's own review, in full, for this revision.
 
 Source, read in full or in the cited ranges: `shared/project.js` (schema: `createScreen`, `createMap`,
 `LIMITS`, `normalizeMap`/`normalizeScreen`/`normalizeEntity`, `normalizeProject`'s title/start clamps,
@@ -3012,7 +3012,7 @@ Together, the three cases prove the UI's own branching genuinely discriminates a
 merely that the fallback endpoint is reachable in isolation — test 23 and test 27 each prove their own
 endpoint is *correct*; this matrix is what proves the *button* chooses correctly among all three.
 
-Per this repository's own stated precedent (`brief-reviewer-role.md`'s reviewer briefing, and CLAUDE.md's
+Per this repository's own stated precedent (the reviewer role's own briefing, and CLAUDE.md's
 Testing section), Map Forge *control* behavior (does the button wire to the right handler, does the
 picker show the right options) belongs in the real-window smoke test, not a fake-DOM unit test — a
 `commandRow`-shaped "does the element exist" unit assertion cannot tell an `onchange` from an
@@ -3151,7 +3151,7 @@ explicitly named and rejected as an unrouted structural edit).
 
 ## §15. Changelog
 
-### Fix round 1 (against `maporg-design-review1.md`, 10 findings, 5 High)
+### Fix round 1 (against that round's own review, 10 findings, 5 High)
 
 1. **The save record (High) — retracted and fixed.** §5's old "never serialized into a save slot" claim
    removed; §3 gains row 17 (saved `flat_screen`, `shared/save.js`/`engine/save.asm`); new §6.10
@@ -3210,7 +3210,7 @@ explicitly named and rejected as an unrouted structural edit).
     `saveProject`/`loadProject` round trip, and `normalizeProject` idempotence. Smoke coverage (§11) gains
     a real project-reload check that the folder grouping survives.
 
-### Fix round 2 (against `maporg-design-review2.md`, 7 findings, 3 High)
+### Fix round 2 (against that round's own review, 7 findings, 3 High)
 
 1. **Epoch reuse across an undo branch (High) — the counter is replaced with an independently-redrawn
    16-bit nonce, and the fold width is pinned.** Round 1's `saveCompatEpoch` (a monotonic `+= 1`) is
@@ -3293,7 +3293,7 @@ plan noticing, since every fixture draws tokens through the normal edit path rat
 a hand-authored, out-of-range value — closed directly by widening test 20(a) with a fourth assertion,
 rather than left as a residual gap or spun into a separate test.
 
-### Fix round 3 (against `maporg-design-review3.md`, 7 findings, 2 High)
+### Fix round 3 (against that round's own review, 7 findings, 2 High)
 
 1. **The decoder (High) — rebuilt against `encodeCommand`'s actual cases, not the authored `args`
    table.** Two independent defects, both real. Choice's own framing
@@ -3370,7 +3370,7 @@ but genuinely unguarded and untested. Closed directly: §6.2 gains `nameForNewMa
 collision-avoidance discipline `nameForDuplicateScreen` already applies one level over, and test 25 gains
 a third fixture proving the specific delete-then-add collision is avoided.
 
-### Fix round 4 (against `maporg-design-review4.md`, 3 findings, 1 High)
+### Fix round 4 (against that round's own review, 3 findings, 1 High)
 
 1. **The all-maps-full duplicate fallback (High, blocking) — assembled as a named, fully specified
    operation.** Round 3's own text left "a brand-new 1×1 map" as an analogy — "mechanically identical to
@@ -3422,7 +3422,7 @@ Closed directly: a new smoke case builds an all-maps-full project, drives the re
 control, and asserts a new `1×1` map with the expected name actually appears — proving the UI reaches the
 operation, not merely that the operation is correct in isolation.
 
-### Fix round 5 (against `maporg-design-review5.md`, 5 findings, 4 Medium/1 Low — micro round, no
+### Fix round 5 (against that round's own review, 5 findings, 4 Medium/1 Low — micro round, no
 architectural redesign; verdict: ready for implementation)
 
 1. **§§6.2.1/8/11.27 (Medium) — the fallback's "source-map metadata" list omitted `folder`.** Corrected
@@ -3470,7 +3470,7 @@ mechanism from round 4.
 *(Round 0 predates this changelog. Future review rounds append below this entry, in the same
 routes/SFX style: finding, what changed, where.)*
 
-### Implementation fix (phase 2, code review round 1, against `handoff-maporg/maporg-code-review4.md`)
+### Implementation fix (phase 2, code review round 1)
 
 Design review ended at round 5 with no blocking finding, and implementation began. Phase 2's own
 code review (not a design review — the design was already "ready for implementation") found a real
@@ -3532,6 +3532,6 @@ pointing at an unrelated third screen instead of the clone.
    `flatBefore`/`flatAfter`/`cloneScreen` already produced the exactly-correct answer before this fix,
    proving the defect was in the sketch's own *call order*, not in either translate function. §6.9.1's
    own code sketch above is corrected in place to reflect the fixed order. Found by test 23
-   (`handoff-maporg/design-maporg.md` §11), which the design's own review process (Fix rounds 1-5)
+   (this document's own §11), which the design's own review process (Fix rounds 1-5)
    never ran against real code — this is the first point in item 7's history a §6.9.1-shaped fixture
    was actually executed, not merely traced by hand.

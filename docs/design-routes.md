@@ -1,12 +1,11 @@
 # Design: Move/Turn/Wait routes (item 6's last unshipped line)
 
 Status: design only, no code written, no tracked file touched. **Revised four times**, against
-`handoff-routes/routes-design-review1.md` (11 findings), `handoff-routes/routes-design-review2.md`
-(7 findings), `handoff-routes/routes-design-review3.md` (1 finding), and
-`handoff-routes/routes-design-review4.md` (2 findings), all confirmed by the orchestrator against
+four review rounds (round 1: 11 findings; round 2: 7 findings; round 3: 1 finding; and
+round 4: 2 findings), all confirmed by the orchestrator against
 source before each revision was written — see the "Fix rounds" section at the end for what moved and
-why in each. Companion precedent: `handoff-tile/design-tile.md` (a Map Forge authoring + preview
-feature, the closest shape to this one) and `handoff-sting/design-sting.md` (the most recent
+why in each. Companion precedent: the Tile Forge's own design (a Map Forge authoring + preview
+feature, the closest shape to this one) and `docs/design-sting.md` (the most recent
 cutscene-verb slice, same item) are the models this follows for depth and format. Written against
 HEAD `6a44850`.
 
@@ -1542,7 +1541,7 @@ dedicated scenario within the existing smoke step, for the reason given there.
 
 ### Round 1 fixes
 
-Resolutions of `handoff-routes/routes-design-review1.md`, by finding number:
+Resolutions of round 1's own review, by finding number:
 
 - **Finding 1 (medium, confirmed).** `route` is now `nests: true`, per the source contract's actual
   wording (`shared/project.js:609-611`) and `call`'s own contrasting comment. §3.1 rewritten in
@@ -1626,12 +1625,12 @@ Resolutions of `handoff-routes/routes-design-review1.md`, by finding number:
 orchestrator against source before that revision began, per that round's brief, and each was
 adopted as written or per that brief's own stated preference (findings 8 and 10, where the brief
 offered two options and named a preferred one). See
-`handoff-routes/routes-design-fixes1-report.md` for the same resolutions summarized at report
+that round's own fixes report for the same resolutions summarized at report
 length.
 
 ### Round 2 fixes
 
-Resolutions of `handoff-routes/routes-design-review2.md`, by finding number:
+Resolutions of round 2's own review, by finding number:
 
 - **Finding 1 (medium, confirmed).** Round 1's own fix for the review-1 byte-identity concern had
   quietly drifted into proposing a checked-in reference ROM — a mechanism `move.test.js` does not
@@ -1698,12 +1697,12 @@ Resolutions of `handoff-routes/routes-design-review2.md`, by finding number:
 
 **Nothing in round 2's revision was pushed back on either** — every finding was verified by the
 orchestrator against source before this revision began, per that round's brief, and each is adopted
-as written. See `handoff-routes/routes-design-fixes2-report.md` for the same resolutions summarized
+as written. See that round's own fixes report for the same resolutions summarized
 at report length.
 
 ### Round 3 fixes
 
-Resolutions of `handoff-routes/routes-design-review3.md`, by finding number:
+Resolutions of round 3's own review, by finding number:
 
 - **Finding 1 (medium, confirmed) — the last gate before the implementation brief.** Round 2's leg
   rows rendered `routeLegs(command.legs)` (a filtered *copy*) but wired
@@ -1763,11 +1762,11 @@ Resolutions of `handoff-routes/routes-design-review3.md`, by finding number:
 **Nothing in round 3's revision was pushed back on** — the finding was verified by the orchestrator
 against the design's own §9 text before this revision began, per the brief, and the reviewer's
 preferred resolution (canonicalize the draft) is adopted as written. See
-`handoff-routes/routes-design-fixes3-report.md` for the same resolution summarized at report length.
+that round's own fixes report for the same resolution summarized at report length.
 
 ### Round 4 fixes
 
-Resolutions of `handoff-routes/routes-design-review4.md`, by finding number:
+Resolutions of round 4's own review, by finding number:
 
 - **Finding 1 (medium, confirmed).** §13 test 13's round-3 row-tool scenario asked smoke to inspect
   "the draft's own `command.legs`" — unreachable, since `editEvent`'s draft is `const draft =
@@ -1796,5 +1795,5 @@ Resolutions of `handoff-routes/routes-design-review4.md`, by finding number:
 **Nothing in round 4's revision was pushed back on** — both findings arrived with the correct
 resolution already specified by the reviewer, confirmed by the orchestrator against source
 (`events.js:294-297`'s closure-private draft) before this revision began, and both are adopted as
-written. See `handoff-routes/routes-design-fixes4-report.md` for the same resolutions summarized at
+written. See that round's own fixes report for the same resolutions summarized at
 report length.

@@ -41,7 +41,7 @@ Several tests **skip** unless `sample/build/game.nes` exists — run `npm run sa
 build:sample` first, and `npm run sample:rpg && npm run build:sample:rpg` for `rpg.test.js`.
 A skipped test is not a passing test; check the skip count.
 
-`test/unit/docs.test.js` checks CLAUDE.md itself: every `handoff-*/*.md` pointer it names must
+`test/unit/docs.test.js` checks CLAUDE.md itself: every `docs/*.md` pointer it names must
 exist on disk *and* be tracked by git, and the file must stay under a 135,000-character budget
 (`fs.readFileSync(..., 'utf8').length`, not byte length — Claude Code's own limit is on
 characters) kept below the tool's 150,000-character hard limit for margin.
@@ -155,7 +155,7 @@ Anything the 6502 engine and the JavaScript tooling both depend on has **one** d
   existing importers (`main/build/generate.js`, `test/unit/script.test.js`) keep working
   unmodified. The `Sting` scripted command (item 6) is not a fourth implementation of the format:
   it plays an existing song through the same unmodified driver, pausing and resuming whichever
-  song was already playing — see `handoff-sting/design-sting.md` for the full design and
+  song was already playing — see `docs/design-sting.md` for the full design and
   `engine/music.asm`'s own `sting_snapshot`/`sting_restore`/`sting_tick` comments for the
   mechanisms. The `Sfx` scripted command (item 6's last verb) is a genuinely separate, smaller
   format beside the music one, not a variant of it, with its own single-writer contract:
@@ -165,7 +165,7 @@ Anything the 6502 engine and the JavaScript tooling both depend on has **one** d
   `main/build/songcompile.js`, and `SfxReplayer` in `renderer/forges/sound/replayer.js` — held
   byte-identical by `test/unit/sfx.test.js`'s own golden trace, 25 tests covering the ROM's APU
   writes diffed against the replayer frame-by-frame, all four channel groups, the cleanup frame,
-  and `$4015` write interception. See `handoff-sfx/design-sfx.md` for the full design.
+  and `$4015` write interception. See `docs/design-sfx.md` for the full design.
 - The NES palette → `shared/nespalette.js`, shared by the editors *and* the emulator, so the
   in-app preview matches the editors by construction.
 - The message font → `shared/font.js`: the glyph art, the character-to-tile mapping, the window
@@ -304,7 +304,7 @@ Mechanism depth — the map-space fixups, the duplicated-map/screen self/externa
 (`rewriteClonedRange` for a duplicated map or a screen promoted into a new map, `buildCloneTranslate`
 for a growth-routed screen clone; region copy/paste has no such split at all — `pasteRegionCore`
 copies metatiles, bound tiles and already-positioned entities verbatim, calling neither), `map.folder`,
-the world overview this design deliberately sliced out — is `handoff-maporg/design-maporg.md`, not
+the world overview this design deliberately sliced out — is `docs/design-maporg.md`, not
 here.
 
 ### The engine
@@ -868,7 +868,7 @@ branch's contents. `liveCommands` recurses into a route's admitted legs
 (`main/build/textcompile.js`) writes no opcode of its own, only its legs' bytes, through the same
 `move`/`turn`/`wait` cases a standalone command already uses — so an authored route and the same
 commands hand-chained compile byte-identical, at zero engine cost. See
-`handoff-routes/design-routes.md` for the full design.
+`docs/design-routes.md` for the full design.
 
 Anything asking a question of a
 whole event walks `allCommands` in `shared/eventrules.js` rather than a page's own list, and
@@ -1043,7 +1043,7 @@ sizes, the route zero-cost proof and `KERNEL_SLACK` itself are each checked thei
   cost; both share `PALETTE_FX_KERNEL_ALLOWANCE = 55` (`fade_apply_palette` plus the NMI PPUADDR
   fix, charged once whenever either Fade or Flash is live, never twice when both are) — 201 total
   for a Fade-only project, the unchanged shipped figure from before the two were split apart.
-- A `route` (`handoff-routes/design-routes.md`) compiles to the identical bytes as hand-chaining
+- A `route` (`docs/design-routes.md`) compiles to the identical bytes as hand-chaining
   the same `move`/`turn`/`wait` commands — zero additional kernel cost, proven by
   `test/unit/routes.test.js`'s byte-identical-ROM comparison and confirmed with a cross-tree
   SHA-256 gate.
@@ -1126,7 +1126,7 @@ is what the deep-link needs.
 SFX feature: a label of 31 or more characters aborts the assembler with a glibc `_FORTIFY_SOURCE`
 buffer-overflow error (exit 134) rather than reporting a normal error line; 30 characters assembles
 cleanly. Found by binary search after two new engine labels reached 32 characters
-(`handoff-sfx/sfx-implementation-report.md` §2); both were renamed to 24 characters or fewer and no
+(`docs/sfx-implementation-report.md` §2); both were renamed to 24 characters or fewer and no
 other change was needed. Unlike the "6502 traps" list below, this one has no regression test — it is
 recorded here as a known assembler limit to keep new labels under, not a claim this codebase actively
 guards against.
@@ -1186,10 +1186,10 @@ and must stay that way; `renderer/forges/build/build.js` importing it is the sam
 3931 — each +14 from the battle-side saturation fixes, the `bcs`-before-`cmp` guard `gain_hearts`
 and `party_heal` already had, applied to `item_chosen`/`cast_heal`/`cast_heal_mon` plus a
 saturate-to-255 in `spell_damage_weak` and `physical_damage_noise`; see
-`handoff-battlemath/battlemath-report.md` — plus a further +50 on every board alike from the
+`docs/battlemath-report.md` — plus a further +50 on every board alike from the
 name-stride fix: `name_offset_pc` (`engine/battle.asm`) traded the 8-bit offset that silently
 wrapped past entry 25 for a 16-bit `ptr_lo`/`ptr_hi` add its four callers now dereference through;
-see `handoff-namestride/namestride-report.md`) rather than one flat number split later — the mistake `BASE_KERNEL_CODE_BYTES` made and
+see `docs/namestride-report.md`) rather than one flat number split later — the mistake `BASE_KERNEL_CODE_BYTES` made and
 `BASE_KERNEL_CODE_BYTES_BY_MAPPER` had to undo. MMC3's extra 46 bytes are the `.if SPLIT_ENABLED`
 blocks inside the region itself (`battle.asm`'s split arm, `battleui.asm`'s sprite targeting
 cursor), and they need **no** separate conditional term the way `SPLIT_LOCK_KERNEL_ALLOWANCE` does:

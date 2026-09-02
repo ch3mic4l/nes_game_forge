@@ -1,7 +1,7 @@
 # SFX implementation report
 
-Implements `handoff-sfx/design-sfx.md` (four review rounds, approved) per
-`handoff-sfx/brief-sfx-implement.md`. Nothing in this branch has been
+Implements `docs/design-sfx.md` (four review rounds, approved) per
+the implementation brief. Nothing in this branch has been
 committed — the orchestrator commits on the user's word.
 
 ## Summary
@@ -163,7 +163,7 @@ Row construction note: each row combines its defining commands onto one
 placed actor's event page (mirroring `saveAndMoveEvent`'s existing
 precedent) with SFX (and Sting, where applicable) on a second placed actor
 (mirroring the existing Sting-limitation test's own convention). This does
-not reproduce `handoff-costing/costing-report.md`'s Part 1 rows
+not reproduce the costing pass's own Part 1 rows
 byte-for-byte — an extra placed entity costs its own few bytes of screen
 table data a single-entity reconstruction would not — so the exact deficit
 figures in the test file are this construction's own real, measured numbers,
@@ -172,14 +172,14 @@ assembler-backed `checkCapacity()` run, which is the thing that actually
 matters for shipping correctness.
 
 > **CORRECTION (code review round 1, finding 3 — annotated in place, not
-> rewritten; see `handoff-sfx/sfx-code-fixes1-report.md` §3 for the full
+> rewritten; see that round's own fixes report §3 for the full
 > account).** The "MMC3 ALL-7-verbs-only w/ item, no Save/Move, +Sting +SFX"
 > row above (marked REFUSED, real measured −51) was itself a measurement
 > bug, not a real capacity result: the row-construction note's own separate-
 > actor shape forced a title screen onto every row unconditionally,
 > including this one and the two "ALL-7-verbs+Move+item, no Save" refusal
 > rows above it, none of which has a live Save command or any reason to
-> carry a title (`handoff-costing/costing-report.md`'s own Part 1 table is a
+> carry a title (the costing pass's own Part 1 table is a
 > set of deltas from a title-free baseline). The forced title cost a real,
 > uncredited ~224 bytes that had nothing to do with SFX. Corrected and
 > verified two ways, exactly as the review asked (real `checkCapacity()`
@@ -285,7 +285,7 @@ reverted, confirmed `diff` empty and the test passes again.
 > build or independent user interactions needed. Both variants (Silence-
 > restore and audible-restore) are now built and asserted against the real
 > ROM's own APU trace in `test/unit/sfx.test.js` — see
-> `handoff-sfx/sfx-code-fixes1-report.md` §4 for the real traces. The
+> that round's own fixes report §4 for the real traces. The
 > Silence-restore case confirms the pinned truncation write order exactly;
 > the audible-restore case confirms no truncation. The scope reduction
 > below is kept for the record of why it was originally judged

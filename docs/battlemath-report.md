@@ -1,4 +1,4 @@
-# Report: battle-side saturation fixes (brief-battlemath.md)
+# Report: battle-side saturation fixes
 
 ## Plan
 
@@ -242,7 +242,7 @@ max" wrong fix fails them too.
 
 ## Not touched
 
-The Magic Forge work, anything under `handoff-magic/`, `apply_damage` (correct, per the
+The Magic Forge work (a separate, later slice), `apply_damage` (correct, per the
 brief), the field-side sites (already guarded), and the four found-not-changed items above.
 Nothing committed; the working tree holds `engine/battleturn.asm`,
 `main/build/battletables.js`, `test/unit/rpg.test.js`, `test/unit/items.test.js` and
@@ -250,13 +250,13 @@ Nothing committed; the working tree holds `engine/battleturn.asm`,
 
 ---
 
-*Fixes round 1 (report-only, per `brief-battlemath-fixes-round1.md`): corrected the census's
+*Fixes round 1 (report-only, per that round's own fix brief): corrected the census's
 wrong "already correct" verdict on `name_offset_pc` and added it as the fourth found-but-deferred
 entry — deferral is the user's decision — plus fixed the `award_spoils` entry's misstatement of
 the brief's 16-bit scope rule. No engine, test or constant changes; the suite and byte figures
 stand exactly as the Verification section records them.*
 
-*Fixes round 2 (report-only, per `brief-battlemath-fixes-round2.md`): round 1 got the spell-path
+*Fixes round 2 (report-only, per that round's own fix brief): round 1 got the spell-path
 bound wrong twice in one paragraph — it denied the literal `cpy #8` (which is real, on
 `build_spell_list`'s back edge at `engine/battleui.asm:376`, and is the loop's actual
 terminator) and invented a `bit_mask` over-read with phantom spell ids that cannot occur. Both

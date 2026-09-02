@@ -2,11 +2,11 @@
 
 Status: design only, no code written, no tracked file touched. Written against HEAD `6a44850`
 (current `master`, `ROADMAP`/`CLAUDE.md` docs pass `b36093e` already applied). Expects at least two
-review rounds before implementation, the established pattern (`handoff-sting/design-sting.md`,
-`handoff-routes/design-routes.md`, `handoff-tile/design-tile.md`). A "Fix rounds" section is
+review rounds before implementation, the established pattern (`docs/design-sting.md`,
+`docs/design-routes.md`, and the Tile Forge's own design). A "Fix rounds" section is
 appended at the end for reviews to write into; empty for now.
 
-**This is not a re-costing.** `handoff-costing/costing-report.md`'s "Sound effect / sting" section
+**This is not a re-costing.** The costing pass's "Sound effect / sting" section
 (read in full) already priced three shapes and Part 3's fit matrix already answered "does this fit."
 The user picked shape (a) — channel-steal — from that closed pass. This document's job is the one
 the costing pass explicitly declined to do: resolve every question the costing left open, against
@@ -17,7 +17,7 @@ the tree as it actually is *today*, not the tree the costing was priced against.
 The costing priced shape (a) and shape (b) as **independent, competing** shippables, each paying its
 own copy of two "shared mechanisms" (a `force_trig` retrigger array, and a `music_play`/`music_stop`
 cancellation pair). Shape (b) then shipped, as `Sting` — but **not** as the costing's own shape (b)
-sketch. `handoff-sting/design-sting.md` and the real `engine/music.asm` (329 lines, read in full for
+sketch. `docs/design-sting.md` and the real `engine/music.asm` (329 lines, read in full for
 this design) show what actually shipped:
 
 - `Sting` reuses the **full, unmodified 4-channel song format and driver** — `[OP_STING, songIndex,
@@ -78,7 +78,7 @@ co-end" bullet for the full trace and the reasoning for leaving it unfixed.**
 
 ## §2. What I read
 
-`handoff-costing/costing-report.md` in full (its "Sound effect / sting" section, Part 1's margin
+The costing pass's own report, in full (its "Sound effect / sting" section, Part 1's margin
 table, Part 3's fit matrix, and the three rounds of revisions at the end, to see which figures moved
 and why). `engine/music.asm` in full (329 lines) — not the costing's sketch of it, the real shipped
 file, including the now-shipped `.if STING_ENABLED` blocks. `engine/constants.asm`'s RAM map from
@@ -1294,7 +1294,7 @@ this design deliberately does not build; see Open Questions.
 drops from ≈303 to ≈298, and MMC1 Save+Move-no-item moves from a refusal back to a fit)
 
 **The mistake round 1 made, named exactly so it is not repeated: comparing a mixed marginal cost
-against rows that do not carry that mix.** None of `handoff-costing/costing-report.md`'s own Part 1
+against rows that do not carry that mix.** None of the costing pass's own Part 1
 rows include a live Sting at all — every one of them is a plain action/RPG project with some
 combination of Save/Move/item/"ALL 7 shipped verbs" (Turn/Wait/Shake/Show-Hide/Fade/Flash), never
 Sting. Comparing those rows' own signed-free headroom against a figure that assumes Sting is already
@@ -1950,7 +1950,7 @@ follows explicitly, not merely cites.
     selector or a preview that silently no-ops would still pass a smoke step that only checks controls
     exist, which is exactly finding 6's own complaint about round 1's plan), and **build** the ROM.
 22. **Sabotage-style checks worth pre-naming for whoever implements this** (the discipline
-    `handoff-routes/routes-implementation-report.md`'s own "Sabotage evidence" section already models
+    the routes implementation report's own "Sabotage evidence" section already models
     — each of these is a plausible wrong implementation that a correct one must fail against):
     reversing the `music_stop`/`sting_restore_silence` ownership guards' own `.if SFX_ENABLED` order
     relative to the surrounding code should not change behavior — test 8's own co-end cases are what
@@ -2022,7 +2022,7 @@ the brief's own completeness bar)
 
 ## Fix rounds
 
-### Round 1 — against `handoff-sfx/sfx-design-review1.md`, all nine findings accepted
+### Round 1 — against that round's own review, all nine findings accepted
 
 - **Finding 1 (high — final SFX note dropped when Silence follows).** Replaced the single-shot
   `sfx_left`-reaches-zero-then-handback shape with a real two-phase `sfx_state` machine (0 idle / 1
@@ -2080,7 +2080,7 @@ the brief's own completeness bar)
   means an `sfx` command in a raw route leg is dropped by both normalization and compilation, never
   counted on either side. Added the negative route-leg test the review asked for. §3.8, §7 test 16.
 
-### Round 2 — against `handoff-sfx/sfx-design-review2.md`, all six findings accepted
+### Round 2 — against that round's own review, all six findings accepted
 
 - **Finding 1 (high — active-music hand-back landed one frame later than Silence cleanup).**
   Confirmed directly: the cleanup state's audible branch set `force_trig` and `rts`'d without ever
@@ -2151,7 +2151,7 @@ the brief's own completeness bar)
   it is not the preserve-and-refuse shape `LIMITS.sfx` itself correctly uses one level up). Added the
   editor-boundary test. §3.2, §3.9, §7 test 20a.
 
-### Round 3 — against `handoff-sfx/sfx-design-review3.md`, all three findings accepted
+### Round 3 — against that round's own review, all three findings accepted
 
 - **Finding 1 (high — the 5-byte `sting_restore_silence` guard was classified as SFX-standalone code,
   but it can only assemble when both features are live).** Confirmed directly: `sting_restore_
@@ -2199,7 +2199,7 @@ the brief's own completeness bar)
   This design's own 8-byte allocation still fits comfortably (144 bytes remain free) — only the
   factual count needed correcting. Section: §4.
 
-### Round 4 — against `handoff-sfx/sfx-design-review4.md`, all four findings accepted (final wording
+### Round 4 — against that round's own review, all four findings accepted (final wording
 round; no further substantive review round required per the reviewer's own verdict)
 
 - **Finding 1 (medium — §3.6's primary decomposition table still said `AUDIO_FX_KERNEL_ALLOWANCE` is
@@ -2242,7 +2242,7 @@ round; no further substantive review round required per the reviewer's own verdi
   historical 286/303/five-refusal figures untouched, per the review's own explicit exemption — they
   describe what past rounds changed, not current promises. Sections: §3.12, §9.
 
-### Implementation — measured values, per `handoff-sfx/brief-sfx-implement.md`'s own instruction that
+### Implementation — measured values, per the implementation brief's own instruction that
 the design changelog receive one line per allowance term once real nesasm figures replace the
 pre-implementation estimates above (§8's own table stays as the historical record of what was
 estimated before any of this was built; this entry is the measured record alongside it, not a
@@ -2258,6 +2258,6 @@ silent edit to it)
   real kernel-total deltas (Sting-only 175, SFX-only 310, both-live 475) minus the two span-measured
   terms above; internally consistent (160 + 295 + 15 + 5 = 475, exactly the independently measured
   both-live total). See `main/build/generate.js`'s own comment beside the constant, and
-  `sfx-implementation-report.md` §1 for the full account, including the two documented-limitation
+  `docs/sfx-implementation-report.md` §1 for the full account, including the two documented-limitation
   rows this 12-byte deviation moved (and code review round 1's own correction to a fixture bug that
   had misattributed a further, unrelated row to this same deviation — see that report's §3).

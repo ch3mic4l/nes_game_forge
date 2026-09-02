@@ -1,11 +1,15 @@
-// CLAUDE.md makes two promises nothing ever checked. First, it points agents at handoff-*/
+// CLAUDE.md makes two promises nothing ever checked. First, it points agents at docs/*.md
 // design docs for mechanism depth it deliberately keeps out of the file itself -- but until
-// 39dac4d, CLAUDE.md named nine such documents and not one of them was tracked by git. They
-// were never gitignored, merely never `git add`ed, so a fresh clone or a `git clean -fdx`
-// silently took every destination the file cited; existence-on-disk alone would have passed the
-// whole time this was true. Second, it stays under Claude Code's 150,000-character tool limit --
-// but it crossed that limit once already, one ordinary docs pass at a time, with nothing to
-// notice the slide until agents started silently losing part of their own instructions.
+// 39dac4d, CLAUDE.md named nine such documents (then living under handoff-*/ folders) and not
+// one of them was tracked by git. They were never gitignored, merely never `git add`ed, so a
+// fresh clone or a `git clean -fdx` silently took every destination the file cited; existence-
+// on-disk alone would have passed the whole time this was true. The handoff-cleanup pass moved
+// the seven documents CLAUDE.md still points at into docs/ for exactly that reason -- every
+// other handoff-*/ folder is orchestration paper trail (briefs, review rounds, reports), not
+// part of the project, deliberately untracked and gitignored, and CLAUDE.md must never point at
+// one of those again. Second, it stays under Claude Code's 150,000-character tool limit -- but
+// it crossed that limit once already, one ordinary docs pass at a time, with nothing to notice
+// the slide until agents started silently losing part of their own instructions.
 //
 // Both are the same "two things that must agree" shape this suite already holds elsewhere --
 // kernelbytes.test.js holds a byte figure to the assembler, music.test.js holds three
@@ -32,39 +36,40 @@ const CLAUDE_MD_PATH = path.join(ROOT, 'CLAUDE.md');
 // later, so it is left as-is rather than special-cased.
 const CLAUDE_MD_TEXT = fs.readFileSync(CLAUDE_MD_PATH, 'utf8');
 
-const HANDOFF_POINTERS = [...new Set(CLAUDE_MD_TEXT.match(/handoff-[A-Za-z0-9_-]+\/[A-Za-z0-9_.-]+\.md/g) ?? [])];
+const DOCS_POINTERS = [...new Set(CLAUDE_MD_TEXT.match(/docs\/[A-Za-z0-9_.-]+\.md/g) ?? [])];
 
-test('the handoff-pointer extraction regex actually matches something in CLAUDE.md', () => {
+test('the docs-pointer extraction regex actually matches something in CLAUDE.md', () => {
   // A regex that silently stops matching (CLAUDE.md's own pointer style drifts, or this file's
   // pattern is edited wrong) makes every check below vacuously pass -- a docs test that passes
   // because it checked nothing is worse than no test, since it reads as coverage. This is the
   // one assertion standing between that failure mode and a green run.
   assert.ok(
-    HANDOFF_POINTERS.length > 0,
-    'found zero handoff-*/*.md pointers in CLAUDE.md -- either every mechanism-depth pointer was ' +
+    DOCS_POINTERS.length > 0,
+    'found zero docs/*.md pointers in CLAUDE.md -- either every mechanism-depth pointer was ' +
       'removed from the file (unlikely) or the extraction regex in this test no longer matches ' +
       "CLAUDE.md's own pointer style (likely). Fix the regex before trusting this suite again."
   );
 });
 
 // The guard above only catches *total* extraction failure. It says nothing if the strict pattern
-// is merely too narrow -- a pointer written in a form it does not match (a nested path, an
-// uppercase HANDOFF, some other shape) would sit right next to five others that do match, the
+// is merely too narrow -- a pointer written in a form it does not match (a nested subfolder, an
+// uppercase `Docs`, some other shape) would sit right next to five others that do match, the
 // guard above would stay green, and that one pointer would be silently skipped by every check
 // below. That is the same false-pass failure mode the guard above exists to prevent, just
-// narrower, and it is a live style in this repo: HANDOFF-item5-phase4c.md sits at the repo root
-// in a shape the strict pattern below would not match if something like it were ever referenced
-// from CLAUDE.md. So a second, deliberately loose scan -- case-insensitive, no fixed slash
-// structure -- catches anything handoff-*.md-shaped, and the strict set must cover all of it.
-const BROAD_HANDOFF_MATCHES = [...new Set(CLAUDE_MD_TEXT.match(/handoff-[\w./-]*\.md/gi) ?? [])];
+// narrower -- and it is a live risk here: the docs/ folder is flat today (seven files, no
+// subdirectories), but nothing stops a future pointer from naming one, or from being typo'd as
+// `Docs/`, and either would sail past the strict pattern unnoticed without a second check. So a
+// second, deliberately loose scan -- case-insensitive, no fixed slash structure -- catches
+// anything docs/*.md-shaped, and the strict set must cover all of it.
+const BROAD_DOCS_MATCHES = [...new Set(CLAUDE_MD_TEXT.match(/docs\/[\w./-]*\.md/gi) ?? [])];
 
-test('the strict pointer pattern is not silently narrower than a loose scan for anything handoff-like', () => {
-  const strictSet = new Set(HANDOFF_POINTERS);
-  const missed = BROAD_HANDOFF_MATCHES.filter((match) => !strictSet.has(match));
+test('the strict pointer pattern is not silently narrower than a loose scan for anything docs-like', () => {
+  const strictSet = new Set(DOCS_POINTERS);
+  const missed = BROAD_DOCS_MATCHES.filter((match) => !strictSet.has(match));
   assert.deepEqual(
     missed,
     [],
-    `the loose handoff-*.md scan found reference(s) the strict pointer pattern above did not match: ` +
+    `the loose docs/*.md scan found reference(s) the strict pointer pattern above did not match: ` +
       `${missed.join(', ')}. Each one is being silently skipped by every check in this file -- either ` +
       'it is written in a style the strict pattern needs to be widened to cover, or it is not really a ' +
       "pointer this test should track and the loose scan needs narrowing. Either way, don't leave it " +
@@ -78,7 +83,7 @@ const TRACKED_FILES = new Set(
     .filter(Boolean)
 );
 
-for (const pointer of HANDOFF_POINTERS) {
+for (const pointer of DOCS_POINTERS) {
   test(`CLAUDE.md's pointer to ${pointer} resolves and is tracked by git`, () => {
     assert.ok(
       fs.existsSync(path.join(ROOT, pointer)),
@@ -106,7 +111,7 @@ test(`CLAUDE.md stays under its ${CLAUDE_MD_CHAR_BUDGET}-character budget`, () =
       "budget. That budget is kept below Claude Code's hard 150,000-character tool limit " +
       'specifically so this test fails before an agent working in this repo starts silently ' +
       'losing part of its own instructions, not after. The fix is to move whichever docs pass ' +
-      "pushed this over into the relevant handoff-*/design-*.md doc's mechanism depth -- not to " +
+      "pushed this over into the relevant docs/*.md doc's mechanism depth -- not to " +
       'delete rules to make room.'
   );
 });
