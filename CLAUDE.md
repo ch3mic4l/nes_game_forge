@@ -1182,11 +1182,14 @@ the drift the check exists to prevent, one layer out. `battletables.js` imports 
 and must stay that way; `renderer/forges/build/build.js` importing it is the same move
 `renderer/forges/sound/sound.js` already makes with `main/build/songcompile.js`.
 
-`BASE_BATTLE_CODE_BYTES_BY_MAPPER` is per board from the outset (UNROM 512 3835, MMC1 3835, MMC3
-3881 — each +14 from the battle-side saturation fixes, the `bcs`-before-`cmp` guard `gain_hearts`
+`BASE_BATTLE_CODE_BYTES_BY_MAPPER` is per board from the outset (UNROM 512 3885, MMC1 3885, MMC3
+3931 — each +14 from the battle-side saturation fixes, the `bcs`-before-`cmp` guard `gain_hearts`
 and `party_heal` already had, applied to `item_chosen`/`cast_heal`/`cast_heal_mon` plus a
 saturate-to-255 in `spell_damage_weak` and `physical_damage_noise`; see
-`handoff-battlemath/battlemath-report.md`) rather than one flat number split later — the mistake `BASE_KERNEL_CODE_BYTES` made and
+`handoff-battlemath/battlemath-report.md` — plus a further +50 on every board alike from the
+name-stride fix: `name_offset_pc` (`engine/battle.asm`) traded the 8-bit offset that silently
+wrapped past entry 25 for a 16-bit `ptr_lo`/`ptr_hi` add its four callers now dereference through;
+see `handoff-namestride/namestride-report.md`) rather than one flat number split later — the mistake `BASE_KERNEL_CODE_BYTES` made and
 `BASE_KERNEL_CODE_BYTES_BY_MAPPER` had to undo. MMC3's extra 46 bytes are the `.if SPLIT_ENABLED`
 blocks inside the region itself (`battle.asm`'s split arm, `battleui.asm`'s sprite targeting
 cursor), and they need **no** separate conditional term the way `SPLIT_LOCK_KERNEL_ALLOWANCE` does:
@@ -1241,6 +1244,22 @@ hand-measured constant like any other: **exact today, and held there by the equa
 boards — fifteen builds — `base + battleTableBytes` equals nesasm's reported usage **to the byte**,
 which is why the test asserts equality rather than a margin band, and why `BATTLE_SLACK` is buffer
 against stock-code growth rather than headroom for an estimate to be wrong in.
+
+**`battleTables(project, battleStrings = BATTLE_STRINGS)` and `battleTableBytes(project,
+battleStrings = BATTLE_STRINGS)` both take an optional, test-only injected strings list** — the
+default path is byte-identical to before either parameter existed. Both take it, not just the
+first: round 2 of the name-stride slice's own review found `battleTableBytes` still calling
+`battleTables(project)` with the *default* even after `battleTables` had been given the parameter,
+so an injected list's real emission and the counter naming its size could disagree — a counter
+drifting from what it counts is exactly the failure this region's whole exactness discipline
+exists to prevent, one call site closer in than the board-level check above. Separately,
+`checkBattleStringsCapacity` (`battletables.js`) exists because `push_battle_string`
+(`engine/battleui.asm`) keeps the identical 8-bit `index * MSG_COLS` stride `name_offset_pc` used
+to have — deliberately left unfixed at the engine level (see that function's own header comment for
+the reasoning) and guarded at the generator instead, refusing a build at the 22nd `BATTLE_STRINGS`
+entry. The injected-list parameter is what lets that guard be exercised through `battleTables`'
+own call site rather than only the helper called in isolation (`test/unit/bankedbytes.test.js`),
+not what caused the guard to exist.
 
 **Exact for the *stock* battle code, and that qualifier is load-bearing.** A Code Forge override of
 `battle.asm` — or of `battleui.asm`/`battleturn.asm`, which it includes — is hand-written 6502 whose
@@ -1514,6 +1533,20 @@ Each of these cost real debugging time and now has a regression test. They are e
   position-independent (assembled at an ordinary address, copied to its real address at runtime)
   rather than ever reserving a fixed low address for itself via `.org`. See `flash.asm`'s own
   header comment for the relocation rules that position-independence requires.
+- **An 8-bit multiply used as a table offset silently wraps.** `name_offset_pc`
+  (`engine/battle.asm`) computed `index * NAME_LEN` in a single accumulator with the carry
+  discarded, so index 26 (`26 * 10 = 260`) came back as offset 4 — `table + 4`, four glyphs into
+  the table's first entry (entry 0), so the ten-glyph read returned the last six glyphs of entry 0
+  followed by the first four of entry 1, not entry 26's own name; `table,y` addressed that offset
+  correctly, only `y` itself was wrong. The fix adds the product
+  into a 16-bit `ptr_lo`/`ptr_hi` in place and reads `[ptr_lo],y` instead. Regression tests:
+  `'a monster at actor id 26 draws its own name when it attacks, and a low-index monster (one that
+  also forces a carry out of ptr_lo) in the same fight still draws correctly'` and `'an item at id
+  26 draws its own name in the battle ITEM list, and a low-index item in the same bag still draws
+  correctly'` (both `test/unit/rpg.test.js`) read the nametable rather than engine RAM, because the
+  bug was in what a consumer was told to point at, not in any table's own contents; `assertForcesCarry`
+  (same file) proves each fixture's low-index control also forces a carry out of `ptr_lo`, not just
+  the high-index one, so a fixture that stopped needing the carry could not go silently vacuous.
 
 ## Conventions
 
