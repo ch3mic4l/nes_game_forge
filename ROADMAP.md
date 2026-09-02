@@ -1370,15 +1370,17 @@ of this is real machinery already shipped and only needs a home of its own; part
 item states which is which rather than reading as one undifferentiated feature.
 
 **Already exists.** `project.spells` (`shared/project.js`, cap `RPG_LIMITS.spells = 32`) is a real,
-compiled record today — `{id, name, mpCost, kind, amount, element, scope}` (`createSpell`) — authored
-inside the Sprite Forge's battle page (`renderer/forges/sprite/battle.js`: add, rename, MP cost, kind,
-amount, element, scope), with which spells a party member learns at which level on that same page's
+compiled record today — `{id, name, mpCost, kind, amountMin, amountMax, element, scope}`
+(`createSpell`) — authored inside the Sprite Forge's battle page (`renderer/forges/sprite/battle.js`:
+add, rename, MP cost, kind, a min/max amount range, element, scope), with which spells a party member
+learns at which level on that same page's
 party tab — one bitmask byte per member per level, up to eight spells each (`battletables.js`).
 `SPELL_KINDS` (damage / heal / poison) is already append-only wire format (`SK_*` in
 `engine/constants.asm`), and poison is already a real status effect, not a placeholder: it ignores
-`amount` and deals a fixed 2 HP after each of the victim's turns until cured by a heal or the battle
-ends (`pc_status`/`mon_slot_status`, ticked by `battle_message_done`). `ELEMENTS` (`shared/project.js`)
-is live in the engine, not decorative — `spell_element` plus per-monster `mon_weak`/`mon_strong`
+`amountMin`/`amountMax` and deals a fixed 2 HP after each of the victim's turns until cured by a
+heal or the battle ends (`pc_status`/`mon_slot_status`, ticked by `battle_message_done`).
+`ELEMENTS` (`shared/project.js`) is live in the engine, not decorative — `spell_element` plus
+per-monster `mon_weak`/`mon_strong`
 tables (`battletables.js`), applied by `battleturn.asm`'s spell-damage rule: half again into a
 weakness, half into a strength ("elements only describe monsters" — the party carries no weakness of
 its own). `SPELL_SCOPES` (one / all) is likewise live both ways: monsters cast the same spells the
@@ -1421,12 +1423,14 @@ this item's own new table bytes would land and grow.
    a metasprite flipbook drawn over the target (`draw_metasprite`, `engine/entities.asm`), a palette
    flash reusing the existing `PALETTE_FX` machinery (`PALETTE_FX_ENABLED`, shared by `Fade`/`Flash`),
    or something else entirely — is an open design question this item records rather than settles.
-3. **Damage/heal ranges (min-max)** — `spell.amount` is one flat byte today (`normalizeSpell` clamps
-   it 1-255), with no range at all. The battle engine already has a real RNG (`rng_next`,
-   `engine/rpg.asm`), so rolling a range is a table-shape and engine-arithmetic question, not a
-   new-mechanism one. `SAVE_LAYOUT_VERSION` (`shared/save.js`, currently 2) only matters here if some
-   new per-spell state ends up serialized to a save record — flagged as a check this item owes, not
-   a cost already known to be owed.
+3. ~~**Damage/heal ranges (min-max)** — `spell.amount` is one flat byte today~~ — **done**:
+   `amountMin`/`amountMax` replace it (`normalizeSpell`, one-time migration; a backwards pair is
+   swapped, not rejected), compiled into three tables (`spell_amount_min`/`spell_amount_n`/
+   `spell_amount_limit`, `main/build/battletables.js`) and rolled by rejection sampling
+   (`roll_spell_amount`/`mod8`, `engine/battleturn.asm`) so the result is uniform rather than
+   masked-and-biased; a flat range (`amountMin === amountMax`) draws nothing from the RNG at all,
+   which is the byte-for-byte migration guarantee. `SAVE_LAYOUT_VERSION` (`shared/save.js`) did not
+   need to move: nothing per-spell is serialized to a save record.
 4. **Generalizing status effects beyond poison** — `SPELL_KINDS` being append-only means new kinds
    are additive by construction. The storage is not the constraint: `pc_status`/`mon_slot_status`
    already allocate one whole byte per combatant, with only bit 0 defined (`engine/constants.asm`'s

@@ -675,6 +675,14 @@ already-over-cap project (a later version's, or hand-edited) is refused by `vali
 named error and left intact rather than silently sliced — a 256th metasprite is real, drawable
 content, the identical policy the actor and item ceilings already hold to.
 
+`renumberSpellDeletion` (`shared/project.js`) exists beside `renumberActorDeletion`/
+`renumberItemDeletion`, the same shape applied to `project.spells` — but nothing in the
+renderer calls it yet. The `Spells…` modal's own delete still carries its level-migrates-onto-the-
+neighbour bug on purpose until Magic Forge phase 3 wires the primitive in, and
+`test/unit/project.test.js` pins the primitive against a modelled copy of that filter-without-shift
+bug (a local closure, not the real handler itself, which stays untested until phase 3 replaces it),
+with a sanity assertion that the model really does get the fixture wrong.
+
 **`SAVE_LAYOUT_VERSION` goes 1 → 2 for this same phase**, because `inv_items`' own bytes can now
 mean an item id rather than an actor id, and that is a change to what the bytes mean, not how many
 there are — precisely the case `saveIdentity`'s own derived sizes cannot catch, which is what the
@@ -1182,14 +1190,16 @@ the drift the check exists to prevent, one layer out. `battletables.js` imports 
 and must stay that way; `renderer/forges/build/build.js` importing it is the same move
 `renderer/forges/sound/sound.js` already makes with `main/build/songcompile.js`.
 
-`BASE_BATTLE_CODE_BYTES_BY_MAPPER` is per board from the outset (UNROM 512 3885, MMC1 3885, MMC3
-3931 — each +14 from the battle-side saturation fixes, the `bcs`-before-`cmp` guard `gain_hearts`
+`BASE_BATTLE_CODE_BYTES_BY_MAPPER` is per board from the outset (UNROM 512 3938, MMC1 3938, MMC3
+3984 — each +14 from the battle-side saturation fixes, the `bcs`-before-`cmp` guard `gain_hearts`
 and `party_heal` already had, applied to `item_chosen`/`cast_heal`/`cast_heal_mon` plus a
 saturate-to-255 in `spell_damage_weak` and `physical_damage_noise`; see
 `docs/battlemath-report.md` — plus a further +50 on every board alike from the
 name-stride fix: `name_offset_pc` (`engine/battle.asm`) traded the 8-bit offset that silently
 wrapped past entry 25 for a 16-bit `ptr_lo`/`ptr_hi` add its four callers now dereference through;
-see `docs/namestride-report.md`) rather than one flat number split later — the mistake `BASE_KERNEL_CODE_BYTES` made and
+see `docs/namestride-report.md` — plus a further +53 on every board alike from the Magic Forge's
+own spell-amount roll, `roll_spell_amount`/`mod8` (`engine/battleturn.asm`); see
+`docs/design-magic.md` §8) rather than one flat number split later — the mistake `BASE_KERNEL_CODE_BYTES` made and
 `BASE_KERNEL_CODE_BYTES_BY_MAPPER` had to undo. MMC3's extra 46 bytes are the `.if SPLIT_ENABLED`
 blocks inside the region itself (`battle.asm`'s split arm, `battleui.asm`'s sprite targeting
 cursor), and they need **no** separate conditional term the way `SPLIT_LOCK_KERNEL_ALLOWANCE` does:
@@ -1368,6 +1378,20 @@ Three shapes worth keeping:
   stale-but-harmless byte stops being harmless the day a save record starts serializing this
   array, so the invariant is enforced at every exit rather than merely documented at one of them.
   A heal or a potion cures the caster's own, mid-battle.
+- **A spell's amount is a range, not a fixed number**: `amountMin`/`amountMax` in the schema,
+  `spell_amount_min`/`spell_amount_n`/`spell_amount_limit` (`main/build/battletables.js`) in ROM,
+  rolled by `roll_spell_amount` + `mod8` (`engine/battleturn.asm`) — a draw rejected at or above
+  `spell_amount_limit,x` keeps the accepted range uniform rather than masked-and-biased.
+  `spell_amount_n,x == 1` is byte-for-byte the old flat `spell_amount,x` read and draws nothing
+  from the RNG at all, which is what lets a project migrated from the old schema replay its
+  battles identically. Both routines run inside `cast_all`'s own per-target loop, so `bt_tmp2` —
+  that loop's own end-of-side sentinel — must survive untouched across the whole `spell_damage`
+  → `roll_spell_amount` → `mod8` chain; the regression guard is an RNG-state assertion in
+  `test/unit/rpg.test.js`'s `'an all-target spell rolls independently per target -- two living
+  monsters take different damage from one cast'`, and it is narrower than it looks: a mutation
+  that *replaces* `mod8`'s own `bt_tmp` write with a `bt_tmp2` one corrupts the roll itself and is
+  already caught by that test's damage numbers, but one that *adds* a stray `bt_tmp2` write
+  beside the real one leaves those numbers looking right and only the RNG assertion catches it.
 
 Anything the engine would need a multiply for is a table instead: `main/build/battletables.js`
 precomputes per-level stats and the experience curve, and pads every name to `RPG_LIMITS.nameLength`
@@ -1519,7 +1543,10 @@ Each of these cost real debugging time and now has a regression test. They are e
   `bt_tmp2` and counts it down to zero. One list entry hid it (blank rows never touch the byte);
   two hung the whole game in the redraw loop. A counter that lives across a `jsr` needs a byte
   nothing downstream owns (`bt_vrow`), and the bug reached `main` because no test ever opened a
-  list with two entries — the untested path was the broken one.
+  list with two entries — the untested path was the broken one. `bt_tmp2` is load-bearing a second
+  time for the identical reason: it is `cast_all`'s own end-of-side sentinel for its whole
+  `spell_damage`/`roll_spell_amount`/`mod8` call chain, so a new routine reaching for scratch space
+  in that chain has exactly one byte it may not pick.
 - **A backward `.org` silently splices bytes into whatever already assembled there.** nesasm
   places a bank's contents at file offset `address & (bank size - 1)`, with no check that the
   address is actually inside the bank currently being assembled. Given an address *behind* the
