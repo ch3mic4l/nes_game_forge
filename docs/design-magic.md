@@ -774,29 +774,28 @@ correct, not that saturation was skipped.
 Every `checkBattleTables`/`battleShortfallAdvice` message that is actually about a **spell**
 switches `where: 'Sprite Forge'` to `where: 'Magic Forge'`:
 
-- `battletables.js:340` — the "N spells, only 8 learnable" warning.
-- `battletables.js:815` — `battleShortfallAdvice`'s "removing k spells" lever description (the
+- `battletables.js`'s `checkBattleTables` — the "N spells, only 8 learnable" warning.
+- `battletables.js`'s `battleShortfallAdvice` — the "removing k spells" lever description (the
   `reduce` callback itself, which splices a *local probe clone* purely to measure bytes and is
   never applied to `store.project`, needs no change — nothing it touches is ever seen by a party
   member's own learned-spell reference).
 - §6's new per-member/per-learned-spell warning is born `where: 'Magic Forge'`.
 
-**Left as `'Sprite Forge'`, because they are not about a spell**: `:333` (no party member starts),
-`:351` (a learned spell's *level* exceeds `maxLevel` — about the party member's own level cap, not
-the spell), `:363` (no hostile actor), `:370` (party size over the limit), `:810`/`:822`
-(`battleShortfallAdvice`'s actor/party-member levers).
+**Left as `'Sprite Forge'`, because they are not about a spell**: no party member starts; a learned
+spell's *level* exceeds `maxLevel` (about the party member's own level cap, not the spell); no
+hostile actor; party size over the limit; `battleShortfallAdvice`'s actor/party-member levers.
 
 **The battle-region overflow error** (`generate.js`'s `regionBytes > regionCeiling` check,
 `where: 'Sprite Forge'` today) genuinely cannot stay Sprite-owned or become Magic-owned once this
 slice ships: the 8 KB region is now fed by Sprite (actors, party), Magic (spells) and Items at once,
 plus the mapper choice itself (a Build-panel decision, `reconcileCartridge`) that decides the
 region's *ceiling*. **It becomes `where: 'Build & Play'`** — the one existing Forge title
-(`renderer/app.js:64`) that already names the page showing this exact number (CLAUDE.md's own
-"the Build panel's meter would need a second copy of the arithmetic" passage is describing this same
-meter), and the one place a mapper change — itself a real lever on this same error — is made. No
-other content Forge is uniquely responsible for a shared-region overflow the way each of the four
-other `where:` strings in this codebase names a Forge that owns the *entirety* of what it is
-reporting on.
+(`renderer/app.js`'s `FORGES` array) that already names the page showing this exact number
+(CLAUDE.md's own "the Build panel's meter would need a second copy of the arithmetic" passage is
+describing this same meter), and the one place a mapper change — itself a real lever on this same
+error — is made. No other content Forge is uniquely responsible for a shared-region overflow the way
+each of the four other `where:` strings in this codebase names a Forge that owns the *entirety* of
+what it is reporting on.
 
 ## §10. Byte budget rollup — every figure an estimate unless labelled measured
 

@@ -4,8 +4,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-An Electron app for building NES games through a UI (six "Forges": Tile, Sprite, Items, Map, Sound,
-Controller — plus the Code Forge, the escape hatch for hand-written 6502), which compiles a
+An Electron app for building NES games through a UI (seven "Forges": Tile, Sprite, Items, Magic (RPG
+projects only), Map, Sound, Controller — plus the Code Forge, the escape hatch for hand-written
+6502), which compiles a
 project into a real `.nes` ROM with `nesasm` and plays it in a built-in emulator with a debugger. See `README.md` for the user-facing description and the
 current feature status table.
 
@@ -250,6 +251,19 @@ renderer, and `node:test` alike.
   that never arrives in a window whose frames are being throttled). The smoke test resizes the real
   window and asserts the map screen grew, because a hardcoded zoom looks perfectly correct at
   whatever size it was written for.
+- **A Forge selection must check it is still the current one after its own `await`.**
+  `selectForge(id)` (`renderer/app.js`) is called unawaited from `store.subscribe`'s `'open'`
+  handler, so two selections can be in flight at once and the *earlier* one can finish last. A
+  module-level `selectionToken` counter is bumped once by every call that gets past its own guards
+  (an open project, a known and available id) and re-checked after `await entry.load()` and again in
+  the `catch`; a call that finds itself superseded returns before it mounts anything or sets the
+  status bar. It has still torn the stage down: the token is taken *before* `mounted` is destroyed
+  and `dom.stage` cleared, so a superseded call has already run that teardown by the time it learns
+  it lost. That is safe only because the winner took its own token later, tears down again, and
+  mounts after both. Missing the token check looks like a screenshot or harness
+  artefact rather than a bug: the second Forge mounts, then the first one's late import mounts over
+  it, leaving two `.forge` elements in `#stage` — which is exactly what `main/smoke.js`'s own
+  same-tick selection race step asserts against.
 
 Each Forge is a module exporting `mount(container, app)` and returning
 `{ destroy?, onProjectChange? }`; `renderer/app.js`'s `FORGES` array is the single writer for which
@@ -258,8 +272,19 @@ own place to author an item's name, effect and backing Pickup actor) is one of t
 case. `app.forgeIds` is that registry's own derived getter (`FORGES.filter(...).map((f) => f.id)`),
 not a second writer of its own — it exists so `main/smoke.js`'s "visit every Forge" step can read
 `FORGES` without a hand-maintained list of its own agreeing with it by hand, which is exactly the
-kind of drift that let the Items Forge almost ship unvisited by that very test. `renderer/store.js`
-is the single project state:
+kind of drift that let the Items Forge almost ship unvisited by that very test. The Magic Forge
+(`renderer/forges/magic/magic.js`, item 13's own spell catalog — turn-based RPG projects only) is
+`FORGES`' first entry to carry a `gameTypes` field; every other entry is unconditional, so the field
+is additive. `isForgeAvailable(entry, project)` is the single predicate for whether an entry applies
+to the open project, read by exactly three call sites — `renderRail()`, the `app.forgeIds` getter
+(which is why "visit every Forge" stays correct on an action project without special-casing Magic
+itself), and `selectForge`, which has to guard itself a second way: `activeForgeId` is a bare
+module-level variable that outlives a project close, so a stale `'magic'` can reach `selectForge` on
+a path the rail never rendered a button for, and it falls back to `'tile'`. `main/smoke.js`'s own
+negative case for this reads the rendered `.rail-item` titles rather than `forgeIds` — the wrong
+implementation it exists to catch is a `renderRail()` that filters differently from the getter,
+which would offer a real, clickable button into a Forge `forgeIds` already excludes.
+`renderer/store.js` is the single project state:
 `commit()` for a discrete edit, `beginStroke()`/`touch()`/`endStroke()` so a drag is one undo entry.
 Undo is whole-project `structuredClone` snapshots.
 
@@ -676,12 +701,15 @@ named error and left intact rather than silently sliced — a 256th metasprite i
 content, the identical policy the actor and item ceilings already hold to.
 
 `renumberSpellDeletion` (`shared/project.js`) exists beside `renumberActorDeletion`/
-`renumberItemDeletion`, the same shape applied to `project.spells` — but nothing in the
-renderer calls it yet. The `Spells…` modal's own delete still carries its level-migrates-onto-the-
-neighbour bug on purpose until Magic Forge phase 3 wires the primitive in, and
-`test/unit/project.test.js` pins the primitive against a modelled copy of that filter-without-shift
-bug (a local closure, not the real handler itself, which stays untested until phase 3 replaces it),
-with a sanity assertion that the model really does get the fixture wrong.
+`renumberItemDeletion`, the same shape applied to `project.spells` — the Magic Forge's own delete
+handler (`renderer/forges/magic/magic.js`) is its real caller, as of Magic Forge phase 3. The
+`Spells…` modal it was written against is gone; `test/unit/project.test.js`'s tests still call the
+export directly, the same shape the actor/item siblings' tests use, because the real handler is
+renderer code (`confirmModal`, `store`, a toast) a `node:test` process cannot drive — `main/smoke.js`
+is what exercises it for real. The `wrongImplementation` closure beside those tests still models the
+old modal's own filter-without-shift bug on purpose — a deliberate regression fixture for a handler
+that no longer exists, not a stale one — with a sanity assertion that the model really does get the
+fixture wrong.
 
 **`SAVE_LAYOUT_VERSION` goes 1 → 2 for this same phase**, because `inv_items`' own bytes can now
 mean an item id rather than an actor id, and that is a change to what the bytes mean, not how many

@@ -1371,10 +1371,11 @@ item states which is which rather than reading as one undifferentiated feature.
 
 **Already exists.** `project.spells` (`shared/project.js`, cap `RPG_LIMITS.spells = 32`) is a real,
 compiled record today — `{id, name, mpCost, kind, amountMin, amountMax, element, scope}`
-(`createSpell`) — authored inside the Sprite Forge's battle page (`renderer/forges/sprite/battle.js`:
-add, rename, MP cost, kind, a min/max amount range, element, scope), with which spells a party member
-learns at which level on that same page's
-party tab — one bitmask byte per member per level, up to eight spells each (`battletables.js`).
+(`createSpell`) — authored in the Magic Forge (`renderer/forges/magic/magic.js`: add, rename, MP
+cost, kind, a min/max amount range, element, scope — sub-item 1 below), with which spells a party
+member learns at which level still on the Sprite Forge's own party tab
+(`renderer/forges/sprite/battle.js`'s `partyPanel`) — one bitmask byte per member per level, up to
+eight spells each (`battletables.js`).
 `SPELL_KINDS` (damage / heal / poison) is already append-only wire format (`SK_*` in
 `engine/constants.asm`), and poison is already a real status effect, not a placeholder: it ignores
 `amountMin`/`amountMax` and deals a fixed 2 HP after each of the victim's turns until cured by a
@@ -1394,8 +1395,10 @@ those two still-open threads pick up, not a new one.
 The precedent for pulling this authoring surface out into its own Forge is item 5's own Items Forge
 (`renderer/forges/items/items.js`): one `FORGES` entry in `renderer/app.js` — the single writer for
 which Forges exist — visited by `npm run smoke` via `app.forgeIds`, documented in CLAUDE.md. A Magic
-Forge is the same shape: move spell authoring (and the party's learned-spells tab) out from under the
-Sprite Forge's battle page into its own place in the rail.
+Forge is the same shape: move spell authoring out from under the Sprite Forge's battle page into its
+own place in the rail. Per-member learned-spell editing stays on that party tab (sub-item 1 below),
+cross-linked to the Magic Forge — the catalog and who has learned what are different questions, and
+only the first one is a spell's own.
 
 The current battle routines (`engine/battle.asm`, `battleui.asm`, `battleturn.asm` —
 `BATTLE_REGION_SOURCES`, `main/build/battletables.js`) and every table `battletables.js` emits already
@@ -1415,8 +1418,13 @@ this item's own new table bytes would land and grow.
 
 **Genuinely new in this item:**
 
-1. **The Forge itself** — moving spell authoring out of the Sprite Forge's battle page into a
-   dedicated Magic Forge, the Items Forge shape above.
+1. ~~**The Forge itself** — moving spell authoring out of the Sprite Forge's battle page into a
+   dedicated Magic Forge, the Items Forge shape above.~~ — **done**: `renderer/forges/magic/magic.js`
+   is a real Forge, conditional on `gameType` (`isForgeAvailable`, the registry's first entry to
+   carry `gameTypes: ['rpg']`). Spell *authoring* — name, kind, amount range, MP cost, element,
+   scope, add/delete — moved there in full; a party member's own *learned* spells (which ones, at
+   what level) stay on the Sprite Forge's party tab, cross-linked to the Magic Forge rather than
+   opening the old `Spells…` modal.
 2. **Spell animations** — nothing exists today: casting is message lines and HP changes, with no
    per-spell visual at all. This is the least-designed part of the item, and stays that way here
    rather than being forced to a figure: what an animation even *is* on the battle screen —
