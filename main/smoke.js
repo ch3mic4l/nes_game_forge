@@ -85,14 +85,25 @@ const scenario = (dir, sampleDir, sampleRpgDir) => `
   // not a second hand-written list here -- a hardcoded array in this file
   // agreeing with FORGES by hand is exactly the single-writer violation that
   // let the Items Forge almost ship unvisited by this very step.
-  const forgeIds = window.__app.forgeIds;
-  if (!forgeIds.length) throw new Error('window.__app.forgeIds returned nothing -- the registry is not reaching this test');
-  for (const id of forgeIds) {
-    window.__app.goTo(id);
-    await wait(140);
-    if (!document.querySelector('#stage').children.length) throw new Error(id + ' forge mounted nothing');
-  }
-  step('all forges mount', 'ok (' + forgeIds.join(', ') + ')');
+  //
+  // A function, not inlined, because Magic Forge (item 13, phase 3) is
+  // conditional on gameType -- window.__app.forgeIds already excludes it for
+  // this action project, which proves nothing about it either way, by design,
+  // not by omission (design-magic.md §7.1). The identical loop runs again,
+  // reused rather than duplicated, once an RPG project is open later in this
+  // script, which is the only point Magic can actually be observed mounting.
+  const visitEveryForge = async (label) => {
+    const forgeIds = window.__app.forgeIds;
+    if (!forgeIds.length) throw new Error('window.__app.forgeIds returned nothing -- the registry is not reaching this test');
+    for (const id of forgeIds) {
+      window.__app.goTo(id);
+      await wait(140);
+      if (!document.querySelector('#stage').children.length) throw new Error(id + ' forge mounted nothing');
+    }
+    step(label, 'ok (' + forgeIds.join(', ') + ')');
+    return forgeIds;
+  };
+  await visitEveryForge('all forges mount');
 
   // --- Map Forge ---------------------------------------------------------
   window.__app.goTo('map');
@@ -2757,6 +2768,27 @@ const scenario = (dir, sampleDir, sampleRpgDir) => `
   // --- Sprite Forge ------------------------------------------------------
   window.__app.store.open(sample.value.dir, sample.value.project);
   await wait(200);
+
+  // Magic Forge rail-gating, negative case (item 13, phase 3, design §7.1 /
+  // §11.3): an action project must not offer Magic at all. forgeIds alone
+  // is not enough -- it would also pass if renderRail() itself forgot to
+  // filter, offering a real button into a Forge forgeIds excludes -- so this
+  // reads the rendered rail buttons directly (title, the same attribute
+  // renderRail() sets and clicking one relies on) rather than calling
+  // window.__app.goTo('magic'), which would bypass exactly the render this
+  // is checking.
+  {
+    const forgeIdsAction = window.__app.forgeIds;
+    if (forgeIdsAction.includes('magic')) {
+      throw new Error('forgeIds should exclude Magic for an action project, saw: ' + forgeIdsAction.join(', '));
+    }
+    const railTitles = [...document.querySelectorAll('.rail-item')].map((b) => b.title);
+    if (railTitles.includes('Magic Forge')) {
+      throw new Error('the rendered rail offered a Magic Forge button for an action project: ' + railTitles.join(', '));
+    }
+    step('magic forge hidden for an action project', 'absent from forgeIds and from the rendered rail');
+  }
+
   window.__app.goTo('sprite');
   await wait(350);
   const spriteStage = document.querySelector('#stage');
@@ -4136,6 +4168,351 @@ const scenario = (dir, sampleDir, sampleRpgDir) => `
   if (!sampleRpgAgain.ok) throw new Error('re-open sample-rpg: ' + sampleRpgAgain.error);
   window.__app.store.open(sampleRpgAgain.value.dir, sampleRpgAgain.value.project);
   await wait(200);
+
+  // --- Magic Forge (item 13, phase 3) -------------------------------------
+  // Everything below runs against this fresh sample-rpg open and mutates it
+  // (spells, party, an actor's battle.spellId, undo history) -- a further
+  // fresh re-open at the end of this section restores the pristine project
+  // the rest of this script (the build below) depends on, the same pattern
+  // this file already uses a few lines up for the overflow-meter probe.
+
+  // §11.3 bullet 1 (design-magic.md), the RPG positive case: the identical
+  // forgeIds loop the action project ran near the top of this script, reused
+  // rather than duplicated, now that an RPG project is open -- the only
+  // point in this whole script a Magic Forge mount is possible to observe at
+  // all. Wrong implementation this catches: a forgeIds getter that filters
+  // correctly but a renderRail() that does not (or the reverse) would still
+  // pass this loop, since it drives goTo() directly rather than the rendered
+  // rail -- the rail-gating negative case earlier in this script, and the
+  // cross-type redirect below, are what catch that half.
+  const forgeIdsRpg = await visitEveryForge('all forges mount (RPG)');
+  if (!forgeIdsRpg.includes('magic')) {
+    throw new Error('forgeIds should include magic for an RPG project, saw: ' + forgeIdsRpg.join(', '));
+  }
+  step('magic forge available for an RPG project', 'present in forgeIds and mounted during the sweep above');
+
+  const rpgStore = window.__app.store;
+
+  // The phase-1 reproduction fixture, verbatim from
+  // test/unit/project.test.js's own first renumberSpellDeletion test and the
+  // design's own §2: Fire/Ice/Bolt, a member who learned Ice at level 3 and
+  // Bolt at level 5, and a monster that casts Bolt. Deleting Fire (named by
+  // neither reference) must not touch either.
+  rpgStore.commit('smoke: seed the phase-1 fixture', (project) => {
+    project.spells = [
+      { id: 0, name: 'Fire', mpCost: 2, kind: 'damage', amountMin: 8, amountMax: 8, element: 'none', scope: 'one' },
+      { id: 1, name: 'Ice', mpCost: 2, kind: 'damage', amountMin: 8, amountMax: 8, element: 'none', scope: 'one' },
+      { id: 2, name: 'Bolt', mpCost: 2, kind: 'damage', amountMin: 8, amountMax: 8, element: 'none', scope: 'one' }
+    ];
+    project.party[0].spells = [
+      { spellId: 1, level: 3 }, // Ice
+      { spellId: 2, level: 5 } // Bolt
+    ];
+    project.sprites.actors[0].battle = { ...project.sprites.actors[0].battle, spellId: 2 }; // casts Bolt
+  });
+  await wait(150);
+
+  window.__app.goTo('magic');
+  await wait(200);
+
+  // Test 1: the modal-bug reproduction, against the real handler. This is
+  // the test the previous round's docs wrongly said already existed --
+  // test/unit/project.test.js's own fixture only ever drove a *modelled*
+  // closure of the old bug, never the real renderer handler
+  // (renderer/forges/magic/magic.js's Delete button today; the old
+  // renderer/forges/sprite/battle.js's editSpells before this phase).
+  {
+    const findSpellSelect = (name) =>
+      [...document.querySelectorAll('#stage select')].find((s) => [...s.options].some((o) => o.textContent === name));
+    const fireSelect = findSpellSelect('Fire');
+    if (!fireSelect) throw new Error('Magic Forge has no spell list select with a Fire option');
+    fireSelect.value = String([...fireSelect.options].findIndex((o) => o.textContent === 'Fire'));
+    fireSelect.dispatchEvent(new Event('change', { bubbles: true }));
+    await wait(150);
+
+    const deleteFireButton = [...document.querySelectorAll('#stage button.btn.btn-sm')].find((b) => b.title === 'Delete');
+    if (!deleteFireButton) throw new Error('Magic Forge has no Delete button');
+    deleteFireButton.click();
+    await until('the Fire delete confirmation', () => document.querySelector('#modalHost p'));
+    const fireConfirmText = document.querySelector('#modalHost p').textContent;
+    if (fireConfirmText.indexOf('"Fire"') === -1) throw new Error('the delete confirmation did not name Fire: ' + fireConfirmText);
+    const confirmDeleteFire = [...document.querySelectorAll('#modalHost button')].find((b) => b.textContent.trim() === 'Delete');
+    if (!confirmDeleteFire) throw new Error('the Fire delete confirmation has no Delete button');
+    confirmDeleteFire.click();
+    await until('the Fire confirmation to close', () => document.querySelector('#modalHost').hidden);
+    await wait(150);
+
+    // Wrong implementation this catches: the old Save filter -- filter
+    // member.spells down to ids that still exist post-renumber *without
+    // shifting the survivors' own spellId values* -- would leave Ice's
+    // entry pointing at a spellId that now names Bolt (its level 3 landing
+    // on the wrong spell) and drop Bolt's own learned entry entirely, and
+    // never touched actor.battle.spellId at all.
+    const spellsAfterFire = rpgStore.project.spells;
+    // A no-op Delete handler leaves Ice@3, Bolt@5 and the monster on Bolt and
+    // would still pass every assertion below this one -- these three prove
+    // Fire is actually gone, not merely that the two survivors still resolve
+    // correctly regardless of whether a deletion happened at all.
+    if (spellsAfterFire.some((s) => s.name === 'Fire')) {
+      throw new Error('Fire should have been deleted, but is still present: ' + JSON.stringify(spellsAfterFire.map((s) => s.name)));
+    }
+    const namesAfterFire = spellsAfterFire.map((s) => s.name);
+    if (namesAfterFire.length !== 2 || namesAfterFire[0] !== 'Ice' || namesAfterFire[1] !== 'Bolt') {
+      throw new Error('expected the catalog to be exactly ["Ice","Bolt"] in that order, saw: ' + JSON.stringify(namesAfterFire));
+    }
+    if (spellsAfterFire[0].id !== 0 || spellsAfterFire[1].id !== 1) {
+      throw new Error('expected Ice/Bolt to be restamped to ids 0/1, saw: ' + JSON.stringify(spellsAfterFire.map((s) => s.id)));
+    }
+    const learnedIce = rpgStore.project.party[0].spells.find((entry) => spellsAfterFire[entry.spellId]?.name === 'Ice');
+    const learnedBolt = rpgStore.project.party[0].spells.find((entry) => spellsAfterFire[entry.spellId]?.name === 'Bolt');
+    if (!learnedIce || learnedIce.level !== 3) throw new Error('Ice should still be learned at level 3, saw: ' + JSON.stringify(learnedIce));
+    if (!learnedBolt || learnedBolt.level !== 5) throw new Error('Bolt should still be learned at level 5, saw: ' + JSON.stringify(learnedBolt));
+    const monsterSpellId = rpgStore.project.sprites.actors[0].battle.spellId;
+    if (spellsAfterFire[monsterSpellId]?.name !== 'Bolt') {
+      throw new Error('the monster should now name Bolt at its shifted id, saw spellId ' + monsterSpellId);
+    }
+    step('Magic Forge delete reproduces and fixes the phase-1 bug', 'Ice@3 and Bolt@5 survive by name, the monster now names Bolt');
+  }
+
+  // Test 2: the abort path (E4's case) -- items.js's own delete-race shape,
+  // one id space over. This is why the handler captures the spell object,
+  // not an index: the confirmation must resolve against the exact object it
+  // named, even if the project changed underneath it while it was open.
+  {
+    rpgStore.commit('smoke: add a throwaway spell', (project) => {
+      project.spells.push({
+        id: project.spells.length,
+        name: 'Throwaway',
+        mpCost: 1,
+        kind: 'damage',
+        amountMin: 1,
+        amountMax: 1,
+        element: 'none',
+        scope: 'one'
+      });
+    });
+    await wait(150);
+
+    const findSpellSelect2 = (name) =>
+      [...document.querySelectorAll('#stage select')].find((s) => [...s.options].some((o) => o.textContent === name));
+    const throwawaySelect = findSpellSelect2('Throwaway');
+    if (!throwawaySelect) throw new Error('Magic Forge has no spell list select with a Throwaway option');
+    throwawaySelect.value = String([...throwawaySelect.options].findIndex((o) => o.textContent === 'Throwaway'));
+    throwawaySelect.dispatchEvent(new Event('change', { bubbles: true }));
+    await wait(150);
+
+    const deleteThrowawayButton = [...document.querySelectorAll('#stage button.btn.btn-sm')].find((b) => b.title === 'Delete');
+    if (!deleteThrowawayButton) throw new Error('Magic Forge has no Delete button (abort test)');
+    deleteThrowawayButton.click();
+    await until('the abort-path confirmation', () => document.querySelector('#modalHost p'));
+    const abortConfirmText = document.querySelector('#modalHost p').textContent;
+    if (abortConfirmText.indexOf('"Throwaway"') === -1) throw new Error('the confirmation did not name Throwaway: ' + abortConfirmText);
+
+    // The race itself: while the confirmation for Throwaway is open, undo
+    // the Add. store.undo() restores a structuredClone snapshot -- entirely
+    // new objects -- so the exact spell this dialog captured before the
+    // await no longer exists anywhere in the live project once this runs.
+    const spellCountBeforeUndo = rpgStore.project.spells.length;
+    rpgStore.undo();
+    await wait(150);
+    if (rpgStore.project.spells.length !== spellCountBeforeUndo - 1) {
+      throw new Error('undo should have removed exactly the throwaway spell');
+    }
+
+    const confirmDeleteThrowaway = [...document.querySelectorAll('#modalHost button')].find((b) => b.textContent.trim() === 'Delete');
+    if (!confirmDeleteThrowaway) throw new Error('the abort-path confirmation has no Delete button');
+    confirmDeleteThrowaway.click();
+    await until('the abort-path confirmation to close', () => document.querySelector('#modalHost').hidden);
+    await wait(150);
+
+    // Wrong implementation this catches: a delete handler that re-reads
+    // state.selected (an index) after the await instead of re-resolving the
+    // captured object -- would delete whatever now sits at that stale
+    // index (Ice or Bolt), not nothing.
+    const namesAfterAbort = rpgStore.project.spells.map((s) => s.name);
+    if (namesAfterAbort.indexOf('Throwaway') !== -1) {
+      throw new Error('Throwaway should already be gone (undone), but is still present: ' + JSON.stringify(namesAfterAbort));
+    }
+    if (namesAfterAbort.indexOf('Ice') === -1 || namesAfterAbort.indexOf('Bolt') === -1) {
+      throw new Error('the wrong spell was deleted -- Ice and Bolt should have survived, spells are now: ' + JSON.stringify(namesAfterAbort));
+    }
+    const abortToastText = [...document.querySelectorAll('#toastHost .toast')].map((n) => n.textContent).join(' | ');
+    if (abortToastText.indexOf('changed') === -1 || abortToastText.toLowerCase().indexOf('try again') === -1) {
+      throw new Error('expected a toast explaining the project changed and asking to try again, saw: ' + abortToastText);
+    }
+    step('Magic Forge delete race', 'undoing the add mid-confirmation deleted nothing else, Ice and Bolt survived, toast shown');
+  }
+
+  // Test 3: per-field commits are undo entries -- the modal's Save/Cancel
+  // semantics are really gone. Wrong implementation this catches: per-field
+  // commits that batch through a debounce and never actually land -- the
+  // input's own DOM value would still show the edit (a visual check would
+  // pass), but store.project would not have it yet, which is what this
+  // reads instead.
+  {
+    const findFieldInput = (labelText) => {
+      const fieldDiv = [...document.querySelectorAll('#stage .field')].find(
+        (f) => f.querySelector('.field-label')?.textContent === labelText
+      );
+      return fieldDiv ? fieldDiv.querySelector('input') : null;
+    };
+    const iceIndex = rpgStore.project.spells.findIndex((s) => s.name === 'Ice');
+    if (iceIndex === -1) throw new Error('Ice should still be present for the per-field-commit test');
+    const findSpellSelect3 = (name) =>
+      [...document.querySelectorAll('#stage select')].find((s) => [...s.options].some((o) => o.textContent === name));
+    const iceSelect = findSpellSelect3('Ice');
+    if (!iceSelect) throw new Error('Magic Forge has no spell list select with an Ice option');
+    iceSelect.value = String([...iceSelect.options].findIndex((o) => o.textContent === 'Ice'));
+    iceSelect.dispatchEvent(new Event('change', { bubbles: true }));
+    await wait(150);
+
+    const mpCostInput = findFieldInput('MP cost');
+    if (!mpCostInput) throw new Error('Magic Forge has no MP cost field');
+    const originalMpCost = Number(mpCostInput.value);
+    const newMpCost = originalMpCost === 42 ? 43 : 42;
+    mpCostInput.value = String(newMpCost);
+    mpCostInput.dispatchEvent(new Event('change', { bubbles: true }));
+    await wait(150);
+    if (rpgStore.project.spells[iceIndex].mpCost !== newMpCost) {
+      throw new Error('changing MP cost on the page did not commit to the store: expected ' + newMpCost + ', saw ' + rpgStore.project.spells[iceIndex].mpCost);
+    }
+    if (!rpgStore.undo()) throw new Error('undo returned false for the MP cost field commit');
+    await wait(150);
+    if (rpgStore.project.spells[iceIndex].mpCost !== originalMpCost) {
+      throw new Error('undo did not restore the original MP cost: expected ' + originalMpCost + ', saw ' + rpgStore.project.spells[iceIndex].mpCost);
+    }
+    step('Magic Forge per-field commits are undo entries', 'MP cost committed on change, undo restored it');
+  }
+
+  // Test 4: a backwards range swaps rather than reaching the store broken.
+  // The setup range [10, 50] already satisfies amountMin <= amountMax on its
+  // own, so asserting only that inequality after the edit would still pass a
+  // missing/no-op onchange (the committed pair would just be the untouched
+  // setup value, [10, 50], which also satisfies min <= max) -- asserting the
+  // exact committed pair is what actually requires the edit to have landed.
+  // Wrong implementations this catches: (1) a missing/no-op onchange leaves
+  // [10, 50], unchanged from the setup commit; (2) clamping the edited field
+  // to the other bound instead of swapping the pair (the alternative design
+  // this Forge's own report names and did not choose) would yield [50, 50]
+  // -- min clamped down to meet max, not swapped past it -- never [200, 50],
+  // which was this test's own comment's wrong claim before this fix: nothing
+  // in either the chosen swap design or this clamp alternative ever writes
+  // amountMin above amountMax to the store in the first place, so a bare
+  // min <= max check could not have told (1), (2) or the real, correct swap
+  // apart from each other.
+  {
+    const iceIndex2 = rpgStore.project.spells.findIndex((s) => s.name === 'Ice');
+    if (iceIndex2 === -1) throw new Error('Ice should still be present for the backwards-range test');
+    rpgStore.commit('smoke: set up a backwards-range fixture', (project) => {
+      project.spells[iceIndex2].amountMin = 10;
+      project.spells[iceIndex2].amountMax = 50;
+    });
+    await wait(150);
+
+    const minInput = document.querySelector('#stage input[title="Minimum"]');
+    if (!minInput) throw new Error('Magic Forge has no Minimum amount field');
+    minInput.value = '200';
+    minInput.dispatchEvent(new Event('change', { bubbles: true }));
+    await wait(150);
+
+    const afterBackwards = rpgStore.project.spells[iceIndex2];
+    if (afterBackwards.amountMin !== 50 || afterBackwards.amountMax !== 200) {
+      throw new Error(
+        'expected the swapped pair [50, 200], saw amountMin=' + afterBackwards.amountMin + ' amountMax=' + afterBackwards.amountMax
+      );
+    }
+    step('Magic Forge backwards range swap', 'amountMin=' + afterBackwards.amountMin + ', amountMax=' + afterBackwards.amountMax + ' -- the exact swapped pair landed');
+  }
+
+  // §11.3 bullet 3: cross-type open with Magic active. Magic is already the
+  // mounted Forge from the tests above; opening the action sample here (the
+  // same project.open + store.open pattern used throughout this script,
+  // reusing the sample already opened near the top) must land the app on
+  // Tile rather than throw or mount Magic against a project with no
+  // spells/party in the shape it expects. Wrong implementation this catches:
+  // a selectForge that filters the rail but does not guard itself -- would
+  // pass the rail-gating negative case earlier (nothing ever offered a
+  // click into Magic) while still crashing or mounting Magic here, since
+  // this reaches selectForge('magic') by the stale activeForgeId path the
+  // rail itself never sees.
+  {
+    const activeBeforeCrossType = document.querySelector('.rail-item.active')?.title;
+    if (activeBeforeCrossType !== 'Magic Forge') {
+      throw new Error('expected Magic Forge to be the active rail item going into the cross-type test, saw ' + activeBeforeCrossType);
+    }
+    const sampleForCrossType = await window.forge.project.open(${JSON.stringify(sampleDir)});
+    if (!sampleForCrossType.ok) throw new Error('open sample for the cross-type test: ' + sampleForCrossType.error);
+    window.__app.store.open(sampleForCrossType.value.dir, sampleForCrossType.value.project);
+    await wait(300);
+    const activeAfterCrossType = document.querySelector('.rail-item.active')?.title;
+    if (activeAfterCrossType !== 'Tile Forge') {
+      throw new Error('expected the app to land on Tile Forge after a cross-type open with Magic active, saw ' + activeAfterCrossType);
+    }
+    step('Magic active, cross-type open lands on Tile Forge', 'no throw, rail shows Tile Forge active');
+  }
+
+  // selectForge stale-load race (fix round 1, finding 1): store.subscribe's
+  // own 'open' handler calls selectForge(activeForgeId) without awaiting it,
+  // so a caller free to call goTo() again before that first call's own
+  // await on entry.load() has settled can race it -- both calls pass their own
+  // mounted?.destroy()/clear(dom.stage) prologue and then await a dynamic
+  // import, and without a per-call selection token the *older* request can
+  // still resolve last and mount, appending its own module's root on top of
+  // whatever the newer, correct selection already mounted (module.mount()
+  // itself never clears dom.stage -- only selectForge's own prologue does),
+  // leaving the rail naming one Forge while #stage shows two.
+  {
+    const rpgForRace = await window.forge.project.open(${JSON.stringify(sampleRpgDir)});
+    if (!rpgForRace.ok) throw new Error('open sample-rpg for the selectForge race test: ' + rpgForRace.error);
+    // The race itself: store.open() fires store.subscribe's own 'open'
+    // handler synchronously, which calls selectForge(activeForgeId) --
+    // whatever Forge was active before this block -- without awaiting it, so
+    // this next line, with nothing awaited in between, starts a second,
+    // later selectForge call while the first is still mid-flight on its own
+    // dynamic import.
+    window.__app.store.open(rpgForRace.value.dir, rpgForRace.value.project);
+    await window.__app.goTo('magic');
+
+    const assertMagicWonTheRace = (when) => {
+      const activeTitle = document.querySelector('.rail-item.active')?.title;
+      if (activeTitle !== 'Magic Forge') {
+        throw new Error('selectForge race, ' + when + ': expected Magic Forge active, saw ' + activeTitle);
+      }
+      const stageForges = document.querySelectorAll('#stage .forge');
+      if (stageForges.length !== 1) {
+        throw new Error(
+          'selectForge race, ' + when + ': expected exactly one .forge element in #stage, saw ' + stageForges.length
+        );
+      }
+      const panelHead = stageForges[0].querySelector('.panel-head')?.textContent;
+      if (panelHead !== 'Magic') {
+        throw new Error(
+          'selectForge race, ' + when + ': expected the mounted .forge to be Magic, saw panel-head "' + panelHead + '"'
+        );
+      }
+    };
+    // Wrong implementation this catches: no selection token at all, or one
+    // that is not checked after the await -- the older, unawaited
+    // selectForge(activeForgeId) call can resolve its own dynamic import
+    // after this one and mount over or beside it. Checked twice: once right
+    // after awaiting the newer call (the older one may still be pending),
+    // and again after a real wait, so a slow-resolving older import that
+    // lands well after this line still cannot win.
+    assertMagicWonTheRace('immediately after awaiting goTo(magic)');
+    await wait(600);
+    assertMagicWonTheRace('after a further 600ms wait');
+    step('selectForge stale-load race', 'a same-tick goTo(magic), racing store.open’s own unawaited selectForge(activeForgeId), still lands on exactly one Magic Forge, immediately and after a delay');
+  }
+
+  // Back to the pristine sample-rpg project before anything else in this
+  // script depends on it -- the block above mutated spells, party, an
+  // actor's battle.spellId and undo history, and just swapped the open
+  // project to the action sample entirely for the cross-type test.
+  const sampleRpgOnceMore = await window.forge.project.open(${JSON.stringify(sampleRpgDir)});
+  if (!sampleRpgOnceMore.ok) throw new Error('re-open sample-rpg after the Magic Forge tests: ' + sampleRpgOnceMore.error);
+  window.__app.store.open(sampleRpgOnceMore.value.dir, sampleRpgOnceMore.value.project);
+  await wait(200);
+
   window.__app.goTo('build');
   await wait(300);
 

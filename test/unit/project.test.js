@@ -935,9 +935,13 @@ test('a map’s wandering-encounter table is renumbered when an actor is deleted
   );
 });
 
-// --- renumberSpellDeletion (Magic Forge, phase 1) — the primitive only; the
-// Spells… modal is not wired to it yet (phase 3), so these tests call the
-// export directly, the same way the item/actor siblings' tests do above.
+// --- renumberSpellDeletion (Magic Forge, phase 1) — the primitive only. The
+// old Spells… modal these tests originally targeted is gone as of phase 3
+// (renderer/forges/magic/magic.js); the Magic Forge's own delete handler is
+// the primitive's real caller now, and that handler is renderer code
+// (confirmModal, store, toast) a node:test process cannot drive — main/smoke.js
+// is what exercises it for real. These tests call the export directly, the
+// same way the item/actor siblings' tests do above.
 
 test('deleting a spell renumbers a party member’s learned entries and a monster’s cast spell, without attaching a level to the wrong spell', () => {
   const project = createProject('Quest', 'rpg');

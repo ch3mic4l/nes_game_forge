@@ -29,6 +29,18 @@ const FORGES = [
     load: () => import('./forges/items/items.js')
   },
   {
+    id: 'magic',
+    label: 'Magic',
+    glyph: '✨',
+    title: 'Magic Forge',
+    load: () => import('./forges/magic/magic.js'),
+    // Spells and the party that casts them mean nothing outside a turn-based
+    // RPG (BATTLE_ENABLED is off and no engine code path ever reads either
+    // in an action project) -- the one entry in this whole registry that is
+    // conditional. See isForgeAvailable below, its own three call sites.
+    gameTypes: ['rpg']
+  },
+  {
     id: 'map',
     label: 'Map',
     glyph: '🗺',
@@ -74,6 +86,16 @@ const FORGES = [
   }
 ];
 
+/**
+ * Whether `entry` can be opened for `project` at all. `entry.gameTypes`,
+ * when present, is the total list of game types the Forge means anything
+ * for -- the Magic Forge's own `['rpg']` today, and nothing else in `FORGES`
+ * carries the field, so this is `true` for every other entry unchanged: an
+ * additive shape on the registry, not a rewrite of it. Three call sites
+ * below all read through this one predicate rather than `FORGES` directly.
+ */
+const isForgeAvailable = (entry, project) => !entry.gameTypes || entry.gameTypes.includes(project?.project?.gameType);
+
 const dom = {
   rail: document.querySelector('#rail'),
   stage: document.querySelector('#stage'),
@@ -88,6 +110,18 @@ const dom = {
 
 let activeForgeId = 'tile';
 let mounted = null;
+// A monotonically increasing token, one per selectForge call. store.subscribe's
+// own 'open' handler calls selectForge(activeForgeId) without awaiting it, and
+// a caller (main/smoke.js's cross-type test, or anything else) is free to call
+// goTo() again before that first call's own `await entry.load()` has settled --
+// both calls pass the mounted?.destroy()/clear(dom.stage) prologue and then
+// race on their own dynamic import, so without this the *older* request could
+// still win, mounting on top of (or instead of) the newer one, while the rail
+// already shows the newer Forge active. Each call takes the next token at
+// entry; only the call still holding the current token after its own await is
+// allowed to touch dom.stage/mounted/status -- an older, since-superseded call
+// returns without doing anything once it notices.
+let selectionToken = 0;
 
 // The selected test scenario (ROADMAP item 3's "Reload the ROM" bullet) —
 // session state, not project state: it lives here, at the same altitude as
@@ -115,16 +149,20 @@ export const app = {
   showModal,
   goTo: (id) => selectForge(id),
   /**
-   * Every real Forge id, in rail order — the single source `main/smoke.js`'s
-   * "visit every Forge" step reads instead of keeping its own hand-written
-   * list. `FORGES` itself stays module-private (its `load` closures are not
-   * something a test needs, or should be able to call directly), so this is
-   * the ids alone, in the same shape a second hardcoded array would have
-   * been guessing at. Filters out `{ separator: true }` rail dividers, which
-   * carry no `id` and mount nothing.
+   * Every Forge id this project can open, in rail order — the single source
+   * `main/smoke.js`'s "visit every Forge" step reads instead of keeping its
+   * own hand-written list. `FORGES` itself stays module-private (its `load`
+   * closures are not something a test needs, or should be able to call
+   * directly), so this is the ids alone, in the same shape a second
+   * hardcoded array would have been guessing at. Filters out `{ separator:
+   * true }` rail dividers, which carry no `id` and mount nothing, and — since
+   * the Magic Forge (item 13, phase 3) — anything `isForgeAvailable` says
+   * `store.project` cannot open right now; the getter already re-evaluates
+   * against live `store` state on every read, so this needed no signature
+   * change for `main/smoke.js`'s existing call site to keep working.
    */
   get forgeIds() {
-    return FORGES.filter((entry) => !entry.separator).map((entry) => entry.id);
+    return FORGES.filter((entry) => !entry.separator && isForgeAvailable(entry, store.project)).map((entry) => entry.id);
   },
   /**
    * A Forge holding an edit it has not committed to the store yet says so here.
@@ -174,6 +212,7 @@ function renderRail() {
       dom.rail.append(el('div.rail-sep'));
       continue;
     }
+    if (!isForgeAvailable(entry, store.project)) continue;
     const item = el(
       'button.rail-item',
       {
@@ -190,20 +229,35 @@ function renderRail() {
 
 async function selectForge(id) {
   if (!store.isOpen) return;
-  const entry = FORGES.find((forge) => forge.id === id);
+  let entry = FORGES.find((forge) => forge.id === id);
   if (!entry) return;
+  if (!isForgeAvailable(entry, store.project)) {
+    // activeForgeId is a bare module-level variable, never reset on project
+    // open/close, and store.subscribe's own 'open' handler replays it
+    // (below) with whatever the *previous* project left it at -- so "Magic
+    // active -> close -> open an action project" reaches this function with
+    // 'magic' by a path the rail itself never offered a click into (the
+    // rail never rendered that button for an unavailable entry to begin
+    // with). 'tile' is unconditionally available, the same id
+    // activeForgeId's own module-level default already starts at.
+    id = 'tile';
+    entry = FORGES.find((forge) => forge.id === id);
+  }
   activeForgeId = id;
   renderRail();
 
+  const token = ++selectionToken;
   mounted?.destroy?.();
   mounted = null;
   clear(dom.stage);
 
   try {
     const module = await entry.load();
+    if (token !== selectionToken) return; // superseded by a later selectForge call while this awaited
     mounted = module.mount(dom.stage, app) ?? null;
     app.setStatus(entry.title, '');
   } catch (error) {
+    if (token !== selectionToken) return;
     console.error(error);
     fill(dom.stage,
       el(

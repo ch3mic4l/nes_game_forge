@@ -549,7 +549,10 @@ test('the refusal names a change that actually closes the gap', async () => {
     (entry) => entry.severity === 'error' && /battle system needs/.test(entry.message)
   );
   assert.ok(problem, 'an over-capacity project should be refused');
-  assert.equal(problem.where, 'Sprite Forge');
+  // 'Build & Play', not 'Sprite Forge' -- Magic Forge phase 3, design §9: the
+  // region is fed by three Forges plus the mapper choice, so no single one
+  // owns this overflow.
+  assert.equal(problem.where, 'Build & Play');
   // This many extra actors also overflows kernel-lo on every other board, so
   // switchableMappers offers none — and with no candidate to have judged, the
   // message must say NOTHING about boards. "Changing mapper does not help" is
@@ -1253,7 +1256,10 @@ test('an override of the battle sources withdraws the claim rather than guessing
   const tablesOver = grow(structuredClone(overrideOver), 400);
   const problem = refusal(tablesOver);
   assert.ok(problem, 'tables that alone exceed the region must still be refused, override or not');
-  assert.equal(problem.where, 'Sprite Forge');
+  // 'Build & Play', not 'Sprite Forge' -- Magic Forge phase 3, design §9: the
+  // region is fed by three Forges plus the mapper choice, so no single one
+  // owns this overflow.
+  assert.equal(problem.where, 'Build & Play');
   assert.match(problem.message, /tables alone need/);
   assert.match(problem.message, /before this project’s own battle code is counted at all/);
   assert.match(problem.message, /is the least that could fit/);

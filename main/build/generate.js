@@ -1693,7 +1693,14 @@ export function checkCapacity(project) {
     if (regionBytes > regionCeiling) {
       problems.push({
         severity: 'error',
-        where: 'Sprite Forge',
+        // The region is fed by three Forges (Sprite's actors/party, Magic's
+        // spells, Items) plus the mapper choice itself (a Build-panel
+        // decision, reconcileCartridge) that decides its ceiling -- no single
+        // content Forge owns this overflow the way each of the other
+        // `where:` strings in this file names a Forge that owns the entirety
+        // of what it reports on. 'Build & Play' is the one existing Forge
+        // title (renderer/app.js) that already shows this exact number.
+        where: 'Build & Play',
         message:
           (overridden
             ? `The battle system’s tables alone need ${regionBytes} bytes but its program bank holds ` +

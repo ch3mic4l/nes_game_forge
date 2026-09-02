@@ -931,7 +931,7 @@ export function mount(container, app) {
   }
 
   function renderPartyPane() {
-    fill(partyHost, partyPanel(() => render()));
+    fill(partyHost, partyPanel(() => render(), app));
     fill(listHost,
       el('div.panel-head', { style: { paddingLeft: '0' } }, 'Party'),
       el(

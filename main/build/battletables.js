@@ -355,7 +355,7 @@ export function checkBattleTables(project) {
   if ((project.spells ?? []).length > 8) {
     problems.push({
       severity: 'warning',
-      where: 'Sprite Forge',
+      where: 'Magic Forge',
       message:
         `This project has ${project.spells.length} spells, and a party member can only learn the first 8. ` +
         'The rest can still be cast by monsters.'
@@ -830,7 +830,7 @@ export function battleShortfallAdvice(project, mapper, deficit, { alternatives =
     {
       units: (project.spells ?? []).length,
       reduce: (draft, k) => draft.spells.splice(draft.spells.length - k, k),
-      describe: (k) => `removing ${k === 1 ? 'one spell' : `${k} spells`} in the Sprite Forge`
+      describe: (k) => `removing ${k === 1 ? 'one spell' : `${k} spells`} in the Magic Forge`
     },
     {
       // At least one member has to remain, and checkBattleTables already

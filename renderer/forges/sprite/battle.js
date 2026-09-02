@@ -5,17 +5,8 @@
 // codebase does not do.
 
 import { store } from '../../store.js';
-import { el, fill, field, showModal } from '../../ui.js';
-import {
-  ELEMENTS,
-  RPG_LIMITS,
-  SPELL_KINDS,
-  SPELL_SCOPES,
-  createPartyMember,
-  createSpell,
-  isMonsterActor,
-  itemPickerOptions
-} from '../../../shared/project.js';
+import { el, field } from '../../ui.js';
+import { ELEMENTS, RPG_LIMITS, createPartyMember, isMonsterActor, itemPickerOptions } from '../../../shared/project.js';
 import { FONT_BASE } from '../../../shared/font.js';
 import { drawSheet, sheetIndexFromEvent, SHEET_COLS } from '../../widgets/sheet.js';
 
@@ -192,7 +183,7 @@ function artPicker(battle, set) {
 }
 
 /** The party tab: who fights, how they grow, and what they learn. */
-export function partyPanel(rerender) {
+export function partyPanel(rerender, app) {
   const { party, spells } = store.project;
 
   const setMember = (index, key, value) => {
@@ -357,117 +348,8 @@ export function partyPanel(rerender) {
         },
         '+ Member'
       ),
-      el('button.btn.btn-sm', { onclick: () => editSpells(rerender) }, 'Spells…')
+      el('button.btn.btn-sm', { onclick: () => app.goTo('magic') }, 'Manage spells in the Magic Forge →')
     )
   );
 }
 
-/** The spell list, which the party learns from and monsters are hurt by. */
-function editSpells(rerender) {
-  const draft = structuredClone(store.project.spells);
-  const body = el('div', { style: { minWidth: '560px' } });
-
-  const draw = () => {
-    fill(body,
-      el(
-        'p.hint',
-        { style: { marginBottom: '12px' } },
-        'A spell against something weak to its element does half again as much; against something that ' +
-          'resists it, half. The first eight are the only ones a party member can learn — the engine ' +
-          'keeps what they know in one bitmask byte.'
-      ),
-      draft.map((spell, index) =>
-        row(
-          el('input', {
-            type: 'text',
-            value: spell.name,
-            maxlength: NAME_LIMIT,
-            style: { flex: '1' },
-            onchange: (event) => {
-              spell.name = event.target.value.slice(0, NAME_LIMIT);
-              draw();
-            }
-          }),
-          select(SPELL_KINDS, spell.kind, (value) => {
-            spell.kind = value;
-            draw();
-          }),
-          // Poison is a status, not a number: the victim loses a fixed 2 HP
-          // after each of its turns, so `amountMin`/`amountMax` would be
-          // fields the ROM ignores.
-          spell.kind === 'poison'
-            ? el('span.hint', { style: { alignSelf: 'center' }, title: 'Poison costs a fixed 2 HP per turn' }, '2/turn')
-            : el(
-                'span.field-row',
-                { style: { gap: '4px' } },
-                number(spell.amountMin, 1, 255, (value) => (spell.amountMin = value), 'Minimum'),
-                el('span.hint', {}, '–'),
-                number(spell.amountMax, 1, 255, (value) => (spell.amountMax = value), 'Maximum')
-              ),
-          number(spell.mpCost, 0, 255, (value) => (spell.mpCost = value), 'MP cost'),
-          select(ELEMENTS, spell.element, (value) => (spell.element = value)),
-          select(SPELL_SCOPES, spell.scope, (value) => (spell.scope = value)),
-          el(
-            'button.btn.btn-sm',
-            {
-              onclick: () => {
-                draft.splice(index, 1);
-                draw();
-              }
-            },
-            '✕'
-          )
-        )
-      ),
-      el(
-        'button.btn.btn-sm',
-        {
-          disabled: draft.length >= RPG_LIMITS.spells,
-          onclick: () => {
-            draft.push(createSpell(draft.length));
-            draw();
-          }
-        },
-        '+ Spell'
-      )
-    );
-  };
-  draw();
-
-  return showModal({
-    title: 'Spells',
-    body,
-    width: 620,
-    actions: [
-      { label: 'Cancel', value: false },
-      {
-        label: 'Save',
-        primary: true,
-        onClick: () => {
-          store.commit('Edit spells', (project) => {
-            project.spells = draft.map((spell, id) => {
-              // Save reaches the build pipeline directly, without going
-              // through normalizeSpell (store.commit never calls
-              // normalizeProject — see CLAUDE.md's own reconcileCartridge
-              // passage) — so a range left backwards by hand-editing the two
-              // fields above would otherwise compile straight into a
-              // negative spell_amount_n. Swap here, the same rule
-              // normalizeSpell applies on load, so a live edit-and-build
-              // cycle behaves identically to a save-reload-build one.
-              const amountMin = Math.min(spell.amountMin, spell.amountMax);
-              const amountMax = Math.max(spell.amountMin, spell.amountMax);
-              return { ...spell, id, amountMin, amountMax };
-            });
-            // A member cannot keep learning a spell that no longer exists.
-            const ids = new Set(project.spells.map((spell) => spell.id));
-            for (const member of project.party) {
-              member.spells = member.spells.filter((entry) => ids.has(entry.spellId));
-            }
-          });
-          rerender();
-          return true;
-        }
-      }
-    ]
-  });
-}

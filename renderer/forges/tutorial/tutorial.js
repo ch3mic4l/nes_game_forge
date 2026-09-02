@@ -370,7 +370,7 @@ const TOPICS = [
         ['Where', 'What you set'],
         [
           ['Sprite ▸ Party', 'Up to four members: stats, growth per level, spells learned and when'],
-          ['Sprite ▸ Party ▸ Spells…', 'The spell list — cost, damage or healing, element, one target or all'],
+          ['Magic Forge', 'The spell list — cost, a min/max damage or heal range, element, one target or all'],
           ['Sprite ▸ Actors ▸ In battle', 'A monster’s stats, experience, gold, weakness, resistance and drop'],
           ['Map ▸ Battles here', 'The battle backdrop, encounter rate, and which monsters appear'],
           ['Build ▸ RPG progression', 'The experience curve, level cap, and the monster-art tileset']
