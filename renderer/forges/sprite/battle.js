@@ -393,10 +393,17 @@ function editSpells(rerender) {
             draw();
           }),
           // Poison is a status, not a number: the victim loses a fixed 2 HP
-          // after each of its turns, so `amount` would be a field the ROM ignores.
+          // after each of its turns, so `amountMin`/`amountMax` would be
+          // fields the ROM ignores.
           spell.kind === 'poison'
             ? el('span.hint', { style: { alignSelf: 'center' }, title: 'Poison costs a fixed 2 HP per turn' }, '2/turn')
-            : number(spell.amount, 1, 255, (value) => (spell.amount = value), 'How much'),
+            : el(
+                'span.field-row',
+                { style: { gap: '4px' } },
+                number(spell.amountMin, 1, 255, (value) => (spell.amountMin = value), 'Minimum'),
+                el('span.hint', {}, '–'),
+                number(spell.amountMax, 1, 255, (value) => (spell.amountMax = value), 'Maximum')
+              ),
           number(spell.mpCost, 0, 255, (value) => (spell.mpCost = value), 'MP cost'),
           select(ELEMENTS, spell.element, (value) => (spell.element = value)),
           select(SPELL_SCOPES, spell.scope, (value) => (spell.scope = value)),
@@ -438,7 +445,19 @@ function editSpells(rerender) {
         primary: true,
         onClick: () => {
           store.commit('Edit spells', (project) => {
-            project.spells = draft.map((spell, id) => ({ ...spell, id }));
+            project.spells = draft.map((spell, id) => {
+              // Save reaches the build pipeline directly, without going
+              // through normalizeSpell (store.commit never calls
+              // normalizeProject — see CLAUDE.md's own reconcileCartridge
+              // passage) — so a range left backwards by hand-editing the two
+              // fields above would otherwise compile straight into a
+              // negative spell_amount_n. Swap here, the same rule
+              // normalizeSpell applies on load, so a live edit-and-build
+              // cycle behaves identically to a save-reload-build one.
+              const amountMin = Math.min(spell.amountMin, spell.amountMax);
+              const amountMax = Math.max(spell.amountMin, spell.amountMax);
+              return { ...spell, id, amountMin, amountMax };
+            });
             // A member cannot keep learning a spell that no longer exists.
             const ids = new Set(project.spells.map((spell) => spell.id));
             for (const member of project.party) {

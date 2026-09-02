@@ -954,6 +954,394 @@ test('a heal spell restores HP, cures poison, and costs its MP', {
   assert.equal(nes.cpu.mem[PC_STATUS], 0, 'a heal should cure poison');
 });
 
+// --- spell amount ranges (Magic Forge phase 2, roll_spell_amount/mod8) -----
+//
+// Every seed below was derived offline by hand-simulating engine/rpg.asm's
+// rng_next (asl a; on carry, eor #$71; a zero state substitutes $A5) and
+// engine/battleturn.asm's mod8 (an 8-iteration shift/compare/subtract),
+// never by importing or re-implementing either inside this file -- the point
+// of an emulator-backed fixture is that it exercises the real ROM's actual
+// routines, not a JS model of them. "Nothing advances the LFSR in battle but
+// the rolls themselves" (see the atkover test above), so seeding it
+// immediately before the tap that triggers the one roll under test is
+// deterministic. Casts against `element: 'none'` isolate roll_spell_amount's
+// own output from spell_damage's separate weak/strong multiply, except where
+// a fixture is deliberately testing that interaction (saturation).
+
+test('a flat-range spell (amountMin === amountMax) consumes no RNG at all -- the migrated old flat-amount read, byte-for-byte', {
+  skip: needsSample
+}, () => {
+  const nes = boot();
+  assert.ok(walkIntoEncounter(nes));
+  waitForMenu(nes);
+  nes.cpu.mem[MON_HP] = 255; // headroom above the flat spell's own weak-multiplied damage, so the subtraction below reads the real number rather than a saturated-at-death one
+  const startHp = nes.cpu.mem[MON_HP];
+
+  chooseCommand(nes, BC_MAGIC);
+  tap(nes, A, 6); // Ember, sample-rpg's own flat amountMin === amountMax === 10
+  nes.cpu.mem[RNG] = 0x99; // arbitrary -- the flat branch must never read this
+  tap(nes, A, 20); // confirm the target -- where the (skipped) roll would happen
+
+  // Fire into the slime's own fire weakness: 10 * 1.5 = 15 exactly,
+  // deterministic -- the identical number the pre-migration flat
+  // `spell_amount,x` read always produced.
+  assert.equal(startHp - nes.cpu.mem[MON_HP], 15, 'a flat-range spell should still deal exactly its old flat number');
+  assert.equal(nes.cpu.mem[RNG], 0x99, 'spell_amount_n === 1 must take the no-roll branch and never call rng_next');
+
+  // Wrong implementation this catches: a roll_spell_amount that always jsr's
+  // rng_next once "to be safe" even when n === 1 would still hand back
+  // amountMin here (any result mod 1 is 0), so the damage-number assertion
+  // alone would not catch it -- only pairing it with the untouched-RNG-byte
+  // assertion tells a silent RNG-state shift apart from a merely-correct
+  // number, which is the entire byte-for-byte migration guarantee.
+});
+
+test('a maximal range (1-255) reaches amountMin on a seed whose first draw is 0', {
+  skip: needsSample
+}, async (t) => {
+  const rom = await buildVariant(t, 'maxrange', (project) => {
+    project.maps[0].encounters = { rate: 0, actorIds: [] };
+    project.spells[0].amountMin = 1;
+    project.spells[0].amountMax = 255; // n = 255, limit = floor(255/255)*255 = 255
+    project.spells[0].element = 'none'; // isolate the roll from the weak/strong multiply
+  });
+  const nes = boot(rom);
+  walkTo(nes, 160, 176);
+  walkTo(nes, 176, 176, 200);
+  assert.equal(nes.cpu.mem[GAME_STATE], ST_BATTLE);
+  waitForMenu(nes);
+  nes.cpu.mem[MON_HP] = 255;
+  const startHp = nes.cpu.mem[MON_HP];
+
+  chooseCommand(nes, BC_MAGIC);
+  tap(nes, A, 6);
+  // seed 0xB8: rng_next(0xB8) = 0x01, draw = 0x01 - 1 = 0 < limit(255), accepted
+  // on the first call; mod8(0, 255) = 0; result = amountMin(1) + 0 = 1.
+  nes.cpu.mem[RNG] = 0xb8;
+  tap(nes, A, 20);
+
+  assert.equal(startHp - nes.cpu.mem[MON_HP], 1, 'the maximal-range roll should reach exactly amountMin here, not stay stuck away from it');
+  assert.equal(nes.cpu.mem[RNG], 0x01, 'exactly one rng_next call should have run');
+
+  // Wrong implementation this catches: the pre-round-4 masked-AND construction
+  // this design replaced could never produce amountMin at all on this range
+  // (High 1 finding) -- any seed handed to it would land somewhere in
+  // [amountMin+1, amountMax], so this specific low-end value is exactly what
+  // that defect could never pass.
+});
+
+test('a non-maximal range reaches both of its own endpoints', {
+  skip: needsSample
+}, async (t) => {
+  const rom = await buildVariant(t, 'endpoints', (project) => {
+    project.maps[0].encounters = { rate: 0, actorIds: [] };
+    project.spells[0].amountMin = 10;
+    project.spells[0].amountMax = 20; // n = 11, limit = floor(255/11)*11 = 253
+    project.spells[0].element = 'none';
+  });
+
+  {
+    const nes = boot(rom);
+    walkTo(nes, 160, 176);
+    walkTo(nes, 176, 176, 200);
+    waitForMenu(nes);
+    nes.cpu.mem[MON_HP] = 255;
+    const startHp = nes.cpu.mem[MON_HP];
+    chooseCommand(nes, BC_MAGIC);
+    tap(nes, A, 6);
+    // seed 0x06: rng_next(0x06) = 0x0C, draw = 11 < limit(253); mod8(11, 11) = 0;
+    // result = amountMin(10) + 0 = 10.
+    nes.cpu.mem[RNG] = 0x06;
+    tap(nes, A, 20);
+    assert.equal(startHp - nes.cpu.mem[MON_HP], 10, 'this seed should reach the range’s own minimum exactly');
+  }
+  {
+    const nes = boot(rom);
+    walkTo(nes, 160, 176);
+    walkTo(nes, 176, 176, 200);
+    waitForMenu(nes);
+    nes.cpu.mem[MON_HP] = 255;
+    const startHp = nes.cpu.mem[MON_HP];
+    chooseCommand(nes, BC_MAGIC);
+    tap(nes, A, 6);
+    // seed 0x0B: rng_next(0x0B) = 0x16, draw = 21 < limit(253); mod8(21, 11) = 10;
+    // result = amountMin(10) + 10 = 20.
+    nes.cpu.mem[RNG] = 0x0b;
+    tap(nes, A, 20);
+    assert.equal(startHp - nes.cpu.mem[MON_HP], 20, 'this seed should reach the range’s own maximum exactly');
+  }
+
+  // Wrong implementation this catches: an off-by-one in the final
+  // `adc spell_amount_min,x` (say, forgetting the add and returning the bare
+  // modulo) would report 0 and 10 here instead of 10 and 20 -- close enough
+  // to "looks like it's in range" to pass a loose bounds check, which is
+  // exactly why every fixture in this section asserts an exact value.
+});
+
+test('mod8 divisor boundaries: n=2, n=128 with a real rejection, n=255 returns the draw unchanged, and n=127 at its own limit', {
+  skip: needsSample
+}, async (t) => {
+  {
+    const rom = await buildVariant(t, 'n2', (project) => {
+      project.maps[0].encounters = { rate: 0, actorIds: [] };
+      project.spells[0].amountMin = 5;
+      project.spells[0].amountMax = 6; // n = 2, limit = 254
+      project.spells[0].element = 'none';
+    });
+    const nes = boot(rom);
+    walkTo(nes, 160, 176);
+    walkTo(nes, 176, 176, 200);
+    waitForMenu(nes);
+    nes.cpu.mem[MON_HP] = 255;
+    const startHp = nes.cpu.mem[MON_HP];
+    chooseCommand(nes, BC_MAGIC);
+    tap(nes, A, 6);
+    // seed 0x00: state 0 substitutes $A5; rng_next(0xA5) = 0x3B, draw = 0x3A =
+    // 58 < limit(254); mod8(58, 2) = 0; result = amountMin(5) + 0 = 5.
+    nes.cpu.mem[RNG] = 0x00;
+    tap(nes, A, 20);
+    assert.equal(startHp - nes.cpu.mem[MON_HP], 5, 'n=2 should still divide correctly at the smallest real divisor');
+  }
+  {
+    const rom = await buildVariant(t, 'n128', (project) => {
+      project.maps[0].encounters = { rate: 0, actorIds: [] };
+      project.spells[0].amountMin = 1;
+      project.spells[0].amountMax = 128; // n = 128, limit = floor(255/128)*128 = 128
+      project.spells[0].element = 'none';
+    });
+    const nes = boot(rom);
+    walkTo(nes, 160, 176);
+    walkTo(nes, 176, 176, 200);
+    waitForMenu(nes);
+    nes.cpu.mem[MON_HP] = 255;
+    const startHp = nes.cpu.mem[MON_HP];
+    chooseCommand(nes, BC_MAGIC);
+    tap(nes, A, 6);
+    // seed 0x41: rng_next(0x41) = 0x82, draw = 0x81 = 129 >= limit(128) --
+    // rejected, roll again. rng_next(0x82) = 0x75, draw = 0x74 = 116 <
+    // limit(128) -- accepted. mod8(116, 128) = 116 (116 < 128, no subtraction
+    // is ever needed); result = amountMin(1) + 116 = 117. Two rng_next calls
+    // -- one real rejection -- land the RNG byte on 0x75.
+    nes.cpu.mem[RNG] = 0x41;
+    tap(nes, A, 20);
+    assert.equal(startHp - nes.cpu.mem[MON_HP], 117, 'n=128 (roughly 50% acceptance) should still land exactly after its one rejection');
+    assert.equal(nes.cpu.mem[RNG], 0x75, 'exactly two rng_next calls (one rejected, one accepted) should have run');
+  }
+  {
+    const rom = await buildVariant(t, 'n255', (project) => {
+      project.maps[0].encounters = { rate: 0, actorIds: [] };
+      project.spells[0].amountMin = 1;
+      project.spells[0].amountMax = 255; // n = 255, limit = 255 -- mod8 never subtracts
+      project.spells[0].element = 'none';
+    });
+    const nes = boot(rom);
+    walkTo(nes, 160, 176);
+    walkTo(nes, 176, 176, 200);
+    waitForMenu(nes);
+    nes.cpu.mem[MON_HP] = 255;
+    const startHp = nes.cpu.mem[MON_HP];
+    chooseCommand(nes, BC_MAGIC);
+    tap(nes, A, 6);
+    // seed 0xDC: rng_next(0xDC) = 0xC9, draw = 0xC8 = 200 < limit(255);
+    // mod8(200, 255) = 200 unchanged (200 < 255, the loop's `cmp`/`bcc` never
+    // subtracts on any of its eight iterations); result = amountMin(1) + 200 = 201.
+    nes.cpu.mem[RNG] = 0xdc;
+    tap(nes, A, 20);
+    assert.equal(startHp - nes.cpu.mem[MON_HP], 201, 'n=255 should hand the draw straight through unchanged, plus amountMin');
+  }
+  {
+    const rom = await buildVariant(t, 'n127', (project) => {
+      project.maps[0].encounters = { rate: 0, actorIds: [] };
+      project.spells[0].amountMin = 1;
+      project.spells[0].amountMax = 127; // n = 127, limit = floor(255/127)*127 = 254
+      project.spells[0].element = 'none';
+    });
+    const nes = boot(rom);
+    walkTo(nes, 160, 176);
+    walkTo(nes, 176, 176, 200);
+    waitForMenu(nes);
+    nes.cpu.mem[MON_HP] = 255;
+    const startHp = nes.cpu.mem[MON_HP];
+    chooseCommand(nes, BC_MAGIC);
+    tap(nes, A, 6);
+    // seed 0x7F: rng_next(0x7F) = 0xFE, draw = 0xFD = 253 < limit(254) --
+    // accepted right at the edge of the accepted domain; mod8(253, 127) = 126
+    // (253 - 127 = 126); result = amountMin(1) + 126 = 127 (== amountMax,
+    // its own catalog's ceiling).
+    nes.cpu.mem[RNG] = 0x7f;
+    tap(nes, A, 20);
+    assert.equal(startHp - nes.cpu.mem[MON_HP], 127, 'n=127 at draw=253, one below the rejection edge, should still divide exactly');
+  }
+
+  // Wrong implementations these four fixtures catch -- each actually run
+  // against a sabotaged engine/battleturn.asm and confirmed to fail before
+  // being written down, not merely reasoned about:
+  // (1) a mod8 that stops after seven shift/subtract iterations instead of
+  // eight under-reduces n=2 -- run: dealt 6 instead of 5.
+  // (2) `cmp`/`sbc` against the wrong table inside the loop
+  // (spell_amount_min,x instead of spell_amount_n,x) also breaks n=2 -- run:
+  // dealt 8 instead of 5.
+  // (3) a rejection loop that forgets to re-roll (accepting the first draw
+  // regardless of the limit check) does NOT report the raw rejected draw
+  // (129) for n=128: 129 still passes through mod8 (129 mod 128 = 1) and
+  // amountMin(1) is then added, landing on 2 -- run: dealt 2 instead of 117.
+});
+
+test('a range that reaches into a weakness still saturates at $FF, the same as a flat one already does', {
+  skip: needsSample
+}, async (t) => {
+  const rom = await buildVariant(t, 'weakrange', (project) => {
+    project.maps[0].encounters = { rate: 0, actorIds: [] };
+    project.spells[0].amountMin = 170;
+    project.spells[0].amountMax = 200; // n = 31, limit = floor(255/31)*31 = 248
+    // element stays 'fire' -- the slime is weak to it (sample-rpg default).
+  });
+  const nes = boot(rom);
+  walkTo(nes, 160, 176);
+  walkTo(nes, 176, 176, 200);
+  waitForMenu(nes);
+  nes.cpu.mem[MON_HP] = 255; // saturated damage is exactly its whole HP, same setup as the flat-amount saturation test above
+
+  chooseCommand(nes, BC_MAGIC);
+  tap(nes, A, 6);
+  // seed 0x00 -> $A5 substitution -> rng_next = 0x3B, draw = 58 < limit(248);
+  // mod8(58, 31) = 27; result = amountMin(170) + 27 = 197. Weak-multiplied:
+  // 197 >> 1 = 98, 98 + 197 = 295, which wraps past 255 (carry set) --
+  // spell_damage_weak saturates to $FF (255) rather than storing the wrapped
+  // low byte 39.
+  nes.cpu.mem[RNG] = 0x00;
+  tap(nes, A, 20);
+
+  assert.equal(nes.cpu.mem[MON_HP], 0, 'a saturated weakness hit from a rolled amount should take all 255, not a wrapped 39');
+  assert.equal(nes.cpu.mem[MON_ALIVE], 0, 'and 255 damage into 255 HP is a kill');
+
+  // Wrong implementation this catches: trusting that "saturation is
+  // inherited, not re-derived" (design §8.0) without actually driving a
+  // rolled -- not authored -- value through spell_damage_weak would miss a
+  // regression where the roll's result somehow bypassed bt_dmg_lo and
+  // reached the weak multiply through a different, unsaturated path.
+});
+
+test('a heal spell rolling near a member’s max HP still clamps to it, the same as a flat one already does', {
+  skip: needsSample
+}, async (t) => {
+  const rom = await buildVariant(t, 'healrange', (project) => {
+    project.maps[0].encounters = { rate: 0, actorIds: [] };
+    project.spells[1].amountMin = 40;
+    project.spells[1].amountMax = 60; // n = 21, limit = floor(255/21)*21 = 252
+  });
+  const nes = boot(rom);
+  walkTo(nes, 160, 176);
+  walkTo(nes, 176, 176, 200);
+  waitForMenu(nes);
+  nes.cpu.mem[PC_SPELLS] |= 2; // Mend is authored at level 3; grant it directly, as the flat-heal test above does
+  nes.cpu.mem[PC_HP] = 250;
+  nes.cpu.mem[PC_HP_MAX] = 255;
+  nes.cpu.mem[PC_MP] = 20;
+
+  chooseCommand(nes, BC_MAGIC);
+  tap(nes, DOWN, 4); // Ember is first; Mend is the second row
+  tap(nes, A, 6);
+  // seed 0x00 -> $A5 substitution -> rng_next = 0x3B, draw = 58 < limit(252);
+  // mod8(58, 21) = 16 (58 - 21 - 21 = 16); result = amountMin(40) + 16 = 56.
+  // 250 + 56 = 306, past both the 255-byte wrap point and PC_HP_MAX(255) --
+  // cast_heal's own bcs guard catches the carry before the max-compare runs.
+  nes.cpu.mem[RNG] = 0x00;
+  tap(nes, A, 10);
+
+  assert.equal(nes.cpu.mem[PC_HP], 255, 'a rolled heal that would overshoot the max should clamp to it, not wrap');
+
+  // Wrong implementation this catches: relying on cast_heal's own
+  // bcs-before-cmp guard being new, untested code for a rolled value -- it
+  // is not (design §8.0), but the guard was previously only ever exercised
+  // by a flat authored amount large enough to overflow (18, PC_HP_MAX 24 in
+  // the base fixture); this is the first assertion that drives a *rolled*
+  // value through the exact same carry path.
+});
+
+test('an all-target spell rolls independently per target -- two living monsters take different damage from one cast', {
+  skip: needsSample
+}, async (t) => {
+  const rom = await buildVariant(t, 'multitarget', (project) => {
+    project.maps[0].encounters = { rate: 0, actorIds: [] };
+    project.spells[0].scope = 'all';
+    project.spells[0].amountMin = 1;
+    project.spells[0].amountMax = 100; // n = 100, limit = 200
+    project.spells[0].element = 'none';
+    project.sprites.actors[0].hp = 150; // both slimes must survive the larger possible roll
+  });
+  const nes = boot(rom);
+  walkTo(nes, 160, 176);
+  walkTo(nes, 176, 176, 200);
+  assert.equal(nes.cpu.mem[GAME_STATE], ST_BATTLE);
+  nes.cpu.mem[MON_SLOT_ACTOR + 1] = 0; // a second slime in the formation, same as the groupspell test above
+  for (let i = 0; i < 12; i++) nes.frame();
+  assert.equal(nes.cpu.mem[BT_COUNT], 2);
+  waitForMenu(nes);
+  const startHp0 = nes.cpu.mem[MON_HP];
+  const startHp1 = nes.cpu.mem[MON_HP + 1];
+
+  chooseCommand(nes, BC_MAGIC);
+  // seed 0x00 -> $A5 substitution -> rng_next = 0x3B, draw = 58 < limit(200);
+  // mod8(58, 100) = 58 (58 < 100, no subtraction); result = amountMin(1) + 58
+  // = 59 for the first living target (cast_all's own loop starts at
+  // other_side()'s base slot and walks up). The LFSR's state after that roll
+  // is 0x3B (59); rng_next(0x3B) = 0x76, draw = 0x75 = 117 < limit(200);
+  // mod8(117, 100) = 17 (117 - 100 = 17); result = amountMin(1) + 17 = 18 for
+  // the second target. 59 != 18: the two targets are independently rolled,
+  // not one shared roll applied twice.
+  nes.cpu.mem[RNG] = 0x00;
+  tap(nes, A, 12); // scope "all": no target to pick, it just resolves
+
+  const dealt0 = startHp0 - nes.cpu.mem[MON_HP];
+  const dealt1 = startHp1 - nes.cpu.mem[MON_HP + 1];
+  assert.equal(dealt0, 59, 'the first target should take exactly its own roll');
+  assert.equal(dealt1, 18, 'the second target should take exactly its own, different roll');
+  assert.notEqual(dealt0, dealt1, 'two independently-rolled targets landing on the same number here would be indistinguishable from one shared roll applied twice');
+  // Exactly two rng_next calls ran for the whole cast, one per living target:
+  // 0x00 -> substituted 0xA5 -> 0x3B (first roll's own new state) -> 0x76
+  // (second roll's own new state, per the trace above). This is what makes
+  // roll_spell_amount/mod8's own header comment's "bt_tmp2 is NEVER touched"
+  // claim a tested one rather than a hope: bt_tmp2 is cast_all's own
+  // end-of-side loop sentinel (bt_target's ceiling), read every iteration of
+  // the loop this cast runs through, so either routine touching it would
+  // corrupt that ceiling mid-loop -- reading turn_order as if it were
+  // liveness data, walking past the two real monster slots, and (among other
+  // things) drawing more or fewer rolls than the two genuinely alive targets
+  // call for. A stray extra or dropped rng_next call is exactly what would
+  // show up here as a final RNG byte other than 0x76, even if the two
+  // damage numbers above happened to still look plausible.
+  assert.equal(nes.cpu.mem[RNG], 0x76, 'exactly two rng_next calls should have run, one per living target');
+
+  // Wrong implementation this catches: rolling once outside cast_all's loop
+  // and reusing the same result for every target (design §8's own "caching a
+  // single roll... for a less interesting result" alternative it explicitly
+  // rejected) -- every assertion elsewhere in this section would still pass
+  // with that implementation, since each cast in isolation still lands on a
+  // correct, exact value; only a genuine two-target cast in the same battle
+  // tick exposes the difference.
+  //
+  // A second wrong implementation, run and confirmed to fail: `mod8`
+  // clobbering `bt_tmp2` instead of `bt_tmp` (its first instruction
+  // sabotaged from `sta bt_tmp` to `sta bt_tmp2`) -- corrupting cast_all's
+  // own end-of-side sentinel mid-loop, the load-bearing "bt_tmp2 is NEVER
+  // touched" contract roll_spell_amount/mod8's own header comment states.
+  // Run against this exact fixture (this test's real, unmodified assertions,
+  // not an isolated copy): it failed at the very first damage assertion
+  // above ("the first target should take exactly its own roll", actual 1,
+  // expected 59) -- corrupting bt_tmp2 also corrupts the uninitialized
+  // `bt_tmp` this mutation leaves `asl bt_tmp` operating on, so the first
+  // roll's own result is already wrong before the RNG-byte assertion is ever
+  // reached. The RNG-byte assertion still stands as the direct test of the
+  // sentinel-survival claim -- a subtler clobber that left `bt_tmp` alone
+  // but still touched `bt_tmp2` only somewhere reachable from mod8/
+  // roll_spell_amount would corrupt cast_all's loop ceiling without
+  // necessarily producing a wrong-looking single-target number -- but this
+  // exact mutation is caught earlier, by the damage numbers, and the report
+  // for this fix round records the real failing line rather than a value
+  // this run never actually produced.
+});
+
 test('ITEM heals from the bag, spends the potion, and cures poison', {
   skip: needsSample
 }, () => {
@@ -1074,7 +1462,11 @@ test('a weakness hit at 171 or more saturates instead of dealing less than the p
     project.maps[0].encounters = { rate: 0, actorIds: [] };
     // Ember into the slime's fire weakness: 200 * 1.5 = 300, which wraps to 44
     // in eight bits -- *less* than the unmodified 200 -- and saturates to 255.
-    project.spells[0].amount = 200;
+    // A flat range (amountMin === amountMax) keeps this deterministic: n == 1
+    // means roll_spell_amount takes its no-roll branch and hands back exactly
+    // 200 every cast, no RNG involved.
+    project.spells[0].amountMin = 200;
+    project.spells[0].amountMax = 200;
   });
   const nes = boot(rom);
   walkTo(nes, 160, 176);

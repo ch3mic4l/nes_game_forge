@@ -296,9 +296,14 @@ project.party = [
   { ...createPartyMember(1, 'Iris'), metaspriteId: 0, startsInParty: false, spells: [{ spellId: 1, level: 1 }] }
 ];
 project.spells = [
-  { ...createSpell(0, 'Ember'), mpCost: 3, kind: 'damage', amount: 10, element: 'fire', scope: 'one' },
-  { ...createSpell(1, 'Mend'), mpCost: 4, kind: 'heal', amount: 18, element: 'none', scope: 'one' },
-  { ...createSpell(2, 'Venom'), mpCost: 2, kind: 'poison', amount: 1, element: 'none', scope: 'one' }
+  // Flat ranges (amountMin === amountMax), deliberately: this fixture is the
+  // regression control every existing engine test's own hardcoded numbers
+  // (10, 18, 1) depend on, and a flat range is what a pre-migration project's
+  // legacy `amount` field always meant -- see rpg.test.js's own "spell amount
+  // ranges" section for the ranged fixtures.
+  { ...createSpell(0, 'Ember'), mpCost: 3, kind: 'damage', amountMin: 10, amountMax: 10, element: 'fire', scope: 'one' },
+  { ...createSpell(1, 'Mend'), mpCost: 4, kind: 'heal', amountMin: 18, amountMax: 18, element: 'none', scope: 'one' },
+  { ...createSpell(2, 'Venom'), mpCost: 2, kind: 'poison', amountMin: 1, amountMax: 1, element: 'none', scope: 'one' }
 ];
 project.rpg = { ...project.rpg, xpBase: 8, xpGrow: 4, maxLevel: 8, battleTilesetId: 1 };
 

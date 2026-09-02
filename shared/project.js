@@ -329,7 +329,9 @@ export const ELEMENTS = [
   { id: 'wind', label: 'Wind' },
   { id: 'earth', label: 'Earth' },
   { id: 'light', label: 'Light' },
-  { id: 'dark', label: 'Dark' }
+  { id: 'dark', label: 'Dark' },
+  { id: 'water', label: 'Water' },
+  { id: 'holy', label: 'Holy' }
 ];
 
 /** What a spell does when it lands. The order is the wire format (SK_* in
@@ -2314,6 +2316,50 @@ export function renumberItemDeletion(project, index) {
 }
 
 /**
+ * What every reference to a *spell* becomes once `index` is gone from
+ * `project.spells`: the spell-space sibling of `renumberActorDeletion`/
+ * `renumberItemDeletion` above, covering the two fields that name a spell —
+ * a party member's own learned `{spellId, level}` entries, and a hostile
+ * actor's `battle.spellId` (the one spell it may cast).
+ *
+ * The two fields do **not** share a sentinel discipline, unlike the actor/
+ * item siblings' own uniform shift-or-fixed-point shape, so this is not that
+ * shape copied mechanically. `actors[].battle.spellId` already has a
+ * sentinel for "casts nothing" — `null` — and it is a fixed point for the
+ * identical reason `NO_ACTOR`/`NO_ITEM` are ones above: walking it down
+ * would let it decay back into range as the catalog shrinks further. A
+ * party member's learned entry has no such sentinel at all — there is no
+ * "learned nothing" entry sitting in the array to fall back to — so a
+ * reference to the deleted spell is **dropped** from `member.spells`
+ * entirely rather than clamped to anything: a learn record naming a spell
+ * that no longer exists is not a record, it is stale data.
+ *
+ * `RPG_LIMITS.spells = 32` means nothing near `$FF` is ever a live id, so
+ * unlike `NO_ACTOR`/`NO_ITEM` there is no compiled sentinel value to collide
+ * with here — `null`/dropped-entry is the whole story at this layer; `$FF`
+ * only appears once this reaches the compiler (`mon_spell`'s own stale-id
+ * clamp in `battletables.js`, unchanged by this function).
+ *
+ * Mutates `project` and returns it. The caller removes
+ * `project.spells[index]` itself, before or after calling this, the same
+ * contract `renumberActorDeletion`/`renumberItemDeletion` document.
+ */
+export function renumberSpellDeletion(project, index) {
+  const shift = (id) => (id > index ? id - 1 : id);
+  for (const actor of project.sprites?.actors ?? []) {
+    const spellId = actor.battle?.spellId;
+    if (typeof spellId !== 'number') continue; // already null -- "casts nothing," a fixed point
+    actor.battle.spellId = spellId === index ? null : shift(spellId);
+  }
+  for (const member of project.party ?? []) {
+    member.spells = (member.spells ?? [])
+      .filter((entry) => entry.spellId !== index)
+      .map((entry) => ({ ...entry, spellId: shift(entry.spellId) }));
+  }
+  return project;
+}
+
+/**
  * What every reference to a metasprite becomes once `index` is gone from
  * `project.sprites.metasprites`. Three consumers exist — an animation
  * frame's `metaspriteId`, a party member's `metaspriteId`, and (as of this
@@ -2483,7 +2529,7 @@ export function createPartyMember(id, name = `Member ${id + 1}`) {
 }
 
 export function createSpell(id, name = `Spell ${id}`) {
-  return { id, name, mpCost: 2, kind: 'damage', amount: 8, element: 'none', scope: 'one' };
+  return { id, name, mpCost: 2, kind: 'damage', amountMin: 8, amountMax: 8, element: 'none', scope: 'one' };
 }
 
 /**
@@ -3340,12 +3386,32 @@ function normalizeActor(raw, id, itemCtx = EMPTY_ITEM_CTX) {
 
 function normalizeSpell(raw, id) {
   const base = createSpell(id);
+  // One-time migration, exactly the `deriveItemEffect` idiom above: a spell
+  // saved before this range existed carries only the legacy flat `amount`,
+  // and gets amountMin === amountMax === that (clamped) value. Once a
+  // project has been saved back with an explicit amountMin/amountMax (even a
+  // flat one), `raw.amountMin`/`raw.amountMax` are no longer undefined on
+  // the next load, so this branch never re-fires — `amount` itself is never
+  // written back; amountMin/amountMax are the schema from here on.
+  const hasRange = typeof raw?.amountMin === 'number' || typeof raw?.amountMax === 'number';
+  let amountMin;
+  let amountMax;
+  if (hasRange) {
+    amountMin = clamp(raw?.amountMin, 1, 255, base.amountMin);
+    amountMax = clamp(raw?.amountMax, 1, 255, base.amountMax);
+  } else {
+    const amount = clamp(raw?.amount, 1, 255, base.amountMin);
+    amountMin = amount;
+    amountMax = amount;
+  }
+  if (amountMin > amountMax) [amountMin, amountMax] = [amountMax, amountMin]; // swap rather than reject
   return {
     id,
     name: normalizeLabel(raw?.name, base.name),
-    mpCost: clamp(raw?.mpCost, 0, 99, base.mpCost),
+    mpCost: clamp(raw?.mpCost, 0, 255, base.mpCost),
     kind: SPELL_KINDS.some((k) => k.id === raw?.kind) ? raw.kind : base.kind,
-    amount: clamp(raw?.amount, 1, 255, base.amount),
+    amountMin,
+    amountMax,
     element: elementId(raw?.element),
     scope: SPELL_SCOPES.some((s) => s.id === raw?.scope) ? raw.scope : base.scope
   };

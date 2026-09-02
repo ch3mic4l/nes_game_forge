@@ -1320,34 +1320,33 @@ test('a kernel-lo shortfall neither Save nor Move would close, but a roomier boa
   project.project.titleScreen = 0;
   // No Save, no Move: kernelShortfallAdvice must skip straight past the
   // feature-drop branch (neither is live) to the mapper-swap one.
-  // 126, not the 128 an earlier measurement of this file used: the namestride
-  // fix (handoff-namestride/brief-namestride.md -- name_offset_pc's 8-bit
-  // offset silently wrapped past entry 25, so the routine and every consumer
-  // now carry a table base in ptr_lo/ptr_hi and a 16-bit add) cost every
-  // board's own banked battle-region base 50 bytes alike, MMC1 included, so
-  // 128 fillers now overflows the very region this test depends on to be
-  // exact and re-derives below. 126 currently lands a 61-byte kernel-lo
+  // 124, not the 126 the Magic Forge impl-1/2 slice's own recalibration
+  // replaces: engine/battleturn.asm's new roll_spell_amount/mod8 (the
+  // reject-then-modulo spell-amount roll, added beside the two call sites it
+  // replaces a flat `lda spell_amount,x` read at) cost every board's own
+  // banked battle-region base 53 bytes alike, MMC1 included (measured, not
+  // derived -- bankedbytes.test.js's own equality assertion is what pins
+  // BASE_BATTLE_CODE_BYTES_BY_MAPPER, this file only inherits the shift), so
+  // 126 fillers now overflows the very region this test depends on to be
+  // exact and re-derives below. 124 currently lands a 45-byte kernel-lo
   // deficit (re-measured, not adjusted by arithmetic, per this file's own
   // note above on why that matters here).
   //
-  // "Comfortably inside the narrow window ... out of 195 bytes MMC1 would
-  // save" was never actually why this works, and this file's own re-check
-  // found that out rather than assuming it: 61 is nowhere close to 195, yet
-  // 126 is already within one filler actor of failing. The real ceiling is a
-  // different bank. inflate()'s dummy actors are also monster stat entries
-  // battleTables compiles into the banked battle-code region
-  // (main/build/battletables.js), which MMC1 shares the identical
-  // 8172-byte ceiling for regardless of kernel-lo -- each filler actor costs
-  // it 30 bytes there. At 126 fillers (130 actors total) that region has
-  // exactly 26 bytes free on MMC1; at 127 it overflows by 4, and MMC1 stops
-  // being offered a full 195-byte kernel-lo saving before that saving would
-  // ever have run out (confirmed directly: switchableMappers(project, u512)
-  // returns [1] at 126 fillers and [] at 127). So the window this test
-  // actually sits inside is one filler actor's worth of headroom in the
-  // banked battle region, not a kernel-lo byte band -- the two banks merely
-  // happen to both grow with the same inflate() call, and the smaller one
-  // has always been the one that runs out first.
-  inflate(project, 126);
+  // The window this test sits inside was never a kernel-lo byte band, and
+  // remeasuring only moves where it falls, not what it is: inflate()'s dummy
+  // actors are also monster stat entries battleTables compiles into the
+  // banked battle-code region (main/build/battletables.js), which MMC1
+  // shares the identical 8172-byte ceiling for regardless of kernel-lo --
+  // each filler actor costs it 30 bytes there. At 124 fillers (128 actors
+  // total) that region has exactly 27 bytes free on MMC1; at 125 it
+  // overflows by 3, and MMC1 stops being offered a full 195-byte kernel-lo
+  // saving before that saving would ever have run out (confirmed directly:
+  // switchableMappers(project, u512) returns [1] at 124 fillers and [] at
+  // 125). So the window this test actually sits inside is one filler actor's
+  // worth of headroom in the banked battle region, not a kernel-lo byte band
+  // -- the two banks merely happen to both grow with the same inflate()
+  // call, and the smaller one has always been the one that runs out first.
+  inflate(project, 124);
   const message = kernelShortfallMessage(project);
   assert.match(message, /Try MMC1 in the Build panel/);
 });
@@ -1376,7 +1375,7 @@ test('a mapper suggestion is withheld from a project carrying hand-written code'
   base.cartridge.mapper = 30; // UNROM 512 -- the case above proves MMC1 is offered here
   base.project.titleMap = 0;
   base.project.titleScreen = 0;
-  inflate(base, 126); // see the identical recalibration note on the case above
+  inflate(base, 124); // see the identical recalibration note on the case above
 
   assert.match(
     kernelShortfallMessage(structuredClone(base)),

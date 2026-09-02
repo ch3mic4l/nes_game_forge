@@ -323,7 +323,7 @@ cast_all_next:
 ; with it, which is what makes poison worth curing.
 cast_heal:
   ldx bt_arg
-  lda spell_amount,x
+  jsr roll_spell_amount
   sta bt_tmp
   lda bt_actor
   cmp #MAX_PARTY
@@ -609,11 +609,59 @@ combatant_def_ret:
   lda bt_ret
   rts
 
+; X = spell index (bt_arg, at both call sites). Returns A = the rolled
+; amount. spell_amount_n,x == 1 means min == max: no roll, no RNG
+; consumed, byte-for-byte the old flat-amount read. X is preserved
+; throughout (both roll_spell_amount and mod8 need it for spell_amount_*,x
+; reads); Y and bt_tmp are both clobbered; bt_tmp2 is NEVER touched by
+; either routine -- cast_all's own end-of-side sentinel lives there across
+; this entire call chain and must survive it untouched.
+roll_spell_amount:
+  lda spell_amount_n,x
+  cmp #1
+  beq roll_spell_amount_flat
+roll_spell_amount_retry:
+  jsr rng_next                  ; 1-255
+  sec
+  sbc #1                        ; draw = rng_next() - 1, uniform over 0-254
+  cmp spell_amount_limit,x
+  bcs roll_spell_amount_retry   ; draw >= limit: reject, roll again
+  jsr mod8                      ; A (draw) -> A (draw mod spell_amount_n,x)
+  clc
+  adc spell_amount_min,x
+  rts
+roll_spell_amount_flat:
+  lda spell_amount_min,x
+  rts
+
+; A = dividend (0-254) on entry. X = spell index, preserved (spell_amount_n,x
+; is the divisor). Returns A = dividend mod spell_amount_n,x. Clobbers Y (the
+; eight-count) and bt_tmp (the shifting copy of the dividend). Never touches
+; bt_tmp2 -- see the caller-contract comment above. No carry-catching branch
+; after `rol a`: an 8-bit accumulator fed by exactly eight shift-in steps
+; cannot exceed 2^i - 1 after i steps for any divisor or dividend, so the
+; ordinary compare/subtract below is already exact on the whole byte domain.
+mod8:
+  sta bt_tmp                    ; the dividend, shifted left one bit per iteration
+  lda #0                        ; the remainder, built up one bit per iteration
+  ldy #8
+mod8_loop:
+  asl bt_tmp                    ; dividend's next MSB -> carry
+  rol a                         ; carry -> remainder's LSB
+  cmp spell_amount_n,x
+  bcc mod8_no_sub                ; remainder < n: nothing to subtract
+  sbc spell_amount_n,x           ; carry is 1 from the cmp above, so this
+                                  ; subtracts exactly, no borrow
+mod8_no_sub:
+  dey
+  bne mod8_loop
+  rts
+
 ; The spell's own number, then the element: half again against a weakness, half
 ; against a resistance, and never less than one.
 spell_damage:
   ldx bt_arg
-  lda spell_amount,x
+  jsr roll_spell_amount
   sta bt_dmg_lo
   lda #0
   sta bt_dmg_hi

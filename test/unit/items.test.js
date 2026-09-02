@@ -430,7 +430,17 @@ test('a project with no items and no Save is byte-identical to the pre-phase-4b 
 // banked region grew by 50 bytes of code but the padded ROM's overall size
 // did not move, consistent with bytes inserted mid-bank shifting every label
 // after them rather than growing the ROM itself.
-const PINNED_RPG_BASELINE_HASH = '11ae1dc40badcf8d317692cc75c5423fac2506bfec8d9a8670f23ebe68bfa572';
+//
+// Re-pinned again for the Magic Forge impl-1/2 slice: engine/battleturn.asm
+// gained roll_spell_amount/mod8 (the reject-then-modulo spell-amount roll)
+// and its two call-site swaps at spell_damage and cast_heal -- unconditional
+// battle-region code, present whether or not this baseline project has any
+// spells, so its hash moves for the identical reason the namestride fix's
+// hash re-pin above does. Size still unchanged (still 147472): the region
+// grew by the same 53 measured bytes bankedbytes.test.js pins into
+// BASE_BATTLE_CODE_BYTES_BY_MAPPER, again shifting labels mid-bank rather
+// than growing the padded ROM.
+const PINNED_RPG_BASELINE_HASH = '622826949b8aaf414f9c3a73423929239b61f62498e4aa5dad0dd49460b29d3c';
 const PINNED_RPG_BASELINE_SIZE = 147472;
 
 test('an RPG with no items and no Save is byte-identical to the pre-round-4 master build', async (t) => {

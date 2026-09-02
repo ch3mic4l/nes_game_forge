@@ -206,7 +206,25 @@ export function battleTables(project, battleStrings = BATTLE_STRINGS) {
   chunks.push(`NUM_SPELLS = ${spells.length}`);
   chunks.push(`spell_cost:\n${dbRows(spells.map((spell) => spell.mpCost))}`);
   chunks.push(`spell_kind:\n${dbRows(spells.map((spell) => kindIndex(spell.kind)))}`);
-  chunks.push(`spell_amount:\n${dbRows(spells.map((spell) => spell.amount))}`);
+  // Replaces the old flat `spell_amount` row: `roll_spell_amount`/`mod8`
+  // (engine/battleturn.asm) reject-then-modulo a 0-254 RNG draw down to a
+  // uniform value in [0, n-1] and add it to `amountMin` -- see the design's
+  // own derivation for why a masked-AND draw is biased and this exact
+  // reject-to-the-largest-multiple-of-n construction is not.
+  // `spell_amount_n === 1` (amountMin === amountMax) is the flat case: the
+  // engine's own `cmp #1 / beq` skips the roll entirely and consumes no RNG.
+  chunks.push(`spell_amount_min:\n${dbRows(spells.map((spell) => spell.amountMin))}`);
+  chunks.push(
+    `spell_amount_n:\n${dbRows(spells.map((spell) => spell.amountMax - spell.amountMin + 1))}`
+  );
+  chunks.push(
+    `spell_amount_limit:\n${dbRows(
+      spells.map((spell) => {
+        const n = spell.amountMax - spell.amountMin + 1;
+        return Math.floor(255 / n) * n;
+      })
+    )}`
+  );
   chunks.push(`spell_element:\n${dbRows(spells.map((spell) => elementIndex(spell.element)))}`);
   chunks.push(`spell_scope:\n${dbRows(spells.map((spell) => scopeIndex(spell.scope)))}`);
   chunks.push(`spell_name:\n${dbRows(spells.flatMap((spell) => nameTiles(spell.name)), NAME_LIMIT)}`);
@@ -430,7 +448,7 @@ export function checkBattleTables(project) {
 // this region on MMC3 pays those 46 bytes -- there is no MMC3-RPG-without-the-
 // split to overcharge, which is precisely the case that forced the kernel's
 // split-lock term out of MMC3's base. Here it is a property of the board.
-export const BASE_BATTLE_CODE_BYTES_BY_MAPPER = { 30: 3885, 1: 3885, 4: 3931 };
+export const BASE_BATTLE_CODE_BYTES_BY_MAPPER = { 30: 3938, 1: 3938, 4: 3984 };
 
 // Phase 4c round 3, finding 6 (phase4-design.md §9), corrected round 3b
 // (review K1): the two-menu-consistency filter (build_item_list's kind/

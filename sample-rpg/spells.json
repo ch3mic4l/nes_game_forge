@@ -4,7 +4,8 @@
     "name": "Ember",
     "mpCost": 3,
     "kind": "damage",
-    "amount": 10,
+    "amountMin": 10,
+    "amountMax": 10,
     "element": "fire",
     "scope": "one"
   },
@@ -13,7 +14,8 @@
     "name": "Mend",
     "mpCost": 4,
     "kind": "heal",
-    "amount": 18,
+    "amountMin": 18,
+    "amountMax": 18,
     "element": "none",
     "scope": "one"
   },
@@ -22,7 +24,8 @@
     "name": "Venom",
     "mpCost": 2,
     "kind": "poison",
-    "amount": 1,
+    "amountMin": 1,
+    "amountMax": 1,
     "element": "none",
     "scope": "one"
   }

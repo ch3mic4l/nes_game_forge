@@ -31,6 +31,7 @@ import {
   renumberActorDeletion,
   renumberItemDeletion,
   renumberMetaspriteDeletion,
+  renumberSpellDeletion,
   battleFormationSlice,
   NO_ACTOR,
   NO_ITEM,
@@ -546,15 +547,20 @@ test('party members and spells clamp against each other', () => {
   const project = normalizeProject({
     project: { gameType: 'rpg' },
     cartridge: { mapper: 1 },
+    // mpCost 0-255 (widened from the old 0-99 to match the engine's and the
+    // editor field's real domain -- design §4.3) and a legacy flat `amount`,
+    // which normalizeSpell's one-time migration turns into
+    // amountMin === amountMax === <the same clamped ceiling>.
     spells: [{ name: 'Fire', mpCost: 500, kind: 'wat', element: 'fire', amount: 900 }],
     party: [
       { name: 'Hero', baseHp: 999 },
       { name: 'Mage', startsInParty: false, spells: [{ spellId: 0, level: 99 }, { spellId: 7, level: 2 }] }
     ]
   });
-  assert.equal(project.spells[0].mpCost, 99);
+  assert.equal(project.spells[0].mpCost, 255);
   assert.equal(project.spells[0].kind, 'damage');
-  assert.equal(project.spells[0].amount, 255);
+  assert.equal(project.spells[0].amountMin, 255, 'a legacy amount past the ceiling migrates in, clamped, to both ends');
+  assert.equal(project.spells[0].amountMax, 255);
   assert.equal(project.party[0].baseHp, 255);
   assert.equal(project.party[0].startsInParty, true, 'the first member always starts');
   assert.equal(project.party[1].startsInParty, false);
@@ -927,6 +933,185 @@ test('a map’s wandering-encounter table is renumbered when an actor is deleted
     [],
     'a table whose only entry was the deleted actor empties out rather than retargeting'
   );
+});
+
+// --- renumberSpellDeletion (Magic Forge, phase 1) — the primitive only; the
+// Spells… modal is not wired to it yet (phase 3), so these tests call the
+// export directly, the same way the item/actor siblings' tests do above.
+
+test('deleting a spell renumbers a party member’s learned entries and a monster’s cast spell, without attaching a level to the wrong spell', () => {
+  const project = createProject('Quest', 'rpg');
+  // The brief's own reproduction: Fire/Ice/Bolt, a member who learned Ice at
+  // level 3 and Bolt at level 5 (in that authoring order), and a monster that
+  // casts Bolt. Deleting Fire (index 0, named by neither reference) must
+  // renumber Ice -> 0 and Bolt -> 1 everywhere without disturbing which level
+  // goes with which spell.
+  project.spells = [createSpell(0, 'Fire'), createSpell(1, 'Ice'), createSpell(2, 'Bolt')];
+  project.party = [
+    { ...createPartyMember(0, 'Hero'), spells: [{ spellId: 1, level: 3 }, { spellId: 2, level: 5 }] }
+  ];
+  project.sprites.actors = [{ name: 'Slime', damage: 1, battle: { spellId: 2 } }];
+
+  renumberSpellDeletion(project, 0); // delete "Fire"
+  project.spells.splice(0, 1);
+  project.spells.forEach((spell, id) => (spell.id = id));
+
+  assert.deepEqual(project.spells.map((s) => s.name), ['Ice', 'Bolt'], 'the surviving catalog shifts down');
+
+  const learned = project.party[0].spells;
+  const learnedIce = learned.find((entry) => project.spells[entry.spellId]?.name === 'Ice');
+  const learnedBolt = learned.find((entry) => project.spells[entry.spellId]?.name === 'Bolt');
+  assert.ok(learnedIce, 'Hero should still know Ice, now at its shifted id');
+  assert.equal(learnedIce.level, 3, 'Ice must keep the level it was authored at, not a level that used to belong to Bolt');
+  assert.ok(learnedBolt, 'Hero should still know Bolt, now at its shifted id');
+  assert.equal(learnedBolt.level, 5, 'Bolt must keep its own authored level too');
+
+  assert.equal(project.sprites.actors[0].battle.spellId, 1, 'the monster’s cast spell (Bolt) shifts down to its new id, not dropped');
+
+  // Wrong implementation this fixture exists to catch: the pre-fix Spells…
+  // modal's Save handler, which filtered a member's learned entries down to
+  // ids that still exist post-renumber *without shifting the survivors'
+  // spellId values* -- so a surviving entry keeps pointing at its old,
+  // now-reassigned id instead of following the spell it actually names.
+  const wrongImplementation = (proj, index) => {
+    const survivingIds = new Set(proj.spells.map((spell, id) => id).filter((id) => id !== index));
+    for (const member of proj.party ?? []) {
+      member.spells = (member.spells ?? []).filter((entry) => survivingIds.has(entry.spellId));
+    }
+  };
+  const brokenProject = createProject('Quest', 'rpg');
+  brokenProject.spells = [createSpell(0, 'Fire'), createSpell(1, 'Ice'), createSpell(2, 'Bolt')];
+  brokenProject.party = [
+    { ...createPartyMember(0, 'Hero'), spells: [{ spellId: 1, level: 3 }, { spellId: 2, level: 5 }] }
+  ];
+  wrongImplementation(brokenProject, 0);
+  brokenProject.spells.splice(0, 1);
+  brokenProject.spells.forEach((spell, id) => (spell.id = id));
+  const brokenLearned = brokenProject.party[0].spells;
+  const brokenLearnedBolt = brokenLearned.find((entry) => brokenProject.spells[entry.spellId]?.name === 'Bolt');
+  assert.ok(
+    !brokenLearnedBolt || brokenLearnedBolt.level !== 5,
+    'sanity check: the wrong implementation must actually get this fixture wrong, or this test would not be distinguishing anything'
+  );
+});
+
+test('a monster’s battle.spellId naming exactly the deleted spell becomes null', () => {
+  const project = createProject('Quest', 'rpg');
+  project.spells = [createSpell(0, 'Fire'), createSpell(1, 'Ice')];
+  project.sprites.actors = [{ name: 'Slime', damage: 1, battle: { spellId: 0 } }];
+
+  renumberSpellDeletion(project, 0); // delete "Fire", which the monster casts
+
+  assert.equal(
+    project.sprites.actors[0].battle.spellId,
+    null,
+    'a monster whose one spell was just deleted casts nothing, not spell 0 by accident'
+  );
+
+  // Wrong implementation this catches: shift-only logic with no exact-match
+  // branch (`shift(id) => id > index ? id - 1 : id` applied unconditionally,
+  // no `=== index` check at all) would leave 0 as 0 here, silently pointing
+  // the monster at whatever now occupies id 0 instead of casting nothing.
+});
+
+test('a monster’s battle.spellId naming a spell above the deleted one is decremented, not left alone or zeroed', () => {
+  const project = createProject('Quest', 'rpg');
+  project.spells = [createSpell(0, 'Fire'), createSpell(1, 'Ice'), createSpell(2, 'Bolt')];
+  project.sprites.actors = [{ name: 'Golem', damage: 1, battle: { spellId: 2 } }]; // casts "Bolt"
+
+  renumberSpellDeletion(project, 0); // delete "Fire"
+
+  assert.equal(
+    project.sprites.actors[0].battle.spellId,
+    1,
+    'a monster casting a spell above the deleted one should shift down to the spell’s new id'
+  );
+
+  // Wrong implementation this catches: treating every non-null spellId as
+  // untouchable except an exact match (i.e. only handling the sentinel case
+  // from the previous test, with no `shift()` for ids above the deletion)
+  // would leave this at 2, which after the catalog shrinks to 2 entries names
+  // nothing at all.
+});
+
+test('a party member’s learned entry naming the deleted spell is removed entirely, not clamped to a sentinel', () => {
+  const project = createProject('Quest', 'rpg');
+  project.spells = [createSpell(0, 'Fire'), createSpell(1, 'Ice')];
+  project.party = [{ ...createPartyMember(0, 'Hero'), spells: [{ spellId: 0, level: 4 }, { spellId: 1, level: 2 }] }];
+
+  renumberSpellDeletion(project, 0); // delete "Fire", which Hero had learned at level 4
+
+  const learned = project.party[0].spells;
+  assert.equal(learned.length, 1, 'the entry naming the deleted spell is dropped, not kept with a null spellId');
+  assert.equal(learned[0].spellId, 0, 'the surviving entry (was Ice, id 1) shifts down to id 0');
+  assert.equal(learned[0].level, 2, 'the surviving entry keeps its own authored level');
+
+  // Wrong implementation this catches: reusing the actor sentinel discipline
+  // for member.spells too (setting spellId to null instead of filtering the
+  // entry out) -- there is no "learned nothing" entry sitting in the array
+  // for null to mean, so a null-spellId entry here is stale data, not a
+  // faithful "forgot this spell" representation.
+});
+
+test('battle.spellId === null before deletion stays null after — the fixed point is not disturbed', () => {
+  const project = createProject('Quest', 'rpg');
+  project.spells = [createSpell(0, 'Fire'), createSpell(1, 'Ice')];
+  project.sprites.actors = [{ name: 'Rat', damage: 1, battle: { spellId: null } }];
+
+  // Deleting index 1, not 0: a mutation that coerces a missing spellId to a
+  // live numeric sentinel before the shift (see below) only produces a
+  // *different* number than the deleted index when the two are not equal --
+  // deleting index 0 would let the coerced value collide with the
+  // exact-match branch and mask the defect by coincidence.
+  renumberSpellDeletion(project, 1);
+
+  assert.equal(project.sprites.actors[0].battle.spellId, null, 'a monster that already cast nothing should still cast nothing');
+
+  // Wrong implementation this catches, run and confirmed to fail: treating a
+  // missing spellId as the numeric sentinel 0 before shifting --
+  // `const spellId = actor.battle?.spellId ?? 0;` in place of the real
+  // `typeof spellId !== 'number'` guard, so `null` becomes `shift(0)` = `0`
+  // (0 is not > 1) instead of staying `null`. Run against this exact
+  // fixture: `actor.battle.spellId` came back `0`, not `null` -- a live,
+  // wrong spell id where the monster should still be casting nothing.
+});
+
+test('deleting the last of a 32-entry catalog shifts nothing anywhere, and the primitive still does not touch project.spells itself', () => {
+  const project = createProject('Quest', 'rpg');
+  project.spells = Array.from({ length: 32 }, (_, id) => createSpell(id));
+  project.sprites.actors = [{ name: 'Boss', damage: 1, battle: { spellId: 30 } }];
+  project.party = [{ ...createPartyMember(0, 'Hero'), spells: [{ spellId: 30, level: 10 }] }];
+  const spellsBefore = project.spells.slice(); // same array entries, captured before the call
+
+  renumberSpellDeletion(project, 31); // delete the last entry, id 31, named by nothing
+
+  assert.equal(project.sprites.actors[0].battle.spellId, 30, 'a reference below the deleted last entry must not move');
+  assert.equal(project.party[0].spells.length, 1, 'a learned entry below the deleted last entry must survive');
+  assert.equal(project.party[0].spells[0].spellId, 30, 'and must not shift, since nothing above it was deleted');
+  assert.equal(project.party[0].spells[0].level, 10, 'and keeps its authored level');
+
+  // The primitive's own documented contract: it never splices
+  // project.spells[index] or restamps ids -- the caller does that. Asserted
+  // directly, not just implied by the reference-shift asserts above: all 32
+  // entries survive, in place, by identity.
+  assert.equal(project.spells.length, 32, 'renumberSpellDeletion must not have spliced project.spells itself');
+  for (let id = 0; id < 32; id++) {
+    assert.equal(project.spells[id], spellsBefore[id], `spell ${id} must be the same object at the same index, untouched`);
+    assert.equal(project.spells[id].id, id, `spell ${id} must keep its own id`);
+  }
+
+  // Wrong implementation this catches, run and confirmed to fail: a
+  // renumberSpellDeletion that also splices project.spells[index] and
+  // restamps every survivor's id by position -- violating its own documented
+  // "the caller removes project.spells[index] itself" contract. Run against
+  // this exact fixture: project.spells.length came back 31, not 32, tripping
+  // the length assertion immediately (the per-id identity/id loop after it
+  // never got the chance to also catch the restamp). The id>=index-vs->
+  // off-by-one this test used to also claim is dropped: neither `id >= index`
+  // nor `id > index` disturbs id 30 here (30 is below index 31 either way),
+  // so no shift-arithmetic slip this fixture's own numbers can express is
+  // exposed by it -- the splice/restamp mutation above is what this fixture
+  // actually catches.
 });
 
 // --- renumberMetaspriteDeletion (round 2, item 4) — imported since it was

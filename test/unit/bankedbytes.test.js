@@ -74,7 +74,7 @@ import {
   tilesetLimit,
   NESASM_BANK_BYTES
 } from '../../shared/cartridge.js';
-import { reconcileCartridge, validateProject } from '../../shared/project.js';
+import { reconcileCartridge, validateProject, RPG_LIMITS } from '../../shared/project.js';
 import { FONT_BASE, SPRITE_ARROW_TILE, fontChrPages } from '../../shared/font.js';
 import { BLANK_TILE } from '../../shared/chr.js';
 
@@ -412,6 +412,47 @@ test('the fixture assembles into its region with at least BATTLE_SLACK to spare'
       `${mapper.name}: sample-rpg fits the region but checkCapacity refused it anyway`
     );
   }
+});
+
+// Fits control for the Magic Forge impl-1/2 slice (design-magic.md §10/§11.2):
+// a full RPG_LIMITS.spells-entry catalog, each spell carrying a real (non-flat)
+// amountMin/amountMax range rather than the flat one every other fixture in
+// this file authors, still has to fit the region on MMC3 -- the tightest of
+// the three boards (46 bytes of stock code more than MMC1/UNROM 512, per
+// BASE_BATTLE_CODE_BYTES_BY_MAPPER's own comment). A flat range would let
+// spell_amount_n compile to 1 for every entry and prove nothing about the two
+// new table rows a ranged spell actually occupies (spell_amount_n,
+// spell_amount_limit) alongside spell_amount_min -- three bytes per spell now,
+// not the one spell_amount used to cost, so this is the one place in this file
+// that has to author every slot with a genuine range to be a real fits check
+// rather than an accidental one.
+test('a full 32-spell catalog, each with a real amount range, still fits the region on MMC3', {
+  skip: !hasNesasm && 'nesasm not found on PATH'
+}, async (t) => {
+  const mmc3 = resolveMapper(4);
+  const { project, used } = await measureRegion(t, mmc3, (proj) => {
+    const template = proj.spells[0];
+    proj.spells = Array.from({ length: RPG_LIMITS.spells }, (_, id) => ({
+      ...structuredClone(template),
+      id,
+      name: `S${id}`,
+      amountMin: 10 + (id % 20),
+      amountMax: 40 + (id % 20) // genuinely non-flat: n > 1 for every entry
+    }));
+  });
+  const free = NESASM_BANK_BYTES - used;
+  assert.ok(
+    free >= BATTLE_SLACK,
+    `MMC3: a full ${RPG_LIMITS.spells}-spell catalog with real ranges leaves only ${free} bytes free in the ` +
+      `banked code region (used ${used} of ${NESASM_BANK_BYTES}), under the ${BATTLE_SLACK}-byte BATTLE_SLACK ` +
+      'the budget holds back.'
+  );
+  const { problems } = checkCapacity(project);
+  assert.equal(
+    problems.filter((p) => p.severity === 'error' && /battle system needs/.test(p.message)).length,
+    0,
+    'a full ranged-spell catalog fits the region but checkCapacity refused it anyway'
+  );
 });
 
 // The projectScreenCeiling arrangement, for this meter: build.js renders
