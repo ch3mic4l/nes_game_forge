@@ -20,6 +20,21 @@
 // "what the generator authors directly" against "what the migration derives
 // from the checked-in old-format data" — which is exactly the equivalence
 // that broke.
+//
+// The on-disk bytes are *not* expected to match, and that is deliberate, not
+// a gap this test should close. sample-rpg/ in particular is a pre-migration
+// snapshot: it ships with no items.json and a `battle.drop` still pointing at
+// an actor id, so every load runs migrateItemsFromActors (shared/project.js)
+// for real, against a real project, deriving the one Potion item and
+// remapping the drop reference to it. Regenerating the fixture in place would
+// make it post-migration on disk and silently delete that coverage -- nobody
+// would be exercising the migration path again until the *next* schema
+// change broke it unnoticed, the exact failure mode this file exists to
+// catch. The other fixtures carry the same kind of additive, schema-only
+// drift (saveCompatToken, boundTiles, map folder). So the invariant pinned
+// here is load-equality, not file-equality: regenerating a fixture into a
+// fresh directory must produce a project that loads identically to the
+// checked-in one, however differently the two are actually spelled on disk.
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -40,14 +55,32 @@ const GENERATORS = [
   { name: 'sample-u512', script: 'tools/make-u512-sample.js' }
 ];
 
+// A cheap proof that loadProject(checkedIn) never wrote back into the
+// fixture it just read: every file's relative path and mtime, unaffected by
+// the mkdtemp regeneration happening alongside it.
+async function snapshotFixture(dir) {
+  const entries = await fs.readdir(dir, { recursive: true, withFileTypes: true });
+  const files = entries.filter((e) => e.isFile()).map((e) => path.join(e.parentPath ?? e.path, e.name));
+  files.sort();
+  return Promise.all(
+    files.map(async (file) => {
+      const stat = await fs.stat(file);
+      return `${path.relative(dir, file)}:${stat.mtimeMs}`;
+    })
+  );
+}
+
 for (const { name, script } of GENERATORS) {
   test(`${script} reproduces what the checked-in ${name}/ migrates to`, async (t) => {
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'forge-samplegen-'));
     t.after(() => fs.rm(dir, { recursive: true, force: true }));
 
+    const fixtureDir = path.join(ROOT, name);
+    const before = await snapshotFixture(fixtureDir);
+
     execFileSync(process.execPath, [path.join(ROOT, script), dir], { stdio: 'ignore' });
 
-    const checkedIn = await loadProject(path.join(ROOT, name));
+    const checkedIn = await loadProject(fixtureDir);
     const regenerated = await loadProject(dir);
     assert.deepEqual(
       regenerated,
@@ -57,5 +90,8 @@ for (const { name, script } of GENERATORS) {
         'reference, which can drift silently (no build error, no crash) while quietly handing out or checking for ' +
         'nothing at runtime.'
     );
+
+    const after = await snapshotFixture(fixtureDir);
+    assert.deepEqual(after, before, `${name}/ must not be written to by this test -- CLAUDE.md: "No test may mutate any of the five."`);
   });
 }
