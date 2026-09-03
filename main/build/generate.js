@@ -357,7 +357,9 @@ const TITLE_PROMPT_ROW = 19;
 // against the new title-off base after the split (title forced on for both
 // the with-Save and without-Save sides, kernelbytes.test.js's own
 // `measureCodeBytes(..., { withTitle: true })`) rather than assumed: still
-// 547/552/719, to the byte. (This grew from an earlier +453/+458
+// 547/552/719, to the byte -- the RPG total as it stood before `BE_RESTORE`
+// (Magic Forge phase 4, below) added its own call site; see that paragraph
+// for the post-`BE_RESTORE` figures. (This grew from an earlier +453/+458
 // once a review pass range-checked every restored value load_apply_body
 // trusts as a table index -- player_dir, player_y, each live inv_items
 // entry, each pc_level -- and widened the identity from two bytes to four;
@@ -398,19 +400,37 @@ const TITLE_PROMPT_ROW = 19;
 // than only ever against `sample-rpg`, the way every measurement above this
 // line always had been.
 //
+// Magic Forge phase 4 (`BE_RESTORE`, handoff-magic/phase4-design.md) grew
+// that RPG-only supplement again, from 36 to 41: `continue_game`
+// (engine/save.asm) now calls `call_battle` once more, right after
+// `load_apply_body`, to recompute every party member's `pc_spells` (and, as
+// an accepted side effect, `pc_hp_max`/`pc_mp_max`) from their restored
+// level against the *current* build's own tables -- a save's raw
+// `pc_spells` byte is a bitmask of catalog positions a spell delete since
+// the save was written can retarget, so it is never trusted directly (see
+// `party_restore`'s own comment, engine/battle.asm, for the full account).
+// That call site is itself `.if BATTLE_ENABLED`-gated, for the same reason
+// the range-check block below is: `call_battle` does not assemble outside
+// an RPG at all. Measured once the routine was actually written, not
+// estimated: the RPG total moves from 547/552/719 to 552/557/724 -- a
+// uniform +5 on every board, the same flatness the range-check block's own
+// gap already has, since the call site is a plain two-instruction `jsr`
+// with nothing mapper-specific in it.
+//
 // SAVE_BATTLE_KERNEL_ALLOWANCE is that RPG-only supplement, and it is a flat
 // constant, not `*_BY_MAPPER`, on purpose: a term earns per-mapper treatment
 // only once real variance between boards is measured (the same standard the
 // title paragraph above already holds itself to, in the opposite direction —
 // MMC3's own extra 12 bytes there is exactly the kind of measured difference
 // that earns a `*_BY_MAPPER` shape), and there is none here to earn it. The
-// 36-byte gap is identical on MMC1, MMC3 and UNROM 512 -- three boards whose
-// own `SAVE_KERNEL_ALLOWANCE_BY_MAPPER` figures differ by hundreds of bytes
-// from each other -- because the `.if BATTLE_ENABLED` block it charges for
-// is a plain RAM range check with no mapper-specific instruction in it: no
-// register layout, no bank-switch shape, nothing that reads differently on
-// a board whose Save medium is battery-WRAM versus one whose medium is a
-// flash driver. `test/unit/kernelbytes.test.js` equality-asserts this figure
+// 41-byte gap (36 from the pre-existing range-check block, 5 from
+// `BE_RESTORE`'s own call site) is identical on MMC1, MMC3 and UNROM 512 --
+// three boards whose own `SAVE_KERNEL_ALLOWANCE_BY_MAPPER` figures differ by
+// hundreds of bytes from each other -- because neither piece has any
+// mapper-specific instruction in it: no register layout, no bank-switch
+// shape, nothing that reads differently on a board whose Save medium is
+// battery-WRAM versus one whose medium is a flash driver. `test/unit/
+// kernelbytes.test.js` equality-asserts this figure
 // on all three boards independently (not merely once and assumed to
 // generalize), specifically to keep the flatness a measured claim rather
 // than a structural assumption -- if a future change to save_check_valid
@@ -678,29 +698,28 @@ export function titleKernelAllowance(mapper) {
 }
 
 // 30 (UNROM 512) is measured the same way as the other two, from a real
-// build of sample-rpg with and without a live Save command: 6678 -> 7397,
-// +719 -- both sides carrying a title screen, since Save requires one; 6678
-// is base (6466) + title (212), not the base alone (see the title-split
-// paragraph above for why that distinction now matters: folding a title-on
-// baseline back into a bare "base" figure is exactly the mistake that
-// undercharged every titleless project before this file's own base/title
-// split). Substantially larger than MMC1/MMC3's own allowance because flash
+// build of sample-rpg with and without a live Save command, title on both
+// sides since Save requires one: 6687 -> 7411, +724 (re-measured against the
+// current tree with Magic Forge phase 4's `BE_RESTORE` landed; both sides
+// were 6678 -> 7397, +719 before it, matching this constant's own
+// action-side 683 plus the prerequisite phase's 36, before `BE_RESTORE`
+// added its own 5-byte call site -- see the split's own paragraph above).
+// Substantially larger than MMC1/MMC3's own allowance because flash
 // save is not just a checksum/marker-write difference from battery -- it
 // carries its own RAM-resident driver (engine/flash.asm: the JEDEC unlock
 // sequence, the erase, the 87-byte program loop, all position-independent)
 // plus save_media_fetch/commit's wrapper (the vblank wait, the forced
 // blank, the copy-to-RAM, the mapper_shadow save/restore) that battery's
 // save_media_fetch/commit reduce to a no-op. UNROM 512's own base-plus-title
-// (6678, the largest of the three, and title-on because Save requires it) is
-// what leaves room for the RPG total (719 = this constant's own action-side
-// 683 plus SAVE_BATTLE_KERNEL_ALLOWANCE's 36, below -- see the split's own
-// paragraph above) against roughly 1514 bytes of headroom before
-// KERNEL_SLACK and the fallback base even enter the picture.
+// figure is what leaves room for the RPG total (724 = this constant's own
+// action-side 683 plus SAVE_BATTLE_KERNEL_ALLOWANCE's 41, below) against
+// roughly 1500 bytes of headroom before KERNEL_SLACK and the fallback base
+// even enter the picture.
 export const SAVE_KERNEL_ALLOWANCE_BY_MAPPER = { 1: 511, 4: 516, 30: 683 };
 // The RPG-only supplement the paragraph above this table derives -- flat,
 // not *_BY_MAPPER, and why, is argued there in full; this is only the
 // declaration, kept next to the table it supplements.
-export const SAVE_BATTLE_KERNEL_ALLOWANCE = 36;
+export const SAVE_BATTLE_KERNEL_ALLOWANCE = 41;
 // move_tick/move_get_x/y/move_set_x/y/move_speed/move_animate only --
 // move_face moved out to its own FACE_KERNEL_ALLOWANCE below (item 6's
 // Turn/Wait first slice), so this dropped from the 395 bytes it measured
@@ -969,7 +988,7 @@ export function kernelCodeBytes(project, mapper) {
   // saveMediaImplemented, not saveCapable: SAVE_KERNEL_ALLOWANCE_BY_MAPPER
   // only has a measured entry for a board whose save/load code actually
   // assembles -- every registered board's medium is implemented today,
-  // UNROM 512 (683 base + 36 RPG supplement = 719 total, engine/flash.asm's
+  // UNROM 512 (683 base + 41 RPG supplement = 724 total, engine/flash.asm's
   // driver plus save_media_fetch/commit's own wrapper) included, so this
   // currently agrees with saveCapable everywhere. It stays saveMediaImplemented
   // rather than collapsing to saveCapable for the same reason

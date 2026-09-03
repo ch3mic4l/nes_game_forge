@@ -540,6 +540,24 @@ load_apply_next:
 continue_game:
   jsr init_session
   jsr load_apply_body
+  ; BE_RESTORE recomputes pc_spells/pc_hp_max/pc_mp_max from the just-restored
+  ; pc_level against the current build's own tables, since the save's raw
+  ; pc_spells bitmask is catalog positions a spell delete since the save was
+  ; written can retarget (engine/battle.asm's own party_restore comment has
+  ; the full account). .if BATTLE_ENABLED because call_battle itself only
+  ; assembles for an RPG (engine/banks.asm) -- an action project has nothing
+  ; to call. Placed here, before the three stores below, purely for locality
+  ; with load_apply_body: what this call needs restored -- pc_level -- is
+  ; exactly what that store just wrote (it also reads the generated
+  ; per-level tables and bt_tmp scratch space, neither of which
+  ; load_apply_body touches, but nothing else is using either at this point
+  ; -- round 2 review, finding 7). It touches none of talk_ent/box_state/
+  ; game_state, so its position relative to those three stores has no safety
+  ; consequence either way.
+  .if BATTLE_ENABLED
+  lda #BE_RESTORE
+  jsr call_battle
+  .endif
   lda #NO_ENTITY
   sta talk_ent
   lda #0

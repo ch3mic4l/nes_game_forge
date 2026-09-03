@@ -448,7 +448,19 @@ export function checkBattleTables(project) {
 // this region on MMC3 pays those 46 bytes -- there is no MMC3-RPG-without-the-
 // split to overcharge, which is precisely the case that forced the kernel's
 // split term out of MMC3's base. Here it is a property of the board.
-export const BASE_BATTLE_CODE_BYTES_BY_MAPPER = { 30: 3938, 1: 3938, 4: 3984 };
+//
+// Magic Forge phase 4 (`BE_RESTORE`, handoff-magic/phase4-design.md) added a
+// uniform +18 on all three boards -- measured, not estimated: `battle_entry`'s
+// own dispatch chain (engine/battle.asm) grew an explicit `cmp #BE_JOIN`
+// before its now-fourth arm, and the new `party_restore` routine loops every
+// party member, recomputing `pc_spells`/`pc_hp_max`/`pc_mp_max` from their
+// restored level on `Continue` (see `main/build/generate.js`'s own
+// `SAVE_BATTLE_KERNEL_ALLOWANCE` comment for why the save's raw `pc_spells`
+// byte can't be trusted). Nothing in either addition branches on
+// `SPLIT_ENABLED` or anything else mapper-specific, so the +18 lands
+// identically on all three boards -- MMC3's own extra 46 bytes above is
+// unchanged by it (4002 - 3956 = 46, the same gap as before).
+export const BASE_BATTLE_CODE_BYTES_BY_MAPPER = { 30: 3956, 1: 3956, 4: 4002 };
 
 // Phase 4c round 3, finding 6 (phase4-design.md §9), corrected round 3b
 // (review K1): the two-menu-consistency filter (build_item_list's kind/

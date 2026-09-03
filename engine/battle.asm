@@ -26,8 +26,12 @@ battle_entry_tick:
   bne battle_entry_join
   jmp battle_tick
 battle_entry_join:
+  cmp #BE_JOIN
+  bne battle_entry_restore
   ldx bt_arg                ; the Join command, run from the field mid-script
   jmp party_join
+battle_entry_restore:
+  jmp party_restore
 
 ; ------------------------------------------------------------- a new game
 
@@ -84,6 +88,39 @@ party_apply_level:
   sta pc_mp_max,x
   lda pc_spells_at,y
   sta pc_spells,x
+  rts
+
+; BE_RESTORE: continue_game (engine/save.asm) calls this once, right after
+; load_apply_body has overwritten RAM with the save record, to recompute
+; every member's pc_spells (and, as an accepted side effect, pc_hp_max/
+; pc_mp_max) from their restored pc_level against the *current* build's own
+; tables. The save's raw pc_spells byte is a bitmask of catalog *positions*,
+; not spell ids, and nothing renumbers it when a spell is deleted -- a save
+; written before the delete would otherwise restore a party that knows the
+; wrong spell, or one that no longer exists.
+;
+; Unconditional over every PARTY_SIZE slot, live or not -- no pc_in_party
+; check. An unjoined slot's pc_spells/pc_hp_max/pc_mp_max are dead data by
+; the engine's own convention (nothing reads them until pc_in_party goes
+; live), and the only other writer that ever sets pc_in_party, party_join,
+; unconditionally calls party_apply_level again the moment it does -- so
+; whatever this loop computes for an unjoined slot is guaranteed to be
+; overwritten with the then-current level's own figures regardless.
+;
+; Bounded PARTY_SIZE, not MAX_PARTY: pc_hp_at/pc_mp_at/pc_spells_at are each
+; sized to the authored party count, not the fixed RAM capacity -- a
+; MAX_PARTY-bounded loop would read past the end of those tables the moment
+; a project's own party is smaller than four, which sample-rpg's already is.
+; party_apply_level preserves X (it only ever reads X via txa; level_row
+; never touches X), so the loop needs no save/restore of its own index
+; across the call.
+party_restore:
+  ldx #0
+party_restore_slot:
+  jsr party_apply_level
+  inx
+  cpx #PARTY_SIZE
+  bne party_restore_slot
   rts
 
 ; A = member index; returns Y = that member's row for their current level.

@@ -129,9 +129,14 @@ kb_timer    = $50           ; knocked back for this many more frames
 kb_dir      = $51           ; which way, as a DIR_*
 hud_slot    = $52           ; draw_hud's heart counter
 ; ------------------------------------------------------------- battle RAM
-; Only an RPG ever touches these, and only while ST_BATTLE is the game state.
-; Combatants live in one index space -- 0-3 are party members, 4-7 monsters --
-; so targeting, the cursor and the turn order are one code path for both sides.
+; Only an RPG ever touches these. Mostly only while ST_BATTLE is the game
+; state, but not exclusively: the RPG cross-bank calls made outside a battle
+; -- BE_INIT (init_session, at boot/new-game) and BE_RESTORE (continue_game,
+; on Continue) -- both reach party_apply_level/level_row, which use bt_tmp,
+; while game_state is ST_TITLE or whatever init_session left it at, not
+; ST_BATTLE (round 2 review, finding 7). Combatants live in one index space
+; -- 0-3 are party members, 4-7 monsters -- so targeting, the cursor and the
+; turn order are one code path for both sides.
 bt_phase    = $53           ; BP_* below
 bt_actor    = $54           ; whose turn it is, as a combatant index
 bt_sel      = $55           ; the highlighted command, or list row
@@ -780,6 +785,7 @@ BP_DONE     = 11            ; leave the battle on the next tick
 BE_INIT     = 0             ; build the party from the tables: a new game
 BE_TICK     = 1             ; one frame of battle
 BE_JOIN     = 2             ; recruit the party member in bt_arg (the Join command)
+BE_RESTORE  = 3             ; recompute every member's spells/hp_max/mp_max from their restored level (Continue)
 
 ; The battle screen, in tile rows. Sky, then ground with the monsters standing
 ; on it, then the box -- FALLEN STAR's geometry, which is what the user asked

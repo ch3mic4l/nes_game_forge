@@ -2027,6 +2027,14 @@ test(
 // between them, not just one. sample-rpg's own Save+Move combination on
 // MMC3 no longer triggers this (see above), so this inflates the project's
 // table content to force a deficit comfortably under both allowances.
+// 557, not 552: Magic Forge phase 4 (BE_RESTORE) grew SAVE_BATTLE_KERNEL_
+// ALLOWANCE from 36 to 41, a real +5 to MMC3's own Save total this hardcoded
+// literal names directly (395 + 557, below, the same +5) -- these two message
+// literals were the ones the phase-4 design's own census found already
+// correct through the prerequisite split alone (they name the real total,
+// not the constant, so splitting the term left them unchanged); BE_RESTORE
+// itself is the first change since that actually moves the real total they
+// hardcode, and they needed editing for exactly that reason.
 test('a kernel-lo shortfall either Save or Move alone would close offers both as a choice', async () => {
   const project = await loadProject(SAMPLE_RPG);
   project.cartridge.mapper = 4; // MMC3
@@ -2035,7 +2043,7 @@ test('a kernel-lo shortfall either Save or Move alone would close offers both as
   project.maps[0].screens[0].entities.push(saveAndMoveEvent());
   inflate(project, 25);
   const message = kernelShortfallMessage(project);
-  assert.match(message, /removing every Move command \(frees 395 bytes\) or every Save command \(frees 552 bytes\)/);
+  assert.match(message, /removing every Move command \(frees 395 bytes\) or every Save command \(frees 557 bytes\)/);
 });
 
 // Neither allowance alone covers a big enough deficit, but the two together
@@ -2049,7 +2057,7 @@ test('a kernel-lo shortfall neither Save nor Move alone would close, but both to
   project.maps[0].screens[0].entities.push(saveAndMoveEvent());
   inflate(project, 88);
   const message = kernelShortfallMessage(project);
-  assert.match(message, /removing every Move command and every Save command together \(frees 947 bytes\)/);
+  assert.match(message, /removing every Move command and every Save command together \(frees 952 bytes\)/);
 });
 
 // Turn and Wait were added to kernelShortfallAdvice's own active-feature list
@@ -3194,7 +3202,7 @@ test(
 );
 
 // design-tile.md §9: MMC1 Save+Move+item is the one RPG-capable-board
-// configuration comfortable enough (220 bytes free, per this file's own
+// configuration comfortable enough (195 bytes free, per this file's own
 // Save+Move+item narrative) to absorb everything else measured against it --
 // until a bound tile is added on top, per the design's own occupancy
 // accounting.

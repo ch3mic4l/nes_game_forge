@@ -440,7 +440,19 @@ test('a project with no items and no Save is byte-identical to the pre-phase-4b 
 // grew by the same 53 measured bytes bankedbytes.test.js pins into
 // BASE_BATTLE_CODE_BYTES_BY_MAPPER, again shifting labels mid-bank rather
 // than growing the padded ROM.
-const PINNED_RPG_BASELINE_HASH = '622826949b8aaf414f9c3a73423929239b61f62498e4aa5dad0dd49460b29d3c';
+//
+// Re-pinned again for Magic Forge phase 4 (BE_RESTORE, handoff-magic/
+// phase4-design.md): battle_entry (engine/battle.asm) gained an explicit
+// `cmp #BE_JOIN` ahead of its now-fourth dispatch arm, and the new
+// party_restore routine (looping every party member to recompute pc_spells/
+// pc_hp_max/pc_mp_max on Continue) landed in the same file -- both
+// unconditional battle-region code present on every RPG build regardless of
+// whether this baseline project has any items, Save, or spells, the
+// identical shape the two re-pins above already are. Size still unchanged
+// (still 147472): the region grew by the 18 measured bytes bankedbytes.
+// test.js now pins into BASE_BATTLE_CODE_BYTES_BY_MAPPER, again shifting
+// labels mid-bank rather than growing the padded ROM.
+const PINNED_RPG_BASELINE_HASH = 'f2da4ef71f0d8b0aba4f8eedaf09acadfbd4cca995871e754345a5c374f1a3c9';
 const PINNED_RPG_BASELINE_SIZE = 147472;
 
 test('an RPG with no items and no Save is byte-identical to the pre-round-4 master build', async (t) => {

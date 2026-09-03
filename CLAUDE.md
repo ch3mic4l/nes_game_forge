@@ -1074,21 +1074,19 @@ sizes, the route zero-cost proof and `KERNEL_SLACK` itself are each checked thei
   project with a live `Save` command pays this term even if `titleMap` is currently unset, because
   `validateProject` requires a title wherever Save is live.
 - `SAVE_KERNEL_ALLOWANCE_BY_MAPPER = { 1: 511, 4: 516, 30: 683 }` plus
-  `SAVE_BATTLE_KERNEL_ALLOWANCE = 36` — Save's cost is **two** terms, not one. The table is the
-  action-side base every save-capable board pays regardless of game type (UNROM 512's own entry
-  costs more because that board's Save path is a flash-rewrite driver rather than battery-WRAM, see
-  the flash-save passage under "The engine"); the flat supplement is the RPG-only extra, charged
-  when `save_check_valid`'s own `.if BATTLE_ENABLED` range-check block — the sole `BATTLE_ENABLED`
-  gate in `engine/save.asm` — actually assembles. Together they sum to the RPG totals
-  `{1: 547, 4: 552, 30: 719}` those boards paid when this was one undivided term, so no capacity
-  refusal moved when it split; what changed is that an action project stopped being overcharged 36
-  bytes on every board. The supplement is flat rather than `*_BY_MAPPER` because the gap measures
+  `SAVE_BATTLE_KERNEL_ALLOWANCE = 41` — Save's cost is **two** terms: the table is the
+  action-side base every save-capable board pays regardless of game type (UNROM 512 costs more —
+  flash-rewrite, not battery-WRAM; see the flash-save passage under "The engine"); the flat
+  supplement is the RPG-only extra:
+  `save_check_valid`'s own `.if BATTLE_ENABLED` range-check block, plus phase 4's `BE_RESTORE`
+  call site; together they sum to the RPG totals `{1: 552, 4: 557, 30: 724}`. The
+  supplement is flat rather than `*_BY_MAPPER` because the gap measures
   identical on all three boards — the block is a plain RAM range check with no mapper-specific
-  instruction in it — and `kernelbytes.test.js` equality-asserts it on each board independently, so
-  the flatness stays a measured claim rather than a structural assumption. Its gate is **not**
+  instruction in it — and `kernelbytes.test.js` equality-asserts it per board, keeping the flatness
+  measured, not assumed. Its gate is **not**
   `gameType === 'rpg'`: `kernelCodeBytes` recomputes `codeRegions(...).length > 0`, the real
-  predicate `BATTLE_ENABLED` is emitted from, which is strictly narrower for a CHR-RAM board whose
-  tileset payloads have claimed every switchable region.
+  predicate `BATTLE_ENABLED` is emitted from, strictly narrower for a CHR-RAM board whose tileset
+  payloads have claimed every switchable region.
 - `MOVE_KERNEL_ALLOWANCE = 379` plus `FACE_KERNEL_ALLOWANCE = 16` (the facing-set routine Move and
   `Turn` share, charged once whenever either is live) — 395 total for a Move-only project.
 - `SPLIT_KERNEL_ALLOWANCE = 165`, MMC3-only, charged whenever `projectUsesText` is true on that
@@ -1132,34 +1130,34 @@ sizes, the route zero-cost proof and `KERNEL_SLACK` itself are each checked thei
   the engine closely enough to catch the next regression.
 
 **Documented limitations — combinations `checkCapacity` refuses today, each with its own named
-test rather than a silent gap:**
+test rather than a silent gap. Every Save-on-RPG row moved 5 bytes with `BE_RESTORE` (above):**
 
-- MMC3, `Save` + `Move` + one live item: 11 bytes short. Test:
+- MMC3, `Save` + `Move` + one live item: 16 bytes short. Test:
   `'sample-rpg with Save, Move and its one live item does not build on MMC3 -- round 2 reopened the
   gap the kernel diet had closed, a documented limitation'` (`kernelbytes.test.js`). The identical
-  combination fits on MMC1 with 220 bytes free.
-- UNROM 512, `Save` + `Move`, no item: 88 bytes short (need 126, only 38 free) — genuinely
+  combination fits on MMC1 with 195 bytes free.
+- UNROM 512, `Save` + `Move`, no item: 93 bytes short (need 126, only 33 free) — genuinely
   unrelated to items; dropping an item does not close this one the way it closes MMC3's.
 - MMC3, `Save` + `Move` (no item) + a live `Sting`: documented limitation. Test:
   `'sample-rpg with Save, Move (no item) and a live Sting does not build on MMC3 -- a documented
   limitation'`.
 - A live switch-bound tile (marginal cost `388 + 30 + 2 × screen count` — 420 bytes on this
   project's one screen, the largest single feature cost in this ledger) reopens two different
-  rows: MMC3's `Save` + `Move`, no item (already 88-free without the tile) and MMC1's `Save` +
-  `Move` + one live item (previously comfortable at 220 free). Documented limitation on both
+  rows: MMC3's `Save` + `Move`, no item (already 63-free without the tile) and MMC1's `Save` +
+  `Move` + one live item (previously comfortable at 195 free). Documented limitation on both
   boards, but two different configurations, not the same one. Tests: `'sample-rpg with Save, Move
   (no item) and a live bound tile does not build on MMC3'` / `'sample-rpg with Save, Move and its
   one live item does not build on MMC1 once a bound tile is added'`.
 - A live `Sfx` command adds five more refusal rows on its own: MMC1 Save+Move+item; MMC1
-  Save+Move-no-item (31 short); MMC3 ALL-7-verbs+Move+item-no-Save (41 short); UNROM 512
-  Save-only-with-item and ALL-7-verbs+Move+item (42 short); and it reopens MMC3's
-  Save+Move-no-item row a second, independent way (alongside Sting), and MMC1's Save+Move+item row
-  a second way (with Sting and Sfx both live).
+  Save+Move-no-item (36 short); MMC3 ALL-7-verbs+Move+item-no-Save (41 short); UNROM 512
+  Save-only-with-item (87 short); UNROM 512 ALL-7-verbs+Move+item-no-Save (42 short); and it
+  reopens MMC3's Save+Move-no-item row a second, independent way (alongside Sting), and MMC1's
+  Save+Move+item row a second way (with Sting and Sfx both live).
 - Two fits controls confirm the boundary is real, not over-drawn: `sample-rpg`'s one live item plus
   a live Sfx alone still builds on MMC3 (the tightest of the three boards), and the seven item-6
   commands (Turn, Wait, Shake, both Show/Hide, Fade, Flash) plus that item with Sting *and* Sfx
-  both live still builds on MMC3 too — with no Save, no Move and no title live on that row; those
-  exclusions are load-bearing, since every refusal row above carries Save and/or Move.
+  both live still builds on MMC3 too — no Save, Move or title live on that row, load-bearing since
+  every refusal row above carries Save and/or Move.
 
 `kernelShortfallAdvice` names a real, buildable fix for every refusal above (which live command(s)
 to drop, or occasionally a different mapper) — a refusal here is `checkCapacity` doing its job on a
@@ -1238,11 +1236,15 @@ the single writer for that, consulted by the schema, the Build panel and `reconc
 **`call_battle` in `engine/banks.asm` is the only cross-bank call in this codebase, and the only
 one there may be.** `player.asm` dereferences `mtptr` out of the switchable window every single
 frame, so the trampoline ends with `jmp set_screen_ptr` — the restore *is* the return. Anything
-that forgets it leaves the game reading its map out of the battle system's code, which does not
-crash and does not look like a banking bug. `banked.test.js` asserts the restore. The trampoline
-has three entry points (`BE_INIT`, `BE_TICK`, `BE_JOIN`), and `BE_JOIN` is the one used *on the
-field*: the script's Join command recruits a party member mid-conversation, so the restore matters
-there more than anywhere — the frame it ran in still has a map to draw.
+that forgets it leaves the game reading its map out of the battle system's code — no crash, no
+obvious banking bug. `banked.test.js` asserts the restore. The trampoline
+has four entry points (`BE_INIT`, `BE_TICK`, `BE_JOIN`, `BE_RESTORE`), and `BE_JOIN` is the one used
+*on the field*: the script's Join command recruits a party member mid-conversation, so the restore
+matters most there — the frame it ran in still has a map to draw. `BE_RESTORE` runs at
+load time (`engine/save.asm`), recomputing `pc_spells` from the restored level, not trusting the
+save's own possibly-stale bitmask. Unlike `BE_JOIN`, this restore is masked by its caller:
+`continue_game` ends `jmp redraw_screen`, re-running `set_screen_ptr` regardless of whether the
+trampoline exit succeeded.
 
 The split is: `engine/rpg.asm` in the kernel (the RNG, the step counter, assembling a formation),
 everything else in `engine/battle.asm` + `battleui.asm` + `battleturn.asm` on the far side.
@@ -1259,8 +1261,8 @@ the drift the check exists to prevent, one layer out. `battletables.js` imports 
 and must stay that way; `renderer/forges/build/build.js` importing it is the same move
 `renderer/forges/sound/sound.js` already makes with `main/build/songcompile.js`.
 
-`BASE_BATTLE_CODE_BYTES_BY_MAPPER` is per board from the outset (UNROM 512 3938, MMC1 3938, MMC3
-3984 — each +14 from the battle-side saturation fixes, the `bcs`-before-`cmp` guard `gain_hearts`
+`BASE_BATTLE_CODE_BYTES_BY_MAPPER` is per board from the outset (UNROM 512 3956, MMC1 3956, MMC3
+4002 — each +14 from the battle-side saturation fixes, the `bcs`-before-`cmp` guard `gain_hearts`
 and `party_heal` already had, applied to `item_chosen`/`cast_heal`/`cast_heal_mon` plus a
 saturate-to-255 in `spell_damage_weak` and `physical_damage_noise`; see
 `docs/battlemath-report.md` — plus a further +50 on every board alike from the
@@ -1268,7 +1270,8 @@ name-stride fix: `name_offset_pc` (`engine/battle.asm`) traded the 8-bit offset 
 wrapped past entry 25 for a 16-bit `ptr_lo`/`ptr_hi` add its four callers now dereference through;
 see `docs/namestride-report.md` — plus a further +53 on every board alike from the Magic Forge's
 own spell-amount roll, `roll_spell_amount`/`mod8` (`engine/battleturn.asm`); see
-`docs/design-magic.md` §8) rather than one flat number split later — the mistake `BASE_KERNEL_CODE_BYTES` made and
+`docs/design-magic.md` §8 — plus +18 from `BE_RESTORE` below) rather
+than one flat number split later — the mistake `BASE_KERNEL_CODE_BYTES` made and
 `BASE_KERNEL_CODE_BYTES_BY_MAPPER` had to undo. MMC3's extra 46 bytes are the `.if SPLIT_ENABLED`
 blocks inside the region itself (`battle.asm`'s split arm, `battleui.asm`'s sprite targeting
 cursor), and they need **no** separate conditional term the way `SPLIT_KERNEL_ALLOWANCE` does:

@@ -39,6 +39,9 @@ import { Emulator } from '../../renderer/emulator/runcontrol.js';
 import { loadProject, saveProject } from '../../main/project-io.js';
 import { buildProject } from '../../main/build/pipeline.js';
 import { createSong } from '../../shared/audio.js';
+import { renumberSpellDeletion } from '../../shared/project.js';
+import { saveIdentity } from '../../shared/save.js';
+import { battleTables, statAt } from '../../main/build/battletables.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const SAMPLE_RPG = path.join(ROOT, 'sample-rpg');
@@ -53,6 +56,12 @@ const SWITCHES = 0x390;
 const VARIABLES = 0x500;
 const CUR_SONG = 0x8b; // cur_map+1, cur_map = bt_owner_rec+1 = $8A
 const NO_SONG = 0xff;
+// Magic Forge phase 4 (BE_RESTORE) — the live, per-member RAM arrays
+// party_apply_level writes, indexed by adding the member index directly
+// (each is MAX_PARTY bytes wide, contiguous).
+const PC_HP_MAX = 0x039c;
+const PC_MP_MAX = 0x03a4;
+const PC_SPELLS = 0x03b8;
 
 const ST_GAMEPLAY = 0;
 const ST_TITLE = 3;
@@ -79,8 +88,14 @@ const SAVE_PLAYER_DIR_OFFSET = 0x03;
 const SAVE_INV_ITEMS_OFFSET = 0x1d;
 const SAVE_INV_COUNT_OFFSET = 0x25;
 const SAVE_PARTY_SIZE_OFFSET = 0x29;
+// Magic Forge phase 4 (BE_RESTORE) — sourced the same way, by hand from a
+// real build's assets/save.inc (`SAVE_PC_HP_MAX = $6030`, `SAVE_PC_MP_MAX =
+// $6038`, `SAVE_PC_SPELLS = $604C`, each minus SRAM_BASE).
+const SAVE_PC_HP_MAX_OFFSET = 0x30;
+const SAVE_PC_MP_MAX_OFFSET = 0x38;
 const SAVE_PC_LEVEL_OFFSET = 0x3c;
 const SAVE_PC_IN_PARTY_OFFSET = 0x48;
+const SAVE_PC_SPELLS_OFFSET = 0x4c;
 const SAVE_CHECKSUM_LO_OFFSET = 0x50;
 const SAVE_CHECKSUM_HI_OFFSET = 0x51;
 // Widened from two bytes to four this round -- see shared/save.js's
@@ -741,5 +756,285 @@ test(
     const built = await buildProject({ dir, project, log: () => {} });
     const header = await fs.promises.readFile(built.romPath);
     assert.equal(header[6] & 0x02, 0, 'a project with no Save command must not set the battery bit');
+  }
+);
+
+// --- Magic Forge phase 4: BE_RESTORE (handoff-magic/phase4-design.md) ------
+//
+// continue_game (engine/save.asm) now calls call_battle(BE_RESTORE) once,
+// right after load_apply_body, to recompute every party member's pc_spells
+// (and, as an accepted side effect, pc_hp_max/pc_mp_max) from their restored
+// pc_level against the *current* build's own tables -- the save's raw
+// pc_spells byte is a bitmask of catalog *positions*, and nothing renumbers
+// it when a spell is deleted, so a save written before the delete would
+// otherwise restore a party that knows the wrong spell (see
+// engine/battle.asm's own party_restore comment for the full account).
+//
+// A small helper, not exported by battletables.js itself: nesasm assembles
+// every .db operand in this file as one contiguous byte stream regardless of
+// which label sits in front of it, so a table's own "past the end" bytes are
+// simply whatever the next .db line(s) after it happen to hold -- real,
+// deterministic output, not undefined behaviour. Reading it this way (off
+// battleTables(project)'s own returned text, in JS, before assembly ever
+// runs) is one of the two techniques the design's own Q6 names; the other is
+// parsing the built assets/battle.inc, which would say the same thing, since
+// that file's content *is* this function's return value.
+function flattenBattleTableBytes(project) {
+  const text = battleTables(project);
+  const bytes = [];
+  const labelOffsets = {};
+  for (const line of text.split('\n')) {
+    const label = line.match(/^(\w+):$/);
+    if (label) {
+      labelOffsets[label[1]] = bytes.length;
+      continue;
+    }
+    const db = line.match(/^\s*\.db\s+(.+)$/);
+    if (db) {
+      for (const token of db[1].split(',')) bytes.push(parseInt(token.trim().replace('$', ''), 16));
+    }
+  }
+  return { bytes, labelOffsets };
+}
+
+/** level_row's own arithmetic (engine/battle.asm): Y = member * MAX_LEVEL + level - 1. */
+function levelRow(project, member, level) {
+  return member * project.rpg.maxLevel + (level - 1);
+}
+
+/**
+ * The spell bitmask party_apply_level would compute for `member` at `level`
+ * against `project`'s *current* spells catalog -- the same algorithm
+ * battleTables' own `known` builds (main/build/battletables.js), reimplemented
+ * here rather than imported because the source computes it inline for every
+ * member/level pair at once, not as a callable single-lookup function.
+ */
+function expectedSpellMask(project, memberIndex, level) {
+  const member = project.party[memberIndex];
+  let mask = 0;
+  for (const entry of member.spells ?? []) {
+    const slot = project.spells.findIndex((spell) => spell.id === entry.spellId);
+    if (slot < 0 || slot > 7) continue;
+    if (level >= Math.max(1, entry.level)) mask |= 1 << slot;
+  }
+  return mask;
+}
+
+/** buildSaveable's own shape, but keeping the project object for saveIdentity(). */
+async function buildSaveableProject(t, mutate) {
+  const dir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'forge-restore-'));
+  t.after(() => fs.promises.rm(dir, { recursive: true, force: true }));
+  const project = await loadProject(SAMPLE_RPG);
+  project.cartridge.mapper = 1; // MMC1
+  project.project.titleMap = 0;
+  project.project.titleScreen = 0;
+  project.maps[0].encounters = { rate: 0, actorIds: [] };
+  const saverId = project.sprites.actors.length;
+  project.sprites.actors.push({ name: 'Saver', behavior: 'npc', hp: 1, damage: 0 });
+  project.maps[0].screens[0].entities.push({
+    actorId: saverId,
+    x: 64,
+    y: 96,
+    props: { trigger: 'touch', event: { pages: [{ cond: { type: 'none', arg: 0 }, commands: [{ op: 'save' }] }] } }
+  });
+  if (mutate) mutate(project);
+  await saveProject(dir, project);
+  const built = await buildProject({ dir, project, log: () => {} });
+  return { project, romPath: built.romPath };
+}
+
+// Wrong implementation this catches: a BE_RESTORE that is never called at
+// all -- a no-op stub, or one that forgot the .if BATTLE_ENABLED gate and
+// quietly did nothing -- would leave pc_spells/pc_hp_max/pc_mp_max holding
+// the raw transplanted bytes ROM A wrote under the OLD catalog, not the
+// values ROM B's own current tables say for the restored level.
+test(
+  'BE_RESTORE recomputes pc_spells/pc_hp_max/pc_mp_max from the restored level against the current build, not the transplanted save',
+  { skip: !hasNesasm && 'nesasm not found on PATH' },
+  async (t) => {
+    // ROM A: sample-rpg as checked in. Rian (party member 0) knows Ember
+    // (spell id 0) at level 1, Venom (id 2) at level 2, Mend (id 1) at level
+    // 3 -- sample-rpg/party.json's own data, unmutated.
+    const a = await buildSaveableProject(t);
+
+    // ROM B: the identical project, with "Mend" (spell index 1) deleted the
+    // same way the Magic Forge's own delete handler does it (renderer/
+    // forges/magic/magic.js): renumberSpellDeletion first (repairs every
+    // reference), then splice, then renumber the remaining ids to their new
+    // positions. Venom (was index 2) becomes index 1; Mend is gone.
+    const b = await buildSaveableProject(t, (project) => {
+      renumberSpellDeletion(project, 1);
+      project.spells.splice(1, 1);
+      project.spells.forEach((entry, position) => (entry.id = position));
+    });
+
+    // The transplant below is only meaningful if save_check_valid actually
+    // accepts it on ROM B -- assert the precondition directly rather than
+    // assume it: saveIdentity folds in none of project.spells (shared/
+    // save.js), so a spell-catalog-only change must never move the identity.
+    assert.equal(
+      saveIdentity(a.project),
+      saveIdentity(b.project),
+      'a spell catalog change alone must not move saveIdentity, or this transplant proves nothing'
+    );
+
+    // Every value computed up front, before anything is written to a
+    // record: the stale mask/hp_max/mp_max ROM A's own catalog gives member
+    // 0 at level 3 (what a save actually written by ROM A at that level
+    // would coherently carry, and what load_apply_body alone would leave in
+    // place if BE_RESTORE never ran), against the correct mask ROM B's own
+    // (post-delete) catalog gives the same member/level. The masks must
+    // differ, or this fixture cannot tell "recomputed" from "trusted the
+    // transplanted byte" apart.
+    const staleMask = expectedSpellMask(a.project, 0, 3);
+    assert.equal(staleMask, 0b111, 'fixture setup is wrong if ROM A does not have Rian knowing all three spells at level 3');
+    const expectedMask = expectedSpellMask(b.project, 0, 3);
+    assert.equal(expectedMask, 0b011, "fixture setup is wrong if ROM B's own catalog does not give Rian exactly Ember+Venom at level 3");
+    assert.notEqual(expectedMask, staleMask, 'ROM A and ROM B must disagree about the mask, or this fixture proves nothing');
+
+    const staleHpMax = statAt(a.project.party[0].baseHp, a.project.party[0].hpPerLevel, 3);
+    const staleMpMax = statAt(a.project.party[0].baseMp, a.project.party[0].mpPerLevel, 3);
+    const expectedHpMax = statAt(b.project.party[0].baseHp, b.project.party[0].hpPerLevel, 3);
+    const expectedMpMax = statAt(b.project.party[0].baseMp, b.project.party[0].mpPerLevel, 3);
+    // ROM A and ROM B share the identical party.json stats -- only the spell
+    // catalog differs between them -- so these are equal by construction,
+    // confirmed rather than assumed: the hp/mp assertions below therefore
+    // only prove "recomputed to a sane value for the restored level," not
+    // "recomputed against ROM B's own catalog rather than ROM A's carried-
+    // over one" -- the mask is the one assertion in this fixture that can
+    // tell the two builds apart (round 1 review, finding 1).
+    assert.equal(staleHpMax, expectedHpMax, "fixture assumption wrong: ROM A and ROM B's own level-3 hp_max should be identical");
+    assert.equal(staleMpMax, expectedMpMax, "fixture assumption wrong: ROM A and ROM B's own level-3 mp_max should be identical");
+
+    // A real save on ROM A, then plant all four of ROM A's own coherent
+    // level-3 values directly into the sealed record -- corruptAndReseal is
+    // the file's own existing "plant one byte, reseal the checksum around
+    // it" tool, called four times in a row (each reseals over the record's
+    // then-current state, so the final checksum covers all four pokes
+    // together). `pc_level` alone is not an invalid value to plant (1..
+    // MAX_LEVEL is legal); `pc_spells`/`pc_hp_max`/`pc_mp_max` are what make
+    // this a *coherent* level-3 record rather than a level-1 one wearing a
+    // level-3 label -- round 1 review, finding 1: the previous version of
+    // this fixture only ever changed `pc_level`, leaving the level-1 mask
+    // (`1`) in place, so the omitted-call sabotage caught `1 !== 3` rather
+    // than the intended stale-catalog `7 !== 3`.
+    const nesA = boot(a.romPath);
+    tap(nesA, START);
+    touchSaver(nesA);
+    assert.equal(nesA.cpu.mem[SRAM_BASE + SAVE_MARKER_OFFSET], SAVE_MARKER_VALID, 'the real save on ROM A never completed');
+    corruptAndReseal(nesA, SAVE_PC_LEVEL_OFFSET, 3); // member 0's level (offset 0 within the field)
+    corruptAndReseal(nesA, SAVE_PC_SPELLS_OFFSET, staleMask);
+    corruptAndReseal(nesA, SAVE_PC_HP_MAX_OFFSET, staleHpMax);
+    corruptAndReseal(nesA, SAVE_PC_MP_MAX_OFFSET, staleMpMax);
+
+    // Assert the sealed record actually carries what was just planted,
+    // before it is ever transplanted anywhere -- this is what proves the
+    // fixture is carrying a coherent old-build save rather than an
+    // internally inconsistent one (round 1 review, finding 1's own ask).
+    assert.equal(nesA.cpu.mem[SRAM_BASE + SAVE_PC_LEVEL_OFFSET], 3, "ROM A's own sealed record does not carry the planted level");
+    assert.equal(nesA.cpu.mem[SRAM_BASE + SAVE_PC_SPELLS_OFFSET], staleMask, "ROM A's own sealed record does not carry the planted mask");
+    assert.equal(nesA.cpu.mem[SRAM_BASE + SAVE_PC_HP_MAX_OFFSET], staleHpMax, "ROM A's own sealed record does not carry the planted hp_max");
+    assert.equal(nesA.cpu.mem[SRAM_BASE + SAVE_PC_MP_MAX_OFFSET], staleMpMax, "ROM A's own sealed record does not carry the planted mp_max");
+
+    const foreignBattery = nesA.cpu.mem.slice(SRAM_BASE, SRAM_BASE + SRAM_SIZE);
+
+    const nesB = boot(b.romPath);
+    nesB.cpu.mem.set(foreignBattery, SRAM_BASE);
+    tap(nesB, SELECT); // Continue
+    assert.equal(
+      nesB.cpu.mem[GAME_STATE],
+      ST_GAMEPLAY,
+      'ROM B should have accepted the transplanted save (identity-compatible) and resumed play'
+    );
+
+    assert.equal(
+      nesB.cpu.mem[PC_SPELLS],
+      expectedMask,
+      "pc_spells was not recomputed against ROM B's own current catalog -- BE_RESTORE never ran, or read the wrong table"
+    );
+    assert.equal(nesB.cpu.mem[PC_HP_MAX], expectedHpMax, 'pc_hp_max was not recomputed from the restored level');
+    assert.equal(nesB.cpu.mem[PC_MP_MAX], expectedMpMax, 'pc_mp_max was not recomputed from the restored level');
+  }
+);
+
+// Wrong implementation this catches: BE_RESTORE's own loop bounded at
+// MAX_PARTY instead of PARTY_SIZE -- directly, by its own writes to the two
+// slots a correct implementation must never touch. sample-rpg's own party
+// has 2 members (PARTY_SIZE = 2), so slots 2 and 3 are exactly such slots --
+// never assigned a per-level table row at all, since pc_hp_at/pc_mp_at/
+// pc_spells_at are each generated PARTY_SIZE * MAX_LEVEL rows wide, not
+// MAX_PARTY * MAX_LEVEL.
+test(
+  "BE_RESTORE's loop stays within PARTY_SIZE -- it must never touch a slot past the project's real party",
+  { skip: !hasNesasm && 'nesasm not found on PATH' },
+  async (t) => {
+    const { project, romPath } = await buildSaveableProject(t);
+    assert.equal(project.party.length, 2, 'this fixture needs sample-rpg\'s own 2-member party, unmutated');
+
+    // The real bytes a MAX_PARTY-bounded loop would fetch for slots 2 and 3
+    // at level 1 -- the level party_init leaves every never-joined slot at,
+    // and the level a fresh save (nothing here levels anyone up) therefore
+    // carries for them too. Read off battleTables(project)'s own returned
+    // text, not guessed.
+    const { bytes, labelOffsets } = flattenBattleTableBytes(project);
+    const outOfBounds = {};
+    for (const [label, key] of [
+      ['pc_hp_at', 'hpMax'],
+      ['pc_mp_at', 'mpMax'],
+      ['pc_spells_at', 'spells']
+    ]) {
+      outOfBounds[key] = [2, 3].map((member) => bytes[labelOffsets[label] + levelRow(project, member, 1)]);
+    }
+
+    // Chosen sentinels, and the precondition that makes them safe to use:
+    // each must differ from the real out-of-bounds byte it will sit beside,
+    // or a MAX_PARTY-bounded loop's own wrong write would coincidentally
+    // reproduce the sentinel and this fixture would silently pass a wrong
+    // implementation (design's own review round 2, finding 2).
+    const SENTINEL_HP_MAX = 0xaa;
+    const SENTINEL_MP_MAX = 0xbb;
+    const SENTINEL_SPELLS = 0xcc;
+    for (const value of outOfBounds.hpMax) {
+      assert.notEqual(SENTINEL_HP_MAX, value, 'hp_max sentinel collides with the real generated byte -- pick another');
+    }
+    for (const value of outOfBounds.mpMax) {
+      assert.notEqual(SENTINEL_MP_MAX, value, 'mp_max sentinel collides with the real generated byte -- pick another');
+    }
+    for (const value of outOfBounds.spells) {
+      assert.notEqual(SENTINEL_SPELLS, value, 'spells sentinel collides with the real generated byte -- pick another');
+    }
+
+    const nes = boot(romPath);
+    tap(nes, START);
+    touchSaver(nes);
+    assert.equal(nes.cpu.mem[SRAM_BASE + SAVE_MARKER_OFFSET], SAVE_MARKER_VALID, 'the real save never completed');
+
+    for (const member of [2, 3]) {
+      corruptAndReseal(nes, SAVE_PC_HP_MAX_OFFSET + member, SENTINEL_HP_MAX);
+      corruptAndReseal(nes, SAVE_PC_MP_MAX_OFFSET + member, SENTINEL_MP_MAX);
+      corruptAndReseal(nes, SAVE_PC_SPELLS_OFFSET + member, SENTINEL_SPELLS);
+    }
+
+    powerCycle(nes);
+    tap(nes, SELECT); // Continue
+    assert.equal(nes.cpu.mem[GAME_STATE], ST_GAMEPLAY, 'Continue should have loaded the save and resumed play');
+
+    for (const member of [2, 3]) {
+      assert.equal(
+        nes.cpu.mem[PC_HP_MAX + member],
+        SENTINEL_HP_MAX,
+        `slot ${member}'s pc_hp_max was overwritten -- BE_RESTORE's loop reached a slot past PARTY_SIZE`
+      );
+      assert.equal(
+        nes.cpu.mem[PC_MP_MAX + member],
+        SENTINEL_MP_MAX,
+        `slot ${member}'s pc_mp_max was overwritten -- BE_RESTORE's loop reached a slot past PARTY_SIZE`
+      );
+      assert.equal(
+        nes.cpu.mem[PC_SPELLS + member],
+        SENTINEL_SPELLS,
+        `slot ${member}'s pc_spells was overwritten -- BE_RESTORE's loop reached a slot past PARTY_SIZE`
+      );
+    }
   }
 );

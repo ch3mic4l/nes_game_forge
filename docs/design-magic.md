@@ -288,10 +288,12 @@ Three options, per the brief; the third is the one this design picks.
   project that performed a qualifying edit (here: any spell delete). Real, and cheaper than a version
   bump — but still throws away hit points, level, gold and inventory along with the spells mask,
   the moment *any* spell is ever deleted, even one no saved party member had learned.
-- **Recompute the mask on load and invalidate nothing.** `pc_spells`'s only writer anywhere in the
-  engine is `party_apply_level` (`engine/battle.asm:78-87`), which reads `pc_spells_at` indexed by
+- **Recompute the mask on load and invalidate nothing.** `pc_spells`'s only *derived* writer anywhere
+  in the engine is `party_apply_level` (`engine/battle.asm`), which reads `pc_spells_at` indexed by
   `member * MAX_LEVEL + level - 1` — nothing else in the engine grants or removes a spell
-  independently. Restore the saved `pc_level`, rebuild the mask against the *current* build's own
+  independently, and `load_apply_body`'s own raw restore of the saved bytes is a *copy*, not a
+  derivation, so it is the one this design has to override, not a second source to reconcile with.
+  Restore the saved `pc_level`, rebuild the mask against the *current* build's own
   table, and a renumber (or a maxLevel change, or anything else that moves the table) cannot
   retarget anything, because the restored value is never trusted as an index into a table that might
   have moved — it is recomputed from a value (`pc_level`) that means the same thing before and after
@@ -800,8 +802,12 @@ what it is reporting on.
 ## §10. Byte budget rollup — every figure an estimate unless labelled measured
 
 No code was written for this design; nothing below is measured. All figures are against the current
-banked-region base (`BASE_BATTLE_CODE_BYTES_BY_MAPPER = {30: 3885, 1: 3885, 4: 3931}`,
-post-name-stride) and ceiling (`NESASM_BANK_BYTES - BATTLE_SLACK = 8192 - 20 = 8172`). `sample-rpg`'s
+banked-region base (`BASE_BATTLE_CODE_BYTES_BY_MAPPER = {30: 3938, 1: 3938, 4: 3984}`, post-§8's own
+spell-amount roll landing — corrected against the tree at HEAD; an earlier draft of this section
+cited the pre-§8 `{3885, 3885, 3931}` instead — a base 53 bytes too small, which *overstates* the
+real headroom by that same 53 bytes/board, not understates it as an earlier draft of this very
+correction had it backwards [round 2 review, finding 6]) and
+ceiling (`NESASM_BANK_BYTES - BATTLE_SLACK = 8192 - 20 = 8172`). `sample-rpg`'s
 own measured table bytes today are 464 (from the namestride slice's own re-measurement). **Round 2
 review, Low 3: corrected below** — this design adds table rows *and* new banked base code
 (`roll_spell_amount`/`mod8` in `engine/battleturn.asm`, and `BE_RESTORE`'s own loop and dispatch-chain
@@ -853,16 +859,23 @@ This is a genuinely separate ledger from the banked-region table above, priced s
 `kernelbytes.test.js`'s own discipline (equality per mapper, not a margin) is what would catch a stale
 figure here, the same way `bankedbytes.test.js`'s equality catches one in the banked base.
 
+**Addendum, `BE_RESTORE` implementation (`handoff-magic/phase4-impl-1-report.md`): the real post-call-site
+figure is `41`, not the ~5-byte estimate this section priced against — measured, a uniform +5 on all
+three boards, matching the estimate's own order of magnitude exactly.** `SAVE_BATTLE_KERNEL_ALLOWANCE`
+is `41`; the RPG totals `{1: 547, 4: 552, 30: 719}` this section's own estimates were written against
+are now `{1: 552, 4: 557, 30: 724}`. No documented-limitation row moved by more than that same 5 bytes,
+and only rows carrying `Save` on an RPG moved at all (CLAUDE.md, "The kernel budget").
+
 | Item | Where it lands | Estimate |
 |---|---|---|
 | `BE_RESTORE`'s own `call_battle` call site in `continue_game` | Kernel-lo, `engine/save.asm`, save-and-`BATTLE_ENABLED`-conditional | A handful of bytes, matching `BE_INIT`/`BE_TICK`/`BE_JOIN`'s own known-small per-call-site cost, added to `SAVE_BATTLE_KERNEL_ALLOWANCE` (flat, not per-mapper) once `BE_RESTORE` ships |
 
 **Total estimated banked-region growth: well under 200 bytes in the worst case.** Round 1 review,
 Low 8: the previous draft named MMC1/UNROM 512 as the tightest board at 3806 bytes free before this
-slice — backwards. `BASE_BATTLE_CODE_BYTES_BY_MAPPER`'s own measured figures
-(`battletables.js:416-433`) put **MMC3** 46 bytes higher than the other two (3931 vs. 3885), so MMC3
-is the tightest of the three: `3931 + 464 (table) + 17 (item allowance) = 4412` used of `8172`,
-**3760 bytes free**, not 3806. The conclusion — that this slice's own estimated growth fits with
+slice — backwards. `BASE_BATTLE_CODE_BYTES_BY_MAPPER`'s own measured figures put **MMC3** 46 bytes
+higher than the other two (3984 vs. 3938, per the corrected §10 baseline above), so MMC3 is the
+tightest of the three: `3984 + 464 (table) + 17 (item allowance) = 4465` used of `8172`,
+**3707 bytes free**. The conclusion — that this slice's own estimated growth fits with
 real margin to spare — is unaffected by the correction; only which board and which headroom figure
 back it. **`bankedbytes.test.js` rows this is expected to move**: `BASE_BATTLE_CODE_BYTES_BY_MAPPER`
 (re-measure after `roll_spell_amount`/`mod8`/`BE_RESTORE`'s banked loop land — a real, small,
@@ -875,6 +888,11 @@ per the kernel-lo table above — not `SAVE_KERNEL_ALLOWANCE_BY_MAPPER`'s, which
 limitation" row is expected to flip in either direction, given the size of both ledgers' headroom
 relative to these estimates, but the implementer re-measures both rather than assumes (house rule,
 restated: only nesasm's own output is ever called measured).
+
+**Addendum, `BE_RESTORE` implementation (`handoff-magic/phase4-impl-1-report.md`): the real
+banked-region growth is a uniform +18 bytes on all three boards** — `BASE_BATTLE_CODE_BYTES_BY_MAPPER`
+is now `{30: 3956, 1: 3956, 4: 4002}` — comfortably inside the "well under 200 bytes" estimate above.
+No `bankedbytes.test.js`/`kernelbytes.test.js` documented-limitation row flipped.
 
 ## §11. Test plan
 
@@ -1035,12 +1053,19 @@ half of this slice:
   cached-and-reused-roll implementation, which would show identical damage on every target where an
   independent roll on each would not (barring the rare `rng_next` coincidence, which the fixture
   should choose `rng` values to avoid).
-- **§5's save-restore recompute**: a save written with a party member who has since had a spell
-  deleted out from under their learned list (via `renumberSpellDeletion`, so the JSON reference is
-  already correct) restores a `pc_spells` mask that matches the *current* build's table, not a stale
-  restored byte — and, per §5's documented side effect, `pc_hp_max`/`pc_mp_max` after Continue match
-  a freshly recomputed value rather than whatever was literally saved, for a fixture whose level
-  table was edited between the save and the load.
+- **§5's save-restore recompute — corrected file assignment (`handoff-magic/phase4-design.md`, Q6):
+  `test/unit/save.test.js`, not this file.** `rpg.test.js` has real battle/casting helpers but no
+  `Save` command, no SRAM record, no power-cycle, no checksum-reseal and no cross-ROM
+  battery-transplant machinery at all — the identical class of error as this section's own §6
+  fixtures above (a design written before anyone checked which file could actually run the test).
+  `save.test.js` already owns all of that; see phase4-design.md's own Q6 for the fixture rebuilt on
+  top of it (a cross-build transplant, not a single-project save/load), and
+  `handoff-magic/phase4-impl-1-report.md` for its implementation. The claim itself is unchanged: a
+  save written with a party member who has since had a spell deleted out from under their learned
+  list (via `renumberSpellDeletion`, so the JSON reference is already correct) restores a `pc_spells`
+  mask that matches the *current* build's table, not a stale restored byte — and, per §5's documented
+  side effect, `pc_hp_max`/`pc_mp_max` after Continue match a freshly recomputed value rather than
+  whatever was literally saved.
 - **§6's real, positive-direction boundary case, the emulator-observable half.** Build a catalog
   where a spell sits at position 8 (unlearnable), delete an earlier spell so it shifts to position 7,
   have a member learn it in its new position, and assert the *compiled* `pc_spells_at` bitmask
