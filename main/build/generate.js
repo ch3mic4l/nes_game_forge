@@ -208,41 +208,81 @@ const TITLE_PROMPT_ROW = 19;
 // conditionally-assembled block heal/damage's own measurement already
 // covered (dialogue, action combat, the RPG battle system, branches,
 // questions, common-event calls, Play music, Start a battle, Heal/Damage) --
-// nesasm's kernel-lo usage minus that build's own fixedBytes + tableBytes:
+// nesasm's kernel-lo usage minus that build's own fixedBytes + tableBytes --
+// **except BASE_KERNEL_CODE_BYTES_BY_MAPPER itself, which is measured
+// against `sample` (the action fixture) instead; see its own paragraph for
+// why, and BATTLE_KERNEL_ALLOWANCE_BY_MAPPER right after it for the
+// RPG-only remainder that split out of it.**
 //
 // BASE_KERNEL_CODE_BYTES_BY_MAPPER is the worst case with nothing
 // conditional turned on -- no title screen, no Save, no Move, no text on a
-// split-font board -- measured per mapper rather than once. A single flat
-// number, measured on UNROM 512 because banks.asm emits the most code for
-// it, used to be charged to every board; MMC3's own switch_chr_bank/
-// switch_prg_bank pair is smaller, so that overcharged every MMC3 project by
-// 8 bytes, and MMC1's by 195 -- both boards forced to carry UNROM 512's own
-// combined PRG/CHR register plumbing, which neither of them has. Only three
-// mappers can be measured this way at all: sample-rpg needs a mapper that
-// switches both PRG and CHR (rpgCapable() in shared/cartridge.js), which is
-// exactly UNROM 512, MMC1 and MMC3 -- the same three test/unit/kernelbytes.
-// test.js already builds.
-//   UNROM 512: 6466   MMC1: 6271   MMC3: 6446
-// (MMC3's own figure excludes SPLIT_LOCK_KERNEL_ALLOWANCE, kept a separate
-// term below for the same reason it always was -- see its own paragraph. A
-// title-off sample-rpg still shows text on MMC3 -- projectUsesText is true
-// for the RPG game type alone, regardless of titleMap -- so the raw
-// title-off measurement, 6465, already has SPLIT_LOCK_KERNEL_ALLOWANCE's 19
-// bytes baked in exactly as the old title-on raw measurement did; 6446 is
-// that measurement with the same 19 bytes subtracted back out, the same
-// bookkeeping the old 6670 already did against its own raw 6689.)
+// split-font board -- measured per mapper rather than once, and, since
+// `docs/kernel-base-overcharge-report.md`, against `sample` rather than
+// `sample-rpg`. A single flat number, measured on UNROM 512 because
+// banks.asm emits the most code for it, used to be charged to every board;
+// MMC3's own switch_chr_bank/switch_prg_bank pair is smaller, so that
+// overcharged every MMC3 project by 8 bytes, and MMC1's by 195 -- both
+// boards forced to carry UNROM 512's own combined PRG/CHR register
+// plumbing, which neither of them has. That per-mapper split fixed the
+// wrong-board defect but not the wrong-*game-type* one sitting right next
+// to it: for as long as this table was measured only against `sample-rpg`,
+// it was a `BATTLE_ENABLED` figure -- the size of the kernel *with* the
+// RPG-only code eight other kernel files gate on that flag -- charged in
+// full to action projects too, a 270/282-byte overcharge with nothing to
+// catch it (every existing action-side check in this file is a *delta*
+// between two action builds, which cancels a wrong base out; see
+// `docs/kernel-base-overcharge-report.md` for the full account, now
+// resolved by this change).
+//
+// Re-measured against `sample`, title off, nothing else conditional, on all
+// three RPG-capable boards (rpgCapable() in shared/cartridge.js -- the same
+// three test/unit/kernelbytes.test.js already builds for this term) -- not
+// because the action fixture itself needs a mapper that switches PRG and
+// CHR (it does not; measureFallbackCodeBytes, same file, builds `sample` on
+// all five fallback boards too), but because BATTLE_KERNEL_ALLOWANCE_BY_MAPPER
+// right after it is the *paired* action-versus-RPG residual, and only these
+// three boards can build both fixtures to take that residual from:
+//   MMC1: 6033   MMC3: 6215   UNROM 512: 6228
+// -- nesasm's own real usage, default item included (`sample` carries one,
+// same as `sample-rpg`; ITEM_KERNEL_ALLOWANCE + ITEM_EFFECT_KERNEL_ALLOWANCE_
+// BY_GAME_TYPE.action's own 79 bytes are still owed on top of whatever this
+// table holds, the same as ever -- this paragraph's own figures are the raw
+// build, not what BASE_KERNEL_CODE_BYTES_BY_MAPPER is set to). MMC3 also
+// shows text unconditionally on `sample` (it has real dialogue, so
+// projectUsesText is true regardless of game type), so its own raw figure
+// already has SPLIT_LOCK_KERNEL_ALLOWANCE's 19 bytes baked in, the identical
+// bookkeeping the RPG-side measurement already needed. Subtracting the
+// item allowance (and, on MMC3, the split-lock allowance) from each raw
+// figure gives the table's own values below: `{1: 5954, 4: 6117,
+// 30: 6149}` -- arithmetic that has to agree with, and was cross-checked
+// against, `docs/kernel-base-overcharge-report.md` §6's own derivation (old
+// base minus the margin's excess over KERNEL_SLACK: 6204-250, 6379-262,
+// 6399-250) — both routes land on the identical three numbers.
 // Every other supported mapper -- NROM, CNROM, GxROM, Color Dreams, UxROM --
-// cannot build an RPG at all, so this methodology cannot measure a base for
-// any of them; baseKernelCodeBytes() falls back to the largest of the three
-// figures above for a mapper this table has no entry for, which is not a
-// guess standing in for a measurement -- it is the same shape this function
-// has always used for an unmeasured board, so a project on one of those
-// five still reserves a safe over-estimate rather than nothing.
+// cannot build an RPG at all, so `sample-rpg` was never buildable on them and
+// the paired action-versus-RPG residual above cannot be derived for any of
+// them. The action fixture's own base is not unmeasurable there, though: it
+// builds fine on all five (measureFallbackCodeBytes, same file), which is
+// exactly what lets that same test confirm the fallback below still covers
+// each one. baseKernelCodeBytes() falls back to the largest of the three
+// figures above for a mapper this table has no entry for regardless, which is
+// not a guess standing in for a measurement -- it is the same shape this
+// function has always used for an unmeasured board, so a project on one of
+// those five still reserves a safe over-estimate rather than nothing. This
+// fallback stays a *base*-shaped one (largest-of-three, not "fail loudly")
+// deliberately: unlike the two BATTLE_ENABLED-gated terms below, which can
+// only ever be indexed for a real, registered rpgCapable() mapper (see
+// their own fallback paragraphs), the base is charged to *every* project on
+// *every* board, including the five that can never be RPG-capable at all --
+// an unmeasured board among those five still needs a safe number here, or
+// checkCapacity would compute NaN for a project that never touched
+// anything conditional.
 // codebuild.test.js's byte-identical NROM build depends on this fallback
 // staying a safe over-estimate (it changed value, from 6678 to 6466, the
-// day the title term below was carved out of it -- see that term's own
-// paragraph for why NROM's own byte-identical build is unaffected: NROM's
-// build carries no title screen, so nothing here changes what it emits).
+// day the title term below was carved out of it, and again with this
+// change -- see that term's own paragraph for why NROM's own byte-identical
+// build is unaffected either time: NROM's build carries no title screen and
+// is never an RPG, so nothing here changes what it emits).
 // cartridge.test.js's UxROM screen-count test depends on the fallback the
 // same way.
 //
@@ -508,12 +548,101 @@ const TITLE_PROMPT_ROW = 19;
 // read talk_ent as still NO_ENTITY (battle_begin clears it unconditionally
 // and nothing put it back) and silently jmp script_finish'd the whole rest
 // of the page. battle_end is unconditional kernel code (BATTLE_ENABLED
-// alone, not gated by MOVE_ENABLED/TURN_ENABLED), so this is a base cost
-// every RPG project pays, not a new named allowance term.
-export const BASE_KERNEL_CODE_BYTES_BY_MAPPER = { 30: 6399, 1: 6204, 4: 6379 };
+// alone, not gated by MOVE_ENABLED/TURN_ENABLED), so this was folded into
+// the base below as "a cost every RPG project pays, not a new named
+// allowance term" -- **correction, `docs/kernel-base-overcharge-report.md`:
+// "unconditional whenever BATTLE_ENABLED" and "belongs in the shared base"
+// are different claims, and this +3 is exactly an instance of the first
+// without the second -- rpg.asm assembles only under BATTLE_ENABLED at all,
+// so this is RPG-only code, the identical shape of byte
+// BATTLE_KERNEL_ALLOWANCE_BY_MAPPER (below) now exists to hold instead of
+// the base. The figure this note is attached to (`{30: 6399, 1: 6204,
+// 4: 6379}`) was measured against `sample-rpg` and included this +3 as part
+// of the base; re-measuring against `sample` (the action fixture) moved it,
+// along with every other RPG-only byte in this figure, out into the new
+// term below.**
+export const BASE_KERNEL_CODE_BYTES_BY_MAPPER = { 1: 5954, 4: 6117, 30: 6149 };
 const FALLBACK_BASE_KERNEL_CODE_BYTES = Math.max(...Object.values(BASE_KERNEL_CODE_BYTES_BY_MAPPER));
 export function baseKernelCodeBytes(mapper) {
   return BASE_KERNEL_CODE_BYTES_BY_MAPPER[mapper.id] ?? FALLBACK_BASE_KERNEL_CODE_BYTES;
+}
+
+// BATTLE_KERNEL_ALLOWANCE_BY_MAPPER is the RPG-only remainder
+// BASE_KERNEL_CODE_BYTES_BY_MAPPER gave up moving from sample-rpg to
+// sample: every byte outside save_check_valid (SAVE_BATTLE_KERNEL_ALLOWANCE
+// already owns that one) that eight kernel files -- player.asm, boot.asm,
+// combat.asm, save.asm, rpg.asm, banks.asm, script.asm, ui.asm, plus
+// split.asm on MMC3 -- assemble only under `.if BATTLE_ENABLED` (in both
+// directions: an RPG assembles party/battle code an action project does
+// not, and an action project assembles its own hearts/knockback code an
+// RPG does not, so this is a genuine two-sided swap, not one side's code
+// simply vanishing). Charged as the *excess* of the old, sample-rpg-measured
+// base over its own real usage past KERNEL_SLACK -- 6204-5954=250 (MMC1),
+// 6379-6117=262 (MMC3), 6399-6149=250 (UNROM 512) -- because that excess is,
+// by construction, exactly the RPG-only byte count the old base was silently
+// carrying: handing it back as its own term is what restores the RPG side's
+// original reservation (and its original KERNEL_SLACK margin) to the byte,
+// while the new, smaller base finally reserves what an action project's own
+// build actually needs. `*_BY_MAPPER`, not flat like SAVE_BATTLE_KERNEL_
+// ALLOWANCE: MMC3 genuinely differs from the other two by 12 bytes, measured
+// and identified rather than left as noise -- split_select's own
+// `.if BATTLE_ENABLED` arm (engine/split.asm), five instructions
+// (`lda`/`cmp`/`bne`/`lda`/`jmp`, 3+2+2+2+3) that only a split-font board
+// assembles, entirely separate from the `.if TITLE_ENABLED` arm right above
+// it in the same routine that TITLE_KERNEL_ALLOWANCE_BY_MAPPER's own MMC3
+// entry already charges for. This is the ledger's own rule working as
+// designed, not a coincidence: a term stays flat until real variance is
+// measured (SAVE_BATTLE_KERNEL_ALLOWANCE, above), and earns `*_BY_MAPPER`
+// the moment it is (this term, TITLE_KERNEL_ALLOWANCE_BY_MAPPER, the base).
+// No fallback -- `BASE_KERNEL_CODE_BYTES_BY_MAPPER`'s own `?? FALLBACK_...`
+// is not copied by reflex. The base needs one because it is charged to
+// *every* project on *every* board, RPG-capable or not; this term is only
+// ever read when `battleEnabled` is true (kernelCodeBytes, below). Round 1
+// argued that condition can only hold for a real, registered rpgCapable()
+// mapper, on the strength of reconcileCartridge forcing `gameType === 'rpg'`
+// to imply `rpgCapable(mapper)` -- but reconcileCartridge runs on an *edit*,
+// not on every read: normalizeProject deliberately does not call it, and
+// checkCapacity (below) resolves `project.cartridge.mapper` directly with no
+// reconciling step of its own, so a hand-edited or older-version RPG project
+// carrying a non-rpgCapable mapper (UxROM, mapper 2 -- switchable PRG with no
+// switchable CHR, so `codeRegions(...).length > 0` while `rpgCapable` is
+// false) reaches this term with no entry to find. Indexing straight into the
+// table there produces `undefined`, then a `NaN` kernel-lo budget that
+// silently passes `checkCapacity`'s own `kernelFree < 0` check -- the bug a
+// review round found and this comment used to (wrongly) argue could not
+// happen. Guarded for real now, three ways: `battleKernelAllowance(mapper)`
+// (below) is the only reader of this table and throws instead of returning
+// `undefined` when an entry is missing; `checkCapacity` checks
+// `battleEnabledFor(project, mapper) && !hasBattleKernelAllowance(mapper)`
+// for the project's own (unreconciled) mapper *before* ever calling it, and
+// reports a named `problems` entry instead of computing a broken budget; and
+// `switchableMappers` (below) never offers a *candidate* mapper that would
+// hit the throw, on top of its existing `rpgCapable(candidate)` filter. A
+// new RPG-capable mapper added to the registry without a measured entry here
+// therefore still fails loudly -- via the throw, not via `NaN` -- for any
+// caller that does not pre-check, which is the same "a newly implemented
+// board with no measured entry must fail loudly" rule the Save table's own
+// comment argues, now actually enforced rather than assumed unreachable.
+export const BATTLE_KERNEL_ALLOWANCE_BY_MAPPER = { 1: 250, 4: 262, 30: 250 };
+
+/** Whether `battleKernelAllowance` has a real, measured entry for `mapper`. */
+export function hasBattleKernelAllowance(mapper) {
+  return mapper.id in BATTLE_KERNEL_ALLOWANCE_BY_MAPPER;
+}
+
+// The single reader of BATTLE_KERNEL_ALLOWANCE_BY_MAPPER -- kernelCodeBytes
+// (below) calls this rather than indexing the table directly, so a missing
+// entry cannot silently become `undefined`-then-`NaN` again by a future edit
+// that reaches for the table's own bracket syntax instead of this function.
+export function battleKernelAllowance(mapper) {
+  if (!hasBattleKernelAllowance(mapper)) {
+    throw new Error(
+      `BATTLE_KERNEL_ALLOWANCE_BY_MAPPER has no measured entry for ${mapper.name} (mapper ${mapper.id}). ` +
+        'A caller reached this with battleEnabled true for a mapper this table does not cover -- add a ' +
+        'measured entry before this mapper can be used for an RPG project.'
+    );
+  }
+  return BATTLE_KERNEL_ALLOWANCE_BY_MAPPER[mapper.id];
 }
 
 export const TITLE_KERNEL_ALLOWANCE_BY_MAPPER = { 30: 212, 1: 212, 4: 224 };
@@ -784,6 +913,32 @@ export const SFX_KERNEL_ALLOWANCE_STANDALONE = 295;
 export const BOUND_TILE_KERNEL_ALLOWANCE = 388;
 export const KERNEL_SLACK = 20;
 
+// Whether BATTLE_ENABLED itself actually assembles for `project` on `mapper`
+// -- the single, shared predicate every BATTLE_ENABLED-gated allowance in
+// kernelCodeBytes reads, rather than each recomputing its own copy, and the
+// same predicate checkCapacity (below) consults for the project's own
+// mapper before it ever calls kernelCodeBytes or battleKernelAllowance, so
+// the two cannot disagree about when a battle allowance is needed at all.
+// This is *not* simply `gameType === 'rpg'`. BATTLE_ENABLED (assets/
+// config.inc) is `codeRegions(mapper, tilesetCount,
+// codeRegionCount(project)).length > 0`, and codeRegionCount(project) is
+// exactly the gameType === 'rpg' test -- but codeRegions can still come back
+// empty for a CHR-RAM board whose tileset payloads have already claimed
+// every switchable region, a strictly narrower condition than "is an RPG",
+// and it can come back *non*-empty for a switchable-PRG board with no
+// switchable CHR (UxROM, mapper 2) even though that board is not
+// `rpgCapable` at all -- codeRegions only requires PRG switching,
+// rpgCapable requires PRG *and* CHR. So this does not imply rpgCapable(mapper)
+// on its own, which is exactly why a caller may not assume a
+// BATTLE_KERNEL_ALLOWANCE_BY_MAPPER entry exists just because this is true;
+// see battleKernelAllowance's own comment for the guard that follows from
+// that. Charging a project for bytes that would not actually assemble is
+// exactly the overcharge both BATTLE_ENABLED-gated terms in kernelCodeBytes
+// exist to remove.
+export function battleEnabledFor(project, mapper) {
+  return codeRegions(mapper, project.tilesets.length, codeRegionCount(project)).length > 0;
+}
+
 export function kernelCodeBytes(project, mapper) {
   // saveMediaImplemented, not saveCapable: SAVE_KERNEL_ALLOWANCE_BY_MAPPER
   // only has a measured entry for a board whose save/load code actually
@@ -798,28 +953,18 @@ export function kernelCodeBytes(project, mapper) {
   // the shape this already handles and saveCapable alone would not -- it
   // would index this table with a mapper id that has no entry for it yet.
   const usesSave = projectUsesSave(project) && saveMediaImplemented(mapper);
-  // The RPG-only supplement (SAVE_BATTLE_KERNEL_ALLOWANCE, above) is gated on
-  // whether save_check_valid's own `.if BATTLE_ENABLED` range-check block
-  // actually assembles -- which is *not* simply `gameType === 'rpg'`.
-  // BATTLE_ENABLED (assets/config.inc) is `codeRegions(mapper, tilesetCount,
-  // codeRegionCount(project)).length > 0`, and codeRegionCount(project) is
-  // exactly the gameType === 'rpg' test -- but codeRegions can still come
-  // back empty for a CHR-RAM board whose tileset payloads have already
-  // claimed every switchable region, a strictly narrower condition than
-  // "is an RPG". Mirrored here rather than assumed equivalent: reconcileCartridge
-  // (shared/project.js) already forces gameType === 'rpg' to imply
-  // rpgCapable(mapper), and every registered rpgCapable mapper leaves this
-  // equal to gameType === 'rpg' at every reachable tileset count today --
-  // MMC1/MMC3 are CHR-ROM, so chrPayloadRegions never claims a switchable
-  // region from them at all, and UNROM 512's own tilesetLimit ceiling (at
-  // most 4 tilesets) never comes close to exhausting its 62 switchable
-  // regions -- but that equivalence rests on facts about the current mapper
-  // registry, not on anything this function can see on its own, so it
-  // recomputes the real predicate instead of trusting the proxy to keep
-  // holding for a mapper not yet registered. Charging a project for bytes
-  // that would not actually assemble is exactly the overcharge this whole
-  // split exists to remove.
-  const usesSaveBattle = usesSave && codeRegions(mapper, project.tilesets.length, codeRegionCount(project)).length > 0;
+  // See battleEnabledFor's own comment, above, for what this is and is not
+  // equivalent to.
+  const battleEnabled = battleEnabledFor(project, mapper);
+  // save_check_valid's own `.if BATTLE_ENABLED` range-check block -- the
+  // Save-only slice of the RPG-vs-action gap (SAVE_BATTLE_KERNEL_ALLOWANCE,
+  // above).
+  const usesSaveBattle = usesSave && battleEnabled;
+  // Every other BATTLE_ENABLED-gated byte outside save_check_valid --
+  // BASE_KERNEL_CODE_BYTES_BY_MAPPER's own comment and
+  // BATTLE_KERNEL_ALLOWANCE_BY_MAPPER's (below) explain what this covers and
+  // why it needs its own term rather than folding into the base.
+  const usesBattleBase = battleEnabled;
   const usesMove = projectUsesMove(project);
   const usesTurn = projectUsesTurn(project);
   const usesWait = projectUsesWait(project);
@@ -865,6 +1010,7 @@ export function kernelCodeBytes(project, mapper) {
   const usesBoundTiles = projectUsesBoundTiles(project);
   return (
     baseKernelCodeBytes(mapper) +
+    (usesBattleBase ? battleKernelAllowance(mapper) : 0) +
     (usesTitle ? titleKernelAllowance(mapper) : 0) +
     (usesSave ? SAVE_KERNEL_ALLOWANCE_BY_MAPPER[mapper.id] : 0) +
     (usesSaveBattle ? SAVE_BATTLE_KERNEL_ALLOWANCE : 0) +
@@ -1069,6 +1215,15 @@ export function switchableMappers(project, mapper, { checkBattleRegion = true } 
       if (moved.tilesets.length > tilesetLimit(candidate, moved.cartridge, fontChrPages(moved, candidate))) {
         return false;
       }
+      // rpgCapable(candidate) was already required above for an RPG project,
+      // which today always carries a measured BATTLE_KERNEL_ALLOWANCE_BY_MAPPER
+      // entry -- but that correspondence is a fact about the current
+      // registry, not something this filter chain can see on its own (see
+      // battleEnabledFor's own comment), so a candidate whose own battle
+      // allowance is unmeasured is excluded here rather than left to throw
+      // out of kernelCodeBytes uncaught. Never reachable today; the guard is
+      // for the mapper this table has no entry for yet.
+      if (battleEnabledFor(moved, candidate) && !hasBattleKernelAllowance(candidate)) return false;
       if (kernelCodeBytes(moved, candidate) + fixedBytes + tableBytes > BANK_SIZE) return false;
       // The one fit check a caller may waive, and only the caller that owns
       // this bank does. battleShortfallAdvice needs to tell "no board is safe
@@ -1654,8 +1809,34 @@ export function checkCapacity(project) {
   const { fixedBytes, tableBytes } = kernelTableBytes(project);
 
   const mapper = resolveMapper(project.cartridge.mapper);
-  const kernelBudget = kernelCodeBytes(project, mapper);
-  const kernelFree = BANK_SIZE - kernelBudget - fixedBytes - tableBytes;
+  // resolveMapper reads project.cartridge.mapper directly, with no
+  // reconciling step of its own (reconcileCartridge runs on an edit, not on
+  // every read -- normalizeProject deliberately does not call it either).
+  // So an RPG project can reach here carrying a mapper that is not
+  // rpgCapable(), and battleEnabledFor can still be true for it (see that
+  // function's own UxROM example) even though BATTLE_KERNEL_ALLOWANCE_BY_MAPPER
+  // has no entry for it -- checked here, before kernelCodeBytes is ever
+  // called, so that case becomes a named problem instead of
+  // kernelCodeBytes's own throw (battleKernelAllowance) propagating out of
+  // this function uncaught. validateProject already refuses this exact
+  // project for other reasons (a non-rpgCapable mapper fails its own RPG
+  // checks), so this is defense in depth for today's registry and the real
+  // guard for a future rpgCapable mapper shipped without a measured entry.
+  let kernelBudget = null;
+  let kernelFree = null;
+  if (battleEnabledFor(project, mapper) && !hasBattleKernelAllowance(mapper)) {
+    problems.push({
+      severity: 'error',
+      where: 'Build',
+      message:
+        `${mapper.name} has no measured kernel-lo battle allowance yet, so this project's real capacity ` +
+        'cannot be computed on it. This is a gap in engine support for that mapper, not a problem with ' +
+        'the project -- choose a different mapper in the Build panel.'
+    });
+  } else {
+    kernelBudget = kernelCodeBytes(project, mapper);
+    kernelFree = BANK_SIZE - kernelBudget - fixedBytes - tableBytes;
+  }
 
   const layout = prgLayout(mapper);
   const bankedCode = codeRegionCount(project);
@@ -1717,7 +1898,7 @@ export function checkCapacity(project) {
           : 'Remove a screen or shrink a map grid.')
     });
   }
-  if (kernelFree < 0) {
+  if (kernelFree !== null && kernelFree < 0) {
     problems.push({
       severity: 'error',
       where: 'Map Forge',

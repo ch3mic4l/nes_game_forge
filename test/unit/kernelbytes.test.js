@@ -34,6 +34,7 @@ import {
   titleKernelAllowance,
   checkCapacity,
   BASE_KERNEL_CODE_BYTES_BY_MAPPER,
+  BATTLE_KERNEL_ALLOWANCE_BY_MAPPER,
   TITLE_KERNEL_ALLOWANCE_BY_MAPPER,
   KERNEL_SLACK,
   SAVE_KERNEL_ALLOWANCE_BY_MAPPER,
@@ -63,6 +64,7 @@ import {
 } from '../../main/build/generate.js';
 import { SUPPORTED_MAPPERS, rpgCapable, saveMediaImplemented, prgLayout } from '../../shared/cartridge.js';
 import { createTileset, createProject, projectUsesItems, projectUsesBoundTiles, projectUsesTurn } from '../../shared/project.js';
+import { fontBankSplit } from '../../shared/font.js';
 import { createSong } from '../../shared/audio.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
@@ -319,6 +321,47 @@ test('every saveMediaImplemented() board has a finite SAVE_KERNEL_ALLOWANCE_BY_M
   }
 });
 
+test('every rpgCapable() board has a finite BATTLE_KERNEL_ALLOWANCE_BY_MAPPER entry', () => {
+  for (const mapper of SUPPORTED_MAPPERS) {
+    if (!rpgCapable(mapper)) continue;
+    assert.ok(
+      Number.isFinite(BATTLE_KERNEL_ALLOWANCE_BY_MAPPER[mapper.id]),
+      `${mapper.name}: rpgCapable() is true but BATTLE_KERNEL_ALLOWANCE_BY_MAPPER[${mapper.id}] is ` +
+        `${BATTLE_KERNEL_ALLOWANCE_BY_MAPPER[mapper.id]} -- battleKernelAllowance would throw, and a caller ` +
+        'that does not pre-check (kernelCodeBytes included) would surface that as an uncaught exception, for ' +
+        'an RPG project on this board. Add a measured entry before shipping this combination.'
+    );
+  }
+});
+
+test(
+  'checkCapacity reports a named problem, not a silent NaN pass, for an RPG project on a non-rpgCapable mapper',
+  () => {
+    // UxROM (mapper 2) has switchable PRG with no switchable CHR:
+    // battleEnabledFor comes back true for an RPG project on it even though
+    // rpgCapable(mapper) is false (codeRegions only requires PRG switching;
+    // rpgCapable requires PRG and CHR), so this reaches
+    // BATTLE_KERNEL_ALLOWANCE_BY_MAPPER with a mapper id it has no entry for
+    // -- the exact case a round-1 review found silently produced NaN,
+    // making checkCapacity's own `kernelFree < 0` check false and the
+    // capacity refusal disappear. resolveMapper reads project.cartridge.mapper
+    // with no reconciling step, so this is reachable through checkCapacity
+    // itself, not just kernelCodeBytes called directly.
+    const project = createProject('Repro', 'rpg');
+    project.cartridge.mapper = 2;
+    const { problems } = checkCapacity(project);
+    const battleAllowanceProblem = problems.find((p) =>
+      p.message.includes('no measured kernel-lo battle allowance')
+    );
+    assert.ok(
+      battleAllowanceProblem,
+      'checkCapacity should report a named problem for a mapper with no measured battle allowance, not ' +
+        'silently skip the kernel-lo check'
+    );
+    assert.equal(battleAllowanceProblem.severity, 'error');
+  }
+);
+
 test(
   'kernelCodeBytes covers the real engine, on every RPG-capable board, in every conditional combination',
   { skip: !hasNesasm && 'nesasm not found on PATH' },
@@ -380,8 +423,16 @@ test(
     // so asserting the RPG figure here and the action figure below is what
     // keeps this an equality check rather than a >= that would let either
     // side's slack hide.
+    // noSaveNoItems is captured, not discarded, for reuse below: it is
+    // sample-rpg's own real usage with title off *and* items stripped -- the
+    // cleanest available RPG baseline for isolating
+    // BATTLE_KERNEL_ALLOWANCE_BY_MAPPER (only SPLIT_LOCK_KERNEL_ALLOWANCE, on
+    // MMC3 alone, stands between this and base+battleSupplement, rather than
+    // both that and an item allowance to subtract by hand).
+    const noSaveNoItems = [];
     for (const mapper of CAPABLE_MAPPERS) {
       const { codeBytes } = await measureCodeBytes(t, mapper, { withItems: false });
+      noSaveNoItems.push({ mapper, codeBytes });
       const noSaveEntry = noSave.find((entry) => entry.mapper.id === mapper.id);
       const delta = noSaveEntry.codeBytes - codeBytes;
       const expected = ITEM_KERNEL_ALLOWANCE + ITEM_EFFECT_KERNEL_ALLOWANCE_BY_GAME_TYPE.rpg;
@@ -392,6 +443,70 @@ test(
           `${noSaveEntry.codeBytes}), but ITEM_KERNEL_ALLOWANCE + ITEM_EFFECT_KERNEL_ALLOWANCE_BY_GAME_TYPE.rpg ` +
           `reserves ${expected} — this allowance must equal an item’s real cost exactly, on every board. ` +
           're-measure and correct it (see the comment beside kernelCodeBytes).'
+      );
+    }
+
+    // `docs/kernel-base-overcharge-report.md`: the action-side twin of the
+    // `noSave` loop above, title off, nothing conditional -- `sample`, not
+    // `sample-rpg`. This is the measurement that never existed before that
+    // report: every prior absolute assertCovers check in this file ran only
+    // against `sample-rpg`, and BASE_KERNEL_CODE_BYTES_BY_MAPPER was measured
+    // exclusively against it too, so an action project's own real "nothing
+    // conditional" cost had never once been compared against what
+    // kernelCodeBytes actually reserves for it, on any board. `sample`
+    // cannot have its own default item stripped the way `noSaveNoItems`
+    // strips sample-rpg's (its Give/Take command names that item, so an
+    // empty items[] fails validateProject) -- both the equality checks below
+    // account for that by hand, matching the shape the MMC3 split-lock check
+    // further down already established for exactly this reason.
+    const actionNoSave = [];
+    for (const mapper of CAPABLE_MAPPERS) {
+      const { project, codeBytes } = await measureCodeBytes(t, mapper, { fixture: SAMPLE });
+      actionNoSave.push({ mapper, project, codeBytes });
+      assertCovers({ mapper, codeBytes }, kernelCodeBytes(project, mapper), 'an action project, no Save, no Move, no title');
+    }
+
+    // BASE_KERNEL_CODE_BYTES_BY_MAPPER and BATTLE_KERNEL_ALLOWANCE_BY_MAPPER,
+    // equality-asserted per board -- the direct measurement both terms are
+    // supposed to equal, not merely covered by assertCovers' own
+    // worst-board-only margin. `sample`'s own default item and (on MMC3)
+    // its own real dialogue are subtracted out by hand from the raw action
+    // figure, since they cannot be stripped by rebuilding without them (see
+    // the comment above); `noSaveNoItems`, sample-rpg's own items-already-
+    // stripped measurement, only ever needs the split-lock term subtracted
+    // on top, since RPG items were already removed by rebuilding without
+    // them. `fontBankSplit`, not a hardcoded MMC3 check, so this generalizes
+    // correctly if a second scanline-IRQ board is ever added.
+    for (const mapper of CAPABLE_MAPPERS) {
+      const actionEntry = actionNoSave.find((entry) => entry.mapper.id === mapper.id);
+      const splitLockCost = fontBankSplit(actionEntry.project, mapper) ? SPLIT_LOCK_KERNEL_ALLOWANCE : 0;
+      const actionResidual =
+        actionEntry.codeBytes - ITEM_KERNEL_ALLOWANCE - ITEM_EFFECT_KERNEL_ALLOWANCE_BY_GAME_TYPE.action - splitLockCost;
+      assert.equal(
+        actionResidual,
+        BASE_KERNEL_CODE_BYTES_BY_MAPPER[mapper.id],
+        `${mapper.name}: an action project with nothing conditional turned on, its own default item and (if this ` +
+          `board splits the font) its own text removed by hand, measures ${actionResidual} bytes of kernel code, ` +
+          `but BASE_KERNEL_CODE_BYTES_BY_MAPPER[${mapper.id}] reserves ` +
+          `${BASE_KERNEL_CODE_BYTES_BY_MAPPER[mapper.id]} — the base must equal an action project's own real, ` +
+          'unconditional cost exactly, with no RPG-only byte folded in. Re-measure and correct it (see the ' +
+          'comment beside BASE_KERNEL_CODE_BYTES_BY_MAPPER in generate.js).'
+      );
+
+      const rpgNoItemsEntry = noSaveNoItems.find((entry) => entry.mapper.id === mapper.id);
+      const rpgSplitLockCost = fontBankSplit(noSave.find((entry) => entry.mapper.id === mapper.id).project, mapper)
+        ? SPLIT_LOCK_KERNEL_ALLOWANCE
+        : 0;
+      const battleResidual = rpgNoItemsEntry.codeBytes - baseKernelCodeBytes(mapper) - rpgSplitLockCost;
+      assert.equal(
+        battleResidual,
+        BATTLE_KERNEL_ALLOWANCE_BY_MAPPER[mapper.id],
+        `${mapper.name}: sample-rpg with nothing conditional turned on and its own default item stripped, minus ` +
+          `the action-side base and (if this board splits the font) split-lock, measures ${battleResidual} bytes ` +
+          `of RPG-only kernel code, but BATTLE_KERNEL_ALLOWANCE_BY_MAPPER[${mapper.id}] reserves ` +
+          `${BATTLE_KERNEL_ALLOWANCE_BY_MAPPER[mapper.id]} — this supplement must equal the RPG-only byte count ` +
+          'exactly. Re-measure and correct it (see the comment beside BATTLE_KERNEL_ALLOWANCE_BY_MAPPER in ' +
+          'generate.js).'
       );
     }
 
@@ -481,29 +596,23 @@ test(
       const { codeBytes } = await measureCodeBytes(t, mapper, { fixture: SAMPLE, withTitle: true });
       actionNoSaveTitle.push({ mapper, codeBytes });
     }
-    // Deliberately no assertCovers call here, unlike every other loop in this
-    // test -- discovered while implementing this split, not assumed: building
-    // this exact project (action, on an RPG-capable board) and comparing the
-    // *absolute* kernelCodeBytes(project, mapper) against real usage surfaces
-    // a real, pre-existing, unrelated overcharge in baseKernelCodeBytes
-    // itself, which is measured exclusively against sample-rpg and applied
-    // unconditionally to action projects on the same board too -- an action
-    // project with no title, no Save and nothing else conditional already
-    // reserves 270-282 bytes more than nesasm actually uses, on all three
-    // RPG-capable boards, entirely independent of Save. No existing test
-    // before this change ever built an action project on an RPG-capable
-    // mapper and checked it against kernelCodeBytes at all (every other
-    // action-side check in this file — see ITEM_EFFECT_KERNEL_ALLOWANCE_BY_
-    // GAME_TYPE.action's own test above — is a delta, which cancels the base
-    // term out and so never surfaced this). Calling assertCovers here would
-    // conflate that separate, out-of-scope defect with this change's own
-    // correctness; the delta-equality assertion below is what this change is
-    // actually responsible for; the exact-delta assertion above -- the
-    // RPG-side sum -- is unaffected and keeps its own assertCovers call.
+    // assertCovers is back, per `docs/kernel-base-overcharge-report.md`: it
+    // was deliberately withheld here by the Save-allowance split, because
+    // building this exact project (action, on an RPG-capable board) and
+    // comparing the *absolute* kernelCodeBytes(project, mapper) against real
+    // usage surfaced a real, pre-existing, unrelated overcharge in
+    // baseKernelCodeBytes itself (270-282 bytes, entirely independent of
+    // Save) that calling it would have conflated with the Save split's own
+    // correctness. That defect is what this change fixes -- base is now
+    // measured against `sample`, not `sample-rpg` (see its own comment in
+    // generate.js) -- so the withholding no longer applies, and leaving it
+    // out would now hide a real regression in either term instead of
+    // avoiding a false one.
     const actionWithSave = [];
     for (const mapper of saveMappers) {
-      const { codeBytes } = await measureCodeBytes(t, mapper, { fixture: SAMPLE, withSave: true });
+      const { project, codeBytes } = await measureCodeBytes(t, mapper, { fixture: SAMPLE, withSave: true });
       actionWithSave.push({ mapper, codeBytes });
+      assertCovers({ mapper, codeBytes }, kernelCodeBytes(project, mapper), 'a live Save command on an action project');
       const baselineEntry = actionNoSaveTitle.find((entry) => entry.mapper.id === mapper.id);
       const delta = codeBytes - baselineEntry.codeBytes;
       assert.equal(
@@ -969,9 +1078,14 @@ test(
     // every MMC3 measurement above already carries SPLIT_LOCK_KERNEL_ALLOWANCE
     // baked into its own real usage. This is the direct check that the term
     // is exactly what MMC3's own no-Save measurement needs beyond its own
-    // per-mapper base -- not a stray byte either way, and not folded into the
-    // base itself (see the comment beside kernelCodeBytes for why it stays a
-    // separate term).
+    // per-mapper base *and* BATTLE_KERNEL_ALLOWANCE_BY_MAPPER (the RPG-only
+    // supplement measured earlier in this test, which now also has to be
+    // subtracted -- `docs/kernel-base-overcharge-report.md`: MMC3's own
+    // battle supplement already carries split_select's other BATTLE_ENABLED
+    // arm, engine/split.asm, so it and split-lock are two different terms
+    // sitting on top of the same base, not one absorbed into the other) --
+    // not a stray byte either way, and not folded into the base itself (see
+    // the comment beside kernelCodeBytes for why it stays a separate term).
     //
     // Phase 4b: sample-rpg (what measureCodeBytes always builds) carries one
     // live item, so "no Save, no Move, no title" is not "no items" -- every
@@ -987,11 +1101,16 @@ test(
     const mmc3 = noSave.find((entry) => entry.mapper.id === 4);
     if (mmc3) {
       assert.equal(
-        mmc3.codeBytes - baseKernelCodeBytes(mmc3.mapper) - ITEM_KERNEL_ALLOWANCE - ITEM_EFFECT_KERNEL_ALLOWANCE_BY_GAME_TYPE.rpg,
+        mmc3.codeBytes -
+          baseKernelCodeBytes(mmc3.mapper) -
+          BATTLE_KERNEL_ALLOWANCE_BY_MAPPER[mmc3.mapper.id] -
+          ITEM_KERNEL_ALLOWANCE -
+          ITEM_EFFECT_KERNEL_ALLOWANCE_BY_GAME_TYPE.rpg,
         SPLIT_LOCK_KERNEL_ALLOWANCE,
-        "MMC3's own no-Save measurement should exceed its per-mapper base by exactly SPLIT_LOCK_KERNEL_ALLOWANCE " +
-          'plus ITEM_KERNEL_ALLOWANCE plus ITEM_EFFECT_KERNEL_ALLOWANCE_BY_GAME_TYPE.rpg (every RPG shows text, ' +
-          'so every MMC3 RPG pays the interrupt-race fix, and sample-rpg always carries a live item)'
+        "MMC3's own no-Save measurement should exceed its per-mapper base plus BATTLE_KERNEL_ALLOWANCE_BY_MAPPER " +
+          'by exactly SPLIT_LOCK_KERNEL_ALLOWANCE plus ITEM_KERNEL_ALLOWANCE plus ' +
+          'ITEM_EFFECT_KERNEL_ALLOWANCE_BY_GAME_TYPE.rpg (every RPG shows text, so every MMC3 RPG pays the ' +
+          'interrupt-race fix, and sample-rpg always carries a live item)'
       );
     }
   }
@@ -1364,18 +1483,22 @@ test('a kernel-lo shortfall Move alone would not close by its own allowance can 
     y: 16,
     props: { event: { pages: [{ cond: { type: 'none', arg: 0 }, commands: [{ op: 'move', who: 'self', dir: 'up', dist: 16 }] }] } }
   });
-  // 169, not the original 159: the kernel diet's movement-tail dedup
-  // (engine/player.asm) dropped MMC3's own base by a further 70 bytes, so
-  // 159's own deficit (397 before the diet) fell to 327 -- under
-  // MOVE_KERNEL_ALLOWANCE + FACE_KERNEL_ALLOWANCE (what dropping this
-  // project's only Move, and so its only reason to assemble move_face,
-  // actually frees), which no longer exercises split-lock being freed
-  // alongside it at all. Re-derived against a real checkCapacity() run, not
-  // assumed from the base delta alone: 169 lands the deficit at 407, inside
-  // the (395, 414] band this case exists to reproduce -- 395 = 379 + 16,
-  // unchanged by the Turn/Wait first slice's move_face split, since a
-  // project with a live Move and no Turn still pays both terms together.
-  inflate(project, 169); // deficit 407, strictly above 395 and at or below 414
+  // 201, not the earlier 169: `docs/kernel-base-overcharge-report.md` moved
+  // BASE_KERNEL_CODE_BYTES_BY_MAPPER to the action-side figure, giving this
+  // action project 262 more real bytes of kernel-lo headroom on MMC3 (the
+  // RPG-only supplement that used to be silently folded into the base) --
+  // 169's own deficit (407 before this fix) dropped well under
+  // MOVE_KERNEL_ALLOWANCE + FACE_KERNEL_ALLOWANCE, which no longer exercises
+  // split-lock being freed alongside it at all. Re-derived against a real
+  // checkCapacity() run, not assumed from the base delta alone: 201 lands
+  // the deficit at 404, near the middle of the (395, 414] band this case
+  // exists to reproduce (200 also lands inside it, at 396, but that is the
+  // band's first representable value rather than a centred one -- inflate()
+  // moves in exact 8-byte steps, so 201 is the nearest centred count) --
+  // 395 = 379 + 16, unchanged by the Turn/Wait first slice's move_face
+  // split, since a project with a live Move and no Turn still pays both
+  // terms together.
+  inflate(project, 201); // deficit 404, strictly above 395 and at or below 414
   // The message assertion below would still pass if drift ever dropped the
   // deficit to, say, 200 bytes -- solo's own freed figure (414, Move's own
   // cost plus the split-lock it also turns off) covers any deficit up to
@@ -1836,9 +1959,16 @@ test('a kernel-lo shortfall neither Save nor Move alone would close, but both to
 // else, since Wait never touches move_face -- covers the deficit. If the
 // 'wait' push were missing, kernelShortfallAdvice would never consider
 // dropping Wait at all and this project would instead get a mapper
-// suggestion or the generic "reduce content" message. n=190 measured
-// directly against a real checkCapacity() run, not assumed: it lands a
-// 37-byte deficit, comfortably under WAIT_KERNEL_ALLOWANCE (48) alone.
+// suggestion or the generic "reduce content" message. n=220, not the
+// earlier 190: `docs/kernel-base-overcharge-report.md` moved
+// BASE_KERNEL_CODE_BYTES_BY_MAPPER to the action-side figure, giving this
+// action project real headroom on MMC1 that used to be silently withheld,
+// so 190's own deficit no longer exists at all. Re-derived against a real
+// checkCapacity() run: 220 lands a 27-byte deficit, comfortably under
+// WAIT_KERNEL_ALLOWANCE (48) and centred within the (0, 48] band this case
+// only needs to sit inside -- 222 also lands inside it, at 43, only 5 bytes
+// below the boundary, which left no room to catch a regression that grew
+// the deficit rather than shrank it.
 test('a kernel-lo shortfall a live Wait command alone would close names Wait', () => {
   const project = createProject('Action', 'action');
   project.cartridge.mapper = 1; // MMC1 -- no split-lock to complicate the arithmetic
@@ -1848,7 +1978,7 @@ test('a kernel-lo shortfall a live Wait command alone would close names Wait', (
     y: 16,
     props: { event: { pages: [{ cond: { type: 'none', arg: 0 }, commands: [{ op: 'wait', frames: 30 }] }] } }
   });
-  inflate(project, 190);
+  inflate(project, 220);
   const deficit = kernelShortfallDeficit(project);
   assert.ok(deficit <= WAIT_KERNEL_ALLOWANCE, `deficit ${deficit} must not exceed WAIT_KERNEL_ALLOWANCE (${WAIT_KERNEL_ALLOWANCE}) or this case does not exercise Wait alone closing the gap`);
   const message = kernelShortfallMessage(project);
@@ -1870,9 +2000,15 @@ test('a kernel-lo shortfall a live Wait command alone would close names Wait', (
 // *either* new active.push line is missing: with only one of Turn/Wait in
 // `active`, the combo loop below (which requires at least two chosen
 // features) never runs, and the message falls straight through to a mapper
-// suggestion or the generic one instead of naming either command. n=186
-// measured directly, landing a 56-byte deficit -- strictly above both solo
-// figures (51, 48) and at or below the combined one (99).
+// suggestion or the generic one instead of naming either command. n=220, not
+// the earlier 186: `docs/kernel-base-overcharge-report.md` moved
+// BASE_KERNEL_CODE_BYTES_BY_MAPPER to the action-side figure, giving this
+// action project real headroom on MMC1 the old base withheld. Re-derived
+// against a real checkCapacity() run: 220 lands a 78-byte deficit, near the
+// middle of the (51, 99] band -- strictly above both solo figures (51, 48)
+// and at or below the combined one (99). 217 also lands inside the band, at
+// 54, but that sits only 3 bytes above the lower boundary; inflate() moves
+// in exact 8-byte steps, so 220 is the nearest centred count.
 test('a kernel-lo shortfall neither Turn nor Wait alone would close, but both together would, names the combination', () => {
   const project = createProject('Action', 'action');
   project.cartridge.mapper = 1; // MMC1 -- no split-lock to complicate the arithmetic
@@ -1894,7 +2030,7 @@ test('a kernel-lo shortfall neither Turn nor Wait alone would close, but both to
       }
     }
   });
-  inflate(project, 186);
+  inflate(project, 220);
   const deficit = kernelShortfallDeficit(project);
   const turnAlone = TURN_KERNEL_ALLOWANCE + FACE_KERNEL_ALLOWANCE;
   const combined = TURN_KERNEL_ALLOWANCE + WAIT_KERNEL_ALLOWANCE + FACE_KERNEL_ALLOWANCE;
@@ -1913,7 +2049,16 @@ test('a kernel-lo shortfall neither Turn nor Wait alone would close, but both to
 // is. This is the test that fails if active.push({ op: 'shake', ... }) is
 // missing from kernelShortfallAdvice: without it, Shake is never considered
 // at all and the message falls through to a mapper suggestion or the
-// generic one instead of naming it.
+// generic one instead of naming it. n=219, not the earlier 184:
+// `docs/kernel-base-overcharge-report.md` moved
+// BASE_KERNEL_CODE_BYTES_BY_MAPPER to the action-side figure, giving this
+// action project real headroom on MMC1 the old base withheld -- re-derived
+// against a real checkCapacity() run, landing a 36-byte deficit, centred
+// within the (0, 65] band this case only needs to sit inside -- 222 also
+// lands inside it, at 60, only 5 bytes below SHAKE_KERNEL_ALLOWANCE (65),
+// which left no room to catch a regression that grew the deficit rather
+// than shrank it. The two negative-control tests below reuse this
+// identical count, per their own comments.
 test('a kernel-lo shortfall a live Shake command alone would close names Shake', () => {
   const project = createProject('Action', 'action');
   project.cartridge.mapper = 1; // MMC1 -- no split-lock to complicate the arithmetic
@@ -1923,7 +2068,7 @@ test('a kernel-lo shortfall a live Shake command alone would close names Shake',
     y: 16,
     props: { event: { pages: [{ cond: { type: 'none', arg: 0 }, commands: [{ op: 'shake', frames: 30 }] }] } }
   });
-  inflate(project, 184);
+  inflate(project, 219);
   const deficit = kernelShortfallDeficit(project);
   assert.ok(deficit <= SHAKE_KERNEL_ALLOWANCE, `deficit ${deficit} must not exceed SHAKE_KERNEL_ALLOWANCE (${SHAKE_KERNEL_ALLOWANCE}) or this case does not exercise Shake alone closing the gap`);
   const message = kernelShortfallMessage(project);
@@ -1936,9 +2081,15 @@ test('a kernel-lo shortfall a live Shake command alone would close names Shake',
 // neither shares a dependent term with the other (unlike Turn+Move's own
 // FACE_KERNEL_ALLOWANCE) -- SHAKE_KERNEL_ALLOWANCE + WAIT_KERNEL_ALLOWANCE =
 // 65 + 48 = 113. Sized so neither command alone (65, 48) covers the deficit
-// but dropping both together does. n=186 measured directly, landing a
-// 70-byte deficit (1516 - 1446) -- strictly above both solo figures and at
-// or below the combined one.
+// but dropping both together does. n=220, not the earlier 186:
+// `docs/kernel-base-overcharge-report.md` moved BASE_KERNEL_CODE_BYTES_BY_MAPPER
+// to the action-side figure, giving this action project real headroom on
+// MMC1 the old base withheld -- re-derived against a real checkCapacity()
+// run, landing a 92-byte deficit, near the middle of the (65, 113] band --
+// strictly above both solo figures and at or below the combined one. 217
+// also lands inside the band, at 68, only 3 bytes above the lower boundary;
+// inflate() moves in exact 8-byte steps, so 220 is the nearest centred
+// count.
 test('a kernel-lo shortfall neither Shake nor Wait alone would close, but both together would, names the combination', () => {
   const project = createProject('Action', 'action');
   project.cartridge.mapper = 1; // MMC1 -- no split-lock to complicate the arithmetic
@@ -1960,7 +2111,7 @@ test('a kernel-lo shortfall neither Shake nor Wait alone would close, but both t
       }
     }
   });
-  inflate(project, 186);
+  inflate(project, 220);
   const deficit = kernelShortfallDeficit(project);
   const combined = SHAKE_KERNEL_ALLOWANCE + WAIT_KERNEL_ALLOWANCE;
   assert.ok(
@@ -1978,7 +2129,12 @@ test('a kernel-lo shortfall neither Shake nor Wait alone would close, but both t
 // if active.push({ op: 'visible', ... }) is missing from
 // kernelShortfallAdvice: without it, Show/Hide is never considered at all
 // and the message falls through to a mapper suggestion or the generic one
-// instead of naming it.
+// instead of naming it. n=221, not the earlier 188:
+// `docs/kernel-base-overcharge-report.md` moved
+// BASE_KERNEL_CODE_BYTES_BY_MAPPER to the action-side figure, giving this
+// action project real headroom on MMC1 the old base withheld -- re-derived
+// against a real checkCapacity() run, landing a 36-byte deficit, under
+// VISIBLE_KERNEL_ALLOWANCE (49).
 test('a kernel-lo shortfall a live Show/Hide command alone would close names Show/Hide', () => {
   const project = createProject('Action', 'action');
   project.cartridge.mapper = 1; // MMC1 -- no split-lock to complicate the arithmetic
@@ -1988,7 +2144,7 @@ test('a kernel-lo shortfall a live Show/Hide command alone would close names Sho
     y: 16,
     props: { event: { pages: [{ cond: { type: 'none', arg: 0 }, commands: [{ op: 'visible', state: 'hidden' }] }] } }
   });
-  inflate(project, 188);
+  inflate(project, 221);
   const deficit = kernelShortfallDeficit(project);
   assert.ok(
     deficit <= VISIBLE_KERNEL_ALLOWANCE,
@@ -2003,9 +2159,15 @@ test('a kernel-lo shortfall a live Show/Hide command alone would close names Sho
 // The combination half: Shake and Show/Hide together, purely additive since
 // neither shares a dependent term with the other -- SHAKE_KERNEL_ALLOWANCE +
 // VISIBLE_KERNEL_ALLOWANCE = 65 + 49 = 114. Sized so neither command alone
-// (65, 49) covers the deficit but dropping both together does. n=186
-// measured directly, landing a 71-byte deficit -- strictly above both solo
-// figures and at or below the combined one.
+// (65, 49) covers the deficit but dropping both together does. n=220, not
+// the earlier 186: `docs/kernel-base-overcharge-report.md` moved
+// BASE_KERNEL_CODE_BYTES_BY_MAPPER to the action-side figure, giving this
+// action project real headroom on MMC1 the old base withheld -- re-derived
+// against a real checkCapacity() run, landing a 93-byte deficit, near the
+// middle of the (65, 114] band -- strictly above both solo figures and at
+// or below the combined one. 217 also lands inside the band, at 69, only 4
+// bytes above the lower boundary; inflate() moves in exact 8-byte steps, so
+// 220 is the nearest centred count.
 test('a kernel-lo shortfall neither Shake nor Show/Hide alone would close, but both together would, names the combination', () => {
   const project = createProject('Action', 'action');
   project.cartridge.mapper = 1; // MMC1 -- no split-lock to complicate the arithmetic
@@ -2027,7 +2189,7 @@ test('a kernel-lo shortfall neither Shake nor Show/Hide alone would close, but b
       }
     }
   });
-  inflate(project, 186);
+  inflate(project, 220);
   const deficit = kernelShortfallDeficit(project);
   const combined = SHAKE_KERNEL_ALLOWANCE + VISIBLE_KERNEL_ALLOWANCE;
   assert.ok(
@@ -2043,12 +2205,18 @@ test('a kernel-lo shortfall neither Shake nor Show/Hide alone would close, but b
 // live Fade command turns off both FADE_ENABLED and PALETTE_FX_ENABLED (no
 // Flash keeps the shared term charged), so the real freed figure is
 // FADE_KERNEL_ALLOWANCE + PALETTE_FX_KERNEL_ALLOWANCE -- 146 + 55 = 201, the
-// same total the bare FADE_KERNEL_ALLOWANCE used to be before the re-gate,
-// which is why n=190 below still lands the identical deficit it always has.
-// This is the test that fails if active.push({ op: 'fade', ... }) is
-// missing from kernelShortfallAdvice: without it, Fade is never considered
-// at all and the message falls through to a mapper suggestion or the
-// generic one instead of naming it.
+// same total the bare FADE_KERNEL_ALLOWANCE used to be before the re-gate.
+// n=210, not the earlier 190: `docs/kernel-base-overcharge-report.md` moved
+// BASE_KERNEL_CODE_BYTES_BY_MAPPER to the action-side figure, giving this
+// action project real headroom on MMC1 the old base withheld -- re-derived
+// against a real checkCapacity() run, landing a 100-byte deficit, almost
+// exactly centred within the (0, 201] band this case only needs to sit
+// inside. 222 also lands inside it, at 196, only 5 bytes below the
+// 201-byte freed figure, which left no room to catch a regression that
+// grew the deficit rather than shrank it. This is the test that fails if
+// active.push({ op: 'fade', ... }) is missing from kernelShortfallAdvice:
+// without it, Fade is never considered at all and the message falls through
+// to a mapper suggestion or the generic one instead of naming it.
 test('a kernel-lo shortfall a live Fade command alone would close names Fade', () => {
   const project = createProject('Action', 'action');
   project.cartridge.mapper = 1; // MMC1 -- no split-lock to complicate the arithmetic
@@ -2058,7 +2226,7 @@ test('a kernel-lo shortfall a live Fade command alone would close names Fade', (
     y: 16,
     props: { event: { pages: [{ cond: { type: 'none', arg: 0 }, commands: [{ op: 'fade', dir: 'out' }] }] } }
   });
-  inflate(project, 190);
+  inflate(project, 210);
   const deficit = kernelShortfallDeficit(project);
   const freed = FADE_KERNEL_ALLOWANCE + PALETTE_FX_KERNEL_ALLOWANCE;
   assert.ok(deficit <= freed, `deficit ${deficit} must not exceed FADE_KERNEL_ALLOWANCE + PALETTE_FX_KERNEL_ALLOWANCE (${freed}) or this case does not exercise Fade alone closing the gap`);
@@ -2075,9 +2243,12 @@ test('a kernel-lo shortfall a live Fade command alone would close names Fade', (
 // the identical 266 this combination has always measured (no Flash anywhere
 // in this project, so the shared term is charged once, for Fade alone, the
 // same as the solo case just above). Sized so neither command alone (65,
-// 201) covers the deficit but dropping both together does. n=190 measured
-// directly, landing a 255-byte deficit -- strictly above both solo figures
-// and at or below the combined one.
+// 201) covers the deficit but dropping both together does. n=220, not the
+// earlier 190: `docs/kernel-base-overcharge-report.md` moved
+// BASE_KERNEL_CODE_BYTES_BY_MAPPER to the action-side figure, giving this
+// action project real headroom on MMC1 the old base withheld -- re-derived
+// against a real checkCapacity() run, landing a 245-byte deficit -- strictly
+// above both solo figures and at or below the combined one.
 test('a kernel-lo shortfall neither Shake nor Fade alone would close, but both together would, names the combination', () => {
   const project = createProject('Action', 'action');
   project.cartridge.mapper = 1; // MMC1 -- no split-lock to complicate the arithmetic
@@ -2099,7 +2270,7 @@ test('a kernel-lo shortfall neither Shake nor Fade alone would close, but both t
       }
     }
   });
-  inflate(project, 190);
+  inflate(project, 220);
   const deficit = kernelShortfallDeficit(project);
   const fadeAlone = FADE_KERNEL_ALLOWANCE + PALETTE_FX_KERNEL_ALLOWANCE;
   const combined = SHAKE_KERNEL_ALLOWANCE + fadeAlone;
@@ -2120,7 +2291,13 @@ test('a kernel-lo shortfall neither Shake nor Fade alone would close, but both t
 // case design-flash.md §4 calls out explicitly: summing the bare
 // FADE_KERNEL_ALLOWANCE here (as if the shared term always came along for
 // free) would overstate what dropping Fade actually buys once Flash is
-// also live.
+// also live. n=200, not the earlier 170:
+// `docs/kernel-base-overcharge-report.md` moved
+// BASE_KERNEL_CODE_BYTES_BY_MAPPER to the action-side figure, giving this
+// action project real headroom on MMC1 the old base withheld -- re-derived
+// against a real checkCapacity() run, landing a 118-byte deficit, strictly
+// above FLASH_KERNEL_ALLOWANCE (98) and at or below FADE_KERNEL_ALLOWANCE
+// (146).
 test('a kernel-lo shortfall with both Flash and Fade live: dropping Fade alone frees only FADE_KERNEL_ALLOWANCE, not the shared term', () => {
   const project = createProject('Action', 'action');
   project.cartridge.mapper = 1; // MMC1 -- no split-lock to complicate the arithmetic
@@ -2142,7 +2319,7 @@ test('a kernel-lo shortfall with both Flash and Fade live: dropping Fade alone f
       }
     }
   });
-  inflate(project, 170);
+  inflate(project, 200);
   const deficit = kernelShortfallDeficit(project);
   assert.ok(
     deficit > FLASH_KERNEL_ALLOWANCE,
@@ -2189,7 +2366,7 @@ test('a kernel-lo shortfall with no live Fade command never names Fade as droppa
     y: 16,
     props: { event: { pages: [{ cond: { type: 'none', arg: 0 }, commands: [{ op: 'shake', frames: 30 }] }] } }
   });
-  inflate(project, 184); // the identical Shake-solo deficit measured above
+  inflate(project, 219); // the identical Shake-solo deficit measured above
   const deficit = kernelShortfallDeficit(project);
   assert.ok(deficit <= SHAKE_KERNEL_ALLOWANCE, `deficit ${deficit} must not exceed SHAKE_KERNEL_ALLOWANCE (${SHAKE_KERNEL_ALLOWANCE}) or this case does not exercise Shake alone closing the gap`);
   const message = kernelShortfallMessage(project);
@@ -2228,7 +2405,7 @@ test('a kernel-lo shortfall with no live Flash command never names Flash as drop
     y: 16,
     props: { event: { pages: [{ cond: { type: 'none', arg: 0 }, commands: [{ op: 'shake', frames: 30 }] }] } }
   });
-  inflate(project, 184); // the identical Shake-solo deficit measured above
+  inflate(project, 219); // the identical Shake-solo deficit measured above
   const deficit = kernelShortfallDeficit(project);
   assert.ok(deficit <= SHAKE_KERNEL_ALLOWANCE, `deficit ${deficit} must not exceed SHAKE_KERNEL_ALLOWANCE (${SHAKE_KERNEL_ALLOWANCE}) or this case does not exercise Shake alone closing the gap`);
   const message = kernelShortfallMessage(project);
@@ -2286,8 +2463,13 @@ test(
 // Sting-only one included, the identical shape CLAUDE.md already documents for a Move-only event
 // (and the test above it, in this file). Calibrated the same way that one was: a deficit strictly
 // above STING_KERNEL_ALLOWANCE alone (175) and at or below the combined figure (194 = 175 + 19),
-// so 175 alone provably would not close the gap but 194 does -- inflate(169) lands it at 190,
-// found by direct measurement against a real checkCapacity() run, not derived by arithmetic.
+// so 175 alone provably would not close the gap but 194 does -- inflate(201), not the earlier 169:
+// `docs/kernel-base-overcharge-report.md` moved BASE_KERNEL_CODE_BYTES_BY_MAPPER to the action-side
+// figure, giving this action project real headroom on MMC3 the old base withheld. 201 lands the
+// deficit at 184, near the middle of the (175, 194] band, found by direct measurement against a
+// real checkCapacity() run, not derived by arithmetic -- 200 also lands inside the band, at 176,
+// but that is its first representable value rather than a centred one; inflate() moves in exact
+// 8-byte steps, so 201 is the nearest centred count.
 test('a kernel-lo shortfall Sting alone would not close by its own allowance can still close when dropping it also turns off split-lock', () => {
   const project = createProject('Action', 'action');
   project.cartridge.mapper = 4; // MMC3
@@ -2300,7 +2482,7 @@ test('a kernel-lo shortfall Sting alone would not close by its own allowance can
     y: 16,
     props: { event: { pages: [{ cond: { type: 'none', arg: 0 }, commands: [{ op: 'sting', song: 0 }] }] } }
   });
-  inflate(project, 169); // deficit 190, strictly above 175 and at or below 194
+  inflate(project, 201); // deficit 184, strictly above 175 and at or below 194
   const deficit = kernelShortfallDeficit(project);
   assert.ok(
     deficit > (STING_KERNEL_ALLOWANCE_STANDALONE + AUDIO_FX_KERNEL_ALLOWANCE),

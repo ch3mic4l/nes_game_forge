@@ -1,9 +1,14 @@
 # `BASE_KERNEL_CODE_BYTES_BY_MAPPER` overcharges every action project by 270-282 bytes
 
-**Status: open, unfixed, deliberately out of scope for the Save allowance split that found it.**
-This document records a real, measured, pre-existing defect so it is not rediscovered a third time.
-Nothing here is a proposal that has been agreed to; §5 sketches what a fix would have to do and is
-explicitly not a plan anyone has signed off on.
+**Status: resolved.** `BASE_KERNEL_CODE_BYTES_BY_MAPPER` is now measured against `sample` (the action
+fixture), and a new `BATTLE_KERNEL_ALLOWANCE_BY_MAPPER` term carries the RPG-only remainder that used
+to be silently folded into it (`main/build/generate.js`; equality-asserted, both halves, per board, in
+`test/unit/kernelbytes.test.js`). Implemented per `handoff-magic/brief-kernel-base-1.md`; see
+`handoff-magic/kernel-base-1-report.md` for the full account, including the real, re-measured figures
+this document's own §6 sketch is checked against. Not yet committed as of this fix landing in the
+tree — the commit that carries it will supersede this line with its own hash once it exists. §1-§5
+and §7 below are left exactly as they were: the record of how this was found and what a fix would
+have to do, not retroactively edited now that it is one.
 
 ## 1. The claim, in one line
 

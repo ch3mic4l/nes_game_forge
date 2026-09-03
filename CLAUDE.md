@@ -1017,13 +1017,14 @@ ledger has to keep:
 - **A term measured against one game type and charged to both is wrong for the one it was not
   measured on, and no delta-based test can see it.** `SAVE_KERNEL_ALLOWANCE_BY_MAPPER` was measured
   only against `sample-rpg` and overcharged every action project 36 bytes until it was split;
-  `BASE_KERNEL_CODE_BYTES_BY_MAPPER` has the identical defect *today*, unfixed, overcharging action
-  projects 270 bytes on MMC1 and UNROM 512 and 282 on MMC3 — measured, with the cause and the shape
-  of a fix, in `docs/kernel-base-overcharge-report.md`. The reason neither was caught is worth
-  keeping even after the second is fixed: every absolute `assertCovers` check runs against
-  `sample-rpg`, and every action-side check is a *delta* between two action builds, which cancels
-  the base term out. A new allowance needs at least one absolute check on each game type it can be
-  charged to.
+  `BASE_KERNEL_CODE_BYTES_BY_MAPPER` had the identical defect, overcharging action projects 270 bytes
+  on MMC1 and UNROM 512 and 282 on MMC3 (`docs/kernel-base-overcharge-report.md` — the write-up, cause
+  and fix), fixed the same way: the base now holds the action-side figure, and
+  `BATTLE_KERNEL_ALLOWANCE_BY_MAPPER` (below) carries the RPG-only remainder. The reason neither was
+  caught is worth keeping even after both are fixed: every absolute `assertCovers` check used to run
+  against `sample-rpg` only, and every action-side check was a *delta* between two action builds,
+  which cancels the base term out. A new allowance needs at least one absolute check on each game
+  type it can be charged to.
 - **Individual allowance deltas are equality-asserted against nesasm's real usage, per board, not
   margin-checked.** `kernelbytes.test.js` measures each named constant's own isolated delta with
   `assert.equal`, not `<=` — a margin check would let a stale, too-generous figure sit undetected
@@ -1049,14 +1050,21 @@ Current allowance figures (`main/build/generate.js` unless noted; each named cod
 delta `kernelbytes.test.js` measures exactly, on every board named — the base, the derived table
 sizes, the route zero-cost proof and `KERNEL_SLACK` itself are each checked their own way, below):
 
-- `BASE_KERNEL_CODE_BYTES_BY_MAPPER = { 30 (UNROM 512): 6399, 1 (MMC1): 6204, 4 (MMC3): 6379 }` —
-  the stock RPG-capable kernel with nothing conditional turned on; a non-RPG-capable mapper falls
-  back to the largest of the three. Read *RPG-capable* literally: these are `BATTLE_ENABLED`
-  figures, measured on `sample-rpg`, and an action project on the same board is charged all of them
-  — a known 270/282-byte overcharge, open and unfixed, written up in
-  `docs/kernel-base-overcharge-report.md`. The direction is safe (the assembler is never promised
-  room it will refuse), but an action project is denied roughly 20 screens of table space it really
-  has.
+- `BASE_KERNEL_CODE_BYTES_BY_MAPPER = { 1 (MMC1): 5954, 4 (MMC3): 6117, 30 (UNROM 512): 6149 }` plus
+  `BATTLE_KERNEL_ALLOWANCE_BY_MAPPER = { 1: 250, 4: 262, 30: 250 }` — the base is now the action-side
+  kernel with nothing conditional turned on, on every RPG-capable board; a non-RPG-capable mapper
+  falls back to the largest of the three (`docs/kernel-base-overcharge-report.md`: this used to be
+  one `BATTLE_ENABLED` figure, measured on `sample-rpg` alone and charged in full to action projects
+  too — a real 270/282-byte overcharge, now split the same way Save's own was). The supplement is
+  `*_BY_MAPPER`, not flat like `SAVE_BATTLE_KERNEL_ALLOWANCE`: MMC3 genuinely differs by 12 bytes,
+  `split_select`'s own second `.if BATTLE_ENABLED` arm (`engine/split.asm`), separate from the arm
+  `TITLE_KERNEL_ALLOWANCE_BY_MAPPER`'s own MMC3 entry already charges for — measured variance earns
+  the table, per this file's own rule above. No fallback, deliberately, the same reason Save's table
+  has none -- but its own gate, `battleEnabledFor` (`codeRegions(...).length > 0`), does not by itself
+  imply `rpgCapable(mapper)` (round 1 wrongly assumed it did): `battleKernelAllowance(mapper)` throws
+  on a missing entry instead of returning `undefined`-then-`NaN`, `checkCapacity` pre-checks the
+  project's own mapper and reports a named problem instead of a broken budget, and `switchableMappers`
+  filters out any candidate that would hit the throw.
 - `TITLE_KERNEL_ALLOWANCE_BY_MAPPER = { 30: 212, 1: 212, 4: 224 }`, charged whenever a project has
   a title screen — MMC3 costs 12 bytes more because it is the only board with `SPLIT_ENABLED`, and
   `split_select` carries an extra `.if TITLE_ENABLED` branch neither other board assembles. A
@@ -1082,7 +1090,8 @@ sizes, the route zero-cost proof and `KERNEL_SLACK` itself are each checked thei
   `Turn` share, charged once whenever either is live) — 395 total for a Move-only project.
 - `SPLIT_LOCK_KERNEL_ALLOWANCE = 19`, MMC3-only, charged whenever `projectUsesText` is true on that
   board — which includes a project whose only live event is a Move or a Sting command, not just
-  dialogue.
+  dialogue. Never independently measured in isolation, only as a residual inside other real builds —
+  see `docs/split-lock-not-pinned-report.md` for the gap that leaves and why it is not yet fixed.
 - `ITEM_KERNEL_ALLOWANCE = 16` (flat across boards) plus 3 `kernelTableBytes` bytes *per item*
   (`item_metasprite`, `item_effect_kind`, `item_effect_amount`, one byte each in
   `assets/items.inc`); `ITEM_EFFECT_KERNEL_ALLOWANCE_BY_GAME_TYPE = { action: 63, rpg: 60 }` for
