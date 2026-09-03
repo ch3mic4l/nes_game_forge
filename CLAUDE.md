@@ -289,9 +289,7 @@ which would offer a real, clickable button into a Forge `forgeIds` already exclu
 Undo is whole-project `structuredClone` snapshots.
 
 **Map organization and reuse (ROADMAP item 7) is what makes a store commit that restructures the
-map list safe.** Before it, Delete Map and Resize Map had shipped restructuring `project.maps` with
-zero reference repair — a real, already-shipped bug, not a hypothetical one — and Add Map was a bare
-`project.maps.push` with no reference repair to speak of either. `remapScreenReferences(project,
+map list safe.** `remapScreenReferences(project,
 translate)` in `shared/project.js` is the one new primitive: the single place that knows *which
 fields* hold a flat screen reference — every placed entity's `props.toScreen`, and every `warp`
 command's `screen` operand, reached through `allCommands` so a warp nested inside a branch or a
@@ -406,25 +404,13 @@ and MMC5 above, a real design worked out and rejected on a real budget rather th
 considered.** UNROM 512's flash commit (below) is not power-loss atomic: it erases the whole 4 KB
 sector before writing anything, so a save interrupted mid-commit can leave neither the old record nor
 a valid new one. Two designs were costed against the real remaining kernel-lo headroom on
-`sample-rpg` with a live Save — roughly 240 budgetable bytes once engine code, fixed tables and
-project tables are accounted for (the same bank `kernelbytes.test.js` arbitrates everywhere else in
-this file). A 47-slot append-only ring (`floor(4096/87)`, treating the marker as an allocation state)
-costs an estimated 170-265 bytes — most of the remaining headroom — and is still not atomic at
-rollover: a one-sector design has nowhere to put slot zero's replacement without erasing every slot
-first, so the hazard is reduced, not removed. A two-sector A/B journal is the design that actually
-closes the gap: the *adjacent* 4 KB sector is already reserved by `chrPayloadRegions()`/
-`screenRegions()` (this file's own note on why a flash build gives up a whole 8 KB region for a driver
-that uses only the top 4 KB of it) but currently unused, and a one-byte generation counter is safe
-across wraparound because each generation is written into a sector that was just erased to `$FF` — no
-value needs a bit to go 0 → 1 without an erase in between, so there is no counter value clear-only
-programming cannot express. That design is genuinely atomic and still costs an estimated 155-225
-bytes — 65-94% of the same headroom — and would push the already-refused `sample-rpg` + Save + Move
-combination (currently 167 bytes short on this board — re-measured against the current tree, not the
-~155 this passage previously estimated; `battle_end`'s own talk_ent fix, item 6's Turn/Wait slice,
-added 3 more unconditional kernel-lo bytes to every RPG build, on top of whatever else moved it
-before) to roughly 322-392 bytes short. Neither was
-built. If atomic flash saving becomes a real requirement, the A/B journal is where to start — not the
-ring — and the adjacent sector is already sitting there reserved for exactly it.
+`sample-rpg` with a live Save: a single-sector append-only ring, which is still not atomic at
+rollover, and a two-sector A/B journal that genuinely is, using the adjacent 4 KB sector
+`chrPayloadRegions()`/`screenRegions()` already reserves but leaves unused — but even the journal
+would push the already-refused `sample-rpg` + Save + Move combination further out of reach. Neither
+was built; see `docs/design-flash-slot-ring.md` for both designs, their exact costs, and why the
+journal — not the ring — is where to start if atomic flash saving becomes a real requirement, since
+the sector it needs is already sitting there reserved for exactly it.
 
 **MMC3's scanline IRQ gives the font its own CHR bank** (`engine/split.asm`). On a board whose
 registry entry has `scanlineIrq: true` — only MMC3 — a project that shows text does *not* get the
@@ -742,16 +728,14 @@ already are: its array order is `EFFECT_NONE`/`EFFECT_HEAL`/`EFFECT_DAMAGE` in
 two places. `none` stays index 0 because it is what every item meant before this field existed, and
 `normalizeItem`'s own one-time migration — at normalization, not re-derived on every build — falls
 back to it whenever an item's backing actor never had a positive `battle.heal` to derive a `heal`
-from. `item_heal` (`main/build/battletables.js`, the RPG battle ITEM menu's own table) used to read
-`actor.battle.heal` directly off the backing actor every build; it now reads `item.effect.amount`
-(when `kind` is `heal`, else 0) straight off the item, the migration having already moved that number
-onto the item once. The table's existence, size and only reader (`item_chosen`,
+from. `item_heal` (`main/build/battletables.js`, the RPG battle ITEM menu's own table) now reads
+`item.effect.amount` (when `kind` is `heal`, else 0) straight off the item, the migration having
+already moved that number onto the item once. The table's existence, size and only reader (`item_chosen`,
 `engine/battleturn.asm`) are unchanged — only where each row's number comes from moved.
 
 **`use_item` (`engine/ui.asm`) is the field/menu "spend an item" action, in every game type, and it
-is the only place `none` genuinely means *key item*.** Before this phase, confirming on any
-highlighted item shifted the bag over it and bumped `items_used` unconditionally, whatever it was.
-Now it calls `use_item_apply` first, which reads `item_effect_kind`/`item_effect_amount` and answers
+is the only place `none` genuinely means *key item*.** It calls `use_item_apply` first, which reads
+`item_effect_kind`/`item_effect_amount` and answers
 one of three states in `A` — `USE_ITEM_NONE`, `USE_ITEM_ALIVE`, `USE_ITEM_DIED` — because a two-state
 carry protocol cannot say "applied, and lethal" as a third thing distinct from "applied" and "not
 applied" without a second flag riding beside it. A `none`-kind item makes `use_item` skip the
@@ -761,13 +745,8 @@ both apply, through whichever health model the build has — `BATTLE_ENABLED`: `
 `party_damage`; otherwise `gain_hearts`/`lose_hearts` — and are spent either way, no third model
 invented for the field the way `Heal`/`Damage` already refuse one for a metatile. **`use_item_apply`
 is reached by `jsr` and must never itself `jmp player_died`** — the identical shape "a killing hit
-must `jmp player_died`, not return into it" already documents a few paragraphs up, which the design
-draft for this routine got wrong the same way before any of it was written: §5's own code sketch had
-`use_item_apply` `jmp player_died` directly, copying `lose_hearts`'/`party_damage`'s call shape
-without copying the constraint that makes it safe. Design review (§9) caught it and corrected the
-routine to a three-state return before implementation started, so the constraint below is what the
-shipped code has always done, not a fix for something that ran broken. The constraint is about whose
-return address is at stake, not about whether one exists on the
+must `jmp player_died`, not return into it" already documents a few paragraphs up. The constraint is
+about whose return address is at stake, not about whether one exists on the
 stack at all — those are different claims, and only the first is what makes the `jmp` safe.
 `dispatch_input`'s own `dispatch_loop` reaches `use_item` by `jsr do_action` (`engine/input.asm`),
 which then falls to `do_action_confirm` and `do_action_use` by ordinary same-subroutine branches
@@ -1056,9 +1035,8 @@ sizes, the route zero-cost proof and `KERNEL_SLACK` itself are each checked thei
 - `BASE_KERNEL_CODE_BYTES_BY_MAPPER = { 1 (MMC1): 5954, 4 (MMC3): 5971, 30 (UNROM 512): 6149 }` plus
   `BATTLE_KERNEL_ALLOWANCE_BY_MAPPER = { 1: 250, 4: 262, 30: 250 }` — the base is now the action-side
   kernel with nothing conditional turned on, on every RPG-capable board; a non-RPG-capable mapper
-  falls back to the largest of the three (`docs/kernel-base-overcharge-report.md`: this used to be
-  one `BATTLE_ENABLED` figure, measured on `sample-rpg` alone and charged in full to action projects
-  too — a real 270/282-byte overcharge, now split the same way Save's own was). The supplement is
+  falls back to the largest of the three (the game-type overcharge above; see
+  `docs/kernel-base-overcharge-report.md`). The supplement is
   `*_BY_MAPPER`, not flat like `SAVE_BATTLE_KERNEL_ALLOWANCE`: MMC3 genuinely differs by 12 bytes,
   `split_select`'s own second `.if BATTLE_ENABLED` arm (`engine/split.asm`), separate from the arm
   `TITLE_KERNEL_ALLOWANCE_BY_MAPPER`'s own MMC3 entry already charges for — measured variance earns
@@ -1302,8 +1280,7 @@ be a list. So there are two questions instead: does `reconcileCartridge` change 
 does, the switch silently costs a tileset or a mirroring choice — and the *result* validates
 cleanly, which is what makes that case invisible to every other check), and would the result still
 build — `validateProject` for every content rule at once, plus the three capacity questions it does
-not own: screens, kernel-lo and the banked code region. A board that fixed one bounded bank by
-overflowing another used to be offered in both directions. Errors are compared before against after,
+not own: screens, kernel-lo and the banked code region. Errors are compared before against after,
 not merely counted: a project being advised may carry unrelated errors every board shares, and
 rejecting a candidate for one it merely inherited would cost the author every suggestion over a
 mistake that has nothing to do with the switch.
@@ -1328,20 +1305,15 @@ which is why the test asserts equality rather than a margin band, and why `BATTL
 against stock-code growth rather than headroom for an estimate to be wrong in.
 
 **`battleTables(project, battleStrings = BATTLE_STRINGS)` and `battleTableBytes(project,
-battleStrings = BATTLE_STRINGS)` both take an optional, test-only injected strings list** — the
-default path is byte-identical to before either parameter existed. Both take it, not just the
-first: round 2 of the name-stride slice's own review found `battleTableBytes` still calling
+battleStrings = BATTLE_STRINGS)` both take an optional, test-only injected strings list, and both
+must** — round 2 of the name-stride slice's own review found `battleTableBytes` still calling
 `battleTables(project)` with the *default* even after `battleTables` had been given the parameter,
-so an injected list's real emission and the counter naming its size could disagree — a counter
-drifting from what it counts is exactly the failure this region's whole exactness discipline
-exists to prevent, one call site closer in than the board-level check above. Separately,
-`checkBattleStringsCapacity` (`battletables.js`) exists because `push_battle_string`
-(`engine/battleui.asm`) keeps the identical 8-bit `index * MSG_COLS` stride `name_offset_pc` used
-to have — deliberately left unfixed at the engine level (see that function's own header comment for
-the reasoning) and guarded at the generator instead, refusing a build at the 22nd `BATTLE_STRINGS`
-entry. The injected-list parameter is what lets that guard be exercised through `battleTables`'
-own call site rather than only the helper called in isolation (`test/unit/bankedbytes.test.js`),
-not what caused the guard to exist.
+so an injected list's real emission and the counter naming its size could disagree, exactly the
+failure this region's whole exactness discipline exists to prevent, one call site closer in than
+the board-level check above. The default path is byte-identical to before either parameter existed.
+See `docs/namestride-report.md` for `checkBattleStringsCapacity`, the generator guard this
+parameter lets be exercised through `battleTables`' own call site rather than only in isolation
+(`test/unit/bankedbytes.test.js`).
 
 **Exact for the *stock* battle code, and that qualifier is load-bearing.** A Code Forge override of
 `battle.asm` — or of `battleui.asm`/`battleturn.asm`, which it includes — is hand-written 6502 whose
@@ -1355,57 +1327,30 @@ assembler answers, with the `.fail` below as the backstop. The advice changes wi
 that would close an exact deficit is only "the least that could fit" when the base is unknown, and
 no board can be said to fit either.
 
-**Overriding `main.asm` is a weaker guarantee again, and gets its own predicate.**
-`battleRegionPlacementOverridden` / `BATTLE_REGION_PLACEMENT_SOURCES`, separate from the size
-question above because the two license different amounts of arithmetic. An override of `battle.asm`
-leaves the tables where they are, so "the tables alone must fit" survives it. An override of
-`main.asm` does not: `assets/code.inc` — the region's own `.bank`/`.org`, the tables, the include of
-`battle.asm` and the end-of-region `.fail` — reaches the ROM only because `main.asm` includes it, so
-a custom main may put the tables somewhere else entirely, or nowhere. **No capacity refusal is
-raised at all in that case**, because the tables-only bound assumes exactly the placement the author
-has taken over, and refusing on it would turn away a project that fits. The `.fail` goes with the
-include, so this is the one case where neither the JS check nor the assembler backstop covers this
-region — the ordinary consequence of taking over the file that decides the ROM's whole layout, not a
-hole in either mechanism. The meter still shows the stock-based figure, under a hint
-saying which number it is — the tables half is as real as ever, and hiding the meter would leave an
-RPG author with nothing.
-`battleTableBytes` therefore *throws* on a directive it cannot size instead of skipping it — the
-count is complete only while `.db` is the sole storage directive `battleTables` emits, which is a
-property of the emit and not of the counter.
+**Overriding `main.asm` is a weaker guarantee again, and gets its own predicate,**
+`battleRegionPlacementOverridden` / `BATTLE_REGION_PLACEMENT_SOURCES`: an override of `battle.asm`
+leaves the tables where they are, so "the tables alone must fit" survives it, but a custom
+`main.asm` can put those tables somewhere else entirely, or nowhere. **No capacity refusal is
+raised at all in that case** — the tables-only bound assumes exactly the placement the author has
+taken over, and refusing on it would turn away a project that fits. The meter still shows the
+stock-based figure, under a hint saying which number it is, since the tables half is as real as
+ever. See `docs/design-battle-region-guard.md` for why this is the one case neither the JS check nor
+the assembler backstop covers, and how `battleTableBytes` handles a directive it cannot size.
 
-**The `.fail` in the generated `assets/code.inc` covers exactly one residual class, and it is worth
-knowing which.** An override of `battle.asm` that is simply too big is caught by nesasm's own
-per-byte bank check first — no guard placed after the content can beat it — so this one bounds
-something else: an override that *relocates* with its own `.bank`/`.org` and finishes outside the
-region. Nothing trips nesasm's per-byte check there, because the bytes land in a bank with room for
-them. Verified by stripping the guard and running nesasm by hand: an override ending
-`.bank 1 / .org $A000` and one ending `.bank 2 / .org $C000` both assemble with exit 0, no reported
-errors and a complete ROM, with battle code silently written over screen data and over the kernel —
-the second being the backward-`.org` splice this file already documents under the 6502 traps. Hence
-two one-directional `>` comparisons (nesasm's grammar, the same restriction `engine/main.asm`'s
-flash guard works within): the condition is "did the counter finish inside this region", not "is the
-content too big".
-
-**The guard bounds where the region ends up, not where the assembler went, and there are two escapes
-it cannot close.** `.if` can see neither the current bank nor any history. A relocation to the same
-*address* in a different bank lands back inside the bounds; and — confirmed on a real build — an
-override can relocate, write, and *return*: on UNROM 512, ending an override `.bank 0 / .org $8000 /
-.db $AA,$BB,$CC,$DD / .bank 1 / .org $B000` overwrites four bytes of the CHR payload already emitted
-at bank 0, finishes tidily inside the region, and ships that corruption in a ROM that assembled with
-no error at all. So `checkCapacity` additionally *warns* when an override of a battle-region source
-contains a **token shaped like** a `.bank`/`.org` relocation (`battleRegionRelocates`) — which is a
-weaker claim than "contains a directive", deliberately, and the message says so: the scan is one
-file's text, so it sees a label named `org` or a `.org` inside `.if 0` and cannot see a relocation
-reached through `.include` or produced by a macro at all. A text scan is not the kind of guess this
-codebase refuses to make about hand-written 6502 — refusing to *size* it would be; noticing its text
-contains something spelled `.org` is a fact about the text — and a warning that misfires costs
-nothing, which is why the false positives are kept rather than filtered. It is per *token* rather
-than anchored to the start of a line, because `BANK 0`, `bt_lab .org`, `.locallab: .org` and
-`zz_b:.org` (nesasm needs no whitespace after a label's colon) all relocate and an anchored match
-sees only the last. Neither mechanism makes the
-guard complete; together they mean nothing is claimed that is not true. The guard is emitted into the
-generated file rather than added to `engine/main.asm` on purpose — `main.asm` is a stock engine file
-an override could replace, taking the guard with it.
+**The `.fail` in the generated `assets/code.inc` bounds where an override of `battle.asm` ends up,
+not whether nesasm accepted it — and even together with `checkCapacity`'s own text-scan warning, it
+cannot close every escape.** nesasm's own per-byte bank check already catches an override that is
+simply too big; the `.fail` exists for the one thing that check cannot see — an override that
+*relocates* with its own `.bank`/`.org` and finishes outside the region, which nesasm accepts with
+exit 0 while battle code is silently written over screen data or the kernel. `checkCapacity`
+separately *warns* when an override's text contains anything **shaped like** a `.bank`/`.org`
+relocation (`battleRegionRelocates`) — a text scan, not a size guess, so it is deliberately weaker
+than "contains a directive" and can both miss a relocation reached through `.include`/a macro and
+flag one that is not real. Neither mechanism alone is complete, and — confirmed on a real build —
+two specific relocations get past both together: see `docs/design-battle-region-guard.md` for both,
+for the empirical proof behind the `.fail`'s own boundary condition ("did the counter finish inside
+this region", not "is the content too big"), and for why the guard is emitted into the generated
+file rather than `engine/main.asm`.
 
 **When 8 KB genuinely runs out — a note, not something to do now.**
 `codeRegions(mapper, tilesetCount, bankedCode)` already takes a `bankedCode` count and hands back
@@ -1439,9 +1384,7 @@ Three shapes worth keeping:
   advances the turn instead of poisoning twice. A status never survives past the battle that gave
   it to a party member, on any of the three ways a battle can stop mattering: `battle_begin` and
   `battle_end` (`engine/rpg.asm`) each zero `pc_status` for every party slot, covering a fight
-  entered and a fight left normally — including a fight the party won, where `battle_end` not
-  clearing it used to leave a winning member's poison sitting on the field, inert only because
-  nothing out there reads it, until the next battle's own reset overwrote it. A loss is the third
+  entered and a fight left normally — including a fight the party won. A loss is the third
   way and does not go through `battle_end` at all: `battle_finish` (`engine/battleturn.asm`) jumps
   straight to `player_died` on defeat, so the clear for that path lives in `init_session`
   (`engine/combat.asm`) instead — the single definition of "new game" every game over already
