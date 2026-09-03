@@ -998,7 +998,7 @@ ledger has to keep:
 
 - **A conditional feature's cost is a separate generated allowance, never folded into a base.**
   `kernelCodeBytes` charges Move, Turn, Wait, Save, Sting, Sfx, switch-bound tiles, Fade/Flash and
-  the MMC3-only split-lock fix as their own named `*_KERNEL_ALLOWANCE` terms, each gated on the
+  the MMC3-only font-bank split as their own named `*_KERNEL_ALLOWANCE` terms, each gated on the
   predicate that turns the feature on (`projectUsesMove`, `projectUsesSave`, …) — a project that
   never uses a feature assembles byte-for-byte as if the feature did not exist, which
   `move.test.js`, `codebuild.test.js` and their neighbours assert by comparing whole ROMs.
@@ -1020,11 +1020,14 @@ ledger has to keep:
   `BASE_KERNEL_CODE_BYTES_BY_MAPPER` had the identical defect, overcharging action projects 270 bytes
   on MMC1 and UNROM 512 and 282 on MMC3 (`docs/kernel-base-overcharge-report.md` — the write-up, cause
   and fix), fixed the same way: the base now holds the action-side figure, and
-  `BATTLE_KERNEL_ALLOWANCE_BY_MAPPER` (below) carries the RPG-only remainder. The reason neither was
-  caught is worth keeping even after both are fixed: every absolute `assertCovers` check used to run
-  against `sample-rpg` only, and every action-side check was a *delta* between two action builds,
-  which cancels the base term out. A new allowance needs at least one absolute check on each game
-  type it can be charged to.
+  `BATTLE_KERNEL_ALLOWANCE_BY_MAPPER` (below) carries the RPG-only remainder. A third instance shared
+  the blind spot without the game-type mismatch: `SPLIT_KERNEL_ALLOWANCE` was never measured as its
+  own delta, only as a residual already containing its own bytes, and 146 of its true 165 had been
+  hiding inside that same MMC3 base (`docs/split-lock-not-pinned-report.md` §8). The reason none of
+  the three was caught is worth keeping even after all are fixed: every absolute `assertCovers` check
+  used to run against `sample-rpg` only, and every action-side check was a *delta* between two action
+  builds, which cancels the base term out. A new allowance needs at least one absolute check on each
+  game type — and each condition — it can be charged to.
 - **Individual allowance deltas are equality-asserted against nesasm's real usage, per board, not
   margin-checked.** `kernelbytes.test.js` measures each named constant's own isolated delta with
   `assert.equal`, not `<=` — a margin check would let a stale, too-generous figure sit undetected
@@ -1039,8 +1042,8 @@ ledger has to keep:
   not just top-level — and asking what the resulting project's full kernel-lo occupancy
   (`kernelCodeBytes + fixedBytes + tableBytes`) would be (`projectWithoutCommands`), never by
   summing the flat allowance constants.** Summing under-counts: on MMC3, a project whose only live
-  event is a Move (or a Sting) is that project's only reason `SPLIT_LOCK_KERNEL_ALLOWANCE` is paid
-  at all, so removing it has to free the term *and* the split lock together, and only the
+  event is a Move (or a Sting) is that project's only reason `SPLIT_KERNEL_ALLOWANCE` is paid
+  at all, so removing it has to free the term *and* the split term together, and only the
   counterfactual-occupancy approach knows that.
 - **A mapper offered as a fix must still hold every tileset, every screen and the project's
   mirroring choice** — a smaller kernel-lo reservation alone is not a valid suggestion if
@@ -1050,7 +1053,7 @@ Current allowance figures (`main/build/generate.js` unless noted; each named cod
 delta `kernelbytes.test.js` measures exactly, on every board named — the base, the derived table
 sizes, the route zero-cost proof and `KERNEL_SLACK` itself are each checked their own way, below):
 
-- `BASE_KERNEL_CODE_BYTES_BY_MAPPER = { 1 (MMC1): 5954, 4 (MMC3): 6117, 30 (UNROM 512): 6149 }` plus
+- `BASE_KERNEL_CODE_BYTES_BY_MAPPER = { 1 (MMC1): 5954, 4 (MMC3): 5971, 30 (UNROM 512): 6149 }` plus
   `BATTLE_KERNEL_ALLOWANCE_BY_MAPPER = { 1: 250, 4: 262, 30: 250 }` — the base is now the action-side
   kernel with nothing conditional turned on, on every RPG-capable board; a non-RPG-capable mapper
   falls back to the largest of the three (`docs/kernel-base-overcharge-report.md`: this used to be
@@ -1088,10 +1091,11 @@ sizes, the route zero-cost proof and `KERNEL_SLACK` itself are each checked thei
   tileset payloads have claimed every switchable region.
 - `MOVE_KERNEL_ALLOWANCE = 379` plus `FACE_KERNEL_ALLOWANCE = 16` (the facing-set routine Move and
   `Turn` share, charged once whenever either is live) — 395 total for a Move-only project.
-- `SPLIT_LOCK_KERNEL_ALLOWANCE = 19`, MMC3-only, charged whenever `projectUsesText` is true on that
+- `SPLIT_KERNEL_ALLOWANCE = 165`, MMC3-only, charged whenever `projectUsesText` is true on that
   board — which includes a project whose only live event is a Move or a Sting command, not just
-  dialogue. Never independently measured in isolation, only as a residual inside other real builds —
-  see `docs/split-lock-not-pinned-report.md` for the gap that leaves and why it is not yet fixed.
+  dialogue. Renamed from `SPLIT_LOCK_KERNEL_ALLOWANCE`: pinned by a real text-on/text-off isolation
+  on a fresh action project, plus a zero-delta control on every non-`scanlineIrq` board, not the
+  19-byte residual guess it used to be — see `docs/split-lock-not-pinned-report.md` §8.
 - `ITEM_KERNEL_ALLOWANCE = 16` (flat across boards) plus 3 `kernelTableBytes` bytes *per item*
   (`item_metasprite`, `item_effect_kind`, `item_effect_amount`, one byte each in
   `assets/items.inc`); `ITEM_EFFECT_KERNEL_ALLOWANCE_BY_GAME_TYPE = { action: 63, rpg: 60 }` for
@@ -1267,7 +1271,7 @@ own spell-amount roll, `roll_spell_amount`/`mod8` (`engine/battleturn.asm`); see
 `docs/design-magic.md` §8) rather than one flat number split later — the mistake `BASE_KERNEL_CODE_BYTES` made and
 `BASE_KERNEL_CODE_BYTES_BY_MAPPER` had to undo. MMC3's extra 46 bytes are the `.if SPLIT_ENABLED`
 blocks inside the region itself (`battle.asm`'s split arm, `battleui.asm`'s sprite targeting
-cursor), and they need **no** separate conditional term the way `SPLIT_LOCK_KERNEL_ALLOWANCE` does:
+cursor), and they need **no** separate conditional term the way `SPLIT_KERNEL_ALLOWANCE` does:
 `SPLIT_ENABLED` is `fontBankSplit`, `projectUsesText` is true for `gameType === 'rpg'` on the game
 type alone, and this region exists only for an RPG — so there is no MMC3-RPG-without-the-split to
 overcharge. Every board that can reach the region has its own measured entry, because `codeRegions()`

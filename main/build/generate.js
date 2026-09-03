@@ -250,14 +250,22 @@ const TITLE_PROMPT_ROW = 19;
 // build, not what BASE_KERNEL_CODE_BYTES_BY_MAPPER is set to). MMC3 also
 // shows text unconditionally on `sample` (it has real dialogue, so
 // projectUsesText is true regardless of game type), so its own raw figure
-// already has SPLIT_LOCK_KERNEL_ALLOWANCE's 19 bytes baked in, the identical
+// already has SPLIT_KERNEL_ALLOWANCE's bytes baked in, the identical
 // bookkeeping the RPG-side measurement already needed. Subtracting the
-// item allowance (and, on MMC3, the split-lock allowance) from each raw
-// figure gives the table's own values below: `{1: 5954, 4: 6117,
-// 30: 6149}` -- arithmetic that has to agree with, and was cross-checked
-// against, `docs/kernel-base-overcharge-report.md` §6's own derivation (old
-// base minus the margin's excess over KERNEL_SLACK: 6204-250, 6379-262,
-// 6399-250) — both routes land on the identical three numbers.
+// item allowance (and, on MMC3, the split allowance) from each raw
+// figure gives the table's own values below: `{1: 5954, 4: 5971,
+// 30: 6149}`. MMC3's own entry moved a second time after this passage was
+// first written: the 6117 it originally landed on (6215-79-19, and
+// cross-checked against `docs/kernel-base-overcharge-report.md` §6's own
+// 6379-262) subtracted `SPLIT_KERNEL_ALLOWANCE`'s own then-measured value,
+// 19 -- which `docs/split-lock-not-pinned-report.md` found was never
+// actually isolated, and `handoff-magic/brief-split-term-1.md` then
+// re-measured at 165 (a fresh action project, text on vs. off, real nesasm
+// builds -- see that term's own declaration for the full account). 6215
+// still real, still nesasm's own output; only which subtrahend it is split
+// against changed. The other two boards are untouched by this correction --
+// neither has a scanline IRQ, so `SPLIT_KERNEL_ALLOWANCE` was always 0 for
+// them regardless of what its own figure was.
 // Every other supported mapper -- NROM, CNROM, GxROM, Color Dreams, UxROM --
 // cannot build an RPG at all, so `sample-rpg` was never buildable on them and
 // the paired action-versus-RPG residual above cannot be derived for any of
@@ -309,7 +317,12 @@ const TITLE_PROMPT_ROW = 19;
 // -- five instructions deciding whether the current frame's font-CHR split
 // program is the title one -- that MMC1 and UNROM 512 never assemble at
 // all, because split.asm's entire body is conditional on SPLIT_ENABLED and
-// neither board ever sets it. engine/title.asm itself has no MMC3-specific
+// neither board ever sets it -- a claim this file used to make right beside
+// a 19-byte SPLIT_KERNEL_ALLOWANCE without ever noticing the two disagreed:
+// an entire file's worth of split machinery, contradicted by a term sized
+// for one thirteen-byte critical section inside it. See that term's own
+// declaration for the corrected figure and where the other 146 bytes had
+// been hiding. engine/title.asm itself has no MMC3-specific
 // branch anywhere in it (checked: no SPLIT_ENABLED/split_ reference in that
 // file), so its own cost is identical on all three boards; the other 12
 // bytes are exactly this one extra branch, elsewhere, that only a
@@ -333,7 +346,7 @@ const TITLE_PROMPT_ROW = 19;
 // charged to both the way it used to be, now that a per-mapper base makes a
 // per-mapper allowance the same kind of number: MMC1 goes from 6483 to 7030
 // (+547), MMC3 from 6689 to 7241 (+552, text always on for an RPG on a
-// split-font board -- see SPLIT_LOCK_KERNEL_ALLOWANCE below). Both sides of
+// split-font board -- see SPLIT_KERNEL_ALLOWANCE below). Both sides of
 // that subtraction carry a title screen (validateProject refuses a live Save
 // with no title screen — "Continue has nowhere to appear without one" — so a
 // project that pays this always pays TITLE_KERNEL_ALLOWANCE too), which is
@@ -412,24 +425,37 @@ const TITLE_PROMPT_ROW = 19;
 // to each other the way the rest of this file already keeps a term's
 // declaration next to its own explanatory comment.
 //
-// SPLIT_LOCK_KERNEL_ALLOWANCE is a third term, MMC3-only and conditional the
+// SPLIT_KERNEL_ALLOWANCE is a third term, MMC3-only and conditional the
 // same way, and it stays a separate term rather than folding into MMC3's own
-// base: switch_prg_bank's critical section against the call_battle interrupt
-// race (engine/banks.asm, engine/split.asm — split_lock in
-// engine/constants.asm) is wrapped `.if SPLIT_ENABLED`, so only a project
-// that shows text on MMC3 (fontBankSplit) pays it, measured at 19 bytes.
-// Every RPG shows text unconditionally (projectUsesText returns true for the
-// game type alone, battle messages included), so this is really "every RPG
-// on MMC3" rather than a case that has to be sought out -- MMC3's own
-// SAVE_ENABLED-off figure above (6689) already has it baked in; the
-// per-mapper base does not, or an *action* project on MMC3 with no text
-// would be overcharged 19 bytes for a fix its own ROM cannot contain. This is
-// the same reasoning SAVE_KERNEL_ALLOWANCE_BY_MAPPER above and
-// MOVE_KERNEL_ALLOWANCE below are already built on, applied to a fix instead
-// of a feature -- and it is what "per-mapper base" does not subsume: a base
-// is a property of the board, this is a property of the board *and* whether
-// the project shows text, so it cannot become one more row in the base table
-// without overcharging every MMC3 project that carries no dialogue.
+// base: the entire font-bank split machinery -- engine/split.asm's whole
+// body (`.if SPLIT_ENABLED` wraps the file end to end: the split programs,
+// split_select, split_arm, the IRQ handler), the `.if SPLIT_ENABLED` blocks
+// in engine/boot.asm (three) and engine/screens.asm (one), and
+// engine/banks.asm's own two (the chr_r1 shadow switch_chr_bank keeps, and
+// switch_prg_bank's critical section against the call_battle interrupt race
+// -- split_lock in engine/constants.asm, which is the one piece this term
+// used to be named for) -- assembles only under that same flag, so only a
+// project that shows text on MMC3 (fontBankSplit) pays any of it. Renamed
+// from SPLIT_LOCK_KERNEL_ALLOWANCE (handoff-magic/brief-split-term-1.md,
+// docs/split-lock-not-pinned-report.md §8) once a real text-on/text-off
+// isolation on a fresh action project measured the true cost at 165 bytes,
+// not the 19 the old name and figure both implied: `split_lock`'s own
+// critical section is a genuinely small part of a much larger whole, and the
+// old figure had only ever been checked against residuals that already
+// contained the rest of that whole baked into other terms -- see
+// BASE_KERNEL_CODE_BYTES_BY_MAPPER's own comment above for exactly where the
+// other 146 bytes had been hiding. Every RPG shows text unconditionally
+// (projectUsesText returns true for the game type alone, battle messages
+// included), so this is really "every RPG on MMC3" rather than a case that
+// has to be sought out -- MMC3's own SAVE_ENABLED-off figure above (6689)
+// already has it baked in; the per-mapper base does not, or an *action*
+// project on MMC3 with no text would be overcharged for a fix its own ROM
+// cannot contain. This is the same reasoning SAVE_KERNEL_ALLOWANCE_BY_MAPPER
+// above and MOVE_KERNEL_ALLOWANCE below are already built on, applied to a
+// fix instead of a feature -- and it is what "per-mapper base" does not
+// subsume: a base is a property of the board, this is a property of the
+// board *and* whether the project shows text, so it cannot become one more
+// row in the base table without overcharging every text-free MMC3 project.
 //
 // KERNEL_SLACK is kept on the *total*, once, here — never inside any term
 // above, or a margin on each would compound into a bigger one than any was
@@ -561,7 +587,7 @@ const TITLE_PROMPT_ROW = 19;
 // of the base; re-measuring against `sample` (the action fixture) moved it,
 // along with every other RPG-only byte in this figure, out into the new
 // term below.**
-export const BASE_KERNEL_CODE_BYTES_BY_MAPPER = { 1: 5954, 4: 6117, 30: 6149 };
+export const BASE_KERNEL_CODE_BYTES_BY_MAPPER = { 1: 5954, 4: 5971, 30: 6149 };
 const FALLBACK_BASE_KERNEL_CODE_BYTES = Math.max(...Object.values(BASE_KERNEL_CODE_BYTES_BY_MAPPER));
 export function baseKernelCodeBytes(mapper) {
   return BASE_KERNEL_CODE_BYTES_BY_MAPPER[mapper.id] ?? FALLBACK_BASE_KERNEL_CODE_BYTES;
@@ -768,7 +794,7 @@ export const PALETTE_FX_KERNEL_ALLOWANCE = 55;
 // "Flash alone" figures for the combined build -- FLASH_KERNEL_ALLOWANCE =
 // D_flash - PALETTE_FX_KERNEL_ALLOWANCE, the same three-equation procedure.
 export const FLASH_KERNEL_ALLOWANCE = 98;
-export const SPLIT_LOCK_KERNEL_ALLOWANCE = 19;
+export const SPLIT_KERNEL_ALLOWANCE = 165;
 // Phase 4b: item_metasprite's own draw_item_icon routine (gated on
 // ITEMS_ENABLED as a whole routine, not just its callers -- see
 // engine/ui.asm) plus add_item's centralized NO_ITEM guard, gated by
@@ -823,7 +849,7 @@ export function itemEffectKernelAllowance(project) {
 // nothing here branches on SPLIT_ENABLED or any other mapper-specific fact -- measured 175 on all
 // three RPG-capable boards, exactly, not merely close. Measured the same way every other allowance
 // here is: build sample-rpg with and without a live Sting, isolated against a baseline that already
-// carries a surviving text-triggering event so MMC3's own SPLIT_LOCK_KERNEL_ALLOWANCE stays out of
+// carries a surviving text-triggering event so MMC3's own SPLIT_KERNEL_ALLOWANCE stays out of
 // this delta -- test/unit/kernelbytes.test.js asserts the three boards agree exactly.
 //
 // Not the design's own 176-byte pre-implementation estimate: implementation deviated from
@@ -1002,7 +1028,7 @@ export function kernelCodeBytes(project, mapper) {
   // validateProject's own version of this mistake and left this one, its
   // mirror image, in place.
   const usesTitle = projectUsesEffectiveTitle(project) || projectUsesSave(project);
-  const usesSplitLock = fontBankSplit(project, mapper);
+  const usesSplit = fontBankSplit(project, mapper);
   const usesItems = projectUsesItems(project);
   const usesSting = projectUsesSting(project);
   const usesSfx = projectUsesSfx(project);
@@ -1023,7 +1049,7 @@ export function kernelCodeBytes(project, mapper) {
     (usesFlash ? FLASH_KERNEL_ALLOWANCE : 0) +
     (usesPaletteFx ? PALETTE_FX_KERNEL_ALLOWANCE : 0) +
     (usesFace ? FACE_KERNEL_ALLOWANCE : 0) +
-    (usesSplitLock ? SPLIT_LOCK_KERNEL_ALLOWANCE : 0) +
+    (usesSplit ? SPLIT_KERNEL_ALLOWANCE : 0) +
     (usesItems ? ITEM_KERNEL_ALLOWANCE + itemEffectKernelAllowance(project) : 0) +
     (usesSting ? STING_KERNEL_ALLOWANCE_STANDALONE : 0) +
     (usesSfx ? SFX_KERNEL_ALLOWANCE_STANDALONE : 0) +
@@ -1044,7 +1070,7 @@ export function kernelCodeBytes(project, mapper) {
  * answer every question about, including ones this function does not itself
  * know to ask: fontBankSplit (shared/font.js) reads projectUsesText, which a
  * command's own page can be the project's only source of, so disabling it
- * can turn the split-lock term off too. kernelShortfallAdvice asks
+ * can turn the split term off too. kernelShortfallAdvice asks
  * kernelCodeBytes rather than re-deriving what it already knows, which is
  * the whole point of calling this first. Never touches `project` itself.
  */

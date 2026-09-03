@@ -440,14 +440,14 @@ export function checkBattleTables(project) {
 // font-split build the arrow glyph's bank is only mapped below the battle box.
 //
 // That does NOT need a separate conditional term the way
-// SPLIT_LOCK_KERNEL_ALLOWANCE does in generate.js, and the reason is worth
+// SPLIT_KERNEL_ALLOWANCE does in generate.js, and the reason is worth
 // writing down so nobody adds one: SPLIT_ENABLED is fontBankSplit(), which is
 // `scanlineIrq && projectUsesText`, and projectUsesText (shared/font.js)
 // returns true for `gameType === 'rpg'` on the game type alone. This region
 // only exists for an RPG (codeRegionCount). So every project that reserves
 // this region on MMC3 pays those 46 bytes -- there is no MMC3-RPG-without-the-
 // split to overcharge, which is precisely the case that forced the kernel's
-// split-lock term out of MMC3's base. Here it is a property of the board.
+// split term out of MMC3's base. Here it is a property of the board.
 export const BASE_BATTLE_CODE_BYTES_BY_MAPPER = { 30: 3938, 1: 3938, 4: 3984 };
 
 // Phase 4c round 3, finding 6 (phase4-design.md §9), corrected round 3b

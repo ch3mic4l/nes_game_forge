@@ -760,8 +760,8 @@ conclusion from this same 220, not the stale 223.)
   this paragraph still holds.) Those 175 bytes are why MMC3 now has a
   third documented-limitation refusal (`sample-rpg` with Save, Move and a live Sting, no item —
   tested in `kernelbytes.test.js`), and on an MMC3 project whose sole live event is a Sting-only
-  command, `kernelShortfallAdvice` correctly frees 175 + 19 = 194 bytes together via the dependent
-  `SPLIT_LOCK_KERNEL_ALLOWANCE` term. See `handoff-sting/design-sting.md` for the full design
+  command, `kernelShortfallAdvice` correctly frees 175 + 165 = 340 bytes together via the dependent
+  `SPLIT_KERNEL_ALLOWANCE` term. See `handoff-sting/design-sting.md` for the full design
   and CLAUDE.md's own `sting_snapshot`/`sting_restore`/`sting_tick` passage for the mechanism. ~~A true
   **sound effect** (independent of whatever song is playing, borrowing an APU channel briefly) is
   genuinely new and touches `music_tick`, which runs unconditionally every frame including during

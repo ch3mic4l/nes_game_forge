@@ -48,7 +48,7 @@ import {
   FADE_KERNEL_ALLOWANCE,
   FLASH_KERNEL_ALLOWANCE,
   PALETTE_FX_KERNEL_ALLOWANCE,
-  SPLIT_LOCK_KERNEL_ALLOWANCE,
+  SPLIT_KERNEL_ALLOWANCE,
   ITEM_KERNEL_ALLOWANCE,
   ITEM_EFFECT_KERNEL_ALLOWANCE_BY_GAME_TYPE,
   itemEffectKernelAllowance,
@@ -64,7 +64,7 @@ import {
 } from '../../main/build/generate.js';
 import { SUPPORTED_MAPPERS, rpgCapable, saveMediaImplemented, prgLayout } from '../../shared/cartridge.js';
 import { createTileset, createProject, projectUsesItems, projectUsesBoundTiles, projectUsesTurn } from '../../shared/project.js';
-import { fontBankSplit } from '../../shared/font.js';
+import { fontBankSplit, projectUsesText } from '../../shared/font.js';
 import { createSong } from '../../shared/audio.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
@@ -426,7 +426,7 @@ test(
     // noSaveNoItems is captured, not discarded, for reuse below: it is
     // sample-rpg's own real usage with title off *and* items stripped -- the
     // cleanest available RPG baseline for isolating
-    // BATTLE_KERNEL_ALLOWANCE_BY_MAPPER (only SPLIT_LOCK_KERNEL_ALLOWANCE, on
+    // BATTLE_KERNEL_ALLOWANCE_BY_MAPPER (only SPLIT_KERNEL_ALLOWANCE, on
     // MMC3 alone, stands between this and base+battleSupplement, rather than
     // both that and an item allowance to subtract by hand).
     const noSaveNoItems = [];
@@ -457,7 +457,7 @@ test(
     // cannot have its own default item stripped the way `noSaveNoItems`
     // strips sample-rpg's (its Give/Take command names that item, so an
     // empty items[] fails validateProject) -- both the equality checks below
-    // account for that by hand, matching the shape the MMC3 split-lock check
+    // account for that by hand, matching the shape the MMC3 split-term check
     // further down already established for exactly this reason.
     const actionNoSave = [];
     for (const mapper of CAPABLE_MAPPERS) {
@@ -473,15 +473,15 @@ test(
     // its own real dialogue are subtracted out by hand from the raw action
     // figure, since they cannot be stripped by rebuilding without them (see
     // the comment above); `noSaveNoItems`, sample-rpg's own items-already-
-    // stripped measurement, only ever needs the split-lock term subtracted
+    // stripped measurement, only ever needs the split term subtracted
     // on top, since RPG items were already removed by rebuilding without
     // them. `fontBankSplit`, not a hardcoded MMC3 check, so this generalizes
     // correctly if a second scanline-IRQ board is ever added.
     for (const mapper of CAPABLE_MAPPERS) {
       const actionEntry = actionNoSave.find((entry) => entry.mapper.id === mapper.id);
-      const splitLockCost = fontBankSplit(actionEntry.project, mapper) ? SPLIT_LOCK_KERNEL_ALLOWANCE : 0;
+      const splitCost = fontBankSplit(actionEntry.project, mapper) ? SPLIT_KERNEL_ALLOWANCE : 0;
       const actionResidual =
-        actionEntry.codeBytes - ITEM_KERNEL_ALLOWANCE - ITEM_EFFECT_KERNEL_ALLOWANCE_BY_GAME_TYPE.action - splitLockCost;
+        actionEntry.codeBytes - ITEM_KERNEL_ALLOWANCE - ITEM_EFFECT_KERNEL_ALLOWANCE_BY_GAME_TYPE.action - splitCost;
       assert.equal(
         actionResidual,
         BASE_KERNEL_CODE_BYTES_BY_MAPPER[mapper.id],
@@ -494,15 +494,15 @@ test(
       );
 
       const rpgNoItemsEntry = noSaveNoItems.find((entry) => entry.mapper.id === mapper.id);
-      const rpgSplitLockCost = fontBankSplit(noSave.find((entry) => entry.mapper.id === mapper.id).project, mapper)
-        ? SPLIT_LOCK_KERNEL_ALLOWANCE
+      const rpgSplitCost = fontBankSplit(noSave.find((entry) => entry.mapper.id === mapper.id).project, mapper)
+        ? SPLIT_KERNEL_ALLOWANCE
         : 0;
-      const battleResidual = rpgNoItemsEntry.codeBytes - baseKernelCodeBytes(mapper) - rpgSplitLockCost;
+      const battleResidual = rpgNoItemsEntry.codeBytes - baseKernelCodeBytes(mapper) - rpgSplitCost;
       assert.equal(
         battleResidual,
         BATTLE_KERNEL_ALLOWANCE_BY_MAPPER[mapper.id],
         `${mapper.name}: sample-rpg with nothing conditional turned on and its own default item stripped, minus ` +
-          `the action-side base and (if this board splits the font) split-lock, measures ${battleResidual} bytes ` +
+          `the action-side base and (if this board splits the font) the split term, measures ${battleResidual} bytes ` +
           `of RPG-only kernel code, but BATTLE_KERNEL_ALLOWANCE_BY_MAPPER[${mapper.id}] reserves ` +
           `${BATTLE_KERNEL_ALLOWANCE_BY_MAPPER[mapper.id]} — this supplement must equal the RPG-only byte count ` +
           'exactly. Re-measure and correct it (see the comment beside BATTLE_KERNEL_ALLOWANCE_BY_MAPPER in ' +
@@ -1075,17 +1075,27 @@ test(
     }
 
     // MMC3 is the only scanline-IRQ board, and an RPG always shows text, so
-    // every MMC3 measurement above already carries SPLIT_LOCK_KERNEL_ALLOWANCE
-    // baked into its own real usage. This is the direct check that the term
-    // is exactly what MMC3's own no-Save measurement needs beyond its own
-    // per-mapper base *and* BATTLE_KERNEL_ALLOWANCE_BY_MAPPER (the RPG-only
-    // supplement measured earlier in this test, which now also has to be
-    // subtracted -- `docs/kernel-base-overcharge-report.md`: MMC3's own
+    // every MMC3 measurement above already carries SPLIT_KERNEL_ALLOWANCE
+    // baked into its own real usage. NOT an independent proof that the term
+    // is right, despite reading like one -- docs/split-lock-not-pinned-
+    // report.md §3 traced this exact equation algebraically and found it is
+    // a consequence of the action residual (above, which pins base given
+    // SPLIT_KERNEL_ALLOWANCE's own stored value) and the battle residual
+    // (which pins BATTLE_KERNEL_ALLOWANCE_BY_MAPPER given base and
+    // SPLIT_KERNEL_ALLOWANCE, both already trusted from the first): once
+    // those two hold, this reduces to SPLIT_KERNEL_ALLOWANCE ==
+    // SPLIT_KERNEL_ALLOWANCE by substitution, true for whatever value the
+    // constant happens to hold. Kept as a cross-check -- it still catches a
+    // single constant edited alone -- but the real, independent measurement
+    // is the text-on/text-off isolation below this function
+    // ('SPLIT_KERNEL_ALLOWANCE is pinned by an isolated text-on/text-off
+    // delta...'), added by handoff-magic/brief-split-term-1.md once the gap
+    // this comment used to overclaim past was found and closed. MMC3's own
     // battle supplement already carries split_select's other BATTLE_ENABLED
-    // arm, engine/split.asm, so it and split-lock are two different terms
-    // sitting on top of the same base, not one absorbed into the other) --
-    // not a stray byte either way, and not folded into the base itself (see
-    // the comment beside kernelCodeBytes for why it stays a separate term).
+    // arm, engine/split.asm, so it and the split term are two different terms
+    // sitting on top of the same base, not one absorbed into the other --
+    // not folded into the base itself (see the comment beside kernelCodeBytes
+    // for why it stays a separate term).
     //
     // Phase 4b: sample-rpg (what measureCodeBytes always builds) carries one
     // live item, so "no Save, no Move, no title" is not "no items" -- every
@@ -1106,13 +1116,116 @@ test(
           BATTLE_KERNEL_ALLOWANCE_BY_MAPPER[mmc3.mapper.id] -
           ITEM_KERNEL_ALLOWANCE -
           ITEM_EFFECT_KERNEL_ALLOWANCE_BY_GAME_TYPE.rpg,
-        SPLIT_LOCK_KERNEL_ALLOWANCE,
+        SPLIT_KERNEL_ALLOWANCE,
         "MMC3's own no-Save measurement should exceed its per-mapper base plus BATTLE_KERNEL_ALLOWANCE_BY_MAPPER " +
-          'by exactly SPLIT_LOCK_KERNEL_ALLOWANCE plus ITEM_KERNEL_ALLOWANCE plus ' +
+          'by exactly SPLIT_KERNEL_ALLOWANCE plus ITEM_KERNEL_ALLOWANCE plus ' +
           'ITEM_EFFECT_KERNEL_ALLOWANCE_BY_GAME_TYPE.rpg (every RPG shows text, so every MMC3 RPG pays the ' +
-          'interrupt-race fix, and sample-rpg always carries a live item)'
+          'font-bank split machinery, and sample-rpg always carries a live item)'
       );
     }
+  }
+);
+
+/**
+ * A fresh, minimal action project, its only content the choice of whether an
+ * entity carries dialogue -- built and measured exactly the way
+ * measureCodeBytes measures `sample`/`sample-rpg`, but starting from
+ * createProject() rather than loadProject(fixture), so `projectUsesText` can
+ * be forced independently of every other conditional term this file tracks
+ * (no Move, no Turn, no Save, no items, no combat, no title -- see
+ * docs/split-lock-not-pinned-report.md §6 item 1 for why a naive strip of
+ * one of the five checked-in fixtures would not hold that constant). This is
+ * the isolation that document's own sketch asked for, built for real by
+ * handoff-magic/brief-split-term-1.md.
+ */
+async function measureSplitProbe(t, mapper, textOn) {
+  const dir = await fsp.mkdtemp(path.join(os.tmpdir(), 'forge-splitprobe-'));
+  t.after(() => fsp.rm(dir, { recursive: true, force: true }));
+  const project = createProject('Probe', 'action');
+  project.cartridge.mapper = mapper.id;
+  project.project.titleMap = null;
+  if (textOn) {
+    project.maps[0].screens[0].entities.push({ actorId: 0, x: 96, y: 96, props: { dialogue: 'Hi.' } });
+  }
+  await saveProject(dir, project);
+  const lines = [];
+  const built = await buildProject({ dir, project, log: (line) => lines.push(line) });
+
+  const { kernelLoBank } = prgLayout(mapper);
+  const bankLine = lines.find((line) => new RegExp(`^BANK\\s+${kernelLoBank}\\s`).test(line));
+  assert.ok(bankLine, `${mapper.name}: nesasm's usage table never mentioned bank ${kernelLoBank} (kernel-lo)`);
+  const used = Number(bankLine.match(/(\d+)\/\s*(\d+)\s*$/)?.[1]);
+  assert.ok(Number.isFinite(used) && used > 0, `${mapper.name}: could not parse a used-byte count out of "${bankLine}"`);
+
+  assert.ok(built.symbolPath, `${mapper.name}: nesasm should have written a symbol file`);
+  const symbols = await fsp.readFile(built.symbolPath, 'utf8');
+  const resetMatch = symbols.match(/^reset\s*=\s*\$([0-9A-Fa-f]+)/m);
+  assert.ok(resetMatch, `${mapper.name}: reset should be a named symbol in game.fns`);
+  const resetAddr = parseInt(resetMatch[1], 16);
+
+  return { project, codeBytes: used - (resetAddr - 0xc000) };
+}
+
+test(
+  'SPLIT_KERNEL_ALLOWANCE is pinned by an isolated text-on/text-off delta, not a residual -- and is exactly 0 off a scanline-IRQ board',
+  { skip: !hasNesasm && 'nesasm not found on PATH' },
+  async (t) => {
+    for (const mapper of SUPPORTED_MAPPERS) {
+      const off = await measureSplitProbe(t, mapper, false);
+      const on = await measureSplitProbe(t, mapper, true);
+      assert.equal(
+        projectUsesText(off.project),
+        false,
+        `${mapper.name}: the text-off probe must not use text, or this isolation proves nothing`
+      );
+      assert.equal(
+        projectUsesText(on.project),
+        true,
+        `${mapper.name}: the text-on probe must use text, or this isolation proves nothing`
+      );
+      const delta = on.codeBytes - off.codeBytes;
+      if (mapper.scanlineIrq) {
+        assert.equal(
+          delta,
+          SPLIT_KERNEL_ALLOWANCE,
+          `${mapper.name}: a fresh action project's own text-on/text-off kernel-lo delta is ${delta} bytes ` +
+            `(${off.codeBytes} -> ${on.codeBytes}), but SPLIT_KERNEL_ALLOWANCE reserves ${SPLIT_KERNEL_ALLOWANCE} ` +
+            '-- this must equal the real cost of the entire font-bank split machinery exactly, measured in ' +
+            'isolation rather than assumed from a residual. Re-measure and correct it (see the comment beside ' +
+            'kernelCodeBytes).'
+        );
+      } else {
+        // The control: no board without a scanline IRQ may show any kernel-lo
+        // delta between text off and text on, because nothing outside
+        // split.asm/boot.asm/screens.asm/banks.asm's own `.if SPLIT_ENABLED`
+        // blocks reads TEXT_ENABLED -- it is emitted into config.inc but no
+        // .asm file consults it (checked: grep TEXT_ENABLED engine/ finds
+        // only the generator's own emit). A future .asm file that starts
+        // reading TEXT_ENABLED directly, on a board with no scanline IRQ,
+        // would fail exactly this assertion.
+        assert.equal(
+          delta,
+          0,
+          `${mapper.name}: a board with no scanline IRQ must show zero kernel-lo difference between text off ` +
+            `and text on, but this project's own build differs by ${delta} bytes (${off.codeBytes} -> ` +
+            `${on.codeBytes}) -- something outside the font-bank split machinery is now reading TEXT_ENABLED ` +
+            'or otherwise varying with projectUsesText on a board that should not care.'
+        );
+      }
+    }
+  }
+);
+
+test(
+  'kernelCodeBytes covers a fresh, text-off action project on MMC3 with real margin -- the configuration SPLIT_KERNEL_ALLOWANCE used to overcharge by 146 bytes',
+  { skip: !hasNesasm && 'nesasm not found on PATH' },
+  async (t) => {
+    const mapper = SUPPORTED_MAPPERS.find((m) => m.id === 4);
+    assert.ok(mapper, 'MMC3 (mapper 4) should be registered');
+    const off = await measureSplitProbe(t, mapper, false);
+    assert.equal(projectUsesText(off.project), false, 'the text-off probe must not use text');
+    assert.equal(fontBankSplit(off.project, mapper), false, 'the text-off probe must not trigger the font split');
+    assertCovers({ mapper, codeBytes: off.codeBytes }, kernelCodeBytes(off.project, mapper), 'a fresh, text-off action project on MMC3');
   }
 );
 
@@ -1466,13 +1579,12 @@ test('a kernel-lo shortfall a live Move command alone would close names Move', a
 // A dependent term, not just Move's own allowance: fontBankSplit
 // (shared/font.js) reads projectUsesText, and projectUsesText counts *any*
 // event that survives to the ROM, live Move-only ones included -- so an
-// action project on MMC3 whose only event is "Move" turns split-lock on for
-// a reason that disappears the moment that Move is gone too. Summing the
-// flat allowances (395 for Move) would miss the 19 bytes SPLIT_LOCK_KERNEL_ALLOWANCE
-// also frees here and wrongly fall through past a deficit only 2 bytes over
-// what Move alone frees. Reproduction from review: a 397-byte deficit: 395
-// alone does not cover it, 395 + 19 = 414 does.
-test('a kernel-lo shortfall Move alone would not close by its own allowance can still close when dropping it also turns off split-lock', () => {
+// action project on MMC3 whose only event is "Move" turns the split term on
+// for a reason that disappears the moment that Move is gone too. Summing the
+// flat allowances (395 for Move) would miss the 165 bytes SPLIT_KERNEL_ALLOWANCE
+// also frees here and wrongly fall through past a deficit only just over
+// what Move alone frees.
+test('a kernel-lo shortfall Move alone would not close by its own allowance can still close when dropping it also turns off the split term', () => {
   const project = createProject('Action', 'action');
   project.cartridge.mapper = 4; // MMC3
   // The project's only event, and its only command -- the project's sole
@@ -1483,48 +1595,38 @@ test('a kernel-lo shortfall Move alone would not close by its own allowance can 
     y: 16,
     props: { event: { pages: [{ cond: { type: 'none', arg: 0 }, commands: [{ op: 'move', who: 'self', dir: 'up', dist: 16 }] }] } }
   });
-  // 201, not the earlier 169: `docs/kernel-base-overcharge-report.md` moved
-  // BASE_KERNEL_CODE_BYTES_BY_MAPPER to the action-side figure, giving this
-  // action project 262 more real bytes of kernel-lo headroom on MMC3 (the
-  // RPG-only supplement that used to be silently folded into the base) --
-  // 169's own deficit (407 before this fix) dropped well under
-  // MOVE_KERNEL_ALLOWANCE + FACE_KERNEL_ALLOWANCE, which no longer exercises
-  // split-lock being freed alongside it at all. Re-derived against a real
-  // checkCapacity() run, not assumed from the base delta alone: 201 lands
-  // the deficit at 404, near the middle of the (395, 414] band this case
-  // exists to reproduce (200 also lands inside it, at 396, but that is the
-  // band's first representable value rather than a centred one -- inflate()
-  // moves in exact 8-byte steps, so 201 is the nearest centred count) --
-  // 395 = 379 + 16, unchanged by the Turn/Wait first slice's move_face
-  // split, since a project with a live Move and no Turn still pays both
-  // terms together.
-  inflate(project, 201); // deficit 404, strictly above 395 and at or below 414
-  // The message assertion below would still pass if drift ever dropped the
-  // deficit to, say, 200 bytes -- solo's own freed figure (414, Move's own
-  // cost plus the split-lock it also turns off) covers any deficit up to
-  // 414, not only the one this case is calibrated for. That is not what
-  // this test is supposed to demonstrate: the band a deficit has to sit in
-  // for split-lock's own extra 19 bytes to be the thing making the
-  // difference is strictly above Move's own allowance alone (395) and at
-  // or below the combined figure (414) -- below 395 and Move alone already
-  // covers it without split-lock in the picture at all, and above 414
-  // neither figure would close the gap. Asserted directly, per the phase4a
-  // round-2 review, rather than left implicit in the message match below.
+  // 210, not the earlier 201: handoff-magic/brief-split-term-1.md re-measured
+  // SPLIT_KERNEL_ALLOWANCE at 165, not 19 -- the true cost of MMC3's whole
+  // font-bank split machinery, not just switch_prg_bank's own critical
+  // section -- which widened this test's band from (395, 414] to
+  // (395, 560] (395 + 165). The combined MMC3 reservation for a project that
+  // shows text is unchanged by that fix (base dropped by exactly as much as
+  // the split term grew, conserving the sum), so the deficit at any given
+  // inflate() count is unaffected up to this point -- what changed is how
+  // much room the band itself has to be recentred in. Re-derived against a
+  // real checkCapacity() run: 210 lands the deficit at 476, almost exactly
+  // centred in the new band (477.5 is the midpoint).
+  inflate(project, 210); // deficit 476, strictly above 395 and at or below 560
+  // The band a deficit has to sit in for the split term's own extra bytes to
+  // be the thing making the difference is strictly above Move's own
+  // allowance alone (395) and at or below the combined figure (560) -- below
+  // 395 and Move alone already covers it without the split term in the
+  // picture at all, and above 560 neither figure would close the gap.
   const deficit = kernelShortfallDeficit(project);
   const moveAlone = MOVE_KERNEL_ALLOWANCE + FACE_KERNEL_ALLOWANCE;
   assert.ok(
     deficit > moveAlone,
     `deficit ${deficit} must exceed MOVE_KERNEL_ALLOWANCE + FACE_KERNEL_ALLOWANCE (${moveAlone}) alone, or this ` +
-      'case does not exercise split-lock being freed alongside Move at all'
+      'case does not exercise the split term being freed alongside Move at all'
   );
   assert.ok(
-    deficit <= moveAlone + SPLIT_LOCK_KERNEL_ALLOWANCE,
+    deficit <= moveAlone + SPLIT_KERNEL_ALLOWANCE,
     'deficit ' +
-      `${deficit} must not exceed MOVE_KERNEL_ALLOWANCE + FACE_KERNEL_ALLOWANCE + SPLIT_LOCK_KERNEL_ALLOWANCE ` +
-      `(${moveAlone + SPLIT_LOCK_KERNEL_ALLOWANCE}), or dropping Move would not close the gap either`
+      `${deficit} must not exceed MOVE_KERNEL_ALLOWANCE + FACE_KERNEL_ALLOWANCE + SPLIT_KERNEL_ALLOWANCE ` +
+      `(${moveAlone + SPLIT_KERNEL_ALLOWANCE}), or dropping Move would not close the gap either`
   );
   const message = kernelShortfallMessage(project);
-  assert.match(message, /removing every Move command \(frees 414 bytes\)/);
+  assert.match(message, /removing every Move command \(frees 560 bytes\)/);
 });
 
 test('a kernel-lo shortfall a live Save command alone would close names Save, with that board’s own allowance', async () => {
@@ -1971,7 +2073,7 @@ test('a kernel-lo shortfall neither Save nor Move alone would close, but both to
 // the deficit rather than shrank it.
 test('a kernel-lo shortfall a live Wait command alone would close names Wait', () => {
   const project = createProject('Action', 'action');
-  project.cartridge.mapper = 1; // MMC1 -- no split-lock to complicate the arithmetic
+  project.cartridge.mapper = 1; // MMC1 -- no split term to complicate the arithmetic
   project.maps[0].screens[0].entities.push({
     actorId: 0,
     x: 16,
@@ -1991,8 +2093,8 @@ test('a kernel-lo shortfall a live Wait command alone would close names Wait', (
 // Wait, and no Move, so Turn is the project's only reason move_face
 // assembles at all -- dropping Turn alone already frees TURN_KERNEL_ALLOWANCE
 // + FACE_KERNEL_ALLOWANCE together (51), the identical "dropping one command
-// silently also drops a dependent term" shape the Move+split-lock case above
-// already proves, applied to Turn+Face instead of Move+split-lock. Sized so
+// silently also drops a dependent term" shape the Move+split case above
+// already proves, applied to Turn+Face instead of Move+split. Sized so
 // neither Turn alone (51) nor Wait alone (48) covers the deficit, but
 // dropping both together does, because with neither command left, Face has
 // no more reason to assemble either: TURN_KERNEL_ALLOWANCE + WAIT_KERNEL_ALLOWANCE
@@ -2011,7 +2113,7 @@ test('a kernel-lo shortfall a live Wait command alone would close names Wait', (
 // in exact 8-byte steps, so 220 is the nearest centred count.
 test('a kernel-lo shortfall neither Turn nor Wait alone would close, but both together would, names the combination', () => {
   const project = createProject('Action', 'action');
-  project.cartridge.mapper = 1; // MMC1 -- no split-lock to complicate the arithmetic
+  project.cartridge.mapper = 1; // MMC1 -- no split term to complicate the arithmetic
   project.maps[0].screens[0].entities.push({
     actorId: 0,
     x: 16,
@@ -2061,7 +2163,7 @@ test('a kernel-lo shortfall neither Turn nor Wait alone would close, but both to
 // identical count, per their own comments.
 test('a kernel-lo shortfall a live Shake command alone would close names Shake', () => {
   const project = createProject('Action', 'action');
-  project.cartridge.mapper = 1; // MMC1 -- no split-lock to complicate the arithmetic
+  project.cartridge.mapper = 1; // MMC1 -- no split term to complicate the arithmetic
   project.maps[0].screens[0].entities.push({
     actorId: 0,
     x: 16,
@@ -2092,7 +2194,7 @@ test('a kernel-lo shortfall a live Shake command alone would close names Shake',
 // count.
 test('a kernel-lo shortfall neither Shake nor Wait alone would close, but both together would, names the combination', () => {
   const project = createProject('Action', 'action');
-  project.cartridge.mapper = 1; // MMC1 -- no split-lock to complicate the arithmetic
+  project.cartridge.mapper = 1; // MMC1 -- no split term to complicate the arithmetic
   project.maps[0].screens[0].entities.push({
     actorId: 0,
     x: 16,
@@ -2137,7 +2239,7 @@ test('a kernel-lo shortfall neither Shake nor Wait alone would close, but both t
 // VISIBLE_KERNEL_ALLOWANCE (49).
 test('a kernel-lo shortfall a live Show/Hide command alone would close names Show/Hide', () => {
   const project = createProject('Action', 'action');
-  project.cartridge.mapper = 1; // MMC1 -- no split-lock to complicate the arithmetic
+  project.cartridge.mapper = 1; // MMC1 -- no split term to complicate the arithmetic
   project.maps[0].screens[0].entities.push({
     actorId: 0,
     x: 16,
@@ -2170,7 +2272,7 @@ test('a kernel-lo shortfall a live Show/Hide command alone would close names Sho
 // 220 is the nearest centred count.
 test('a kernel-lo shortfall neither Shake nor Show/Hide alone would close, but both together would, names the combination', () => {
   const project = createProject('Action', 'action');
-  project.cartridge.mapper = 1; // MMC1 -- no split-lock to complicate the arithmetic
+  project.cartridge.mapper = 1; // MMC1 -- no split term to complicate the arithmetic
   project.maps[0].screens[0].entities.push({
     actorId: 0,
     x: 16,
@@ -2219,7 +2321,7 @@ test('a kernel-lo shortfall neither Shake nor Show/Hide alone would close, but b
 // to a mapper suggestion or the generic one instead of naming it.
 test('a kernel-lo shortfall a live Fade command alone would close names Fade', () => {
   const project = createProject('Action', 'action');
-  project.cartridge.mapper = 1; // MMC1 -- no split-lock to complicate the arithmetic
+  project.cartridge.mapper = 1; // MMC1 -- no split term to complicate the arithmetic
   project.maps[0].screens[0].entities.push({
     actorId: 0,
     x: 16,
@@ -2251,7 +2353,7 @@ test('a kernel-lo shortfall a live Fade command alone would close names Fade', (
 // above both solo figures and at or below the combined one.
 test('a kernel-lo shortfall neither Shake nor Fade alone would close, but both together would, names the combination', () => {
   const project = createProject('Action', 'action');
-  project.cartridge.mapper = 1; // MMC1 -- no split-lock to complicate the arithmetic
+  project.cartridge.mapper = 1; // MMC1 -- no split term to complicate the arithmetic
   project.maps[0].screens[0].entities.push({
     actorId: 0,
     x: 16,
@@ -2300,7 +2402,7 @@ test('a kernel-lo shortfall neither Shake nor Fade alone would close, but both t
 // (146).
 test('a kernel-lo shortfall with both Flash and Fade live: dropping Fade alone frees only FADE_KERNEL_ALLOWANCE, not the shared term', () => {
   const project = createProject('Action', 'action');
-  project.cartridge.mapper = 1; // MMC1 -- no split-lock to complicate the arithmetic
+  project.cartridge.mapper = 1; // MMC1 -- no split term to complicate the arithmetic
   project.maps[0].screens[0].entities.push({
     actorId: 0,
     x: 16,
@@ -2359,7 +2461,7 @@ test('a kernel-lo shortfall with both Flash and Fade live: dropping Fade alone f
 // rather than only a candidate that survived the `freed >= deficit` check.
 test('a kernel-lo shortfall with no live Fade command never names Fade as droppable advice', () => {
   const project = createProject('Action', 'action');
-  project.cartridge.mapper = 1; // MMC1 -- no split-lock to complicate the arithmetic
+  project.cartridge.mapper = 1; // MMC1 -- no split term to complicate the arithmetic
   project.maps[0].screens[0].entities.push({
     actorId: 0,
     x: 16,
@@ -2398,7 +2500,7 @@ test('a kernel-lo shortfall with no live Fade command never names Fade as droppa
 // advice ever names a command the project does not use.
 test('a kernel-lo shortfall with no live Flash command never names Flash as droppable advice', () => {
   const project = createProject('Action', 'action');
-  project.cartridge.mapper = 1; // MMC1 -- no split-lock to complicate the arithmetic
+  project.cartridge.mapper = 1; // MMC1 -- no split term to complicate the arithmetic
   project.maps[0].screens[0].entities.push({
     actorId: 0,
     x: 16,
@@ -2420,8 +2522,8 @@ test('a kernel-lo shortfall with no live Flash command never names Flash as drop
 // ------------------------------------------------------------------ Sting
 // Item 6, sound-effect slice (handoff-sting/design-sting.md §12, tests 3/15). Two questions this
 // file's own discipline already applies to every other allowance: is STING_KERNEL_ALLOWANCE flat
-// across every RPG-capable board (equality, not merely covered), and does the split-lock dependent
-// term ride along with it correctly (design-sting.md §8, the identical shape projectUsesFace's own
+// across every RPG-capable board (equality, not merely covered), and does the dependent split term
+// ride along with it correctly (design-sting.md §8, the identical shape projectUsesFace's own
 // comment already describes for Move/Turn)?
 
 test(
@@ -2429,9 +2531,9 @@ test(
   { skip: !hasNesasm && 'nesasm not found on PATH' },
   async (t) => {
     // withMove: true as the baseline on both sides, not a no-command baseline: a bare Sting-only
-    // delta on MMC3 would also turn split-lock on (any surviving event does, projectUsesText), so
+    // delta on MMC3 would also turn the split term on (any surviving event does, projectUsesText), so
     // comparing against a baseline that already has a different, surviving event (Move) isolates
-    // Sting's own cost from split-lock's -- split-lock is already charged on both sides of this
+    // Sting's own cost from the split term's -- the split term is already charged on both sides of this
     // diff and cancels out, the same isolation this file's own ITEM_KERNEL_ALLOWANCE measurement
     // above already uses against the noSave baseline.
     for (const mapper of CAPABLE_MAPPERS) {
@@ -2459,18 +2561,18 @@ test(
 
 // The dependent-term case round-1 finding 11 added: on MMC3, a project whose *sole* live event is
 // a Sting-only command is the project's only reason fontBankSplit (shared/font.js) turns
-// SPLIT_LOCK_KERNEL_ALLOWANCE on at all -- projectUsesText counts any surviving event, a
+// SPLIT_KERNEL_ALLOWANCE on at all -- projectUsesText counts any surviving event, a
 // Sting-only one included, the identical shape CLAUDE.md already documents for a Move-only event
 // (and the test above it, in this file). Calibrated the same way that one was: a deficit strictly
-// above STING_KERNEL_ALLOWANCE alone (175) and at or below the combined figure (194 = 175 + 19),
-// so 175 alone provably would not close the gap but 194 does -- inflate(201), not the earlier 169:
-// `docs/kernel-base-overcharge-report.md` moved BASE_KERNEL_CODE_BYTES_BY_MAPPER to the action-side
-// figure, giving this action project real headroom on MMC3 the old base withheld. 201 lands the
-// deficit at 184, near the middle of the (175, 194] band, found by direct measurement against a
-// real checkCapacity() run, not derived by arithmetic -- 200 also lands inside the band, at 176,
-// but that is its first representable value rather than a centred one; inflate() moves in exact
-// 8-byte steps, so 201 is the nearest centred count.
-test('a kernel-lo shortfall Sting alone would not close by its own allowance can still close when dropping it also turns off split-lock', () => {
+// above STING_KERNEL_ALLOWANCE alone (175) and at or below the combined figure (340 = 175 + 165).
+// handoff-magic/brief-split-term-1.md re-measured SPLIT_KERNEL_ALLOWANCE at 165, not 19 -- the true
+// cost of MMC3's whole font-bank split machinery -- which widened this band from (175, 194] to
+// (175, 340]; the combined MMC3 reservation for a project that shows text is unchanged by that fix
+// (base dropped by exactly as much as the split term grew), so the deficit at a given inflate()
+// count is unaffected -- what changed is how much room the band has to be recentred in. Re-derived
+// against a real checkCapacity() run: inflate(210) lands the deficit at 256, almost exactly centred
+// in the new band (257.5 is the midpoint).
+test('a kernel-lo shortfall Sting alone would not close by its own allowance can still close when dropping it also turns off the split term', () => {
   const project = createProject('Action', 'action');
   project.cartridge.mapper = 4; // MMC3
   project.songs = [createSong('Fanfare')];
@@ -2482,25 +2584,25 @@ test('a kernel-lo shortfall Sting alone would not close by its own allowance can
     y: 16,
     props: { event: { pages: [{ cond: { type: 'none', arg: 0 }, commands: [{ op: 'sting', song: 0 }] }] } }
   });
-  inflate(project, 201); // deficit 184, strictly above 175 and at or below 194
+  inflate(project, 210); // deficit 256, strictly above 175 and at or below 340
   const deficit = kernelShortfallDeficit(project);
   assert.ok(
     deficit > (STING_KERNEL_ALLOWANCE_STANDALONE + AUDIO_FX_KERNEL_ALLOWANCE),
     `deficit ${deficit} must exceed (STING_KERNEL_ALLOWANCE_STANDALONE + AUDIO_FX_KERNEL_ALLOWANCE) (${(STING_KERNEL_ALLOWANCE_STANDALONE + AUDIO_FX_KERNEL_ALLOWANCE)}) alone, or this case ` +
-      'does not exercise split-lock being freed alongside Sting at all'
+      'does not exercise the split term being freed alongside Sting at all'
   );
   assert.ok(
-    deficit <= (STING_KERNEL_ALLOWANCE_STANDALONE + AUDIO_FX_KERNEL_ALLOWANCE) + SPLIT_LOCK_KERNEL_ALLOWANCE,
-    `deficit ${deficit} must not exceed (STING_KERNEL_ALLOWANCE_STANDALONE + AUDIO_FX_KERNEL_ALLOWANCE) + SPLIT_LOCK_KERNEL_ALLOWANCE ` +
-      `(${(STING_KERNEL_ALLOWANCE_STANDALONE + AUDIO_FX_KERNEL_ALLOWANCE) + SPLIT_LOCK_KERNEL_ALLOWANCE}), or dropping Sting would not close the gap either`
+    deficit <= (STING_KERNEL_ALLOWANCE_STANDALONE + AUDIO_FX_KERNEL_ALLOWANCE) + SPLIT_KERNEL_ALLOWANCE,
+    `deficit ${deficit} must not exceed (STING_KERNEL_ALLOWANCE_STANDALONE + AUDIO_FX_KERNEL_ALLOWANCE) + SPLIT_KERNEL_ALLOWANCE ` +
+      `(${(STING_KERNEL_ALLOWANCE_STANDALONE + AUDIO_FX_KERNEL_ALLOWANCE) + SPLIT_KERNEL_ALLOWANCE}), or dropping Sting would not close the gap either`
   );
   const message = kernelShortfallMessage(project);
   assert.match(
     message,
-    new RegExp(`removing every Sting command \\(frees ${(STING_KERNEL_ALLOWANCE_STANDALONE + AUDIO_FX_KERNEL_ALLOWANCE) + SPLIT_LOCK_KERNEL_ALLOWANCE} bytes\\)`),
+    new RegExp(`removing every Sting command \\(frees ${(STING_KERNEL_ALLOWANCE_STANDALONE + AUDIO_FX_KERNEL_ALLOWANCE) + SPLIT_KERNEL_ALLOWANCE} bytes\\)`),
     'an implementation that sums the flat (STING_KERNEL_ALLOWANCE_STANDALONE + AUDIO_FX_KERNEL_ALLOWANCE) constant directly instead of asking ' +
       'kernelCodeBytes what a Sting-free version of the project would actually cost would report ' +
-      `${(STING_KERNEL_ALLOWANCE_STANDALONE + AUDIO_FX_KERNEL_ALLOWANCE)} alone here, wrong by exactly the split-lock term`
+      `${(STING_KERNEL_ALLOWANCE_STANDALONE + AUDIO_FX_KERNEL_ALLOWANCE)} alone here, wrong by exactly the split term`
   );
 });
 
@@ -2569,7 +2671,7 @@ test(
     // withMove: true as the baseline on both sides, the identical isolation
     // STING_KERNEL_ALLOWANCE's own test above already uses, for the same
     // reason: a bare no-command baseline would still leave the delta
-    // uncontaminated here (SFX turns on no split-lock dependency of its own
+    // uncontaminated here (SFX turns on no split-term dependency of its own
     // that a bare baseline would hide), but matching the Sting test's own
     // shape keeps the two directly comparable.
     for (const mapper of CAPABLE_MAPPERS) {
@@ -3019,7 +3121,7 @@ test(
 // of its own, so it never turns projectUsesText (and so fontBankSplit) on by
 // itself: on sample-rpg, projectUsesText is already true unconditionally
 // (gameType === 'rpg'), and on a fresh action project a bound tile alone
-// still leaves it false. There is therefore no split-lock dependent term to
+// still leaves it false. There is therefore no split-term dependency to
 // isolate against here the way Move/Sting both need -- a bare baseline is
 // the correct isolation, the same one ITEM_KERNEL_ALLOWANCE's own
 // measurement already uses.

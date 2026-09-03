@@ -155,3 +155,14 @@ plainly:
 
 `SAVE_KERNEL_ALLOWANCE_BY_MAPPER` was the instance that got fixed. This one is the instance that got
 written down.
+
+**A third instance surfaced afterward, one step removed from the first two.** Where the Save split and
+this document's own defect were each a term measured on the wrong *game type*, `SPLIT_LOCK_KERNEL_ALLOWANCE`
+(MMC3's font-bank split cost) was never independently measured on any game type at all — every equality
+assertion that touched it used it as a subtrahend inside a residual already containing its own bytes,
+never as the direct subject of a before/after delta. The residual turned out to be hiding 146 of its
+true 165-byte cost inside `BASE_KERNEL_CODE_BYTES_BY_MAPPER[4]` itself, an overcharge on exactly the
+no-text MMC3 action project this document's own §2 table never had a row for. See
+`docs/split-lock-not-pinned-report.md` for the full account — found and written up first as an open,
+unproven gap, then closed the same way this document's own defect was: measured for real, fixed
+conserving sums, and reported (`handoff-magic/split-term-1-report.md`).

@@ -1,9 +1,15 @@
 # `SPLIT_LOCK_KERNEL_ALLOWANCE` is never independently measured — a paired MMC3 drift would pass undetected
 
-**Status: open, deliberately.** This is a documented gap, not a defect being fixed here. Chris's decision:
-closing it is its own slice, not part of the round that found it (`handoff-magic/kernel-base-2-report.md`).
-Written up per the same discipline `docs/kernel-base-overcharge-report.md` got before its own fix landed —
-this document is that file's sibling, not its sequel.
+**Status: resolved.** The isolation §6 sketched has been run for real, against a fresh action project
+built with and without text on every supported board. It found the gap this document warned about was
+real, not merely unproven: `SPLIT_LOCK_KERNEL_ALLOWANCE` (now `SPLIT_KERNEL_ALLOWANCE`) was not 19 bytes
+but 165, and the missing 146 had been silently folded into `BASE_KERNEL_CODE_BYTES_BY_MAPPER[4]` the
+whole time — the third instance of the same overcharge class `docs/kernel-base-overcharge-report.md`
+names. See §8 for the measured table, the fix, and the correction to §4/§7's own "never wrong" claim
+below, which this document's original text (§1-§7, left otherwise unedited) got wrong in one specific,
+narrow way. Implemented per `handoff-magic/brief-split-term-1.md`; see
+`handoff-magic/split-term-1-report.md` for the full account. Not yet committed as of this fix landing in
+the tree.
 
 ## 1. The claim, in one line
 
@@ -188,3 +194,61 @@ exactly 19, and the base may well be exactly what `BASE_KERNEL_CODE_BYTES_BY_MAP
 missing is proof, not a known-bad number, which is why this document's own status is "open, deliberately"
 rather than "resolved": there is nothing here to fix yet, only a gap in what the test suite can catch if
 something does go wrong.
+
+## 8. Resolution
+
+§4 and §7 above were wrong on the one point that mattered most: "this was never wrong" and "the base may
+well be exactly what `BASE_KERNEL_CODE_BYTES_BY_MAPPER[4]` says." It was wrong. The isolation §6 sketched
+was run for real (`handoff-magic/brief-split-term-1.md`) — a fresh `createProject()` action project,
+`titleMap: null`, no items, built twice on every supported board: once with no text anywhere
+(`projectUsesText` false), once with a single placed entity carrying `props.dialogue: 'Hi'`
+(`projectUsesText` true), nothing else changed. `codeBytes` measured exactly as `measureCodeBytes`
+(`test/unit/kernelbytes.test.js`) does — nesasm's own kernel-lo usage minus everything before `reset`.
+
+| Board | text off: used / reserved / margin | text on: used / reserved / margin | real delta |
+|---|---|---|---|
+| NROM/CNROM/GxROM/CD/UxROM (fallback boards) | margin 246–285 | identical | 0 |
+| MMC1 | 5954 / 5974 / 20 | 5954 / 5974 / 20 | 0 |
+| UNROM 512 | 6149 / 6169 / 20 | 6149 / 6169 / 20 | 0 |
+| **MMC3** | **5971 / 6137 / 166** | 6136 / 6156 / 20 | **165** |
+
+Every non-MMC3 board shows a real delta of exactly 0, confirming §3's own prediction that nothing in
+kernel-lo depends on `projectUsesText` except through `SPLIT_ENABLED` — `TEXT_ENABLED` is emitted into
+`config.inc` but no `.asm` file reads it. MMC3's own text-off margin, 166, is the tell §1's escape
+scenario predicted: it should be `KERNEL_SLACK` (20), the way both other RPG-capable boards' margins
+already are in the identical configuration, and it was not.
+
+The true cost of the entire font-bank split machinery — `engine/split.asm`'s whole body, the
+`.if SPLIT_ENABLED` blocks in `engine/boot.asm` (three) and `engine/screens.asm` (one), and
+`engine/banks.asm`'s own two (the `chr_r1` shadow, and `switch_prg_bank`'s critical section — the one
+piece the old name was for) — is 165 bytes, not 19. The ledger had been charging 19 of those 165
+conditionally and folding the remaining 146 into `BASE_KERNEL_CODE_BYTES_BY_MAPPER[4]`, invisibly, for
+the entire life of the constant: exactly the "residual bakes in what it cannot separately prove" failure
+§3 and §5 above already argued was possible, now confirmed to have actually happened. `TITLE_KERNEL_ALLOWANCE_BY_MAPPER[4]`
+and `BATTLE_KERNEL_ALLOWANCE_BY_MAPPER[4]` (`split_select`'s own `.if TITLE_ENABLED` / `.if BATTLE_ENABLED`
+arms) are unaffected — the probe project has neither a title nor combat, so the measured 165 excludes
+both, confirmed by reading `engine/split.asm`'s own `split_select` directly, not merely inferred.
+
+**The fix conserves sums, exactly the shape the base/battle split (`docs/kernel-base-overcharge-report.md`)
+and the Save split before it both used**, so no existing capacity refusal moved: `BASE_KERNEL_CODE_BYTES_BY_MAPPER[4]`
+6117 → 5971, the split term 19 → 165, `6117 + 19 == 5971 + 165 == 6136` — every MMC3 configuration that
+shows text (every RPG, every action project with a title, combat, dialogue or a live event) reserves
+byte-identically to before. Only the no-text MMC3 action project changes, by −146 — from a 166-byte
+margin (more than 8× `KERNEL_SLACK`) to the correct 20. The constant is renamed `SPLIT_KERNEL_ALLOWANCE`:
+"split-lock" named the 13-byte `switch_prg_bank` critical section alone, and the term now correctly
+covers the entire split, of which the lock was always only one small part — the old name and the old
+19-byte figure had been quietly agreeing with each other, which is exactly how a residual-only check let
+both go unchallenged for as long as they did. `kernelCodeBytes`'s own gate stays `fontBankSplit(project,
+mapper)`, unchanged — it was always the right predicate; only the figure it multiplied against was wrong.
+
+The independent proof this document's §6 called for now exists as a real test
+(`'SPLIT_KERNEL_ALLOWANCE is pinned by an isolated text-on/text-off delta, not a residual...'`,
+`test/unit/kernelbytes.test.js`), generalised on `scanlineIrq` rather than hardcoded to mapper id 4 per
+§6's own second open question, with a zero-delta control on every board without one. The three residual
+assertions §3 traced (the action residual, the battle residual, and the "extended check" that reduces to
+`SPLIT_KERNEL_ALLOWANCE == SPLIT_KERNEL_ALLOWANCE` by substitution) all still hold and still run — they
+remain useful cross-checks against a single constant edited alone — but their own comments now say
+plainly that the extended check is a consequence of the other two, not independent proof, now that real
+independent proof exists elsewhere. Full account, including the sabotage check that confirms the new
+isolation test and the new absolute `assertCovers` check both fail loudly on the old, wrong figures:
+`handoff-magic/split-term-1-report.md`.
