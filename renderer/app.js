@@ -130,8 +130,21 @@ let mounted = null;
 // already shows the newer Forge active. Each call takes the next token at
 // entry; only the call still holding the current token after its own await is
 // allowed to touch dom.stage/mounted/status -- an older, since-superseded call
-// returns without doing anything once it notices.
+// returns without doing anything once it notices. The same token also bounds
+// a navigation context's lifetime (below) -- see docs/design-monster.md §2.
 let selectionToken = 0;
+
+// pendingRequest is written by goTo() and claimed (read, then cleared) as the
+// very first thing selectForge() does, so a request that dies at an early
+// return, an availability redirect, or loses the selectionToken race can never
+// be read by an unrelated later call. activeContext is bound only after the
+// target module has loaded and only if store.revision has not moved since the
+// request was made -- an actor id captured before that await can otherwise
+// name a different actor once a delete has renumbered everything. See
+// docs/design-monster.md §2 for why this shape replaced an earlier, unsafe
+// single-slot sketch.
+let pendingRequest = null; // { targetId, context, atRevision }
+let activeContext = null; // { token, context }
 
 // The selected test scenario (ROADMAP item 3's "Reload the ROM" bullet) —
 // session state, not project state: it lives here, at the same altitude as
@@ -157,7 +170,29 @@ export const app = {
   },
   toast,
   showModal,
-  goTo: (id) => selectForge(id),
+  /**
+   * Navigate to a Forge, optionally carrying a context for it to consume once
+   * it mounts -- `{ actorId }` for the Monster Forge, `{ tab, actorId }` for
+   * the Sprite Forge. With no context this is exactly a plain Forge switch,
+   * unchanged for every existing caller. See docs/design-monster.md §2.
+   */
+  goTo(id, context = null) {
+    pendingRequest = { targetId: id, context, atRevision: store.revision };
+    return selectForge(id);
+  },
+  /**
+   * Claims the navigation context bound for this call's own selectionToken,
+   * or null if there is none -- because nothing was passed, the target
+   * changed, the request died at an early return or a redirect, it was
+   * superseded by a later navigation, or store.revision moved during the
+   * load. Returns each context at most once.
+   */
+  consumeContext() {
+    if (!activeContext || activeContext.token !== selectionToken) return null;
+    const context = activeContext.context;
+    activeContext = null;
+    return context;
+  },
   /**
    * Every Forge id this project can open, in rail order — the single source
    * `main/smoke.js`'s "visit every Forge" step reads instead of keeping its
@@ -238,6 +273,11 @@ function renderRail() {
 }
 
 async function selectForge(id) {
+  // Claimed unconditionally, before either early return below, so a request
+  // that dies here can never be read by a later, unrelated selectForge call --
+  // the slot is already empty for it.
+  const incoming = pendingRequest;
+  pendingRequest = null;
   if (!store.isOpen) return;
   let entry = FORGES.find((forge) => forge.id === id);
   if (!entry) return;
@@ -257,6 +297,10 @@ async function selectForge(id) {
   renderRail();
 
   const token = ++selectionToken;
+  // Computed after the availability redirect above, so a context aimed at a
+  // Forge id that just got rewritten to 'tile' (an rpg-only Forge on an
+  // action project, say) never matches and dies here.
+  const candidateContext = incoming && incoming.targetId === id ? incoming : null;
   mounted?.destroy?.();
   mounted = null;
   clear(dom.stage);
@@ -264,9 +308,18 @@ async function selectForge(id) {
   try {
     const module = await entry.load();
     if (token !== selectionToken) return; // superseded by a later selectForge call while this awaited
+    // Bound only now, after the async gap: a commit/undo/redo during the
+    // dynamic import can renumber actors, so an id captured before the await
+    // is only trusted if store.revision hasn't moved since.
+    activeContext =
+      candidateContext && candidateContext.atRevision === store.revision
+        ? { token, context: candidateContext.context }
+        : null;
     mounted = module.mount(dom.stage, app) ?? null;
+    if (activeContext?.token === token) activeContext = null; // not consumed, or already was
     app.setStatus(entry.title, '');
   } catch (error) {
+    if (activeContext?.token === token) activeContext = null;
     if (token !== selectionToken) return;
     console.error(error);
     fill(dom.stage,

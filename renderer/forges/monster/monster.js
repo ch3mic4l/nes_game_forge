@@ -197,6 +197,16 @@ function artPicker(battle, set) {
 export function mount(container, app) {
   const state = { selectedActorId: null };
 
+  // A cross-link from the Sprite Forge (app.goTo('monster', { actorId })).
+  // No further validation here: render()'s own `ids.includes` fallback below
+  // already lands a deleted or otherwise unlisted id on the catalog's first
+  // entry, which is exactly the behaviour a bad context should get. See
+  // docs/design-monster.md §2.
+  const context = app.consumeContext();
+  if (Number.isInteger(context?.actorId)) {
+    state.selectedActorId = context.actorId;
+  }
+
   const body = el('div.panel-body');
 
   function render() {
@@ -221,6 +231,16 @@ export function mount(container, app) {
           'command, is listed here. To add, rename or delete a monster, or change its overworld sprite, ' +
           'hit points, contact damage or animations, use the Sprite Forge.'
       ),
+      state.selectedActorId === null
+        ? null
+        : el(
+            'button.btn.btn-sm',
+            {
+              style: { marginBottom: '12px' },
+              onclick: () => app.goTo('sprite', { tab: 'actors', actorId: state.selectedActorId })
+            },
+            'Edit in the Sprite Forge →'
+          ),
       el(
         'div.field-row',
         { style: { marginBottom: '12px' } },

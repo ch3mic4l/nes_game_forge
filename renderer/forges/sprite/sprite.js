@@ -14,7 +14,8 @@ import {
   tilesetAt,
   renumberActorDeletion,
   renumberMetaspriteDeletion,
-  overCapDeleteWarning
+  overCapDeleteWarning,
+  monsterActorIds
 } from '../../../shared/project.js';
 import { partyPanel } from './battle.js';
 import { drawSheet, sheetIndexFromEvent } from '../../widgets/sheet.js';
@@ -42,6 +43,21 @@ export function mount(container, app) {
     // so the same metasprite reads against whichever CHR bank a map banks in.
     tilesetId: 0
   };
+  // A cross-link from the Monster Forge (app.goTo('sprite', { tab: 'actors',
+  // actorId })) lands on that actor's tab and selection; anything else --
+  // no context, a different shape, an actorId the delete/undo dance already
+  // invalidated -- leaves the defaults above untouched. See
+  // docs/design-monster.md §2.
+  const context = app.consumeContext();
+  if (
+    context?.tab === 'actors' &&
+    Number.isInteger(context.actorId) &&
+    store.project.sprites.actors[context.actorId]
+  ) {
+    state.tab = 'actors';
+    state.actor = context.actorId;
+  }
+
   let decoded = [];
   let raf = null;
 
@@ -873,13 +889,38 @@ export function mount(container, app) {
             // told where to find them. Attack, drops, battle artwork and the
             // rest of an actor's battle stats are authored in the Monster
             // Forge now -- see docs/design-monster.md §2 for the boundary.
+            // The link only makes sense for an actor monsterActorIds
+            // actually lists: isMonsterActor alone would miss a harmless
+            // actor a map's encounter table or a battle command still
+            // names, and would link a harmless, unreferenced one straight
+            // into the Monster Forge's own catalog-first fallback landing
+            // on some other actor entirely (review1's must-fix).
             store.project.project.gameType === 'rpg'
-              ? el(
-                  'p.hint',
-                  { style: { marginTop: '16px', borderTop: '1px solid var(--line)', paddingTop: '12px' } },
-                  'Attack, drops, battle artwork and the rest of this actor’s battle stats are authored in the ' +
-                    'Monster Forge now.'
-                )
+              ? monsterActorIds(store.project).includes(state.actor)
+                ? el(
+                    'div',
+                    { style: { marginTop: '16px', borderTop: '1px solid var(--line)', paddingTop: '12px' } },
+                    el(
+                      'p.hint',
+                      null,
+                      'Attack, drops, battle artwork and the rest of this actor’s battle stats are authored in the ' +
+                        'Monster Forge now.'
+                    ),
+                    el(
+                      'button.btn.btn-sm',
+                      { onclick: () => app.goTo('monster', { actorId: state.actor }) },
+                      'Edit in the Monster Forge →'
+                    )
+                  )
+                : el(
+                    'div',
+                    { style: { marginTop: '16px', borderTop: '1px solid var(--line)', paddingTop: '12px' } },
+                    el(
+                      'p.hint',
+                      null,
+                      'This actor is harmless and nothing references it, so the Monster Forge has no entry for it.'
+                    )
+                  )
               : null
           )
         : el('p.hint', null, 'Actors are what the Map Forge places on a screen.')

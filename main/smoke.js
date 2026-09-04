@@ -4940,16 +4940,632 @@ const scenario = (dir, sampleDir, sampleRpgDir) => `
     }
   }
 
+  // --- Monster Forge navigation contract (item 14, phase 1 part B,
+  // docs/design-monster.md §2) ---------------------------------------------
+  // Each sub-test below opens its own fresh sample-rpg (or, for the second
+  // half of the rail-click test and the defence-in-depth probes below, the
+  // action sample) rather than depending on whatever state the Monster
+  // Forge tests just above left behind -- the same isolation the
+  // "selectForge stale-load race" test above already uses. Most sub-tests
+  // drive the contract through window.__app.goTo(id, context) and
+  // window.__app.store directly; test 1 below additionally clicks the real
+  // "Edit in the ... Forge ->" buttons, so the button wiring is exercised
+  // too, not only the goTo() contract underneath it.
+  {
+    const { renumberActorDeletion: renumberActorDeletionForNav } = await import('../shared/project.js');
+
+    const navPanelHead = () => document.querySelector('#stage span.panel-head')?.textContent;
+    const navActiveTab = () =>
+      [...document.querySelectorAll('#stage .tab')].find((t) => t.classList.contains('active'))?.textContent;
+    // Scoped to .panel-body (the list/detail panel) rather than a bare
+    // ".field-row > select": the canvas panel's own Tileset picker
+    // (sprite.js's renderTabs, "label.field-row" with a plain "select.input"
+    // child) is a second, unrelated match for that shape and sits earlier in
+    // the DOM, so an unscoped query would silently grab it instead.
+    const navActorSelect = () => document.querySelector('#stage .panel-body .field-row > select');
+    // Monster Forge's own catalog select is always the first <select> in
+    // #stage -- battleSection's own Weak-to/Resists/Casts/Drops selects for
+    // the selected actor render after it in DOM order.
+    const navCatalogSelect = () => document.querySelector('#stage select');
+    const navActiveRailTitle = () => document.querySelector('.rail-item.active')?.title;
+    const navStageForgeCount = () => document.querySelectorAll('#stage .forge').length;
+    const navFindButton = (text) => [...document.querySelectorAll('#stage button')].find((b) => b.textContent === text);
+    const deleteActorLikeSpriteForge = (project, index) => {
+      // The exact splice/restamp/entities-filter-and-shift/renumberActorDeletion
+      // sequence sprite.js's own delete-actor handler runs (sprite.js:764-780)
+      // -- CLAUDE.md's own "trap 2" is that a partial reimplementation of this
+      // sequence is a bug in its own right, not just an unfaithful test.
+      project.sprites.actors.splice(index, 1);
+      project.sprites.actors.forEach((entry, position) => (entry.id = position));
+      for (const map of project.maps) {
+        for (const screen of map.screens) {
+          screen.entities = screen.entities
+            .filter((entity) => entity.actorId !== index)
+            .map((entity) => ({ ...entity, actorId: entity.actorId > index ? entity.actorId - 1 : entity.actorId }));
+        }
+      }
+      renumberActorDeletionForNav(project, index);
+    };
+
+    // Test 1 (§2's own two deep-links, happy path -- reworked per round 2's
+    // review to click the real buttons, not call goTo directly: a button
+    // that targets the wrong Forge, passes the wrong context shape, or has
+    // no handler at all would otherwise pass every test in this section,
+    // since every other test drives the contract through goTo alone).
+    // Snake is id 3 -- not sample-rpg's catalog's first id (Slime, 0) -- so
+    // landing on it is not something a Forge that always defaults to the
+    // first catalog entry could fake.
+    {
+      const opened = await window.forge.project.open(${JSON.stringify(sampleRpgDir)});
+      if (!opened.ok) throw new Error('open sample-rpg for the navigation-contract happy-path test: ' + opened.error);
+      window.__app.store.open(opened.value.dir, opened.value.project);
+      await wait(200);
+
+      // Setup only -- goTo is fine here, landing on Snake's Actors-tab row
+      // is not the thing under test.
+      await window.__app.goTo('sprite', { tab: 'actors', actorId: 3 });
+      await wait(250);
+
+      const forwardButton = navFindButton('Edit in the Monster Forge →');
+      if (!forwardButton) throw new Error('Sprite Forge shows no "Edit in the Monster Forge →" button for Snake, a listed monster');
+      forwardButton.click();
+      await wait(250);
+
+      if (navPanelHead() !== 'Snake') {
+        throw new Error('clicking "Edit in the Monster Forge →" from Snake should select Snake, saw panel-head "' + navPanelHead() + '"');
+      }
+      if (navCatalogSelect()?.value !== '3') {
+        throw new Error(
+          'clicking "Edit in the Monster Forge →" from Snake should select catalog value 3, saw "' + navCatalogSelect()?.value + '"'
+        );
+      }
+
+      const reverseButton = navFindButton('Edit in the Sprite Forge →');
+      if (!reverseButton) throw new Error('Monster Forge shows no "Edit in the Sprite Forge →" button');
+      reverseButton.click();
+      await wait(250);
+
+      if (navActiveTab() !== 'Actors') {
+        throw new Error('clicking "Edit in the Sprite Forge →" should land on the Actors tab, saw "' + navActiveTab() + '"');
+      }
+      if (navActorSelect()?.value !== '3') {
+        throw new Error('clicking "Edit in the Sprite Forge →" should select actor 3, saw "' + navActorSelect()?.value + '"');
+      }
+
+      // Same step: Potion (id 1) is harmless and unreferenced, so it is not
+      // in the Monster catalog -- the forward button must be entirely
+      // absent for it (round 2's must-fix), not merely wired to the wrong
+      // actor.
+      navActorSelect().value = '1';
+      navActorSelect().dispatchEvent(new Event('change', { bubbles: true }));
+      await wait(150);
+      if (navFindButton('Edit in the Monster Forge →')) {
+        throw new Error('Sprite Forge should show no "Edit in the Monster Forge →" button for Potion, an actor the Monster catalog does not list');
+      }
+
+      // Round 3 review's should-fix 1: Potion alone only proves the gate
+      // hides a harmless, unreferenced actor -- a wrong gate keyed off
+      // isMonsterActor(actor) instead of monsterActorIds(...) would hide
+      // Potion for the same (wrong) reason and still pass. Reference Potion
+      // from a map encounter table without making it hostile -- the
+      // positive discriminator, since only monsterActorIds(...) lists it
+      // once referenced.
+      window.__app.store.commit('smoke: reference Potion from a map encounter table without making it hostile', (project) => {
+        project.maps[0].encounters.actorIds.push(1);
+      });
+      await wait(150);
+      const forwardButtonForReferencedPotion = navFindButton('Edit in the Monster Forge →');
+      if (!forwardButtonForReferencedPotion) {
+        throw new Error(
+          'Sprite Forge should show the "Edit in the Monster Forge →" button for Potion once a map encounter table references it, even though it stays harmless'
+        );
+      }
+      forwardButtonForReferencedPotion.click();
+      await wait(250);
+      if (navPanelHead() !== 'Potion') {
+        throw new Error(
+          'clicking "Edit in the Monster Forge →" for a referenced-but-harmless Potion should select Potion, saw panel-head "' + navPanelHead() + '"'
+        );
+      }
+      if (navCatalogSelect()?.value !== '1') {
+        throw new Error(
+          'clicking "Edit in the Monster Forge →" for a referenced-but-harmless Potion should select catalog value 1, saw "' +
+            navCatalogSelect()?.value +
+            '"'
+        );
+      }
+
+      step(
+        'Monster <-> Sprite navigation contract, happy path via the real buttons',
+        'clicking "Edit in the Monster Forge ->" from Snake lands on Snake (heading and catalog select both); clicking "Edit in the Sprite Forge ->" lands back on the Actors tab with actor 3 selected; the forward button is entirely absent for Potion while harmless and unreferenced, and reappears (landing on Potion) once a map encounter table references it without making it hostile'
+      );
+    }
+
+    // Test 2 (an out-of-range id that is stale but *fresh* -- "a case a bare
+    // bounds/catalog check already handles", per the brief, not a second
+    // store.revision proof; test 3 below is the one only store.revision
+    // catches). Nothing mutates the store between either goTo call and its
+    // own consumption, so store.revision never moves and the context
+    // survives the atRevision compare intact -- it is each target Forge's
+    // own bounds/catalog guard, not the revision check, that has to land
+    // this on a default. actorId 99 names no real actor on sample-rpg
+    // either way.
+    {
+      const opened = await window.forge.project.open(${JSON.stringify(sampleRpgDir)});
+      if (!opened.ok) throw new Error('open sample-rpg for the out-of-range-id fallback test: ' + opened.error);
+      window.__app.store.open(opened.value.dir, opened.value.project);
+      await wait(200);
+
+      // Monster side: exercises monster.js's own render()-time
+      // ids.includes fallback (from part A).
+      await window.__app.goTo('monster', { actorId: 99 });
+      await wait(250);
+      if (navPanelHead() !== 'Slime') {
+        throw new Error(
+          'goTo(monster, {actorId:99}) (an id naming no real actor) should fall back to the catalog’s first id (Slime), saw panel-head "' +
+            navPanelHead() +
+            '"'
+        );
+      }
+
+      // Sprite side, same step: exercises sprite.js's own mount()-time
+      // store.project.sprites.actors[context.actorId] bounds check.
+      await window.__app.goTo('sprite', { tab: 'actors', actorId: 99 });
+      await wait(250);
+      if (navActiveTab() !== 'Metasprites') {
+        throw new Error(
+          'goTo(sprite, {tab:"actors", actorId:99}) (an out-of-range actor id) should fall back to the Sprite Forge’s own default tab (Metasprites), saw "' +
+            navActiveTab() +
+            '"'
+        );
+      }
+      // Tightened per round 2's review: a wrong implementation that writes
+      // state.actor = 99 but declines to switch tabs would still pass the
+      // Metasprites-tab check above; opening Actors afterward is what
+      // exposes that half-applied state instead of the real default (0).
+      const actorsTabAfterOutOfRange = [...document.querySelectorAll('#stage .tab')].find((t) => t.textContent === 'Actors');
+      if (!actorsTabAfterOutOfRange) throw new Error('Sprite Forge has no Actors tab button');
+      actorsTabAfterOutOfRange.click();
+      await wait(150);
+      if (navActorSelect()?.value !== '0') {
+        throw new Error(
+          'goTo(sprite, {tab:"actors", actorId:99}) (an out-of-range actor id) should leave the actor at its default (0), saw "' +
+            navActorSelect()?.value +
+            '"'
+        );
+      }
+      step(
+        'Monster/Sprite navigation, out-of-range id fallback',
+        'goTo(monster, {actorId:99}) lands on the catalog’s first id (Slime) via monster.js’s own ids.includes fallback; goTo(sprite, {tab:"actors", actorId:99}) falls back to the default Metasprites tab and actor 0 via sprite.js’s own bounds check -- store.revision unchanged throughout, so neither depends on the atRevision compare'
+      );
+    }
+
+    // Test 3 (the renumbered-actor fallback -- the one only store.revision
+    // catches): B's *old* id ends up naming a different, still-valid
+    // catalog member once A (a lower id) is deleted and everything above it
+    // shifts down -- a bounds/catalog-membership check alone cannot see
+    // this, because the shifted-in actor really is a real monster.
+    {
+      const opened = await window.forge.project.open(${JSON.stringify(sampleRpgDir)});
+      if (!opened.ok) throw new Error('open sample-rpg for the renumbered-actor fallback test: ' + opened.error);
+      window.__app.store.open(opened.value.dir, opened.value.project);
+      await wait(200);
+
+      // A fifth actor, Decoy, appended after Snake (id 4): deleting A
+      // (Slime, id 0) shifts it down onto B's (Snake, id 3) old number, so
+      // that number doesn't vanish -- it comes to name a different, real
+      // monster instead.
+      window.__app.store.commit('smoke: append a fifth hostile actor for the renumbered-actor fallback test', (project) => {
+        const id = project.sprites.actors.length;
+        project.sprites.actors.push({ id, name: 'Decoy', behavior: 'patroller', speed: 1, hp: 1, damage: 1, anims: {} });
+      });
+      await wait(150);
+
+      const goingToMonster = window.__app.goTo('monster', { actorId: 3 }); // B = Snake
+      window.__app.store.commit('smoke: delete Slime (A, the lower id) before the Monster Forge import resolves', (project) =>
+        deleteActorLikeSpriteForge(project, 0)
+      );
+      await goingToMonster;
+      await wait(250);
+
+      // After the delete: Potion(0), Iris(1), Snake(2), Decoy(3) -- id 3,
+      // Snake's old number, now names Decoy. Landing on Decoy would mean the
+      // dropped context was applied anyway; the catalog's own first
+      // remaining id (Snake, now id 2) is the only correct answer.
+      const headingAfterRenumber = navPanelHead();
+      if (headingAfterRenumber !== 'Snake') {
+        throw new Error(
+          'a renumbered target id should drop the stale context and land on the catalog’s first id (Snake, now id 2), saw panel-head "' +
+            headingAfterRenumber +
+            '"' +
+            (headingAfterRenumber === 'Decoy' ? ' -- landed on the actor now wearing Snake’s old id 3 instead' : '')
+        );
+      }
+      // Tightened per round 2's review: the heading alone would still pass a
+      // render that displays a locally-computed ids[0] fallback without
+      // writing it back to state.selectedActorId -- its own reverse-link
+      // button would then still send the stale id 3, landing Sprite Forge on
+      // Decoy rather than Snake. Checking the catalog select's own value,
+      // then actually clicking the reverse button and following it to
+      // Sprite Forge, is what proves the corrected id is what state holds,
+      // not just what one label happens to say.
+      if (navCatalogSelect()?.value !== '2') {
+        throw new Error(
+          'a renumbered target id should leave the catalog select on Snake’s new id (2), saw "' + navCatalogSelect()?.value + '"'
+        );
+      }
+      const reverseButtonAfterRenumber = navFindButton('Edit in the Sprite Forge →');
+      if (!reverseButtonAfterRenumber) throw new Error('Monster Forge shows no "Edit in the Sprite Forge →" button for Snake');
+      reverseButtonAfterRenumber.click();
+      await wait(250);
+      if (navActiveTab() !== 'Actors') {
+        throw new Error('clicking "Edit in the Sprite Forge →" after the renumber should land on the Actors tab, saw "' + navActiveTab() + '"');
+      }
+      if (navActorSelect()?.value !== '2') {
+        throw new Error(
+          'clicking "Edit in the Sprite Forge →" after the renumber should select Snake’s new id (2), saw "' +
+            navActorSelect()?.value +
+            '" -- the reverse link used the stale id instead of the post-fallback one'
+        );
+      }
+      step(
+        'Monster Forge navigation, renumbered-actor fallback (store.revision)',
+        'a lower-id delete that shifts a different, still-valid actor onto the linked-to id drops the stale context, landing on the catalog’s first id (checked via the select, not just the heading) rather than the actor now wearing that number; the reverse link then follows the corrected id 2 back to Sprite Forge'
+      );
+    }
+
+    // Test 4 (a superseded navigation): a second goTo (no context), started
+    // in the same tick as the first, must win outright, and the first's
+    // context must never leak into the winning mount.
+    {
+      const opened = await window.forge.project.open(${JSON.stringify(sampleRpgDir)});
+      if (!opened.ok) throw new Error('open sample-rpg for the superseded-navigation test: ' + opened.error);
+      window.__app.store.open(opened.value.dir, opened.value.project);
+      await wait(200);
+
+      const goingToMonster = window.__app.goTo('monster', { actorId: 3 });
+      const goingToSprite = window.__app.goTo('sprite'); // no context, same tick
+      await Promise.all([goingToMonster, goingToSprite]);
+      await wait(300);
+
+      if (navStageForgeCount() !== 1) {
+        throw new Error('expected exactly one .forge element in #stage after the superseded-navigation race, saw ' + navStageForgeCount());
+      }
+      if (navActiveRailTitle() !== 'Sprite Forge') {
+        throw new Error('expected Sprite Forge to win the superseded-navigation race, rail shows "' + navActiveRailTitle() + '"');
+      }
+      if (navActiveTab() !== 'Metasprites') {
+        throw new Error('the winning goTo(sprite) call with no context should land on its default tab, saw "' + navActiveTab() + '"');
+      }
+      const actorsTabButton = [...document.querySelectorAll('#stage .tab')].find((t) => t.textContent === 'Actors');
+      if (!actorsTabButton) throw new Error('Sprite Forge has no Actors tab button');
+      actorsTabButton.click();
+      await wait(150);
+      if (navActorSelect()?.value !== '0') {
+        throw new Error(
+          'the winning goTo(sprite) call with no context should default to actor 0, saw "' + navActorSelect()?.value + '"'
+        );
+      }
+      const consumedAfterward = window.__app.consumeContext();
+      if (consumedAfterward !== null) {
+        throw new Error('consumeContext() called after the race settled should return null, saw ' + JSON.stringify(consumedAfterward));
+      }
+
+      // Second sub-case (round 2's review, tightened by round 3's): the
+      // loser above carried a Monster-shaped {actorId} context, which
+      // Sprite's own shape guard (context.tab === 'actors') would reject
+      // even if it somehow leaked -- so that race alone cannot distinguish
+      // "no leak" from "a leak Sprite happens to ignore". Racing a
+      // Sprite-shaped loser instead makes a real leak observable: if the
+      // token check after entry.load() (app.js's own selectForge) were ever
+      // removed, the losing Sprite mount would append a second .forge into
+      // #stage alongside the winning Tile mount -- checked here, on the
+      // settled race, before the later rail click below clears #stage and
+      // mounts a fresh Sprite over whatever evidence that would have left.
+      // consumeContext()'s own token check (renderer/app.js:191) is what
+      // rejects the loser's context in the shipped code: a Sprite-shaped
+      // context bound to a superseded token is never claimed, so it never
+      // reaches a later Sprite mount to be applied.
+      {
+        const opened2 = await window.forge.project.open(${JSON.stringify(sampleRpgDir)});
+        if (!opened2.ok) throw new Error('open sample-rpg for the superseded-navigation Sprite-shaped-loser sub-case: ' + opened2.error);
+        window.__app.store.open(opened2.value.dir, opened2.value.project);
+        await wait(200);
+
+        const goingToSpriteActors = window.__app.goTo('sprite', { tab: 'actors', actorId: 3 });
+        const goingToTile = window.__app.goTo('tile'); // no context, same tick, wins the race
+        await Promise.all([goingToSpriteActors, goingToTile]);
+        await wait(300);
+
+        if (navStageForgeCount() !== 1) {
+          throw new Error(
+            'expected exactly one .forge element in #stage after the second superseded-navigation race, saw ' + navStageForgeCount()
+          );
+        }
+        if (navActiveRailTitle() !== 'Tile Forge') {
+          throw new Error('expected Tile Forge to win the second superseded-navigation race, rail shows "' + navActiveRailTitle() + '"');
+        }
+        const spriteRailButton3 = [...document.querySelectorAll('.rail-item')].find((b) => b.title === 'Sprite Forge');
+        if (!spriteRailButton3) throw new Error('no Sprite Forge rail button found for the Sprite-shaped-loser sub-case');
+        spriteRailButton3.click();
+        await wait(250);
+        if (navActiveTab() !== 'Metasprites') {
+          throw new Error(
+            'a rail click into Sprite Forge after a superseded Sprite-shaped context should land on the default tab, saw "' +
+              navActiveTab() +
+              '"'
+          );
+        }
+        const actorsTabButton2 = [...document.querySelectorAll('#stage .tab')].find((t) => t.textContent === 'Actors');
+        if (!actorsTabButton2) throw new Error('Sprite Forge has no Actors tab button');
+        actorsTabButton2.click();
+        await wait(150);
+        if (navActorSelect()?.value !== '0') {
+          throw new Error(
+            'a rail click into Sprite Forge after a superseded Sprite-shaped context should default to actor 0, saw "' +
+              navActorSelect()?.value +
+              '"'
+          );
+        }
+      }
+
+      step(
+        'Monster Forge navigation, superseded selection',
+        'a same-tick goTo(sprite) with no context, racing goTo(monster, {actorId}), wins with exactly one .forge mounted on its own defaults, the older context never leaks and consumeContext() afterward returns null; a second race whose loser carries a Sprite-shaped context also settles at exactly one .forge mounted on Tile, and a later rail click into Sprite still lands on its defaults'
+      );
+    }
+
+    // Test 5 (a rail click never consumes a stale context): a rail click
+    // bypasses goTo() entirely, both after a context that already settled
+    // and consumed itself, and after one that died at the availability
+    // redirect and was never bound in the first place.
+    {
+      const opened = await window.forge.project.open(${JSON.stringify(sampleRpgDir)});
+      if (!opened.ok) throw new Error('open sample-rpg for the rail-click test: ' + opened.error);
+      window.__app.store.open(opened.value.dir, opened.value.project);
+      await wait(200);
+
+      await window.__app.goTo('monster', { actorId: 3 });
+      await wait(250);
+      if (navPanelHead() !== 'Snake') {
+        throw new Error('setup for the rail-click test: expected Snake selected, saw "' + navPanelHead() + '"');
+      }
+
+      const spriteRailButton = [...document.querySelectorAll('.rail-item')].find((b) => b.title === 'Sprite Forge');
+      if (!spriteRailButton) throw new Error('no Sprite Forge rail button found on sample-rpg');
+      spriteRailButton.click();
+      await wait(250);
+      if (navActiveTab() !== 'Metasprites') {
+        throw new Error('a rail click into Sprite Forge, right after a settled Monster link, should land on its default tab, saw "' + navActiveTab() + '"');
+      }
+
+      // Second half: goTo(monster) on an *action* project, where the Monster
+      // Forge is unavailable -- the availability redirect rewrites id to
+      // 'tile' before candidateContext is even computed, so nothing is ever
+      // bound. A rail click straight afterward must still land on Sprite
+      // Forge's own defaults.
+      const actionOpened = await window.forge.project.open(${JSON.stringify(sampleDir)});
+      if (!actionOpened.ok) throw new Error('open sample for the rail-click redirect test: ' + actionOpened.error);
+      window.__app.store.open(actionOpened.value.dir, actionOpened.value.project);
+      await wait(200);
+
+      await window.__app.goTo('monster', { actorId: 3 });
+      await wait(250);
+      if (navActiveRailTitle() !== 'Tile Forge') {
+        throw new Error('goTo(monster) on an action project should redirect to Tile Forge, rail shows "' + navActiveRailTitle() + '"');
+      }
+
+      const spriteRailButton2 = [...document.querySelectorAll('.rail-item')].find((b) => b.title === 'Sprite Forge');
+      if (!spriteRailButton2) throw new Error('no Sprite Forge rail button found on the action project');
+      spriteRailButton2.click();
+      await wait(250);
+      if (navActiveTab() !== 'Metasprites') {
+        throw new Error(
+          'a rail click into Sprite Forge, right after a dead goTo(monster) context on an action project, should still land on the default tab, saw "' +
+            navActiveTab() +
+            '"'
+        );
+      }
+      step(
+        'Monster Forge navigation, rail click never consumes a stale context',
+        'a direct rail click into Sprite Forge lands on its defaults both after a settled Monster link and after a dead (availability-redirected) one'
+      );
+    }
+
+    // Test 6 (review1's "should-fix — multiple clearing defenses called
+    // 'unobservable' have clean smoke seams"): four direct probes of the
+    // defence-in-depth lines the report could previously only reason about.
+    // window.__app is the exact object every Forge's mount(container, app)
+    // receives (app.js:590's own window.__app = app), so wrapping
+    // window.__app.setMeta is a test-side seam, not a production patch --
+    // tile.js calls app.setMeta('Tile Forge') synchronously near the end of
+    // its own mount(), after activeContext has already been bound and
+    // before selectForge's post-mount clear or catch clear ever run.
+    // Probe 1 checks the post-mount clear from the outside, once Tile's own
+    // mount() has already returned and the awaited goTo() has settled;
+    // probes 2-4 wrap setMeta so they can look from *inside* that same
+    // window instead, which is what each of them actually needs.
+    {
+      const actionForProbes = await window.forge.project.open(${JSON.stringify(sampleDir)});
+      if (!actionForProbes.ok) throw new Error('open sample for the defence-in-depth probes: ' + actionForProbes.error);
+      window.__app.store.open(actionForProbes.value.dir, actionForProbes.value.project);
+      await wait(200);
+
+      // Probe 1 -- post-mount clear (app.js:~318): Tile never consumes, so
+      // a context bound for it must be cleared once its own mount() returns.
+      await window.__app.goTo('tile', { probe: true });
+      await wait(250);
+      const probe1 = window.__app.consumeContext();
+      if (probe1 !== null) {
+        throw new Error('post-mount-clear probe: expected consumeContext() === null after a non-consuming Tile mount, saw ' + JSON.stringify(probe1));
+      }
+
+      // Probe 2 -- redirect ordering (app.js:~303): on this action project,
+      // Monster Forge is unavailable, so goTo('monster', ...) redirects to
+      // Tile before candidateContext is computed. Probed from *inside*
+      // Tile's own mount(), before the post-mount clear can mask a wrong
+      // placement.
+      let probe2 = 'not called';
+      const originalSetMetaProbe2 = window.__app.setMeta;
+      window.__app.setMeta = function (text) {
+        if (text === 'Tile Forge' && probe2 === 'not called') probe2 = window.__app.consumeContext();
+        return originalSetMetaProbe2(text);
+      };
+      try {
+        await window.__app.goTo('monster', { probe: true });
+        await wait(250);
+      } finally {
+        window.__app.setMeta = originalSetMetaProbe2;
+      }
+      if (probe2 === 'not called') throw new Error('redirect-ordering probe: setMeta("Tile Forge") was never called during the redirected mount');
+      if (probe2 !== null) {
+        throw new Error('redirect-ordering probe: expected consumeContext() === null from inside the redirected Tile mount, saw ' + JSON.stringify(probe2));
+      }
+
+      // Probe 3 -- token check (consumeContext, app.js:~191): from inside
+      // Tile's own mount(), synchronously start a second, unrelated
+      // navigation (without awaiting it) before calling consumeContext().
+      // selectionToken has already advanced by the time that call runs, so
+      // the still-bound Tile context is a stale token, not merely a
+      // consumed slot. The nested selectForge's own destroy/clear prologue
+      // runs before outer Tile's mount() has returned a handle, so Tile's
+      // observeSize ResizeObserver (renderer/ui.js:191-204) is never
+      // disconnect()ed by a destroy() call -- window.ResizeObserver is
+      // shimmed for this probe, but only for the window between Tile's own
+      // observeSize() call (tile.js:854) and its setMeta('Tile Forge') call
+      // right after it (tile.js:855): the wrapper below restores the real
+      // constructor *before* starting the racing goTo('sprite'), so the
+      // shim is live just long enough to catch Tile's own observer and not
+      // the racing Sprite mount's -- disconnecting that live mount's own
+      // observer would be the mirror image of the leak this shim exists to
+      // close. The finally restore stays as the safety net for the path
+      // where the wrapper never fires at all.
+      let probe3 = 'not called';
+      let probe3RacingNav = null;
+      const originalSetMetaProbe3 = window.__app.setMeta;
+      const originalResizeObserverProbe3 = window.ResizeObserver;
+      const probe3Observers = [];
+      window.ResizeObserver = class extends originalResizeObserverProbe3 {
+        constructor(...args) {
+          super(...args);
+          probe3Observers.push(this);
+        }
+      };
+      window.__app.setMeta = function (text) {
+        if (text === 'Tile Forge' && probe3 === 'not called') {
+          window.ResizeObserver = originalResizeObserverProbe3; // before the racing nav, not after
+          probe3RacingNav = window.__app.goTo('sprite'); // started, not awaited
+          probe3 = window.__app.consumeContext();
+        }
+        return originalSetMetaProbe3(text);
+      };
+      try {
+        await window.__app.goTo('tile', { probe: true });
+        await wait(250);
+      } finally {
+        window.__app.setMeta = originalSetMetaProbe3;
+        window.ResizeObserver = originalResizeObserverProbe3;
+      }
+      if (probe3RacingNav) await probe3RacingNav;
+      await wait(250);
+      for (const observer of probe3Observers) observer.disconnect();
+      if (probe3 === 'not called') throw new Error('token-check probe: setMeta("Tile Forge") was never called during the probed mount');
+      if (probe3 !== null) {
+        throw new Error('token-check probe: expected consumeContext() === null once a later navigation has advanced selectionToken, saw ' + JSON.stringify(probe3));
+      }
+      if (probe3Observers.length !== 1) {
+        throw new Error(
+          'token-check probe: expected exactly one ResizeObserver constructed while the shim was live (Tile’s own) -- ' +
+            'more than one means the shim over-collected (likely the racing Sprite mount’s), fewer means Tile stopped ' +
+            'constructing one at all; saw ' +
+            probe3Observers.length
+        );
+      }
+
+      // Probe 4 -- catch clear (app.js:~320): force Tile's own mount() to
+      // throw once activeContext has already been bound for it, and confirm
+      // selectForge's catch block still clears the slot. selectForge's own
+      // catch unconditionally does console.error(error); window.console.error
+      // is swapped out for the duration of this probe alone (restored in the
+      // finally) so that expected error does not fail the run the way
+      // main/smoke.js's own console-message listener otherwise would. Tile's
+      // observeSize ResizeObserver is already created before setMeta throws
+      // (renderer/forges/tile/tile.js:854-855), so no destroy() handle is
+      // ever returned for it -- window.ResizeObserver is shimmed the same
+      // way as probe 3, tracked instances disconnected after the probe's
+      // navigation has settled.
+      let probe4Recorded = [];
+      const originalConsoleError = window.console.error;
+      window.console.error = (...args) => {
+        probe4Recorded.push(args.map((a) => (a && a.message) || String(a)).join(' '));
+      };
+      let probe4Thrown = false;
+      const originalSetMetaProbe4 = window.__app.setMeta;
+      const originalResizeObserverProbe4 = window.ResizeObserver;
+      const probe4Observers = [];
+      window.ResizeObserver = class extends originalResizeObserverProbe4 {
+        constructor(...args) {
+          super(...args);
+          probe4Observers.push(this);
+        }
+      };
+      window.__app.setMeta = function (text) {
+        if (text === 'Tile Forge' && !probe4Thrown) {
+          probe4Thrown = true;
+          throw new Error('smoke: probe4 forced Tile mount failure');
+        }
+        return originalSetMetaProbe4(text);
+      };
+      try {
+        await window.__app.goTo('tile', { probe: true });
+        await wait(250);
+      } finally {
+        window.__app.setMeta = originalSetMetaProbe4;
+        window.console.error = originalConsoleError;
+        window.ResizeObserver = originalResizeObserverProbe4;
+      }
+      for (const observer of probe4Observers) observer.disconnect();
+      if (probe4Observers.length !== 1) {
+        throw new Error(
+          'catch-clear probe: expected exactly one ResizeObserver constructed while the shim was live (Tile’s own) -- ' +
+            'more than one means the shim over-collected, fewer means Tile stopped constructing one at all; saw ' +
+            probe4Observers.length
+        );
+      }
+      if (!probe4Thrown) throw new Error('catch-clear probe: the forced Tile mount failure never ran');
+      const probe4Consumed = window.__app.consumeContext();
+      if (probe4Consumed !== null) {
+        throw new Error('catch-clear probe: expected consumeContext() === null after a throwing mount, saw ' + JSON.stringify(probe4Consumed));
+      }
+      if (probe4Recorded.length !== 1 || !probe4Recorded[0].includes('probe4 forced Tile mount failure')) {
+        throw new Error('catch-clear probe: expected exactly one recorded console.error mentioning the thrown message, saw ' + JSON.stringify(probe4Recorded));
+      }
+      const probe4Heading = document.querySelector('#stage .placeholder h2')?.textContent;
+      if (!probe4Heading || !probe4Heading.includes('failed to load')) {
+        throw new Error('catch-clear probe: expected the "failed to load" placeholder in #stage, saw ' + JSON.stringify(probe4Heading));
+      }
+
+      step(
+        'Monster Forge navigation contract, the defence-in-depth lines',
+        'four direct probes of Tile’s own non-consuming mount: the post-mount clear (checked once that mount has returned), plus redirect ordering, consumeContext’s token check and the catch-block clear (each probed from inside it) all independently return null/clear state rather than leaking a bound context'
+      );
+    }
+  }
+
   // Back to the pristine sample-rpg project before anything else in this
-  // script depends on it. Two sections above mutated it: the Magic Forge
+  // script depends on it. Three sections above mutated it: the Magic Forge
   // tests (spells, party, an actor's battle.spellId and undo history, and a
-  // swap over to the action sample entirely for the cross-type test) and,
-  // after that, the Monster Forge tests just above (undo history, an
-  // external Potion-hostile commit, Snake's battle.atk, an added-and-since-
-  // removed Ephemeral actor, a full wipe and restore of sprites.actors, and
-  // the Fresh/ToBeStranded actors and map encounter table).
+  // swap over to the action sample entirely for the cross-type test), the
+  // Monster Forge tests after that (undo history, an external
+  // Potion-hostile commit, Snake's battle.atk, an added-and-since-removed
+  // Ephemeral actor, a full wipe and restore of sprites.actors, and the
+  // Fresh/ToBeStranded actors and map encounter table), and the navigation-
+  // contract tests just above (each opens its own fresh copy, but the last
+  // one leaves the action sample as the current project).
   const sampleRpgOnceMore = await window.forge.project.open(${JSON.stringify(sampleRpgDir)});
-  if (!sampleRpgOnceMore.ok) throw new Error('re-open sample-rpg after the Magic Forge tests: ' + sampleRpgOnceMore.error);
+  if (!sampleRpgOnceMore.ok) {
+    throw new Error('re-open sample-rpg after the Magic Forge, Monster Forge and navigation-contract tests: ' + sampleRpgOnceMore.error);
+  }
   window.__app.store.open(sampleRpgOnceMore.value.dir, sampleRpgOnceMore.value.project);
   await wait(200);
 

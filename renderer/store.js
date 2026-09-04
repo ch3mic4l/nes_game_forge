@@ -14,10 +14,22 @@ export class Store {
     this.redoStack = [];
     this.listeners = new Set();
     this.stroke = null;
+    this._revision = 0;
   }
 
   get isOpen() {
     return this.project !== null;
+  }
+
+  /**
+   * Bumped inside commit()/undo()/redo()/open()/close() -- every method that
+   * replaces or mutates this.project. Not beginStroke()/touch()/endStroke()/
+   * cancelStroke(): an actor deletion or renumbering always goes through one
+   * commit(), never a stroke, and touch() fires per pointer-move frame of an
+   * unrelated drag. See docs/design-monster.md §2.
+   */
+  get revision() {
+    return this._revision;
   }
 
   subscribe(listener) {
@@ -35,6 +47,7 @@ export class Store {
     this.dirty = false;
     this.undoStack = [];
     this.redoStack = [];
+    this._revision++;
     this.emit({ type: 'open' });
   }
 
@@ -44,6 +57,7 @@ export class Store {
     this.dirty = false;
     this.undoStack = [];
     this.redoStack = [];
+    this._revision++;
     this.emit({ type: 'close' });
   }
 
@@ -63,7 +77,17 @@ export class Store {
   commit(label, mutate) {
     if (!this.project) return;
     this.pushUndo(label);
-    mutate(this.project);
+    // The revision bump lives in `finally`, not after a normal return: a
+    // mutator that splices/restamps the actor array and then throws has
+    // already changed actor identity, and the fence a contextual navigation
+    // relies on (docs/design-monster.md §2) must not claim otherwise by
+    // staying stale. Nothing else about the throwing path changes -- no
+    // `emit`, no `dirty` -- the exception still propagates past this method.
+    try {
+      mutate(this.project);
+    } finally {
+      this._revision++;
+    }
     this.dirty = true;
     this.emit({ type: 'change', label });
   }
@@ -106,6 +130,7 @@ export class Store {
     this.redoStack.push({ label: entry.label, state: structuredClone(this.project) });
     this.project = entry.state;
     this.dirty = true;
+    this._revision++;
     this.emit({ type: 'undo', label: entry.label });
     return entry.label ?? true;
   }
@@ -116,6 +141,7 @@ export class Store {
     this.undoStack.push({ label: entry.label, state: structuredClone(this.project) });
     this.project = entry.state;
     this.dirty = true;
+    this._revision++;
     this.emit({ type: 'redo', label: entry.label });
     return entry.label ?? true;
   }
