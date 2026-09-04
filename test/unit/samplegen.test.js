@@ -1,4 +1,4 @@
-// The five sample generators (tools/make-*.js) are read by nobody but their
+// The six sample generators (tools/make-*.js) are read by nobody but their
 // own npm scripts, so nothing else in this suite would ever notice one
 // drifting from what the checked-in fixture it is supposed to reproduce
 // actually contains. That is exactly how phase 3's item-schema migration
@@ -52,7 +52,8 @@ const GENERATORS = [
   { name: 'sample-rpg', script: 'tools/make-rpg-sample.js' },
   { name: 'sample-mmc1', script: 'tools/make-mmc1-sample.js' },
   { name: 'sample-mmc3', script: 'tools/make-mmc3-sample.js' },
-  { name: 'sample-u512', script: 'tools/make-u512-sample.js' }
+  { name: 'sample-u512', script: 'tools/make-u512-sample.js' },
+  { name: 'sample-rpg-mmc1', script: 'tools/make-rpg-save-sample.js' }
 ];
 
 // A cheap proof that loadProject(checkedIn) never wrote back into the
@@ -92,6 +93,6 @@ for (const { name, script } of GENERATORS) {
     );
 
     const after = await snapshotFixture(fixtureDir);
-    assert.deepEqual(after, before, `${name}/ must not be written to by this test -- CLAUDE.md: "No test may mutate any of the five."`);
+    assert.deepEqual(after, before, `${name}/ must not be written to by this test -- CLAUDE.md: "No test may mutate any of the six."`);
   });
 }
