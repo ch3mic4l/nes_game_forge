@@ -1650,3 +1650,9 @@ Each of these cost real debugging time and now has a regression test. They are e
   as bad data rather than the wrong append, and cost the Map Forge its whole placed-actor list
   (remove buttons included) until it was noticed in a screenshot. Bare `clear()` is still right
   for the clear-then-append-in-a-loop cases.
+- `showModal` (`renderer/ui.js`) resolves `null` for Escape, a backdrop click, a bare `close()`,
+  and an action with `value: undefined` — a caller can't tell "dismissed" from a chosen `null`
+  through the promise alone. A caller needing that brings its own sentinel: `editEvent`
+  (`renderer/forges/map/events.js`) resolves Clear event and an emptied-draft Save through a
+  private `CLEAR_EVENT` Symbol, folded by `resolveEventEditorResult` (pinned by
+  `events.test.js`).
