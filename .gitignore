@@ -14,3 +14,4 @@ sample-u512/build/
 # mechanism depth live in docs/ instead, which stays tracked.
 handoff-*/
 HANDOFF-*.md
+HANDOFF.md
