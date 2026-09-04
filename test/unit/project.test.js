@@ -33,6 +33,8 @@ import {
   renumberMetaspriteDeletion,
   renumberSpellDeletion,
   battleFormationSlice,
+  mapEncounterFormation,
+  monsterActorIds,
   NO_ACTOR,
   NO_ITEM,
   NO_METASPRITE,
@@ -2256,7 +2258,7 @@ test('a monster whose drop no longer names an actor is a warning, not a refusal'
     'warning',
     'a monster that drops nothing still fights, so this is the stale-reference warning, not the Give/Take refusal'
   );
-  assert.equal(aboutDrop[0].where, 'Sprite Forge', 'the drop is edited in the Sprite Forge, so that is who it names');
+  assert.equal(aboutDrop[0].where, 'Monster Forge', 'the drop is edited in the Monster Forge now, so that is who it names');
 
   // renumberActorDeletion's own null is the other way to get here, and reads
   // as deliberate rather than stale: nothing to warn about.
@@ -2265,6 +2267,30 @@ test('a monster whose drop no longer names an actor is a warning, not a refusal'
     validateProject(project).filter((problem) => /drop/i.test(problem.message)),
     [],
     'a drop of "Nothing" is a choice, not a dangling reference'
+  );
+});
+
+test('a monster whose battle artwork runs into the message font is a Monster Forge error', () => {
+  const project = createProject('Quest', 'rpg'); // RPG_DEFAULT_MAPPER is MMC1, not the split-font board
+  project.party.push(createPartyMember(0, 'Hero'));
+  project.sprites.actors = [
+    // battleW/H default to 4, so last = battleTile + 3*16 + 3; 200 + 51 = 251 >= FONT_BASE (0xA0 = 160)
+    { name: 'Slime', damage: 1, battle: { battleTile: 200 } }
+  ];
+
+  const problems = validateProject(project);
+  const aboutArt = problems.filter((problem) => /battle artwork runs into/i.test(problem.message));
+  assert.equal(aboutArt.length, 1, 'the battle-art/font collision should be reported exactly once');
+  assert.equal(aboutArt[0].severity, 'error', 'artwork overrunning the font tiles is fatal, not a warning');
+  assert.equal(
+    aboutArt[0].message,
+    "Slime's battle artwork runs into the message font's tiles. Move it below background tile $A0 or make it smaller.",
+    'the message names the actor and the exact tile boundary'
+  );
+  assert.equal(
+    aboutArt[0].where,
+    'Monster Forge',
+    'battle art is authored in the Monster Forge now, so that is who it names'
   );
 });
 
@@ -3445,6 +3471,300 @@ test('a formation whose only valid monster falls past the truncation point reads
   const errors = validateProject(project).filter((p) => p.severity === 'error');
   assert.equal(errors.length, 1);
   assert.match(errors[0].message, /name no monsters/);
+});
+
+// --- monsterActorIds (ROADMAP item 14, docs/design-monster.md §2) ----------
+//
+// The Monster Forge's own catalog: every actor id that reads as a monster
+// right now, or is named *anywhere authored* as one -- deliberately wider
+// than what the compiler would ever run (allCommands, not liveCommands;
+// command.monsters/map.encounters.actorIds raw, not through
+// battleFormationSlice/mapEncounterFormation), so an author never loses
+// sight of a reference just because it is currently dormant or over-cap.
+
+test('monsterActorIds includes a battle command inside a disabled branch', () => {
+  const project = createProject('Quest', 'rpg');
+  project.sprites.actors = [
+    { name: 'A', damage: 0 },
+    { name: 'B', damage: 0 }
+  ];
+  project.maps[0].screens[0].entities.push({
+    actorId: 0,
+    x: 0,
+    y: 0,
+    props: {
+      event: {
+        pages: [
+          {
+            cond: { type: 'none', arg: 0 },
+            commands: [
+              {
+                op: 'branch',
+                off: true, // the branch itself is switched off -- liveCommands would never reach inside it
+                cond: { type: 'none', arg: 0 },
+                then: [{ op: 'battle', monsters: [1] }],
+                else: []
+              }
+            ]
+          }
+        ]
+      }
+    }
+  });
+
+  assert.deepEqual(
+    monsterActorIds(project),
+    [1],
+    'a battle command inside a disabled branch is still an authored mention'
+  );
+});
+
+test('monsterActorIds includes a battle command inside a common event', () => {
+  const project = createProject('Quest', 'rpg');
+  project.sprites.actors = [
+    { name: 'A', damage: 0 },
+    { name: 'B', damage: 0 }
+  ];
+  project.commonEvents = [
+    {
+      id: 0,
+      name: 'Ambush',
+      event: { pages: [{ cond: { type: 'none', arg: 0 }, commands: [{ op: 'battle', monsters: [1] }] }] }
+    }
+  ];
+
+  assert.deepEqual(monsterActorIds(project), [1], 'a common event is walked the same as a placement’s own event');
+});
+
+test('monsterActorIds includes a battle command nested inside a branch, inside a common event', () => {
+  // The disabled-branch test above nests inside a *placement's* event; the common-event test above
+  // this one keeps its battle command top-level. Neither alone tells a top-level-only common-event
+  // walk apart from a real allCommands one -- this composes both axes in a single fixture.
+  const project = createProject('Quest', 'rpg');
+  project.sprites.actors = [
+    { name: 'A', damage: 0 },
+    { name: 'B', damage: 0 }
+  ];
+  project.commonEvents = [
+    {
+      id: 0,
+      name: 'Ambush',
+      event: {
+        pages: [
+          {
+            cond: { type: 'none', arg: 0 },
+            commands: [
+              {
+                op: 'branch',
+                off: false,
+                cond: { type: 'none', arg: 0 },
+                then: [{ op: 'battle', monsters: [1] }],
+                else: []
+              }
+            ]
+          }
+        ]
+      }
+    }
+  ];
+
+  assert.deepEqual(
+    monsterActorIds(project),
+    [1],
+    'a battle command nested inside a branch inside a common event is still an authored mention -- nesting and ' +
+      'common-event traversal must compose, not just be true separately'
+  );
+});
+
+test('monsterActorIds includes a battle command nested inside a choice option', () => {
+  const project = createProject('Quest', 'rpg');
+  project.sprites.actors = [
+    { name: 'A', damage: 0 },
+    { name: 'B', damage: 0 }
+  ];
+  project.maps[0].screens[0].entities.push({
+    actorId: 0,
+    x: 0,
+    y: 0,
+    props: {
+      event: {
+        pages: [
+          {
+            cond: { type: 'none', arg: 0 },
+            commands: [
+              {
+                op: 'choice',
+                options: [{ text: 'Fight', commands: [{ op: 'battle', monsters: [1] }] }]
+              }
+            ]
+          }
+        ]
+      }
+    }
+  });
+
+  assert.deepEqual(
+    monsterActorIds(project),
+    [1],
+    'a battle command inside a question option is still an authored mention'
+  );
+});
+
+test('monsterActorIds includes an over-cap 5th formation slot, not just the truncated four', () => {
+  const project = createProject('Quest', 'rpg');
+  project.sprites.actors = [
+    { name: 'A', damage: 0 },
+    { name: 'B', damage: 0 },
+    { name: 'C', damage: 0 },
+    { name: 'D', damage: 0 },
+    { name: 'E', damage: 0 }
+  ];
+  project.maps[0].screens[0].entities.push({
+    actorId: 0,
+    x: 0,
+    y: 0,
+    props: {
+      event: {
+        pages: [{ cond: { type: 'none', arg: 0 }, commands: [{ op: 'battle', monsters: [0, 1, 2, 3, 4] }] }]
+      }
+    }
+  });
+
+  assert.deepEqual(
+    battleFormationSlice([0, 1, 2, 3, 4]),
+    [0, 1, 2, 3],
+    'RPG_LIMITS.monstersPerBattle is 4, so the compiler truncates away the fifth slot'
+  );
+  assert.deepEqual(
+    monsterActorIds(project),
+    [0, 1, 2, 3, 4],
+    'monsterActorIds reads command.monsters raw, so the truncated-away fifth actor is still an authored mention'
+  );
+});
+
+test('monsterActorIds reads a rate-zero map’s encounter table raw, past what the compiled formation truncates', () => {
+  const project = createProject('Quest', 'rpg');
+  project.sprites.actors = [
+    { name: 'A', damage: 0 },
+    { name: 'B', damage: 0 },
+    { name: 'C', damage: 0 },
+    { name: 'D', damage: 0 },
+    { name: 'Fifth', damage: 0 } // id 4, sits in the table's 5th slot -- past RPG_LIMITS.encounterActors
+  ];
+  project.maps[0].encounters = { rate: 0, actorIds: [0, 0, 0, 0, 4] }; // rate 0 = the engine never rolls this table
+
+  assert.deepEqual(
+    mapEncounterFormation(project.maps[0], project.sprites.actors.length),
+    [0, 0, 0, 0],
+    'RPG_LIMITS.encounterActors is 4, so the compiled formation truncates away the 5th slot -- actor 4 is dropped'
+  );
+  assert.deepEqual(
+    monsterActorIds(project),
+    [0, 4],
+    'the Map Forge lets an author edit a rate-zero table regardless, and the raw read keeps the 5th slot the ' +
+      'compiled formation would drop'
+  );
+});
+
+test('monsterActorIds excludes an out-of-range id', () => {
+  const project = createProject('Quest', 'rpg');
+  project.sprites.actors = [{ name: 'A', damage: 0 }];
+  project.maps[0].encounters = { rate: 8, actorIds: [99] }; // no actor 99 exists
+
+  assert.deepEqual(monsterActorIds(project), [], 'an id past the end of the actor list names nothing real');
+});
+
+test('monsterActorIds excludes invalid ids named in a battle command (negative, fractional, out-of-range)', () => {
+  const project = createProject('Quest', 'rpg');
+  project.sprites.actors = [
+    { name: 'A', damage: 0 },
+    { name: 'B', damage: 0 }
+  ];
+  project.maps[0].screens[0].entities.push({
+    actorId: 0,
+    x: 0,
+    y: 0,
+    props: {
+      event: {
+        pages: [
+          {
+            cond: { type: 'none', arg: 0 },
+            commands: [{ op: 'battle', monsters: [-1, 1.5, 99] }]
+          }
+        ]
+      }
+    }
+  });
+
+  assert.deepEqual(
+    monsterActorIds(project),
+    [],
+    'inRange guards a battle command’s own monsters array too -- a negative id, a fractional id, and an id past ' +
+      'the end of the actor list all name nothing real'
+  );
+});
+
+test('monsterActorIds excludes a non-battle command naming the same number', () => {
+  const project = createProject('Quest', 'rpg');
+  project.sprites.actors = [
+    { name: 'A', damage: 0 },
+    { name: 'B', damage: 0 }
+  ];
+  project.maps[0].screens[0].entities.push({
+    actorId: 0,
+    x: 0,
+    y: 0,
+    props: {
+      event: {
+        pages: [{ cond: { type: 'none', arg: 0 }, commands: [{ op: 'give', item: 1 }] }]
+      }
+    }
+  });
+
+  assert.deepEqual(
+    monsterActorIds(project),
+    [],
+    'a Give item command’s operand is an item id, not an actor reference'
+  );
+});
+
+test('monsterActorIds unions live hostility with authored mentions, ascending and deduplicated', () => {
+  const project = createProject('Quest', 'rpg');
+  project.sprites.actors = [
+    { name: 'Hostile', damage: 3 }, // id 0, reads as a monster right now
+    { name: 'Harmless', damage: 0 }, // id 1, never referenced anywhere -- must be absent
+    { name: 'Two', damage: 0 }, // id 2, named once, only by the battle command below
+    { name: 'C3', damage: 0 },
+    { name: 'C4', damage: 0 },
+    { name: 'C5', damage: 0 },
+    { name: 'C6', damage: 0 },
+    { name: 'C7', damage: 0 },
+    { name: 'C8', damage: 0 },
+    { name: 'C9', damage: 0 },
+    { name: 'Ten', damage: 0 } // id 10, named three times over by two different sources
+  ];
+  // id 10 is inserted before id 2 both ways: the map loop runs before the events loop, and within
+  // the battle command's own array 10 precedes 2 -- so Set insertion order and a default
+  // lexicographic Array#sort both land on [0, 10, 2], not the numeric-ascending [0, 2, 10].
+  project.maps[0].encounters = { rate: 8, actorIds: [10, 10] }; // the same id named twice in one table
+  project.maps[0].screens[0].entities.push({
+    actorId: 0,
+    x: 0,
+    y: 0,
+    props: {
+      event: {
+        pages: [{ cond: { type: 'none', arg: 0 }, commands: [{ op: 'battle', monsters: [10, 2] }] }]
+      }
+    }
+  });
+
+  assert.deepEqual(
+    monsterActorIds(project),
+    [0, 2, 10],
+    'actor 0 is live-hostile; actor 10 is named three times over by two different sources and appears once, but ' +
+      'is inserted ahead of actor 2 -- only a numeric ascending sort recovers [0, 2, 10]; actor 1 is unreferenced ' +
+      'anywhere and is absent'
+  );
 });
 
 test('an RPG project round-trips through normalize unchanged', () => {

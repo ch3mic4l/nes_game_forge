@@ -36,8 +36,18 @@ const FORGES = [
     load: () => import('./forges/magic/magic.js'),
     // Spells and the party that casts them mean nothing outside a turn-based
     // RPG (BATTLE_ENABLED is off and no engine code path ever reads either
-    // in an action project) -- the one entry in this whole registry that is
-    // conditional. See isForgeAvailable below, its own three call sites.
+    // in an action project). See isForgeAvailable below, its own three call
+    // sites.
+    gameTypes: ['rpg']
+  },
+  {
+    id: 'monster',
+    label: 'Monster',
+    glyph: '👹',
+    title: 'Monster Forge',
+    load: () => import('./forges/monster/monster.js'),
+    // A monster's stats mean nothing outside a turn-based RPG, the identical
+    // reason the Magic Forge entry just above is conditional too.
     gameTypes: ['rpg']
   },
   {
@@ -89,8 +99,8 @@ const FORGES = [
 /**
  * Whether `entry` can be opened for `project` at all. `entry.gameTypes`,
  * when present, is the total list of game types the Forge means anything
- * for -- the Magic Forge's own `['rpg']` today, and nothing else in `FORGES`
- * carries the field, so this is `true` for every other entry unchanged: an
+ * for -- the Magic and Monster Forges' own `['rpg']` today, and every other
+ * entry in `FORGES` omits the field, so this is `true` for them unchanged: an
  * additive shape on the registry, not a rewrite of it. Three call sites
  * below all read through this one predicate rather than `FORGES` directly.
  */

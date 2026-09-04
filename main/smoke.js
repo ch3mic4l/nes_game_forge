@@ -86,12 +86,13 @@ const scenario = (dir, sampleDir, sampleRpgDir) => `
   // agreeing with FORGES by hand is exactly the single-writer violation that
   // let the Items Forge almost ship unvisited by this very step.
   //
-  // A function, not inlined, because Magic Forge (item 13, phase 3) is
-  // conditional on gameType -- window.__app.forgeIds already excludes it for
-  // this action project, which proves nothing about it either way, by design,
-  // not by omission (design-magic.md §7.1). The identical loop runs again,
+  // A function, not inlined, because Magic Forge (item 13, phase 3) and
+  // Monster Forge (item 14, phase 1) are both conditional on gameType --
+  // window.__app.forgeIds already excludes both for this action project,
+  // which proves nothing about either one way or the other, by design, not
+  // by omission (design-magic.md §7.1). The identical loop runs again,
   // reused rather than duplicated, once an RPG project is open later in this
-  // script, which is the only point Magic can actually be observed mounting.
+  // script, which is the only point either can actually be observed mounting.
   const visitEveryForge = async (label) => {
     const forgeIds = window.__app.forgeIds;
     if (!forgeIds.length) throw new Error('window.__app.forgeIds returned nothing -- the registry is not reaching this test');
@@ -2789,6 +2790,23 @@ const scenario = (dir, sampleDir, sampleRpgDir) => `
     step('magic forge hidden for an action project', 'absent from forgeIds and from the rendered rail');
   }
 
+  // Monster Forge rail-gating, negative case (item 14, phase 1,
+  // docs/design-monster.md §2/§6) -- the identical shape as the Magic Forge
+  // check just above, for the second gameTypes-conditional entry.
+  {
+    const forgeIdsActionMonster = window.__app.forgeIds;
+    if (forgeIdsActionMonster.includes('monster')) {
+      throw new Error('forgeIds should exclude Monster for an action project, saw: ' + forgeIdsActionMonster.join(', '));
+    }
+    const railTitlesMonster = [...document.querySelectorAll('.rail-item')].map((b) => b.title);
+    if (railTitlesMonster.includes('Monster Forge')) {
+      throw new Error(
+        'the rendered rail offered a Monster Forge button for an action project: ' + railTitlesMonster.join(', ')
+      );
+    }
+    step('monster forge hidden for an action project', 'absent from forgeIds and from the rendered rail');
+  }
+
   window.__app.goTo('sprite');
   await wait(350);
   const spriteStage = document.querySelector('#stage');
@@ -4191,6 +4209,14 @@ const scenario = (dir, sampleDir, sampleRpgDir) => `
   }
   step('magic forge available for an RPG project', 'present in forgeIds and mounted during the sweep above');
 
+  // Monster Forge positive case (item 14, phase 1, docs/design-monster.md
+  // §2/§6) -- the identical shape as the Magic Forge check just above, for
+  // the second gameTypes-conditional entry, reusing the same sweep.
+  if (!forgeIdsRpg.includes('monster')) {
+    throw new Error('forgeIds should include monster for an RPG project, saw: ' + forgeIdsRpg.join(', '));
+  }
+  step('monster forge available for an RPG project', 'present in forgeIds and mounted during the sweep above');
+
   const rpgStore = window.__app.store;
 
   // The phase-1 reproduction fixture, verbatim from
@@ -4504,10 +4530,424 @@ const scenario = (dir, sampleDir, sampleRpgDir) => `
     step('selectForge stale-load race', 'a same-tick goTo(magic), racing store.open’s own unawaited selectForge(activeForgeId), still lands on exactly one Magic Forge, immediately and after a delay');
   }
 
+  // --- Monster Forge (item 14, phase 1 part A, docs/design-monster.md) ----
+  // A fresh sample-rpg open, independent of whatever the Magic Forge tests
+  // above left behind -- the reopen a few lines below (for the build/play
+  // section) cleans up after this section the same way it already cleans up
+  // after Magic's.
+  {
+    const monsterRpg = await window.forge.project.open(${JSON.stringify(sampleRpgDir)});
+    if (!monsterRpg.ok) throw new Error('open sample-rpg for the Monster Forge tests: ' + monsterRpg.error);
+    window.__app.store.open(monsterRpg.value.dir, monsterRpg.value.project);
+    await wait(200);
+
+    const monsterStore = window.__app.store;
+    const { ANIM_SLOTS, normalizeProject } = await import('../shared/project.js');
+
+    const findFieldInput = (labelText) => {
+      const fieldDiv = [...document.querySelectorAll('#stage .field')].find(
+        (f) => f.querySelector('.field-label')?.textContent === labelText
+      );
+      return fieldDiv ? fieldDiv.querySelector('input') : null;
+    };
+    const findFieldSelect = (labelText) => {
+      const fieldDiv = [...document.querySelectorAll('#stage .field')].find(
+        (f) => f.querySelector('.field-label')?.textContent === labelText
+      );
+      return fieldDiv ? fieldDiv.querySelector('select') : null;
+    };
+    const catalogSelect = () => document.querySelector('#stage select'); // the catalog is always the first select rendered
+    const selectByName = (name) => {
+      const sel = catalogSelect();
+      const option = [...sel.options].find((o) => o.textContent === name || o.textContent === name + ' (stranded)');
+      if (!option) return null;
+      sel.value = option.value;
+      sel.dispatchEvent(new Event('change', { bubbles: true }));
+      return option;
+    };
+
+    await window.__app.goTo('monster');
+    await wait(250);
+
+    // Test 1 (§2/§6, undo/redo and an external commit changing catalog
+    // membership while this Forge is mounted): sample-rpg's own pristine
+    // catalog is [Slime(0), Snake(3)] -- Snake sits at catalog index 1. If
+    // selection were an array index into the catalog rather than the
+    // actor's own id (trap 1's shape, sabotage 3), inserting a new, lower-id
+    // monster (Potion, id 1) between them would shift whatever sits at
+    // index 1 out from under the selection, landing the edit on Potion
+    // instead of Snake without any error.
+    {
+      const snakeOption = selectByName('Snake');
+      if (!snakeOption) throw new Error('Monster Forge catalog does not list Snake on a pristine sample-rpg');
+      await wait(150);
+      const headingBefore = document.querySelector('#stage span.panel-head')?.textContent;
+      if (headingBefore !== 'Snake') throw new Error('expected Snake selected before the external commit, saw ' + headingBefore);
+
+      // External commit: nothing this Forge's own UI did -- the identical
+      // shape an undo, a redo, or an edit made from a different Forge
+      // entirely would produce.
+      monsterStore.commit('smoke: an external commit makes Potion hostile too, inserting a lower id into the catalog', (project) => {
+        project.sprites.actors[1].damage = 2;
+      });
+      await wait(150);
+
+      const headingAfterInsert = document.querySelector('#stage span.panel-head')?.textContent;
+      if (headingAfterInsert !== 'Snake') {
+        throw new Error(
+          'an external commit that inserts a lower id into the catalog moved the selection off Snake, onto "' +
+            headingAfterInsert +
+            '" -- selection must be by actor id, never a catalog array index'
+        );
+      }
+
+      if (!monsterStore.undo()) throw new Error('undo returned false for the external Potion-hostile commit');
+      await wait(150);
+      if (monsterStore.project.sprites.actors[1].damage !== 0) throw new Error('undo did not restore Potion’s damage to zero');
+      const headingAfterUndo = document.querySelector('#stage span.panel-head')?.textContent;
+      if (headingAfterUndo !== 'Snake') {
+        throw new Error('undo (catalog membership shrinking back) moved the selection off Snake, onto "' + headingAfterUndo + '"');
+      }
+
+      if (!monsterStore.redo()) throw new Error('redo returned false for the external Potion-hostile commit');
+      await wait(150);
+      if (monsterStore.project.sprites.actors[1].damage !== 2) throw new Error('redo did not restore Potion’s damage to 2');
+      const headingAfterRedo = document.querySelector('#stage span.panel-head')?.textContent;
+      if (headingAfterRedo !== 'Snake') {
+        throw new Error('redo (catalog membership growing again) moved the selection off Snake, onto "' + headingAfterRedo + '"');
+      }
+
+      // Leave Potion harmless again for the rest of this section.
+      if (!monsterStore.undo()) throw new Error('undo (cleanup) returned false');
+      await wait(150);
+
+      step(
+        'Monster Forge selection survives undo/redo and an external commit that shifts the catalog',
+        'Snake stays selected throughout; selection is by actor id, not a catalog array index'
+      );
+
+      // The dance above only ever checked the panel heading, which a Forge
+      // caching the selected *actor object* (not just its id) would also
+      // pass -- the cached object's own .name never changes, even once
+      // undo/redo has replaced store.project with a structuredClone that
+      // detaches it. Mutate a displayed battle field on Snake instead, and
+      // walk the *rendered* value back and forward across that same
+      // replacement, so a stale cached object has somewhere to be caught.
+      const snakeId = monsterStore.project.sprites.actors.findIndex((a) => a.name === 'Snake');
+      const originalAttack = monsterStore.project.sprites.actors[snakeId].battle?.atk ?? 4;
+
+      const attackFieldBeforeEdit = findFieldInput('Attack');
+      if (!attackFieldBeforeEdit) throw new Error('Monster Forge has no Attack field for Snake');
+      attackFieldBeforeEdit.value = '91';
+      attackFieldBeforeEdit.dispatchEvent(new Event('change', { bubbles: true }));
+      await wait(150);
+      if (monsterStore.project.sprites.actors[snakeId].battle.atk !== 91) {
+        throw new Error('editing Snake’s Attack field did not reach the store');
+      }
+      const attackFieldAfterEdit = findFieldInput('Attack');
+      if (Number(attackFieldAfterEdit?.value) !== 91) {
+        throw new Error('Monster Forge did not render the edited Attack value, saw ' + attackFieldAfterEdit?.value);
+      }
+
+      if (!monsterStore.undo()) throw new Error('undo returned false for the Attack edit');
+      await wait(150);
+      const attackFieldAfterUndo = findFieldInput('Attack');
+      if (Number(attackFieldAfterUndo?.value) !== originalAttack) {
+        throw new Error(
+          'after undo, Monster Forge still rendered the edited Attack value (' +
+            attackFieldAfterUndo?.value +
+            ') instead of the live store’s (' +
+            originalAttack +
+            ') -- a cached actor object would do exactly this'
+        );
+      }
+
+      if (!monsterStore.redo()) throw new Error('redo returned false for the Attack edit');
+      await wait(150);
+      const attackFieldAfterRedo = findFieldInput('Attack');
+      if (Number(attackFieldAfterRedo?.value) !== 91) {
+        throw new Error('after redo, Monster Forge did not render the reapplied Attack value, saw ' + attackFieldAfterRedo?.value);
+      }
+
+      // Cleanup: leave Snake’s Attack at its original value.
+      if (!monsterStore.undo()) throw new Error('undo (cleanup for the Attack edit) returned false');
+      await wait(150);
+
+      step(
+        'Monster Forge re-derives the live actor on every render, not a cached object',
+        'a displayed battle field tracks the live store across undo and redo, not a stale reference to a detached actor object'
+      );
+    }
+
+    // Test 1b (§2, catalog-exit fallback #1): a selected actor that becomes
+    // harmless *and* has no authored reference anywhere leaves the catalog
+    // outright -- unlike Test 3 below, whose actor stays referenced and
+    // stays listed as stranded. Selection must fall back to the first
+    // remaining catalog id, ascending.
+    {
+      let ephemeralId;
+      monsterStore.commit('smoke: add a hostile actor with no authored reference anywhere', (project) => {
+        const id = project.sprites.actors.length;
+        project.sprites.actors.push({ id, name: 'Ephemeral', behavior: 'patroller', speed: 1, hp: 1, damage: 3, anims: {} });
+        ephemeralId = id;
+      });
+      await wait(150);
+
+      const ephemeralOption = selectByName('Ephemeral');
+      if (!ephemeralOption) throw new Error('Monster Forge catalog does not list the newly hostile, unreferenced actor');
+      await wait(150);
+
+      monsterStore.commit('smoke: make the unreferenced actor harmless', (project) => {
+        project.sprites.actors[ephemeralId].damage = 0;
+      });
+      await wait(150);
+
+      // Slime (id 0) is hostile and unreferenced by anything else in this
+      // section so far, so it is always the ascending-first survivor.
+      const headingAfterExit = document.querySelector('#stage span.panel-head')?.textContent;
+      if (headingAfterExit !== 'Slime') {
+        throw new Error(
+          'a selected actor that left the catalog (harmless and unreferenced) should fall back to the first ' +
+            'remaining catalog id, ascending -- saw "' + headingAfterExit + '"'
+        );
+      }
+      const exitedOption = [...catalogSelect().options].find((o) => o.textContent.startsWith('Ephemeral'));
+      if (exitedOption) {
+        throw new Error('Ephemeral should have left the catalog entirely once harmless and unreferenced, still saw it listed');
+      }
+
+      step(
+        'Monster Forge catalog-exit fallback (still exists, just filtered out)',
+        'a selected actor that becomes harmless and unreferenced leaves the catalog, and selection falls back to the first remaining id'
+      );
+    }
+
+    // Test 1c (§2, catalog-exit fallback #2): the selected actor's own
+    // array slot can vanish outright, not merely drop out of the catalog
+    // filter -- the same shape a delete elsewhere in the project could
+    // produce. Emptying the whole roster also exercises the empty-catalog
+    // placeholder, since nothing remains to fall back to.
+    {
+      monsterStore.commit('smoke: remove every actor -- the selected one no longer resolves at all', (project) => {
+        project.sprites.actors = [];
+      });
+      await wait(150);
+
+      const optionsAfterWipe = [...catalogSelect().options];
+      if (optionsAfterWipe.length !== 1 || optionsAfterWipe[0].textContent !== 'No monsters yet') {
+        throw new Error(
+          'once no actor exists at all, the catalog select should show exactly the empty-catalog placeholder, saw ' +
+            JSON.stringify(optionsAfterWipe.map((o) => o.textContent))
+        );
+      }
+      const hints = [...document.querySelectorAll('#stage p.hint')].map((p) => p.textContent);
+      if (!hints.some((t) => t.includes('No actor currently fights'))) {
+        throw new Error('once no actor exists at all, Monster Forge should show its empty-catalog message, saw ' + JSON.stringify(hints));
+      }
+
+      // Restore a normal roster so the rest of this section has actors to work with.
+      monsterStore.commit('smoke: cleanup -- restore Slime and Snake', (project) => {
+        project.sprites.actors.push(
+          { id: 0, name: 'Slime', behavior: 'patroller', speed: 1, hp: 1, damage: 1, anims: {} },
+          { id: 1, name: 'Snake', behavior: 'patroller', speed: 1, hp: 1, damage: 1, anims: {} }
+        );
+      });
+      await wait(150);
+
+      step(
+        'Monster Forge empty-catalog fallback',
+        'a selected actor whose array slot vanishes entirely falls back to null, and the empty-catalog placeholder appears once nothing remains'
+      );
+    }
+
+    // Test 2 (§2, the actor.battle ?? {} invariant): an actor added in the
+    // same session with no battle record at all -- sprite.js's own
+    // Add-actor handler's exact pushed shape -- then given contact damage
+    // on a second commit, the same two steps an author would actually take,
+    // opened in the Monster Forge before any save/reload has run.
+    {
+      let freshId;
+      monsterStore.commit('smoke: add an actor with no battle record', (project) => {
+        const id = project.sprites.actors.length;
+        const anims = {};
+        for (const { id: slot } of ANIM_SLOTS) anims[slot] = null;
+        if (project.sprites.animations.length) anims.idle = 0;
+        project.sprites.actors.push({ id, name: 'Fresh', behavior: 'patroller', speed: 1, hp: 1, anims });
+        freshId = id;
+      });
+      monsterStore.commit('smoke: give the fresh actor contact damage', (project) => {
+        project.sprites.actors[freshId].damage = 2;
+      });
+      await wait(150);
+
+      const freshOption = selectByName('Fresh');
+      if (!freshOption) throw new Error('Monster Forge catalog does not list the freshly added, freshly hostile actor');
+      await wait(150);
+
+      // Every rendered default for a battle-record-less actor, not just
+      // Attack -- checked before the first edit below, which on its own
+      // would only prove Attack's own round-trip and would miss a wrong
+      // default anywhere else (battle.def ?? 99, a wrong MP/drop-chance
+      // default, wrong battle-art dimensions, a wrong Weak-to/Casts/Drops
+      // selection, ...).
+      const numberDefaultCases = [
+        ['Attack', '4'],
+        ['Defence', '2'],
+        ['Speed', '4'],
+        ['Accuracy', '180'],
+        ['Evasion', '4'],
+        ['Magic points', '0'],
+        ['Experience', '4'],
+        ['Gold', '2'],
+        ['Chance %', '10'],
+        ['Tiles across', '4'],
+        ['Tiles down', '4'],
+        ['Palette', '2']
+      ];
+      for (const [label, expected] of numberDefaultCases) {
+        const control = findFieldInput(label);
+        if (!control) throw new Error('Monster Forge has no ' + label + ' field for a battle-record-less actor');
+        if (control.value !== expected) {
+          throw new Error(
+            'a battle-record-less actor should show ' + label + '’s own default (' + expected + '), saw ' + control.value
+          );
+        }
+      }
+      const selectDefaultCases = [
+        ['Weak to', 'none'],
+        ['Resists', 'none'],
+        ['Casts', ''],
+        ['Drops', '']
+      ];
+      for (const [label, expected] of selectDefaultCases) {
+        const control = findFieldSelect(label);
+        if (!control) throw new Error('Monster Forge has no ' + label + ' select for a battle-record-less actor');
+        if (control.value !== expected) {
+          throw new Error(
+            'a battle-record-less actor should default ' + label + ' to "' + expected + '", saw "' + control.value + '"'
+          );
+        }
+      }
+      const artHint = [...document.querySelectorAll('#stage span.hint')].find((s) => s.textContent.includes('No block chosen'));
+      if (!artHint) {
+        throw new Error('a battle-record-less actor should show the no-art state ("No block chosen...")');
+      }
+
+      const attackInput = findFieldInput('Attack');
+      if (!attackInput) throw new Error('Monster Forge has no Attack field for the selected actor');
+      attackInput.value = '55';
+      attackInput.dispatchEvent(new Event('change', { bubbles: true }));
+      await wait(150);
+
+      const editedBattle = monsterStore.project.sprites.actors[freshId].battle;
+      if (JSON.stringify(editedBattle) !== JSON.stringify({ atk: 55 })) {
+        throw new Error('the first edit should produce a battle object with only the edited key, saw ' + JSON.stringify(editedBattle));
+      }
+      const scratch = structuredClone(monsterStore.project);
+      scratch.sprites.actors[freshId].battle = undefined;
+      const freshDefaults = normalizeProject(scratch).sprites.actors[freshId].battle;
+      const normalizedEdited = normalizeProject(structuredClone(monsterStore.project)).sprites.actors[freshId].battle;
+      const expected = { ...freshDefaults, atk: 55 };
+      if (JSON.stringify(normalizedEdited) !== JSON.stringify(expected)) {
+        throw new Error(
+          'the first edit’s battle object should normalize identically to normalizeActor’s own defaults, saw ' +
+            JSON.stringify(normalizedEdited) +
+            ' expected ' +
+            JSON.stringify(expected)
+        );
+      }
+      step(
+        'Monster Forge actor.battle ?? {} invariant',
+        'a battle-record-less actor shows correct defaults, and its first edit normalizes identically to normalizeActor’s own from-scratch defaults'
+      );
+    }
+
+    // Test 3 (§2, "Make harmless"): a still-referenced actor stays listed,
+    // marked stranded, after its contact damage is cleared to zero -- and
+    // clears *only* damage, nothing else. Checked against a full-project
+    // snapshot rather than just the one field, so a handler that also
+    // resets battle, HP or anims (all satisfying "damage is zero" alone)
+    // cannot pass.
+    {
+      let strandedId;
+      monsterStore.commit('smoke: add an actor a map’s encounter table will still name', (project) => {
+        const id = project.sprites.actors.length;
+        project.sprites.actors.push({
+          id,
+          name: 'ToBeStranded',
+          behavior: 'patroller',
+          speed: 1,
+          hp: 1,
+          damage: 3,
+          anims: {},
+          battle: {
+            atk: 77,
+            def: 66,
+            speed: 55,
+            acc: 200,
+            eva: 33,
+            mp: 12,
+            xp: 999,
+            gold: 88,
+            weak: 'fire',
+            strong: 'ice',
+            spellId: null,
+            drop: null,
+            dropPct: 40,
+            battleTile: 5,
+            battleW: 2,
+            battleH: 2,
+            battlePalette: 1
+          }
+        });
+        strandedId = id;
+        project.maps[0].encounters = {
+          rate: project.maps[0].encounters?.rate ?? 8,
+          actorIds: [...(project.maps[0].encounters?.actorIds ?? []), id]
+        };
+      });
+      await wait(150);
+
+      const strandedOption = selectByName('ToBeStranded');
+      if (!strandedOption) throw new Error('Monster Forge catalog does not list the newly hostile, encounter-referenced actor');
+      await wait(150);
+
+      const harmlessButton = [...document.querySelectorAll('#stage button')].find((b) => b.textContent === 'Make harmless');
+      if (!harmlessButton) throw new Error('Monster Forge has no Make harmless button');
+      if (harmlessButton.disabled) throw new Error('Make harmless should be enabled for a currently hostile actor');
+
+      const beforeClick = structuredClone(monsterStore.project);
+      harmlessButton.click();
+      await wait(150);
+
+      const expectedAfterClick = structuredClone(beforeClick);
+      expectedAfterClick.sprites.actors[strandedId].damage = 0;
+      if (JSON.stringify(monsterStore.project) !== JSON.stringify(expectedAfterClick)) {
+        throw new Error(
+          'Make harmless should change only the selected actor’s damage to zero -- the resulting project diverged ' +
+            'from an expected clone with just that one field changed'
+        );
+      }
+
+      const strandedOptionAfter = [...catalogSelect().options].find((o) => o.textContent.startsWith('ToBeStranded'));
+      if (!strandedOptionAfter) {
+        throw new Error('the actor disappeared from the catalog entirely after Make harmless, even though a map still names it');
+      }
+      if (strandedOptionAfter.textContent !== 'ToBeStranded (stranded)') {
+        throw new Error('a still-referenced, now-harmless actor should be marked stranded, saw "' + strandedOptionAfter.textContent + '"');
+      }
+      step('Monster Forge "Make harmless"', 'clears damage to zero and nothing else; a still-referenced actor stays listed, marked stranded');
+    }
+  }
+
   // Back to the pristine sample-rpg project before anything else in this
-  // script depends on it -- the block above mutated spells, party, an
-  // actor's battle.spellId and undo history, and just swapped the open
-  // project to the action sample entirely for the cross-type test.
+  // script depends on it. Two sections above mutated it: the Magic Forge
+  // tests (spells, party, an actor's battle.spellId and undo history, and a
+  // swap over to the action sample entirely for the cross-type test) and,
+  // after that, the Monster Forge tests just above (undo history, an
+  // external Potion-hostile commit, Snake's battle.atk, an added-and-since-
+  // removed Ephemeral actor, a full wipe and restore of sprites.actors, and
+  // the Fresh/ToBeStranded actors and map encounter table).
   const sampleRpgOnceMore = await window.forge.project.open(${JSON.stringify(sampleRpgDir)});
   if (!sampleRpgOnceMore.ok) throw new Error('re-open sample-rpg after the Magic Forge tests: ' + sampleRpgOnceMore.error);
   window.__app.store.open(sampleRpgOnceMore.value.dir, sampleRpgOnceMore.value.project);

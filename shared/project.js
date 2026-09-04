@@ -459,8 +459,8 @@ export const itemMissing = (items, id) =>
  * item, plus how the id currently named is represented if it names none of
  * them. Three call sites used to compute this separately — the Map Forge's
  * Carrying and Give/Take selects (renderer/forges/map/events.js) and the
- * Sprite Forge's Drops select (renderer/forges/sprite/battle.js) — the exact
- * shape CLAUDE.md already warns about for `effectiveTrigger`.
+ * Monster Forge's Drops select (renderer/forges/monster/monster.js) — the
+ * exact shape CLAUDE.md already warns about for `effectiveTrigger`.
  *
  * Returns `{ healthy, missing }`:
  *
@@ -1020,6 +1020,43 @@ export const mapEncounterFormation = (map, actorCount) => {
   const ids = (map?.encounters?.actorIds ?? []).filter((id) => id < actorCount).slice(0, RPG_LIMITS.encounterActors);
   return [...ids, ...new Array(RPG_LIMITS.encounterActors - ids.length).fill(NO_ACTOR)];
 };
+
+/**
+ * The Monster Forge's own catalog: every actor id that either reads as a
+ * monster right now (`isMonsterActor`), or is named *anywhere authored* as
+ * one -- a map's encounter table or a `battle` command's formation -- even
+ * if that reference is currently dormant (inside a disabled branch), over
+ * the compiled cap (a battle command's 5th+ formation slot,
+ * `battleFormationSlice` truncates away), or in a map whose wandering rate
+ * is zero. Deliberately reads `allCommands` (what is mentioned) rather than
+ * `liveCommands` (what would compile) and `command.monsters` /
+ * `map.encounters.actorIds` raw rather than through `battleFormationSlice` /
+ * `mapEncounterFormation` -- the concern here is never hiding an actor an
+ * author is looking at, not deciding what the ROM will run
+ * (`docs/design-monster.md` §2). Returns actor ids ascending, each
+ * guaranteed to index a real entry in `project.sprites.actors`.
+ */
+export function monsterActorIds(project) {
+  const actors = project.sprites?.actors ?? [];
+  const inRange = (id) => Number.isInteger(id) && id >= 0 && id < actors.length;
+  const ids = new Set();
+  actors.forEach((actor, id) => {
+    if (isMonsterActor(actor)) ids.add(id);
+  });
+  for (const map of project.maps ?? []) {
+    for (const id of map.encounters?.actorIds ?? []) if (inRange(id)) ids.add(id);
+  }
+  for (const event of projectEvents(project)) {
+    for (const page of event.pages ?? []) {
+      for (const command of allCommands(page.commands)) {
+        if (command.op === 'battle') {
+          for (const id of command.monsters ?? []) if (inRange(id)) ids.add(id);
+        }
+      }
+    }
+  }
+  return [...ids].sort((a, b) => a - b);
+}
 
 // ---------------------------------------------------------------------------
 // Defaults
@@ -4494,7 +4531,7 @@ export function validateProject(project) {
       if (last >= FONT_BASE && !splitFont) {
         add(
           'error',
-          'Sprite Forge',
+          'Monster Forge',
           `${actor.name}'s battle artwork runs into the message font's tiles. Move it below background tile ` +
             `$${FONT_BASE.toString(16).toUpperCase()} or make it smaller.`
         );
@@ -4524,7 +4561,7 @@ export function validateProject(project) {
     // it gets the stale-reference severity: the same one staleBattleMonsters
     // below and the encounter table just above already use.
     //
-    // `null` is not this. It is "Nothing" chosen on purpose in the Sprite
+    // `null` is not this. It is "Nothing" chosen on purpose in the Monster
     // Forge, and it is also the mark renumberItemDeletion leaves — warning
     // about it would turn every deletion into a build complaint.
     //
@@ -4537,7 +4574,7 @@ export function validateProject(project) {
       if (itemMissing(project.items, drop)) {
         add(
           'warning',
-          'Sprite Forge',
+          'Monster Forge',
           `${actor.name} is set to drop an item that no longer exists, so it will leave nothing behind.`
         );
       }

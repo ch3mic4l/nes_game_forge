@@ -16,7 +16,7 @@ import {
   renumberMetaspriteDeletion,
   overCapDeleteWarning
 } from '../../../shared/project.js';
-import { battleSection, partyPanel } from './battle.js';
+import { partyPanel } from './battle.js';
 import { drawSheet, sheetIndexFromEvent } from '../../widgets/sheet.js';
 
 // The canvas shows a 64x64 window with the actor's origin inset, so tiles placed
@@ -870,9 +870,16 @@ export function mount(container, app) {
               'a slot; flip the metasprite to face the other way.'
             ),
             // Only an RPG has battles to carry stats into, so only an RPG is
-            // offered the fields for them.
+            // told where to find them. Attack, drops, battle artwork and the
+            // rest of an actor's battle stats are authored in the Monster
+            // Forge now -- see docs/design-monster.md §2 for the boundary.
             store.project.project.gameType === 'rpg'
-              ? battleSection(actor, state.actor, () => render())
+              ? el(
+                  'p.hint',
+                  { style: { marginTop: '16px', borderTop: '1px solid var(--line)', paddingTop: '12px' } },
+                  'Attack, drops, battle artwork and the rest of this actor’s battle stats are authored in the ' +
+                    'Monster Forge now.'
+                )
               : null
           )
         : el('p.hint', null, 'Actors are what the Map Forge places on a screen.')
