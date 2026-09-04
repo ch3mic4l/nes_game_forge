@@ -1349,6 +1349,73 @@ const scenario = (dir, sampleDir, sampleRpgDir) => `
   store.undo();
   await wait(200);
 
+  // Cancel, Escape and a backdrop click must all leave an authored event
+  // alone -- editEvent used to fold every dismissal to a real, committed
+  // null (see renderer/forges/map/events.js's CLEAR_EVENT sentinel and
+  // resolveEventEditorResult), which read as Clear event no matter how the
+  // editor was closed. Only an actual Clear event click may do that.
+  const beforeCancelEvent = JSON.parse(JSON.stringify(store.project.maps[0].screens[3].entities[0].props.event));
+  if (!beforeCancelEvent?.pages?.length) throw new Error('the chest event must be authored before the Cancel checks, or the step proves nothing');
+  const revisionBeforeCancel = store.revision;
+
+  rowButton(0, 'Edit event…').click();
+  await until('the event editor', () => document.querySelector('#modalHost .btn-accent'));
+  const editorCancel = [...document.querySelectorAll('#modalHost button')].find((node) => node.textContent.trim() === 'Cancel');
+  if (!editorCancel) throw new Error('the event editor has no Cancel button');
+  editorCancel.click();
+  await until('the event editor to close after Cancel', () => document.querySelector('#modalHost').hidden);
+  await wait(120);
+  if (JSON.stringify(store.project.maps[0].screens[3].entities[0].props.event) !== JSON.stringify(beforeCancelEvent)) {
+    throw new Error("Cancel on the event editor must not change the placement's event");
+  }
+  if (store.revision !== revisionBeforeCancel) {
+    throw new Error('Cancel on the event editor must not bump store.revision -- it committed something');
+  }
+
+  rowButton(0, 'Edit event…').click();
+  await until('the event editor', () => document.querySelector('#modalHost .btn-accent'));
+  document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
+  await until('the event editor to close after Escape', () => document.querySelector('#modalHost').hidden);
+  await wait(120);
+  if (JSON.stringify(store.project.maps[0].screens[3].entities[0].props.event) !== JSON.stringify(beforeCancelEvent)) {
+    throw new Error("Escape on the event editor must not change the placement's event");
+  }
+  if (store.revision !== revisionBeforeCancel) {
+    throw new Error('Escape on the event editor must not bump store.revision -- it committed something');
+  }
+
+  rowButton(0, 'Edit event…').click();
+  await until('the event editor', () => document.querySelector('#modalHost .btn-accent'));
+  document.querySelector('#modalHost').click();
+  await until('the event editor to close after a backdrop click', () => document.querySelector('#modalHost').hidden);
+  await wait(120);
+  if (JSON.stringify(store.project.maps[0].screens[3].entities[0].props.event) !== JSON.stringify(beforeCancelEvent)) {
+    throw new Error("a backdrop click on the event editor must not change the placement's event");
+  }
+  if (store.revision !== revisionBeforeCancel) {
+    throw new Error('a backdrop click on the event editor must not bump store.revision -- it committed something');
+  }
+
+  rowButton(0, 'Edit event…').click();
+  await until('the event editor', () => document.querySelector('#modalHost .btn-accent'));
+  const editorClear = [...document.querySelectorAll('#modalHost button')].find((node) => node.textContent.trim() === 'Clear event');
+  if (!editorClear) throw new Error('the event editor has no Clear event button');
+  editorClear.click();
+  await until('the event editor to close after Clear event', () => document.querySelector('#modalHost').hidden);
+  await wait(120);
+  if (store.project.maps[0].screens[3].entities[0].props.event !== null) {
+    throw new Error('Clear event must commit a null event, saw: ' + JSON.stringify(store.project.maps[0].screens[3].entities[0].props.event));
+  }
+  if (store.revision !== revisionBeforeCancel + 1) {
+    throw new Error('Clear event must bump store.revision by exactly one, saw a change of ' + (store.revision - revisionBeforeCancel));
+  }
+  if (!store.undo()) throw new Error('undo returned false for the Clear event commit');
+  await wait(200);
+  if (JSON.stringify(store.project.maps[0].screens[3].entities[0].props.event) !== JSON.stringify(beforeCancelEvent)) {
+    throw new Error("undoing Clear event should have restored the chest's authored event");
+  }
+  step('event editor Cancel/Escape/backdrop leave the event alone; only Clear event clears it', 'four sub-checks, each against props.event and store.revision');
+
   // And naming one, which is the other half of it reading as English.
   document.querySelector('#stage button[title^="Name the 16"]').click();
   await until('the variables dialog', () => document.querySelector('#modalHost input[type=text]'));
@@ -4620,30 +4687,18 @@ const scenario = (dir, sampleDir, sampleRpgDir) => `
         throw new Error('the selected option for a stale numeric member should read "Missing member", saw: ' + JSON.stringify(selectedOptionText));
       }
 
-      // Not Cancel: showModal's own generic close handler (renderer/ui.js)
-      // resolves an action with no onClick to action.value ?? null, which
-      // turns editEvent's own Cancel action (value: undefined) into a real,
-      // committed null the instant it reaches map.js's own
-      // result !== undefined check -- Cancel is not actually a no-op today,
-      // it wipes the event. That is a real, pre-existing bug this test
-      // found, unrelated to the join guard and out of this brief's scope to
-      // fix (see the round 3 report). Save with nothing changed is
-      // unaffected -- its own onClick returns the draft's real pages,
-      // member 5 untouched -- so it is used here instead, and undone twice
-      // afterward (once for this unchanged-Save commit, once for the seed
-      // commit above it) to leave the undo stack exactly where the
-      // pre-existing "one undo entry" test below expects
-      // it: the party Remove commit as the only thing left to undo.
-      document.querySelector('#modalHost .btn-accent').click();
+      const staleMemberCancel = [...document.querySelectorAll('#modalHost button')].find(
+        (b) => b.textContent.trim() === 'Cancel'
+      );
+      if (!staleMemberCancel) throw new Error('the event editor has no Cancel button');
+      staleMemberCancel.click();
       await wait(200);
 
-      if (!rpgStore.undo()) throw new Error('undo returned false for the unchanged Save commit');
-      await wait(150);
       if (!rpgStore.undo()) throw new Error('undo returned false for the stale-numeric-member seed commit');
       await wait(150);
       const lowerMemberAfterOwnUndo = rpgStore.project.maps[0].screens[0].entities[lowerEntityIndex].props.event.pages[0].commands[0].member;
       if (lowerMemberAfterOwnUndo !== 0) {
-        throw new Error('undoing the seed and the unchanged Save should have restored member 0, saw: ' + JSON.stringify(lowerMemberAfterOwnUndo));
+        throw new Error('undoing the stale-numeric-member seed should have restored member 0, saw: ' + JSON.stringify(lowerMemberAfterOwnUndo));
       }
       step('Map Forge renders a stale numeric Join member as missing too', 'summary line and the selected option both read as missing');
     }

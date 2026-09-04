@@ -454,11 +454,33 @@ export function describeCondition(cond, { actors = [], items = [], switches = []
 }
 
 /**
+ * showModal folds Escape, the backdrop and a plain Cancel action to the same
+ * `null` it would use for a chosen `null` — so Clear event's own `null` is
+ * indistinguishable from a dismissal there. `editEvent`'s Clear/Save actions
+ * resolve with a private sentinel instead of a bare `null` wherever they mean
+ * "clear the event", and `resolveEventEditorResult` is the one place that
+ * turns showModal's raw resolution into editEvent's real three-way answer:
+ * the caller's own `clearSentinel` becomes `null` (clear it), a `null`
+ * dismissal becomes `undefined` (leave it alone), and anything else — falsy
+ * values included — passes through unchanged as the saved `{ pages }`.
+ * Exported (unlike the sentinel itself, which stays production-only) so
+ * `events.test.js` can pin the mapping against a token of its own, without a
+ * DOM.
+ */
+export function resolveEventEditorResult(raw, clearSentinel) {
+  if (raw === clearSentinel) return null;
+  if (raw === null) return undefined;
+  return raw;
+}
+
+const CLEAR_EVENT = Symbol('clear-event');
+
+/**
  * Edit an event. Resolves to the new event (or null to clear it), or undefined
  * if the editor was dismissed — which is why the caller must check for
  * `undefined` rather than falsiness before writing anything back.
  */
-export function editEvent(event, context) {
+export async function editEvent(event, context) {
   // A working copy: nothing reaches the project until Save, so Escape really
   // does abandon the edit rather than leaving half of it behind.
   const draft = structuredClone(event ?? { pages: [] });
@@ -1674,13 +1696,13 @@ export function editEvent(event, context) {
 
   rerender();
 
-  return showModal({
+  const raw = await showModal({
     title: 'Event',
     body,
     width: 560,
     actions: [
-      { label: 'Cancel', value: undefined },
-      { label: 'Clear event', value: null },
+      { label: 'Cancel', value: null },
+      { label: 'Clear event', value: CLEAR_EVENT },
       {
         label: 'Save',
         primary: true,
@@ -1707,11 +1729,12 @@ export function editEvent(event, context) {
           const pages = draft.pages
             .map((page) => ({ ...page, commands: stripEmptyBattles(page.commands) }))
             .filter((page) => page.commands.length);
-          return pages.length ? { pages } : null;
+          return pages.length ? { pages } : CLEAR_EVENT;
         }
       }
     ]
   });
+  return resolveEventEditorResult(raw, CLEAR_EVENT);
 }
 
 /**

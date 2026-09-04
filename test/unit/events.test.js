@@ -7,7 +7,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { stripEmptyBattles, defaultCommand, describeCommand } from '../../renderer/forges/map/events.js';
+import { stripEmptyBattles, defaultCommand, describeCommand, resolveEventEditorResult } from '../../renderer/forges/map/events.js';
 import { MOVE_TARGETS, MOVE_DIRECTIONS } from '../../shared/project.js';
 
 const EVENTS_JS_PATH = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../renderer/forges/map/events.js');
@@ -204,4 +204,41 @@ test('a Play a sound effect command shows the real effect name, or Missing effec
   assert.equal(describeCommand({ op: 'sfx', sfx: null }, context), 'Play a sound effect (missing effect)');
   assert.equal(describeCommand({ op: 'sfx', sfx: 99 }, context), 'Play a sound effect (missing effect)', 'a stale, out-of-range reference must read as missing too');
   assert.equal(describeCommand({ op: 'sfx', sfx: 0, off: true }, context), '(off) Play a sound effect: Boop');
+});
+
+// ------------------------------------------------------- editEvent's Cancel
+
+test('resolveEventEditorResult tells Clear, Cancel and Save apart -- Cancel/Escape/backdrop must not read as Clear', () => {
+  // A token of this test's own -- editEvent's real CLEAR_EVENT is private to
+  // events.js now, so the mapper is exercised the way editEvent itself calls
+  // it: with the sentinel passed in, not baked into resolveEventEditorResult.
+  const clearToken = Symbol('test-clear-token');
+  assert.equal(
+    resolveEventEditorResult(clearToken, clearToken),
+    null,
+    'Clear event (and an emptied Save) resolve with the sentinel, which must become a real null'
+  );
+  assert.equal(
+    resolveEventEditorResult(null, clearToken),
+    undefined,
+    'showModal folds Cancel, Escape and the backdrop to null, which must NOT read as Clear event -- it must leave the placement alone'
+  );
+  assert.equal(
+    resolveEventEditorResult(undefined, clearToken),
+    undefined,
+    'an explicit undefined (were showModal ever called with none) must also read as dismissed'
+  );
+  const saved = { pages: [{ cond: { type: 'none', arg: 0 }, commands: [] }] };
+  assert.equal(
+    resolveEventEditorResult(saved, clearToken),
+    saved,
+    'a saved { pages } must pass through unchanged, same reference'
+  );
+  // Passthrough must not be falsy-coerced -- an implementation that answers
+  // `raw || undefined` for "anything else" happens to work for editEvent's
+  // current value domain but silently turns a real false/0 result into a
+  // dismissal, which is a wider promise than the editor happens to need
+  // today and a trap for a future caller of this shared mapper.
+  assert.equal(resolveEventEditorResult(false, clearToken), false, 'a literal false must pass through unchanged, not become undefined');
+  assert.equal(resolveEventEditorResult(0, clearToken), 0, 'a literal 0 must pass through unchanged, not become undefined');
 });

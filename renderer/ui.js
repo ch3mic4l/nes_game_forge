@@ -69,8 +69,13 @@ export function toast(message, kind = 'info', ms = 3200) {
 }
 
 /**
- * Show a modal. `body` may be a node or a function receiving a `close` callback.
- * Returns a promise resolving to whatever an action's handler returns, or null.
+ * Show a modal. `body` may be a node or a function receiving a `close`
+ * callback. Returns a promise resolving to an action's `onClick` result, an
+ * action's plain `value`, or whatever a `body(close)` callback passes to
+ * `close` — and to `null` for Escape, a backdrop click, an action with
+ * `value: undefined`, or a bare `close()`. A caller that needs "dismissed"
+ * distinct from a chosen `null` must resolve with its own sentinel instead
+ * (see `editEvent` in `renderer/forges/map/events.js`).
  */
 export function showModal({ title, body, actions = [], width }) {
   const host = document.querySelector('#modalHost');
