@@ -537,6 +537,88 @@ test('actors carry battle stats whether or not the project uses them', () => {
   assert.equal(actor.battle.battleTile, null, 'no battle art means draw the metasprite instead');
 });
 
+// -------------------------------------------------------- battle.level (Monster Forge phase 2)
+
+test('battle.level normalizes null-or-clamp like spellId/battleTile, and is a fixed point under re-normalization', () => {
+  const cases = [
+    { input: 7, expected: 7 },
+    { input: undefined, expected: null },
+    { input: 0, expected: 1 },
+    { input: 99, expected: RPG_LIMITS.maxLevel },
+    // Number('boss') is NaN, so clamp() falls back to its own fallback
+    // argument (1, per normalizeActor's own battle.level clamp call) --
+    // the same non-finite-falls-back-to-fallback behaviour clamp() already
+    // gives every other numeric field on garbage input.
+    { input: 'boss', expected: 1 }
+  ];
+  for (const { input, expected } of cases) {
+    const project = normalizeProject({
+      project: { gameType: 'rpg' },
+      sprites: { actors: [{ name: 'Slime', damage: 1, battle: { level: input } }] }
+    });
+    assert.equal(
+      project.sprites.actors[0].battle.level,
+      expected,
+      `battle.level: ${JSON.stringify(input)} should normalize to ${JSON.stringify(expected)}`
+    );
+    // Fixed point: re-normalizing an already-normalized project must not
+    // move the value again.
+    const again = normalizeProject(normalizeProject(project));
+    assert.equal(
+      again.sprites.actors[0].battle.level,
+      expected,
+      `battle.level: ${JSON.stringify(input)} must survive normalizeProject(normalizeProject(p)) unchanged`
+    );
+  }
+});
+
+test('battle.level survives a disk round trip, both set and null', async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'forge-level-'));
+  const project = normalizeProject({
+    project: { gameType: 'rpg' },
+    sprites: {
+      actors: [
+        { name: 'Slime', damage: 1, battle: { level: 3 } },
+        { name: 'Rat', damage: 1, battle: { level: null } }
+      ]
+    }
+  });
+  await saveProject(dir, project);
+  const reopened = await loadProject(dir);
+  assert.equal(reopened.sprites.actors[0].battle.level, 3, 'a set level must survive save/load');
+  assert.equal(reopened.sprites.actors[1].battle.level, null, 'a null level must survive save/load as null, not 0 or 1');
+});
+
+test('battle.level clamps against the fixed RPG_LIMITS.maxLevel, not the project’s own adjustable rpg.maxLevel', () => {
+  // §3's actual decision: lowering the project's own ceiling (a capacity
+  // lever, e.g. one of battleShortfallAdvice's own reductions) must not
+  // silently reclamp an already-authored monster level.
+  const project = normalizeProject({
+    project: { gameType: 'rpg' },
+    cartridge: { mapper: 1 },
+    rpg: { maxLevel: 5 },
+    sprites: { actors: [{ name: 'Dragon', damage: 1, battle: { level: 12 } }] }
+  });
+  assert.equal(project.rpg.maxLevel, 5, 'the project ceiling really was lowered');
+  assert.equal(
+    project.sprites.actors[0].battle.level,
+    12,
+    'an off-the-charts boss above the party’s own ceiling is an ordinary thing to author, not an error'
+  );
+
+  // Sabotage, run and confirmed to fail this test and only this test (159/160
+  // pass, this one fails): threading project.rpg.maxLevel through to
+  // normalizeActor and clamping battle.level against it instead of the fixed
+  // RPG_LIMITS.maxLevel reclamps the monster to 5 the moment an unrelated
+  // capacity fix lowers the party's own ceiling. Exact failure output:
+  //   not ok - battle.level clamps against the fixed RPG_LIMITS.maxLevel,
+  //     not the project's own adjustable rpg.maxLevel
+  //   error: an off-the-charts boss above the party's own ceiling is an
+  //     ordinary thing to author, not an error
+  //     5 !== 12
+  //   expected: 12, actual: 5, operator: 'strictEqual'
+});
+
 test('the npc behaviour is a real behaviour with a stable index', () => {
   assert.equal(BEHAVIORS[BEHAVIORS.length - 1].id, 'npc', 'appended, because the order is the wire format');
   const project = normalizeProject({ sprites: { actors: [{ name: 'Elder', behavior: 'npc' }] } });

@@ -3416,7 +3416,12 @@ function normalizeActor(raw, id, itemCtx = EMPTY_ITEM_CTX) {
           : clamp(battle.battleTile, 0, LIMITS.tilesPerTable - 1, 0),
       battleW: clamp(battle.battleW, 1, RPG_LIMITS.battleArtTiles, 4),
       battleH: clamp(battle.battleH, 1, RPG_LIMITS.battleArtTiles, 4),
-      battlePalette: clamp(battle.battlePalette, 0, LIMITS.palettes - 1, 2)
+      battlePalette: clamp(battle.battlePalette, 0, LIMITS.palettes - 1, 2),
+      // Display-only, no compiled reader; clamped to the fixed
+      // RPG_LIMITS.maxLevel, not project.rpg.maxLevel -- see docs/design-monster.md §3.
+      level: battle.level === null || battle.level === undefined
+        ? null
+        : clamp(battle.level, 1, RPG_LIMITS.maxLevel, 1)
     }
   };
 }

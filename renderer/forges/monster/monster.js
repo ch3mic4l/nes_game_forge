@@ -27,6 +27,27 @@ const number = (value, min, max, onChange, title = null) =>
     onchange: (event) => onChange(Math.max(min, Math.min(max, Number(event.target.value))))
   });
 
+// Same as number(...) above, but an empty input stores/renders null rather
+// than 0 -- for a field like battle.level that means "not set," not "zero."
+// An empty string or anything Number() can't parse into a finite value also
+// stores null, never NaN: Chromium already sanitizes input[type=number] to
+// '' for invalid text before onchange ever sees it, so this is defence in
+// depth, not the normal path. Unlike normalizeActor's own on-disk garbage
+// fallback (1, shared/project.js), unparseable input here means the author
+// typed nothing usable, not "level 1."
+const numberOrNull = (value, min, max, onChange, title = null) =>
+  el('input', {
+    type: 'number',
+    min,
+    max,
+    value: value === null || value === undefined ? '' : value,
+    title,
+    onchange: (event) => {
+      const parsed = Number(event.target.value);
+      onChange(event.target.value === '' || !Number.isFinite(parsed) ? null : Math.max(min, Math.min(max, parsed)));
+    }
+  });
+
 const select = (options, value, onChange) =>
   el(
     'select',
@@ -74,6 +95,18 @@ export function battleSection(actor, index, rerender) {
       hostile
         ? 'Contact damage above zero is what marks this actor a monster. These numbers decide how the fight goes.'
         : 'Contact damage is zero, so this actor never starts a fight. Items — including what they heal or damage for — are authored in the Items Forge now; set this actor’s Behaviour to Pickup and choose it there as an item’s “Collected from”, or hand one out with a scripted Give item command.'
+    ),
+    row(
+      field(
+        'Level',
+        numberOrNull(
+          battle.level ?? null,
+          1,
+          RPG_LIMITS.maxLevel,
+          (value) => set('level', value),
+          'For your own reference only -- the battle system never reads this'
+        )
+      )
     ),
     row(
       field('Attack', number(battle.atk ?? 4, 0, 255, (value) => set('atk', value))),

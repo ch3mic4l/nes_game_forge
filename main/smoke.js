@@ -4679,6 +4679,75 @@ const scenario = (dir, sampleDir, sampleRpgDir) => `
       );
     }
 
+    // Test 1a-level (phase 2, docs/design-monster.md §3/§6): battle.level is
+    // display-only authoring metadata, so its own regression to guard is not
+    // the compiled ROM (that is monsterlevel.test.js's job) but that typing
+    // a level really reaches the store -- state.selectedActorId is per-mount
+    // (monster.js's own mount()), so switching Forges away and back remounts
+    // it and resets selection to the catalog's first id; re-selecting Snake
+    // afterward and finding the level still there is what proves the value
+    // was committed to the project, not held only in local component state
+    // that a remount would have dropped -- and that clearing the field back
+    // to empty stores null, not 0.
+    {
+      const snakeIdForLevel = monsterStore.project.sprites.actors.findIndex((a) => a.name === 'Snake');
+      if (!selectByName('Snake')) throw new Error('Monster Forge catalog does not list Snake for the Level field test');
+      await wait(150);
+
+      const levelFieldBefore = findFieldInput('Level');
+      if (!levelFieldBefore) throw new Error('Monster Forge has no Level field for Snake');
+      if (levelFieldBefore.value !== '') {
+        throw new Error('Snake’s Level should render empty on a pristine sample-rpg, saw "' + levelFieldBefore.value + '"');
+      }
+
+      levelFieldBefore.value = '12';
+      levelFieldBefore.dispatchEvent(new Event('change', { bubbles: true }));
+      await wait(150);
+      if (monsterStore.project.sprites.actors[snakeIdForLevel].battle.level !== 12) {
+        throw new Error('typing 12 into Snake’s Level field did not reach the store');
+      }
+
+      // Switch away to another Forge and back, remounting the Monster Forge.
+      const spriteRailButtonForLevel = [...document.querySelectorAll('.rail-item')].find((b) => b.title === 'Sprite Forge');
+      if (!spriteRailButtonForLevel) throw new Error('no Sprite Forge rail button found for the Level persistence test');
+      spriteRailButtonForLevel.click();
+      await wait(200);
+      const monsterRailButtonForLevel = [...document.querySelectorAll('.rail-item')].find((b) => b.title === 'Monster Forge');
+      if (!monsterRailButtonForLevel) throw new Error('no Monster Forge rail button found to switch back for the Level persistence test');
+      monsterRailButtonForLevel.click();
+      await wait(200);
+
+      if (!selectByName('Snake')) throw new Error('Monster Forge catalog does not list Snake after the Forge switch back');
+      await wait(150);
+      const levelFieldAfterSwitch = findFieldInput('Level');
+      if (levelFieldAfterSwitch?.value !== '12') {
+        throw new Error(
+          'Snake’s Level should still read 12 after switching Forges away and back (a remount), saw "' +
+            levelFieldAfterSwitch?.value +
+            '" -- the value must live in the store, not in Monster Forge’s own per-mount state'
+        );
+      }
+
+      // Clear it back to empty: an empty input must store null, not 0.
+      levelFieldAfterSwitch.value = '';
+      levelFieldAfterSwitch.dispatchEvent(new Event('change', { bubbles: true }));
+      await wait(150);
+      if (monsterStore.project.sprites.actors[snakeIdForLevel].battle.level !== null) {
+        throw new Error(
+          'clearing Snake’s Level field should store null, saw ' + JSON.stringify(monsterStore.project.sprites.actors[snakeIdForLevel].battle.level)
+        );
+      }
+      const levelFieldAfterClear = findFieldInput('Level');
+      if (levelFieldAfterClear?.value !== '') {
+        throw new Error('a null Level should render as an empty input, saw "' + levelFieldAfterClear?.value + '"');
+      }
+
+      step(
+        'Monster Forge Level field commits to the store, survives a Forge switch, and clears back to null',
+        'typing 12 reaches battle.level; it is still there after remounting via a rail switch away and back; clearing the field stores null, not 0, and renders empty'
+      );
+    }
+
     // Test 1b (§2, catalog-exit fallback #1): a selected actor that becomes
     // harmless *and* has no authored reference anywhere leaves the catalog
     // outright -- unlike Test 3 below, whose actor stays referenced and
