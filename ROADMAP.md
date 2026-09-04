@@ -1448,13 +1448,14 @@ this item's own new table bytes would land and grow.
    Generalizing means assigning and preserving individual bits and extending the cure/tick/message
    flow to more than one condition at once — the RAM arrays themselves only need to grow past eight
    boolean statuses, or once a status needs its own payload beyond a single bit.
-5. **The element list is settled scope, not an open question.** The user's ask (31 Aug 2026) is
+5. ~~**The element list is settled scope, not an open question.** The user's ask (31 Aug 2026) is
    explicit: water and holy are distinct damage types, not relabelings of the shipped earth and
-   light — both pairs exist side by side. `water` and `holy` are **appended** as two new entries to
-   `ELEMENTS`, keeping every existing one (`none`, `fire`, `ice`, `wind`, `earth`, `light`, `dark`
-   all stay), growing the list to `none`, `fire`, `ice`, `wind`, `earth`, `light`, `dark`, `water`,
-   `holy`. Appending is also the mechanically safe direction, worth recording alongside the decision:
-   element ids live in project JSON and the array's index is the wire format compiled into
+   light — both pairs exist side by side.~~ — **done** (`65fcad9`): `water` and `holy` are
+   **appended** as two new entries to `ELEMENTS`, keeping every existing one (`none`, `fire`, `ice`,
+   `wind`, `earth`, `light`, `dark` all stay), growing the list to `none`, `fire`, `ice`, `wind`,
+   `earth`, `light`, `dark`, `water`, `holy` — verified directly against `shared/project.js`'s
+   `ELEMENTS` array. Appending is also the mechanically safe direction, worth recording alongside the
+   decision: element ids live in project JSON and the array's index is the wire format compiled into
    `mon_weak`/`mon_strong`/`spell_element` (`elementIndex`, `battletables.js`), so appending at the
    end only ever adds new index values and leaves every existing one untouched — additive and
    zero-break for every project already using `earth`/`light`. Renaming or replacing an existing
@@ -1469,7 +1470,9 @@ Set monsters' **animations**, **tile maps for RPG battles**, **sprites for the o
 **MP**, **magic resistances and weaknesses**, **how much damage they do**, **how much MP they have**,
 **how much XP, gold and items dropped when defeated**, and **what level the monster is at**. This
 Forge is an even more lopsided UI-reorganization item than item 13: almost every stat the user lists
-already exists on the actor's own `battle` record, authored today in the same Sprite Forge pages. A
+already exists on the actor's own `battle` record. (This section's own "Already exists" account below
+predates phase 1's own Forge extraction, described further down: it names where each field used to be
+authored, on the Sprite Forge's battle sub-page, before that page moved to the Monster Forge.) A
 monster *is* an actor with a battle record — item 5's own opening sentence ("Reusing actors as
 monsters and items is a genuinely clever economy, and it will not scale as the system grows",
 `ROADMAP.md`'s own item 5 above) is exactly the framing, and this item is that sentence coming due for
@@ -1481,11 +1484,12 @@ monsters the way item 5's shipped phases were for items.
 - **HP** (`actor.hp` → `mon_hp`), edited on the actor's own general panel
   (`renderer/forges/sprite/sprite.js`, "Hit points") rather than the battle sub-page — it is general
   actor data, not battle-specific, worth noting for the Forge-boundary question below. **MP**
-  (`battle.mp` → `mon_mp` — what the monster's own spell-casting spends) is edited on the battle
-  sub-page instead (`renderer/forges/sprite/battle.js`, "Magic points").
+  (`battle.mp` → `mon_mp` — what the monster's own spell-casting spends) was edited on the Sprite
+  Forge's battle sub-page before phase 1 (below); it is on the Monster Forge now ("Magic points").
 - **Damage dealt and the rest of the combat statline**: `atk`/`def`/`acc`/`eva`/`speed` (→
-  `mon_atk`/`mon_def`/`mon_acc`/`mon_eva`/`mon_speed`), all labeled fields on the battle page today
-  (Attack, Defence, Speed, Accuracy, Evasion).
+  `mon_atk`/`mon_def`/`mon_acc`/`mon_eva`/`mon_speed`), labeled fields that were on the Sprite Forge's
+  battle page before phase 1 and are on the Monster Forge now (Attack, Defence, Speed, Accuracy,
+  Evasion).
 - **Magic weakness and resistance**: `weak`/`strong`, one element each (→ `mon_weak`/`mon_strong`),
   consumed live by `battleturn.asm`'s spell-damage rule — the same mechanism item 13's own
   "Already exists" paragraph names for spells casting *into* it.
@@ -1511,7 +1515,7 @@ monsters the way item 5's shipped phases were for items.
 
 **Genuinely new in the user's ask:**
 
-1. **The Forge itself** — monster authoring pulled out of the Sprite Forge's battle page into a
+1. ~~**The Forge itself** — monster authoring pulled out of the Sprite Forge's battle page into a
    dedicated Monster Forge, the same Items Forge precedent item 13 already cites. Where the two
    Forges' boundary actually falls is a real design question this item should record rather than
    assume: the Sprite Forge would presumably keep the actor's overworld half (metasprites,
@@ -1519,7 +1523,24 @@ monsters the way item 5's shipped phases were for items.
    `project.sprites.actors` is one array, and deleting an actor (`sprite.js`'s "Delete actor",
    `project.sprites.actors.splice`) deletes whatever battle record it carried with it. A Monster
    Forge cannot own a monster independently of the actor underneath it the way the Items Forge owns
-   an item independently of its backing Pickup actor.
+   an item independently of its backing Pickup actor.~~ — **done**: `renderer/forges/monster/
+   monster.js` is a real Forge, `FORGES`' second `gameTypes: ['rpg']` entry after Magic. The boundary
+   settled per `docs/design-monster.md` §2: the Sprite Forge keeps the overworld half (metasprites,
+   animations, `behavior`, `speed`) *and* `hp` *and* contact `damage`, since both are dual-purpose —
+   `hp` backs an action project's own `ent_hp`, and `damage` is what makes `isMonsterActor` true at
+   all — while the Monster Forge takes the remaining author-facing battle controls
+   (atk/def/acc/eva/speed/mp/xp/gold/weak/strong/spellId/drop/dropPct/battle art), every field with no
+   consumer outside `BATTLE_ENABLED`. One field is the exception on both sides: `battle.heal` stays in
+   the schema, edited by neither Forge — it is legacy `ITEMS_ENABLED`-false data and an item-migration
+   source with a consumer outside `BATTLE_ENABLED`, per design §2. `monsterActorIds(project)`
+   (`shared/project.js`) is the Forge's single catalog predicate — it deliberately never hides an
+   actor an author is looking at, including one named only inside a disabled branch, an over-cap
+   formation slot, or a rate-zero map's encounter table. A
+   two-way deep link (`app.goTo`/`app.consumeContext`, gated on a new `store.revision` counter so a
+   mid-navigation delete-and-renumber can never land the wrong actor) carries the selected actor
+   between the two Forges. The non-destructive "Make harmless" action clears an actor's `damage` to
+   zero without deleting it. `validateProject`'s battle-art-collision error and stale-drop warning now
+   attribute `where: 'Monster Forge'`.
 2. **Monster level** — nothing exists today. Party members have levels and a level curve
    (`battletables.js` precomputes per-level stats into `pc_hp_at`/`pc_mp_at`/`pc_atk_at`/`pc_def_at`
    and the XP curve into `xp_next_lo`/`xp_next_hi`); monsters have flat, hand-set stats with no level
@@ -1528,7 +1549,10 @@ monsters the way item 5's shipped phases were for items.
    statline, or a curve of its own — is an open design question this item records rather than
    settles. If it does settle on anything derived, the no-multiply rule already governing every other
    RPG table applies here too: a scaling level is `battletables.js` build-time cost, not new engine
-   code.
+   code. `docs/design-monster.md` §3 has since settled this as **display-only** for phase 2 — a
+   `battle.level` number field in the Monster Forge's detail pane, no scaling, no curve, proved by a
+   same-tree byte-identical ROM comparison — while §6 phase 3's derived-stat convenience stays
+   explicitly not committed to.
 3. **Battle-side animations** — battle art is a static block today, with no motion and no
    attack/cast animation on a monster at all. This shares the same open "what is an animation on the
    battle screen" question item 13 records for spells (metasprite flipbook vs. `PALETTE_FX` reuse vs.

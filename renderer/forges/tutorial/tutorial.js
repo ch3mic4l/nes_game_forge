@@ -163,10 +163,10 @@ const TOPICS = [
       tip(
         'In a turn-based RPG project this Forge also grows a ',
         b('Party'),
-        ' tab (members, stats, spells) and an ',
-        b('In battle'),
-        ' section on each actor (a monster’s stats, element, gold and drops). ',
-        'See the Turn-based RPGs topic.'
+        ' tab (members, stats, spells). A monster’s own battle stats (attack, defence, weakness, ',
+        'resistance, which spell it casts, XP, gold, what it drops and at what chance) live in the ',
+        b('Monster Forge'),
+        ' instead, linked from the actor. See the Turn-based RPGs topic.'
       )
     ]
   },
@@ -371,7 +371,7 @@ const TOPICS = [
         [
           ['Sprite ▸ Party', 'Up to four members: stats, growth per level, spells learned and when'],
           ['Magic Forge', 'The spell list — cost, a min/max damage or heal range, element, one target or all'],
-          ['Sprite ▸ Actors ▸ In battle', 'A monster’s stats, experience, gold, weakness, resistance and drop'],
+          ['Monster Forge', 'A monster’s stats, which spell it casts, experience, gold, weakness, resistance, what it drops and at what chance'],
           ['Map ▸ Battles here', 'The battle backdrop, encounter rate, and which monsters appear'],
           ['Build ▸ RPG progression', 'The experience curve, level cap, and the monster-art tileset']
         ]

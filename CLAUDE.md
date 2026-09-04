@@ -4,9 +4,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-An Electron app for building NES games through a UI (seven "Forges": Tile, Sprite, Items, Magic (RPG
-projects only), Map, Sound, Controller — plus the Code Forge, the escape hatch for hand-written
-6502), which compiles a
+An Electron app for building NES games through a UI (eight "Forges": Tile, Sprite, Items, Magic (RPG
+projects only), Monster (RPG projects only), Map, Sound, Controller — plus the Code Forge, the escape
+hatch for hand-written 6502), which compiles a
 project into a real `.nes` ROM with `nesasm` and plays it in a built-in emulator with a debugger. See `README.md` for the user-facing description and the
 current feature status table.
 
@@ -264,6 +264,22 @@ renderer, and `node:test` alike.
   artefact rather than a bug: the second Forge mounts, then the first one's late import mounts over
   it, leaving two `.forge` elements in `#stage` — which is exactly what `main/smoke.js`'s own
   same-tick selection race step asserts against.
+- **The same token also bounds a navigation context's lifetime**, added for the Monster ↔ Sprite deep
+  link. `app.goTo(id, context)` writes `pendingRequest = { targetId, context, atRevision:
+  store.revision }` and calls `selectForge(id)`; with no context that is a plain Forge switch.
+  `selectForge` claims `pendingRequest` — reads it, then nulls it — as its very first statement,
+  before either of its own early returns, so a request that dies at a guard, gets redirected by
+  `isForgeAvailable` to `'tile'`, or loses the token race can never be read by an unrelated later
+  call. `activeContext = { token, context }` is bound only *after* `await entry.load()`, and only if
+  `store.revision` — bumped by `commit()`/`undo()`/`redo()`/`open()`/`close()`, the `commit()` bump
+  living in a `finally` so a mutator that throws still moves it — has not moved since the request was
+  made: an actor id captured before the await can otherwise name a *different* actor once a delete
+  has renumbered everything (`sprites.actors` renumbers every later actor on a delete, as above). A
+  bounds check cannot see that case; only the revision check can. `app.consumeContext()` hands the
+  context to the mounting Forge at most once, only when `activeContext.token === selectionToken`, so
+  a superseded navigation's context never reaches the winner; anything not consumed by the time
+  `mount()` returns is dropped. `main/smoke.js` exercises this contract end-to-end. See
+  `docs/design-monster.md` §2 for the fuller write-up.
 
 Each Forge is a module exporting `mount(container, app)` and returning
 `{ destroy?, onProjectChange? }`; `renderer/app.js`'s `FORGES` array is the single writer for which
@@ -274,8 +290,17 @@ not a second writer of its own — it exists so `main/smoke.js`'s "visit every F
 `FORGES` without a hand-maintained list of its own agreeing with it by hand, which is exactly the
 kind of drift that let the Items Forge almost ship unvisited by that very test. The Magic Forge
 (`renderer/forges/magic/magic.js`, item 13's own spell catalog — turn-based RPG projects only) is
-`FORGES`' first entry to carry a `gameTypes` field; every other entry is unconditional, so the field
-is additive. `isForgeAvailable(entry, project)` is the single predicate for whether an entry applies
+`FORGES`' first entry to carry a `gameTypes` field, and the Monster Forge
+(`renderer/forges/monster/monster.js`, item 14's own module) is the second; every other entry is
+unconditional, so the field is additive.
+`monsterActorIds(project)` (`shared/project.js`) is the Monster Forge's single catalog predicate, and
+deliberately reads `allCommands` (what is *mentioned*) rather than `liveCommands` (what would
+*compile*), and raw `command.monsters`/`map.encounters.actorIds` rather than
+`battleFormationSlice`/`mapEncounterFormation` — a monster named only inside a disabled branch, in an
+over-cap 5th formation slot, or on a rate-zero map still appears, because the concern is never hiding
+an actor an author is looking at, not deciding what the ROM runs. See `docs/design-monster.md` §2 for
+the boundary behind this catalog — what stays on the Sprite Forge and why.
+`isForgeAvailable(entry, project)` is the single predicate for whether an entry applies
 to the open project, read by exactly three call sites — `renderRail()`, the `app.forgeIds` getter
 (which is why "visit every Forge" stays correct on an action project without special-casing Magic
 itself), and `selectForge`, which has to guard itself a second way: `activeForgeId` is a bare
