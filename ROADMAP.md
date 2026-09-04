@@ -1748,6 +1748,21 @@ chosen.
 
 ---
 
+## 16. A stale Join operand survived a party member deletion — **done**
+
+A bug, not a capability gap, the same shape as items 10 and 11: deleting a party member in the
+Sprite Forge spliced `project.party` and repaired nothing that named a member by index — a Join
+command's own `member` kept its old id, clamped only to the fixed RAM capacity, and
+`battle_entry_join` (`engine/battle.asm`) indexed the per-level stat tables with it, no bound check
+at all, while `party_init` guarded the identical access a few lines below. `renumberPartyMemberDeletion`
+(`shared/project.js`) is the fourth sibling `renumberActorDeletion`/`renumberItemDeletion`/
+`renumberSpellDeletion` had been missing; `validateProject` refuses a live Join naming `null` or a
+stale index at build time; and the engine guards the operand at runtime too, for a hand-edited or
+later-version project that bypassed validation. CLAUDE.md's *renumber* paragraph and its `BE_JOIN`
+passage in *The battle system* carry the mechanism; it is not repeated here. Fixed in `1b1e522`.
+
+---
+
 ## Suggested order
 
 1. ~~Event names, list and search; duplication; templates; play-from-here — item 2 plus the first

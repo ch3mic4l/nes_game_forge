@@ -726,6 +726,12 @@ old modal's own filter-without-shift bug on purpose — a deliberate regression 
 that no longer exists, not a stale one — with a sanity assertion that the model really does get the
 fixture wrong.
 
+**A fourth sibling, `renumberPartyMemberDeletion(project, index)`, exists for `project.party`**: a
+Join's `member` above the deleted index shifts down, the hole becomes `null`. The Sprite Forge's
+own party Remove handler calls it in its one `store.commit`. The normalizer keeps `null` `null`;
+`validateProject` refuses a live Join naming `null` or an index ≥ `project.party.length`, via
+`liveCommands` not `allCommands`.
+
 **`SAVE_LAYOUT_VERSION` is 2**, bumped from 1 when `inv_items`' own bytes started meaning an item
 id rather than an actor id — a change to what the bytes mean, not how many
 there are, precisely the case `saveIdentity`'s own derived sizes cannot catch and what the
@@ -1253,6 +1259,14 @@ save's own possibly-stale bitmask. Unlike `BE_JOIN`, this restore is masked by i
 `continue_game` ends `jmp redraw_screen`, re-running `set_screen_ptr` regardless of whether the
 trampoline exit succeeded.
 
+**`BE_JOIN`'s operand is guarded now; the asymmetry was the defect.** `battle_entry_join`
+(`engine/battle.asm`) does `cpx #PARTY_SIZE` / `bcs battle_entry_join_skip` — `rts` back to
+`call_battle` — `party_init`'s own twin guard on the same access. `NO_MEMBER = $FF` is defined once
+per side, beside `NO_ACTOR`/`NO_ITEM`; the compiler emits it for `null` since `byte(null, 3)` coerces
+`null` to member 0. One compare refuses both the sentinel and a stale index; `rpg.test.js` patches a
+built ROM's operand to `$FF` and to exactly `PARTY_SIZE`, with a seeded `pc_hp_max` byte catching a
+mis-branch into `party_restore`.
+
 The split is: `engine/rpg.asm` in the kernel (the RNG, the step counter, assembling a formation),
 everything else in `engine/battle.asm` + `battleui.asm` + `battleturn.asm` on the far side.
 Calling *out* of the bank is free — the kernel is permanently mapped — so the battle system uses
@@ -1268,8 +1282,8 @@ the drift the check exists to prevent, one layer out. `battletables.js` imports 
 and must stay that way; `renderer/forges/build/build.js` importing it is the same move
 `renderer/forges/sound/sound.js` already makes with `main/build/songcompile.js`.
 
-`BASE_BATTLE_CODE_BYTES_BY_MAPPER` is per board from the outset (UNROM 512 3956, MMC1 3956, MMC3
-4002 — each +14 from the battle-side saturation fixes, the `bcs`-before-`cmp` guard `gain_hearts`
+`BASE_BATTLE_CODE_BYTES_BY_MAPPER` is per board from the outset (UNROM 512 3961, MMC1 3961, MMC3
+4007 — each +14 from the battle-side saturation fixes, the `bcs`-before-`cmp` guard `gain_hearts`
 and `party_heal` already had, applied to `item_chosen`/`cast_heal`/`cast_heal_mon` plus a
 saturate-to-255 in `spell_damage_weak` and `physical_damage_noise`; see
 `docs/battlemath-report.md` — plus a further +50 on every board alike from the
@@ -1277,7 +1291,8 @@ name-stride fix: `name_offset_pc` (`engine/battle.asm`) traded the 8-bit offset 
 wrapped past entry 25 for a 16-bit `ptr_lo`/`ptr_hi` add its four callers now dereference through;
 see `docs/namestride-report.md` — plus a further +53 on every board alike from the Magic Forge's
 own spell-amount roll, `roll_spell_amount`/`mod8` (`engine/battleturn.asm`); see
-`docs/design-magic.md` §8 — plus +18 from `BE_RESTORE` below) rather
+`docs/design-magic.md` §8 — plus +18 from `BE_RESTORE` above — plus a further +5 on every board
+alike from the join-guard slice's own `cpx #PARTY_SIZE` check in `battle_entry_join`) rather
 than one flat number split later — the mistake `BASE_KERNEL_CODE_BYTES` made and
 `BASE_KERNEL_CODE_BYTES_BY_MAPPER` had to undo. MMC3's extra 46 bytes are the `.if SPLIT_ENABLED`
 blocks inside the region itself (`battle.asm`'s split arm, `battleui.asm`'s sprite targeting
