@@ -452,7 +452,18 @@ test('a project with no items and no Save is byte-identical to the pre-phase-4b 
 // (still 147472): the region grew by the 18 measured bytes bankedbytes.
 // test.js now pins into BASE_BATTLE_CODE_BYTES_BY_MAPPER, again shifting
 // labels mid-bank rather than growing the padded ROM.
-const PINNED_RPG_BASELINE_HASH = 'f2da4ef71f0d8b0aba4f8eedaf09acadfbd4cca995871e754345a5c374f1a3c9';
+//
+// Re-pinned again for the join-guard brief (handoff-next/
+// join-guard-brief.md): battle_entry_join (engine/battle.asm) gained a
+// `cpx #PARTY_SIZE / bcs battle_entry_join_skip` guard ahead of its own
+// `jmp party_join`, the same bound party_init_slot already held for its own
+// identical access -- unconditional battle-region code present on every RPG
+// build regardless of whether this baseline project has any items, Save, or
+// spells, the identical shape every re-pin above already is. Size still
+// unchanged (still 147472): the region grew by the 5 measured bytes
+// bankedbytes.test.js now pins into BASE_BATTLE_CODE_BYTES_BY_MAPPER, again
+// shifting labels mid-bank rather than growing the padded ROM.
+const PINNED_RPG_BASELINE_HASH = 'dbd0adf6cbcdc4f772f9fa4230e48c647c90f0e544f3458fe7f6807f5f0e6199';
 const PINNED_RPG_BASELINE_SIZE = 147472;
 
 test('an RPG with no items and no Save is byte-identical to the pre-round-4 master build', async (t) => {

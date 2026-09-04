@@ -9,7 +9,7 @@
 
 import { store } from '../../store.js';
 import { el, field } from '../../ui.js';
-import { RPG_LIMITS, createPartyMember } from '../../../shared/project.js';
+import { RPG_LIMITS, createPartyMember, renumberPartyMemberDeletion } from '../../../shared/project.js';
 
 const NAME_LIMIT = RPG_LIMITS.nameLength;
 
@@ -101,6 +101,13 @@ export function partyPanel(rerender, app) {
                   title: 'Remove',
                   onclick: () => {
                     store.commit('Remove party member', (project) => {
+                      // Renumber every Join command's own member reference
+                      // before the splice moves everyone above index down --
+                      // renumberPartyMemberDeletion only measures the array,
+                      // never mutates it, so either order gives the same
+                      // answer, but doing it first keeps this in step with
+                      // the actor/item/spell delete handlers' own contract.
+                      renumberPartyMemberDeletion(project, index);
                       project.party.splice(index, 1);
                       project.party.forEach((entry, id) => (entry.id = id));
                     });

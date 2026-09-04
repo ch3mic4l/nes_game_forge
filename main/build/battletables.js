@@ -460,7 +460,23 @@ export function checkBattleTables(project) {
 // `SPLIT_ENABLED` or anything else mapper-specific, so the +18 lands
 // identically on all three boards -- MMC3's own extra 46 bytes above is
 // unchanged by it (4002 - 3956 = 46, the same gap as before).
-export const BASE_BATTLE_CODE_BYTES_BY_MAPPER = { 30: 3956, 1: 3956, 4: 4002 };
+//
+// The join-guard brief (handoff-next/join-guard-brief.md) added a further
+// uniform +5 on all three boards: battle_entry_join (engine/battle.asm) now
+// guards its own ldx bt_arg with cpx #PARTY_SIZE / bcs, the same bound
+// party_init_slot already held for its own call to party_join, before the
+// unguarded jmp party_join -- a stale or hand-edited member (NO_MEMBER, or a
+// numeric index a shrunk party no longer covers) indexed party_apply_level's
+// per-level tables past their end with no check at all. Measured with items
+// stripped (project.items = []), to isolate this delta from
+// ITEM_LIST_FILTER_BATTLE_ALLOWANCE the same way that allowance's own
+// isolation test does: nesasm's own usage grew from 3956/3956/4002 to
+// 3961/3961/4007 on UNROM 512/MMC1/MMC3 respectively -- the same +5 on every
+// board because the new guard branches on nothing mapper-specific, the
+// identical reasoning the BE_RESTORE paragraph above already gives for its
+// own uniform +18. MMC3's own extra 46-byte SPLIT_ENABLED gap is unchanged by
+// it (4007 - 3961 = 46).
+export const BASE_BATTLE_CODE_BYTES_BY_MAPPER = { 30: 3961, 1: 3961, 4: 4007 };
 
 // Phase 4c round 3, finding 6 (phase4-design.md §9), corrected round 3b
 // (review K1): the two-menu-consistency filter (build_item_list's kind/

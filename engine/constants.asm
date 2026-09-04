@@ -734,6 +734,14 @@ NO_ITEM     = $FF           ; inv_items under ITEMS_ENABLED, and every
                             ; own NO_ITEM; same value as NO_ACTOR by
                             ; convention (both $FF), not by any relationship
                             ; between the two id spaces.
+NO_MEMBER   = $FF           ; bt_arg for a Join command whose party member was
+                            ; deleted since -- battle_entry_join's own
+                            ; cpx #PARTY_SIZE guard refuses it the same way a
+                            ; stale numeric member above PARTY_SIZE is
+                            ; refused. Matches shared/project.js's own
+                            ; NO_MEMBER; same value as NO_ACTOR/NO_ITEM by
+                            ; convention (all $FF), not by any relationship
+                            ; between the id spaces.
 NO_METASPRITE = $FF         ; item_metasprite: no icon, whether because none
                             ; was ever set and legacy derivation found
                             ; nothing to derive from, or because an author

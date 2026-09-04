@@ -97,6 +97,26 @@ export const NO_ACTOR = 0xff;
 export const NO_ITEM = 0xff;
 
 /**
+ * The byte that means "names no party member" — the compiled-event-byte
+ * sibling of `NO_ACTOR`/`NO_ITEM`, one id space over again. `join`'s own
+ * `member` field has no schema-level sentinel (a `null` member already means
+ * "join no one," the same nullable shape `renumberSpellDeletion`'s own
+ * comment describes for a party member's learned spells) — `NO_MEMBER` exists
+ * for the one place that shape has to become a byte: `main/build/
+ * textcompile.js`'s `join` case, so a `null` member compiles to something the
+ * engine can refuse to act on (`battle_entry_join`'s own `cpx #PARTY_SIZE`
+ * guard, engine/battle.asm) rather than folding through the existing
+ * `byte(command.member, 3)` clamp into a real, wrong member 0 — `value | 0`
+ * coerces `null` to `0` before the clamp ever runs, so it is `$FF` that
+ * would clamp to 3, not `null`. Same value as
+ * `NO_ACTOR`/`NO_ITEM`, deliberately — nothing compares it against a member
+ * id from a different id space, so sharing the byte costs nothing and keeps
+ * the "missing" convention uniform. The matching engine-side equate lives in
+ * `engine/constants.asm`, beside `NO_ACTOR`/`NO_ITEM`.
+ */
+export const NO_MEMBER = 0xff;
+
+/**
  * The byte that means "names no metasprite" — one id space over from
  * `NO_ACTOR`/`NO_ITEM`, for an item's own `metaspriteId`. Two things share
  * this value on purpose: `null` still means "not set — derive an icon from
@@ -2397,6 +2417,51 @@ export function renumberSpellDeletion(project, index) {
 }
 
 /**
+ * What every reference to a *party member* becomes once `index` is gone from
+ * `project.party`: the party-space sibling of `renumberActorDeletion`/
+ * `renumberItemDeletion`/`renumberSpellDeletion` above, covering the one
+ * field that names a party member by index — a Join command's own `member`.
+ * A grep across the schema, the compiler and the Map Forge event editor
+ * turned up exactly that one reference; nothing else names a party member by
+ * position (a party member's own fields — `spells`, `metaspriteId` — are
+ * named *from* the member, never *by* an index into `project.party`, so they
+ * are not this function's question to answer).
+ *
+ * Same shape as `renumberActorDeletion`/`renumberItemDeletion`: an index
+ * above the deleted one shifts down by one, and the deleted index itself
+ * becomes `null` — "join no one," which `normalizeEventCommand` and the Map
+ * Forge editor already treat distinctly from a real, in-range member. There
+ * is no schema-level sentinel byte to hold as a fixed point here the way
+ * `NO_ACTOR`/`NO_ITEM` are: a party member index has no "$FF means nothing"
+ * convention at this layer, only in the compiled event bytes (`NO_MEMBER`,
+ * `main/build/textcompile.js`) — so `null` is the whole story here, the same
+ * way `renumberSpellDeletion` documents for a party member's own learned
+ * spells.
+ *
+ * Walked through `allCommands`, not each page's own top-level list, for the
+ * identical reason `renumberActorDeletion`/`renumberItemDeletion` are — a
+ * Join nested inside a branch, a choice option or a common event is not
+ * visible to a page's own list, the `usedSwitches` defect this file already
+ * records elsewhere.
+ *
+ * Mutates `project` and returns it. The caller removes `project.party[index]`
+ * itself, before or after calling this, the same contract the actor/item/
+ * spell siblings document.
+ */
+export function renumberPartyMemberDeletion(project, index) {
+  const shift = (member) => (member > index ? member - 1 : member);
+  for (const event of projectEvents(project)) {
+    for (const page of event.pages ?? []) {
+      for (const command of allCommands(page.commands)) {
+        if (command.op !== 'join' || typeof command.member !== 'number') continue;
+        command.member = command.member === index ? null : shift(command.member);
+      }
+    }
+  }
+  return project;
+}
+
+/**
  * What every reference to a metasprite becomes once `index` is gone from
  * `project.sprites.metasprites`. Three consumers exist — an animation
  * frame's `metaspriteId`, a party member's `metaspriteId`, and (as of this
@@ -2827,7 +2892,19 @@ function normalizeEventCommand(raw, depth = 0, itemCtx = EMPTY_ITEM_CTX) {
   for (const arg of command.args) {
     if (arg === 'text') out.text = String(raw?.text ?? '').slice(0, MAX_DIALOGUE);
     else if (arg === 'switch') out.switch = clamp(raw?.switch, 0, RPG_LIMITS.switches - 1, 0);
-    else if (arg === 'member') out.member = clamp(raw?.member, 0, RPG_LIMITS.party - 1, 0);
+    // Nullable, unlike every other clamped arg here: `null` is "join no one"
+    // (renumberPartyMemberDeletion's own answer once the named member is
+    // deleted), and must survive normalization as `null` rather than being
+    // coerced back into a real, wrong member 0 the way clamp's own fallback
+    // would. Unlike 'song'/'sfx' below, a missing/undefined value (a freshly
+    // authored command) falls back to 0 rather than staying null -- Silence
+    // is a legitimate default for a music command, but a Join has to name
+    // someone. A number still clamps to RPG_LIMITS.party - 1 as before -- the
+    // compiler is the only thing that can know the project's real party size
+    // (see 'song's own comment below for the identical reasoning applied to
+    // where a field's true ceiling is enforced).
+    else if (arg === 'member')
+      out.member = raw?.member === null ? null : clamp(raw?.member, 0, RPG_LIMITS.party - 1, 0);
     else if (arg === 'variable') out.variable = clamp(raw?.variable, 0, RPG_LIMITS.variables - 1, 0);
     // Not the generic byte clamp below: a common event id is resolved to a
     // table slot at compile time rather than written into the ROM itself,
@@ -4519,6 +4596,44 @@ export function validateProject(project) {
       );
     }
     if (!project.party.length) add('error', 'Sprite Forge', 'A turn-based RPG needs at least one party member.');
+    // A live join naming a party member the project does not have is not a
+    // display quirk to leave to the engine's own defense in depth.
+    // battle_entry_join (engine/battle.asm) does guard this operand at
+    // runtime now (cpx #PARTY_SIZE / bcs), refusing to reach
+    // party_join -> party_apply_level -> level_row and index the per-level
+    // stat tables past their end -- but that guard's whole job is to fail
+    // silently: it skips the recruit and returns, with nothing on screen to
+    // say a Join just did nothing. This check is what turns that into a
+    // named refusal at build time instead, the moment it is still cheap to
+    // fix. Same severity and wording shape as the missing Give/Take item
+    // check below: an error, not a warning, because unlike the
+    // encounter-table check just below (which only ever produces a
+    // load-bearing no-op monster) a project that reached the engine guard at
+    // all would have corrupted memory before this check existed.
+    // Gated on project.party.length so an already-empty party (flagged
+    // above) does not also report every join in it as individually dangling.
+    // liveCommands, not allCommands: a join sitting under a switched-off
+    // branch never runs and must not be reported.
+    if (project.party.length) {
+      let danglingJoins = 0;
+      for (const event of projectEvents(project)) {
+        for (const page of compiledPages(event)) {
+          for (const command of liveCommands(page.commands, CHOICE_LIMITS.options)) {
+            if (command.op === 'join' && (command.member === null || command.member >= project.party.length)) {
+              danglingJoins++;
+            }
+          }
+        }
+      }
+      if (danglingJoins) {
+        add(
+          'error',
+          'Map Forge',
+          `${danglingJoins} Party member joins command${danglingJoins === 1 ? '' : 's'} do not name a real ` +
+            'party member. Pick a member or switch the command off.'
+        );
+      }
+    }
     const hostile = project.sprites.actors.filter((actor) => actor.damage > 0);
     if (!hostile.length) {
       add('warning', 'Sprite Forge', 'No actor deals damage, so no battle can ever start.');

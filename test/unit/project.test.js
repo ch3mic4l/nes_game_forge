@@ -32,6 +32,8 @@ import {
   renumberItemDeletion,
   renumberMetaspriteDeletion,
   renumberSpellDeletion,
+  renumberPartyMemberDeletion,
+  NO_MEMBER,
   battleFormationSlice,
   mapEncounterFormation,
   monsterActorIds,
@@ -1200,6 +1202,228 @@ test('deleting the last of a 32-entry catalog shifts nothing anywhere, and the p
   // so no shift-arithmetic slip this fixture's own numbers can express is
   // exposed by it -- the splice/restamp mutation above is what this fixture
   // actually catches.
+});
+
+// --- renumberPartyMemberDeletion (join-guard brief,
+// handoff-next/join-guard-brief.md) — the party-space sibling of
+// renumberActorDeletion/renumberItemDeletion/renumberSpellDeletion above. A
+// Join command's own `member` is the only reference a grep across the
+// schema, the compiler and the Map Forge event editor turned up; see the
+// function's own docstring in shared/project.js.
+
+test('deleting a party member renumbers a Join command’s member, nested inside a branch, a choice option and a common event', () => {
+  const project = createProject('Quest', 'rpg');
+  project.party = [createPartyMember(0, 'Hero'), createPartyMember(1, 'Iris'), createPartyMember(2, 'Doc')];
+  project.maps[0].screens[0].entities = [
+    {
+      actorId: 0,
+      x: 0,
+      y: 0,
+      props: {
+        event: {
+          pages: [
+            {
+              cond: { type: 'none', arg: 0 },
+              commands: [
+                { op: 'join', member: 2 }, // Doc, above the member about to be deleted
+                {
+                  op: 'branch',
+                  cond: { type: 'none', arg: 0 },
+                  // A switch used only inside a branch was once invisible to
+                  // usedSwitches for exactly this reason — a Join named only
+                  // here has to be found the same way. Both sides shift
+                  // (round 3 review, finding 3): a below-the-hole "must not
+                  // move" value here would pass even for a walker that never
+                  // visits `else` at all, since an untouched value and a
+                  // correctly-preserved one look identical — that control
+                  // lives in its own dedicated test below instead
+                  // ("a join naming a member below the deleted one is
+                  // untouched...").
+                  then: [{ op: 'join', member: 2 }],
+                  else: [{ op: 'join', member: 2 }]
+                },
+                {
+                  op: 'choice',
+                  options: [{ text: 'Recruit', commands: [{ op: 'join', member: 2 }] }]
+                }
+              ]
+            }
+          ]
+        }
+      }
+    }
+  ];
+  // A common event is not reached by walking a placement's commands — a
+  // `call` names it by id rather than holding its pages — so an
+  // implementation that walked placed actors alone would pass every
+  // assertion above while leaving a common event's own Join unrenumbered.
+  // projectEvents() covers both; this is what says so.
+  project.commonEvents = [
+    {
+      id: 0,
+      name: 'Reward',
+      event: {
+        pages: [{ cond: { type: 'none', arg: 0 }, commands: [{ op: 'join', member: 2 }] }]
+      }
+    }
+  ];
+
+  renumberPartyMemberDeletion(project, 1); // delete "Iris"
+
+  const [top, branch, choice] = project.maps[0].screens[0].entities[0].props.event.pages[0].commands;
+  assert.equal(top.member, 1, 'a join naming a member above the deleted one shifts down');
+  assert.equal(branch.then[0].member, 1, 'a join nested inside a branch’s then side shifts down too');
+  assert.equal(branch.else[0].member, 1, 'a join nested inside a branch’s else side shifts down too, not just then');
+  assert.equal(choice.options[0].commands[0].member, 1, 'a join inside a choice option shifts down the same way');
+  assert.equal(
+    project.commonEvents[0].event.pages[0].commands[0].member,
+    1,
+    'a common event’s own join is not reached by walking a placement’s commands alone'
+  );
+});
+
+test('a join naming exactly the deleted party member becomes null', () => {
+  const project = createProject('Quest', 'rpg');
+  project.party = [createPartyMember(0, 'Hero'), createPartyMember(1, 'Iris')];
+  project.maps[0].screens[0].entities = [
+    {
+      actorId: 0,
+      x: 0,
+      y: 0,
+      props: {
+        event: { pages: [{ cond: { type: 'none', arg: 0 }, commands: [{ op: 'join', member: 1 }] }] }
+      }
+    }
+  ];
+
+  renumberPartyMemberDeletion(project, 1); // delete "Iris", who this join recruits
+
+  const [join] = project.maps[0].screens[0].entities[0].props.event.pages[0].commands;
+  assert.equal(
+    join.member,
+    null,
+    'a join whose recruit was just deleted should name nobody, not member 1 by accident'
+  );
+
+  // Wrong implementation this catches: shift-only logic with no exact-match
+  // branch (member > index ? member - 1 : member, applied unconditionally, no
+  // === index check at all) would leave member at 1 here, silently pointing
+  // the join at whoever now occupies slot 1 instead of naming nobody.
+});
+
+test('a join naming a member below the deleted one is untouched, and the primitive does not touch project.party itself', () => {
+  const project = createProject('Quest', 'rpg');
+  project.party = [createPartyMember(0, 'Hero'), createPartyMember(1, 'Iris'), createPartyMember(2, 'Doc')];
+  project.maps[0].screens[0].entities = [
+    {
+      actorId: 0,
+      x: 0,
+      y: 0,
+      props: {
+        event: { pages: [{ cond: { type: 'none', arg: 0 }, commands: [{ op: 'join', member: 0 }] }] }
+      }
+    }
+  ];
+  const partyBefore = project.party.slice();
+
+  renumberPartyMemberDeletion(project, 2); // delete "Doc", named by nothing here
+
+  const [join] = project.maps[0].screens[0].entities[0].props.event.pages[0].commands;
+  assert.equal(join.member, 0, 'a member below the deleted one must not move');
+
+  // The primitive's own documented contract: it never splices project.party
+  // or restamps ids — the caller does that, the same contract the
+  // actor/item/spell siblings document. Asserted directly, by identity.
+  assert.equal(project.party.length, 3, 'renumberPartyMemberDeletion must not have spliced project.party itself');
+  for (let id = 0; id < 3; id++) {
+    assert.equal(
+      project.party[id],
+      partyBefore[id],
+      `party member ${id} must be the same object at the same index, untouched`
+    );
+  }
+});
+
+// The normalizer's own null/undefined/number mapping for a Join's member,
+// deliberately different from every other clamped arg in
+// normalizeEventCommand: null survives as null ("join no one," the answer
+// renumberPartyMemberDeletion just above leaves behind), a missing/undefined
+// value (a freshly authored command) falls back to member 0, and a real
+// number still clamps to RPG_LIMITS.party - 1 as it always has.
+test('normalizeProject keeps a Join’s null member null, defaults a missing one to 0, and still clamps a number', () => {
+  const page = (commands) =>
+    normalizeProject({
+      project: { gameType: 'rpg' },
+      cartridge: { mapper: 1 },
+      party: [createPartyMember(0, 'Hero')],
+      maps: [
+        { screens: [{ entities: [{ actorId: 0, x: 0, y: 0, props: { event: { pages: [{ commands }] } } }] }] }
+      ]
+    });
+
+  const nullMember = page([{ op: 'join', member: null }]);
+  assert.equal(
+    nullMember.maps[0].screens[0].entities[0].props.event.pages[0].commands[0].member,
+    null,
+    'a null member must survive normalization as null, not be coerced back to a real member'
+  );
+
+  const missingMember = page([{ op: 'join' }]);
+  assert.equal(
+    missingMember.maps[0].screens[0].entities[0].props.event.pages[0].commands[0].member,
+    0,
+    'a freshly authored join with no member at all should default to member 0'
+  );
+
+  const overLimit = page([{ op: 'join', member: 99 }]);
+  assert.equal(
+    overLimit.maps[0].screens[0].entities[0].props.event.pages[0].commands[0].member,
+    RPG_LIMITS.party - 1,
+    'a numeric member still clamps to RPG_LIMITS.party - 1, exactly as before this brief'
+  );
+});
+
+// Round 3 review, finding 1: reverting the join case (main/build/
+// textcompile.js) back to the bare byte(command.member, 3) clamp folds a
+// null member into a real, wrong member 0 (byte's own `value | 0`
+// coercion) -- and nothing else in the suite would have noticed. The
+// primitive/validation tests above never compile a project at all; the
+// patched-ROM engine test (test/unit/rpg.test.js) only ever patches an
+// already-built, already-valid ROM's byte directly; and the one existing
+// round-trip corpus assertion on 'join' (further down this file) only ever
+// exercises member 0. This is the missing direct assertion on the
+// compiler itself, the same shape the Sting-duration compileText test
+// above uses.
+test('compileText emits NO_MEMBER for a null Join member, and clamps a numeric one exactly as before', () => {
+  const project = createProject('Roster', 'rpg');
+  const compiledJoin = (member) => {
+    project.maps[0].screens[0].entities = [
+      {
+        actorId: 0,
+        x: 0,
+        y: 0,
+        props: { event: { pages: [{ cond: { type: 'none', arg: 0 }, commands: [{ op: 'join', member }] }] } }
+      }
+    ];
+    const [compiled] = compileText(project).events;
+    return compiled.slice(4, 6); // past the 4-byte page header: [OP_JOIN, operand]
+  };
+
+  const OP_JOIN = opIndex('join');
+  assert.deepEqual(
+    compiledJoin(null),
+    [OP_JOIN, NO_MEMBER],
+    'a null member must compile to NO_MEMBER, not fold through byte() into a real member 0'
+  );
+  assert.deepEqual(compiledJoin(0), [OP_JOIN, 0], 'member 0 compiles unchanged');
+  assert.deepEqual(compiledJoin(1), [OP_JOIN, 1], 'member 1 compiles unchanged');
+  assert.deepEqual(compiledJoin(2), [OP_JOIN, 2], 'member 2 compiles unchanged');
+  assert.deepEqual(compiledJoin(3), [OP_JOIN, 3], 'member 3 compiles unchanged');
+  assert.deepEqual(
+    compiledJoin(99),
+    [OP_JOIN, 3],
+    'a numeric member past the RAM capacity still clamps to 3, exactly as it did before this brief'
+  );
 });
 
 // --- renumberMetaspriteDeletion (round 2, item 4) — imported since it was
@@ -2448,6 +2672,117 @@ test('the give/take check applies to an action project too, and now refuses a bu
     buildProject({ dir, project, log: () => {} }),
     /do not name a real/,
     'buildProject should refuse this project rather than compiling actor 99 into the ROM as-is'
+  );
+});
+
+// Join-guard brief (handoff-next/join-guard-brief.md): battle_entry_join
+// (engine/battle.asm) does guard a stale or null member at runtime now
+// (cpx #PARTY_SIZE / bcs, before party_apply_level -> level_row would index
+// the per-level stat tables past their end), but that guard fails silently
+// -- it skips the recruit and returns, with nothing to tell an author a
+// Join just did nothing. This is the build-time refusal that catches it
+// before it ever reaches that silent runtime path. Same severity and
+// wording shape as the Give/Take check above: an error, not a warning.
+test('a live Join naming no party member, or a stale one, blocks the build; an in-range or switched-off one does not', () => {
+  const project = createProject('Quest', 'rpg');
+  project.party = [createPartyMember(0, 'Hero'), createPartyMember(1, 'Iris')];
+  const page = (commands) => {
+    project.maps[0].screens[0].entities = [
+      { actorId: 0, x: 0, y: 0, props: { event: { pages: [{ cond: { type: 'none', arg: 0 }, commands }] } } }
+    ];
+    return project;
+  };
+
+  // (a) null member -- renumberPartyMemberDeletion's own answer once the
+  // named member is gone.
+  page([{ op: 'join', member: null }]);
+  let errors = validateProject(project).filter((p) => p.severity === 'error');
+  assert.equal(errors.length, 1, 'a null member should be refused');
+  assert.match(errors[0].message, /Party member joins.*do not name a real/);
+
+  // (b) a stale numeric member -- valid at authoring time (0-3, per
+  // RPG_LIMITS.party), but this project's own party has only two members.
+  page([{ op: 'join', member: 2 }]);
+  errors = validateProject(project).filter((p) => p.severity === 'error');
+  assert.equal(errors.length, 1, 'a member the party no longer has should be refused the same way');
+  assert.match(errors[0].message, /Party member joins.*do not name a real/);
+
+  // (c) in range -- accepted.
+  page([{ op: 'join', member: 1 }]);
+  assert.deepEqual(validateProject(project).filter((p) => p.severity === 'error'), []);
+
+  // (d) switched off -- the same escape hatch the Give/Take check gives
+  // scaffolding that names nothing real: a stale reference sitting in a
+  // command the ROM will never run must not be what stands between an
+  // author and a build.
+  page([{ op: 'join', member: 2, off: true }]);
+  assert.deepEqual(validateProject(project).filter((p) => p.severity === 'error'), []);
+});
+
+// Round 3 review, finding 2: a wrong validator that walks allCommands and
+// filters only on each command's own `off` flag would still visit a Join
+// nested inside a switched-off branch (the Join's own `off` is unset) and
+// report it, even though switching a branch off takes both sides out with
+// it -- renderer/forges/map/events.js's own comment on the branch case:
+// "Switching it off takes both sides out with it, which is what the
+// indentation is saying." The real check uses liveCommands
+// (shared/eventrules.js), which filters through enabledCommands at every
+// level of recursion, so it never even descends into a switched-off
+// branch's then/else. Distinct from case (d) in the test above, which
+// switches off the Join command itself -- this one leaves the Join enabled
+// and switches off its parent instead.
+test('a live-looking stale Join nested inside a switched-off branch produces no error', () => {
+  const project = createProject('Quest', 'rpg');
+  project.party = [createPartyMember(0, 'Hero'), createPartyMember(1, 'Iris')];
+  project.maps[0].screens[0].entities = [
+    {
+      actorId: 0,
+      x: 0,
+      y: 0,
+      props: {
+        event: {
+          pages: [
+            {
+              cond: { type: 'none', arg: 0 },
+              commands: [
+                { op: 'setSwitch', switch: 0 }, // another live command, so the page still reaches compiledPages
+                {
+                  op: 'branch',
+                  off: true,
+                  cond: { type: 'none', arg: 0 },
+                  then: [{ op: 'join', member: 2 }], // enabled and stale, but dead beneath the switched-off branch
+                  else: []
+                }
+              ]
+            }
+          ]
+        }
+      }
+    }
+  ];
+
+  const errors = validateProject(project).filter((p) => p.severity === 'error');
+  assert.ok(
+    !errors.some((e) => /Party member joins/.test(e.message)),
+    'a Join nested inside a switched-off branch must not be reported, even though its own off flag is unset'
+  );
+});
+
+test('the join-member check never fires for an action project, which hides Join from its editor already', () => {
+  const project = createProject('Quest'); // action, the default gameType
+  project.party = []; // action projects carry no party at all
+  project.sprites.actors = [{ name: 'Sign', behavior: 'npc' }];
+  project.maps[0].screens[0].entities.push({
+    actorId: 0,
+    x: 0,
+    y: 0,
+    props: { event: { pages: [{ cond: { type: 'none', arg: 0 }, commands: [{ op: 'join', member: 99 }] }] } }
+  });
+  const errors = validateProject(project).filter((p) => p.severity === 'error');
+  assert.ok(
+    !errors.some((e) => /Party member joins/.test(e.message)),
+    'an action project should never see the join-member error -- the check lives inside validateProject’s ' +
+      'gameType === "rpg" block, the same place Join’s own contact-damage sibling checks already live'
   );
 });
 

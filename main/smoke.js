@@ -4450,6 +4450,233 @@ const scenario = (dir, sampleDir, sampleRpgDir) => `
     step('Magic Forge backwards range swap', 'amountMin=' + afterBackwards.amountMin + ', amountMax=' + afterBackwards.amountMax + ' -- the exact swapped pair landed');
   }
 
+  // Test 5 (join-guard brief, handoff-next/join-guard-brief.md): the Sprite
+  // Forge Party tab's Remove button now renumbers every Join command's own
+  // member, in the same store.commit as the splice -- this is what actually
+  // calls renumberPartyMemberDeletion for real, against the real handler
+  // (renderer/forges/sprite/battle.js), since project.test.js only calls the
+  // primitive directly.
+  {
+    // sample-rpg's own first party member (Rian, per sample-rpg/party.json) --
+    // captured rather than hardcoded, since this block does not care who it
+    // is, only that removing Doc must not touch it.
+    const firstMemberName = rpgStore.project.party[0].name;
+    rpgStore.commit('smoke: seed a three-member party with two joins', (project) => {
+      project.party = [
+        project.party[0],
+        { ...project.party[0], id: 1, name: 'Iris', startsInParty: false },
+        { ...project.party[0], id: 2, name: 'Doc', startsInParty: false }
+      ];
+      project.maps[0].screens[0].entities.push(
+        {
+          actorId: 0,
+          x: 32,
+          y: 32,
+          props: { event: { pages: [{ cond: { type: 'none', arg: 0 }, commands: [{ op: 'join', member: 2 }] }] } }
+        },
+        {
+          actorId: 0,
+          x: 48,
+          y: 32,
+          props: { event: { pages: [{ cond: { type: 'none', arg: 0 }, commands: [{ op: 'join', member: 0 }] }] } }
+        }
+      );
+    });
+    await wait(150);
+    const joinEntities = rpgStore.project.maps[0].screens[0].entities.slice(-2);
+    // Positions within screen.entities, for the Map Forge's own data-entity
+    // attribute (round 3 review, finding 4) -- pushed last, so these are the
+    // final two indices at seed time, and nothing between here and the
+    // rendering-coverage block below inserts or removes an entity.
+    const docEntityIndex = rpgStore.project.maps[0].screens[0].entities.length - 2;
+    const lowerEntityIndex = rpgStore.project.maps[0].screens[0].entities.length - 1;
+    const lastJoin = joinEntities[0].props.event.pages[0].commands[0];
+    const lowerJoin = joinEntities[1].props.event.pages[0].commands[0];
+
+    window.__app.goTo('sprite');
+    await wait(200);
+    const partyTabButton = [...document.querySelectorAll('#stage button.tab')].find((b) => b.textContent.trim() === 'Party');
+    if (!partyTabButton) throw new Error('Sprite Forge has no Party tab');
+    partyTabButton.click();
+    await wait(200);
+
+    const docNameInput = [...document.querySelectorAll('#stage input[type="text"]')].find((i) => i.value === 'Doc');
+    if (!docNameInput) throw new Error('Sprite Forge Party tab has no Doc member to find');
+    const docRow = docNameInput.closest('.field-row');
+    const removeButton = docRow ? [...docRow.querySelectorAll('button')].find((b) => b.title === 'Remove') : null;
+    if (!removeButton) throw new Error('Sprite Forge Party tab has no Remove button for Doc');
+    removeButton.click();
+    await wait(150);
+
+    const namesAfterRemove = rpgStore.project.party.map((m) => m.name);
+    if (namesAfterRemove.length !== 2 || namesAfterRemove[0] !== firstMemberName || namesAfterRemove[1] !== 'Iris') {
+      throw new Error('expected the party to be exactly [' + JSON.stringify(firstMemberName) + ',"Iris"] after removing Doc, saw: ' + JSON.stringify(namesAfterRemove));
+    }
+    if (lastJoin.member !== null) {
+      throw new Error('the Join naming the removed member (Doc, member 2) should now name null, saw: ' + JSON.stringify(lastJoin.member));
+    }
+    if (lowerJoin.member !== 0) {
+      throw new Error('the Join naming a lower member (' + firstMemberName + ', member 0) must not move, saw: ' + JSON.stringify(lowerJoin.member));
+    }
+    step('Sprite Forge party Remove renumbers a Join naming the removed member', 'party is now ' + firstMemberName + '/Iris, the Doc join is null, the ' + firstMemberName + ' join is untouched');
+
+    // Round 3 review, finding 4: none of the earlier assertions ever opened
+    // the affected placement's own event in the Map Forge, so the pre-fix
+    // summary/select rendering (or a regression in the fixed empty-string
+    // handler) would have passed every test as written. Exercised here
+    // through the real UI -- the Map Forge's own entity-row summary line and
+    // the event editor modal's own select -- then undone before the
+    // pre-existing "one undo entry" test below, so that test's own single
+    // undo() still only has the party Remove commit left to undo.
+    {
+      const findEntityRow = (entityIndex) => document.querySelector('#stage [data-entity="' + entityIndex + '"]');
+      const findEditButton = (entityIndex) =>
+        [...document.querySelectorAll('#stage [data-entity="' + entityIndex + '"] button')].find(
+          (node) => node.textContent === 'Edit event…'
+        );
+      const findMemberSelect = () =>
+        [...document.querySelectorAll('#modalHost select')].find((s) =>
+          [...s.options].some((o) => o.textContent === 'Missing member')
+        );
+
+      window.__app.goTo('map');
+      await wait(250);
+
+      const docRowHint = findEntityRow(docEntityIndex);
+      if (!docRowHint || docRowHint.textContent.indexOf('Join (missing member)') === -1) {
+        throw new Error('the Doc placement’s own Map Forge row should summarize its Join as "Join (missing member)", saw: ' + (docRowHint ? docRowHint.textContent : 'no row found'));
+      }
+
+      const docEditButton = findEditButton(docEntityIndex);
+      if (!docEditButton) throw new Error('the Doc placement has no Edit event… button');
+      docEditButton.click();
+      await until('the event editor', () => document.querySelector('#modalHost .btn-accent'));
+
+      const nullMemberSelect = findMemberSelect();
+      if (!nullMemberSelect) throw new Error('the event editor has no Join select with a Missing member option');
+      if (nullMemberSelect.value !== '') {
+        throw new Error('the null Join’s own select should have "Missing member" selected (value ""), saw: ' + JSON.stringify(nullMemberSelect.value));
+      }
+
+      // The round-trip write bug this round's own review found: picking a
+      // real member, then picking "Missing member" again (still present in
+      // the DOM -- this select's own onchange never triggers a rerender, the
+      // same reason give/take/call selects do not either), must write null
+      // back, not 0. No escaped quotes anywhere in this block.
+      nullMemberSelect.value = '0';
+      nullMemberSelect.dispatchEvent(new Event('change', { bubbles: true }));
+      await wait(60);
+      nullMemberSelect.value = '';
+      nullMemberSelect.dispatchEvent(new Event('change', { bubbles: true }));
+      await wait(60);
+      document.querySelector('#modalHost .btn-accent').click();
+      await wait(200);
+
+      const docEntityAfterRoundTrip = rpgStore.project.maps[0].screens[0].entities[docEntityIndex];
+      const docMemberAfterRoundTrip = docEntityAfterRoundTrip.props.event.pages[0].commands[0].member;
+      if (docMemberAfterRoundTrip !== null) {
+        throw new Error('selecting Missing member after a real member should have written null, saw: ' + JSON.stringify(docMemberAfterRoundTrip));
+      }
+      step('Map Forge renders a null Join member as missing, and round-trips it back to null, not 0', 'summary line, selected option and the write-back all checked through the real editor');
+
+      // That Save is its own commit, on top of the party Remove commit below
+      // it -- undone here, immediately, so the pre-existing "one undo
+      // entry" test further down still only has the party Remove to undo.
+      // It restores exactly the null this block started from, so nothing
+      // else about the fixture changes.
+      if (!rpgStore.undo()) throw new Error('undo returned false for the event editor Save commit');
+      await wait(150);
+      const docMemberAfterOwnUndo = rpgStore.project.maps[0].screens[0].entities[docEntityIndex].props.event.pages[0].commands[0].member;
+      if (docMemberAfterOwnUndo !== null) {
+        throw new Error('undoing the event editor Save should have restored the Doc join to null, saw: ' + JSON.stringify(docMemberAfterOwnUndo));
+      }
+
+      // Also cover a stale NUMERIC member rendering as missing -- the
+      // Remove path above only ever produces null, so this is seeded
+      // directly through the store instead, on the other (lower) join.
+      // party.length is 2 at this point (Doc still removed), so 5 is stale.
+      rpgStore.commit('smoke: seed a stale numeric Join member', (project) => {
+        project.maps[0].screens[0].entities[lowerEntityIndex].props.event.pages[0].commands[0].member = 5;
+      });
+      await wait(200);
+
+      const lowerRowHint = findEntityRow(lowerEntityIndex);
+      if (!lowerRowHint || lowerRowHint.textContent.indexOf('Join (missing member)') === -1) {
+        throw new Error('a stale numeric Join member should also summarize as "Join (missing member)", saw: ' + (lowerRowHint ? lowerRowHint.textContent : 'no row found'));
+      }
+
+      const lowerEditButton = findEditButton(lowerEntityIndex);
+      if (!lowerEditButton) throw new Error('the lower placement has no Edit event… button');
+      lowerEditButton.click();
+      await until('the event editor', () => document.querySelector('#modalHost .btn-accent'));
+
+      const numericMemberSelect = findMemberSelect();
+      if (!numericMemberSelect) throw new Error('the event editor has no Join select with a Missing member option for the stale numeric case');
+      if (numericMemberSelect.value !== '5') {
+        throw new Error('a stale numeric Join’s own select should have "Missing member" selected (value "5"), saw: ' + JSON.stringify(numericMemberSelect.value));
+      }
+      const selectedOptionText = numericMemberSelect.options[numericMemberSelect.selectedIndex].textContent;
+      if (selectedOptionText !== 'Missing member') {
+        throw new Error('the selected option for a stale numeric member should read "Missing member", saw: ' + JSON.stringify(selectedOptionText));
+      }
+
+      // Not Cancel: showModal's own generic close handler (renderer/ui.js)
+      // resolves an action with no onClick to action.value ?? null, which
+      // turns editEvent's own Cancel action (value: undefined) into a real,
+      // committed null the instant it reaches map.js's own
+      // result !== undefined check -- Cancel is not actually a no-op today,
+      // it wipes the event. That is a real, pre-existing bug this test
+      // found, unrelated to the join guard and out of this brief's scope to
+      // fix (see the round 3 report). Save with nothing changed is
+      // unaffected -- its own onClick returns the draft's real pages,
+      // member 5 untouched -- so it is used here instead, and undone twice
+      // afterward (once for this unchanged-Save commit, once for the seed
+      // commit above it) to leave the undo stack exactly where the
+      // pre-existing "one undo entry" test below expects
+      // it: the party Remove commit as the only thing left to undo.
+      document.querySelector('#modalHost .btn-accent').click();
+      await wait(200);
+
+      if (!rpgStore.undo()) throw new Error('undo returned false for the unchanged Save commit');
+      await wait(150);
+      if (!rpgStore.undo()) throw new Error('undo returned false for the stale-numeric-member seed commit');
+      await wait(150);
+      const lowerMemberAfterOwnUndo = rpgStore.project.maps[0].screens[0].entities[lowerEntityIndex].props.event.pages[0].commands[0].member;
+      if (lowerMemberAfterOwnUndo !== 0) {
+        throw new Error('undoing the seed and the unchanged Save should have restored member 0, saw: ' + JSON.stringify(lowerMemberAfterOwnUndo));
+      }
+      step('Map Forge renders a stale numeric Join member as missing too', 'summary line and the selected option both read as missing');
+    }
+
+    // The "one undo entry" test below reads only rpgStore.project, not the
+    // DOM, so which Forge is mounted going into it does not matter -- the
+    // rendering-coverage block above leaves the Map Forge active, and that
+    // is fine.
+    if (!rpgStore.undo()) throw new Error('undo returned false for the party Remove commit');
+    await wait(150);
+    const namesAfterUndo = rpgStore.project.party.map((m) => m.name);
+    if (namesAfterUndo.length !== 3 || namesAfterUndo[0] !== firstMemberName || namesAfterUndo[1] !== 'Iris' || namesAfterUndo[2] !== 'Doc') {
+      throw new Error('expected the party to be back to [' + JSON.stringify(firstMemberName) + ',"Iris","Doc"] after one undo, saw: ' + JSON.stringify(namesAfterUndo));
+    }
+    const joinEntitiesAfterUndo = rpgStore.project.maps[0].screens[0].entities.slice(-2);
+    const lastJoinAfterUndo = joinEntitiesAfterUndo[0].props.event.pages[0].commands[0];
+    const lowerJoinAfterUndo = joinEntitiesAfterUndo[1].props.event.pages[0].commands[0];
+    if (lastJoinAfterUndo.member !== 2) {
+      throw new Error('one undo should have restored the Doc join to member 2, saw: ' + JSON.stringify(lastJoinAfterUndo.member));
+    }
+    if (lowerJoinAfterUndo.member !== 0) {
+      throw new Error('one undo should have left the ' + firstMemberName + ' join at member 0, saw: ' + JSON.stringify(lowerJoinAfterUndo.member));
+    }
+    step('Sprite Forge party Remove is one undo entry', 'a single undo restored the party and both Join members together');
+
+    // Back to Magic Forge, active rail item and all -- the next block (§11.3
+    // bullet 3) depends on that being true going in, the same way this block
+    // depended on it being true when it started (Magic Forge was the active
+    // Forge from Test 4, above).
+    window.__app.goTo('magic');
+    await wait(200);
+  }
+
   // §11.3 bullet 3: cross-type open with Magic active. Magic is already the
   // mounted Forge from the tests above; opening the action sample here (the
   // same project.open + store.open pattern used throughout this script,

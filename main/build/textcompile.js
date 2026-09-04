@@ -37,6 +37,7 @@ import {
   actorByte,
   itemMissing,
   NO_ITEM,
+  NO_MEMBER,
   battleFormationSlice,
   NO_ACTOR,
   choiceLabel,
@@ -318,8 +319,27 @@ export function compileText(project) {
       // and back, the same "nothing to resolve" shape 'save' already has.
       case 'flash':
         return [opIndex('flash')];
+      // NO_MEMBER, not the byte() clamp below, for a null member --
+      // renumberPartyMemberDeletion's own answer once the named member is
+      // deleted. byte(null, 3) would coerce it to 0, a real, wrong member;
+      // NO_MEMBER is what battle_entry_join's own cpx #PARTY_SIZE guard
+      // (engine/battle.asm) refuses instead. A numeric member still clamps
+      // to 3 as before -- this function does have project in hand (it is the
+      // one argument compileText takes, used a few lines below by songByte),
+      // so the 0-3 clamp is not a lack-of-information limit the way the
+      // screen/actor-count clamps elsewhere in this file are. It is policy:
+      // whether a member is live is validateProject's own question to
+      // answer at authoring time (the RPG block's own dangling-join check),
+      // not this operand's, so it keeps its old RAM-capacity-only clamp
+      // rather than growing a second, narrower one here. A value at or above
+      // the project's real PARTY_SIZE but still within that 0-3 clamp (2 on
+      // a two-member project, say) therefore reaches the ROM unrefused at
+      // this layer -- validateProject refuses it at authoring time for a
+      // live join, and the engine guard that refuses NO_MEMBER catches it at
+      // runtime otherwise, for a hand-edited or later-version project that
+      // bypassed validation.
       case 'join':
-        return [opIndex('join'), byte(command.member, 3)];
+        return [opIndex('join'), command.member === null ? NO_MEMBER : byte(command.member, 3)];
       case 'call': {
         // A reference, not a container: the argument is the callee's slot in
         // the shared events table, resolved above rather than clamped here.

@@ -29,7 +29,21 @@ battle_entry_join:
   cmp #BE_JOIN
   bne battle_entry_restore
   ldx bt_arg                ; the Join command, run from the field mid-script
+  ; A stale or hand-edited member (NO_MEMBER, or a numeric one the deleting
+  ; party member's own party.length no longer covers) must not reach
+  ; party_apply_level -> level_row, whose per-level tables are sized to
+  ; PARTY_SIZE * MAX_LEVEL, not MAX_PARTY * MAX_LEVEL -- the same access
+  ; party_init_slot already guards a few lines below (cpx #PARTY_SIZE /
+  ; bcs party_init_next) before its own call to party_join. This is that
+  ; guard's twin for the *other* caller: party_init already protects itself,
+  ; and this is the asymmetry that was the defect.
+  cpx #PARTY_SIZE
+  bcs battle_entry_join_skip
   jmp party_join
+battle_entry_join_skip:
+  rts                        ; back to call_battle's own jmp set_screen_ptr --
+                              ; battle_entry is reached by jsr, never jmp, so
+                              ; this rts is the correct, and only, return.
 battle_entry_restore:
   jmp party_restore
 

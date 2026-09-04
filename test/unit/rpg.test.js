@@ -15,10 +15,12 @@ import NES from '../../renderer/emulator/core/nes.js';
 import { Emulator, BUTTON } from '../../renderer/emulator/runcontrol.js';
 import { loadProject, saveProject } from '../../main/project-io.js';
 import { buildProject } from '../../main/build/pipeline.js';
-import { createProject } from '../../shared/project.js';
+import { createProject, NO_MEMBER } from '../../shared/project.js';
 import { checkCapacity } from '../../main/build/generate.js';
 import { statAt, xpCurve, nameTiles, NAME_LIMIT } from '../../main/build/battletables.js';
 import { parseSymbolFile } from '../../main/build/symbols.js';
+import { compileText, opIndex, EVT_PAGES_END } from '../../main/build/textcompile.js';
+import { decodeBody } from '../lib/eventdecoder.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const SAMPLE = path.join(ROOT, 'sample-rpg');
@@ -887,6 +889,165 @@ test('a Join event recruits a member mid-script, and they fight from then on', {
   assert.equal(state, ST_GAMEPLAY, 'two attackers could not finish one slime');
   assert.equal(nes.cpu.mem[MON_ALIVE], 0);
   assert.ok(nes.cpu.mem[PC_XP_LO + 1] > 0, 'the recruit fought and earned nothing');
+});
+
+// Join-guard brief (handoff-next/join-guard-brief.md): battle_entry_join
+// (engine/battle.asm) had no bound check of its own on a Join command's own
+// operand -- unlike party_init_slot, which already guards its own identical
+// access to the same per-level tables. validateProject refuses a live join
+// like this at authoring time (project.test.js), so this proves the engine's
+// own runtime guard holds too, for a hand-edited or later-version ROM that
+// bypassed validation. The compiled operand is patched directly in the built
+// ROM, located by finding the exact bytes compileText produces for this
+// project rather than a hand-picked file offset -- a change to the
+// compiler's own layout would move the byte and this test would notice, not
+// silently patch the wrong one.
+test('battle_entry_join refuses a Join operand at or above PARTY_SIZE, whether the sentinel or a stale numeric index', {
+  skip: needsSample
+}, async (t) => {
+  const dir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'forge-join-guard-'));
+  t.after(() => fs.promises.rm(dir, { recursive: true, force: true }));
+  const project = await loadProject(SAMPLE);
+  // Wandering monsters off, so the walk to Iris cannot be interrupted -- the
+  // same fixture shape the Join test above uses.
+  project.maps[0].encounters = { rate: 0, actorIds: [] };
+  await saveProject(dir, project);
+  const built = await buildProject({ dir, project, log: () => {} });
+
+  // Locate the Iris recruit entity by content (a live 'join' command
+  // somewhere in its event), not by actor id or map position -- sample-rpg's
+  // own layout is not this test's concern.
+  let joinEntity = null;
+  for (const map of project.maps) {
+    for (const screen of map.screens) {
+      for (const entity of screen.entities ?? []) {
+        const pages = entity.props?.event?.pages ?? [];
+        if (pages.some((page) => (page.commands ?? []).some((c) => c.op === 'join'))) joinEntity = entity;
+      }
+    }
+  }
+  assert.ok(joinEntity, 'sample-rpg should carry exactly one placement with a live Join command');
+
+  // compileText on the identical project object the ROM was built from: the
+  // compiler is deterministic, so this reproduces the exact bytes embedded
+  // in the ROM, the same discipline test/lib/eventdecoder.js already applies
+  // elsewhere in this codebase.
+  const compiled = compileText(project);
+  const bytes = compiled.events[compiled.eventFor.get(joinEntity)];
+  assert.ok(bytes, 'compileText should have compiled a slot for the Join entity’s event');
+
+  const OP_JOIN = opIndex('join');
+  // Walks the page/command framing exactly as decodeBody (test/lib/
+  // eventdecoder.js) does, tracking absolute offsets as it goes -- decodeBody
+  // itself only hands back decoded command objects, not the byte offset each
+  // one started at, so this reconstructs that from each command's own
+  // reported size. Only finds a top-level Join, not one nested inside a
+  // branch or a choice option -- sample-rpg's own Join is top-level (a plain
+  // Say/Join/SetSwitch sequence), so this is sufficient for this fixture; a
+  // mismatch here surfaces as opAt === -1, not a silent wrong offset.
+  const opAt = (() => {
+    let cursor = 0;
+    while (bytes[cursor] !== EVT_PAGES_END) {
+      const bodyLen = bytes[cursor + 3];
+      const commands = decodeBody(bytes, cursor + 4, bodyLen - 1, { strings: [], flat: [] });
+      let at = cursor + 4;
+      for (const cmd of commands) {
+        if (bytes[at] === OP_JOIN) return at + 1; // the operand, one byte past the opcode
+        at += cmd.size;
+      }
+      cursor += 4 + bodyLen;
+    }
+    return -1;
+  })();
+  assert.notEqual(opAt, -1, 'the Join command must be a live, top-level, decodable command in its own event');
+  assert.equal(
+    bytes[opAt],
+    1,
+    'sample-rpg’s Iris Join should still name member 1 -- if this moved, re-derive the fixture'
+  );
+
+  // Confirm the located event's bytes appear in the built ROM exactly once,
+  // so patching operandOffset below cannot silently hit a different copy.
+  const romBytes = fs.readFileSync(built.romPath);
+  const needle = Buffer.from(bytes);
+  const first = romBytes.indexOf(needle);
+  assert.ok(first !== -1, 'the compiled event bytes must appear in the built ROM verbatim');
+  assert.equal(
+    romBytes.indexOf(needle, first + 1),
+    -1,
+    'the compiled event bytes must appear exactly once in the ROM, or the patch below could hit the wrong copy'
+  );
+  const operandOffset = first + opAt;
+  assert.equal(romBytes[operandOffset], 1, 'byte at the located offset must be the Join operand itself');
+
+  // round 2 finding 1: patching only NO_MEMBER ($FF) proves a guard shaped
+  // like `cpx #NO_MEMBER / beq skip` too -- that compare happens to refuse
+  // the sentinel while doing nothing for a plain stale numeric index, which
+  // is not what battle_entry_join actually does (`cpx #PARTY_SIZE / bcs`,
+  // engine/battle.asm). sample-rpg's own party has two members, so
+  // PARTY_SIZE is 2 and the operand value 2 is the exact boundary a
+  // sentinel-only compare would let through: 2 !== NO_MEMBER, so `beq`
+  // never fires, and party_join would recruit a member that does not exist.
+  // Patching both values into two separately built ROMs and asserting the
+  // identical refusal on each is what tells the real guard and the
+  // sentinel-only one apart.
+  const buildPatched = (value, suffix) => {
+    const patched = Buffer.from(romBytes);
+    patched[operandOffset] = value;
+    const patchedPath = path.join(dir, 'build', 'join-guard-' + suffix + '.nes');
+    fs.writeFileSync(patchedPath, patched);
+    return patchedPath;
+  };
+
+  // Round 3 review, finding 5: party_size/pc_in_party alone only prove
+  // battle_entry_join declined to recruit anyone -- they say nothing about
+  // *how* it got back to the field. A wrong `bcs battle_entry_restore`
+  // (engine/battle.asm) in place of `bcs battle_entry_join_skip` would run
+  // party_restore instead of skipping straight to rts, and party_restore
+  // still ends in an rts back to call_battle (the same chain the checked-in
+  // skip uses), so party_size/pc_in_party would come out identical either
+  // way on this freshly booted fixture -- nothing recruited, nothing
+  // in-party changes. What differs is party_restore's own side effect: it
+  // unconditionally recomputes pc_hp_max/pc_mp_max/pc_spells for every
+  // PARTY_SIZE slot from that slot's current pc_level, live or not. Seeding
+  // slot 0's pc_hp_max to a value the level tables would never produce
+  // before triggering the refused Join, then asserting it is still that
+  // same artificial value afterward, is what tells "skipped outright" and
+  // "ran party_restore, which happened to recompute the identical number"
+  // apart.
+  const assertJoinRefused = (patchedPath, label) => {
+    const nes = boot(patchedPath);
+    assert.equal(nes.cpu.mem[PARTY_SIZE], 1, label + ': only the starting member should have started');
+
+    const realHpMax = nes.cpu.mem[PC_HP_MAX];
+    const seededHpMax = (realHpMax + 111) & 0xff; // guaranteed different from whatever the tables actually produced
+    nes.cpu.mem[PC_HP_MAX] = seededHpMax;
+
+    walkTo(nes, 208, 48);
+    assert.ok(talkThrough(nes), label + ': the conversation never ended');
+
+    assert.equal(
+      nes.cpu.mem[PARTY_SIZE],
+      1,
+      label + ': a stale Join operand must not recruit anyone -- battle_entry_join’s own cpx #PARTY_SIZE guard should refuse it'
+    );
+    for (let slot = 0; slot < MAX_PARTY; slot++) {
+      assert.equal(
+        nes.cpu.mem[PC_IN_PARTY + slot],
+        slot === 0 ? 1 : 0,
+        label + ': pc_in_party slot ' + slot + ' must be untouched by the refused Join'
+      );
+    }
+    assert.equal(
+      nes.cpu.mem[PC_HP_MAX],
+      seededHpMax,
+      label + ': the refused Join must not have run party_restore -- the seeded pc_hp_max should be untouched, ' +
+        'not recomputed back to the level tables’ own value'
+    );
+  };
+
+  assertJoinRefused(buildPatched(NO_MEMBER, 'sentinel'), 'NO_MEMBER ($FF)');
+  assertJoinRefused(buildPatched(2, 'boundary'), 'a stale numeric member (2, exactly PARTY_SIZE)');
 });
 
 test('a two-monster formation is targeted one at a time, and the cursor wraps', {

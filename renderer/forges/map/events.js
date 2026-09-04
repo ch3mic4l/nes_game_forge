@@ -273,6 +273,17 @@ export function callTargetMissing(commonEvents, eventId) {
 }
 
 /**
+ * Whether a `join` command's `member` does not name a real, current party
+ * member — `null` (renumberPartyMemberDeletion's own answer once the member
+ * it named is gone) or a stale numeric index the party has since shrunk
+ * past. The `callTargetMissing` precedent just above, one field over: pulled
+ * out so the summary line and the select below ask the identical question.
+ */
+export function partyMemberMissing(party, member) {
+  return member === null || member === undefined || !(party ?? [])[member];
+}
+
+/**
  * How a command reads in the list, so a page is legible without opening it.
  * A switched-off command says so wherever it is summarised — the alternative
  * is a list describing an event that is not the one the ROM will run.
@@ -320,7 +331,9 @@ function describeEnabled(command, context = {}) {
     case 'warp':
       return `Warp to ${screens[command.screen] ?? `screen ${command.screen}`} at ${command.x},${command.y}`;
     case 'join':
-      return `${party[command.member]?.name ?? `Member ${command.member}`} joins the party`;
+      return partyMemberMissing(party, command.member)
+        ? 'Join (missing member)'
+        : `${party[command.member].name} joins the party`;
     case 'setVar':
       return `Set ${varName(command.variable)} to ${command.value ?? 0}`;
     case 'addVar':
@@ -1490,13 +1503,36 @@ export function editEvent(event, context) {
         valueInput(command.value ?? 0, (value) => (command.value = value))
       );
     } else if (command.op === 'join') {
+      const party = context.party ?? [];
       controls.push(
         el(
           'select',
-          { style: { flex: '1' }, onchange: (fired) => (command.member = Number(fired.target.value)) },
-          (context.party ?? []).map((member, id) =>
-            el('option', { value: id, selected: id === command.member }, member.name)
-          )
+          {
+            style: { flex: '1' },
+            // Not the bare Number(fired.target.value) the call select below
+            // gets away with: that select's own missing sentinel
+            // (NO_COMMON_EVENT_ID, a real number) round-trips through
+            // Number() unchanged, but a join's missing member is `null`,
+            // which the DOM can only carry as the empty string
+            // (`command.member ?? ''` below) -- Number('') is 0, not null, so
+            // reselecting the still-showing "Missing member" option after
+            // picking a real one would silently write member 0. The same
+            // empty-string-means-null check the 'music'/'sfx' selects
+            // already use a few cases down.
+            onchange: (fired) => {
+              const raw = fired.target.value;
+              command.member = raw === '' ? null : Number(raw);
+            }
+          },
+          // A member the party no longer has — deleted since, or the null
+          // renumberPartyMemberDeletion leaves behind — gets its own option
+          // rather than falling to whichever option the browser renders
+          // first while command.member keeps pointing at nothing: the same
+          // callTargetMissing precedent above, one field over.
+          partyMemberMissing(party, command.member)
+            ? el('option', { value: command.member ?? '', selected: true }, 'Missing member')
+            : null,
+          party.map((member, id) => el('option', { value: id, selected: id === command.member }, member.name))
         )
       );
     } else if (command.op === 'call') {
