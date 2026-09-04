@@ -299,7 +299,11 @@ deliberately reads `allCommands` (what is *mentioned*) rather than `liveCommands
 `battleFormationSlice`/`mapEncounterFormation` — a monster named only inside a disabled branch, in an
 over-cap 5th formation slot, or on a rate-zero map still appears, because the concern is never hiding
 an actor an author is looking at, not deciding what the ROM runs. See `docs/design-monster.md` §2 for
-the boundary behind this catalog — what stays on the Sprite Forge and why.
+the boundary behind this catalog — what stays on the Sprite Forge and why. `battle.level` is the one
+Monster-Forge-only field with no compiled reader: it normalizes to `null` or
+`clamp(1, RPG_LIMITS.maxLevel)`, the fixed constant and never `project.rpg.maxLevel`, so lowering the
+Build panel's own level cap as a capacity lever cannot silently reclamp an already-authored bestiary.
+`test/unit/monsterlevel.test.js` is its same-tree byte-identity proof, the `routes.test.js` shape.
 `isForgeAvailable(entry, project)` is the single predicate for whether an entry applies
 to the open project, read by exactly three call sites — `renderRail()`, the `app.forgeIds` getter
 (which is why "visit every Forge" stays correct on an action project without special-casing Magic

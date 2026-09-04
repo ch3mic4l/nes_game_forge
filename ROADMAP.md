@@ -1541,7 +1541,7 @@ monsters the way item 5's shipped phases were for items.
    between the two Forges. The non-destructive "Make harmless" action clears an actor's `damage` to
    zero without deleting it. `validateProject`'s battle-art-collision error and stale-drop warning now
    attribute `where: 'Monster Forge'`.
-2. **Monster level** — nothing exists today. Party members have levels and a level curve
+2. ~~**Monster level** — nothing exists today. Party members have levels and a level curve
    (`battletables.js` precomputes per-level stats into `pc_hp_at`/`pc_mp_at`/`pc_atk_at`/`pc_def_at`
    and the XP curve into `xp_next_lo`/`xp_next_hi`); monsters have flat, hand-set stats with no level
    dimension at all (`mon_hp`/`mon_atk`/etc. are one value per actor). What a monster's level would
@@ -1549,10 +1549,13 @@ monsters the way item 5's shipped phases were for items.
    statline, or a curve of its own — is an open design question this item records rather than
    settles. If it does settle on anything derived, the no-multiply rule already governing every other
    RPG table applies here too: a scaling level is `battletables.js` build-time cost, not new engine
-   code. `docs/design-monster.md` §3 has since settled this as **display-only** for phase 2 — a
-   `battle.level` number field in the Monster Forge's detail pane, no scaling, no curve, proved by a
-   same-tree byte-identical ROM comparison — while §6 phase 3's derived-stat convenience stays
-   explicitly not committed to.
+   code.~~ — **done** (`9e66fe2`): `battle.level`, nullable, clamped to the fixed
+   `RPG_LIMITS.maxLevel` — not the project's own, separately adjustable `rpg.maxLevel`, because
+   lowering the Build panel's own level cap as a capacity lever must not silently reclamp an
+   already-authored bestiary — display-only, with no compiled-byte reader anywhere under
+   `main/build/` or `engine/`, proved ROM-neutral by `test/unit/monsterlevel.test.js`'s same-tree
+   byte-identical ROM comparison. Scaling/curve stays deferred per `docs/design-monster.md` §3/§6
+   phase 3, explicitly not committed to.
 3. **Battle-side animations** — battle art is a static block today, with no motion and no
    attack/cast animation on a monster at all. This shares the same open "what is an animation on the
    battle screen" question item 13 records for spells (metasprite flipbook vs. `PALETTE_FX` reuse vs.

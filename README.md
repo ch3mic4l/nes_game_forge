@@ -23,7 +23,7 @@ npm run smoke      # end-to-end: boots the real UI and drives it
 | **Sprite Forge** | Done — metasprite assembly, animation timeline with live preview, actors bound to behaviours |
 | **Items Forge** | Done — name, effect (None for a key item, or Heals/Damages with an amount) and, optionally, the linked Pickup actor; also reachable via a scripted Give item command or a monster's drop |
 | **Magic Forge** | Done — name, kind, a min/max damage or heal range, MP cost, element and scope, for turn-based RPG projects only; a party member's own learned spells stay on the Sprite Forge's Party tab |
-| **Monster Forge** | Done — combat stats, magic weakness/resistance, which spell it casts, XP/gold, item drop and drop chance, and battle artwork, for turn-based RPG projects only; an actor's hit points, contact damage, sprites and animations stay on the Sprite Forge, reachable from the Monster Forge by a link (and back) |
+| **Monster Forge** | Done — combat stats, magic weakness/resistance, which spell it casts, XP/gold, item drop and drop chance, an optional reference level (display-only — it does not affect battle stats), and battle artwork, for turn-based RPG projects only; an actor's hit points, contact damage, sprites and animations stay on the Sprite Forge, reachable from the Monster Forge by a link (and back) |
 | **Sound Forge** | Done — tracker for all four channels, instruments, order list, preview through the same replayer the ROM agrees with |
 | **Controller Forge** | Done — buttons bound to engine actions per game state, plus keyboard bindings for the player |
 | **Code Forge** | Done — the engine's 6502 source in a tabbed editor with syntax highlighting; edits are kept per project, and you can add your own `.asm` files |
@@ -446,7 +446,7 @@ Fantasy shipped on.
 |---|---|
 | Sprite Forge ▸ *Party* | Up to four members: base stats, growth per level, which spells they learn and when |
 | Magic Forge | The spell list — cost, a min/max damage or heal range, element, one target or all |
-| Monster Forge | A monster's attack, defence, speed, accuracy, evasion, magic points, experience, gold, weakness, resistance, which spell it casts, what it drops and at what chance, and its battle artwork |
+| Monster Forge | A monster's attack, defence, speed, accuracy, evasion, magic points, experience, gold, weakness, resistance, which spell it casts, what it drops and at what chance, its battle artwork, and an optional reference level |
 | Map Forge ▸ *Battles here* | The sky and ground a battle is fought against, how many steps between encounters, and which monsters turn up |
 | Build ▸ *RPG progression* | The experience curve, the level cap, and which tileset holds the monster art |
 

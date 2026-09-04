@@ -634,7 +634,11 @@ elements that already write to `actor.battle.*`, adds the `pendingRequest`/`acti
 never serialized, never read by anything under `main/build/`), and adds `monsterActorIds` (a pure
 read, no compiled output) — the underlying `store.commit` calls, the schema, and everything
 `main/build/battletables.js` emits from that schema are unchanged. §3's `level` field is read by
-nothing outside the Forge that authors it.
+normalization (`normalizeActor`, `shared/project.js`), the Monster Forge's own render, `main/smoke.js`
+and the unit tests — the true boundary is narrower than "nothing outside the Forge": no
+compiled-byte emitter reads it. A direct search finds no `battle.level` or `mon_level` anywhere
+under `main/build/` or `engine/`; `test/unit/monsterlevel.test.js` separately proves the narrower
+claim that a build with the field left unset and one set to 7 compile to byte-identical ROMs.
 
 **v1's proof procedure conflated two different things the review correctly separated: a claim only a
 cross-tree comparison can prove, and a claim a same-tree unit test can prove — and a `test/unit` test
@@ -803,6 +807,12 @@ and unexposed in both Forges, the same posture this design already takes toward 
 this document does not otherwise touch.
 
 ## §8. Changelog
+
+**2026-09-04** — Phase 2 (§3/§6, display-only `battle.level`) shipped, commit `9e66fe2`. Corrected
+§5's own claim above: the field is read by normalization, the Monster Forge and the tests, not "by
+nothing outside the Forge that authors it" — the true boundary, confirmed by source inspection, is
+that no compiled-byte emitter reads it; the byte-identity test itself proves only the narrower claim
+that a build with the field unset and one set to 7 compile to identical ROMs.
 
 **v3** — folds in `handoff-next/monster-design-2-review1.md` (a confirmation pass on v2: nine of
 nine round-1 findings resolved, one blocking finding raised fresh against v2's own navigation fix,

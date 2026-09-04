@@ -371,7 +371,7 @@ const TOPICS = [
         [
           ['Sprite ▸ Party', 'Up to four members: stats, growth per level, spells learned and when'],
           ['Magic Forge', 'The spell list — cost, a min/max damage or heal range, element, one target or all'],
-          ['Monster Forge', 'A monster’s stats, which spell it casts, experience, gold, weakness, resistance, what it drops and at what chance'],
+          ['Monster Forge', 'A monster’s stats, which spell it casts, experience, gold, weakness, resistance, what it drops and at what chance, and an optional reference level'],
           ['Map ▸ Battles here', 'The battle backdrop, encounter rate, and which monsters appear'],
           ['Build ▸ RPG progression', 'The experience curve, level cap, and the monster-art tileset']
         ]
