@@ -19,7 +19,9 @@
     "sample:mmc3": "node tools/make-mmc3-sample.js",
     "build:sample:mmc3": "node main/build/cli.js sample-mmc3",
     "sample:u512": "node tools/make-u512-sample.js",
-    "build:sample:u512": "node main/build/cli.js sample-u512"
+    "build:sample:u512": "node main/build/cli.js sample-u512",
+    "sample:rpg-mmc1": "node tools/make-rpg-save-sample.js",
+    "build:sample:rpg-mmc1": "node main/build/cli.js sample-rpg-mmc1"
   },
   "devDependencies": {
     "electron": "^38.0.0"

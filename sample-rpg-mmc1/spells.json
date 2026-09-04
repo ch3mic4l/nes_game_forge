@@ -1,0 +1,12 @@
+[
+  {
+    "id": 0,
+    "name": "Spark",
+    "mpCost": 2,
+    "kind": "damage",
+    "amountMin": 8,
+    "amountMax": 8,
+    "element": "none",
+    "scope": "one"
+  }
+]

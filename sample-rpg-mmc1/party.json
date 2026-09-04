@@ -1,0 +1,43 @@
+[
+  {
+    "id": 0,
+    "name": "Rian",
+    "metaspriteId": null,
+    "startsInParty": true,
+    "baseHp": 24,
+    "hpPerLevel": 5,
+    "baseMp": 8,
+    "mpPerLevel": 2,
+    "baseAtk": 6,
+    "atkPerLevel": 1,
+    "baseDef": 4,
+    "defPerLevel": 1,
+    "speed": 4,
+    "acc": 200,
+    "eva": 8,
+    "spells": [
+      {
+        "spellId": 0,
+        "level": 1
+      }
+    ]
+  },
+  {
+    "id": 1,
+    "name": "Iris",
+    "metaspriteId": null,
+    "startsInParty": false,
+    "baseHp": 24,
+    "hpPerLevel": 5,
+    "baseMp": 8,
+    "mpPerLevel": 2,
+    "baseAtk": 6,
+    "atkPerLevel": 1,
+    "baseDef": 4,
+    "defPerLevel": 1,
+    "speed": 4,
+    "acc": 200,
+    "eva": 8,
+    "spells": []
+  }
+]

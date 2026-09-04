@@ -1,0 +1,12 @@
+[
+  {
+    "id": 0,
+    "name": "Gem",
+    "actorId": 0,
+    "metaspriteId": null,
+    "effect": {
+      "kind": "none",
+      "amount": 0
+    }
+  }
+]

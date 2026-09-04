@@ -47,17 +47,19 @@ exist on disk *and* be tracked by git, and the file must stay under a 135,000-ch
 (`fs.readFileSync(..., 'utf8').length`, not byte length — Claude Code's own limit is on
 characters) kept below the tool's 150,000-character hard limit for margin.
 
-There are **five fixtures, deliberately**. `sample/` is the action-adventure one every engine test is
+There are **six fixtures, deliberately**. `sample/` is the action-adventure one every engine test is
 written against; `sample-rpg/` is the turn-based one `rpg.test.js` drives; `sample-mmc1/`,
-`sample-mmc3/` and `sample-u512/` are small save-check fixtures, one per save-capable board, that exist
-to cover a board rather than to demonstrate a game. They are separate projects, not variants of the
+`sample-mmc3/`, `sample-u512/` and `sample-rpg-mmc1/` are small save-check fixtures — one per
+save-capable board, plus a second MMC1 one for an RPG's own extra save-adjacent bank switches
+(`docs/design-rpg-save-fixture.md`) — that exist to cover a board rather than to demonstrate a game.
+They are separate projects, not variants of the
 other two, because `sample/` and `sample-rpg/` are mapper-agnostic by design — nothing about what they
 exercise depends on which board they happen to be built for — so pinning any of them to a specific
 mapper to reach it would narrow a fixture every other engine test already depends on, for the sake of a
 concern (a specific board's own save behaviour) that only the Mesen save checks have. Those checks —
 `test/lua/run_sram_check.sh` and `test/lua/run_flash_check.sh`, driving `save_sram.lua` and
-`save_flash.lua` — are what these three exist to feed, and are the only things that consume them. No
-test may mutate any of the five — variants go to `mkdtemp` directories — and no existing test is
+`save_flash.lua` — are what these four exist to feed, and are the only things that consume them. No
+test may mutate any of the six — variants go to `mkdtemp` directories — and no existing test is
 repointed at any of the new ones: every engine test stays written against `sample/`.
 
 `sample-mmc1/` and `sample-mmc3/` are **the same walk on two boards**: same 2x1 world, same saver at the
@@ -76,7 +78,7 @@ JEDEC flash state machine) and, for `run_flash_check.sh`, a form of persistence
 (`Core/NES/Mappers/Homebrew/FlashSST39SF040.h`'s own write-through, saved as an `.ips` patch keyed off
 the ROM's basename) that the SRAM check has no equivalent of at all.
 
-All three save-check fixtures' saver pages are guarded on the switch they set — `Save` records where the
+All four save-check fixtures' saver pages are guarded on the switch they set — `Save` records where the
 player is standing, which for a `touch` trigger is on top of the actor that fired it, so Continue
 restores the player mid-contact and `spawn_entities` arms the trigger again during the load's own
 redraw. Without the guard the page re-runs a frame later and hands out a second gem, which is the

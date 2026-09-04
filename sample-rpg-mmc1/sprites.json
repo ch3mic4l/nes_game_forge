@@ -1,0 +1,176 @@
+{
+  "metasprites": [
+    {
+      "id": 0,
+      "name": "Gem",
+      "tiles": [
+        {
+          "x": 0,
+          "y": 0,
+          "tile": 32,
+          "palette": 1,
+          "hflip": false,
+          "vflip": false
+        },
+        {
+          "x": 8,
+          "y": 0,
+          "tile": 33,
+          "palette": 1,
+          "hflip": false,
+          "vflip": false
+        },
+        {
+          "x": 0,
+          "y": 8,
+          "tile": 34,
+          "palette": 1,
+          "hflip": false,
+          "vflip": false
+        },
+        {
+          "x": 8,
+          "y": 8,
+          "tile": 35,
+          "palette": 1,
+          "hflip": false,
+          "vflip": false
+        }
+      ]
+    },
+    {
+      "id": 1,
+      "name": "Saver",
+      "tiles": [
+        {
+          "x": 0,
+          "y": 0,
+          "tile": 36,
+          "palette": 2,
+          "hflip": false,
+          "vflip": false
+        },
+        {
+          "x": 8,
+          "y": 0,
+          "tile": 37,
+          "palette": 2,
+          "hflip": false,
+          "vflip": false
+        },
+        {
+          "x": 0,
+          "y": 8,
+          "tile": 38,
+          "palette": 2,
+          "hflip": false,
+          "vflip": false
+        },
+        {
+          "x": 8,
+          "y": 8,
+          "tile": 39,
+          "palette": 2,
+          "hflip": false,
+          "vflip": false
+        }
+      ]
+    }
+  ],
+  "animations": [
+    {
+      "id": 0,
+      "name": "Gem shine",
+      "loop": true,
+      "frames": [
+        {
+          "metaspriteId": 0,
+          "duration": 30
+        }
+      ]
+    },
+    {
+      "id": 1,
+      "name": "Saver idle",
+      "loop": true,
+      "frames": [
+        {
+          "metaspriteId": 1,
+          "duration": 30
+        }
+      ]
+    }
+  ],
+  "actors": [
+    {
+      "id": 0,
+      "name": "Gem",
+      "behavior": "pickup",
+      "speed": 1,
+      "hp": 1,
+      "damage": 0,
+      "anims": {
+        "idle": 0,
+        "walkDown": null,
+        "walkUp": null,
+        "walkSide": null
+      },
+      "battle": {
+        "atk": 4,
+        "def": 2,
+        "acc": 180,
+        "eva": 4,
+        "speed": 4,
+        "mp": 0,
+        "xp": 4,
+        "gold": 2,
+        "weak": "none",
+        "strong": "none",
+        "drop": null,
+        "dropPct": 10,
+        "heal": 0,
+        "spellId": null,
+        "battleTile": null,
+        "battleW": 4,
+        "battleH": 4,
+        "battlePalette": 2,
+        "level": null
+      }
+    },
+    {
+      "id": 1,
+      "name": "Saver",
+      "behavior": "npc",
+      "speed": 1,
+      "hp": 1,
+      "damage": 0,
+      "anims": {
+        "idle": 1,
+        "walkDown": null,
+        "walkUp": null,
+        "walkSide": null
+      },
+      "battle": {
+        "atk": 4,
+        "def": 2,
+        "acc": 180,
+        "eva": 4,
+        "speed": 4,
+        "mp": 0,
+        "xp": 4,
+        "gold": 2,
+        "weak": "none",
+        "strong": "none",
+        "drop": null,
+        "dropPct": 10,
+        "heal": 0,
+        "spellId": null,
+        "battleTile": null,
+        "battleW": 4,
+        "battleH": 4,
+        "battlePalette": 2,
+        "level": null
+      }
+    }
+  ]
+}
