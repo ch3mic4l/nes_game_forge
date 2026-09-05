@@ -2889,6 +2889,121 @@ const scenario = (dir, sampleDir, sampleRpgDir) => `
   }
   step('sprite forge tabs', 'animations and actors render');
 
+  // ROADMAP item 8: Palette-swap an existing sprite. Still on the Actors tab,
+  // with the sample's own "Slime" (actor 0, anims idle=0/walkSide=2, both
+  // resolving to metasprites painted sprite palette 1) selected by default.
+  // End-to-end through the real button and modal -- this Forge has no
+  // dedicated unit-test file of its own, so this is the real verification
+  // for the UI half of the feature; shared/project.js's
+  // duplicateActorPaletteSwapCore is unit-tested directly for the dedup/
+  // clone/recolor logic itself.
+  {
+    const spriteStoreForSwap = window.__app.store;
+    const beforeActorCount = spriteStoreForSwap.project.sprites.actors.length;
+    const beforeMetaspriteCount = spriteStoreForSwap.project.sprites.metasprites.length;
+    const beforeAnimationCount = spriteStoreForSwap.project.sprites.animations.length;
+
+    const swapButton = [...document.querySelectorAll('#stage button.btn.btn-sm')].find(
+      (b) => b.textContent.trim() === '⧉'
+    );
+    if (!swapButton) throw new Error('Actors tab has no palette-swap button');
+    if (swapButton.disabled) throw new Error('palette-swap button is disabled for an actor with animations assigned');
+    swapButton.click();
+    await until('the palette-swap modal', () => document.querySelector('#modalHost .modal-head'));
+    if (document.querySelector('#modalHost .modal-head').textContent !== 'Palette-swap actor') {
+      throw new Error('unexpected modal opened: ' + document.querySelector('#modalHost .modal-head').textContent);
+    }
+    const selects = [...document.querySelectorAll('#modalHost select')];
+    if (selects.length !== 2) throw new Error('expected two palette selects (From/To), saw ' + selects.length);
+    // From should default to 1, the only palette Slime's own metasprites use.
+    if (selects[0].value !== '1') throw new Error('"From" did not default to the actor’s own most-common palette (1): ' + selects[0].value);
+    // Explicitly choose "To" 3, distinct from the modal's own default (2), so
+    // this also proves the dropdown is wired to the confirm action rather
+    // than the default being what actually lands.
+    selects[1].value = '3';
+    selects[1].dispatchEvent(new Event('change'));
+    const swapConfirm = [...document.querySelectorAll('#modalHost button')].find((b) => b.textContent.trim() === 'Swap');
+    if (!swapConfirm) throw new Error('the palette-swap modal has no Swap button');
+    swapConfirm.click();
+    await until('the palette-swap modal to close', () => document.querySelector('#modalHost').hidden);
+
+    const afterSwap = spriteStoreForSwap.project;
+    if (afterSwap.sprites.actors.length !== beforeActorCount + 1) {
+      throw new Error('palette-swap did not append exactly one new actor: ' + afterSwap.sprites.actors.length);
+    }
+    // Slime uses two distinct animations, backing three distinct metasprites
+    // (0, 1 via anim 0; 3 via anim 2) -- exactly what should get cloned once
+    // each, never twice.
+    if (afterSwap.sprites.animations.length !== beforeAnimationCount + 2) {
+      throw new Error('expected exactly 2 new animations (Slime’s own two, deduped), saw ' + (afterSwap.sprites.animations.length - beforeAnimationCount));
+    }
+    if (afterSwap.sprites.metasprites.length !== beforeMetaspriteCount + 3) {
+      throw new Error('expected exactly 3 new metasprites (deduped across both animations), saw ' + (afterSwap.sprites.metasprites.length - beforeMetaspriteCount));
+    }
+    const newActor = afterSwap.sprites.actors[afterSwap.sprites.actors.length - 1];
+    const newIdleAnim = afterSwap.sprites.animations[newActor.anims.idle];
+    const newWalkAnim = afterSwap.sprites.animations[newActor.anims.walkSide];
+    const recoloredMetaspriteIds = new Set([...newIdleAnim.frames, ...newWalkAnim.frames].map((f) => f.metaspriteId));
+    if (recoloredMetaspriteIds.size !== 3) throw new Error('the new actor’s two animations should share the same 3 new metasprites');
+    for (const id of recoloredMetaspriteIds) {
+      const tiles = afterSwap.sprites.metasprites[id].tiles;
+      if (!tiles.every((t) => t.palette === 3)) throw new Error('metasprite ' + id + ' was not fully recolored to palette 3');
+    }
+    // The original must be untouched: same animation ids, same metasprites,
+    // still painted palette 1.
+    const original = afterSwap.sprites.actors[0];
+    if (original.anims.idle !== 0 || original.anims.walkSide !== 2) {
+      throw new Error('the original Slime’s own anim references were mutated by the swap');
+    }
+    if (!afterSwap.sprites.metasprites[0].tiles.every((t) => t.palette === 1)) {
+      throw new Error('the original Slime A metasprite was recolored in place');
+    }
+    step('palette-swap actor', 'new actor "' + newActor.name + '" appeared with 3 metasprites recolored to palette 3, original untouched');
+  }
+
+  // Round 3 review finding 1: the post-modal check must catch ANY
+  // intervening change, not just one that happens to move the actor the
+  // modal was opened for. Reopen the same modal (on whatever actor the swap
+  // above left selected), synchronously commit an unrelated, no-op rename
+  // while it sits open -- store.commit always bumps store.revision
+  // (renderer/store.js), even for a mutation that changes nothing -- then
+  // confirm. Real-world reachability: Ctrl+Z/Ctrl+Shift+Z/Ctrl+O are native
+  // accelerators (main/main.js) not blocked by the modal's own backdrop.
+  {
+    const spriteStoreForRace = window.__app.store;
+    const beforeActorCountRace = spriteStoreForRace.project.sprites.actors.length;
+
+    const swapButtonAgain = [...document.querySelectorAll('#stage button.btn.btn-sm')].find(
+      (b) => b.textContent.trim() === '⧉'
+    );
+    if (!swapButtonAgain || swapButtonAgain.disabled) {
+      throw new Error('palette-swap button unavailable for the second (race) attempt');
+    }
+    swapButtonAgain.click();
+    await until('the second palette-swap modal', () => document.querySelector('#modalHost .modal-head'));
+
+    spriteStoreForRace.commit('Smoke: intervening change while the palette-swap modal is open', (project) => {
+      project.sprites.actors[0].name = project.sprites.actors[0].name;
+    });
+
+    const swapConfirmAgain = [...document.querySelectorAll('#modalHost button')].find(
+      (b) => b.textContent.trim() === 'Swap'
+    );
+    if (!swapConfirmAgain) throw new Error('the second palette-swap modal has no Swap button');
+    swapConfirmAgain.click();
+    await until('the second palette-swap modal to close', () => document.querySelector('#modalHost').hidden);
+    await until('the stale-project toast', () =>
+      [...document.querySelectorAll('#toastHost .toast')].some((node) =>
+        node.textContent.includes('changed while this dialog was open')
+      )
+    );
+
+    if (spriteStoreForRace.project.sprites.actors.length !== beforeActorCountRace) {
+      throw new Error('a swap confirmed after an intervening change must not commit -- actor count changed anyway');
+    }
+    step('palette-swap actor race', 'an intervening commit while the modal was open produced a clean refusal, not a stale-data commit');
+  }
+
   // The over-cap delete warning, through the real confirmation dialog.
   // overCapDeleteWarning is unit-tested for its wording; what only the real
   // window can show is that it reaches the author at the moment of the edit —

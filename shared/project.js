@@ -139,6 +139,19 @@ export const NO_MEMBER = 0xff;
  */
 export const NO_METASPRITE = 0xff;
 
+/**
+ * The byte that means "no animation" — `animFor` (`main/build/generate.js`)
+ * emits an actor's raw `anims[slot]` value into `actor_anim_dir` with no
+ * clamping, so a real animation id and "unset" collide the moment the id
+ * space reaches this value, the identical trap `NO_ACTOR`/`NO_ITEM`/
+ * `NO_METASPRITE` each already exist to close for their own arrays. The
+ * matching engine-side equate is `NO_ANIM` in `engine/constants.asm`,
+ * hand-written like the rest of that family. `LIMITS.animations` below is
+ * this value, not a literal 255, for the identical reason `LIMITS.actors`/
+ * `LIMITS.items`/`LIMITS.metasprites` already are.
+ */
+export const NO_ANIM = 0xff;
+
 /** Hard limits imposed by the NES and by the template engine. */
 export const LIMITS = {
   tilesPerTable: 256,
@@ -182,6 +195,13 @@ export const LIMITS = {
   // already are closes it the same way: a real metasprite can never again
   // be assigned the sentinel's own value.
   metasprites: NO_METASPRITE,
+  // Ids 0..$FE, the identical shape again, one id space further over:
+  // NO_ANIM is a byte in this space too, so the cap is the sentinel's own
+  // value. Unlike actors/items/metasprites, nothing enforced this ceiling
+  // anywhere before duplicateActorPaletteSwapCore (ROADMAP item 8) needed to
+  // check it -- narrowly gated there rather than retrofitted app-wide; see
+  // that function's own comment.
+  animations: NO_ANIM,
   // Ids 0..$FE, the identical shape again, one id space further over: NO_SFX
   // is a byte in this space too, so the cap is the sentinel's own value.
   sfx: NO_SFX,
@@ -2578,6 +2598,147 @@ export function renumberMetaspriteDeletion(project, index) {
     item.metaspriteId = fixedPoint(item.metaspriteId, NO_METASPRITE, true);
   }
   return project;
+}
+
+// ---------------------------------------------------------------------------
+// Palette-swap an existing sprite (ROADMAP item 8): duplicate an actor with
+// every tile currently painted in one sprite palette slot repainted into
+// another. `actor.anims` -> `project.sprites.animations` -> `project.sprites.
+// metasprites` is a graph, not a tree, and both pools are shared -- the same
+// animation may back two of an actor's own slots, and the same metasprite may
+// appear in two animations or twice in one -- so a naive walk would clone the
+// same record more than once. `actorAnimationIds`/`actorMetaspriteIds` are the
+// single dedup for that graph, shared between the Sprite Forge's own
+// disabled-button count and `duplicateActorPaletteSwapCore` below, so the two
+// can never disagree about how many new records a swap would need.
+// ---------------------------------------------------------------------------
+
+/** The distinct, non-null animation ids `actor.anims` names, in slot order. */
+export function actorAnimationIds(actor) {
+  return [...new Set(Object.values(actor.anims).filter((id) => id !== null))];
+}
+
+/**
+ * The distinct metasprite ids referenced by any of `actor`'s own animations'
+ * frames -- one hop past `actorAnimationIds`. A stale animation id (nothing
+ * currently produces one, but nothing enforces it either) is skipped rather
+ * than thrown on, the same defensive shape `renumberMetaspriteDeletion`'s own
+ * lookups already use elsewhere in this file.
+ */
+export function actorMetaspriteIds(project, actor) {
+  const ids = new Set();
+  for (const animId of actorAnimationIds(actor)) {
+    const animation = project.sprites.animations[animId];
+    if (!animation) continue;
+    for (const frame of animation.frames ?? []) ids.add(frame.metaspriteId);
+  }
+  return [...ids];
+}
+
+/**
+ * The commit-free core of Palette-swap actor. Always appended to the end of
+ * `project.sprites.actors` (and of `.animations`/`.metasprites`, for whatever
+ * new records it clones), never inserted in the middle -- the same shape
+ * `duplicateMapCore` already follows for its own list. Refuses the whole
+ * operation, with no partial mutation, when cloning would push
+ * `project.sprites.actors.length` past `LIMITS.actors`,
+ * `project.sprites.metasprites.length` past `LIMITS.metasprites`, or
+ * `project.sprites.animations.length` past `LIMITS.animations` -- checked
+ * before anything is pushed, the same "check first, mutate never happens
+ * otherwise" shape the Sprite Forge's own Add-actor/Add-metasprite handlers
+ * already use. Also refuses, the identical way, if `source.anims` names an
+ * animation id with no matching entry in `project.sprites.animations` --
+ * reachable today because "Delete animation" (`renderer/forges/sprite/
+ * sprite.js`) never fixes up an actor's own `anims` the way
+ * `renumberActorDeletion`/`renumberMetaspriteDeletion` do for their own id
+ * spaces, so a stale reference is real, existing data this function must not
+ * crash on (`structuredClone(undefined)`) or silently mis-clone (a stale
+ * index that now aliases a different, real animation). The identical guard
+ * applies one hop further into the graph, for a frame naming a metasprite id
+ * with no matching entry in `project.sprites.metasprites` -- not reachable
+ * through today's Sprite Forge (`renumberMetaspriteDeletion` does cascade-fix
+ * every animation's frames on a real delete), but a hand-edited or
+ * later-version project can still carry one, and this function's own two
+ * levels of the graph must agree on that policy.
+ *
+ * Every clone is `structuredClone`d from its source and renamed via
+ * `nameForDuplicateScreen` against the destination list captured *before*
+ * that clone is pushed (the same ordering `duplicateMapCore` already relies
+ * on) -- never hand-rebuilt field by field, so a clone carries over every
+ * present and future field (an actor's battle stats, an animation's `loop`,
+ * a metasprite's own art) with no risk of one being missed as the schema
+ * grows. Only a cloned metasprite's own tiles are touched: a tile whose
+ * `palette` is exactly `fromPalette` is repainted to `toPalette`; every other
+ * tile -- including one already on some other slot, since a metasprite can
+ * legitimately shade with more than one of the four -- is left exactly as it
+ * was. Nothing shared is ever mutated in place: the source actor and every
+ * animation/metasprite it (transitively) references are read, never written.
+ *
+ * Returns the new actor, or nothing (project unchanged) on refusal --
+ * `renderer/forges/sprite/sprite.js`'s own handler wraps this in exactly one
+ * `store.commit`.
+ */
+export function duplicateActorPaletteSwapCore(project, actorIndex, fromPalette, toPalette) {
+  const source = project.sprites.actors[actorIndex];
+  const animIds = actorAnimationIds(source);
+  const metaspriteIds = actorMetaspriteIds(project, source);
+
+  if (project.sprites.actors.length >= LIMITS.actors) return;
+  if (project.sprites.metasprites.length + metaspriteIds.length > LIMITS.metasprites) return;
+  if (project.sprites.animations.length + animIds.length > LIMITS.animations) return;
+  // A stale animation id (reachable today: "Delete animation" in
+  // renderer/forges/sprite/sprite.js splices project.sprites.animations and
+  // renumbers .id fields, but never fixes up any actor's own anims the way
+  // renumberActorDeletion/renumberMetaspriteDeletion do for their own id
+  // spaces) has nothing real to clone -- structuredClone(undefined) throws,
+  // and worse, the stale index could now alias a different, real animation.
+  // Refused the same way an over-cap clone already is, not fixed up: the
+  // pre-existing "Delete animation doesn't cascade" defect is out of this
+  // slice's scope.
+  if (animIds.some((id) => !project.sprites.animations[id])) return;
+  // The identical guard, one hop further into the same graph: a frame naming
+  // a metasprite id with no matching entry. Not reachable through today's
+  // Sprite Forge (renumberMetaspriteDeletion does cascade-fix every
+  // animation's frames on a real delete), but a hand-edited or
+  // later-version project is exactly the case this codebase's other
+  // stale-reference guards (NO_ACTOR/NO_ITEM/NO_METASPRITE) already exist
+  // for -- guarding the animation level of this graph but not the
+  // metasprite level one hop further in would be an inconsistency within
+  // this one function, not a different policy question.
+  if (metaspriteIds.some((id) => !project.sprites.metasprites[id])) return;
+
+  const metaspriteIdMap = new Map();
+  for (const oldId of metaspriteIds) {
+    const sourceMetasprite = project.sprites.metasprites[oldId];
+    const clone = structuredClone(sourceMetasprite);
+    clone.name = nameForDuplicateScreen(sourceMetasprite.name, project.sprites.metasprites);
+    clone.id = project.sprites.metasprites.length;
+    for (const tile of clone.tiles) {
+      if (tile.palette === fromPalette) tile.palette = toPalette;
+    }
+    metaspriteIdMap.set(oldId, clone.id);
+    project.sprites.metasprites.push(clone);
+  }
+
+  const animationIdMap = new Map();
+  for (const oldId of animIds) {
+    const sourceAnimation = project.sprites.animations[oldId];
+    const clone = structuredClone(sourceAnimation);
+    clone.name = nameForDuplicateScreen(sourceAnimation.name, project.sprites.animations);
+    clone.id = project.sprites.animations.length;
+    for (const frame of clone.frames) frame.metaspriteId = metaspriteIdMap.get(frame.metaspriteId);
+    animationIdMap.set(oldId, clone.id);
+    project.sprites.animations.push(clone);
+  }
+
+  const newActor = structuredClone(source);
+  newActor.name = nameForDuplicateScreen(source.name, project.sprites.actors);
+  newActor.id = project.sprites.actors.length;
+  for (const { id: slot } of ANIM_SLOTS) {
+    if (newActor.anims[slot] !== null) newActor.anims[slot] = animationIdMap.get(newActor.anims[slot]);
+  }
+  project.sprites.actors.push(newActor);
+  return newActor;
 }
 
 export function defaultInput() {

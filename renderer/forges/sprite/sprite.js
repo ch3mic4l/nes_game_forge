@@ -2,7 +2,7 @@
 // bind those animations to the actors the Map Forge places.
 
 import { store } from '../../store.js';
-import { el, fill, field, toast, confirmModal, fitZoom, observeSize } from '../../ui.js';
+import { el, fill, field, toast, confirmModal, showModal, fitZoom, observeSize } from '../../ui.js';
 import { tileFromString, flipTile } from '../../../shared/chr.js';
 import { NES_PALETTE, cssColor } from '../../../shared/nespalette.js';
 import {
@@ -15,7 +15,10 @@ import {
   renumberActorDeletion,
   renumberMetaspriteDeletion,
   overCapDeleteWarning,
-  monsterActorIds
+  monsterActorIds,
+  actorAnimationIds,
+  actorMetaspriteIds,
+  duplicateActorPaletteSwapCore
 } from '../../../shared/project.js';
 import { partyPanel } from './battle.js';
 import { drawSheet, sheetIndexFromEvent } from '../../widgets/sheet.js';
@@ -684,6 +687,151 @@ export function mount(container, app) {
     context.putImageData(image, 0, 0);
   }
 
+  // ------------------------------------------------------- palette swap
+
+  /**
+   * Why the button beside it is disabled, or null when the swap is live.
+   * Shares `actorAnimationIds`/`actorMetaspriteIds` (shared/project.js) with
+   * `duplicateActorPaletteSwapCore` itself, so "how many new metasprites
+   * would this need" is computed exactly once, not twice in a way that could
+   * drift.
+   */
+  function paletteSwapDisabledReason(actor) {
+    if (!actor) return 'Select an actor first';
+    const animIds = actorAnimationIds(actor);
+    if (!animIds.length) return 'This actor has no animation assigned, so there is nothing to swap';
+    // "Delete animation" does not fix up any actor's own anims (a
+    // pre-existing gap outside this feature's scope) -- surfaced here rather
+    // than left for the core function to refuse silently on click.
+    if (animIds.some((id) => !sprites().animations[id])) {
+      return 'This actor references a deleted animation, so it cannot be safely duplicated';
+    }
+    const metaspriteIds = actorMetaspriteIds(store.project, actor);
+    // The identical guard one hop further into the graph -- see
+    // duplicateActorPaletteSwapCore's own comment on why both levels must
+    // agree.
+    if (metaspriteIds.some((id) => !sprites().metasprites[id])) {
+      return 'This actor references a deleted metasprite, so it cannot be safely duplicated';
+    }
+    if (sprites().actors.length >= LIMITS.actors) return `${LIMITS.actors} actors is the ceiling`;
+    const needed = metaspriteIds.length;
+    if (sprites().metasprites.length + needed > LIMITS.metasprites) {
+      return `Not enough room for ${needed} new metasprite${needed === 1 ? '' : 's'} — ${LIMITS.metasprites} is the ceiling`;
+    }
+    if (sprites().animations.length + animIds.length > LIMITS.animations) {
+      return `Not enough room for ${animIds.length} new animation${animIds.length === 1 ? '' : 's'} — ${LIMITS.animations} is the ceiling`;
+    }
+    return null;
+  }
+
+  /** A small live-updating colour swatch beside a palette `<select>`. */
+  function paletteSwatch(colorIndex) {
+    return el('span', {
+      style: {
+        display: 'inline-block',
+        width: '14px',
+        height: '14px',
+        borderRadius: '3px',
+        background: cssColor(colorIndex),
+        border: '1px solid var(--line)',
+        marginLeft: '8px',
+        verticalAlign: 'middle'
+      }
+    });
+  }
+
+  /** A labelled palette-slot `<select>` with a swatch that tracks it live. */
+  function paletteRow(label, value, onChange) {
+    const swatch = paletteSwatch(palettes()[value][1]);
+    const select = el(
+      'select',
+      {
+        onchange: (event) => {
+          const next = Number(event.target.value);
+          onChange(next);
+          swatch.style.background = cssColor(palettes()[next][1]);
+        }
+      },
+      [0, 1, 2, 3].map((index) =>
+        el('option', { value: index, selected: index === value }, `Sprite palette ${index}`)
+      )
+    );
+    return field(label, el('div.field-row', null, select, swatch));
+  }
+
+  async function openPaletteSwapModal() {
+    const actor = currentActor();
+    if (!actor || paletteSwapDisabledReason(actor)) return;
+    // Captured now, before the modal's own await -- Ctrl+Z/Ctrl+Shift+Z/
+    // Ctrl+O are wired as native accelerators (main/main.js) that reach the
+    // renderer regardless of DOM focus, so an undo/redo/open can change or
+    // remove this very actor while the modal sits open. Re-checked once the
+    // modal resolves, below, the same "capture identity before the await,
+    // revalidate after" shape CLAUDE.md documents for selectForge's own
+    // selectionToken, at button-click scale rather than Forge-navigation
+    // scale. store.revision, not actor.id: every structural-edit handler in
+    // this file (Delete actor/animation/metasprite) restamps every surviving
+    // record's own `id` to match its array position, so whatever actor a
+    // later edit leaves sitting at actorIndex will already carry `id ===
+    // actorIndex` by the time this resolves -- an identity check keyed on
+    // `id` can never actually distinguish "still the same actor" from "a
+    // different one now sits here." store.revision (bumped by every
+    // commit()/undo()/redo()/open()/close(), renderer/store.js) has no such
+    // blind spot: it moves on ANY intervening change, which is exactly the
+    // posture this needs -- "if anything happened, don't trust what was
+    // captured" -- not a narrower "did this specific actor move" question.
+    const actorIndex = state.actor;
+    const revisionAtOpen = store.revision;
+
+    // Default "From" to whichever slot is most common across the actor's own
+    // (distinct) metasprites' tiles, slot 0 on a tie or when there is nothing
+    // to go on; "To" is simply a different slot, so the two never start equal.
+    const counts = [0, 0, 0, 0];
+    for (const id of actorMetaspriteIds(store.project, actor)) {
+      for (const tile of sprites().metasprites[id]?.tiles ?? []) counts[tile.palette]++;
+    }
+    const max = Math.max(...counts);
+    const leaders = counts.flatMap((count, index) => (count === max ? [index] : []));
+    const picked = { from: leaders.length === 1 ? leaders[0] : 0 };
+    picked.to = (picked.from + 1) % LIMITS.palettes;
+
+    const result = await showModal({
+      title: 'Palette-swap actor',
+      body: el(
+        'div',
+        null,
+        el(
+          'p.hint',
+          null,
+          `Creates a new actor that looks like "${actor.name}", with every tile currently painted in ` +
+            '"From" repainted into "To". The original is left untouched.'
+        ),
+        paletteRow('From', picked.from, (value) => (picked.from = value)),
+        paletteRow('To', picked.to, (value) => (picked.to = value))
+      ),
+      actions: [
+        { label: 'Cancel', value: null },
+        { label: 'Swap', primary: true, onClick: () => ({ from: picked.from, to: picked.to }) }
+      ]
+    });
+    if (!result) return;
+
+    // Revalidate rather than trust the captured index: refuse on ANY
+    // intervening change, not just one that happens to touch this actor --
+    // see the comment where revisionAtOpen was captured for why a narrower
+    // check cannot work here.
+    if (store.revision !== revisionAtOpen) {
+      toast('The project changed while this dialog was open — try again.', 'error');
+      return;
+    }
+
+    store.commit('Palette-swap actor', (project) =>
+      duplicateActorPaletteSwapCore(project, actorIndex, result.from, result.to)
+    );
+    state.actor = sprites().actors.length - 1;
+    render();
+  }
+
   function renderActorPane() {
     const actor = currentActor();
     fill(listHost,
@@ -785,6 +933,15 @@ export function mount(container, app) {
             }
           },
           '✕'
+        ),
+        el(
+          'button.btn.btn-sm',
+          {
+            disabled: !!paletteSwapDisabledReason(actor),
+            title: paletteSwapDisabledReason(actor) ?? 'Palette-swap this actor into a new one',
+            onclick: openPaletteSwapModal
+          },
+          '⧉'
         )
       ),
       actor

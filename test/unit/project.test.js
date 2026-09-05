@@ -82,7 +82,11 @@ import {
   clampPasteOrigin,
   buildRegionClip,
   pasteRegionCore,
-  pasteCapacityProblem
+  pasteCapacityProblem,
+  // ROADMAP item 8 (palette-swap) -------------------------------------------
+  actorAnimationIds,
+  actorMetaspriteIds,
+  duplicateActorPaletteSwapCore
 } from '../../shared/project.js';
 import { resolveStartAt } from '../../shared/playscenario.js';
 import fs from 'node:fs/promises';
@@ -2266,6 +2270,480 @@ test('the delete confirmation says what deleting while over the ceiling costs', 
   assert.match(warning, new RegExp(String(LIMITS.actors)), 'it should name the ceiling');
   assert.match(warning, new RegExp(String(LIMITS.actors - 1)), 'and the highest id a reference can still name');
   assert.match(warning, /not preserved/, 'and say plainly that those references do not survive');
+});
+
+// ---------------------------------------------------------------------------
+// ROADMAP item 8 -- "Palette-swap an existing sprite" (docs: the brief's own
+// design section). actor.anims -> project.sprites.animations -> project.
+// sprites.metasprites is a graph over two SHARED pools, so the core function
+// under test here is really a dedup-and-clone walk with a recolor on the way
+// -- these tests are chosen to catch a walk that clones something twice, or
+// that mutates a shared record in place, neither of which a naive "swap
+// every tile the actor's own metasprites carry" implementation would catch.
+// ---------------------------------------------------------------------------
+
+test('actorAnimationIds/actorMetaspriteIds: dedupe across slots and across animations', () => {
+  const project = createProject('Quest');
+  project.sprites.metasprites = [
+    { id: 0, name: 'Body', tiles: [] },
+    { id: 1, name: 'Other', tiles: [] }
+  ];
+  project.sprites.animations = [
+    { id: 0, name: 'Idle', loop: true, frames: [{ metaspriteId: 0, duration: 8 }, { metaspriteId: 0, duration: 8 }] },
+    { id: 1, name: 'Walk', loop: true, frames: [{ metaspriteId: 1, duration: 8 }] }
+  ];
+  const actor = { anims: { idle: 0, walkDown: 0, walkUp: 1, walkSide: null } };
+
+  assert.deepEqual(actorAnimationIds(actor), [0, 1], 'idle and walkDown share animation 0 -- it must appear once');
+  assert.deepEqual(
+    actorMetaspriteIds(project, actor),
+    [0, 1],
+    'metasprite 0 is referenced twice within animation 0 -- it must appear once'
+  );
+});
+
+test('duplicateActorPaletteSwapCore: an animation shared across two anim slots of the same actor is cloned exactly once', () => {
+  const project = createProject('Quest');
+  project.sprites.metasprites = [
+    { id: 0, name: 'Body', tiles: [{ x: 0, y: 0, tile: 1, palette: 0, hflip: false, vflip: false }] }
+  ];
+  project.sprites.animations = [
+    { id: 0, name: 'Walk', loop: true, frames: [{ metaspriteId: 0, duration: 8 }] }
+  ];
+  project.sprites.actors = [
+    {
+      id: 0,
+      name: 'Hero',
+      behavior: 'player',
+      speed: 1,
+      hp: 1,
+      anims: { idle: 0, walkDown: 0, walkUp: null, walkSide: null },
+      battle: {}
+    }
+  ];
+
+  const clone = duplicateActorPaletteSwapCore(project, 0, 0, 1);
+
+  assert.equal(project.sprites.animations.length, 2, 'the shared animation should be cloned exactly once, not once per slot');
+  assert.equal(clone.anims.idle, 1, 'idle should point at the new clone');
+  assert.equal(clone.anims.walkDown, 1, 'walkDown shares the same source animation, so it must point at the SAME clone');
+});
+
+test('duplicateActorPaletteSwapCore: a metasprite referenced by two animations (and twice within one) is cloned exactly once', () => {
+  const project = createProject('Quest');
+  project.sprites.metasprites = [
+    { id: 0, name: 'Body', tiles: [{ x: 0, y: 0, tile: 1, palette: 0, hflip: false, vflip: false }] }
+  ];
+  project.sprites.animations = [
+    {
+      id: 0,
+      name: 'Idle',
+      loop: true,
+      frames: [{ metaspriteId: 0, duration: 8 }, { metaspriteId: 0, duration: 8 }]
+    },
+    { id: 1, name: 'Walk', loop: true, frames: [{ metaspriteId: 0, duration: 4 }] }
+  ];
+  project.sprites.actors = [
+    {
+      id: 0,
+      name: 'Hero',
+      behavior: 'player',
+      speed: 1,
+      hp: 1,
+      anims: { idle: 0, walkDown: 1, walkUp: null, walkSide: null },
+      battle: {}
+    }
+  ];
+
+  duplicateActorPaletteSwapCore(project, 0, 0, 1);
+
+  assert.equal(
+    project.sprites.metasprites.length,
+    2,
+    'the shared metasprite should be cloned exactly once, not once per reference'
+  );
+  const [newIdle, newWalk] = project.sprites.animations.slice(2);
+  assert.equal(newIdle.frames[0].metaspriteId, 1);
+  assert.equal(newIdle.frames[1].metaspriteId, 1, 'both frames within the cloned Idle animation should point at the same new metasprite');
+  assert.equal(newWalk.frames[0].metaspriteId, 1, 'the cloned Walk animation should point at the same new metasprite as Idle, not a second clone');
+});
+
+test('duplicateActorPaletteSwapCore: only tiles on the source palette move; a tile already on another slot is untouched', () => {
+  const project = createProject('Quest');
+  project.sprites.metasprites = [
+    {
+      id: 0,
+      name: 'Body',
+      tiles: [
+        { x: 0, y: 0, tile: 1, palette: 0, hflip: false, vflip: false },
+        { x: 8, y: 0, tile: 2, palette: 1, hflip: false, vflip: false }
+      ]
+    }
+  ];
+  project.sprites.animations = [{ id: 0, name: 'Idle', loop: true, frames: [{ metaspriteId: 0, duration: 8 }] }];
+  project.sprites.actors = [
+    {
+      id: 0,
+      name: 'Hero',
+      behavior: 'player',
+      speed: 1,
+      hp: 1,
+      anims: { idle: 0, walkDown: null, walkUp: null, walkSide: null },
+      battle: {}
+    }
+  ];
+
+  duplicateActorPaletteSwapCore(project, 0, 0, 2);
+
+  const clonedMetasprite = project.sprites.metasprites[1];
+  assert.equal(clonedMetasprite.tiles[0].palette, 2, 'the tile on the source slot (0) should move to the destination slot (2)');
+  assert.equal(clonedMetasprite.tiles[1].palette, 1, 'the tile already on a different slot (1) should be left exactly as it was');
+});
+
+test('duplicateActorPaletteSwapCore: the source actor, its animations, and its metasprites are byte-identical before and after', () => {
+  const project = createProject('Quest');
+  project.sprites.metasprites = [
+    { id: 0, name: 'Body', tiles: [{ x: 0, y: 0, tile: 1, palette: 0, hflip: false, vflip: false }] }
+  ];
+  project.sprites.animations = [{ id: 0, name: 'Idle', loop: true, frames: [{ metaspriteId: 0, duration: 8 }] }];
+  project.sprites.actors = [
+    {
+      id: 0,
+      name: 'Hero',
+      behavior: 'player',
+      speed: 1,
+      hp: 1,
+      damage: 0,
+      anims: { idle: 0, walkDown: null, walkUp: null, walkSide: null },
+      battle: { atk: 4, def: 2, drop: null }
+    }
+  ];
+  const before = structuredClone(project);
+
+  duplicateActorPaletteSwapCore(project, 0, 0, 2);
+
+  assert.deepEqual(project.sprites.actors[0], before.sprites.actors[0], 'the source actor must not be mutated');
+  assert.deepEqual(project.sprites.animations[0], before.sprites.animations[0], 'the source animation must not be mutated');
+  assert.deepEqual(project.sprites.metasprites[0], before.sprites.metasprites[0], 'the source metasprite must not be mutated');
+});
+
+test('duplicateActorPaletteSwapCore: a non-visual field (battle.atk, drop) survives onto the clone untouched', () => {
+  const project = createProject('Quest');
+  project.sprites.metasprites = [{ id: 0, name: 'Body', tiles: [] }];
+  project.sprites.animations = [{ id: 0, name: 'Idle', loop: true, frames: [{ metaspriteId: 0, duration: 8 }] }];
+  project.sprites.actors = [
+    {
+      id: 0,
+      name: 'Slime',
+      behavior: 'npc',
+      speed: 2,
+      hp: 6,
+      anims: { idle: 0, walkDown: null, walkUp: null, walkSide: null },
+      battle: { atk: 42, def: 7, drop: 3 }
+    }
+  ];
+
+  const clone = duplicateActorPaletteSwapCore(project, 0, 0, 1);
+
+  assert.equal(clone.battle.atk, 42, 'battle.atk must survive onto the clone, proving structuredClone carried the whole record');
+  assert.equal(clone.battle.drop, 3, 'drop must survive onto the clone');
+  assert.equal(clone.speed, 2);
+  assert.equal(clone.hp, 6);
+});
+
+test('duplicateActorPaletteSwapCore: refuses cleanly, with no mutation, when it would exceed LIMITS.actors', () => {
+  const project = createProject('Quest');
+  project.sprites.metasprites = [
+    { id: 0, name: 'Body', tiles: [{ x: 0, y: 0, tile: 1, palette: 0, hflip: false, vflip: false }] }
+  ];
+  project.sprites.animations = [{ id: 0, name: 'Idle', loop: true, frames: [{ metaspriteId: 0, duration: 8 }] }];
+  project.sprites.actors = Array.from({ length: LIMITS.actors }, (_, id) => ({
+    id,
+    name: `A${id}`,
+    behavior: 'npc',
+    speed: 1,
+    hp: 1,
+    anims:
+      id === 0
+        ? { idle: 0, walkDown: null, walkUp: null, walkSide: null }
+        : { idle: null, walkDown: null, walkUp: null, walkSide: null },
+    battle: {}
+  }));
+  const before = structuredClone(project);
+
+  const result = duplicateActorPaletteSwapCore(project, 0, 0, 1);
+
+  assert.equal(result, undefined, 'a full roster must refuse rather than push an actor past the sentinel');
+  assert.deepEqual(project, before, 'nothing may be mutated on refusal');
+});
+
+test('duplicateActorPaletteSwapCore: refuses cleanly, with no mutation, when it would exceed LIMITS.metasprites', () => {
+  const project = createProject('Quest');
+  project.sprites.metasprites = Array.from({ length: LIMITS.metasprites }, (_, id) => ({
+    id,
+    name: `M${id}`,
+    tiles: []
+  }));
+  project.sprites.animations = [{ id: 0, name: 'Idle', loop: true, frames: [{ metaspriteId: 0, duration: 8 }] }];
+  project.sprites.actors = [
+    {
+      id: 0,
+      name: 'Hero',
+      behavior: 'player',
+      speed: 1,
+      hp: 1,
+      anims: { idle: 0, walkDown: null, walkUp: null, walkSide: null },
+      battle: {}
+    }
+  ];
+  const before = structuredClone(project);
+
+  const result = duplicateActorPaletteSwapCore(project, 0, 0, 1);
+
+  assert.equal(result, undefined, 'a full metasprite pool must refuse a swap that would need one more slot');
+  assert.deepEqual(project, before, 'nothing may be mutated on refusal');
+});
+
+// Round 2 review finding 1: "Delete animation" (renderer/forges/sprite/
+// sprite.js) splices project.sprites.animations and renumbers ids, but never
+// fixes up any actor's own anims -- a pre-existing, out-of-scope gap that
+// leaves a real, reachable state: an actor naming an animation id with no
+// matching entry. The core function must refuse cleanly rather than crash
+// inside structuredClone(undefined) or silently clone whatever now aliases
+// the stale index.
+// Round 4 review finding 1: the round-3 version placed the stale id LAST, so
+// a wrong implementation checking only the final id (e.g. `ids.at(-1)`)
+// would also have passed. Three slots now, valid-stale-valid in ANIM_SLOTS
+// order -- idle (0, valid), walkDown (5, stale), walkUp (1, valid) -- so
+// neither a first-only nor a last-only check can pass: only a check over
+// every id (the `.some` this function actually uses) catches the stale one
+// sitting in the middle.
+test('duplicateActorPaletteSwapCore: refuses cleanly, with no mutation, when an actor names a deleted (stale) animation id', () => {
+  const project = createProject('Quest');
+  project.sprites.metasprites = [
+    { id: 0, name: 'Body', tiles: [{ x: 0, y: 0, tile: 1, palette: 0, hflip: false, vflip: false }] }
+  ];
+  // Animations 0 and 1 are real; animation 5 is exactly what a "Delete
+  // animation" can leave a stale walkDown reference pointing at.
+  project.sprites.animations = [
+    { id: 0, name: 'Idle', loop: true, frames: [{ metaspriteId: 0, duration: 8 }] },
+    { id: 1, name: 'Walk up', loop: true, frames: [{ metaspriteId: 0, duration: 8 }] }
+  ];
+  project.sprites.actors = [
+    {
+      id: 0,
+      name: 'Hero',
+      behavior: 'player',
+      speed: 1,
+      hp: 1,
+      anims: { idle: 0, walkDown: 5, walkUp: 1, walkSide: null },
+      battle: {}
+    }
+  ];
+  const before = structuredClone(project);
+
+  const result = duplicateActorPaletteSwapCore(project, 0, 0, 1);
+
+  assert.equal(result, undefined, 'a stale animation reference must refuse rather than crash or mis-clone, even when it sits between two valid ones');
+  assert.deepEqual(project, before, 'nothing may be mutated on refusal');
+});
+
+// Round 4 review finding 1: the round-3 version placed the stale id LAST, so
+// a wrong implementation checking only the final id would also have passed.
+// Three frames now, valid-stale-valid -- metasprite 0, then stale metasprite
+// 9, then metasprite 1 -- so neither a first-only nor a last-only check can
+// pass. renumberMetaspriteDeletion does cascade-fix every animation's frames
+// on a real delete, so this isn't reachable through today's Sprite Forge the
+// way the stale-animation case is, but a hand-edited or later-version
+// project can still carry one, and this function's two levels of the graph
+// must agree on the policy.
+test('duplicateActorPaletteSwapCore: refuses cleanly, with no mutation, when an animation frame names a deleted (stale) metasprite id', () => {
+  const project = createProject('Quest');
+  project.sprites.metasprites = [
+    { id: 0, name: 'Body', tiles: [{ x: 0, y: 0, tile: 1, palette: 0, hflip: false, vflip: false }] },
+    { id: 1, name: 'Head', tiles: [{ x: 0, y: 0, tile: 2, palette: 0, hflip: false, vflip: false }] }
+  ];
+  // Metasprite 9 does not exist -- a hand-edited or later-version project's
+  // frame can still name it, even though today's own UI cannot produce it.
+  project.sprites.animations = [
+    {
+      id: 0,
+      name: 'Idle',
+      loop: true,
+      frames: [{ metaspriteId: 0, duration: 8 }, { metaspriteId: 9, duration: 8 }, { metaspriteId: 1, duration: 8 }]
+    }
+  ];
+  project.sprites.actors = [
+    {
+      id: 0,
+      name: 'Hero',
+      behavior: 'player',
+      speed: 1,
+      hp: 1,
+      anims: { idle: 0, walkDown: null, walkUp: null, walkSide: null },
+      battle: {}
+    }
+  ];
+  const before = structuredClone(project);
+
+  const result = duplicateActorPaletteSwapCore(project, 0, 0, 1);
+
+  assert.equal(result, undefined, 'a stale metasprite reference must refuse rather than crash or mis-clone, even when it sits between two valid ones');
+  assert.deepEqual(project, before, 'nothing may be mutated on refusal');
+});
+
+// Round 2 review finding 2: animation ids are byte-indexed on the engine
+// side (NO_ANIM = $FF, engine/constants.asm; animFor, main/build/
+// generate.js, emits the raw id with no clamp), the identical trap
+// LIMITS.actors/items/metasprites already exist to close for their own id
+// spaces -- but nothing capped project.sprites.animations before this
+// feature had to check it.
+test('duplicateActorPaletteSwapCore: refuses cleanly, with no mutation, when it would exceed LIMITS.animations', () => {
+  const project = createProject('Quest');
+  project.sprites.metasprites = [
+    { id: 0, name: 'Body', tiles: [{ x: 0, y: 0, tile: 1, palette: 0, hflip: false, vflip: false }] }
+  ];
+  project.sprites.animations = Array.from({ length: LIMITS.animations }, (_, id) => ({
+    id,
+    name: `Anim${id}`,
+    loop: true,
+    frames: [{ metaspriteId: 0, duration: 8 }]
+  }));
+  project.sprites.actors = [
+    {
+      id: 0,
+      name: 'Hero',
+      behavior: 'player',
+      speed: 1,
+      hp: 1,
+      anims: { idle: 0, walkDown: null, walkUp: null, walkSide: null },
+      battle: {}
+    }
+  ];
+  const before = structuredClone(project);
+
+  const result = duplicateActorPaletteSwapCore(project, 0, 0, 1);
+
+  assert.equal(result, undefined, 'a full animation pool must refuse a swap that would need one more slot');
+  assert.deepEqual(project, before, 'nothing may be mutated on refusal');
+});
+
+// A fits-with-headroom control, not the discriminating case (see the
+// refusal test right below, which is): two clones against a pool at
+// `LIMITS.animations - 2` lands exactly at the ceiling and both the correct
+// check (`+ animIds.length`) and a buggy hardcoded `+ 1` agree it fits --
+// `(LIMIT - 2) + 2 > LIMIT` and `(LIMIT - 2) + 1 > LIMIT` are both false.
+// Kept as a confirmation the boundary itself is real, not over-drawn.
+test('duplicateActorPaletteSwapCore: a swap landing exactly at LIMITS.animations succeeds, not just refuses', () => {
+  const project = createProject('Quest');
+  project.sprites.metasprites = [
+    { id: 0, name: 'Body', tiles: [{ x: 0, y: 0, tile: 1, palette: 0, hflip: false, vflip: false }] }
+  ];
+  project.sprites.animations = Array.from({ length: LIMITS.animations - 2 }, (_, id) => ({
+    id,
+    name: `Anim${id}`,
+    loop: true,
+    frames: [{ metaspriteId: 0, duration: 8 }]
+  }));
+  // The actor's own two animations (ids 0 and 1) need exactly two clones,
+  // landing the pool at exactly LIMITS.animations -- the legal boundary, not
+  // one past it.
+  project.sprites.actors = [
+    {
+      id: 0,
+      name: 'Hero',
+      behavior: 'player',
+      speed: 1,
+      hp: 1,
+      anims: { idle: 0, walkDown: 1, walkUp: null, walkSide: null },
+      battle: {}
+    }
+  ];
+
+  const result = duplicateActorPaletteSwapCore(project, 0, 0, 1);
+
+  assert.ok(result, 'landing exactly at the ceiling must be allowed -- the cap is a ceiling, not a limit one below it');
+  assert.equal(project.sprites.animations.length, LIMITS.animations, 'the pool should now sit exactly at the ceiling');
+});
+
+// Round 5 review finding: the round-4 fixture above (pool at LIMITS.
+// animations - 2, needing 2 clones) cannot actually distinguish the correct
+// check from a buggy hardcoded `+ 1`, because both land at or under the
+// ceiling there -- `(LIMIT - 2) + 2 > LIMIT` and `(LIMIT - 2) + 1 > LIMIT`
+// are both false, so a success-only assertion at that starting point cannot
+// tell them apart. The actual discriminating case is a REFUSAL one slot
+// tighter: pool at `LIMITS.animations - 1`, the same two distinct
+// animations (still 2 clones needed). Correct check: `(LIMIT - 1) + 2 >
+// LIMIT` is true, so this must refuse -- two clones do not fit in the one
+// remaining slot. A buggy `+ 1` check would compute `(LIMIT - 1) + 1 >
+// LIMIT`, false, and incorrectly allow it -- this is where the two
+// implementations actually diverge.
+test('duplicateActorPaletteSwapCore: refuses cleanly, with no mutation, when two clones would not fit in the one remaining LIMITS.animations slot', () => {
+  const project = createProject('Quest');
+  project.sprites.metasprites = [
+    { id: 0, name: 'Body', tiles: [{ x: 0, y: 0, tile: 1, palette: 0, hflip: false, vflip: false }] }
+  ];
+  project.sprites.animations = Array.from({ length: LIMITS.animations - 1 }, (_, id) => ({
+    id,
+    name: `Anim${id}`,
+    loop: true,
+    frames: [{ metaspriteId: 0, duration: 8 }]
+  }));
+  // The actor's own two animations (ids 0 and 1) need two clones, but only
+  // one slot remains before the ceiling.
+  project.sprites.actors = [
+    {
+      id: 0,
+      name: 'Hero',
+      behavior: 'player',
+      speed: 1,
+      hp: 1,
+      anims: { idle: 0, walkDown: 1, walkUp: null, walkSide: null },
+      battle: {}
+    }
+  ];
+  const before = structuredClone(project);
+
+  const result = duplicateActorPaletteSwapCore(project, 0, 0, 1);
+
+  assert.equal(result, undefined, 'two clones must refuse when only one slot remains before LIMITS.animations');
+  assert.deepEqual(project, before, 'nothing may be mutated on refusal');
+});
+
+// Round 2 review finding 4 (test-quality gap): the existing LIMITS.metasprites
+// refusal test above only exercises an already-full pool -- this is the
+// sibling boundary case, proving the comparison is `>`, not `>=`.
+test('duplicateActorPaletteSwapCore: a swap landing exactly at LIMITS.metasprites succeeds, not just refuses', () => {
+  const project = createProject('Quest');
+  project.sprites.metasprites = Array.from({ length: LIMITS.metasprites - 1 }, (_, id) => ({
+    id,
+    name: `M${id}`,
+    tiles: []
+  }));
+  // The actor's own metasprite (id 0) needs exactly one clone, landing the
+  // pool at exactly LIMITS.metasprites -- the legal boundary, not one past it.
+  project.sprites.metasprites[0] = {
+    id: 0,
+    name: 'Body',
+    tiles: [{ x: 0, y: 0, tile: 1, palette: 0, hflip: false, vflip: false }]
+  };
+  project.sprites.animations = [{ id: 0, name: 'Idle', loop: true, frames: [{ metaspriteId: 0, duration: 8 }] }];
+  project.sprites.actors = [
+    {
+      id: 0,
+      name: 'Hero',
+      behavior: 'player',
+      speed: 1,
+      hp: 1,
+      anims: { idle: 0, walkDown: null, walkUp: null, walkSide: null },
+      battle: {}
+    }
+  ];
+
+  const result = duplicateActorPaletteSwapCore(project, 0, 0, 1);
+
+  assert.ok(result, 'landing exactly at the ceiling must be allowed -- the cap is a ceiling, not a limit one below it');
+  assert.equal(project.sprites.metasprites.length, LIMITS.metasprites, 'the pool should now sit exactly at the ceiling');
 });
 
 test('the missing-item sentinel survives normalization and reaches the ROM as NO_ITEM', () => {
