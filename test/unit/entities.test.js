@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url';
 import NES from '../../renderer/emulator/core/nes.js';
 import { generateAssets } from '../../main/build/generate.js';
 import { loadProject } from '../../main/project-io.js';
-import { createProject, ACTIONS, BUTTONS, INPUT_STATES } from '../../shared/project.js';
+import { createProject, ACTIONS, BUTTONS, INPUT_STATES, PLAYER_TILES } from '../../shared/project.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const SAMPLE = path.join(ROOT, 'sample');
@@ -51,6 +51,13 @@ test('each actor gets one animation per facing, falling back to idle', async (t)
 
   const project = createProject('Anim');
   project.sprites = {
+    // playerParts/playerTiles preserved as createProject's own defaults --
+    // this test replaces the rest of sprites wholesale, but generateAssets'
+    // per-slot player stamp (design-modular-parts.md §4.3) now reads
+    // project.sprites.playerTiles unconditionally on every build, so it must
+    // stay a real, normalized 32-entry array here too.
+    playerParts: [],
+    playerTiles: Array(PLAYER_TILES).fill(null),
     metasprites: [{ id: 0, name: 'A', tiles: [{ x: 0, y: 0, tile: 0, palette: 0, hflip: false, vflip: false }] }],
     animations: [
       { id: 0, name: 'idle', loop: true, frames: [{ metaspriteId: 0, duration: 8 }] },

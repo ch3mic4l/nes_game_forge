@@ -14,6 +14,23 @@ import { loadProject } from './project-io.js';
 import { checkCapacity } from './build/generate.js';
 import { battleRegionBytes, battleRegionCeiling } from './build/battletables.js';
 import { resolveMapper } from '../shared/cartridge.js';
+import { encodeTiles } from '../shared/chr.js';
+
+/**
+ * A canned CHR file payload for the files:readBinary override -- one flat,
+ * non-blank tile per entry of `digits` (each a palette slot 1-3, never 0,
+ * so a tile can never coincide with BLANK_TILE). Round 3 review: `digits`
+ * is explicit per caller, not derived from a shared counter, precisely so
+ * each importChr() smoke case can be given content guaranteed to differ
+ * from both the destination's own pre-import snapshot and every other
+ * case's own payload -- the same "assert on real, distinguishable data"
+ * discipline CLAUDE.md already documents for other capture checks.
+ */
+function fakeChrPayload(name, digits) {
+  const tiles = digits.map((digit) => String(digit).repeat(64));
+  const bytes = encodeTiles(tiles);
+  return { name, data: bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) };
+}
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -7245,6 +7262,23 @@ export async function runSmoke(window) {
     return { ok: true, value: `/smoke/fake/${name}` };
   });
 
+  // Same reasoning as files:writeBinary above, for the matching Open dialog:
+  // the real handler shows a native picker with no seam of its own, so this
+  // is where a test drives the CHR-import flow (round 2, finding 4) with a
+  // controlled file. A one-shot canned response, consumed on read; with none
+  // queued the override answers "the user cancelled" (ok: true, value: null)
+  // rather than opening a real dialog headlessly.
+  let nextReadBinary = null;
+  ipcMain.removeHandler('files:readBinary');
+  ipcMain.handle('files:readBinary', async () => {
+    if (nextReadBinary) {
+      const value = nextReadBinary;
+      nextReadBinary = null;
+      return { ok: true, value };
+    }
+    return { ok: true, value: null };
+  });
+
   const scratch = await fs.mkdtemp(path.join(os.tmpdir(), 'forge-smoke-'));
   const dir = path.join(scratch, 'Smoke.forge');
   // The scenario edits and saves the sample, so work on a copy: a test must
@@ -8119,6 +8153,246 @@ export async function runSmoke(window) {
       );
     } else {
       console.log(`  ok  content follows the window — map screen ${seen.map((e) => `${e.zoom}x`).join(' → ')}`);
+    }
+
+    // --- Round 2, finding 4: importChr()'s confirm-before-overwrite prompt,
+    // driven for real through the actual button/modal, not just a call to
+    // chrImportOverlap in isolation. files:readBinary is overridden above
+    // the same way files:writeBinary already is (native Open dialog, no
+    // seam of its own) -- `nextReadBinary` hands back a small, real CHR
+    // payload the moment the button's own invoke reaches it. -------------
+    const clickSheetIndexScript = (index) => `(() => {
+      const SHEET_COLS = 16;
+      const canvas = document.querySelector('#stage canvas.sheet');
+      if (!canvas) throw new Error('no sheet canvas');
+      const row = Math.floor(${index} / SHEET_COLS);
+      const col = ${index} % SHEET_COLS;
+      const rect = canvas.getBoundingClientRect();
+      const x = rect.left + ((col + 0.5) / SHEET_COLS) * rect.width;
+      const y = rect.top + ((row + 0.5) / SHEET_COLS) * rect.height;
+      canvas.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, button: 0, clientX: x, clientY: y }));
+      return document.querySelectorAll('#stage .status-meta')[0]?.textContent ?? null;
+    })()`;
+    const clickImportChrScript = `(() => {
+      const importLabel = [...document.querySelectorAll('#stage .field-label')].find((l) => l.textContent === 'Import');
+      if (!importLabel) throw new Error('no Import section');
+      const chrButton = [...importLabel.nextElementSibling.querySelectorAll('button')].find((b) => b.textContent.trim() === 'CHR');
+      if (!chrButton) throw new Error('no Import CHR button');
+      chrButton.click();
+      return true;
+    })()`;
+    const readTilesScript = (table, indices) => `(() => {
+      const tiles = window.__app.store.project.tilesets[0].${table}.tiles;
+      return [${indices.join(',')}].map((i) => tiles[i]);
+    })()`;
+    const readWholeTableScript = (table) => `window.__app.store.project.tilesets[0].${table}.tiles.slice()`;
+    const modalStateScript = `(() => {
+      const host = document.querySelector('#modalHost');
+      return {
+        visible: !!host && !host.hidden,
+        title: host && !host.hidden ? host.querySelector('.modal-head')?.textContent : null,
+        message: host && !host.hidden ? host.querySelector('.modal-body')?.textContent : null
+      };
+    })()`;
+    const hasExactToastScript = (text) =>
+      `[...document.querySelectorAll('#toastHost .toast')].some((t) => t.textContent === ${JSON.stringify(text)})`;
+    const expectedTilesFor = (digits) => digits.map((digit) => String(digit).repeat(64));
+    // Matches importChr()'s own toast text exactly (tile.js) -- name, count,
+    // and the $xx start address. Every case below picks a count equal to its
+    // own payload length, so the "(N did not fit)" suffix never applies.
+    const expectedImportToast = (name, start, count) => `${name}: ${count} tiles loaded at $${start.toString(16).padStart(2, '0')}`;
+    const waitForExactToast = async (text, ms = 3000) => {
+      for (let waited = 0; waited < ms; waited += 50) {
+        if (await window.webContents.executeJavaScript(hasExactToastScript(text))) return true;
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      }
+      return false;
+    };
+    // Polls until the destination genuinely differs from its own pre-import
+    // snapshot, rather than merely "equals the expected value" -- round 3
+    // review: with every case importing the same payload, (c)/(d) could
+    // report success before the asynchronous import actually ran if their
+    // destination happened to already hold that value. Waiting for a real
+    // change from a captured `before` closes that regardless of payload
+    // content; distinct payloads per case (below) close it a second way.
+    const waitForTilesToChange = async (table, indices, before, ms = 3000) => {
+      let current = before;
+      for (let waited = 0; waited < ms; waited += 50) {
+        current = await window.webContents.executeJavaScript(readTilesScript(table, indices));
+        if (JSON.stringify(current) !== JSON.stringify(before)) return current;
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      }
+      return current;
+    };
+
+    // Full-table snapshots, restored at the end of this block (round 3
+    // review, finding 1's third bullet) so the tile edits this block commits
+    // never leak into the build/emulator/GIF-recorder steps that follow,
+    // which reuse this same project.
+    const spritesSnapshotFull = await window.webContents.executeJavaScript(readWholeTableScript('sprites'));
+    const backgroundSnapshotFull = await window.webContents.executeJavaScript(readWholeTableScript('background'));
+
+    await window.webContents.executeJavaScript("window.__app.goTo('tile'); true");
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    await window.webContents.executeJavaScript(`(() => {
+      const tab = [...document.querySelectorAll('#stage .tab')].find((b) => b.textContent.trim() === 'Sprites');
+      if (!tab) throw new Error('Tile Forge has no Sprites tab');
+      tab.click();
+      return true;
+    })()`);
+
+    // (a) sprite table, cursor inside 0-31: the modal must appear naming the
+    // overlap, and Cancel must commit nothing and toast nothing.
+    const cursorAText = await window.webContents.executeJavaScript(clickSheetIndexScript(5));
+    if (cursorAText !== '$05') throw new Error(`expected the sheet click to select $05, saw ${cursorAText}`);
+    const beforeCancelTiles = await window.webContents.executeJavaScript(readTilesScript('sprites', [5, 6, 7]));
+    const toastsBeforeCancel = await window.webContents.executeJavaScript(
+      "document.querySelectorAll('#toastHost .toast').length"
+    );
+
+    let problemsBefore = problems.length;
+    nextReadBinary = fakeChrPayload('a.chr', [1, 2, 3]);
+    await window.webContents.executeJavaScript(clickImportChrScript);
+    let modalState = { visible: false };
+    for (let waited = 0; waited < 3000 && !modalState.visible; waited += 50) {
+      modalState = await window.webContents.executeJavaScript(modalStateScript);
+      if (!modalState.visible) await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    if (!modalState.visible || modalState.title !== 'Import CHR') {
+      problems.push(`importChr(): expected a confirm modal titled "Import CHR", saw ${JSON.stringify(modalState)}`);
+    } else if (!/3/.test(modalState.message) || !/reserved range/.test(modalState.message)) {
+      problems.push(`importChr(): confirm modal did not name the overlap count and reserved range, saw "${modalState.message}"`);
+    }
+    await window.webContents.executeJavaScript(`(() => {
+      const button = [...document.querySelectorAll('#modalHost button')].find((b) => b.textContent.trim() === 'Cancel');
+      if (!button) throw new Error('no Cancel button on the CHR import modal');
+      button.click();
+      return true;
+    })()`);
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    const afterCancel = {
+      modalHidden: !(await window.webContents.executeJavaScript(modalStateScript)).visible,
+      tiles: await window.webContents.executeJavaScript(readTilesScript('sprites', [5, 6, 7])),
+      toastCount: await window.webContents.executeJavaScript("document.querySelectorAll('#toastHost .toast').length")
+    };
+    if (!afterCancel.modalHidden) problems.push('importChr(): Cancel did not close the confirm modal');
+    if (JSON.stringify(afterCancel.tiles) !== JSON.stringify(beforeCancelTiles)) {
+      problems.push('importChr(): Cancel must commit nothing, but the sprite tiles changed');
+    }
+    if (afterCancel.toastCount !== toastsBeforeCancel) {
+      problems.push('importChr(): Cancel must not toast, but a new toast appeared');
+    }
+    if (problems.length === problemsBefore) {
+      console.log('  ok  importChr() sprite-table overlap: the confirm modal names the overlap, and Cancel commits nothing and toasts nothing');
+    }
+
+    // (b) same cursor, this time confirm: the tiles land and the exact
+    // success toast appears. Its own payload (digitsB) is distinct from
+    // (c)'s and (d)'s below (round 3 review) -- reusing one payload across
+    // cases let a later case's poll match on content left by an earlier one
+    // rather than proving its own import ran.
+    problemsBefore = problems.length;
+    const digitsB = [1, 2, 3];
+    nextReadBinary = fakeChrPayload('b.chr', digitsB);
+    await window.webContents.executeJavaScript(clickImportChrScript);
+    modalState = { visible: false };
+    for (let waited = 0; waited < 3000 && !modalState.visible; waited += 50) {
+      modalState = await window.webContents.executeJavaScript(modalStateScript);
+      if (!modalState.visible) await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    if (!modalState.visible) throw new Error('importChr(): expected a second confirm modal for the confirm case');
+    await window.webContents.executeJavaScript(`(() => {
+      const button = document.querySelector('#modalHost .btn-accent');
+      if (!button) throw new Error('no primary button on the CHR import modal');
+      button.click();
+      return true;
+    })()`);
+    const confirmedTiles = await waitForTilesToChange('sprites', [5, 6, 7], beforeCancelTiles);
+    if (JSON.stringify(confirmedTiles) !== JSON.stringify(expectedTilesFor(digitsB))) {
+      problems.push(`importChr(): confirming did not write the imported tiles, saw ${JSON.stringify(confirmedTiles)}`);
+    }
+    const toastTextB = expectedImportToast('b.chr', 5, digitsB.length);
+    if (!(await waitForExactToast(toastTextB))) {
+      problems.push(`importChr(): expected the exact success toast "${toastTextB}", but it never appeared`);
+    }
+    if (problems.length === problemsBefore) {
+      console.log('  ok  importChr() sprite-table overlap, confirmed: the tiles land at the cursor and the exact success toast appears');
+    }
+
+    // (c) sprite table, cursor at 40 -- outside 0-31 and the import does not
+    // straddle back into it -- no modal, tiles land directly. Its own
+    // pre-import snapshot and payload (digitsC) are both distinct from (b)'s.
+    problemsBefore = problems.length;
+    await window.webContents.executeJavaScript(clickSheetIndexScript(40));
+    const beforeNoOverlapTiles = await window.webContents.executeJavaScript(readTilesScript('sprites', [40, 41, 42]));
+    const digitsC = [3, 1, 2];
+    nextReadBinary = fakeChrPayload('c.chr', digitsC);
+    await window.webContents.executeJavaScript(clickImportChrScript);
+    const noOverlapTiles = await waitForTilesToChange('sprites', [40, 41, 42], beforeNoOverlapTiles);
+    const modalDuringNoOverlap = await window.webContents.executeJavaScript(modalStateScript);
+    if (modalDuringNoOverlap.visible) problems.push('importChr(): a non-overlapping sprite-table import must not show a modal');
+    if (JSON.stringify(noOverlapTiles) !== JSON.stringify(expectedTilesFor(digitsC))) {
+      problems.push(`importChr(): a non-overlapping import did not land, saw ${JSON.stringify(noOverlapTiles)}`);
+    }
+    const toastTextC = expectedImportToast('c.chr', 40, digitsC.length);
+    if (!(await waitForExactToast(toastTextC))) {
+      problems.push(`importChr(): expected the exact success toast "${toastTextC}", but it never appeared`);
+    }
+    if (problems.length === problemsBefore) {
+      console.log('  ok  importChr() sprite-table, cursor past 31 with no overlap back into it: no modal, tiles land directly, exact toast appears');
+    }
+
+    // (d) background table, cursor at 0 -- never prompts regardless of
+    // overlap. Its own pre-import snapshot and payload (digitsD) are both
+    // distinct from (b)'s and (c)'s.
+    problemsBefore = problems.length;
+    await window.webContents.executeJavaScript(`(() => {
+      const tab = [...document.querySelectorAll('#stage .tab')].find((b) => b.textContent.trim() === 'Background');
+      if (!tab) throw new Error('Tile Forge has no Background tab');
+      tab.click();
+      return true;
+    })()`);
+    await window.webContents.executeJavaScript(clickSheetIndexScript(0));
+    const beforeBackgroundTiles = await window.webContents.executeJavaScript(readTilesScript('background', [0, 1, 2]));
+    const digitsD = [2, 3, 1];
+    nextReadBinary = fakeChrPayload('d.chr', digitsD);
+    await window.webContents.executeJavaScript(clickImportChrScript);
+    const backgroundTiles = await waitForTilesToChange('background', [0, 1, 2], beforeBackgroundTiles);
+    const modalDuringBackground = await window.webContents.executeJavaScript(modalStateScript);
+    if (modalDuringBackground.visible) problems.push('importChr(): a background-table import must never show the reserved-range modal');
+    if (JSON.stringify(backgroundTiles) !== JSON.stringify(expectedTilesFor(digitsD))) {
+      problems.push(`importChr(): a background-table import did not land, saw ${JSON.stringify(backgroundTiles)}`);
+    }
+    const toastTextD = expectedImportToast('d.chr', 0, digitsD.length);
+    if (!(await waitForExactToast(toastTextD))) {
+      problems.push(`importChr(): expected the exact success toast "${toastTextD}", but it never appeared`);
+    }
+    if (problems.length === problemsBefore) {
+      console.log('  ok  importChr() background table: no modal regardless of overlap, tiles land directly, exact toast appears');
+    }
+
+    // Restore both tables to their pre-block snapshot (round 3 review,
+    // finding 1's third bullet) -- the build/emulator/GIF-recorder steps
+    // below reuse this same project, and nothing this block committed may
+    // leak into them.
+    problemsBefore = problems.length;
+    await window.webContents.executeJavaScript(`(() => {
+      window.__app.store.commit('smoke: restore importChr tiles', (project) => {
+        project.tilesets[0].sprites.tiles = ${JSON.stringify(spritesSnapshotFull)};
+        project.tilesets[0].background.tiles = ${JSON.stringify(backgroundSnapshotFull)};
+      });
+      return true;
+    })()`);
+    const restoredSprites = await window.webContents.executeJavaScript(readWholeTableScript('sprites'));
+    const restoredBackground = await window.webContents.executeJavaScript(readWholeTableScript('background'));
+    if (JSON.stringify(restoredSprites) !== JSON.stringify(spritesSnapshotFull)) {
+      problems.push('importChr(): the sprite table did not restore to its pre-block snapshot');
+    }
+    if (JSON.stringify(restoredBackground) !== JSON.stringify(backgroundSnapshotFull)) {
+      problems.push('importChr(): the background table did not restore to its pre-block snapshot');
+    }
+    if (problems.length === problemsBefore) {
+      console.log('  ok  importChr() block restored both tables to their pre-block snapshot before the steps that follow');
     }
 
     // --- a files:writeBinary that rejects must toast, not crash or leave an

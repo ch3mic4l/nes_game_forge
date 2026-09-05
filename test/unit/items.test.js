@@ -22,7 +22,15 @@ import NES from '../../renderer/emulator/core/nes.js';
 import { loadProject, saveProject } from '../../main/project-io.js';
 import { buildProject } from '../../main/build/pipeline.js';
 import { generateAssets, resolveItemIcon } from '../../main/build/generate.js';
-import { createProject, createScreen, normalizeProject, validateProject, LIMITS, NO_METASPRITE } from '../../shared/project.js';
+import {
+  createProject,
+  createScreen,
+  normalizeProject,
+  validateProject,
+  LIMITS,
+  NO_METASPRITE,
+  PLAYER_TILES
+} from '../../shared/project.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const SAMPLE = path.join(ROOT, 'sample');
@@ -475,7 +483,19 @@ test('a project with no items and no Save is byte-identical to the pre-phase-4b 
 // same 164 measured bytes bankedbytes.test.js now pins into
 // BASE_BATTLE_CODE_BYTES_BY_MAPPER, again shifting labels mid-bank rather
 // than growing the padded ROM.
-const PINNED_RPG_BASELINE_HASH = '2334e4809e3c55e644eb216d1fb0f3770b8f01c876e29accda0f5f500dc144a7';
+//
+// Re-pinned again for modular-parts Phase 2 (design-modular-parts.md §4.3,
+// ROADMAP item 8) -- and, unlike every re-pin above, this one is a CHR
+// content change, not a banked-code-region growth, so the size is genuinely
+// unchanged for a different reason this time (nothing was added, only
+// repainted). createProject('rpg') makes two tilesets, both left entirely
+// blank at sprite indices 0-31 -- the old, tileset-0-only spriteTableEmpty
+// placeholder stamp left tileset 1's own 0-31 range as plain, invisible
+// BLANK_TILE; the new per-slot, every-tileset stamp (§4.3's own documented
+// "free structural side effect") now stamps the placeholder into tileset 1
+// as well, which is the only thing that changes here -- this project draws
+// no player art of its own, so every other byte is untouched. Still 147472.
+const PINNED_RPG_BASELINE_HASH = '8ea8d44d49f8ebdfdbdc6aa923664e2cb1984d792386d0143cc0cd0f944b7ecc';
 const PINNED_RPG_BASELINE_SIZE = 147472;
 
 test('an RPG with no items and no Save is byte-identical to the pre-round-4 master build', async (t) => {
@@ -508,6 +528,12 @@ test('an RPG with no items and no Save is byte-identical to the pre-round-4 mast
 function baseItemIconProject() {
   const project = createProject('Icon', 'action');
   project.sprites = {
+    // playerParts/playerTiles preserved as createProject's own defaults --
+    // see the identical note in entities.test.js: generateAssets' per-slot
+    // player stamp (design-modular-parts.md §4.3) reads
+    // project.sprites.playerTiles on every build now, unconditionally.
+    playerParts: [],
+    playerTiles: Array(PLAYER_TILES).fill(null),
     metasprites: [
       { id: 0, name: 'Idle0', tiles: [{ x: 0, y: 0, tile: 1, palette: 0, hflip: false, vflip: false }] },
       { id: 1, name: 'Idle1', tiles: [{ x: 0, y: 0, tile: 2, palette: 0, hflip: false, vflip: false }] }

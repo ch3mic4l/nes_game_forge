@@ -5,8 +5,8 @@ import { store } from '../../store.js';
 import { el, field, showModal, toast } from '../../ui.js';
 import { quantizeImage, indexedToRgba, sliceToTiles, DITHER_MODES } from '../../../shared/quantize.js';
 import { perceptualPaletteFor } from '../../../shared/nespalette.js';
-import { tileToString, BLANK_TILE } from '../../../shared/chr.js';
-import { LIMITS, tilesetAt } from '../../../shared/project.js';
+import { tileToString } from '../../../shared/chr.js';
+import { tilesetAt, freeTileSlots } from '../../../shared/project.js';
 
 async function pickImage() {
   const result = await window.forge.files.readBinary([
@@ -98,7 +98,7 @@ export async function openImportDialog(app, state, syncFromStore, renderAll) {
     preview.style.height = `${(Math.min(320, width * 4) * height) / width}px`;
     preview.getContext('2d').putImageData(new ImageData(indexedToRgba(indexed, palette), width, height), 0, 0);
 
-    const free = tilesetAt(store.project, state.tilesetId)[state.table].tiles.filter((tile) => tile === BLANK_TILE).length;
+    const free = freeTileSlots(tilesetAt(store.project, state.tilesetId)[state.table].tiles, state.table).length;
     summary.textContent =
       `${sliced.columns}×${sliced.rows} tiles · ${sliced.tiles.length} unique after de-duplication · ` +
       `${free} empty slots available in the ${state.table} table`;
@@ -228,8 +228,7 @@ export async function openImportDialog(app, state, syncFromStore, renderAll) {
   if (!confirmed || !result) return;
 
   const table = tilesetAt(store.project, state.tilesetId)[state.table].tiles;
-  const free = [];
-  for (let i = 0; i < LIMITS.tilesPerTable; i++) if (table[i] === BLANK_TILE) free.push(i);
+  const free = freeTileSlots(table, state.table);
   if (result.sliced.tiles.length > free.length) {
     return toast(
       `Need ${result.sliced.tiles.length} free tile slots but only ${free.length} are empty. ` +

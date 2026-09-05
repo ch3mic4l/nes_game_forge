@@ -9,7 +9,7 @@ import { readdirSync } from 'node:fs';
 import path from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import { fileURLToPath } from 'node:url';
-import { encodeTiles, tileFromString, BLANK_TILE } from '../../shared/chr.js';
+import { encodeTiles, tileFromString, BLANK_TILE, isBlank } from '../../shared/chr.js';
 import { normalizeSong } from '../../shared/audio.js';
 import {
   ARROW_TILE,
@@ -2162,18 +2162,49 @@ export async function generateAssets({ dir, project, log = () => {} }) {
     }
   }
 
-  const spriteTableEmpty = tilesets[0].sprites
-    .slice(0, PLAYER_TILES)
-    .every((tile) => tile === BLANK_TILE);
-  if (spriteTableEmpty) {
-    const frames = PLACEHOLDER_FRAMES.map(split16);
-    for (let frame = 0; frame < PLAYER_FRAMES; frame++) {
-      const source = frames[frame % 2];
-      for (let quadrant = 0; quadrant < 4; quadrant++) {
-        tilesets[0].sprites[frame * 4 + quadrant] = Array.from(source[quadrant]).join('');
-      }
+  // Per-slot, every-tileset player stamp (design-modular-parts.md §4.3,
+  // ROADMAP item 8 phase 2). Replaces the old all-or-nothing, tileset-0-only
+  // spriteTableEmpty check outright: project.sprites.playerTiles is now the
+  // single canonical source (generatePlayerSpriteCore writes only there,
+  // never to a tileset directly, §4.1), so every tileset's own sprite table
+  // is stamped fresh from it on every build, and a still-null slot falls back
+  // to the placeholder per-slot rather than only when the whole table is
+  // blank. This also fixes the pre-existing tileset-0-only placeholder gap
+  // for free (§4.3's own "structural side effect"): a multi-tileset project
+  // with no playerTiles content now shows the placeholder consistently on
+  // every tileset, not only tileset 0.
+  const placeholderQuadrants = PLACEHOLDER_FRAMES.map(split16);
+  const placeholderFor = (i) => Array.from(placeholderQuadrants[Math.floor(i / 4) % 2][i % 4]).join('');
+  for (const [tilesetIndex, tileset] of tilesets.entries()) {
+    const overwrittenReal = [];
+    for (let i = 0; i < PLAYER_TILES; i++) {
+      const canonical = project.sprites.playerTiles[i];
+      const replacement = canonical !== null ? canonical : placeholderFor(i);
+      // A real, non-blank tile already sitting here that is about to become
+      // something different is the "silent repaint of existing content" risk
+      // (§3.2's own migration limitation, an NPC's own art, or simply a
+      // tileset nobody has stamped yet) -- named below, once per divergent
+      // tileset, per build. A tile that is already blank becoming real
+      // content (or the placeholder) is the ordinary, intended case and
+      // never worth a warning.
+      if (!isBlank(tileset.sprites[i]) && tileset.sprites[i] !== replacement) overwrittenReal.push(i);
+      tileset.sprites[i] = replacement;
     }
-    log('note: the sprite table is empty, so a placeholder player was drawn into the ROM.');
+    if (overwrittenReal.length) {
+      log(
+        `warning: tileset ${tilesetIndex} ("${project.tilesets[tilesetIndex].name}") has ` +
+          `${overwrittenReal.length} tile(s) in the player's reserved range ($00-$1F) that do not ` +
+          'match the generated character and will look different in this build.'
+      );
+    }
+  }
+  // usedPlaceholder now means "at least one of the 32 slots resolved to the
+  // placeholder," i.e. some playerTiles[i] === null -- not "the whole table
+  // was blank," which is what the old spriteTableEmpty check meant.
+  const placeholderSlotCount = project.sprites.playerTiles.filter((tile) => tile === null).length;
+  const usedPlaceholder = placeholderSlotCount > 0;
+  if (usedPlaceholder) {
+    log(`note: ${placeholderSlotCount} of the ${PLAYER_TILES} player sprite slots used the placeholder.`);
   }
 
   // This project's actual actor roster size -- computed once here and reused
@@ -3032,7 +3063,7 @@ export async function generateAssets({ dir, project, log = () => {} }) {
   return {
     buildDir,
     warnings: problems.filter((problem) => problem.severity !== 'error'),
-    stats: { screenCount, capacity, usedPlaceholder: spriteTableEmpty, playerActor: playerActor?.name ?? null }
+    stats: { screenCount, capacity, usedPlaceholder, playerActor: playerActor?.name ?? null }
   };
 }
 

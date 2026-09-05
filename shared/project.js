@@ -2573,6 +2573,250 @@ export function renumberPlayerPartDeletion(project, index) {
 }
 
 /**
+ * Groups a `planPlayerSprite`/`generatePlayerSpriteCore` pick list by the
+ * RAW (direction, frameIndex) each pick supplied — verbatim, never coerced —
+ * so a bad-value group reports exactly what the caller asked for (round 2,
+ * finding 1). The key discriminates by `typeof` as well as value: a
+ * `frameIndex` of `0` (number) and `'0'` (string) must never fall into the
+ * same group, since one is a legitimate frame and the other is a poisoned
+ * pick that merely stringifies the same way a plain template-literal key
+ * would collapse them under.
+ *
+ * Each returned group also validates every pick that landed in it and
+ * records which field(s), if any, are invalid — `direction` not in
+ * `DIRECTION_ORDER`, `quadrant` not in `QUADRANT_ORDER`, or `frameIndex` not
+ * strictly `0` or `1` (a number, never a string). A pick that fails
+ * validation contributes nothing to `quadrants`: an invalid group is never
+ * resolved at all (see `evaluatePlayerSpritePicks` below), so there is
+ * nothing for a bad quadrant/partId to corrupt regardless. Keeping every
+ * partId offered for a given quadrant, rather than collapsing to the last
+ * one written, is what lets a quadrant picked twice with two *different*
+ * partIds be told apart from an ordinary duplicate pick of the same part
+ * (design-modular-parts.md §4.2's "duplicate quadrant with conflicting
+ * parts") — only a `Set` of size 1 answers that question. Not exported:
+ * `evaluatePlayerSpritePicks` is the only caller.
+ */
+function groupPlayerSpritePicks(picks) {
+  const groups = [];
+  const index = new Map();
+  for (const pick of picks) {
+    const key = `${typeof pick.direction}:${pick.direction}|${typeof pick.frameIndex}:${pick.frameIndex}`;
+    let i = index.get(key);
+    if (i === undefined) {
+      i = groups.length;
+      groups.push({
+        direction: pick.direction,
+        frameIndex: pick.frameIndex,
+        quadrants: new Map(),
+        invalidFields: new Set()
+      });
+      index.set(key, i);
+    }
+    const group = groups[i];
+    if (!DIRECTION_ORDER.includes(pick.direction)) group.invalidFields.add('direction');
+    if (!QUADRANT_ORDER.includes(pick.quadrant)) group.invalidFields.add('quadrant');
+    if (pick.frameIndex !== 0 && pick.frameIndex !== 1) group.invalidFields.add('frameIndex');
+    if (group.invalidFields.size === 0) {
+      if (!group.quadrants.has(pick.quadrant)) group.quadrants.set(pick.quadrant, new Set());
+      group.quadrants.get(pick.quadrant).add(pick.partId);
+    }
+  }
+  return groups;
+}
+
+/**
+ * Resolves one already-validated (direction, frameIndex) group's picks
+ * against the current `playerParts` library, per design-modular-parts.md
+ * §4.1-§4.2's atomicity rule: a quadrant counts as resolved only when
+ * exactly one partId was picked for it *and* that part exists *and* its own
+ * `direction`/`frameSlot` actually qualify it for this frame. Anything else
+ * — no pick, two conflicting picks, an unknown partId, a part tagged for
+ * another direction or the other frame slot — makes that quadrant "bad," and
+ * a frame with any bad quadrant writes nothing (§4.2: refuse the whole
+ * frame, never a partial one). Callable only with a group whose
+ * `invalidFields` is already empty — `direction`/`frameIndex` here are
+ * trusted enough for `storageIndex`'s own arithmetic, which is exactly the
+ * guarantee `groupPlayerSpritePicks` exists to give it (round 2, finding 1:
+ * this function used to be reachable with an out-of-range `frameIndex` or a
+ * `direction` absent from `DIRECTION_ORDER`, which is what let four `right`
+ * picks at `frameIndex: 2` compute storage indices 32-35 — past the end of
+ * `playerTiles` — and let `down`/`frameIndex: 2` alias the real `up`/0
+ * frame).
+ */
+function resolvePlayerSpriteFrame(project, direction, frameIndex, quadrants) {
+  const frame = DIRECTION_ORDER.indexOf(direction) * 2 + frameIndex;
+  const badQuadrants = [];
+  const resolved = [];
+  for (const quadrant of QUADRANT_ORDER) {
+    const partIds = quadrants.get(quadrant);
+    if (!partIds || partIds.size !== 1) {
+      badQuadrants.push(quadrant);
+      continue;
+    }
+    const [partId] = partIds;
+    const part = project.sprites.playerParts[partId];
+    const qualifies =
+      part && part.direction === direction && (part.frameSlot === String(frameIndex) || part.frameSlot === 'both');
+    if (!qualifies) {
+      badQuadrants.push(quadrant);
+      continue;
+    }
+    const quadrantIdx = QUADRANT_ORDER.indexOf(quadrant);
+    resolved.push({
+      index: storageIndex(frame, Math.floor(quadrantIdx / 2), quadrantIdx % 2),
+      tile: part.tile
+    });
+  }
+  return { ok: badQuadrants.length === 0, badQuadrants, resolved };
+}
+
+/**
+ * The single place that decides what a "Generate Player Sprite" run does,
+ * computed exactly once so `planPlayerSprite` (the pure preview) and
+ * `generatePlayerSpriteCore` (the mutating core) can never disagree about
+ * the same input — the previous draft recomputed resolution separately in
+ * each, which is how a fix applied to one could silently miss the other.
+ * Not exported.
+ *
+ * A group with any invalid field (round 2, finding 1 — see
+ * `groupPlayerSpritePicks`) is skipped without ever reaching
+ * `resolvePlayerSpriteFrame`: an invalid `direction` or out-of-range
+ * `frameIndex` must never reach `storageIndex`'s own arithmetic, which is
+ * exactly the bug this closes. The skip reason names the invalid field(s) so
+ * a modal built on this can say precisely why, distinct from the ordinary
+ * "a quadrant is missing or unqualified" reason an otherwise-valid frame
+ * gets.
+ */
+function evaluatePlayerSpritePicks(project, picks) {
+  const groups = groupPlayerSpritePicks(picks);
+  const written = [];
+  const skipped = [];
+  const indices = new Set();
+  const writes = [];
+  for (const group of groups) {
+    if (group.invalidFields.size > 0) {
+      skipped.push({
+        direction: group.direction,
+        frameIndex: group.frameIndex,
+        reason: `invalid ${[...group.invalidFields].join('/')}`,
+        quadrants: []
+      });
+      continue;
+    }
+    const { ok, badQuadrants, resolved } = resolvePlayerSpriteFrame(project, group.direction, group.frameIndex, group.quadrants);
+    if (ok) {
+      written.push({ direction: group.direction, frameIndex: group.frameIndex });
+      for (const entry of resolved) {
+        indices.add(entry.index);
+        writes.push(entry);
+      }
+    } else {
+      skipped.push({
+        direction: group.direction,
+        frameIndex: group.frameIndex,
+        reason: 'one or more quadrants have no resolved part',
+        quadrants: badQuadrants
+      });
+    }
+  }
+  return { written, skipped, indices: [...indices].sort((a, b) => a - b), writes };
+}
+
+/**
+ * Pure, non-mutating preview of a "Generate Player Sprite" run
+ * (design-modular-parts.md §4.1-§4.2, ROADMAP item 8 phase 2). `picks` is a
+ * flat list of `{ direction, frameIndex, quadrant, partId }` — **this
+ * function validates every pick field itself** (round 2, finding 1; a prior
+ * draft's doc comment wrongly assigned that job to the caller). A pick whose
+ * `direction` is not in `DIRECTION_ORDER`, whose `quadrant` is not in
+ * `QUADRANT_ORDER`, or whose `frameIndex` is not strictly `0` or `1` (a
+ * number — `'0'` does not qualify) poisons its whole attempted frame: no
+ * quadrant in it is ever resolved, it contributes no indices, and it is
+ * reported in `skipped` with a reason naming the bad field(s), grouped under
+ * the raw (direction, frameIndex) the caller actually supplied. An otherwise
+ * valid frame still passes only with all 4 quadrants resolved
+ * (`resolvePlayerSpriteFrame`); anything else — missing, conflicting, an
+ * unknown partId, or a part tagged for another direction/frame slot — fails
+ * that whole frame the same way, so a modal built on this can say precisely
+ * which frames will not be written and why, before anything commits.
+ */
+export function planPlayerSprite(project, picks) {
+  const { written, skipped, indices } = evaluatePlayerSpritePicks(project, picks);
+  return { written, skipped, indices };
+}
+
+/**
+ * The mutating half of "Generate Player Sprite": writes
+ * `evaluatePlayerSpritePicks`'s passing frames into
+ * `project.sprites.playerTiles` in place, verbatim — `part.tile` lands
+ * exactly as stored, `BLANK_TILE` included, never coerced to `null`
+ * (design-modular-parts.md §3.2's own null-vs-`BLANK_TILE` distinction: a
+ * part deliberately drawn blank is real, generated content, not
+ * "ungenerated"). A skipped frame's 4 slots — including one poisoned by an
+ * invalid pick field (round 2, finding 1) — are left exactly as they were,
+ * per §4.2's atomicity rule. Touches nothing but `playerTiles` — never a
+ * tileset (§4.1: build-time stamping is `generateAssets`' own job, not this
+ * function's) and never `playerParts` itself.
+ */
+export function generatePlayerSpriteCore(project, picks) {
+  const { written, skipped, indices, writes } = evaluatePlayerSpritePicks(project, picks);
+  for (const { index, tile } of writes) project.sprites.playerTiles[index] = tile;
+  return { project, written, skipped, indices };
+}
+
+/**
+ * The Generate-modal's own preflight (design-modular-parts.md §4.4): which
+ * metasprites already reference a `playerTiles` storage index a pending
+ * generation is about to change. A metasprite carries no tileset of its own,
+ * so one project-wide scan covers every tileset. Pure — the modal calls this
+ * before letting the author confirm, never after.
+ */
+export function playerSpriteCollisions(project, indices) {
+  const indexSet = new Set(indices);
+  const collisions = [];
+  (project.sprites.metasprites ?? []).forEach((metasprite, index) => {
+    const hits = new Set();
+    for (const entry of metasprite.tiles ?? []) {
+      if (indexSet.has(entry.tile)) hits.add(entry.tile);
+    }
+    if (hits.size) collisions.push({ index, name: metasprite.name, tiles: [...hits].sort((a, b) => a - b) });
+  });
+  return collisions;
+}
+
+/**
+ * Which indices of a tile `table` count as free for the image-import path
+ * (design-modular-parts.md §4.1's own "two import paths, two different
+ * fixes"). Every `BLANK_TILE` slot is free, *except* — for the sprite table
+ * only — indices `< PLAYER_TILES`: those are always build-time-stamped from
+ * `playerTiles` (`generateAssets`), so offering them as free would let
+ * imported art sit there only to be silently discarded at the very next
+ * build. The background table has no such reservation, at any index.
+ */
+export function freeTileSlots(table, kind) {
+  const free = [];
+  for (let i = 0; i < table.length; i++) {
+    if (table[i] !== BLANK_TILE) continue;
+    if (kind === 'sprites' && i < PLAYER_TILES) continue;
+    free.push(i);
+  }
+  return free;
+}
+
+/**
+ * How many of a raw CHR import's `count` tiles, written starting at `start`,
+ * fall inside the player's reserved range `[0, PLAYER_TILES)`
+ * (design-modular-parts.md §4.1's `importChr()` fix). `importChr()` has no
+ * "free slot" concept — it overwrites a contiguous run unconditionally — so
+ * its own fix is a confirmation naming this count, not an exclusion list.
+ */
+export function chrImportOverlap(start, count) {
+  const overlapStart = Math.max(start, 0);
+  const overlapEnd = Math.min(start + count, PLAYER_TILES);
+  return Math.max(0, overlapEnd - overlapStart);
+}
+
+/**
  * What every reference to a metasprite becomes once `index` is gone from
  * `project.sprites.metasprites`. Three consumers exist — an animation
  * frame's `metaspriteId`, a party member's `metaspriteId`, and (as of this

@@ -17,7 +17,8 @@ import {
   QUADRANT_ORDER,
   PART_FRAME_SLOTS,
   storageIndex,
-  renumberPlayerPartDeletion
+  renumberPlayerPartDeletion,
+  chrImportOverlap
 } from '../../../shared/project.js';
 import { resolveMapper, tilesetLimit } from '../../../shared/cartridge.js';
 import { FONT_BASE, fontBankSplit, fontChrPages, projectUsesText } from '../../../shared/font.js';
@@ -712,6 +713,24 @@ export function mount(container, app) {
     }
     const start = state.selected;
     const count = Math.min(tiles.length, LIMITS.tilesPerTable - start);
+    // Raw CHR import overwrites a contiguous run unconditionally, unlike the
+    // image-import path's own free-slot exclusion (design-modular-parts.md
+    // §4.1) -- there is no "free slot" concept here to exclude from, so the
+    // fix is a confirmation naming the overlap rather than a silent skip. A
+    // background-table import never touches the player's reserved range and
+    // never prompts.
+    if (state.table === 'sprites') {
+      const overlap = chrImportOverlap(start, count);
+      if (overlap > 0) {
+        const confirmed = await confirmModal(
+          'Import CHR',
+          `${overlap} of these tiles fall inside the player's reserved range ($00-$1F). The next build ` +
+            'will replace them with the generated player regardless of what this import writes.',
+          'Import anyway'
+        );
+        if (!confirmed) return;
+      }
+    }
     store.commit('Import CHR', (project) => {
       for (let i = 0; i < count; i++) {
         tilesetAt(project, state.tilesetId)[state.table].tiles[start + i] = tileToString(tiles[i]);
