@@ -718,11 +718,14 @@ named error and left intact rather than silently sliced — a 256th metasprite i
 content, the identical policy the actor and item ceilings already hold to.
 
 ROADMAP item 8's modular-parts feature targets the player character specifically, not a Sprite
-Forge actor: `PLAYER_TILES`'s 32 fixed sprite-table slots (`main/build/generate.js`, `build_oam` in
-`engine/oam.asm`) get zero authoring assistance today, and a "Generate Player Sprite" action would
-compose them from small reusable, tagged tiles into a new `project.sprites.playerTiles`, stamped
-into every tileset at build time like `HEART_TILES` already is — ordinary project data, no new
-compiled/engine-side array or table. See `docs/design-modular-parts.md`.
+Forge actor: `PLAYER_FRAMES`/`PLAYER_TILES` (`shared/project.js`, imported by `generate.js`) name
+the player's 32 fixed sprite-table slots (`build_oam` in `engine/oam.asm`). Phase 1 shipped the
+schema — `project.sprites.playerTiles`, always 32 entries, `null` meaning never generated and any
+string (`BLANK_TILE` included) meaning real content; `project.sprites.playerParts`, a library of
+tagged, reusable tiles; `storageIndex`'s addressing arithmetic; and the Tile Forge's Player tab, a
+`state.mode` of its own, not a third `state.table` value. Composing parts into `playerTiles` and
+stamping it into every tileset at build time, like `HEART_TILES`, is Phase 2 — ordinary project
+data, no new compiled/engine-side array or table. See `docs/design-modular-parts.md`.
 
 `renumberSpellDeletion` (`shared/project.js`) exists beside `renumberActorDeletion`/
 `renumberItemDeletion`, the same shape applied to `project.spells` — the Magic Forge's own delete
