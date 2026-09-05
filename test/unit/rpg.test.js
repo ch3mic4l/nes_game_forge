@@ -21,6 +21,7 @@ import { statAt, xpCurve, nameTiles, NAME_LIMIT } from '../../main/build/battlet
 import { parseSymbolFile } from '../../main/build/symbols.js';
 import { compileText, opIndex, EVT_PAGES_END } from '../../main/build/textcompile.js';
 import { decodeBody } from '../lib/eventdecoder.js';
+import { textToTiles } from '../../shared/font.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const SAMPLE = path.join(ROOT, 'sample-rpg');
@@ -69,6 +70,10 @@ const TURN_ORDER = 0x3cc;
 const MON_SLOT_MP = 0x3ec;
 const PC_STATUS = 0x3f0;
 const MON_STATUS = 0x3f4;
+const STATUS_POISON = 1; // engine/constants.asm
+const STATUS_BURN = 2; // engine/constants.asm
+const POISON_DMG = 2; // engine/constants.asm
+const BURN_DMG = 3; // engine/constants.asm
 
 const ST_GAMEPLAY = 0;
 const ST_MENU = 1;
@@ -212,6 +217,17 @@ function nametableRow(nes, row, col, count) {
   const out = [];
   for (let i = 0; i < count; i++) out.push(nes.ppu.vramMem[0x2000 + row * 32 + col + i]);
   return out;
+}
+
+/**
+ * The first nine columns of a battle string's own line -- push_battle_string
+ * (engine/battleui.asm) overwrites the last three with a printed number, so
+ * comparing the whole twelve would fail against a real damage-tick line
+ * regardless of whether the label itself is right. `text` is BATTLE_STRINGS'
+ * own second column (main/build/battletables.js), e.g. 'poisoned'/'burned'.
+ */
+function battleStringTiles(text) {
+  return textToTiles(text.padEnd(9, ' ').slice(0, 9)).tiles;
 }
 
 /**
@@ -2280,6 +2296,147 @@ test('the party can poison a monster, and the poison alone finishes it', {
   assert.equal(ended, ST_GAMEPLAY, 'the poison never finished the slime');
   assert.equal(nes.cpu.mem[MON_ALIVE], 0);
   assert.ok(nes.cpu.mem[PC_XP_LO] > 0, 'a poison victory should still pay out');
+});
+
+// --- Burn, the second status (roadmap item 13.4, docs/design-status-effects.md) ---
+
+test('a spell of kind burn lands on a monster, and its own tick after its turn carries its own message', {
+  skip: needsSample
+}, async (t) => {
+  const rom = await buildVariant(t, 'burn', (project) => {
+    project.maps[0].encounters = { rate: 0, actorIds: [] };
+    project.spells[2].kind = 'burn'; // Venom becomes this build's Burn spell
+    project.sprites.actors[0].battle = { ...project.sprites.actors[0].battle, acc: 0 }; // never hits back, so MON_HP moves only from the tick under test
+  });
+  const nes = boot(rom);
+  walkTo(nes, 160, 176);
+  walkTo(nes, 176, 176, 200);
+  assert.equal(nes.cpu.mem[GAME_STATE], ST_BATTLE);
+  waitForMenu(nes);
+
+  // Venom/Burn is authored at level 2; grant it the way the level would.
+  nes.cpu.mem[PC_SPELLS] |= 4;
+  chooseCommand(nes, BC_MAGIC);
+  tap(nes, DOWN, 4); // past Ember to Venom/Burn
+  tap(nes, A, 6);
+  tap(nes, A, 10);   // aim it at the slime
+  assert.equal(nes.cpu.mem[MON_STATUS], STATUS_BURN, 'the slime should be burned, not poisoned');
+
+  // Stall with RUN (a walked-into fight refuses it) until a tick lands.
+  const startHp = nes.cpu.mem[MON_HP];
+  let ticked = false;
+  for (let round = 0; round < 30 && !ticked; round++) {
+    if (nes.cpu.mem[BT_PHASE] === BP_MENU) chooseCommand(nes, BC_RUN);
+    else tap(nes, A, 12);
+    ticked = nes.cpu.mem[MON_HP] !== startHp;
+  }
+  assert.ok(ticked, 'thirty rounds and burn never bit');
+  assert.equal(startHp - nes.cpu.mem[MON_HP], BURN_DMG, "a burn tick should cost exactly BURN_DMG, not poison's own amount");
+  assert.deepEqual(
+    nametableRow(nes, MSG_ROW + 1, MSG_COL, 9),
+    battleStringTiles('burned'),
+    "the tick line on screen should be burn's own message, not poison's SUFFERS/poisoned"
+  );
+});
+
+// This is the generalization's own reason for existing: the old single-bit
+// bt_ptick mechanism could only ever raise one status line before advancing
+// the turn, so it would fail this the moment a second status was live at
+// once. Every assertion below checks RAM *and* the nametable at each step,
+// not just the final HP -- a wrong dispatch order (burn before poison) or a
+// dispatch that skips straight to advancing the turn would still land on the
+// same total HP loss, and only checking each tick in sequence catches it.
+test('a combatant poisoned and burned on its own turn takes both ticks, in order, as two separate messages, before the turn advances', {
+  skip: needsSample
+}, async (t) => {
+  const rom = await buildVariant(t, 'dual-status', (project) => {
+    project.maps[0].encounters = { rate: 0, actorIds: [] };
+    // Never hits back, so PC_HP only ever moves from the ticks under test.
+    project.sprites.actors[0].battle = { ...project.sprites.actors[0].battle, acc: 0 };
+  });
+  const nes = boot(rom);
+  walkTo(nes, 160, 176);
+  walkTo(nes, 176, 176, 200);
+  assert.equal(nes.cpu.mem[GAME_STATE], ST_BATTLE);
+  waitForMenu(nes);
+
+  nes.cpu.mem[PC_STATUS] = STATUS_POISON | STATUS_BURN;
+  const actorAtStart = nes.cpu.mem[BT_ACTOR];
+  chooseCommand(nes, BC_FIGHT);
+  assert.equal(nes.cpu.mem[BT_PHASE], BP_TARGET, 'FIGHT should ask who to hit');
+  tap(nes, A, 5); // confirm the target -- the attack lands and its own line shows
+  assert.equal(nes.cpu.mem[BT_PHASE], BP_MESSAGE, "the attack's own line should be up");
+  const startHp = nes.cpu.mem[PC_HP];
+
+  tap(nes, A, 5); // dismiss the attack's own line -- poison should go first, lowest bit
+  assert.equal(nes.cpu.mem[BT_PHASE], BP_MESSAGE, 'a status tick should have raised its own line');
+  assert.equal(startHp - nes.cpu.mem[PC_HP], POISON_DMG, "the first tick should be poison's own amount");
+  assert.deepEqual(
+    nametableRow(nes, MSG_ROW + 1, MSG_COL, 9),
+    battleStringTiles('poisoned'),
+    "the first tick line should be poison's own message"
+  );
+
+  tap(nes, A, 5); // dismiss the poison tick -- burn should follow, on the same turn
+  assert.equal(nes.cpu.mem[BT_PHASE], BP_MESSAGE, 'the second status tick should have raised its own line');
+  assert.equal(startHp - nes.cpu.mem[PC_HP], POISON_DMG + BURN_DMG, "the second tick should add burn's own amount, not repeat poison's");
+  assert.deepEqual(
+    nametableRow(nes, MSG_ROW + 1, MSG_COL, 9),
+    battleStringTiles('burned'),
+    "the second tick line should be burn's own message, not another poison line"
+  );
+
+  tap(nes, A, 5); // dismiss the burn tick -- nothing left to tick, so the turn should advance
+  // Not "BT_PHASE !== BP_MESSAGE": the monster's own turn can raise its own
+  // message (a miss, since acc: 0 above never lets it land a hit) the moment
+  // it comes round, so BP_MESSAGE reappearing here is expected, not a third
+  // status line. The turn actually advancing is what BT_ACTOR moving away
+  // from the party member proves instead.
+  assert.notEqual(nes.cpu.mem[BT_ACTOR], actorAtStart, 'with both ticks paid, the turn should move on to the next combatant');
+  assert.equal(
+    nes.cpu.mem[PC_STATUS],
+    STATUS_POISON | STATUS_BURN,
+    'a tick must not cure the status it just bit from -- only a heal or a potion does'
+  );
+});
+
+test('a heal spell cures both poison and burn at once', {
+  skip: needsSample
+}, () => {
+  const nes = boot();
+  assert.ok(walkIntoEncounter(nes));
+  waitForMenu(nes);
+
+  // Mend is authored at level 3, granted the way a level would.
+  nes.cpu.mem[PC_SPELLS] |= 2;
+  nes.cpu.mem[PC_HP] = 5;
+  nes.cpu.mem[PC_MP] = 20;
+  nes.cpu.mem[PC_STATUS] = STATUS_POISON | STATUS_BURN;
+
+  chooseCommand(nes, BC_MAGIC);
+  tap(nes, DOWN, 4); // Ember is first; Mend is the second row
+  tap(nes, A, 6);    // choose it
+  tap(nes, A, 10);   // confirm the target
+
+  assert.equal(nes.cpu.mem[PC_STATUS], 0, 'a heal should cure both poison and burn together, not just one bit');
+});
+
+test('a potion cures both poison and burn at once', {
+  skip: needsSample
+}, () => {
+  const nes = boot();
+  nes.cpu.mem[INV_ITEMS] = 0;
+  nes.cpu.mem[INV_COUNT] = 1;
+  assert.ok(walkIntoEncounter(nes));
+  waitForMenu(nes);
+  nes.cpu.mem[PC_HP] = 5;
+  nes.cpu.mem[PC_STATUS] = STATUS_POISON | STATUS_BURN;
+
+  chooseCommand(nes, BC_ITEM);
+  assert.equal(nes.cpu.mem[BT_PHASE], BP_ITEMS, 'ITEM should open the bag');
+  tap(nes, A, 10);
+
+  assert.equal(nes.cpu.mem[PC_STATUS], 0, 'a potion should flush both poison and burn out together, not just one bit');
 });
 
 test('winning a battle clears a status that fight leaves behind, not just one it never had', {

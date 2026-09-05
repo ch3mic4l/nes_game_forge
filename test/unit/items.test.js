@@ -463,7 +463,19 @@ test('a project with no items and no Save is byte-identical to the pre-phase-4b 
 // unchanged (still 147472): the region grew by the 5 measured bytes
 // bankedbytes.test.js now pins into BASE_BATTLE_CODE_BYTES_BY_MAPPER, again
 // shifting labels mid-bank rather than growing the padded ROM.
-const PINNED_RPG_BASELINE_HASH = 'dbd0adf6cbcdc4f772f9fa4230e48c647c90f0e544f3458fe7f6807f5f0e6199';
+// Re-pinned again for the status-effects slice (ROADMAP item 13.4,
+// docs/design-status-effects.md): battle_message_done's own status dispatch
+// (engine/battleui.asm) now loops every set bit on status_pending instead of
+// assuming poison alone, and poison_target/cast_poison/poison_tick
+// (engine/battleturn.asm) gained the parallel burn_target/cast_burn/burn_tick
+// beside them -- all unconditional battle-region code present on every RPG
+// build regardless of whether this baseline project has any spells at all, so
+// its hash moves for the identical reason every prior battle-region re-pin
+// above does. Size still unchanged (still 147472): the region grew by the
+// same 164 measured bytes bankedbytes.test.js now pins into
+// BASE_BATTLE_CODE_BYTES_BY_MAPPER, again shifting labels mid-bank rather
+// than growing the padded ROM.
+const PINNED_RPG_BASELINE_HASH = '2334e4809e3c55e644eb216d1fb0f3770b8f01c876e29accda0f5f500dc144a7';
 const PINNED_RPG_BASELINE_SIZE = 147472;
 
 test('an RPG with no items and no Save is byte-identical to the pre-round-4 master build', async (t) => {

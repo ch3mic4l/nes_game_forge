@@ -9,6 +9,12 @@ import { ELEMENTS, RPG_LIMITS, SPELL_KINDS, SPELL_SCOPES, createSpell, renumberS
 
 const NAME_LIMIT = RPG_LIMITS.nameLength;
 
+// Mirrors POISON_DMG/BURN_DMG in engine/constants.asm: both status kinds
+// ignore amountMin/amountMax and cost a fixed, un-authored amount per turn
+// instead, so the Amount field below is replaced by a hint naming it rather
+// than showing fields the ROM ignores.
+const STATUS_KIND_DAMAGE = { poison: 2, burn: 3 };
+
 const number = (value, min, max, onChange, title = null) =>
   el('input', {
     type: 'number',
@@ -175,13 +181,17 @@ export function mount(container, app) {
               })
             ),
             field('Kind', select(SPELL_KINDS, current.kind, (value) => updateSpell('Change spell kind', (entry) => (entry.kind = value)))),
-            // Poison is a status, not a number: the victim loses a fixed 2 HP
-            // after each of its turns, so amountMin/amountMax would be
-            // fields the ROM ignores.
-            current.kind === 'poison'
+            // Poison and Burn are statuses, not a number: the victim loses a
+            // fixed amount after each of its turns, so amountMin/amountMax
+            // would be fields the ROM ignores. See STATUS_KIND_DAMAGE above.
+            current.kind in STATUS_KIND_DAMAGE
               ? field(
                   'Amount',
-                  el('span.hint', { title: 'Poison costs a fixed 2 HP per turn' }, '2/turn')
+                  el(
+                    'span.hint',
+                    { title: `${SPELL_KINDS.find((k) => k.id === current.kind).label} costs a fixed ${STATUS_KIND_DAMAGE[current.kind]} HP per turn` },
+                    `${STATUS_KIND_DAMAGE[current.kind]}/turn`
+                  )
                 )
               : field(
                   'Amount',

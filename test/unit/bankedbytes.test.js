@@ -204,8 +204,8 @@ test('battleTableBytes refuses a directive it cannot size instead of skipping it
 
 // push_battle_string (engine/battleui.asm) accumulates index * MSG_COLS the
 // same 8-bit way name_offset_pc used to before handoff-namestride/
-// brief-namestride.md's fix -- safe today only because BATTLE_STRINGS has 11
-// entries (max offset 120 of 256), not because anything stops a 22nd. Out of
+// brief-namestride.md's fix -- safe today only because BATTLE_STRINGS has 13
+// entries (max offset 144 of 256), not because anything stops a 22nd. Out of
 // scope for an engine change (the brief's own call); checkBattleStringsCapacity
 // is the guard instead, so a 22nd string fails the build rather than leaving a
 // comment nobody reads. A wrong implementation that merely checked
@@ -531,7 +531,16 @@ test('the refusal names a change that actually closes the gap', async () => {
   const mapper = SUPPORTED_MAPPERS.find((entry) => entry.id === base.cartridge.mapper);
   const project = structuredClone(base);
   const template = project.sprites.actors[project.sprites.actors.length - 1];
-  while (battleRegionBytes(project, mapper) <= battleRegionCeiling(mapper)) {
+  // Keep pushing past the battle region's own overflow point until no board
+  // is switchable either -- the two ceilings move independently as the
+  // engine's own stock code grows, so stopping at the first alone is not
+  // guaranteed to also clear the second (see the titleMap=0 comment above:
+  // this is the same "no board is a safe switch" premise, made robust to
+  // that drift instead of assumed from one measurement).
+  while (
+    battleRegionBytes(project, mapper) <= battleRegionCeiling(mapper) ||
+    switchableMappers(project, mapper, { checkBattleRegion: false }).length > 0
+  ) {
     project.sprites.actors.push({
       ...structuredClone(template),
       id: project.sprites.actors.length,

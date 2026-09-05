@@ -1555,6 +1555,25 @@ function inflate(project, count) {
   }
 }
 
+// The kernel-lo-only twin of inflate() above: a metasprite costs kernel-lo's
+// own spriteBytes term (main/build/generate.js's kernelTableBytes) exactly
+// the way a filler actor does, but -- unlike an actor -- it is never a row in
+// battleTables' own monster tables, so it grows nothing in the banked
+// battle-code region at all (main/build/battletables.js). Some of the tests
+// below need a kernel-lo deficit on one board while a *second*, candidate
+// board still has room in both its kernel-lo bank and its (shared,
+// board-independent) banked battle-code region; inflate()'s own actors load
+// both regions at once and can no longer open that window now that the
+// status-effects slice grew the banked region's own stock base on every
+// board alike (docs/design-status-effects.md) -- see the comment on the test
+// just below for the arithmetic.
+function inflateMetasprites(project, count) {
+  const template = project.sprites.metasprites[0];
+  for (let i = 0; i < count; i++) {
+    project.sprites.metasprites.push({ ...structuredClone(template), id: 1000 + i, name: `FillerMS${i}` });
+  }
+}
+
 test('a kernel-lo shortfall a live Move command alone would close names Move', async () => {
   const project = await loadProject(SAMPLE_RPG);
   project.cartridge.mapper = 4; // MMC3
@@ -1664,33 +1683,25 @@ test('a kernel-lo shortfall neither Save nor Move would close, but a roomier boa
   project.project.titleScreen = 0;
   // No Save, no Move: kernelShortfallAdvice must skip straight past the
   // feature-drop branch (neither is live) to the mapper-swap one.
-  // 124, not the 126 the Magic Forge impl-1/2 slice's own recalibration
-  // replaces: engine/battleturn.asm's new roll_spell_amount/mod8 (the
-  // reject-then-modulo spell-amount roll, added beside the two call sites it
-  // replaces a flat `lda spell_amount,x` read at) cost every board's own
-  // banked battle-region base 53 bytes alike, MMC1 included (measured, not
-  // derived -- bankedbytes.test.js's own equality assertion is what pins
-  // BASE_BATTLE_CODE_BYTES_BY_MAPPER, this file only inherits the shift), so
-  // 126 fillers now overflows the very region this test depends on to be
-  // exact and re-derives below. 124 currently lands a 45-byte kernel-lo
-  // deficit (re-measured, not adjusted by arithmetic, per this file's own
-  // note above on why that matters here).
   //
-  // The window this test sits inside was never a kernel-lo byte band, and
-  // remeasuring only moves where it falls, not what it is: inflate()'s dummy
-  // actors are also monster stat entries battleTables compiles into the
-  // banked battle-code region (main/build/battletables.js), which MMC1
-  // shares the identical 8172-byte ceiling for regardless of kernel-lo --
-  // each filler actor costs it 30 bytes there. At 124 fillers (128 actors
-  // total) that region has exactly 27 bytes free on MMC1; at 125 it
-  // overflows by 3, and MMC1 stops being offered a full 195-byte kernel-lo
-  // saving before that saving would ever have run out (confirmed directly:
-  // switchableMappers(project, u512) returns [1] at 124 fillers and [] at
-  // 125). So the window this test actually sits inside is one filler actor's
-  // worth of headroom in the banked battle region, not a kernel-lo byte band
-  // -- the two banks merely happen to both grow with the same inflate()
-  // call, and the smaller one has always been the one that runs out first.
-  inflate(project, 124);
+  // inflateMetasprites, not inflate: the status-effects slice
+  // (docs/design-status-effects.md) grew every board's banked battle-region
+  // base by the same 164 bytes (BASE_BATTLE_CODE_BYTES_BY_MAPPER,
+  // main/build/battletables.js), and inflate()'s own filler actors are also
+  // monster-table rows in that region -- so by the time enough of them
+  // existed to open a kernel-lo-only deficit on UNROM 512, the identical,
+  // now-larger region had already overflowed on the MMC1 candidate this test
+  // needs to still fit (confirmed directly: with inflate(), MMC1's banked
+  // region overflows at 118 fillers while UNROM 512's kernel-lo does not
+  // until 119 -- no count opens the window this test needs). A metasprite
+  // costs kernel-lo's own spriteBytes term the same way a filler actor does,
+  // but is never a row in battleTables' own tables, so it cannot touch the
+  // banked region at all -- see inflateMetasprites' own comment above. 52
+  // metasprites land a 41-byte kernel-lo deficit on UNROM 512 while leaving
+  // MMC1's banked region exactly where it started (re-measured against a
+  // real checkCapacity() run, not derived by arithmetic, per this file's own
+  // rule on why that matters).
+  inflateMetasprites(project, 52);
   const message = kernelShortfallMessage(project);
   assert.match(message, /Try MMC1 in the Build panel/);
 });
@@ -1719,7 +1730,7 @@ test('a mapper suggestion is withheld from a project carrying hand-written code'
   base.cartridge.mapper = 30; // UNROM 512 -- the case above proves MMC1 is offered here
   base.project.titleMap = 0;
   base.project.titleScreen = 0;
-  inflate(base, 124); // see the identical recalibration note on the case above
+  inflateMetasprites(base, 52); // see the identical recalibration note on the case above
 
   assert.match(
     kernelShortfallMessage(structuredClone(base)),

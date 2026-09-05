@@ -1439,15 +1439,18 @@ this item's own new table bytes would land and grow.
    masked-and-biased; a flat range (`amountMin === amountMax`) draws nothing from the RNG at all,
    which is the byte-for-byte migration guarantee. `SAVE_LAYOUT_VERSION` (`shared/save.js`) did not
    need to move: nothing per-spell is serialized to a save record.
-4. **Generalizing status effects beyond poison** — `SPELL_KINDS` being append-only means new kinds
+4. ~~**Generalizing status effects beyond poison** — `SPELL_KINDS` being append-only means new kinds
    are additive by construction. The storage is not the constraint: `pc_status`/`mon_slot_status`
    already allocate one whole byte per combatant, with only bit 0 defined (`engine/constants.asm`'s
    own "Status bits" comment) — seven bits already sit spare in that byte. What is single-status
    today is the *logic*, not the storage: `poison_target` writes the whole value `1` rather than a
-   bit, `combatant_status` treats any nonzero byte as poison, and heals clear the byte outright.
-   Generalizing means assigning and preserving individual bits and extending the cure/tick/message
-   flow to more than one condition at once — the RAM arrays themselves only need to grow past eight
-   boolean statuses, or once a status needs its own payload beyond a single bit.
+   bit, `combatant_status` treats any nonzero byte as poison, and heals clear the byte outright.~~ —
+   **done**: `STATUS_BURN` joins `STATUS_POISON` as a second, independent bit (`engine/
+   constants.asm`), set by `ora` rather than a plain store; `battle_message_done`'s dispatch
+   (`engine/battleui.asm`) now drains a `status_pending` mask lowest-bit-first, one tick and one
+   message per bit, instead of assuming exactly one status. A heal or a potion still clears the
+   whole byte, curing every status at once with no code change — see `docs/design-status-effects.md`
+   for the mechanism, the bit assignment, and what a third status would need.
 5. ~~**The element list is settled scope, not an open question.** The user's ask (31 Aug 2026) is
    explicit: water and holy are distinct damage types, not relabelings of the shipped earth and
    light — both pairs exist side by side.~~ — **done** (`65fcad9`): `water` and `holy` are

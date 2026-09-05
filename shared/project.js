@@ -359,9 +359,12 @@ export const ELEMENTS = [
 export const SPELL_KINDS = [
   { id: 'damage', label: 'Damage' },
   { id: 'heal', label: 'Heal' },
-  // Poison ignores `amount`: the victim loses a fixed 2 HP after each of its
-  // turns until it is cured by a heal or the battle ends.
-  { id: 'poison', label: 'Poison' }
+  // Poison and Burn both ignore `amount`: the victim loses a fixed number of
+  // HP (POISON_DMG/BURN_DMG, engine/constants.asm) after each of its turns
+  // until cured by a heal or the battle ends -- see
+  // docs/design-status-effects.md. Append-only, so Burn stays last.
+  { id: 'poison', label: 'Poison' },
+  { id: 'burn', label: 'Burn' }
 ];
 
 /** Who a spell reaches. */

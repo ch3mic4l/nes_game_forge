@@ -275,14 +275,18 @@ attack_missed:
   jmp battle_say_actor
 
 ; The spell in bt_arg: damage on bt_target or the whole other side, a heal on
-; whoever is casting, or a poison. The kind numbers index SPELL_KINDS in
-; shared/project.js -- that order is the wire format.
+; whoever is casting, or a status effect (poison, burn). The kind numbers
+; index SPELL_KINDS in shared/project.js -- that order is the wire format.
 cast_spell:
   ldx bt_arg
   lda spell_kind,x
   cmp #SK_POISON
-  bne cast_spell_heal_chk
+  bne cast_spell_burn_chk
   jmp cast_poison
+cast_spell_burn_chk:
+  cmp #SK_BURN
+  bne cast_spell_heal_chk
+  jmp cast_burn
 cast_spell_heal_chk:
   cmp #SK_HEAL
   bne cast_spell_dmg
@@ -368,7 +372,10 @@ cast_heal_say:
   jmp battle_say_actor
 
 ; Poison sets a status bit rather than dealing damage now: the victim loses
-; POISON_DMG after each of its turns, applied where the message flow advances.
+; POISON_DMG after each of its turns, applied where the message flow
+; advances -- see battle_message_done's own status dispatch
+; (engine/battleui.asm) and docs/design-status-effects.md. Burn just below is
+; the identical shape with its own bit, amount and strings.
 cast_poison:
   ldx bt_arg
   lda spell_scope,x
@@ -397,20 +404,72 @@ cast_poison_say:
   lda #BS_POISONS
   jmp battle_say_actor
 
-; Mark bt_target poisoned, whichever side it is on.
+; Set STATUS_POISON on bt_target, whichever side it is on -- ora, not a plain
+; store, so an existing burn (or any other status) survives being poisoned.
 poison_target:
   lda bt_target
   cmp #MAX_PARTY
   bcs poison_target_mon
   tax
-  lda #1
+  lda pc_status,x
+  ora #STATUS_POISON
   sta pc_status,x
   rts
 poison_target_mon:
   sec
   sbc #MAX_PARTY
   tax
-  lda #1
+  lda mon_slot_status,x
+  ora #STATUS_POISON
+  sta mon_slot_status,x
+  rts
+
+; Burn: the identical mechanism as poison just above, its own bit and its own
+; landing message.
+cast_burn:
+  ldx bt_arg
+  lda spell_scope,x
+  bne cast_burn_all
+  jsr burn_target
+  jmp cast_burn_say
+cast_burn_all:
+  jsr other_side
+  sta bt_target
+  clc
+  adc #MAX_PARTY
+  sta bt_tmp2
+cast_burn_loop:
+  ldx bt_target
+  jsr combatant_alive_x
+  beq cast_burn_next
+  jsr burn_target
+cast_burn_next:
+  inc bt_target
+  lda bt_target
+  cmp bt_tmp2
+  bcc cast_burn_loop
+cast_burn_say:
+  lda #$FF
+  sta bt_dmg_hi             ; no number on this line
+  lda #BS_BURNS
+  jmp battle_say_actor
+
+; Set STATUS_BURN on bt_target -- see poison_target just above.
+burn_target:
+  lda bt_target
+  cmp #MAX_PARTY
+  bcs burn_target_mon
+  tax
+  lda pc_status,x
+  ora #STATUS_BURN
+  sta pc_status,x
+  rts
+burn_target_mon:
+  sec
+  sbc #MAX_PARTY
+  tax
+  lda mon_slot_status,x
+  ora #STATUS_BURN
   sta mon_slot_status,x
   rts
 
@@ -427,7 +486,7 @@ other_side_party:
 
 ; A = combatant. Returns A = its status bits (Z set when clean). Clobbers X,
 ; unlike the combatant_* lookups above it: its callers are the message flow and
-; the poison tick, neither of which is holding a register.
+; the status dispatch, neither of which is holding a register.
 combatant_status:
   cmp #MAX_PARTY
   bcs combatant_status_mon
@@ -441,13 +500,11 @@ combatant_status_mon:
   lda mon_slot_status,x
   rts
 
-; The acting combatant suffers its poison: a fixed bite, a line saying so, and
-; bt_ptick raised so the message that follows hands the turn on rather than
-; poisoning again. Called from battle_message_done, after the action's own
-; message has been dismissed.
+; The acting combatant suffers its poison: a fixed bite and a line saying so.
+; Called from battle_message_done's status dispatch (engine/battleui.asm),
+; which already owns bt_ptick and status_pending -- this only ever does
+; poison's own amount and message.
 poison_tick:
-  lda #1
-  sta bt_ptick
   lda bt_actor
   sta bt_target
   lda #POISON_DMG
@@ -457,6 +514,20 @@ poison_tick:
   jsr apply_damage
   jsr print_num
   lda #BS_SUFFERS
+  jmp battle_say_actor
+
+; Burn: the identical mechanism as poison_tick just above, its own amount and
+; message.
+burn_tick:
+  lda bt_actor
+  sta bt_target
+  lda #BURN_DMG
+  sta bt_dmg_lo
+  lda #0
+  sta bt_dmg_hi
+  jsr apply_damage
+  jsr print_num
+  lda #BS_SCORCHED
   jmp battle_say_actor
 
 ; X = combatant; Z set when it is out. A wrapper so the loops above read.

@@ -311,7 +311,9 @@ export const BATTLE_STRINGS = [
   ['DEFEAT', 'Wiped out.'],
   ['NOTHING', 'no effect'],
   ['POISONS', 'poisons'],
-  ['SUFFERS', 'poisoned']
+  ['SUFFERS', 'poisoned'],
+  ['BURNS', 'burns'],
+  ['SCORCHED', 'burned']
 ];
 
 /** The four commands down the left of the battle box, padded to one width. */
@@ -323,7 +325,7 @@ const MSG_COLS = 12;
  * push_battle_string (engine/battleui.asm) accumulates index * MSG_COLS the
  * same 8-bit way name_offset_pc used to before the fix in
  * handoff-namestride/brief-namestride.md -- safe today only because
- * BATTLE_STRINGS has 11 entries (max offset 120 of 256), not because
+ * BATTLE_STRINGS has 13 entries (max offset 144 of 256), not because
  * anything stops a 22nd. It is out of scope for an engine change (the brief's
  * own call): a 22nd string is the same wraparound, so this fails the build
  * at the 22nd string instead, rather than leaving a comment nobody reads.
@@ -476,7 +478,7 @@ export function checkBattleTables(project) {
 // identical reasoning the BE_RESTORE paragraph above already gives for its
 // own uniform +18. MMC3's own extra 46-byte SPLIT_ENABLED gap is unchanged by
 // it (4007 - 3961 = 46).
-export const BASE_BATTLE_CODE_BYTES_BY_MAPPER = { 30: 3961, 1: 3961, 4: 4007 };
+export const BASE_BATTLE_CODE_BYTES_BY_MAPPER = { 30: 4125, 1: 4125, 4: 4171 };
 
 // Phase 4c round 3, finding 6 (phase4-design.md §9), corrected round 3b
 // (review K1): the two-menu-consistency filter (build_item_list's kind/

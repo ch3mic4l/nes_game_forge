@@ -701,15 +701,37 @@ battle_message_wait:
   bne battle_message_hold
 battle_message_done:
   jsr clear_message
-  ; After the acting combatant's own line, its poison gets a word in: one tick
-  ; of damage and one more line, with bt_ptick raised so *this* branch advances
-  ; the turn when that line is dismissed instead of poisoning twice.
+  ; After the acting combatant's own line, every status it carries gets a
+  ; word in, one tick and one line per bit, lowest first: status_pending
+  ; holds which are still owed this turn (snapshotted from combatant_status
+  ; the first time through) and bt_ptick raised marks that the line on screen
+  ; is a status tick, not the action's own, so dismissing it either ticks the
+  ; next bit or -- once none are left -- advances the turn. See
+  ; docs/design-status-effects.md.
   lda bt_ptick
-  bne battle_message_advance
+  bne battle_status_dispatch
   lda bt_actor
   jsr combatant_status
   beq battle_message_advance
+  sta status_pending
+  lda #1
+  sta bt_ptick
+battle_status_dispatch:
+  lda status_pending
+  and #STATUS_POISON
+  beq battle_status_check_burn
+  lda status_pending
+  and #$FE                  ; clears STATUS_POISON (bit 0)
+  sta status_pending
   jmp poison_tick
+battle_status_check_burn:
+  lda status_pending
+  and #STATUS_BURN
+  beq battle_message_advance
+  lda status_pending
+  and #$FD                  ; clears STATUS_BURN (bit 1)
+  sta status_pending
+  jmp burn_tick
 battle_message_advance:
   lda #0
   sta bt_ptick

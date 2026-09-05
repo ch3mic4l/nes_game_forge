@@ -171,8 +171,10 @@ bt_x        = $6E
 bt_y        = $6F
 bt_ret      = $70
 bt_fill     = $71           ; wipe_monster's background tile
-bt_ptick    = $72           ; the line on screen is a poison tick, so the next
-                            ; message-done advances the turn instead of poisoning
+bt_ptick    = $72           ; a status tick is on screen, not the acting
+                            ; combatant's own line -- see status_pending below
+                            ; and battle_message_done's own comment
+                            ; (engine/battleui.asm) for the rest.
 bt_vrow     = $73           ; draw_list's visible-row counter. Its own byte
                             ; because drawing a name runs through name_offset_pc,
                             ; which owns bt_tmp2 -- a shared counter hung the
@@ -395,6 +397,17 @@ fade_reload = fade_left+1      ; non-zero: the next redraw_screen must reload
 ; symbol's address, including fade_reload's.
 flash_left  = fade_reload+1
 
+; battle_message_done's own status dispatch (engine/battleui.asm): which of
+; the acting combatant's status bits are still owed a tick this turn,
+; snapshotted from combatant_status once and cleared bit by bit as each is
+; ticked. Not bt_tmp/bt_tmp2 -- both are load-bearing for other call chains
+; already running inside this same message flow (see their own comments, and
+; the 6502-traps entry on bt_tmp2 in CLAUDE.md). See docs/design-status-effects.md.
+;
+; Chained after flash_left for the identical reason flash_left itself was
+; chained after fade_reload: this must not move any other symbol's address.
+status_pending = flash_left+1
+
 ; The $10-per-row darken trick reaches solid black in at most this many
 ; subtractions from any starting row; the hold between steps is an engine
 ; constant, not authored -- see OP_FADE below and shared/project.js's
@@ -523,8 +536,13 @@ bt_list     = $03E4  ; the open spell or item list -- up to eight  @size=8
                             ; once, scrolled by bt_scroll -- not how many
                             ; entries this array holds.
 mon_slot_mp = $03EC         ; what each monster has left to cast with  @size=MAX_MONSTERS
-; Status bits, one byte per combatant side. Bit 0 is poison, the only status;
-; both are cleared when a battle starts, so nothing carries into the field.
+; Status bits, one byte per combatant side. Each status owns one bit, set by
+; poison_target/burn_target's own ora (engine/battleturn.asm) and cleared as
+; a whole byte by any cure, never overwritten whole by an afflict -- the
+; generalization behind this is docs/design-status-effects.md. Both arrays
+; are cleared when a battle starts, so nothing carries into the field.
+STATUS_POISON = 1           ; bit 0
+STATUS_BURN   = 2           ; bit 1
 pc_status   = $03F0  ; @size=MAX_PARTY
 mon_slot_status = $03F4  ; @size=MAX_MONSTERS
 
@@ -828,6 +846,9 @@ SK_DAMAGE   = 0
 SK_HEAL     = 1
 SK_POISON   = 2
 POISON_DMG  = 2             ; what a poisoned combatant loses after each turn
+SK_BURN     = 3             ; appended -- SPELL_KINDS in shared/project.js is
+                            ; append-only, so this stays the last entry
+BURN_DMG    = 3             ; what a burned combatant loses after each turn
 
 ; Getting hit. The invincible window is long enough to walk out of whatever hit
 ; you, which is what stops a chaser draining the whole bar in half a second.

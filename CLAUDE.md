@@ -1424,21 +1424,20 @@ Three shapes worth keeping:
 - **The `combatant_*` lookups preserve X and Y and return through `bt_ret`**, because they are
   called from loops that own those registers — and restoring a register sets the flags, so the
   answer has to be reloaded last.
-- **Poison is a status bit, ticked by the message flow.** `pc_status`/`mon_slot_status` carry it,
-  and the bite lands in `battle_message_done`: after the victim's own line is dismissed, one tick
-  of damage and one more line, with `bt_ptick` marking that second line so dismissing *it*
-  advances the turn instead of poisoning twice. A status never survives past the battle that gave
-  it to a party member, on any of the three ways a battle can stop mattering: `battle_begin` and
-  `battle_end` (`engine/rpg.asm`) each zero `pc_status` for every party slot, covering a fight
-  entered and a fight left normally — including a fight the party won. A loss is the third
-  way and does not go through `battle_end` at all: `battle_finish` (`engine/battleturn.asm`) jumps
-  straight to `player_died` on defeat, so the clear for that path lives in `init_session`
-  (`engine/combat.asm`) instead — the single definition of "new game" every game over already
-  runs through via `restart_game`, rather than a clear bolted onto the defeat path on its own.
-  Nothing currently depends on any of this — nothing on the field reads `pc_status` — but a
-  stale-but-harmless byte stops being harmless the day a save record starts serializing this
-  array, so the invariant is enforced at every exit rather than merely documented at one of them.
-  A heal or a potion cures the caster's own, mid-battle.
+- **Status effects are independent bits, ticked by the message flow.** `pc_status`/`mon_slot_status`
+  carry them — `STATUS_POISON`/`STATUS_BURN` (`engine/constants.asm`), set by `ora` rather than a
+  plain store, so casting one never erases the other. The bite lands in `battle_message_done`: once
+  the actor's own line is dismissed, `status_pending` walks every set bit lowest-first, one tick and
+  one line per bit, before the turn advances — see `docs/design-status-effects.md` for the dispatch
+  mechanism, why curing the whole byte at once is still correct, and what a third status would need.
+  No status survives past the battle that gave it, on any of the three ways a battle can stop
+  mattering: `battle_begin`/`battle_end` (`engine/rpg.asm`) each zero the array for every party slot,
+  covering a fight entered and one left normally, won included. A loss is the third way and skips
+  `battle_end`: `battle_finish` (`engine/battleturn.asm`) jumps straight to `player_died`, so that
+  clear lives in `init_session` (`engine/combat.asm`) instead — the single definition of "new game"
+  every game over runs through via `restart_game`. Nothing on the field reads either array, but a
+  stale byte stops being harmless the day a save record serializes it, so the invariant is enforced
+  at every exit, not just documented at one. A heal or a potion cures everything at once, mid-battle.
 - **A spell's amount is a range, not a fixed number**: `amountMin`/`amountMax` in the schema,
   `spell_amount_min`/`spell_amount_n`/`spell_amount_limit` (`main/build/battletables.js`) in ROM,
   rolled by `roll_spell_amount` + `mod8` (`engine/battleturn.asm`) — a draw rejected at or above
