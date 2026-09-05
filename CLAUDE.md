@@ -213,9 +213,8 @@ Anything the 6502 engine and the JavaScript tooling both depend on has **one** d
   point at different content the moment the project is edited in between.
 - Rewriting every stored flat-screen reference after a map/screen structural edit →
   `remapScreenReferences(project, translate)` in `shared/project.js` (item 7, "Map organization and
-  reuse"). It is the single place that knows *which fields* hold a flat screen reference; it does
-  not know how any operation computes its own permutation, which each caller supplies as `translate`.
-  See the fuller passage below, near `renderer/store.js`.
+  reuse"). It is the single place that knows *which fields* hold a flat screen reference — the
+  fuller passage below, near `renderer/store.js`, has the rest.
 - Engine RAM addresses → `engine/constants.asm`. Tooling that has to know where a byte lives
   *parses* them (`parseEquates` in `shared/enginesyms.js`) out of the `constants.asm` in `build/`,
   which is the copy that assembled the ROM in hand — a Code Forge override of it included. The
@@ -348,11 +347,8 @@ builders (`buildReorderTranslate`, `buildAppendCanonicalizeTranslate`, `buildDel
 `store.commit()`, so restructuring the map list and repairing every reference it holds is one undo
 entry, never two.
 
-A same-count reorder is the case `screenCount`/`mapCount` cannot see: it leaves both untouched, so a
-cartridge save would still pass `saveIdentity`'s checks (`shared/save.js`, below) while its own
-`flat_screen` byte named a different room. `saveCompatToken`, drawn by `drawSaveCompatToken` and
-folded into `saveIdentity` only when nonzero, closes that gap — see the `SAVE_LAYOUT_VERSION`
-passage below for how it differs from a layout-version bump.
+A same-count reorder leaves `screenCount`/`mapCount` untouched, so `saveIdentity` alone cannot see
+it; `saveCompatToken` closes that gap — see the `SAVE_LAYOUT_VERSION` passage below.
 
 Mechanism depth — the map-space fixups, the duplicated-map/screen self/external target split
 (`rewriteClonedRange` for a duplicated map or a screen promoted into a new map, `buildCloneTranslate`
@@ -717,15 +713,20 @@ already-over-cap project (a later version's, or hand-edited) is refused by `vali
 named error and left intact rather than silently sliced — a 256th metasprite is real, drawable
 content, the identical policy the actor and item ceilings already hold to.
 
-ROADMAP item 8's modular-parts feature targets the player character specifically, not a Sprite
-Forge actor: `PLAYER_FRAMES`/`PLAYER_TILES` (`shared/project.js`, imported by `generate.js`) name
-the player's 32 fixed sprite-table slots (`build_oam` in `engine/oam.asm`). Phase 1 shipped the
-schema — `project.sprites.playerTiles`, always 32 entries, `null` meaning never generated and any
-string (`BLANK_TILE` included) meaning real content; `project.sprites.playerParts`, a library of
-tagged, reusable tiles; `storageIndex`'s addressing arithmetic; and the Tile Forge's Player tab, a
-`state.mode` of its own, not a third `state.table` value. Composing parts into `playerTiles` and
-stamping it into every tileset at build time, like `HEART_TILES`, is Phase 2 — ordinary project
-data, no new compiled/engine-side array or table. See `docs/design-modular-parts.md`.
+ROADMAP item 8's modular-parts targets the player, not a Sprite Forge actor:
+`PLAYER_FRAMES`/`PLAYER_TILES` (`shared/project.js`) name the player's 32 sprite-table slots.
+Phase 1 shipped the schema — `project.sprites.playerTiles`, `project.sprites.playerParts`,
+`storageIndex`'s addressing arithmetic, the Tile Forge's Player tab. **Phase 2 shipped the
+generator and the build-time stamp; Phase 3 (the modal, §6.3) remains.** `playerTiles` is the
+single canonical source: `generatePlayerSpriteCore`/`planPlayerSprite` write only there, sharing
+one decision path — a frame is written whole or not at all, and `BLANK_TILE` stays the literal
+string, never `null`. Every pick field is validated before address arithmetic — the trap: an
+out-of-range `frameIndex` once grew the array past 32 and aliased another frame. `generateAssets`
+stamps every tileset's `$00-$1F` from `playerTiles` every build, into build-time copies only, never
+project data, `null` falling back to the placeholder per slot. Mechanism depth — the import fixes
+(`freeTileSlots`/`chrImportOverlap`), a divergence warning, and `playerSpriteCollisions`'s §4.4
+preflight — is `docs/design-modular-parts.md`, not here. Pinned by
+`test/unit/playersprite.test.js` and `importChr()` smoke steps.
 
 `renumberSpellDeletion` (`shared/project.js`) exists beside `renumberActorDeletion`/
 `renumberItemDeletion`, the same shape applied to `project.spells` — the Magic Forge's own delete
