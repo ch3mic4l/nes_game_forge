@@ -8,7 +8,17 @@ import { store } from '../../store.js';
 import { el, clear, fill, toast, canvasPoint, line, confirmModal, promptModal, fitZoom, observeSize } from '../../ui.js';
 import { tileFromString, tileToString, encodeTiles, decodeChr, flipTile, BLANK_TILE } from '../../../shared/chr.js';
 import { NES_PALETTE, cssColor, colorLabel, isUnsafeColor } from '../../../shared/nespalette.js';
-import { LIMITS, tilesetAt, createTileset } from '../../../shared/project.js';
+import {
+  LIMITS,
+  tilesetAt,
+  createTileset,
+  PLAYER_TILES,
+  DIRECTION_ORDER,
+  QUADRANT_ORDER,
+  PART_FRAME_SLOTS,
+  storageIndex,
+  renumberPlayerPartDeletion
+} from '../../../shared/project.js';
 import { resolveMapper, tilesetLimit } from '../../../shared/cartridge.js';
 import { FONT_BASE, fontBankSplit, fontChrPages, projectUsesText } from '../../../shared/font.js';
 import { openImportDialog } from './import.js';
@@ -16,9 +26,29 @@ import { openImportDialog } from './import.js';
 const SHEET_COLS = 16;
 const SHEET_ROWS = LIMITS.tilesPerTable / SHEET_COLS;
 
+/**
+ * A real mouse/touch pointerdown always has a capturable pointer, but a
+ * synthetically dispatched PointerEvent (browser automation, some
+ * accessibility tooling) does not, and `setPointerCapture` throws
+ * `NotFoundError` for one -- uncaught, that crashes the whole Forge mid-
+ * drag. Losing capture only means a drag that leaves the canvas stops
+ * tracking; the ordinary pointerup on the canvas itself still ends it. Same
+ * shape as `trySetPointerCapture` in `renderer/forges/map/map.js`.
+ */
+function trySetPointerCapture(canvas, event) {
+  try {
+    canvas.setPointerCapture(event.pointerId);
+  } catch {
+    // Best-effort only -- see the comment above.
+  }
+}
+
 export function mount(container, app) {
   const state = {
-    // Which tileset (CHR bank) is open, and which of its two tables.
+    // Which tileset (CHR bank) is open, and which of its two tables. Only
+    // meaningful in 'tileset' mode -- 'player' mode reads/writes
+    // project.sprites.playerTiles/playerParts directly, which are neither
+    // tileset- nor table-scoped (design-modular-parts.md §6.2).
     tilesetId: 0,
     table: 'background',
     tiles: [],
@@ -30,14 +60,31 @@ export function mount(container, app) {
     sheetZoom: 2,
     painting: false,
     lastPoint: null,
-    clipboard: null
+    clipboard: null,
+    // Not a third `state.table` value (design-modular-parts.md §6.2:
+    // tilesetAt(...)[state.table] assumes a per-tileset property, and
+    // neither playerParts nor playerTiles is one) -- a separate mode
+    // switched by its own third tab, alongside Background/Sprites.
+    mode: 'tileset', // 'tileset' | 'player'
+    playerView: 'frames', // 'frames' | 'parts'
+    playerFrame: 0, // which of the 8 View-1 frames is highlighted as active
+    playerPaint: null // in-progress drag: { lastPoint, slot, paint(x, y, slot) }
   };
 
   // ------------------------------------------------------------- helpers
 
-  const paletteSet = () => (state.table === 'background' ? store.project.palettes.bg : store.project.palettes.sprite);
+  // Player art is always sprite-shaped, in either mode -- the player's own
+  // compiled sprite is what View 1/View 2 edit, so the shared Palettes panel
+  // (activePalette/activeSlot) follows sprite palettes and transparent slot 0
+  // the moment Player mode is open, regardless of which tileset tab was last
+  // showing. This is the single place that decision is made -- every read
+  // (paletteSet/transparentZero) and every write (setColor, importPal,
+  // exportPal) goes through it, so a palette edit made while Player is open
+  // can never land on the wrong table's palette.
+  const paletteKind = () => (state.mode === 'player' || state.table === 'sprites' ? 'sprite' : 'bg');
+  const paletteSet = () => store.project.palettes[paletteKind()];
   const palette = () => paletteSet()[state.activePalette];
-  const transparentZero = () => state.table === 'sprites';
+  const transparentZero = () => state.mode === 'player' || state.table === 'sprites';
   // Only the background table loses tiles to the font, only while something in
   // the project actually puts text on screen — and never on a scanline-IRQ
   // board, where the font rides in its own CHR bank and every tile stays yours.
@@ -45,6 +92,10 @@ export function mount(container, app) {
     state.table === 'background' &&
     projectUsesText(store.project) &&
     !fontBankSplit(store.project, resolveMapper(store.project.cartridge.mapper));
+  // Unconditional, unlike fontReserved above: every game has a player, so the
+  // stamp always lands here at build time (design-modular-parts.md §3.2/§6.2)
+  // -- simpler than fontReserved's own conditional predicate, deliberately.
+  const playerReserved = () => state.table === 'sprites';
 
   function syncFromStore() {
     state.tiles = tilesetAt(store.project, state.tilesetId)[state.table].tiles.map(tileFromString);
@@ -150,6 +201,23 @@ export function mount(container, app) {
       sheetContext.stroke();
     }
 
+    // Tiles $00-$1F are the player's own compiled sprite (design-modular-
+    // parts.md §3.2/§6.2): stamped over at build time on every tileset,
+    // unconditionally, so shading here is the identical shape as the font's
+    // own reservation above, just unconditional rather than gated on
+    // projectUsesText.
+    if (playerReserved()) {
+      const bottom = Math.ceil(PLAYER_TILES / SHEET_COLS) * cell;
+      sheetContext.fillStyle = 'rgba(255, 157, 60, 0.16)';
+      sheetContext.fillRect(0, 0, sheetCanvas.width, bottom);
+      sheetContext.strokeStyle = 'rgba(255, 157, 60, 0.7)';
+      sheetContext.lineWidth = 1;
+      sheetContext.beginPath();
+      sheetContext.moveTo(0, bottom + 0.5);
+      sheetContext.lineTo(sheetCanvas.width, bottom + 0.5);
+      sheetContext.stroke();
+    }
+
     const { col, row } = regionOrigin();
     sheetContext.strokeStyle = '#ff9d3c';
     sheetContext.lineWidth = 2;
@@ -232,8 +300,7 @@ export function mount(container, app) {
           onclick: () => {
             state.activePalette = paletteIndex;
             renderPalettes();
-            renderSheet();
-            renderEditor();
+            redrawActive();
           }
         },
         el('span.palette-index', null, paletteIndex),
@@ -249,8 +316,7 @@ export function mount(container, app) {
               state.activePalette = paletteIndex;
               state.activeSlot = slot;
               renderPalettes();
-              renderSheet();
-              renderEditor();
+              redrawActive();
             }
           })
         )
@@ -281,7 +347,7 @@ export function mount(container, app) {
   function setColor(colorIndex) {
     const slot = state.activeSlot;
     const paletteIndex = state.activePalette;
-    const kind = state.table === 'background' ? 'bg' : 'sprite';
+    const kind = paletteKind();
     store.commit('Change palette colour', (project) => {
       if (slot === 0) {
         // The NES has a single backdrop colour shared by every palette.
@@ -300,6 +366,14 @@ export function mount(container, app) {
       el('div.kv', null, el('span', null, 'Tiles used'), el('span', null, `${used} / ${LIMITS.tilesPerTable}`)),
       el('div.meter', null, el('div.meter-fill', { style: { width: `${(used / LIMITS.tilesPerTable) * 100}%` } })),
       el('p.hint', null, 'One pattern table holds 256 tiles. Background and sprite tables are separate.'),
+      playerReserved()
+        ? el(
+            'p.hint',
+            { style: { color: 'var(--accent)' } },
+            `Tiles $00–$${(PLAYER_TILES - 1).toString(16).toUpperCase().padStart(2, '0')} are reserved for the player ` +
+              'character and are replaced at build time; edit them from the Player view instead.'
+          )
+        : null,
       fontReserved()
         ? el(
             'p.hint',
@@ -464,10 +538,36 @@ export function mount(container, app) {
   }
 
   function renderAll() {
-    renderSheet();
-    renderEditor();
+    tilesetLeftBody.hidden = state.mode !== 'tileset';
+    playerLeftHint.hidden = state.mode !== 'player';
+    tilesetMiddleBody.hidden = state.mode !== 'tileset';
+    playerViewBody.hidden = state.mode !== 'player';
+    importSection.hidden = state.mode !== 'tileset';
+    exportSection.hidden = state.mode !== 'tileset';
+    if (state.mode === 'tileset') {
+      renderSheet();
+      renderEditor();
+      renderStats();
+    } else {
+      renderPlayerPanel();
+    }
     renderPalettes();
-    renderStats();
+    updateTabs();
+  }
+
+  // Redraws whichever mode is actually showing, without touching visibility,
+  // tabs or stats -- for a change that only affects what the picture looks
+  // like (the active palette/slot), never which data exists (F1). Tileset
+  // mode's own canvases have no persistent "redraw" handle of their own the
+  // way the Player panel's cells/rows do, so this calls the same pair
+  // renderAll() does for that branch.
+  function redrawActive() {
+    if (state.mode === 'tileset') {
+      renderSheet();
+      renderEditor();
+    } else {
+      redrawPlayerCanvases();
+    }
   }
 
   // ---------------------------------------------------------------- tools
@@ -637,7 +737,7 @@ export function mount(container, app) {
     if (!result.value) return;
     const bytes = new Uint8Array(result.value.data);
     if (bytes.length < 4) return toast('Palette files need at least four bytes.', 'error');
-    const kind = state.table === 'background' ? 'bg' : 'sprite';
+    const kind = paletteKind();
     store.commit('Import palette', (project) => {
       for (let slot = 0; slot < 4; slot++) {
         project.palettes[kind][state.activePalette][slot] = bytes[slot] & 0x3f;
@@ -727,14 +827,12 @@ export function mount(container, app) {
     return el(
       'button.tab',
       {
-        class: state.table === id ? 'active' : '',
-        dataset: { table: id },
+        class: state.mode === 'tileset' && state.table === id ? 'active' : '',
+        dataset: { tab: id },
         onclick: () => {
+          state.mode = 'tileset';
           state.table = id;
           state.activePalette = 0;
-          root.querySelectorAll('[data-table]').forEach((button) => {
-            button.classList.toggle('active', button.dataset.table === id);
-          });
           syncFromStore();
           renderAll();
         }
@@ -743,76 +841,511 @@ export function mount(container, app) {
     );
   }
 
+  function playerModeTab() {
+    return el(
+      'button.tab',
+      {
+        class: state.mode === 'player' ? 'active' : '',
+        dataset: { tab: 'player' },
+        onclick: () => {
+          state.mode = 'player';
+          renderAll();
+        }
+      },
+      'Player'
+    );
+  }
+
+  function updateTabs() {
+    root.querySelectorAll('[data-tab]').forEach((button) => {
+      const id = button.dataset.tab;
+      const active = id === 'player' ? state.mode === 'player' : state.mode === 'tileset' && state.table === id;
+      button.classList.toggle('active', active);
+    });
+  }
+
+  // ------------------------------------------------------- Player view (§6.2)
+  //
+  // Two real, separately-sourced views (design-modular-parts.md §6.2), never a
+  // third `state.table` entry: View 1 reads/writes `project.sprites.playerTiles`
+  // directly via the new `storageIndex` mapping (§1.5), never `regionTiles()`/
+  // `writeTile()`/`writeRegion()`, which assume the sheet's mismatched
+  // 16-column grid. View 2 reads/writes `project.sprites.playerParts`. Neither
+  // needs `state.tilesetId` -- both arrays are project-level, not per-tileset.
+
+  /** One of the 8 always-visible, always-paintable 16x16 frame canvases. */
+  function createPlayerFrameCell(frame) {
+    const direction = Math.floor(frame / 2);
+    const frameIndex = frame % 2;
+    const canvas = el('canvas.pixels');
+    const marker = el('span.player-frame-marker', { hidden: true }, 'not generated');
+    const stage = el('div.player-canvas-box', null, el('div', null, canvas, marker));
+    const node = el(
+      'div.player-frame-cell',
+      null,
+      el('div.field-label', null, `${DIRECTION_ORDER[direction]} ${frameIndex + 1}`),
+      stage
+    );
+
+    const rawTile = (row, col) => store.project.sprites.playerTiles[storageIndex(frame, row, col)];
+    const pixelsAt = (x, y) => tileFromString(rawTile(Math.floor(y / 8), Math.floor(x / 8)) ?? BLANK_TILE);
+    function paintPixel(x, y, slot) {
+      const index = storageIndex(frame, Math.floor(y / 8), Math.floor(x / 8));
+      const pixels = tileFromString(store.project.sprites.playerTiles[index] ?? BLANK_TILE);
+      pixels[(y % 8) * 8 + (x % 8)] = slot;
+      // A dedicated mutation, never writeTile()/writeRegion() (design-modular-
+      // parts.md §6.2) -- those are hard-wired to tilesetAt(...)[state.table].
+      store.project.sprites.playerTiles[index] = tileToString(pixels);
+    }
+
+    function redraw() {
+      const zoom = fitZoom(stage, 16, 16, { min: 3, max: 16 });
+      canvas.width = 16;
+      canvas.height = 16;
+      canvas.style.width = `${16 * zoom}px`;
+      canvas.style.height = `${16 * zoom}px`;
+      const context = canvas.getContext('2d');
+      context.imageSmoothingEnabled = false;
+      const image = context.createImageData(16, 16);
+      paintImageData(image, (x, y) => pixelsAt(x, y)[(y % 8) * 8 + (x % 8)], 16, 16);
+      context.putImageData(image, 0, 0);
+      const missing = [0, 1].some((row) => [0, 1].some((col) => rawTile(row, col) === null));
+      marker.hidden = !missing;
+      node.classList.toggle('active', frame === state.playerFrame);
+    }
+
+    function beginPaint(event) {
+      if (event.button > 2) return;
+      event.preventDefault();
+      state.playerFrame = frame;
+      const point = canvasPoint(event, canvas, 16, 16);
+      const slot = event.button === 2 ? 0 : state.activeSlot;
+      store.beginStroke('Edit player tile');
+      paintPixel(point.x, point.y, slot);
+      state.playerPaint = { lastPoint: point, slot, paint: paintPixel };
+      redraw();
+      trySetPointerCapture(canvas, event);
+    }
+    function movePaint(event) {
+      if (!state.playerPaint || state.playerPaint.paint !== paintPixel) return;
+      const point = canvasPoint(event, canvas, 16, 16);
+      line(state.playerPaint.lastPoint, point, (x, y) => paintPixel(x, y, state.playerPaint.slot));
+      state.playerPaint.lastPoint = point;
+      redraw();
+    }
+    function endPaint() {
+      if (!state.playerPaint || state.playerPaint.paint !== paintPixel) return;
+      store.endStroke();
+      state.playerPaint = null;
+    }
+
+    canvas.addEventListener('pointerdown', beginPaint);
+    canvas.addEventListener('pointermove', movePaint);
+    canvas.addEventListener('pointerup', endPaint);
+    canvas.addEventListener('pointercancel', endPaint);
+    canvas.addEventListener('contextmenu', (event) => event.preventDefault());
+
+    // No observeSize() of its own: one shared observer on playerViewBody
+    // (below, beside stopWatchingStage) redraws every mounted cell/row, so
+    // opening the Player tab constructs exactly one more ResizeObserver for
+    // the whole panel rather than one per cell -- main/smoke.js's own
+    // token-check probe pins Tile Forge's mount() to a fixed observer count.
+    return { node, redraw };
+  }
+
+  const playerFrameCells = Array.from({ length: PLAYER_TILES / 4 }, (_, frame) => createPlayerFrameCell(frame));
+  const playerFramesGrid = el('div.player-frames-grid', null, ...playerFrameCells.map((cell) => cell.node));
+
+  function renderPlayerFrames() {
+    playerFrameCells.forEach((cell) => cell.redraw());
+  }
+
+  /** One player-part row: its fields plus its own single-tile 8x8 canvas. */
+  function createPlayerPartRow(part) {
+    const canvas = el('canvas.pixels');
+    const stage = el('div.player-canvas-box', null, el('div', null, canvas));
+
+    const current = () => store.project.sprites.playerParts.find((entry) => entry.id === part.id) ?? part;
+    function paintPixel(x, y, slot) {
+      const target = current();
+      const pixels = tileFromString(target.tile);
+      pixels[y * 8 + x] = slot;
+      target.tile = tileToString(pixels);
+    }
+    function redraw() {
+      const zoom = fitZoom(stage, 8, 8, { min: 4, max: 16 });
+      canvas.width = 8;
+      canvas.height = 8;
+      canvas.style.width = `${8 * zoom}px`;
+      canvas.style.height = `${8 * zoom}px`;
+      const context = canvas.getContext('2d');
+      context.imageSmoothingEnabled = false;
+      const pixels = tileFromString(current().tile);
+      const image = context.createImageData(8, 8);
+      paintImageData(image, (x, y) => pixels[y * 8 + x], 8, 8);
+      context.putImageData(image, 0, 0);
+    }
+    function beginPaint(event) {
+      if (event.button > 2) return;
+      event.preventDefault();
+      const point = canvasPoint(event, canvas, 8, 8);
+      const slot = event.button === 2 ? 0 : state.activeSlot;
+      store.beginStroke('Edit part tile');
+      paintPixel(point.x, point.y, slot);
+      state.playerPaint = { lastPoint: point, slot, paint: paintPixel };
+      redraw();
+      trySetPointerCapture(canvas, event);
+    }
+    function movePaint(event) {
+      if (!state.playerPaint || state.playerPaint.paint !== paintPixel) return;
+      const point = canvasPoint(event, canvas, 8, 8);
+      line(state.playerPaint.lastPoint, point, (x, y) => paintPixel(x, y, state.playerPaint.slot));
+      state.playerPaint.lastPoint = point;
+      redraw();
+    }
+    function endPaint() {
+      if (!state.playerPaint || state.playerPaint.paint !== paintPixel) return;
+      store.endStroke();
+      state.playerPaint = null;
+    }
+    canvas.addEventListener('pointerdown', beginPaint);
+    canvas.addEventListener('pointermove', movePaint);
+    canvas.addEventListener('pointerup', endPaint);
+    canvas.addEventListener('pointercancel', endPaint);
+    canvas.addEventListener('contextmenu', (event) => event.preventDefault());
+    // No observeSize() of its own -- see createPlayerFrameCell's own comment.
+
+    const enumSelect = (options, value, onChange) =>
+      el(
+        'select',
+        { onchange: (event) => onChange(event.target.value) },
+        options.map((option) => el('option', { value: option, selected: option === value }, option))
+      );
+
+    const node = el(
+      'div.player-part-row',
+      { dataset: { partId: String(part.id) } },
+      stage,
+      el('div.player-part-fields', null,
+        el('input', {
+          type: 'text',
+          value: part.name,
+          title: 'Part name',
+          dataset: { partField: 'name' },
+          onchange: (event) => updatePlayerPart(part.id, 'Rename player part', (entry) => applyPartName(entry, event.target.value))
+        }),
+        el('input', {
+          type: 'text',
+          value: part.category,
+          placeholder: 'Category',
+          dataset: { partField: 'category' },
+          onchange: (event) => updatePlayerPart(part.id, 'Set player part category', (entry) => applyPartCategory(entry, event.target.value))
+        }),
+        enumSelect(DIRECTION_ORDER, part.direction, (value) =>
+          updatePlayerPart(part.id, 'Set player part direction', (entry) => (entry.direction = value))
+        ),
+        enumSelect(PART_FRAME_SLOTS, part.frameSlot, (value) =>
+          updatePlayerPart(part.id, 'Set player part frame', (entry) => (entry.frameSlot = value))
+        ),
+        enumSelect(QUADRANT_ORDER, part.quadrant, (value) =>
+          updatePlayerPart(part.id, 'Set player part quadrant', (entry) => (entry.quadrant = value))
+        )
+      ),
+      el(
+        'button.btn.btn-icon',
+        {
+          title: 'Delete this part',
+          onclick: async () => {
+            const target = part;
+            if (!(await confirmModal('Delete part', `Delete "${target.name}"?`, 'Delete'))) return;
+            const index = store.project.sprites.playerParts.indexOf(target);
+            if (index === -1) {
+              toast('The project changed while that confirmation was open — nothing was deleted. Try again.', 'error');
+              rebuildPlayerParts();
+              return;
+            }
+            store.commit('Delete player part', (project) => renumberPlayerPartDeletion(project, index));
+            rebuildPlayerParts();
+          }
+        },
+        '×'
+      )
+    );
+
+    return { node, redraw };
+  }
+
+  // Shared by a part row's own onchange handlers and flushPendingEdits()
+  // below (F5), so a value committed at blur and one flushed ahead of a
+  // save apply the identical trim/fallback rule under the identical undo
+  // label -- never two slightly different ideas of what "renaming a part"
+  // means.
+  const applyPartName = (entry, rawValue) => {
+    entry.name = rawValue.trim() || `Part ${entry.id}`;
+  };
+  const applyPartCategory = (entry, rawValue) => {
+    entry.category = rawValue;
+  };
+
+  function updatePlayerPart(partId, label, mutate) {
+    store.commit(label, (project) => {
+      const target = project.sprites.playerParts.find((entry) => entry.id === partId);
+      if (target) mutate(target);
+    });
+    rebuildPlayerParts();
+  }
+
+  /**
+   * A part row's name/category inputs commit on blur (`change`), same as
+   * every other free-text field in this Forge -- deliberately not per
+   * keystroke, or the undo stack would fill with one entry per character.
+   * But `saveProject()` (`renderer/app.js`) calls this *before* reading
+   * `store.project`, specifically so a save while still focused inside one
+   * of these inputs writes what's on screen, not the last blurred value --
+   * matching the Code Forge's own `flushPendingEdits` precedent
+   * (`renderer/forges/code/code.js`). Reading `document.activeElement`
+   * rather than tracking "the currently open row" separately is what keeps
+   * this correct across a rebuild: rebuildPlayerParts() replaces every row's
+   * DOM on almost every edit, so any handle to "the row being edited" kept
+   * here would already be stale by the time a flush needs it.
+   */
+  function flushPendingEdits() {
+    const active = document.activeElement;
+    const field = active?.dataset?.partField;
+    if (!field) return;
+    const row = active.closest('.player-part-row');
+    const partId = row ? Number(row.dataset.partId) : NaN;
+    if (Number.isNaN(partId)) return;
+    const current = store.project.sprites.playerParts.find((entry) => entry.id === partId);
+    if (!current) return;
+    if (field === 'name') {
+      const next = active.value.trim() || `Part ${partId}`;
+      if (next !== current.name) updatePlayerPart(partId, 'Rename player part', (entry) => applyPartName(entry, active.value));
+    } else if (field === 'category') {
+      if (active.value !== current.category) {
+        updatePlayerPart(partId, 'Set player part category', (entry) => applyPartCategory(entry, active.value));
+      }
+    }
+  }
+
+  const playerPartsAddButton = el('button.btn', { onclick: () => addPlayerPart() }, '+ Add part');
+  const playerPartsList = el('div.player-parts-list');
+  const playerPartsBody = el(
+    'div',
+    null,
+    el(
+      'div.field-row',
+      { style: { marginBottom: '6px' } },
+      el('span.field-label', null, 'Parts'),
+      playerPartsAddButton
+    ),
+    playerPartsList,
+    el('p.hint', null, `${LIMITS.playerParts} parts is the ceiling. A part is never tileset-scoped.`)
+  );
+
+  function addPlayerPart() {
+    if (store.project.sprites.playerParts.length >= LIMITS.playerParts) return;
+    store.commit('Add player part', (project) => {
+      const id = project.sprites.playerParts.length;
+      if (id >= LIMITS.playerParts) return;
+      project.sprites.playerParts.push({
+        id,
+        name: `Part ${id}`,
+        category: '',
+        direction: 'down',
+        frameSlot: 'both',
+        quadrant: 'TL',
+        tile: BLANK_TILE
+      });
+    });
+    rebuildPlayerParts();
+  }
+
+  // Rebuilds the row DOM because the *data* changed (add/delete/field edit,
+  // or a project change from elsewhere) -- kept in playerPartRows so
+  // redrawPlayerParts() below can redraw those same canvases without
+  // rebuilding them. Every existing row is torn down and recreated here
+  // (matching this codebase's other list-rebuild Forges), which is why the
+  // rebuild must call each new row's own redraw() too -- a freshly created
+  // canvas.pixels has no width/height/content until something draws it, and
+  // the row that painted a stroke is exactly the row about to be rebuilt out
+  // from under itself the moment its own edit reaches the store (F2).
+  let playerPartRows = [];
+  function rebuildPlayerParts() {
+    const parts = store.project.sprites.playerParts;
+    playerPartRows = parts.map((part) => createPlayerPartRow(part));
+    fill(playerPartsList, ...playerPartRows.map((row) => row.node));
+    playerPartRows.forEach((row) => row.redraw());
+    const atLimit = parts.length >= LIMITS.playerParts;
+    playerPartsAddButton.disabled = atLimit;
+    playerPartsAddButton.title = atLimit ? `${LIMITS.playerParts} parts is the ceiling.` : 'Add a part';
+  }
+
+  // Redraws the currently-mounted part rows in place -- no rebuild, so a
+  // resize tick can never drop focus from a text input mid-typing (F2).
+  function redrawPlayerParts() {
+    playerPartRows.forEach((row) => row.redraw());
+  }
+
+  function playerViewTab(id, label) {
+    return el(
+      'button.tab',
+      {
+        class: state.playerView === id ? 'active' : '',
+        dataset: { playerView: id },
+        onclick: () => {
+          state.playerView = id;
+          renderPlayerPanel();
+        }
+      },
+      label
+    );
+  }
+
+  const playerFramesBody = el('div', null, playerFramesGrid);
+  const playerViewBody = el(
+    'div',
+    { hidden: true, style: { display: 'flex', flexDirection: 'column', flex: '1', minHeight: '0' } },
+    el('div.tabs', null, playerViewTab('frames', 'Frames'), playerViewTab('parts', 'Parts')),
+    el('div.panel-body.tight', null, playerFramesBody, playerPartsBody)
+  );
+
+  // The "data changed" path -- shows the right sub-view and rebuilds it.
+  // Never wired to the resize observer directly (F2): a resize is a "redraw
+  // what's there," not a "the parts list changed" event, and rebuilding on
+  // every tick would tear a part row's text input out from under a typing
+  // author. See redrawPlayerCanvases() below for that path.
+  function renderPlayerPanel() {
+    playerFramesBody.hidden = state.playerView !== 'frames';
+    playerPartsBody.hidden = state.playerView !== 'parts';
+    playerViewBody.querySelectorAll('[data-player-view]').forEach((button) => {
+      button.classList.toggle('active', button.dataset.playerView === state.playerView);
+    });
+    if (state.playerView === 'frames') renderPlayerFrames();
+    else rebuildPlayerParts();
+  }
+
+  // The "just redraw what's already there" path -- used by the shared
+  // ResizeObserver and by a palette change (F1's redrawActive()), neither of
+  // which touches which parts exist or which fields they hold.
+  function redrawPlayerCanvases() {
+    if (state.playerView === 'frames') renderPlayerFrames();
+    else redrawPlayerParts();
+  }
+
+  const tilesetLeftBody = el(
+    'div',
+    null,
+    el('div.sheet-wrap', null, sheetCanvas),
+    el(
+      'div.field-row',
+      { style: { marginTop: '10px' } },
+      el('span.field-label', null, 'Zoom'),
+      el('input', {
+        type: 'range',
+        min: 1,
+        max: 4,
+        value: state.sheetZoom,
+        oninput: (event) => {
+          state.sheetZoom = Number(event.target.value);
+          renderSheet();
+        }
+      })
+    ),
+    stats
+  );
+
+  const playerLeftHint = el(
+    'div',
+    { hidden: true },
+    el(
+      'p.hint',
+      null,
+      'Compose the player’s walk cycle out of tagged parts, or hand-edit each frame directly. ' +
+        'Nothing here reaches the ROM until Generate Player Sprite lands in a later phase.'
+    )
+  );
+
+  const tilesetMiddleBody = el(
+    'div',
+    { style: { display: 'flex', flexDirection: 'column', flex: '1', minHeight: '0' } },
+    el(
+      'div.toolbar',
+      null,
+      toolButton('pencil', '✏ Pencil', 'Draw pixels (right-click draws slot 0)'),
+      toolButton('fill', '🪣 Fill', 'Flood fill'),
+      toolButton('eyedropper', '💧 Pick', 'Pick a palette slot from the canvas'),
+      el('span.sep'),
+      el('span.field-label', null, 'Region'),
+      ...[1, 2, 4].map((size) =>
+        el(
+          'button.btn.btn-sm',
+          {
+            class: state.regionSize === size ? 'active' : '',
+            dataset: { region: size },
+            title: `Edit ${size}x${size} tiles (${size * 8}x${size * 8} pixels)`,
+            onclick: () => {
+              state.regionSize = size;
+              root.querySelectorAll('[data-region]').forEach((button) => {
+                button.classList.toggle('active', Number(button.dataset.region) === size);
+              });
+              renderSheet();
+              renderEditor();
+            }
+          },
+          `${size}×${size}`
+        )
+      ),
+      el('span.sep'),
+      el('button.btn.btn-sm', { onclick: () => transformRegion('Flip horizontally', flipHorizontal) }, '↔ Flip'),
+      el('button.btn.btn-sm', { onclick: () => transformRegion('Flip vertically', flipVertical) }, '↕ Flip'),
+      el('button.btn.btn-sm', { onclick: clearRegion }, '⌫ Clear'),
+      el('span.spacer'),
+      editorInfo,
+      el('span.sep'),
+      cursorInfo
+    ),
+    editStage
+  );
+
+  // Tileset-only: both act on the hidden state.table, so both are hidden in
+  // Player mode (F3) rather than left visible and silently acting on
+  // whichever tileset tab was last showing.
+  const importSection = el(
+    'div',
+    null,
+    el('div.field-label', { style: { marginTop: '16px' } }, 'Import'),
+    el(
+      'div.button-row',
+      null,
+      el('button.btn.btn-sm', { onclick: () => openImportDialog(app, state, syncFromStore, renderAll) }, '🖼 Image…'),
+      el('button.btn.btn-sm', { onclick: importChr }, 'CHR'),
+      el('button.btn.btn-sm', { onclick: importPal }, 'PAL')
+    )
+  );
+  const exportSection = el(
+    'div',
+    null,
+    el('div.field-label', { style: { marginTop: '12px' } }, 'Export'),
+    el('div.button-row', null, el('button.btn.btn-sm', { onclick: exportChr }, 'CHR'), el('button.btn.btn-sm', { onclick: exportPal }, 'PAL'))
+  );
+
   const root = el(
     'div.forge',
     { style: { gridTemplateColumns: '286px 1fr 268px' } },
     el(
       'div.panel',
       null,
-      el('div.tabs', null, tableTab('background', 'Background'), tableTab('sprites', 'Sprites')),
       el(
-        'div.panel-body.tight',
+        'div.tabs',
         null,
-        el('div.sheet-wrap', null, sheetCanvas),
-        el(
-          'div.field-row',
-          { style: { marginTop: '10px' } },
-          el('span.field-label', null, 'Zoom'),
-          el('input', {
-            type: 'range',
-            min: 1,
-            max: 4,
-            value: state.sheetZoom,
-            oninput: (event) => {
-              state.sheetZoom = Number(event.target.value);
-              renderSheet();
-            }
-          })
-        ),
-        stats
-      )
-    ),
-    el(
-      'div.panel',
-      { style: { borderRight: 'none' } },
-      el(
-        'div.toolbar',
-        null,
-        toolButton('pencil', '✏ Pencil', 'Draw pixels (right-click draws slot 0)'),
-        toolButton('fill', '🪣 Fill', 'Flood fill'),
-        toolButton('eyedropper', '💧 Pick', 'Pick a palette slot from the canvas'),
-        el('span.sep'),
-        el('span.field-label', null, 'Region'),
-        ...[1, 2, 4].map((size) =>
-          el(
-            'button.btn.btn-sm',
-            {
-              class: state.regionSize === size ? 'active' : '',
-              dataset: { region: size },
-              title: `Edit ${size}x${size} tiles (${size * 8}x${size * 8} pixels)`,
-              onclick: () => {
-                state.regionSize = size;
-                root.querySelectorAll('[data-region]').forEach((button) => {
-                  button.classList.toggle('active', Number(button.dataset.region) === size);
-                });
-                renderSheet();
-                renderEditor();
-              }
-            },
-            `${size}×${size}`
-          )
-        ),
-        el('span.sep'),
-        el('button.btn.btn-sm', { onclick: () => transformRegion('Flip horizontally', flipHorizontal) }, '↔ Flip'),
-        el('button.btn.btn-sm', { onclick: () => transformRegion('Flip vertically', flipVertical) }, '↕ Flip'),
-        el('button.btn.btn-sm', { onclick: clearRegion }, '⌫ Clear'),
-        el('span.spacer'),
-        editorInfo,
-        el('span.sep'),
-        cursorInfo
+        tableTab('background', 'Background'),
+        tableTab('sprites', 'Sprites'),
+        playerModeTab()
       ),
-      editStage
+      el('div.panel-body.tight', null, tilesetLeftBody, playerLeftHint)
     ),
+    el('div.panel', { style: { borderRight: 'none' } }, tilesetMiddleBody, playerViewBody),
     el(
       'div.panel',
       null,
@@ -829,21 +1362,8 @@ export function mount(container, app) {
           'Slot 0 is the shared backdrop colour — changing it updates every palette. ',
           'Sprites treat slot 0 as transparent.'
         ),
-        el('div.field-label', { style: { marginTop: '16px' } }, 'Import'),
-        el(
-          'div.button-row',
-          null,
-          el('button.btn.btn-sm', { onclick: () => openImportDialog(app, state, syncFromStore, renderAll) }, '🖼 Image…'),
-          el('button.btn.btn-sm', { onclick: importChr }, 'CHR'),
-          el('button.btn.btn-sm', { onclick: importPal }, 'PAL')
-        ),
-        el('div.field-label', { style: { marginTop: '12px' } }, 'Export'),
-        el(
-          'div.button-row',
-          null,
-          el('button.btn.btn-sm', { onclick: exportChr }, 'CHR'),
-          el('button.btn.btn-sm', { onclick: exportPal }, 'PAL')
-        )
+        importSection,
+        exportSection
       )
     )
   );
@@ -852,16 +1372,24 @@ export function mount(container, app) {
   syncFromStore();
   renderAll();
   const stopWatchingStage = observeSize(editStage, renderEditor);
+  // One shared observer for the whole Player panel (view 1's 8 cells and
+  // view 2's part rows all redraw off it) rather than one per cell/row --
+  // see createPlayerFrameCell's own comment on why.
+  const stopWatchingPlayer = observeSize(playerViewBody, () => {
+    if (state.mode === 'player') redrawPlayerCanvases();
+  });
   app.setMeta('Tile Forge');
 
   return {
     destroy() {
       stopWatchingStage();
+      stopWatchingPlayer();
       app.setMeta('');
     },
     onProjectChange() {
       syncFromStore();
       renderAll();
-    }
+    },
+    flushPendingEdits
   };
 }

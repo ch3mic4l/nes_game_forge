@@ -18,7 +18,8 @@ import {
   monsterActorIds,
   actorAnimationIds,
   actorMetaspriteIds,
-  duplicateActorPaletteSwapCore
+  duplicateActorPaletteSwapCore,
+  PLAYER_TILES
 } from '../../../shared/project.js';
 import { partyPanel } from './battle.js';
 import { drawSheet, sheetIndexFromEvent } from '../../widgets/sheet.js';
@@ -1201,7 +1202,10 @@ export function mount(container, app) {
     renderTabs();
     drawSheet(sheetCanvas, spriteTable(), palettes()[0], 2, {
       transparentZero: true,
-      selected: state.sheetTile
+      selected: state.sheetTile,
+      // Shading only, no behaviour change (design-modular-parts.md §6.2): tiles
+      // $00-$1F are the player's own compiled sprite, replaced at build time.
+      reservedUpTo: PLAYER_TILES
     });
     const party = state.tab === 'party';
     editStage.style.display = party ? 'none' : '';

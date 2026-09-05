@@ -80,6 +80,235 @@ const scenario = (dir, sampleDir, sampleRpgDir) => `
   }
   step('save/load round trip', 'identical');
 
+  // ROADMAP item 8 (modular parts) Phase 1: the Tile Forge's Player tab --
+  // two real views (design-modular-parts.md §6.2), neither a third
+  // state.table entry. The Tile Forge is still the mounted Forge here, on
+  // the Background tab.
+  const { storageIndex: playerStorageIndex } = await import('../shared/project.js');
+  const tileTabs = [...stage.querySelectorAll('.tab')];
+  const playerTab = tileTabs.find((button) => button.textContent === 'Player');
+  if (!playerTab) throw new Error('Tile Forge has no Player tab');
+  playerTab.click();
+  await wait(80);
+  const playerFrameCanvases = [...stage.querySelectorAll('.player-frame-cell canvas.pixels')];
+  if (playerFrameCanvases.length !== 8) {
+    throw new Error('expected 8 player frame canvases (View 1), saw ' + playerFrameCanvases.length);
+  }
+  step('player view 1 (frames) mounted', playerFrameCanvases.length + ' canvases');
+
+  // Round-1 review finding: a real pointerdown/pointerup on frame cell 3's
+  // canvas, aimed at a pixel inside its bottom-right quadrant, must write
+  // exactly storageIndex(3, 1, 1) (index 15) and leave every other
+  // playerTiles slot untouched. A renderer using regionTiles()'s 16-column
+  // arithmetic, or one that transposed row/col, would write a different
+  // index instead.
+  const targetFrameIndex = playerStorageIndex(3, 1, 1);
+  if (targetFrameIndex !== 15) throw new Error('expected storageIndex(3,1,1) === 15, saw ' + targetFrameIndex);
+  const beforeFrameTiles = store.project.sprites.playerTiles.slice();
+  const frame3Canvas = playerFrameCanvases[3];
+  const frame3Rect = frame3Canvas.getBoundingClientRect();
+  const frame3Point = {
+    clientX: frame3Rect.left + (12.5 / 16) * frame3Rect.width,
+    clientY: frame3Rect.top + (12.5 / 16) * frame3Rect.height
+  };
+  frame3Canvas.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, button: 0, ...frame3Point }));
+  frame3Canvas.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, button: 0 }));
+  await wait(80);
+  const afterFrameTiles = store.project.sprites.playerTiles;
+  if (afterFrameTiles[targetFrameIndex] === beforeFrameTiles[targetFrameIndex]) {
+    throw new Error('painting frame 3’s bottom-right quadrant did not change playerTiles[15]');
+  }
+  for (let i = 0; i < afterFrameTiles.length; i++) {
+    if (i === targetFrameIndex) continue;
+    if (afterFrameTiles[i] !== beforeFrameTiles[i]) {
+      throw new Error('painting frame 3’s bottom-right quadrant unexpectedly changed playerTiles[' + i + ']');
+    }
+  }
+  // Round-2 sabotage-table hardening: the click at (12.5/16, 12.5/16) of the
+  // 16x16 canvas is tile-local pixel (4, 4) inside the bottom-right quadrant
+  // (12 % 8, 12 % 8), so character index 4 * 8 + 4 = 36 of playerTiles[15]
+  // must now hold the active slot's own digit, and every other character
+  // must still read as BLANK_TILE's -- not merely "some character changed."
+  const activePaletteRow = [...stage.querySelectorAll('.palette-row')].find((row) => row.classList.contains('active'));
+  const activeSwatches = activePaletteRow ? [...activePaletteRow.querySelectorAll('.swatch')] : [];
+  const activeSlotIndex = activeSwatches.findIndex((swatch) => swatch.classList.contains('selected'));
+  if (activeSlotIndex < 0) throw new Error('could not determine the active palette slot from the swatch UI');
+  const blankTile = '0'.repeat(64);
+  const expectedFrameTile = blankTile.slice(0, 36) + String(activeSlotIndex) + blankTile.slice(37);
+  if (afterFrameTiles[targetFrameIndex] !== expectedFrameTile) {
+    throw new Error(
+      'expected playerTiles[15] to be BLANK_TILE with only character 36 set to the active slot digit (' +
+        expectedFrameTile + '), saw ' + afterFrameTiles[targetFrameIndex]
+    );
+  }
+  step('player view 1 UI mapping', 'painting frame 3’s BR quadrant wrote exactly playerTiles[15][36]');
+
+  const partsTab = [...stage.querySelectorAll('.tab')].find((button) => button.textContent === 'Parts');
+  if (!partsTab) throw new Error('Player mode has no Parts sub-tab');
+  partsTab.click();
+  await wait(80);
+  if (stage.querySelectorAll('.player-parts-list').length !== 1) throw new Error('player parts list did not mount');
+  step('player view 2 (parts) mounted', 'ok');
+
+  // F2 regression: a part's own canvas must actually render, and keep
+  // rendering after a stroke on it ends, not go blank because
+  // renderPlayerParts() rebuilt the row and discarded its own redraw().
+  const nonBlankPartTile = '1'.repeat(64);
+  store.commit('smoke add player part', (project) => {
+    project.sprites.playerParts.push({
+      id: project.sprites.playerParts.length,
+      name: 'Smoke part',
+      category: '',
+      direction: 'down',
+      frameSlot: 'both',
+      quadrant: 'TL',
+      tile: nonBlankPartTile
+    });
+  });
+  await wait(80);
+  const partRows = stage.querySelectorAll('.player-part-row');
+  if (partRows.length !== 1) throw new Error('expected 1 player part row after adding one through the store, saw ' + partRows.length);
+  const partCanvas = partRows[0].querySelector('canvas.pixels');
+  if (!partCanvas) throw new Error('the new part row has no canvas');
+  if (partCanvas.width !== 8) throw new Error('expected the part canvas to be 8x8, saw width ' + partCanvas.width);
+  if (!partCanvas.style.width) {
+    throw new Error('the part canvas was never sized -- renderPlayerParts() must call each row’s own redraw()');
+  }
+  const readNonBlack = (canvas) => {
+    const data = canvas.getContext('2d').getImageData(0, 0, canvas.width, canvas.height).data;
+    for (let i = 0; i < data.length; i += 4) {
+      if (data[i] !== 0 || data[i + 1] !== 0 || data[i + 2] !== 0) return true;
+    }
+    return false;
+  };
+  if (!readNonBlack(partCanvas)) throw new Error('the part canvas never drew its own non-blank tile content');
+  step('player part added through the store', partRows.length + ' row(s), canvas drawn');
+
+  // Paint one pixel on the part's own canvas (right-click writes slot 0,
+  // the palette's transparent slot) and confirm both the store and the
+  // canvas reflect it once the stroke ends -- this exact sequence used to
+  // blank the canvas: endStroke() -> onProjectChange -> renderAll() ->
+  // renderPlayerParts(), which rebuilt every row and discarded its redraw.
+  const partRectBefore = partCanvas.getBoundingClientRect();
+  const partPoint = {
+    clientX: partRectBefore.left + (0.5 / 8) * partRectBefore.width,
+    clientY: partRectBefore.top + (0.5 / 8) * partRectBefore.height
+  };
+  partCanvas.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, button: 2, ...partPoint }));
+  partCanvas.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, button: 2 }));
+  await wait(80);
+  const paintedPart = store.project.sprites.playerParts[0];
+  if (paintedPart.tile === nonBlankPartTile) throw new Error('painting the part canvas (right-click, slot 0) did not change its tile string');
+  if (paintedPart.tile[0] !== '0') throw new Error('expected pixel (0,0) to become slot 0 after a right-click paint');
+  const partCanvasAfter = stage.querySelectorAll('.player-part-row canvas.pixels')[0];
+  if (!partCanvasAfter) throw new Error('the part row vanished after the stroke ended');
+  if (!readNonBlack(partCanvasAfter)) throw new Error('the part canvas went blank after the stroke ended -- the F2 regression');
+  step('player part canvas painted and survives the stroke ending', 'tile changed, canvas still shows content');
+
+  // F5 regression: renderer/app.js's saveProject() calls
+  // mounted.flushPendingEdits() before it reads store.project, specifically
+  // so a save made while still focused inside a part's name/category input
+  // (never blurred, so the ordinary onchange commit never fired) writes what
+  // is on screen, not the last blurred value. window.__app.saveProject() is
+  // the real Ctrl+S entry point (renderer/app.js's keydown listener calls
+  // the same function), not a shortcut around it.
+  const nameInputForFlush = stage.querySelector('.player-part-row input[data-part-field="name"]');
+  if (!nameInputForFlush) throw new Error('could not find the part name input for the flush test');
+  nameInputForFlush.focus();
+  const flushedPartName = 'Flushed name';
+  nameInputForFlush.value = flushedPartName;
+  nameInputForFlush.dispatchEvent(new Event('input', { bubbles: true }));
+  await wait(40);
+  if (store.project.sprites.playerParts[0].name === flushedPartName) {
+    throw new Error('the store already reflects the typed name before any save -- this test needs the input still uncommitted');
+  }
+  const saveOk = await window.__app.saveProject();
+  if (!saveOk) throw new Error('window.__app.saveProject() reported failure');
+  if (store.project.sprites.playerParts[0].name !== flushedPartName) {
+    throw new Error('saveProject() did not flush the focused, unblurred part name edit before saving');
+  }
+  const reopenedAfterFlush = await window.forge.project.open(store.dir);
+  if (!reopenedAfterFlush.ok) throw new Error('reopen (flush test): ' + reopenedAfterFlush.error);
+  if (reopenedAfterFlush.value.project.sprites.playerParts[0].name !== flushedPartName) {
+    throw new Error('the flushed part name was not what actually got written to disk');
+  }
+  const nameInputAfterFlush = stage.querySelector('.player-part-row input[data-part-field="name"]');
+  if (!nameInputAfterFlush || nameInputAfterFlush.value !== flushedPartName) {
+    throw new Error('the part row on screen must still show the flushed name after the post-save re-render');
+  }
+  step('flushPendingEdits: an unblurred part name edit survives Save', flushedPartName);
+
+  const editedPlayerTile = '1'.repeat(64);
+  store.commit('smoke edit player tile', (project) => {
+    project.sprites.playerTiles[5] = editedPlayerTile;
+  });
+  await wait(80);
+  if (store.project.sprites.playerTiles[5] !== editedPlayerTile) throw new Error('playerTiles[5] was not written');
+  step('player tile hand-edited through the store', 'index 5');
+
+  const savedPlayer = await window.forge.project.save(store.dir, store.project);
+  if (!savedPlayer.ok) throw new Error('save (player tiles): ' + savedPlayer.error);
+  const reopenedPlayer = await window.forge.project.open(store.dir);
+  if (!reopenedPlayer.ok) throw new Error('reopen (player tiles): ' + reopenedPlayer.error);
+  if (reopenedPlayer.value.project.sprites.playerTiles[5] !== editedPlayerTile) {
+    throw new Error('the hand-edited playerTiles slot did not survive the save/load round trip');
+  }
+  if (reopenedPlayer.value.project.sprites.playerTiles[6] !== null) {
+    throw new Error('an untouched playerTiles slot must survive the round trip as null, not be coerced to something else');
+  }
+  step('player tiles round trip', 'index 5 survived, index 6 still null');
+
+  // F1 regression: entering Player mode from the Background tab must route
+  // palette reads *and writes* through the sprite palettes, never the
+  // background ones, regardless of which tileset tab was last showing.
+  const backgroundTab = [...stage.querySelectorAll('.tab')].find((button) => button.textContent === 'Background');
+  if (!backgroundTab) throw new Error('Tile Forge has no Background tab');
+  backgroundTab.click();
+  await wait(80);
+  const playerTabAgain = [...stage.querySelectorAll('.tab')].find((button) => button.textContent === 'Player');
+  playerTabAgain.click();
+  await wait(80);
+  const beforeSpriteColor = store.project.palettes.sprite[1][2];
+  const beforeBgColor = store.project.palettes.bg[1][2];
+  const paletteRows = [...stage.querySelectorAll('.palette-row')];
+  if (paletteRows.length < 2) throw new Error('expected at least 2 palette rows');
+  const row1Swatches = paletteRows[1].querySelectorAll('.swatch');
+  if (row1Swatches.length < 3) throw new Error('expected at least 3 swatches in palette row 1');
+  row1Swatches[2].click();
+  await wait(60);
+  const pickerChip = [...stage.querySelectorAll('.color-chip')].find((chip) => !chip.disabled && !chip.classList.contains('selected'));
+  if (!pickerChip) throw new Error('no selectable, safe colour chip found in the picker');
+  pickerChip.click();
+  await wait(80);
+  if (store.project.palettes.sprite[1][2] === beforeSpriteColor) {
+    throw new Error('clicking the picker while Player mode is open did not change palettes.sprite[1][2] (F1 regression)');
+  }
+  if (store.project.palettes.bg[1][2] !== beforeBgColor) {
+    throw new Error('clicking the picker while Player mode is open wrote palettes.bg[1][2] instead of sprite (F1 regression)');
+  }
+  step('player mode palette routing', 'palettes.sprite[1][2] changed, palettes.bg[1][2] untouched');
+
+  // F3 regression: the tileset-only Import/Export rows act on the hidden
+  // state.table, so both must be hidden while Player mode is open, and
+  // visible again once a tileset tab is showing. offsetParent, not
+  // getComputedStyle(...).display -- a [hidden] ancestor's display:none
+  // does not change a descendant's own computed display value (that stays
+  // its ordinary 'block'), only whether the descendant is actually laid
+  // out at all, which is exactly what offsetParent reports as null for.
+  const isHiddenByAncestor = (el) => el.offsetParent === null;
+  const importLabel = [...stage.querySelectorAll('.field-label')].find((el) => el.textContent === 'Import');
+  const exportLabel = [...stage.querySelectorAll('.field-label')].find((el) => el.textContent === 'Export');
+  if (!importLabel || !exportLabel) throw new Error('Import/Export labels not found in the Palettes panel');
+  if (!isHiddenByAncestor(importLabel)) throw new Error('Import row must be hidden in Player mode (F3)');
+  if (!isHiddenByAncestor(exportLabel)) throw new Error('Export row must be hidden in Player mode (F3)');
+  const spritesTab = [...stage.querySelectorAll('.tab')].find((button) => button.textContent === 'Sprites');
+  if (!spritesTab) throw new Error('Tile Forge has no Sprites tab');
+  spritesTab.click();
+  await wait(80);
+  if (isHiddenByAncestor(importLabel)) throw new Error('Import row must be visible again on the Sprites tab (F3)');
+  if (isHiddenByAncestor(exportLabel)) throw new Error('Export row must be visible again on the Sprites tab (F3)');
+  step('import/export rows hidden in Player mode, visible again on Sprites', 'ok');
+
   // Visit every Forge so a syntax error in any module is caught here.
   // window.__app.forgeIds (renderer/app.js) is the FORGES registry's own ids,
   // not a second hand-written list here -- a hardcoded array in this file
@@ -5894,18 +6123,19 @@ const scenario = (dir, sampleDir, sampleRpgDir) => `
       // selectionToken has already advanced by the time that call runs, so
       // the still-bound Tile context is a stale token, not merely a
       // consumed slot. The nested selectForge's own destroy/clear prologue
-      // runs before outer Tile's mount() has returned a handle, so Tile's
-      // observeSize ResizeObserver (renderer/ui.js:191-204) is never
-      // disconnect()ed by a destroy() call -- window.ResizeObserver is
-      // shimmed for this probe, but only for the window between Tile's own
-      // observeSize() call (tile.js:854) and its setMeta('Tile Forge') call
-      // right after it (tile.js:855): the wrapper below restores the real
-      // constructor *before* starting the racing goTo('sprite'), so the
-      // shim is live just long enough to catch Tile's own observer and not
-      // the racing Sprite mount's -- disconnecting that live mount's own
-      // observer would be the mirror image of the leak this shim exists to
-      // close. The finally restore stays as the safety net for the path
-      // where the wrapper never fires at all.
+      // runs before outer Tile's mount() has returned a handle, so neither of
+      // Tile's two observeSize ResizeObservers (renderer/ui.js:191-204) --
+      // editStage's own, and the Player panel's shared one, added for
+      // ROADMAP item 8's Tile Forge views -- is ever disconnect()ed by a
+      // destroy() call -- window.ResizeObserver is shimmed for this probe,
+      // but only for the window between Tile's own two observeSize() calls
+      // and its setMeta('Tile Forge') call right after them: the wrapper
+      // below restores the real constructor *before* starting the racing
+      // goTo('sprite'), so the shim is live just long enough to catch Tile's
+      // own two observers and not the racing Sprite mount's -- disconnecting
+      // that live mount's own observer would be the mirror image of the leak
+      // this shim exists to close. The finally restore stays as the safety
+      // net for the path where the wrapper never fires at all.
       let probe3 = 'not called';
       let probe3RacingNav = null;
       const originalSetMetaProbe3 = window.__app.setMeta;
@@ -5939,11 +6169,11 @@ const scenario = (dir, sampleDir, sampleRpgDir) => `
       if (probe3 !== null) {
         throw new Error('token-check probe: expected consumeContext() === null once a later navigation has advanced selectionToken, saw ' + JSON.stringify(probe3));
       }
-      if (probe3Observers.length !== 1) {
+      if (probe3Observers.length !== 2) {
         throw new Error(
-          'token-check probe: expected exactly one ResizeObserver constructed while the shim was live (Tile’s own) -- ' +
-            'more than one means the shim over-collected (likely the racing Sprite mount’s), fewer means Tile stopped ' +
-            'constructing one at all; saw ' +
+          'token-check probe: expected exactly two ResizeObservers constructed while the shim was live (Tile’s own -- ' +
+            'editStage plus the shared Player panel one) -- more means the shim over-collected (likely the racing ' +
+            'Sprite mount’s), fewer means Tile stopped constructing one of its own; saw ' +
             probe3Observers.length
         );
       }
@@ -5954,12 +6184,11 @@ const scenario = (dir, sampleDir, sampleRpgDir) => `
       // catch unconditionally does console.error(error); window.console.error
       // is swapped out for the duration of this probe alone (restored in the
       // finally) so that expected error does not fail the run the way
-      // main/smoke.js's own console-message listener otherwise would. Tile's
-      // observeSize ResizeObserver is already created before setMeta throws
-      // (renderer/forges/tile/tile.js:854-855), so no destroy() handle is
-      // ever returned for it -- window.ResizeObserver is shimmed the same
-      // way as probe 3, tracked instances disconnected after the probe's
-      // navigation has settled.
+      // main/smoke.js's own console-message listener otherwise would. Both of
+      // Tile's observeSize ResizeObservers are already created before
+      // setMeta throws, so no destroy() handle is ever returned for either --
+      // window.ResizeObserver is shimmed the same way as probe 3, tracked
+      // instances disconnected after the probe's navigation has settled.
       let probe4Recorded = [];
       const originalConsoleError = window.console.error;
       window.console.error = (...args) => {
@@ -5991,10 +6220,11 @@ const scenario = (dir, sampleDir, sampleRpgDir) => `
         window.ResizeObserver = originalResizeObserverProbe4;
       }
       for (const observer of probe4Observers) observer.disconnect();
-      if (probe4Observers.length !== 1) {
+      if (probe4Observers.length !== 2) {
         throw new Error(
-          'catch-clear probe: expected exactly one ResizeObserver constructed while the shim was live (Tile’s own) -- ' +
-            'more than one means the shim over-collected, fewer means Tile stopped constructing one at all; saw ' +
+          'catch-clear probe: expected exactly two ResizeObservers constructed while the shim was live (Tile’s own -- ' +
+            'editStage plus the shared Player panel one) -- more means the shim over-collected, fewer means Tile ' +
+            'stopped constructing one of its own; saw ' +
             probe4Observers.length
         );
       }

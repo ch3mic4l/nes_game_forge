@@ -32,7 +32,7 @@ export function sheetImageData(context, tiles, palette, transparentZero = false)
 
 /** Draw a pattern table into `canvas` at an integer zoom, with an 8x8 grid. */
 export function drawSheet(canvas, tiles, palette, zoom, options = {}) {
-  const { transparentZero = false, selected = null, grid = true } = options;
+  const { transparentZero = false, selected = null, grid = true, reservedUpTo = 0 } = options;
   const context = canvas.getContext('2d');
   const buffer = document.createElement('canvas');
   buffer.width = SHEET_W;
@@ -56,6 +56,21 @@ export function drawSheet(canvas, tiles, palette, zoom, options = {}) {
       context.moveTo(0, i * cell + 0.5);
       context.lineTo(canvas.width, i * cell + 0.5);
     }
+    context.stroke();
+  }
+  // Tiles [0, reservedUpTo) are the player's own compiled sprite
+  // (design-modular-parts.md §3.2/§6.2) -- stamped over at build time on
+  // every tileset, unconditionally, the same shading shape the Tile Forge's
+  // own sheet uses for this range.
+  if (reservedUpTo > 0) {
+    const bottom = Math.ceil(reservedUpTo / SHEET_COLS) * cell;
+    context.fillStyle = 'rgba(255, 157, 60, 0.16)';
+    context.fillRect(0, 0, canvas.width, bottom);
+    context.strokeStyle = 'rgba(255, 157, 60, 0.7)';
+    context.lineWidth = 1;
+    context.beginPath();
+    context.moveTo(0, bottom + 0.5);
+    context.lineTo(canvas.width, bottom + 0.5);
     context.stroke();
   }
   if (selected !== null && selected >= 0) {

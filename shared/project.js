@@ -5,7 +5,7 @@
 // limits every Forge validates against, and normalisation of loaded data so a
 // hand-edited or older project never crashes the UI.
 
-import { BLANK_TILE } from './chr.js';
+import { BLANK_TILE, TILE_PIXELS, isBlank } from './chr.js';
 import {
   normalizeSong,
   NO_SONG,
@@ -152,6 +152,58 @@ export const NO_METASPRITE = 0xff;
  */
 export const NO_ANIM = 0xff;
 
+/**
+ * The player character's own compiled sprite: 4 directions x 2 walk frames,
+ * each frame 4 contiguous tiles (`player_tiles,x` / `+1` / `+2` / `+3`,
+ * `engine/oam.asm`). Moved here from `main/build/generate.js` (design-
+ * modular-parts.md §3.0, ROADMAP item 8) because `normalizePlayerTiles`
+ * below and the generator's own address arithmetic both need these, and
+ * `shared/` cannot import from `main/build/` — `generate.js` now imports
+ * these instead of defining its own copy.
+ */
+export const PLAYER_FRAMES = 8; // 4 directions x 2 walk frames
+export const PLAYER_TILES = PLAYER_FRAMES * 4;
+
+/**
+ * The one canonical order for a player frame's direction and quadrant, used
+ * both to validate a `playerParts` entry's `direction`/`quadrant` field and
+ * as the generator's own address arithmetic (design-modular-parts.md §3.3,
+ * §4.1) — one array doing both jobs so the two cannot drift apart, the same
+ * discipline `ANIM_SLOTS`/`BEHAVIORS`/`ACTIONS` already hold themselves to
+ * elsewhere in this file. `DIRECTION_ORDER` matches `DIR_DOWN..DIR_RIGHT` in
+ * `engine/constants.asm`; `QUADRANT_ORDER` matches `split16`'s own TL/TR/BL/BR
+ * order (`main/build/generate.js`).
+ */
+export const DIRECTION_ORDER = ['down', 'up', 'left', 'right'];
+export const QUADRANT_ORDER = ['TL', 'TR', 'BL', 'BR'];
+
+/**
+ * A `playerParts` entry's `frameSlot` is a qualification predicate ("does
+ * this part apply to frame 0, frame 1, or both"), never an arithmetic index
+ * — it is deliberately not treated as an ordinal the way `DIRECTION_ORDER`/
+ * `QUADRANT_ORDER` are (design-modular-parts.md §3.3), so nothing in this
+ * file ever calls `.indexOf` on it.
+ */
+export const PART_FRAME_SLOTS = ['0', '1', 'both'];
+
+/**
+ * `quadrantIndex`/`storageIndex`: the mapping a player frame's 2x2 view uses
+ * to address its own 4 contiguous `playerTiles` entries (design-modular-
+ * parts.md §1.5). This is deliberately **not** `regionTiles()` (`renderer/
+ * forges/tile/tile.js`) reused: that function computes `(row + ry) *
+ * SHEET_COLS + col + rx` over the sheet's fixed 16-column grid, so a 2x2
+ * region at sheet index 0 names tiles `[0, 1, 16, 17]` — row-major over 16
+ * columns — while a player frame's own four quadrant tiles are stored
+ * contiguously as `[base, base+1, base+2, base+3]`. Reusing `regionTiles()`
+ * here would silently address the wrong four tiles.
+ */
+export function quadrantIndex(row, col) {
+  return row * 2 + col;
+}
+export function storageIndex(frame, row, col) {
+  return frame * 4 + quadrantIndex(row, col);
+}
+
 /** Hard limits imposed by the NES and by the template engine. */
 export const LIMITS = {
   tilesPerTable: 256,
@@ -208,7 +260,14 @@ export const LIMITS = {
   // Re-exported from shared/audio.js for display/UI purposes only --
   // shared/audio.js is the single writer (SFX_MAX_STEPS, an authoring limit,
   // not a format one), this is an alias, not a second definition.
-  sfxSteps: SFX_MAX_STEPS
+  sfxSteps: SFX_MAX_STEPS,
+  // A pure authoring-list-readability ceiling, the LIMITS.commonEvents-shaped
+  // precedent above (design-modular-parts.md §3.4): no part is ever compiled
+  // into the ROM as a byte-addressed reference -- generation copies a part's
+  // `tile` string verbatim into `project.sprites.playerTiles` -- so there is
+  // no NO_* sentinel for this cap to equal, unlike actors/items/metasprites/
+  // animations/sfx above.
+  playerParts: 256
 };
 
 /**
@@ -2485,6 +2544,35 @@ export function renumberPartyMemberDeletion(project, index) {
 }
 
 /**
+ * What deleting a player part (`project.sprites.playerParts`) costs
+ * (design-modular-parts.md §3.5, ROADMAP item 8 phase 1): nothing but a plain
+ * splice-and-renumber, unlike every other `renumber*Deletion` sibling in this
+ * file. A part is never referenced by anything else — generation reads a
+ * part's own `tile` string and copies it verbatim into
+ * `project.sprites.playerTiles`, a plain string assignment, never an id or a
+ * pointer — so there is no cascading reference to fix up, and
+ * `project.sprites.playerTiles` itself is untouched: it has no notion of an
+ * entry being removed, only ever overwritten in place.
+ *
+ * Unlike the actor/item/spell/party-member siblings above, **this function
+ * performs the splice and renumber itself rather than leaving the splice to
+ * its caller.** Those siblings only ever fix up *other* fields that name the
+ * deleted record by id — the caller does the actual `array.splice(index, 1)`
+ * on the record's own array, before or after calling the sibling, because
+ * that array is not the only thing the sibling has to touch. A part has no
+ * such second thing: nothing outside `project.sprites.playerParts` names a
+ * part by id, so there is no separate fix-up step to sequence around the
+ * splice, and splitting "splice the array" from "renumber what's left" into
+ * two calls a caller has to remember to make in order would only invent a
+ * way to get this one right. Mutates `project` and returns it.
+ */
+export function renumberPlayerPartDeletion(project, index) {
+  project.sprites.playerParts.splice(index, 1);
+  project.sprites.playerParts.forEach((entry, position) => (entry.id = position));
+  return project;
+}
+
+/**
  * What every reference to a metasprite becomes once `index` is gone from
  * `project.sprites.metasprites`. Three consumers exist — an animation
  * frame's `metaspriteId`, a party member's `metaspriteId`, and (as of this
@@ -2838,7 +2926,13 @@ export function createProject(name = 'Untitled Game', gameType = 'action') {
     metatiles: Array.from({ length: LIMITS.metatiles }, (_, id) => createMetatile(id)),
     maps: [createMap(0, 'World')],
     items: [],
-    sprites: { metasprites: [], animations: [], actors: [] },
+    sprites: {
+      metasprites: [],
+      animations: [],
+      actors: [],
+      playerParts: [],
+      playerTiles: Array(PLAYER_TILES).fill(null)
+    },
     songs: [],
     sfx: [],
     input: defaultInput(),
@@ -2871,6 +2965,74 @@ function normalizeTileTable(table) {
     if (typeof tile === 'string' && tile.length === 64) tiles[i] = tile;
   }
   return { tiles };
+}
+
+/**
+ * One tagged, reusable tile for the player's own modular parts library
+ * (design-modular-parts.md §3.1, ROADMAP item 8) -- never tileset-scoped,
+ * and never referenced by anything else once generation copies its `tile`
+ * string into `project.sprites.playerTiles` (§3.5), so deletion is a plain
+ * splice-and-renumber (`renumberPlayerPartDeletion` below).
+ */
+function normalizePlayerPart(raw, id) {
+  return {
+    id,
+    name: typeof raw?.name === 'string' && raw.name ? raw.name : `Part ${id}`,
+    category: authorName(raw?.category),
+    direction: DIRECTION_ORDER.includes(raw?.direction) ? raw.direction : 'down',
+    frameSlot: PART_FRAME_SLOTS.includes(raw?.frameSlot) ? raw.frameSlot : 'both',
+    quadrant: QUADRANT_ORDER.includes(raw?.quadrant) ? raw.quadrant : 'TL',
+    tile: typeof raw?.tile === 'string' && raw.tile.length === TILE_PIXELS ? raw.tile : BLANK_TILE
+  };
+}
+
+/**
+ * The one canonical, always-exactly-`PLAYER_TILES`-long array holding the
+ * player's own currently-composed pixel content (design-modular-parts.md
+ * §3.2). `null` means "never generated, use the build-time placeholder";
+ * any valid tile string -- `BLANK_TILE` included, when that is genuinely
+ * what was composed -- means "has real, generated content." A `BLANK_TILE`
+ * sprite tile renders fully transparent (`transparentZero()`,
+ * `renderer/forges/tile/tile.js`), so it is a legitimate, deliberate
+ * composed result, not evidence of "unset" -- collapsing the two onto one
+ * value would make an intentionally-blank quadrant impossible to author.
+ *
+ * With an array already present, each entry degrades independently: `null`
+ * stays `null`, a valid-length string survives verbatim, and anything else
+ * (wrong length, a number, `undefined`) becomes `null` -- "unset" is the
+ * conservative reading for a corrupt or malformed entry, since it costs
+ * nothing worse than the generic placeholder, never a silently wrong pixel.
+ * No character-level (0-3) digit validation, matching `normalizeTileTable`'s
+ * own guarantee for every other tile string in this schema exactly --
+ * `tileFromString` (`shared/chr.js`) already degrades an out-of-range digit
+ * to 0 at read time, so a stricter check here would guard against nothing.
+ *
+ * With no `playerTiles` field at all -- a project saved before this schema
+ * existed -- this runs a one-time, whole-range migration reusing
+ * `spriteTableEmpty`'s own existing granularity (the generator's placeholder
+ * check) rather than a new per-slot heuristic: if tileset 0's first
+ * `PLAYER_TILES` sprite tiles are *all* blank, every slot migrates to
+ * `null` (today's own "untouched" case); otherwise every slot migrates as
+ * its literal string, blanks included, because a blank tile sitting among
+ * mostly-real ones is already being treated as real, deliberate content
+ * today, and coercing it to `null` here would silently reintroduce the
+ * placeholder for that one tile the moment this project rebuilds under the
+ * new schema. Reads only tileset 0, matching this codebase's own existing
+ * asymmetry. Run once, at normalization, not re-derived on every build --
+ * the moment a project has been saved with `playerTiles` present, that
+ * array is authoritative from then on.
+ */
+function normalizePlayerTiles(raw, tilesetZeroSprites) {
+  if (Array.isArray(raw)) {
+    return Array.from({ length: PLAYER_TILES }, (_, i) => {
+      const entry = raw[i];
+      if (entry === null) return null;
+      return typeof entry === 'string' && entry.length === TILE_PIXELS ? entry : null;
+    });
+  }
+  const legacy = tilesetZeroSprites.tiles.slice(0, PLAYER_TILES);
+  const neverTouched = legacy.every((tile) => isBlank(tile));
+  return neverTouched ? Array(PLAYER_TILES).fill(null) : legacy;
 }
 
 /**
@@ -4196,7 +4358,14 @@ export function normalizeProject(raw) {
       // it is being declined because it accrues only inside a state no
       // version of this app can create, and only until the roster is legal
       // again.
-      actors: (raw.sprites?.actors ?? []).map((actor, id) => normalizeActor(actor, id, itemCtx))
+      actors: (raw.sprites?.actors ?? []).map((actor, id) => normalizeActor(actor, id, itemCtx)),
+      // Player character modular parts (design-modular-parts.md §3.1-§3.2,
+      // ROADMAP item 8 phase 1). Neither array is tileset-scoped, so both
+      // are read straight off `raw.sprites` with no per-tileset loop.
+      playerParts: (raw.sprites?.playerParts ?? [])
+        .slice(0, LIMITS.playerParts)
+        .map((part, id) => normalizePlayerPart(part, id)),
+      playerTiles: normalizePlayerTiles(raw.sprites?.playerTiles, tilesets[0].sprites)
     },
     songs: (Array.isArray(raw.songs) ? raw.songs : []).map((song, index) =>
       normalizeSong(song, `Song ${index}`)

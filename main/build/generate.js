@@ -81,7 +81,9 @@ import {
   canBackItem,
   ITEM_EFFECT_KINDS,
   NO_ITEM,
-  NO_METASPRITE
+  NO_METASPRITE,
+  PLAYER_FRAMES,
+  PLAYER_TILES
 } from '../../shared/project.js';
 import { SAVE_FIELDS, saveBodySize, saveIdentity } from '../../shared/save.js';
 import {
@@ -1431,8 +1433,6 @@ function kernelShortfallAdvice(project, mapper, deficit) {
 
   return 'Reduce the number of screens, actors or metasprites.';
 }
-const PLAYER_FRAMES = 8; // 4 directions x 2 walk frames
-const PLAYER_TILES = PLAYER_FRAMES * 4;
 
 // Drawn into the CHR output (never into project data) when the sprite table is
 // still empty, so a brand-new project builds into something you can actually see.

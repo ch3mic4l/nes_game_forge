@@ -9,7 +9,7 @@
 
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { createProject, createPartyMember, createSpell, LIMITS } from '../shared/project.js';
+import { createProject, createPartyMember, createSpell, LIMITS, PLAYER_TILES } from '../shared/project.js';
 import { saveProject } from '../main/project-io.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -160,6 +160,19 @@ split16(HERO).forEach((quadrant, index) => (sprites[4 + index] = quadrant));  //
 split16(HERO).forEach((quadrant, index) => (sprites[0x20 + index] = quadrant));
 split16(SLIME).forEach((quadrant, index) => (sprites[0x24 + index] = quadrant));
 split16(POTION).forEach((quadrant, index) => (sprites[0x28 + index] = quadrant));
+
+// project.sprites.playerTiles (ROADMAP item 8, design-modular-parts.md §3.2)
+// is the canonical source normalizePlayerTiles' own migration would otherwise
+// have to *derive* from tileset 0's raw sprite indices 0-31 -- but
+// createProject() already supplies an explicit (all-null) playerTiles field,
+// which means "already migrated" the same way createProject()'s `items: []`
+// already means that for the item schema (see samplegen.test.js's own header
+// comment for that exact precedent). Authoring it directly here, mirroring
+// the HERO art just painted above, is what keeps this generator's own output
+// loading identically to the checked-in sample-rpg/ fixture -- which has no
+// playerTiles field on disk at all, so loading it runs the real migration
+// against real HERO content and derives these same 32 tiles.
+project.sprites.playerTiles = sprites.slice(0, PLAYER_TILES);
 
 // --- the battle tileset -----------------------------------------------------
 // A second CHR bank the engine switches to when a battle starts, which is why an
