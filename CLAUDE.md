@@ -717,6 +717,13 @@ already-over-cap project (a later version's, or hand-edited) is refused by `vali
 named error and left intact rather than silently sliced — a 256th metasprite is real, drawable
 content, the identical policy the actor and item ceilings already hold to.
 
+ROADMAP item 8's modular-parts feature targets the player character specifically, not a Sprite
+Forge actor: `PLAYER_TILES`'s 32 fixed sprite-table slots (`main/build/generate.js`, `build_oam` in
+`engine/oam.asm`) get zero authoring assistance today, and a "Generate Player Sprite" action would
+compose them from small reusable, tagged tiles into a new `project.sprites.playerTiles`, stamped
+into every tileset at build time like `HEART_TILES` already is — ordinary project data, no new
+compiled/engine-side array or table. See `docs/design-modular-parts.md`.
+
 `renumberSpellDeletion` (`shared/project.js`) exists beside `renumberActorDeletion`/
 `renumberItemDeletion`, the same shape applied to `project.spells` — the Magic Forge's own delete
 handler (`renderer/forges/magic/magic.js`) is its real caller, as of Magic Forge phase 3. The
