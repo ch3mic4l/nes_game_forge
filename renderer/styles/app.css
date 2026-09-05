@@ -1002,6 +1002,14 @@ canvas.sheet {
   color: var(--text);
 }
 
+/* The Code Forge's split pane: a second open tab shown alongside the primary
+   one, so its tab strip entry gets its own indicator distinct from .active. */
+.tab.active-split {
+  background: var(--bg-2);
+  border-color: var(--line-soft);
+  color: var(--text-dim);
+}
+
 /* ------------------------------------------------------------------ Code Forge */
 
 /* Syntax colours. The mnemonic deliberately shares the accent so code reads in
@@ -1182,6 +1190,22 @@ canvas.sheet {
   color: var(--red);
 }
 
+.code-tab-split {
+  flex: none;
+  background: none;
+  border: none;
+  color: var(--text-faint);
+  cursor: pointer;
+  font-size: 11px;
+  line-height: 1;
+  padding: 0 1px;
+}
+
+.code-tab-split:hover,
+.code-tab-split.active {
+  color: var(--accent);
+}
+
 .code-tabs-empty {
   padding: 5px 4px;
   font-size: 11px;
@@ -1199,6 +1223,29 @@ canvas.sheet {
   display: flex;
   flex-direction: column;
   overflow: hidden;
+}
+
+/* One pane normally, two side by side once a second tab is opened in the
+   split pane (`.code-pane[hidden]` then, via the global `[hidden]` rule
+   above). Each pane is an ordinary flex box, not an integer-zoomed pixel
+   canvas, so a divider between them is plain CSS -- no resize handler. */
+.code-panes {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  overflow: hidden;
+}
+
+.code-pane {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.code-pane + .code-pane {
+  border-left: 1px solid var(--line-soft);
 }
 
 .code-hint {

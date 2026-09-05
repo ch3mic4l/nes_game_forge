@@ -7242,6 +7242,474 @@ export async function runSmoke(window) {
       console.log('  ok  focused menu undo stays in the editor — one insertion, not the whole burst');
     }
 
+    // Split-pane editing (roadmap item 9, phase 1): two open tabs shown side by
+    // side, with a divider between them, instead of one editor behind the tab
+    // strip. Builds on the still-open player.asm tab from the scenarios above —
+    // opening constants.asm lands it in the primary (left) pane per this item's
+    // own rule (a fresh open lands in the currently focused pane, left by
+    // default), and the tab strip's split button is what puts player.asm beside
+    // it on the right.
+    // Split into several small round trips rather than one script with two
+    // internal wait-loops -- a single `executeJavaScript` call spanning up to
+    // several seconds of polling proved unreliable here (it once came back
+    // rejected with a bare, unrelated-looking "input is not defined" instead
+    // of ever running), where the same polling done as separate, short calls
+    // from here did not. The `until`/`layoutAt` pattern above already polls
+    // this way for exactly this reason.
+    const findsInStrip = (selector, text) =>
+      `[...document.querySelectorAll('#stage ${selector}')].some((n) => n.textContent.trim() === ${JSON.stringify(text)})`;
+    await window.webContents.executeJavaScript(
+      `[...document.querySelectorAll('#stage .tree-row')].find((n) => n.querySelector('.tree-name').textContent === 'constants.asm').click(); true`
+    );
+    for (
+      let waited = 0;
+      waited < 4000 && !(await window.webContents.executeJavaScript(findsInStrip('.code-tab .code-tab-name', 'constants.asm')));
+      waited += 100
+    ) {
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    await window.webContents.executeJavaScript(
+      `[...document.querySelectorAll('#stage .code-tab')].find((n) => n.querySelector('.code-tab-name').textContent === 'player.asm').querySelector('.code-tab-split').click(); true`
+    );
+    for (
+      let waited = 0;
+      waited < 4000 && (await window.webContents.executeJavaScript(`document.querySelectorAll('#stage .code-input').length`)) < 2;
+      waited += 100
+    ) {
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    const splitSetup = await window.webContents.executeJavaScript(`(() => {
+        const findTab = (name) => [...document.querySelectorAll('#stage .code-tab')].find(
+          (node) => node.querySelector('.code-tab-name').textContent === name
+        );
+        const panes = [...document.querySelectorAll('#stage .code-pane')].filter((pane) => !pane.hidden);
+        return {
+          paneCount: panes.length,
+          inputCount: document.querySelectorAll('#stage .code-input').length,
+          leftIsConstants: !!findTab('constants.asm')?.classList.contains('active'),
+          rightIsPlayer: !!findTab('player.asm')?.classList.contains('active-split')
+        };
+      })()`);
+    if (
+      splitSetup.paneCount !== 2 ||
+      splitSetup.inputCount !== 2 ||
+      !splitSetup.leftIsConstants ||
+      !splitSetup.rightIsPlayer
+    ) {
+      problems.push(
+        `the Code Forge did not show two tabs side by side (panes=${splitSetup.paneCount}, ` +
+          `inputs=${splitSetup.inputCount})`
+      );
+    } else {
+      console.log('  ok  the Code Forge shows two open tabs side by side, constants.asm left and player.asm right');
+    }
+
+    // Each pane's tab keeps its own debounce timer (this item's fix): before it,
+    // a single Forge-wide timer meant typing in one tab cancelled another tab's
+    // pending commit. Typing in both panes within the same 600ms window and
+    // confirming both land proves the timers are independent, not merely that
+    // `flushPendingEdits()` papered over a shared one.
+    await window.webContents.executeJavaScript(`(async () => {
+      const tick = () => new Promise((resolve) => setTimeout(resolve, 25));
+      const panes = [...document.querySelectorAll('#stage .code-pane')].filter((pane) => !pane.hidden);
+      const leftInput = panes[0].querySelector('.code-input');
+      const rightInput = panes[1].querySelector('.code-input');
+      leftInput.value = '; left pane edit\\n' + leftInput.value;
+      leftInput.dispatchEvent(new Event('input', { bubbles: true }));
+      await tick(); // well inside the 600ms commit delay
+      rightInput.value = '; right pane edit\\n' + rightInput.value;
+      rightInput.dispatchEvent(new Event('input', { bubbles: true }));
+      return true;
+    })()`);
+    await new Promise((resolve) => setTimeout(resolve, 900)); // past both tabs' own commit delay
+    const afterSplitTyping = await window.webContents.executeJavaScript(`(() => {
+      const overrides = window.__app.store.project.code.overrides;
+      return {
+        constants: overrides.find((file) => file.name === 'constants.asm')?.text ?? '',
+        player: overrides.find((file) => file.name === 'player.asm')?.text ?? ''
+      };
+    })()`);
+    if (
+      !afterSplitTyping.constants.startsWith('; left pane edit\n') ||
+      !afterSplitTyping.player.startsWith('; right pane edit\n')
+    ) {
+      problems.push(
+        "a split pane's edit did not reach the store on its own debounce — one tab is still cancelling " +
+          "the other's pending commit"
+      );
+    } else {
+      console.log('  ok  each split-pane tab commits on its own debounce timer, independent of the other pane');
+    }
+
+    // Two real textareas are mounted at once with a split engaged, not one
+    // detached and one live — the case `undoInFocusedEditor` never had to
+    // handle before this item. It reads `document.activeElement`, which can
+    // only ever be one of the two, so this proves that stays true rather than
+    // assuming it: type twice in the focused (right) pane, menu-undo, and
+    // confirm the left pane's buffer and committed project text are untouched.
+    const paneUndo = await window.webContents.executeJavaScript(`(() => {
+      const panes = [...document.querySelectorAll('#stage .code-pane')].filter((pane) => !pane.hidden);
+      const rightInput = panes[1].querySelector('.code-input');
+      const leftInput = panes[0].querySelector('.code-input');
+      rightInput.focus();
+      rightInput.setSelectionRange(0, 0);
+      const before = rightInput.value;
+      const leftBefore = leftInput.value;
+      const first = document.execCommand('insertText', false, '; right first\\n');
+      rightInput.setSelectionRange(0, 0);
+      const second = document.execCommand('insertText', false, '; right second\\n');
+      return {
+        before,
+        leftBefore,
+        typed: first && second && rightInput.value === '; right second\\n; right first\\n' + before
+      };
+    })()`);
+    window.webContents.send('menu:action', 'edit:undo');
+    await new Promise((resolve) => setTimeout(resolve, 900));
+    const afterPaneUndo = await window.webContents.executeJavaScript(`(() => {
+      const panes = [...document.querySelectorAll('#stage .code-pane')].filter((pane) => !pane.hidden);
+      const rightInput = panes[1].querySelector('.code-input');
+      const leftInput = panes[0].querySelector('.code-input');
+      const overrides = window.__app.store.project.code.overrides;
+      return {
+        rightText: rightInput.value,
+        leftText: leftInput.value,
+        rightProjectText: overrides.find((file) => file.name === 'player.asm')?.text,
+        leftProjectText: overrides.find((file) => file.name === 'constants.asm')?.text
+      };
+    })()`);
+    const wantedRightAfterPaneUndo = '; right first\n' + paneUndo.before;
+    if (!paneUndo.typed) {
+      problems.push('the smoke test could not type into the split pane editor');
+    } else if (afterPaneUndo.rightText !== wantedRightAfterPaneUndo) {
+      problems.push('menu undo in a focused split pane took back more than the last thing typed in that pane');
+    } else if (afterPaneUndo.rightProjectText !== wantedRightAfterPaneUndo) {
+      problems.push('the split pane editor and the project disagree about the text after a menu undo');
+    } else if (afterPaneUndo.leftText !== paneUndo.leftBefore || afterPaneUndo.leftProjectText !== paneUndo.leftBefore) {
+      problems.push('undo in the focused split pane also changed the other, unfocused pane');
+    } else {
+      console.log('  ok  focused menu undo in a split pane stays in that pane — the other visible pane is untouched');
+    }
+
+    // Round 2 (reviewer): the split button used to claim a pane was "last
+    // focused" by a bare `focusedPane = 'right'` assignment, with no real
+    // focus event backing it -- clicking the button focuses the button, not
+    // the tab it just placed. Reproduces the exact sequence: real-focus the
+    // left editor, open a third file so the current left tab (constants.asm)
+    // is parked open but shown in neither pane -- which is what makes its own
+    // "Open in split pane" button clickable -- click that button, and confirm
+    // the click genuinely moved DOM focus into constants.asm's own textarea
+    // rather than only asserting it. Left pane currently shows constants.asm.
+    // This test window never has real OS-level focus in this harness
+    // (`document.hasFocus()` is false throughout), so a plain `.focus()` call
+    // updates `document.activeElement` correctly but Chromium suppresses the
+    // actual `focus`/`focusin` event dispatch -- exactly the DOM event the
+    // app's own `leftHost`/`rightHost` listeners (and thus `focusedPane`) rely
+    // on to notice a raw click into an editor. Real, OS-focused usage does not
+    // have this quirk. Dispatching a genuine `focusin` alongside `.focus()` is
+    // what a focused window would already be doing, so this only compensates
+    // for the harness, not for anything about the app.
+    await window.webContents.executeJavaScript(`(() => {
+      const el = document.querySelectorAll('#stage .code-pane')[0].querySelector('.code-input');
+      el.focus();
+      el.dispatchEvent(new FocusEvent('focusin', { bubbles: true }));
+      return true;
+    })()`);
+    await window.webContents.executeJavaScript(
+      `[...document.querySelectorAll('#stage .tree-row')].find((n) => n.querySelector('.tree-name').textContent === 'screens.asm').click(); true`
+    );
+    for (
+      let waited = 0;
+      waited < 4000 &&
+      !(await window.webContents.executeJavaScript(
+        `[...document.querySelectorAll('#stage .code-tab .code-tab-name')].some((n) => n.textContent === 'screens.asm')`
+      ));
+      waited += 100
+    ) {
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    const parkedButtonClicked = await window.webContents.executeJavaScript(`(() => {
+      const button = [...document.querySelectorAll('#stage .code-tab')].find(
+        (n) => n.querySelector('.code-tab-name').textContent === 'constants.asm'
+      )?.querySelector('.code-tab-split');
+      if (!button) return false;
+      button.click();
+      return true;
+    })()`);
+    const afterSplitButtonClick = await window.webContents.executeJavaScript(`(() => {
+      const panes = [...document.querySelectorAll('#stage .code-pane')].filter((pane) => !pane.hidden);
+      const rightInput = panes[1]?.querySelector('.code-input');
+      const findTab = (name) => [...document.querySelectorAll('#stage .code-tab')].find(
+        (node) => node.querySelector('.code-tab-name').textContent === name
+      );
+      return {
+        rightTabIsConstants: !!findTab('constants.asm')?.classList.contains('active-split'),
+        focusedIsRightPane: document.activeElement === rightInput
+      };
+    })()`);
+    if (!parkedButtonClicked) {
+      problems.push('constants.asm was not left parked with its own clickable split button after opening a third file');
+    } else if (!afterSplitButtonClick.rightTabIsConstants) {
+      problems.push("clicking a parked tab's split button did not move it into the split pane");
+    } else if (!afterSplitButtonClick.focusedIsRightPane) {
+      problems.push(
+        "clicking a tab's split button did not genuinely focus its own editor -- focusedPane would be " +
+          'asserted rather than true'
+      );
+    } else {
+      console.log("  ok  clicking a tab's split button genuinely focuses its own editor, not merely a claim");
+    }
+
+    // With real focus now in the right pane and no click into either editor
+    // since, a fresh open should follow that real focus into the right pane --
+    // not a bare assertion left over from the button click.
+    await window.webContents.executeJavaScript(
+      `[...document.querySelectorAll('#stage .tree-row')].find((n) => n.querySelector('.tree-name').textContent === 'title.asm').click(); true`
+    );
+    for (
+      let waited = 0;
+      waited < 4000 &&
+      !(await window.webContents.executeJavaScript(
+        `[...document.querySelectorAll('#stage .code-tab .code-tab-name')].some((n) => n.textContent === 'title.asm')`
+      ));
+      waited += 100
+    ) {
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    const afterUnfocusedThirdOpen = await window.webContents.executeJavaScript(`(() => {
+      const findTab = (name) => [...document.querySelectorAll('#stage .code-tab')].find(
+        (node) => node.querySelector('.code-tab-name').textContent === name
+      );
+      return {
+        leftIsScreens: !!findTab('screens.asm')?.classList.contains('active'),
+        rightIsTitle: !!findTab('title.asm')?.classList.contains('active-split')
+      };
+    })()`);
+    if (!afterUnfocusedThirdOpen.leftIsScreens || !afterUnfocusedThirdOpen.rightIsTitle) {
+      problems.push(
+        'opening a third file with no intervening editor click did not land in the pane genuinely last ' +
+          `focused (left is screens.asm: ${afterUnfocusedThirdOpen.leftIsScreens}, right is title.asm: ` +
+          `${afterUnfocusedThirdOpen.rightIsTitle})`
+      );
+    } else {
+      console.log(
+        '  ok  a fresh, unfocused open follows the pane that was really last focused, not one merely asserted so'
+      );
+    }
+
+    // Round 3 (reviewer): rounds 1 and 2 each patched one bare `focusedPane =
+    // ...` assignment, but the same shape survived in three more places,
+    // including an ordinary tab-strip click -- `placeInPane`'s general branch,
+    // hit by clicking any already-open, not-currently-shown tab in the strip.
+    // Reproduces the exact sequence: real-focus the right editor (title.asm),
+    // click a hidden tab in the strip -- player.asm, parked open in neither
+    // pane since the previous scenario left it evicted -- to bring it up on
+    // the left, and confirm the click genuinely moved DOM focus into
+    // player.asm's own textarea rather than only asserting it.
+    // Same harness quirk as round 2's setup above: dispatch a genuine
+    // `focusin` alongside `.focus()` since this window never has real OS-level
+    // focus here, which otherwise leaves `focusedPane` unable to notice a raw
+    // editor click at all in this environment.
+    await window.webContents.executeJavaScript(`(() => {
+      const el = document.querySelectorAll('#stage .code-pane')[1].querySelector('.code-input');
+      el.focus();
+      el.dispatchEvent(new FocusEvent('focusin', { bubbles: true }));
+      return true;
+    })()`);
+    const hiddenTabClicked = await window.webContents.executeJavaScript(`(() => {
+      const tab = [...document.querySelectorAll('#stage .code-tab')].find(
+        (n) => n.querySelector('.code-tab-name').textContent === 'player.asm'
+      );
+      if (!tab) return false;
+      tab.click();
+      return true;
+    })()`);
+    const afterHiddenTabClick = await window.webContents.executeJavaScript(`(() => {
+      const panes = [...document.querySelectorAll('#stage .code-pane')].filter((pane) => !pane.hidden);
+      const leftInput = panes[0]?.querySelector('.code-input');
+      const findTab = (name) => [...document.querySelectorAll('#stage .code-tab')].find(
+        (node) => node.querySelector('.code-tab-name').textContent === name
+      );
+      return {
+        leftTabIsPlayer: !!findTab('player.asm')?.classList.contains('active'),
+        focusedIsLeftPane: document.activeElement === leftInput
+      };
+    })()`);
+    if (!hiddenTabClicked) {
+      problems.push('player.asm was not a hidden, clickable tab-strip entry after the previous scenario');
+    } else if (!afterHiddenTabClick.leftTabIsPlayer) {
+      problems.push('clicking a hidden tab-strip entry did not bring it up on the left pane');
+    } else if (!afterHiddenTabClick.focusedIsLeftPane) {
+      problems.push(
+        'clicking a hidden tab-strip entry did not genuinely focus its own editor -- focusedPane would be ' +
+          'asserted rather than true'
+      );
+    } else {
+      console.log("  ok  clicking a hidden tab-strip entry genuinely focuses its own editor, not merely a claim");
+    }
+
+    // With real focus now in the left pane and no click into either editor
+    // since, a fresh open should follow that real focus into the left pane --
+    // not a bare assertion left over from the tab-strip click.
+    await window.webContents.executeJavaScript(
+      `[...document.querySelectorAll('#stage .tree-row')].find((n) => n.querySelector('.tree-name').textContent === 'oam.asm').click(); true`
+    );
+    for (
+      let waited = 0;
+      waited < 4000 &&
+      !(await window.webContents.executeJavaScript(
+        `[...document.querySelectorAll('#stage .code-tab .code-tab-name')].some((n) => n.textContent === 'oam.asm')`
+      ));
+      waited += 100
+    ) {
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    const afterUnfocusedFourthOpen = await window.webContents.executeJavaScript(`(() => {
+      const findTab = (name) => [...document.querySelectorAll('#stage .code-tab')].find(
+        (node) => node.querySelector('.code-tab-name').textContent === name
+      );
+      return {
+        leftIsOam: !!findTab('oam.asm')?.classList.contains('active'),
+        rightIsTitle: !!findTab('title.asm')?.classList.contains('active-split')
+      };
+    })()`);
+    if (!afterUnfocusedFourthOpen.leftIsOam || !afterUnfocusedFourthOpen.rightIsTitle) {
+      problems.push(
+        'opening a fourth file with no intervening editor click did not land in the pane genuinely last ' +
+          `focused (left is oam.asm: ${afterUnfocusedFourthOpen.leftIsOam}, right is title.asm: ` +
+          `${afterUnfocusedFourthOpen.rightIsTitle})`
+      );
+    } else {
+      console.log(
+        '  ok  a fresh, unfocused open after a plain tab-strip click also follows the pane that was really ' +
+          'last focused'
+      );
+    }
+
+    // Round 4 (reviewer): closeTab has two places that null `splitKey` in
+    // response to a close -- closing the split tab directly (which already
+    // normalized `focusedPane`), and closing the *primary* tab when the
+    // auto-picked next tab collides with the split tab (which used to leave
+    // `focusedPane` naming the now-gone split pane, so the survivor ended up
+    // on the left with nothing in the Forge actually focused at all).
+    // Reproduces the exact sequence: tab A on the left, tab B split to the
+    // right, B genuinely focused, close A -- opening main.asm then flash.asm
+    // (in that order) guarantees flash.asm sits immediately after main.asm in
+    // the open-tabs list, so closing flash.asm's own tab is exactly the
+    // "next auto-picked tab collides with the split tab" case once main.asm
+    // is the one split to the right.
+    await window.webContents.executeJavaScript(
+      `[...document.querySelectorAll('#stage .tree-row')].find((n) => n.querySelector('.tree-name').textContent === 'main.asm').click(); true`
+    );
+    for (
+      let waited = 0;
+      waited < 4000 &&
+      !(await window.webContents.executeJavaScript(
+        `[...document.querySelectorAll('#stage .code-tab .code-tab-name')].some((n) => n.textContent === 'main.asm')`
+      ));
+      waited += 100
+    ) {
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    await window.webContents.executeJavaScript(
+      `[...document.querySelectorAll('#stage .tree-row')].find((n) => n.querySelector('.tree-name').textContent === 'flash.asm').click(); true`
+    );
+    for (
+      let waited = 0;
+      waited < 4000 &&
+      !(await window.webContents.executeJavaScript(
+        `[...document.querySelectorAll('#stage .code-tab .code-tab-name')].some((n) => n.textContent === 'flash.asm')`
+      ));
+      waited += 100
+    ) {
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    // flash.asm just landed on the left (opened after main.asm, same as every
+    // fresh open above); main.asm is parked, which is what makes its own
+    // split button clickable.
+    await window.webContents.executeJavaScript(`(() => {
+      const button = [...document.querySelectorAll('#stage .code-tab')].find(
+        (n) => n.querySelector('.code-tab-name').textContent === 'main.asm'
+      )?.querySelector('.code-tab-split');
+      if (button) button.click();
+      return true;
+    })()`);
+    // Same harness quirk as rounds 2 and 3's setup: this window never has
+    // real OS-level focus here, so dispatch a genuine `focusin` alongside
+    // `.focus()` -- what a focused window would already be doing -- so B
+    // (main.asm, now split to the right) is really, not just nominally,
+    // focused before A is closed.
+    await window.webContents.executeJavaScript(`(() => {
+      const panes = [...document.querySelectorAll('#stage .code-pane')].filter((p) => !p.hidden);
+      const el = panes[1]?.querySelector('.code-input');
+      if (!el) return false;
+      el.focus();
+      el.dispatchEvent(new FocusEvent('focusin', { bubbles: true }));
+      return true;
+    })()`);
+    const beforeCloseA = await window.webContents.executeJavaScript(`(() => {
+      const panes = [...document.querySelectorAll('#stage .code-pane')].filter((p) => !p.hidden);
+      const rightInput = panes[1]?.querySelector('.code-input');
+      const findTab = (name) => [...document.querySelectorAll('#stage .code-tab')].find(
+        (node) => node.querySelector('.code-tab-name').textContent === name
+      );
+      return {
+        arranged: !!findTab('flash.asm')?.classList.contains('active') && !!findTab('main.asm')?.classList.contains('active-split'),
+        bFocused: document.activeElement === rightInput
+      };
+    })()`);
+    if (!beforeCloseA.arranged || !beforeCloseA.bFocused) {
+      problems.push(
+        `could not arrange tab A (flash.asm, left) / tab B (main.asm, right, genuinely focused) before ` +
+          `closing A (arranged=${beforeCloseA.arranged}, bFocused=${beforeCloseA.bFocused})`
+      );
+    } else {
+      await window.webContents.executeJavaScript(`(() => {
+        const closeButton = [...document.querySelectorAll('#stage .code-tab')].find(
+          (n) => n.querySelector('.code-tab-name').textContent === 'flash.asm'
+        )?.querySelector('.code-tab-close');
+        if (closeButton) closeButton.click();
+        return true;
+      })()`);
+      for (
+        let waited = 0;
+        waited < 4000 &&
+        (await window.webContents.executeJavaScript(
+          `[...document.querySelectorAll('#stage .code-tab .code-tab-name')].some((n) => n.textContent === 'flash.asm')`
+        ));
+        waited += 100
+      ) {
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      }
+      const afterCloseA = await window.webContents.executeJavaScript(`(() => {
+        const panes = [...document.querySelectorAll('#stage .code-pane')].filter((pane) => !pane.hidden);
+        const leftInput = panes[0]?.querySelector('.code-input');
+        const findTab = (name) => [...document.querySelectorAll('#stage .code-tab')].find(
+          (node) => node.querySelector('.code-tab-name').textContent === name
+        );
+        return {
+          paneCount: panes.length,
+          bIsLeftActive: !!findTab('main.asm')?.classList.contains('active'),
+          bFocusedOnLeft: document.activeElement === leftInput
+        };
+      })()`);
+      if (afterCloseA.paneCount !== 1) {
+        problems.push('closing tab A did not collapse the split pane once its only survivor took over both slots');
+      } else if (!afterCloseA.bIsLeftActive) {
+        problems.push('closing tab A did not leave tab B showing on the left');
+      } else if (!afterCloseA.bFocusedOnLeft) {
+        problems.push(
+          'closing tab A left tab B showing on the left but not genuinely focused -- focusedPane named a pane ' +
+            'that no longer had a tab in it'
+        );
+      } else {
+        console.log(
+          '  ok  closing the primary tab when the auto-picked next tab collides with the split tab leaves the ' +
+            'survivor genuinely focused on the left'
+        );
+      }
+    }
+
     // The map screen is drawn at the largest whole zoom its stage has room for,
     // so the check is that the canvas matches the room it was given. Asserting
     // the relationship rather than a remembered pixel count keeps this true at

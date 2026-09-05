@@ -47,18 +47,39 @@ export function mount(container, app) {
 
   /** Open tabs, in strip order. */
   const tabs = [];
+  // `activeKey` is the primary (left) pane's tab; `splitKey` is the second
+  // (right) pane's, or null when the Forge shows a single editor -- which is
+  // the only state before this item and must keep behaving exactly as before.
   let activeKey = null;
-  let pendingCommit = null;
+  let splitKey = null;
+  // Which pane a fresh open (a tree click, or the Build panel's error deep
+  // link) lands in: whichever pane's textarea last held focus. Defaults to
+  // 'left' and is only ever read as 'right' while a split is actually showing
+  // (see pickTargetPane), so single-pane behavior never depends on this.
+  let focusedPane = 'left';
 
   const treeHost = el('div.code-tree');
   const tabsHost = el('div.tabs.code-tabs');
-  const hintHost = el('div.code-hint');
-  const editorHost = el('div.code-host');
+  const leftHint = el('div.code-hint');
+  const leftHost = el('div.code-host');
+  const rightHint = el('div.code-hint');
+  const rightHost = el('div.code-host');
+  const leftPane = el('div.code-pane', null, leftHint, leftHost);
+  const rightPane = el('div.code-pane', { hidden: true }, rightHint, rightHost);
+  const panesHost = el('div.code-panes', null, leftPane, rightPane);
+
+  leftHost.addEventListener('focusin', () => {
+    focusedPane = 'left';
+  });
+  rightHost.addEventListener('focusin', () => {
+    focusedPane = 'right';
+  });
 
   const codeSlice = () => store.project?.code ?? { overrides: [], files: [] };
   const findFile = (group, name) => codeSlice()[group].find((file) => file.name === name) ?? null;
   const tabKey = (kind, name) => `${kind}:${name}`;
-  const activeTab = () => tabs.find((tab) => tabKey(tab.kind, tab.name) === activeKey) ?? null;
+  const tabByKey = (key) => tabs.find((tab) => tabKey(tab.kind, tab.name) === key) ?? null;
+  const activeTab = () => tabByKey(activeKey);
 
   // A buffer that has diverged from what is committed is the tab strip's dot and
   // the shell's unsaved work — one predicate, so the dot and the close guard
@@ -126,36 +147,106 @@ export function mount(container, app) {
     notePending();
   }
 
+  /**
+   * Each tab owns its own debounce timer, rather than one shared across the
+   * Forge. With a shared timer, typing in one tab cancelled another tab's
+   * pending commit before it ever fired -- masked by `flushPendingEdits()` on
+   * save, but a real data-loss risk (e.g. a crash between two tabs' edits) and
+   * the wrong shape once two tabs can be typed into side by side.
+   */
   function scheduleCommit(tab) {
-    clearTimeout(pendingCommit);
+    clearTimeout(tab.pendingCommit);
     renderTabs(); // the dot appears as soon as the buffer differs
     // And so does the shell's. The commit is a moment away, but the close guard
     // lives in main and asks *now*: without this, typing and immediately hitting
     // the window's X closed it with no prompt and lost the edit.
     notePending();
-    pendingCommit = setTimeout(() => {
-      pendingCommit = null;
+    tab.pendingCommit = setTimeout(() => {
+      tab.pendingCommit = null;
       commitTab(tab);
     }, COMMIT_DELAY);
   }
 
-  /** Commit every tab now — before a save, a tab switch, or leaving the Forge. */
+  /** Commit every open tab now — before a save, a tab switch, or leaving the Forge. */
   function flushPendingEdits() {
-    clearTimeout(pendingCommit);
-    pendingCommit = null;
-    for (const tab of tabs) if (tab.kind !== 'generated') commitTab(tab);
+    for (const tab of tabs) {
+      if (tab.kind === 'generated') continue;
+      clearTimeout(tab.pendingCommit);
+      tab.pendingCommit = null;
+      commitTab(tab);
+    }
     notePending();
   }
 
   // ------------------------------------------------------------ tabs
 
+  /**
+   * Which pane a file being opened lands in. Split off from `openFile` because
+   * both a tree click and the Build panel's error deep-link go through that one
+   * function, and this item requires an explicit, stated rule rather than
+   * "whichever pane happened to be focused last" by accident: the currently
+   * focused pane, defaulting to the left/primary one -- which is also the only
+   * answer this can ever give while there is no split, so single-pane behavior
+   * is unchanged.
+   */
+  function pickTargetPane() {
+    return splitKey && focusedPane === 'right' ? 'right' : 'left';
+  }
+
+  /**
+   * The one place that makes `focusedPane` a fact rather than a claim: focus
+   * whichever tab currently occupies `pane`, if any (a no-op while that pane
+   * is empty, e.g. no split). Rounds 1 and 2 each patched a single bare
+   * `focusedPane = ...` assignment with its own ad hoc focus call -- the real
+   * defect was structural, not those two spots, since every write to
+   * `focusedPane` needs one of these or the variable can lie. Every operation
+   * below that changes what a pane shows, or which pane counts as "current",
+   * ends with this -- after `renderPanes()`, since the target tab's DOM node
+   * has to actually be mounted and visible before `.focus()` can do anything.
+   *
+   * This is also the one place the invariant behind all of that is enforced:
+   * `focusedPane` may never name the split pane once `splitKey` is null. Round
+   * 4's defect was a caller (`closeTab`'s primary-tab-collision branch)
+   * nulling `splitKey` without remembering to also correct `focusedPane` --
+   * the same shape rounds 1-3 each fixed at one call site apiece. Normalizing
+   * here instead means a caller can pass a stale `'right'` and still end up
+   * with a real, focused pane and a `focusedPane` that agrees with it,
+   * whether or not it remembered to check `splitKey` itself first.
+   */
+  function focusPane(pane) {
+    if (pane === 'right' && !splitKey) pane = 'left';
+    focusedPane = pane;
+    tabByKey(pane === 'right' ? splitKey : activeKey)?.editor.focus();
+  }
+
+  /**
+   * Show `key` in `pane`, keeping the same tab from ever occupying both, and
+   * finish by rendering and genuinely focusing wherever it ends up -- so a
+   * caller can never reassign a pane without also focusing it.
+   */
+  function placeInPane(pane, key) {
+    if (pane === 'right' && key === activeKey) {
+      // Already visible on the left; showing it again on the right would
+      // mean mounting one editor's single DOM node in two places at once.
+      pane = 'left';
+    } else if (pane === 'right') {
+      splitKey = key;
+    } else {
+      if (splitKey === key) splitKey = null; // moving the split tab to the primary pane closes the split
+      activeKey = key;
+    }
+    focusedPane = pane;
+    renderPanes();
+    focusPane(pane);
+  }
+
   async function openFile(kind, name, line = 0) {
     const key = tabKey(kind, name);
-    const existing = tabs.find((tab) => tabKey(tab.kind, tab.name) === key);
+    const existing = tabByKey(key);
     if (existing) {
-      activeKey = key;
-      showActive();
-      if (line) existing.editor.gotoLine(line);
+      if (key !== activeKey && key !== splitKey) placeInPane(pickTargetPane(), key);
+      else renderPanes();
+      if (line) existing.editor.gotoLine(line); // gotoLine focuses an editable editor itself
       existing.editor.markLine(line);
       return existing;
     }
@@ -168,15 +259,14 @@ export function mount(container, app) {
       return null;
     }
 
-    const tab = { kind, name, committed: text, editor: null };
+    const tab = { kind, name, committed: text, editor: null, pendingCommit: null };
     tab.editor = createEditor({
       value: text,
       readOnly: kind === 'generated',
       onChange: () => scheduleCommit(tab)
     });
     tabs.push(tab);
-    activeKey = key;
-    showActive();
+    placeInPane(pickTargetPane(), key);
     if (line) {
       tab.editor.gotoLine(line);
       tab.editor.markLine(line);
@@ -184,20 +274,49 @@ export function mount(container, app) {
     return tab;
   }
 
+  /** Put `tab` into the split pane, or close the split if it is already there. */
+  function toggleSplit(tab) {
+    const key = tabKey(tab.kind, tab.name);
+    if (splitKey === key) {
+      splitKey = null; // focusPane() below normalizes focusedPane off 'right' once splitKey is gone
+    } else if (key !== activeKey) {
+      splitKey = key;
+      focusedPane = 'right';
+    } else {
+      return; // nothing to do -- the tab strip hides this button for that case anyway
+    }
+    renderPanes();
+    focusPane(focusedPane);
+  }
+
   /**
    * `commit: false` throws the buffer away instead of writing it back — for the
    * tabs whose file is being removed, where committing would recreate it.
    */
   function closeTab(tab, { commit = true } = {}) {
+    clearTimeout(tab.pendingCommit);
     if (commit && tab.kind !== 'generated') commitTab(tab);
+    const key = tabKey(tab.kind, tab.name);
     const index = tabs.indexOf(tab);
     tabs.splice(index, 1);
     tab.editor.destroy();
-    if (activeKey === tabKey(tab.kind, tab.name)) {
+    if (splitKey === key) {
+      splitKey = null; // focusPane() below normalizes focusedPane off 'right' once splitKey is gone
+    }
+    if (activeKey === key) {
       const next = tabs[index] ?? tabs[index - 1] ?? null;
       activeKey = next ? tabKey(next.kind, next.name) : null;
+      // The auto-picked next tab may already be showing in the split pane --
+      // showing it on the left too would mount its one editor node twice.
+      if (activeKey !== null && activeKey === splitKey) splitKey = null;
     }
-    showActive();
+    renderPanes();
+    // Whatever a closed tab leaves behind -- the pane that already survived
+    // untouched, or the neighbor that just took over its slot -- is what
+    // there is to look at now, so it is the one reasonable thing to focus.
+    // Also closes the loop this round exists for: no operation that changes a
+    // pane's assignment may skip the real focus that backs it.
+    focusPane(focusedPane);
     notePending();
   }
 
@@ -208,45 +327,55 @@ export function mount(container, app) {
     tab.committed = text;
   }
 
-  function showActive() {
-    const tab = activeTab();
-    renderTabs();
-    renderTree();
+  function hintKindFor(tab) {
+    return tab.kind === 'generated'
+      ? 'generated'
+      : tab.kind === 'user'
+        ? 'user'
+        : findFile('overrides', tab.name)
+          ? 'override'
+          : 'stock';
+  }
+
+  const placeholder = () =>
+    el(
+      'div.placeholder',
+      null,
+      el('div.placeholder-glyph', null, '‹›'),
+      el('h2', null, 'The code behind your game'),
+      el(
+        'p',
+        null,
+        'Pick a file on the left. Engine files are the app’s own 6502 source — editing one keeps ' +
+          'your changes in this project, so the original is always there to go back to.'
+      )
+    );
+
+  /** Render one pane's hint strip and editor host for whichever tab `key` names. */
+  function renderPane(hintNode, hostNode, key, { showPlaceholder = false } = {}) {
+    const tab = key ? tabByKey(key) : null;
     if (!tab) {
-      fill(hintHost);
-      hintHost.hidden = true;
-      fill(
-        editorHost,
-        el(
-          'div.placeholder',
-          null,
-          el('div.placeholder-glyph', null, '‹›'),
-          el('h2', null, 'The code behind your game'),
-          el(
-            'p',
-            null,
-            'Pick a file on the left. Engine files are the app’s own 6502 source — editing one keeps ' +
-              'your changes in this project, so the original is always there to go back to.'
-          )
-        )
-      );
+      fill(hintNode);
+      hintNode.hidden = true;
+      fill(hostNode, showPlaceholder ? placeholder() : null);
       return;
     }
-    const kind =
-      tab.kind === 'generated'
-        ? 'generated'
-        : tab.kind === 'user'
-          ? 'user'
-          : findFile('overrides', tab.name)
-            ? 'override'
-            : 'stock';
-    hintHost.hidden = false;
-    fill(hintHost, HINTS[kind]);
+    hintNode.hidden = false;
+    fill(hintNode, HINTS[hintKindFor(tab)]);
     // Only when it actually changes. Removing and re-appending a node blurs
     // whatever inside it had focus, and this runs on every commit — including the
     // debounced one a few hundred milliseconds into typing, which would take the
     // caret away mid-sentence.
-    if (editorHost.firstChild !== tab.editor.el) fill(editorHost, tab.editor.el);
+    if (hostNode.firstChild !== tab.editor.el) fill(hostNode, tab.editor.el);
+  }
+
+  /** Render both panes -- the primary (left) one always, the split (right) one only while active. */
+  function renderPanes() {
+    renderTabs();
+    renderTree();
+    renderPane(leftHint, leftHost, activeKey, { showPlaceholder: true });
+    rightPane.hidden = !splitKey;
+    if (splitKey) renderPane(rightHint, rightHost, splitKey);
   }
 
   function renderTabs() {
@@ -259,17 +388,36 @@ export function mount(container, app) {
             return el(
               'div.tab.code-tab',
               {
-                class: key === activeKey ? 'active' : '',
+                class: key === activeKey ? 'active' : key === splitKey ? 'active-split' : '',
                 title: tab.kind === 'generated' ? `${tab.name} (generated)` : tab.name,
                 onclick: () => {
-                  if (key === activeKey) return;
+                  // Already showing in one of the two panes: nothing to do --
+                  // unlike the split-toggle button below, a plain click never
+                  // reassigns which pane an already-visible tab occupies.
+                  if (key === activeKey || key === splitKey) return;
                   flushPendingEdits();
-                  activeKey = key;
-                  showActive();
+                  placeInPane('left', key);
                 }
               },
               el('span.code-tab-name', null, tab.name.replace(/^assets\//, '')),
               dirty ? el('span.code-tab-dot') : null,
+              // Not for the primary (left) pane's own tab: there is nothing to
+              // open into the split for a tab that is already showing there,
+              // and toggleSplit() would silently no-op on it.
+              tabs.length > 1 && key !== activeKey
+                ? el(
+                    'button.code-tab-split',
+                    {
+                      class: key === splitKey ? 'active' : '',
+                      title: key === splitKey ? 'Close split pane' : 'Open in split pane',
+                      onclick: (event) => {
+                        event.stopPropagation();
+                        toggleSplit(tab);
+                      }
+                    },
+                    '⧉'
+                  )
+                : null,
               el(
                 'button.code-tab-close',
                 {
@@ -331,9 +479,7 @@ export function mount(container, app) {
       tab.editor.setValue(stock);
       tab.committed = stock;
     }
-    renderTree();
-    renderTabs();
-    showActive();
+    renderPanes();
     toast(`${name} is back to the original.`, 'info');
   }
 
@@ -392,7 +538,7 @@ export function mount(container, app) {
       if (index >= 0) project.code.files.splice(index, 1);
     });
     renderTree();
-    showActive();
+    renderPanes();
   }
 
   async function refreshGenerated() {
@@ -466,13 +612,13 @@ export function mount(container, app) {
       'div.panel',
       null,
       el('div.panel-head.code-head', null, tabsHost),
-      el('div.panel-body.code-body', null, hintHost, editorHost)
+      el('div.panel-body.code-body', null, panesHost)
     )
   );
 
   container.append(root);
   renderTree();
-  showActive();
+  renderPanes();
   app.setMeta('Code Forge');
 
   // Kept, not just fired: anything that has to *know* whether a name is a stock
@@ -534,9 +680,7 @@ export function mount(container, app) {
           () => {}
         );
       }
-      renderTree();
-      renderTabs();
-      showActive();
+      renderPanes();
       notePending();
     },
     /**
