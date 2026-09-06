@@ -326,6 +326,153 @@ const scenario = (dir, sampleDir, sampleRpgDir) => `
   if (isHiddenByAncestor(exportLabel)) throw new Error('Export row must be visible again on the Sprites tab (F3)');
   step('import/export rows hidden in Player mode, visible again on Sprites', 'ok');
 
+  // ROADMAP item 8 (validate-as-you-draw), Phase 4 review fix 1
+  // (docs/design-draw-validation.md §7 Phase 4's own "smoke coverage"
+  // bullets, now driven through the real mounted canvas rather than only
+  // test/unit/drawvalidation.test.js's pure spriteReservedRanges +
+  // reservedRangeRects combination). Still on the Sprites tab from the F3
+  // regression check just above. Pixel reads are deltas -- "did this exact
+  // cell's own pixel change when the predicate flipped" -- rather than
+  // assumptions about the shading overlay's absolute composited colour,
+  // which depends on transparentZero and the underlying palette.
+  const p4Sheet = stage.querySelector('canvas.sheet');
+  if (!p4Sheet) throw new Error('Tile Forge sheet canvas not found for reserved-range shading checks');
+  const p4CellPixel = (col, row) => {
+    const cell = p4Sheet.width / 16;
+    const x = Math.floor(col * cell + cell / 2);
+    const y = Math.floor(row * cell + cell / 2);
+    return [...p4Sheet.getContext('2d').getImageData(x, y, 1, 1).data].join(',');
+  };
+  const p4HintWith = (text) => [...stage.querySelectorAll('p.hint')].find((p) => p.textContent.includes(text));
+
+  // (a) an action project with combat -- $FE/$FF shade in, $FC/$F0 (negative
+  // controls, same last row) do not, and the HUD-hearts hint appears;
+  // removing the damage source reverses all three.
+  const p4Fe = p4CellPixel(14, 15); // $FE, no combat yet
+  const p4Ff = p4CellPixel(15, 15); // $FF
+  const p4Fc = p4CellPixel(12, 15); // $FC, negative control
+  const p4F0 = p4CellPixel(0, 15); // $F0, negative control
+  if (p4HintWith('HUD hearts')) throw new Error('the HUD-hearts hint must not appear before anything can hurt the player');
+
+  window.__app.store.commit('smoke: add a damage source', (project) => {
+    project.sprites.actors.push({ name: 'Hazard', behavior: 'patroller', speed: 0, damage: 1, anims: {} });
+  });
+  await wait(80);
+
+  if (p4CellPixel(14, 15) === p4Fe) throw new Error('$FE did not shade once the project could hurt the player');
+  if (p4CellPixel(15, 15) === p4Ff) throw new Error('$FF did not shade once the project could hurt the player');
+  if (p4CellPixel(12, 15) !== p4Fc) throw new Error('$FC (a negative control) shaded when it must not have');
+  if (p4CellPixel(0, 15) !== p4F0) throw new Error('$F0 (a negative control) shaded when it must not have');
+  if (!p4HintWith('HUD hearts')) throw new Error('expected the HUD-hearts hint once the project could hurt the player');
+  step('Tile Forge (a): $FE/$FF shade and the hearts hint appears once the project can hurt the player', 'ok');
+
+  window.__app.store.commit('smoke: remove the damage source', (project) => {
+    project.sprites.actors.pop();
+  });
+  await wait(80);
+
+  if (p4CellPixel(14, 15) !== p4Fe) throw new Error('$FE stayed shaded after the damage source was removed');
+  if (p4CellPixel(15, 15) !== p4Ff) throw new Error('$FF stayed shaded after the damage source was removed');
+  if (p4HintWith('HUD hearts')) throw new Error('the HUD-hearts hint survived the damage source being removed');
+  step('Tile Forge (a): $FE/$FF shading and the hearts hint disappear once combat is gone', 'ok');
+
+  // (b) an RPG on MMC3 -- $FD shades in (never $FE/$FF: projectUsesHeartArt
+  // is always false for an RPG, regardless of combat), and the battle-cursor
+  // hint appears; switching to MMC1 (no scanline IRQ, so fontBankSplit is
+  // false) reverses both. Mutating cartridge.mapper directly on the open
+  // project mirrors the existing "switching the mapper is what makes more
+  // tilesets legal" step later in this file.
+  const p4Fd = p4CellPixel(13, 15); // $FD, still NROM/action
+  window.__app.store.commit('smoke: switch to RPG on MMC3', (project) => {
+    project.project.gameType = 'rpg';
+    project.cartridge.mapper = 4;
+  });
+  await wait(80);
+
+  if (p4CellPixel(13, 15) === p4Fd) throw new Error('$FD did not shade on an RPG/MMC3 project');
+  if (p4CellPixel(14, 15) !== p4Fe) throw new Error('$FE must stay unshaded on an RPG -- projectUsesHeartArt is always false there');
+  if (p4CellPixel(15, 15) !== p4Ff) throw new Error('$FF must stay unshaded on an RPG -- projectUsesHeartArt is always false there');
+  if (p4CellPixel(12, 15) !== p4Fc) throw new Error('$FC (a negative control) shaded on RPG/MMC3');
+  if (p4CellPixel(0, 15) !== p4F0) throw new Error('$F0 (a negative control) shaded on RPG/MMC3');
+  if (!p4HintWith('targeting cursor')) throw new Error('expected the battle-cursor hint on an RPG/MMC3 project');
+  step('Tile Forge (b): $FD shades and the cursor hint appears on an RPG/MMC3 project, hearts stay absent', 'ok');
+
+  window.__app.store.commit('smoke: switch mapper to MMC1', (project) => {
+    project.cartridge.mapper = 1;
+  });
+  await wait(80);
+
+  if (p4CellPixel(13, 15) !== p4Fd) throw new Error('$FD stayed shaded after switching to MMC1');
+  if (p4HintWith('targeting cursor')) throw new Error('the battle-cursor hint survived switching to MMC1');
+  step('Tile Forge (b): $FD shading and the cursor hint disappear on MMC1', 'ok');
+
+  // (c) the table-conflation fix (§6.3): the two sheets' own reserved-range
+  // lists must be genuinely independent. This project is still text-using
+  // (gameType 'rpg') and non-MMC3 (mapper switched to MMC1 just above), so
+  // its background sheet must show the font band while its sprite sheet
+  // must not -- and the sprite sheet's own unconditional player band must
+  // never reach the background sheet either. Every fresh tile is blank, so
+  // an unshaded cell reads identically to any other unshaded cell -- a
+  // neutral reference cell (row 5, col 8: outside rows 0-1's player band and
+  // rows 10-15's font/hearts/cursor bands on either table) is what "did not
+  // shade" is compared against, not an assumed absolute colour.
+  const p4Neutral = () => p4CellPixel(8, 5);
+
+  const p4SpriteFontRpg = p4CellPixel(5, 12); // sprite table, row 12 -- inside $A0-$FF, away from $FD/$FE/$FF
+  const p4SpritePlayerRpg = p4CellPixel(0, 0); // sprite table, inside the player's own $00-$1F band
+  if (p4SpriteFontRpg !== p4Neutral()) {
+    throw new Error('the sprite sheet shaded the font-band row before the background table was ever shown -- table conflation');
+  }
+  if (p4SpritePlayerRpg === p4Neutral()) {
+    throw new Error('the sprite sheet’s own unconditional player band is not actually shaded -- the delta below would prove nothing');
+  }
+
+  backgroundTab.click();
+  await wait(80);
+  const p4BgNeutral = p4Neutral();
+  const p4BgFontRpg = p4CellPixel(5, 12);
+  const p4BgPlayerRpg = p4CellPixel(0, 0);
+  if (p4BgFontRpg === p4BgNeutral) {
+    throw new Error('the background sheet did not shade its own $A0-$FF font band on a text-using, non-split-font project');
+  }
+  if (p4BgPlayerRpg !== p4BgNeutral) {
+    throw new Error('the background sheet shaded the player’s own $00-$1F band -- it must never reach this table');
+  }
+
+  window.__app.store.commit('smoke: back to a plain action project (no RPG, no combat, no text)', (project) => {
+    project.project.gameType = 'action';
+    project.cartridge.mapper = 1;
+  });
+  await wait(80);
+  const p4BgFontAction = p4CellPixel(5, 12);
+  if (p4BgFontAction === p4BgFontRpg) {
+    throw new Error('the background sheet’s own $A0-$FF font band did not disappear once the project stopped using text');
+  }
+  if (p4BgFontAction !== p4BgNeutral) {
+    throw new Error('the background sheet’s font-band row did not return to its own neutral, unshaded colour');
+  }
+
+  spritesTab.click();
+  await wait(80);
+  if (p4CellPixel(5, 12) !== p4SpriteFontRpg) {
+    throw new Error('the sprite sheet showed a font-band change -- the background table’s own font reservation leaked onto it');
+  }
+  if (p4CellPixel(0, 0) !== p4SpritePlayerRpg) {
+    throw new Error('the sprite sheet’s own unconditional player band changed when it should not have');
+  }
+  step(
+    'Tile Forge (c): the background sheet’s font band and the sprite sheet’s player/hearts/cursor ranges never conflate',
+    'font band toggles with projectUsesText on the background table only; the sprite table is unaffected either way'
+  );
+
+  // Restore the project to the state later steps in this file assume
+  // (plain action, NROM) before continuing.
+  window.__app.store.commit('smoke: restore plain action/NROM for later steps', (project) => {
+    project.project.gameType = 'action';
+    project.cartridge.mapper = 0;
+  });
+  await wait(80);
+
   // Visit every Forge so a syntax error in any module is caught here.
   // window.__app.forgeIds (renderer/app.js) is the FORGES registry's own ids,
   // not a second hand-written list here -- a hardcoded array in this file

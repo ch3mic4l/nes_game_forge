@@ -1205,7 +1205,9 @@ export function mount(container, app) {
       selected: state.sheetTile,
       // Shading only, no behaviour change (design-modular-parts.md §6.2): tiles
       // $00-$1F are the player's own compiled sprite, replaced at build time.
-      reservedUpTo: PLAYER_TILES
+      // (The Sprite Forge's own hearts/cursor shading and hints are
+      // design-draw-validation.md §6.1, Phase 5 -- not this call site yet.)
+      reservedRanges: [{ start: 0, end: PLAYER_TILES }]
     });
     const party = state.tab === 'party';
     editStage.style.display = party ? 'none' : '';

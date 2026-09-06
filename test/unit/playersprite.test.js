@@ -16,7 +16,7 @@ import {
   createTileset,
   planPlayerSprite,
   generatePlayerSpriteCore,
-  playerSpriteCollisions,
+  metaspriteTileCollisions,
   describePlayerSpritePlan,
   freeTileSlots,
   chrImportOverlap,
@@ -439,7 +439,7 @@ test(
 
 // --- 9. NPC-collision preflight ------------------------------------------------
 
-test('playerSpriteCollisions: fires for a metasprite referencing an index the pending plan will write, and not for one referencing only a skipped frame\'s indices', () => {
+test('metaspriteTileCollisions (renamed from playerSpriteCollisions): fires for a metasprite referencing an index the pending plan will write, and not for one referencing only a skipped frame\'s indices', () => {
   const project = createProject('T');
   // left/frameIndex 1 -> frame 5 -> storage base 20 (indices 20-23). A
   // non-zero frame is deliberate (round 2 hardening): a collision check
@@ -458,7 +458,7 @@ test('playerSpriteCollisions: fires for a metasprite referencing an index the pe
   const plan = planPlayerSprite(project, picks);
   assert.deepEqual(plan.indices, [20, 21, 22, 23]);
 
-  const collisions = playerSpriteCollisions(project, plan.indices);
+  const collisions = metaspriteTileCollisions(project, plan.indices);
   assert.equal(collisions.length, 1, 'only the metasprite referencing a to-be-written index should be reported');
   assert.equal(collisions[0].index, 0);
   assert.equal(collisions[0].name, 'Colliding');

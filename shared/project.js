@@ -2790,13 +2790,17 @@ export function generatePlayerSpriteCore(project, picks) {
 }
 
 /**
- * The Generate-modal's own preflight (design-modular-parts.md §4.4): which
- * metasprites already reference a `playerTiles` storage index a pending
- * generation is about to change. A metasprite carries no tileset of its own,
- * so one project-wide scan covers every tileset. Pure — the modal calls this
- * before letting the author confirm, never after.
+ * Which metasprites reference any tile index in the given set — originally
+ * `playerSpriteCollisions`, written for the Generate-modal's own preflight
+ * (design-modular-parts.md §4.4: which metasprites already reference a
+ * `playerTiles` storage index a pending generation is about to change).
+ * Renamed for design-draw-validation.md §3.2: the function was already
+ * generic over whatever `indices` it is given, never hardcoded to
+ * `PLAYER_TILES` — only its name assumed one caller. A metasprite carries no
+ * tileset of its own, so one project-wide scan covers every tileset. Pure —
+ * a caller calls this before letting the author confirm, never after.
  */
-export function playerSpriteCollisions(project, indices) {
+export function metaspriteTileCollisions(project, indices) {
   const indexSet = new Set(indices);
   const collisions = [];
   (project.sprites.metasprites ?? []).forEach((metasprite, index) => {
@@ -2810,6 +2814,26 @@ export function playerSpriteCollisions(project, indices) {
 }
 
 /**
+ * Which sprite-table tile ranges are reserved, and why (design-draw-
+ * validation.md §3.3) — player always; the HUD hearts only when
+ * `projectUsesHeartArt` (always false for an RPG, unconditionally, regardless
+ * of how much combat the project has); the battle targeting cursor only for
+ * an RPG on a split-font (MMC3) cartridge. Never more than two ranges at
+ * once: an RPG never gets the hearts range, so the cursor range can never
+ * join it.
+ */
+export function spriteReservedRanges(project, mapper) {
+  const ranges = [{ start: 0, end: PLAYER_TILES, label: 'the player' }];
+  if (projectUsesHeartArt(project)) {
+    ranges.push({ start: HEART_FULL_TILE, end: LIMITS.tilesPerTable, label: 'the HUD hearts' });
+  }
+  if (project.project?.gameType === 'rpg' && fontBankSplit(project, mapper)) {
+    ranges.push({ start: SPRITE_ARROW_TILE, end: SPRITE_ARROW_TILE + 1, label: 'the battle cursor' });
+  }
+  return ranges;
+}
+
+/**
  * Renders a "Generate Player Sprite" plan (design-modular-parts.md §6.3) as
  * plain-text strings, and only that -- the modal (renderer/forges/tile/
  * tile.js) renders exactly these strings and computes nothing about their
@@ -2819,7 +2843,7 @@ export function playerSpriteCollisions(project, indices) {
  *
  * `plan` is `planPlayerSprite(project, picks)`'s own return shape
  * (`{written, skipped, indices}`); `collisions` is
- * `playerSpriteCollisions(project, plan.indices)`'s return value, computed by
+ * `metaspriteTileCollisions(project, plan.indices)`'s return value, computed by
  * the caller (not here) so this function stays pure with respect to
  * `project.sprites.metasprites` and easy to unit-test with a hand-built
  * collision list.
@@ -5525,7 +5549,8 @@ export function validateProject(project) {
   // actually shows text — a text-free game keeps all 256 tiles — and never on a
   // scanline-IRQ board, where the font ships in its own CHR bank and the
   // tilesets are left alone (see fontBankSplit in shared/font.js).
-  const splitFont = fontBankSplit(project, resolveMapper(project.cartridge.mapper));
+  const artworkMapper = resolveMapper(project.cartridge.mapper);
+  const splitFont = fontBankSplit(project, artworkMapper);
   if (projectUsesText(project) && !splitFont) {
     for (const tileset of project.tilesets) {
       const occupied = tileset.background.tiles.findIndex(
@@ -5547,37 +5572,24 @@ export function validateProject(project) {
   // must not have its own party/portrait art refused over a reservation the
   // ROM does not contain, even though projectUsesCombat can still be true
   // there (a monster's contact damage starts a fight rather than a heart, but
-  // COMBAT_ENABLED still has to be on for the check to run at all).
-  if (projectUsesHeartArt(project)) {
+  // COMBAT_ENABLED still has to be on for the check to run at all). The
+  // player's own reservation (spriteReservedRanges' own first entry) is never
+  // refused as artwork here — a deliberate decision (design-modular-parts.md):
+  // stamping over it never destroys an author's fresh work, it corrects an
+  // inconsistency the modular-parts feature exists to fix.
+  for (const range of spriteReservedRanges(project, artworkMapper).slice(1)) {
     for (const tileset of project.tilesets) {
       const occupied = tileset.sprites.tiles.findIndex(
-        (tile, index) => index >= HEART_FULL_TILE && tile !== BLANK_TILE
+        (tile, index) => index >= range.start && index < range.end && tile !== BLANK_TILE
       );
-      if (occupied >= 0) {
-        add(
-          'error',
-          'Tile Forge',
-          `Tileset "${tileset.name}" has artwork in the last two sprite tiles, which the HUD hearts reserve ` +
+      if (occupied < 0) continue;
+      const message =
+        range.label === 'the HUD hearts'
+          ? `Tileset "${tileset.name}" has artwork in the last two sprite tiles, which the HUD hearts reserve ` +
             'while anything in the project can hurt the player.'
-        );
-      }
-    }
-  }
-
-  if (project.project.gameType === 'rpg' && splitFont) {
-    // The battle targeting cursor is a sprite on a split-font board (the arrow
-    // glyph's bank is only switched in below the battle box), so one more
-    // sprite tile joins the hearts' reservation.
-    for (const tileset of project.tilesets) {
-      const tile = tileset.sprites.tiles[SPRITE_ARROW_TILE];
-      if (tile && tile !== BLANK_TILE) {
-        add(
-          'error',
-          'Tile Forge',
-          `Tileset "${tileset.name}" has artwork in sprite tile $${SPRITE_ARROW_TILE.toString(16).toUpperCase()}, ` +
-            'which the battle targeting cursor reserves on this cartridge.'
-        );
-      }
+          : `Tileset "${tileset.name}" has artwork in sprite tile $${range.start.toString(16).toUpperCase()}, ` +
+            'which the battle targeting cursor reserves on this cartridge.';
+      add('error', 'Tile Forge', message);
     }
   }
 

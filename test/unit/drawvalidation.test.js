@@ -1,5 +1,5 @@
-// ROADMAP item 8 (validate-as-you-draw), Phases 1-3: no UI in any of the
-// three -- docs/design-draw-validation.md §7. Phase 1 covers the pieces that
+// ROADMAP item 8 (validate-as-you-draw), Phases 1-4 -- docs/design-draw-
+// validation.md §7. Phases 1-3 carry no UI. Phase 1 covers the pieces that
 // have no home yet beside an existing test file: the relocated animFor/
 // resolveActorRestingIcon matrix, the two flat OAM constants, the MAX_ITEMS
 // consolidation, and metaspriteKernelBytes' own coefficients. resolveItemIcon's
@@ -10,13 +10,14 @@
 // battleSpriteBudget and its three private helpers (§3.10). Phase 3 covers
 // the field position-aware predicate, fieldScanlineRows/fieldScanlineDensity
 // and their private helpers reachablePoses/poseRowCounts/entityRowMax
-// (§3.9) -- §3.1's metaspriteScanlineDensity, §3.2's rename of
-// playerSpriteCollisions to metaspriteTileCollisions, §3.3's
-// spriteReservedRanges and §3.8's screenSpriteBudget/overlaySpriteBudget are
-// NOT part of Phase 3 per §7's own phase text (§3.2/§3.3 belong to Phase 4,
-// tested against reservedRangeRects' own fixtures; §3.1/§3.8 belong to
-// Phase 5, tested against the message builders and the concrete 64/65
-// boundary fixture) and are left there, unimplemented, by this file.
+// (§3.9). Phase 4 covers §3.2's rename of playerSpriteCollisions to
+// metaspriteTileCollisions and §3.3's spriteReservedRanges -- both tested
+// below against reservedRangeRects' own fixtures (reservedRangeRects itself,
+// pure sheet-grid geometry with no project-domain meaning, lives in
+// test/unit/sheetgeom.test.js instead, beside the module it tests). §3.1's
+// metaspriteScanlineDensity and §3.8's screenSpriteBudget/overlaySpriteBudget
+// belong to Phase 5, tested against the message builders and the concrete
+// 64/65 boundary fixture, and are left unimplemented by this file.
 //
 // Everything here builds its own project via createProject() rather than
 // touching `sample/` or any of the other checked-in fixtures, except the
@@ -44,10 +45,17 @@ import {
   battleSpriteBudget,
   fieldScanlineRows,
   fieldScanlineDensity,
-  normalizeProject
+  normalizeProject,
+  LIMITS,
+  PLAYER_TILES,
+  metaspriteTileCollisions,
+  spriteReservedRanges,
+  validateProject
 } from '../../shared/project.js';
 import { MAX_ITEMS as SAVE_MAX_ITEMS, saveIdentity } from '../../shared/save.js';
 import { mapperById } from '../../shared/cartridge.js';
+import { HEART_FULL_TILE, SPRITE_ARROW_TILE } from '../../shared/font.js';
+import { reservedRangeRects } from '../../renderer/widgets/sheetgeom.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 
@@ -798,4 +806,152 @@ test('fieldScanlineRows: the isStartScreen option -- true includes the player\'s
   assert.equal(fieldScanlineRows(project, screen, { isStartScreen: true }).size, 16, 'isStartScreen: true must include the player\'s own sixteen rows');
   assert.equal(fieldScanlineRows(project, screen, { isStartScreen: false }).size, 0, 'isStartScreen: false must include none of them');
   assert.equal(fieldScanlineRows(project, screen).size, 0, 'omitting the options object entirely must behave identically to isStartScreen: false');
+});
+
+// --------------------------------------------------------------------------
+// Phase 4 -- spriteReservedRanges (design §3.3) and metaspriteTileCollisions
+// (design §3.2, the rename of playerSpriteCollisions -- test/unit/
+// playersprite.test.js's own existing assertions cover the rename itself
+// verbatim; the duplicated-input-indices case below is new). reservedRangeRects
+// itself is tested directly in test/unit/sheetgeom.test.js.
+// --------------------------------------------------------------------------
+
+test('spriteReservedRanges: an action-with-combat project is charged the player and HUD-hearts ranges, and the cursor range is absent (no RPG, no split font)', () => {
+  const project = createProject('Action combat', 'action');
+  makeMonster(project, 3, { damage: 1 }); // projectUsesCombat: an actor with damage > 0
+  const ranges = spriteReservedRanges(project, mapperById(1)); // MMC1: not scanline-IRQ, irrelevant here anyway (action project)
+  assert.deepEqual(ranges, [
+    { start: 0, end: PLAYER_TILES, label: 'the player' },
+    { start: HEART_FULL_TILE, end: LIMITS.tilesPerTable, label: 'the HUD hearts' }
+  ]);
+});
+
+test('spriteReservedRanges: an RPG-on-MMC3 project is charged the player and battle-cursor ranges, and the hearts range is absent -- projectUsesHeartArt is always false for an RPG, regardless of how much combat the project has', () => {
+  const project = createProject('RPG split font', 'rpg'); // gameType 'rpg' alone makes projectUsesText true
+  makeMonster(project, 3, { damage: 1 }); // plenty of combat -- must still not earn the hearts range
+  const ranges = spriteReservedRanges(project, mapperById(4)); // MMC3: scanlineIrq -- fontBankSplit is true
+  assert.deepEqual(ranges, [
+    { start: 0, end: PLAYER_TILES, label: 'the player' },
+    { start: SPRITE_ARROW_TILE, end: SPRITE_ARROW_TILE + 1, label: 'the battle cursor' }
+  ]);
+});
+
+test('spriteReservedRanges: an RPG-on-MMC1 project is charged the player range only -- no hearts (RPG), no cursor (no split font)', () => {
+  const project = createProject('RPG plain', 'rpg');
+  makeMonster(project, 3, { damage: 1 });
+  const ranges = spriteReservedRanges(project, mapperById(1)); // MMC1: not scanline-IRQ -- fontBankSplit is false
+  assert.deepEqual(ranges, [{ start: 0, end: PLAYER_TILES, label: 'the player' }]);
+});
+
+test('metaspriteTileCollisions: a metasprite with two tiles both referencing the identical reserved index reports that index once, deduplicated and sorted', () => {
+  const project = createProject('Dedup collisions', 'action');
+  project.sprites.metasprites = [
+    {
+      id: 0,
+      name: 'Double-hit',
+      // $FF (HEART_FULL_TILE + 1) is encountered FIRST, then the duplicated
+      // $FE (HEART_FULL_TILE) references -- so an insertion-order Set with no
+      // .sort() would yield [$FF, $FE], not the expected [$FE, $FF]. Placing
+      // $FE first (the original ordering) would let a missing .sort() pass
+      // by accident, since insertion order already happens to be sorted.
+      tiles: [
+        { tile: HEART_FULL_TILE + 1, x: 0, y: 4, palette: 0 },
+        { tile: HEART_FULL_TILE, x: 0, y: 0, palette: 0 },
+        { tile: HEART_FULL_TILE, x: 4, y: 0, palette: 0 } // same reserved index, a second time
+      ]
+    }
+  ];
+  const indices = [HEART_FULL_TILE, HEART_FULL_TILE + 1];
+  const collisions = metaspriteTileCollisions(project, indices);
+  assert.equal(collisions.length, 1);
+  assert.deepEqual(
+    collisions[0].tiles,
+    [HEART_FULL_TILE, HEART_FULL_TILE + 1],
+    'the duplicated HEART_FULL_TILE reference must be reported once, not twice, and the set must be sorted -- ' +
+      'caught: removing .sort(), which would report [$FF, $FE] instead, matching encounter order'
+  );
+});
+
+// A tile string with real, non-blank art -- the split.test.js precedent
+// (SOLID_TILE there).
+const RESERVED_ART_TILE = '3'.repeat(64);
+
+test('validateProject: an action-with-combat project with artwork at $FE gets exactly one error, where "Tile Forge", the exact HUD-hearts message; removing the combat source makes the error disappear -- caught: the refactored hearts branch skipping the hearts range or choosing the cursor message instead', () => {
+  const project = createProject('Hearts regression', 'action');
+  const actorId = makeMonster(project, 3, { damage: 1 });
+  project.tilesets[0].sprites.tiles[HEART_FULL_TILE] = RESERVED_ART_TILE;
+
+  const problems = validateProject(project);
+  assert.equal(problems.length, 1, 'expected exactly one problem');
+  assert.deepEqual(problems[0], {
+    severity: 'error',
+    where: 'Tile Forge',
+    message:
+      `Tileset "${project.tilesets[0].name}" has artwork in the last two sprite tiles, which the HUD hearts reserve ` +
+      'while anything in the project can hurt the player.'
+  });
+
+  project.sprites.actors[actorId].damage = 0; // combat off -- projectUsesHeartArt now false
+  assert.deepEqual(validateProject(project), [], 'with no combat source left, the reservation -- and its error -- must be gone even though the artwork is still there');
+});
+
+// The design's own "smoke coverage" runs (§7 Phase 4) as a direct, DOM-free
+// proof of the combination spriteReservedRanges + reservedRangeRects actually
+// produces -- the exact shading rectangles the Tile Forge and Sprite Forge
+// sheets will draw from, without needing a mounted canvas to observe it.
+const SHEET_COLS = 16;
+
+function cellCovered(ranges, col, row) {
+  return ranges.some((range) =>
+    reservedRangeRects(range.start, range.end, SHEET_COLS).some(
+      (rect) => row >= rect.row && row < rect.row + rect.rows && col >= rect.col && col < rect.col + rect.cols
+    )
+  );
+}
+
+test('Smoke coverage, run 1 (action-with-combat): $FE and $FF are covered, $FC and $F0 are not, and toggling combat off drops the hearts shading while the player range keeps its own', () => {
+  const project = createProject('Smoke run 1', 'action');
+  const actorId = makeMonster(project, 3, { damage: 1 });
+  const mapper = mapperById(1);
+  const withCombat = spriteReservedRanges(project, mapper);
+  assert.ok(cellCovered(withCombat, 14, 15), '$FE (col 14, row 15) must be shaded');
+  assert.ok(cellCovered(withCombat, 15, 15), '$FF (col 15, row 15) must be shaded');
+  assert.ok(!cellCovered(withCombat, 12, 15), '$FC (col 12, row 15) must NOT be shaded');
+  assert.ok(!cellCovered(withCombat, 0, 15), '$F0 (col 0, row 15) must NOT be shaded');
+
+  project.sprites.actors[actorId].damage = 0; // combat off
+  const withoutCombat = spriteReservedRanges(project, mapper);
+  assert.ok(!cellCovered(withoutCombat, 14, 15), 'with combat off, $FE must no longer be shaded');
+  assert.ok(cellCovered(withoutCombat, 0, 0), 'the player range must still be shaded regardless of combat');
+});
+
+test('Smoke coverage, run 2 (RPG-on-MMC3): $FD is covered, $FC and $F0 are not, and switching to MMC1 drops the cursor shading while the player range keeps its own', () => {
+  const project = createProject('Smoke run 2', 'rpg');
+  const onMmc3 = spriteReservedRanges(project, mapperById(4));
+  assert.ok(cellCovered(onMmc3, 13, 15), '$FD (col 13, row 15) must be shaded');
+  assert.ok(!cellCovered(onMmc3, 12, 15), '$FC (col 12, row 15) must NOT be shaded');
+  assert.ok(!cellCovered(onMmc3, 0, 15), '$F0 (col 0, row 15) must NOT be shaded');
+
+  const onMmc1 = spriteReservedRanges(project, mapperById(1));
+  assert.ok(!cellCovered(onMmc1, 13, 15), 'on MMC1, $FD must no longer be shaded');
+  assert.ok(cellCovered(onMmc1, 0, 0), 'the player range must still be shaded regardless of mapper');
+});
+
+// The table-conflation fix (design §6.3): renderer/forges/tile/tile.js's own
+// renderSheet() must build a table-specific range list gated on the existing
+// playerReserved()/fontReserved() predicates, never handing
+// spriteReservedRanges' own output to the background table or the font
+// range to the sprite table. A behavioral test cannot see this without a
+// mounted canvas (tile.js touches document/canvas throughout its module, so
+// it is not node:test-importable) -- this reads the source instead, the same
+// shape the single-writer source assertions at the top of this file already
+// use for an identical class of wiring-only concern.
+test('renderer/forges/tile/tile.js: renderSheet keeps the sprite-table and background-table reserved-range lists genuinely independent -- caught: the literal pre-fix design, which handed spriteReservedRanges(...) to both sheets', () => {
+  const text = fs.readFileSync(path.join(ROOT, 'renderer/forges/tile/tile.js'), 'utf8');
+  const match = text.match(/const reservedRanges = playerReserved\(\)\s*\?\s*spriteReservedRanges\([\s\S]*?\)\)\s*:\s*fontReserved\(\)\s*\?\s*\[\{[^}]*\}\]\s*:\s*\[\];/s);
+  assert.ok(
+    match,
+    'expected renderSheet to build its reservedRanges list from playerReserved() ? spriteReservedRanges(...) : fontReserved() ? [font range] : [] -- ' +
+      'a version that reused one range list for both tables (or compared state.table directly instead of the existing gates) would fail this match'
+  );
 });

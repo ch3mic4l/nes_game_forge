@@ -34,11 +34,20 @@ import {
   chrImportOverlap,
   planPlayerSprite,
   generatePlayerSpriteCore,
-  playerSpriteCollisions,
+  metaspriteTileCollisions,
+  spriteReservedRanges,
   describePlayerSpritePlan
 } from '../../../shared/project.js';
 import { resolveMapper, tilesetLimit } from '../../../shared/cartridge.js';
-import { FONT_BASE, fontBankSplit, fontChrPages, projectUsesText } from '../../../shared/font.js';
+import {
+  FONT_BASE,
+  HEART_FULL_TILE,
+  SPRITE_ARROW_TILE,
+  fontBankSplit,
+  fontChrPages,
+  projectUsesText
+} from '../../../shared/font.js';
+import { reservedRangeRects } from '../../widgets/sheetgeom.js';
 import { openImportDialog } from './import.js';
 
 const SHEET_COLS = 16;
@@ -203,37 +212,31 @@ export function mount(container, app) {
     }
     sheetContext.stroke();
 
-    // The message font is stamped over the top of $A0-$FF at build time, so
-    // anything drawn there will not survive into the ROM. Shading it is cheaper
-    // than letting someone find that out from a screenshot; validateProject
-    // refuses artwork here from the same predicate.
-    if (fontReserved()) {
-      const top = Math.floor(FONT_BASE / SHEET_COLS) * cell;
-      sheetContext.fillStyle = 'rgba(255, 157, 60, 0.16)';
-      sheetContext.fillRect(0, top, sheetCanvas.width, sheetCanvas.height - top);
-      sheetContext.strokeStyle = 'rgba(255, 157, 60, 0.7)';
-      sheetContext.lineWidth = 1;
-      sheetContext.beginPath();
-      sheetContext.moveTo(0, top + 0.5);
-      sheetContext.lineTo(sheetCanvas.width, top + 0.5);
-      sheetContext.stroke();
-    }
-
-    // Tiles $00-$1F are the player's own compiled sprite (design-modular-
-    // parts.md §3.2/§6.2): stamped over at build time on every tileset,
-    // unconditionally, so shading here is the identical shape as the font's
-    // own reservation above, just unconditional rather than gated on
-    // projectUsesText.
-    if (playerReserved()) {
-      const bottom = Math.ceil(PLAYER_TILES / SHEET_COLS) * cell;
-      sheetContext.fillStyle = 'rgba(255, 157, 60, 0.16)';
-      sheetContext.fillRect(0, 0, sheetCanvas.width, bottom);
-      sheetContext.strokeStyle = 'rgba(255, 157, 60, 0.7)';
-      sheetContext.lineWidth = 1;
-      sheetContext.beginPath();
-      sheetContext.moveTo(0, bottom + 0.5);
-      sheetContext.lineTo(sheetCanvas.width, bottom + 0.5);
-      sheetContext.stroke();
+    // Reserved-range shading (design-draw-validation.md §3.4/§6.3): a
+    // table-specific range list, built from the identical playerReserved()/
+    // fontReserved() gates the two predicates above already use, never a
+    // fresh state.table comparison of its own -- so a background sheet can
+    // never be handed a sprite-only reservation (the player, the HUD hearts,
+    // the battle cursor) and a sprite sheet never the background-only font
+    // band. validateProject refuses artwork in these same ranges from the
+    // same predicates.
+    const reservedRanges = playerReserved()
+      ? spriteReservedRanges(store.project, resolveMapper(store.project.cartridge.mapper))
+      : fontReserved()
+        ? [{ start: FONT_BASE, end: LIMITS.tilesPerTable, label: 'the message font' }]
+        : [];
+    for (const range of reservedRanges) {
+      for (const rect of reservedRangeRects(range.start, range.end, SHEET_COLS)) {
+        const x = rect.col * cell;
+        const y = rect.row * cell;
+        const w = rect.cols * cell;
+        const h = rect.rows * cell;
+        sheetContext.fillStyle = 'rgba(255, 157, 60, 0.16)';
+        sheetContext.fillRect(x, y, w, h);
+        sheetContext.strokeStyle = 'rgba(255, 157, 60, 0.7)';
+        sheetContext.lineWidth = 1;
+        sheetContext.strokeRect(x + 0.5, y + 0.5, w - 1, h - 1);
+      }
     }
 
     const { col, row } = regionOrigin();
@@ -391,6 +394,25 @@ export function mount(container, app) {
             `Tiles $00–$${(PLAYER_TILES - 1).toString(16).toUpperCase().padStart(2, '0')} are reserved for the player ` +
               'character and are replaced at build time; edit them from the Player view instead.'
           )
+        : null,
+      // One more hint per non-player sprite range this project currently
+      // reserves (design-draw-validation.md §6.3) -- never on the background
+      // table, since playerReserved() gates it exactly as the shading above
+      // does.
+      playerReserved()
+        ? spriteReservedRanges(store.project, resolveMapper(store.project.cartridge.mapper))
+            .slice(1)
+            .map((range) =>
+              el(
+                'p.hint',
+                { style: { color: 'var(--accent)' } },
+                range.label === 'the HUD hearts'
+                  ? `Tiles $${HEART_FULL_TILE.toString(16).toUpperCase()}–$FF are shaded because this project can hurt ` +
+                    'the player: the HUD hearts are stamped over them when the ROM is built.'
+                  : `Tile $${SPRITE_ARROW_TILE.toString(16).toUpperCase()} is shaded because this project’s battle ` +
+                    'system reserves it for the targeting cursor, stamped over it when the ROM is built.'
+              )
+            )
         : null,
       fontReserved()
         ? el(
@@ -1164,7 +1186,7 @@ export function mount(container, app) {
 
     function render() {
       const plan = planPlayerSprite(store.project, currentPicks());
-      const collisions = playerSpriteCollisions(store.project, plan.indices);
+      const collisions = metaspriteTileCollisions(store.project, plan.indices);
       const described = describePlayerSpritePlan(store.project, plan, collisions);
 
       fill(
@@ -1224,7 +1246,7 @@ export function mount(container, app) {
 
     const finalPlan = planPlayerSprite(store.project, picksResult);
     if (finalPlan.written.length === 0) return;
-    const finalCollisions = playerSpriteCollisions(store.project, finalPlan.indices);
+    const finalCollisions = metaspriteTileCollisions(store.project, finalPlan.indices);
     const described = describePlayerSpritePlan(store.project, finalPlan, finalCollisions);
 
     store.commit('Generate player sprite', (project) => generatePlayerSpriteCore(project, picksResult));

@@ -3,6 +3,7 @@
 
 import { tileFromString } from '../../shared/chr.js';
 import { NES_PALETTE } from '../../shared/nespalette.js';
+import { reservedRangeRects } from './sheetgeom.js';
 
 export const SHEET_COLS = 16;
 export const SHEET_ROWS = 16;
@@ -32,7 +33,7 @@ export function sheetImageData(context, tiles, palette, transparentZero = false)
 
 /** Draw a pattern table into `canvas` at an integer zoom, with an 8x8 grid. */
 export function drawSheet(canvas, tiles, palette, zoom, options = {}) {
-  const { transparentZero = false, selected = null, grid = true, reservedUpTo = 0 } = options;
+  const { transparentZero = false, selected = null, grid = true, reservedRanges = [] } = options;
   const context = canvas.getContext('2d');
   const buffer = document.createElement('canvas');
   buffer.width = SHEET_W;
@@ -58,20 +59,20 @@ export function drawSheet(canvas, tiles, palette, zoom, options = {}) {
     }
     context.stroke();
   }
-  // Tiles [0, reservedUpTo) are the player's own compiled sprite
-  // (design-modular-parts.md §3.2/§6.2) -- stamped over at build time on
-  // every tileset, unconditionally, the same shading shape the Tile Forge's
-  // own sheet uses for this range.
-  if (reservedUpTo > 0) {
-    const bottom = Math.ceil(reservedUpTo / SHEET_COLS) * cell;
-    context.fillStyle = 'rgba(255, 157, 60, 0.16)';
-    context.fillRect(0, 0, canvas.width, bottom);
-    context.strokeStyle = 'rgba(255, 157, 60, 0.7)';
-    context.lineWidth = 1;
-    context.beginPath();
-    context.moveTo(0, bottom + 0.5);
-    context.lineTo(canvas.width, bottom + 0.5);
-    context.stroke();
+  // Each reserved range (design-draw-validation.md §3.4) is stamped over at
+  // build time -- the player's own compiled sprite unconditionally
+  // (design-modular-parts.md §3.2/§6.2), the HUD hearts and the battle
+  // cursor conditionally -- so shading it here is cheaper than letting an
+  // author find that out from a screenshot.
+  for (const range of reservedRanges) {
+    for (const rect of reservedRangeRects(range.start, range.end, SHEET_COLS)) {
+      const x = rect.col * cell, y = rect.row * cell, w = rect.cols * cell, h = rect.rows * cell;
+      context.fillStyle = 'rgba(255, 157, 60, 0.16)';
+      context.fillRect(x, y, w, h);
+      context.strokeStyle = 'rgba(255, 157, 60, 0.7)';
+      context.lineWidth = 1;
+      context.strokeRect(x + 0.5, y + 0.5, w - 1, h - 1);
+    }
   }
   if (selected !== null && selected >= 0) {
     context.strokeStyle = '#ff9d3c';
