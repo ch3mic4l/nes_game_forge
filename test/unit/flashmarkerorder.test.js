@@ -84,10 +84,10 @@ async function buildU512(t) {
 /**
  * sample-rpg on UNROM 512 with a touch-triggered saver a few steps from the
  * start, same shape as flashsave.test.js's own buildFlashSaveable -- not
- * imported from there because that file does not export it, and this is the
- * kind of small, single-purpose duplication tools/sample-common.js's own
- * header already argues for over a shared module two call sites would only
- * lightly disagree about later.
+ * imported from there because that file does not export it. A small,
+ * single-purpose test helper like this one is cheaper duplicated than shared:
+ * the two call sites would only lightly disagree about it later, and a shared
+ * module would cost more to keep in sync than the duplication itself.
  */
 async function buildFlashSaveable(t) {
   const dir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'forge-flashmarkerorder-'));

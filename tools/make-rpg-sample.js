@@ -11,30 +11,16 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createProject, createPartyMember, createSpell, LIMITS, PLAYER_TILES } from '../shared/project.js';
 import { saveProject } from '../main/project-io.js';
+import { tile, split16, metasprite } from './sample-common.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const target = process.argv[2] ?? path.resolve(__dirname, '../sample-rpg');
-
-const tile = (rows) => rows.join('');
 
 const GRASS = ['11111111', '11211111', '11111121', '11111111', '12111111', '11111211', '11111111', '11121111'];
 const PATH  = ['22222222', '22122222', '22222212', '22222222', '21222222', '22222122', '22222222', '22212222'];
 const WALL  = ['11111111', '12222222', '12222222', '12222222', '11111111', '22212222', '22212222', '22212222'];
 const SKY   = ['11111111', '11111111', '11111111', '11111111', '11111111', '11111111', '11111111', '11111111'];
 const SOIL  = ['22222222', '21222122', '22222222', '22122212', '22222222', '21222122', '22222222', '22212221'];
-
-/** Split a 16x16 grid into TL, TR, BL, BR tile strings. */
-function split16(rows) {
-  const out = [];
-  for (let quadrant = 0; quadrant < 4; quadrant++) {
-    const originX = (quadrant % 2) * 8;
-    const originY = Math.floor(quadrant / 2) * 8;
-    let text = '';
-    for (let y = 0; y < 8; y++) text += rows[originY + y].slice(originX, originX + 8);
-    out.push(text);
-  }
-  return out;
-}
 
 const HERO = [
   '0000111111110000',
@@ -200,17 +186,6 @@ project.palettes.sprite = [
   [0x0f, 0x14, 0x24, 0x30],
   [0x0f, 0x11, 0x21, 0x31]
 ];
-
-const metasprite = (id, name, firstTile, palette) => ({
-  id,
-  name,
-  tiles: [
-    { x: 0, y: 0, tile: firstTile, palette, hflip: false, vflip: false },
-    { x: 8, y: 0, tile: firstTile + 1, palette, hflip: false, vflip: false },
-    { x: 0, y: 8, tile: firstTile + 2, palette, hflip: false, vflip: false },
-    { x: 8, y: 8, tile: firstTile + 3, palette, hflip: false, vflip: false }
-  ]
-});
 
 project.sprites.metasprites = [
   metasprite(0, 'Hero', 0x20, 0),

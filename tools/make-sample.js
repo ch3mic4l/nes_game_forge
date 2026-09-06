@@ -6,6 +6,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createProject, LIMITS } from '../shared/project.js';
 import { saveProject } from '../main/project-io.js';
+import { tile, split16, metasprite } from './sample-common.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const target = process.argv[2] ?? path.resolve(__dirname, '../sample');
@@ -98,21 +99,6 @@ const GEM = [
   '0000000000000000',
   '0000000000000000'
 ];
-
-const tile = (rows) => rows.join('');
-
-/** Split a 16x16 grid into TL, TR, BL, BR tile strings. */
-function split16(rows) {
-  const out = [];
-  for (let quadrant = 0; quadrant < 4; quadrant++) {
-    const originX = (quadrant % 2) * 8;
-    const originY = Math.floor(quadrant / 2) * 8;
-    let text = '';
-    for (let y = 0; y < 8; y++) text += rows[originY + y].slice(originX, originX + 8);
-    out.push(text);
-  }
-  return out;
-}
 
 // --- screens ---------------------------------------------------------------
 // Edges left open where a neighbouring screen exists, so the player can cross.
@@ -248,17 +234,6 @@ const sprites = project.tilesets[0].sprites.tiles;
   split16(art).forEach((quadrant, index) => {
     sprites[0x20 + frame * 4 + index] = quadrant;
   });
-});
-
-const metasprite = (id, name, firstTile, palette) => ({
-  id,
-  name,
-  tiles: [
-    { x: 0, y: 0, tile: firstTile, palette, hflip: false, vflip: false },
-    { x: 8, y: 0, tile: firstTile + 1, palette, hflip: false, vflip: false },
-    { x: 0, y: 8, tile: firstTile + 2, palette, hflip: false, vflip: false },
-    { x: 8, y: 8, tile: firstTile + 3, palette, hflip: false, vflip: false }
-  ]
 });
 
 /** The same art mirrored, so a turn is visible without spending more tiles. */
