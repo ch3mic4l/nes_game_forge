@@ -648,8 +648,9 @@ for (const range of spriteReservedRanges(project, artworkMapper).slice(1)) {
 ```
 
 The existing warning (`metaspriteTileCollisions` against every reserved range including the
-player's, unconditional on whether the range is active or the tile is blank) stays exactly as it is
-— it already covers the player's own range and the non-active or non-blank cases this new check does
+player's, already gated on the range being active via `spriteReservedRanges` itself, and
+unconditional only on whether the tile is blank) stays exactly as it is — it already covers the
+player's own range and the non-blank cases (within an already-active range) this new check does
 not reach; both can fire for the same metasprite without conflict.
 
 **Gate, probed directly against all six checked-in fixtures, not merely asserted**: `sample`,
@@ -1455,9 +1456,10 @@ block art at all.
 11. **`battleTile: 255` (explicit) and `battleTile: null` both reference nothing.** *Catches*: a
     guard checking only `null`/`undefined`, missing the byte-identical explicit-255 sentinel.
 12. **The new `validateProject` error fires only when active and blank**: (a) blank `$FE` reference +
-    active heart reservation → new error; (b) same reference, reservation inactive → only the
-    pre-existing warning; (c) active reservation + genuinely non-blank art → only the pre-existing
-    `:5796`-style error, not the new one. *Catches*: the §5.7 gap, and over-firing.
+    active heart reservation → new error; (b) same reference, reservation inactive → neither check
+    fires (the pre-existing warning is also already gated on the range being active, via
+    `spriteReservedRanges` itself); (c) active reservation + genuinely non-blank art → only the
+    pre-existing `:5796`-style error, not the new one. *Catches*: the §5.7 gap, and over-firing.
 13. **The six-fixture gate for the new error** — `validateProject` on each of the six checked-in
     fixtures raises no new problem, the §5.7 probe made a permanent test.
 14. **A clean import into a clean project succeeds.** *Catches*: a `planErrors` bug that refuses for

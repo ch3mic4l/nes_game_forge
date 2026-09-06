@@ -5838,6 +5838,27 @@ export function validateProject(project) {
     }
   }
 
+  // A reference-based sibling of the non-blank-content check just above. Scoped to the ACTIVE
+  // ranges only (hearts/cursor, never the player -- the player's own range is deliberately never
+  // refused as artwork, a pre-existing design-modular-parts.md decision this does not revisit) and to
+  // a tile that is genuinely blank in that SPECIFIC tileset (the same sprite-table index can be real
+  // art in one tileset and blank in another).
+  for (const range of spriteReservedRanges(project, artworkMapper).slice(1)) {
+    const rangeIndices = Array.from({ length: range.end - range.start }, (_, i) => range.start + i);
+    for (const [tilesetIndex, tileset] of project.tilesets.entries()) {
+      const blankInRange = rangeIndices.filter((i) => tileset.sprites.tiles[i] === BLANK_TILE);
+      if (!blankInRange.length) continue;
+      for (const collision of metaspriteTileCollisions(project, blankInRange)) {
+        add(
+          'error', 'Sprite Forge',
+          `Metasprite "${collision.name}" references a blank tile inside the range reserved for ${range.label} ` +
+            `on tileset "${tileset.name}" — the build will draw ${range.label} there instead ` +
+            'of leaving it empty.'
+        );
+      }
+    }
+  }
+
   if (project.project.gameType === 'rpg') {
     const mapper = resolveMapper(project.cartridge.mapper);
     if (!rpgCapable(mapper)) {

@@ -914,6 +914,87 @@ test('validateProject: an action-with-combat project with artwork at $FE gets ex
   assert.deepEqual(validateProject(project), [], 'with no combat source left, the reservation -- and its error -- must be gone even though the artwork is still there');
 });
 
+// --------------------------------------------------------------------------
+// ROADMAP item 8 (starter library, phase 3) -- design-starter-library.md
+// §5.7/§11 test 12: a reference-based sibling of the non-blank-artwork check
+// just above. Scoped to an ACTIVE range (hearts/cursor) and a tile that is
+// genuinely blank in that specific tileset.
+// --------------------------------------------------------------------------
+
+test('validateProject: a metasprite referencing a genuinely blank $FE tile, with the hearts reservation active, is the new error -- exact message, where "Sprite Forge" -- caught: the §5.7 gap (a blank reference silently corrupted by the build the moment the reservation activates, with no warning at all)', () => {
+  const project = createProject('Blank heart ref, active', 'action');
+  makeMonster(project, 3, { damage: 1 }); // activates projectUsesHeartArt
+  project.sprites.metasprites.push({
+    id: project.sprites.metasprites.length,
+    name: 'Icon',
+    tiles: [{ tile: HEART_FULL_TILE, x: 0, y: 0, palette: 0 }]
+  });
+
+  const problems = validateProject(project);
+  const newErrors = problems.filter((p) => p.message.includes('references a blank tile inside the range'));
+  assert.equal(newErrors.length, 1, 'expected exactly one new-check error');
+  assert.deepEqual(newErrors[0], {
+    severity: 'error',
+    where: 'Sprite Forge',
+    message:
+      'Metasprite "Icon" references a blank tile inside the range reserved for the HUD hearts ' +
+      `on tileset "${project.tilesets[0].name}" — the build will draw the HUD hearts there instead ` +
+      'of leaving it empty.'
+  });
+});
+
+// This pins actual behaviour against the design doc's own §5.7 prose, which
+// calls the pre-existing describeReservedReferenceWarning check "unconditional
+// on whether the range is active" -- empirically false for the range itself:
+// spriteReservedRanges (§3.3) already omits the hearts/cursor range entirely
+// once inactive, so metaspriteTileCollisions never sees $FE as reserved at
+// all in that state, and neither check has anything to fire on. The prose's
+// "unconditional" claim holds only for blank-vs-non-blank, once a range is
+// already active (see the next test).
+test('validateProject: the same blank $FE reference with the hearts reservation INACTIVE raises neither the new error nor the pre-existing reserved-reference warning -- an inactive range is invisible to metaspriteTileCollisions too, not just to the new check', () => {
+  const project = createProject('Blank heart ref, inactive', 'action');
+  project.sprites.metasprites.push({
+    id: project.sprites.metasprites.length,
+    name: 'Icon',
+    tiles: [{ tile: HEART_FULL_TILE, x: 0, y: 0, palette: 0 }]
+  });
+
+  assert.deepEqual(
+    validateProject(project),
+    [],
+    'with no damage source, the hearts range is not reserved at all, so nothing has anything to fire on'
+  );
+});
+
+test('validateProject: active reservation + genuinely non-blank artwork at $FE fires only the pre-existing non-blank-artwork error, never the new blank-reference one -- the two checks are mutually exclusive on the same tile', () => {
+  const project = createProject('Non-blank heart art, active', 'action');
+  makeMonster(project, 3, { damage: 1 });
+  project.tilesets[0].sprites.tiles[HEART_FULL_TILE] = RESERVED_ART_TILE;
+  project.sprites.metasprites.push({
+    id: project.sprites.metasprites.length,
+    name: 'Icon',
+    tiles: [{ tile: HEART_FULL_TILE, x: 0, y: 0, palette: 0 }]
+  });
+
+  const problems = validateProject(project);
+  const newErrors = problems.filter((p) => p.message.includes('references a blank tile inside the range'));
+  assert.equal(newErrors.length, 0, 'the tile is not blank, so the new check must not fire');
+  const nonBlankErrors = problems.filter(
+    (p) => p.severity === 'error' && p.where === 'Tile Forge' && p.message.includes('has artwork in the last two sprite tiles')
+  );
+  assert.equal(nonBlankErrors.length, 1, 'the pre-existing non-blank-artwork error must still fire');
+});
+
+test('validateProject: the new blank-reference-in-active-range error never fires on any of the six checked-in fixtures -- the §5.7 probe, made permanent', async () => {
+  const fixtures = ['sample', 'sample-rpg', 'sample-mmc1', 'sample-mmc3', 'sample-u512', 'sample-rpg-mmc1'];
+  for (const fixture of fixtures) {
+    const project = await loadProject(path.join(ROOT, fixture));
+    const problems = validateProject(project);
+    const newErrors = problems.filter((p) => p.message.includes('references a blank tile inside the range'));
+    assert.deepEqual(newErrors, [], `${fixture} must raise no blank-reference-in-active-range error`);
+  }
+});
+
 // The design's own "smoke coverage" runs (§7 Phase 4) as a direct, DOM-free
 // proof of the combination spriteReservedRanges + reservedRangeRects actually
 // produces -- the exact shading rectangles the Tile Forge and Sprite Forge
