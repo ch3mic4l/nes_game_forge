@@ -2967,6 +2967,603 @@ const scenario = (dir, sampleDir, sampleRpgDir) => `
   if (cnromBuild.value.mapper !== 3) throw new Error('built mapper ' + cnromBuild.value.mapper + ', expected 3');
   step('CNROM project builds', cnromBuild.value.size + ' bytes, mapper ' + cnromBuild.value.mapper);
 
+  // --- ROADMAP item 8 (modular parts) Phase 3: the Generate Player Sprite
+  // modal (design-modular-parts.md §6.3, §7 phase 3). Reuses this CNROM,
+  // 2-tileset project -- still open from the block above -- so the real-build
+  // step below has more than one tileset to prove the build-time stamp
+  // against, per the brief's own requirement. Every playerParts/playerTiles/
+  // metasprites change this block makes is restored at the end, the same
+  // discipline the importChr() block elsewhere in this file follows.
+  const playerGenPartsSnapshot = structuredClone(store.project.sprites.playerParts);
+  const playerGenTilesSnapshot = structuredClone(store.project.sprites.playerTiles);
+  const playerGenMetaspritesSnapshot = structuredClone(store.project.sprites.metasprites);
+
+  // A tile unique per part id (never BLANK_TILE, which would be
+  // indistinguishable from "no pick" under transparentZero, and never
+  // colliding with another id's own tile the way a plain n%3 digit would --
+  // ids differing by exactly 3 would otherwise render identically, hiding a
+  // real TL/BR-swap bug). Four 16-character blocks, block k (0..3) holding
+  // digit 1 + floor(n / 3^k) % 3 repeated 16 times -- a base-3 encoding of n
+  // across the 4 blocks, offset by 1 so every digit is 1-3 (never 0/transparent).
+  // Unique for every n < 3^4 = 81, far more than this fixture's 19 parts.
+  function playerGenPid(n) {
+    let tile = '';
+    for (let block = 0; block < 4; block++) {
+      const digit = 1 + (Math.floor(n / Math.pow(3, block)) % 3);
+      tile += String(digit).repeat(16);
+    }
+    return tile;
+  }
+
+  // 19 parts across all 4 directions, mixing 'both'-tagged and frame-specific
+  // parts: 'down' is fully covered on both frames via one 'both'-tagged set;
+  // 'up' frame 1 is complete but frame 2 is deliberately short one quadrant
+  // (BR), exercising the incomplete case; 'left' frame 1 only and 'right'
+  // frame 2 only are each complete, leaving their other frame untouched
+  // ("left as is").
+  const playerGenSpecs = [
+    ['down', 'both', 'TL'], ['down', 'both', 'TR'], ['down', 'both', 'BL'], ['down', 'both', 'BR'],
+    ['up', '0', 'TL'], ['up', '0', 'TR'], ['up', '0', 'BL'], ['up', '0', 'BR'],
+    ['up', '1', 'TL'], ['up', '1', 'TR'], ['up', '1', 'BL'],
+    ['left', '0', 'TL'], ['left', '0', 'TR'], ['left', '0', 'BL'], ['left', '0', 'BR'],
+    ['right', '1', 'TL'], ['right', '1', 'TR'], ['right', '1', 'BL'], ['right', '1', 'BR']
+  ];
+
+  // Round 2 (§3a): the empty-library button state, from the real DOM,
+  // checked BEFORE this block's own library exists. This project already
+  // carries one leftover part from way earlier in this smoke run
+  // ("Flushed name") -- emptied here on purpose, since the very next commit
+  // below (the real 19-part library) replaces it regardless, leaving
+  // nothing from this one check that needs restoring separately.
+  store.commit('smoke: temporarily empty the player parts library', (project) => {
+    project.sprites.playerParts = [];
+  });
+  await wait(80);
+  await playerGenOpenFrames();
+  if (!playerGenButton()) throw new Error('no Generate… button in the Player Frames view (empty-library check)');
+  if (!playerGenButton().disabled) throw new Error('Generate… must be disabled for an empty parts library');
+  const playerGenEmptyTitle = 'Add at least one part in the Parts tab first.';
+  if (playerGenButton().title !== playerGenEmptyTitle) {
+    throw new Error('expected Generate… title "' + playerGenEmptyTitle + '", saw "' + playerGenButton().title + '"');
+  }
+  const playerGenHintText = 'Add at least one part in the Parts tab before generating.';
+  const playerGenHint = () => [...stage.querySelectorAll('p.hint')].find((p) => p.textContent === playerGenHintText);
+  const playerGenEmptyHint = playerGenHint();
+  if (!playerGenEmptyHint) throw new Error('expected the hint paragraph "' + playerGenHintText + '" to be present for an empty library');
+  if (playerGenEmptyHint.hidden) throw new Error('expected the hint paragraph to be visible for an empty library');
+  step('player sprite generate: an empty parts library disables Generate… and shows the hint', 'title="' + playerGenEmptyTitle + '"');
+
+  store.commit('smoke: player sprite parts library', (project) => {
+    project.sprites.playerParts = playerGenSpecs.map((spec, i) => ({
+      id: i,
+      name: spec[0] + '-' + spec[1] + '-' + spec[2],
+      category: '',
+      direction: spec[0],
+      frameSlot: spec[1],
+      quadrant: spec[2],
+      tile: playerGenPid(i)
+    }));
+  });
+  await wait(120);
+  // Still the same Tile Forge mount from the empty-library check above --
+  // Player Frames re-renders reactively off onProjectChange, with no
+  // re-navigation needed, which this also proves in passing.
+  if (playerGenButton().disabled) throw new Error('Generate… should be enabled once the parts library is non-empty');
+  const playerGenHintAfterAuthoring = playerGenHint();
+  if (playerGenHintAfterAuthoring && !playerGenHintAfterAuthoring.hidden) {
+    throw new Error('expected the hint paragraph to be hidden once the library is non-empty');
+  }
+  step(
+    'player sprite generate: a non-empty library re-enables Generate… and hides the hint',
+    store.project.sprites.playerParts.length + ' parts'
+  );
+
+  async function playerGenOpenFrames() {
+    window.__app.goTo('tile');
+    await wait(250);
+    const tab = [...stage.querySelectorAll('.tab')].find((b) => b.textContent === 'Player');
+    if (!tab) throw new Error('Tile Forge has no Player tab (player sprite generate block)');
+    tab.click();
+    await wait(80);
+  }
+  function playerGenButton() {
+    return [...stage.querySelectorAll('button')].find((b) => b.textContent.trim() === 'Generate…');
+  }
+  function playerGenModalHost() {
+    return document.querySelector('#modalHost');
+  }
+  function playerGenModalVisible() {
+    const host = playerGenModalHost();
+    return !!host && !host.hidden;
+  }
+  function playerGenModalTitle() {
+    const host = playerGenModalHost();
+    return host ? host.querySelector('.modal-head')?.textContent ?? null : null;
+  }
+  function playerGenFrameCell(direction, frameIndex) {
+    const host = playerGenModalHost();
+    return host
+      ? host.querySelector('.player-generate-frame[data-direction="' + direction + '"][data-frame-index="' + frameIndex + '"]')
+      : null;
+  }
+  function playerGenFrameStatus(direction, frameIndex) {
+    const cell = playerGenFrameCell(direction, frameIndex);
+    return cell ? cell.querySelector('.hint')?.textContent ?? null : null;
+  }
+  function playerGenCanvasFor(direction, frameIndex) {
+    const cell = playerGenFrameCell(direction, frameIndex);
+    return cell ? cell.querySelector('canvas') : null;
+  }
+  function playerGenChangesText() {
+    const host = playerGenModalHost();
+    return host ? host.querySelector('.player-generate-changes')?.textContent ?? null : null;
+  }
+  function playerGenCollisionsText() {
+    const host = playerGenModalHost();
+    return host ? host.querySelector('.player-generate-collisions')?.textContent ?? null : null;
+  }
+  function playerGenSelect(direction, frameIndex, quadrant) {
+    const host = playerGenModalHost();
+    return host
+      ? host.querySelector(
+          'select[data-direction="' + direction + '"][data-frame-index="' + frameIndex + '"][data-quadrant="' + quadrant + '"]'
+        )
+      : null;
+  }
+  function playerGenGenerateButton() {
+    const host = playerGenModalHost();
+    return host ? [...host.querySelectorAll('button')].find((b) => b.textContent.trim() === 'Generate') : null;
+  }
+  function playerGenCancelButton() {
+    const host = playerGenModalHost();
+    return host ? [...host.querySelectorAll('button')].find((b) => b.textContent.trim() === 'Cancel') : null;
+  }
+  function playerGenHasExactToast(text) {
+    return [...document.querySelectorAll('#toastHost .toast')].some((t) => t.textContent === text);
+  }
+
+  // Round 2 (§3b): duplicate-name option labels -- two parts sharing a name,
+  // qualifying for the same (direction, frameIndex) as a third, uniquely
+  // named part, all offered in the SAME selector (the option list is
+  // unfiltered by tag, only reordered -- tile.js's own tag-first ordering).
+  // right/frame 1 has no parts of its own in playerGenSpecs, so these three
+  // are the ONLY qualifying parts there, added and then removed again so
+  // playerGenExpectedByIndex (which assumes right/frame 1 is untouched)
+  // still holds for the rest of this block.
+  store.commit('smoke: temporary duplicate-name parts', (project) => {
+    project.sprites.playerParts.push(
+      { id: 19, name: 'Twin', category: '', direction: 'right', frameSlot: '0', quadrant: 'TL', tile: playerGenPid(19) },
+      { id: 20, name: 'Twin', category: '', direction: 'right', frameSlot: '0', quadrant: 'TR', tile: playerGenPid(20) },
+      { id: 21, name: 'Solo', category: '', direction: 'right', frameSlot: '0', quadrant: 'BL', tile: playerGenPid(21) }
+    );
+  });
+  await wait(80);
+  await playerGenOpenFrames();
+  playerGenButton().click();
+  await wait(150);
+  if (!playerGenModalVisible()) throw new Error('reopening the modal for the duplicate-name check failed');
+  const playerGenDupSelect = playerGenSelect('right', 0, 'TL');
+  if (!playerGenDupSelect) throw new Error('no right/frame 1/TL select found for the duplicate-name check');
+  const playerGenDupOptionLabels = [...playerGenDupSelect.querySelectorAll('option')].map((option) => option.textContent);
+  if (!playerGenDupOptionLabels.includes('Twin (#19)') || !playerGenDupOptionLabels.includes('Twin (#20)')) {
+    throw new Error('expected both duplicate-named options to read "Twin (#id)", saw ' + playerGenDupOptionLabels.join(' | '));
+  }
+  if (!playerGenDupOptionLabels.includes('Solo')) {
+    throw new Error('expected the uniquely-named option to read plain "Solo", saw ' + playerGenDupOptionLabels.join(' | '));
+  }
+  step(
+    'player sprite generate: duplicate-named options are disambiguated by id, a unique name in the same selector stays plain',
+    playerGenDupOptionLabels.join(', ')
+  );
+  playerGenCancelButton().click();
+  await wait(80);
+  store.commit('smoke: remove the temporary duplicate-name parts', (project) => {
+    project.sprites.playerParts = project.sprites.playerParts.filter((part) => part.id < 19);
+  });
+  await wait(80);
+  if (store.project.sprites.playerParts.length !== 19) {
+    throw new Error(
+      'expected exactly 19 parts after removing the duplicate-name fixture, saw ' + store.project.sprites.playerParts.length
+    );
+  }
+
+  // --- 1/2: author is done above; open the modal and check the incomplete
+  // frame's own status line and the exact initial summary. --------------
+  await playerGenOpenFrames();
+  if (!playerGenButton()) throw new Error('no Generate… button in the Player Frames view');
+  if (playerGenButton().disabled) throw new Error('Generate… should be enabled once the parts library is non-empty');
+  playerGenButton().click();
+  await wait(150);
+  if (!playerGenModalVisible()) throw new Error('the Generate Player Sprite modal did not open');
+  if (playerGenModalTitle() !== 'Generate Player Sprite') {
+    throw new Error('expected a modal titled "Generate Player Sprite", saw ' + playerGenModalTitle());
+  }
+  step('player sprite generate: modal opens', 'title = "' + playerGenModalTitle() + '"');
+
+  // Each quadrant selector's own default is the first qualifying part TAGGED
+  // for that exact quadrant (tile.js's tagMatchingPart), so a fully-tagged
+  // frame's 4 quadrants default to 4 DIFFERENT parts, in the order they were
+  // tagged -- down/frame 1's own 'both' parts were authored TL,TR,BL,BR as
+  // ids 0,1,2,3, so TR must default to id 1 and BL to id 2. up/frame 2 has
+  // only TL/TR/BL parts (ids 8,9,10) and no part tagged BR at all, so BR's
+  // default is "(none)" from the authored data alone, with no select
+  // touched -- the incomplete case this fixture was built to exercise.
+  const downFrame0TR = playerGenSelect('down', 0, 'TR');
+  const downFrame0BL = playerGenSelect('down', 0, 'BL');
+  if (!downFrame0TR || !downFrame0BL) throw new Error('down/frame 1 TR/BL selects not found');
+  if (downFrame0TR.value !== '1') throw new Error('expected down/frame 1/TR to default to part id 1 (tag match), saw ' + downFrame0TR.value);
+  if (downFrame0BL.value !== '2') throw new Error('expected down/frame 1/BL to default to part id 2 (tag match), saw ' + downFrame0BL.value);
+  step('player sprite generate: quadrant defaults follow each part’s own tag', 'down/frame 1 TR=1, BL=2');
+
+  const upFrame1Status = playerGenFrameStatus('up', 1);
+  if (upFrame1Status !== 'Incomplete — missing BR.') {
+    throw new Error('expected up/frame 2 status "Incomplete — missing BR.", saw ' + upFrame1Status + ' (no select was touched to reach this)');
+  }
+  step('player sprite generate: the authored library alone opens the incomplete frame, naming its missing quadrant', upFrame1Status);
+
+  const expectedChangesInitial =
+    'Facing down, both frames, facing up (frame 1), facing left (frame 1), facing right (frame 2) — nothing else is touched.';
+  if (playerGenChangesText() !== expectedChangesInitial) {
+    throw new Error('expected initial summary "' + expectedChangesInitial + '", saw "' + playerGenChangesText() + '"');
+  }
+  step('player sprite generate: initial summary text is exact', expectedChangesInitial);
+
+  // §8's placeholder note, derived from playerGenTilesSnapshot (the CNROM
+  // project's playerTiles before this block touched anything) against this
+  // plan's own indices (down frames 0/1 -- 0-7 -- and up frame 0 -- 8-11 --
+  // and left frame 0 -- 16-19 -- and right frame 1 -- 28-31; up frame 1,
+  // 12-15, is skipped and left/right's other frame, 20-27, was never
+  // attempted). "down" ends up with every one of its 8 slots covered by
+  // this plan, so it does not count. "up" still has 12/13/14 sitting at
+  // their snapshot value of null (only 15 was ever touched, by an earlier
+  // smoke step, to a non-null tile) -- counts. "left" still has 20-23 at
+  // null (never touched) -- counts. "right" still has 24-27 at null (never
+  // touched) -- counts. 3 of the 4 directions, checked, not assumed.
+  const placeholderTextInitial = playerGenModalHost()?.querySelector('.player-generate-placeholder')?.textContent ?? null;
+  const expectedPlaceholderInitial = '3 of 4 directions still use the placeholder look.';
+  if (placeholderTextInitial !== expectedPlaceholderInitial) {
+    throw new Error('expected the placeholder note "' + expectedPlaceholderInitial + '", saw ' + placeholderTextInitial);
+  }
+  step('player sprite generate: the placeholder note is exact on first open', expectedPlaceholderInitial);
+
+  // Round 2 (§1): prove the WHOLE preview canvas, not just one alpha byte.
+  // Read the sprite palette the Player view's own frame cells use (whatever
+  // .palette-row currently carries the "active" class, on the underlying
+  // Tile Forge -- the modal is an overlay, it does not hide it) and
+  // recompute every one of a 16x16 preview's 256 pixels the exact way
+  // paintImageData (tile.js) does: each quadrant's currently-selected part,
+  // through the real NES_PALETTE lookup, slot 0 transparent.
+  const playerGenPaletteRows = [...stage.querySelectorAll('.palette-row')];
+  const playerGenActivePaletteIndex = playerGenPaletteRows.findIndex((row) => row.classList.contains('active'));
+  if (playerGenActivePaletteIndex < 0) throw new Error('could not determine the active sprite palette row');
+  const { NES_PALETTE: playerGenNesPalette } = await import('../shared/nespalette.js');
+  const { tileFromString: playerGenTileFromString } = await import('../shared/chr.js');
+  const playerGenColors = store.project.palettes.sprite[playerGenActivePaletteIndex].map(
+    (index) => playerGenNesPalette[index & 0x3f]
+  );
+  const playerGenQuadrants = ['TL', 'TR', 'BL', 'BR'];
+  function playerGenExpectedRGBA(direction, frameIndex, x, y) {
+    const quadrant = playerGenQuadrants[Math.floor(y / 8) * 2 + Math.floor(x / 8)];
+    const select = playerGenSelect(direction, frameIndex, quadrant);
+    const raw = select ? select.value : '';
+    let slot = 0;
+    if (raw !== '') {
+      const partEntry = store.project.sprites.playerParts.find((candidate) => candidate.id === Number(raw));
+      const pixels = partEntry ? playerGenTileFromString(partEntry.tile) : null;
+      slot = pixels ? pixels[(y % 8) * 8 + (x % 8)] : 0;
+    }
+    const color = playerGenColors[slot];
+    return [color[0], color[1], color[2], slot === 0 ? 0 : 255];
+  }
+  function playerGenAssertPreviewMatches(direction, frameIndex, label) {
+    const canvas = playerGenCanvasFor(direction, frameIndex);
+    if (!canvas) throw new Error(label + ': no preview canvas found');
+    const data = canvas.getContext('2d').getImageData(0, 0, 16, 16).data;
+    for (let y = 0; y < 16; y++) {
+      for (let x = 0; x < 16; x++) {
+        const expected = playerGenExpectedRGBA(direction, frameIndex, x, y);
+        const offset = (y * 16 + x) * 4;
+        for (let channel = 0; channel < 4; channel++) {
+          if (data[offset + channel] !== expected[channel]) {
+            throw new Error(
+              label +
+                ': pixel (' +
+                x +
+                ',' +
+                y +
+                ') channel ' +
+                channel +
+                ' expected ' +
+                expected[channel] +
+                ', saw ' +
+                data[offset + channel]
+            );
+          }
+        }
+      }
+    }
+  }
+  playerGenAssertPreviewMatches('up', 0, 'up/frame 1 preview, all 4 quadrants picked');
+  step(
+    'player sprite generate: the preview canvas matches every one of its 256 pixels against the picked parts, through the real sprite palette',
+    'up/frame 1, all 4 quadrants'
+  );
+
+  // A real select change, dispatched as a change event -- clear up/frame 1's
+  // TL pick, making that whole frame incomplete too, and confirm the summary
+  // text and the WHOLE live preview canvas (not one byte) follow it.
+  const upFrame0TL = playerGenSelect('up', 0, 'TL');
+  if (!upFrame0TL) throw new Error('no up/frame 1/TL select found');
+  upFrame0TL.value = '';
+  upFrame0TL.dispatchEvent(new Event('change', { bubbles: true }));
+  await wait(80);
+
+  const expectedChangesAfterSelect =
+    'Facing down, both frames, facing left (frame 1), facing right (frame 2) — nothing else is touched.';
+  if (playerGenChangesText() !== expectedChangesAfterSelect) {
+    throw new Error('expected updated summary "' + expectedChangesAfterSelect + '", saw "' + playerGenChangesText() + '"');
+  }
+  playerGenAssertPreviewMatches('up', 0, 'up/frame 1 preview after clearing TL');
+  step('player sprite generate: a real select change updates the summary and every pixel of the preview canvas', 'ok');
+
+  // Put the pick back so run 1 (below) generates the originally-intended plan.
+  upFrame0TL.value = '4';
+  upFrame0TL.dispatchEvent(new Event('change', { bubbles: true }));
+  await wait(80);
+  if (playerGenChangesText() !== expectedChangesInitial) {
+    throw new Error('reverting the select did not restore the original summary, saw "' + playerGenChangesText() + '"');
+  }
+
+  // --- 3: Generate, and check the exact toast plus playerTiles content,
+  // plus (round 2, §1) exactly one commit and no other field touched. ------
+  function playerGenProjectSnapshotExceptTiles() {
+    const clone = JSON.parse(JSON.stringify(store.project));
+    delete clone.sprites.playerTiles;
+    return JSON.stringify(clone);
+  }
+  const playerGenRevisionBeforeRun1 = store.revision;
+  const playerGenSnapshotBeforeRun1 = playerGenProjectSnapshotExceptTiles();
+
+  const run1GenBtn = playerGenGenerateButton();
+  if (!run1GenBtn || run1GenBtn.disabled) throw new Error('Generate should be enabled for a plan with 5 written frames');
+  run1GenBtn.click();
+  await wait(200);
+
+  if (store.revision !== playerGenRevisionBeforeRun1 + 1) {
+    throw new Error(
+      'expected exactly one commit from Generate, revision went from ' + playerGenRevisionBeforeRun1 + ' to ' + store.revision
+    );
+  }
+  if (playerGenProjectSnapshotExceptTiles() !== playerGenSnapshotBeforeRun1) {
+    throw new Error('Generate must touch nothing in the project but sprites.playerTiles');
+  }
+  step(
+    'player sprite generate: Generate commits exactly once and touches nothing but sprites.playerTiles',
+    'revision ' + playerGenRevisionBeforeRun1 + ' -> ' + store.revision
+  );
+
+  const run1Toast = 'Generated 5 player sprite frames. 1 frame skipped (incomplete).';
+  if (!playerGenHasExactToast(run1Toast)) {
+    throw new Error(
+      'expected the exact toast "' +
+        run1Toast +
+        '", toasts were: ' +
+        [...document.querySelectorAll('#toastHost .toast')].map((t) => t.textContent).join(' | ')
+    );
+  }
+  step('player sprite generate: exact success toast', run1Toast);
+
+  // storageIndex(frame, row, col): frame*4 + row*2+col, and QUADRANT_ORDER's
+  // TL/TR/BL/BR map to offsets 0/1/2/3 within a frame's own 4-slot block.
+  // Each quadrant's own default now follows its tag (tile.js's
+  // tagMatchingPart), so a complete frame's 4 slots are 4 DIFFERENT ids, in
+  // playerGenSpecs' own TL,TR,BL,BR authoring order for that frame.
+  const playerGenExpectedByIndex = {
+    0: playerGenPid(0), 1: playerGenPid(1), 2: playerGenPid(2), 3: playerGenPid(3), // down frame 1 (ids 0-3)
+    4: playerGenPid(0), 5: playerGenPid(1), 6: playerGenPid(2), 7: playerGenPid(3), // down frame 2 (the same 'both' ids 0-3)
+    8: playerGenPid(4), 9: playerGenPid(5), 10: playerGenPid(6), 11: playerGenPid(7), // up frame 1 (ids 4-7)
+    16: playerGenPid(11), 17: playerGenPid(12), 18: playerGenPid(13), 19: playerGenPid(14), // left frame 1 (ids 11-14)
+    28: playerGenPid(15), 29: playerGenPid(16), 30: playerGenPid(17), 31: playerGenPid(18) // right frame 2 (ids 15-18)
+  };
+  const afterRun1 = store.project.sprites.playerTiles.slice();
+  for (const key of Object.keys(playerGenExpectedByIndex)) {
+    const index = Number(key);
+    if (afterRun1[index] !== playerGenExpectedByIndex[index]) {
+      throw new Error('playerTiles[' + index + '] does not hold the composed content the plan promised');
+    }
+  }
+  // up/frame 2 (indices 12-15) was skipped for incompleteness -- atomicity
+  // (design-modular-parts.md §4.2) says its 4 slots must be untouched.
+  for (let index = 12; index <= 15; index++) {
+    if (afterRun1[index] !== playerGenTilesSnapshot[index]) {
+      throw new Error('the incomplete up/frame 2 slot ' + index + ' changed even though it was never fully picked');
+    }
+  }
+  step('player sprite generate: playerTiles hold the composed content; the incomplete frame is untouched', '20 slots written');
+
+  // --- 4: a real build, checked against EVERY tileset's own built CHR, not
+  // playerTiles -- the whole point of the lifecycle-gap fix (§4.3). --------
+  window.__app.goTo('build');
+  await wait(300);
+  const playerGenBuild = await window.forge.build.run(store.dir, store.project);
+  if (!playerGenBuild.ok) throw new Error('player sprite generate: build failed: ' + playerGenBuild.error);
+  step('player sprite generate: real build succeeds', playerGenBuild.value.size + ' bytes, mapper ' + playerGenBuild.value.mapper);
+
+  const { decodeChr: playerGenDecodeChr, tileToString: playerGenTileToString } = await import('../shared/chr.js');
+  async function playerGenReadSpriteTiles(bank) {
+    const filePath = store.dir + '/build/assets/tiles' + bank + '.chr';
+    const result = await window.forge.build.readRom(filePath);
+    if (!result.ok) throw new Error('reading ' + filePath + ': ' + result.error);
+    const tiles = playerGenDecodeChr(new Uint8Array(result.value));
+    return tiles.slice(256).map((pixels) => playerGenTileToString(pixels));
+  }
+  for (const bank of [0, 1]) {
+    const spriteTiles = await playerGenReadSpriteTiles(bank);
+    for (const key of Object.keys(playerGenExpectedByIndex)) {
+      const index = Number(key);
+      if (spriteTiles[index] !== playerGenExpectedByIndex[index]) {
+        throw new Error('tileset ' + bank + ' built CHR sprite tile ' + index + ' does not hold the composed content');
+      }
+    }
+    if (spriteTiles[5] !== afterRun1[5]) {
+      throw new Error('tileset ' + bank + ' built CHR sprite tile 5 should carry playerTiles[5], same as every other tileset');
+    }
+    if (spriteTiles[15] !== afterRun1[15]) {
+      throw new Error('tileset ' + bank + ' built CHR sprite tile 15 should carry playerTiles[15], same as every other tileset');
+    }
+  }
+  step("player sprite generate: every tileset's built CHR holds the identical composed player content", '2 tilesets checked');
+
+  // --- 5: a second run with a changed pick replaces only that slot. -------
+  await playerGenOpenFrames();
+  playerGenButton().click();
+  await wait(150);
+  if (!playerGenModalVisible()) throw new Error('reopening the modal for run 2 failed');
+
+  // Up/frame 2 is still incomplete on this reopen too -- the authored
+  // library never changed, and defaults recompute from it fresh every open.
+  const run2UpFrame1Status = playerGenFrameStatus('up', 1);
+  if (run2UpFrame1Status !== 'Incomplete — missing BR.') {
+    throw new Error('expected up/frame 2 to still read "Incomplete — missing BR." on reopen, saw ' + run2UpFrame1Status);
+  }
+
+  // Run 1 already filled every "down" slot and left 12-14/20-27 exactly as
+  // they were (see the derivation above) -- this reopen's own default plan
+  // covers the identical set of indices, so the placeholder note reads the
+  // same as it did on first open.
+  const placeholderTextOnReopen = playerGenModalHost()?.querySelector('.player-generate-placeholder')?.textContent ?? null;
+  if (placeholderTextOnReopen !== expectedPlaceholderInitial) {
+    throw new Error('expected the placeholder note "' + expectedPlaceholderInitial + '" on the run-2 reopen, saw ' + placeholderTextOnReopen);
+  }
+  step('player sprite generate: the placeholder note reads the same on the run-2 reopen', placeholderTextOnReopen);
+
+  const run2DownFrame0TL = playerGenSelect('down', 0, 'TL');
+  if (!run2DownFrame0TL) throw new Error('no down/frame 1/TL select found on reopen');
+  if (run2DownFrame0TL.value !== '0') {
+    throw new Error('expected down/frame 1/TL to default back to part id 0 on reopen, saw ' + run2DownFrame0TL.value);
+  }
+  run2DownFrame0TL.value = '1';
+  run2DownFrame0TL.dispatchEvent(new Event('change', { bubbles: true }));
+  await wait(80);
+  const run2GenBtn = playerGenGenerateButton();
+  if (!run2GenBtn || run2GenBtn.disabled) throw new Error('run 2: Generate should still be enabled');
+  run2GenBtn.click();
+  await wait(200);
+
+  const afterRun2 = store.project.sprites.playerTiles.slice();
+  if (afterRun2[0] !== playerGenPid(1)) {
+    throw new Error('run 2: expected playerTiles[0] to become part id 1’s tile, saw a different value');
+  }
+  for (let index = 0; index < 32; index++) {
+    if (index === 0) continue;
+    if (afterRun2[index] !== afterRun1[index]) {
+      throw new Error('run 2: playerTiles[' + index + '] moved even though only index 0’s own pick changed');
+    }
+  }
+  step('player sprite generate: a second run replaces only the changed slot, nothing else moves', 'index 0 changed, 31 other slots unchanged');
+
+  // --- 6: an NPC metasprite colliding with the pending plan. --------------
+  store.commit('smoke: player sprite collision fixture', (project) => {
+    const existing = project.sprites.metasprites || [];
+    project.sprites.metasprites = [
+      ...existing,
+      { id: existing.length, name: 'Slime', tiles: [{ x: 0, y: 0, tile: 0, palette: 0, hflip: false, vflip: false }] }
+    ];
+  });
+  await wait(80);
+
+  await playerGenOpenFrames();
+  playerGenButton().click();
+  await wait(150);
+  if (!playerGenModalVisible()) throw new Error('reopening the modal for the collision check failed');
+  const expectedCollisionText = '1 metasprite (Slime) references a tile index inside this range and will look different after this.';
+  if (playerGenCollisionsText() !== expectedCollisionText) {
+    throw new Error('expected the collision line "' + expectedCollisionText + '", saw "' + playerGenCollisionsText() + '"');
+  }
+  step('player sprite generate: the NPC-collision preflight names the metasprite and count', playerGenCollisionsText());
+  playerGenCancelButton().click();
+  await wait(80);
+
+  // --- 7: the stale-revision path. ----------------------------------------
+  await playerGenOpenFrames();
+  playerGenButton().click();
+  await wait(150);
+  if (!playerGenModalVisible()) throw new Error('reopening the modal for the stale-revision check failed');
+  const revisionBeforeStaleCheck = store.revision;
+  const tilesBeforeStaleCheck = store.project.sprites.playerTiles.slice();
+
+  store.commit('smoke: unrelated change while the modal is open', (project) => {
+    project.sprites.metasprites.push({ id: project.sprites.metasprites.length, name: 'Unrelated', tiles: [] });
+  });
+  await wait(80);
+  if (store.revision === revisionBeforeStaleCheck) throw new Error('the unrelated commit above should have bumped store.revision');
+
+  const staleGenBtn = playerGenGenerateButton();
+  if (!staleGenBtn || staleGenBtn.disabled) throw new Error('stale-revision check: Generate should read as enabled going in');
+  staleGenBtn.click();
+  await wait(150);
+
+  const staleToast = 'The project changed while this dialog was open — try again.';
+  if (!playerGenHasExactToast(staleToast)) throw new Error('expected the exact stale-revision toast "' + staleToast + '"');
+  if (JSON.stringify(store.project.sprites.playerTiles) !== JSON.stringify(tilesBeforeStaleCheck)) {
+    throw new Error('a stale-revision Generate must not have written playerTiles');
+  }
+  step('player sprite generate: a stale revision refuses with the exact toast and commits nothing', staleToast);
+
+  // --- 8: the Cancel path. -------------------------------------------------
+  await playerGenOpenFrames();
+  playerGenButton().click();
+  await wait(150);
+  if (!playerGenModalVisible()) throw new Error('reopening the modal for the Cancel check failed');
+  const playerGenRevisionBeforeCancel = store.revision;
+  // A Set of actual DOM NODES, not text -- comparing text alone would let a
+  // genuine new toast that happens to duplicate an existing one's wording
+  // pass undetected. An earlier toast (run 1's own success toast, by now the
+  // oldest one showing) can legitimately auto-expire on its own 3200ms timer
+  // while this check is running -- its node simply stops being present,
+  // which is not what this check is guarding against. What Cancel must never
+  // do is leave behind a toast node that was not already in this Set.
+  const playerGenToastNodesBeforeCancel = new Set(document.querySelectorAll('#toastHost .toast'));
+
+  const cancelDownFrame0TL = playerGenSelect('down', 0, 'TL');
+  if (!cancelDownFrame0TL) throw new Error('no down/frame 1/TL select found for the Cancel check');
+  cancelDownFrame0TL.value = '2';
+  cancelDownFrame0TL.dispatchEvent(new Event('change', { bubbles: true }));
+  await wait(80);
+  playerGenCancelButton().click();
+  await wait(80);
+
+  if (playerGenModalVisible()) throw new Error('Cancel did not close the Generate Player Sprite modal');
+  if (store.revision !== playerGenRevisionBeforeCancel) throw new Error('Cancel must not commit anything, but store.revision moved');
+  const playerGenNewToastNodes = [...document.querySelectorAll('#toastHost .toast')].filter(
+    (node) => !playerGenToastNodesBeforeCancel.has(node)
+  );
+  if (playerGenNewToastNodes.length) {
+    throw new Error(
+      'Cancel must not toast, but a new toast node appeared: ' + playerGenNewToastNodes.map((node) => node.textContent).join(' | ')
+    );
+  }
+  step('player sprite generate: Cancel commits nothing and toasts nothing', 'ok');
+
+  // Restore every fixture this block touched, the same discipline the
+  // importChr() block below follows for the tile tables it edits.
+  store.commit('smoke: restore player sprite fixtures', (project) => {
+    project.sprites.playerParts = playerGenPartsSnapshot;
+    project.sprites.playerTiles = playerGenTilesSnapshot;
+    project.sprites.metasprites = playerGenMetaspritesSnapshot;
+  });
+  await wait(100);
+  if (JSON.stringify(store.project.sprites.playerParts) !== JSON.stringify(playerGenPartsSnapshot)) {
+    throw new Error('failed to restore playerParts after the player sprite generate block');
+  }
+  if (JSON.stringify(store.project.sprites.playerTiles) !== JSON.stringify(playerGenTilesSnapshot)) {
+    throw new Error('failed to restore playerTiles after the player sprite generate block');
+  }
+  if (JSON.stringify(store.project.sprites.metasprites) !== JSON.stringify(playerGenMetaspritesSnapshot)) {
+    throw new Error('failed to restore metasprites after the player sprite generate block');
+  }
+  step('player sprite generate: fixtures restored for the steps that follow', 'ok');
+
   // Four-screen is UNROM 512 only, and costs a tileset.
   store.commit('smoke u512', (project) => {
     project.cartridge.mapper = 30;

@@ -2785,6 +2785,105 @@ export function playerSpriteCollisions(project, indices) {
 }
 
 /**
+ * Renders a "Generate Player Sprite" plan (design-modular-parts.md §6.3) as
+ * plain-text strings, and only that -- the modal (renderer/forges/tile/
+ * tile.js) renders exactly these strings and computes nothing about their
+ * wording itself, so the modal's live summary and the smoke test's
+ * assertions can never drift from each other or from a unit test covering
+ * every branch here.
+ *
+ * `plan` is `planPlayerSprite(project, picks)`'s own return shape
+ * (`{written, skipped, indices}`); `collisions` is
+ * `playerSpriteCollisions(project, plan.indices)`'s return value, computed by
+ * the caller (not here) so this function stays pure with respect to
+ * `project.sprites.metasprites` and easy to unit-test with a hand-built
+ * collision list.
+ *
+ * Returns `{changes, placeholder, collisions, toast}`:
+ * - `changes` -- always a string. "Nothing will be generated." when
+ *   `written` is empty; otherwise one clause per direction that has at least
+ *   one written frame ("Facing down, both frames" when both of a direction's
+ *   frames are written, "Facing down (frame 1)" when only one is), joined
+ *   with ", ", followed by " — nothing else is touched." — true regardless
+ *   of how many directions are involved, since `generatePlayerSpriteCore`
+ *   never writes outside `plan.indices` (§4.1's "one place, plain
+ *   assignment").
+ * - `placeholder` -- `null` when every one of the 32 `playerTiles` slots
+ *   would hold real content after this plan applies; otherwise a string
+ *   naming how many of the 4 directions would still have at least one `null`
+ *   slot left (§4.3/§8's "an ungenerated direction ... looks generic").
+ * - `collisions` -- `null` when `collisions` (the argument) is empty;
+ *   otherwise a string naming the count and (by name) which metasprites are
+ *   affected (§4.4), singular for exactly one.
+ * - `toast` -- the exact text the modal's own success toast shows after a
+ *   real Generate commit, computed from the same `plan` the modal is about
+ *   to commit (never recomputed afterward, so it can never disagree with
+ *   what was actually written).
+ */
+export function describePlayerSpritePlan(project, plan, collisions) {
+  const { written, skipped, indices } = plan;
+
+  let changes;
+  if (written.length === 0) {
+    changes = 'Nothing will be generated.';
+  } else {
+    const framesByDirection = new Map();
+    for (const entry of written) {
+      if (!framesByDirection.has(entry.direction)) framesByDirection.set(entry.direction, new Set());
+      framesByDirection.get(entry.direction).add(entry.frameIndex);
+    }
+    const clauses = DIRECTION_ORDER.filter((direction) => framesByDirection.has(direction)).map((direction, position) => {
+      const frames = framesByDirection.get(direction);
+      const verb = position === 0 ? 'Facing' : 'facing';
+      if (frames.has(0) && frames.has(1)) return `${verb} ${direction}, both frames`;
+      return `${verb} ${direction} (frame ${frames.has(0) ? 1 : 2})`;
+    });
+    changes = `${clauses.join(', ')} — nothing else is touched.`;
+  }
+
+  const indexSet = new Set(indices);
+  let stillPlaceholderCount = 0;
+  for (let direction = 0; direction < DIRECTION_ORDER.length; direction++) {
+    let stillPlaceholder = false;
+    for (let frameIndex = 0; frameIndex < 2 && !stillPlaceholder; frameIndex++) {
+      const frame = direction * 2 + frameIndex;
+      for (let row = 0; row < 2 && !stillPlaceholder; row++) {
+        for (let col = 0; col < 2 && !stillPlaceholder; col++) {
+          const index = storageIndex(frame, row, col);
+          if (!indexSet.has(index) && project.sprites.playerTiles[index] === null) stillPlaceholder = true;
+        }
+      }
+    }
+    if (stillPlaceholder) stillPlaceholderCount++;
+  }
+  const placeholder =
+    stillPlaceholderCount > 0
+      ? `${stillPlaceholderCount} of ${DIRECTION_ORDER.length} directions still use the placeholder look.`
+      : null;
+
+  let collisionsText = null;
+  if (collisions.length > 0) {
+    const names = collisions.map((entry) => entry.name).join(', ');
+    collisionsText =
+      collisions.length === 1
+        ? `1 metasprite (${names}) references a tile index inside this range and will look different after this.`
+        : `${collisions.length} metasprites (${names}) reference tile indices inside this range and will look different after this.`;
+  }
+
+  let toast;
+  if (written.length === 0) {
+    toast = 'Nothing was generated — no frame had all 4 quadrants picked.';
+  } else {
+    toast = `Generated ${written.length} player sprite frame${written.length === 1 ? '' : 's'}.`;
+    if (skipped.length > 0) {
+      toast += ` ${skipped.length} frame${skipped.length === 1 ? '' : 's'} skipped (incomplete).`;
+    }
+  }
+
+  return { changes, placeholder, collisions: collisionsText, toast };
+}
+
+/**
  * Which indices of a tile `table` count as free for the image-import path
  * (design-modular-parts.md §4.1's own "two import paths, two different
  * fixes"). Every `BLANK_TILE` slot is free, *except* — for the sprite table

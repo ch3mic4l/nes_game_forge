@@ -568,6 +568,37 @@ canvas.sheet {
   min-width: 0;
 }
 
+/* ---------------------------------- Generate Player Sprite modal (§6.3) */
+
+.player-generate-row {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 14px;
+}
+
+.player-generate-columns {
+  display: flex;
+  gap: 16px;
+}
+
+.player-generate-frame {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px;
+  border: 1px solid var(--line-soft);
+  border-radius: var(--radius-sm);
+  opacity: 0.55;
+}
+
+.player-generate-frame.complete {
+  opacity: 1;
+  border-color: var(--accent);
+}
+
 .player-part-fields input,
 .player-part-fields select {
   min-width: 0;

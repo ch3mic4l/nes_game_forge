@@ -5,7 +5,20 @@
 // so 16x16 and 32x32 characters can be drawn as one picture.
 
 import { store } from '../../store.js';
-import { el, clear, fill, toast, canvasPoint, line, confirmModal, promptModal, fitZoom, observeSize } from '../../ui.js';
+import {
+  el,
+  clear,
+  fill,
+  toast,
+  canvasPoint,
+  line,
+  confirmModal,
+  promptModal,
+  showModal,
+  pixelCanvas,
+  fitZoom,
+  observeSize
+} from '../../ui.js';
 import { tileFromString, tileToString, encodeTiles, decodeChr, flipTile, BLANK_TILE } from '../../../shared/chr.js';
 import { NES_PALETTE, cssColor, colorLabel, isUnsafeColor } from '../../../shared/nespalette.js';
 import {
@@ -18,7 +31,11 @@ import {
   PART_FRAME_SLOTS,
   storageIndex,
   renumberPlayerPartDeletion,
-  chrImportOverlap
+  chrImportOverlap,
+  planPlayerSprite,
+  generatePlayerSpriteCore,
+  playerSpriteCollisions,
+  describePlayerSpritePlan
 } from '../../../shared/project.js';
 import { resolveMapper, tilesetLimit } from '../../../shared/cartridge.js';
 import { FONT_BASE, fontBankSplit, fontChrPages, projectUsesText } from '../../../shared/font.js';
@@ -977,6 +994,242 @@ export function mount(container, app) {
 
   function renderPlayerFrames() {
     playerFrameCells.forEach((cell) => cell.redraw());
+    const empty = store.project.sprites.playerParts.length === 0;
+    generatePlayerSpriteButton.disabled = empty;
+    generatePlayerSpriteButton.title = empty
+      ? 'Add at least one part in the Parts tab first.'
+      : 'Open the Generate Player Sprite dialog';
+    generatePlayerSpriteHint.hidden = !empty;
+  }
+
+  /**
+   * The Generate Player Sprite modal (design-modular-parts.md §6.3, ROADMAP
+   * item 8 phase 3). Captures store.revision before opening (the
+   * openPaletteSwapModal idiom, sprite.js's own openPaletteSwapModal) and
+   * refuses on ANY intervening change once the modal resolves, not merely a
+   * change to something this modal happened to touch. Commits at most once,
+   * through generatePlayerSpriteCore -- the same pure core planPlayerSprite
+   * already previews live, so what this modal shows is exactly what it
+   * writes.
+   */
+  async function openGeneratePlayerSpriteModal() {
+    if (store.project.sprites.playerParts.length === 0) return;
+    const revisionAtOpen = store.revision;
+
+    const pickKey = (direction, frameIndex, quadrant) => `${direction}|${frameIndex}|${quadrant}`;
+    const NONE = null;
+
+    // Every part whose direction/frameSlot qualify it for this frame --
+    // deliberately not filtered by the part's own `quadrant` tag (§6.3: "one
+    // per quadrant -- populated with every part whose direction matches and
+    // whose frameSlot is that column's frame index or 'both'"). A part's own
+    // `quadrant` field is descriptive for the parts library, not a placement
+    // restriction the modal enforces.
+    function qualifyingParts(direction, frameIndex) {
+      return store.project.sprites.playerParts.filter(
+        (candidate) => candidate.direction === direction && (candidate.frameSlot === String(frameIndex) || candidate.frameSlot === 'both')
+      );
+    }
+
+    // Each quadrant selector's own default is the FIRST qualifying part
+    // (same direction/frameSlot rule as qualifyingParts above) whose own
+    // `quadrant` tag equals that selector's quadrant, in library order --
+    // the part's tag is what a fully-tagged library uses to say which of
+    // its 4 pieces belongs where, so the default should follow it. Falls
+    // back to "(none)" when no qualifying part carries that tag, even if
+    // other qualifying parts exist for a different quadrant of this same
+    // frame -- ungating the option list (below) is what still lets an
+    // author pick one of those anyway.
+    function tagMatchingPart(options, quadrant) {
+      return options.find((candidate) => candidate.quadrant === quadrant) ?? null;
+    }
+    const picks = {};
+    for (const direction of DIRECTION_ORDER) {
+      for (const frameIndex of [0, 1]) {
+        const options = qualifyingParts(direction, frameIndex);
+        for (const quadrant of QUADRANT_ORDER) {
+          const tagMatch = tagMatchingPart(options, quadrant);
+          picks[pickKey(direction, frameIndex, quadrant)] = tagMatch ? tagMatch.id : NONE;
+        }
+      }
+    }
+
+    function currentPicks() {
+      const list = [];
+      for (const direction of DIRECTION_ORDER) {
+        for (const frameIndex of [0, 1]) {
+          for (const quadrant of QUADRANT_ORDER) {
+            const partId = picks[pickKey(direction, frameIndex, quadrant)];
+            if (partId !== NONE) list.push({ direction, frameIndex, quadrant, partId });
+          }
+        }
+      }
+      return list;
+    }
+
+    // "disambiguate duplicates by index" (brief): only parts sharing another
+    // qualifying part's own name in this same selector's option list get the
+    // "(#id)" suffix -- an unambiguous name stays plain.
+    function partOptionLabel(options, candidate) {
+      const sharesName = options.filter((entry) => entry.name === candidate.name).length > 1;
+      return sharesName ? `${candidate.name} (#${candidate.id})` : candidate.name;
+    }
+
+    function previewPixelAt(direction, frameIndex, x, y) {
+      const quadrant = QUADRANT_ORDER[Math.floor(y / 8) * 2 + Math.floor(x / 8)];
+      const partId = picks[pickKey(direction, frameIndex, quadrant)];
+      if (partId === NONE) return 0;
+      const partEntry = store.project.sprites.playerParts.find((candidate) => candidate.id === partId);
+      if (!partEntry) return 0;
+      return tileFromString(partEntry.tile)[(y % 8) * 8 + (x % 8)];
+    }
+
+    function drawPreview(direction, frameIndex, canvas, context) {
+      const image = context.createImageData(16, 16);
+      paintImageData(image, (x, y) => previewPixelAt(direction, frameIndex, x, y), 16, 16);
+      context.putImageData(image, 0, 0);
+    }
+
+    let closeModal = () => {};
+    const rowsHost = el('div');
+    const summaryHost = el('div', { style: { marginTop: '10px' } });
+    const cancelButton = el('button.btn', { onclick: () => closeModal(null) }, 'Cancel');
+    const generateButton = el('button.btn.btn-accent', { onclick: () => closeModal(currentPicks()) }, 'Generate');
+
+    function frameStatusText(direction, frameIndex, plan) {
+      const pickedCount = QUADRANT_ORDER.filter((quadrant) => picks[pickKey(direction, frameIndex, quadrant)] !== NONE).length;
+      if (pickedCount === 0) return 'Left as is — no parts picked.';
+      if (plan.written.some((entry) => entry.direction === direction && entry.frameIndex === frameIndex)) {
+        return 'Will be generated.';
+      }
+      const skippedEntry = plan.skipped.find((entry) => entry.direction === direction && entry.frameIndex === frameIndex);
+      const missing = skippedEntry?.quadrants?.length ? skippedEntry.quadrants.join(', ') : 'one or more quadrants';
+      return `Incomplete — missing ${missing}.`;
+    }
+
+    function frameColumn(direction, frameIndex, plan) {
+      const { canvas, context } = pixelCanvas(16, 16, 6);
+      drawPreview(direction, frameIndex, canvas, context);
+      canvas.dataset.direction = direction;
+      canvas.dataset.frameIndex = String(frameIndex);
+      const status = el('p.hint', null, frameStatusText(direction, frameIndex, plan));
+      const complete = plan.written.some((entry) => entry.direction === direction && entry.frameIndex === frameIndex);
+      const selects = QUADRANT_ORDER.map((quadrant) => {
+        const options = qualifyingParts(direction, frameIndex);
+        // The option list itself stays unfiltered (§6.3's literal wording --
+        // the core permits any qualifying part in any quadrant), but a
+        // tag-matching part is listed first, each of the two groups in its
+        // own library order, so the obvious choice is easy to find even
+        // though nothing stops picking a differently-tagged part instead.
+        const tagMatching = options.filter((candidate) => candidate.quadrant === quadrant);
+        const rest = options.filter((candidate) => candidate.quadrant !== quadrant);
+        const orderedOptions = [...tagMatching, ...rest];
+        const value = picks[pickKey(direction, frameIndex, quadrant)];
+        return el(
+          'div.field',
+          null,
+          el('span.field-label', null, quadrant),
+          el(
+            'select',
+            {
+              dataset: { direction, frameIndex: String(frameIndex), quadrant },
+              onchange: (event) => {
+                const raw = event.target.value;
+                picks[pickKey(direction, frameIndex, quadrant)] = raw === '' ? NONE : Number(raw);
+                render();
+              }
+            },
+            [
+              el('option', { value: '', selected: value === NONE }, '(none)'),
+              orderedOptions.map((option) =>
+                el(
+                  'option',
+                  { value: String(option.id), selected: option.id === value },
+                  partOptionLabel(options, option)
+                )
+              )
+            ]
+          )
+        );
+      });
+      return el(
+        'div.player-generate-frame',
+        { class: complete ? 'complete' : null, dataset: { direction, frameIndex: String(frameIndex) } },
+        el('div.field-label', null, `Frame ${frameIndex + 1}`),
+        canvas,
+        status,
+        ...selects
+      );
+    }
+
+    function render() {
+      const plan = planPlayerSprite(store.project, currentPicks());
+      const collisions = playerSpriteCollisions(store.project, plan.indices);
+      const described = describePlayerSpritePlan(store.project, plan, collisions);
+
+      fill(
+        rowsHost,
+        DIRECTION_ORDER.map((direction) =>
+          el(
+            'div.player-generate-row',
+            null,
+            el('div.field-label', null, direction),
+            el('div.player-generate-columns', null, frameColumn(direction, 0, plan), frameColumn(direction, 1, plan))
+          )
+        )
+      );
+
+      fill(
+        summaryHost,
+        el('p.player-generate-changes', null, described.changes),
+        described.placeholder ? el('p.hint.player-generate-placeholder', null, described.placeholder) : null,
+        described.collisions
+          ? el('p.hint.player-generate-collisions', { style: { color: 'var(--accent)' } }, described.collisions)
+          : null
+      );
+
+      generateButton.disabled = plan.written.length === 0;
+      generateButton.title = plan.written.length === 0 ? 'Nothing is complete enough to generate yet.' : 'Generate';
+    }
+
+    render();
+
+    const picksResult = await showModal({
+      title: 'Generate Player Sprite',
+      width: 640,
+      body: (close) => {
+        closeModal = close;
+        return el(
+          'div.player-generate-modal',
+          { style: { minWidth: '600px' } },
+          rowsHost,
+          summaryHost,
+          el(
+            'div.field-row',
+            { style: { justifyContent: 'flex-end', gap: '8px', marginTop: '14px' } },
+            cancelButton,
+            generateButton
+          )
+        );
+      },
+      actions: []
+    });
+
+    if (!picksResult) return;
+
+    if (store.revision !== revisionAtOpen) {
+      toast('The project changed while this dialog was open — try again.', 'error');
+      return;
+    }
+
+    const finalPlan = planPlayerSprite(store.project, picksResult);
+    if (finalPlan.written.length === 0) return;
+    const finalCollisions = playerSpriteCollisions(store.project, finalPlan.indices);
+    const described = describePlayerSpritePlan(store.project, finalPlan, finalCollisions);
+
+    store.commit('Generate player sprite', (project) => generatePlayerSpriteCore(project, picksResult));
+    toast(described.toast, 'success');
+    renderPlayerFrames();
   }
 
   /** One player-part row: its fields plus its own single-tile 8x8 canvas. */
@@ -1221,7 +1474,19 @@ export function mount(container, app) {
     );
   }
 
-  const playerFramesBody = el('div', null, playerFramesGrid);
+  const generatePlayerSpriteButton = el('button.btn', { onclick: () => openGeneratePlayerSpriteModal() }, 'Generate…');
+  const generatePlayerSpriteHint = el(
+    'p.hint',
+    { hidden: true },
+    'Add at least one part in the Parts tab before generating.'
+  );
+  const playerFramesBody = el(
+    'div',
+    null,
+    el('div.field-row', { style: { marginBottom: '10px' } }, generatePlayerSpriteButton),
+    generatePlayerSpriteHint,
+    playerFramesGrid
+  );
   const playerViewBody = el(
     'div',
     { hidden: true, style: { display: 'flex', flexDirection: 'column', flex: '1', minHeight: '0' } },

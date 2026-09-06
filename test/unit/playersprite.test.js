@@ -17,6 +17,7 @@ import {
   planPlayerSprite,
   generatePlayerSpriteCore,
   playerSpriteCollisions,
+  describePlayerSpritePlan,
   freeTileSlots,
   chrImportOverlap,
   DIRECTION_ORDER,
@@ -813,3 +814,139 @@ test('freeTileSlots on an all-blank table: sprites equals exactly [32 .. LIMITS.
 // "sample/ builds a byte-identical ROM after PLAYER_FRAMES/PLAYER_TILES moved
 // into shared/project.js" already asserts this and runs unmodified as part of
 // this same `node --test` invocation.
+
+// --- 14. describePlayerSpritePlan (Phase 3, design-modular-parts.md §6.3) --
+// Pure text formatting only -- the modal renders exactly these strings, so
+// every branch is exercised directly against hand-built plan/collisions
+// arguments rather than through a real pick list, matching this function's
+// own doc comment ("collisions is computed by the caller, not here").
+
+test('describePlayerSpritePlan: both frames of one direction -- "Facing X, both frames"', () => {
+  const project = createProject('T');
+  const plan = { written: [{ direction: 'down', frameIndex: 0 }, { direction: 'down', frameIndex: 1 }], skipped: [], indices: [0, 1, 2, 3, 4, 5, 6, 7] };
+  const described = describePlayerSpritePlan(project, plan, []);
+  assert.equal(described.changes, 'Facing down, both frames — nothing else is touched.');
+});
+
+test('describePlayerSpritePlan: one frame each of two different directions, in DIRECTION_ORDER order regardless of written\'s own order', () => {
+  const project = createProject('T');
+  // Deliberately out of DIRECTION_ORDER order (left before down) -- the
+  // output must still read "down" before "left".
+  const plan = { written: [{ direction: 'left', frameIndex: 1 }, { direction: 'down', frameIndex: 0 }], skipped: [], indices: [0, 1, 2, 3, 20, 21, 22, 23] };
+  const described = describePlayerSpritePlan(project, plan, []);
+  assert.equal(described.changes, 'Facing down (frame 1), facing left (frame 2) — nothing else is touched.');
+});
+
+test('describePlayerSpritePlan: a written frame naming only frameIndex 1 (never 0) reports "(frame 2)", not "(frame 1)"', () => {
+  const project = createProject('T');
+  const plan = { written: [{ direction: 'up', frameIndex: 1 }], skipped: [], indices: [4, 5, 6, 7] };
+  const described = describePlayerSpritePlan(project, plan, []);
+  assert.equal(described.changes, 'Facing up (frame 2) — nothing else is touched.');
+});
+
+test('describePlayerSpritePlan: nothing written -- "Nothing will be generated." and the "nothing generated" toast', () => {
+  const project = createProject('T');
+  const plan = { written: [], skipped: [{ direction: 'down', frameIndex: 0, reason: 'x', quadrants: ['TL'] }], indices: [] };
+  const described = describePlayerSpritePlan(project, plan, []);
+  assert.equal(described.changes, 'Nothing will be generated.');
+  assert.equal(described.toast, 'Nothing was generated — no frame had all 4 quadrants picked.');
+});
+
+test('describePlayerSpritePlan: placeholder note -- generating both frames of one direction on an all-null project leaves the other 3 directions still placeholder', () => {
+  const project = createProject('T');
+  assert.ok(project.sprites.playerTiles.every((tile) => tile === null), 'a fresh project must start with every playerTiles slot null');
+  // frame 0 = down/0 (indices 0-3), frame 1 = down/1 (indices 4-7) -- both of
+  // "down"'s two frames, so "down" alone should no longer count as
+  // placeholder while up/left/right (never touched) still do.
+  const plan = { written: [{ direction: 'down', frameIndex: 0 }, { direction: 'down', frameIndex: 1 }], skipped: [], indices: [0, 1, 2, 3, 4, 5, 6, 7] };
+  const described = describePlayerSpritePlan(project, plan, []);
+  assert.equal(described.placeholder, '3 of 4 directions still use the placeholder look.');
+});
+
+test('describePlayerSpritePlan: placeholder note is absent once every slot the plan leaves behind is non-null', () => {
+  const project = createProject('T');
+  // Every direction already has real (non-null) content in every slot this
+  // plan does NOT write, so nothing is still placeholder after it applies.
+  project.sprites.playerTiles = project.sprites.playerTiles.map((_, i) => tileForId(i + 1));
+  const plan = { written: [{ direction: 'down', frameIndex: 0 }], skipped: [], indices: [0, 1, 2, 3] };
+  const described = describePlayerSpritePlan(project, plan, []);
+  assert.equal(described.placeholder, null);
+});
+
+test('describePlayerSpritePlan: placeholder note is also absent for a fully-generated 8-frame plan even though playerTiles started all null -- indices, not the pre-plan array, decide', () => {
+  const project = createProject('T');
+  const { parts, picks } = buildFullPlayerParts();
+  project.sprites.playerParts = parts;
+  const plan = planPlayerSprite(project, picks);
+  assert.equal(plan.written.length, 8);
+  const described = describePlayerSpritePlan(project, plan, []);
+  assert.equal(described.placeholder, null);
+});
+
+test('describePlayerSpritePlan: collisions text is absent for zero, singular for one, plural with every name for two or more', () => {
+  const project = createProject('T');
+  const plan = { written: [{ direction: 'down', frameIndex: 0 }], skipped: [], indices: [0, 1, 2, 3] };
+
+  const none = describePlayerSpritePlan(project, plan, []);
+  assert.equal(none.collisions, null);
+
+  const one = describePlayerSpritePlan(project, plan, [{ index: 0, name: 'Slime', tiles: [1] }]);
+  assert.equal(one.collisions, '1 metasprite (Slime) references a tile index inside this range and will look different after this.');
+
+  const two = describePlayerSpritePlan(project, plan, [
+    { index: 0, name: 'Slime', tiles: [1] },
+    { index: 2, name: 'Chest', tiles: [2, 3] }
+  ]);
+  assert.equal(
+    two.collisions,
+    '2 metasprites (Slime, Chest) reference tile indices inside this range and will look different after this.'
+  );
+});
+
+test('describePlayerSpritePlan: the success toast names how many frames were written, singular/plural, and appends the skipped count when non-empty', () => {
+  const project = createProject('T');
+
+  const one = describePlayerSpritePlan(project, { written: [{ direction: 'down', frameIndex: 0 }], skipped: [], indices: [0, 1, 2, 3] }, []);
+  assert.equal(one.toast, 'Generated 1 player sprite frame.');
+
+  const two = describePlayerSpritePlan(
+    project,
+    { written: [{ direction: 'down', frameIndex: 0 }, { direction: 'up', frameIndex: 1 }], skipped: [], indices: [0, 1, 2, 3, 4, 5, 6, 7] },
+    []
+  );
+  assert.equal(two.toast, 'Generated 2 player sprite frames.');
+
+  const withSkipped = describePlayerSpritePlan(
+    project,
+    {
+      written: [{ direction: 'down', frameIndex: 0 }],
+      skipped: [{ direction: 'up', frameIndex: 0, reason: 'x', quadrants: ['TL'] }],
+      indices: [0, 1, 2, 3]
+    },
+    []
+  );
+  assert.equal(withSkipped.toast, 'Generated 1 player sprite frame. 1 frame skipped (incomplete).');
+
+  const withSkippedPlural = describePlayerSpritePlan(
+    project,
+    {
+      written: [{ direction: 'down', frameIndex: 0 }],
+      skipped: [
+        { direction: 'up', frameIndex: 0, reason: 'x', quadrants: ['TL'] },
+        { direction: 'left', frameIndex: 1, reason: 'x', quadrants: ['BR'] }
+      ],
+      indices: [0, 1, 2, 3]
+    },
+    []
+  );
+  assert.equal(withSkippedPlural.toast, 'Generated 1 player sprite frame. 2 frames skipped (incomplete).');
+});
+
+test('describePlayerSpritePlan does not mutate project or plan', () => {
+  const project = createProject('T');
+  const plan = { written: [{ direction: 'down', frameIndex: 0 }], skipped: [], indices: [0, 1, 2, 3] };
+  const collisions = [{ index: 0, name: 'Slime', tiles: [1] }];
+  const before = JSON.stringify({ project, plan, collisions });
+  describePlayerSpritePlan(project, plan, collisions);
+  assert.equal(JSON.stringify({ project, plan, collisions }), before);
+});
