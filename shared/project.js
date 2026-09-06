@@ -2834,6 +2834,24 @@ export function spriteReservedRanges(project, mapper) {
 }
 
 /**
+ * The exact text for a reserved-tile-reference warning (design §3.12).
+ * `collision` is one entry of `metaspriteTileCollisions`' own return array
+ * (`{index, name, tiles}`); `ranges` is `spriteReservedRanges`'s own output,
+ * consulted only to look up each hit tile's own `label`.
+ */
+export function describeReservedReferenceWarning(collision, ranges) {
+  const labels = collision.tiles.map((tile) => {
+    const range = ranges.find((r) => tile >= r.start && tile < r.end);
+    const hex = `$${tile.toString(16).toUpperCase().padStart(2, '0')}`;
+    return range ? `${hex} (${range.label})` : hex;
+  });
+  return (
+    `Metasprite "${collision.name}" references ${labels.join(', ')}, which will be replaced at ` +
+    'build time.'
+  );
+}
+
+/**
  * Renders a "Generate Player Sprite" plan (design-modular-parts.md §6.3) as
  * plain-text strings, and only that -- the modal (renderer/forges/tile/
  * tile.js) renders exactly these strings and computes nothing about their
@@ -3187,6 +3205,134 @@ function actorRestingIconTiles(actor, project) {
   return project.sprites.metasprites[id]?.tiles.length ?? 0;
 }
 
+// A single animation's own worst-case tile count. Zero authored frames
+// compiles to a one-byte $00 stub the engine dereferences as metasprite 0,
+// not "draws nothing" (main/build/generate.js's spriteTables,
+// engine/entities.asm's draw_one_entity, test/unit/items.test.js's own
+// regression proof for the identical fallback chain) -- the same
+// substitution resolveActorRestingIcon already applies to a single icon.
+function animationMetaspriteTileCount(animation, project) {
+  if (!animation.frames.length) return project.sprites.metasprites[0]?.tiles.length ?? 0;
+  let max = 0;
+  for (const frame of animation.frames) {
+    const metasprite = project.sprites.metasprites[frame.metaspriteId];
+    if (metasprite && metasprite.tiles.length > max) max = metasprite.tiles.length;
+  }
+  return max;
+}
+
+// The four facings actor_anim_dir actually compiles (main/build/
+// generate.js's spriteTables), in the same order -- walkSide covers both
+// left and right, so it is asked twice rather than once here, matching the
+// compiled table exactly. (fieldScanlineDensity's own reachablePoses asks
+// for the three DISTINCT slots instead, for its own, different reason.)
+const FACING_SLOTS = ['walkDown', 'walkUp', 'walkSide', 'walkSide'];
+
+/**
+ * The field figure's own resolver (design §3.6): the one place every facing
+ * and every frame of an actor genuinely can be shown, since a field entity's
+ * own facing/frame state (draw_one_entity, engine/entities.asm) is the one
+ * and only place that is true. Everywhere else in this design that needs an
+ * actor's icon (the overlay figure, battle's fallback monsters) must resolve
+ * it through resolveActorRestingIcon/draw_actor_icon's own exact chain
+ * instead, never a maximum over every pose.
+ */
+export function actorMaxMetaspriteTiles(actor, project) {
+  if (!actor) return 0;
+  let max = 0;
+  for (const slot of FACING_SLOTS) {
+    const animId = animFor(actor, slot);
+    if (animId === NO_ANIM) continue;
+    const animation = project.sprites.animations[animId];
+    if (!animation) continue;
+    const count = animationMetaspriteTileCount(animation, project);
+    if (count > max) max = count;
+  }
+  return max;
+}
+
+/**
+ * The field figure for one screen (design §3.8): the player's own four fixed
+ * OAM entries, plus every placed entity's own worst reachable pose --
+ * matching the compiler's own direct array-index lookup
+ * (`entity.actorId < actorCount`, then `actors[entity.actorId]`). A hide-
+ * switch placement is not excluded: it draws whenever its switch is off, the
+ * default, initial state, so it counts toward what this screen could ever
+ * demand. Returned alongside `overlaySpriteBudget`'s own project-wide figure
+ * and the shared OAM limit, so a caller never has to fetch the three
+ * separately and risk them drifting out of sync.
+ */
+export function screenSpriteBudget(project, screen) {
+  const field = screen.entities.reduce((total, entity) => {
+    const actor = project.sprites.actors[entity.actorId];
+    return total + actorMaxMetaspriteTiles(actor, project); // every facing genuinely showable here
+  }, PLAYER_OAM_ENTRIES);
+  return { field, overlay: overlaySpriteBudget(project), limit: MAX_OAM_ENTRIES };
+}
+
+function largestActorRestingIconTiles(project) {
+  let max = 0;
+  for (const actor of project.sprites.actors ?? []) {
+    const count = actorRestingIconTiles(actor, project);
+    if (count > max) max = count;
+  }
+  return max;
+}
+
+function largestItemIconTiles(project) {
+  let max = 0;
+  for (const item of project.items ?? []) {
+    const actor = project.sprites.actors[item.actorId];
+    const iconId = resolveItemIcon(item, actor, project.sprites.animations, project.sprites.metasprites);
+    const metasprite = project.sprites.metasprites[iconId];
+    if (metasprite && metasprite.tiles.length > max) max = metasprite.tiles.length;
+  }
+  return max;
+}
+
+/**
+ * The overlay figure, project-wide (design §3.8): hearts, plus the LARGER of
+ * the inventory row's or the dialogue portrait's own worst case -- ST_MENU
+ * and ST_DIALOG are mutually exclusive game_state values (engine/ui.asm), so
+ * the two never draw on the same frame, but each is independently additive
+ * with hearts. Deliberately a separate figure from the field one (design §2):
+ * the two use genuinely different coordinate spaces (screen position vs.
+ * fixed HUD position), so folding them into one joint sweep would be a
+ * materially larger calculation than either alone.
+ */
+export function overlaySpriteBudget(project) {
+  // draw_hud (engine/combat.asm) draws MAX_HEARTS sprites, full or empty,
+  // both drawn -- gated the same way its own reservation is
+  // (projectUsesHeartArt: COMBAT_ENABLED and not an RPG).
+  const hearts = projectUsesHeartArt(project) ? (project.project?.maxHearts ?? 3) : 0;
+  // draw_menu (engine/ui.asm) draws up to MAX_ITEMS icons, one
+  // draw_metasprite call each -- through draw_item_icon (an item's own exact
+  // icon, resolveItemIcon) when ITEMS_ENABLED, otherwise through
+  // draw_actor_icon (resolveActorRestingIcon) reading inv_items as raw actor
+  // ids directly.
+  const inventory = projectUsesItems(project)
+    ? MAX_ITEMS * largestItemIconTiles(project)
+    : MAX_ITEMS * largestActorRestingIconTiles(project);
+  // draw_dialog (engine/ui.asm) draws at most one portrait, also through
+  // draw_actor_icon.
+  const portrait = largestActorRestingIconTiles(project);
+  return hearts + Math.max(inventory, portrait);
+}
+
+/**
+ * The exact text for a per-screen field+overlay OAM warning (design §3.12).
+ * `budget` is `screenSpriteBudget`'s own return shape (`{field, overlay,
+ * limit}`).
+ */
+export function describeScreenSpriteWarning(project, mapIndex, screenIndex, budget) {
+  const total = budget.field + budget.overlay;
+  return (
+    `${screenLabel(project, mapIndex, screenIndex)} could need ${total} sprites at once ` +
+    `(${budget.field} for the player and its actors, plus up to ${budget.overlay} for the HUD and ` +
+    `menus); the NES can only show ${budget.limit}.`
+  );
+}
+
 // The pure spriteBytes term main/build/generate.js's kernelTableBytes used
 // to compute inline. Needs neither flattenScreens nor node:fs, so it can
 // live here and be read by the Sprite Forge as well as the generator.
@@ -3199,6 +3345,14 @@ export function metaspriteKernelBytes(project) {
     2 * animations.reduce((total, entry) => total + entry.frames.length, 0) +
     8 * Math.max(1, actors.length)
   );
+}
+
+/**
+ * The exact text for the battle OAM warning (design §3.12). `budget` is
+ * `battleSpriteBudget`'s own return shape (`{used, limit}`).
+ */
+export function describeBattleSpriteWarning(budget) {
+  return `A battle could need ${budget.used} sprites at once; the NES can only show ${budget.limit}.`;
 }
 
 /**
@@ -3407,6 +3561,19 @@ export function fieldScanlineRows(project, screen, { isStartScreen } = {}) {
 // own worst pose at the identical instant every other entity is.
 export function fieldScanlineDensity(project, screen, opts = {}) {
   return Math.max(0, ...fieldScanlineRows(project, screen, opts).values());
+}
+
+/**
+ * The exact text for the position-aware field-density warning (design
+ * §3.12) -- labeled a heuristic in its own wording, since it assumes every
+ * placed entity could be showing its own worst pose at the identical
+ * instant every other one is (design §8).
+ */
+export function describeFieldDensityWarning(project, mapIndex, screenIndex, count) {
+  return (
+    `${screenLabel(project, mapIndex, screenIndex)}: at these actors' own placed positions (a ` +
+    `rough estimate — actors and the player both move), ${count} tiles could share one scanline.`
+  );
 }
 
 /**
@@ -4427,6 +4594,55 @@ function normalizeMetasprite(raw, id) {
       vflip: Boolean(t?.vflip)
     }))
   };
+}
+
+/**
+ * A metasprite's own intrinsic scanline density (design-draw-validation.md
+ * §3.1): the peak number of this metasprite's own tiles that can occupy one
+ * scanline, in the metasprite's own LOCAL tile offsets -- never wrapped,
+ * never clipped, and independent of where any entity places it. Half-open
+ * [y, y+8) spans, so a tile at y=0 and one at y=8 do not overlap (rows 0-7
+ * vs. 8-15) but y=0 and y=7 genuinely do (both cover row 7) -- an "end"
+ * event at the same y as a "start" event is applied first, before that y's
+ * own coverage is measured. This is a real, useful, CONSERVATIVE upper
+ * bound on one metasprite's own shape, not definitive hardware behavior:
+ * `draw_one_entity` adds the entity's own runtime `ent_y` to every tile
+ * offset, so an actual on-screen overlap depends on where the entity
+ * stands, and two metasprites belonging to different entities can overlap
+ * on a real scanline even though each one, alone, is well under 8. Its own
+ * sweep is deliberately NOT shared with fieldScanlineDensity/poseRowCounts:
+ * that function needs a materially different shape (max-over-poses-then-
+ * sum-across-entities on wrapped, clipped bytes), and forcing the two to
+ * share one helper would either weaken this one or wrongly complicate it.
+ */
+export function metaspriteScanlineDensity(metasprite) {
+  const tiles = metasprite.tiles ?? [];
+  if (!tiles.length) return 0;
+  const events = [];
+  for (const tile of tiles) {
+    events.push([tile.y, 1]);
+    events.push([tile.y + 8, -1]);
+  }
+  events.sort((a, b) => a[0] - b[0] || a[1] - b[1]); // -1 (end) before +1 (start) at a tie
+  let running = 0;
+  let peak = 0;
+  for (const [, delta] of events) {
+    running += delta;
+    if (running > peak) peak = running;
+  }
+  return peak;
+}
+
+/**
+ * The exact text for a metasprite intrinsic-density warning (design §3.12) --
+ * shared by the Sprite Forge's own live hint and validateProject's matching
+ * warning, so the two can never disagree about the wording.
+ */
+export function describeMetaspriteDensityWarning(metasprite, count) {
+  return (
+    `Metasprite "${metasprite.name}": ${count} of its tiles can share one scanline; the NES ` +
+    'can only show 8 there, so some of them will not appear on that row.'
+  );
 }
 
 function normalizeAnimation(raw, id) {
@@ -6229,6 +6445,46 @@ export function validateProject(project) {
           'will refuse to resolve.'
       );
     }
+  }
+
+  // ROADMAP item 8 (design-draw-validation.md §4) -- five advisory sprite/
+  // OAM warnings. None of these corrupts data, silently discards authored
+  // work, or produces a ROM that fails to build; each degrades to a real,
+  // working game with a visible (or missing) sprite, so all five are
+  // warnings, not errors. Each pairs the identical message-builder call its
+  // own live hint uses (§3.12), so the Problems list and the editor never
+  // disagree about the wording.
+
+  for (const metasprite of project.sprites.metasprites) {
+    const density = metaspriteScanlineDensity(metasprite);
+    if (density > 8) {
+      add('warning', 'Sprite Forge', describeMetaspriteDensityWarning(metasprite, density));
+    }
+  }
+
+  const reservedRanges = spriteReservedRanges(project, artworkMapper);
+  const reservedIndices = reservedRanges.flatMap((r) => Array.from({ length: r.end - r.start }, (_, i) => r.start + i));
+  for (const collision of metaspriteTileCollisions(project, reservedIndices)) {
+    add('warning', 'Sprite Forge', describeReservedReferenceWarning(collision, reservedRanges));
+  }
+
+  for (const { mapIndex, screenIndex, screen } of flatScreens(project)) {
+    const budget = screenSpriteBudget(project, screen);
+    if (budget.field + budget.overlay > budget.limit) {
+      add('warning', 'Map Forge', describeScreenSpriteWarning(project, mapIndex, screenIndex, budget));
+    }
+
+    const isStartScreen =
+      mapIndex === project.project.startMap && screenIndex === project.project.startScreen;
+    const density = fieldScanlineDensity(project, screen, { isStartScreen });
+    if (density > 8) {
+      add('warning', 'Map Forge', describeFieldDensityWarning(project, mapIndex, screenIndex, density));
+    }
+  }
+
+  const battleBudget = battleSpriteBudget(project, artworkMapper);
+  if (battleBudget.used > battleBudget.limit) {
+    add('warning', 'Build', describeBattleSpriteWarning(battleBudget));
   }
 
   return problems;

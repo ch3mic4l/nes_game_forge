@@ -1,4 +1,4 @@
-// ROADMAP item 8 (validate-as-you-draw), Phases 1-4 -- docs/design-draw-
+// ROADMAP item 8 (validate-as-you-draw), Phases 1-5 -- docs/design-draw-
 // validation.md §7. Phases 1-3 carry no UI. Phase 1 covers the pieces that
 // have no home yet beside an existing test file: the relocated animFor/
 // resolveActorRestingIcon matrix, the two flat OAM constants, the MAX_ITEMS
@@ -14,10 +14,10 @@
 // metaspriteTileCollisions and §3.3's spriteReservedRanges -- both tested
 // below against reservedRangeRects' own fixtures (reservedRangeRects itself,
 // pure sheet-grid geometry with no project-domain meaning, lives in
-// test/unit/sheetgeom.test.js instead, beside the module it tests). §3.1's
-// metaspriteScanlineDensity and §3.8's screenSpriteBudget/overlaySpriteBudget
-// belong to Phase 5, tested against the message builders and the concrete
-// 64/65 boundary fixture, and are left unimplemented by this file.
+// test/unit/sheetgeom.test.js instead, beside the module it tests). Phase 5
+// covers §3.1's metaspriteScanlineDensity, §3.6's actorMaxMetaspriteTiles,
+// §3.8's screenSpriteBudget/overlaySpriteBudget, §3.12's five message
+// builders, and the five new validateProject warnings.
 //
 // Everything here builds its own project via createProject() rather than
 // touching `sample/` or any of the other checked-in fixtures, except the
@@ -50,7 +50,21 @@ import {
   PLAYER_TILES,
   metaspriteTileCollisions,
   spriteReservedRanges,
-  validateProject
+  validateProject,
+  metaspriteScanlineDensity,
+  describeMetaspriteDensityWarning,
+  describeReservedReferenceWarning,
+  actorMaxMetaspriteTiles,
+  screenSpriteBudget,
+  overlaySpriteBudget,
+  describeScreenSpriteWarning,
+  describeFieldDensityWarning,
+  describeBattleSpriteWarning,
+  screenLabel,
+  projectUsesItems,
+  createMap,
+  createPartyMember,
+  RPG_LIMITS
 } from '../../shared/project.js';
 import { MAX_ITEMS as SAVE_MAX_ITEMS, saveIdentity } from '../../shared/save.js';
 import { mapperById } from '../../shared/cartridge.js';
@@ -367,7 +381,12 @@ function makeMonster(project, tileCount, { battleTile = null, damage = 0 } = {})
   project.sprites.metasprites.push({
     id: metaspriteId,
     name: `Icon ${metaspriteId}`,
-    tiles: Array.from({ length: tileCount }, (_, i) => ({ tile: i, x: 0, y: 0, palette: 0 }))
+    // tile: 32 + i, not i -- $00-$1F is the player's own always-reserved
+    // range (design-draw-validation.md §3.3), and this helper's own actors
+    // feed the one test in this file that calls validateProject and expects
+    // an exact problem count; tile indices in the player's range would add a
+    // second, real reserved-reference warning to that count.
+    tiles: Array.from({ length: tileCount }, (_, i) => ({ tile: 32 + i, x: 0, y: 0, palette: 0 }))
   });
   const animId = project.sprites.animations.length;
   project.sprites.animations.push({ id: animId, name: `Walk ${animId}`, loop: true, frames: [{ metaspriteId }] });
@@ -954,4 +973,407 @@ test('renderer/forges/tile/tile.js: renderSheet keeps the sprite-table and backg
     'expected renderSheet to build its reservedRanges list from playerReserved() ? spriteReservedRanges(...) : fontReserved() ? [font range] : [] -- ' +
       'a version that reused one range list for both tables (or compared state.table directly instead of the existing gates) would fail this match'
   );
+});
+
+// ============================================================================
+// Phase 5 -- docs/design-draw-validation.md §7 Phase 5. metaspriteScanlineDensity
+// (§3.1), actorMaxMetaspriteTiles (§3.6), screenSpriteBudget/overlaySpriteBudget
+// (§3.8), the five message builders (§3.12), and the five new validateProject
+// warnings (§4).
+// ============================================================================
+
+// --------------------------------------------------------------------------
+// metaspriteScanlineDensity (§3.1) -- a metasprite's own intrinsic density,
+// local, non-wrapping, half-open [y, y+8) spans.
+// --------------------------------------------------------------------------
+
+test('metaspriteScanlineDensity: half-open [y, y+8) spans -- y=0 and y=7 overlap (both cover row 7); y=0 and y=8 do not -- caught: a closed [y, y+8] interval, or an "end before start at a tie" ordering bug', () => {
+  assert.equal(metaspriteScanlineDensity({ tiles: [{ y: 0 }, { y: 7 }] }), 2);
+  assert.equal(metaspriteScanlineDensity({ tiles: [{ y: 0 }, { y: 8 }] }), 1);
+});
+
+test('metaspriteScanlineDensity: the PEAK across many overlapping tiles, not merely whether any two overlap -- nine tiles at the same y report 9', () => {
+  const tiles = Array.from({ length: 9 }, () => ({ y: 0 }));
+  assert.equal(metaspriteScanlineDensity({ tiles }), 9);
+});
+
+test('metaspriteScanlineDensity: no tiles is 0', () => {
+  assert.equal(metaspriteScanlineDensity({ tiles: [] }), 0);
+});
+
+test('describeMetaspriteDensityWarning: names the metasprite and the count -- caught: an off-by-one or a hardcoded count', () => {
+  const text = describeMetaspriteDensityWarning({ name: 'Boss' }, 9);
+  assert.match(text, /"Boss"/);
+  assert.match(text, /\b9\b/);
+});
+
+test('describeReservedReferenceWarning: a collision spanning two DIFFERENT ranges names BOTH ranges’ own labels -- caught: looking up only ranges[0] instead of ranges.find(...) per tile', () => {
+  const ranges = [
+    { start: 0, end: 32, label: 'the player' },
+    { start: 254, end: 256, label: 'the HUD hearts' }
+  ];
+  const collision = { index: 0, name: 'Icon', tiles: [5, 254] };
+  const text = describeReservedReferenceWarning(collision, ranges);
+  assert.match(text, /"Icon"/);
+  assert.match(text, /\$05 \(the player\)/);
+  assert.match(text, /\$FE \(the HUD hearts\)/);
+});
+
+// --------------------------------------------------------------------------
+// actorMaxMetaspriteTiles (§3.6) -- the field figure's own resolver, maxing
+// over EVERY facing/frame, unlike actorRestingIconTiles (down/frame0 only).
+// --------------------------------------------------------------------------
+
+// Pushes a "resting" metasprite (walkDown, restTiles tiles) and a "big" one
+// (walkUp by default, bigTiles tiles) plus an actor whose anims name both --
+// exactly the shape the field-figure/overlay-figure fixtures below need to
+// keep the two chains (actorMaxMetaspriteTiles vs. actorRestingIconTiles)
+// genuinely distinguishable, per design §7 Phase 5's own 64/65 boundary
+// fixture requirement.
+function makeFieldActor(project, { restTiles, bigTiles, slot = 'walkUp' }) {
+  const restId = project.sprites.metasprites.length;
+  project.sprites.metasprites.push({
+    id: restId,
+    name: `Rest ${restId}`,
+    tiles: Array.from({ length: restTiles }, (_, i) => ({ tile: 32 + i, x: 0, y: 0 }))
+  });
+  const bigId = project.sprites.metasprites.length;
+  project.sprites.metasprites.push({
+    id: bigId,
+    name: `Big ${bigId}`,
+    tiles: Array.from({ length: bigTiles }, (_, i) => ({ tile: 32 + i, x: 0, y: 0 }))
+  });
+  const downAnim = project.sprites.animations.length;
+  project.sprites.animations.push({ id: downAnim, name: `Down ${downAnim}`, loop: true, frames: [{ metaspriteId: restId }] });
+  const bigAnim = project.sprites.animations.length;
+  project.sprites.animations.push({ id: bigAnim, name: `Big ${bigAnim}`, loop: true, frames: [{ metaspriteId: bigId }] });
+  const actorId = project.sprites.actors.length;
+  project.sprites.actors.push({
+    id: actorId,
+    name: `Actor ${actorId}`,
+    behavior: 'patroller',
+    speed: 1,
+    hp: 1,
+    damage: 0,
+    anims: { walkDown: downAnim, [slot]: bigAnim },
+    battle: { battleTile: null }
+  });
+  return { actorId, restId, bigId };
+}
+
+test('actorMaxMetaspriteTiles: maxes over every facing, not just walkDown -- a 13-tile walkUp pose beats a 2-tile walkDown resting icon -- caught: reusing resolveActorRestingIcon here instead of maxing over FACING_SLOTS', () => {
+  const project = createProject('Field actor', 'action');
+  const { actorId } = makeFieldActor(project, { restTiles: 2, bigTiles: 13 });
+  assert.equal(actorMaxMetaspriteTiles(project.sprites.actors[actorId], project), 13);
+});
+
+test('actorMaxMetaspriteTiles: no actor is 0', () => {
+  const project = createProject('No actor', 'action');
+  assert.equal(actorMaxMetaspriteTiles(null, project), 0);
+});
+
+test('actorMaxMetaspriteTiles: a zero-frame animation substitutes metasprite 0, the compiled stub, not 0 tiles outright -- caught: treating a zero-frame animation as drawing nothing', () => {
+  const project = createProject('Zero-frame facing', 'action');
+  const stubId = project.sprites.metasprites.length; // must land at index 0 for the stub substitution to apply
+  project.sprites.metasprites.push({ id: stubId, name: 'Stub', tiles: Array.from({ length: 5 }, (_, i) => ({ tile: 32 + i })) });
+  assert.equal(stubId, 0);
+  const emptyAnim = project.sprites.animations.length;
+  project.sprites.animations.push({ id: emptyAnim, name: 'Empty', loop: true, frames: [] });
+  const actorId = project.sprites.actors.length;
+  project.sprites.actors.push({
+    id: actorId,
+    name: 'Actor',
+    behavior: 'patroller',
+    speed: 1,
+    hp: 1,
+    damage: 0,
+    anims: { walkDown: emptyAnim }
+  });
+  assert.equal(actorMaxMetaspriteTiles(project.sprites.actors[actorId], project), 5);
+});
+
+// --------------------------------------------------------------------------
+// screenSpriteBudget / overlaySpriteBudget (§3.8) and their message builders.
+// --------------------------------------------------------------------------
+
+test('overlaySpriteBudget: an empty project is 0 -- no hearts, no items, no actors', () => {
+  const project = createProject('Empty overlay', 'action');
+  assert.equal(overlaySpriteBudget(project), 0);
+});
+
+test('overlaySpriteBudget: hearts is projectUsesHeartArt-gated (maxHearts when combat is live, 0 when it is not), additive with the LARGER of the inventory or portrait terms', () => {
+  const project = createProject('Overlay hearts', 'action');
+  const actorId = makeMonster(project, 3, { damage: 1 }); // projectUsesCombat -> true
+  project.project.maxHearts = 5;
+  assert.equal(overlaySpriteBudget(project), 5 + Math.max(8 * 3, 3));
+  project.sprites.actors[actorId].damage = 0; // combat off -- hearts term drops to 0
+  assert.equal(overlaySpriteBudget(project), Math.max(8 * 3, 3));
+});
+
+test('overlaySpriteBudget: with items enabled, the inventory term uses the largest ITEM icon, never the largest actor resting icon -- but the portrait term still reads every actor, so a large actor can still dominate the max -- caught: reusing largestActorRestingIconTiles for the inventory term once items are enabled', () => {
+  const project = createProject('Overlay items', 'action');
+  makeMonster(project, 10); // a large resting icon that must not feed the INVENTORY term once items exist
+  const iconId = project.sprites.metasprites.length;
+  project.sprites.metasprites.push({ id: iconId, name: 'Item icon', tiles: [{ tile: 40 }] }); // 1 tile
+  project.items.push({ id: 0, name: 'Potion', actorId: null, metaspriteId: iconId, effect: { kind: 'none', amount: 0 } });
+  assert.ok(projectUsesItems(project));
+  // inventory = MAX_ITEMS * 1 = 8; portrait = 10 (the monster's own resting icon) -- portrait wins.
+  assert.equal(overlaySpriteBudget(project), 10);
+});
+
+test('screenSpriteBudget: field is PLAYER_OAM_ENTRIES plus each placed entity’s own actorMaxMetaspriteTiles; a stale actorId contributes 0 without throwing -- caught: indexing actors[entity.actorId] with no existence guard', () => {
+  const project = createProject('Field budget', 'action');
+  const { actorId } = makeFieldActor(project, { restTiles: 2, bigTiles: 13 });
+  const screen = project.maps[0].screens[0];
+  screen.entities.push({ actorId, x: 0, y: 0, props: {} });
+  screen.entities.push({ actorId: 99, x: 0, y: 0, props: {} }); // no actor at index 99
+  const budget = screenSpriteBudget(project, screen);
+  assert.equal(budget.field, PLAYER_OAM_ENTRIES + 13);
+  assert.equal(budget.limit, MAX_OAM_ENTRIES);
+});
+
+test('describeScreenSpriteWarning: {field: 56, overlay: 8, limit: 64} for a NAMED screen includes the screen’s own label, 56, 8, and 64 (both the limit and the total) as literal substrings -- caught: omitting any one of the five', () => {
+  const project = createProject('Screen warning named', 'action');
+  project.maps[0].name = 'World';
+  project.maps[0].screens[0].name = 'Boss Room';
+  const text = describeScreenSpriteWarning(project, 0, 0, { field: 56, overlay: 8, limit: 64 });
+  assert.match(text, /World · Boss Room/);
+  assert.match(text, /\b56\b/);
+  assert.match(text, /\b8\b/);
+  assert.match(text, /\b64\b/);
+});
+
+test('describeScreenSpriteWarning: an UNNAMED screen falls back to screenLabel’s own "screen N" wording -- caught: a builder that assumes every screen has an author-given name', () => {
+  const project = createProject('Screen warning unnamed', 'action');
+  const text = describeScreenSpriteWarning(project, 0, 0, { field: 56, overlay: 8, limit: 64 });
+  assert.equal(text.startsWith(screenLabel(project, 0, 0)), true);
+  assert.match(text, /screen 0/);
+});
+
+test('describeFieldDensityWarning: names the screen and the count, and calls itself a rough estimate -- caught: an off-by-one, or dropping the heuristic framing', () => {
+  const project = createProject('Field density warning text', 'action');
+  const text = describeFieldDensityWarning(project, 0, 0, 9);
+  assert.match(text, new RegExp(screenLabel(project, 0, 0).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+  assert.match(text, /\b9\b/);
+  assert.match(text, /rough estimate/);
+});
+
+test('describeBattleSpriteWarning: names the used count and the limit', () => {
+  const text = describeBattleSpriteWarning({ used: 70, limit: 64 });
+  assert.match(text, /\b70\b/);
+  assert.match(text, /\b64\b/);
+});
+
+// The concrete 64/65 boundary fixture, design §7 Phase 5's own last paragraph:
+// an action project, combat off (no hearts term), items enabled with a
+// single-tile item icon (inventory overlay term = MAX_ITEMS * 1 = 8), and
+// four placed actors each with a small (<=8-tile) walkDown resting icon and
+// a 13-tile walkUp pose -- field = 4 + 4*13 = 56, overlay = max(8, <=8) = 8,
+// total 64: no overflow. Adding one tile to any one actor's own walkUp
+// metasprite (13 -> 14) raises the field total to 57 and the grand total to
+// 65 -- caught: an off-by-one comparing > instead of >= (or the reverse)
+// against MAX_OAM_ENTRIES, and, by this fixture's own two-animation
+// construction, an implementation that conflates the field figure's
+// every-facing maximum with the overlay figure's down-facing-only resting
+// icon (which a looser fixture could pass for the wrong reason).
+test('screenSpriteBudget/overlaySpriteBudget: the concrete 64/65 boundary -- exactly 64 does not overflow, 65 does', () => {
+  const project = createProject('Boundary', 'action');
+  const iconId = project.sprites.metasprites.length;
+  project.sprites.metasprites.push({ id: iconId, name: 'Item icon', tiles: [{ tile: 40 }] });
+  project.items.push({ id: 0, name: 'Potion', actorId: null, metaspriteId: iconId, effect: { kind: 'none', amount: 0 } });
+
+  const actors = [];
+  for (let i = 0; i < 4; i++) actors.push(makeFieldActor(project, { restTiles: 2, bigTiles: 13 }));
+  const screen = project.maps[0].screens[0];
+  for (const { actorId } of actors) screen.entities.push({ actorId, x: 0, y: 0, props: {} });
+
+  let budget = screenSpriteBudget(project, screen);
+  assert.equal(budget.field, 4 + 4 * 13); // 56
+  assert.equal(budget.overlay, 8);
+  assert.equal(budget.field + budget.overlay, 64);
+
+  // Review round 1, finding 1: the 64 case must also be proven THROUGH
+  // validateProject, not only against the pure screenSpriteBudget figures --
+  // a production predicate silently loosened to `budget.field > budget.limit`
+  // (ignoring the overlay term entirely) would still pass every assertion
+  // above, since only screenSpriteBudget's own two numbers are checked there.
+  const messageAt64 = describeScreenSpriteWarning(project, 0, 0, budget);
+  const problemsAt64 = validateProject(project);
+  assert.equal(
+    problemsAt64.some((p) => p.where === 'Map Forge' && p.message === messageAt64),
+    false,
+    'at exactly 64 (the limit, not over it), the screen-sprite warning must be absent'
+  );
+
+  project.sprites.metasprites[actors[0].bigId].tiles.push({ tile: 45 }); // 13 -> 14
+  budget = screenSpriteBudget(project, screen);
+  assert.equal(budget.field, 57);
+  assert.equal(budget.field + budget.overlay, 65);
+
+  const messageAt65 = describeScreenSpriteWarning(project, 0, 0, budget);
+  const problemsAt65 = validateProject(project);
+  const matchesAt65 = problemsAt65.filter((p) => p.where === 'Map Forge' && p.message === messageAt65);
+  assert.equal(
+    matchesAt65.length,
+    1,
+    'at 65 (one over the limit), the exact screen-sprite warning must appear exactly once as a Map Forge warning'
+  );
+  assert.equal(matchesAt65[0].severity, 'warning');
+});
+
+// --------------------------------------------------------------------------
+// The five new validateProject warnings (§4) -- each a 'warning', never an
+// 'error', and each calling its own message builder rather than a second,
+// inline copy of the same text.
+// --------------------------------------------------------------------------
+
+test('validateProject: a metasprite whose own intrinsic density exceeds 8 gets a Sprite Forge WARNING, not an error, with the exact describeMetaspriteDensityWarning text', () => {
+  const project = createProject('Density warning', 'action');
+  project.sprites.metasprites.push({
+    id: 0,
+    name: 'Dense',
+    tiles: Array.from({ length: 9 }, (_, i) => ({ tile: 32 + i, x: i * 8, y: 0, palette: 0 }))
+  });
+  const problems = validateProject(project);
+  const found = problems.find((p) => p.where === 'Sprite Forge' && p.message.includes('"Dense"'));
+  assert.ok(found, 'expected a Sprite Forge problem naming the dense metasprite');
+  assert.equal(found.severity, 'warning');
+  assert.equal(found.message, describeMetaspriteDensityWarning(project.sprites.metasprites[0], 9));
+});
+
+test('validateProject: a metasprite referencing a reserved tile that is NOT its last tile still triggers the reserved-reference warning -- caught: only checking the metasprite’s own last tile', () => {
+  const project = createProject('Reserved not last', 'action');
+  project.sprites.metasprites.push({
+    id: 0,
+    name: 'Mixed',
+    tiles: [
+      { tile: 5, x: 0, y: 0, palette: 0 }, // reserved -- the player range, $00-$1F
+      { tile: 40, x: 8, y: 0, palette: 0 } // ordinary art, last in the list
+    ]
+  });
+  const problems = validateProject(project);
+  const found = problems.find((p) => p.where === 'Sprite Forge' && p.message.includes('"Mixed"'));
+  assert.ok(found, 'expected a Sprite Forge problem naming the mixed metasprite even though the reserved tile is not last');
+  assert.equal(found.severity, 'warning');
+  assert.match(found.message, /\$05/);
+});
+
+test('validateProject: TWO separately named colliding metasprites each get their own exact reserved-reference warning -- caught: a collision loop truncated to .slice(0, 1), which would report only the first', () => {
+  const project = createProject('Two collisions', 'action');
+  project.sprites.metasprites.push({ id: 0, name: 'First', tiles: [{ tile: 3, x: 0, y: 0, palette: 0 }] });
+  project.sprites.metasprites.push({ id: 1, name: 'Second', tiles: [{ tile: 7, x: 0, y: 0, palette: 0 }] });
+
+  const mapper = mapperById(project.cartridge.mapper);
+  const ranges = spriteReservedRanges(project, mapper);
+  const indices = ranges.flatMap((r) => Array.from({ length: r.end - r.start }, (_, i) => r.start + i));
+  const collisions = metaspriteTileCollisions(project, indices);
+  assert.equal(collisions.length, 2, 'expected both metasprites to collide with the player range');
+
+  const firstMessage = describeReservedReferenceWarning(collisions[0], ranges);
+  const secondMessage = describeReservedReferenceWarning(collisions[1], ranges);
+  assert.notEqual(firstMessage, secondMessage);
+
+  const problems = validateProject(project);
+  const spriteWarnings = problems.filter(
+    (p) => p.where === 'Sprite Forge' && (p.message === firstMessage || p.message === secondMessage)
+  );
+  // Round 2 review, finding 1: a plain length check (`=== 2`) is satisfied by
+  // two copies of the SAME message, which would still pass while
+  // secondMessage never actually appeared -- comparing the sorted emitted
+  // messages directly against the sorted expected pair proves both distinct
+  // warnings are present, not merely that two matching problems exist.
+  assert.deepEqual(
+    spriteWarnings.map((p) => p.message).sort(),
+    [firstMessage, secondMessage].sort(),
+    'expected BOTH exact builder messages, each exactly once, to appear as Sprite Forge warnings'
+  );
+  for (const problem of spriteWarnings) assert.equal(problem.severity, 'warning');
+});
+
+test('validateProject: the per-screen field+overlay warning names the right screen, and stays silent for the identical actor on an uncrowded screen -- caught: a global, worst-case-only check that cannot tell screens apart', () => {
+  const project = createProject('Per-screen OAM', 'action');
+  // bigTiles capped at LIMITS.metaspriteTiles (16) -- a persisted project
+  // can never hold a larger metasprite; 5 placements of a 16-tile actor
+  // still overflows 64 (field = 4 + 5*16 = 84).
+  const { actorId } = makeFieldActor(project, { restTiles: 2, bigTiles: 16 });
+  project.maps[0].name = 'Crowded Map';
+  project.maps[0].screens[0].name = 'Crowded Screen';
+  for (let i = 0; i < 5; i++) project.maps[0].screens[0].entities.push({ actorId, x: 0, y: 0, props: {} });
+
+  const quietMap = createMap(1, 'Quiet Map');
+  quietMap.screens[0].entities.push({ actorId, x: 0, y: 0, props: {} });
+  project.maps.push(quietMap);
+
+  const problems = validateProject(project);
+  const crowded = problems.find((p) => p.where === 'Map Forge' && p.message.includes('Crowded Map · Crowded Screen'));
+  assert.ok(crowded, 'expected a warning naming the crowded screen');
+  assert.equal(crowded.severity, 'warning');
+  const quiet = problems.find((p) => p.where === 'Map Forge' && p.message.includes('Quiet Map'));
+  assert.equal(quiet, undefined, 'the uncrowded screen with the same actor must not trigger the warning');
+});
+
+test('validateProject: the position-aware field-density warning fires as a warning, with the exact describeFieldDensityWarning text', () => {
+  const project = createProject('Field density warning', 'action');
+  const metaId = project.sprites.metasprites.length;
+  project.sprites.metasprites.push({
+    id: metaId,
+    name: 'Dense pose',
+    tiles: Array.from({ length: 9 }, (_, i) => ({ tile: 32 + i, x: i * 8, y: 0 }))
+  });
+  const animId = project.sprites.animations.length;
+  project.sprites.animations.push({ id: animId, name: 'Down', loop: true, frames: [{ metaspriteId: metaId }] });
+  const actorId = project.sprites.actors.length;
+  project.sprites.actors.push({
+    id: actorId,
+    name: 'Dense actor',
+    behavior: 'patroller',
+    speed: 1,
+    hp: 1,
+    damage: 0,
+    anims: { walkDown: animId }
+  });
+  project.maps[0].screens[0].entities.push({ actorId, x: 0, y: 50, props: {} });
+
+  const problems = validateProject(project);
+  const found = problems.find((p) => p.where === 'Map Forge' && p.message.includes('rough estimate'));
+  assert.ok(found, 'expected a field-density warning');
+  assert.equal(found.severity, 'warning');
+  assert.equal(
+    found.message,
+    describeFieldDensityWarning(project, 0, 0, fieldScanlineDensity(project, project.maps[0].screens[0], { isStartScreen: true }))
+  );
+});
+
+test('validateProject: the battle sprite-budget warning fires as a warning when the worst reachable formation exceeds 64, built from several legal (<=16-tile) participants -- caught: a fixture relying on a single over-cap metasprite no persisted project could actually hold', () => {
+  const project = createProject('Battle warning', 'rpg');
+  const bigId = project.sprites.metasprites.length;
+  project.sprites.metasprites.push({
+    id: bigId,
+    name: 'Sixteen',
+    tiles: Array.from({ length: 16 }, (_, i) => ({ tile: 32 + i }))
+  });
+  // Fill the party to its own RPG_LIMITS.party ceiling (4), each member
+  // drawn with the identical 16-tile metasprite: party = 4*16 = 64.
+  project.party[0].metaspriteId = bigId;
+  for (let i = 1; i < RPG_LIMITS.party; i++) {
+    const member = createPartyMember(i);
+    member.metaspriteId = bigId;
+    project.party.push(member);
+  }
+  // One hostile placement (touch_encounter's own singleton formation, §3.10)
+  // with the identical 16-tile resting icon pushes the total to 64+16=80.
+  const { actorId } = makeFieldActor(project, { restTiles: 16, bigTiles: 2 });
+  project.sprites.actors[actorId].damage = 1;
+  project.maps[0].screens[0].entities.push({ actorId, x: 0, y: 0, props: {} });
+
+  const mapper = mapperById(project.cartridge.mapper);
+  const budget = battleSpriteBudget(project, mapper);
+  assert.equal(budget.used, RPG_LIMITS.party * 16 + 16); // 80
+  assert.ok(budget.used > budget.limit, 'expected the built fixture to actually overflow 64');
+
+  const problems = validateProject(project);
+  const found = problems.find((p) => p.where === 'Build');
+  assert.ok(found, 'expected a Build problem for the oversized battle formation');
+  assert.equal(found.severity, 'warning');
+  assert.equal(found.message, describeBattleSpriteWarning(budget));
 });

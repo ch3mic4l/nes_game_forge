@@ -19,8 +19,14 @@ import {
   actorAnimationIds,
   actorMetaspriteIds,
   duplicateActorPaletteSwapCore,
-  PLAYER_TILES
+  metaspriteScanlineDensity,
+  describeMetaspriteDensityWarning,
+  metaspriteTileCollisions,
+  spriteReservedRanges,
+  describeReservedReferenceWarning,
+  metaspriteKernelBytes
 } from '../../../shared/project.js';
+import { resolveMapper } from '../../../shared/cartridge.js';
 import { partyPanel } from './battle.js';
 import { drawSheet, sheetIndexFromEvent } from '../../widgets/sheet.js';
 
@@ -351,6 +357,12 @@ export function mount(container, app) {
           '✕'
         )
       ),
+      // Informational only, no meter bar -- there is no ceiling to show a
+      // percentage of (design §2's rejection of a full kernel-lo meter).
+      // Project-wide, so it is not gated on a metasprite being selected.
+      el('div.kv', { style: { marginBottom: '8px' } },
+        el('span', null, 'Sprite/animation/actor tables'),
+        el('span', null, `${metaspriteKernelBytes(store.project)} bytes`)),
       metasprite
         ? el(
             'div',
@@ -421,7 +433,25 @@ export function mount(container, app) {
                   })
               },
               '+ Add tile from the sheet'
-            )
+            ),
+            // Recomputed on every render -- the same "no cached state, just
+            // ask the predicate again" discipline fontReserved()/
+            // playerReserved() already follow (design §6.1).
+            metaspriteScanlineDensity(metasprite) > 8
+              ? el('p.hint', { style: { color: 'var(--accent)' } },
+                  describeMetaspriteDensityWarning(metasprite, metaspriteScanlineDensity(metasprite)))
+              : null,
+            (() => {
+              const ranges = spriteReservedRanges(store.project, resolveMapper(store.project.cartridge.mapper));
+              const flattenedIndices = ranges.flatMap((r) =>
+                Array.from({ length: r.end - r.start }, (_, i) => r.start + i));
+              const collision = metaspriteTileCollisions(store.project, flattenedIndices)
+                .find((c) => c.index === state.metasprite);
+              return collision
+                ? el('p.hint', { style: { color: 'var(--accent)' } },
+                    describeReservedReferenceWarning(collision, ranges))
+                : null;
+            })()
           )
         : el('p.hint', null, 'Create a metasprite to start placing tiles.')
     );
@@ -1203,11 +1233,12 @@ export function mount(container, app) {
     drawSheet(sheetCanvas, spriteTable(), palettes()[0], 2, {
       transparentZero: true,
       selected: state.sheetTile,
-      // Shading only, no behaviour change (design-modular-parts.md §6.2): tiles
-      // $00-$1F are the player's own compiled sprite, replaced at build time.
-      // (The Sprite Forge's own hearts/cursor shading and hints are
-      // design-draw-validation.md §6.1, Phase 5 -- not this call site yet.)
-      reservedRanges: [{ start: 0, end: PLAYER_TILES }]
+      // Shading only, no behaviour change (design-modular-parts.md §6.2,
+      // generalized to every sprite-table reservation by design-draw-
+      // validation.md §6.1): the player's own compiled sprite, the HUD
+      // hearts (with combat) and the battle cursor (RPG split-font), each
+      // replaced at build time.
+      reservedRanges: spriteReservedRanges(store.project, resolveMapper(store.project.cartridge.mapper))
     });
     const party = state.tab === 'party';
     editStage.style.display = party ? 'none' : '';

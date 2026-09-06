@@ -33,7 +33,15 @@ import {
   pasteCapacityProblem
 } from '../../../shared/project.js';
 import { BOX_COLS, BOX_ROWS, FONT_BASE, wrapText, projectUsesEffectiveTitle } from '../../../shared/font.js';
-import { RPG_LIMITS, isMonsterActor, mapEncounterFormation } from '../../../shared/project.js';
+import {
+  RPG_LIMITS,
+  isMonsterActor,
+  mapEncounterFormation,
+  screenSpriteBudget,
+  fieldScanlineDensity,
+  describeScreenSpriteWarning,
+  describeFieldDensityWarning
+} from '../../../shared/project.js';
 import { saveCapable, resolveMapper } from '../../../shared/cartridge.js';
 import { createMetatilePanel } from './metatiles.js';
 import {
@@ -1389,6 +1397,38 @@ export function mount(container, app) {
     );
   }
 
+  // The field/overlay OAM meter, plus the position-aware field-density
+  // heuristic hint (design-draw-validation.md §6.2). Recomputed on every
+  // renderEntities() call -- the same no-cached-state discipline every
+  // other hint in this design follows, so an edit that resolves the
+  // overflow (removing an actor, say) makes the warning disappear on the
+  // very next render.
+  function renderSpriteBudget(screen) {
+    const budget = screenSpriteBudget(store.project, screen);
+    const total = budget.field + budget.overlay;
+    const isStartScreen =
+      state.mapIndex === store.project.project.startMap && state.screenIndex === store.project.project.startScreen;
+    const density = fieldScanlineDensity(store.project, screen, { isStartScreen });
+    return el(
+      'div',
+      { style: { marginBottom: '10px' } },
+      el('div.kv', null, el('span', null, 'Field sprites (player + actors, worst pose)'), el('span', null, `${budget.field}`)),
+      el('div.kv', null, el('span', null, 'Plus up to, for the HUD and menus'), el('span', null, `${budget.overlay}`)),
+      el('div.meter', null, el('div.meter-fill', {
+        class: total > budget.limit ? 'full' : '',
+        style: { width: `${Math.min(100, (total / budget.limit) * 100)}%` }
+      })),
+      total > budget.limit
+        ? el('p.hint', { style: { color: 'var(--accent)' } },
+            describeScreenSpriteWarning(store.project, state.mapIndex, state.screenIndex, budget))
+        : el('p.hint', null, `${total} / ${budget.limit} sprites, worst case.`),
+      density > 8
+        ? el('p.hint', { style: { color: 'var(--accent)' } },
+            describeFieldDensityWarning(store.project, state.mapIndex, state.screenIndex, density))
+        : null
+    );
+  }
+
   function renderEntities() {
     const screen = currentScreen();
     const actors = store.project.sprites.actors;
@@ -1398,6 +1438,7 @@ export function mount(container, app) {
         { style: { paddingLeft: '0' } },
         `Actors on this screen (${screen.entities.length}/${LIMITS.entitiesPerScreen})`
       ),
+      renderSpriteBudget(screen),
       el(
         'div.field-row.wrap',
         null,

@@ -20,7 +20,10 @@ import {
   RPG_LIMITS,
   reconcileCartridge,
   projectUsesSave,
-  projectScreenCeiling
+  projectScreenCeiling,
+  battleSpriteBudget,
+  describeBattleSpriteWarning,
+  MAX_OAM_ENTRIES
 } from '../../../shared/project.js';
 import {
   MAPPERS,
@@ -627,6 +630,28 @@ export function mount(container, app) {
               : 'This project overrides the battle system’s own source, so that figure counts the stock code ' +
                 'rather than yours. The assembler is the real check for it.'
           )
+        : null,
+      // The project-wide battle OAM figure (design-draw-validation.md §6.4,
+      // §3.10) -- surfaced here rather than the Monster Forge because a
+      // formation is not owned by one place in the editor (a scripted
+      // battle's own monster list, a map's wandering table, and an implicit
+      // hostile-placement singleton can each be authored somewhere
+      // different); a single, project-wide worst-case figure fits beside
+      // the existing, already-RPG-only "Battle system" meter above.
+      isRpg
+        ? (() => {
+            const battleBudget = battleSpriteBudget(project, mapper);
+            return [
+              meter('Battle sprites (worst case)', battleBudget.used, MAX_OAM_ENTRIES),
+              battleBudget.used > battleBudget.limit
+                ? el(
+                    'p.hint',
+                    { style: { marginTop: '-6px', color: 'var(--accent)' } },
+                    describeBattleSpriteWarning(battleBudget)
+                  )
+                : null
+            ];
+          })()
         : null,
       isRpg ? rpgProgression(project) : null,
       lastBuild

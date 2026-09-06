@@ -3725,6 +3725,18 @@ const scenario = (dir, sampleDir, sampleRpgDir) => `
   if (mirrorSelect.value !== 'fourscreen') throw new Error('the mirroring selector shows the wrong mode');
   step('four-screen selectable', 'UNROM 512');
 
+  // ROADMAP item 8 (validate-as-you-draw), Phase 5 (docs/design-draw-
+  // validation.md §6.4) -- the Build Forge's own project-wide battle-sprite
+  // meter is RPG-only. This project is action-type, so the meter must be
+  // entirely absent from the Build panel already mounted above.
+  {
+    const p5BattleSpriteRow = [...document.querySelectorAll('#stage .kv')].find(
+      (node) => node.firstElementChild && node.firstElementChild.textContent.trim() === 'Battle sprites (worst case)'
+    );
+    if (p5BattleSpriteRow) throw new Error('the Battle sprites meter must not appear for a non-RPG project');
+    step('build forge battle-sprite meter absent for a non-RPG project', 'ok');
+  }
+
   // Drive the real mapper selector rather than the store, so the Build panel's own
   // reconciliation runs: that is what has to drop an unsupported mirroring mode.
   const mapperSelect = [...document.querySelectorAll('#stage select')].find((s) =>
@@ -3871,6 +3883,90 @@ const scenario = (dir, sampleDir, sampleRpgDir) => `
   const tabs = [...spriteStage.querySelectorAll('.tab')].map((t) => t.textContent);
   if (tabs.length !== 3) throw new Error('expected 3 Sprite Forge tabs, saw ' + tabs.join(','));
   step('sprite forge mounted', tabs.join(' / '));
+
+  // ROADMAP item 8 (validate-as-you-draw), Phase 5 (docs/design-draw-
+  // validation.md §7 Phase 5 / §6.1) -- the scanline-density hint and the
+  // kernel-lo div.kv, driven through the real mounted UI rather than only
+  // test/unit/drawvalidation.test.js's pure metaspriteScanlineDensity/
+  // metaspriteKernelBytes calls. Still on the Metasprites tab (the default
+  // right after mounting). A freshly added metasprite starts with a 16x16
+  // starter quad -- two tiles at y=0, two at y=8 (addMetasprite) -- and
+  // "+ Add tile from the sheet" always adds a tile at x=0,y=0
+  // (state.sheetTile), so seven more of them stack onto the two already at
+  // y=0, reaching nine on that one scanline -- exactly the shape
+  // metaspriteScanlineDensity's own peak-sweep needs to cross 8.
+  {
+    // Review round 1, finding 3: this block adds a metasprite to
+    // sample.value.project (held by reference, not a copy), and that same
+    // object is reopened and built later in this file -- so whatever this
+    // probe adds must be reverted before the block ends, or the later build
+    // carries an extra, density-warning-triggering metasprite the rest of
+    // the script never expected. Recorded before the "Add a 16x16
+    // metasprite" click below, restored via a truncating commit plus a
+    // fresh store.open (clearing the undo stack and dirty flag along with
+    // it) once this probe's own assertions are done.
+    const p5MetaspriteCountBefore = store.project.sprites.metasprites.length;
+
+    const p5AddMetaButton = [...document.querySelectorAll('#stage button.btn.btn-sm')].find(
+      (b) => b.textContent.trim() === '+' && b.title.includes('16x16 metasprite')
+    );
+    if (!p5AddMetaButton) throw new Error('Sprite Forge has no "Add a 16x16 metasprite" button');
+    p5AddMetaButton.click();
+    await wait(80);
+
+    const p5KvRow = (label) =>
+      [...document.querySelectorAll('#stage div.kv')].find((row) => row.textContent.startsWith(label));
+    const p5KernelKv = p5KvRow('Sprite/animation/actor tables');
+    if (!p5KernelKv) throw new Error('Sprite Forge has no kernel-lo div.kv row');
+    const p5KernelBefore = p5KernelKv.textContent;
+
+    const p5AddTileButton = () =>
+      [...document.querySelectorAll('#stage button.btn.btn-sm')].find(
+        (b) => b.textContent.trim() === '+ Add tile from the sheet'
+      );
+    if (!p5AddTileButton()) throw new Error('Sprite Forge has no "+ Add tile from the sheet" button');
+
+    const p5DensityHint = () =>
+      [...document.querySelectorAll('#stage p.hint')].find((p) => p.textContent.includes('can share one scanline'));
+    if (p5DensityHint()) throw new Error('the density hint must not appear before any tiles are added');
+
+    for (let i = 0; i < 7; i++) {
+      p5AddTileButton().click();
+      await wait(30);
+    }
+    await wait(80);
+
+    const p5Hint = p5DensityHint();
+    if (!p5Hint) throw new Error('expected the metasprite scanline-density hint once a metasprite reaches 9 overlapping tiles');
+    if (!p5Hint.textContent.includes('9 of its tiles can share one scanline')) {
+      throw new Error('unexpected density hint text: ' + p5Hint.textContent);
+    }
+    const p5KernelAfter = p5KvRow('Sprite/animation/actor tables').textContent;
+    if (p5KernelAfter === p5KernelBefore) throw new Error('the kernel-lo div.kv did not update after adding tiles');
+    step(
+      'sprite forge scanline-density hint and kernel-lo div.kv',
+      'hint appears at 9 tiles ("' + p5Hint.textContent + '"); kernel-lo bytes moved from "' + p5KernelBefore + '" to "' + p5KernelAfter + '"'
+    );
+
+    // Revert: sample.value.project is held by reference and reopened later
+    // in this file (built as-is), so this probe's own metasprite must not
+    // survive past this block.
+    window.__app.store.commit('smoke: revert phase5 density-hint metasprite', (project) => {
+      project.sprites.metasprites.length = p5MetaspriteCountBefore;
+    });
+    await wait(80);
+    window.__app.store.open(sample.value.dir, sample.value.project);
+    await wait(150);
+    if (sample.value.project.sprites.metasprites.length !== p5MetaspriteCountBefore) {
+      throw new Error(
+        'the density-hint metasprite was not reverted -- expected ' +
+          p5MetaspriteCountBefore +
+          ' metasprites, saw ' +
+          sample.value.project.sprites.metasprites.length
+      );
+    }
+    step('sprite forge phase5 probe reverted', 'metasprite count back to ' + p5MetaspriteCountBefore);
+  }
 
   for (const label of ['Animations', 'Actors']) {
     [...document.querySelectorAll('#stage .tab')].find((t) => t.textContent === label).click();
@@ -4497,6 +4593,244 @@ const scenario = (dir, sampleDir, sampleRpgDir) => `
   // sample.value.project, so re-opening it is a clean switch of context, not
   // a restoration of anything -- the steps below expect the sample's own
   // song data, same as before this block ran.
+  window.__app.store.open(sample.value.dir, sample.value.project);
+  await wait(200);
+
+  // --- ROADMAP item 8 (validate-as-you-draw), Phase 5 -- Map Forge --------
+  // (docs/design-draw-validation.md §7 Phase 5 / §6.2). A fresh, isolated
+  // project rather than the shared sample fixture: these fixtures place
+  // several large, purpose-built actors and a second map that have nothing
+  // to do with sample's own content.
+  {
+    // \\. (not \.): this whole scenario is itself an untagged template
+    // literal (review round 1, finding 5) -- an unrecognized escape like \.
+    // is silently reduced to a bare . by the OUTER literal's own evaluation,
+    // so the regex the browser actually receives would have read
+    // /Smoke.forge$/ (any character, not a literal dot) without the double
+    // backslash here.
+    const p5MapDir = ${JSON.stringify(dir)}.replace(/Smoke\\.forge$/, 'DrawValidationPhase5.forge');
+    const p5Created = await window.forge.project.create({ dir: p5MapDir, name: 'Draw Validation Phase 5' });
+    if (!p5Created.ok) throw new Error('create draw-validation-phase5 project: ' + p5Created.error);
+    window.__app.store.open(p5Created.value.dir, p5Created.value.project);
+    await wait(200);
+    const p5Store = window.__app.store;
+
+    // ---- Fixture A: heterogeneous actors, the meter's own field/overlay
+    // breakdown, its "full" class crossing 64, and updating on removal. ----
+    const p5MakeFieldActor = (project, restTiles, bigTiles) => {
+      const restId = project.sprites.metasprites.length;
+      project.sprites.metasprites.push({
+        id: restId,
+        name: 'Rest ' + restId,
+        tiles: Array.from({ length: restTiles }, (_, i) => ({ tile: 32 + i, x: 0, y: 0, palette: 0, hflip: false, vflip: false }))
+      });
+      const bigId = project.sprites.metasprites.length;
+      project.sprites.metasprites.push({
+        id: bigId,
+        name: 'Big ' + bigId,
+        tiles: Array.from({ length: bigTiles }, (_, i) => ({ tile: 32 + i, x: 0, y: 0, palette: 0, hflip: false, vflip: false }))
+      });
+      const downAnim = project.sprites.animations.length;
+      project.sprites.animations.push({ id: downAnim, name: 'Down ' + downAnim, loop: true, frames: [{ metaspriteId: restId }] });
+      const bigAnim = project.sprites.animations.length;
+      project.sprites.animations.push({ id: bigAnim, name: 'Big ' + bigAnim, loop: true, frames: [{ metaspriteId: bigId }] });
+      const actorId = project.sprites.actors.length;
+      project.sprites.actors.push({
+        id: actorId,
+        name: 'Actor ' + actorId,
+        behavior: 'patroller',
+        speed: 1,
+        hp: 1,
+        damage: 0,
+        anims: { walkDown: downAnim, walkUp: bigAnim },
+        battle: { battleTile: null }
+      });
+      return actorId;
+    };
+
+    let p5ActorIds = [];
+    p5Store.commit('smoke phase5: heterogeneous actors', (project) => {
+      // Heterogeneous max-facing tile counts: 10, 12, 14, 16 -- each within
+      // LIMITS.metaspriteTiles (16), the real ceiling a persisted project's
+      // own metasprite can hold (review round 1, finding 4) -- chosen so the
+      // real field total (4 + 10+12+14+16 = 56) is visibly different from the
+      // retired "4 + largest * LIMITS.entitiesPerScreen" heuristic (4 + 16*8
+      // = 132), which an implementation silently reproducing that heuristic
+      // would report instead. Fewer than eight placements (4).
+      p5ActorIds = [10, 12, 14, 16].map((n) => p5MakeFieldActor(project, 2, n));
+      const screen = project.maps[0].screens[0];
+      for (const actorId of p5ActorIds) screen.entities.push({ actorId, x: 0, y: 0, props: {} });
+    });
+    await wait(150);
+
+    window.__app.goTo('map');
+    await wait(300);
+
+    const p5KvRow = (label) =>
+      [...document.querySelectorAll('#stage div.kv')].find((row) => row.textContent.startsWith(label));
+    const p5FieldKv = p5KvRow('Field sprites');
+    const p5OverlayKv = p5KvRow('Plus up to, for the HUD and menus');
+    if (!p5FieldKv || !p5OverlayKv) throw new Error('Map Forge is missing the field/overlay sprite-budget div.kv rows');
+    // field = PLAYER_OAM_ENTRIES(4) + 10+12+14+16 = 56; overlay = MAX_ITEMS(8)
+    // * largestActorRestingIconTiles(2) = 16 (no items, no combat -- the
+    // "read inv_items as raw actor ids" branch). Total 56+16=72, over 64.
+    if (!p5FieldKv.textContent.includes('56')) throw new Error('expected field sprites 56, saw: ' + p5FieldKv.textContent);
+    if (!p5OverlayKv.textContent.includes('16')) throw new Error('expected overlay sprites 16, saw: ' + p5OverlayKv.textContent);
+
+    const p5MeterFill = () => document.querySelector('#stage div.meter .meter-fill');
+    if (!p5MeterFill() || !p5MeterFill().classList.contains('full')) {
+      throw new Error('expected the sprite-budget meter to show "full" at 56+16=72 sprites');
+    }
+    const p5WarningHint = () =>
+      [...document.querySelectorAll('#stage p.hint')].find((p) => p.textContent.includes('could need'));
+    if (!p5WarningHint()) throw new Error('expected the over-budget warning hint');
+    if (!p5WarningHint().textContent.includes('56') || !p5WarningHint().textContent.includes('16')) {
+      throw new Error(
+        'the warning text must state both the field and overlay parts, not a single combined figure: ' +
+          p5WarningHint().textContent
+      );
+    }
+    step(
+      'map forge sprite-budget meter: heterogeneous actors',
+      'field 56, overlay 16, meter full, warning names both parts -- not the retired 4+largest*8 heuristic'
+    );
+
+    // Remove the biggest actor's own placement (the "✕" button on its entity
+    // row) -- field drops to 4+10+12+14=40, total 40+16=56, under budget.
+    const p5BigRow = [...document.querySelectorAll('#stage [data-entity]')][3];
+    if (!p5BigRow) throw new Error('expected 4 placed-actor rows in the Map Forge entity list');
+    const p5RemoveButton = [...p5BigRow.querySelectorAll('button.btn.btn-sm')].find((b) => b.title === 'Remove');
+    if (!p5RemoveButton) throw new Error('the entity row has no Remove button');
+    p5RemoveButton.click();
+    await wait(150);
+
+    if (p5MeterFill().classList.contains('full')) {
+      throw new Error('the meter must lose its "full" class once an entity is removed');
+    }
+    if (!p5KvRow('Field sprites').textContent.includes('40')) {
+      throw new Error('expected field sprites 40 after removing the 16-tile actor, saw: ' + p5KvRow('Field sprites').textContent);
+    }
+    if (p5WarningHint()) throw new Error('the over-budget warning must disappear once the total is back under the limit');
+    step('map forge sprite-budget meter updates on entity removal', 'field 40, overlay 16, total 56 -- meter no longer full, warning gone');
+
+    // ---- Fixture B: the isStartScreen wiring proof, through the real map
+    // <select> and the screen-navigator thumbnails (design §6.2's own
+    // "Integration coverage" fixture -- no direct fieldScanlineDensity call
+    // anywhere in this test, so the only way to pass is through the real Map
+    // Forge wiring). ----
+    p5Store.commit('smoke phase5: two maps, same local screen index', (project) => {
+      project.project.startMap = 0;
+      project.project.startScreen = 1;
+      // A second screen on map 0 (Map A, the start map) -- gridW bumped to 2
+      // so the map's own screen count agrees with gridW*gridH (review round
+      // 1, finding 4): a real, persisted project can never carry a screens
+      // array longer than that product, since normalizeMap slices to it.
+      project.maps[0].gridW = 2;
+      project.maps[0].screens.push({ name: '', metatiles: new Array(240).fill(0), entities: [], boundTiles: [] });
+      // Map B: a second map, also with two screens (gridW: 2), sharing
+      // screen 1's local index.
+      project.maps.push({
+        id: 1,
+        name: 'Map B',
+        gridW: 2,
+        gridH: 1,
+        screens: [
+          { name: '', metatiles: new Array(240).fill(0), entities: [], boundTiles: [] },
+          { name: '', metatiles: new Array(240).fill(0), entities: [], boundTiles: [] }
+        ],
+        songId: null,
+        tilesetId: 0,
+        battleSkyTile: 0,
+        battleGroundTile: 0,
+        encounters: { rate: 0, actorIds: [] }
+      });
+
+      // A 7-tile pose, all at local y=0, placed (via entity.y below) so its
+      // own OAM-Y row lands exactly on the first row of the player's own top
+      // span (baseY = startY - 1).
+      const metaId = project.sprites.metasprites.length;
+      project.sprites.metasprites.push({
+        id: metaId,
+        name: 'Dense pose',
+        tiles: Array.from({ length: 7 }, (_, i) => ({ tile: 32 + i, x: i * 8, y: 0, palette: 0, hflip: false, vflip: false }))
+      });
+      const animId = project.sprites.animations.length;
+      project.sprites.animations.push({ id: animId, name: 'Dense down', loop: true, frames: [{ metaspriteId: metaId }] });
+      const actorId = project.sprites.actors.length;
+      project.sprites.actors.push({
+        id: actorId,
+        name: 'Dense actor',
+        behavior: 'patroller',
+        speed: 1,
+        hp: 1,
+        damage: 0,
+        anims: { walkDown: animId }
+      });
+
+      // Identical placement on Map A's screen 1 (the real start screen) and
+      // Map B's screen 1 (same local index, wrong map).
+      project.maps[0].screens[1].entities.push({ actorId, x: 0, y: project.project.startY, props: {} });
+      project.maps[1].screens[1].entities.push({ actorId, x: 0, y: project.project.startY, props: {} });
+    });
+    await wait(150);
+
+    window.__app.goTo('map');
+    await wait(300);
+
+    const p5MapSelect = [...document.querySelectorAll('#stage .field')]
+      .map((f) => (f.querySelector('.field-label')?.textContent === 'Map' ? f.querySelector('select') : null))
+      .find(Boolean);
+    if (!p5MapSelect) throw new Error('Map Forge has no Map picker select');
+
+    const p5DensityHint = () =>
+      [...document.querySelectorAll('#stage p.hint')].find((p) => p.textContent.includes('rough estimate'));
+    const p5ClickScreen = (n) => {
+      const thumb = [...document.querySelectorAll('#stage canvas')].find(
+        (c) => c.title && c.title.startsWith('Screen ' + n)
+      );
+      if (!thumb) throw new Error('no navigator thumbnail found for Screen ' + n);
+      thumb.click();
+    };
+
+    // Select Map A (index 0) explicitly, then its screen 1.
+    p5MapSelect.value = '0';
+    p5MapSelect.dispatchEvent(new Event('change'));
+    await wait(150);
+    p5ClickScreen(1);
+    await wait(150);
+
+    const p5HintA = p5DensityHint();
+    if (!p5HintA) throw new Error('expected the field-density hint on Map A’s real start screen');
+    if (!p5HintA.textContent.includes('9 tiles could share one scanline')) {
+      throw new Error(
+        'expected the start screen’s density hint to read 9 (7 from the actor + 2 from the player), saw: ' +
+          p5HintA.textContent
+      );
+    }
+    step('map forge field-density hint on the real start screen', p5HintA.textContent);
+
+    // Switch to Map B, click its own screen 1 (same local index, wrong map):
+    // no player term there, so the identical placement reads 7, under the
+    // threshold of 8.
+    p5MapSelect.value = '1';
+    p5MapSelect.dispatchEvent(new Event('change'));
+    await wait(150);
+    p5ClickScreen(1);
+    await wait(150);
+
+    if (p5DensityHint()) {
+      throw new Error(
+        'Map B’s screen 1 must show no field-density hint -- caught: isStartScreen wired wrong (e.g. comparing screenIndex alone)'
+      );
+    }
+    step(
+      'map forge field-density hint absent on the wrong map’s same-local-index screen',
+      'ok -- isStartScreen correctly requires both mapIndex and screenIndex'
+    );
+  }
+
+  // Back to the sample project for the steps that follow -- this whole block
+  // worked in its own isolated project and never touched sample.value.project.
   window.__app.store.open(sample.value.dir, sample.value.project);
   await wait(200);
 
@@ -5331,6 +5665,56 @@ const scenario = (dir, sampleDir, sampleRpgDir) => `
   };
   const meterFits = readBattleMeter();
   if (!meterFits) throw new Error('the Build panel showed no "Battle system" meter for an RPG project');
+
+  // ROADMAP item 8 (validate-as-you-draw), Phase 5 (docs/design-draw-
+  // validation.md §6.4/§3.10) -- the Build Forge's own project-wide
+  // battle-sprite meter, RPG-only, beside the "Battle system" (kernel bytes)
+  // meter just read above. Read while sample-rpg is still in its pristine,
+  // unmodified state.
+  {
+    const readBattleSpriteMeter = () => {
+      const row = [...document.querySelectorAll('.kv')].find(
+        (node) => node.firstElementChild && node.firstElementChild.textContent.trim() === 'Battle sprites (worst case)'
+      );
+      if (!row) return null;
+      const parts = row.lastElementChild.textContent.split('/');
+      if (parts.length !== 2) return null;
+      const used = Number(parts[0].trim());
+      const total = Number(parts[1].trim());
+      return Number.isFinite(used) && Number.isFinite(total) ? { used, total } : null;
+    };
+    const spriteMeterBefore = readBattleSpriteMeter();
+    if (!spriteMeterBefore) throw new Error('the Build panel showed no "Battle sprites (worst case)" meter for an RPG project');
+    if (spriteMeterBefore.total !== 64) {
+      throw new Error('expected the battle-sprite meter ceiling to be 64, saw ' + spriteMeterBefore.total);
+    }
+
+    // Edit a formation -- give the first party member a much bigger own
+    // metasprite -- and confirm the meter's own used figure actually moves,
+    // proving it is live rather than a build-time-only figure.
+    window.__app.store.commit('smoke: grow a party member’s own battle metasprite', (draft) => {
+      const bigId = draft.sprites.metasprites.length;
+      // 16 tiles -- LIMITS.metaspriteTiles, the real ceiling a persisted
+      // project's own metasprite can hold (review round 1, finding 4), not
+      // an impossible over-cap count.
+      draft.sprites.metasprites.push({
+        id: bigId,
+        name: 'Smoke big battle sprite',
+        tiles: Array.from({ length: 16 }, (_, i) => ({ tile: i, x: 0, y: 0, palette: 0, hflip: false, vflip: false }))
+      });
+      draft.party[0].metaspriteId = bigId;
+    });
+    await wait(300);
+    const spriteMeterAfter = readBattleSpriteMeter();
+    if (!spriteMeterAfter) throw new Error('the "Battle sprites (worst case)" meter vanished after editing a formation');
+    if (spriteMeterAfter.used === spriteMeterBefore.used) {
+      throw new Error('the battle-sprite meter did not update after growing a party member’s own metasprite');
+    }
+    step(
+      'build forge battle-sprite meter present for an RPG project and updates on a formation edit',
+      spriteMeterBefore.used + '/' + spriteMeterBefore.total + ' -> ' + spriteMeterAfter.used + '/' + spriteMeterAfter.total
+    );
+  }
 
   // ...and again past the ceiling, so the boundary itself is crossed on screen
   // rather than only the comfortable side of it being checked. Enough actors

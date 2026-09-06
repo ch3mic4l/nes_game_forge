@@ -3048,16 +3048,6 @@ export async function generateAssets({ dir, project, log = () => {} }) {
     log(`warning: skipped ${droppedEntities} placed actor(s) that refer to an actor which no longer exists.`);
   }
 
-  // The player takes four sprites and the NES can only show 64, so a screen
-  // full of large actors will start dropping tiles.
-  const largest = Math.max(0, ...project.sprites.metasprites.map((entry) => entry.tiles.length));
-  if (largest && 4 + largest * LIMITS.entitiesPerScreen > 64) {
-    log(
-      `warning: ${LIMITS.entitiesPerScreen} actors of ${largest} tiles each plus the player exceed the ` +
-        "NES's 64 sprites; some will not be drawn on a crowded screen."
-    );
-  }
-
   return {
     buildDir,
     warnings: problems.filter((problem) => problem.severity !== 'error'),
