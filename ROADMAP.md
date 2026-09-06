@@ -1054,7 +1054,16 @@ The blank-page problem is real, and RPG Maker solves it mostly by shipping conte
   tab clones an actor, repainting every tile on a chosen source sprite-palette slot into a
   destination slot; the original actor and everything it references are untouched. See
   `duplicateActorPaletteSwapCore` (`shared/project.js`).
-- **Validate** sprite size, palette count and tile budget as you draw
+- ~~**Validate** sprite size, palette count and tile budget as you draw~~ — **done**: six advisory
+  checks, each one predicate in `shared/project.js` feeding both a live hint (Sprite Forge, Map
+  Forge, Build Forge) and a `validateProject` warning through the same message builder —
+  `metaspriteScanlineDensity`, `fieldScanlineRows`/`fieldScanlineDensity`,
+  `screenSpriteBudget`/`overlaySpriteBudget`, `battleSpriteBudget`, and reserved-sprite-range
+  shading (`spriteReservedRanges`/`reservedRangeRects`) with its own kernel-lo byte count
+  (`metaspriteKernelBytes`). Palette count needed no check at all: a palette index is clamped to
+  `[0, LIMITS.palettes-1]` at authoring time, so an invalid one is unrepresentable by construction,
+  not a gap this design could validate against. See `docs/design-draw-validation.md` and
+  CLAUDE.md's own "The engine" section.
 - A small **MIT/CC0 starter library**: terrain, UI, monsters, effects, sound effects
 - **Starter projects** — action, dungeon crawl, RPG — beyond today's demo fixtures
 

@@ -668,6 +668,22 @@ between an entry routine and its tail load-bearing and invisible, so inserting a
 `move_down_inside` and `move_vertical_probe` would silently break `move_down` with no assembler
 error.
 
+**Validate-as-you-draw (ROADMAP item 8) is five `validateProject` warnings — metasprite density,
+reserved-tile reference, per-screen OAM, field density, battle OAM — plus a kernel-lo figure and
+reserved-range shading (not checks), each backed by one predicate in `shared/project.js`, the five
+sharing their live hint's own message builder** (`docs/design-draw-validation.md` for depth):
+`metaspriteScanlineDensity`, `fieldScanlineRows`/`fieldScanlineDensity` (wraps before clipping at
+row 239), `screenSpriteBudget`/`overlaySpriteBudget` (two figures, never combined),
+`battleSpriteBudget` (gated on `gameType === 'rpg'` alone, charging every wandering encounter its
+full four-monster formation — `start_encounter`'s own `and #3` rolls 0-3, not the comment's "one to
+four," a known engine bug left for its own slice), `spriteReservedRanges`/`reservedRangeRects`, and
+`metaspriteKernelBytes` (extracted from `kernelTableBytes`). No ROM byte changed (six-fixture
+SHA-256 gate); the old worst-case-only 64-sprite build-log line is gone. Two traps: a delegation is
+structural, not behavioral, proven by reading `generate.js`'s source, not its output
+(`playerparts.test.js`'s precedent); and a game-type gate must be probed on the *other* game type —
+`battleSpriteBudget`'s own gate was missing from v1 through v6, missed by every review round, found
+only on an action build.
+
 ### The event system
 
 **What makes an event run is a byte of the entity record**, `EVENT_TRIGGERS` in
@@ -1080,80 +1096,63 @@ Current allowance figures (`main/build/generate.js` unless noted; each named cod
 delta `kernelbytes.test.js` measures exactly, on every board named — the base, the derived table
 sizes, the route zero-cost proof and `KERNEL_SLACK` itself are each checked their own way, below):
 
-- `BASE_KERNEL_CODE_BYTES_BY_MAPPER = { 1 (MMC1): 5954, 4 (MMC3): 5971, 30 (UNROM 512): 6149 }` plus
-  `BATTLE_KERNEL_ALLOWANCE_BY_MAPPER = { 1: 250, 4: 262, 30: 250 }` — the base is now the action-side
-  kernel with nothing conditional turned on, on every RPG-capable board; a non-RPG-capable mapper
-  falls back to the largest of the three (the game-type overcharge above; see
-  `docs/kernel-base-overcharge-report.md`). The supplement is
-  `*_BY_MAPPER`, not flat like `SAVE_BATTLE_KERNEL_ALLOWANCE`: MMC3 genuinely differs by 12 bytes,
-  `split_select`'s own second `.if BATTLE_ENABLED` arm (`engine/split.asm`), separate from the arm
-  `TITLE_KERNEL_ALLOWANCE_BY_MAPPER`'s own MMC3 entry already charges for — measured variance earns
-  the table, per this file's own rule above. No fallback, deliberately, the same reason Save's table
-  has none -- but its own gate, `battleEnabledFor` (`codeRegions(...).length > 0`), does not by itself
-  imply `rpgCapable(mapper)` (round 1 wrongly assumed it did): `battleKernelAllowance(mapper)` throws
-  on a missing entry instead of returning `undefined`-then-`NaN`, `checkCapacity` pre-checks the
-  project's own mapper and reports a named problem instead of a broken budget, and `switchableMappers`
-  filters out any candidate that would hit the throw.
+- `BASE_KERNEL_CODE_BYTES_BY_MAPPER = { 1 (MMC1): 5954, 4 (MMC3): 5971, 30 (UNROM 512): 6149 }` —
+  action-side, nothing conditional on, falling back to the largest of the three for an unmeasured
+  mapper (the game-type overcharge this fixed: `docs/kernel-base-overcharge-report.md`).
+  `BATTLE_KERNEL_ALLOWANCE_BY_MAPPER = { 1: 250, 4: 262, 30: 250 }` is its RPG-only supplement — no
+  fallback, deliberately, the same reason Save's table has none; MMC3's extra 12 bytes are
+  `split_select`'s second `.if BATTLE_ENABLED` arm (`engine/split.asm`). Its gate,
+  `battleEnabledFor` (`codeRegions(...).length > 0`), does not imply `rpgCapable(mapper)`, so
+  `battleKernelAllowance(mapper)` THROWS on a missing entry rather than `undefined`-then-`NaN`,
+  `checkCapacity` pre-checks the project's own mapper and reports a named problem, and
+  `switchableMappers` filters out any candidate that would hit the throw.
 - `TITLE_KERNEL_ALLOWANCE_BY_MAPPER = { 30: 212, 1: 212, 4: 224 }`, charged whenever a project has
-  a title screen — MMC3 costs 12 bytes more because it is the only board with `SPLIT_ENABLED`, and
-  `split_select` carries an extra `.if TITLE_ENABLED` branch neither other board assembles. A
-  project with a live `Save` command pays this term even if `titleMap` is currently unset, because
+  a title screen — MMC3's extra 12 bytes are its own `.if TITLE_ENABLED` branch in `split_select`.
+  A live `Save` command pays this term even with `titleMap` currently unset, because
   `validateProject` requires a title wherever Save is live.
-- `SAVE_KERNEL_ALLOWANCE_BY_MAPPER = { 1: 511, 4: 516, 30: 683 }` plus
-  `SAVE_BATTLE_KERNEL_ALLOWANCE = 41` — Save's cost is **two** terms: the table is the
-  action-side base every save-capable board pays regardless of game type (UNROM 512 costs more —
-  flash-rewrite, not battery-WRAM; see the flash-save passage under "The engine"); the flat
-  supplement is the RPG-only extra:
-  `save_check_valid`'s own `.if BATTLE_ENABLED` range-check block, plus phase 4's `BE_RESTORE`
-  call site; together they sum to the RPG totals `{1: 552, 4: 557, 30: 724}`. The
-  supplement is flat rather than `*_BY_MAPPER` because the gap measures
-  identical on all three boards — the block is a plain RAM range check with no mapper-specific
-  instruction in it — and `kernelbytes.test.js` equality-asserts it per board, keeping the flatness
-  measured, not assumed. Its gate is **not**
-  `gameType === 'rpg'`: `kernelCodeBytes` recomputes `codeRegions(...).length > 0`, the real
-  predicate `BATTLE_ENABLED` is emitted from, strictly narrower for a CHR-RAM board whose tileset
-  payloads have claimed every switchable region.
-- `MOVE_KERNEL_ALLOWANCE = 379` plus `FACE_KERNEL_ALLOWANCE = 16` (the facing-set routine Move and
-  `Turn` share, charged once whenever either is live) — 395 total for a Move-only project.
+- `SAVE_KERNEL_ALLOWANCE_BY_MAPPER = { 1: 511, 4: 516, 30: 683 }` plus flat
+  `SAVE_BATTLE_KERNEL_ALLOWANCE = 41` — two terms: the table is the action-side base every
+  save-capable board pays (UNROM 512 costs more — flash-rewrite, not battery-WRAM); the flat
+  RPG-only supplement is `save_check_valid`'s own `.if BATTLE_ENABLED` range-check block plus phase
+  4's `BE_RESTORE` call site, summing to RPG totals `{1: 552, 4: 557, 30: 724}` — flat because the
+  gap measures identical on all three boards, `kernelbytes.test.js` equality-asserting it per board.
+  Its gate is NOT `gameType === 'rpg'`: `kernelCodeBytes` recomputes `codeRegions(...).length > 0`,
+  the real predicate `BATTLE_ENABLED` is emitted from, strictly narrower on a CHR-RAM board whose
+  tileset payloads have claimed every switchable region.
+- `MOVE_KERNEL_ALLOWANCE = 379` plus `FACE_KERNEL_ALLOWANCE = 16` (the facing routine Move and
+  `Turn` share, charged once) — 395 total for a Move-only project.
 - `SPLIT_KERNEL_ALLOWANCE = 165`, MMC3-only, charged whenever `projectUsesText` is true on that
-  board — which includes a project whose only live event is a Move or a Sting command, not just
-  dialogue. Renamed from `SPLIT_LOCK_KERNEL_ALLOWANCE`: pinned by a real text-on/text-off isolation
-  on a fresh action project, plus a zero-delta control on every non-`scanlineIrq` board, not the
-  19-byte residual guess it used to be — see `docs/split-lock-not-pinned-report.md` §8.
-- `ITEM_KERNEL_ALLOWANCE = 16` (flat across boards) plus 3 `kernelTableBytes` bytes *per item*
+  board — including a project whose only live event is a Move or a Sting, not just dialogue.
+  Renamed from `SPLIT_LOCK_KERNEL_ALLOWANCE`: pinned by a text-on/off isolation on a fresh action
+  project plus a zero-delta control on every non-`scanlineIrq` board, not the old 19-byte residual
+  guess — `docs/split-lock-not-pinned-report.md` §8.
+- `ITEM_KERNEL_ALLOWANCE = 16` (flat) plus 3 `kernelTableBytes` bytes *per item*
   (`item_metasprite`, `item_effect_kind`, `item_effect_amount`, one byte each in
   `assets/items.inc`); `ITEM_EFFECT_KERNEL_ALLOWANCE_BY_GAME_TYPE = { action: 63, rpg: 60 }` for
   `use_item_apply`.
-- `STING_KERNEL_ALLOWANCE_STANDALONE = 160` plus the shared `AUDIO_FX_KERNEL_ALLOWANCE = 15`
-  (paid by Sting or Sfx, either one); `SFX_KERNEL_ALLOWANCE_STANDALONE = 295`;
-  `STING_SFX_INTERACTION_ALLOWANCE = 5` more when both are live at once. Aggregate cost: Sting-only
-  175, Sfx-only 310, both live 475.
+- `STING_KERNEL_ALLOWANCE_STANDALONE = 160` plus the shared `AUDIO_FX_KERNEL_ALLOWANCE = 15` (paid
+  by either); `SFX_KERNEL_ALLOWANCE_STANDALONE = 295`; `STING_SFX_INTERACTION_ALLOWANCE = 5` more
+  when both live. Aggregate: Sting-only 175, Sfx-only 310, both live 475.
 - `BOUND_TILE_KERNEL_ALLOWANCE = 388`, plus a 30-byte fixed table (`bound_row_lo`/`bound_row_hi`)
-  and 2 `kernelTableBytes` bytes per screen (`screen_bound_lo`/`hi`) — not the only allowance with
-  a table cost (items have one too, above), but the first `kernelShortfallAdvice` offers to drop
-  whose removal changes both code and table occupancy at once, which is why its advice compares
-  full kernel-lo occupancy (`kernelCodeBytes + fixedBytes + tableBytes`), not `kernelCodeBytes`
-  alone.
-- `TURN_KERNEL_ALLOWANCE = 35` composes with the shared `FACE_KERNEL_ALLOWANCE` above (Move+Turn
-  together cost 379+35+16=430, the shared facing routine charged once); `WAIT_KERNEL_ALLOWANCE =
-  48` shares no code with Turn beyond that same facing routine (35+16+48=99 for Turn+Wait both
-  live, neither Move).
-  `SHAKE_KERNEL_ALLOWANCE = 65` and `VISIBLE_KERNEL_ALLOWANCE = 49` (Show/Hide) are each flat, with
-  no dependent term of their own.
-- `FADE_KERNEL_ALLOWANCE = 146` and `FLASH_KERNEL_ALLOWANCE = 98` each name their own routine's
-  cost; both share `PALETTE_FX_KERNEL_ALLOWANCE = 55` (`fade_apply_palette` plus the NMI PPUADDR
-  fix, charged once whenever either Fade or Flash is live, never twice when both are) — 201 total
-  for a Fade-only project, the unchanged shipped figure from before the two were split apart.
+  and 2 `kernelTableBytes` bytes per screen (`screen_bound_lo`/`hi`) — the first allowance whose
+  removal `kernelShortfallAdvice` has to price by full kernel-lo occupancy (code and table
+  together), the rule above.
+- `TURN_KERNEL_ALLOWANCE = 35` composes with `FACE_KERNEL_ALLOWANCE` above (Move+Turn cost
+  379+35+16=430, facing routine charged once); `WAIT_KERNEL_ALLOWANCE = 48` shares no other code
+  with Turn (35+16+48=99 for Turn+Wait, no Move). `SHAKE_KERNEL_ALLOWANCE = 65` and
+  `VISIBLE_KERNEL_ALLOWANCE = 49` (Show/Hide) are each flat, with no dependent term.
+- `FADE_KERNEL_ALLOWANCE = 146` and `FLASH_KERNEL_ALLOWANCE = 98` name each routine's own cost;
+  both share `PALETTE_FX_KERNEL_ALLOWANCE = 55` (`fade_apply_palette` plus the NMI PPUADDR fix,
+  charged once whether Fade or Flash or both are live) — 201 total for Fade-only, the unchanged
+  shipped figure from before the two were split apart.
 - A `route` (`docs/design-routes.md`) compiles to the identical bytes as hand-chaining
   the same `move`/`turn`/`wait` commands — zero additional kernel cost, proven by
   `test/unit/routes.test.js`'s byte-identical-ROM comparison and confirmed with a cross-tree
   SHA-256 gate.
 - `KERNEL_SLACK = 20` — the floor `assertCovers` (`kernelbytes.test.js`) holds every measured
-  configuration's real margin to (`margin >= KERNEL_SLACK`), not a target to merely clear: a
-  correctly measured per-mapper base should leave *exactly* `KERNEL_SLACK` once every conditional
-  term is accounted for. `assertCovers` also enforces a ceiling at `KERNEL_SLACK * 2` — not more
-  headroom to spend, but a drift alarm: a margin that wide means some term has stopped tracking
-  the engine closely enough to catch the next regression.
+  margin to (`margin >= KERNEL_SLACK`): a correctly measured base should leave *exactly* this once
+  every conditional term is counted. It also enforces a ceiling at `KERNEL_SLACK * 2` — a drift
+  alarm, not spare headroom: too wide a margin means some term stopped tracking the engine closely.
 
 **Documented limitations — combinations `checkCapacity` refuses today, each with its own named
 test rather than a silent gap. Every Save-on-RPG row moved 5 bytes with `BE_RESTORE` (above):**
