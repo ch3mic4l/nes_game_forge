@@ -6778,6 +6778,87 @@ const scenario = (dir, sampleDir, sampleRpgDir) => `
       }
       step('Monster Forge "Make harmless"', 'clears damage to zero and nothing else; a still-referenced actor stays listed, marked stranded');
     }
+
+    // Test (docs/design-starter-library.md §5.3/§5.6/§11): the battle-
+    // block-art predicate's two *mounted* call sites, not just the pure
+    // helper -- that's already covered by project.test.js's
+    // hasBattleBlockArt/battleBlockIndices tests and monster.test.js's
+    // describeBattleTileState test 3d. An implementation that added the
+    // helpers but left the old, unused ternary in place at artPicker's
+    // label/button call sites would still pass every one of those.
+    //
+    // A wrapping block (battleTile: 250, battleW: 4, battleH: 2) reaches
+    // indices 250-253 then 10-13 (§11 test D's own wrap example) -- row 0,
+    // col 10 is only ever painted by the post-fix battleBlockIndices loop;
+    // the pre-fix single strokeRect's own math only ever touched row 15,
+    // and an off-canvas row 16, so it never reached this cell at all.
+    {
+      monsterStore.commit('smoke: set Snake battle block art', (project) => {
+        const snake = project.sprites.actors.find((a) => a.name === 'Snake');
+        snake.battle = { ...snake.battle, battleTile: 250, battleW: 4, battleH: 2 };
+      });
+      await wait(150);
+
+      if (!selectByName('Snake')) throw new Error('Monster Forge catalog does not list Snake for the battle-block-art check');
+      await wait(150);
+
+      const artCanvas = document.querySelector('#stage canvas.sheet');
+      if (!artCanvas) throw new Error('Monster Forge art picker sheet canvas not found');
+      const artCell = artCanvas.width / 16;
+      // Sampled 1px in from the cell's own top-left corner, not its centre:
+      // battleBlockIndices' own cells are drawn with strokeRect (an outline,
+      // not a fill), and the top-left corner is where the top and left
+      // strokes of that 2px-wide outline always overlap, regardless of the
+      // sheet's underlying tile art.
+      const artPixel = (col, row) => {
+        const x = Math.floor(col * artCell + 1);
+        const y = Math.floor(row * artCell + 1);
+        return [...artCanvas.getContext('2d').getImageData(x, y, 1, 1).data];
+      };
+      const wrappedPixel = artPixel(10, 0);
+      if (wrappedPixel[0] !== 255 || wrappedPixel[1] !== 157 || wrappedPixel[2] !== 60) {
+        throw new Error(
+          'the wrapped block cell (row 0, col 10) should carry the orange stroke colour #ff9d3c, saw rgb(' +
+            wrappedPixel.slice(0, 3).join(',') +
+            ')'
+        );
+      }
+
+      monsterStore.commit('smoke: add a sentinel actor with an explicit $FF battleTile', (project) => {
+        project.sprites.actors.push({
+          id: project.sprites.actors.length,
+          name: 'Sentinel-Smoke',
+          behavior: 'patroller',
+          speed: 0,
+          damage: 1,
+          anims: {},
+          battle: { battleTile: 255 }
+        });
+      });
+      await wait(150);
+
+      if (!selectByName('Sentinel-Smoke')) throw new Error('Monster Forge catalog does not list the sentinel smoke actor');
+      await wait(150);
+
+      const sentinelHint = document.querySelector('#stage span.hint');
+      if (!sentinelHint || sentinelHint.textContent !== 'No block chosen — the actor is drawn from its animation.') {
+        throw new Error(
+          'expected the exact "No block chosen" label for an explicit battleTile: 255, saw ' + JSON.stringify(sentinelHint?.textContent)
+        );
+      }
+      const sentinelUseAnimButton = [...document.querySelectorAll('#stage button.btn.btn-sm')].find(
+        (b) => b.textContent === 'Use the animation'
+      );
+      if (sentinelUseAnimButton) {
+        throw new Error('an actor with no block art (battleTile: 255) should not show a "Use the animation" button');
+      }
+
+      step(
+        'Monster Forge battle-block-art predicate reaches both mounted call sites',
+        'a wrapping block (battleTile 250, 4x2) paints its real, disjoint cells including the wrapped row 0/col 10; ' +
+          'an explicit battleTile: 255 reads as "no block chosen" with no "Use the animation" button'
+      );
+    }
   }
 
   // --- Monster Forge navigation contract (item 14, phase 1 part B,

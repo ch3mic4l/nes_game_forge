@@ -1670,7 +1670,10 @@ every `monster`/`pickup` entry's `palettes.length` (or the sugared `palette`'s i
    core already depends on the predicate existing for its own background-palette accounting — this
    is a prerequisite, not merely an early convenience — and because a validation/UI-only,
    byte-neutral fix to existing code has no reason to wait on any of this design's own new content
-   landing first. Tests 3, 3b, 3c, 3d, and the new `main/smoke.js` step (§11).
+   landing first. Tests 3b, 3c, 3d, and the new `main/smoke.js` step (§11); test 3 (`unusedPaletteSlots`'s own
+   background-palette accounting through `bgRefCount`, which reads `hasBattleBlockArt`) waits for phase
+   4, where `unusedPaletteSlots` itself is built — `grep`-confirmed `unusedPaletteSlots` does not exist
+   in `shared/project.js` today, so test 3 cannot be written yet regardless of phase.
 3. **§5.7's new `validateProject` error, on its own, gated by the six-fixture probe (§5.7/§11 test
    13) turning into a real, permanent test.** This must land *before* any kind's `planLibraryImport`
    is written to depend on §7.5's attribution rule, since that rule is what makes the check

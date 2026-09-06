@@ -3432,6 +3432,35 @@ function touchEncounterFormations(project) {
   return formations;
 }
 
+export function hasBattleBlockArt(actor) {
+  const battleTile = actor.battle?.battleTile;
+  return typeof battleTile === 'number' && battleTile !== 0xff;
+}
+
+export function battleBlockIndices(actor) {
+  // hasBattleBlockArt is the one shared answer to "does this actor draw block art at all" --
+  // called here rather than re-testing battleTile locally, so this walk, the background-palette
+  // reference count, and every UI reader can never drift apart on the $FF/explicit-255 sentinel.
+  if (!hasBattleBlockArt(actor)) return [];
+  const { battleTile, battleW = 4, battleH = 4 } = actor.battle;
+  const indices = [];
+  for (let row = 0; row < battleH; row++) {
+    for (let col = 0; col < battleW; col++) indices.push((battleTile + row * 16 + col) & 0xff);
+  }
+  return indices;
+}
+
+export function describeBattleTileState(actor) {
+  const hasBlock = hasBattleBlockArt(actor);
+  const { battleTile, battleW = 4, battleH = 4 } = actor.battle ?? {};
+  return {
+    hasBlock,
+    label: hasBlock
+      ? `Block at $${battleTile.toString(16).toUpperCase().padStart(2, '0')}, ${battleW}×${battleH} tiles.`
+      : 'No block chosen — the actor is drawn from its animation.'
+  };
+}
+
 // A formation's own worst-case sprite cost: only a monster with no block art
 // (battleTile === null, i.e. mon_tile === $FF) draws as a sprite at all
 // (engine/battleui.asm's battle_sprite_mon, via draw_actor_icon) -- through
@@ -3441,7 +3470,7 @@ function formationSpriteCost(formation, project) {
   return formation.reduce((total, actorId) => {
     if (actorId === NO_ACTOR) return total;
     const actor = project.sprites.actors[actorId];
-    if (!actor || actor.battle?.battleTile !== null) return total;
+    if (!actor || hasBattleBlockArt(actor)) return total;
     return total + actorRestingIconTiles(actor, project);
   }, 0);
 }
@@ -5865,7 +5894,7 @@ export function validateProject(project) {
       // A validator runs against whatever it is handed, including a project the
       // UI is mid-edit on, so it never assumes normalisation has been through.
       const { battleTile, battleW = 4, battleH = 4 } = actor.battle ?? {};
-      if (battleTile === null || battleTile === undefined) continue;
+      if (!hasBattleBlockArt(actor)) continue;
       // Battle art is stamped as background tiles on the battle tileset, so it
       // competes with the font for the same 256 entries — except on a
       // split-font board, where the font is not in the tileset at all and the

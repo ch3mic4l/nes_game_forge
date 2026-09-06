@@ -13,7 +13,15 @@
 
 import { store } from '../../store.js';
 import { el, fill, field } from '../../ui.js';
-import { ELEMENTS, RPG_LIMITS, isMonsterActor, itemPickerOptions, monsterActorIds } from '../../../shared/project.js';
+import {
+  ELEMENTS,
+  RPG_LIMITS,
+  isMonsterActor,
+  itemPickerOptions,
+  monsterActorIds,
+  battleBlockIndices,
+  describeBattleTileState
+} from '../../../shared/project.js';
 import { FONT_BASE } from '../../../shared/font.js';
 import { drawSheet, sheetIndexFromEvent, SHEET_COLS } from '../../widgets/sheet.js';
 
@@ -186,6 +194,7 @@ function artPicker(battle, set) {
   const width = battle.battleW ?? 4;
   const height = battle.battleH ?? 4;
   const fontRow = FONT_BASE / SHEET_COLS;
+  const { hasBlock, label } = describeBattleTileState({ battle });
 
   const canvas = el('canvas.sheet', { style: { cursor: 'crosshair' } });
   drawSheet(canvas, tileset.background.tiles, palette, 2);
@@ -193,15 +202,12 @@ function artPicker(battle, set) {
   const cell = 16; // 8 px at zoom 2
   context.fillStyle = 'rgba(0,0,0,0.55)';
   context.fillRect(0, fontRow * cell, canvas.width, canvas.height - fontRow * cell);
-  if (battle.battleTile !== null && battle.battleTile !== undefined) {
-    context.strokeStyle = '#ff9d3c';
-    context.lineWidth = 2;
-    context.strokeRect(
-      (battle.battleTile % SHEET_COLS) * cell + 1,
-      Math.floor(battle.battleTile / SHEET_COLS) * cell + 1,
-      width * cell - 2,
-      height * cell - 2
-    );
+  context.strokeStyle = '#ff9d3c';
+  context.lineWidth = 2;
+  for (const index of battleBlockIndices({ battle })) {
+    const col = index % SHEET_COLS;
+    const row = Math.floor(index / SHEET_COLS);
+    context.strokeRect(col * cell + 1, row * cell + 1, cell - 2, cell - 2);
   }
   canvas.addEventListener('pointerdown', (event) => {
     const index = sheetIndexFromEvent(event, canvas);
@@ -210,19 +216,13 @@ function artPicker(battle, set) {
     set('battleTile', rowIndex * SHEET_COLS + col);
   });
 
-  const chosen =
-    battle.battleTile === null || battle.battleTile === undefined
-      ? 'No block chosen — the actor is drawn from its animation.'
-      : `Block at $${battle.battleTile.toString(16).toUpperCase().padStart(2, '0')}, ${width}×${height} tiles.`;
   return el(
     'div',
     { style: { marginBottom: '8px' } },
     el('div.sheet-wrap', null, canvas),
     row(
-      el('span.hint', { style: { flex: '1', alignSelf: 'center' } }, chosen),
-      battle.battleTile === null || battle.battleTile === undefined
-        ? null
-        : el('button.btn.btn-sm', { onclick: () => set('battleTile', null) }, 'Use the animation')
+      el('span.hint', { style: { flex: '1', alignSelf: 'center' } }, label),
+      !hasBlock ? null : el('button.btn.btn-sm', { onclick: () => set('battleTile', null) }, 'Use the animation')
     )
   );
 }

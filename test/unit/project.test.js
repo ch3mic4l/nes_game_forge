@@ -86,7 +86,11 @@ import {
   // ROADMAP item 8 (palette-swap) -------------------------------------------
   actorAnimationIds,
   actorMetaspriteIds,
-  duplicateActorPaletteSwapCore
+  duplicateActorPaletteSwapCore,
+  // ROADMAP item 8 (starter library, phase 2 -- battle-block-art predicate) -
+  hasBattleBlockArt,
+  battleBlockIndices,
+  battleSpriteBudget
 } from '../../shared/project.js';
 import { resolveStartAt } from '../../shared/playscenario.js';
 import fs from 'node:fs/promises';
@@ -8177,3 +8181,69 @@ test(
     }
   }
 );
+
+// ROADMAP item 8 (starter library, phase 2) -- battle-block-art predicate --
+// design-starter-library.md §5.3/§5.6/§11 tests 3b/3c/3d. hasBattleBlockArt
+// is the one shared answer to "does this actor draw block art at all," which
+// the engine's own mon_tile === $FF sentinel makes into a two-way question:
+// null/undefined AND an explicit, normalized 255 both mean "no block art,"
+// so every reader has to treat them alike or disagree with the engine about
+// which actors draw as a sprite.
+// --------------------------------------------------------------------------
+
+test('hasBattleBlockArt: a real battleTile is block art; an explicit 255 (the engine\'s own $FF sentinel) is not, even though it is a real, normalized number and not null', () => {
+  const withBlock = { battle: { battleTile: 5, battlePalette: 2 } };
+  assert.equal(hasBattleBlockArt(withBlock), true);
+
+  const explicitSentinel = { battle: { battleTile: 255, battlePalette: 2 } };
+  assert.equal(hasBattleBlockArt(explicitSentinel), false);
+});
+
+test('battleSpriteBudget: an actor with battle.battleTile explicitly set to 255 still has no block art and is charged its resting-icon sprite cost when placed as a hostile -- caught: the old formationSpriteCost guard (battleTile !== null) wrongly excluding an explicit 255 as "has art"', () => {
+  const project = createProject('Sentinel block art', 'rpg');
+  const metaspriteId = project.sprites.metasprites.length;
+  project.sprites.metasprites.push({
+    id: metaspriteId,
+    name: 'Icon',
+    tiles: [
+      { tile: 32, x: 0, y: 0, palette: 0 },
+      { tile: 33, x: 0, y: 0, palette: 0 },
+      { tile: 34, x: 0, y: 0, palette: 0 }
+    ]
+  });
+  const animId = project.sprites.animations.length;
+  project.sprites.animations.push({ id: animId, name: 'Walk', loop: true, frames: [{ metaspriteId }] });
+  const actorId = project.sprites.actors.length;
+  project.sprites.actors.push({
+    id: actorId,
+    name: 'Sentinel monster',
+    behavior: 'patroller',
+    speed: 1,
+    hp: 1,
+    damage: 1,
+    anims: { walkDown: animId },
+    battle: { battleTile: 255 }
+  });
+  project.maps[0].screens[0].entities.push({ actorId, x: 0, y: 0, props: {} });
+
+  assert.equal(battleSpriteBudget(project, resolveMapper(project.cartridge.mapper)).used, 3);
+});
+
+test('validateProject: neither an unset battleTile nor an explicit 255 collides with the message font -- caught: skipping only null/undefined and letting an explicit 255 fall through into the last-tile-index math', () => {
+  const project = createProject('Quest', 'rpg'); // RPG_DEFAULT_MAPPER is MMC1, not the split-font board
+  project.party.push(createPartyMember(0, 'Hero'));
+  project.sprites.actors = [
+    { name: 'Unset', damage: 1, battle: { battleTile: null } },
+    { name: 'Sentinel', damage: 1, battle: { battleTile: 255 } }
+  ];
+
+  const problems = validateProject(project);
+  const aboutArt = problems.filter((problem) => /battle artwork runs into/i.test(problem.message));
+  assert.deepEqual(aboutArt, []);
+});
+
+test('battleBlockIndices: a block that wraps past the sheet\'s 16-column row width returns its real, disjoint cells, mirroring draw_mon_block\'s own 8-bit row-advance', () => {
+  assert.deepEqual(battleBlockIndices({ battle: { battleTile: 250, battleW: 4, battleH: 2 } }), [
+    250, 251, 252, 253, 10, 11, 12, 13
+  ]);
+});
