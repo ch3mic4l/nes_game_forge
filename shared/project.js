@@ -3268,6 +3268,123 @@ function formationSpriteCost(formation, project) {
   }, 0);
 }
 
+// Every distinct pose (metasprite) reachable through this actor's own three
+// DISTINCT facing slots -- walkDown, walkUp, and walkSide asked ONCE, not
+// twice the way the compiled table asks for it (main/build/generate.js's
+// spriteTables asks walkSide for both left and right), because it is one
+// animation either way and this function only needs its own set of poses,
+// not a count. The zero-frame stub contributes metasprite 0, the same
+// substitution resolveActorRestingIcon/animationMetaspriteTileCount already
+// apply to a single icon (design §3.6/§3.9).
+function reachablePoses(actor, project) {
+  const animIds = new Set();
+  for (const slot of ['walkDown', 'walkUp', 'walkSide']) {
+    const animId = animFor(actor, slot);
+    if (animId !== NO_ANIM) animIds.add(animId);
+  }
+  const poseIds = new Set();
+  for (const animId of animIds) {
+    const animation = project.sprites.animations[animId];
+    if (!animation) continue;
+    if (!animation.frames.length) {
+      poseIds.add(0);
+      continue;
+    }
+    for (const frame of animation.frames) poseIds.add(frame.metaspriteId);
+  }
+  return [...poseIds].map((id) => project.sprites.metasprites[id]).filter(Boolean);
+}
+
+// A single pose's own per-OAM-Y-row tile counts, placed so its local y=0
+// lands at OAM-Y `baseY`. Runtime computes (ent_y - 1 + tile.y) & 0xFF
+// (engine/entities.asm's draw_one_entity, the -1 and the tile.y add both) --
+// the whole sum wraps as one 8-bit byte, matching real 6502 arithmetic, not
+// a signed/unbounded JS number. OAM Y is one scanline above the sprite (the
+// identical -1 convention oam.asm/entities.asm's own comments already use),
+// so a byte of 239 or more puts the entire sprite's own 8 rows below the
+// 240-line visible picture: the sprite's own first drawn scanline is
+// OAM-Y + 1, and the visible picture is rows 0-239, so any OAM-Y >= 239 has
+// no visible row at all. Wrap first, clip second -- a positive sum that
+// wraps past 255 back down to a small value genuinely does reappear at a
+// real, visible, low row on real hardware, and must be counted there, not
+// treated as still "near the bottom."
+function poseRowCounts(metasprite, baseY) {
+  const counts = new Map();
+  for (const tile of metasprite.tiles) {
+    const oamY = (((baseY + tile.y) % 256) + 256) % 256; // wrap first
+    for (let row = oamY; row < Math.min(oamY + 8, 239); row++) { // then clip
+      counts.set(row, (counts.get(row) ?? 0) + 1);
+    }
+  }
+  return counts;
+}
+
+// One entity's own contribution, per row: the MAX across its reachable
+// poses, never their sum -- only one pose is ever on screen for a given
+// entity at a given instant, so two mutually exclusive poses must never be
+// added together.
+function entityRowMax(entity, actor, project) {
+  const baseY = entity.y - 1;
+  const rowMax = new Map();
+  for (const pose of reachablePoses(actor, project)) {
+    for (const [row, count] of poseRowCounts(pose, baseY)) {
+      rowMax.set(row, Math.max(rowMax.get(row) ?? 0, count));
+    }
+  }
+  return rowMax;
+}
+
+/**
+ * The full per-OAM-Y-row map a position-aware field scanline bound is built
+ * from (design §3.9) -- exported in its own right, not merely a private step
+ * of `fieldScanlineDensity` below, because the scalar peak alone cannot be
+ * tested for per-row correctness: two materially different implementations
+ * (the player's own two OAM rows modeled as two real 8-scanline spans,
+ * versus a single-row hit of weight 2 at each of topRow/bottomRow) can
+ * report an identical peak on a player-only screen while disagreeing on
+ * every other row.
+ *
+ * `isStartScreen` is the caller's own responsibility, computed from both a
+ * map index and a screen index, not one: neither `screen` nor this
+ * function's own arguments carry either index, so the caller must compute
+ * `isStartScreen = mapIndex === project.project.startMap && screenIndex ===
+ * project.project.startScreen`.
+ */
+export function fieldScanlineRows(project, screen, { isStartScreen } = {}) {
+  const total = new Map();
+  for (const entity of screen.entities) {
+    const actor = project.sprites.actors[entity.actorId];
+    if (!actor) continue;
+    for (const [row, count] of entityRowMax(entity, actor, project)) {
+      total.set(row, (total.get(row) ?? 0) + count); // different entities ARE simultaneous
+    }
+  }
+  if (isStartScreen) {
+    // build_oam's own tmp/tmp2 (engine/oam.asm): top-left and top-right each
+    // an 8x8 sprite at OAM-Y `player_y - 1` (tmp), bottom-left and
+    // bottom-right each one at `tmp + 8` (tmp2) -- four sprites, two per
+    // row, each covering its own 8-scanline span, not two single-row hits of
+    // weight 2. Modeled as a synthetic four-tile pose and run through the
+    // identical poseRowCounts every other pose already uses, so there is one
+    // span implementation in this function, not two.
+    const playerPose = { tiles: [{ y: 0 }, { y: 0 }, { y: 8 }, { y: 8 }] };
+    for (const [row, count] of poseRowCounts(playerPose, project.project.startY - 1)) {
+      total.set(row, (total.get(row) ?? 0) + count);
+    }
+  }
+  return total;
+}
+
+// A position-aware field bound, at the placed entities' own runtime OAM-Y
+// coordinates plus, on the start screen only, the player's own start
+// position -- explicitly a heuristic (design §3.9/§8): it is a real,
+// additional way two individually-legal metasprites can still overflow a
+// scanline together, but it still assumes every entity could be showing its
+// own worst pose at the identical instant every other entity is.
+export function fieldScanlineDensity(project, screen, opts = {}) {
+  return Math.max(0, ...fieldScanlineRows(project, screen, opts).values());
+}
+
 /**
  * The commit-free core of Palette-swap actor. Always appended to the end of
  * `project.sprites.actors` (and of `.animations`/`.metasprites`, for whatever

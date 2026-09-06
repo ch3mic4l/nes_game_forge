@@ -1519,11 +1519,10 @@ extract `metaspriteKernelBytes` (§3.11). Tests:
   they would occupy the same OAM-Y rows if summed, reports a peak of 5 for that entity's own
   contribution, not 10 — **caught**: unioning every reachable tile across every pose instead of maxing
   them.
-- **`walkSide` is not double-counted**: an actor whose `walkSide` animation is the only one set (both
-  `walkDown` and `walkUp` unset, falling back to `idle`, itself unset — `NO_ANIM`) contributes exactly
-  that one pose's own row counts once, not twice — **caught**: iterating the compiled four-facing table
-  literally (`walkDown, walkUp, walkSide, walkSide`) instead of the three *distinct* slots this function
-  asks `animFor` for.
+- **A `walkSide`-only actor is included**: an actor whose `walkSide` animation is the only one set (both
+  `walkDown` and `walkUp` unset, falling back to `idle`, itself unset — `NO_ANIM`) still contributes that
+  one pose's own row counts — **caught**: a facing-slot resolution that skips `walkSide` entirely, or
+  resolves it to `NO_ANIM` the way an unset `walkDown`/`walkUp` correctly does.
 - **Negative underflow wraps to an invisible row, not a JS-negative one**: an entity at `y = 0` with a
   pose tile at `tile.y = -18` computes `oamY = (0 - 1 - 18) & 0xff = 237`, still visible (rows 237-238,
   2 of its 8 rows); a tile placed so the wrapped result lands at or past 239 contributes zero rows —
@@ -1561,11 +1560,15 @@ extract `metaspriteKernelBytes` (§3.11). Tests:
   span, not its first row) raises `fieldScanlineDensity`'s own peak to `3` — **caught**: a fix that
   only satisfies the new row-level assertion in isolation without actually wiring
   `fieldScanlineDensity`'s own reduction to read from the corrected map.
-- **`isStartScreen` requires both indices, not one**: two maps, each with a screen at local index 2;
-  `project.project.startMap = 0`, `startScreen = 2`. Calling with `mapIndex: 0, screenIndex: 2` (the
-  real start) includes the player's own two rows; calling with `mapIndex: 1, screenIndex: 2` (the
-  second map's own screen 2, the same screen *index* but the wrong map) does not — **caught**: a caller
-  that compares only `screenIndex === startScreen` and ignores `mapIndex` entirely.
+- **The `isStartScreen` option, in isolation**: `true` includes the player's own sixteen rows; `false`,
+  and omitting the option entirely, includes none of them — **caught**: an implementation that reads the
+  option incorrectly, or that includes the player's rows regardless of it. The real two-index caller
+  proof — that the Map Forge's own `state.mapIndex`/`state.screenIndex` correctly decide `isStartScreen`,
+  not `screenIndex` alone — is not this test's job: a version computing that comparison *inside* the
+  test and handing only the resulting boolean to `fieldScanlineRows` could never catch a caller bug,
+  since the comparison itself never reaches production code. That proof belongs to, and stays in, Phase
+  5's own UI integration test (§6.2's "Integration coverage" fixture), which drives the real Map Forge
+  controls rather than calling `fieldScanlineRows` directly.
 
 **Phase 4 — `reservedRangeRects` and the reserved-range fixtures.** `reservedRangeRects` (§3.4) in the
 new `renderer/widgets/sheetgeom.js`; `sheet.js`/`tile.js` updated to call it. Unit tests, each a direct,
@@ -1905,3 +1908,14 @@ itself the whole time.
 type, so an action project with a hostile placement reported a battle budget for a battle system it
 does not assemble; found by the orchestrator's probe after Phase 2 was implemented; fixed in code and
 here.
+
+**v7.1** (Phase 3 review round 1, findings 3 and 4): the `walkSide` bullet's own "once, not twice" claim
+was unobservable — `animIds` and `poseIds` are both `Set`s, so a duplicate `walkSide` request collapses
+before the per-row maximum ever runs — reframed to state only that a `walkSide`-only actor is included.
+The `isStartScreen` bullet's own claim — that its test exercises two map/screen indices and catches a
+caller comparing `screenIndex` alone — was equally unobservable, for the identical reason: the test
+computed that comparison itself, inside the test, and handed only the resulting boolean across the
+boundary into `fieldScanlineRows`, so no caller bug on the far side of that boundary could ever fail it.
+Reframed to state only what the test actually proves — the `isStartScreen` option's own `true`/`false`/
+omitted behavior in isolation — with the real two-index caller proof left where it already belonged,
+Phase 5's own UI integration test (§6.2's "Integration coverage" fixture; found in review round 2).

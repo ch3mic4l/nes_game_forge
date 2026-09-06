@@ -1,13 +1,22 @@
-// ROADMAP item 8 (validate-as-you-draw), Phases 1-2: no UI in either phase --
-// docs/design-draw-validation.md §7. Phase 1 covers the pieces that have no
-// home yet beside an existing test file: the relocated animFor/
+// ROADMAP item 8 (validate-as-you-draw), Phases 1-3: no UI in any of the
+// three -- docs/design-draw-validation.md §7. Phase 1 covers the pieces that
+// have no home yet beside an existing test file: the relocated animFor/
 // resolveActorRestingIcon matrix, the two flat OAM constants, the MAX_ITEMS
 // consolidation, and metaspriteKernelBytes' own coefficients. resolveItemIcon's
 // pre-existing three-cell coverage (test/unit/items.test.js, unchanged by the
 // delegation) and the compiled item_metasprite byte-identity for a stale
 // derived reference live beside that file's own itemMetaspriteTable helper
 // instead of being duplicated here. Phase 2 covers the battle predicate,
-// battleSpriteBudget and its three private helpers (§3.10).
+// battleSpriteBudget and its three private helpers (§3.10). Phase 3 covers
+// the field position-aware predicate, fieldScanlineRows/fieldScanlineDensity
+// and their private helpers reachablePoses/poseRowCounts/entityRowMax
+// (§3.9) -- §3.1's metaspriteScanlineDensity, §3.2's rename of
+// playerSpriteCollisions to metaspriteTileCollisions, §3.3's
+// spriteReservedRanges and §3.8's screenSpriteBudget/overlaySpriteBudget are
+// NOT part of Phase 3 per §7's own phase text (§3.2/§3.3 belong to Phase 4,
+// tested against reservedRangeRects' own fixtures; §3.1/§3.8 belong to
+// Phase 5, tested against the message builders and the concrete 64/65
+// boundary fixture) and are left there, unimplemented, by this file.
 //
 // Everything here builds its own project via createProject() rather than
 // touching `sample/` or any of the other checked-in fixtures, except the
@@ -33,6 +42,8 @@ import {
   MAX_ITEMS,
   metaspriteKernelBytes,
   battleSpriteBudget,
+  fieldScanlineRows,
+  fieldScanlineDensity,
   normalizeProject
 } from '../../shared/project.js';
 import { MAX_ITEMS as SAVE_MAX_ITEMS, saveIdentity } from '../../shared/save.js';
@@ -559,4 +570,232 @@ test('battleSpriteBudget: an action project with a hostile placement returns {us
   const rpgProject = normalizeProject(project); // an RPG always has a party; normalizing gains the default one
   assert.equal(rpgProject.party.length, 1, 'sanity: normalizing must actually have granted a party');
   assert.equal(battleSpriteBudget(rpgProject, mapperById(1)).used, 3);
+});
+
+// --------------------------------------------------------------------------
+// fieldScanlineRows/fieldScanlineDensity (design §3.9) -- the field position-
+// aware predicate. reachablePoses/poseRowCounts/entityRowMax are module-
+// private, so every case here goes through the two exported functions alone.
+// --------------------------------------------------------------------------
+
+// A metasprite of hand-placed tiles, referenced by no other fixture.
+function poseMetasprite(project, tiles) {
+  const id = project.sprites.metasprites.length;
+  project.sprites.metasprites.push({ id, name: `Pose ${id}`, tiles });
+  return id;
+}
+
+// A one-frame animation naming `metaspriteId` as its own frame 0 -- enough
+// for animFor's own directional resolution and reachablePoses' own nonzero-
+// frame branch. The zero-frame branch is not covered by this helper at all
+// (every animation it builds has exactly one frame); that case is
+// constructed separately, in the edge-branch matrix test below.
+function facingAnim(project, metaspriteId) {
+  const id = project.sprites.animations.length;
+  project.sprites.animations.push({ id, name: `Anim ${id}`, loop: true, frames: [{ metaspriteId }] });
+  return id;
+}
+
+// An actor carrying exactly the facing anims given (e.g. { walkDown, walkUp }),
+// with no other slot set -- so animFor's own idle fallback resolves to
+// NO_ANIM for any slot not named here, exactly as reachablePoses expects.
+function fieldActor(project, anims) {
+  const id = project.sprites.actors.length;
+  project.sprites.actors.push({
+    id,
+    name: `Actor ${id}`,
+    behavior: 'patroller',
+    speed: 1,
+    hp: 1,
+    damage: 0,
+    anims,
+    battle: { battleTile: null }
+  });
+  return id;
+}
+
+test('fieldScanlineDensity: mutually exclusive poses are not summed -- an entity whose walkDown resolves to a 5-tile pose and whose walkUp resolves to a different 5-tile pose, both at the identical local y so they would occupy the same OAM-Y rows if summed, reports a peak of 5, not 10 -- caught: unioning every reachable tile across every pose instead of maxing them', () => {
+  const project = createProject('Exclusive poses', 'action');
+  const downPose = poseMetasprite(project, Array.from({ length: 5 }, (_, i) => ({ tile: i, x: 0, y: 0, palette: 0 })));
+  const upPose = poseMetasprite(project, Array.from({ length: 5 }, (_, i) => ({ tile: i + 10, x: 0, y: 0, palette: 0 })));
+  const downAnim = facingAnim(project, downPose);
+  const upAnim = facingAnim(project, upPose);
+  const actorId = fieldActor(project, { walkDown: downAnim, walkUp: upAnim });
+  const screen = project.maps[0].screens[0];
+  screen.entities.push({ actorId, x: 0, y: 1, props: {} }); // baseY = 0
+  assert.equal(fieldScanlineDensity(project, screen), 5, 'summing both poses would wrongly give 10');
+});
+
+test('fieldScanlineDensity: different entities ARE simultaneous -- two placed entities overlapping the same rows, with distinct tile counts (3 and 5), sum to a peak of 8, not 5 -- caught: taking the max across entities the way poses within a single entity are correctly maxed, instead of summing across entities', () => {
+  const project = createProject('Sum across entities', 'action');
+  const smallPose = poseMetasprite(project, Array.from({ length: 3 }, (_, i) => ({ tile: i, x: 0, y: 0, palette: 0 })));
+  const bigPose = poseMetasprite(project, Array.from({ length: 5 }, (_, i) => ({ tile: i + 10, x: 0, y: 0, palette: 0 })));
+  const smallAnim = facingAnim(project, smallPose);
+  const bigAnim = facingAnim(project, bigPose);
+  const smallActorId = fieldActor(project, { walkDown: smallAnim });
+  const bigActorId = fieldActor(project, { walkDown: bigAnim });
+  const screen = project.maps[0].screens[0];
+  screen.entities.push({ actorId: smallActorId, x: 0, y: 1, props: {} }); // baseY = 0
+  screen.entities.push({ actorId: bigActorId, x: 0, y: 1, props: {} }); // baseY = 0, identical rows
+  assert.equal(fieldScanlineDensity(project, screen), 8, 'taking the max across entities would wrongly give 5');
+});
+
+test('fieldScanlineRows: three edge branches, none of which may throw or contribute a wrong count -- a zero-frame animation substitutes metasprite 0 (its own rows appear, not "no rows"), a frame naming a missing metasprite is filtered out (no rows, no throw), and an entity whose actorId is past the actors array is skipped entirely (no rows, no throw) -- caught: indexing metasprites[id] with no .map(...).filter(Boolean) guard (a throw, or NaN-tainted rows), or entityRowMax being reached with no actor at all (a throw reading actor.anims)', () => {
+  const zeroFrame = createProject('Zero-frame substitution', 'action');
+  // metasprite 0 -- the first pushed, since sprites.metasprites starts empty --
+  // is what the zero-frame stub must resolve to, per resolveActorRestingIcon's
+  // own identical substitution (design §3.6) applied here to reachablePoses.
+  poseMetasprite(zeroFrame, [{ tile: 0, x: 0, y: 0, palette: 0 }, { tile: 1, x: 0, y: 0, palette: 0 }]);
+  const zeroFrameAnimId = zeroFrame.sprites.animations.length;
+  zeroFrame.sprites.animations.push({ id: zeroFrameAnimId, name: 'Zero frames', loop: true, frames: [] });
+  const zeroFrameActorId = fieldActor(zeroFrame, { walkDown: zeroFrameAnimId });
+  const zeroFrameScreen = zeroFrame.maps[0].screens[0];
+  zeroFrameScreen.entities.push({ actorId: zeroFrameActorId, x: 0, y: 1, props: {} }); // baseY = 0
+  const zeroFrameRows = fieldScanlineRows(zeroFrame, zeroFrameScreen);
+  assert.equal(zeroFrameRows.get(0), 2, 'metasprite 0\'s own two tiles must appear -- the zero-frame stub is not "draws nothing"');
+
+  const missingMetasprite = createProject('Missing metasprite filtered', 'action');
+  const missingAnimId = missingMetasprite.sprites.animations.length;
+  // Frame 0 names metasprite 42 -- no such metasprite exists in this project.
+  missingMetasprite.sprites.animations.push({ id: missingAnimId, name: 'Stale frame', loop: true, frames: [{ metaspriteId: 42 }] });
+  const missingActorId = fieldActor(missingMetasprite, { walkDown: missingAnimId });
+  const missingScreen = missingMetasprite.maps[0].screens[0];
+  missingScreen.entities.push({ actorId: missingActorId, x: 0, y: 1, props: {} });
+  assert.doesNotThrow(() => fieldScanlineRows(missingMetasprite, missingScreen));
+  assert.equal(fieldScanlineRows(missingMetasprite, missingScreen).size, 0, 'a frame naming a missing metasprite must be filtered out, contributing no rows');
+
+  const staleActorId = createProject('Stale actorId skipped', 'action');
+  staleActorId.maps[0].screens[0].entities.push({ actorId: 99, x: 0, y: 1, props: {} }); // no actor at index 99
+  assert.doesNotThrow(() => fieldScanlineRows(staleActorId, staleActorId.maps[0].screens[0]));
+  assert.equal(fieldScanlineRows(staleActorId, staleActorId.maps[0].screens[0]).size, 0, 'an out-of-range actorId must be skipped entirely, contributing no rows');
+});
+
+// Reframed per review round 1, finding 3: the original title claimed this
+// test distinguishes asking for walkSide once from asking twice, which is
+// unobservable -- reachablePoses' own animIds and poseIds (both local to
+// that function) are both Sets, so a duplicate walkSide request collapses
+// before entityRowMax's per-row maximum ever runs (docs/design-draw-
+// validation.md §9, v7.1). What
+// this test actually proves, and the only thing it can prove, is that a
+// walkSide-only actor (walkDown and walkUp both unset, falling back to an
+// unset idle -- NO_ANIM) is included at all.
+test('fieldScanlineDensity: a walkSide-only actor is included -- walkDown and walkUp both unset, falling back to an unset idle (NO_ANIM), still contributes its one 5-tile pose\'s row counts -- caught: a facing-slot resolution that skips walkSide entirely, or resolves it to NO_ANIM the way an unset walkDown/walkUp correctly does', () => {
+  const project = createProject('walkSide only', 'action');
+  const sidePose = poseMetasprite(project, Array.from({ length: 5 }, (_, i) => ({ tile: i, x: 0, y: 0, palette: 0 })));
+  const sideAnim = facingAnim(project, sidePose);
+  const actorId = fieldActor(project, { walkSide: sideAnim });
+  const screen = project.maps[0].screens[0];
+  screen.entities.push({ actorId, x: 0, y: 1, props: {} }); // baseY = 0
+  assert.equal(fieldScanlineDensity(project, screen), 5, 'a walkSide-only actor must still be included -- 0 would mean walkSide was silently dropped');
+});
+
+test('fieldScanlineRows: negative underflow wraps to a real, invisible-until-wrapped low row, not a JS-negative one, and a wrap landing at/past row 239 contributes zero rows -- caught: clamping a negative sum to 0 (top of screen) instead of wrapping it, which would place the tile somewhere hardware never would', () => {
+  const visible = createProject('Underflow, visible', 'action');
+  const visiblePose = poseMetasprite(visible, [{ tile: 0, x: 0, y: -18, palette: 0 }]);
+  const visibleAnim = facingAnim(visible, visiblePose);
+  const visibleActorId = fieldActor(visible, { walkDown: visibleAnim });
+  const visibleScreen = visible.maps[0].screens[0];
+  visibleScreen.entities.push({ actorId: visibleActorId, x: 0, y: 0, props: {} }); // baseY = -1
+  const rows = fieldScanlineRows(visible, visibleScreen);
+  // (0 - 1 - 18) & 0xff = 237: two of the tile's own eight rows (237-238)
+  // are still inside the visible 0-238 picture.
+  assert.deepEqual([...rows.keys()].sort((a, b) => a - b), [237, 238], 'the wrap must land at row 237, not a negative index or an unwrapped one');
+  assert.equal(rows.get(237), 1);
+  assert.equal(rows.get(238), 1);
+
+  const offscreen = createProject('Underflow, off-screen', 'action');
+  const offscreenPose = poseMetasprite(offscreen, [{ tile: 0, x: 0, y: -2, palette: 0 }]);
+  const offscreenAnim = facingAnim(offscreen, offscreenPose);
+  const offscreenActorId = fieldActor(offscreen, { walkDown: offscreenAnim });
+  const offscreenScreen = offscreen.maps[0].screens[0];
+  offscreenScreen.entities.push({ actorId: offscreenActorId, x: 0, y: 0, props: {} }); // baseY = -1
+  // (0 - 1 - 2) & 0xff = 253: at/past row 239, so no row of the visible
+  // picture is ever reached.
+  assert.equal(fieldScanlineRows(offscreen, offscreenScreen).size, 0, 'a wrap landing at/past row 239 must contribute zero rows');
+});
+
+test('fieldScanlineRows: a positive byte wrap reappears at a real, visible, low row and must be counted there, not treated as still "near the bottom" -- entity.y = 239 (normalization\'s own ceiling, shared/project.js\'s clamp(raw?.y, 0, 239, 0)) with a pose tile at tile.y = 18 wraps to row 0 -- caught: clipping anything computed from a large entity.y as off-screen without performing the wrap first', () => {
+  const project = createProject('Positive wrap', 'action');
+  const pose = poseMetasprite(project, [{ tile: 0, x: 0, y: 18, palette: 0 }]);
+  const anim = facingAnim(project, pose);
+  const actorId = fieldActor(project, { walkDown: anim });
+  const screen = project.maps[0].screens[0];
+  screen.entities.push({ actorId, x: 0, y: 239, props: {} }); // baseY = 238
+  // (239 - 1 + 18) & 0xff = 256 & 0xff = 0.
+  const rows = fieldScanlineRows(project, screen);
+  assert.equal(rows.get(0), 1, 'the wrapped sum must land on row 0, a real visible row');
+});
+
+test('fieldScanlineRows: clipping happens at row 239, not row 240 -- a tile at oamY 235 contributes only its first 4 of 8 rows (235-238), and a tile at oamY 239 contributes none at all -- caught: an off-by-one clipping at 240 instead of 239 (against the documented one-scanline OAM-Y delay), or clipping only the span\'s own starting row rather than the whole span', () => {
+  const interior = createProject('Clip, interior', 'action');
+  const interiorPose = poseMetasprite(interior, [{ tile: 0, x: 0, y: 235, palette: 0 }]);
+  const interiorAnim = facingAnim(interior, interiorPose);
+  const interiorActorId = fieldActor(interior, { walkDown: interiorAnim });
+  const interiorScreen = interior.maps[0].screens[0];
+  interiorScreen.entities.push({ actorId: interiorActorId, x: 0, y: 1, props: {} }); // baseY = 0, oamY = 235
+  assert.deepEqual(
+    [...fieldScanlineRows(interior, interiorScreen).keys()].sort((a, b) => a - b),
+    [235, 236, 237, 238],
+    'oamY 235 must contribute exactly rows 235-238 (4 of its own 8), not all 8 and not fewer'
+  );
+
+  const boundary = createProject('Clip, boundary', 'action');
+  const boundaryPose = poseMetasprite(boundary, [{ tile: 0, x: 0, y: 239, palette: 0 }]);
+  const boundaryAnim = facingAnim(boundary, boundaryPose);
+  const boundaryActorId = fieldActor(boundary, { walkDown: boundaryAnim });
+  const boundaryScreen = boundary.maps[0].screens[0];
+  boundaryScreen.entities.push({ actorId: boundaryActorId, x: 0, y: 1, props: {} }); // baseY = 0, oamY = 239
+  assert.equal(fieldScanlineRows(boundary, boundaryScreen).size, 0, 'oamY 239 is past the visible picture entirely and must contribute nothing');
+});
+
+test('fieldScanlineRows: the player\'s own two OAM rows each cover all eight of their own scanlines, not one row of weight 2 -- asserted directly against fieldScanlineRows, the one place this is observable (fieldScanlineDensity\'s own scalar peak cannot distinguish "two real 8-row spans" from "two single-row hits of weight 2" on a player-only screen -- both report a peak of 2) -- caught: reporting only two populated map entries (topRow: 2, bottomRow: 2) instead of the full sixteen-row span build_oam\'s own tmp/tmp2 layout actually produces', () => {
+  const project = createProject('Player span rows', 'action'); // startMap 0, startScreen 0, startY 112 by default
+  const screen = project.maps[0].screens[0];
+  const topRow = project.project.startY - 1;
+  const bottomRow = topRow + 8;
+  const rows = fieldScanlineRows(project, screen, { isStartScreen: true });
+  assert.equal(rows.size, 16, 'expected all sixteen rows of the player\'s own two 8-scanline spans, not two single-row hits');
+  for (let row = topRow; row < topRow + 8; row++) {
+    assert.equal(rows.get(row), 2, `row ${row} (top span) must be 2`);
+  }
+  for (let row = bottomRow; row < bottomRow + 8; row++) {
+    assert.equal(rows.get(row), 2, `row ${row} (bottom span) must be 2`);
+  }
+});
+
+test('fieldScanlineDensity: a placed entity\'s pose tile landing at bottomRow + 3 -- the INTERIOR of the player\'s own bottom span, not its first row -- raises the scalar peak from 2 to 3, proving fieldScanlineDensity genuinely reads from the corrected per-row map rather than an isolated pair of hits -- caught: a fix that only satisfies the row-level assertion above in isolation without actually wiring fieldScanlineDensity\'s own reduction to read from the corrected map', () => {
+  const project = createProject('Bottom span interior probe', 'action');
+  const screen = project.maps[0].screens[0];
+  const topRow = project.project.startY - 1;
+  const bottomRow = topRow + 8;
+  assert.equal(fieldScanlineDensity(project, screen, { isStartScreen: true }), 2, 'sanity: the player alone peaks at 2');
+
+  const pose = poseMetasprite(project, [{ tile: 0, x: 0, y: 0, palette: 0 }]);
+  const anim = facingAnim(project, pose);
+  const actorId = fieldActor(project, { walkDown: anim });
+  // baseY = entity.y - 1 = bottomRow + 3, the interior of [bottomRow, bottomRow + 8).
+  screen.entities.push({ actorId, x: 0, y: bottomRow + 4, props: {} });
+
+  assert.equal(fieldScanlineDensity(project, screen, { isStartScreen: true }), 3, 'a tile in the interior of the bottom span must raise the peak to 3');
+});
+
+// Reframed per review round 1, finding 4: the original test computed the
+// mapIndex-and-screenIndex predicate itself, inside the test, and only
+// passed the resulting boolean to fieldScanlineRows -- a future caller that
+// wrongly compared screenIndex alone would never affect this test, since the
+// comparison never happens in production code here. What this test actually
+// proves, and the only thing it can prove, is fieldScanlineRows' own
+// isStartScreen option in isolation: true includes the player's own sixteen
+// rows, false (and omitting the option entirely) includes none of them. The
+// real two-index caller wiring -- deriving isStartScreen from the Map
+// Forge's actual state.mapIndex/state.screenIndex -- is Phase 5's own UI
+// integration test (docs/design-draw-validation.md, the "Integration
+// coverage" passage a few lines above its own §6.2, ~line 1304), which drives
+// the real UI rather than calling fieldScanlineRows directly.
+test('fieldScanlineRows: the isStartScreen option -- true includes the player\'s own sixteen rows, false (and omitting it) includes none of them', () => {
+  const project = createProject('isStartScreen option', 'action');
+  const screen = project.maps[0].screens[0];
+  assert.equal(fieldScanlineRows(project, screen, { isStartScreen: true }).size, 16, 'isStartScreen: true must include the player\'s own sixteen rows');
+  assert.equal(fieldScanlineRows(project, screen, { isStartScreen: false }).size, 0, 'isStartScreen: false must include none of them');
+  assert.equal(fieldScanlineRows(project, screen).size, 0, 'omitting the options object entirely must behave identically to isStartScreen: false');
 });
