@@ -714,19 +714,19 @@ named error and left intact rather than silently sliced — a 256th metasprite i
 content, the identical policy the actor and item ceilings already hold to.
 
 ROADMAP item 8's modular-parts targets the player, not a Sprite Forge actor:
-`PLAYER_FRAMES`/`PLAYER_TILES` (`shared/project.js`) name the player's 32 sprite-table slots.
-Phase 1 shipped the schema — `project.sprites.playerTiles`, `project.sprites.playerParts`,
-`storageIndex`'s addressing arithmetic, the Tile Forge's Player tab. **Phase 2 shipped the
-generator and the build-time stamp; Phase 3 (the modal, §6.3) remains.** `playerTiles` is the
-single canonical source: `generatePlayerSpriteCore`/`planPlayerSprite` write only there, sharing
-one decision path — a frame is written whole or not at all, and `BLANK_TILE` stays the literal
-string, never `null`. Every pick field is validated before address arithmetic — the trap: an
-out-of-range `frameIndex` once grew the array past 32 and aliased another frame. `generateAssets`
-stamps every tileset's `$00-$1F` from `playerTiles` every build, into build-time copies only, never
-project data, `null` falling back to the placeholder per slot. Mechanism depth — the import fixes
-(`freeTileSlots`/`chrImportOverlap`), a divergence warning, and `playerSpriteCollisions`'s §4.4
-preflight — is `docs/design-modular-parts.md`, not here. Pinned by
-`test/unit/playersprite.test.js` and `importChr()` smoke steps.
+`PLAYER_FRAMES`/`PLAYER_TILES` (`shared/project.js`) name the player's 32 sprite-table slots,
+shipped in three phases: schema/Player tab, generator/build-time stamp, then this modal.
+`playerTiles` is the single canonical source: `generatePlayerSpriteCore`/`planPlayerSprite`
+write only there, sharing one decision path — a frame is written whole or not at all,
+`BLANK_TILE` staying the literal string, never `null`. The trap: an out-of-range `frameIndex`
+grew the array past 32, aliasing another frame. `generateAssets` stamps every tileset's
+`$00-$1F` from `playerTiles` every build, into build-time copies only, never project data.
+`openGeneratePlayerSpriteModal` (`renderer/forges/tile/tile.js`) is the only caller of
+`generatePlayerSpriteCore`, capturing `store.revision` before `showModal` and refusing on any
+change after (the `openPaletteSwapModal` idiom); a quadrant selector defaults to the first
+qualifying part carrying its own quadrant tag. `describePlayerSpritePlan` (`shared/project.js`)
+writes every string the modal shows, so the modal, `playersprite.test.js` and the smoke assert
+identical text. Mechanism depth is `docs/design-modular-parts.md`, not here.
 
 `renumberSpellDeletion` (`shared/project.js`) exists beside `renumberActorDeletion`/
 `renumberItemDeletion`, the same shape applied to `project.spells` — the Magic Forge's own delete

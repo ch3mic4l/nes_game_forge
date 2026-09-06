@@ -1045,7 +1045,11 @@ engine bytes: `sample/` builds to an identical ROM hash before and after.
 
 The blank-page problem is real, and RPG Maker solves it mostly by shipping content.
 
-- Generate four directions and two walk frames from modular parts
+- ~~Generate four directions and two walk frames from modular parts~~ — **done**: the Tile
+  Forge's Player view holds a reusable parts library and the canonical 32-tile `playerTiles`
+  array; its Generate Player Sprite modal composes picked parts into whole frames, stamped into
+  every tileset's own sprite table at build time. See `openGeneratePlayerSpriteModal`
+  (`renderer/forges/tile/tile.js`) and `docs/design-modular-parts.md`.
 - ~~**Palette-swap** an existing sprite into a new one~~ — **done**: the Sprite Forge's Actors
   tab clones an actor, repainting every tile on a chosen source sprite-palette slot into a
   destination slot; the original actor and everything it references are untouched. See
