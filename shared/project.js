@@ -6,6 +6,7 @@
 // hand-edited or older project never crashes the UI.
 
 import { BLANK_TILE, TILE_PIXELS, isBlank } from './chr.js';
+import { NES_LAB, labDistance } from './nespalette.js';
 import {
   normalizeSong,
   NO_SONG,
@@ -6543,3 +6544,511 @@ export function validateProject(project) {
 /** Index helpers shared by Map Forge and the generator. */
 export const screenIndex = (map, col, row) => row * map.gridW + col;
 export const metatileIndex = (col, row) => row * LIMITS.screenCols + col;
+
+// ---------------------------------------------------------------------------
+// The starter library import operation (docs/design-starter-library.md).
+// planLibraryImport/applyPlannedProject live here, not in a separate module,
+// because the private normalizers they call (normalizeMetatile and friends)
+// are unexported `function` declarations only this module can reach (§2.1).
+// ---------------------------------------------------------------------------
+
+/** §5.1: engine facts that reserve a palette slot regardless of content. */
+export function reservedPaletteSlots(project, mapper) {
+  const bg = new Set();
+  if (projectUsesText(project) || projectUsesEffectiveTitle(project)) bg.add(0);
+  if (project.project?.gameType === 'rpg') bg.add(1);
+  return { bg, sprite: new Set([0]) };
+}
+
+// §5.2: a metatile id is "used" if a screen paints it OR names it as a bound
+// alternate -- the switch-off state a switch-bound cell falls back to, which
+// paints nothing until the switch flips and so looks untouched to a walk that
+// only reads screen.metatiles.
+function usedMetatileIds(project) {
+  const used = new Set();
+  for (const map of project.maps ?? []) {
+    for (const screen of map.screens ?? []) {
+      for (const id of screen.metatiles) used.add(id);
+      for (const bound of screen.boundTiles ?? []) used.add(bound.metatileId);
+    }
+  }
+  return used;
+}
+
+// A metatile is only "untouched" if it ALSO still carries its own default
+// name -- sample/'s own metatile 0 is renamed "Void" but otherwise pristine,
+// which is exactly the reservation an import must not silently overwrite.
+function isPristine(mt) {
+  return (
+    mt.name === createMetatile(mt.id).name &&
+    mt.tiles.every((t) => t === 0) &&
+    mt.palette === 0 &&
+    mt.collision === 'open'
+  );
+}
+
+function claimed(project, id) {
+  return usedMetatileIds(project).has(id) || !isPristine(project.metatiles[id]);
+}
+
+/**
+ * §5.3, reader 1 of 6 (readers 2-6 are hasBattleBlockArt/battleBlockIndices'
+ * own siblings, already fixed by phase 2). Every *claimed* metatile's own
+ * `palette` field, plus every actor's `battle.battlePalette` where
+ * hasBattleBlockArt(actor) is true -- draw_mon_block/draw_attr_mon tint a
+ * monster's block art by that field regardless of whether any metatile
+ * happens to point at the same slot. Named and exported because test 3
+ * (design §11) calls it directly.
+ */
+export function bgRefCount(project) {
+  const counts = new Map();
+  const bump = (index) => counts.set(index, (counts.get(index) ?? 0) + 1);
+  for (const mt of project.metatiles) {
+    if (claimed(project, mt.id)) bump(mt.palette);
+  }
+  for (const actor of project.sprites.actors) {
+    if (hasBattleBlockArt(actor)) bump(actor.battle.battlePalette);
+  }
+  return counts;
+}
+
+// The sprite-table half of §5.3: every metasprite's own tiles[].palette,
+// unconditionally -- project.sprites.metasprites is append-only, with no
+// pre-allocated pool to distinguish claimed from unclaimed the way
+// project.metatiles has, so every metasprite that exists counts.
+function spriteRefCount(project) {
+  const counts = new Map();
+  for (const ms of project.sprites.metasprites) {
+    for (const t of ms.tiles) counts.set(t.palette, (counts.get(t.palette) ?? 0) + 1);
+  }
+  return counts;
+}
+
+/**
+ * §5.3: which of a palette table's four slots are genuinely free -- neither
+ * reserved (§5.1) nor referenced by any claimed content (above). Returns a
+ * Set, not an object, because §7.3's paletteCandidates indexes it with
+ * `.has(index)`.
+ */
+export function unusedPaletteSlots(project, table, mapper) {
+  const counts = table === 'bg' ? bgRefCount(project) : spriteRefCount(project);
+  const reserved = reservedPaletteSlots(project, mapper)[table];
+  const unused = new Set();
+  for (let index = 0; index < LIMITS.palettes; index++) {
+    if (!reserved.has(index) && !(counts.get(index) > 0)) unused.add(index);
+  }
+  return unused;
+}
+
+/**
+ * §5.4: project.metatiles is a fixed 64-slot array, never appended to --
+ * "importing" a terrain metatile means claiming an existing, still-unclaimed
+ * slot in place, not appending. Returns a plain object (id -> is it free),
+ * the shape the design's own formula spells out.
+ */
+export function unusedMetatileSlots(project) {
+  const result = {};
+  for (let id = 0; id < project.metatiles.length; id++) result[id] = !claimed(project, id);
+  return result;
+}
+
+/**
+ * §5.5: every index outside the engine's reserved ranges, blank or not --
+ * the set dedup candidates are drawn from, since a real non-blank tile
+ * already matching what an entry wants is exactly what cross-entry dedup
+ * (§6) needs to find and reuse.
+ */
+export function permittedIndices(project, table, mapper) {
+  const all = Array.from({ length: LIMITS.tilesPerTable }, (_, i) => i);
+  if (table === 'background') {
+    if (projectUsesText(project) && !fontBankSplit(project, mapper)) {
+      return all.filter((i) => i < FONT_BASE);
+    }
+    return all;
+  }
+  const ranges = spriteReservedRanges(project, mapper);
+  return all.filter((i) => !ranges.some((r) => i >= r.start && i < r.end));
+}
+
+// §5.5: every index a claimed metatile, a metasprite, or (on the project's
+// own battle tileset) a monster's own block art already points at -- a blank
+// tile referenced this way is not free, even though its stored content is
+// all zeroes.
+function referencedTileIndices(project, table, tilesetIndex) {
+  const refs = new Set();
+  if (table === 'background') {
+    for (const mt of project.metatiles) {
+      if (claimed(project, mt.id)) for (const t of mt.tiles) refs.add(t);
+    }
+    if (project.project?.gameType === 'rpg' && tilesetIndex === project.rpg.battleTilesetId) {
+      for (const actor of project.sprites.actors) {
+        for (const index of battleBlockIndices(actor)) refs.add(index);
+      }
+    }
+  } else {
+    for (const ms of project.sprites.metasprites) for (const t of ms.tiles) refs.add(t.tile);
+  }
+  return refs;
+}
+
+/**
+ * §5.5: permittedIndices intersected with freeTileSlots' own blank-content
+ * answer, further reduced by everything already referenced -- the set fresh
+ * allocation is drawn from, as opposed to permittedIndices' own dedup set.
+ */
+export function freePermittedIndices(tilesetTable, project, table, mapper, tilesetIndex) {
+  const permitted = new Set(permittedIndices(project, table, mapper));
+  const referenced = referencedTileIndices(project, table, tilesetIndex);
+  return freeTileSlots(tilesetTable, table === 'background' ? 'background' : 'sprites').filter(
+    (i) => permitted.has(i) && !referenced.has(i)
+  );
+}
+
+// §7.2: which of a palette table's four slots looks least wrong to render an
+// entry's colours in, when nothing about to adopt it is an exact or an
+// unused match. Sums shared/nespalette.js's own perceptual Lab distance over
+// the three non-backdrop positions; slot 0 is never compared, since §7.3's
+// own backdrop canonicalization already forces it identical everywhere.
+function nearestPaletteSlot(project, table, colors, excluded = new Set()) {
+  let best = null;
+  let bestDistance = Infinity;
+  for (let index = 0; index < LIMITS.palettes; index++) {
+    if (excluded.has(index)) continue;
+    const slotColors = project.palettes[table][index];
+    let sum = 0;
+    for (let i = 1; i <= 3; i++) sum += labDistance(NES_LAB[colors[i]], NES_LAB[slotColors[i]]);
+    if (sum < bestDistance) {
+      bestDistance = sum;
+      best = index;
+    }
+  }
+  return best;
+}
+
+// §7.3: names the exact engine fact from §5.1 in words, for the picker's own
+// caption on a reserved slot.
+function reservedCaption(paletteKey, index, project) {
+  if (paletteKey === 'sprite' && index === 0) return 'reserved for the player';
+  if (paletteKey === 'bg' && index === 0) {
+    return projectUsesText(project)
+      ? 'reserved because this project shows text'
+      : 'reserved because this project has a title screen';
+  }
+  if (paletteKey === 'bg' && index === 1) return 'reserved for battle scenery';
+  return null;
+}
+
+// §7.3: the four candidate slots of one palette table, each carrying whether
+// it is an exact match (once the entry's placeholder backdrop is
+// canonicalized against the project's real one), unused, excluded (claimed
+// by an earlier entry-local palette in this same plan) or reserved.
+function paletteCandidates(project, colors, tileTable, mapper, excluded = new Set()) {
+  const paletteKey = tileTable === 'background' ? 'bg' : 'sprite';
+  const canonical = [project.palettes.bg[0][0], ...colors.slice(1)];
+  const unused = unusedPaletteSlots(project, paletteKey, mapper);
+  const reserved = reservedPaletteSlots(project, mapper)[paletteKey];
+  return [0, 1, 2, 3].map((index) => {
+    const colours = project.palettes[paletteKey][index];
+    const exactMatch = colours.slice(1).every((c, i) => c === canonical[i + 1]);
+    return {
+      index,
+      colours,
+      exactMatch,
+      unused: unused.has(index) && !excluded.has(index),
+      excluded: excluded.has(index),
+      reserved: reserved.has(index),
+      reservedReason: reserved.has(index) ? reservedCaption(paletteKey, index, project) : null
+    };
+  });
+}
+
+function validPaletteSlotOption(value) {
+  return Number.isInteger(value) && value >= 0 && value < LIMITS.palettes;
+}
+
+/**
+ * §7.2/§7.3, resolved for ONE entry-local palette: validate an explicit
+ * `requestedSlot`, or fall back to the headless default priority (exact
+ * match, else the first unused slot, else nearestPaletteSlot), then apply
+ * §7.3's own two-outcome resolution -- write fresh colours only if the
+ * chosen slot is genuinely unused, otherwise adopt what is already there.
+ * `excluded` is every slot an earlier entry-local palette in this same plan
+ * already claimed; this phase's callers (terrain has exactly one palette)
+ * always pass an empty set, but the parameter is threaded through now so a
+ * future multi-palette caller (monster/pickup, phase 5) can grow it between
+ * calls rather than this function needing to change shape.
+ */
+function resolvePaletteForKind(project, paletteKey, colors, requestedSlot, excluded, mapper) {
+  if (requestedSlot !== undefined) {
+    if (!validPaletteSlotOption(requestedSlot)) {
+      return {
+        ok: false,
+        reason:
+          `options.paletteSlot must be an integer from 0 to ${LIMITS.palettes - 1}; received ` +
+          `${JSON.stringify(requestedSlot)}.`
+      };
+    }
+    if (excluded.has(requestedSlot)) {
+      return {
+        ok: false,
+        reason: `paletteSlot ${requestedSlot} is already claimed by an earlier palette in this import.`
+      };
+    }
+    return finishPaletteResolution(project, paletteKey, colors, requestedSlot, mapper);
+  }
+  const tileTable = paletteKey === 'bg' ? 'background' : 'sprites';
+  const candidates = paletteCandidates(project, colors, tileTable, mapper, excluded);
+  const exact = candidates.find((c) => c.exactMatch && !c.excluded);
+  if (exact) return finishPaletteResolution(project, paletteKey, colors, exact.index, mapper);
+  const unused = candidates.filter((c) => c.unused).sort((a, b) => a.index - b.index)[0];
+  if (unused) return finishPaletteResolution(project, paletteKey, colors, unused.index, mapper);
+  const nearest = nearestPaletteSlot(project, paletteKey, colors, excluded);
+  return finishPaletteResolution(project, paletteKey, colors, nearest, mapper);
+}
+
+function finishPaletteResolution(project, paletteKey, colors, slot, mapper) {
+  const unused = unusedPaletteSlots(project, paletteKey, mapper);
+  const written = unused.has(slot);
+  if (written) {
+    project.palettes[paletteKey][slot] = [project.palettes.bg[0][0], ...colors.slice(1)];
+  }
+  return { ok: true, slot, written };
+}
+
+// §7.5: the identity of one (severity, where) bucket a diagnostic sits in.
+function errorKey(problem) {
+  return `${problem.severity} ${problem.where}`;
+}
+
+function messageSkeleton(message) {
+  return message.replace(/\d+/g, '#');
+}
+
+function messageNumbers(message) {
+  return (message.match(/\d+/g) || []).map(Number);
+}
+
+// True only if `after` is textually identical to `before`, or shares the
+// same skeleton with every embedded number no greater than `before`'s
+// corresponding number, position by position (§7.5).
+function isNotWorse(beforeMessage, afterMessage) {
+  if (messageSkeleton(beforeMessage) !== messageSkeleton(afterMessage)) return false;
+  const beforeNumbers = messageNumbers(beforeMessage);
+  const afterNumbers = messageNumbers(afterMessage);
+  if (beforeNumbers.length !== afterNumbers.length) return false;
+  return afterNumbers.every((n, i) => n <= beforeNumbers[i]);
+}
+
+/**
+ * §7.5: only the errors an import's own writes actually caused may refuse
+ * it. Matches each `after` error against an unclaimed `before` error at the
+ * same (severity, where) whose message is textually the same or numerically
+ * no worse; anything left over in `after` is a genuine regression.
+ */
+export function attributedErrors(originalProject, candidateClone) {
+  const before = new Map();
+  for (const p of validateProject(originalProject)) {
+    if (p.severity !== 'error') continue;
+    const key = errorKey(p);
+    if (!before.has(key)) before.set(key, []);
+    before.get(key).push({ message: p.message, used: false });
+  }
+  const regressions = [];
+  for (const p of validateProject(candidateClone)) {
+    if (p.severity !== 'error') continue;
+    const pool = before.get(errorKey(p)) || [];
+    const match = pool.find((entry) => !entry.used && isNotWorse(entry.message, p.message));
+    if (match) {
+      match.used = true;
+    } else {
+      regressions.push(p);
+    }
+  }
+  return regressions;
+}
+
+/**
+ * §7 (terrain only, phase 4): plan claiming this entry's metatiles into
+ * `clone.metatiles` and its tiles into `options.tilesetId`'s background
+ * table (default 0 -- this phase has no UI, so nothing yet lets an author
+ * choose a different destination tileset; a future UI phase can plumb a
+ * real choice through this same option).
+ */
+function planTerrainImport(originalProject, clone, entry, options) {
+  if (options.paletteSlot !== undefined && !validPaletteSlotOption(options.paletteSlot)) {
+    return {
+      ok: false,
+      reason:
+        `options.paletteSlot must be an integer from 0 to ${LIMITS.palettes - 1}; received ` +
+        `${JSON.stringify(options.paletteSlot)}.`
+    };
+  }
+
+  const tilesetId = options.tilesetId ?? 0;
+  const tileset = clone.tilesets[tilesetId];
+  if (!tileset) return { ok: false, reason: `Tileset ${tilesetId} does not exist.` };
+  const mapper = resolveMapper(clone.cartridge.mapper);
+
+  // §7.6 step 2: id-space capacity, before any tile or palette work.
+  const neededSlots = entry.metatiles.length;
+  const availableSlots = Object.values(unusedMetatileSlots(clone)).filter(Boolean).length;
+  if (availableSlots < neededSlots) {
+    return {
+      ok: false,
+      reason:
+        `This set needs ${neededSlots} free metatile slot${neededSlots === 1 ? '' : 's'}, but only ` +
+        `${availableSlots} ${availableSlots === 1 ? 'is' : 'are'} free (of ${LIMITS.metatiles}).`
+    };
+  }
+
+  // §7.6 step 3: tile-space capacity -- how many of the entry's own tiles
+  // cannot dedup-match something already present.
+  const table = tileset.background.tiles;
+  const permittedBefore = permittedIndices(clone, 'background', mapper);
+  const unmatchedCount = entry.tiles.filter(
+    (content) => !permittedBefore.some((i) => table[i] === content)
+  ).length;
+  const free = freePermittedIndices(table, clone, 'background', mapper, tilesetId);
+  if (free.length < unmatchedCount) {
+    return {
+      ok: false,
+      reason:
+        `This set needs ${unmatchedCount} free background tile${unmatchedCount === 1 ? '' : 's'} on ` +
+        `tileset "${tileset.name}", but only ${free.length} ${free.length === 1 ? 'is' : 'are'} free.`
+    };
+  }
+
+  // §7.6 step 4: build the full candidate on the clone.
+  // §6: one map, entry-local tiles[] index -> destination background index,
+  // built by walking entry.tiles in order -- an exact-string match against
+  // what is already permitted (blank or not), else a fresh allocation.
+  // Deliberately no "already used this import" exclusion: the moment a
+  // fresh index is written (table[destination] = content), it is no longer
+  // BLANK_TILE, so freePermittedIndices already drops it from every later
+  // allocation search on its own -- and it must stay a legal DEDUP target
+  // for a later entry-local tile with the identical content, which an
+  // exclusion set would wrongly block, forcing a needless second copy of
+  // the same art into a second index.
+  let tilesWrittenFresh = 0;
+  let allocationFailed = false;
+  const tileMap = entry.tiles.map((content) => {
+    if (allocationFailed) return undefined;
+    const permittedNow = permittedIndices(clone, 'background', mapper);
+    let destination = permittedNow.find((i) => table[i] === content);
+    if (destination === undefined) {
+      const freeNow = freePermittedIndices(table, clone, 'background', mapper, tilesetId);
+      destination = freeNow[0];
+      // Defense in depth: §7.6 step 3 above already checked there is enough
+      // room, so this should be structurally unreachable -- but a future
+      // change that lets the preflight count and this loop's real
+      // consumption drift apart must refuse loudly, never write
+      // table[undefined] or let undefined flow into tileMap.
+      if (destination === undefined) {
+        allocationFailed = true;
+        return undefined;
+      }
+      table[destination] = content;
+      tilesWrittenFresh++;
+    }
+    return destination;
+  });
+  if (allocationFailed) {
+    return {
+      ok: false,
+      reason: `Ran out of free background tile slots on tileset "${tileset.name}" while importing "${entry.name}".`
+    };
+  }
+
+  const paletteResolution = resolvePaletteForKind(
+    clone,
+    'bg',
+    entry.palette,
+    options.paletteSlot,
+    new Set(),
+    mapper
+  );
+  if (!paletteResolution.ok) return paletteResolution;
+
+  // §7.4: terrain claims a slot from unusedMetatileSlots, in place, never
+  // appended -- the slot's own existing array index becomes the metatile's
+  // id. Every claimed record's name runs through nameForDuplicateScreen for
+  // the "name copy/copy 2/..." de-collision rule.
+  const claimedMetatiles = [];
+  for (const mt of entry.metatiles) {
+    const remappedTiles = mt.tiles.map((localIndex) =>
+      localIndex >= 0 && localIndex < tileMap.length ? tileMap[localIndex] : null
+    );
+    // == null also catches undefined: a tileMap entry that is itself
+    // undefined (a failed allocation) must refuse here too, never fall
+    // through into normalizeMetatile coerced into some fallback tile index.
+    if (remappedTiles.some((t) => t == null)) {
+      return {
+        ok: false,
+        reason: `"${entry.name}"'s metatile "${mt.name}" references a tile index this entry does not have.`
+      };
+    }
+    const unused = unusedMetatileSlots(clone);
+    const id = Object.keys(unused)
+      .map(Number)
+      .find((candidateId) => unused[candidateId]);
+    const name = nameForDuplicateScreen(mt.name, clone.metatiles);
+    clone.metatiles[id] = normalizeMetatile(
+      { name, tiles: remappedTiles, palette: paletteResolution.slot, collision: mt.collision },
+      id
+    );
+    claimedMetatiles.push({ id, name: clone.metatiles[id].name });
+  }
+
+  // §7.6 step 5: only the errors this import actually causes may refuse it.
+  const regressions = attributedErrors(originalProject, clone);
+  if (regressions.length > 0) {
+    return {
+      ok: false,
+      reason:
+        'This import would cause these problems:\n' +
+        regressions.map((p) => `- ${p.message}`).join('\n')
+    };
+  }
+
+  const tilesMatched = tileMap.length - tilesWrittenFresh;
+  const report = {
+    kind: entry.kind,
+    name: entry.name,
+    tiles: { fresh: tilesWrittenFresh, matched: tilesMatched, tileset: tileset.name },
+    metatiles: claimedMetatiles,
+    palette: { table: 'bg', slot: paletteResolution.slot, written: paletteResolution.written },
+    lines: [
+      `Imported "${entry.name}" (terrain).`,
+      `${tilesWrittenFresh} tile${tilesWrittenFresh === 1 ? '' : 's'} written fresh, ${tilesMatched} ` +
+        `reused via dedup, into tileset "${tileset.name}".`,
+      ...claimedMetatiles.map((c) => `Metatile slot ${c.id} ("${c.name}") claimed.`),
+      paletteResolution.written
+        ? `Background palette ${paletteResolution.slot} written with this set's own colours.`
+        : `Background palette ${paletteResolution.slot} adopted as-is (existing colours kept).`,
+      'Capacity is checked at build.'
+    ]
+  };
+
+  return { ok: true, project: clone, report };
+}
+
+/**
+ * §7.1: pure planning. Clones `project` immediately and mutates only the
+ * clone; returns `{ ok: true, project, report }` or `{ ok: false, reason }`.
+ * The caller's own `project` is never touched, on either outcome.
+ */
+export function planLibraryImport(project, entry, options = {}) {
+  const clone = structuredClone(project);
+  if (entry.kind === 'terrain') return planTerrainImport(project, clone, entry, options);
+  return { ok: false, reason: `Unsupported library entry kind "${entry.kind}".` };
+}
+
+/**
+ * §7.1: the one defined "make a successful plan real" operation.
+ * `planned` is a structuredClone of `target` with content only ever added,
+ * never a key removed, so Object.assign's own "copy every own enumerable
+ * key" behaviour is already the whole, correct operation.
+ */
+export function applyPlannedProject(target, planned) {
+  return Object.assign(target, planned);
+}
