@@ -3149,6 +3149,20 @@ export function resolveItemIcon(item, actor, animations, metasprites) {
   return resolveActorRestingIcon(actor, animations, metasprites);
 }
 
+// A small, project-scoped convenience wrapper around resolveActorRestingIcon
+// for every consumer that wants a tile count rather than a raw metasprite id
+// -- battleSpriteBudget's own formationSpriteCost, below, since a formation's
+// monster sprites and an item's derived icon both draw through
+// draw_actor_icon. This is the one place a stale or out-of-range id is
+// actually handled: array indexing a JS array past its own end returns
+// `undefined`, so `?.tiles` short-circuits to `undefined` and `?? 0` supplies
+// the safe worst-case-bound answer -- 0 tiles -- without resolveActorRestingIcon
+// itself needing to know or care that the id it returned was stale.
+function actorRestingIconTiles(actor, project) {
+  const id = resolveActorRestingIcon(actor, project.sprites.animations, project.sprites.metasprites);
+  return project.sprites.metasprites[id]?.tiles.length ?? 0;
+}
+
 // The pure spriteBytes term main/build/generate.js's kernelTableBytes used
 // to compute inline. Needs neither flattenScreens nor node:fs, so it can
 // live here and be read by the Sprite Forge as well as the generator.
@@ -3161,6 +3175,97 @@ export function metaspriteKernelBytes(project) {
     2 * animations.reduce((total, entry) => total + entry.frames.length, 0) +
     8 * Math.max(1, actors.length)
   );
+}
+
+/**
+ * The project-wide battle OAM figure: party (an RPG's own live members, drawn
+ * via each member's explicit `pc_metasprite`), the worst monster formation
+ * the project can reach (battle_draw_sprites draws only a no-block-art
+ * monster as a sprite, through the exact draw_actor_icon resolver), and the
+ * MMC3 targeting cursor, whenever the split font is live -- the same
+ * SPLIT_ENABLED gate the engine's own cursor draw uses
+ * (engine/battleui.asm's `.if SPLIT_ENABLED`). `mapper` is already-resolved,
+ * the same discipline fontBankSplit's own callers already keep, so this
+ * function never has to import resolveMapper itself.
+ *
+ * An action project has no battle system at all: `entity_contact`
+ * (engine/combat.asm) jumps to `hurt_player`, never `touch_encounter`, unless
+ * `BATTLE_ENABLED` -- so a hostile placement's "singleton formation" and a
+ * map's own encounter table are both engine fictions on that build, and this
+ * returns `{used: 0, limit: MAX_OAM_ENTRIES}` before walking any of it. Gated
+ * on `gameType`, the same fact the party term below already keys off of, not
+ * on `codeRegions(...)` (whether the mapper actually has room for the battle
+ * bank): a CHR-RAM board too small for the battle region is already refused
+ * by `checkCapacity` on its own, so computing a battle figure for that
+ * project anyway is harmless -- game type alone is the real, single gate.
+ */
+export function battleSpriteBudget(project, mapper) {
+  if (project.project?.gameType !== 'rpg') return { used: 0, limit: MAX_OAM_ENTRIES };
+  const actorCount = project.sprites.actors.length;
+  const party = project.party.reduce((total, member) => {
+    const metasprite = project.sprites.metasprites[member.metaspriteId];
+    return total + (metasprite?.tiles.length ?? 0); // $FF (NO_METASPRITE) naturally resolves to 0
+  }, 0);
+  const formations = battleFormations(project, actorCount);
+  const monsters = Math.max(0, ...formations.map((formation) => formationSpriteCost(formation, project)));
+  const cursor = fontBankSplit(project, mapper) ? 1 : 0;
+  return { used: party + monsters + cursor, limit: MAX_OAM_ENTRIES };
+}
+
+// Every formation the project can reach, from all three sources the engine
+// actually has. liveCommands, not allCommands -- a compiled-ROM question, the
+// same distinction projectUsesText/projectUsesCombat already draw,
+// deliberately different from monsterActorIds' own "what is mentioned"
+// catalog rule.
+function battleFormations(project, actorCount) {
+  const formations = [];
+  for (const event of projectEvents(project)) {
+    for (const page of compiledPages(event)) {
+      for (const command of liveCommands(page.commands, CHOICE_LIMITS.options)) {
+        if (command.op === 'battle') formations.push(battleFormationSlice(command.monsters));
+      }
+    }
+  }
+  for (const map of project.maps ?? []) {
+    // check_encounter returns immediately when map_enc_rate is zero
+    // (engine/rpg.asm) -- this map's own table can never fire.
+    if ((map.encounters?.rate ?? 0) > 0) formations.push(mapEncounterFormation(map, actorCount));
+  }
+  formations.push(...touchEncounterFormations(project));
+  return formations;
+}
+
+// entity_contact (engine/combat.asm) starts a fight through touch_encounter
+// (engine/rpg.asm) for ANY placed actor whose own actor_damage is nonzero,
+// gated on nothing else -- a one-monster formation per such placement,
+// project-wide, on every screen. A hide-switch placement still counts, the
+// same reasoning as the field sprite budget: it draws whenever its switch is
+// off, the default state.
+function touchEncounterFormations(project) {
+  const formations = [];
+  for (const map of project.maps ?? []) {
+    for (const screen of map.screens ?? []) {
+      for (const entity of screen.entities ?? []) {
+        const actor = project.sprites.actors[entity.actorId];
+        if (actor && (actor.damage ?? 0) > 0) formations.push([entity.actorId]);
+      }
+    }
+  }
+  return formations;
+}
+
+// A formation's own worst-case sprite cost: only a monster with no block art
+// (battleTile === null, i.e. mon_tile === $FF) draws as a sprite at all
+// (engine/battleui.asm's battle_sprite_mon, via draw_actor_icon) -- through
+// the exact resolver, actorRestingIconTiles, not the field's own
+// every-facing maximum.
+function formationSpriteCost(formation, project) {
+  return formation.reduce((total, actorId) => {
+    if (actorId === NO_ACTOR) return total;
+    const actor = project.sprites.actors[actorId];
+    if (!actor || actor.battle?.battleTile !== null) return total;
+    return total + actorRestingIconTiles(actor, project);
+  }, 0);
 }
 
 /**

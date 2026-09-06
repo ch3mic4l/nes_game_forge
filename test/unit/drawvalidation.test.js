@@ -1,13 +1,13 @@
-// ROADMAP item 8 (validate-as-you-draw), Phase 1: relocations and central
-// constants only, no UI -- docs/design-draw-validation.md §7 Phase 1. This
-// file covers the pieces that have no home yet beside an existing test file:
-// the relocated animFor/resolveActorRestingIcon matrix, the two flat OAM
-// constants, the MAX_ITEMS consolidation, and metaspriteKernelBytes' own
-// coefficients. resolveItemIcon's pre-existing three-cell coverage
-// (test/unit/items.test.js, unchanged by the delegation) and the compiled
-// item_metasprite byte-identity for a stale derived reference live beside
-// that file's own itemMetaspriteTable helper instead of being duplicated
-// here.
+// ROADMAP item 8 (validate-as-you-draw), Phases 1-2: no UI in either phase --
+// docs/design-draw-validation.md §7. Phase 1 covers the pieces that have no
+// home yet beside an existing test file: the relocated animFor/
+// resolveActorRestingIcon matrix, the two flat OAM constants, the MAX_ITEMS
+// consolidation, and metaspriteKernelBytes' own coefficients. resolveItemIcon's
+// pre-existing three-cell coverage (test/unit/items.test.js, unchanged by the
+// delegation) and the compiled item_metasprite byte-identity for a stale
+// derived reference live beside that file's own itemMetaspriteTable helper
+// instead of being duplicated here. Phase 2 covers the battle predicate,
+// battleSpriteBudget and its three private helpers (§3.10).
 //
 // Everything here builds its own project via createProject() rather than
 // touching `sample/` or any of the other checked-in fixtures, except the
@@ -31,9 +31,12 @@ import {
   PLAYER_OAM_ENTRIES,
   MAX_OAM_ENTRIES,
   MAX_ITEMS,
-  metaspriteKernelBytes
+  metaspriteKernelBytes,
+  battleSpriteBudget,
+  normalizeProject
 } from '../../shared/project.js';
 import { MAX_ITEMS as SAVE_MAX_ITEMS, saveIdentity } from '../../shared/save.js';
+import { mapperById } from '../../shared/cartridge.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 
@@ -326,4 +329,234 @@ test('kernelTableBytes delegates its own spriteBytes term to metaspriteKernelByt
   project.sprites.metasprites[0].tiles.push({ ...project.sprites.metasprites[0].tiles[0] });
   const after = kernelTableBytes(project).tableBytes;
   assert.equal(after - before, 4, 'an extraction that never wires kernelTableBytes to call metaspriteKernelBytes would leave this delta at 0');
+});
+
+// --------------------------------------------------------------------------
+// battleSpriteBudget (design §3.10) -- the project-wide battle OAM figure.
+// battleFormations/touchEncounterFormations/formationSpriteCost are module-
+// private (§3.10's own home/call-site table), so every case here goes
+// through the exported function alone.
+// --------------------------------------------------------------------------
+
+// Pushes a metasprite of `tileCount` tiles, an animation whose walkDown
+// frame 0 names it, and an actor whose walkDown resolves to that animation --
+// exactly the chain resolveActorRestingIcon/actorRestingIconTiles walk.
+// Returns the actor's own array index -- its actorId, per the compiler's
+// direct array-index lookup (design §1.2).
+function makeMonster(project, tileCount, { battleTile = null, damage = 0 } = {}) {
+  const metaspriteId = project.sprites.metasprites.length;
+  project.sprites.metasprites.push({
+    id: metaspriteId,
+    name: `Icon ${metaspriteId}`,
+    tiles: Array.from({ length: tileCount }, (_, i) => ({ tile: i, x: 0, y: 0, palette: 0 }))
+  });
+  const animId = project.sprites.animations.length;
+  project.sprites.animations.push({ id: animId, name: `Walk ${animId}`, loop: true, frames: [{ metaspriteId }] });
+  const actorId = project.sprites.actors.length;
+  project.sprites.actors.push({
+    id: actorId,
+    name: `Monster ${actorId}`,
+    behavior: 'patroller',
+    speed: 1,
+    hp: 1,
+    damage,
+    anims: { walkDown: animId },
+    battle: { battleTile }
+  });
+  return actorId;
+}
+
+// A placed entity carrying an authored event of exactly one page holding
+// `commands` -- the entity's own actorId is irrelevant to battleFormations
+// (only entity.props.event is walked), so it is fixed at 0.
+function eventEntity(commands) {
+  return { actorId: 0, x: 0, y: 0, props: { event: { pages: [{ commands }] } } };
+}
+
+test('battleSpriteBudget: a hostile placement (damage > 0), named in no battle command and no encounter table, still contributes a one-monster formation of its own resting-icon size -- caught: scanning only scripted battle commands and map encounter tables and never placed entities, the exact false negative this design\'s own inventory found', () => {
+  const project = createProject('Hostile placement', 'rpg');
+  const actorId = makeMonster(project, 3, { damage: 1 });
+  project.maps[0].screens[0].entities.push({ actorId, x: 0, y: 0, props: {} });
+  assert.equal(battleSpriteBudget(project, mapperById(1)).used, 3);
+});
+
+test('battleSpriteBudget: touch-encounter edges -- a hidden hostile placement (hideSwitch set) still contributes, since it draws whenever the switch is off, the default state; a placement whose actorId is past the actor array contributes 0 without throwing -- caught: filtering out hideSwitch placements, or indexing actors[entity.actorId] with no existence guard', () => {
+  const hidden = createProject('Hidden hostile', 'rpg');
+  const hiddenActorId = makeMonster(hidden, 5, { damage: 1 });
+  hidden.maps[0].screens[0].entities.push({ actorId: hiddenActorId, x: 0, y: 0, props: { hideSwitch: 3 } });
+  assert.equal(battleSpriteBudget(hidden, mapperById(1)).used, 5);
+
+  const stale = createProject('Stale actorId', 'rpg');
+  stale.maps[0].screens[0].entities.push({ actorId: 99, x: 0, y: 0, props: {} }); // no actor at index 99
+  assert.doesNotThrow(() => battleSpriteBudget(stale, mapperById(1)));
+  assert.equal(battleSpriteBudget(stale, mapperById(1)).used, 0);
+});
+
+test('battleSpriteBudget: a map with encounters.rate = 0 and a full actorIds table contributes nothing; the identical map at rate 1 contributes its formation -- caught: reading actorIds.length as the admission test instead of rate, which would wrongly include the rate-0 map since its table is non-empty', () => {
+  const project = createProject('Rate gate', 'rpg');
+  const actorId = makeMonster(project, 4);
+  project.maps[0].encounters = { rate: 0, actorIds: [actorId] };
+  assert.equal(battleSpriteBudget(project, mapperById(1)).used, 0);
+  project.maps[0].encounters.rate = 1;
+  assert.equal(battleSpriteBudget(project, mapperById(1)).used, 4);
+});
+
+test('battleSpriteBudget: a rate-nonzero map\'s four-actor encounter table is charged all four resting icons, not the engine\'s own current 0-3 roll ceiling -- caught: "helpfully" clamping to three to match start_encounter\'s buggy loop, silently under-counting relative to this design\'s own stated decision', () => {
+  const project = createProject('Four slots', 'rpg');
+  const ids = [1, 2, 3, 4].map((n) => makeMonster(project, n));
+  project.maps[0].encounters = { rate: 1, actorIds: ids };
+  assert.equal(battleSpriteBudget(project, mapperById(1)).used, 1 + 2 + 3 + 4);
+});
+
+test('battleSpriteBudget: a monster with block art (battle.battleTile !== null) costs 0 -- battle_draw_sprites only ever draws a no-block-art monster as a sprite -- caught: charging every encounter-table monster regardless of its own battleTile', () => {
+  const project = createProject('Block art', 'rpg');
+  const artActor = makeMonster(project, 12, { battleTile: 5 });
+  project.maps[0].encounters = { rate: 1, actorIds: [artActor] };
+  assert.equal(battleSpriteBudget(project, mapperById(1)).used, 0);
+});
+
+test('battleSpriteBudget: a monster whose down/frame-0 icon (2 tiles) is smaller than its largest reachable pose (10 tiles, walkUp) is charged the icon, not the pose -- caught: reusing actorMaxMetaspriteTiles here instead of actorRestingIconTiles', () => {
+  const project = createProject('Icon vs pose', 'rpg');
+  const smallId = project.sprites.metasprites.length;
+  project.sprites.metasprites.push({ id: smallId, name: 'Small', tiles: [{ tile: 0 }, { tile: 1 }] });
+  const bigId = project.sprites.metasprites.length;
+  project.sprites.metasprites.push({ id: bigId, name: 'Big', tiles: Array.from({ length: 10 }, (_, i) => ({ tile: i })) });
+  const downAnim = project.sprites.animations.length;
+  project.sprites.animations.push({ id: downAnim, name: 'Down', loop: true, frames: [{ metaspriteId: smallId }] });
+  const upAnim = project.sprites.animations.length;
+  project.sprites.animations.push({ id: upAnim, name: 'Up', loop: true, frames: [{ metaspriteId: bigId }] });
+  const actorId = project.sprites.actors.length;
+  project.sprites.actors.push({
+    id: actorId,
+    name: 'Actor',
+    behavior: 'patroller',
+    speed: 1,
+    hp: 1,
+    damage: 0,
+    anims: { walkDown: downAnim, walkUp: upAnim },
+    battle: { battleTile: null }
+  });
+  project.maps[0].encounters = { rate: 1, actorIds: [actorId] };
+  assert.equal(battleSpriteBudget(project, mapperById(1)).used, 2);
+});
+
+test('battleSpriteBudget: a monster whose resting frame names a metasprite id past the array\'s own end contributes 0, not a throw -- the deferred stale-icon regression test/unit/items.test.js:632 named for Phase 2 -- caught: indexing metasprites[id].tiles.length directly, without the ?. guard actorRestingIconTiles relies on', () => {
+  const project = createProject('Stale icon', 'rpg');
+  const animId = project.sprites.animations.length;
+  // frame 0 names metasprite 99 -- no such metasprite exists in this project
+  project.sprites.animations.push({ id: animId, name: 'Stale', loop: true, frames: [{ metaspriteId: 99 }] });
+  const actorId = project.sprites.actors.length;
+  project.sprites.actors.push({
+    id: actorId,
+    name: 'Stale actor',
+    behavior: 'patroller',
+    speed: 1,
+    hp: 1,
+    damage: 0,
+    anims: { walkDown: animId },
+    battle: { battleTile: null }
+  });
+  project.maps[0].encounters = { rate: 1, actorIds: [actorId] };
+  assert.doesNotThrow(() => battleSpriteBudget(project, mapperById(1)));
+  assert.equal(battleSpriteBudget(project, mapperById(1)).used, 0);
+});
+
+test('battleSpriteBudget: a battle command nested inside a branch\'s then is counted -- liveCommands recursion, not a top-level-only scan', () => {
+  const project = createProject('Nested branch', 'rpg');
+  const actorId = makeMonster(project, 5);
+  project.maps[0].screens[0].entities.push(
+    eventEntity([{ op: 'branch', cond: 'switch', arg: 0, value: true, then: [{ op: 'battle', monsters: [actorId] }], else: [] }])
+  );
+  assert.equal(battleSpriteBudget(project, mapperById(1)).used, 5);
+});
+
+test('battleSpriteBudget: a battle command nested inside a choice option is counted -- liveCommands recursion', () => {
+  const project = createProject('Nested choice', 'rpg');
+  const actorId = makeMonster(project, 6);
+  project.maps[0].screens[0].entities.push(
+    eventEntity([{ op: 'choice', options: [{ commands: [{ op: 'battle', monsters: [actorId] }] }, { commands: [] }] }])
+  );
+  assert.equal(battleSpriteBudget(project, mapperById(1)).used, 6);
+});
+
+test('battleSpriteBudget: a battle command inside a disabled branch is not counted -- caught: walking allCommands instead of liveCommands/compiledPages, which would count a formation the ROM never contains', () => {
+  const project = createProject('Disabled branch', 'rpg');
+  const actorId = makeMonster(project, 99); // dominant if wrongly counted
+  project.maps[0].screens[0].entities.push(
+    eventEntity([{ op: 'branch', off: true, then: [{ op: 'battle', monsters: [actorId] }], else: [] }])
+  );
+  assert.equal(battleSpriteBudget(project, mapperById(1)).used, 0);
+});
+
+test('battleSpriteBudget: a battle command nested in a common event\'s branch else, reached by no placement at all, is still counted -- caught: scanning project.maps\' placements only and skipping project.commonEvents entirely', () => {
+  const project = createProject('Common event battle', 'rpg');
+  const actorId = makeMonster(project, 8);
+  project.commonEvents.push({
+    id: 0,
+    name: 'Ambush',
+    event: {
+      pages: [
+        {
+          commands: [
+            { op: 'branch', cond: 'switch', arg: 0, value: true, then: [], else: [{ op: 'battle', monsters: [actorId] }] }
+          ]
+        }
+      ]
+    }
+  });
+  // Deliberately no `call` command anywhere names this common event -- projectEvents/liveCommonEvents
+  // do not require one; a common event compiles into the shared table whenever it has a live page,
+  // whether or not any placement currently calls it.
+  assert.equal(battleSpriteBudget(project, mapperById(1)).used, 8);
+});
+
+test('battleSpriteBudget: the MMC3 targeting cursor adds exactly one sprite on a split-font RPG, and is absent on MMC1 -- caught: gating the cursor on gameType alone instead of fontBankSplit, or forgetting the gate entirely', () => {
+  const project = createProject('Cursor gate', 'rpg'); // gameType 'rpg' alone makes projectUsesText true
+  assert.equal(battleSpriteBudget(project, mapperById(4)).used, 1); // MMC3: cursor only, no monsters, no party art
+  assert.equal(battleSpriteBudget(project, mapperById(1)).used, 0); // MMC1: no scanlineIrq, no cursor
+});
+
+test('battleSpriteBudget: the party sum proves the full matrix -- metaspriteId: null and NO_METASPRITE both contribute 0, and two real members with distinguishable tile counts are BOTH summed, not just one -- caught: a null/NO_METASPRITE id failing to resolve to 0, or an implementation that stops after the first real member instead of reducing over every one', () => {
+  const project = createProject('Party matrix', 'rpg');
+  const smallIconId = project.sprites.metasprites.length;
+  project.sprites.metasprites.push({ id: smallIconId, name: 'Small', tiles: [{ tile: 0 }, { tile: 1 }] }); // 2 tiles
+  const bigIconId = project.sprites.metasprites.length;
+  project.sprites.metasprites.push({
+    id: bigIconId,
+    name: 'Big',
+    tiles: Array.from({ length: 6 }, (_, i) => ({ tile: i })) // 6 tiles -- distinguishable from Small
+  });
+  project.party = [
+    { ...project.party[0], id: 0, name: 'Null icon', metaspriteId: null },
+    { ...project.party[0], id: 1, name: 'Explicit no icon', metaspriteId: NO_METASPRITE },
+    { ...project.party[0], id: 2, name: 'Small icon', metaspriteId: smallIconId },
+    { ...project.party[0], id: 3, name: 'Big icon', metaspriteId: bigIconId }
+  ];
+  assert.equal(battleSpriteBudget(project, mapperById(1)).used, 2 + 6, 'summing only one real member would give 2 or 6, never 8');
+});
+
+test('battleSpriteBudget: the empty action project returns {used: 0, limit: 64}', () => {
+  const project = createProject('Empty', 'action');
+  assert.deepEqual(battleSpriteBudget(project, mapperById(0)), { used: 0, limit: 64 });
+});
+
+test('battleSpriteBudget: the overall figure is the maximum across every reachable formation, not their sum -- caught: summing every formation\'s own cost together, which would count monsters from two mutually-exclusive fights as if they could appear in the same battle', () => {
+  const project = createProject('Max not sum', 'rpg');
+  const smallActor = makeMonster(project, 3);
+  const bigActor = makeMonster(project, 7);
+  project.maps[0].screens[0].entities.push(eventEntity([{ op: 'battle', monsters: [smallActor] }]));
+  project.maps[0].screens[0].entities.push(eventEntity([{ op: 'battle', monsters: [bigActor] }]));
+  assert.equal(battleSpriteBudget(project, mapperById(1)).used, 7, 'summing would wrongly give 10');
+});
+
+test('battleSpriteBudget: an action project with a hostile placement returns {used: 0, limit: 64} -- an action build has no battle system at all, entity_contact jumps to hurt_player, never touch_encounter -- the identical project as an RPG counts the placement\'s 3-tile resting icon instead -- caught: no game-type gate', () => {
+  const project = createProject('Action hostile', 'action');
+  const actorId = makeMonster(project, 3, { damage: 1 });
+  project.maps[0].screens[0].entities.push({ actorId, x: 0, y: 0, props: {} });
+  assert.deepEqual(battleSpriteBudget(project, mapperById(1)), { used: 0, limit: 64 });
+
+  project.project.gameType = 'rpg';
+  const rpgProject = normalizeProject(project); // an RPG always has a party; normalizing gains the default one
+  assert.equal(rpgProject.party.length, 1, 'sanity: normalizing must actually have granted a party');
+  assert.equal(battleSpriteBudget(rpgProject, mapperById(1)).used, 3);
 });

@@ -1,8 +1,8 @@
-# Design: validate sprite size, palette count and tile budget as you draw (ROADMAP item 8, v6)
+# Design: validate sprite size, palette count and tile budget as you draw (ROADMAP item 8, v7)
 
-**v6 fixes two review findings against the prior revision and keeps the document self-contained — no
-other file or revision needs to be read alongside it.** §9 carries the full history of every prior
-finding and how it was addressed.
+**v7 fixes a v6 design omission — missed by every review round, found by a direct probe after Phase 2
+was implemented — and keeps the document self-contained — no other file or revision needs to be read
+alongside it.** §9 carries the full history of every prior finding and how it was addressed.
 
 ## §0. What I read
 
@@ -935,9 +935,21 @@ what the Map Forge's own standing hint and the matching `validateProject` warnin
 ### §3.10 `battleSpriteBudget(project, mapper)` — the project-wide battle OAM figure
 
 ```js
+// An action project has no battle system at all: entity_contact
+// (engine/combat.asm) jumps to hurt_player, never touch_encounter, unless
+// BATTLE_ENABLED -- so a hostile placement's "singleton formation" and a
+// map's own encounter table are both engine fictions on that build. Gated on
+// gameType, the same fact the party term below already keys off of, not on
+// codeRegions(...) (whether the mapper actually has room for the battle
+// bank): a CHR-RAM board too small for the battle region is already refused
+// by checkCapacity on its own, so computing a battle figure for that project
+// anyway is harmless -- game type alone is the real, single gate. A v6
+// design omission, missed by every review round; found by a direct probe
+// after Phase 2 was implemented. See §9 v7.
 export function battleSpriteBudget(project, mapper) {
+  if (project.project?.gameType !== 'rpg') return { used: 0, limit: MAX_OAM_ENTRIES };
   const actorCount = project.sprites.actors.length;
-  const party = (project.project?.gameType === 'rpg' ? project.party : []).reduce((total, member) => {
+  const party = project.party.reduce((total, member) => {
     const metasprite = project.sprites.metasprites[member.metaspriteId];
     return total + (metasprite?.tiles.length ?? 0); // $FF (NO_METASPRITE) naturally resolves to 0
   }, 0);
@@ -1011,6 +1023,17 @@ function formationSpriteCost(formation, project) {
 up-to-four-slot authored table down to the engine's own current, buggy 0-3-slot roll ceiling** (§1.2).
 This makes the term a one-icon over-bound against today's actual ROM and exact against the engine's own
 stated intent and any future fix — stated here, not silently assumed.
+
+**The whole function is gated on `project.project.gameType !== 'rpg'` before any of the above ever
+runs, returning `{used: 0, limit: MAX_OAM_ENTRIES}` outright** — a v6 design omission, missed by every
+review round and found only by a direct probe after Phase 2 was implemented (§9 v7): an action project
+has no battle bank and no `touch_encounter` at all, so a hostile placement's singleton formation and a
+map's own wandering table are both engine fictions there, and reporting a nonzero figure for either
+would be validating a system the ROM never assembles. The gate is `gameType`, the same fact the party
+term already keyed off of in v6 — not `codeRegions(...).length > 0` (whether the resolved mapper
+actually has room for the battle bank): a CHR-RAM board too small for the region is already refused by
+`checkCapacity` on its own terms, so this function computing a battle figure for that doomed project
+anyway costs nothing extra.
 
 **Home: `shared/project.js`, `battleSpriteBudget` exported, `battleFormations`/
 `touchEncounterFormations`/`formationSpriteCost` private.** **Call sites**: the Build Forge's own
@@ -1481,6 +1504,12 @@ extract `metaspriteKernelBytes` (§3.11). Tests:
 - The overall figure is the **maximum** across every reachable formation, not their sum — **caught**:
   summing every formation's own cost together, which would count monsters from two different,
   mutually-exclusive fights as if they could appear in the same battle.
+- **An action project with a hostile placement returns `{used: 0, limit: 64}`** — the identical
+  project, switched to `gameType: 'rpg'` and renormalized so it gains its default party, counts that
+  same placement's 3-tile resting icon instead — **caught**: no game-type gate, which would report a
+  battle budget for a battle system an action build never assembles (`entity_contact` jumps to
+  `hurt_player`, never `touch_encounter`, unless `BATTLE_ENABLED`) — a v6 design omission, missed by
+  every review round, found by a direct probe after Phase 2 was implemented; see §9 v7.
 
 **Phase 3 — the field position-aware predicate, no UI.** `fieldScanlineRows`/`fieldScanlineDensity`/
 `reachablePoses`/`poseRowCounts`/`entityRowMax` (§3.9). Tests, each with concrete numbers:
@@ -1871,3 +1900,8 @@ itself the whole time.
   decide which range list applies, rather than re-deriving the same table split with a second,
   parallel `state.table === 'sprites'` comparison the prose already claimed (incorrectly) not to need —
   the single-writer arrangement §6.3's own prose describes is now what the code actually does.
+
+**v7 (a v6 design omission, missed by every review round)**: `battleSpriteBudget` was ungated on game
+type, so an action project with a hostile placement reported a battle budget for a battle system it
+does not assemble; found by the orchestrator's probe after Phase 2 was implemented; fixed in code and
+here.
