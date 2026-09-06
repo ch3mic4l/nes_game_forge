@@ -1,14 +1,26 @@
-# Design: a small MIT/CC0 starter library (ROADMAP item 8, fourth sub-bullet) — v11
+# Design: a small MIT/CC0 starter library (ROADMAP item 8, fourth sub-bullet) — v12
 
-**v11 responds to a NO-GO review of v10 (1495 lines): one Medium, blocking. Surgical, one fix:** the
-`main/smoke.js` Monster Forge step now also selects an actor with an explicit `battle.battleTile:
-255` and asserts the *rendered* label and button directly — the hint text reads `'No block chosen —
-the actor is drawn from its animation.'`, never `` `Block at $FF, ${width}×${height} tiles.` ``, and
-no "Use the animation" button is present — closing the one gap the prior round's tests left open: an
-implementation could export and correctly unit-test `describeBattleTileState` and route the overlay
-through `battleBlockIndices`, yet leave the original, independent ternary sitting unused at
-`monster.js:214`/`:223`, and every test before this one would still pass. **No section says
-"Unchanged" or defers to an earlier round.**
+**v12 resolves three questions Chris left open in v11 — §7.2/§10's palette default, §2.4/§6's
+multi-pose/multi-palette schema, §7.5's import-validity mechanism — then fixes what two further review
+rounds found.** Round 1: **one High** (the `(severity, where)`-only occurrence count let two textually
+different diagnostics at the same coarse location cancel out, hiding a real regression behind an
+unrelated fix — closed, that round, by matching on message text, exact then digit-normalized), **three
+Medium** (a multi-pose entry's own tiles needed a default `paletteIndex` for backward compatibility
+with every v1 entry's literal; a multi-palette entry's own resolution needed a real
+`options.paletteSlots` contract and had to resolve sequentially, not independently, to stop two
+entry-local palettes racing onto the same slot; test 16b's own worked example named an impossible
+scenario and the wrong file), and **three Low** (this opening paragraph and a comment in test 31 both
+still described the withdrawn zero-errors rule; test 26b's own assertion was blind to a permutation of
+otherwise-distinct ids). **Round 2, on that same fix: one further High** (digit-normalizing every
+embedded number away made a genuine increase of the *same* aggregate message — `overlongSfx` going
+2→3 — indistinguishable from an unchanged count, silently missing the regression; closed for good by
+`isNotWorse`, §7.5, which compares the embedded numbers instead of erasing them) plus a cluster of
+**Medium/Low** findings on the multi-palette exclusion mechanism itself: `nearestPaletteSlot` and the
+headless default chain were not threading the same `excluded` set `paletteCandidates` already
+respected (§7.2), `options.paletteSlots` did not refuse a duplicate index (§7.2), `entry.palettes.
+length` was left unbounded (§2.4/§12), and three remaining sites still described per-palette
+resolution as independent rather than sequential (§6/§10/test 26d). **No section says "Unchanged" or
+defers to an earlier round.**
 
 ## §0. What I read for v6
 
@@ -103,7 +115,9 @@ is never handed out as free, whether the reference is a metatile's or a metaspri
 ### §2.3 `pickup`
 
 A plain, single-frame `behavior: 'pickup'`, `damage: 0` actor — exactly §2.4's shape with those two
-fields fixed to those two values. **No item is ever written by importing a `pickup` entry.** The
+fields fixed to those two values, poses and multiple palettes included: a `pickup` entry with its own
+shine/idle pose difference is exactly as valid as a `monster` with a walk cycle, since it inherits
+§2.4's schema wholesale. **No item is ever written by importing a `pickup` entry.** The
 toast (§7.7) tells the author, in words, to bind the new actor to an item using the Items Forge's
 existing "Collected from" control. This is deliberate, not an omission: `resolveItemIcon` gives an
 item's own explicit `metaspriteId` priority over anything derived from its backing actor, and
@@ -120,39 +134,87 @@ import must never make on the author's behalf.
 ```
 {
   kind: 'monster', name, license,
-  palette: [p0, p1, p2, p3],                               // p0 placeholder, §7.3
-  spriteTiles: ['<64-char>', ...],                          // entry-local pool, sprite table -- NEVER BLANK_TILE
-  metasprite: { tiles: [{ x, y, tile, hflip, vflip }] },    // ONE resting pose; NO `.palette` per tile
+  palettes: [ [p0, p1, p2, p3], ... ],                      // one or more entry-local palettes; p0 of EACH is a placeholder, see §7.3
+  spriteTiles: ['<64-char>', ...],                          // ONE shared entry-local pool, sprite table -- NEVER BLANK_TILE
+  poses: {                                                   // one to four named poses; `idle` is required
+    idle:     { tiles: [{ x, y, tile, paletteIndex, hflip, vflip }] },
+    walkDown: { tiles: [...] },                              // optional
+    walkUp:   { tiles: [...] },                              // optional
+    walkSide: { tiles: [...] }                                // optional
+  },
   hp, speed, damage,
   battle: { atk, def, acc, eva, speed, mp, xp, gold, weak, strong, dropPct, heal }
 }
 ```
 
+**`entry.palettes.length` must be between 1 and `LIMITS.palettes` (4) inclusive.** A background or
+sprite table has exactly four physical palette slots (§7.2/§7.3), so a fifth entry-local palette could
+never be given a distinct one — §7.4's own sequential resolution (an earlier palette's chosen slot
+added to `excluded` before the next resolves) would have nothing left to hand it by the time it runs.
+§12's own manifest test enforces this bound on every `monster`/`pickup` entry, alongside its existing
+`BLANK_TILE` check.
+
+**`palette` (singular) and `metasprite` (singular) remain valid, and are sugar for the general shape
+above, not a second schema.** An entry declaring `palette: [...]` is read as `palettes: [that one
+palette]`; an entry declaring `metasprite: {...}` is read as `poses: { idle: that one metasprite }`.
+**Every tile in that sugared `metasprite` lacks a `paletteIndex` field entirely — v11's tile shape
+never had one — and each such tile defaults to `paletteIndex: 0`,** the entry's own first (and, under
+the singular sugar, only) declared palette; without this default, `paletteMap[tile.paletteIndex]`
+(§6) would read `paletteMap[undefined]`, which is `undefined`, on every tile of every entry shipped
+today. Every entry shipped in v1 still uses the singular form and needs no literal change at all —
+nothing in the current inventory needs more than one pose or one palette — so this is a capability the
+mechanism gains now, with no content yet exercising it, the same "additive, unused capability is fine
+when the alternative is redesigning the mechanism twice" reasoning §6 already applied to `tileMap`.
+
+**A pose's own `tile` field is an entry-local index into the ONE shared `spriteTiles` pool, exactly
+as before — poses do not each get their own pool.** A four-pose entry with a genuine walk cycle
+reuses body tiles across poses (a torso that doesn't change between `idle` and `walkSide`) the same
+way a hand-authored actor already can; giving every pose its own pool would force needless
+duplication and a bigger `tileMap` for zero benefit. A pose's own `paletteIndex` field is an
+entry-local index into `palettes` — which of the entry's own declared palettes this tile draws from
+— resolved through the new `paletteMap` (§6), never a project-level palette slot directly.
+
 **The entry declares the minimum; the core synthesizes the rest, always, identically, for every
-actor-shaped entry:**
+actor-shaped entry — generalized from "the one metasprite" to "each declared pose":**
 
-1. The one declared metasprite is pushed through `normalizeMetasprite` with every tile's `.palette`
-   set to the resolved destination palette index (§7.3's outcome) — never a hardcoded `0`.
-2. One animation is synthesized: `{ loop: true, frames: [{ metaspriteId: <the pushed metasprite's
-   real destination id>, duration: 30 }] }`, pushed through `normalizeAnimation`.
-3. The actor's `anims` object sets **all four** slots — `idle`, `walkDown`, `walkUp`, `walkSide`
-   (`ANIM_SLOTS` has exactly these four; there is no `attack` slot on an actor at all) — to that one
-   synthesized animation's real destination id, never `null` and never a hardcoded `0` unless that
-   genuinely is where the animation landed.
+1. Every declared pose's metasprite is pushed through `normalizeMetasprite`, with every tile's
+   `.palette` set through `paletteMap[tile.paletteIndex]` (§6/§7.3's outcome for that entry-local
+   palette) — never a hardcoded `0`, and never the same destination slot for two different
+   entry-local palettes that happened to resolve differently.
+2. One animation is synthesized **per declared pose**, same one-frame shape as before: `{ loop: true,
+   frames: [{ metaspriteId: <that pose's own pushed metasprite's real destination id>, duration: 30
+   }] }`, pushed through `normalizeAnimation`. A four-pose entry therefore pushes four metasprites and
+   four animations, each following §7.4's ordinary append rule; a one-pose entry still pushes exactly
+   one of each, byte-identical to today.
+3. The actor's `anims` object sets each of the four `ANIM_SLOTS` — `idle`, `walkDown`, `walkUp`,
+   `walkSide` — to **its own matching pose's** synthesized animation id when that pose was declared,
+   else to the `idle` pose's synthesized animation id. A one-pose entry (only `idle` declared)
+   therefore still sets all four slots to that single animation, exactly today's behaviour; nothing
+   changes for an entry that declares only what §2.4 already required before this revision.
 
-`battle.drop`, `battle.spellId`, and `battle.battleTile`/`battleW`/`battleH`/`battlePalette` are
-absent from the entry literal on purpose: an entry cannot assume the destination project has items
-or spells to point at, and an absent `battleTile` normalizes to `null`, which already means "draw
-the battle animation as a sprite instead of block art" — exactly the right default for content with
-no battle-tileset art of its own. Only one resting pose is provided, deliberately — a real
-per-direction walk cycle is exactly the enrichment an author is expected to add afterward through
-the Sprite Forge, not something a *small* starter library needs to ship.
+`battle.drop`, `battle.spellId`, and `battle.battleTile`/`battleW`/`battleH`/`battlePalette` remain
+absent from the entry literal for the same reason as before this revision: an entry cannot assume the
+destination project has items or spells to point at, and an absent `battleTile` normalizes to `null`,
+which already means "draw the battle animation as a sprite instead of block art" — exactly the right
+default for content with no battle-tileset art of its own.
 
 **A `monster`/`pickup` entry's `spriteTiles` pool may never contain the literal `BLANK_TILE`
-string.** A metasprite quadrant meant to be fully transparent is **omitted from `metasprite.
-tiles[]` entirely** rather than declared with a blank tile — a metasprite is already a list of
-*placed* tiles, so leaving one out is the natural way to say "nothing here." §12's manifest test
-enforces this mechanically by walking every `monster`/`pickup` entry's `spriteTiles` array.
+string** (unchanged from before this revision) — a metasprite quadrant meant to be fully transparent
+is omitted from that pose's own `tiles[]` entirely, in every pose, not just `idle`. §12's manifest
+test still enforces this by walking every `monster`/`pickup` entry's `spriteTiles` array, which the
+multi-pose shape does not change the shape of at all — it is still one flat pool per entry, however
+many poses reference it.
+
+**Explicitly out of scope, kept honest rather than silently assumed away: a per-pose multi-frame walk
+cycle** (two or more alternating frames within a single direction, the way a hand-authored walk
+animation usually looks) is not part of this extension. "More than one pose" means up to four static,
+per-direction images — a real, visible improvement (a monster now faces the direction implied by its
+own `walkDown`/`walkUp`/`walkSide` slot instead of showing its resting pose in every direction)
+without also asking a *small* starter library to author frame-interpolated animation, which remains
+exactly the kind of enrichment an author is expected to add afterward through the Sprite Forge. A
+future round could extend `poses.walkDown` etc. from one metasprite to a short `frames` list the same
+additive way this revision extended a single metasprite to up to four named poses — nothing here
+forecloses it, and nothing here builds it.
 
 ### §2.5 `sfx` / `song`
 
@@ -345,9 +407,12 @@ live bug this design fixes as part of shipping too.** Left unfixed, an actor wit
 `≥ FONT_BASE` for essentially any `battleW`/`battleH`, so this check would raise `"<actor>'s battle
 artwork runs into the message font's tiles"` — a **false** error, since `battleTile: 255` means no
 block art is drawn at all, the metasprite fallback is used instead, and nothing competes with the
-font for tileset space. Under §7.5's own zero-errors rule, that false error would refuse *every*
-library import into any project carrying such an actor, whether or not the import touches anything
-related. The fix is the identical substitution: `battleTile === null || battleTile === undefined` →
+font for tileset space. Under v11's now-superseded zero-errors rule, that false error would have
+refused *every* library import into any project carrying such an actor, whether or not the import
+touched anything related; under §7.5's current attribution rule (v12) a pre-existing instance of it
+is never attributed to an unrelated import, but the fix still ships here regardless of which rule sits
+above it, since a false `validateProject` error is a real defect independent of either. The fix is the
+identical substitution: `battleTile === null || battleTile === undefined` →
 `!hasBattleBlockArt(actor)`. **Validation-only and byte-neutral, the same shape as the
 `formationSpriteCost` fix**: this is an `add('error', ...)` call inside `validateProject`, never a
 generator or compiled-byte path, so the six-fixture SHA-256 gate (§9) proves no ROM changes, and the
@@ -617,15 +682,25 @@ elsewhere in this codebase ("there is deliberately no third 'leave it alone' ans
 the single resolved destination index from §7.3, applied uniformly to every metatile in the set,
 since one entry declares exactly one palette.
 
-**`monster`/`pickup`**: the identical `tileMap` shape, over the sprite table, built over
-`entry.spriteTiles`. No separate palette/metasprite/animation map is needed in v1 — §2.4's synthesis
-means each entry produces exactly one metasprite and one animation, so "the metasprite's destination
-id" and "the animation's destination id" are simply the two values the core assigns when it pushes
-them, used directly rather than resolved through a lookup. A future, richer entry (more than one pose
-or more than one entry-local palette) would extend this additively — `metasprite.tiles[k].tile`
-already resolves through a real map — but nothing in this design's own inventory needs that
-generality yet, and building it unused now would be exactly the kind of speculative scope this
-design's own orchestrator has repeatedly asked not to add.
+**`monster`/`pickup`**: two maps, both over the sprite table. `tileMap` is unchanged in shape and
+purpose — one map, built once over the entry's single shared `spriteTiles` pool (§2.4), used by every
+declared pose's `tiles[k].tile`, however many poses there are. `paletteMap` is new: one entry-local
+palette array index (into `entry.palettes`, §2.4) → destination palette slot, built by resolving each
+of `entry.palettes` independently through §7.2/§7.3's own single-palette resolution — a one-palette
+entry produces a `paletteMap` of length 1 and resolves byte-identically to how a `palette` (singular)
+entry already did before this revision, since §7.2/§7.3 themselves are unchanged; they are simply
+called once per entry-local palette instead of exactly once per entry, in `entry.palettes` order
+(§7.4) — never independently, once P>1, since a later palette must see an earlier one's own chosen
+slot as unavailable. Every declared pose's
+`tiles[k].paletteIndex` resolves through `paletteMap`, exactly the way `tiles[k].tile` already
+resolves through `tileMap` — a `paletteIndex` the map has no entry for (`≥ entry.palettes.length`,
+from a corrupted or future-schema entry) refuses the whole import, never a silent passthrough of the
+raw number, the identical rule `tileMap`'s own out-of-range case already holds to ("there is
+deliberately no third 'leave it alone' answer"). §2.4's own synthesis (items 1-3) is what calls both
+maps, once per pose, so no third map or lookup is needed for "the metasprite's destination id" or
+"the animation's destination id" — those are still simply the values the core assigns when it pushes
+each pose's own metasprite and animation, the same as before this revision, just done once per
+declared pose instead of exactly once.
 
 **`sfx`/`song`**: no references of any kind; the payload is self-contained and goes straight through
 its own normalizer.
@@ -685,12 +760,59 @@ the one the report would claim was used.
 **If `options.paletteSlot` is omitted — the headless path every test, `main/smoke.js`'s default
 step, and any future scripted caller uses — it resolves deterministically, never a prompt and never
 a refusal on palette grounds:** the first exact match (post-canonicalization, §7.3) if one exists,
-else the first entry of `unusedPaletteSlots` (§5.3) for the target table, else slot `0` of that
-table. All three are equally valid "the entry adopts whatever is already there" outcomes when no
-unused slot exists — slot `0` is chosen purely for determinism, not because it is in any way
-preferred, and this is true even when slot `0` happens to be reserved: a reserved slot is always
-selectable (§7.3), so the headless default can land there exactly as any other slot without ever
-refusing.
+else the first entry of `unusedPaletteSlots` (§5.3) for the target table, else the slot chosen by
+`nearestPaletteSlot` (below). All three are equally valid "the entry adopts whatever is already
+there" outcomes when no unused slot exists, and this is true even when the chosen slot happens to be
+reserved: a reserved slot is always selectable (§7.3), so the headless default can land there exactly
+as any other slot without ever refusing.
+
+**`nearestPaletteSlot(project, table, colors, excluded = new Set())` — a single-writer, called by
+both the headless default above and the picker's own default selection (§10) — replaces the old,
+purely positional "else slot 0" fallback.** It answers "the entry adopts whatever is already there"
+with a real answer instead of an arbitrary one: which of the table's four slots looks least wrong to
+render this entry in, rather than always "the first one." It reuses `shared/nespalette.js`'s own
+existing perceptual machinery — `NES_LAB`/`labDistance`, the same CIE L*a*b* distance this codebase
+already trusts for exactly this kind of judgement (`nearestNesColor`, `perceptualPaletteFor`) —
+rather than inventing a second colour-distance metric: for each of the table's four slots, sum
+`labDistance` over the three non-backdrop positions (`colors[1..3]` against that slot's own `[1..3]`,
+position-matched — a palette's four colour roles are fixed, not reorderable, so position-matching is
+correct and simpler than trying every permutation), and returns the slot with the lowest sum, lowest
+slot index breaking a tie. Slot 0 of every palette is excluded from the comparison entirely, not
+merely given zero weight, since §7.3's own backdrop canonicalization already forces it identical
+across all eight palettes before any comparison runs — comparing it would only ever contribute an
+identical, provably uninformative term to every candidate's sum. **`excluded` — the identical set
+`paletteCandidates` (§7.3) now threads through — is removed from the candidate slots this function
+sums over as well**, so a slot a different entry-local palette already claimed earlier in the same
+plan can never be picked again here either, the same way it can no longer land in the "unused" outcome
+above. This is a pure function of the four (or fewer, once `excluded` is applied) candidate slots'
+existing colours and the entry's own three colours; it does not know or care whether a candidate slot
+is reserved, exactly as `unusedPaletteSlots`'s own candidates never needed to either — reservation is
+§7.3's concern, applied identically to whichever slot this function names.
+
+**Every rule above is stated for "the palette" because v1's own inventory only ever declares one; a
+`monster`/`pickup` entry with P declared palettes (§2.4) runs this exact resolution — validation, then
+the exact-match/unused/`nearestPaletteSlot` priority chain — once per `entry.palettes[i]`, against
+`options.paletteSlots[i]` when supplied.** `options.paletteSlots` (plural, an array) is the real
+contract for P>1: each element, when supplied, is validated exactly as `options.paletteSlot` is above,
+independently, against `entry.palettes[i]`; a length mismatch against `entry.palettes.length`, **or any
+repeated value within `options.paletteSlots` itself**, refuses immediately (§7.6), before any
+resolution runs — two entry-local palettes explicitly named onto the same slot is refused outright
+rather than given adopt-or-overwrite semantics, since nothing about which one's colours a reader should
+expect to see is otherwise well-defined for an interactive picker showing both steps in sequence. `options.paletteSlot` (singular) remains valid and is
+read as `options.paletteSlots: [options.paletteSlot]` for the one-palette case; a caller may not
+supply both. Every headless caller in this design's own inventory (§8) uses the singular form, since
+no v1 entry declares more than one palette. Nothing about the per-palette resolution rule itself
+changes for P>1 — what changes is only that it now runs P times, and (§7.4) each run after the first
+must additionally treat any slot already claimed by an earlier run in this same plan as unavailable,
+the same way an already-reserved slot already is, or two entry-local palettes could independently
+resolve to, and both write into, the identical slot. **The same `excluded` set threads through every
+step of the priority chain for `entry.palettes[i]` when `i > 0`, not only `paletteCandidates`'s own
+outcome** — the exact-match test is checked against a slot only when it is not already in `excluded`;
+`unusedPaletteSlots`'s own result is intersected with "not excluded" before its first entry is taken;
+and `nearestPaletteSlot` is called with the identical `excluded` set (above), never a fresh, empty one
+— so the headless default path (this section) and the picker's own per-palette step (§10) resolve
+against the exact same available-slot set at every stage, and can never disagree about which slots
+remain for a later entry-local palette to land on.
 
 ### §7.3 Palette placement — two outcomes, reserved slots always selectable
 
@@ -715,10 +837,11 @@ palettes (4 background, 4 sprite) has slot 0 forced to a single shared value on 
 (`normalizeProject`'s own palette block: `const backdrop = bg[0][0]; for (const palette of bg)
 palette[0] = backdrop; for (const palette of sprite) palette[0] = backdrop;`), because the NES has
 exactly one physical backdrop colour register shared across every palette. An entry's own declared
-`palette[0]` is a placeholder with no meaning outside its own file, so it is replaced with the
-destination project's real backdrop (`project.palettes.bg[0][0]`) before either an exact-match test
-or a write: `canonical = [project.palettes.bg[0][0], entry.palette[1], entry.palette[2],
-entry.palette[3]]`. Writing the entry's own literal slot-0 value verbatim into, say, a `$0F`-backdrop
+palette's own `[0]` (whether `entry.palette` for a `terrain` entry or one of `entry.palettes` for a
+`monster`/`pickup` entry, §2.4/§6) is a placeholder with no meaning outside its own file, so it is
+replaced with the destination project's real backdrop (`project.palettes.bg[0][0]`) before either an
+exact-match test or a write: `canonical = [project.palettes.bg[0][0], colors[1], colors[2],
+colors[3]]`. Writing the entry's own literal slot-0 value verbatim into, say, a `$0F`-backdrop
 project would produce an internally inconsistent live project — one whose in-memory palettes
 disagree with the invariant `normalizeProject` enforces on every load, which would visibly change
 the instant the project is saved and reloaded purely from renormalization. Canonicalizing at import
@@ -736,12 +859,15 @@ uses `'bg'`/`'sprite'`, with no exception, since all three describe the identica
 palette slots `project.palettes` itself holds. The one bridge point from the *other* vocabulary is
 `paletteCandidates`, which receives the tile-table form (what the caller — the Tile or Sprite Forge —
 already has as its own `state.table`) and maps it once, before ever touching `project.palettes` or
-calling `reservedPaletteSlots`:
+calling `reservedPaletteSlots`. **It resolves one palette at a time** — `colors` is a single
+`[p0,p1,p2,p3]` array, `entry.palette` for a `terrain` entry (still exactly one) or one element of
+`entry.palettes` for a `monster`/`pickup` entry (§2.4/§6) — since §10's picker already runs this step
+once per entry-local palette:
 
 ```js
-function paletteCandidates(project, entry, tileTable, mapper) {
+function paletteCandidates(project, colors, tileTable, mapper, excluded = new Set()) {
   const paletteKey = tileTable === 'background' ? 'bg' : 'sprite';
-  const canonical = [project.palettes.bg[0][0], ...entry.palette.slice(1)];
+  const canonical = [project.palettes.bg[0][0], ...colors.slice(1)];
   const unused = unusedPaletteSlots(project, paletteKey, mapper);
   const reserved = reservedPaletteSlots(project, mapper)[paletteKey];
   return [0, 1, 2, 3].map((index) => {
@@ -749,13 +875,29 @@ function paletteCandidates(project, entry, tileTable, mapper) {
     const exactMatch = colours.slice(1).every((c, i) => c === canonical[i + 1]);
     return {
       index, colours, exactMatch,
-      unused: unused.has(index),
+      unused: unused.has(index) && !excluded.has(index),
+      excluded: excluded.has(index),
       reserved: reserved.has(index),
       reservedReason: reserved.has(index) ? reservedCaption(paletteKey, index, project) : null
     };
   });
 }
 ```
+
+**`excluded` — new, defaulting to empty — is the set of slot indices a *different* entry-local palette
+already claimed earlier in this same plan (§7.4), and it is a genuinely third state, not a variant of
+"reserved."** A reserved slot is always selectable — the whole point of §7.3's own two-outcome design
+is that reading or adopting a reserved slot's colours is never unsafe. An excluded slot is different:
+picking it a second time is not merely discouraged, it is refused outright at the options level (§7.2,
+the duplicate-index check) the instant it happens through a headless or scripted caller — so offering
+it as a live, clickable choice in the picker (§10) for `entry.palettes[i]` when `i > 0` would let an
+author click something guaranteed to fail once submitted. The picker therefore disables — not merely
+deprioritizes — any candidate with `excluded: true`, captioned to say which of the entry's own earlier
+palettes already claimed it, the same way a reserved slot is captioned to say which engine fact claims
+it. `unused: false` (already true for an excluded index, above) is what keeps it out of the *automatic*
+resolution's "write fresh colours" outcome; `excluded: true` is the separate signal the picker uses to
+refuse the click in the first place, so the options-level duplicate refusal (§7.2) is a backstop for a
+scripted caller, never something an author using the picker can actually trigger.
 
 `reservedCaption` names the exact engine fact from §5.1 in words: `"reserved for the player"`
 (sprite, always), `"reserved because this project shows text"` / `"...has a title screen"`
@@ -781,6 +923,16 @@ the array" discipline `renumberActorDeletion`/`renumberItemDeletion`/`renumberSf
 hold to everywhere else in this codebase; the next id for any appended kind is always exactly that
 array's current length, full stop, never "the first gap."
 
+**A `monster`/`pickup` entry with K declared poses appends K metasprites and K animations, each
+following the identical append rule above** — `project.sprites.metasprites.length`/`.animations.
+length` at the moment each one is pushed, capped by the same `LIMITS.metasprites`/`LIMITS.animations`
+refusal (§7.6) — never a single combined allowance computed for "the entry" as a whole. An entry's P
+declared entry-local palettes are each resolved through §7.2/§7.3 **in `entry.palettes` order, never
+independently** — a slot chosen for `entry.palettes[i]` is added to the `excluded` set (§7.3) before
+`entry.palettes[i+1]` ever resolves, so two entry-local palettes can never both land on, and both
+write into, the same slot. A P=1 entry has no later palette to exclude anything from, so it resolves
+byte-identically to how it already did before this revision.
+
 **Name collisions on re-import are not refused — this codebase already treats duplicate names as
 ordinary, not exceptional.** Every appended or claimed record's `name` is run through
 `nameForDuplicateScreen(entry.name, destinationList)` — a function already generic over any
@@ -790,57 +942,152 @@ else `"<name> copy"`, else `"<name> copy 2"`, `"<name> copy 3"`, and so on. Re-i
 entry a second time therefore never collides on name; it simply produces a second, distinctly named
 record.
 
-### §7.5 Post-import validity: the planned project must pass `validateProject` with zero errors
+### §7.5 Post-import validity: only the errors this import actually causes may refuse it
 
-**This is the whole of the mechanism.** No diff against the pre-import project, no stable identity
-codes, no occurrence counting of any kind: `planLibraryImport` runs `validateProject` on the
-candidate clone and refuses if it reports **any** error at all. Warnings never refuse — this
-codebase's own existing rule for every advisory check `validateProject` already makes (the
-validate-as-you-draw warnings, CLAUDE.md's own "an error rather than a truncation," and every place
-this document has already distinguished "error" from "warning" throughout §5).
+**v11 shipped a deliberately blunt rule — the planned project must pass `validateProject` with zero
+errors, full stop, no attribution — after three earlier attempts at attribution broke in three
+different ways (Changelog, v6).** This round's first attempt at a fourth mechanism (`attributedErrors`,
+comparing `(severity, where)` occurrence counts) was itself found unsound in review: `shared/
+project.js`'s own `missingSfx`/`overlongSfx` checks (§11 test 16b) both report `where: 'Map Forge'`,
+so an import that satisfies a dangling SFX reference (removing the `missingSfx` diagnostic) while its
+own content happens to be over 255 frames long (adding the *different* `overlongSfx` diagnostic)
+leaves that key's count unchanged before and after — the count-only comparison saw nothing, and let a
+real new build error through. This is the mechanism below, revised a second time to close that gap.
+
+**This mechanism does not rest on a claim that `planLibraryImport` leaves every pre-existing
+diagnostic's truth unchanged — it does not, and the document's own test 16b is a case where it
+doesn't:** appending an SFX entry at the exact id a live command already names genuinely changes
+whether that pre-existing command has a missing-target error, because the reference it names has gone
+from dangling to real. An earlier draft of this section claimed a general "nothing pre-existing is
+affected" invariant; it was false (the append-only framing correctly notes `planLibraryImport` adds
+content and, for `terrain`, overwrites one array slot nothing depends on — but *whether an existing
+diagnostic fires* can absolutely change as a result, exactly as test 16b demonstrates on purpose).
+Soundness instead comes directly from what `isNotWorse` checks, argued case by case below — not from
+any blanket claim about what the import does or does not touch.
+
+**The mechanism: within each `(severity, where)` bucket, match each `after` diagnostic against an
+unclaimed `before` diagnostic whose message is textually the same *or numerically no worse* — never
+merely "close enough after stripping digits."** Round 2's own first fix (exact match, then a
+digit-normalized match) was itself found unsound in review: stripping every digit makes any two counts
+of the *same* aggregate message indistinguishable, so a genuine increase (`shared/project.js`'s
+`overlongSfx` check going from 2 to 3, in the exact scenario that satisfies a *different* dangling
+reference at the same time) silently matched and the regression went unflagged. The fix compares the
+embedded numbers instead of erasing them:
 
 ```js
-function planErrors(clone) {
-  return validateProject(clone).filter((p) => p.severity === 'error');
+function errorKey(problem) {
+  return `${problem.severity} ${problem.where}`;
+}
+
+function messageSkeleton(message) {
+  return message.replace(/\d+/g, '#');
+}
+
+function messageNumbers(message) {
+  return (message.match(/\d+/g) || []).map(Number);
+}
+
+// True only if `after` is textually identical to `before`, or shares the same skeleton with
+// every embedded number no greater than `before`'s corresponding number, position by position.
+function isNotWorse(beforeMessage, afterMessage) {
+  if (messageSkeleton(beforeMessage) !== messageSkeleton(afterMessage)) return false;
+  const beforeNumbers = messageNumbers(beforeMessage);
+  const afterNumbers = messageNumbers(afterMessage);
+  if (beforeNumbers.length !== afterNumbers.length) return false;
+  return afterNumbers.every((n, i) => n <= beforeNumbers[i]);
+}
+
+function attributedErrors(originalProject, candidateClone) {
+  const before = new Map(); // key -> [{ message, used }]
+  for (const p of validateProject(originalProject)) {
+    if (p.severity !== 'error') continue;
+    const key = errorKey(p);
+    if (!before.has(key)) before.set(key, []);
+    before.get(key).push({ message: p.message, used: false });
+  }
+  const regressions = [];
+  for (const p of validateProject(candidateClone)) {
+    if (p.severity !== 'error') continue;
+    const pool = before.get(errorKey(p)) || [];
+    const match = pool.find((entry) => !entry.used && isNotWorse(entry.message, p.message));
+    if (match) {
+      match.used = true;
+    } else {
+      regressions.push(p);
+    }
+  }
+  return regressions;
 }
 ```
 
-If `planErrors(clone).length > 0`, the plan refuses, and the report lists every one of those error
-messages **verbatim** — the identical strings the Build panel already shows for the same project
-state, since they come from the same function.
+`isNotWorse` subsumes an exact match: when every embedded number is unchanged, the skeleton and number
+comparisons together are only satisfied by an identical message, so there is no separate exact-match
+pass to keep in sync. `planErrors` (the name stays; only its body and signature change) is now
+`attributedErrors(project, clone)`, called with the real, unmodified project and the fully-planned
+candidate. The plan refuses only if `attributedErrors(...).length > 0`, and the refusal names exactly
+those problems — never the project's other, unrelated errors, and never fewer than the real
+regressions either. Matching is per-key, so a diagnostic at one `(severity, where)` can never be "used
+up" satisfying an `after` diagnostic at a different key — `pool` is looked up fresh from `errorKey(p)`
+on every `after` item.
 
-**A structural change, made because a before/after `validateProject` *diff* kept breaking in new
-ways across three review rounds rather than converging**: an aggregate error whose count decreases
-(an import resolving one of several dangling references) changes its own message text and gets
-misclassified as "new," spuriously refusing an improving import; one whose count could instead
-increase without the diagnostic's text changing could hide a genuine worsening behind an unchanged
-string; and giving every diagnostic a stable `code`/`subject` to fix both changed the shape of every
-object `validateProject` returns, breaking existing exact-shape assertions elsewhere in this codebase
-(`test/unit/drawvalidation.test.js`'s own `assert.deepEqual(problems[0], { severity, where,
-message })` — a plain three-key comparison a fourth/fifth key would fail outright). Rather than patch
-a fourth defect into that mechanism, this design withdraws it: `validateProject`'s own signature and
-every object it returns are completely untouched (§5.7's new check uses the existing, unmodified
-three-argument `add`), and the "zero errors" rule needs nothing from `validateProject` beyond what it
-has always provided.
+**Why this closes all five known failures, each addressed by name:**
 
-**The consequence, stated honestly: a project with *any* build error — a Map Forge warp to nowhere,
-anything, whether or not it touches library content — cannot import anything until that error is
-fixed.** Deliberate: such a project cannot build a ROM either way, and the Build panel already lists
-the same errors in the same words today. Refusing an import into a project this design cannot reason
-about the validity of is the failure direction this codebase already prefers over silently accepting
-content into a project already known broken. **The refusal report makes no claim about which errors
-are pre-existing and which the import itself introduced — `planErrors` (§7.5) only ever looks at the
-clone, once, after the import; it never compares against the original project, so it has no way to
-know.** An existing missing-item error and a heart-reference error the import's own damage-bearing
-actor just activated are reported identically: by their message text alone. A display-only
-before/after comparison, purely for framing what the author sees and never feeding back into whether
-the import refuses, could label the two differently later — a real, separate piece of UI polish, out
-of scope for this design.
+1. **"An aggregate error whose count decreases changes its own message text and gets misclassified as
+   new" (v6) cannot happen: a decrease is exactly what `isNotWorse` is built to recognise, not merely
+   tolerate as noise.** A diagnostic shrinking from `"3 ... commands do not ..."` to `"2 ... commands do
+   not ..."` shares a skeleton and `2 <= 3`, so it matches and is never flagged — the decrease is
+   *understood*, not merely ignored because the two strings happened to look similar after erasing
+   information.
+2. **"One whose count could increase without the diagnostic's text changing could hide a genuine
+   worsening behind an unchanged string" (v6) cannot happen: `used` is per-instance, not per-key, and a
+   real increase fails `isNotWorse` outright** (its number is *larger*, not merely different) rather
+   than being erased into equality with its predecessor the way plain digit-stripping erased it.
+3. **"Giving every diagnostic a stable `code`/`subject` ... changed the shape of every object
+   `validateProject` returns" (v6) still does not apply.** `errorKey`, `messageSkeleton` and
+   `messageNumbers` all read only `severity`/`where`/`message` — the exact three keys `test/unit/
+   drawvalidation.test.js`'s own `assert.deepEqual(problems[0], { severity, where, message })` already
+   asserts every diagnostic has — and compute values *outside* the diagnostic object, never written
+   back onto it.
+4. **Round 1's failure — "two different diagnostics sharing one coarse `where` can substitute for each
+   other at an unchanged count" — is closed by requiring a skeleton match before any number is even
+   compared**, exactly as round 2's digit-normalized pass already did: `missingSfx`'s and `overlongSfx`'s
+   own message skeletons are completely different beyond any digit, so a substitution between them
+   never reaches the numeric comparison at all and is unconditionally flagged.
+5. **Round 2's own failure — "digit-normalizing erases whether the count went up, not just whether it
+   changed for cosmetic reasons" — is closed by comparing the actual numbers rather than discarding
+   them.** The exact counterexample reviewer found (`overlongSfx` 2→3, sharing a skeleton with a
+   pre-existing count-2 instance) now fails `isNotWorse` (`3 <= 2` is false) and is correctly flagged;
+   test 16c (§11, new) proves this against the real check.
 
-**The single-writer argument holds and is simpler than ever**: whatever `validateProject` knows,
-across every tileset, today or in the future, the import inherits automatically, because there is no
-second list of "which errors count" to keep in step with it. §5.7's new check is exactly such an
-addition — made once, with nothing on the import side needing to know it exists.
+**A remaining, disclosed limitation, narrower than before and still in the safe direction only:** a
+diagnostic whose message pluralizes on its own live count (`"1 ... command does not"` vs `"2 ...
+commands do not"`) changes its *skeleton*, not just its numbers, at the exact moment the count crosses
+the singular/plural boundary — `messageSkeleton` sees different surrounding words, not only a
+different digit. An *increasing* crossing (1→2) is still correctly flagged regardless, since a skeleton
+mismatch alone already treats it as unmatched. A *decreasing* crossing (2→1, a genuine improvement)
+is the one case this mechanism gets wrong: the skeleton mismatch means `isNotWorse` never even reaches
+the numeric comparison that would have recognised the decrease, so it is treated as a new diagnostic
+and the import is refused unnecessarily. This is, once again, an over-refusal, never a missed
+regression — the same failure direction this codebase already prefers throughout — so it is named here
+precisely rather than left for someone to rediscover with a different, possibly less charitable,
+characterization.
+
+**Ordering is unaffected**: §7.6's refuse-before-mutate order still puts this check last, after every
+capacity refusal, so a validity refusal under this mechanism is, as before, never reached until the
+candidate is fully planned.
+
+**A stated boundary, not a silent one: `isNotWorse`'s own case-by-case argument above is what this
+mechanism's soundness rests on, and it does not automatically transfer to a different feature that
+edits or removes existing project content.** This design's own imports can and do change whether an
+existing diagnostic fires — test 16b is exactly that — but every such change follows one of two shapes
+`isNotWorse` is built to recognise: a diagnostic disappearing entirely (a reference fully satisfied,
+nothing left to report), or a diagnostic's own live-embedded number moving in a way its message's
+skeleton makes visible (a count growing or shrinking within the same aggregate check, tests 16c/16d).
+**An operation that could change an existing diagnostic's `where` or its message's skeleton for content
+that already existed — not merely shift a number within an unchanged skeleton, or make a diagnostic
+disappear outright — would need its own argument for why matching by `(severity, where)` plus
+`isNotWorse` still attributes correctly; this design does not make that argument, because nothing it
+builds needs one.
 
 ### §7.6 Refuse-before-mutate, the full order
 
@@ -853,7 +1100,10 @@ addition — made once, with nothing on the import side needing to know it exist
 4. Build the full candidate on the `structuredClone` — every step in §6's remap, §7.4's id/slot
    assignment and duplicate-name handling, §7.3's palette outcome (writing fresh colours or
    adopting existing ones, per that section's own two-outcome resolution).
-5. `planErrors(clone)` (§7.5) — refuse if non-empty, naming every error verbatim.
+5. `planErrors(project, clone)` (§7.5, i.e. `attributedErrors`) — refuse if non-empty, naming every
+   text-matched-and-still-unattributed error verbatim. (`options.paletteSlot`/`options.paletteSlots`'
+   own validation, and the duplicate-index refusal, are both step 1 above — checked before this step
+   ever runs, exactly as every other palette-slot validation already is.)
 6. Return `{ ok: true, project: clone, report }`.
 
 Every refusal returns `{ ok: false, reason }` with the caller's own project completely untouched —
@@ -864,9 +1114,11 @@ since every step above operates on the clone alone.
 
 **On success**: `report` names the entry's kind and name; how many tiles were written fresh versus
 matched via dedup, and into which tileset; for `terrain`, which metatile slot was claimed; for
-`monster`/`pickup`/`sfx`/`song`, the new id each appended record received; the palette outcome —
-whether the entry's own colours were freshly written into a slot, or whether it adopted an existing
-slot's colours, naming the slot either way; and, for `pickup` specifically, the fixed line pointing
+`monster`/`pickup`/`sfx`/`song`, the new id each appended record received — every pushed metasprite
+and animation for a multi-pose entry included, one line per pose; the palette outcome, once per
+entry-local palette — whether that palette's own colours were freshly written into a slot, or whether
+it adopted an existing slot's colours, naming the slot either way; and, for `pickup` specifically, the
+fixed line pointing
 the author at the Items Forge's "Collected from" control (§2.3), since no item is ever written
 automatically. **Every success report also carries one further fixed line, unconditionally: "Capacity
 is checked at build."** — §7.8 states why this line exists and what it is warning about. The
@@ -876,14 +1128,16 @@ import.js` already uses for its own PNG-import success message.
 **On refusal**: `reason` is one of three specific, human-readable shapes, never a generic "import
 failed" — an id-capacity or tile-capacity refusal names the exact ceiling and how much room the
 entry needed against how much was available; a palette-slot validation refusal names the invalid
-value and the valid range; and a `validateProject`-error refusal (§7.5) is neutral, factual wording —
-`"The resulting project has these errors:"` followed by every offending message verbatim — with no
-claim about which of them existed before the import and which it caused, since `planErrors` cannot
-determine that (§7.5).
+value and the valid range; and a `validateProject`-error refusal (§7.5) names exactly the errors this
+import would newly introduce or worsen — `"This import would cause these problems:"` followed by each
+attributed diagnostic's own message verbatim, never the project's other, pre-existing, unrelated
+errors. Because §7.6 checks capacity before ever reaching §7.5, and because §7.5's own mechanism only
+ever attributes errors the import's own writes actually pushed past their pre-import count, this list
+is never empty at the moment this refusal fires and never contains anything the import did not cause.
 
 ### §7.8 Generator capacity is outside this design's own contract — a named limitation, not a gap left silent
 
-**§7.6's own capacity checks (id-space, tile-space) and §7.5's `validateProject` zero-errors rule are
+**§7.6's own capacity checks (id-space, tile-space) and §7.5's `validateProject` attribution rule are
 not the same thing as "this project will still build a ROM." `checkCapacity` (`main/build/
 generate.js`) is a separate, larger function — it calls `validateProject` internally and then adds
 generator-level checks `validateProject` itself has no way to express: whether the compiled music/
@@ -1000,10 +1254,10 @@ measured minimum, including the tightened 141-tile battle-tileset figure — whi
 would not ordinarily even target, since the walkable "Overworld"/"Main" tileset is the natural
 destination for scenery, not the tileset holding monster block art.
 
-**§7.5's zero-errors rule is what can now refuse an import that palette placement alone never
+**§7.5's attribution rule is what can now refuse an import that palette placement alone never
 could** — every one of the four scenarios above is drawn from a project with no pre-existing build
-error, so none of them is affected by it; §11's own tests are what exercise the rule directly, since
-neither fresh projects nor the two real fixtures happen to already carry one.
+error, so none of them is affected by it either way; §11's own tests are what exercise the rule
+directly, since neither fresh projects nor the two real fixtures happen to already carry one.
 
 ## §9. Zero cost, and the six-fixture gate
 
@@ -1032,11 +1286,29 @@ Opens a picker listing every `terrain` entry, each previewed by drawing its meta
 through `shared/nespalette.js`'s RGB lookup on a canvas sized via `fitZoom`/`observeSize` — never a
 fixed pixel size. Choosing an entry opens §7.3's own palette-candidate picker as a required second
 step: all four background-palette slots shown, each rendered with the entry's own art in that slot's
-actual current colours, reserved slots captioned rather than disabled. Only after a slot is chosen
-does `planLibraryImport` run.
+actual current colours, reserved slots captioned rather than disabled. **One candidate is
+pre-highlighted as "the suggestion"** — the exact slot §7.2's headless default would resolve to
+(exact match, else `unusedPaletteSlots`'s first entry, else `nearestPaletteSlot`, §7.2) — but every
+one of the four remains clickable regardless of which is highlighted; choosing a different one is not
+a special path, only a different, equally valid input to the same §7.3 resolution. Only after a slot
+is chosen does `planLibraryImport` run.
 
 **Monster / Pickup** (Sprite Forge): the identical two-step flow, over the sprite table and sprite
-palettes, previewing the entry's one resting metasprite.
+palettes, previewing the entry's own poses — `idle` alone when that is all the entry declares (every
+v1 entry), or all of `idle`/`walkDown`/`walkUp`/`walkSide` the entry actually provides, each labelled
+by direction. **A multi-palette entry runs the second step's own palette-candidate picker once per
+entry-local palette, in `entry.palettes` order, never all at once in one combined picker** — each
+resolution runs in that same order, never independently (§6/§7.2/§7.4), so a two-palette entry can
+freely adopt one existing slot and write fresh colours into another, but can never have its second
+palette silently land on the slot its first one just claimed. **The second (and any later) step's own
+candidate list disables whichever slot an earlier palette in this same import already chose** (§7.3's
+`excluded` field), captioned to name which of the entry's own palettes claimed it — an author can see
+why it is unavailable, but cannot click it, which is what keeps the options-level duplicate-index
+refusal (§7.2) a backstop for a scripted caller rather than something the picker itself can ever walk
+an author into. Every v1 entry declares exactly one palette, so this repeats exactly
+once, unchanged from before this revision. A future entry that actually declares more than one pose or
+palette will need its own `main/smoke.js` coverage of this repeated-picker flow; none of v1's inventory
+does, so none exists yet — named here rather than left implicit.
 
 **Sfx / Song** (Sound Forge): a picker with no palette step at all, since neither kind touches a
 tileset or a palette — previewed by handing the entry's own raw `sfx`/`song` object to the existing
@@ -1089,9 +1361,12 @@ design's own test list, states it plainly rather than silently.
     `battleW`/`battleH` chosen to matter, since neither should ever reach the rectangle arithmetic at
     all; assert `validateProject(project)` raises no `"battle artwork runs into the message font"`
     error for either. *Catches*: reviewer High #1 exactly — the false error an explicit `255` would
-    raise under the unfixed `battleTile === null || undefined` skip, which — under §7.5's zero-errors
-    rule — would refuse every library import into the project, whether or not the import touches
-    anything related to the actor at all.
+    raise under the unfixed `battleTile === null || undefined` skip, which — under v11's now-
+    superseded zero-errors rule — would have refused every library import into the project, whether
+    or not the import touched anything related to the actor at all; under §7.5's current attribution
+    rule (v12) a pre-existing instance of it would only ever block an import that itself introduced
+    it as a new occurrence, but the false error is a real `validateProject` defect regardless of
+    which rule sits above it, and this test still needs it fixed.
 3d. **`describeBattleTileState` is DOM-free and correct for the explicit-255 sentinel — no mounting,
     no DOM, no stub.** `test/unit/monster.test.js` (new file — no existing test currently mounts or
     exercises `renderer/forges/monster/monster.js` at all, verified by grep; `test/unit/
@@ -1190,17 +1465,73 @@ block art at all.
 15. **Warnings alone never refuse** — import into a project already carrying a genuine
     `validateProject` warning; still succeeds. *Catches*: a severity filter that refuses on any
     problem, warnings included.
-16. **An unrelated pre-existing error refuses, and is named verbatim** — a project with one genuine,
-    unrelated build error (a live Give/Take naming a deleted item); a clean `sfx` import still
-    refuses, naming that error's own text. *Catches*: checking only errors the import's own writes
-    could have caused — exactly the diff shape this design withdrew.
+16. **An unrelated pre-existing error no longer blocks an unrelated import.** A project with one
+    genuine, unrelated build error (a live Give/Take naming a deleted item); a clean `sfx` import
+    succeeds, and that Give/Take error is still present and unchanged in the project afterward (this
+    design never fixes anything it didn't cause). *Catches*: the v11 behaviour this round
+    deliberately reverses — refusing on an error the import's own writes could not possibly have
+    caused — and, separately, an implementation that discards the original project's own diagnostics
+    entirely before comparing (so `before` is always empty and every `after` diagnostic reads as new),
+    which this specific case — one unrelated, completely untouched error — would immediately expose.
+16b. **A single import that satisfies a dangling reference while also introducing a genuinely
+    different problem at the same coarse `where` is still caught — the exact case count-only matching
+    missed in this round's own first review.** A project has one live `Play a sound effect` command
+    naming SFX id 1, which does not exist yet (`shared/project.js`'s own `missingSfx` check fires:
+    `"1 Play a sound effect command does not name a real effect..."`, `where: 'Map Forge'`). Import an
+    `sfx` entry, deliberately authored past `SFX_MAX_STEPS`-worth of duration so `sfxFrameLength(...) >
+    255`, landing at id 1 (the destination array's next append slot, §7.4); assert the plan **refuses**,
+    naming the *new* `overlongSfx` diagnostic (`"...takes longer than 255 frames..."`) specifically —
+    never the old `missingSfx` text, which genuinely no longer exists. A second, companion case: the
+    identical starting project, importing a short (in-bounds) `sfx` entry at the same id instead;
+    assert the plan **succeeds** — the dangling reference is satisfied, nothing new appears at that key,
+    and an empty `before` pool at that key (nothing left unmatched) correctly finds nothing to flag.
+    *Catches*: the v12-round-1 failure mode by name — two textually different diagnostics sharing one
+    coarse `where` cancelling out under a count-only comparison — proven against the real checks
+    (`shared/project.js`'s `missingSfx`/`overlongSfx`, both reporting `where: 'Map Forge'`) rather than
+    a synthetic stand-in, and confirmed reachable through this exact import mechanism (an `sfx` kind
+    entry's own append can land at precisely the id a dangling reference already names).
+16c. **A same-template increase is flagged even when digit-stripping alone would have erased the
+    difference — the exact case round 2's own first review found.** A project already has two live
+    `Play a sound effect` commands whose targets are each independently over 255 frames
+    (`overlongSfx` fires once, at count 2), plus a third live command naming a not-yet-existing SFX id
+    (`missingSfx` fires once, count 1). Import an `sfx` entry at that id, itself also over 255 frames;
+    assert the plan **refuses**, naming the new `overlongSfx` diagnostic (now count 3) — the
+    `missingSfx` diagnostic has genuinely vanished and must not appear in the refusal. *Catches*:
+    digit-normalizing away the difference between "2" and "3" in the identical surrounding wording,
+    which silently matched the two counts against each other in round 2's own first fix and let this
+    exact regression through.
+16d. **A genuine decrease in the same aggregate still succeeds — the branch test 16c does not cover.**
+    Three live `Play a sound effect` commands name ids 0, 1 and 2, none of which exist yet
+    (`missingSfx` fires once, count 3). Import a short, in-bounds `sfx` entry landing at id 0
+    (§7.4's append rule; satisfies exactly one of the three dangling references); `missingSfx` becomes
+    count 2. Assert the plan **succeeds**. *Catches*: an `isNotWorse` reduced to strict message
+    equality (no numeric comparison at all) — it would pass test 16c (a differently-worded message is
+    still correctly flagged either way) while wrongly refusing this genuinely improving import, since
+    `"2 ..."` never equals `"3 ..."` under equality alone.
 17. **An import that itself creates an error refuses** — a damaging `monster` into an action project
     whose metasprite already references blank `$FE` (no active reservation yet); refuses, naming
-    §5.7's new error. *Catches*: the review's own named interaction, covered end to end without the
-    withdrawn diff mechanism.
+    §5.7's new error, exactly once (this key had zero occurrences before the import). *Catches*: the
+    review's own named interaction, still covered end to end — now via `attributedErrors` rather than
+    the unconditional zero-errors rule, but the outcome for this specific case (an import's own new
+    content causing a genuinely new problem) is identical either way, which is why this test alone
+    cannot distinguish the two mechanisms; test 16 is what does.
 18. **`options.paletteSlot` validation** — `4`, `-1`, `1.5`, `"2"` each refuse before palette
     resolution, project untouched. *Catches*: a fifth palette appended, an out-of-range crash, or a
     downstream `clamp()` silently resolving to a different slot than the report names.
+18b. **`options.paletteSlots` validation for a two-palette entry** — a length mismatch (one element
+    for a two-palette entry) refuses; two elements naming the *same* slot index refuses; project
+    untouched either way. *Catches*: silently accepting a duplicate and falling into whatever
+    adopt-or-overwrite behaviour §7.3's two outcomes would otherwise produce for it, which this design
+    deliberately refuses to define.
+18c. **A valid, distinct `options.paletteSlots` array succeeds end to end — not merely "an invalid one
+    refuses."** A two-palette `monster`, `options.paletteSlots: [2, 3]` where slot 2 is a genuine exact
+    match and slot 3 is genuinely unused; assert the plan succeeds, `entry.palettes[0]`'s tiles resolve
+    to `palette: 2` with `project.palettes` unchanged at that slot (adopted), and `entry.palettes[1]`'s
+    tiles resolve to `palette: 3` with slot 3's colours freshly written. *Catches*: an implementation
+    that only ever exercises the automatic (omitted-option) resolution path and never actually reads
+    `options.paletteSlots` when supplied — every other multi-palette test either omits the option
+    (26d/26f) or supplies an invalid one (18b); none before this proves a valid explicit array is
+    honoured at all.
 19. **The omitted-`options.paletteSlot` headless default is real and deterministic** — two calls
     against the same project resolve to the same slot, matching §7.2's own stated priority. *Catches*:
     reviewer Medium #5 — requiring the option with no defined behaviour when it's absent.
@@ -1230,12 +1561,55 @@ block art at all.
     resolves to slot 2, three animations already exist so the synthesized one is id 3; every
     metasprite tile is `palette: 2`, every `anims` slot is 3. *Catches*: hardcoding both, invisible
     against an empty project.
+26b. **A four-pose entry pushes four metasprites and four animations, each `anims` slot pointing at
+    its own, correctly corresponding pose's animation — not merely a different one.** Import a
+    `monster` declaring `idle`/`walkDown`/`walkUp`/`walkSide`, each pose's own metasprite built from
+    visibly distinct tile art (so each pushed metasprite's own tiles can be read back and matched to
+    the pose that declared them); assert four new metasprite ids, four new animation ids, and for each
+    of the four `ANIM_SLOTS` that `actor.anims[slot]`'s animation's own `frames[0].metaspriteId` points
+    at the metasprite built from *that slot's own* declared pose's art — not merely that the four
+    resulting ids are pairwise distinct. *Catches*: a synthesis that still hardcodes "all four slots
+    share the one animation" even when the entry declares more than one pose, and, more narrowly, one
+    that pushes four real, distinct animations but wires them to `anims` in the wrong order (e.g.
+    `walkDown`'s slot pointing at `walkUp`'s own pose) — a defect the original pairwise-inequality
+    assertion could not have caught, since four distinct-but-swapped ids are still pairwise distinct.
+26c. **A partially-declared entry falls back to `idle` per slot, not per entry.** Import a `monster`
+    declaring only `idle` and `walkDown`; assert `actor.anims.walkUp === actor.anims.idle` and
+    `actor.anims.walkSide === actor.anims.idle`, while `actor.anims.walkDown` is its own, different
+    animation id. *Catches*: a fallback that reuses `idle` for every undeclared slot only when *no*
+    other pose is declared at all, rather than per slot independently.
+26d. **A two-palette entry resolves each palette in order, and `paletteMap` routes each pose's tiles
+    correctly.** Import a `monster` with `palettes: [a, b]`, one pose whose tiles mix
+    `paletteIndex: 0` and `paletteIndex: 1`; assert the two resolve to different destination slots (one
+    an exact match, the other freshly written, chosen so the test cannot pass by both landing on the
+    same slot by coincidence), and that tiles with `paletteIndex: 0` carry the first destination slot
+    while `paletteIndex: 1` tiles carry the second. *Catches*: a `paletteMap` that resolves only the
+    first entry-local palette and silently reuses it for every index, invisible against a one-palette
+    entry.
+26f. **Two entry-local palettes that would BOTH resolve to the same "first unused slot" if resolved
+    independently instead land on two different slots.** Import a `monster` with `palettes: [c, d]`,
+    neither matching any existing colours exactly, into a project with at least two genuinely unused
+    slots on the target table; assert `entry.palettes[0]` and `entry.palettes[1]` resolve to two
+    *different* slot indices — never the identical one — and that both slots' colours were actually
+    written (neither adopts, since neither was an exact match). *Catches*: a `paletteMap` builder that
+    calls the P=1 resolution path P times without ever threading `excluded` through it, which test 26d
+    alone cannot catch (its own two palettes are deliberately one exact-match and one fresh, so they
+    could never collide even with no exclusion logic at all).
+26e. **An out-of-range `paletteIndex` refuses the whole import, never a silent passthrough.** A
+    corrupted/future-schema entry with `paletteIndex: 1` but only one declared palette; the import
+    refuses entirely — `project` byte-identical before and after — rather than clamping or defaulting
+    the index. *Catches*: treating `paletteIndex` as a clamped field the way `normalizeMetasprite`'s
+    own destination `.palette` already is, instead of a reference that must resolve or refuse, the
+    identical rule an out-of-range `tile` index already holds to (§6).
 27. **A monster is counted in the OAM budget through the exported `battleSpriteBudget`** — placed
     once, no save/reload, via the touch-encounter formation path (no encounter table needed).
     *Catches*: testing through the private `formationSpriteCost` instead of the real public API.
-28. **License manifest, plus the `BLANK_TILE` sprite-pool rule** — `LICENSE-ASSETS` tracked by git;
-    every entry's `license.type` allowed; no `monster`/`pickup` `spriteTiles` contains `BLANK_TILE`.
-    *Catches*: a missing license field, or an explicit transparent tile instead of an omitted one.
+28. **License manifest, plus the `BLANK_TILE` sprite-pool rule and the palette-count bound** —
+    `LICENSE-ASSETS` tracked by git; every entry's `license.type` allowed; no `monster`/`pickup`
+    `spriteTiles` contains `BLANK_TILE`; every `monster`/`pickup` entry's own `palettes.length` (or the
+    sugared `palette`'s implicit 1) is between 1 and `LIMITS.palettes` (4) inclusive. *Catches*: a
+    missing license field, an explicit transparent tile instead of an omitted one, or a hand-authored
+    (or future-schema) entry declaring more entry-local palettes than any table has physical slots for.
 29. **The whole inventory imports into fresh action and RPG projects, fixed order** — every entry
     succeeds; the RPG case's two background palettes end at `Nature`/`Built`, zero spare.
 30. **The identical sequence against `sample/` and `sample-rpg/`** — asserts §8.3's exact colour-
@@ -1245,8 +1619,9 @@ block art at all.
     `checkCapacity` directly (the way other unit tests already do): construct a project whose
     compiled music+SFX+text bytes sit exactly one byte under the `$E000` bank ceiling
     (`main/build/generate.js`'s own `musicBytes + sfxBytes + text.bytes > BANK_SIZE - 64` check);
-    `planLibraryImport` a one-step `sfx` entry; assert the plan succeeds (§7.5's zero-`validateProject`
-    -errors rule has nothing to say about this), then call `checkCapacity` on the resulting project
+    `planLibraryImport` a one-step `sfx` entry; assert the plan succeeds (§7.5's own mechanism has
+    nothing to say about this — the entry introduces no `validateProject` error), then call
+    `checkCapacity` on the resulting project
     and assert it reports the bank overflow **by name**. *Catches*: a false belief that §7.5's rule
     already covers generator capacity — it does not, and this test documents the boundary rather than
     silently leaving it unverified.
@@ -1277,8 +1652,10 @@ project itself the sole author of new work with no third-party content to indivi
 the identical failure mode that test already exists to catch, an untracked file silently vanishing
 on a fresh clone, applies here just as much); every `LIBRARY_ENTRIES` entry's `license.type` is a
 member of a fixed allowed set (`['CC0-1.0']` for v1, extendable later), the same closed-vocabulary
-shape `ITEM_EFFECT_KINDS`/`normalizeEffectKind` already enforces for `item.effect.kind`; and no
-`monster`/`pickup` entry's `spriteTiles` array contains the literal `BLANK_TILE` string (§2.4).
+shape `ITEM_EFFECT_KINDS`/`normalizeEffectKind` already enforces for `item.effect.kind`; no
+`monster`/`pickup` entry's `spriteTiles` array contains the literal `BLANK_TILE` string (§2.4); and
+every `monster`/`pickup` entry's `palettes.length` (or the sugared `palette`'s implicit 1) is between
+1 and `LIMITS.palettes` (4) inclusive (§2.4).
 
 ## §13. Phasing — one consistent dependency order
 
@@ -1296,14 +1673,15 @@ shape `ITEM_EFFECT_KINDS`/`normalizeEffectKind` already enforces for `item.effec
    landing first. Tests 3, 3b, 3c, 3d, and the new `main/smoke.js` step (§11).
 3. **§5.7's new `validateProject` error, on its own, gated by the six-fixture probe (§5.7/§11 test
    13) turning into a real, permanent test.** This must land *before* any kind's `planLibraryImport`
-   is written to depend on §7.5's zero-errors rule, since that rule is what makes the check
+   is written to depend on §7.5's attribution rule, since that rule is what makes the check
    meaningful to an import in the first place — landing it later would mean phase 4's own terrain
    core temporarily shipped against a different, weaker validity contract than the one this document
    describes, a phasing contradiction an earlier review round found and this ordering removes.
 4. **Schema, the `terrain` core, and its own tests** (§5.1-§5.6, §6, §7 for the `terrain` kind, the
    matching slice of §11).
-5. **`monster`/`pickup` cores** — the synthesis contract (§2.4/§6), the remaining §11 tests for
-   those kinds.
+5. **`monster`/`pickup` cores** — the synthesis contract (§2.4/§6), including multi-pose and
+   multi-palette resolution from the start (this round folded that capability into the schema itself
+   rather than deferring it), and the remaining §11 tests for those kinds, tests 26b-26e included.
 6. **`sfx`/`song` cores** — the simplest phase, no tile or palette interaction at all.
 7. **The UI** (§10, including the picker) **and the `main/smoke.js` steps that drive it** — last,
    since every phase before this one is independently reviewable and testable with no UI at all.
@@ -1364,18 +1742,37 @@ for v1.
 
 ## Changelog
 
-### v11 (this round — one Medium, blocking, down from one Medium plus one Low)
+### v12 (this round — three questions Chris left open in v11, settled at his own explicit direction; not a reviewer-finding round)
 
-- **Medium** (the v10 test plan proved `describeBattleTileState` correct in isolation, and proved
-  the overlay consumes `battleBlockIndices`, but neither test touched `monster.js:214`/`:223`
-  themselves — an implementation could leave the original, independent `battle.battleTile === null
-  || battle.battleTile === undefined` ternary sitting unused at both lines and still pass every
-  proposed test, with an explicit-`255` actor still showing `"Block at $FF, 4×4 tiles."` and a live
-  "Use the animation" button): fixed by extending the existing `main/smoke.js` Monster Forge step to
-  also select an actor with `battle.battleTile: 255` and assert the *mounted* DOM directly — the
-  rendered `span.hint` reads exactly `'No block chosen — the actor is drawn from its animation.'`,
-  and no `'Use the animation'` button is present. §11's own test entry states this exact wrong
-  implementation as what the new assertion closes.
+- Palette default when no unused slot exists is now `nearestPaletteSlot`, real CIE L*a*b* distance
+  reusing `shared/nespalette.js`'s existing machinery, not an arbitrary "always slot 0" (§7.2/§10).
+- Multi-pose (up to all four `ANIM_SLOTS`) and multi-palette (`entry.palettes`, a new `paletteMap`
+  alongside `tileMap`) are built into the `monster`/`pickup` schema now; every v1 entry keeps using
+  the singular `metasprite`/`palette` sugar unchanged (§2.4/§6/§7.4).
+- §7.5's zero-errors rule is replaced by `attributedErrors`, now a per-`(severity, where)` match
+  requiring the same message skeleton and no larger an embedded number — the fourth attempt at the
+  diff mechanism v6 withdrew, after two more found unsound within this same round. Attempt two
+  (occurrence-counting by `(severity, where)` alone): `shared/project.js`'s `missingSfx`/`overlongSfx`
+  checks both report `where: 'Map Forge'`, so an import that satisfies a dangling SFX reference while
+  its own content is separately over 255 frames long let one diagnostic vanish and a different one
+  appear at an unchanged count — invisible to counting alone. Attempt three (exact-then-digit-
+  normalized text matching, meant to fix attempt two): stripping every digit away also erases whether
+  a count *increased* — `overlongSfx` going from 2 to 3 (the exact scenario above, with the newly
+  imported effect itself also over 255 frames) digit-normalizes to the same string either way, so the
+  genuinely worse count silently matched the old one. Attempt four compares the actual numbers instead
+  of erasing them: `isNotWorse(before, after)` requires the same skeleton *and* every embedded number
+  no larger than before's — 2→3 now fails (`3 <= 2` is false, correctly flagged), while a genuine
+  decrease (3→2) still passes (`2 <= 3` is true, correctly not flagged). Test 16b covers the
+  attempt-two failure (the substitution); test 16c (new) covers the attempt-three failure (the
+  same-template increase). Test 16 is reversed to match: an unrelated pre-existing error no longer
+  blocks an unrelated import.
+
+### v11 (one Medium, blocking, down from one Medium plus one Low)
+
+- The v10 test plan proved `describeBattleTileState` correct in isolation and proved the overlay
+  consumes `battleBlockIndices`, but neither test touched `monster.js:214`/`:223` themselves; fixed
+  by extending the `main/smoke.js` Monster Forge step to assert the *mounted* DOM directly for an
+  explicit-`255` actor.
 
 ### Earlier rounds (full per-finding history retained in the orchestrator's own records, not here)
 
@@ -1436,11 +1833,15 @@ for v1.
    sprite range is added to `validateProject` itself, gated on all six fixtures raising nothing
    new** — §5.7, probed and confirmed clean.
 10. **The diff/`code`/`subject`/multiset mechanism is withdrawn; the planned project must pass
-    `validateProject` with zero errors, warnings never refusing** — this round's central decision;
-    see the Changelog above for why — §7.5.
+    `validateProject` with zero errors, warnings never refusing** — this round's (v6's) central
+    decision; see the Changelog above for why — §7.5. **Superseded by Decision 24 (v12)**: the
+    zero-errors rule itself is what that round replaces, with a mechanism that avoids v6's original
+    three failures plus a fourth found in v12's own first review round — §7.5's "all four known
+    failures" passage.
 11. **A project with any pre-existing build error cannot import anything until fixed, even content
     unrelated to it — a deliberate trade-off**, since such a project cannot build a ROM either way —
-    §7.5.
+    §7.5. **Superseded by Decision 24 (v12)**: an unrelated pre-existing error no longer blocks an
+    unrelated import (test 16).
 12. **Reserved palette slots are always selectable, never disabled; the reserved caption is
     computed through `reservedPaletteSlots` and asserted by a smoke step, not left as a
     placeholder** — §7.3/§10.
@@ -1468,7 +1869,9 @@ for v1.
     on load would rewrite stored project data the instant an unrelated project is opened; every
     consumer instead asks `hasBattleBlockArt` — §5.3.
 18. **The refusal report never claims to know which errors pre-date an import** — `planErrors`
-    compares nothing; it only ever looks at the clone, once — §7.5/§7.7.
+    compares nothing; it only ever looks at the clone, once — §7.5/§7.7. **Superseded by Decision 24
+    (v12)**: `attributedErrors` now compares the original project against the candidate explicitly,
+    and the refusal report names exactly the errors the import caused.
 19. **The Monster Forge's own block-art overlay and labels are fixed as part of this design too, in
     their own phase, before any kind's core is built** — CLAUDE.md's single-writer rule applies to a
     shared predicate's readers regardless of which layer (validation, generator, or UI) they sit in;
@@ -1485,19 +1888,29 @@ for v1.
     mounted-and-stubbed-canvas test was never viable; the mounted Forge itself is exercised by
     `main/smoke.js`'s real canvas pixel sampling instead, an existing technique, not new
     infrastructure — §5.3/§11.
+22. **Palette headless/UI default, when no unused slot exists, is computed by real perceptual
+    distance (`nearestPaletteSlot`, reusing `shared/nespalette.js`'s existing `NES_LAB`/`labDistance`)
+    rather than always landing on slot 0** — §7.2, at Chris's own request; no new colour-distance
+    metric invented, ties broken by lowest slot index for the same reason the old "else slot 0"
+    fallback was deterministic.
+23. **Multi-pose (up to all four `ANIM_SLOTS`) and multi-palette (more than one entry-local palette)
+    are built into the `monster`/`pickup` schema now, not deferred to a future round** — §2.4/§6, at
+    Chris's own request; `metasprite`/`palette` (singular) remain valid as sugar for the one-pose,
+    one-palette case, so no entry shipped in v1 needs to change. A per-pose multi-frame walk cycle
+    remains explicitly out of scope (§2.4) — "richer" here means per-direction static art and more
+    than one palette, not animated walk frames.
+24. **§7.5's zero-errors rule is replaced with `attributedErrors`, a per-`(severity, where)` match
+    requiring the same message skeleton and no larger an embedded number, that only refuses on errors
+    this import's own writes actually caused** — at Chris's own request, three further attempts
+    (occurrence-counting alone, then exact-or-digit-normalized text matching) were each found unsound
+    in this round's own reviews and replaced within the same round; sound this time because comparing
+    the actual embedded numbers — not erasing them — is what tells a genuine increase (flagged) apart
+    from a genuine decrease (not flagged), which digit-stripping alone could not do — §7.5. A narrow,
+    disclosed, safe-direction limitation remains: a message that pluralizes on its own live count
+    changes its skeleton, not just a digit, at the exact moment a *decreasing* count crosses that
+    boundary, causing an unnecessary (never a missed) refusal — §7.5's own closing note.
 
 ## Open questions for Chris
 
-1. **Is "adopt an existing slot's colours" a good enough default outcome** when no unused slot
-   exists, or should the picker suggest a specific existing slot by some perceptual-closeness
-   heuristic rather than always defaulting to "the first non-reserved index"?
-2. **Should a future, richer entry (more than one pose, or more than one entry-local palette) be
-   designed now**, given §6 already leaves room for it structurally, or only once a real inventory
-   item actually needs it?
-3. **Is the "any pre-existing error blocks every import, forever, until fixed" trade-off (§7.5,
-   Decision 11) the right one for v1**, or should a future round narrow it to "only errors this
-   import's own writes could plausibly interact with" — the exact shape the diff mechanism
-   attempted and repeatedly failed to get right, which is precisely why this design does not
-   attempt a narrower version of it now, but the underlying product question (should an unrelated
-   pre-existing bug block importing an unrelated new pickup icon) is a real one worth Chris's own
-   judgment, not merely a technical one this document can settle by itself.
+None remain open as of v12 — all three of v11's open questions were settled by Chris directly (see
+Decisions 22-24 and the v12 Changelog entry above).
