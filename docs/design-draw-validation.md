@@ -239,6 +239,10 @@ worst real roll is three monsters, not four) — never an under-bound. This does
 command's own formation (`battleFormationSlice`, unaffected by this roll entirely) or to a
 touch-encounter singleton (also unaffected — always exactly one monster, no roll involved).
 
+[Postscript: the off-by-one described above was fixed in a later slice — `start_encounter`'s roll is
+now genuinely 1..4, matching the comment it used to contradict, so `battleSpriteBudget`'s four-slot
+figure is exact rather than a one-icon over-bound. The passage otherwise stands as written.]
+
 ### §1.3 Tile budget: one live per-tileset meter, no kernel-lo visibility, and shading that only works because two existing ranges happen to be row-aligned
 
 `tile.js`'s `renderStats()` (`:381-415`) shows `Tiles used: N / 256` for whichever tileset table is

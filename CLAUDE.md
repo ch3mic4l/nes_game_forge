@@ -675,8 +675,8 @@ sharing their live hint's own message builder** (`docs/design-draw-validation.md
 `metaspriteScanlineDensity`, `fieldScanlineRows`/`fieldScanlineDensity` (wraps before clipping at
 row 239), `screenSpriteBudget`/`overlaySpriteBudget` (two figures, never combined),
 `battleSpriteBudget` (gated on `gameType === 'rpg'` alone, charging every wandering encounter its
-full four-monster formation — `start_encounter`'s own `and #3` rolls 0-3, not the comment's "one to
-four," a known engine bug left for its own slice), `spriteReservedRanges`/`reservedRangeRects`, and
+full four-monster formation — the 1..4 roll `start_encounter` makes since its off-by-one was fixed),
+`spriteReservedRanges`/`reservedRangeRects`, and
 `metaspriteKernelBytes` (extracted from `kernelTableBytes`). No ROM byte changed (six-fixture
 SHA-256 gate); the old worst-case-only 64-sprite build-log line is gone. Two traps: a delegation is
 structural, not behavioral, proven by reading `generate.js`'s source, not its output
@@ -1099,7 +1099,7 @@ sizes, the route zero-cost proof and `KERNEL_SLACK` itself are each checked thei
 - `BASE_KERNEL_CODE_BYTES_BY_MAPPER = { 1 (MMC1): 5954, 4 (MMC3): 5971, 30 (UNROM 512): 6149 }` —
   action-side, nothing conditional on, falling back to the largest of the three for an unmeasured
   mapper (the game-type overcharge this fixed: `docs/kernel-base-overcharge-report.md`).
-  `BATTLE_KERNEL_ALLOWANCE_BY_MAPPER = { 1: 250, 4: 262, 30: 250 }` is its RPG-only supplement — no
+  `BATTLE_KERNEL_ALLOWANCE_BY_MAPPER = { 1: 253, 4: 265, 30: 253 }` is its RPG-only supplement — no
   fallback, deliberately, the same reason Save's table has none; MMC3's extra 12 bytes are
   `split_select`'s second `.if BATTLE_ENABLED` arm (`engine/split.asm`). Its gate,
   `battleEnabledFor` (`codeRegions(...).length > 0`), does not imply `rpgCapable(mapper)`, so

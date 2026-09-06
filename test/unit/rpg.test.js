@@ -660,9 +660,10 @@ test('a lethal Damage metatile hit does not lose the race to a wandering encount
     project.project.startX = 23; // probe_x = startX+8 = 31, one pixel short of column 2
     project.project.startY = 112;
     // rate 1: the very first moving step already reaches the threshold, and
-    // every one of the four formation slots names the same monster so the
-    // roll always lands on a real encounter rather than sometimes finding an
-    // empty one -- otherwise this test would only exercise the race by luck.
+    // every one of the four formation slots names the same monster so a roll
+    // of 1..4 slots always lands on a real encounter regardless of which
+    // count it draws -- otherwise this test would only exercise the race by
+    // luck.
     project.maps[0].encounters = { rate: 1, actorIds: [0, 0, 0, 0] };
   });
   const nes = boot(rom);
@@ -679,6 +680,149 @@ test('a lethal Damage metatile hit does not lose the race to a wandering encount
 
   assert.equal(nes.cpu.mem[GAME_STATE], ST_GAMEOVER, 'the lethal hit should have ended the game');
   assert.notEqual(nes.cpu.mem[GAME_STATE], ST_BATTLE, 'an encounter due the same step must not overwrite game over');
+});
+
+/**
+ * A JS mirror of rng_next (engine/rpg.asm 14-24): an 8-bit Galois LFSR, zero
+ * mapped to a fixed nonzero state so it is never a lock point. Used only to
+ * predict what one call advances the byte to -- never to decide what a roll
+ * "should" be by construction, which is exactly the gap that let `and #$83`
+ * (see below) pass a test that only checked the observed counts' shape.
+ */
+function referenceRngNext(v) {
+  if (v === 0) v = 0xa5;
+  const carry = (v & 0x80) !== 0;
+  v = (v << 1) & 0xff;
+  if (carry) v ^= 0x71;
+  return v & 0xff;
+}
+
+/**
+ * Whether some second advance in `advances` would expose a wrong `and #3`
+ * mask that flips `bit`. Losing bit 0 or bit 1 changes the roll on any
+ * advance that has the bit set at all. Gaining a bit in 2..7 only changes
+ * the roll when the advance's own low two bits are not already 3 -- an
+ * advance of, say, binary `...111` (low bits already 3, count 4) looks
+ * identical whether or not a wrong mask also keeps some higher bit, since
+ * both clamp to the same 4-slot fill via start_encounter's own loop bound.
+ * `and #$0B` (round 3) is exactly a seed set missing this: every stride-8
+ * second advance that had bit 3 set also had low bits already 3, so gaining
+ * bit 3 never showed up.
+ */
+function maskBitCovered(advances, bit) {
+  if (bit <= 1) return advances.some((v) => (v & (1 << bit)) !== 0);
+  return advances.some((v) => (v & (1 << bit)) !== 0 && (v & 3) !== 3);
+}
+
+// start_encounter used to take exactly bt_tmp2 slots, and check_encounter
+// rolled bt_tmp2 as rng_next() & 3 -- 0..3, never 4, so a roll of 0 filled no
+// slots and fell into start_encounter_none, silently starting no fight (a
+// quarter of triggered encounters were a no-op, and the fourth encounter-table
+// slot was dead). The fix makes bt_tmp2 mean "how many slots to take" (1..4)
+// instead. One ROM, built once and reused across every seed below, with four
+// distinct real monster actors (sample-rpg's own Slime and Snake, id 0 and 3,
+// plus two more cloned from them below -- id 1 is the Potion pickup and id 2
+// is Iris, an NPC, neither a monster) so a filled slot proves it copied its
+// own table entry rather than merely being non-$FF.
+test('a wandering encounter always takes 1..4 slots -- never zero, and every count 1..4 is reachable', {
+  skip: needsSample
+}, async (t) => {
+  const formation = {};
+  const built = await buildVariantFull(t, 'encounter-roll', (project) => {
+    const actors = project.sprites.actors;
+    const idC = actors.length;
+    actors.push({ ...structuredClone(actors[0]), id: idC, name: 'Slime2' }); // Slime's own stats
+    const idD = actors.length;
+    actors.push({ ...structuredClone(actors[3]), id: idD, name: 'Snake2' }); // Snake's own stats
+    formation.ids = [0, 3, idC, idD]; // sample-rpg's own two monsters plus two more, all distinct
+    project.maps[0].encounters = { rate: 1, actorIds: formation.ids };
+  });
+  const IDS = formation.ids;
+
+  // Spread across the whole byte range rather than computing the LFSR by
+  // hand: enough seeds that the roll's low two bits (taken after
+  // check_encounter's own two rng_next() advances -- line 32's unconditional
+  // roll, then line 46's actual roll) are observed to cover 0..3. A stride of
+  // 8 (round 2) was not enough on its own -- none of those 32 seeds' second
+  // advances happened to have bit 3 set, so `and #$0B` passed unnoticed; the
+  // self-check right below is what would have caught that instead of relying
+  // on this comment's own claim.
+  const seeds = [];
+  for (let seed = 0; seed < 256; seed += 6) seeds.push(seed);
+
+  // Prove the seed set can see every wrong mask `and #3` could become,
+  // rather than merely asserting it in a comment (the round-2 gap): for
+  // every bit `and #3` could gain (2..7) or lose (0, 1), some seed's second
+  // advance must be able to expose it (maskBitCovered above). A future edit
+  // that thins this list back down fails loudly here, naming the bit, rather
+  // than quietly reopening the hole assertion (c) below depends on closing.
+  const secondAdvances = seeds.map((seed) => referenceRngNext(referenceRngNext(seed)));
+  for (let bit = 0; bit <= 7; bit++) {
+    assert.ok(
+      maskBitCovered(secondAdvances, bit),
+      `this seed set cannot see a wrong "and #3" mask that changes bit ${bit} -- no chosen seed's second rng_next ` +
+        `advance ${bit <= 1 ? 'has that bit set' : 'has that bit set while its own low two bits are not already 3'}` +
+        '; add a seed whose second advance does'
+    );
+  }
+
+  const observedCounts = new Set();
+  for (const seed of seeds) {
+    const nes = boot(built.romPath);
+    nes.cpu.mem[RNG] = seed;
+    nes.buttonDown(1, RIGHT);
+    nes.frame();
+    nes.buttonUp(1, RIGHT);
+    for (let i = 0; i < 10; i++) nes.frame();
+
+    // (a) no roll yields zero -- a rate-1 map always starts a fight.
+    assert.equal(
+      nes.cpu.mem[GAME_STATE],
+      ST_BATTLE,
+      `rng seed ${seed}: a triggered wandering encounter must always enter battle, never silently do nothing`
+    );
+
+    // (b) the filled slots are always a prefix -- slots 0..count-1 hold
+    // IDS[0..count-1] in order, and count is always in 1..4.
+    const slots = [0, 1, 2, 3].map((i) => nes.cpu.mem[MON_SLOT_ACTOR + i]);
+    const count = slots.filter((v) => v !== 0xff).length;
+    observedCounts.add(count);
+    assert.ok(count >= 1 && count <= 4, `rng seed ${seed}: filled slot count ${count} is outside 1..4`);
+    for (let slot = 0; slot < 4; slot++) {
+      const expected = slot < count ? IDS[slot] : 0xff;
+      assert.equal(
+        slots[slot],
+        expected,
+        `rng seed ${seed}: slot ${slot} should be ${expected === 0xff ? '$FF (empty)' : expected} but was ${slots[slot]}`
+      );
+    }
+
+    // (c) the count is not merely in range -- it is exactly the roll this
+    // seed predicts. check_encounter calls rng_next twice on the field
+    // (line 32, unconditional; line 46, the roll) before start_encounter
+    // ever reads bt_tmp2, so a seeded rng sees exactly those two advances.
+    // This is what and #$83 (same instruction size as and #3, so a wrong
+    // fix could slip past a size-only sabotage check) fails: it still
+    // clamps to a valid 1..4 count via start_encounter's own loop bound,
+    // and still eventually shows all four counts across enough seeds, but
+    // the count it picks for a *given* seed stops matching this formula.
+    const firstAdvance = referenceRngNext(seed);
+    const secondAdvance = referenceRngNext(firstAdvance);
+    const predictedCount = (secondAdvance & 3) + 1;
+    assert.equal(
+      count,
+      predictedCount,
+      `rng seed ${seed}: predicted count ${predictedCount} from two rng_next advances (${firstAdvance}, then ` +
+        `${secondAdvance}) but the ROM filled ${count} slots -- either the fix does not mask to 0..3 before ` +
+        'adding one, or this reference model no longer matches rng_next'
+    );
+  }
+
+  assert.deepEqual(
+    [...observedCounts].sort(),
+    [1, 2, 3, 4],
+    `every formation size 1..4 should be reachable across these seeds; observed ${JSON.stringify([...observedCounts].sort())}`
+  );
 });
 
 // player_iframes (engine/combat.asm) is the action side's own invincible

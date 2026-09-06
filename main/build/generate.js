@@ -633,17 +633,21 @@ export function baseKernelCodeBytes(mapper) {
 // carrying: handing it back as its own term is what restores the RPG side's
 // original reservation (and its original KERNEL_SLACK margin) to the byte,
 // while the new, smaller base finally reserves what an action project's own
-// build actually needs. `*_BY_MAPPER`, not flat like SAVE_BATTLE_KERNEL_
-// ALLOWANCE: MMC3 genuinely differs from the other two by 12 bytes, measured
-// and identified rather than left as noise -- split_select's own
-// `.if BATTLE_ENABLED` arm (engine/split.asm), five instructions
-// (`lda`/`cmp`/`bne`/`lda`/`jmp`, 3+2+2+2+3) that only a split-font board
-// assembles, entirely separate from the `.if TITLE_ENABLED` arm right above
-// it in the same routine that TITLE_KERNEL_ALLOWANCE_BY_MAPPER's own MMC3
-// entry already charges for. This is the ledger's own rule working as
-// designed, not a coincidence: a term stays flat until real variance is
-// measured (SAVE_BATTLE_KERNEL_ALLOWANCE, above), and earns `*_BY_MAPPER`
-// the moment it is (this term, TITLE_KERNEL_ALLOWANCE_BY_MAPPER, the base).
+// build actually needs. Those three figures (250/262/250) were the
+// extraction-era measurement; the encounter-roll fix (`inc bt_tmp2`,
+// engine/rpg.asm, unconditional on every RPG build, absolute-addressed so 3
+// bytes) raised each entry by three, to 253/265/253.
+// `*_BY_MAPPER`, not flat like SAVE_BATTLE_KERNEL_ALLOWANCE: MMC3 genuinely
+// differs from the other two by 12 bytes, measured and identified rather
+// than left as noise -- split_select's own `.if BATTLE_ENABLED` arm
+// (engine/split.asm), five instructions (`lda`/`cmp`/`bne`/`lda`/`jmp`,
+// 3+2+2+2+3) that only a split-font board assembles, entirely separate from
+// the `.if TITLE_ENABLED` arm right above it in the same routine that
+// TITLE_KERNEL_ALLOWANCE_BY_MAPPER's own MMC3 entry already charges for.
+// This is the ledger's own rule working as designed, not a coincidence: a
+// term stays flat until real variance is measured (SAVE_BATTLE_KERNEL_
+// ALLOWANCE, above), and earns `*_BY_MAPPER` the moment it is (this term,
+// TITLE_KERNEL_ALLOWANCE_BY_MAPPER, the base).
 // No fallback -- `BASE_KERNEL_CODE_BYTES_BY_MAPPER`'s own `?? FALLBACK_...`
 // is not copied by reflex. The base needs one because it is charged to
 // *every* project on *every* board, RPG-capable or not; this term is only
@@ -673,7 +677,7 @@ export function baseKernelCodeBytes(mapper) {
 // caller that does not pre-check, which is the same "a newly implemented
 // board with no measured entry must fail loudly" rule the Save table's own
 // comment argues, now actually enforced rather than assumed unreachable.
-export const BATTLE_KERNEL_ALLOWANCE_BY_MAPPER = { 1: 250, 4: 262, 30: 250 };
+export const BATTLE_KERNEL_ALLOWANCE_BY_MAPPER = { 1: 253, 4: 265, 30: 253 };
 
 /** Whether `battleKernelAllowance` has a real, measured entry for `mapper`. */
 export function hasBattleKernelAllowance(mapper) {

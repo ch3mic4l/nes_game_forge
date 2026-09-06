@@ -46,6 +46,7 @@ check_encounter:
   jsr rng_next
   and #3
   sta bt_tmp2
+  inc bt_tmp2
   lda #1
   sta bt_esc                ; a wandering monster can be run from
   jmp start_encounter
@@ -66,7 +67,7 @@ touch_encounter:
   sta mon_slot_actor+3
   jmp battle_begin
 
-; bt_tmp2 = how many of this map's encounter slots to take, minus one.
+; bt_tmp2 = how many of this map's encounter slots to take (1..4).
 start_encounter:
   lda #NO_ENTITY
   sta bt_from_ent

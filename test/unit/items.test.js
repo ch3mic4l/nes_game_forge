@@ -496,7 +496,16 @@ test('a project with no items and no Save is byte-identical to the pre-phase-4b 
 // "free structural side effect") now stamps the placeholder into tileset 1
 // as well, which is the only thing that changes here -- this project draws
 // no player art of its own, so every other byte is untouched. Still 147472.
-const PINNED_RPG_BASELINE_HASH = '8ea8d44d49f8ebdfdbdc6aa923664e2cb1984d792386d0143cc0cd0f944b7ecc';
+//
+// Re-pinned again for the encounter-roll off-by-one fix (engine/rpg.asm):
+// check_encounter's `and #3` roll now takes 1..4 formation slots instead of
+// 0..3 (`inc bt_tmp2` after the mask), unconditional kernel-lo code present
+// on every RPG build regardless of whether this baseline project has any
+// items, Save, or a live encounter table at all -- the identical shape every
+// re-pin above already is. Size still unchanged (still 147472): the kernel-lo
+// bank is a fixed 8 KB region, so the extra bytes shift labels mid-bank
+// rather than growing the padded ROM.
+const PINNED_RPG_BASELINE_HASH = '21230c2c2852bd483e4d4ed0dd4d099bea2e8a02e470a9857bcf7569f5026a1f';
 const PINNED_RPG_BASELINE_SIZE = 147472;
 
 test('an RPG with no items and no Save is byte-identical to the pre-round-4 master build', async (t) => {
