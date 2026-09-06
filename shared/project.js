@@ -120,7 +120,8 @@ export const NO_MEMBER = 0xff;
  * The byte that means "names no metasprite" — one id space over from
  * `NO_ACTOR`/`NO_ITEM`, for an item's own `metaspriteId`. Two things share
  * this value on purpose: `null` still means "not set — derive an icon from
- * the backing actor" (generate.js's own legacy fallback), while
+ * the backing actor" (resolveActorRestingIcon's own legacy fallback, this
+ * file), while
  * `NO_METASPRITE` is how an author says "this item explicitly has no icon"
  * once there is an editor to say it with. `renumberMetaspriteDeletion`
  * treats both as fixed points — `null` because it never named a real
@@ -140,9 +141,10 @@ export const NO_MEMBER = 0xff;
 export const NO_METASPRITE = 0xff;
 
 /**
- * The byte that means "no animation" — `animFor` (`main/build/generate.js`)
- * emits an actor's raw `anims[slot]` value into `actor_anim_dir` with no
- * clamping, so a real animation id and "unset" collide the moment the id
+ * The byte that means "no animation" — `spriteTables` (`main/build/
+ * generate.js`) emits an actor's raw `anims[slot]` value, resolved through
+ * `animFor` (this file), into `actor_anim_dir` with no clamping, so a real
+ * animation id and "unset" collide the moment the id
  * space reaches this value, the identical trap `NO_ACTOR`/`NO_ITEM`/
  * `NO_METASPRITE` each already exist to close for their own arrays. The
  * matching engine-side equate is `NO_ANIM` in `engine/constants.asm`,
@@ -163,6 +165,29 @@ export const NO_ANIM = 0xff;
  */
 export const PLAYER_FRAMES = 8; // 4 directions x 2 walk frames
 export const PLAYER_TILES = PLAYER_FRAMES * 4;
+
+// build_oam (engine/oam.asm) always writes exactly four fixed OAM records --
+// four `sta OAM+N` stores in both the parked case and the drawn case (four
+// blocks of four stores each) -- and leaves oam_idx at 16 either way.
+// Declared outright, not derived from PLAYER_TILES / PLAYER_FRAMES's own
+// 32/8 quotient (which happens to equal 4 today only because of how the
+// player's own tile storage is laid out, and could change independently of
+// build_oam's own draw layout).
+export const PLAYER_OAM_ENTRIES = 4;
+
+// The sprite shadow is OAM ($0200, engine/constants.asm, "@size=256"), four
+// bytes per hardware sprite.
+export const MAX_OAM_ENTRIES = 64;
+
+// The bag's own physical size -- NOT the same concept as LIMITS.items (the
+// actor/item id-space ceiling, above): this is how many slots the bag itself
+// has. Mirrors engine/constants.asm's own MAX_ITEMS, the one hand-written
+// mirror this design cannot remove, since nothing generates
+// engine/constants.asm's own literals. shared/save.js imports and
+// re-exports this under its existing name; renderer/emulator/battletest.js
+// and test/unit/battletest.test.js import it directly rather than each
+// declaring their own literal `8`.
+export const MAX_ITEMS = 8;
 
 /**
  * The one canonical order for a player frame's direction and quadrant, used
@@ -3066,6 +3091,78 @@ export function actorMetaspriteIds(project, actor) {
   return [...ids];
 }
 
+// The directional slot if set, else idle, else NO_ANIM (draws nothing).
+// Relocated verbatim from main/build/generate.js -- needed here because
+// resolveActorRestingIcon (below) and design-draw-validation.md's own
+// screen/battle sprite-budget predicates all need the real per-facing
+// resolution, and a second copy of this exact logic is the drift
+// single-writer exists to prevent.
+export function animFor(actor, slot) {
+  const value = actor.anims?.[slot];
+  if (value !== null && value !== undefined) return value;
+  const idle = actor.anims?.idle;
+  return idle === null || idle === undefined ? NO_ANIM : idle;
+}
+
+// The exact draw_actor_icon resolver (engine/ui.asm): the down-facing
+// animation's own frame 0, never any other facing or frame -- returned as
+// the RAW frame-0 metaspriteId, with NO range check against `metasprites`,
+// because neither side of the real chain checks one. normalizeAnimation
+// clamps a frame's metaspriteId to a single byte only, never to the CURRENT
+// metasprites array length, so a metasprite deleted after an animation frame
+// was authored to reference it leaves a real, valid, stale byte sitting in
+// the project; draw_actor_icon's own runtime read performs no range check
+// either -- it hands whatever byte is there straight to draw_metasprite.
+// `metasprites` is accepted for signature symmetry with resolveItemIcon's
+// own explicit-id branch (below), which does need it for its own, separate
+// bounds check; this function's own derivation does not consult it at all.
+export function resolveActorRestingIcon(actor, animations, metasprites) {
+  if (!actor) return NO_METASPRITE;
+  const animId = animFor(actor, 'walkDown');
+  if (animId === NO_ANIM) return NO_METASPRITE;
+  const frames = animations[animId]?.frames ?? [];
+  return frames.length ? frames[0].metaspriteId : 0;
+}
+
+/**
+ * item_metasprite[itemId] -- the icon draw_item_icon (engine/ui.asm) draws.
+ * `item.metaspriteId`:
+ *
+ * - `NO_METASPRITE` ($FF): an author's explicit "no icon". Passed through.
+ * - a real, in-range value: used as-is.
+ * - an out-of-range value (a stale reference, or a hand-edited project):
+ *   degraded to NO_METASPRITE rather than resurrected as "unset" -- doing
+ *   the latter would silently reinterpret a broken explicit choice as
+ *   "please derive one for me", which is a bigger behaviour change than
+ *   refusing to draw a corrupt index. The same "a bad reference becomes
+ *   nothing, not garbage" rule screenRecordBytes already applies to a stale
+ *   entity.actorId.
+ * - `null` (not set): derived from the backing actor's own resting frame via
+ *   resolveActorRestingIcon, reproducing draw_actor_icon's *exact* runtime
+ *   behaviour for a migrated item, byte-identical to before this delegation.
+ */
+export function resolveItemIcon(item, actor, animations, metasprites) {
+  if (item.metaspriteId === NO_METASPRITE) return NO_METASPRITE;
+  if (item.metaspriteId !== null) {
+    return item.metaspriteId < metasprites.length ? item.metaspriteId : NO_METASPRITE;
+  }
+  return resolveActorRestingIcon(actor, animations, metasprites);
+}
+
+// The pure spriteBytes term main/build/generate.js's kernelTableBytes used
+// to compute inline. Needs neither flattenScreens nor node:fs, so it can
+// live here and be read by the Sprite Forge as well as the generator.
+export function metaspriteKernelBytes(project) {
+  const { metasprites, animations, actors } = project.sprites;
+  return (
+    3 * Math.max(1, metasprites.length) +
+    4 * metasprites.reduce((total, entry) => total + entry.tiles.length, 0) +
+    3 * Math.max(1, animations.length) +
+    2 * animations.reduce((total, entry) => total + entry.frames.length, 0) +
+    8 * Math.max(1, actors.length)
+  );
+}
+
 /**
  * The commit-free core of Palette-swap actor. Always appended to the end of
  * `project.sprites.actors` (and of `.animations`/`.metasprites`, for whatever
@@ -4376,7 +4473,7 @@ function normalizeItem(raw, id, rawActors) {
     // why existence and pickup-backing are two separate questions.
     actorId,
     // The icon. `null` means "not set — derive one from the backing actor's
-    // own resting frame at generation time" (generate.js's resolveItemIcon,
+    // own resting frame at generation time" (this file's own resolveItemIcon,
     // reproducing what draw_actor_icon already drew for a migrated item
     // before this table existed, empty-animation stub included). An explicit
     // value 0-255 is used as-is (255 is `NO_METASPRITE`, an author's own

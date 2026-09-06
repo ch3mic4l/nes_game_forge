@@ -18,16 +18,19 @@
 // which is exactly the point: a reordered or resized record must not be read
 // as an old one's.
 
-import { RPG_LIMITS, projectUsesItems } from './project.js';
+import { RPG_LIMITS, projectUsesItems, MAX_ITEMS } from './project.js';
 
 /**
  * `inv_items`' size (engine/constants.asm's `MAX_ITEMS`). Hardcoded there,
  * not generated — the same "two literals that happen to agree" situation
  * `NUM_SWITCHES` is already in, and for the same reason: nothing today makes
  * either project-configurable. If that ever changes, this is the JS side that
- * would need to become the generated one.
+ * would need to become the generated one. Declared in shared/project.js
+ * (design-draw-validation.md §3.7, the single canonical declaration) and
+ * re-exported here under this module's existing name, so every existing
+ * internal use below and the saveIdentity hash it feeds are unchanged.
  */
-export const MAX_ITEMS = 8;
+export { MAX_ITEMS };
 
 /**
  * Bumped by hand whenever this list's *shape* changes in a way its own sizes

@@ -26,7 +26,7 @@ import {
 } from '../../renderer/emulator/battletest.js';
 import { loadProject, saveProject } from '../../main/project-io.js';
 import { buildProject } from '../../main/build/pipeline.js';
-import { mapEncounterFormation, RPG_LIMITS, createScreen } from '../../shared/project.js';
+import { mapEncounterFormation, RPG_LIMITS, createScreen, MAX_ITEMS } from '../../shared/project.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const SAMPLE = path.join(ROOT, 'sample');
@@ -580,7 +580,6 @@ test('a full-bag pickup still despawns the entity and increments pickups, and is
   // across this pickup even though it genuinely fires -- entity_pickup
   // (engine/entities.asm) still unconditionally despawns the entity and
   // increments `pickups` before add_item is even called.
-  const MAX_ITEMS = 8; // engine/constants.asm
   emulator.poke(build.ram.inv_count, MAX_ITEMS);
   for (let slot = 0; slot < MAX_ITEMS; slot++) emulator.poke(build.ram.inv_items + slot, 3); // arbitrary real actor id
   emulator.poke(build.ram.player_x, OVERLAP_X);

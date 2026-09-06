@@ -81,9 +81,11 @@ import {
   canBackItem,
   ITEM_EFFECT_KINDS,
   NO_ITEM,
-  NO_METASPRITE,
   PLAYER_FRAMES,
-  PLAYER_TILES
+  PLAYER_TILES,
+  animFor,
+  resolveItemIcon,
+  metaspriteKernelBytes
 } from '../../shared/project.js';
 import { SAVE_FIELDS, saveBodySize, saveIdentity } from '../../shared/save.js';
 import {
@@ -1806,13 +1808,9 @@ export function kernelTableBytes(project) {
     1 +
     INPUT_STATES.length * BUTTONS.length +
     (boundTilesEnabled ? 30 : 0);
-  const { metasprites, animations, actors } = project.sprites;
-  const spriteBytes =
-    3 * Math.max(1, metasprites.length) +
-    4 * metasprites.reduce((total, entry) => total + entry.tiles.length, 0) +
-    3 * Math.max(1, animations.length) +
-    2 * animations.reduce((total, entry) => total + entry.frames.length, 0) +
-    8 * Math.max(1, actors.length); // behavior, speed, hp, damage, 4 anim slots
+  // behavior, speed, hp, damage, 4 anim slots -- shared/project.js's
+  // metaspriteKernelBytes (single writer, design-draw-validation.md §3.11).
+  const spriteBytes = metaspriteKernelBytes(project);
   // item_metasprite, item_effect_kind, item_effect_amount (assets/items.inc)
   // -- one byte per item per table, gated the same way the code that reads
   // them is: a project with no items pays nothing, matching itemTables' own
@@ -3126,12 +3124,11 @@ function spriteTables(project, playerTiles) {
 
   // Four animations per actor, indexed by facing (down, up, left, right).
   // A slot the Sprite Forge left empty falls back to the idle animation, and
-  // an actor with nothing at all is marked $FF so the engine draws nothing.
-  // animFor is module-scoped (below spriteTables) rather than local to it --
-  // resolveItemIcon needs the identical fallback chain to reproduce what
-  // draw_actor_icon already draws for a migrated item's legacy icon, and a
-  // second copy of this exact logic is the drift single-writer exists to
-  // prevent.
+  // an actor with nothing at all is marked NO_ANIM ($FF) so the engine draws
+  // nothing. animFor lives in shared/project.js (single writer) since
+  // resolveItemIcon and design-draw-validation.md's own predicates need the
+  // identical fallback chain, and a second copy of this exact logic is the
+  // drift single-writer exists to prevent.
   const animTable = list.flatMap((actor) => [
     animFor(actor, 'walkDown'),
     animFor(actor, 'walkUp'),
@@ -3143,73 +3140,9 @@ function spriteTables(project, playerTiles) {
   return `${chunks.join('\n')}\n`;
 }
 
-// A slot the Sprite Forge left empty falls back to the idle animation, and
-// an actor with nothing at all is marked $FF so the engine draws nothing.
-// Module-scoped: both spriteTables' own actor_anim_dir table and
-// resolveItemIcon below (item.js) need the identical fallback chain --
-// resolveItemIcon reproduces what draw_actor_icon already draws for a
-// migrated item's legacy icon, so a second copy of this logic would be
-// exactly the drift single-writer exists to prevent.
-function animFor(actor, slot) {
-  const value = actor.anims?.[slot];
-  if (value !== null && value !== undefined) return value;
-  const idle = actor.anims?.idle;
-  return idle === null || idle === undefined ? 0xff : idle;
-}
-
-/**
- * item_metasprite[itemId] -- the icon draw_item_icon (engine/ui.asm) draws.
- * `item.metaspriteId`:
- *
- * - `NO_METASPRITE` ($FF): an author's explicit "no icon". Passed through.
- * - a real, in-range value: used as-is.
- * - an out-of-range value (a stale reference, or a hand-edited project):
- *   degraded to NO_METASPRITE rather than resurrected as "unset" -- doing
- *   the latter would silently reinterpret a broken explicit choice as
- *   "please derive one for me", which is a bigger behaviour change than
- *   refusing to draw a corrupt index. The same "a bad reference becomes
- *   nothing, not garbage" rule screenRecordBytes already applies to a stale
- *   entity.actorId.
- * - `null` (not set): derived from the backing actor's own resting frame,
- *   reproducing draw_actor_icon's *exact* runtime behaviour for a migrated
- *   item -- animFor's own idle/walkDown fallback, then frame 0 of whatever
- *   animation that resolves to. The one easy-to-miss case: an animation
- *   that exists but has zero frames is explicitly permitted (the Sprite
- *   Forge allows it, and spriteTables emits a one-byte `.db $00` stub for
- *   it), and draw_actor_icon dereferences that stub as if it were real
- *   frame data -- drawing metasprite 0, not nothing. This function
- *   reproduces that exactly (`frames.length ? frames[0].metaspriteId : 0`),
- *   not the more intuitive but wrong "no frames means no icon".
- */
-export function resolveItemIcon(item, actor, animations, metasprites) {
-  // Round 5 had a defensive `Math.min(metasprites.length, LIMITS.metasprites)`
-  // ceiling here, on the reasoning that buildProject compiles the project the
-  // app is holding rather than one that has passed validateProject. Round 6
-  // sabotage-testing found that reasoning does not hold for THIS function:
-  // metaspriteId is a byte (0-255), so the only value the clamp could ever
-  // treat differently from a plain `< metasprites.length` bound is 255 --
-  // and 255 is NO_METASPRITE's own value, so both branches return the
-  // identical byte either way. There is no input this clamp changes the
-  // output for; it read as protection while protecting nothing, which is
-  // worse than no code at all. Removed rather than kept as inert ceremony.
-  //
-  // The real guarantee that a *real* metasprite id here is never 255 is
-  // LIMITS.metasprites (shared/project.js) plus validateProject's own
-  // over-cap refusal, upstream of this function entirely -- a project that
-  // reaches generation has already been refused if it could produce the
-  // ambiguity. This function needs no bound of its own to enforce that; it
-  // would be redundant even if it could distinguish the values, which it
-  // provably cannot.
-  if (item.metaspriteId === NO_METASPRITE) return NO_METASPRITE;
-  if (item.metaspriteId !== null) {
-    return item.metaspriteId < metasprites.length ? item.metaspriteId : NO_METASPRITE;
-  }
-  if (!actor) return NO_METASPRITE; // no backing actor at all -- nothing to derive from
-  const animId = animFor(actor, 'walkDown');
-  if (animId === 0xff) return NO_METASPRITE;
-  const frames = animations[animId]?.frames ?? [];
-  return frames.length ? frames[0].metaspriteId : 0;
-}
+// animFor and resolveItemIcon now live in shared/project.js (single writer,
+// design-draw-validation.md §3.5/§3.6) -- imported above rather than defined
+// here.
 
 /**
  * `assets/items.inc`: the ITEMS_ENABLED-only kernel-lo table an item's icon

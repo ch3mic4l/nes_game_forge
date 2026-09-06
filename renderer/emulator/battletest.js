@@ -69,10 +69,10 @@
 
 import { missingEquates } from '../../shared/enginesyms.js';
 import { isRamAddress, isCodeAddress } from '../../shared/testoverrides.js';
+import { MAX_ITEMS } from '../../shared/project.js';
 
 const NO_ENTITY = 0xff;
 const FORMATION_SIZE = 4; // RPG_LIMITS.monstersPerBattle / .encounterActors (shared/project.js)
-const MAX_ITEMS = 8; // engine/constants.asm
 
 /** Engine RAM this needs, by the names engine/constants.asm gives them. */
 export const REQUIRED_RAM = [

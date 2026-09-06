@@ -21,7 +21,7 @@ import { fileURLToPath } from 'node:url';
 import NES from '../../renderer/emulator/core/nes.js';
 import { loadProject, saveProject } from '../../main/project-io.js';
 import { buildProject } from '../../main/build/pipeline.js';
-import { generateAssets, resolveItemIcon } from '../../main/build/generate.js';
+import { generateAssets } from '../../main/build/generate.js';
 import {
   createProject,
   createScreen,
@@ -29,7 +29,8 @@ import {
   validateProject,
   LIMITS,
   NO_METASPRITE,
-  PLAYER_TILES
+  PLAYER_TILES,
+  resolveItemIcon
 } from '../../shared/project.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
@@ -520,8 +521,8 @@ test('an RPG with no items and no Save is byte-identical to the pre-round-4 mast
 
 // --------------------------------------------------------------------------
 // Deliverable 3: phase-3 upgrade compatibility for the icon, including the
-// empty-animation case finding 2 found -- resolveItemIcon (main/build/
-// generate.js) has to reproduce draw_actor_icon's exact runtime behaviour,
+// empty-animation case finding 2 found -- resolveItemIcon (shared/
+// project.js) has to reproduce draw_actor_icon's exact runtime behaviour,
 // not what the project data merely reads like.
 // --------------------------------------------------------------------------
 
@@ -619,6 +620,38 @@ test('an item with an explicit but out-of-range metaspriteId degrades to NO_META
   );
 });
 
+// design-draw-validation.md §7 Phase 1's stale-derived-frame regression,
+// compiled-byte half: an item whose icon is DERIVED (metaspriteId: null),
+// backed by an actor whose walkDown animation's frame 0 names a metasprite
+// that has since been deleted, must compile the raw, out-of-range id
+// verbatim -- byte-for-byte identical to what generate.js's own
+// pre-relocation derivation branch (main/build/generate.js:3208-3211, before
+// the animFor/resolveItemIcon move into shared/project.js) already produced.
+// The pure-function-level assertion for this same scenario
+// (resolveActorRestingIcon's own raw return) lives in
+// test/unit/drawvalidation.test.js; the tile-count helper that would turn
+// this raw id into a safe count (actorRestingIconTiles) is deferred to
+// Phase 2, where formationSpriteCost first needs it, and does not exist
+// yet. This is the one place that proves the relocation did not also sneak
+// a bounds check into the compiled table itself, unlike the explicit-id
+// case just above (which keeps its own, separate, pre-existing bounds
+// check).
+test('an item deriving its icon from an actor whose walkDown frame 0 names a deleted metasprite compiles the raw, stale id -- no bounds check introduced by the relocation', async () => {
+  const project = baseItemIconProject();
+  // Only 2 metasprites exist (ids 0-1); the animation's own frame 0 names a
+  // third that was deleted after this frame was authored to reference it.
+  project.sprites.animations = [{ id: 0, name: 'walkDown', loop: true, frames: [{ metaspriteId: 200, duration: 8 }] }];
+  project.sprites.actors = [{ id: 0, name: 'Backer', behavior: 'pickup', speed: 1, hp: 1, anims: { walkDown: 0 } }];
+  project.items = [{ id: 0, name: 'Migrated', actorId: 0, metaspriteId: null }];
+
+  const table = await itemMetaspriteTable(project);
+  assert.equal(
+    table[0],
+    200,
+    'a stale DERIVED reference must compile verbatim -- reintroducing a bounds check here would be a real, accidental behavior change'
+  );
+});
+
 // Deliverable 3, effect half (phase4-design.md §8): recorded there as 4c's
 // own, deferred until items[] actually gained an effect field -- a project
 // shaped exactly like phase 3's migration output (no `effect` key at all,
@@ -702,8 +735,9 @@ test('a phase-3-shaped item (no effect field, actorId naming a real actor) migra
 // return value with or without the clamp. Two tests here asserted exactly
 // that indistinguishable output and could not have failed either way; they
 // are deleted along with the clamp they were testing, rather than kept as
-// coverage that only looked like coverage. See resolveItemIcon's own
-// comment (main/build/generate.js) for the full reasoning. The boundary
+// coverage that only looked like coverage -- the reasoning above is the
+// full reasoning; resolveItemIcon's own comment (shared/project.js) no
+// longer restates it, since the clamp itself is long gone. The boundary
 // test below (254, one below the cap) is the one that actually
 // distinguishes real behaviour and is kept.
 // --------------------------------------------------------------------------
