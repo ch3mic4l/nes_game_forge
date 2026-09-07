@@ -6,7 +6,8 @@
 
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { createProject, normalizeProject } from '../shared/project.js';
+import { normalizeProject } from '../shared/project.js';
+import { STARTERS } from '../shared/starters/index.js';
 
 export const PROJECT_MARKER = 'project.json';
 
@@ -231,11 +232,18 @@ export async function loadProject(dir) {
   });
 }
 
-export async function createProjectAt(dir, name, gameType = 'action') {
+export async function createProjectAt(dir, name, starterId = 'blank-action') {
+  // Resolved before anything touches the filesystem: an unknown id must
+  // leave the directory untouched entirely -- not even created -- rather
+  // than mkdir-ing an empty folder for a project that was never going to be
+  // written (docs/design-starter-projects.md §6.1, tightened from the
+  // design's own snippet, which mkdirs first).
+  const starter = STARTERS.find((entry) => entry.id === starterId);
+  if (!starter) throw new Error(`Unknown starter "${starterId}".`);
   await fs.mkdir(dir, { recursive: true });
   const entries = await fs.readdir(dir);
   if (entries.length && !(await isProjectDir(dir))) {
     throw new Error('That folder already contains other files. Choose an empty folder.');
   }
-  return saveProject(dir, createProject(name, gameType));
+  return saveProject(dir, starter.build(name));
 }

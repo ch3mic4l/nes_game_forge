@@ -25,6 +25,20 @@ const saveWaiters = new Set();
 /** Whether the renderer has changes it has not written to disk. */
 export const unsavedChanges = () => unsaved;
 
+// The seam for dialog:newProject (docs/design-starter-projects.md §8.2): the
+// real save dialog is native and cannot be driven, so main/smoke.js arms a
+// path here before clicking "New project" for real, and dialog:newProject
+// answers with it -- one-shot, consumed and cleared the moment it is read,
+// so an unrelated later New-Project click (if a scenario ever makes one)
+// still hits the real dialog guard below rather than silently reusing a
+// stale scratch path.
+let smokeNewProjectPath = null;
+
+export function setSmokeNewProjectPath(path) {
+  if (!process.env.FORGE_SMOKE) throw new Error('setSmokeNewProjectPath is only for FORGE_SMOKE runs');
+  smokeNewProjectPath = path;
+}
+
 /**
  * Resolves true once the renderer reports the project saved, false if it never
  * does. A save that fails leaves the project dirty and toasts in the renderer,
@@ -66,6 +80,11 @@ export function registerIpc({ getWindow }) {
   });
 
   ipcMain.handle('dialog:newProject', async () => {
+    if (process.env.FORGE_SMOKE && smokeNewProjectPath) {
+      const path = smokeNewProjectPath;
+      smokeNewProjectPath = null;
+      return ok(path);
+    }
     const result = await dialog.showSaveDialog(window(), {
       title: 'Create NES Game Forge project',
       buttonLabel: 'Create project',
@@ -84,9 +103,9 @@ export function registerIpc({ getWindow }) {
     return result.canceled || !result.filePaths.length ? ok(null) : ok(result.filePaths[0]);
   });
 
-  ipcMain.handle('project:create', async (_event, { dir, name, gameType }) => {
+  ipcMain.handle('project:create', async (_event, { dir, name, starterId }) => {
     try {
-      const project = await createProjectAt(dir, name || path.basename(dir).replace(/\.forge$/i, ''), gameType);
+      const project = await createProjectAt(dir, name || path.basename(dir).replace(/\.forge$/i, ''), starterId);
       await rememberProject(dir);
       return ok({ dir, project });
     } catch (error) {

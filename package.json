@@ -24,6 +24,7 @@
     "build:sample:rpg-mmc1": "node main/build/cli.js sample-rpg-mmc1"
   },
   "devDependencies": {
+    "acorn": "8.18.0",
     "electron": "^38.0.0"
   }
 }

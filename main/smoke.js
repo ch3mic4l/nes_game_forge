@@ -7,7 +7,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { ipcMain } from 'electron';
-import { unsavedChanges } from './ipc.js';
+import { unsavedChanges, setSmokeNewProjectPath } from './ipc.js';
 import { decodePng } from '../test/lib/pngdecode.js';
 import { decodeGif } from '../test/lib/gifdecode.js';
 import { loadProject } from './project-io.js';
@@ -15,6 +15,7 @@ import { checkCapacity } from './build/generate.js';
 import { battleRegionBytes, battleRegionCeiling } from './build/battletables.js';
 import { resolveMapper } from '../shared/cartridge.js';
 import { encodeTiles } from '../shared/chr.js';
+import { STARTERS } from '../shared/starters/index.js';
 
 /**
  * A canned CHR file payload for the files:readBinary override -- one flat,
@@ -9203,6 +9204,99 @@ export async function runSmoke(window) {
 
   try {
     await new Promise((resolve) => window.webContents.once('did-finish-load', resolve));
+
+    // ROADMAP item 8 (starter projects), phase 1: the New Project picker
+    // (design-starter-projects.md §11 test 16a), driven through both of its
+    // real triggers rather than just one. No project is open yet at this
+    // point in the run (the window has only just finished loading), so
+    // there is nothing for a dirty-state guard to veto and nothing later
+    // that this step's own store.open() calls could disrupt -- the giant
+    // scenario's own store.open() immediately below supersedes whichever
+    // blank project this step leaves open.
+    //
+    // blank-action is picked via the welcome screen's own real button
+    // (renderer/app.js:357) -- genuinely present, since no project is open.
+    // blank-rpg is picked via the real File > New Project menu action
+    // instead (main/main.js's own 'project:new' menu item sends exactly
+    // this), because the welcome screen's button no longer exists the
+    // moment the first pick opens a project; `window.webContents.send(
+    // 'menu:action', ...)` is the identical dispatch that menu item's own
+    // click handler performs, already precedented in this file for
+    // 'edit:undo'. Between them, both of the picker's real entry points are
+    // exercised, not only the one named in the design.
+    const readPicker = `(() => {
+      const host = document.querySelector('#modalHost');
+      if (!host || host.hidden) return null;
+      const buttons = [...host.querySelectorAll('.modal-body button.btn')];
+      if (!buttons.length) return null;
+      return buttons.map((b) => ({
+        id: b.dataset.starterId ?? null,
+        label: (b.querySelector('div.label')?.textContent ?? '').trim()
+      }));
+    })()`;
+    const waitForPicker = async () => {
+      for (let waited = 0; waited < 4000; waited += 25) {
+        const rows = await window.webContents.executeJavaScript(readPicker);
+        if (rows) return rows;
+        await new Promise((resolve) => setTimeout(resolve, 25));
+      }
+      throw new Error('timed out waiting for the starter picker to render');
+    };
+    const waitForStoreDir = async (expected) => {
+      for (let waited = 0; waited < 4000; waited += 25) {
+        const current = await window.webContents.executeJavaScript('window.__app.store.dir');
+        if (current === expected) return;
+        await new Promise((resolve) => setTimeout(resolve, 25));
+      }
+      throw new Error(`timed out waiting for the new project at ${expected} to open`);
+    };
+    const clickPickerButton = async (starterId) => {
+      const clicked = await window.webContents.executeJavaScript(`(() => {
+        const btn = document.querySelector('#modalHost [data-starter-id=${JSON.stringify(starterId)}]');
+        if (!btn) return false;
+        btn.click();
+        return true;
+      })()`);
+      if (!clicked) throw new Error(`no picker button for starter id "${starterId}"`);
+    };
+    const assertPickerLabels = (rows) => {
+      const seen = rows.map((r) => r.label);
+      const expected = STARTERS.map((s) => s.label);
+      if (JSON.stringify(seen) !== JSON.stringify(expected)) {
+        throw new Error(`starter picker rendered labels ${JSON.stringify(seen)}, expected ${JSON.stringify(expected)}`);
+      }
+    };
+
+    const blankActionDir = path.join(scratch, 'PickerBlankAction.forge');
+    setSmokeNewProjectPath(blankActionDir);
+    const clickedWelcomeButton = await window.webContents.executeJavaScript(`(() => {
+      const btn = [...document.querySelectorAll('#stage button')].find((b) => b.textContent.trim() === 'New project');
+      if (!btn) return false;
+      btn.click();
+      return true;
+    })()`);
+    if (!clickedWelcomeButton) throw new Error('the welcome screen "New project" button was not found');
+    assertPickerLabels(await waitForPicker());
+    await clickPickerButton('blank-action');
+    await waitForStoreDir(blankActionDir);
+    const blankActionProject = await loadProject(blankActionDir);
+    if (blankActionProject.project.gameType !== 'action') {
+      throw new Error(`starter "blank-action" created gameType "${blankActionProject.project.gameType}", expected "action"`);
+    }
+    console.log('  ok  starter picker (welcome-screen button): blank-action -> gameType "action"');
+
+    const blankRpgDir = path.join(scratch, 'PickerBlankRpg.forge');
+    setSmokeNewProjectPath(blankRpgDir);
+    window.webContents.send('menu:action', 'project:new');
+    assertPickerLabels(await waitForPicker());
+    await clickPickerButton('blank-rpg');
+    await waitForStoreDir(blankRpgDir);
+    const blankRpgProject = await loadProject(blankRpgDir);
+    if (blankRpgProject.project.gameType !== 'rpg') {
+      throw new Error(`starter "blank-rpg" created gameType "${blankRpgProject.project.gameType}", expected "rpg"`);
+    }
+    console.log('  ok  starter picker (File > New Project menu action): blank-rpg -> gameType "rpg"');
+
     const report = await window.webContents.executeJavaScript(scenario(dir, sampleCopy, sampleRpgCopy));
     for (const entry of report.steps) console.log(`  ok  ${entry.name}${entry.detail ? ` — ${entry.detail}` : ''}`);
 

@@ -2,8 +2,7 @@
 
 import { store } from './store.js';
 import { el, clear, fill, toast, showModal, confirmModal } from './ui.js';
-import { GAME_TYPES } from '../shared/project.js';
-import { RPG_DEFAULT_MAPPER, mapperById } from '../shared/cartridge.js';
+import { STARTERS } from '../shared/starters/index.js';
 import { TOGGLE_NAMES } from '../shared/testoverrides.js';
 
 const FORGES = [
@@ -378,12 +377,12 @@ async function renderWelcome() {
 // -------------------------------------------------------- project actions
 
 /**
- * Action adventure or turn-based RPG. This is the one decision a project cannot
- * comfortably change its mind about later — an RPG's battle system lives in a
- * switchable program bank, which rules out half the cartridges and takes screen
- * capacity with it — so it is asked once, up front, and said out loud.
+ * Which starter to build the new project from. STARTERS (shared/starters/)
+ * is the single catalog both this picker and main's own project:create
+ * handler read, so a starter added there needs no change here at all
+ * (docs/design-starter-projects.md §3.2/§8.1).
  */
-function chooseGameType() {
+function chooseStarter() {
   return showModal({
     title: 'New project',
     width: 460,
@@ -391,23 +390,18 @@ function chooseGameType() {
       el(
         'div',
         null,
-        el('p.hint', { style: { marginBottom: '14px' } }, 'What kind of game is this?'),
-        ...GAME_TYPES.map((type) =>
+        el('p.hint', { style: { marginBottom: '14px' } }, 'What kind of project?'),
+        ...STARTERS.map((starter) =>
           el(
             'button.btn',
             {
               style: { display: 'block', width: '100%', textAlign: 'left', marginBottom: '8px', padding: '10px' },
-              onclick: () => close(type.id)
+              dataset: { starterId: starter.id },
+              onclick: () => close(starter.id)
             },
-            el('div', { style: { fontWeight: '700', marginBottom: '3px' } }, type.label),
-            el('div.hint', { style: { margin: '0' } }, type.hint)
+            el('div.label', { style: { fontWeight: '700', marginBottom: '3px' } }, starter.label),
+            el('div.hint', { style: { margin: '0' } }, starter.hint)
           )
-        ),
-        el(
-          'p.hint',
-          { style: { marginTop: '12px' } },
-          `A turn-based RPG starts on ${mapperById(RPG_DEFAULT_MAPPER).name}, because its battle system ` +
-            'needs a cartridge that can switch program banks. Action games start on NROM.'
         )
       ),
     actions: [{ label: 'Cancel', value: null }]
@@ -419,12 +413,12 @@ async function newProject() {
   // well as the engine: an RPG needs a mapper that can switch program banks, and
   // changing your mind afterwards means rebuilding the maps around a battle
   // system that was not there.
-  const gameType = await chooseGameType();
-  if (!gameType) return;
+  const starterId = await chooseStarter();
+  if (!starterId) return;
   const picked = await window.forge.project.pickNew();
   if (!picked.ok) return toast(picked.error, 'error');
   if (!picked.value) return;
-  const result = await window.forge.project.create({ dir: picked.value, gameType });
+  const result = await window.forge.project.create({ dir: picked.value, starterId });
   if (!result.ok) return toast(result.error, 'error');
   store.open(result.value.dir, result.value.project);
   toast('Project created', 'success');
