@@ -783,6 +783,92 @@ canvas.sheet {
   gap: 8px;
 }
 
+/* ---------------------------------------------------------- library picker */
+/* renderer/widgets/librarypicker.js -- the starter-library import flow's own
+   two-step picker, shared by the Tile, Sprite and Sound Forges. */
+
+.library-art-stage {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  /* width/height are set inline per instance, in aspect with the art being
+     drawn (renderer/widgets/librarypicker.js's own artCanvas) -- a fixed
+     48x48 square clipped anything wider than tall (every terrain entry's
+     own two-metatile candidate cell is 32x16). This 48px height is only the
+     pre-layout fallback fitZoom itself already documents. */
+  height: 48px;
+  flex: none;
+  background: var(--bg-0);
+  border: 1px solid var(--line-soft);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+}
+
+.library-entry-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 60vh;
+  overflow-y: auto;
+}
+
+.library-entry-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px;
+  border: 1px solid var(--line-soft);
+  border-radius: var(--radius-sm);
+  background: var(--bg-2);
+}
+
+.library-entry-info {
+  flex: 1;
+  min-width: 0;
+}
+
+.library-entry-name {
+  font-weight: 600;
+}
+
+.library-candidate-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 10px;
+}
+
+.library-candidate {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding: 10px;
+  background: var(--bg-2);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  text-align: center;
+}
+
+.library-candidate:hover:not(:disabled) {
+  border-color: var(--text-dim);
+}
+
+.library-candidate.suggested {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent-line);
+}
+
+.library-candidate.excluded,
+.library-candidate:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.library-candidate-caption {
+  max-width: 140px;
+}
+
 /* ----------------------------------------------------------------- toast */
 
 .toast-host {

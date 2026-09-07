@@ -31,6 +31,8 @@ import {
   applyPlannedProject,
   attributedErrors,
   battleSpriteBudget,
+  paletteCandidates,
+  suggestedPaletteSlot,
   ELEMENTS,
   LIMITS
 } from '../../shared/project.js';
@@ -1629,6 +1631,92 @@ test('30: the identical sequence against the real sample/ and sample-rpg/ fixtur
     assert.equal(unusedPaletteSlots(project, 'sprite', mapper).size, 0, `${label}: no sprite palette slots left free`);
     const errors = validateProject(project).filter((p) => p.severity === 'error');
     assert.deepEqual(errors, [], `${label}: validateProject reports errors after importing everything`);
+  }
+});
+
+// --- Phase 7 (§10 UI): suggestedPaletteSlot extraction + paletteCandidates export ---
+
+test('33: suggestedPaletteSlot agrees with the headless plan on all three branches', () => {
+  // (a) an exact match present -- must win even when a LOWER-index unused
+  // slot also exists (which "first unused" alone would wrongly prefer).
+  {
+    const project = createProject('Test', 'action');
+    const mapper = resolveMapper(project.cartridge.mapper);
+    project.palettes.bg[1] = [0x00, 0x01, 0x02, 0x03]; // unused, lower index, NOT an exact match
+    project.palettes.bg[2] = [0x00, 0x1a, 0x2a, 0x30]; // unused, exact match to grassPlains' Nature colours
+    const suggested = suggestedPaletteSlot(project, 'bg', grassPlains.palette, new Set(), mapper);
+    assert.equal(suggested, 2, '(a) exact match must win over a lower-index unused slot');
+    const plan = planLibraryImport(project, grassPlains);
+    assert.ok(plan.ok, plan.reason);
+    assert.equal(plan.report.palette.slot, suggested, '(a): headless plan must land on suggestedPaletteSlot\'s own answer');
+  }
+
+  // (b) no exact match, but a genuinely unused slot exists -- the lowest one.
+  {
+    const project = createProject('Test', 'action'); // untouched defaults exact-match nothing (probed)
+    const mapper = resolveMapper(project.cartridge.mapper);
+    const before = paletteCandidates(project, grassPlains.palette, 'background', mapper);
+    assert.ok(before.every((c) => !c.exactMatch), '(b) fixture assumption: no default bg slot exact-matches Nature');
+    const suggested = suggestedPaletteSlot(project, 'bg', grassPlains.palette, new Set(), mapper);
+    assert.equal(suggested, 1, '(b) must be the lowest genuinely unused slot');
+    const plan = planLibraryImport(project, grassPlains);
+    assert.ok(plan.ok, plan.reason);
+    assert.equal(plan.report.palette.slot, suggested, '(b): headless plan must land on suggestedPaletteSlot\'s own answer');
+  }
+
+  // (c) is exercised in test 33c below -- it needs a real fixture project
+  // (sample/, loaded via loadProject) with zero free bg slots, which needs
+  // an await, so it is kept as its own async test rather than forcing this
+  // whole test async for one of its three branches.
+});
+
+// 33c: branch (c) -- no exact match and no unused slot at all --
+// nearestPaletteSlot's own answer, deliberately NOT slot 0 and NOT the
+// lowest index, so the test cannot be satisfied by a "just return 0" or
+// "just return the lowest index" bug standing in for real Lab-distance
+// nearness. sample/ has zero free bg slots (probed); its own bg palette 3
+// is [0x0f,0x00,0x10,0x20], and [0x0f,0x00,0x16,0x30] is Lab-nearest to
+// slot 3 (probed) while exact-matching nothing.
+test('33c: suggestedPaletteSlot, no exact match and no unused slot -- nearestPaletteSlot\'s own answer', async () => {
+  const project = await loadProject(SAMPLE);
+  const mapper = resolveMapper(project.cartridge.mapper);
+  assert.equal(unusedPaletteSlots(project, 'bg', mapper).size, 0, 'fixture assumption: sample/ has no free bg slot');
+  const colors = [0x0f, 0x00, 0x16, 0x30];
+  const candidates = paletteCandidates(project, colors, 'background', mapper);
+  assert.ok(candidates.every((c) => !c.exactMatch), 'fixture assumption: colors exact-match nothing in sample/');
+
+  const suggested = suggestedPaletteSlot(project, 'bg', colors, new Set(), mapper);
+  assert.equal(suggested, 3, '(c) must be nearestPaletteSlot\'s own answer, not slot 0 or the lowest index');
+
+  const entry = { ...grassPlains, palette: colors };
+  const plan = planLibraryImport(project, entry);
+  assert.ok(plan.ok, plan.reason);
+  assert.equal(plan.report.palette.slot, suggested, '(c): headless plan must land on suggestedPaletteSlot\'s own answer');
+});
+
+test('34: paletteCandidates is exported, and reservedReason is one of the exact §7.3 caption strings', () => {
+  // sprite slot 0: always reserved, on every project.
+  {
+    const project = createProject('Test', 'action');
+    const mapper = resolveMapper(project.cartridge.mapper);
+    const candidates = paletteCandidates(project, [0x0f, 0x11, 0x21, 0x31], 'sprites', mapper);
+    const slot0 = candidates.find((c) => c.index === 0);
+    assert.equal(slot0.reserved, true);
+    assert.equal(slot0.reservedReason, 'reserved for the player'); // from reservedCaption, shared/project.js
+  }
+  // bg slot 0: reserved whenever the project shows text -- gameType 'rpg'
+  // always does (CLAUDE.md/other tests' own precedent).
+  {
+    const project = createProject('Test', 'rpg');
+    const mapper = resolveMapper(project.cartridge.mapper);
+    const candidates = paletteCandidates(project, [0x0f, 0x11, 0x21, 0x31], 'background', mapper);
+    const slot0 = candidates.find((c) => c.index === 0);
+    assert.equal(slot0.reserved, true);
+    assert.equal(slot0.reservedReason, 'reserved because this project shows text'); // from reservedCaption
+    // bg slot 1: reserved for battle scenery, RPG only.
+    const slot1 = candidates.find((c) => c.index === 1);
+    assert.equal(slot1.reserved, true);
+    assert.equal(slot1.reservedReason, 'reserved for battle scenery'); // from reservedCaption
   }
 });
 

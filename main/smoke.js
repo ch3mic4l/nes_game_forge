@@ -3114,6 +3114,143 @@ const scenario = (dir, sampleDir, sampleRpgDir) => `
   if (cnromBuild.value.mapper !== 3) throw new Error('built mapper ' + cnromBuild.value.mapper + ', expected 3');
   step('CNROM project builds', cnromBuild.value.size + ' bytes, mapper ' + cnromBuild.value.mapper);
 
+  // --- Starter library picker: the tileset id is actually threaded through
+  // (finding 1, round 2). This CNROM project genuinely has two tilesets
+  // (0 default, 1 "Dungeon"), which a fresh single-tileset project cannot
+  // exercise -- selecting tileset 1 through the REAL tileset-list UI (never
+  // by poking state) and importing must write into tileset 1, never
+  // silently fall back to tileset 0's own options.tilesetId ?? 0 default.
+  {
+    window.__app.goTo('tile');
+    await wait(300);
+    const cnromTilesetRows = () => [...document.querySelectorAll('#stage .tileset-row')];
+    if (cnromTilesetRows().length !== 2) throw new Error('expected two tileset rows here, saw ' + cnromTilesetRows().length);
+    cnromTilesetRows()[1].click();
+    await wait(200);
+    if (!cnromTilesetRows()[1].classList.contains('active')) {
+      throw new Error('clicking the second tileset row did not make it the active one');
+    }
+    if (cnromTilesetRows()[0].classList.contains('active')) {
+      throw new Error('tileset 0 is still shown active after selecting tileset 1');
+    }
+
+    const beforeCnromSnapshot = structuredClone(store.project);
+    const cnromLibraryButton = () =>
+      [...document.querySelectorAll('#stage button.btn.btn-sm')].find((b) => b.textContent.trim() === '📚 Library…');
+    if (!cnromLibraryButton()) throw new Error('Tile Forge has no "Library…" button (CNROM tileset-id step)');
+    cnromLibraryButton().click();
+    await until('the terrain library entry picker (CNROM tileset-id step)', () => document.querySelector('#modalHost .modal-head'));
+    const cnromTerrainChoose = [...document.querySelectorAll('#modalHost .library-entry-row button')][0];
+    if (!cnromTerrainChoose) throw new Error('the terrain library list has no entries (CNROM tileset-id step)');
+    cnromTerrainChoose.click();
+    await until('the terrain palette-candidate step (CNROM tileset-id step)', () => document.querySelector('#modalHost .library-candidate-grid'));
+
+    // Accept the suggestion this time (headless-default path for the slot;
+    // the tileset id is what this step is actually proving).
+    const cnromSuggested = [...document.querySelectorAll('#modalHost .library-candidate')].find((c) => c.dataset.suggested === 'true');
+    if (!cnromSuggested) throw new Error('no candidate is marked as the suggestion (CNROM tileset-id step)');
+    const cnromToastCountBefore = document.querySelectorAll('#toastHost .toast').length;
+    cnromSuggested.click();
+    await until('the CNROM terrain import toast', () => document.querySelectorAll('#toastHost .toast').length > cnromToastCountBefore);
+
+    const tileset0After = JSON.stringify(store.project.tilesets[0].background.tiles);
+    const tileset1After = JSON.stringify(store.project.tilesets[1].background.tiles);
+    const tileset0Before = JSON.stringify(beforeCnromSnapshot.tilesets[0].background.tiles);
+    const tileset1Before = JSON.stringify(beforeCnromSnapshot.tilesets[1].background.tiles);
+    if (tileset1After === tileset1Before) {
+      throw new Error('tileset 1 (the selected one) background tiles did not change -- the tileset id was not threaded through');
+    }
+    if (tileset0After !== tileset0Before) {
+      throw new Error('tileset 0 (NOT selected) background tiles changed -- the import landed in the wrong tileset');
+    }
+    step(
+      'library picker: Tile Forge threads the selected tileset id (CNROM, 2 tilesets)',
+      'tileset 1 (Dungeon, active) changed; tileset 0 stayed byte-identical'
+    );
+
+    // Revert -- whole-project snapshot (finding 6's own shape), then
+    // restore the Tile Forge's own tileset selection back to 0 too, since
+    // that is UI state outside store.project a plain commit cannot touch.
+    window.__app.store.commit('Smoke: revert CNROM tileset-id library import', (project) => Object.assign(project, beforeCnromSnapshot));
+    await wait(150);
+    if (JSON.stringify(store.project) !== JSON.stringify(beforeCnromSnapshot)) {
+      throw new Error('the CNROM tileset-id library import was not fully reverted (whole-project mismatch)');
+    }
+    cnromTilesetRows()[0].click();
+    await wait(150);
+    step('library picker: Tile Forge CNROM tileset-id import reverted', 'whole project byte-identical to its own pre-import snapshot, tileset 0 reselected');
+  }
+
+  // The Sprite Forge DOES have a real tileset selector too (its own
+  // "Tileset" <select>, renderTabs() in sprite.js, shown once a project has
+  // more than one) -- so this reuses the SAME CNROM 2-tileset project,
+  // still open, for the identical proof over the sprite table rather than
+  // falling back to asserting against sample/'s own single tileset.
+  {
+    window.__app.goTo('sprite');
+    await wait(300);
+    const cnromTilesetSelect = [...document.querySelectorAll('#stage select')].find((s) =>
+      [...s.options].some((o) => o.textContent === 'Dungeon')
+    );
+    if (!cnromTilesetSelect) throw new Error('Sprite Forge has no tileset selector for a 2-tileset project');
+    cnromTilesetSelect.value = '1';
+    cnromTilesetSelect.dispatchEvent(new Event('change'));
+    await wait(200);
+    if (cnromTilesetSelect.value !== '1') throw new Error('selecting tileset 1 through the real select did not stick');
+
+    const actorsTabForCnrom = [...document.querySelectorAll('#stage .tab')].find((t) => t.textContent === 'Actors');
+    if (!actorsTabForCnrom) throw new Error('Sprite Forge has no Actors tab (CNROM tileset-id step)');
+    actorsTabForCnrom.click();
+    await wait(200);
+    // Tab switches remount the tileset select fresh (renderTabs() rebuilds
+    // it every render) -- re-find it and confirm it is still showing 1.
+    const cnromTilesetSelectAfterTab = [...document.querySelectorAll('#stage select')].find((s) =>
+      [...s.options].some((o) => o.textContent === 'Dungeon')
+    );
+    if (!cnromTilesetSelectAfterTab || cnromTilesetSelectAfterTab.value !== '1') {
+      throw new Error('tileset selection did not survive switching to the Actors tab');
+    }
+
+    const beforeCnromSpriteSnapshot = structuredClone(store.project);
+    const cnromActorLibraryButton = () =>
+      [...document.querySelectorAll('#stage button.btn.btn-sm')].find((b) => b.textContent.trim() === '📚 Library…');
+    if (!cnromActorLibraryButton()) throw new Error('Sprite Forge Actors tab has no "Library…" button (CNROM tileset-id step)');
+    cnromActorLibraryButton().click();
+    await until('the actor library entry picker (CNROM tileset-id step)', () => document.querySelector('#modalHost .modal-head'));
+    const cnromMonsterChoose = [...document.querySelectorAll('#modalHost .library-entry-row button')][0];
+    if (!cnromMonsterChoose) throw new Error('the monster/pickup library list has no entries (CNROM tileset-id step)');
+    cnromMonsterChoose.click();
+    await until('the monster palette-candidate step (CNROM tileset-id step)', () => document.querySelector('#modalHost .library-candidate-grid'));
+
+    const cnromSuggestedActor = [...document.querySelectorAll('#modalHost .library-candidate')].find((c) => c.dataset.suggested === 'true');
+    if (!cnromSuggestedActor) throw new Error('no candidate is marked as the suggestion (CNROM tileset-id step)');
+    const cnromActorToastCountBefore = document.querySelectorAll('#toastHost .toast').length;
+    cnromSuggestedActor.click();
+    await until('the CNROM monster import toast', () => document.querySelectorAll('#toastHost .toast').length > cnromActorToastCountBefore);
+
+    const spriteTileset0After = JSON.stringify(store.project.tilesets[0].sprites.tiles);
+    const spriteTileset1After = JSON.stringify(store.project.tilesets[1].sprites.tiles);
+    const spriteTileset0Before = JSON.stringify(beforeCnromSpriteSnapshot.tilesets[0].sprites.tiles);
+    const spriteTileset1Before = JSON.stringify(beforeCnromSpriteSnapshot.tilesets[1].sprites.tiles);
+    if (spriteTileset1After === spriteTileset1Before) {
+      throw new Error('tileset 1 (the selected one) sprite tiles did not change -- the tileset id was not threaded through');
+    }
+    if (spriteTileset0After !== spriteTileset0Before) {
+      throw new Error('tileset 0 (NOT selected) sprite tiles changed -- the import landed in the wrong tileset');
+    }
+    step(
+      'library picker: Sprite Forge threads the selected tileset id (CNROM, 2 tilesets)',
+      'tileset 1 (Dungeon, selected) changed; tileset 0 stayed byte-identical'
+    );
+
+    window.__app.store.commit('Smoke: revert CNROM sprite tileset-id library import', (project) => Object.assign(project, beforeCnromSpriteSnapshot));
+    await wait(150);
+    if (JSON.stringify(store.project) !== JSON.stringify(beforeCnromSpriteSnapshot)) {
+      throw new Error('the CNROM sprite tileset-id library import was not fully reverted (whole-project mismatch)');
+    }
+    step('library picker: Sprite Forge CNROM tileset-id import reverted', 'whole project byte-identical to its own pre-import snapshot');
+  }
+
   // --- ROADMAP item 8 (modular parts) Phase 3: the Generate Player Sprite
   // modal (design-modular-parts.md §6.3, §7 phase 3). Reuses this CNROM,
   // 2-tileset project -- still open from the block above -- so the real-build
@@ -3876,6 +4013,157 @@ const scenario = (dir, sampleDir, sampleRpgDir) => `
     step('monster forge hidden for an action project', 'absent from forgeIds and from the rendered rail');
   }
 
+  // --- Starter library picker: Tile Forge (terrain), design-starter-
+  // library.md §10 / §11 test 21. sample/ is open here (real palettes in
+  // real use, unlike a fresh project), which is what makes "a non-default,
+  // already-in-use slot" reachable at all.
+  {
+    window.__app.goTo('tile');
+    await wait(300);
+    const libraryTileButton = () =>
+      [...document.querySelectorAll('#stage button.btn.btn-sm')].find((b) => b.textContent.trim() === '📚 Library…');
+    if (!libraryTileButton()) throw new Error('Tile Forge has no "Library…" button');
+
+    // Dismissal leaves nothing behind: Escape at the entry-list step.
+    const revisionBeforeTileEscape = store.revision;
+    libraryTileButton().click();
+    await until('the terrain library entry picker', () => document.querySelector('#modalHost .modal-head'));
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
+    await until('the terrain picker to close on Escape', () => document.querySelector('#modalHost').hidden);
+    if (store.revision !== revisionBeforeTileEscape) {
+      throw new Error('Escape at the terrain entry list changed store.revision');
+    }
+    step('library picker: Tile Forge Escape leaves nothing behind', 'revision unchanged, modalHost hidden');
+
+    // Dismissal leaves nothing behind, step 2 (the candidate picker) --
+    // distinct from the entry-list Escape above: open, Choose an entry to
+    // actually reach the candidate grid, THEN press Escape there.
+    {
+      const revisionBeforeCandidateEscape = store.revision;
+      const metatilesBeforeCandidateEscape = JSON.stringify(store.project.metatiles);
+      const palettesBeforeCandidateEscape = JSON.stringify(store.project.palettes);
+      libraryTileButton().click();
+      await until('the terrain library entry picker (step-2 escape)', () => document.querySelector('#modalHost .modal-head'));
+      const escapeStepChoose = [...document.querySelectorAll('#modalHost .library-entry-row button')][0];
+      if (!escapeStepChoose) throw new Error('the terrain library list has no entries (step-2 escape)');
+      escapeStepChoose.click();
+      await until('the terrain palette-candidate step (step-2 escape)', () => document.querySelector('#modalHost .library-candidate-grid'));
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
+      await until('the terrain candidate step to close on Escape', () => document.querySelector('#modalHost').hidden);
+      if (store.revision !== revisionBeforeCandidateEscape) {
+        throw new Error('Escape at the terrain candidate step changed store.revision');
+      }
+      if (JSON.stringify(store.project.metatiles) !== metatilesBeforeCandidateEscape) {
+        throw new Error('Escape at the terrain candidate step changed project.metatiles');
+      }
+      if (JSON.stringify(store.project.palettes) !== palettesBeforeCandidateEscape) {
+        throw new Error('Escape at the terrain candidate step changed project.palettes');
+      }
+      step(
+        'library picker: Tile Forge Escape at the candidate step leaves nothing behind',
+        'revision, metatiles and palettes all unchanged, modalHost hidden'
+      );
+    }
+
+    // Real choice: pick the first terrain entry, then in the candidate step
+    // choose a slot with data-suggested="false" AND data-unused="false"
+    // (reserved or genuinely in use) -- never the suggestion.
+    const beforeTileSnapshot = structuredClone(store.project);
+    libraryTileButton().click();
+    await until('the terrain library entry picker (real choice)', () => document.querySelector('#modalHost .modal-head'));
+    const terrainChoose = [...document.querySelectorAll('#modalHost .library-entry-row button')][0];
+    if (!terrainChoose) throw new Error('the terrain library list has no entries');
+    terrainChoose.click();
+    await until('the terrain palette-candidate step', () => document.querySelector('#modalHost .library-candidate-grid'));
+
+    // Finding 2 (round 2)/finding 3 (round 3): a two-metatile terrain
+    // candidate is 32x16, which a fixed 48x48 .library-art-stage clipped at
+    // zoom >= 2 -- artCanvas now sizes the stage from the art's own aspect
+    // ratio instead. Checked here, before any click, over every candidate
+    // canvas in this grid.
+    for (const canvas of document.querySelectorAll('#modalHost .library-candidate canvas')) {
+      const rect = canvas.getBoundingClientRect();
+      const stage = canvas.closest('.library-art-stage');
+      if (rect.width > stage.clientWidth + 0.5) {
+        throw new Error('terrain candidate canvas wider than its stage: ' + rect.width + ' > ' + stage.clientWidth);
+      }
+      if (rect.height > stage.clientHeight + 0.5) {
+        throw new Error('terrain candidate canvas taller than its stage: ' + rect.height + ' > ' + stage.clientHeight);
+      }
+      if (rect.width < canvas.width) {
+        throw new Error('terrain candidate canvas drawn below zoom 1: ' + rect.width + ' < ' + canvas.width);
+      }
+    }
+
+    // §10: the reserved caption must be "present somewhere in the picker's
+    // rendered candidate list" -- checked unconditionally, over the WHOLE
+    // grid's own textContent, before any candidate is clicked, so this
+    // cannot pass merely because whichever slot this run happens to choose
+    // is reserved. sample/ shows text, so background palette slot 0's own
+    // reservation caption names that exact engine fact -- from
+    // reservedCaption, shared/project.js.
+    const terrainGridText = document.querySelector('#modalHost .library-candidate-grid').textContent;
+    if (!terrainGridText.includes('reserved because this project shows text')) {
+      throw new Error('the terrain candidate grid never rendered the text-reservation caption: ' + terrainGridText);
+    }
+
+    const terrainCandidates = [...document.querySelectorAll('#modalHost .library-candidate')];
+    const terrainTarget = terrainCandidates.find((c) => c.dataset.suggested === 'false' && c.dataset.unused === 'false');
+    if (!terrainTarget) throw new Error('no non-suggested, in-use/reserved candidate slot exists for this terrain import');
+    const terrainChosenSlot = Number(terrainTarget.dataset.slot);
+    const terrainCaptionText = terrainTarget.textContent;
+    // Not merely "modal hidden": showModal's own close() sets #modalHost's
+    // hidden flag SYNCHRONOUSLY on click, before the async continuation that
+    // actually calls planLibraryImport/store.commit (a microtask) has run --
+    // so "hidden" alone can be observed true before the import itself has
+    // happened. runLibraryImport's own success toast is its last action,
+    // after the commit, so waiting for a NEW one (count strictly greater
+    // than before the click, not merely text-matched -- an earlier toast may
+    // still be visible) is the real completion signal.
+    const terrainToastCountBefore = document.querySelectorAll('#toastHost .toast').length;
+    terrainTarget.click();
+    await until('the terrain import toast', () => document.querySelectorAll('#toastHost .toast').length > terrainToastCountBefore);
+
+    if (JSON.stringify(store.project.palettes) !== JSON.stringify(beforeTileSnapshot.palettes)) {
+      throw new Error('choosing a non-free candidate slot must adopt, not write -- project.palettes changed');
+    }
+    let claimedMetatileId = -1;
+    for (let i = 0; i < store.project.metatiles.length; i++) {
+      if (JSON.stringify(store.project.metatiles[i]) !== JSON.stringify(beforeTileSnapshot.metatiles[i])) {
+        claimedMetatileId = i;
+        break;
+      }
+    }
+    if (claimedMetatileId === -1) throw new Error('no metatile changed after the terrain import');
+    if (store.project.metatiles[claimedMetatileId].palette !== terrainChosenSlot) {
+      throw new Error(
+        "the claimed metatile's palette (" + store.project.metatiles[claimedMetatileId].palette +
+          ') does not equal the chosen slot (' + terrainChosenSlot + ')'
+      );
+    }
+    step(
+      'library picker: Tile Forge terrain import, non-default in-use slot',
+      'slot ' + terrainChosenSlot + ' chosen, palettes byte-identical, metatile ' + claimedMetatileId +
+        ' claimed with that palette; caption seen: "' + terrainCaptionText + '"'
+    );
+
+    // Revert: sample.value.project is held by reference and reused by every
+    // later step in this file (the phase5 density-hint probe's own idiom,
+    // above) -- restore it exactly via a full snapshot, then reopen to clear
+    // the dirty flag/undo stack too.
+    window.__app.store.commit('Smoke: revert terrain library import', (project) => Object.assign(project, beforeTileSnapshot));
+    await wait(120);
+    window.__app.store.open(sample.value.dir, sample.value.project);
+    await wait(150);
+    // Whole-project equality, not just the fields this step itself touched
+    // -- a leftover tile, animation, metasprite or written palette elsewhere
+    // in the project must not be able to leak into later steps unnoticed.
+    if (JSON.stringify(store.project) !== JSON.stringify(beforeTileSnapshot)) {
+      throw new Error('the terrain library import was not fully reverted (whole-project mismatch)');
+    }
+    step('library picker: Tile Forge terrain import reverted', 'whole project byte-identical to its own pre-import snapshot');
+  }
+
   window.__app.goTo('sprite');
   await wait(350);
   const spriteStage = document.querySelector('#stage');
@@ -4137,6 +4425,177 @@ const scenario = (dir, sampleDir, sampleRpgDir) => `
       throw new Error('the over-cap roster was not restored: ' + spriteStore.project.sprites.actors.length);
     }
     step('over-cap delete warning', 'reaches the real confirmation, and nothing was deleted');
+  }
+
+  // --- Starter library picker: Sprite Forge (monster/pickup), design-
+  // starter-library.md §10 / §11 test 21. Still on the Actors tab, sample/
+  // open (real sprite palettes in real use).
+  {
+    const findActorSelectByOption = (label) =>
+      [...document.querySelectorAll('#stage select')].find((s) => [...s.options].some((o) => o.textContent === label));
+    const selectActorByOption = (label, value) => {
+      const select = findActorSelectByOption(label);
+      if (!select) throw new Error('Actors tab has no actor select with a "' + label + '" option');
+      select.value = value;
+      select.dispatchEvent(new Event('change'));
+    };
+
+    const libraryActorButton = () =>
+      [...document.querySelectorAll('#stage button.btn.btn-sm')].find((b) => b.textContent.trim() === '📚 Library…');
+    if (!libraryActorButton()) throw new Error('Sprite Forge Actors tab has no "Library…" button');
+
+    // Dismissal leaves nothing behind: Escape at the entry-list step.
+    const revisionBeforeActorEscape = store.revision;
+    libraryActorButton().click();
+    await until('the actor library entry picker', () => document.querySelector('#modalHost .modal-head'));
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
+    await until('the actor picker to close on Escape', () => document.querySelector('#modalHost').hidden);
+    if (store.revision !== revisionBeforeActorEscape) {
+      throw new Error('Escape at the actor entry list changed store.revision');
+    }
+    step('library picker: Sprite Forge Escape leaves nothing behind', 'revision unchanged, modalHost hidden');
+
+    // Real choice: the first entry (a monster, Slime), then in the candidate
+    // step choose a slot with data-suggested="false" AND data-unused="false".
+    const beforeActorSnapshot = structuredClone(store.project);
+    libraryActorButton().click();
+    await until('the actor library entry picker (real choice)', () => document.querySelector('#modalHost .modal-head'));
+    const monsterChoose = [...document.querySelectorAll('#modalHost .library-entry-row button')][0];
+    if (!monsterChoose) throw new Error('the monster/pickup library list has no entries');
+    monsterChoose.click();
+    await until('the monster palette-candidate step', () => document.querySelector('#modalHost .library-candidate-grid'));
+
+    // See the terrain step's own comment above -- identical canvas-fit
+    // proof, over the sprite table's own candidate grid.
+    for (const canvas of document.querySelectorAll('#modalHost .library-candidate canvas')) {
+      const rect = canvas.getBoundingClientRect();
+      const stage = canvas.closest('.library-art-stage');
+      if (rect.width > stage.clientWidth + 0.5) {
+        throw new Error('monster candidate canvas wider than its stage: ' + rect.width + ' > ' + stage.clientWidth);
+      }
+      if (rect.height > stage.clientHeight + 0.5) {
+        throw new Error('monster candidate canvas taller than its stage: ' + rect.height + ' > ' + stage.clientHeight);
+      }
+      if (rect.width < canvas.width) {
+        throw new Error('monster candidate canvas drawn below zoom 1: ' + rect.width + ' < ' + canvas.width);
+      }
+    }
+
+    // §10: the reserved caption must be "present somewhere in the picker's
+    // rendered candidate list" -- checked unconditionally, over the WHOLE
+    // grid's own textContent, before any candidate is clicked. Sprite
+    // palette slot 0 is always reserved for the player -- from
+    // reservedCaption, shared/project.js.
+    const actorGridText = document.querySelector('#modalHost .library-candidate-grid').textContent;
+    if (!actorGridText.includes('reserved for the player')) {
+      throw new Error('the monster candidate grid never rendered the player-reservation caption: ' + actorGridText);
+    }
+
+    const actorCandidates = [...document.querySelectorAll('#modalHost .library-candidate')];
+    const actorTarget = actorCandidates.find((c) => c.dataset.suggested === 'false' && c.dataset.unused === 'false');
+    if (!actorTarget) throw new Error('no non-suggested, in-use/reserved candidate slot exists for this monster import');
+    const actorChosenSlot = Number(actorTarget.dataset.slot);
+    const actorCaptionText = actorTarget.textContent;
+    // See the terrain step's own comment above for why a NEW toast, not
+    // "modal hidden", is the real completion signal.
+    const monsterToastCountBefore = document.querySelectorAll('#toastHost .toast').length;
+    actorTarget.click();
+    await until('the monster import toast', () => document.querySelectorAll('#toastHost .toast').length > monsterToastCountBefore);
+
+    if (JSON.stringify(store.project.palettes) !== JSON.stringify(beforeActorSnapshot.palettes)) {
+      throw new Error('choosing a non-free candidate slot must adopt, not write -- project.palettes changed');
+    }
+    if (store.project.sprites.actors.length !== beforeActorSnapshot.sprites.actors.length + 1) {
+      throw new Error('choosing a monster from the library did not append exactly one actor');
+    }
+    const newMonsterActor = store.project.sprites.actors[store.project.sprites.actors.length - 1];
+    // sample/ already has its own actor named "Slime" (actor 0), so the
+    // import's own de-collided name is "Slime copy" (nameForDuplicateScreen,
+    // shared/project.js) -- assert the base name survives the suffix rather
+    // than an exact match.
+    if (!newMonsterActor.name.startsWith('Slime')) {
+      throw new Error('the appended actor is not named after the imported entry: ' + newMonsterActor.name);
+    }
+    if (store.project.sprites.metasprites.length !== beforeActorSnapshot.sprites.metasprites.length + 1) {
+      throw new Error('choosing a monster from the library did not append exactly one metasprite');
+    }
+    const newMonsterMetasprite = store.project.sprites.metasprites[store.project.sprites.metasprites.length - 1];
+    if (!newMonsterMetasprite.tiles.every((t) => t.palette === actorChosenSlot)) {
+      throw new Error(
+        "the pushed metasprite's tiles are not ALL painted the chosen slot (" + actorChosenSlot +
+          '): ' + JSON.stringify(newMonsterMetasprite.tiles.map((t) => t.palette))
+      );
+    }
+    step(
+      'library picker: Sprite Forge monster import, non-default in-use slot',
+      'slot ' + actorChosenSlot + ' chosen, palettes byte-identical, actor "' + newMonsterActor.name +
+        '" appended, metasprite palette matches; caption seen: "' + actorCaptionText + '"'
+    );
+
+    // Headless-default path: a pickup, accepting the pre-highlighted
+    // suggestion rather than choosing a specific slot.
+    libraryActorButton().click();
+    await until('the actor library entry picker (pickup)', () => document.querySelector('#modalHost .modal-head'));
+    const pickupRow = [...document.querySelectorAll('#modalHost .library-entry-row')].find((row) =>
+      row.querySelector('.library-entry-name').textContent.includes('(pickup)')
+    );
+    if (!pickupRow) throw new Error('the library list has no pickup entry');
+    const pickupChoose = [...pickupRow.querySelectorAll('button')].find((b) => b.textContent.trim() === 'Choose');
+    pickupChoose.click();
+    await until('the pickup palette-candidate step', () => document.querySelector('#modalHost .library-candidate-grid'));
+
+    const pickupCandidates = [...document.querySelectorAll('#modalHost .library-candidate')];
+    const suggestedPickupCandidate = pickupCandidates.find((c) => c.dataset.suggested === 'true');
+    if (!suggestedPickupCandidate) throw new Error('no candidate is marked as the suggestion for this pickup import');
+    const suggestedPickupSlot = Number(suggestedPickupCandidate.dataset.slot);
+    // See the terrain step's own comment above for why a NEW toast, not
+    // "modal hidden", is the real completion signal.
+    const pickupToastCountBefore = document.querySelectorAll('#toastHost .toast').length;
+    suggestedPickupCandidate.click();
+    await until('the pickup import toast', () => document.querySelectorAll('#toastHost .toast').length > pickupToastCountBefore);
+
+    if (store.project.sprites.metasprites.length !== beforeActorSnapshot.sprites.metasprites.length + 2) {
+      throw new Error('choosing a pickup from the library did not append exactly one more metasprite');
+    }
+    const newPickupMetasprite = store.project.sprites.metasprites[store.project.sprites.metasprites.length - 1];
+    if (!newPickupMetasprite.tiles.every((t) => t.palette === suggestedPickupSlot)) {
+      throw new Error(
+        "the pushed pickup metasprite's tiles are not ALL painted the suggested slot (" + suggestedPickupSlot +
+          '): ' + JSON.stringify(newPickupMetasprite.tiles.map((t) => t.palette))
+      );
+    }
+    step(
+      'library picker: Sprite Forge pickup import, headless-default path',
+      'accepted the suggested slot ' + suggestedPickupSlot + ', pushed metasprite palette matches'
+    );
+
+    // Revert: sample.value.project is held by reference and reused by every
+    // later step in this file -- restore it exactly via a full snapshot,
+    // then reopen to clear the dirty flag/undo stack too. store.open()
+    // triggers a full Sprite Forge remount (store.subscribe's own 'open'
+    // handler, renderer/app.js), which drops back to its default
+    // Metasprites tab and re-derives state.actor from scratch -- so the
+    // Actors tab is re-selected below, the same as the earlier
+    // for (const label of ['Animations', 'Actors']) loop's own click idiom,
+    // since a later ROADMAP item 11 check (this same file, further down)
+    // assumes it is showing Actors with Slime selected.
+    window.__app.store.commit('Smoke: revert monster/pickup library imports', (project) => Object.assign(project, beforeActorSnapshot));
+    await wait(120);
+    window.__app.store.open(sample.value.dir, sample.value.project);
+    await wait(200);
+    // Whole-project equality, not just the actor count -- a leftover
+    // metasprite, animation or written palette must not be able to leak
+    // into later steps unnoticed.
+    if (JSON.stringify(store.project) !== JSON.stringify(beforeActorSnapshot)) {
+      throw new Error('the monster/pickup library imports were not fully reverted (whole-project mismatch)');
+    }
+    const actorsTabAfterRevert = [...document.querySelectorAll('#stage .tab')].find((t) => t.textContent === 'Actors');
+    if (!actorsTabAfterRevert) throw new Error('Sprite Forge did not remount with an Actors tab after the revert reopen');
+    actorsTabAfterRevert.click();
+    await wait(200);
+    selectActorByOption('Slime', '0');
+    await wait(150);
+    step('library picker: Sprite Forge monster/pickup imports reverted', 'whole project byte-identical to its own pre-import snapshot, selection back on Slime');
   }
 
   // ROADMAP item 11: the Actors and Animations tabs' preview loops used to
@@ -5138,6 +5597,243 @@ const scenario = (dir, sampleDir, sampleRpgDir) => `
   const songsTabButton = [...soundStage.querySelectorAll('button')].find((node) => node.textContent === 'Songs');
   if (songsTabButton) songsTabButton.click();
   await wait(150);
+
+  // --- Starter library picker: Sound Forge (sfx + song), headless-default
+  // path -- design-starter-library.md §10 / §11 test 21. No palette step at
+  // all (neither kind touches a tileset or a palette).
+  {
+    // A whole-project snapshot, restored via the same Object.assign shape
+    // the Tile/Sprite steps already use (finding 6) -- not a truncating
+    // commit of just songs.length/sfx.length, which only ever proved those
+    // two fields came back, never that nothing ELSE in the project moved.
+    const beforeSoundSnapshot = structuredClone(store.project);
+    const beforeSongCount = beforeSoundSnapshot.songs.length;
+    const beforeSfxCount = beforeSoundSnapshot.sfx?.length ?? 0;
+
+    // A one-shot snapshot at a fixed delay races a short effect: the
+    // library's own "Hit" sfx is ~83ms total (5 frames at 60fps), shorter
+    // than a single 150ms wait, so it can start AND self-stop (sfxTimer's
+    // own cleanup tick, sound.js) before a single later check ever looks.
+    // Poll instead, breaking the instant either outcome is first observed.
+    // unavailableCountBefore (the count of "Sound unavailable" toasts
+    // already on screen when Preview was clicked) is required to have
+    // GROWN, not merely "some toast with that text exists somewhere" -- a
+    // stale one still visible from the song step's own 3200ms toast
+    // lifetime must not be able to satisfy the sfx step's own check.
+    function countUnavailableToasts() {
+      return [...document.querySelectorAll('.toast, [class*="toast"]')].filter((node) => node.textContent.includes('Sound unavailable')).length;
+    }
+    async function observePreviewOutcome(getTransport, unavailableCountBefore, ms = 400) {
+      for (let waited = 0; waited < ms; waited += 15) {
+        const sawStop = getTransport()?.textContent.includes('⏸ Stop') ?? false;
+        const sawUnavailable = countUnavailableToasts() > unavailableCountBefore;
+        if (sawStop || sawUnavailable) return { sawStop, sawUnavailable };
+        await wait(15);
+      }
+      return { sawStop: false, sawUnavailable: false };
+    }
+
+    // sound.js's own transport button (play()/stop() toggle, ~line 826):
+    // "⏸ Stop" while genuinely playing, "▶ Play" at rest.
+    const songTransport = () =>
+      [...soundStage.querySelectorAll('button.btn-accent')].filter(visible).find((b) => b.textContent.includes('Play') || b.textContent.includes('Stop'));
+    const findSongLibraryButton = () =>
+      [...soundStage.querySelectorAll('button.btn.btn-sm')].filter(visible).find((b) => b.textContent.trim() === '📚 Library…');
+
+    // Finding 1 (round 3): a successful import must stop the Forge's own
+    // playback even when Preview was never clicked, but DISMISSING the
+    // picker must never touch playback that predates it -- two different
+    // rules, so both are exercised for real rather than only the
+    // Preview-driven path below.
+    {
+      let ownPlayButton = songTransport();
+      if (!ownPlayButton) throw new Error('Songs tab has no transport button to start playback with');
+      if (ownPlayButton.textContent.includes('⏸ Stop')) {
+        ownPlayButton.click(); // stop first, so "started fresh" below is real
+        await wait(150);
+        ownPlayButton = songTransport();
+      }
+      ownPlayButton.click();
+      await wait(200);
+      if (!songTransport()?.textContent.includes('⏸ Stop')) {
+        throw new Error("clicking the Songs tab's own Play button did not start playback");
+      }
+      step('library picker: Sound Forge own playback starts', 'transport reads ⏸ Stop');
+
+      const revisionBeforeDismiss = store.revision;
+      const dismissLibraryButton = findSongLibraryButton();
+      if (!dismissLibraryButton) throw new Error('the Songs tab offers no Library button (dismissal step)');
+      dismissLibraryButton.click();
+      await until('the song library entry picker (dismissal step)', () => document.querySelector('#modalHost .modal-head'));
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
+      await until('the song picker to close on Escape (dismissal step)', () => document.querySelector('#modalHost').hidden);
+      if (store.revision !== revisionBeforeDismiss) {
+        throw new Error('Escape at the song picker changed store.revision');
+      }
+      if (!songTransport()?.textContent.includes('⏸ Stop')) {
+        throw new Error('dismissing the library picker silenced playback it did not start');
+      }
+      step('library picker: Sound Forge dismissal preserves playback already running', 'transport still reads ⏸ Stop after Escape');
+
+      // A successful import (Choose WITHOUT previewing) must stop it,
+      // though -- the newly-imported song replaces the one selected.
+      const beforeReplaceSongCount = store.project.songs.length;
+      const replaceLibraryButton = findSongLibraryButton();
+      if (!replaceLibraryButton) throw new Error('the Songs tab offers no Library button (replace step)');
+      replaceLibraryButton.click();
+      await until('the song library entry picker (replace step)', () => document.querySelector('#modalHost .modal-head'));
+      const replaceRow = document.querySelector('#modalHost .library-entry-row');
+      if (!replaceRow) throw new Error('the song library list has no entries (replace step)');
+      const replaceChoose = [...replaceRow.querySelectorAll('button')].find((b) => b.textContent.trim() === 'Choose');
+      if (!replaceChoose) throw new Error('a song library row has no Choose button (replace step)');
+      const replaceToastCountBefore = document.querySelectorAll('#toastHost .toast').length;
+      replaceChoose.click(); // WITHOUT clicking Preview first
+      await until('the replace-step song import toast', () => document.querySelectorAll('#toastHost .toast').length > replaceToastCountBefore);
+      if (store.project.songs.length !== beforeReplaceSongCount + 1) {
+        throw new Error('choosing a song without previewing did not append exactly one song');
+      }
+      if (songTransport()?.textContent.includes('⏸ Stop')) {
+        throw new Error('a successful import left the OLD song still playing -- transport still reads ⏸ Stop');
+      }
+      const newSongName = store.project.songs[store.project.songs.length - 1].name;
+      const songSelectAfter = [...soundStage.querySelectorAll('select')].filter(visible).find((s) =>
+        [...s.options].some((o) => o.textContent === newSongName)
+      );
+      if (!songSelectAfter) throw new Error('the Songs tab select does not offer the newly imported song by name');
+      const selectedOption = songSelectAfter.options[songSelectAfter.selectedIndex];
+      if (!selectedOption || selectedOption.textContent !== newSongName) {
+        throw new Error('the Songs tab select is not showing the newly imported song as selected: ' + selectedOption?.textContent);
+      }
+      step(
+        'library picker: Sound Forge successful import stops playback even without Preview',
+        'transport back at ▶ Play, selection shows "' + newSongName + '"'
+      );
+    }
+
+    const songLibraryButton = findSongLibraryButton();
+    if (!songLibraryButton) throw new Error('the Songs tab offers no Library button');
+    songLibraryButton.click();
+    await until('the song library entry picker', () => document.querySelector('#modalHost .modal-head'));
+    const songRow = document.querySelector('#modalHost .library-entry-row');
+    if (!songRow) throw new Error('the song library list has no entries');
+    const songPreviewButton = [...songRow.querySelectorAll('button')].find((b) => b.textContent.trim() === '▶ Preview');
+    if (!songPreviewButton) throw new Error('a song library row has no Preview button');
+    // A Preview wired to an empty function must not pass: clicking it must
+    // flip the transport -- unless there is truly no audio device, in
+    // which case a "Sound unavailable" toast is the honest alternative
+    // (the pre-existing Effects-tab Preview check, above, establishes the
+    // identical tolerance). Exactly one of the two.
+    const songUnavailableCountBefore = countUnavailableToasts();
+    songPreviewButton.click();
+    const { sawStop: songPlayingAfterPreview, sawUnavailable: songUnavailableAfterPreview } = await observePreviewOutcome(songTransport, songUnavailableCountBefore);
+    if (!document.querySelector('#modalHost .modal-head')) {
+      throw new Error("clicking a song's own Preview button closed the picker");
+    }
+    if (songPlayingAfterPreview === songUnavailableAfterPreview) {
+      throw new Error(
+        'song Preview must produce exactly one of real playback or a Sound-unavailable toast -- playing=' +
+          songPlayingAfterPreview + ', unavailableToast=' + songUnavailableAfterPreview
+      );
+    }
+    const songChoose = [...songRow.querySelectorAll('button')].find((b) => b.textContent.trim() === 'Choose');
+    if (!songChoose) throw new Error('a song library row has no Choose button');
+    // showModal's own close() sets #modalHost's hidden flag SYNCHRONOUSLY on
+    // click, before the async continuation that actually calls
+    // planLibraryImport/store.commit (a microtask) has run -- so "hidden"
+    // alone can be observed true before the import itself has happened.
+    // Waiting for a NEW toast (count strictly greater than before the
+    // click) is the real completion signal.
+    const songToastCountBefore = document.querySelectorAll('#toastHost .toast').length;
+    songChoose.click();
+    await until('the song import toast', () => document.querySelectorAll('#toastHost .toast').length > songToastCountBefore);
+    // +2, not +1: the dismissal/replace-without-Preview block above already
+    // appended one song of its own before this one runs.
+    if (store.project.songs.length !== beforeSongCount + 2) {
+      throw new Error('choosing a song from the library did not append exactly one more song');
+    }
+    // Finding 3's own fix (stop only what the picker itself started) is what
+    // makes this true: the picker closing must leave the Songs tab's own
+    // transport back at rest, never stuck reading "⏸ Stop".
+    if (songTransport()?.textContent.includes('⏸ Stop')) {
+      throw new Error('the Songs tab transport is still "⏸ Stop" after the library picker closed');
+    }
+    step(
+      'library picker: Sound Forge song import (headless-default path)',
+      'Preview did not close the picker or throw (' + (songPlayingAfterPreview ? 'audible' : 'Sound unavailable, handled gracefully') +
+        '), song appended, transport back at rest'
+    );
+
+    const effectsTabButtonAgain = [...soundStage.querySelectorAll('button')].filter(visible).find((node) => node.textContent === 'Effects');
+    if (!effectsTabButtonAgain) throw new Error('the Sound Forge offers no Effects tab (library step)');
+    effectsTabButtonAgain.click();
+    await wait(200);
+
+    const sfxLibraryButton = [...soundStage.querySelectorAll('button.btn.btn-sm')].filter(visible).find(
+      (b) => b.textContent.trim() === '📚 Library…'
+    );
+    if (!sfxLibraryButton) throw new Error('the Effects tab offers no Library button');
+    sfxLibraryButton.click();
+    await until('the sfx library entry picker', () => document.querySelector('#modalHost .modal-head'));
+    const sfxRow = document.querySelector('#modalHost .library-entry-row');
+    if (!sfxRow) throw new Error('the sfx library list has no entries');
+    const sfxPreviewButton = [...sfxRow.querySelectorAll('button')].find((b) => b.textContent.trim() === '▶ Preview');
+    if (!sfxPreviewButton) throw new Error('an sfx library row has no Preview button');
+    // See the song step's own comment above for why exactly one of
+    // "the Effects tab transport reads Stop" / "a Sound-unavailable toast
+    // appeared" is the required outcome of clicking Preview.
+    const sfxTransport = () =>
+      [...soundStage.querySelectorAll('button.btn-accent')].filter(visible).find((b) => b.textContent.includes('Preview') || b.textContent.includes('Stop'));
+    const sfxUnavailableCountBefore = countUnavailableToasts();
+    sfxPreviewButton.click();
+    const { sawStop: sfxPlayingAfterPreview, sawUnavailable: sfxUnavailableAfterPreview } = await observePreviewOutcome(sfxTransport, sfxUnavailableCountBefore);
+    if (!document.querySelector('#modalHost .modal-head')) {
+      throw new Error("clicking an sfx's own Preview button closed the picker");
+    }
+    if (sfxPlayingAfterPreview === sfxUnavailableAfterPreview) {
+      throw new Error(
+        'sfx Preview must produce exactly one of real playback or a Sound-unavailable toast -- playing=' +
+          sfxPlayingAfterPreview + ', unavailableToast=' + sfxUnavailableAfterPreview
+      );
+    }
+    const sfxChoose = [...sfxRow.querySelectorAll('button')].find((b) => b.textContent.trim() === 'Choose');
+    if (!sfxChoose) throw new Error('an sfx library row has no Choose button');
+    // See the song step's own comment above for why a NEW toast, not
+    // "modal hidden", is the real completion signal.
+    const sfxToastCountBefore = document.querySelectorAll('#toastHost .toast').length;
+    sfxChoose.click();
+    await until('the sfx import toast', () => document.querySelectorAll('#toastHost .toast').length > sfxToastCountBefore);
+    if ((store.project.sfx?.length ?? 0) !== beforeSfxCount + 1) {
+      throw new Error('choosing an sfx from the library did not append exactly one effect');
+    }
+    // Finding 3's own fix (stop only what the picker itself started) is what
+    // makes this true: the picker closing must leave the Effects tab's own
+    // transport back at rest, never stuck reading "⏸ Stop".
+    if (sfxTransport()?.textContent.includes('⏸ Stop')) {
+      throw new Error('the Effects tab transport is still "⏸ Stop" after the library picker closed');
+    }
+    step(
+      'library picker: Sound Forge sfx import (headless-default path)',
+      'Preview did not close the picker or throw (' + (sfxPlayingAfterPreview ? 'audible' : 'Sound unavailable, handled gracefully') +
+        '), effect appended, transport back at rest'
+    );
+
+    // Revert -- a whole-project Object.assign commit (not store.undo(),
+    // which swaps store.project for a decoupled clone rather than mutating
+    // the object in place; see the over-cap-delete comment above for why
+    // that matters when a later step reopens this same project object), and
+    // not a truncating commit of just songs.length/sfx.length either
+    // (finding 6): a leftover change anywhere else in the project must not
+    // be able to leak into later steps unnoticed.
+    window.__app.store.commit('Smoke: revert sfx/song library imports', (project) => Object.assign(project, beforeSoundSnapshot));
+    await wait(150);
+    if (JSON.stringify(store.project) !== JSON.stringify(beforeSoundSnapshot)) {
+      throw new Error('sfx/song library imports were not fully reverted (whole-project mismatch)');
+    }
+    const backToSongsTab = [...soundStage.querySelectorAll('button')].filter(visible).find((node) => node.textContent === 'Songs');
+    if (backToSongsTab) backToSongsTab.click();
+    await wait(150);
+    step('library picker: Sound Forge sfx/song imports reverted', 'whole project byte-identical to its own pre-import snapshot, back on Songs tab');
+  }
 
   // --- Controller Forge --------------------------------------------------
   window.__app.goTo('controller');

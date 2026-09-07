@@ -6741,8 +6741,9 @@ function reservedCaption(paletteKey, index, project) {
 // §7.3: the four candidate slots of one palette table, each carrying whether
 // it is an exact match (once the entry's placeholder backdrop is
 // canonicalized against the project's real one), unused, excluded (claimed
-// by an earlier entry-local palette in this same plan) or reserved.
-function paletteCandidates(project, colors, tileTable, mapper, excluded = new Set()) {
+// by an earlier entry-local palette in this same plan) or reserved. Exported
+// (phase 7, §10): the picker renders straight from this output.
+export function paletteCandidates(project, colors, tileTable, mapper, excluded = new Set()) {
   const paletteKey = tileTable === 'background' ? 'bg' : 'sprite';
   const canonical = [project.palettes.bg[0][0], ...colors.slice(1)];
   const unused = unusedPaletteSlots(project, paletteKey, mapper);
@@ -6760,6 +6761,26 @@ function paletteCandidates(project, colors, tileTable, mapper, excluded = new Se
       reservedReason: reserved.has(index) ? reservedCaption(paletteKey, index, project) : null
     };
   });
+}
+
+/**
+ * §7.2's own headless-default priority chain, extracted to a single writer
+ * (phase 7): the first exact match, else the lowest-index unused slot, else
+ * `nearestPaletteSlot`'s answer. `resolvePaletteForKind` (below) calls this
+ * for the `requestedSlot === undefined` case rather than inlining a second
+ * copy of the chain, so the picker's own pre-highlighted "suggestion" (§10)
+ * and the headless default (§7.2) can never disagree -- they are the same
+ * function call. `paletteKey` is `'bg'`/`'sprite'` (never the tile-table
+ * `'background'`/`'sprites'` form -- see the discriminator note at §7.3).
+ */
+export function suggestedPaletteSlot(project, paletteKey, colors, excluded = new Set(), mapper) {
+  const tileTable = paletteKey === 'bg' ? 'background' : 'sprites';
+  const candidates = paletteCandidates(project, colors, tileTable, mapper, excluded);
+  const exact = candidates.find((c) => c.exactMatch && !c.excluded);
+  if (exact) return exact.index;
+  const unused = candidates.filter((c) => c.unused).sort((a, b) => a.index - b.index)[0];
+  if (unused) return unused.index;
+  return nearestPaletteSlot(project, paletteKey, colors, excluded);
 }
 
 function validPaletteSlotOption(value) {
@@ -6796,14 +6817,8 @@ function resolvePaletteForKind(project, paletteKey, colors, requestedSlot, exclu
     }
     return finishPaletteResolution(project, paletteKey, colors, requestedSlot, mapper);
   }
-  const tileTable = paletteKey === 'bg' ? 'background' : 'sprites';
-  const candidates = paletteCandidates(project, colors, tileTable, mapper, excluded);
-  const exact = candidates.find((c) => c.exactMatch && !c.excluded);
-  if (exact) return finishPaletteResolution(project, paletteKey, colors, exact.index, mapper);
-  const unused = candidates.filter((c) => c.unused).sort((a, b) => a.index - b.index)[0];
-  if (unused) return finishPaletteResolution(project, paletteKey, colors, unused.index, mapper);
-  const nearest = nearestPaletteSlot(project, paletteKey, colors, excluded);
-  return finishPaletteResolution(project, paletteKey, colors, nearest, mapper);
+  const slot = suggestedPaletteSlot(project, paletteKey, colors, excluded, mapper);
+  return finishPaletteResolution(project, paletteKey, colors, slot, mapper);
 }
 
 function finishPaletteResolution(project, paletteKey, colors, slot, mapper) {

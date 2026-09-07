@@ -29,6 +29,7 @@ import {
 import { resolveMapper } from '../../../shared/cartridge.js';
 import { partyPanel } from './battle.js';
 import { drawSheet, sheetIndexFromEvent } from '../../widgets/sheet.js';
+import { openLibraryActorImport } from './librarysprite.js';
 
 // The canvas shows a 64x64 window with the actor's origin inset, so tiles placed
 // at negative offsets are still visible.
@@ -973,6 +974,11 @@ export function mount(container, app) {
             onclick: openPaletteSwapModal
           },
           '⧉'
+        ),
+        el(
+          'button.btn.btn-sm',
+          { title: 'Import from library', onclick: () => openLibraryActorImport(state, render) },
+          '📚 Library…'
         )
       ),
       actor

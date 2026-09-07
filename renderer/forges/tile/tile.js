@@ -49,6 +49,7 @@ import {
 } from '../../../shared/font.js';
 import { reservedRangeRects } from '../../widgets/sheetgeom.js';
 import { openImportDialog } from './import.js';
+import { openLibraryImportDialog } from './librarytile.js';
 
 const SHEET_COLS = 16;
 const SHEET_ROWS = LIMITS.tilesPerTable / SHEET_COLS;
@@ -1625,6 +1626,11 @@ export function mount(container, app) {
       'div.button-row',
       null,
       el('button.btn.btn-sm', { onclick: () => openImportDialog(app, state, syncFromStore, renderAll) }, '🖼 Image…'),
+      el(
+        'button.btn.btn-sm',
+        { title: 'Import from library', onclick: () => openLibraryImportDialog(app, state, syncFromStore, renderAll) },
+        '📚 Library…'
+      ),
       el('button.btn.btn-sm', { onclick: importChr }, 'CHR'),
       el('button.btn.btn-sm', { onclick: importPal }, 'PAL')
     )

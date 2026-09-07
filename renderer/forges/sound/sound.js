@@ -11,6 +11,7 @@ import { compileSong, compileSfx } from '../../../main/build/songcompile.js';
 import { renumberSongDeletion, renumberSfxDeletion, LIMITS } from '../../../shared/project.js';
 import { Replayer, SfxReplayer } from './replayer.js';
 import { Synth } from './synth.js';
+import { openLibrarySongImport, openLibraryEffectImport } from './librarysound.js';
 
 // FamiTracker-style two-octave keyboard.
 const KEYS = {
@@ -65,9 +66,24 @@ export function mount(container, app) {
     render();
   }
 
-  async function playSfx() {
-    const current = effect();
+  // `entry`, when given, is a raw sfx object NOT necessarily in
+  // project.sfx -- the starter library picker's own ▶ Preview button plays
+  // an entry's literal `entry.sfx` this same way, through this same
+  // synth/replayer, rather than a second player (design-starter-library.md
+  // §10). Defaults to the Forge's own currently-selected effect.
+  async function playSfx(entry = effect()) {
+    const current = entry;
     if (!current) return;
+    // The Forge's own Preview button toggles (state.sfxPlaying ? stopSfx() :
+    // playSfx()), so a running timer was already stopped before this could
+    // ever be reached that way -- but the library picker's own ▶ Preview
+    // calls this directly, so a second click (or a click on a different
+    // row) while one is already running must not leave the first interval
+    // running forever, driving the synth alongside the new one.
+    if (sfxTimer) {
+      clearInterval(sfxTimer);
+      sfxTimer = null;
+    }
     if (!(await synth.start())) {
       toast(`Sound unavailable: ${synth.failed}`, 'error');
       return;
@@ -130,29 +146,47 @@ export function mount(container, app) {
     render();
   }
 
-  async function play() {
-    if (!song()) return;
+  // `entry`, when given, is a raw song object NOT necessarily in
+  // project.songs -- the starter library picker's own ▶ Preview button
+  // plays an entry's literal `entry.song` this same way, through this same
+  // synth/replayer, rather than a second player (design-starter-library.md
+  // §10). Defaults to the Forge's own currently-selected song. Row
+  // highlighting reads `state.pattern`/`playPosition()`, both scoped to the
+  // CURRENTLY SELECTED song regardless of `entry` -- so it is skipped for a
+  // foreign entry (one that isn't `song()`), where it would light up the
+  // wrong row of whatever pattern grid happens to be showing.
+  async function play(entry = song()) {
+    if (!entry) return;
+    // See playSfx's own identical comment above: the Forge's own Play
+    // button toggles, so this was unreachable before the library picker's
+    // ▶ Preview started calling play() directly -- a second click must
+    // clear the first interval, not run two replayers over one synth.
+    if (timer) {
+      clearInterval(timer);
+      timer = null;
+    }
     if (!(await synth.start())) {
       toast(`Sound unavailable: ${synth.failed}`, 'error');
       return;
     }
     synth.resume();
 
-    const compiled = compileSong(song());
+    const compiled = compileSong(entry);
     replayer = new Replayer(compiled);
     frameInPlayback = 0;
     state.playing = true;
+    const ownSelection = entry === song();
 
     // The engine ticks the driver once per video frame; match that here.
     timer = setInterval(() => {
       if (!state.playing) return;
       synth.apply(replayer.tick());
       frameInPlayback++;
-      const framesPerRow = song().tempo.framesPerRow;
+      const framesPerRow = entry.tempo.framesPerRow;
       const nextRow = Math.floor(frameInPlayback / framesPerRow);
       if (nextRow !== state.playRow) {
         state.playRow = nextRow;
-        highlightPlayRow();
+        if (ownSelection) highlightPlayRow();
       }
     }, 1000 / 60);
     render();
@@ -383,6 +417,11 @@ export function mount(container, app) {
             }
           },
           '✕'
+        ),
+        el(
+          'button.btn.btn-sm',
+          { title: 'Import from library', onclick: () => openLibrarySongImport(state, render, play, stop) },
+          '📚 Library…'
         )
       ),
       current
@@ -711,6 +750,11 @@ export function mount(container, app) {
             }
           },
           '✕'
+        ),
+        el(
+          'button.btn.btn-sm',
+          { title: 'Import from library', onclick: () => openLibraryEffectImport(state, render, playSfx, stopSfx) },
+          '📚 Library…'
         )
       ),
       current
