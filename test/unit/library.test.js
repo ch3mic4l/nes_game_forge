@@ -1268,6 +1268,17 @@ test('28a: LICENSE and LICENSE-ASSETS exist on disk and are tracked by git', () 
   }
 });
 
+// A dedication that widened to cover the library's own new sibling directory
+// but was never actually reworded would still pass 28a (the file still
+// exists and is still tracked) while leaving the starters' own authored art
+// -- the shared player figure and Doorway, present as of this phase -- with
+// no dedication naming them at all.
+test("28a2: LICENSE-ASSETS's own text covers shared/starters/ as well as shared/library/", () => {
+  const text = fs.readFileSync(path.join(ROOT, 'LICENSE-ASSETS'), 'utf8');
+  assert.match(text, /shared\/library\//, "LICENSE-ASSETS must still mention shared/library/");
+  assert.match(text, /shared\/starters\//, 'LICENSE-ASSETS must also mention shared/starters/');
+});
+
 test('28b: every entry declares an allowed license and a valid kind, and names are unique within each kind', () => {
   for (const entry of LIBRARY_ENTRIES) {
     assert.ok(

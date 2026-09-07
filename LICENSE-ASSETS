@@ -1,9 +1,12 @@
-This dedication applies to every file under shared/library/ -- the starter
-content library's terrain, monster, pickup, sfx and song entries, and the
-authoring helpers alongside them. All of it is original work created by the
-NES Game Forge project (option (A): the project itself is the sole author,
-with no third-party content to individually attribute), and the project
-dedicates it to the public domain worldwide under the terms below.
+This dedication applies to every file under shared/library/ and
+shared/starters/ -- the starter content library's terrain, monster, pickup,
+sfx and song entries and the authoring helpers alongside them, plus the
+starter projects' own authored art (for example the shared player figure and
+Doorway metasprite) and any further art the starter projects author. All of
+it is original work created by the NES Game Forge project (option (A): the
+project itself is the sole author, with no third-party content to
+individually attribute), and the project dedicates it to the public domain
+worldwide under the terms below.
 
 ---
 

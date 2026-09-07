@@ -9297,6 +9297,26 @@ export async function runSmoke(window) {
     }
     console.log('  ok  starter picker (File > New Project menu action): blank-rpg -> gameType "rpg"');
 
+    // design-starter-projects.md §11 test 16b: the overworld content
+    // starter, added in this phase -- same mechanism as blank-rpg above
+    // (the welcome screen's own button is gone the moment the first pick
+    // opened a project), asserting both the game type and the map count
+    // (design §9.1: Greenwood, Cottage, Title).
+    const overworldDir = path.join(scratch, 'PickerOverworld.forge');
+    setSmokeNewProjectPath(overworldDir);
+    window.webContents.send('menu:action', 'project:new');
+    assertPickerLabels(await waitForPicker());
+    await clickPickerButton('overworld');
+    await waitForStoreDir(overworldDir);
+    const overworldProject = await loadProject(overworldDir);
+    if (overworldProject.project.gameType !== 'action') {
+      throw new Error(`starter "overworld" created gameType "${overworldProject.project.gameType}", expected "action"`);
+    }
+    if (overworldProject.maps.length !== 3) {
+      throw new Error(`starter "overworld" created ${overworldProject.maps.length} maps, expected 3`);
+    }
+    console.log(`  ok  starter picker (File > New Project menu action): overworld -> gameType "action", ${overworldProject.maps.length} maps`);
+
     const report = await window.webContents.executeJavaScript(scenario(dir, sampleCopy, sampleRpgCopy));
     for (const entry of report.steps) console.log(`  ok  ${entry.name}${entry.detail ? ` — ${entry.detail}` : ''}`);
 
