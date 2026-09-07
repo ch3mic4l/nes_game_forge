@@ -7333,6 +7333,102 @@ function planActorImport(originalProject, clone, entry, options) {
 }
 
 /**
+ * §7 (sfx, phase 6): the simplest kind -- §6 says "no references of any
+ * kind," so this is only the append rule (§7.4), name de-collision, and the
+ * shared attribution check (§7.5/§7.6 step 5); there is no tile or palette
+ * work (§7.6 steps 1/3 do not apply here).
+ */
+function planSfxImport(originalProject, clone, entry, options) {
+  // §7.6 step 2: id-space capacity, before any other work.
+  if (clone.sfx.length >= LIMITS.sfx) {
+    return { ok: false, reason: `This project already has ${LIMITS.sfx} sound effects, the maximum.` };
+  }
+
+  // §7.4: the destination name is resolved via nameForDuplicateScreen BEFORE
+  // building the record, not after -- the payload's own name (entry.sfx.name)
+  // wins over the entry's own name, the same priority normalizeSfx itself
+  // would apply, but resolved first so the pushed record's own `.name` is
+  // exactly the de-collided one, the same ordering planActorImport's own
+  // actor/metasprite/animation pushes already use.
+  const baseName = entry.sfx?.name || entry.name;
+  const name = nameForDuplicateScreen(baseName, clone.sfx);
+  const id = clone.sfx.length;
+  const sfx = normalizeSfx({ ...entry.sfx, name }, name);
+  clone.sfx.push(sfx);
+
+  // §7.6 step 5 (last, after every write): only the errors this import
+  // actually causes may refuse it.
+  const regressions = attributedErrors(originalProject, clone);
+  if (regressions.length > 0) {
+    return {
+      ok: false,
+      reason:
+        'This import would cause these problems:\n' +
+        regressions.map((p) => `- ${p.message}`).join('\n')
+    };
+  }
+
+  const report = {
+    kind: entry.kind,
+    name: entry.name,
+    id,
+    lines: [
+      `Imported "${entry.name}" (${entry.kind}).`,
+      `Sound effect "${sfx.name}" added (id ${id}).`,
+      'Capacity is checked at build.'
+    ]
+  };
+
+  return { ok: true, project: clone, report };
+}
+
+/**
+ * §7 (song, phase 6): identical shape to `planSfxImport` above, one array
+ * over. `NO_SONG` is the ceiling, not a `LIMITS.songs` entry -- §7.4 says
+ * songs cap at `NO_SONG` the same way `songByte` already treats any id at
+ * or past it as "no song," so there is deliberately no second definition of
+ * that number to keep in step.
+ */
+function planSongImport(originalProject, clone, entry, options) {
+  // §7.6 step 2: id-space capacity, before any other work.
+  if (clone.songs.length >= NO_SONG) {
+    return { ok: false, reason: `This project already has ${NO_SONG} songs, the maximum.` };
+  }
+
+  // §7.4: identical name-resolution ordering to planSfxImport above.
+  const baseName = entry.song?.name || entry.name;
+  const name = nameForDuplicateScreen(baseName, clone.songs);
+  const id = clone.songs.length;
+  const song = normalizeSong({ ...entry.song, name }, name);
+  clone.songs.push(song);
+
+  // §7.6 step 5 (last, after every write): only the errors this import
+  // actually causes may refuse it.
+  const regressions = attributedErrors(originalProject, clone);
+  if (regressions.length > 0) {
+    return {
+      ok: false,
+      reason:
+        'This import would cause these problems:\n' +
+        regressions.map((p) => `- ${p.message}`).join('\n')
+    };
+  }
+
+  const report = {
+    kind: entry.kind,
+    name: entry.name,
+    id,
+    lines: [
+      `Imported "${entry.name}" (${entry.kind}).`,
+      `Song "${song.name}" added (id ${id}).`,
+      'Capacity is checked at build.'
+    ]
+  };
+
+  return { ok: true, project: clone, report };
+}
+
+/**
  * §7.1: pure planning. Clones `project` immediately and mutates only the
  * clone; returns `{ ok: true, project, report }` or `{ ok: false, reason }`.
  * The caller's own `project` is never touched, on either outcome.
@@ -7343,6 +7439,8 @@ export function planLibraryImport(project, entry, options = {}) {
   if (entry.kind === 'monster' || entry.kind === 'pickup') {
     return planActorImport(project, clone, entry, options);
   }
+  if (entry.kind === 'sfx') return planSfxImport(project, clone, entry, options);
+  if (entry.kind === 'song') return planSongImport(project, clone, entry, options);
   return { ok: false, reason: `Unsupported library entry kind "${entry.kind}".` };
 }
 

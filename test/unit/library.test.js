@@ -1,14 +1,15 @@
 // The starter library import operation (docs/design-starter-library.md),
-// terrain kind only -- phase 4 (§13 item 4). Every numbered test below is
-// the design's own §11 test of the same number, adapted to a terrain
-// vehicle wherever the design's own example used a monster/pickup/sfx
-// entry this phase does not build; each adaptation says so in its own
-// comment.
+// through phase 6 (§13 items 4-6): terrain, monster/pickup, and sfx/song.
+// Every numbered test below is the design's own §11 test of the same
+// number, adapted to whichever kind that phase actually built wherever the
+// design's own example used a kind not yet available at the time; each
+// adaptation says so in its own comment.
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { BLANK_TILE } from '../../shared/chr.js';
 import { resolveMapper } from '../../shared/cartridge.js';
+import { NO_SONG } from '../../shared/audio.js';
 import {
   createProject,
   createScreen,
@@ -22,10 +23,13 @@ import {
   planLibraryImport,
   applyPlannedProject,
   attributedErrors,
-  battleSpriteBudget
+  battleSpriteBudget,
+  LIMITS
 } from '../../shared/project.js';
 import { Store } from '../../renderer/store.js';
 import { TERRAIN_ENTRIES } from '../../shared/library/terrain/index.js';
+import { checkCapacity } from '../../main/build/generate.js';
+import { encodeString } from '../../main/build/textcompile.js';
 
 const [grassPlains, dirtPath, shallowWater, stoneFloor, woodPlanks] = TERRAIN_ENTRIES;
 
@@ -86,6 +90,33 @@ function onePosePickup(overrides = {}) {
     name: 'Coin',
     // Deliberately nonzero: the core must force this to 0 regardless.
     damage: 5
+  };
+}
+
+// --- Phase 6 (sfx/song) synthetic entry helpers -----------------------------
+function sfxEntryLiteral(overrides = {}) {
+  return {
+    kind: 'sfx',
+    name: 'Hit',
+    license: { type: 'CC0-1.0', author: 'NES Game Forge' },
+    sfx: { name: 'Hit', volume: 15, steps: [{ note: 5, duration: 4 }] },
+    ...overrides
+  };
+}
+
+function songEntryLiteral(overrides = {}) {
+  return {
+    kind: 'song',
+    name: 'Theme',
+    license: { type: 'CC0-1.0', author: 'NES Game Forge' },
+    song: {
+      tempo: { framesPerRow: 6 },
+      instruments: [{ duty: 2, volEnv: [15], sustain: 0 }],
+      patterns: [{ rows: 4, channels: {} }],
+      order: [0],
+      loop: 0
+    },
+    ...overrides
   };
 }
 
@@ -320,6 +351,104 @@ test('16d: a genuine decrease in the same aggregate check still succeeds', () =>
   const after = structuredClone(project);
   after.sfx = [{ name: 'Short', volume: 15, steps: [{ note: 0, duration: 10 }] }]; // satisfies id 0 only
   assert.equal(attributedErrors(project, after).length, 0);
+});
+
+// 16b/16c/16d above prove attributedErrors itself is correct, but they
+// hand-build the "after" project directly (their own comment says why: the
+// sfx kind didn't exist yet when they were written). That leaves a real gap
+// a sabotage probe found: nothing proved planSfxImport/planSongImport
+// actually WIRE attributedErrors in, through the real planLibraryImport
+// path, rather than e.g. `const regressions = [];` -- gutting the check
+// entirely still passed every test in this file. This is the identical
+// "mechanism only, then real end-to-end version" progression test 17 went
+// through once planActorImport existed; see '17 (real end-to-end version)'
+// below for the precedent this mirrors.
+test('16b (real end-to-end version): a damaging sfx import that itself creates a new validateProject error refuses', () => {
+  const project = createProject('Test', 'action');
+  project.sfx = [{ name: 'A', volume: 15, steps: [{ note: 0, duration: 1 }] }]; // id 0 -- real, satisfied
+  placeEventEntity(project, [{ op: 'sfx', sfx: 1 }]); // dangles: nothing at id 1 yet
+  const before = validateProject(project);
+  assert.ok(before.some((p) => p.severity === 'error' && /do not name a real effect/.test(p.message)));
+
+  // §7.4's append rule lands this import at project.sfx.length === 1 -- the
+  // exact id the dangling command names -- so the reference resolves, but
+  // the effect itself is over the 255-frame ceiling (mirrors 16b's own
+  // hand-built "Long" entry, two 200-duration steps).
+  const overlongEntry = sfxEntryLiteral({
+    sfx: { name: 'Long', volume: 15, steps: [{ note: 0, duration: 200 }, { note: 1, duration: 200 }] }
+  });
+  const refused = planLibraryImport(project, overlongEntry);
+  assert.equal(refused.ok, false);
+  assert.match(refused.reason, /takes longer than 255 frames/);
+  assert.doesNotMatch(refused.reason, /do not name a real effect/);
+
+  // Companion: a short, in-bounds effect at the identical id satisfies the
+  // dangling reference and introduces nothing new -- the plan succeeds.
+  const shortEntry = sfxEntryLiteral({
+    sfx: { name: 'Short', volume: 15, steps: [{ note: 0, duration: 10 }] }
+  });
+  const accepted = planLibraryImport(project, shortEntry);
+  assert.ok(accepted.ok, accepted.reason);
+  assert.equal(accepted.report.id, 1);
+  assert.equal(
+    validateProject(accepted.project).some((p) => p.severity === 'error' && /Play a sound effect/.test(p.message)),
+    false
+  );
+});
+
+// A real song-analogous check does exist, one command over: a `sting`
+// (not `music` -- an out-of-range `music` command's song operand just
+// clamps at compile time, no dangling-reference check) names a song
+// directly, and missingStings/overlongStings (shared/project.js, right
+// above missingSfx/overlongSfx) is the identical Give/Take-family shape for
+// it: songByte(project.songs, command.song) === NO_SONG is missing,
+// songFrameLength(...) > 255 is overlong. The same real end-to-end
+// construction as above, one command and one array over.
+test('song (real end-to-end version): a damaging song import that itself creates a new validateProject error refuses', () => {
+  const project = createProject('Test', 'action');
+  project.songs = [
+    { name: 'A', tempo: { framesPerRow: 6 }, instruments: [{ id: 0, name: 'I', duty: 2, volEnv: [15], sustain: 0 }],
+      patterns: [{ id: 0, rows: 1, channels: {} }], order: [0], loop: 0 }
+  ]; // id 0 -- real, satisfied (1 row * 6 frames/row = 6 frames)
+  placeEventEntity(project, [{ op: 'sting', song: 1 }]); // dangles: nothing at id 1 yet
+  const before = validateProject(project);
+  assert.ok(before.some((p) => p.severity === 'error' && /do not name a real song/.test(p.message)));
+
+  // §7.4's append rule lands this import at project.songs.length === 1 --
+  // the exact id the dangling sting names -- so the reference resolves, but
+  // the song itself is over the 255-frame ceiling (64 rows * 6 frames/row).
+  const overlongEntry = songEntryLiteral({
+    song: {
+      tempo: { framesPerRow: 6 },
+      instruments: [{ duty: 2, volEnv: [15], sustain: 0 }],
+      patterns: [{ rows: 64, channels: {} }],
+      order: [0],
+      loop: 0
+    }
+  });
+  const refused = planLibraryImport(project, overlongEntry);
+  assert.equal(refused.ok, false);
+  assert.match(refused.reason, /takes longer than 255 frames/);
+  assert.doesNotMatch(refused.reason, /do not name a real song/);
+
+  // Companion: a short, in-bounds song at the identical id satisfies the
+  // dangling reference and introduces nothing new -- the plan succeeds.
+  const shortEntry = songEntryLiteral({
+    song: {
+      tempo: { framesPerRow: 6 },
+      instruments: [{ duty: 2, volEnv: [15], sustain: 0 }],
+      patterns: [{ rows: 1, channels: {} }],
+      order: [0],
+      loop: 0
+    }
+  });
+  const accepted = planLibraryImport(project, shortEntry);
+  assert.ok(accepted.ok, accepted.reason);
+  assert.equal(accepted.report.id, 1);
+  assert.equal(
+    validateProject(accepted.project).some((p) => p.severity === 'error' && /Sound sting command/.test(p.message)),
+    false
+  );
 });
 
 // 17's own design example imports a damaging monster to trigger §5.7's new
@@ -881,6 +1010,222 @@ test('27: an imported monster is counted in the OAM budget through the exported 
 
   const metasprite = placed.sprites.metasprites[plan.report.poses[0].metaspriteId];
   assert.equal(after.used - before.used, metasprite.tiles.length);
+});
+
+// --- Phase 6 (§13 item 6): sfx/song cores -----------------------------------
+
+test('sfx: a clean import into a fresh project succeeds', () => {
+  const project = createProject('Test', 'action');
+  const plan = planLibraryImport(project, sfxEntryLiteral());
+  assert.ok(plan.ok, plan.reason);
+  assert.equal(plan.project.sfx.length, 1);
+  assert.equal(plan.project.sfx[0].name, 'Hit');
+  assert.equal(plan.project.sfx[0].volume, 15);
+  assert.deepEqual(plan.project.sfx[0].steps, [{ note: 5, duration: 4 }]);
+  assert.equal(plan.report.kind, 'sfx');
+  assert.equal(plan.report.id, 0);
+  assert.ok(plan.report.lines.includes('Capacity is checked at build.'));
+});
+
+test('song: a clean import into a fresh project succeeds', () => {
+  const project = createProject('Test', 'action');
+  const plan = planLibraryImport(project, songEntryLiteral());
+  assert.ok(plan.ok, plan.reason);
+  assert.equal(plan.project.songs.length, 1);
+  assert.equal(plan.project.songs[0].name, 'Theme');
+  assert.equal(plan.project.songs[0].tempo.framesPerRow, 6);
+  assert.equal(plan.project.songs[0].order.length, 1);
+  assert.equal(plan.report.kind, 'song');
+  assert.equal(plan.report.id, 0);
+  assert.ok(plan.report.lines.includes('Capacity is checked at build.'));
+});
+
+test('sfx: re-importing the same entry twice de-collides the pushed record\'s name (26i shape)', () => {
+  const project = createProject('Test', 'action');
+  const entry = sfxEntryLiteral({
+    name: 'Repeat',
+    sfx: { name: 'Repeat', volume: 15, steps: [{ note: 1, duration: 2 }] }
+  });
+  const first = planLibraryImport(project, entry);
+  assert.ok(first.ok, first.reason);
+  const second = planLibraryImport(first.project, entry);
+  assert.ok(second.ok, second.reason);
+  assert.equal(second.project.sfx[first.report.id].name, 'Repeat');
+  assert.equal(second.project.sfx[second.report.id].name, 'Repeat copy');
+});
+
+test('song: re-importing the same entry twice de-collides the pushed record\'s name (26i shape)', () => {
+  const project = createProject('Test', 'action');
+  const entry = songEntryLiteral({
+    name: 'Repeat',
+    song: {
+      tempo: { framesPerRow: 6 },
+      instruments: [{ duty: 2, volEnv: [15], sustain: 0 }],
+      patterns: [{ rows: 4, channels: {} }],
+      order: [0],
+      loop: 0,
+      name: 'Repeat'
+    }
+  });
+  const first = planLibraryImport(project, entry);
+  assert.ok(first.ok, first.reason);
+  const second = planLibraryImport(first.project, entry);
+  assert.ok(second.ok, second.reason);
+  assert.equal(second.project.songs[first.report.id].name, 'Repeat');
+  assert.equal(second.project.songs[second.report.id].name, 'Repeat copy');
+});
+
+test('sfx: capacity refusal at LIMITS.sfx, project untouched', () => {
+  const project = createProject('Test', 'action');
+  for (let i = 0; i < LIMITS.sfx; i++) {
+    project.sfx.push({ name: `Filler${i}`, volume: 15, steps: [{ note: 0, duration: 1 }] });
+  }
+  const before = structuredClone(project);
+  const plan = planLibraryImport(project, sfxEntryLiteral());
+  assert.equal(plan.ok, false);
+  assert.match(plan.reason, new RegExp(`${LIMITS.sfx} sound effects, the maximum`));
+  assert.deepEqual(project, before);
+});
+
+test('song: capacity refusal at NO_SONG, project untouched', () => {
+  const project = createProject('Test', 'action');
+  for (let i = 0; i < NO_SONG; i++) {
+    project.songs.push({
+      name: `Filler${i}`,
+      tempo: { framesPerRow: 6 },
+      instruments: [{ id: 0, name: 'I', duty: 2, volEnv: [15], sustain: 0 }],
+      patterns: [{ id: 0, rows: 1, channels: {} }],
+      order: [0],
+      loop: 0
+    });
+  }
+  const before = structuredClone(project);
+  const plan = planLibraryImport(project, songEntryLiteral());
+  assert.equal(plan.ok, false);
+  assert.match(plan.reason, new RegExp(`${NO_SONG} songs, the maximum`));
+  assert.deepEqual(project, before);
+});
+
+// 31: a successful sfx import can leave the project one build away from a
+// music/text-bank overflow, documented rather than prevented (§7.8). Built
+// for real, not by hand-guessing the byte formulas: a single Say command's
+// text is engineered to compile to an exact byte count via wrapText's own
+// word-wrap rule -- a word of exactly BOX_COLS (28) characters always fills
+// its line alone (no room for a further word), so N such words cost exactly
+// 29 bytes apiece (28 characters + one separator, page math included), and
+// one shorter trailing word tops up any remainder; `encodeString` itself
+// verifies the construction rather than trusting the arithmetic blindly.
+test('31: a successful sfx import can leave the project one byte-for-byte build away from a music/text-bank overflow', () => {
+  const FILLER_WORD = 'A'.repeat(28); // exactly BOX_COLS characters
+  function textOfByteLength(targetBytes) {
+    let full = Math.floor(targetBytes / 29);
+    let remaining = targetBytes - full * 29;
+    // A trailing empty "word" is swallowed by wrapText's own word-split
+    // (spaces around an empty token collapse away), so a remainder of
+    // exactly 1 can't be represented as a lone extra word once a filler
+    // word already precedes it -- borrow one filler word back (29 bytes)
+    // and re-spend it as two trailing words (28 + 2 = 30) instead.
+    if (remaining === 1 && full > 0) {
+      full -= 1;
+      remaining = 30;
+    }
+    const words = [];
+    for (let i = 0; i < full; i++) words.push(FILLER_WORD);
+    if (remaining > 0) {
+      if (remaining <= 28) words.push('B'.repeat(remaining - 1));
+      else {
+        words.push('B'.repeat(27));
+        words.push('C'.repeat(1));
+      }
+    }
+    return words.join(' ');
+  }
+
+  // Self-check the construction before relying on it for the real project.
+  for (const t of [1, 2, 28, 29, 30, 57, 100, 8000, 8127]) {
+    assert.equal(encodeString(textOfByteLength(t)).bytes.length, t, `textOfByteLength(${t})`);
+  }
+
+  const BANK_SIZE = 8192; // main/build/generate.js's own BANK_SIZE constant
+  const CEILING = BANK_SIZE - 64; // main/build/generate.js's own ceiling for this check
+
+  // Calibrate the fixed part of the total (music + sfx + the one event's own
+  // non-string overhead) by measuring it directly, at a small known string
+  // byte count -- strings.length and events.length stay fixed at 1 across
+  // every project built below, so only the string's own content length ever
+  // changes what textBytes reports.
+  const probeBytes = 2;
+  const probe = createProject('Test', 'action');
+  placeEventEntity(probe, [{ op: 'say', text: textOfByteLength(probeBytes) }]);
+  const probeCapacity = checkCapacity(probe);
+  const fixed = probeCapacity.musicBytes + probeCapacity.sfxBytes + (probeCapacity.textBytes - probeBytes);
+
+  const targetTotal = CEILING - 1; // exactly one byte under the ceiling
+  const neededStringBytes = targetTotal - fixed;
+  assert.ok(neededStringBytes > 0, 'sanity: needs a positive-length dialogue string');
+
+  const project = createProject('Test', 'action');
+  placeEventEntity(project, [{ op: 'say', text: textOfByteLength(neededStringBytes) }]);
+
+  const before = checkCapacity(project);
+  assert.equal(before.musicBytes + before.sfxBytes + before.textBytes, targetTotal);
+  assert.equal(
+    before.problems.some((p) => /music and text bank/.test(p.message)),
+    false,
+    'must not already be over the ceiling before the import'
+  );
+
+  const plan = planLibraryImport(project, sfxEntryLiteral({ sfx: { name: 'OneStep', volume: 15, steps: [{ note: 5, duration: 4 }] } }));
+  assert.ok(plan.ok, plan.reason); // §7.5's own mechanism has nothing to say about generator capacity
+
+  const after = checkCapacity(plan.project);
+  const overflow = after.problems.find((p) => /music and text bank/.test(p.message));
+  assert.ok(overflow, 'checkCapacity must report the bank overflow by name after the import');
+  assert.equal(overflow.severity, 'error');
+});
+
+// 32: the identical shape for kernel-lo, via an actor import -- the id-space/
+// table-byte axis rather than the music/text-bank one (§7.8). Found by
+// search rather than by formula: filler actors (no metasprites/animations of
+// their own -- metaspriteKernelBytes' own per-actor term is a flat 8 bytes
+// regardless of their content) are pushed one at a time until checkCapacity
+// first reports the kernel-lo shortfall, then backed off by one so the
+// project fits again -- "one actor away from the ceiling," exactly as the
+// design names it.
+test('32: a successful monster import can leave the project one build away from a kernel-lo overflow', () => {
+  const hasLookupError = (p) => checkCapacity(p).problems.some((x) => /lookup tables need/.test(x.message));
+  const fillerActor = (id) => ({
+    id,
+    name: `Filler${id}`,
+    behavior: 'npc',
+    speed: 1,
+    hp: 1,
+    damage: 0,
+    anims: { idle: null, walkDown: null, walkUp: null, walkSide: null },
+    battle: {
+      atk: 4, def: 2, acc: 180, eva: 4, speed: 4, mp: 0, xp: 4, gold: 2,
+      weak: 'none', strong: 'none', drop: null, dropPct: 10, heal: 0,
+      spellId: null, battleTile: null, battleW: 4, battleH: 4, battlePalette: 2, level: null
+    }
+  });
+
+  const project = createProject('Test', 'action');
+  assert.equal(hasLookupError(project), false, 'a fresh project must not already be over the kernel-lo ceiling');
+  let guard = 0;
+  while (!hasLookupError(project) && guard < LIMITS.actors) {
+    project.sprites.actors.push(fillerActor(project.sprites.actors.length));
+    guard++;
+  }
+  assert.ok(hasLookupError(project), 'filler actors never tipped the project over -- test assumption is wrong');
+  project.sprites.actors.pop(); // back off by one: fits again, one actor away from the ceiling
+  assert.equal(hasLookupError(project), false, 'one actor back from the tip-over point must fit');
+
+  const plan = planLibraryImport(project, onePoseMonster());
+  assert.ok(plan.ok, plan.reason); // §7.5's own mechanism has nothing to say about generator capacity
+
+  const overflow = checkCapacity(plan.project).problems.find((p) => /lookup tables need/.test(p.message));
+  assert.ok(overflow, 'checkCapacity must report the kernel-lo overflow by name after the import');
+  assert.equal(overflow.severity, 'error');
 });
 
 // --- Whole-inventory sanity (not §11-numbered, but cheap and load-bearing) --
