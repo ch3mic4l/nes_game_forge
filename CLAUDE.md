@@ -426,18 +426,10 @@ iNES byte 6 bit 1, applied the same way four-screen's bit 3 already was, in pref
 MMC1 and MMC3 into the NES 2.0 path UNROM 512 alone needs for a size neither board's ordinary 8 KB of
 WRAM requires declaring precisely.
 
-**A slot ring for flash save was designed, costed and deliberately left out — the same shape as AxROM
-and MMC5 above, a real design worked out and rejected on a real budget rather than never
-considered.** UNROM 512's flash commit (below) is not power-loss atomic: it erases the whole 4 KB
-sector before writing anything, so a save interrupted mid-commit can leave neither the old record nor
-a valid new one. Two designs were costed against the real remaining kernel-lo headroom on
-`sample-rpg` with a live Save: a single-sector append-only ring, which is still not atomic at
-rollover, and a two-sector A/B journal that genuinely is, using the adjacent 4 KB sector
-`chrPayloadRegions()`/`screenRegions()` already reserves but leaves unused — but even the journal
-would push the already-refused `sample-rpg` + Save + Move combination further out of reach. Neither
-was built; see `docs/design-flash-slot-ring.md` for both designs, their exact costs, and why the
-journal — not the ring — is where to start if atomic flash saving becomes a real requirement, since
-the sector it needs is already sitting there reserved for exactly it.
+**A slot ring for flash save was designed, costed and rejected**, not never considered. UNROM 512's
+flash commit is not power-loss atomic. A single-sector ring and a two-sector A/B journal (genuinely
+atomic) were both costed; neither was built. See `docs/design-flash-slot-ring.md` — the journal, not
+the ring, is where to start if atomicity ever becomes a real requirement.
 
 **MMC3's scanline IRQ gives the font its own CHR bank** (`engine/split.asm`). On a board whose
 registry entry has `scanlineIrq: true` — only MMC3 — a project that shows text does *not* get the
@@ -1028,6 +1020,17 @@ what makes "this happened already" expressible. `switch_test` / `switch_set` / `
 and `switch_split` builds its mask by shifting rather than indexing a table for exactly that
 reason: `spawn_entities` calls `switch_test` with the entity slot in X and the record cursor in Y,
 and reloading Y after the test would set the flags from the reload rather than from the switch.
+
+### The starter library
+
+`shared/library/` ships CC0-1.0 content (terrain, monster, pickup, sfx, song) in one flat
+`LIBRARY_ENTRIES` (`shared/library/index.js`). `planLibraryImport` is pure; `applyPlannedProject =
+Object.assign` is the one apply, called inside one `store.commit` with no `await` between plan and
+apply, so a refused plan never reaches `commit`. `suggestedPaletteSlot` is the single writer for
+both the picker's suggestion and the headless default — the two can never disagree. A reserved
+palette slot is always selectable; only writing fresh colours is refused. The Forges must pass
+`options.tilesetId`, else a core defaults to tileset 0. `renderer/widgets/librarypicker.js` is the
+one picker shared by all three Forges. See `docs/design-starter-library.md`.
 
 ### The kernel budget
 

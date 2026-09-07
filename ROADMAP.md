@@ -1064,7 +1064,11 @@ The blank-page problem is real, and RPG Maker solves it mostly by shipping conte
   `[0, LIMITS.palettes-1]` at authoring time, so an invalid one is unrepresentable by construction,
   not a gap this design could validate against. See `docs/design-draw-validation.md` and
   CLAUDE.md's own "The engine" section.
-- A small **MIT/CC0 starter library**: terrain, UI, monsters, effects, sound effects
+- ~~A small **MIT/CC0 starter library**: terrain, UI, monsters, effects, sound effects~~ —
+  **done**: `shared/library/` ships 5 terrain / 3 monster / 4 pickup / 8 sfx / 2 song entries, all
+  CC0-1.0 (top-level `LICENSE-ASSETS`, plus MIT `LICENSE` for the project itself); each imports
+  through a "📚 Library…" button in the Tile, Sprite and Sound Forges. See
+  `docs/design-starter-library.md`.
 - **Starter projects** — action, dungeon crawl, RPG — beyond today's demo fixtures
 
 Anything shipped here needs its license recorded in the repo, and the five existing fixtures stay

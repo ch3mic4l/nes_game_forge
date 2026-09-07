@@ -1,4 +1,4 @@
-# Design: a small MIT/CC0 starter library (ROADMAP item 8, fourth sub-bullet) — v13
+# Design: a small MIT/CC0 starter library (ROADMAP item 8, fourth sub-bullet) — v14
 
 **v12 resolves three questions Chris left open in v11 — §7.2/§10's palette default, §2.4/§6's
 multi-pose/multi-palette schema, §7.5's import-validity mechanism — then fixes what two further review
@@ -1298,7 +1298,13 @@ pre-highlighted as "the suggestion"** — the exact slot §7.2's headless defaul
 (exact match, else `unusedPaletteSlots`'s first entry, else `nearestPaletteSlot`, §7.2) — but every
 one of the four remains clickable regardless of which is highlighted; choosing a different one is not
 a special path, only a different, equally valid input to the same §7.3 resolution. Only after a slot
-is chosen does `planLibraryImport` run.
+is chosen does `planLibraryImport` run. **(Phase 7 implementation) `suggestedPaletteSlot`
+(`shared/project.js`) is the exported single writer for that priority chain, called by both the
+picker's own pre-highlight and by `resolvePaletteForKind`'s headless-default branch (§7.2), so the
+two can never disagree; `paletteCandidates` is exported alongside it purely so the picker can render
+straight from its output.** The candidate-step canvas is sized from the art's own aspect ratio (48px
+tall, width scaled to match) rather than a fixed square, so a two-metatile terrain candidate (32×16)
+is never clipped.
 
 **Monster / Pickup** (Sprite Forge): the identical two-step flow, over the sprite table and sprite
 palettes, previewing the entry's own poses — `idle` alone when that is all the entry declares (every
@@ -1315,11 +1321,22 @@ refusal (§7.2) a backstop for a scripted caller rather than something the picke
 an author into. Every v1 entry declares exactly one palette, so this repeats exactly
 once, unchanged from before this revision. A future entry that actually declares more than one pose or
 palette will need its own `main/smoke.js` coverage of this repeated-picker flow; none of v1's inventory
-does, so none exists yet — named here rather than left implicit.
+does, so none exists yet — named here rather than left implicit. **(Phase 7 implementation)** Both
+the Tile and Sprite Forges pass their own currently-selected `state.tilesetId` as
+`options.tilesetId` when calling `planLibraryImport` — the cores default to tileset 0 otherwise, and
+the first implementation of this UI omitted it entirely (a reviewer-found High: a second tileset's
+own art would silently land in the wrong one). The revision guard (§7.1) is re-checked after EVERY
+candidate-step await, not only once after the whole P-palette sequence, so a project change during
+the second of several palette steps aborts before the next one ever opens.
 
 **Sfx / Song** (Sound Forge): a picker with no palette step at all, since neither kind touches a
 tileset or a palette — previewed by handing the entry's own raw `sfx`/`song` object to the existing
-in-app player before import.
+in-app player before import. **(Phase 7 implementation)** Preview plays through the Forge's own
+existing `play()`/`playSfx()` (`renderer/forges/sound/sound.js`), refactored to accept an optional
+raw entry and to clear their own already-running timer before starting a new one. A dismissed picker
+stops only a preview it itself started — a song already playing before the picker opened survives a
+plain Cancel or Escape — but a *successful* import always stops playback even if Preview was never
+clicked, since the Forge's own selection is about to move to the newly imported record.
 
 **`showModal`'s `null`-on-dismiss**: the picker resolves `null` on Escape or a backdrop click exactly
 like every other `showModal` call in this codebase; the caller does nothing further and no partial
@@ -1333,6 +1350,13 @@ and after (proving a true adoption — no colours written); the pushed metatile/
 text is present somewhere in the picker's rendered candidate list, not merely computable in
 isolation. A further step exercises the ordinary headless default path (§7.2) for the remaining
 kinds, so both paths in this design are actually driven by something, not merely specified.
+**(Phase 7 implementation) Two lessons the smoke coverage itself surfaced, worth keeping:**
+`showModal`'s own `close()` hides `#modalHost` synchronously, before the async continuation that
+actually commits the import (a microtask) has run — so the real completion signal to wait for is a
+NEW toast, never `#modalHost`'s own hidden state, which can be observed true before the import has
+happened at all. And the library's own `Hit` sfx entry is only about 83ms long — shorter than a
+single fixed post-click wait — so a Preview-outcome check has to poll for "started playing" rather
+than sample once, or a short effect can start and self-stop before the one look ever happens.
 
 ## §11. Tests
 
@@ -1752,6 +1776,50 @@ stated fallback (the next build reports the same overflow it always would have) 
 for v1.
 
 ## Changelog
+
+### v14 (phase 7 shipped — the picker UI and its smoke steps)
+
+- **The picker itself**: `renderer/widgets/librarypicker.js` is the one shared implementation for
+  all three Forges — `pickLibraryEntry` (step 1), `pickPaletteSlots`/`pickOneCandidate` (step 2,
+  looped once per entry-local palette), and the `runLibraryImport` orchestrator (revision guard,
+  `planLibraryImport`/`applyPlannedProject`/`store.commit`, the success toast). Each Forge supplies
+  only its own kind-specific rendering callbacks: `renderer/forges/tile/librarytile.js`,
+  `renderer/forges/sprite/librarysprite.js`, `renderer/forges/sound/librarysound.js`.
+- **§7.2's extraction**: `suggestedPaletteSlot` (`shared/project.js`) is now the exported single
+  writer for the exact-match/unused/`nearestPaletteSlot` priority chain; `resolvePaletteForKind`
+  calls it instead of inlining a second copy, and `paletteCandidates` is exported alongside it so the
+  picker renders straight from real, shared logic rather than a parallel reimplementation.
+- **The tileset id**: both the Tile and Sprite Forges now pass their own `state.tilesetId` as
+  `options.tilesetId`. The first implementation omitted this entirely — every import silently
+  targeted tileset 0 regardless of which tileset was on screen — caught by a reviewer, not by any
+  test written before the fix; §11's own `main/smoke.js` coverage for this now builds a real
+  CNROM, two-tileset project and proves the SECOND tileset changes while the first stays
+  byte-identical, for both Forges.
+- **Candidate/preview art sizing**: `artCanvas` sizes its stage from the art's own aspect ratio
+  (48px tall, width scaled) rather than a fixed square, since every terrain entry's own two-metatile
+  candidate is 32×16 — a fixed square clipped it at the zoom `fitZoom` would otherwise have chosen.
+- **Sound picker ownership**: `play()`/`playSfx()` (`renderer/forges/sound/sound.js`) now accept an
+  optional raw entry (so Preview reuses the real synth/replayer rather than a second player) and
+  clear their own already-running timer before starting a new one (a real leaked-interval bug once
+  Preview could be clicked twice, unreachable before this feature existed). The picker itself tracks
+  whether ITS OWN Preview started playback: a dismissed picker stops only what it started, but a
+  successful import always stops playback, since the Forge's own selection is about to move to the
+  newly imported record regardless of whether Preview was ever clicked.
+- **The revision guard** now re-checks after every candidate-step await (`pickPaletteSlots`), not
+  only once after the whole possibly-multi-palette sequence.
+- **Findings from two reviewer rounds, all confirmed and fixed** (a third, earlier round of 5 came
+  from the orchestrator's own review, before any of this reached a reviewer): round one, six —
+  tileset id never passed (High); candidate art clipped; the sound picker stopping playback it did
+  not start; `observePreviewOutcome` accepting a stale "Sound unavailable" toast from an earlier
+  step; the revision guard only checked once for a multi-palette import; the smoke reverts asserting
+  only part of the project instead of the whole thing. Round two, three — a successful import must
+  stop the Forge's own playback even when Preview was never clicked (not only when it stopped what
+  it itself started); the toast-freshness fix needed the SAME "count before, require growth" shape
+  applied consistently; the canvas-fit assertions promised in the prior round's own report had not
+  actually been written — caught only by grepping for the claimed assertion and finding nothing,
+  the reason this entry names line numbers rather than only describing behaviour.
+- §10 is amended in place above (search "Phase 7 implementation") rather than rewritten, so the
+  original v1-era prose and what actually shipped both stay legible.
 
 ### v13 (the content slice — real shipped inventory, plus a reviewer round on it)
 
