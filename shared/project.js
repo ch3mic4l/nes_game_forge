@@ -7033,6 +7033,306 @@ function planTerrainImport(originalProject, clone, entry, options) {
 }
 
 /**
+ * §7 (monster/pickup, phase 5): plan appending this entry's actor -- plus one
+ * metasprite and one animation per declared pose -- to `clone.sprites`, and
+ * its shared `spriteTiles` pool into `options.tilesetId`'s sprite table
+ * (default 0, same "no UI yet to choose a different destination tileset"
+ * reasoning as `planTerrainImport`). `pickup` is exactly this shape with
+ * `behavior: 'pickup'`/`damage: 0` forced (§2.3); `monster` gets
+ * `behavior: 'patroller'` -- both fields absent from the entry schema itself
+ * (§2.4), so this function is what decides them, not `normalizeActor`'s own
+ * default.
+ */
+function planActorImport(originalProject, clone, entry, options) {
+  const palettes = entry.palettes ?? [entry.palette];
+  const poses = entry.poses ?? { idle: entry.metasprite };
+  const isPickup = entry.kind === 'pickup';
+
+  // §2.4: entry.palettes.length must be between 1 and LIMITS.palettes (4)
+  // inclusive -- a table has exactly four physical slots, so a 5th
+  // entry-local palette could never be given a distinct one, and (without
+  // this) a full excluded set makes nearestPaletteSlot return null, which
+  // resolvePaletteForKind/finishPaletteResolution never checked for, letting
+  // a paletteIndex referencing that palette silently clamp to slot 0 inside
+  // normalizeMetasprite instead of refusing. Checked before anything else,
+  // the same "no third 'leave it alone' answer" rule the tile/paletteIndex
+  // out-of-range checks below already hold to, for the identical class of
+  // input -- any caller, hand-authored or future-schema entry included, not
+  // only what §12's own (not-yet-built) manifest test would catch.
+  if (palettes.length < 1 || palettes.length > LIMITS.palettes) {
+    return {
+      ok: false,
+      reason:
+        `"${entry.name}" declares ${palettes.length} palette${palettes.length === 1 ? '' : 's'}; a monster/pickup ` +
+        `entry must declare between 1 and ${LIMITS.palettes}.`
+    };
+  }
+
+  // §2.4: "one to four named poses; idle is required." Without this, an
+  // entry declaring only e.g. walkDown silently produces an actor with
+  // anims.idle === null -- every state, including standing still, needs an
+  // animation, so this is the identical silent-wrong-answer class the
+  // palettes.length check above guards against, for a different field.
+  if (!poses.idle) {
+    return { ok: false, reason: `"${entry.name}" declares no "idle" pose, which every monster/pickup entry requires.` };
+  }
+
+  // §7.6 step 1 / §7.2: options.paletteSlot/paletteSlots, before anything else.
+  if (options.paletteSlot !== undefined && options.paletteSlots !== undefined) {
+    return { ok: false, reason: 'Supply either options.paletteSlot or options.paletteSlots, never both.' };
+  }
+  if (options.paletteSlots !== undefined && !Array.isArray(options.paletteSlots)) {
+    return { ok: false, reason: 'options.paletteSlots must be an array.' };
+  }
+  const requestedSlots =
+    options.paletteSlots !== undefined
+      ? options.paletteSlots
+      : options.paletteSlot !== undefined
+        ? [options.paletteSlot]
+        : undefined;
+  if (requestedSlots !== undefined) {
+    if (requestedSlots.length !== palettes.length) {
+      return {
+        ok: false,
+        reason:
+          `"${entry.name}" declares ${palettes.length} palette${palettes.length === 1 ? '' : 's'}, but ` +
+          `options.paletteSlots names ${requestedSlots.length}.`
+      };
+    }
+    if (new Set(requestedSlots).size !== requestedSlots.length) {
+      return { ok: false, reason: 'options.paletteSlots must not name the same slot twice.' };
+    }
+    for (const slot of requestedSlots) {
+      if (!validPaletteSlotOption(slot)) {
+        return {
+          ok: false,
+          reason:
+            `options.paletteSlots must each be an integer from 0 to ${LIMITS.palettes - 1}; received ` +
+            `${JSON.stringify(slot)}.`
+        };
+      }
+    }
+  }
+
+  const tilesetId = options.tilesetId ?? 0;
+  const tileset = clone.tilesets[tilesetId];
+  if (!tileset) return { ok: false, reason: `Tileset ${tilesetId} does not exist.` };
+  const mapper = resolveMapper(clone.cartridge.mapper);
+
+  // ANIM_SLOTS order, for determinism -- idle is always present, the other
+  // three only when the entry declares them.
+  const declaredPoseIds = ANIM_SLOTS.map((s) => s.id).filter((id) => poses[id]);
+  const poseCount = declaredPoseIds.length;
+
+  // §7.6 step 2: id-space capacity, before any tile or palette work.
+  if (clone.sprites.actors.length >= LIMITS.actors) {
+    return { ok: false, reason: `This project already has ${LIMITS.actors} actors, the maximum.` };
+  }
+  const freeMetasprites = LIMITS.metasprites - clone.sprites.metasprites.length;
+  if (poseCount > freeMetasprites) {
+    return {
+      ok: false,
+      reason:
+        `"${entry.name}" needs ${poseCount} free metasprite slot${poseCount === 1 ? '' : 's'}, but only ` +
+        `${Math.max(0, freeMetasprites)} ${freeMetasprites === 1 ? 'is' : 'are'} free (of ${LIMITS.metasprites}).`
+    };
+  }
+  const freeAnimations = LIMITS.animations - clone.sprites.animations.length;
+  if (poseCount > freeAnimations) {
+    return {
+      ok: false,
+      reason:
+        `"${entry.name}" needs ${poseCount} free animation slot${poseCount === 1 ? '' : 's'}, but only ` +
+        `${Math.max(0, freeAnimations)} ${freeAnimations === 1 ? 'is' : 'are'} free (of ${LIMITS.animations}).`
+    };
+  }
+
+  // §7.6 step 3: tile-space capacity -- the entry's own shared spriteTiles
+  // pool against the sprite table's own dedup-aware free count.
+  const table = tileset.sprites.tiles;
+  const permittedBefore = permittedIndices(clone, 'sprites', mapper);
+  const unmatchedCount = entry.spriteTiles.filter(
+    (content) => !permittedBefore.some((i) => table[i] === content)
+  ).length;
+  const free = freePermittedIndices(table, clone, 'sprites', mapper, tilesetId);
+  if (free.length < unmatchedCount) {
+    return {
+      ok: false,
+      reason:
+        `This entry needs ${unmatchedCount} free sprite tile${unmatchedCount === 1 ? '' : 's'} on tileset ` +
+        `"${tileset.name}", but only ${free.length} ${free.length === 1 ? 'is' : 'are'} free.`
+    };
+  }
+
+  // §7.6 step 4: build the full candidate on the clone.
+  // §6: tileMap, one map over the entry's single shared spriteTiles pool,
+  // built once and used by every declared pose -- the identical dedup-or-
+  // allocate walk planTerrainImport's own tileMap already uses, over the
+  // sprite table instead of the background one.
+  let tilesWrittenFresh = 0;
+  let allocationFailed = false;
+  const tileMap = entry.spriteTiles.map((content) => {
+    if (allocationFailed) return undefined;
+    const permittedNow = permittedIndices(clone, 'sprites', mapper);
+    let destination = permittedNow.find((i) => table[i] === content);
+    if (destination === undefined) {
+      const freeNow = freePermittedIndices(table, clone, 'sprites', mapper, tilesetId);
+      destination = freeNow[0];
+      if (destination === undefined) {
+        allocationFailed = true;
+        return undefined;
+      }
+      table[destination] = content;
+      tilesWrittenFresh++;
+    }
+    return destination;
+  });
+  if (allocationFailed) {
+    return {
+      ok: false,
+      reason: `Ran out of free sprite tile slots on tileset "${tileset.name}" while importing "${entry.name}".`
+    };
+  }
+
+  // §6/§7.4: paletteMap, one entry-local palette index -> destination slot,
+  // resolved in entry.palettes order, each one's chosen slot excluded before
+  // the next resolves -- so two entry-local palettes can never both land on,
+  // and both write into, the same destination slot.
+  const excluded = new Set();
+  const paletteMap = [];
+  const paletteResolutions = [];
+  for (let i = 0; i < palettes.length; i++) {
+    const resolution = resolvePaletteForKind(clone, 'sprite', palettes[i], requestedSlots?.[i], excluded, mapper);
+    if (!resolution.ok) return resolution;
+    excluded.add(resolution.slot);
+    paletteMap.push(resolution.slot);
+    paletteResolutions.push(resolution);
+  }
+
+  // §2.4 items 1-3: one metasprite and one animation per declared pose, in
+  // ANIM_SLOTS order, each following §7.4's ordinary append rule.
+  const pushedPoses = [];
+  const animIdBySlot = {};
+  for (const slotId of declaredPoseIds) {
+    const pose = poses[slotId];
+    const rawTiles = Array.isArray(pose?.tiles) ? pose.tiles : [];
+    const remappedTiles = rawTiles.map((t) => {
+      const tileIndex = t?.tile;
+      if (!(Number.isInteger(tileIndex) && tileIndex >= 0 && tileIndex < tileMap.length)) return null;
+      const paletteIndex = t?.paletteIndex ?? 0;
+      if (!(Number.isInteger(paletteIndex) && paletteIndex >= 0 && paletteIndex < paletteMap.length)) return null;
+      return {
+        x: t.x,
+        y: t.y,
+        tile: tileMap[tileIndex],
+        palette: paletteMap[paletteIndex],
+        hflip: t.hflip,
+        vflip: t.vflip
+      };
+    });
+    // == null also catches the failed-tileMap-allocation undefined case, the
+    // identical defense-in-depth planTerrainImport's own remap loop applies.
+    if (remappedTiles.some((t) => t == null)) {
+      return {
+        ok: false,
+        reason: `"${entry.name}"'s "${slotId}" pose references a tile or palette index this entry does not have.`
+      };
+    }
+    // §7.4: de-collided the same way the actor's own name already is below --
+    // without this, re-importing the same entry twice pushes two metasprites
+    // (and two animations) both named the literal `${entry.name} (${slotId})`,
+    // silently colliding instead of "<name> copy" the way every other
+    // appended/claimed record's name already avoids.
+    const metaspriteName = nameForDuplicateScreen(`${entry.name} (${slotId})`, clone.sprites.metasprites);
+    const metaspriteId = clone.sprites.metasprites.length;
+    const metasprite = normalizeMetasprite({ name: metaspriteName, tiles: remappedTiles }, metaspriteId);
+    clone.sprites.metasprites.push(metasprite);
+
+    const animationName = nameForDuplicateScreen(`${entry.name} (${slotId})`, clone.sprites.animations);
+    const animationId = clone.sprites.animations.length;
+    const animation = normalizeAnimation(
+      { name: animationName, loop: true, frames: [{ metaspriteId, duration: 30 }] },
+      animationId
+    );
+    clone.sprites.animations.push(animation);
+
+    animIdBySlot[slotId] = animationId;
+    pushedPoses.push({ slot: slotId, metaspriteId, animationId });
+  }
+
+  // §2.4 item 3: every ANIM_SLOTS entry points at its own declared pose's
+  // animation, else the idle pose's -- per slot, not per entry, so a
+  // partially-declared entry falls back independently for each undeclared
+  // slot.
+  const anims = {};
+  for (const { id: slot } of ANIM_SLOTS) anims[slot] = animIdBySlot[slot] ?? animIdBySlot.idle;
+
+  // §7.4: append rule for the actor itself. Name de-collision captured
+  // BEFORE the push, the same ordering planTerrainImport/
+  // duplicateActorPaletteSwapCore already use.
+  const name = nameForDuplicateScreen(entry.name, clone.sprites.actors);
+  const actorId = clone.sprites.actors.length;
+  const actor = normalizeActor(
+    {
+      name,
+      behavior: isPickup ? 'pickup' : 'patroller',
+      speed: entry.speed,
+      hp: entry.hp,
+      damage: isPickup ? 0 : entry.damage,
+      anims,
+      battle: entry.battle
+    },
+    actorId
+  );
+  clone.sprites.actors.push(actor);
+
+  // §7.6 step 5 (last, after every write): only the errors this import
+  // actually causes may refuse it.
+  const regressions = attributedErrors(originalProject, clone);
+  if (regressions.length > 0) {
+    return {
+      ok: false,
+      reason:
+        'This import would cause these problems:\n' +
+        regressions.map((p) => `- ${p.message}`).join('\n')
+    };
+  }
+
+  const tilesMatched = tileMap.length - tilesWrittenFresh;
+  const report = {
+    kind: entry.kind,
+    name: entry.name,
+    tiles: { fresh: tilesWrittenFresh, matched: tilesMatched, tileset: tileset.name },
+    actor: { id: actorId, name: actor.name },
+    poses: pushedPoses,
+    palettes: paletteResolutions.map((r) => ({ table: 'sprite', slot: r.slot, written: r.written })),
+    lines: [
+      `Imported "${entry.name}" (${entry.kind}).`,
+      `${tilesWrittenFresh} sprite tile${tilesWrittenFresh === 1 ? '' : 's'} written fresh, ${tilesMatched} ` +
+        `reused via dedup, into tileset "${tileset.name}".`,
+      `Actor "${actor.name}" added (id ${actorId}).`,
+      ...pushedPoses.map(
+        (p) => `Pose "${p.slot}" pushed as metasprite ${p.metaspriteId} and animation ${p.animationId}.`
+      ),
+      ...paletteResolutions.map((r, i) =>
+        r.written
+          ? `Sprite palette ${r.slot} written with entry-local palette ${i}'s own colours.`
+          : `Sprite palette ${r.slot} adopted as-is for entry-local palette ${i} (existing colours kept).`
+      ),
+      ...(isPickup
+        ? [
+            'No item was written -- bind this actor to an item using the Items Forge\'s "Collected ' +
+              'from" control.'
+          ]
+        : []),
+      'Capacity is checked at build.'
+    ]
+  };
+
+  return { ok: true, project: clone, report };
+}
+
+/**
  * §7.1: pure planning. Clones `project` immediately and mutates only the
  * clone; returns `{ ok: true, project, report }` or `{ ok: false, reason }`.
  * The caller's own `project` is never touched, on either outcome.
@@ -7040,6 +7340,9 @@ function planTerrainImport(originalProject, clone, entry, options) {
 export function planLibraryImport(project, entry, options = {}) {
   const clone = structuredClone(project);
   if (entry.kind === 'terrain') return planTerrainImport(project, clone, entry, options);
+  if (entry.kind === 'monster' || entry.kind === 'pickup') {
+    return planActorImport(project, clone, entry, options);
+  }
   return { ok: false, reason: `Unsupported library entry kind "${entry.kind}".` };
 }
 

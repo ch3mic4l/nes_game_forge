@@ -21,7 +21,8 @@ import {
   freePermittedIndices,
   planLibraryImport,
   applyPlannedProject,
-  attributedErrors
+  attributedErrors,
+  battleSpriteBudget
 } from '../../shared/project.js';
 import { Store } from '../../renderer/store.js';
 import { TERRAIN_ENTRIES } from '../../shared/library/terrain/index.js';
@@ -39,6 +40,53 @@ function placeEventEntity(project, commands) {
     y: 0,
     props: { event: { pages: [{ cond: { type: 'none', arg: 0 }, commands }] } }
   });
+}
+
+// --- Phase 5 (monster/pickup) synthetic entry helpers ----------------------
+// Every entry below is a small, inline literal, not real library content
+// (phase 5's own scope decision -- shared/library/monster|pickup are a later
+// phase). A distinct 64-char tile string per label, never BLANK_TILE.
+const spriteTile = (label) => `${label}`.padEnd(64, '.');
+
+const MONSTER_PALETTE = [0x0f, 0x11, 0x22, 0x33];
+const MONSTER_BATTLE = {
+  atk: 5, def: 2, acc: 180, eva: 4, speed: 4, mp: 0, xp: 4, gold: 2,
+  weak: 'none', strong: 'none', dropPct: 10, heal: 0
+};
+
+// One pose (idle only), 4 tiles, the sugared `palette`/`metasprite` singular
+// form -- exercises the §2.4 sugar defaulting every tile's paletteIndex to 0.
+function onePoseMonster(overrides = {}) {
+  return {
+    kind: 'monster',
+    name: 'Slime',
+    license: { type: 'CC0-1.0', author: 'NES Game Forge' },
+    palette: MONSTER_PALETTE,
+    spriteTiles: [spriteTile('m0'), spriteTile('m1'), spriteTile('m2'), spriteTile('m3')],
+    metasprite: {
+      tiles: [
+        { x: 0, y: 0, tile: 0, hflip: false, vflip: false },
+        { x: 8, y: 0, tile: 1, hflip: false, vflip: false },
+        { x: 0, y: 8, tile: 2, hflip: false, vflip: false },
+        { x: 8, y: 8, tile: 3, hflip: false, vflip: false }
+      ]
+    },
+    hp: 5,
+    speed: 2,
+    damage: 1,
+    battle: MONSTER_BATTLE,
+    ...overrides
+  };
+}
+
+function onePosePickup(overrides = {}) {
+  return {
+    ...onePoseMonster(overrides),
+    kind: 'pickup',
+    name: 'Coin',
+    // Deliberately nonzero: the core must force this to 0 regardless.
+    damage: 5
+  };
 }
 
 // --- §5.1/§5.3: reservation and reference counting --------------------------
@@ -437,6 +485,402 @@ test('24: applyPlannedProject deep-equals the plan, with no independent second a
   const target = structuredClone(project);
   applyPlannedProject(target, plan.project);
   assert.deepEqual(target, plan.project);
+});
+
+// --- Phase 5 (§13 item 5): monster/pickup cores ----------------------------
+
+test('17 (real end-to-end version): a damaging monster import that itself creates a new §5.7 error refuses', () => {
+  const project = createProject('Test', 'action');
+  // A metasprite already references blank $FE, but the HUD-hearts range is
+  // not active yet (no damage source anywhere in the project), so this is
+  // not an error before the import.
+  project.sprites.metasprites.push({
+    id: 0,
+    name: 'PreExisting',
+    tiles: [{ x: 0, y: 0, tile: 0xfe, palette: 0, hflip: false, vflip: false }]
+  });
+  const before = validateProject(project).filter((p) => p.severity === 'error');
+  assert.equal(before.length, 0);
+
+  // onePoseMonster's own damage: 1 is exactly what flips projectUsesHeartArt
+  // on, activating the reservation this pre-existing reference now violates.
+  const plan = planLibraryImport(project, onePoseMonster());
+  assert.equal(plan.ok, false);
+  const occurrences = plan.reason.match(/references a blank tile inside the range reserved for the HUD hearts/g);
+  assert.equal(occurrences?.length, 1);
+});
+
+test('18b: options.paletteSlots validation for a two-palette entry', () => {
+  const project = createProject('Test', 'action');
+  const twoPaletteEntry = {
+    kind: 'monster',
+    name: 'Dual',
+    license: { type: 'CC0-1.0', author: 'NES Game Forge' },
+    palettes: [[0x0f, 0x05, 0x06, 0x07], [0x00, 0x08, 0x09, 0x0a]],
+    spriteTiles: [spriteTile('a'), spriteTile('b')],
+    poses: {
+      idle: {
+        tiles: [
+          { x: 0, y: 0, tile: 0, paletteIndex: 0, hflip: false, vflip: false },
+          { x: 8, y: 0, tile: 1, paletteIndex: 1, hflip: false, vflip: false }
+        ]
+      }
+    },
+    hp: 5, speed: 2, damage: 1, battle: MONSTER_BATTLE
+  };
+
+  // Length mismatch.
+  let before = structuredClone(project);
+  let plan = planLibraryImport(project, twoPaletteEntry, { paletteSlots: [1] });
+  assert.equal(plan.ok, false);
+  assert.deepEqual(project, before);
+
+  // Two elements naming the same slot.
+  before = structuredClone(project);
+  plan = planLibraryImport(project, twoPaletteEntry, { paletteSlots: [1, 1] });
+  assert.equal(plan.ok, false);
+  assert.deepEqual(project, before);
+});
+
+test('18c: a valid, distinct options.paletteSlots array succeeds end to end', () => {
+  const project = createProject('Test', 'action');
+  // Occupy sprite palette 2 (referenced, so an exact match there adopts
+  // rather than writes) while leaving its colours at the default.
+  project.sprites.metasprites.push({
+    id: 0,
+    name: 'Occupant',
+    tiles: [{ x: 0, y: 0, tile: 10, palette: 2, hflip: false, vflip: false }]
+  });
+  const beforeSlot2 = [...project.palettes.sprite[2]];
+  const beforeSlot3 = [...project.palettes.sprite[3]];
+
+  const entry = {
+    kind: 'pickup',
+    name: 'Key',
+    license: { type: 'CC0-1.0', author: 'NES Game Forge' },
+    // palettes[0] narratively "exact matches" slot 2's own default colours
+    // (this is not what selects the slot -- options.paletteSlots names it
+    // explicitly -- only what makes "adopt, no write" the correct outcome).
+    palettes: [[0x00, 0x19, 0x29, 0x30], [0x00, 0x05, 0x06, 0x07]],
+    spriteTiles: [spriteTile('k0'), spriteTile('k1')],
+    poses: {
+      idle: {
+        tiles: [
+          { x: 0, y: 0, tile: 0, paletteIndex: 0, hflip: false, vflip: false },
+          { x: 8, y: 0, tile: 1, paletteIndex: 1, hflip: false, vflip: false }
+        ]
+      }
+    },
+    hp: 5, speed: 2, damage: 1, battle: MONSTER_BATTLE
+  };
+
+  const plan = planLibraryImport(project, entry, { paletteSlots: [2, 3] });
+  assert.ok(plan.ok, plan.reason);
+  assert.equal(plan.report.palettes[0].slot, 2);
+  assert.equal(plan.report.palettes[0].written, false);
+  assert.equal(plan.report.palettes[1].slot, 3);
+  assert.equal(plan.report.palettes[1].written, true);
+  assert.deepEqual(plan.project.palettes.sprite[2], beforeSlot2);
+  assert.notDeepEqual(plan.project.palettes.sprite[3], beforeSlot3);
+
+  const metasprite = plan.project.sprites.metasprites[1]; // 0 is Occupant
+  assert.equal(metasprite.tiles[0].palette, 2);
+  assert.equal(metasprite.tiles[1].palette, 3);
+});
+
+test('25: importing a pickup entry leaves project.items byte-identical, and the report names "Collected from"', () => {
+  const project = createProject('Test', 'action');
+  const beforeItems = structuredClone(project.items);
+  const plan = planLibraryImport(project, onePosePickup());
+  assert.ok(plan.ok, plan.reason);
+  assert.deepEqual(plan.project.items, beforeItems);
+  assert.ok(plan.report.lines.some((line) => /Collected from/.test(line)));
+});
+
+test('25b (extra): a pickup entry forces behavior: pickup and damage: 0 regardless of what the entry declares', () => {
+  const project = createProject('Test', 'action');
+  const plan = planLibraryImport(project, onePosePickup());
+  assert.ok(plan.ok, plan.reason);
+  const actor = plan.project.sprites.actors[plan.report.actor.id];
+  assert.equal(actor.behavior, 'pickup');
+  assert.equal(actor.damage, 0);
+});
+
+test('26: synthesized .palette/anims.* are the real resolved values, never hardcoded', () => {
+  const project = createProject('Test', 'action');
+  // Three pre-existing metasprites/animations so the synthesized ones land
+  // at id 3, and sprite palette 1 is referenced (not "unused") so the
+  // headless default's own priority chain lands on slot 2, not 1.
+  project.sprites.metasprites.push(
+    { id: 0, name: 'E0', tiles: [{ x: 0, y: 0, tile: 20, palette: 1, hflip: false, vflip: false }] },
+    { id: 1, name: 'E1', tiles: [] },
+    { id: 2, name: 'E2', tiles: [] }
+  );
+  project.sprites.animations.push(
+    { id: 0, name: 'A0', loop: true, frames: [{ metaspriteId: 0, duration: 8 }] },
+    { id: 1, name: 'A1', loop: true, frames: [{ metaspriteId: 1, duration: 8 }] },
+    { id: 2, name: 'A2', loop: true, frames: [{ metaspriteId: 2, duration: 8 }] }
+  );
+
+  const entry = onePoseMonster({ palette: [0x00, 0x05, 0x06, 0x07] }); // matches nothing exactly
+  const plan = planLibraryImport(project, entry);
+  assert.ok(plan.ok, plan.reason);
+  assert.equal(plan.report.palettes[0].slot, 2);
+
+  const metasprite = plan.project.sprites.metasprites[3];
+  assert.equal(metasprite.id, 3);
+  for (const tile of metasprite.tiles) assert.equal(tile.palette, 2);
+
+  const actor = plan.project.sprites.actors[plan.report.actor.id];
+  for (const slot of ['idle', 'walkDown', 'walkUp', 'walkSide']) assert.equal(actor.anims[slot], 3);
+});
+
+test('26b: a four-pose entry pushes four metasprites/animations, each anims slot pointing at its own pose', () => {
+  const project = createProject('Test', 'action');
+  const labels = { idle: 'i', walkDown: 'd', walkUp: 'u', walkSide: 's' };
+  const spriteTiles = [];
+  const poses = {};
+  for (const slot of ['idle', 'walkDown', 'walkUp', 'walkSide']) {
+    const base = spriteTiles.length;
+    for (let k = 0; k < 4; k++) spriteTiles.push(spriteTile(`${labels[slot]}${k}`));
+    poses[slot] = {
+      tiles: [
+        { x: 0, y: 0, tile: base, paletteIndex: 0, hflip: false, vflip: false },
+        { x: 8, y: 0, tile: base + 1, paletteIndex: 0, hflip: false, vflip: false },
+        { x: 0, y: 8, tile: base + 2, paletteIndex: 0, hflip: false, vflip: false },
+        { x: 8, y: 8, tile: base + 3, paletteIndex: 0, hflip: false, vflip: false }
+      ]
+    };
+  }
+  const entry = {
+    kind: 'monster', name: 'Walker', license: { type: 'CC0-1.0', author: 'NES Game Forge' },
+    palette: MONSTER_PALETTE, spriteTiles, poses, hp: 5, speed: 2, damage: 1, battle: MONSTER_BATTLE
+  };
+
+  const plan = planLibraryImport(project, entry);
+  assert.ok(plan.ok, plan.reason);
+  assert.equal(plan.report.poses.length, 4);
+  assert.equal(new Set(plan.report.poses.map((p) => p.metaspriteId)).size, 4);
+  assert.equal(new Set(plan.report.poses.map((p) => p.animationId)).size, 4);
+
+  const actor = plan.project.sprites.actors[plan.report.actor.id];
+  const spriteTable = plan.project.tilesets[0].sprites.tiles;
+  for (const slot of ['idle', 'walkDown', 'walkUp', 'walkSide']) {
+    const animation = plan.project.sprites.animations[actor.anims[slot]];
+    const metasprite = plan.project.sprites.metasprites[animation.frames[0].metaspriteId];
+    const content = spriteTable[metasprite.tiles[0].tile];
+    assert.equal(content, spriteTile(`${labels[slot]}0`));
+  }
+});
+
+test('26c: a partially-declared entry (idle + walkDown) falls back to idle per slot', () => {
+  const project = createProject('Test', 'action');
+  const entry = {
+    kind: 'monster', name: 'Partial', license: { type: 'CC0-1.0', author: 'NES Game Forge' },
+    palette: MONSTER_PALETTE,
+    spriteTiles: [spriteTile('i0'), spriteTile('i1'), spriteTile('d0'), spriteTile('d1')],
+    poses: {
+      idle: {
+        tiles: [
+          { x: 0, y: 0, tile: 0, paletteIndex: 0, hflip: false, vflip: false },
+          { x: 8, y: 0, tile: 1, paletteIndex: 0, hflip: false, vflip: false }
+        ]
+      },
+      walkDown: {
+        tiles: [
+          { x: 0, y: 0, tile: 2, paletteIndex: 0, hflip: false, vflip: false },
+          { x: 8, y: 0, tile: 3, paletteIndex: 0, hflip: false, vflip: false }
+        ]
+      }
+    },
+    hp: 5, speed: 2, damage: 1, battle: MONSTER_BATTLE
+  };
+
+  const plan = planLibraryImport(project, entry);
+  assert.ok(plan.ok, plan.reason);
+  const actor = plan.project.sprites.actors[plan.report.actor.id];
+  assert.equal(actor.anims.walkUp, actor.anims.idle);
+  assert.equal(actor.anims.walkSide, actor.anims.idle);
+  assert.notEqual(actor.anims.walkDown, actor.anims.idle);
+});
+
+test('26d: a two-palette entry resolves each palette in order, and paletteMap routes tiles by paletteIndex', () => {
+  const project = createProject('Test', 'action');
+  // Sprite palette 1 referenced (adopt outcome for an exact match); 2 stays
+  // genuinely unused (fresh-written outcome).
+  project.sprites.metasprites.push({
+    id: 0,
+    name: 'Occupant',
+    tiles: [{ x: 0, y: 0, tile: 10, palette: 1, hflip: false, vflip: false }]
+  });
+  const entry = {
+    kind: 'monster', name: 'Dual', license: { type: 'CC0-1.0', author: 'NES Game Forge' },
+    palettes: [
+      [0x0f, 0x11, 0x21, 0x30], // exact-matches sprite palette 1's default colours
+      [0x00, 0x05, 0x06, 0x07] // matches nothing; genuinely unused slot 2 is next
+    ],
+    spriteTiles: [spriteTile('a'), spriteTile('b')],
+    poses: {
+      idle: {
+        tiles: [
+          { x: 0, y: 0, tile: 0, paletteIndex: 0, hflip: false, vflip: false },
+          { x: 8, y: 0, tile: 1, paletteIndex: 1, hflip: false, vflip: false }
+        ]
+      }
+    },
+    hp: 5, speed: 2, damage: 1, battle: MONSTER_BATTLE
+  };
+
+  const plan = planLibraryImport(project, entry);
+  assert.ok(plan.ok, plan.reason);
+  assert.equal(plan.report.palettes[0].slot, 1);
+  assert.equal(plan.report.palettes[0].written, false);
+  assert.equal(plan.report.palettes[1].slot, 2);
+  assert.equal(plan.report.palettes[1].written, true);
+
+  const metasprite = plan.project.sprites.metasprites[1]; // 0 is Occupant
+  assert.equal(metasprite.tiles[0].palette, 1);
+  assert.equal(metasprite.tiles[1].palette, 2);
+});
+
+test('26e: an out-of-range paletteIndex refuses the whole import, never a silent passthrough', () => {
+  const project = createProject('Test', 'action');
+  const entry = onePoseMonster();
+  entry.metasprite.tiles[0] = { ...entry.metasprite.tiles[0], paletteIndex: 1 }; // only 1 declared palette
+  const before = structuredClone(project);
+  const plan = planLibraryImport(project, entry);
+  assert.equal(plan.ok, false);
+  assert.deepEqual(project, before);
+});
+
+test('26f: two entry-local palettes that would both resolve to "first unused" independently land on different slots', () => {
+  const project = createProject('Test', 'action'); // sprite slots 1, 2, 3 all genuinely unused
+  const entry = {
+    kind: 'monster', name: 'DualFresh', license: { type: 'CC0-1.0', author: 'NES Game Forge' },
+    palettes: [[0x00, 0x05, 0x06, 0x07], [0x00, 0x08, 0x09, 0x0a]], // neither matches any existing colours
+    spriteTiles: [spriteTile('c'), spriteTile('d')],
+    poses: {
+      idle: {
+        tiles: [
+          { x: 0, y: 0, tile: 0, paletteIndex: 0, hflip: false, vflip: false },
+          { x: 8, y: 0, tile: 1, paletteIndex: 1, hflip: false, vflip: false }
+        ]
+      }
+    },
+    hp: 5, speed: 2, damage: 1, battle: MONSTER_BATTLE
+  };
+
+  const plan = planLibraryImport(project, entry);
+  assert.ok(plan.ok, plan.reason);
+  assert.notEqual(plan.report.palettes[0].slot, plan.report.palettes[1].slot);
+  assert.equal(plan.report.palettes[0].written, true);
+  assert.equal(plan.report.palettes[1].written, true);
+});
+
+test('26g (extra): entry.palettes.length is bound-checked against LIMITS.palettes (4), inclusive', () => {
+  const project = createProject('Test', 'action');
+  const fivePalette = {
+    kind: 'monster', name: 'FivePalette', license: { type: 'CC0-1.0', author: 'NES Game Forge' },
+    palettes: [[0, 1, 2, 3], [0, 4, 5, 6], [0, 7, 8, 9], [0, 10, 11, 12], [0, 13, 14, 15]],
+    spriteTiles: [spriteTile('a')],
+    poses: { idle: { tiles: [{ x: 0, y: 0, tile: 0, paletteIndex: 4, hflip: false, vflip: false }] } },
+    hp: 5, speed: 2, damage: 1, battle: MONSTER_BATTLE
+  };
+  const before = structuredClone(project);
+  const refused = planLibraryImport(project, fivePalette);
+  assert.equal(refused.ok, false);
+  assert.deepEqual(project, before);
+
+  // Boundary control: exactly 4 declared palettes (the inclusive upper
+  // bound) still succeeds -- the fix must not accidentally refuse this.
+  const fourPalette = {
+    kind: 'monster', name: 'FourPalette', license: { type: 'CC0-1.0', author: 'NES Game Forge' },
+    palettes: [[0, 1, 2, 3], [0, 4, 5, 6], [0, 7, 8, 9], [0, 10, 11, 12]],
+    spriteTiles: [spriteTile('a')],
+    poses: { idle: { tiles: [{ x: 0, y: 0, tile: 0, paletteIndex: 3, hflip: false, vflip: false }] } },
+    hp: 5, speed: 2, damage: 1, battle: MONSTER_BATTLE
+  };
+  const accepted = planLibraryImport(project, fourPalette);
+  assert.ok(accepted.ok, accepted.reason);
+  assert.equal(accepted.report.palettes.length, 4);
+});
+
+test('26h (extra): a missing required "idle" pose refuses, project untouched', () => {
+  const project = createProject('Test', 'action');
+  const noIdle = {
+    kind: 'monster', name: 'NoIdle', license: { type: 'CC0-1.0', author: 'NES Game Forge' },
+    palette: MONSTER_PALETTE,
+    spriteTiles: [spriteTile('a')],
+    poses: { walkDown: { tiles: [{ x: 0, y: 0, tile: 0, paletteIndex: 0, hflip: false, vflip: false }] } },
+    hp: 5, speed: 2, damage: 1, battle: MONSTER_BATTLE
+  };
+  const before = structuredClone(project);
+  const refused = planLibraryImport(project, noIdle);
+  assert.equal(refused.ok, false);
+  assert.deepEqual(project, before);
+
+  // Companion control: idle present (alone) still succeeds -- the fix must
+  // not accidentally refuse the ordinary one-pose case.
+  const accepted = planLibraryImport(project, onePoseMonster());
+  assert.ok(accepted.ok, accepted.reason);
+});
+
+test('26i (extra): re-importing the same entry twice de-collides the pushed metasprite/animation names', () => {
+  const project = createProject('Test', 'action');
+  const entry = onePoseMonster({ name: 'Repeat' });
+  const first = planLibraryImport(project, entry);
+  assert.ok(first.ok, first.reason);
+  const second = planLibraryImport(first.project, entry);
+  assert.ok(second.ok, second.reason);
+
+  const actor1 = second.project.sprites.actors[first.report.actor.id];
+  const actor2 = second.project.sprites.actors[second.report.actor.id];
+  assert.notEqual(actor1.name, actor2.name); // "Repeat" / "Repeat copy", already correct before this round
+
+  const metasprite1 = second.project.sprites.metasprites[first.report.poses[0].metaspriteId];
+  const metasprite2 = second.project.sprites.metasprites[second.report.poses[0].metaspriteId];
+  assert.notEqual(metasprite1.name, metasprite2.name);
+
+  const animation1 = second.project.sprites.animations[first.report.poses[0].animationId];
+  const animation2 = second.project.sprites.animations[second.report.poses[0].animationId];
+  assert.notEqual(animation1.name, animation2.name);
+});
+
+test('26j (extra): a non-array options.paletteSlots refuses rather than throwing', () => {
+  const project = createProject('Test', 'action');
+  const before = structuredClone(project);
+  const arrayLike = { 0: 2, length: 1 }; // array-like, not a real array
+  let plan;
+  assert.doesNotThrow(() => {
+    plan = planLibraryImport(project, onePoseMonster(), { paletteSlots: arrayLike });
+  });
+  assert.equal(plan.ok, false);
+  assert.deepEqual(project, before);
+});
+
+test('26k (extra): an out-of-range tile index in a pose refuses the whole import, never a silent passthrough', () => {
+  const project = createProject('Test', 'action');
+  const entry = onePoseMonster();
+  entry.metasprite.tiles[0] = { ...entry.metasprite.tiles[0], tile: entry.spriteTiles.length }; // one past the end
+  const before = structuredClone(project);
+  const plan = planLibraryImport(project, entry);
+  assert.equal(plan.ok, false);
+  assert.deepEqual(project, before);
+});
+
+test('27: an imported monster is counted in the OAM budget through the exported battleSpriteBudget', () => {
+  const project = createProject('Test', 'rpg');
+  const mapper = resolveMapper(project.cartridge.mapper);
+  const plan = planLibraryImport(project, onePoseMonster());
+  assert.ok(plan.ok, plan.reason);
+
+  const before = battleSpriteBudget(plan.project, mapper);
+  const placed = structuredClone(plan.project);
+  placed.maps[0].screens[0].entities.push({ actorId: plan.report.actor.id, x: 0, y: 0, props: {} });
+  const after = battleSpriteBudget(placed, mapper);
+
+  const metasprite = placed.sprites.metasprites[plan.report.poses[0].metaspriteId];
+  assert.equal(after.used - before.used, metasprite.tiles.length);
 });
 
 // --- Whole-inventory sanity (not §11-numbered, but cheap and load-bearing) --
