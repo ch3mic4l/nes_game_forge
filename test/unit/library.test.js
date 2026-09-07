@@ -1,15 +1,22 @@
 // The starter library import operation (docs/design-starter-library.md),
-// through phase 6 (§13 items 4-6): terrain, monster/pickup, and sfx/song.
-// Every numbered test below is the design's own §11 test of the same
-// number, adapted to whichever kind that phase actually built wherever the
-// design's own example used a kind not yet available at the time; each
-// adaptation says so in its own comment.
+// through phase 6's content slice (§13 items 4-6 plus §12's own content and
+// license tests, pulled forward): terrain, monster/pickup, sfx/song -- both
+// the mechanism (planLibraryImport/applyPlannedProject) and, as of this
+// slice, the real shipped content every kind's own shared/library/*/*.js
+// file declares. Every numbered test below is the design's own §11 test of
+// the same number, adapted to whichever kind that phase actually built
+// wherever the design's own example used a kind not yet available at the
+// time; each adaptation says so in its own comment.
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { execFileSync } from 'node:child_process';
 import { BLANK_TILE } from '../../shared/chr.js';
 import { resolveMapper } from '../../shared/cartridge.js';
-import { NO_SONG } from '../../shared/audio.js';
+import { NO_SONG, normalizeSfx, normalizeSong, sfxFrameLength, songFrameLength, SFX_MAX_STEPS } from '../../shared/audio.js';
 import {
   createProject,
   createScreen,
@@ -24,12 +31,23 @@ import {
   applyPlannedProject,
   attributedErrors,
   battleSpriteBudget,
+  ELEMENTS,
   LIMITS
 } from '../../shared/project.js';
 import { Store } from '../../renderer/store.js';
 import { TERRAIN_ENTRIES } from '../../shared/library/terrain/index.js';
+import { MONSTER_ENTRIES } from '../../shared/library/monster/index.js';
+import { PICKUP_ENTRIES } from '../../shared/library/pickup/index.js';
+import { SFX_ENTRIES } from '../../shared/library/sfx/index.js';
+import { SONG_ENTRIES } from '../../shared/library/song/index.js';
+import { LIBRARY_ENTRIES } from '../../shared/library/index.js';
+import { loadProject } from '../../main/project-io.js';
 import { checkCapacity } from '../../main/build/generate.js';
 import { encodeString } from '../../main/build/textcompile.js';
+
+const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
+const SAMPLE = path.join(ROOT, 'sample');
+const SAMPLE_RPG = path.join(ROOT, 'sample-rpg');
 
 const [grassPlains, dirtPath, shallowWater, stoneFloor, woodPlanks] = TERRAIN_ENTRIES;
 
@@ -1226,6 +1244,392 @@ test('32: a successful monster import can leave the project one build away from 
   const overflow = checkCapacity(plan.project).problems.find((p) => /lookup tables need/.test(p.message));
   assert.ok(overflow, 'checkCapacity must report the kernel-lo overflow by name after the import');
   assert.equal(overflow.severity, 'error');
+});
+
+// --- Content slice: real monster/pickup/sfx/song entries, the aggregate ----
+// --- manifest, and §12's license recording (§11 tests 28-30) ---------------
+
+const LICENSE_TYPES = ['CC0-1.0'];
+// §2: author is exactly 'NES Game Forge' on every v1 entry -- the project
+// itself is the sole author (option (A)), so this is a closed set, not
+// merely "any non-empty string."
+const LICENSE_AUTHORS = ['NES Game Forge'];
+const ENTRY_KINDS = ['terrain', 'monster', 'pickup', 'sfx', 'song'];
+
+test('28a: LICENSE and LICENSE-ASSETS exist on disk and are tracked by git', () => {
+  const tracked = new Set(
+    execFileSync('git', ['ls-files'], { cwd: ROOT, encoding: 'utf8' }).split('\n').filter(Boolean)
+  );
+  for (const name of ['LICENSE', 'LICENSE-ASSETS']) {
+    assert.ok(fs.existsSync(path.join(ROOT, name)), `${name} does not exist on disk`);
+    assert.ok(tracked.has(name), `${name} exists on disk but is not tracked by git`);
+  }
+});
+
+test('28b: every entry declares an allowed license and a valid kind, and names are unique within each kind', () => {
+  for (const entry of LIBRARY_ENTRIES) {
+    assert.ok(
+      LICENSE_TYPES.includes(entry.license?.type),
+      `"${entry.name}" (${entry.kind}) has an unrecognized license.type: ${entry.license?.type}`
+    );
+    assert.ok(
+      LICENSE_AUTHORS.includes(entry.license?.author),
+      `"${entry.name}" (${entry.kind}) has an unrecognized license.author: ${entry.license?.author}`
+    );
+    assert.ok(ENTRY_KINDS.includes(entry.kind), `"${entry.name}" has an unrecognized kind: ${entry.kind}`);
+  }
+  for (const [kind, entries] of [
+    ['terrain', TERRAIN_ENTRIES],
+    ['monster', MONSTER_ENTRIES],
+    ['pickup', PICKUP_ENTRIES],
+    ['sfx', SFX_ENTRIES],
+    ['song', SONG_ENTRIES]
+  ]) {
+    const names = entries.map((e) => e.name);
+    assert.equal(new Set(names).size, names.length, `${kind}: duplicate entry name among ${names.join(', ')}`);
+    // Round-3 review missed this for every array but monster/pickup (28h):
+    // a swapped `kind` (an sfx entry authored `kind: 'song'`, say) would
+    // otherwise pass every check above -- entry.kind is still one of the
+    // five allowed kinds, and duplicate-name checking doesn't look at it --
+    // then import into the wrong collection entirely.
+    for (const entry of entries) {
+      assert.equal(entry.kind, kind, `"${entry.name}": entry.kind is "${entry.kind}", not "${kind}" -- it does not match the array it was authored in (${kind === 'terrain' ? 'TERRAIN' : kind.toUpperCase()}_ENTRIES)`);
+    }
+  }
+});
+
+test('28c: no monster/pickup spriteTiles pool contains BLANK_TILE, and every palette count is 1..LIMITS.palettes', () => {
+  for (const entry of [...MONSTER_ENTRIES, ...PICKUP_ENTRIES]) {
+    assert.ok(
+      !entry.spriteTiles.includes(BLANK_TILE),
+      `"${entry.name}" (${entry.kind}) has a BLANK_TILE in its spriteTiles pool`
+    );
+    const paletteCount = entry.palettes ? entry.palettes.length : entry.palette ? 1 : 0;
+    assert.ok(
+      paletteCount >= 1 && paletteCount <= LIMITS.palettes,
+      `"${entry.name}" (${entry.kind}) declares ${paletteCount} palette(s), outside 1..${LIMITS.palettes}`
+    );
+  }
+});
+
+test('28d: the inventory counts match §8.1 exactly', () => {
+  assert.equal(TERRAIN_ENTRIES.length, 5);
+  assert.equal(MONSTER_ENTRIES.length, 3);
+  assert.equal(PICKUP_ENTRIES.length, 4);
+  assert.equal(SFX_ENTRIES.length, 8);
+  assert.equal(SONG_ENTRIES.length, 2);
+
+  const bgTiles = new Set();
+  for (const entry of TERRAIN_ENTRIES) for (const t of entry.tiles) bgTiles.add(t);
+  assert.equal(bgTiles.size, 25, '25 globally-distinct background tiles across terrain pools');
+
+  const spriteTiles = new Set();
+  for (const entry of [...MONSTER_ENTRIES, ...PICKUP_ENTRIES]) for (const t of entry.spriteTiles) spriteTiles.add(t);
+  assert.equal(spriteTiles.size, 28, '28 globally-distinct sprite tiles across actor pools');
+});
+
+test('28e: every sfx literal round-trips through normalizeSfx unchanged, within SFX_MAX_STEPS and 255 frames', () => {
+  for (const entry of SFX_ENTRIES) {
+    assert.deepEqual(normalizeSfx(entry.sfx), entry.sfx, `"${entry.name}" sfx does not round-trip unchanged`);
+    assert.ok(entry.sfx.steps.length <= SFX_MAX_STEPS, `"${entry.name}" exceeds SFX_MAX_STEPS`);
+    assert.ok(sfxFrameLength(entry.sfx) <= 255, `"${entry.name}" sfxFrameLength exceeds 255`);
+    // planSfxImport takes the payload's own sfx.name, not entry.name -- a
+    // mismatch would import under a different name than the picker shows.
+    assert.equal(entry.sfx.name, entry.name, `"${entry.name}": entry.sfx.name does not match entry.name`);
+  }
+});
+
+test('28f: every song literal round-trips through normalizeSong unchanged, and Title Jingle fits a Sting', () => {
+  for (const entry of SONG_ENTRIES) {
+    assert.deepEqual(normalizeSong(entry.song), entry.song, `"${entry.name}" song does not round-trip unchanged`);
+    // planSongImport takes the payload's own song.name, not entry.name -- a
+    // mismatch would import under a different name than the picker shows.
+    assert.equal(entry.song.name, entry.name, `"${entry.name}": entry.song.name does not match entry.name`);
+  }
+  const titleJingle = SONG_ENTRIES.find((e) => e.name === 'Title Jingle');
+  assert.ok(titleJingle, 'Title Jingle entry not found');
+  assert.ok(songFrameLength(titleJingle.song) <= 255, "Title Jingle's songFrameLength exceeds 255");
+});
+
+test('28g: LIBRARY_ENTRIES is exactly terrain, monster, pickup, sfx, song, in that order', () => {
+  const expected = [...TERRAIN_ENTRIES, ...MONSTER_ENTRIES, ...PICKUP_ENTRIES, ...SFX_ENTRIES, ...SONG_ENTRIES];
+  assert.deepEqual(LIBRARY_ENTRIES, expected);
+});
+
+// 28h: 28a-g check the manifest-level shape (license, kind, name, tile pool,
+// palette count) but never look inside a monster/pickup literal's own
+// schema or gameplay values -- confirmed by sabotage: a hostile monster with
+// damage: 0, or a Potion with heal: 0, passed all 63 round-1 library tests.
+// This pins the exact v1 sugared §2.4 literal shape (palette/metasprite
+// singular, no paletteIndex on any tile) plus per-field gameplay values. A
+// future multi-pose/multi-palette entry (poses/palettes plural) updates this
+// test on purpose -- it is not meant to survive that change unmodified.
+const V1_TOP_KEYS = ['kind', 'name', 'license', 'palette', 'spriteTiles', 'metasprite', 'hp', 'speed', 'damage', 'battle'].sort();
+const V1_TILE_KEYS = ['x', 'y', 'tile', 'hflip', 'vflip'].sort();
+const V1_BATTLE_KEYS = ['atk', 'def', 'acc', 'eva', 'speed', 'mp', 'xp', 'gold', 'weak', 'strong', 'dropPct', 'heal'].sort();
+const V1_TILE_POSITIONS = [
+  [0, 0],
+  [8, 0],
+  [0, 8],
+  [8, 8]
+];
+
+test('28h: every monster/pickup literal is exactly the v1 sugared §2.4 shape with sane gameplay values', () => {
+  // Round-2 review finding: branching the damage rule on `entry.kind` trusts
+  // each entry's own self-reported field -- a Slime authored `kind:
+  // 'pickup', damage: 0` would pass every check below, then plan/apply as a
+  // real, collectible pickup rather than the hostile monster it is meant to
+  // be. `expectedKind` is instead the array the entry actually lives in --
+  // the same ground truth planLibraryImport's own callers use
+  // (MONSTER_ENTRIES vs. PICKUP_ENTRIES) -- and `entry.kind` is asserted
+  // against it rather than trusted.
+  for (const [expectedKind, entries] of [
+    ['monster', MONSTER_ENTRIES],
+    ['pickup', PICKUP_ENTRIES]
+  ]) {
+    for (const entry of entries) {
+      const label = `"${entry.name}" (declared in ${expectedKind === 'monster' ? 'MONSTER_ENTRIES' : 'PICKUP_ENTRIES'})`;
+
+      assert.equal(
+        entry.kind,
+        expectedKind,
+        `${label}: entry.kind is "${entry.kind}", not "${expectedKind}" -- it does not match the array it was authored in`
+      );
+
+      assert.deepEqual(Object.keys(entry).sort(), V1_TOP_KEYS, `${label}: top-level keys are not exactly the v1 sugared shape`);
+      assert.equal(entry.palettes, undefined, `${label}: declares plural "palettes" -- not the v1 singular sugar`);
+      assert.equal(entry.poses, undefined, `${label}: declares plural "poses" -- not the v1 singular sugar`);
+
+      assert.equal(entry.palette.length, 4, `${label}: palette is not 4 integers`);
+      for (const c of entry.palette) {
+        assert.ok(Number.isInteger(c) && c >= 0 && c <= 0x3f, `${label}: palette entry ${c} is not 0..0x3f`);
+      }
+
+      assert.equal(entry.spriteTiles.length, 4, `${label}: spriteTiles is not exactly 4 strings`);
+      for (const t of entry.spriteTiles) {
+        assert.match(t, /^[0-3]{64}$/, `${label}: spriteTiles entry does not match /^[0-3]{64}$/`);
+        assert.notEqual(t, BLANK_TILE, `${label}: spriteTiles contains BLANK_TILE`);
+      }
+
+      const tiles = entry.metasprite.tiles;
+      assert.equal(tiles.length, 4, `${label}: metasprite.tiles is not exactly 4 records`);
+      for (const t of tiles) {
+        assert.deepEqual(Object.keys(t).sort(), V1_TILE_KEYS, `${label}: a metasprite tile's own keys are not exactly x,y,tile,hflip,vflip (no paletteIndex)`);
+        assert.equal(t.hflip, false, `${label}: a metasprite tile's hflip is not exactly false`);
+        assert.equal(t.vflip, false, `${label}: a metasprite tile's vflip is not exactly false`);
+      }
+      assert.deepEqual(
+        tiles.map((t) => t.tile).sort(),
+        [0, 1, 2, 3],
+        `${label}: metasprite.tiles' own tile values are not exactly {0,1,2,3} each once`
+      );
+      assert.deepEqual(
+        tiles.map((t) => [t.x, t.y]).sort((a, b) => a[0] - b[0] || a[1] - b[1]),
+        [...V1_TILE_POSITIONS].sort((a, b) => a[0] - b[0] || a[1] - b[1]),
+        `${label}: metasprite.tiles' own (x, y) pairs are not exactly (0,0),(8,0),(0,8),(8,8)`
+      );
+
+      const battle = entry.battle;
+      assert.deepEqual(Object.keys(battle).sort(), V1_BATTLE_KEYS, `${label}: battle's own keys are not exactly the §2.4 set`);
+      for (const key of ['atk', 'def', 'acc', 'eva', 'speed', 'mp', 'xp', 'gold', 'dropPct', 'heal']) {
+        assert.ok(
+          Number.isInteger(battle[key]) && Number.isFinite(battle[key]) && battle[key] >= 0,
+          `${label}: battle.${key} (${battle[key]}) is not a finite non-negative integer`
+        );
+      }
+      assert.ok(ELEMENTS.some((e) => e.id === battle.weak), `${label}: battle.weak "${battle.weak}" is not a real element id`);
+      assert.ok(ELEMENTS.some((e) => e.id === battle.strong), `${label}: battle.strong "${battle.strong}" is not a real element id`);
+
+      assert.ok(Number.isInteger(entry.hp) && entry.hp > 0, `${label}: hp (${entry.hp}) is not an integer > 0`);
+      assert.ok(Number.isInteger(entry.speed) && entry.speed > 0, `${label}: speed (${entry.speed}) is not an integer > 0`);
+
+      // The damage rule is decided by `expectedKind` (which array this entry
+      // came from), never by the entry's own self-reported `entry.kind`.
+      if (expectedKind === 'monster') {
+        assert.ok(Number.isInteger(entry.damage) && entry.damage > 0, `${label}: monster damage (${entry.damage}) is not an integer > 0 -- it is what marks an actor hostile`);
+      } else {
+        assert.equal(entry.damage, 0, `${label}: pickup damage is not exactly 0`);
+      }
+
+      if (entry.name === 'Potion') {
+        assert.ok(battle.heal > 0, `${label}: Potion's battle.heal is not > 0`);
+      } else {
+        assert.equal(battle.heal, 0, `${label}: non-Potion battle.heal is not exactly 0`);
+      }
+    }
+  }
+});
+
+// 28i: §8.1's own shared-palette groups, pinned by content -- 28a-h never
+// compared one entry's palette against another's, so nothing caught a
+// group member drifting onto a different group's colours (or the two
+// groups colliding) even though the whole point of sharing one palette
+// literal per group (§8.1/§8.3) is that they import to the identical
+// destination slot. Position 0 of every declared palette is a placeholder
+// (§7.3) replaced by the destination project's own backdrop at import time,
+// so comparisons below are over positions 1..3 only where they need to
+// prove two palettes differ; the "share one literal" checks compare the
+// whole array, since sharing means byte-identical including the (unused)
+// placeholder.
+test('28i: monsters share one identical Creature palette, pickups one identical Item palette, terrain shares Nature/Built, and each group differs from its sibling', () => {
+  for (const entries of [MONSTER_ENTRIES, PICKUP_ENTRIES]) {
+    for (const entry of entries) {
+      assert.deepEqual(
+        entry.palette,
+        entries[0].palette,
+        `"${entry.name}": palette does not match the group's shared palette ("${entries[0].name}"'s)`
+      );
+    }
+  }
+  assert.notDeepEqual(
+    MONSTER_ENTRIES[0].palette.slice(1),
+    PICKUP_ENTRIES[0].palette.slice(1),
+    'the Creature (monster) and Item (pickup) palettes must differ on positions 1..3'
+  );
+
+  const NATURE_GROUP = [grassPlains, dirtPath, shallowWater];
+  const BUILT_GROUP = [stoneFloor, woodPlanks];
+  for (const entry of NATURE_GROUP) {
+    assert.deepEqual(
+      entry.palette,
+      NATURE_GROUP[0].palette,
+      `"${entry.name}": palette does not match the Nature group's shared palette ("${NATURE_GROUP[0].name}"'s)`
+    );
+  }
+  for (const entry of BUILT_GROUP) {
+    assert.deepEqual(
+      entry.palette,
+      BUILT_GROUP[0].palette,
+      `"${entry.name}": palette does not match the Built group's shared palette ("${BUILT_GROUP[0].name}"'s)`
+    );
+  }
+  assert.notDeepEqual(
+    NATURE_GROUP[0].palette.slice(1),
+    BUILT_GROUP[0].palette.slice(1),
+    'the Nature and Built palettes must differ on positions 1..3'
+  );
+});
+
+// Sums every palette-table write this plan's report attributes -- terrain's
+// singular `report.palette`, monster/pickup's plural `report.palettes` --
+// into per-table counters. sfx/song reports carry no palette field at all.
+function tallyPaletteWrites(report, tally) {
+  const entries = report.palette ? [report.palette] : report.palettes || [];
+  for (const p of entries) if (p.written) tally[p.table] = (tally[p.table] ?? 0) + 1;
+}
+
+test('29: the whole inventory imports into fresh action and RPG projects, fixed order, every plan ok', () => {
+  for (const gameType of ['action', 'rpg']) {
+    const project = createProject('Test', gameType);
+    const mapper = resolveMapper(project.cartridge.mapper);
+
+    const startActors = project.sprites.actors.length;
+    const startMetasprites = project.sprites.metasprites.length;
+    const startAnimations = project.sprites.animations.length;
+    const startFreeMetatiles = Object.values(unusedMetatileSlots(project)).filter(Boolean).length;
+    const startSfx = project.sfx.length;
+    const startSongs = project.songs.length;
+
+    const written = {};
+    for (const entry of LIBRARY_ENTRIES) {
+      const plan = planLibraryImport(project, entry);
+      assert.ok(plan.ok, `${gameType} / ${entry.kind} "${entry.name}": ${plan.reason}`);
+      tallyPaletteWrites(plan.report, written);
+      applyPlannedProject(project, plan.project);
+    }
+
+    assert.equal(project.sprites.actors.length - startActors, 7);
+    assert.equal(project.sprites.metasprites.length - startMetasprites, 7);
+    assert.equal(project.sprites.animations.length - startAnimations, 7);
+    const endFreeMetatiles = Object.values(unusedMetatileSlots(project)).filter(Boolean).length;
+    assert.equal(startFreeMetatiles - endFreeMetatiles, 10, `${gameType}: 10 metatile slots claimed`);
+    assert.equal(project.sfx.length - startSfx, 8);
+    assert.equal(project.songs.length - startSongs, 2);
+    assert.equal(written.bg ?? 0, 2, `${gameType}: 2 background palettes written fresh`);
+    assert.equal(written.sprite ?? 0, 2, `${gameType}: 2 sprite palettes written fresh`);
+
+    if (gameType === 'rpg') {
+      // §8.3: the RPG case's two free background slots exactly cover
+      // Nature+Built, with zero spare left once the whole terrain set lands.
+      assert.equal(unusedPaletteSlots(project, 'bg', mapper).size, 0);
+    }
+
+    const errors = validateProject(project).filter((p) => p.severity === 'error');
+    assert.deepEqual(errors, [], `${gameType}: validateProject reports errors after importing everything`);
+  }
+});
+
+// 30: the identical sequence against the real sample/ and sample-rpg/
+// fixtures, loaded via loadProject (precedent: test 4 above). §8.3's own
+// prose predicts the *first* entry of each shared-palette group gets a
+// fresh write wherever a free slot exists. The real fixtures diverge from
+// that prose in one respect, confirmed empirically rather than assumed: on
+// both fixtures, Grass Plains (the first Nature-group terrain entry) exactly
+// matches the fixture's own pre-existing background palette 0 -- both
+// sample/ and sample-rpg/ already carry [0x0f, 0x1a, 0x2a, 0x30] there, byte
+// for byte identical to NATURE_PALETTE -- so it *adopts* (written: false)
+// rather than writing fresh, even on sample-rpg/ where a genuinely free bg
+// slot (2) exists. That free slot instead goes to the *second* group
+// (Built, via Stone Floor) on sample-rpg/, and on sample/ (which has no
+// free bg slot at all) every terrain entry adopts. This is a real, checked
+// discrepancy against §8.3's prose, not a test bent to pass -- see this
+// slice's own report for the write-up. The sprite side matches §8.3's prose
+// exactly on both fixtures: Slime (first of the Creature group) takes the
+// one free sprite slot (3), and every other monster/pickup entry adopts.
+const EXPECTED_OUTCOMES = {
+  sample: [
+    ['Grass Plains', 'bg', false],
+    ['Dirt Path', 'bg', false],
+    ['Shallow Water', 'bg', false],
+    ['Stone Floor', 'bg', false],
+    ['Wood Planks', 'bg', false],
+    ['Slime', 'sprite', true],
+    ['Bat', 'sprite', false],
+    ['Skeleton', 'sprite', false],
+    ['Key', 'sprite', false],
+    ['Coin', 'sprite', false],
+    ['Potion', 'sprite', false],
+    ['Scroll', 'sprite', false]
+  ],
+  'sample-rpg': [
+    ['Grass Plains', 'bg', false],
+    ['Dirt Path', 'bg', false],
+    ['Shallow Water', 'bg', false],
+    ['Stone Floor', 'bg', true],
+    ['Wood Planks', 'bg', false],
+    ['Slime', 'sprite', true],
+    ['Bat', 'sprite', false],
+    ['Skeleton', 'sprite', false],
+    ['Key', 'sprite', false],
+    ['Coin', 'sprite', false],
+    ['Potion', 'sprite', false],
+    ['Scroll', 'sprite', false]
+  ]
+};
+
+test('30: the identical sequence against the real sample/ and sample-rpg/ fixtures, never a refusal', async () => {
+  for (const [label, dir] of [['sample', SAMPLE], ['sample-rpg', SAMPLE_RPG]]) {
+    const project = await loadProject(dir); // must not skip silently if the fixture is missing
+    const mapper = resolveMapper(project.cartridge.mapper);
+
+    const outcomes = [];
+    for (const entry of LIBRARY_ENTRIES) {
+      const plan = planLibraryImport(project, entry);
+      assert.ok(plan.ok, `${label}: "${entry.name}" (${entry.kind}) was refused: ${plan.reason}`);
+      const reported = entry.kind === 'terrain' || entry.kind === 'monster' || entry.kind === 'pickup';
+      if (reported) {
+        const entries = plan.report.palette ? [plan.report.palette] : plan.report.palettes;
+        for (const p of entries) outcomes.push([entry.name, p.table, p.written]);
+      }
+      applyPlannedProject(project, plan.project);
+    }
+
+    assert.deepEqual(outcomes, EXPECTED_OUTCOMES[label], `${label}: per-entry palette-write sequence`);
+    assert.equal(unusedPaletteSlots(project, 'bg', mapper).size, 0, `${label}: no bg palette slots left free`);
+    assert.equal(unusedPaletteSlots(project, 'sprite', mapper).size, 0, `${label}: no sprite palette slots left free`);
+    const errors = validateProject(project).filter((p) => p.severity === 'error');
+    assert.deepEqual(errors, [], `${label}: validateProject reports errors after importing everything`);
+  }
 });
 
 // --- Whole-inventory sanity (not §11-numbered, but cheap and load-bearing) --

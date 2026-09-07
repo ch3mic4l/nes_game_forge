@@ -1,4 +1,4 @@
-# Design: a small MIT/CC0 starter library (ROADMAP item 8, fourth sub-bullet) — v12
+# Design: a small MIT/CC0 starter library (ROADMAP item 8, fourth sub-bullet) — v13
 
 **v12 resolves three questions Chris left open in v11 — §7.2/§10's palette default, §2.4/§6's
 multi-pose/multi-palette schema, §7.5's import-validity mechanism — then fixes what two further review
@@ -1244,12 +1244,18 @@ tileset the field actually names, not to every tileset sharing a label.
 **No import in this inventory can refuse on palette grounds in any scenario** — §7.3's two-outcome
 resolution never has a third, refusing branch. Fresh projects give every entry its own designed
 colours (the RPG case's 2 free background slots exactly cover `Nature`+`Built`, with zero spare —
-the tightest passing case, still passing). `sample/` and `sample-rpg/`, which have too few free
-palette slots for the whole shared-palette scheme, give the *first* entry of each shared-palette
-group real, freshly-written colours where a genuinely free slot exists, and every later same-group
-entry either exact-matches it (a real write happened, so this is a true match) or — where no free
-slot ever existed for that group at all — adopts the deterministic default slot's existing colours
-instead of refusing. **Tile-table and metatile-slot capacity never bind in any of the four scenarios
+the tightest passing case, still passing). `sample/` and `sample-rpg/` never reach the
+"genuinely free slot" case for the `Nature` group at all: §7.2's own priority chain tests every
+candidate slot for an exact match — over the three non-backdrop positions, slot 0 included —
+*before* it ever looks at which slots are free, and both fixtures' own background palette 0 already
+holds `Nature`'s exact non-backdrop colours (`0x1a, 0x2a, 0x30`), so Grass Plains, Dirt Path and
+Shallow Water all **adopt** slot 0 on both fixtures rather than writing anything. `sample-rpg/`'s one
+genuinely free bg slot (2) therefore goes to the *next* group instead — `Built`'s first entry, Stone
+Floor, writes it fresh, and Wood Planks then exact-matches it — while on `sample/` (no free bg slot
+at all) every terrain entry adopts. The sprite side runs the way this paragraph's opening claim
+already describes: Slime (the first `Creature`-group entry) takes the one free sprite slot (3), and
+every later monster/pickup entry adopts. §11 test 30 pins this exact per-entry sequence against both
+fixtures. **Tile-table and metatile-slot capacity never bind in any of the four scenarios
 probed**: 25 unique background tiles and 28 unique sprite tiles remain comfortably under every
 measured minimum, including the tightened 141-tile battle-tileset figure — which a terrain import
 would not ordinarily even target, since the walkable "Overworld"/"Main" tileset is the natural
@@ -1746,6 +1752,34 @@ stated fallback (the next build reports the same overflow it always would have) 
 for v1.
 
 ## Changelog
+
+### v13 (the content slice — real shipped inventory, plus a reviewer round on it)
+
+- The real v1 inventory now ships: `shared/library/monster/{slime,bat,skeleton}.js`,
+  `shared/library/pickup/{key,coin,potion,scroll}.js`, `shared/library/sfx/*.js` (8 entries),
+  `shared/library/song/{title-jingle,ambient-loop}.js`, and the aggregate
+  `shared/library/index.js` (`LIBRARY_ENTRIES`, fixed terrain/monster/pickup/sfx/song order) —
+  §8.1's inventory was previously described but not authored.
+- §12's license files and manifest test landed with this slice rather than waiting for phase 8,
+  per §13's own "can land as early as phase 1" note: top-level `LICENSE` (MIT) and
+  `LICENSE-ASSETS` (this project's own preamble plus the complete CC0 1.0 Universal legal code,
+  not merely a summary — a reviewer finding this round) are both tracked by git.
+- §11 tests 28 (split into 28a-28i once reviewer rounds found 28a-28g checked only manifest-level
+  shape — license, kind, tile pool, palette count — and never a monster/pickup literal's own
+  schema or gameplay values, nor §8.1's own shared-palette groups; 28h pins the v1 sugared §2.4
+  literal shape and per-field gameplay values, 28i pins §8.1's shared-palette groups, and 28b pins
+  each per-kind array's own `kind`), 29 (fresh action/RPG import of the whole inventory) and 30 (the
+  identical sequence against the real `sample/`/`sample-rpg/` fixtures) are now written and passing.
+- §8.3's own prose about what the two real fixtures do was wrong and is corrected above: it
+  described the *first* entry of each shared-palette group getting a fresh write wherever a free
+  slot exists, but on both fixtures Grass Plains exactly matches the existing background palette 0
+  (byte-identical to `Nature`'s own colours) and adopts it instead — §7.2's exact-match check runs
+  before the free-slot check, on every slot including reserved ones. Found by empirically running
+  the real import sequence against the real fixtures rather than trusting the prose, and pinned by
+  test 30 so it cannot silently drift back out of sync with the code again.
+- The shipped Slime redraw (a reviewer round found it byte-identical to `tools/make-rpg-sample.js`'s
+  own `SLIME` art, so all 4 of its tiles already sat in both fixtures' sprite tables) is now a
+  visibly different silhouette with zero tile overlap against either fixture's sprite table.
 
 ### v12 (this round — three questions Chris left open in v11, settled at his own explicit direction; not a reviewer-finding round)
 
