@@ -5457,6 +5457,97 @@ const scenario = (dir, sampleDir, sampleRpgDir) => `
     'steps disabled at ' + SFX_MAX_STEPS + '/' + SFX_MAX_STEPS + ', a 9th click did nothing; effects disabled at ' +
       LIMITS.sfx + '/' + LIMITS.sfx + ' (LIMITS.sfx), a click past the cap did nothing'
   );
+
+  // Review-fixes slice C round 2, finding 1's own song-cap twin. Cheap here
+  // in a way LIMITS.sfx (255) above is not: LIMITS.songs is only 64, so the
+  // whole fill-to-one-below-the-cap step could in principle be real clicks
+  // too -- but the identical bulk-store.commit-then-one-real-boundary-click
+  // shape is kept anyway, both because it is the already-established
+  // pattern immediately above and because the point of this step is the
+  // Add-a-song button's own disabled state at the boundary, not proving 63
+  // individual clicks each work.
+  //
+  // Still on the Effects tab from the sfx section above, where the Songs
+  // panel (and its own Add-a-song button) is hidden, not removed --
+  // modeButtons, captured before that tab switch, is by now a stale,
+  // detached snapshot (sound.js's render() clears and re-appends on every
+  // change), so this re-queries the tab strip fresh rather than reusing it,
+  // the same 'never cache across a change' discipline
+  // currentAddStepButton/currentAddEffectButton above already follow.
+  const currentModeButton = (label) => [...soundStage.querySelectorAll('button')].filter(visible).find((node) => node.textContent === label);
+  const currentAddSongButton = () => [...soundStage.querySelectorAll('button')].filter(visible).find((node) => node.title === 'Add a song');
+  const songsTabButtonForCap = currentModeButton('Songs');
+  if (!songsTabButtonForCap) throw new Error('could not find the Songs tab button to start the song-cap boundary check');
+  songsTabButtonForCap.click();
+  await wait(200);
+  const songCountBeforeCap = store.project.songs.length;
+  store.commit('smoke: fill the songs list to one below the cap', (project) => {
+    // A well-formed song, not merely one with enough fields for the
+    // sidebar's own <select> to render a name -- undoing the real
+    // boundary-crossing Add just below re-clamps state.song back onto the
+    // LAST filler (sound.js's own onProjectChange), and the pattern grid
+    // then renders whatever that filler holds. channels needs a row array
+    // per channel (createPattern's own shape), not an empty object, or the
+    // grid's own per-row lookup reads index 0 off undefined.
+    while (project.songs.length < LIMITS.songs - 1) {
+      project.songs.push({
+        name: 'Filler ' + project.songs.length,
+        tempo: { framesPerRow: 6 },
+        instruments: [{ duty: 2, volEnv: [15], sustain: 0 }],
+        patterns: [{ id: 0, rows: 1, channels: { pulse1: [null], pulse2: [null], triangle: [null], noise: [null] } }],
+        order: [0],
+        loop: 0
+      });
+    }
+  });
+  await wait(150);
+  if (store.project.songs.length !== LIMITS.songs - 1) {
+    throw new Error('expected ' + (LIMITS.songs - 1) + ' songs one below the cap, got ' + store.project.songs.length);
+  }
+  if (currentAddSongButton().disabled) {
+    throw new Error('Add a song must still be enabled one below LIMITS.songs');
+  }
+  currentAddSongButton().click(); // the real boundary-crossing click: LIMITS.songs - 1 -> LIMITS.songs
+  await wait(150);
+  if (store.project.songs.length !== LIMITS.songs) {
+    throw new Error('expected exactly LIMITS.songs (' + LIMITS.songs + ') songs after the boundary click, got ' + store.project.songs.length);
+  }
+  if (!currentAddSongButton().disabled) {
+    throw new Error('Add a song must disable once the project reaches LIMITS.songs');
+  }
+  const songsAtCap = store.project.songs.length;
+  currentAddSongButton().click(); // disabled -- must be a no-op
+  await wait(80);
+  if (store.project.songs.length !== songsAtCap) {
+    throw new Error('a disabled Add a song button still added one when clicked');
+  }
+  step(
+    'song editor boundary gate',
+    'songs disabled at ' + LIMITS.songs + '/' + LIMITS.songs + ' (LIMITS.songs), a click past the cap did nothing'
+  );
+  // Undo this step's own two commits (the boundary-crossing Add, then the
+  // fill) right away, before anything past this point -- most immediately,
+  // the library picker's own song import later in this same visit, which
+  // would otherwise find the project already sitting at LIMITS.songs and
+  // get refused by planSongImport for a reason that has nothing to do with
+  // what it is testing. Popped here rather than left to the sfx section's
+  // own undo pair below: that pair is one stack frame further down and
+  // must keep undoing exactly the sfx fill/add it always did, not this
+  // step's.
+  store.undo(); // this step's own boundary-crossing Add
+  await wait(150);
+  store.undo(); // this step's own fill-to-cap commit
+  await wait(150);
+  if (store.project.songs.length !== songCountBeforeCap) {
+    throw new Error('undoing the song-cap boundary check did not restore the pre-fill song count');
+  }
+  // Back to Effects: the rest of this section (the Preview check right
+  // below) expects to still be there.
+  const effectsTabButtonAfterCap = currentModeButton('Effects');
+  if (!effectsTabButtonAfterCap) throw new Error('could not find the Effects tab button to resume the sfx section after the song-cap check');
+  effectsTabButtonAfterCap.click();
+  await wait(200);
+
   // Undo the fill and the boundary-crossing add before Preview runs, so the
   // effect this section previews is still the small one it authored, not a
   // 255-entry list.
@@ -10877,6 +10968,89 @@ export async function runSmoke(window) {
       problems.push('tearing the player down mid-recording still sent something over files:writeBinary');
     } else if (sawDiscardToast) {
       console.log('  ok  tearing the player down mid-recording discards it -- nothing sent over files:writeBinary, and it toasts');
+    }
+
+    // --- Item 10 (review-fixes slice C): confirming a Sound Forge delete
+    // after an Undo dispatched while the confirm modal is open must not
+    // delete whatever now sits at the old selection index. Seam used to
+    // click Delete: the song sidebar's own '✕' button (title-less, plain
+    // text), found by exact textContent -- the same lookup style the rest
+    // of this file already uses for the Sound Forge (e.g. the '📚
+    // Library…' button a few sections up). Seam used to confirm: the real
+    // menu dispatch, `window.webContents.send('menu:action', 'edit:undo')`,
+    // already precedented above for the Code Forge's own undo test, not a
+    // direct store.undo() call -- this exercises the real Edit > Undo path
+    // an author would actually use while the modal is showing.
+    await window.webContents.executeJavaScript(`(async () => {
+      await window.__app.goTo('sound');
+      return true;
+    })()`);
+    const beforeAdd = await window.webContents.executeJavaScript('window.__app.store.project.songs.length');
+    await window.webContents.executeJavaScript(`(() => {
+      const addButton = [...document.querySelectorAll('#stage button')].find((b) => b.title === 'Add a song');
+      if (!addButton) throw new Error('no "Add a song" control found in the Sound Forge');
+      addButton.click();
+      return true;
+    })()`);
+    const afterAdd = await window.webContents.executeJavaScript('window.__app.store.project.songs.length');
+    if (afterAdd !== beforeAdd + 1) {
+      problems.push(`Add a song did not add exactly one song (before ${beforeAdd}, after ${afterAdd})`);
+    }
+    const toastCountBeforeDelete = await window.webContents.executeJavaScript(
+      "document.querySelectorAll('#toastHost .toast').length"
+    );
+    await window.webContents.executeJavaScript(`(() => {
+      const deleteButton = [...document.querySelectorAll('#stage button')].find((b) => b.textContent.trim() === '✕');
+      if (!deleteButton) throw new Error('no song delete ("✕") control found in the Sound Forge');
+      deleteButton.click();
+      return true;
+    })()`);
+    for (
+      let waited = 0;
+      waited < 4000 && !(await window.webContents.executeJavaScript("!!document.querySelector('#modalHost p')"));
+      waited += 25
+    ) {
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+    const modalShowed = await window.webContents.executeJavaScript("!!document.querySelector('#modalHost p')");
+    if (!modalShowed) problems.push('clicking the song delete control never showed a confirmation modal');
+    // Undo while the modal is still open -- pops the "Add song" commit,
+    // restoring the project to its own pre-add snapshot (a different object
+    // graph than the song the modal captured, per resolveDeletionTarget's
+    // own contract in shared/project.js).
+    window.webContents.send('menu:action', 'edit:undo');
+    await new Promise((resolve) => setTimeout(resolve, 900)); // past the commit delay
+    const undoneCount = await window.webContents.executeJavaScript('window.__app.store.project.songs.length');
+    if (undoneCount !== beforeAdd) {
+      problems.push(`Undo while the delete modal was open did not restore the pre-add song count (expected ${beforeAdd}, got ${undoneCount})`);
+    }
+    // Confirm -- the modal's own accent "Delete" button.
+    await window.webContents.executeJavaScript(`(() => {
+      const confirmButton = [...document.querySelectorAll('#modalHost button')].find((b) => b.textContent.trim() === 'Delete');
+      if (!confirmButton) throw new Error('the delete-song confirmation has no Delete button');
+      confirmButton.click();
+      return true;
+    })()`);
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    const finalCount = await window.webContents.executeJavaScript('window.__app.store.project.songs.length');
+    const toastTextsAfterDelete = await window.webContents.executeJavaScript(
+      "[...document.querySelectorAll('#toastHost .toast')].map((n) => n.textContent)"
+    );
+    const sawAbortToast = toastTextsAfterDelete.some((text) => /no longer there/i.test(text));
+    if (finalCount !== beforeAdd) {
+      problems.push(
+        `confirming the delete after an intervening Undo changed the song count from the original ${beforeAdd} to ` +
+          `${finalCount} -- it should have aborted with no change, since the song the modal was about was already gone`
+      );
+    } else {
+      console.log('  ok  the original songs survive confirming a delete after an intervening Undo -- the commit aborted');
+    }
+    if (!sawAbortToast) {
+      problems.push(
+        `confirming the delete after an intervening Undo did not toast that the song was no longer there -- saw: ${JSON.stringify(toastTextsAfterDelete.slice(toastCountBeforeDelete))}`
+      );
+    } else {
+      console.log('  ok  confirming a delete after an intervening Undo toasted "no longer there"');
     }
 
     if (process.env.FORGE_SHOT) {

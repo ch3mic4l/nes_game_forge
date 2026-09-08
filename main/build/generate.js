@@ -10,7 +10,7 @@ import path from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import { fileURLToPath } from 'node:url';
 import { encodeTiles, tileFromString, BLANK_TILE, isBlank } from '../../shared/chr.js';
-import { normalizeSong } from '../../shared/audio.js';
+import { normalizeSong, MAX_TOTAL_INSTRUMENTS } from '../../shared/audio.js';
 import {
   ARROW_TILE,
   BORDER_CORNER,
@@ -33,7 +33,7 @@ import {
   projectUsesText,
   projectUsesEffectiveTitle
 } from '../../shared/font.js';
-import { compileSong, songTables, compileSfx, sfxTables } from './songcompile.js';
+import { songTables, songTableBytes, compileSfx, sfxTables } from './songcompile.js';
 import { NO_EVENT, compileText, textTables, songByte } from './textcompile.js';
 import {
   battleTables,
@@ -141,16 +141,36 @@ export function engineFileNames() {
 // keeps it, which is two places to get the cursor right instead of none.
 export const ENTITY_RECORD = 9;
 
-/** Bytes the compiled music will occupy: period table, instruments and streams. */
-function musicSize(songs) {
+/**
+ * How many instrument entries every song in the project contributes,
+ * combined -- item 12: songTables (main/build/songcompile.js) concatenates
+ * every song's own instruments into one flat set rather than only song 0's,
+ * so this is the real total the flat inst_* tables and song_inst_base will
+ * hold, not one song's count standing in for the whole project. A project
+ * with no songs still gets the one SILENT instrument songTables emits for
+ * it.
+ */
+function totalInstrumentCount(songs) {
   const list = songs?.length ? songs : [];
-  const streams = list.reduce(
-    (total, song) =>
-      total + compileSong(song).channels.reduce((sum, channel) => sum + channel.bytes.length + 3, 0),
-    0
-  );
-  const instruments = list.length ? (normalizeSong(list[0]).instruments.length || 1) : 1;
-  return 192 + instruments * 5 + 32 + streams + 4 * Math.max(1, list.length) * 2;
+  if (!list.length) return 1; // SILENT's own single instrument
+  return list.reduce((total, song) => total + (normalizeSong(song).instruments.length || 1), 0);
+}
+
+/**
+ * Bytes the compiled music will occupy: period table, instruments and
+ * streams. Review-fixes slice C round 2, finding 2: measures songTables'
+ * own real emitted output (songTableBytes, main/build/songcompile.js)
+ * rather than a hand-maintained formula -- the same "derive the figure from
+ * the code path that actually emits it" discipline battleTableBytes already
+ * holds battleTables to, so this and songTables cannot drift apart. The old
+ * formula charged a flat 32 bytes for every instrument's own envelope
+ * regardless of its real length (up to 16 steps each), which could
+ * undercount a project with several large-envelope instruments by
+ * thousands of bytes and let checkCapacity pass a project the assembler
+ * then refused.
+ */
+function musicSize(songs) {
+  return songTableBytes(songs);
 }
 
 /** Bytes the compiled sound effects will occupy: each effect's own compiled stream plus the one
@@ -611,7 +631,16 @@ const TITLE_PROMPT_ROW = 19;
 // of the base; re-measuring against `sample` (the action fixture) moved it,
 // along with every other RPG-only byte in this figure, out into the new
 // term below.**
-export const BASE_KERNEL_CODE_BYTES_BY_MAPPER = { 1: 6007, 4: 6024, 30: 6202 };
+// +15 on each board, review-fixes slice C, item 12: music_play now looks up
+// song_inst_base and seeds mus_inst_base before initializing every channel's
+// own mus_inst,x from it (8 bytes), each channel's own init trades one
+// shared zero-store for a dedicated mus_inst_base copy (+3 bytes), and the
+// $F0-$F7 instrument-select handler in music_read_event adds mus_inst_base
+// onto the stream's local 0-7 select rather than storing it verbatim (+4
+// bytes) -- unconditional kernel code (music.asm is never gated out), so
+// this is a cost every project pays, folded into the base like the +3 above
+// it. See mus_inst_base's own comment in engine/constants.asm.
+export const BASE_KERNEL_CODE_BYTES_BY_MAPPER = { 1: 6022, 4: 6039, 30: 6217 };
 const FALLBACK_BASE_KERNEL_CODE_BYTES = Math.max(...Object.values(BASE_KERNEL_CODE_BYTES_BY_MAPPER));
 export function baseKernelCodeBytes(mapper) {
   return BASE_KERNEL_CODE_BYTES_BY_MAPPER[mapper.id] ?? FALLBACK_BASE_KERNEL_CODE_BYTES;
@@ -897,10 +926,17 @@ export function itemEffectKernelAllowance(project) {
 // Sting-only project's own kernel-lo byte count does not move by one byte from this split, the
 // identical MOVE_KERNEL_ALLOWANCE -> MOVE_KERNEL_ALLOWANCE + FACE_KERNEL_ALLOWANCE precedent.
 // Measured (test/unit/kernelbytes.test.js): a Sting-only build's own delta over its no-Sting-no-Sfx
-// baseline is 175 on every RPG-capable board, unchanged; the music_channel..music_channel_tick
-// label-span diff below is what splits that 175 into this term (160) and AUDIO_FX_KERNEL_ALLOWANCE
-// (15) rather than guessing which side of the split each byte belongs to.
-export const STING_KERNEL_ALLOWANCE_STANDALONE = 160;
+// baseline was 175 on every RPG-capable board; the music_channel..music_channel_tick label-span diff
+// below is what splits that 175 into this term (was 160) and AUDIO_FX_KERNEL_ALLOWANCE (15) rather
+// than guessing which side of the split each byte belongs to.
+//
+// +12, review-fixes slice C, item 12: sting_snapshot/sting_restore (engine/music.asm) now
+// save/restore mus_inst_base alongside cur_song and mus_enabled -- `lda mus_inst_base / sta
+// sting_shadow_inst_base` in the snapshot and its mirror in the restore, 6 bytes each -- entirely
+// inside the outer `.if STING_ENABLED` block, so none of it is AUDIO_FX_KERNEL_ALLOWANCE's shared
+// force_trig code. Re-measured Sting-only delta: 187 on every RPG-capable board (was 175); 187 - 15
+// (AUDIO_FX_KERNEL_ALLOWANCE, unmoved) = 172.
+export const STING_KERNEL_ALLOWANCE_STANDALONE = 172;
 // force_trig's own check-and-self-clear inside music_channel (engine/music.asm) -- shared by
 // Sting and SFX, gated AUDIO_FX_ENABLED rather than STING_ENABLED alone. Already fully paid by
 // STING_KERNEL_ALLOWANCE_STANDALONE + this term summing to the historical 175 for a Sting-only
@@ -2053,6 +2089,35 @@ export function checkCapacity(project) {
     });
   }
   problems.push(...checkCode(project));
+  // Item 12: every song's own instruments land in one flat table (songTables,
+  // main/build/songcompile.js), and the driver indexes it with Y -- an 8-bit
+  // register -- so the combined total across every song can never exceed 256,
+  // regardless of how the per-song MAX_INSTRUMENTS(8) cap is spent across them.
+  const totalInstruments = totalInstrumentCount(project.songs);
+  if (totalInstruments > MAX_TOTAL_INSTRUMENTS) {
+    problems.push({
+      severity: 'error',
+      where: 'Sound Forge',
+      message:
+        `This project's songs use ${totalInstruments} instruments combined, but the driver can only ` +
+        `address ${MAX_TOTAL_INSTRUMENTS}. Remove some instruments from one or more songs.`
+    });
+  }
+  // Round 2 finding 1: LIMITS.songs (shared/project.js) is a real hardware
+  // ceiling -- music_play's 8-bit song*4 index wraps at 64 -- and
+  // validateProject already refuses a project over it. Checked again here,
+  // defense in depth: buildProject compiles the project actually in hand,
+  // not one that necessarily passed validateProject, the same reasoning
+  // every other checkCapacity refusal above already holds to.
+  if (project.songs.length > LIMITS.songs) {
+    problems.push({
+      severity: 'error',
+      where: 'Sound Forge',
+      message:
+        `This project has ${project.songs.length} songs but the driver can only address ${LIMITS.songs} ` +
+        `(ids 0-${LIMITS.songs - 1}). Delete ${project.songs.length - LIMITS.songs} of them before this can build.`
+    });
+  }
   // Music, sound effects and text share the $E000 half of the fixed kernel, above the vectors.
   if (musicBytes + sfxBytes + text.bytes > BANK_SIZE - 64) {
     problems.push({

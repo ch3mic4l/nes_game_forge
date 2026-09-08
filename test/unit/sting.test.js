@@ -360,6 +360,106 @@ test('a live Sting fires, resumes, and real APU writes accompany both transition
   assert.equal(nes.cpu.mem[MUS_ENABLED], 1, 'the field song should be audible again after the resume');
 });
 
+// Review-fixes slice C, item 12: sting_snapshot/sting_restore now shadow mus_inst_base
+// (engine/music.asm) alongside cur_song/mus_enabled, so a resumed song's own LATER $F0-$F7 select
+// lands on its own instruments, not whichever song's base happened to be live when the sting
+// resolved. The field song here is deliberately NOT song 0 (index 1, behind an unplayed dummy
+// song 0 with its own distinct instrument): with song 0's own base trivially zero, a bug that
+// dropped mus_inst_base's own save/restore, or the $F0-$F7 handler's own `adc mus_inst_base`,
+// would still happen to resume a song-0 field song correctly by accident -- this construction is
+// what can actually catch either omission.
+test('a resumed song\'s later $F0-$F7 select lands on its own instrument, not song 0\'s', {
+  skip: !hasRom && 'run `npm run sample` first'
+}, async (t) => {
+  const dir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'forge-sting-instbase-'));
+  t.after(() => fs.promises.rm(dir, { recursive: true, force: true }));
+  const project = await loadProject(SAMPLE);
+
+  // song 0: a dummy, never played -- its own instrument 0 has a duty distinct from either of the
+  // field song's own instruments, so a base miscomputation lands here instead of on the field
+  // song's real instrument 1.
+  project.songs[0] = {
+    name: 'Dummy',
+    tempo: { framesPerRow: 6 },
+    instruments: [{ duty: 1, volEnv: [15], sustain: 0 }],
+    patterns: [{ id: 0, rows: 4, channels: { pulse1: [{ note: 30, inst: 0 }, null, null, null] } }],
+    order: [0],
+    loop: 0
+  };
+  // song 1: the real field song -- two instruments of its own (duty 0, then duty 2), a note change
+  // partway through so a fresh $F0-$F7 select is emitted well after the sting's own resume point.
+  // 20 rows (120 frames) on instrument 0 comfortably outlasts boot settling plus the sting's own
+  // STING_FRAMES pause, so the second note's own instrument-1 select is only ever read after the
+  // resume, never before it.
+  const FIELD = 1;
+  project.songs[FIELD] = {
+    name: 'Field',
+    tempo: { framesPerRow: 6 },
+    instruments: [
+      { duty: 0, volEnv: [15], sustain: 0 },
+      { duty: 2, volEnv: [15], sustain: 0 }
+    ],
+    patterns: [
+      {
+        id: 0,
+        rows: 40,
+        channels: {
+          pulse1: [
+            { note: 40, inst: 0 },
+            ...Array(19).fill(null), // 20 rows (120 frames) on instrument 0
+            { note: 42, inst: 1 },
+            ...Array(19).fill(null) // remaining 20 rows (120 frames) on instrument 1
+          ]
+        }
+      }
+    ],
+    order: [0],
+    loop: 0
+  };
+  const STING = 2;
+  project.songs[STING] = stingSong();
+  project.maps[0].songId = FIELD;
+
+  const slime = project.sprites.actors[0];
+  project.sprites.actors.push({ ...structuredClone(slime), id: NPC, name: 'Walker', behavior: 'npc' });
+  project.maps[0].screens[0].metatiles = new Array(240).fill(0);
+  project.maps[0].screens[0].entities = [
+    {
+      actorId: NPC,
+      x: START_X,
+      y: START_Y - 16,
+      props: { event: { pages: [{ cond: { type: 'none', arg: 0 }, commands: [{ op: 'sting', song: STING }] }] } }
+    }
+  ];
+  await saveProject(dir, project);
+  const built = await buildProject({ dir, project, log: () => {} });
+  const nes = boot(built.romPath);
+
+  assert.equal(nes.cpu.mem[CUR_SONG], FIELD, 'the field song (index 1, not 0) should be the one sounding at boot');
+
+  const { writesPerFrame, songWrites } = trace(nes, 170, tapAt(B, 0));
+  const triggerFrame = songWrites.find((w) => w.value === STING)?.frame;
+  assert.ok(triggerFrame !== undefined, 'the sting never triggered');
+  assert.equal(nes.cpu.mem[CUR_SONG], FIELD, 'the field song should be sounding again after the resume');
+
+  // $4000 (pulse 1) is written every tick regardless of whether that tick also retriggered a note
+  // (music_apply_pulse's own duty+volume write, unconditional -- only the period write is
+  // trigger-gated), so the LAST $4000 write across the whole trace reflects whichever instrument
+  // is active by the end of the window: instrument 1, since 120 (instrument 0's own span) is well
+  // past both boot settling and the sting's own STING_FRAMES pause.
+  const pulse1Writes = writesPerFrame.flat().filter(([address]) => address === 0x4000);
+  assert.ok(pulse1Writes.length > 0, 'pulse 1 never wrote $4000 at all');
+  const [, lastByte] = pulse1Writes[pulse1Writes.length - 1];
+  const duty = (lastByte >> 6) & 3;
+  assert.equal(
+    duty,
+    2,
+    "the field song's own instrument 1 (duty 2) should be selected after the resume, not song 0's " +
+      `instrument 0 (duty 1) or the field song's own instrument 0 (duty 0) -- got duty ${duty} from byte ` +
+      `0x${lastByte.toString(16)}`
+  );
+});
+
 // §12 test 6: Silence-restore -- the actual re-silencing writes, not merely their absence
 // downstream (round-1 finding 5; sabotage claim narrowed in round-2 finding 6 to not claim an
 // ordering it cannot prove).

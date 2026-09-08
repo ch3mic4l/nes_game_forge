@@ -16,7 +16,7 @@ import { fileURLToPath } from 'node:url';
 import { execFileSync } from 'node:child_process';
 import { BLANK_TILE } from '../../shared/chr.js';
 import { resolveMapper } from '../../shared/cartridge.js';
-import { NO_SONG, normalizeSfx, normalizeSong, sfxFrameLength, songFrameLength, SFX_MAX_STEPS } from '../../shared/audio.js';
+import { normalizeSfx, normalizeSong, sfxFrameLength, songFrameLength, SFX_MAX_STEPS } from '../../shared/audio.js';
 import {
   createProject,
   createScreen,
@@ -1107,9 +1107,13 @@ test('sfx: capacity refusal at LIMITS.sfx, project untouched', () => {
   assert.deepEqual(project, before);
 });
 
-test('song: capacity refusal at NO_SONG, project untouched', () => {
+// Review-fixes slice C round 2, finding 1: gated on LIMITS.songs (64), not
+// NO_SONG (255) -- music_play's 8-bit song*4 index wraps at 64, well below
+// NO_SONG's own 255, so importing up to NO_SONG here would offer imports the
+// Forge could never actually hold. See planSongImport's own comment.
+test('song: capacity refusal at LIMITS.songs, project untouched', () => {
   const project = createProject('Test', 'action');
-  for (let i = 0; i < NO_SONG; i++) {
+  for (let i = 0; i < LIMITS.songs; i++) {
     project.songs.push({
       name: `Filler${i}`,
       tempo: { framesPerRow: 6 },
@@ -1122,7 +1126,7 @@ test('song: capacity refusal at NO_SONG, project untouched', () => {
   const before = structuredClone(project);
   const plan = planLibraryImport(project, songEntryLiteral());
   assert.equal(plan.ok, false);
-  assert.match(plan.reason, new RegExp(`${NO_SONG} songs, the maximum`));
+  assert.match(plan.reason, new RegExp(`${LIMITS.songs} songs, the maximum`));
   assert.deepEqual(project, before);
 });
 

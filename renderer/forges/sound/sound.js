@@ -8,7 +8,7 @@ import { store } from '../../store.js';
 import { el, clear, fill, field, toast, confirmModal } from '../../ui.js';
 import { CHANNELS, NUM_NOTES, noteName, createSong, createPattern, createInstrument, MAX_INSTRUMENTS, normalizeSfx, SFX_MAX_STEPS } from '../../../shared/audio.js';
 import { compileSong, compileSfx } from '../../../main/build/songcompile.js';
-import { renumberSongDeletion, renumberSfxDeletion, LIMITS } from '../../../shared/project.js';
+import { renumberSongDeletion, renumberSfxDeletion, resolveDeletionTarget, LIMITS } from '../../../shared/project.js';
 import { Replayer, SfxReplayer } from './replayer.js';
 import { Synth } from './synth.js';
 import { openLibrarySongImport, openLibraryEffectImport } from './librarysound.js';
@@ -389,6 +389,11 @@ export function mount(container, app) {
           'button.btn.btn-sm',
           {
             title: 'Add a song',
+            // LIMITS.songs' own real ceiling (review-fixes slice C round 2,
+            // finding 1): music_play's 8-bit song*4 index wraps at 64. The
+            // sfx editor's own '+' button below already disables the same
+            // way at LIMITS.sfx.
+            disabled: songs().length >= LIMITS.songs,
             onclick: () => {
               store.commit('Add song', (project) => {
                 project.songs.push(createSong(`Song ${project.songs.length}`));
@@ -405,14 +410,25 @@ export function mount(container, app) {
           {
             disabled: !current,
             onclick: async () => {
-              if (!(await confirmModal('Delete song', `Delete "${current.name}"?`, 'Delete'))) return;
+              // Captured now, not re-read off state.song after the await --
+              // an Undo dispatched while the modal is open changes what
+              // state.song points at, or replaces project.songs outright
+              // with a structuredClone'd snapshot (item 10, see
+              // resolveDeletionTarget's own comment in shared/project.js).
+              const target = current;
+              if (!(await confirmModal('Delete song', `Delete "${target.name}"?`, 'Delete'))) return;
               stop();
-              const index = state.song;
+              const index = resolveDeletionTarget(store.project.songs, target);
+              if (index === -1) {
+                toast('That song is no longer there', 'error');
+                render();
+                return;
+              }
               store.commit('Delete song', (project) => {
                 project.songs.splice(index, 1);
                 renumberSongDeletion(project, index);
               });
-              state.song = Math.max(0, state.song - 1);
+              state.song = Math.max(0, index - 1);
               render();
             }
           },
@@ -738,14 +754,22 @@ export function mount(container, app) {
           {
             disabled: !current,
             onclick: async () => {
-              if (!(await confirmModal('Delete effect', `Delete "${current.name}"?`, 'Delete'))) return;
+              // See the song delete handler's identical comment above --
+              // item 10, resolveDeletionTarget in shared/project.js.
+              const target = current;
+              if (!(await confirmModal('Delete effect', `Delete "${target.name}"?`, 'Delete'))) return;
               stopSfx();
-              const index = state.effect;
+              const index = resolveDeletionTarget(store.project.sfx, target);
+              if (index === -1) {
+                toast('That effect is no longer there', 'error');
+                render();
+                return;
+              }
               store.commit('Delete effect', (project) => {
                 project.sfx.splice(index, 1);
                 renumberSfxDeletion(project, index);
               });
-              state.effect = Math.max(0, state.effect - 1);
+              state.effect = Math.max(0, index - 1);
               render();
             }
           },

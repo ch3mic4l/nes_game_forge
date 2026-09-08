@@ -436,6 +436,23 @@ bt_wipe_mask = status_pending+1
 bt_wipe_row  = bt_wipe_mask+1
 bt_wipe_slot = bt_wipe_row+1
 
+; Absolute offset added to a song's own $F0-$F7 local instrument select (0-7)
+; to reach its slice of the flat inst_duty/inst_env_len/inst_sustain/
+; inst_env_lo/inst_env_hi tables -- every song's instruments are concatenated
+; into those tables in song order (main/build/songcompile.js's songTables),
+; rather than only song 0's ever reaching the ROM, and each song gets its own
+; BASE rather than a shared 8-entry pool, since the select is only 3 bits
+; wide. music_play looks up the generated song_inst_base table for the song
+; and stores it here, both to seed each channel's own mus_inst,x at the top
+; of the song and for music_read_event's own $F0-$F7 handler to add in on
+; every later select. sting_snapshot/sting_restore shadow this alongside
+; cur_song (sting_shadow_inst_base, below), since a sting's own song and the
+; one it resumes can have different bases.
+;
+; Chained after bt_wipe_slot for the identical reason bt_wipe_slot itself was
+; chained after bt_wipe_row: this must not move any other symbol's address.
+mus_inst_base = bt_wipe_slot+1
+
 ; The $10-per-row darken trick reaches solid black in at most this many
 ; subtractions from any starting row; the hold between steps is an engine
 ; constant, not authored -- see OP_FADE below and shared/project.js's
@@ -715,6 +732,18 @@ sfx_trig     = $056D        ; a new note started this tick -- write the period
 sfx_left     = $056E        ; frames left on the whole PLAYING phase; a pure
                              ; countdown, not an ownership flag -- see §3.3
 sfx_volume   = $056F        ; fixed for the whole effect, read once at trigger
+
+; The sting's own shadow of mus_inst_base (music.asm's sting_snapshot/
+; sting_restore), so a resumed song's later $F0-$F7 selects land on its own
+; instruments rather than whatever base the sting's own song left in
+; mus_inst_base. Not placed beside sting_shadow_song/sting_shadow_enabled at
+; $0540-$0541: that block sits flush against switch-bound tiles RAM's own
+; bind_idx at $0547 with no room to grow, and inserting a byte there would
+; shift every switch-bound-tile and flip address after it. Appended instead
+; in the free space right after the sfx RAM block above, itself already
+; appended into design-sfx.md's own confirmed-unused $0568-$05FF gap rather
+; than disturbing anything before it.
+sting_shadow_inst_base = sfx_volume+1
 
 ; ------------------------------------------------------------ inventory RAM
 ; One id per item carried, oldest first -- an item id under ITEMS_ENABLED, or

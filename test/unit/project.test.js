@@ -28,6 +28,7 @@ import {
   resolveCommonEventIds,
   commonEventId,
   renumberSongDeletion,
+  resolveDeletionTarget,
   renumberActorDeletion,
   renumberItemDeletion,
   renumberMetaspriteDeletion,
@@ -1396,6 +1397,35 @@ test('deleting a song renumbers every reference, including one nested inside a b
   assert.equal(branch.then[0].song, 1, 'a Play music command nested inside a branch did not renumber');
   assert.equal(branch.else[0].song, 0, 'a reference below the deleted song should not move');
   assert.equal(silence.song, null, 'Silence should stay Silence');
+});
+
+// Item 10 (review-fixes slice C): the Sound Forge's delete handlers capture their target song/effect
+// object before awaiting confirmModal, then re-resolve it by identity once confirmation returns --
+// an Undo dispatched while the modal is open replaces the whole project with a structuredClone'd
+// snapshot (renderer/store.js), a different object graph even when it holds identical content, so a
+// captured reference from before the clone can never match anything in the list after it.
+test('resolveDeletionTarget finds a captured object by identity, and returns -1 once a clone breaks that identity', () => {
+  const project = createProject();
+  project.songs = [{ name: 'A' }, { name: 'B' }, { name: 'C' }];
+  const target = project.songs[1];
+
+  assert.equal(resolveDeletionTarget(project.songs, target), 1, 'the captured object should resolve to its live index');
+
+  // Undo/redo replace the whole project with a structuredClone'd snapshot -- a different object
+  // graph, even though "B" is still there by value.
+  const cloned = structuredClone(project);
+  assert.equal(
+    resolveDeletionTarget(cloned.songs, target),
+    -1,
+    'a captured reference must not resolve against a cloned project, even when the same-named entry is still there'
+  );
+
+  // A genuine deletion (no clone involved) must read the same way.
+  project.songs.splice(1, 1);
+  assert.equal(resolveDeletionTarget(project.songs, target), -1, 'a target actually removed from the list must resolve to -1');
+
+  // An empty/undefined list is handled the same way every other project.js helper treats one.
+  assert.equal(resolveDeletionTarget(undefined, target), -1);
 });
 
 test('deleting an actor renumbers a battle formation, nested or not, and never touches Give/Take', () => {

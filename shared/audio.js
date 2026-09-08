@@ -23,7 +23,18 @@ export const NOTE_NAMES = ['C-', 'C#', 'D-', 'D#', 'E-', 'F-', 'F#', 'G-', 'G#',
 export const OP_REST = 0xfe;
 export const OP_LOOP = 0xff;
 export const OP_INSTRUMENT = 0xf0; // $F0 + n, no duration byte
-export const MAX_INSTRUMENTS = 8;
+export const MAX_INSTRUMENTS = 8; // one song's own local $F0-$F7 select range
+
+/**
+ * The driver's real ceiling on instruments across every song combined
+ * (item 12): each song's own instruments are concatenated, in song order,
+ * into one flat set of inst_duty/inst_env_len/inst_sustain/inst_env_lo/
+ * inst_env_hi tables, and music_play/music_read_event (engine/music.asm)
+ * index into it with Y -- an 8-bit register, so the flat total can never
+ * exceed 256 regardless of how many songs or how the 8-per-song
+ * MAX_INSTRUMENTS cap above is spent across them.
+ */
+export const MAX_TOTAL_INSTRUMENTS = 256;
 
 /** Pulse periods are 11 bits, so anything longer than this cannot be played. */
 export const MAX_PERIOD = 0x7ff;

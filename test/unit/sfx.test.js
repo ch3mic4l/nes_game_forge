@@ -1350,3 +1350,45 @@ test('the exact co-end, sting-restores-into-an-audible-song sub-case: no truncat
   );
 });
 
+// ---------------------------------------------------------------------------
+// Review-fixes slice C round 2, finding 3: sfx_ptr_table_lo/hi (sfxTables,
+// main/build/songcompile.js) used to be one unwrapped .db line each -- a
+// permitted LIMITS.sfx (255) effect project passed every LIMITS/
+// checkCapacity check and then failed assembly with a syntax error inside
+// music.inc (a 3,210-character line). Both tables now chunk through
+// dbExprBlock, the same 16-entries-per-line wrapping song_ptr_lo/hi already
+// use.
+// ---------------------------------------------------------------------------
+
+test('a project with LIMITS.sfx (255) effects builds cleanly, and no emitted line in music.inc exceeds 1,500 characters', {
+  skip: !hasRom && 'run `npm run sample` first'
+}, async (t) => {
+  const dir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'forge-sfx-manyeffects-'));
+  t.after(() => fs.promises.rm(dir, { recursive: true, force: true }));
+  const project = await loadProject(SAMPLE);
+  project.sfx = Array.from({ length: LIMITS.sfx }, (_, index) => ({
+    name: `E${index}`,
+    volume: 10,
+    steps: [{ note: index % 16, duration: 1 }]
+  }));
+  assert.equal(project.sfx.length, LIMITS.sfx);
+
+  const { problems } = checkCapacity(project);
+  assert.deepEqual(
+    problems.filter((p) => p.severity === 'error'),
+    [],
+    `checkCapacity should accept exactly LIMITS.sfx (${LIMITS.sfx}) effects`
+  );
+
+  const built = await buildProject({ dir, project, log: () => {} });
+  assert.ok(built.romPath, `a project with LIMITS.sfx (${LIMITS.sfx}) effects should build cleanly`);
+
+  const inc = await fs.promises.readFile(path.join(dir, 'build/assets/music.inc'), 'utf8');
+  const longest = inc.split('\n').reduce((max, line) => Math.max(max, line.length), 0);
+  assert.ok(
+    longest <= 1500,
+    `the longest line in music.inc is ${longest} characters, expected at most 1,500 (the old unwrapped ` +
+      'sfx_ptr_table_lo/hi line for this many effects was 3,210 characters)'
+  );
+});
+

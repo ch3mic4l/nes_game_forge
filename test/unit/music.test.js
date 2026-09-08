@@ -4,13 +4,14 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { spawnSync } from 'node:child_process';
 import NES from '../../renderer/emulator/core/nes.js';
 import { Replayer } from '../../renderer/forges/sound/replayer.js';
-import { compileSong } from '../../main/build/songcompile.js';
+import { compileSong, songTables, songTableBytes } from '../../main/build/songcompile.js';
 import { loadProject, saveProject } from '../../main/project-io.js';
 import { buildProject } from '../../main/build/pipeline.js';
-import { flattenScreens } from '../../main/build/generate.js';
-import { createMap } from '../../shared/project.js';
+import { flattenScreens, checkCapacity } from '../../main/build/generate.js';
+import { createMap, createProject, validateProject, LIMITS } from '../../shared/project.js';
 import {
   PERIOD_TABLE,
   CPU_CLOCK,
@@ -18,6 +19,8 @@ import {
   noteName,
   envelopeVolume,
   normalizeSong,
+  createSong,
+  MAX_TOTAL_INSTRUMENTS,
   OP_REST,
   OP_INSTRUMENT
 } from '../../shared/audio.js';
@@ -26,6 +29,7 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..')
 const SAMPLE = path.join(ROOT, 'sample');
 const ROM_PATH = path.join(SAMPLE, 'build/game.nes');
 const hasRom = fs.existsSync(ROM_PATH);
+const hasNesasm = spawnSync('nesasm', [], { stdio: 'ignore' }).error?.code !== 'ENOENT';
 
 // engine/constants.asm. Not parsed out of build/constants.asm the way
 // shared/enginesyms.js reads other engine addresses: cur_map and cur_song are
@@ -113,6 +117,397 @@ test('a long note is split into byte-sized durations', () => {
   );
 });
 
+// -------------------------------------------------------------------------
+// Item 12 (review-fixes slice C): songTables concatenates every song's own
+// instruments, in song order, into one flat set rather than only song 0's,
+// and emits song_inst_base, one byte per song, naming the offset of that
+// song's own first instrument.
+// -------------------------------------------------------------------------
+
+/** Pulls the numeric values out of one dbBlock-emitted label's own .db line(s). */
+function dbBytesAt(inc, label) {
+  const match = inc.match(new RegExp(`${label}:\\n((?:  \\.db [^\\n]*\\n?)+)`));
+  assert.ok(match, `label ${label} not found in the generated .inc text`);
+  return match[1]
+    .trim()
+    .split('\n')
+    .flatMap((line) => line.replace(/^ *\.db /, '').split(','))
+    .map((token) => parseInt(token.replace('$', ''), 16));
+}
+
+test('songTables concatenates every song\'s own instruments in song order, and song_inst_base names each song\'s own offset', () => {
+  const songA = {
+    instruments: [
+      { duty: 0, volEnv: [1] },
+      { duty: 1, volEnv: [2] },
+      { duty: 2, volEnv: [3] }
+    ],
+    patterns: [{ id: 0, rows: 1, channels: {} }],
+    order: [0]
+  };
+  const songB = {
+    instruments: [
+      { duty: 3, volEnv: [4] },
+      { duty: 0, volEnv: [5] }
+    ],
+    patterns: [{ id: 0, rows: 1, channels: {} }],
+    order: [0]
+  };
+  const inc = songTables([songA, songB]);
+
+  assert.deepEqual(
+    dbBytesAt(inc, 'inst_duty'),
+    [0, 1, 2, 3, 0],
+    'two songs with 3 and 2 instruments should emit 5 table rows total, in song order'
+  );
+  assert.deepEqual(
+    dbBytesAt(inc, 'song_inst_base'),
+    [0, 3],
+    "song A's own base is 0; song B's is 3, right after song A's own three instruments"
+  );
+});
+
+test('songTables with no songs at all still emits the SILENT instrument, and song_inst_base still advances', () => {
+  const inc = songTables([]);
+  assert.deepEqual(dbBytesAt(inc, 'inst_duty'), [2], "the SILENT fallback's own single instrument (duty 2)");
+  assert.deepEqual(
+    dbBytesAt(inc, 'song_inst_base'),
+    [0],
+    'one entry (the silent placeholder standing in for the whole project), base 0'
+  );
+});
+
+/** A raw song with exactly `n` instruments -- MAX_INSTRUMENTS (8) slices anything past its own cap. */
+function songWithInstruments(n) {
+  return {
+    name: 'Song',
+    tempo: { framesPerRow: 6 },
+    instruments: Array.from({ length: n }, (_, i) => ({ duty: i % 4, volEnv: [15], sustain: 0 })),
+    patterns: [{ id: 0, rows: 1, channels: {} }],
+    order: [0]
+  };
+}
+
+test(
+  'checkCapacity refuses a project whose songs use more than 256 instruments combined, and fits at exactly 256',
+  () => {
+    // Control: 32 songs x 8 instruments (MAX_INSTRUMENTS) each = exactly MAX_TOTAL_INSTRUMENTS.
+    const control = createProject('Instrument cap control');
+    control.songs = Array.from({ length: MAX_TOTAL_INSTRUMENTS / 8 }, () => songWithInstruments(8));
+    const { problems: controlProblems } = checkCapacity(control);
+    assert.deepEqual(
+      controlProblems.filter((p) => p.severity === 'error' && /instrument/i.test(p.message)),
+      [],
+      `exactly ${MAX_TOTAL_INSTRUMENTS} total instruments must not be refused`
+    );
+
+    // Over: the same 32 songs, plus one more instrument on a 33rd song -- 257 total.
+    const over = createProject('Instrument cap over');
+    over.songs = [...Array.from({ length: MAX_TOTAL_INSTRUMENTS / 8 }, () => songWithInstruments(8)), songWithInstruments(1)];
+    const { problems: overProblems } = checkCapacity(over);
+    const found = overProblems.find((p) => p.severity === 'error' && /instrument/i.test(p.message));
+    assert.ok(found, `${MAX_TOTAL_INSTRUMENTS + 1} total instruments should be refused`);
+    assert.equal(found.where, 'Sound Forge', 'the refusal should point at the Sound Forge');
+    assert.match(found.message, /257/, "the refusal should name the project's own real total");
+  }
+);
+
+// ---------------------------------------------------------------------------
+// Item 14 (review-fixes slice C): song_ptr_lo/song_ptr_hi used to be one
+// unwrapped .db line each -- nesasm truncates a long input line, so a
+// project with enough small songs passed checkCapacity and then failed
+// assembly with a syntax error inside music.inc. songTables now chunks them
+// through dbExprBlock (main/build/songcompile.js), the same dbBlock-style
+// wrapping every numeric table here already uses, at 16 entries per line.
+//
+// Measured, not guessed: a single nesasm .db line built the same way this
+// project's own song_ptr_lo is (LOW(songN_channel) expressions, real
+// generated label lengths) assembles cleanly up to 1553 characters and fails
+// with a syntax error at 1555 -- see the binary search behind this comment
+// for the exact method. dbExprBlock's own 16-per-line chunking keeps every
+// emitted line under roughly 360 characters even at song index 23 (the
+// longest label, "triangle" being the longest channel name) -- comfortably
+// under a third of the real limit, not merely under it.
+// ---------------------------------------------------------------------------
+
+test(
+  'a project with 24 small songs builds cleanly, and no emitted line in music.inc is anywhere near nesasm\'s real line-length limit',
+  { skip: !hasNesasm && 'nesasm not found on PATH' },
+  async (t) => {
+    const dir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'forge-music-manysongs-'));
+    t.after(() => fs.promises.rm(dir, { recursive: true, force: true }));
+    const project = await loadProject(SAMPLE);
+    // 24 blank songs on top of whatever the sample already carries -- the
+    // exact shape item 14's own report reproduced the bug with (song_ptr_lo/
+    // hi have 4 entries per song, so 24+ songs is comfortably past the old
+    // unwrapped line's real breaking point, measured above).
+    for (let i = 0; i < 24; i++) project.songs.push(createSong(`Song ${i}`));
+
+    const { problems } = checkCapacity(project);
+    assert.deepEqual(
+      problems.filter((p) => p.severity === 'error'),
+      [],
+      'checkCapacity should report zero errors for 24 small songs'
+    );
+
+    await saveProject(dir, project);
+    const built = await buildProject({ dir, project, log: () => {} });
+    assert.ok(built.romPath, 'a project with 24 small songs should build cleanly');
+
+    const inc = await fs.promises.readFile(path.join(dir, 'build/assets/music.inc'), 'utf8');
+    const longest = inc.split('\n').reduce((max, line) => Math.max(max, line.length), 0);
+    assert.ok(
+      longest < 500,
+      `the longest line in music.inc is ${longest} characters -- expected well under nesasm's real ~1553-1555 ` +
+        'character limit (measured directly, see the section comment above), not just barely under it'
+    );
+  }
+);
+
+// ---------------------------------------------------------------------------
+// Review-fixes slice C round 2, finding 1: music_play (engine/music.asm)
+// forms `song index * 4` in a single 8-bit accumulator to index
+// song_ptr_lo/hi with Y, so an index at or past 64 wraps (64*4=256=0 mod
+// 256) and silently plays a lower-numbered song's own pointers instead --
+// reachable, since songs otherwise had no ceiling below NO_SONG (255).
+// LIMITS.songs = 64 (shared/project.js) is the real ceiling, enforced by
+// validateProject and, defense in depth, checkCapacity too.
+// ---------------------------------------------------------------------------
+
+test(
+  `exactly LIMITS.songs (${LIMITS.songs}) songs validate and build; LIMITS.songs + 1 is refused by both validateProject and checkCapacity`,
+  { skip: !hasNesasm && 'nesasm not found on PATH' },
+  async (t) => {
+    const dir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'forge-music-songcap-'));
+    t.after(() => fs.promises.rm(dir, { recursive: true, force: true }));
+    const project = await loadProject(SAMPLE);
+    for (let i = project.songs.length; i < LIMITS.songs; i++) project.songs.push(createSong(`Song ${i}`));
+    assert.equal(project.songs.length, LIMITS.songs);
+
+    const isSongCapError = (p) => p.severity === 'error' && /driver can only address/.test(p.message);
+
+    assert.deepEqual(
+      validateProject(project).filter(isSongCapError),
+      [],
+      `exactly LIMITS.songs (${LIMITS.songs}) songs must not be refused by validateProject`
+    );
+    assert.deepEqual(
+      checkCapacity(project).problems.filter(isSongCapError),
+      [],
+      `exactly LIMITS.songs (${LIMITS.songs}) songs must not be refused by checkCapacity`
+    );
+
+    await saveProject(dir, project);
+    const built = await buildProject({ dir, project, log: () => {} });
+    assert.ok(built.romPath, `a project with exactly LIMITS.songs (${LIMITS.songs}) songs should build cleanly`);
+
+    // One more: refused by both, before nesasm is ever asked.
+    const over = structuredClone(project);
+    over.songs.push(createSong('One too many'));
+    assert.equal(over.songs.length, LIMITS.songs + 1);
+
+    const foundValidation = validateProject(over).find(isSongCapError);
+    assert.ok(foundValidation, `${LIMITS.songs + 1} songs should be refused by validateProject`);
+    assert.equal(foundValidation.where, 'Sound Forge');
+
+    const foundCapacity = checkCapacity(over).problems.find(isSongCapError);
+    assert.ok(foundCapacity, `${LIMITS.songs + 1} songs should be refused by checkCapacity`);
+    assert.equal(foundCapacity.where, 'Sound Forge');
+  }
+);
+
+// ---------------------------------------------------------------------------
+// Review-fixes slice C round 2, finding 2: musicSize (main/build/generate.js)
+// used to charge a flat 32 bytes for every instrument's own envelope
+// regardless of its real length (up to 16 steps each), while songTables
+// emits the full envelope. A project with enough large envelopes could pass
+// checkCapacity and then overflow the $E000 bank for real -- musicSize now
+// measures songTableBytes (main/build/songcompile.js), the same code path
+// songTables itself uses to emit the .inc text, so the two cannot drift.
+// ---------------------------------------------------------------------------
+
+/** 8 instruments, each with a real 16-step envelope -- the reviewer's own shape. */
+function bigSong(index) {
+  const instruments = Array.from({ length: 8 }, (_, i) => ({
+    duty: i % 4,
+    volEnv: Array.from({ length: 16 }, (_, step) => (step + i) % 16),
+    sustain: 15
+  }));
+  const channels = { pulse1: [], pulse2: [] };
+  for (let row = 0; row < 32; row++) {
+    // A distinct note (and instrument) every row, on two channels, so
+    // compileSong cannot sustain a note across rows and merge them into one
+    // shorter event -- every row is its own 2-byte event, the worst case
+    // for stream length as well as instrument-select churn.
+    channels.pulse1[row] = { note: (row * 3 + index) % 96, inst: row % 8 };
+    channels.pulse2[row] = { note: (row * 5 + index + 1) % 96, inst: (row + 1) % 8 };
+  }
+  return {
+    name: `Big ${index}`,
+    tempo: { framesPerRow: 6 },
+    instruments,
+    patterns: [{ id: 0, rows: 32, channels }],
+    order: [0],
+    loop: 0
+  };
+}
+
+test(
+  "checkCapacity refuses the reviewer's 32-song/8-instrument/16-step-envelope/32-row shape with a named error",
+  () => {
+    const project = createProject('Reviewer overflow shape');
+    project.songs = Array.from({ length: 32 }, (_, index) => bigSong(index));
+    // 32 x 8 = 256 instruments exactly -- at, not over, MAX_TOTAL_INSTRUMENTS
+    // (item 12's own separate cap), so this exercises the music/sfx/text
+    // bank-size refusal specifically, not the instrument-count one.
+    assert.equal(totalInstrumentCountForTest(project.songs), MAX_TOTAL_INSTRUMENTS);
+
+    const { problems } = checkCapacity(project);
+    const found = problems.find(
+      (p) => p.severity === 'error' && /music/i.test(p.message) && /music and text bank/.test(p.message)
+    );
+    assert.ok(
+      found,
+      'checkCapacity should refuse this project with a named music-bank-overflow error, but got: ' +
+        JSON.stringify(problems.filter((p) => p.severity === 'error'))
+    );
+    assert.equal(found.where, 'Sound Forge');
+  }
+);
+
+/** Mirrors totalInstrumentCount's own SILENT-fallback shape (main/build/generate.js), for the assertion above only. */
+function totalInstrumentCountForTest(songs) {
+  return songs.reduce((total, song) => total + song.instruments.length, 0);
+}
+
+/**
+ * The same 8-instrument/16-step-envelope shape as bigSong above, but with a
+ * single note total per song rather than a 32-row pattern changing notes on
+ * two channels -- stream bytes stay near-minimal, so the project's real
+ * size is dominated by envelope bytes specifically, not by note-stream
+ * length. This is what actually isolates finding 2's own defect: verified
+ * by sabotage, bigSong's own 32-song construction above is refused by
+ * checkCapacity under BOTH the fixed musicSize and the old flat-32-byte
+ * formula it replaced (its note-stream bytes alone already exceed the
+ * bank), so it proves the fixed behavior is correct without proving the old
+ * behavior was wrong. This construction does: 40 of them are refused under
+ * the fix (8112 real music bytes) and silently accepted under the old flat
+ * formula (which would have reported roughly a quarter of that).
+ */
+function bigEnvelopeMinimalNoteSong(index) {
+  const instruments = Array.from({ length: 8 }, (_, i) => ({
+    duty: i % 4,
+    volEnv: Array.from({ length: 16 }, (_, step) => (step + i) % 16),
+    sustain: 15
+  }));
+  return {
+    name: `Env ${index}`,
+    tempo: { framesPerRow: 6 },
+    instruments,
+    patterns: [{ id: 0, rows: 1, channels: { pulse1: [{ note: 40, inst: 0 }] } }],
+    order: [0],
+    loop: 0
+  };
+}
+
+test(
+  '40 songs whose size is dominated by real envelope bytes, not note-stream length, are refused by checkCapacity -- the shape that actually isolates the old flat-envelope-charge bug',
+  () => {
+    const project = createProject('Envelope-dominated overflow shape');
+    project.songs = Array.from({ length: 40 }, (_, index) => bigEnvelopeMinimalNoteSong(index));
+    assert.ok(project.songs.length <= LIMITS.songs, 'stay under the unrelated song-count cap (finding 1)');
+
+    const { problems } = checkCapacity(project);
+    const found = problems.find(
+      (p) => p.severity === 'error' && /music/i.test(p.message) && /music and text bank/.test(p.message)
+    );
+    assert.ok(
+      found,
+      'checkCapacity should refuse this envelope-dominated project with a named music-bank-overflow error, ' +
+        'but got: ' + JSON.stringify(problems.filter((p) => p.severity === 'error'))
+    );
+    assert.equal(found.where, 'Sound Forge');
+
+    // musicSize is private to generate.js -- not exported -- so this reads
+    // the exact figure it reports back out of the refusal message itself
+    // ("... compile to N bytes (M music, ...)") and checks it against
+    // songTableBytes computed independently, closing the one gap the
+    // sabotage check found: a musicSize that stopped delegating to
+    // songTableBytes (drifted back to its own guess) would not be caught by
+    // the "must be refused" assertion above alone, since a large enough
+    // guess still refuses -- only comparing the reported NUMBER catches
+    // that the two have drifted apart.
+    const reportedMusicBytes = Number(found.message.match(/\((\d+) music,/)?.[1]);
+    assert.ok(Number.isFinite(reportedMusicBytes), `could not parse the reported music byte count out of: ${found.message}`);
+    assert.equal(
+      reportedMusicBytes,
+      songTableBytes(project.songs),
+      "checkCapacity's own reported music byte count must equal songTableBytes(project.songs) exactly -- " +
+        'musicSize must be delegating to it, not computing its own figure'
+    );
+  }
+);
+
+test(
+  "a project checkCapacity accepts really assembles, and musicSize's reported bytes match nesasm's own placement exactly",
+  { skip: !hasNesasm && 'nesasm not found on PATH' },
+  async (t) => {
+    const dir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'forge-music-bytecount-'));
+    t.after(() => fs.promises.rm(dir, { recursive: true, force: true }));
+    const project = await loadProject(SAMPLE);
+    // Two more songs with real, differently-sized envelopes (not the
+    // trivial one-step default), so this exercises the same "sum the real
+    // envelope lengths" code path the reviewer's overflow shape does, just
+    // at a size that still fits.
+    project.songs.push({
+      name: 'Extra A',
+      tempo: { framesPerRow: 6 },
+      instruments: [
+        { duty: 1, volEnv: [15, 12, 9, 6, 3, 0], sustain: 5 },
+        { duty: 2, volEnv: Array.from({ length: 16 }, (_, i) => 15 - i), sustain: 15 }
+      ],
+      patterns: [{ id: 0, rows: 8, channels: { pulse1: [{ note: 40, inst: 0 }, null, { note: 44, inst: 1 }, null, null, null, null, null] } }],
+      order: [0],
+      loop: 0
+    });
+    project.songs.push({
+      name: 'Extra B',
+      tempo: { framesPerRow: 6 },
+      instruments: [{ duty: 0, volEnv: [15, 10, 5, 0], sustain: 3 }],
+      patterns: [{ id: 0, rows: 4, channels: { noise: [{ note: 5, inst: 0 }, null, { note: 8, inst: 0 }, null] } }],
+      order: [0],
+      loop: 0
+    });
+
+    const { problems, capacity } = checkCapacity(project);
+    assert.deepEqual(problems.filter((p) => p.severity === 'error'), [], 'this project should be accepted');
+    void capacity;
+
+    await saveProject(dir, project);
+    const built = await buildProject({ dir, project, log: () => {} });
+    assert.ok(built.romPath, 'an accepted project should really assemble');
+    assert.ok(built.symbolPath, 'nesasm should have written a symbol file');
+    const symbols = await fs.promises.readFile(built.symbolPath, 'utf8');
+    const addr = (label) => {
+      const m = symbols.match(new RegExp(`^${label}\\s*=\\s*\\$([0-9A-Fa-f]+)`, 'm'));
+      assert.ok(m, `label ${label} not found in game.fns`);
+      return parseInt(m[1], 16);
+    };
+    // period_lo is songTables' own first emitted label; sfx_ptr_table_lo is
+    // sfxTables' own first (always emitted, even for zero effects -- see its
+    // own comment). assets/music.inc is songTables(...) + sfxTables(...)
+    // concatenated with nothing between them (main/build/generate.js), so
+    // the address span between the two is the real, measured music byte
+    // count nesasm actually placed -- exactly what musicSize claims.
+    const realMusicBytes = addr('sfx_ptr_table_lo') - addr('period_lo');
+    assert.equal(
+      songTableBytes(project.songs),
+      realMusicBytes,
+      "musicSize (== songTableBytes) must equal nesasm's own real placement, to the byte"
+    );
+  }
+);
+
 // ---------------------------------------------------------------------------
 // The golden test: the ROM's driver and the preview replayer must produce
 // identical APU writes, or what you hear in the Sound Forge is a lie.
@@ -140,9 +535,9 @@ const APU_HIGH = 0x400f;
  * caller downstream tell the boot-settling burst apart from a write that has
  * no business happening once the song is already playing.
  */
-function recordRomActivity(frames) {
+function recordRomActivity(frames, romPath = ROM_PATH) {
   const nes = new NES({ onFrame: () => {}, emulateSound: false });
-  nes.loadROM(new Uint8Array(fs.readFileSync(ROM_PATH)));
+  nes.loadROM(new Uint8Array(fs.readFileSync(romPath)));
 
   const writesPerFrame = [];
   let current = [];
@@ -243,6 +638,79 @@ test('the ROM driver and the preview replayer agree', { skip: !hasRom && 'run `n
     );
   }
 });
+
+// Item 12 (review-fixes slice C): every song's own instruments now reach the ROM, not just song
+// 0's -- songTables (main/build/songcompile.js) concatenates them in song order and the driver
+// (engine/music.asm) looks up a per-song BASE. The test above is this claim's own mirror control:
+// it is unchanged, still exercises song 0 (whose base is trivially zero either way), and still
+// passes. This is the one that can actually fail if the per-song BASE is wrong: a second song,
+// its own instrument 0 given a duty and envelope distinct from the sample's own song 0, set as the
+// start map's song -- the ROM driver and the preview replayer must still agree frame-for-frame.
+test(
+  'a second song -- not song 0 -- still gets its own real instrument in the ROM, frame-for-frame against the replayer',
+  { skip: !hasRom && 'run `npm run sample` first' },
+  async (t) => {
+    const dir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'forge-music-song2-'));
+    t.after(() => fs.promises.rm(dir, { recursive: true, force: true }));
+    const project = await loadProject(SAMPLE);
+    assert.ok(project.songs.length, 'the sample project should contain a song');
+    // Boot straight into gameplay -- nothing here is about the title screen, and the sample's own
+    // title map would otherwise decide (and settle cur_song on) ITS OWN song first, before the
+    // start map's choice is ever reached.
+    project.project.titleMap = null;
+
+    // Same notes as song 0 (structuredClone of it), but a distinct instrument 0 -- duty and
+    // envelope both different from the sample's own -- so a driver that mis-resolved this song's
+    // own $F0-$F7 select against song 0's base (or against the wrong absolute slot entirely)
+    // would produce APU writes the replayer's own correct resolution does not match.
+    const second = structuredClone(project.songs[0]);
+    second.name = 'Second';
+    second.instruments = [{ duty: (project.songs[0].instruments?.[0]?.duty ?? 0) === 1 ? 3 : 1, volEnv: [10, 6, 2, 0], sustain: 1 }];
+    const SONG_B = project.songs.length;
+    project.songs.push(second);
+    project.maps[0].songId = SONG_B;
+
+    await saveProject(dir, project);
+    const built = await buildProject({ dir, project, log: () => {} });
+
+    const compiled = compileSong(project.songs[SONG_B]);
+    const replayer = new Replayer(compiled);
+
+    const { writesPerFrame, songWrites } = recordRomActivity(200, built.romPath);
+
+    const tickStart = writesPerFrame.findIndex((writes) =>
+      writes.some(([address]) => address === 0x4002 || address === 0x400a)
+    );
+    assert.ok(tickStart >= 0, 'the ROM never gave a channel a period -- is the song playing?');
+
+    const settling = songWrites.filter((entry) => entry.frame < tickStart);
+    assert.ok(settling.length > 0, 'cur_song was never written before the song started ticking');
+    const decision = settling[settling.length - 1];
+    assert.equal(decision.value, SONG_B, `cur_song never settled on song ${SONG_B} before the song started ticking`);
+
+    const restart = songWrites.find((entry) => entry.frame >= tickStart);
+    assert.equal(
+      restart,
+      undefined,
+      `cur_song was written again on frame ${restart?.frame} (value ${restart?.value}) after the song had ` +
+        'already started ticking'
+    );
+
+    const start = decision.frame + 1;
+    const compare = 150;
+    for (let i = 0; i < compare; i++) {
+      const expected = replayer.tick();
+      const actual = writesPerFrame[start + i];
+      assert.deepEqual(
+        actual,
+        expected,
+        `APU writes differ on frame ${i} (ROM frame ${start + i}):\n` +
+          `  ROM:      ${JSON.stringify(actual)}\n` +
+          `  replayer: ${JSON.stringify(expected)}`
+      );
+    }
+  }
+);
 
 test('the song actually plays notes, not just silence', { skip: !hasRom && 'run `npm run sample` first' }, () => {
   const { writesPerFrame } = recordRomActivity(200);

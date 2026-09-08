@@ -1838,6 +1838,29 @@ function saveAndMoveEvent() {
   };
 }
 
+/**
+ * Removes every live occurrence of one opcode from `project`, page by page,
+ * across every placed entity's event -- unlike filtering out a whole entity
+ * (which a project can be sharing between two commands the way
+ * saveAndMoveEvent puts Save and Move on the same page), this drops exactly
+ * one command and leaves any other command on the same page alone. Used by
+ * the documented-limitation tests below to confirm which single command a
+ * real refusal's own advice is actually naming.
+ */
+function dropCommand(project, op) {
+  const cloned = structuredClone(project);
+  for (const map of cloned.maps ?? []) {
+    for (const screen of map.screens ?? []) {
+      for (const entity of screen.entities ?? []) {
+        for (const page of entity.props?.event?.pages ?? []) {
+          page.commands = (page.commands ?? []).filter((command) => command.op !== op);
+        }
+      }
+    }
+  }
+  return cloned;
+}
+
 // The outcome this whole change was scoped against, and its history in four
 // parts now, not three. sample-rpg with a live Save command *and* a live
 // Move command, on MMC3, used to be short of the kernel-lo bank (332 bytes
@@ -2625,10 +2648,20 @@ test('a kernel-lo shortfall Sting alone would not close by its own allowance can
   );
 });
 
-// design-sting.md §9: the new documented limitation Sting creates. MMC3 Save+Move-no-item has
-// exactly 88 free (handoff-costing/costing-report.md Part 1's own MMC3 table, and CLAUDE.md's own
-// documented figure) -- (STING_KERNEL_ALLOWANCE_STANDALONE + AUDIO_FX_KERNEL_ALLOWANCE) (175) exceeds that by more than double, so a live
-// Sting on this exact configuration is a clean, unambiguous NO FIT, not a close call.
+// design-sting.md §9: the documented limitation Sting creates -- DEVIATION,
+// review-fixes slice C, item 12: MMC3 Save+Move-no-item used to have enough
+// margin that Sting's own allowance alone was the row's real tipping point
+// (175 bytes, against a deficit just above it, matching the CLAUDE.md figure
+// this comment used to cite). Item 12's own base growth (+15/board,
+// unconditional -- see BASE_KERNEL_CODE_BYTES_BY_MAPPER's own comment in
+// generate.js) already pushes this exact row 8 bytes over budget with NO
+// Sting live at all, so Sting is no longer what tips it and dropping Sting
+// alone no longer closes it (its own allowance grew too, to 187, but the
+// deficit it would have to clear grew to 195) -- Move or Save, both much
+// larger allowances, are the only single-command fixes left, and neither
+// depends on whether Sting is live. What this test still proves is that
+// Sting genuinely does not make the refusal disappear on its own now, not
+// that it is what causes it.
 test(
   'sample-rpg with Save, Move (no item) and a live Sting does not build on MMC3 -- a documented limitation',
   { skip: !hasNesasm && 'nesasm not found on PATH' },
@@ -2648,27 +2681,41 @@ test(
     });
 
     const message = kernelShortfallMessage(project);
-    assert.match(
+    // Move and Save, not Sting: dropping Sting alone (187 bytes) no longer
+    // closes this row's own deficit (195), so kernelShortfallAdvice's solo
+    // pass correctly leaves it out -- see the header comment above.
+    assert.match(message, /every Move command \(frees \d+ bytes\)/, 'the refusal should offer dropping Move');
+    assert.match(message, /every Save command \(frees \d+ bytes\)/, 'the refusal should offer dropping Save');
+    assert.doesNotMatch(
       message,
-      // Not anchored to "removing every Sting command" at the start of the message: this
-      // configuration also carries a live Move and a live Save, both real droppable fixes of
-      // their own, so the advice offers all three ("...or every Sting command (frees N bytes)
-      // or...") -- Sting's own presence and its real byte figure are what this asserts, not
-      // where in the list it happens to land.
-      new RegExp(`every Sting command \\(frees ${(STING_KERNEL_ALLOWANCE_STANDALONE + AUDIO_FX_KERNEL_ALLOWANCE)} bytes\\)`),
-      'the refusal should name Sting and its real byte figure, the same discipline every other documented ' +
-        'limitation in this file is held to'
+      /Sting/,
+      'Sting alone no longer closes this row (its own allowance grew to 187, but so did the deficit, to 195) -- ' +
+        'offering it here would be advice that does not actually work'
     );
 
-    // Confirm the design's own stated mitigation: dropping Sting alone is a real fix, the exact
-    // same shape checkCapacity's own advice already offers for Move/Save elsewhere.
+    // Dropping Sting alone is NOT a real fix any more -- confirms the
+    // deficit above is genuine, not an artifact of kernelShortfallMessage's
+    // own arithmetic.
     const droppedSting = structuredClone(project);
     droppedSting.maps[0].screens[0].entities.pop();
-    const dir = await fsp.mkdtemp(path.join(os.tmpdir(), 'forge-sting-limitation-'));
-    t.after(() => fsp.rm(dir, { recursive: true, force: true }));
-    await saveProject(dir, droppedSting);
-    const built = await buildProject({ dir, project: droppedSting, log: () => {} });
-    assert.ok(built.romPath, 'dropping the Sting command should still be a real fix');
+    const dirSting = await fsp.mkdtemp(path.join(os.tmpdir(), 'forge-sting-limitation-'));
+    t.after(() => fsp.rm(dirSting, { recursive: true, force: true }));
+    await saveProject(dirSting, droppedSting);
+    await assert.rejects(
+      buildProject({ dir: dirSting, project: droppedSting, log: () => {} }),
+      'dropping only the Sting command should still fail to build -- this row is now over budget with no ' +
+        'Sting live at all'
+    );
+
+    // Confirm the design's own stated mitigation still holds: dropping Move
+    // ALONE -- Save stays live -- (one of the two fixes the message above
+    // actually offers) is a real fix, with Sting still live too.
+    const droppedMove = dropCommand(project, 'move');
+    const dirMove = await fsp.mkdtemp(path.join(os.tmpdir(), 'forge-sting-limitation-move-'));
+    t.after(() => fsp.rm(dirMove, { recursive: true, force: true }));
+    await saveProject(dirMove, droppedMove);
+    const built = await buildProject({ dir: dirMove, project: droppedMove, log: () => {} });
+    assert.ok(built.romPath, 'dropping Move (with Sting still live) should be a real fix');
   }
 );
 
@@ -2714,16 +2761,21 @@ test(
 // AUDIO_FX_ENABLED in music_channel) must not change a Sting-only project's
 // own measured cost -- the direct, checked form of §3.6's "the re-gate is a
 // no-op for a Sting-only project" claim. STING_KERNEL_ALLOWANCE_STANDALONE +
-// AUDIO_FX_KERNEL_ALLOWANCE summing to exactly 175 (the historical flat
-// STING_KERNEL_ALLOWANCE every Sting-only project paid before SFX existed)
-// is what this test actually checks; a real nesasm build against the
-// implementation as shipped, not merely an arithmetic identity between two
-// constants. Also confirms STING_SFX_INTERACTION_ALLOWANCE costs a
-// Sting-only project nothing: the nested `.if SFX_ENABLED` guard inside
-// sting_restore_silence collapses away identically to any other
-// SFX_ENABLED-gated block when SFX is not live, and this same
-// before/after-style comparison (against the pre-SFX historical figure)
-// already exercises that.
+// AUDIO_FX_KERNEL_ALLOWANCE summing to exactly 175 was the historical flat
+// STING_KERNEL_ALLOWANCE every Sting-only project paid before SFX existed;
+// review-fixes slice C, item 12 moved that to 187 -- sting_snapshot/
+// sting_restore (engine/music.asm) now also save/restore mus_inst_base
+// alongside cur_song/mus_enabled, 12 bytes entirely inside the outer `.if
+// STING_ENABLED` block (see STING_KERNEL_ALLOWANCE_STANDALONE's own comment
+// in generate.js), so this is a real, legitimate move of the baseline this
+// test pins, not a regression the re-gate introduced. What this test still
+// checks is a real nesasm build against the implementation as shipped, not
+// merely an arithmetic identity between two constants. Also confirms
+// STING_SFX_INTERACTION_ALLOWANCE costs a Sting-only project nothing: the
+// nested `.if SFX_ENABLED` guard inside sting_restore_silence collapses away
+// identically to any other SFX_ENABLED-gated block when SFX is not live, and
+// this same before/after-style comparison (against the current historical
+// figure) already exercises that.
 test(
   'the force_trig re-gate does not change a Sting-only project\'s own measured kernel-lo cost, on every RPG-capable board',
   { skip: !hasNesasm && 'nesasm not found on PATH' },
@@ -2737,11 +2789,11 @@ test(
         STING_KERNEL_ALLOWANCE_STANDALONE + AUDIO_FX_KERNEL_ALLOWANCE,
         `${mapper.name}: a live Sting (no SFX live) costs ${delta} bytes, but ` +
           `STING_KERNEL_ALLOWANCE_STANDALONE + AUDIO_FX_KERNEL_ALLOWANCE reserves ` +
-          `${STING_KERNEL_ALLOWANCE_STANDALONE + AUDIO_FX_KERNEL_ALLOWANCE} -- the historical flat 175 a ` +
+          `${STING_KERNEL_ALLOWANCE_STANDALONE + AUDIO_FX_KERNEL_ALLOWANCE} -- the historical flat 187 a ` +
           'Sting-only project has always paid must not move now that force_trig\'s own gate reads ' +
           'AUDIO_FX_ENABLED instead of STING_ENABLED alone (design-sfx.md §7 test 10).'
       );
-      assert.equal(delta, 175, `${mapper.name}: the historical Sting-only figure itself must not have moved`);
+      assert.equal(delta, 187, `${mapper.name}: the historical Sting-only figure itself must not have moved`);
     }
   }
 );
@@ -2970,14 +3022,62 @@ async function assertSfxRefusal(t, mapperId, rowCommands, { noItem = false, with
   assert.ok(built.romPath, `${mapperLabel}: dropping the SFX command alone should still be a real fix`);
 }
 
+// DEVIATION, review-fixes slice C, item 12: this row does not go through
+// assertSfxRefusal any more. Item 12's own base growth (+15/board,
+// unconditional) already pushes MMC3 Save+Move-no-item 8 bytes over budget
+// with no SFX live at all (the identical finding the Sting documented-
+// limitation test above now records) -- so SFX no longer "reaches" a
+// previously-fitting row, it lands on one that was already refused, and
+// SFX_KERNEL_ALLOWANCE_STANDALONE's own 295-byte allowance is not what the
+// message names any more (Move/Save, both larger, are). Kept as its own
+// test, inline rather than through the shared helper, because the helper's
+// assertion (SFX must be named) is still correct for every other row that
+// calls it (45-49 below) and must not be weakened for all of them to
+// accommodate this one row's own now-different reality.
 test(
   'sample-rpg with Save, Move (no item) and a live SFX does not build on MMC3 -- the already-known documented limitation, now also reached by SFX',
   { skip: !hasNesasm && 'nesasm not found on PATH' },
   async (t) => {
-    await assertSfxRefusal(t, 4, [{ op: 'save' }, { op: 'move', who: 'self', dir: 'up', dist: 16 }], {
-      noItem: true,
-      mapperLabel: 'MMC3'
-    });
+    const project = await loadProject(SAMPLE_RPG);
+    project.cartridge.mapper = 4; // MMC3
+    project.project.titleMap = 0;
+    project.project.titleScreen = 0;
+    project.items = [];
+    project.maps[0].screens[0].entities.push(
+      commandsEvent([{ op: 'save' }, { op: 'move', who: 'self', dir: 'up', dist: 16 }])
+    );
+    project.maps[0].screens[0].entities.push(sfxCommandEvent(project));
+
+    const message = kernelShortfallMessage(project);
+    assert.match(message, /every Move command \(frees \d+ bytes\)/, 'the refusal should offer dropping Move');
+    assert.match(message, /every Save command \(frees \d+ bytes\)/, 'the refusal should offer dropping Save');
+    assert.doesNotMatch(
+      message,
+      /sound effect/,
+      'SFX alone no longer closes this row -- the baseline is already over budget without it, so offering ' +
+        'it here would be advice that does not actually work'
+    );
+
+    // Dropping SFX alone is NOT a real fix any more.
+    const droppedSfx = structuredClone(project);
+    droppedSfx.maps[0].screens[0].entities.pop();
+    const dirSfx = await fsp.mkdtemp(path.join(os.tmpdir(), 'forge-sfx-limitation-mmc3-'));
+    t.after(() => fsp.rm(dirSfx, { recursive: true, force: true }));
+    await saveProject(dirSfx, droppedSfx);
+    await assert.rejects(
+      buildProject({ dir: dirSfx, project: droppedSfx, log: () => {} }),
+      'dropping only the SFX command should still fail to build -- this row is now over budget with no SFX ' +
+        'live at all'
+    );
+
+    // Move ALONE -- Save stays live -- (one of the two fixes actually
+    // offered above) is a real fix.
+    const droppedMove = dropCommand(project, 'move');
+    const dirMove = await fsp.mkdtemp(path.join(os.tmpdir(), 'forge-sfx-limitation-move-'));
+    t.after(() => fsp.rm(dirMove, { recursive: true, force: true }));
+    await saveProject(dirMove, droppedMove);
+    const built = await buildProject({ dir: dirMove, project: droppedMove, log: () => {} });
+    assert.ok(built.romPath, 'dropping Move (with SFX still live) should be a real fix');
   }
 );
 
@@ -3216,12 +3316,25 @@ test(
 );
 
 // design-tile.md §9's own new documented-limitation ledger paragraph: MMC3
-// Save+Move-no-item has 88 bytes free (CLAUDE.md's own documented figure,
-// the row Sting's own documented limitation already lands on) --
+// Save+Move-no-item used to have 88 bytes free (CLAUDE.md's own documented
+// figure, the row Sting's own documented limitation already lands on) --
 // BOUND_TILE_KERNEL_ALLOWANCE plus the fixed/table terms a bound tile also
-// carries (design-tile.md §8's own occupancy accounting) exceeds that by a
-// wide margin, so a live bound tile on this exact configuration is a clean
+// carries (design-tile.md §8's own occupancy accounting) exceeded that by a
+// wide margin, so a live bound tile on this exact configuration was a clean
 // NO FIT, the same shape as Sting's own refusal a few tests up.
+//
+// DEVIATION, review-fixes slice C, item 12: the baseline itself moved.
+// Item 12's own base growth (+15/board, unconditional) already pushes this
+// exact row 8 bytes over budget with no bound tile live at all (the
+// identical finding the Sting and SFX documented-limitation tests above now
+// record) -- so a live bound tile here is landing on an already-refused row,
+// not creating one. Its own allowance (420 bytes) is no longer even the
+// dominant single-command fix, and does not clear the deficit alone: only
+// Save (557 bytes) does. Dropping Move alone (with the bound tile still
+// live) does not fix it either -- 395 bytes is short of what this
+// particular deficit needs once the bound tile's own real occupancy cost
+// (code, the fixed row table and the per-screen pointer table together,
+// design-tile.md §8) is added on top.
 test(
   'sample-rpg with Save, Move (no item) and a live bound tile does not build on MMC3 -- a documented limitation',
   { skip: !hasNesasm && 'nesasm not found on PATH' },
@@ -3236,22 +3349,40 @@ test(
     project.maps[0].screens[0].boundTiles = [{ switchId: 0, row: 0, col: 0, metatileId: paintedId }];
 
     const message = kernelShortfallMessage(project);
-    assert.match(
+    // Save only: neither the bound tile's own allowance nor Move alone
+    // clears this deficit any more -- see the header comment above.
+    assert.match(message, /every Save command \(frees \d+ bytes\)/, 'the refusal should offer dropping Save');
+    assert.doesNotMatch(
       message,
-      new RegExp(`every switch-bound tile \\(frees \\d+ bytes\\)`),
-      'the refusal should name switch-bound tiles as one of its droppable fixes, the same discipline every ' +
-        'other documented limitation in this file is held to'
+      /switch-bound tile/,
+      'the bound tile\'s own allowance no longer closes this row alone -- offering it here would be advice ' +
+        'that does not actually work'
+    );
+    assert.doesNotMatch(
+      message,
+      /every Move command/,
+      'Move alone does not close this row either, once the bound tile\'s own real occupancy is added on top'
     );
 
-    // Confirm the design's own stated mitigation: dropping the bound tile
-    // alone is a real fix.
+    // Dropping the bound tile alone is NOT a real fix any more.
     const droppedBound = structuredClone(project);
     droppedBound.maps[0].screens[0].boundTiles = [];
-    const dir = await fsp.mkdtemp(path.join(os.tmpdir(), 'forge-boundtile-limitation-mmc3-'));
-    t.after(() => fsp.rm(dir, { recursive: true, force: true }));
-    await saveProject(dir, droppedBound);
-    const built = await buildProject({ dir, project: droppedBound, log: () => {} });
-    assert.ok(built.romPath, 'dropping the bound tile should still be a real fix');
+    const dirBound = await fsp.mkdtemp(path.join(os.tmpdir(), 'forge-boundtile-limitation-mmc3-'));
+    t.after(() => fsp.rm(dirBound, { recursive: true, force: true }));
+    await saveProject(dirBound, droppedBound);
+    await assert.rejects(
+      buildProject({ dir: dirBound, project: droppedBound, log: () => {} }),
+      'dropping only the bound tile should still fail to build -- this row is now over budget with no bound ' +
+        'tile live at all'
+    );
+
+    // Save (the one fix the message above actually offers) is a real fix.
+    const droppedSave = dropCommand(project, 'save');
+    const dirSave = await fsp.mkdtemp(path.join(os.tmpdir(), 'forge-boundtile-limitation-save-'));
+    t.after(() => fsp.rm(dirSave, { recursive: true, force: true }));
+    await saveProject(dirSave, droppedSave);
+    const built = await buildProject({ dir: dirSave, project: droppedSave, log: () => {} });
+    assert.ok(built.romPath, 'dropping Save (with the bound tile still live) should be a real fix');
   }
 );
 

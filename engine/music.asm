@@ -80,6 +80,15 @@ music_play_no_cancel:
   .endif
   cmp #NO_SONG
   beq music_stop
+  ; song_inst_base is one byte per song -- the offset of that song's own
+  ; slice of the flat instrument tables, item 12's per-song BASE (see
+  ; mus_inst_base's own comment in engine/constants.asm). Looked up here,
+  ; before A is squared into a channel-pointer offset below, and kept in Y
+  ; across it so `tya` can restore the song index afterward.
+  tay
+  lda song_inst_base,y
+  sta mus_inst_base
+  tya
   asl a
   asl a                     ; four channel pointers per song
   sta mus_tmp
@@ -96,9 +105,10 @@ music_play_loop:
   sta mus_ptr_hi,x
   lda #0
   sta mus_dur,x
-  sta mus_inst,x
   sta mus_step,x
   sta mus_trig,x
+  lda mus_inst_base         ; every channel starts on this song's base
+  sta mus_inst,x            ; instrument (BASE + 0), not local 0 unadjusted
   lda #$FF
   sta mus_note,x
   inx
@@ -238,7 +248,9 @@ music_read_not_loop:
   beq music_read_rest
   cmp #MUS_INST
   bcc music_read_note
-  and #$07                  ; $F0-$F7 selects an instrument
+  and #$07                  ; $F0-$F7 selects a LOCAL instrument 0-7 --
+  clc                       ; item 12's per-song BASE turns that into this
+  adc mus_inst_base         ; song's own absolute slot in the flat tables
   sta mus_inst,x
   jsr music_advance_one
   jmp music_read_fetch
@@ -409,10 +421,13 @@ music_volume_read:
 
 ; Copies the six contiguous per-channel arrays (mus_ptr_lo..mus_note, 24
 ; bytes, mus_trig excluded -- see music_channel's own force_trig comment for
-; why a copied mus_trig would be worthless) into sting_shadow, plus cur_song
-; and mus_enabled. Only called when sting_left == 0 (script_op_sting,
-; mechanism 4) -- a second sting arriving mid-first must not re-snapshot the
-; first sting's own state over the real song's already-shadowed one.
+; why a copied mus_trig would be worthless) into sting_shadow, plus cur_song,
+; mus_enabled and mus_inst_base (item 12: the resumed song's own later
+; $F0-$F7 selects must land on ITS OWN instruments, not the sting's base
+; still sitting in mus_inst_base). Only called when sting_left == 0
+; (script_op_sting, mechanism 4) -- a second sting arriving mid-first must
+; not re-snapshot the first sting's own state over the real song's
+; already-shadowed one.
 sting_snapshot:
   ldx #0
 sting_snapshot_loop:
@@ -425,6 +440,8 @@ sting_snapshot_loop:
   sta sting_shadow_song
   lda mus_enabled
   sta sting_shadow_enabled
+  lda mus_inst_base
+  sta sting_shadow_inst_base
   rts
 
 ; The mirror copy-back, plus force-retriggering every channel (so the
@@ -449,6 +466,8 @@ sting_restore_loop:
   bne sting_restore_loop
   lda sting_shadow_song
   sta cur_song
+  lda sting_shadow_inst_base
+  sta mus_inst_base
   lda sting_shadow_enabled
   sta mus_enabled
   beq sting_restore_silence

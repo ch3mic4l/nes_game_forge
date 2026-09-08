@@ -366,7 +366,13 @@ test('do_interact enters the bag with the actor’s own id when the project has 
 // reaches) applied -- so this still asserts what it always asserted (an
 // items-disabled build is unaffected by items), not the fix compared
 // against itself.
-const PINNED_BASELINE_HASH = 'f0f8754928349dfde0f1ad2d97938acbf7784fe64efe6c71e928002f26591b49';
+// Re-pinned again, review-fixes slice C, item 12: music_play/music_read_event
+// (engine/music.asm) now look up and apply a per-song instrument BASE --
+// unconditional kernel code (music.asm is always assembled), so it moves
+// every project's hash regardless of items or gameType, the identical shape
+// the actor*4 fix's own re-pin above already explains. ROM size unchanged
+// (40976).
+const PINNED_BASELINE_HASH = 'a7d9612ed96b95d094d2d652faf6516b86efa1f3651837b3101a45b5612ed92a';
 const PINNED_BASELINE_SIZE = 40976;
 
 test('a project with no items and no Save is byte-identical to the pre-phase-4b master build', async (t) => {
@@ -532,7 +538,12 @@ test('a project with no items and no Save is byte-identical to the pre-phase-4b 
 // battle-region code (engine/battle.asm), present on every RPG build
 // regardless of whether this baseline project ever kills a monster at all.
 // Size still unchanged (still 147472), same reason as every re-pin above.
-const PINNED_RPG_BASELINE_HASH = 'dc702ba4ac13e1a00f831bf287483579b7f6d28aa3f479e040bdfa1fb2355e93';
+//
+// Re-pinned again, review-fixes slice C, item 12: music_play/music_read_event
+// (engine/music.asm) now look up and apply a per-song instrument BASE --
+// unconditional kernel code, present on every RPG build regardless of items,
+// Save or spells. Size still unchanged (still 147472).
+const PINNED_RPG_BASELINE_HASH = 'a252a26b4360f19bedeeb31cd220cfe4ce804ef09cea133a4ba01372d773eea0';
 const PINNED_RPG_BASELINE_SIZE = 147472;
 
 test('an RPG with no items and no Save is byte-identical to the pre-round-4 master build', async (t) => {

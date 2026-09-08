@@ -411,9 +411,14 @@ test('sample/ builds a byte-identical ROM after PLAYER_FRAMES/PLAYER_TILES moved
   // moves sample/'s hash the same way it moves items.test.js's own pinned
   // baselines. Not a PLAYER_FRAMES/PLAYER_TILES regression: re-captured by
   // building this exact sample/ tree with only that fix applied.
+  // Re-pinned again, review-fixes slice C, item 12: music_play/music_read_event
+  // (engine/music.asm) now look up and apply a per-song instrument BASE --
+  // unconditional kernel code, present in every build. Not a
+  // PLAYER_FRAMES/PLAYER_TILES regression either: re-captured by building
+  // this exact sample/ tree with only that fix applied.
   assert.equal(
     hash,
-    'c8792cd6ecdf66ff65efdf4703fe6b02abe4114950703222d1ec60889c42fa0b',
+    '471562e528e8ad08a44c9211bd0784b8e6b5e9811e9793ebf21f02e2143bcd82',
     'moving PLAYER_FRAMES/PLAYER_TILES into shared/project.js is a single-writer move, not a behaviour ' +
       'change -- sample/ must assemble byte-for-byte identically to the pinned pre-move build (captured ' +
       'from this exact working tree, immediately before this move, by building createProject-free sample/)'

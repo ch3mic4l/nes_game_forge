@@ -112,6 +112,24 @@ function dbBlock(values, perLine = 16) {
   return lines.join('\n');
 }
 
+/**
+ * The dbBlock-style chunking above, but for a list of nesasm expressions
+ * (LOW(x)/HIGH(x)) rather than numeric bytes -- those cannot go through
+ * dbBlock's own hex() map, so song_ptr_lo/song_ptr_hi chunk here instead.
+ * Item 14: with every song's pointer pair on one unwrapped .db line, nesasm
+ * truncates the line past its own input-line limit once a project has enough
+ * songs, which passed checkCapacity and then failed assembly with a syntax
+ * error inside music.inc. perLine matches dbBlock's own default so both
+ * tables read the same width in the generated file.
+ */
+function dbExprBlock(exprs, perLine = 16) {
+  const lines = [];
+  for (let i = 0; i < exprs.length; i += perLine) {
+    lines.push(`  .db ${exprs.slice(i, i + perLine).join(',')}`);
+  }
+  return lines.join('\n');
+}
+
 /** The silent song used when a project has no music yet. */
 const SILENT = {
   channels: CHANNELS.map((channel) => ({ id: channel.id, bytes: [OP_REST, MAX_DURATION], loopOffset: 0 })),
@@ -120,12 +138,28 @@ const SILENT = {
 
 /**
  * Emit the period table, instrument tables and every song stream.
- * Instruments are shared across songs: the first song's set wins, which keeps
- * the driver's lookup a single flat table.
+ *
+ * Item 12: every song's own instruments are concatenated, in song order, into
+ * the one flat set of inst_* tables -- not just song 0's, which the schema,
+ * the editor and the preview all already treat as one instrument set per
+ * song. song_inst_base carries one byte per song, the offset of that song's
+ * own first instrument in the flat tables; the driver ($F0-$F7 in
+ * engine/music.asm) adds it onto the stream's own local 0-7 select to reach
+ * the right absolute slot. A song with no instruments (only possible for the
+ * project-wide SILENT fallback below -- normalizeSong always leaves a real
+ * song with at least one) gets SILENT's own single entry, and the base still
+ * advances past it.
  */
 export function songTables(songs) {
   const compiled = songs.length ? songs.map((song) => compileSong(song)) : [SILENT];
-  const instruments = compiled[0].instruments.length ? compiled[0].instruments : SILENT.instruments;
+
+  const instrumentBases = [];
+  const instruments = [];
+  for (const song of compiled) {
+    instrumentBases.push(instruments.length);
+    const list = song.instruments.length ? song.instruments : SILENT.instruments;
+    instruments.push(...list);
+  }
 
   const chunks = [
     '; Generated -- note periods, instruments and song streams.',
@@ -136,21 +170,22 @@ export function songTables(songs) {
     `inst_sustain:\n${dbBlock(
       instruments.map((entry) => Math.min(entry.sustain ?? entry.volEnv.length - 1, entry.volEnv.length - 1))
     )}`,
-    `inst_env_lo:\n  .db ${instruments.map((_, index) => `LOW(inst_env_${index})`).join(',')}`,
-    `inst_env_hi:\n  .db ${instruments.map((_, index) => `HIGH(inst_env_${index})`).join(',')}`,
+    `inst_env_lo:\n${dbExprBlock(instruments.map((_, index) => `LOW(inst_env_${index})`))}`,
+    `inst_env_hi:\n${dbExprBlock(instruments.map((_, index) => `HIGH(inst_env_${index})`))}`,
+    `song_inst_base:\n${dbBlock(instrumentBases)}`,
     ...instruments.map((entry, index) => `inst_env_${index}:\n${dbBlock(entry.volEnv.map((value) => value & 15))}`)
   ];
 
   const label = (songIndex, channelId) => `song${songIndex}_${channelId}`;
   chunks.push(
-    `song_ptr_lo:\n  .db ${compiled
-      .flatMap((song, index) => song.channels.map((channel) => `LOW(${label(index, channel.id)})`))
-      .join(',')}`
+    `song_ptr_lo:\n${dbExprBlock(
+      compiled.flatMap((song, index) => song.channels.map((channel) => `LOW(${label(index, channel.id)})`))
+    )}`
   );
   chunks.push(
-    `song_ptr_hi:\n  .db ${compiled
-      .flatMap((song, index) => song.channels.map((channel) => `HIGH(${label(index, channel.id)})`))
-      .join(',')}`
+    `song_ptr_hi:\n${dbExprBlock(
+      compiled.flatMap((song, index) => song.channels.map((channel) => `HIGH(${label(index, channel.id)})`))
+    )}`
   );
 
   compiled.forEach((song, index) => {
@@ -169,6 +204,56 @@ export function songTables(songs) {
   });
 
   return `${chunks.join('\n')}\n`;
+}
+
+/**
+ * Total bytes songTables' own emitted text will occupy in the ROM -- review-
+ * fixes slice C round 2, finding 2: musicSize (main/build/generate.js) used
+ * to charge a flat, hand-guessed 32 bytes for every instrument's own
+ * envelope regardless of its real length, so a project whose envelopes were
+ * genuinely large (16 steps, several instruments, several songs) could pass
+ * checkCapacity and then overflow the assembled bank for real. This measures
+ * songTables' own output directly instead -- the identical "count what the
+ * generator actually emits" discipline battleTableBytes (main/build/
+ * battletables.js) already holds battleTables to, so musicSize and
+ * songTables cannot drift apart the way the flat guess could.
+ *
+ * Walks every non-blank, non-label, non-equate line of songTables' output:
+ * `.db` is one byte per comma-separated operand, `.dw` is two (the loop
+ * pointer each channel stream ends with). Throws on anything else -- an
+ * unrecognized directive here means this function is undercounting, not
+ * that it is safe to skip, the identical fail-loud shape emittedBytes
+ * already holds itself to.
+ */
+export function songTableBytes(songs) {
+  const source = songTables(songs);
+  let bytes = 0;
+  for (const [index, raw] of source.split('\n').entries()) {
+    const text = raw
+      .replace(/;.*$/, '')
+      .trim()
+      .replace(/^[A-Za-z_][A-Za-z0-9_]*:\s*/, '');
+    if (!text) continue;
+    if (/^[A-Za-z_][A-Za-z0-9_]*\s*=/.test(text)) continue; // an equate stores nothing
+    if (/^\.db\b/i.test(text)) {
+      const operands = text.slice(3).trim();
+      if (!operands) throw new Error(`internal: songTables emitted a .db with no operands on line ${index + 1}`);
+      bytes += operands.split(',').length; // nesasm stores one byte per .db operand
+      continue;
+    }
+    if (/^\.dw\b/i.test(text)) {
+      const operands = text.slice(3).trim();
+      if (!operands) throw new Error(`internal: songTables emitted a .dw with no operands on line ${index + 1}`);
+      bytes += operands.split(',').length * 2; // nesasm stores two bytes per .dw operand
+      continue;
+    }
+    throw new Error(
+      `internal: songTableBytes cannot size "${text}" (line ${index + 1} of songTables' own output). ` +
+        'Teach songTableBytes how many bytes this directive stores before emitting it, or musicSize will ' +
+        'undercount and promise room the assembler refuses.'
+    );
+  }
+  return bytes;
 }
 
 // ------------------------------------------------------------------- sfx
@@ -205,15 +290,21 @@ export function sfxTables(sfxList) {
   const compiled = list.map((sfx) => compileSfx(sfx));
   const label = (index) => `sfx${index}`;
 
+  // Review-fixes slice C round 2, finding 3: both pointer tables now chunk
+  // through dbExprBlock the same way song_ptr_lo/hi (songTables above)
+  // already do, one nesasm .db line per 16 entries -- a permitted 255-effect
+  // project (LIMITS.sfx) used to emit each as one unwrapped line, long
+  // enough (3,210 characters) to pass every LIMITS/checkCapacity check and
+  // then fail assembly with a syntax error inside music.inc.
   const chunks = ['; Generated -- sound effect streams.'];
   chunks.push(
     compiled.length
-      ? `sfx_ptr_table_lo:\n  .db ${compiled.map((_, index) => `LOW(${label(index)})`).join(',')}`
+      ? `sfx_ptr_table_lo:\n${dbExprBlock(compiled.map((_, index) => `LOW(${label(index)})`))}`
       : 'sfx_ptr_table_lo:'
   );
   chunks.push(
     compiled.length
-      ? `sfx_ptr_table_hi:\n  .db ${compiled.map((_, index) => `HIGH(${label(index)})`).join(',')}`
+      ? `sfx_ptr_table_hi:\n${dbExprBlock(compiled.map((_, index) => `HIGH(${label(index)})`))}`
       : 'sfx_ptr_table_hi:'
   );
 

@@ -293,7 +293,18 @@ export const LIMITS = {
   // `tile` string verbatim into `project.sprites.playerTiles` -- so there is
   // no NO_* sentinel for this cap to equal, unlike actors/items/metasprites/
   // animations/sfx above.
-  playerParts: 256
+  playerParts: 256,
+  // A real hardware ceiling, not an authoring convenience, and NOT the
+  // sentinel-shaped cap actors/items/metasprites/animations/sfx above are:
+  // music_play (engine/music.asm) forms `song index * 4` (four pointers per
+  // song -- pulse1/pulse2/triangle/noise) in a single 8-bit accumulator to
+  // index song_ptr_lo/hi with Y, so any index at or past 64 wraps
+  // (64*4=256=0 mod 256) and silently plays a lower-numbered song's own
+  // pointers instead -- reachable, since project.songs otherwise has no
+  // ceiling of its own below NO_SONG (255). 64 is the largest count that
+  // never wraps (63*4=252). Review-fixes slice C round 2, finding 1: a
+  // 65-song project used to pass every check and build silently wrong.
+  songs: 64
 };
 
 /**
@@ -1315,6 +1326,29 @@ export function createMap(id, name = 'World') {
  * Mutates `project` and returns it. The caller removes `project.songs[index]`
  * itself, before or after calling this — nothing here reads that list.
  */
+/**
+ * Re-resolves a captured song/effect object back to its live index in
+ * `list`, by identity (`===`) -- item 10: the Sound Forge's delete handlers
+ * (renderer/forges/sound/sound.js) capture the target object before awaiting
+ * `confirmModal`, since `state.song`/`state.effect` themselves are just a
+ * selection index that an Undo dispatched while the modal is open would
+ * leave pointing at whatever now sits there instead. Undo/redo (renderer/
+ * store.js) replace the whole project with a `structuredClone`d snapshot
+ * rather than mutating it in place, so a captured object reference stops
+ * matching anything in the live list the instant that happens -- even a
+ * song with identical content is, after a clone, a different object. -1
+ * therefore covers two cases the caller must treat identically: the entry
+ * really is gone, or Undo swapped in a different object graph. Either way
+ * the thing the user clicked delete on is not what is about to be deleted,
+ * and the caller must abort rather than guess.
+ *
+ * Pure: takes the list to search rather than reading `project` itself, so
+ * both the song and the sfx handler share the one implementation.
+ */
+export function resolveDeletionTarget(list, target) {
+  return (list ?? []).indexOf(target);
+}
+
 export function renumberSongDeletion(project, index) {
   for (const map of project.maps ?? []) {
     if (map.songId === index) map.songId = null;
@@ -6409,6 +6443,19 @@ export function validateProject(project) {
     );
   }
 
+  // LIMITS.songs' own real ceiling (see its own comment): music_play's 8-bit song*4 index wraps
+  // at 64, so a project over the cap (hand-edited, or authored by a later version) is refused with
+  // a named, actionable count -- refused and left intact, never silently sliced, the identical
+  // policy the sfx check above and LIMITS.metasprites already hold to.
+  if (project.songs.length > LIMITS.songs) {
+    add(
+      'error',
+      'Sound Forge',
+      `This project has ${project.songs.length} songs but the driver can only address ${LIMITS.songs} ` +
+        `(ids 0-${LIMITS.songs - 1}). Delete ${project.songs.length - LIMITS.songs} of them before this can build.`
+    );
+  }
+
   // A call to a common event that no longer has anything live in it is
   // structurally the same gap an empty battle formation and a missing give/
   // take actor are: liveCommands has no way to ask "does this reference
@@ -7399,15 +7446,16 @@ function planSfxImport(originalProject, clone, entry, options) {
 
 /**
  * §7 (song, phase 6): identical shape to `planSfxImport` above, one array
- * over. `NO_SONG` is the ceiling, not a `LIMITS.songs` entry -- §7.4 says
- * songs cap at `NO_SONG` the same way `songByte` already treats any id at
- * or past it as "no song," so there is deliberately no second definition of
- * that number to keep in step.
+ * over. Gated on `LIMITS.songs`, not `NO_SONG` -- review-fixes slice C round
+ * 2, finding 1 gave songs a real hardware ceiling (music_play's 8-bit
+ * song*4 index wraps at 64, well below `NO_SONG`'s own 255), so importing
+ * up to `NO_SONG` here would offer imports the Forge could never actually
+ * hold.
  */
 function planSongImport(originalProject, clone, entry, options) {
   // §7.6 step 2: id-space capacity, before any other work.
-  if (clone.songs.length >= NO_SONG) {
-    return { ok: false, reason: `This project already has ${NO_SONG} songs, the maximum.` };
+  if (clone.songs.length >= LIMITS.songs) {
+    return { ok: false, reason: `This project already has ${LIMITS.songs} songs, the maximum.` };
   }
 
   // §7.4: identical name-resolution ordering to planSfxImport above.
