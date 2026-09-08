@@ -24,7 +24,8 @@ import {
   effectiveTrigger,
   compiledPages,
   liveCommands,
-  reconcileCartridge
+  reconcileCartridge,
+  canBackItem
 } from '../../shared/project.js';
 import { LIBRARY_ENTRIES } from '../../shared/library/index.js';
 import { createProjectAt, loadProject, saveProject } from '../../main/project-io.js';
@@ -676,7 +677,7 @@ test("interactionProblems negative control: off:true on the trader's own choice 
 // fails on the missing one; the "any other actor whose name matches an
 // entry" sweep still runs too, so a fourth import phases 3-4 add is checked
 // even before its own name is added here.
-const IMPORTED_ACTORS = { overworld: ['Bat', 'Coin'] };
+const IMPORTED_ACTORS = { overworld: ['Bat', 'Coin'], dungeon: ['Skeleton', 'Bat', 'Key', 'Potion'] };
 
 function assertActorDrawsItsOwnArt(starterId, project, actor, entry) {
   const animation = project.sprites.animations[actor.anims?.idle];
@@ -744,6 +745,13 @@ const PALETTE_TABLE = {
     { kind: 'terrain', name: 'Wood Planks', table: 'bg', slot: 2, written: true },
     { kind: 'monster', name: 'Bat', table: 'sprite', slot: 1, written: true },
     { kind: 'pickup', name: 'Coin', table: 'sprite', slot: 2, written: true }
+  ],
+  dungeon: [
+    { kind: 'terrain', name: 'Stone Floor', table: 'bg', slot: 1, written: true },
+    { kind: 'monster', name: 'Skeleton', table: 'sprite', slot: 1, written: true },
+    { kind: 'monster', name: 'Bat', table: 'sprite', slot: 1, written: false },
+    { kind: 'pickup', name: 'Key', table: 'sprite', slot: 2, written: true },
+    { kind: 'pickup', name: 'Potion', table: 'sprite', slot: 2, written: false }
   ]
 };
 
@@ -780,9 +788,509 @@ test("15: each starter's own documented import sequence produces the pinned pale
   }
 });
 
-// --- 17: arrival safety, across every starter -------------------------------
+// --- 10: the dungeon starter's locked door is a real, reachable-only-when- -
+// --- unlocked barrier -------------------------------------------------------
 
-const TOUCH_RANGE = 12; // from engine/constants.asm
+const TOUCH_RANGE = 12; // from engine/constants.asm -- shared by tests 10 and 17
+
+/**
+ * A plain 4-directional flood fill over `screen`'s own effective metatile
+ * grid -- `boundTiles` substituted for every switch in `switchesOn` -- from
+ * `start` ({row, col}). Returns a Set of "row,col" strings. A cell outside
+ * the grid, or whose effective metatile is missing/solid/water, is never
+ * entered.
+ */
+function floodFillReachable(project, screen, start, switchesOn) {
+  const cols = LIMITS.screenCols;
+  const rows = LIMITS.screenRows;
+  const effectiveMetatile = (row, col) => {
+    const bound = (screen.boundTiles ?? []).find((b) => b.row === row && b.col === col && switchesOn.has(b.switchId));
+    const metatileId = bound ? bound.metatileId : screen.metatiles[row * cols + col];
+    return project.metatiles[metatileId];
+  };
+  const blocked = (row, col) => {
+    if (row < 0 || row >= rows || col < 0 || col >= cols) return true;
+    const mt = effectiveMetatile(row, col);
+    return !mt || mt.collision === 'solid' || mt.collision === 'water';
+  };
+  const key = (row, col) => `${row},${col}`;
+  const seen = new Set();
+  if (blocked(start.row, start.col)) return seen;
+  seen.add(key(start.row, start.col));
+  const queue = [start];
+  while (queue.length) {
+    const { row, col } = queue.shift();
+    for (const [dr, dc] of [
+      [1, 0],
+      [-1, 0],
+      [0, 1],
+      [0, -1]
+    ]) {
+      const nr = row + dr;
+      const nc = col + dc;
+      if (blocked(nr, nc)) continue;
+      const k = key(nr, nc);
+      if (seen.has(k)) continue;
+      seen.add(k);
+      queue.push({ row: nr, col: nc });
+    }
+  }
+  return seen;
+}
+
+const cellOf = (x, y) => ({ row: Math.floor(y / 16), col: Math.floor(x / 16) });
+
+/** The door entity on `screen` whose props.toScreen === targetFlatIndex, found by behavior + target, never by array position. */
+function findDoorTo(project, screen, targetFlatIndex) {
+  return (screen.entities ?? []).find((e) => {
+    const actor = project.sprites.actors[e.actorId];
+    return actor?.behavior === 'door' && e.props?.toScreen === targetFlatIndex;
+  });
+}
+
+/**
+ * Every problem with the dungeon starter's own locked-door mechanism, given
+ * `project`: a plain list of strings, empty when clean. Four independent
+ * checks (design §11 test 10): reachability of the Boss Chamber door's own
+ * cell from both the start cell and the Key-Hall-return door's own arrival
+ * cell, with switch 0 off and on; the key mechanism's own give page setting
+ * the SAME switch the boundTiles entry substitutes on (not merely "some"
+ * switch); and no cell reachable with switch 0 off sitting within
+ * TOUCH_RANGE of the Boss Chamber door's own placed (x, y) on both axes.
+ */
+function lockedDoorProblems(project) {
+  const problems = [];
+  const flatScreens = project.maps.flatMap((m) => m.screens);
+  const ENTRANCE = 0;
+  const BOSS_CHAMBER = 2;
+  const entrance = flatScreens[ENTRANCE];
+  const boss = flatScreens[BOSS_CHAMBER];
+  if (!entrance || !boss) return ['expected at least three flat screens (Entrance, Key Hall, Boss Chamber)'];
+
+  const bossDoorInEntrance = findDoorTo(project, entrance, BOSS_CHAMBER);
+  if (!bossDoorInEntrance) {
+    problems.push('no door on the Entrance targets the Boss Chamber');
+    return problems;
+  }
+  const bossDoorCellKey = `${cellOf(bossDoorInEntrance.x, bossDoorInEntrance.y).row},${cellOf(bossDoorInEntrance.x, bossDoorInEntrance.y).col}`;
+
+  const keyHall = flatScreens.find((s, i) => i !== ENTRANCE && i !== BOSS_CHAMBER && findDoorTo(project, s, ENTRANCE));
+  const keyHallDoorToEntrance = keyHall && findDoorTo(project, keyHall, ENTRANCE);
+  if (!keyHallDoorToEntrance) {
+    problems.push('no door on Key Hall targets the Entrance');
+    return problems;
+  }
+  const returnLandingCell = cellOf(keyHallDoorToEntrance.props.toX, keyHallDoorToEntrance.props.toY);
+
+  const startCell = { row: Math.floor(project.project.startY / 16), col: Math.floor(project.project.startX / 16) };
+
+  // Every switch-0-off reachable set computed below is kept, not just
+  // tested and discarded, so rule (iv) further down can sweep their UNION
+  // -- a future landing placed in a different pocket than the start cell's
+  // own must still be covered, not just whichever origin happens to share
+  // it today.
+  const offReachableByOrigin = [];
+
+  for (const [label, cell] of [
+    ['the start cell', startCell],
+    ["the Key-Hall-return door's own arrival cell", returnLandingCell]
+  ]) {
+    const off = floodFillReachable(project, entrance, cell, new Set());
+    const on = floodFillReachable(project, entrance, cell, new Set([0]));
+    offReachableByOrigin.push(off);
+    if (off.has(bossDoorCellKey)) {
+      problems.push(`the Boss Chamber door is reachable from ${label} with switch 0 off`);
+    }
+    if (!on.has(bossDoorCellKey)) {
+      problems.push(`the Boss Chamber door is unreachable from ${label} with switch 0 on`);
+    }
+  }
+
+  // The key mechanism's own give page must set the SAME switch the
+  // boundTiles entry substitutes on -- flipping switch 0 directly (as the
+  // flood fill above does) proves nothing about whether the key is what
+  // sets it otherwise.
+  const boundEntry = entrance.boundTiles?.[0];
+  if (!boundEntry) {
+    problems.push('the Entrance has no boundTiles entry at all');
+  } else {
+    const mechanism = (keyHall.entities ?? []).find((e) => {
+      const actor = project.sprites.actors[e.actorId];
+      return actor?.behavior === 'npc' && e.props?.hideSwitch === 0;
+    });
+    if (!mechanism) {
+      problems.push('no npc placement on Key Hall has hideSwitch 0');
+    } else {
+      const selected = selectPage(mechanism.props.event, new Set());
+      const liveOps = selected ? [...liveCommands(selected.commands, CHOICE_LIMITS.options)] : [];
+      const setSwitch = liveOps.find((c) => c.op === 'setSwitch');
+      if (!setSwitch) {
+        problems.push("the key mechanism's own selected give page (switch 0 off) has no live setSwitch");
+      } else if (setSwitch.switch !== boundEntry.switchId) {
+        problems.push(
+          `the key mechanism's own live setSwitch sets switch ${setSwitch.switch}, but the boundTiles entry substitutes on switch ${boundEntry.switchId}`
+        );
+      }
+    }
+  }
+
+  // No cell reachable with switch 0 off from EITHER origin above may sit
+  // within TOUCH_RANGE of the Boss Chamber door's own (x, y) on BOTH axes
+  // -- entity_touching_player's own independent per-axis test,
+  // engine/entities.asm:452-478. The union, not just the start cell's own
+  // set: today the return landing's own off-reachable set is the identical
+  // front area, so this changes no verdict, but a future landing placed in
+  // a different pocket would otherwise go unswept.
+  const offReachableUnion = new Set(offReachableByOrigin.flatMap((set) => [...set]));
+  for (const key of offReachableUnion) {
+    const [row, col] = key.split(',').map(Number);
+    const cellLeft = col * 16;
+    const cellRight = col * 16 + 15;
+    const cellTop = row * 16;
+    const cellBottom = row * 16 + 15;
+    const dx = Math.max(0, cellLeft - bossDoorInEntrance.x, bossDoorInEntrance.x - cellRight);
+    const dy = Math.max(0, cellTop - bossDoorInEntrance.y, bossDoorInEntrance.y - cellBottom);
+    if (dx < TOUCH_RANGE && dy < TOUCH_RANGE) {
+      problems.push(`cell (row ${row}, col ${col}), reachable with switch 0 off, is within touch range of the Boss Chamber door`);
+    }
+  }
+
+  return problems;
+}
+
+test('10: the dungeon starter\'s locked door is a real, reachable-only-when-unlocked barrier', () => {
+  const dungeon = STARTERS.find((s) => s.id === 'dungeon');
+  assert.ok(dungeon, 'expected a "dungeon" starter');
+  const project = dungeon.build('X');
+  const problems = lockedDoorProblems(project);
+  assert.deepEqual(problems, [], `the dungeon starter's locked door has problems: ${JSON.stringify(problems)}`);
+});
+
+test('10 negative control: a second gap punched in row 7 lets the player walk around the lock', () => {
+  const project = STARTERS.find((s) => s.id === 'dungeon').build('X');
+  const entrance = project.maps.flatMap((m) => m.screens)[0];
+  const stoneFloorPlainId = project.metatiles.find((m) => m.name === 'Stone Floor Plain').id;
+  entrance.metatiles[7 * LIMITS.screenCols + 3] = stoneFloorPlainId; // a second, unguarded gap
+  const problems = lockedDoorProblems(project);
+  assert.ok(
+    problems.some((p) => p.includes('reachable') && p.includes('switch 0 off')),
+    `expected the second gap to be reported, got ${JSON.stringify(problems)}`
+  );
+});
+
+// Design §9.2's own prose computes row 7's 16px thickness as already putting
+// the front area's deepest reachable point (row 6, y up to 111) 17 pixels
+// from anything in row 8 (y from 128) -- "over TOUCH_RANGE on the y axis
+// alone... so even a door at row 8 would already be safe by this measure."
+// §11 test 10's own catches-list nonetheless claims a door moved to exactly
+// "(128, 128)" (row 8, directly below the gap) "fails iv" -- a real
+// contradiction between the design's own two sections, confirmed by direct
+// computation (probed against this starter's own built project: dy = 17,
+// >= TOUCH_RANGE, no violation). Reported as a design defect rather than
+// silently worked around; this sabotage uses (128, 116) instead -- 5 pixels
+// short of row 6's own bottom edge, a real violation of check (iv) -- so the
+// test still proves lockedDoorProblems catches a door placed too close to
+// the front area, without asserting something the design's own arithmetic
+// says is false.
+test('10 negative control: the Boss Chamber door moved to (128, 116) -- inside the touch-range margin of the front area -- is reported', () => {
+  const project = STARTERS.find((s) => s.id === 'dungeon').build('X');
+  const flatScreens = project.maps.flatMap((m) => m.screens);
+  const entrance = flatScreens[0];
+  const bossDoor = findDoorTo(project, entrance, 2);
+  assert.ok(bossDoor, 'expected a door on the Entrance targeting the Boss Chamber');
+  bossDoor.x = 128;
+  bossDoor.y = 116;
+  const problems = lockedDoorProblems(project);
+  assert.ok(
+    problems.some((p) => p.includes('within touch range')),
+    `expected the relocated Boss Chamber door to be reported, got ${JSON.stringify(problems)}`
+  );
+});
+
+// --- 10b: the key mechanism itself ------------------------------------------
+
+/**
+ * Every problem with the dungeon starter's own key mechanism, given
+ * `project`: an npc placement in Key Hall whose effectiveTrigger is 'touch'
+ * and whose hideSwitch is 0, with the exact give-page/fallback-page shape
+ * design §9.2 describes, bound to an unplaced, canBackItem-backed Key item.
+ */
+function keyMechanismProblems(project) {
+  const problems = [];
+  const keyHall = project.maps.find((m) => m.name === 'Key Hall')?.screens[0];
+  if (!keyHall) return ['expected a map named "Key Hall" with a screen'];
+
+  const mechanism = (keyHall.entities ?? []).find((e) => {
+    const actor = project.sprites.actors[e.actorId];
+    return actor?.behavior === 'npc' && effectiveTrigger(e, actor, project) === 'touch' && e.props?.hideSwitch === 0;
+  });
+  if (!mechanism) {
+    problems.push('no npc placement on Key Hall has effectiveTrigger "touch" and hideSwitch 0');
+    return problems;
+  }
+
+  const offSelected = selectPage(mechanism.props.event, new Set());
+  if (!offSelected) {
+    problems.push('no page of the key mechanism is selected with switch 0 off');
+  } else {
+    const liveOps = [...liveCommands(offSelected.commands, CHOICE_LIMITS.options)];
+    const opNames = liveOps.map((c) => c.op);
+    const expected = ['say', 'give', 'setSwitch', 'visible'];
+    if (JSON.stringify(opNames) !== JSON.stringify(expected)) {
+      problems.push(
+        `the key mechanism's own selected page (switch 0 off) has live ops ${JSON.stringify(opNames)}, expected ${JSON.stringify(expected)}`
+      );
+    } else {
+      const give = liveOps.find((c) => c.op === 'give');
+      if (give.item !== 0) problems.push('the live give command does not name item 0 (the Key)');
+      const setSwitch = liveOps.find((c) => c.op === 'setSwitch');
+      if (setSwitch.switch !== 0) problems.push('the live setSwitch command does not set switch 0');
+      const visible = liveOps.find((c) => c.op === 'visible');
+      if (visible.state !== 'hidden') problems.push('the live visible command does not hide the actor');
+    }
+  }
+
+  const onSelected = selectPage(mechanism.props.event, new Set([0]));
+  if (!onSelected) {
+    problems.push('no page of the key mechanism is selected with switch 0 on');
+  } else if (onSelected === offSelected) {
+    problems.push('the same page is selected with switch 0 off and switch 0 on -- the give is never actually guarded');
+  } else {
+    // Exactly ['say'] -- not merely "has a live say" (round 1's own P2: a
+    // second live `give` on this page would pass a bare `.some()` check
+    // while handing out a second Key on every re-touch, since `visible:
+    // 'hidden'` keeps the pedestal touchable and hideSwitch only takes
+    // effect on the screen's NEXT load, not this same visit).
+    const liveOnOps = [...liveCommands(onSelected.commands, CHOICE_LIMITS.options)];
+    const liveOnOpNames = liveOnOps.map((c) => c.op);
+    if (JSON.stringify(liveOnOpNames) !== JSON.stringify(['say'])) {
+      problems.push(
+        `the key mechanism's own fallback page (switch 0 on) has live ops ${JSON.stringify(liveOnOpNames)}, expected ["say"]`
+      );
+    }
+  }
+
+  const keyItem = project.items.find((i) => i.name === 'Key');
+  if (!keyItem) {
+    problems.push('no item named "Key"');
+    return problems;
+  }
+  if (JSON.stringify(keyItem.effect) !== JSON.stringify({ kind: 'none', amount: 0 })) {
+    problems.push(`the Key item's own effect is ${JSON.stringify(keyItem.effect)}, expected {"kind":"none","amount":0}`);
+  }
+  const keyActor = project.sprites.actors[keyItem.actorId];
+  if (!keyActor || keyActor.name !== 'Key') {
+    problems.push("the Key item's own actorId does not name the imported Key actor");
+  } else {
+    if (!canBackItem(keyActor)) problems.push('canBackItem is false for the Key actor');
+    const placedAnywhere = project.maps
+      .flatMap((m) => m.screens)
+      .some((s) => (s.entities ?? []).some((e) => e.actorId === keyItem.actorId));
+    if (placedAnywhere) problems.push('the imported Key pickup actor is placed on a screen, but should not be');
+
+    // The pedestal draws the Key's own art, nothing authored -- strict
+    // equality against the imported Key actor's own anims.idle, not merely
+    // "some real animation."
+    const mechanismActor = project.sprites.actors[mechanism.actorId];
+    if (mechanismActor.anims.idle !== keyActor.anims.idle) {
+      problems.push(
+        `the key mechanism's own anims.idle is ${mechanismActor.anims.idle}, expected the imported Key actor's own anims.idle (${keyActor.anims.idle})`
+      );
+    }
+  }
+
+  return problems;
+}
+
+test('10b: the dungeon starter\'s key mechanism is a real, reachable, correctly-guarded give-then-hide interaction', () => {
+  const dungeon = STARTERS.find((s) => s.id === 'dungeon').build('X');
+  const problems = keyMechanismProblems(dungeon);
+  assert.deepEqual(problems, [], `the dungeon starter's key mechanism has problems: ${JSON.stringify(problems)}`);
+});
+
+test('10b negative control: reversing the key mechanism\'s own two pages shadows the give behind the fallback', () => {
+  const project = STARTERS.find((s) => s.id === 'dungeon').build('X');
+  const keyHall = project.maps.find((m) => m.name === 'Key Hall').screens[0];
+  // Located by behavior alone -- there is exactly one npc in Key Hall --
+  // not by hideSwitch === 0, so this lookup keeps working even when a
+  // sibling control's own sabotage clears hideSwitch.
+  const mechanism = keyHall.entities.find((e) => project.sprites.actors[e.actorId]?.behavior === 'npc');
+  mechanism.props.event.pages.reverse();
+  const problems = keyMechanismProblems(project);
+  assert.ok(problems.length > 0, 'expected the reversed pages to be reported, got no problems');
+});
+
+test('10b negative control: off:true on the give page\'s own give command is reported', () => {
+  const project = STARTERS.find((s) => s.id === 'dungeon').build('X');
+  const keyHall = project.maps.find((m) => m.name === 'Key Hall').screens[0];
+  const mechanism = keyHall.entities.find((e) => project.sprites.actors[e.actorId]?.behavior === 'npc');
+  const givePage = mechanism.props.event.pages.find((p) => (p.commands ?? []).some((c) => c.op === 'give'));
+  givePage.commands.find((c) => c.op === 'give').off = true;
+  const problems = keyMechanismProblems(project);
+  assert.ok(problems.length > 0, 'expected off:true on the give command to be reported, got no problems');
+});
+
+test('10b negative control: hideSwitch set to null is reported', () => {
+  const project = STARTERS.find((s) => s.id === 'dungeon').build('X');
+  const keyHall = project.maps.find((m) => m.name === 'Key Hall').screens[0];
+  // Located by behavior, not by the hideSwitch value this control is about
+  // to clear -- the lookup must survive its own sabotage.
+  const mechanism = keyHall.entities.find((e) => project.sprites.actors[e.actorId]?.behavior === 'npc');
+  mechanism.props.hideSwitch = null;
+  const problems = keyMechanismProblems(project);
+  assert.ok(problems.length > 0, 'expected hideSwitch: null to be reported, got no problems');
+});
+
+test('10b negative control: placing the imported Key pickup actor on a screen is reported', () => {
+  const project = STARTERS.find((s) => s.id === 'dungeon').build('X');
+  const keyItem = project.items.find((i) => i.name === 'Key');
+  const keyHall = project.maps.find((m) => m.name === 'Key Hall').screens[0];
+  keyHall.entities.push({ actorId: keyItem.actorId, x: 64, y: 64, props: {} });
+  const problems = keyMechanismProblems(project);
+  assert.ok(problems.length > 0, 'expected the placed Key pickup actor to be reported, got no problems');
+});
+
+test('10b negative control: a repeat give on the fallback page (switch 0 on) is reported', () => {
+  const project = STARTERS.find((s) => s.id === 'dungeon').build('X');
+  const keyHall = project.maps.find((m) => m.name === 'Key Hall').screens[0];
+  const mechanism = keyHall.entities.find((e) => project.sprites.actors[e.actorId]?.behavior === 'npc');
+  const fallbackPage = mechanism.props.event.pages.find((p) => p.cond?.type === 'none');
+  assert.ok(fallbackPage, 'expected the key mechanism to have an unconditional fallback page');
+  fallbackPage.commands.push({ op: 'give', item: 0 });
+  const problems = keyMechanismProblems(project);
+  assert.ok(
+    problems.some((p) => p.includes('fallback page')),
+    `expected the repeat give on the fallback page to be reported, got ${JSON.stringify(problems)}`
+  );
+});
+
+test('10b negative control: the Key item\'s effect changed to heal 5 is reported', () => {
+  const project = STARTERS.find((s) => s.id === 'dungeon').build('X');
+  const keyItem = project.items.find((i) => i.name === 'Key');
+  keyItem.effect = { kind: 'heal', amount: 5 };
+  const problems = keyMechanismProblems(project);
+  assert.ok(
+    problems.some((p) => p.includes('effect')),
+    `expected the changed Key effect to be reported, got ${JSON.stringify(problems)}`
+  );
+});
+
+test('10b negative control: the mechanism\'s anims.idle repointed at the Doorway animation is reported', () => {
+  const project = STARTERS.find((s) => s.id === 'dungeon').build('X');
+  const keyHall = project.maps.find((m) => m.name === 'Key Hall').screens[0];
+  const mechanism = keyHall.entities.find((e) => project.sprites.actors[e.actorId]?.behavior === 'npc');
+  const mechanismActor = project.sprites.actors[mechanism.actorId];
+  const doorwayMetasprite = project.sprites.metasprites.find((m) => m.name === 'Doorway');
+  assert.ok(doorwayMetasprite, 'expected a metasprite named "Doorway"');
+  const doorwayAnim = project.sprites.animations.find((a) => (a.frames ?? []).some((f) => f.metaspriteId === doorwayMetasprite.id));
+  assert.ok(doorwayAnim, 'expected an animation wrapping the Doorway metasprite');
+  mechanismActor.anims.idle = doorwayAnim.id;
+  const problems = keyMechanismProblems(project);
+  assert.ok(
+    problems.some((p) => p.includes('anims.idle')),
+    `expected the repointed anims.idle to be reported, got ${JSON.stringify(problems)}`
+  );
+});
+
+// --- 11: the dungeon starter's boss room ------------------------------------
+
+/**
+ * Every problem with the dungeon starter's own Boss Chamber, given
+ * `project`: a plain list of strings, empty when clean, in the same
+ * `problems`-list shape tests 10/10b/17 already use -- so a negative
+ * control mutates the project and asserts THIS checker reports the break,
+ * rather than asserting on the mutation itself. The real, chaser-overridden
+ * Skeleton (name, its own imported art, behavior) and a placed,
+ * canBackItem-backed Potion (a matching item, its exact heal effect).
+ */
+function bossRoomProblems(project) {
+  const problems = [];
+  const boss = project.maps.find((m) => m.name === 'Boss Chamber')?.screens[0];
+  if (!boss) return ['expected a map named "Boss Chamber" with a screen'];
+
+  const skeletonEntity = (boss.entities ?? []).find((e) => project.sprites.actors[e.actorId]?.name === 'Skeleton');
+  if (!skeletonEntity) {
+    problems.push('expected a Skeleton placement in the Boss Chamber');
+  } else {
+    const skeletonActor = project.sprites.actors[skeletonEntity.actorId];
+    const skeletonEntry = LIBRARY_ENTRIES.find((e) => e.kind === 'monster' && e.name === 'Skeleton');
+    if (!skeletonEntry) {
+      problems.push('no monster library entry named "Skeleton" (bossRoomProblems is stale)');
+    } else {
+      if (skeletonActor.name !== skeletonEntry.name) {
+        problems.push(`the Boss Chamber's own placed monster is named "${skeletonActor.name}", expected "${skeletonEntry.name}"`);
+      }
+      try {
+        assertActorDrawsItsOwnArt('dungeon', project, skeletonActor, skeletonEntry);
+      } catch (err) {
+        problems.push(err.message);
+      }
+    }
+    if (skeletonActor.behavior !== 'chaser') {
+      problems.push(`the Skeleton's own behavior is "${skeletonActor.behavior}", expected "chaser"`);
+    }
+  }
+
+  const potionEntity = (boss.entities ?? []).find((e) => project.sprites.actors[e.actorId]?.name === 'Potion');
+  if (!potionEntity) {
+    problems.push('expected a Potion placement in the Boss Chamber');
+  } else {
+    const potionActor = project.sprites.actors[potionEntity.actorId];
+    if (!canBackItem(potionActor)) {
+      problems.push('canBackItem is false for the placed Potion actor');
+    }
+    const potionItem = project.items.find((i) => i.actorId === potionEntity.actorId);
+    if (!potionItem) {
+      problems.push("no project.items entry's actorId matches the placed Potion actor's own id");
+    } else if (JSON.stringify(potionItem.effect) !== JSON.stringify({ kind: 'heal', amount: 20 })) {
+      problems.push(`the Potion item's own effect is ${JSON.stringify(potionItem.effect)}, expected {"kind":"heal","amount":20}`);
+    }
+  }
+
+  return problems;
+}
+
+test("11: the dungeon starter's Boss Chamber has the real, chaser-overridden Skeleton and a placed, item-bound Potion", () => {
+  const dungeon = STARTERS.find((s) => s.id === 'dungeon');
+  const project = dungeon.build('X');
+  const problems = bossRoomProblems(project);
+  assert.deepEqual(problems, [], `the dungeon starter's Boss Chamber has problems: ${JSON.stringify(problems)}`);
+});
+
+test('11 negative control: leaving the Skeleton at its imported default behavior (patroller) is reported', () => {
+  const project = STARTERS.find((s) => s.id === 'dungeon').build('X');
+  const skeletonActor = project.sprites.actors.find((a) => a.name === 'Skeleton');
+  skeletonActor.behavior = 'patroller';
+  const problems = bossRoomProblems(project);
+  assert.ok(
+    problems.some((p) => p.includes('chaser')),
+    `expected the missing chaser override to be reported, got ${JSON.stringify(problems)}`
+  );
+});
+
+test('11 negative control: pointing the Potion item\'s actorId at the Key actor is reported', () => {
+  const project = STARTERS.find((s) => s.id === 'dungeon').build('X');
+  const keyActor = project.sprites.actors.find((a) => a.name === 'Key');
+  const potionItem = project.items.find((i) => i.name === 'Potion');
+  potionItem.actorId = keyActor.id;
+  const problems = bossRoomProblems(project);
+  assert.ok(
+    problems.some((p) => p.includes('actorId')),
+    `expected the retargeted actorId to be reported, got ${JSON.stringify(problems)}`
+  );
+});
+
+test("11 negative control: the Potion item's effect.amount set to 0 is reported", () => {
+  const project = STARTERS.find((s) => s.id === 'dungeon').build('X');
+  const potionItem = project.items.find((i) => i.name === 'Potion');
+  potionItem.effect.amount = 0;
+  const problems = bossRoomProblems(project);
+  assert.ok(problems.length > 0, `expected the zeroed heal amount to be reported, got no problems`);
+});
+
+// --- 17: arrival safety, across every starter -------------------------------
+// TOUCH_RANGE is declared above, before test 10 -- shared by both.
+
 const BODY_L = 2; // from engine/constants.asm
 const BODY_R = 13; // from engine/constants.asm
 const BODY_T = 8; // from engine/constants.asm
@@ -954,6 +1462,82 @@ test("17: every door's own landing point is far enough from every other placemen
   );
 });
 
+test('17: the dungeon starter\'s own placement table (design §9.2, plus the Bat coordinate this phase chose) is pinned directly, so a silently moved placement fails', () => {
+  const dungeon = STARTERS.find((s) => s.id === 'dungeon').build('X');
+  const flatScreens = dungeon.maps.flatMap((m) => m.screens);
+  const ENTRANCE = 0;
+  const KEY_HALL = 1;
+  const BOSS_CHAMBER = 2;
+  const entrance = flatScreens[ENTRANCE];
+  const keyHall = flatScreens[KEY_HALL];
+  const boss = flatScreens[BOSS_CHAMBER];
+
+  const doorToKeyHall = findDoorTo(dungeon, entrance, KEY_HALL);
+  assert.ok(doorToKeyHall, 'expected a door on the Entrance targeting Key Hall');
+  assert.deepEqual([doorToKeyHall.x, doorToKeyHall.y], [208, 48], "the Entrance's own door to Key Hall must sit at (208, 48)");
+  assert.deepEqual([doorToKeyHall.props.toX, doorToKeyHall.props.toY], [32, 112], 'it must land in Key Hall at (32, 112)');
+
+  const doorToBoss = findDoorTo(dungeon, entrance, BOSS_CHAMBER);
+  assert.ok(doorToBoss, 'expected a door on the Entrance targeting the Boss Chamber');
+  assert.deepEqual([doorToBoss.x, doorToBoss.y], [128, 160], "the Entrance's own door to the Boss Chamber must sit at (128, 160)");
+  assert.deepEqual([doorToBoss.props.toX, doorToBoss.props.toY], [128, 112], 'it must land in the Boss Chamber at (128, 112)');
+
+  const doorToEntranceFromKeyHall = findDoorTo(dungeon, keyHall, ENTRANCE);
+  assert.ok(doorToEntranceFromKeyHall, 'expected a door on Key Hall targeting the Entrance');
+  assert.deepEqual([doorToEntranceFromKeyHall.x, doorToEntranceFromKeyHall.y], [32, 96], "Key Hall's own door must sit at (32, 96)");
+  assert.deepEqual(
+    [doorToEntranceFromKeyHall.props.toX, doorToEntranceFromKeyHall.props.toY],
+    [208, 80],
+    'it must land in the Entrance at (208, 80)'
+  );
+
+  const doorToEntranceFromBoss = findDoorTo(dungeon, boss, ENTRANCE);
+  assert.ok(doorToEntranceFromBoss, 'expected a door on the Boss Chamber targeting the Entrance');
+  assert.deepEqual([doorToEntranceFromBoss.x, doorToEntranceFromBoss.y], [192, 64], "the Boss Chamber's own door must sit at (192, 64)");
+  assert.deepEqual(
+    [doorToEntranceFromBoss.props.toX, doorToEntranceFromBoss.props.toY],
+    [192, 176],
+    'it must land in the Entrance at (192, 176)'
+  );
+
+  const skeleton = boss.entities.find((e) => dungeon.sprites.actors[e.actorId]?.name === 'Skeleton');
+  assert.ok(skeleton, 'expected the Skeleton on the Boss Chamber');
+  assert.deepEqual([skeleton.x, skeleton.y], [128, 192], 'the Skeleton must sit at (128, 192)');
+
+  const potion = boss.entities.find((e) => dungeon.sprites.actors[e.actorId]?.name === 'Potion');
+  assert.ok(potion, 'expected the Potion on the Boss Chamber');
+  assert.deepEqual([potion.x, potion.y], [128, 64], 'the Potion must sit at (128, 64)');
+
+  const bat = keyHall.entities.find((e) => dungeon.sprites.actors[e.actorId]?.name === 'Bat');
+  assert.ok(bat, 'expected the Bat on Key Hall');
+  assert.deepEqual([bat.x, bat.y], [16, 48], 'the Bat must sit at (16, 48) on Key Hall');
+
+  const mechanism = keyHall.entities.find((e) => dungeon.sprites.actors[e.actorId]?.behavior === 'npc');
+  assert.ok(mechanism, 'expected the key mechanism on Key Hall');
+  assert.deepEqual([mechanism.x, mechanism.y], [128, 112], 'the key mechanism must sit at (128, 112)');
+
+  assert.equal(dungeon.project.startMap, 0, 'the dungeon starter must start on map 0 (Dungeon Entrance)');
+  assert.equal(dungeon.project.startScreen, 0, 'the dungeon starter must start on screen 0');
+  assert.equal(dungeon.project.startX, 32, 'the dungeon starter must start at x 32');
+  assert.equal(dungeon.project.startY, 48, 'the dungeon starter must start at y 48');
+  assert.equal(dungeon.project.titleMap, 3, 'the dungeon starter must use map 3 (Title) as its title map');
+  assert.equal(dungeon.project.titleScreen, 0, "the dungeon starter's title screen must be screen 0");
+
+  const startProblems = landingProblems(
+    "the dungeon starter's own start position",
+    dungeon,
+    entrance,
+    dungeon.project.startX,
+    dungeon.project.startY,
+    entrance.entities ?? []
+  );
+  assert.deepEqual(
+    startProblems,
+    [],
+    `the dungeon starter's own start position has arrival-safety problems: ${JSON.stringify(startProblems)}`
+  );
+});
+
 // Negative controls: arrivalProblems is only trustworthy if it can actually
 // fail on a genuinely bad project, not just pass on this design's own
 // already-clean one.
@@ -996,6 +1580,16 @@ test("arrivalProblems negative control: a solid metatile under a door's own land
   assert.ok(
     problems.some((p) => p.includes('lands on solid ground')),
     `expected the solid metatile under a landing point to be reported, got ${JSON.stringify(problems)}`
+  );
+});
+
+test("17 negative control (dungeon): an arrival at (120, 104) in the Entrance -- a raw point in row 6's open floor whose body offset reaches into row 7's wall -- is reported", () => {
+  const dungeon = STARTERS.find((s) => s.id === 'dungeon').build('X');
+  const entrance = dungeon.maps.find((m) => m.name === 'Dungeon Entrance').screens[0];
+  const problems = landingProblems('dungeon body-offset arrival', dungeon, entrance, 120, 104, entrance.entities ?? []);
+  assert.ok(
+    problems.some((p) => p.includes('lands on solid ground')),
+    `expected the body-offset arrival at (120, 104) to be reported, got ${JSON.stringify(problems)}`
   );
 });
 

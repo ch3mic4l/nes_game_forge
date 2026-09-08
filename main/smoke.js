@@ -16,6 +16,8 @@ import { battleRegionBytes, battleRegionCeiling } from './build/battletables.js'
 import { resolveMapper } from '../shared/cartridge.js';
 import { encodeTiles } from '../shared/chr.js';
 import { STARTERS } from '../shared/starters/index.js';
+import { buildProject } from './build/pipeline.js';
+import { Emulator, BUTTON } from '../renderer/emulator/runcontrol.js';
 
 /**
  * A canned CHR file payload for the files:readBinary override -- one flat,
@@ -9425,6 +9427,131 @@ export async function runSmoke(window) {
       throw new Error(`starter "overworld" created ${overworldProject.maps.length} maps, expected 3`);
     }
     console.log(`  ok  starter picker (File > New Project menu action): overworld -> gameType "action", ${overworldProject.maps.length} maps`);
+
+    // design-starter-projects.md §11 test 16c: the dungeon crawl content
+    // starter, added in this phase -- same click-through mechanism as 16a/
+    // 16b, then a real headless boot of the built ROM, run right here in
+    // this file's own main process (the same idiom test/unit/banked.test.js
+    // and test/unit/emulator.test.js already use for a plain node process),
+    // rather than folded into the giant renderer scenario template literal
+    // below. Nothing after 16a-c depends on which project is currently
+    // open (the comment above the picker helpers, a few dozen lines up,
+    // already establishes that for 16a/16b; this step's own store.open()
+    // is likewise superseded by the scenario's own store.open() next).
+    const dungeonDir = path.join(scratch, 'PickerDungeon.forge');
+    setSmokeNewProjectPath(dungeonDir);
+    window.webContents.send('menu:action', 'project:new');
+    assertPickerLabels(await waitForPicker());
+    await clickPickerButton('dungeon');
+    await waitForStoreDir(dungeonDir);
+    const dungeonProject = await loadProject(dungeonDir);
+    if (dungeonProject.project.gameType !== 'action') {
+      throw new Error(`starter "dungeon" created gameType "${dungeonProject.project.gameType}", expected "action"`);
+    }
+    if (dungeonProject.maps.length !== 4) {
+      throw new Error(`starter "dungeon" created ${dungeonProject.maps.length} maps, expected 4`);
+    }
+
+    const dungeonBuild = await buildProject({ dir: dungeonDir, project: dungeonProject, log: () => {} });
+    const dungeonEmulator = new Emulator({ onFrame: () => {} });
+    dungeonEmulator.loadROM(new Uint8Array(await fs.readFile(dungeonBuild.romPath)));
+    const dungeonNes = dungeonEmulator.nes;
+    const dungeonFrame = () => dungeonNes.frame();
+
+    // Addresses from engine/constants.asm.
+    const DUNGEON_PLAYER_X = 0x10;
+    const DUNGEON_PLAYER_Y = 0x11;
+    const DUNGEON_FLAT_SCREEN = 0x16;
+    const DUNGEON_GAME_STATE = 0x25;
+    const DUNGEON_INV_COUNT = 0x37;
+    const DUNGEON_INV_ITEMS = 0x0378;
+    const DUNGEON_SWITCHES = 0x0390;
+    const DUNGEON_ST_TITLE = 3;
+    const DUNGEON_ST_GAMEPLAY = 0;
+
+    for (let i = 0; i < 40; i++) dungeonFrame();
+    if (dungeonNes.cpu.mem[DUNGEON_GAME_STATE] !== DUNGEON_ST_TITLE) {
+      throw new Error(`dungeon starter: expected ST_TITLE (3) after boot, got game_state ${dungeonNes.cpu.mem[DUNGEON_GAME_STATE]}`);
+    }
+    dungeonEmulator.setButton(BUTTON.START, true);
+    dungeonFrame();
+    dungeonEmulator.setButton(BUTTON.START, false);
+    for (let i = 0; i < 12; i++) dungeonFrame();
+
+    if (dungeonNes.cpu.mem[DUNGEON_PLAYER_X] !== 32 || dungeonNes.cpu.mem[DUNGEON_PLAYER_Y] !== 48) {
+      throw new Error(
+        `dungeon starter: expected the player at (32, 48) after Start, got (${dungeonNes.cpu.mem[DUNGEON_PLAYER_X]}, ${dungeonNes.cpu.mem[DUNGEON_PLAYER_Y]})`
+      );
+    }
+    if (dungeonNes.cpu.mem[DUNGEON_FLAT_SCREEN] !== 0) {
+      throw new Error(`dungeon starter: expected flat_screen 0 after Start, got ${dungeonNes.cpu.mem[DUNGEON_FLAT_SCREEN]}`);
+    }
+
+    // Walk east across the Entrance's front area to the Key Hall door.
+    dungeonEmulator.setButton(BUTTON.RIGHT, true);
+    let dungeonSteps = 0;
+    while (dungeonNes.cpu.mem[DUNGEON_FLAT_SCREEN] === 0 && dungeonSteps < 400) {
+      dungeonFrame();
+      dungeonSteps++;
+    }
+    dungeonEmulator.setButton(BUTTON.RIGHT, false);
+    if (dungeonNes.cpu.mem[DUNGEON_FLAT_SCREEN] !== 1) {
+      throw new Error(
+        `dungeon starter: never reached flat_screen 1 (Key Hall) after ${dungeonSteps} frames holding RIGHT, ` +
+          `player stopped at (${dungeonNes.cpu.mem[DUNGEON_PLAYER_X]}, ${dungeonNes.cpu.mem[DUNGEON_PLAYER_Y]})`
+      );
+    }
+    if (dungeonNes.cpu.mem[DUNGEON_PLAYER_X] !== 32 || dungeonNes.cpu.mem[DUNGEON_PLAYER_Y] !== 112) {
+      throw new Error(
+        `dungeon starter: expected the Key Hall landing at (32, 112), got (${dungeonNes.cpu.mem[DUNGEON_PLAYER_X]}, ${dungeonNes.cpu.mem[DUNGEON_PLAYER_Y]})`
+      );
+    }
+
+    // Walk east again to the key mechanism. Touching it opens a Say box,
+    // which freezes the world (game_state != ST_GAMEPLAY) until the confirm
+    // action (A, edge-detected via pad_new -- engine/input.asm) dismisses
+    // it; a press during the typewriter is ignored (engine/text.asm's own
+    // text_advance comment), so A is tapped once per two-frame cycle for as
+    // long as the box is up, rather than merely held. Once the box is
+    // dismissed, give/setSwitch/visible run immediately, with no further
+    // input needed.
+    dungeonEmulator.setButton(BUTTON.RIGHT, true);
+    dungeonSteps = 0;
+    while (!(dungeonNes.cpu.mem[DUNGEON_SWITCHES] & 1) && dungeonSteps < 1000) {
+      if (dungeonNes.cpu.mem[DUNGEON_GAME_STATE] !== DUNGEON_ST_GAMEPLAY) {
+        dungeonEmulator.setButton(BUTTON.A, true);
+        dungeonFrame();
+        dungeonEmulator.setButton(BUTTON.A, false);
+        dungeonFrame();
+        dungeonSteps += 2;
+      } else {
+        dungeonFrame();
+        dungeonSteps++;
+      }
+    }
+    dungeonEmulator.setButton(BUTTON.RIGHT, false);
+    dungeonEmulator.setButton(BUTTON.A, false);
+    if (!(dungeonNes.cpu.mem[DUNGEON_SWITCHES] & 1)) {
+      throw new Error(
+        `dungeon starter: switch 0 never set after ${dungeonSteps} frames in Key Hall, player stopped at ` +
+          `(${dungeonNes.cpu.mem[DUNGEON_PLAYER_X]}, ${dungeonNes.cpu.mem[DUNGEON_PLAYER_Y]})`
+      );
+    }
+
+    if (dungeonNes.cpu.mem[DUNGEON_INV_COUNT] !== 1) {
+      throw new Error(`dungeon starter: expected inv_count 1 after taking the key, got ${dungeonNes.cpu.mem[DUNGEON_INV_COUNT]}`);
+    }
+    if (dungeonNes.cpu.mem[DUNGEON_INV_ITEMS] !== 0) {
+      throw new Error(`dungeon starter: expected inv_items[0] to be item 0 (the Key), got ${dungeonNes.cpu.mem[DUNGEON_INV_ITEMS]}`);
+    }
+    if (dungeonNes.cpu.mem[DUNGEON_FLAT_SCREEN] !== 1) {
+      throw new Error(`dungeon starter: expected to still be on flat_screen 1 (Key Hall), got ${dungeonNes.cpu.mem[DUNGEON_FLAT_SCREEN]}`);
+    }
+
+    console.log(
+      `  ok  starter picker (File > New Project menu action): dungeon -> gameType "action", ${dungeonProject.maps.length} maps; ` +
+        'ROM built, key mechanism touched (switch 0 set, 1 item)'
+    );
 
     const report = await window.webContents.executeJavaScript(scenario(dir, sampleCopy, sampleRpgCopy));
     for (const entry of report.steps) console.log(`  ok  ${entry.name}${entry.detail ? ` — ${entry.detail}` : ''}`);
