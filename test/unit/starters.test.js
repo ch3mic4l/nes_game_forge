@@ -24,6 +24,7 @@ import {
   effectiveTrigger,
   compiledPages,
   liveCommands,
+  allCommands,
   reconcileCartridge,
   canBackItem
 } from '../../shared/project.js';
@@ -37,6 +38,8 @@ import { HERO_IDLE_TILES, HERO_WALK_TILES } from '../../shared/starters/figures.
 import { screenFromArt as screenFromArtViaTools } from '../../tools/sample-common.js';
 import { screenFromArt as screenFromArtViaStarters } from '../../shared/starters/authoring.js';
 import { nodeDomViolations, fixtureReferences, literalOccurrences } from '../lib/sourcescan.js';
+import { Emulator, BUTTON } from '../../renderer/emulator/runcontrol.js';
+import { charToTile } from '../../shared/font.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 
@@ -367,6 +370,258 @@ test('6: every starter builds into a real ROM (buildProject/inspectRom) in a fre
   }
 });
 
+// --- an engine-level regression test for round-2 finding 1: hideSwitch is --
+// --- read only at spawn_entities, so a single unguarded join page repeats --
+
+// spawn_entities (engine/entities.asm) reads a placement's own hideSwitch
+// byte once, when the screen's own entity list is placed -- closing a
+// message box never re-runs that placement, so a recruit whose join page
+// has no switch guard of its own stays ent_active (and therefore still
+// reachable by do_talk, engine/input.asm) for the rest of that visit even
+// after the join sets the very switch that will hide her on the NEXT
+// screen load. This boots the real ROM and proves both halves: the join
+// happens once, and a second interact on the same visit runs the fallback
+// page rather than the join again -- checked not merely by "nothing
+// changed" but by confirming Ally's own entity slot is still active, which
+// is what tells a real fallback apart from an actor that silently vanished.
+test("engine regression: the RPG starter's Ally recruit joins once per visit -- a second interact runs the fallback, not another join", async (t) => {
+  const hasNesasm = spawnSync('nesasm', [], { stdio: 'ignore' }).error?.code !== 'ENOENT';
+  assert.ok(hasNesasm, 'nesasm must be present on PATH -- this test must not silently skip when it is missing');
+
+  const base = await fs.mkdtemp(path.join(os.tmpdir(), 'forge-starters-rpg-recruit-'));
+  t.after(() => fs.rm(base, { recursive: true, force: true }));
+
+  async function buildAndBoot(project) {
+    const dir = path.join(base, `rpg-${Math.random().toString(36).slice(2)}`);
+    await saveProject(dir, project);
+    const reloaded = await loadProject(dir);
+    const buildResult = await buildProject({ dir, project: reloaded, log: () => {} });
+    const emulator = new Emulator({ onFrame: () => {} });
+    emulator.loadROM(new Uint8Array(await fs.readFile(buildResult.romPath)));
+    return emulator;
+  }
+
+  // Addresses from engine/constants.asm.
+  const PLAYER_X = 0x10;
+  const PLAYER_Y = 0x11;
+  const GAME_STATE = 0x25;
+  const PC_IN_PARTY = 0x03b4;
+  const ENT_ACTIVE = 0x0300;
+  const SWITCHES = 0x0390;
+  const ST_TITLE = 3;
+  const ST_GAMEPLAY = 0;
+  const TOUCH_RANGE_LOCAL = 12;
+
+  /** Walks toward Ally, interacts twice, and returns the RAM state after each interact. */
+  async function runVisit(project) {
+    const emulator = await buildAndBoot(project);
+    const nes = emulator.nes;
+    const frame = () => nes.frame();
+
+    // Which physical button is bound to 'interact' in THIS starter's own
+    // input, not assumed -- defaultInput() (shared/project.js) binds it to
+    // B today, but this reads the project's own record rather than that
+    // default.
+    const interactEntry = Object.entries(project.input.states.gameplay).find(([, action]) => action === 'interact');
+    assert.ok(interactEntry, "expected some button bound to 'interact' in the gameplay state");
+    const interactButton = BUTTON[interactEntry[0]];
+
+    for (let i = 0; i < 40; i++) frame();
+    assert.equal(nes.cpu.mem[GAME_STATE], ST_TITLE, 'expected ST_TITLE after boot');
+    emulator.setButton(BUTTON.START, true);
+    frame();
+    emulator.setButton(BUTTON.START, false);
+    for (let i = 0; i < 12; i++) frame();
+    assert.equal(nes.cpu.mem[GAME_STATE], ST_GAMEPLAY, 'expected ST_GAMEPLAY after Start');
+    assert.deepEqual([nes.cpu.mem[PLAYER_X], nes.cpu.mem[PLAYER_Y]], [48, 176], 'expected the player to start at (48, 176)');
+
+    // The Village is all open floor (a Stone Floor Plain interior with a
+    // decorative, collision-open Edge border), so nothing blocks a straight
+    // walk right then up toward Ally at (128, 32).
+    emulator.setButton(BUTTON.RIGHT, true);
+    let steps = 0;
+    while (nes.cpu.mem[PLAYER_X] < 128 - TOUCH_RANGE_LOCAL + 1 && steps < 300) {
+      frame();
+      steps++;
+    }
+    emulator.setButton(BUTTON.RIGHT, false);
+    assert.ok(
+      steps < 300,
+      `never got within reach of Ally on the x axis after ${steps} frames holding RIGHT, player stopped at ` +
+        `(${nes.cpu.mem[PLAYER_X]}, ${nes.cpu.mem[PLAYER_Y]})`
+    );
+
+    emulator.setButton(BUTTON.UP, true);
+    steps = 0;
+    while (nes.cpu.mem[PLAYER_Y] > 32 + TOUCH_RANGE_LOCAL - 1 && steps < 300) {
+      frame();
+      steps++;
+    }
+    emulator.setButton(BUTTON.UP, false);
+    assert.ok(
+      steps < 300,
+      `never got within reach of Ally on the y axis after ${steps} frames holding UP, player stopped at ` +
+        `(${nes.cpu.mem[PLAYER_X]}, ${nes.cpu.mem[PLAYER_Y]})`
+    );
+    assert.ok(
+      Math.abs(nes.cpu.mem[PLAYER_X] - 128) < TOUCH_RANGE_LOCAL && Math.abs(nes.cpu.mem[PLAYER_Y] - 32) < TOUCH_RANGE_LOCAL,
+      `expected to be within TOUCH_RANGE of Ally (128, 32), stopped at (${nes.cpu.mem[PLAYER_X]}, ${nes.cpu.mem[PLAYER_Y]})`
+    );
+
+    // The box's own text starts at nametable row 25, column 2 (BOX_TEXT_LO,
+    // engine/constants.asm -- row 24 is the top border, the four text rows
+    // are 25-28) -- $2000 + 25*32 + 2. Reading pc_in_party alone cannot
+    // tell a repeated join apart from a fallback: `join member: 1` is a
+    // plain store to an already-1 byte, so pc_in_party reads identically
+    // whether the SAME join page ran twice or the fallback ran instead
+    // (confirmed empirically before writing this test -- see the report).
+    // The nametable is the one place the two are actually distinguishable:
+    // a first, un-typed character cell holds TILE_SPACE (or whatever the
+    // box wipe left), so this waits, bounded, for the box's own first
+    // character cell to become a real glyph before reading it.
+    const BOX_FIRST_CHAR_ADDR = 0x2000 + 25 * 32 + 2;
+    const boxFirstCharTile = () => nes.ppu.vramMem[BOX_FIRST_CHAR_ADDR];
+
+    // The border/raise animation writes transient bytes into this same
+    // cell for the first few frames after interact, and the typewriter
+    // itself holds TILE_SPACE (not 0) there until the first character is
+    // actually typed -- probed empirically: the real first glyph is
+    // present and stable eight frames after the interact press, and stays
+    // that way. A fixed, bounded wait comfortably past that (not a poll
+    // for "non-space", which the transient bytes can satisfy too soon) is
+    // what actually reads the real character.
+    const BOX_TYPE_SETTLE_FRAMES = 30;
+
+    /** Presses interact, waits (bounded) for the box's own first glyph to settle, reads it, then taps A (bounded) until the box closes. */
+    function interactReadAndDismiss() {
+      emulator.setButton(interactButton, true);
+      frame();
+      emulator.setButton(interactButton, false);
+
+      for (let i = 0; i < BOX_TYPE_SETTLE_FRAMES; i++) frame();
+      const firstCharTile = boxFirstCharTile();
+
+      let dismissSteps = 0;
+      while (nes.cpu.mem[GAME_STATE] !== ST_GAMEPLAY && dismissSteps < 200) {
+        emulator.setButton(BUTTON.A, true);
+        frame();
+        emulator.setButton(BUTTON.A, false);
+        frame();
+        dismissSteps += 2;
+      }
+      assert.ok(dismissSteps < 200, `the message box never closed after ${dismissSteps} frames dismissing it`);
+      return firstCharTile;
+    }
+
+    const firstCharTile1 = interactReadAndDismiss();
+    const afterFirst = {
+      partyIn: [nes.cpu.mem[PC_IN_PARTY], nes.cpu.mem[PC_IN_PARTY + 1]],
+      switch0: (nes.cpu.mem[SWITCHES] & 1) !== 0,
+      allyActive: nes.cpu.mem[ENT_ACTIVE + 2],
+      firstCharTile: firstCharTile1
+    };
+
+    const firstCharTile2 = interactReadAndDismiss();
+    const afterSecond = {
+      partyIn: [nes.cpu.mem[PC_IN_PARTY], nes.cpu.mem[PC_IN_PARTY + 1]],
+      switch0: (nes.cpu.mem[SWITCHES] & 1) !== 0,
+      allyActive: nes.cpu.mem[ENT_ACTIVE + 2],
+      firstCharTile: firstCharTile2
+    };
+
+    return { afterFirst, afterSecond };
+  }
+
+  const project = STARTERS.find((s) => s.id === 'rpg').build('X');
+
+  // Derive the two opening glyphs from the starter's own pages (round 2
+  // finding 1), rather than hardcoding the dialogue text: a tiny local
+  // locator (the same "mentioned anywhere in allCommands" reading item 2
+  // above gives rpgFeatureProblems' own recruit locator) finds the Village
+  // placement whose event mentions a join naming the recruit, then walks
+  // the identical selectPage/liveCommands path the engine's own "first
+  // passing page wins" rule takes: the page selected with no switches on
+  // is the join page, the page selected with its own live setSwitch's
+  // switch on is the fallback. BEFORE ever booting the emulator, this
+  // asserts the two opening characters actually differ -- if a future
+  // edit to rpg.js's own dialogue ever made them start the same, the
+  // glyph-compare below could not tell the two outcomes apart no matter
+  // how faithfully the emulator ran, so that has to fail here, at the
+  // precondition, with a message that says so, rather than fail later
+  // with a confusing glyph mismatch.
+  const recruit = project.party.find((m) => m.startsInParty === false);
+  assert.ok(recruit, 'expected a party member with startsInParty: false');
+  const recruitIndex = project.party.indexOf(recruit);
+  const village = project.maps.find((m) => m.name === 'Village').screens[0];
+  const joinEntity = village.entities.find((entity) =>
+    (entity.props?.event?.pages ?? []).some((page) =>
+      [...allCommands(page.commands ?? [])].some((c) => c.op === 'join' && c.member === recruitIndex)
+    )
+  );
+  assert.ok(joinEntity, 'expected a Village placement whose event mentions a join naming the recruit');
+
+  const firstLiveSayText = (page) => {
+    const liveOps = [...liveCommands(page.commands ?? [], CHOICE_LIMITS.options)];
+    return liveOps.find((c) => c.op === 'say')?.text;
+  };
+
+  const offSelected = selectPage(joinEntity.props.event, new Set());
+  assert.ok(offSelected, 'expected a page of the recruit to be selected with no switches on');
+  const offSayText = firstLiveSayText(offSelected);
+  assert.ok(offSayText, 'expected a live say on the recruit\'s own page selected with no switches on');
+
+  const offLiveOps = [...liveCommands(offSelected.commands, CHOICE_LIMITS.options)];
+  const setSwitch = offLiveOps.find((c) => c.op === 'setSwitch');
+  assert.ok(setSwitch, 'expected a live setSwitch on the recruit\'s own page selected with no switches on');
+
+  const onSelected = selectPage(joinEntity.props.event, new Set([setSwitch.switch]));
+  assert.ok(onSelected, `expected a page of the recruit to be selected with switch ${setSwitch.switch} on`);
+  const onSayText = firstLiveSayText(onSelected);
+  assert.ok(onSayText, `expected a live say on the recruit's own page selected with switch ${setSwitch.switch} on`);
+
+  const joinLineTile = charToTile(offSayText[0]);
+  const fallbackLineTile = charToTile(onSayText[0]);
+  assert.notEqual(
+    joinLineTile,
+    fallbackLineTile,
+    `the recruit's own join-page say ("${offSayText}") and fallback-page say ("${onSayText}") start with the same ` +
+      'character -- this test cannot tell the two outcomes apart by their first glyph'
+  );
+
+  const { afterFirst, afterSecond } = await runVisit(project);
+
+  assert.deepEqual(afterFirst.partyIn, [1, 1], 'expected pc_in_party [1, 1] (Hero and Ally both in) after the first interact');
+  assert.equal(afterFirst.switch0, true, 'expected switch 0 set after the first interact');
+  assert.equal(
+    afterFirst.firstCharTile,
+    joinLineTile,
+    `expected the first interact's own box to open on the join line ("I've..."), read tile ${afterFirst.firstCharTile}`
+  );
+
+  assert.deepEqual(
+    afterSecond.partyIn,
+    [1, 1],
+    `expected pc_in_party to stay [1, 1] after a second interact, got ${JSON.stringify(afterSecond.partyIn)}`
+  );
+  assert.equal(afterSecond.switch0, true, 'expected switch 0 to stay set after a second interact');
+  // The real check, per round-2 finding 1: pc_in_party alone cannot tell a
+  // repeated join apart from the fallback (see the comment above), so the
+  // second box's own first character is what actually proves the FALLBACK
+  // page ran rather than the join page running again.
+  assert.equal(
+    afterSecond.firstCharTile,
+    fallbackLineTile,
+    `expected the second interact's own box to open on the fallback line ("Ready..."), read tile ${afterSecond.firstCharTile} ` +
+      `(${afterSecond.firstCharTile === joinLineTile ? 'this is the JOIN line -- the join repeated' : 'unrecognised'})`
+  );
+  // Ally's own entity slot (index 2 -- Saver, Innkeeper, Ally, Door, all
+  // still visible when the screen first loaded since switch 0 starts off)
+  // is still active, which is what tells "the fallback page ran" apart
+  // from "the actor silently vanished and the second interact touched
+  // nothing at all."
+  assert.equal(afterSecond.allyActive, 1, "expected Ally's own entity slot to still be active after a second interact");
+});
+
 // --- playerTiles' own shape: the 24 unauthored frames are `null`, not a ----
 // --- blank string ------------------------------------------------------------
 
@@ -677,7 +932,17 @@ test("interactionProblems negative control: off:true on the trader's own choice 
 // fails on the missing one; the "any other actor whose name matches an
 // entry" sweep still runs too, so a fourth import phases 3-4 add is checked
 // even before its own name is added here.
-const IMPORTED_ACTORS = { overworld: ['Bat', 'Coin'], dungeon: ['Skeleton', 'Bat', 'Key', 'Potion'] };
+// The rpg roster's own Slime/Bat are never placed as entities (design §9.3:
+// a wandering encounter is rolled from the step counter, not walked into),
+// but assertActorDrawsItsOwnArt below finds an actor by name directly off
+// `project.sprites.actors` -- never by walking placements -- so an unplaced
+// monster is checked exactly the same way a placed one is; no separate
+// map.encounters.actorIds walk is needed for this particular test.
+const IMPORTED_ACTORS = {
+  overworld: ['Bat', 'Coin'],
+  dungeon: ['Skeleton', 'Bat', 'Key', 'Potion'],
+  rpg: ['Slime', 'Bat', 'Potion']
+};
 
 function assertActorDrawsItsOwnArt(starterId, project, actor, entry) {
   const animation = project.sprites.animations[actor.anims?.idle];
@@ -752,6 +1017,18 @@ const PALETTE_TABLE = {
     { kind: 'monster', name: 'Bat', table: 'sprite', slot: 1, written: false },
     { kind: 'pickup', name: 'Key', table: 'sprite', slot: 2, written: true },
     { kind: 'pickup', name: 'Potion', table: 'sprite', slot: 2, written: false }
+  ],
+  // A fresh RPG project's own background slot 1 is already reserved for
+  // battle scenery (reservedPaletteSlots' RPG-only reservation), so the
+  // first terrain import lands on slot 2, not 1 -- design §9.3's own figures,
+  // re-measured against this working tree (test 15's own probe, below).
+  rpg: [
+    { kind: 'terrain', name: 'Grass Plains', table: 'bg', slot: 2, written: true },
+    { kind: 'terrain', name: 'Dirt Path', table: 'bg', slot: 2, written: false },
+    { kind: 'terrain', name: 'Stone Floor', table: 'bg', slot: 3, written: true },
+    { kind: 'monster', name: 'Slime', table: 'sprite', slot: 1, written: true },
+    { kind: 'monster', name: 'Bat', table: 'sprite', slot: 1, written: false },
+    { kind: 'pickup', name: 'Potion', table: 'sprite', slot: 2, written: true }
   ]
 };
 
@@ -1288,6 +1565,525 @@ test("11 negative control: the Potion item's effect.amount set to 0 is reported"
   assert.ok(problems.length > 0, `expected the zeroed heal amount to be reported, got no problems`);
 });
 
+// --- 12: the RPG starter's own named features -------------------------------
+
+/**
+ * Every problem with the RPG starter's own five named features (design
+ * §9.3), given `project`: a plain list of strings, empty when clean, in the
+ * same shape every other `*Problems` checker in this file already uses. The
+ * Field's own live encounter, the Village's own repeatable Save (an
+ * unguarded, single-page, interact-triggered page), a second npc's own
+ * `Heal 255` (the inn), the one recruitable party member's own guarded join,
+ * and a spell reachable by the starting party member.
+ */
+function rpgFeatureProblems(project) {
+  const problems = [];
+
+  const field = project.maps.find((m) => m.name === 'Field');
+  if (!field) {
+    problems.push('expected a map named "Field"');
+  } else {
+    if (!(field.encounters?.rate > 0)) {
+      problems.push('the Field map has no live encounter rate (rate > 0)');
+    }
+    const actorIds = field.encounters?.actorIds ?? [];
+    if (!actorIds.length) problems.push('the Field map names no encounter actors');
+    for (const id of actorIds) {
+      const actor = project.sprites.actors[id];
+      if (!actor || !(actor.damage > 0)) {
+        problems.push(`Field encounter actor id ${id} does not resolve to an actor with damage > 0`);
+      }
+    }
+  }
+
+  const village = project.maps.find((m) => m.name === 'Village');
+  if (!village) {
+    problems.push('expected a map named "Village"');
+    return problems;
+  }
+  const screen = village.screens[0];
+  const npcPlacements = (screen.entities ?? []).filter((e) => project.sprites.actors[e.actorId]?.behavior === 'npc');
+
+  const saver = npcPlacements.find((e) => (e.props?.event?.pages ?? []).some((p) => (p.commands ?? []).some((c) => c.op === 'save')));
+  if (!saver) {
+    problems.push('no npc placement on Village mentions a save');
+  } else {
+    const saverActor = project.sprites.actors[saver.actorId];
+    if (effectiveTrigger(saver, saverActor, project) !== 'interact') {
+      problems.push("the Saver's own effective trigger is not \"interact\"");
+    }
+    const pages = saver.props?.event?.pages ?? [];
+    if (pages.length !== 1) problems.push(`the Saver's own event has ${pages.length} pages, expected exactly 1`);
+    const firstPage = pages[0];
+    if (firstPage && (firstPage.cond?.type ?? 'none') !== 'none') {
+      problems.push(`the Saver's own page cond.type is "${firstPage.cond?.type}", expected "none" (unguarded)`);
+    }
+    const selected = firstPage ? selectPage(saver.props.event, new Set()) : null;
+    if (!selected) {
+      problems.push('no page of the Saver is selected with no switches on');
+    } else {
+      const liveOps = [...liveCommands(selected.commands, CHOICE_LIMITS.options)];
+      if (!liveOps.some((c) => c.op === 'save')) problems.push("the Saver's own selected page has no live save");
+    }
+  }
+
+  const innkeeper = npcPlacements.find(
+    (e) => e !== saver && (e.props?.event?.pages ?? []).some((p) => (p.commands ?? []).some((c) => c.op === 'heal'))
+  );
+  if (!innkeeper) {
+    problems.push('no other npc placement on Village mentions a heal');
+  } else {
+    const innkeeperActor = project.sprites.actors[innkeeper.actorId];
+    if (effectiveTrigger(innkeeper, innkeeperActor, project) !== 'interact') {
+      problems.push("the Innkeeper's own effective trigger is not \"interact\"");
+    }
+    const innkeeperPages = innkeeper.props?.event?.pages ?? [];
+    if (innkeeperPages.length !== 1) {
+      problems.push(`the Innkeeper's own event has ${innkeeperPages.length} pages, expected exactly 1`);
+    }
+    const innkeeperFirstPage = innkeeperPages[0];
+    if (innkeeperFirstPage && (innkeeperFirstPage.cond?.type ?? 'none') !== 'none') {
+      problems.push(`the Innkeeper's own page cond.type is "${innkeeperFirstPage.cond?.type}", expected "none" (unguarded)`);
+    }
+    const selected = selectPage(innkeeper.props.event, new Set());
+    const liveOps = selected ? [...liveCommands(selected.commands, CHOICE_LIMITS.options)] : [];
+    const heal = liveOps.find((c) => c.op === 'heal');
+    if (!heal) {
+      problems.push("the Innkeeper's own selected page has no live heal");
+    } else if (heal.value !== 255) {
+      problems.push(`the Innkeeper's own live heal value is ${heal.value}, expected 255`);
+    }
+  }
+
+  const recruits = project.party.filter((m) => m.startsInParty === false);
+  if (recruits.length !== 1) {
+    problems.push(`expected exactly one party member with startsInParty: false, found ${recruits.length}`);
+  } else {
+    const recruit = recruits[0];
+    const recruitIndex = project.party.indexOf(recruit);
+    // Located by which placement's event MENTIONS the join anywhere in
+    // allCommands -- every page, nested inside a branch/choice/route
+    // included, and regardless of `off` (round 2 finding 2: "what is
+    // mentioned," the same reading monsterActorIds already uses, not
+    // "what is live") -- so a disabled decoy still counts as a second
+    // recruit and gets reported, rather than silently passing because the
+    // decoy's own join happens to be off. Requiring exactly one match is
+    // the fix itself: the previous `.find()` let the FIRST matching
+    // placement win, so a valid earlier decoy masked a broken original
+    // entirely, and a disabled earlier decoy made a valid original
+    // invisible to `.find()`'s own live-blind scan. The real selection,
+    // below, goes through selectPage/liveCommands exactly the way the
+    // engine's own "first passing page wins" rule does, so a page guarded
+    // switchOn (unreachable, since nothing else sets that switch first) or
+    // reversed page order is a problem THAT check reports, not something
+    // this lookup should paper over by finding the join some other way.
+    const mentionsJoin = (entity) => {
+      for (const page of entity.props?.event?.pages ?? []) {
+        for (const command of allCommands(page.commands ?? [])) {
+          if (command.op === 'join' && command.member === recruitIndex) return true;
+        }
+      }
+      return false;
+    };
+    const joinEntities = (screen.entities ?? []).filter(mentionsJoin);
+    if (joinEntities.length !== 1) {
+      problems.push(
+        `expected exactly one placement whose event mentions a join naming party member index ${recruitIndex}, found ${joinEntities.length}`
+      );
+    } else {
+      const joinEntity = joinEntities[0];
+      const joinActor = project.sprites.actors[joinEntity.actorId];
+      if (effectiveTrigger(joinEntity, joinActor, project) !== 'interact') {
+        problems.push("the recruit's own effective trigger is not \"interact\"");
+      }
+      const offSelected = selectPage(joinEntity.props.event, new Set());
+      if (!offSelected) {
+        problems.push('no page of the recruit is selected with no switches on');
+      } else {
+        const offLiveOps = [...liveCommands(offSelected.commands, CHOICE_LIMITS.options)];
+        const join = offLiveOps.find((c) => c.op === 'join' && c.member === recruitIndex);
+        const setSwitch = offLiveOps.find((c) => c.op === 'setSwitch');
+        if (!join) {
+          problems.push(`the recruit's own selected page (no switches on) has no live join naming party member index ${recruitIndex}`);
+        }
+        if (!setSwitch) {
+          problems.push("the recruit's own selected page (no switches on) has no live setSwitch");
+        } else if (joinEntity.props?.hideSwitch !== setSwitch.switch) {
+          problems.push(
+            `the recruit's own hideSwitch (${JSON.stringify(joinEntity.props?.hideSwitch)}) does not equal its own selected page's setSwitch operand (${setSwitch.switch})`
+          );
+        }
+        if (setSwitch) {
+          const onSelected = selectPage(joinEntity.props.event, new Set([setSwitch.switch]));
+          if (!onSelected) {
+            problems.push(`no page of the recruit is selected with switch ${setSwitch.switch} on`);
+          } else if (onSelected === offSelected) {
+            problems.push('the same page is selected with the switch off and on -- the join is never actually guarded');
+          } else {
+            const onLiveOps = [...liveCommands(onSelected.commands, CHOICE_LIMITS.options)];
+            if (onLiveOps.some((c) => c.op === 'join')) {
+              problems.push("the recruit's own fallback page (switch on) still has a live join -- recruitment could repeat");
+            }
+            if (!onLiveOps.some((c) => c.op === 'say')) {
+              problems.push('the recruit\'s own fallback page (switch on) has no live say');
+            }
+          }
+        }
+      }
+    }
+  }
+
+  const hero = project.party[0];
+  const heroSpellIds = new Set((hero?.spells ?? []).map((s) => s.spellId));
+  const liveSpell = (project.spells ?? []).find((s) => s.kind !== 'none' && heroSpellIds.has(s.id));
+  if (!liveSpell) problems.push("no spell with kind !== 'none' is reachable by party member 0's own spells list");
+
+  return problems;
+}
+
+test('12: the RPG starter\'s own five named features (a live Field encounter, a repeatable Save, an inn via Heal 255, a guarded join, and a reachable spell) are all real', () => {
+  const rpg = STARTERS.find((s) => s.id === 'rpg');
+  const project = rpg.build('X');
+  const problems = rpgFeatureProblems(project);
+  assert.deepEqual(problems, [], `the rpg starter has feature problems: ${JSON.stringify(problems)}`);
+});
+
+test('12 negative control: guarding the Saver\'s page on switchOff 0 is reported', () => {
+  const project = STARTERS.find((s) => s.id === 'rpg').build('X');
+  const village = project.maps.find((m) => m.name === 'Village').screens[0];
+  const saver = village.entities.find((e) => (e.props?.event?.pages ?? []).some((p) => (p.commands ?? []).some((c) => c.op === 'save')));
+  saver.props.event.pages[0].cond = { type: 'switchOff', arg: 0 };
+  const problems = rpgFeatureProblems(project);
+  assert.ok(problems.length > 0, 'expected the guarded Saver page to be reported, got no problems');
+});
+
+test('12 negative control: off:true on the save command is reported', () => {
+  const project = STARTERS.find((s) => s.id === 'rpg').build('X');
+  const village = project.maps.find((m) => m.name === 'Village').screens[0];
+  const saver = village.entities.find((e) => (e.props?.event?.pages ?? []).some((p) => (p.commands ?? []).some((c) => c.op === 'save')));
+  saver.props.event.pages[0].commands.find((c) => c.op === 'save').off = true;
+  const problems = rpgFeatureProblems(project);
+  assert.ok(problems.length > 0, 'expected off:true on the save command to be reported, got no problems');
+});
+
+test('12 negative control: the Innkeeper\'s heal value changed to 20 is reported', () => {
+  const project = STARTERS.find((s) => s.id === 'rpg').build('X');
+  const village = project.maps.find((m) => m.name === 'Village').screens[0];
+  const innkeeper = village.entities.find((e) => (e.props?.event?.pages ?? []).some((p) => (p.commands ?? []).some((c) => c.op === 'heal')));
+  innkeeper.props.event.pages[0].commands.find((c) => c.op === 'heal').value = 20;
+  const problems = rpgFeatureProblems(project);
+  assert.ok(problems.length > 0, 'expected the changed heal value to be reported, got no problems');
+});
+
+test('12 negative control: guarding the Innkeeper\'s page on switchOff 0 is reported', () => {
+  const project = STARTERS.find((s) => s.id === 'rpg').build('X');
+  const village = project.maps.find((m) => m.name === 'Village').screens[0];
+  const innkeeper = village.entities.find((e) => (e.props?.event?.pages ?? []).some((p) => (p.commands ?? []).some((c) => c.op === 'heal')));
+  innkeeper.props.event.pages[0].cond = { type: 'switchOff', arg: 0 };
+  const problems = rpgFeatureProblems(project);
+  assert.ok(
+    problems.some((p) => p.includes('Innkeeper')),
+    `expected the guarded Innkeeper page to be reported, got ${JSON.stringify(problems)}`
+  );
+});
+
+test('12 negative control: flipping Ally\'s startsInParty to true is reported', () => {
+  const project = STARTERS.find((s) => s.id === 'rpg').build('X');
+  const ally = project.party.find((m) => m.name === 'Ally');
+  ally.startsInParty = true;
+  const problems = rpgFeatureProblems(project);
+  assert.ok(problems.length > 0, "expected Ally's own flipped startsInParty to be reported, got no problems");
+});
+
+test('12 negative control: the join command\'s member changed to 0 is reported', () => {
+  const project = STARTERS.find((s) => s.id === 'rpg').build('X');
+  const village = project.maps.find((m) => m.name === 'Village').screens[0];
+  const allyEntity = village.entities.find((e) => (e.props?.event?.pages ?? []).some((p) => (p.commands ?? []).some((c) => c.op === 'join')));
+  allyEntity.props.event.pages[0].commands.find((c) => c.op === 'join').member = 0;
+  const problems = rpgFeatureProblems(project);
+  assert.ok(problems.length > 0, "expected the join command's own member changed to 0 to be reported, got no problems");
+});
+
+test('12 negative control: the recruit\'s own hideSwitch set to 1 while its page still sets switch 0 is reported', () => {
+  const project = STARTERS.find((s) => s.id === 'rpg').build('X');
+  const village = project.maps.find((m) => m.name === 'Village').screens[0];
+  const allyEntity = village.entities.find((e) => (e.props?.event?.pages ?? []).some((p) => (p.commands ?? []).some((c) => c.op === 'join')));
+  allyEntity.props.hideSwitch = 1;
+  const problems = rpgFeatureProblems(project);
+  assert.ok(problems.length > 0, "expected the mismatched hideSwitch to be reported, got no problems");
+});
+
+test('12 negative control: zeroing the Field\'s own encounter rate is reported', () => {
+  const project = STARTERS.find((s) => s.id === 'rpg').build('X');
+  const field = project.maps.find((m) => m.name === 'Field');
+  field.encounters.rate = 0;
+  const problems = rpgFeatureProblems(project);
+  assert.ok(problems.length > 0, "expected the zeroed encounter rate to be reported, got no problems");
+});
+
+test('12 negative control: emptying the Hero\'s own spells list is reported', () => {
+  const project = STARTERS.find((s) => s.id === 'rpg').build('X');
+  project.party[0].spells = [];
+  const problems = rpgFeatureProblems(project);
+  assert.ok(problems.length > 0, "expected the Hero's own emptied spells list to be reported, got no problems");
+});
+
+// The recruit's own two-page guard, round 2's finding 1 and 2: the join must
+// really be reached via selectPage's own "first passing page wins" rule --
+// not merely mentioned somewhere in the event -- and the fallback page must
+// really block a repeat.
+
+test('12 negative control: guarding the recruit\'s own join page on switchOn 0 (unreachable -- nothing else sets that switch first) is reported', () => {
+  const project = STARTERS.find((s) => s.id === 'rpg').build('X');
+  const village = project.maps.find((m) => m.name === 'Village').screens[0];
+  const allyEntity = village.entities.find((e) => (e.props?.event?.pages ?? []).some((p) => (p.commands ?? []).some((c) => c.op === 'join')));
+  allyEntity.props.event.pages[0].cond = { type: 'switchOn', arg: 0 };
+  const problems = rpgFeatureProblems(project);
+  assert.ok(
+    problems.some((p) => p.includes('no live join')),
+    `expected the unreachable join page to be reported, got ${JSON.stringify(problems)}`
+  );
+});
+
+test('12 negative control: reversing the recruit\'s own two pages shadows the join behind the fallback', () => {
+  const project = STARTERS.find((s) => s.id === 'rpg').build('X');
+  const village = project.maps.find((m) => m.name === 'Village').screens[0];
+  const allyEntity = village.entities.find((e) => (e.props?.event?.pages ?? []).some((p) => (p.commands ?? []).some((c) => c.op === 'join')));
+  allyEntity.props.event.pages.reverse();
+  const problems = rpgFeatureProblems(project);
+  assert.ok(
+    problems.some((p) => p.includes('no live join')),
+    `expected the reversed pages to be reported, got ${JSON.stringify(problems)}`
+  );
+});
+
+test('12 negative control: removing the recruit\'s own fallback page\'s say (replaced by a non-say command, so the page still compiles and is still selected) is reported', () => {
+  const project = STARTERS.find((s) => s.id === 'rpg').build('X');
+  const village = project.maps.find((m) => m.name === 'Village').screens[0];
+  const allyEntity = village.entities.find((e) => (e.props?.event?.pages ?? []).some((p) => (p.commands ?? []).some((c) => c.op === 'join')));
+  // A page with NO live commands at all is dropped from compiledPages
+  // entirely (its own doc comment: "a page whose commands are ALL switched
+  // off is dropped from the ROM"), which would make this control actually
+  // exercise "no page is selected with the switch on" instead of the
+  // "no live say" branch it means to test -- so the say is swapped for a
+  // different live command, not simply deleted.
+  allyEntity.props.event.pages[1].commands = [{ op: 'wait', frames: 1 }];
+  const problems = rpgFeatureProblems(project);
+  assert.ok(
+    problems.some((p) => p.includes('fallback page') && p.includes('say')),
+    `expected the missing fallback say to be reported, got ${JSON.stringify(problems)}`
+  );
+});
+
+test('12 negative control: deleting the recruit\'s own fallback page entirely (a one-page guarded event) is reported', () => {
+  const project = STARTERS.find((s) => s.id === 'rpg').build('X');
+  const village = project.maps.find((m) => m.name === 'Village').screens[0];
+  const allyEntity = village.entities.find((e) => (e.props?.event?.pages ?? []).some((p) => (p.commands ?? []).some((c) => c.op === 'join')));
+  allyEntity.props.event.pages = [allyEntity.props.event.pages[0]];
+  const problems = rpgFeatureProblems(project);
+  assert.ok(
+    problems.some((p) => p.includes('no page of the recruit is selected with switch')),
+    `expected the deleted fallback page to be reported, got ${JSON.stringify(problems)}`
+  );
+});
+
+// Round 2 finding 2's own two controls: the locator must require EXACTLY
+// one placement mentioning the join, not merely "at least one" (which a
+// `.find()` already satisfied, letting the first match -- valid or not --
+// silently win).
+
+test('12 negative control: a second Village placement duplicating the recruit\'s own event is reported as "2 placements"', () => {
+  const project = STARTERS.find((s) => s.id === 'rpg').build('X');
+  const village = project.maps.find((m) => m.name === 'Village').screens[0];
+  const allyEntity = village.entities.find((e) => (e.props?.event?.pages ?? []).some((p) => (p.commands ?? []).some((c) => c.op === 'join')));
+  const decoy = structuredClone(allyEntity);
+  decoy.x = 96;
+  decoy.y = 96;
+  village.entities.push(decoy);
+  const problems = rpgFeatureProblems(project);
+  assert.ok(
+    problems.some((p) => p.includes('found 2')),
+    `expected the duplicated recruit placement to be reported as "found 2", got ${JSON.stringify(problems)}`
+  );
+});
+
+test('12 negative control: the duplicate placement\'s own join marked off:true is still reported (mentioned, not live, is what counts)', () => {
+  const project = STARTERS.find((s) => s.id === 'rpg').build('X');
+  const village = project.maps.find((m) => m.name === 'Village').screens[0];
+  const allyEntity = village.entities.find((e) => (e.props?.event?.pages ?? []).some((p) => (p.commands ?? []).some((c) => c.op === 'join')));
+  const decoy = structuredClone(allyEntity);
+  decoy.x = 96;
+  decoy.y = 96;
+  const decoyJoin = decoy.props.event.pages.flatMap((p) => p.commands ?? []).find((c) => c.op === 'join');
+  decoyJoin.off = true;
+  village.entities.push(decoy);
+  const problems = rpgFeatureProblems(project);
+  assert.ok(
+    problems.some((p) => p.includes('found 2')),
+    `expected the disabled duplicate to still be reported as "found 2", got ${JSON.stringify(problems)}`
+  );
+});
+
+// --- 14: the RPG starter's battle art really reaches tileset 1 -------------
+
+/**
+ * Every problem with the RPG starter's own battle-art reach, given
+ * `project`: every Field encounter actor's own idle art, and every party
+ * member's own battle portrait, must resolve to real (non-blank) content in
+ * tileset 1 that matches tileset 0's own content at the identical index --
+ * a plain list of strings, empty when clean.
+ */
+function battleArtProblems(project) {
+  const problems = [];
+
+  const checkTileIndex = (label, index) => {
+    const tile1 = project.tilesets[1]?.sprites.tiles[index];
+    if (typeof tile1 !== 'string' || tile1 === BLANK_TILE) {
+      problems.push(`${label}: tileset 1's own sprite tile ${index} is blank or missing`);
+      return;
+    }
+    const tile0 = project.tilesets[0]?.sprites.tiles[index];
+    if (tile1 !== tile0) {
+      problems.push(`${label}: tileset 1's own sprite tile ${index} does not match tileset 0's own content (the copy is not faithful)`);
+    }
+  };
+
+  // A metasprite with no tiles is a reported problem the instant it is
+  // reached, before any tile is walked -- an empty `tiles` array makes the
+  // `for` loop below run zero times and report nothing on its own, which is
+  // exactly how a battle portrait can go silently invisible and still pass.
+  const checkMetasprite = (label, metasprite) => {
+    if (!metasprite.tiles || metasprite.tiles.length === 0) {
+      problems.push(`${label}: metasprite "${metasprite.name}" has zero tiles`);
+      return;
+    }
+    for (const tile of metasprite.tiles) checkTileIndex(label, tile.tile);
+  };
+
+  const walkAnimation = (label, animId) => {
+    const animation = project.sprites.animations[animId];
+    if (!animation) {
+      problems.push(`${label}: animation id ${animId} does not resolve to a real animation`);
+      return;
+    }
+    // A zero-frame animation -- the same silent-pass shape as a zero-tile
+    // metasprite: the `for` loop below runs zero times and reports nothing,
+    // even though the engine's own zero-frame fallback (design's own
+    // "compiles to a one-byte $00 stub") only helps a FIELD icon, never a
+    // battle portrait or a monster's own idle art walked here.
+    if (animation.frames.length === 0) {
+      problems.push(`${label}: animation "${animation.name}" has zero frames`);
+      return;
+    }
+    for (const frame of animation.frames) {
+      const metasprite = project.sprites.metasprites[frame.metaspriteId];
+      if (!metasprite) {
+        problems.push(`${label}: animation ${animId} references no real metasprite ${frame.metaspriteId}`);
+        continue;
+      }
+      checkMetasprite(label, metasprite);
+    }
+  };
+
+  const field = project.maps.find((m) => m.name === 'Field');
+  const actorIds = field?.encounters?.actorIds ?? [];
+  if (!actorIds.length) problems.push('the Field map names no encounter actors');
+  for (const id of actorIds) {
+    const actor = project.sprites.actors[id];
+    if (!actor) {
+      problems.push(`Field encounter actor id ${id} does not resolve to a real actor`);
+      continue;
+    }
+    const idleId = actor.anims?.idle;
+    if (idleId === null || idleId === undefined) {
+      problems.push(`actor "${actor.name}" has no idle animation`);
+      continue;
+    }
+    walkAnimation(`actor "${actor.name}"`, idleId);
+  }
+
+  for (const member of project.party ?? []) {
+    if (typeof member.metaspriteId !== 'number') {
+      problems.push(`party member "${member.name}" has metaspriteId ${JSON.stringify(member.metaspriteId)}, expected a number`);
+      continue;
+    }
+    const metasprite = project.sprites.metasprites[member.metaspriteId];
+    if (!metasprite) {
+      problems.push(`party member "${member.name}"'s own metaspriteId ${member.metaspriteId} does not resolve to a real metasprite`);
+      continue;
+    }
+    checkMetasprite(`party member "${member.name}"`, metasprite);
+  }
+
+  return problems;
+}
+
+test("14: every monster in the RPG starter's Field encounter list, and every party member, resolves to a real, faithfully-copied sprite tile in tileset 1", () => {
+  const rpg = STARTERS.find((s) => s.id === 'rpg');
+  const project = rpg.build('X');
+  const problems = battleArtProblems(project);
+  assert.deepEqual(problems, [], `the rpg starter has battle-art problems: ${JSON.stringify(problems)}`);
+});
+
+test('14 negative control: replacing the tileset-1 sprite copy with blanks is reported', () => {
+  const project = STARTERS.find((s) => s.id === 'rpg').build('X');
+  project.tilesets[1].sprites.tiles = project.tilesets[1].sprites.tiles.map(() => BLANK_TILE);
+  const problems = battleArtProblems(project);
+  assert.ok(problems.length > 0, 'expected the blanked tileset-1 copy to be reported, got no problems');
+});
+
+test("14 negative control: Ally's metaspriteId left at createPartyMember's own default (null) is reported", () => {
+  const project = STARTERS.find((s) => s.id === 'rpg').build('X');
+  const ally = project.party.find((m) => m.name === 'Ally');
+  ally.metaspriteId = null;
+  const problems = battleArtProblems(project);
+  assert.ok(
+    problems.some((p) => p.includes('expected a number')),
+    `expected Ally's own null metaspriteId to be reported, got ${JSON.stringify(problems)}`
+  );
+});
+
+test('14 negative control: one Slime tile blanked in tileset 1 only is reported', () => {
+  const project = STARTERS.find((s) => s.id === 'rpg').build('X');
+  const slimeActor = project.sprites.actors.find((a) => a.name === 'Slime');
+  const idleAnim = project.sprites.animations[slimeActor.anims.idle];
+  const slimeMetasprite = project.sprites.metasprites[idleAnim.frames[0].metaspriteId];
+  const someIndex = slimeMetasprite.tiles[0].tile;
+  project.tilesets[1].sprites.tiles[someIndex] = BLANK_TILE;
+  const problems = battleArtProblems(project);
+  assert.ok(problems.length > 0, "expected the blanked Slime tile in tileset 1 to be reported, got no problems");
+});
+
+// Round 2 finding 3: an empty tiles/frames array makes the walking `for`
+// loop run zero times and report nothing on its own -- both party portraits
+// share the Hero metasprite, so emptying its own tiles makes them silently
+// invisible; a monster's idle animation with zero frames is the identical
+// shape one hop up the chain.
+
+test("14 negative control: the shared Hero metasprite's own tiles set to [] is reported", () => {
+  const project = STARTERS.find((s) => s.id === 'rpg').build('X');
+  const heroMetasprite = project.sprites.metasprites.find((m) => m.name === 'Hero');
+  assert.ok(heroMetasprite, 'expected a metasprite named "Hero"');
+  heroMetasprite.tiles = [];
+  const problems = battleArtProblems(project);
+  assert.ok(
+    problems.some((p) => p.includes('zero tiles')),
+    `expected the emptied Hero metasprite to be reported, got ${JSON.stringify(problems)}`
+  );
+});
+
+test("14 negative control: the Slime's own idle animation frames set to [] is reported", () => {
+  const project = STARTERS.find((s) => s.id === 'rpg').build('X');
+  const slimeActor = project.sprites.actors.find((a) => a.name === 'Slime');
+  const idleAnim = project.sprites.animations[slimeActor.anims.idle];
+  idleAnim.frames = [];
+  const problems = battleArtProblems(project);
+  assert.ok(
+    problems.some((p) => p.includes('zero frames')),
+    `expected the emptied Slime idle animation to be reported, got ${JSON.stringify(problems)}`
+  );
+});
+
 // --- 17: arrival safety, across every starter -------------------------------
 // TOUCH_RANGE is declared above, before test 10 -- shared by both.
 
@@ -1590,6 +2386,95 @@ test("17 negative control (dungeon): an arrival at (120, 104) in the Entrance --
   assert.ok(
     problems.some((p) => p.includes('lands on solid ground')),
     `expected the body-offset arrival at (120, 104) to be reported, got ${JSON.stringify(problems)}`
+  );
+});
+
+test("17: the rpg starter's own placement table (design §9.3) is pinned directly, so a silently moved placement fails", () => {
+  const rpg = STARTERS.find((s) => s.id === 'rpg').build('X');
+  const flatScreens = rpg.maps.flatMap((m) => m.screens);
+  const VILLAGE = 0;
+  const FIELD = 1;
+  const village = flatScreens[VILLAGE];
+  const field = flatScreens[FIELD];
+
+  const saver = village.entities.find((e) => (e.props?.event?.pages ?? []).some((p) => (p.commands ?? []).some((c) => c.op === 'save')));
+  assert.ok(saver, 'expected a Saver placement on Village');
+  assert.deepEqual([saver.x, saver.y], [64, 64], 'the Saver must sit at (64, 64) on Village');
+
+  const innkeeper = village.entities.find((e) => (e.props?.event?.pages ?? []).some((p) => (p.commands ?? []).some((c) => c.op === 'heal')));
+  assert.ok(innkeeper, 'expected an Innkeeper placement on Village');
+  assert.deepEqual([innkeeper.x, innkeeper.y], [192, 64], 'the Innkeeper must sit at (192, 64) on Village');
+
+  const ally = village.entities.find((e) => (e.props?.event?.pages ?? []).some((p) => (p.commands ?? []).some((c) => c.op === 'join')));
+  assert.ok(ally, 'expected the Ally recruit placement on Village');
+  assert.deepEqual([ally.x, ally.y], [128, 32], 'the Ally recruit must sit at (128, 32) on Village');
+
+  const villageDoor = findDoorTo(rpg, village, FIELD);
+  assert.ok(villageDoor, 'expected a door on Village targeting the Field');
+  assert.deepEqual([villageDoor.x, villageDoor.y], [224, 112], "Village's own door must sit at (224, 112)");
+  assert.deepEqual([villageDoor.props.toX, villageDoor.props.toY], [192, 176], 'it must land in the Field at (192, 176)');
+
+  const potion = field.entities.find((e) => rpg.sprites.actors[e.actorId]?.name === 'Potion');
+  assert.ok(potion, 'expected the Potion on the Field');
+  assert.deepEqual([potion.x, potion.y], [192, 64], 'the Potion must sit at (192, 64) on the Field');
+
+  const fieldDoor = findDoorTo(rpg, field, VILLAGE);
+  assert.ok(fieldDoor, 'expected a door on the Field targeting Village');
+  assert.deepEqual([fieldDoor.x, fieldDoor.y], [32, 112], "the Field's own return door must sit at (32, 112)");
+  assert.deepEqual([fieldDoor.props.toX, fieldDoor.props.toY], [128, 208], 'it must land in Village at (128, 208)');
+
+  const fieldMap = rpg.maps.find((m) => m.name === 'Field');
+  assert.equal(fieldMap.encounters.rate, 20, "the Field's own encounter rate must be 20");
+  const rosterNames = fieldMap.encounters.actorIds.map((id) => rpg.sprites.actors[id]?.name);
+  assert.deepEqual(rosterNames, ['Slime', 'Bat'], "the Field's own encounter roster must be exactly [Slime, Bat], in that order");
+
+  assert.equal(rpg.project.startMap, 0, 'the rpg starter must start on map 0 (Village)');
+  assert.equal(rpg.project.startScreen, 0, 'the rpg starter must start on screen 0');
+  assert.equal(rpg.project.startX, 48, 'the rpg starter must start at x 48');
+  assert.equal(rpg.project.startY, 176, 'the rpg starter must start at y 176');
+  assert.equal(rpg.project.titleMap, 2, 'the rpg starter must use map 2 (Title) as its title map');
+  assert.equal(rpg.project.titleScreen, 0, "the rpg starter's title screen must be screen 0");
+
+  const startProblems = landingProblems(
+    "the rpg starter's own start position",
+    rpg,
+    village,
+    rpg.project.startX,
+    rpg.project.startY,
+    village.entities ?? []
+  );
+  assert.deepEqual(
+    startProblems,
+    [],
+    `the rpg starter's own start position has arrival-safety problems: ${JSON.stringify(startProblems)}`
+  );
+});
+
+// design §9.3's own v3 bounce bug (round-3 finding 1) was: the Village's own
+// door to the Field arrived at exactly (32, 112) -- which coincides with the
+// Field's own return door's RESTING position (also (32, 112)) -- so a player
+// stepping through would land already within TOUCH_RANGE of the door that
+// sends them right back. Reproducing that bug means mutating the VILLAGE
+// door's own landing point (toX/toY) back onto (32, 112), the Field return
+// door's own (x, y) -- not the Field return door's own toX/toY (its landing
+// point, on Village, which today's placement table leaves nowhere near any
+// Village entity, so that specific mutation alone passes arrivalProblems
+// vacuously; confirmed empirically before writing this control). The pinned
+// placement-table test above is what catches THAT literal mutation instead
+// (its own assert.deepEqual on the Field door's own toX/toY fails directly),
+// so the two checks together cover both readings without a third test whose
+// only job is to assert a checker's own blind spot.
+test('17 negative control (rpg): the Village door\'s own landing point moved onto the Field return door\'s own resting position (32, 112) -- the v3 bounce bug -- is reported', () => {
+  const rpg = STARTERS.find((s) => s.id === 'rpg').build('X');
+  const village = rpg.maps.find((m) => m.name === 'Village').screens[0];
+  const villageDoor = findDoorTo(rpg, village, 1);
+  assert.ok(villageDoor, 'expected a door on Village targeting the Field');
+  villageDoor.props.toX = 32;
+  villageDoor.props.toY = 112;
+  const problems = arrivalProblems(rpg);
+  assert.ok(
+    problems.some((p) => p.includes('within touch range')),
+    `expected the relocated Village door landing to be reported, got ${JSON.stringify(problems)}`
   );
 });
 

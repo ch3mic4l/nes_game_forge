@@ -9553,6 +9553,80 @@ export async function runSmoke(window) {
         'ROM built, key mechanism touched (switch 0 set, 1 item)'
     );
 
+    // design-starter-projects.md §11 test 16d: the turn-based RPG content
+    // starter, added in this phase -- same click-through mechanism as
+    // 16a-16c, then a real headless boot of the built ROM, run right here in
+    // this file's own main process (the same idiom 16c already uses).
+    // Nothing after 16a-d depends on which project is currently open (the
+    // comment above the picker helpers, a few dozen lines up, already
+    // establishes that for 16a/16b; this step's own store.open() is
+    // likewise superseded by the scenario's own store.open() next). No
+    // walking required -- title then gameplay, start position, flat_screen
+    // and the party's own in/out state are all readable straight off boot.
+    const rpgDir = path.join(scratch, 'PickerRpg.forge');
+    setSmokeNewProjectPath(rpgDir);
+    window.webContents.send('menu:action', 'project:new');
+    assertPickerLabels(await waitForPicker());
+    await clickPickerButton('rpg');
+    await waitForStoreDir(rpgDir);
+    const rpgProject = await loadProject(rpgDir);
+    if (rpgProject.project.gameType !== 'rpg') {
+      throw new Error(`starter "rpg" created gameType "${rpgProject.project.gameType}", expected "rpg"`);
+    }
+    if (rpgProject.maps.length !== 3) {
+      throw new Error(`starter "rpg" created ${rpgProject.maps.length} maps, expected 3`);
+    }
+    if (rpgProject.cartridge.mapper !== 1) {
+      throw new Error(`starter "rpg" created cartridge.mapper ${rpgProject.cartridge.mapper}, expected 1 (MMC1)`);
+    }
+
+    const rpgBuild = await buildProject({ dir: rpgDir, project: rpgProject, log: () => {} });
+    const rpgEmulator = new Emulator({ onFrame: () => {} });
+    rpgEmulator.loadROM(new Uint8Array(await fs.readFile(rpgBuild.romPath)));
+    const rpgNes = rpgEmulator.nes;
+    const rpgFrame = () => rpgNes.frame();
+
+    // Addresses from engine/constants.asm.
+    const RPG_PLAYER_X = 0x10;
+    const RPG_PLAYER_Y = 0x11;
+    const RPG_FLAT_SCREEN = 0x16;
+    const RPG_GAME_STATE = 0x25;
+    const RPG_PC_IN_PARTY = 0x03b4;
+    const RPG_ST_TITLE = 3;
+    const RPG_ST_GAMEPLAY = 0;
+
+    for (let i = 0; i < 40; i++) rpgFrame();
+    if (rpgNes.cpu.mem[RPG_GAME_STATE] !== RPG_ST_TITLE) {
+      throw new Error(`rpg starter: expected ST_TITLE (3) after boot, got game_state ${rpgNes.cpu.mem[RPG_GAME_STATE]}`);
+    }
+    rpgEmulator.setButton(BUTTON.START, true);
+    rpgFrame();
+    rpgEmulator.setButton(BUTTON.START, false);
+    for (let i = 0; i < 12; i++) rpgFrame();
+
+    if (rpgNes.cpu.mem[RPG_GAME_STATE] !== RPG_ST_GAMEPLAY) {
+      throw new Error(`rpg starter: expected ST_GAMEPLAY (0) after Start, got game_state ${rpgNes.cpu.mem[RPG_GAME_STATE]}`);
+    }
+    if (rpgNes.cpu.mem[RPG_PLAYER_X] !== 48 || rpgNes.cpu.mem[RPG_PLAYER_Y] !== 176) {
+      throw new Error(
+        `rpg starter: expected the player at (48, 176) after Start, got (${rpgNes.cpu.mem[RPG_PLAYER_X]}, ${rpgNes.cpu.mem[RPG_PLAYER_Y]})`
+      );
+    }
+    if (rpgNes.cpu.mem[RPG_FLAT_SCREEN] !== 0) {
+      throw new Error(`rpg starter: expected flat_screen 0 after Start, got ${rpgNes.cpu.mem[RPG_FLAT_SCREEN]}`);
+    }
+    if (rpgNes.cpu.mem[RPG_PC_IN_PARTY] !== 1 || rpgNes.cpu.mem[RPG_PC_IN_PARTY + 1] !== 0) {
+      throw new Error(
+        `rpg starter: expected pc_in_party [1, 0] (Hero in, Ally not yet), got ` +
+          `[${rpgNes.cpu.mem[RPG_PC_IN_PARTY]}, ${rpgNes.cpu.mem[RPG_PC_IN_PARTY + 1]}]`
+      );
+    }
+
+    console.log(
+      `  ok  starter picker (File > New Project menu action): rpg -> gameType "rpg", ${rpgProject.maps.length} maps; ROM ` +
+        'built (MMC1), title then gameplay, party 1/2'
+    );
+
     const report = await window.webContents.executeJavaScript(scenario(dir, sampleCopy, sampleRpgCopy));
     for (const entry of report.steps) console.log(`  ok  ${entry.name}${entry.detail ? ` — ${entry.detail}` : ''}`);
 
