@@ -103,7 +103,7 @@ import { buildProject } from '../../main/build/pipeline.js';
 import { resolveMapper, rpgCapable } from '../../shared/cartridge.js';
 import { flattenScreens, resolveEntityByte, checkCapacity } from '../../main/build/generate.js';
 import { compileText, opIndex, OP_JUMP, OP_STING, encodeString } from '../../main/build/textcompile.js';
-import { createSong, songFrameLength, songByte, sfxByte, sfxFrameLength } from '../../shared/audio.js';
+import { createSong, songFrameLength, songByte, sfxByte, sfxFrameLength, normalizeSfx } from '../../shared/audio.js';
 import { battleTables } from '../../main/build/battletables.js';
 import { FONT_BASE } from '../../shared/font.js';
 import { BLANK_TILE } from '../../shared/chr.js';
@@ -111,6 +111,7 @@ import { spawnSync } from 'node:child_process';
 import NES from '../../renderer/emulator/core/nes.js';
 import { saveIdentity } from '../../shared/save.js';
 import { decodeCommand, decodeBody, decodeEvent } from '../lib/eventdecoder.js';
+import { tokenizer } from 'acorn';
 
 const hasNesasm = spawnSync('nesasm', [], { stdio: 'ignore' }).error?.code !== 'ENOENT';
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
@@ -533,6 +534,668 @@ test('commonEventSeq survives a disk round trip even when the surviving list cou
   await saveProject(emptyDir, emptied);
   const reopenedEmpty = await loadProject(emptyDir);
   assert.equal(reopenedEmpty.commonEventSeq, 40, 'an empty list must not reset the seq back to 0');
+});
+
+// ---------------------------------------- review-fix slice A: items 1, 2, 5
+
+test('review-fix slice A item 1: project.sfx survives a disk round trip byte-for-byte', async (t) => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'forge-sfx-'));
+  t.after(() => fs.rm(dir, { recursive: true, force: true }));
+  const project = normalizeProject({
+    sfx: [
+      normalizeSfx({
+        name: 'Coin',
+        volume: 12,
+        steps: [
+          { note: 7, duration: 3 },
+          { note: 2, duration: 5 }
+        ]
+      })
+    ]
+  });
+  assert.equal(project.sfx.length, 1, 'the authored effect must actually be present before saving');
+  await saveProject(dir, project);
+  const reopened = await loadProject(dir);
+  assert.deepEqual(reopened.sfx, project.sfx, 'the authored sfx effect must survive the save/load round trip byte-for-byte');
+});
+
+// The generic test that would have caught the sfx omission (and any future
+// field someone forgets to wire into project-io.js) before it ever shipped:
+// load the real sample fixture read-only, top up any of the four "easy to
+// leave empty" arrays that happen to be empty on it, save the augmented
+// project to a scratch directory, reload it, and diff EVERY top-level key of
+// the normalized project against the copy saveProject itself returned (which
+// is exactly normalizeProject's own output for what was written) --
+// iterating Object.keys rather than naming fields by hand is what makes this
+// generic.
+test('review-fix slice A item 1 (generic): every top-level field of a saved project survives a disk round trip', async (t) => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'forge-roundtrip-all-'));
+  t.after(() => fs.rm(dir, { recursive: true, force: true }));
+
+  const project = await loadProject(SAMPLE);
+  if (!project.sfx.length) {
+    project.sfx.push(normalizeSfx({ name: 'Ding', volume: 10, steps: [{ note: 5, duration: 4 }] }));
+  }
+  if (!project.songs.length) project.songs.push(createSong('Extra Tune'));
+  if (!project.commonEvents.length) project.commonEvents.push({ name: 'Common', event: null });
+  if (!project.items.length) {
+    project.items.push({ name: 'Test Item', actorId: null, metaspriteId: null, effect: { kind: 'heal', amount: 10 } });
+  }
+  assert.ok(project.sfx.length && project.songs.length && project.commonEvents.length && project.items.length,
+    'every one of the four fields this test tops up must be non-empty before saving, or the round trip proves nothing');
+
+  const written = await saveProject(dir, project);
+  const reopened = await loadProject(dir);
+
+  const keys = Object.keys(written);
+  assert.ok(keys.includes('sfx') && keys.length > 10, 'sanity: normalizeProject must still return a real, multi-field project shape');
+  for (const key of keys) {
+    assert.deepEqual(reopened[key], written[key], `top-level key "${key}" did not survive the disk round trip`);
+  }
+});
+
+test('review-fix slice A item 2: a mid-save write failure leaves the previous save intact, and the failure surfaces to the caller', async (t) => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'forge-atomicsave-'));
+  t.after(() => fs.rm(dir, { recursive: true, force: true }));
+
+  // NROM (the default mapper) has no CHR switching at all -- tilesetLimit
+  // caps it at exactly one tileset, which would silently collapse a second
+  // authored one before it ever reached disk. MMC1 supports four.
+  const blankRow = '0'.repeat(64);
+  const original = normalizeProject({
+    project: { name: 'Original' },
+    cartridge: { mapper: 1 },
+    tilesets: [
+      { id: 0, name: 'A', background: { tiles: [] }, sprites: { tiles: [] } },
+      { id: 1, name: 'B', background: { tiles: [blankRow] }, sprites: { tiles: [] } }
+    ]
+  });
+  assert.equal(original.tilesets.length, 2, 'both authored tilesets must survive normalization, or this test proves nothing');
+  await saveProject(dir, original);
+  const background1Before = await fs.readFile(path.join(dir, 'tiles', '1', 'background.json'), 'utf8');
+  const sprites1Before = await fs.readFile(path.join(dir, 'tiles', '1', 'sprites.json'), 'utf8');
+
+  // Changes tileset 1's own tile CONTENT, not its name -- the name lives in
+  // tilesets.json, which is written before the per-tileset folders (and
+  // whose own update this test does not contest); the background/sprites
+  // tables are what the forced failure below must keep untouched.
+  const editedRow = '1'.repeat(64);
+  const updated = normalizeProject({
+    ...original,
+    tilesets: original.tilesets.map((tileset, index) =>
+      index === 1 ? { ...tileset, background: { tiles: [editedRow] } } : tileset
+    )
+  });
+
+  // Force the SECOND tileset's own background.json write to fail exactly
+  // once, deterministically -- by monkeypatching the shared node:fs/promises
+  // module object project-io.js itself imported (the same object, since ES
+  // modules cache by specifier), matched by path rather than call order so
+  // it targets exactly the write this test is about. The mock genuinely
+  // writes a truncated prefix of the new content to whatever path it was
+  // given, THEN throws -- simulating a real ENOSPC mid-write, where some
+  // bytes really do land on disk before the error surfaces. That is what
+  // makes this a meaningful test of atomicWriteFile's own tmp+rename
+  // design specifically: writing the target path directly (no tmp file)
+  // would leave a truncated, corrupt background.json behind; writing
+  // through a tmp file leaves the corruption confined to a tmp name that is
+  // never renamed over the real target, which is the whole point of it.
+  const targetDir = path.join(dir, 'tiles', '1') + path.sep;
+  const originalWriteFile = fs.writeFile;
+  let forcedFailureFired = false;
+  fs.writeFile = async (file, ...rest) => {
+    if (!forcedFailureFired && typeof file === 'string' && file.includes(targetDir) && file.includes('background.json')) {
+      forcedFailureFired = true;
+      const content = typeof rest[0] === 'string' ? rest[0] : '';
+      await originalWriteFile(file, content.slice(0, Math.max(1, Math.floor(content.length / 2))), 'utf8');
+      const error = new Error('ENOSPC: no space left on device (forced by test)');
+      error.code = 'ENOSPC';
+      throw error;
+    }
+    return originalWriteFile(file, ...rest);
+  };
+  t.after(() => {
+    fs.writeFile = originalWriteFile;
+  });
+
+  await assert.rejects(saveProject(dir, updated), /ENOSPC/);
+  fs.writeFile = originalWriteFile;
+  assert.equal(forcedFailureFired, true, 'the forced failure must actually have fired, or this test proves nothing');
+
+  // The failing write's own target, and anything scheduled after it, must be
+  // completely untouched -- never half-written, and never pruned before the
+  // rest of the save succeeded.
+  const background1After = await fs.readFile(path.join(dir, 'tiles', '1', 'background.json'), 'utf8');
+  const sprites1After = await fs.readFile(path.join(dir, 'tiles', '1', 'sprites.json'), 'utf8');
+  assert.equal(background1After, background1Before, 'the previous background.json must be byte-identical after a failed save');
+  assert.equal(sprites1After, sprites1Before, 'sprites.json (scheduled after the failing write) must never have been touched');
+
+  const reloaded = await loadProject(dir);
+  assert.equal(
+    reloaded.tilesets[1].background.tiles[0],
+    blankRow,
+    'loadProject must still return the previous tileset content after a failed save, not the half-applied edit'
+  );
+});
+
+test('review-fix slice A item 2(b): a write failure after a tileset shrink must not have pruned the now-stale folder', async (t) => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'forge-pruneorder-'));
+  t.after(() => fs.rm(dir, { recursive: true, force: true }));
+
+  const original = normalizeProject({
+    project: { name: 'Original' },
+    cartridge: { mapper: 1 },
+    tilesets: [
+      { id: 0, name: 'A', background: { tiles: [] }, sprites: { tiles: [] } },
+      { id: 1, name: 'B', background: { tiles: [] }, sprites: { tiles: [] } }
+    ]
+  });
+  assert.equal(original.tilesets.length, 2);
+  await saveProject(dir, original);
+  assert.ok(fsSync.existsSync(path.join(dir, 'tiles', '1')), 'tileset 1’s own folder must exist before the shrink');
+
+  // Shrinking to one tileset makes tiles/1/ stale -- under the OLD
+  // rm-everything-up-front ordering this would already be gone before any
+  // new write was even attempted, let alone confirmed.
+  const shrunk = normalizeProject({ ...original, tilesets: [original.tilesets[0]] });
+  assert.equal(shrunk.tilesets.length, 1);
+
+  // Force a write that runs AFTER every tileset write but BEFORE pruning
+  // (maps/0.json) to fail, so the save aborts before ever reaching the
+  // prune step at all.
+  const originalWriteFile = fs.writeFile;
+  let forcedFailureFired = false;
+  const mapsTarget = path.join(dir, 'maps') + path.sep;
+  fs.writeFile = async (file, ...rest) => {
+    if (!forcedFailureFired && typeof file === 'string' && file.includes(mapsTarget) && file.includes('0.json')) {
+      forcedFailureFired = true;
+      const error = new Error('ENOSPC: no space left on device (forced by test)');
+      error.code = 'ENOSPC';
+      throw error;
+    }
+    return originalWriteFile(file, ...rest);
+  };
+  t.after(() => {
+    fs.writeFile = originalWriteFile;
+  });
+
+  await assert.rejects(saveProject(dir, shrunk), /ENOSPC/);
+  fs.writeFile = originalWriteFile;
+  assert.equal(forcedFailureFired, true, 'the forced failure must actually have fired, or this test proves nothing');
+
+  assert.ok(
+    fsSync.existsSync(path.join(dir, 'tiles', '1')),
+    'a stale tileset folder must never be pruned before every write in the save has succeeded'
+  );
+});
+
+test('review-fix slice A item 2: a successful save leaves no .tmp- files behind', async (t) => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'forge-notemp-'));
+  t.after(() => fs.rm(dir, { recursive: true, force: true }));
+  await saveProject(dir, normalizeProject({}));
+
+  const findTmp = async (folder) => {
+    const found = [];
+    for (const entry of await fs.readdir(folder, { withFileTypes: true })) {
+      const full = path.join(folder, entry.name);
+      if (entry.isDirectory()) found.push(...(await findTmp(full)));
+      else if (/\.tmp-/.test(entry.name)) found.push(full);
+    }
+    return found;
+  };
+  assert.deepEqual(await findTmp(dir), [], 'no .tmp- file should remain on disk after a successful save');
+});
+
+// Round 2 review, item 8: the original version of this test held save 1's
+// first write for a FIXED 120ms, long enough in practice for an unserialized
+// save 2 to finish -- but "long enough in practice" is exactly a timing
+// dependency, and the reviewer found a queue-less mutant that a shim adding
+// its own 240ms of I/O latency made pass anyway (both saves simply ran slow
+// enough that the fixed delay no longer distinguished them). installWriteBarrier
+// below blocks save 1's own first write on a promise THIS TEST controls
+// (never released on a timer) and counts every fs.writeFile call, so the
+// assertion that matters -- "save 2 has made zero writes while save 1 is
+// still blocked" -- holds regardless of how fast or slow any individual
+// write happens to run.
+// round 4 review: `reached` resolves the moment the shim ENTERS its hold --
+// synchronously, before the `await held` that actually blocks -- so a test
+// can `await barrier.reached` for a deterministic, load-independent signal
+// that save 1 has genuinely gotten there, instead of polling a bounded turn
+// count (waitUntil) that a slow enough machine (another npm test running
+// concurrently, say) can exhaust before the real mkdir/writeFile chain ever
+// gets that far. `armed` stays, read-only, for the trivial post-hoc sanity
+// check that `reached` really does imply it (it always will: both are set
+// in the same synchronous stretch, with no await between them).
+function installWriteBarrier(isTarget) {
+  const originalWriteFile = fs.writeFile;
+  let armed = false;
+  let release;
+  const held = new Promise((resolve) => {
+    release = resolve;
+  });
+  let resolveReached;
+  const reached = new Promise((resolve) => {
+    resolveReached = resolve;
+  });
+  let writeCount = 0;
+  let writeCountWhenBlocked = null;
+  fs.writeFile = async (file, ...rest) => {
+    writeCount++;
+    if (!armed && isTarget(file, rest[0])) {
+      armed = true;
+      writeCountWhenBlocked = writeCount;
+      resolveReached();
+      await held;
+    }
+    return originalWriteFile(file, ...rest);
+  };
+  return {
+    release,
+    reached,
+    restore: () => {
+      fs.writeFile = originalWriteFile;
+    },
+    get writeCount() {
+      return writeCount;
+    },
+    get writeCountWhenBlocked() {
+      return writeCountWhenBlocked;
+    },
+    get armed() {
+      return armed;
+    }
+  };
+}
+
+/** Poll `predicate` for up to `maxTurns` event-loop turns -- for waiting on
+ *  something to become true, since how many real mkdir/write/rename calls
+ *  precede the awaited condition varies by test and by filesystem (and, per
+ *  the round 4 review, by whatever else happens to be running on the
+ *  machine at the same time). Never used to decide whether something has
+ *  NOT happened yet -- a real `reached`-style promise (installWriteBarrier,
+ *  or a test's own equivalent) is what each test below awaits for that,
+ *  deterministically; this is only for "give the OTHER, unblocked save a
+ *  chance to actually finish," where exhausting the whole cap harmlessly is
+ *  the correct outcome whenever it CAN'T finish yet (the fix is in place). */
+async function waitUntil(predicate, maxTurns = 500) {
+  for (let i = 0; i < maxTurns && !predicate(); i++) await new Promise((resolve) => setImmediate(resolve));
+  return predicate();
+}
+
+test('review-fix slice A: fs-level integration check -- two concurrent saveProject calls to one directory end up with exactly the second project on disk (the structural proof that the queue itself serializes lives in test/unit/savequeue.test.js)', async (t) => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'forge-savequeue-'));
+  t.after(() => fs.rm(dir, { recursive: true, force: true }));
+
+  const first = normalizeProject({ project: { name: 'First' } });
+  const second = normalizeProject({ project: { name: 'Second' } });
+
+  const barrier = installWriteBarrier(
+    (file, content) =>
+      typeof file === 'string' &&
+      file.includes('project.json') &&
+      typeof content === 'string' &&
+      content.includes('"First"')
+  );
+  t.after(barrier.restore);
+
+  const firstPromise = saveProject(dir, first);
+  const secondPromise = saveProject(dir, second);
+
+  // A real promise, never a bounded turn count: under load (another npm test
+  // running concurrently, say) the real mkdir/writeFile chain leading up to
+  // save 1's own held write can take longer than any fixed number of
+  // event-loop turns would allow for, which is exactly what made the
+  // sibling test below (item 6) flaky before this fix.
+  await barrier.reached;
+  assert.equal(barrier.armed, true, 'the barrier on save 1’s own first write must actually have tripped, or this test proves nothing');
+  // Meaningful only now that save 1 has genuinely reached its hold -- no
+  // pump in between to decide WHEN to look. `reached` fires the instant
+  // save 1's own first write is attempted, essentially no real time after
+  // dispatch, so this alone cannot yet prove save 2 is queued (correctly)
+  // rather than merely not-there-yet either way) -- the wait below, before
+  // releasing, is what actually gives a genuinely unqueued save 2 room to
+  // prove it.
+  assert.equal(
+    barrier.writeCount,
+    barrier.writeCountWhenBlocked,
+    'save 2 must not have performed ANY filesystem write while save 1 is still blocked on its own first write'
+  );
+
+  // Give save 2 a real chance to run to completion while save 1 is still
+  // held -- polling for save 2 to have SETTLED (reactive, not a guessed
+  // duration) means a genuinely unqueued save 2 is caught the moment it
+  // actually finishes, while a correctly queued one (which cannot even
+  // start yet) simply exhausts this poll's own generous cap harmlessly,
+  // since nothing about how long that takes affects correctness there. See
+  // the fan-out test below for the identical shape and the same reasoning.
+  let secondSettled = false;
+  secondPromise.then(
+    () => {
+      secondSettled = true;
+    },
+    () => {
+      secondSettled = true;
+    }
+  );
+  await waitUntil(() => secondSettled, 3000);
+
+  barrier.release();
+  const [firstResult, secondResult] = await Promise.all([firstPromise, secondPromise]);
+  barrier.restore();
+  assert.equal(firstResult.project.name, 'First');
+  assert.equal(secondResult.project.name, 'Second');
+
+  const reloaded = await loadProject(dir);
+  assert.equal(
+    reloaded.project.name,
+    'Second',
+    'two concurrent saves to the same directory must be serialized, not interleaved -- the directory must hold exactly the later one'
+  );
+});
+
+test('review-fix slice A round 2, item 6: the save queue key stays the same whether the target directory (reached through a symlinked ancestor) already exists or not', async (t) => {
+  if (process.platform === 'win32') return t.skip('symlinks need elevated privileges on Windows');
+  const real = await fs.mkdtemp(path.join(os.tmpdir(), 'forge-queuekey-real-'));
+  t.after(() => fs.rm(real, { recursive: true, force: true }));
+  const linkPath = path.join(os.tmpdir(), `forge-queuekey-link-${process.pid}-${Date.now()}`);
+  fsSync.symlinkSync(real, linkPath);
+  t.after(() => fs.rm(linkPath, { force: true }));
+
+  // Neither <linkPath>/new nor .../Project exists yet -- the directory is
+  // reached entirely through the symlinked ancestor.
+  const projectDir = path.join(linkPath, 'new', 'Project');
+
+  const first = normalizeProject({ project: { name: 'First' } });
+  const second = normalizeProject({ project: { name: 'Second' } });
+
+  // save 1's own mkdir calls (which create the real directory tree, through
+  // the symlink) run BEFORE this barrier trips -- project.json is the first
+  // write, after every mkdir -- so by the time save 2 is dispatched below,
+  // the target directory genuinely already exists, which is exactly the
+  // ordering the old bug needed: save 1's own queue key was computed while
+  // the directory did not exist (path.resolve fallback), and save 2's key
+  // would have been computed via realpathSync once it did (a different
+  // string, since linkPath resolves to `real`).
+  const barrier = installWriteBarrier(
+    (file, content) =>
+      typeof file === 'string' &&
+      file.includes('project.json') &&
+      typeof content === 'string' &&
+      content.includes('"First"')
+  );
+  t.after(barrier.restore);
+
+  const firstPromise = saveProject(projectDir, first);
+  // A real promise, never a bounded turn count (round 4 review: this exact
+  // test, waiting on a fixed-turn-count waitUntil, failed under load --
+  // another npm test running concurrently made the real mkdir/writeFile
+  // chain leading up to this write take longer than the poll's own cap).
+  await barrier.reached;
+  assert.equal(barrier.armed, true, 'save 1 must have reached (and blocked on) its own project.json write, or this test proves nothing');
+  assert.ok(fsSync.existsSync(projectDir), 'save 1’s own mkdir calls must have created the directory before this point');
+
+  const secondPromise = saveProject(projectDir, second);
+
+  // Meaningful only now that save 1 has genuinely reached its hold -- no
+  // pump in between to decide WHEN to look; see the sibling test above for
+  // why this alone cannot yet prove save 2 is genuinely queued.
+  assert.equal(
+    barrier.writeCount,
+    barrier.writeCountWhenBlocked,
+    'save 2 must not have performed ANY filesystem write while save 1 is still blocked -- a queue-key mismatch would let it run fully independently'
+  );
+
+  // Give save 2 a real chance to run to completion while save 1 is still
+  // held -- see the sibling test above for why this (reactive, polling for
+  // save 2 to have settled) is what actually gives a genuine queue-key
+  // mismatch room to prove itself, where the immediate check just above
+  // cannot.
+  let secondSettled = false;
+  secondPromise.then(
+    () => {
+      secondSettled = true;
+    },
+    () => {
+      secondSettled = true;
+    }
+  );
+  await waitUntil(() => secondSettled, 3000);
+
+  barrier.release();
+  const [firstResult, secondResult] = await Promise.all([firstPromise, secondPromise]);
+  barrier.restore();
+  assert.equal(firstResult.project.name, 'First');
+  assert.equal(secondResult.project.name, 'Second');
+
+  const reloaded = await loadProject(projectDir);
+  assert.equal(reloaded.project.name, 'Second', 'the directory must end up holding exactly the second, later save');
+});
+
+test('review-fix slice A item 5: corrupt JSON in an asset file makes loadProject reject, naming the file', async (t) => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'forge-corruptjson-'));
+  t.after(() => fs.rm(dir, { recursive: true, force: true }));
+  await saveProject(
+    dir,
+    normalizeProject({ tilesets: [{ id: 0, name: 'A', background: { tiles: [] }, sprites: { tiles: [] } }] })
+  );
+  const target = path.join(dir, 'tiles', '0', 'background.json');
+  await fs.writeFile(target, '[ invalid json', 'utf8');
+
+  await assert.rejects(loadProject(dir), (error) => {
+    assert.match(error.message, /background\.json/, 'the rejection must name the offending file');
+    return true;
+  });
+});
+
+test('review-fix slice A item 5: a project missing items.json still loads, fallback-on-missing preserved', async (t) => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'forge-missing-items-'));
+  t.after(() => fs.rm(dir, { recursive: true, force: true }));
+  await saveProject(dir, normalizeProject({}));
+  await fs.rm(path.join(dir, 'items.json'));
+  const reopened = await loadProject(dir);
+  assert.deepEqual(reopened.items, []);
+});
+
+test('review-fix slice A item 5: a project missing sfx.json still loads with sfx []', async (t) => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'forge-missing-sfx-'));
+  t.after(() => fs.rm(dir, { recursive: true, force: true }));
+  await saveProject(dir, normalizeProject({}));
+  await fs.rm(path.join(dir, 'sfx.json'));
+  const reopened = await loadProject(dir);
+  assert.deepEqual(reopened.sfx, []);
+});
+
+// --------------------------------------------- review-fix slice A round 2
+
+test('review-fix slice A round 2, item 1: a failure writing the SECOND code group leaves the FIRST group’s stale files intact -- pruning must not run per-group', async (t) => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'forge-codeprune-'));
+  t.after(() => fs.rm(dir, { recursive: true, force: true }));
+
+  const withOverride = normalizeProject({
+    code: { overrides: [{ name: 'player.asm', text: '; override v1\n' }], files: [] }
+  });
+  await saveProject(dir, withOverride);
+  const overridePath = path.join(dir, 'code', 'engine', 'player.asm');
+  assert.ok(fsSync.existsSync(overridePath), 'the override must actually be on disk before the next save');
+
+  // The incoming snapshot removes the override entirely (code.overrides: [])
+  // and adds a user file whose own write is forced to fail -- CODE_GROUPS
+  // processes ['overrides','engine'] before ['files','user'], so under the
+  // old per-group pruning this override would already be deleted (its group
+  // finished, keep-set empty) before the second group's failure ever
+  // surfaced.
+  const updated = normalizeProject({
+    code: { overrides: [], files: [{ name: 'mylib.asm', text: '; user file\n' }] }
+  });
+
+  const userTarget = path.join(dir, 'code', 'user') + path.sep;
+  const originalWriteFile = fs.writeFile;
+  let forcedFailureFired = false;
+  fs.writeFile = async (file, ...rest) => {
+    if (!forcedFailureFired && typeof file === 'string' && file.includes(userTarget) && file.includes('mylib.asm')) {
+      forcedFailureFired = true;
+      const error = new Error('ENOSPC: no space left on device (forced by test)');
+      error.code = 'ENOSPC';
+      throw error;
+    }
+    return originalWriteFile(file, ...rest);
+  };
+  t.after(() => {
+    fs.writeFile = originalWriteFile;
+  });
+
+  await assert.rejects(saveProject(dir, updated), /ENOSPC/);
+  fs.writeFile = originalWriteFile;
+  assert.equal(forcedFailureFired, true, 'the forced failure must actually have fired, or this test proves nothing');
+
+  assert.ok(
+    fsSync.existsSync(overridePath),
+    'the previous engine override must still be on disk -- pruning must only run after the WHOLE save succeeds, not per code group'
+  );
+});
+
+test('review-fix slice A: fs-level integration check -- a real fan-out write that fails does not leave a straggling rename to corrupt a later, successful save (the structural proof that awaitAllSettled itself waits for every settlement lives in test/unit/savequeue.test.js)', async (t) => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'forge-fanout-'));
+  t.after(() => fs.rm(dir, { recursive: true, force: true }));
+
+  // save1: two maps, one of which will be HELD; save2 (to the same dir): a
+  // different, single-map project, distinguishable by map 0's own name.
+  const save1 = normalizeProject({
+    project: { name: 'Save1' },
+    maps: [createMap(0, 'Save1-Map0'), createMap(1, 'Save1-Map1')]
+  });
+  const save2 = normalizeProject({
+    project: { name: 'Save2' },
+    maps: [createMap(0, 'Save2-Map0')]
+  });
+
+  let releaseMap0;
+  const map0Held = new Promise((resolve) => {
+    releaseMap0 = resolve;
+  });
+  // Round 4 review: resolves the moment the shim ENTERS the hold --
+  // synchronously, before the `await map0Held` that actually blocks -- the
+  // same shape installWriteBarrier's own `reached` uses, so waiting for
+  // save 1 to genuinely get here never depends on a bounded turn count
+  // (which a slow enough machine can exhaust before the real mkdir/
+  // writeFile chain leading up to this write ever finishes).
+  let resolveMap0Reached;
+  const map0Reached = new Promise((resolve) => {
+    resolveMap0Reached = resolve;
+  });
+
+  const mapsDir = path.join(dir, 'maps') + path.sep;
+  const originalWriteFile = fs.writeFile;
+  let map0Blocked = false;
+  let map1Failed = false;
+  fs.writeFile = async (file, ...rest) => {
+    if (!map0Blocked && typeof file === 'string' && file.includes(mapsDir) && file.includes('.0.json.tmp-')) {
+      map0Blocked = true;
+      resolveMap0Reached();
+      await map0Held; // blocks here until the test releases it
+      return originalWriteFile(file, ...rest);
+    }
+    if (!map1Failed && typeof file === 'string' && file.includes(mapsDir) && file.includes('.1.json.tmp-')) {
+      map1Failed = true;
+      const error = new Error('ENOSPC: no space left on device (forced by test)');
+      error.code = 'ENOSPC';
+      throw error;
+    }
+    return originalWriteFile(file, ...rest);
+  };
+  t.after(() => {
+    fs.writeFile = originalWriteFile;
+  });
+
+  const save1Promise = saveProject(dir, save1).catch((error) => ({ rejected: error }));
+  const save2Promise = saveProject(dir, save2);
+
+  // Confirmed save 1 has genuinely reached its hold -- deterministic, not a
+  // guess at how many turns that takes under whatever load happens to be on
+  // the machine right now.
+  await map0Reached;
+  assert.equal(map0Blocked, true, 'save 1 must have reached (and blocked on) its own map0 write, or this test proves nothing');
+
+  // Give save2 a real chance to run to completion while save1's map0 write
+  // is still held -- this is exactly the window Promise.all (rejecting the
+  // instant map1's write failed, without waiting for map0) used to leave
+  // open: save1's own promise settled early, so the queue advanced to save2
+  // immediately, well before map0's write was ever released. Polling for
+  // save2 to have SETTLED (rather than assuming a fixed pump is "enough")
+  // means the buggy case is caught the moment save2 actually finishes --
+  // reactive, not a guessed duration -- while the fixed case (where save2
+  // cannot even start yet, still queued behind save1) simply exhausts the
+  // poll's own generous cap harmlessly, since nothing about how long that
+  // takes affects correctness there.
+  let save2Settled = false;
+  save2Promise.then(
+    () => {
+      save2Settled = true;
+    },
+    () => {
+      save2Settled = true;
+    }
+  );
+  await waitUntil(() => save2Settled, 3000);
+
+  releaseMap0();
+  const save1Outcome = await save1Promise;
+  const save2Result = await save2Promise;
+  fs.writeFile = originalWriteFile;
+
+  assert.equal(map1Failed, true, 'the forced map1 failure must actually have fired');
+  assert.ok(save1Outcome?.rejected, 'save1 must have rejected (its own forced map1 failure)');
+  assert.equal(save2Result.project.name, 'Save2');
+
+  const reloaded = await loadProject(dir);
+  assert.equal(reloaded.project.name, 'Save2', 'the directory must end up holding save2, not a mix');
+  assert.equal(reloaded.maps.length, 1, 'save2 has one map; a straggling save1 write must not have left its own second map behind');
+  assert.equal(
+    reloaded.maps[0].name,
+    'Save2-Map0',
+    'map 0 must be save2 own content -- a straggling save1 rename landing after save2 finished would overwrite it with Save1-Map0'
+  );
+});
+
+test('review-fix slice A round 2, item 9: a write failure leaves no .tmp- file behind', async (t) => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'forge-tmpcleanup-'));
+  t.after(() => fs.rm(dir, { recursive: true, force: true }));
+  await saveProject(dir, normalizeProject({}));
+
+  const originalWriteFile = fs.writeFile;
+  let forcedFailureFired = false;
+  fs.writeFile = async (file, ...rest) => {
+    if (!forcedFailureFired && typeof file === 'string' && file.includes('palettes.json')) {
+      forcedFailureFired = true;
+      // The write must genuinely land on disk before the failure -- a mock
+      // that throws before ever calling the real writeFile never creates a
+      // tmp file at all, which would make this test pass regardless of
+      // whether atomicWriteFile cleans one up (there is nothing to clean).
+      await originalWriteFile(file, ...rest);
+      const error = new Error('ENOSPC: no space left on device (forced by test, after the write landed)');
+      error.code = 'ENOSPC';
+      throw error;
+    }
+    return originalWriteFile(file, ...rest);
+  };
+  t.after(() => {
+    fs.writeFile = originalWriteFile;
+  });
+
+  await assert.rejects(saveProject(dir, normalizeProject({ project: { name: 'Renamed' } })), /ENOSPC/);
+  fs.writeFile = originalWriteFile;
+  assert.equal(forcedFailureFired, true, 'the forced failure must actually have fired, or this test proves nothing');
+
+  const findTmp = async (folder) => {
+    const found = [];
+    for (const entry of await fs.readdir(folder, { withFileTypes: true })) {
+      const full = path.join(folder, entry.name);
+      if (entry.isDirectory()) found.push(...(await findTmp(full)));
+      else if (/\.tmp-/.test(entry.name)) found.push(full);
+    }
+    return found;
+  };
+  assert.deepEqual(await findTmp(dir), [], 'a write that throws must clean up its own tmp file rather than leaving it behind forever');
 });
 
 test('actors carry battle stats whether or not the project uses them', () => {
@@ -8246,4 +8909,90 @@ test('battleBlockIndices: a block that wraps past the sheet\'s 16-column row wid
   assert.deepEqual(battleBlockIndices({ battle: { battleTile: 250, battleW: 4, battleH: 2 } }), [
     250, 251, 252, 253, 10, 11, 12, 13
   ]);
+});
+
+// --------------------------------------------------------------- review-fix slice A round 3, item 5(d)
+
+// A structural proof, not a behavioral one: reads main/project-io.js's own
+// source with acorn's tokenizer (the same low-level tool test/lib/
+// sourcescan.js is built on, and the idiom test/unit/starters.test.js's own
+// guard tests already use) and asserts, from the token stream itself, that
+// saveProject's body really does call the queue's own run() (not some
+// bypass that happens to produce the same result today) and that
+// saveProjectNow contains no Promise.all call anywhere (the fan-outs must
+// go through awaitAllSettled instead). Comments never reach the token
+// stream at all (acorn drops them), so a comment merely mentioning
+// "Promise.all" -- this file has several -- can never trip this check.
+function tokensOf(text) {
+  return [...tokenizer(text, { ecmaVersion: 'latest', sourceType: 'module' })];
+}
+
+// Extracts the token range of a top-level `function NAME(...) { ... }`
+// declaration's own body (the balanced `{ ... }` immediately following its
+// parameter list), by brace-depth tracking over the real token stream --
+// not a line/regex guess, so reordering or reformatting the file cannot
+// fool it into grabbing the wrong span.
+function functionBodyTokens(tokens, name) {
+  let nameIndex = -1;
+  for (let i = 0; i < tokens.length; i++) {
+    if (
+      tokens[i].type.label === 'name' &&
+      tokens[i].value === name &&
+      tokens[i - 1]?.type.label === 'function'
+    ) {
+      nameIndex = i;
+      break;
+    }
+  }
+  assert.notEqual(nameIndex, -1, `function ${name} not found in the scanned source`);
+
+  let i = nameIndex;
+  while (tokens[i].type.label !== '{') i++;
+  const bodyStart = i;
+  let depth = 0;
+  for (; i < tokens.length; i++) {
+    if (tokens[i].type.label === '{') depth++;
+    else if (tokens[i].type.label === '}') {
+      depth--;
+      if (depth === 0) return tokens.slice(bodyStart, i + 1);
+    }
+  }
+  throw new Error(`unbalanced braces scanning function ${name}`);
+}
+
+function tokensCallName(tokens, name) {
+  return tokens.some((token, index) => token.type.label === 'name' && token.value === name && tokens[index + 1]?.type.label === '(');
+}
+
+function tokensContainPromiseAll(tokens) {
+  for (let i = 0; i < tokens.length; i++) {
+    if (
+      tokens[i].type.label === 'name' &&
+      tokens[i].value === 'Promise' &&
+      tokens[i + 1]?.type.label === '.' &&
+      tokens[i + 2]?.type.label === 'name' &&
+      tokens[i + 2].value === 'all'
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
+test('review-fix slice A round 3, item 5(d): saveProject’s own body calls run(), and saveProjectNow contains no Promise.all', async () => {
+  const source = await fs.readFile(path.join(ROOT, 'main', 'project-io.js'), 'utf8');
+  const tokens = tokensOf(source);
+
+  const saveProjectBody = functionBodyTokens(tokens, 'saveProject');
+  assert.ok(
+    tokensCallName(saveProjectBody, 'run'),
+    'saveProject’s own body must call run() -- the queue (main/savequeue.js), not a bypass around it'
+  );
+
+  const saveProjectNowBody = functionBodyTokens(tokens, 'saveProjectNow');
+  assert.equal(
+    tokensContainPromiseAll(saveProjectNowBody),
+    false,
+    'saveProjectNow must contain no Promise.all call anywhere -- every fan-out must go through awaitAllSettled instead'
+  );
 });

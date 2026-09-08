@@ -164,6 +164,40 @@ test('4: createProjectAt resolves starterId before touching the filesystem, refu
   assert.equal(defaultProject.project.gameType, 'action');
 });
 
+// Review-fix slice A, item 6: createProjectAt used to refuse a non-empty
+// destination only when it was NOT already a project -- so pointing New
+// Project at a folder that already held a project silently overwrote it.
+// assertEmptyProjectDestination (main/project-io.js) now refuses ANY
+// non-empty destination, with two distinct messages.
+test('4b: createProjectAt refuses a destination that already contains a project, leaving its data untouched', async (t) => {
+  const base = await fs.mkdtemp(path.join(os.tmpdir(), 'forge-starters-existing-'));
+  t.after(() => fs.rm(base, { recursive: true, force: true }));
+
+  const dir = path.join(base, 'existing');
+  await createProjectAt(dir, 'Original', 'blank-action');
+  const originalTiles = await fs.readFile(path.join(dir, 'tiles', 'tilesets.json'), 'utf8');
+
+  await assert.rejects(createProjectAt(dir, 'Overwriter', 'blank-rpg'), /already contains a project/);
+
+  const tilesAfter = await fs.readFile(path.join(dir, 'tiles', 'tilesets.json'), 'utf8');
+  assert.equal(tilesAfter, originalTiles, 'the original project’s tile data must be untouched after a refused overwrite');
+  const reopened = await loadProject(dir);
+  assert.equal(reopened.project.gameType, 'action', 'the original project must still be the one on disk, not the rejected overwrite');
+});
+
+test('4c: createProjectAt still refuses a destination holding unrelated (non-project) files, with a distinct message from 4b', async (t) => {
+  const base = await fs.mkdtemp(path.join(os.tmpdir(), 'forge-starters-junk-'));
+  t.after(() => fs.rm(base, { recursive: true, force: true }));
+
+  const dir = path.join(base, 'junk');
+  await fs.mkdir(dir, { recursive: true });
+  await fs.writeFile(path.join(dir, 'notes.txt'), 'unrelated file');
+
+  await assert.rejects(createProjectAt(dir, 'X', 'blank-action'), /already contains other files/);
+  const stillThere = await fs.readFile(path.join(dir, 'notes.txt'), 'utf8');
+  assert.equal(stillThere, 'unrelated file');
+});
+
 // --- 6: every starter assembles into a real ROM ----------------------------
 
 // Tile bytes: main/build/generate.js's own per-tileset CHR emission

@@ -363,7 +363,12 @@ async function renderWelcome() {
             recent.value.map((entry) =>
               el(
                 'button.recent-item',
-                { onclick: () => loadProject(entry.dir) },
+                {
+                  onclick: async () => {
+                    if (!(await ensureProjectCanBeReplaced())) return;
+                    loadProject(entry.dir);
+                  }
+                },
                 el('span', null, entry.name),
                 el('span.recent-path', null, entry.dir)
               )
@@ -408,7 +413,41 @@ function chooseStarter() {
   });
 }
 
+/**
+ * The one guard for every way the store can be replaced wholesale --
+ * New Project, Open Project, and picking a recent project -- called at the
+ * top of each, before any picker. Flushes an uncommitted edit first (the
+ * same reason saveProject below does), then, if the project is genuinely
+ * dirty, asks with the same three-way shape main.js's own DISCARD table uses
+ * for the window close/reload guard (main/main.js): Save, Discard, Cancel.
+ * Resolves true when it is safe to go ahead and replace the project -- a
+ * successful save or an explicit discard -- and false for Cancel, Escape, a
+ * backdrop click, or a save that itself failed (a failed save must not let
+ * the caller proceed, since the edits it was protecting are still unwritten).
+ */
+async function ensureProjectCanBeReplaced() {
+  mounted?.flushPendingEdits?.();
+  if (!store.dirty) return true;
+  const name = store.project?.project?.name;
+  return Boolean(
+    await showModal({
+      title: 'Unsaved changes',
+      body: el(
+        'p.hint',
+        null,
+        `Save ${name || 'this project'} before continuing? The project has changes that have not been written to disk.`
+      ),
+      actions: [
+        { label: 'Save and continue', primary: true, onClick: () => saveProject() },
+        { label: 'Continue without saving', value: true },
+        { label: 'Cancel', value: false }
+      ]
+    })
+  );
+}
+
 async function newProject() {
+  if (!(await ensureProjectCanBeReplaced())) return;
   // Asked before the folder picker, because the answer decides the cartridge as
   // well as the engine: an RPG needs a mapper that can switch program banks, and
   // changing your mind afterwards means rebuilding the maps around a battle
@@ -425,6 +464,7 @@ async function newProject() {
 }
 
 async function openProject() {
+  if (!(await ensureProjectCanBeReplaced())) return;
   const picked = await window.forge.project.pickOpen();
   if (!picked.ok) return toast(picked.error, 'error');
   if (!picked.value) return;
@@ -443,17 +483,72 @@ async function saveProject() {
   // waits for typing to pause — writes it into the project first, so Ctrl+S
   // never saves a version older than what is on screen.
   mounted?.flushPendingEdits?.();
-  const result = await window.forge.project.save(store.dir, store.project);
+  // Captured after the flush and before the IPC call, so a save that lands
+  // after a newer edit (or after the project itself changed underneath it --
+  // a close/open, or a Save As) does not mark that newer state clean. See
+  // Store#markSaved.
+  const generation = store.generation;
+  const dir = store.dir;
+  const result = await window.forge.project.save(dir, store.project);
   if (!result.ok) {
     toast(result.error, 'error');
     return false;
   }
-  store.markSaved();
-  app.setStatus('Project saved', 'ready');
-  return true;
+  const applied = store.markSaved({ generation, dir });
+  if (applied) app.setStatus('Project saved', 'ready');
+  return applied;
 }
 
 app.saveProject = saveProject;
+
+/**
+ * Save As (ROADMAP item 15): write the current in-memory project to a
+ * brand-new location and move the open project there, leaving the original
+ * folder's own files untouched. Refuses a non-empty destination the same way
+ * New Project does (project:saveAs shares assertEmptyProjectDestination with
+ * createProjectAt, main/project-io.js) -- the check runs main-side, so a
+ * failure here always means the original folder was never touched.
+ *
+ * session and generation are captured before the write IPC, exactly as
+ * saveProject captures generation above, and for the identical reason: the
+ * IPC round trip takes real time, and more than one thing can happen while
+ * it is in flight. An edit can land on the SAME project -- relocateIfSession
+ * is told whether generation still matches, so it SETS dirty rather than
+ * silently calling an older-than-memory copy current. Or a different project
+ * session can take over entirely -- another project opening, or even the
+ * SAME directory being closed and reopened (dir would read identical either
+ * way, which is exactly why this checks session rather than dir) --
+ * relocating that onto this Save As call's own destination would be wrong
+ * regardless of generation, so relocateIfSession refuses outright and
+ * touches nothing when session no longer matches; the copy was still
+ * written successfully, so the toast says where.
+ */
+async function saveProjectAs() {
+  if (!store.isOpen) return false;
+  mounted?.flushPendingEdits?.();
+  const picked = await window.forge.project.pickSaveAs();
+  if (!picked.ok) {
+    toast(picked.error, 'error');
+    return false;
+  }
+  if (!picked.value) return false;
+  const session = store.session;
+  const generation = store.generation;
+  const result = await window.forge.project.saveAs(picked.value, store.project);
+  if (!result.ok) {
+    toast(result.error, 'error');
+    return false;
+  }
+  if (!store.relocateIfSession(picked.value, { session, generation })) {
+    toast(`A copy was saved to ${picked.value}`, 'success');
+    return true;
+  }
+  app.setStatus('Project saved', 'ready');
+  toast('Project saved to new location', 'success');
+  return true;
+}
+
+app.saveProjectAs = saveProjectAs;
 
 async function buildAndPlay() {
   if (!store.isOpen) return;
@@ -537,8 +632,9 @@ async function runAction(action) {
     case 'project:open':
       return openProject();
     case 'project:save':
-    case 'project:saveAs':
       return saveProject();
+    case 'project:saveAs':
+      return saveProjectAs();
     case 'edit:undo':
       if (undoInFocusedEditor(false)) return;
       // Uncommitted typing has to become an undo entry before it can be undone.

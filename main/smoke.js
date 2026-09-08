@@ -9185,6 +9185,24 @@ export async function runSmoke(window) {
     return { ok: true, value: null };
   });
 
+  // Review-fix slice A, item 3: ensureProjectCanBeReplaced (renderer/app.js)
+  // is meant to ask BEFORE Open Project's own native picker ever shows, so
+  // most of what this scenario needs to drive is the guard modal itself --
+  // but its Discard path really does go on to open a second project, which
+  // needs a real answer from this channel. Same one-shot-queue shape as
+  // files:readBinary just above, overridden directly on the real IPC
+  // handler rather than adding a production-code seam for it.
+  let nextOpenProjectDir = null;
+  ipcMain.removeHandler('dialog:openProject');
+  ipcMain.handle('dialog:openProject', async () => {
+    if (nextOpenProjectDir) {
+      const value = nextOpenProjectDir;
+      nextOpenProjectDir = null;
+      return { ok: true, value };
+    }
+    return { ok: true, value: null };
+  });
+
   const scratch = await fs.mkdtemp(path.join(os.tmpdir(), 'forge-smoke-'));
   const dir = path.join(scratch, 'Smoke.forge');
   // The scenario edits and saves the sample, so work on a copy: a test must
@@ -9564,6 +9582,130 @@ export async function runSmoke(window) {
     } else {
       console.log('  ok  unsaved changes reach the close handler — edit → dirty, save → clean');
     }
+
+    // Review-fix slice A, item 3: ensureProjectCanBeReplaced. Driven through
+    // File > Open Project (menu:action project:open), not a recent-project
+    // click -- the recent list only ever renders on the welcome screen, which
+    // this scenario's own project is never on with unsaved work at risk, so
+    // there is no way to exercise that call site's own dirty guard for real;
+    // it shares the identical ensureProjectCanBeReplaced() call New Project
+    // and Open Project already use, so covering one of the three covers the
+    // function both others call.
+    const readModalButtons = () =>
+      window.webContents.executeJavaScript(`(() => {
+        const host = document.querySelector('#modalHost');
+        if (!host || host.hidden) return null;
+        return [...host.querySelectorAll('.modal-foot button.btn')].map((b) => b.textContent.trim());
+      })()`);
+    const waitForUnsavedModal = async () => {
+      for (let waited = 0; waited < 4000; waited += 25) {
+        const buttons = await readModalButtons();
+        if (buttons) return buttons;
+        await new Promise((resolve) => setTimeout(resolve, 25));
+      }
+      throw new Error('timed out waiting for the unsaved-changes guard modal');
+    };
+    const clickModalButton = async (label) => {
+      const clicked = await window.webContents.executeJavaScript(`(() => {
+        const host = document.querySelector('#modalHost');
+        const btn = host && [...host.querySelectorAll('.modal-foot button.btn')].find((b) => b.textContent.trim() === ${JSON.stringify(label)});
+        if (!btn) return false;
+        btn.click();
+        return true;
+      })()`);
+      if (!clicked) throw new Error(`unsaved-changes guard modal has no "${label}" button`);
+    };
+    const readAppState = async () => ({
+      dir: await window.webContents.executeJavaScript('window.__app.store.dir'),
+      dirty: await window.webContents.executeJavaScript('window.__app.store.dirty')
+    });
+
+    const beforeGuard = await readAppState();
+    await window.webContents.executeJavaScript(
+      `window.__app.store.commit('smoke: dirty before open guard', (p) => { p.project.startX = 97; }); true`
+    );
+    window.webContents.send('menu:action', 'project:open');
+    const guardButtons = await waitForUnsavedModal();
+    const expectedGuardButtons = ['Save and continue', 'Continue without saving', 'Cancel'];
+    if (JSON.stringify(guardButtons) !== JSON.stringify(expectedGuardButtons)) {
+      problems.push(`unsaved-changes guard modal buttons were ${JSON.stringify(guardButtons)}, expected ${JSON.stringify(expectedGuardButtons)}`);
+    }
+    await clickModalButton('Cancel');
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    const afterGuardCancel = await readAppState();
+    if (afterGuardCancel.dir !== beforeGuard.dir || afterGuardCancel.dirty !== true) {
+      problems.push(
+        `Cancel on the unsaved-changes guard must leave the same project open and still dirty; saw ${JSON.stringify(afterGuardCancel)}`
+      );
+    } else {
+      console.log('  ok  ensureProjectCanBeReplaced: Cancel (via File > Open Project) keeps the same project open and dirty');
+    }
+
+    // Discard path: the project is still dirty from the edit above (Cancel
+    // touched nothing), so this reuses that same dirty state rather than
+    // re-editing. nextOpenProjectDir answers the native picker Discard goes
+    // on to trigger with an already-created, real project folder.
+    nextOpenProjectDir = blankActionDir;
+    window.webContents.send('menu:action', 'project:open');
+    await waitForUnsavedModal();
+    await clickModalButton('Continue without saving');
+    for (let waited = 0; waited < 4000; waited += 25) {
+      const current = await readAppState();
+      if (current.dir === blankActionDir) break;
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+    const afterDiscard = await readAppState();
+    if (afterDiscard.dir !== blankActionDir || afterDiscard.dirty !== false) {
+      problems.push(
+        `Discard on the unsaved-changes guard must open the picked project and leave it clean; saw ${JSON.stringify(afterDiscard)}`
+      );
+    } else {
+      console.log('  ok  ensureProjectCanBeReplaced: Discard (via File > Open Project) opens the other project and clears dirty');
+    }
+
+    // Restore the scenario's own project for every step still to come --
+    // its on-disk content is exactly what it was before this guard test
+    // started (the save just above, at "wentClean", already wrote it).
+    await window.webContents.executeJavaScript(`(async () => {
+      const result = await window.forge.project.open(${JSON.stringify(dir)});
+      if (!result.ok) throw new Error('reopen after unsaved-changes guard test: ' + result.error);
+      window.__app.store.open(result.value.dir, result.value.project);
+      return true;
+    })()`);
+
+    // ROADMAP item 15: Save As. project:saveAs used to fall through to plain
+    // Save (renderer/app.js); now it writes to a brand-new folder, moves
+    // store.dir there, and must never touch the original folder's own files.
+    const saveAsDir = path.join(scratch, 'SaveAsTarget.forge');
+    const originalProjectJsonBefore = await fs.readFile(path.join(dir, 'project.json'), 'utf8');
+    setSmokeNewProjectPath(saveAsDir);
+    window.webContents.send('menu:action', 'project:saveAs');
+    for (let waited = 0; waited < 4000; waited += 25) {
+      const current = await window.webContents.executeJavaScript('window.__app.store.dir');
+      if (current === saveAsDir) break;
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+    const afterSaveAsDir = await window.webContents.executeJavaScript('window.__app.store.dir');
+    if (afterSaveAsDir !== saveAsDir) {
+      problems.push(`Save As did not move store.dir to the new folder -- saw ${afterSaveAsDir}`);
+    } else {
+      const newProjectJsonText = await fs.readFile(path.join(saveAsDir, 'project.json'), 'utf8');
+      const newProjectName = JSON.parse(newProjectJsonText).project?.name;
+      const originalProjectJsonAfter = await fs.readFile(path.join(dir, 'project.json'), 'utf8');
+      if (originalProjectJsonAfter !== originalProjectJsonBefore) {
+        problems.push('Save As modified the ORIGINAL project folder’s own project.json');
+      } else {
+        console.log(`  ok  Save As: new folder holds project.json (name "${newProjectName}"), original folder unchanged, store moved`);
+      }
+    }
+
+    // Restore the scenario's own project again for every step still to come.
+    await window.webContents.executeJavaScript(`(async () => {
+      const result = await window.forge.project.open(${JSON.stringify(dir)});
+      if (!result.ok) throw new Error('reopen after Save As test: ' + result.error);
+      window.__app.store.open(result.value.dir, result.value.project);
+      return true;
+    })()`);
 
     // Typing in the Code Forge does not reach the store until it pauses, and the
     // X does not wait for the pause. So main has to hear about a buffer the

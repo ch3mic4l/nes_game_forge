@@ -13,11 +13,13 @@ contextBridge.exposeInMainWorld('forge', {
     create: (options) => invoke('project:create', options),
     open: (dir) => invoke('project:open', dir),
     save: (dir, data) => invoke('project:save', dir, data),
+    saveAs: (dir, data) => invoke('project:saveAs', { dir, data }),
     recent: () => invoke('project:recent'),
     // Main asks nothing at close time: it acts on the last state pushed here.
     reportDirty: (dirty, name) => invoke('project:dirty', { dirty, name }),
     pickNew: () => invoke('dialog:newProject'),
-    pickOpen: () => invoke('dialog:openProject')
+    pickOpen: () => invoke('dialog:openProject'),
+    pickSaveAs: () => invoke('dialog:saveProjectAs')
   },
   build: {
     run: (dir, data) => invoke('build:run', dir, data),
