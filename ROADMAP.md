@@ -1041,7 +1041,7 @@ had two real bugs, found
 only by implementing it, both fixed in the code and in the design document's own §15 changelog. Zero
 engine bytes: `sample/` builds to an identical ROM hash before and after.
 
-## 8. NES-constrained asset assistance
+## 8. NES-constrained asset assistance — **done**
 
 The blank-page problem is real, and RPG Maker solves it mostly by shipping content.
 
@@ -1069,13 +1069,19 @@ The blank-page problem is real, and RPG Maker solves it mostly by shipping conte
   CC0-1.0 (top-level `LICENSE-ASSETS`, plus MIT `LICENSE` for the project itself); each imports
   through a "📚 Library…" button in the Tile, Sprite and Sound Forges. See
   `docs/design-starter-library.md`.
-- **Starter projects** — action, dungeon crawl, RPG — beyond today's demo fixtures
+- ~~**Starter projects** — action, dungeon crawl, RPG — beyond today's demo fixtures~~ — **done**:
+  `shared/starters/`'s five-entry catalog — Blank action, Blank RPG, Overworld adventure, Dungeon
+  crawl and Turn-based RPG. The three content starters are each a pure `build(name)` function
+  importing `shared/library/` content through `planLibraryImport` plus small hand-authored art, maps
+  and events; the two blanks are `createProject` pinned byte-identical. All five wired through
+  `project:create`'s `starterId` and the renderer's own picker, replacing `chooseGameType()`. See
+  `docs/design-starter-projects.md`.
 
-Anything shipped here needs its license recorded in the repo, and the five existing fixtures stay
+Anything shipped here needs its license recorded in the repo, and the six existing fixtures stay
 exactly as they are: tests are written against them and they may not be mutated. Only two of them
-are demos worth starting from — `sample/` and `sample-rpg/`; `sample-mmc1/`, `sample-mmc3/` and
-`sample-u512/` exist to cover a board rather than to show a game (CLAUDE.md's own "five fixtures,
-deliberately" passage), and are not what this item means.
+are demos worth starting from — `sample/` and `sample-rpg/`; `sample-mmc1/`, `sample-mmc3/`,
+`sample-u512/` and `sample-rpg-mmc1/` exist to cover a board rather than to show a game (CLAUDE.md's
+own "six fixtures, deliberately" passage), and are not what this item means.
 
 ## 9. Split-pane editing in the Code Forge
 

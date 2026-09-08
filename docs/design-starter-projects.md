@@ -1,19 +1,17 @@
-# Design: starter projects (ROADMAP item 8, fifth sub-bullet) — v5 (final)
+# Design: starter projects (ROADMAP item 8, fifth sub-bullet) — v6 (as shipped)
 
-**v5 closes a GO WITH FIXES review: two medium findings, both in test 17 itself, plus one small
-addition.** Test 17 (§11) named the wrong field path for a placed entity's own position —
-`entity.props.x`/`y`, which do not exist, rather than the real, top-level `entity.x`/`entity.y`
-(`shared/project.js:4499-4502`; `entity.props` holds only `toScreen`/`toX`/`toY`) — a mistake that
-would have made every distance the test computes `NaN` and every comparison against it silently come
-back `false`, passing for the worst possible reason; fixed, with an added finite-number assertion so
-the same class of mistake fails loudly next time instead of passing quietly. Test 17's own passability
-check also looked at only the single metatile under an arrival point, when the player's own collision
-body is offset from it (`BODY_L/R/T/B`, `engine/constants.asm:1139-1144`) and can overlap a different,
-adjacent metatile — strengthened to check every metatile the whole body rectangle overlaps, confirmed
-this round to change no verdict for any coordinate this design currently lists. A third, smaller
-addition states what already happens, with no starter change needed, when a player reaches the edge of
-one of the open, no-border screens (Greenwood, the Village, the Field): the engine's own per-screen
-neighbour table already stops them there. See the changelog for the full list.
+**v6 records every deviation the four implementation phases (`10f656c`, `aeed4d9`, `b3be691`,
+`52c01a3`) accepted from v5, re-derived from the shipped code rather than copied from any commit
+message, and corrects the body text in place wherever a deviation contradicts it** — most
+consequentially, three probed-tile-index corrections (the Overworld's Villager, the RPG's Hero
+battle portrait, and a new RPG "Villager" NPC frame the design never authored at all), a real bug in
+the RPG recruit's own `hideSwitch` idiom found and fixed during phase 4's review, and two `§11` test
+write-ups (test 10's catches-list, test 17's own negative control) that no longer matched what the
+shipped tests actually check. Nothing here reopens a mechanism decision — every fix is either a
+probed number the design guessed at before the code existed, or a design gap the implementer closed
+the same way an established idiom elsewhere in this document already had. See the changelog for the
+full, numbered list; v5's own closing summary (two `NaN`-safety fixes in test 17, plus the
+no-wall-needed note for open screens) is preserved there too, under its own heading.
 
 ## §0. What I read for this design
 
@@ -395,6 +393,16 @@ moment the project opens, before any build ever runs) and into `project.sprites.
 canonical source `generateAssets` actually stamps from at build time). The remaining six frames stay
 `null`, falling back to the build-time placeholder exactly as they would for a hand-authored project
 that only ever drew two of its eight frames — a legal, unremarkable partial-coverage case, not a gap.
+**As shipped, the `null` has to be explicit, not merely absent (phase 2, a product bug found in
+review):** a fresh tileset's sprite table starts as 256 `BLANK_TILE` *strings*, not `null`s, so
+`playerTiles.slice(0, PLAYER_TILES)` off that table would hand back 24 blank strings for the
+unauthored frames rather than 24 `null`s — `generateAssets` substitutes its own build-time
+placeholder only when `canonical === null` (`const replacement = canonical !== null ? canonical :
+placeholderFor(i);`, `main/build/generate.js`), using any non-`null` entry verbatim otherwise, so a
+blank string reads as "authored blank" and is used as-is, compiling to zero CHR bytes and leaving
+the player invisible facing anything but down. `writePlayerFigure`
+(`shared/starters/figures.js`) therefore builds the 32-entry array explicitly — the eight authored
+tiles followed by `Array(PLAYER_TILES - 8).fill(null)` — rather than slicing it off the tileset.
 
 **Why this needs no new reservation**: `PLAYER_TILES`'s own 32 slots are already reserved on every
 tileset regardless of content (`spriteReservedRanges`, `{start: 0, end: PLAYER_TILES, label: 'the
@@ -429,15 +437,13 @@ gameType)` both take `gameType` today, defaulted to `'action'`. **`gameType` is 
 current default `gameType = 'action'` already matches `createProject`'s own default second argument).
 
 ```js
-// main/project-io.js
+// main/project-io.js -- as shipped (phase 1): starterId is resolved BEFORE fs.mkdir runs, a
+// deliberate tightening of this snippet's own original order (below), which mkdir'd first --
+// an unknown id must leave the destination directory untouched entirely, not even created.
 export async function createProjectAt(dir, name, starterId = 'blank-action') {
-  await fs.mkdir(dir, { recursive: true });
-  const entries = await fs.readdir(dir);
-  if (entries.length && !(await isProjectDir(dir))) {
-    throw new Error('That folder already contains other files. Choose an empty folder.');
-  }
   const starter = STARTERS.find((entry) => entry.id === starterId);
   if (!starter) throw new Error(`Unknown starter "${starterId}".`);
+  await assertEmptyProjectDestination(dir); // fs.mkdir + the existing non-empty-folder refusal
   return saveProject(dir, starter.build(name));
 }
 ```
@@ -489,8 +495,13 @@ resulting item literal directly.
 Every starter's `build(name)` output must pass `validateProject` with **zero errors**. A warning
 would not fail this bar on its own, but none of the three content starters carries one today — §6.2
 explains why the dungeon starter's own unbound-pickup case, which would have, no longer applies — so
-test 7 (§11) holds every starter to zero warnings as well, as an observed fact about this design's own
-content rather than a looser rule this design needed to lean on. Every starter must also assemble
+test 7 (§11) holds every *content* starter to zero warnings as well, as an observed fact about this
+design's own content rather than a looser rule this design needed to lean on. **As shipped (phase 2),
+this zero-warnings bar excludes `blank-rpg`**: it is pinned byte-for-byte deep-equal to `createProject`
+(§4), which carries a real, correctly-raised "No actor deals damage, so no battle can ever start."
+warning for every fresh RPG project regardless of starter — test 7 therefore covers content starters
+only, and test 1's own byte-equality check is what already holds the two blank entries to their own,
+different bar. Every starter must also assemble
 headlessly through `buildProject`/`inspectRom`
 (`main/build/pipeline.js:16,92`) without an `nesasm` failure. This is the same bar
 `design-starter-library.md §7.5`'s attribution rule holds a *library import* to, applied here to a
@@ -710,6 +721,17 @@ own simple, distinct colours. One animation (`{ loop: true, frames: [{ metasprit
 30 }] }`) wraps it for `anims.idle`. Both NPCs below use this same actor art — recognizably human,
 recognizably not the Bat, and distinct from the player's own on-screen tint.
 
+**As shipped (phase 2), `firstTile: 0` is not legal, and the Villager gets its own tile copy instead —
+this is round-1 finding 4's own residue, not a mechanism this design got to keep.** Pointing a
+metasprite at any tile inside the player's own reserved `$00-$1F` — including the exact `$00-$03`
+this section recommends — trips `validateProject`'s reserved-tile-reference warning (ROADMAP item 8's
+own "validate-as-you-draw" check, CLAUDE.md), which then fails test 7's zero-warnings bar. The shipped
+fix is a second, identical copy of the idle art (`HERO_IDLE_TILES`, `shared/starters/figures.js`)
+written into its own free four-tile run instead — a real, if small, tile cost this section did not
+budget for. Probed against the shipped build: that run is **`$28-$2B` (40-43)**, immediately after
+Bat (`$20-$23`) and Coin (`$24-$27`) — which is the index this section's own next paragraph names for
+the Doorway; see that paragraph's own "as shipped" correction for where the Doorway actually lands.
+
 **A hand-authored Doorway metasprite, shared by every door in all three starters — not the Villager's
 own animation either (round-3 finding 5).** v3 gave the Overworld's own door the Villager's animation
 (a door that looks like a person to talk to) and the dungeon's doors the Key's animation (a door that
@@ -719,8 +741,10 @@ reads as a portal; neither a person nor a key plausibly reads as a doorway. **Fi
 hand-authored Doorway metasprite — a plain dark archway, four tiles, no new pixel content beyond
 that** — authored once, under `shared/starters/`, and used by every `Door` actor in every starter.
 Each starter writes the identical four tiles into its own tileset 0 at the first free sprite index
-after that starter's own library imports (re-probed this round, not assumed): **Overworld: `$28-$2B`
-(40-43)**, after Bat (`$20-$23`) and Coin (`$24-$27`); **Dungeon: `$30-$33` (48-51)**, after Skeleton,
+after that starter's own library imports (re-probed this round, not assumed): ~~**Overworld:
+`$28-$2B` (40-43)**, after Bat (`$20-$23`) and Coin (`$24-$27`)~~ — **as shipped, `$2C-$2F` (44-47)**:
+the Villager's own now-real tile cost (above) occupies `$28-$2B` first, pushing the Doorway one run
+later than this section originally planned; **Dungeon: `$30-$33` (48-51)**, after Skeleton,
 Bat, Key and Potion (`$20-$2F`, four four-tile imports); **RPG: `$2C-$2F` (44-47)**, after Slime, Bat
 and Potion (`$20-$2B`) — none collides with another import (each starter's own imports already end
 exactly where the Doorway begins) or with the player's own reserved `$00-$1F` (`spriteReservedRanges`
@@ -750,8 +774,11 @@ against, not only doors)**:
 - **"Greenwood"** (1 screen) — the start map and screen. Grass Plains/Dirt Path terrain forms a
   clearing with a path leading to a door. Entities: the imported Bat (already `patroller`, contact
   damage 1, its own `damage` field per the library entry). A trader NPC (`behavior: 'npc'`, the
-  Villager metasprite) with `trigger: 'interact'` and an event: a `choice` ("Which way did the old
-  bridge go?" / two answers, each ending in a `say`) — this starter's own "a choice." A `Door` actor
+  Villager metasprite) with `trigger: 'interact'` and an event: ~~a `choice` ("Which way did the old
+  bridge go?" / two answers, each ending in a `say`)~~ — **as shipped, `choice` has no prompt field of
+  its own** (`EVENT_COMMANDS`, `shared/project.js`), so the question is a plain `say` ("Which way did
+  the old bridge go?") immediately followed by the `choice` itself, its two answers each ending in
+  their own `say` — this starter's own "a choice." A `Door` actor
   (`behavior: 'door'`, the Doorway metasprite above) targeting the Cottage, `props.trigger: 'touch'`
   (round-2 finding 1 — every door placement in this design names an explicit landing point, since
   `normalizeEntity`'s own default, `112,112`, is not guaranteed safe in every room and this design no
@@ -866,6 +893,16 @@ numbers:
 | Potion | Boss Chamber | `128, 64` | — | — |
 | Door (Dungeon Entrance) | Boss Chamber | `192, 64` | Dungeon Entrance | `192, 176` (row 11, col 12 — back area, clear of the Boss Chamber door's own resting spot) |
 | key mechanism | Key Hall | `128, 112` | — | — |
+| Bat | Key Hall | `16, 48` (as shipped — this design's own import list names the Bat but its placement table never placed it; see the note below the table) | — | — |
+
+**As shipped (phase 3), the Bat gets a placement this section never gave it.** §9.2's own import list
+(below) names the Bat, but no version of this table before v6 placed it anywhere — a gap, not a
+deliberate omission. The shipped fix places one Bat patrolling Key Hall's leftmost interior column,
+`(16, 48)`: a `patroller` always spawns facing down and only ever steps along its current axis,
+reversing at a wall, so it patrols straight up and down column x=16 for as long as the screen is
+loaded — 16 pixels clear, on the x axis alone, of the key mechanism's own touch line (`x = 32..128,
+y = 112`, the walk smoke step 16c drives), which is already `>= TOUCH_RANGE` (12) regardless of the
+Bat's own y at any given frame.
 
 The Entrance's own player start is `(32, 48)` (row 3, col 2, the front area). Every `Door` placement
 in every screen above uses **the shared Doorway metasprite (§9.1)** — a plain dark archway, not the
@@ -994,7 +1031,8 @@ Entrance's own back area, above), all three `folder: 'Dungeon'` —
 `folder`), so this is a real, novel exercise of item 7's own grouping field, on three genuinely
 separate 1×1 maps linked only by door actors rather than one larger grid a player could otherwise
 cross by walking off an edge — the literal "interior single-screen rooms linked by doors" decision 2
-names. "Title" (1 screen, `folder: null`).
+names. "Title" (1 screen, `folder: null`) — **as shipped, plain Stone Floor Plain, no border and no
+entities**, the simplest legal screen this design needed nothing more elaborate for.
 
 **What the player can do in the first minute**: spawn in the Dungeon Entrance's front area, take the
 unlocked door into Key Hall, where the key mechanism can be touched to receive the Key, hear the wall
@@ -1067,12 +1105,40 @@ from `playerTiles` on every build). Hero's own party record gets `metaspriteId: 
 (below) **reuses the identical metaspriteId** — the same choice `tools/make-rpg-sample.js:281,284`
 already makes for its own Rian and Iris, both `metaspriteId: 0`; nothing requires a party member's
 battle portrait to be unique, and authoring a second figure just for Ally would be new art this
-starter does not need. This differs slightly from `tools/make-rpg-sample.js`'s own idiom, which
+starter does not need. ~~This differs slightly from `tools/make-rpg-sample.js`'s own idiom, which
 additionally duplicates its HERO art a second time at sprite index `0x20` for the identical purpose —
 unnecessary here, since referencing tiles `0-3` directly works precisely because `generateAssets`
 already guarantees their content in every tileset, and a metasprite is free to reference the player's
 own reserved range (`design-starter-library.md §5.7`: "never the player — the player's own range is
-deliberately never refused as artwork").
+deliberately never refused as artwork").~~
+
+**As shipped (phase 4), `firstTile: 0` on the Hero metasprite is not legal either, for the identical
+reason the Overworld's Villager (§9.1) is not** — this section's own "unnecessary here" claim is the
+probe this design never ran, and the probe disproves it. `metasprite(newId, 'Hero', 0, 0)` names a
+tile inside the player's own reserved `$00-$1F`, tripping the same `validateProject` reserved-tile
+warning §9.1 already hit, which fails test 7. The fix is the identical one: a second, identical copy
+of `HERO_IDLE_TILES` written into its own free four-tile run — written and mirrored into tileset 1
+*before* the tileset-1 copy above (§5.7's "never the player" carve-out is real, but it covers only the
+player's own permanent `$00-$1F`, not a second copy elsewhere), so this new index reaches the Battle
+tileset the same way every other tile does. Probed against the shipped build: that run is **`$34-$37`
+(52-55)**, after Slime/Bat (`$20-$27`), Potion (`$28-$2B`), the Doorway (`$2C-$2F`) and the shared NPC
+frame below (`$30-$33`).
+
+**As shipped (phase 4), the three Village NPCs need art this section never authored: one
+procedurally-generated "Villager" frame, shared by the Saver, the Innkeeper and Ally.** §9.3 as
+written names the Saver's and Innkeeper's dialogue and mechanics in full (below) but never states what
+`anims.idle` any of the three points at — a real gap, not a deliberate choice. There is no player
+*actor* with its own `anims.idle` to reuse the way the dungeon starter's key mechanism reuses the
+imported Key's own animation (§9.2), since the field player is drawn directly from
+`project.sprites.playerTiles`, never through an actor record — so this is the "otherwise" branch: one
+small shared frame, authored once (`shared/starters/rpg.js`'s own `npcRows()`, a small procedurally
+generated hooded figure — a pointed hood tip, a rounded head/shoulders band with a face highlight,
+then a straight-sided robe — distinct from both `HERO` and the Doorway), on **sprite palette 0** —
+never overwritten by an import (`reservedPaletteSlots`, `shared/project.js`, reserves that slot for
+the player), so its
+colours are stable and distinct from Slime/Bat's own "Creature" palette (slot 1) and Potion's "Item"
+palette (slot 2). Written before the tileset-1 copy, so it mirrors there too, at the first free run
+after the Doorway. Probed against the shipped build: **`$30-$33` (48-51)**.
 
 **Spells**: one, hand-authored (the library has no `spell` kind at all — decision 4 names this
 explicitly as something the library lacks): `{ ...createSpell(0, 'Ember'), mpCost: 3, kind: 'damage',
@@ -1088,6 +1154,28 @@ metaspriteId: <the same id>, spells: [] }`, recruited on the field via a `join` 
 the Village, `hideSwitch` set to the same switch the join event sets — the identical `hideSwitch`
 idiom §9.2's own key mechanism now also uses, already precedented by `tools/make-rpg-sample.js`'s own
 recruit.
+
+**As shipped (phase 4, a real engine gap found in review, not merely a probed number): naming
+`hideSwitch` here is not sufficient on its own, and this section's own wording invited exactly the bug
+§9.2's key mechanism had already been fixed for once (round-2 finding 2, above).**
+`spawn_entities` (`engine/entities.asm`) reads an entity's `hideSwitch` only once, at the moment its
+own screen's entities are placed from the record table — never consulted again until the next time
+that happens. `setSwitch`'s own opcode, `script_op_set`, touches no entity state at all. So a single,
+unguarded `join` page — the shape a bare "`hideSwitch` set to the same switch the join event sets"
+reads as — would still be standing there, still `touch`/`interact`-able, for as long as the player
+stays on the Village screen after recruiting Ally: a second interact reruns the page, joins the
+already-recruited member a second time (a harmless store, since `PARTY_SIZE`-bounded `join` is
+idempotent on `pc_in_party`) and sets the same switch again — silently, not a crash, but not the
+one-shot recruitment this section implies either. **Fix, the identical two-page shape §9.2's key
+mechanism already uses**: the recruit's page is `cond: { type: 'switchOff', arg: 0 }` guarding the
+`say`/`join`/`setSwitch` — the dungeon key-mechanism idiom, restated here as a rule rather than left
+implicit: *a one-shot interact page needs both a `switchOff` guard and an unconditional fallback page;
+`hideSwitch` alone only removes the actor on the screen's next load, never within the same visit.* A
+second, unconditional page states the fallback: `say: "Ready when you are."` `hideSwitch: 0` is kept
+on the placement itself, for the *next* visit — the mechanism the section above already describes.
+(Outside this design's own scope, recorded here only as an observation: `tools/make-rpg-sample.js`'s
+own Iris has the identical unguarded shape and was left unfixed, since `sample-rpg/` is a checked-in
+fixture no test may mutate.)
 
 **A hand-authored Doorway metasprite here too (§9.1), at sprite index `$2C-$2F` (44-47), the first free
 run after Slime, Bat and Potion (`$20-$2B`), on **sprite palette slot 2** — Potion's own slot, reused
@@ -1155,6 +1243,15 @@ spell (Ember), a pickup that grants an item (the Potion), two door placements wi
 now, correctly, non-bouncing) landing points, an authored player sprite reused as a battle portrait, a
 shared Doorway metasprite, a title screen, terrain imported for two distinct areas. No locked
 door/bound tile and no scripted choice here — both already covered by the two action starters.
+
+**Capacity, measured against the shipped build, not guessed (phase 4):** `buildRpg`'s own output
+leaves **384 bytes free** in MMC1 kernel-lo (`kernelCodeBytes` 7135 + `fixedBytes` 409 +
+`tableBytes` 264, against the 8192-byte bank `kernelbytes.test.js` checks against) — re-derived
+directly from `checkCapacity`, not copied from `rpg.js`'s own comment recording the same figure. One
+live `Move` command (`MOVE_KERNEL_ALLOWANCE`, 379 bytes, plus `FACE_KERNEL_ALLOWANCE`, 16 bytes, for
+the facing routine Move and `Turn` share — 395 bytes together, CLAUDE.md's own "The kernel budget"
+section) would already be refused by 11 bytes on this exact starter; an author who adds a cutscene to
+this starter's own events is the first person this margin matters to.
 
 ## §10. Nesasm label-length check
 
@@ -1231,11 +1328,16 @@ each). Each names the wrong implementation it catches.
    one case per starter (5 total, blanks included). *Catches*: anything §7.1's "must assemble" bar
    exists for — a bad opcode, an out-of-range operand, a capacity overflow `checkCapacity` (test 8)
    would already have caught but `nesasm` is the final authority on.
-7. **`validateProject` raises zero errors and zero warnings for every starter** — simplified this
-   round (round-2 finding 8): §6.2's own binding fix removes the dungeon's own unbound-pickup warning
-   entirely, so no starter carries an expected warning any more and this test needs no special case
-   for one. *Catches*: schema-legal-but-semantically-broken content, and any warning at all appearing
-   in a starter's own build log, which — now that none is expected — would itself be a regression.
+7. **`validateProject` raises zero errors and zero warnings for every *content* starter** —
+   simplified this round (round-2 finding 8): §6.2's own binding fix removes the dungeon's own
+   unbound-pickup warning entirely, so no content starter carries an expected warning any more and
+   this test needs no special case for one. **As shipped (phase 2), `blank-rpg` is excluded from this
+   bar, not a fourth omission left implicit**: it is pinned byte-for-byte deep-equal to `createProject`
+   (test 1, §4), which correctly raises "No actor deals damage, so no battle can ever start." for
+   every fresh RPG project — a real warning this design does not get to silence, since silencing it
+   would mean the blank entry no longer matches `createProject`'s own output. *Catches*:
+   schema-legal-but-semantically-broken content, and any warning at all appearing in a content
+   starter's own build log, which — now that none is expected there — would itself be a regression.
 8. **`checkCapacity` raises zero errors for every starter**, and its own `screenCount`/`capacity`
    figures are logged (not asserted past zero-errors). *Catches*: §7.2's second risk — a schema/
    capacity tightening that starves a starter's fixed content.
@@ -1275,6 +1377,12 @@ each). Each names the wrong implementation it catches.
       mirroring `entity_touching_player`'s own independent dx/dy-under-`TOUCH_RANGE` test
       (`engine/entities.asm:452-478`) rather than a Euclidean distance.
 
+    **As shipped, the fourth assertion's own negative control moves the Boss Chamber door to `(128,
+    116)`, documented here for the first time — v5's own text above prescribed no negative control at
+    all.** The value is computed from §9.2's own reference point, the front area's own deepest
+    reachable point, `y = 111` (the same point that paragraph's own 17-pixel figure for a row-8 door,
+    `y = 128`, is measured from): `(128, 116)` sits only 5 pixels from `y = 111`, under `TOUCH_RANGE`
+    (12), a real violation by the identical measure.
     *Catches*: everything the old, structural-only check could not — a "locked" cell that a real
     player can walk around because it is not part of a full barrier, a door placed somewhere the wall
     does not actually block; **and now also**: a bad `toX`/`toY` on the return door that drops the
@@ -1307,6 +1415,18 @@ each). Each names the wrong implementation it catches.
     reachable by the starting party member's own `spells` list. *Catches*: any one of the RPG
     starter's own named features silently missing or, for Save specifically, silently guarded in a
     way that would make it a one-shot rather than the repeatable save point this starter intends.
+
+    **A structural check of this shape cannot see the `hideSwitch`-at-spawn bug this section's own
+    correction above describes, and a second, engine-level test was added for it (phase 4, unnumbered
+    — the same shape `main/smoke.js`'s own boot-and-walk checks already take).** `pc_in_party`,
+    `switches` and `ent_active` are a RAM-only oracle, and `join` is idempotent on every one of them:
+    reading engine RAM after two interacts cannot tell "the join page ran twice" from "the join page
+    ran once, then the fallback page ran" — both leave the identical bytes behind. The regression test
+    instead boots the built ROM, walks to Ally, interacts twice, and reads the message box's own first
+    nametable glyph after each — derived from the two pages' own authored `say` text at the moment the
+    test runs (never hardcoded), with a precondition that the two lines' first characters actually
+    differ, so a future edit to either line that made them start identically fails the test at that
+    precondition rather than passing on a glyph comparison that could no longer tell the two apart.
 13. **No test touches `sample*/`** — no starter test imports from or writes into any `sample*/` path,
     asserted starting with the first phase that ships any test at all and unchanged through every
     later one. *Catches*: a future contributor reaching for `sample/` as a shortcut "starting point"
@@ -1358,10 +1478,14 @@ each). Each names the wrong implementation it catches.
     - **16b** (ships with the overworld phase): the same mechanism, clicking Overworld's own button;
       assert `gameType === 'action'` and `maps.length === 3`.
     - **16c** (ships with the dungeon phase): clicking Dungeon's own button; assert `gameType ===
-      'action'` and `maps.length === 4`; build it and run the ROM far enough to touch the key
-      mechanism entity.
+      'action'` and `maps.length === 4`; build it and boot the ROM headlessly in the main process,
+      walking the player from `(32, 48)` through the Key Hall door and east to the key mechanism,
+      tapping A through the `Say` box — **as shipped**, the walk's own arrival asserts three real
+      engine-RAM values, not merely that the walk completed: switch 0 set, `inv_count === 1`, and
+      `inv_items[0] === 0` (the Key's own item id).
     - **16d** (ships with the RPG phase): clicking the RPG starter's own button; assert `gameType ===
-      'rpg'` and `maps.length === 3`.
+      'rpg'` and `maps.length === 3`; build it and boot the ROM to real gameplay, the same idiom 16c
+      already established for the dungeon phase.
 
     *Catches*, across all four: anything only a real DOM click and a real IPC round trip can — a
     picker that renders but whose buttons do not actually call `close` with the right id, a
@@ -1425,6 +1549,21 @@ each). Each names the wrong implementation it catches.
     and an arrival point whose raw coordinate lands on open ground while the player's own collision
     body, offset from it, still overlaps a solid or water metatile next door.
 
+    **As shipped (phase 4), this test's own negative control hardcodes `(32, 112)`** —
+    `villageDoor.props.toX = 32; villageDoor.props.toY = 112;`, a literal, not a value read off the
+    Field door's own object. That literal is the Field's own return door's real, placed `(x, y)`
+    (`shared/starters/rpg.js`, the Field's own door placement), so the control reproduces the v3
+    bounce bug directly rather than an arbitrary coordinate — but the literal on its own could
+    silently drift away from what the Field door actually places if either number were ever edited,
+    which is exactly what "moves the door to an arbitrary literal coordinate" would mean if nothing
+    else were true. **What keeps it from going vacuous is a second, independent pin, not
+    derivation**: this same test 17 also pins the RPG starter's own placement table directly
+    (`'17: the rpg starter's own placement table (design §9.3) is pinned directly...'`,
+    `assert.deepEqual([fieldDoor.x, fieldDoor.y], [32, 112], "the Field's own return door must sit at
+    (32, 112)")`) — so a future edit that moved the Field door away from `(32, 112)` fails that pin
+    first, and the negative control's own hardcoded literal can never silently point at the wrong
+    place without the placement-table test catching it first.
+
 ## §12. Phasing
 
 1. **The catalog/IPC rename and the renderer's own picker, merged into one phase** — v1 split these
@@ -1436,9 +1575,11 @@ each). Each names the wrong implementation it catches.
    project instead. This phase ships together: `screenFromArt`'s promotion (§3.3), the
    `project:create`/`createProjectAt` rename to `starterId` (§6.1), the two blank `STARTERS` entries,
    and the renderer's own picker (§8.1) replacing `chooseGameType()` outright. **The implementer also
-   performs, once, the ROM SHA-256 comparison §3.3 describes** — six generators, hashed on the commit
-   before this phase and again on this phase's own tree — as a one-off check that `screenFromArt`'s
-   move changed no ROM byte; this is not a checked-in test (§3.3, round-2 finding 10). **This phase ships no
+   performed, once, the ROM SHA-256 comparison §3.3 describes, as this phase shipped (`10f656c`)** —
+   six generators, hashed on the commit before this phase and again on this phase's own tree, all six
+   pairwise identical — the one-off check that `screenFromArt`'s move changed no ROM byte; this is not
+   a checked-in test (§3.3, round-2 finding 10), so it is recorded here as a completed fact, not a
+   promise. **This phase ships no
    authored art at all** — the shared player sprite (§5) does not exist until a content starter
    authors it, which is why `LICENSE-ASSETS`'s widening (§13) is phase 2's concern, not this one's.
    Tests: 1, 2, 3 (blanks only), 4, 5, 16a.
@@ -1511,13 +1652,14 @@ document in every direction.
   content starters, in `tools/make-rpg-sample.js`'s own `HERO` idiom, to minimize authoring cost. If
   Chris wants each starter's protagonist to look distinct, that is three small art assets instead of
   one, with no mechanism change.
-- **Which library monster is the dungeon boss.** §9.2 recommends Skeleton, overridden to `chaser`
-  (the strongest of the three by every stat §0 read, and the only one this design gives a deliberate
-  behavior override). If Chris wants a different one for pacing or flavor reasons, that is a one-line
-  change with no mechanism impact.
-- **The RPG starter's recruit and inn framing** — is "Ally" an acceptable placeholder party-member
-  name, and should the innkeeper's dialogue explicitly mention the Heal 255 mechanic to the player,
-  or stay purely in-fiction ("You look tired — rest here")?
+- ~~**Which library monster is the dungeon boss.**~~ **Answered (phase 3):** Skeleton, this section's
+  own recommendation, stays the boss, overridden to `chaser` exactly as proposed — Chris's decision on
+  the design's own recommendation, not a reopening of it.
+- ~~**The RPG starter's recruit and inn framing**~~ **Answered (phase 4):** "Ally" is the shipped,
+  fixed recruit name; the innkeeper's line stays purely in-fiction ("You look tired. Rest here a
+  while."), naming no mechanic. A related question this design never asked, raised and settled the
+  same round: **in-game renaming of a recruit on join is explicitly out of scope for this design** — a
+  future engine slice of its own, should one ever be built, never folded into this starter.
 - **How much of the player figure to author (round-2 finding 12).** §5's own recommendation authors
   only two of the player's eight frames (`down`'s idle and walk step); the other six stay at the
   build-time placeholder, so a player walking up, left or right sees a visibly different character
@@ -1527,6 +1669,123 @@ document in every direction.
   art this design currently proposes, for a consistent look in every direction). Chris's call.
 
 ## Changelog
+
+### v6 (as shipped) — every deviation the four implementation phases accepted
+
+Every figure below was re-derived from the shipped code this round (`shared/starters/*.js`,
+`test/unit/starters.test.js`, `main/smoke.js`), never copied from a commit message. Where a
+deviation contradicts this document's own body text, the body is corrected in place, marked
+"as shipped," and cross-referenced from here.
+
+**Phase 1 (`10f656c`):**
+
+1. `createProjectAt` resolves `starterId` **before** `fs.mkdir` runs, so an unknown id creates
+   nothing at all — a deliberate tightening of §6.1's own snippet, which mkdir'd first. §6.1's code
+   block is corrected to the shipped shape.
+2. Tests 2 and 13, and the `shared/` Node/DOM-purity check, are built on `test/lib/sourcescan.js`,
+   an `acorn`-tokenizer-backed scanner (with its own 24 tests) rather than a hand-rolled one: eight
+   review rounds found a hand-rolled scanner cannot settle regex-vs-division or comment/string
+   boundaries without hiding real violations. `acorn` 8.18.0 is an exact-pinned, test-only
+   devDependency — this codebase's first non-Electron one — imported by that file and by
+   `test/unit/project.test.js`; nothing under `main/`, `renderer/` or `shared/` imports it.
+3. The one-off six-fixture ROM SHA-256 comparison §3.3/§12 required was performed at this phase
+   (`10f656c`): all six generators, hashed before and after `screenFromArt`'s move, identical
+   pairwise. §12's own phase-1 paragraph now records this as done, not merely planned.
+
+**Phase 2 (`aeed4d9`):**
+
+4. **The Overworld's Villager cannot reuse the player's own tiles `$00-$03` as §9.1 proposed** —
+   pointing a metasprite at any tile inside the player's reserved `$00-$1F` trips `validateProject`'s
+   reserved-tile-reference warning (ROADMAP item 8's own validate-as-you-draw check), failing test
+   7's zero-warnings bar. The Villager gets its own copy of the idle art instead, at a probed run
+   (`$28-$2B`, 40-43, as shipped), which in turn pushes the Doorway from §9.1's own `$28-$2B` to
+   `$2C-$2F` (44-47). Both corrected in place in §9.1; sprite indices are probed at build time in
+   every content starter, never assumed.
+5. Test 7 ("every starter, zero warnings") cannot hold for `blank-rpg`, which is pinned
+   byte-identical to `createProject` (test 1) and correctly carries "No actor deals damage" for
+   every fresh RPG project — test 7 covers content starters only; §7.1 and §11 test 7 both corrected.
+6. `choice` has no prompt field of its own, so the Overworld trader's question is a plain `say`
+   immediately before the `choice` — §9.1 corrected.
+7. **A product bug found in review, not a probed number:** `playerTiles` built by slicing a
+   tileset held 24 `BLANK_TILE` *strings*, not `null`s, so `generateAssets` never substituted its
+   own placeholder and the player vanished facing anything but down. `writePlayerFigure`
+   (`shared/starters/figures.js`) returns eight authored tiles and 24 explicit `null`s, built
+   directly rather than sliced. §5 corrected with the null rule stated as a rule, not left implicit.
+8. `LICENSE-ASSETS` was widened to cover `shared/starters/` at this phase, exactly as §13 planned;
+   `test/unit/library.test.js`'s test `28a2` asserts the wording. No correction needed — confirmed
+   against the shipped file and test.
+
+**Phase 3 (`b3be691`):**
+
+9. §9.2 imports the Bat but its own placement table never placed it — a design gap, not a
+   deliberate omission. The shipped fix patrols one Bat at Key Hall's leftmost interior column,
+   `(16, 48)`, clear of the key mechanism's own touch line on the x axis alone. Added to §9.2's
+   placement table and prose.
+10. v5's own §11 test 10 write-up prescribed no negative control at all. The shipped test's own
+    fourth assertion is checked by one, moving the Boss Chamber door to `(128, 116)` — computed from
+    §9.2's own reference point, the front area's deepest reachable point (`y = 111`), the same point
+    that section's own 17-pixel figure for a row-8 door is measured from: `(128, 116)` sits only 5
+    pixels from it, under `TOUCH_RANGE`, a real violation. §11 test 10 now documents this. Separately:
+    `test/unit/starters.test.js`'s own source comment above this negative control attributes a
+    "(128, 128) fails (iv)" claim to §11 that no version of this document at HEAD contains — left
+    alone by this docs pass, since it is code, not documented here; flagged for a later code pass.
+11. The dungeon's Title screen is shipped as plain Stone Floor Plain, no border, no entities — noted
+    in §9.2 where it was previously unstated.
+12. The Skeleton is overridden to `chaser` after the import, exactly as §9.2 already recommended —
+    Chris's decision on the design's own recommendation, not a reopening of it. No text change
+    needed; the matching "Open question for Chris" is marked answered.
+13. Tests 10 and 17 share one `TOUCH_RANGE` constant (`test/unit/starters.test.js`, "from
+    `engine/constants.asm` -- shared by tests 10 and 17"); smoke step 16c boots the built ROM in the
+    main process, walks the player to the key mechanism, then asserts three real engine-RAM values —
+    switch 0 set, `inv_count === 1`, `inv_items[0] === 0` — not merely that the walk completed. §11's
+    own 16c write-up corrected to say so.
+
+**Phase 4 (`52c01a3`):**
+
+14. §9.3's Hero battle portrait cannot reference the player's own tiles `$00-$03` either, for the
+    identical reason as finding 4 — this section's own "unnecessary here" claim was the probe this
+    design never ran, and the probe disproves it. A duplicate sits at a probed run, `$34-$37`
+    (52-55) as shipped. §9.3 corrected in place, its own superseded "unnecessary" sentence struck
+    rather than deleted.
+15. §9.3 authors no NPC art for the Saver, the Innkeeper or Ally at all — a real gap, not a choice.
+    One procedurally-generated "Villager" frame (`npcRows()`, `shared/starters/rpg.js`), shared by
+    all three, lands at a probed run, `$30-$33` (48-51) as shipped, on sprite palette 0. Added to
+    §9.3 as new body text, not merely the changelog.
+16. **§9.3's own "hideSwitch idiom" sentence alone describes a real bug, and this is the most
+    important correction in this pass.** `spawn_entities` reads `hideSwitch` only at spawn, so a
+    single unguarded join page — the shape §9.3 as written implies — repeats on every interact until
+    the screen reloads, silently re-joining an already-recruited member. The shipped recruit page is
+    `switchOff 0`-guarded with an unconditional fallback `say`, the identical two-page shape §9.2's
+    own key mechanism already uses (restored there in round 2, above) — restated in §9.3 as a rule,
+    not only as a changelog line: *a one-shot interact page needs both a `switchOff` guard and a
+    fallback; `hideSwitch` alone only removes the actor on the screen's next load.* Noted, outside
+    this design's own scope: `tools/make-rpg-sample.js`'s Iris has the identical unguarded shape and
+    was left untouched, since `sample-rpg/` is a checked-in fixture no test may mutate.
+17. v5's own test 17 write-up described no negative control at all. The shipped test
+    (`'17 negative control (rpg): ...'`) hardcodes `villageDoor.props.toX = 32; villageDoor.props.toY
+    = 112;`, a literal. That literal is real (it is the Field return door's own placed `(x, y)`), and
+    what actually keeps the control from going vacuous is a second, independent pin: test 17's own
+    placement-table assertion names the Field door's position directly (`"the Field's own return door
+    must sit at (32, 112)"`), so a future edit that moved it fails that pin before the negative
+    control's own hardcoded literal could silently drift away from it. §11 test 17 now describes
+    this — hardcoded literal, pinned elsewhere, not derived.
+18. A RAM-only oracle (`pc_in_party`, `switches`, `ent_active`) cannot distinguish a repeated join
+    from the fallback page, since `join` is idempotent on every one of those bytes. The shipped
+    regression test (`'engine regression: the RPG starter's Ally recruit joins once per visit...'`)
+    instead boots the ROM, interacts twice, and reads the message box's own first nametable glyph
+    after each — derived from the two pages' own authored text, with a precondition that the two
+    lines' first characters differ. Added to §11 under test 12.
+19. **Capacity, measured, not guessed:** `buildRpg`'s own output leaves 384 bytes free in MMC1
+    kernel-lo (re-derived via `checkCapacity`, matching `rpg.js`'s own comment); one live `Move`
+    command (395 bytes) would already be refused by 11 bytes. Added to §9.3 as a new paragraph.
+20. Chris's decisions, both settled during this phase: the recruit is named "Ally," fixed, not a
+    placeholder; the innkeeper's line stays purely in-fiction, naming no mechanic; in-game renaming
+    of a recruit on join is explicitly out of scope for this design, a future engine slice of its
+    own should one ever be built. Both matching "Open questions for Chris" marked answered rather
+    than deleted.
+21. Smoke step 16d clicks the picker's RPG button, builds the ROM and boots it to real gameplay —
+    the same idiom step 16c already established for the dungeon phase. §11's own 16d write-up
+    corrected to say so.
 
 ### v5 (final) — GO WITH FIXES: two medium findings in test 17, plus one addition
 
