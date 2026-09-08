@@ -60,20 +60,79 @@ test('the sample ROM boots and renders', { skip: !hasRom && 'run `npm run sample
 });
 
 test('the ⟳ Reset button leaves the ROM able to draw again', { skip: !hasRom && 'run `npm run sample` first' }, () => {
-  const emulator = new Emulator({ onFrame: () => {} });
-  emulator.loadROM(new Uint8Array(fs.readFileSync(ROM_PATH)));
-  for (let i = 0; i < 20; i++) emulator.runFrame();
-
   // `nes.reset()` builds a new PPU, so everything `nes.loadROM` does *after*
   // its own reset has to be done again. Miss the mirroring and the nametables
   // are never allocated: the engine's first background write after a reset
   // throws from inside the PPU, which run control has to redo for itself
   // because it resets without going back through loadROM.
-  emulator.reset();
+  //
+  // A bare "the nametable is nonempty" oracle alone is hollow: it was already
+  // true before reset() ever ran, so a no-op reset() (mutation-proven) still
+  // passes. This drives the ROM into an observable, non-startup state first
+  // -- walking the player away from its authored start position -- and checks
+  // that reset() genuinely reloads (Emulator.reset() goes through
+  // reloadROM(), which re-runs the CPU's own power-on RAM clear over
+  // $0000-$07FF, PLAYER_X included -- see runcontrol.js's own reset() header
+  // comment and CLAUDE.md's "The emulator") rather than merely continuing to
+  // run: the player must be back at its boot position, not wherever the walk
+  // left it, and the frame counter must have restarted, not kept counting up.
+  const PLAYER_X = 0x10; // engine/constants.asm
+  const GAME_STATE = 0x25; // engine/constants.asm
+  const RIGHT = 7;
+  const START = 3;
+
+  const pressStartIfShown = () => {
+    if (emulator.nes.cpu.mem[GAME_STATE] !== 3) return;
+    emulator.setButton(START, true);
+    emulator.runFrame();
+    emulator.setButton(START, false);
+    for (let i = 0; i < 12; i++) emulator.runFrame();
+  };
+
+  const emulator = new Emulator({ onFrame: () => {} });
+  emulator.loadROM(new Uint8Array(fs.readFileSync(ROM_PATH)));
+  for (let i = 0; i < 20; i++) emulator.runFrame();
+  pressStartIfShown();
+
+  const bootPlayerX = emulator.nes.cpu.mem[PLAYER_X];
+
+  emulator.setButton(RIGHT, true);
   for (let i = 0; i < 30; i++) emulator.runFrame();
+  emulator.setButton(RIGHT, false);
+  const walkedPlayerX = emulator.nes.cpu.mem[PLAYER_X];
+  assert.ok(
+    walkedPlayerX > bootPlayerX,
+    `the walk itself did not move the player (boot ${bootPlayerX}, after walking ${walkedPlayerX}) -- the ` +
+      'reset oracle below depends on the player genuinely being off its boot position first'
+  );
+
+  const framesBeforeReset = emulator.frames;
+  assert.ok(framesBeforeReset > 0, 'the frame counter never advanced before reset');
+
+  emulator.reset();
+  for (let i = 0; i < 20; i++) emulator.runFrame();
+  pressStartIfShown();
+
+  // (a) RAM was really rebuilt, not merely left running: the player is back
+  // at its authored boot position, not wherever the walk above left it.
+  assert.equal(
+    emulator.nes.cpu.mem[PLAYER_X],
+    bootPlayerX,
+    `player x should be back at its boot value ${bootPlayerX} after reset, not still at the walked-to ` +
+      `${walkedPlayerX} (got ${emulator.nes.cpu.mem[PLAYER_X]}) -- a no-op reset would leave it there`
+  );
+
+  // (b) the original claim: the ROM can still draw.
   assert.ok(
     emulator.nes.ppu.vramMem.subarray(0x2000, 0x2400).some((byte) => byte !== 0),
     'nothing was drawn after a reset'
+  );
+
+  // (c) the frame counter restarted rather than merely continuing to climb.
+  assert.ok(
+    emulator.frames < framesBeforeReset,
+    `the frame counter should have restarted below its pre-reset count of ${framesBeforeReset} (now ` +
+      `${emulator.frames}) -- a no-op reset leaves it monotonically increasing`
   );
 });
 

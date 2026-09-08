@@ -150,7 +150,10 @@ Anything the 6502 engine and the JavaScript tooling both depend on has **one** d
   `engine/music.asm`, the compiler in `main/build/songcompile.js`, the preview replayer in
   `renderer/forges/sound/replayer.js`). `test/unit/music.test.js` runs the built ROM in the
   emulator, records every write to `$4000-$400F`, and asserts it is byte-identical to the
-  replayer's. If you change one implementation, change all three or that test fails. `songByte`,
+  replayer's. If you change one implementation, change all three or that test fails. Every song's
+  own instruments reach the ROM now, not just song 0's: `songTables` concatenates them in song
+  order, `song_inst_base` names each song's offset, and the driver adds it into `mus_inst_base` —
+  256 entries combined, total (`MAX_TOTAL_INSTRUMENTS`). `songByte`,
   `NO_SONG`, `songTimeline` and `songFrameLength` (a song's own length in frames, one full pass
   through its authored order) live here too, not in `main/build/textcompile.js`, because
   `shared/project.js`'s `validateProject` needs the identical resolution and cannot import
@@ -235,6 +238,10 @@ renderer, and `node:test` alike.
   can reach is enumerated in `main/preload.cjs`.
 - The app is served over a custom `forge://` scheme registered in `main/main.js`, **not**
   `file://`, because ES modules cannot be fetched from an opaque `file://` origin.
+- Every `ipcMain.handle` (`main/ipc.js`) is wrapped through one `guardedHandle` refusing a call
+  whose `event.senderFrame` is not this app's own `forge://app/` origin. Saves queue one chain per
+  canonicalized directory (`main/savequeue.js`/`main/paths.js`), so concurrent saves to a project
+  serialize rather than interleave, and each file lands via a sibling temp file and atomic rename.
 - **Unsaved changes are guarded in main, never by `beforeunload`.** The renderer pushes its dirty
   state to main (`project:dirty`) whenever it changes, and the window's `close` handler — plus the
   View ▸ Reload item, which discards just as thoroughly — asks there. Vetoing `beforeunload` from
@@ -1099,7 +1106,7 @@ Current allowance figures (`main/build/generate.js` unless noted; each named cod
 delta `kernelbytes.test.js` measures exactly, on every board named — the base, the derived table
 sizes, the route zero-cost proof and `KERNEL_SLACK` itself are each checked their own way, below):
 
-- `BASE_KERNEL_CODE_BYTES_BY_MAPPER = { 1 (MMC1): 5954, 4 (MMC3): 5971, 30 (UNROM 512): 6149 }` —
+- `BASE_KERNEL_CODE_BYTES_BY_MAPPER = { 1 (MMC1): 6022, 4 (MMC3): 6039, 30 (UNROM 512): 6217 }` —
   action-side, nothing conditional on, falling back to the largest of the three for an unmeasured
   mapper (the game-type overcharge this fixed: `docs/kernel-base-overcharge-report.md`).
   `BATTLE_KERNEL_ALLOWANCE_BY_MAPPER = { 1: 253, 4: 265, 30: 253 }` is its RPG-only supplement — no
@@ -1126,16 +1133,16 @@ sizes, the route zero-cost proof and `KERNEL_SLACK` itself are each checked thei
   `Turn` share, charged once) — 395 total for a Move-only project.
 - `SPLIT_KERNEL_ALLOWANCE = 165`, MMC3-only, charged whenever `projectUsesText` is true on that
   board — including a project whose only live event is a Move or a Sting, not just dialogue.
-  Renamed from `SPLIT_LOCK_KERNEL_ALLOWANCE`: pinned by a text-on/off isolation on a fresh action
-  project plus a zero-delta control on every non-`scanlineIrq` board, not the old 19-byte residual
-  guess — `docs/split-lock-not-pinned-report.md` §8.
+  Pinned by a text-on/off isolation on a fresh action project plus a zero-delta control on every
+  non-`scanlineIrq` board, not an old residual guess — `docs/split-lock-not-pinned-report.md` §8.
 - `ITEM_KERNEL_ALLOWANCE = 16` (flat) plus 3 `kernelTableBytes` bytes *per item*
   (`item_metasprite`, `item_effect_kind`, `item_effect_amount`, one byte each in
   `assets/items.inc`); `ITEM_EFFECT_KERNEL_ALLOWANCE_BY_GAME_TYPE = { action: 63, rpg: 60 }` for
   `use_item_apply`.
-- `STING_KERNEL_ALLOWANCE_STANDALONE = 160` plus the shared `AUDIO_FX_KERNEL_ALLOWANCE = 15` (paid
-  by either); `SFX_KERNEL_ALLOWANCE_STANDALONE = 295`; `STING_SFX_INTERACTION_ALLOWANCE = 5` more
-  when both live. Aggregate: Sting-only 175, Sfx-only 310, both live 475.
+- `STING_KERNEL_ALLOWANCE_STANDALONE = 172` (+12: `sting_snapshot`/`restore` now also shadow
+  `mus_inst_base`) plus the shared `AUDIO_FX_KERNEL_ALLOWANCE = 15` (paid by either);
+  `SFX_KERNEL_ALLOWANCE_STANDALONE = 295`; `STING_SFX_INTERACTION_ALLOWANCE = 5` more when both
+  live. Aggregate: Sting-only 187, Sfx-only 310, both live 487.
 - `BOUND_TILE_KERNEL_ALLOWANCE = 388`, plus a 30-byte fixed table (`bound_row_lo`/`bound_row_hi`)
   and 2 `kernelTableBytes` bytes per screen (`screen_bound_lo`/`hi`) — the first allowance whose
   removal `kernelShortfallAdvice` has to price by full kernel-lo occupancy (code and table
@@ -1158,34 +1165,31 @@ sizes, the route zero-cost proof and `KERNEL_SLACK` itself are each checked thei
   alarm, not spare headroom: too wide a margin means some term stopped tracking the engine closely.
 
 **Documented limitations — combinations `checkCapacity` refuses today, each with its own named
-test rather than a silent gap. Every Save-on-RPG row moved 5 bytes with `BE_RESTORE` (above):**
+test rather than a silent gap. Every Save-on-RPG row moved 5 bytes with `BE_RESTORE` (above), and
+the kernel base's own further +15 (below) moved several rows again — MMC3 `Save` + `Move`, no
+item, is now short 8 bytes with *nothing else live*, so Sting/Sfx/a bound tile below no longer tip
+a fitting row into refusal, they land on one already broken:**
 
-- MMC3, `Save` + `Move` + one live item: 16 bytes short. Test:
+- MMC3, `Save` + `Move` + one live item: 87 bytes short (fits on MMC1 with 124 free). Test:
   `'sample-rpg with Save, Move and its one live item does not build on MMC3 -- round 2 reopened the
-  gap the kernel diet had closed, a documented limitation'` (`kernelbytes.test.js`). The identical
-  combination fits on MMC1 with 195 bytes free.
-- UNROM 512, `Save` + `Move`, no item: 93 bytes short (need 126, only 33 free) — genuinely
-  unrelated to items; dropping an item does not close this one the way it closes MMC3's.
-- MMC3, `Save` + `Move` (no item) + a live `Sting`: documented limitation. Test:
-  `'sample-rpg with Save, Move (no item) and a live Sting does not build on MMC3 -- a documented
-  limitation'`.
-- A live switch-bound tile (marginal cost `388 + 30 + 2 × screen count` — 420 bytes on this
-  project's one screen, the largest single feature cost in this ledger) reopens two different
-  rows: MMC3's `Save` + `Move`, no item (already 63-free without the tile) and MMC1's `Save` +
-  `Move` + one live item (previously comfortable at 195 free). Documented limitation on both
-  boards, but two different configurations, not the same one. Tests: `'sample-rpg with Save, Move
-  (no item) and a live bound tile does not build on MMC3'` / `'sample-rpg with Save, Move and its
-  one live item does not build on MMC1 once a bound tile is added'`.
-- A live `Sfx` command adds five more refusal rows on its own: MMC1 Save+Move+item; MMC1
-  Save+Move-no-item (36 short); MMC3 ALL-7-verbs+Move+item-no-Save (41 short); UNROM 512
-  Save-only-with-item (87 short); UNROM 512 ALL-7-verbs+Move+item-no-Save (42 short); and it
-  reopens MMC3's Save+Move-no-item row a second, independent way (alongside Sting), and MMC1's
-  Save+Move+item row a second way (with Sting and Sfx both live).
-- Two fits controls confirm the boundary is real, not over-drawn: `sample-rpg`'s one live item plus
-  a live Sfx alone still builds on MMC3 (the tightest of the three boards), and the seven item-6
-  commands (Turn, Wait, Shake, both Show/Hide, Fade, Flash) plus that item with Sting *and* Sfx
-  both live still builds on MMC3 too — no Save, Move or title live on that row, load-bearing since
-  every refusal row above carries Save and/or Move.
+  gap the kernel diet had closed, a documented limitation'` (`kernelbytes.test.js`).
+- UNROM 512, `Save` + `Move`, no item: 164 bytes short — unrelated to items; dropping one does not
+  close this the way it closes MMC3's.
+- MMC3, `Save` + `Move`, no item: 8 bytes short alone. A live `Sting` deepens it to 195 short,
+  closed by `Move` (395) or `Save` (557) — `kernelbytes.test.js` asserts both. A live bound tile
+  deepens it to 428 short instead, where `Move` (395) alone is 33 short — only `Save` (557)
+  closes it, per that row's own test.
+- The same bound tile (marginal cost `388 + 30 + 2 × screen count` — 420 bytes, this ledger's
+  largest single feature cost) also reopens MMC1's `Save` + `Move` + one live item row (296 short,
+  was 124 free) — MMC1 had margin to lose, unlike MMC3's row above.
+- A live `Sfx` command adds five more refusal rows: MMC1 Save+Move+item (186 short); MMC1
+  Save+Move-no-item (107 short); MMC3 ALL-7-verbs+Move+item-no-Save (112 short); UNROM 512
+  Save-only-with-item (158 short); UNROM 512 ALL-7-verbs+Move+item-no-Save (113 short); and it
+  reopens MMC1's Save+Move+item row a second way (363 short, Sting also live).
+- Two fits controls confirm the boundary is real: `sample-rpg`'s one live item plus a live Sfx
+  alone still builds on MMC3 (the tightest board), and the seven item-6 commands plus that item
+  with Sting *and* Sfx both live still builds on MMC3 too — no Save/Move/title live on that row,
+  load-bearing since every refusal row above carries Save and/or Move.
 
 `kernelShortfallAdvice` names a real, buildable fix for every refusal above (which live command(s)
 to drop, or occasionally a different mapper) — a refusal here is `checkCapacity` doing its job on a
@@ -1297,21 +1301,16 @@ the drift the check exists to prevent, one layer out. `battletables.js` imports 
 and must stay that way; `renderer/forges/build/build.js` importing it is the same move
 `renderer/forges/sound/sound.js` already makes with `main/build/songcompile.js`.
 
-`BASE_BATTLE_CODE_BYTES_BY_MAPPER` is per board from the outset (UNROM 512 3961, MMC1 3961, MMC3
-4007 — each +14 from the battle-side saturation fixes, the `bcs`-before-`cmp` guard `gain_hearts`
-and `party_heal` already had, applied to `item_chosen`/`cast_heal`/`cast_heal_mon` plus a
-saturate-to-255 in `spell_damage_weak` and `physical_damage_noise`; see
-`docs/battlemath-report.md` — plus a further +50 on every board alike from the
-name-stride fix: `name_offset_pc` (`engine/battle.asm`) traded the 8-bit offset that silently
-wrapped past entry 25 for a 16-bit `ptr_lo`/`ptr_hi` add its four callers now dereference through;
-see `docs/namestride-report.md` — plus a further +53 on every board alike from the Magic Forge's
-own spell-amount roll, `roll_spell_amount`/`mod8` (`engine/battleturn.asm`); see
-`docs/design-magic.md` §8 — plus +18 from `BE_RESTORE` above — plus a further +5 on every board
-alike from the join-guard slice's own `cpx #PARTY_SIZE` check in `battle_entry_join`) rather
-than one flat number split later — the mistake `BASE_KERNEL_CODE_BYTES` made and
-`BASE_KERNEL_CODE_BYTES_BY_MAPPER` had to undo. MMC3's extra 46 bytes are the `.if SPLIT_ENABLED`
-blocks inside the region itself (`battle.asm`'s split arm, `battleui.asm`'s sprite targeting
-cursor), and they need **no** separate conditional term the way `SPLIT_KERNEL_ALLOWANCE` does:
+`BASE_BATTLE_CODE_BYTES_BY_MAPPER` is per board (UNROM 512 4220, MMC1 4220, MMC3 4266), measured
+directly rather than reconstructed from a running fix history — the same mistake
+`BASE_KERNEL_CODE_BYTES_BY_MAPPER` had to undo. The last move, +95 on every board, is slice B's own
+fixes: `battle_status_dispatch` now checks `combatant_alive` before every status tick (a
+poison+burn double-kill wrapped `bt_count` to `$FF`), and death no longer wipes its four rows
+inline — four kills in one tick used to queue 176 bytes of VRAM writes past the vblank window, so
+`bt_wipe_mask`/`row`/`slot` now queue one 11-byte row a frame, sticky against a staggered death.
+MMC3's extra 46 bytes are the `.if
+SPLIT_ENABLED` blocks inside the region itself (`battle.asm`'s split arm, `battleui.asm`'s sprite
+targeting cursor), and they need **no** separate conditional term the way `SPLIT_KERNEL_ALLOWANCE` does:
 `SPLIT_ENABLED` is `fontBankSplit`, `projectUsesText` is true for `gameType === 'rpg'` on the game
 type alone, and this region exists only for an RPG — so there is no MMC3-RPG-without-the-split to
 overcharge. Every board that can reach the region has its own measured entry, because `codeRegions()`

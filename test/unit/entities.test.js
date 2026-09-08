@@ -20,7 +20,14 @@ const PLAYER_X = 0x10;
 const PLAYER_Y = 0x11;
 const ENT_ACTIVE = 0x300;
 const ENT_ACTOR = 0x308;
+const ENT_X = 0x310; // from engine/constants.asm
+const ENT_Y = 0x318; // from engine/constants.asm
 const ENT_DIR = 0x320;
+// DIR_DOWN/DIR_UP/DIR_LEFT/DIR_RIGHT, from engine/constants.asm
+const DIR_DOWN = 0;
+const DIR_UP = 1;
+const DIR_LEFT = 2;
+const DIR_RIGHT = 3;
 
 function boot(frames = 30) {
   const nes = new NES({ onFrame: () => {}, emulateSound: false });
@@ -223,30 +230,93 @@ test('a chaser faces the axis it is furthest away on', { skip: !hasRom && 'run `
     return count;
   };
 
-  const facings = new Set();
-  let mirroredFrames = 0;
   let slot = -1;
 
   nes.buttonDown(1, 5); // walk south into the screen holding the chaser
-  for (let i = 0; i < 400; i++) {
+  for (let i = 0; i < 400 && slot < 0; i++) {
     nes.frame();
     if (M(FLAT_SCREEN) !== 2) continue;
-    if (slot < 0) {
-      for (let k = 0; k < 8; k++) if (M(ENT_ACTIVE + k) === 1 && M(ENT_ACTOR + k) === 2) slot = k;
-    }
-    if (slot < 0) continue;
-    facings.add(M(ENT_DIR + slot));
-    if (mirroredSprites() > 0) mirroredFrames++;
+    for (let k = 0; k < 8; k++) if (M(ENT_ACTIVE + k) === 1 && M(ENT_ACTOR + k) === 2) slot = k;
   }
   nes.buttonUp(1, 5);
-
+  nes.frame(); // let the button release settle before the controlled poking below
   assert.ok(slot >= 0, 'the chaser never spawned');
-  // Setting the facing inside each movement branch used to let the vertical
-  // pass overwrite the horizontal one, so a chaser only ever faced up or down.
-  assert.ok(
-    facings.has(2) || facings.has(3),
-    `the chaser never faced sideways (saw ${[...facings].join(',')})`
+
+  // Controlled geometry, not the loose "collect every facing seen over a
+  // real chase" this replaces: that only ever proved every direction is
+  // reachable, never which axis actually won a given decision, so inverting
+  // entity_chase's own `bcc entity_chase_face_side` (so it faces the NEARER
+  // axis instead of the further one -- engine/entities.asm's own header
+  // comment states the intended rule) still passed. This poses one exact
+  // frame at a time: pokes player_x/y and the chaser's own ent_x/y directly
+  // (PLAYER_X/PLAYER_Y and ENT_X/ENT_Y,x, both engine/constants.asm),
+  // releases every button first so nothing but entity_chase's own decision
+  // can move either of them, runs exactly one frame (update_entities calls
+  // entity_chase unconditionally, once per active BEH_CHASE entity, every
+  // frame -- no timer or randomness gates it), and reads ent_dir back.
+  const ENT_BASE_X = 100;
+  const ENT_BASE_Y = 100;
+  const MARGIN = 80; // the large axis
+  const SHORT = 10; // the short axis, comfortably nonzero so a tie is never accidental
+
+  // Two frames, not one: draw_entities builds this frame's sprite OAM from
+  // LAST frame's ent_dir (drawing runs before update_entities within
+  // main_loop), so the mirrored-sprite checks below would see the previous
+  // decision, not this one, off a single frame. The pose is re-pinned
+  // before the second frame too, so the one-pixel step entity_chase's own
+  // movement half takes between the two frames cannot shift the geometry
+  // enough to change which axis wins.
+  function poseAndStep(playerX, playerY) {
+    nes.cpu.mem[ENT_X + slot] = ENT_BASE_X;
+    nes.cpu.mem[ENT_Y + slot] = ENT_BASE_Y;
+    nes.cpu.mem[PLAYER_X] = playerX;
+    nes.cpu.mem[PLAYER_Y] = playerY;
+    nes.frame();
+    nes.cpu.mem[ENT_X + slot] = ENT_BASE_X;
+    nes.cpu.mem[ENT_Y + slot] = ENT_BASE_Y;
+    nes.cpu.mem[PLAYER_X] = playerX;
+    nes.cpu.mem[PLAYER_Y] = playerY;
+    nes.frame();
+    return nes.cpu.mem[ENT_DIR + slot];
+  }
+
+  // |dx| > |dy|: faces horizontal, sign of dx -- and the sideways
+  // (mirrored, per the original claim this rewrite otherwise drops) sprite
+  // animation actually gets drawn for it.
+  assert.equal(
+    poseAndStep(ENT_BASE_X + MARGIN, ENT_BASE_Y + SHORT),
+    DIR_RIGHT,
+    'player clearly to the right (and only slightly below) should face the chaser right'
   );
-  assert.ok(facings.has(0) || facings.has(1), 'the chaser never faced vertically');
-  assert.ok(mirroredFrames > 0, 'the sideways animation was never drawn');
+  assert.ok(mirroredSprites() > 0, 'the mirrored sideways animation was never drawn while facing right');
+  assert.equal(
+    poseAndStep(ENT_BASE_X - MARGIN, ENT_BASE_Y + SHORT),
+    DIR_LEFT,
+    'player clearly to the left (and only slightly below) should face the chaser left'
+  );
+  assert.ok(mirroredSprites() > 0, 'the mirrored sideways animation was never drawn while facing left');
+
+  // |dy| > |dx|: faces vertical, sign of dy.
+  assert.equal(
+    poseAndStep(ENT_BASE_X + SHORT, ENT_BASE_Y + MARGIN),
+    DIR_DOWN,
+    'player clearly below (and only slightly right) should face the chaser down'
+  );
+  assert.equal(
+    poseAndStep(ENT_BASE_X + SHORT, ENT_BASE_Y - MARGIN),
+    DIR_UP,
+    'player clearly above (and only slightly right) should face the chaser up'
+  );
+
+  // The tie: entity_chase's own `cmp chase_dx` after storing chase_dy leaves
+  // the carry set (not clear) when the two distances are equal, so `bcc
+  // entity_chase_face_side` is NOT taken -- a tie falls through to the
+  // vertical branch, not the horizontal one. Asserted explicitly here, not
+  // left implicit: player equally offset on both axes, below and to the
+  // right, should face down.
+  assert.equal(
+    poseAndStep(ENT_BASE_X + MARGIN, ENT_BASE_Y + MARGIN),
+    DIR_DOWN,
+    'a tied distance on both axes should face the chaser vertically (down here), per entity_chase\'s own policy'
+  );
 });
