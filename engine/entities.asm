@@ -478,16 +478,35 @@ entity_touching_far:
 
 ; The animation an actor uses right now, chosen by which way it faces.
 ; Returns A = animation id, or NO_ANIM. Preserves X.
+;
+; actor_anim_dir is four bytes per actor (config.inc's own layout, unchanged),
+; so the row a wide actor id lands on needs a 16-bit offset: actor id * 4 as an
+; 8-bit shift-and-store discarded the carry out of the low byte, so actor 64
+; (64*4 = 256) wrapped to offset 0 and drew actor 0's animation instead --
+; the same trap name_offset_pc's own fix (engine/battle.asm) already
+; documents for an index used as a table offset. ptr_lo/ptr_hi are free here
+; at both call sites (entity_animate and draw_one_entity each load them fresh
+; from anim_ptr_lo/hi only after this returns), so they double as the scratch
+; that builds actor*4 and then the final pointer, with no dedicated pair
+; needed.
 entity_animation:
   lda ent_actor,x
-  asl a
-  asl a                     ; four animations per actor
-  sta ent_tmp
-  lda ent_dir,x
+  sta ptr_lo
+  lda #0
+  asl ptr_lo
+  rol a
+  asl ptr_lo
+  rol a                     ; {a,ptr_lo} = ent_actor,x * 4, as a 16-bit value
+  sta ptr_hi
+  lda ptr_lo
   clc
-  adc ent_tmp
-  tay
-  lda actor_anim_dir,y
+  adc #LOW(actor_anim_dir)
+  sta ptr_lo
+  lda ptr_hi
+  adc #HIGH(actor_anim_dir)
+  sta ptr_hi
+  ldy ent_dir,x
+  lda [ptr_lo],y
   rts
 
 ; Advance the actor's animation. Frame records are (metasprite, duration).

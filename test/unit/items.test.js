@@ -355,14 +355,18 @@ test('do_interact enters the bag with the actor’s own id when the project has 
 // landed, immediately before this branch's first edit.
 // --------------------------------------------------------------------------
 
-// Re-pinned for the player.asm movement-tail dedup (the kernel diet that
-// reopened MMC3's Save+Move margin): re-captured from a `git worktree` at
-// master (9eda25f) with *only* that diet's diff applied -- no other phase 4b
-// change -- so this still asserts what it always asserted (an items-disabled
-// build is unaffected by items), not the diet compared against itself.
-// Building the current tree and pasting its hash here would have made this
-// assertion vacuous.
-const PINNED_BASELINE_HASH = '6a586eae7c9855176e158c15edff6885551ec647b31eb24bbdff741d54f7e986';
+// Re-pinned for review finding 11 (entities.asm's entity_animation): an
+// 8-bit actor*4 silently wrapped at actor id 64 and aliased actor 0's own
+// animation row, fixed with a 16-bit ptr_lo/ptr_hi offset instead --
+// unconditional kernel code (entities.asm is always assembled), so it moves
+// every project's hash regardless of items or gameType. Re-captured by
+// building this exact project (createProject('Baseline'), no items, no
+// Save, default mapper) against the working tree with only that fix (and
+// its ui.asm draw_actor_icon sibling, which this action-only baseline never
+// reaches) applied -- so this still asserts what it always asserted (an
+// items-disabled build is unaffected by items), not the fix compared
+// against itself.
+const PINNED_BASELINE_HASH = 'f0f8754928349dfde0f1ad2d97938acbf7784fe64efe6c71e928002f26591b49';
 const PINNED_BASELINE_SIZE = 40976;
 
 test('a project with no items and no Save is byte-identical to the pre-phase-4b master build', async (t) => {
@@ -505,7 +509,30 @@ test('a project with no items and no Save is byte-identical to the pre-phase-4b 
 // re-pin above already is. Size still unchanged (still 147472): the kernel-lo
 // bank is a fixed 8 KB region, so the extra bytes shift labels mid-bank
 // rather than growing the padded ROM.
-const PINNED_RPG_BASELINE_HASH = '21230c2c2852bd483e4d4ed0dd4d099bea2e8a02e470a9857bcf7569f5026a1f';
+//
+// Re-pinned again for review slice B (four defects, one round): item 8's
+// apply_damage_mon alive-check and its wipe_tick/bt_wipe_mask budgeting
+// (engine/battleturn.asm, engine/battle.asm) and battle_status_dispatch's
+// own alive-check (engine/battleui.asm) are unconditional battle-region
+// code; item 11's entity_animation fix (engine/entities.asm) is
+// unconditional kernel code, present on every project regardless of game
+// type. Item 9's roll_drop comment and item 13's mon_drop_pct scaling
+// (battletables.js) change no bytes of their own -- a comment, and a table
+// VALUE rather than its layout. Both regions move for the identical reason
+// every prior re-pin above does: unconditional code present whether or not
+// this baseline project has any items, Save, or spells at all. Size still
+// unchanged (still 147472): both the kernel-lo and banked battle-code
+// regions are fixed-size banks, so the extra bytes shift labels mid-bank
+// rather than growing the padded ROM.
+//
+// Re-pinned again for slice B round 2 (review finding on wipe_tick):
+// bt_wipe_slot (engine/constants.asm) makes the active wipe slot sticky --
+// wipe_tick only re-picks the lowest set bt_wipe_mask bit once bt_wipe_row
+// is back at zero, instead of every idle frame -- unconditional
+// battle-region code (engine/battle.asm), present on every RPG build
+// regardless of whether this baseline project ever kills a monster at all.
+// Size still unchanged (still 147472), same reason as every re-pin above.
+const PINNED_RPG_BASELINE_HASH = 'dc702ba4ac13e1a00f831bf287483579b7f6d28aa3f479e040bdfa1fb2355e93';
 const PINNED_RPG_BASELINE_SIZE = 147472;
 
 test('an RPG with no items and no Save is byte-identical to the pre-round-4 master build', async (t) => {

@@ -404,9 +404,16 @@ test('sample/ builds a byte-identical ROM after PLAYER_FRAMES/PLAYER_TILES moved
   const rom = await fs.promises.readFile(built.romPath);
   assert.equal(rom.length, 40976, 'ROM size drifted from the pinned pre-move build of sample/');
   const hash = crypto.createHash('sha256').update(rom).digest('hex');
+  // Re-pinned for review finding 11 (entities.asm's entity_animation): an
+  // 8-bit actor*4 silently wrapped at actor id 64 and aliased actor 0's own
+  // animation row, fixed with a 16-bit ptr_lo/ptr_hi offset instead --
+  // unconditional kernel code (entities.asm is always assembled), so it
+  // moves sample/'s hash the same way it moves items.test.js's own pinned
+  // baselines. Not a PLAYER_FRAMES/PLAYER_TILES regression: re-captured by
+  // building this exact sample/ tree with only that fix applied.
   assert.equal(
     hash,
-    '0e638aaaecf871b0479e09513e12b47ef7d24fe433c3142fb3369cfcb53a5253',
+    'c8792cd6ecdf66ff65efdf4703fe6b02abe4114950703222d1ec60889c42fa0b',
     'moving PLAYER_FRAMES/PLAYER_TILES into shared/project.js is a single-writer move, not a behaviour ' +
       'change -- sample/ must assemble byte-for-byte identically to the pinned pre-move build (captured ' +
       'from this exact working tree, immediately before this move, by building createProject-free sample/)'

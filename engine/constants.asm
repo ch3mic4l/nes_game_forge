@@ -408,6 +408,34 @@ flash_left  = fade_reload+1
 ; chained after fade_reload: this must not move any other symbol's address.
 status_pending = flash_left+1
 
+; wipe_tick's own state (engine/battle.asm; the death branch in
+; apply_damage_mon, engine/battleturn.asm): bt_wipe_mask bit n set means
+; monster slot n still owes its background wipe, and bt_wipe_row (0-3) is
+; which of that slot's four rows queues next. Killing every monster in a
+; formation in one tick used to call wipe_monster's own four-row sweep once
+; per death -- up to 176 bytes of queued PPUDATA in a single frame, past the
+; ~2273-cycle vblank window -- so a death now only sets a bit here, and
+; wipe_tick (called first in battle_tick) queues exactly one row a frame off
+; the lowest set bit. All three zeroed by setup_monsters alongside the
+; arrays around it.
+;
+; bt_wipe_slot is the active slot's own sticky memory, added after review
+; found bt_wipe_row shared across whichever slot wipe_tick's own
+; lowest-set-bit scan happened to land on that frame: killing slots 1-3 then
+; slot 0 while slot 3 was two rows into its own sweep re-picked slot 0 (now
+; the lowest pending bit) but left bt_wipe_row at 2, so slot 0 only ever
+; queued its own rows 2-3 and its top two rows were never blanked. wipe_tick
+; now only re-scans for the lowest set bit when bt_wipe_row is back at zero
+; (nothing mid-wipe); otherwise it keeps wiping bt_wipe_slot until that
+; slot's own four rows are done.
+;
+; Chained after status_pending for the identical reason status_pending
+; itself was chained after flash_left: this must not move any other symbol's
+; address.
+bt_wipe_mask = status_pending+1
+bt_wipe_row  = bt_wipe_mask+1
+bt_wipe_slot = bt_wipe_row+1
+
 ; The $10-per-row darken trick reaches solid black in at most this many
 ; subtractions from any starting row; the hold between steps is an engine
 ; constant, not authored -- see OP_FADE below and shared/project.js's

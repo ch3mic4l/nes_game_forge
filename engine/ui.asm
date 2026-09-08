@@ -425,11 +425,32 @@ draw_dialog_done:
 
 ; A = actor id. Draws that actor's resting metasprite at de_ex/de_ey, which is
 ; the first frame of the animation it faces the camera with.
+;
+; actor_anim_dir is four bytes per actor; an 8-bit actor*4 silently wrapped at
+; actor 64 and aliased actor 0's row, the identical trap entity_animation's
+; own fix documents (engine/entities.asm) for the same table. ptr_lo/ptr_hi
+; are free at every call site (ui.asm's two, and battleui.asm's, all load
+; de_ex/de_ey or read mon_slot_actor,x beforehand and never touch ptr_lo/hi
+; either side of this call), and this routine never touches X, so both stay
+; preserved automatically -- the battle sprite loop relies on X surviving the
+; jsr.
 draw_actor_icon:
-  asl a
-  asl a                     ; four animations per actor, DIR_DOWN first
-  tay
-  lda actor_anim_dir,y
+  sta ptr_lo
+  lda #0
+  asl ptr_lo
+  rol a
+  asl ptr_lo
+  rol a                     ; {a,ptr_lo} = actor * 4, as a 16-bit value
+  sta ptr_hi
+  lda ptr_lo
+  clc
+  adc #LOW(actor_anim_dir)
+  sta ptr_lo
+  lda ptr_hi
+  adc #HIGH(actor_anim_dir)
+  sta ptr_hi
+  ldy #0                    ; DIR_DOWN: the icon always faces the camera
+  lda [ptr_lo],y
   cmp #NO_ANIM
   beq draw_actor_icon_done
   tay

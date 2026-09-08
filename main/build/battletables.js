@@ -47,6 +47,21 @@ import { textToTiles } from '../../shared/font.js';
 /** Longest name the battle box has room for, in its 12-column message area. */
 export const NAME_LIMIT = RPG_LIMITS.nameLength;
 
+// roll_drop (engine/battleturn.asm) rolls the RNG and scales it to 0-63
+// (lsr a; lsr a on an 8-bit roll) before comparing it against a monster's own
+// drop chance, so the chance byte has to live in that same 0-63 domain --
+// mon_drop_pct used to carry the raw authored 0-100 percentage straight
+// through, comparing a 0-63 roll against a 0-100 threshold, which made a 50%
+// chance actually fire on roughly 199 of 255 rolls (~78%) and anything at or
+// above 64% fire on every single one. This rescales the authored percentage
+// into the roll's own domain: dropThreshold(0) = 0 keeps roll_drop's early-out
+// (`beq roll_drop_done`) meaning exactly what it always did, and
+// dropThreshold(100) = 64 is one past the largest value lsr a/lsr a can ever
+// produce (63), so a 100% (and, from 64% up, any) chance is genuinely certain.
+export function dropThreshold(pct) {
+  return Math.round((pct ?? 0) * 64 / 100);
+}
+
 const elementIndex = (id) => Math.max(0, ELEMENTS.findIndex((entry) => entry.id === id));
 const kindIndex = (id) => Math.max(0, SPELL_KINDS.findIndex((entry) => entry.id === id));
 const scopeIndex = (id) => Math.max(0, SPELL_SCOPES.findIndex((entry) => entry.id === id));
@@ -137,7 +152,7 @@ export function battleTables(project, battleStrings = BATTLE_STRINGS) {
   chunks.push(
     `mon_drop:\n${dbRows(battle((b) => (itemMissing(project.items, b.drop) ? NO_ITEM : b.drop)))}`
   );
-  chunks.push(`mon_drop_pct:\n${dbRows(battle((b) => b.dropPct ?? 0))}`);
+  chunks.push(`mon_drop_pct:\n${dbRows(battle((b) => dropThreshold(b.dropPct)))}`);
   // The ITEMS_ENABLED-false path's own table: item_chosen (engine/
   // battleturn.asm) still reads this, keyed by actor id, when a project has
   // no items[] at all and the bag still holds legacy actor ids. Stays
@@ -478,7 +493,7 @@ export function checkBattleTables(project) {
 // identical reasoning the BE_RESTORE paragraph above already gives for its
 // own uniform +18. MMC3's own extra 46-byte SPLIT_ENABLED gap is unchanged by
 // it (4007 - 3961 = 46).
-export const BASE_BATTLE_CODE_BYTES_BY_MAPPER = { 30: 4125, 1: 4125, 4: 4171 };
+export const BASE_BATTLE_CODE_BYTES_BY_MAPPER = { 30: 4220, 1: 4220, 4: 4266 };
 
 // Phase 4c round 3, finding 6 (phase4-design.md §9), corrected round 3b
 // (review K1): the two-menu-consistency filter (build_item_list's kind/

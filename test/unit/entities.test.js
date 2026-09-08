@@ -6,7 +6,8 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import NES from '../../renderer/emulator/core/nes.js';
 import { generateAssets } from '../../main/build/generate.js';
-import { loadProject } from '../../main/project-io.js';
+import { loadProject, saveProject } from '../../main/project-io.js';
+import { buildProject } from '../../main/build/pipeline.js';
 import { createProject, ACTIONS, BUTTONS, INPUT_STATES, PLAYER_TILES } from '../../shared/project.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
@@ -83,6 +84,67 @@ test('each actor gets one animation per facing, falling back to idle', async (t)
   // Order is down, up, left, right.
   assert.deepEqual(rows[0], [1, 0, 2, 2], 'walkUp should fall back to idle; left and right share walkSide');
   assert.deepEqual(rows[1], [0xff, 0xff, 0xff, 0xff], 'an actor with no animations is $FF everywhere');
+});
+
+// entity_animation (engine/entities.asm) and draw_actor_icon (engine/ui.asm)
+// both used to compute actor*4 in one 8-bit accumulator (asl a; asl a), which
+// silently wraps at actor id 64 (64*4 = 256 mod 256 = 0) and aliases actor 0's
+// own animation row -- LIMITS.actors is 255, so a 65-actor project is legal
+// and this is genuinely reachable, not merely theoretical. Two placements,
+// each with its own distinct tile, so a wrap shows up as the WRONG tile
+// (actor 0's own, or none at all) rather than merely "nothing changed".
+test('an actor at id 64 draws its own animation row, not actor 0 wrapped around', async (t) => {
+  const dir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'forge-actor64-'));
+  t.after(() => fs.promises.rm(dir, { recursive: true, force: true }));
+
+  const project = createProject('ActorBoundary');
+  const metasprite = (id, tile) => ({
+    id,
+    name: `m${id}`,
+    tiles: [{ x: 0, y: 0, tile, palette: 0, hflip: false, vflip: false }]
+  });
+  const anim = (id, metaspriteId) => ({ id, name: `a${id}`, loop: true, frames: [{ metaspriteId, duration: 8 }] });
+
+  // Three distinct tiles: actor 0's own (a live control -- proves the fixture
+  // itself draws entities at all), and the two boundary actors either side of
+  // the wrap.
+  project.sprites.metasprites = [metasprite(0, 200), metasprite(1, 63), metasprite(2, 64)];
+  project.sprites.animations = [anim(0, 0), anim(1, 1), anim(2, 2)];
+
+  const actors = [{ id: 0, name: 'Zero', behavior: 'npc', speed: 1, hp: 1, anims: { walkDown: 0 } }];
+  for (let id = 1; id < 63; id++) {
+    actors.push({ id, name: `Filler${id}`, behavior: 'npc', speed: 1, hp: 1, anims: {} });
+  }
+  actors.push({ id: 63, name: 'Boundary63', behavior: 'npc', speed: 1, hp: 1, anims: { walkDown: 1 } });
+  actors.push({ id: 64, name: 'Boundary64', behavior: 'npc', speed: 1, hp: 1, anims: { walkDown: 2 } });
+  project.sprites.actors = actors;
+
+  const screen = project.maps[0].screens[0];
+  screen.entities.push({ actorId: 0, x: 40, y: 100, props: {} });
+  screen.entities.push({ actorId: 63, x: 80, y: 100, props: {} });
+  screen.entities.push({ actorId: 64, x: 120, y: 100, props: {} });
+
+  await saveProject(dir, project);
+  const built = await buildProject({ dir, project, log: () => {} });
+
+  const nes = new NES({ onFrame: () => {}, emulateSound: false });
+  nes.loadROM(new Uint8Array(fs.readFileSync(built.romPath)));
+  for (let i = 0; i < 20; i++) nes.frame();
+
+  const drawnTiles = new Set();
+  for (let i = 0; i < 64; i++) {
+    const y = nes.ppu.spriteMem[i * 4];
+    if (y >= 0xef) continue; // parked slot
+    drawnTiles.add(nes.ppu.spriteMem[i * 4 + 1]);
+  }
+
+  assert.ok(drawnTiles.has(200), 'actor 0 should draw its own tile -- the fixture itself must be live');
+  assert.ok(drawnTiles.has(63), 'actor 63 (the last one before the wrap) should draw its own tile');
+  assert.ok(
+    drawnTiles.has(64),
+    'actor 64 should draw its own animation row (tile 64) -- an 8-bit actor*4 wraps at 64 ' +
+      '(64*4=256, mod 256=0) and aliases actor 0, which would draw tile 200 here instead'
+  );
 });
 
 test('the button table has one row per game state, in INPUT_STATES order', async (t) => {

@@ -2099,7 +2099,7 @@ test('a kernel-lo shortfall a live Wait command alone would close names Wait', (
     y: 16,
     props: { event: { pages: [{ cond: { type: 'none', arg: 0 }, commands: [{ op: 'wait', frames: 30 }] }] } }
   });
-  inflate(project, 220);
+  inflate(project, 213);
   const deficit = kernelShortfallDeficit(project);
   assert.ok(deficit <= WAIT_KERNEL_ALLOWANCE, `deficit ${deficit} must not exceed WAIT_KERNEL_ALLOWANCE (${WAIT_KERNEL_ALLOWANCE}) or this case does not exercise Wait alone closing the gap`);
   const message = kernelShortfallMessage(project);
@@ -2151,7 +2151,7 @@ test('a kernel-lo shortfall neither Turn nor Wait alone would close, but both to
       }
     }
   });
-  inflate(project, 220);
+  inflate(project, 213);
   const deficit = kernelShortfallDeficit(project);
   const turnAlone = TURN_KERNEL_ALLOWANCE + FACE_KERNEL_ALLOWANCE;
   const combined = TURN_KERNEL_ALLOWANCE + WAIT_KERNEL_ALLOWANCE + FACE_KERNEL_ALLOWANCE;
@@ -2189,7 +2189,7 @@ test('a kernel-lo shortfall a live Shake command alone would close names Shake',
     y: 16,
     props: { event: { pages: [{ cond: { type: 'none', arg: 0 }, commands: [{ op: 'shake', frames: 30 }] }] } }
   });
-  inflate(project, 219);
+  inflate(project, 212);
   const deficit = kernelShortfallDeficit(project);
   assert.ok(deficit <= SHAKE_KERNEL_ALLOWANCE, `deficit ${deficit} must not exceed SHAKE_KERNEL_ALLOWANCE (${SHAKE_KERNEL_ALLOWANCE}) or this case does not exercise Shake alone closing the gap`);
   const message = kernelShortfallMessage(project);
@@ -2232,7 +2232,7 @@ test('a kernel-lo shortfall neither Shake nor Wait alone would close, but both t
       }
     }
   });
-  inflate(project, 220);
+  inflate(project, 213);
   const deficit = kernelShortfallDeficit(project);
   const combined = SHAKE_KERNEL_ALLOWANCE + WAIT_KERNEL_ALLOWANCE;
   assert.ok(
@@ -2265,7 +2265,7 @@ test('a kernel-lo shortfall a live Show/Hide command alone would close names Sho
     y: 16,
     props: { event: { pages: [{ cond: { type: 'none', arg: 0 }, commands: [{ op: 'visible', state: 'hidden' }] }] } }
   });
-  inflate(project, 221);
+  inflate(project, 214);
   const deficit = kernelShortfallDeficit(project);
   assert.ok(
     deficit <= VISIBLE_KERNEL_ALLOWANCE,
@@ -2310,7 +2310,7 @@ test('a kernel-lo shortfall neither Shake nor Show/Hide alone would close, but b
       }
     }
   });
-  inflate(project, 220);
+  inflate(project, 213);
   const deficit = kernelShortfallDeficit(project);
   const combined = SHAKE_KERNEL_ALLOWANCE + VISIBLE_KERNEL_ALLOWANCE;
   assert.ok(
@@ -2391,7 +2391,7 @@ test('a kernel-lo shortfall neither Shake nor Fade alone would close, but both t
       }
     }
   });
-  inflate(project, 220);
+  inflate(project, 213);
   const deficit = kernelShortfallDeficit(project);
   const fadeAlone = FADE_KERNEL_ALLOWANCE + PALETTE_FX_KERNEL_ALLOWANCE;
   const combined = SHAKE_KERNEL_ALLOWANCE + fadeAlone;
@@ -2440,7 +2440,7 @@ test('a kernel-lo shortfall with both Flash and Fade live: dropping Fade alone f
       }
     }
   });
-  inflate(project, 200);
+  inflate(project, 193);
   const deficit = kernelShortfallDeficit(project);
   assert.ok(
     deficit > FLASH_KERNEL_ALLOWANCE,
@@ -2487,7 +2487,7 @@ test('a kernel-lo shortfall with no live Fade command never names Fade as droppa
     y: 16,
     props: { event: { pages: [{ cond: { type: 'none', arg: 0 }, commands: [{ op: 'shake', frames: 30 }] }] } }
   });
-  inflate(project, 219); // the identical Shake-solo deficit measured above
+  inflate(project, 212); // the identical Shake-solo deficit measured above
   const deficit = kernelShortfallDeficit(project);
   assert.ok(deficit <= SHAKE_KERNEL_ALLOWANCE, `deficit ${deficit} must not exceed SHAKE_KERNEL_ALLOWANCE (${SHAKE_KERNEL_ALLOWANCE}) or this case does not exercise Shake alone closing the gap`);
   const message = kernelShortfallMessage(project);
@@ -2526,7 +2526,7 @@ test('a kernel-lo shortfall with no live Flash command never names Flash as drop
     y: 16,
     props: { event: { pages: [{ cond: { type: 'none', arg: 0 }, commands: [{ op: 'shake', frames: 30 }] }] } }
   });
-  inflate(project, 219); // the identical Shake-solo deficit measured above
+  inflate(project, 212); // the identical Shake-solo deficit measured above
   const deficit = kernelShortfallDeficit(project);
   assert.ok(deficit <= SHAKE_KERNEL_ALLOWANCE, `deficit ${deficit} must not exceed SHAKE_KERNEL_ALLOWANCE (${SHAKE_KERNEL_ALLOWANCE}) or this case does not exercise Shake alone closing the gap`);
   const message = kernelShortfallMessage(project);
@@ -3037,14 +3037,57 @@ test(
   }
 );
 
+// DECLARED DEVIATION (see the section comment above): assertSfxRefusal's own
+// contract -- dropping SFX alone is always a real, buildable fix -- no longer
+// holds for this one row. Item 11's re-measurement moved
+// BASE_KERNEL_CODE_BYTES_BY_MAPPER[1] from 5954 to 6007 (entity_animation and
+// draw_actor_icon both needed a 16-bit pointer where an 8-bit actor*4 used to
+// silently wrap at actor id 64), which raises this row's real deficit from
+// 283 to 336 -- 36 bytes past what dropping SFX alone frees here (300:
+// SFX_KERNEL_ALLOWANCE_STANDALONE + AUDIO_FX_KERNEL_ALLOWANCE +
+// STING_SFX_INTERACTION_ALLOWANCE - AUDIO_FX_KERNEL_ALLOWANCE, unchanged by
+// this slice). Verified against a real checkCapacity() run, not a re-derived
+// formula: the refusal now names Move (395) or Save (552), never SFX, and
+// dropping Move alone (Save's own event keeps its `save` command) is
+// confirmed as a real, buildable fix in its place.
 test(
-  'sample-rpg with Save, Move and its one live item does not build on MMC1 with a live Sting AND a live SFX together',
+  'sample-rpg with Save, Move and its one live item does not build on MMC1 with a live Sting AND a live SFX together -- DEVIATION: item 11\'s base re-measurement means dropping SFX alone no longer closes this one, only Move or Save does',
   { skip: !hasNesasm && 'nesasm not found on PATH' },
   async (t) => {
-    await assertSfxRefusal(t, 1, [{ op: 'save' }, { op: 'move', who: 'self', dir: 'up', dist: 16 }], {
-      withSting: true,
-      mapperLabel: 'MMC1'
-    });
+    const project = await loadProject(SAMPLE_RPG);
+    project.cartridge.mapper = 1;
+    project.project.titleMap = 0;
+    project.project.titleScreen = 0;
+    project.maps[0].screens[0].entities.push(
+      commandsEvent([{ op: 'save' }, { op: 'move', who: 'self', dir: 'up', dist: 16 }])
+    );
+    project.songs = [createSong('Fanfare')];
+    project.maps[0].screens[0].entities.push(commandsEvent([{ op: 'sting', song: 0 }], 96, 96));
+    project.maps[0].screens[0].entities.push(sfxCommandEvent(project));
+
+    const message = kernelShortfallMessage(project);
+    assert.match(
+      message,
+      /removing every Move command \(frees 395 bytes\) or every Save command \(frees 552 bytes\)/,
+      `MMC1: dropping Move or Save, not SFX, should be the offered fix once the deficit exceeds what SFX alone frees -- got: ${message}`
+    );
+    assert.doesNotMatch(
+      message,
+      /Play a sound effect/,
+      'SFX alone no longer frees enough to close this particular deficit, so it must not be offered as a solo fix'
+    );
+
+    // Dropping Move alone (Save's own command stays in the same event) is
+    // still a real, buildable fix -- the refusal is accurate, not merely
+    // differently worded.
+    const droppedMove = structuredClone(project);
+    const saveMoveEntity = droppedMove.maps[0].screens[0].entities.at(-3); // pushed first of the three appended above
+    saveMoveEntity.props.event.pages[0].commands = saveMoveEntity.props.event.pages[0].commands.filter((c) => c.op !== 'move');
+    const dir = await fsp.mkdtemp(path.join(os.tmpdir(), 'forge-sfx-sting-limitation-'));
+    t.after(() => fsp.rm(dir, { recursive: true, force: true }));
+    await saveProject(dir, droppedMove);
+    const built = await buildProject({ dir, project: droppedMove, log: () => {} });
+    assert.ok(built.romPath, 'MMC1: dropping Move should be a real fix once SFX alone no longer is');
   }
 );
 

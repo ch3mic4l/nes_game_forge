@@ -17,7 +17,7 @@ import { loadProject, saveProject } from '../../main/project-io.js';
 import { buildProject } from '../../main/build/pipeline.js';
 import { createProject, NO_MEMBER } from '../../shared/project.js';
 import { checkCapacity } from '../../main/build/generate.js';
-import { statAt, xpCurve, nameTiles, NAME_LIMIT } from '../../main/build/battletables.js';
+import { statAt, xpCurve, nameTiles, NAME_LIMIT, dropThreshold } from '../../main/build/battletables.js';
 import { parseSymbolFile } from '../../main/build/symbols.js';
 import { compileText, opIndex, EVT_PAGES_END } from '../../main/build/textcompile.js';
 import { decodeBody } from '../lib/eventdecoder.js';
@@ -42,7 +42,11 @@ const BT_PHASE = 0x53;
 const BT_ACTOR = 0x54;
 const BT_SEL = 0x55;
 const BT_TARGET = 0x56;
+const BT_DMG_LO = 0x58;
+const BT_DMG_HI = 0x59;
 const BT_COUNT = 0x5b;
+const BT_MON_ROW = 4; // engine/constants.asm -- the first monster's top row
+const BT_MON_COL = 4; // engine/constants.asm
 const GOLD_LO = 0x63;
 const PARTY_SIZE = 0x65;
 const BT_LEN = 0x6b;
@@ -265,6 +269,104 @@ async function buildVariantFull(t, name, mutate) {
 async function buildVariant(t, name, mutate) {
   const built = await buildVariantFull(t, name, mutate);
   return built.romPath;
+}
+
+// --- calling one engine routine in isolation --------------------------------
+//
+// A stub JSR/NOP pair at $0700 (plain RAM, mirrored from $0000-$07FF, so it is
+// executable regardless of which PRG bank is currently mapped), landing PC
+// one byte before it so the very first emulate() step fetches the JSR. Used
+// to unit-test a single routine's own contract without driving the whole
+// game loop up to the exact frame that would reach it.
+function callRoutine(nes, address) {
+  nes.mmap.write(0x2000, 0); // NMI generation off -- a stray NMI mid-stub would
+                              // both divert PC and inflate the returned cycle count
+  nes.cpu.irqRequested = false;
+  nes.cpu.F_INTERRUPT = 1; // and IRQ must not land mid-stub either
+  nes.cpu.mem.set([0x20, address & 255, address >> 8, 0xea], 0x700);
+  nes.cpu.REG_PC = 0x6ff;
+  let cycles = 0;
+  let steps = 0;
+  while ((nes.cpu.REG_PC + 1) !== 0x703) {
+    cycles += nes.cpu.emulate();
+    assert.ok(++steps < 20000, 'routine never returned to the stub');
+  }
+  return cycles;
+}
+
+/**
+ * The battle system's own code (battle.asm/battleui.asm/battleturn.asm) lives
+ * in the switchable PRG window, which call_battle only ever holds mapped for
+ * the duration of one call -- CLAUDE.md's "The battle system" section, and
+ * engine/banks.asm's own call_battle comment ("the restore *is* the return").
+ * So between frames the window is back to whatever screen bank the field was
+ * showing, and jsr'ing straight into a battle-bank address from outside a
+ * frame would execute that screen's data as code. switch_prg_bank itself
+ * lives in the fixed kernel ($C000+), so it is reachable regardless, and
+ * selecting BATTLE_BANK first (read out of this build's own generated
+ * config.inc, never guessed) is what makes a direct call into battle-bank
+ * code like apply_damage safe to make in isolation.
+ */
+function selectBattleBank(nes, built) {
+  const dir = path.dirname(path.dirname(built.romPath));
+  const configText = fs.readFileSync(path.join(dir, 'build', 'assets', 'config.inc'), 'utf8');
+  const match = configText.match(/^BATTLE_BANK\s*=\s*(\d+)/m);
+  assert.ok(match, 'BATTLE_BANK should be a named constant in config.inc');
+  const battleBank = parseInt(match[1], 10);
+  const symbols = fs.readFileSync(built.symbolPath, 'utf8');
+  const addrOf = (label) => {
+    const m = symbols.match(new RegExp(`^${label}\\s*=\\s*\\$([0-9A-Fa-f]+)`, 'm'));
+    assert.ok(m, `${label} should be a named symbol in game.fns`);
+    return parseInt(m[1], 16);
+  };
+  nes.cpu.REG_ACC = battleBank;
+  callRoutine(nes, addrOf('switch_prg_bank'));
+  return addrOf;
+}
+
+/**
+ * Resolve one RAM symbol out of a build's own `build/constants.asm`, the
+ * copy that assembled the ROM in hand (Code Forge override included) --
+ * shared/enginesyms.js's own parseEquates only understands a bare literal,
+ * not a chained `name = otherName+1` expression, and most of this engine's
+ * zero-page map (bt_wipe_mask included) is chained precisely so a new byte
+ * never moves an existing one. This walks the identical chain by hand,
+ * resolving `NAME = $hex`, `NAME = decimal`, `NAME = otherName`, and
+ * `NAME = otherName+decimal` lines, exactly the restricted grammar this
+ * codebase's own equate chains stay inside (rammap.test.js's scanEquates
+ * documents and audits the same shape, project-wide).
+ */
+function resolveEngineAddress(constantsText, name) {
+  const equates = new Map();
+  for (const line of constantsText.split('\n')) {
+    const m = line.match(/^([A-Za-z_][A-Za-z0-9_]*)\s*=\s*([^;]+)/);
+    if (!m) continue;
+    const [, n, rawExpr] = m;
+    if (!equates.has(n)) equates.set(n, rawExpr.trim());
+  }
+  const cache = new Map();
+  function resolve(n, seen) {
+    if (cache.has(n)) return cache.get(n);
+    assert.ok(!seen.has(n), `circular equate chain resolving ${n}`);
+    seen.add(n);
+    const expr = equates.get(n);
+    assert.ok(expr !== undefined, `${n} is not defined in this build's own constants.asm`);
+    let value;
+    const hex = expr.match(/^\$([0-9A-Fa-f]+)$/);
+    const dec = expr.match(/^(\d+)$/);
+    const sum = expr.match(/^([A-Za-z_][A-Za-z0-9_]*)\s*\+\s*([A-Za-z_][A-Za-z0-9_]*|\d+)$/);
+    const bare = expr.match(/^([A-Za-z_][A-Za-z0-9_]*)$/);
+    if (hex) value = parseInt(hex[1], 16);
+    else if (dec) value = parseInt(dec[1], 10);
+    else if (sum) {
+      const add = /^\d+$/.test(sum[2]) ? parseInt(sum[2], 10) : resolve(sum[2], seen);
+      value = resolve(sum[1], seen) + add;
+    } else if (bare) value = resolve(bare[1], seen);
+    else assert.fail(`${n} = ${expr} does not fit resolveEngineAddress's restricted grammar (literal, bare name, name+decimal, or name+name)`);
+    cache.set(n, value);
+    return value;
+  }
+  return resolve(name, new Set());
 }
 
 // --- the tables -------------------------------------------------------------
@@ -2334,6 +2436,77 @@ test('a certain drop lands in the bag on victory', {
   assert.equal(nes.cpu.mem[INV_ITEMS], 0, 'the drop should be the potion the slime carries');
 });
 
+// --- review finding 13: roll_drop compares a 0-63 roll to a 0-100 byte -----
+
+// roll_drop (engine/battleturn.asm) scales its own roll to 0-63 before
+// comparing it against mon_drop_pct, so the byte battletables.js emits into
+// that table has to live in the identical 0-63 domain -- dropThreshold is
+// the single place that scaling happens, at generation time, with no engine
+// change of its own.
+test('dropThreshold scales an authored percentage into the 0-63 roll domain', () => {
+  assert.equal(dropThreshold(0), 0, 'a 0% chance must keep roll_drop\'s own early-out meaning "never"');
+  assert.equal(dropThreshold(1), 1);
+  assert.equal(dropThreshold(50), 32, '50% of 64 is 32');
+  assert.equal(dropThreshold(100), 64, '100% is one past the largest value a 0-63 roll can ever produce -- certain');
+
+  // Monotonic: raising the authored percentage must never lower the compiled
+  // byte, or an author's own "more likely" slider would compile backwards.
+  let prev = -1;
+  for (let pct = 0; pct <= 100; pct++) {
+    const value = dropThreshold(pct);
+    assert.ok(value >= prev, `dropThreshold(${pct}) = ${value} should not be lower than the previous percentage's ${prev}`);
+    prev = value;
+  }
+});
+
+// The generation-level fix cross-checked against the real engine: roll_drop
+// itself, called directly (bypassing the whole battle flow, the same
+// isolation technique as the apply_damage test above) once per seed 0-255,
+// counted against a JS model built from referenceRngNext (already proven
+// against rng_next elsewhere in this file) and dropThreshold together. A
+// generation-only fix that scaled the wrong way, rounded the wrong way, or
+// never reached mon_drop_pct at all would all show up here as a seed-sweep
+// count that does not match the model, not merely as "some drops happened".
+test('roll_drop\'s own drop rate matches referenceRngNext + dropThreshold across every seed, for 0%, 50% and 100%', {
+  skip: needsSample
+}, async (t) => {
+  for (const pct of [0, 50, 100]) {
+    const built = await buildVariantFull(t, `dropthreshold-sweep-${pct}`, (project) => {
+      project.sprites.actors[0].battle = { ...project.sprites.actors[0].battle, dropPct: pct };
+    });
+    const nes = boot(built.romPath, 10);
+    const addrOf = selectBattleBank(nes, built);
+    const rollDrop = addrOf('roll_drop');
+    const threshold = dropThreshold(pct);
+
+    let drops = 0;
+    let predictedDrops = 0;
+    for (let seed = 0; seed < 256; seed++) {
+      nes.cpu.mem[MON_SLOT_ACTOR] = 0; // this build's slime, slot 0
+      nes.cpu.mem[RNG] = seed;
+      nes.cpu.mem[INV_COUNT] = 0;
+      nes.cpu.mem[INV_ITEMS] = 0xff;
+      nes.cpu.REG_X = 0;
+      callRoutine(nes, rollDrop);
+      if (nes.cpu.mem[INV_COUNT] === 1) drops++;
+
+      const roll64 = referenceRngNext(seed) >> 2;
+      if (roll64 < threshold) predictedDrops++;
+    }
+
+    assert.equal(
+      drops,
+      predictedDrops,
+      `dropPct ${pct} (threshold ${threshold}): predicted ${predictedDrops} drops across all 256 seeds, the ROM gave ${drops}`
+    );
+    // Sanity on the model itself, so a model bug cannot pass by predicting
+    // the same wrong number the old bug produced: 0% must never drop, and
+    // 100% must always drop, in both the prediction and the ROM alike.
+    if (pct === 0) assert.equal(drops, 0, 'a 0% drop chance must never drop');
+    if (pct === 100) assert.equal(drops, 256, 'a 100% drop chance must always drop');
+  }
+});
+
 test('a group spell reaches every monster in the formation at once', {
   skip: needsSample
 }, async (t) => {
@@ -2358,6 +2531,262 @@ test('a group spell reaches every monster in the formation at once', {
   // Fire against a fire weakness: ten becomes fifteen, on both of them.
   assert.equal(nes.cpu.mem[MON_HP], 15, 'the first monster took the wrong damage');
   assert.equal(nes.cpu.mem[MON_HP + 1], 15, 'the group spell missed the second monster');
+});
+
+// --- review finding 9: killing a formation in one tick overruns vblank -----
+
+// wipe_monster's own four-row sweep, called once per dying monster, used to
+// let an all-target spell killing four at once queue 4 x 44 = 176 bytes of
+// PPUDATA in the same frame -- past the ~2273-cycle vblank window, so the
+// writes land on visible scanlines. The fix (bt_wipe_mask/bt_wipe_row,
+// wipe_tick) turns that into a per-frame producer budgeted at one 8-byte
+// row -- an 11-byte packet with its 3-byte header -- at a time. Measured
+// directly against real PPUDATA traffic ($2007 writes, the same oracle the
+// review's own repro used) rather than against internal RAM state, since
+// the defect is about how much lands in one frame, not about whether it
+// eventually all lands.
+test('killing a whole formation in one tick queues at most one wipe row a frame, not a 176-byte spike', {
+  skip: needsSample
+}, async (t) => {
+  const rom = await buildVariant(t, 'wipe-budget', (project) => {
+    project.maps[0].encounters = { rate: 0, actorIds: [] };
+    project.spells[0].scope = 'all';
+  });
+  const nes = boot(rom);
+  walkTo(nes, 160, 176);
+  walkTo(nes, 176, 176, 200);
+  assert.equal(nes.cpu.mem[GAME_STATE], ST_BATTLE);
+  waitForMenu(nes);
+
+  // Force all four monster slots alive with one hit point each -- the wipe
+  // budget is a property of apply_damage_mon/wipe_tick alone, not of
+  // whichever formation the walk actually seated, and this is the review's
+  // own repro shape: an all-target spell killing four monsters at once.
+  for (let slot = 0; slot < 4; slot++) {
+    nes.cpu.mem[MON_SLOT_ACTOR + slot] = 0;
+    nes.cpu.mem[MON_HP + slot] = 1;
+    nes.cpu.mem[MON_ALIVE + slot] = 1;
+  }
+  nes.cpu.mem[BT_COUNT] = 4;
+
+  chooseCommand(nes, BC_MAGIC);
+
+  const writesPerFrame = [];
+  const originalWrite = nes.mmap.write.bind(nes.mmap);
+  let current = 0;
+  nes.mmap.write = (address, value) => {
+    if (address === 0x2007) current++;
+    return originalWrite(address, value);
+  };
+
+  nes.buttonDown(1, A); // Ember, scope "all" -- resolves immediately, killing all four
+  current = 0;
+  nes.frame();
+  writesPerFrame.push(current);
+  nes.buttonUp(1, A);
+  // Just long enough to cover the cast's own message and the full wipe
+  // drain (measured at 16 frames for four monsters' four rows each) --
+  // deliberately short of MSG_HOLD (45 frames), past which the message
+  // auto-advances on its own and queues unrelated post-battle traffic
+  // (the victory line, and so on) that has nothing to do with this fix.
+  for (let i = 0; i < 25; i++) {
+    current = 0;
+    nes.frame();
+    writesPerFrame.push(current);
+  }
+  nes.mmap.write = originalWrite;
+
+  assert.equal(nes.cpu.mem[BT_COUNT], 0, 'all four monsters should have died to the one cast');
+
+  const maxPerFrame = Math.max(...writesPerFrame);
+  // The old bug's own shape: one dying monster's wipe alone is 4 rows of 8
+  // (32 PPUDATA bytes) queued in a single call, so four monsters dying in
+  // the same tick was up to 128 wipe bytes in one frame, on top of whatever
+  // the message flow queued that same frame. Nothing this fix touches
+  // should ever again approach that -- the budgeted path caps a single
+  // wipe-driven frame at one row (8), and the largest *other* single-frame
+  // producer measured on this build (clear_message's own 4 rows, see the
+  // report) is 52, so 60 is generous headroom above real producers and far
+  // below the old bug's own magnitude.
+  assert.ok(
+    maxPerFrame <= 60,
+    `no single frame should come anywhere near a full monster wipe (32 PPUDATA bytes) at once, let alone four -- ` +
+      `saw a peak of ${maxPerFrame} $2007 writes in one frame`
+  );
+
+  // The budgeted rows themselves: four monsters x four rows x eight bytes is
+  // 128 bytes total, and it must be spread over many frames (one row a
+  // frame), never bunched into a handful of them.
+  const wipeFrames = writesPerFrame.filter((count) => count === 8);
+  const wipeBytes = wipeFrames.length * 8;
+  assert.equal(wipeBytes, 4 * 4 * 8, 'the four monsters\' full wipes (4 rows each, 8 bytes a row) should all eventually drain');
+  assert.ok(
+    wipeFrames.length >= 15,
+    `the 16 wipe rows should be spread across at least 15 distinct frames (one row a frame) -- saw only ${wipeFrames.length}`
+  );
+});
+
+// Round 2 review finding: wipe_tick re-picked the lowest set bt_wipe_mask bit
+// every frame it was idle between rows, but bt_wipe_row is a single counter
+// shared across whichever slot it lands on -- so a lower slot dying while a
+// higher one was mid-wipe stole that in-progress row count instead of
+// starting its own sweep at row 0, and its own earlier rows were never
+// queued at all. bt_wipe_slot (engine/constants.asm) makes the active slot
+// sticky: a fresh pick only happens once bt_wipe_row is back at zero.
+//
+// Reproduces the reviewer's own staggered-death shape directly against RAM
+// state (the same technique the apply_damage isolation tests above use):
+// slots 1-3 die in one tick (bt_wipe_mask set for all three at once, as a
+// real all-target kill would leave it), then slot 0 dies two rows into
+// slot 3's own sweep -- the exact interruption point the finding names.
+// Every one of the four blocks' four rows is then checked directly in the
+// nametable, not just bt_wipe_mask reaching zero, because the bug's own
+// shape is "some rows silently never queued," which an empty mask alone
+// cannot distinguish from "every row genuinely queued."
+test('a lower slot dying while a higher slot is mid-wipe still gets all four of its own rows blanked', {
+  skip: needsSample
+}, async (t) => {
+  let capturedProject;
+  const built = await buildVariantFull(t, 'wipe-stagger', (project) => {
+    capturedProject = project;
+    project.maps[0].encounters = { rate: 0, actorIds: [] };
+  });
+  const dir = path.dirname(path.dirname(built.romPath));
+  const constantsText = fs.readFileSync(path.join(dir, 'build', 'constants.asm'), 'utf8');
+  const BT_WIPE_MASK = resolveEngineAddress(constantsText, 'bt_wipe_mask');
+  const BT_WIPE_ROW = resolveEngineAddress(constantsText, 'bt_wipe_row');
+  const fillTile = capturedProject.maps[0].battleGroundTile;
+
+  const nes = boot(built.romPath);
+  walkTo(nes, 160, 176);
+  walkTo(nes, 176, 176, 200);
+  assert.equal(nes.cpu.mem[GAME_STATE], ST_BATTLE);
+  waitForMenu(nes);
+
+  // Force all four monster slots alive with real block art (sample-rpg's
+  // slime has one, battleTile 32) so a wiped cell is observably different
+  // from an unwiped one -- a metasprite-only monster would leave the
+  // background exactly as ground fill either way and prove nothing.
+  for (let slot = 0; slot < 4; slot++) {
+    nes.cpu.mem[MON_SLOT_ACTOR + slot] = 0;
+    nes.cpu.mem[MON_HP + slot] = 1;
+    nes.cpu.mem[MON_ALIVE + slot] = 1;
+  }
+  nes.cpu.mem[BT_COUNT] = 4;
+  for (let i = 0; i < 4; i++) nes.frame(); // let draw_monsters actually paint the four blocks
+
+  // Slots 1-3 die in the same tick: bt_wipe_mask gets all three bits at
+  // once, exactly as apply_damage_mon leaves it after an all-target spell
+  // kills them within the same cast_all loop.
+  for (const slot of [1, 2, 3]) {
+    nes.cpu.mem[MON_ALIVE + slot] = 0;
+    nes.cpu.mem[MON_HP + slot] = 0;
+  }
+  nes.cpu.mem[BT_COUNT] = 1;
+  nes.cpu.mem[BT_WIPE_MASK] = (1 << 1) | (1 << 2) | (1 << 3);
+
+  // Ten frames drains slot 1's own four rows, then slot 2's own four, then
+  // two of slot 3's own four -- deterministic in both the fixed and the
+  // buggy shared-counter implementation alike, since nothing has diverged
+  // between them yet at this point: neither has had a reason to re-pick or
+  // stay sticky before the very first interruption below. Driving the poke
+  // by frame count rather than by reading bt_wipe_slot (the fix's own new
+  // byte, meaningless in the sabotaged version) is what makes this a fair
+  // sabotage target instead of merely re-checking the fix's own bookkeeping.
+  let staggered = false;
+  let drained = false;
+  for (let i = 0; i < 60 && !drained; i++) {
+    nes.frame();
+    if (!staggered && i === 9) {
+      assert.equal(
+        nes.cpu.mem[BT_WIPE_ROW],
+        2,
+        'scenario setup is wrong, not the fix: expected slot 3 to be two rows into its own wipe by the tenth frame'
+      );
+      // Slot 3 is two rows into its own sweep -- kill slot 0 right now.
+      nes.cpu.mem[MON_ALIVE + 0] = 0;
+      nes.cpu.mem[MON_HP + 0] = 0;
+      nes.cpu.mem[BT_COUNT] = 0;
+      nes.cpu.mem[BT_WIPE_MASK] |= 1 << 0;
+      staggered = true;
+    }
+    if (staggered && nes.cpu.mem[BT_WIPE_MASK] === 0) drained = true;
+  }
+  assert.ok(drained, 'bt_wipe_mask never reached zero -- the wipe queue got stuck');
+
+  // vram_buf's own contract: NMI drains what mainline queued *this* frame at
+  // the *next* vblank, so the last row's packet -- built during the very
+  // frame bt_wipe_mask reached zero -- is not yet visible in the nametable
+  // until one more nes.frame() has run. Two, for margin.
+  for (let i = 0; i < 2; i++) nes.frame();
+
+  for (let slot = 0; slot < 4; slot++) {
+    for (let row = 0; row < 4; row++) {
+      const tiles = nametableRow(nes, BT_MON_ROW + slot * 4 + row, BT_MON_COL, 8);
+      assert.deepEqual(
+        tiles,
+        new Array(8).fill(fillTile),
+        `slot ${slot} row ${row} should be fully blanked to the ground fill tile (${fillTile}) -- got [${tiles.join(',')}]` +
+          (slot === 0 && row < 2 ? ' (slot 0\'s own top two rows are exactly what the bug left unwiped)' : '')
+      );
+    }
+  }
+});
+
+// A direct cycle measurement of the thing the ~2273-cycle vblank window
+// actually bounds: vram_drain, NMI's own routine, draining whatever a
+// producer queued the frame before. wipe_tick runs on the mainline (which has
+// the whole ~29,780-cycle NTSC frame to spare, not the vblank window), so
+// timing wipe_tick itself would measure the wrong budget entirely -- what
+// matters is how many bytes it adds to vram_buf, and what draining that
+// costs. Four real apply_damage calls (via callRoutine, the same isolation
+// as the apply_damage_mon test above) set all four bt_wipe_mask bits through
+// the real engine mechanism; wipe_tick then queues exactly one row (11
+// bytes: a 3-byte header plus 8 PPUDATA bytes) rather than a dying monster's
+// old four-row, 44-byte sweep, let alone four of those in the same frame.
+test('draining one wipe row costs a small fraction of the ~2273-cycle vblank window', {
+  skip: needsSample
+}, async (t) => {
+  const built = await buildVariantFull(t, 'wipe-cycles', () => {});
+  const addrOf = (label) => {
+    const symbols = fs.readFileSync(built.symbolPath, 'utf8');
+    const m = symbols.match(new RegExp(`^${label}\\s*=\\s*\\$([0-9A-Fa-f]+)`, 'm'));
+    assert.ok(m, `${label} should be a named symbol in game.fns`);
+    return parseInt(m[1], 16);
+  };
+  const nes = boot(built.romPath, 10);
+  selectBattleBank(nes, built);
+  const applyDamage = addrOf('apply_damage');
+  const wipeTick = addrOf('wipe_tick');
+
+  nes.cpu.mem[BT_COUNT] = 4;
+  for (let slot = 0; slot < 4; slot++) {
+    nes.cpu.mem[MON_ALIVE + slot] = 1;
+    nes.cpu.mem[MON_HP + slot] = 1;
+    nes.cpu.mem[BT_TARGET] = MAX_PARTY + slot;
+    nes.cpu.mem[BT_DMG_LO] = 1;
+    nes.cpu.mem[BT_DMG_HI] = 0;
+    callRoutine(nes, applyDamage);
+  }
+  assert.equal(nes.cpu.mem[BT_COUNT], 0, 'all four slots should have died, each owing wipe_tick a row');
+
+  const VRAM_LEN = 0x3c; // engine/constants.asm
+  const VRAM_BUF = 0x0400; // engine/constants.asm
+  nes.cpu.mem[VRAM_LEN] = 0;
+  nes.cpu.mem[VRAM_BUF] = 0;
+  callRoutine(nes, wipeTick); // mainline: builds the packet, does not drain it
+  assert.equal(nes.cpu.mem[VRAM_LEN], 11, "wipe_tick should queue exactly one row's own packet (3-byte header + 8 PPUDATA bytes), not more");
+
+  // vram_drain is called from NMI with A/X/Y already saved -- callRoutine's
+  // own stub does not save them, but this routine does not need that
+  // discipline to answer the one question here, which is purely how many
+  // cycles it takes to walk the one packet just queued.
+  const drainCycles = callRoutine(nes, addrOf('vram_drain'));
+  assert.ok(
+    drainCycles < 1000,
+    `draining one wipe row (${drainCycles} cycles) should leave generous room under the ~2273-cycle vblank window, ` +
+      'even after the OAM DMA\'s own 513 cycles and NMI\'s register save/restore'
+  );
 });
 
 // --- poison and the monsters' own magic -------------------------------------
@@ -2542,6 +2971,111 @@ test('a combatant poisoned and burned on its own turn takes both ticks, in order
     STATUS_POISON | STATUS_BURN,
     'a tick must not cure the status it just bit from -- only a heal or a potion does'
   );
+});
+
+// --- review finding 8: a dead monster ticked again decrements bt_count twice --
+
+// Isolated call into apply_damage itself (via callRoutine/selectBattleBank),
+// bypassing the whole turn engine on purpose: every real caller that can
+// reach a monster combatant already screens for aliveness one way or another
+// (cast_all's own combatant_alive_x, and -- once the sibling fix below is in
+// place -- battle_status_dispatch's own check), so apply_damage_mon's own
+// guard is unreachable through ordinary play. It still has to hold on its
+// own terms, as the last line of defense the routine's own contract
+// promises: an already-dead slot must see no store, no bt_count move, and no
+// wipe, regardless of who or what calls it.
+test('apply_damage does not touch an already-dead monster slot a second time', {
+  skip: needsSample
+}, async (t) => {
+  const built = await buildVariantFull(t, 'apply-damage-guard', () => {});
+  const addrOf = (label) => {
+    const symbols = fs.readFileSync(built.symbolPath, 'utf8');
+    const m = symbols.match(new RegExp(`^${label}\\s*=\\s*\\$([0-9A-Fa-f]+)`, 'm'));
+    assert.ok(m, `${label} should be a named symbol in game.fns`);
+    return parseInt(m[1], 16);
+  };
+  const nes = boot(built.romPath, 10);
+  selectBattleBank(nes, built);
+  const applyDamage = addrOf('apply_damage');
+
+  // Slot 0 already dead, but left holding hp == the damage about to be
+  // "applied" again -- exactly the shape a second status tick on the same
+  // dead combatant produces (poison already having zeroed it, then burn
+  // rolling in with its own amount). bt_count stands in for "three other
+  // monsters are still alive", so a wrong second decrement is visible as a
+  // wrong number, not merely a non-zero one.
+  nes.cpu.mem[MON_ALIVE] = 0;
+  nes.cpu.mem[MON_HP] = 5;
+  nes.cpu.mem[BT_COUNT] = 3;
+  nes.cpu.mem[BT_TARGET] = MAX_PARTY; // combatant index 4 == monster slot 0
+  nes.cpu.mem[BT_DMG_LO] = 5;
+  nes.cpu.mem[BT_DMG_HI] = 0;
+
+  callRoutine(nes, applyDamage);
+
+  assert.equal(nes.cpu.mem[BT_COUNT], 3, 'apply_damage must not decrement bt_count for a slot that was already dead');
+  assert.equal(nes.cpu.mem[MON_HP], 5, 'an already-dead slot must not have its hp touched at all, let alone re-zeroed');
+  assert.equal(nes.cpu.mem[MON_ALIVE], 0, 'an already-dead slot must stay dead');
+});
+
+// The full turn engine's own side of the same defect: two status bits ticking
+// on the SAME combatant's SAME turn, the monster's own (party-vs-monster
+// status ticks on a party member are already covered by the dual-status test
+// above; this is the bt_count/mon_slot_alive half that test cannot reach).
+// Every assertion checks the nametable as well as RAM, the same discipline
+// the dual-status test uses, because a dispatch that silently skips straight
+// to advancing the turn could look right on HP alone.
+test('a monster poisoned and burned on its own turn dies once, not twice, and takes no tick once dead', {
+  skip: needsSample
+}, async (t) => {
+  const rom = await buildVariant(t, 'monster-dual-status', (project) => {
+    project.maps[0].encounters = { rate: 0, actorIds: [] };
+    project.party[0].baseHp = 200; // the slime's own ordinary attacks must not derail the stall loop
+  });
+  const nes = boot(rom);
+  walkTo(nes, 160, 176);
+  walkTo(nes, 176, 176, 200);
+  assert.equal(nes.cpu.mem[GAME_STATE], ST_BATTLE);
+
+  // Stall every party turn with RUN (a walked-into fight refuses it, so this
+  // never actually flees) until the slime's own action message comes up --
+  // that is the moment to poke its status and hp, before dismissing it.
+  let round;
+  for (round = 0; round < 60; round++) {
+    if (nes.cpu.mem[GAME_STATE] !== ST_BATTLE) break;
+    if (nes.cpu.mem[BT_ACTOR] >= MAX_PARTY && nes.cpu.mem[BT_PHASE] === BP_MESSAGE) break;
+    if (nes.cpu.mem[BT_PHASE] === BP_MENU) chooseCommand(nes, BC_RUN);
+    else tap(nes, A, 12);
+  }
+  assert.ok(nes.cpu.mem[BT_ACTOR] >= MAX_PARTY, 'sixty rounds and the slime never got its own turn');
+  assert.equal(nes.cpu.mem[BT_PHASE], BP_MESSAGE, "the slime's own action line should be up");
+  assert.equal(nes.cpu.mem[BT_COUNT], 1, 'only the one slime should still be standing going in');
+
+  nes.cpu.mem[MON_STATUS] = STATUS_POISON | STATUS_BURN;
+  nes.cpu.mem[MON_HP] = POISON_DMG; // exactly lethal on the poison tick alone
+
+  tap(nes, A, 14); // dismiss the slime's own action line -- poison should fire and kill it
+  assert.equal(nes.cpu.mem[BT_COUNT], 0, 'poison killing the slime should drop bt_count to zero, once');
+  assert.equal(nes.cpu.mem[MON_ALIVE], 0, 'the slime should be dead');
+  assert.equal(nes.cpu.mem[MON_HP], 0, "poison's own tick should have zeroed its hp");
+  assert.deepEqual(
+    nametableRow(nes, MSG_ROW + 1, MSG_COL, 9),
+    battleStringTiles('poisoned'),
+    "the first tick line should be poison's own message"
+  );
+
+  tap(nes, A, 14); // dismiss the poison tick -- burn must NOT get a second kill at the dead slime
+  assert.equal(nes.cpu.mem[BT_COUNT], 0, 'bt_count must not move again once the slime is already dead -- no double decrement, no underflow to 255');
+  assert.equal(nes.cpu.mem[MON_HP], 0, "a dead slime's hp must not move again either");
+  assert.notDeepEqual(
+    nametableRow(nes, MSG_ROW + 1, MSG_COL, 9),
+    battleStringTiles('burned'),
+    'a dead combatant must take no further tick this turn -- burn should never get its own line here'
+  );
+
+  const finalState = pressThrough(nes, 120);
+  assert.equal(finalState, ST_GAMEPLAY, 'the battle must actually end in victory, not hang on a corrupted bt_count');
+  assert.equal(nes.cpu.mem[BT_COUNT], 0, 'bt_count must stay at zero through to the end, never wrap to 255');
 });
 
 test('a heal spell cures both poison and burn at once', {

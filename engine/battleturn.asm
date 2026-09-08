@@ -791,6 +791,14 @@ apply_damage_mon:
   sec
   sbc #MAX_PARTY
   tax
+  ; Already dead: a second status tick landing on the same combatant this
+  ; turn (poison then burn, say) must do nothing -- no store, no bt_count
+  ; decrement, no wipe -- or a monster with two ticking statuses dies once
+  ; on the first and then "dies" again on the second, decrementing bt_count
+  ; a second time and underflowing it to $FF, which check_over never sees
+  ; reach zero. See docs/design-status-effects.md.
+  lda mon_slot_alive,x
+  beq apply_damage_done
   lda mon_slot_hp,x
   sec
   sbc bt_dmg_lo
@@ -802,27 +810,34 @@ apply_damage_mon_store:
   lda #0
   sta mon_slot_alive,x
   dec bt_count
-  jsr wipe_monster
+  ; Owe this slot a wipe rather than drawing it now -- wipe_tick
+  ; (engine/battle.asm) pays it down one row a frame, so four monsters dying
+  ; in the same tick can never queue more than one vblank's worth between
+  ; them. See bt_wipe_mask's own comment, engine/constants.asm.
+  lda bit_mask,x
+  ora bt_wipe_mask
+  sta bt_wipe_mask
 apply_damage_done:
   rts
 
-; X = monster slot. Blank the block it was standing on, four rows at a time so
-; the queue never carries more than one vblank's worth.
+; X = monster slot, bt_wipe_row = which of its four rows (0-3). Queues that
+; one row's 8-cell wipe and nothing else -- wipe_tick (engine/battle.asm) is
+; the state machine that steps bt_wipe_row across calls and clears
+; bt_wipe_mask's own bit once all four rows are queued.
 wipe_monster:
   txa
   asl a
   asl a
   clc
   adc #BT_MON_ROW
+  clc
+  adc bt_wipe_row
   sta bt_row
   ldy flat_screen
   lda screen_map,y
   tay
   lda map_battle_ground,y   ; hoisted: the fill never changes mid-wipe, and a
   sta bt_fill               ; spell may be halfway through using bt_arg
-  lda #4
-  sta bt_tmp
-wipe_monster_row:
   lda #BT_MON_COL
   sta bt_col
   jsr queue_at
@@ -832,11 +847,7 @@ wipe_monster_cell:
   jsr vram_push
   dey
   bne wipe_monster_cell
-  jsr vram_end
-  inc bt_row
-  dec bt_tmp
-  bne wipe_monster_row
-  rts
+  jmp vram_end
 
 ; ---------------------------------------------------------- monsters' turn
 
@@ -996,8 +1007,13 @@ roll_drop:
   txa
   pha
   jsr rng_next
-  ; rng is 0-255 and the chance is a percentage, so scale it: a byte under
-  ; pct * 256 / 100 is the same thing without a divide.
+  ; rng is 0-255; scale the roll down to 0-63 rather than the chance up,
+  ; which is why mon_drop_pct is generated already in that same 0-63 domain
+  ; (battletables.js's dropThreshold) rather than as the authored 0-100
+  ; percentage -- comparing a 0-63 roll against a 0-100 byte here used to
+  ; make a 50% chance fire roughly 78% of the time, and anything at or past
+  ; 64% fire always. 64 in this byte means certain, one past the largest
+  ; value the shift below can produce.
   lsr a
   lsr a                     ; 0-63
   cmp bt_tmp2

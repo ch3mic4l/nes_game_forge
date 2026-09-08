@@ -130,6 +130,12 @@ async function buildFlashSaveable(t, fillerActors = 0) {
   project.project.titleMap = 0;
   project.project.titleScreen = 0;
   project.maps[0].encounters = { rate: 0, actorIds: [] };
+  // Frees ITEM_KERNEL_ALLOWANCE + 3 bytes/item of kernel-lo room -- items are
+  // not what this file exercises, and the relocation test below needs every
+  // spare byte it can get now that item 11's kernel-lo re-measurement left
+  // this fixture less headroom to move flash_commit_driver across a page
+  // boundary with.
+  project.items = [];
   const saverId = project.sprites.actors.length;
   project.sprites.actors.push({ name: 'Saver', behavior: 'npc', hp: 1, damage: 0 });
   project.maps[0].screens[0].entities.push({

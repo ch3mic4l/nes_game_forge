@@ -158,12 +158,64 @@ level_row_add:
 
 ; ------------------------------------------------------------------ tick
 
-; One frame of battle: advance the state machine, then rebuild the sprite
-; shadow. The party and any metasprite monsters are the only sprites on screen,
-; so this owns the whole shadow rather than appending to it.
+; One frame of battle: pay down any wipe still owed from a dead monster, then
+; advance the state machine, then rebuild the sprite shadow. The party and any
+; metasprite monsters are the only sprites on screen, so this owns the whole
+; shadow rather than appending to it.
 battle_tick:
+  jsr wipe_tick
   jsr battle_dispatch
   jmp battle_draw_sprites
+
+; A dying monster's own block wipe is budgeted at one row a frame (see
+; bt_wipe_mask/bt_wipe_row/bt_wipe_slot, engine/constants.asm): four dead
+; monsters in the same tick used to queue wipe_monster's whole four-row sweep
+; four times over -- up to 176 bytes of PPUDATA in one frame, past the
+; ~2273-cycle vblank window -- so apply_damage_mon (engine/battleturn.asm)
+; only sets a bit now, and this is what actually queues a row, called first
+; thing in battle_tick so it never competes with whatever the state machine
+; below queues the same frame.
+;
+; The active slot is sticky: a fresh pick (lowest set bit) only happens when
+; bt_wipe_row is back at zero, i.e. nothing is mid-wipe. Re-picking the
+; lowest bit every frame regardless -- the review's own finding -- let a
+; newly-dead lower slot steal a higher slot's in-progress bt_wipe_row, so the
+; lower slot inherited whatever row the interrupted one had reached and its
+; own earlier rows were never queued at all.
+wipe_tick:
+  lda bt_wipe_mask
+  bne wipe_tick_go
+  rts
+wipe_tick_go:
+  lda bt_wipe_row
+  bne wipe_tick_slot        ; mid-wipe: bt_wipe_slot already names who
+  ldx #0
+wipe_tick_bit:
+  lda bit_mask,x
+  and bt_wipe_mask
+  bne wipe_tick_pick
+  inx
+  cpx #MAX_MONSTERS
+  bne wipe_tick_bit
+  rts                       ; unreachable: bt_wipe_mask was non-zero above
+wipe_tick_pick:
+  stx bt_wipe_slot
+wipe_tick_slot:
+  ldx bt_wipe_slot
+  jsr wipe_monster
+  inc bt_wipe_row
+  lda bt_wipe_row
+  cmp #4
+  bcc wipe_tick_done
+  lda #0
+  sta bt_wipe_row
+  ldx bt_wipe_slot
+  lda bit_mask,x
+  eor #$FF
+  and bt_wipe_mask
+  sta bt_wipe_mask
+wipe_tick_done:
+  rts
 
 battle_dispatch:
   lda bt_phase
@@ -221,6 +273,9 @@ battle_intro:
 setup_monsters:
   lda #0
   sta bt_count
+  sta bt_wipe_mask
+  sta bt_wipe_row
+  sta bt_wipe_slot
   ldx #0
 setup_monsters_slot:
   lda #0

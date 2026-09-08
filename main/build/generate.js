@@ -611,7 +611,7 @@ const TITLE_PROMPT_ROW = 19;
 // of the base; re-measuring against `sample` (the action fixture) moved it,
 // along with every other RPG-only byte in this figure, out into the new
 // term below.**
-export const BASE_KERNEL_CODE_BYTES_BY_MAPPER = { 1: 5954, 4: 5971, 30: 6149 };
+export const BASE_KERNEL_CODE_BYTES_BY_MAPPER = { 1: 6007, 4: 6024, 30: 6202 };
 const FALLBACK_BASE_KERNEL_CODE_BYTES = Math.max(...Object.values(BASE_KERNEL_CODE_BYTES_BY_MAPPER));
 export function baseKernelCodeBytes(mapper) {
   return BASE_KERNEL_CODE_BYTES_BY_MAPPER[mapper.id] ?? FALLBACK_BASE_KERNEL_CODE_BYTES;

@@ -716,7 +716,23 @@ battle_message_done:
   sta status_pending
   lda #1
   sta bt_ptick
+; A combatant that died since the last tick -- to the action itself, or to an
+; earlier status tick the same turn (poison killing it before burn gets its
+; own line) -- owes no further tick and no further message: apply_damage_mon
+; (engine/battleturn.asm) already refuses to double-decrement bt_count for a
+; slot that is already dead, but poison_tick/burn_tick would still print a
+; line and re-run apply_damage's own (harmless, post-fix) no-op every time
+; this dispatches, which is a dead combatant still acting for a turn nobody
+; can see. Checked on every re-entry, not just the first, because each tick
+; suspends through battle_message_wait and comes back here once dismissed.
 battle_status_dispatch:
+  lda bt_actor
+  jsr combatant_alive
+  bne battle_status_check_poison
+  lda #0
+  sta status_pending
+  jmp battle_message_advance
+battle_status_check_poison:
   lda status_pending
   and #STATUS_POISON
   beq battle_status_check_burn
