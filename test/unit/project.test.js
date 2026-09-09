@@ -110,7 +110,8 @@ import { flattenScreens, resolveEntityByte, checkCapacity } from '../../main/bui
 import { compileText, opIndex, OP_JUMP, OP_STING, encodeString } from '../../main/build/textcompile.js';
 import { createSong, songFrameLength, songByte, sfxByte, sfxFrameLength, normalizeSfx } from '../../shared/audio.js';
 import { battleTables } from '../../main/build/battletables.js';
-import { FONT_BASE } from '../../shared/font.js';
+import { FONT_BASE, fontChrPages } from '../../shared/font.js';
+import { tilesetLimit } from '../../shared/cartridge.js';
 import { BLANK_TILE } from '../../shared/chr.js';
 import { spawnSync } from 'node:child_process';
 import NES from '../../renderer/emulator/core/nes.js';
@@ -2223,6 +2224,131 @@ test('compileText emits NO_MEMBER for a null Join member, and clamps a numeric o
     compiledJoin(99),
     [OP_JOIN, 3],
     'a numeric member past the RAM capacity still clamps to 3, exactly as it did before this brief'
+  );
+});
+
+// docs/design-name-entry.md §7, D9, finding 12: the packed operand's own bit
+// 7 reads project.party through joinNamingCandidate, never a raw renamable
+// flag and never any field on the command itself (v15.1's own withdrawn
+// `named` argument). Four builds, differing only in party[1]'s own
+// renamable/startsInParty combination, prove the compiler reads the gated
+// predicate rather than the bare flag.
+test('encodeCommand packs a Join\'s named bit from joinNamingCandidate, not raw renamable', () => {
+  const OP_JOIN = opIndex('join');
+  const compiledJoin = (member, party) => {
+    const project = createProject('Roster', 'rpg');
+    project.party = party;
+    project.maps[0].screens[0].entities = [
+      {
+        actorId: 0,
+        x: 0,
+        y: 0,
+        props: { event: { pages: [{ cond: { type: 'none', arg: 0 }, commands: [{ op: 'join', member }] }] } }
+      }
+    ];
+    const [compiled] = compileText(project).events;
+    return compiled.slice(4, 6);
+  };
+
+  const heroOnly = [createPartyMember(0, 'Hero')];
+  const named = [createPartyMember(0, 'Hero'), { ...createPartyMember(1), renamable: true, startsInParty: false }];
+  const unnamed = [createPartyMember(0, 'Hero'), { ...createPartyMember(1), renamable: false, startsInParty: false }];
+  const startingButRenamable = [
+    createPartyMember(0, 'Hero'),
+    { ...createPartyMember(1), renamable: true, startsInParty: true }
+  ];
+  const heroRenamableUnset = [
+    { ...createPartyMember(0, 'Hero'), renamable: false },
+    { ...createPartyMember(1), renamable: true, startsInParty: false }
+  ];
+
+  assert.deepEqual(compiledJoin(1, named), [OP_JOIN, 1 | 0x80], 'a real naming candidate must set bit 7');
+  assert.deepEqual(compiledJoin(1, unnamed), [OP_JOIN, 1], 'renamable: false must leave bit 7 clear');
+  assert.deepEqual(
+    compiledJoin(1, startingButRenamable),
+    [OP_JOIN, 1],
+    'renamable but startsInParty must leave bit 7 clear -- joinNamingCandidate excludes this combination, ' +
+      'the operand-contract regression finding 12 exists to catch'
+  );
+  assert.deepEqual(
+    compiledJoin(0, heroOnly),
+    [OP_JOIN, 0],
+    'member 0 is hero naming\'s own domain -- joinNamingCandidate always excludes memberIndex 0'
+  );
+  assert.deepEqual(
+    compiledJoin(1, heroRenamableUnset),
+    [OP_JOIN, 1 | 0x80],
+    'member 0\'s own renamable flag must never leak into member 1\'s own packed bit'
+  );
+});
+
+// test/lib/eventdecoder.js's own generic width formula must still predict
+// join's real wire width correctly with args unchanged at one entry --
+// regression guard for the mechanism v16 chose specifically because it needs
+// no EXCEPTIONAL_WIDTHS entry (docs/design-name-entry.md §7/§16).
+test('a live, renamable-true Join decodes to the same two-byte width as one with no naming live at all', () => {
+  const project = createProject('Roster', 'rpg');
+  project.party = [createPartyMember(0, 'Hero'), { ...createPartyMember(1), renamable: true, startsInParty: false }];
+  project.maps[0].screens[0].entities = [
+    {
+      actorId: 0,
+      x: 0,
+      y: 0,
+      props: { event: { pages: [{ cond: { type: 'none', arg: 0 }, commands: [{ op: 'join', member: 1 }] }] } }
+    }
+  ];
+  const [compiled] = compileText(project).events;
+  const decoded = decodeCommand(compiled, 4);
+  assert.equal(decoded.size, 2, 'join must still decode to a two-byte command, opcode plus one operand');
+});
+
+// P1-1 (docs/design-name-entry.md phase 3 fix round 2): the naming grid IS
+// text, so a naming-only action project must reserve $A0-$FF the same way
+// any other text source already does -- before this fix, projectUsesText
+// never turned on for hero naming alone, so an action project with naming
+// as its ONLY text source kept all 256 background tiles free and never
+// warned about art painted where the font goes, exactly the "a naming grid
+// containing blank or authored tiles instead of letters" defect this test
+// rules out.
+test('a naming-only action project reserves $A0-$FF (non-split boards) and costs a font CHR page on MMC3, the same as any other text source', () => {
+  const project = createProject('Naming reserves text');
+  // No text source at all: no dialogue, no title, no combat, naming off.
+  assert.equal(validateProject(project).some((p) => /message font reserves/.test(p.message)), false);
+  project.tilesets[0].background.tiles[FONT_BASE] = '3'.repeat(64); // art painted where the font would go
+  assert.equal(
+    validateProject(project).some((p) => /message font reserves/.test(p.message)),
+    false,
+    'a text-free project must keep all 256 background tiles -- painting one at $A0 must not warn'
+  );
+
+  // Turning hero naming on, with no other text source, must now reserve
+  // $A0-$FF on a non-split board (MMC1): the same art now conflicts.
+  project.party[0].renamable = true;
+  const mmc1 = resolveMapper(1);
+  project.cartridge.mapper = 1;
+  assert.equal(
+    validateProject(project).some((p) => /message font reserves/.test(p.message)),
+    true,
+    'hero naming alone must now reserve $A0-$FF on a non-split board -- the naming grid needs the glyphs there'
+  );
+  assert.equal(fontChrPages(project, mmc1), 0, 'MMC1 has no scanline IRQ -- the font stays stamped in the tilesets, no extra CHR page');
+
+  // On MMC3 (scanline IRQ), the same art at $A0-$FF is EXCUSED (the font
+  // lives in its own CHR page there, not the tileset) -- but the font page
+  // itself now costs one CHR page's worth of tileset capacity.
+  const mmc3 = resolveMapper(4);
+  project.cartridge.mapper = 4;
+  assert.equal(
+    validateProject(project).some((p) => /message font reserves/.test(p.message)),
+    false,
+    'MMC3 splits the font into its own CHR page -- art at $A0-$FF in the tileset itself is not a conflict there'
+  );
+  assert.equal(fontChrPages(project, mmc3), 1, 'hero naming alone should cost one font CHR page on MMC3');
+  assert.equal(
+    tilesetLimit(mmc3, project.cartridge, fontChrPages(project, mmc3)),
+    tilesetLimit(mmc3, project.cartridge, 0) - 1,
+    "MMC3's own font page should reduce its tileset ceiling by exactly one, relative to the same board with no " +
+      'text source at all'
   );
 });
 

@@ -172,11 +172,34 @@ test('the button table has one row per game state, in INPUT_STATES order', async
     .split('\n')
     .map((line) => line.replace(/\s*\.db\s*/, '').split(',').map((value) => parseInt(value.replace('$', ''), 16)));
 
-  assert.equal(rows.length, INPUT_STATES.length);
+  // The nameentry row exists only when the project actually opts into naming
+  // (docs/design-name-entry.md §4, Y1) -- a naming-off project (this one)
+  // still gets only INPUT_STATES.length - 1 rows, so every naming-off
+  // project ever built keeps its input table byte-identical.
+  assert.equal(rows.length, INPUT_STATES.length - 1);
   for (const row of rows) assert.equal(row.length, BUTTONS.length);
   const actionIndex = (id) => ACTIONS.findIndex((entry) => entry.id === id);
   assert.equal(rows[INPUT_STATES.indexOf('gameplay')][0], actionIndex('dash'));
   assert.equal(rows[INPUT_STATES.indexOf('title')][BUTTONS.indexOf('START')], actionIndex('confirm'));
+});
+
+test('the button table gains a nameentry row, in order, once the project opts into naming', async (t) => {
+  const dir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'forge-input-naming-'));
+  t.after(() => fs.promises.rm(dir, { recursive: true, force: true }));
+
+  const project = createProject('Input naming');
+  project.party[0].renamable = true;
+  await generateAssets({ dir, project });
+
+  const text = await fs.promises.readFile(path.join(dir, 'build/assets/input.inc'), 'utf8');
+  const rows = /input_actions:\n((?:\s*\.db .*\n?)+)/
+    .exec(text)[1]
+    .trim()
+    .split('\n')
+    .map((line) => line.replace(/\s*\.db\s*/, '').split(',').map((value) => parseInt(value.replace('$', ''), 16)));
+
+  assert.equal(rows.length, INPUT_STATES.length, 'a naming-on project should get the full row count, nameentry included');
+  assert.equal(INPUT_STATES[INPUT_STATES.length - 1], 'nameentry', 'nameentry must be the last, appended row');
 });
 
 // --- doors ------------------------------------------------------------------

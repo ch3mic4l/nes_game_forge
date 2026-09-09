@@ -44,6 +44,12 @@ button_mask:
 dispatch_input:
   lda #0
   sta dash_on
+  .if NAME_ENTRY_ENABLED
+  sta nm_acted               ; the per-frame grid-action latch (§4) -- reset
+                              ; here, set inside nameentry_select/
+                              ; nameentry_cancel, so two queued presses on the
+                              ; same frame produce at most one grid action
+  .endif
 
   ldx #0
 dispatch_loop:
@@ -117,7 +123,21 @@ do_action:
   cmp #ACT_CANCEL
   beq do_action_cancel
   cmp #ACT_PAUSE
+  ; Naming's own code (do_action_confirm/do_action_cancel, below) inserts
+  ; several dozen bytes between this dispatch chain and do_action_pause's own
+  ; label -- with naming, a title screen and Save all enabled, the forward
+  ; displacement exceeds the 6502's +-127-byte signed branch range. Inverted
+  ; over an unconditional jmp, conditionally, so a naming-off build keeps
+  ; today's plain 2-byte branch exactly (docs/design-name-entry.md §4, the
+  ; identical technique engine/music.asm already needed for the same reason).
+  .if NAME_ENTRY_ENABLED
+  bne do_action_pause_skip
+  jmp do_action_pause
+do_action_pause_skip:
+  .endif
+  .if !NAME_ENTRY_ENABLED
   beq do_action_pause
+  .endif
   .if SAVE_ENABLED
   cmp #ACT_CONTINUE
   beq do_action_continue
@@ -143,7 +163,27 @@ do_action_item:
   bne do_action_none        ; a conversation owns the buttons until it ends
   jmp open_menu
 
+; The naming grid's own readiness gate is box_row/box_state, never game_state
+; (a named Join's own session runs entirely inside ST_DIALOG) --
+; docs/design-name-entry.md §4.
 do_action_confirm:
+  .if NAME_ENTRY_ENABLED
+  lda box_state
+  cmp #BOX_NAMEENTRY
+  bne do_action_confirm_notname
+  lda box_row
+  cmp #BOX_TEXT_ROWS
+  bcc do_action_confirm_wait ; still raising -- LOCAL rts, never the distant
+                              ; do_action_none
+  jsr name_select             ; shim (engine/ui.asm) -- returns here either way
+  lda box_state
+  cmp #BOX_NAMEDONE
+  bne do_action_confirm_wait  ; LOCAL rts
+  jmp script_resume
+do_action_confirm_wait:
+  rts
+do_action_confirm_notname:
+  .endif
   lda game_state
   cmp #ST_MENU
   beq do_action_use
@@ -173,12 +213,41 @@ do_action_continue:
   .endif
 
 do_action_cancel:
+  .if NAME_ENTRY_ENABLED
+  lda box_state
+  cmp #BOX_NAMEENTRY
+  bne do_action_cancel_notname
+  lda box_row
+  cmp #BOX_TEXT_ROWS
+  bcc do_action_cancel_wait  ; still raising -- LOCAL rts
+  jmp name_cancel             ; shim (engine/ui.asm) -- tail call, never ends
+                               ; the session
+do_action_cancel_notname:
+  .endif
   lda game_state
-  beq do_action_none        ; during play there is nothing to back out of
+  .if NAME_ENTRY_ENABLED
+  beq do_action_cancel_wait  ; RETARGETED from do_action_none -- the identical
+                              ; rts either way, now always in range regardless
+                              ; of how much code precedes this file. Same
+                              ; 2-byte cost as the branch it replaces; this is
+                              ; a pure retarget, not new bytes.
+  .endif
+  .if !NAME_ENTRY_ENABLED
+  beq do_action_none          ; today's bytes, unchanged
+  .endif
   cmp #ST_DIALOG
   beq do_action_dialog
+  .if NAME_ENTRY_ENABLED
+  cmp #ST_NAMEENTRY
+  beq do_action_cancel_wait  ; RETARGETED from do_action_none, same reasoning
+                              ; and same byte cost
+  .endif
 do_action_close:
   jmp close_ui
+  .if NAME_ENTRY_ENABLED
+do_action_cancel_wait:
+  rts
+  .endif
 
 ; A press while a conversation is on screen. With a message box up the box
 ; decides what it means -- turn the page, or resume the event -- and a press

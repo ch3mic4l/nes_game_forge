@@ -297,9 +297,16 @@ ui_tick_title:
 ui_tick_battle:
   .if BATTLE_ENABLED
   cmp #ST_BATTLE
-  bne ui_tick_menu
+  bne ui_tick_nameentry      ; retargeted from ui_tick_menu -- same two bytes
+                              ; either way, zero marginal cost
   lda #BE_TICK
   jmp call_battle           ; the only way into the banked bank, and back out
+  .endif
+ui_tick_nameentry:
+  .if NAME_ENTRY_ENABLED
+  cmp #ST_NAMEENTRY
+  bne ui_tick_menu
+  jmp text_tick
   .endif
 ui_tick_menu:
   cmp #ST_MENU
@@ -349,6 +356,17 @@ ui_tick_dead_done:
 ; --------------------------------------------------------------- drawing
 
 draw_ui:
+  .if NAME_ENTRY_ENABLED
+  lda box_state
+  cmp #BOX_NAMEENTRY
+  bne draw_ui_notname
+  lda box_row
+  cmp #BOX_TEXT_ROWS
+  bcc draw_ui_notname
+  jmp name_draw              ; shim -- tail call either way, runs
+                              ; draw_nameentry_cursor
+draw_ui_notname:
+  .endif
   lda game_state
   cmp #ST_MENU
   beq draw_menu
@@ -486,4 +504,61 @@ draw_item_icon:
   jmp draw_metasprite
 draw_item_icon_done:
   rts
+  .endif
+
+; ------------------------------------------------- the naming grid's shims
+;
+; call_battle does not exist at all in an action project's own kernel-lo (it
+; is .if BATTLE_ENABLED-wrapped, engine/banks.asm), so every hook site above
+; that used to reach it directly for naming (do_action_confirm/
+; do_action_cancel, draw_ui, text_tick, start_game/reset) instead calls one
+; of these five shims -- always resident in kernel-lo regardless of
+; placement, since they are the dispatch glue deciding the placement, not
+; part of what moves (docs/design-name-entry.md §5). A shim reached by jsr
+; may still jmp onward: jmp never pushes a return address, so the eventual
+; rts -- deep inside call_battle's own chain, or inside nameentry_select
+; directly -- pops the original return address the caller's own jsr pushed.
+  .if NAME_ENTRY_ENABLED
+name_begin:                 ; A = the party slot to name -- always 0, the
+                             ; hero, from every hook site that reaches this
+  .if NAME_ENTRY_BANKED
+  sta bt_arg
+  lda #BE_NAME_BEGIN
+  jmp call_battle
+  .endif
+  .if !NAME_ENTRY_BANKED
+  jmp nameentry_begin
+  .endif
+name_tick:
+  .if NAME_ENTRY_BANKED
+  lda #BE_NAME_TICK
+  jmp call_battle
+  .endif
+  .if !NAME_ENTRY_BANKED
+  jmp nameentry_tick
+  .endif
+name_draw:
+  .if NAME_ENTRY_BANKED
+  lda #BE_NAME_DRAW
+  jmp call_battle
+  .endif
+  .if !NAME_ENTRY_BANKED
+  jmp draw_nameentry_cursor
+  .endif
+name_select:
+  .if NAME_ENTRY_BANKED
+  lda #BE_NAME_SELECT
+  jmp call_battle
+  .endif
+  .if !NAME_ENTRY_BANKED
+  jmp nameentry_select
+  .endif
+name_cancel:
+  .if NAME_ENTRY_BANKED
+  lda #BE_NAME_CANCEL
+  jmp call_battle
+  .endif
+  .if !NAME_ENTRY_BANKED
+  jmp nameentry_cancel
+  .endif
   .endif

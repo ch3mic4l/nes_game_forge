@@ -14,9 +14,10 @@ import {
   textToTiles,
   wrapText,
   projectUsesText,
-  projectUsesCombat
+  projectUsesCombat,
+  projectUsesNaming
 } from '../../shared/font.js';
-import { createProject, createPartyMember } from '../../shared/project.js';
+import { createProject, createPartyMember, projectUsesNameEntry } from '../../shared/project.js';
 import { encodeTiles, tileFromString } from '../../shared/chr.js';
 
 test('the font is 96 glyphs in the project tile-string format', () => {
@@ -106,6 +107,84 @@ test('dialogue, a title screen, an RPG or anything harmful turns the font on', (
   withDamage.sprites.actors.push({ name: 'Spike', damage: 1 });
   assert.equal(projectUsesCombat(withDamage), true);
   assert.equal(projectUsesText(withDamage), true); // combat can reach the game-over screen
+});
+
+// P1-1 (docs/design-name-entry.md phase 3 fix round 2): the naming grid IS
+// text, so projectUsesText must turn on the moment naming does, on either
+// game type -- an action project with hero naming and nothing else, and an
+// RPG with only a named Join, both need the glyphs. font.js cannot import
+// shared/project.js's own projectUsesNameEntry (the import runs the other
+// way), so it carries a duplicate (projectUsesNaming, exported specifically
+// for this comparison) of the same formula -- this test is what catches the
+// two drifting apart, on every input the predicate can see. projectUsesText
+// itself is also checked, but only where its own boolean is not masked by
+// gameType === 'rpg' already forcing it true on its own.
+test('font.js\'s own projectUsesNaming agrees with shared/project.js\'s projectUsesNameEntry on every input', () => {
+  const heroOnly = createProject('Hero only');
+  assert.equal(projectUsesNaming(heroOnly), false, 'naming off, nothing else -- no naming yet');
+  assert.equal(projectUsesNaming(heroOnly), projectUsesNameEntry(heroOnly));
+  assert.equal(projectUsesText(heroOnly), false, 'and, with no other text source, no text either');
+  heroOnly.party[0].renamable = true;
+  assert.equal(projectUsesNaming(heroOnly), true, 'hero naming alone must read true');
+  assert.equal(projectUsesNaming(heroOnly), projectUsesNameEntry(heroOnly));
+  assert.equal(projectUsesText(heroOnly), true, 'and turn the font on -- the naming grid IS text');
+
+  // A named Join, RPG-only, with no other text source (no dialogue string --
+  // the Join command itself is the only content). projectUsesText cannot
+  // isolate this (an RPG is always text, battles alone guarantee it), so the
+  // real assertion here is agreement between the two naming predicates
+  // directly, not projectUsesText's own already-true boolean.
+  const joinOnly = createProject('Join only', 'rpg');
+  joinOnly.party.push({ ...createPartyMember(1), renamable: true, startsInParty: false });
+  joinOnly.maps[0].screens[0].entities.push({
+    actorId: 0,
+    x: 0,
+    y: 0,
+    props: { event: { pages: [{ cond: { type: 'none', arg: 0 }, commands: [{ op: 'join', member: 1 }] }] } }
+  });
+  assert.equal(projectUsesNaming(joinOnly), true, 'a live, real Join naming candidate must read true');
+  assert.equal(projectUsesNaming(joinOnly), projectUsesNameEntry(joinOnly));
+
+  joinOnly.party[1].renamable = false;
+  assert.equal(projectUsesNaming(joinOnly), false, 'no naming feature is live once the flag is off');
+  assert.equal(projectUsesNaming(joinOnly), projectUsesNameEntry(joinOnly));
+
+  // A dangling Join (member null) must not turn naming on, on either side.
+  const danglingJoin = createProject('Dangling join', 'rpg');
+  danglingJoin.maps[0].screens[0].entities.push({
+    actorId: 0,
+    x: 0,
+    y: 0,
+    props: { event: { pages: [{ cond: { type: 'none', arg: 0 }, commands: [{ op: 'join', member: null }] }] } }
+  });
+  assert.equal(projectUsesNaming(danglingJoin), false);
+  assert.equal(projectUsesNaming(danglingJoin), projectUsesNameEntry(danglingJoin));
+
+  // A renamable-but-startsInParty member (finding 12's own operand-contract
+  // case, docs/design-name-entry.md §9) is never a real naming candidate on
+  // either side -- already recruited at boot, so their own Join is inert.
+  const inertJoin = createProject('Inert join', 'rpg');
+  inertJoin.party.push({ ...createPartyMember(1), renamable: true, startsInParty: true });
+  inertJoin.maps[0].screens[0].entities.push({
+    actorId: 0,
+    x: 0,
+    y: 0,
+    props: { event: { pages: [{ cond: { type: 'none', arg: 0 }, commands: [{ op: 'join', member: 1 }] }] } }
+  });
+  assert.equal(projectUsesNaming(inertJoin), false);
+  assert.equal(projectUsesNaming(inertJoin), projectUsesNameEntry(inertJoin));
+
+  // A switched-off Join must not count either, on either side.
+  const offJoin = createProject('Off join', 'rpg');
+  offJoin.party.push({ ...createPartyMember(1), renamable: true, startsInParty: false });
+  offJoin.maps[0].screens[0].entities.push({
+    actorId: 0,
+    x: 0,
+    y: 0,
+    props: { event: { pages: [{ cond: { type: 'none', arg: 0 }, commands: [{ op: 'join', member: 1, off: true }] }] } }
+  });
+  assert.equal(projectUsesNaming(offJoin), false);
+  assert.equal(projectUsesNaming(offJoin), projectUsesNameEntry(offJoin));
 });
 
 test('a damage metatile only counts once it is actually painted somewhere', () => {

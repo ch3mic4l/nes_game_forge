@@ -44,7 +44,8 @@ import {
   battleTableBytes,
   battleRegionCeiling,
   battleShortfallAdvice,
-  checkBattleTables
+  checkBattleTables,
+  nameTiles
 } from './battletables.js';
 import {
   LIMITS,
@@ -85,7 +86,15 @@ import {
   PLAYER_TILES,
   animFor,
   resolveItemIcon,
-  metaspriteKernelBytes
+  metaspriteKernelBytes,
+  projectUsesHeroNaming,
+  projectUsesJoinNaming,
+  projectUsesNameEntry,
+  battleBankEnabled,
+  projectWithoutHeroNaming,
+  projectWithoutJoinNaming,
+  projectNeedsHeroDefault,
+  projectNeedsNameSeed
 } from '../../shared/project.js';
 import { SAVE_FIELDS, saveBodySize, saveIdentity } from '../../shared/save.js';
 import {
@@ -652,7 +661,16 @@ const TITLE_PROMPT_ROW = 19;
 // bytes) -- unconditional kernel code (music.asm is never gated out), so
 // this is a cost every project pays, folded into the base like the +3 above
 // it. See mus_inst_base's own comment in engine/constants.asm.
-export const BASE_KERNEL_CODE_BYTES_BY_MAPPER = { 1: 6022, 4: 6039, 30: 6217 };
+// NROM (0) added by docs/design-name-entry.md §11's own "durable fix": NROM
+// is the one board where action-side hero naming actually fits a real
+// fixture (sample), so an unmeasured base there -- previously falling back
+// to UNROM 512's own 6217, always the largest of the three RPG-capable
+// boards' figures -- was exactly the game-type/board blind spot this
+// ledger's own discipline warns about. Measured the identical way the other
+// three are (title off, sample's own default item kept and its 79-byte
+// ITEM_KERNEL_ALLOWANCE + ITEM_EFFECT_KERNEL_ALLOWANCE_BY_GAME_TYPE.action
+// subtracted back out): 6031 - 79 = 5952.
+export const BASE_KERNEL_CODE_BYTES_BY_MAPPER = { 0: 5952, 1: 6022, 4: 6039, 30: 6217 };
 const FALLBACK_BASE_KERNEL_CODE_BYTES = Math.max(...Object.values(BASE_KERNEL_CODE_BYTES_BY_MAPPER));
 export function baseKernelCodeBytes(mapper) {
   return BASE_KERNEL_CODE_BYTES_BY_MAPPER[mapper.id] ?? FALLBACK_BASE_KERNEL_CODE_BYTES;
@@ -1016,6 +1034,75 @@ export const SFX_KERNEL_ALLOWANCE_STANDALONE = 295;
 // handoff-tile/tile-code-fixes1-report.md for the full symbol-span trace
 // this correction came from.
 export const BOUND_TILE_KERNEL_ALLOWANCE = 388;
+
+// In-game party-member naming (docs/design-name-entry.md §4/§11). Six
+// kernel-lo terms. NAME_ENTRY_KERNEL_ALLOWANCE, JOIN_NAMING_KERNEL_ALLOWANCE,
+// HERO_NAMING_KERNEL_ALLOWANCE and HERO_NAMING_TITLELESS_KERNEL_ALLOWANCE are
+// nesasm-measured, exactly, against sample-rpg on MMC1/MMC3/UNROM 512
+// (identical on all three, so flat rather than *_BY_MAPPER -- test/unit/
+// kernelbytes.test.js's own isolation matrix asserts this), by triangulating
+// three real deltas (naming off vs. join-only, off vs. hero-only, off vs.
+// both, all titled) the same way MOVE_KERNEL_ALLOWANCE-style terms already
+// are elsewhere in this file: N = (off->join) + (off->hero) - (off->both),
+// H = (off->hero) - N, J = (off->join) - N; HT is the same titled-vs-
+// titleless subtraction X3 already specifies. NAME_ENTRY_ACTION_KERNEL_
+// ALLOWANCE is measured the same way against sample (action, all four
+// action-capable boards, identical on all four) once HERO_DEFAULT_KERNEL_
+// ALLOWANCE's own exact 21 bytes and the shared N/H above are subtracted out
+// of the one combined delta an action build can ever isolate (there is no
+// build-time lever, in this phase, that turns HERO_NAMING_ENABLED on for an
+// action project without also turning on NAME_ENTRY_ACTION and
+// projectNeedsHeroDefault at the same time -- see NAME_ENTRY_ACTION's own
+// comment below).
+//
+// NAME_ENTRY_KERNEL_ALLOWANCE is the hook glue shared by every naming feature
+// regardless of game type: dispatch_input's nm_acted latch, do_action_confirm/
+// do_action_cancel's own naming arms (plus the do_action dispatch chain's own
+// branch-range fix), draw_ui's naming arm, ui_tick's routing arm, text_tick's
+// naming arm, and the five kernel-lo shims (name_begin/tick/draw/select/
+// cancel) that let those hook sites reach either placement identically. This
+// is v13's own shim rewrite landing higher than the pre-implementation
+// static count (95) predicted -- the five shims are a genuinely new
+// kernel-lo block neither v12 nor the static estimate had to include.
+export const NAME_ENTRY_KERNEL_ALLOWANCE = 115;
+// script_op_join's own growth (engine/script.asm) -- RPG-only, since Join is
+// itself an RPG-only command.
+export const JOIN_NAMING_KERNEL_ALLOWANCE = 64;
+// start_game's own naming arm (engine/title.asm) -- both game types.
+export const HERO_NAMING_KERNEL_ALLOWANCE = 10;
+// reset's own titleless naming arm (engine/boot.asm) -- only paid when there
+// is no title screen to reach start_game through instead.
+export const HERO_NAMING_TITLELESS_KERNEL_ALLOWANCE = 15;
+// The naming grid's own body (engine/nameentry.asm, nameentry_begin through
+// draw_nameentry_cursor) when it has nowhere else to live: on an RPG this is
+// banked (NAME_ENTRY_BATTLE_ALLOWANCE, battletables.js), charged here only
+// when NAME_ENTRY_BANKED is false -- an action project, which never has a
+// battle bank to hold it in. Measured, not the pre-implementation static
+// count of 722: identical on NROM, MMC1, MMC3 and UNROM 512 (nothing here
+// branches on SPLIT_ENABLED or any other mapper-specific fact), computed as
+// the one combined post-reset delta a naming-on action build (titled or
+// titleless, both agree) can isolate, minus NAME_ENTRY_KERNEL_ALLOWANCE,
+// HERO_NAMING_KERNEL_ALLOWANCE (both shared with the RPG placement above)
+// and HERO_DEFAULT_KERNEL_ALLOWANCE's own 11 (the copy loop alone --
+// hero_name_default's own 10-byte table lives BEFORE reset, so it was never
+// part of this delta to begin with; P1-2's own fix, below, is what corrects
+// this term from a wrong 699 that had subtracted 21 instead of 11).
+export const NAME_ENTRY_ACTION_KERNEL_ALLOWANCE = 709;
+// init_session's own 11-byte action-side copy loop that reads
+// hero_name_default (engine/combat.asm) -- the loop ALONE, not the table:
+// hero_name_default's own 10-byte .db table is charged in kernelTableBytes's
+// fixedBytes instead (main/build/generate.js), gated on the identical
+// projectNeedsHeroDefault predicate, because the table lives in main.asm's
+// lookup-table region, BEFORE reset -- outside the region kernelCodeBytes/
+// measureCodeBytes both model, the same "a code term and a table term stay
+// in the ledgers they each belong to" rule the 4-byte input row already
+// follows. Exact by construction (five unbranching instructions whose
+// widths nesasm cannot disagree with: ldy #imm(2) + lda abs,y(3) +
+// sta abs,y(3) + dey(1) + bpl(2) = 11), not measured in isolation -- see
+// NAME_ENTRY_ACTION_KERNEL_ALLOWANCE's own comment for why this phase has
+// no build-time lever that could isolate it from that term.
+export const HERO_DEFAULT_KERNEL_ALLOWANCE = 11;
+
 export const KERNEL_SLACK = 20;
 
 // Whether BATTLE_ENABLED itself actually assembles for `project` on `mapper`
@@ -1041,7 +1128,7 @@ export const KERNEL_SLACK = 20;
 // exactly the overcharge both BATTLE_ENABLED-gated terms in kernelCodeBytes
 // exist to remove.
 export function battleEnabledFor(project, mapper) {
-  return codeRegions(mapper, project.tilesets.length, codeRegionCount(project)).length > 0;
+  return battleBankEnabled(project, mapper);
 }
 
 export function kernelCodeBytes(project, mapper) {
@@ -1113,6 +1200,23 @@ export function kernelCodeBytes(project, mapper) {
   const usesSfx = projectUsesSfx(project);
   const usesAudioFx = projectUsesAudioFx(project); // = usesSting || usesSfx
   const usesBoundTiles = projectUsesBoundTiles(project);
+  // In-game party-member naming (docs/design-name-entry.md §4/§8/§9, D8).
+  // usesHeroNaming drops any "&& battleEnabled" -- an action project's own
+  // battleEnabled is always false (no code region at all), so ANDing it in
+  // would make hero naming unreachable on exactly the game type D6 exists to
+  // add it to. usesJoinNaming keeps its own "&& battleEnabled" implicitly,
+  // since projectUsesJoinNaming already refuses a non-RPG project and Join
+  // naming can only ever run through the banked party_join/battle_entry
+  // machinery. usesNameEntry is the plain OR of the two, not a third
+  // independent battleEnabled AND of its own. nameEntryBanked is a separate,
+  // placement-only fact -- where the naming code lives, never whether it is
+  // live at all -- read by the two placement-conditional terms below.
+  const usesHeroNaming = projectUsesHeroNaming(project);
+  const usesJoinNaming = projectUsesJoinNaming(project) && battleEnabled;
+  const usesNameEntry = usesHeroNaming || usesJoinNaming;
+  const usesHeroNamingTitleless = usesHeroNaming && !usesTitle;
+  const nameEntryBanked = battleEnabled;
+  const needsHeroDefault = projectNeedsHeroDefault(project);
   return (
     baseKernelCodeBytes(mapper) +
     (usesBattleBase ? battleKernelAllowance(mapper) : 0) +
@@ -1135,6 +1239,12 @@ export function kernelCodeBytes(project, mapper) {
     (usesAudioFx ? AUDIO_FX_KERNEL_ALLOWANCE : 0) +
     (usesSting && usesSfx ? STING_SFX_INTERACTION_ALLOWANCE : 0) +
     (usesBoundTiles ? BOUND_TILE_KERNEL_ALLOWANCE : 0) +
+    (usesNameEntry ? NAME_ENTRY_KERNEL_ALLOWANCE : 0) +
+    (usesJoinNaming ? JOIN_NAMING_KERNEL_ALLOWANCE : 0) +
+    (usesHeroNaming ? HERO_NAMING_KERNEL_ALLOWANCE : 0) +
+    (usesHeroNamingTitleless ? HERO_NAMING_TITLELESS_KERNEL_ALLOWANCE : 0) +
+    (usesHeroNaming && !nameEntryBanked ? NAME_ENTRY_ACTION_KERNEL_ALLOWANCE : 0) +
+    (needsHeroDefault ? HERO_DEFAULT_KERNEL_ALLOWANCE : 0) +
     KERNEL_SLACK
   );
 }
@@ -1242,10 +1352,14 @@ export function switchableMappers(project, mapper, { checkBattleRegion = true } 
   const { flat } = flattenScreens(project);
   const bankedCode = codeRegionCount(project);
   const actorCount = project.sprites.actors.length;
-  const { fixedBytes, tableBytes } = kernelTableBytes(project);
-  // Computed once and reused for every candidate: switching mapper candidates
-  // never changes which screens author bound tiles, only cartridge fields
-  // (design-tile.md §8).
+  // boundTilesEnabled is computed once and reused for every candidate:
+  // switching mapper candidates never changes which screens author bound
+  // tiles, only cartridge fields (design-tile.md §8). fixedBytes/tableBytes
+  // themselves are NOT reused this way any more -- chrTableBytes (this
+  // file's own kernelTableBytes) depends on whether a given CANDIDATE mapper
+  // is chrRam, so they are recomputed per candidate, below, against `moved`
+  // (the already-reconciled clone) and `candidate` rather than the
+  // project's own current mapper.
   const boundTilesEnabled = projectUsesBoundTiles(project);
 
   return SUPPORTED_MAPPERS.filter((candidate) => candidate.id !== mapper.id)
@@ -1329,6 +1443,7 @@ export function switchableMappers(project, mapper, { checkBattleRegion = true } 
       // out of kernelCodeBytes uncaught. Never reachable today; the guard is
       // for the mapper this table has no entry for yet.
       if (battleEnabledFor(moved, candidate) && !hasBattleKernelAllowance(candidate)) return false;
+      const { fixedBytes, tableBytes } = kernelTableBytes(moved, candidate);
       if (kernelCodeBytes(moved, candidate) + fixedBytes + tableBytes > BANK_SIZE) return false;
       // The one fit check a caller may waive, and only the caller that owns
       // this bank does. battleShortfallAdvice needs to tell "no board is safe
@@ -1410,6 +1525,16 @@ function kernelShortfallAdvice(project, mapper, deficit) {
   // strip cannot go through projectWithoutCommands at all.
   if (usesBoundTiles) active.push({ label: 'every switch-bound tile', strip: (p) => projectWithoutBoundTiles(p) });
   if (usesSave) active.push({ label: 'every Save command', strip: (p) => projectWithoutCommands(p, ['save']) });
+  // In-game naming (docs/design-name-entry.md §11): no bespoke combination
+  // logic needed -- the existing solo-then-combination search below already
+  // tries "both together" the moment neither alone suffices, generic over
+  // whatever active holds.
+  if (projectUsesHeroNaming(project)) {
+    active.push({ label: 'hero naming at the start of a new game', strip: (p) => projectWithoutHeroNaming(p) });
+  }
+  if (projectUsesJoinNaming(project)) {
+    active.push({ label: 'every named Join', strip: (p) => projectWithoutJoinNaming(p) });
+  }
   // A title screen is not offered here even though it is now its own term in
   // kernelCodeBytes: this list is specifically "commands projectWithoutCommands
   // can switch off", and a title screen is content on a map, not a command --
@@ -1434,7 +1559,7 @@ function kernelShortfallAdvice(project, mapper, deficit) {
   // function already computed -- every existing command-only advice string is
   // unchanged by this switch.
   const occupancy = (proj) => {
-    const { fixedBytes, tableBytes } = kernelTableBytes(proj);
+    const { fixedBytes, tableBytes } = kernelTableBytes(proj, mapper);
     return kernelCodeBytes(proj, mapper) + fixedBytes + tableBytes;
   };
   const budget = occupancy(project);
@@ -1481,12 +1606,26 @@ function kernelShortfallAdvice(project, mapper, deficit) {
   // to fit. Which boards those are is switchableMappers below, shared with
   // the banked code region's own advice so the two cannot come to different
   // conclusions about whether a switch is safe.
+  // Priced by full kernel-lo occupancy (code + fixedBytes + tableBytes), the
+  // same counterfactual-occupancy rule every command-removal candidate above
+  // already follows, not by kernelCodeBytes alone: kernelTableBytes is
+  // itself mapper-dependent now (the CHR-RAM streaming tables, phase 3 fix
+  // round 3 -- 3 bytes per tileset on a chrRam board, 0 elsewhere), so a
+  // switch off a chrRam board also frees table bytes a code-only comparison
+  // never sees. A candidate that saves 195 code bytes but also 9 table bytes
+  // was being reported as saving only 195, understating -- or in the
+  // reviewer's reproduction, missing entirely -- a board switchableMappers
+  // itself already considers safe.
   const alternative = switchableMappers(project, mapper)
-    .filter((candidate) => kernelCodeBytes(project, mapper) - kernelCodeBytes(project, candidate) >= deficit)
-    .sort((a, b) => kernelCodeBytes(project, a) - kernelCodeBytes(project, b))[0];
+    .map((candidate) => {
+      const { fixedBytes, tableBytes } = kernelTableBytes(project, candidate);
+      return { candidate, occupancy: kernelCodeBytes(project, candidate) + fixedBytes + tableBytes };
+    })
+    .filter((entry) => budget - entry.occupancy >= deficit)
+    .sort((a, b) => a.occupancy - b.occupancy)[0];
   if (alternative) {
-    const saved = kernelCodeBytes(project, mapper) - kernelCodeBytes(project, alternative);
-    return `Try ${alternative.name} in the Build panel — it reserves ${saved} fewer bytes for the same features.`;
+    const saved = budget - alternative.occupancy;
+    return `Try ${alternative.candidate.name} in the Build panel — it reserves ${saved} fewer bytes for the same features.`;
   }
 
   return 'Reduce the number of screens, actors or metasprites.';
@@ -1850,20 +1989,50 @@ export function assignScreenBanks(
  * (tableBytes), both design-tile.md §8 (finding 6), both gated on
  * projectUsesBoundTiles since a feature-free project emits neither.
  */
-export function kernelTableBytes(project) {
+export function kernelTableBytes(project, mapper) {
   const { flat } = flattenScreens(project);
   const boundTilesEnabled = projectUsesBoundTiles(project);
-  // maps.inc holds four neighbour tables, four screen pointer tables and the
-  // actor-list *pointers*; everything else in bank 0 is fixed size. The input
-  // table is one byte per button per game state, so it grows when a state is
-  // added — deriving it here rather than writing a constant keeps this honest.
+  // tileset_bank/tileset_lo/tileset_hi (assets/chrtables.inc) -- one byte
+  // each per chrPayloadRegions() region, kernel-lo, before reset, so this
+  // has to be charged here the same way the naming table above is. Zero on
+  // every CHR-ROM board (chrPayloadRegions returns [] unless mapper.chrRam,
+  // which today only UNROM 512 sets) -- pre-existing at 1e21fde, entirely
+  // unrelated to naming; found while measuring the naming allowances'
+  // whole-bank margin on UNROM 512 (docs/design-name-entry.md phase 3 fix
+  // round 2/3). `mapper` is optional so a caller mid-transition (there are
+  // none left after this fix, but future callers might reasonably still
+  // only have a project) degrades to 0 rather than throwing.
+  const chrTableBytes = mapper?.chrRam ? 3 * chrPayloadRegions(mapper, project.tilesets.length).length : 0;
+  // The nameentry row only exists in input_actions when a project actually
+  // opts into naming (docs/design-name-entry.md §4, Y1): INPUT_STATES stays
+  // append-only in the schema, but the emitted row count is conditional, or
+  // every naming-off project (including every one that predates this
+  // feature) would pay 4 bytes it never used. projectUsesNameEntry(project)
+  // alone, with no mapper argument, is the correct gate here -- see §4's own
+  // reasoning for why a mapper-aware check is both unavailable at this call
+  // site and unnecessary (it is a safe, content-only superset of the real
+  // code-side gate, HERO_NAMING_ENABLED || JOIN_NAMING_ENABLED).
+  const inputStateCount = projectUsesNameEntry(project) ? INPUT_STATES.length : INPUT_STATES.length - 1;
+  // hero_name_default (assets/nameentry.inc) is a 10-byte .db table, included
+  // in engine/main.asm BEFORE boot.asm -- i.e. before reset -- alongside the
+  // other generated lookup tables (palettes, metatiles, sprites, input,
+  // maps, chrtables), never after it. kernelCodeBytes/measureCodeBytes both
+  // measure kernel-lo usage MINUS everything before reset, so this table has
+  // to be charged here, in fixedBytes, or it is invisible to every capacity
+  // check that adds kernelCodeBytes to kernelTableBytes (checkCapacity's own
+  // arithmetic) -- the identical "a code term and a table term stay in the
+  // ledgers they each belong to" rule the 4-byte input row above already
+  // follows. HERO_DEFAULT_KERNEL_ALLOWANCE (generate.js) is the copy loop
+  // alone, not this table.
   const fixedBytes =
     32 +
     5 * LIMITS.metatiles +
     PLAYER_TILES +
     1 +
-    INPUT_STATES.length * BUTTONS.length +
-    (boundTilesEnabled ? 30 : 0);
+    inputStateCount * BUTTONS.length +
+    (boundTilesEnabled ? 30 : 0) +
+    (projectNeedsHeroDefault(project) ? 10 : 0) +
+    chrTableBytes;
   // behavior, speed, hp, damage, 4 anim slots -- shared/project.js's
   // metaspriteKernelBytes (single writer, design-draw-validation.md §3.11).
   const spriteBytes = metaspriteKernelBytes(project);
@@ -1905,9 +2074,8 @@ export function checkCapacity(project) {
   const problems = [...validateProject(project), ...text.problems, ...checkBattleTables(project)];
   const { flat } = flattenScreens(project);
 
-  const { fixedBytes, tableBytes } = kernelTableBytes(project);
-
   const mapper = resolveMapper(project.cartridge.mapper);
+  const { fixedBytes, tableBytes } = kernelTableBytes(project, mapper);
   // resolveMapper reads project.cartridge.mapper directly, with no
   // reconciling step of its own (reconcileCartridge runs on an edit, not on
   // every read -- normalizeProject deliberately does not call it either).
@@ -2341,12 +2509,16 @@ export async function generateAssets({ dir, project, log = () => {} }) {
     }
   }
 
-  // The battle targeting cursor. On a split-font board the background arrow
-  // glyph lives in the font's own bank, which is only switched in below the
-  // text windows — and this cursor points at monsters above them, so those
-  // builds draw it as a sprite instead. Same conditional-reservation rule as
-  // the hearts, one tile lower.
-  if (fontSplit && codeRegionCount(project)) {
+  // The battle targeting cursor, or the naming grid's own cursor. On a
+  // split-font board the background arrow glyph lives in the font's own
+  // bank, which is only switched in below the text windows — and the battle
+  // cursor points at monsters above them, so that build draws it as a sprite
+  // instead. The naming disjunct is NOT ANDed with codeRegionCount: an action
+  // project's own naming-grid cursor needs the identical art with no code
+  // region in the picture at all (docs/design-name-entry.md §4, D8) --
+  // spriteReservedRanges' own mirror-image widening is what reserves the
+  // slot this stamps.
+  if ((fontSplit && codeRegionCount(project)) || projectUsesNameEntry(project)) {
     for (const tileset of tilesets) tileset.sprites[SPRITE_ARROW_TILE] = SPRITE_ARROW_ART;
   }
 
@@ -2586,6 +2758,19 @@ export async function generateAssets({ dir, project, log = () => {} }) {
   // One attribute byte covers four tile rows, so each line of the title sits in
   // exactly one attribute row and the engine blanks that row to make it legible.
   const attrRow = (row) => 0x23c0 + (row >> 2) * 8;
+  // In-game party-member naming (docs/design-name-entry.md §4/§8/§9). The
+  // identical D8 shape kernelCodeBytes' own locals already use: usesHeroNaming
+  // drops any battleEnabled AND (an action project's own battleEnabled is
+  // always false), usesJoinNaming keeps it (Join naming can only ever run
+  // through the banked machinery), and nameEntryBanked is the placement fact
+  // the five kernel-lo shims read, independent of whether naming is live at
+  // all.
+  const usesHeroNaming = projectUsesHeroNaming(project);
+  const usesJoinNaming = projectUsesJoinNaming(project) && codeSlots.length > 0;
+  const usesNameEntry = usesHeroNaming || usesJoinNaming;
+  const nameEntryBanked = codeSlots.length > 0;
+  const usesNameSeed = projectNeedsNameSeed(project);
+  const needsHeroDefault = projectNeedsHeroDefault(project);
   const config = [
     '; Generated by NES Game Forge -- do not edit.',
     `NUM_SCREENS   = ${flat.length}`,
@@ -2603,6 +2788,13 @@ export async function generateAssets({ dir, project, log = () => {} }) {
     // block; RPG_LIMITS.variables is what says how big it is, here and in the
     // clamp that keeps a variable index inside it.
     `NUM_VARIABLES = ${RPG_LIMITS.variables}`,
+    // Moved here from battletables.js (docs/design-name-entry.md §5, P1-3):
+    // nameentry.asm's own kernel-lo placement needs this equate too, and
+    // battletables.js's own output is omitted entirely from an action
+    // project's build -- so this project-independent RPG_LIMITS figure is
+    // emitted unconditionally, the same shape NUM_VARIABLES just above
+    // already uses, rather than duplicated in two places.
+    `NAME_LEN      = ${RPG_LIMITS.nameLength}`,
     `NUM_TILESETS  = ${project.tilesets.length}`,
     // This build's own actor roster size -- save_check_valid range-checks a
     // restored inv_items entry against this, under `.if !ITEMS_ENABLED`,
@@ -2684,6 +2876,29 @@ export async function generateAssets({ dir, project, log = () => {} }) {
     // The CHR bank a battle switches to, which is where the monster artwork
     // lives. Clamped to what survived the mapper's tileset limit.
     `BATTLE_TILESET = ${Math.min(project.rpg?.battleTilesetId ?? 0, Math.max(0, project.tilesets.length - 1))}`,
+    // In-game party-member naming (docs/design-name-entry.md §4/§5/§9).
+    // NAME_ENTRY_BANKED decides which of engine/nameentry.asm's two mutually
+    // exclusive .include sites fires; the other four are content flags,
+    // independent of where the code lives.
+    `NAME_ENTRY_ENABLED = ${usesNameEntry ? 1 : 0}`,
+    `JOIN_NAMING_ENABLED = ${usesJoinNaming ? 1 : 0}`,
+    `HERO_NAMING_ENABLED = ${usesHeroNaming ? 1 : 0}`,
+    `NAME_ENTRY_BANKED = ${nameEntryBanked ? 1 : 0}`,
+    `NAME_SEED_ENABLED = ${usesNameSeed ? 1 : 0}`,
+    // The grid's own layout constants -- generated from shared/font.js's
+    // charToTile, the same single-writer source engine/text.asm's own glyph
+    // indices already come from. Cost nothing to emit off-gate (equates, no
+    // bytes), so always present rather than conditional.
+    `NAME_GRID_UPPER_BASE = ${hex(charToTile('A'))}`,
+    `NAME_GRID_LOWER_BASE = ${hex(charToTile('a'))}`,
+    `NAME_GRID_D_TILE = ${hex(charToTile('D'))}`,
+    `NAME_GRID_E_TILE = ${hex(charToTile('E'))}`,
+    `NAME_GRID_L_TILE = ${hex(charToTile('L'))}`,
+    `NAME_GRID_N_TILE = ${hex(charToTile('N'))}`,
+    // (BOX_TEXT_LO & $1F)*8 -- BOX_TEXT_LO is engine/constants.asm's own fixed
+    // $22, not a generated value, so it is spelled out here rather than
+    // imported from anywhere.
+    `NAME_GRID_TEXT_COL0 = ${(0x22 & 0x1f) * 8}`,
     // Save. Pays nothing when the project has no live Save command, the
     // same rule COMBAT_ENABLED and TITLE_ENABLED already hold their own
     // projects to — see engine/save.asm for what this gates, and
@@ -2896,6 +3111,22 @@ export async function generateAssets({ dir, project, log = () => {} }) {
   await fs.writeFile(path.join(assetsDir, 'sprites.inc'), spriteTables(project, playerTiles));
   await fs.writeFile(path.join(assetsDir, 'items.inc'), itemTables(project, itemsEnabled));
 
+  // --- the naming grid's own default-name table -----------------------------
+  // hero_name_default (docs/design-name-entry.md §8): kernel-lo, not $E000,
+  // because its one reader (init_session's own action-side re-seed) is
+  // kernel-lo code already. Emitted only when needsHeroDefault -- an RPG
+  // never reads it at all, seeding pc_name_ram from the banked pc_name/
+  // party_join path instead (§7/§8).
+  await fs.writeFile(
+    path.join(assetsDir, 'nameentry.inc'),
+    needsHeroDefault
+      ? `; Generated -- the hero's default name, for a build with no battle bank to seed pc_name_ram from.\n` +
+        `hero_name_default:\n  .db ${nameTiles(project.party[0].name)
+          .map((tile) => hex(tile))
+          .join(',')}\n`
+      : '; Generated -- an RPG seeds pc_name_ram from the banked pc_name table instead (see engine/battle.asm).\n'
+  );
+
   // --- music ---------------------------------------------------------------
   await fs.writeFile(
     path.join(assetsDir, 'music.inc'),
@@ -2906,7 +3137,10 @@ export async function generateAssets({ dir, project, log = () => {} }) {
   await fs.writeFile(path.join(assetsDir, 'text.inc'), textTables(text));
 
   // --- controller mapping --------------------------------------------------
-  const actionRows = INPUT_STATES.map((state) => {
+  // The nameentry row exists only when this project actually opts into
+  // naming -- kernelTableBytes' own identical gate, above (§4's Y1 fix).
+  const nameEntryStates = projectUsesNameEntry(project) ? INPUT_STATES : INPUT_STATES.slice(0, -1);
+  const actionRows = nameEntryStates.map((state) => {
     const bindings = project.input.states[state] ?? {};
     return BUTTONS.map((button) => actionIndex(bindings[button]));
   });
@@ -2914,7 +3148,7 @@ export async function generateAssets({ dir, project, log = () => {} }) {
     path.join(assetsDir, 'input.inc'),
     [
       '; Generated -- one action per button, for each game state.',
-      `; States: ${INPUT_STATES.join(', ')}. Buttons: ${BUTTONS.join(', ')}.`,
+      `; States: ${nameEntryStates.join(', ')}. Buttons: ${BUTTONS.join(', ')}.`,
       `input_actions:\n${actionRows.map((row) => `  .db ${row.map(hex).join(',')}`).join('\n')}`,
       ''
     ].join('\n')

@@ -22,6 +22,24 @@ import { parseSymbolFile } from '../../main/build/symbols.js';
 import { compileText, opIndex, EVT_PAGES_END } from '../../main/build/textcompile.js';
 import { decodeBody } from '../lib/eventdecoder.js';
 import { textToTiles } from '../../shared/font.js';
+import {
+  BOX_ROW,
+  NM_ROW,
+  NM_COL,
+  NM_LEN,
+  PC_NAME_RAM,
+  NAME_LEN,
+  ST_NAMEENTRY,
+  BOX_NAMEENTRY,
+  BOX_NAMEDONE,
+  namingReady,
+  waitForNamingReady,
+  gotoCell,
+  clearName,
+  typeNameAndFinish,
+  finishNamingIfOpen,
+  nameBytes
+} from '../lib/naming.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const SAMPLE = path.join(ROOT, 'sample-rpg');
@@ -81,6 +99,7 @@ const BURN_DMG = 3; // engine/constants.asm
 
 const ST_GAMEPLAY = 0;
 const ST_MENU = 1;
+const ST_DIALOG = 2;
 const ST_GAMEOVER = 4;
 const ST_BATTLE = 5;
 
@@ -174,21 +193,45 @@ function walkTo(nes, targetX, targetY, budget = 600) {
   }
 }
 
-/** Talk (B), then press through every page until the conversation ends. */
+/** Talk (B), then press through every page until the conversation ends.
+ *  Returns false the instant a named Join opens the naming grid mid-
+ *  conversation (docs/design-name-entry.md §14) -- the caller drives it with
+ *  typeNameAndFinish, then calls talkThrough again for whatever the script
+ *  does after the Join, mirroring how any other mid-conversation suspend in
+ *  this engine is already driven one segment at a time. */
 function talkThrough(nes, budget = 30) {
   tap(nes, B);
   for (let press = 0; press < budget; press++) {
     if (nes.cpu.mem[GAME_STATE] === ST_GAMEPLAY) return true;
     for (let frame = 0; frame < 600; frame++) {
       const box = nes.cpu.mem[BOX_STATE];
+      if (box === BOX_NAMEENTRY) return false;
       if (box === BOX_PAGEWAIT || box === BOX_ENDWAIT || nes.cpu.mem[GAME_STATE] === ST_GAMEPLAY) break;
       nes.frame();
     }
     if (nes.cpu.mem[GAME_STATE] === ST_GAMEPLAY) return true;
+    if (nes.cpu.mem[BOX_STATE] === BOX_NAMEENTRY) return false;
     tap(nes, A);
     for (let i = 0; i < 20; i++) nes.frame();
   }
   return nes.cpu.mem[GAME_STATE] === ST_GAMEPLAY;
+}
+
+// --- in-game party-member naming (docs/design-name-entry.md §14) ----------
+//
+// The grid helpers themselves live in test/lib/naming.js, shared with
+// test/unit/nameentry.test.js (the action, kernel-lo placement) -- P2
+// hygiene, phase 3 fix round 2. The shared shape is naming.js's own: every
+// helper operates on an already-booted `nes` instance. bootPastNaming below
+// is this file's own thin wrapper around that shape, since it is the one
+// piece that is genuinely specific to this file (this file's own boot()/
+// ROM_PATH, not naming.js's business).
+
+/** Boot, then clear any hero-naming session with the default seeded name
+ *  untouched -- this file's own boot()/ROM_PATH piped into naming.js's own
+ *  finishNamingIfOpen. */
+function bootPastNaming(romPath = ROM_PATH, frames = 40) {
+  return finishNamingIfOpen(boot(romPath, frames));
 }
 
 // engine/constants.asm
@@ -1151,6 +1194,237 @@ test('a Join event recruits a member mid-script, and they fight from then on', {
   assert.equal(state, ST_GAMEPLAY, 'two attackers could not finish one slime');
   assert.equal(nes.cpu.mem[MON_ALIVE], 0);
   assert.ok(nes.cpu.mem[PC_XP_LO + 1] > 0, 'the recruit fought and earned nothing');
+});
+
+// --- in-game party-member naming (docs/design-name-entry.md, phase 3) ------
+
+test('hero naming: a typed name lands in pc_name_ram at the right stride offset, and game_state hands off to gameplay', {
+  skip: needsSample
+}, async (t) => {
+  const rom = await buildVariant(t, 'hero-naming', (project) => {
+    project.party[0].renamable = true;
+  });
+  const nes = boot(rom);
+  assert.equal(nes.cpu.mem[GAME_STATE], ST_NAMEENTRY, 'hero naming should open at the start of a new game');
+  typeNameAndFinish(nes, 'Zed');
+  for (let i = 0; i < 20 && nes.cpu.mem[GAME_STATE] === ST_NAMEENTRY; i++) nes.frame();
+  assert.equal(nes.cpu.mem[GAME_STATE], ST_GAMEPLAY, 'the hero naming session never handed off to gameplay');
+  assert.deepEqual(
+    nameBytes(nes, 0),
+    [...textToTiles('Zed').tiles, ...Array(NAME_LEN - 3).fill(textToTiles(' ').tiles[0])],
+    'the typed name should land at pc_name_ram slot 0, blank-padded'
+  );
+});
+
+// P2-1 (docs/design-name-entry.md phase 3 fix round 2): the banked-placement
+// twin of the identical action-side test in nameentry.test.js -- mirrors it
+// exactly, since the two placements are the whole point of this phase. A
+// counter, not a switch: setSwitch is idempotent, so it cannot distinguish
+// "fired once" from "fired twice."
+test('hero naming: the starting screen\'s own entry event fires exactly once, after naming, never before and never twice', {
+  skip: needsSample
+}, async (t) => {
+  const VARIABLES = 0x0500; // engine/constants.asm
+  const rom = await buildVariant(t, 'hero-naming-entry-once', (project) => {
+    project.party[0].renamable = true;
+    const screen = project.maps[project.project.startMap].screens[project.project.startScreen];
+    screen.entities[0].props.trigger = 'enter';
+    screen.entities[0].props.event = {
+      pages: [{ cond: { type: 'none', arg: 0 }, commands: [{ op: 'addVar', variable: 0, value: 1 }] }]
+    };
+  });
+  const nes = boot(rom);
+  assert.equal(nes.cpu.mem[GAME_STATE], ST_NAMEENTRY, 'hero naming should be open');
+  waitForNamingReady(nes);
+  assert.equal(
+    nes.cpu.mem[VARIABLES],
+    0,
+    'the entry event must not have run yet while the naming session is still open -- proves this assertion is ' +
+      'checking a byte that could actually be nonzero, not one structurally stuck at 0'
+  );
+  gotoCell(nes, 2, 1); // END, seeded default untouched
+  tap(nes, A);
+  for (let i = 0; i < 30 && nes.cpu.mem[GAME_STATE] === ST_NAMEENTRY; i++) nes.frame();
+  assert.equal(nes.cpu.mem[GAME_STATE], ST_GAMEPLAY, 'naming should have handed off to gameplay');
+  for (let i = 0; i < 20; i++) nes.frame(); // let a same-frame-armed entry event actually run
+  assert.equal(
+    nes.cpu.mem[VARIABLES],
+    1,
+    'the entry event must fire exactly once -- 0 would mean it never ran (settle_owed swallowed it), 2 would mean ' +
+      'it ran once before naming and again after (the starting screen redrawn out from under a still-open session)'
+  );
+});
+
+test('hero naming: DEL via the grid cell and DEL via the Cancel action produce identical pc_name_ram contents', {
+  skip: needsSample
+}, async (t) => {
+  const rom = await buildVariant(t, 'hero-naming-del', (project) => {
+    project.party[0].renamable = true;
+  });
+
+  const viaGrid = boot(rom);
+  waitForNamingReady(viaGrid);
+  gotoCell(viaGrid, 0, 0); // 'A'
+  tap(viaGrid, A);
+  clearName(viaGrid); // DEL via the grid cell
+
+  const viaCancel = boot(rom);
+  waitForNamingReady(viaCancel);
+  gotoCell(viaCancel, 0, 0);
+  tap(viaCancel, A);
+  for (let i = 0; i < NAME_LEN && viaCancel.cpu.mem[NM_LEN] > 0; i++) tap(viaCancel, B); // Cancel action
+  assert.equal(viaCancel.cpu.mem[NM_LEN], 0, 'Cancel never emptied the name');
+
+  assert.deepEqual(nameBytes(viaGrid, 0), nameBytes(viaCancel, 0), 'DEL via either path must leave identical bytes');
+});
+
+test('hero naming: nm_acted is a per-frame latch -- two queued button presses on the same frame produce exactly one grid action', {
+  skip: needsSample
+}, async (t) => {
+  const rom = await buildVariant(t, 'hero-naming-latch', (project) => {
+    project.party[0].renamable = true;
+  });
+  const nes = boot(rom);
+  waitForNamingReady(nes);
+  clearName(nes);
+  gotoCell(nes, 0, 0); // 'A'
+  // Press A and B on the same frame -- select AND cancel/delete queued together.
+  nes.buttonDown(1, A);
+  nes.buttonDown(1, B);
+  nes.frame();
+  nes.buttonUp(1, A);
+  nes.buttonUp(1, B);
+  for (let i = 0; i < 14; i++) nes.frame();
+  assert.equal(nes.cpu.mem[NM_LEN], 1, 'exactly one grid action (the type) should have registered, not two that cancel out');
+});
+
+test('hero naming: DOWN then UP from row 0 returns to the exact starting cell; UP then DOWN does not, unless it started at column 0', {
+  skip: needsSample
+}, async (t) => {
+  const rom = await buildVariant(t, 'hero-naming-ring', (project) => {
+    project.party[0].renamable = true;
+  });
+  const nes = boot(rom);
+  waitForNamingReady(nes);
+  gotoCell(nes, 0, 5);
+  tap(nes, DOWN);
+  tap(nes, UP);
+  assert.equal(nes.cpu.mem[NM_ROW], 0, 'DOWN then UP should return to row 0');
+  assert.equal(nes.cpu.mem[NM_COL], 5, 'DOWN then UP should return to the exact starting column');
+
+  const nes2 = boot(rom);
+  waitForNamingReady(nes2);
+  gotoCell(nes2, 0, 5);
+  tap(nes2, UP);
+  tap(nes2, DOWN);
+  assert.equal(nes2.cpu.mem[NM_ROW], 0, 'UP then DOWN should still land on row 0 (DOWN\'s own wrap)');
+  assert.notEqual(nes2.cpu.mem[NM_COL], 5, 'UP then DOWN from a non-zero column must NOT return to the start -- DOWN wraps to column 0 unconditionally');
+  assert.equal(nes2.cpu.mem[NM_COL], 0, 'DOWN\'s own wrap always resets the column to 0');
+});
+
+test('hero naming: an empty name (END pressed immediately after clearing) is accepted, and the seeded default round-trips unchanged when END is pressed with no edits', {
+  skip: needsSample
+}, async (t) => {
+  const rom = await buildVariant(t, 'hero-naming-empty', (project) => {
+    project.party[0].renamable = true;
+  });
+
+  const empty = boot(rom);
+  waitForNamingReady(empty);
+  clearName(empty);
+  gotoCell(empty, 2, 1); // END
+  tap(empty, A);
+  for (let i = 0; i < 20 && empty.cpu.mem[GAME_STATE] === ST_NAMEENTRY; i++) empty.frame();
+  assert.equal(empty.cpu.mem[GAME_STATE], ST_GAMEPLAY, 'an all-space name must be accepted, not rejected');
+  assert.deepEqual(nameBytes(empty, 0), Array(NAME_LEN).fill(textToTiles(' ').tiles[0]), 'an all-space name should read back as ten space tiles');
+
+  const seeded = boot(rom);
+  waitForNamingReady(seeded);
+  const before = nameBytes(seeded, 0);
+  gotoCell(seeded, 2, 1); // END, no edits
+  tap(seeded, A);
+  for (let i = 0; i < 20 && seeded.cpu.mem[GAME_STATE] === ST_NAMEENTRY; i++) seeded.frame();
+  assert.deepEqual(nameBytes(seeded, 0), before, 'the seeded default must round-trip unchanged when END is pressed with no edits');
+});
+
+test('hero naming: restart_game (a game over\'s own path back to a fresh session) re-seeds the default name, not whatever the last session typed', {
+  skip: needsSample
+}, async (t) => {
+  // A real, scripted killing hit, not a poked PC_HP array: an 'enter'
+  // trigger with a live Damage command for 255 reaches player_died through
+  // the ordinary field path (script_op_damage -> party_damage -> jmp
+  // player_died, engine/script.asm/engine/rpg.asm) the instant gameplay
+  // begins, right after naming ends -- the identical mechanism the existing
+  // "a killing Damage wipes the whole recruited party" test already proves
+  // reaches game over on this exact engine, reused here via 'enter' instead
+  // of 'touch' so it needs no walk to trigger.
+  const rom = await buildVariant(t, 'hero-naming-restart', (project) => {
+    project.party[0].renamable = true;
+    project.project.titleMap = null; // titleless: a game over restarts straight into a new game
+    project.maps[0].encounters = { rate: 0, actorIds: [] }; // a wandering monster must not race this
+    const screen = project.maps[project.project.startMap].screens[project.project.startScreen];
+    screen.entities[0].props.trigger = 'enter';
+    screen.entities[0].props.event = {
+      pages: [{ cond: { type: 'none', arg: 0 }, commands: [{ op: 'damage', value: 255 }] }]
+    };
+  });
+  const nes = boot(rom);
+  assert.equal(nes.cpu.mem[GAME_STATE], ST_NAMEENTRY, 'titleless cold boot should reach naming directly');
+  const seededDefault = nameBytes(nes, 0);
+  typeNameAndFinish(nes, 'Zed');
+  assert.deepEqual(
+    nameBytes(nes, 0).slice(0, 3),
+    textToTiles('Zed').tiles,
+    'the typed name should have landed the instant naming ends -- before checking for the game over below, since ' +
+      'the entry event\'s own killing Damage command can reach ST_GAMEOVER within the same handful of frames ' +
+      'gameplay begins in'
+  );
+
+  for (let i = 0; i < 60 && nes.cpu.mem[GAME_STATE] !== ST_GAMEOVER; i++) nes.frame();
+  assert.equal(
+    nes.cpu.mem[GAME_STATE],
+    ST_GAMEOVER,
+    'the entry event\'s own killing Damage command never reached game over -- no early return: this must be a ' +
+      'real failure, not a silently skipped assertion'
+  );
+  const BOX_ENDWAIT_LOCAL = 6;
+  for (let i = 0; i < 200 && nes.cpu.mem[BOX_STATE] !== BOX_ENDWAIT_LOCAL; i++) nes.frame();
+  assert.equal(nes.cpu.mem[BOX_STATE], BOX_ENDWAIT_LOCAL, 'the game-over message never reached BOX_ENDWAIT');
+  tap(nes, START, 20); // restart_game's own hardwired Start
+  assert.equal(nes.cpu.mem[GAME_STATE], ST_NAMEENTRY, 'restart_game should reopen hero naming, titleless');
+  waitForNamingReady(nes);
+  assert.deepEqual(
+    nameBytes(nes, 0),
+    seededDefault,
+    'the fresh session\'s own seeded preview must be the compiled default, not the previous session\'s typed name'
+  );
+});
+
+test('a named Join opens the naming grid entirely inside ST_DIALOG (never ST_NAMEENTRY), recruits before naming, and resumes the script after', {
+  skip: needsSample
+}, async (t) => {
+  const rom = await buildVariant(t, 'join-naming', (project) => {
+    project.party[1].renamable = true; // Iris, the recruiter's own target
+    project.maps[0].encounters = { rate: 0, actorIds: [] }; // wandering monsters off
+  });
+  const nes = boot(rom);
+  assert.equal(nes.cpu.mem[PC_IN_PARTY + 1], 0, 'Iris should not start in the party');
+
+  walkTo(nes, 208, 48);
+  const finishedWithoutNaming = talkThrough(nes);
+  assert.equal(finishedWithoutNaming, false, 'talkThrough should stop at the naming grid, not finish the conversation');
+  assert.equal(nes.cpu.mem[BOX_STATE], BOX_NAMEENTRY);
+  assert.equal(nes.cpu.mem[GAME_STATE], ST_DIALOG, 'a named Join\'s own session must run inside ST_DIALOG, never ST_NAMEENTRY');
+  assert.equal(nes.cpu.mem[PC_IN_PARTY + 1], 1, 'BE_JOIN should already have run before BE_NAME_BEGIN');
+
+  typeNameAndFinish(nes, 'Kip');
+  assert.ok(talkThrough(nes, 10) || nes.cpu.mem[GAME_STATE] === ST_GAMEPLAY, 'the conversation never resumed after naming');
+  assert.deepEqual(
+    nameBytes(nes, 1).slice(0, 3),
+    textToTiles('Kip').tiles,
+    'the recruit\'s own typed name should land at pc_name_ram slot 1'
+  );
+  assert.ok(nes.cpu.mem[SWITCHES] & 1, 'the page\'s own trailing setSwitch command should still have run, after naming');
 });
 
 // Join-guard brief (handoff-next/join-guard-brief.md): battle_entry_join

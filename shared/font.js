@@ -317,16 +317,59 @@ export function projectUsesEffectiveTitle(project) {
 }
 
 /**
+ * Whether the naming grid itself is live -- the grid IS text (docs/design-
+ * name-entry.md §5's own glyph-drawing routines), so a project whose only
+ * text source is hero or Join naming still needs the font, on either game
+ * type and either placement.
+ *
+ * Mirrors shared/project.js's own projectUsesNameEntry
+ * (projectUsesHeroNaming || projectUsesJoinNaming), duplicated rather than
+ * imported: shared/project.js imports FROM this file (fontBankSplit,
+ * projectUsesText, projectUsesEffectiveTitle), so the reverse import would be
+ * circular. project.js's own predicate is the single writer for "does this
+ * project use naming"; test/unit/font.test.js's own agreement test is what
+ * catches the two drifting apart, since nothing else can tell a real shared
+ * import apart from a pasted-back copy that happens to answer identically
+ * today. BOX_ROWS (this file's own export, identical to CHOICE_LIMITS.options
+ * in shared/project.js) is the choice-option limit liveCommands needs; the
+ * `memberIndex > 0 && renamable && !startsInParty` clause is
+ * shared/project.js's own joinNamingCandidate, inlined for the same reason.
+ *
+ * Exported (not merely a projectUsesText implementation detail) specifically
+ * so test/unit/font.test.js's own agreement test can compare it directly
+ * against projectUsesNameEntry -- projectUsesText's own boolean is masked
+ * for the RPG game type (always true regardless of naming, since a turn-
+ * based RPG's battles are text on their own), so the Join-naming half of
+ * that agreement could not otherwise be observed at all.
+ */
+export function projectUsesNaming(project) {
+  if (project?.party?.[0]?.renamable) return true;
+  if (project?.project?.gameType !== 'rpg') return false;
+  for (const event of projectEvents(project)) {
+    for (const page of compiledPages(event)) {
+      for (const command of liveCommands(page.commands, BOX_ROWS)) {
+        if (command.op !== 'join' || command.member === null) continue;
+        const member = project.party?.[command.member];
+        if (command.member > 0 && Boolean(member?.renamable) && !member?.startsInParty) return true;
+      }
+    }
+  }
+  return false;
+}
+
+/**
  * Does any part of the project put text on screen? True as soon as an entity
  * carries dialogue or an event, a title screen is chosen, the game is a
- * turn-based RPG (battles are text), or combat can reach the game-over screen.
- * The generator stamps the font and the Tile Forge reserves $A0-$FF exactly
- * when this is true, so a text-free project keeps all 256 tiles.
+ * turn-based RPG (battles are text), combat can reach the game-over screen,
+ * or the naming grid is live. The generator stamps the font and the Tile
+ * Forge reserves $A0-$FF exactly when this is true, so a text-free project
+ * keeps all 256 tiles.
  */
 export function projectUsesText(project) {
   if (project.project?.gameType === 'rpg') return true;
   if (projectUsesEffectiveTitle(project)) return true;
   if (projectUsesCombat(project)) return true;
+  if (projectUsesNaming(project)) return true;
   for (const map of project.maps ?? []) {
     for (const screen of map.screens ?? []) {
       for (const entity of screen.entities ?? []) {

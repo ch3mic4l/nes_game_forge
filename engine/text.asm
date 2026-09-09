@@ -247,8 +247,15 @@ text_tick_choice:
   jmp text_choice_step
 text_tick_choicewait:
   cmp #BOX_CHOICEWAIT
-  bne text_tick_wait
+  bne text_tick_nameentry
   jmp text_choice_move      ; a wait that still has a cursor to steer
+text_tick_nameentry:
+  .if NAME_ENTRY_ENABLED
+  cmp #BOX_NAMEENTRY
+  bne text_tick_wait
+  jmp name_tick              ; shim (engine/ui.asm) -- tail call either way,
+                              ; runs nameentry_tick
+  .endif
 text_tick_wait:
   rts                       ; the WAIT states are waiting for the player
 

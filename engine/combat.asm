@@ -144,6 +144,24 @@ init_session_status:
   lda #BE_INIT              ; the party, out of the tables in the battle bank
   jmp call_battle
   .endif
+  ; The default-name re-seed a project with hero naming or the name token
+  ; needs and an action build cannot get from the banked pc_name/party_join
+  ; path above -- there is no battle bank on this game type at all
+  ; (docs/design-name-entry.md §8). An RPG never reaches here: its own seed
+  ; already happened above, through BE_INIT's own party_init -> party_join
+  ; chain, which runs unconditionally for every starting member (the hero
+  ; included) before this routine's own callers ever let a naming session
+  ; begin.
+  .if NAME_SEED_ENABLED
+  .if !BATTLE_ENABLED
+  ldy #NAME_LEN-1
+init_session_name_loop:
+  lda hero_name_default,y
+  sta pc_name_ram,y
+  dey
+  bpl init_session_name_loop
+  .endif
+  .endif
   rts
 
   .if !BATTLE_ENABLED

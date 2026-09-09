@@ -619,10 +619,21 @@ push_combatant_name:
   cmp #MAX_PARTY
   bcs push_combatant_monster
   sta bt_tmp                 ; the party slot, while ptr_lo/hi is loaded
+  ; The battle message box's own combatant-name reader, swapped the same way
+  ; draw_panel's is (docs/design-name-entry.md §3) -- pc_name_ram once naming
+  ; is on, so "Rian attacks!" says whatever the player actually typed.
+  .if NAME_ENTRY_ENABLED
+  lda #LOW(pc_name_ram)
+  sta ptr_lo
+  lda #HIGH(pc_name_ram)
+  sta ptr_hi
+  .endif
+  .if !NAME_ENTRY_ENABLED
   lda #LOW(pc_name)
   sta ptr_lo
   lda #HIGH(pc_name)
   sta ptr_hi
+  .endif
   lda bt_tmp
   jsr name_offset_pc
 push_pc_char:

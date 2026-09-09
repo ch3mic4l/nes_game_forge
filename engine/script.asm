@@ -377,12 +377,63 @@ script_op_warp:
 ; through call_battle -- the trampoline restores the screen bank on the way out,
 ; which matters here more than anywhere: the script keeps running afterwards,
 ; and the frame this ran in still has to dereference mtptr.
+;
+; The operand's bit 7 is the compiler's own "this Join is a real naming
+; candidate" flag (docs/design-name-entry.md §7, packed by textcompile.js'
+; own joinNamingCandidate-gated encodeCommand case) -- masked with and #$7F,
+; never a narrower mask, so a stale or out-of-range operand still reaches
+; battle_entry_join's own cpx #PARTY_SIZE guard unmodified rather than being
+; folded into a valid-looking member index. A named Join's own naming session
+; runs entirely inside ST_DIALOG, never ST_NAMEENTRY -- game_state is already
+; ST_DIALOG from start_dialog and nothing here touches it; only box_state
+; becomes BOX_NAMEENTRY.
+  .if JOIN_NAMING_ENABLED
+script_op_join:
+  jsr script_arg
+  sta nm_named
+  cmp #NO_MEMBER
+  beq script_op_join_dangling
+  and #$7F
+  sta bt_arg
+  cmp #PARTY_SIZE
+  bcs script_op_join_unname
+  tax
+  lda pc_in_party,x
+  bne script_op_join_unname
+  lda nm_named
+  and #$80
+  beq script_op_join_unname
+  lda #1
+  sta nm_named
+  jmp script_op_join_call
+script_op_join_dangling:
+  lda #NO_MEMBER
+  sta bt_arg
+script_op_join_unname:
+  lda #0
+  sta nm_named
+script_op_join_call:
+  lda #BE_JOIN
+  jsr call_battle
+  lda #2
+  jsr script_skip
+  lda nm_named
+  beq script_op_join_plain
+  lda #BE_NAME_BEGIN
+  jsr call_battle             ; bt_arg still holds the member index
+  lda #BOX_NAMEENTRY
+  jmp box_begin
+script_op_join_plain:
+  jmp script_run
+  .endif
+  .if !JOIN_NAMING_ENABLED
 script_op_join:
   jsr script_arg
   sta bt_arg
   lda #BE_JOIN
   jsr call_battle
   jmp script_next2
+  .endif
   .endif
 
 ; [OP_MUSIC, song index or NO_SONG]. set_music (engine/music.asm) is the same

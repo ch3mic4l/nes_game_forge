@@ -3,7 +3,7 @@
 
 import { store } from '../../store.js';
 import { el, fill, field, toast } from '../../ui.js';
-import { ACTIONS, BUTTONS, INPUT_STATES } from '../../../shared/project.js';
+import { ACTIONS, BUTTONS, INPUT_STATES, projectUsesHeroNaming } from '../../../shared/project.js';
 import { projectUsesEffectiveTitle } from '../../../shared/font.js';
 
 // What the engine does with each action, in each game state. A `null` means the
@@ -78,7 +78,13 @@ const STATE_LABELS = {
     'Reading dialogue',
     'Opened by interacting with an actor that is not a pickup. The world freezes.'
   ],
-  title: ['On the title screen', 'What the cartridge boots into when a title map is set. Start always works here.']
+  title: ['On the title screen', 'What the cartridge boots into when a title map is set. Start always works here.'],
+  nameentry: [
+    'Naming a character',
+    'Opened for the hero at the start of a new game when hero naming is on. The world is frozen; the ' +
+      'D-pad moves the grid cursor, Confirm types the highlighted letter or selects END, and Cancel deletes ' +
+      'the last letter.'
+  ]
 };
 
 // `INPUT_STATES` is the wire format and runs ahead of the engine: a state is
@@ -94,7 +100,8 @@ export const bindableStates = (project) =>
   INPUT_STATES.filter(
     (state) =>
       state in STATE_LABELS &&
-      (state !== 'title' || projectUsesEffectiveTitle(project))
+      (state !== 'title' || projectUsesEffectiveTitle(project)) &&
+      (state !== 'nameentry' || projectUsesHeroNaming(project))
   );
 
 const BUTTON_LABELS = { A: 'A', B: 'B', SELECT: 'Select', START: 'Start' };

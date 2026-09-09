@@ -45,7 +45,40 @@ battle_entry_join_skip:
                               ; battle_entry is reached by jsr, never jmp, so
                               ; this rts is the correct, and only, return.
 battle_entry_restore:
+  .if NAME_ENTRY_ENABLED
+  cmp #BE_RESTORE
+  bne be_name_begin_chk
+  .endif
   jmp party_restore
+  .if NAME_ENTRY_ENABLED
+; The naming grid's own five entry points (engine/nameentry.asm), reached
+; only through the kernel-lo shims' own NAME_ENTRY_BANKED arm -- never
+; directly, and never on an action project, where nameentry.asm assembles
+; into kernel-lo instead and this whole dispatch chain does not exist.
+be_name_begin_chk:
+  cmp #BE_NAME_BEGIN
+  bne be_name_tick_chk
+  lda bt_arg
+  jmp nameentry_begin
+be_name_tick_chk:
+  cmp #BE_NAME_TICK
+  bne be_name_draw_chk
+  jmp nameentry_tick
+be_name_draw_chk:
+  cmp #BE_NAME_DRAW
+  bne be_name_select_chk
+  jmp draw_nameentry_cursor
+be_name_select_chk:
+  cmp #BE_NAME_SELECT
+  bne be_name_cancel_chk
+  jmp nameentry_select
+be_name_cancel_chk:
+  cmp #BE_NAME_CANCEL
+  bne be_entry_done
+  jmp nameentry_cancel
+be_entry_done:
+  rts
+  .endif
 
 ; ------------------------------------------------------------- a new game
 
@@ -82,6 +115,41 @@ party_join:
   lda #1
   sta pc_in_party,x
   inc party_size
+  ; Seeds pc_name_ram from the banked pc_name table -- widened from
+  ; NAME_ENTRY_ENABLED to the wider NAME_SEED_ENABLED union
+  ; (docs/design-name-entry.md §8, P1-2): party_init already calls this
+  ; routine for every starting member, member 0 (the hero) included, so this
+  ; is the RPG's own working seed path -- nameentry_begin's own preview-row
+  ; scan (engine/nameentry.asm) needs a real name already sitting here the
+  ; instant a naming session opens.
+  .if NAME_SEED_ENABLED
+  lda #LOW(pc_name)
+  sta ptr_lo
+  lda #HIGH(pc_name)
+  sta ptr_hi
+  txa
+  jsr name_offset_pc
+  stx bt_tmp
+  lda #0
+name_copy_dst_loop:
+  cpx #0
+  beq name_copy_dst_ready
+  clc
+  adc #NAME_LEN
+  dex
+  jmp name_copy_dst_loop
+name_copy_dst_ready:
+  tax
+  ldy #0
+name_copy_loop:
+  lda [ptr_lo],y
+  sta pc_name_ram,x
+  iny
+  inx
+  cpy #NAME_LEN
+  bne name_copy_loop
+  ldx bt_tmp
+  .endif
   jsr party_apply_level
   lda pc_hp_max,x
   sta pc_hp,x
@@ -598,10 +666,21 @@ draw_panel_slot:
   lda #BT_PANEL_COL
   sta bt_col
   jsr seek_at
+  ; A party slot's own name reads pc_name_ram once naming is on -- the
+  ; player's actual, possibly-typed name, not the compiled default
+  ; (docs/design-name-entry.md §3).
+  .if NAME_ENTRY_ENABLED
+  lda #LOW(pc_name_ram)
+  sta ptr_lo
+  lda #HIGH(pc_name_ram)
+  sta ptr_hi
+  .endif
+  .if !NAME_ENTRY_ENABLED
   lda #LOW(pc_name)
   sta ptr_lo
   lda #HIGH(pc_name)
   sta ptr_hi
+  .endif
   txa
   jsr name_offset_pc
 draw_panel_char:
@@ -658,3 +737,6 @@ name_offset_pc_len:
 
   .include "battleui.asm"
   .include "battleturn.asm"
+  .if NAME_ENTRY_ENABLED
+  .include "nameentry.asm"
+  .endif

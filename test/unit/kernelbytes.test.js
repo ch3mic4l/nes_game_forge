@@ -60,10 +60,28 @@ import {
   BOUND_TILE_RECORD,
   screenCapacityFor,
   flattenScreens,
-  kernelTableBytes
+  kernelTableBytes,
+  NAME_ENTRY_KERNEL_ALLOWANCE,
+  JOIN_NAMING_KERNEL_ALLOWANCE,
+  HERO_NAMING_KERNEL_ALLOWANCE,
+  HERO_NAMING_TITLELESS_KERNEL_ALLOWANCE,
+  NAME_ENTRY_ACTION_KERNEL_ALLOWANCE,
+  HERO_DEFAULT_KERNEL_ALLOWANCE
 } from '../../main/build/generate.js';
 import { SUPPORTED_MAPPERS, rpgCapable, saveMediaImplemented, prgLayout } from '../../shared/cartridge.js';
-import { createTileset, createProject, projectUsesItems, projectUsesBoundTiles, projectUsesTurn } from '../../shared/project.js';
+import {
+  createTileset,
+  createProject,
+  createPartyMember,
+  projectUsesItems,
+  projectUsesBoundTiles,
+  projectUsesTurn,
+  projectUsesHeroNaming,
+  projectUsesJoinNaming,
+  projectWithoutHeroNaming,
+  projectWithoutJoinNaming,
+  metaspriteKernelBytes
+} from '../../shared/project.js';
 import { fontBankSplit, projectUsesText } from '../../shared/font.js';
 import { createSong } from '../../shared/audio.js';
 
@@ -135,7 +153,14 @@ async function measureCodeBytes(
     withSfx = false,
     withTitle = false,
     withItems = true,
-    withBoundTiles = false
+    withBoundTiles = false,
+    // In-game party-member naming (docs/design-name-entry.md §11, X3).
+    // withHeroNaming sets party[0].renamable; withJoinNaming sets party[1].renamable
+    // when the fixture has a second member (sample-rpg does; SAMPLE, the action
+    // fixture, does not carry a second party slot to name, so withJoinNaming is a
+    // no-op there -- matching D6/D8's own "Join naming is RPG-only" rule).
+    withHeroNaming = false,
+    withJoinNaming = false
   } = {}
 ) {
   const dir = await fsp.mkdtemp(path.join(os.tmpdir(), 'forge-kernelbytes-'));
@@ -194,6 +219,8 @@ async function measureCodeBytes(
     const paintedId = screen.metatiles[0];
     screen.boundTiles = [{ switchId: 0, row: 0, col: 0, metatileId: paintedId }];
   }
+  if (withHeroNaming) project.party[0].renamable = true;
+  if (withJoinNaming && project.party[1]) project.party[1].renamable = true;
   await saveProject(dir, project);
   const lines = [];
   const built = await buildProject({ dir, project, log: (line) => lines.push(line) });
@@ -1706,6 +1733,79 @@ test('a kernel-lo shortfall neither Save nor Move would close, but a roomier boa
   assert.match(message, /Try MMC1 in the Build panel/);
 });
 
+// P2-1 (phase 3 fix round 4): the mapper-swap branch above used to price a
+// candidate by kernelCodeBytes alone, but kernelTableBytes is itself
+// mapper-dependent now (the CHR-RAM streaming tables, phase 3 fix round 3 --
+// 3 bytes per tileset on a chrRam board, 0 elsewhere), so a switch off
+// UNROM 512 also frees table bytes a code-only comparison never sees.
+// Reviewer's own reproduction, re-derived here rather than hand-typed: a
+// Join-only sample-rpg variant (hero naming off, one named Join) with its
+// default 3 tilesets and enough filler metasprites to land a 196-byte
+// kernel-lo deficit on UNROM 512. MMC1 saves 195 code bytes alone -- short
+// of 196 -- but 204 total (195 code + 9 table, chrTableBytes going from 3
+// regions x 3 bytes on UNROM 512 to 0 on MMC1), which does cover it. The
+// wrong implementation this catches: pricing a candidate by kernelCodeBytes
+// alone recommends dropping content (or nothing at all) instead of the
+// board that actually fits.
+test(
+  'a mapper suggestion prices a candidate by full kernel-lo occupancy (code + table bytes), not code bytes alone -- a board that only fits once its table savings are counted is still offered, and content is not',
+  async () => {
+    const project = await loadProject(SAMPLE_RPG);
+    project.cartridge.mapper = 30; // UNROM 512 -- the only chrRam board, so the only one with a nonzero table term to omit
+    project.project.titleMap = 0;
+    project.project.titleScreen = 0;
+    assert.equal(project.tilesets.length, 3, 'sample-rpg ships 3 tilesets by default -- the reviewer\'s own shape');
+    project.party.push({ id: project.party.length, name: 'Ally', renamable: true, startsInParty: false });
+    project.maps[0].screens[0].entities.push({
+      actorId: 0,
+      x: 16,
+      y: 16,
+      props: { event: { pages: [{ cond: { type: 'none', arg: 0 }, commands: [{ op: 'join', member: project.party.length - 1 }] }] } }
+    });
+    assert.ok(
+      !projectUsesHeroNaming(project) && projectUsesJoinNaming(project),
+      'this reproduction needs Join naming alone, not hero naming -- otherwise the solo-drop branch above would offer removing naming instead of exercising the mapper-swap branch'
+    );
+    // Zero-tile filler metasprites, not inflateMetasprites (which clones a
+    // real, 4-tile template) -- a real tile costs 4 kernel-lo bytes/tile on
+    // every board alike and would swamp the small, table-only gap this
+    // reproduction depends on long before the deficit reaches 196.
+    for (let i = 0; i < 220; i++) project.sprites.metasprites.push({ id: 1000 + i, name: `FillerMS${i}`, tiles: [] });
+
+    const mapper30 = SUPPORTED_MAPPERS.find((m) => m.id === 30);
+    const mapper1 = SUPPORTED_MAPPERS.find((m) => m.id === 1);
+    const occupancyOn = (m) => {
+      const { fixedBytes, tableBytes } = kernelTableBytes(project, m);
+      return kernelCodeBytes(project, m) + fixedBytes + tableBytes;
+    };
+    const codeSaved = kernelCodeBytes(project, mapper30) - kernelCodeBytes(project, mapper1);
+    const tableSaved = occupancyOn(mapper30) - occupancyOn(mapper1) - codeSaved;
+    assert.equal(codeSaved, 195, 'the reproduction must still isolate to exactly 195 code-only bytes saved by MMC1, or this is testing a different shape');
+    assert.equal(tableSaved, 9, 'the reproduction must still isolate to exactly 9 table-only bytes saved by MMC1 (the CHR-RAM streaming tables), or this is testing a different shape');
+
+    const { problems } = checkCapacity(project);
+    const error = problems.find((p) => p.severity === 'error' && /lookup tables/.test(p.message));
+    assert.ok(error, 'expected checkCapacity to refuse this project on UNROM 512');
+    const deficit = Number(error.message.match(/need (\d+) bytes but only (-?\d+) are free/)?.[1]) - Number(error.message.match(/need (\d+) bytes but only (-?\d+) are free/)?.[2]);
+    assert.equal(deficit, 196, 'the reproduction must still isolate to exactly a 196-byte deficit, or this is testing a different shape');
+    assert.ok(
+      deficit > codeSaved,
+      `this case only exercises the bug if the code-only savings (${codeSaved}) alone would NOT cover the deficit (${deficit})`
+    );
+
+    assert.match(
+      error.message,
+      /Try MMC1 in the Build panel — it reserves 204 fewer bytes for the same features\.$/,
+      `expected the full-occupancy MMC1 suggestion; got: ${error.message}`
+    );
+    assert.doesNotMatch(
+      error.message,
+      /Reduce the number|Try removing/,
+      'a board that actually fits must be offered, not content removal'
+    );
+  }
+);
+
 // A mapper suggestion is unverifiable the moment the project carries any
 // hand-written 6502, so it is withheld rather than guessed.
 //
@@ -2291,7 +2391,14 @@ test('a kernel-lo shortfall a live Show/Hide command alone would close names Sho
     y: 16,
     props: { event: { pages: [{ cond: { type: 'none', arg: 0 }, commands: [{ op: 'visible', state: 'hidden' }] }] } }
   });
-  inflate(project, 214);
+  // 213, not 214: metaspriteKernelBytes' own empty-table placeholder fix
+  // (phase 3 fix round 3b -- ms_data_0/anim_data_0's real one-byte
+  // generator placeholder, previously unmodelled) adds 2 predicted bytes to
+  // this project's kernelTableBytes (its metasprites and animations are
+  // both empty), which at the old 214 pushed the deficit from 48 to 50 --
+  // over VISIBLE_KERNEL_ALLOWANCE. Re-measured, not adjusted by hand: one
+  // fewer filler actor (8 bytes/actor) lands back at 42.
+  inflate(project, 213);
   const deficit = kernelShortfallDeficit(project);
   assert.ok(
     deficit <= VISIBLE_KERNEL_ALLOWANCE,
@@ -3424,3 +3531,608 @@ test(
     assert.ok(built.romPath, 'dropping the bound tile should still be a real fix, leaving Save+Move+item to build as before');
   }
 );
+
+// ---------------------------------------------------------------------------
+// In-game party-member naming (docs/design-name-entry.md §4/§8/§11 -- phase 3,
+// "the gated engine core"). The kernel-lo half of the 21-point isolation
+// matrix (§11): rows 4-15 (RPG, per-board deltas), the RPG half of 16-18
+// (the worst-case build), and the action-side deltas D8 adds. The banked half
+// (rows 1-3, 19-21, the banked half of 16-18) lives in bankedbytes.test.js.
+
+// Every supported board hosts an action project -- there is no gameType
+// restriction on the action side the way rpgCapable() restricts the RPG
+// side, so this is simply every registered mapper (P2, phase 3 fix round 3):
+// NROM 0, UxROM 2, CNROM 3, MMC1 1, MMC3 4, GxROM 66, Color Dreams 11, UNROM
+// 512 30. switchableMappers will offer any of the four previously omitted
+// here (UxROM, CNROM, GxROM, Color Dreams) to a naming-only action project,
+// so leaving them out of this suite would leave real, offered boards
+// unchecked.
+const ACTION_CAPABLE_MAPPERS = SUPPORTED_MAPPERS;
+// The measured/fallback split BASE_KERNEL_CODE_BYTES_BY_MAPPER itself
+// already makes (mirrors FALLBACK_MAPPERS above): only NROM, MMC1, MMC3 and
+// UNROM 512 have a real measured base entry. The other four fall back to the
+// largest measured figure (6217) -- known safe by construction, but not by
+// how much, so the whole-bank absolute check below holds them to the
+// "margin >= KERNEL_SLACK, no upper band" idiom the existing fallback-base
+// test above already uses, not the full [KERNEL_SLACK, 2*KERNEL_SLACK] band
+// a real measured base earns.
+const ACTION_MEASURED_MAPPERS = ACTION_CAPABLE_MAPPERS.filter((m) => m.id in BASE_KERNEL_CODE_BYTES_BY_MAPPER);
+const ACTION_FALLBACK_MAPPERS = ACTION_CAPABLE_MAPPERS.filter((m) => !(m.id in BASE_KERNEL_CODE_BYTES_BY_MAPPER));
+
+test(
+  'in-game naming: rows 4-15 -- N, H, J and HT triangulated from real nesasm deltas on every RPG-capable board',
+  { skip: !hasNesasm && 'nesasm not found on PATH' },
+  async (t) => {
+    for (const mapper of CAPABLE_MAPPERS) {
+      const off = await measureCodeBytes(t, mapper, { withTitle: true });
+      const join = await measureCodeBytes(t, mapper, { withTitle: true, withJoinNaming: true });
+      const hero = await measureCodeBytes(t, mapper, { withTitle: true, withHeroNaming: true });
+      const both = await measureCodeBytes(t, mapper, { withTitle: true, withHeroNaming: true, withJoinNaming: true });
+      const heroTitleless = await measureCodeBytes(t, mapper, { withTitle: false, withHeroNaming: true });
+      const offTitleless = await measureCodeBytes(t, mapper, { withTitle: false });
+
+      const deltaJoin = join.codeBytes - off.codeBytes; // N + J
+      const deltaHero = hero.codeBytes - off.codeBytes; // N + H
+      const deltaBoth = both.codeBytes - off.codeBytes; // N + H + J
+      const n = deltaJoin + deltaHero - deltaBoth;
+      const h = deltaHero - n;
+      const j = deltaJoin - n;
+      const deltaHeroTitleless = heroTitleless.codeBytes - offTitleless.codeBytes; // N + H + HT
+      const ht = deltaHeroTitleless - deltaHero;
+
+      assert.equal(n, NAME_ENTRY_KERNEL_ALLOWANCE, `${mapper.name}: NAME_ENTRY_KERNEL_ALLOWANCE triangulated to ${n}`);
+      assert.equal(h, HERO_NAMING_KERNEL_ALLOWANCE, `${mapper.name}: HERO_NAMING_KERNEL_ALLOWANCE triangulated to ${h}`);
+      assert.equal(j, JOIN_NAMING_KERNEL_ALLOWANCE, `${mapper.name}: JOIN_NAMING_KERNEL_ALLOWANCE triangulated to ${j}`);
+      assert.equal(
+        ht,
+        HERO_NAMING_TITLELESS_KERNEL_ALLOWANCE,
+        `${mapper.name}: HERO_NAMING_TITLELESS_KERNEL_ALLOWANCE triangulated to ${ht}`
+      );
+
+      assertCovers({ mapper, codeBytes: both.codeBytes }, kernelCodeBytes(both.project, mapper), 'hero+join naming, titled');
+    }
+  }
+);
+
+// P1-1's own consequence: the naming grid IS text (shared/font.js's own
+// projectUsesText now answers true whenever projectUsesNameEntry does), so a
+// naming-only MMC3 action project -- no title, no dialogue, no combat, no
+// text source but the grid itself -- must pay SPLIT_KERNEL_ALLOWANCE too.
+// createProject, not sample: sample already has dialogue, so its own
+// naming-on/off delta never had to include this term (it was already true
+// on both sides, cancelling out) -- this is the one isolation that actually
+// needs a text-free baseline.
+test(
+  'in-game naming: SPLIT_KERNEL_ALLOWANCE is charged to a naming-only MMC3 action project (the naming grid IS text)',
+  { skip: !hasNesasm && 'nesasm not found on PATH' },
+  async (t) => {
+    async function measure(hero) {
+      const dir = await fsp.mkdtemp(path.join(os.tmpdir(), 'forge-naming-split-'));
+      t.after(() => fsp.rm(dir, { recursive: true, force: true }));
+      const project = createProject('Naming only MMC3');
+      project.cartridge.mapper = 4; // MMC3, the scanline-IRQ board
+      if (hero) project.party[0].renamable = true;
+      const lines = [];
+      const built = await buildProject({ dir, project, log: (line) => lines.push(line) });
+      const { kernelLoBank } = prgLayout(SUPPORTED_MAPPERS.find((m) => m.id === 4));
+      const bankLine = lines.find((line) => new RegExp(`^BANK\\s+${kernelLoBank}\\s`).test(line));
+      const used = Number(bankLine.match(/(\d+)\/\s*(\d+)\s*$/)?.[1]);
+      const symbols = await fsp.readFile(built.symbolPath, 'utf8');
+      const resetAddr = parseInt(symbols.match(/^reset\s*=\s*\$([0-9A-Fa-f]+)/m)[1], 16);
+      return { project, codeBytes: used - (resetAddr - 0xc000) };
+    }
+    const off = await measure(false);
+    const on = await measure(true);
+    const mapper = SUPPORTED_MAPPERS.find((m) => m.id === 4);
+    assert.equal(
+      off.codeBytes,
+      BASE_KERNEL_CODE_BYTES_BY_MAPPER[4],
+      'a text-free, naming-off project should measure exactly the MMC3 base -- nothing else conditional'
+    );
+    const delta = on.codeBytes - off.codeBytes;
+    const expected =
+      NAME_ENTRY_KERNEL_ALLOWANCE +
+      HERO_NAMING_KERNEL_ALLOWANCE +
+      HERO_NAMING_TITLELESS_KERNEL_ALLOWANCE + // createProject's own default has no title
+      NAME_ENTRY_ACTION_KERNEL_ALLOWANCE +
+      HERO_DEFAULT_KERNEL_ALLOWANCE +
+      SPLIT_KERNEL_ALLOWANCE;
+    assert.equal(
+      delta,
+      expected,
+      `hero naming on a text-free MMC3 action project should cost every naming term PLUS SPLIT_KERNEL_ALLOWANCE ` +
+        `(165) -- got a delta of ${delta}, expected ${expected}. A delta missing exactly 165 would mean ` +
+        'projectUsesText never turned on for this project.'
+    );
+    assertCovers({ mapper, codeBytes: on.codeBytes }, kernelCodeBytes(on.project, mapper), 'naming-only text on MMC3, titleless action');
+  }
+);
+
+test(
+  'in-game naming: rows 16-18 -- naming (hero+join) + title + Save all live, real assembly on the boards it fits',
+  { skip: !hasNesasm && 'nesasm not found on PATH' },
+  async (t) => {
+    // MMC1 and MMC3 fit; UNROM 512 does not -- a new, real, documented
+    // limitation (its own SAVE_KERNEL_ALLOWANCE_BY_MAPPER entry, 686, is the
+    // largest of the three, the identical reason every other Save-adjacent
+    // shortfall in this ledger already singles UNROM 512 out), confirmed
+    // below rather than silently skipped.
+    for (const mapper of CAPABLE_MAPPERS.filter((m) => m.id !== 30)) {
+      const entry = await measureCodeBytes(t, mapper, {
+        withTitle: true,
+        withSave: true,
+        withHeroNaming: true,
+        withJoinNaming: true
+      });
+      assertCovers({ mapper, codeBytes: entry.codeBytes }, kernelCodeBytes(entry.project, mapper), 'naming + title + Save (worst case)');
+    }
+
+    const u512 = CAPABLE_MAPPERS.find((m) => m.id === 30);
+    const project = await loadProject(SAMPLE_RPG);
+    project.cartridge.mapper = 30;
+    project.project.titleMap = 0;
+    project.project.titleScreen = 0;
+    project.party[0].renamable = true;
+    if (project.party[1]) project.party[1].renamable = true;
+    project.maps[0].screens[0].entities.push({
+      actorId: 0,
+      x: 16,
+      y: 16,
+      props: { event: { pages: [{ cond: { type: 'none', arg: 0 }, commands: [{ op: 'save' }] }] } }
+    });
+    const message = kernelShortfallMessage(project);
+    assert.match(
+      message,
+      /every named Join \(frees \d+ bytes\)/,
+      `${u512.name}: naming + title + Save should refuse, offering "every named Join" as one real fix`
+    );
+  }
+);
+
+test(
+  'in-game naming: NROM base (durable fix) and the action-side absolute check on sample',
+  { skip: !hasNesasm && 'nesasm not found on PATH' },
+  async (t) => {
+    const nrom = ACTION_CAPABLE_MAPPERS.find((m) => m.id === 0);
+    assert.ok(nrom, 'NROM should be a supported mapper');
+    assert.equal(
+      baseKernelCodeBytes(nrom),
+      5952,
+      'BASE_KERNEL_CODE_BYTES_BY_MAPPER should have a real, measured NROM entry now, not the UNROM 512 fallback'
+    );
+
+    // sample (NROM, titled) with hero naming: the one action board with real
+    // margin -- assertCovers is meaningful here because checkCapacity does
+    // not refuse this build.
+    const entry = await measureCodeBytes(t, nrom, { fixture: SAMPLE, withHeroNaming: true });
+    assertCovers({ mapper: nrom, codeBytes: entry.codeBytes }, kernelCodeBytes(entry.project, nrom), 'hero naming on sample, NROM');
+
+    // The three small, save-capable action fixtures (each already carries a
+    // live Save command, unlike sample itself) with hero naming added do not
+    // fit at all -- the documented limitation §11 predicts (mmc1 -45, mmc3
+    // -244, u512 -412 against the design's own static count; real, measured
+    // figures differ slightly but the refusal itself is exact and real).
+    // checkCapacity refuses with real advice rather than measureCodeBytes
+    // ever reaching nesasm.
+    for (const [fixtureName, mapperId] of [
+      ['sample-mmc1', 1],
+      ['sample-mmc3', 4],
+      ['sample-u512', 30]
+    ]) {
+      const project = await loadProject(path.join(ROOT, fixtureName));
+      project.party[0].renamable = true;
+      const message = kernelShortfallMessage(project);
+      assert.match(
+        message,
+        /hero naming at the start of a new game \(frees \d+ bytes\)/,
+        `${fixtureName} (mapper ${mapperId}): the refusal should offer removing hero naming as a fix`
+      );
+    }
+  }
+);
+
+test(
+  'in-game naming: the action-side allowance triangulated from sample, identical on every action-capable board',
+  { skip: !hasNesasm && 'nesasm not found on PATH' },
+  async (t) => {
+    // sample carries a title by default; titled and titleless both isolate
+    // the identical NAME_ENTRY_ACTION_KERNEL_ALLOWANCE once N, H, HT (all
+    // shared with the RPG placement, measured above) and HERO_DEFAULT_KERNEL_
+    // ALLOWANCE (exact by construction -- see its own comment in generate.js)
+    // are subtracted out -- there is no toggle, in this phase, that turns any
+    // of those on for an action project without also turning the others on.
+    for (const mapper of ACTION_CAPABLE_MAPPERS) {
+      const off = await measureCodeBytes(t, mapper, { fixture: SAMPLE, withTitle: false });
+      const heroTitled = await measureCodeBytes(t, mapper, { fixture: SAMPLE, withTitle: true, withHeroNaming: true });
+      const offTitled = await measureCodeBytes(t, mapper, { fixture: SAMPLE, withTitle: true });
+      const heroTitleless = await measureCodeBytes(t, mapper, { fixture: SAMPLE, withTitle: false, withHeroNaming: true });
+
+      const deltaTitled = heroTitled.codeBytes - offTitled.codeBytes;
+      const deltaTitleless = heroTitleless.codeBytes - off.codeBytes;
+      const actionFromTitled = deltaTitled - NAME_ENTRY_KERNEL_ALLOWANCE - HERO_NAMING_KERNEL_ALLOWANCE - HERO_DEFAULT_KERNEL_ALLOWANCE;
+      const actionFromTitleless =
+        deltaTitleless -
+        NAME_ENTRY_KERNEL_ALLOWANCE -
+        HERO_NAMING_KERNEL_ALLOWANCE -
+        HERO_NAMING_TITLELESS_KERNEL_ALLOWANCE -
+        HERO_DEFAULT_KERNEL_ALLOWANCE;
+      assert.equal(
+        actionFromTitled,
+        NAME_ENTRY_ACTION_KERNEL_ALLOWANCE,
+        `${mapper.name}: NAME_ENTRY_ACTION_KERNEL_ALLOWANCE (titled path) triangulated to ${actionFromTitled}`
+      );
+      assert.equal(
+        actionFromTitleless,
+        NAME_ENTRY_ACTION_KERNEL_ALLOWANCE,
+        `${mapper.name}: NAME_ENTRY_ACTION_KERNEL_ALLOWANCE (titleless path) triangulated to ${actionFromTitleless}`
+      );
+    }
+  }
+);
+
+// P1-A (phase 3 fix round 3, fixed round 4 P2-2): kernelTableBytes' own new
+// chrTableBytes term (main/build/generate.js) -- tileset_bank/tileset_lo/
+// tileset_hi (assets/chrtables.inc), 3 bytes per chrPayloadRegions() region,
+// only on a chrRam board (UNROM 512 today). The original version of this
+// test only ever compared nesasm's real delta against a hardcoded literal
+// 3/0 -- it never once called kernelTableBytes itself, so a broken MODEL
+// (a flat `chrTableBytes = 3` regardless of region count, or a `3 *
+// Math.max(1, regions)` floor) could mispredict while nesasm's own real
+// output, produced by a different code path entirely, still happened to
+// read 3 for a single 1->2 step -- passing the old test outright. Fixed:
+// compare the MODEL's own 1->2 AND 2->3 deltas against nesasm's real deltas
+// directly. A flat charge predicts a 2->3 model delta of 0 against a real
+// delta of 3 and fails here; a `max(1, regions)`-style floor is
+// indistinguishable from the correct per-region charge once regions >= 1 on
+// every step this test takes, so it is not a distinguishable case for THIS
+// term (chrPayloadRegions never returns 0 regions for a chrRam board with
+// >=1 tileset) -- the real defect that name describes is caught by the
+// flat-charge check above instead. Zero-delta controls on every non-chrRam
+// board stay, now checked against the model too.
+test(
+  "in-game naming: kernelTableBytes' own CHR-RAM streaming-table term -- its own 1->2 AND 2->3 tileset delta matches nesasm's real pre-reset delta exactly, on every board",
+  { skip: !hasNesasm && 'nesasm not found on PATH' },
+  async (t) => {
+    async function measure(mapper, tilesetCount) {
+      const project = await loadProject(SAMPLE);
+      project.cartridge.mapper = mapper.id;
+      while (project.tilesets.length < tilesetCount) project.tilesets.push(createTileset(`Extra ${project.tilesets.length}`));
+      project.tilesets.length = tilesetCount;
+      const dir = await fsp.mkdtemp(path.join(os.tmpdir(), 'forge-chrtable-'));
+      t.after(() => fsp.rm(dir, { recursive: true, force: true }));
+      const built = await buildProject({ dir, project, log: () => {} });
+      const symbols = await fsp.readFile(built.symbolPath, 'utf8');
+      const resetAddr = parseInt(symbols.match(/^reset\s*=\s*\$([0-9A-Fa-f]+)/m)[1], 16);
+      const { fixedBytes, tableBytes } = kernelTableBytes(project, mapper);
+      return { real: resetAddr - 0xc000, model: fixedBytes + tableBytes };
+    }
+    for (const mapper of [SUPPORTED_MAPPERS.find((m) => m.id === 30), ...CAPABLE_MAPPERS]) {
+      const one = await measure(mapper, 1);
+      const two = await measure(mapper, 2);
+      const three = await measure(mapper, 3);
+      const expected = mapper.chrRam ? 3 : 0;
+      for (const [label, before, after] of [
+        ['1->2', one, two],
+        ['2->3', two, three]
+      ]) {
+        const realDelta = after.real - before.real;
+        const modelDelta = after.model - before.model;
+        assert.equal(
+          modelDelta,
+          realDelta,
+          `${mapper.name}, ${label} tilesets: kernelTableBytes' own predicted delta (${modelDelta}) must equal ` +
+            `nesasm's real pre-reset delta (${realDelta}) -- a flat charge or a model that stops tracking real ` +
+            'per-tileset region count would mispredict here even while an earlier step happened to match'
+        );
+        assert.equal(
+          realDelta,
+          expected,
+          `${mapper.name}, ${label} tilesets: adding a tileset should cost ${expected} real pre-reset bytes` +
+            (mapper.chrRam ? ' (tileset_bank/tileset_lo/tileset_hi, one more region)' : ' (no CHR-RAM streaming tables on this board)')
+        );
+      }
+    }
+  }
+);
+
+// P1-A2 fix (phase 3 fix round 3b): metaspriteKernelBytes' own new
+// placeholder terms -- going from zero metasprites (or zero animations) to
+// one real one (non-empty tiles/frames, so this stays clear of the
+// separate, narrower "one entry with an empty tiles/frames array" case --
+// see the report) must cost exactly what generateAssets' spriteTables
+// really emits. The wrong implementation this catches: "predicts 0 bytes
+// for an empty table the generator still emits one byte for" -- the bug
+// this round fixed, on every board a naming-only action project can use.
+test(
+  "in-game naming: metaspriteKernelBytes' own ms_data_0/anim_data_0 placeholder terms -- going from zero metasprites (or zero animations) to one real one costs exactly the real generator bytes, on every action-capable board",
+  { skip: !hasNesasm && 'nesasm not found on PATH' },
+  async (t) => {
+    async function measurePreReset(mapper, { metasprite, animation }) {
+      const project = await loadProject(SAMPLE);
+      project.cartridge.mapper = mapper.id;
+      project.sprites.metasprites = metasprite ? [{ id: 0, name: 'MS', tiles: [{ tile: 1 }] }] : [];
+      project.sprites.animations = animation ? [{ id: 0, name: 'Anim', loop: true, frames: [{ metaspriteId: 0 }] }] : [];
+      const dir = await fsp.mkdtemp(path.join(os.tmpdir(), 'forge-msplaceholder-'));
+      t.after(() => fsp.rm(dir, { recursive: true, force: true }));
+      const built = await buildProject({ dir, project, log: () => {} });
+      const symbols = await fsp.readFile(built.symbolPath, 'utf8');
+      const resetAddr = parseInt(symbols.match(/^reset\s*=\s*\$([0-9A-Fa-f]+)/m)[1], 16);
+      return resetAddr - 0xc000;
+    }
+    for (const mapper of ACTION_CAPABLE_MAPPERS) {
+      const neither = await measurePreReset(mapper, { metasprite: false, animation: false });
+      const msOnly = await measurePreReset(mapper, { metasprite: true, animation: false });
+      const animOnly = await measurePreReset(mapper, { metasprite: false, animation: true });
+      const predictedMsDelta =
+        metaspriteKernelBytes({ sprites: { metasprites: [{ id: 0, name: 'MS', tiles: [{ tile: 1 }] }], animations: [], actors: [] } }) -
+        metaspriteKernelBytes({ sprites: { metasprites: [], animations: [], actors: [] } });
+      const predictedAnimDelta =
+        metaspriteKernelBytes({ sprites: { metasprites: [], animations: [{ id: 0, name: 'Anim', loop: true, frames: [{ metaspriteId: 0 }] }], actors: [] } }) -
+        metaspriteKernelBytes({ sprites: { metasprites: [], animations: [], actors: [] } });
+      assert.equal(
+        msOnly - neither,
+        predictedMsDelta,
+        `${mapper.name}: going from 0 to 1 real metasprite should cost exactly metaspriteKernelBytes' own predicted ${predictedMsDelta} real pre-reset bytes`
+      );
+      assert.equal(
+        animOnly - neither,
+        predictedAnimDelta,
+        `${mapper.name}: going from 0 to 1 real animation should cost exactly metaspriteKernelBytes' own predicted ${predictedAnimDelta} real pre-reset bytes`
+      );
+    }
+  }
+);
+
+// P1-A2 sibling fix (phase 3 fix round 3c): metaspriteKernelBytes' own new
+// per-entry floor terms -- an entry that EXISTS but carries an empty tiles
+// (or frames) array still costs 1 real byte (spriteTables' own
+// `bytes.length ? dbBlock(...) : '  .db $00'` per ms_data_N/anim_data_N),
+// the same defect class round 3b already fixed for the whole-array-empty
+// case. The wrong implementation this catches: "predicts 0 bytes for a
+// per-entry table the generator still emits one byte for".
+test(
+  "in-game naming: metaspriteKernelBytes' own per-entry ms_data_N/anim_data_N placeholder terms -- a zero-tile metasprite (or a zero-frame animation) costs exactly the real generator bytes when a tile/frame is added, on every action-capable board",
+  { skip: !hasNesasm && 'nesasm not found on PATH' },
+  async (t) => {
+    async function measurePreReset(mapper, tiles, frames) {
+      const project = await loadProject(SAMPLE);
+      project.cartridge.mapper = mapper.id;
+      project.sprites.metasprites = [{ id: 0, name: 'MS', tiles }];
+      project.sprites.animations = [{ id: 0, name: 'Anim', loop: true, frames }];
+      const dir = await fsp.mkdtemp(path.join(os.tmpdir(), 'forge-msperentry-'));
+      t.after(() => fsp.rm(dir, { recursive: true, force: true }));
+      const built = await buildProject({ dir, project, log: () => {} });
+      const symbols = await fsp.readFile(built.symbolPath, 'utf8');
+      const resetAddr = parseInt(symbols.match(/^reset\s*=\s*\$([0-9A-Fa-f]+)/m)[1], 16);
+      return resetAddr - 0xc000;
+    }
+    function predicted(tiles, frames) {
+      return metaspriteKernelBytes({
+        sprites: { metasprites: [{ id: 0, name: 'MS', tiles }], animations: [{ id: 0, name: 'Anim', loop: true, frames }], actors: [] }
+      });
+    }
+    const oneFrame = [{ metaspriteId: 0 }];
+    const oneTile = [{ tile: 1 }];
+    for (const mapper of ACTION_CAPABLE_MAPPERS) {
+      // Tiles delta: 0 -> 1 tile, frames held at 1 throughout so only the
+      // metasprite's own per-entry term moves.
+      const zeroTilesAddr = await measurePreReset(mapper, [], oneFrame);
+      const oneTileAddr = await measurePreReset(mapper, oneTile, oneFrame);
+      const realTilesDelta = oneTileAddr - zeroTilesAddr;
+      const predictedTilesDelta = predicted(oneTile, oneFrame) - predicted([], oneFrame);
+      assert.equal(
+        realTilesDelta,
+        predictedTilesDelta,
+        `${mapper.name}: a zero-tile metasprite gaining its first tile should cost exactly metaspriteKernelBytes' own predicted ${predictedTilesDelta} real pre-reset bytes, got ${realTilesDelta}`
+      );
+
+      // Frames delta: 0 -> 1 frame, tiles held at 1 throughout so only the
+      // animation's own per-entry term moves.
+      const zeroFramesAddr = await measurePreReset(mapper, oneTile, []);
+      const oneFrameAddr = await measurePreReset(mapper, oneTile, oneFrame);
+      const realFramesDelta = oneFrameAddr - zeroFramesAddr;
+      const predictedFramesDelta = predicted(oneTile, oneFrame) - predicted(oneTile, []);
+      assert.equal(
+        realFramesDelta,
+        predictedFramesDelta,
+        `${mapper.name}: a zero-frame animation gaining its first frame should cost exactly metaspriteKernelBytes' own predicted ${predictedFramesDelta} real pre-reset bytes, got ${realFramesDelta}`
+      );
+    }
+  }
+);
+
+// The whole-bank control for the same fix: a project with TWO zero-tile
+// metasprites (not one, and not the whole array empty -- the shape neither
+// round 3b's nor 3c's own delta tests above individually exercise) must
+// still predict exactly what nesasm uses, on every measured board.
+test(
+  'in-game naming: the whole kernel-lo bank with two zero-tile metasprites (and two zero-frame animations) still holds the normal KERNEL_SLACK band, every measured board',
+  { skip: !hasNesasm && 'nesasm not found on PATH' },
+  async (t) => {
+    for (const mapper of ACTION_MEASURED_MAPPERS) {
+      const project = await loadProject(SAMPLE);
+      project.cartridge.mapper = mapper.id;
+      project.sprites.metasprites = [
+        { id: 0, name: 'A', tiles: [] },
+        { id: 1, name: 'B', tiles: [] }
+      ];
+      project.sprites.animations = [
+        { id: 0, name: 'A', loop: true, frames: [] },
+        { id: 1, name: 'B', loop: true, frames: [] }
+      ];
+      const margin = await measureWholeBank(t, mapper, project);
+      assert.ok(margin >= KERNEL_SLACK, `${mapper.name}: whole-bank margin ${margin} is under KERNEL_SLACK`);
+      assert.ok(margin <= KERNEL_SLACK * 2, `${mapper.name}: whole-bank margin ${margin} is over 2*KERNEL_SLACK`);
+    }
+  }
+);
+
+// P1-2/P1-A's own whole-bank check: assertCovers (above) only ever compares
+// post-reset usage, so hero_name_default's own 10-byte table and the
+// CHR-RAM streaming tables -- both emitted BEFORE reset, in
+// kernelTableBytes' fixedBytes -- have no absolute check of their own
+// without this. nesasm's REAL, full kernel-lo usage (both the pre-reset
+// lookup tables and the post-reset code) against kernelCodeBytes +
+// kernelTableBytes' own combined prediction (the identical arithmetic
+// checkCapacity runs), naming ON and OFF (P1-A: the "pre-existing, unrelated
+// to naming" claim demonstrated by a real control, not a comment), on every
+// action-capable board -- the four with a real measured
+// BASE_KERNEL_CODE_BYTES_BY_MAPPER entry held to the full
+// [KERNEL_SLACK, 2*KERNEL_SLACK] band, the four falling back to the largest
+// measured base held to the weaker "margin >= KERNEL_SLACK, no upper bound"
+// idiom the existing fallback-base test above already uses (P2).
+async function measureWholeBank(t, mapper, project) {
+  const dir = await fsp.mkdtemp(path.join(os.tmpdir(), 'forge-wholebank-'));
+  t.after(() => fsp.rm(dir, { recursive: true, force: true }));
+  const lines = [];
+  await buildProject({ dir, project, log: (line) => lines.push(line) });
+  const { kernelLoBank } = prgLayout(mapper);
+  const bankLine = lines.find((line) => new RegExp(`^BANK\\s+${kernelLoBank}\\s`).test(line));
+  assert.ok(bankLine, `${mapper.name}: nesasm's usage table never mentioned bank ${kernelLoBank}`);
+  const used = Number(bankLine.match(/(\d+)\/\s*(\d+)\s*$/)?.[1]);
+  const { fixedBytes, tableBytes } = kernelTableBytes(project, mapper);
+  const budget = kernelCodeBytes(project, mapper) + fixedBytes + tableBytes;
+  return budget - used;
+}
+
+test(
+  'in-game naming: the whole kernel-lo bank -- nesasm real usage vs. kernelCodeBytes + kernelTableBytes, sample, naming on AND off, every action-capable board',
+  { skip: !hasNesasm && 'nesasm not found on PATH' },
+  async (t) => {
+    for (const mapper of ACTION_MEASURED_MAPPERS) {
+      for (const namingOn of [false, true]) {
+        const project = await loadProject(SAMPLE);
+        project.cartridge.mapper = mapper.id;
+        if (namingOn) project.party[0].renamable = true;
+        const margin = await measureWholeBank(t, mapper, project);
+        const label = `${mapper.name}, naming ${namingOn ? 'ON' : 'OFF'}`;
+        assert.ok(margin >= KERNEL_SLACK, `${label}: whole-bank margin ${margin} is under KERNEL_SLACK`);
+        assert.ok(margin <= KERNEL_SLACK * 2, `${label}: whole-bank margin ${margin} is over 2*KERNEL_SLACK`);
+      }
+    }
+    for (const mapper of ACTION_FALLBACK_MAPPERS) {
+      for (const namingOn of [false, true]) {
+        const project = await loadProject(SAMPLE);
+        project.cartridge.mapper = mapper.id;
+        if (namingOn) project.party[0].renamable = true;
+        const margin = await measureWholeBank(t, mapper, project);
+        const label = `${mapper.name} (fallback base), naming ${namingOn ? 'ON' : 'OFF'}`;
+        assert.ok(
+          margin >= KERNEL_SLACK,
+          `${label}: whole-bank margin ${margin} is under KERNEL_SLACK -- the fallback base no longer covers real usage`
+        );
+      }
+    }
+  }
+);
+
+// P1-A2 (phase 3 fix round 3, fixed in round 3b): the whole-bank checks
+// above only ever build `sample`, a rich, real fixture -- the shape the
+// checked-in fixtures never exercise is a minimal, near-empty project (0
+// metasprites, 0 animations, 0 items, 1 screen), which is what surfaced a
+// real 2-byte gap: metaspriteKernelBytes (shared/project.js) predicted 0
+// bytes for ms_data_0/anim_data_0 when a project has zero metasprites/
+// animations, but generateAssets (main/build/generate.js's spriteTables)
+// still emits a 1-byte `.db $00` placeholder for each. Round 3 pinned that
+// gap with a loosened band instead of fixing it; round 3b fixed
+// metaspriteKernelBytes itself (its own two `Math.max(1,…)`-shaped
+// placeholder terms) and re-pinned every test that number moved --
+// including this one, now held to the same full band the sample test above
+// uses, on every measured board.
+test(
+  'in-game naming: the whole kernel-lo bank on a minimal createProject action project, naming on AND off, every action-capable board',
+  { skip: !hasNesasm && 'nesasm not found on PATH' },
+  async (t) => {
+    for (const mapper of ACTION_MEASURED_MAPPERS) {
+      for (const namingOn of [false, true]) {
+        const project = createProject('Minimal');
+        project.cartridge.mapper = mapper.id;
+        if (namingOn) project.party[0].renamable = true;
+        const margin = await measureWholeBank(t, mapper, project);
+        const label = `${mapper.name} (minimal project), naming ${namingOn ? 'ON' : 'OFF'}`;
+        assert.ok(margin >= KERNEL_SLACK, `${label}: whole-bank margin ${margin} is under KERNEL_SLACK`);
+        assert.ok(margin <= KERNEL_SLACK * 2, `${label}: whole-bank margin ${margin} is over 2*KERNEL_SLACK`);
+      }
+    }
+    for (const mapper of ACTION_FALLBACK_MAPPERS) {
+      for (const namingOn of [false, true]) {
+        const project = createProject('Minimal');
+        project.cartridge.mapper = mapper.id;
+        if (namingOn) project.party[0].renamable = true;
+        const margin = await measureWholeBank(t, mapper, project);
+        const label = `${mapper.name} (minimal project, fallback base), naming ${namingOn ? 'ON' : 'OFF'}`;
+        assert.ok(
+          margin >= KERNEL_SLACK,
+          `${label}: whole-bank margin ${margin} is under KERNEL_SLACK -- the fallback base no longer covers real usage`
+        );
+      }
+    }
+  }
+);
+
+test('in-game naming: kernelTableBytes only charges the input-row 4 bytes when the project opts in', async () => {
+  const project = await loadProject(SAMPLE_RPG);
+  const off = kernelTableBytes(project);
+  project.party[0].renamable = true;
+  const on = kernelTableBytes(project);
+  assert.equal(on.fixedBytes - off.fixedBytes, 4, 'the nameentry row should cost exactly 4 bytes once opted in');
+  assert.equal(on.tableBytes, off.tableBytes, 'naming should never touch tableBytes');
+});
+
+test('in-game naming: kernelShortfallAdvice offers every named Join as a solo candidate, on a board where naming + title + Save does not fit', async () => {
+  // UNROM 512: naming + title + Save all live does not fit (confirmed by
+  // the real-assembly test above) -- JOIN_NAMING_KERNEL_ALLOWANCE alone
+  // (64 bytes) already exceeds this project's own 44-byte deficit here, so
+  // the generic solo search finds it without ever reaching the combination
+  // search (hero naming alone frees less than the deficit on this exact
+  // project, so it is correctly absent from this particular message --
+  // the combination-search test above covers "neither alone, both
+  // together").
+  const project = await loadProject(SAMPLE_RPG);
+  project.cartridge.mapper = 30;
+  project.project.titleMap = 0;
+  project.project.titleScreen = 0;
+  project.party[0].renamable = true;
+  if (project.party[1]) project.party[1].renamable = true;
+  project.maps[0].screens[0].entities.push({
+    actorId: 0,
+    x: 16,
+    y: 16,
+    props: { event: { pages: [{ cond: { type: 'none', arg: 0 }, commands: [{ op: 'save' }] }] } }
+  });
+  assert.ok(projectUsesHeroNaming(project) && projectUsesJoinNaming(project), 'fixture should exercise both naming features');
+  const message = kernelShortfallMessage(project);
+  assert.match(message, /every named Join \(frees \d+ bytes\)/, 'advice should name Join naming as a real, solo fix');
+});
+
+test('in-game naming: removing hero naming or join naming ALONE frees only H or J (10 or 64 bytes) -- NAME_ENTRY_ENABLED stays on because the other feature is still live; removing both frees the full N+H+J', async () => {
+  const project = createProject('Naming combo', 'rpg');
+  project.project.titleMap = 0; // titled, so HERO_NAMING_TITLELESS_KERNEL_ALLOWANCE stays out of this
+  project.project.titleScreen = 0;
+  project.party[0].renamable = true;
+  project.party.push(createPartyMember(1));
+  project.party[1].renamable = true;
+  // A real, live Join command targeting member 1 -- projectUsesJoinNaming
+  // walks compiled events, not the bare party flag, so a candidate with no
+  // Join command anywhere reads as false, exactly as it should.
+  project.maps[0].screens[0].entities.push({
+    actorId: 0,
+    x: 16,
+    y: 16,
+    props: { event: { pages: [{ cond: { type: 'none', arg: 0 }, commands: [{ op: 'join', member: 1 }] }] } }
+  });
+  const mapper = SUPPORTED_MAPPERS.find((m) => m.id === 1); // MMC1
+
+  const both = kernelCodeBytes(project, mapper);
+  const withoutHero = kernelCodeBytes(projectWithoutHeroNaming(project), mapper);
+  const withoutJoin = kernelCodeBytes(projectWithoutJoinNaming(project), mapper);
+  const withoutBoth = kernelCodeBytes(projectWithoutJoinNaming(projectWithoutHeroNaming(project)), mapper);
+
+  assert.equal(both - withoutHero, HERO_NAMING_KERNEL_ALLOWANCE, 'stripping hero alone frees only H -- join naming keeps NAME_ENTRY_ENABLED on');
+  assert.equal(both - withoutJoin, JOIN_NAMING_KERNEL_ALLOWANCE, 'stripping join alone frees only J -- hero naming keeps NAME_ENTRY_ENABLED on');
+  assert.equal(
+    both - withoutBoth,
+    NAME_ENTRY_KERNEL_ALLOWANCE + HERO_NAMING_KERNEL_ALLOWANCE + JOIN_NAMING_KERNEL_ALLOWANCE,
+    'stripping both frees the full N+H+J -- NAME_ENTRY_ENABLED finally turns off too'
+  );
+});

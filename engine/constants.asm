@@ -889,6 +889,14 @@ BE_INIT     = 0             ; build the party from the tables: a new game
 BE_TICK     = 1             ; one frame of battle
 BE_JOIN     = 2             ; recruit the party member in bt_arg (the Join command)
 BE_RESTORE  = 3             ; recompute every member's spells/hp_max/mp_max from their restored level (Continue)
+; The naming grid, banked placement only -- reached through the five kernel-lo
+; shims (name_begin/tick/draw/select/cancel), never directly. See
+; engine/nameentry.asm and docs/design-name-entry.md §5.
+BE_NAME_BEGIN  = 4          ; A = the party slot to name (bt_arg)
+BE_NAME_TICK   = 5          ; one frame of the grid: raise it, or read the D-pad
+BE_NAME_DRAW   = 6          ; the grid's own cursor sprite
+BE_NAME_SELECT = 7          ; the Confirm action, while the grid is up
+BE_NAME_CANCEL = 8          ; the Cancel action, while the grid is up (DEL)
 
 ; The battle screen, in tile rows. Sky, then ground with the monsters standing
 ; on it, then the box -- FALLEN STAR's geometry, which is what the user asked
@@ -957,12 +965,15 @@ NUM_BUTTONS = 4             ; A, B, Select, Start
 ; Game states, in the same order as INPUT_STATES in shared/project.js: the state
 ; is the row of input_actions the dispatcher reads, so the two orders are one
 ; fact. Every state but the first freezes the world.
-ST_GAMEPLAY = 0
-ST_MENU     = 1
-ST_DIALOG   = 2
-ST_TITLE    = 3
-ST_GAMEOVER = 4
-ST_BATTLE   = 5
+ST_GAMEPLAY  = 0
+ST_MENU      = 1
+ST_DIALOG    = 2
+ST_TITLE     = 3
+ST_GAMEOVER  = 4
+ST_BATTLE    = 5
+ST_NAMEENTRY = 6            ; the naming grid is up, for the hero only -- a
+                             ; Join's own naming session runs entirely inside
+                             ; ST_DIALOG instead (docs/design-name-entry.md §7)
 
 ; Where the frozen-world overlays sit, in screen pixels. The inventory is a row
 ; of item sprites across the top; the highlighted one lifts, which is the cursor.
@@ -1027,6 +1038,13 @@ BOX_CLOSING   = 5
 BOX_ENDWAIT   = 6           ; the message is over; confirm resumes the script
 BOX_CHOICE    = 7           ; listing a question's options, one row per frame
 BOX_CHOICEWAIT = 8          ; ...and waiting for one of them to be picked
+BOX_NAMEENTRY = 9           ; the naming grid is up and interactive (once
+                             ; box_row has reached BOX_TEXT_ROWS)
+BOX_NAMEDONE  = 10          ; the session just ended -- an inert value set once
+                             ; END is selected, matched by nothing in text_tick,
+                             ; text_advance or draw_ui; do_action_confirm's own
+                             ; naming arm is what notices it and calls
+                             ; script_resume (docs/design-name-entry.md §4)
 
 ; String bytes. Glyphs are $A0-$FF (see shared/font.js), so anything below the
 ; font's base is free to be a control code.

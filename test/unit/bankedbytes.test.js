@@ -64,7 +64,9 @@ import {
   battleShortfallAdvice,
   battleTableBytes,
   battleTables,
-  emittedBytes
+  emittedBytes,
+  NAME_ENTRY_BATTLE_ALLOWANCE,
+  NAME_COPY_BATTLE_ALLOWANCE
 } from '../../main/build/battletables.js';
 import {
   SUPPORTED_MAPPERS,
@@ -1296,4 +1298,63 @@ test('an override of the battle sources withdraws the claim rather than guessing
     undefined,
     'with main.asm overridden, even the tables-only bound assumes a placement this project has taken over'
   );
+});
+
+// ---------------------------------------------------------------------------
+// In-game party-member naming (docs/design-name-entry.md §5/§11 -- phase 3).
+// The banked half of the 21-point isolation matrix: rows 1-3 (the combined
+// 812-byte addition) and the banked half of rows 16-18 (exact equality
+// against battleRegionBytes' own prediction, checked as part of
+// kernelbytes.test.js's own worst-case build test too, but pinned here
+// directly against measureRegion's real usage). Rows 19-21 (the token-only
+// isolation that splits NAME_ENTRY_BATTLE_ALLOWANCE from
+// NAME_COPY_BATTLE_ALLOWANCE) need the Say token (phase 4) to reach
+// NAME_SEED_ENABLED without NAME_ENTRY_ENABLED and are deferred there.
+
+test(
+  'in-game naming: rows 1-3 -- the combined 812-byte banked addition, real nesasm usage, on every RPG-capable board',
+  { skip: !hasNesasm && 'nesasm not found on PATH' },
+  async (t) => {
+    for (const mapper of CAPABLE_MAPPERS) {
+      const off = await measureRegion(t, mapper);
+      const on = await measureRegion(t, mapper, (project) => {
+        project.party[0].renamable = true;
+        if (project.party[1]) project.party[1].renamable = true;
+      });
+      assert.equal(
+        on.used - off.used,
+        NAME_ENTRY_BATTLE_ALLOWANCE + NAME_COPY_BATTLE_ALLOWANCE,
+        `${mapper.name}: hero+join naming should cost exactly NAME_ENTRY_BATTLE_ALLOWANCE + ` +
+          'NAME_COPY_BATTLE_ALLOWANCE of real banked usage'
+      );
+      assert.equal(on.used, on.predicted, `${mapper.name}: battleRegionBytes should predict real usage exactly, naming on`);
+      assert.equal(off.used, off.predicted, `${mapper.name}: battleRegionBytes should predict real usage exactly, naming off`);
+    }
+  }
+);
+
+test('in-game naming: the register-write source scan -- nameentry.asm never touches $8000/$8001', async () => {
+  const text = await fsp.readFile(path.join(ROOT, 'engine', 'nameentry.asm'), 'utf8');
+  const code = text
+    .split('\n')
+    .map((line) => line.replace(/;.*$/, ''))
+    .join('\n');
+  assert.doesNotMatch(
+    code,
+    /\$8000|\$8001/,
+    'nameentry.asm must never write a mapper register directly, outside comments -- switch_prg_bank (called ' +
+      'only from call_battle, entirely outside this file) is the only place in this feature that may'
+  );
+});
+
+test('in-game naming: battleShortfallAdvice never proposes removing naming when the battle code is overridden and the generated tables alone overflow the region', async () => {
+  const project = await loadProject(SAMPLE_RPG);
+  const mapper = SUPPORTED_MAPPERS.find((m) => m.id === project.cartridge.mapper);
+  project.party[0].renamable = true;
+  if (project.party[1]) project.party[1].renamable = true;
+  project.code = { overrides: [{ name: 'battle.asm', text: '; overridden\n' }], files: [] };
+  const deficit = battleTableBytes(project) - battleRegionCeiling(mapper) + 1000; // force a real overflow
+  const advice = battleShortfallAdvice(project, mapper, Math.max(1, deficit), { exact: false });
+  assert.doesNotMatch(advice, /hero naming/, 'an overridden battle system must never offer removing hero naming');
+  assert.doesNotMatch(advice, /named Join/, 'an overridden battle system must never offer removing a named Join');
 });

@@ -39,7 +39,14 @@ import {
   NO_ITEM,
   itemMissing,
   isMonsterActor,
-  projectUsesItems
+  projectUsesItems,
+  projectUsesHeroNaming,
+  projectUsesJoinNaming,
+  projectUsesNameEntry,
+  battleBankEnabled,
+  projectWithoutHeroNaming,
+  projectWithoutJoinNaming,
+  projectNeedsNameSeed
 } from '../../shared/project.js';
 import { NESASM_BANK_BYTES } from '../../shared/cartridge.js';
 import { textToTiles } from '../../shared/font.js';
@@ -288,7 +295,10 @@ export function battleTables(project, battleStrings = BATTLE_STRINGS) {
   chunks.push(`xp_next_hi:\n${dbRows(curve.map((total) => (total >> 8) & 0xff))}`);
 
   // --- the engine's own words ----------------------------------------------
-  chunks.push(`NAME_LEN = ${NAME_LIMIT}`);
+  // NAME_LEN itself moved to main/build/generate.js's own config.inc
+  // emission (docs/design-name-entry.md §5, P1-3): it is undefined on an
+  // action project's build, whose output omits this file entirely, and
+  // engine/nameentry.asm needs the equate on that placement too.
   chunks.push(`CMD_NAME_LEN = ${CMD_LEN}`);
   battleStrings.forEach(([name], index) => chunks.push(`BS_${name} = ${index}`));
   chunks.push(
@@ -534,6 +544,17 @@ export const BASE_BATTLE_CODE_BYTES_BY_MAPPER = { 30: 4220, 1: 4220, 4: 4266 };
 // mapper-specific fact, only on ITEMS_ENABLED.
 export const ITEM_LIST_FILTER_BATTLE_ALLOWANCE = 17;
 
+// In-game party-member naming (docs/design-name-entry.md §5/§11) -- the
+// banked half. Two independently-gated terms, not one: NAME_ENTRY_BATTLE_
+// ALLOWANCE is the naming grid's own body (engine/nameentry.asm) plus
+// battle_entry's own dispatch growth, gated on NAME_ENTRY_ENABLED && banked;
+// NAME_COPY_BATTLE_ALLOWANCE is party_join's own name-copy loop, gated on the
+// wider NAME_SEED_ENABLED && banked -- a token-only RPG (phase 4) trips the
+// copy loop with no naming feature live at all, so charging the two under one
+// gate would under-reserve that project by 47 real bytes.
+export const NAME_ENTRY_BATTLE_ALLOWANCE = 765;
+export const NAME_COPY_BATTLE_ALLOWANCE = 47;
+
 // Deliberate headroom, and its job is NOT the job KERNEL_SLACK does. There is
 // no estimation error here for it to absorb -- see the exactness note above --
 // so this is purely a buffer against the stock code growing a byte or two
@@ -630,7 +651,7 @@ export function emittedBytes(source) {
  * battle.asm itself includes, and they are in this region for that reason
  * rather than by being named anywhere the generator can see.
  */
-export const BATTLE_REGION_SOURCES = ['battle.asm', 'battleui.asm', 'battleturn.asm'];
+export const BATTLE_REGION_SOURCES = ['battle.asm', 'battleui.asm', 'battleturn.asm', 'nameentry.asm'];
 
 /**
  * Files that are not *in* the region but decide what goes into it and where.
@@ -801,10 +822,13 @@ export function battleRegionPlacementOverridden(project) {
  * numbers are exactly what a meter renders.
  */
 export function battleRegionBytes(project, mapper) {
+  const banked = battleBankEnabled(project, mapper);
   return (
     baseBattleCodeBytes(mapper) +
     battleTableBytes(project) +
-    (projectUsesItems(project) ? ITEM_LIST_FILTER_BATTLE_ALLOWANCE : 0)
+    (projectUsesItems(project) ? ITEM_LIST_FILTER_BATTLE_ALLOWANCE : 0) +
+    (projectUsesNameEntry(project) && banked ? NAME_ENTRY_BATTLE_ALLOWANCE : 0) +
+    (projectNeedsNameSeed(project) && banked ? NAME_COPY_BATTLE_ALLOWANCE : 0)
   );
 }
 
@@ -902,6 +926,32 @@ export function battleShortfallAdvice(project, mapper, deficit, { alternatives =
         options.push(lever.describe(k));
         break;
       }
+    }
+  }
+
+  // In-game naming (docs/design-name-entry.md §11, X2). Suppressed entirely
+  // when exact is false: with an overridden battle system, the deficit above
+  // was computed from battleTableBytes ALONE (generate.js) -- removing
+  // naming changes battleRegionBytes, never battleTableBytes, so it cannot
+  // close this particular deficit no matter how it is worded.
+  const nameFeatures = [];
+  if (exact) {
+    if (battleBankEnabled(project, mapper) && projectUsesHeroNaming(project)) {
+      nameFeatures.push({ label: 'hero naming at the start of a new game', strip: projectWithoutHeroNaming });
+    }
+    if (battleBankEnabled(project, mapper) && projectUsesJoinNaming(project)) {
+      nameFeatures.push({ label: 'every named Join', strip: projectWithoutJoinNaming });
+    }
+  }
+  if (nameFeatures.length) {
+    const nameBudget = battleRegionBytes(project, mapper);
+    const nameFreed = (subset) =>
+      nameBudget - battleRegionBytes(subset.reduce((p, f) => f.strip(p), project), mapper);
+    const soloWinners = nameFeatures.filter((f) => nameFreed([f]) >= deficit);
+    if (soloWinners.length) {
+      for (const f of soloWinners) options.push(`removing ${f.label}`);
+    } else if (nameFeatures.length > 1 && nameFreed(nameFeatures) >= deficit) {
+      options.push(`removing ${nameFeatures.map((f) => f.label).join(' and ')}`);
     }
   }
 

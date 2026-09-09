@@ -244,9 +244,20 @@ start_game:
   sta player_dir
   lda #0
   sta box_state
+  .if HERO_NAMING_ENABLED
+  lda #ST_NAMEENTRY
+  sta game_state
+  jsr redraw_screen
+  lda #0
+  jsr name_begin              ; shim (engine/ui.asm) -- A = party slot 0
+  lda #BOX_NAMEENTRY
+  jmp box_begin
+  .endif
+  .if !HERO_NAMING_ENABLED
   lda #ST_GAMEPLAY
   sta game_state
   jmp redraw_screen
+  .endif
 
 ; Where a game over goes. Back to the title when there is one -- which is what
 ; makes a title screen worth having -- and straight into a new game when there

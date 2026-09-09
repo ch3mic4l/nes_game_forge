@@ -144,7 +144,7 @@ test('main/build/generate.js defines none of animFor/resolveItemIcon/metaspriteK
   // reappear elsewhere in this file for unrelated tables (itemBytes, a few
   // lines below this function), so a whole-file scan would false-positive
   // on those.
-  const kernelTableBytesMatch = text.match(/export function kernelTableBytes\(project\) \{[\s\S]*?\n\}\n/);
+  const kernelTableBytesMatch = text.match(/export function kernelTableBytes\(project, mapper\) \{[\s\S]*?\n\}\n/);
   assert.ok(kernelTableBytesMatch, 'expected to find the kernelTableBytes function body');
   const body = kernelTableBytesMatch[0];
   assert.doesNotMatch(
@@ -325,18 +325,28 @@ test('saveIdentity is pinned per fixture -- unchanged by relocating MAX_ITEMS in
 // kernelTableBytes' own delegation to it.
 // --------------------------------------------------------------------------
 
-test('metaspriteKernelBytes: an empty project pays exactly the three max(1, …) floors -- 3 + 3 + 8', () => {
+test('metaspriteKernelBytes: an empty project pays the three max(1, …) floors plus the ms_data_0/anim_data_0 placeholder byte each -- 3+1 + 3+1 + 8', () => {
+  // Re-pinned, phase 3 fix round 3b: spriteTables (main/build/generate.js)
+  // emits a real one-byte `.db $00` placeholder for ms_data_0/anim_data_0
+  // when the respective array is empty, which metaspriteKernelBytes did
+  // not model until this round -- found by the in-game-naming whole-bank
+  // check. Was 3+3+8=14; now 16.
   const project = createProject('Empty', 'action');
-  assert.equal(metaspriteKernelBytes(project), 3 + 3 + 8);
+  assert.equal(metaspriteKernelBytes(project), 3 + 1 + 3 + 1 + 8);
 });
 
-test('metaspriteKernelBytes: going from 1 to 2 metasprites (same, zero tile count each, so the 4 * sum(tiles.length) term’s own delta is subtracted out) changes the total by exactly 3', () => {
+test('metaspriteKernelBytes: going from 1 to 2 metasprites, both zero-tile, changes the total by exactly 4 -- the 3-byte count/ptr floor plus the second entry’s own 1-byte ms_data_N placeholder', () => {
+  // Re-pinned, phase 3 fix round 3c: an entry with an empty tiles array still
+  // costs 1 real byte (spriteTables' `bytes.length ? dbBlock(...) : '  .db
+  // $00'`), which metaspriteKernelBytes did not model until this round --
+  // was 3 (count/ptr floor only, the old model predicted 0 for either
+  // entry's own zero-tile data row); now 3+1=4.
   const project = createProject('Metasprites', 'action');
   project.sprites.metasprites = [{ id: 0, name: 'A', tiles: [] }];
   const before = metaspriteKernelBytes(project);
   project.sprites.metasprites.push({ id: 1, name: 'B', tiles: [] });
   const after = metaspriteKernelBytes(project);
-  assert.equal(after - before, 3);
+  assert.equal(after - before, 4);
 });
 
 test('metaspriteKernelBytes: adding one tile to an existing metasprite changes the total by exactly 4', () => {
@@ -348,13 +358,16 @@ test('metaspriteKernelBytes: adding one tile to an existing metasprite changes t
   assert.equal(after - before, 4);
 });
 
-test('metaspriteKernelBytes: going from 1 to 2 animations (same, zero frame count each, so the 2 * sum(frames.length) term’s own delta is subtracted out) changes the total by exactly 3', () => {
+test('metaspriteKernelBytes: going from 1 to 2 animations, both zero-frame, changes the total by exactly 4 -- the 3-byte count/ptr floor plus the second entry’s own 1-byte anim_data_N placeholder', () => {
+  // Re-pinned, phase 3 fix round 3c: same shape as the metasprites sibling
+  // above -- an entry with an empty frames array still costs 1 real byte
+  // (spriteTables' `bytes.length ? dbBlock(...) : '  .db $00'`). Was 3; now 4.
   const project = createProject('Animations', 'action');
   project.sprites.animations = [{ id: 0, name: 'A', loop: true, frames: [] }];
   const before = metaspriteKernelBytes(project);
   project.sprites.animations.push({ id: 1, name: 'B', loop: true, frames: [] });
   const after = metaspriteKernelBytes(project);
-  assert.equal(after - before, 3);
+  assert.equal(after - before, 4);
 });
 
 test('metaspriteKernelBytes: adding one frame to an existing animation changes the total by exactly 2', () => {
@@ -870,7 +883,7 @@ test('spriteReservedRanges: an RPG-on-MMC3 project is charged the player and bat
   const ranges = spriteReservedRanges(project, mapperById(4)); // MMC3: scanlineIrq -- fontBankSplit is true
   assert.deepEqual(ranges, [
     { start: 0, end: PLAYER_TILES, label: 'the player' },
-    { start: SPRITE_ARROW_TILE, end: SPRITE_ARROW_TILE + 1, label: 'the battle cursor' }
+    { start: SPRITE_ARROW_TILE, end: SPRITE_ARROW_TILE + 1, label: 'the naming grid or battle cursor' }
   ]);
 });
 

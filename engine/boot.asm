@@ -76,6 +76,18 @@ boot_wait2:
   lda #ST_TITLE
   sta game_state
   .endif
+  ; A titleless cold boot never reaches start_game at all, so hero naming
+  ; needs its own arrival here too (docs/design-name-entry.md §8).
+  .if !TITLE_ENABLED
+  .if HERO_NAMING_ENABLED
+  lda #ST_NAMEENTRY
+  sta game_state
+  lda #0
+  jsr name_begin             ; shim (engine/ui.asm) -- A = party slot 0
+  lda #BOX_NAMEENTRY
+  jsr box_begin
+  .endif
+  .endif
 
   ; flat_screen is final now -- the title's, if there is one -- so this is the
   ; one point boot decides the music instead of hardcoding the start map's:

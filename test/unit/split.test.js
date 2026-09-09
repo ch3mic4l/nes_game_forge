@@ -28,6 +28,7 @@ import {
   charToTile,
   fontBankSplit
 } from '../../shared/font.js';
+import { SOLID_TILE, PROBE_TILE, probe, probeKind } from '../lib/framebuffer.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const SAMPLE = path.join(ROOT, 'sample');
@@ -45,6 +46,7 @@ const ENT_Y = 0x318;
 const OAM = 0x200;
 
 const ST_GAMEPLAY = 0;
+const ST_DIALOG = 2;
 const ST_TITLE = 3;
 const ST_BATTLE = 5;
 const BOX_PAGEWAIT = 3;
@@ -58,9 +60,6 @@ const UP = 4;
 const DOWN = 5;
 const LEFT = 6;
 const RIGHT = 7;
-
-const SOLID_TILE = '3'.repeat(64);
-const PROBE_TILE = 0xc1; // solid art in the variants below; the glyph 'A' in the font page
 
 /** Build a mutated copy of a checked-in sample project, in a dir the test owns. */
 async function buildVariant(t, name, source, mutate) {
@@ -115,28 +114,6 @@ function walkToEntity(nes, slot, budget = 400) {
     for (const button of buttons) nes.buttonUp(1, button);
   }
   return false;
-}
-
-/**
- * Put the probe tile in a nametable cell. mirroredWrite keeps jsnes's internal
- * name-table cache in step with vramMem, which a bare array poke does not.
- */
-const probe = (nes, row, col) => nes.ppu.mirroredWrite(0x2000 + row * 32 + col, PROBE_TILE);
-
-/**
- * What the probe cell rendered as. The art version is one solid colour; the
- * glyph 'A' has both set and clear pixels, so the colour count answers which
- * CHR bank was live when that row rendered.
- */
-function probeKind(nes, row, col) {
-  nes.frame();
-  nes.frame();
-  const frame = nes.lastFrame();
-  const colors = new Set();
-  for (let y = row * 8; y < row * 8 + 8; y++) {
-    for (let x = col * 8; x < col * 8 + 8; x++) colors.add(frame[y * 256 + x]);
-  }
-  return colors.size === 1 ? 'art' : 'font';
 }
 
 // --- the predicate and the generator ----------------------------------------
@@ -307,4 +284,136 @@ test('an MMC3 battle splits at the box and points at monsters with a sprite', as
   assert.ok(cursor, 'no cursor sprite in the shadow');
   assert.equal(cursor.x, 16, 'the cursor sits in the command column');
   assert.equal(cursor.y, 39, 'beside the first monster’s row band');
+});
+
+// --- in-game party-member naming (docs/design-name-entry.md §5/§15) --------
+//
+// split_select's own fallback (engine/split.asm) treats ANY box_state !=
+// BOX_CLOSED as needing the font-bank program, with no list of specific box
+// states -- BOX_NAMEENTRY and BOX_NAMEDONE are both non-zero, so this
+// generic mechanism already covers the naming grid with no code change at
+// all, on either placement. These are the framebuffer probes that hold that
+// claim to account rather than merely asserting it from source.
+
+const NM_ROW = 0x059b;
+const BOX_ROW = 0x41;
+const BOX_TEXT_ROWS = 4;
+const BOX_NAMEENTRY = 9;
+const ST_NAMEENTRY = 6;
+
+function waitForNamingReady(nes, budget = 60) {
+  return runUntil(nes, (n) => n.cpu.mem[BOX_STATE] === BOX_NAMEENTRY && n.cpu.mem[BOX_ROW] >= BOX_TEXT_ROWS, budget);
+}
+
+// probeRows: the row-23-through-28 tight-boundary probe (P2-3, phase 3 fix
+// round 4). The original version of both naming windows below only ever
+// sampled row 2 (far above the box) and row 25 (one row inside it) -- far
+// enough from the real boundary that a split armed several rows early (row
+// 10 instead of 24) or one that switches back to the art bank early
+// (before rows 27-28 render) would still pass. Row 23 (the last row above
+// the box) must read 'art'; every row the box itself draws, 24 (its own top
+// border, drawn from font-page border glyphs the same as its text) through
+// 28 (BOX_ROW_CONTROLS, the last content row), must read 'font',
+// individually, so no single row's own split-timing bug can hide behind a
+// neighbour. Row 29 (the box's nominal bottom border) is deliberately
+// excluded rather than asserted either way, but NOT because it is
+// genuinely outside the split's font-page range -- P3 (round 4 review): the
+// vendored core's own `endFrame()` (renderer/emulator/core/ppu/index.js)
+// blanks the top and bottom 8-pixel rows of the framebuffer to zero,
+// unconditionally, AFTER the whole frame has already rendered, whenever
+// `clipToTvSize` is true (the default) -- simulating a real TV's overscan
+// by clipping the picture, not by skipping anything the PPU actually drew.
+// Row 29 is tile row 29, pixel rows 232-239, exactly the bottom band that
+// clip zeroes. So probeKind's own colour-count read of row 29 is always a
+// single colour (0) regardless of which CHR bank the PPU used while
+// rendering that scanline -- a wrong bank there is invisible to this probe
+// technique specifically because of this post-render clip, not because the
+// box's own bottom border is drawn from anywhere other than the font page.
+function probeRows(nes, label) {
+  probe(nes, 23, 2);
+  assert.equal(
+    probeKind(nes, 23, 2),
+    'art',
+    `${label}: row 23, the last row above the box, must still render from the map's own art bank -- a split ` +
+      "armed too early (before row 24) would read 'font' here"
+  );
+  for (let row = 24; row <= 28; row++) {
+    probe(nes, row, 2);
+    assert.equal(
+      probeKind(nes, row, 2),
+      'font',
+      `${label}: row ${row} of the naming grid's own box must render from the font page -- a split armed too ` +
+        `early (e.g. row 10 instead of 24) or one that switches back to the art bank early (before rows 27-28 ` +
+        `render) would leave row ${row} reading 'art' instead`
+    );
+  }
+}
+
+test('an MMC3 RPG splits over the naming grid -- hero naming first, then a named Join, both on the real framebuffer', async (t) => {
+  const rom = await buildVariant(t, 'split-naming-rpg', SAMPLE_RPG, (project) => {
+    project.cartridge.mapper = 4;
+    project.party[0].renamable = true;
+    if (project.party[1]) project.party[1].renamable = true;
+    project.maps[0].encounters = { rate: 0, actorIds: [] };
+  });
+  const nes = boot(rom);
+  assert.equal(nes.cpu.mem[GAME_STATE], ST_NAMEENTRY, 'hero naming should open at the start of a new game');
+  assert.ok(waitForNamingReady(nes), 'the hero naming grid never finished raising');
+
+  probeRows(nes, 'hero naming');
+
+  // Select END with the seeded default, and check the split comes back down.
+  for (let i = 0; i < 3 && nes.cpu.mem[NM_ROW] !== 2; i++) tap(nes, DOWN, 4);
+  const NM_COL = 0x059c;
+  if (nes.cpu.mem[NM_COL] !== 1) tap(nes, RIGHT, 4); // land on END, not DEL
+  tap(nes, A, 20);
+  assert.ok(runUntil(nes, (n) => n.cpu.mem[GAME_STATE] === ST_GAMEPLAY, 60), 'hero naming never handed off to gameplay');
+  probe(nes, 25, 2);
+  assert.equal(probeKind(nes, 25, 2), 'art', 'with the grid closed the whole screen is art again');
+
+  // Then a named Join: walk to the recruiter, talk, and probe the grid again.
+  for (let step = 0; step < 900 && nes.cpu.mem[GAME_STATE] === ST_GAMEPLAY; step++) {
+    const dx = 208 - nes.cpu.mem[PLAYER_X];
+    const dy = 48 - nes.cpu.mem[PLAYER_Y];
+    let button = null;
+    if (dx > 1) button = RIGHT;
+    else if (dx < -1) button = LEFT;
+    else if (dy > 1) button = DOWN;
+    else if (dy < -1) button = UP;
+    if (button === null) break;
+    nes.buttonDown(1, button);
+    nes.frame();
+    nes.buttonUp(1, button);
+  }
+  const BOX_PAGEWAIT_LOCAL = 3;
+  tap(nes, B, 4);
+  for (let press = 0; press < 10 && nes.cpu.mem[BOX_STATE] !== BOX_NAMEENTRY; press++) {
+    runUntil(nes, (n) => n.cpu.mem[BOX_STATE] === BOX_PAGEWAIT_LOCAL || n.cpu.mem[BOX_STATE] === BOX_NAMEENTRY, 600);
+    if (nes.cpu.mem[BOX_STATE] === BOX_NAMEENTRY) break;
+    tap(nes, A, 20);
+  }
+  assert.equal(nes.cpu.mem[BOX_STATE], BOX_NAMEENTRY, 'the Join should have opened the naming grid');
+  assert.equal(nes.cpu.mem[GAME_STATE], ST_DIALOG, 'a named Join\'s own session runs inside ST_DIALOG, never ST_NAMEENTRY');
+  assert.ok(waitForNamingReady(nes), 'the Join naming grid never finished raising');
+
+  probeRows(nes, 'Join naming');
+});
+
+test('an MMC3 action project splits over the naming grid, kernel-lo placement', async (t) => {
+  const rom = await buildVariant(t, 'split-naming-action', SAMPLE, (project) => {
+    project.cartridge.mapper = 4;
+    project.party[0].renamable = true;
+    project.tilesets[0].background.tiles[PROBE_TILE] = SOLID_TILE;
+  });
+  const nes = boot(rom);
+  if (nes.cpu.mem[GAME_STATE] === ST_TITLE) tap(nes, START, 12);
+  assert.equal(nes.cpu.mem[GAME_STATE], ST_NAMEENTRY, 'hero naming should open on the action placement too');
+  assert.ok(waitForNamingReady(nes), 'the naming grid never finished raising (kernel-lo placement)');
+
+  // Row 2 col 2 is a pre-existing artifact of this fixture's own post-title
+  // rendering unrelated to naming or the split (reproduces identically with
+  // naming absent, on plain gameplay) -- row 23 avoids it (confirmed
+  // empirically, same as the other two naming probes below) while sitting
+  // tight against the real boundary, one row above the box's own row 24.
+  probeRows(nes, 'action placement');
 });

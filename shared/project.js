@@ -39,7 +39,8 @@ import {
   saveUnsupportedReason,
   reservesFlashSaveRegion,
   screenCapacity,
-  defaultMapperFor
+  defaultMapperFor,
+  codeRegions
 } from './cartridge.js';
 import {
   BOX_COLS,
@@ -445,7 +446,7 @@ export const ACTIONS = [
  * engine indexes it with `game_state * NUM_BUTTONS`, so `ST_*` in
  * engine/constants.asm is this list written down. **Append only.**
  */
-export const INPUT_STATES = ['gameplay', 'menu', 'dialog', 'title', 'gameover', 'battle'];
+export const INPUT_STATES = ['gameplay', 'menu', 'dialog', 'title', 'gameover', 'battle', 'nameentry'];
 
 /**
  * What kind of game the project builds. Chosen when the project is created and
@@ -2613,6 +2614,97 @@ export function joinNamingCandidate(member, memberIndex) {
   return memberIndex > 0 && Boolean(member?.renamable) && !member?.startsInParty;
 }
 
+// Hero naming (member 0) applies on either game type, the moment the project
+// authors it -- no gameType gate at all (docs/design-name-entry.md D6/D8).
+export function projectUsesHeroNaming(project) {
+  return Boolean(project?.party?.[0]?.renamable);
+}
+
+// A named Join is RPG-only: Join itself is an RPG-only command, with no
+// action-project equivalent to compile it from. joinNamingCandidate (above)
+// is the single admission test, so this and projectWithoutJoinNaming (below)
+// can never disagree about what counts as "Join naming".
+export function projectUsesJoinNaming(project) {
+  if (project?.project?.gameType !== 'rpg') return false;
+  for (const event of projectEvents(project)) {
+    for (const page of compiledPages(event)) {
+      for (const command of liveCommands(page.commands, CHOICE_LIMITS.options)) {
+        if (
+          command.op === 'join' &&
+          command.member !== null &&
+          joinNamingCandidate(project.party[command.member], command.member)
+        ) {
+          return true;
+        }
+      }
+    }
+  }
+  return false;
+}
+
+export function projectUsesNameEntry(project) {
+  return projectUsesHeroNaming(project) || projectUsesJoinNaming(project);
+}
+
+// Whether this project's naming code (and its battle system generally) would
+// live in a banked PRG code region at all -- the placement fact NAME_ENTRY_BANKED
+// reads, a separate question from whether naming is actually live. Moved here
+// (docs/design-name-entry.md §9) so main/build/generate.js's battleEnabledFor
+// and main/build/battletables.js can share one real implementation instead of
+// battletables.js importing Node-dependent generate.js, which its own header
+// forbids.
+export function battleBankEnabled(project, mapper) {
+  const bankedCode = project.project?.gameType === 'rpg' ? 1 : 0;
+  return codeRegions(mapper, project.tilesets.length, bankedCode).length > 0;
+}
+
+// The two shared strip helpers kernelShortfallAdvice/battleShortfallAdvice
+// both rely on, mirroring projectWithoutCommands' own allCommands-not-
+// liveCommands shape: a naming candidate is switched off everywhere a Move
+// or Save command already is (branch and choice contents included), not
+// merely among live occurrences, so a removal candidate stays honest against
+// a later edit that makes a currently-dead branch live.
+export function projectWithoutHeroNaming(project) {
+  const clone = structuredClone(project);
+  if (clone.party[0]) clone.party[0].renamable = false;
+  return clone;
+}
+
+// Strips renamable from exactly the members joinNamingCandidate would ever
+// admit -- not "every member but 0", which would over-strip a
+// renamable-but-startsInParty member 1-3 whose flag joinNamingCandidate never
+// admitted in the first place. Stripping hero naming (member 0) is
+// projectWithoutHeroNaming's own job, above, and this helper must not touch
+// it -- joinNamingCandidate's own `memberIndex > 0` term is what keeps the
+// two helpers from ever overlapping.
+export function projectWithoutJoinNaming(project) {
+  const clone = structuredClone(project);
+  clone.party.forEach((member, index) => {
+    if (joinNamingCandidate(member, index)) member.renamable = false;
+  });
+  return clone;
+}
+
+// The single answer to "does this project need pc_name_ram seeded at all" --
+// the identical formula NAME_SEED_ENABLED's own kernel-lo emission computes.
+// Phase 4 (the Say token, docs/design-name-entry.md §9a) widens this to
+// `projectUsesNameEntry(project) || projectUsesNameToken(project)`; written as
+// its own exported function now so that widening changes one function body
+// and no call site.
+export function projectNeedsNameSeed(project) {
+  return projectUsesNameEntry(project);
+}
+
+// Whether a compiled `hero_name_default` table is needed at all -- an RPG
+// never needs one, since its own seed comes from the banked `pc_name`/
+// `party_join` path (docs/design-name-entry.md §8) instead. Phase 4 widens
+// this the same way projectNeedsNameSeed widens (the token also needs a
+// default to read); action-only, reading projectNeedsNameSeed rather than
+// restating its formula a second time.
+export function projectNeedsHeroDefault(project) {
+  return project?.project?.gameType !== 'rpg' && projectNeedsNameSeed(project);
+}
+
 /**
  * What deleting a player part (`project.sprites.playerParts`) costs
  * (design-modular-parts.md §3.5, ROADMAP item 8 phase 1): nothing but a plain
@@ -2872,8 +2964,14 @@ export function spriteReservedRanges(project, mapper) {
   if (projectUsesHeartArt(project)) {
     ranges.push({ start: HEART_FULL_TILE, end: LIMITS.tilesPerTable, label: 'the HUD hearts' });
   }
-  if (project.project?.gameType === 'rpg' && fontBankSplit(project, mapper)) {
-    ranges.push({ start: SPRITE_ARROW_TILE, end: SPRITE_ARROW_TILE + 1, label: 'the battle cursor' });
+  // The naming disjunct is deliberately outside the "gameType === 'rpg'" AND:
+  // hero naming reserves this tile on any game type the moment it is live
+  // (docs/design-name-entry.md §4, D8), not only on an RPG split-font board.
+  if (
+    (project.project?.gameType === 'rpg' && fontBankSplit(project, mapper)) ||
+    projectUsesNameEntry(project)
+  ) {
+    ranges.push({ start: SPRITE_ARROW_TILE, end: SPRITE_ARROW_TILE + 1, label: 'the naming grid or battle cursor' });
   }
   return ranges;
 }
@@ -3361,7 +3459,13 @@ export function overlaySpriteBudget(project) {
   // draw_dialog (engine/ui.asm) draws at most one portrait, also through
   // draw_actor_icon.
   const portrait = largestActorRestingIconTiles(project);
-  return hearts + Math.max(inventory, portrait);
+  // draw_nameentry_cursor (engine/nameentry.asm) draws one sprite, the same
+  // SPRITE_ARROW_TILE the battle cursor uses -- never on the same frame as the
+  // inventory row or the dialogue portrait (ST_NAMEENTRY/ST_DIALOG's own box
+  // state is mutually exclusive with ST_MENU), but additive with hearts the
+  // identical way inventory/portrait already are.
+  const nameEntryCursor = projectUsesNameEntry(project) ? 1 : 0;
+  return hearts + Math.max(inventory, portrait, nameEntryCursor);
 }
 
 /**
@@ -3385,9 +3489,24 @@ export function metaspriteKernelBytes(project) {
   const { metasprites, animations, actors } = project.sprites;
   return (
     3 * Math.max(1, metasprites.length) +
-    4 * metasprites.reduce((total, entry) => total + entry.tiles.length, 0) +
+    // spriteTables (main/build/generate.js): `ms_data_${index}:\n${bytes.length
+    // ? dbBlock(bytes, 4) : '  .db $00'}` -- each metasprite's own data row is
+    // never zero bytes, even with an empty tiles array, so the per-entry term
+    // mirrors that floor exactly rather than letting an empty tiles array
+    // predict 0 (found via the phase-3 in-game-naming whole-bank check, the
+    // same defect class as the whole-array-empty case below).
+    metasprites.reduce((total, entry) => total + Math.max(1, 4 * entry.tiles.length), 0) +
+    // spriteTables emits a one-byte `ms_data_0:\n  .db $00` placeholder when
+    // metasprites is empty, the same way it floors ms_count/ms_ptr_lo/
+    // ms_ptr_hi above -- the reduce term is 0 there (no entries to sum), so
+    // this table's own floor has to be named separately.
+    (metasprites.length ? 0 : 1) +
     3 * Math.max(1, animations.length) +
-    2 * animations.reduce((total, entry) => total + entry.frames.length, 0) +
+    // Same per-entry floor shape for `anim_data_${index}:\n${bytes.length ?
+    // dbBlock(bytes, 2) : '  .db $00'}`.
+    animations.reduce((total, entry) => total + Math.max(1, 2 * entry.frames.length), 0) +
+    // Same shape for spriteTables' `anim_data_0: .db $00` placeholder.
+    (animations.length ? 0 : 1) +
     8 * Math.max(1, actors.length)
   );
 }
@@ -3772,7 +3891,8 @@ export function defaultInput() {
       // for it on a project that does.
       title: { A: 'confirm', B: 'none', SELECT: 'continue', START: 'confirm' },
       gameover: { A: 'confirm', B: 'none', SELECT: 'none', START: 'confirm' },
-      battle: { A: 'confirm', B: 'cancel', SELECT: 'none', START: 'none' }
+      battle: { A: 'confirm', B: 'cancel', SELECT: 'none', START: 'none' },
+      nameentry: { A: 'confirm', B: 'cancel', SELECT: 'none', START: 'none' }
     }
   };
 }

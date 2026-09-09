@@ -44,6 +44,7 @@
   .include "assets/metatiles.inc"
   .include "assets/sprites.inc"
   .include "assets/items.inc"
+  .include "assets/nameentry.inc"
   .include "assets/input.inc"
   .include "assets/maps.inc"
   .include "assets/chrtables.inc"
@@ -55,6 +56,11 @@
   .include "entities.asm"
   .include "oam.asm"
   .include "ui.asm"
+  .if NAME_ENTRY_ENABLED
+  .if !NAME_ENTRY_BANKED
+  .include "nameentry.asm"
+  .endif
+  .endif
   .include "combat.asm"
   .include "title.asm"
   .include "rpg.asm"

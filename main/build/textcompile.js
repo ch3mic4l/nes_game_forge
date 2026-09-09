@@ -51,7 +51,8 @@ import {
   commonEventId,
   VISIBLE_STATES,
   routeLegs,
-  legWithWho
+  legWithWho,
+  joinNamingCandidate
 } from '../../shared/project.js';
 import { damageAmount } from '../../shared/eventrules.js';
 import { NO_SONG, songByte, songFrameLength, NO_SFX, sfxByte, sfxFrameLength } from '../../shared/audio.js';
@@ -338,8 +339,19 @@ export function compileText(project) {
       // live join, and the engine guard that refuses NO_MEMBER catches it at
       // runtime otherwise, for a hand-edited or later-version project that
       // bypassed validation.
-      case 'join':
-        return [opIndex('join'), command.member === null ? NO_MEMBER : byte(command.member, 3)];
+      case 'join': {
+        if (command.member === null) return [opIndex('join'), NO_MEMBER];
+        const memberByte = byte(command.member, 3);
+        // The named bit reads project.party -- the compiler's own input --
+        // rather than any field authored on the command itself: a
+        // per-character renamable flag, not a per-placement one
+        // (docs/design-name-entry.md v16, D9). joinNamingCandidate, not raw
+        // renamable, so a renamable-but-startsInParty member (already
+        // recruited at boot, so any later Join targeting them is inert) never
+        // sets the bit.
+        const named = joinNamingCandidate(project.party[command.member], command.member);
+        return [opIndex('join'), named ? (memberByte | 0x80) : memberByte];
+      }
       case 'call': {
         // A reference, not a container: the argument is the callee's slot in
         // the shared events table, resolved above rather than clamped here.
