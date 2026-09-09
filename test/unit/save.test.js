@@ -96,13 +96,20 @@ const SAVE_PC_MP_MAX_OFFSET = 0x38;
 const SAVE_PC_LEVEL_OFFSET = 0x3c;
 const SAVE_PC_IN_PARTY_OFFSET = 0x48;
 const SAVE_PC_SPELLS_OFFSET = 0x4c;
-const SAVE_CHECKSUM_LO_OFFSET = 0x50;
-const SAVE_CHECKSUM_HI_OFFSET = 0x51;
-// Widened from two bytes to four this round -- see shared/save.js's
-// saveIdentity() for why -- which pushed the marker from 0x54 to 0x56.
-const SAVE_IDENTITY_OFFSET = 0x52;
-const SAVE_MARKER_OFFSET = 0x56;
-const SAVE_BODY_LEN = 80;
+// Name entry phase 1 (docs/design-name-entry.md §2/§10) appended pc_name_ram
+// as SAVE_FIELDS' last field, growing the body 80 -> 120 and pushing the
+// checksum/identity/marker that follow it down by the same 40 bytes -- every
+// offset above this line names a field that sits before pc_name_ram in
+// SAVE_FIELDS' own order and is therefore unmoved.
+const SAVE_CHECKSUM_LO_OFFSET = 0x78;
+const SAVE_CHECKSUM_HI_OFFSET = 0x79;
+// Widened from two bytes to four (SAVE_LAYOUT_VERSION 1 -> 2) -- see
+// shared/save.js's saveIdentity() for why -- which pushed the marker from
+// four bytes after the checksum to five; phase 1's own 40-byte body growth
+// above pushed both again, from 0x52/0x56 to 0x7a/0x7e.
+const SAVE_IDENTITY_OFFSET = 0x7a;
+const SAVE_MARKER_OFFSET = 0x7e;
+const SAVE_BODY_LEN = 120;
 const SAVE_MARKER_VALID = 0xa5;
 
 function boot(romPath, frames = 60) {
@@ -462,6 +469,78 @@ test(
       other.cpu.mem[GAME_STATE],
       ST_TITLE,
       "a save written by a project with a different screen count must be refused, not restored into this one"
+    );
+  }
+);
+
+// Name entry phase 1 (docs/design-name-entry.md §2/§10, ROADMAP work
+// preceding any naming code): SAVE_LAYOUT_VERSION bumped 2 -> 3 when
+// SAVE_FIELDS gained pc_name_ram. saveIdentity() folds in screen/map/actor/
+// item counts and the like, but nothing about the body's own total length,
+// so a pre-migration record cannot be told apart from a version-3 one by
+// those folded values alone -- SAVE_LAYOUT_VERSION is the seed of the
+// identity hash (shared/save.js, the `hashLo = SAVE_LAYOUT_VERSION` /
+// `hashHi = SAVE_LAYOUT_VERSION` lines), so the bump is what actually moves
+// the four SAVE_IDENTITY_* bytes a version-2 record would carry.
+//
+// The version-2 literal below is buildSaveable()'s own project -- loadProject
+// on sample-rpg, mapper 1, titleMap/titleScreen 0, maps[0].encounters
+// cleared, and one touch-triggered Saver actor/entity carrying a single
+// `{ op: 'save' }` page, exactly what buildSaveable(t, [{ op: 'save' }])
+// below constructs -- run through saveIdentity() as it stood before this
+// phase's own edits: SAVE_LAYOUT_VERSION 2, SAVE_FIELDS with no pc_name_ram
+// entry. HEAD at the time this was computed was `ab1ffc7`; `d3d7a24` is used
+// as the revision spec below instead because it is the last commit that
+// actually touched shared/save.js before this phase, and the file is
+// byte-identical between the two (`git diff d3d7a24 ab1ffc7 --
+// shared/save.js` is empty), so `git show d3d7a24:shared/save.js` reads the
+// identical pre-phase content. Result: 420550832 (0x191118b0). Obtained by copying
+// that revision's shared/save.js to a sibling scratch file (so its own
+// `import ... from './project.js'` still resolved) and calling saveIdentity()
+// against the project object above, before any of this phase's edits landed.
+const V2_SAMPLE_RPG_SAVEABLE_IDENTITY = 420550832;
+// Little-endian, the same order main/build/generate.js emits
+// SAVE_IDENTITY_0..3 in (byte 0 = value & 0xff, ... byte 3 = value >> 24).
+const V2_SAMPLE_RPG_SAVEABLE_IDENTITY_BYTES = [0xb0, 0x18, 0x11, 0x19];
+
+test(
+  'a pre-migration (SAVE_LAYOUT_VERSION 2) save is refused by the version bump alone, with no naming code present yet',
+  { skip: !hasNesasm && 'nesasm not found on PATH' },
+  async (t) => {
+    const romPath = await buildSaveable(t, [{ op: 'save' }]);
+    const nes = boot(romPath);
+    tap(nes, START);
+    touchSaver(nes);
+    assert.equal(nes.cpu.mem[SRAM_BASE + SAVE_MARKER_OFFSET], SAVE_MARKER_VALID, 'the real save never completed');
+
+    const v3IdentityBytes = Array.from(
+      nes.cpu.mem.slice(SRAM_BASE + SAVE_IDENTITY_OFFSET, SRAM_BASE + SAVE_IDENTITY_OFFSET + 4)
+    );
+    assert.notDeepEqual(
+      v3IdentityBytes,
+      V2_SAMPLE_RPG_SAVEABLE_IDENTITY_BYTES,
+      'the version-3 build and the version-2 literal must disagree, or this test cannot tell a real refusal from a ' +
+        'vacuous one'
+    );
+
+    // Force the real, version-3 save back to what a version-2 build would
+    // have written: only the four identity bytes change. save_checksum
+    // (engine/save.asm) sums exactly SAVE_BODY_LEN bytes of the body and
+    // stops -- the checksum/identity/marker bytes that follow are outside
+    // its span -- so the checksum already sitting in this copy still
+    // matches the (unchanged) body and needs no recomputation.
+    const foreignBattery = nes.cpu.mem.slice(SRAM_BASE, SRAM_BASE + SRAM_SIZE);
+    for (let i = 0; i < 4; i++) foreignBattery[SAVE_IDENTITY_OFFSET + i] = V2_SAMPLE_RPG_SAVEABLE_IDENTITY_BYTES[i];
+
+    const reloaded = boot(romPath);
+    reloaded.cpu.mem.set(foreignBattery, SRAM_BASE);
+    tap(reloaded, SELECT);
+    assert.equal(
+      reloaded.cpu.mem[GAME_STATE],
+      ST_TITLE,
+      'a save whose identity bytes were forced back to the pre-phase-1 (SAVE_LAYOUT_VERSION 2) literal must be ' +
+        'refused, not restored -- save_check_valid compares the whole record against what this exact build would ' +
+        'have written, and a version-2 identity is not that, regardless of the checksum matching'
     );
   }
 );

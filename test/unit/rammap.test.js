@@ -152,7 +152,16 @@ const KNOWN_MAX_SIZES = {
   OAM: 256,
   // The open spell or item list, up to eight entries -- see the comment
   // above the table for why this is the one that was wrong.
-  bt_list: 8
+  bt_list: 8,
+  // All four party members' names back-to-back (docs/design-name-entry.md
+  // §2). A literal, not MAX_PARTY-derived: a NAME_LEN equate does exist
+  // (engine/battle.asm:629 calls RPG_LIMITS.nameLength "config.inc's single
+  // writer for it"), but it is emitted into the generated assets/battle.inc,
+  // not constants.asm or config.inc -- and buildAndRead (above) only reads
+  // build/constants.asm and build/assets/config.inc into this file's own
+  // `symbols` table, so NAME_LEN is not a name resolveKnownSize can resolve
+  // here even though it exists elsewhere in the build.
+  pc_name_ram: 40
 };
 
 /**

@@ -95,10 +95,12 @@ const INES_HEADER = 16;
 const FLASH_DRIVER_RAM_ADDR = 0x0600;
 
 // Same sector geometry flashsave.test.js hardcodes, for the same reason
-// (reading it back out of the build under test would prove nothing).
+// (reading it back out of the build under test would prove nothing) --
+// including name entry phase 1's pc_name_ram growth (see that file's own
+// comment).
 const SAVE_BANK = 30;
 const SECTOR_OFFSET = 0x3000;
-const SAVE_RECORD_LEN = 87;
+const SAVE_RECORD_LEN = 127;
 const SAVE_MARKER_OFFSET = SAVE_RECORD_LEN - 1;
 const SAVE_MARKER_VALID = 0xa5;
 

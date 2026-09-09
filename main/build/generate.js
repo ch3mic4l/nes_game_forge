@@ -461,7 +461,19 @@ const TITLE_PROMPT_ROW = 19;
 // ever makes this block's own size depend on the mapper, the test that
 // would catch it is already in place, and this constant becomes
 // `*_BY_MAPPER` at that point, on real evidence, the same way every other
-// term in this file already earned its own shape. Declared below, beside
+// term in this file already earned its own shape.
+//
+// Name entry phase 1 (docs/design-name-entry.md §2/§10) moved
+// SAVE_KERNEL_ALLOWANCE_BY_MAPPER again, uniformly this time (not
+// BASE_KERNEL_CODE_BYTES_BY_MAPPER, below -- this term alone): SAVE_FIELDS
+// gained pc_name_ram, unconditional on any naming code existing, which grows
+// save_field_lo/hi/len (assets/save.inc) by 3 real bytes on every
+// save-capable board regardless of game type or naming --
+// 511/516/683 -> 514/519/686. SAVE_BATTLE_KERNEL_ALLOWANCE is untouched (no
+// BATTLE_ENABLED branch reads pc_name_ram), so the RPG total moves by the
+// identical +3: 552/557/724 -> 555/560/727.
+//
+// Declared below, beside
 // `SAVE_KERNEL_ALLOWANCE_BY_MAPPER` itself, not here -- this whole comment
 // block is prose introducing every term before any of their real
 // declarations begin (see BASE_KERNEL_CODE_BYTES_BY_MAPPER's own export a
@@ -736,11 +748,15 @@ export function titleKernelAllowance(mapper) {
 
 // 30 (UNROM 512) is measured the same way as the other two, from a real
 // build of sample-rpg with and without a live Save command, title on both
-// sides since Save requires one: 6687 -> 7411, +724 (re-measured against the
-// current tree with Magic Forge phase 4's `BE_RESTORE` landed; both sides
-// were 6678 -> 7397, +719 before it, matching this constant's own
-// action-side 683 plus the prerequisite phase's 36, before `BE_RESTORE`
-// added its own 5-byte call site -- see the split's own paragraph above).
+// sides since Save requires one: 6687 -> 7414, +727 (re-measured for name
+// entry phase 1's own +3, docs/design-name-entry.md §2/§10 -- the no-Save
+// side is unaffected, since save_field_lo/hi/len only assembles inside
+// save.asm's own `.if SAVE_ENABLED` block, so the whole +3 lands on the
+// with-Save side alone. Before that: 6687 -> 7411, +724, re-measured against
+// the tree with Magic Forge phase 4's `BE_RESTORE` landed; both sides were
+// 6678 -> 7397, +719 before it, matching this constant's own action-side 683
+// plus the prerequisite phase's 36, before `BE_RESTORE` added its own
+// 5-byte call site -- see the split's own paragraph above).
 // Substantially larger than MMC1/MMC3's own allowance because flash
 // save is not just a checksum/marker-write difference from battery -- it
 // carries its own RAM-resident driver (engine/flash.asm: the JEDEC unlock
@@ -748,11 +764,11 @@ export function titleKernelAllowance(mapper) {
 // plus save_media_fetch/commit's wrapper (the vblank wait, the forced
 // blank, the copy-to-RAM, the mapper_shadow save/restore) that battery's
 // save_media_fetch/commit reduce to a no-op. UNROM 512's own base-plus-title
-// figure is what leaves room for the RPG total (724 = this constant's own
-// action-side 683 plus SAVE_BATTLE_KERNEL_ALLOWANCE's 41, below) against
+// figure is what leaves room for the RPG total (727 = this constant's own
+// action-side 686 plus SAVE_BATTLE_KERNEL_ALLOWANCE's 41, below) against
 // roughly 1500 bytes of headroom before KERNEL_SLACK and the fallback base
 // even enter the picture.
-export const SAVE_KERNEL_ALLOWANCE_BY_MAPPER = { 1: 511, 4: 516, 30: 683 };
+export const SAVE_KERNEL_ALLOWANCE_BY_MAPPER = { 1: 514, 4: 519, 30: 686 };
 // The RPG-only supplement the paragraph above this table derives -- flat,
 // not *_BY_MAPPER, and why, is argued there in full; this is only the
 // declaration, kept next to the table it supplements.

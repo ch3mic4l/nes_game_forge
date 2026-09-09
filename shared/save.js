@@ -55,8 +55,17 @@ export { MAX_ITEMS };
  * treated exactly like a foreign or corrupted one, the same path a save from
  * a different project already takes. The title screen simply does not offer
  * Continue.
+ *
+ * 2 -> 3 (name entry, phase 1): `SAVE_FIELDS` gains `pc_name_ram`, growing
+ * the body by a fixed 40 bytes. Unlike the phase-4b case above this is a new
+ * field rather than a reinterpretation, but `saveIdentity`'s own hash still
+ * cannot catch it: none of its folded values derive from the body's total
+ * length, so a record grown by a field nothing else here reads would
+ * otherwise validate unchanged. Same engine-wide, unconditional bump as
+ * above: reserved before any naming code exists, so every save-enabled
+ * project pays it regardless of whether that project ever turns naming on.
  */
-export const SAVE_LAYOUT_VERSION = 2;
+export const SAVE_LAYOUT_VERSION = 3;
 
 /**
  * Every field the record carries, and the RAM array or scalar it comes from.
@@ -114,7 +123,12 @@ export const SAVE_FIELDS = [
   { ram: 'pc_xp_lo', size: RPG_LIMITS.party },
   { ram: 'pc_xp_hi', size: RPG_LIMITS.party },
   { ram: 'pc_in_party', size: RPG_LIMITS.party },
-  { ram: 'pc_spells', size: RPG_LIMITS.party }
+  { ram: 'pc_spells', size: RPG_LIMITS.party },
+  // Name entry phase 1 (docs/design-name-entry.md §2/§10): reserved
+  // unconditionally, before any naming code exists, so every later phase's
+  // naming-off ROM can be compared byte-for-byte against this phase's own
+  // pinned hashes. All four party members' names, back-to-back.
+  { ram: 'pc_name_ram', size: RPG_LIMITS.party * RPG_LIMITS.nameLength }
 ];
 
 /** Total body size in bytes — everything above, before the checksum and identity. */

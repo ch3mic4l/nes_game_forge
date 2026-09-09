@@ -287,13 +287,20 @@ test('saveIdentity is pinned per fixture -- unchanged by relocating MAX_ITEMS in
   // MAX_ITEMS still declared independently in shared/save.js -- the move
   // changes only which file names the value 8, never the value itself, so
   // the hash must land on these exact figures either way.
+  //
+  // Re-pinned for name entry phase 1 (docs/design-name-entry.md §2/§10):
+  // SAVE_LAYOUT_VERSION bumped 2 -> 3, and it seeds saveIdentity's own hash
+  // (shared/save.js, the `hashLo = SAVE_LAYOUT_VERSION` / `hashHi =
+  // SAVE_LAYOUT_VERSION` lines), so every fixture's identity moves
+  // regardless of whether it uses Save at all -- the same unconditional,
+  // engine-wide reach CLAUDE.md's own SAVE_LAYOUT_VERSION passage describes.
   const expected = {
-    sample: 0xe7d46fb1,
-    'sample-rpg': 0x2611f851,
-    'sample-mmc1': 0xc3d42152,
-    'sample-mmc3': 0xc3d42152,
-    'sample-u512': 0xc3d42152,
-    'sample-rpg-mmc1': 0xf5950c91
+    sample: 0xc0d443d0,
+    'sample-rpg': 0xf9111d30,
+    'sample-mmc1': 0x885405b3,
+    'sample-mmc3': 0x885405b3,
+    'sample-u512': 0x885405b3,
+    'sample-rpg-mmc1': 0x6e55e8f0
   };
   for (const [fixture, hash] of Object.entries(expected)) {
     const project = await loadProject(path.join(ROOT, fixture));

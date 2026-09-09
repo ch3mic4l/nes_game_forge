@@ -1255,20 +1255,12 @@ test('10 negative control: a second gap punched in row 7 lets the player walk ar
   );
 });
 
-// Design §9.2's own prose computes row 7's 16px thickness as already putting
-// the front area's deepest reachable point (row 6, y up to 111) 17 pixels
-// from anything in row 8 (y from 128) -- "over TOUCH_RANGE on the y axis
-// alone... so even a door at row 8 would already be safe by this measure."
-// §11 test 10's own catches-list nonetheless claims a door moved to exactly
-// "(128, 128)" (row 8, directly below the gap) "fails iv" -- a real
-// contradiction between the design's own two sections, confirmed by direct
-// computation (probed against this starter's own built project: dy = 17,
-// >= TOUCH_RANGE, no violation). Reported as a design defect rather than
-// silently worked around; this sabotage uses (128, 116) instead -- 5 pixels
-// short of row 6's own bottom edge, a real violation of check (iv) -- so the
-// test still proves lockedDoorProblems catches a door placed too close to
-// the front area, without asserting something the design's own arithmetic
-// says is false.
+// The negative control uses (128, 116), not a row-8 door at (128, 128):
+// design §9.2's own reference point is the front area's deepest reachable
+// row (row 6, y up to 111), and (128, 116) sits only 5 pixels under it --
+// inside TOUCH_RANGE, a real violation of check (iv). A row-8 door at
+// y = 128 would sit 17 pixels away instead, over TOUCH_RANGE and therefore
+// not a violation, which is why this sabotage does not use one.
 test('10 negative control: the Boss Chamber door moved to (128, 116) -- inside the touch-range margin of the front area -- is reported', () => {
   const project = STARTERS.find((s) => s.id === 'dungeon').build('X');
   const flatScreens = project.maps.flatMap((m) => m.screens);

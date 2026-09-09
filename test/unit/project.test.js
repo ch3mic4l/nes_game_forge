@@ -6440,7 +6440,12 @@ const REORDER_PLAYER_X = 0x10;
 const REORDER_GAME_STATE = 0x25;
 const REORDER_SRAM_BASE = 0x6000;
 const REORDER_SRAM_SIZE = 0x2000;
-const REORDER_SAVE_MARKER_OFFSET = 0x56;
+// Name entry phase 1 (docs/design-name-entry.md §2/§10) appended pc_name_ram
+// as SAVE_FIELDS' last field, growing the body 80 -> 120 and pushing the
+// checksum/identity/marker that follow it down by the same 40 bytes -- see
+// test/unit/save.test.js's own SAVE_MARKER_OFFSET comment for the full
+// derivation (0x56 -> 0x7e).
+const REORDER_SAVE_MARKER_OFFSET = 0x7e;
 const REORDER_SAVE_MARKER_VALID = 0xa5;
 const REORDER_ST_GAMEPLAY = 0;
 const REORDER_ST_TITLE = 3;
@@ -6542,6 +6547,13 @@ async function buildReorderSaveable(t, mutate) {
 // SAVE_LAYOUT_VERSION-class break -- an accidental extra fold term (the
 // unconditional-push sabotage this test's own sabotage evidence applies)
 // must fail this test, not have the golden quietly updated to match it.
+//
+// Re-pinned for exactly such a break: name entry phase 1
+// (docs/design-name-entry.md §2/§10) bumped SAVE_LAYOUT_VERSION 2 -> 3, which
+// seeds saveIdentity's own hash (the `hashLo = SAVE_LAYOUT_VERSION` /
+// `hashHi = SAVE_LAYOUT_VERSION` lines), so every golden moves regardless of
+// this fixture's own fields. Recomputed on the identical fixture below,
+// under this tree, after that bump landed.
 test(
   'saveIdentity: a token-zero project folds the pre-item-7 identity sequence, byte-identical to the pinned ' +
     'golden computed from 8e3e1c9',
@@ -6589,7 +6601,7 @@ test(
 
     assert.equal(
       saveIdentity(project),
-      2144726128, // computed at 8e3e1c9 on this identical, now fully pinned, fixture; see the comment above
+      2400524561, // re-pinned for SAVE_LAYOUT_VERSION 3 (name entry phase 1); see the comment above
       "saveIdentity must fold the pre-item-7 sequence exactly for a token-zero project -- an old cartridge save's " +
         'own identity bytes were computed against this fold, and must still validate against it'
     );

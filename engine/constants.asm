@@ -745,6 +745,26 @@ sfx_volume   = $056F        ; fixed for the whole effect, read once at trigger
 ; than disturbing anything before it.
 sting_shadow_inst_base = sfx_volume+1
 
+; ------------------------------------------------------------- name entry RAM
+; In-game party-member naming's own RAM, reserved unconditionally, the same
+; reasoning the flash-save RAM below already holds to: nothing here costs a
+; board that never assembles .if NAME_ENTRY_ENABLED code anything, and
+; reserving it only there would leave the save record's own layout (which is
+; unconditional -- see shared/save.js's SAVE_FIELDS) unable to see it on every
+; build. pc_name_ram holds all four party members' names back-to-back, so a
+; save/load round trip on a build with naming off still carries the bytes
+; forward byte-for-byte. The naming code itself (engine/nameentry.asm, a
+; later phase) needs no scratch byte of its own beyond the six scalars below
+; -- it reuses bt_tmp for drawing scratch. Appended right after the sting
+; shadow above, in the same confirmed-unused $0568-$05FF gap.
+pc_name_ram = $0571  ; @size=40 -- MAX_PARTY*NAME_LEN
+nm_target   = $0599  ; which party slot (0-3) the open naming session writes into
+nm_len      = $059A  ; letters committed so far, 0-NAME_LEN
+nm_row      = $059B  ; grid cursor row: 0=A-Z, 1=a-z, 2=controls (DEL/END)
+nm_col      = $059C  ; grid cursor column: 0-25 on rows 0/1, 0(DEL)/1(END) on row 2
+nm_named    = $059D  ; script_op_join's own scratch
+nm_acted    = $059E  ; per-frame latch: at most one grid action per frame
+
 ; ------------------------------------------------------------ inventory RAM
 ; One id per item carried, oldest first -- an item id under ITEMS_ENABLED, or
 ; the legacy backing-actor id on the disabled economy, which never gained a

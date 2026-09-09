@@ -130,8 +130,11 @@ local ST_TITLE    = 3
 -- same reason SAVE_RECORD_LEN is: this Lua cannot import that module either).
 local SAVE_BANK          = 30
 local SECTOR_OFFSET      = 0x3000
-local SAVE_RECORD_LEN    = 87
-local SAVE_BODY_LEN      = 80 -- assets/save.inc's SAVE_BODY_LEN for this fixture
+-- Name entry phase 1 (docs/design-name-entry.md §2/§10) appended pc_name_ram
+-- as SAVE_FIELDS' last field, growing the body 80 -> 120 (record 87 -> 127)
+-- -- see test/unit/flashsave.test.js's own SAVE_RECORD_LEN comment.
+local SAVE_RECORD_LEN    = 127
+local SAVE_BODY_LEN      = 120 -- assets/save.inc's SAVE_BODY_LEN for this fixture
 local SAVE_CHECKSUM_LO_OFFSET = SAVE_BODY_LEN     -- SAVE_CHECKSUM_LO - SAVE_BASE
 local SAVE_CHECKSUM_HI_OFFSET = SAVE_BODY_LEN + 1 -- SAVE_CHECKSUM_HI - SAVE_BASE
 local SAVE_IDENTITY_OFFSET    = SAVE_BODY_LEN + 2 -- SAVE_IDENTITY_0_ADDR - SAVE_BASE; 4 bytes

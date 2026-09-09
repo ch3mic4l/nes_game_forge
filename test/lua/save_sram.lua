@@ -162,7 +162,12 @@ local RPG_SPELLS_1    = 0  -- Iris: no spells learned
 local SRAM_BASE          = 0x6000
 local SAVE_PLAYER_X_OFF  = 0x01
 local SAVE_PLAYER_Y_OFF  = 0x02
-local SAVE_MARKER_OFFSET = 0x56
+-- Name entry phase 1 (docs/design-name-entry.md §2/§10) appended
+-- pc_name_ram as SAVE_FIELDS' last field, growing the body 80 -> 120 and
+-- pushing the checksum/identity/marker that follow it down by the same 40
+-- bytes -- see test/unit/save.test.js's own SAVE_MARKER_OFFSET comment for
+-- the full derivation (0x56 -> 0x7e).
+local SAVE_MARKER_OFFSET = 0x7E
 local SAVE_MARKER_VALID  = 0xA5
 
 -- What the fixture's saver page writes, restated from

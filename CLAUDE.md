@@ -758,15 +758,15 @@ own party Remove handler calls it in its one `store.commit`. The normalizer keep
 `validateProject` refuses a live Join naming `null` or an index ≥ `project.party.length`, via
 `liveCommands` not `allCommands`.
 
-**`SAVE_LAYOUT_VERSION` is 2**, bumped from 1 when `inv_items`' own bytes started meaning an item
-id rather than an actor id — a change to what the bytes mean, not how many
-there are, precisely the case `saveIdentity`'s own derived sizes cannot catch and what the
-version byte exists for. Such a bump is unconditional and engine-wide: *any*
-save from the prior engine version fails `save_check_valid`'s very first identity compare,
-regardless of whether that particular project uses items. What an author sees is nothing special —
-the old save is treated exactly like a foreign or corrupted one, which is to say the title screen
-simply does not offer Continue. No message, no crash: the existing "this record does not belong to
-this build" path doing the job it already did for every other case.
+**`SAVE_LAYOUT_VERSION` is 3**, bumped 1→2 when `inv_items`' own bytes started meaning an item
+id rather than an actor id, then 2→3 when name entry (phase 1) added `pc_name_ram` to the body —
+both cases `saveIdentity`'s own derived sizes cannot catch and what the version byte exists for. A
+bump is unconditional and engine-wide: *any* save from the prior engine version fails
+`save_check_valid`'s very first identity compare, regardless of whether that particular project uses
+items or naming. What an author sees is nothing special — the old save is treated exactly like a
+foreign or corrupted one, which is to say the title screen simply does not offer Continue. No
+message, no crash: the existing "this record does not belong to this build" path doing the job it
+already did for every other case.
 
 **Item 7's `saveCompatToken` (`shared/save.js`'s `saveIdentity`, drawn by `drawSaveCompatToken` in
 `shared/project.js`) closes a narrower hole the same way, and is deliberately not a second
@@ -1131,11 +1131,11 @@ sizes, the route zero-cost proof and `KERNEL_SLACK` itself are each checked thei
   a title screen — MMC3's extra 12 bytes are its own `.if TITLE_ENABLED` branch in `split_select`.
   A live `Save` command pays this term even with `titleMap` currently unset, because
   `validateProject` requires a title wherever Save is live.
-- `SAVE_KERNEL_ALLOWANCE_BY_MAPPER = { 1: 511, 4: 516, 30: 683 }` plus flat
+- `SAVE_KERNEL_ALLOWANCE_BY_MAPPER = { 1: 514, 4: 519, 30: 686 }` plus flat
   `SAVE_BATTLE_KERNEL_ALLOWANCE = 41` — two terms: the table is the action-side base every
   save-capable board pays (UNROM 512 costs more — flash-rewrite, not battery-WRAM); the flat
   RPG-only supplement is `save_check_valid`'s own `.if BATTLE_ENABLED` range-check block plus phase
-  4's `BE_RESTORE` call site, summing to RPG totals `{1: 552, 4: 557, 30: 724}` — flat because the
+  4's `BE_RESTORE` call site, summing to RPG totals `{1: 555, 4: 560, 30: 727}` — flat because the
   gap measures identical on all three boards, `kernelbytes.test.js` equality-asserting it per board.
   Its gate is NOT `gameType === 'rpg'`: `kernelCodeBytes` recomputes `codeRegions(...).length > 0`,
   the real predicate `BATTLE_ENABLED` is emitted from, strictly narrower on a CHR-RAM board whose
@@ -1176,27 +1176,28 @@ sizes, the route zero-cost proof and `KERNEL_SLACK` itself are each checked thei
   alarm, not spare headroom: too wide a margin means some term stopped tracking the engine closely.
 
 **Documented limitations — combinations `checkCapacity` refuses today, each with its own named
-test rather than a silent gap. Every Save-on-RPG row moved 5 bytes with `BE_RESTORE` (above), and
-the kernel base's own further +15 (below) moved several rows again — MMC3 `Save` + `Move`, no
-item, is now short 8 bytes with *nothing else live*, so Sting/Sfx/a bound tile below no longer tip
-a fitting row into refusal, they land on one already broken:**
+test rather than a silent gap. Every Save-on-RPG row moved 5 bytes with `BE_RESTORE` (above), the
+kernel base's own further +15 (below) moved several rows again, and name entry phase 1's own +3
+(above) moved every Save row again — MMC3 `Save` + `Move`, no item, is now short 11 bytes with
+*nothing else live*, so Sting/Sfx/a bound tile below no longer tip a fitting row into refusal, they
+land on one already broken:**
 
-- MMC3, `Save` + `Move` + one live item: 87 bytes short (fits on MMC1 with 124 free). Test:
+- MMC3, `Save` + `Move` + one live item: 90 bytes short (fits on MMC1 with 121 free). Test:
   `'sample-rpg with Save, Move and its one live item does not build on MMC3 -- round 2 reopened the
   gap the kernel diet had closed, a documented limitation'` (`kernelbytes.test.js`).
-- UNROM 512, `Save` + `Move`, no item: 164 bytes short — unrelated to items; dropping one does not
+- UNROM 512, `Save` + `Move`, no item: 167 bytes short — unrelated to items; dropping one does not
   close this the way it closes MMC3's.
-- MMC3, `Save` + `Move`, no item: 8 bytes short alone. A live `Sting` deepens it to 195 short,
-  closed by `Move` (395) or `Save` (557) — `kernelbytes.test.js` asserts both. A live bound tile
-  deepens it to 428 short instead, where `Move` (395) alone is 33 short — only `Save` (557)
+- MMC3, `Save` + `Move`, no item: 11 bytes short alone. A live `Sting` deepens it to 198 short,
+  closed by `Move` (395) or `Save` (560) — `kernelbytes.test.js` asserts both. A live bound tile
+  deepens it to 431 short instead, where `Move` (395) alone is 36 short — only `Save` (560)
   closes it, per that row's own test.
 - The same bound tile (marginal cost `388 + 30 + 2 × screen count` — 420 bytes, this ledger's
-  largest single feature cost) also reopens MMC1's `Save` + `Move` + one live item row (296 short,
-  was 124 free) — MMC1 had margin to lose, unlike MMC3's row above.
-- A live `Sfx` command adds five more refusal rows: MMC1 Save+Move+item (186 short); MMC1
-  Save+Move-no-item (107 short); MMC3 ALL-7-verbs+Move+item-no-Save (112 short); UNROM 512
-  Save-only-with-item (158 short); UNROM 512 ALL-7-verbs+Move+item-no-Save (113 short); and it
-  reopens MMC1's Save+Move+item row a second way (363 short, Sting also live).
+  largest single feature cost) also reopens MMC1's `Save` + `Move` + one live item row (299 short,
+  was 121 free) — MMC1 had margin to lose, unlike MMC3's row above.
+- A live `Sfx` command adds five more refusal rows: MMC1 Save+Move+item (189 short); MMC1
+  Save+Move-no-item (110 short); MMC3 ALL-7-verbs+Move+item-no-Save (112 short); UNROM 512
+  Save-only-with-item (161 short); UNROM 512 ALL-7-verbs+Move+item-no-Save (113 short); and it
+  reopens MMC1's Save+Move+item row a second way (366 short, Sting live).
 - Two fits controls confirm the boundary is real: `sample-rpg`'s one live item plus a live Sfx
   alone still builds on MMC3 (the tightest board), and the seven item-6 commands plus that item
   with Sting *and* Sfx both live still builds on MMC3 too — no Save/Move/title live on that row,

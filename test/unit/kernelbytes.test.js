@@ -2061,14 +2061,17 @@ test(
 // between them, not just one. sample-rpg's own Save+Move combination on
 // MMC3 no longer triggers this (see above), so this inflates the project's
 // table content to force a deficit comfortably under both allowances.
-// 557, not 552: Magic Forge phase 4 (BE_RESTORE) grew SAVE_BATTLE_KERNEL_
-// ALLOWANCE from 36 to 41, a real +5 to MMC3's own Save total this hardcoded
-// literal names directly (395 + 557, below, the same +5) -- these two message
-// literals were the ones the phase-4 design's own census found already
-// correct through the prerequisite split alone (they name the real total,
-// not the constant, so splitting the term left them unchanged); BE_RESTORE
-// itself is the first change since that actually moves the real total they
-// hardcode, and they needed editing for exactly that reason.
+// 560, not 557: name entry phase 1 (docs/design-name-entry.md §2/§10)
+// appended pc_name_ram to SAVE_FIELDS unconditionally, growing every
+// save-enabled board's own save_field_lo/hi/len tables by 3 real bytes
+// (assets/save.inc) regardless of whether naming is ever turned on --
+// SAVE_KERNEL_ALLOWANCE_BY_MAPPER re-measured and moved 511/516/683 ->
+// 514/519/686, so MMC3's own RPG total (SAVE_KERNEL_ALLOWANCE_BY_MAPPER[4] +
+// SAVE_BATTLE_KERNEL_ALLOWANCE) moved 557 -> 560, and this hardcoded literal
+// (395 + 560, below, the same +3) needed editing for that reason. Before
+// that, Magic Forge phase 4 (BE_RESTORE) had grown SAVE_BATTLE_KERNEL_
+// ALLOWANCE from 36 to 41, a +5 these two message literals absorbed the
+// same way.
 test('a kernel-lo shortfall either Save or Move alone would close offers both as a choice', async () => {
   const project = await loadProject(SAMPLE_RPG);
   project.cartridge.mapper = 4; // MMC3
@@ -2077,7 +2080,7 @@ test('a kernel-lo shortfall either Save or Move alone would close offers both as
   project.maps[0].screens[0].entities.push(saveAndMoveEvent());
   inflate(project, 25);
   const message = kernelShortfallMessage(project);
-  assert.match(message, /removing every Move command \(frees 395 bytes\) or every Save command \(frees 557 bytes\)/);
+  assert.match(message, /removing every Move command \(frees 395 bytes\) or every Save command \(frees 560 bytes\)/);
 });
 
 // Neither allowance alone covers a big enough deficit, but the two together
@@ -2091,7 +2094,7 @@ test('a kernel-lo shortfall neither Save nor Move alone would close, but both to
   project.maps[0].screens[0].entities.push(saveAndMoveEvent());
   inflate(project, 88);
   const message = kernelShortfallMessage(project);
-  assert.match(message, /removing every Move command and every Save command together \(frees 952 bytes\)/);
+  assert.match(message, /removing every Move command and every Save command together \(frees 955 bytes\)/);
 });
 
 // Turn and Wait were added to kernelShortfallAdvice's own active-feature list
@@ -3147,9 +3150,11 @@ test(
 // SFX_KERNEL_ALLOWANCE_STANDALONE + AUDIO_FX_KERNEL_ALLOWANCE +
 // STING_SFX_INTERACTION_ALLOWANCE - AUDIO_FX_KERNEL_ALLOWANCE, unchanged by
 // this slice). Verified against a real checkCapacity() run, not a re-derived
-// formula: the refusal now names Move (395) or Save (552), never SFX, and
-// dropping Move alone (Save's own event keeps its `save` command) is
-// confirmed as a real, buildable fix in its place.
+// formula: the refusal now names Move (395) or Save (555 -- 552 before name
+// entry phase 1's own +3 to SAVE_KERNEL_ALLOWANCE_BY_MAPPER[1], see the
+// comment above the two message tests near this file's Save/Move choice
+// tests), never SFX, and dropping Move alone (Save's own event keeps its
+// `save` command) is confirmed as a real, buildable fix in its place.
 test(
   'sample-rpg with Save, Move and its one live item does not build on MMC1 with a live Sting AND a live SFX together -- DEVIATION: item 11\'s base re-measurement means dropping SFX alone no longer closes this one, only Move or Save does',
   { skip: !hasNesasm && 'nesasm not found on PATH' },
@@ -3168,7 +3173,7 @@ test(
     const message = kernelShortfallMessage(project);
     assert.match(
       message,
-      /removing every Move command \(frees 395 bytes\) or every Save command \(frees 552 bytes\)/,
+      /removing every Move command \(frees 395 bytes\) or every Save command \(frees 555 bytes\)/,
       `MMC1: dropping Move or Save, not SFX, should be the offered fix once the deficit exceeds what SFX alone frees -- got: ${message}`
     );
     assert.doesNotMatch(

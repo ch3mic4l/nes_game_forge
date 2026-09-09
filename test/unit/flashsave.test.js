@@ -45,14 +45,15 @@ const UP = 4;
 
 // The flash sector: bank 30 (shared/cartridge.js's flashSaveSectorBank for
 // UNROM 512), offset $3000 within that bank's own 16 KB ($B000-$8000).
-// SAVE_RECORD_LEN is sample-rpg's own real figure (80-byte body + 2-byte
-// checksum + 4-byte identity + 1-byte marker), sourced by hand from a real
-// build the same way save.test.js's own SAVE_BODY_LEN is -- see that
+// SAVE_RECORD_LEN is sample-rpg's own real figure (120-byte body -- 80 plus
+// name entry phase 1's pc_name_ram, docs/design-name-entry.md §2/§10 -- plus
+// 2-byte checksum + 4-byte identity + 1-byte marker), sourced by hand from a
+// real build the same way save.test.js's own SAVE_BODY_LEN is -- see that
 // file's comment on why reading it back out of the build under test would
 // prove nothing.
 const SAVE_BANK = 30;
 const SECTOR_OFFSET = 0x3000;
-const SAVE_RECORD_LEN = 87;
+const SAVE_RECORD_LEN = 127;
 const SAVE_MARKER_OFFSET = SAVE_RECORD_LEN - 1;
 const SAVE_MARKER_VALID = 0xa5;
 
