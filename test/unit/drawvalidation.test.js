@@ -294,12 +294,24 @@ test('saveIdentity is pinned per fixture -- unchanged by relocating MAX_ITEMS in
   // SAVE_LAYOUT_VERSION` lines), so every fixture's identity moves
   // regardless of whether it uses Save at all -- the same unconditional,
   // engine-wide reach CLAUDE.md's own SAVE_LAYOUT_VERSION passage describes.
+  //
+  // Re-pinned again for the Character Forge phase 2
+  // (docs/design-character-forge.md §2): every action project's own
+  // party.length now normalizes to 1, not 0 (a real character always
+  // exists to play as). saveIdentity folds partyCount unconditionally, on
+  // every game type, so this moves sample/sample-mmc1/sample-mmc3/
+  // sample-u512 -- the three save-check action fixtures land on one shared
+  // new value since they differ only by mapper, which saveIdentity does not
+  // fold in. sample-rpg and sample-rpg-mmc1 already had a 1+ member party
+  // and are unaffected -- the same "changes only for a project that
+  // actually performed the qualifying edit" shape saveCompatToken already
+  // holds to (CLAUDE.md).
   const expected = {
-    sample: 0xc0d443d0,
+    sample: 0xe8d4cff1,
     'sample-rpg': 0xf9111d30,
-    'sample-mmc1': 0x885405b3,
-    'sample-mmc3': 0x885405b3,
-    'sample-u512': 0x885405b3,
+    'sample-mmc1': 0x3dd47992,
+    'sample-mmc3': 0x3dd47992,
+    'sample-u512': 0x3dd47992,
     'sample-rpg-mmc1': 0x6e55e8f0
   };
   for (const [fixture, hash] of Object.entries(expected)) {

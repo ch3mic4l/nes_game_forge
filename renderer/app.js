@@ -21,6 +21,13 @@ const FORGES = [
     load: () => import('./forges/sprite/sprite.js')
   },
   {
+    id: 'character',
+    label: 'Character',
+    glyph: '🧑',
+    title: 'Character Forge',
+    load: () => import('./forges/character/character.js')
+  },
+  {
     id: 'items',
     label: 'Items',
     glyph: '🎒',

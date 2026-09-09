@@ -6796,12 +6796,13 @@ const scenario = (dir, sampleDir, sampleRpgDir) => `
     step('Magic Forge backwards range swap', 'amountMin=' + afterBackwards.amountMin + ', amountMax=' + afterBackwards.amountMax + ' -- the exact swapped pair landed');
   }
 
-  // Test 5 (join-guard brief, handoff-next/join-guard-brief.md): the Sprite
-  // Forge Party tab's Remove button now renumbers every Join command's own
-  // member, in the same store.commit as the splice -- this is what actually
-  // calls renumberPartyMemberDeletion for real, against the real handler
-  // (renderer/forges/sprite/battle.js), since project.test.js only calls the
-  // primitive directly.
+  // Test 5 (join-guard brief, handoff-next/join-guard-brief.md; moved to the
+  // Character Forge under docs/design-character-forge.md): the Character
+  // Forge's Remove button now renumbers every Join command's own member, in
+  // the same store.commit as the splice -- this is what actually calls
+  // renumberPartyMemberDeletion for real, against the real handler
+  // (renderer/forges/character/character.js), since project.test.js only
+  // calls the primitive directly.
   {
     // sample-rpg's own first party member (Rian, per sample-rpg/party.json) --
     // captured rather than hardcoded, since this block does not care who it
@@ -6839,18 +6840,18 @@ const scenario = (dir, sampleDir, sampleRpgDir) => `
     const lastJoin = joinEntities[0].props.event.pages[0].commands[0];
     const lowerJoin = joinEntities[1].props.event.pages[0].commands[0];
 
-    window.__app.goTo('sprite');
+    window.__app.goTo('character');
     await wait(200);
-    const partyTabButton = [...document.querySelectorAll('#stage button.tab')].find((b) => b.textContent.trim() === 'Party');
-    if (!partyTabButton) throw new Error('Sprite Forge has no Party tab');
-    partyTabButton.click();
+    const characterSelect = document.querySelector('#stage select');
+    if (!characterSelect) throw new Error('Character Forge has no character list select');
+    const docOption = [...characterSelect.options].find((o) => o.textContent === 'Doc');
+    if (!docOption) throw new Error('Character Forge has no Doc member to find');
+    characterSelect.value = docOption.value;
+    characterSelect.dispatchEvent(new Event('change', { bubbles: true }));
     await wait(200);
 
-    const docNameInput = [...document.querySelectorAll('#stage input[type="text"]')].find((i) => i.value === 'Doc');
-    if (!docNameInput) throw new Error('Sprite Forge Party tab has no Doc member to find');
-    const docRow = docNameInput.closest('.field-row');
-    const removeButton = docRow ? [...docRow.querySelectorAll('button')].find((b) => b.title === 'Remove') : null;
-    if (!removeButton) throw new Error('Sprite Forge Party tab has no Remove button for Doc');
+    const removeButton = [...document.querySelectorAll('#stage button')].find((b) => b.title === 'Remove');
+    if (!removeButton) throw new Error('Character Forge has no Remove button for Doc');
     removeButton.click();
     await wait(150);
 
@@ -6864,7 +6865,7 @@ const scenario = (dir, sampleDir, sampleRpgDir) => `
     if (lowerJoin.member !== 0) {
       throw new Error('the Join naming a lower member (' + firstMemberName + ', member 0) must not move, saw: ' + JSON.stringify(lowerJoin.member));
     }
-    step('Sprite Forge party Remove renumbers a Join naming the removed member', 'party is now ' + firstMemberName + '/Iris, the Doc join is null, the ' + firstMemberName + ' join is untouched');
+    step('Character Forge Remove renumbers a Join naming the removed member', 'party is now ' + firstMemberName + '/Iris, the Doc join is null, the ' + firstMemberName + ' join is untouched');
 
     // Round 3 review, finding 4: none of the earlier assertions ever opened
     // the affected placement's own event in the Map Forge, so the pre-fix
@@ -7001,7 +7002,195 @@ const scenario = (dir, sampleDir, sampleRpgDir) => `
     if (lowerJoinAfterUndo.member !== 0) {
       throw new Error('one undo should have left the ' + firstMemberName + ' join at member 0, saw: ' + JSON.stringify(lowerJoinAfterUndo.member));
     }
-    step('Sprite Forge party Remove is one undo entry', 'a single undo restored the party and both Join members together');
+    step('Character Forge Remove is one undo entry', 'a single undo restored the party and both Join members together');
+
+    // New Character Forge coverage (docs/design-character-forge.md phase 2):
+    // Add, the renamable checkbox (including its disabled state on an inert
+    // starting member), and the Map Forge's own read-only join-row hint.
+    // The party is back to [Hero, Iris, Doc] (the undo just above), each
+    // sub-block restores whatever it changed, so the next one always starts
+    // from that same pristine three-member shape.
+    {
+      window.__app.goTo('character');
+      await wait(200);
+
+      // Add appends "Ally"; clicking Remove right after (Add leaves the new
+      // member selected) renumbers it straight back out.
+      {
+        const addButton = [...document.querySelectorAll('#stage button')].find((b) => b.textContent.trim() === '+ Character');
+        if (!addButton) throw new Error('Character Forge has no Add button');
+        addButton.click();
+        await wait(150);
+        const namesAfterAdd = rpgStore.project.party.map((m) => m.name);
+        if (namesAfterAdd.length !== 4 || namesAfterAdd[3] !== 'Ally') {
+          throw new Error('expected Add to append "Ally" as a fourth member, saw: ' + JSON.stringify(namesAfterAdd));
+        }
+        const removeAllyButton = [...document.querySelectorAll('#stage button')].find((b) => b.title === 'Remove');
+        if (!removeAllyButton) throw new Error('Character Forge has no Remove button after Add');
+        removeAllyButton.click();
+        await wait(150);
+        const namesAfterCleanup = rpgStore.project.party.map((m) => m.name);
+        if (namesAfterCleanup.length !== 3) {
+          throw new Error('expected Remove to restore the three-member party, saw: ' + JSON.stringify(namesAfterCleanup));
+        }
+        step('Character Forge Add appends "Ally"', 'party grew to 4 (' + JSON.stringify(namesAfterAdd) + ') then back to 3');
+      }
+
+      // The Magic Forge cross-link (HEAD's battle.js:201, moved here with the
+      // "Learns" block, RPG only -- renderStats, which contains it, is never
+      // called for an action project). Lands on Magic Forge; navigate
+      // straight back to Character so the next sub-block's own DOM queries
+      // still find the Character Forge's own list select.
+      {
+        const magicLink = [...document.querySelectorAll('#stage button')].find(
+          (b) => b.textContent.trim() === 'Manage spells in the Magic Forge →'
+        );
+        if (!magicLink) throw new Error('Character Forge has no Magic Forge cross-link on an RPG project');
+        magicLink.click();
+        await wait(250);
+        const activeAfterMagicLink = document.querySelector('.rail-item.active')?.title;
+        if (activeAfterMagicLink !== 'Magic Forge') {
+          throw new Error('expected the Magic Forge cross-link to land on Magic Forge, saw ' + activeAfterMagicLink);
+        }
+        step('Character Forge Magic Forge cross-link', 'lands on Magic Forge from an RPG character card');
+        window.__app.goTo('character');
+        await wait(200);
+      }
+
+      // Select Iris (index 1, does not start in the party): Renamable toggles
+      // through one store.commit per click and the checkbox still shows
+      // checked after the re-render that click triggers -- then toggled back
+      // off, restoring the baseline for the sub-block after this one.
+      {
+        const characterSelect = document.querySelector('#stage select');
+        if (!characterSelect) throw new Error('Character Forge has no character list select');
+        const irisOption = [...characterSelect.options].find((o) => o.textContent === 'Iris');
+        if (!irisOption) throw new Error('Character Forge has no Iris member to find');
+        characterSelect.value = irisOption.value;
+        characterSelect.dispatchEvent(new Event('change', { bubbles: true }));
+        await wait(150);
+
+        const findCheckbox = (label) => {
+          const match = [...document.querySelectorAll('#stage label.check')].find((l) => l.textContent.trim() === label);
+          return match ? match.querySelector('input') : null;
+        };
+
+        const renamableCheckbox = findCheckbox('Renamable');
+        if (!renamableCheckbox) throw new Error('Character Forge has no Renamable checkbox for Iris');
+        if (renamableCheckbox.disabled) throw new Error('Iris does not start in the party, so Renamable must not be disabled');
+        renamableCheckbox.click();
+        await wait(150);
+        if (rpgStore.project.party[1].renamable !== true) {
+          throw new Error('expected Iris.renamable true after the click, saw: ' + JSON.stringify(rpgStore.project.party[1].renamable));
+        }
+        if (!findCheckbox('Renamable').checked) {
+          throw new Error('the Renamable checkbox should stay checked across the re-render it triggers');
+        }
+        findCheckbox('Renamable').click();
+        await wait(150);
+        if (rpgStore.project.party[1].renamable !== false) {
+          throw new Error('expected Iris.renamable false again after the second click, saw: ' + JSON.stringify(rpgStore.project.party[1].renamable));
+        }
+        step('Character Forge Renamable checkbox toggles and persists', 'Iris.renamable went true then false, the checkbox reflecting each re-render');
+
+        // Checking "Starts in the party" disables Renamable (party_init would
+        // recruit Iris at boot, so her own Join could never open the naming
+        // grid); unchecking it re-enables Renamable in the same render. Each
+        // click re-queries its own checkbox rather than reusing a reference
+        // captured before the previous click's own re-render -- fill()
+        // rebuilds the whole detail pane on every commit, so a stale
+        // reference is a detached node the second click cannot rely on.
+        if (!findCheckbox('Starts in the party')) throw new Error('Character Forge has no Starts in the party checkbox for Iris');
+        findCheckbox('Starts in the party').click();
+        await wait(150);
+        if (rpgStore.project.party[1].startsInParty !== true) {
+          throw new Error('expected Iris.startsInParty true after the click');
+        }
+        if (!findCheckbox('Renamable').disabled) {
+          throw new Error('Renamable should be disabled once Iris starts in the party');
+        }
+        findCheckbox('Starts in the party').click();
+        await wait(150);
+        if (rpgStore.project.party[1].startsInParty !== false) {
+          throw new Error('expected Iris.startsInParty false again after the second click');
+        }
+        if (findCheckbox('Renamable').disabled) {
+          throw new Error('Renamable should re-enable the instant Iris no longer starts in the party');
+        }
+        step('Character Forge Renamable checkbox disables on an inert starting member and re-enables', 'Iris.startsInParty true disabled it; false re-enabled it, same render each time');
+      }
+
+      // Map Forge join row (docs/design-name-entry.md v16.4 §13): read-only
+      // text beside the member select, reading joinNamingCandidate rather
+      // than renamable alone. Doc (index 2, does not start) becomes a real
+      // candidate; Iris (index 1) becomes renamable but starting, the inert
+      // case -- the lower join, which currently names Hero (member 0, whose
+      // own inertness is a different case entirely), is repointed at Iris so
+      // there is a real Join command to show that hint against.
+      {
+        rpgStore.commit('smoke: seed a real naming candidate and an inert one', (project) => {
+          project.party[2].renamable = true; // Doc
+          project.party[1].renamable = true; // Iris
+          project.party[1].startsInParty = true; // Iris -- inert
+        });
+        rpgStore.commit('smoke: repoint the lower join at Iris', (project) => {
+          project.maps[0].screens[0].entities[lowerEntityIndex].props.event.pages[0].commands[0].member = 1;
+        });
+        await wait(150);
+
+        window.__app.goTo('map');
+        await wait(250);
+
+        const openEvent = async (entityIndex) => {
+          const editButton = [...document.querySelectorAll('#stage [data-entity="' + entityIndex + '"] button')].find(
+            (node) => node.textContent === 'Edit event…'
+          );
+          if (!editButton) throw new Error('entity ' + entityIndex + ' has no Edit event… button');
+          editButton.click();
+          await until('the event editor', () => document.querySelector('#modalHost .btn-accent'));
+        };
+        const closeEvent = async () => {
+          const cancel = [...document.querySelectorAll('#modalHost button')].find((b) => b.textContent.trim() === 'Cancel');
+          if (!cancel) throw new Error('the event editor has no Cancel button');
+          cancel.click();
+          await wait(150);
+        };
+
+        await openEvent(docEntityIndex);
+        const docHint = document.querySelector('#modalHost span.hint');
+        if (!docHint || docHint.textContent !== 'Named by the player') {
+          throw new Error('expected the Doc join row to read "Named by the player", saw: ' + (docHint ? docHint.textContent : 'no hint found'));
+        }
+        await closeEvent();
+
+        await openEvent(lowerEntityIndex);
+        const irisHint = document.querySelector('#modalHost span.hint');
+        if (!irisHint || irisHint.textContent.indexOf('inert') === -1) {
+          throw new Error('expected the Iris join row to read the inert hint, saw: ' + (irisHint ? irisHint.textContent : 'no hint found'));
+        }
+        await closeEvent();
+        step(
+          'Map Forge join row shows "Named by the player" for a real candidate and the inert hint for a renamable starting member',
+          'Doc (candidate) and Iris (renamable but starts in the party) both read correctly'
+        );
+
+        if (!rpgStore.undo()) throw new Error('undo returned false for the join-repoint seed commit');
+        await wait(150);
+        if (!rpgStore.undo()) throw new Error('undo returned false for the renamable seed commit');
+        await wait(150);
+        const lowerJoinRestored = rpgStore.project.maps[0].screens[0].entities[lowerEntityIndex].props.event.pages[0].commands[0].member;
+        if (lowerJoinRestored !== 0) {
+          throw new Error('expected the lower join to be back at member 0, saw: ' + JSON.stringify(lowerJoinRestored));
+        }
+        if (
+          rpgStore.project.party[1].renamable !== false ||
+          rpgStore.project.party[1].startsInParty !== false ||
+          rpgStore.project.party[2].renamable !== false
+        ) {
+          throw new Error('expected the Iris/Doc renamable and startsInParty seeds to be fully undone');
+        }
+      }
+    }
 
     // Back to Magic Forge, active rail item and all -- the next block (§11.3
     // bullet 3) depends on that being true going in, the same way this block
@@ -7036,6 +7225,40 @@ const scenario = (dir, sampleDir, sampleRpgDir) => `
       throw new Error('expected the app to land on Tile Forge after a cross-type open with Magic active, saw ' + activeAfterCrossType);
     }
     step('Magic active, cross-type open lands on Tile Forge', 'no throw, rail shows Tile Forge active');
+  }
+
+  // Character Forge coverage on an action project (docs/design-character-
+  // forge.md §2/§4): the Add button is disabled with a stated reason (an
+  // action game has one character), and the Field sprite link lands the
+  // Tile Forge in Player mode. The action sample opened just above for the
+  // cross-type test is still current.
+  {
+    window.__app.goTo('character');
+    await wait(200);
+    const addButtonAction = [...document.querySelectorAll('#stage button')].find((b) => b.textContent.trim() === '+ Character');
+    if (!addButtonAction) throw new Error('Character Forge has no Add button on the action project');
+    if (!addButtonAction.disabled) throw new Error('expected Add to be disabled on an action project');
+    if (addButtonAction.title.indexOf('one character') === -1) {
+      throw new Error('expected the Add button’s disabled reason to explain the one-character limit, saw: ' + JSON.stringify(addButtonAction.title));
+    }
+    const fieldSpriteLink = [...document.querySelectorAll('#stage button')].find(
+      (b) => b.textContent.trim() === 'Edit in the Tile Forge →'
+    );
+    if (!fieldSpriteLink) throw new Error('Character Forge has no Field sprite link to the Tile Forge');
+    fieldSpriteLink.click();
+    await wait(250);
+    const activeAfterFieldSpriteLink = document.querySelector('.rail-item.active')?.title;
+    if (activeAfterFieldSpriteLink !== 'Tile Forge') {
+      throw new Error('expected the Field sprite link to land on the Tile Forge, saw ' + activeAfterFieldSpriteLink);
+    }
+    const playerTab = document.querySelector('#stage [data-tab="player"]');
+    if (!playerTab || !playerTab.classList.contains('active')) {
+      throw new Error('expected the Tile Forge to land in Player mode from the Field sprite link');
+    }
+    step(
+      'Character Forge action project: Add is disabled with a reason, and the Field sprite link lands Tile Forge in Player mode',
+      'title="' + addButtonAction.title + '"'
+    );
   }
 
   // selectForge stale-load race (fix round 1, finding 1): store.subscribe's

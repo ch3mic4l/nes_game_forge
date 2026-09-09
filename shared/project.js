@@ -2603,6 +2603,16 @@ export function renumberPartyMemberDeletion(project, index) {
   return project;
 }
 
+// The single admission test a Join must pass to ever open the naming grid --
+// exported because both main/build/textcompile.js and
+// renderer/forges/map/events.js read it. Member 0 is hero-naming's own
+// domain; a member who starts in the party is already recruited by
+// party_init at boot, so any later Join targeting them is always a no-op
+// regardless of renamable (docs/design-character-forge.md §3).
+export function joinNamingCandidate(member, memberIndex) {
+  return memberIndex > 0 && Boolean(member?.renamable) && !member?.startsInParty;
+}
+
 /**
  * What deleting a player part (`project.sprites.playerParts`) costs
  * (design-modular-parts.md §3.5, ROADMAP item 8 phase 1): nothing but a plain
@@ -3039,7 +3049,7 @@ export function chrImportOverlap(start, count) {
  *
  * The party member and item cases are both the `shift`/fixed-point
  * treatment, but not the identical one: a party member's `null` already
- * means "draws nothing" ("Not drawn" in the Sprite Forge's battle tab), so a
+ * means "draws nothing" ("Not drawn" in the Character Forge), so a
  * reference to the deleted metasprite becomes `null` there. An item's
  * `null` means something else now (§ its own field comment in
  * `normalizeItem`: "not set — derive one from the backing actor"), so
@@ -3778,10 +3788,20 @@ export function defaultRpg() {
   };
 }
 
-export function createPartyMember(id, name = `Member ${id + 1}`) {
+const DEFAULT_MEMBER_NAME = (id) => (id === 0 ? 'Hero' : 'Ally');
+
+// The one cap on how many characters a project may hold, shared by
+// normalizeProject's own slice and the Character Forge's Add gate so the two
+// cannot disagree.
+export function characterCap(gameType) {
+  return gameType === 'rpg' ? RPG_LIMITS.party : 1;
+}
+
+export function createPartyMember(id, name = DEFAULT_MEMBER_NAME(id)) {
   return {
     id,
     name,
+    renamable: false, // an author opts in; see normalizeCharacterName
     metaspriteId: null, // how the member is drawn in battle
     startsInParty: id === 0, // the rest are recruited with the Join command
     baseHp: 24,
@@ -3857,7 +3877,7 @@ export function createProject(name = 'Untitled Game', gameType = 'action') {
     variables: [], // and 16 bytes, likewise named only for the author's benefit
     commonEvents: [], // bodies a `call` command reaches by stable id; see normalizeCommonEvents
     commonEventSeq: 0, // the next id a common event will be given; never reused, see resolveCommonEventIds
-    party: rpg ? [createPartyMember(0, 'Hero')] : [],
+    party: [createPartyMember(0, 'Hero')],
     spells: [],
     rpg: { ...defaultRpg(), battleTilesetId: rpg ? 1 : 0 },
     code: { overrides: [], files: [] }
@@ -3976,6 +3996,18 @@ function normalizeTilesets(raw, mapper, cartridge) {
 function normalizeLabel(value, fallback) {
   const text = typeof value === 'string' ? value.trim() : '';
   return text ? text.slice(0, 40) : fallback;
+}
+
+// The one normalizer for every character's name -- it is the exact byte
+// content the naming grid can produce (A-Z/a-z only, no digits, punctuation
+// or space), so a stored name outside that alphabet would seed a preview row
+// the grid's own controls could never have typed. Exported so the Character
+// Forge can apply the identical filter at input time -- without this, what a
+// player sees in the editor and what a save round-trip silently keeps could
+// disagree, the exact class of bug this field's own migration exists to fix.
+export function normalizeCharacterName(value, fallback) {
+  const filtered = typeof value === 'string' ? value.replace(/[^A-Za-z]/g, '').slice(0, RPG_LIMITS.nameLength) : '';
+  return filtered || fallback;
 }
 
 function normalizeCartridge(raw) {
@@ -4833,7 +4865,8 @@ function normalizePartyMember(raw, id, spellCount, maxLevel) {
   const num = (key, min, max) => clamp(raw?.[key], min, max, base[key]);
   return {
     id,
-    name: normalizeLabel(raw?.name, base.name),
+    name: normalizeCharacterName(raw?.name, base.name),
+    renamable: Boolean(raw?.renamable),
     metaspriteId:
       raw?.metaspriteId === null || raw?.metaspriteId === undefined
         ? null
@@ -5259,10 +5292,10 @@ export function normalizeProject(raw) {
     .slice(0, RPG_LIMITS.spells)
     .map(normalizeSpell);
   const party = (Array.isArray(raw.party) ? raw.party : [])
-    .slice(0, RPG_LIMITS.party)
+    .slice(0, characterCap(project.gameType))
     .map((member, index) => normalizePartyMember(member, index, spells.length, rpg.maxLevel));
-  // An RPG always has someone to play as; an action game has no party at all.
-  if (project.gameType === 'rpg' && !party.length) party.push(createPartyMember(0, 'Hero'));
+  // Every project always has someone to play as.
+  if (!party.length) party.push(createPartyMember(0, 'Hero'));
 
   const { commonEvents, commonEventSeq } = normalizeCommonEvents(raw.commonEvents, raw.commonEventSeq, itemCtx);
 
@@ -5903,7 +5936,7 @@ export function validateProject(project) {
         `${rpgUnsupportedReason(mapper)} Choose a mapper with program bank switching in the Build panel.`
       );
     }
-    if (!project.party.length) add('error', 'Sprite Forge', 'A turn-based RPG needs at least one party member.');
+    if (!project.party.length) add('error', 'Character Forge', 'A turn-based RPG needs at least one party member.');
     // A live join naming a party member the project does not have is not a
     // display quirk to leave to the engine's own defense in depth.
     // battle_entry_join (engine/battle.asm) does guard this operand at

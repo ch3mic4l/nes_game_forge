@@ -3,14 +3,13 @@
 
 import { store } from '../../store.js';
 import { el, fill, field, toast, confirmModal, showModal, fitZoom, observeSize } from '../../ui.js';
-import { tileFromString, flipTile } from '../../../shared/chr.js';
-import { NES_PALETTE, cssColor } from '../../../shared/nespalette.js';
+import { tileFromString } from '../../../shared/chr.js';
+import { cssColor } from '../../../shared/nespalette.js';
 import {
   LIMITS,
   BEHAVIORS,
   ANIM_SLOTS,
   ELEMENTS,
-  RPG_LIMITS,
   tilesetAt,
   renumberActorDeletion,
   renumberMetaspriteDeletion,
@@ -27,7 +26,7 @@ import {
   metaspriteKernelBytes
 } from '../../../shared/project.js';
 import { resolveMapper } from '../../../shared/cartridge.js';
-import { partyPanel } from './battle.js';
+import { paintMetasprite as paintMetaspriteShared } from '../../widgets/metasprite.js';
 import { drawSheet, sheetIndexFromEvent } from '../../widgets/sheet.js';
 import { openLibraryActorImport } from './librarysprite.js';
 
@@ -113,31 +112,6 @@ export function mount(container, app) {
 
   // ------------------------------------------------------------ rendering
 
-  /** Paint a metasprite into an ImageData at a given origin. */
-  function paintMetasprite(data, width, metasprite, originX, originY) {
-    if (!metasprite) return;
-    for (const entry of metasprite.tiles) {
-      let pixels = decoded[entry.tile] ?? decoded[0];
-      if (entry.hflip || entry.vflip) pixels = flipTile(pixels, entry.hflip, entry.vflip);
-      const colors = palettes()[entry.palette].map((index) => NES_PALETTE[index & 0x3f]);
-      for (let y = 0; y < 8; y++) {
-        for (let x = 0; x < 8; x++) {
-          const slot = pixels[y * 8 + x];
-          if (slot === 0) continue; // sprite slot 0 is transparent
-          const px = originX + entry.x + x;
-          const py = originY + entry.y + y;
-          if (px < 0 || py < 0 || px >= width || py >= width) continue;
-          const color = colors[slot];
-          const offset = (py * width + px) * 4;
-          data[offset] = color[0];
-          data[offset + 1] = color[1];
-          data[offset + 2] = color[2];
-          data[offset + 3] = 255;
-        }
-      }
-    }
-  }
-
   // No zoom control: the editor is always as large as its stage allows, so a
   // bigger window is a bigger drawing area.
   function drawPreview(canvas, metasprite, { showGuides = false } = {}) {
@@ -148,7 +122,7 @@ export function mount(container, app) {
     canvas.style.height = `${VIEW * zoom}px`;
     const context = canvas.getContext('2d');
     const image = context.createImageData(VIEW, VIEW);
-    paintMetasprite(image.data, VIEW, metasprite, ORIGIN, ORIGIN);
+    paintMetaspriteShared(image.data, VIEW, metasprite, ORIGIN, ORIGIN, decoded, palettes());
     context.putImageData(image, 0, 0);
     if (!showGuides) return;
 
@@ -237,9 +211,6 @@ export function mount(container, app) {
   const listHost = el('div');
   const detailHost = el('div');
   const tabsHost = el('div.tabs');
-  // The Party tab's editor. It swaps in for the canvas stage: party cards are
-  // forms, and forms belong in the wide pane, not squeezed into the right rail.
-  const partyHost = el('div.panel-body', { style: { overflow: 'auto', display: 'none' } });
 
   sheetCanvas.addEventListener('pointerdown', (event) => {
     state.sheetTile = sheetIndexFromEvent(event, sheetCanvas);
@@ -715,7 +686,7 @@ export function mount(container, app) {
     canvas.style.height = `${VIEW * zoom}px`;
     const context = canvas.getContext('2d');
     const image = context.createImageData(VIEW, VIEW);
-    paintMetasprite(image.data, VIEW, metasprite, ORIGIN, ORIGIN);
+    paintMetaspriteShared(image.data, VIEW, metasprite, ORIGIN, ORIGIN, decoded, palettes());
     context.putImageData(image, 0, 0);
   }
 
@@ -1172,31 +1143,14 @@ export function mount(container, app) {
     }
   }
 
-  function renderPartyPane() {
-    fill(partyHost, partyPanel(() => render(), app));
-    fill(listHost,
-      el('div.panel-head', { style: { paddingLeft: '0' } }, 'Party'),
-      el(
-        'p.hint',
-        null,
-        'Members, growth and learned spells are edited in the middle pane. Only the first member walks ' +
-          'the field — the rest join through an event’s “Party member joins” command.'
-      )
-    );
-    fill(detailHost);
-  }
-
   // ---------------------------------------------------------------- shell
 
   function renderTabs() {
     fill(tabsHost,
-      // The Party tab only exists for a turn-based RPG, because that is the only
-      // game type that has a party.
       ...[
         ['metasprites', 'Metasprites'],
         ['animations', 'Animations'],
-        ['actors', 'Actors'],
-        ...(store.project.project.gameType === 'rpg' ? [['party', 'Party']] : [])
+        ['actors', 'Actors']
       ].map(([id, label]) =>
         el(
           'button.tab',
@@ -1246,12 +1200,9 @@ export function mount(container, app) {
       // replaced at build time.
       reservedRanges: spriteReservedRanges(store.project, resolveMapper(store.project.cartridge.mapper))
     });
-    const party = state.tab === 'party';
-    editStage.style.display = party ? 'none' : '';
-    partyHost.style.display = party ? '' : 'none';
+    editStage.style.display = '';
     if (state.tab === 'metasprites') renderMetaspritePane();
     else if (state.tab === 'animations') renderAnimationPane();
-    else if (party) renderPartyPane();
     else renderActorPane();
   }
 
@@ -1276,10 +1227,10 @@ export function mount(container, app) {
   }
 
   // Only the Actors and Animations tabs have anything previewing at all — the
-  // Party tab has no animation of its own, so it is left out entirely rather
-  // than swept in by a catch-all "not metasprites" condition that used to
-  // rebuild it for no visual benefit. Each branch calls a canvas-only repaint
-  // (never `render()`), so a running preview cannot tear either panel out
+  // Metasprites tab's own edit canvas already repaints on every edit, so it
+  // has no need for this per-tick dispatch, and is left out entirely rather
+  // than swept in by a catch-all "not metasprites" condition. Each branch
+  // calls a canvas-only repaint (never `render()`), so a running preview cannot tear either panel out
   // from under whoever is clicking or typing in it. `state.playing` — the
   // Animations tab's own Play checkbox — pauses only that tab's preview, not
   // Actors': Actors has no pause control of its own, so its preview simply
@@ -1329,8 +1280,7 @@ export function mount(container, app) {
       'div.panel',
       { style: { borderRight: 'none' } },
       tabsHost,
-      editStage,
-      partyHost
+      editStage
     ),
     el('div.panel', null, el('div.panel-head', null, 'Sprite Forge'), el('div.panel-body', null, listHost, detailHost))
   );

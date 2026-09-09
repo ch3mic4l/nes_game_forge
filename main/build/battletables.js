@@ -365,7 +365,7 @@ export function checkBattleTables(project) {
   if (!party.some((member) => member.startsInParty)) {
     problems.push({
       severity: 'error',
-      where: 'Sprite Forge',
+      where: 'Character Forge',
       message: 'No party member starts in the party, so the first battle would begin with nobody in it.'
     });
   }
@@ -383,7 +383,7 @@ export function checkBattleTables(project) {
       if (entry.level > project.rpg.maxLevel) {
         problems.push({
           severity: 'warning',
-          where: 'Sprite Forge',
+          where: 'Character Forge',
           message:
             `${member.name} learns a spell at level ${entry.level}, past the maximum of ` +
             `${project.rpg.maxLevel}, so it will never be learned.`
@@ -402,7 +402,7 @@ export function checkBattleTables(project) {
   if (party.length > RPG_LIMITS.party) {
     problems.push({
       severity: 'error',
-      where: 'Sprite Forge',
+      where: 'Character Forge',
       message: `The party holds ${RPG_LIMITS.party} members and this project has ${party.length}.`
     });
   }
@@ -882,7 +882,7 @@ export function battleShortfallAdvice(project, mapper, deficit, { alternatives =
       // refuses a party nobody starts in -- so this never offers emptying it.
       units: Math.max(0, (project.party ?? []).length - 1),
       reduce: (draft, k) => draft.party.splice(draft.party.length - k, k),
-      describe: (k) => `removing ${k === 1 ? 'one party member' : `${k} party members`} in the Sprite Forge`
+      describe: (k) => `removing ${k === 1 ? 'one party member' : `${k} party members`} in the Character Forge`
     },
     {
       units: Math.max(0, (project.rpg?.maxLevel ?? 1) - 1),

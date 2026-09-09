@@ -4,10 +4,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-An Electron app for building NES games through a UI (eight "Forges": Tile, Sprite, Items, Magic (RPG
-projects only), Monster (RPG projects only), Map, Sound, Controller — plus the Code Forge, the escape
-hatch for hand-written 6502), which compiles a
-project into a real `.nes` ROM with `nesasm` and plays it in a built-in emulator with a debugger. See `README.md` for the user-facing description and the
+An Electron app for building NES games through a UI (nine "Forges": Tile, Sprite, Character, Items,
+Magic and Monster (RPG projects only), Map, Sound, Controller — plus the Code Forge,
+the escape hatch for hand-written 6502), which compiles a
+project into a real `.nes` ROM with `nesasm` and plays it in a built-in emulator with a debugger. See `README.md` for the user-facing description and
 current feature status table.
 
 ## Commands
@@ -753,7 +753,7 @@ that no longer exists, not a stale one — with a sanity assertion that the mode
 fixture wrong.
 
 **A fourth sibling, `renumberPartyMemberDeletion(project, index)`, exists for `project.party`**: a
-Join's `member` above the deleted index shifts down, the hole becomes `null`. The Sprite Forge's
+Join's `member` above the deleted index shifts down, the hole becomes `null`. The Character Forge's
 own party Remove handler calls it in its one `store.commit`. The normalizer keeps `null` `null`;
 `validateProject` refuses a live Join naming `null` or an index ≥ `project.party.length`, via
 `liveCommands` not `allCommands`.
@@ -891,8 +891,8 @@ scripted one. `IMPLEMENTED_COMMANDS` in `shared/project.js` is what the Map Forg
 schema, `normalizeEntity` and the compiler handle every command in `EVENT_COMMANDS`, so a project
 written by a later version round-trips through this one, and an opcode the engine cannot run stops
 the event rather than being reinterpreted as another one. Every command is now implemented; `join`
-is additionally hidden by the event editor unless the project has a party, because in an action
-build `OP_JOIN` is exactly such an opcode — the battle bank it calls into is not assembled.
+is additionally hidden by the event editor unless the project is a turn-based RPG (`map.js`), because
+in an action build `OP_JOIN` is such an opcode — the battle bank it calls into is not assembled.
 
 **`Move` is the first command conditionally assembled for a capacity reason rather than a hardware
 one.** `Say` waits for the player; `Move` waits for the *world*, which is the thing this engine had

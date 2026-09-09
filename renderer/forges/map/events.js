@@ -34,7 +34,8 @@ import {
   commonEventId,
   isMonsterActor,
   routeLegs,
-  legWithWho
+  legWithWho,
+  joinNamingCandidate
 } from '../../../shared/project.js';
 import { MetatileRenderer, SCREEN_PX_W, SCREEN_PX_H } from './render.js';
 
@@ -330,10 +331,16 @@ function describeEnabled(command, context = {}) {
       return `Turn off ${switchName(command.switch)}`;
     case 'warp':
       return `Warp to ${screens[command.screen] ?? `screen ${command.screen}`} at ${command.x},${command.y}`;
-    case 'join':
-      return partyMemberMissing(party, command.member)
-        ? 'Join (missing member)'
-        : `${party[command.member].name} joins the party`;
+    case 'join': {
+      if (partyMemberMissing(party, command.member)) return 'Join (missing member)';
+      const member = party[command.member];
+      const suffix = joinNamingCandidate(member, command.member)
+        ? ', named by the player'
+        : member.renamable
+          ? ', renamable but inert here (starts in the party)'
+          : '';
+      return `${member.name} joins the party${suffix}`;
+    }
     case 'setVar':
       return `Set ${varName(command.variable)} to ${command.value ?? 0}`;
     case 'addVar':
@@ -1526,6 +1533,8 @@ export async function editEvent(event, context) {
       );
     } else if (command.op === 'join') {
       const party = context.party ?? [];
+      const member = party[command.member];
+      const candidate = command.member !== null && joinNamingCandidate(member, command.member);
       controls.push(
         el(
           'select',
@@ -1544,6 +1553,7 @@ export async function editEvent(event, context) {
             onchange: (fired) => {
               const raw = fired.target.value;
               command.member = raw === '' ? null : Number(raw);
+              rerender();
             }
           },
           // A member the party no longer has — deleted since, or the null
@@ -1554,8 +1564,20 @@ export async function editEvent(event, context) {
           partyMemberMissing(party, command.member)
             ? el('option', { value: command.member ?? '', selected: true }, 'Missing member')
             : null,
-          party.map((member, id) => el('option', { value: id, selected: id === command.member }, member.name))
-        )
+          party.map((entry, id) => el('option', { value: id, selected: id === command.member }, entry.name))
+        ),
+        candidate
+          ? el('span.hint', { title: 'Set on the Character Forge' }, 'Named by the player')
+          : member?.renamable
+            ? el(
+                'span.hint',
+                {
+                  title:
+                    'party_init recruits a starting member at boot -- this Join can never run its naming session'
+                },
+                'Renamable, but inert here — starts in the party'
+              )
+            : null
       );
     } else if (command.op === 'call') {
       const commonEvents = context.commonEvents ?? [];

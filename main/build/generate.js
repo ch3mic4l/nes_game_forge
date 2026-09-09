@@ -2017,16 +2017,20 @@ export function checkCapacity(project) {
   // function takes or should have to. Giving it a mapper argument to host one
   // piece of arithmetic would put capacity math in two files.
   //
-  // Attributed to the Sprite Forge because that is where every input to these
-  // tables is edited today -- monsters, spells and the party all live in
-  // renderer/forges/sprite/battle.js. One input does not: “Highest level” is a
-  // Build panel field, and one of the larger levers (five bytes per party
-  // member per level), so battleShortfallAdvice names the panel explicitly
-  // whenever lowering it is one of the fixes, rather than leaving `where` to
-  // send the author to the wrong Forge for it. ATTRIBUTION
-  // WILL HAVE TO WIDEN IN PHASE 5: item records land in this same region with
-  // the Database Forge as their editing home, so once project.items exists
-  // this `where` can no longer name one Forge for every input.
+  // Attributed to the Build panel's own capacity math for a project fed by
+  // every Forge listed here: a monster's own battle stats (attack, drops,
+  // weak/resist, spellId, battle artwork) are edited in the Monster Forge;
+  // hp and name are general actor fields, edited in the Sprite Forge's own
+  // Actor panel; a spell's own catalog entry (name, kind, damage/heal
+  // range, MP cost, element, scope) is edited in the Magic Forge; an
+  // item's own name and heal amount are edited in the Items Forge; a party
+  // member's own stats, growth and learned spells are edited in the
+  // Character Forge. "Highest level" and the two XP-curve fields beside it
+  // are Build panel fields in their own right, and "Highest level" is one
+  // of the larger levers (five bytes per party member per level), so
+  // battleShortfallAdvice names the panel explicitly whenever lowering it
+  // is one of the fixes, rather than leaving `where` to send the author to
+  // the wrong Forge for it.
   if (bankedCode && !battleRegionPlacementOverridden(project)) {
     // Refuse only what is knowable. With the stock battle code the region's
     // contents are exact (see battleRegionBytes), so the whole figure is
@@ -2053,10 +2057,12 @@ export function checkCapacity(project) {
     if (regionBytes > regionCeiling) {
       problems.push({
         severity: 'error',
-        // The region is fed by three Forges (Sprite's actors/party, Magic's
-        // spells, Items) plus the mapper choice itself (a Build-panel
-        // decision, reconcileCartridge) that decides its ceiling -- no single
-        // content Forge owns this overflow the way each of the other
+        // The region is fed by every Forge listed here: the Monster Forge's
+        // battle stats, the Sprite Forge's own actor hp/name, the Magic Forge's
+        // spells, the Items Forge, and (moving here under this design) the
+        // Character Forge's own party -- plus the mapper choice itself (a
+        // Build-panel decision, reconcileCartridge) that decides its ceiling --
+        // no single content Forge owns this overflow the way each of the other
         // `where:` strings in this file names a Forge that owns the entirety
         // of what it reports on. 'Build & Play' is the one existing Forge
         // title (renderer/app.js) that already shows this exact number.

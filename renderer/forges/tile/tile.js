@@ -98,6 +98,12 @@ export function mount(container, app) {
     playerFrame: 0, // which of the 8 View-1 frames is highlighted as active
     playerPaint: null // in-progress drag: { lastPoint, slot, paint(x, y, slot) }
   };
+  // A cross-link from the Character Forge (app.goTo('tile', { mode: 'player' })).
+  // Set before the first render, matching sprite.js's own consumeContext
+  // placement, so the Tile Forge lands directly on the Player view rather
+  // than flashing whatever tab/mode it was last in.
+  const context = app.consumeContext();
+  if (context?.mode === 'player') state.mode = 'player';
 
   // ------------------------------------------------------------- helpers
 

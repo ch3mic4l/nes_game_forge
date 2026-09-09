@@ -91,7 +91,11 @@ import {
   // ROADMAP item 8 (starter library, phase 2 -- battle-block-art predicate) -
   hasBattleBlockArt,
   battleBlockIndices,
-  battleSpriteBudget
+  battleSpriteBudget,
+  // Character Forge phase 2 (docs/design-character-forge.md) ---------------
+  characterCap,
+  normalizeCharacterName,
+  joinNamingCandidate
 } from '../../shared/project.js';
 import { resolveStartAt } from '../../shared/playscenario.js';
 import fs from 'node:fs/promises';
@@ -223,12 +227,33 @@ test('a project is an action game unless it says otherwise', () => {
   const action = createProject('Quest');
   assert.equal(action.project.gameType, 'action');
   assert.equal(action.cartridge.mapper, 0);
-  assert.deepEqual(action.party, []);
+  assert.equal(action.party.length, 1);
+  assert.equal(action.party[0].name, 'Hero');
+  assert.equal(action.party[0].renamable, false);
 
   // A project written before game types existed had no battle system, so
   // reading one as an action game is the only answer that cannot break it.
+  // It also had no party field at all -- the pre-D9 shape every real saved
+  // action project has today -- and normalizes to exactly one member.
   const legacy = normalizeProject({ project: { name: 'Old' } });
   assert.equal(legacy.project.gameType, 'action');
+  assert.equal(legacy.party.length, 1);
+  assert.equal(legacy.party[0].name, 'Hero');
+  assert.equal(legacy.party[0].renamable, false);
+});
+
+test('an action project truncates a hand-edited multi-member party to one, keeping the first', () => {
+  const project = normalizeProject({
+    project: { name: 'Quest', gameType: 'action' },
+    party: [{ name: 'A' }, { name: 'B' }]
+  });
+  assert.equal(project.party.length, 1);
+  assert.equal(project.party[0].name, 'A');
+});
+
+test('characterCap: rpg allows a full party, action allows only the hero', () => {
+  assert.equal(characterCap('rpg'), RPG_LIMITS.party);
+  assert.equal(characterCap('action'), 1);
 });
 
 test('an RPG starts on a board that can actually hold one', () => {
@@ -2043,6 +2068,80 @@ test('a join naming a member below the deleted one is untouched, and the primiti
       `party member ${id} must be the same object at the same index, untouched`
     );
   }
+});
+
+// --- Character Forge phase 2 (docs/design-character-forge.md; the name
+// normalizer/idempotence matrix is docs/design-name-entry.md v16.2 §8) -----
+
+test('normalizeCharacterName filters to A-Za-z, slices to RPG_LIMITS.nameLength, and falls back', () => {
+  assert.equal(normalizeCharacterName('Rian', 'Hero'), 'Rian');
+  assert.equal(normalizeCharacterName('Rian123', 'Hero'), 'Rian');
+  assert.equal(normalizeCharacterName('Mem-ber', 'Hero'), 'Member');
+  assert.equal(normalizeCharacterName('A'.repeat(20), 'Hero'), 'A'.repeat(RPG_LIMITS.nameLength));
+  assert.equal(normalizeCharacterName('123', 'Hero'), 'Hero');
+  assert.equal(normalizeCharacterName('', 'Hero'), 'Hero');
+  assert.equal(normalizeCharacterName(null, 'Hero'), 'Hero');
+});
+
+test('normalizePartyMember’s own name normalization is idempotent for every member index', () => {
+  const DEFAULT_MEMBER_NAME = (id) => (id === 0 ? 'Hero' : 'Ally');
+  const cases = ['Hero', 'Ally', 'Rian', 'Rian123', 'Mem-ber', 'A'.repeat(20), '123', '', null];
+  for (let index = 0; index < RPG_LIMITS.party; index++) {
+    const fallback = DEFAULT_MEMBER_NAME(index);
+    for (const x of cases) {
+      const project = normalizeProject({
+        project: { name: 'Idempotence', gameType: 'rpg' },
+        party: Array.from({ length: index + 1 }, (_, id) => (id === index ? { name: x } : createPartyMember(id)))
+      });
+      const once = project.party[index].name;
+      const project2 = normalizeProject({
+        project: { name: 'Idempotence', gameType: 'rpg' },
+        party: project.party
+      });
+      const twice = project2.party[index].name;
+      assert.equal(twice, once, `member ${index}, input ${JSON.stringify(x)}: normalizing twice must not change the result`);
+      if (!/[A-Za-z]/.test(String(x ?? ''))) {
+        assert.equal(once, fallback, `member ${index}, input ${JSON.stringify(x)} has nothing alphabetic: must be the default`);
+      }
+    }
+  }
+});
+
+test('joinNamingCandidate: member 0 never, not-renamable never, a starting member never, otherwise true', () => {
+  assert.equal(joinNamingCandidate({ renamable: true, startsInParty: false }, 0), false, 'member 0 is hero-naming’s own domain');
+  assert.equal(joinNamingCandidate({ renamable: false, startsInParty: false }, 1), false, 'not renamable');
+  assert.equal(joinNamingCandidate({ renamable: true, startsInParty: true }, 1), false, 'already recruited at boot');
+  assert.equal(joinNamingCandidate({ renamable: true, startsInParty: false }, 1), true);
+  assert.equal(joinNamingCandidate(undefined, 1), false, 'a member past party.length reads back undefined');
+});
+
+test('renamable round-trips through normalizeProject, and a hand-edited non-boolean coerces', () => {
+  const truthy = normalizeProject({
+    project: { name: 'Renamable', gameType: 'rpg' },
+    party: [{ ...createPartyMember(0), renamable: true }]
+  });
+  assert.equal(truthy.party[0].renamable, true);
+
+  const coerced = normalizeProject({
+    project: { name: 'Renamable', gameType: 'rpg' },
+    party: [{ ...createPartyMember(0), renamable: 'yes' }]
+  });
+  assert.equal(coerced.party[0].renamable, true);
+
+  const absent = normalizeProject({
+    project: { name: 'Renamable', gameType: 'rpg' },
+    party: [{ name: 'Hero' }]
+  });
+  assert.equal(absent.party[0].renamable, false);
+});
+
+test('validateProject’s empty-RPG-party error names the Character Forge', () => {
+  const project = createProject('Quest', 'rpg');
+  project.party = [];
+  const problems = validateProject(project);
+  const found = problems.find((p) => /at least one party member/.test(p.message));
+  assert.ok(found, 'expected the empty-party error');
+  assert.equal(found.where, 'Character Forge');
 });
 
 // The normalizer's own null/undefined/number mapping for a Join's member,

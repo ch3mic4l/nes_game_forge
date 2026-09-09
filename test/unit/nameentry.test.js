@@ -46,12 +46,22 @@ const hasNesasm = spawnSync('nesasm', [], { stdio: 'ignore' }).error?.code !== '
 // `build:sample:mmc3`, `build:sample:u512`, and `node main/build/cli.js
 // sample-rpg-mmc1`), hash each `<fixture>/build/game.nes` with sha256sum,
 // and say in the commit which engine change moved which hashes.
+// Re-pinned for the Character Forge phase 2 (docs/design-character-forge.md
+// §2): sample-mmc1/sample-mmc3/sample-u512 moved. They are action projects
+// with a live Save, and saveIdentity (shared/save.js) folds partyCount,
+// which goes 0 -> 1 for every action project under this phase (a project
+// always has someone to play as, per createPartyMember/normalizeProject) --
+// so SAVE_IDENTITY_0..3 in each fixture's own build/assets/config.inc
+// changed, and only those four lines (confirmed by diffing config.inc
+// against a HEAD-3949316 build of the same fixture). sample/, sample-rpg/
+// and sample-rpg-mmc1/ are unchanged: sample has no live Save at all, and
+// both RPG fixtures already had a 1+ member party.
 const BASELINES = {
   sample: '471562e528e8ad08a44c9211bd0784b8e6b5e9811e9793ebf21f02e2143bcd82',
   'sample-rpg': 'c7bc3dc326996831e488b929d238f19b71095dd02a8e2c24c37f5612f6f251be',
-  'sample-mmc1': 'd2b8a23d41340ddbfac5ca1cf7176d85c6df999008d8d96efd68caae182c27b5',
-  'sample-mmc3': '52618166b837e589d343903ee3eaed97bca908b3581b88b2ab1c2e30d4efec99',
-  'sample-u512': '10a558d9a51487a44d171e32fe0897bc9725bda73909a2f7da3c8fcfbb29c565',
+  'sample-mmc1': 'f24816f2bd35c7e4df6974823409db384b92cb90bea263b08bdc05fa4d4e2b76',
+  'sample-mmc3': '689bf6cc813dc21870be606d7eac2e892b1fdeb6c33be4238db61d24ad79bf97',
+  'sample-u512': '2a2f9d63a30cde781e34951dff595f777f7beba65472014c881cb525691da3ae',
   'sample-rpg-mmc1': 'f24658ab023a888df23722cd6da0a94f85ba1480b9267ef1906df58ebbceeba8'
 };
 

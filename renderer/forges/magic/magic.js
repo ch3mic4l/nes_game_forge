@@ -1,7 +1,8 @@
 // Magic Forge — spell authoring, moved out of the Sprite Forge's Party tab
-// (item 13, phase 3). A party member's own *learned* spells stay on that tab
-// (they are edited per member, not per spell); this Forge owns the catalog
-// itself: name, kind, damage/heal range, MP cost, element and scope.
+// (item 13, phase 3). A party member's own *learned* spells stay on the
+// Character Forge (they are edited per member, not per spell); this Forge
+// owns the catalog itself: name, kind, damage/heal range, MP cost, element
+// and scope.
 
 import { store } from '../../store.js';
 import { el, fill, field, confirmModal, toast } from '../../ui.js';
