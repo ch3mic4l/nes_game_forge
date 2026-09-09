@@ -124,8 +124,12 @@ map/events.js`: the `join` case in the summary-line switch (`:333-336`), the `jo
 per-command control builder (`:1527-1559` — the member `<select>`, including its own comment on why
 `command.member`'s `null` sentinel needs the empty-string round-trip a `Number()`-based select does
 not), `defaultCommand` (`:194-197` — `for (const arg of entry.args)`, the identical args-driven loop
-shape as the schema normalizer, meaning a default value for `'named'` is unreachable for the same
-reason the normalizer's own case is until `'named'` is added to `EVENT_COMMANDS`'s `join` entry).
+shape as the schema normalizer: whatever `EVENT_COMMANDS.join.args` lists is exactly what a freshly
+placed Join gets a default for, and nothing else. **v16 (D9) note: this reading is what makes X1's own
+plan (below, superseded) legible as a real dependency at the time it was written — a `'named'` case in
+either loop would have been unreachable without first widening `join.args` to include it — but is now
+moot, since v16 withdraws X1 outright (§7) and `join.args` never gains that second entry at all; recorded
+here as what was read, not as a live requirement.**
 
 **Capacity, and its own two Node boundaries — re-read fully this round for the exact insertion points
 X1/X2/X3 need.** `main/build/generate.js`: `kernelCodeBytes` (`:1031-1124`, read in full this round —
@@ -230,9 +234,11 @@ Forge's own tab list is `metasprites`/`animations`/`actors`, plus `party` **only
 `party` tab's own panel (`renderer/forges/sprite/battle.js`'s `partyPanel`), which therefore does not
 exist at all for an action project; no other panel in this Forge, or anywhere else in the renderer,
 edits a project-level (not per-actor) fact about "the player" for both game types today — `heroName`/
-`nameHeroAtStart` need a genuinely new home, not a relocated existing one (§13). `shared/project.js`:
+`nameHeroAtStart` need a genuinely new home, not a relocated existing one (§13, as this document stood
+before v16). `shared/project.js`:
 `createProject`'s own `project:` block (`:3812-3834`, `titleMap`/`maxHearts`/`saveCompatToken` as
-project-level, both-game-types fields — the precedent `nameHeroAtStart`/`heroName` follow), and
+project-level, both-game-types fields — the precedent `nameHeroAtStart`/`heroName` were originally
+meant to follow, before v16 (D9) moved both onto the character record instead), and
 `normalizeProject`'s own `project` object (`:5158-5195`, where `titleMap`/`saveCompatToken` are
 clamped — where the two new fields' own clamps go). `main/build/generate.js`,
 `main/build/battletables.js`: every line v12 cited, re-read and re-pinned at its current position
@@ -250,12 +256,17 @@ figures §11 now updates rather than re-deriving them from scratch.
 
 1. Maximum name length is 10, `RPG_LIMITS.nameLength`.
 2. The grid offers A-Z and a-z, 52 glyphs, no digits or punctuation, no space.
-3. Naming applies to the hero — `project.party[0]` in an RPG; in an action project, which has no
-   `party` array at all (`shared/project.js:3860`, `party: rpg ? [createPartyMember(0, 'Hero')] : []`),
-   the single player character `pc_name_ram` slot 0 always means (§8) — at the start of a new game, and
-   to any Join that opts in (RPG-only, a Join is an RPG-only command). **Corrected this round (D6): v12
+3. Naming applies to the hero — `project.party[0]`, on **either** game type as of v16 (below) — the
+   single player character `pc_name_ram` slot 0 always means (§8) — at the start of a new game, and to
+   any Join that opts in (RPG-only, a Join is an RPG-only command). **Corrected this round (D6): v12
    restricted this decision, and every mechanism built on it, to `project.party[0]` alone because naming
-   was RPG-only; that restriction is gone, the hero half of it is not.**
+   was RPG-only; that restriction is gone, the hero half of it is not.** **Corrected again in v16 (the
+   Character Forge, D9 below): the clause this item used to carry here — "in an action project, which
+   has no `party` array at all... the single player character `pc_name_ram` slot 0 always means" — was
+   true when D6 was decided and is not true any longer. `project.party` now holds exactly one member on
+   an action project too (`docs/design-character-forge.md` Q1), so "the hero" is `project.party[0]` on
+   both game types by the same rule, not by a game-type-conditional fallback. Kept here rather than
+   silently dropped, per this document's own no-shrink-without-a-line rule.**
 4. The RPG starter and `sample-rpg` both opt in.
 5. Delete and Done are grid controls, not new bindable actions; Delete is also reachable through the
    existing Cancel action wherever a project's own controller mapping already binds it (§4).
@@ -266,12 +277,19 @@ figures §11 now updates rather than re-deriving them from scratch.
    change.
 8. **(D4, confirming §19 open question 4.)** `sample-rpg`'s own opt-in covers both hero naming and
    Join naming — already item 4 above; §11's own fit numbers already assumed this for `sample-rpg`.
-9. **(D5, confirming §19 open question 5.)** `sample-rpg-mmc1` carries `named: true` on its own Join,
-   so `save_sram.lua` drives the grid and can assert a byte-exact restored name (§14).
-10. **(D6, new.)** Action projects get hero naming too — the hero (item 3), never a party (action
-    projects have none). Join naming stays RPG-only, since Join is itself an RPG-only command
-    (`EVENT_COMMANDS`, `shared/project.js`) with nowhere to run in an action project's own compiled
-    event set regardless of naming.
+9. **(D5, confirming §19 open question 5.)** `sample-rpg-mmc1`'s own recruited member,
+   `project.party[1]`, carries `renamable: true` (v16, D9 — was the Join command's own `named: true`;
+   the Join command itself is unchanged, still `{ op: 'join', member: 1 }`), so `save_sram.lua` drives
+   the grid and can assert a byte-exact restored name (§14).
+10. **(D6, new.)** Action projects get hero naming too — the hero (item 3). **Corrected in v16 (D9):**
+    at the time D6 was decided, an action project had no `party` array at all, so "never a party" was
+    literally true; under D9 (§1 item 13) an action project's `project.party` holds exactly one member,
+    and hero naming reaches the ROM through that member's own `party[0].renamable` (§8). Join naming
+    still stays RPG-only — not because an action project's party array is absent (it is not, any
+    longer), but because Join is itself an RPG-only command (`EVENT_COMMANDS`, `shared/project.js`) with
+    nowhere to run in an action project's own compiled event set, and because an action project's own
+    party is capped at exactly one member (`docs/design-character-forge.md` Q1), leaving no member 1-3
+    for a Join to ever target there regardless of naming.
 11. **(D7, new.)** The action game's own reader is a `Say` token: authored dialogue may contain a
     token the engine expands at runtime from the hero's own RAM name (`pc_name_ram` slot 0). RPG
     dialogue gets the identical token — one mechanism, not two, so a project that changes game type
@@ -283,6 +301,21 @@ figures §11 now updates rather than re-deriving them from scratch.
     kernel-lo feature when a project cannot afford it. An RPG keeps v12's banked placement completely
     unchanged. **One rule per game type, decided by the project+mapper combination alone, never a
     per-project "banked when it fits, kernel-lo otherwise" hybrid** (§5).
+13. **(D9, v16, new — Chris's answer to §19 question 1 as originally posed, superseding it.)** Chris's
+    own request (verbatim, `docs/design-character-forge.md` §"What Chris asked for"): a new Character
+    Forge, sited between Sprite and Items, where every character — the action hero included — gets a
+    sprite, a stat block and a name, with a per-character "renamable" checkbox. This moves the default
+    name and the renamable flag OFF `project.project` (`heroName`/`nameHeroAtStart`, §8 below as
+    designed in v15.1, never shipped — confirmed again this round, §0 addendum) and ONTO the character
+    record itself: `project.party[0].name` is the default name on both game types, and a new
+    `project.party[N].renamable` boolean replaces both `nameHeroAtStart` (member 0's own flag) and the
+    Join command's authored `named` field (every other member's flag) with one mechanism. The engine
+    (§2-§6, §10, §12, §14-§16) is **completely unaffected** — same RAM, same state machine, same
+    `nameentry.asm`, same compiled bytes for `hero_name_default`/`party_join`'s copy loop/the packed Join
+    operand — because nothing here changes what gets compiled, only which JS-side field the compiler
+    reads it from. §7, §8, §9, §9a and §13 are rewritten below to the new source; the byte-cost ledger in
+    §11 is unchanged in every number. See `docs/design-character-forge.md` for the Forge itself, its own
+    blast-radius audit, and why `project.party` becoming universal (both game types) is safe.
 
 ## §2. RAM — every address, all unconditional equates
 
@@ -1079,14 +1112,33 @@ action-side byte count is the *same* body, differently addressed — the same ki
 (CLAUDE.md, "The kernel budget").
 
 **`test/unit/rammap.test.js`'s own `pc_name_ram: 40` literal (§15, phase 1, already shipped) can now be
-derived instead** — phase 1's own comment there explains precisely why it had to be a literal:
-`NAME_LEN` lived only in `assets/battle.inc`, which this test's own `symbols` table (built from
-`build/constants.asm` and `build/assets/config.inc` alone) never reads. Once `NAME_LEN` moves to
-`config.inc` (this finding), that comment's own premise is gone, and `pc_name_ram`'s own
-`KNOWN_MAX_SIZES` entry can become `(s) => s.MAX_PARTY * s.NAME_LEN` — matching this file's own existing
-derived-entry convention (`switches: (symbols) => symbols.get('NUM_SWITCHES') / 8`) instead of the one
-literal that had to be an exception. Named as a phase-2 follow-up (§15), not applied to the already-
-shipped phase-1 file directly — this document edits nothing outside itself.
+derived instead — corrected this round: the callback receives a `Map`, not a plain object, and the
+phase that makes it valid is the engine core (phase 3 under v16's own renumbering, §17), not phase 2.**
+Phase 1's own comment there explains precisely why it had to be a literal: `NAME_LEN` lived only in
+`assets/battle.inc`, which this test's own `symbols` table (built from `build/constants.asm` and
+`build/assets/config.inc` alone) never reads — **confirmed directly against `engine/constants.asm`
+this round: `MAX_PARTY = 4` is already a real, shipped equate there (`:543`), but `NAME_LEN` is not
+defined anywhere yet, only referenced in existing comments (`:760`, `:762`) — it does not become a
+real symbol until the engine core emits it into `config.inc`, which is phase 3's own work (§17), not
+phase 2's (schema/Forge, JS-only, touching no `.asm` or generated `config.inc` output).** Once that
+lands, `pc_name_ram`'s own `KNOWN_MAX_SIZES` entry can become a derived callback — but it must resolve
+through the `Map` the way every other function-typed entry in this table already does
+(`resolveKnownSize`, `test/unit/rammap.test.js:135-140`, `spec(symbols)` called directly on the `Map`;
+the file's own existing precedent, `switches: (symbols) => symbols.get('NUM_SWITCHES') / 8`, `:140`,
+uses `.get()`, never property access):
+
+```js
+// test/unit/rammap.test.js's KNOWN_MAX_SIZES, corrected -- (symbols) is a
+// Map, so `.get('MAX_PARTY')`/`.get('NAME_LEN')`, never `.MAX_PARTY`/`.NAME_LEN`
+pc_name_ram: (symbols) => symbols.get('MAX_PARTY') * symbols.get('NAME_LEN'),
+```
+
+Both symbols are confirmed real once phase 3 has landed: `MAX_PARTY` is already parsed today (it is a
+plain `constants.asm` equate, unconditional, unaffected by this feature at all), and `NAME_LEN` becomes
+parseable the moment phase 3 emits it into `config.inc` — so this specific `KNOWN_MAX_SIZES` change is
+itself part of phase 3's own scope, not phase 2's, and not something this document can apply to the
+already-shipped phase-1 file directly, unchanged from the original framing's own caution — this
+document edits nothing outside itself.
 
 **MMC3 split coverage needs no change at all, on either placement — confirmed this round by reading
 `split_select` to its own final, unconditional fallback arm, not merely its two named `.if` blocks.**
@@ -1756,72 +1808,123 @@ naming flag that keeps its own `&& battleBankEnabled(project, mapper)` term unco
 D8 fix), and `party_join`'s copy loop below stays banked-only, reached only through
 `battle_entry`/`call_battle` exactly as specified.
 
-**The schema change X1 restores.** `EVENT_COMMANDS`'s `join` entry (`shared/project.js:773`) gains a
-second arg, so `normalizeEventCommand`'s own per-arg loop (`:4135`, `for (const arg of command.args)`)
-can actually reach a `'named'` case — without this, a `named` field on the raw authored command is
-silently dropped by normalization no matter what case is added to the loop's own body, since the loop
-never iterates an arg that is not listed here:
+**v16 (D9): X1's own schema-widening half is withdrawn — there is no schema change here at all.**
+(Scoping note, since "X1" has named a multi-part bundle since v9's own Changelog entry, below: this
+withdraws only the `join.args`/`EXCEPTIONAL_WIDTHS` half of that bundle — the second and third items in
+v9's own six-item list. **X1's sprite-CHR-stamp fix, its sixth and last item, is a completely different,
+still-needed fix and is not affected by anything in this section** — see §17's own correction, below, for
+where a prior pass of this document wrongly implied otherwise.) v15.1 had `join` gain an
+authored `named` field, which is why it needed a second `args` entry and, from that, the whole
+`EXCEPTIONAL_WIDTHS` correction below. The Character Forge round (`docs/design-character-forge.md` Q2)
+found a strictly simpler source for the same bit: a party member's own `renamable` flag, which the
+compiler already has in hand (it compiles from the whole `project`, party included) the moment it
+reaches a `join` command. There is nothing left for an author to check per-placement — the Map Forge's
+own join row shows `renamable` as read-only text (§13, rewritten below), not a checkbox — so
+`EVENT_COMMANDS`'s `join` entry, `normalizeEventCommand`'s per-arg loop and `defaultCommand`
+(`renderer/forges/map/events.js`) all keep their **pre-v15.1** shape, unmodified:
 
 ```js
-// shared/project.js:773, corrected
-{ id: 'join', label: 'Party member joins', args: ['member', 'named'] },
+// shared/project.js, unchanged from HEAD — no X1
+{ id: 'join', label: 'Party member joins', args: ['member'] },
 ```
 
-```js
-// shared/project.js's normalizeEventCommand, new case beside 'member'
-else if (arg === 'named') out.named = Boolean(raw?.named);
-```
+`encodeCommand`'s own `join` case (`main/build/textcompile.js:341-342`) still packs the named bit into
+the single operand byte's bit 7 — that part of v15.1's own engine-facing design was correct and is kept
+— but reads it from `project.party`, the compiler's own input, rather than from `command.named`, an
+authored field that no longer exists.
 
-`renderer/forges/map/events.js`'s own `defaultCommand` (`:194-197`) needs the identical case, for the
-same reason — it walks `entry.args` too, so a freshly placed Join needs `'named'` listed here as well
-to seed `out.named = false` on arrival:
-
-```js
-// renderer/forges/map/events.js's defaultCommand, new case
-else if (arg === 'named') out.named = false;
-```
-
-`encodeCommand`'s own `join` case (`main/build/textcompile.js:341-342`) packs both fields into the same
-single operand byte, rather than adding a second byte — `named` rides bit 7 of the member index, which
-fits because `RPG_LIMITS.party` (4) only ever needs bits 0-1:
+**Corrected this round (round-3 review, fresh finding 12's own consequence, found while auditing every
+other bare `.renamable` read the finding asked for): this must gate on `joinNamingCandidate` (§9), not
+raw `renamable` alone.** **Corrected again this round (round-4 review): the fix itself is right, but the
+consequence described here was wrong — the example used a `startsInParty` member, for whom the
+described failure is unobservable, and the framing overstated it as a recruitment fix.** By
+construction, `joinNamingCandidate` and raw `renamable` can only ever disagree for a member 1-3 whose
+`startsInParty` is `true` (that is the only term `joinNamingCandidate` adds beyond `renamable` itself
+for a non-hero member) — so any project that can exercise the divergence necessarily targets a member
+`party_init` already recruited at boot (`pc_starts,x` true → `jsr party_join`, `engine/battle.asm:69-71`
+— finding 10's own inert case). The operand contract is "bits 0-6 the member index, bit 7 clear unless
+this Join is a real naming candidate"; the bug was `encodeCommand` reading `renamable` for that bit
+instead of the candidate predicate. **What actually happens for this exact member, traced both ways**:
+`JOIN_NAMING_ENABLED` (§9) is `projectUsesJoinNaming`-derived, itself `joinNamingCandidate`-gated — a
+project whose only renamable non-hero member is this `startsInParty` one compiles
+`JOIN_NAMING_ENABLED = false`, so the engine assembles `script_op_join`'s **unmasked** variant (§7's own
+listing above, `jsr script_arg / sta bt_arg`, no `and #$7F`). With the bug, that member's own Join
+compiles a stray high bit — `bt_arg = memberByte | 0x80`, e.g. `$81` for member 1 — and
+`battle_entry_join`'s own `cpx #PARTY_SIZE / bcs battle_entry_join_skip` (`engine/battle.asm:40-41`)
+refuses it outright, *before* `party_join` ever runs. Without the bug, the same Join compiles a clean
+operand, reaches `party_join`, and is refused there instead — `lda pc_in_party,x / bne
+party_join_done` (`:80-81`), since the member is already recruited. **Both paths reach an identical,
+empty `rts` with no side effect either way — for this specific member, the bug is invisible in play,
+not merely hard to notice.** It is real regardless, as an operand-contract regression rather than a
+recruitment fix: the compiled byte's own high bit no longer means what its contract says it means
+(`test/lib/eventdecoder.js` or a raw ROM dump would show a member index of 128+, not 1), and the
+byte-for-byte cancellation above is a property of `battle_entry_join`'s and `party_join`'s own *current*
+guard shapes, not a design invariant either routine documents or promises to keep — a future change to
+either guard's own ordering could turn this from a latent contract violation into a live one. (A
+non-starting, genuinely-recruitable member cannot exercise this at all: for such a member,
+`joinNamingCandidate` and `renamable` agree by construction, so there is no divergence left to be a bug
+about — this is why the example stays on a `startsInParty` member rather than being changed to one,
+per the round's own alternative.) Gating `encodeCommand` on the identical predicate every other
+consumer already uses closes the contract violation regardless of whether today's guard shapes happen
+to absorb it:
 
 ```js
 case 'join': {
   if (command.member === null) return [opIndex('join'), NO_MEMBER];
   const memberByte = byte(command.member, 3);          // 0-3
-  return [opIndex('join'), command.named ? (memberByte | 0x80) : memberByte];
+  const named = joinNamingCandidate(project.party[command.member], command.member); // §9
+  return [opIndex('join'), named ? (memberByte | 0x80) : memberByte];
 }
 ```
 
-**Why the compiled width stays 2 even though `args` now has two entries — the exact mechanism, not
-merely asserted.** `test/lib/eventdecoder.js`'s own generic fallback (`:132`, used for every opcode not
-given an explicit `branch`/`choice`/`warp`/`say` case) is `EXCEPTIONAL_WIDTHS[entry.id] ?? 1 +
-entry.args.length`. Before this change, `join`'s single-arg `args` already made the generic rule's own
-prediction (`1 + 1 = 2`) match the real wire width by coincidence, needing no entry in
-`EXCEPTIONAL_WIDTHS` at all. Widening `args` to two entries makes the SAME generic rule predict `1 + 2
-= 3` — wrong, since both fields still pack into the one operand byte `encodeCommand`'s own case above
-shows. `join` therefore joins `sting`/`sfx`/`battle` as a fourth, real entry in `EXCEPTIONAL_WIDTHS`,
-overriding the now-wrong generic prediction back down to the real width:
+`joinNamingCandidate` reaches this file the same way `battleFormationSlice`/`NO_MEMBER`/every other
+`shared/project.js` import already does — added to the existing multi-line import, not a new import
+statement of its own:
 
 ```js
-// test/lib/eventdecoder.js:33-37, corrected
-const EXCEPTIONAL_WIDTHS = {
-  sting: 3,
-  sfx: 3,
-  battle: 1 + RPG_LIMITS.monstersPerBattle,
-  join: 2
-};
+// main/build/textcompile.js:28-55, amended -- one name added to the
+// existing shared/project.js import
+import {
+  CHOICE_LIMITS,
+  EVENT_COMMANDS,
+  EVENT_CONDITIONS,
+  FADE_DIRECTIONS,
+  MOVE_DIRECTIONS,
+  MOVE_TARGETS,
+  RPG_LIMITS,
+  actorMissing,
+  actorByte,
+  itemMissing,
+  NO_ITEM,
+  NO_MEMBER,
+  battleFormationSlice,
+  NO_ACTOR,
+  choiceLabel,
+  choiceOptionsSlice,
+  conditionArgLimit,
+  enabledCommands,
+  compiledPages,
+  entityLabel,
+  screenLabel,
+  liveCommonEvents,
+  commonEventId,
+  VISIBLE_STATES,
+  routeLegs,
+  legWithWho,
+  joinNamingCandidate
+} from '../../shared/project.js';
 ```
 
-`join` deliberately stays on the *generic* raw-bytes decode path (the module's own header,
-`test/lib/eventdecoder.js:1-24`, reserves a bespoke resolved-shape case only for the two operand kinds
-a structural map edit can relocate — a Warp's screen, a Say's string id) rather than gaining its own
-explicit `if (entry.id === 'join')` branch the way `warp`/`say` have: a party member index is not a
-relocatable reference the way a screen or a string id are, so per this module's own stated design, it
-belongs on the raw-bytes path like every other non-relocating operand. A test that needs the member
-index or the `named` bit reads `decoded.raw[0]`, masking `& 0x7f` for the member and `& 0x80` for
-`named` itself, at the call site — the same thing a consumer of `sting`/`sfx`'s own raw two-byte
-payload already has to do for their own packed fields.
+**The compiled width was never actually in question — v15.1's own EXCEPTIONAL_WIDTHS correction was
+undoing a problem this design no longer creates.** `test/lib/eventdecoder.js`'s own generic fallback
+(`:132`, `EXCEPTIONAL_WIDTHS[entry.id] ?? 1 + entry.args.length`) already predicts the real wire width
+for `join` correctly the moment `args` stays `['member']` (one entry): `1 + 1 = 2`, exactly the operand
+byte `encodeCommand`'s case above still emits. `join` needs no entry in `EXCEPTIONAL_WIDTHS` at all —
+not a new one, and not the one v15.1 added, which this rewrite removes along with X1 itself. A test
+that needs the member index or the renamable bit reads `decoded.raw[0]` off the generic raw-bytes
+path, masking `& 0x7f` for the member and `& 0x80` for the bit itself, at the call site — the same
+thing a consumer of `sting`/`sfx`'s own raw two-byte payload already has to do for their own packed
+fields, and the identical mechanism v15.1 specified, only the field it is checked against changed.
 
 Masking with `and #$7f`, never `and #$03`, preserves bits 2-6 so a stale operand like `$05` stays `$05`
 and `battle_entry_join`'s own unmodified `cpx #PARTY_SIZE / bcs skip` refuses it. `script_op_join`
@@ -2032,48 +2135,131 @@ a `box_after`-style discriminator of its own — `script_active` already is one.
 
 **The problem.** An RPG already has a default hero name: `pc_name`, the compiled ROM table
 `party[0].name` produces, walked by `name_offset_pc` the identical way any other combatant's name is
-(§3). An action project has no party at all (`project.party = []`, §1 item 3) and consequently no
-`pc_name` table — nothing to seed `pc_name_ram` slot 0 from at boot, and nothing for the Say token
-(§9a) to read when naming is off. Something has to fill both roles for an action project the way
-`pc_name` already does for an RPG.
+(§3). v15.1's own action project had no party at all — that premise is gone (§1 item 3, D9): as of v16
+every project, either game type, carries exactly one member at index 0 on an action build
+(`docs/design-character-forge.md` Q1), so an action project now has a `party[0].name` too. What it
+still lacks is the *banked* `pc_name` table itself — `codeRegions` never reserves a battle bank for an
+action project (`battleBankEnabled`, §9), so there is nowhere for a per-member table like `pc_name` to
+live on that board, and nothing to seed `pc_name_ram` slot 0 from at boot, or for the Say token (§9a)
+to read when naming is off. A kernel-lo table still has to fill that role for an action build; only
+*where its value comes from* changes in this round.
 
-**The source: `project.project.heroName`, a new project-level string, default `"Hero"`, max 10
-characters, A-Z/a-z only — normalized the way every other authored string is, with one added
-restriction.** Placed beside `titleMap`/`maxHearts`/`saveCompatToken` in `createProject`'s own
-`project:` block (`shared/project.js:3812-3834`, the exact precedent this field follows — a
-project-level, both-game-types fact, not a per-actor one) and clamped in `normalizeProject`'s own
-`project` object (`:5158-5195`, where `titleMap`/`saveCompatToken` already are):
+**v16 (D9): the source is `project.party[0].name` — no new field, on either game type.** v15.1 put a
+second, project-level copy of this string on `project.project.heroName`, kept in sync with nothing
+(an author could set one and not the other, and the P2-7 finding below is exactly that divergence
+happening on an RPG). The Character Forge round found the field already existed for an RPG
+(`createPartyMember`, `shared/project.js:3781-3800`, `name` — a plain, existing member field, not a
+new one) and simply had no member 0 to hold it on an action project until D9 gave it one. There is now
+exactly one string, read the same way regardless of game type — `project.party[0].name` — so
+`heroName` is withdrawn entirely, not renamed:
 
 ```js
-// shared/project.js, createProject's own project: block, beside titleMap
-heroName: 'Hero',      // the compiled default; also this project's own
-                        // nameHeroAtStart re-seed and the Say-token default
-nameHeroAtStart: false,
+// shared/project.js, createProject's own project: block -- v16: no heroName/
+// nameHeroAtStart entries added here at all. The default name lives on
+// party[0].name -- "Hero" on a freshly created project either game type
+// (createProject's own createPartyMember(0, 'Hero'), :3860, now unconditional
+// per docs/design-character-forge.md Q1), and whatever a hand-edited or
+// migrated project's own party[0].name already holds otherwise.
 ```
 
 ```js
-// shared/project.js, normalizeProject's own project object, beside titleMap/saveCompatToken
-heroName: normalizeHeroName(raw.project?.heroName),
-nameHeroAtStart: Boolean(raw.project?.nameHeroAtStart),
+// shared/project.js, normalizeProject's own project object -- v16: neither
+// heroName nor nameHeroAtStart is normalized here; there is nothing left in
+// project.project for this feature to clamp.
 ```
 
+`normalizeHeroName` is withdrawn as a separate function — folded into the party member name
+normalizer instead, below, since it is no longer a project-level special case but an ordinary rule
+every character's name follows.
+
+**Why A-Z/a-z only, not `normalizeLabel`'s own free-text 40-character shape (which every OTHER
+authored label in this codebase still uses).** A character's `name` is not only a label once
+`renamable` (§7's `docs/design-character-forge.md` Q2) can be true for it — it is the exact byte
+content `init_session`'s own re-seed (action) or `party_join`'s own copy loop (RPG, §7) writes into
+`pc_name_ram`, the same RAM the grid then lets the player edit, glyph by glyph, from a 52-letter
+alphabet with no digits, punctuation or space (§1 item 2). A stored name outside that alphabet would
+seed a preview row the grid's own controls could never have produced by typing — a real, visible
+inconsistency the moment a player opened the grid on a default the compiler accepted but the grid
+cannot itself express. **v16 widens this restriction from `heroName` alone to every `project.party[N]`
+member's own `name`, member 0 included, replacing `normalizePartyMember`'s previous use of
+`normalizeLabel` for this one field** (`docs/design-character-forge.md` Q5 has the full reasoning,
+including what happens to an existing name — `sample-rpg`'s own "Rian"/"Iris", both already
+alphabetic and within 10 characters — on migration):
+
 ```js
-// shared/project.js, a new normalizer beside normalizeLabel
-function normalizeHeroName(value) {
+// shared/project.js, replaces normalizeHeroName -- now the one normalizer
+// for every character's name, called from normalizePartyMember (below)
+// instead of normalizeLabel.
+function normalizeCharacterName(value, fallback) {
   const filtered = typeof value === 'string' ? value.replace(/[^A-Za-z]/g, '').slice(0, RPG_LIMITS.nameLength) : '';
-  return filtered || 'Hero';
+  return filtered || fallback;
 }
 ```
 
-**Why A-Z/a-z only, not `normalizeLabel`'s own free-text 40-character shape (party member names, item
-names and every other authored label in this codebase already use).** `heroName` is not only a label —
-it is the exact byte content `init_session`'s own re-seed writes into `pc_name_ram` slot 0 (below), the
-same RAM the grid itself then lets the player edit, glyph by glyph, from a 52-letter alphabet with no
-digits, punctuation or space (§1 item 2). A `heroName` outside that alphabet would seed a preview row
-the grid's own controls could never have produced by typing — a real, visible inconsistency the moment
-a player opened the grid on a default the compiler accepted but the grid cannot itself express — so
-this is the one authored string in this codebase restricted to precisely what the runtime mechanism it
-feeds can also produce.
+```js
+// shared/project.js, normalizePartyMember -- one line changed
+name: normalizeCharacterName(raw?.name, base.name),   // was normalizeLabel(raw?.name, base.name)
+```
+
+**Corrected this round (finding 8, round-2 review): normalization was not idempotent, and the fix is
+in `createPartyMember`'s own default, not in `normalizeCharacterName`.** `createPartyMember`'s own
+two-argument default, `name = \`Member ${id + 1}\`` (`:3781`), contains a digit and a space — outside
+A-Z/a-z. That string reaches a real party member's own `name` field two ways that never pass through
+`normalizeCharacterName` at the moment they are written: the Character Forge's own Add handler
+(`docs/design-character-forge.md` §2, `createPartyMember(project.party.length)`, no name argument) and
+`normalizePartyMember`'s own fallback (`base.name`, used verbatim whenever `raw?.name` is empty or
+unparseable, never itself re-filtered — by design, since a fallback must be a fixed point already, not
+something to filter again). Both write `"Member 2"` (or `"Member 1"`, `"Member 3"`, …) as a real, live
+`name`. **The instant that value round-trips through a real save** — `main/project-io.js:110`'s own
+`saveProjectNow` calls `normalizeProject(data)` on *every* save, not only on load — it is no longer the
+untouched fallback, it is `raw?.name` on the next pass, and `normalizeCharacterName` filters it for
+real: `"Member 2"` → `"Member"`, silently, the moment a project with an unrenamed added member is saved
+once. A name a player never touched changed anyway. This is the defect: a default has to be a fixed
+point of the normalizer it will eventually be fed through, and `"Member N"` never was.
+
+**The fix is at the source, not at the filter: give every default a name the alphabet already
+accepts**, matching the RPG starter's own existing precedent (`shared/starters/rpg.js:205`,
+`createPartyMember(1, 'Ally')` for its own recruit) rather than inventing new vocabulary — member 0 is
+`"Hero"` (already settled, `createProject`'s own explicit call, `:3860`), every other index is `"Ally"`,
+with no uniqueness requirement to violate (nothing in the schema or the engine requires distinct party
+member names, so two added-but-unrenamed members both reading "Ally" is a real, harmless, plainly
+self-explanatory state, not a bug):
+
+```js
+// shared/project.js -- createPartyMember's own default is now a function of
+// id, not one literal template, and always alphabetic
+const DEFAULT_MEMBER_NAME = (id) => (id === 0 ? 'Hero' : 'Ally');
+
+export function createPartyMember(id, name = DEFAULT_MEMBER_NAME(id)) {
+  return {
+    id,
+    name,
+    renamable: false,   // unchanged from round 1 -- every character defaults to not-renamable,
+                         // matching nameHeroAtStart's own prior default; an author opts in
+    ...
+  };
+}
+```
+
+**This also retires the "quirk" a prior pass of this document merely documented rather than fixed:**
+`normalizePartyMember`'s own `base = createPartyMember(id)` (`:4832`) calls the *single-argument* form,
+so `base.name` for member 0 is now `DEFAULT_MEMBER_NAME(0)` = `"Hero"` — matching `createProject`'s own
+explicit `createPartyMember(0, 'Hero')` call (`:3860`) exactly, for the first time. A hand-edited or
+format-drifted project whose `party[0].name` is missing or empty now normalizes to `"Hero"`, not
+`"Member 1"` — the inconsistency the prior pass could only note is gone, not merely explained.
+`docs/design-character-forge.md` Q1's own migration question (what name a freshly-migrated action
+member 0 gets) is answered the same way as a direct consequence: `"Hero"`, with no special-casing
+needed in the migration code itself, since it is simply what `createPartyMember(0)` already returns.
+
+**The idempotence test, specified exactly rather than left to a future round to invent:** for every
+member index 0-3, `normalizeCharacterName(normalizeCharacterName(x, DEFAULT_MEMBER_NAME(index)),
+DEFAULT_MEMBER_NAME(index)) === normalizeCharacterName(x, DEFAULT_MEMBER_NAME(index))` for `x` ranging
+over: each `DEFAULT_MEMBER_NAME` value itself (`"Hero"`, `"Ally"` — the case that was broken), a
+plain valid name (`"Rian"`), a name needing filtering (`"Rian123"`, `"Mem-ber"`, a name over 10
+characters), and a name with nothing alphabetic in it at all (`"123"`, `""`, `null`) — the last group
+proving the fallback path itself (`DEFAULT_MEMBER_NAME(index)`, always alphabetic by construction) is
+what a name with no alphabetic content reduces to, and that reducing it a second time changes nothing
+further, since the fallback is already a fixed point.
 
 **`hero_name_default`: a new 10-byte compiled table, emitted only for a project that needs it —
 `needsHeroDefault` corrected this round (P1-2, round-1 finding): an RPG never needs it at all, since
@@ -2108,7 +2294,9 @@ export function projectNeedsHeroDefault(project) {
 // main/build/generate.js -- emitted only when needsHeroDefault, below
 const needsHeroDefault = projectNeedsHeroDefault(project);
 if (needsHeroDefault) {
-  const padded = project.project.heroName.padEnd(RPG_LIMITS.nameLength, ' ').slice(0, RPG_LIMITS.nameLength);
+  // v16: was project.project.heroName -- same padding, same table, the
+  // source is party[0].name now that it exists on every project (D9).
+  const padded = project.party[0].name.padEnd(RPG_LIMITS.nameLength, ' ').slice(0, RPG_LIMITS.nameLength);
   lines.push(`hero_name_default:\n  .db ${[...padded].map((ch) => hex(charToTile(ch))).join(',')}`);
 }
 ```
@@ -2245,39 +2433,85 @@ a game over), and `continue_game` (`engine/save.asm:541`, whatever screen bank a
 `load_apply_body` call happens to leave switched in) — a kernel-lo copy needs none of that context, and
 none of these four callers needs to change to accommodate it.
 
-**The Sprite Forge's own Player tab (§13) is where `heroName`/`nameHeroAtStart` are edited — a new
-tab, not the existing, RPG-only `party` one v12 used, and (P2-7, §13) only `nameHeroAtStart`'s own
-checkbox is universal; the `heroName` field itself is shown only for an action project, since it is the
-one game type whose build ever reads it** — see §13 for why v12's own location does not exist on an
-action project at all, and the new tab this round adds instead.
+**v16 (D9): neither `heroName` nor `nameHeroAtStart` is edited anywhere — both are withdrawn, and
+what replaces them is edited on the new Character Forge, not a Sprite Forge tab.** v15.1's own plan
+here (a new Sprite Forge "Player" tab, unconditional, ahead of the RPG-only `party` tab, §13) is
+superseded outright by `docs/design-character-forge.md`, not merely relocated: the party tab itself is
+removed, folded into the Character Forge along with everything `renderer/forges/sprite/battle.js`'s
+`partyPanel` used to edit, and the default-name field and renamable checkbox live on that new Forge's
+own per-character card rather than on a Sprite Forge tab of any kind. §13 below is rewritten to this
+shape.
 
-**`validateProject` gains one new refusal**, alongside its existing Save-needs-a-title check
-(`:6098-6115`): a live Say token (§9a, `projectUsesNameToken`) in a project where neither
-`projectUsesHeroNaming(project)` nor a compiled default exists to back it is refused, naming the Map
-Forge — this can only happen for an action project with the token authored but `heroName` never having
-had a chance to compile a table for (impossible in practice once `needsHeroDefault`'s own `usesNameToken`
-disjunct above is correctly wired, since the token itself is what makes `needsHeroDefault` true — this
-check is defense in depth for a hand-edited or future-version project whose generator disagrees with
-this one, the same role every other capacity-adjacent `validateProject` check already plays).
+**`validateProject` gains the identical one new refusal, only its own reasoning simplifies.** A live
+Say token (§9a, `projectUsesNameToken`) in a project where neither `projectUsesHeroNaming(project)` nor
+a compiled default exists to back it is still refused, naming the Map Forge — but v15.1's own caveat
+about `heroName` "never having had a chance to compile a table for" no longer applies, because there is
+no longer a second, independently-settable field that could be out of step with `needsHeroDefault`'s
+own formula: `project.party[0].name` always exists (D9) and is always exactly what `hero_name_default`
+compiles from, so this check is defense in depth for a hand-edited or future-version project alone, the
+same role every other capacity-adjacent `validateProject` check already plays, with one fewer real way
+to reach it than v15.1 had.
 
 ## §9. Game types — three admission points, hero default input, and the normalizer/UI wiring
 
 **v13 (D6/D8): `projectUsesHeroNaming` drops its own `gameType === 'rpg'` gate entirely — hero naming
-is the one naming feature that now applies to any game type — and its field moves from
-`project.rpg.nameHeroAtStart` to `project.project.nameHeroAtStart` (below). `projectUsesJoinNaming`
-and `projectUsesNameEntry` are unchanged in shape; `projectUsesNameEntry`'s own `||` already meant
-"either," which is still exactly right now that the left side can be true on either game type.**
+is the one naming feature that now applies to any game type.** **v16 (D9): both predicates' own source
+field moves again — not to `project.project.nameHeroAtStart`/`command.named` as v13/v15.1 had it, but
+to the per-character `renamable` flag `docs/design-character-forge.md` adds to `createPartyMember`/
+`normalizePartyMember`.** `project.party[0].renamable` answers `projectUsesHeroNaming` exactly the way
+`nameHeroAtStart` used to — member 0's own flag, read bare, with no candidate gating, since the hero has
+no `startsInParty`-inert case the way a recruit does. For members 1-3, `joinNamingCandidate(member,
+index)` (below) — not bare `renamable` — is what actually answers what `command.named` used to (§7, D9
+— there is no more authored `named` field to read; and, per finding 12, the Join site, the compiler,
+and the summary/hint UI must all read the same gated predicate, not the raw flag, or a
+`renamable`-but-`startsInParty` member reads as a naming candidate somewhere it is not). `projectUsesJoinNaming` and `projectUsesNameEntry` keep their outer shape —
+still RPG-gated, still an `||` of the two admission predicates — only the inner test moves:
+
+**Corrected this round (finding 7, round-2 review): `projectUsesJoinNaming` admitted a Join naming
+member 0, and `projectWithoutJoinNaming` (below) only ever stripped index > 0 — two different, silently
+disagreeing definitions of what counts as "Join naming."** Checked directly against
+`engine/battle.asm`, not assumed: `party_init` (`:60-71`) recruits every member whose `pc_starts` flag
+is set — `startsInParty: true`, any index — via `party_join` at *boot*, before any field event can ever
+run; `party_join`'s own guard (`:79-81`, `lda pc_in_party,x / bne party_join_done`) then makes any
+*later* Join targeting that same member an unconditional no-op, since `pc_in_party` is already set. So
+a Join can only ever contribute a real naming session when its target is **not** member 0 (member 0 is
+hero-naming's own domain, §8, handled by `projectUsesHeroNaming` alone), **is** `renamable`, and does
+**not** `startsInParty` — a starting member's own later Join is always inert, regardless of `renamable`,
+for the identical reason a Join on member 0 already is (§3 of `docs/design-character-forge.md`). One
+predicate now states this once, and both functions read it, so they cannot drift apart again:
+
+**Corrected this round (round-4 review): this must be `export`ed.** `joinNamingCandidate` is read by
+both `main/build/textcompile.js`'s own `encodeCommand` (§7) and `renderer/forges/map/events.js`'s own
+per-command control builder and summary-line switch (§13) — two consumer modules, neither of them
+`shared/project.js` itself — so a plain, unexported function here would be a real `ReferenceError` the
+moment either file actually called it, not a private helper the way `normalizeCharacterName` (§8) or
+`normalizeLabel` correctly are (both single-module-internal, never imported elsewhere):
 
 ```js
+// shared/project.js -- the single admission test a Join must pass to ever
+// open the naming grid, shared by projectUsesJoinNaming (below) and
+// projectWithoutJoinNaming (further below) so the two share one definition,
+// and exported so main/build/textcompile.js and renderer/forges/map/events.js
+// can both read it too.
+export function joinNamingCandidate(member, memberIndex) {
+  return memberIndex > 0 && Boolean(member?.renamable) && !member?.startsInParty;
+}
+
 export function projectUsesHeroNaming(project) {
-  return Boolean(project?.project?.nameHeroAtStart);
+  return Boolean(project?.party?.[0]?.renamable);
 }
 export function projectUsesJoinNaming(project) {
   if (project?.project?.gameType !== 'rpg') return false;
   for (const event of projectEvents(project)) {
     for (const page of compiledPages(event)) {
       for (const command of liveCommands(page.commands, CHOICE_LIMITS.options)) {
-        if (command.op === 'join' && command.named) return true;
+        if (
+          command.op === 'join' &&
+          command.member !== null &&
+          joinNamingCandidate(project.party[command.member], command.member)
+        ) {
+          return true;
+        }
       }
     }
   }
@@ -2287,6 +2521,17 @@ export function projectUsesNameEntry(project) {
   return projectUsesHeroNaming(project) || projectUsesJoinNaming(project);
 }
 ```
+
+`command.member !== null` is written explicitly rather than left to `?.` alone, purely for readability
+at the call site — `project.party[null]` never throws (a non-numeric array index reads back
+`undefined`, and `joinNamingCandidate(undefined, null)` reads `undefined?.renamable` as `undefined`,
+falsy, and `null > 0` as `false` regardless), so the guard is not load-bearing the way it would be in a
+language where it could throw; it is here so a reader does not have to reason through that to see a
+dangling Join (`null`, or a stale numeric member `validateProject` separately refuses,
+`shared/project.js:5906+`) is excluded. `joinNamingCandidate`'s own `member?.renamable` is what actually
+carries the "member past `party.length`" case (an out-of-range lookup reads back `undefined`, falsy).
+The `liveCommands`/`allCommands` distinction this predicate already made in v13 (a naming candidate
+under a switched-off branch must not be live here) is unchanged.
 
 **The battle-bank admission predicate moves to `shared/`, so both `main/build/generate.js` and
 `main/build/battletables.js` can share one real implementation instead of `battletables.js` importing
@@ -2311,40 +2556,79 @@ drift — mirroring `projectWithoutCommands`'s own `event.pages ?? []` / `allCom
 command already is (branch and choice contents included), not merely among live occurrences:
 
 ```js
-// shared/project.js, beside battleBankEnabled -- v13: clone.project, not
-// clone.rpg, since the field moved (below) and now applies to any game type
+// shared/project.js, beside battleBankEnabled -- v16: clone.party[0], not
+// clone.project -- the field is per-character now (D9), not project-level.
 export function projectWithoutHeroNaming(project) {
   const clone = structuredClone(project);
-  clone.project.nameHeroAtStart = false;
+  if (clone.party[0]) clone.party[0].renamable = false;
   return clone;
 }
+// v16: projectWithoutJoinNaming no longer walks the events at all -- there is
+// no per-command `named` field left to strip (D9, §7). It strips renamable
+// from exactly the members joinNamingCandidate would ever admit -- not
+// "every member but 0" (finding 7, round-2 review: that over-strips a
+// renamable-but-startsInParty member 1-3, whose flag joinNamingCandidate
+// never admitted in the first place, and under-strips nothing, since
+// joinNamingCandidate already excludes member 0). Stripping hero naming
+// (member 0) is projectWithoutHeroNaming's own job, above, and this helper
+// must not touch it (X2's own strip-one-candidate-at-a-time contract,
+// unchanged from v13) -- joinNamingCandidate's own `memberIndex > 0` term is
+// what keeps the two helpers from ever overlapping.
 export function projectWithoutJoinNaming(project) {
   const clone = structuredClone(project);
-  for (const event of projectEvents(clone)) {
-    for (const page of event.pages ?? []) {
-      for (const command of allCommands(page.commands)) {
-        if (command.op === 'join') command.named = false;
-      }
-    }
-  }
+  clone.party.forEach((member, index) => {
+    if (joinNamingCandidate(member, index)) member.renamable = false;
+  });
   return clone;
 }
 ```
 
-**`normalizeRpg` (`shared/project.js:4864`, its one real caller at `:5257`) no longer carries this
-field at all — the project-block normalizer does (§8's own code, `normalizeProject`'s `project` object,
-`:5158-5195`), because hero naming is no longer an RPG-only fact and `project.rpg` is meant to hold
-RPG-only ones.** (Checked precisely rather than assumed this round: `normalizeRpg` is in fact called
-**unconditionally**, `:5257`, for every project regardless of `gameType` — `project.rpg` technically
-exists on an action project too, its fields simply inert there, contrary to what an earlier pass of
-this document's own reasoning for the move assumed. That does not change the conclusion: `project.rpg`
-is still the *RPG settings* object by every existing convention in this codebase — `xpBase`/`xpGrow`/
-`maxLevel`/`battleTilesetId`/`encounterMusic`, every field it already holds, means nothing outside an
-RPG — and a field meaningful on *both* game types belongs beside `titleMap`/`gameType`/
-`saveCompatToken` in `project.project` on that basis alone, not because `project.rpg` is technically
-unreachable for an action project, which it is not.) `normalizeRpg`'s own signature and body are
-otherwise completely unchanged from HEAD — no `gameType` parameter needed, since it never gated on it
-for this field to begin with once the field is gone entirely:
+**A real authoring capability v13's own schema had and v16 gives up — stated plainly, corrected this
+round (finding 1, round-2 review) after an earlier pass here got the conclusion backwards.** v13's
+`command.named` was per-Join-*placement*, not per-member: two different Join commands, at two different
+map placements, both naming the same member, could carry different `named` values. `party_join`'s own
+no-op guard (`pc_in_party,x / bne party_join_done`, `engine/battle.asm:79-91`) is keyed on `pc_in_party`
+alone, with no memory of *which* placement's own bit accompanied a successful recruitment — so when two
+placements target the same not-yet-recruited member, whichever the player reaches **first** is the one
+whose own bit decides whether the grid opens, and the other placement's bit is simply never read. **This
+is real, observable, route-dependent behavior, not an unobservable one — an earlier pass of this
+document called it "already unobservable in play," which is wrong and is withdrawn, not softened.** Two
+NPCs, one authored `named: true` and the other `named: false`, both recruiting the same member, produce
+a genuinely different play experience depending on which the player reaches first — the opposite of a
+bug nobody would notice; a project with two differently-`named` placements for one member had exactly
+one of them ever actually matter, decided by play order, not authoring order, which is a real source of
+confusion for the *author* even though it is not a defect in the *engine* (the engine's own guard is
+doing exactly its documented job either way). **v16 gives this capability up deliberately, because
+Chris's own request specifies one flag per character (`docs/design-character-forge.md`, verbatim) and a
+route-dependent naming session was never a feature anyone asked for — not because the capability never
+mattered.** A single per-character `renamable` cannot disagree with itself across placements the way two
+authored bits could, which is the real, positive reason for the change. One narrower fact survives from
+the earlier reasoning and remains true: grepped `EVENT_COMMANDS` (`shared/project.js:765-…`) for a way
+to *leave* the party and re-`join` later, which would make a *second* naming session on an
+*already-recruited* member reachable again: none exists — there is no "leave party" command in this
+codebase — so a member can only ever race between placements once, on their first successful
+recruitment, never repeatedly. That fact bounds how often the route-dependency above could ever surface
+in one playthrough; it does not mean the route-dependency itself was never real.
+
+**`normalizeRpg` (`shared/project.js:4864`, its one real caller at `:5257`) never carried this field,
+on any version of this design, and does not now.** **Corrected this round (finding 9, round-2 review):
+a prior pass left this passage saying "the project-block normalizer does" — true of v13/v15.1's own
+`project.project.nameHeroAtStart`, live prose describing a mechanism v16 (D9) already withdrew
+everywhere else in this document. Under v16, neither `project.rpg` nor `project.project` carries it:
+`renamable` is normalized inside `normalizePartyMember` (§8, `shared/project.js:4831-4862`) as an
+ordinary field of the character record, the same normalizer that already handles `name`/`metaspriteId`/
+`startsInParty`/the stat block, not a project-level special case at all.** The historical reasoning for
+why `project.rpg` specifically was never the right place is still worth keeping, since it explains a
+real thing about this codebase's own conventions rather than only about this one field: (Checked
+precisely rather than assumed, v13's own round: `normalizeRpg` is in fact called **unconditionally**,
+`:5257`, for every project regardless of `gameType` — `project.rpg` technically exists on an action
+project too, its fields simply inert there. That did not change the conclusion then and does not now:
+`project.rpg` is still the *RPG settings* object by every existing convention in this codebase —
+`xpBase`/`xpGrow`/`maxLevel`/`battleTilesetId`/`encounterMusic`, every field it already holds, means
+nothing outside an RPG — so a field meaningful on *both* game types, or (as of D9) one meaningful *per
+character* rather than per project at all, was never going to belong there on that basis alone.)
+`normalizeRpg`'s own signature and body are, and have been throughout every version of this design,
+completely unchanged from HEAD — this field was never any version of its business:
 
 ```js
 function normalizeRpg(raw, tilesetCount) {
@@ -2359,11 +2643,16 @@ function normalizeRpg(raw, tilesetCount) {
 }
 ```
 
-`defaultRpg()` gains nothing — `nameHeroAtStart`/`heroName` are `createProject`'s own `project:` block
-fields now (§8), never `defaultRpg()`'s. **Nothing shipped with v12's own `project.rpg.nameHeroAtStart`
-location** — no phase past 1 (the save migration) has landed in the working tree, confirmed this round
-by grepping the tree for `nameHeroAtStart` and finding no match anywhere outside this document — so this
-is a location change to an unbuilt field, not a migration, and needs none.
+`defaultRpg()` gains nothing, still — `nameHeroAtStart`/`heroName` are withdrawn entirely as of v16
+(§8, D9), never landing in `createProject`'s own `project:` block the way v13/v15.1 planned;
+`renamable` lives on `createPartyMember` instead (`docs/design-character-forge.md`), which is party
+data, not RPG-settings data, so it does not belong in `defaultRpg()` either. **Nothing shipped with
+v12's own `project.rpg.nameHeroAtStart` location, v13/v15.1's own `project.project.nameHeroAtStart`
+location, or a `join.named` schema field** — no phase past 1 (the save migration) has landed in the
+working tree, reconfirmed this round by grepping the tree for `nameHeroAtStart` and for a `named` case
+in `normalizeEventCommand`, finding no match anywhere outside this document — so every location this
+document has proposed for this data, this one included, is a location change to an unbuilt field, not
+a migration, and none of them needs one.
 
 **`defaultInput()` gains its own `nameentry` row:**
 
@@ -2766,27 +3055,29 @@ function previewLines(text, project) {
 }
 ```
 
-**P2-7: the display name substituted above is `project.project.heroName` on an action project, but
-`party[0].name` on an RPG — `heroName` itself is action-only, and editing it on an RPG changes nothing
-a real build reads.** On an RPG, `needsHeroDefault` (P1-2's own correction, §8) is `false` — the hero's
-own seed comes from `pc_name` via the banked `party_init`/`party_join` path, itself derived from
-`party[0].name`, never from `hero_name_default` — so a `heroName` value stored on an RPG project is
-inert: nothing in the compiled ROM, and nothing this preview should show either, ever reads it.
+**v16 (D9): P2-7's own game-type split collapses to one line — `project.party[0].name`, unconditional,
+on either game type.** v15.1's split existed only because `heroName` was a second, action-only field
+that could disagree with `party[0].name`; with `heroName` withdrawn (§8), there is exactly one string
+to preview, and it is the compiler's own source for `hero_name_default` on an action build and for
+`pc_name` (via `party_init`/`party_join`, unchanged) on an RPG alike:
 
 ```js
-// renderer/forges/map/events.js, beside previewLines
+// renderer/forges/map/events.js, beside previewLines -- v16: replaces the
+// game-type-conditional previewHeroName. No `?? 'Hero'` fallback needed
+// either: party[0] and its own name field are unconditional as of D9
+// (createPartyMember, createProject:3860), never absent to fall back from.
 function previewHeroName(project) {
-  return project.project.gameType === 'rpg' ? (project.party[0]?.name ?? 'Hero') : project.project.heroName;
+  return project.party[0].name;
 }
 ```
 
-`normalizeProject`'s own behavior for a stored `heroName` on an RPG project: **kept, not stripped, but
-ignored** — the same dormant-field convention `project.rpg`'s own fields already hold to on an action
-project (P1-2's own research this round: `normalizeRpg` runs unconditionally for every project
-regardless of `gameType`, its fields simply inert where they do not apply). `normalizeHeroName` (§8)
-still clamps whatever value is present, on either game type, so a hand-edited or format-drifted value
-cannot reach the UI or the compiler malformed — it is only the *use* of the field, not its presence or
-validity, that becomes RPG-conditional.
+**P2-7's own real finding — a preview genuinely reading a value nothing a real build reads — is now
+structurally impossible rather than merely fixed for this one field.** There is no second copy of the
+hero's own default name left anywhere in the schema for a preview (or an author) to read the wrong one
+of; `normalizeCharacterName` (§8) is the single normalizer for `party[N].name` on either game type, so
+"kept, not stripped, but ignored" — the dormant-field convention v15.1 needed to describe `heroName`'s
+own behavior on an RPG — describes nothing here, because there is no longer a field that goes dormant
+on either game type.
 
 **`validateProject` gains one new refusal, alongside the existing Save-needs-a-title check
 (`:6098-6115`) and §8's own default-name refusal**: a live token (`projectUsesNameToken`, below) in a
@@ -2905,7 +3196,8 @@ counts named here and on the input-row count §4's own Y1 fix restores — corre
 RPG and `sample`'s own `gameType` is `'action'`. `projectUsesHeroNaming` dropped that requirement this
 round (D6, §9) — an action fixture genuinely *can* opt into hero naming now, and phase 4 (§17) is
 exactly where `sample` itself is planned to. The claim that holds today is narrower and content-based:
-`sample`'s own `project.project.nameHeroAtStart` is unset (`false`, the default, §8) as shipped, so
+`sample`'s own `project.party[0].renamable` is unset (`false`, `createPartyMember`'s own default, §8)
+as shipped, so
 `projectUsesHeroNaming(sample)` — and therefore `projectUsesNameEntry(sample)` — reads `false` for
 exactly as long as that stays true, the same way any other optional feature's byte-identity in this
 codebase already depends on content rather than game type (`projectUsesMove`, `projectUsesSave`, every
@@ -3213,8 +3505,8 @@ existing `withMove`/`withSave`/`withTitle`:
 // test/unit/kernelbytes.test.js's measureCodeBytes, two more options
 {
   ...,
-  withHeroNaming = false,   // project.project.nameHeroAtStart = true
-  withJoinNaming = false    // the fixture's own Join gains named: true
+  withHeroNaming = false,   // v16: project.party[0].renamable = true (was project.project.nameHeroAtStart)
+  withJoinNaming = false    // v16: the fixture's own recruit member gains renamable: true (was the Join's own named: true)
 }
 ```
 
@@ -3475,169 +3767,160 @@ unchanged: the token is not a new case for that arithmetic to cover, it is the *
 case, with a different byte source selected ahead of time (§9a's own one-time pointer swap, itself not
 a VRAM producer at all — a zero-page store, not a queue write).
 
-## §13. UI — a new Sprite Forge Player tab (both game types), the Map Forge join-row checkbox and
-summary suffix, with real code for both, modeled on this codebase's own existing patterns rather than
-invented
+## §13. UI — v16 (D9): superseded by the Character Forge; the Map Forge join row becomes read-only;
+the Controller Forge is unaffected
 
-**v12's own location does not exist for an action project — confirmed this round, not assumed, and a
-new tab is the fix, not a relocation of an existing one.** `renderer/forges/sprite/sprite.js`'s own tab
-list (`renderTabs`, `:1191-1212`) is `metasprites` / `animations` / `actors`, plus `party` **only**
-when `store.project.project.gameType === 'rpg'` (`:1196-1199`) — v12's checkbox lived inside that
-`party` tab's own panel (`renderer/forges/sprite/battle.js`'s `partyPanel`), which an action project
-therefore never renders at all. No other panel anywhere in this renderer edits a project-level (not
-per-actor) fact about "the player" for both game types today (§0) — `titleMap` lives in the Map Forge,
-`maxHearts` has no UI yet at all — so this needs a genuinely new home, not a relocated existing one.
-**A new `player` tab, unconditional, first in the list** (the player exists before anything else does,
-on either game type):
+**Withdrawn in full: the new Sprite Forge "Player" tab this section specified in v13/v15.1 is not
+built.** Everything it would have edited — the hero-naming checkbox, the default-name field, and (per
+D9's own merge) the RPG party tab's entire contents besides — moves to a new, dedicated Forge instead:
+`docs/design-character-forge.md`. That document is where the real code for the character list, the
+Add/Delete flow, the sprite-in-the-middle layout, the stat block and the per-character `renamable`
+checkbox lives; nothing about it is repeated here. Two consequences worth stating plainly, since they
+are easy to miss reading §7-§9a in isolation:
 
-```js
-// renderer/forges/sprite/sprite.js, renderTabs' own tab array, corrected
-[
-  ['player', 'Player'],
-  ['metasprites', 'Metasprites'],
-  ['animations', 'Animations'],
-  ['actors', 'Actors'],
-  ...(store.project.project.gameType === 'rpg' ? [['party', 'Party']] : [])
-]
-```
+- **`renderer/forges/sprite/sprite.js`'s own tab list loses `party` rather than gaining `player`.** The
+  RPG-only `party` tab (`renderTabs`, `:1191-1212`, `store.project.project.gameType === 'rpg'` at
+  `:1196-1199`) and its panel (`renderer/forges/sprite/battle.js`'s `partyPanel`) are removed outright,
+  not extended — `docs/design-character-forge.md` Q6 has the removal itself; this document's own stake
+  in that removal is narrower: `partyPanel`'s "Starts in the party" checkbox (`battle.js:87-95`) is the
+  pattern `docs/design-character-forge.md` cites for its own renamable checkbox, so the visual
+  vocabulary carries over even though the module does not. No `player` tab is added to the Sprite
+  Forge at all — the Character Forge is the new tab-equivalent, as an entirely separate rail entry, not
+  a Sprite Forge addition.
+- **The default-name field is no longer action-only.** v15.1's P2-7 finding (§9a) was about
+  `heroName` specifically disagreeing with `party[0].name` on an RPG; with `heroName` gone, the
+  Character Forge's own default-name field is simply `project.party[N].name`, editable the same way on
+  every character, member 0 included, both game types — there is no more RPG-only "read-only, pointed
+  elsewhere" special case for it to need (`docs/design-character-forge.md` Q4).
 
-```js
-// renderer/forges/sprite/sprite.js's render(), corrected dispatch -- the
-// same shape the existing party/metasprites/animations/actors branches use
-const player = state.tab === 'player';
-const party = state.tab === 'party';
-editStage.style.display = player || party ? 'none' : '';
-partyHost.style.display = party ? '' : 'none';
-playerHost.style.display = player ? '' : 'none';
-if (player) renderPlayerPane();
-else if (state.tab === 'metasprites') renderMetaspritePane();
-else if (state.tab === 'animations') renderAnimationPane();
-else if (party) renderPartyPane();
-else renderActorPane();
-```
+**The Map Forge's join row changes from v15.1's own plan, and in the opposite direction of what a
+first read of "no more authored `named` field" suggests — it still needs a code change, just not a
+checkbox.** With `renamable` sourced from the character record (§7, §9, D9), there is nothing left for
+an author to toggle *at the placement* — but the row still has to show whether a given Join will open
+the naming grid, or an author placing a second Join on the same member has no way to tell why the
+compiled operand's own bit is set without opening the Character Forge. `docs/design-character-forge.md`
+Q6 specifies read-only text, not a checkbox:
 
-**`renderPlayerPane()`, a new module (`renderer/forges/sprite/player.js`), mirroring `battle.js`'s own
-`partyPanel` shape (one exported function, `(rerender, app) => Node`, `store.commit` on change, the
-identical `el('label.check', ...)` checkbox this codebase already uses for every other boolean toggle
-— `battle.js:87-95`'s own "Starts in the party" row, cited verbatim as the pattern this follows rather
-than invented fresh) — the hero-naming checkbox and the `heroName` field, both project-level, both
-present on either game type:**
+**Corrected this round (round-3 review, fresh finding 12): both the control and the summary line read
+`member?.renamable` alone — a member can be `renamable` and also `startsInParty` (finding 10's own
+inert case), for whom this Join will never actually open the naming grid at all
+(`party_init`/`party_join`, §3). Reading `renamable` alone here would show "Named by the player" on a
+Join that is a guaranteed no-op the moment `startsInParty` is true — the Map Forge lying about what the
+engine will do, the identical class of defect `joinNamingCandidate` (§9, finding 7) exists to prevent
+at the compiler level, now shown to matter at the UI level too.** Both read through
+`joinNamingCandidate` instead, and the control names the actual reason when a `renamable` member is not
+a real candidate.
 
-**P2-7: the "Default name" field is action-only — on an RPG it edits a value nothing reads.**
-`needsHeroDefault` (P1-2's own correction, §8) is `gameType !== 'rpg' && (usesHeroNaming ||
-usesNameToken)` — an RPG's own default always comes from `party[0].name` through the banked `pc_name`
-table (P1-2), never `hero_name_default`, so a `heroName` control that stayed editable on an RPG would
-change the preview (P2-6) and nothing else a real build ever reads — the exact defect this finding
-names. The field is shown only for an action project; an RPG sees `party[0].name` instead, read-only,
-with a hint pointing at where it is actually edited:
-
-```js
-// renderer/forges/sprite/player.js
-export function playerPanel(rerender) {
-  const project = store.project;
-  const isRpg = project.project.gameType === 'rpg';
-  return el(
-    'div',
-    null,
-    el('div.panel-head', { style: { paddingLeft: '0' } }, 'Player'),
-    el(
-      'label.check',
-      { title: 'The player types this name at the start of a new game' },
-      el('input', {
-        type: 'checkbox',
-        checked: Boolean(project.project.nameHeroAtStart),
-        onchange: (event) => {
-          store.commit('Change hero naming', (draft) => {
-            draft.project.nameHeroAtStart = event.target.checked;
-          });
-          rerender();
-        }
-      }),
-      ' Player names the hero at the start'
-    ),
-    isRpg
-      ? el(
-          'div.field-row',
-          null,
-          el('span.field-label', null, 'Default name'),
-          el('span', null, project.party[0]?.name ?? 'Hero'),
-          el('p.hint', null, 'Edited on the Party tab — the hero is party member 1 there.')
-        )
-      : el(
-          'label.field-row',
-          null,
-          el('span.field-label', null, 'Default name'),
-          el('input.input', {
-            type: 'text',
-            maxlength: RPG_LIMITS.nameLength,
-            value: project.project.heroName,
-            onchange: (event) => {
-              store.commit('Change hero default name', (draft) => {
-                draft.project.heroName = event.target.value; // clamped by normalizeProject on save
-              });
-              rerender();
-            }
-          })
-        ),
-    isRpg
-      ? null
-      : el('p.hint', null, 'A-Z and a-z only, up to 10 letters — the same alphabet the in-game grid offers.')
-  );
-}
-```
-
-`el()`'s own null-skipping (CLAUDE.md's "Conventions" section) is what lets the trailing hint disappear
-cleanly on an RPG rather than showing an empty paragraph — the one place in this panel the pattern is
-actually exercised, unlike v12's own per-member row, which this panel otherwise has no equivalent of:
-this is not a per-row list, it is the whole content of an unconditional tab, so there is no `index ===
-0 ? ... : null` branch to write at all; the RPG-only concern that branch existed for (only member 0
-gets the checkbox) is now moot, since there is no
-per-member list here in the first place.
-
-**The Map Forge's join-row checkbox and summary suffix** (`renderer/forges/map/events.js`), added
-beside the existing member `<select>` (`:1527-1559`) and the existing `join` case in the summary-line
-switch (`:333-336`):
+**Corrected again this round (round-4 review): the hint is computed once, at render time, from
+whatever `command.member` was when this control tree was last built — but the existing member `<select>`
+(`:1527-1559` as of HEAD)'s own `onchange` only assigns `command.member`, with no `rerender()` call, the
+same "not `Number(fired.target.value)`... this select's own missing sentinel is `null`" case its own
+comment already explains.** Every other `onchange` handler in this file that mutates state a sibling
+element depends on calls `rerender()` immediately after (the established idiom throughout
+`commandRow`, e.g. `:851-854`'s own choice-answer text input: `option.text = fired.target.value;
+rerender();`) — the member select is the one place in the `join` case that mutates and does not, so
+switching from a naming-candidate member to a `startsInParty` one (or back) leaves the previous
+member's own hint on screen until some *other* control happens to trigger a rerender. The select's own
+existing `onchange` gains the identical call, not a new mechanism:
 
 ```js
-// events.js's per-command control builder, join case, appended after the
-// existing member <select>
+// events.js's per-command control builder, join case -- v16: no checkbox,
+// nothing added to EVENT_COMMANDS.join.args. Read-only text beside the
+// existing member <select> (:1527-1559 as of HEAD). Reads
+// joinNamingCandidate, not member?.renamable alone (finding 12); the
+// select's own onchange gains a rerender() call so the hint updates when
+// the selected member changes (finding 12's own round-4 follow-up) --
+// the same idiom every other onchange in this file already uses.
 } else if (command.op === 'join') {
   const party = context.party ?? [];
+  const member = party[command.member];
+  const candidate = command.member !== null && joinNamingCandidate(member, command.member);
   controls.push(
-    el('select', { /* unchanged member select */ }),
-    el(
-      'label.check',
-      { title: 'Show the naming grid the moment this member joins' },
-      el('input', {
-        type: 'checkbox',
-        checked: Boolean(command.named),
-        onchange: (fired) => { command.named = fired.target.checked; }
-      }),
-      ' Named'
-    )
+    el('select', {
+      style: { flex: '1' },
+      onchange: (fired) => {
+        const raw = fired.target.value;
+        command.member = raw === '' ? null : Number(raw);
+        rerender();
+      }
+      /* option list unchanged: :1547-1559 as of HEAD */
+    }),
+    candidate
+      ? el('span.hint', { title: 'Set on the Character Forge' }, 'Named by the player')
+      : member?.renamable
+        ? el(
+            'span.hint',
+            { title: 'party_init recruits a starting member at boot -- this Join can never run its naming session' },
+            'Renamable, but inert here — starts in the party'
+          )
+        : null
   );
 }
 ```
 
 ```js
-// events.js's summary-line switch, join case, corrected
-case 'join':
-  return partyMemberMissing(party, command.member)
-    ? 'Join (missing member)'
-    : `${party[command.member].name} joins the party${command.named ? ', named by the player' : ''}`;
+// events.js's summary-line switch, join case -- v16: reads joinNamingCandidate,
+// not party[command.member].renamable directly (finding 12); command.named no
+// longer exists
+case 'join': {
+  if (partyMemberMissing(party, command.member)) return 'Join (missing member)';
+  const member = party[command.member];
+  const suffix = joinNamingCandidate(member, command.member)
+    ? ', named by the player'
+    : member.renamable
+      ? ', renamable but inert here (starts in the party)'
+      : '';
+  return `${member.name} joins the party${suffix}`;
+}
 ```
 
-`defaultCommand`'s own per-arg default switch (`:194-197`) gains `else if (arg === 'named') out.named =
-false;`, reachable only because `'named'` now appears in `EVENT_COMMANDS`'s own `join.args` (§7's own
-X1 fix) — the identical dependency the schema normalizer has on the same array. `validateProject` gains
-no new check: an unresolved `named` Join is refused for the same, pre-existing reason a plain
-unresolved Join already is (a missing/out-of-range member), with no naming-specific case needed.
+`joinNamingCandidate` reaches this file the same way: one name added to the existing multi-line
+`shared/project.js` import, not a new import statement:
 
-**The Controller Forge's own hero-gated row** is §9's own `bindableStates` change, cross-referenced
-rather than repeated here — `nameentry` only ever appears as an editable row when
-`projectUsesHeroNaming(project)` is true, since Join-only naming never puts `ST_NAMEENTRY` on screen at
-all (a Join names the party member entirely within `ST_DIALOG`, per §7 — not `ST_GAMEPLAY`, corrected
-this round).
+```js
+// renderer/forges/map/events.js:16-38, amended -- one name added to the
+// existing shared/project.js import
+import {
+  CHOICE_LIMITS,
+  EVENT_COMMANDS,
+  EVENT_CONDITIONS,
+  FADE_DIRECTIONS,
+  IMPLEMENTED_COMMANDS,
+  LIMITS,
+  MAX_BRANCH_DEPTH,
+  MOVE_DIRECTIONS,
+  MOVE_TARGETS,
+  VISIBLE_STATES,
+  RPG_LIMITS,
+  ROUTE_LEG_OPS,
+  itemMissing,
+  itemPickerOptions,
+  compiledPages,
+  damageAmount,
+  enabledCommands,
+  commonEventId,
+  isMonsterActor,
+  routeLegs,
+  legWithWho,
+  joinNamingCandidate
+} from '../../../shared/project.js';
+```
+
+(`partyMemberMissing`, used in both snippets above, needs no import at all — it is defined and
+exported inside this same file, `events.js:282`, not `shared/project.js`.)
+
+`defaultCommand`'s own per-arg default switch (`renderer/forges/map/events.js:194-197`) needs **no**
+`'named'` case — v15.1's own X1 fix is withdrawn (§7, D9), so `EVENT_COMMANDS`'s `join.args` never
+grows a second entry, and this switch stays exactly as it is at HEAD. `validateProject` gains no new
+check here either, unchanged from v15.1's own conclusion: an unresolved Join is refused for the
+pre-existing missing/out-of-range-member reason, with no naming-specific case ever needed by either
+design.
+
+**The Controller Forge's own hero-gated row is unaffected — cross-referenced, not repeated, exactly as
+v15.1 already had it.** `bindableStates` (§9) still reads `projectUsesHeroNaming(project)`, which still
+answers correctly the moment that predicate's own source moved (§9, D9); nothing about the Controller
+Forge's own code needed to change for v13/v15.1 and nothing about it needs to change for v16 either —
+the whole point of pushing the game-type/source decision down into the predicate, restated once more.
 
 ## §14. Test infrastructure — every helper written out in full, keyed to the real, asymmetric movement
 rules §6 documents, plus the RPG save fixture's own new Lua phases
@@ -3992,8 +4275,10 @@ for i = 1, 10 do
 end
 ```
 
-`tools/make-rpg-save-sample.js`'s own existing `{ op: 'join', member: 1 }` (`:230`) gains `named: true`
-— the one, minimal content change this whole mechanism exists to exercise (§19's own open question 5).
+`tools/make-rpg-save-sample.js`'s own existing `{ op: 'join', member: 1 }` (verified at `:230`, unchanged
+by this round) is left exactly as it is — the Join command itself carries no naming information under
+v16 (D9, §7). The one, minimal content change this whole mechanism exists to exercise (§19's own open
+question 5) is instead `project.party[1].renamable = true` on this fixture's own recruited member.
 
 **Every JS helper above already works unchanged for the action side — checked, not assumed.** `boot`,
 `bootPastNaming`, `namingReady`, `waitForNamingReady`, `gotoCell`, `clearName` and `typeNameAndFinish`
@@ -4047,11 +4332,35 @@ Every test below names its own destination file, per the original brief's own re
   `and #$03`).* (`test/unit/rpg.test.js`, patching a built ROM's own compiled operand byte, the same
   technique the existing `BE_JOIN` guard tests already use.) Catches: a narrower mask folding a stale,
   out-of-range operand into a valid-looking member index rather than refusing it.
-- *`EXCEPTIONAL_WIDTHS`'s own `join: 2` entry, proven against a real compiled Join with `named: true`
-  and one with `named: false`.* (`test/unit/project.test.js`, beside the existing `EVENT_COMMANDS`
-  corpus that already exercises `test/lib/eventdecoder.js`.) Catches: the generic `1 + args.length`
-  fallback silently mispredicting the wire width the moment `args` grew to two entries, which would
-  desynchronize `decodeBody`'s own cursor and corrupt every command decoded after it in the same event.
+- *`encodeCommand`'s own `join` case emits the packed operand's named bit from
+  `joinNamingCandidate(project.party[command.member], command.member)`, not from raw `renamable` and
+  not from any field on the command itself* — one Join naming member 1, built twice against a project
+  differing only in `party[1].renamable` (`true` vs. `false`, `startsInParty: false` both times),
+  asserting the compiled operand byte differs in bit 7 alone; a third build with the same Join naming
+  member 0 whose `party[0].renamable` is unset (`false`, the default) asserts bit 7 clear there too.
+  **A fourth build is the real regression guard finding 12 (round-3 review, corrected round-4) exists
+  for**: member 1 with `renamable: true` **and** `startsInParty: true` — `joinNamingCandidate` excludes
+  this combination, so the compiled operand must have bit 7 **clear**, identical to the plain-Join case;
+  asserting this is what catches the compiler reverting to raw `renamable`, which would set the stray
+  bit — an **operand-contract regression**, asserted as a byte-level fact (bit 7 clear), not framed as a
+  recruitment-behavior test: for this specific member, `battle_entry_join`'s own bounds guard
+  (`engine/battle.asm:40-41`) and `party_join`'s own already-recruited no-op (`:80-81`) reach the
+  identical empty `rts` either way (round-4 review's own correction — the earlier round wrongly claimed
+  this test also proves a recruitment failure; it does not, and does not need to, since the byte-level
+  assertion is what the contract actually requires). (`test/unit/project.test.js` or
+  `test/lib/eventdecoder.js`'s own corpus, mirroring the existing `sting`/`sfx` packed-operand tests'
+  shape.) Catches: the compiler reading a stale or wrong member's own
+  `renamable` (an off-by-one into `project.party`), reading the flag at the wrong time relative to a
+  structural edit that renumbers party members, or reading `renamable` directly instead of through
+  `joinNamingCandidate`.
+- *`test/lib/eventdecoder.js`'s own generic width formula still predicts `join`'s real wire width
+  correctly with `args` unchanged at one entry* — a build with a live, renamable-true Join decodes to the
+  same two-byte width (`opIndex('join')` + one packed operand byte) as one with no naming live at all.
+  (`test/unit/project.test.js`, beside the existing `EVENT_COMMANDS` corpus that already exercises
+  `test/lib/eventdecoder.js`.) Catches: a future change that widens `join.args` again (reviving v15.1's
+  own withdrawn X1) without also adding the `EXCEPTIONAL_WIDTHS` entry that widening would once again
+  require — this test is the regression guard for the mechanism v16 chose specifically *because* it
+  needs no such entry; it fails loudly if that stops being true.
 - *A typed name, read back from `pc_name_ram` after `typeNameAndFinish`.* (`test/unit/rpg.test.js`.)
   Catches: the write-cell routine writing to the wrong stride offset, or `nm_len` not actually
   advancing.
@@ -4096,8 +4405,11 @@ Every test below names its own destination file, per the original brief's own re
   "font in at the box's top border row") — row 24 is legitimately `'font'`, not `'art'`, and asserting
   otherwise would reject correct behavior, per round 10's own finding. The four text rows are 25-28.
 
-  Build an MMC3 `SAMPLE_RPG` variant with `project.project.nameHeroAtStart = true` and the recruiter's own
-  Join (`actorId: 2`, `tools/make-rpg-sample.js:331-344`) mutated to `named: true`. **Hero naming
+  Build an MMC3 `SAMPLE_RPG` variant with `project.party[0].renamable = true` (v16: was
+  `project.project.nameHeroAtStart = true`) and, for the recruiter's own Join (the NPC placement with
+  `actorId: 2`, `tools/make-rpg-sample.js:331-344`, whose event runs `{ op: 'join', member: 1 }` — verified
+  against the file, not v15.1's own prose, which named the wrong index) `project.party[1].renamable = true`
+  (v16: was the Join command's own `named: true`). **Hero naming
   first**: boot, wait for readiness, probe `'font'` on rows 25-28 and `'art'` on row 2 while the grid is
   up, select END with the seeded default, and probe `'art'` again on row 25 once `game_state` returns to
   `ST_GAMEPLAY`. **Then the named Join, explicitly, in the same test**: walk to the recruiter (slot 2),
@@ -4271,19 +4583,22 @@ Every test below names its own destination file, per the original brief's own re
   kernelbytes.test.js`.) Catches: the flat placeholder (§9a) drifting from nesasm's real usage the
   moment `text_type_name`'s own listing is actually assembled.
 
-**Phase 3 (UI):** (`main/smoke.js`, driving the real renderer, for all three — this is UI behavior a
-`node:test` process cannot exercise directly.) The Sprite Forge's hero-naming checkbox (`checked`
-reflects `project.project.nameHeroAtStart` — corrected this round from a stale `project.rpg.
-nameHeroAtStart` this passage had not been updated to match §9's own field move, found while pinning
-lines for this round, not one of the eight findings proper but fixed alongside them — `onchange`
-commits and rerenders — catches a checkbox wired to `oninput` instead, which would commit on every
-intermediate browser event rather than once on change); the "Default name" field's own RPG/action
-split (P2-7, §13 — catches it showing the editable input on an RPG, or the read-only `party[0].name`
-span on an action project, either one backwards);
-the Map Forge's join-row checkbox and its own summary-line suffix (catches the checkbox existing but
-never actually setting `command.named`, which would look correct in the editor while compiling a
-plain, unnamed Join); the Controller Forge's hero-gated `nameentry` row (catches it appearing for a
-Join-only-naming project, which can never reach `ST_NAMEENTRY` and so has nothing for the row to bind).
+**Phase 3 (UI) — v16 (D9): this phase's own coverage target moved.** (`main/smoke.js`, driving the real
+renderer, for all three — this is UI behavior a `node:test` process cannot exercise directly.) The
+Sprite-Forge-checkbox and Map-Forge-checkbox coverage v15.1 specified here no longer exists to test —
+withdrawn along with the UI they described (§13, D9). What replaces it: the Character Forge's own
+`renamable` checkbox, per character, `checked` reflecting `project.party[N].renamable` and `onchange`
+committing and rerendering exactly the same way — this is `docs/design-character-forge.md`'s own smoke
+coverage to specify, not repeated here, since that document owns the Forge; the "Default name" field's
+own now-unconditional editability (every character, both game types, §13) is likewise that document's
+coverage. What stays this document's own to specify: the Map Forge's join row now showing *read-only*
+text, not a checkbox — the smoke assertion inverts from "clicking the checkbox writes `command.named`"
+to "toggling a member's own `renamable` on the Character Forge changes what the Map Forge's join row
+renders for a Join naming that member, with no control on the row itself to click" (catches the row
+still rendering an editable, clickable checkbox that writes nothing real, the mirror image of v15.1's
+own "checkbox exists but never sets `command.named`" case); the Controller Forge's hero-gated
+`nameentry` row (unchanged from v15.1 — catches it appearing for a Join-only-naming project, which can
+never reach `ST_NAMEENTRY` and so has nothing for the row to bind).
 
 **Phase 4 (starter/fixture opt-in):** the naming-on/off data deltas on the two capacity ledgers, for
 real, assembled ROMs rather than the static count (`test/unit/kernelbytes.test.js`/`bankedbytes.test.js`,
@@ -4377,13 +4692,17 @@ per-section total exactly.
   growth was entirely in code inserted *between* it and its target. `music.asm`'s own precedent is the
   identical shape.
 - **Widening a table's own count (`args.length`) can silently change what a formula derived from that
-  count predicts, even in code that never touches the table directly.** `join`'s own compiled wire
-  width stayed 2 bytes throughout this round, but the *generic* width-prediction formula
-  (`EXCEPTIONAL_WIDTHS[id] ?? 1 + entry.args.length`, `test/lib/eventdecoder.js:132`) silently started
-  predicting 3 the moment `EVENT_COMMANDS`'s own `join.args` grew a second entry for an unrelated
-  reason (reaching the schema normalizer's own `'named'` case) — a genuinely new instance of "adding a
-  field can break code that never reads that field," caught only because this design traced the
-  formula itself rather than assuming a two-arg command must cost two bytes on the wire.
+  count predicts, even in code that never touches the table directly — `(v15.1's X1, withdrawn in v16 —
+  kept as the lesson, not as live design; see §7)`.** `join`'s own compiled wire width stayed 2 bytes
+  throughout that round, but the *generic* width-prediction formula (`EXCEPTIONAL_WIDTHS[id] ?? 1 +
+  entry.args.length`, `test/lib/eventdecoder.js:132`) silently started predicting 3 the moment
+  `EVENT_COMMANDS`'s own `join.args` grew a second entry for an unrelated reason (reaching the schema
+  normalizer's own `'named'` case) — a genuinely new instance of "adding a field can break code that
+  never reads that field," caught only because that round traced the formula itself rather than
+  assuming a two-arg command must cost two bytes on the wire. **v16 withdrew the widening itself (§7,
+  D9) — `join.args` never grows a second entry under the current design, so this specific trap cannot
+  currently recur — but the lesson (a derived-from-count formula is a hidden dependency on that count)
+  is kept here because it is real and general, not specific to `join`.**
 - **A gate must be balanced across its own listing, and a "not simply the reverse" rule deserves its
   own name, not just correct code.** The naming grid's own UP/DOWN ring (§6) is intentionally
   asymmetric — DOWN's forward cycle (row 0→1→2→0) is not the reverse of UP's own cycle (row 0→2→1→0) —
@@ -4462,95 +4781,148 @@ per-section total exactly.
   special case beside the scripted one" — true of the *engine's* own runtime path, not of the
   *compiler's* own two authoring surfaces feeding it).
 
-## §17. Phasing
+## §17. Phasing — v16 (D9): reordered so the fields exist before anything compiles them (Q7)
 
-1. **The save migration alone.** `SAVE_FIELDS`'s new entry, `SAVE_LAYOUT_VERSION` 2→3, every RAM
-   equate in §2. Fixtures regenerated; SHA-256 of all six pinned. Reviewable and mergeable on its own:
-   nothing downstream depends on anything but the version bump and the RAM layout existing.
-2. **The gated engine core — now including the action placement and the shims, not deferred to a later
-   phase (D8).** The mechanism (§5) is designed once, for both game types, and has to land with the RPG
-   side or the two would drift the moment either was implemented alone: `engine/nameentry.asm` (the
-   identical source, `.include`d from `battle.asm` *or* `engine/main.asm`, never both), the five
-   kernel-lo shims and every hook site rewritten to call them (§4/§5), `battle_entry`'s own extended
-   dispatch (banked-only, unchanged from v12), `BATTLE_REGION_SOURCES` extended (§5), `party_join`'s
-   copy loop (banked, §7, RPG-only, unchanged), the kernel-lo hooks including the branch-range fix (§4,
-   now correctly reachable on either game type since `HERO_NAMING_ENABLED` dropped its own
-   `battleEnabledFor` AND), `script_op_join`'s growth (§7, RPG-only, unchanged), `start_game`/`reset`'s
-   hero hooks including `init_session`'s own three-way default-name re-seed (§8), the schema fixes
-   (`INPUT_STATES`'s seventh entry, `join.args`'s second entry, `EXCEPTIONAL_WIDTHS`'s `join: 2`,
-   §4/§7's own X1 fixes, `heroName`/`nameHeroAtStart` moved to `project.project`, §8/§9), all
-   normalizer/predicate work including the shared `battleBankEnabled`/`projectWithoutHeroNaming`/
-   `projectWithoutJoinNaming` helpers (§9) and the X1 sprite-CHR-stamp D8 fix (§4), all capacity
-   allowances measured for real against nesasm's own output on **every** action-capable board as well as
-   every RPG-capable one (not the static count this document uses — §11's own re-measured headroom
-   table is this phase's own starting point, not its result), `kernelShortfallAdvice`/
-   `battleShortfallAdvice` both correctly extended including X2's own suppression. Every real fixture
-   rebuilt with naming still off and re-hashed against phase 1's own pins — this phase must leave every
-   existing test green with the feature fully present but universally disabled, on both game types, the
-   same discipline every prior optional feature in this codebase shipped under.
-3. **The Say token (D7) — its own phase, after 2, reviewable independently.** The compiler
+**Why reordered, not merely relabeled.** v15.1's own phase 2 was "the gated engine core," and buried
+inside its own bullet — because in that version the fields it needed (`heroName`/`nameHeroAtStart`,
+the Join `named` arg) were schema work *within* that same phase — were the very fields this round moves
+onto the character record. Landing the engine core before the Character Forge exists would mean
+compiling from fields (`project.party[N].renamable`, and `project.party[0]` unconditionally present)
+that phase 2 would then have to invent inline, exactly the drift-risk shape this document's own
+single-writer discipline (CLAUDE.md) warns about elsewhere. Putting the schema and the Forge first, as
+their own phase, means every later phase reads a field that already exists, already has a UI, and is
+already covered by its own tests — the same reason `docs/design-monster.md`/`docs/design-magic.md`
+each landed their own schema-plus-Forge phase before any engine-reading phase consumed it.
+
+1. **The save migration alone — shipped (`af2bd07`).** `SAVE_FIELDS`'s new entry, `SAVE_LAYOUT_VERSION`
+   2→3, every RAM equate in §2. Unaffected by D9 — nothing about *where* the default name or the
+   renamable flag live changes what phase 1 already shipped.
+2. **The schema and the Character Forge (v16, D9 — new, and now first among the unshipped phases).**
+   `docs/design-character-forge.md`'s own phasing is the authority for this phase's real content and
+   is not restated here; at the level this document cares about, it lands: `project.party[N].renamable`
+   (`createPartyMember`/`normalizePartyMember`), `project.party[0]` unconditional on every game type
+   (`createProject`/`normalizeProject`), `normalizeCharacterName` replacing `normalizeLabel` for every
+   party member's `name` (§8), the Character Forge itself (schema-adjacent renderer work: the character
+   list, Add/Delete, the stat block, the renamable checkbox), the Sprite Forge's `party` tab removed in
+   the same phase (a lossless move, not a copy — two editing surfaces for one record is the drift this
+   codebase refuses), the Map Forge's join row showing `renamable` as read-only text (§13), and smoke
+   coverage for all of it. **Nothing here reads or writes engine RAM, and no `.asm` file changes** — this
+   phase is reviewable purely as a schema-and-UI change, the identical "fields exist before anything
+   compiles them" property phase 1 already has for `SAVE_LAYOUT_VERSION`.
+3. **The gated engine core (v15.1's own phase 2 content, engine-only now that the schema moved to phase
+   2 above) — the action placement and the shims, still not deferred to a later phase (D8).** The
+   mechanism (§5) is designed once, for both game types, and has to land with the RPG side or the two
+   would drift the moment either was implemented alone: `engine/nameentry.asm` (the identical source,
+   `.include`d from `battle.asm` *or* `engine/main.asm`, never both), the five kernel-lo shims and every
+   hook site rewritten to call them (§4/§5), `battle_entry`'s own extended dispatch (banked-only,
+   unchanged from v12), `BATTLE_REGION_SOURCES` extended (§5), `party_join`'s copy loop (banked, §7,
+   RPG-only, unchanged), the kernel-lo hooks including the branch-range fix (§4, reachable on either
+   game type since `HERO_NAMING_ENABLED` dropped its own `battleEnabledFor` AND), `script_op_join`'s
+   growth (§7, RPG-only, unchanged), `start_game`/`reset`'s hero hooks including `init_session`'s own
+   default-name re-seed (§8), `INPUT_STATES`'s seventh entry, **the sprite CHR-art stamp
+   (`generate.js:2343-2345`, `spriteReservedRanges`'s own mirror-image widening, §4's own "X1's third
+   fix") — kept, unmodified, and NOT tied to the schema withdrawal below: this is what stamps
+   `SPRITE_ARROW_TILE`'s actual pixel art into every tileset whenever naming is live on a board that
+   needs it drawn as a sprite (action naming, and non-split-font RPG naming alike), and it is needed
+   regardless of what shape the Join operand's own bit comes from — a project with naming live and no
+   split font would compile with the cursor tile *reserved* (`spriteReservedRanges`) but never actually
+   *drawn* if this fix were dropped, a real, silent, missing-art regression, not merely stale prose**,
+   all predicate work
+   (`projectUsesHeroNaming`/`projectUsesJoinNaming`/`battleBankEnabled`/`projectWithoutHeroNaming`/
+   `projectWithoutJoinNaming`, §9, now reading phase 2's own `renamable` field rather than fields this
+   phase would otherwise have had to add itself), all capacity allowances measured for real against
+   nesasm's own output on **every** action-capable board as well as every RPG-capable one (not the
+   static count this document uses — §11's own re-measured headroom table is this phase's own starting
+   point, not its result), `kernelShortfallAdvice`/`battleShortfallAdvice` both correctly extended
+   including X2's own suppression. **What v15.1 had in this phase and v16 does not — and ONLY this,
+   corrected from a prior pass of this document that wrongly lumped the sprite-CHR-stamp fix in here
+   too**: `join.args`'s second entry and `EXCEPTIONAL_WIDTHS`'s `join: 2` — both withdrawn (§7, D9),
+   since there is no authored `named` field left to widen for. Every real fixture rebuilt with naming
+   still off and re-hashed against phase 1's own pins — this phase must leave every existing test green
+   with the feature fully present but universally disabled, on both game types, the same discipline
+   every prior optional feature in this codebase shipped under.
+4. **The Say token (D7) — its own phase, after 3, reviewable independently.** The compiler
    (`TXT_NAME`, `encodeString`'s own token split, §9a), `text.asm`'s own `text_type_name` arm and the
    three-way reader swap (§3/§9a), `wrapText`'s own token-width and never-split-a-token corrections
-   (§9a), the event editor's and box preview's own 10-column placeholder rendering (§9a),
+   (§9a), the event editor's and box preview's own 10-column placeholder rendering (§9a, now reading
+   `project.party[0].name` unconditionally rather than a game-type-conditional pair of fields),
    `validateProject`'s new refusal (§8), and `NAME_TOKEN_KERNEL_ALLOWANCE`'s own real measurement.
-   Deliberately after phase 2, not folded into it: the token can be authored and tested with the naming
+   Deliberately after phase 3, not folded into it: the token can be authored and tested with the naming
    grid itself still entirely absent (a project with only a compiled default, no naming feature live at
-   all), so nothing about it depends on phase 2 having landed first except the *existence* of
-   `pc_name_ram` as one of its three possible sources (phase 1, already shipped) — but it is placed
-   after 2 anyway, matching phase 4's own reason for going last among the earlier functional phases:
-   this is the second phase to change what an authored `Say` can mean, and phase 2's own naming-off
-   byte-identity discipline is the baseline it has to hold to as well.
-4. **UI.** The new Sprite Forge Player tab — the hero-naming checkbox and the `heroName` field, both
-   game types (§13) — the Map Forge checkbox and summary suffix, the Controller Forge's hero-gated row.
-   Independently reviewable once phases 2 and 3's own predicates and fields exist, since the UI layer
-   only ever writes the same fields those phases already read.
+   all), so nothing about it depends on phase 3 having landed first except the *existence* of
+   `pc_name_ram` as one of its three possible sources (phase 1, already shipped) and `project.party[0].name`
+   as its default-name source (phase 2) — but it is placed after phase 3 anyway, matching phase 5's own
+   reason for going last among the earlier functional phases: this is the second phase to change what an
+   authored `Say` can mean, and phase 3's own naming-off byte-identity discipline is the baseline it has
+   to hold to as well.
 5. **Starter/fixture opt-in.** `shared/starters/rpg.js` and `tools/make-rpg-sample.js` opt in per
-   decision 4 (§1 item 8); `sample-rpg-mmc1`'s own Join gets `named: true` and `save_sram.lua` gains its
-   own new phases (§14); every `rpg.test.js` caller of `boot()` that needs it switches to
-   `bootPastNaming()`. **New this round: `sample` (the action fixture) opts in too** — hero naming
-   turned on, and its own token authored into one existing `Say` (the specific line to name is a phase-5
-   content decision, not a phase-1-of-this-design one — recommended: the entrance NPC's own greeting,
-   the first `Say` a fresh action project's own player ever sees, so the token's effect is visible
-   immediately rather than buried in a later screen) — so an action fixture exercises both D6/D8 (the
-   grid) and D7 (the token) for real, alongside `sample-rpg` and `sample-rpg-mmc1`. Left last among the
-   functional phases deliberately, unchanged reasoning from v12: it is the only one that changes what a
-   shipped fixture's own ROM contains, and every other phase's own tests must already be green against
-   the feature switched off before this phase turns it on for three real projects, not two.
+   decision 4 (§1 item 8); `sample-rpg-mmc1`'s own recruited member gets `renamable: true` (v16: was the
+   Join's own `named: true`) and `save_sram.lua` gains its own new phases (§14); every `rpg.test.js`
+   caller of `boot()` that needs it switches to `bootPastNaming()`. **`sample` (the action fixture) opts
+   in too** — hero naming turned on (`project.party[0].renamable = true`), and its own token authored
+   into one existing `Say` (the specific line to name is a phase-5 content decision, not a
+   phase-1-of-this-design one — recommended: the entrance NPC's own greeting, the first `Say` a fresh
+   action project's own player ever sees, so the token's effect is visible immediately rather than
+   buried in a later screen) — so an action fixture exercises both D6/D8 (the grid) and D7 (the token)
+   for real, alongside `sample-rpg` and `sample-rpg-mmc1`. Left last among the functional phases
+   deliberately, unchanged reasoning from v12: it is the only one that changes what a shipped fixture's
+   own ROM contains, and every other phase's own tests must already be green against the feature
+   switched off before this phase turns it on for three real projects, not two.
 6. **Docs.** CLAUDE.md's own budget check (§15), a short passage naming `nameentry.asm`'s place in the
-   include graph on both placements, the five new `BE_NAME_*` entry points, and the Say token's own
-   three constants (`TXT_NAME`, `hero_name_default`, `NAME_TOKEN_ENABLED`), paid for with a trim
+   include graph on both placements, the five new `BE_NAME_*` entry points, the Say token's own three
+   constants (`TXT_NAME`, `hero_name_default`, `NAME_TOKEN_ENABLED`), and (new, D9) the Character
+   Forge's own entry in the Forge list and the Sprite Forge party tab's removal — paid for with a trim
    elsewhere in the file.
 
 ## §18. Out of scope, explicitly
 
 **"An action-project equivalent of any of this" is removed this round — it is now in scope (D6/D7/D8),
 which is what this whole document is for.** What remains explicitly out of scope: renaming an
-already-recruited member (or the hero) later, after the naming session that named them has ended;
-naming a monster or any non-party actor; digits, punctuation, or any glyph outside A-Z/a-z, on the grid
-or in `heroName` (§8); any new save-atomicity mechanism beyond `pc_name_ram` riding the existing
-`SAVE_FIELDS` sequence; localized/non-Latin name entry; a Say token naming anyone but the hero (§9a —
-`{name}` is always `pc_name_ram` slot 0, never a per-Say-configurable party member); Continue's own
-title-screen prompt showing the saved name (§19's own question 6, unchanged); any second token syntax
-beyond the exact `{name}` sequence (§9a's own recommendation, kept as an open question anyway).
+already-recruited member (or the hero) later, after the naming session that named them has ended (a
+Character Forge edit to `party[N].name` changes only the *default* a future new game starts from,
+never a live save's own already-typed `pc_name_ram` — the two are read at different times and never
+overwrite one another, §8); naming a monster or any
+non-party actor; digits, punctuation, or any glyph outside A-Z/a-z, on the grid or on a character's own
+`name` (§8, widened this round from `heroName` alone to every character); any new save-atomicity
+mechanism beyond `pc_name_ram` riding the existing `SAVE_FIELDS` sequence; localized/non-Latin name
+entry; a Say token naming anyone but the hero (§9a — `{name}` is always `pc_name_ram` slot 0, never a
+per-Say-configurable party member); Continue's own title-screen prompt showing the saved name (§19's
+own question 6, unchanged); any second token syntax beyond the exact `{name}` sequence (§9a's own
+recommendation, kept as an open question anyway); a `magicPower` or similar caster stat
+(`docs/design-character-forge.md` Q4 — Chris's own request named it, no such stat exists anywhere in
+the compiled battle math, and adding one is a real engine change this document's own scope does not
+cover); **naming every renamable starting member in sequence at new game (new, round-2 review, finding
+10).** Today, only the hero (member 0) is ever named at boot (`start_game`/`reset`, §8) — a starting
+member 1-3 whose own `renamable` is set is never named at all, since `party_init` recruits them silently
+alongside the hero and no mechanism opens a second naming session for a member who never passed through
+a live Join. A coherent alternative exists — naming every starting renamable member in turn before
+gameplay begins, the way the hero already is — but Chris did not ask for it and it is a real engine
+change (a new multi-session state machine at boot, not merely a UI change), so it is named here as
+future scope, not built. `docs/design-character-forge.md`'s own Character Forge disables the
+`renamable` checkbox for exactly this combination (index > 0, `startsInParty` true) rather than
+silently allowing an author to set a flag with no effect (§3 there), which is what makes this an
+explicit "not built" rather than a silent gap an author could stumble into unwarned.
 
 ## §19. Open questions for Chris
 
 **v12's own six questions are now settled** — §1 items 6-9 restate Chris's own D2/D3/D4/D5 answers to
 questions 2, 3, 4 and 5; question 1 (RPG-only) is overruled outright by D6 (§1 item 10); question 6
 (Continue's own title prompt showing the saved name) remains open, unchanged, out of scope unless
-wanted — nothing this round touches it. Two new questions replace them, each already answered by a
-recommendation this document builds on, restated here per the original brief's own requirement that
+wanted — nothing this round touches it. **v13/v15.1's own question 1 below (the default hero name
+source) is now also settled, by D9 (§1 item 13) — kept, marked answered, per this document's own
+no-shrink-without-a-line rule, not deleted now that it no longer needs deciding.** The two questions
+below, each already answered by a recommendation this document builds on, restated here per the
+original brief's own requirement that
 every open question carry one:
 
-1. **The default hero name source (§8).** Recommended and built: `project.project.heroName`, a new
-   string field, default `"Hero"`, A-Z/a-z only, max 10 — compiled into `hero_name_default` only for
-   the projects that need it. The alternative considered and rejected: an all-spaces default, so a
-   naming-off action project's own Say token would print nothing at all rather than a placeholder name.
-   Rejected because it makes the *common* case — an author who authors `{name}` and never touches
-   `heroName` at all — read as broken (a message with a name-shaped hole in it) rather than merely
-   generic; `"Hero"` costs nothing extra to compile (the table exists either way once anything needs it)
-   and reads as an intentional default the way every other unset string field in this schema already
-   does (a party member's own name defaults to `"Member N"`, never blank).
+1. **The default hero name source (§8) — ANSWERED (2026-09-08).** v15.1's own recommendation here —
+   `project.project.heroName`, a new project-level string field — was superseded by Chris's own answer
+   before this question was ever put to him formally: a new Character Forge, where every character
+   (the action hero included) gets a sprite, a stat block and a name, with a per-character "renamable"
+   checkbox (`docs/design-character-forge.md`, verbatim request quoted there). `project.party[0].name`
+   is the source, D9, this round — no new project-level field, and no all-spaces alternative to weigh,
+   since the question v15.1 posed ("where does the default come from") is answered by "the same place
+   an RPG's already was," not by inventing a second string.
 2. **The token's own syntax and the brace collision (§9a).** Recommended and built: the exact sequence
    `{name}`, recognised only as that literal run of six characters, leaving a lone `{`/`|`/`}`/`~`
    elsewhere in the same string as window furniture exactly as today. The alternative considered: reserve
@@ -4561,6 +4933,33 @@ every open question carry one:
 
 ## Places a claim could not be pinned to a line and was reasoned instead
 
+**A numbering note, not a new item: every "phase 2" below predates D9's reorder (§17) and means what is
+now phase 3 (the engine core) — the schema/Forge phase D9 inserted ahead of it did not exist when these
+were written, and none of them are about schema or UI work, so none needed renumbering, only this one
+clarifying line.**
+
+- **Withdrawn this round (round-3 review, P2 finding 1): the "unobservable" half of this entry was
+  itself the wrong claim this whole document's own §9 later corrected, and this entry kept re-asserting
+  it as something merely "to be re-verified" rather than as already found wrong.** The original entry
+  read: "`party_join`'s no-op guard and `script_op_join`'s `pc_in_party` check together making a second
+  placement's own `named`/`renamable` bit unobservable... the conclusion should be re-verified once
+  phase 3 actually writes that routine." That framing presented a false claim as a pending
+  confirmation. It is false regardless of what phase 3 eventually writes: two placements racing to
+  recruit the *same, not-yet-recruited* member is real, observable, route-dependent behavior (§9's own
+  corrected passage has the full argument) — nothing about `script_op_join` not existing yet changes
+  that, since the race is decided by `party_join`'s own guard, which is real and shipped
+  (`engine/battle.asm:79-91`) today. What *was* genuinely reasoned rather than pinned, and remains open:
+  `script_op_join`'s own *second*-Join guard (an already-recruited member's later Join being inert
+  regardless of its own bit) is v15.1 pseudocode, not yet built, and should be checked against phase
+  3's real implementation — but that is a narrower, still-open question about repeat Joins, not the
+  withdrawn "first-race is unobservable" claim, and the two must not be conflated the way this entry
+  once did. Second, the still-open half of the original entry: whether `createPartyMember`'s own default
+  `renamable` value should be `false` uniformly or `true` for member 0 specifically (a fresh project's
+  own hero, matching `startsInParty: id === 0`'s own precedent) is a real open authoring-defaults
+  question `docs/design-character-forge.md` answers for its own schema addition — cited here rather
+  than re-argued, since that document owns the field. (Answered since v16.2, finding 8: `false`
+  uniformly, matching `nameHeroAtStart`'s own prior default — kept here as a record that the question
+  was once open, not because it still is.)
 - Every byte figure in §11 is a static instruction-width count, not a nesasm measurement — adopted
   from round 8's own independently-confirmed figures; phase 2 replaces every figure here with a real,
   assembled, per-board number regardless.
@@ -4593,6 +4992,312 @@ every open question carry one:
   time. Nothing about it has been run through nesasm.
 
 ## Changelog
+
+- **v16.4**: round-4 reviewer findings (NO-GO: 1 P1, 4 P2) — five findings, each a specific sentence
+  contradicting a specific source line, closed by re-reading that line rather than the surrounding
+  prose. This document's own share:
+  - **P2 (`:1848`/`:4225` as of v16.3): the encoder-fix explanation used a `startsInParty` member as its
+    example, for whom the described failure ("silently fail to recruit anyone") never actually happens
+    — `party_init` already recruits that member at boot, so `party_join`'s own no-op guard reaches the
+    identical empty result whether or not the compiled operand carries the stray bit.** Rewritten in
+    place (§7) rather than swapping the example: by construction, `joinNamingCandidate` and raw
+    `renamable` can *only* diverge for a `startsInParty` member (that is the one term the predicate adds
+    beyond `renamable` for a non-hero member), so no non-starting example could ever exercise the bug —
+    the round's own first alternative was never available. The example stays, now stating plainly that
+    the failure is invisible in play for this exact member, and the fix is reframed throughout (§7, the
+    §15 test, and the v16.3 changelog entry's own historical line) as an operand-contract regression —
+    the compiled byte's own high bit stops meaning what its contract says regardless of whether today's
+    two guard shapes happen to absorb the consequence — not a recruitment-behavior fix.
+  - **P2 (`:3758`): the join-row hint is computed once; the member select's own `onchange` only assigns
+    `command.member`, with no `rerender()` call, so switching between a candidate and a non-candidate
+    member leaves the previous member's hint on screen.** Fixed by adding the identical `rerender()`
+    call every other `onchange` handler in `renderer/forges/map/events.js`'s own `commandRow` already
+    makes after a mutation (cited directly, `:851-854`'s own choice-answer text input) — not a new
+    mechanism, the established idiom this file already uses everywhere else in the same function. The
+    §13 code block now shows the select's own real `onchange`, amended, rather than eliding it as
+    "unchanged."
+  - **P2 (`:2432`): `joinNamingCandidate` was a plain, unexported function, called from two other
+    modules — a real `ReferenceError` waiting in the spec, not a style note.** `export`ed (§9); both
+    consumer modules' own existing multi-line `shared/project.js` import blocks shown amended, one name
+    added to each, not a new `import` statement (`main/build/textcompile.js:28-55`,
+    `renderer/forges/map/events.js:16-38`, both quoted in full so the insertion point is unambiguous).
+  - Findings P1a and P1b (the `battleTables`/`battleTableBytes` caller graph, and the `pc_hp`/
+    `pc_name_ram` save-field claim) are `docs/design-character-forge.md` v4's own findings, closed
+    there — this document's own text never made either claim.
+  - **Per-section line counts, v16.3 → v16.4** (awk `## §`-boundary): §0 223→223, §1 65→65, §2 45→45,
+    §3 61→61, §4 507→507, §5 782→782, §6 86→86, §7 191→246 (+55, the operand-contract rewrite plus the
+    two amended-import code blocks), §8 408→408, §9 243→252 (+9, the `export` correction and its own
+    explanation), §9a 464→464, §10 37→37, §11 497→497, §12 65→65, §13 97→155 (+58, the real `onchange`
+    shown amended plus its own explanation, plus the events.js amended-import block), §14 369→369, §15
+    322→325 (+3, the fourth test's own reframing), §16 165→165, §17 93→93, §18 29→29, §19 28→28,
+    "Places a claim..." 60→60, Changelog 714→719 (+5, the historical v16.3 line's own correction). No
+    section shrank. `.if`/`.endif`: 49/49, unchanged — every fix is a compiler-input predicate, a
+    module `export`, an import list, or a UI re-render call; nothing in `engine/` changed.
+  - Findings not contested: none — every cited line held exactly, and every fix traces the real
+    consequence rather than the first plausible-sounding one (P2's own operand-contract correction is
+    the clearest instance: the original "recruitment fails" framing sounded right and was not).
+
+- **v16.3**: round-3 reviewer findings (NO-GO: 2 P1, 3 P2) — the same shape every time: an audit that
+  said "every"/"all" and was not, or a withdrawal applied to the main text but not to every place the
+  old claim was repeated. This document's own share: P2 finding 1 (route-dependent naming
+  "unobservable") was fixed in the main §9 text by v16.2 but two more live copies survived — the
+  "Places a claim..." entry (`:4761-4771` as of v16.2) still told the implementer to "re-verify" the
+  withdrawn claim rather than stating it was already found wrong, and a historical Changelog line
+  inside the v16 entry itself repeated it with no correction note at all. Both fixed in place — the
+  reasoned-instead entry rewritten to say what is actually still open (a narrower, unrelated question
+  about `script_op_join`'s own second-Join guard) versus what was withdrawn, and the historical line
+  given an explicit "this claim was withdrawn, see v16.2/v16.3" pointer, per the round's own rule that
+  a history note must say a claim was withdrawn, not merely repeat it. P2 finding 12 (fresh): the Map
+  Forge's own join-row hint and summary suffix (§13) read `member?.renamable` bare, which would show
+  "Named by the player" on a Join whose target is renamable but also `startsInParty` — a member
+  `joinNamingCandidate` (§9, finding 7) already excludes, so the UI would promise a naming session the
+  engine can never open. Both now read `joinNamingCandidate`, and show the actual reason ("renamable,
+  but inert here — starts in the party") when it excludes an otherwise-renamable member. **Grepping for
+  every other bare `.renamable` read where the candidate rule is what the engine actually does found a
+  second, more serious instance the finding's own two citations did not name**: `encodeCommand`'s own
+  `join` case (§7) packed the operand's bit 7 from raw `renamable`, not `joinNamingCandidate` — for a
+  project whose only renamable non-hero member is also `startsInParty` (so `JOIN_NAMING_ENABLED`
+  compiles false, and the engine assembles `script_op_join`'s **unmasked** variant), that stray bit
+  would make `battle_entry_join`'s own `cpx #PARTY_SIZE / bcs` refuse a completely ordinary recruit
+  outright — ­not a UI wording bug but a real compiled-ROM defect, found only by taking the finding's
+  own "grep for every other bare read" instruction literally rather than treating the two named
+  citations as the whole scope. Fixed the same way, with the packed-operand test (§15) extended to
+  assert bit 7 stays clear for exactly this combination. **Corrected by the round-4 review: "refuse a
+  completely ordinary recruit" mischaracterized the consequence for this exact example — a
+  `startsInParty` member is already recruited at boot, so `party_join`'s own no-op guard reaches the
+  identical empty result with or without the bug; the fix is real as an operand-contract regression
+  (the compiled byte's own high bit stops meaning what its contract says), not as a recruitment defect.
+  See the v16.4 entry and §7's own corrected passage.**
+  - **Per-section line counts, v16.2 → v16.3** (awk `## §`-boundary): §0 223→223, §1 65→65, §2 45→45,
+    §3 61→61, §4 507→507, §5 782→782, §6 86→86, §7 173→191 (+18, the `encodeCommand` fix and its own
+    "why this matters" explanation), §8 408→408, §9 240→243 (+3, the predicate-intro clarification),
+    §9a 464→464, §10 37→37, §11 497→497, §12 65→65, §13 72→97 (+25, the join-row hint/summary fix),
+    §14 369→369, §15 313→322 (+9, the packed-operand test's own fourth build), §16 165→165, §17 93→93,
+    §18 29→29, §19 28→28, "Places a claim..." 49→60 (+11, the withdrawn-conclusion rewrite), Changelog
+    662→665 (+3, the historical-line correction, inline within the v16 entry — not a new bullet, so
+    counted here rather than against that entry's own count). No section shrank. `.if`/`.endif`: 49/49,
+    unchanged — every fix this round is a compiler-input predicate correction or prose, and while the
+    `encodeCommand` fix changes what byte the compiler *emits* for one specific authored combination, it
+    changes no engine `.asm` source at all, so the assembly-side count is rightly untouched.
+  - **The two grep audits, pasted rather than summarized**: `grep -n "unobservable" docs/design-name-
+    entry.md docs/design-character-forge.md` → 7 hits (2 in the corrected §9 main text, 2 in
+    character-forge's own already-correct §3, 3 in this document's own reasoned-instead/changelog
+    material, all three now carrying an explicit withdrawal note); `grep -n "never mattered"` → 2 hits
+    (both in character-forge's own already-correct §3, restating the withdrawal, not the claim);
+    `grep -n "no live use case"`/`"had no live use case to lose"` → 0 hits each, both phrasings already
+    fully retired by v16.2's own fix. No live (non-withdrawal-framed) occurrence of any of the four
+    phrasings remains in either document.
+  - Findings not contested: none — both P1 findings and finding 12 held exactly as cited; the
+    `encodeCommand` defect was found during finding 12's own required sweep, not separately reported by
+    the review, and is recorded here as what that sweep was for.
+
+- **v16.2**: round-2 reviewer findings on Character Forge v1 + name-entry v16.1 (NO-GO: 6 P1, 5 P2) —
+  every finding verified against the source it cited before being closed, per the round's own
+  instruction; all eleven held. Findings 1-6 (P1) and 7-11 (P2), closed in `docs/design-name-entry.md`
+  (this document): finding 1 (route-dependent per-placement naming was real and observable, not
+  "unobservable" — the claim is withdrawn, not softened, §9); finding 3's own test-migration list lives
+  in `docs/design-character-forge.md` v2 §8, not here, since it is that Forge's own phase plan; finding
+  5 (X1's sprite-CHR-stamp fix restored to §17 as its own bullet, unlinked from the withdrawn schema
+  half, plus a scoping note at §7's own top distinguishing "X1" the six-part v9 bundle from "X1's own
+  schema-widening half," the only part this document withdraws); finding 6 (`KNOWN_MAX_SIZES`'s own
+  callback corrected to `.get()` against a `Map`, not property access, and pinned to the phase that
+  makes `NAME_LEN` resolvable at all — phase 3, the engine core, not phase 2, §5); finding 7
+  (`projectUsesJoinNaming`/`projectWithoutJoinNaming` now share one `joinNamingCandidate` predicate,
+  §9); finding 8 (`createPartyMember`'s own default names were not fixed points of
+  `normalizeCharacterName` — `"Member 2"` silently became `"Member"` on the first real save; fixed with
+  an alphabetic `DEFAULT_MEMBER_NAME` per index, which also retires the pre-existing "Member 1" vs.
+  "Hero" quirk a prior pass could only document, §8); finding 9 (a passage still describing
+  `nameHeroAtStart`'s own v13 location as live is corrected to the current per-character mechanism,
+  §9); finding 10's own engine-side grounding (a starting non-hero member's Join is always inert,
+  `party_init`, §3 of the Forge document) is here; the UI-side fix (the disabled checkbox) is that
+  document's own; finding 11's own exhaustive `'Sprite Forge'` string audit is entirely in the Forge
+  document (§7 there), since every site named lives in `main/`/`shared/`, not in this document's own
+  text. Finding 2 (the blast-radius table) and finding 4 (the metasprite compositor citation) are
+  entirely `docs/design-character-forge.md`'s own findings and are closed there, not here.
+  - **Per-section line counts, v16.1 → v16.2** (awk `## §`-boundary): §0 223→223, §1 65→65, §2 45→45,
+    §3 61→61, §4 507→507, §5 763→782 (+19, finding 6), §6 86→86, §7 168→173 (+5, finding 5's own scoping
+    note), §8 364→408 (+44, finding 8), §9 195→240 (+45, findings 1/7/9), §9a 464→464, §10 37→37, §11
+    497→497, §12 65→65, §13 72→72, §14 369→369, §15 313→313, §16 165→165, §17 84→93 (+9, finding 5's own
+    restored bullet), §18 19→29 (+10, finding 10's own future-scope note), §19 28→28, "Places a claim..."
+    49→49, Changelog 627→(this entry, grows). No section shrank. `.if`/`.endif`: 49/49, unchanged —
+    every fix this round is prose or a JS-level predicate/default-value correction, no assembly changed.
+  - **Findings not contested: none** — all eleven held against the source cited, and every fix above was
+    re-verified against the real file (`engine/battle.asm`, `main/project-io.js`,
+    `test/unit/rammap.test.js`, `main/build/generate.js`, `shared/starters/rpg.js`) rather than against
+    the reviewer's own prose, per the round's own instruction.
+
+- **v16.1**: a fix-up round, before review — one class of defect in v16: live text that still described
+  the WITHDRAWN mechanisms (the Join command's own authored `named` arg, X1's `join.args` widening,
+  `EXCEPTIONAL_WIDTHS.join = 2`, "an action project has no party") as if they were still the design,
+  rather than as a "(v16: was ...)" history note. Six sites named directly, plus an exhaustive re-grep
+  of both documents for eight patterns (`project.project.heroName`, `project.project.nameHeroAtStart`,
+  `named: true`, `'named'`, `join.args`, `EXCEPTIONAL_WIDTHS`, `action projects have none`, `no party`),
+  every hit read in context and classified.
+  - **Per-section line counts, v16 → v16.1** (awk `## §`-boundary): §0 219→223 (+4), §1 58→65 (+7), §2
+    45→45, §3 61→61, §4 507→507, §5 763→763, §6 86→86, §7 168→168, §8 364→364, §9 195→195, §9a 464→464,
+    §10 37→37, §11 497→497, §12 65→65, §13 72→72, §14 367→369 (+2), §15 301→313 (+12), §16 161→165
+    (+4), §17 84→84, §18 19→19, §19 28→28, "Places a claim..." 49→49, Changelog 547→(this entry,
+    grows). No section shrank. `.if`/`.endif`: 49/49, unchanged — confirming, again, that a fix-up
+    correcting live-stale *prose* touches no assembly.
+  - **Fix 1** (§0, `:126-132`): the `defaultCommand` citation asserted a `'named'` case was "unreachable
+    ... until `'named'` is added to `EVENT_COMMANDS`'s `join` entry," phrased as a live pending
+    requirement. Rewritten to record what the args-driven loop shape *itself* means (read, factual) and
+    to state explicitly that the dependency it once created is now moot, since v16 withdraws the
+    widening it depended on.
+  - **Fix 2** (§1 item 9, `:280-283`): "`sample-rpg-mmc1` carries `named: true` on its own Join" asserted
+    a field that no longer exists. Rewritten: the fixture's own recruited member,
+    `project.party[1]`, carries `renamable: true`; the Join command itself (`{ op: 'join', member: 1 }`)
+    is unchanged.
+  - **Fix 3** (§1 item 10, `:285-292`): "the hero (item 3), never a party (action projects have none)"
+    was true when D6 was decided and is not true under D9. Rewritten in place, correction tagged
+    "Corrected in v16 (D9)" per this document's own convention: an action project's `party` array is not
+    absent — it holds exactly one member — and Join naming stays RPG-only because Join is an RPG-only
+    command and an action party is capped at one member, not because the array does not exist.
+  - **Fix 4** (§14, `:4116-4119`): "`tools/make-rpg-save-sample.js`'s own existing `{ op: 'join', member:
+    1 }` (`:230`) gains `named: true`" described a schema field that no longer exists. **Verified
+    directly against the file before fixing**: `tools/make-rpg-save-sample.js:230` is indeed `{ op:
+    'join', member: 1 }`, confirmed by reading the file, not trusted from the prior round's own citation.
+    Rewritten: the Join command is left exactly as it is; the fixture's own `project.party[1].renamable`
+    is set to `true` instead.
+  - **Fix 5** (§15, `:4054-4070`): the test row "`EXCEPTIONAL_WIDTHS`'s own `join: 2` entry, proven
+    against a real compiled Join with `named: true` and one with `named: false`" specified a test for a
+    mechanism v16 withdrew — it would fail to compile against the current design (no `named` field to
+    build a fixture from) rather than merely being stale prose. Replaced with two tests matching what
+    v16 actually needs: (a) `encodeCommand`'s own `join` case emits the packed operand's named bit from
+    `project.party[command.member]?.renamable`, checked against a renamable-true build, a
+    renamable-false build, and a build naming member 0 with `renamable` unset; (b)
+    `test/lib/eventdecoder.js`'s own generic width formula still predicts `join`'s real wire width with
+    `args` unchanged at one entry, framed explicitly as the regression guard for X1 staying withdrawn.
+  - **Fix 6** (§16, `:4401-4409`, the "widening a table's own count" trap): a real, general lesson that
+    had started to read as live design the longer the surrounding withdrawal-language accumulated
+    elsewhere in this document. Tagged explicitly, per the fix-up's own instruction: "(v15.1's X1,
+    withdrawn in v16 — kept as the lesson, not as live design; see §7)," plus a closing sentence stating
+    the specific trap cannot currently recur under v16's own mechanism, while the general lesson (a
+    derived-from-count formula is a hidden dependency on that count) is kept because it outlives the one
+    mechanism that first surfaced it.
+  - **The exhaustive re-grep, read in full, not sampled**: `project.project.heroName` (6 hits,
+    `docs/design-name-entry.md`; 4 hits, `docs/design-character-forge.md`) — all history-notes or the
+    named alternative's own description, none live-stale. `project.project.nameHeroAtStart` (8 hits; 1
+    hit) — same. `named: true` (4 hits after fixes; 0 hits) — same, all now "(v16: was ...)"-framed.
+    `'named'` (5 hits; 1 hit) — same, including the two inside historical Changelog entries (v9's own
+    "X1" origin, v13's own D6 entry), correctly left untouched as history rather than edited, per this
+    document's own convention that a past round's entry describes *that round's* then-current state, not
+    the present one. `join.args` (11 hits; 1 hit) — one genuine live-current statement per site
+    (`:3608`'s own code comment, `:3632`'s own prose — both correctly say "never," not "gains"), the rest
+    history-notes or trap-tags. `EXCEPTIONAL_WIDTHS` (12 hits; 1 hit) — `:110-111` is the real, unchanged,
+    current-shipped-code citation (`EXCEPTIONAL_WIDTHS` with no `join` entry, confirmed against
+    `test/lib/eventdecoder.js` — accurate today and unaffected by this round); every other hit is either
+    a correct live statement that `join` needs no entry (§7's own rewrite) or a history-note/trap-tag.
+    `action projects have none` (0 hits either document — the exact phrase was already paraphrased away
+    by v16's own §7/§9 rewrites; fix 3 above targets the actual surviving instance of the same claim,
+    "never a party... action projects have none," found by reading §1 item 10 directly rather than by
+    this exact string). `no party` (1 hit; 0 hits) — `:2041`'s own "v15.1's own action project had no
+    party at all — that premise is gone" is correctly framed as history, no fix needed. A broader safety
+    sweep for `has no party`/`never a party`/`no party array`/`action project(s) have no` found four more
+    hits, all either fix 3 itself, fix 3's own new "Corrected in v16 (D9)" language, or a Changelog entry
+    dated to v13 describing that round's own then-current state — none live-stale. Every count above is
+    from `grep -cF` against the working tree, re-run after these fixes and with this changelog entry's
+    own prose excluded from the count (its own narration of the search patterns would otherwise inflate
+    them). Total: **55 hits across both documents** (47 in `docs/design-name-entry.md`, 8 in
+    `docs/design-character-forge.md`), all read in context; **6 required fixing** (all six named above,
+    all in `docs/design-name-entry.md`); the remaining **49** were correctly classified as history-notes,
+    trap-tags, or accurate current-state citations on first read.
+  - Findings not contested: none — every defect named in the fix-up brief was verified against the
+    source it named (or, for fix 4, against the fixture file directly) before being fixed, and no
+    additional live-stale instance was found beyond the six named plus the broader safety sweep above.
+
+- **v16**: a scope change, not a review round — Chris's own answer to a question v15.1 had not yet
+  formally asked (§19 question 1, "the default hero name source") turned out to be a new Forge, not a
+  field placement, and D9 (§1 item 13) records that decision. The default name and the renamable flag
+  move OFF `project.project` (`heroName`/`nameHeroAtStart`) and ONTO the character record
+  (`project.party[0].name`, a new `project.party[N].renamable`), and the same merge removes the Join
+  command's own authored `named` field entirely — the compiler derives the identical packed bit from
+  `project.party[command.member]?.renamable` instead. See `docs/design-character-forge.md` for the
+  Forge itself; this entry is this document's own half of the change.
+  - **What changed, and why, section by section** (v15.1 → v16, per-section line counts, awk
+    `## §`-boundary, both baselines re-run rather than trusted from memory): §0 217→219 (+2, one
+    addendum paragraph noting the schema/UI work this round reads from
+    `docs/design-character-forge.md` rather than from scratch); §1 38→58 (+20, item 3 corrected in
+    place — an action project now does have `project.party`, D9 — and a new item 13 records D9 itself,
+    no item removed); §2 45→45 (0, engine RAM layout untouched — D9 changes no compiled bytes); §3
+    61→61 (0, the two `pc_name` readers are engine-side and untouched); §4 507→507 (0, the state
+    machine and kernel-lo hooks are engine-side and untouched); §5 763→763 (0, `nameentry.asm` itself
+    is untouched — same source, same placement rule); §6 86→86 (0, cursor movement is untouched); **§7
+    195→168 (-27, real shrink, justified below)**; §8 319→364 (+45, the default-name mechanism's
+    source rewritten from `project.project.heroName` to `project.party[0].name`, the alphabet
+    restriction widened from `heroName` alone to every character's `name`, and a real pre-existing
+    normalizer quirk found and documented — `normalizePartyMember`'s own fallback is `"Member 1"`, not
+    `"Hero"`, for an empty member-0 name, `shared/project.js:4832`); §9 155→195 (+40, both admission
+    predicates and both X1/X2 strip helpers rewritten to the new source field, plus a genuine behavior
+    change documented — per-placement `named` divergence is no longer authorable, **claimed at the time
+    to have been unobservable in play already — this specific claim was found wrong and withdrawn by
+    the round-2 review (P2 finding 1) and again referenced by the round-3 review's own P2 finding 1;
+    see the v16.2 and v16.3 entries above for the correction and where it reached, since a history note
+    must say a claim was withdrawn, not merely repeat it**); §9a 462→464 (+2, `previewHeroName` collapses from a two-branch,
+    game-type-conditional function to one line); §10 36→37 (+1, incidental — the save descriptor
+    section is engine-side and untouched; the one-line difference is a section-boundary artifact of
+    neighboring section growth, confirmed by reading §10's own body, byte-for-byte identical); §11
+    497→497 (0, no capacity figure changes value — D9 changes which JS field a compiled table's bytes
+    come from, never the table's own size); §12 65→65 (0, cycle budget is engine-side and untouched);
+    **§13 164→72 (-92, real shrink, justified below)**; §14 367→367 (0, net — one test-fixture code
+    comment corrected in place, one real error found and fixed, no line added or removed); §15
+    295→301 (+6, the Phase-3-UI test description rewritten from Sprite/Map-Forge-checkbox coverage to
+    Character-Forge-cross-link coverage); §16 161→161 (0, nesasm/6502 traps are engine-side and
+    untouched); **§17 59→84 (+25, reordered per Q7, content below)**; §18 12→19 (+7, one new
+    out-of-scope item — a `magicPower`/caster stat, named in Chris's own request and explicitly not
+    built — plus the existing in-game-rename item's own reasoning expanded); §19 26→28 (+2, question 1
+    marked ANSWERED rather than removed); "Places a claim..." 33→49 (+16, one new entry for two
+    claims this round could not pin to a line, per the numbering-note explaining why every existing
+    "phase 2" reference there was left alone). `.if`/.endif: 49/49, **unchanged** — the single
+    strongest confirmation available that this round touched no engine behavior at all: every `.if`
+    this document specifies compiles to the identical program it did in v15.1, because every edit above
+    is either prose or a JS-level field-path change, never an assembly change.
+  - **§7's own real shrink (-27 lines): X1 is withdrawn, not merely re-sourced.** v15.1 had `join` gain
+    a second `args` entry (`'named'`), which needed its own `normalizeEventCommand` case, its own
+    `defaultCommand` case, and — because widening `args` to two entries broke `test/lib/eventdecoder.js`'s
+    own generic width formula — a new `EXCEPTIONAL_WIDTHS.join = 2` entry with its own explanation of
+    why. None of that exists once the named bit is derived from `project.party[command.member]?.renamable`
+    at compile time rather than authored per-placement: `join.args` stays `['member']`, one entry, the
+    generic width formula already predicts the real wire width correctly, and there is nothing to widen.
+    §7 is shorter because there is a real mechanism v15.1 needed and v16 does not, not because anything
+    was cut for space.
+  - **§13's own real shrink (-92 lines): the Sprite Forge Player tab this section specified — real
+    working code, `playerPanel`, the tab-array edit, the render-dispatch edit — is withdrawn outright,
+    not merely relocated.** It is superseded by `docs/design-character-forge.md`, a separate document,
+    so its own implementation code is not carried forward here at all; what remains is a pointer to that
+    document plus the two pieces of UI that stay this document's own to specify (the Map Forge's join
+    row, now read-only text instead of a checkbox — real code, kept — and the unaffected Controller
+    Forge row, cross-referenced as before). This is the deliberate kind of shrink the no-shrink rule
+    exists to make visible, not the silent-content-loss kind it exists to catch: the content did not
+    disappear, it moved to a document whose own existence and location this changelog names.
+  - **§17's own reorder (+25 lines, Q7).** Phase 2 is now "the schema and Forge," inserted ahead of the
+    engine core (renumbered from phase 2 to phase 3) — Q7's own reasoning, restated in §17 itself: the
+    engine core should read a field that already exists rather than invent it inline. Old phase 2's own
+    schema-fix bullets (`join.args`, `EXCEPTIONAL_WIDTHS`, the X1 fix) are removed from the new phase 3's
+    own list — they no longer exist to land, per §7's own withdrawal — and a new bullet names exactly
+    that omission. Old phases 3-6 (token, UI, fixtures, docs) become 4 (token), and UI is *removed* as
+    its own phase (folded into phase 2, since the schema and the Forge are one change now) —
+    phases 5 (fixtures) and 6 (docs) keep their content, renumbered down by one, with §14/§15's own
+    internal "Phase 3/4/5" labels left as-is and flagged rather than renumbered throughout (a numbering
+    note added to "Places a claim could not be pinned to a line," above, rather than silently
+    renumbering every cross-reference in two more sections and risking a fresh contradiction of exactly
+    the kind this document's own discipline exists to catch).
+  - **A verified correction to v15.1's own test-fixture prose, found while re-pinning line numbers for
+    this round, not one of D9's own findings but fixed alongside them.** §14's own MMC3 `SAMPLE_RPG`
+    test-build description named the recruiter's target as party member 2; `tools/make-rpg-sample.js:
+    331-344`'s own Join command reads `{ op: 'join', member: 1 }` — member 1 (Iris), not member 2. Fixed
+    in place, with the correction noted inline so a future round does not need to re-derive it.
+  - **Grep, whole document, for every occurrence of `heroName`/`nameHeroAtStart`**: 55 lines matched
+    (`grep -Ec`) against the v15.1 snapshot before this round's edits began; every live (non-Changelog,
+    non-"Places a claim") occurrence remaining after is
+    either (a) inside a `v16:`-prefixed note explicitly stating the field is withdrawn, (b) inside §1
+    item 3/13's own before/after correction, or (c) inside a historical Changelog entry (v13/v14/v14.1/
+    v15/v15.1) describing that round's own then-current field name correctly, left as history per this
+    document's own convention. No live statement anywhere in §0-§19 asserts `project.project.heroName`
+    or `project.project.nameHeroAtStart` as this design's current mechanism.
+  - Findings not contested: none — this is a scope change, not a reviewed round, so there was no
+    adversarial pass to contest against; `docs/design-character-forge.md` carries its own verification
+    discipline for the schema/Forge half of this change.
 
 - **v15.1**: one P3 from round 3, the only finding on v15 — round 3 otherwise passed every
   substantive check. Per-section line counts, v15 → v15.1 (awk `## §`-boundary): §0 217→217, §1
