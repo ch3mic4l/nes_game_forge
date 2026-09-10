@@ -130,6 +130,22 @@ export const compiledPages = (event) =>
   (event?.pages ?? []).filter((page) => enabledCommands(page).length > 0);
 
 /**
+ * Which text a placed entity actually compiles, matching
+ * main/build/textcompile.js's own dialogue-vs-event precedence exactly: an
+ * authored event with at least one compiled page wins outright, and plain
+ * dialogue is read only when the event compiles to nothing at all
+ * (docs/design-name-entry.md §9a P1-1 round 2). Any predicate answering
+ * "does this project's compiled ROM contain X in some Say text" has to walk
+ * this, not just projectEvents — a Say's own text and a dialogue field's own
+ * text are the identical compiled shape, so a check that only ever visits
+ * projectEvents silently misses whichever entities have no authored event.
+ */
+export function effectiveDialogue(entity) {
+  if (compiledPages(entity.props?.event).length) return ''; // the event wins; dialogue is dead text
+  return String(entity.props?.dialogue ?? '').trim();
+}
+
+/**
  * A choice command's own options, truncated to how many the message box has
  * rows for. The single definition `encodeBody` (main/build/textcompile.js)
  * and `liveCommands` below both slice by, so the bound can only be changed

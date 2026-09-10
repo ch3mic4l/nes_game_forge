@@ -186,6 +186,9 @@ box_begin:
   sta msg_col
   sta msg_line
   sta box_row
+  .if NAME_TOKEN_ENABLED
+  sta msg_name_idx
+  .endif
   lda box_state
   bne box_begin_clear       ; already up: keep the frame, wipe what it holds
   lda #BOX_OPENING
@@ -357,11 +360,46 @@ text_type_control:
   rts
 text_type_page:
   cmp #TXT_PAGE
-  bne text_type_glyph
+  bne text_type_name
   jsr msg_advance
   lda #BOX_PAGEWAIT
   sta box_state
   jmp text_show_arrow
+  .if NAME_TOKEN_ENABLED
+text_type_name:
+  cmp #TXT_NAME
+  bne text_type_glyph
+  lda #LOW(pc_name_ram)         ; reloaded EVERY frame this token is in
+  sta ptr_lo                    ; progress -- not only the first -- because
+  lda #HIGH(pc_name_ram)        ; ptr_lo/ptr_hi are shared, volatile scratch
+  sta ptr_hi                    ; draw_entities' own animation path clobbers
+                                 ; them between frames (docs/design-name-
+                                 ; entry.md §9a, P1-1)
+  ldy msg_name_idx
+text_type_name_lookahead:     ; is there a real (non-space) glyph at or after
+  cpy #NAME_LEN                ; msg_name_idx? If not, we are already inside
+  beq text_type_name_done      ; the trailing pad -- the token is finished.
+  lda [ptr_lo],y                ; An internal space (an authored default like
+  cmp #TILE_SPACE               ; "Sir Reginald") is NOT trailing pad, so this
+  bne text_type_name_draw       ; loop must look past it, not stop on it.
+  iny
+  jmp text_type_name_lookahead
+text_type_name_draw:
+  ldy msg_name_idx             ; reload -- the lookahead above may have moved
+  lda [ptr_lo],y                ; Y past msg_name_idx while searching ahead
+  jsr text_put_char
+  inc msg_col
+  inc msg_name_idx
+  rts
+text_type_name_done:
+  lda #0
+  sta msg_name_idx
+  jsr msg_advance               ; consume the TXT_NAME byte itself
+  rts
+  .endif
+  .if !NAME_TOKEN_ENABLED
+text_type_name:
+  .endif
 text_type_glyph:
   jsr text_put_char
   jsr msg_advance

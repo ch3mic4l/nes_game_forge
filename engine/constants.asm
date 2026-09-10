@@ -764,6 +764,7 @@ nm_row      = $059B  ; grid cursor row: 0=A-Z, 1=a-z, 2=controls (DEL/END)
 nm_col      = $059C  ; grid cursor column: 0-25 on rows 0/1, 0(DEL)/1(END) on row 2
 nm_named    = $059D  ; script_op_join's own scratch
 nm_acted    = $059E  ; per-frame latch: at most one grid action per frame
+msg_name_idx = $059F ; TXT_NAME's own typewriter progress, 0-9 (docs/design-name-entry.md §9a)
 
 ; ------------------------------------------------------------ inventory RAM
 ; One id per item carried, oldest first -- an item id under ITEMS_ENABLED, or
@@ -1051,6 +1052,7 @@ BOX_NAMEDONE  = 10          ; the session just ended -- an inert value set once
 TXT_END     = $00
 TXT_NEWLINE = $01
 TXT_PAGE    = $02
+TXT_NAME    = $03
 
 ; Event page conditions and command opcodes, in the order of EVENT_CONDITIONS
 ; and EVENT_COMMANDS in shared/project.js. That order is the wire format, so

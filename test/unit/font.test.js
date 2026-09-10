@@ -10,6 +10,8 @@ import {
   BORDER_H,
   BORDER_V,
   ARROW_TILE,
+  NAME_TOKEN,
+  NAME_LENGTH,
   charToTile,
   textToTiles,
   wrapText,
@@ -84,6 +86,59 @@ test('a blank line is a page break and overflow starts a new page', () => {
 test('a word longer than the window is cut rather than looping forever', () => {
   const [page] = wrapText('supercalifragilistic', 8, 4);
   assert.deepEqual(page, ['supercal']);
+});
+
+// Name entry phase 4 -- the Say token (docs/design-name-entry.md §9a).
+
+test('NAME_LENGTH is the single writer RPG_LIMITS.nameLength reads', () => {
+  assert.equal(NAME_TOKEN, '{name}');
+  assert.equal(NAME_LENGTH, 10);
+});
+
+test('wrapText measures a word containing {name} as NAME_LENGTH columns, not the six literal characters', () => {
+  // "Hi {name}!" is 10 literal characters (2 + 1 + 6 + 1) but should be
+  // measured as 2 + 1 + 10 + 1 = 14 visual columns (the token's own six
+  // literal characters counted as NAME_LENGTH instead) -- too wide for
+  // a 13-column line, but it fits a 14-column one, proving the token itself
+  // (not its literal length) decided the wrap.
+  const tooNarrow = wrapText('Hi {name}!', 13, 4);
+  assert.ok(tooNarrow.flat().length > 1, 'a 13-column line must not fit the 14-visual-column line');
+  const [wide] = wrapText('Hi {name}!', 14, 4);
+  assert.deepEqual(wide, ['Hi {name}!'], 'a 14-column line should fit the whole 14-visual-column line on one row');
+});
+
+test('wrapText never splits a {name} token across a wrap, even when it must truncate a single long "word"', () => {
+  // "XX{name}YY" glued with no space: "XX" costs 2 visual columns, the
+  // token costs NAME_LENGTH (10) whole or not at all, then each
+  // trailing "Y" costs 1. At cols=12, "XX" + the whole token exactly fits
+  // (2 + 10 = 12); the first trailing "Y" would push it to 13 and is
+  // dropped -- the token itself must survive intact, never truncated to a
+  // dangling fragment.
+  const [page] = wrapText('XX{name}YY', 12, 4);
+  assert.deepEqual(page, ['XX{name}'], 'the token must survive whole; only the trailing Ys are dropped');
+
+  // At cols=11 the token itself no longer fits alongside "XX" (2 + 10 = 12
+  // > 11), so truncateAtVisualLimit must drop the WHOLE token rather than
+  // emit a partial one -- the cut lands at the token's own boundary, never
+  // inside it.
+  const [tooTight] = wrapText('XX{name}YY', 11, 4);
+  assert.deepEqual(tooTight, ['XX'], 'when the token itself does not fit, it is dropped whole, never left dangling');
+});
+
+test('wrapText leaves a lone {, }, | or ~ outside the exact six-character sequence alone -- still renders as furniture, unaffected by token measurement', () => {
+  const [page] = wrapText('A { and a } and a | and a ~ mark.', 40, 4);
+  assert.deepEqual(page, ['A { and a } and a | and a ~ mark.']);
+});
+
+test('a repeated {name} token in one line is each measured at the reserved width, not the literal length', () => {
+  // "{name} and {name} again." is 24 literal characters; visually it is
+  // 24 + 2*4 = 32 columns (two tokens, each +4 over their own 6 literal
+  // characters). A 31-column window must NOT fit it on one line; a
+  // 32-column one must.
+  const narrow = wrapText('{name} and {name} again.', 31, 4);
+  assert.ok(narrow.flat().length > 1, 'two tokens together must not fit a 31-column line');
+  const [wide] = wrapText('{name} and {name} again.', 32, 4);
+  assert.deepEqual(wide, ['{name} and {name} again.']);
 });
 
 test('a plain action project pays for neither the font nor the hearts', () => {

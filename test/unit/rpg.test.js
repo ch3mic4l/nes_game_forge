@@ -1586,6 +1586,130 @@ test('battle_entry_join refuses a Join operand at or above PARTY_SIZE, whether t
   assertJoinRefused(buildPatched(2, 'boundary'), 'a stale numeric member (2, exactly PARTY_SIZE)');
 });
 
+// --- the Say token (docs/design-name-entry.md §9a, phase 4) -----------------
+
+const BOX_TEXT_ROW = 25; // engine/constants.asm -- the field box's text starts here, column 2
+const BOX_TEXT_COL = 2;
+
+/** Talk (B), run frames until the box has finished typing its current page
+ *  (or is waiting to be dismissed at the end of the message), then settle a
+ *  few more frames for the last queued glyph to actually drain into the
+ *  nametable -- the same "the last thing queued drains on the next vblank"
+ *  margin test/unit/script.test.js's own box tests already take. Leaves the
+ *  conversation open (does not press through to the end); a caller reading
+ *  the nametable does not need it closed. */
+function openSayAndSettle(nes, budget = 200) {
+  tap(nes, B);
+  for (let frame = 0; frame < budget; frame++) {
+    const box = nes.cpu.mem[BOX_STATE];
+    if (box === BOX_PAGEWAIT || box === BOX_ENDWAIT) break;
+    nes.frame();
+  }
+  for (let i = 0; i < 4; i++) nes.frame();
+}
+
+// P1-B (round-1 finding): must actually type a name DIFFERENT from the
+// seeded default and assert those glyphs -- an engine that always showed the
+// default (e.g. a token reader that never re-reads pc_name_ram after typing,
+// or a naming session that never actually committed the typed letters) would
+// pass a test that only ever checks the default. The naming-off default case
+// is P1-2, immediately below, and is left exactly as it was.
+test('the Say token renders the TYPED name in the nametable, not the default -- hero naming on, read via the nametable itself (docs/design-name-entry.md §15)', {
+  skip: needsSample
+}, async (t) => {
+  const rom = await buildVariant(t, 'name-token-basic', (project) => {
+    project.party[0].renamable = true;
+    project.maps[0].screens[0].entities.push(teller([{ cond: { type: 'none', arg: 0 }, commands: [{ op: 'say', text: 'Hi {name}.' }] }]));
+  });
+  const nes = boot(rom);
+  assert.equal(nes.cpu.mem[GAME_STATE], ST_NAMEENTRY, 'hero naming should open at the start of a new game');
+  typeNameAndFinish(nes, 'Zed');
+  for (let i = 0; i < 20 && nes.cpu.mem[GAME_STATE] === ST_NAMEENTRY; i++) nes.frame();
+  assert.notEqual(nes.cpu.mem[GAME_STATE], ST_NAMEENTRY, 'naming should have handed off');
+  openSayAndSettle(nes);
+  assert.deepEqual(
+    nametableRow(nes, BOX_TEXT_ROW, BOX_TEXT_COL, 'Hi Zed.'.length),
+    textToTiles('Hi Zed.').tiles,
+    'the token should expand to the just-typed name ("Zed"), not the compiled default ("Rian")'
+  );
+});
+
+test('P1-2 (round-1 finding): an RPG with the token authored and naming switched OFF reads party[0].name byte-exact from the nametable -- not merely "some name"', {
+  skip: needsSample
+}, async (t) => {
+  const rom = await buildVariant(t, 'name-token-naming-off', (project) => {
+    // Naming stays off throughout -- neither party[0].renamable nor any
+    // Join's own renamable flag is ever set on this project.
+    project.maps[0].screens[0].entities.push(
+      teller([{ cond: { type: 'none', arg: 0 }, commands: [{ op: 'say', text: 'Welcome, {name}!' }] }])
+    );
+  });
+  const nes = boot(rom); // plain boot(), never bootPastNaming -- there is no naming session to clear
+  assert.notEqual(nes.cpu.mem[GAME_STATE], undefined);
+  openSayAndSettle(nes);
+  assert.deepEqual(
+    nametableRow(nes, BOX_TEXT_ROW, BOX_TEXT_COL, 'Welcome, Rian!'.length),
+    textToTiles('Welcome, Rian!').tiles,
+    'party_init’s own unconditional pc_name seed (docs/design-name-entry.md §8) should have seeded pc_name_ram ' +
+      'slot 0 with the compiled name at boot, with no naming session ever opening'
+  );
+});
+
+// P1-A (round-1 finding): the token's OTHER compile path -- plain dialogue,
+// no authored event at all -- end to end, RPG placement. kernelbytes.
+// test.js's own predicate test already proves projectUsesNameToken reads
+// effectiveDialogue; this is the real build + nametable half.
+test('P1-A (round-1 finding): the token in PLAIN DIALOGUE (no authored event) renders the real name after talking to the entity', {
+  skip: needsSample
+}, async (t) => {
+  const rom = await buildVariant(t, 'name-token-dialogue', (project) => {
+    project.maps[0].screens[0].entities.push({ actorId: 2, x: 112, y: 96, props: { dialogue: 'Hi {name}.', event: null } });
+  });
+  const nes = boot(rom);
+  openSayAndSettle(nes);
+  assert.deepEqual(
+    nametableRow(nes, BOX_TEXT_ROW, BOX_TEXT_COL, 'Hi Rian.'.length),
+    textToTiles('Hi Rian.').tiles,
+    'plain dialogue carrying the token should expand it the same as a scripted Say'
+  );
+});
+
+// P1-1 (round-1 finding): a Say carrying the token TWICE, proving both
+// instances draw correctly -- not just the first. draw_entities' own
+// ptr_lo/ptr_hi write (engine/entities.asm) runs every frame regardless of
+// whether a token is on screen, which is exactly why text_type_name reloads
+// ptr_lo/ptr_hi unconditionally rather than only on a token's own first
+// frame (P1-1's fix). The text between the two occurrences ("meet") forces
+// several ordinary glyph frames, each running draw_entities in between, so
+// the SECOND token's own first frame is reached only after draw_entities has
+// already written ptr_lo/ptr_hi for whatever else is on screen -- sample-rpg's
+// own map0/screen0 carries three other placed actors (idle, but
+// entity_animation runs its own lookup for every active entity regardless of
+// whether its frame index actually changes) alongside the teller itself, so
+// this is real intervening engine work, not a contrived gap.
+test('P1-1 (round-1 finding): a Say with the token TWICE draws the SECOND token correctly too, not whatever draw_entities left in ptr_lo/ptr_hi between the two', {
+  skip: needsSample
+}, async (t) => {
+  // "{name} meet {name}." is 19 literal characters, reserved at 27 visual
+  // columns (19 + 2*4) -- under BOX_COLS (28), so wrapText keeps both
+  // occurrences on the SAME line rather than wrapping the second onto the
+  // box's next row, which would let a bug that only breaks the second token
+  // hide behind a coincidental row mismatch instead of a wrong glyph.
+  const rom = await buildVariant(t, 'name-token-twice', (project) => {
+    project.maps[0].screens[0].entities.push(
+      teller([{ cond: { type: 'none', arg: 0 }, commands: [{ op: 'say', text: '{name} meet {name}.' }] }])
+    );
+  });
+  const nes = boot(rom);
+  openSayAndSettle(nes, 400);
+  assert.deepEqual(
+    nametableRow(nes, BOX_TEXT_ROW, BOX_TEXT_COL, 'Rian meet Rian.'.length),
+    textToTiles('Rian meet Rian.').tiles,
+    'both the first AND the second token instance must read the real name -- a shared-scratch clobber between ' +
+      'them would corrupt only the second onward, not the first'
+  );
+});
+
 test('a two-monster formation is targeted one at a time, and the cursor wraps', {
   skip: needsSample
 }, async (t) => {

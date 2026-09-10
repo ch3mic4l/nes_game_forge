@@ -95,7 +95,10 @@ import {
   // Character Forge phase 2 (docs/design-character-forge.md) ---------------
   characterCap,
   normalizeCharacterName,
-  joinNamingCandidate
+  joinNamingCandidate,
+  // Name entry phase 4 -- the Say token (docs/design-name-entry.md §9a) -----
+  projectUsesNameToken,
+  projectWithoutNameToken
 } from '../../shared/project.js';
 import { resolveStartAt } from '../../shared/playscenario.js';
 import fs from 'node:fs/promises';
@@ -107,10 +110,10 @@ import { loadProject, saveProject } from '../../main/project-io.js';
 import { buildProject } from '../../main/build/pipeline.js';
 import { resolveMapper, rpgCapable } from '../../shared/cartridge.js';
 import { flattenScreens, resolveEntityByte, checkCapacity } from '../../main/build/generate.js';
-import { compileText, opIndex, OP_JUMP, OP_STING, encodeString } from '../../main/build/textcompile.js';
+import { compileText, opIndex, OP_JUMP, OP_STING, encodeString, TXT_NAME, TXT_END } from '../../main/build/textcompile.js';
 import { createSong, songFrameLength, songByte, sfxByte, sfxFrameLength, normalizeSfx } from '../../shared/audio.js';
 import { battleTables } from '../../main/build/battletables.js';
-import { FONT_BASE, fontChrPages } from '../../shared/font.js';
+import { FONT_BASE, fontChrPages, textToTiles } from '../../shared/font.js';
 import { tilesetLimit } from '../../shared/cartridge.js';
 import { BLANK_TILE } from '../../shared/chr.js';
 import { spawnSync } from 'node:child_process';
@@ -9261,5 +9264,239 @@ test('review-fix slice A round 3, item 5(d): saveProject’s own body calls run(
     tokensContainPromiseAll(saveProjectNowBody),
     false,
     'saveProjectNow must contain no Promise.all call anywhere -- every fan-out must go through awaitAllSettled instead'
+  );
+});
+
+// ---------------------------------------------------------------------------
+// Name entry phase 4: the Say token (docs/design-name-entry.md §9a).
+
+test('P1-4 (round-1 finding): encodeString/encodeLine never desync -- a real array with TXT_NAME at the expected byte, and the default is byte-identical to before for token-bearing AND token-free text', () => {
+  // encodeLine must return { tiles, unmapped }, the exact shape encodeString's
+  // own caller line (main/build/textcompile.js) already expects from
+  // textToTiles -- a { bytes, unmapped } shape here would desync that line
+  // silently (bytes.push(...mapped.tiles) reading undefined).
+  const withToken = encodeString('Hi {name}!', true);
+  assert.ok(Array.isArray(withToken.bytes), 'encodeString(text, true).bytes must be a real array, not undefined');
+  // "Hi " (3 glyphs) then TXT_NAME then "!" (1 glyph) then TXT_END.
+  assert.equal(withToken.bytes[3], TXT_NAME, 'TXT_NAME should sit at the position the token occupied');
+  assert.equal(withToken.bytes.length, 6, '3 glyphs + TXT_NAME + 1 glyph + TXT_END');
+  assert.equal(withToken.bytes.at(-1), TXT_END, 'the string must still terminate with TXT_END');
+
+  // The default (allowNameToken: false, and no second argument at all) must
+  // be byte-identical to before this phase existed for token-free text --
+  // encodeLine(line, false) falls straight to textToTiles with no scanning
+  // at all. P2-B (round-1 finding): an independent baseline (textToTiles +
+  // TXT_END), not two calls to encodeString compared with each other --
+  // 'Hello there.' is one short line, so wrapText's own single-line shape
+  // holds (no TXT_NEWLINE/TXT_PAGE).
+  const independentBaseline = [...textToTiles('Hello there.').tiles, TXT_END];
+  const tokenFreeDefault = encodeString('Hello there.');
+  const tokenFreeExplicit = encodeString('Hello there.', false);
+  assert.deepEqual(tokenFreeDefault.bytes, independentBaseline, 'the default must match the independent baseline');
+  assert.deepEqual(tokenFreeExplicit.bytes, independentBaseline, 'an explicit false must match the identical independent baseline');
+  assert.ok(!tokenFreeDefault.bytes.includes(TXT_NAME), 'token-free text must never contain TXT_NAME');
+
+  // And for token-bearing text, the default (false) must render the six
+  // literal characters -- never TXT_NAME -- since allowNameToken opts in
+  // rather than being assumed.
+  const tokenBearingDefault = encodeString('Hi {name}!');
+  assert.ok(!tokenBearingDefault.bytes.includes(TXT_NAME), 'without opting in, {name} must compile as literal glyphs');
+  assert.notEqual(tokenBearingDefault.bytes.length, withToken.bytes.length, 'the literal rendering is longer than the token');
+});
+
+test('encodeString never hands textToTiles a raw, unconsumed token substring -- multiple occurrences, and one at the very start/end of a line', () => {
+  const twice = encodeString('{name} and {name} again.', true);
+  const nameCount = twice.bytes.filter((b) => b === TXT_NAME).length;
+  assert.equal(nameCount, 2, 'both occurrences of the token must each become one TXT_NAME byte');
+
+  const atEnds = encodeString('{name}', true);
+  assert.deepEqual(atEnds.bytes, [TXT_NAME, TXT_END], 'a line that is only the token compiles to one byte plus TXT_END');
+});
+
+test('a choice option label containing {name} compiles to six literal glyphs, never TXT_NAME (P2-5)', () => {
+  const project = createProject('Token Choice');
+  project.maps[0].screens[0].entities[0] = {
+    actorId: 0,
+    x: 16,
+    y: 16,
+    props: {
+      event: {
+        pages: [
+          {
+            cond: { type: 'none', arg: 0 },
+            commands: [
+              {
+                op: 'choice',
+                options: [
+                  { text: 'Say {name}', commands: [] },
+                  { text: 'No thanks', commands: [] }
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    }
+  };
+  const compiled = compileText(project);
+  const entity = project.maps[0].screens[0].entities[0];
+  const bytes = compiled.events[compiled.eventFor.get(entity)];
+  // [cond(3), bodyLen, OP_CHOICE, count, label0Id, label1Id, ...]
+  const choiceOpcode = opIndex('choice');
+  const choiceAt = bytes.indexOf(choiceOpcode);
+  assert.notEqual(choiceAt, -1, 'the choice opcode should be present');
+  const label0Id = bytes[choiceAt + 2];
+  const label0Bytes = compiled.strings[label0Id];
+  assert.ok(!label0Bytes.includes(TXT_NAME), 'a choice label must never carry TXT_NAME');
+  // P2-B (round-1 finding): an independent baseline, not encodeString (the
+  // function under test) compared with itself. textToTiles is the plain,
+  // lower-level character mapper neither encodeString nor encodeLine
+  // bypasses when allowNameToken is false -- 'Say {name}' is well under
+  // BOX_COLS (28), so wrapText's own single-line shape holds (no
+  // TXT_NEWLINE/TXT_PAGE), leaving exactly the ten mapped glyphs plus
+  // TXT_END. The six glyph tiles for {, n, a, m, e, } sit at indices 4-9
+  // (211,225,249,160, 251,238,225,237,229,253, TXT_END) -- literal glyphs,
+  // never the TXT_NAME opcode.
+  assert.deepEqual(
+    label0Bytes,
+    [...textToTiles('Say {name}').tiles, TXT_END],
+    'the label compiles as ten literal glyphs (S,a,y, ,{,n,a,m,e,}) plus TXT_END, matching allowNameToken: false'
+  );
+});
+
+test('validateProject warns when a live choice option label contains {name} (P2-5)', () => {
+  const project = createProject('Token Choice Warning');
+  project.maps[0].screens[0].entities[0] = {
+    actorId: 0,
+    x: 16,
+    y: 16,
+    props: {
+      event: {
+        pages: [
+          {
+            cond: { type: 'none', arg: 0 },
+            commands: [
+              {
+                op: 'choice',
+                options: [
+                  { text: 'Say {name}', commands: [] },
+                  { text: 'No thanks', commands: [] }
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    }
+  };
+  const problems = validateProject(project);
+  const warning = problems.find((p) => p.severity === 'warning' && p.where === 'Map Forge' && /\{name\}/.test(p.message));
+  assert.ok(warning, 'a live choice option label containing {name} should warn, naming the Map Forge');
+  assert.match(warning.message, /only expands inside Say text/, 'the warning should say why the label will show literal braces');
+
+  // Switched off, it must not warn.
+  const disabled = structuredClone(project);
+  disabled.maps[0].screens[0].entities[0].props.event.pages[0].commands[0].off = true;
+  const disabledProblems = validateProject(disabled);
+  assert.ok(
+    !disabledProblems.some((p) => p.severity === 'warning' && /\{name\}/.test(p.message)),
+    'a switched-off choice must not warn'
+  );
+
+  // P2-A (round-1 finding): a FIFTH option's own label, alone, must not
+  // warn -- CHOICE_LIMITS.options is 4, and choiceOptionsSlice (the same
+  // truncation encodeBody/liveCommands already apply) drops any option past
+  // that before it ever reaches the ROM. Counting the raw, untruncated
+  // command.options array would warn about a label the compiler discards.
+  const fifthOnly = createProject('Token Choice Fifth Only');
+  fifthOnly.maps[0].screens[0].entities[0] = {
+    actorId: 0,
+    x: 16,
+    y: 16,
+    props: {
+      event: {
+        pages: [
+          {
+            cond: { type: 'none', arg: 0 },
+            commands: [
+              {
+                op: 'choice',
+                options: [
+                  { text: 'One', commands: [] },
+                  { text: 'Two', commands: [] },
+                  { text: 'Three', commands: [] },
+                  { text: 'Four', commands: [] },
+                  { text: 'Say {name}', commands: [] } // fifth option -- discarded at compile time
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    }
+  };
+  const fifthOnlyProblems = validateProject(fifthOnly);
+  assert.ok(
+    !fifthOnlyProblems.some((p) => p.severity === 'warning' && /\{name\}/.test(p.message)),
+    'a token sitting only in a fifth, discarded option must not warn'
+  );
+});
+
+test('the Say-token validateProject refusal: unreachable through the boolean formula alone on a normalized project, but catches a hand-edited action project with an empty party (the genuinely reachable case)', () => {
+  // On a normal, app-produced project, party[0] always exists (normalizeProject
+  // guarantees party.length >= 1 unconditionally), so this refusal never
+  // fires -- confirmed here as a real, positive control.
+  const project = createProject('Token No Source');
+  project.project.gameType = 'action';
+  project.maps[0].screens[0].entities[0] = {
+    actorId: 0,
+    x: 16,
+    y: 16,
+    props: { event: { pages: [{ cond: { type: 'none', arg: 0 }, commands: [{ op: 'say', text: 'Hi {name}.' }] }] } }
+  };
+  assert.equal(projectUsesNameToken(project), true, 'sanity: the token should be live');
+  const normalProblems = validateProject(project);
+  assert.ok(
+    !normalProblems.some((p) => p.severity === 'error' && /no party member to read a default name from/.test(p.message)),
+    'a normal project (party[0] present, unrenamable "Hero") must never trip this refusal'
+  );
+
+  // The genuinely reachable case: a hand-edited action project whose party
+  // array is empty. Nothing else in this file refuses that on an action
+  // project (the RPG "needs at least one party member" check is gated to
+  // gameType === 'rpg' alone), and generate.js's own
+  // `project.party[0].name.padEnd(...)` (the hero_name_default emission,
+  // §8) would otherwise throw instead of failing with a named message.
+  const handEdited = structuredClone(project);
+  handEdited.party = [];
+  const problems = validateProject(handEdited);
+  const error = problems.find((p) => p.severity === 'error' && /no party member to read a default name from/.test(p.message));
+  assert.ok(error, 'an action project with a live token and an empty party should be refused, naming the Map Forge');
+  assert.equal(error.where, 'Map Forge');
+
+  // And with hero naming live instead (a real party[0] whose renamable flag
+  // is true), the token has a real source and must not be refused even with
+  // the token otherwise unsupported by a default table.
+  const withHeroNaming = structuredClone(project);
+  withHeroNaming.party[0].renamable = true;
+  assert.ok(
+    !validateProject(withHeroNaming).some((p) => p.severity === 'error' && /no party member to read a default name from/.test(p.message)),
+    'hero naming alone is a real source and must not be refused'
+  );
+
+  // An RPG with an empty party is caught by the pre-existing, more specific
+  // "needs at least one party member" error instead -- this refusal must not
+  // also fire there (it is scoped to gameType !== 'rpg').
+  const rpgHandEdited = structuredClone(project);
+  rpgHandEdited.project.gameType = 'rpg';
+  rpgHandEdited.party = [];
+  const rpgProblems = validateProject(rpgHandEdited);
+  assert.ok(
+    rpgProblems.some((p) => p.severity === 'error' && /needs at least one party member/.test(p.message)),
+    'the RPG-specific empty-party error should still fire'
+  );
+  assert.ok(
+    !rpgProblems.some((p) => p.severity === 'error' && /no party member to read a default name from/.test(p.message)),
+    'the token-specific refusal is action-only and must not also fire on an RPG'
   );
 });

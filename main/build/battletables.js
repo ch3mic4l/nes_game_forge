@@ -46,7 +46,9 @@ import {
   battleBankEnabled,
   projectWithoutHeroNaming,
   projectWithoutJoinNaming,
-  projectNeedsNameSeed
+  projectNeedsNameSeed,
+  projectUsesNameToken,
+  projectWithoutNameToken
 } from '../../shared/project.js';
 import { NESASM_BANK_BYTES } from '../../shared/cartridge.js';
 import { textToTiles } from '../../shared/font.js';
@@ -941,6 +943,15 @@ export function battleShortfallAdvice(project, mapper, deficit, { alternatives =
     }
     if (battleBankEnabled(project, mapper) && projectUsesJoinNaming(project)) {
       nameFeatures.push({ label: 'every named Join', strip: projectWithoutJoinNaming });
+    }
+    // Phase 4 (the Say token, docs/design-name-entry.md §9a/§11): a token-only
+    // RPG (neither hero nor Join naming live) still pays NAME_COPY_BATTLE_
+    // ALLOWANCE (47 bytes) once projectNeedsNameSeed is widened to include
+    // the token -- this is that candidate's own removal, gated on
+    // battleBankEnabled the identical way the two above are, since
+    // battleRegionBytes only charges the term at all when banked.
+    if (battleBankEnabled(project, mapper) && projectUsesNameToken(project)) {
+      nameFeatures.push({ label: 'the name token', strip: projectWithoutNameToken });
     }
   }
   if (nameFeatures.length) {

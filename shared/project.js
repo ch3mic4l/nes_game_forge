@@ -23,6 +23,7 @@ import {
   choiceOptionsSlice,
   compiledPages,
   damageAmount,
+  effectiveDialogue,
   liveCommands,
   projectEvents,
   routeLegs
@@ -47,6 +48,8 @@ import {
   BOX_ROWS,
   FONT_BASE,
   HEART_FULL_TILE,
+  NAME_TOKEN,
+  NAME_LENGTH,
   SPRITE_ARROW_TILE,
   fontBankSplit,
   projectUsesText,
@@ -978,6 +981,7 @@ export const EVENT_COMMANDS = [
 export {
   enabledCommands,
   compiledPages,
+  effectiveDialogue,
   allCommands,
   choiceOptionsSlice,
   damageAmount,
@@ -1124,7 +1128,11 @@ export const RPG_LIMITS = {
   battleArtTiles: 12, // the widest/tallest monster block, in 8x8 tiles
   // Names are padded to this in the compiled tables, so the engine needs no
   // length byte — and it is what the battle box's message area has room for.
-  nameLength: 10
+  // Single writer is shared/font.js's NAME_LENGTH -- the Say token's own
+  // reserved wrap width derives from this exactly, and font.js cannot
+  // import this file (see eventrules.js's own header for the cycle that
+  // would create), so this direction is the one that stays import-legal.
+  nameLength: NAME_LENGTH
 };
 
 /**
@@ -2685,14 +2693,67 @@ export function projectWithoutJoinNaming(project) {
   return clone;
 }
 
+// The Say token (docs/design-name-entry.md §9a): whether the literal
+// `{name}` sequence appears in any live Say text, or in the effective
+// dialogue of any placed entity. liveCommands, not allCommands -- the
+// identical choice projectUsesMove already makes, for the identical reason: a
+// token switched off, or sitting inside a switched-off branch, is scaffolding
+// the compiler already drops and must not cost a project the token's own
+// kernel-lo term. effectiveDialogue's own precedence check (an entity whose
+// event already compiles at least one live page) keeps a dormant dialogue
+// field from being counted a second, wrong way.
+export function projectUsesNameToken(project) {
+  for (const event of projectEvents(project)) {
+    for (const page of compiledPages(event)) {
+      for (const command of liveCommands(page.commands, CHOICE_LIMITS.options)) {
+        if (command.op === 'say' && String(command.text ?? '').includes(NAME_TOKEN)) return true;
+      }
+    }
+  }
+  for (const map of project?.maps ?? []) {
+    for (const screen of map.screens ?? []) {
+      for (const entity of screen.entities ?? []) {
+        if (effectiveDialogue(entity).includes(NAME_TOKEN)) return true;
+      }
+    }
+  }
+  return false;
+}
+
+// The kernelShortfallAdvice/battleShortfallAdvice removal candidate for the
+// token -- allCommands, not liveCommands, and every placed entity's raw
+// dialogue field unconditionally, the same projectWithoutCommands shape: a
+// removal candidate has to stay honest against a later edit that makes a
+// currently-dead branch (or a currently-superseded dialogue field) live.
+export function projectWithoutNameToken(project) {
+  const clone = structuredClone(project);
+  for (const event of projectEvents(clone)) {
+    for (const page of event.pages ?? []) {
+      for (const command of allCommands(page.commands)) {
+        if (command.op === 'say' && typeof command.text === 'string') {
+          command.text = command.text.split(NAME_TOKEN).join('');
+        }
+      }
+    }
+  }
+  for (const map of clone.maps ?? []) {
+    for (const screen of map.screens ?? []) {
+      for (const entity of screen.entities ?? []) {
+        if (typeof entity.props?.dialogue === 'string') {
+          entity.props.dialogue = entity.props.dialogue.split(NAME_TOKEN).join('');
+        }
+      }
+    }
+  }
+  return clone;
+}
+
 // The single answer to "does this project need pc_name_ram seeded at all" --
 // the identical formula NAME_SEED_ENABLED's own kernel-lo emission computes.
 // Phase 4 (the Say token, docs/design-name-entry.md §9a) widens this to
-// `projectUsesNameEntry(project) || projectUsesNameToken(project)`; written as
-// its own exported function now so that widening changes one function body
-// and no call site.
+// `projectUsesNameEntry(project) || projectUsesNameToken(project)`.
 export function projectNeedsNameSeed(project) {
-  return projectUsesNameEntry(project);
+  return projectUsesNameEntry(project) || projectUsesNameToken(project);
 }
 
 // Whether a compiled `hero_name_default` table is needed at all -- an RPG
@@ -6264,6 +6325,78 @@ export function validateProject(project) {
         'Map Forge',
         'A project with a Save command needs a title screen — Continue has nowhere to appear without one. ' +
           'Set a title map, or remove the Save command.'
+      );
+    }
+  }
+
+  // The Say token (docs/design-name-entry.md §9a): a live token with nothing
+  // behind it to read is refused, naming the Map Forge. Scoped to an action
+  // project (gameType !== 'rpg') because on an RPG the token's own source is
+  // party_init's unconditional pc_name seed (docs/design-name-entry.md §8) --
+  // always present given a real party member, and an empty party there is
+  // already refused above by its own, more specific error. On an action
+  // project the design's own formula for "no compiled default name source"
+  // is projectUsesNameToken && !projectUsesHeroNaming && !projectNeedsHeroDefault
+  // -- but projectNeedsHeroDefault is `gameType !== 'rpg' && (usesHeroNaming
+  // || usesNameToken)`, so a live token on an action project makes that
+  // predicate true by construction and the formula above is a tautological
+  // false: the token is always one of that predicate's own two disjuncts.
+  // The genuinely reachable failure is a level below the boolean formula, not
+  // inside it -- a hand-edited project whose party array is empty. Nothing
+  // else in this file refuses that on an action project (the "needs at least
+  // one party member" check above is gated to gameType === 'rpg' alone), and
+  // generate.js's own `project.party[0].name.padEnd(...)` (the
+  // hero_name_default emission, §8) would otherwise throw instead of failing
+  // with a named message.
+  if (
+    project.project.gameType !== 'rpg' &&
+    projectUsesNameToken(project) &&
+    !projectUsesHeroNaming(project) &&
+    !project.party?.[0]
+  ) {
+    add(
+      'error',
+      'Map Forge',
+      'A Say uses {name}, but this project has no party member to read a default name from. Add a party ' +
+        'member on the Character Forge, or remove the token.'
+    );
+  }
+
+  // P2-5 (docs/design-name-entry.md §9a): a choice option label is never
+  // eligible for the token -- internString's own allowNameToken defaults to
+  // false there -- so {name} in one compiles as six literal, displayable
+  // characters (the border-corner glyph, "name", the border-corner glyph
+  // again), not the token. Legal and displayable, so a warning rather than a
+  // refusal: almost certainly not what an author meant if they copy-pasted a
+  // Say line into a choice label. Walked the same liveCommands/
+  // CHOICE_LIMITS.options way projectUsesJoinNaming already does.
+  {
+    let nameTokenChoiceLabels = 0;
+    for (const event of projectEvents(project)) {
+      for (const page of compiledPages(event)) {
+        for (const command of liveCommands(page.commands, CHOICE_LIMITS.options)) {
+          if (command.op === 'choice') {
+            // choiceOptionsSlice, not the raw command.options: liveCommands
+            // itself only recurses into the truncated slice when walking a
+            // choice's contents, but the command object it yields still
+            // carries the FULL, untruncated array -- a fifth-and-beyond
+            // option's own label never reaches the ROM (encodeBody applies
+            // the identical truncation at compile time), so counting the raw
+            // array would warn about a label the compiler already discards.
+            for (const option of choiceOptionsSlice(command.options, CHOICE_LIMITS.options)) {
+              if (String(option?.text ?? '').includes(NAME_TOKEN)) nameTokenChoiceLabels++;
+            }
+          }
+        }
+      }
+    }
+    if (nameTokenChoiceLabels) {
+      add(
+        'warning',
+        'Map Forge',
+        `${nameTokenChoiceLabels} choice option label${nameTokenChoiceLabels === 1 ? '' : 's'} ` +
+          `contain${nameTokenChoiceLabels === 1 ? 's' : ''} {name} — the token only expands inside Say text, ` +
+          'so this label will show the literal braces instead.'
       );
     }
   }

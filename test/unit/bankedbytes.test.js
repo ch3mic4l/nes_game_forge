@@ -76,7 +76,14 @@ import {
   tilesetLimit,
   NESASM_BANK_BYTES
 } from '../../shared/cartridge.js';
-import { reconcileCartridge, validateProject, RPG_LIMITS } from '../../shared/project.js';
+import {
+  reconcileCartridge,
+  validateProject,
+  RPG_LIMITS,
+  projectUsesNameEntry,
+  projectUsesNameToken,
+  projectWithoutNameToken
+} from '../../shared/project.js';
 import { FONT_BASE, SPRITE_ARROW_TILE, fontChrPages } from '../../shared/font.js';
 import { BLANK_TILE } from '../../shared/chr.js';
 
@@ -1301,15 +1308,14 @@ test('an override of the battle sources withdraws the claim rather than guessing
 });
 
 // ---------------------------------------------------------------------------
-// In-game party-member naming (docs/design-name-entry.md §5/§11 -- phase 3).
-// The banked half of the 21-point isolation matrix: rows 1-3 (the combined
-// 812-byte addition) and the banked half of rows 16-18 (exact equality
-// against battleRegionBytes' own prediction, checked as part of
-// kernelbytes.test.js's own worst-case build test too, but pinned here
-// directly against measureRegion's real usage). Rows 19-21 (the token-only
-// isolation that splits NAME_ENTRY_BATTLE_ALLOWANCE from
-// NAME_COPY_BATTLE_ALLOWANCE) need the Say token (phase 4) to reach
-// NAME_SEED_ENABLED without NAME_ENTRY_ENABLED and are deferred there.
+// In-game party-member naming (docs/design-name-entry.md §5/§11 -- phase 3;
+// rows 19-21 landed in phase 4, the Say token). The banked half of the
+// 21-point isolation matrix: rows 1-3 (the combined 812-byte addition), the
+// banked half of rows 16-18 (exact equality against battleRegionBytes' own
+// prediction, checked as part of kernelbytes.test.js's own worst-case build
+// test too, but pinned here directly against measureRegion's real usage),
+// and rows 19-21 (the token-only isolation that splits NAME_ENTRY_BATTLE_
+// ALLOWANCE from NAME_COPY_BATTLE_ALLOWANCE, below).
 
 test(
   'in-game naming: rows 1-3 -- the combined 812-byte banked addition, real nesasm usage, on every RPG-capable board',
@@ -1332,6 +1338,71 @@ test(
     }
   }
 );
+
+// Phase 4 (the Say token, docs/design-name-entry.md §9a/§11): rows 19-21,
+// the token-only isolation P2-2 asks for by name. Neither hero nor Join
+// naming is ever turned on here -- projectUsesNameEntry stays false
+// throughout -- so if the two banked terms still shared NAME_ENTRY_ENABLED
+// (the old, wrong theory), this would predict a delta of 0. The corrected
+// formula (battleRegionBytes gating NAME_COPY_BATTLE_ALLOWANCE on
+// projectNeedsNameSeed alone) predicts NAME_COPY_BATTLE_ALLOWANCE (47) --
+// the real discriminator between the two theories, not a restatement of
+// rows 1-3 at a different toggle setting.
+test(
+  'in-game naming: rows 19-21 -- the token-only banked isolation (NAME_COPY_BATTLE_ALLOWANCE alone, neither naming feature live), every RPG-capable board',
+  { skip: !hasNesasm && 'nesasm not found on PATH' },
+  async (t) => {
+    // Mutates one already-live Say line already in the fixture (the
+    // recruit's own "I have waited for you..." page, maps[0].screens[0]
+    // .entities[2]) rather than adding a new page or command, so nothing
+    // else about the fixture's compiled bytes moves between the two builds
+    // being differenced -- the same discipline the withItems/noItems pair
+    // above already holds to for a different predicate.
+    const injectToken = (project) => {
+      project.maps[0].screens[0].entities[2].props.event.pages[0].commands[0].text += ' {name}';
+    };
+    for (const mapper of CAPABLE_MAPPERS) {
+      const off = await measureRegion(t, mapper);
+      const on = await measureRegion(t, mapper, injectToken);
+      assert.equal(projectUsesNameEntry(off.project), false, `${mapper.name}: naming-off baseline should not read as naming-live`);
+      assert.equal(projectUsesNameEntry(on.project), false, `${mapper.name}: injecting the token must not turn naming-live on`);
+      assert.equal(projectUsesNameToken(off.project), false, `${mapper.name}: the unmutated fixture should carry no token`);
+      assert.equal(projectUsesNameToken(on.project), true, `${mapper.name}: the mutated fixture should read as token-live`);
+      assert.equal(
+        on.used - off.used,
+        NAME_COPY_BATTLE_ALLOWANCE,
+        `${mapper.name}: a token-only RPG should cost exactly NAME_COPY_BATTLE_ALLOWANCE (47) of real banked ` +
+          'usage, not 0 (the old, wrong shared-gate theory) and not NAME_ENTRY_BATTLE_ALLOWANCE + ' +
+          'NAME_COPY_BATTLE_ALLOWANCE (rows 1-3, a different configuration)'
+      );
+      assert.equal(on.used, on.predicted, `${mapper.name}: battleRegionBytes should predict real usage exactly, token-only`);
+      assert.equal(off.used, off.predicted, `${mapper.name}: battleRegionBytes should predict real usage exactly, naming and token both off`);
+    }
+  }
+);
+
+// Phase 4 (the Say token, docs/design-name-entry.md §9a/§11): a token-only
+// RPG (neither hero nor Join naming live) still pays NAME_COPY_BATTLE_
+// ALLOWANCE (47 bytes) once projectNeedsNameSeed widens to include the
+// token -- battleShortfallAdvice must offer removing it as one real fix,
+// the same way it already offers hero/Join naming.
+test('in-game naming: battleShortfallAdvice offers "the name token" as a solo candidate for a token-only RPG', async () => {
+  const project = await loadProject(SAMPLE_RPG);
+  const mapper = SUPPORTED_MAPPERS.find((entry) => entry.id === project.cartridge.mapper);
+  project.maps[0].screens[0].entities[2].props.event.pages[0].commands[0].text += ' {name}';
+
+  const before = battleRegionBytes(project, mapper);
+  const after = battleRegionBytes(projectWithoutNameToken(project), mapper);
+  assert.equal(before - after, NAME_COPY_BATTLE_ALLOWANCE, 'the token alone should cost exactly NAME_COPY_BATTLE_ALLOWANCE here');
+
+  const advice = battleShortfallAdvice(project, mapper, 1); // any deficit <= 47 makes the token a solo winner
+  assert.match(advice, /removing the name token/i, `advice should offer the token as a fix, got: ${advice}`);
+
+  // Suppressed when the battle code is overridden, X2's own discipline,
+  // extended to this third candidate.
+  const overriddenAdvice = battleShortfallAdvice(project, mapper, 1, { exact: false });
+  assert.doesNotMatch(overriddenAdvice, /name token/i, 'the token candidate must be suppressed too when exact is false');
+});
 
 test('in-game naming: the register-write source scan -- nameentry.asm never touches $8000/$8001', async () => {
   const text = await fsp.readFile(path.join(ROOT, 'engine', 'nameentry.asm'), 'utf8');

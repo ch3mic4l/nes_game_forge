@@ -39,6 +39,19 @@ export const SPRITE_ARROW_TILE = 0xfd;
 export const BOX_COLS = 28;
 export const BOX_ROWS = 4;
 
+// The Say token (docs/design-name-entry.md §9a): the literal six-character
+// sequence a Say may expand into the hero's typed name at runtime.
+export const NAME_TOKEN = '{name}';
+// A character name's own maximum length -- the primary fact (the compiled
+// tables pad every name to this, and the naming grid caps input at it); the
+// Say token's own reserved column width is a *derived* consequence of it,
+// not a separate fact. Single writer for RPG_LIMITS.nameLength (shared/
+// project.js) too: font.js cannot import project.js (project.js already
+// imports font.js; eventrules.js's own header explains why that direction is
+// the one this codebase keeps a cycle out of), so the value lives here and
+// project.js reads it, rather than the other way around.
+export const NAME_LENGTH = 10;
+
 // ---------------------------------------------------------------- glyph art
 //
 // Each glyph is up to 8 rows of up to 8 columns, '#' = colour slot 3, '.' = the
@@ -224,6 +237,51 @@ export function textToTiles(text) {
  * Shared by the build-time compiler and the event editor's preview, so what the
  * editor shows is what the ROM says.
  */
+// The token's own reserved column width, derived from NAME_LENGTH (the
+// primary fact -- a character name's own maximum length) rather than a
+// second, independently-named width: the token expands to a name, so its
+// width IS that length.
+const TOKEN_WIDTH = NAME_LENGTH;
+
+// A candidate line's real column width once the compiler expands it -- a
+// word containing `{name}` is measured as TOKEN_WIDTH columns, not the six
+// literal characters, since that is the reserved worst case the compiled
+// token will actually occupy (docs/design-name-entry.md §9a). The compiler
+// cannot know the actual typed name's length at wrap time, only the reserved
+// maximum.
+function visualLength(str) {
+  const extra = TOKEN_WIDTH - NAME_TOKEN.length;
+  let count = 0;
+  let from = 0;
+  let at;
+  while ((at = str.indexOf(NAME_TOKEN, from)) !== -1) {
+    count++;
+    from = at + NAME_TOKEN.length;
+  }
+  return str.length + count * extra;
+}
+
+// A single "word" too wide for the window on its own is truncated at the
+// nearest token boundary at or before the visual column limit, never inside
+// one -- a naive char-index slice could otherwise cut a `{name}` occurrence
+// in half, emitting a dangling fragment encodeLine's own exact-sequence scan
+// (main/build/textcompile.js) would then render as raw, unmapped
+// furniture-adjacent characters rather than a token at all.
+function truncateAtVisualLimit(word, cols) {
+  let visual = 0;
+  let cut = 0;
+  let i = 0;
+  while (i < word.length) {
+    const isToken = word.startsWith(NAME_TOKEN, i);
+    const width = isToken ? TOKEN_WIDTH : 1;
+    if (visual + width > cols) break;
+    visual += width;
+    i += isToken ? NAME_TOKEN.length : 1;
+    cut = i;
+  }
+  return word.slice(0, cut);
+}
+
 export function wrapText(text, cols = BOX_COLS, rows = BOX_ROWS) {
   const pages = [];
   let page = [];
@@ -246,13 +304,13 @@ export function wrapText(text, cols = BOX_COLS, rows = BOX_ROWS) {
       let line = '';
       for (const word of words) {
         const candidate = line ? `${line} ${word}` : word;
-        if (candidate.length <= cols) {
+        if (visualLength(candidate) <= cols) {
           line = candidate;
         } else if (line) {
           push(line);
-          line = word.slice(0, cols);
+          line = truncateAtVisualLimit(word, cols);
         } else {
-          line = word.slice(0, cols); // a single word longer than the window
+          line = truncateAtVisualLimit(word, cols); // a single word longer than the window
         }
       }
       push(line);

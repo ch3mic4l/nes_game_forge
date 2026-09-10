@@ -36,7 +36,7 @@ import NES from '../../renderer/emulator/core/nes.js';
 import { BUTTON } from '../../renderer/emulator/runcontrol.js';
 import { nameTiles } from '../../main/build/battletables.js';
 import { createProject } from '../../shared/project.js';
-import { charToTile, FONT_TILES, FONT_BASE, fontBankSplit } from '../../shared/font.js';
+import { charToTile, FONT_TILES, FONT_BASE, fontBankSplit, textToTiles } from '../../shared/font.js';
 import { encodeTiles, decodeChr, TILE_BYTES } from '../../shared/chr.js';
 import { resolveMapper } from '../../shared/cartridge.js';
 import {
@@ -668,5 +668,148 @@ test(
           `the art bank early (before rows 27-28 render) would leave row ${row} reading 'art' instead`
       );
     }
+  }
+);
+
+// ---------------------------------------------------------------------------
+// The Say token (docs/design-name-entry.md §9a, phase 4) -- the action,
+// kernel-lo placement. text_type_step's own new arm is identical source on
+// either placement, but the action placement's own hero_name_default seed
+// path (init_session's own copy loop, engine/combat.asm) is genuinely
+// different code from the RPG placement's party_init seed
+// (test/unit/rpg.test.js already covers that one) -- so this needs its own
+// coverage rather than assuming the RPG-side proof carries over.
+
+const BOX_TEXT_ROW = 25; // engine/constants.asm -- the field box's text starts here, column 2
+const BOX_TEXT_COL = 2;
+
+/** Talk (B), run frames until the box has finished typing (or is waiting to
+ *  be dismissed), then settle a few more frames for the last queued glyph to
+ *  drain into the nametable. */
+function openSayAndSettle(nes, budget = 200) {
+  tap(nes, BUTTON.B);
+  const BOX_PAGEWAIT = 3;
+  const BOX_ENDWAIT = 6;
+  for (let frame = 0; frame < budget; frame++) {
+    const box = nes.cpu.mem[BOX_STATE];
+    if (box === BOX_PAGEWAIT || box === BOX_ENDWAIT) break;
+    nes.frame();
+  }
+  for (let i = 0; i < 4; i++) nes.frame();
+}
+
+test(
+  'action placement: the Say token renders hero_name_default ("Hero") in the nametable when naming is off -- P1-2\'s action-side equivalent',
+  { skip: !hasNesasm && 'nesasm not found on PATH' },
+  async (t) => {
+    const { built } = await buildActionNamingVariant(t, (project) => {
+      // Naming stays off throughout -- party[0].renamable is never set.
+      project.maps[0].screens[0].entities.push({
+        actorId: 0,
+        x: 112,
+        y: 96,
+        props: { event: { pages: [{ cond: { type: 'none', arg: 0 }, commands: [{ op: 'say', text: 'Hi {name}.' }] }] } }
+      });
+    });
+    const nes = bootToNaming(built.romPath); // sample carries a title -- press through it
+    assert.notEqual(nes.cpu.mem[GAME_STATE], ST_NAMEENTRY, 'no naming session should ever open -- hero naming is off');
+    openSayAndSettle(nes);
+    assert.deepEqual(
+      nametableRow(nes, BOX_TEXT_ROW, BOX_TEXT_COL, 'Hi Hero.'.length),
+      textToTiles('Hi Hero.').tiles,
+      "init_session's own hero_name_default copy loop should have seeded pc_name_ram slot 0 with the compiled " +
+        'default ("Hero", createProject\'s own default party[0].name) with no naming session ever opening'
+    );
+  }
+);
+
+// P1-A (round-1 finding): the token's OTHER compile path -- plain dialogue,
+// no authored event at all -- end to end, action placement. kernelbytes.
+// test.js:3842 already covers the predicate half (projectUsesNameToken must
+// read effectiveDialogue, not just projectEvents); this is the real build +
+// nametable half, which nothing exercised before this round.
+test(
+  'P1-A (round-1 finding), action placement: the token in PLAIN DIALOGUE (no authored event) renders the real name after talking to the entity',
+  { skip: !hasNesasm && 'nesasm not found on PATH' },
+  async (t) => {
+    const { built } = await buildActionNamingVariant(t, (project) => {
+      project.maps[0].screens[0].entities.push({
+        actorId: 0,
+        x: 112,
+        y: 96,
+        props: { dialogue: 'Hi {name}.', event: null }
+      });
+    });
+    const nes = bootToNaming(built.romPath);
+    openSayAndSettle(nes);
+    assert.deepEqual(
+      nametableRow(nes, BOX_TEXT_ROW, BOX_TEXT_COL, 'Hi Hero.'.length),
+      textToTiles('Hi Hero.').tiles,
+      'plain dialogue carrying the token should expand it the same as a scripted Say'
+    );
+  }
+);
+
+test(
+  'action placement: after hero naming, the Say token renders the TYPED name, not the default',
+  { skip: !hasNesasm && 'nesasm not found on PATH' },
+  async (t) => {
+    const { built } = await buildActionNamingVariant(t, (project) => {
+      project.party[0].renamable = true;
+      project.maps[0].screens[0].entities.push({
+        actorId: 0,
+        x: 112,
+        y: 96,
+        props: { event: { pages: [{ cond: { type: 'none', arg: 0 }, commands: [{ op: 'say', text: 'Hi {name}.' }] }] } }
+      });
+    });
+    const nes = bootToNaming(built.romPath);
+    assert.equal(nes.cpu.mem[GAME_STATE], ST_NAMEENTRY, 'hero naming should open at the start of a new game');
+    typeNameAndFinish(nes, 'Zed');
+    for (let i = 0; i < 20 && nes.cpu.mem[GAME_STATE] === ST_NAMEENTRY; i++) nes.frame();
+    assert.equal(nes.cpu.mem[GAME_STATE], ST_GAMEPLAY, 'naming should have handed off to gameplay');
+    openSayAndSettle(nes);
+    assert.deepEqual(
+      nametableRow(nes, BOX_TEXT_ROW, BOX_TEXT_COL, 'Hi Zed.'.length),
+      textToTiles('Hi Zed.').tiles,
+      'the token should expand to the just-typed name, not the compiled default'
+    );
+  }
+);
+
+// P1-1 (round-1 finding), action placement: a Say with the token TWICE,
+// proving both instances draw correctly. draw_entities' own ptr_lo/ptr_hi
+// write (engine/entities.asm) runs every frame regardless of a token --
+// exactly why text_type_name reloads ptr_lo/ptr_hi unconditionally rather
+// than only on a token's own first frame (P1-1's fix). The text between the
+// two occurrences ("meet") forces several ordinary glyph frames, each
+// running draw_entities in between, so the SECOND token's own first frame is
+// reached only after draw_entities has already written ptr_lo/ptr_hi for
+// whatever else is on screen (sample's own slime is idle-animated) -- the
+// identical proof rpg.test.js already gives the banked placement, needed
+// again here because this placement's own typewriter is the same source but
+// a different call context (reached via ui_tick's kernel-lo dispatch, never
+// through call_battle).
+test(
+  'P1-1 (round-1 finding), action placement: a Say with the token TWICE draws the SECOND token correctly too',
+  { skip: !hasNesasm && 'nesasm not found on PATH' },
+  async (t) => {
+    const { built } = await buildActionNamingVariant(t, (project) => {
+      project.maps[0].screens[0].entities.push({
+        actorId: 0,
+        x: 112,
+        y: 96,
+        props: {
+          event: { pages: [{ cond: { type: 'none', arg: 0 }, commands: [{ op: 'say', text: '{name} meet {name}.' }] }] }
+        }
+      });
+    });
+    const nes = bootToNaming(built.romPath); // sample carries a title -- press through it
+    openSayAndSettle(nes, 400);
+    assert.deepEqual(
+      nametableRow(nes, BOX_TEXT_ROW, BOX_TEXT_COL, 'Hero meet Hero.'.length),
+      textToTiles('Hero meet Hero.').tiles,
+      'both the first AND the second token instance must read the real name'
+    );
   }
 );

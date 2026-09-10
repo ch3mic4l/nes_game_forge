@@ -66,7 +66,8 @@ import {
   HERO_NAMING_KERNEL_ALLOWANCE,
   HERO_NAMING_TITLELESS_KERNEL_ALLOWANCE,
   NAME_ENTRY_ACTION_KERNEL_ALLOWANCE,
-  HERO_DEFAULT_KERNEL_ALLOWANCE
+  HERO_DEFAULT_KERNEL_ALLOWANCE,
+  NAME_TOKEN_KERNEL_ALLOWANCE
 } from '../../main/build/generate.js';
 import { SUPPORTED_MAPPERS, rpgCapable, saveMediaImplemented, prgLayout } from '../../shared/cartridge.js';
 import {
@@ -80,7 +81,10 @@ import {
   projectUsesJoinNaming,
   projectWithoutHeroNaming,
   projectWithoutJoinNaming,
-  metaspriteKernelBytes
+  projectUsesNameToken,
+  projectWithoutNameToken,
+  metaspriteKernelBytes,
+  RPG_LIMITS
 } from '../../shared/project.js';
 import { fontBankSplit, projectUsesText } from '../../shared/font.js';
 import { createSong } from '../../shared/audio.js';
@@ -160,7 +164,16 @@ async function measureCodeBytes(
     // fixture, does not carry a second party slot to name, so withJoinNaming is a
     // no-op there -- matching D6/D8's own "Join naming is RPG-only" rule).
     withHeroNaming = false,
-    withJoinNaming = false
+    withJoinNaming = false,
+    // The Say token (docs/design-name-entry.md §9a, §11): a live Say command
+    // carrying the literal {name}. Added as its own command, the same shape
+    // withSave/withMove/etc. already use here -- unlike the banked-region
+    // isolation matrix (bankedbytes.test.js rows 19-21), a brand-new entity
+    // and event add no kernel-lo bytes of their own (screen/event data lives
+    // in the switchable window and the $E000 text bank, neither of which
+    // measureCodeBytes' post-reset delta can see), so this is safe to add
+    // rather than mutate.
+    withNameToken = false
   } = {}
 ) {
   const dir = await fsp.mkdtemp(path.join(os.tmpdir(), 'forge-kernelbytes-'));
@@ -202,6 +215,7 @@ async function measureCodeBytes(
     if (!project.sfx?.length) project.sfx = [{ name: 'Boop', volume: 10, steps: [{ note: 5, duration: 4 }] }];
     commands.push({ op: 'sfx', sfx: 0 });
   }
+  if (withNameToken) commands.push({ op: 'say', text: 'Hello {name}.' });
   if (commands.length) {
     project.maps[0].screens[0].entities.push({
       actorId: 0,
@@ -231,7 +245,9 @@ async function measureCodeBytes(
   // half never does ("7235/ 957").
   const bankLine = lines.find((line) => new RegExp(`^BANK\\s+${kernelLoBank}\\s`).test(line));
   assert.ok(bankLine, `${mapper.name}: nesasm's usage table never mentioned bank ${kernelLoBank} (kernel-lo)`);
-  const used = Number(bankLine.match(/(\d+)\/\s*(\d+)\s*$/)?.[1]);
+  const bankMatch = bankLine.match(/(\d+)\/\s*(\d+)\s*$/);
+  const used = Number(bankMatch?.[1]);
+  const bankFree = Number(bankMatch?.[2]); // nesasm's own real free-byte count for the WHOLE kernel-lo bank
   assert.ok(Number.isFinite(used) && used > 0, `${mapper.name}: could not parse a used-byte count out of "${bankLine}"`);
 
   assert.ok(built.symbolPath, `${mapper.name}: nesasm should have written a symbol file`);
@@ -240,7 +256,7 @@ async function measureCodeBytes(
   assert.ok(resetMatch, `${mapper.name}: reset should be a named symbol in game.fns`);
   const resetAddr = parseInt(resetMatch[1], 16);
 
-  return { project, codeBytes: used - (resetAddr - 0xc000), symbols };
+  return { project, codeBytes: used - (resetAddr - 0xc000), symbols, bankFree };
 }
 
 /** The address a label was assembled at, straight out of nesasm's own game.fns. */
@@ -3770,6 +3786,283 @@ test(
   }
 );
 
+// Phase 4 (the Say token, docs/design-name-entry.md §9a/§11): NAME_TOKEN_
+// KERNEL_ALLOWANCE isolated on the RPG placement, every RPG-capable board.
+// The token's own source on an RPG is party_init's unconditional pc_name
+// seed (§8) -- no hero naming needed -- so this isolates cleanly with no
+// HERO_DEFAULT_KERNEL_ALLOWANCE riding along, unlike the action-side
+// isolation below.
+test(
+  'phase 4 (Say token): NAME_TOKEN_KERNEL_ALLOWANCE isolated on the RPG placement, every RPG-capable board',
+  { skip: !hasNesasm && 'nesasm not found on PATH' },
+  async (t) => {
+    for (const mapper of CAPABLE_MAPPERS) {
+      const off = await measureCodeBytes(t, mapper, {});
+      const on = await measureCodeBytes(t, mapper, { withNameToken: true });
+      const delta = on.codeBytes - off.codeBytes;
+      assert.equal(
+        delta,
+        NAME_TOKEN_KERNEL_ALLOWANCE,
+        `${mapper.name}: NAME_TOKEN_KERNEL_ALLOWANCE triangulated to ${delta} on the RPG placement (expected ` +
+          `NAME_TOKEN_KERNEL_ALLOWANCE alone, ${NAME_TOKEN_KERNEL_ALLOWANCE} -- an RPG needs no ` +
+          'HERO_DEFAULT_KERNEL_ALLOWANCE, its own seed is unconditional party_init)'
+      );
+      assert.ok(on.project && projectUsesNameToken(on.project), 'the mutated fixture should read as token-live');
+      assertCovers({ mapper, codeBytes: on.codeBytes }, kernelCodeBytes(on.project, mapper), 'name token live, RPG placement');
+    }
+  }
+);
+
+// The action-side cost: turning the token on for an action project also
+// turns projectNeedsHeroDefault on (it is one of that predicate's own two
+// disjuncts, docs/design-name-entry.md §8), so the real, measured delta here
+// is NAME_TOKEN_KERNEL_ALLOWANCE + HERO_DEFAULT_KERNEL_ALLOWANCE (the
+// post-reset copy-loop half of it -- the table's own 10 bytes live in
+// kernelTableBytes' fixedBytes, before reset, outside what this delta can
+// see), not NAME_TOKEN_KERNEL_ALLOWANCE alone. Written out explicitly so the
+// two terms this sum is made of are visible at the assertion itself.
+test(
+  'phase 4 (Say token): the action-side cost (token + its own hero-default copy loop) triangulated, every action-capable board',
+  { skip: !hasNesasm && 'nesasm not found on PATH' },
+  async (t) => {
+    const expected = NAME_TOKEN_KERNEL_ALLOWANCE + HERO_DEFAULT_KERNEL_ALLOWANCE;
+    for (const mapper of ACTION_CAPABLE_MAPPERS) {
+      const off = await measureCodeBytes(t, mapper, { fixture: SAMPLE });
+      const on = await measureCodeBytes(t, mapper, { fixture: SAMPLE, withNameToken: true });
+      const delta = on.codeBytes - off.codeBytes;
+      assert.equal(
+        delta,
+        expected,
+        `${mapper.name}: token-on delta triangulated to ${delta}, expected NAME_TOKEN_KERNEL_ALLOWANCE ` +
+          `(${NAME_TOKEN_KERNEL_ALLOWANCE}) + HERO_DEFAULT_KERNEL_ALLOWANCE (${HERO_DEFAULT_KERNEL_ALLOWANCE}) ` +
+          `= ${expected}`
+      );
+    }
+  }
+);
+
+test(
+  'phase 4 (Say token): projectUsesNameToken predicate cases -- live/dead, and the plain-dialogue path (P1-1 round 2)',
+  async () => {
+    const project = await loadProject(SAMPLE_RPG);
+    assert.equal(projectUsesNameToken(project), false, 'the unmutated fixture carries no token');
+
+    // entities[2] on the fixture's first screen is the one entity carrying a
+    // real, live Say-bearing event (the recruit's own "I have waited for
+    // you..." page).
+    const withLive = structuredClone(project);
+    withLive.maps[0].screens[0].entities[2].props.event.pages[0].commands.push({ op: 'say', text: 'Hi {name}.' });
+    assert.equal(projectUsesNameToken(withLive), true, 'a live Say carrying the token should be detected');
+
+    const withDisabled = structuredClone(withLive);
+    const page = withDisabled.maps[0].screens[0].entities[2].props.event.pages[0];
+    page.commands[page.commands.length - 1].off = true;
+    assert.equal(
+      projectUsesNameToken(withDisabled),
+      false,
+      'a switched-off Say carrying the token must not count -- it is scaffolding the compiler drops'
+    );
+
+    // projectWithoutNameToken must clear the token even off allCommands, not
+    // only liveCommands -- the removal-candidate discipline kernelShortfallAdvice
+    // needs (a later edit could re-enable a currently-dead branch).
+    const stripped = projectWithoutNameToken(withDisabled);
+    const strippedText = stripped.maps[0].screens[0].entities[2].props.event.pages[0].commands.at(-1).text;
+    assert.equal(strippedText.includes('{name}'), false, 'projectWithoutNameToken must strip a token inside a disabled command too');
+
+    // P1-1 round 2: plain dialogue carrying the token, with no authored
+    // event to supersede it, must also be detected -- entities[0] on the
+    // same screen has no event at all.
+    const withDialogue = structuredClone(project);
+    withDialogue.maps[0].screens[0].entities[0].props.dialogue = 'Hello {name}.';
+    assert.equal(projectUsesNameToken(withDialogue), true, 'plain dialogue carrying the token should be detected');
+
+    // And the identical token in a dialogue field the compiler will never
+    // reach (superseded by that same entity's own compiling event) must NOT
+    // be detected -- effectiveDialogue's own precedence check.
+    const withSupersededDialogue = structuredClone(withLive);
+    withSupersededDialogue.maps[0].screens[0].entities[2].props.dialogue = 'Hello {name}.';
+    assert.equal(
+      projectUsesNameToken(withSupersededDialogue),
+      true, // still true -- the entity's own live Say (pushed above) carries it
+      'sanity: the entity already has a live token in its event'
+    );
+    const withOnlySupersededDialogue = structuredClone(project);
+    withOnlySupersededDialogue.maps[0].screens[0].entities[2].props.dialogue = 'Hello {name}.';
+    assert.equal(
+      projectUsesNameToken(withOnlySupersededDialogue),
+      false,
+      "a token sitting only in a dialogue field the compiler will never reach (this entity's own event already " +
+        'compiles a live page) must not count'
+    );
+
+    // A token sitting inside a switched-off branch's own then-side is
+    // scaffolding the compiler already drops -- the identical liveCommands
+    // discipline projectUsesMove already holds to.
+    const withBranchedOffToken = structuredClone(project);
+    withBranchedOffToken.maps[0].screens[0].entities[2].props.event.pages[0].commands.push({
+      op: 'branch',
+      cond: { type: 'switchOn', arg: 0, value: 0 },
+      off: true,
+      then: [{ op: 'say', text: 'Hi {name}.' }],
+      else: []
+    });
+    assert.equal(
+      projectUsesNameToken(withBranchedOffToken),
+      false,
+      'a token inside a switched-off branch must not count'
+    );
+    withBranchedOffToken.maps[0].screens[0].entities[2].props.event.pages[0].commands.at(-1).off = false;
+    assert.equal(
+      projectUsesNameToken(withBranchedOffToken),
+      true,
+      'the identical token becomes live once its branch is switched back on'
+    );
+  }
+);
+
+test(
+  'phase 4 (Say token): kernelShortfallAdvice offers "the name token" as a removal candidate',
+  async () => {
+    // MMC1, Save + Move + Turn + Wait: 38 bytes free before the token (real,
+    // nesasm-independent -- checked via kernelCodeBytes/kernelTableBytes
+    // directly). Adding a live token deepens that to a 20-byte deficit
+    // (58 - 38), and the token alone frees the full 58, so it must be
+    // offered as one real solo fix alongside Move/Turn/Wait/Save.
+    const project = await loadProject(SAMPLE_RPG);
+    project.cartridge.mapper = 1;
+    project.project.titleMap = 0;
+    project.project.titleScreen = 0;
+    project.maps[0].screens[0].entities.push({
+      actorId: 0,
+      x: 16,
+      y: 16,
+      props: {
+        event: {
+          pages: [
+            {
+              cond: { type: 'none', arg: 0 },
+              commands: [
+                { op: 'save' },
+                { op: 'move', who: 'self', dir: 'up', dist: 16 },
+                { op: 'turn', who: 'self', dir: 'up' },
+                { op: 'wait', frames: 5 },
+                { op: 'say', text: 'Hi {name}.' }
+              ]
+            }
+          ]
+        }
+      }
+    });
+    const message = kernelShortfallMessage(project);
+    assert.match(message, /the name token \(frees \d+ bytes\)/, 'the token should be offered as one real fix');
+  }
+);
+
+test(
+  'phase 4 (Say token): sample (NROM) with hero naming AND the token both live -- the combination §11 asked to have measured, TITLED (sample\'s own real configuration)',
+  { skip: !hasNesasm && 'nesasm not found on PATH' },
+  async (t) => {
+    const nrom = ACTION_CAPABLE_MAPPERS.find((m) => m.id === 0);
+    // withTitle defaults false in measureCodeBytes -- sample itself carries a
+    // title, so leaving this implicit measures a project that is NOT the one
+    // §11 asked about (round-1 finding). Both configurations are measured and
+    // reported; only the titled one is sample's own real shape.
+    const titled = await measureCodeBytes(t, nrom, { fixture: SAMPLE, withTitle: true, withHeroNaming: true, withNameToken: true });
+    const titleless = await measureCodeBytes(t, nrom, { fixture: SAMPLE, withTitle: false, withHeroNaming: true, withNameToken: true });
+    const budget = kernelCodeBytes(titled.project, nrom); // the ledger's own reservation for this exact configuration
+    const titlelessBudget = kernelCodeBytes(titleless.project, nrom);
+    // bankFree is nesasm's own real free-byte count for the WHOLE kernel-lo
+    // bank (pre-reset tables plus post-reset code) -- the "free bank bytes"
+    // figure, a different quantity from budget - codeBytes (which compares
+    // only the post-reset code half against the ledger's own reservation for
+    // that half).
+    console.log(
+      `sample (NROM), hero naming + token, TITLED: nesasm used ${titled.codeBytes} post-reset bytes, ledger budget ` +
+        `${budget}, real free bank bytes ${titled.bankFree}`
+    );
+    console.log(
+      `sample (NROM), hero naming + token, TITLELESS: nesasm used ${titleless.codeBytes} post-reset bytes, ledger ` +
+        `budget ${titlelessBudget}, real free bank bytes ${titleless.bankFree}`
+    );
+
+    // The real "FITS" check: assertCovers (the real band) AND checkCapacity
+    // itself reporting no problem for sample's own real, titled shape --
+    // not a bare Number.isFinite on an unlabelled delta.
+    assertCovers({ mapper: nrom, codeBytes: titled.codeBytes }, budget, 'hero naming + token, sample, titled (NROM)');
+    const { problems } = checkCapacity(titled.project);
+    assert.deepEqual(
+      problems.filter((p) => p.severity === 'error'),
+      [],
+      'sample (NROM), hero naming + token, titled -- checkCapacity must report no error: this is the real FITS'
+    );
+  }
+);
+
+// P1-C: the action token isolation (the "triangulated" test above) only ever
+// checks nesasm DELTAS, never whether kernelCodeBytes still actually covers
+// real usage with the requested per-board margin. This adds that absolute
+// coverage, the same measured/fallback split every other whole-board check
+// in this file already uses (kernelbytes.test.js's own ACTION_MEASURED_
+// MAPPERS/ACTION_FALLBACK_MAPPERS idiom): a full [KERNEL_SLACK, 2*KERNEL_SLACK]
+// band on a board with a real measured base, and a bare margin >= KERNEL_SLACK
+// (no upper bound) on a board falling back to the largest measured base.
+test(
+  'phase 4 (Say token): absolute assertCovers with the token live (hero naming off), every action-capable board',
+  { skip: !hasNesasm && 'nesasm not found on PATH' },
+  async (t) => {
+    for (const mapper of ACTION_MEASURED_MAPPERS) {
+      const entry = await measureCodeBytes(t, mapper, { fixture: SAMPLE, withNameToken: true });
+      assertCovers({ mapper, codeBytes: entry.codeBytes }, kernelCodeBytes(entry.project, mapper), 'name token live, sample');
+    }
+    for (const mapper of ACTION_FALLBACK_MAPPERS) {
+      const entry = await measureCodeBytes(t, mapper, { fixture: SAMPLE, withNameToken: true });
+      const budget = kernelCodeBytes(entry.project, mapper);
+      const margin = budget - entry.codeBytes;
+      assert.ok(
+        margin >= KERNEL_SLACK,
+        `${mapper.name} (fallback base), name token live: margin ${margin} is under KERNEL_SLACK`
+      );
+    }
+  }
+);
+
+test('phase 4 (Say token): kernelShortfallAdvice\'s counterfactual frees the token term AND the hero-default table+loop, on an action project where the token was the only reason for either', async () => {
+  // Pure occupancy arithmetic, no nesasm required -- kernelShortfallAdvice's
+  // own `occupancy` helper (kernelCodeBytes + kernelTableBytes' fixedBytes +
+  // tableBytes), computed directly here the same way that private function
+  // does internally. On sample (action), with the token as the only naming
+  // feature live, dropping it must free NAME_TOKEN_KERNEL_ALLOWANCE (58, the
+  // code arm) AND all of HERO_DEFAULT_KERNEL_ALLOWANCE's own two homes --
+  // the 11-byte copy loop (kernelCodeBytes) and the 10-byte table
+  // (kernelTableBytes' fixedBytes) -- because projectNeedsHeroDefault
+  // reduces to false once the token is gone too, never summing constants by
+  // hand (CLAUDE.md: "Advice prices removals by full counterfactual
+  // occupancy... never by summing constants").
+  const mapper = ACTION_CAPABLE_MAPPERS.find((m) => m.id === 4); // MMC3
+  const project = await loadProject(SAMPLE);
+  project.maps[0].screens[0].entities.push({
+    actorId: 0,
+    x: 16,
+    y: 16,
+    props: { event: { pages: [{ cond: { type: 'none', arg: 0 }, commands: [{ op: 'say', text: 'Hi {name}.' }] }] } }
+  });
+  const occupancy = (proj) => {
+    const { fixedBytes, tableBytes } = kernelTableBytes(proj, mapper);
+    return kernelCodeBytes(proj, mapper) + fixedBytes + tableBytes;
+  };
+  const before = occupancy(project);
+  const after = occupancy(projectWithoutNameToken(project));
+  const expected = NAME_TOKEN_KERNEL_ALLOWANCE + HERO_DEFAULT_KERNEL_ALLOWANCE + RPG_LIMITS.nameLength;
+  assert.equal(
+    before - after,
+    expected,
+    `dropping the token should free ${NAME_TOKEN_KERNEL_ALLOWANCE} (token) + ${HERO_DEFAULT_KERNEL_ALLOWANCE} ` +
+      `(copy loop) + ${RPG_LIMITS.nameLength} (hero_name_default table, one byte per name-length column) = ` +
+      `${expected} bytes total`
+  );
+});
+
 // P1-A (phase 3 fix round 3, fixed round 4 P2-2): kernelTableBytes' own new
 // chrTableBytes term (main/build/generate.js) -- tileset_bank/tileset_lo/
 // tileset_hi (assets/chrtables.inc), 3 bytes per chrPayloadRegions() region,
@@ -4066,6 +4359,48 @@ test(
           `${label}: whole-bank margin ${margin} is under KERNEL_SLACK -- the fallback base no longer covers real usage`
         );
       }
+    }
+  }
+);
+
+// Phase 4 (Say token): the whole-bank absolute check, one more
+// configuration -- token ON, both game types, every measured action-capable
+// board plus every RPG-capable board. The action side also picks up
+// HERO_DEFAULT_KERNEL_ALLOWANCE's own 10-byte pre-reset table (kernelTableBytes'
+// fixedBytes), which is exactly what this whole-bank check (unlike
+// assertCovers) is able to see.
+test(
+  'phase 4 (Say token): the whole kernel-lo bank with the token live, every measured board, both game types',
+  { skip: !hasNesasm && 'nesasm not found on PATH' },
+  async (t) => {
+    for (const mapper of ACTION_MEASURED_MAPPERS) {
+      const project = await loadProject(SAMPLE);
+      project.cartridge.mapper = mapper.id;
+      let mutated = false;
+      for (const map of project.maps) {
+        for (const screen of map.screens) {
+          for (const entity of screen.entities ?? []) {
+            if (typeof entity.props?.dialogue === 'string' && entity.props.dialogue && !mutated) {
+              entity.props.dialogue = entity.props.dialogue.replace(/\.$/, ' {name}.');
+              mutated = true;
+            }
+          }
+        }
+      }
+      assert.ok(mutated, 'sample should have a live dialogue line to mutate');
+      const margin = await measureWholeBank(t, mapper, project);
+      const label = `${mapper.name} (sample, action), token ON`;
+      assert.ok(margin >= KERNEL_SLACK, `${label}: whole-bank margin ${margin} is under KERNEL_SLACK`);
+      assert.ok(margin <= KERNEL_SLACK * 2, `${label}: whole-bank margin ${margin} is over 2*KERNEL_SLACK`);
+    }
+    for (const mapper of CAPABLE_MAPPERS) {
+      const project = await loadProject(SAMPLE_RPG);
+      project.cartridge.mapper = mapper.id;
+      project.maps[0].screens[0].entities[2].props.event.pages[0].commands[0].text += ' {name}';
+      const margin = await measureWholeBank(t, mapper, project);
+      const label = `${mapper.name} (sample-rpg, RPG), token ON`;
+      assert.ok(margin >= KERNEL_SLACK, `${label}: whole-bank margin ${margin} is under KERNEL_SLACK`);
+      assert.ok(margin <= KERNEL_SLACK * 2, `${label}: whole-bank margin ${margin} is over 2*KERNEL_SLACK`);
     }
   }
 );

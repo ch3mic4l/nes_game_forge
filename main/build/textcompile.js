@@ -24,7 +24,7 @@
 // engine/constants.asm) rather than anything this module tracks — a call is a
 // jump the engine can unwind, not a shape the compiler flattens.
 
-import { BOX_COLS, BOX_ROWS, textToTiles, wrapText } from '../../shared/font.js';
+import { BOX_COLS, BOX_ROWS, NAME_TOKEN, textToTiles, wrapText } from '../../shared/font.js';
 import {
   CHOICE_LIMITS,
   EVENT_COMMANDS,
@@ -61,6 +61,7 @@ import { NO_SONG, songByte, songFrameLength, NO_SFX, sfxByte, sfxFrameLength } f
 export const TXT_END = 0x00;
 export const TXT_NEWLINE = 0x01;
 export const TXT_PAGE = 0x02;
+export const TXT_NAME = 0x03;
 
 // Page conditions and command opcodes are numbered by their position in
 // EVENT_CONDITIONS and EVENT_COMMANDS — that order *is* the wire format, so it
@@ -124,19 +125,45 @@ export const MAX_TABLE = 255; // $FF is the "none" marker in both tables
 export const MAX_BODY = 255;
 export const OP_JUMP = 0xfe; // the compiler's own punctuation; see constants.asm
 
+// One wrapped line as engine bytes, splitting out every `{name}` occurrence
+// into the single TXT_NAME opcode before textToTiles ever sees that span —
+// textToTiles is never handed an unconsumed token fragment to render as
+// furniture-adjacent glyphs. allowNameToken is false by default (P2-5): a
+// choice option label never recognises the token, so its literal braces
+// compile as ordinary glyphs instead.
+function encodeLine(line, allowNameToken) {
+  if (!allowNameToken) return textToTiles(line);
+  const tiles = [];
+  const unmapped = new Set();
+  let rest = line;
+  let cut;
+  while ((cut = rest.indexOf(NAME_TOKEN)) !== -1) {
+    const mapped = textToTiles(rest.slice(0, cut));
+    for (const char of mapped.unmapped) unmapped.add(char);
+    tiles.push(...mapped.tiles, TXT_NAME);
+    rest = rest.slice(cut + NAME_TOKEN.length);
+  }
+  const mapped = textToTiles(rest);
+  for (const char of mapped.unmapped) unmapped.add(char);
+  tiles.push(...mapped.tiles);
+  return { tiles, unmapped };
+}
+
 /**
  * Authored text as engine bytes: pages of wrapped lines, then a terminator.
  * A page break costs one byte and a line break one, so what the editor shows as
- * four lines is what the box types.
+ * four lines is what the box types. allowNameToken (default false) opts a
+ * caller into recognising the literal `{name}` sequence as TXT_NAME — Say
+ * text only (docs/design-name-entry.md §9a P2-5), never a choice label.
  */
-export function encodeString(text) {
+export function encodeString(text, allowNameToken = false) {
   const bytes = [];
   const unmapped = new Set();
   wrapText(text, BOX_COLS, BOX_ROWS).forEach((page, pageIndex) => {
     if (pageIndex) bytes.push(TXT_PAGE);
     page.forEach((line, lineIndex) => {
       if (lineIndex) bytes.push(TXT_NEWLINE);
-      const mapped = textToTiles(line);
+      const mapped = encodeLine(line, allowNameToken);
       for (const char of mapped.unmapped) unmapped.add(char);
       bytes.push(...mapped.tiles);
     });
@@ -159,8 +186,8 @@ export function compileText(project) {
   const eventFor = new Map();
   const unmapped = new Set();
 
-  const internString = (text) => {
-    const encoded = encodeString(text);
+  const internString = (text, allowNameToken = false) => {
+    const encoded = encodeString(text, allowNameToken);
     for (const char of encoded.unmapped) unmapped.add(char);
     const key = encoded.bytes.join(',');
     if (!stringIds.has(key)) {
@@ -239,7 +266,7 @@ export function compileText(project) {
   const encodeCommand = (command, where) => {
     switch (command.op) {
       case 'say':
-        return [OP_SAY, internString(command.text ?? '')];
+        return [OP_SAY, internString(command.text ?? '', true)];
       case 'warp':
         return [
           opIndex('warp'),
@@ -563,7 +590,7 @@ export function compileText(project) {
                 `${entityLabel(project, entity)} on ${screenLabel(project, mapIndex, screenIndex)}`
               )
             : // one unconditional page: [cond, arg, value, length], then Say and End
-              [COND_NONE, 0, 0, 3, OP_SAY, internString(dialogue), OP_END, EVT_PAGES_END]
+              [COND_NONE, 0, 0, 3, OP_SAY, internString(dialogue, true), OP_END, EVT_PAGES_END]
         );
       }
     }
