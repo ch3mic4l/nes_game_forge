@@ -59,7 +59,17 @@ behaviour) only the Mesen save checks have. Those checks — `test/lua/run_sram_
 `test/lua/run_flash_check.sh`, driving `save_sram.lua` and `save_flash.lua` — are what these four
 exist to feed, and the only things that consume them. No test may mutate any of the six — variants
 go to `mkdtemp` directories — and no existing test is repointed at any of the new ones: every
-engine test stays written against `sample/`.
+engine test stays written against `sample/`. None of the six is ever regenerated in place, either:
+each is hand-edited JSON once written, and the no-regeneration policy is what keeps them
+pre-migration on disk — `samplegen.test.js` only asserts load-equality (its output loads deepEqual
+to the checked-in fixture) and non-mutation, never on-disk shape. Running one of the
+`npm run sample*` scripts over a checked-in fixture is data loss, not a refresh. Three of the six
+carry in-game naming for
+real: `sample/` has hero naming plus a `{name}` token in the slime's plain dialogue (screen 0);
+`sample-rpg/` has hero and Join naming, on a titleless build; `sample-rpg-mmc1/` has Join naming
+for Iris alone, hero naming off, so `save_sram.lua` can assert a typed name survives Continue. No
+fixture or starter carries the token except `sample/`; the RPG starter names its two members Hero
+and Ally.
 
 `sample-mmc1/` and `sample-mmc3/` are **the same walk on two boards**: same 2x1 world, same saver
 at the same coordinates running the same page, differing only in mapper and in the `Say` the MMC3
@@ -165,21 +175,31 @@ Anything the 6502 engine and the JavaScript tooling both depend on has **one** d
 - The NES palette → `shared/nespalette.js`, shared by the editors *and* the emulator, so the
   in-app preview matches the editors by construction.
 - The message font → `shared/font.js`: the glyph art, the character-to-tile mapping, the window
-  furniture aliases (`BORDER_H`, `ARROW_TILE`, …), `wrapText`, and the `projectUsesText` /
-  `projectUsesCombat` predicates that decide whether a project pays for any of it. **The
-  reservation is conditional**: a project that never shows text keeps all 256 background tiles,
-  and one that does loses `$A0-$FF` in *every* tileset — except on MMC3, where `fontBankSplit`
-  (also here) moves the font into its own CHR page and the scanline IRQ pays instead; see the
-  split section under The engine. The generator stamps the glyphs into the
+  furniture aliases (`BORDER_H`, `ARROW_TILE`, …), `wrapText`, `NAME_LENGTH`, and the
+  `projectUsesText` / `projectUsesCombat` predicates that decide whether a project pays for any of
+  it. **The reservation is conditional**: a project that never shows text keeps all 256 background
+  tiles, and one that does loses `$A0-$FF` in *every* tileset — except on MMC3, where
+  `fontBankSplit` (also here) moves the font into its own CHR page and the scanline IRQ pays
+  instead; see the split section under The engine. The generator stamps the glyphs into the
   **build-time** CHR copies only — never into project data, or the font would turn up in the Tile
   Forge as something the user drew. The same predicate drives the Tile Forge's shading, the
   `validateProject` error, and the stamp, so the three cannot disagree. The glyph *indices* reach
-  the engine through `config.inc`, so no `.asm` file spells one out.
+  the engine through `config.inc`, so no `.asm` file spells one out. **The in-game naming grid is
+  text too**: `projectUsesText` answers true for a naming-only project via `projectUsesNaming`, a
+  deliberate duplicate of `projectUsesNameEntry` (font.js cannot import project.js, so the two stay
+  independent predicates held in agreement by `font.test.js`) — before this, a hero-naming-only
+  action project shipped a grid with no glyphs stamped into its tilesets. `RPG_LIMITS.nameLength`
+  reads `NAME_LENGTH` the same import-direction way; `wrapText` measures the `{name}` Say token
+  (below) as `NAME_LENGTH` columns and never splits one across a line.
 - Actions and game states → `ACTIONS` and `INPUT_STATES` in `shared/project.js`. Their *order* is
   the wire format: `generate.js` emits `input_actions` as one row per state of one byte per
   button, and the engine indexes it with `game_state * NUM_BUTTONS`. `ACT_*` and `ST_*` in
   `engine/constants.asm` are those orders written down, so adding an action or a state means
-  editing both ends in the same change.
+  editing both ends in the same change. `INPUT_STATES` has a seventh entry, `nameentry`
+  (in-game party-member naming) — its row is conditional, the one case `input_actions` is not
+  simply "one row per state": `generate.js` emits `INPUT_STATES.length` rows only when naming is
+  live on the project, `INPUT_STATES.length - 1` otherwise, so a project that never names anyone
+  pays no table byte for a state it can never enter.
 - Describing and resolving a test scenario → `shared/playscenario.js` — not the stored scenario
   itself (`renderer/app.js`'s own `playScenario`/`rememberPlayScenario`), and not which toggles
   exist (`shared/testoverrides.js`'s `TOGGLE_NAMES`). The rule, stated in full in the file's own
@@ -205,6 +225,10 @@ Anything the 6502 engine and the JavaScript tooling both depend on has **one** d
   without it. The same goes for the *labels* generally: `game.fns` is how the tooling names an
   address, so a label is cheaper than an assumption about which instruction follows which. Tests hardcode addresses with a `; from engine/constants.asm` comment
   because a test that reads the file it is checking proves nothing; shipping code must not.
+  `testplay.js`'s start override also pokes `box_state`/`box_after` to `BOX_CLOSED` (all three
+  added to `REQUIRED_RAM`): on a titleless naming-on ROM the in-game naming grid is mid-raise
+  before `main_loop` ever runs, and MMC3's `split_select` reads `box_state` every frame regardless
+  of which state owns it.
 
 `shared/` modules must stay free of DOM and Node APIs: they are imported by the main process, the
 renderer, and `node:test` alike.
@@ -664,7 +688,14 @@ fixture wrong.
 Join's `member` above the deleted index shifts down, the hole becomes `null`. The Character Forge's
 own party Remove handler calls it in its one `store.commit`. The normalizer keeps `null` `null`;
 `validateProject` refuses a live Join naming `null` or an index ≥ `project.party.length`, via
-`liveCommands` not `allCommands`.
+`liveCommands` not `allCommands`. `project.party[0]` is unconditional on every game type — a
+project always has someone to play as — and `project.party[N].renamable` is the single opt-in for
+in-game naming, both for the hero (index 0, at boot or the title) and for a named Join (any other
+index); the Map Forge's own join row shows `renamable` as a read-only hint, never an editable
+control there, since the flag belongs to the Character Forge. `project.party` itself used to be
+edited on the Sprite Forge's own `party` tab; that tab is removed entirely, a lossless move rather
+than a copy — two editing surfaces for one record is the drift this codebase refuses. See
+`docs/design-character-forge.md`.
 
 **`SAVE_LAYOUT_VERSION` is 3**, bumped 1→2 when `inv_items`' own bytes started meaning an item
 id rather than an actor id, then 2→3 when name entry (phase 1) added `pc_name_ram` to the body —
@@ -854,6 +885,29 @@ finished and nothing noticed. Listing options is what actually reads `box_row`, 
 wipe left, drawing no labels at all while every RAM assertion still passed — why `script.test.js`
 reads the *nametable* for this one.
 
+**The literal sequence `{name}` in a scripted `Say` or an entity's plain dialogue — never a
+choice label — compiles to one `TXT_NAME` byte** (`$03`, defined in both hand-duplicated homes:
+`engine/constants.asm:1055` and `main/build/textcompile.js:64`), expanded by
+`engine/text.asm`'s `text_type_name` arm from `pc_name_ram` slot 0 at the typewriter's own
+one-glyph-per-frame rate. `hero_name_default` (`assets/nameentry.inc`, a 10-byte table,
+action-only) is what seeds that slot on an action project with no battle bank to read a name
+from; an RPG never emits the table at all, seeding the identical slot from the banked `pc_name`
+table through `party_join`'s own `NAME_SEED_ENABLED` copy instead (`engine/battle.asm`), since
+`party_init` already calls `party_join` for every starting member, hero included. The pointer pair
+is reloaded every frame the token is in progress, not only the first, because `ptr_lo`/`ptr_hi` are
+shared scratch `draw_entities`' own animation path clobbers between frames.
+`msg_name_idx = $059F` (`engine/constants.asm:767`, allocated with the Say token in phase 4, not
+phase 1) is the token's own typewriter progress, reset to 0 in `box_begin`. `NAME_TOKEN_ENABLED`
+gates the whole arm; a naming-off build still
+keeps an empty `text_type_name` label so `text_type_page`'s branch target never moves.
+`encodeLine`'s own `allowNameToken` flag (`main/build/textcompile.js`) decides eligibility at
+compile time — true for a scripted `Say` and for plain dialogue (`effectiveDialogue`,
+`shared/eventrules.js`, the compiler's own dialogue-vs-event precedence that `projectEvents` alone
+never reaches), false for a choice option label, which compiles the literal text as six ordinary
+glyphs instead and draws a Map Forge warning. `projectUsesNameToken` (`shared/project.js`) walks
+`liveCommands` plus `effectiveDialogue` to answer whether any of this is live; `validateProject`
+refuses a live token on an action project with no party member to read a default from.
+
 A page is `[cond, arg, value, body length, commands…]`, and **a branch is that same header inline
 in a body**: `[OP_IF, cond, arg, value, then-length]`, the then-branch, `[OP_JUMP, else-length]`,
 the else-branch. Past the opcode the shapes are identical, so `script_cond` and the skip that
@@ -943,7 +997,7 @@ Move's mechanism is described under "The event system" above. Its cost is measur
 because hand-written code that assembles to an unknown size is exactly what the Code Forge's own
 capacity philosophy (below, under "The Code Forge") refuses to model — the kernel-lo bank is a
 fixed 8,192-byte region shared by engine code and every project's own lookup tables, and
-`checkCapacity` (`main/build/generate.js`) has to know both halves exactly. Six rules hold that
+`checkCapacity` (`main/build/generate.js`) has to know both halves exactly. Seven rules hold that
 model together, and they are the ones any change to this ledger has to keep:
 
 - **A conditional feature's cost is a separate generated allowance, never folded into a base.**
@@ -984,6 +1038,17 @@ model together, and they are the ones any change to this ledger has to keep:
   has stopped tracking closely enough to catch the next regression. (`bankedbytes.test.js` holds
   the same discipline for the separate banked battle-region ledger, not these kernel-lo
   allowances.)
+- **`assertCovers` only ever compared post-`reset` *code* against the real usage a build measured,
+  so drift in a *table* emitted before `reset` — CHR-RAM tileset tables, an empty-array
+  placeholder byte — was invisible until a whole-bank absolute check existed.** In-game naming's
+  phase 3 added that check (nesasm's total kernel-lo usage against
+  `kernelCodeBytes + kernelTableBytes` together) and it surfaced three pre-existing ledger gaps in
+  one pass: UNROM 512's `tileset_bank`/`tileset_lo`/`tileset_hi` CHR-RAM tables (3 bytes per
+  region — `kernelTableBytes` now takes the mapper as a parameter for exactly this), the one-byte
+  `ms_data_0`/`anim_data_0` placeholders a project with no metasprites or animations still emits,
+  and the per-entry placeholder for a metasprite with no tiles or an animation with no frames
+  (`metaspriteKernelBytes` now floors each data term at 1 rather than 0). None of these are code
+  terms `assertCovers`'s code-only comparison could ever have seen.
 - **`kernelShortfallAdvice` (`main/build/generate.js`) prices a removal by disabling every live
   occurrence of a command — nested inside a branch, a choice option, or a common event — and asking
   what the resulting project's full kernel-lo occupancy (`kernelCodeBytes + fixedBytes +
@@ -991,7 +1056,13 @@ model together, and they are the ones any change to this ledger has to keep:
   constants.** Summing under-counts: on MMC3, a project whose only live event is a Move (or a
   Sting) is that project's only reason `SPLIT_KERNEL_ALLOWANCE` is paid at all, so removing it has
   to free the term *and* the split term together, which only the counterfactual-occupancy approach
-  knows.
+  knows. In-game naming's own strip helpers (`projectWithoutHeroNaming`/`projectWithoutJoinNaming`/
+  `projectWithoutNameToken`, `shared/project.js`) follow the identical full-occupancy rule for
+  content that is not a command at all — a `renamable` flag or a token inside dialogue — and both
+  `kernelShortfallAdvice` and `battleShortfallAdvice` (`main/build/battletables.js`) now offer "the
+  name token" as one of the removals they name. Pricing an alternative *mapper* the same
+  full-occupancy way is what lets one be recommended at all once a project's real shortfall
+  includes table bytes an allowance-summing guess would have missed.
 - **A mapper offered as a fix must still hold every tileset, every screen and the project's
   mirroring choice** — a smaller kernel-lo reservation alone is not a valid suggestion if
   `reconcileCartridge` would silently truncate one of those the moment the author switched.
@@ -1000,9 +1071,10 @@ Current allowance figures (`main/build/generate.js` unless noted; each named cod
 delta `kernelbytes.test.js` measures exactly, on every board named — the base, the derived table
 sizes, the route zero-cost proof and `KERNEL_SLACK` itself are each checked their own way, below):
 
-- `BASE_KERNEL_CODE_BYTES_BY_MAPPER = { 1 (MMC1): 6022, 4 (MMC3): 6039, 30 (UNROM 512): 6217 }` —
-  action-side, nothing conditional on, falling back to the largest of the three for an unmeasured
-  mapper (`docs/kernel-base-overcharge-report.md`). `BATTLE_KERNEL_ALLOWANCE_BY_MAPPER = { 1: 253,
+- `BASE_KERNEL_CODE_BYTES_BY_MAPPER = { 0 (NROM): 5952, 1 (MMC1): 6022, 4 (MMC3): 6039, 30 (UNROM
+  512): 6217 }` — action-side, nothing conditional on, falling back to the largest of the four for
+  an unmeasured mapper (`docs/kernel-base-overcharge-report.md`; the NROM entry was added measuring
+  in-game naming's own isolation deltas, below). `BATTLE_KERNEL_ALLOWANCE_BY_MAPPER = { 1: 253,
   4: 265, 30: 253 }` is its RPG-only supplement — no fallback, deliberately, the same reason Save's
   table has none; MMC3's extra 12 bytes are `split_select`'s second `.if BATTLE_ENABLED` arm
   (`engine/split.asm`). Its gate, `battleEnabledFor` (`codeRegions(...).length > 0`), does not
@@ -1031,6 +1103,24 @@ sizes, the route zero-cost proof and `KERNEL_SLACK` itself are each checked thei
   (`item_metasprite`, `item_effect_kind`, `item_effect_amount`, one byte each in
   `assets/items.inc`); `ITEM_EFFECT_KERNEL_ALLOWANCE_BY_GAME_TYPE = { action: 63, rpg: 60 }` for
   `use_item_apply`.
+- In-game party-member naming, seven kernel-lo terms plus two banked ones — flat across every board
+  on both game types, nesasm-measured by triangulating real deltas rather than guessed
+  (`docs/design-name-entry.md` §4/§11): `NAME_ENTRY_KERNEL_ALLOWANCE = 115` (the hook glue every
+  naming feature shares — `nm_acted`, the `do_action`/`draw_ui`/`ui_tick`/`text_tick` naming arms,
+  and the five `name_begin`/`tick`/`draw`/`select`/`cancel` shims above), charged whenever hero or
+  Join naming is live; `JOIN_NAMING_KERNEL_ALLOWANCE = 64` (`script_op_join`'s own growth,
+  RPG-only); `HERO_NAMING_KERNEL_ALLOWANCE = 10` (`start_game`'s naming arm, both game types);
+  `HERO_NAMING_TITLELESS_KERNEL_ALLOWANCE = 15` (`reset`'s own titleless naming arm, paid only with
+  no title screen to reach `start_game` through — `sample-rpg`, as shipped, pays this);
+  `NAME_ENTRY_ACTION_KERNEL_ALLOWANCE = 709` (the grid's own body, `engine/nameentry.asm`, when an
+  action project has no battle bank to place it in — banked instead, `NAME_ENTRY_BATTLE_ALLOWANCE
+  = 765`, on an RPG: the grid's own body plus `battle_entry`'s own dispatch growth, not the grid
+  alone); `HERO_DEFAULT_KERNEL_ALLOWANCE = 11` (`init_session`'s copy loop alone — the
+  10-byte `hero_name_default` table itself is a `kernelTableBytes` term instead, since it assembles
+  before `reset`); `NAME_TOKEN_KERNEL_ALLOWANCE = 58` (`text_type_name`, flat on every board and
+  both game types, gated on `NAME_TOKEN_ENABLED` alone); banked `NAME_COPY_BATTLE_ALLOWANCE = 47`
+  (`party_join`'s own name-copy loop, gated on `projectNeedsNameSeed` — a token-only RPG pays this
+  even with no `renamable` party member, since the token still needs a seeded name to read).
 - `STING_KERNEL_ALLOWANCE_STANDALONE = 172` (+12: `sting_snapshot`/`restore` now also shadow
   `mus_inst_base`) plus the shared `AUDIO_FX_KERNEL_ALLOWANCE = 15` (paid by either);
   `SFX_KERNEL_ALLOWANCE_STANDALONE = 295`; `STING_SFX_INTERACTION_ALLOWANCE = 5` more when both
@@ -1057,8 +1147,16 @@ sizes, the route zero-cost proof and `KERNEL_SLACK` itself are each checked thei
   alarm, not spare headroom: too wide a margin means some term stopped tracking the engine closely.
 
 **Documented limitations** — combinations `checkCapacity` refuses today, each backed by its own
-named test in `kernelbytes.test.js` rather than a silent gap; the figures below are current, as the
-tests measure them:
+named test in `kernelbytes.test.js` rather than a silent gap; every figure below is a naming-off
+figure. Most of the tests behind them strip naming explicitly (`project.party[0].renamable =
+false`, and `party[1]` where present), inline or through the shared `assertSfxRefusal` helper.
+Two do not: the `Sting`-deepens-it row's own test ("`sample-rpg` with Save, Move (no item) and a
+live Sting does not build on MMC3") runs with `sample-rpg`'s naming left live — 391 bytes short
+there, not the 198 pinned below — and asserts only the advice-message shape, never a byte figure,
+so the 198 is pinned by this file, not computed by that test. The Sfx-only fits control
+("`sample-rpg` with its one live item and a live SFX and nothing else still builds on MMC3," one
+of the "two fits controls" below) also leaves naming live; naming only adds cost, so "still builds"
+holds *a fortiori* with it stripped too.
 
 - MMC3, `Save` + `Move` + one live item: 90 bytes short (fits on MMC1 with 121 free).
 - UNROM 512, `Save` + `Move`, no item: 167 bytes short — unrelated to items; dropping one does not
@@ -1152,13 +1250,36 @@ the single writer for that, consulted by the schema, the Build panel and `reconc
 one there may be.** `player.asm` dereferences `mtptr` out of the switchable window every single
 frame, so the trampoline ends with `jmp set_screen_ptr` — the restore *is* the return; forgetting
 it leaves the game reading its map out of the battle system's code, with no crash and no obvious
-banking bug. `banked.test.js` asserts the restore. The trampoline has four entry points
-(`BE_INIT`, `BE_TICK`, `BE_JOIN`, `BE_RESTORE`), and `BE_JOIN` is the one used *on the field*: the
-script's Join command recruits a party member mid-conversation, so the restore matters most there
-— the frame it ran in still has a map to draw. `BE_RESTORE` runs at load time (`engine/save.asm`),
-recomputing `pc_spells` from the restored level rather than trusting the save's own possibly-stale
-bitmask. Unlike `BE_JOIN`, this restore is masked by its caller: `continue_game` ends `jmp
-redraw_screen`, re-running `set_screen_ptr` regardless of whether the trampoline exit succeeded.
+banking bug. `banked.test.js` asserts the restore. The trampoline has nine entry points: the
+original four (`BE_INIT`, `BE_TICK`, `BE_JOIN`, `BE_RESTORE`) plus five more added for in-game
+party-member naming (`BE_NAME_BEGIN`, `BE_NAME_TICK`, `BE_NAME_DRAW`, `BE_NAME_SELECT`,
+`BE_NAME_CANCEL` — `engine/constants.asm:896-900`), below. `BE_JOIN` was the first entry point used
+*on the field*: the script's Join command recruits a party member mid-conversation, so the restore
+matters most there — the frame it ran in still has a map to draw. It is no longer the only one:
+`script_op_join_call` (`engine/script.asm:422`) calls `BE_NAME_BEGIN` right behind `BE_JOIN` for a
+named Join, and the other four `BE_NAME_*` arms run on the field too, through the `ui.asm` shims
+below, for as long as that Join's own naming session stays open. `BE_RESTORE` runs at load time
+(`engine/save.asm`), recomputing `pc_spells` from the restored level rather than trusting the
+save's own possibly-stale bitmask. Unlike `BE_JOIN`, this restore is masked by its caller:
+`continue_game` ends `jmp redraw_screen`, re-running `set_screen_ptr` regardless of whether the
+trampoline exit succeeded.
+
+**In-game party-member naming (`engine/nameentry.asm`, docs/design-name-entry.md) is one source
+assembled in exactly one of two placements, never both.** On an RPG (`NAME_ENTRY_BANKED` true, the
+same `battleBankEnabled` fact `BATTLE_ENABLED` itself reads) it is `.include`d from `battle.asm`
+and reached through the five `BE_NAME_*` arms above; on an action project it is `.include`d from
+`engine/main.asm` instead and reached by a plain `jsr`, since there is no battle bank to hold it
+in. Five kernel-lo shims in `engine/ui.asm` — `name_begin`/`name_tick`/`name_draw`/
+`name_select`/`name_cancel`, each an `.if NAME_ENTRY_BANKED` / `.if !NAME_ENTRY_BANKED` pair —
+keep every real call site textually identical regardless of which placement the project actually
+got: `name_begin` from `boot.asm`/`title.asm` (a fresh game or a Start press), `name_tick` from
+`text.asm` (`text_tick`'s own naming arm), `name_select`/`name_cancel` from `input.asm`
+(`do_action_confirm`/`do_action_cancel`), `name_draw` from `ui.asm`'s own `draw_ui` — the same
+shape `switch_prg_bank`'s own mapper-family dispatch already uses to keep call sites
+mapper-agnostic.
+A live `{name}` Say token pays no placement cost of its own: `text_type_name`
+(`engine/text.asm`) is kernel-lo on every board and both game types, reading `pc_name_ram` slot 0
+directly.
 
 **`BE_JOIN`'s operand is guarded**, matching `party_init`'s own twin guard on the same access:
 `battle_entry_join` (`engine/battle.asm`) does `cpx #PARTY_SIZE` / `bcs battle_entry_join_skip` —
@@ -1432,6 +1553,23 @@ Three independent layers, all of which should pass before calling a change done:
 **Tests must not mutate `sample/`.** It is a checked-in fixture; `main/smoke.js` copies it to a
 temp directory precisely because an earlier version saved edits back into it and left the two
 suites fighting over the ROM. If a test seems flaky, suspect shared state before adding retries.
+
+**In-game naming means `sample`/`sample-rpg` now boot into a grid, so roughly thirty ROM-booting
+unit test files have to get past it before their own assertions can run.** `test/lib/naming.js`
+exports the shared grid primitives (`finishNamingIfOpen`, `typeNameAndFinish`, `clearName`, …),
+each operating on an already-booted `nes` instance with raw `nes.frame()` calls; each ROM-booting
+suite wraps them in its own local boot helper (`rpg.test.js`'s own `bootPastNaming`, for one).
+`test/unit/testoverrides.test.js` deliberately does **not** use this module — that file's own
+`bootPast`/`gridTap` drive the grid through `Emulator`'s `runFrame()`/`setButton` instead, because
+`test/lib/naming.js`'s raw `nes.frame()` path bypasses the `Emulator`'s own PC-intercept table
+entirely, and the tests in that file that drive a ROM depend on that table's own intercept
+behaviour holding for every frame, naming frames included — not only the ones that happen to turn
+invincibility on. (Not every test there drives a ROM at all: `applyDesiredToggles` and
+`setTestOverrides` are exercised directly, with no `Emulator` frame ever run.) `npm run
+smoke` drives every naming grid it meets the same frame-paced way, `pressFramePaced` anchored to
+`Emulator.frames` rather than `wait(ms)` — a throttled window starves a wall-clock hold. Mesen's
+`save_sram.lua` gained its own naming phases for `sample-rpg-mmc1`; see
+`docs/design-rpg-save-fixture.md`.
 
 ## 6502 traps this codebase has already hit
 

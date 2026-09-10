@@ -205,3 +205,30 @@ per-member spell mask is computed with `battleTables`' own catalog-position/lear
 (`main/build/battletables.js`, its `known` builder), not hardcoded, so the printed numbers cannot
 drift from what the fixture would actually compile to. `test/lua/run_sram_check.sh` iterates a
 third board key in its existing loop.
+
+## Round 3: naming phases
+
+`sample-rpg-mmc1/` opted into in-game naming for real (docs/design-name-entry.md v16.4 §17 item
+5): Iris (`party[1]`) carries `renamable: true`, Rian (`party[0]`) does not, so `join member 1` --
+the same command that already sat between "the state worth saving now exists" and "the state gets
+written to the chip" for round 1's own finding -- now also opens Iris's own naming grid before the
+`save` that follows it on the same page. `save_sram.lua` drives that grid as its own phase 3c:
+once the box leaves `BOX_OPENING` it classifies which kind it is (Iris's naming grid vs. an
+ordinary `Say`, the same classification MMC3's own opening message already needed), waits for the
+grid to finish raising, navigates to DEL and clears the seeded default ("Iris") one letter at a
+time, types a real name ("I"), and confirms END. Run 2 then reads `pc_name_ram` slot 1 after
+Continue and asserts it byte-exact against the typed name (`pcName1`/`expectedName1` in the
+script), not merely "some name" -- a restore that discarded the typed name and re-seeded the
+compiled default instead cannot pass this. Neither fixture chains a Join's own naming grid
+directly behind a Say today -- Iris's Join is the page's only box on `rpg-mmc1`, and `mmc3`'s
+opening `Say` has no Join behind it at all -- but the ordinary-`Say` path (phase 3.4) still checks
+`box_after` for `BOX_NAMEENTRY` before assuming the box in front of it is a plain message, per
+§14's own requirement: `box_after` names the phase `box_begin` was last called for, set one frame
+before `box_state` itself settles, so a future fixture chaining a named Join right behind a Say
+would hand off into the naming phases instead of pulsing A into a grid it does not expect.
+
+This layers on round 2's own mechanism without disturbing it: `--break=mmc1-restore-disable`
+still fails `rpg-mmc1` alone (`run1=1 run2=13`, `EXIT_WRAM_LOST_AFTER_RESTORE`), with `mmc1`/`mmc3`
+still passing, exactly as it did before the naming phases existed -- the negative control is
+proving the same WRAM-availability gap around `BE_RESTORE`, and the added naming assertion is
+additional coverage of *what* gets restored, not a replacement for *whether* it does.
