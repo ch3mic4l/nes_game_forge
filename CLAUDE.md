@@ -52,39 +52,38 @@ written against; `sample-rpg/` is the turn-based one `rpg.test.js` drives; `samp
 `sample-mmc3/`, `sample-u512/` and `sample-rpg-mmc1/` are small save-check fixtures — one per
 save-capable board, plus a second MMC1 one for an RPG's own extra save-adjacent bank switches
 (`docs/design-rpg-save-fixture.md`) — that exist to cover a board rather than to demonstrate a game.
-They are separate projects, not variants of the
-other two, because `sample/` and `sample-rpg/` are mapper-agnostic by design — nothing about what they
-exercise depends on which board they happen to be built for — so pinning any of them to a specific
-mapper to reach it would narrow a fixture every other engine test already depends on, for the sake of a
-concern (a specific board's own save behaviour) that only the Mesen save checks have. Those checks —
-`test/lua/run_sram_check.sh` and `test/lua/run_flash_check.sh`, driving `save_sram.lua` and
-`save_flash.lua` — are what these four exist to feed, and are the only things that consume them. No
-test may mutate any of the six — variants go to `mkdtemp` directories — and no existing test is
-repointed at any of the new ones: every engine test stays written against `sample/`.
+They are separate projects, not variants of the other two, because `sample/` and `sample-rpg/` are
+mapper-agnostic by design — pinning either to a specific mapper to reach one of these four would
+narrow a fixture every other engine test depends on, for a concern (a specific board's own save
+behaviour) only the Mesen save checks have. Those checks — `test/lua/run_sram_check.sh` and
+`test/lua/run_flash_check.sh`, driving `save_sram.lua` and `save_flash.lua` — are what these four
+exist to feed, and the only things that consume them. No test may mutate any of the six — variants
+go to `mkdtemp` directories — and no existing test is repointed at any of the new ones: every
+engine test stays written against `sample/`.
 
-`sample-mmc1/` and `sample-mmc3/` are **the same walk on two boards**: same 2x1 world, same saver at the
-same coordinates running the same page, differing only in mapper and in the `Say` the MMC3 one opens
-with (that board is the scanline-IRQ one, and a message box is what puts the font split to work during
-real gameplay rather than only on the title). So the only thing that can make one pass and the other
-fail is the board's own register behaviour, which is the entire point of having two. `sample-u512/` is
-the same walk again, on a third board, mapper swapped and no opening `Say` (see
-`tools/make-u512-sample.js`'s own header for why not) — but it exists for a genuinely different reason
-than the first two: MMC1 and MMC3 differ only in *register encoding* for the same battery-WRAM medium,
-while UNROM 512 differs in the *save medium itself* — it has no battery-backed WRAM at all, and saves by
-reflashing its own PRG-ROM (`engine/flash.asm`) instead. `run_sram_check.sh` and `run_flash_check.sh`
-are consequently not one check with two runners; they exercise different engine code (`engine/save.asm`'s
-battery path vs its flash path) against different Mesen models (WRAM enable/write-protect gating vs a
-JEDEC flash state machine) and, for `run_flash_check.sh`, a form of persistence
-(`Core/NES/Mappers/Homebrew/FlashSST39SF040.h`'s own write-through, saved as an `.ips` patch keyed off
-the ROM's basename) that the SRAM check has no equivalent of at all.
+`sample-mmc1/` and `sample-mmc3/` are **the same walk on two boards**: same 2x1 world, same saver
+at the same coordinates running the same page, differing only in mapper and in the `Say` the MMC3
+one opens with (that board is the scanline-IRQ one, and a message box puts the font split to work
+during real gameplay, not just the title) — so the only thing that can make one pass and the other
+fail is the board's own register behaviour. `sample-u512/` is the same walk again, on a third
+board, mapper swapped and no opening `Say` (see `tools/make-u512-sample.js`'s own header for why
+not), but for a genuinely different reason: MMC1 and MMC3 differ only in *register encoding* for
+the same battery-WRAM medium, while UNROM 512 differs in the *save medium itself* — no
+battery-backed WRAM at all, saving instead by reflashing its own PRG-ROM (`engine/flash.asm`).
+`run_sram_check.sh` and `run_flash_check.sh` are consequently not one check with two runners; they
+exercise different engine code (`engine/save.asm`'s battery path vs its flash path) against
+different Mesen models (WRAM enable/write-protect gating vs a JEDEC flash state machine) and, for
+`run_flash_check.sh`, a form of persistence (`Core/NES/Mappers/Homebrew/FlashSST39SF040.h`'s own
+write-through, saved as an `.ips` patch keyed off the ROM's basename) the SRAM check has no
+equivalent of at all.
 
-All four save-check fixtures' saver pages are guarded on the switch they set — `Save` records where the
-player is standing, which for a `touch` trigger is on top of the actor that fired it, so Continue
-restores the player mid-contact and `spawn_entities` arms the trigger again during the load's own
-redraw. Without the guard the page re-runs a frame later and hands out a second gem, which is the
-engine behaving as specified but makes the restored bag impossible to assert exactly: a load that came
-back empty and a load that came back
-correctly both read as "something in the bag" once the re-run has refilled it.
+All four save-check fixtures' saver pages are guarded on the switch they set — `Save` records
+where the player is standing, which for a `touch` trigger is on top of the actor that fired it, so
+Continue restores the player mid-contact and `spawn_entities` arms the trigger again during the
+load's own redraw. Without the guard the page re-runs a frame later and hands out a second gem —
+the engine behaving as specified, but making the restored bag impossible to assert exactly, since a
+load that came back empty and one that came back correctly both read as "something in the bag" once
+the re-run has refilled it.
 
 `FORGE_SHOT=out.png` (optionally with `FORGE_SHOT_FORGE=map`) makes `npm run smoke` write a
 screenshot, which is the practical way to see the UI without a human at the keyboard.
@@ -116,24 +115,19 @@ directly (below).
 
 The renderer already refuses a second, reentrant `build()` call from the same Build Forge mount (a
 plain `building` boolean, checked before dispatch) — but that only protects one mount against
-itself, resetting the moment a fresh mount replaces it, exactly the case a concurrent build needs
-protecting against. `main/build/buildgate.js`'s `createBuildGate()` closes that: it allows exactly
-one in-flight **`build:run` IPC call** per project directory (canonicalized with `realpathSync`, so
-a symlink and its target count as the same one), refusing a second request outright rather than
-queuing it. Queuing would not re-read the project when its turn finally came — `build()`
-(`renderer/forges/build/build.js`) clones the project *before* dispatching, and `ipcRenderer.invoke`
-serializes that clone again on the way over, so a queued request already carries a fixed snapshot
-from the moment it was made. The risk is the opposite: the longer that snapshot waits, the more
-likely it no longer matches what the user is looking at by the time it builds, reintroducing the
-staleness a scenario resolves against (below), one layer further out. This has to live in the main
-process, not the renderer: the renderer is exactly what gets destroyed if the user navigates away
-mid-build, so a per-mount flag there cannot stop a second, concurrent caller from racing
-`generate.js`'s own `fs.rm(buildDir)` the way a main-process gate on the IPC channel can. It only
-covers that one channel: unit and Lua tests import `buildProject` (`main/build/pipeline.js`)
-directly, bypassing both this gate and `main/build/cli.js` entirely, and `npm run smoke` is the only
-thing that actually goes through `build:run` and is covered by it. There is no CI configuration in
-this repository — `main/build/cli.js`'s own bypass, regenerating the checked-in fixtures' ROMs by
-hand, is the same one described above.
+itself, not a concurrent build after a fresh mount replaces it. `main/build/buildgate.js`'s
+`createBuildGate()` closes that: it allows exactly one in-flight **`build:run` IPC call** per
+project directory (canonicalized with `realpathSync`), refusing a second request outright rather
+than queuing it — queuing would not re-read the project when its turn came, since `build()`
+(`renderer/forges/build/build.js`) clones it before dispatching, and the longer a queued snapshot
+waited, the more stale it would get. This has to live in the main process, not the renderer: the
+renderer is exactly what gets destroyed if the user navigates away mid-build, so a per-mount flag
+there cannot stop a second, concurrent caller from racing `generate.js`'s own `fs.rm(buildDir)`. It
+only covers that one channel — unit and Lua tests import `buildProject` (`main/build/pipeline.js`)
+directly, bypassing both this gate and `main/build/cli.js` entirely, and `npm run smoke` is the
+only thing that goes through `build:run` and is covered by it. There is no CI configuration in this
+repository — `main/build/cli.js`'s own bypass, regenerating the checked-in fixtures' ROMs by hand,
+is the same one described above.
 
 ### The single-writer rule
 
@@ -149,28 +143,25 @@ Anything the 6502 engine and the JavaScript tooling both depend on has **one** d
   `engine/music.asm`, the compiler in `main/build/songcompile.js`, the preview replayer in
   `renderer/forges/sound/replayer.js`). `test/unit/music.test.js` runs the built ROM in the
   emulator, records every write to `$4000-$400F`, and asserts it is byte-identical to the
-  replayer's. If you change one implementation, change all three or that test fails. Every song's
-  own instruments reach the ROM now, not just song 0's: `songTables` concatenates them in song
-  order, `song_inst_base` names each song's offset, and the driver adds it into `mus_inst_base` —
-  256 entries combined, total (`MAX_TOTAL_INSTRUMENTS`). `songByte`,
-  `NO_SONG`, `songTimeline` and `songFrameLength` (a song's own length in frames, one full pass
-  through its authored order) live here too, not in `main/build/textcompile.js`, because
-  `shared/project.js`'s `validateProject` needs the identical resolution and cannot import
-  upward from `main/build/` — `textcompile.js` re-exports `NO_SONG`/`songByte` verbatim so its
-  existing importers (`main/build/generate.js`, `test/unit/script.test.js`) keep working
-  unmodified. The `Sting` scripted command (item 6) is not a fourth implementation of the format:
+  replayer's — change one implementation, change all three or that test fails. Every song's own
+  instruments reach the ROM: `songTables` concatenates them in song order, `song_inst_base` names
+  each song's offset, and the driver adds it into `mus_inst_base` (256 entries combined,
+  `MAX_TOTAL_INSTRUMENTS`). `songByte`, `NO_SONG`, `songTimeline` and `songFrameLength` (a song's
+  own length in frames, one full pass through its authored order) live here too, not in
+  `main/build/textcompile.js`, because `shared/project.js`'s `validateProject` needs the identical
+  resolution and cannot import upward from `main/build/` — `textcompile.js` re-exports
+  `NO_SONG`/`songByte` verbatim for its existing importers (`main/build/generate.js`,
+  `test/unit/script.test.js`). The `Sting` scripted command (item 6) is not a fourth implementation of the format:
   it plays an existing song through the same unmodified driver, pausing and resuming whichever
   song was already playing — see `docs/design-sting.md` for the full design and
   `engine/music.asm`'s own `sting_snapshot`/`sting_restore`/`sting_tick` comments for the
   mechanisms. The `Sfx` scripted command (item 6's last verb) is a genuinely separate, smaller
-  format beside the music one, not a variant of it, with its own single-writer contract:
-  `shared/audio.js` owns it (`NO_SFX`, `SFX_MAX_STEPS`, `sfxByte`, `normalizeSfx`,
-  `sfxFrameLength`), and it is implemented three times the same way the music format is — the
-  6502 driver's `sfx_*` routines in `engine/music.asm`, `compileSfx`/`sfxTables` in
+  format beside the music one, with its own single-writer contract in `shared/audio.js` (`NO_SFX`,
+  `SFX_MAX_STEPS`, `sfxByte`, `normalizeSfx`, `sfxFrameLength`), implemented three times the same
+  way — `engine/music.asm`'s `sfx_*` routines, `compileSfx`/`sfxTables` in
   `main/build/songcompile.js`, and `SfxReplayer` in `renderer/forges/sound/replayer.js` — held
-  byte-identical by `test/unit/sfx.test.js`'s own golden trace, 25 tests covering the ROM's APU
-  writes diffed against the replayer frame-by-frame, all four channel groups, the cleanup frame,
-  and `$4015` write interception. See `docs/design-sfx.md` for the full design.
+  byte-identical by `test/unit/sfx.test.js`'s own golden trace. See `docs/design-sfx.md` for the
+  full design.
 - The NES palette → `shared/nespalette.js`, shared by the editors *and* the emulator, so the
   in-app preview matches the editors by construction.
 - The message font → `shared/font.js`: the glyph art, the character-to-tile mapping, the window
@@ -190,28 +181,17 @@ Anything the 6502 engine and the JavaScript tooling both depend on has **one** d
   `engine/constants.asm` are those orders written down, so adding an action or a state means
   editing both ends in the same change.
 - Describing and resolving a test scenario → `shared/playscenario.js` — not the stored scenario
-  itself, which is `renderer/app.js`'s own `playScenario`/`rememberPlayScenario` (the record shape
-  `{startAt, battleTest, toggles}` and its merge semantics), and not which toggles exist, which is
-  `shared/testoverrides.js`'s `TOGGLE_NAMES`. `describePlayScenario` turns Map Forge's raw numeric
-  choice (a flat screen index, actor ids) into a name/position description at the moment a scenario
-  is picked ("the map named World, screen 5", "the actors named Slime, Bat");
-  `resolveStartAt`/`resolveFormation` turn a remembered description back into a live target later,
-  against whatever project is actually in hand then — an unnamed screen has no name to resolve by
-  and falls back to its remembered position within its map, unaffected by whether it is later given
-  one; renaming the map, a *named* screen, or the tracked actor, though, makes resolution refuse
-  rather than follow it. Only a *different* one renamed onto the old name is what "follows the name"
-  describes. Never keep raw indices across that gap and re-use them directly — a screen or actor's
-  numeric position is not its identity (`createScreen()`'s own comment says so for screens;
-  `sprites.actors` renumbers every later actor on a delete for the identical reason, and item 7's
-  map/screen reorder, duplicate and delete operations are a larger family of renumbering behind the
-  same fact). This subsystem needed no reorder-awareness to survive that family: `mapsNamed` and
-  `screensNamed` (`shared/playscenario.js`) resolve by current name at call time, and an unnamed
-  screen resolves by its position within its *own* map's `screens` array — a value item 7's map
-  reorder never touches, since reordering `project.maps` moves a map's slot in that outer array, not
-  a screen's slot within its own map — so name-resolution already treated "the map or screen moved"
-  as an ordinary edit it was built to survive, before item 7 ever existed. So anything that
-  round-trips through a cached index instead of this file's own name-based lookup will silently
-  point at different content once the project is edited in between.
+  itself (`renderer/app.js`'s own `playScenario`/`rememberPlayScenario`), and not which toggles
+  exist (`shared/testoverrides.js`'s `TOGGLE_NAMES`). The rule, stated in full in the file's own
+  header comment: resolve by current name at call time, never cache a raw index — a screen or
+  actor's numeric position is not its identity (`createScreen()`'s own comment says so for screens;
+  `sprites.actors` renumbers every later actor on a delete for the same reason, item 7's own
+  reorder/duplicate/delete family included). `describePlayScenario` turns Map Forge's raw numeric
+  choice into a name/position description when a scenario is picked;
+  `resolveStartAt`/`resolveFormation` (via `mapsNamed`/`screensNamed`) resolve it back later
+  against whatever project is then in hand, refusing rather than following a rename of the map, a
+  *named* screen, or the tracked actor — an unnamed screen instead falls back to its position
+  within its own map, a value item 7's map reorder never touches.
 - Rewriting every stored flat-screen reference after a map/screen structural edit →
   `remapScreenReferences(project, translate)` in `shared/project.js` (item 7, "Map organization and
   reuse"). It is the single place that knows *which fields* hold a flat screen reference — the
@@ -250,117 +230,85 @@ renderer, and `node:test` alike.
   reflows on its own, but the drawing surfaces are integer-zoomed pixel art, so they only follow
   the window if something recomputes the zoom: `fitZoom()` and `observeSize()` in `renderer/ui.js`
   are that something, and the Tile, Sprite and Map Forges plus the emulator all go through them.
-  Two rules keep the observer from chasing itself — it watches the *border* box (a scrollbar
-  changes the content box, and the redraw changes the scrollbar), and it calls the redraw
-  synchronously from the callback rather than deferring it a frame (deferring would only trade
-  "ResizeObserver loop completed" — which the smoke test counts as a renderer error — for a redraw
-  that never arrives in a window whose frames are being throttled). The smoke test resizes the real
-  window and asserts the map screen grew, because a hardcoded zoom looks perfectly correct at
-  whatever size it was written for.
+  Two rules keep the observer from chasing itself — it watches the *border* box, not the content
+  box a scrollbar changes and the redraw affects, and it calls the redraw synchronously from the
+  callback rather than deferring it a frame (which would trade a "ResizeObserver loop completed"
+  renderer error for a redraw that never arrives in a throttled window). The smoke test resizes the
+  real window and asserts the map screen grew, since a hardcoded zoom looks correct at whatever
+  size it was written for.
 - **A Forge selection must check it is still the current one after its own `await`.**
   `selectForge(id)` (`renderer/app.js`) is called unawaited from `store.subscribe`'s `'open'`
-  handler, so two selections can be in flight at once and the *earlier* one can finish last. A
-  module-level `selectionToken` counter is bumped once by every call that gets past its own guards
-  (an open project, a known and available id) and re-checked after `await entry.load()` and again in
-  the `catch`; a call that finds itself superseded returns before it mounts anything or sets the
-  status bar. It has still torn the stage down: the token is taken *before* `mounted` is destroyed
-  and `dom.stage` cleared, so a superseded call has already run that teardown by the time it learns
-  it lost. That is safe only because the winner took its own token later, tears down again, and
-  mounts after both. Missing the token check looks like a screenshot or harness
-  artefact rather than a bug: the second Forge mounts, then the first one's late import mounts over
-  it, leaving two `.forge` elements in `#stage` — which is exactly what `main/smoke.js`'s own
+  handler, so two selections can be in flight and the *earlier* one can finish last. A module-level
+  `selectionToken` counter is bumped once by every call that gets past its own guards and re-checked
+  after `await entry.load()` and again in the `catch`; a superseded call returns before it mounts
+  anything or sets the status bar, but has still torn the stage down — the token is taken *before*
+  `mounted` is destroyed and `dom.stage` cleared — safe only because the winner took its own token
+  later and tears down again, mounting after both. Missing the check looks like a screenshot or
+  harness artefact rather than a bug: the second Forge mounts, then the first one's late import
+  mounts over it, leaving two `.forge` elements in `#stage`, exactly what `main/smoke.js`'s own
   same-tick selection race step asserts against.
 - **The same token also bounds a navigation context's lifetime**, added for the Monster ↔ Sprite deep
   link. `app.goTo(id, context)` writes `pendingRequest = { targetId, context, atRevision:
-  store.revision }` and calls `selectForge(id)`; with no context that is a plain Forge switch.
-  `selectForge` claims `pendingRequest` — reads it, then nulls it — as its very first statement,
-  before either of its own early returns, so a request that dies at a guard, gets redirected by
-  `isForgeAvailable` to `'tile'`, or loses the token race can never be read by an unrelated later
-  call. `activeContext = { token, context }` is bound only *after* `await entry.load()`, and only if
-  `store.revision` — bumped by `commit()`/`undo()`/`redo()`/`open()`/`close()`, the `commit()` bump
-  living in a `finally` so a mutator that throws still moves it — has not moved since the request was
-  made: an actor id captured before the await can otherwise name a *different* actor once a delete
-  has renumbered everything (`sprites.actors` renumbers every later actor on a delete, as above). A
-  bounds check cannot see that case; only the revision check can. `app.consumeContext()` hands the
-  context to the mounting Forge at most once, only when `activeContext.token === selectionToken`, so
-  a superseded navigation's context never reaches the winner; anything not consumed by the time
-  `mount()` returns is dropped. `main/smoke.js` exercises this contract end-to-end. See
-  `docs/design-monster.md` §2 for the fuller write-up.
+  store.revision }` and calls `selectForge(id)`, which claims `pendingRequest` unconditionally as
+  its first statement, before either of its own early returns. `activeContext = { token, context }`
+  is bound only after `await entry.load()`, and only if `store.revision` has not moved since the
+  request was made — a bounds check on a captured actor id cannot see a delete that renumbered
+  everything in between, only the revision check can. `app.consumeContext()` hands the context to
+  the mounting Forge at most once, only when `activeContext.token === selectionToken`, so a
+  superseded navigation's context never reaches the winner. `main/smoke.js` exercises this contract
+  end-to-end; see `docs/design-monster.md` §2 for the full mechanism and race analysis.
 
 Each Forge is a module exporting `mount(container, app)` and returning
-`{ destroy?, onProjectChange? }`; `renderer/app.js`'s `FORGES` array is the single writer for which
-Forges exist and lazily imports them — the Items Forge (`renderer/forges/items/items.js`, item 5's
-own place to author an item's name, effect and backing Pickup actor) is one of these, not a special
-case. `app.forgeIds` is that registry's own derived getter (`FORGES.filter(...).map((f) => f.id)`),
-not a second writer of its own — it exists so `main/smoke.js`'s "visit every Forge" step can read
-`FORGES` without a hand-maintained list of its own agreeing with it by hand, which is exactly the
-kind of drift that let the Items Forge almost ship unvisited by that very test. The Magic Forge
+`{ destroy?, onProjectChange? }`; `renderer/app.js`'s `FORGES` array is the single writer for
+which Forges exist and lazily imports them — the Items Forge (`renderer/forges/items/items.js`,
+item 5's own place to author an item's name, effect and backing Pickup actor) is one of these, not
+a special case. `app.forgeIds` is that registry's own derived getter
+(`FORGES.filter(...).map((f) => f.id)`), not a second writer — it exists so `main/smoke.js`'s
+"visit every Forge" step can read `FORGES` without a hand-maintained list of its own, the drift
+that let the Items Forge almost ship unvisited by that very test. The Magic Forge
 (`renderer/forges/magic/magic.js`, item 13's own spell catalog — turn-based RPG projects only) is
 `FORGES`' first entry to carry a `gameTypes` field, and the Monster Forge
 (`renderer/forges/monster/monster.js`, item 14's own module) is the second; every other entry is
 unconditional, so the field is additive.
-`monsterActorIds(project)` (`shared/project.js`) is the Monster Forge's single catalog predicate, and
-deliberately reads `allCommands` (what is *mentioned*) rather than `liveCommands` (what would
-*compile*), and raw `command.monsters`/`map.encounters.actorIds` rather than
-`battleFormationSlice`/`mapEncounterFormation` — a monster named only inside a disabled branch, in an
-over-cap 5th formation slot, or on a rate-zero map still appears, because the concern is never hiding
-an actor an author is looking at, not deciding what the ROM runs. See `docs/design-monster.md` §2 for
-the boundary behind this catalog — what stays on the Sprite Forge and why. `battle.level` is the one
+`monsterActorIds(project)` (`shared/project.js`) is the Monster Forge's single catalog predicate:
+it reads `allCommands` (mentioned, disabled branches included) rather than `liveCommands`
+(compiles), and raw `command.monsters`/`map.encounters.actorIds` rather than
+`battleFormationSlice`/`mapEncounterFormation`, so an over-cap or rate-zero monster still appears —
+the concern is never hiding an actor an author is looking at. `battle.level` is the one
 Monster-Forge-only field with no compiled reader: it normalizes to `null` or
-`clamp(1, RPG_LIMITS.maxLevel)`, the fixed constant and never `project.rpg.maxLevel`, so lowering the
-Build panel's own level cap as a capacity lever cannot silently reclamp an already-authored bestiary.
-`test/unit/monsterlevel.test.js` is its same-tree byte-identity proof, the `routes.test.js` shape.
-`isForgeAvailable(entry, project)` is the single predicate for whether an entry applies
-to the open project, read by exactly three call sites — `renderRail()`, the `app.forgeIds` getter
-(which is why "visit every Forge" stays correct on an action project without special-casing Magic
-itself), and `selectForge`, which has to guard itself a second way: `activeForgeId` is a bare
-module-level variable that outlives a project close, so a stale `'magic'` can reach `selectForge` on
-a path the rail never rendered a button for, and it falls back to `'tile'`. `main/smoke.js`'s own
-negative case for this reads the rendered `.rail-item` titles rather than `forgeIds` — the wrong
-implementation it exists to catch is a `renderRail()` that filters differently from the getter,
-which would offer a real, clickable button into a Forge `forgeIds` already excludes.
+`clamp(1, RPG_LIMITS.maxLevel)`, the fixed constant and never `project.rpg.maxLevel`, so lowering
+the Build panel's own level cap as a capacity lever cannot silently reclamp an already-authored
+bestiary. See `docs/design-monster.md` §2 for the Forge-boundary argument and
+`test/unit/monsterlevel.test.js` for the level field's byte-identity proof.
+`isForgeAvailable(entry, project)` is the single predicate for whether an entry applies to the
+open project, read by exactly three call sites — `renderRail()`, the `app.forgeIds` getter (why
+"visit every Forge" stays correct on an action project without special-casing Magic), and
+`selectForge`, which guards itself a second way: `activeForgeId` is a bare module-level variable
+that outlives a project close, so a stale `'magic'` can reach `selectForge` on a path the rail
+never rendered a button for, falling back to `'tile'`. `main/smoke.js`'s own negative case reads
+the rendered `.rail-item` titles rather than `forgeIds` — the wrong implementation it catches is a
+`renderRail()` that filters differently from the getter, offering a real, clickable button into a
+Forge `forgeIds` already excludes.
 `renderer/store.js` is the single project state:
 `commit()` for a discrete edit, `beginStroke()`/`touch()`/`endStroke()` so a drag is one undo entry.
 Undo is whole-project `structuredClone` snapshots.
 
-**Map organization and reuse (ROADMAP item 7) is what makes a store commit that restructures the
-map list safe.** `remapScreenReferences(project,
-translate)` in `shared/project.js` is the one new primitive: the single place that knows *which
-fields* hold a flat screen reference — every placed entity's `props.toScreen`, and every `warp`
-command's `screen` operand, reached through `allCommands` so a warp nested inside a branch or a
-choice option is not missed (the identical defect `usedSwitches` once had against a switch set
-inside a branch). It does not know how any operation computes its own permutation — the caller
-supplies `translate`, and `translate` must be **total** over every raw stored value it can
-encounter: there is deliberately no third "leave it alone" answer, because a reference the function
-does not resolve is a reference it is wrong about, not one safe to skip. It mutates `project` in
-place and returns `{ project, droppedTargets }` for the callers that need to report what got
-redirected. `canonicalizeFlat(value, flatLengthBefore)` resolves a raw stored operand against the
-flat count as it stood *before* the edit, so a stale out-of-range operand keeps the target the
-compiler already gave it rather than being re-clamped onto whatever the edit just appended.
-`titleMap`/`titleScreen` and `startMap`/`startScreen` are deliberately **not** handled by
-`remapScreenReferences` — they are map-space, not flat-space, and how they move depends on which
-operation is running, so each operation (reorder's direct map-space lookup, delete/resize's own
-per-map fixup) fixes them itself.
-
-**One body, not two.** Every operation — `reorderMapsCore`, `addMapCore`, `duplicateMapCore`,
-`deleteMapCore`, `growOrShrinkMap`, `duplicateScreenViaGrowthCore`,
-`duplicateScreenIntoNewMapCore`, `pasteRegionCore` — is a commit-free core in `shared/project.js`
-that both the renderer's one `store.commit` and the unit tests call directly, alongside translate
-builders (`buildReorderTranslate`, `buildAppendCanonicalizeTranslate`, `buildDeleteMapTranslate`,
-`buildResizeTranslate`, `buildPerMapTranslate`, `buildCloneTranslate`) and the audit helper
-`auditDroppedReferences`. `renderer/forges/map/map.js` wraps each core in exactly one
-`store.commit()`, so restructuring the map list and repairing every reference it holds is one undo
-entry, never two.
-
-A same-count reorder leaves `screenCount`/`mapCount` untouched, so `saveIdentity` alone cannot see
-it; `saveCompatToken` closes that gap — see the `SAVE_LAYOUT_VERSION` passage below.
-
-Mechanism depth — the map-space fixups, the duplicated-map/screen self/external target split
-(`rewriteClonedRange` for a duplicated map or a screen promoted into a new map, `buildCloneTranslate`
-for a growth-routed screen clone; region copy/paste has no such split at all — `pasteRegionCore`
-copies metatiles, bound tiles and already-positioned entities verbatim, calling neither), `map.folder`,
-the world overview this design deliberately sliced out — is `docs/design-maporg.md`, not
-here.
+**Map organization and reuse (ROADMAP item 7)** is what makes a store commit that restructures the
+map list safe. `remapScreenReferences(project, translate)` in `shared/project.js` is the single
+place that knows *which fields* hold a flat screen reference — every placed entity's
+`props.toScreen`, every `warp` command's `screen` operand, reached through `allCommands` so a
+nested one is not missed — and rewrites them under a caller-supplied `translate`, which must be
+**total**: there is deliberately no "leave it alone" answer, because a reference the function does
+not resolve is a reference it is wrong about. `titleMap`/`titleScreen`/`startMap`/`startScreen` are
+map-space, not flat-space, and are left to each operation's own fixup instead. Every restructuring
+operation — `reorderMapsCore`, `addMapCore`, `duplicateMapCore`, `deleteMapCore`,
+`growOrShrinkMap`, `duplicateScreenViaGrowthCore`, `duplicateScreenIntoNewMapCore`,
+`pasteRegionCore` — is a commit-free core in `shared/project.js`, called by both
+`renderer/forges/map/map.js` (wrapped in exactly one `store.commit()`) and the unit tests directly:
+one body, not two. A same-count reorder leaves `screenCount`/`mapCount` untouched, which is what
+`saveCompatToken` (below, under `SAVE_LAYOUT_VERSION`) exists to catch. See `docs/design-maporg.md`
+for the full mechanism — the `translate` builders, the duplicated-map/screen self/external target
+split, `map.folder`, and the world overview.
 
 ### The engine
 
@@ -419,17 +367,16 @@ agree.
 
 **UNROM 512 (mapper 30) is the CHR-RAM case** and the only one that bends two rules. It ships no
 CHR-ROM: `chrPayloadRegions()` reserves one 8 KB region of the *switchable window* per tileset, and
-`chr_ram_init` streams each into a pattern page at boot, so on that board tilesets consume screen
-capacity. Its single register carries the PRG bank in bits 0-4 and the CHR page in bits 5-6, so
-neither can be set without the other — `mapper_shadow` holds the last value written and both switch
-routines rewrite the whole byte. And because iNES cannot declare CHR-RAM, `applyHeaderPatch()` in
-`pipeline.js` rewrites the 16-byte header to NES 2.0 after assembly. `headerPatch()` returns `{}` for
-every mapper that needs neither that nor a plain byte-6 bit set — battery on a project that never
-saves, four-screen on a board without the nametable RAM for it — so "nesasm writes a correct header
-with no post-processing" still holds for them. Battery-backed save (below) is the other bit-set case:
-iNES byte 6 bit 1, applied the same way four-screen's bit 3 already was, in preference to dragging
-MMC1 and MMC3 into the NES 2.0 path UNROM 512 alone needs for a size neither board's ordinary 8 KB of
-WRAM requires declaring precisely.
+`chr_ram_init` streams each into a pattern page at boot, so tilesets consume screen capacity there.
+Its single register carries the PRG bank in bits 0-4 and the CHR page in bits 5-6, so neither can
+be set without the other — `mapper_shadow` holds the last value written and both switch routines
+rewrite the whole byte. Because iNES cannot declare CHR-RAM, `applyHeaderPatch()` in `pipeline.js`
+rewrites the 16-byte header to NES 2.0 after assembly; `headerPatch()` returns `{}` for every
+mapper needing neither that nor a plain byte-6 bit set (battery on a project that never saves,
+four-screen on a board without the nametable RAM for it), so "nesasm writes a correct header with
+no post-processing" still holds for them. Battery-backed save (below) is the other bit-set case:
+iNES byte 6 bit 1, applied the same way four-screen's bit 3 already was, rather than dragging MMC1
+and MMC3 into the NES 2.0 path only UNROM 512 needs.
 
 **A slot ring for flash save was designed, costed and rejected**, not never considered. UNROM 512's
 flash commit is not power-loss atomic. A single-sector ring and a two-sector A/B journal (genuinely
@@ -453,13 +400,12 @@ it, so on MMC3 the `$A0-$FF` reservation simply disappears (and the font page co
 - **`switch_chr_bank`'s mapper-register pairs run only under forced blank with the counter
   disabled** — `redraw_screen` and `draw_battle_screen` clear `$2000` (NMI off, not merely masked)
   and write `$E000` the moment they blank, so neither interrupt source can land inside its register
-  pairs at all. `switch_prg_bank` does not get that guarantee for free: `call_battle`
-  (`engine/banks.asm`) calls it with rendering on and the picture live, every tick of a battle, so
-  it carries its own critical section — `php`/`sei` mask the scanline IRQ (restoring the caller's
-  interrupt state exactly, since this also runs during boot, before boot's own `cli`), and
-  `split_lock`, a flag `split_arm` checks before touching R1, stands in for masking NMI, which
-  `sei` cannot do. A stray NMI there costs at most one frame of the wrong CHR bank on the split,
-  never a half-selected PRG or CHR register.
+  pairs. `switch_prg_bank` does not get that guarantee for free: `call_battle` (`engine/banks.asm`)
+  calls it with rendering on and the picture live, every tick of a battle, so it carries its own
+  critical section — `php`/`sei` mask the scanline IRQ (restoring the caller's interrupt state
+  exactly, since this also runs during boot), and `split_lock`, a flag `split_arm` checks before
+  touching R1, stands in for masking NMI, which `sei` cannot do. A stray NMI there costs at most one
+  frame of the wrong CHR bank on the split, never a half-selected PRG or CHR register.
 - **The split follows state, not events**: `split_select` recomputes `split_mode` from
   `game_state`/`box_state` every frame in one store, so no transition can leave a stale program
   armed. The split programs live in ROM, built from the same row constants that draw the windows.
@@ -535,47 +481,29 @@ after the OAM DMA. Three rules hold it together:
   the PPU's `t` register, nametable-select bits included, so resetting `$2005` alone leaves the
   screen scrolled to a different nametable.
 
-**Flash is the first producer allowed to write `vram_buf` outside `ui_tick`'s own priority
-chain, which makes "one producer per frame" a bound of two, not one, and it has to be counted
-rather than assumed.** `flash_tick` (`engine/entities.asm`) ticks unconditionally from
-`main_loop`, alongside `music_tick`, specifically so a non-suspending Flash burst keeps
-counting down across the frozen/gameplay boundary the way Shake's own countdown already does —
-but unlike Shake (a pure PPUSCROLL trick with no producer at all), Flash's own packet-building
-code runs on the mainline and can share a frame with whichever *one* of `move_tick`/`wait_tick`/
-`fade_tick`/`text_tick` `ui_tick`'s own frozen-world dispatch is running that frame (those four
-remain mutually exclusive among themselves, unchanged). The bound is therefore at most two
-packets per frame, not one: `2 * (3-byte header + 32-byte body) + 1` shared terminator = 71 of
-`vram_buf`'s 256 bytes, and roughly 1670-1740 cycles of full NMI time in the worst case (two
-32-byte packets, the OAM DMA, both register save/restore and the PPUADDR fix) against the
-~2273-cycle vblank window — measured against real hardware timing via the Mesen Lua layer, not
-jsnes, which does not enforce this deadline the way a deliberately slow drain would need to be
-caught. Ordering matters and is deterministic, not incidental: `main_loop` calls `flash_tick`
-before `settle_owed`/`dispatch_input`/`ui_tick`, so on a frame where both a Flash edge and one
-of the frozen-world four target the same address (Flash and a coincident Fade step, both
-`$3F00`), Flash's packet is queued first and Fade's second, so Fade's write lands last in that
-NMI's drain and is what the screen shows — an author who needs the opposite has to sequence
-with an explicit `Wait`. A third independent producer must re-open both the byte-count and
-cycle-budget arithmetic above, not assume either bound still holds.
+**Flash is the first producer allowed to write `vram_buf` outside `ui_tick`'s own priority chain,
+which makes "one producer per frame" a bound of two, not one.** `flash_tick`
+(`engine/entities.asm`) ticks unconditionally from `main_loop`, alongside `music_tick`, so a
+non-suspending Flash burst keeps counting down across the frozen/gameplay boundary; its own
+packet-building code can share a frame with whichever *one* of `move_tick`/`wait_tick`/`fade_tick`/
+`text_tick` `ui_tick`'s own frozen-world dispatch is running (those four stay mutually exclusive
+among themselves). `main_loop` calls `flash_tick` before `settle_owed`/`dispatch_input`/`ui_tick`,
+so on a frame where a Flash edge and one of the frozen-world four target the same address, Flash's
+packet is queued first and the other second, landing last in that NMI's drain and winning the
+screen — an author who needs the opposite has to sequence with an explicit `Wait`. Measured against
+real hardware timing via the Mesen Lua layer (`flash_nmi_timing.lua.template`), not jsnes, which
+does not enforce this deadline.
 
-**A live switch-bound tile is that third producer, and the prediction above is what it cashes
-in.** `flip_tick` (`engine/entities.asm`) ticks unconditionally from `main_loop`, exactly the way
-`flash_tick` already does, and `main_loop` calls it *before* `flash_tick` — so on a frame where a
-flip, a Flash edge and one of the frozen-world four all land together, the flip's own packets are
-queued first, Flash's second, and whichever of `move_tick`/`wait_tick`/`fade_tick`/`text_tick` is
-running third. A flip's own packet pair is small — `flip_emit_packet` writes the bound cell's top
-row (`mt_tl`/`mt_tr`) and bottom row (`mt_bl`/`mt_br`) as two separate `vram_open`/`vram_push`/
-`vram_end` calls, each a 3-byte header plus a 2-byte body — so the worst case is now
-`2 * (3 + 2) + 2 * (3 + 32) + 1` shared terminator = 81 bytes including the terminator, up from
-71, of `vram_buf`'s 256 bytes. The cycle bound is not re-derived here by hand — nesasm's own instruction timing for two more small
-packets is a few dozen cycles at most against a ~2273-cycle vblank window that already had slack
-to spare at 71/256 bytes — but it is not assumed either:
-`test/lua/bound_tile_nmi_timing.lua.template` (built and run by
-`test/lua/build_bound_tile_nmi_roms.mjs`, driven by `test/lua/run_bound_tile_nmi_check.sh`) proves
-this exact three-producer frame — a flip queued via a real, already-cached switch toggle, re-armed
-at the instant `flip_tick`'s own drain reads it so it lands on the identical frame as a Flash edge
-and the message box's own raise row — against real Mesen timing, the same "prove the workload,
-then trust the deadline" two-phase shape `flash_nmi_timing.lua.template` already established. A
-fourth independent producer must re-open this accounting again, not assume it still holds.
+**A live switch-bound tile is a third producer.** `flip_tick` (`engine/entities.asm`) ticks
+unconditionally from `main_loop`, called *before* `flash_tick` — so on a frame where a flip, a
+Flash edge and one of the frozen-world four all land together, the flip's own packets are queued
+first, Flash's second, and whichever frozen-world tick is running third. The worst-case bound is
+now 81 of `vram_buf`'s 256 bytes, up from 71 with Flash alone.
+`test/lua/bound_tile_nmi_timing.lua.template` (built by `test/lua/build_bound_tile_nmi_roms.mjs`,
+run by `test/lua/run_bound_tile_nmi_check.sh`) proves this exact three-producer frame against real
+Mesen timing, the same "prove the workload, then trust the deadline" shape
+`flash_nmi_timing.lua.template` established. **A fourth independent producer must re-open this
+accounting again, not assume it still holds.**
 
 `box_close` keeps no copy of what the box covered: the box is tile rows 24-29, which is exactly
 metatile rows 12-14 with no half-row left over, so it rebuilds those rows straight out of
@@ -585,16 +513,14 @@ columns 0 and 31 — so the frame drawn there is decoration, and nothing the pla
 (the ▼ page prompt) goes in it.
 
 `engine/combat.asm` and `engine/title.asm` are conditionally *reachable* either way, but only
-`title.asm` is still always assembled. `COMBAT_ENABLED` and `TITLE_ENABLED` in `config.inc` gate what
-runs; `BATTLE_ENABLED` now also gates what *assembles* in `combat.asm` — the same conditional-
-allowance discipline the kernel-lo capacity ledger below applies to every optional feature (an
-RPG's action-only health code has no call site once combat routes through the battle bank, so
-keeping it assembled would burn kernel-lo space for dead code) — and `projectUsesHeartArt`
-(`shared/font.js`), not
-`projectUsesCombat`, for what decides the heart art stamped into sprite tiles `$FE/$FF`: an RPG's
-monsters can still carry contact damage (`COMBAT_ENABLED` on, driven by `projectUsesCombat` as
-before), but an RPG never draws the hearts that art is for. `init_session` is the single definition
-of "new game" — hearts, bag, counters, all 64 switches and all 16 variables — and both boot and the
+`title.asm` is always assembled. `COMBAT_ENABLED` and `TITLE_ENABLED` in `config.inc` gate what
+runs; `BATTLE_ENABLED` also gates what *assembles* in `combat.asm` (an RPG's action-only health
+code has no call site once combat routes through the battle bank, so keeping it assembled would
+burn kernel-lo space for dead code) — and `projectUsesHeartArt` (`shared/font.js`), not
+`projectUsesCombat`, decides the heart art stamped into sprite tiles `$FE/$FF`: an RPG's monsters
+can still carry contact damage (`COMBAT_ENABLED` on, driven by `projectUsesCombat` as before), but
+an RPG never draws the hearts that art is for. `init_session` is the single definition of "new
+game" — hearts, bag, counters, all 64 switches and all 16 variables — and both boot and the
 game-over path go through it. Where a game over *lands* is `restart_game`: the title if there is
 one, a new game if there is not.
 
@@ -616,25 +542,23 @@ painted tile does instead of what an event says. Getting there took three traps,
   — rather than draining every recruited member at close to 60 Hz for as long as the player stands
   on the tile.
 - **A lethal hit must stop the frame**, not merely end the game. `check_encounter` runs immediately
-  after `player_hazard` in `update_player`, and a wandering encounter reaching its threshold on the
-  very same step would overwrite the `ST_GAMEOVER` a party wipe just set with `ST_BATTLE` — so
+  after `player_hazard` in `update_player`, and a wandering encounter reaching its threshold the
+  same step would overwrite the `ST_GAMEOVER` a party wipe just set with `ST_BATTLE` — so
   `update_player` reads `game_state` back after `player_hazard` and stops there, the same "the rest
   of this frame belongs to the transition" rule a screen edge or a fresh screen already apply above
   it.
-- **A killing hit must `jmp player_died`, not return into it.** `party_damage` and `lose_hearts` both
-  only ever saturate and answer whether the hit was lethal; *deciding* the game is over is each
-  caller's own `jmp`, for the same reason `lose_hearts`' own header already explains a few lines
-  below and `script_op_call`'s `NO_COMMON_EVENT_SLOT` stop needed too — a callee that jumped there on
-  a caller's behalf would leave that caller's own return address sitting unpopped on the stack for
-  some unrelated `rts` to mis-pop later.
+- **A killing hit must `jmp player_died`, not return into it.** `party_damage` and `lose_hearts`
+  both only ever saturate and answer whether the hit was lethal; *deciding* the game is over is
+  each caller's own `jmp` — a callee that jumped there on a caller's behalf would leave that
+  caller's own return address sitting unpopped on the stack for some unrelated `rts` to mis-pop
+  later.
 - **`player_iframes` is the floor hazard's cooldown, not a general "the player was just hurt" flag,
-  and only `player_hazard` may gate on it.** `entity_contact` (below) shared the same read at first —
-  a Damage metatile setting `player_iframes` then silently suppressed every contact battle for the
+  and only `player_hazard` may gate on it.** `entity_contact` shared the same read at first — a
+  Damage metatile setting `player_iframes` then silently suppressed every contact battle for the
   rest of `IFRAME_TIME`, since `entity_contact`'s check ran before the branch that tells
-  `touch_encounter` and `hurt_player` apart, so an RPG's monsters became briefly walk-through. Fixed
-  by moving the read inside `entity_contact`'s own `.if !BATTLE_ENABLED` block, where it belongs: an
-  RPG encounter has no invincible window to respect, only the action side's knockback does. See
-  `rpg.test.js`.
+  `touch_encounter` and `hurt_player` apart, making an RPG's monsters briefly walk-through. Fixed by
+  moving the read inside `entity_contact`'s own `.if !BATTLE_ENABLED` block: an RPG encounter has no
+  invincible window to respect, only the action side's knockback does. See `rpg.test.js`.
 
 The scripted `Damage` command follows the same `jmp player_died` rule for its own killing hit, and
 deliberately does not route through `hurt_player` either: a trap has no attacker for the knockback
@@ -644,19 +568,16 @@ heal with no separate "inn" vocabulary, and — the one place the two models gen
 revives a fallen RPG party member the way an inn would, where `cast_heal` in battle never has to ask
 the question because it only ever heals whoever is already taking their turn. `projectUsesCombat`
 (`shared/font.js`) counts a live `Damage` command in an action project the same way it counts a
-damage actor or a painted metatile, because an author whose only damage source is this command still
-needs the hearts drawn — but not in an RPG, where `Damage` never reaches `player_hp` and, now, where
+damage actor or a painted metatile, since an author whose only damage source is this command still
+needs the hearts drawn — but not in an RPG, where `Damage` never reaches `player_hp`, and where
 nothing about combat reaches the hearts at all: `projectUsesHeartArt` answers false for every RPG
-regardless of what `projectUsesCombat` says, because `draw_hud` and `hurt_player` do not assemble
-there to draw them. Item 5's own phase 4c added a fourth source to that same list: an action-project
-item whose `effect` is `{kind: 'damage', amount > 0}` reaches `player_hp` too, through
-`use_item_apply` (below), the moment it is ever spent — and unlike the scripted command, an item's
-effect has no live/dead branch to hide inside, since every item in `project.items` is compiled
-unconditionally, so `projectUsesCombat` counts any such item regardless of whether a pickup or a
-`Give` currently makes it reachable, the same policy `projectUsesItems` already holds for turning
-`ITEMS_ENABLED` on at all. An RPG's own damage-kind items are excluded from this count the same way
-its `Damage` command already is — they land on party HP through `party_damage` (`engine/rpg.asm`)
-instead, and need no heart-HUD reservation.
+regardless of `projectUsesCombat`, since `draw_hud`/`hurt_player` do not assemble there. Item 5's
+own phase 4c added a fourth source: an action-project item whose `effect` is `{kind: 'damage',
+amount > 0}` reaches `player_hp` too, through `use_item_apply` (below) — and since every item in
+`project.items` compiles unconditionally, `projectUsesCombat` counts it regardless of reachability,
+the same policy `projectUsesItems` holds for `ITEMS_ENABLED`. An RPG's own damage-kind items are
+excluded the same way its `Damage` command is — they land on party HP through `party_damage`
+(`engine/rpg.asm`) instead, needing no heart-HUD reservation.
 
 An internal movement-code dedup's `move_right_inside`/`move_down_inside` (`engine/player.asm`)
 deliberately `jmp` to their shared tail on the very next line rather than falling through into it,
@@ -665,21 +586,18 @@ between an entry routine and its tail load-bearing and invisible, so inserting a
 `move_down_inside` and `move_vertical_probe` would silently break `move_down` with no assembler
 error.
 
-**Validate-as-you-draw (ROADMAP item 8) is five `validateProject` warnings — metasprite density,
+**Validate-as-you-draw (ROADMAP item 8)** is five `validateProject` warnings — metasprite density,
 reserved-tile reference, per-screen OAM, field density, battle OAM — plus a kernel-lo figure and
-reserved-range shading (not checks), each backed by one predicate in `shared/project.js`, the five
-sharing their live hint's own message builder** (`docs/design-draw-validation.md` for depth):
+reserved-range shading (not checks), each backed by one predicate in `shared/project.js`:
 `metaspriteScanlineDensity`, `fieldScanlineRows`/`fieldScanlineDensity` (wraps before clipping at
 row 239), `screenSpriteBudget`/`overlaySpriteBudget` (two figures, never combined),
 `battleSpriteBudget` (gated on `gameType === 'rpg'` alone, charging every wandering encounter its
-full four-monster formation — the 1..4 roll `start_encounter` makes since its off-by-one was fixed),
-`spriteReservedRanges`/`reservedRangeRects`, and
+full four-monster formation), `spriteReservedRanges`/`reservedRangeRects`, and
 `metaspriteKernelBytes` (extracted from `kernelTableBytes`). No ROM byte changed (six-fixture
-SHA-256 gate); the old worst-case-only 64-sprite build-log line is gone. Two traps: a delegation is
-structural, not behavioral, proven by reading `generate.js`'s source, not its output
-(`playerparts.test.js`'s precedent); and a game-type gate must be probed on the *other* game type —
-`battleSpriteBudget`'s own gate was missing from v1 through v6, missed by every review round, found
-only on an action build.
+SHA-256 gate). Two traps worth remembering: a delegation must be proven structural by reading
+`generate.js`'s source, not its output; and a game-type gate must be probed on the *other* game
+type — `battleSpriteBudget`'s own gate went missing for several review rounds, caught only on an
+action build. See `docs/design-draw-validation.md` for the full depth.
 
 ### The event system
 
@@ -691,55 +609,45 @@ walking up to whatever carried it and pressing the button.
 
 **A placed entity's own record has a second field whose meaning depends on the actor's
 behaviour, not just its trigger.** `ent_to_scr` (`engine/constants.asm`) is written unconditionally
-for every placement (`spawn_entities`). `entity_door` (`engine/entities.asm`) reads it as a
-flat-screen target; under `ITEMS_ENABLED`, both `entity_pickup` (`engine/entities.asm`) and the
-interact-button pickup path in `do_interact` (`engine/input.asm`) instead read it as the item id a
-pickup actor's placement grants — so for a pickup actor, item 5's own id retarget (phase 4)
-repurposes the same byte to carry that item id instead of a meaningless door target. Behaviour is
+for every placement. `entity_door` (`engine/entities.asm`) reads it as a flat-screen target; under
+`ITEMS_ENABLED`, `entity_pickup` and the interact-button pickup path in `do_interact`
+(`engine/input.asm`) instead read it as the item id a pickup actor's placement grants. Behaviour is
 exclusive (never both `door` and `pickup`), so the two meanings never collide, and
-`resolveEntityByte(entity, actor,
-itemsEnabled, itemIdForActor, flatLength)` (`main/build/generate.js`) is the single place that
-decides which one a given placement's byte is — a verbatim extraction of the inline ternary
-`emitScreens` used to carry, with no ROM-visible change, so the same question resolves identically
-for `emitScreens` and for `test/lib/eventdecoder.js`'s consumer (below). The one trap in the reuse:
-the door-target clamp (`Math.min(entity.props?.toScreen ?? 0, Math.max(0, flatLength - 1))`, now
-inside `resolveEntityByte`) must never run for a pickup actor's byte — an item id above the current
-screen count would be silently corrupted into a real, wrong screen number by a clamp meant for the
-other meaning entirely.
+`resolveEntityByte(entity, actor, itemsEnabled, itemIdForActor, flatLength)`
+(`main/build/generate.js`) is the single place that decides which one a given placement's byte is
+— the same question resolves identically for `emitScreens` and for `test/lib/eventdecoder.js`'s
+consumer (below). The trap: the door-target clamp inside `resolveEntityByte` must never run for a
+pickup actor's byte — an item id above the current screen count would be silently corrupted into a
+real, wrong screen number by a clamp meant for the other meaning entirely.
 
 `NO_ACTOR == NO_ITEM == $FF` is what let most of that retarget reach the ROM with **no engine code
-change at all**: Give, Take, a monster's drop, and a Carrying condition all used to resolve an item
-id to the actor byte it backed (`itemByte`, since deleted) before compiling it; once the compiler
-stops resolving and hands over the item id directly, every sentinel comparison already in the
-engine — `script_op_give`'s `cmp #NO_ITEM` (renamed from `NO_ACTOR` for clarity; both are `$FF`,
-so the rename cost nothing), `roll_drop`'s identical compare — keeps working unexamined, because
-both sentinels were always the same byte. Only the compiler's choice of *which* function resolves
-an authored reference changed, never what the engine compares it against.
+change at all**: Give, Take, a monster's drop, and a Carrying condition used to resolve an item id to the
+actor byte it backed before compiling it; once the compiler hands over the item id directly, every
+sentinel comparison already in the engine — `script_op_give`'s `cmp #NO_ITEM` (renamed from
+`NO_ACTOR` for clarity, both `$FF`), `roll_drop`'s identical compare — keeps working unexamined,
+since both sentinels were always the same byte. Only the compiler's choice of *which* function
+resolves an authored reference changed, never what the engine compares it against.
 
-The same id-space-capping shape `NO_ACTOR`/`NO_ITEM` already use closed a second, unrelated
-collision the retarget's own icon table (`item_metasprite`) surfaced: before `LIMITS.metasprites`
-existed, a metasprite array was genuinely uncapped, so a project could reach a real metasprite 255 —
+The same id-space-capping shape `NO_ACTOR`/`NO_ITEM` use closed a second, unrelated collision the
+retarget's own icon table (`item_metasprite`) surfaced: before `LIMITS.metasprites` existed, a
+metasprite array was genuinely uncapped, so a project could reach a real metasprite 255 —
 byte-identical to `NO_METASPRITE`, an item's own "explicitly no icon". `LIMITS.metasprites =
 NO_METASPRITE` (`shared/project.js`) closes it the same way `LIMITS.actors`/`LIMITS.items` already
-do: the cap *is* the sentinel's own value, not a literal 255 that could drift from it. An
-already-over-cap project (a later version's, or hand-edited) is refused by `validateProject` with a
-named error and left intact rather than silently sliced — a 256th metasprite is real, drawable
-content, the identical policy the actor and item ceilings already hold to.
+do: the cap *is* the sentinel's own value. An already-over-cap project is refused by
+`validateProject` with a named error and left intact rather than silently sliced, the identical
+policy the actor and item ceilings hold to.
 
 ROADMAP item 8's modular-parts targets the player, not a Sprite Forge actor:
-`PLAYER_FRAMES`/`PLAYER_TILES` (`shared/project.js`) name the player's 32 sprite-table slots,
-shipped in three phases: schema/Player tab, generator/build-time stamp, then this modal.
-`playerTiles` is the single canonical source: `generatePlayerSpriteCore`/`planPlayerSprite`
-write only there, sharing one decision path — a frame is written whole or not at all,
-`BLANK_TILE` staying the literal string, never `null`. The trap: an out-of-range `frameIndex`
-grew the array past 32, aliasing another frame. `generateAssets` stamps every tileset's
-`$00-$1F` from `playerTiles` every build, into build-time copies only, never project data.
+`PLAYER_FRAMES`/`PLAYER_TILES` (`shared/project.js`) name the player's 32 sprite-table slots.
+`playerTiles` is the single canonical source — `generatePlayerSpriteCore`/`planPlayerSprite` write
+only there, sharing one decision path: a frame is written whole or not at all, `BLANK_TILE`
+staying the literal string, never `null`. The trap is separate: an out-of-range `frameIndex` grew
+the array past 32, aliasing another frame. `generateAssets` stamps every tileset's `$00-$1F` from
+it every build, into build-time copies only.
 `openGeneratePlayerSpriteModal` (`renderer/forges/tile/tile.js`) is the only caller of
-`generatePlayerSpriteCore`, capturing `store.revision` before `showModal` and refusing on any
-change after (the `openPaletteSwapModal` idiom); a quadrant selector defaults to the first
-qualifying part carrying its own quadrant tag. `describePlayerSpritePlan` (`shared/project.js`)
-writes every string the modal shows, so the modal, `playersprite.test.js` and the smoke assert
-identical text. Mechanism depth is `docs/design-modular-parts.md`, not here.
+`generatePlayerSpriteCore`, using the `openPaletteSwapModal` revision-guard idiom, and
+`describePlayerSpritePlan` (`shared/project.js`) writes every string the modal shows, pinned by
+`playersprite.test.js`. See `docs/design-modular-parts.md` for the mechanism.
 
 `renumberSpellDeletion` (`shared/project.js`) exists beside `renumberActorDeletion`/
 `renumberItemDeletion`, the same shape applied to `project.spells` — the Magic Forge's own delete
@@ -796,38 +704,31 @@ already moved that number onto the item once. The table's existence, size and on
 
 **`use_item` (`engine/ui.asm`) is the field/menu "spend an item" action, in every game type, and it
 is the only place `none` genuinely means *key item*.** It calls `use_item_apply` first, which reads
-`item_effect_kind`/`item_effect_amount` and answers
-one of three states in `A` — `USE_ITEM_NONE`, `USE_ITEM_ALIVE`, `USE_ITEM_DIED` — because a two-state
-carry protocol cannot say "applied, and lethal" as a third thing distinct from "applied" and "not
-applied" without a second flag riding beside it. A `none`-kind item makes `use_item` skip the
-shift/`items_used` step entirely: it is kept, not spent, regardless of `amount` (a positive amount on
-a `none`-kind record is a legal, if inert, thing to author — kind alone decides). `heal` and `damage`
-both apply, through whichever health model the build has — `BATTLE_ENABLED`: `party_heal`/
-`party_damage`; otherwise `gain_hearts`/`lose_hearts` — and are spent either way, no third model
-invented for the field the way `Heal`/`Damage` already refuse one for a metatile. **`use_item_apply`
-is reached by `jsr` and must never itself `jmp player_died`** — the identical return-address
-constraint stated above for a killing hit, but here from the callee's side: what matters is whose
-return address is at stake, not merely whether one exists on the stack. The chain is
-`dispatch_input`'s own `dispatch_loop`, `jsr do_action` (`engine/input.asm`), falling to
-`do_action_confirm` and `do_action_use` by ordinary `cmp`/`beq` branches, then `do_action_use`'s own
-`jmp use_item` — so that first `jsr`'s return address sits live on the stack through `use_item`,
-`use_item_apply` and `player_died` alike (nothing resets the stack pointer except boot's own `txs`,
-and `player_died` itself tail-calls `jmp box_say`), unstranded: some later `rts`, once the chain of
-tail calls unwinds, returns through it to `dispatch_loop` to keep reading buttons. `use_item` may
-safely `jmp player_died` only because `use_item` itself was reached by `jmp` and so never had a
-return address of its own; `use_item_apply` was reached by `jsr` and does have one, so it must
-answer with `rts` rather than add a second return address and abandon it with a `jmp`. `use_item`
-`pla`s that three-state result back (a `pha` at the top of the routine, popped once at the end,
-carrying the decision across the shift and highlight repair, which clobber `A`) before performing
-its own `jmp player_died`.
+`item_effect_kind`/`item_effect_amount` and answers one of three states in `A` —
+`USE_ITEM_NONE`, `USE_ITEM_ALIVE`, `USE_ITEM_DIED` — since a two-state carry protocol cannot say
+"applied, and lethal" without a second flag. A `none`-kind item makes `use_item` skip the
+shift/`items_used` step entirely: it is kept, not spent, regardless of `amount` (kind alone
+decides). `heal` and `damage` both apply through whichever health model the build has
+(`BATTLE_ENABLED`: `party_heal`/`party_damage`; otherwise `gain_hearts`/`lose_hearts`), spent
+either way. **`use_item_apply` is reached by `jsr` and must never itself `jmp player_died`** — the
+same return-address constraint as a killing hit, but from the callee's side. The chain is
+`dispatch_input`'s `dispatch_loop` → `jsr do_action` (`engine/input.asm`) → `do_action_use`'s own
+`jmp use_item`, so that first `jsr`'s return address sits live on the stack through `use_item`,
+`use_item_apply` and `player_died` alike, unstranded until some later `rts` unwinds the whole
+tail-call chain back to `dispatch_loop`. `use_item` may safely `jmp player_died` only because
+`use_item` itself was reached by `jmp` and so never had a return address of its own;
+`use_item_apply` has one, so it must answer with `rts` rather than add a second return address and
+abandon it with a `jmp`. `use_item` `pla`s that three-state result back (a `pha` at the top of the
+routine, carrying the decision across the shift and highlight repair, which clobber `A`) before
+performing its own `jmp player_died`.
 
 **Neither of the other two starts a conversation itself.** Both arm `pending_ent`, and `main_loop`
-is the single place it becomes one. Touch fires from inside `update_entities`, which is still
-walking the other seven slots — starting there leaves the pickups, doors and contact damage below
-it acting on a world that has just frozen, and a door on the same square redraws the screen out
+is the single place it becomes one. Touch fires from inside `update_entities`, still walking the
+other seven slots — starting there would leave the pickups, doors and contact damage below it
+acting on a world that has just frozen, and a door on the same square would redraw the screen out
 from under the conversation. Enter is armed by `spawn_entities`, inside the redraw that spawned it,
-against a screen still being drawn. So both wait for a frame boundary, and the rules below are all
-one rule seen from different sides: **a frame that draws a screen or decides a warp belongs to that
+against a screen still being drawn. So both wait for a frame boundary — the rules below are all one
+rule seen from different sides: **a frame that draws a screen or decides a warp belongs to that
 transition, not to the player.**
 
 - **First claim wins**, for both triggers through one `arm_event`. Two actors cannot each own the
@@ -837,26 +738,26 @@ transition, not to the player.**
   moment on to whatever the next screen owes rather than swallowing it.
 - **Work owed is settled before `dispatch_input`, not merely before the world**, since the frame
   ends there — it belongs to the transition, not the player. `settle_owed` carries its own
-  `paused`/`game_state` gate — buttons are read in every state, but a warp and a pending event are
-  gameplay's alone. Before the world: an event can finish while the box is still up, so the frame
-  reading `warp_ready` after `update_entities` never runs. Before the *buttons*: an interact reaches
-  `start_dialog` and an event is free to warp, so a press that frame could overwrite a warp already
-  owed, or warp away from a screen whose opening was armed and never spoken.
+  `paused`/`game_state` gate: buttons are read in every state, but a warp and a pending event are
+  gameplay's alone. Before the world, because an event can finish while the box is still up and the
+  frame reading `warp_ready` after `update_entities` never runs; before the *buttons*, because an
+  interact reaching `start_dialog` leaves an event free to warp, so a press that frame could
+  overwrite a warp already owed, or warp away from a screen whose opening was armed and never
+  spoken.
 - **`dispatch_input` stops once a button has drawn a screen or decided a warp.** It re-reads
   `game_state` for every button, so two pressed together land in different states the moment the
   first changes it: confirm and interact on the same frame begin the game, then talk to whatever it
   spawned — on a screen never seen, and if that conversation warps, the opening goes with it. A is
   read first, which is why this is reachable at all; Start is read last and never could be.
 - **`screen_fresh` means a screen has been drawn and the world has not run since**, cleared once
-  per frame *before* `dispatch_input` and checked at every point the world could start on a screen
-  that has only just arrived. There are three ways one arrives mid-frame, and each needed its own
-  check: `dispatch_input` draws one outright (Start, on the title); `update_player` crosses an edge
-  — and that **does not unwind it**, because `cross_*` is reached with a `jmp` and ends in
-  `redraw_screen`, whose `rts` lands back mid-routine with a different screen under the player, so
-  `update_player` stops at the flag twice as well (before the second axis of movement, and before
-  the hazard and encounter checks); and the input can leave a warp for the next frame. Miss one and
-  the new screen charges for its spikes, counts a step towards its wandering monsters, or moves the
-  player against its collision before it has said a word.
+  per frame *before* `dispatch_input` and checked everywhere the world could start on a screen that
+  has only just arrived — three ways one can: `dispatch_input` draws one outright (Start, on the
+  title); `update_player` crosses an edge, which **does not unwind it** since `cross_*` is reached
+  with a `jmp` ending in `redraw_screen`, whose `rts` lands back mid-routine with a different screen
+  under the player, so `update_player` stops at the flag twice more (before the second axis of
+  movement, and before the hazard and encounter checks); and the input can leave a warp for the next
+  frame. Miss one and the new screen charges for its spikes, counts a step towards its wandering
+  monsters, or moves the player against its collision before it has said a word.
 - **A pending event is checked against `ent_active` before it runs.** With the settle ahead of the
   buttons nothing known can empty that slot in between, so this is a guard rather than a fix: the
   index is remembered across a frame boundary, and a stale one would speak for something that is
@@ -885,14 +786,14 @@ ROM run a third.
 
 `engine/script.asm` runs an actor's event: a list of pages, first passing page wins, commands run
 straight through until one has to wait for the player. `Say` is such a command, so the box's close
-path calls `script_resume`. Plain dialogue is compiled into an event of one unconditional page, so
+path calls `script_resume`. Plain dialogue compiles into an event of one unconditional page, so
 "talking to somebody" has a single path through the engine rather than a special case beside the
 scripted one. `IMPLEMENTED_COMMANDS` in `shared/project.js` is what the Map Forge offers; the
 schema, `normalizeEntity` and the compiler handle every command in `EVENT_COMMANDS`, so a project
 written by a later version round-trips through this one, and an opcode the engine cannot run stops
-the event rather than being reinterpreted as another one. Every command is now implemented; `join`
-is additionally hidden by the event editor unless the project is a turn-based RPG (`map.js`), because
-in an action build `OP_JOIN` is such an opcode — the battle bank it calls into is not assembled.
+the event rather than being reinterpreted. `join` is hidden by the event editor unless the project
+is a turn-based RPG (`map.js`), because in an action build `OP_JOIN`'s battle bank is not
+assembled.
 
 **`Move` is the first command conditionally assembled for a capacity reason rather than a hardware
 one.** `Say` waits for the player; `Move` waits for the *world*, which is the thing this engine had
@@ -914,26 +815,18 @@ flag to keep in step with the counter. Three rules hold it together:
 
 **A command that holds commands is not a special case to be named, it is a `nests: true` entry.**
 Three exist — `branch`, `choice` and `route`, the last of which is also `EVENT_COMMANDS`' only
-`virtual: true` entry and the array's final one.
-Array position is the wire opcode for every real, `OP_*`-backed entry (`opIndex(id)`,
-`main/build/textcompile.js`); the catalog is a contiguous real prefix followed by a contiguous
-virtual tail, and a unit test (`'EVENT_COMMANDS: every real-opcode entry keeps its engine constant
-value; the virtual tail is contiguous and last'`, `test/unit/project.test.js`) pins both halves
-directly, so a future engine-backed command has to insert immediately before the virtual tail and a
-future virtual one has to append after it. `route` holds one `who` and an ordered list of legs, each
-a real `move`/`turn`/`wait` record; `routeLegs`/`ROUTE_LEG_OPS` (`shared/eventrules.js`) is the
-single admission filter shared by the seven consumers that actually admit or reject a leg by it: the
-normalizer, `isLive`, `liveCommands`' own recursion, the compiler, the Map Forge editor's own row
-canonicalization, its summary line, and the preview's trace model — so none of *those* can disagree
-about what a route may hold. `allCommands` is the deliberate exception: its own route branch walks
-`command.legs` raw, unfiltered, because it answers "what is mentioned" (for renumbering and
-content-wide scans) rather than "what compiles," the same way it already walks a switched-off
-branch's contents. `liveCommands` recurses into a route's admitted legs
-*instead of* yielding the route command itself, because `encodeCommand`'s own `'route'` case
-(`main/build/textcompile.js`) writes no opcode of its own, only its legs' bytes, through the same
-`move`/`turn`/`wait` cases a standalone command already uses — so an authored route and the same
-commands hand-chained compile byte-identical, at zero engine cost. See
-`docs/design-routes.md` for the full design.
+`virtual: true` entry and the array's final one. Array position is the wire opcode for every real,
+`OP_*`-backed entry (`opIndex(id)`, `main/build/textcompile.js`); the catalog is a contiguous real
+prefix followed by a contiguous virtual tail, pinned by a unit test in `test/unit/project.test.js`,
+so a future engine-backed command inserts before the virtual tail and a future virtual one appends
+after it. `route` holds one `who` and an ordered list of `move`/`turn`/`wait` legs, admitted by the
+single filter `routeLegs`/`ROUTE_LEG_OPS` (`shared/eventrules.js`) shared by every consumer that
+decides what a route may hold — `allCommands` is the deliberate exception, walking `command.legs`
+raw because it answers "what is mentioned," not "what compiles." `liveCommands` recurses into a
+route's admitted legs instead of yielding the route command itself, and `encodeCommand`'s own
+`'route'` case writes no opcode of its own, only its legs' bytes — so an authored route and the
+same commands hand-chained compile byte-identical, at zero engine cost. See `docs/design-routes.md`
+for the full design.
 
 Anything asking a question of a
 whole event walks `allCommands` in `shared/eventrules.js` rather than a page's own list, and
@@ -944,72 +837,66 @@ unrelated events firing together, and reads as an engine bug.
 
 **A question is a branch the player takes.** `[OP_CHOICE, count, a string id per option]` and then
 one record per option, `[length, commands…, OP_JUMP, what is left of the question]` — the same
-`OP_JUMP` a then-branch ends with, doing the same job. The string ids are contiguous and up front
-because `script_ptr` **stays on the command** until it is answered: `text_choice_step` draws row *n*
-from the *n*'th byte after the count, so nothing has to be remembered but `choice_sel`, and
-`script_choose` walks that into a body exactly once. That is what lets a `Say` inside an option
-suspend and resume through `script_resume`, which knows nothing about questions. `CHOICE_LIMITS` in
-`shared/project.js` is the single writer for what one holds, and both numbers come from the box —
-four options because `BOX_ROWS` is four, and a label as wide as `BOX_COLS` — so the schema, the
-editor and the compiler's clamp cannot offer an option the box has no row for. The cursor is
-`ARROW_TILE` in the padding column (`BOX_TEXT_LO-1`), which is inside the frame and outside the
-text, so moving it cannot disturb a label and wiping the labels cannot rub it out. `box_after`
-carries which phase the box was raised for, so raising the frame and wiping a page stay one
-implementation each rather than asking what they are being done for — and `box_handover` is the
-single end of both, because **a phase must leave `box_row` at zero for the next one**. Typing
-counts in `msg_line`, so for as long as the box only ever typed, every phase could leave that
-counter wherever it had finished and nothing noticed; listing options reads it, and read the 4 the
-wipe left, which drew no labels at all while every RAM assertion still passed. That is why
-`script.test.js` reads the *nametable* for this one.
+`OP_JUMP` a then-branch ends with. The string ids are contiguous and up front because `script_ptr`
+**stays on the command** until it is answered: `text_choice_step` draws row *n* from the *n*'th
+byte after the count, so nothing has to be remembered but `choice_sel`, and `script_choose` walks
+that into a body exactly once — which is what lets a `Say` inside an option suspend and resume
+through `script_resume`, which knows nothing about questions. `CHOICE_LIMITS` in
+`shared/project.js` is the single writer for what one holds — four options because `BOX_ROWS` is
+four, a label as wide as `BOX_COLS` — so the schema, the editor and the compiler's clamp cannot
+offer an option the box has no row for. The cursor is `ARROW_TILE` in the padding column
+(`BOX_TEXT_LO-1`), inside the frame and outside the text, so moving it cannot disturb a label and
+wiping the labels cannot rub it out. `box_after` carries which phase the box was raised for, so
+raising the frame and wiping a page stay one implementation each, and `box_handover` is the single
+end of both, because **a phase must leave `box_row` at zero for the next one**. Typing counts in
+`msg_line`, so for as long as the box only ever typed, `box_row` could be left wherever it had
+finished and nothing noticed. Listing options is what actually reads `box_row`, and read the 4 the
+wipe left, drawing no labels at all while every RAM assertion still passed — why `script.test.js`
+reads the *nametable* for this one.
 
 A page is `[cond, arg, value, body length, commands…]`, and **a branch is that same header inline
 in a body**: `[OP_IF, cond, arg, value, then-length]`, the then-branch, `[OP_JUMP, else-length]`,
 the else-branch. Past the opcode the shapes are identical, so `script_cond` and the skip that
-declines a page are the ones a branch uses too — and because nothing is remembered but where
-`script_ptr` points, nesting costs the engine nothing and a `Say` can suspend inside a branch with
+declines a page are the ones a branch uses too, and nesting costs the engine nothing since nothing
+is remembered but where `script_ptr` points — a `Say` can suspend inside a branch with
 `script_resume` knowing nothing about it. The `OP_JUMP` pair is emitted even for an empty else, so
 both arrivals at the end of a then-branch look the same. The header is a fixed four bytes on every
 page even though only the variable comparisons read `value`, because `script_skip` steps over a
-page it has declined *without* decoding the condition that declined it; `EVT_PAGE_HEAD` in
-`engine/constants.asm` and the header written by `main/build/textcompile.js` are the two ends of
-that. The variables themselves are 16 bytes at `variables` in `constants.asm`, but **how many
-there are is generated** — `NUM_VARIABLES` in `config.inc`, from `RPG_LIMITS.variables`, which is
-also what clamps a variable index as it is compiled. The engine therefore range-checks nothing:
-the compiler is the only thing that can know how big the array is, so it is the only thing that
-guards it.
+declined page without decoding its condition; `EVT_PAGE_HEAD` in `engine/constants.asm` and the
+header written by `main/build/textcompile.js` are the two ends of that. The variables themselves
+are 16 bytes at `variables` in `constants.asm`, but **how many there are is generated** —
+`NUM_VARIABLES` in `config.inc`, from `RPG_LIMITS.variables`, which also clamps a variable index as
+it is compiled — the engine range-checks nothing, since the compiler is the only thing that knows
+how big the array is.
 
 **`Run common event…` compiles to `[OP_CALL, table slot]`**, the slot a `call`'s target resolved to
-in `main/build/textcompile.js`'s own events table — common events are compiled into it ahead of
-every placement's, so a call's one-byte argument is the position it landed in, nothing more.
+in `main/build/textcompile.js`'s own events table — common events compile into it ahead of every
+placement's, so a call's one-byte argument is just the position it landed in.
 `shared/project.js`'s `liveCommonEvents(project)` is the single definition of which
-`project.commonEvents` entries get a slot at all — one with at least one live page
-(`compiledPages(entry.event).length > 0`), carrying the id `resolveCommonEventIds` gives it — and
-both the compiler's slot assignment and `validateProject`'s own "does this call's target still
-resolve" check consume that one function rather than two implementations of the same admission rule
-that could disagree about which id a deleted or emptied-out common event leaves behind.
+`project.commonEvents` entries get a slot at all — one with at least one live page, carrying the id
+`resolveCommonEventIds` gives it — consumed by both the compiler's slot assignment and
+`validateProject`'s own "does this call's target still resolve" check, rather than two
+implementations of the same admission rule that could disagree.
 
 A `call` naming nothing live — deleted since, never live to begin with, or never given a target —
 still compiles to `[OP_CALL, NO_COMMON_EVENT_SLOT]` rather than being dropped: `script_op_call`
 (`engine/script.asm`) reads the operand and, finding the sentinel, stops the event exactly as
-`script_run_bad` stops one on an opcode it does not recognise at all, and exactly as
+`script_run_bad` stops one on an opcode it does not recognise, and exactly as
 `script_op_give`/`script_op_take` already do on `NO_ACTOR` — a recognised command whose operand
-names nothing is that family's shape of bug regardless of which opcode carries it. Dropping the
-command silently instead — which is what this engine did until the gap was found — let the page
-carry on to whatever the author wrote to run *after* the call, having silently not run the thing
-the call was there for. `validateProject` also refuses a build over a *live* `call` like that, the
-same way it refuses a missing Give/Take actor or an empty battle formation, so this is defense in
-depth for a hand-edited project or one written by a later version, not the only thing standing
-between a broken reference and a shipped ROM.
+names nothing is that family's shape of bug. Dropping the command silently instead would let the
+page carry on to whatever the author wrote to run *after* the call, having silently not run the
+thing the call was there for. `validateProject` also refuses a build over a *live* `call` like
+that, the same way it refuses a missing Give/Take actor or an empty battle formation — defense in
+depth for a hand-edited project or one written by a later version.
 
 **Exceeding `CALL_STACK_DEPTH` is a different failure from `NO_COMMON_EVENT_SLOT` and gets a different
 answer.** The callee there is perfectly real — there is just nowhere left on the small fixed
 `call_ret_lo/hi` stack (`CALL_STACK_DEPTH` in `engine/constants.asm`) to remember the way back — so
 `script_op_call` skips the call and runs the next command, on purpose: two common events are free to
-call each other, and a cycle between them is only visible once both bodies exist, not while either
-is being authored, so past the bound a call has to unwind rather than hang the game on an
-author-invisible cycle. The two checks do not share a branch: `script_op_call` tests the operand
-against `NO_COMMON_EVENT_SLOT` first and stops there before the depth is even read, so a fix to one
-cannot quietly change the other's behaviour.
+call each other, and a cycle between them is only visible once both bodies exist, so past the bound
+a call has to unwind rather than hang the game on an author-invisible cycle. The two checks do not
+share a branch: `script_op_call` tests the operand against `NO_COMMON_EVENT_SLOT` first and stops
+there before the depth is even read, so a fix to one cannot quietly change the other's behaviour.
 
 The 64 switches and the 16 variables are the only state that outlives a screen change, which is
 what makes "this happened already" expressible. `switch_test` / `switch_set` / `switch_clear`
@@ -1052,63 +939,59 @@ See `docs/design-starter-projects.md`.
 
 ### The kernel budget
 
-Move's mechanism is described under "The event system" above. The conditional part is the interesting one: Move is measured, not guessed, because hand-written
-code that assembles to an unknown size is exactly what the Code Forge's own capacity philosophy
-(below, under "The Code Forge") refuses to model — the kernel-lo bank is a fixed 8,192-byte region
-shared by engine code
-and every project's own lookup tables, and `checkCapacity` (`main/build/generate.js`) has to know
-both halves exactly. Six rules hold that model together, and they are the ones any change to this
-ledger has to keep:
+Move's mechanism is described under "The event system" above. Its cost is measured, not guessed,
+because hand-written code that assembles to an unknown size is exactly what the Code Forge's own
+capacity philosophy (below, under "The Code Forge") refuses to model — the kernel-lo bank is a
+fixed 8,192-byte region shared by engine code and every project's own lookup tables, and
+`checkCapacity` (`main/build/generate.js`) has to know both halves exactly. Six rules hold that
+model together, and they are the ones any change to this ledger has to keep:
 
 - **A conditional feature's cost is a separate generated allowance, never folded into a base.**
   `kernelCodeBytes` charges Move, Turn, Wait, Save, Sting, Sfx, switch-bound tiles, Fade/Flash and
-  the MMC3-only font-bank split as their own named `*_KERNEL_ALLOWANCE` terms, each gated on the
+  the MMC3-only font-bank split as their own named `*_KERNEL_ALLOWANCE` terms, gated on the
   predicate that turns the feature on (`projectUsesMove`, `projectUsesSave`, …) — a project that
-  never uses a feature assembles byte-for-byte as if the feature did not exist, which
-  `move.test.js`, `codebuild.test.js` and their neighbours assert by comparing whole ROMs.
+  never uses a feature assembles byte-for-byte as if it did not exist, asserted by `move.test.js`,
+  `codebuild.test.js` and their neighbours comparing whole ROMs.
 - **A term that varies by mapper is measured per mapper**, in a `*_BY_MAPPER` table
   (`BASE_KERNEL_CODE_BYTES_BY_MAPPER`, `TITLE_KERNEL_ALLOWANCE_BY_MAPPER`,
-  `SAVE_KERNEL_ALLOWANCE_BY_MAPPER`), not charged to every board at whichever board's figure is
-  largest. Base and title fall back to the largest measured figure for a mapper their table has no
-  entry for (`?? FALLBACK_...`), and `kernelbytes.test.js` builds real ROMs there to confirm the
-  fallback still leaves real margin. **Save has no fallback** — it indexes
-  `SAVE_KERNEL_ALLOWANCE_BY_MAPPER[mapper.id]` directly, deliberately: a newly implemented save
-  medium with no measured entry must fail loudly rather than silently inherit another board's
-  figure. The converse rule matters as much: **a term stays flat until real variance is measured**,
-  which is why Save's own RPG supplement is a bare `SAVE_BATTLE_KERNEL_ALLOWANCE` and not a fourth
-  table — the same standard `TITLE_KERNEL_ALLOWANCE_BY_MAPPER` met in the opposite direction, its
-  MMC3 entry earning per-mapper shape on a measured 12-byte difference.
+  `SAVE_KERNEL_ALLOWANCE_BY_MAPPER`), not charged to every board at whichever figure is largest.
+  Base and title fall back to the largest measured figure for an unmeasured mapper (`??
+  FALLBACK_...`), confirmed to leave real margin by `kernelbytes.test.js`. **Save has no
+  fallback** — it indexes `SAVE_KERNEL_ALLOWANCE_BY_MAPPER[mapper.id]` directly, deliberately: a
+  newly implemented save medium with no measured entry must fail loudly rather than silently
+  inherit another board's figure. The converse matters as much: **a term stays flat until real
+  variance is measured**, which is why Save's own RPG supplement is a bare
+  `SAVE_BATTLE_KERNEL_ALLOWANCE` and not a fourth table — the same standard
+  `TITLE_KERNEL_ALLOWANCE_BY_MAPPER` met in the opposite direction, its MMC3 entry earning
+  per-mapper shape on a measured 12-byte difference.
 - **A term measured against one game type and charged to both is wrong for the one it was not
-  measured on, and no delta-based test can see it.** `SAVE_KERNEL_ALLOWANCE_BY_MAPPER` was measured
-  only against `sample-rpg` and overcharged every action project 36 bytes until it was split;
-  `BASE_KERNEL_CODE_BYTES_BY_MAPPER` had the identical defect, overcharging action projects 270 bytes
-  on MMC1 and UNROM 512 and 282 on MMC3 (`docs/kernel-base-overcharge-report.md` — the write-up, cause
-  and fix), fixed the same way: the base now holds the action-side figure, and
-  `BATTLE_KERNEL_ALLOWANCE_BY_MAPPER` (below) carries the RPG-only remainder. A third instance shared
-  the blind spot without the game-type mismatch: `SPLIT_KERNEL_ALLOWANCE` was never measured as its
-  own delta, only as a residual already containing its own bytes, and 146 of its true 165 had been
-  hiding inside that same MMC3 base (`docs/split-lock-not-pinned-report.md` §8). The reason none of
-  the three was caught is worth keeping even after all are fixed: every absolute `assertCovers` check
-  ran against `sample-rpg` only, and every action-side check was a *delta* between two action builds,
-  cancelling the base term out. A new allowance needs at least one absolute check on each game type —
-  and each condition — it can be charged to.
+  measured on, and no delta-based test can see it.** `SAVE_KERNEL_ALLOWANCE_BY_MAPPER` and
+  `BASE_KERNEL_CODE_BYTES_BY_MAPPER` both overcharged action projects this way until each was split
+  into its action-side per-mapper base plus an RPG-only supplement — `BATTLE_KERNEL_ALLOWANCE_BY_MAPPER`
+  for the base, and the flat `SAVE_BATTLE_KERNEL_ALLOWANCE` for Save
+  (`docs/kernel-base-overcharge-report.md`); `SPLIT_KERNEL_ALLOWANCE` had the same blind spot
+  without the game-type mismatch, measured only as a residual rather than its own delta
+  (`docs/split-lock-not-pinned-report.md` §8). All three escaped detection for the same reason:
+  every absolute `assertCovers` check ran against `sample-rpg` only, and every action-side check was
+  a *delta* between two action builds, cancelling the base term out. A new allowance needs at least
+  one absolute check on each game type — and each condition — it can be charged to.
 - **Individual allowance deltas are equality-asserted against nesasm's real usage, per board, not
   margin-checked.** `kernelbytes.test.js` measures each named constant's own isolated delta with
   `assert.equal`, not `<=` — a margin check would let a stale, too-generous figure sit undetected
-  until the day a project actually needed the bytes it silently claimed. The *combined*
-  reservation is checked differently: `assertCovers` requires the real margin to sit between
-  `KERNEL_SLACK` and `KERNEL_SLACK * 2` — under it, the reservation has fallen behind the engine;
-  over it, the term has stopped tracking closely enough to catch the next regression.
-  (`bankedbytes.test.js` holds the same discipline for the separate banked battle-region ledger,
-  not for these kernel-lo allowances.)
+  until a project actually needed the bytes it silently claimed. The *combined* reservation is
+  checked differently: `assertCovers` requires the real margin to sit between `KERNEL_SLACK` and
+  `KERNEL_SLACK * 2` — under it, the reservation has fallen behind the engine; over it, the term
+  has stopped tracking closely enough to catch the next regression. (`bankedbytes.test.js` holds
+  the same discipline for the separate banked battle-region ledger, not these kernel-lo
+  allowances.)
 - **`kernelShortfallAdvice` (`main/build/generate.js`) prices a removal by disabling every live
-  occurrence of a command — nested inside a branch or a choice option, and inside a common event,
-  not just top-level — and asking what the resulting project's full kernel-lo occupancy
-  (`kernelCodeBytes + fixedBytes + tableBytes`) would be (`projectWithoutCommands`), never by
-  summing the flat allowance constants.** Summing under-counts: on MMC3, a project whose only live
-  event is a Move (or a Sting) is that project's only reason `SPLIT_KERNEL_ALLOWANCE` is paid
-  at all, so removing it has to free the term *and* the split term together, and only the
-  counterfactual-occupancy approach knows that.
+  occurrence of a command — nested inside a branch, a choice option, or a common event — and asking
+  what the resulting project's full kernel-lo occupancy (`kernelCodeBytes + fixedBytes +
+  tableBytes`) would be (`projectWithoutCommands`), never by summing the flat allowance
+  constants.** Summing under-counts: on MMC3, a project whose only live event is a Move (or a
+  Sting) is that project's only reason `SPLIT_KERNEL_ALLOWANCE` is paid at all, so removing it has
+  to free the term *and* the split term together, which only the counterfactual-occupancy approach
+  knows.
 - **A mapper offered as a fix must still hold every tileset, every screen and the project's
   mirroring choice** — a smaller kernel-lo reservation alone is not a valid suggestion if
   `reconcileCartridge` would silently truncate one of those the moment the author switched.
@@ -1119,14 +1002,13 @@ sizes, the route zero-cost proof and `KERNEL_SLACK` itself are each checked thei
 
 - `BASE_KERNEL_CODE_BYTES_BY_MAPPER = { 1 (MMC1): 6022, 4 (MMC3): 6039, 30 (UNROM 512): 6217 }` —
   action-side, nothing conditional on, falling back to the largest of the three for an unmeasured
-  mapper (the game-type overcharge this fixed: `docs/kernel-base-overcharge-report.md`).
-  `BATTLE_KERNEL_ALLOWANCE_BY_MAPPER = { 1: 253, 4: 265, 30: 253 }` is its RPG-only supplement — no
-  fallback, deliberately, the same reason Save's table has none; MMC3's extra 12 bytes are
-  `split_select`'s second `.if BATTLE_ENABLED` arm (`engine/split.asm`). Its gate,
-  `battleEnabledFor` (`codeRegions(...).length > 0`), does not imply `rpgCapable(mapper)`, so
-  `battleKernelAllowance(mapper)` THROWS on a missing entry rather than `undefined`-then-`NaN`,
-  `checkCapacity` pre-checks the project's own mapper and reports a named problem, and
-  `switchableMappers` filters out any candidate that would hit the throw.
+  mapper (`docs/kernel-base-overcharge-report.md`). `BATTLE_KERNEL_ALLOWANCE_BY_MAPPER = { 1: 253,
+  4: 265, 30: 253 }` is its RPG-only supplement — no fallback, deliberately, the same reason Save's
+  table has none; MMC3's extra 12 bytes are `split_select`'s second `.if BATTLE_ENABLED` arm
+  (`engine/split.asm`). Its gate, `battleEnabledFor` (`codeRegions(...).length > 0`), does not
+  imply `rpgCapable(mapper)`, so `battleKernelAllowance(mapper)` THROWS on a missing entry rather
+  than `undefined`-then-`NaN`; `checkCapacity` pre-checks the project's own mapper and reports a
+  named problem, and `switchableMappers` filters out any candidate that would hit the throw.
 - `TITLE_KERNEL_ALLOWANCE_BY_MAPPER = { 30: 212, 1: 212, 4: 224 }`, charged whenever a project has
   a title screen — MMC3's extra 12 bytes are its own `.if TITLE_ENABLED` branch in `split_select`.
   A live `Save` command pays this term even with `titleMap` currently unset, because
@@ -1134,12 +1016,11 @@ sizes, the route zero-cost proof and `KERNEL_SLACK` itself are each checked thei
 - `SAVE_KERNEL_ALLOWANCE_BY_MAPPER = { 1: 514, 4: 519, 30: 686 }` plus flat
   `SAVE_BATTLE_KERNEL_ALLOWANCE = 41` — two terms: the table is the action-side base every
   save-capable board pays (UNROM 512 costs more — flash-rewrite, not battery-WRAM); the flat
-  RPG-only supplement is `save_check_valid`'s own `.if BATTLE_ENABLED` range-check block plus phase
-  4's `BE_RESTORE` call site, summing to RPG totals `{1: 555, 4: 560, 30: 727}` — flat because the
-  gap measures identical on all three boards, `kernelbytes.test.js` equality-asserting it per board.
-  Its gate is NOT `gameType === 'rpg'`: `kernelCodeBytes` recomputes `codeRegions(...).length > 0`,
-  the real predicate `BATTLE_ENABLED` is emitted from, strictly narrower on a CHR-RAM board whose
-  tileset payloads have claimed every switchable region.
+  RPG-only supplement is `save_check_valid`'s own `.if BATTLE_ENABLED` range-check block plus
+  `BE_RESTORE`'s call site, summing to RPG totals `{1: 555, 4: 560, 30: 727}`, flat because the gap
+  measures identical on all three boards. Its gate is NOT `gameType === 'rpg'`: `kernelCodeBytes`
+  recomputes `codeRegions(...).length > 0`, the real predicate `BATTLE_ENABLED` is emitted from,
+  strictly narrower on a CHR-RAM board whose tileset payloads have claimed every switchable region.
 - `MOVE_KERNEL_ALLOWANCE = 379` plus `FACE_KERNEL_ALLOWANCE = 16` (the facing routine Move and
   `Turn` share, charged once) — 395 total for a Move-only project.
 - `SPLIT_KERNEL_ALLOWANCE = 165`, MMC3-only, charged whenever `projectUsesText` is true on that
@@ -1175,33 +1056,26 @@ sizes, the route zero-cost proof and `KERNEL_SLACK` itself are each checked thei
   every conditional term is counted. It also enforces a ceiling at `KERNEL_SLACK * 2` — a drift
   alarm, not spare headroom: too wide a margin means some term stopped tracking the engine closely.
 
-**Documented limitations — combinations `checkCapacity` refuses today, each with its own named
-test rather than a silent gap. Every Save-on-RPG row moved 5 bytes with `BE_RESTORE` (above), the
-kernel base's own further +15 (below) moved several rows again, and name entry phase 1's own +3
-(above) moved every Save row again — MMC3 `Save` + `Move`, no item, is now short 11 bytes with
-*nothing else live*, so Sting/Sfx/a bound tile below no longer tip a fitting row into refusal, they
-land on one already broken:**
+**Documented limitations** — combinations `checkCapacity` refuses today, each backed by its own
+named test in `kernelbytes.test.js` rather than a silent gap; the figures below are current, as the
+tests measure them:
 
-- MMC3, `Save` + `Move` + one live item: 90 bytes short (fits on MMC1 with 121 free). Test:
-  `'sample-rpg with Save, Move and its one live item does not build on MMC3 -- round 2 reopened the
-  gap the kernel diet had closed, a documented limitation'` (`kernelbytes.test.js`).
+- MMC3, `Save` + `Move` + one live item: 90 bytes short (fits on MMC1 with 121 free).
 - UNROM 512, `Save` + `Move`, no item: 167 bytes short — unrelated to items; dropping one does not
   close this the way it closes MMC3's.
 - MMC3, `Save` + `Move`, no item: 11 bytes short alone. A live `Sting` deepens it to 198 short,
-  closed by `Move` (395) or `Save` (560) — `kernelbytes.test.js` asserts both. A live bound tile
-  deepens it to 431 short instead, where `Move` (395) alone is 36 short — only `Save` (560)
-  closes it, per that row's own test.
-- The same bound tile (marginal cost `388 + 30 + 2 × screen count` — 420 bytes, this ledger's
-  largest single feature cost) also reopens MMC1's `Save` + `Move` + one live item row (299 short,
-  was 121 free) — MMC1 had margin to lose, unlike MMC3's row above.
+  closed by `Move` (395) or `Save` (560). A live bound tile deepens it to 431 short instead, where
+  `Move` (395) alone is 36 short — only `Save` (560) closes it.
+- The same bound tile (marginal cost `388 + 30 + 2 × screen count` = 420 bytes, this ledger's
+  largest single feature cost) also reopens MMC1's `Save` + `Move` + one live item row, to 299
+  short (was 121 free).
 - A live `Sfx` command adds five more refusal rows: MMC1 Save+Move+item (189 short); MMC1
   Save+Move-no-item (110 short); MMC3 ALL-7-verbs+Move+item-no-Save (112 short); UNROM 512
   Save-only-with-item (161 short); UNROM 512 ALL-7-verbs+Move+item-no-Save (113 short); and it
-  reopens MMC1's Save+Move+item row a second way (366 short, Sting live).
+  reopens MMC1's Save+Move+item row a second way, to 366 short (Sting live).
 - Two fits controls confirm the boundary is real: `sample-rpg`'s one live item plus a live Sfx
   alone still builds on MMC3 (the tightest board), and the seven item-6 commands plus that item
-  with Sting *and* Sfx both live still builds on MMC3 too — no Save/Move/title live on that row,
-  load-bearing since every refusal row above carries Save and/or Move.
+  with Sting *and* Sfx both live still builds on MMC3 too — no Save/Move/title live on that row.
 
 `kernelShortfallAdvice` names a real, buildable fix for every refusal above (which live command(s)
 to drop, or occasionally a different mapper) — a refusal here is `checkCapacity` doing its job on a
@@ -1241,27 +1115,24 @@ fails to rename, so it also falls back on nesasm's own `# N error(s)` count. `bu
 one IPC channel that does not flatten its error through `fail()`, because the `{file, line}` array
 is what the deep-link needs.
 
-**nesasm v3.1 also crashes outright on a long label**, an undocumented limit found while building the
-SFX feature: a label of 31 or more characters aborts the assembler with a glibc `_FORTIFY_SOURCE`
-buffer-overflow error (exit 134) rather than reporting a normal error line; 30 characters assembles
-cleanly. Found by binary search after two new engine labels reached 32 characters
-(`docs/sfx-implementation-report.md` §2); both were renamed to 24 characters or fewer and no
-other change was needed. Unlike the "6502 traps" list below, this one has no regression test — it is
-recorded here as a known assembler limit to keep new labels under, not a claim this codebase actively
-guards against.
+**nesasm v3.1 also crashes outright on a long label**, an undocumented limit found while building
+the SFX feature: a label of 31 or more characters aborts the assembler with a glibc
+`_FORTIFY_SOURCE` buffer-overflow error (exit 134) rather than a normal error line; 30 characters
+assembles cleanly (`docs/sfx-implementation-report.md` §2). Unlike the "6502 traps" list below,
+this has no regression test — recorded here as a known assembler limit to keep new labels under,
+not a claim this codebase actively guards against.
 
 The editor (`renderer/forges/code/`) is hand-rolled — no runtime dependencies and no bundler rule
 out Monaco and CodeMirror, not the CSP; CodeMirror 6 needs no `unsafe-eval` at all. `highlight.js`
-is a pure per-line tokenizer (nesasm has no multi-line construct), and its one invariant is that
-joining the tokens reproduces the line; a test asserts that over every line of the engine. Two
-metric rules in `editor.js`: the gutter, the highlight layer and the textarea must agree on every
-font and spacing value or the caret drifts off its character, and for an editable file `gotoLine`
-sets the selection *before* the scroll because focusing a textarea scrolls it on the browser's
-terms and discards anything set first — a read-only generated file's `gotoLine` does not set a
-selection at all, so it only scrolls.
-Typing commits to the store on a pause rather than per keystroke (an unusable undo stack) or on
-blur (a commit that may never come), so `saveProject` in `app.js` calls the mount contract's
-optional `flushPendingEdits()` first.
+is a pure per-line tokenizer (nesasm has no multi-line construct), and its one invariant — joining
+the tokens reproduces the line — is asserted over every line of the engine. Two metric rules in
+`editor.js`: the gutter, the highlight layer and the textarea must agree on every font and spacing
+value or the caret drifts off its character, and for an editable file `gotoLine` sets the selection
+*before* the scroll, since focusing a textarea scrolls it on the browser's terms and discards
+anything set first — a read-only generated file's `gotoLine` only scrolls. Typing commits to the
+store on a pause rather than per keystroke (an unusable undo stack) or on blur (a commit that may
+never come), so `saveProject` in `app.js` calls the mount contract's optional
+`flushPendingEdits()` first.
 
 - Stock label stability: an internal movement-code dedup removed
   `move_left_done`/`move_right_done`/`move_up_done`/`move_down_done` as standalone labels, but they
@@ -1279,54 +1150,49 @@ the single writer for that, consulted by the schema, the Build panel and `reconc
 
 **`call_battle` in `engine/banks.asm` is the only cross-bank call in this codebase, and the only
 one there may be.** `player.asm` dereferences `mtptr` out of the switchable window every single
-frame, so the trampoline ends with `jmp set_screen_ptr` — the restore *is* the return. Anything
-that forgets it leaves the game reading its map out of the battle system's code — no crash, no
-obvious banking bug. `banked.test.js` asserts the restore. The trampoline
-has four entry points (`BE_INIT`, `BE_TICK`, `BE_JOIN`, `BE_RESTORE`), and `BE_JOIN` is the one used
-*on the field*: the script's Join command recruits a party member mid-conversation, so the restore
-matters most there — the frame it ran in still has a map to draw. `BE_RESTORE` runs at
-load time (`engine/save.asm`), recomputing `pc_spells` from the restored level, not trusting the
-save's own possibly-stale bitmask. Unlike `BE_JOIN`, this restore is masked by its caller:
-`continue_game` ends `jmp redraw_screen`, re-running `set_screen_ptr` regardless of whether the
-trampoline exit succeeded.
+frame, so the trampoline ends with `jmp set_screen_ptr` — the restore *is* the return; forgetting
+it leaves the game reading its map out of the battle system's code, with no crash and no obvious
+banking bug. `banked.test.js` asserts the restore. The trampoline has four entry points
+(`BE_INIT`, `BE_TICK`, `BE_JOIN`, `BE_RESTORE`), and `BE_JOIN` is the one used *on the field*: the
+script's Join command recruits a party member mid-conversation, so the restore matters most there
+— the frame it ran in still has a map to draw. `BE_RESTORE` runs at load time (`engine/save.asm`),
+recomputing `pc_spells` from the restored level rather than trusting the save's own possibly-stale
+bitmask. Unlike `BE_JOIN`, this restore is masked by its caller: `continue_game` ends `jmp
+redraw_screen`, re-running `set_screen_ptr` regardless of whether the trampoline exit succeeded.
 
-**`BE_JOIN`'s operand is guarded now; the asymmetry was the defect.** `battle_entry_join`
-(`engine/battle.asm`) does `cpx #PARTY_SIZE` / `bcs battle_entry_join_skip` — `rts` back to
-`call_battle` — `party_init`'s own twin guard on the same access. `NO_MEMBER = $FF` is defined once
-per side, beside `NO_ACTOR`/`NO_ITEM`; the compiler emits it for `null` since `byte(null, 3)` coerces
-`null` to member 0. One compare refuses both the sentinel and a stale index; `rpg.test.js` patches a
-built ROM's operand to `$FF` and to exactly `PARTY_SIZE`, with a seeded `pc_hp_max` byte catching a
-mis-branch into `party_restore`.
+**`BE_JOIN`'s operand is guarded**, matching `party_init`'s own twin guard on the same access:
+`battle_entry_join` (`engine/battle.asm`) does `cpx #PARTY_SIZE` / `bcs battle_entry_join_skip` —
+`rts` back to `call_battle`. `NO_MEMBER = $FF` is defined once per side, beside `NO_ACTOR`/
+`NO_ITEM`; the compiler emits it for `null` since `byte(null, 3)` coerces `null` to member 0. One
+compare refuses both the sentinel and a stale index; `rpg.test.js` patches a built ROM's operand to
+`$FF` and to exactly `PARTY_SIZE`, with a seeded `pc_hp_max` byte catching a mis-branch into
+`party_restore`.
 
 The split is: `engine/rpg.asm` in the kernel (the RNG, the step counter, assembling a formation),
 everything else in `engine/battle.asm` + `battleui.asm` + `battleturn.asm` on the far side.
 Calling *out* of the bank is free — the kernel is permanently mapped — so the battle system uses
 `vram_open`/`vram_push`, `draw_metasprite` and `add_item` directly.
 
-**That region has a capacity check, and unlike the kernel's it is exact.** Nothing bounded it until
-`battleRegionBytes`/`battleRegionCeiling` (`main/build/battletables.js`) — overflowing it surfaced
-as raw nesasm output attributed to whatever line happened to fall past the end, which is the thing
-this codebase's own convention refuses to show a user. The budget lives beside the tables it sizes
-rather than beside `kernelCodeBytes`, for a hard reason: `generate.js` reaches for `node:fs`, so the
-renderer cannot import it, and the Build panel's meter would need a second copy of the arithmetic —
-the drift the check exists to prevent, one layer out. `battletables.js` imports only from `shared/`
-and must stay that way; `renderer/forges/build/build.js` importing it is the same move
+**That region has a capacity check, and unlike the kernel's it is exact.** Nothing bounded it
+until `battleRegionBytes`/`battleRegionCeiling` (`main/build/battletables.js`) — overflowing it
+used to surface as raw nesasm output attributed to whatever line fell past the end, which this
+codebase's own convention refuses to show a user. The budget lives beside the tables it sizes
+rather than beside `kernelCodeBytes`: `generate.js` reaches for `node:fs`, so the renderer cannot
+import it, and the Build panel's meter would need a second copy of the arithmetic — the drift the
+check exists to prevent, one layer out. `battletables.js` imports only from `shared/` and must stay
+that way; `renderer/forges/build/build.js` importing it is the same move
 `renderer/forges/sound/sound.js` already makes with `main/build/songcompile.js`.
 
 `BASE_BATTLE_CODE_BYTES_BY_MAPPER` is per board (UNROM 512 4220, MMC1 4220, MMC3 4266), measured
 directly rather than reconstructed from a running fix history — the same mistake
-`BASE_KERNEL_CODE_BYTES_BY_MAPPER` had to undo. The last move, +95 on every board, is slice B's own
-fixes: `battle_status_dispatch` now checks `combatant_alive` before every status tick (a
-poison+burn double-kill wrapped `bt_count` to `$FF`), and death no longer wipes its four rows
-inline — four kills in one tick used to queue 176 bytes of VRAM writes past the vblank window, so
-`bt_wipe_mask`/`row`/`slot` now queue one 11-byte row a frame, sticky against a staggered death.
-MMC3's extra 46 bytes are the `.if
+`BASE_KERNEL_CODE_BYTES_BY_MAPPER` had to undo. `battle_status_dispatch`'s `combatant_alive` guard
+and `bt_wipe_mask`'s staggered-death queueing (see that array's own comment in
+`engine/constants.asm`) are folded into this figure. MMC3's extra 46 bytes are the `.if
 SPLIT_ENABLED` blocks inside the region itself (`battle.asm`'s split arm, `battleui.asm`'s sprite
-targeting cursor), and they need **no** separate conditional term the way `SPLIT_KERNEL_ALLOWANCE` does:
-`SPLIT_ENABLED` is `fontBankSplit`, `projectUsesText` is true for `gameType === 'rpg'` on the game
-type alone, and this region exists only for an RPG — so there is no MMC3-RPG-without-the-split to
-overcharge. Every board that can reach the region has its own measured entry, because `codeRegions()`
-hands back nothing unless the project is an RPG and an RPG needs `rpgCapable()`; the fallback in
+targeting cursor), and need **no** separate conditional term the way `SPLIT_KERNEL_ALLOWANCE` does:
+this region exists only for an RPG, so there is no MMC3-RPG-without-the-split to overcharge. Every
+board that can reach the region has its own measured entry, because `codeRegions()` hands back
+nothing unless the project is an RPG and needs `rpgCapable()`; the fallback in
 `baseBattleCodeBytes` stands in for no real board and exists only so an unmeasured one cannot make
 the budget `NaN` and silently stop the refusal firing. `test/unit/bankedbytes.test.js` asserts it is
 unreachable.
@@ -1340,85 +1206,76 @@ fits.
 
 Which boards are candidates is `switchableMappers` (`main/build/generate.js`), extracted from
 `kernelShortfallAdvice` so both answers to "would a different mapper fix this?" share one place.
-**It asks the authorities rather than restating their rules**, a shape arrived at the hard way: as a
-hand-written filter chain it was already missing three rules when reviewed — art in the tilesets'
-`$A0-$FF` (only a scanline-IRQ board leaves that range to the author), sprite tile `$FD` (a
-split-font board reserves it for the battle targeting cursor, so *entering* MMC3 can break a project
-too), and a monster's battle-art block running past `$A0` (an error off MMC3 even when the
-tileset's own upper slots are empty). Three misses in one pass is the sign of a rule that should not
-be a list. So there are two questions instead: does `reconcileCartridge` change the project (if so,
-the switch silently costs a tileset or a mirroring choice — and the *result* validates cleanly,
-invisible to every other check), and would the result still build — `validateProject` for every
-content rule at once, plus the three capacity questions it does not own: screens, kernel-lo and the
-banked code region. Errors are compared before against after, not merely counted: a project being
-advised may carry unrelated errors every board shares, and rejecting a candidate for one it merely
-inherited would cost the author every suggestion over a mistake unrelated to the switch.
+**It asks the authorities rather than restating their rules** — a hand-written filter chain would
+have to independently track art in the tilesets' `$A0-$FF` (only a scanline-IRQ board leaves that
+range to the author), sprite tile `$FD` (a split-font board reserves it for the battle targeting
+cursor, so *entering* MMC3 can break a project too), and a monster's battle-art block running past
+`$A0` (an error off MMC3 even when the tileset's own upper slots are empty) — the sign of a rule
+that should not be a list. So there are two questions instead: does `reconcileCartridge` change the
+project (if so, the switch silently costs a tileset or a mirroring choice, invisible to every other
+check), and would the result still build — `validateProject` for every content rule at once, plus
+the three capacity questions it does not own: screens, kernel-lo and the banked code region. Errors
+are compared before against after, not merely counted, so a candidate is never rejected for an
+error it merely inherited, unrelated to the switch.
 
-**No board is offered at all to a project carrying hand-written 6502.** Two of the three fit checks
-read models of stock code — `kernelCodeBytes` measures the stock kernel, `battleRegionBytes` the
-stock battle system — and a Code Forge override replaces one of those files, while even a plain user
-file lands in kernel-lo through `assets/usercode.inc`. A candidate can therefore save enough
-*modelled* bytes to pass while the real code still overflows, which is the same guess this codebase
-refuses to make about user code anywhere else, aimed at the mapper select instead of at a byte
-count. Withholding degrades gracefully: the feature- and content-removal advice stays true either
-way. This also closes the same overclaim in `kernelShortfallAdvice`, which had it first.
+**No board is offered at all to a project carrying hand-written 6502.** Two of the three fit
+checks read models of stock code — `kernelCodeBytes` measures the stock kernel, `battleRegionBytes`
+the stock battle system — and a Code Forge override replaces one of those files, while even a
+plain user file lands in kernel-lo through `assets/usercode.inc`. A candidate could therefore save
+enough *modelled* bytes to pass while the real code still overflows, the same guess this codebase
+refuses to make about user code anywhere else, aimed at the mapper select instead of a byte count.
+Withholding degrades gracefully — the feature- and content-removal advice stays true either way —
+and closes the same overclaim `kernelShortfallAdvice` had first.
 
 The exactness is worth keeping, with one qualification. `kernelCodeBytes` must over-estimate — it
 shares its bank with lookup tables it models by hand — but this region has two occupants, and
 `battleTableBytes` counts the second off `battleTables`' own emitted output rather than modelling
 it, so that half cannot drift. The other half, the stock engine code, is a
-hand-measured constant like any other: **exact today, and held there by the equality assertion in
-`bankedbytes.test.js` rather than by construction.** Across five table-varying variants on all three
-boards — fifteen builds — `base + battleTableBytes` equals nesasm's reported usage **to the byte**,
-which is why the test asserts equality rather than a margin band, and why `BATTLE_SLACK` is buffer
-against stock-code growth rather than headroom for an estimate to be wrong in.
+hand-measured constant like any other: **exact today, held there by the equality assertion in
+`bankedbytes.test.js` rather than by construction.** Across five table-varying variants on all
+three boards, `base + battleTableBytes` equals nesasm's reported usage **to the byte**, why the
+test asserts equality rather than a margin band, and why `BATTLE_SLACK` is buffer against
+stock-code growth rather than headroom for an estimate to be wrong in.
 
 **`battleTables(project, battleStrings = BATTLE_STRINGS)` and `battleTableBytes(project,
-battleStrings = BATTLE_STRINGS)` both take an optional, test-only injected strings list, and both
-must** — round 2 of the name-stride slice's own review found `battleTableBytes` still calling
-`battleTables(project)` with the *default* even after `battleTables` had been given the parameter,
-so an injected list's real emission and the counter naming its size could disagree, exactly the
-failure this region's whole exactness discipline exists to prevent, one call site closer in than
-the board-level check above. The default path is byte-identical to before either parameter existed.
-See `docs/namestride-report.md` for `checkBattleStringsCapacity`, the generator guard this
-parameter lets be exercised through `battleTables`' own call site rather than only in isolation
-(`test/unit/bankedbytes.test.js`).
+battleStrings = BATTLE_STRINGS)` both must accept the injected list, and `battleTableBytes` must
+forward it into `battleTables`** (`main/build/battletables.js:608`) rather than calling it with the
+default — the defect round 2 of the name-stride review found: a version where `battleTableBytes`
+still called `battleTables(project)` with the default let an injected list's real emission and the
+counter naming its size disagree, exactly what this region's exactness discipline exists to
+prevent. The
+default path is byte-identical to before either parameter existed. See `docs/namestride-report.md`
+for `checkBattleStringsCapacity`, the generator guard this parameter lets be exercised through
+`battleTables`' own call site (`test/unit/bankedbytes.test.js`).
 
-**Exact for the *stock* battle code, and that qualifier is load-bearing.** A Code Forge override of
-`battle.asm` — or of `battleui.asm`/`battleturn.asm`, which it includes — is hand-written 6502 whose
-assembled size cannot be known from its text, so the base term becomes a measurement of a file that
-is no longer being assembled. `battleCodeOverridden` is the single predicate for that. The rule
-about hand-written code cuts **both** ways: a guess would "either refuse a project that fits or
-promise room the assembler then denies". So an override project is not refused on the stock base at
+**Exact for the *stock* battle code, and that qualifier is load-bearing.** A Code Forge override
+of `battle.asm` — or of `battleui.asm`/`battleturn.asm`, which it includes — is hand-written 6502
+whose assembled size cannot be known from its text, so the base term becomes a measurement of a
+file no longer being assembled. `battleCodeOverridden` is the single predicate for that. The rule
+about hand-written code cuts **both** ways: a guess would either refuse a project that fits or
+promise room the assembler then denies. So an override project is not refused on the stock base at
 all — that would turn away someone's *smaller* battle system for the engine's larger one — it is
-checked against the one bound an override cannot move, the generated tables alone. Past that the
+checked against the one bound an override cannot move, the generated tables alone; past that the
 assembler answers, with the `.fail` below as the backstop. The advice changes with it: a reduction
 that would close an exact deficit is only "the least that could fit" when the base is unknown, and
 no board can be said to fit either.
 
-**Overriding `main.asm` is a weaker guarantee again, and gets its own predicate,**
-`battleRegionPlacementOverridden` / `BATTLE_REGION_PLACEMENT_SOURCES`: an override of `battle.asm`
-leaves the tables where they are, so "the tables alone must fit" survives it, but a custom
-`main.asm` can put those tables somewhere else entirely, or nowhere. **No capacity refusal is
-raised at all in that case** — the tables-only bound assumes exactly the placement the author has
-taken over, and refusing on it would turn away a project that fits. The meter still shows the
-stock-based figure, under a hint saying which number it is, since the tables half is as real as
-ever. See `docs/design-battle-region-guard.md` for why this is the one case neither the JS check nor
-the assembler backstop covers, and how `battleTableBytes` handles a directive it cannot size.
+**Overriding `main.asm` is a weaker guarantee again**, its own predicate
+`battleRegionPlacementOverridden` / `BATTLE_REGION_PLACEMENT_SOURCES`: a custom `main.asm` can put
+the tables `battle.asm`'s override leaves in place somewhere else entirely, or nowhere, so **no
+capacity refusal is raised at all** in that case — the meter still shows the stock-based figure,
+under a hint saying which number it is.
 
 **The `.fail` in the generated `assets/code.inc` bounds where an override of `battle.asm` ends up,
-not whether nesasm accepted it — and even together with `checkCapacity`'s own text-scan warning, it
-cannot close every escape.** nesasm's own per-byte bank check already catches an override that is
-simply too big; the `.fail` exists for the one thing that check cannot see — an override that
-*relocates* with its own `.bank`/`.org` and finishes outside the region, which nesasm accepts with
-exit 0 while battle code is silently written over screen data or the kernel. `checkCapacity`
-separately *warns* when an override's text contains anything **shaped like** a `.bank`/`.org`
-relocation (`battleRegionRelocates`) — a text scan, not a size guess, so it is deliberately weaker
-than "contains a directive" and can both miss a relocation reached through `.include`/a macro and
-flag one that is not real. Neither mechanism alone is complete, and — confirmed on a real build —
-two specific relocations get past both together: see `docs/design-battle-region-guard.md` for both,
-for the empirical proof behind the `.fail`'s own boundary condition ("did the counter finish inside
-this region", not "is the content too big"), and for why the guard is emitted into the generated
+not whether nesasm accepted it, and cannot close every escape even together with
+`checkCapacity`'s own text-scan warning (`battleRegionRelocates`).** nesasm's per-byte bank check
+already catches an override that is simply too big; the `.fail` exists for what that check cannot
+see — an override that *relocates* with its own `.bank`/`.org` and finishes outside the region,
+which nesasm accepts with exit 0 while battle code is silently written over screen data or the
+kernel. `battleRegionRelocates` is a text scan for anything shaped like such a relocation, not a
+size guess, so it can both miss one reached through `.include`/a macro and flag one that is not
+real. See `docs/design-battle-region-guard.md` for the empirical proof that two specific
+relocations get past both mechanisms together, and for why the guard is emitted into the generated
 file rather than `engine/main.asm`.
 
 **When 8 KB genuinely runs out — a note, not something to do now.**
@@ -1449,70 +1306,56 @@ Three shapes worth keeping:
   answer has to be reloaded last.
 - **Status effects are independent bits, ticked by the message flow.** `pc_status`/`mon_slot_status`
   carry them — `STATUS_POISON`/`STATUS_BURN` (`engine/constants.asm`), set by `ora` rather than a
-  plain store, so casting one never erases the other. The bite lands in `battle_message_done`: once
-  the actor's own line is dismissed, `status_pending` walks every set bit lowest-first, one tick and
-  one line per bit, before the turn advances — see `docs/design-status-effects.md` for the dispatch
-  mechanism, why curing the whole byte at once is still correct, and what a third status would need.
-  No status survives past the battle that gave it, on any of the three ways a battle can stop
-  mattering: `battle_begin`/`battle_end` (`engine/rpg.asm`) each zero the array for every party slot,
-  covering a fight entered and one left normally, won included. A loss is the third way and skips
-  `battle_end`: `battle_finish` (`engine/battleturn.asm`) jumps straight to `player_died`, so that
-  clear lives in `init_session` (`engine/combat.asm`) instead — the single definition of "new game"
-  every game over runs through via `restart_game`. Nothing on the field reads either array, but a
-  stale byte stops being harmless the day a save record serializes it, so the invariant is enforced
-  at every exit, not just documented at one. A heal or a potion cures everything at once, mid-battle.
+  plain store, so casting one never erases the other. `battle_message_done` dispatches the tick:
+  once the actor's own line is dismissed, `status_pending` walks every set bit lowest-first, one
+  tick and one line per bit, before the turn advances. No status survives past the battle that gave
+  it — `battle_begin`/`battle_end` (`engine/rpg.asm`) zero the array on entry and on a normal exit
+  (won included); a loss skips `battle_end` (`battle_finish` jumps straight to `player_died`), so
+  that clear lives in `init_session` (`engine/combat.asm`) instead, enforced at every exit rather
+  than documented at one. A heal or a potion cures everything at once, mid-battle. See
+  `docs/design-status-effects.md` for the dispatch mechanism and what a third status would need.
 - **A spell's amount is a range, not a fixed number**: `amountMin`/`amountMax` in the schema,
   `spell_amount_min`/`spell_amount_n`/`spell_amount_limit` (`main/build/battletables.js`) in ROM,
   rolled by `roll_spell_amount` + `mod8` (`engine/battleturn.asm`) — a draw rejected at or above
   `spell_amount_limit,x` keeps the accepted range uniform rather than masked-and-biased.
   `spell_amount_n,x == 1` is byte-for-byte the old flat `spell_amount,x` read and draws nothing
-  from the RNG at all, which is what lets a project migrated from the old schema replay its
-  battles identically. Both routines run inside `cast_all`'s own per-target loop, so `bt_tmp2` —
-  that loop's own end-of-side sentinel — must survive untouched across the whole `spell_damage`
-  → `roll_spell_amount` → `mod8` chain; the regression guard is an RNG-state assertion in
-  `test/unit/rpg.test.js`'s `'an all-target spell rolls independently per target -- two living
-  monsters take different damage from one cast'`, and it is narrower than it looks: a mutation
-  that *replaces* `mod8`'s own `bt_tmp` write with a `bt_tmp2` one corrupts the roll itself and is
-  already caught by that test's damage numbers, but one that *adds* a stray `bt_tmp2` write
-  beside the real one leaves those numbers looking right and only the RNG assertion catches it.
+  from the RNG, letting a project migrated from the old schema replay its battles identically. Both
+  routines run inside `cast_all`'s own per-target loop, so `bt_tmp2` — that loop's own end-of-side
+  sentinel — must survive untouched across the whole `spell_damage` → `roll_spell_amount` → `mod8`
+  chain; the regression guard is an RNG-state assertion in `test/unit/rpg.test.js`'s `'an
+  all-target spell rolls independently per target -- two living monsters take different damage from
+  one cast'`, narrower than it looks: it catches a stray extra `bt_tmp2` write that a pure
+  damage-number check would miss.
 
 Anything the engine would need a multiply for is a table instead: `main/build/battletables.js`
 precomputes per-level stats and the experience curve, and pads every name to `RPG_LIMITS.nameLength`
 so the engine needs no length byte.
 
 **The RPG battle ITEM menu does not list everything `use_item` can spend.** `build_item_list`
-(`engine/battleui.asm`) filters the bag to `kind == heal AND amount > 0` — exactly what `item_chosen`
-can apply consistently — so a `damage`-kind item or a `heal`-kind item left at `Amount` 0 is a real,
-valid item on the field and for Give/Take/Carrying/drops; it simply never appears as a selectable row
-in that menu, so no row there is ever a silent no-op. The filter can leave the list empty while the
-bag itself is not (every carried item is field-only-kind), raising a second problem the filter alone
-does not solve: `battle_menu_item` decides whether to open the Items page from the *filtered* list
-length, not raw `inv_count`, building the list first so the gate sees the real count — deciding from
-`inv_count` alone would open onto an empty list whose row-select code indexes a stale entry left over
-from whatever was drawn last, and whose Up press underflows the selection to `$FF`. `build_spell_list`
-never needed this ordering, worth knowing why rather than assuming the two menus share it: a spell's
-own membership test (`pc_spells`, a bitmask) already is what building the list applies, so gating on
-it before building can never disagree with what building produces. Items introduce a second,
-independent filter `inv_count` knows nothing about, making build-before-deciding a genuinely new
-requirement here, not a precedent already proven elsewhere. The `ITEMS_ENABLED`-false path keeps both
-routines exactly as they were — an unfiltered `build_item_list`, and `battle_menu_item`'s original
-`inv_count` check — because that economy has no `effect` field to filter on, and preserving it
-byte-for-byte is the same promise every other `ITEMS_ENABLED`-false path in this document holds to.
+(`engine/battleui.asm`) filters the bag to `kind == heal AND amount > 0` — exactly what
+`item_chosen` can apply consistently — so a `damage`-kind item, or a `heal`-kind item at `Amount`
+0, is a real, valid item for Give/Take/Carrying/drops but never a selectable row here.
+`battle_menu_item` gates on the *filtered* list length, not raw `inv_count`, building the list
+first so the gate sees the real count: deciding from `inv_count` alone would open onto an empty
+list whose row-select code indexes a stale entry and whose Up press underflows the selection to
+`$FF`. `build_spell_list` needs no such ordering — a spell's own membership test (`pc_spells`, a
+bitmask) already is what building the list applies, so gating before building can never disagree
+with it; items introduce a second, independent filter `inv_count` knows nothing about. The
+`ITEMS_ENABLED`-false path keeps both routines exactly as they were, byte-for-byte, since that
+economy has no `effect` field to filter on.
 
 **Two capacity terms follow the item's own kind/amount reader into their respective banks, both
-item-conditional and both flat across boards** (see "The kernel budget" above for why a term
-earns its own name only once real variance is measured). `ITEM_EFFECT_KERNEL_ALLOWANCE_BY_GAME_TYPE`
-(`main/build/generate.js`) is `use_item_apply`'s own kernel-lo cost, split by *game type* rather than
-by board — the first allowance in this file split that way — because `BATTLE_ENABLED` picks a
-genuinely differently-sized damage branch (`party_damage` vs `lose_hearts` plus a zero-page read of
-`player_hp`), not because any board differs: 63 bytes for an action project, 60 for an RPG, each
-measured on every board of its own type. `ITEM_LIST_FILTER_BATTLE_ALLOWANCE` (17 bytes,
-`main/build/battletables.js`) is `build_item_list`'s and `battle_menu_item`'s combined cost in the
-banked battle-code region, uniform across all three RPG-capable boards because neither routine
-branches on `SPLIT_ENABLED` or anything else board-specific — `BASE_BATTLE_CODE_BYTES_BY_MAPPER`
-itself did not move for this: the term is its own line beside the base, not folded into it, the fix
-for exactly the mistake `TITLE_KERNEL_ALLOWANCE_BY_MAPPER` already had to undo on the kernel side —
-charging every project a cost that only `ITEMS_ENABLED` builds actually pay.
+item-conditional and both flat across boards** (see "The kernel budget" above for why a term earns
+its own name only once real variance is measured). `ITEM_EFFECT_KERNEL_ALLOWANCE_BY_GAME_TYPE`
+(`main/build/generate.js`) is `use_item_apply`'s own kernel-lo cost, split by *game type* rather
+than by board — because `BATTLE_ENABLED` picks a genuinely differently-sized damage branch
+(`party_damage` vs `lose_hearts`), not because any board differs: 63 bytes for an action project,
+60 for an RPG. `ITEM_LIST_FILTER_BATTLE_ALLOWANCE` (17 bytes, `main/build/battletables.js`) is
+`build_item_list`'s and `battle_menu_item`'s combined cost in the banked battle-code region,
+uniform across all three RPG-capable boards since neither routine branches on `SPLIT_ENABLED` — its
+own line beside the base rather than folded into it, avoiding the mistake
+`TITLE_KERNEL_ALLOWANCE_BY_MAPPER` already had to undo on the kernel side, charging every project a
+cost only `ITEMS_ENABLED` builds actually pay.
 
 ### The emulator
 
@@ -1522,9 +1365,9 @@ before touching or upgrading it** — it lists the deliberate divergences from u
 vendored code close to upstream; `Emulator.stepInstruction()` mirrors the body of `nes.frame()`
 and must be updated in step with it. `Emulator.reset()` goes through the core's own `reloadROM()`
 rather than `nes.reset()` for the mirror image of that reason: `nes.reset()` builds a *new* PPU and
-mapper, and re-doing by hand what `loadROM` does after its own reset is a second copy of that
-sequence — the version that re-did only half of it left the nametables unallocated, so the first
-background write after a reset threw from inside the PPU.
+mapper, and hand-reimplementing only part of what `loadROM` does after its own reset can leave
+state like the nametables unallocated, throwing from inside the PPU on the first background write
+after a reset.
 
 **The run loop paces itself by wall-clock time, never one-frame-per-rAF.** `requestAnimationFrame`
 fires at the display's refresh rate; on a 120 Hz monitor a frame-per-callback loop runs the game at
@@ -1545,37 +1388,34 @@ index, nearest-colour substitution once the table fills). Neither belongs in `sh
 DOM- and Node-free and `node:test` imports them directly, but nothing outside the renderer has to
 agree with them. Two rules hold the recorder together. `onFrame` **copies and queues, nothing
 more** — it runs inside `emulator.runFrame()`, which `tick()` can call four times in one animation
-callback and `stepOut()` far more, so encoding there is unbounded work in the run loop, and an
-exception there is caught by `tick()` and displayed as `Crashed:`, which is a recorder bug wearing
+callback and `stepOut()` far more, so encoding there would be unbounded work in the run loop, and
+an exception there would be caught by `tick()` and displayed as `Crashed:`, a recorder bug wearing
 an emulator crash's clothes; `drainCapture()` encodes afterwards inside its own try/catch. The copy
 is not defensive style: jsnes hands `onFrame` its **one reused PPU buffer**, whose pre-render
 lookahead writes row 0 before the next frame, so a stored reference turns into a frame correct on
-the canvas but wrong in the file. `stepAnd`'s own `writeFrame` — presentation only, so
-single-stepping is visible — is excluded from sampling by a flag, or the Frame button records a
-duplicate and an instruction step records a partial frame. **And the GIF's real test is Chromium's,
+the canvas but wrong in the file. `stepAnd`'s own `writeFrame` is excluded from sampling by a flag,
+or the Frame button records a duplicate and an instruction step records a partial frame. **And the GIF's real test is Chromium's,
 not ours.** `test/lib/gifdecode.js` decodes what `gif.js` produced and the unit tests assert
 pixel-identity, except in the one case that cannot be exact — a frame carrying more colours than
 the table holds, where the nearest-colour substitution is asserted against an independently
-computed expectation instead. But both files were written together, and their LZW code-width rule
-had to be fixed in both at once — a matched-pair error there passes every round trip of ours while
-producing a file nothing else accepts. The smoke test therefore decodes the same bytes with the
-platform's own `ImageDecoder`; a deliberate one-step shift of that rule in both files passed the
-then-current 562-test unit suite and was caught only there. Any change to `gif.js` has to keep that
-check, and a new format written the same way should get one like it.
+computed expectation instead. But both files were written together, so a matched-pair error in
+their shared LZW code-width rule can pass every round trip of ours while producing a file nothing
+else accepts — only the smoke test, which decodes the same bytes with the platform's own
+`ImageDecoder`, has ever caught one. Any change to `gif.js` has to keep that check, and a new
+format written the same way should get one like it.
 
 **Item 7's `test/lib/eventdecoder.js` is a comparable test-only layer for a different wire format.**
 It walks the actual bytes `encodeCommand`/`encodeEvent` (`main/build/textcompile.js`) produce,
 opcode by opcode: `decodeCommand` handles `branch`, `choice`, `warp` and `say` explicitly (each has
 its own compiled shape a generic width can't express), gives `sting`/`sfx`/`battle` their real
-exceptional widths, and falls back to `EVENT_COMMANDS[opcode].args.length` for every other, generic
-command — deliberately schema-driven for that remainder, not independent of `EVENT_COMMANDS.args`.
-An exhaustive corpus in `test/unit/project.test.js` exercises every real `encodeCommand` case against
-it. It resolves a warp's raw screen operand to a real screen *object* (out of a flattened project,
-the same shape `flatScreens` returns), so two builds can be compared by object identity rather than
-by an index a reorder/duplicate/delete/resize is required to change. Like `gif.js`/`gifdecode.js`
-above, it lives beside the tests that use it — never exported from `main/build/`, and never imported
-by it (design §7 item 2) — so a change to the wire format has to keep this decoder in step, not the
-other way around.
+exceptional widths, and falls back to `EVENT_COMMANDS[opcode].args.length` for every other
+command — schema-driven for that remainder, not independent of `EVENT_COMMANDS.args`. An
+exhaustive corpus in `test/unit/project.test.js` exercises every real `encodeCommand` case against
+it. It resolves a warp's raw screen operand to a real screen *object* (the same shape
+`flatScreens` returns), so two builds compare by object identity rather than by an index a
+reorder/duplicate/delete/resize would change. Like `gif.js`/`gifdecode.js` above, it lives beside
+the tests that use it — never exported from `main/build/`, never imported by it — so a change to
+the wire format has to keep this decoder in step, not the other way around.
 
 ## Testing
 
@@ -1622,39 +1462,28 @@ Each of these cost real debugging time and now has a regression test. They are e
 - **What holds for registers holds for scratch bytes.** `draw_list` kept its row counter in
   `bt_tmp2` while `name_offset_pc` — called for every named row — hands its answer back *in*
   `bt_tmp2` and counts it down to zero. One list entry hid it (blank rows never touch the byte);
-  two hung the whole game in the redraw loop. A counter that lives across a `jsr` needs a byte
-  nothing downstream owns (`bt_vrow`), and the bug reached `main` because no test ever opened a
-  list with two entries — the untested path was the broken one. `bt_tmp2` is load-bearing a second
-  time for the identical reason: it is `cast_all`'s own end-of-side sentinel for its whole
+  two hung the whole game in the redraw loop, untested because no test ever opened a list with two
+  entries. Fixed with a byte nothing downstream owns (`bt_vrow`). `bt_tmp2` is load-bearing a
+  second time for the identical reason: it is `cast_all`'s own end-of-side sentinel for its whole
   `spell_damage`/`roll_spell_amount`/`mod8` call chain, so a new routine reaching for scratch space
   in that chain has exactly one byte it may not pick.
 - **A backward `.org` silently splices bytes into whatever already assembled there.** nesasm
   places a bank's contents at file offset `address & (bank size - 1)`, with no check that the
-  address is actually inside the bank currently being assembled. Given an address *behind* the
-  bank's own base — `.org $0600` inside a `$C000`-based kernel bank, say — that arithmetic still
-  produces a valid, low, in-range offset, so nesasm overwrites whatever code already landed there
-  instead of refusing the file. Nothing about the exit code says so either: like the "exits 0
-  anyway" `.fail`/error-line quirk `parseNesasmErrors` (`main/build/nesasm.js`) already has to work
-  around, this one produces a ROM that assembled cleanly and runs wrong. Proved empirically before
-  `engine/flash.asm` was written — a real `.org` behind a bank's base measurably corrupts a
-  neighboring label's bytes, with nesasm reporting nothing — which is why that file's own driver is
+  address is actually inside the bank currently being assembled — an address *behind* the bank's
+  own base (`.org $0600` inside a `$C000`-based kernel bank) still produces a valid, in-range
+  offset, so nesasm silently overwrites whatever code already landed there, exit code 0 regardless.
+  Proved empirically before `engine/flash.asm` was written, which is why that file's own driver is
   position-independent (assembled at an ordinary address, copied to its real address at runtime)
-  rather than ever reserving a fixed low address for itself via `.org`. See `flash.asm`'s own
-  header comment for the relocation rules that position-independence requires.
+  rather than ever reserving a fixed low address via `.org`. See `flash.asm`'s own header comment
+  for the relocation rules that requires.
 - **An 8-bit multiply used as a table offset silently wraps.** `name_offset_pc`
   (`engine/battle.asm`) computed `index * NAME_LEN` in a single accumulator with the carry
-  discarded, so index 26 (`26 * 10 = 260`) came back as offset 4 — `table + 4`, four glyphs into
-  the table's first entry (entry 0), so the ten-glyph read returned the last six glyphs of entry 0
-  followed by the first four of entry 1, not entry 26's own name; `table,y` addressed that offset
-  correctly, only `y` itself was wrong. The fix adds the product
-  into a 16-bit `ptr_lo`/`ptr_hi` in place and reads `[ptr_lo],y` instead. Regression tests:
-  `'a monster at actor id 26 draws its own name when it attacks, and a low-index monster (one that
-  also forces a carry out of ptr_lo) in the same fight still draws correctly'` and `'an item at id
-  26 draws its own name in the battle ITEM list, and a low-index item in the same bag still draws
-  correctly'` (both `test/unit/rpg.test.js`) read the nametable rather than engine RAM, because the
-  bug was in what a consumer was told to point at, not in any table's own contents; `assertForcesCarry`
-  (same file) proves each fixture's low-index control also forces a carry out of `ptr_lo`, not just
-  the high-index one, so a fixture that stopped needing the carry could not go silently vacuous.
+  discarded, so index 26 landed four bytes into entry 0 instead of entry 26's own name —
+  `table,y` addressed the offset correctly, only `y` itself was wrong. Fixed by adding the product
+  into a 16-bit `ptr_lo`/`ptr_hi` and reading `[ptr_lo],y` instead. Regression tests
+  (`test/unit/rpg.test.js`) read the nametable rather than engine RAM for a high-index monster and
+  item, each paired with a low-index control that also forces the carry (`assertForcesCarry`), so a
+  fixture that stopped needing the carry could not go silently vacuous.
 
 ## Conventions
 
