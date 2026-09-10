@@ -31,7 +31,8 @@ import {
   ROUTE_LEG_OPS,
   projectUsesMove,
   projectUsesTurn,
-  projectUsesWait
+  projectUsesWait,
+  projectWithoutHeroNaming
 } from '../../shared/project.js';
 import { routeTrace, drawRouteTrace } from '../../renderer/forges/map/events.js';
 
@@ -49,7 +50,11 @@ const hasNesasm = spawnSync('nesasm', [], { stdio: 'ignore' }).error?.code !== '
 async function buildWith(t, commands) {
   const dir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'forge-routes-'));
   t.after(() => fs.promises.rm(dir, { recursive: true, force: true }));
-  const project = await loadProject(SAMPLE);
+  // Hero naming off explicitly (phase 5): SAMPLE now carries hero naming for
+  // real, whose own kernel-lo cost is otherwise enough to tip NROM's
+  // capacity over once Move is live -- unrelated to what this file is
+  // actually about (a route compiling byte-identically to hand-chained legs).
+  const project = projectWithoutHeroNaming(await loadProject(SAMPLE));
   project.maps[0].screens[0].metatiles = new Array(240).fill(0);
   project.maps[0].screens[0].entities = [
     {
@@ -251,6 +256,11 @@ test('a route-wrapped Move still triggers the documented UNROM 512 refusal, with
   skip: !hasNesasm && 'nesasm not found on PATH'
 }, async (t) => {
   const project = await loadProject(SAMPLE_RPG);
+  // Naming off explicitly (phase 5): this documented-limitation figure is
+  // CLAUDE.md's own pinned number for Save+Move alone, computed clean of
+  // sample-rpg's own naming, which now opts in for real.
+  project.party[0].renamable = false;
+  if (project.party[1]) project.party[1].renamable = false;
   project.cartridge.mapper = 30; // UNROM 512
   project.project.titleMap = 0;
   project.project.titleScreen = 0;

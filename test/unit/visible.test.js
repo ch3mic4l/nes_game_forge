@@ -25,6 +25,7 @@ import { loadProject, saveProject } from '../../main/project-io.js';
 import { buildProject } from '../../main/build/pipeline.js';
 import { compileText, opIndex } from '../../main/build/textcompile.js';
 import { createProject, normalizeProject, projectUsesVisible } from '../../shared/project.js';
+import { finishNamingIfOpen } from '../lib/naming.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const SAMPLE = path.join(ROOT, 'sample');
@@ -70,6 +71,10 @@ function boot(romPath, frames = 30) {
     nes.buttonUp(1, 3);
     for (let i = 0; i < 12; i++) nes.frame();
   }
+  // sample now has hero naming on (docs/design-name-entry.md v16.4 §17 item
+  // 5); Start lands in the grid, and finishNamingIfOpen is a no-op when
+  // naming is off, so this is safe unconditionally.
+  finishNamingIfOpen(nes);
   return nes;
 }
 

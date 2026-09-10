@@ -22,6 +22,7 @@ import { createProject } from '../../shared/project.js';
 import { encodeTiles } from '../../shared/chr.js';
 import { ARROW_TILE, FONT_BASE, FONT_TILES, charToTile } from '../../shared/font.js';
 import { encodeString } from '../../main/build/textcompile.js';
+import { finishNamingIfOpen, nametableRow } from '../lib/naming.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const SAMPLE = path.join(ROOT, 'sample');
@@ -69,6 +70,10 @@ function boot(romPath = ROM_PATH, frames = 30) {
     nes.buttonUp(1, 3);
     for (let i = 0; i < 12; i++) nes.frame();
   }
+  // sample now has hero naming on (docs/design-name-entry.md v16.4 §17 item
+  // 5); Start lands in the grid, and finishNamingIfOpen is a no-op when
+  // naming is off, so this is safe unconditionally.
+  finishNamingIfOpen(nes);
   return nes;
 }
 
@@ -246,9 +251,24 @@ test('confirm turns the page, and the second page replaces the first', {
 
   tap(nes, A);
   assert.ok(runUntil(nes, (n) => n.cpu.mem[BOX_STATE] === BOX_ENDWAIT), 'the last page never finished');
-  assert.equal(boxLine(nes, 0), 'It does not seem to mind you');
+  // Phase 5 (docs/design-name-entry.md v16.4 §17 item 5) moved the {name}
+  // token into this dialogue -- wrapText now wraps "you" off line 0 and onto
+  // line 1 alongside the token (verified against shared/font.js's wrapText
+  // directly: page 2 is ["It does not seem to mind", "{name} at all, so
+  // you", "step around it and carry on."]).
+  assert.equal(boxLine(nes, 0), 'It does not seem to mind');
   assert.equal(boxLine(nes, 3), '', 'the fourth line of the previous page should have been wiped');
   assert.equal(nes.cpu.mem[GAME_STATE], ST_DIALOG, 'the conversation ended a page early');
+
+  // This is the first real, non-synthetic proof of the plain-dialogue token
+  // path: read straight out of the nametable (test/lib/naming.js's own
+  // idiom), not engine RAM, since the point of the token is what ends up
+  // drawn. The hero's default name is "Hero" (createProject's own default,
+  // sample/party.json).
+  const heroName = 'Hero';
+  const drawnName = nametableRow(nes, BOX_TOP_ROW + 2, 2, heroName.length).map((tile) => String.fromCharCode(32 + (tile - FONT_BASE)));
+  assert.equal(drawnName.join(''), heroName, "the token should expand to the hero's default name, drawn tile-for-tile");
+  assert.equal(boxLine(nes, 1), `${heroName} at all, so you`, 'the whole line should read as the expanded token plus the surrounding words');
 });
 
 test('closing the box puts the world back exactly as it was', {

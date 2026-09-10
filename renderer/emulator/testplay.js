@@ -63,7 +63,10 @@ export const REQUIRED_RAM = [
   'warp_x',
   'warp_y',
   'warp_ready',
-  'ST_GAMEPLAY'
+  'ST_GAMEPLAY',
+  'box_state',
+  'box_after',
+  'BOX_CLOSED'
 ];
 
 /** Engine labels it waits on, out of the build's own symbol table. */
@@ -111,6 +114,23 @@ export function applyStartOverride(emulator, where, { ram, symbols }) {
   emulator.poke(ram.game_state, ram.ST_GAMEPLAY);
   emulator.poke(ram.player_iframes, 2);
   for (let slot = 0; slot < ram.MAX_ENTITIES; slot++) emulator.poke(ram.ent_active + slot, 0);
+  // A titleless naming-on project reaches this poke with the naming grid
+  // already mid-raise (reset's own name_begin/box_begin ran before main_loop
+  // was ever reached) — box_state/box_after are otherwise left stale, in the
+  // same family this poke already makes inert. ui_tick, the only thing that
+  // would ever drain that state normally, only runs while game_state is
+  // non-zero, so nothing on the gameplay path this override forces would
+  // ever clear it on its own. Whether that staleness is ever visible depends
+  // on how the next conversation is reached: `do_talk`'s own `script_start`
+  // (engine/script.asm) zeroes box_state unconditionally at the start of
+  // every fresh conversation, which masks it for that path specifically —
+  // but MMC3's `split_select` (engine/split.asm) reads box_state every
+  // frame regardless of whether a conversation is running, so a stale
+  // nonzero value there still matters on that board. Closing both here is
+  // the same "make the tick inert" family close_ui (engine/ui.asm) already
+  // belongs to.
+  emulator.poke(ram.box_state, ram.BOX_CLOSED);
+  emulator.poke(ram.box_after, ram.BOX_CLOSED);
 
   if (!emulator.runToAddress(symbols[MAIN_LOOP_WARP])) {
     throw new Error('the engine did not reach the point where it takes a door');

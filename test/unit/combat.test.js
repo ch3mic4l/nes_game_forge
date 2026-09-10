@@ -20,6 +20,7 @@ import { generateAssets } from '../../main/build/generate.js';
 import { parseSymbolFile } from '../../main/build/symbols.js';
 import { createProject, RPG_LIMITS } from '../../shared/project.js';
 import { HEART_EMPTY_TILE, HEART_FULL_TILE } from '../../shared/font.js';
+import { finishNamingIfOpen } from '../lib/naming.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const SAMPLE = path.join(ROOT, 'sample');
@@ -72,6 +73,10 @@ function boot(romPath, frames = 30) {
     nes.buttonUp(1, 3);
     for (let i = 0; i < 12; i++) nes.frame();
   }
+  // sample now has hero naming on (docs/design-name-entry.md v16.4 §17 item
+  // 5); Start lands in the grid, and finishNamingIfOpen is a no-op when
+  // naming is off, so this is safe unconditionally.
+  finishNamingIfOpen(nes);
   return nes;
 }
 
@@ -324,6 +329,7 @@ test('running out of hearts reaches game over, and Start goes back to the title'
   assert.equal(nes.cpu.mem[BOX_STATE], 0);
 
   tap(nes, START, 10);
+  finishNamingIfOpen(nes); // hero naming on (phase 5): a new game opens the grid
   assert.equal(nes.cpu.mem[GAME_STATE], ST_GAMEPLAY, 'Start on the title did not begin a new game');
   assert.equal(nes.cpu.mem[PLAYER_HP], MAX_HEARTS, 'a new game should refill the hearts');
   assert.equal(nes.cpu.mem[PLAYER_X], START_X, 'a new game should start at the start position');

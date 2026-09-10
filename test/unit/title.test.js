@@ -21,6 +21,7 @@ import { FONT_BASE, projectUsesEffectiveTitle, projectUsesText } from '../../sha
 import { systemStrings } from '../../main/build/textcompile.js';
 import { bindableStates } from '../../renderer/forges/controller/controller.js';
 import { resolveMapper } from '../../shared/cartridge.js';
+import { finishNamingIfOpen } from '../lib/naming.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const SAMPLE = path.join(ROOT, 'sample');
@@ -113,6 +114,7 @@ test('there is no player and no health bar on the title', {
   const nes = boot();
   const onTitle = liveSprites(nes);
   tap(nes, START);
+  finishNamingIfOpen(nes); // hero naming on (phase 5): Start opens the grid
   assert.equal(nes.cpu.mem[GAME_STATE], ST_GAMEPLAY);
   assert.ok(
     liveSprites(nes) > onTitle,
@@ -137,6 +139,7 @@ test('the prompt blinks, and Start begins the game where the Map Forge said', {
   assert.deepEqual([...seen].sort(), ['', prompt], `the prompt did not blink (saw ${[...seen]})`);
 
   tap(nes, START);
+  finishNamingIfOpen(nes); // hero naming on (phase 5): Start opens the grid
   assert.equal(nes.cpu.mem[GAME_STATE], ST_GAMEPLAY);
   assert.equal(nes.cpu.mem[FLAT_SCREEN], 0);
   assert.equal(nes.cpu.mem[PLAYER_X], project.project.startX);
@@ -149,6 +152,7 @@ test('A also starts the game, through its default confirm binding', {
 }, () => {
   const nes = boot();
   tap(nes, A);
+  finishNamingIfOpen(nes); // hero naming on (phase 5): confirm opens the grid
   assert.equal(nes.cpu.mem[GAME_STATE], ST_GAMEPLAY);
 });
 
@@ -169,10 +173,12 @@ test('the title row is bindable, and Start is the backstop no binding removes', 
   tap(nes, A, 20);
   assert.equal(nes.cpu.mem[GAME_STATE], ST_TITLE, 'A is bound to nothing and still started the game');
   tap(nes, B, 20);
+  finishNamingIfOpen(nes); // hero naming on (phase 5): confirm opens the grid
   assert.equal(nes.cpu.mem[GAME_STATE], ST_GAMEPLAY, 'B is bound to confirm and should start the game');
 
   const backstop = boot(built.romPath);
   tap(backstop, START, 20);
+  finishNamingIfOpen(backstop); // hero naming on (phase 5): Start opens the grid
   assert.equal(backstop.cpu.mem[GAME_STATE], ST_GAMEPLAY, 'Start must work whatever the row says');
 });
 
@@ -200,6 +206,7 @@ test('coming back to the title starts a genuinely new game', {
 
   const nes = boot(built.romPath);
   tap(nes, START); // into the game
+  finishNamingIfOpen(nes); // hero naming on (phase 5): Start opens the grid
   assert.equal(nes.cpu.mem[GAME_STATE], ST_GAMEPLAY);
 
   nes.buttonDown(1, RIGHT);
@@ -216,6 +223,7 @@ test('coming back to the title starts a genuinely new game', {
   assert.equal(nes.cpu.mem[GAME_STATE], ST_TITLE, 'a game over should lead back to the title');
 
   tap(nes, START);
+  finishNamingIfOpen(nes); // hero naming on (phase 5): a new game opens the grid
   assert.equal(nes.cpu.mem[GAME_STATE], ST_GAMEPLAY);
   assert.equal(nes.cpu.mem[PICKUPS], 0);
   assert.equal(nes.cpu.mem[INV_COUNT], 0);

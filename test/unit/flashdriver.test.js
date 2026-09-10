@@ -128,6 +128,13 @@ async function buildFlashSaveable(t, fillerActors = 0) {
   const dir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'forge-flashdriver-'));
   t.after(() => fs.promises.rm(dir, { recursive: true, force: true }));
   const project = await loadProject(SAMPLE_RPG);
+  // Naming off explicitly (phase 5, docs/design-name-entry.md v16.4 §17 item
+  // 5): sample-rpg now opts hero+Join naming in for real, which would open
+  // the grid at Start -- unrelated to what this file tests (the flash
+  // driver), and item 11's own kernel-lo re-measurement already left this
+  // fixture tight on spare bytes for the relocation test below.
+  project.party[0].renamable = false;
+  if (project.party[1]) project.party[1].renamable = false;
   project.cartridge.mapper = 30; // UNROM 512
   project.project.titleMap = 0;
   project.project.titleScreen = 0;

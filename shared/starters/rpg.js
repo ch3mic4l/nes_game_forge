@@ -200,9 +200,11 @@ function buildRpg(name) {
   // recruited on the field via a join command, sharing the identical
   // battle portrait -- nothing requires a party member's own portrait to
   // be unique, and authoring a second figure just for Ally would be new
-  // art this starter does not need.
-  project.party[0] = { ...project.party[0], spells: [{ spellId: 0, level: 1 }], metaspriteId: heroMetaspriteId };
-  project.party.push({ ...createPartyMember(1, 'Ally'), startsInParty: false, metaspriteId: heroMetaspriteId, spells: [] });
+  // art this starter does not need. Both opt into naming (docs/design-name-
+  // entry.md v16.4 §1 item 4, §17 item 5) -- the RPG starter's own decision,
+  // per that design item; no other starter opts in.
+  project.party[0] = { ...project.party[0], renamable: true, spells: [{ spellId: 0, level: 1 }], metaspriteId: heroMetaspriteId };
+  project.party.push({ ...createPartyMember(1, 'Ally'), startsInParty: false, renamable: true, metaspriteId: heroMetaspriteId, spells: [] });
 
   // The switch the Ally recruit's join event sets, and hides herself on
   // (the overworld.js idiom).

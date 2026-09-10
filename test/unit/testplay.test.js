@@ -31,6 +31,8 @@ import {
 import { loadProject, saveProject } from '../../main/project-io.js';
 import { buildProject } from '../../main/build/pipeline.js';
 import { LIMITS } from '../../shared/project.js';
+import { finishNamingIfOpen } from '../lib/naming.js';
+import { BORDER_H, BORDER_CORNER } from '../../shared/font.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const SAMPLE = path.join(ROOT, 'sample');
@@ -162,6 +164,7 @@ test('nothing on the start square is picked up on the way past', { skip: !hasRom
   // override rather than about a project where nothing could have happened.
   emulator.reset();
   for (let frame = 0; frame < 20; frame++) emulator.runFrame();
+  finishNamingIfOpen(emulator.nes); // sample now has hero naming on (phase 5): a titleless boot cold-opens the grid
   assert.equal(emulator.peek(ram.pickups), 1, 'booting normally should have collected the gem');
 });
 
@@ -187,6 +190,7 @@ test('a hazard on the start square costs no health on the way past', { skip: !ha
   // And the spikes are real: booting normally onto them costs a heart.
   emulator.reset();
   for (let frame = 0; frame < 20; frame++) emulator.runFrame();
+  finishNamingIfOpen(emulator.nes); // sample now has hero naming on (phase 5): a titleless boot cold-opens the grid
   assert.ok(
     emulator.peek(ram.player_hp) < hearts,
     `booting normally onto the spikes should have hurt, but health is still ${emulator.peek(ram.player_hp)}`
@@ -211,6 +215,122 @@ test('it leaves the screen drawn and the machine presentable', { skip: !hasRom &
   // engine/constants.asm, are back in the registers by then.
   assert.equal(emulator.nes.cpu.mem[0x2000], 0x88);
   assert.equal(emulator.nes.cpu.mem[0x2001], 0x1e);
+});
+
+// Phase 5 (docs/design-name-entry.md v16.4 §17 item 5): sample now carries
+// hero naming for real, and builtVariant's own project is titleless -- a
+// cold boot therefore lands mid-naming-grid-raise (boot.asm's own reset
+// already ran name_begin/box_begin before main_loop is ever reached, per
+// CLAUDE.md's own "a titleless cold boot never reaches start_game at all")
+// before applyStartOverride's own poke ever runs at all. Investigated per
+// that item, and testplay.js DOES need the fix below: ui_tick, the only
+// thing that would ever drain box_state/box_after normally, only runs while
+// game_state is non-zero, so nothing on the gameplay path the override
+// forces would ever clear them on its own -- applyStartOverride now pokes
+// both to BOX_CLOSED itself, in the same "make the tick inert" family as its
+// other pokes. Whether the staleness is actually visible turned out to
+// depend on how the next conversation is reached: a do_talk conversation's
+// own script_start (engine/script.asm) zeroes box_state unconditionally
+// before box_begin ever reads it, which masks the symptom for that specific
+// path (see the border-row comment further down, where sabotage found this)
+// -- but MMC3's split_select (engine/split.asm) reads box_state every frame
+// regardless of whether a conversation is running, so the reset still
+// matters on that board independent of what any particular conversation
+// does.
+test('it leaves the screen drawn and the machine presentable even mid-naming-grid-raise, on a titleless naming-on ROM', {
+  skip: !hasRom && 'sample ROM not built'
+}, async (t) => {
+  // A Say-carrying NPC standing exactly where the override lands, so a real
+  // conversation can be started with no walk needed -- this is what the
+  // finding 2 fix round strengthens this test to reach: box_state/box_after
+  // must not merely read as closed right after the override, they must
+  // leave the box's own state machine ready for the NEXT box_begin to raise
+  // a real frame, not take box_begin_clear's "already up" path for one that
+  // was never drawn (engine/text.asm).
+  const { emulator, build } = await builtVariant(t, (project) => {
+    const npcId = project.sprites.actors.length;
+    project.sprites.actors.push({ ...structuredClone(project.sprites.actors[0]), id: npcId, name: 'Teller', behavior: 'npc' });
+    project.maps[0].screens[TARGET_SCREEN].entities.push({
+      actorId: npcId,
+      x: TARGET_X,
+      y: TARGET_Y,
+      props: { trigger: 'interact', event: { pages: [{ cond: { type: 'none', arg: 0 }, commands: [{ op: 'say', text: 'Hello.' }] }] } }
+    });
+  });
+  // Run to the same point applyStartOverride's own first internal step
+  // stops at -- calling runToAddress again from there is a no-op (it checks
+  // the current pc before stepping), so this only observes the state
+  // applyStartOverride itself is about to act on, it does not change it.
+  assert.ok(emulator.runToAddress(build.symbols[MAIN_LOOP]), 'the ROM did not reach its main loop');
+  assert.equal(
+    emulator.peek(build.ram.game_state),
+    build.ram.ST_NAMEENTRY,
+    'the cold boot should already be mid-naming before the override ever runs'
+  );
+  assert.notEqual(emulator.peek(build.ram.box_state), build.ram.BOX_CLOSED, 'the naming grid should already be raising a real box_state');
+  applyStartOverride(emulator, { screen: TARGET_SCREEN, x: TARGET_X, y: TARGET_Y }, build);
+
+  assert.equal(emulator.peek(build.ram.flat_screen), TARGET_SCREEN);
+  assert.equal(
+    emulator.peek(build.ram.game_state),
+    build.ram.ST_GAMEPLAY,
+    'the override should have taken over from the still-open naming grid'
+  );
+  assert.equal(emulator.nes.cpu.mem[0x2000], 0x88);
+  assert.equal(emulator.nes.cpu.mem[0x2001], 0x1e);
+
+  // finding 2: the override must also leave box_state/box_after closed. This
+  // is the assertion that actually discriminates the fix -- verified by
+  // sabotage (temporarily removing testplay.js's own two pokes): it fails
+  // here, box_state reading 1 (BOX_OPENING) instead of 0. A stale box_state
+  // matters on its own even though the very next conversation happens to
+  // recover from it (see the comment below) -- MMC3's split_select
+  // recomputes the font-bank split from box_state every single frame, so a
+  // stale nonzero value is a wrong input to it for as long as it persists,
+  // independent of whatever the next conversation does.
+  assert.equal(emulator.peek(build.ram.box_state), build.ram.BOX_CLOSED, 'box_state should be closed after the override, not left mid-raise');
+  assert.equal(emulator.peek(build.ram.box_after), build.ram.BOX_CLOSED, 'box_after should be closed after the override, not left pointing at BOX_NAMEENTRY');
+
+  // Interact with the NPC standing on the landed square -- default binding
+  // is B (jsnes button 1). Held across several real frames, not pulsed for
+  // one: applyStartOverride leaves the CPU mid-instruction-stream at
+  // main_loop's own entry rather than at a fresh frame boundary, so a
+  // single runFrame() call can complete before the input poll this press
+  // needs to reach ever runs again (confirmed empirically -- one frame
+  // never started the conversation at all; three reliably does). Bounded on
+  // the real effect (game_state leaving ST_GAMEPLAY), not a fixed count.
+  emulator.setButton(BUTTON.B, true);
+  for (let i = 0; i < 10 && emulator.peek(build.ram.game_state) === build.ram.ST_GAMEPLAY; i++) emulator.runFrame();
+  emulator.setButton(BUTTON.B, false);
+  assert.notEqual(emulator.peek(build.ram.game_state), build.ram.ST_GAMEPLAY, 'interacting with the NPC never started a conversation');
+  let reachedTyping = false;
+  for (let i = 0; i < 60 && !reachedTyping; i++) {
+    emulator.runFrame();
+    if (emulator.peek(build.ram.box_state) === build.ram.BOX_TYPING) reachedTyping = true;
+  }
+  assert.ok(reachedTyping, 'the conversation never reached BOX_TYPING');
+
+  // The top border row (BOX_TOP_ROW, engine/text.asm's own box_row_addr,
+  // row*32 with no column offset): corner, 30 horizontal fills, corner --
+  // the test/unit/text.test.js boxRows idiom, read directly here since this
+  // file has no ROM-independent import path to it.
+  //
+  // This assertion does NOT independently catch a missing box_state/
+  // box_after reset, and sabotage confirmed that empirically: with
+  // testplay.js's own pokes removed, this border still draws correctly and
+  // BOX_TYPING is still reached, because do_talk's own start_dialog runs
+  // through script_start (engine/script.asm), which unconditionally zeroes
+  // box_state the instant ANY fresh conversation begins -- before box_begin
+  // ever reads it. That masks box_begin_clear's "already up" mistake for
+  // this specific reproduction (a do_talk-triggered conversation), which is
+  // narrower than the original diagnosis claimed. It is kept here as a
+  // straightforward proof that a real conversation still works correctly
+  // after the override; the assertion that actually discriminates the fix
+  // is the direct box_state/box_after check above.
+  const topRow = Array.from({ length: 32 }, (_, col) => emulator.nes.ppu.vramMem[0x2000 + 24 * 32 + col]);
+  assert.equal(topRow[0], BORDER_CORNER, 'the border row’s own left corner was not drawn');
+  assert.equal(topRow[31], BORDER_CORNER, 'the border row’s own right corner was not drawn');
+  assert.ok(topRow.slice(1, 31).every((tile) => tile === BORDER_H), 'the border row’s own horizontal fill was not drawn -- box_begin_clear kept a frame that was never actually raised');
 });
 
 test('the same ROM still boots where the project says', { skip: !hasRom && 'sample ROM not built' }, () => {

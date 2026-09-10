@@ -69,7 +69,7 @@ import {
   HERO_DEFAULT_KERNEL_ALLOWANCE,
   NAME_TOKEN_KERNEL_ALLOWANCE
 } from '../../main/build/generate.js';
-import { SUPPORTED_MAPPERS, rpgCapable, saveMediaImplemented, prgLayout } from '../../shared/cartridge.js';
+import { SUPPORTED_MAPPERS, rpgCapable, saveMediaImplemented, prgLayout, resolveMapper } from '../../shared/cartridge.js';
 import {
   createTileset,
   createProject,
@@ -84,7 +84,8 @@ import {
   projectUsesNameToken,
   projectWithoutNameToken,
   metaspriteKernelBytes,
-  RPG_LIMITS
+  RPG_LIMITS,
+  BUTTONS
 } from '../../shared/project.js';
 import { fontBankSplit, projectUsesText } from '../../shared/font.js';
 import { createSong } from '../../shared/audio.js';
@@ -178,7 +179,15 @@ async function measureCodeBytes(
 ) {
   const dir = await fsp.mkdtemp(path.join(os.tmpdir(), 'forge-kernelbytes-'));
   t.after(() => fsp.rm(dir, { recursive: true, force: true }));
-  const project = await loadProject(fixture);
+  let project = await loadProject(fixture);
+  // Phase 5 (docs/design-name-entry.md v16.4 §17 item 5) turned naming and
+  // the token on for real fixture content, so "off" can no longer mean
+  // "whatever this fixture happens to carry" -- it has to mean explicitly
+  // off, in both directions, regardless of which fixture is loaded. Strip
+  // the token from the fixture's own content first (SAMPLE's slime dialogue
+  // carries one now); the two renamable flags are set explicitly, both ways,
+  // below.
+  if (!withNameToken) project = projectWithoutNameToken(project);
   project.cartridge.mapper = mapper.id;
   // sample-rpg carries one live item by default; withItems: false strips it
   // so a caller can isolate ITEM_KERNEL_ALLOWANCE's own delta the same way
@@ -233,8 +242,13 @@ async function measureCodeBytes(
     const paintedId = screen.metatiles[0];
     screen.boundTiles = [{ switchId: 0, row: 0, col: 0, metatileId: paintedId }];
   }
-  if (withHeroNaming) project.party[0].renamable = true;
-  if (withJoinNaming && project.party[1]) project.party[1].renamable = true;
+  // Explicit both ways (phase 5 finding): SAMPLE and SAMPLE_RPG now carry
+  // renamable: true for real, so a bare `if (withHeroNaming) ... = true`
+  // would leave "off" silently meaning "on" whenever fixture already opts
+  // in -- every isolation delta above would then measure 0 instead of the
+  // named allowance.
+  project.party[0].renamable = Boolean(withHeroNaming);
+  if (project.party[1]) project.party[1].renamable = Boolean(withJoinNaming);
   await saveProject(dir, project);
   const lines = [];
   const built = await buildProject({ dir, project, log: (line) => lines.push(line) });
@@ -1364,7 +1378,13 @@ const FALLBACK_MAPPERS = SUPPORTED_MAPPERS.filter((mapper) => !(mapper.id in BAS
 async function measureFallbackCodeBytes(t, mapper, { titled, withMove = false, withFade = false } = {}) {
   const dir = await fsp.mkdtemp(path.join(os.tmpdir(), 'forge-fallback-'));
   t.after(() => fsp.rm(dir, { recursive: true, force: true }));
-  const project = await loadProject(SAMPLE);
+  // Naming and the token off explicitly (phase 5, docs/design-name-entry.md
+  // v16.4 §17 item 5): SAMPLE now carries hero naming and the Say token for
+  // real, and this helper measures the *base* kernel-lo cost every one of
+  // these fallback boards is judged against -- a base that must not include
+  // an optional feature's own bytes.
+  let project = projectWithoutNameToken(await loadProject(SAMPLE));
+  project = projectWithoutHeroNaming(project);
   project.cartridge.mapper = mapper.id;
   if (titled) {
     project.project.titleMap = 0;
@@ -1721,6 +1741,11 @@ test('a kernel-lo shortfall a live Save command alone would close names Save, wi
 
 test('a kernel-lo shortfall neither Save nor Move would close, but a roomier board would, names that board', async () => {
   const project = await loadProject(SAMPLE_RPG);
+  // Naming off explicitly (phase 5): sample-rpg's own naming is now live for
+  // real and would shift the narrow, hand-calibrated filler count below --
+  // unrelated to what this case is actually about.
+  project.party[0].renamable = false;
+  if (project.party[1]) project.party[1].renamable = false;
   project.cartridge.mapper = 30; // UNROM 512 — the largest per-mapper base of the three, so MMC1 has headroom to spare
   project.project.titleMap = 0;
   project.project.titleScreen = 0;
@@ -1767,6 +1792,11 @@ test(
   'a mapper suggestion prices a candidate by full kernel-lo occupancy (code + table bytes), not code bytes alone -- a board that only fits once its table savings are counted is still offered, and content is not',
   async () => {
     const project = await loadProject(SAMPLE_RPG);
+    // Hero naming off explicitly (phase 5): sample-rpg's own hero (party[0])
+    // now opts in for real, and this reproduction needs Join naming ALONE --
+    // the new Ally member pushed below carries its own renamable: true.
+    project.party[0].renamable = false;
+    if (project.party[1]) project.party[1].renamable = false;
     project.cartridge.mapper = 30; // UNROM 512 -- the only chrRam board, so the only one with a nonzero table term to omit
     project.project.titleMap = 0;
     project.project.titleScreen = 0;
@@ -1843,6 +1873,10 @@ test(
 // the suggestion having vanished for some unrelated reason.
 test('a mapper suggestion is withheld from a project carrying hand-written code', async () => {
   const base = await loadProject(SAMPLE_RPG);
+  // Naming off explicitly (phase 5) -- the identical recalibration note as
+  // the case above, whose exact filler count this test reuses.
+  base.party[0].renamable = false;
+  if (base.party[1]) base.party[1].renamable = false;
   base.cartridge.mapper = 30; // UNROM 512 -- the case above proves MMC1 is offered here
   base.project.titleMap = 0;
   base.project.titleScreen = 0;
@@ -2013,6 +2047,11 @@ test(
   { skip: !hasNesasm && 'nesasm not found on PATH' },
   async (t) => {
     const project = await loadProject(SAMPLE_RPG);
+    // Naming off explicitly (phase 5): this documented-limitation figure is
+    // CLAUDE.md's own pinned number for Save+Move+item alone, computed clean
+    // of sample-rpg's own naming, which now opts in for real.
+    project.party[0].renamable = false;
+    if (project.party[1]) project.party[1].renamable = false;
     project.cartridge.mapper = 4; // MMC3
     project.project.titleMap = 0;
     project.project.titleScreen = 0;
@@ -2088,6 +2127,8 @@ test(
   { skip: !hasNesasm && 'nesasm not found on PATH' },
   async (t) => {
     const saveOnly = await loadProject(SAMPLE_RPG);
+    saveOnly.party[0].renamable = false; // naming off explicitly, phase 5
+    if (saveOnly.party[1]) saveOnly.party[1].renamable = false;
     saveOnly.cartridge.mapper = 30; // UNROM 512
     saveOnly.project.titleMap = 0;
     saveOnly.project.titleScreen = 0;
@@ -2104,6 +2145,8 @@ test(
     assert.ok(saveBuilt.romPath, 'Save alone should fit and assemble on UNROM 512');
 
     const moveOnly = await loadProject(SAMPLE_RPG);
+    moveOnly.party[0].renamable = false; // naming off explicitly, phase 5
+    if (moveOnly.party[1]) moveOnly.party[1].renamable = false;
     moveOnly.cartridge.mapper = 30;
     moveOnly.project.titleMap = 0;
     moveOnly.project.titleScreen = 0;
@@ -2122,6 +2165,8 @@ test(
     assert.ok(moveBuilt.romPath, 'Move alone should fit and assemble on UNROM 512');
 
     const both = await loadProject(SAMPLE_RPG);
+    both.party[0].renamable = false; // naming off explicitly, phase 5
+    if (both.party[1]) both.party[1].renamable = false;
     both.cartridge.mapper = 30;
     both.project.titleMap = 0;
     both.project.titleScreen = 0;
@@ -2149,6 +2194,8 @@ test(
     // than reused from a shared helper, because this is the one place that
     // needs the *refusal* to survive the strip, not the code-byte count.
     const bothItemFree = await loadProject(SAMPLE_RPG);
+    bothItemFree.party[0].renamable = false; // naming off explicitly, phase 5
+    if (bothItemFree.party[1]) bothItemFree.party[1].renamable = false;
     bothItemFree.cartridge.mapper = 30;
     bothItemFree.project.titleMap = 0;
     bothItemFree.project.titleScreen = 0;
@@ -2190,6 +2237,10 @@ test(
 // same way.
 test('a kernel-lo shortfall either Save or Move alone would close offers both as a choice', async () => {
   const project = await loadProject(SAMPLE_RPG);
+  // Naming off explicitly (phase 5) -- the inflate() filler count below is
+  // hand-calibrated to a naming-off deficit band.
+  project.party[0].renamable = false;
+  if (project.party[1]) project.party[1].renamable = false;
   project.cartridge.mapper = 4; // MMC3
   project.project.titleMap = 0;
   project.project.titleScreen = 0;
@@ -2204,6 +2255,10 @@ test('a kernel-lo shortfall either Save or Move alone would close offers both as
 // falling straight through to a mapper suggestion or the generic message.
 test('a kernel-lo shortfall neither Save nor Move alone would close, but both together would, names the combination', async () => {
   const project = await loadProject(SAMPLE_RPG);
+  // Naming off explicitly (phase 5) -- the inflate() filler count below is
+  // hand-calibrated to a naming-off deficit band.
+  project.party[0].renamable = false;
+  if (project.party[1]) project.party[1].renamable = false;
   project.cartridge.mapper = 4; // MMC3
   project.project.titleMap = 0;
   project.project.titleScreen = 0;
@@ -3117,6 +3172,11 @@ function sfxCommandEvent(project, x = 80, y = 80) {
  */
 async function assertSfxRefusal(t, mapperId, rowCommands, { noItem = false, withSting = false, noTitle = false, mapperLabel } = {}) {
   const project = await loadProject(SAMPLE_RPG);
+  // Naming off explicitly (phase 5): these documented-limitation rows are
+  // CLAUDE.md's own pinned figures, computed clean of sample-rpg's own
+  // naming, which now opts in for real.
+  project.party[0].renamable = false;
+  if (project.party[1]) project.party[1].renamable = false;
   project.cartridge.mapper = mapperId;
   if (noTitle) {
     project.project.titleMap = null;
@@ -3165,6 +3225,11 @@ test(
   { skip: !hasNesasm && 'nesasm not found on PATH' },
   async (t) => {
     const project = await loadProject(SAMPLE_RPG);
+    // Naming off explicitly (phase 5): this documented-limitation figure is
+    // CLAUDE.md's own pinned number, computed clean of sample-rpg's own
+    // naming, which now opts in for real.
+    project.party[0].renamable = false;
+    if (project.party[1]) project.party[1].renamable = false;
     project.cartridge.mapper = 4; // MMC3
     project.project.titleMap = 0;
     project.project.titleScreen = 0;
@@ -3283,6 +3348,11 @@ test(
   { skip: !hasNesasm && 'nesasm not found on PATH' },
   async (t) => {
     const project = await loadProject(SAMPLE_RPG);
+    // Naming off explicitly (phase 5): this documented-limitation figure is
+    // CLAUDE.md's own pinned number, computed clean of sample-rpg's own
+    // naming, which now opts in for real.
+    project.party[0].renamable = false;
+    if (project.party[1]) project.party[1].renamable = false;
     project.cartridge.mapper = 1;
     project.project.titleMap = 0;
     project.project.titleScreen = 0;
@@ -3361,6 +3431,11 @@ test(
   { skip: !hasNesasm && 'nesasm not found on PATH' },
   async (t) => {
     const project = await loadProject(SAMPLE_RPG);
+    // Naming off explicitly (phase 5): this fit control is CLAUDE.md's own
+    // pinned figure, computed clean of sample-rpg's own naming, which now
+    // opts in for real.
+    project.party[0].renamable = false;
+    if (project.party[1]) project.party[1].renamable = false;
     project.cartridge.mapper = 4; // MMC3
     project.project.titleMap = null; // no Save live -- matches the named row's own Part 1 baseline exactly
     project.songs = [createSong('Fanfare')];
@@ -3468,6 +3543,11 @@ test(
   { skip: !hasNesasm && 'nesasm not found on PATH' },
   async (t) => {
     const project = await loadProject(SAMPLE_RPG);
+    // Naming off explicitly (phase 5): this documented-limitation figure is
+    // CLAUDE.md's own pinned number, computed clean of sample-rpg's own
+    // naming, which now opts in for real.
+    project.party[0].renamable = false;
+    if (project.party[1]) project.party[1].renamable = false;
     project.cartridge.mapper = 4; // MMC3
     project.project.titleMap = 0;
     project.project.titleScreen = 0;
@@ -3524,6 +3604,11 @@ test(
   { skip: !hasNesasm && 'nesasm not found on PATH' },
   async (t) => {
     const project = await loadProject(SAMPLE_RPG);
+    // Naming off explicitly (phase 5): this documented-limitation figure is
+    // CLAUDE.md's own pinned number, computed clean of sample-rpg's own
+    // naming, which now opts in for real.
+    project.party[0].renamable = false;
+    if (project.party[1]) project.party[1].renamable = false;
     project.cartridge.mapper = 1; // MMC1
     project.project.titleMap = 0;
     project.project.titleScreen = 0;
@@ -3607,6 +3692,175 @@ test(
 
       assertCovers({ mapper, codeBytes: both.codeBytes }, kernelCodeBytes(both.project, mapper), 'hero+join naming, titled');
     }
+  }
+);
+
+/**
+ * Builds `project` exactly as given -- no fixture defaults, no forced title,
+ * no toggle normalization -- into a fresh mkdtemp directory on `mapper`, and
+ * returns the real kernel-lo code-byte usage the same way measureCodeBytes
+ * does. Unlike measureCodeBytes, this takes a project object directly (not a
+ * fixture path plus a set of `with*` flags) so a caller can hand it the
+ * checked-in fixture completely unmodified, or a real `projectWithout*`
+ * helper's own output, and know nothing else about the project changed.
+ */
+async function measureProjectCodeBytes(t, project, mapper) {
+  const dir = await fsp.mkdtemp(path.join(os.tmpdir(), 'forge-kernelbytes-real-'));
+  t.after(() => fsp.rm(dir, { recursive: true, force: true }));
+  const variant = { ...project, cartridge: { ...project.cartridge, mapper: mapper.id } };
+  await saveProject(dir, variant);
+  const lines = [];
+  const built = await buildProject({ dir, project: variant, log: (line) => lines.push(line) });
+
+  const { kernelLoBank } = prgLayout(mapper);
+  const bankLine = lines.find((line) => new RegExp(`^BANK\\s+${kernelLoBank}\\s`).test(line));
+  assert.ok(bankLine, `${mapper.name}: nesasm's usage table never mentioned bank ${kernelLoBank} (kernel-lo)`);
+  const used = Number(bankLine.match(/(\d+)\/\s*(\d+)\s*$/)?.[1]);
+  assert.ok(Number.isFinite(used) && used > 0, `${mapper.name}: could not parse a used-byte count out of "${bankLine}"`);
+
+  assert.ok(built.symbolPath, `${mapper.name}: nesasm should have written a symbol file`);
+  const symbols = await fsp.readFile(built.symbolPath, 'utf8');
+  const resetMatch = symbols.match(/^reset\s*=\s*\$([0-9A-Fa-f]+)/m);
+  assert.ok(resetMatch, `${mapper.name}: reset should be a named symbol in game.fns`);
+  const resetAddr = parseInt(resetMatch[1], 16);
+  return used - (resetAddr - 0xc000);
+}
+
+// Item 5 (phase 5, docs/design-name-entry.md v16.4 §17 item 5) closes the
+// design's own §15 phase-4 delta test: the real fixture AS SHIPPED (naming
+// live for real, not a synthetic measureCodeBytes toggle) against the real
+// exported projectWithoutHeroNaming/projectWithoutJoinNaming helpers applied
+// to it, on real assembled ROMs -- not the static kernelCodeBytes() formula,
+// and not measureCodeBytes' own flag-driven reconstruction, which this test
+// exists to cross-check rather than duplicate.
+test(
+  'phase 5: sample-rpg as shipped (hero+Join naming both live for real) vs. projectWithoutHeroNaming/' +
+    'projectWithoutJoinNaming applied to it -- real assembled ROMs, every RPG-capable board',
+  { skip: !hasNesasm && 'nesasm not found on PATH' },
+  async (t) => {
+    const shipped = await loadProject(SAMPLE_RPG);
+    assert.ok(projectUsesHeroNaming(shipped), 'sample-rpg should carry hero naming live as shipped');
+    assert.ok(projectUsesJoinNaming(shipped), 'sample-rpg should carry Join naming live as shipped');
+
+    for (const mapper of CAPABLE_MAPPERS) {
+      const shippedBytes = await measureProjectCodeBytes(t, shipped, mapper);
+      const withoutHero = await measureProjectCodeBytes(t, projectWithoutHeroNaming(shipped), mapper);
+      const withoutJoin = await measureProjectCodeBytes(t, projectWithoutJoinNaming(shipped), mapper);
+
+      // sample-rpg ships titleless (project.project.titleMap === null), so
+      // removing hero naming from it pays HERO_NAMING_TITLELESS_KERNEL_
+      // ALLOWANCE too (§11's own titleless surcharge) -- not
+      // HERO_NAMING_KERNEL_ALLOWANCE alone, which is the titled-only figure
+      // the "rows 4-15" test above measures against a synthetic titled
+      // variant.
+      assert.equal(
+        shippedBytes - withoutHero,
+        HERO_NAMING_KERNEL_ALLOWANCE + HERO_NAMING_TITLELESS_KERNEL_ALLOWANCE,
+        `${mapper.name}: removing hero naming from the real (titleless) shipped fixture should free exactly ` +
+          'HERO_NAMING_KERNEL_ALLOWANCE + HERO_NAMING_TITLELESS_KERNEL_ALLOWANCE'
+      );
+      assert.equal(
+        shippedBytes - withoutJoin,
+        JOIN_NAMING_KERNEL_ALLOWANCE,
+        `${mapper.name}: removing Join naming from the real shipped fixture should free exactly JOIN_NAMING_KERNEL_ALLOWANCE`
+      );
+    }
+  }
+);
+
+// The action-side twin, against sample/ as shipped: hero naming AND the Say
+// token are both live for real (the slime's own plain dialogue). Dropping
+// the token alone (projectWithoutNameToken) should free the token term plus
+// HERO_DEFAULT_KERNEL_ALLOWANCE's own two homes -- the 11-byte copy loop
+// (kernelCodeBytes) and the 10-byte table (kernelTableBytes' fixedBytes) --
+// UNLESS hero naming is also live, in which case projectNeedsHeroDefault
+// stays true regardless and only the flat token allowance is freed. sample's
+// own real shipped state has hero naming ON, so this is the latter case --
+// verified directly rather than assumed, per the phase-4 handoff's own "58 +
+// 11 + 10" figure, which only applies once hero naming is off too.
+test(
+  'phase 5: sample as shipped (hero naming AND the token both live for real) -- dropping the token alone frees only NAME_TOKEN_KERNEL_ALLOWANCE, because hero naming still needs the default table+loop',
+  { skip: !hasNesasm && 'nesasm not found on PATH' },
+  async (t) => {
+    const shipped = await loadProject(SAMPLE);
+    assert.ok(projectUsesHeroNaming(shipped), 'sample should carry hero naming live as shipped');
+    assert.ok(projectUsesNameToken(shipped), 'sample should carry the {name} token live as shipped');
+
+    const mapper = resolveMapper(shipped.cartridge.mapper);
+    const shippedBytes = await measureProjectCodeBytes(t, shipped, mapper);
+    const withoutToken = await measureProjectCodeBytes(t, projectWithoutNameToken(shipped), mapper);
+    assert.equal(
+      shippedBytes - withoutToken,
+      NAME_TOKEN_KERNEL_ALLOWANCE,
+      `${mapper.name}: with hero naming still live, dropping the token alone should free exactly ` +
+        'NAME_TOKEN_KERNEL_ALLOWANCE -- HERO_DEFAULT_KERNEL_ALLOWANCE and its table stay paid for by hero naming'
+    );
+
+    // The full "token was the only reason for either" figure DOES apply once
+    // hero naming is off too -- confirmed here against the real fixture,
+    // composing both strips, rather than only against the synthetic action
+    // project kernelbytes.test.js's own counterfactual test already covers.
+    const withoutHeroAndToken = await measureProjectCodeBytes(
+      t,
+      projectWithoutNameToken(projectWithoutHeroNaming(shipped)),
+      mapper
+    );
+    const withoutHeroOnly = await measureProjectCodeBytes(t, projectWithoutHeroNaming(shipped), mapper);
+    assert.equal(
+      withoutHeroOnly - withoutHeroAndToken,
+      NAME_TOKEN_KERNEL_ALLOWANCE + HERO_DEFAULT_KERNEL_ALLOWANCE,
+      `${mapper.name}: with hero naming already off, dropping the token too should additionally free ` +
+        'HERO_DEFAULT_KERNEL_ALLOWANCE\'s own copy loop (the 10-byte table lives in kernelTableBytes, not this delta)'
+    );
+
+    // P2-3 (fix round 2): the hero-only removal above was built but its own
+    // delta from the shipped fixture was never equality-asserted. sample
+    // ships titled (project.project.titleMap !== null), an action project
+    // with no Join to keep projectUsesNameEntry true once hero naming is
+    // gone, so removing it drops all three action-side naming terms at
+    // once: NAME_ENTRY_ACTION_KERNEL_ALLOWANCE (the grid's own body, banked
+    // on an RPG but kernel-lo here), NAME_ENTRY_KERNEL_ALLOWANCE (the hook
+    // glue every naming feature shares) and HERO_NAMING_KERNEL_ALLOWANCE
+    // (start_game's own naming arm) -- not HERO_NAMING_TITLELESS_KERNEL_
+    // ALLOWANCE, which sample's own title screen never pays.
+    assert.equal(
+      shippedBytes - withoutHeroOnly,
+      NAME_ENTRY_ACTION_KERNEL_ALLOWANCE + NAME_ENTRY_KERNEL_ALLOWANCE + HERO_NAMING_KERNEL_ALLOWANCE,
+      `${mapper.name}: removing hero naming from the real (titled) shipped action fixture should free exactly ` +
+        'NAME_ENTRY_ACTION_KERNEL_ALLOWANCE + NAME_ENTRY_KERNEL_ALLOWANCE + HERO_NAMING_KERNEL_ALLOWANCE'
+    );
+
+    // The other half of the same finding: measureProjectCodeBytes only ever
+    // sees code AFTER the reset label (CLAUDE.md's own "a code term and a
+    // table term stay in the ledgers they each belong to" rule) -- every
+    // fixedBytes term (kernelTableBytes, main/build/generate.js) lives
+    // BEFORE reset and so is excluded from every delta above by
+    // construction, not merely by coincidence, and the reviewer's own
+    // finding was that this exclusion was never verified, only assumed.
+    // Direct against kernelTableBytes rather than another nesasm build:
+    // dropping hero naming alone (the token still keeps projectUsesNameEntry
+    // OFF but projectNeedsHeroDefault ON) frees only the nameentry row of
+    // input_actions (BUTTONS.length bytes -- projectUsesNameEntry's own
+    // gate); hero_name_default's own table (RPG_LIMITS.nameLength bytes,
+    // projectNeedsHeroDefault's gate) is untouched until the token goes too.
+    const fixedBytesOf = (project) => kernelTableBytes(project, mapper).fixedBytes;
+    const shippedFixed = fixedBytesOf(shipped);
+    const withoutHeroOnlyFixed = fixedBytesOf(projectWithoutHeroNaming(shipped));
+    const withoutHeroAndTokenFixed = fixedBytesOf(projectWithoutNameToken(projectWithoutHeroNaming(shipped)));
+    assert.equal(
+      shippedFixed - withoutHeroOnlyFixed,
+      BUTTONS.length,
+      `${mapper.name}: dropping hero naming alone should free only the nameentry row of input_actions ` +
+        '(BUTTONS.length bytes) -- hero_name_default\'s own table stays reserved, since the token still needs it ' +
+        '(projectNeedsHeroDefault stays true)'
+    );
+    assert.equal(
+      withoutHeroOnlyFixed - withoutHeroAndTokenFixed,
+      RPG_LIMITS.nameLength,
+      `${mapper.name}: dropping the token too (hero naming already off) should free hero_name_default's own ` +
+        `${RPG_LIMITS.nameLength}-byte table, the one home measureProjectCodeBytes' post-reset delta above ` +
+        'cannot see at all'
+    );
   }
 );
 
@@ -3930,6 +4184,13 @@ test(
     // (58 - 38), and the token alone frees the full 58, so it must be
     // offered as one real solo fix alongside Move/Turn/Wait/Save.
     const project = await loadProject(SAMPLE_RPG);
+    // Hero/Join naming off explicitly (phase 5): sample-rpg's own naming is
+    // now live for real, and either would already need the name seed
+    // (projectNeedsNameSeed) regardless of the token -- this case is about
+    // the token alone, and the "38 bytes free" calibration in the comment
+    // above assumes a naming-off baseline.
+    project.party[0].renamable = false;
+    if (project.party[1]) project.party[1].renamable = false;
     project.cartridge.mapper = 1;
     project.project.titleMap = 0;
     project.project.titleScreen = 0;
@@ -4041,6 +4302,11 @@ test('phase 4 (Say token): kernelShortfallAdvice\'s counterfactual frees the tok
   // occupancy... never by summing constants").
   const mapper = ACTION_CAPABLE_MAPPERS.find((m) => m.id === 4); // MMC3
   const project = await loadProject(SAMPLE);
+  // Hero naming off explicitly (phase 5): SAMPLE now carries hero naming on
+  // for real, which alone already needs projectNeedsHeroDefault regardless
+  // of the token -- this test's own premise is "the token was the only
+  // reason for either", which requires hero naming to be off.
+  project.party[0].renamable = false;
   project.maps[0].screens[0].entities.push({
     actorId: 0,
     x: 16,
@@ -4407,6 +4673,14 @@ test(
 
 test('in-game naming: kernelTableBytes only charges the input-row 4 bytes when the project opts in', async () => {
   const project = await loadProject(SAMPLE_RPG);
+  // Naming off explicitly (phase 5): sample-rpg now opts both hero and Join
+  // naming in for real, so the "off" baseline below must force both off
+  // itself rather than rely on the fixture's own default -- the nameentry
+  // row is gated on projectUsesNameEntry (hero OR join), so leaving Join's
+  // own renamable flag on would already charge this row before hero is
+  // ever turned on below.
+  project.party[0].renamable = false;
+  if (project.party[1]) project.party[1].renamable = false;
   const off = kernelTableBytes(project);
   project.party[0].renamable = true;
   const on = kernelTableBytes(project);

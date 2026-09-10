@@ -27,6 +27,7 @@ import {
 import { loadProject, saveProject } from '../../main/project-io.js';
 import { buildProject } from '../../main/build/pipeline.js';
 import { mapEncounterFormation, RPG_LIMITS, createScreen, MAX_ITEMS } from '../../shared/project.js';
+import { finishNamingIfOpen } from '../lib/naming.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const SAMPLE = path.join(ROOT, 'sample');
@@ -76,6 +77,17 @@ const run = (emulator, frames) => {
     assert.ok(result.frameEnded, `runFrame() did not complete frame ${i + 1}/${frames}`);
   }
 };
+
+/** The boot idiom every test in this file uses: run() the fixture's own 10
+ *  settle frames, then clear Rian's own hero-naming session (phase 5:
+ *  sample-rpg ships him renamable) with the seeded default left untouched --
+ *  applyBattleTest requires game_state === ST_GAMEPLAY as a genuine
+ *  precondition and does not itself poke past the grid the way
+ *  applyStartOverride does, so this file's own boot step has to. */
+function bootPast(emulator) {
+  run(emulator, 10);
+  finishNamingIfOpen(emulator.nes);
+}
 
 /** sample-rpg's own default formation slot: 4 actor ids, $FF-padded. */
 const pad4 = (ids) => [...ids, ...new Array(4 - ids.length).fill(NO_ENTITY)];
@@ -249,7 +261,7 @@ test('applyBattleTest starts the requested formation, and a control run proves t
   const formation = pad4([3]); // Snake -- not the map's own (empty) table, not placed anywhere touchable
 
   const on = loadedEmulator(romPath, build);
-  run(on, 10);
+  bootPast(on);
   applyBattleTest(on, formation, build);
   assert.equal(on.peek(build.ram.game_state), ST_BATTLE);
   assert.deepEqual([0, 1, 2, 3].map((s) => on.peek(build.ram.mon_slot_actor + s)), formation);
@@ -262,7 +274,7 @@ test('applyBattleTest starts the requested formation, and a control run proves t
   // passed at all) rather than for the reason under test (nothing redirects
   // to battle_begin on its own).
   const off = loadedEmulator(romPath, build);
-  run(off, 10);
+  bootPast(off);
   off.poke(build.ram.mon_slot_actor, formation[0]); // the poke half alone, no redirect
   run(off, 2);
   assert.equal(off.peek(build.ram.game_state), ST_GAMEPLAY, 'control: a poke with no redirect must not start a fight');
@@ -274,12 +286,12 @@ test('a different formation reads back different -- the parameter is not ignored
   });
 
   const a = loadedEmulator(romPath, build);
-  run(a, 10);
+  bootPast(a);
   applyBattleTest(a, pad4([3]), build);
   const readA = [0, 1, 2, 3].map((s) => a.peek(build.ram.mon_slot_actor + s));
 
   const b = loadedEmulator(romPath, build);
-  run(b, 10);
+  bootPast(b);
   applyBattleTest(b, pad4([2]), build);
   const readB = [0, 1, 2, 3].map((s) => b.peek(build.ram.mon_slot_actor + s));
 
@@ -291,7 +303,7 @@ test('a different formation reads back different -- the parameter is not ignored
 test('an empty formation is refused -- an instant, contentless victory', { skip: skipRpg }, async (t) => {
   const { build, romPath } = await builtVariant(t, SAMPLE_RPG, () => {});
   const emulator = loadedEmulator(romPath, build);
-  run(emulator, 10);
+  bootPast(emulator);
   assert.throws(() => applyBattleTest(emulator, [], build), /instant, contentless victory/);
   assert.throws(() => applyBattleTest(emulator, [NO_ENTITY, NO_ENTITY, NO_ENTITY, NO_ENTITY], build), /instant, contentless victory/);
   // Refused before anything is touched.
@@ -301,7 +313,7 @@ test('an empty formation is refused -- an instant, contentless victory', { skip:
 test('the gate is an explicit precondition, not a timeout standing in for one', { skip: skipRpg }, async (t) => {
   const { build, romPath } = await builtVariant(t, SAMPLE_RPG, () => {});
   const emulator = loadedEmulator(romPath, build);
-  run(emulator, 10);
+  bootPast(emulator);
 
   // Simulate mid-dialogue directly -- not by actually opening a real message
   // box, so this isolates applyBattleTest's own check from the dialogue
@@ -336,7 +348,7 @@ test('bt_from_ent and talk_ent (via bt_owner_ent) are cleared -- proven by dirty
     draft.maps[0].encounters = { rate: 0, actorIds: [] };
   });
   const emulator = loadedEmulator(romPath, build);
-  run(emulator, 10);
+  bootPast(emulator);
 
   // A fresh boot already has talk_ent === NO_ENTITY (start_game sets it) and
   // a plausibly-zeroed bt_from_ent, so a test that never dirties them first
@@ -380,7 +392,7 @@ test('an overlapping monster overwriting the formation is detected, not silently
     draft.maps[0].screens[0].entities.push({ actorId: 3, x: OVERLAP_X, y: OVERLAP_Y, props: {} }); // Snake
   });
   const emulator = loadedEmulator(romPath, build);
-  run(emulator, 10);
+  bootPast(emulator);
 
   // Teleported directly onto the monster's tile via a raw poke, not real
   // movement -- movement would let update_entities notice the overlap on an
@@ -410,7 +422,7 @@ test('a same-actor overlap corrupts bt_esc/bt_from_ent while the formation still
     draft.maps[0].screens[0].entities.push({ actorId: 3, x: OVERLAP_X, y: OVERLAP_Y, props: {} }); // Snake
   });
   const emulator = loadedEmulator(romPath, build);
-  run(emulator, 10);
+  bootPast(emulator);
   emulator.poke(build.ram.player_x, OVERLAP_X);
   emulator.poke(build.ram.player_y, OVERLAP_Y);
 
@@ -436,7 +448,7 @@ test('stepOut() bailing early on a breakpoint mid-battle_begin is treated as inc
     draft.maps[0].encounters = { rate: 0, actorIds: [] };
   });
   const emulator = loadedEmulator(romPath, build);
-  run(emulator, 10);
+  bootPast(emulator);
 
   // battle_begin's own bytes: `lda #ST_BATTLE` (2 bytes) then `sta game_state`
   // (3 bytes, absolute -- confirmed by reading the assembled ROM directly,
@@ -458,7 +470,7 @@ test('the main_loop rendezvous is checked against its own result, not assumed', 
     draft.maps[0].encounters = { rate: 0, actorIds: [] };
   });
   const emulator = loadedEmulator(romPath, build);
-  run(emulator, 10);
+  bootPast(emulator);
 
   // A main_loop symbol that can never be reached -- runToAddress's own
   // instruction budget (frames: 2) will exhaust and return false, which
@@ -473,7 +485,7 @@ test('script_active dirtied during real gameplay (not simulated dialogue) is sti
     draft.maps[0].encounters = { rate: 0, actorIds: [] };
   });
   const emulator = loadedEmulator(romPath, build);
-  run(emulator, 10);
+  bootPast(emulator);
 
   // game_state stays ST_GAMEPLAY throughout -- unlike the dialogue-gate test
   // above, which dirties script_active but also puts the game into ST_DIALOG
@@ -508,7 +520,7 @@ test('an overlapping door taking effect mid-battle-start is detected', { skip: s
     });
   });
   const emulator = loadedEmulator(romPath, build);
-  run(emulator, 10);
+  bootPast(emulator);
   emulator.poke(build.ram.player_x, OVERLAP_X);
   emulator.poke(build.ram.player_y, OVERLAP_Y);
 
@@ -529,7 +541,7 @@ test('a pickup collected mid-battle-start is detected', { skip: skipRpg }, async
     draft.maps[0].screens[0].entities.push({ actorId: 1, x: OVERLAP_X, y: OVERLAP_Y, props: {} });
   });
   const emulator = loadedEmulator(romPath, build);
-  run(emulator, 10);
+  bootPast(emulator);
   emulator.poke(build.ram.player_x, OVERLAP_X);
   emulator.poke(build.ram.player_y, OVERLAP_Y);
 
@@ -555,7 +567,7 @@ test('a same-screen door still moves the player, and is still detected', { skip:
     });
   });
   const emulator = loadedEmulator(romPath, build);
-  run(emulator, 10);
+  bootPast(emulator);
   emulator.poke(build.ram.player_x, OVERLAP_X);
   emulator.poke(build.ram.player_y, OVERLAP_Y);
 
@@ -574,7 +586,7 @@ test('a full-bag pickup still despawns the entity and increments pickups, and is
     draft.maps[0].screens[0].entities.push({ actorId: 1, x: OVERLAP_X, y: OVERLAP_Y, props: {} }); // Potion
   });
   const emulator = loadedEmulator(romPath, build);
-  run(emulator, 10);
+  bootPast(emulator);
   // Fill the bag first: add_item (engine/ui.asm) is a silent no-op once
   // inv_count >= MAX_ITEMS, so inv_count/inv_items alone read unchanged
   // across this pickup even though it genuinely fires -- entity_pickup
@@ -614,7 +626,7 @@ test('a touch-armed pending event is detected', { skip: skipRpg }, async (t) => 
     });
   });
   const emulator = loadedEmulator(romPath, build);
-  run(emulator, 10);
+  bootPast(emulator);
   emulator.poke(build.ram.player_x, OVERLAP_X);
   emulator.poke(build.ram.player_y, OVERLAP_Y);
 

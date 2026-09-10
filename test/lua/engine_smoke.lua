@@ -14,7 +14,17 @@ local FLAT_SCREEN = 0x16
 local FRAME_CNT   = 0x1B
 local GAME_STATE  = 0x25
 
-local ST_TITLE = 3
+local ST_TITLE      = 3
+local ST_NAMEENTRY  = 6
+
+-- The naming grid, from engine/constants.asm and test/lib/naming.js's own
+-- shared shape.
+local BOX_STATE      = 0x40
+local BOX_ROW        = 0x41
+local BOX_TEXT_ROWS  = 4
+local BOX_NAMEENTRY  = 9
+local NM_ROW         = 0x059b
+local NM_COL         = 0x059c
 
 local EXIT_TIMEOUT       = 99
 local EXIT_NO_BOOT       = 2
@@ -23,6 +33,7 @@ local EXIT_NO_COLLISION  = 4
 local EXIT_NO_TRANSITION = 5
 local EXIT_BAD_RETURN    = 6
 local EXIT_TITLE_STUCK   = 7
+local EXIT_NAMING_STUCK  = 8
 
 local frame = 0
 local phase = 1
@@ -115,6 +126,17 @@ local function onFrame()
       fail(EXIT_TITLE_STUCK, "pressed Start for 6 frames and released, but the title still hadn't cleared 14 frames later")
       return
     end
+    -- sample now carries hero naming on for real (docs/design-name-entry.md
+    -- v16.4 §17 item 5), so Start opening the grid instead of gameplay
+    -- outright is the expected case, not a stuck title -- phase 1.6 drives
+    -- it to END with the seeded default name before phase 2's own walk.
+    if read(GAME_STATE) == ST_NAMEENTRY then
+      pass("Start opened the naming grid -- driving it to END before the walk begins")
+      held = {}
+      mark = frame
+      phase = 1.6
+      return
+    end
     note.startX = read(PLAYER_X)
     note.startY = read(PLAYER_Y)
     note.startScreen = read(FLAT_SCREEN)
@@ -122,6 +144,93 @@ local function onFrame()
     phase = 2
     held = { right = true }
     mark = frame
+    return
+  end
+
+  -- 1.6: wait for the grid to finish raising -- the same two-part readiness
+  -- gate test/lib/naming.js's own waitForNamingReady uses (box_state ==
+  -- BOX_NAMEENTRY and box_row has reached BOX_TEXT_ROWS), so nothing is
+  -- pressed against a box still mid-raise.
+  if phase == 1.6 then
+    if read(BOX_STATE) == BOX_NAMEENTRY and read(BOX_ROW) >= BOX_TEXT_ROWS then
+      pass("naming grid finished raising")
+      mark = frame
+      phase = 1.61
+      return
+    end
+    if frame - mark > 120 then
+      fail(EXIT_NAMING_STUCK, "the naming grid never finished raising")
+      return
+    end
+    return
+  end
+
+  -- 1.61: DOWN's own ring visits every row in the same forward order
+  -- regardless of where it starts (0 -> 1 -> 2 -> 0), so pulsing it twice
+  -- from the grid's own default row (0, upper-case) reaches row 2, the
+  -- controls row -- test/lib/naming.js's own gotoCell idiom. Pulsed rather
+  -- than held, the same reason phase 3d of save_sram.lua pulses A: the
+  -- engine advances a selection on a fresh press, and a held button is one
+  -- press, not a repeat.
+  if phase == 1.61 then
+    if read(NM_ROW) == 2 then
+      held = {}
+      pass("naming grid cursor reached the controls row")
+      mark = frame
+      phase = 1.62
+      return
+    end
+    if frame - mark > 300 then
+      fail(EXIT_NAMING_STUCK, "the naming grid cursor never reached the controls row")
+      return
+    end
+    local cycle = (frame - mark) % 12
+    held = cycle < 4 and { down = true } or {}
+    return
+  end
+
+  -- 1.62: RIGHT from the controls row's own default column (0, DEL) reaches
+  -- column 1, END.
+  if phase == 1.62 then
+    if read(NM_COL) == 1 then
+      held = {}
+      pass("naming grid cursor reached END")
+      mark = frame
+      phase = 1.63
+      return
+    end
+    if frame - mark > 600 then
+      fail(EXIT_NAMING_STUCK, "the naming grid cursor never reached END")
+      return
+    end
+    local cycle = (frame - mark) % 12
+    held = cycle < 4 and { right = true } or {}
+    return
+  end
+
+  -- 1.63: confirm END with the seeded default name untouched, then wait for
+  -- the session to hand off to gameplay. note.startX/Y/startScreen are
+  -- captured only after this, not before -- the same reason phase 1.5
+  -- itself re-reads them after start_game's own reset rather than trusting
+  -- values read earlier in a different state.
+  if phase == 1.63 then
+    if read(GAME_STATE) ~= ST_NAMEENTRY then
+      held = {}
+      note.startX = read(PLAYER_X)
+      note.startY = read(PLAYER_Y)
+      note.startScreen = read(FLAT_SCREEN)
+      pass(string.format("naming session ended -- x=%d y=%d screen=%d", note.startX, note.startY, note.startScreen))
+      phase = 2
+      held = { right = true }
+      mark = frame
+      return
+    end
+    if frame - mark > 300 then
+      fail(EXIT_NAMING_STUCK, "the naming session never ended after confirming END")
+      return
+    end
+    local cycle = (frame - mark) % 12
+    held = cycle < 4 and { a = true } or {}
     return
   end
 

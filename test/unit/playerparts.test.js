@@ -416,9 +416,13 @@ test('sample/ builds a byte-identical ROM after PLAYER_FRAMES/PLAYER_TILES moved
   // unconditional kernel code, present in every build. Not a
   // PLAYER_FRAMES/PLAYER_TILES regression either: re-captured by building
   // this exact sample/ tree with only that fix applied.
+  // Re-pinned for phase 5 (docs/design-name-entry.md v16.4 §17 item 5):
+  // sample/ now carries hero naming live and the Say token in the slime's
+  // plain dialogue -- the identical new hash nameentry.test.js's own
+  // BASELINES.sample re-pins to, confirmed to agree with it directly.
   assert.equal(
     hash,
-    '471562e528e8ad08a44c9211bd0784b8e6b5e9811e9793ebf21f02e2143bcd82',
+    '26899435c92ce55ec1314da290944472c359d27181227fc8e2bfc4c09b6035a5',
     'moving PLAYER_FRAMES/PLAYER_TILES into shared/project.js is a single-writer move, not a behaviour ' +
       'change -- sample/ must assemble byte-for-byte identically to the pinned pre-move build (captured ' +
       'from this exact working tree, immediately before this move, by building createProject-free sample/)'

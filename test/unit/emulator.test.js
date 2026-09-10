@@ -7,6 +7,7 @@ import PaletteTable from '../../renderer/emulator/core/ppu/palette-table.js';
 import NES from '../../renderer/emulator/core/nes.js';
 import { Emulator } from '../../renderer/emulator/runcontrol.js';
 import { NES_PALETTE } from '../../shared/nespalette.js';
+import { finishNamingIfOpen } from '../lib/naming.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const ROM_PATH = path.join(ROOT, 'sample/build/game.nes');
@@ -87,6 +88,8 @@ test('the ⟳ Reset button leaves the ROM able to draw again', { skip: !hasRom &
     emulator.runFrame();
     emulator.setButton(START, false);
     for (let i = 0; i < 12; i++) emulator.runFrame();
+    // sample now has hero naming on (phase 5): Start opens the grid.
+    finishNamingIfOpen(emulator.nes);
   };
 
   const emulator = new Emulator({ onFrame: () => {} });
@@ -158,6 +161,10 @@ function bootSample(frames = 30) {
     nes.buttonUp(1, 3);
     for (let i = 0; i < 12; i++) nes.frame();
   }
+  // sample now has hero naming on (docs/design-name-entry.md v16.4 §17 item
+  // 5); Start lands in the grid, and finishNamingIfOpen is a no-op when
+  // naming is off, so this is safe unconditionally.
+  finishNamingIfOpen(nes);
   return nes;
 }
 
@@ -247,6 +254,7 @@ test('controller input reaches the running game', { skip: !hasRom && 'run `npm r
     nes.buttonUp(1, 3);
     for (let i = 0; i < 12; i++) nes.frame();
   }
+  finishNamingIfOpen(nes); // sample now has hero naming on (phase 5): Start opens the grid
 
   const PLAYER_X = 0x10; // engine/constants.asm
   const before = nes.cpu.mem[PLAYER_X];

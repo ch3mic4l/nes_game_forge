@@ -82,13 +82,19 @@ const hasNesasm = spawnSync('nesasm', [], { stdio: 'ignore' }).error?.code !== '
 // against a HEAD-3949316 build of the same fixture). sample/, sample-rpg/
 // and sample-rpg-mmc1/ are unchanged: sample has no live Save at all, and
 // both RPG fixtures already had a 1+ member party.
+// Re-pinned for phase 5 (docs/design-name-entry.md v16.4 §17 item 5,
+// fixture/starter opt-in): sample/ and sample-rpg/ now carry hero naming
+// live for real (sample also carries the Say token in the slime's plain
+// dialogue), and sample-rpg-mmc1/ carries Join naming live on Iris alone --
+// all three moved. sample-mmc1/, sample-mmc3/ and sample-u512/ opt into
+// nothing new this phase and are byte-identical to their phase-4 hashes.
 const BASELINES = {
-  sample: '471562e528e8ad08a44c9211bd0784b8e6b5e9811e9793ebf21f02e2143bcd82',
-  'sample-rpg': 'c7bc3dc326996831e488b929d238f19b71095dd02a8e2c24c37f5612f6f251be',
+  sample: '26899435c92ce55ec1314da290944472c359d27181227fc8e2bfc4c09b6035a5',
+  'sample-rpg': '791b86a9c4a7c64eff0435815e53e92dbe9ee74287e9ab0cc7d8e6f8ce130159',
   'sample-mmc1': 'f24816f2bd35c7e4df6974823409db384b92cb90bea263b08bdc05fa4d4e2b76',
   'sample-mmc3': '689bf6cc813dc21870be606d7eac2e892b1fdeb6c33be4238db61d24ad79bf97',
   'sample-u512': '2a2f9d63a30cde781e34951dff595f777f7beba65472014c881cb525691da3ae',
-  'sample-rpg-mmc1': 'f24658ab023a888df23722cd6da0a94f85ba1480b9267ef1906df58ebbceeba8'
+  'sample-rpg-mmc1': 'd794127a8c8c49c2d2cf5593e6a75009754517b05ada16c419f66dccd6e4fef5'
 };
 
 for (const name of Object.keys(BASELINES)) {
@@ -703,7 +709,9 @@ test(
   { skip: !hasNesasm && 'nesasm not found on PATH' },
   async (t) => {
     const { built } = await buildActionNamingVariant(t, (project) => {
-      // Naming stays off throughout -- party[0].renamable is never set.
+      // Naming off explicitly (phase 5): SAMPLE now carries hero naming on
+      // for real, so "stays off" has to be said, not merely left unset.
+      project.party[0].renamable = false;
       project.maps[0].screens[0].entities.push({
         actorId: 0,
         x: 112,
@@ -733,6 +741,9 @@ test(
   { skip: !hasNesasm && 'nesasm not found on PATH' },
   async (t) => {
     const { built } = await buildActionNamingVariant(t, (project) => {
+      // Naming off explicitly (phase 5): SAMPLE now carries hero naming on
+      // for real.
+      project.party[0].renamable = false;
       project.maps[0].screens[0].entities.push({
         actorId: 0,
         x: 112,
@@ -795,6 +806,9 @@ test(
   { skip: !hasNesasm && 'nesasm not found on PATH' },
   async (t) => {
     const { built } = await buildActionNamingVariant(t, (project) => {
+      // Naming off explicitly (phase 5): SAMPLE now carries hero naming on
+      // for real.
+      project.party[0].renamable = false;
       project.maps[0].screens[0].entities.push({
         actorId: 0,
         x: 112,

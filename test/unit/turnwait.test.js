@@ -36,8 +36,10 @@ import {
   normalizeProject,
   projectUsesTurn,
   projectUsesWait,
-  projectUsesFace
+  projectUsesFace,
+  projectWithoutHeroNaming
 } from '../../shared/project.js';
+import { finishNamingIfOpen } from '../lib/naming.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const SAMPLE = path.join(ROOT, 'sample');
@@ -94,6 +96,10 @@ function boot(romPath, frames = 30) {
     nes.buttonUp(1, 3);
     for (let i = 0; i < 12; i++) nes.frame();
   }
+  // sample now has hero naming on (docs/design-name-entry.md v16.4 §17 item
+  // 5); Start lands in the grid, and finishNamingIfOpen is a no-op when
+  // naming is off, so this is safe unconditionally.
+  finishNamingIfOpen(nes);
   return nes;
 }
 
@@ -130,7 +136,11 @@ function settle(nes, frames = 400) {
 async function buildWith(t, commands, tweak = () => {}) {
   const dir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'forge-turnwait-'));
   t.after(() => fs.promises.rm(dir, { recursive: true, force: true }));
-  const project = await loadProject(SAMPLE);
+  // Hero naming off explicitly (phase 5): SAMPLE now carries hero naming for
+  // real, whose own kernel-lo cost is otherwise enough to tip NROM's
+  // capacity over once Move and Wait are both live -- unrelated to what
+  // this file's own tests are actually about.
+  const project = projectWithoutHeroNaming(await loadProject(SAMPLE));
   const slime = project.sprites.actors[0];
   project.sprites.actors.push({ ...structuredClone(slime), id: NPC, name: 'Walker', behavior: 'npc' });
   project.maps[0].screens[0].metatiles = new Array(240).fill(0);

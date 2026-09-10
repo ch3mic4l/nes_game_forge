@@ -82,7 +82,9 @@ import {
   RPG_LIMITS,
   projectUsesNameEntry,
   projectUsesNameToken,
-  projectWithoutNameToken
+  projectWithoutNameToken,
+  projectWithoutHeroNaming,
+  projectWithoutJoinNaming
 } from '../../shared/project.js';
 import { FONT_BASE, SPRITE_ARROW_TILE, fontChrPages } from '../../shared/font.js';
 import { BLANK_TILE } from '../../shared/chr.js';
@@ -121,6 +123,13 @@ async function measureRegion(t, mapper, mutate = () => {}) {
   t.after(() => fsp.rm(dir, { recursive: true, force: true }));
   const project = await loadProject(SAMPLE_RPG);
   project.cartridge.mapper = mapper.id;
+  // Phase 5 (docs/design-name-entry.md v16.4 §17 item 5) turned hero+Join
+  // naming on for real in sample-rpg, so the baseline this helper measures
+  // has to force both off explicitly before `mutate` runs -- otherwise every
+  // caller that never asked for naming would silently measure it live
+  // anyway, and every naming isolation delta below would come out 0.
+  project.party[0].renamable = false;
+  if (project.party[1]) project.party[1].renamable = false;
   mutate(project);
   await saveProject(dir, project);
   const lines = [];
@@ -624,6 +633,13 @@ test('the refusal names a change that actually closes the gap', async () => {
 // obvious-sounding suggestion and was in this phase's own brief.
 test('shortening a name frees no bytes, and the advice never suggests it', async () => {
   const project = await loadProject(SAMPLE_RPG);
+  // Naming off explicitly (phase 5, docs/design-name-entry.md v16.4 §17 item
+  // 5): sample-rpg now opts in for real, so "removing hero naming ... and
+  // every named Join" is now a real, live candidate battleShortfallAdvice
+  // would legitimately offer -- turning it off here isolates this test's own
+  // concern (shortening a character's name) from that unrelated one.
+  project.party[0].renamable = false;
+  if (project.party[1]) project.party[1].renamable = false;
   const mapper = SUPPORTED_MAPPERS.find((entry) => entry.id === project.cartridge.mapper);
   const before = battleTableBytes(project);
   const renamed = structuredClone(project);
@@ -662,6 +678,12 @@ test('the generated .fail catches an override that finishes outside the region',
     const dir = await fsp.mkdtemp(path.join(os.tmpdir(), 'forge-bankedfail-'));
     t.after(() => fsp.rm(dir, { recursive: true, force: true }));
     const project = await loadProject(SAMPLE_RPG);
+    // Naming off explicitly (phase 5): sample-rpg's own naming code would
+    // otherwise assemble into the stock override text below and eat into the
+    // fixed nop budget this test sizes against -- unrelated to what this
+    // test is actually checking (override relocation).
+    project.party[0].renamable = false;
+    if (project.party[1]) project.party[1].renamable = false;
     project.cartridge.mapper = mapperId; // 1 = MMC1: the region is bank 0 at $8000
     project.code = { overrides: [{ name: 'battle.asm', text: `${stock}\n${tail}\n` }], files: [] };
     await saveProject(dir, project);
@@ -930,6 +952,17 @@ test('an MMC3 project inside the 46-byte band is told a different board fits', a
 // re-implements the thing it is testing agrees with itself, not with reality.
 test('switchableMappers offers only boards the project survives switching to', async () => {
   const base = await loadProject(SAMPLE_RPG);
+  // Naming off explicitly (phase 5, docs/design-name-entry.md v16.4 §17 item
+  // 5): projectUsesNameEntry(project) reserves sprite tile $FD on ANY board
+  // once naming is live (shared/project.js's spriteReservedRanges, the
+  // disjunct deliberately outside the "gameType === rpg" AND) -- with
+  // sample-rpg's own naming now live for real, painting art at $FD in case 2
+  // below would already be an error on the project's *starting* board, not
+  // only on the MMC3 candidate the case means to isolate, which silently
+  // turns "did the switch introduce this error" false for every candidate.
+  // This test is about mapper capacity, not naming, so it is turned off here.
+  base.party[0].renamable = false;
+  if (base.party[1]) base.party[1].renamable = false;
   const mmc3 = resolveMapper(4); // the only scanline-IRQ board
   const mmc1 = resolveMapper(1);
 
@@ -1339,6 +1372,90 @@ test(
   }
 );
 
+// Phase 5 (docs/design-name-entry.md v16.4 §17 item 5) closes the design's
+// own §15 phase-4 delta test for the banked ledger: the real sample-rpg
+// fixture AS SHIPPED (hero+Join naming both live for real) against the real
+// exported projectWithoutHeroNaming/projectWithoutJoinNaming helpers applied
+// to it, on real assembled ROMs -- not measureRegion's own naming-off-by-
+// default baseline, which this test deliberately bypasses by building the
+// shipped project (and each stripped clone of it) directly. The
+// banked-region twin of kernelbytes.test.js's own "phase 5: sample-rpg as
+// shipped" test.
+async function measureRegionForProject(t, project, mapper) {
+  const dir = await fsp.mkdtemp(path.join(os.tmpdir(), 'forge-bankedbytes-real-'));
+  t.after(() => fsp.rm(dir, { recursive: true, force: true }));
+  const variant = { ...project, cartridge: { ...project.cartridge, mapper: mapper.id } };
+  await saveProject(dir, variant);
+  const lines = [];
+  await buildProject({ dir, project: variant, log: (line) => lines.push(line) });
+
+  const slot = codeRegions(mapper, variant.tilesets.length, 1)[0];
+  assert.ok(slot, `${mapper.name}: codeRegions() reserved no region for an RPG`);
+  const bankLine = lines.find((line) => new RegExp(`^BANK\\s+${slot.nesasmBank}\\s`).test(line));
+  assert.ok(bankLine, `${mapper.name}: nesasm's usage table never mentioned bank ${slot.nesasmBank}`);
+  const used = Number(bankLine.match(/(\d+)\/\s*(\d+)\s*$/)?.[1]);
+  assert.ok(Number.isFinite(used) && used > 0, `${mapper.name}: could not parse a used-byte count out of "${bankLine}"`);
+  return used;
+}
+
+test(
+  'phase 5: sample-rpg as shipped (hero+Join naming both live for real) vs. projectWithoutHeroNaming/' +
+    'projectWithoutJoinNaming applied to it, banked region, real assembled ROMs, every RPG-capable board',
+  { skip: !hasNesasm && 'nesasm not found on PATH' },
+  async (t) => {
+    const shipped = await loadProject(SAMPLE_RPG);
+    assert.ok(shipped.party[0].renamable, 'sample-rpg should carry hero naming live as shipped');
+    assert.ok(shipped.party[1]?.renamable, 'sample-rpg should carry Join naming live as shipped');
+
+    for (const mapper of CAPABLE_MAPPERS) {
+      const shippedUsed = await measureRegionForProject(t, shipped, mapper);
+      const withoutHeroUsed = await measureRegionForProject(t, projectWithoutHeroNaming(shipped), mapper);
+      const withoutJoinUsed = await measureRegionForProject(t, projectWithoutJoinNaming(shipped), mapper);
+      const withoutEitherUsed = await measureRegionForProject(
+        t,
+        projectWithoutJoinNaming(projectWithoutHeroNaming(shipped)),
+        mapper
+      );
+
+      // Unlike the kernel-lo ledger (separate HERO_NAMING_KERNEL_ALLOWANCE/
+      // JOIN_NAMING_KERNEL_ALLOWANCE terms), the banked region has no H/J
+      // split at all: both NAME_ENTRY_BATTLE_ALLOWANCE (gated on
+      // projectUsesNameEntry, hero OR join) and NAME_COPY_BATTLE_ALLOWANCE
+      // (gated on projectNeedsNameSeed, hero OR join OR token) stay paid for
+      // as long as EITHER naming feature is still live -- so removing just
+      // one from a project where the other stays on frees nothing here. A
+      // delta of 0 alone cannot tell a real gate from a broken one that
+      // never frees the terms at all (P2-3, fix round 2) -- the combined
+      // removal below, asserting the full non-zero freed amount, is what
+      // makes these two single-removal checks meaningful rather than
+      // vacuously true.
+      assert.equal(
+        shippedUsed - withoutHeroUsed,
+        0,
+        `${mapper.name}: removing hero naming alone should free nothing in the banked region -- Join naming ` +
+          'alone already keeps both projectUsesNameEntry and projectNeedsNameSeed true'
+      );
+      assert.equal(
+        shippedUsed - withoutJoinUsed,
+        0,
+        `${mapper.name}: removing Join naming alone should free nothing in the banked region -- hero naming ` +
+          'alone already keeps both projectUsesNameEntry and projectNeedsNameSeed true'
+      );
+      // The real discriminator: with BOTH naming features gone,
+      // projectUsesNameEntry and projectNeedsNameSeed both finally read
+      // false, so both banked terms drop together -- the only configuration
+      // that can distinguish "the gate never frees anything" from "the gate
+      // only frees on the OR of both conditions."
+      assert.equal(
+        shippedUsed - withoutEitherUsed,
+        NAME_ENTRY_BATTLE_ALLOWANCE + NAME_COPY_BATTLE_ALLOWANCE,
+        `${mapper.name}: removing BOTH hero and Join naming should free exactly NAME_ENTRY_BATTLE_ALLOWANCE + ` +
+          'NAME_COPY_BATTLE_ALLOWANCE of real banked usage'
+      );
+    }
+  }
+);
+
 // Phase 4 (the Say token, docs/design-name-entry.md §9a/§11): rows 19-21,
 // the token-only isolation P2-2 asks for by name. Neither hero nor Join
 // naming is ever turned on here -- projectUsesNameEntry stays false
@@ -1388,6 +1505,13 @@ test(
 // the same way it already offers hero/Join naming.
 test('in-game naming: battleShortfallAdvice offers "the name token" as a solo candidate for a token-only RPG', async () => {
   const project = await loadProject(SAMPLE_RPG);
+  // Naming off explicitly (phase 5): sample-rpg now opts hero+Join naming in
+  // for real, which alone already needs the name seed (projectNeedsNameSeed)
+  // and would pay NAME_COPY_BATTLE_ALLOWANCE regardless of the token this
+  // test injects below -- turned off here so the token is the only thing
+  // that needs the seed, isolating this test's own concern.
+  project.party[0].renamable = false;
+  if (project.party[1]) project.party[1].renamable = false;
   const mapper = SUPPORTED_MAPPERS.find((entry) => entry.id === project.cartridge.mapper);
   project.maps[0].screens[0].entities[2].props.event.pages[0].commands[0].text += ' {name}';
 

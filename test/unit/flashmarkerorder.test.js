@@ -93,6 +93,11 @@ async function buildFlashSaveable(t) {
   const dir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'forge-flashmarkerorder-'));
   t.after(() => fs.promises.rm(dir, { recursive: true, force: true }));
   const project = await loadProject(SAMPLE_RPG);
+  // Naming off explicitly (phase 5): sample-rpg now opts hero+Join naming in
+  // for real, which would open the grid at Start -- unrelated to what this
+  // file tests (the flash save marker write order).
+  project.party[0].renamable = false;
+  if (project.party[1]) project.party[1].renamable = false;
   project.cartridge.mapper = 30;
   project.project.titleMap = 0;
   project.project.titleScreen = 0;

@@ -277,11 +277,14 @@ project.sprites.actors = [
 project.items = [{ id: 0, name: 'Potion', actorId: 1, metaspriteId: null }];
 
 // --- the party --------------------------------------------------------------
+// Both hero and Join naming on (docs/design-name-entry.md v16.4 §1 items 4/8,
+// §17 item 5), so this fixture exercises the naming grid from both its two
+// real entry points -- boot and a mid-conversation Join.
 project.party = [
-  { ...createPartyMember(0, 'Rian'), metaspriteId: 0, spells: [{ spellId: 0, level: 1 }, { spellId: 1, level: 3 }, { spellId: 2, level: 2 }] },
+  { ...createPartyMember(0, 'Rian'), metaspriteId: 0, renamable: true, spells: [{ spellId: 0, level: 1 }, { spellId: 1, level: 3 }, { spellId: 2, level: 2 }] },
   // Iris does not start in the party: talking to her runs a Join event, which is
   // the only way a second member ever arrives.
-  { ...createPartyMember(1, 'Iris'), metaspriteId: 0, startsInParty: false, spells: [{ spellId: 1, level: 1 }] }
+  { ...createPartyMember(1, 'Iris'), metaspriteId: 0, startsInParty: false, renamable: true, spells: [{ spellId: 1, level: 1 }] }
 ];
 project.spells = [
   // Flat ranges (amountMin === amountMax), deliberately: this fixture is the

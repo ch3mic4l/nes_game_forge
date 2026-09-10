@@ -40,6 +40,8 @@ import { screenFromArt as screenFromArtViaStarters } from '../../shared/starters
 import { nodeDomViolations, fixtureReferences, literalOccurrences } from '../lib/sourcescan.js';
 import { Emulator, BUTTON } from '../../renderer/emulator/runcontrol.js';
 import { charToTile } from '../../shared/font.js';
+import { finishNamingIfOpen, waitForNamingReady, gotoCell, tap as namingTap, nameBytes, BOX_STATE, BOX_NAMEENTRY } from '../lib/naming.js';
+import { nameTiles } from '../../main/build/battletables.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 
@@ -432,6 +434,10 @@ test("engine regression: the RPG starter's Ally recruit joins once per visit -- 
     frame();
     emulator.setButton(BUTTON.START, false);
     for (let i = 0; i < 12; i++) frame();
+    // The RPG starter's hero opts into naming too (docs/design-name-entry.md
+    // v16.4 §1 item 4, §17 item 5): Start opens the grid. finishNamingIfOpen
+    // ends it with the seeded default name ("Hero").
+    finishNamingIfOpen(nes);
     assert.equal(nes.cpu.mem[GAME_STATE], ST_GAMEPLAY, 'expected ST_GAMEPLAY after Start');
     assert.deepEqual([nes.cpu.mem[PLAYER_X], nes.cpu.mem[PLAYER_Y]], [48, 176], 'expected the player to start at (48, 176)');
 
@@ -503,6 +509,20 @@ test("engine regression: the RPG starter's Ally recruit joins once per visit -- 
 
       let dismissSteps = 0;
       while (nes.cpu.mem[GAME_STATE] !== ST_GAMEPLAY && dismissSteps < 200) {
+        // Ally's own Join opts into naming too (docs/design-name-entry.md
+        // v16.4 §1 item 4): once the "I've been waiting..." Say is
+        // dismissed, Join opens the grid mid-conversation -- game_state
+        // stays ST_DIALOG (the naming grid's box_state is the one signal
+        // both a hero and a Join session actually set), so this loop's own
+        // game_state check alone cannot see it. Select END, leaving the
+        // seeded default name ("Ally") exactly as compiled.
+        if (nes.cpu.mem[BOX_STATE] === BOX_NAMEENTRY) {
+          waitForNamingReady(nes);
+          gotoCell(nes, 2, 1); // END
+          namingTap(nes, BUTTON.A);
+          dismissSteps += 20;
+          continue;
+        }
         emulator.setButton(BUTTON.A, true);
         frame();
         emulator.setButton(BUTTON.A, false);
@@ -518,6 +538,7 @@ test("engine regression: the RPG starter's Ally recruit joins once per visit -- 
       partyIn: [nes.cpu.mem[PC_IN_PARTY], nes.cpu.mem[PC_IN_PARTY + 1]],
       switch0: (nes.cpu.mem[SWITCHES] & 1) !== 0,
       allyActive: nes.cpu.mem[ENT_ACTIVE + 2],
+      allyNameBytes: nameBytes(nes, 1),
       firstCharTile: firstCharTile1
     };
 
@@ -596,6 +617,14 @@ test("engine regression: the RPG starter's Ally recruit joins once per visit -- 
     afterFirst.firstCharTile,
     joinLineTile,
     `expected the first interact's own box to open on the join line ("I've..."), read tile ${afterFirst.firstCharTile}`
+  );
+  // The Join's own naming session (item 9 above) selected END rather than
+  // typing a new name, so party_join's copy loop should have seeded
+  // pc_name_ram slot 1 with exactly the recruit's own default, "Ally".
+  assert.deepEqual(
+    afterFirst.allyNameBytes,
+    nameTiles('Ally'),
+    'expected pc_name_ram slot 1 to hold the seeded default name "Ally"'
   );
 
   assert.deepEqual(

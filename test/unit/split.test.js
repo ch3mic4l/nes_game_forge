@@ -29,6 +29,7 @@ import {
   fontBankSplit
 } from '../../shared/font.js';
 import { SOLID_TILE, PROBE_TILE, probe, probeKind } from '../lib/framebuffer.js';
+import { finishNamingIfOpen } from '../lib/naming.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const SAMPLE = path.join(ROOT, 'sample');
@@ -220,6 +221,7 @@ test('the title bands and the message box draw glyphs while the map above keeps 
   assert.equal(probeKind(nes, 12, 2), 'art', 'two rows below the band it is the map’s art again');
 
   tap(nes, START, 12);
+  finishNamingIfOpen(nes); // hero naming on (phase 5): Start opens the grid
   assert.equal(nes.cpu.mem[GAME_STATE], ST_GAMEPLAY);
 
   // The box: talk to the slime for real, then read the pixels. Probes sit at
@@ -249,6 +251,7 @@ test('an MMC3 battle splits at the box and points at monsters with a sprite', as
   });
   const nes = boot(rom);
   if (nes.cpu.mem[GAME_STATE] === ST_TITLE) tap(nes, START, 12);
+  finishNamingIfOpen(nes); // hero+Join naming on (phase 5): Start/cold boot opens the grid
 
   // March until a wandering monster turns up.
   for (let step = 0; step < 900 && nes.cpu.mem[GAME_STATE] === ST_GAMEPLAY; step++) {
@@ -275,8 +278,16 @@ test('an MMC3 battle splits at the box and points at monsters with a sprite', as
   tap(nes, A, 3);
   assert.equal(nes.cpu.mem[BT_PHASE], BP_TARGET, 'FIGHT should ask who to hit');
   assert.equal(nes.cpu.mem[BT_TGT_VIS], 1);
+  // Parking only ever clears Y ($FF, battle_draw_sprites' own "park the whole
+  // shadow" loop, engine/battleui.asm) -- tile/attr/x survive untouched from
+  // whatever last drew there, harmlessly invisible off-screen. With hero
+  // naming live (phase 5) the naming grid's own cursor also used
+  // SPRITE_ARROW_TILE (spriteReservedRanges' shared reservation) and left a
+  // stale, parked entry carrying that same tile byte, so a parked slot ($FF)
+  // must be skipped rather than trusted as the real, visible cursor.
   let cursor = null;
   for (let i = 0; i < 256; i += 4) {
+    if (nes.cpu.mem[OAM + i] === 0xff) continue;
     if (nes.cpu.mem[OAM + i + 1] === SPRITE_ARROW_TILE) {
       cursor = { y: nes.cpu.mem[OAM + i], x: nes.cpu.mem[OAM + i + 3] };
     }

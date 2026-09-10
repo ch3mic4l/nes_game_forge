@@ -28,7 +28,8 @@ import { loadProject, saveProject } from '../../main/project-io.js';
 import { buildProject } from '../../main/build/pipeline.js';
 import { compileText, opIndex } from '../../main/build/textcompile.js';
 import { parseSymbolFile } from '../../main/build/symbols.js';
-import { FADE_DIRECTIONS, createProject, normalizeProject, projectUsesFade } from '../../shared/project.js';
+import { FADE_DIRECTIONS, createProject, normalizeProject, projectUsesFade, projectWithoutHeroNaming } from '../../shared/project.js';
+import { finishNamingIfOpen } from '../lib/naming.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const SAMPLE = path.join(ROOT, 'sample');
@@ -89,6 +90,11 @@ function boot(romPath, frames = 30) {
     nes.buttonUp(1, START);
     for (let i = 0; i < 12; i++) nes.frame();
   }
+  // sample/sample-rpg now have naming on (docs/design-name-entry.md v16.4
+  // §17 item 5); Start (or a titleless boot) lands in the grid, and
+  // finishNamingIfOpen is a no-op when naming is off, so this is safe
+  // unconditionally.
+  finishNamingIfOpen(nes);
   return nes;
 }
 
@@ -576,6 +582,11 @@ test('the NMI leaves PPUADDR outside palette space right after a Fade packet dra
     emulator.setButton(BUTTON.START, false);
     for (let i = 0; i < 12; i++) nes.frame();
   }
+  // sample now has hero naming on (docs/design-name-entry.md v16.4 §17 item
+  // 5); Emulator.setButton is a thin wrapper over nes.buttonDown/Up, so
+  // finishNamingIfOpen (which drives the raw nes instance directly) works
+  // identically here.
+  finishNamingIfOpen(nes);
   emulator.setButton(BUTTON.B, true);
   nes.frame();
   emulator.setButton(BUTTON.B, false);
@@ -685,6 +696,7 @@ test('game over restores the palette, and Continue restores it in isolation from
   nes2.loadROM(new Uint8Array(fs.readFileSync(built2.romPath)));
   for (let i = 0; i < 60; i++) nes2.frame();
   tap(nes2, START, 12); // into the game, past the title
+  finishNamingIfOpen(nes2); // hero+Join naming on (phase 5): Start opens the grid
   assert.equal(nes2.cpu.mem[GAME_STATE], ST_GAMEPLAY);
   // Walk onto the saver at (64,96), the same shape save.test.js's own
   // walkTo/touchSaver use -- all four directions, since the saver sits both
@@ -758,7 +770,12 @@ test('boot straight into a Fade out, then a Warp, stays dark -- cold boot must n
 }, async (t) => {
   const dir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'forge-fade-coldboot-'));
   t.after(() => fs.promises.rm(dir, { recursive: true, force: true }));
-  const project = await loadProject(SAMPLE);
+  // Hero naming off explicitly (phase 5): SAMPLE now carries hero naming for
+  // real, which -- combined with the titleless setup below -- would cold-boot
+  // straight into the naming grid instead of gameplay, unrelated to what
+  // this test is actually about (fade_reload across reset's own manual
+  // first draw).
+  const project = projectWithoutHeroNaming(await loadProject(SAMPLE));
   // Titleless, deliberately: if a title screen were present, pressing Start
   // to leave it would run start_game -> init_session -> redraw_screen (the
   // "fixes cold boot too, redundantly but harmlessly" path the design doc

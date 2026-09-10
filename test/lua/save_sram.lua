@@ -122,6 +122,23 @@ local PC_LEVEL    = 0x3A8
 local PC_IN_PARTY = 0x3B4
 local PC_SPELLS   = 0x3B8
 
+-- The naming grid, from engine/constants.asm and test/lib/naming.js's own
+-- shared shape -- rpg-mmc1's own Iris (member 1) is renamable, recruited by
+-- the saver's own `join member 1` moments before the Save (docs/design-
+-- name-entry.md v16.4 §1 item 9, §14).
+local BOX_STATE      = 0x40
+local BOX_AFTER      = 0x7B
+local BOX_ROW        = 0x41
+local BOX_TEXT_ROWS  = 4
+local BOX_CLOSED     = 0
+local BOX_OPENING    = 1
+local BOX_NAMEENTRY  = 9
+local NM_LEN         = 0x059A
+local NM_ROW         = 0x059B
+local NM_COL         = 0x059C
+local PC_NAME_RAM    = 0x0571
+local NAME_LEN       = 10
+
 local ST_GAMEPLAY = 0
 local ST_DIALOG   = 2
 local ST_TITLE    = 3
@@ -210,6 +227,7 @@ local EXIT_NO_ALIGN_TO_SAVER             = 11
 local EXIT_NO_CROSS_BACK                 = 12
 local EXIT_WRAM_LOST_AFTER_RESTORE       = 13 -- the SRAM marker did not survive continue_game's own BE_RESTORE bank switch
 local EXIT_DETECTOR_AMBIGUOUS            = 14 -- pc_level slot 0 was neither 0 (action) nor 1 (RPG) at boot
+local EXIT_NAMING_NEVER_READY             = 15 -- the rpg-mmc1 fixture's own Join-naming grid (Iris) never reached the state a bounded wait expected next
 local EXIT_RUN1_OK                       = 1 -- not a failure; see header comment
 
 local frame = 0
@@ -329,8 +347,18 @@ local function onFrame()
         pcMpMax0 = read(PC_MP_MAX + 0),
         pcMpMax1 = read(PC_MP_MAX + 1),
         pcSpells0 = read(PC_SPELLS + 0),
-        pcSpells1 = read(PC_SPELLS + 1)
+        pcSpells1 = read(PC_SPELLS + 1),
+        -- The name actually TYPED over Iris's seeded default ("I", the
+        -- naming session above cleared "Iris" with DEL and typed a real
+        -- letter before confirming END) -- byte-exact, not merely "some
+        -- name", so a restore that threw the typed name away and re-seeded
+        -- the compiled default instead cannot pass this. Read regardless of
+        -- isRpg; only checked when isRpg is true, below.
+        pcName1 = {}
       }
+      for i = 0, NAME_LEN - 1 do
+        restored.pcName1[i] = read(PC_NAME_RAM + NAME_LEN + i) -- slot 1 (Iris)
+      end
       log("run 2: Continue loaded a save")
       phase = 6
       return
@@ -409,16 +437,204 @@ local function onFrame()
     -- board is the scanline-IRQ one and a message box is what puts the font
     -- split to work during real gameplay rather than only on the title. Say
     -- suspends the script, so the Save behind it does not land until the box
-    -- is dismissed. The MMC1 fixture has no Say and never enters this phase;
-    -- the script keys off the state it observes rather than off which board
-    -- it was handed, so neither fixture needs the other's shape.
+    -- is dismissed. The MMC1 fixture has no Say and never enters this phase
+    -- unless it is the RPG one -- rpg-mmc1's own `join member 1` (Iris, who
+    -- opts into naming for real, docs/design-name-entry.md v16.4 §1 item 9)
+    -- ALSO suspends the script and ALSO leaves game_state at ST_DIALOG (a
+    -- named Join's own session runs entirely inside ST_DIALOG, never
+    -- ST_NAMEENTRY -- test/lib/naming.js's own shared shape). box_state is
+    -- what actually tells the two interruptions apart, but box_begin starts
+    -- every box at BOX_OPENING regardless of what kind it is, so phase 3.33
+    -- below waits for it to settle into a real, distinguishable state before
+    -- classifying it. The script keys off the state it observes rather than
+    -- off which board it was handed, so neither fixture needs the other's
+    -- shape.
     if read(GAME_STATE) == ST_DIALOG then
       held = {}
+      mark = frame
+      phase = 3.33
+      return
+    end
+    if frame - mark > 300 then fail(EXIT_SAVE_NEVER_WROTE, "walked east but the save never landed"); return end
+    return
+  end
+
+  -- 3c-classify: box_state starts at BOX_OPENING regardless of what kind of
+  -- box this is -- wait for it to settle before deciding whether this is
+  -- Iris's own naming grid (BOX_NAMEENTRY) or an ordinary Say (MMC3).
+  if phase == 3.33 then
+    local box = read(BOX_STATE)
+    if box == BOX_NAMEENTRY then
+      mark = frame
+      phase = 3.35
+      return
+    end
+    if box ~= BOX_CLOSED and box ~= BOX_OPENING then
       mark = frame
       phase = 3.4
       return
     end
-    if frame - mark > 300 then fail(EXIT_SAVE_NEVER_WROTE, "walked east but the save never landed"); return end
+    if frame - mark > 120 then fail(EXIT_SAVE_NEVER_WROTE, "the box never left BOX_OPENING to be classified"); return end
+    return
+  end
+
+  -- 3c-naming-1: wait for the grid to finish raising -- the same two-part
+  -- readiness gate test/lib/naming.js's own waitForNamingReady uses
+  -- (box_state == BOX_NAMEENTRY and box_row has reached BOX_TEXT_ROWS).
+  if phase == 3.35 then
+    if read(BOX_STATE) == BOX_NAMEENTRY and read(BOX_ROW) >= BOX_TEXT_ROWS then
+      log("Iris's naming grid finished raising")
+      mark = frame
+      phase = 3.36
+      return
+    end
+    if frame - mark > 120 then fail(EXIT_NAMING_NEVER_READY, "Iris's naming grid never finished raising"); return end
+    return
+  end
+
+  -- §14's phase 3.32 (this file's own phases 3.36/3.361/3.362): navigate to
+  -- DEL (row 2, col 0) and clear the seeded default ("Iris") with it -- a
+  -- restore that threw the saved name away and re-seeded the compiled
+  -- default instead would pass a test that left the default untouched, so
+  -- this types a real name rather than confirming what was already there.
+  -- DOWN's own ring visits
+  -- every row in the same forward order regardless of where it starts
+  -- (0 -> 1 -> 2 -> 0), so pulsing it from the grid's own default row (0,
+  -- upper-case) reaches row 2, the controls row -- test/lib/naming.js's own
+  -- gotoCell idiom. Pulsed rather than held, the same reason phase 3.4's own
+  -- A pulse already is: the engine advances a selection on a fresh press,
+  -- and a held button is one press, not a repeat.
+  if phase == 3.36 then
+    if read(NM_ROW) == 2 then
+      held = {}
+      mark = frame
+      phase = 3.361
+      return
+    end
+    if frame - mark > 300 then fail(EXIT_NAMING_NEVER_READY, "Iris's naming grid cursor never reached the controls row (DEL)"); return end
+    local cycle = (frame - mark) % 12
+    held = cycle < 4 and { down = true } or {}
+    return
+  end
+  if phase == 3.361 then
+    if read(NM_COL) == 0 then
+      held = {}
+      log("Iris's naming grid cursor reached DEL")
+      mark = frame
+      phase = 3.362
+      return
+    end
+    if frame - mark > 600 then fail(EXIT_NAMING_NEVER_READY, "Iris's naming grid cursor never reached DEL"); return end
+    local cycle = (frame - mark) % 12
+    held = cycle < 4 and { right = true } or {}
+    return
+  end
+  -- DEL, held down, one letter per press, until nm_len reaches 0 --
+  -- test/lib/naming.js's own clearName idiom, bounded at NAME_LEN presses
+  -- (the seeded default can hold at most that many letters).
+  if phase == 3.362 then
+    if read(NM_LEN) == 0 then
+      held = {}
+      log("Iris's seeded default name cleared")
+      mark = frame
+      phase = 3.37
+      return
+    end
+    if frame - mark > NAME_LEN * 12 + 60 then fail(EXIT_NAMING_NEVER_READY, "Iris's seeded default name never fully cleared"); return end
+    local cycle = (frame - mark) % 12
+    held = cycle < 4 and { a = true } or {}
+    return
+  end
+
+  -- §14's phase 3.33 (this file's own phases 3.37-3.372): navigate to 'I'
+  -- (row 0, upper-case, column 8 -- 'I' - 'A') and type it, the same
+  -- typeNameAndFinish idiom test/lib/naming.js uses for a real typed name
+  -- rather than the seeded default.
+  if phase == 3.37 then
+    if read(NM_ROW) == 0 then
+      held = {}
+      mark = frame
+      phase = 3.371
+      return
+    end
+    if frame - mark > 300 then fail(EXIT_NAMING_NEVER_READY, "Iris's naming grid cursor never reached the upper-case row"); return end
+    local cycle = (frame - mark) % 12
+    held = cycle < 4 and { down = true } or {}
+    return
+  end
+  if phase == 3.371 then
+    if read(NM_COL) == 8 then
+      held = {}
+      log("Iris's naming grid cursor reached 'I'")
+      mark = frame
+      phase = 3.372
+      return
+    end
+    if frame - mark > 600 then fail(EXIT_NAMING_NEVER_READY, "Iris's naming grid cursor never reached 'I'"); return end
+    local cycle = (frame - mark) % 12
+    held = cycle < 4 and { right = true } or {}
+    return
+  end
+  -- confirm 'I' -- one press, since the
+  -- grid commits the letter under the cursor and does not advance the
+  -- cursor itself (test/lib/naming.js's own typeNameAndFinish re-navigates
+  -- for every subsequent letter; this name is a single letter).
+  if phase == 3.372 then
+    if read(NM_LEN) == 1 then
+      held = {}
+      log("'I' typed")
+      mark = frame
+      phase = 3.38
+      return
+    end
+    if frame - mark > 300 then fail(EXIT_NAMING_NEVER_READY, "'I' was never typed"); return end
+    local cycle = (frame - mark) % 12
+    held = cycle < 4 and { a = true } or {}
+    return
+  end
+
+  -- §14's phase 3.34 (this file's own phases 3.38/3.381/3.39): navigate to
+  -- END (row 2, col 1) and confirm it.
+  if phase == 3.38 then
+    if read(NM_ROW) == 2 then
+      held = {}
+      mark = frame
+      phase = 3.381
+      return
+    end
+    if frame - mark > 300 then fail(EXIT_NAMING_NEVER_READY, "Iris's naming grid cursor never returned to the controls row"); return end
+    local cycle = (frame - mark) % 12
+    held = cycle < 4 and { down = true } or {}
+    return
+  end
+  if phase == 3.381 then
+    if read(NM_COL) == 1 then
+      held = {}
+      log("Iris's naming grid cursor reached END")
+      mark = frame
+      phase = 3.39
+      return
+    end
+    if frame - mark > 600 then fail(EXIT_NAMING_NEVER_READY, "Iris's naming grid cursor never reached END"); return end
+    local cycle = (frame - mark) % 12
+    held = cycle < 4 and { right = true } or {}
+    return
+  end
+
+  -- 3c-naming-4: confirm END with the real typed name ("I") in place of the
+  -- seeded default, then wait for the Save that follows Join in the same
+  -- page to land -- the identical completion signal phase 3.3/3.4 already
+  -- poll for.
+  if phase == 3.39 then
+    if saveWritten() then
+      held = {}
+      mark = frame
+      phase = 4
+      return
+    end
+    if frame - mark > 300 then fail(EXIT_NAMING_NEVER_READY, "Iris's naming session never ended after confirming END"); return end
+    local cycle = (frame - mark) % 12
+    held = cycle < 4 and { a = true } or {}
     return
   end
 
@@ -428,6 +644,20 @@ local function onFrame()
   -- the player is still standing exactly where contact stopped it, which is
   -- why the position this saves matches the board that never opened a box.
   if phase == 3.4 then
+    -- box_after names the phase box_begin was last called FOR, set before
+    -- box_state itself is decided (engine/text.asm's own box_begin) -- so a
+    -- Join opening its naming grid immediately behind this Say's own close
+    -- shows up here first, one frame ahead of box_state settling into
+    -- BOX_NAMEENTRY. None of this file's own fixtures chain a Join directly
+    -- behind a Say this way today (Iris's own Join is the page's only box),
+    -- but §14 requires the interception so a future one hands off to the
+    -- naming phases instead of pulsing A into a grid it does not expect.
+    if read(BOX_AFTER) == BOX_NAMEENTRY then
+      held = {}
+      mark = frame
+      phase = 3.35
+      return
+    end
     if saveWritten() then
       held = {}
       mark = frame
@@ -615,6 +845,21 @@ local function onFrame()
       end
       if restored.pcSpells1 ~= RPG_SPELLS_1 then
         fail(EXIT_RESTORED_STATE_WRONG, "pc_spells slot 1 restored as " .. restored.pcSpells1); return
+      end
+      -- The name typed over Iris's seeded default, byte-exact: "I" alone
+      -- (0xC9 -- shared/font.js's charToTile('I'), confirmed directly
+      -- rather than trusted) then blank-padded (0xA0, charToTile(' ')) to
+      -- NAME_LEN -- a restore that discarded the typed name and re-seeded
+      -- the compiled default ("Iris") would fail this byte-for-byte.
+      local expectedName1 = { 0xC9, 0xA0, 0xA0, 0xA0, 0xA0, 0xA0, 0xA0, 0xA0, 0xA0, 0xA0 }
+      for i = 0, NAME_LEN - 1 do
+        if restored.pcName1[i] ~= expectedName1[i + 1] then
+          fail(
+            EXIT_RESTORED_STATE_WRONG,
+            string.format("pc_name_ram slot 1 byte %d restored as 0x%02X, expected 0x%02X", i, restored.pcName1[i], expectedName1[i + 1])
+          )
+          return
+        end
       end
     end
     log("run 2 complete: every saved field came back")

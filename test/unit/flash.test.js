@@ -28,6 +28,7 @@ import { parseSymbolFile } from '../../main/build/symbols.js';
 import { parseEquates } from '../../shared/enginesyms.js';
 import { applyBattleTest } from '../../renderer/emulator/battletest.js';
 import { createProject, normalizeProject, projectUsesFlash } from '../../shared/project.js';
+import { finishNamingIfOpen } from '../lib/naming.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const SAMPLE = path.join(ROOT, 'sample');
@@ -85,6 +86,11 @@ function boot(romPath, frames = 30) {
     nes.buttonUp(1, START);
     for (let i = 0; i < 12; i++) nes.frame();
   }
+  // sample/sample-rpg now have naming on (docs/design-name-entry.md v16.4
+  // §17 item 5); Start (or a titleless boot) lands in the grid, and
+  // finishNamingIfOpen is a no-op when naming is off, so this is safe
+  // unconditionally.
+  finishNamingIfOpen(nes);
   return nes;
 }
 
@@ -298,6 +304,7 @@ test('Flash restores after exactly six NMIs, and the confirm tick queues nothing
     emulator.setButton(BUTTON.START, false);
     for (let i = 0; i < 12; i++) emulator.nes.frame();
   }
+  finishNamingIfOpen(emulator.nes); // naming on (phase 5): Start/cold boot opens the grid
   emulator.setButton(BUTTON.B, true);
   emulator.nes.frame();
   emulator.setButton(BUTTON.B, false); // matching tap(nes, B, 0) exactly -- no extra frames
@@ -531,6 +538,7 @@ test('entering a scripted battle mid-flash restores the palette via draw_battle_
       emulator.setButton(BUTTON.START, false);
       for (let i = 0; i < 12; i++) emulator.nes.frame();
     }
+    finishNamingIfOpen(emulator.nes); // naming on (phase 5): Start/cold boot opens the grid
     emulator.setButton(BUTTON.B, true);
     emulator.nes.frame();
     emulator.setButton(BUTTON.B, false);
@@ -692,6 +700,7 @@ test('a Say and a Flash edge sharing one frame both apply correctly, and the que
     emulator.setButton(BUTTON.START, false);
     for (let i = 0; i < 12; i++) emulator.nes.frame();
   }
+  finishNamingIfOpen(emulator.nes); // naming on (phase 5): Start/cold boot opens the grid
   emulator.setButton(BUTTON.B, true);
   emulator.nes.frame();
   emulator.setButton(BUTTON.B, false);
@@ -810,6 +819,7 @@ test('the NMI leaves PPUADDR outside palette space right after a Flash packet dr
     emulator.setButton(BUTTON.START, false);
     for (let i = 0; i < 12; i++) nes.frame();
   }
+  finishNamingIfOpen(nes); // naming on (phase 5): Start/cold boot opens the grid
   emulator.setButton(BUTTON.B, true);
   nes.frame();
   emulator.setButton(BUTTON.B, false);
@@ -908,6 +918,7 @@ test('a coincident Flash and Fade edge: Flash queues first, Fade wins the pixel'
     emulator.setButton(BUTTON.START, false);
     for (let i = 0; i < 12; i++) emulator.nes.frame();
   }
+  finishNamingIfOpen(emulator.nes); // naming on (phase 5): Start/cold boot opens the grid
   emulator.setButton(BUTTON.B, true);
   emulator.nes.frame();
   emulator.setButton(BUTTON.B, false);

@@ -203,6 +203,10 @@ function screenFromArt(rows) {
 // --- assemble --------------------------------------------------------------
 
 const project = createProject('Sample Quest');
+// Hero naming on, so this fixture exercises the naming grid and the Say token
+// (docs/design-name-entry.md v16.4 §17 item 5) rather than shipping the
+// feature present but universally off.
+project.party[0].renamable = true;
 
 const treeTiles = split16(TREE);
 const background = project.tilesets[0].background.tiles;
@@ -344,7 +348,7 @@ screens[0].entities = [
     y: 160,
     props: {
       dialogue:
-        'A slime blocks the path, wobbling.\n\nIt does not seem to mind you at all, ' +
+        'A slime blocks the path, wobbling.\n\nIt does not seem to mind {name} at all, ' +
         'so you step around it and carry on.'
     }
   }

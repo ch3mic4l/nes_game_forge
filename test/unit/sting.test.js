@@ -26,6 +26,7 @@ import { compileText, opIndex, OP_STING } from '../../main/build/textcompile.js'
 import { createProject, projectUsesSting } from '../../shared/project.js';
 import { songFrameLength } from '../../shared/audio.js';
 import { parseEquates } from '../../shared/enginesyms.js';
+import { finishNamingIfOpen } from '../lib/naming.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const SAMPLE = path.join(ROOT, 'sample');
@@ -62,6 +63,10 @@ function boot(romPath, frames = 30) {
     nes.buttonUp(1, 3);
     for (let i = 0; i < 12; i++) nes.frame();
   }
+  // sample now has hero naming on (docs/design-name-entry.md v16.4 §17 item
+  // 5); Start lands in the grid, and finishNamingIfOpen is a no-op when
+  // naming is off, so this is safe unconditionally.
+  finishNamingIfOpen(nes);
   return nes;
 }
 
@@ -698,6 +703,12 @@ test('sting_left keeps counting down through a real RPG battle, and a mid-battle
   const dir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'forge-sting-battle-'));
   t.after(() => fs.promises.rm(dir, { recursive: true, force: true }));
   const project = await loadProject(SAMPLE_RPG);
+  // Naming off explicitly (phase 5): sample-rpg is titleless and now opts
+  // hero+Join naming in for real, which would otherwise cold-boot into the
+  // naming grid and freeze the world before the 'enter' trigger below ever
+  // fires -- unrelated to what this test is actually about.
+  project.party[0].renamable = false;
+  if (project.party[1]) project.party[1].renamable = false;
   project.songs[0] = fieldSong(); // the same 240-frame held note as the action-side fixtures
   // A dedicated, longer sting (12 rows -- 72 frames): the fixture's own contact is a handful of
   // frames away (see the relocated Slime below), and the battle's own intro/menu phase, once

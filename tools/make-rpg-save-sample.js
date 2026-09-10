@@ -280,9 +280,13 @@ project.variables = ['Save marker'];
 // pc_spells values differ -- see docs/design-rpg-save-fixture.md for the
 // exact numbers and where they come from.
 project.spells = [createSpell(0, 'Spark')];
+// Iris alone opts into naming (docs/design-name-entry.md v16.4 §1 item 9,
+// §14) -- Rian stays off, so this fixture's boot is unchanged and
+// save_sram.lua's phases 1-3.3 keep their meaning. The Join command itself
+// (:230 above) stays { op: 'join', member: 1 }, unmodified.
 project.party = [
   { ...createPartyMember(0, 'Rian'), spells: [{ spellId: 0, level: 1 }] },
-  createPartyMember(1, 'Iris')
+  { ...createPartyMember(1, 'Iris'), renamable: true }
 ];
 
 project.project.startMap = 0;

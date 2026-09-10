@@ -37,6 +37,7 @@ import {
 import { sfxFrameLength, normalizeSfx, NO_SFX, SFX_MAX_STEPS } from '../../shared/audio.js';
 import { SfxReplayer } from '../../renderer/forges/sound/replayer.js';
 import { parseEquates } from '../../shared/enginesyms.js';
+import { finishNamingIfOpen } from '../lib/naming.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const SAMPLE = path.join(ROOT, 'sample');
@@ -67,6 +68,10 @@ function boot(romPath, frames = 30) {
     nes.buttonUp(1, 3);
     for (let i = 0; i < 12; i++) nes.frame();
   }
+  // sample now has hero naming on (docs/design-name-entry.md v16.4 §17 item
+  // 5); Start lands in the grid, and finishNamingIfOpen is a no-op when
+  // naming is off, so this is safe unconditionally.
+  finishNamingIfOpen(nes);
   return nes;
 }
 
@@ -1046,6 +1051,11 @@ test('SFX ending first hands the channel back to a still-audible Sting on the ex
   const dir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'forge-sfx-sting-handback-'));
   t.after(() => fs.promises.rm(dir, { recursive: true, force: true }));
   const project = await loadProject(SAMPLE);
+  // Naming off explicitly (phase 5, docs/design-name-entry.md v16.4 §17
+  // item 5): SAMPLE now carries hero naming for real, whose own kernel-lo
+  // cost is otherwise enough to tip capacity over once Sting and/or SFX
+  // are also live -- unrelated to what this file tests.
+  project.party[0].renamable = false;
   // A long sting (42 frames) with real, held content on the noise channel --
   // unlike sting.test.js's own stingSong() (pulse1 only), this one needs an
   // audible noise part for the hand-back to retrigger something verifiable.
@@ -1130,6 +1140,11 @@ test('a Sting resolving into Silence while an SFX is still active leaves the SFX
   const dir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'forge-sfx-sting-silence-'));
   t.after(() => fs.promises.rm(dir, { recursive: true, force: true }));
   const project = await loadProject(SAMPLE);
+  // Naming off explicitly (phase 5, docs/design-name-entry.md v16.4 §17
+  // item 5): SAMPLE now carries hero naming for real, whose own kernel-lo
+  // cost is otherwise enough to tip capacity over once Sting and/or SFX
+  // are also live -- unrelated to what this file tests.
+  project.party[0].renamable = false;
   project.maps[0].songId = null; // the field itself is Silence, so the sting restores into it
   // A short sting (3 frames) so it resolves well inside effect A's own
   // 13-frame run, specifically inside its second step (note 12, frames 6-10
@@ -1255,6 +1270,11 @@ test('the exact co-end, sting-restores-into-Silence sub-case: SFX\'s own hand-ba
   const dir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'forge-sfx-coend-silence-'));
   t.after(() => fs.promises.rm(dir, { recursive: true, force: true }));
   const project = await loadProject(SAMPLE);
+  // Naming off explicitly (phase 5, docs/design-name-entry.md v16.4 §17
+  // item 5): SAMPLE now carries hero naming for real, whose own kernel-lo
+  // cost is otherwise enough to tip capacity over once Sting and/or SFX
+  // are also live -- unrelated to what this file tests.
+  project.party[0].renamable = false;
   project.maps[0].songId = null; // the field itself is Silence -- the sting restores into it
   project.songs[1] = coEndSting();
   project.sfx = [effectB()]; // COEND_SFX_FRAMES (4) matches EFFECT_B_FRAMES exactly
@@ -1308,6 +1328,11 @@ test('the exact co-end, sting-restores-into-an-audible-song sub-case: no truncat
   const dir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'forge-sfx-coend-audible-'));
   t.after(() => fs.promises.rm(dir, { recursive: true, force: true }));
   const project = await loadProject(SAMPLE);
+  // Naming off explicitly (phase 5, docs/design-name-entry.md v16.4 §17
+  // item 5): SAMPLE now carries hero naming for real, whose own kernel-lo
+  // cost is otherwise enough to tip capacity over once Sting and/or SFX
+  // are also live -- unrelated to what this file tests.
+  project.party[0].renamable = false;
   project.songs[0] = fieldSong(); // audible -- the sting restores into this, not Silence
   project.songs[1] = coEndSting();
   project.sfx = [effectB()];
@@ -1366,6 +1391,11 @@ test('a project with LIMITS.sfx (255) effects builds cleanly, and no emitted lin
   const dir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'forge-sfx-manyeffects-'));
   t.after(() => fs.promises.rm(dir, { recursive: true, force: true }));
   const project = await loadProject(SAMPLE);
+  // Naming off explicitly (phase 5, docs/design-name-entry.md v16.4 §17
+  // item 5): SAMPLE now carries hero naming for real, whose own kernel-lo
+  // cost is otherwise enough to tip capacity over once Sting and/or SFX
+  // are also live -- unrelated to what this file tests.
+  project.party[0].renamable = false;
   project.sfx = Array.from({ length: LIMITS.sfx }, (_, index) => ({
     name: `E${index}`,
     volume: 10,

@@ -254,7 +254,7 @@
           "x": 64,
           "y": 160,
           "props": {
-            "dialogue": "A slime blocks the path, wobbling.\n\nIt does not seem to mind you at all, so you step around it and carry on.",
+            "dialogue": "A slime blocks the path, wobbling.\n\nIt does not seem to mind {name} at all, so you step around it and carry on.",
             "name": "",
             "toScreen": 0,
             "toX": 112,

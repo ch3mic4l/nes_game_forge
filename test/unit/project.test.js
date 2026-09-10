@@ -120,6 +120,7 @@ import { spawnSync } from 'node:child_process';
 import NES from '../../renderer/emulator/core/nes.js';
 import { saveIdentity } from '../../shared/save.js';
 import { decodeCommand, decodeBody, decodeEvent } from '../lib/eventdecoder.js';
+import { finishNamingIfOpen } from '../lib/naming.js';
 import { tokenizer } from 'acorn';
 
 const hasNesasm = spawnSync('nesasm', [], { stdio: 'ignore' }).error?.code !== 'ENOENT';
@@ -6627,6 +6628,12 @@ test(
     const dirSaveA = await fs.mkdtemp(path.join(os.tmpdir(), 'forge-reorder-save-'));
     t.after(() => fs.rm(dirSaveA, { recursive: true, force: true }));
     const saveEnabledProject = await loadProject(SAMPLE);
+    // Hero naming off explicitly (phase 5, docs/design-name-entry.md v16.4
+    // §17 item 5): SAMPLE now carries hero naming for real, whose own
+    // kernel-lo cost is otherwise enough to tip MMC1's capacity over once a
+    // live Save is added -- unrelated to what this test is actually about
+    // (saveCompatToken's own reorder behavior).
+    saveEnabledProject.party[0].renamable = false;
     saveEnabledProject.cartridge.mapper = 1; // MMC1 -- save-capable; sample/ ships on NROM
     saveEnabledProject.project.titleMap = 1; // sample/'s own Title map -- Save needs one
     saveEnabledProject.project.titleScreen = 0;
@@ -6873,6 +6880,7 @@ test(
     const { project, romPath: romPath1 } = await buildReorderSaveable(t);
     const nes = reorderBoot(romPath1);
     reorderTap(nes, REORDER_START);
+    finishNamingIfOpen(nes); // Rian ships renamable (phase 5); unrelated to this test's own reorder/save interaction
     reorderTouchSaver(nes, 64, 96);
     assert.equal(
       nes.cpu.mem[REORDER_SRAM_BASE + REORDER_SAVE_MARKER_OFFSET],
@@ -6941,6 +6949,7 @@ test(
     const built1 = await buildProject({ dir: dir1, project, log: () => {} });
     const nes = reorderBoot(built1.romPath);
     reorderTap(nes, REORDER_START);
+    finishNamingIfOpen(nes); // Rian ships renamable (phase 5); unrelated to this test's own reorder/save interaction
     reorderTouchSaver(nes, 64, 96);
     const foreignBattery = nes.cpu.mem.slice(REORDER_SRAM_BASE, REORDER_SRAM_BASE + REORDER_SRAM_SIZE);
 

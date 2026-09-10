@@ -55,6 +55,25 @@ const scenario = (dir, sampleDir, sampleRpgDir) => `
     throw new Error('timed out waiting for ' + what);
   };
 
+  /**
+   * Hold "button" on a *live* player's own Emulator long enough to guarantee
+   * the press is actually sampled by inputPolled -- anchored to the
+   * emulator's own frame counter (Emulator.frames, renderer/emulator/
+   * runcontrol.js), never to wall-clock time. The live run loop paces itself
+   * by requestAnimationFrame (renderer/emulator/player.js), and a throttled
+   * or unfocused window can deliver rAF callbacks far slower than 60fps -- a
+   * fixed wait(200) can elapse with zero real frames advanced, in which case
+   * the press is never seen at all. "site" names the caller in every timeout
+   * message this produces, so a future failure says where it fired.
+   */
+  const pressFramePaced = async (emulator, button, site) => {
+    const at = emulator.frames;
+    emulator.setButton(button, true);
+    await until(site + ': press never advanced 2 real frames', () => emulator.frames >= at + 2, 5000);
+    emulator.setButton(button, false);
+    await until(site + ': release never advanced 16 real frames', () => emulator.frames >= at + 16, 5000);
+  };
+
   const created = await window.forge.project.create({ dir: ${JSON.stringify(dir)}, name: 'Smoke Game' });
   if (!created.ok) throw new Error('create: ' + created.error);
   step('create project', created.value.project.project.name);
@@ -3935,6 +3954,39 @@ const scenario = (dir, sampleDir, sampleRpgDir) => `
   emu.runFrame();
   emu.setButton(BUTTON.START, false);
   for (let i = 0; i < 12; i++) emu.runFrame();
+  // sample now has hero naming on (docs/design-name-entry.md v16.4 §17 item
+  // 5), so Start opens the naming grid (game_state 6, ST_NAMEENTRY) instead
+  // of landing straight in gameplay -- drive it to END with the seeded
+  // default name, the finishNamingIfOpen sequence (test/lib/naming.js) done
+  // by hand here since this scenario runs in the browser, not node:test.
+  if (emu.peek(0x0025) === 6) {
+    let raised = false;
+    for (let i = 0; i < 40 && !raised; i++) {
+      emu.runFrame();
+      if (emu.peek(0x0040) === 9 && emu.peek(0x0041) >= 4) raised = true;
+    }
+    if (!raised) throw new Error('the naming grid never finished raising');
+    for (let i = 0; i < 3 && emu.peek(0x059b) !== 2; i++) {
+      emu.setButton(BUTTON.DOWN, true);
+      emu.runFrame();
+      emu.setButton(BUTTON.DOWN, false);
+      for (let f = 0; f < 14; f++) emu.runFrame();
+    }
+    if (emu.peek(0x059b) !== 2) throw new Error('the naming grid cursor never reached the controls row');
+    for (let i = 0; i < 26 && emu.peek(0x059c) !== 1; i++) {
+      emu.setButton(BUTTON.RIGHT, true);
+      emu.runFrame();
+      emu.setButton(BUTTON.RIGHT, false);
+      for (let f = 0; f < 14; f++) emu.runFrame();
+    }
+    if (emu.peek(0x059c) !== 1) throw new Error('the naming grid cursor never reached END');
+    emu.setButton(BUTTON.A, true);
+    emu.runFrame();
+    emu.setButton(BUTTON.A, false);
+    for (let i = 0; i < 20 && emu.peek(0x0025) === 6; i++) emu.runFrame();
+    if (emu.peek(0x0025) === 6) throw new Error('the naming session never ended');
+    step('naming grid', 'hero naming opened at Start, END finished it with the seeded default name');
+  }
   if (emu.peek(0x0025) !== 0) throw new Error('Start did not get past the title screen');
   step('title screen', 'booted into it, Start began the game');
 
@@ -5934,9 +5986,12 @@ const scenario = (dir, sampleDir, sampleRpgDir) => `
   await wait(300);
   // The sample is open and has a title screen, so the title row is shown too:
   // four states of four buttons. Start on the title is the engine's hardwired
-  // backstop, so its dropdown is the one that must be disabled.
+  // backstop, so its dropdown is the one that must be disabled. Hero naming
+  // is on for real too (docs/design-name-entry.md v16.4 §17 item 5), which
+  // adds a fifth, nameentry row -- appended after title, INPUT_STATES' own
+  // order (shared/project.js), so it does not disturb any earlier index.
   const selects = document.querySelectorAll('#stage select');
-  if (selects.length !== 16) throw new Error('expected 16 button dropdowns (4 states x 4), saw ' + selects.length);
+  if (selects.length !== 20) throw new Error('expected 20 button dropdowns (5 states x 4), saw ' + selects.length);
   if (!selects[15].disabled) throw new Error('Start on the title row should be locked');
   const beforeBinding = store.project.input.states.gameplay.A;
   selects[0].value = 'dash';
@@ -5946,7 +6001,7 @@ const scenario = (dir, sampleDir, sampleRpgDir) => `
   store.undo();
   await wait(150);
   if (store.project.input.states.gameplay.A !== beforeBinding) throw new Error('undo did not restore the binding');
-  step('controller forge', '16 bindings incl. the title row, rebind + undo work');
+  step('controller forge', '20 bindings incl. the title and nameentry rows, rebind + undo work');
 
   // --- Tutorial Forge ----------------------------------------------------
   window.__app.goTo('tutorial');
@@ -6811,8 +6866,14 @@ const scenario = (dir, sampleDir, sampleRpgDir) => `
     rpgStore.commit('smoke: seed a three-member party with two joins', (project) => {
       project.party = [
         project.party[0],
-        { ...project.party[0], id: 1, name: 'Iris', startsInParty: false },
-        { ...project.party[0], id: 2, name: 'Doc', startsInParty: false }
+        // renamable: false explicit -- these two are spread copies of
+        // party[0] (Rian), which now carries renamable: true for real
+        // (docs/design-name-entry.md v16.4 §17 item 5); the naming-specific
+        // sub-block further down seeds its own baseline for Iris, and the
+        // "seed a real naming candidate" commit later in this same block
+        // seeds Doc's, so neither should inherit Rian's flag by accident.
+        { ...project.party[0], id: 1, name: 'Iris', startsInParty: false, renamable: false },
+        { ...project.party[0], id: 2, name: 'Doc', startsInParty: false, renamable: false }
       ];
       project.maps[0].screens[0].entities.push(
         {
@@ -7061,6 +7122,13 @@ const scenario = (dir, sampleDir, sampleRpgDir) => `
       // through one store.commit per click and the checkbox still shows
       // checked after the re-render that click triggers -- then toggled back
       // off, restoring the baseline for the sub-block after this one.
+      //
+      // sample-rpg now opts Rian's own renamable in for real (docs/design-
+      // name-entry.md v16.4 §17 item 5), so the party-replacement commit
+      // above explicitly sets renamable: false on this synthesized Iris
+      // (and Doc) rather than inheriting it from the party[0] spread --
+      // otherwise the first click below would toggle a true baseline to
+      // false and every assertion that follows would read backwards.
       {
         const characterSelect = document.querySelector('#stage select');
         if (!characterSelect) throw new Error('Character Forge has no character list select');
@@ -8522,6 +8590,48 @@ const scenario = (dir, sampleDir, sampleRpgDir) => `
   // proven empirically for this exact build too, not assumed from the
   // action sample alone: player_hp reads $FF (an old "!== 0" pass) for
   // 16649 straight instructions from reset before it is genuinely in range.
+  // sample-rpg opts hero+Join naming in for real too (docs/design-name-entry.md
+  // v16.4 §17 item 5): init_session runs before the naming grid ever opens, so
+  // player_hp is already in its genuine 1-6 range the instant game_state
+  // reaches ST_NAMEENTRY (6) -- this is what lets the wait below tell "the
+  // grid opened" apart from "still clearing RAM at power-on" the same way the
+  // comment above already distinguishes booted from not-yet-booted.
+  await until(
+    'the RPG build to boot to a decided state (naming grid or gameplay)',
+    () => {
+      const emulator = window.__app.current?.player?.emulator;
+      if (!emulator) return false;
+      const playerHp = emulator.peek(0x004e);
+      if (!(playerHp >= 1 && playerHp <= 6)) return false;
+      const gameState = emulator.peek(0x0025);
+      return gameState === 0 || gameState === 6;
+    },
+    20000
+  );
+  const rpgNamingEmu = window.__app.current.player.emulator;
+  if (rpgNamingEmu.peek(0x0025) === 6) {
+    // Drive the grid to END with the seeded default hero name. Every press
+    // below is frame-paced (pressFramePaced), not wall-clock, because this
+    // is a live player whose run loop only advances on real
+    // requestAnimationFrame callbacks -- runFrame() is not ours to call here.
+    const rpgSite = 'RPG buildAndPlay naming grid';
+    await until(
+      rpgSite + ': grid never finished raising',
+      () => rpgNamingEmu.peek(0x0040) === 9 && rpgNamingEmu.peek(0x0041) >= 4,
+      5000
+    );
+    for (let i = 0; i < 3 && rpgNamingEmu.peek(0x059b) !== 2; i++) {
+      await pressFramePaced(rpgNamingEmu, BUTTON.DOWN, rpgSite + ' (DOWN)');
+    }
+    if (rpgNamingEmu.peek(0x059b) !== 2) throw new Error(rpgSite + ': cursor never reached the controls row');
+    for (let i = 0; i < 26 && rpgNamingEmu.peek(0x059c) !== 1; i++) {
+      await pressFramePaced(rpgNamingEmu, BUTTON.RIGHT, rpgSite + ' (RIGHT)');
+    }
+    if (rpgNamingEmu.peek(0x059c) !== 1) throw new Error(rpgSite + ': cursor never reached END');
+    await pressFramePaced(rpgNamingEmu, BUTTON.A, rpgSite + ' (A)');
+    await until(rpgSite + ': session never ended', () => rpgNamingEmu.peek(0x0025) !== 6, 5000);
+    step('naming grid (RPG build)', 'hero naming opened at boot (titleless), END finished it with the seeded default name');
+  }
   await until(
     'the RPG build to boot into gameplay',
     () => {
@@ -9211,16 +9321,44 @@ const scenario = (dir, sampleDir, sampleRpgDir) => `
   // had already landed the player before the battle-test fallback discarded
   // it.
   const fellBackTitleEmu = window.__app.current.player.emulator;
-  // Held well past a single frame, not pulsed: the run loop paces itself by
-  // wall-clock time (renderer/emulator/player.js), and a throttled or
+  // Frame-paced, not wall-clock: the run loop paces itself by
+  // requestAnimationFrame (renderer/emulator/player.js), and a throttled or
   // contended window can deliver rAF callbacks far slower than 60fps -- a
-  // brief press risks landing between two real ticks and never being seen
-  // as a press at all by the engine's own frame-by-frame input read.
-  fellBackTitleEmu.setButton(BUTTON.START, true);
-  await wait(1000);
-  fellBackTitleEmu.setButton(BUTTON.START, false);
+  // fixed wait(ms) risks elapsing with zero real frames advanced and never
+  // being seen as a press at all by the engine's own frame-by-frame input
+  // read. pressFramePaced anchors to Emulator.frames instead.
+  await pressFramePaced(fellBackTitleEmu, BUTTON.START, 'battle-test fallback title screen (START)');
   await until(
     'the battle-test fallback session to get past its own title screen',
+    () => {
+      const emulator = window.__app.current?.player?.emulator;
+      if (!emulator) return false;
+      const gameState = emulator.peek(0x0025);
+      return gameState === 0 || gameState === 6;
+    },
+    20000
+  );
+  // sample now has hero naming on for real (docs/design-name-entry.md v16.4
+  // §17 item 5); Start opens the grid instead of landing straight in
+  // gameplay -- driven to END here with the seeded default name.
+  if (window.__app.current.player.emulator.peek(0x0025) === 6) {
+    const namingEmu = window.__app.current.player.emulator;
+    const battleTestSite = 'battle-test fallback naming grid';
+    await until(battleTestSite + ': grid never finished raising', () => namingEmu.peek(0x0040) === 9 && namingEmu.peek(0x0041) >= 4, 5000);
+    for (let i = 0; i < 3 && namingEmu.peek(0x059b) !== 2; i++) {
+      await pressFramePaced(namingEmu, BUTTON.DOWN, battleTestSite + ' (DOWN)');
+    }
+    if (namingEmu.peek(0x059b) !== 2) throw new Error(battleTestSite + ': cursor never reached the controls row');
+    for (let i = 0; i < 26 && namingEmu.peek(0x059c) !== 1; i++) {
+      await pressFramePaced(namingEmu, BUTTON.RIGHT, battleTestSite + ' (RIGHT)');
+    }
+    if (namingEmu.peek(0x059c) !== 1) throw new Error(battleTestSite + ': cursor never reached END');
+    await pressFramePaced(namingEmu, BUTTON.A, battleTestSite + ' (A)');
+    await until(battleTestSite + ': session never ended', () => namingEmu.peek(0x0025) !== 6, 5000);
+    step('naming grid (battle-test fallback)', 'hero naming opened at Start, END finished it with the seeded default name');
+  }
+  await until(
+    'the battle-test fallback session to reach gameplay',
     () => window.__app.current?.player?.emulator?.peek(0x0025) === 0,
     20000
   );
@@ -9826,6 +9964,38 @@ export async function runSmoke(window) {
     rpgFrame();
     rpgEmulator.setButton(BUTTON.START, false);
     for (let i = 0; i < 12; i++) rpgFrame();
+
+    // The RPG starter opts its own Hero into naming too (docs/design-name-
+    // entry.md v16.4 §1 item 4, §17 item 5), so Start opens the grid --
+    // driven to END here with the seeded default name, the same by-hand
+    // finishNamingIfOpen sequence used elsewhere in this scenario.
+    if (rpgNes.cpu.mem[RPG_GAME_STATE] === 6) {
+      let raised = false;
+      for (let i = 0; i < 40 && !raised; i++) {
+        rpgFrame();
+        if (rpgNes.cpu.mem[0x0040] === 9 && rpgNes.cpu.mem[0x0041] >= 4) raised = true;
+      }
+      if (!raised) throw new Error('rpg starter: the naming grid never finished raising');
+      for (let i = 0; i < 3 && rpgNes.cpu.mem[0x059b] !== 2; i++) {
+        rpgEmulator.setButton(BUTTON.DOWN, true);
+        rpgFrame();
+        rpgEmulator.setButton(BUTTON.DOWN, false);
+        for (let f = 0; f < 14; f++) rpgFrame();
+      }
+      if (rpgNes.cpu.mem[0x059b] !== 2) throw new Error('rpg starter: the naming grid cursor never reached the controls row');
+      for (let i = 0; i < 26 && rpgNes.cpu.mem[0x059c] !== 1; i++) {
+        rpgEmulator.setButton(BUTTON.RIGHT, true);
+        rpgFrame();
+        rpgEmulator.setButton(BUTTON.RIGHT, false);
+        for (let f = 0; f < 14; f++) rpgFrame();
+      }
+      if (rpgNes.cpu.mem[0x059c] !== 1) throw new Error('rpg starter: the naming grid cursor never reached END');
+      rpgEmulator.setButton(BUTTON.A, true);
+      rpgFrame();
+      rpgEmulator.setButton(BUTTON.A, false);
+      for (let i = 0; i < 20 && rpgNes.cpu.mem[RPG_GAME_STATE] === 6; i++) rpgFrame();
+      if (rpgNes.cpu.mem[RPG_GAME_STATE] === 6) throw new Error('rpg starter: the naming session never ended');
+    }
 
     if (rpgNes.cpu.mem[RPG_GAME_STATE] !== RPG_ST_GAMEPLAY) {
       throw new Error(`rpg starter: expected ST_GAMEPLAY (0) after Start, got game_state ${rpgNes.cpu.mem[RPG_GAME_STATE]}`);

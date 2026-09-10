@@ -31,11 +31,13 @@ import {
   normalizeProject,
   validateProject,
   projectUsesBoundTiles,
+  projectWithoutHeroNaming,
   LIMITS,
   RPG_LIMITS
 } from '../../shared/project.js';
 import { checkCapacity, kernelCodeBytes, kernelTableBytes, BOUND_TILE_KERNEL_ALLOWANCE } from '../../main/build/generate.js';
 import { mapperById } from '../../shared/cartridge.js';
+import { finishNamingIfOpen } from '../lib/naming.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const SAMPLE = path.join(ROOT, 'sample');
@@ -72,6 +74,10 @@ function boot(romPath, frames = 30) {
     nes.buttonUp(1, 3);
     for (let i = 0; i < 12; i++) nes.frame();
   }
+  // sample now has hero naming on (docs/design-name-entry.md v16.4 §17 item
+  // 5); Start lands in the grid, and finishNamingIfOpen is a no-op when
+  // naming is off, so this is safe unconditionally.
+  finishNamingIfOpen(nes);
   return nes;
 }
 
@@ -111,7 +117,11 @@ function cell(nes, row, col) {
 async function buildWith(t, commands, { bind = [], npcX = 128, npcY = 96, tweak = () => {} } = {}) {
   const dir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'forge-boundtile-'));
   t.after(() => fs.promises.rm(dir, { recursive: true, force: true }));
-  const project = await loadProject(SAMPLE);
+  // Hero naming off explicitly (phase 5): SAMPLE now carries hero naming for
+  // real, whose own kernel-lo cost is otherwise enough to tip NROM's
+  // capacity over once a bound tile is added on top -- unrelated to what
+  // this file's own runtime tests are actually about.
+  const project = projectWithoutHeroNaming(await loadProject(SAMPLE));
   const slime = project.sprites.actors[0];
   const npcId = project.sprites.actors.length;
   project.sprites.actors.push({ ...structuredClone(slime), id: npcId, name: 'Switcher', behavior: 'npc' });
@@ -250,7 +260,12 @@ test('BOUND_TILE_ENABLED and BOUND_CAP appear in config.inc only when a project 
   const dir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'forge-boundtile-config-'));
   t.after(() => fs.promises.rm(dir, { recursive: true, force: true }));
 
-  const without = await loadProject(SAMPLE);
+  // Hero naming off explicitly (phase 5, docs/design-name-entry.md v16.4
+  // §17 item 5): SAMPLE now carries hero naming for real, and this test is
+  // about the bound-tile config flag, not naming -- naming's own kernel-lo
+  // cost is otherwise enough to tip NROM's capacity over with a bound tile
+  // added on top.
+  const without = projectWithoutHeroNaming(await loadProject(SAMPLE));
   const withDir = path.join(dir, 'with');
   const withoutDir = path.join(dir, 'without');
   await saveProject(withoutDir, without);
@@ -258,7 +273,7 @@ test('BOUND_TILE_ENABLED and BOUND_CAP appear in config.inc only when a project 
   const withoutConfig = await fs.promises.readFile(path.join(withoutDir, 'build/assets/config.inc'), 'utf8');
   assert.match(withoutConfig, /BOUND_TILE_ENABLED\s*=\s*0/);
 
-  const withProject = await loadProject(SAMPLE);
+  const withProject = projectWithoutHeroNaming(await loadProject(SAMPLE));
   const paintedId = withProject.maps[0].screens[0].metatiles[0];
   withProject.maps[0].screens[0].boundTiles = [{ switchId: 0, row: 0, col: 0, metatileId: paintedId }];
   await saveProject(withDir, withProject);
@@ -339,6 +354,11 @@ test('kernelShortfallAdvice frees the bound-tile-dependent fixed/table terms too
   // but the real strip does.
   const mapper = mapperById(4); // MMC3
   const project = await loadProject(path.join(ROOT, 'sample-rpg'));
+  // Naming off explicitly (phase 5): sample-rpg now opts hero+Join naming in
+  // for real, which would shift the narrow, hand-calibrated filler window
+  // below -- unrelated to what this case is actually about.
+  project.party[0].renamable = false;
+  if (project.party[1]) project.party[1].renamable = false;
   project.cartridge.mapper = mapper.id;
   project.project.titleMap = 0;
   project.project.titleScreen = 0;

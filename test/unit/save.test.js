@@ -42,6 +42,8 @@ import { createSong } from '../../shared/audio.js';
 import { renumberSpellDeletion } from '../../shared/project.js';
 import { saveIdentity } from '../../shared/save.js';
 import { battleTables, statAt } from '../../main/build/battletables.js';
+import { finishNamingIfOpen, typeNameAndFinish, PC_NAME_RAM, NAME_LEN } from '../lib/naming.js';
+import { textToTiles } from '../../shared/font.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const SAMPLE_RPG = path.join(ROOT, 'sample-rpg');
@@ -126,6 +128,15 @@ const tap = (nes, button, frames = 10) => {
   for (let i = 0; i < frames; i++) nes.frame();
 };
 
+/** Start a new game from the title, then clear Rian's own hero-naming
+ *  session (phase 5: sample-rpg ships him renamable) with the seeded
+ *  default left untouched -- this file's premise is the save/Continue
+ *  mechanism, not naming. */
+function startNewGame(nes) {
+  tap(nes, START);
+  finishNamingIfOpen(nes);
+}
+
 /**
  * A real power cycle with the battery intact: everything but $6000-$7FFF
  * loses state, the same as unplugging and replugging an NES with a
@@ -191,6 +202,11 @@ async function buildSaveable(t, commands, mutate) {
   const dir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'forge-save-'));
   t.after(() => fs.promises.rm(dir, { recursive: true, force: true }));
   const project = await loadProject(SAMPLE_RPG);
+  // Naming stays on, as sample-rpg ships it (phase 5): Rian's own hero
+  // session opens at Start, driven past by startNewGame() below rather than
+  // stripped out from under it. pc_name_ram has been in SAVE_FIELDS
+  // unconditionally since name-entry phase 1, so none of this file's own
+  // hand-sourced offsets (SAVE_IDENTITY_OFFSET etc.) move because of it.
   project.cartridge.mapper = 1; // MMC1
   project.project.titleMap = 0;
   project.project.titleScreen = 0;
@@ -230,7 +246,22 @@ test(
     ]);
     const nes = boot(romPath);
     tap(nes, START); // into the game, past the title
+    // Type a real name over Rian's seeded default -- a restore that threw
+    // the saved name away and re-seeded the compiled default ("Rian")
+    // instead would pass a check that left the default untouched, the same
+    // reason save_sram.lua's own Iris check types a real letter rather than
+    // just confirming what was already there (docs/design-name-entry.md
+    // §14). pc_name_ram has been in SAVE_FIELDS unconditionally since
+    // name-entry phase 1, so this is the shipped fixture's real record, not
+    // a naming-specific fixture built to exercise it.
+    typeNameAndFinish(nes, 'Zed');
     assert.equal(nes.cpu.mem[GAME_STATE], ST_GAMEPLAY, 'never left the title');
+    assert.deepEqual(
+      Array.from({ length: 3 }, (_, i) => nes.cpu.mem[PC_NAME_RAM + i]),
+      textToTiles('Zed').tiles,
+      "the typed name should have landed in the hero's own pc_name_ram slot 0"
+    );
+    const savedName0 = Array.from({ length: NAME_LEN }, (_, i) => nes.cpu.mem[PC_NAME_RAM + i]);
 
     touchSaver(nes);
     const savedX = nes.cpu.mem[PLAYER_X];
@@ -255,6 +286,11 @@ test(
     assert.equal(nes.cpu.mem[FLAT_SCREEN], savedScreen, 'Continue should restore the saved screen');
     assert.equal(nes.cpu.mem[SWITCHES] & (1 << 5), 1 << 5, 'switch 5 should have survived the round trip');
     assert.equal(nes.cpu.mem[VARIABLES + 2], 9, 'variable 2 should have survived the round trip');
+    assert.deepEqual(
+      Array.from({ length: NAME_LEN }, (_, i) => nes.cpu.mem[PC_NAME_RAM + i]),
+      savedName0,
+      "Continue (through BE_RESTORE) should restore the hero's own pc_name_ram slot 0 byte-for-byte"
+    );
   }
 );
 
@@ -276,7 +312,7 @@ test(
   async (t) => {
     const romPath = await buildSaveable(t, [{ op: 'save' }, { op: 'setSwitch', switch: 7 }]);
     const nes = boot(romPath);
-    tap(nes, START);
+    startNewGame(nes);
     touchSaver(nes, () => nes.cpu.mem[SWITCHES] & (1 << 7));
     assert.equal(
       nes.cpu.mem[SWITCHES] & (1 << 7),
@@ -319,6 +355,7 @@ test(
     emulator.loadROM(new Uint8Array(fs.readFileSync(romPath)));
     for (let i = 0; i < 60; i++) emulator.nes.frame();
     emuTap(emulator, START);
+    finishNamingIfOpen(emulator.nes); // Rian ships renamable (phase 5); unrelated to this test
 
     // Save A: switches/variables poked directly (this is about the record
     // mechanics, not about authoring the state that goes into it), then one
@@ -391,7 +428,7 @@ test(
       project.maps[0].songId = 0;
     });
     const nes = boot(romPath);
-    tap(nes, START);
+    startNewGame(nes);
     assert.notEqual(nes.cpu.mem[CUR_SONG], NO_SONG, 'the map should already be playing its song before any save');
 
     touchSaver(nes);
@@ -431,7 +468,7 @@ test(
   async (t) => {
     const romPath = await buildSaveable(t, [{ op: 'save' }]);
     const nes = boot(romPath);
-    tap(nes, START);
+    startNewGame(nes);
     touchSaver(nes);
     assert.equal(nes.cpu.mem[SRAM_BASE + SAVE_MARKER_OFFSET], SAVE_MARKER_VALID, 'the real save never completed');
     const foreignBattery = nes.cpu.mem.slice(SRAM_BASE, SRAM_BASE + SRAM_SIZE);
@@ -503,13 +540,21 @@ const V2_SAMPLE_RPG_SAVEABLE_IDENTITY = 420550832;
 // SAVE_IDENTITY_0..3 in (byte 0 = value & 0xff, ... byte 3 = value >> 24).
 const V2_SAMPLE_RPG_SAVEABLE_IDENTITY_BYTES = [0xb0, 0x18, 0x11, 0x19];
 
+// buildSaveable()'s own project now genuinely carries naming code (phase 5:
+// Rian ships renamable), unlike the golden's own pre-phase-1 revision above
+// -- startNewGame() drives that real session below. That is orthogonal to
+// what this test actually checks: the refusal comes from SAVE_LAYOUT_VERSION
+// alone (the identity hash's own seed), not from anything the body's
+// naming-shaped bytes contain, so this test's own mechanism (patch only the
+// four identity bytes back to the version-2 literal, leave the rest of the
+// real, naming-on body untouched) is unaffected by whether naming is live.
 test(
-  'a pre-migration (SAVE_LAYOUT_VERSION 2) save is refused by the version bump alone, with no naming code present yet',
+  'a pre-migration (SAVE_LAYOUT_VERSION 2) save is refused by the version bump alone, not by anything naming-specific in the body',
   { skip: !hasNesasm && 'nesasm not found on PATH' },
   async (t) => {
     const romPath = await buildSaveable(t, [{ op: 'save' }]);
     const nes = boot(romPath);
-    tap(nes, START);
+    startNewGame(nes);
     touchSaver(nes);
     assert.equal(nes.cpu.mem[SRAM_BASE + SAVE_MARKER_OFFSET], SAVE_MARKER_VALID, 'the real save never completed');
 
@@ -562,7 +607,7 @@ test(
   async (t) => {
     const romPath = await buildSaveable(t, [{ op: 'save' }]);
     const nes = boot(romPath);
-    tap(nes, START);
+    startNewGame(nes);
     touchSaver(nes);
     assert.equal(nes.cpu.mem[SRAM_BASE + SAVE_MARKER_OFFSET], SAVE_MARKER_VALID, 'the real save never completed');
 
@@ -612,7 +657,7 @@ test(
   async (t) => {
     const romPath = await buildSaveable(t, [{ op: 'save' }]);
     const nes = boot(romPath);
-    tap(nes, START);
+    startNewGame(nes);
     touchSaver(nes);
     assert.equal(nes.cpu.mem[SRAM_BASE + SAVE_MARKER_OFFSET], SAVE_MARKER_VALID, 'the real save never completed');
 
@@ -634,7 +679,7 @@ test(
   async (t) => {
     const romPath = await buildSaveable(t, [{ op: 'save' }]);
     const nes = boot(romPath);
-    tap(nes, START);
+    startNewGame(nes);
     touchSaver(nes);
     assert.equal(nes.cpu.mem[SRAM_BASE + SAVE_MARKER_OFFSET], SAVE_MARKER_VALID, 'the real save never completed');
 
@@ -665,7 +710,7 @@ test(
     // id directly (0), not the actor id (1) it used to back it with.
     const romPath = await buildSaveable(t, [{ op: 'give', item: 0 }, { op: 'save' }]);
     const nes = boot(romPath);
-    tap(nes, START);
+    startNewGame(nes);
     touchSaver(nes, () => nes.cpu.mem[SRAM_BASE + SAVE_MARKER_OFFSET] === SAVE_MARKER_VALID);
     assert.equal(nes.cpu.mem[SRAM_BASE + SAVE_MARKER_OFFSET], SAVE_MARKER_VALID, 'the real save never completed');
     assert.ok(
@@ -702,7 +747,7 @@ test(
   async (t) => {
     const romPath = await buildSaveable(t, [{ op: 'give', item: 0 }, { op: 'save' }]);
     const nes = boot(romPath);
-    tap(nes, START);
+    startNewGame(nes);
     touchSaver(nes, () => nes.cpu.mem[SRAM_BASE + SAVE_MARKER_OFFSET] === SAVE_MARKER_VALID);
     assert.equal(nes.cpu.mem[SRAM_BASE + SAVE_MARKER_OFFSET], SAVE_MARKER_VALID, 'the real save never completed');
     assert.ok(
@@ -729,7 +774,7 @@ test(
   async (t) => {
     const romPath = await buildSaveable(t, [{ op: 'save' }]);
     const nes = boot(romPath);
-    tap(nes, START);
+    startNewGame(nes);
     touchSaver(nes);
     assert.equal(nes.cpu.mem[SRAM_BASE + SAVE_MARKER_OFFSET], SAVE_MARKER_VALID, 'the real save never completed');
 
@@ -768,7 +813,7 @@ test(
   async (t) => {
     const romPath = await buildSaveable(t, [{ op: 'save' }]);
     const nes = boot(romPath);
-    tap(nes, START);
+    startNewGame(nes);
     touchSaver(nes);
     assert.equal(nes.cpu.mem[SRAM_BASE + SAVE_MARKER_OFFSET], SAVE_MARKER_VALID, 'the real save never completed');
 
@@ -794,7 +839,7 @@ test(
   async (t) => {
     const romPath = await buildSaveable(t, [{ op: 'save' }]);
     const nes = boot(romPath);
-    tap(nes, START);
+    startNewGame(nes);
     touchSaver(nes);
     assert.equal(nes.cpu.mem[SRAM_BASE + SAVE_MARKER_OFFSET], SAVE_MARKER_VALID, 'the save never actually happened');
 
@@ -904,6 +949,7 @@ async function buildSaveableProject(t, mutate) {
   const dir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'forge-restore-'));
   t.after(() => fs.promises.rm(dir, { recursive: true, force: true }));
   const project = await loadProject(SAMPLE_RPG);
+  // Naming stays on -- see buildSaveable's own comment above.
   project.cartridge.mapper = 1; // MMC1
   project.project.titleMap = 0;
   project.project.titleScreen = 0;
@@ -998,7 +1044,7 @@ test(
     // (`1`) in place, so the omitted-call sabotage caught `1 !== 3` rather
     // than the intended stale-catalog `7 !== 3`.
     const nesA = boot(a.romPath);
-    tap(nesA, START);
+    startNewGame(nesA);
     touchSaver(nesA);
     assert.equal(nesA.cpu.mem[SRAM_BASE + SAVE_MARKER_OFFSET], SAVE_MARKER_VALID, 'the real save on ROM A never completed');
     corruptAndReseal(nesA, SAVE_PC_LEVEL_OFFSET, 3); // member 0's level (offset 0 within the field)
@@ -1084,7 +1130,7 @@ test(
     }
 
     const nes = boot(romPath);
-    tap(nes, START);
+    startNewGame(nes);
     touchSaver(nes);
     assert.equal(nes.cpu.mem[SRAM_BASE + SAVE_MARKER_OFFSET], SAVE_MARKER_VALID, 'the real save never completed');
 

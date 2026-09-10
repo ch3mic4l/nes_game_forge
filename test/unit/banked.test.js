@@ -35,6 +35,7 @@ import {
 } from '../../main/build/generate.js';
 import { buildProject } from '../../main/build/pipeline.js';
 import { loadProject, saveProject } from '../../main/project-io.js';
+import { finishNamingIfOpen, waitForNamingReady, gotoCell, BOX_NAMEENTRY } from '../lib/naming.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const SAMPLE_RPG = path.join(ROOT, 'sample-rpg');
@@ -454,6 +455,10 @@ test(
     const nes = new NES({ onFrame: () => {}, emulateSound: false });
     nes.loadROM(new Uint8Array(fs.readFileSync(built.romPath)));
     for (let i = 0; i < 40; i++) nes.frame();
+    // Rian ships renamable too (phase 5) -- clear his own hero session
+    // before this test's own walk begins; unrelated to the cross-bank
+    // trampoline this test is actually about.
+    finishNamingIfOpen(nes);
 
     // Addresses from engine/constants.asm.
     const PLAYER_X = 0x10;
@@ -529,6 +534,26 @@ test(
     // restore, since nothing else in this sequence ever touches the PRG bank
     // either way.
     assert.deepEqual(screenBytes(), before, 'the bank never came back, so mtptr is reading the battle system now');
+
+    // Iris ships renamable too (phase 5): her own Join opens a naming
+    // session (BE_NAME_BEGIN, a second cross-bank call, already returned by
+    // the time party_size above went to 2) entirely inside ST_DIALOG --
+    // drive it to END with the seeded default left untouched before the
+    // conversation can hand back to gameplay, docs/design-name-entry.md §14.
+    // box_begin takes the "already up" (box_begin_clear) path here, since
+    // the Say box the player just dismissed left box_state non-zero, so the
+    // grid does not read BOX_NAMEENTRY until BOX_CLEARING hands off -- poll
+    // rather than check once.
+    for (let i = 0; i < 60 && nes.cpu.mem[BOX_STATE] !== BOX_NAMEENTRY && nes.cpu.mem[GAME_STATE] !== ST_GAMEPLAY; i++) {
+      nes.frame();
+    }
+    if (nes.cpu.mem[BOX_STATE] === BOX_NAMEENTRY) {
+      waitForNamingReady(nes);
+      gotoCell(nes, 2, 1); // END
+      nes.buttonDown(1, A);
+      nes.frame();
+      nes.buttonUp(1, A);
+    }
 
     // And once the box has finished closing, the field is actually playable:
     // the player can still walk, which player.asm does by dereferencing
@@ -634,6 +659,9 @@ test(
       const frame = () => nes.frame();
 
       for (let i = 0; i < 30; i++) frame();
+      // Rian ships renamable too (phase 5); unrelated to the interrupt race
+      // under test, which never touches Iris or a Join at all.
+      finishNamingIfOpen(nes);
       if (nes.cpu.mem[GAME_STATE] === ST_TITLE) {
         emulator.setButton(BUTTON.START, true);
         frame();

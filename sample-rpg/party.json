@@ -2,6 +2,7 @@
   {
     "id": 0,
     "name": "Rian",
+    "renamable": true,
     "metaspriteId": 0,
     "startsInParty": true,
     "baseHp": 24,
@@ -33,6 +34,7 @@
   {
     "id": 1,
     "name": "Iris",
+    "renamable": true,
     "metaspriteId": 0,
     "startsInParty": false,
     "baseHp": 24,

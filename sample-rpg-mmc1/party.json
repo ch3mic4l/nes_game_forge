@@ -25,6 +25,7 @@
   {
     "id": 1,
     "name": "Iris",
+    "renamable": true,
     "metaspriteId": null,
     "startsInParty": false,
     "baseHp": 24,

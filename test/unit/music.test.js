@@ -24,6 +24,7 @@ import {
   OP_REST,
   OP_INSTRUMENT
 } from '../../shared/audio.js';
+import { finishNamingIfOpen } from '../lib/naming.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const SAMPLE = path.join(ROOT, 'sample');
@@ -738,6 +739,10 @@ function bootHeadless(romPath, frames = 30) {
   const nes = new NES({ onFrame: () => {}, emulateSound: false });
   nes.loadROM(new Uint8Array(fs.readFileSync(romPath)));
   for (let i = 0; i < frames; i++) nes.frame();
+  // sample now has hero naming on (docs/design-name-entry.md v16.4 §17 item
+  // 5); a titleless build cold-boots into the grid, and finishNamingIfOpen
+  // is a no-op when naming is off, so this is safe unconditionally.
+  finishNamingIfOpen(nes);
   return nes;
 }
 
@@ -951,6 +956,7 @@ test('a game over into a Silence map actually silences the APU, not just cur_son
   };
 
   tap(START); // title into gameplay -- the start map's own real song
+  finishNamingIfOpen(nes); // hero naming on (phase 5): Start opens the grid
   assert.equal(nes.cpu.mem[GAME_STATE], ST_GAMEPLAY);
   assert.equal(nes.cpu.mem[MUS_ENABLED], 1, 'the start map should have started a real song');
 

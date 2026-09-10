@@ -100,13 +100,68 @@ const held = (emulator, button, frames) => {
   emulator.setButton(button, false);
 };
 
-/** sample/ (unlike sample-rpg/) boots into a title screen -- press Start past it. */
+/** One grid action: press `button` for a few real frames, then release and
+ *  let several more pass before returning -- confirmed by sabotage that a
+ *  bare press-one-frame-then-release (this file's own `held`, built for
+ *  continuously-held movement, not one-shot menu actions) does not reliably
+ *  register as a new press when called back-to-back with no gap, the same
+ *  multi-frame-press margin testplay.test.js's own B-press finding already
+ *  needed for a different reason (one frame sometimes completes before the
+ *  input poll it needs ever runs again). */
+function gridTap(emulator, button) {
+  emulator.setButton(button, true);
+  run(emulator, 3);
+  emulator.setButton(button, false);
+  run(emulator, 12);
+}
+
+/** If a naming session is open (Rian ships renamable, phase 5: sample/
+ *  sample-rpg both ship him so), drive it to END with the seeded default
+ *  left untouched -- through emulator.runFrame()/setButton (gridTap), NOT
+ *  test/lib/naming.js's own nes.frame()-based helpers. Confirmed by
+ *  sabotage: those bypass the Emulator's own PC-intercept table entirely,
+ *  so an invincibility trap wired only through runFrame() never fires for a
+ *  hazard tick that happens while the grid is being driven closed by raw
+ *  nes.frame() calls -- exactly the toggle every test in this file depends
+ *  on holding for every frame, naming included, whichever path (a titleless
+ *  cold boot or a titled one's Start press) reaches the grid. */
+function clearNamingIfOpen(emulator, ram) {
+  if (emulator.peek(ram.game_state) !== ram.ST_NAMEENTRY) return;
+  for (
+    let i = 0;
+    i < 40 && !(emulator.peek(ram.box_state) === ram.BOX_NAMEENTRY && emulator.peek(ram.box_row) >= ram.BOX_TEXT_ROWS);
+    i++
+  ) {
+    run(emulator, 1);
+  }
+  assert.equal(emulator.peek(ram.box_state), ram.BOX_NAMEENTRY, 'the naming grid never finished raising');
+  for (let i = 0; i < 3 && emulator.peek(ram.nm_row) !== 2; i++) gridTap(emulator, BUTTON.DOWN);
+  assert.equal(emulator.peek(ram.nm_row), 2, 'the naming grid cursor never reached the controls row');
+  for (let i = 0; i < 26 && emulator.peek(ram.nm_col) !== 1; i++) gridTap(emulator, BUTTON.RIGHT); // END
+  assert.equal(emulator.peek(ram.nm_col), 1, 'the naming grid cursor never reached END');
+  gridTap(emulator, BUTTON.A);
+  for (let i = 0; i < 20 && emulator.peek(ram.game_state) === ram.ST_NAMEENTRY; i++) run(emulator, 1);
+  assert.notEqual(emulator.peek(ram.game_state), ram.ST_NAMEENTRY, 'the hero naming session never ended');
+}
+
+/** builtVariant's own projects are titleless -- run() the settle frames a
+ *  cold boot needs to reach the point where either gameplay or Rian's own
+ *  hero-naming session is live, then clearNamingIfOpen(). */
+function bootPast(emulator, build) {
+  run(emulator, 10);
+  clearNamingIfOpen(emulator, build.ram);
+}
+
+/** sample/ (unlike sample-rpg/) boots into a title screen -- press Start past
+ *  it, then clearNamingIfOpen() the same way bootPast does for a titleless
+ *  cold boot. */
 function skipTitle(emulator, ram) {
   run(emulator, 20);
   if (emulator.peek(ram.game_state) === ram.ST_TITLE) {
     held(emulator, BUTTON.START, 1);
     run(emulator, 12);
   }
+  clearNamingIfOpen(emulator, ram);
 }
 
 // =====================================================================
@@ -502,6 +557,7 @@ test('invincibility: a floor hazard costs health off, and costs nothing on', { s
   const hearts = project.project.maxHearts;
 
   const off = loadedEmulator(romPath, build);
+  bootPast(off, build);
   run(off, 20);
   assert.ok(
     off.peek(build.ram.player_hp) < hearts,
@@ -510,6 +566,7 @@ test('invincibility: a floor hazard costs health off, and costs nothing on', { s
 
   const on = loadedEmulator(romPath, build);
   on.setTestOverrides({ invincibility: true });
+  bootPast(on, build);
   run(on, 20);
   assert.equal(on.peek(build.ram.player_hp), hearts, 'invincibility on should have taken no damage from the spikes');
 });
@@ -538,11 +595,13 @@ test('collision off does not also turn off floor hazards -- they were never gate
   const hearts = project.project.maxHearts;
 
   const off = loadedEmulator(romPath, build);
+  bootPast(off, build);
   held(off, BUTTON.RIGHT, 55);
   assert.equal(off.peek(build.ram.player_hp), hearts, 'control: without the toggle the wall should have stopped the player short of the spikes');
 
   const on = loadedEmulator(romPath, build);
   on.setTestOverrides({ collision: true });
+  bootPast(on, build);
   held(on, BUTTON.RIGHT, 55);
   assert.ok(on.peek(build.ram.player_x) >= WALL_COL * 16, 'collision off should have carried the player past the wall');
   assert.ok(
@@ -603,11 +662,13 @@ test('collision off: the player walks through a wall it would otherwise be block
   const wallLeftEdge = 9 * 16;
 
   const off = loadedEmulator(romPath, build);
+  bootPast(off, build);
   held(off, BUTTON.RIGHT, 40);
   assert.ok(off.peek(build.ram.player_x) < wallLeftEdge, 'control: without the toggle the wall should have stopped the player');
 
   const on = loadedEmulator(romPath, build);
   on.setTestOverrides({ collision: true });
+  bootPast(on, build);
   held(on, BUTTON.RIGHT, 40);
   assert.ok(on.peek(build.ram.player_x) >= wallLeftEdge, 'collision off should have walked the player straight through');
   assert.equal(on.peek(build.ram.flat_screen), off.peek(build.ram.flat_screen), 'still the same screen -- this is about the wall, not a screen edge');
@@ -648,8 +709,10 @@ test('collision off is global: a scripted Move through the same wall is unaffect
     const emulator = loadedEmulator(romPath, build);
     if (collisionOn) emulator.setTestOverrides({ collision: true });
     // titleMap is null (builtVariant), so a handful of frames is enough to
-    // clear boot's own forced-blank redraw and reach spawn_entities.
-    run(emulator, 10);
+    // clear boot's own forced-blank redraw and reach spawn_entities -- and,
+    // since Rian ships renamable (phase 5), to clear his own hero-naming
+    // session first.
+    bootPast(emulator, build);
     // Find the NPC's slot, then arm its event directly through the engine's
     // own consumption point (settle_owed reads pending_ent) rather than
     // walking the player over and pressing the action button: a Move only
@@ -686,13 +749,14 @@ test('encounters off closes the rate-1 hole a RAM poke of enc_step cannot', { sk
   const { build, romPath } = await rateOneVariant(t);
 
   const off = loadedEmulator(romPath, build);
+  bootPast(off, build);
   held(off, BUTTON.UP, 20); // rate 1: the first real moving step's `inc enc_step` already meets it
   run(off, 10);
   assert.equal(off.peek(build.ram.game_state), build.ram.ST_BATTLE, 'control: rate 1 should fight on the first step');
 
   const on = loadedEmulator(romPath, build);
   on.setTestOverrides({ encounters: true });
-  run(on, 5); // clear boot before reading game_state at all -- RAM is not yet ST_GAMEPLAY on power-up
+  bootPast(on, build); // clear boot (and Rian's own hero-naming session) before reading game_state at all -- RAM is not yet ST_GAMEPLAY on power-up
   for (let i = 0; i < 60 && on.peek(build.ram.game_state) === build.ram.ST_GAMEPLAY; i++) {
     held(on, i % 4 < 2 ? BUTTON.UP : BUTTON.DOWN, 3);
   }
@@ -711,7 +775,7 @@ test('encounters off never touches a placed monster -- bt_from_ent is the same s
 
   const emulator = loadedEmulator(romPath, build);
   emulator.setTestOverrides({ encounters: true });
-  run(emulator, 10); // clear boot's own redraw so spawn_entities has placed the slime
+  bootPast(emulator, build); // clear boot's own redraw so spawn_entities has placed the slime
 
   let slimeSlot = -1;
   for (let s = 0; s < build.ram.MAX_ENTITIES; s++) {
@@ -773,6 +837,7 @@ test('a breakpoint at the redirect target fires -- and only because of the redir
   const { build, romPath } = await rateOneVariant(t);
 
   const off = loadedEmulator(romPath, build);
+  bootPast(off, build);
   off.toggleBreakpoint(build.symbols.check_encounter_done);
   off.setButton(BUTTON.UP, true);
   let offHit = null;
@@ -782,6 +847,7 @@ test('a breakpoint at the redirect target fires -- and only because of the redir
 
   const on = loadedEmulator(romPath, build);
   on.setTestOverrides({ encounters: true });
+  bootPast(on, build);
   on.toggleBreakpoint(build.symbols.check_encounter_done);
   on.setButton(BUTTON.UP, true);
   let hit = null;
@@ -795,6 +861,7 @@ test('runToAddress(target) only stops there because of the redirect', { skip: sk
   const { build, romPath } = await rateOneVariant(t);
 
   const off = loadedEmulator(romPath, build);
+  bootPast(off, build);
   off.setButton(BUTTON.UP, true);
   assert.equal(
     off.runToAddress(build.symbols.check_encounter_done, { frames: 10 }),
@@ -804,6 +871,7 @@ test('runToAddress(target) only stops there because of the redirect', { skip: sk
 
   const on = loadedEmulator(romPath, build);
   on.setTestOverrides({ encounters: true });
+  bootPast(on, build);
   on.setButton(BUTTON.UP, true);
   assert.ok(on.runToAddress(build.symbols.check_encounter_done, { frames: 10 }));
   assert.equal(on.pc, build.symbols.check_encounter_done);
@@ -820,6 +888,7 @@ test('stepOut from check_encounter returns to update_player, not on into start_e
   const { build, romPath } = await rateOneVariant(t);
   const emulator = loadedEmulator(romPath, build);
   emulator.setTestOverrides({ encounters: true });
+  bootPast(emulator, build);
   emulator.setButton(BUTTON.UP, true);
   assert.ok(emulator.runToAddress(build.symbols.check_encounter, { frames: 40 }));
   const returnTo = returnAddressFromStack(emulator);
@@ -841,6 +910,7 @@ test('stepOver a jsr into check_encounter lands exactly back after the call', { 
   // First pass: discover where the caller's own jsr is, without hardcoding it.
   const probe = loadedEmulator(romPath, build);
   probe.setTestOverrides({ encounters: true });
+  bootPast(probe, build);
   probe.setButton(BUTTON.UP, true);
   assert.ok(probe.runToAddress(build.symbols.check_encounter, { frames: 40 }));
   const returnTo = returnAddressFromStack(probe);
@@ -849,6 +919,7 @@ test('stepOver a jsr into check_encounter lands exactly back after the call', { 
   // Second pass, fresh: land exactly on that jsr and step over it.
   const emulator = loadedEmulator(romPath, build);
   emulator.setTestOverrides({ encounters: true });
+  bootPast(emulator, build);
   emulator.setButton(BUTTON.UP, true);
   assert.ok(emulator.runToAddress(jsrAt, { frames: 40 }));
   assert.equal(emulator.peek(jsrAt), 0x20, 'expected to have landed on a JSR opcode');
@@ -973,12 +1044,12 @@ test('reset restores the RAM the game itself set, independent of any toggle', { 
   const hearts = project.project.maxHearts;
 
   const emulator = loadedEmulator(romPath, build);
-  run(emulator, 20);
+  bootPast(emulator, build);
   emulator.poke(build.ram.player_hp, 1);
   assert.equal(emulator.peek(build.ram.player_hp), 1, 'the poke itself should have taken');
 
   emulator.reset();
-  run(emulator, 5);
+  bootPast(emulator, build); // reset re-boots the same titleless, naming-on image
   assert.equal(emulator.peek(build.ram.player_hp), hearts, 'reset should have restored the RAM to a fresh boot');
   assert.equal(emulator.testOverrides.invincibility, false, 'nothing was turned on yet, so nothing should have turned on by itself');
 });
@@ -999,6 +1070,7 @@ test('the toggle itself survives reset, like a breakpoint -- only the RAM is wha
 
   const emulator = loadedEmulator(romPath, build);
   emulator.setTestOverrides({ invincibility: true });
+  bootPast(emulator, build);
   run(emulator, 20);
   assert.equal(emulator.peek(build.ram.player_hp), hearts, 'invincibility should have protected the first run, spikes and all');
 
@@ -1007,8 +1079,10 @@ test('the toggle itself survives reset, like a breakpoint -- only the RAM is wha
   assert.notEqual(emulator.overrideTargets, null, 'reset reuses the same ROM, so the resolved addresses stay valid without reconfiguring');
 
   // And it really does keep working post-reset -- reset is architecturally a
-  // fresh boot of the same image, so the same budget that proved protection
-  // from a cold load should equally prove it survives a reset.
+  // fresh boot of the same image (Rian's own hero-naming session included),
+  // so the same budget that proved protection from a cold load should
+  // equally prove it survives a reset.
+  bootPast(emulator, build);
   run(emulator, 20);
   assert.equal(emulator.peek(build.ram.player_hp), hearts, 'invincibility should still be protecting the player after the reset');
 });

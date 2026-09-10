@@ -217,6 +217,26 @@ function talkThrough(nes, budget = 30) {
   return nes.cpu.mem[GAME_STATE] === ST_GAMEPLAY;
 }
 
+/** Walk to Iris (208,48) and recruit her -- the shared shape every plain
+ *  recruit-Iris scenario in this file wants, now that sample-rpg ships her
+ *  renamable (phase 5): talkThrough returns false the instant her own named
+ *  Join opens the naming grid mid-conversation, so this drives the grid to
+ *  END with the seeded default left untouched (the same as
+ *  finishNamingIfOpen leaves a hero session) and resumes the conversation,
+ *  the §14 "one segment at a time" shape talkThrough's own header already
+ *  describes. A caller that needs the grid itself under test (a typed name,
+ *  the ST_DIALOG/BOX_NAMEENTRY split) drives it directly instead, the way
+ *  the dedicated named-Join test does. */
+function recruitIris(nes) {
+  walkTo(nes, 208, 48);
+  if (talkThrough(nes)) return;
+  waitForNamingReady(nes);
+  gotoCell(nes, 2, 1); // END, leaving the seeded default name exactly as compiled
+  tap(nes, A);
+  for (let i = 0; i < 20 && nes.cpu.mem[BOX_STATE] === BOX_NAMEENTRY; i++) nes.frame();
+  assert.ok(talkThrough(nes), 'the conversation never resumed after Iris\'s naming session');
+}
+
 // --- in-game party-member naming (docs/design-name-entry.md §14) ----------
 //
 // The grid helpers themselves live in test/lib/naming.js, shared with
@@ -303,6 +323,14 @@ async function buildVariantFull(t, name, mutate) {
   const dir = await fs.promises.mkdtemp(path.join(os.tmpdir(), `forge-${name}-`));
   t.after(() => fs.promises.rm(dir, { recursive: true, force: true }));
   const project = await loadProject(SAMPLE);
+  // Naming stays exactly as sample-rpg ships it (phase 5, docs/design-
+  // name-entry.md v16.4 §17 item 5, P2-2 fix round 2): hero and Join naming
+  // both on for real, the same as every player of the shipped fixture sees.
+  // A variant that genuinely needs naming off says so itself, in its own
+  // `mutate`. Every non-naming-specific caller boots through
+  // bootPastNaming() (hero naming, at cold boot) and recruits Iris through
+  // recruitIris() (Join naming, mid-script) instead of stripping the flag
+  // out from under the scenario its own test name describes.
   mutate(project);
   await saveProject(dir, project);
   return buildProject({ dir, project, log: () => {} });
@@ -441,7 +469,7 @@ test('an RPG on a mapper that cannot switch program banks is refused by name', (
 test('walking far enough starts a battle, and the party is on the screen', {
   skip: needsSample
 }, () => {
-  const nes = boot();
+  const nes = bootPastNaming();
   assert.equal(nes.cpu.mem[PARTY_SIZE], 1);
   assert.ok(nes.cpu.mem[PC_HP] > 0, 'the party never got its hit points');
 
@@ -462,7 +490,7 @@ test('walking far enough starts a battle, and the party is on the screen', {
 test('FIGHT wears the monster down, and winning pays experience and gold', {
   skip: needsSample
 }, () => {
-  const nes = boot();
+  const nes = bootPastNaming();
   assert.ok(walkIntoEncounter(nes));
   const startHp = nes.cpu.mem[MON_HP];
 
@@ -488,7 +516,7 @@ test('FIGHT wears the monster down, and winning pays experience and gold', {
 test('MAGIC spends MP and does more to something the spell is strong against', {
   skip: needsSample
 }, () => {
-  const nes = boot();
+  const nes = bootPastNaming();
   assert.ok(walkIntoEncounter(nes));
   const startMp = nes.cpu.mem[PC_MP];
   const startHp = nes.cpu.mem[MON_HP];
@@ -517,7 +545,7 @@ test('a spell nobody can pay for is refused rather than cast', {
   await saveProject(dir, project);
   const built = await buildProject({ dir, project, log: () => {} });
 
-  const nes = boot(built.romPath);
+  const nes = bootPastNaming(built.romPath);
   assert.equal(nes.cpu.mem[PC_MP], 0);
   assert.ok(walkIntoEncounter(nes));
   const startHp = nes.cpu.mem[MON_HP];
@@ -533,7 +561,7 @@ test('a fight you were dragged into can be run from; one you walked into cannot'
 }, () => {
   // Walking into a monster somebody placed is a fight the author meant to
   // happen, so RUN says so rather than rolling for it.
-  const touched = boot();
+  const touched = bootPastNaming();
   for (let step = 0; step < 200 && touched.cpu.mem[GAME_STATE] === ST_GAMEPLAY; step++) {
     const buttons = [];
     if (touched.cpu.mem[PLAYER_X] < 168) buttons.push(RIGHT);
@@ -550,7 +578,7 @@ test('a fight you were dragged into can be run from; one you walked into cannot'
   assert.equal(touched.cpu.mem[GAME_STATE], ST_BATTLE, 'a placed monster should not let you leave');
   assert.equal(touched.cpu.mem[MON_ALIVE], 1);
 
-  const nes = boot();
+  const nes = bootPastNaming();
   assert.ok(walkIntoEncounter(nes));
 
   // Running is a roll, so this keeps choosing it until it works — and never
@@ -589,7 +617,7 @@ test('a wipe ends the game the same way running out of hearts does', {
   await saveProject(dir, project);
   const built = await buildProject({ dir, project, log: () => {} });
 
-  const nes = boot(built.romPath);
+  const nes = bootPastNaming(built.romPath);
   assert.ok(walkIntoEncounter(nes));
   chooseCommand(nes, BC_FIGHT);
   for (let i = 0; i < 60 && nes.cpu.mem[GAME_STATE] === ST_BATTLE; i++) tap(nes, A, 12);
@@ -615,7 +643,7 @@ test('a status a lost battle leaves behind does not survive the restart that fol
   await saveProject(dir, project);
   const built = await buildProject({ dir, project, log: () => {} });
 
-  const nes = boot(built.romPath);
+  const nes = bootPastNaming(built.romPath);
   assert.ok(walkIntoEncounter(nes));
   // Poisoned mid-fight, the same way a monster's own Venom would leave it --
   // battle_finish (engine/battleturn.asm) jumps straight to player_died on
@@ -633,6 +661,11 @@ test('a status a lost battle leaves behind does not survive the restart that fol
   for (let i = 0; i < 300 && nes.cpu.mem[BOX_STATE] !== BOX_ENDWAIT; i++) nes.frame();
   assert.equal(nes.cpu.mem[BOX_STATE], BOX_ENDWAIT, 'the game-over message never finished');
   tap(nes, START, 10); // sample-rpg has no title, so this starts a new game directly
+  // Rian ships renamable (phase 5), and restart_game re-seeds a fresh naming
+  // session on every new game the same as a cold boot does (the dedicated
+  // "restart_game re-seeds the default name" test below covers that in
+  // detail) -- unrelated to what this test is about, so just clear it.
+  finishNamingIfOpen(nes);
   assert.equal(nes.cpu.mem[GAME_STATE], ST_GAMEPLAY, 'restarting should have started a new game');
   assert.equal(nes.cpu.mem[PC_STATUS], 0, 'init_session should clear a status a lost battle left behind');
 });
@@ -671,7 +704,7 @@ test('scripted Heal and Damage change every recruited member\'s HP, saturating a
   await saveProject(dir, project);
   const built = await buildProject({ dir, project, log: () => {} });
 
-  const nes = boot(built.romPath);
+  const nes = bootPastNaming(built.romPath);
   const max = nes.cpu.mem[PC_HP_MAX];
   assert.equal(nes.cpu.mem[PC_HP], max, 'the session should start on full HP');
 
@@ -690,7 +723,7 @@ test('Heal revives a party member who has fallen to zero, the same as an inn wou
       teller([{ cond: { type: 'none', arg: 0 }, commands: [{ op: 'say', text: 'Rest.' }, { op: 'heal', value: 255 }] }])
     );
   });
-  const nes = boot(rom);
+  const nes = bootPastNaming(rom);
   const max = nes.cpu.mem[PC_HP_MAX];
   nes.cpu.mem[PC_HP] = 0; // fallen, but still recruited -- pc_in_party is untouched
 
@@ -718,12 +751,11 @@ test('a killing Damage wipes the whole recruited party and reaches game over ' +
   await saveProject(dir, project);
   const built = await buildProject({ dir, project, log: () => {} });
 
-  const nes = boot(built.romPath);
+  const nes = bootPastNaming(built.romPath);
   // Recruit Iris first, so this is genuinely "everyone recruited," not a
   // one-member party's coincidence -- the same route the Join test above
   // proves is walkable both ways.
-  walkTo(nes, 208, 48);
-  assert.ok(talkThrough(nes), 'recruiting Iris never finished');
+  recruitIris(nes);
   assert.equal(nes.cpu.mem[PARTY_SIZE], 2, 'Iris never joined');
   walkTo(nes, 112, 112);
 
@@ -761,12 +793,12 @@ test('standing on a Damage metatile drains the party on a cooldown, not every fr
     project.metatiles[damageId].collision = 'damage';
     project.maps[0].screens[0].metatiles = project.maps[0].screens[0].metatiles.map(() => damageId);
   });
-  // The player starts standing on the tile, so boot()'s own frames already
-  // ran through one hit before this test gets control -- worth keeping, not
+  // The player starts standing on the tile, so booting already ran through
+  // one hit before this test gets control -- worth keeping, not
   // working around, since it is exactly the "standing still costs a hit,
   // then nothing until the cooldown is up" behaviour under test, one hit
   // earlier than the rest of it.
-  const nes = boot(rom);
+  const nes = bootPastNaming(rom);
   const max = nes.cpu.mem[PC_HP_MAX];
   const afterBoot = nes.cpu.mem[PC_HP];
   assert.ok(afterBoot < max, 'standing on the tile through boot should already have cost something');
@@ -811,7 +843,7 @@ test('a lethal Damage metatile hit does not lose the race to a wandering encount
     // luck.
     project.maps[0].encounters = { rate: 1, actorIds: [0, 0, 0, 0] };
   });
-  const nes = boot(rom);
+  const nes = bootPastNaming(rom);
   nes.cpu.mem[PC_HP] = 1; // one hit from the tile is lethal
 
   // One frame: the step that both crosses onto the Damage tile and makes
@@ -913,7 +945,7 @@ test('a wandering encounter always takes 1..4 slots -- never zero, and every cou
 
   const observedCounts = new Set();
   for (const seed of seeds) {
-    const nes = boot(built.romPath);
+    const nes = bootPastNaming(built.romPath);
     nes.cpu.mem[RNG] = seed;
     nes.buttonDown(1, RIGHT);
     nes.frame();
@@ -993,9 +1025,9 @@ test('touching a damaging actor still starts a fight inside a Damage metatile\'s
     slime.x = project.project.startX + 16;
     slime.y = project.project.startY;
   });
-  const nes = boot(rom);
-  // boot()'s own 40 frames already took the floor hit standing at start (see
-  // the cooldown test above), so player_iframes is still well inside
+  const nes = bootPastNaming(rom);
+  // Booting already took the floor hit standing at start (see the cooldown
+  // test above), so player_iframes is still well inside
   // IFRAME_TIME here -- exactly the window entity_contact's bug left a
   // contact battle unable to start in.
   assert.ok(nes.cpu.mem[PC_HP] < nes.cpu.mem[PC_HP_MAX], 'the floor hit before this test began should have landed');
@@ -1030,7 +1062,7 @@ test('enough experience raises a level, and a level restores you', {
   await saveProject(dir, project);
   const built = await buildProject({ dir, project, log: () => {} });
 
-  const nes = boot(built.romPath);
+  const nes = bootPastNaming(built.romPath);
   const hpAtOne = nes.cpu.mem[PC_HP_MAX];
   assert.equal(nes.cpu.mem[PC_LEVEL], 1);
 
@@ -1057,7 +1089,7 @@ test('walking into a placed monster is a fight, and beating it removes it', {
   await saveProject(dir, project);
   const built = await buildProject({ dir, project, log: () => {} });
 
-  const nes = boot(built.romPath);
+  const nes = bootPastNaming(built.romPath);
   // The sample places a slime in the bottom-right corner.
   for (let step = 0; step < 400 && nes.cpu.mem[GAME_STATE] === ST_GAMEPLAY; step++) {
     const buttons = [];
@@ -1122,7 +1154,7 @@ test('coming back from a battle is not entering the screen again', {
   await saveProject(dir, project);
   const built = await buildProject({ dir, project, log: () => {} });
 
-  const nes = boot(built.romPath);
+  const nes = bootPastNaming(built.romPath);
   assert.equal(nes.cpu.mem[VARIABLES], 1, 'the entry event did not run when the game started');
 
   // Into the slime in the bottom-right corner, exactly as the touch-encounter
@@ -1158,14 +1190,13 @@ test('a Join event recruits a member mid-script, and they fight from then on', {
   const rom = await buildVariant(t, 'join', (project) => {
     project.maps[0].encounters = { rate: 0, actorIds: [] };
   });
-  const nes = boot(rom);
+  const nes = bootPastNaming(rom);
   assert.equal(nes.cpu.mem[PARTY_SIZE], 1);
   assert.equal(nes.cpu.mem[PC_IN_PARTY + 1], 0, 'Iris should not start in the party');
 
   // Iris stands at (208,32); talking to her says a line, joins her, and sets
   // switch 0 — which is also the switch that hides her from then on.
-  walkTo(nes, 208, 48);
-  assert.ok(talkThrough(nes), 'the conversation never ended');
+  recruitIris(nes);
 
   assert.equal(nes.cpu.mem[PARTY_SIZE], 2, 'Join never ran');
   assert.equal(nes.cpu.mem[PC_IN_PARTY + 1], 1);
@@ -1407,7 +1438,9 @@ test('a named Join opens the naming grid entirely inside ST_DIALOG (never ST_NAM
     project.party[1].renamable = true; // Iris, the recruiter's own target
     project.maps[0].encounters = { rate: 0, actorIds: [] }; // wandering monsters off
   });
-  const nes = boot(rom);
+  // Rian ships renamable too (phase 5) -- bootPastNaming clears his own hero
+  // session first, so what is under test here is Iris's Join naming alone.
+  const nes = bootPastNaming(rom);
   assert.equal(nes.cpu.mem[PC_IN_PARTY + 1], 0, 'Iris should not start in the party');
 
   walkTo(nes, 208, 48);
@@ -1496,10 +1529,13 @@ test('battle_entry_join refuses a Join operand at or above PARTY_SIZE, whether t
     return -1;
   })();
   assert.notEqual(opAt, -1, 'the Join command must be a live, top-level, decodable command in its own event');
+  // Member 1 (Iris), with the high bit set -- Iris ships renamable (phase 5),
+  // so textcompile.js's own 'join' case ORs in 0x80 (main/build/
+  // textcompile.js: `named ? (memberByte | 0x80) : memberByte`).
   assert.equal(
     bytes[opAt],
-    1,
-    'sample-rpg’s Iris Join should still name member 1 -- if this moved, re-derive the fixture'
+    0x81,
+    'sample-rpg’s Iris Join should still name member 1, with naming on -- if this moved, re-derive the fixture'
   );
 
   // Confirm the located event's bytes appear in the built ROM exactly once,
@@ -1514,7 +1550,7 @@ test('battle_entry_join refuses a Join operand at or above PARTY_SIZE, whether t
     'the compiled event bytes must appear exactly once in the ROM, or the patch below could hit the wrong copy'
   );
   const operandOffset = first + opAt;
-  assert.equal(romBytes[operandOffset], 1, 'byte at the located offset must be the Join operand itself');
+  assert.equal(romBytes[operandOffset], 0x81, 'byte at the located offset must be the Join operand itself');
 
   // round 2 finding 1: patching only NO_MEMBER ($FF) proves a guard shaped
   // like `cpx #NO_MEMBER / beq skip` too -- that compare happens to refuse
@@ -1552,7 +1588,9 @@ test('battle_entry_join refuses a Join operand at or above PARTY_SIZE, whether t
   // "ran party_restore, which happened to recompute the identical number"
   // apart.
   const assertJoinRefused = (patchedPath, label) => {
-    const nes = boot(patchedPath);
+    // Rian ships renamable (phase 5); unrelated to the Join operand guard
+    // this test is actually about.
+    const nes = bootPastNaming(patchedPath);
     assert.equal(nes.cpu.mem[PARTY_SIZE], 1, label + ': only the starting member should have started');
 
     const realHpMax = nes.cpu.mem[PC_HP_MAX];
@@ -1638,8 +1676,12 @@ test('P1-2 (round-1 finding): an RPG with the token authored and naming switched
   skip: needsSample
 }, async (t) => {
   const rom = await buildVariant(t, 'name-token-naming-off', (project) => {
-    // Naming stays off throughout -- neither party[0].renamable nor any
-    // Join's own renamable flag is ever set on this project.
+    // Naming off explicitly -- this test's own premise (the title says so)
+    // is the OFF control beside the "hero naming on" test just above it;
+    // sample-rpg itself now ships both renamable (phase 5), so this has to
+    // say so rather than merely not touching the flag.
+    project.party[0].renamable = false;
+    if (project.party[1]) project.party[1].renamable = false;
     project.maps[0].screens[0].entities.push(
       teller([{ cond: { type: 'none', arg: 0 }, commands: [{ op: 'say', text: 'Welcome, {name}!' }] }])
     );
@@ -1665,7 +1707,7 @@ test('P1-A (round-1 finding): the token in PLAIN DIALOGUE (no authored event) re
   const rom = await buildVariant(t, 'name-token-dialogue', (project) => {
     project.maps[0].screens[0].entities.push({ actorId: 2, x: 112, y: 96, props: { dialogue: 'Hi {name}.', event: null } });
   });
-  const nes = boot(rom);
+  const nes = bootPastNaming(rom); // Rian ships renamable (phase 5); unrelated to this test's own token check
   openSayAndSettle(nes);
   assert.deepEqual(
     nametableRow(nes, BOX_TEXT_ROW, BOX_TEXT_COL, 'Hi Rian.'.length),
@@ -1700,7 +1742,7 @@ test('P1-1 (round-1 finding): a Say with the token TWICE draws the SECOND token 
       teller([{ cond: { type: 'none', arg: 0 }, commands: [{ op: 'say', text: '{name} meet {name}.' }] }])
     );
   });
-  const nes = boot(rom);
+  const nes = bootPastNaming(rom); // Rian ships renamable (phase 5); unrelated to this test's own token check
   openSayAndSettle(nes, 400);
   assert.deepEqual(
     nametableRow(nes, BOX_TEXT_ROW, BOX_TEXT_COL, 'Rian meet Rian.'.length),
@@ -1716,7 +1758,7 @@ test('a two-monster formation is targeted one at a time, and the cursor wraps', 
   const rom = await buildVariant(t, 'twomon', (project) => {
     project.maps[0].encounters = { rate: 0, actorIds: [] };
   });
-  const nes = boot(rom);
+  const nes = bootPastNaming(rom);
   walkTo(nes, 160, 176);
   walkTo(nes, 176, 176, 200);
   assert.equal(nes.cpu.mem[GAME_STATE], ST_BATTLE);
@@ -1752,7 +1794,7 @@ test('a two-monster formation is targeted one at a time, and the cursor wraps', 
 test('a heal spell restores HP, cures poison, and costs its MP', {
   skip: needsSample
 }, () => {
-  const nes = boot();
+  const nes = bootPastNaming();
   assert.ok(walkIntoEncounter(nes));
   waitForMenu(nes);
 
@@ -1792,7 +1834,7 @@ test('a heal spell restores HP, cures poison, and costs its MP', {
 test('a flat-range spell (amountMin === amountMax) consumes no RNG at all -- the migrated old flat-amount read, byte-for-byte', {
   skip: needsSample
 }, () => {
-  const nes = boot();
+  const nes = bootPastNaming();
   assert.ok(walkIntoEncounter(nes));
   waitForMenu(nes);
   nes.cpu.mem[MON_HP] = 255; // headroom above the flat spell's own weak-multiplied damage, so the subtraction below reads the real number rather than a saturated-at-death one
@@ -1826,7 +1868,7 @@ test('a maximal range (1-255) reaches amountMin on a seed whose first draw is 0'
     project.spells[0].amountMax = 255; // n = 255, limit = floor(255/255)*255 = 255
     project.spells[0].element = 'none'; // isolate the roll from the weak/strong multiply
   });
-  const nes = boot(rom);
+  const nes = bootPastNaming(rom);
   walkTo(nes, 160, 176);
   walkTo(nes, 176, 176, 200);
   assert.equal(nes.cpu.mem[GAME_STATE], ST_BATTLE);
@@ -1862,7 +1904,7 @@ test('a non-maximal range reaches both of its own endpoints', {
   });
 
   {
-    const nes = boot(rom);
+    const nes = bootPastNaming(rom);
     walkTo(nes, 160, 176);
     walkTo(nes, 176, 176, 200);
     waitForMenu(nes);
@@ -1877,7 +1919,7 @@ test('a non-maximal range reaches both of its own endpoints', {
     assert.equal(startHp - nes.cpu.mem[MON_HP], 10, 'this seed should reach the range’s own minimum exactly');
   }
   {
-    const nes = boot(rom);
+    const nes = bootPastNaming(rom);
     walkTo(nes, 160, 176);
     walkTo(nes, 176, 176, 200);
     waitForMenu(nes);
@@ -1909,7 +1951,7 @@ test('mod8 divisor boundaries: n=2, n=128 with a real rejection, n=255 returns t
       project.spells[0].amountMax = 6; // n = 2, limit = 254
       project.spells[0].element = 'none';
     });
-    const nes = boot(rom);
+    const nes = bootPastNaming(rom);
     walkTo(nes, 160, 176);
     walkTo(nes, 176, 176, 200);
     waitForMenu(nes);
@@ -1930,7 +1972,7 @@ test('mod8 divisor boundaries: n=2, n=128 with a real rejection, n=255 returns t
       project.spells[0].amountMax = 128; // n = 128, limit = floor(255/128)*128 = 128
       project.spells[0].element = 'none';
     });
-    const nes = boot(rom);
+    const nes = bootPastNaming(rom);
     walkTo(nes, 160, 176);
     walkTo(nes, 176, 176, 200);
     waitForMenu(nes);
@@ -1955,7 +1997,7 @@ test('mod8 divisor boundaries: n=2, n=128 with a real rejection, n=255 returns t
       project.spells[0].amountMax = 255; // n = 255, limit = 255 -- mod8 never subtracts
       project.spells[0].element = 'none';
     });
-    const nes = boot(rom);
+    const nes = bootPastNaming(rom);
     walkTo(nes, 160, 176);
     walkTo(nes, 176, 176, 200);
     waitForMenu(nes);
@@ -1977,7 +2019,7 @@ test('mod8 divisor boundaries: n=2, n=128 with a real rejection, n=255 returns t
       project.spells[0].amountMax = 127; // n = 127, limit = floor(255/127)*127 = 254
       project.spells[0].element = 'none';
     });
-    const nes = boot(rom);
+    const nes = bootPastNaming(rom);
     walkTo(nes, 160, 176);
     walkTo(nes, 176, 176, 200);
     waitForMenu(nes);
@@ -2017,7 +2059,7 @@ test('a range that reaches into a weakness still saturates at $FF, the same as a
     project.spells[0].amountMax = 200; // n = 31, limit = floor(255/31)*31 = 248
     // element stays 'fire' -- the slime is weak to it (sample-rpg default).
   });
-  const nes = boot(rom);
+  const nes = bootPastNaming(rom);
   walkTo(nes, 160, 176);
   walkTo(nes, 176, 176, 200);
   waitForMenu(nes);
@@ -2051,7 +2093,7 @@ test('a heal spell rolling near a member’s max HP still clamps to it, the same
     project.spells[1].amountMin = 40;
     project.spells[1].amountMax = 60; // n = 21, limit = floor(255/21)*21 = 252
   });
-  const nes = boot(rom);
+  const nes = bootPastNaming(rom);
   walkTo(nes, 160, 176);
   walkTo(nes, 176, 176, 200);
   waitForMenu(nes);
@@ -2091,7 +2133,7 @@ test('an all-target spell rolls independently per target -- two living monsters 
     project.spells[0].element = 'none';
     project.sprites.actors[0].hp = 150; // both slimes must survive the larger possible roll
   });
-  const nes = boot(rom);
+  const nes = bootPastNaming(rom);
   walkTo(nes, 160, 176);
   walkTo(nes, 176, 176, 200);
   assert.equal(nes.cpu.mem[GAME_STATE], ST_BATTLE);
@@ -2166,7 +2208,7 @@ test('an all-target spell rolls independently per target -- two living monsters 
 test('ITEM heals from the bag, spends the potion, and cures poison', {
   skip: needsSample
 }, () => {
-  const nes = boot();
+  const nes = bootPastNaming();
   // A potion in the bag, as if it had been picked up on the field. Item id 0
   // (sample-rpg's own "Potion") -- the bag holds item ids under
   // ITEMS_ENABLED (phase 4b), not the actor id (1) that used to back it.
@@ -2202,7 +2244,7 @@ test('ITEM heals from the bag, spends the potion, and cures poison', {
 test('a potion used near the top of a byte clamps to the max instead of wrapping', {
   skip: needsSample
 }, () => {
-  const nes = boot();
+  const nes = bootPastNaming();
   nes.cpu.mem[INV_ITEMS] = 0; // the potion, by item id
   nes.cpu.mem[INV_COUNT] = 1;
   assert.ok(walkIntoEncounter(nes));
@@ -2223,7 +2265,7 @@ test('a potion used near the top of a byte clamps to the max instead of wrapping
 test('a heal spell cast near the top of a byte clamps to the max instead of wrapping', {
   skip: needsSample
 }, () => {
-  const nes = boot();
+  const nes = bootPastNaming();
   assert.ok(walkIntoEncounter(nes));
   waitForMenu(nes);
   nes.cpu.mem[PC_SPELLS] |= 2; // Mend, granted the way its level would
@@ -2252,7 +2294,7 @@ test('a monster healing itself near the top of a byte clamps to its own max', {
     project.sprites.actors[3].battle = { ...project.sprites.actors[3].battle, atk: 0, spellId: 1 };
     project.party[0].baseHp = 200;
   });
-  const nes = boot(rom);
+  const nes = bootPastNaming(rom);
   // The snake waits in the bottom-left corner, and a walked-into fight refuses
   // RUN -- which is what makes stalling rounds possible at all.
   walkTo(nes, 32, 112);
@@ -2289,7 +2331,7 @@ test('a weakness hit at 171 or more saturates instead of dealing less than the p
     project.spells[0].amountMin = 200;
     project.spells[0].amountMax = 200;
   });
-  const nes = boot(rom);
+  const nes = bootPastNaming(rom);
   walkTo(nes, 160, 176);
   walkTo(nes, 176, 176, 200);
   assert.equal(nes.cpu.mem[GAME_STATE], ST_BATTLE);
@@ -2316,7 +2358,7 @@ test('a physical attack of 253 or more survives its own noise roll instead of wr
     project.party[0].atkPerLevel = 0;
     project.sprites.actors[0].battle = { ...project.sprites.actors[0].battle, def: 0 };
   });
-  const nes = boot(rom);
+  const nes = bootPastNaming(rom);
   walkTo(nes, 160, 176);
   walkTo(nes, 176, 176, 200);
   assert.equal(nes.cpu.mem[GAME_STATE], ST_BATTLE);
@@ -2369,7 +2411,7 @@ test(
     // at any reject, on either branch, or a predicate that merely excludes
     // `damage` instead of requiring `heal`, each has a concrete,
     // distinguishing outcome to be wrong about.
-    const battleNes = boot(rom);
+    const battleNes = bootPastNaming(rom);
     battleNes.cpu.mem[INV_ITEMS] = 1; // Bomb
     battleNes.cpu.mem[INV_ITEMS + 1] = 0; // Potion
     battleNes.cpu.mem[INV_ITEMS + 2] = 2; // Dud
@@ -2399,7 +2441,7 @@ test(
     // items there, via the same use_item (engine/ui.asm) round 2 already
     // covers -- this menu's own filter has nothing to do with what the
     // field applies.
-    const fieldNes = boot(rom);
+    const fieldNes = bootPastNaming(rom);
     fieldNes.cpu.mem[INV_ITEMS] = 1; // the Bomb
     fieldNes.cpu.mem[INV_COUNT] = 1;
     fieldNes.cpu.mem[INV_SEL] = 0;
@@ -2445,7 +2487,7 @@ test(
       project.items.push({ id: 1, name: 'Bomb', actorId: null, metaspriteId: null, effect: { kind: 'damage', amount: 5 } });
       project.items.push({ id: 2, name: 'Dud', actorId: null, metaspriteId: null, effect: { kind: 'heal', amount: 0 } });
     });
-    const nes = boot(rom);
+    const nes = bootPastNaming(rom);
     nes.cpu.mem[INV_ITEMS] = 1; // the Bomb
     nes.cpu.mem[INV_ITEMS + 1] = 2; // the Dud
     nes.cpu.mem[INV_COUNT] = 2; // no Potion in the bag at all -- nothing qualifies
@@ -2506,7 +2548,7 @@ test(
       project.items.push({ id: 3, name: 'Ether', actorId: null, metaspriteId: null, effect: { kind: 'heal', amount: 8 } });
       project.items.push({ id: 4, name: 'Tonic', actorId: null, metaspriteId: null, effect: { kind: 'heal', amount: 12 } });
     });
-    const nes = boot(rom);
+    const nes = bootPastNaming(rom);
     nes.cpu.mem[INV_ITEMS] = 1; // Bomb
     nes.cpu.mem[INV_ITEMS + 1] = 4; // Tonic
     nes.cpu.mem[INV_ITEMS + 2] = 2; // Dud
@@ -2563,7 +2605,7 @@ test(
     const rom = await buildVariant(t, 'itemslot', (project) => {
       project.items.push({ id: 1, name: 'Ether', actorId: null, metaspriteId: null, effect: { kind: 'heal', amount: 5 } });
     });
-    const nes = boot(rom);
+    const nes = bootPastNaming(rom);
     // Potion (id 0) at slot 0, Ether (id 1) at slot 1 -- inv_sel points at
     // slot 0, the non-last slot. If the register clobber reappeared, X
     // would be MAX_PARTY (4) at the top of the shift loop instead of 0;
@@ -2610,7 +2652,7 @@ test(
     const rom = await buildVariant(t, 'nonlethaldamage', (project) => {
       project.items.push({ id: 1, name: 'Rock', actorId: null, metaspriteId: null, effect: { kind: 'damage', amount: 2 } });
     });
-    const nes = boot(rom);
+    const nes = bootPastNaming(rom);
     nes.cpu.mem[INV_ITEMS] = 1; // the Rock
     nes.cpu.mem[INV_COUNT] = 1;
     nes.cpu.mem[INV_SEL] = 0;
@@ -2640,7 +2682,7 @@ test(
     const rom = await buildVariant(t, 'nonlethaldamage4', (project) => {
       project.items.push({ id: 1, name: 'Boulder', actorId: null, metaspriteId: null, effect: { kind: 'damage', amount: 4 } });
     });
-    const nes = boot(rom);
+    const nes = bootPastNaming(rom);
     nes.cpu.mem[INV_ITEMS] = 1; // the Boulder
     nes.cpu.mem[INV_COUNT] = 1;
     nes.cpu.mem[INV_SEL] = 0;
@@ -2718,6 +2760,7 @@ test(
     const nes = emulator.nes;
     const frame = () => nes.frame();
     for (let i = 0; i < 40; i++) frame();
+    finishNamingIfOpen(nes); // Rian ships renamable (phase 5); the stack baseline below is measured after this, not before
 
     // sample-rpg's own item 0 (the Potion) sits harmlessly in slot 0; the
     // Bomb sits in slot 1, the *last* slot -- the one arrangement that makes
@@ -2820,7 +2863,7 @@ test('a certain drop lands in the bag on victory', {
   const rom = await buildVariant(t, 'drop', (project) => {
     project.sprites.actors[0].battle = { ...project.sprites.actors[0].battle, dropPct: 100 };
   });
-  const nes = boot(rom);
+  const nes = bootPastNaming(rom);
   assert.ok(walkIntoEncounter(nes));
   assert.equal(nes.cpu.mem[INV_COUNT], 0);
 
@@ -2872,7 +2915,7 @@ test('roll_drop\'s own drop rate matches referenceRngNext + dropThreshold across
     const built = await buildVariantFull(t, `dropthreshold-sweep-${pct}`, (project) => {
       project.sprites.actors[0].battle = { ...project.sprites.actors[0].battle, dropPct: pct };
     });
-    const nes = boot(built.romPath, 10);
+    const nes = bootPastNaming(built.romPath, 10);
     const addrOf = selectBattleBank(nes, built);
     const rollDrop = addrOf('roll_drop');
     const threshold = dropThreshold(pct);
@@ -2913,7 +2956,7 @@ test('a group spell reaches every monster in the formation at once', {
     project.spells[0].scope = 'all';
     project.sprites.actors[0].hp = 30; // both slimes survive the hit, so it is measurable
   });
-  const nes = boot(rom);
+  const nes = bootPastNaming(rom);
   walkTo(nes, 160, 176);
   walkTo(nes, 176, 176, 200);
   assert.equal(nes.cpu.mem[GAME_STATE], ST_BATTLE);
@@ -2950,7 +2993,7 @@ test('killing a whole formation in one tick queues at most one wipe row a frame,
     project.maps[0].encounters = { rate: 0, actorIds: [] };
     project.spells[0].scope = 'all';
   });
-  const nes = boot(rom);
+  const nes = bootPastNaming(rom);
   walkTo(nes, 160, 176);
   walkTo(nes, 176, 176, 200);
   assert.equal(nes.cpu.mem[GAME_STATE], ST_BATTLE);
@@ -3055,7 +3098,7 @@ test('a lower slot dying while a higher slot is mid-wipe still gets all four of 
   const BT_WIPE_ROW = resolveEngineAddress(constantsText, 'bt_wipe_row');
   const fillTile = capturedProject.maps[0].battleGroundTile;
 
-  const nes = boot(built.romPath);
+  const nes = bootPastNaming(built.romPath);
   walkTo(nes, 160, 176);
   walkTo(nes, 176, 176, 200);
   assert.equal(nes.cpu.mem[GAME_STATE], ST_BATTLE);
@@ -3152,7 +3195,7 @@ test('draining one wipe row costs a small fraction of the ~2273-cycle vblank win
     assert.ok(m, `${label} should be a named symbol in game.fns`);
     return parseInt(m[1], 16);
   };
-  const nes = boot(built.romPath, 10);
+  const nes = bootPastNaming(built.romPath, 10);
   selectBattleBank(nes, built);
   const applyDamage = addrOf('apply_damage');
   const wipeTick = addrOf('wipe_tick');
@@ -3199,7 +3242,7 @@ test('a monster with a spell casts it, spending its own MP, and poison ticks', {
     project.sprites.actors[3].battle = { ...project.sprites.actors[3].battle, atk: 0 };
     project.party[0].baseHp = 200;
   });
-  const nes = boot(rom);
+  const nes = bootPastNaming(rom);
   // The snake waits in the bottom-left corner.
   walkTo(nes, 32, 112);
   walkTo(nes, 32, 208, 300);
@@ -3241,7 +3284,7 @@ test('the party can poison a monster, and the poison alone finishes it', {
     project.sprites.actors[0].hp = 4;
     project.sprites.actors[0].battle = { ...project.sprites.actors[0].battle, acc: 0 };
   });
-  const nes = boot(rom);
+  const nes = bootPastNaming(rom);
   walkTo(nes, 160, 176);
   walkTo(nes, 176, 176, 200);
   assert.equal(nes.cpu.mem[GAME_STATE], ST_BATTLE);
@@ -3279,7 +3322,7 @@ test('a spell of kind burn lands on a monster, and its own tick after its turn c
     project.spells[2].kind = 'burn'; // Venom becomes this build's Burn spell
     project.sprites.actors[0].battle = { ...project.sprites.actors[0].battle, acc: 0 }; // never hits back, so MON_HP moves only from the tick under test
   });
-  const nes = boot(rom);
+  const nes = bootPastNaming(rom);
   walkTo(nes, 160, 176);
   walkTo(nes, 176, 176, 200);
   assert.equal(nes.cpu.mem[GAME_STATE], ST_BATTLE);
@@ -3325,7 +3368,7 @@ test('a combatant poisoned and burned on its own turn takes both ticks, in order
     // Never hits back, so PC_HP only ever moves from the ticks under test.
     project.sprites.actors[0].battle = { ...project.sprites.actors[0].battle, acc: 0 };
   });
-  const nes = boot(rom);
+  const nes = bootPastNaming(rom);
   walkTo(nes, 160, 176);
   walkTo(nes, 176, 176, 200);
   assert.equal(nes.cpu.mem[GAME_STATE], ST_BATTLE);
@@ -3392,7 +3435,7 @@ test('apply_damage does not touch an already-dead monster slot a second time', {
     assert.ok(m, `${label} should be a named symbol in game.fns`);
     return parseInt(m[1], 16);
   };
-  const nes = boot(built.romPath, 10);
+  const nes = bootPastNaming(built.romPath, 10);
   selectBattleBank(nes, built);
   const applyDamage = addrOf('apply_damage');
 
@@ -3430,7 +3473,7 @@ test('a monster poisoned and burned on its own turn dies once, not twice, and ta
     project.maps[0].encounters = { rate: 0, actorIds: [] };
     project.party[0].baseHp = 200; // the slime's own ordinary attacks must not derail the stall loop
   });
-  const nes = boot(rom);
+  const nes = bootPastNaming(rom);
   walkTo(nes, 160, 176);
   walkTo(nes, 176, 176, 200);
   assert.equal(nes.cpu.mem[GAME_STATE], ST_BATTLE);
@@ -3479,7 +3522,7 @@ test('a monster poisoned and burned on its own turn dies once, not twice, and ta
 test('a heal spell cures both poison and burn at once', {
   skip: needsSample
 }, () => {
-  const nes = boot();
+  const nes = bootPastNaming();
   assert.ok(walkIntoEncounter(nes));
   waitForMenu(nes);
 
@@ -3500,7 +3543,7 @@ test('a heal spell cures both poison and burn at once', {
 test('a potion cures both poison and burn at once', {
   skip: needsSample
 }, () => {
-  const nes = boot();
+  const nes = bootPastNaming();
   nes.cpu.mem[INV_ITEMS] = 0;
   nes.cpu.mem[INV_COUNT] = 1;
   assert.ok(walkIntoEncounter(nes));
@@ -3524,7 +3567,7 @@ test('winning a battle clears a status that fight leaves behind, not just one it
   const rom = await buildVariant(t, 'won-poisoned', (project) => {
     project.sprites.actors[0].hp = 1;
   });
-  const nes = boot(rom);
+  const nes = bootPastNaming(rom);
   assert.ok(walkIntoEncounter(nes));
   waitForMenu(nes);
   // Poisoned mid-fight, the same way a monster's own Venom would leave it --
@@ -3595,7 +3638,7 @@ test('a Start a battle command suspends the script, and winning resumes it', {
     });
   });
 
-  const nes = boot(rom);
+  const nes = bootPastNaming(rom);
   const startScreen = nes.cpu.mem[FLAT_SCREEN];
   assert.equal(nes.cpu.mem[VARIABLES], 1, 'the entry event did not run when the game started');
   assert.equal(nes.cpu.mem[SWITCHES] & (1 << 5), 0, 'the boss switch should not already be on');
@@ -3688,7 +3731,7 @@ test('a Move self right after winning a scripted battle still runs, and so does 
     });
   });
 
-  const nes = boot(rom);
+  const nes = bootPastNaming(rom);
   walkTo(nes, 176, 32);
   for (let i = 0; i < 30 && nes.cpu.mem[GAME_STATE] !== ST_BATTLE; i++) nes.frame();
   assert.equal(nes.cpu.mem[GAME_STATE], ST_BATTLE, 'touching the boss did not start the scripted fight');
@@ -3773,7 +3816,7 @@ test('a Turn self right after winning a scripted battle still runs, and so does 
     });
   });
 
-  const nes = boot(rom);
+  const nes = bootPastNaming(rom);
   walkTo(nes, 176, 32);
   for (let i = 0; i < 30 && nes.cpu.mem[GAME_STATE] !== ST_BATTLE; i++) nes.frame();
   assert.equal(nes.cpu.mem[GAME_STATE], ST_BATTLE, 'touching the boss did not start the scripted fight');
@@ -3874,7 +3917,7 @@ test('winning does not re-arm the boss even when its own event reshuffles entity
     });
   });
 
-  const nes = boot(rom);
+  const nes = bootPastNaming(rom);
 
   walkTo(nes, 176, 32);
   for (let i = 0; i < 30 && nes.cpu.mem[GAME_STATE] !== ST_BATTLE; i++) nes.frame();
@@ -3955,7 +3998,7 @@ test('a random encounter that lands on a touch event does not suppress it', {
     });
   });
 
-  const nes = boot(rom);
+  const nes = bootPastNaming(rom);
   assert.equal(nes.cpu.mem[PLAYER_X], 112);
   assert.equal(nes.cpu.mem[PLAYER_Y], 112);
 
@@ -4033,7 +4076,7 @@ test("an entry event's own battle does not suppress an unrelated touch entity un
     });
   });
 
-  const nes = boot(rom);
+  const nes = bootPastNaming(rom);
   for (let i = 0; i < 30 && nes.cpu.mem[GAME_STATE] !== ST_BATTLE; i++) nes.frame();
   assert.equal(nes.cpu.mem[GAME_STATE], ST_BATTLE, "the entry event's battle never started");
   for (let i = 0; i < 12; i++) nes.frame(); // let battle_intro's own first tick settle in
@@ -4164,7 +4207,7 @@ test(
 
     assertForcesCarry(built.symbolPath, 'mon_name', 23, NAME_LIMIT);
 
-    const nes = boot(built.romPath);
+    const nes = bootPastNaming(built.romPath);
     walkTo(nes, 112, 144, 200);
     for (let i = 0; i < 30 && nes.cpu.mem[GAME_STATE] !== ST_BATTLE; i++) nes.frame();
     assert.equal(nes.cpu.mem[GAME_STATE], ST_BATTLE, 'walking into actor 26 did not start a fight');
@@ -4253,7 +4296,7 @@ test(
 
     assertForcesCarry(built.symbolPath, 'item_name', 14, NAME_LIMIT);
 
-    const nes = boot(built.romPath);
+    const nes = bootPastNaming(built.romPath);
     nes.cpu.mem[INV_ITEMS] = 14; // GEM14 -- the low-index, carry-forcing control
     nes.cpu.mem[INV_ITEMS + 1] = 26; // the round-0 wrap
     nes.cpu.mem[INV_COUNT] = 2;
