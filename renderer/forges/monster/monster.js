@@ -1,6 +1,6 @@
 // Monster Forge — everything about an actor that means something only in a
 // battle: attack/defence/accuracy/evasion/speed, XP/gold, weak/resist, the
-// spell it casts, its drop, and its battle artwork. `hp` and `damage` stay
+// spells it may cast, its drop, and its battle artwork. `hp` and `damage` stay
 // on the Sprite Forge's general Actor panel because both are genuinely
 // dual-purpose there (an action project's own enemies use them directly);
 // see docs/design-monster.md §2 for the full boundary argument.
@@ -65,6 +65,12 @@ const select = (options, value, onChange) =>
 
 const row = (...children) => el('div.field-row', { style: { gap: '8px', marginBottom: '6px' } }, ...children);
 
+// Casts, Also, or, or, ... -- the label for each of RPG_LIMITS.monsterSpells
+// spell slots (§8): the first two are distinct, every slot after repeats
+// "or" since there is nothing more specific to say about a third or fourth
+// alternative.
+const SPELL_SLOT_LABELS = ['Casts', 'Also'];
+
 /**
  * An actor's battle stats: what it is worth fighting, and what fighting it
  * costs. Moved verbatim from renderer/forges/sprite/battle.js (the design's
@@ -92,6 +98,46 @@ export function battleSection(actor, index, rerender) {
   // that case as a deliberate choice, not a broken reference, so this is
   // the one caller-specific decision the shared helper leaves to the field.
   const dropOptions = itemPickerOptions(store.project.items, battle.drop);
+
+  // The spell list's own commit rule (docs/design-monster-spell-list.md §8):
+  // derive the new array from the STORE's current battle.spellIds, never from
+  // the other three <select> elements' DOM values -- a stale id in another
+  // slot renders as "Nothing" (the browser's own default for an unmatched
+  // <option>), so reading the DOM back would silently drop it. Setting a
+  // slot writes the chosen id (or null for "Nothing") at that index, then
+  // every empty entry -- interior gaps and trailing ones alike -- is
+  // dropped, closing the list up. Duplicates are kept: they are the design's
+  // weighting primitive, not accidental repeats to clean up.
+  const spellSlotTooltip =
+    'Cast about half the time while the MP above lasts, choosing at random among the affordable ones; otherwise it attacks';
+  const spellSlot = (slot, label) =>
+    field(
+      label,
+      el(
+        'select',
+        {
+          'data-spell-slot': String(slot),
+          title: spellSlotTooltip,
+          onchange: (event) => {
+            const chosen = event.target.value === '' ? null : Number(event.target.value);
+            store.commit('Change battle stats', (project) => {
+              const target = project.sprites.actors[index];
+              const current = [...(target.battle?.spellIds ?? [])];
+              current[slot] = chosen;
+              target.battle = {
+                ...target.battle,
+                spellIds: current.filter((id) => id !== null && id !== undefined)
+              };
+            });
+            rerender();
+          }
+        },
+        el('option', { value: '', selected: (battle.spellIds ?? [])[slot] === undefined }, 'Nothing'),
+        store.project.spells.map((spell, id) =>
+          el('option', { value: id, selected: id === (battle.spellIds ?? [])[slot] }, spell.name)
+        )
+      )
+    );
 
   return el(
     'div',
@@ -134,36 +180,11 @@ export function battleSection(actor, index, rerender) {
     ),
     row(
       field('Weak to', select(ELEMENTS, battle.weak ?? 'none', (value) => set('weak', value))),
-      field('Resists', select(ELEMENTS, battle.strong ?? 'none', (value) => set('strong', value))),
-      field(
-        'Casts',
-        el(
-          'select',
-          {
-            title:
-              'Cast about half the time while the MP above lasts, choosing at random among the affordable ones; otherwise it attacks',
-            onchange: (event) => {
-              const chosen = event.target.value === '' ? null : Number(event.target.value);
-              store.commit('Change battle stats', (project) => {
-                const target = project.sprites.actors[index];
-                const rest = (target.battle?.spellIds ?? []).slice(1);
-                target.battle = {
-                  ...target.battle,
-                  spellIds: chosen === null ? rest : [chosen, ...rest]
-                };
-              });
-              rerender();
-            }
-          },
-          el(
-            'option',
-            { value: '', selected: (battle.spellIds ?? [])[0] === undefined },
-            'Nothing'
-          ),
-          store.project.spells.map((spell, id) =>
-            el('option', { value: id, selected: id === (battle.spellIds ?? [])[0] }, spell.name)
-          )
-        )
+      field('Resists', select(ELEMENTS, battle.strong ?? 'none', (value) => set('strong', value)))
+    ),
+    row(
+      ...Array.from({ length: RPG_LIMITS.monsterSpells }, (_, slot) =>
+        spellSlot(slot, SPELL_SLOT_LABELS[slot] ?? 'or')
       )
     ),
     row(

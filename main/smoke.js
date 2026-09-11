@@ -7674,6 +7674,139 @@ const scenario = (dir, sampleDir, sampleRpgDir) => `
           'bound to spellIds[0]: choosing a spell writes [chosenId, ...rest]; choosing Nothing writes rest, closing the list up'
         );
       }
+
+      // Monster spell list, phase 2's four-select replacement (§8/§12 test
+      // 14, docs/design-monster-spell-list.md): Casts/Also/or/or, backed by
+      // battle.spellIds[0..3], collapsing empty slots (interior and
+      // trailing alike) on every commit. Located by each select's own
+      // data-spell-slot="0".."3" attribute rather than by label, since two
+      // of the four are both labelled "or" and findFieldSelect cannot tell
+      // them apart. Runs from Snake's pristine spellIds: [2] (Venom).
+      {
+        const spellSlotSelect = (slot) => document.querySelector('#stage select[data-spell-slot="' + slot + '"]');
+        const expectedSpellTooltip =
+          'Cast about half the time while the MP above lasts, choosing at random among the affordable ones; otherwise it attacks';
+        const selectedTextOf = (sel) => [...sel.options].find((o) => o.selected)?.textContent;
+        const renderedSpellSlots = () => [0, 1, 2, 3].map((slot) => selectedTextOf(spellSlotSelect(slot)));
+
+        for (const slot of [0, 1, 2, 3]) {
+          const sel = spellSlotSelect(slot);
+          if (!sel) throw new Error('Monster Forge has no spell slot ' + slot + ' select for Snake');
+          if (sel.title !== expectedSpellTooltip) {
+            throw new Error('spell slot ' + slot + ' tooltip was not the expected text, saw: ' + sel.title);
+          }
+        }
+        const pristineRendered = renderedSpellSlots();
+        if (JSON.stringify(pristineRendered) !== JSON.stringify(['Venom', 'Nothing', 'Nothing', 'Nothing'])) {
+          throw new Error(
+            'a pristine Snake should show [Venom, Nothing, Nothing, Nothing] across the four spell slots, saw: ' +
+              JSON.stringify(pristineRendered)
+          );
+        }
+
+        const setSpellSlot = (slot, optionText) => {
+          const sel = spellSlotSelect(slot);
+          const option = [...sel.options].find((o) => o.textContent === optionText);
+          if (!option) throw new Error('spell slot ' + slot + ' has no ' + optionText + ' option');
+          sel.value = option.value;
+          sel.dispatchEvent(new Event('change', { bubbles: true }));
+        };
+
+        setSpellSlot(0, 'Ember');
+        await wait(150);
+        setSpellSlot(2, 'Venom');
+        await wait(150);
+
+        const afterSpellEdits = monsterStore.project.sprites.actors[snakeId].battle.spellIds;
+        if (JSON.stringify(afterSpellEdits) !== JSON.stringify([0, 2])) {
+          throw new Error(
+            'setting slot 0 to Ember and slot 2 to Venom (1 and 3 left at Nothing) should collapse to [0, 2], saw: ' +
+              JSON.stringify(afterSpellEdits)
+          );
+        }
+        const afterSpellEditsRendered = renderedSpellSlots();
+        if (JSON.stringify(afterSpellEditsRendered) !== JSON.stringify(['Ember', 'Venom', 'Nothing', 'Nothing'])) {
+          throw new Error(
+            'after the collapse, the re-rendered selects should read [Ember, Venom, Nothing, Nothing], saw: ' +
+              JSON.stringify(afterSpellEditsRendered)
+          );
+        }
+
+        if (!monsterStore.undo()) throw new Error('undo (1) returned false for the spell-slot edit');
+        await wait(150);
+        const afterSpellUndo1 = monsterStore.project.sprites.actors[snakeId].battle.spellIds;
+        if (JSON.stringify(afterSpellUndo1) !== JSON.stringify([0])) {
+          throw new Error('the first undo should restore spellIds to [0], saw: ' + JSON.stringify(afterSpellUndo1));
+        }
+        const renderedAfterSpellUndo1 = renderedSpellSlots();
+        if (JSON.stringify(renderedAfterSpellUndo1) !== JSON.stringify(['Ember', 'Nothing', 'Nothing', 'Nothing'])) {
+          throw new Error(
+            'after the first undo, the rendered selects should read [Ember, Nothing, Nothing, Nothing], saw: ' +
+              JSON.stringify(renderedAfterSpellUndo1)
+          );
+        }
+
+        if (!monsterStore.undo()) throw new Error('undo (2) returned false for the spell-slot edit');
+        await wait(150);
+        const afterSpellUndo2 = monsterStore.project.sprites.actors[snakeId].battle.spellIds;
+        if (JSON.stringify(afterSpellUndo2) !== JSON.stringify([2])) {
+          throw new Error('the second undo should restore spellIds to [2], saw: ' + JSON.stringify(afterSpellUndo2));
+        }
+        const renderedAfterSpellUndo2 = renderedSpellSlots();
+        if (JSON.stringify(renderedAfterSpellUndo2) !== JSON.stringify(['Venom', 'Nothing', 'Nothing', 'Nothing'])) {
+          throw new Error(
+            'after the second undo, the rendered selects should read [Venom, Nothing, Nothing, Nothing], saw: ' +
+              JSON.stringify(renderedAfterSpellUndo2)
+          );
+        }
+
+        if (!monsterStore.redo()) throw new Error('redo (1) returned false for the spell-slot edit');
+        await wait(150);
+        if (!monsterStore.redo()) throw new Error('redo (2) returned false for the spell-slot edit');
+        await wait(150);
+        const afterSpellRedo = monsterStore.project.sprites.actors[snakeId].battle.spellIds;
+        if (JSON.stringify(afterSpellRedo) !== JSON.stringify([0, 2])) {
+          throw new Error('two redos should restore spellIds to [0, 2], saw: ' + JSON.stringify(afterSpellRedo));
+        }
+        const renderedAfterSpellRedo = renderedSpellSlots();
+        if (JSON.stringify(renderedAfterSpellRedo) !== JSON.stringify(['Ember', 'Venom', 'Nothing', 'Nothing'])) {
+          throw new Error(
+            'after the two redos, the rendered selects should read [Ember, Venom, Nothing, Nothing], saw: ' +
+              JSON.stringify(renderedAfterSpellRedo)
+          );
+        }
+
+        const spellListSave = await window.forge.project.save(monsterStore.dir, monsterStore.project);
+        if (!spellListSave.ok) throw new Error('save (spell list round trip): ' + spellListSave.error);
+        const spellListReopened = await window.forge.project.open(monsterStore.dir);
+        if (!spellListReopened.ok) throw new Error('reopen (spell list round trip): ' + spellListReopened.error);
+        const reopenedSpellIds = spellListReopened.value.project.sprites.actors[snakeId].battle.spellIds;
+        if (JSON.stringify(reopenedSpellIds) !== JSON.stringify([0, 2])) {
+          throw new Error('the reopened project should read spellIds [0, 2] for Snake, saw: ' + JSON.stringify(reopenedSpellIds));
+        }
+
+        // Cleanup: undo back to the pristine [2] and save so disk matches --
+        // the later sampleRpgDir reopen blocks depend on Snake being back at
+        // one entry.
+        if (!monsterStore.undo()) throw new Error('undo (cleanup 1) returned false for the spell-slot edit');
+        await wait(150);
+        if (!monsterStore.undo()) throw new Error('undo (cleanup 2) returned false for the spell-slot edit');
+        await wait(150);
+        const afterSpellCleanupUndo = monsterStore.project.sprites.actors[snakeId].battle.spellIds;
+        if (JSON.stringify(afterSpellCleanupUndo) !== JSON.stringify([2])) {
+          throw new Error('cleanup undo should restore spellIds to [2], saw: ' + JSON.stringify(afterSpellCleanupUndo));
+        }
+        const spellListCleanupSave = await window.forge.project.save(monsterStore.dir, monsterStore.project);
+        if (!spellListCleanupSave.ok) throw new Error('save (spell list cleanup): ' + spellListCleanupSave.error);
+        if (JSON.stringify(monsterStore.project.sprites.actors[snakeId].battle.spellIds) !== JSON.stringify([2])) {
+          throw new Error('the store should still read spellIds [2] after the cleanup save');
+        }
+
+        step(
+          'Monster Forge phase-2 four spell selects: commit/undo/redo/reload with the collapse applied',
+          'setting slot 0 to Ember and slot 2 to Venom while 1 and 3 stay Nothing collapses to [Ember, Venom]; undo/redo/reload all agree'
+        );
+      }
     }
 
     // Character Forge Magic and Magic defence fields, plus both per-level
@@ -8017,6 +8150,8 @@ const scenario = (dir, sampleDir, sampleRpgDir) => `
         ['Weak to', 'none'],
         ['Resists', 'none'],
         ['Casts', ''],
+        ['Also', ''],
+        ['or', ''], // findFieldSelect matches the first "or" label; both slots 2 and 3 default identically
         ['Drops', '']
       ];
       for (const [label, expected] of selectDefaultCases) {
