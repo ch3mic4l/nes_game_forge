@@ -88,7 +88,9 @@ import {
   projectUsesNameToken,
   projectWithoutNameToken,
   projectWithoutHeroNaming,
-  projectWithoutJoinNaming
+  projectWithoutJoinNaming,
+  projectUsesMonsterSpellList,
+  projectWithoutMonsterSpellList
 } from '../../shared/project.js';
 import { FONT_BASE, SPRITE_ARROW_TILE, fontChrPages } from '../../shared/font.js';
 import { BLANK_TILE } from '../../shared/chr.js';
@@ -1846,6 +1848,106 @@ test('in-game naming: battleShortfallAdvice offers "the name token" as a solo ca
   // extended to this third candidate.
   const overriddenAdvice = battleShortfallAdvice(project, mapper, 1, { exact: false });
   assert.doesNotMatch(overriddenAdvice, /name token/i, 'the token candidate must be suppressed too when exact is false');
+});
+
+// The monster spell list's own removal lever (docs/design-monster-spell-list.md
+// §7/§12 test 15) -- the generalized bankedFeatures mechanism, following the
+// name-token solo-candidate test above's own shape.
+test('monster spell list: battleShortfallAdvice offers "every monster\'s extra spells" exactly when that alone closes the deficit', async () => {
+  const project = await loadProject(SAMPLE_RPG);
+  const mapper = SUPPORTED_MAPPERS.find((entry) => entry.id === project.cartridge.mapper);
+  // Naming off, so no naming entry is a candidate here and the spell list is
+  // the only banked feature live to start with.
+  project.party[0].renamable = false;
+  if (project.party[1]) project.party[1].renamable = false;
+  assert.equal(projectUsesNameToken(project), false, 'sample-rpg should carry no {name} token by default');
+
+  // Negative control first: the pristine fixture (Snake's spellIds is [2])
+  // cannot be helped by this lever at all.
+  assert.equal(projectUsesMonsterSpellList(project), false, 'sample-rpg should ship with no live monster spell list');
+  const pristineAdvice = battleShortfallAdvice(project, mapper, 1);
+  assert.doesNotMatch(
+    pristineAdvice,
+    /extra spells/i,
+    `the lever must not fire on a project it cannot help, got: ${pristineAdvice}`
+  );
+
+  // Flip the feature on the way the phase-1 isolation test above does.
+  const snake = project.sprites.actors.find((a) => a.battle?.spellIds?.length);
+  assert.ok(snake, 'sample-rpg should have a caster with a live spellIds entry to extend');
+  snake.battle.spellIds = [...snake.battle.spellIds, 0];
+  assert.equal(projectUsesMonsterSpellList(project), true, 'a second spellIds entry should flip the feature on');
+
+  const preStripSnapshot = structuredClone(project);
+  const stripped = projectWithoutMonsterSpellList(project);
+  const strippedSnake = stripped.sprites.actors.find((a) => a.name === snake.name);
+  assert.deepEqual(strippedSnake?.battle?.spellIds, [2], 'the strip helper should keep only Snake’s first entry');
+  for (const actor of project.sprites.actors) {
+    if (actor === snake) continue;
+    const strippedActor = stripped.sprites.actors.find((a) => a.name === actor.name);
+    assert.deepEqual(
+      strippedActor?.battle?.spellIds,
+      actor.battle?.spellIds,
+      `${actor.name}'s battle.spellIds must be left untouched by the strip helper`
+    );
+  }
+  assert.deepEqual(project, preStripSnapshot, 'projectWithoutMonsterSpellList must not mutate its input');
+
+  const budget = battleRegionBytes(project, mapper);
+  const freed = budget - battleRegionBytes(projectWithoutMonsterSpellList(project), mapper);
+  assert.ok(
+    freed >= MONSTER_SPELL_LIST_BATTLE_ALLOWANCE,
+    `freed (${freed}) should be at least MONSTER_SPELL_LIST_BATTLE_ALLOWANCE (${MONSTER_SPELL_LIST_BATTLE_ALLOWANCE})`
+  );
+  const expectedFreed = MONSTER_SPELL_LIST_BATTLE_ALLOWANCE + (RPG_LIMITS.monsterSpells - 1) * project.sprites.actors.length;
+  assert.equal(
+    freed,
+    expectedFreed,
+    `freed should equal the code term plus the N-stride table's extra bytes (expected ${expectedFreed}, got ${freed})`
+  );
+
+  const snapshotBeforeAdvice = structuredClone(project);
+
+  const soloAdvice = battleShortfallAdvice(project, mapper, freed);
+  assert.match(
+    soloAdvice,
+    /removing every monster's extra spells/i,
+    `advice should offer the spell list as a fix at deficit = freed, got: ${soloAdvice}`
+  );
+  assert.deepEqual(project, snapshotBeforeAdvice, 'battleShortfallAdvice must not mutate the project');
+
+  const tooMuchAdvice = battleShortfallAdvice(project, mapper, freed + 1);
+  assert.doesNotMatch(
+    tooMuchAdvice,
+    /extra spells/i,
+    `advice must not offer the spell list when it cannot close the deficit, got: ${tooMuchAdvice}`
+  );
+  assert.deepEqual(project, snapshotBeforeAdvice, 'battleShortfallAdvice must not mutate the project');
+
+  const overriddenSpellAdvice = battleShortfallAdvice(project, mapper, 1, { exact: false });
+  assert.doesNotMatch(
+    overriddenSpellAdvice,
+    /extra spells/i,
+    `the spell list candidate must be suppressed too when exact is false, got: ${overriddenSpellAdvice}`
+  );
+  assert.deepEqual(project, snapshotBeforeAdvice, 'battleShortfallAdvice must not mutate the project');
+
+  // The generalized array holds mixed entries: turn hero naming back on and
+  // confirm the combined branch names both candidates in one sentence.
+  project.party[0].renamable = true;
+  const budgetWithHero = battleRegionBytes(project, mapper);
+  const heroFreed = budgetWithHero - battleRegionBytes(projectWithoutHeroNaming(project), mapper);
+  assert.ok(freed > 0, 'freed must be positive for the combined case to be meaningful');
+  assert.ok(heroFreed > 0, 'heroFreed must be positive for the combined case to be meaningful');
+
+  const snapshotBeforeCombined = structuredClone(project);
+  const combinedAdvice = battleShortfallAdvice(project, mapper, freed + heroFreed);
+  assert.match(
+    combinedAdvice,
+    /hero naming at the start of a new game and every monster's extra spells/i,
+    `advice should combine both candidates in one sentence, got: ${combinedAdvice}`
+  );
+  assert.deepEqual(project, snapshotBeforeCombined, 'battleShortfallAdvice must not mutate the project');
 });
 
 test('in-game naming: the register-write source scan -- nameentry.asm never touches $8000/$8001', async () => {

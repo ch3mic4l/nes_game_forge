@@ -2755,6 +2755,24 @@ export function projectWithoutNameToken(project) {
   return clone;
 }
 
+// The battleShortfallAdvice removal candidate for the monster spell list
+// (docs/design-monster-spell-list.md §7) -- NOT the inverse of the schema
+// migration that introduced battle.spellIds (that migration is one-way, and
+// this helper never reintroduces the scalar spellId field it replaced). A
+// same-shaped-array truncation to the first entry is sufficient to flip
+// projectUsesMonsterSpellList off for that actor: a list of length 0 or 1 is
+// left exactly as it is, and a longer list keeps only its first entry, the
+// spell that already assembles when the feature is off.
+export function projectWithoutMonsterSpellList(project) {
+  const clone = structuredClone(project);
+  for (const actor of clone.sprites?.actors ?? []) {
+    if (Array.isArray(actor.battle?.spellIds) && actor.battle.spellIds.length >= 2) {
+      actor.battle.spellIds = actor.battle.spellIds.slice(0, 1);
+    }
+  }
+  return clone;
+}
+
 // The single answer to "does this project need pc_name_ram seeded at all" --
 // the identical formula NAME_SEED_ENABLED's own kernel-lo emission computes.
 // Phase 4 (the Say token, docs/design-name-entry.md §9a) widens this to

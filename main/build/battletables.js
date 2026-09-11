@@ -51,7 +51,8 @@ import {
   projectWithoutJoinNaming,
   projectNeedsNameSeed,
   projectUsesNameToken,
-  projectWithoutNameToken
+  projectWithoutNameToken,
+  projectWithoutMonsterSpellList
 } from '../../shared/project.js';
 import { NESASM_BANK_BYTES } from '../../shared/cartridge.js';
 import { textToTiles } from '../../shared/font.js';
@@ -1008,18 +1009,28 @@ export function battleShortfallAdvice(project, mapper, deficit, { alternatives =
     }
   }
 
-  // In-game naming (docs/design-name-entry.md §11, X2). Suppressed entirely
-  // when exact is false: with an overridden battle system, the deficit above
-  // was computed from battleTableBytes ALONE (generate.js) -- removing
-  // naming changes battleRegionBytes, never battleTableBytes, so it cannot
-  // close this particular deficit no matter how it is worded.
-  const nameFeatures = [];
+  // Every banked-region removal candidate this advisor can suggest directly
+  // -- in-game naming (docs/design-name-entry.md §11, X2), the Say token, and
+  // now the monster spell list (docs/design-monster-spell-list.md §7).
+  // Suppressed entirely when exact is false: with an overridden battle
+  // system, the deficit above was computed from battleTableBytes ALONE
+  // (generate.js). The three naming candidates change battleRegionBytes but
+  // never battleTableBytes, so none of THOSE can close this particular
+  // deficit no matter how it is worded. The spell-list candidate is
+  // different -- projectWithoutMonsterSpellList also shrinks the emitted
+  // mon_spell table from N-stride back to one byte per actor, so it DOES
+  // move battleTableBytes too, and under exact: false it could in principle
+  // close a small tables-only deficit. It is still withheld there on
+  // purpose: exact is a policy gate (no banked-feature removal is offered
+  // when the stock base is unknown -- the identical gate shape naming
+  // already uses), not a claim that this candidate saves zero table bytes.
+  const bankedFeatures = [];
   if (exact) {
     if (battleBankEnabled(project, mapper) && projectUsesHeroNaming(project)) {
-      nameFeatures.push({ label: 'hero naming at the start of a new game', strip: projectWithoutHeroNaming });
+      bankedFeatures.push({ label: 'hero naming at the start of a new game', strip: projectWithoutHeroNaming });
     }
     if (battleBankEnabled(project, mapper) && projectUsesJoinNaming(project)) {
-      nameFeatures.push({ label: 'every named Join', strip: projectWithoutJoinNaming });
+      bankedFeatures.push({ label: 'every named Join', strip: projectWithoutJoinNaming });
     }
     // Phase 4 (the Say token, docs/design-name-entry.md §9a/§11): a token-only
     // RPG (neither hero nor Join naming live) still pays NAME_COPY_BATTLE_
@@ -1028,18 +1039,34 @@ export function battleShortfallAdvice(project, mapper, deficit, { alternatives =
     // battleBankEnabled the identical way the two above are, since
     // battleRegionBytes only charges the term at all when banked.
     if (battleBankEnabled(project, mapper) && projectUsesNameToken(project)) {
-      nameFeatures.push({ label: 'the name token', strip: projectWithoutNameToken });
+      bankedFeatures.push({ label: 'the name token', strip: projectWithoutNameToken });
+    }
+    // docs/design-monster-spell-list.md §7: a monster's own extra spells
+    // (battle.spellIds beyond its first entry) pay
+    // MONSTER_SPELL_LIST_BATTLE_ALLOWANCE plus the N-stride table's own
+    // extra bytes. Unlike NAME_ENTRY_BATTLE_ALLOWANCE/NAME_COPY_BATTLE_
+    // ALLOWANCE just above, battleRegionBytes charges this allowance (and
+    // the table emitter emits the wide table) on
+    // projectUsesMonsterSpellList(project) ALONE, with no && banked guard --
+    // so the battleBankEnabled half of this entry's own gate is not mirroring
+    // a banked-only charge. It matches the naming entries' gate shape and
+    // additionally requires an actually allocated battle region --
+    // checkCapacity consults this advisor for any RPG project requesting
+    // one (codeRegionCount, game type alone), unless its placement is
+    // overridden, so the two gates are not the same test.
+    if (battleBankEnabled(project, mapper) && projectUsesMonsterSpellList(project)) {
+      bankedFeatures.push({ label: "every monster's extra spells", strip: projectWithoutMonsterSpellList });
     }
   }
-  if (nameFeatures.length) {
-    const nameBudget = battleRegionBytes(project, mapper);
-    const nameFreed = (subset) =>
-      nameBudget - battleRegionBytes(subset.reduce((p, f) => f.strip(p), project), mapper);
-    const soloWinners = nameFeatures.filter((f) => nameFreed([f]) >= deficit);
+  if (bankedFeatures.length) {
+    const bankedBudget = battleRegionBytes(project, mapper);
+    const bankedFreed = (subset) =>
+      bankedBudget - battleRegionBytes(subset.reduce((p, f) => f.strip(p), project), mapper);
+    const soloWinners = bankedFeatures.filter((f) => bankedFreed([f]) >= deficit);
     if (soloWinners.length) {
       for (const f of soloWinners) options.push(`removing ${f.label}`);
-    } else if (nameFeatures.length > 1 && nameFreed(nameFeatures) >= deficit) {
-      options.push(`removing ${nameFeatures.map((f) => f.label).join(' and ')}`);
+    } else if (bankedFeatures.length > 1 && bankedFreed(bankedFeatures) >= deficit) {
+      options.push(`removing ${bankedFeatures.map((f) => f.label).join(' and ')}`);
     }
   }
 

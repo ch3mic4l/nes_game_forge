@@ -1506,7 +1506,8 @@ this item's own new table bytes would land and grow.
    and Slime/Bat's own `mdef` (this phase) — no checked-in fixture opts in. See
    `docs/design-character-forge.md` §5 for where the caster-stat request was first recorded and
    deferred, and item 14 below for the Monster Forge, which owns the actor `battle` record both
-   fields live on.
+   fields live on. A monster's own *list* of spells — as opposed to the caster stat spent casting
+   them — is item 14's own sub-item 4, `docs/design-monster-spell-list.md`.
 
 ---
 
@@ -1555,9 +1556,11 @@ monsters the way item 5's shipped phases were for items.
   which is what lets every actor in a project fight without being redrawn for it.
 - **Overworld sprites and animations**: the actor's own metasprites and animations
   (`project.sprites`), the Sprite Forge's core business already.
-- The monster's own **spell**: `spellId` → `mon_spell`, `$FF` meaning it only ever swings
-  (`monster_turn`, `engine/battleturn.asm` — a coin flip between casting and attacking when it can
-  afford the MP) — worth naming here since item 13 is where spells themselves get their Forge.
+- The monster's own **spell list**: `spellIds` → `mon_spell`, an empty list meaning it only ever
+  swings (`monster_turn`, `engine/battleturn.asm` — a uniform pick among whichever listed entries
+  it can currently afford, duplicates counting as weighting, drawn before the same coin flip
+  between casting and attacking) — worth naming here since item 13 is where spells themselves get
+  their Forge. See sub-item 4 below for the several-spells generalization.
 
 **Genuinely new in the user's ask:**
 
@@ -1575,7 +1578,7 @@ monsters the way item 5's shipped phases were for items.
    animations, `behavior`, `speed`) *and* `hp` *and* contact `damage`, since both are dual-purpose —
    `hp` backs an action project's own `ent_hp`, and `damage` is what makes `isMonsterActor` true at
    all — while the Monster Forge takes the remaining author-facing battle controls
-   (atk/def/acc/eva/speed/mp/xp/gold/weak/strong/spellId/drop/dropPct/battle art), every field with no
+   (atk/def/acc/eva/speed/mp/xp/gold/weak/strong/spellIds/drop/dropPct/battle art), every field with no
    consumer outside `BATTLE_ENABLED`. One field is the exception on both sides: `battle.heal` stays in
    the schema, edited by neither Forge — it is legacy `ITEMS_ENABLED`-false data and an item-migration
    source with a consumer outside `BATTLE_ENABLED`, per design §2. `monsterActorIds(project)`
@@ -1607,6 +1610,22 @@ monsters the way item 5's shipped phases were for items.
    battle screen" question item 13 records for spells (metasprite flipbook vs. `PALETTE_FX` reuse vs.
    something else) rather than restating it — the two items would want one shared answer, not two
    separately designed ones.
+4. ~~**A monster's own spell list** — several spells, weighted by duplicate entries, picked
+   uniformly among the affordable ones, replacing the single `battle.spellId` it has today;
+   designed, priced, gated and tested in `docs/design-monster-spell-list.md` v9.2.~~ — **done**
+   (`d442aa7`, `89355a1`, this change): `battle.spellIds`, an array of up to
+   `RPG_LIMITS.monsterSpells` (4) real spell ids, duplicates kept as weighting rather than
+   deduplicated; `monster_turn` (`engine/battleturn.asm`) picks uniformly among whichever listed
+   entries the monster can currently afford before the existing cast-or-attack coin flip. Gated by
+   `MONSTER_SPELL_LIST_ENABLED`/`projectUsesMonsterSpellList` (some actor's `spellIds` has two or
+   more entries), with `MONSTER_SPELL_LIST_BATTLE_ALLOWANCE` (153, flat on every RPG-capable board)
+   in the banked battle region and the N-stride `mon_spell` table kept under its old, single-spell
+   name so the off-path body reads it unchanged — off on all six checked-in fixtures, byte-identical
+   ROMs. Authored on the Monster Forge's four selects (`Casts`/`Also`/`or`/`or`), whose trailing-
+   `Nothing` collapse always derives from the store's own array rather than the other selects' DOM
+   values. `battleShortfallAdvice` offers removing every monster's extra spells
+   (`projectWithoutMonsterSpellList`) as its own banked-region lever. See
+   `docs/design-monster-spell-list.md`.
 
 **Shared with item 13, not repeated here**: which bank future engine work in either Forge would draw
 from — item 13's own paragraph above, which this item's battle-side animations (point 3) are equally

@@ -1060,7 +1060,11 @@ model together, and they are the ones any change to this ledger has to keep:
   `projectWithoutNameToken`, `shared/project.js`) follow the identical full-occupancy rule for
   content that is not a command at all — a `renamable` flag or a token inside dialogue — and both
   `kernelShortfallAdvice` and `battleShortfallAdvice` (`main/build/battletables.js`) now offer "the
-  name token" as one of the removals they name. Pricing an alternative *mapper* the same
+  name token" as one of the removals they name. `battleShortfallAdvice`'s own removal list —
+  generalized to `bankedFeatures`, since it is no longer only naming candidates — now also offers
+  "every monster's extra spells" through `projectWithoutMonsterSpellList`, a same-shaped truncation
+  of every actor's `battle.spellIds` to its first entry, not the schema migration's inverse.
+  Pricing an alternative *mapper* the same
   full-occupancy way is what lets one be recommended at all once a project's real shortfall
   includes table bytes an allowance-summing guess would have missed.
 - **A mapper offered as a fix must still hold every tileset, every screen and the project's
@@ -1477,6 +1481,18 @@ uniform across all three RPG-capable boards since neither routine branches on `S
 own line beside the base rather than folded into it, avoiding the mistake
 `TITLE_KERNEL_ALLOWANCE_BY_MAPPER` already had to undo on the kernel side, charging every project a
 cost only `ITEMS_ENABLED` builds actually pay.
+
+**A monster's own spell list** replaces the old single `mon_spell` byte with an N-stride table,
+gated on `projectUsesMonsterSpellList` (some actor's `battle.spellIds` has two or more entries — a
+one-entry list assembles byte-identical to before, why all six fixtures stay off; `sample-rpg`'s
+Snake carries exactly one). `MONSTER_SPELL_LIST_BATTLE_ALLOWANCE` (153, flat on every RPG-capable
+board, `main/build/battletables.js`) is the banked-region cost; the table keeps the old `mon_spell`
+label so the off-path `monster_turn` body (`engine/battleturn.asm`) reads it unchanged. On,
+`monster_turn` picks uniformly among whichever entries the monster can afford, duplicates as
+weighting, before the existing cast-or-attack coin flip — pick-first
+(`docs/design-monster-spell-list.md` §6). The Monster Forge's four selects collapse to `spellIds`
+by deriving from the store's own array, never the other selects' DOM values, since a stale id
+renders as `Nothing` and reading that back would drop it.
 
 ### The emulator
 
