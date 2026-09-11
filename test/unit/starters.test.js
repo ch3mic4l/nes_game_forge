@@ -26,7 +26,9 @@ import {
   liveCommands,
   allCommands,
   reconcileCartridge,
-  canBackItem
+  canBackItem,
+  projectUsesMagicPower,
+  projectUsesMagicDefence
 } from '../../shared/project.js';
 import { LIBRARY_ENTRIES } from '../../shared/library/index.js';
 import { createProjectAt, loadProject, saveProject } from '../../main/project-io.js';
@@ -1943,6 +1945,47 @@ test('12 negative control: the duplicate placement\'s own join marked off:true i
     problems.some((p) => p.includes('found 2')),
     `expected the disabled duplicate to still be reported as "found 2", got ${JSON.stringify(problems)}`
   );
+});
+
+test('12b: the RPG starter\'s Hero has a real magic power value and Slime/Bat have a real magic defence value, each on the only side that can show it working (docs/design-magic-power.md §11)', () => {
+  const project = STARTERS.find((s) => s.id === 'rpg').build('X');
+
+  assert.equal(project.party[0].baseMag, 8);
+  assert.equal(project.party[0].magPerLevel, 2);
+  assert.equal(project.party[1].baseMag, 0);
+  assert.equal(project.party[1].magPerLevel, 0);
+
+  const slime = project.sprites.actors.find((a) => a.name === 'Slime');
+  const bat = project.sprites.actors.find((a) => a.name === 'Bat');
+  assert.equal(slime.battle.mdef, 4);
+  assert.equal(bat.battle.mdef, 4);
+  assert.equal(slime.battle.mag, 0, 'Slime: expected battle.mag 0 -- Slime never casts');
+  assert.equal(bat.battle.mag, 0, 'Bat: expected battle.mag 0 -- Bat never casts');
+
+  // Every party member has zero magic defence (Hero is the only caster, so
+  // nothing in the starter would ever subtract from a party member's own
+  // mdef -- Hero's own baseMag, asserted above, is magic power, a different
+  // stat), and every OTHER actor (not Slime/Bat, whose own mag is pinned
+  // zero just above) carries neither stat.
+  for (const member of project.party) {
+    assert.equal(member.baseMdef, 0, `${member.name}: expected baseMdef 0`);
+    assert.equal(member.mdefPerLevel, 0, `${member.name}: expected mdefPerLevel 0`);
+  }
+  for (const actor of project.sprites.actors) {
+    if (actor === slime || actor === bat) continue;
+    assert.equal(actor.battle?.mdef ?? 0, 0, `${actor.name}: expected battle.mdef 0`);
+    assert.equal(actor.battle?.mag ?? 0, 0, `${actor.name}: expected battle.mag 0`);
+  }
+
+  assert.equal(projectUsesMagicPower(project), true);
+  assert.equal(projectUsesMagicDefence(project), true);
+});
+
+test('12b negative control: zeroing Hero\'s own baseMag/magPerLevel turns projectUsesMagicPower false, proving the predicate reads the field the starter set and not something else', () => {
+  const project = STARTERS.find((s) => s.id === 'rpg').build('X');
+  project.party[0].baseMag = 0;
+  project.party[0].magPerLevel = 0;
+  assert.equal(projectUsesMagicPower(project), false);
 });
 
 // --- 14: the RPG starter's battle art really reaches tileset 1 -------------

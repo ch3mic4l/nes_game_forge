@@ -1490,6 +1490,23 @@ this item's own new table bytes would land and grow.
    zero-break for every project already using `earth`/`light`. Renaming or replacing an existing
    entry's id would have broken those projects instead, which is why appending is the one this item
    commits to.
+6. ~~**A caster stat and a target stat for spell damage/healing** — magic power and magic defence,
+   one unit of work, not two: designed, priced, gated and tested together in
+   `docs/design-magic-power.md` v7.~~ — **done** (this change, on top of phase 1 `aeb19b8` and phase 2
+   `2d6897c`): `baseMag`/`magPerLevel` and `baseMdef`/`mdefPerLevel` on a party member,
+   `battle.mag`/`battle.mdef` on an actor; compiled into `pc_mag_at`/`mon_mag` and
+   `pc_mdef_at`/`mon_mdef` (`main/build/battletables.js`) and read by `combatant_mag`/`combatant_mdef`
+   (`engine/battleturn.asm`), a caster's `mag` adding into a spell's own rolled damage or heal amount,
+   a damage target's own `mdef` subtracting from that roll before the elemental modifier, floored at
+   1. The two stats are independently gated (`MAGIC_POWER_ENABLED`/`MAGIC_DEFENCE_ENABLED`, both off
+   on all six checked-in fixtures — byte-identical ROMs) with their own banked-region allowances
+   (`MAGIC_POWER_BATTLE_ALLOWANCE`/`MAGIC_DEFENCE_BATTLE_ALLOWANCE`). Authored on the Character
+   Forge's Magic / Magic defence rows and the Monster Forge's Magic / Magic defence fields (phase 2);
+   shipped with real values on the RPG starter alone — Hero's own `baseMag`/`magPerLevel`
+   and Slime/Bat's own `mdef` (this phase) — no checked-in fixture opts in. See
+   `docs/design-character-forge.md` §5 for where the caster-stat request was first recorded and
+   deferred, and item 14 below for the Monster Forge, which owns the actor `battle` record both
+   fields live on.
 
 ---
 

@@ -1622,6 +1622,13 @@ Each of these cost real debugging time and now has a regression test. They are e
   (`test/unit/rpg.test.js`) read the nametable rather than engine RAM for a high-index monster and
   item, each paired with a low-index control that also forces the carry (`assertForcesCarry`), so a
   fixture that stopped needing the carry could not go silently vacuous.
+- **A column-0 `.if` is read by nesasm v3.1 as a label, not a directive, and reports `Unknown
+  instruction!` on that line — exit 0 regardless.** Indented, the identical file assembles cleanly.
+  The trap is `.if`-specific: a flush-left `.else` or `.endif` alone does not fail. Every `.if` in
+  `engine/` is indented and must stay so. Found while listing magic power's `combatant_mag`
+  (`docs/design-magic-power.md` §13 item 11); regression test in `test/unit/codebuild.test.js`, "a
+  column-0 `.if` is read by nesasm as a label...", with indented controls proving the column is what
+  fails, not the snippet.
 
 ## Conventions
 

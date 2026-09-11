@@ -13,6 +13,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { spawnSync } from 'node:child_process';
 import { loadProject, saveProject } from '../../main/project-io.js';
 import { buildProject } from '../../main/build/pipeline.js';
 import { checkCapacity, engineFileNames } from '../../main/build/generate.js';
@@ -23,6 +24,7 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..')
 const SAMPLE = path.join(ROOT, 'sample');
 const hasSample = fs.existsSync(path.join(SAMPLE, 'project.json'));
 const needsSample = !hasSample && 'run `npm run sample` first';
+const hasNesasm = spawnSync('nesasm', [], { stdio: 'ignore' }).error?.code !== 'ENOENT';
 
 /** A build of the sample with `mutate` applied, in a temp dir the test owns. */
 async function buildVariant(t, name, mutate) {
@@ -342,3 +344,85 @@ test('nesasm error count is fatal even when the message shape is unknown', async
   assert.equal(result.ok, false);
   assert.match(result.errors[0]?.message ?? '', /reported 1 error/);
 });
+
+// A column-0 `.if` is read by nesasm v3.1 as a label, not a directive: it
+// fails with "Unknown instruction!" on that line, exit code 0 regardless
+// (CLAUDE.md's "6502 traps" list). Indented, the identical file assembles
+// cleanly -- the control below proves the failure is the column, not the
+// snippet. The trap is `.if`-specific: a flush-left `.else` alone does not
+// fail (confirmed by hand with the installed assembler), and a flush-left
+// `.endif` alone does not fail either, which the third test below pins
+// directly -- so the claim above is not overstated into "any
+// conditional-assembly directive."
+// Runs the real assembler rather than modelling its behaviour, the same
+// reason kernelbytes.test.js/bankedbytes.test.js gate on nesasm itself
+// instead of a checked-in fixture ROM.
+const MINIMAL_ROM_HEADER = ['  .inesprg 2', '  .ineschr 0', '  .inesmap 0', '  .inesmir 1', ''].join('\n');
+const MINIMAL_ROM_VECTORS = ['  .bank 3', '  .org $FFFA', '  .dw nmi', '  .dw reset', '  .dw irq', ''].join('\n');
+
+function minimalRomSource(ifIndent, endifIndent = ifIndent) {
+  return [
+    MINIMAL_ROM_HEADER,
+    '  .bank 0',
+    '  .org $8000',
+    '',
+    'reset:',
+    `${ifIndent}.if 1`,
+    '  lda #1',
+    `${endifIndent}.endif`,
+    '  rts',
+    '',
+    'nmi:',
+    '  rti',
+    '',
+    'irq:',
+    '  rti',
+    '',
+    MINIMAL_ROM_VECTORS
+  ].join('\n');
+}
+
+test(
+  'a column-0 .if is read by nesasm as a label and fails with "Unknown instruction!" on the .if line',
+  { skip: !hasNesasm && 'nesasm not found on PATH' },
+  async (t) => {
+    const dir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'forge-column0-if-'));
+    t.after(() => fs.promises.rm(dir, { recursive: true, force: true }));
+    const source = minimalRomSource('');
+    const ifLine = source.split('\n').findIndex((line) => line === '.if 1') + 1;
+    await fs.promises.writeFile(path.join(dir, 'main.asm'), source);
+
+    const result = await runNesasm({ cwd: dir });
+    assert.equal(result.ok, false);
+    assert.ok(
+      result.errors.some((e) => /Unknown instruction/.test(e.message) && e.line === ifLine),
+      `expected an "Unknown instruction!" error on line ${ifLine}, got ${JSON.stringify(result.errors)}`
+    );
+  }
+);
+
+test(
+  'the identical file with the .if/.endif indented by a tab assembles cleanly -- the control proving the column is what fails, not the snippet',
+  { skip: !hasNesasm && 'nesasm not found on PATH' },
+  async (t) => {
+    const dir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'forge-column0-if-control-'));
+    t.after(() => fs.promises.rm(dir, { recursive: true, force: true }));
+    await fs.promises.writeFile(path.join(dir, 'main.asm'), minimalRomSource('\t'));
+
+    const result = await runNesasm({ cwd: dir });
+    assert.equal(result.ok, true, `expected a clean assemble, got ${JSON.stringify(result.errors)}`);
+  }
+);
+
+test(
+  'the trap is .if-specific: a flush-left .endif (with the .if properly indented) assembles cleanly',
+  { skip: !hasNesasm && 'nesasm not found on PATH' },
+  async (t) => {
+    const dir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'forge-column0-endif-only-'));
+    t.after(() => fs.promises.rm(dir, { recursive: true, force: true }));
+    await fs.promises.writeFile(path.join(dir, 'main.asm'), minimalRomSource('\t', ''));
+
+    const result = await runNesasm({ cwd: dir });
+    assert.equal(result.ok, true, `expected a clean assemble, got ${JSON.stringify(result.errors)}`);
+  }
+);

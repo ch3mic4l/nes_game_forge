@@ -96,6 +96,14 @@ function buildRpg(name) {
   const batActorId = batReport.actor.id;
   const potionActorId = potionReport.actor.id;
 
+  // Magic defence goes on Slime and Bat, not Hero: Hero is the only combatant
+  // that ever casts a spell here, so Hero's own mdef would never be
+  // exercised, while Hero's Ember lands on these two the moment the starter's
+  // own Field encounter fires (docs/design-magic-power.md §11). Not `mag` --
+  // neither monster casts, so it would be a stat with no observable effect.
+  project.sprites.actors[slimeActorId].battle.mdef = 4;
+  project.sprites.actors[batActorId].battle.mdef = 4;
+
   const tileset0 = project.tilesets[0];
 
   // The shared player figure.
@@ -203,7 +211,20 @@ function buildRpg(name) {
   // art this starter does not need. Both opt into naming (docs/design-name-
   // entry.md v16.4 §1 item 4, §17 item 5) -- the RPG starter's own decision,
   // per that design item; no other starter opts in.
-  project.party[0] = { ...project.party[0], renamable: true, spells: [{ spellId: 0, level: 1 }], metaspriteId: heroMetaspriteId };
+  // baseMag/magPerLevel on Hero alone: Hero is the only combatant with a real
+  // spell (Ember), so magic power's own effect is only ever visible on Hero
+  // (docs/design-magic-power.md §11). Against Slime's mdef 4 and the fire
+  // weakness, Ember becomes (6 + 8 - 4) * 1.5 = 15 damage, vs. 21 unmodified
+  // -- a real, observable difference from these two starter values together.
+  // Ally stays at the schema default (0/0): Ally never casts anything.
+  project.party[0] = {
+    ...project.party[0],
+    renamable: true,
+    spells: [{ spellId: 0, level: 1 }],
+    metaspriteId: heroMetaspriteId,
+    baseMag: 8,
+    magPerLevel: 2
+  };
   project.party.push({ ...createPartyMember(1, 'Ally'), startsInParty: false, renamable: true, metaspriteId: heroMetaspriteId, spells: [] });
 
   // The switch the Ally recruit's join event sets, and hides herself on
