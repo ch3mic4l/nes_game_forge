@@ -1358,6 +1358,53 @@ test('party members and spells clamp against each other', () => {
   assert.equal(project.party[1].spells[0].level, project.rpg.maxLevel);
 });
 
+// Magic power / magic defence schema (docs/design-magic-power.md §6, test
+// plan items 14/26). A party-member entry of `null` reaches
+// normalizePartyMember for real -- normalizeProject's own party construction
+// (`raw.party.slice(...).map(normalizePartyMember)`) filters nothing before
+// mapping -- so this is a reachable input, not a hypothetical one. It is the
+// one case that actually distinguishes `raw?.[key]` from `raw[key]`: a
+// member object merely lacking the `baseMag` key reads as `undefined`
+// through a plain property read too, so it cannot tell the optional-chaining
+// guard apart from its absence.
+test('normalizeProject: a null party-member entry does not throw, and baseMag/magPerLevel/baseMdef/mdefPerLevel default to exactly 0', () => {
+  const project = normalizeProject({ project: { gameType: 'rpg' }, cartridge: { mapper: 1 }, party: [null] });
+  assert.equal(project.party[0].baseMag, 0);
+  assert.equal(project.party[0].magPerLevel, 0);
+  assert.equal(project.party[0].baseMdef, 0);
+  assert.equal(project.party[0].mdefPerLevel, 0);
+});
+
+test('normalizeProject: baseMag/magPerLevel/baseMdef/mdefPerLevel clamp out-of-range values, magPerLevel/mdefPerLevel to 0-16 and baseMag/baseMdef to 0-255 -- not atkPerLevel/atkPerLevel-neighbor bounds copy-pasted by mistake', () => {
+  const project = normalizeProject({
+    project: { gameType: 'rpg' },
+    cartridge: { mapper: 1 },
+    party: [{ name: 'Hero', baseMag: 9999, magPerLevel: 9999, baseMdef: 9999, mdefPerLevel: 9999 }]
+  });
+  assert.equal(project.party[0].baseMag, 255);
+  assert.equal(project.party[0].magPerLevel, 16);
+  assert.equal(project.party[0].baseMdef, 255);
+  assert.equal(project.party[0].mdefPerLevel, 16);
+});
+
+// The identical pair on the actor side via normalizeActor, including the
+// identical null-entry reachable path (normalizeProject's own
+// `sprites.actors` construction, `(raw.sprites?.actors ?? []).map(normalizeActor)`,
+// filters nothing before mapping either).
+test('normalizeProject: a null actor entry does not throw, and battle.mag/battle.mdef default to exactly 0', () => {
+  const project = normalizeProject({ sprites: { actors: [null] } });
+  assert.equal(project.sprites.actors[0].battle.mag, 0);
+  assert.equal(project.sprites.actors[0].battle.mdef, 0);
+});
+
+test('normalizeProject: battle.mag/battle.mdef clamp to 0-255', () => {
+  const project = normalizeProject({
+    sprites: { actors: [{ name: 'Boss', battle: { mag: 9999, mdef: 9999 } }] }
+  });
+  assert.equal(project.sprites.actors[0].battle.mag, 255);
+  assert.equal(project.sprites.actors[0].battle.mdef, 255);
+});
+
 test('a party is capped and an RPG never ends up with nobody in it', () => {
   const project = normalizeProject({
     project: { gameType: 'rpg' },

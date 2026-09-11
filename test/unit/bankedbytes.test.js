@@ -36,6 +36,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
+import crypto from 'node:crypto';
 import fsp from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -66,7 +67,9 @@ import {
   battleTables,
   emittedBytes,
   NAME_ENTRY_BATTLE_ALLOWANCE,
-  NAME_COPY_BATTLE_ALLOWANCE
+  NAME_COPY_BATTLE_ALLOWANCE,
+  MAGIC_POWER_BATTLE_ALLOWANCE,
+  MAGIC_DEFENCE_BATTLE_ALLOWANCE
 } from '../../main/build/battletables.js';
 import {
   SUPPORTED_MAPPERS,
@@ -401,6 +404,294 @@ test('ITEM_LIST_FILTER_BATTLE_ALLOWANCE is exact, on every RPG-capable board', {
         '(see the comment beside BASE_BATTLE_CODE_BYTES_BY_MAPPER).'
     );
   }
+});
+
+// Magic power / magic defence (docs/design-magic-power.md §9, test plan
+// items 1/16) -- the identical ITEM_LIST_FILTER_BATTLE_ALLOWANCE isolation
+// shape just above, measuring each allowance directly rather than only
+// through the combined base+tables+allowance sum below. The other stat's own
+// gate is left off in both the "on" and "off" builds, per §8's own
+// delta-measurement trap: if the two stats shared one gate, isolating either
+// allowance this way would measure a delta of 0 for whichever one this test
+// is not exercising.
+test('MAGIC_POWER_BATTLE_ALLOWANCE is exact, on every RPG-capable board', {
+  skip: !hasNesasm && 'nesasm not found on PATH'
+}, async (t) => {
+  for (const mapper of CAPABLE_MAPPERS) {
+    const off = await measureRegion(t, mapper);
+    const on = await measureRegion(t, mapper, (p) => {
+      p.party[0].baseMag = 5;
+      p.party[0].magPerLevel = 1;
+    });
+    const codeOff = off.used - battleTableBytes(off.project);
+    const codeOn = on.used - battleTableBytes(on.project);
+    const delta = codeOn - codeOff;
+    assert.equal(
+      delta,
+      MAGIC_POWER_BATTLE_ALLOWANCE,
+      `${mapper.name}: magic power costs ${delta} bytes of banked code (${codeOff} -> ${codeOn}), but ` +
+        `MAGIC_POWER_BATTLE_ALLOWANCE reserves ${MAGIC_POWER_BATTLE_ALLOWANCE} -- this allowance must equal the ` +
+        'real cost exactly, on every board.'
+    );
+  }
+});
+
+test('MAGIC_DEFENCE_BATTLE_ALLOWANCE is exact, on every RPG-capable board', {
+  skip: !hasNesasm && 'nesasm not found on PATH'
+}, async (t) => {
+  for (const mapper of CAPABLE_MAPPERS) {
+    const off = await measureRegion(t, mapper);
+    const on = await measureRegion(t, mapper, (p) => {
+      p.party[0].baseMdef = 5;
+      p.party[0].mdefPerLevel = 1;
+    });
+    const codeOff = off.used - battleTableBytes(off.project);
+    const codeOn = on.used - battleTableBytes(on.project);
+    const delta = codeOn - codeOff;
+    assert.equal(
+      delta,
+      MAGIC_DEFENCE_BATTLE_ALLOWANCE,
+      `${mapper.name}: magic defence costs ${delta} bytes of banked code (${codeOff} -> ${codeOn}), but ` +
+        `MAGIC_DEFENCE_BATTLE_ALLOWANCE reserves ${MAGIC_DEFENCE_BATTLE_ALLOWANCE} -- this allowance must equal ` +
+        'the real cost exactly, on every board.'
+    );
+  }
+});
+
+// The combined-region equality gained three more entries (§9's own
+// three-configuration measurement: mag alone, mdef alone, both) -- the
+// "magic power + magic defence" variant is the one that would have measured
+// 0 for whichever stat was removed second, had the two shared one gate (§8's
+// own named trap): with two independent gates, both variants measure their
+// own real, nonzero cost regardless of the other stat's own state.
+test('magic power and magic defence pass the combined base+tables equality check, alone and together', {
+  skip: !hasNesasm && 'nesasm not found on PATH'
+}, async (t) => {
+  const variants = [
+    ['magic power', (p) => { p.party[0].baseMag = 5; p.party[0].magPerLevel = 1; }],
+    ['magic defence', (p) => { p.party[0].baseMdef = 5; p.party[0].mdefPerLevel = 1; }],
+    ['magic power + magic defence', (p) => {
+      p.party[0].baseMag = 5; p.party[0].magPerLevel = 1;
+      p.party[0].baseMdef = 5; p.party[0].mdefPerLevel = 1;
+    }]
+  ];
+  for (const mapper of CAPABLE_MAPPERS) {
+    for (const [label, mutate] of variants) {
+      const { used, predicted } = await measureRegion(t, mapper, mutate);
+      assert.equal(
+        used,
+        predicted,
+        `${mapper.name} (${label}): nesasm used ${used} bytes of the banked code region but the byte math ` +
+          `predicts ${predicted}`
+      );
+    }
+  }
+});
+
+// docs/design-magic-power.md §8's own byte-identity claim, verified on the
+// assembled bytes themselves rather than a matching region size (which
+// cannot rule out a changed operand at the same total length): a mag-only
+// build must assemble byte-identical whether or not magic defence's own
+// `.if MAGIC_DEFENCE_ENABLED` blocks exist in the source at all. The three
+// hashes below were produced by building this exact project config (sample-rpg,
+// baseMag = 5, magPerLevel = 1, naming forced off) twice -- once from a `git
+// worktree` copy with every MAGIC_DEFENCE_ENABLED block manually stripped out
+// of engine/battleturn.asm (the literal magic-power-alone shape), and once
+// from this tree as shipped (magic defence's own code present but gated off
+// by the project carrying no baseMdef/mdefPerLevel) -- and confirming the two
+// trees hash identically on all three boards, the same SHA-256 mechanism
+// nameentry.test.js's own six-fixture gate already uses. They also match
+// docs/design-magic-power.md §8's own pinned hashes exactly.
+test('a mag-only build assembles byte-identical whether or not magic defence exists in the source', {
+  skip: !hasNesasm && 'nesasm not found on PATH'
+}, async (t) => {
+  const HASHES = {
+    1: '2fec99599343d1002f9d6139eb4a82cb446f5e664c3f6c08013980fbf4ad68e3', // MMC1
+    4: '6c3edd4da93c6378c63d0428e2249bb9ec7f2bfad6b15c34b64c31ab64c51785', // MMC3
+    30: '1f37c3aebe01ef08322eec515012b63dd0b2d38b4ee9bd7c06f2772a9e34db2b' // UNROM 512
+  };
+  for (const mapper of CAPABLE_MAPPERS) {
+    const dir = await fsp.mkdtemp(path.join(os.tmpdir(), 'forge-magonly-hash-'));
+    t.after(() => fsp.rm(dir, { recursive: true, force: true }));
+    const project = await loadProject(SAMPLE_RPG);
+    project.cartridge.mapper = mapper.id;
+    project.party[0].renamable = false;
+    if (project.party[1]) project.party[1].renamable = false;
+    project.party[0].baseMag = 5;
+    project.party[0].magPerLevel = 1;
+    await saveProject(dir, project);
+    const built = await buildProject({ dir, project, log: () => {} });
+    const rom = await fsp.readFile(built.romPath);
+    const hash = crypto.createHash('sha256').update(rom).digest('hex');
+    assert.equal(
+      hash,
+      HASHES[mapper.id],
+      `${mapper.name}: a mag-only build must hash identically to the magic-power-alone baseline -- magic ` +
+        'defence\'s own new .if blocks in spell_damage failed to strip to nothing when off'
+    );
+  }
+});
+
+// docs/design-magic-power.md §9's own "no bespoke lever" recommendation
+// (test plan items 15/27): a project sized to fit without a stat and
+// overflow with it must still refuse honestly, and neither
+// kernelShortfallAdvice nor battleShortfallAdvice may name a nonexistent
+// "turn magic power/defence off" lever -- the identical shape the in-game
+// naming section's own tests already use for NAME_ENTRY_BATTLE_ALLOWANCE.
+// Fix round 1, P1-1: the prior version of this test called battleRegionBytes/
+// battleRegionCeiling/battleShortfallAdvice directly and never checkCapacity
+// itself, so a wrong implementation that dropped the banked-region overflow
+// rejection from checkCapacity -- or that left MAGIC_POWER_BATTLE_ALLOWANCE
+// out of what checkCapacity actually consults -- would still pass. This
+// version calls checkCapacity(project) on both sides of the flip and reads
+// its own .problems the way the fits-control test above and "the refusal
+// names a change that actually closes the gap" below already do, scoped to
+// the specific "battle system needs" banked-region message so an unrelated
+// capacity failure (kernel-lo, screens) cannot satisfy either assertion. It
+// also no longer claims the overflow is "exactly" the allowance: enabling
+// the stat adds pc_mag_at/mon_mag's own table bytes too, not only
+// MAGIC_POWER_BATTLE_ALLOWANCE's code bytes, and the padding loop's own
+// while-condition leaves variable headroom below the ceiling -- both
+// asserted explicitly below instead.
+test('checkCapacity has no banked-region problem before magic power is turned on, and refuses with an existing lever (not magic power itself) once it is', {
+  skip: !hasNesasm && 'nesasm not found on PATH'
+}, async () => {
+  const project = await loadProject(SAMPLE_RPG);
+  project.party[0].renamable = false;
+  if (project.party[1]) project.party[1].renamable = false;
+  const mapper = SUPPORTED_MAPPERS.find((entry) => entry.id === project.cartridge.mapper);
+  const template = project.sprites.actors[project.sprites.actors.length - 1];
+  // Pad actors until the region sits just under the ceiling, still fitting.
+  while (battleRegionBytes(project, mapper) <= battleRegionCeiling(mapper) - MAGIC_POWER_BATTLE_ALLOWANCE) {
+    project.sprites.actors.push({
+      ...structuredClone(template),
+      id: project.sprites.actors.length,
+      name: `M${project.sprites.actors.length}`
+    });
+  }
+  assert.ok(
+    battleRegionBytes(project, mapper) <= battleRegionCeiling(mapper),
+    'the project should still fit before magic power is turned on'
+  );
+
+  const bankedRegionProblem = (p) =>
+    checkCapacity(p).problems.find((entry) => entry.severity === 'error' && /battle system needs/.test(entry.message));
+
+  assert.equal(
+    bankedRegionProblem(project),
+    undefined,
+    'checkCapacity should raise no banked-region problem before magic power is turned on'
+  );
+
+  const codeAndTablesBefore = battleRegionBytes(project, mapper);
+  const tablesBefore = battleTableBytes(project);
+  project.party[0].baseMag = 5;
+  const codeAndTablesAfter = battleRegionBytes(project, mapper);
+  const tablesAfter = battleTableBytes(project);
+  const tableDelta = tablesAfter - tablesBefore;
+  assert.ok(tableDelta > 0, 'turning magic power on should also add pc_mag_at/mon_mag table bytes, not code alone');
+  assert.equal(
+    codeAndTablesAfter - codeAndTablesBefore,
+    MAGIC_POWER_BATTLE_ALLOWANCE + tableDelta,
+    'the real total growth is the code allowance plus the table bytes it adds, not the allowance alone'
+  );
+  assert.ok(
+    codeAndTablesAfter > battleRegionCeiling(mapper),
+    'the combined code+table growth should be enough to push this padded project over the ceiling'
+  );
+
+  const problem = bankedRegionProblem(project);
+  assert.ok(problem, 'checkCapacity should refuse once magic power pushes the region over its ceiling');
+  // Fix round 2, P1-1 (narrowed): the assertions above exercise
+  // battleRegionBytes directly, never what checkCapacity itself put in the
+  // diagnostic -- a checkCapacity that drops MAGIC_POWER_BATTLE_ALLOWANCE
+  // from its own regionBytes figure (main/build/generate.js's `const
+  // regionBytes = overridden ? battleTableBytes(project) :
+  // battleRegionBytes(project, mapper)`, ~:2241 -- confirmed by reading it:
+  // for an un-overridden project, exactly battleRegionBytes' own figure)
+  // would still refuse with the same "battle system needs" text and the
+  // same actor advice, so neither test above would catch it. This asserts
+  // the diagnostic's own numbers directly, against the exact template
+  // main/build/generate.js builds it from (~:2259).
+  assert.match(
+    problem.message,
+    new RegExp(`needs ${codeAndTablesAfter} bytes`),
+    `checkCapacity's own diagnostic should report the real total (${codeAndTablesAfter}), not a figure with the ` +
+      'allowance silently dropped from it'
+  );
+  assert.match(
+    problem.message,
+    new RegExp(`holds ${battleRegionCeiling(mapper)}`),
+    `checkCapacity's own diagnostic should report the real ceiling (${battleRegionCeiling(mapper)})`
+  );
+  assert.doesNotMatch(problem.message, /magic power/i, 'no nonexistent "turn magic power off" lever should be offered');
+  assert.match(problem.message, /actor/i, 'an existing lever should still be named');
+});
+
+test('checkCapacity has no banked-region problem before magic defence is turned on, and refuses with an existing lever (not magic defence itself) once it is', {
+  skip: !hasNesasm && 'nesasm not found on PATH'
+}, async () => {
+  const project = await loadProject(SAMPLE_RPG);
+  project.party[0].renamable = false;
+  if (project.party[1]) project.party[1].renamable = false;
+  const mapper = SUPPORTED_MAPPERS.find((entry) => entry.id === project.cartridge.mapper);
+  const template = project.sprites.actors[project.sprites.actors.length - 1];
+  while (battleRegionBytes(project, mapper) <= battleRegionCeiling(mapper) - MAGIC_DEFENCE_BATTLE_ALLOWANCE) {
+    project.sprites.actors.push({
+      ...structuredClone(template),
+      id: project.sprites.actors.length,
+      name: `M${project.sprites.actors.length}`
+    });
+  }
+  assert.ok(
+    battleRegionBytes(project, mapper) <= battleRegionCeiling(mapper),
+    'the project should still fit before magic defence is turned on'
+  );
+
+  const bankedRegionProblem = (p) =>
+    checkCapacity(p).problems.find((entry) => entry.severity === 'error' && /battle system needs/.test(entry.message));
+
+  assert.equal(
+    bankedRegionProblem(project),
+    undefined,
+    'checkCapacity should raise no banked-region problem before magic defence is turned on'
+  );
+
+  const codeAndTablesBefore = battleRegionBytes(project, mapper);
+  const tablesBefore = battleTableBytes(project);
+  project.party[0].baseMdef = 5;
+  const codeAndTablesAfter = battleRegionBytes(project, mapper);
+  const tablesAfter = battleTableBytes(project);
+  const tableDelta = tablesAfter - tablesBefore;
+  assert.ok(tableDelta > 0, 'turning magic defence on should also add pc_mdef_at/mon_mdef table bytes, not code alone');
+  assert.equal(
+    codeAndTablesAfter - codeAndTablesBefore,
+    MAGIC_DEFENCE_BATTLE_ALLOWANCE + tableDelta,
+    'the real total growth is the code allowance plus the table bytes it adds, not the allowance alone'
+  );
+  assert.ok(
+    codeAndTablesAfter > battleRegionCeiling(mapper),
+    'the combined code+table growth should be enough to push this padded project over the ceiling'
+  );
+
+  const problem = bankedRegionProblem(project);
+  assert.ok(problem, 'checkCapacity should refuse once magic defence pushes the region over its ceiling');
+  // Fix round 2, P1-1 (narrowed): the identical direct-diagnostic assertion
+  // the magic-power test above now carries, for the same reason -- see that
+  // test's own comment.
+  assert.match(
+    problem.message,
+    new RegExp(`needs ${codeAndTablesAfter} bytes`),
+    `checkCapacity's own diagnostic should report the real total (${codeAndTablesAfter}), not a figure with the ` +
+      'allowance silently dropped from it'
+  );
+  assert.match(
+    problem.message,
+    new RegExp(`holds ${battleRegionCeiling(mapper)}`),
+    `checkCapacity's own diagnostic should report the real ceiling (${battleRegionCeiling(mapper)})`
+  );
+  assert.doesNotMatch(problem.message, /magic defence/i, 'no nonexistent "turn magic defence off" lever should be offered');
+  assert.match(problem.message, /actor/i, 'an existing lever should still be named');
 });
 
 test('the fixture assembles into its region with at least BATTLE_SLACK to spare', {

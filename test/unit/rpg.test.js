@@ -1817,6 +1817,592 @@ test('a heal spell restores HP, cures poison, and costs its MP', {
   assert.equal(nes.cpu.mem[PC_STATUS], 0, 'a heal should cure poison');
 });
 
+// --- magic power and magic defence (docs/design-magic-power.md, phase 1) ---
+//
+// combatant_mag/combatant_mdef and spell_damage's/cast_heal's own call-site
+// additions (engine/battleturn.asm). Every test below names the wrong
+// implementation it rules out in its own comment, the design's own test-plan
+// numbering (§14) kept in each title for cross-reference.
+
+test('test 4: a party caster\'s Ember (fire, flat 10) against the fire-weak Slime deals exactly 90 with baseMag = 50 -- the add applied before the elemental modifier (sample-rpg)', {
+  skip: needsSample
+}, async (t) => {
+  const rom = await buildVariant(t, 'magorder', (project) => {
+    project.party[0].baseMag = 50;
+  });
+  const nes = bootPastNaming(rom);
+  assert.ok(walkIntoEncounter(nes));
+  waitForMenu(nes);
+  nes.cpu.mem[MON_HP] = 200; // headroom so the hit does not saturate at death
+  const startHp = nes.cpu.mem[MON_HP];
+
+  chooseCommand(nes, BC_MAGIC);
+  tap(nes, A, 6); // Ember, sample-rpg's own flat amountMin === amountMax === 10
+  tap(nes, A, 20); // confirm the target
+
+  // (10 + 50) * 1.5 = 90 -- the add applied before the weak multiply. An
+  // add-after-weakness wrong implementation would instead compute
+  // 15 + 50 = 65; no add at all deals 15 (the existing flat-range test's own
+  // unmodified number).
+  assert.equal(startHp - nes.cpu.mem[MON_HP], 90, 'baseMag should add before the elemental modifier, not after or not at all');
+});
+
+test('test 5: a monster caster\'s spell is scaled by its own mag, read through the slot-to-actor-id indirection, not the raw slot number (sample-rpg)', {
+  skip: needsSample
+}, async (t) => {
+  const rom = await buildVariant(t, 'monmag', (project) => {
+    project.maps[0].encounters = { rate: 0, actorIds: [] };
+    project.sprites.actors[3].battle = { ...project.sprites.actors[3].battle, spellId: 0, mag: 40 };
+    project.sprites.actors[0].battle = { ...project.sprites.actors[0].battle, mag: 200 };
+    project.party[0].baseHp = 200;
+  });
+  const nes = bootPastNaming(rom);
+  // The snake waits in the bottom-left corner -- the same spot the existing
+  // monster-spell test uses.
+  walkTo(nes, 32, 112);
+  walkTo(nes, 32, 208, 300);
+  assert.equal(nes.cpu.mem[GAME_STATE], ST_BATTLE, 'walking into the snake did not start a fight');
+
+  // Watch mon_slot_mp rather than PC_HP for any drop: physical_damage floors
+  // a hopeless atk-def at 1 and adds 0-3 RNG noise, so a scratch from an
+  // earlier, uncast round could otherwise be mistaken for the spell's own
+  // hit. An MP drop, and only an MP drop, means this round's action was the
+  // cast (monster_turn spends MP in the same instruction stream that falls
+  // straight into cast_spell, before any physical-attack path can run
+  // instead).
+  let dealt = null;
+  for (let round = 0; round < 60 && dealt === null; round++) {
+    if (nes.cpu.mem[GAME_STATE] !== ST_BATTLE) break;
+    const mpBefore = nes.cpu.mem[MON_SLOT_MP];
+    const hpBefore = nes.cpu.mem[PC_HP];
+    if (nes.cpu.mem[BT_PHASE] === BP_MENU) chooseCommand(nes, BC_RUN);
+    else tap(nes, A, 12);
+    if (nes.cpu.mem[MON_SLOT_MP] < mpBefore) dealt = hpBefore - nes.cpu.mem[PC_HP];
+  }
+  assert.ok(dealt !== null, 'sixty rounds and the snake never cast Ember');
+  // (10 + 40) = 50, no elemental modifier against a party target ("elements
+  // only describe monsters"). Reading mon_mag by raw slot index (0, the
+  // Snake's own formation slot) instead of its resolved actor id (3) would
+  // instead read the unrelated Slime's own mag (200): (10 + 200) = 210.
+  assert.equal(
+    dealt,
+    50,
+    'the cast should scale with mon_mag[3] (the Snake\'s own actor id), not mon_mag[0] (a different actor read by raw slot number)'
+  );
+});
+
+test('test 6a: a heal spell\'s amount scales with baseMag, added before the existing clamp-to-max -- uncapped (sample-rpg)', {
+  skip: needsSample
+}, async (t) => {
+  const rom = await buildVariant(t, 'healmaguncapped', (project) => {
+    project.party[0].baseHp = 100; // headroom above 5 + 18 + 50 = 73
+    project.party[0].baseMag = 50;
+  });
+  const nes = bootPastNaming(rom);
+  assert.ok(walkIntoEncounter(nes));
+  waitForMenu(nes);
+  nes.cpu.mem[PC_SPELLS] |= 2;
+  nes.cpu.mem[PC_HP] = 5;
+  nes.cpu.mem[PC_MP] = 20;
+  assert.ok(nes.cpu.mem[PC_HP_MAX] > 73, 'the fixture\'s own max must clear 5+18+50 for this condition to be observable');
+
+  chooseCommand(nes, BC_MAGIC);
+  tap(nes, DOWN, 4); // Ember is first; Mend is the second row
+  tap(nes, A, 6);
+  tap(nes, A, 10);
+
+  // Rules out: the add being skipped entirely (a wrong implementation would
+  // show 23, the existing heal test's own unmodified number).
+  assert.equal(nes.cpu.mem[PC_HP], 73, '5 + 18 + 50 = 73 -- the add must land, not be skipped');
+});
+
+test('test 6b: a heal spell\'s amount scales with baseMag, added before the existing clamp-to-max -- capped, against the combined total (sample-rpg)', {
+  skip: needsSample
+}, async (t) => {
+  const rom = await buildVariant(t, 'healmagcapped', (project) => {
+    project.party[0].baseMag = 50;
+  });
+  const nes = bootPastNaming(rom);
+  assert.ok(walkIntoEncounter(nes));
+  waitForMenu(nes);
+  nes.cpu.mem[PC_SPELLS] |= 2;
+  const max = nes.cpu.mem[PC_HP_MAX];
+  nes.cpu.mem[PC_HP] = max - 10; // exactly 10 HP of headroom, read at runtime
+  nes.cpu.mem[PC_MP] = 20;
+
+  chooseCommand(nes, BC_MAGIC);
+  tap(nes, DOWN, 4);
+  tap(nes, A, 6);
+  tap(nes, A, 10);
+
+  // Rules out two distinct wrong implementations: one that drops the clamp
+  // for the combined total (wraps or exceeds max outright), and one that
+  // clamps roll alone against max and then bolts mag on afterward with no
+  // clamp of its own (leaves a value that can read either above max or, if
+  // it wraps past 255, wrapped to something below it).
+  assert.equal(
+    nes.cpu.mem[PC_HP],
+    max,
+    'roll+mag together should clamp to the max as one combined total, not roll alone with mag bolted on unclamped afterward'
+  );
+});
+
+test('test 7: poison and burn are unaffected by a caster\'s baseMag (sample-rpg)', {
+  skip: needsSample
+}, async (t) => {
+  const rom = await buildVariant(t, 'magpoison', (project) => {
+    project.maps[0].encounters = { rate: 0, actorIds: [] };
+    project.sprites.actors[0].battle = { ...project.sprites.actors[0].battle, acc: 0 }; // never hits back
+    project.party[0].baseMag = 200;
+  });
+  const nes = bootPastNaming(rom);
+  walkTo(nes, 160, 176);
+  walkTo(nes, 176, 176, 200);
+  waitForMenu(nes);
+  nes.cpu.mem[PC_SPELLS] |= 4; // Venom is authored at level 2; grant it directly
+  chooseCommand(nes, BC_MAGIC);
+  tap(nes, DOWN, 4);
+  tap(nes, A, 6);
+  tap(nes, A, 10);
+  assert.equal(nes.cpu.mem[MON_STATUS], STATUS_POISON, 'the slime should be poisoned');
+
+  const startHp = nes.cpu.mem[MON_HP];
+  let ticked = false;
+  for (let round = 0; round < 30 && !ticked; round++) {
+    if (nes.cpu.mem[BT_PHASE] === BP_MENU) chooseCommand(nes, BC_RUN);
+    else tap(nes, A, 12);
+    ticked = nes.cpu.mem[MON_HP] !== startHp;
+  }
+  assert.ok(ticked, 'thirty rounds and poison never bit');
+  assert.equal(
+    startHp - nes.cpu.mem[MON_HP],
+    POISON_DMG,
+    'a poison tick should cost exactly POISON_DMG, unaffected by the caster\'s own baseMag'
+  );
+});
+
+// Fix round 1, P1-2: the poison case above never exercises burn -- the
+// existing burn test (roughly :3804) has both stats off, so nothing
+// confirmed BURN_DMG survives a live baseMag the way POISON_DMG's own
+// assertion just did. Modeled directly on that existing test's own sequence
+// (project.spells[2].kind = 'burn' repurposes Venom into this build's Burn
+// spell, same menu row, same taps), with the caster's baseMag added.
+test('test 7 (burn sibling): burn is unaffected by a caster\'s baseMag (sample-rpg)', {
+  skip: needsSample
+}, async (t) => {
+  const rom = await buildVariant(t, 'magburn', (project) => {
+    project.maps[0].encounters = { rate: 0, actorIds: [] };
+    project.spells[2].kind = 'burn'; // Venom becomes this build's Burn spell
+    project.sprites.actors[0].battle = { ...project.sprites.actors[0].battle, acc: 0 }; // never hits back
+    project.party[0].baseMag = 200;
+  });
+  const nes = bootPastNaming(rom);
+  walkTo(nes, 160, 176);
+  walkTo(nes, 176, 176, 200);
+  waitForMenu(nes);
+  nes.cpu.mem[PC_SPELLS] |= 4; // Venom/Burn is authored at level 2; grant it directly
+  chooseCommand(nes, BC_MAGIC);
+  tap(nes, DOWN, 4); // past Ember to Venom/Burn
+  tap(nes, A, 6);
+  tap(nes, A, 10);   // aim it at the slime
+  assert.equal(nes.cpu.mem[MON_STATUS], STATUS_BURN, 'the slime should be burned, not poisoned');
+
+  const startHp = nes.cpu.mem[MON_HP];
+  let ticked = false;
+  for (let round = 0; round < 30 && !ticked; round++) {
+    if (nes.cpu.mem[BT_PHASE] === BP_MENU) chooseCommand(nes, BC_RUN);
+    else tap(nes, A, 12);
+    ticked = nes.cpu.mem[MON_HP] !== startHp;
+  }
+  assert.ok(ticked, 'thirty rounds and burn never bit');
+  assert.equal(
+    startHp - nes.cpu.mem[MON_HP],
+    BURN_DMG,
+    'a burn tick should cost exactly BURN_DMG, unaffected by the caster\'s own baseMag'
+  );
+});
+
+test('test 8: a flat-range spell still consumes no RNG with magic power live (sample-rpg)', {
+  skip: needsSample
+}, async (t) => {
+  const rom = await buildVariant(t, 'flatmag', (project) => {
+    project.party[0].baseMag = 50;
+  });
+  const nes = bootPastNaming(rom);
+  assert.ok(walkIntoEncounter(nes));
+  waitForMenu(nes);
+  nes.cpu.mem[MON_HP] = 255;
+  const startHp = nes.cpu.mem[MON_HP];
+
+  chooseCommand(nes, BC_MAGIC);
+  tap(nes, A, 6);
+  nes.cpu.mem[RNG] = 0x99; // the flat branch must never read this
+  tap(nes, A, 20);
+
+  assert.equal(startHp - nes.cpu.mem[MON_HP], 90, 'a flat-range spell should still deal exactly its deterministic number with mag live');
+  assert.equal(nes.cpu.mem[RNG], 0x99, 'combatant_mag must never call rng_next, even when the spell itself is flat');
+});
+
+test('test 9: cast_all\'s RNG state and bt_tmp2 sentinel survive magic power the same way they survive the existing roll (sample-rpg)', {
+  skip: needsSample
+}, async (t) => {
+  const rom = await buildVariant(t, 'multitarget-mag', (project) => {
+    project.maps[0].encounters = { rate: 0, actorIds: [] };
+    project.spells[0].scope = 'all';
+    project.spells[0].amountMin = 1;
+    project.spells[0].amountMax = 100;
+    project.spells[0].element = 'none';
+    project.sprites.actors[0].hp = 150;
+    project.party[0].baseMag = 20;
+  });
+  const nes = bootPastNaming(rom);
+  walkTo(nes, 160, 176);
+  walkTo(nes, 176, 176, 200);
+  assert.equal(nes.cpu.mem[GAME_STATE], ST_BATTLE);
+  nes.cpu.mem[MON_SLOT_ACTOR + 1] = 0; // a second slime in the formation
+  for (let i = 0; i < 12; i++) nes.frame();
+  assert.equal(nes.cpu.mem[BT_COUNT], 2);
+  waitForMenu(nes);
+  const startHp0 = nes.cpu.mem[MON_HP];
+  const startHp1 = nes.cpu.mem[MON_HP + 1];
+
+  chooseCommand(nes, BC_MAGIC);
+  // Identical seed/trace as the existing multitarget test: rolls of 59 then
+  // 18, RNG ending at 0x76.
+  nes.cpu.mem[RNG] = 0x00;
+  tap(nes, A, 12);
+
+  const dealt0 = startHp0 - nes.cpu.mem[MON_HP];
+  const dealt1 = startHp1 - nes.cpu.mem[MON_HP + 1];
+  assert.equal(dealt0, 79, 'the first target should take its own roll (59) plus the caster\'s own baseMag (20)');
+  assert.equal(dealt1, 38, 'the second target should take its own, different roll (18) plus the identical baseMag (20)');
+  assert.equal(
+    nes.cpu.mem[RNG],
+    0x76,
+    'exactly two rng_next calls should have run -- combatant_mag must never touch bt_tmp2 or the RNG'
+  );
+});
+
+test('test 12: a caster at level > 1 deals roll + statAt(baseMag, magPerLevel, level), not just roll + baseMag (sample-rpg)', {
+  skip: needsSample
+}, async (t) => {
+  const rom = await buildVariant(t, 'maggrowth', (project) => {
+    project.party[0].baseMag = 10;
+    project.party[0].magPerLevel = 5;
+  });
+  const nes = bootPastNaming(rom);
+  assert.ok(walkIntoEncounter(nes));
+  waitForMenu(nes);
+  nes.cpu.mem[PC_LEVEL] = 3;
+  nes.cpu.mem[MON_HP] = 200;
+  const startHp = nes.cpu.mem[MON_HP];
+
+  chooseCommand(nes, BC_MAGIC);
+  tap(nes, A, 6);
+  tap(nes, A, 20);
+
+  // statAt(10, 5, 3) = 10 + 5*(3-1) = 20; (10 + 20) * 1.5 = 45. A wrong
+  // implementation that ignores magPerLevel would instead deal (10+10)*1.5=30.
+  assert.equal(startHp - nes.cpu.mem[MON_HP], 45, 'the caster\'s own level growth should apply, not just baseMag');
+});
+
+test('test 13: roll + mag saturates at 255 rather than wrapping (sample-rpg)', {
+  skip: needsSample
+}, async (t) => {
+  const rom = await buildVariant(t, 'magsaturate', (project) => {
+    project.maps[0].encounters = { rate: 0, actorIds: [] };
+    project.spells[0].amountMin = 200;
+    project.spells[0].amountMax = 200;
+    project.spells[0].element = 'none'; // isolate from spell_damage_weak's own separate saturation
+    project.party[0].baseMag = 255;
+  });
+  const nes = bootPastNaming(rom);
+  walkTo(nes, 160, 176);
+  walkTo(nes, 176, 176, 200);
+  waitForMenu(nes);
+  nes.cpu.mem[MON_HP] = 255; // the real byte ceiling
+
+  chooseCommand(nes, BC_MAGIC);
+  tap(nes, A, 6);
+  tap(nes, A, 20);
+
+  // 200 + 255 = 455, saturates at 255: the target is exactly killed. A
+  // wrapping implementation would land on 455 mod 256 = 199, leaving 56 HP.
+  assert.equal(nes.cpu.mem[MON_HP], 0, 'roll + mag should saturate at 255, not wrap to 199 and leave 56 HP');
+  assert.equal(nes.cpu.mem[MON_ALIVE], 0);
+});
+
+test('test 20: mdef subtracts before the elemental modifier, not after (sample-rpg)', {
+  skip: needsSample
+}, async (t) => {
+  const rom = await buildVariant(t, 'mdeforder', (project) => {
+    project.party[0].baseMag = 50;
+    project.sprites.actors[0].battle = { ...project.sprites.actors[0].battle, mdef: 20 };
+  });
+  const nes = bootPastNaming(rom);
+  assert.ok(walkIntoEncounter(nes));
+  waitForMenu(nes);
+  nes.cpu.mem[MON_HP] = 200;
+  const startHp = nes.cpu.mem[MON_HP];
+
+  chooseCommand(nes, BC_MAGIC);
+  tap(nes, A, 6);
+  tap(nes, A, 20);
+
+  // Correct (subtract before the modifier, floored): (10 + 50 - 20) * 1.5 = 60.
+  // Subtract-after wrong implementation: (10+50)*1.5 - 20 = 70. No-subtract
+  // wrong implementation: 90 (test 4's own number).
+  assert.equal(startHp - nes.cpu.mem[MON_HP], 60, 'mdef should subtract before the elemental modifier, floored, not after or not at all');
+});
+
+test('test 21a: mdef floors at 1, never 0 -- exact-zero subtraction (sample-rpg)', {
+  skip: needsSample
+}, async (t) => {
+  const rom = await buildVariant(t, 'mdeffloorexact', (project) => {
+    project.spells[0].element = 'none'; // isolate from the weak/strong step
+    project.sprites.actors[0].battle = { ...project.sprites.actors[0].battle, mdef: 10 };
+  });
+  const nes = bootPastNaming(rom);
+  assert.ok(walkIntoEncounter(nes));
+  waitForMenu(nes);
+  nes.cpu.mem[MON_HP] = 200;
+  const startHp = nes.cpu.mem[MON_HP];
+  chooseCommand(nes, BC_MAGIC);
+  tap(nes, A, 6);
+  tap(nes, A, 20);
+  // roll (10) - mdef (10) = exactly 0 -- floors to 1, not 0.
+  assert.equal(startHp - nes.cpu.mem[MON_HP], 1, 'an exact roll == mdef hit should floor at 1, not deal 0');
+});
+
+test('test 21b: mdef floors at 1, never 0 -- underflow (sample-rpg)', {
+  skip: needsSample
+}, async (t) => {
+  const rom = await buildVariant(t, 'mdeffloorunderflow', (project) => {
+    project.spells[0].element = 'none';
+    project.sprites.actors[0].battle = { ...project.sprites.actors[0].battle, mdef: 255 };
+  });
+  const nes = bootPastNaming(rom);
+  assert.ok(walkIntoEncounter(nes));
+  waitForMenu(nes);
+  nes.cpu.mem[MON_HP] = 200;
+  const startHp = nes.cpu.mem[MON_HP];
+  chooseCommand(nes, BC_MAGIC);
+  tap(nes, A, 6);
+  tap(nes, A, 20);
+  // mdef (255) exceeds the roll (10): underflow, forced to 0, then floored
+  // to 1 by the shared bne/floor check -- an implementation that forces 0 on
+  // underflow but skips that shared check would also read 0 here, the
+  // identical wrong number test 21a rules out, which is why both conditions
+  // are needed.
+  assert.equal(startHp - nes.cpu.mem[MON_HP], 1, 'mdef exceeding the roll should still floor at 1, not deal 0');
+});
+
+test('test 22: an mdef-only build subtracts against the bare roll, with no combatant_mag involved at all (sample-rpg)', {
+  skip: needsSample
+}, async (t) => {
+  const rom = await buildVariant(t, 'mdefonly', (project) => {
+    project.sprites.actors[0].battle = { ...project.sprites.actors[0].battle, mdef: 4 };
+  });
+  const nes = bootPastNaming(rom);
+  assert.ok(walkIntoEncounter(nes));
+  waitForMenu(nes);
+  nes.cpu.mem[MON_HP] = 200;
+  const startHp = nes.cpu.mem[MON_HP];
+  chooseCommand(nes, BC_MAGIC);
+  tap(nes, A, 6);
+  tap(nes, A, 20);
+  // (10 - 4) * 1.5 = 9 -- mdef alone; this build has no baseMag/battle.mag
+  // anywhere, so MAGIC_POWER_ENABLED is off and combatant_mag does not exist.
+  assert.equal(startHp - nes.cpu.mem[MON_HP], 9, 'mdef alone should apply with no stray mag contribution');
+});
+
+test('test 23: poison and burn are unaffected by a target\'s mdef (sample-rpg)', {
+  skip: needsSample
+}, async (t) => {
+  const rom = await buildVariant(t, 'mdefpoison', (project) => {
+    project.maps[0].encounters = { rate: 0, actorIds: [] };
+    project.sprites.actors[0].battle = { ...project.sprites.actors[0].battle, acc: 0, mdef: 250 };
+  });
+  const nes = bootPastNaming(rom);
+  walkTo(nes, 160, 176);
+  walkTo(nes, 176, 176, 200);
+  waitForMenu(nes);
+  nes.cpu.mem[PC_SPELLS] |= 4; // Venom
+  chooseCommand(nes, BC_MAGIC);
+  tap(nes, DOWN, 4);
+  tap(nes, A, 6);
+  tap(nes, A, 10);
+  assert.equal(nes.cpu.mem[MON_STATUS], STATUS_POISON, 'the slime should be poisoned regardless of its own mdef');
+
+  const startHp = nes.cpu.mem[MON_HP];
+  let ticked = false;
+  for (let round = 0; round < 30 && !ticked; round++) {
+    if (nes.cpu.mem[BT_PHASE] === BP_MENU) chooseCommand(nes, BC_RUN);
+    else tap(nes, A, 12);
+    ticked = nes.cpu.mem[MON_HP] !== startHp;
+  }
+  assert.ok(ticked, 'thirty rounds and poison never bit');
+  assert.equal(
+    startHp - nes.cpu.mem[MON_HP],
+    POISON_DMG,
+    'a poison tick should cost exactly POISON_DMG, unaffected by the target\'s own mdef'
+  );
+});
+
+// Fix round 1, P1-2: the poison case above never exercises burn -- see the
+// identical note on test 7's own burn sibling just above. Modeled on the
+// existing burn test's own sequence, with the target's own mdef added.
+test('test 23 (burn sibling): burn is unaffected by a target\'s mdef (sample-rpg)', {
+  skip: needsSample
+}, async (t) => {
+  const rom = await buildVariant(t, 'mdefburn', (project) => {
+    project.maps[0].encounters = { rate: 0, actorIds: [] };
+    project.spells[2].kind = 'burn'; // Venom becomes this build's Burn spell
+    project.sprites.actors[0].battle = { ...project.sprites.actors[0].battle, acc: 0, mdef: 250 };
+  });
+  const nes = bootPastNaming(rom);
+  walkTo(nes, 160, 176);
+  walkTo(nes, 176, 176, 200);
+  waitForMenu(nes);
+  nes.cpu.mem[PC_SPELLS] |= 4; // Venom/Burn
+  chooseCommand(nes, BC_MAGIC);
+  tap(nes, DOWN, 4);
+  tap(nes, A, 6);
+  tap(nes, A, 10);
+  assert.equal(nes.cpu.mem[MON_STATUS], STATUS_BURN, 'the slime should be burned, not poisoned, regardless of its own mdef');
+
+  const startHp = nes.cpu.mem[MON_HP];
+  let ticked = false;
+  for (let round = 0; round < 30 && !ticked; round++) {
+    if (nes.cpu.mem[BT_PHASE] === BP_MENU) chooseCommand(nes, BC_RUN);
+    else tap(nes, A, 12);
+    ticked = nes.cpu.mem[MON_HP] !== startHp;
+  }
+  assert.ok(ticked, 'thirty rounds and burn never bit');
+  assert.equal(
+    startHp - nes.cpu.mem[MON_HP],
+    BURN_DMG,
+    'a burn tick should cost exactly BURN_DMG, unaffected by the target\'s own mdef'
+  );
+});
+
+// Fix round 1, P1-3: the prior version of this test set
+// `MON_SLOT_ACTOR + 1 = 0`, making BOTH formation slots actor 0 -- so both
+// targets shared the identical mdef (10), and an implementation that read
+// the first target's mdef once and wrongly reused it for every target still
+// produced the same 49/8 numbers this test asserted, passing a defect it
+// was supposed to catch. Fixed by giving the two slots different actor ids
+// (0 and 3) with different mdef (10 and 5), so a per-target read and a
+// reused-first-target read diverge on the second number. Recomputed from
+// this test's own seed trace, not assumed: the roll sequence is identical to
+// the pre-existing multitarget test's own (59 then 18, seed 0x00, RNG ending
+// at 0x76), since the rolls depend only on the spell's own amount table, not
+// on which actor is being hit. Correct: dealt0 = 59 - 10 = 49,
+// dealt1 = 18 - 5 = 13. A reused-first-target-defence implementation would
+// instead compute dealt1 = 18 - 10 = 8, the wrong number the prior version
+// of this test could never distinguish from the correct one.
+test('test 24: an all-target spell subtracts mdef per target independently -- bt_tmp2 and the RNG survive it the same way they survive magic power (sample-rpg)', {
+  skip: needsSample
+}, async (t) => {
+  const rom = await buildVariant(t, 'multitarget-mdef', (project) => {
+    project.maps[0].encounters = { rate: 0, actorIds: [] };
+    project.spells[0].scope = 'all';
+    project.spells[0].amountMin = 1;
+    project.spells[0].amountMax = 100;
+    project.spells[0].element = 'none';
+    project.sprites.actors[0].hp = 150;
+    project.sprites.actors[0].battle = { ...project.sprites.actors[0].battle, mdef: 10 };
+    project.sprites.actors[3].hp = 150;
+    project.sprites.actors[3].battle = { ...project.sprites.actors[3].battle, mdef: 5 };
+  });
+  const nes = bootPastNaming(rom);
+  walkTo(nes, 160, 176);
+  walkTo(nes, 176, 176, 200);
+  assert.equal(nes.cpu.mem[GAME_STATE], ST_BATTLE);
+  nes.cpu.mem[MON_SLOT_ACTOR + 1] = 3; // a different actor (Snake, mdef 5), not another copy of the Slime
+  for (let i = 0; i < 12; i++) nes.frame();
+  assert.equal(nes.cpu.mem[BT_COUNT], 2);
+  waitForMenu(nes);
+  const startHp0 = nes.cpu.mem[MON_HP];
+  const startHp1 = nes.cpu.mem[MON_HP + 1];
+
+  chooseCommand(nes, BC_MAGIC);
+  nes.cpu.mem[RNG] = 0x00;
+  tap(nes, A, 12);
+
+  const dealt0 = startHp0 - nes.cpu.mem[MON_HP];
+  const dealt1 = startHp1 - nes.cpu.mem[MON_HP + 1];
+  assert.equal(dealt0, 49, 'the first target should take its own roll (59) minus its own mdef (10)');
+  assert.equal(
+    dealt1,
+    13,
+    'the second target should take its own, different roll (18) minus its OWN mdef (5), not the first target\'s (10, which would show 8)'
+  );
+  assert.equal(
+    nes.cpu.mem[RNG],
+    0x76,
+    'exactly two rng_next calls should have run -- mdef\'s own subtraction touches no RNG and must not disturb bt_tmp2 either'
+  );
+});
+
+test('test 25: a target at level > 1 is defended by statAt(baseMdef, mdefPerLevel, level), not just baseMdef (sample-rpg)', {
+  skip: needsSample
+}, async (t) => {
+  const rom = await buildVariant(t, 'mdefgrowth', (project) => {
+    project.maps[0].encounters = { rate: 0, actorIds: [] };
+    project.spells[0].amountMin = 30;
+    project.spells[0].amountMax = 30;
+    project.spells[0].element = 'none';
+    project.sprites.actors[3].battle = { ...project.sprites.actors[3].battle, spellId: 0, mag: 0 };
+    project.party[0].baseMdef = 4;
+    project.party[0].mdefPerLevel = 3;
+    project.party[0].baseHp = 200; // headroom across up to sixty rounds of physical scratches
+  });
+  const nes = bootPastNaming(rom);
+  nes.cpu.mem[PC_LEVEL] = 3;
+  walkTo(nes, 32, 112);
+  walkTo(nes, 32, 208, 300);
+  assert.equal(nes.cpu.mem[GAME_STATE], ST_BATTLE, 'walking into the snake did not start a fight');
+
+  let dealt = null;
+  for (let round = 0; round < 60 && dealt === null; round++) {
+    if (nes.cpu.mem[GAME_STATE] !== ST_BATTLE) break;
+    const mpBefore = nes.cpu.mem[MON_SLOT_MP];
+    const hpBefore = nes.cpu.mem[PC_HP];
+    if (nes.cpu.mem[BT_PHASE] === BP_MENU) chooseCommand(nes, BC_RUN);
+    else tap(nes, A, 12);
+    if (nes.cpu.mem[MON_SLOT_MP] < mpBefore) dealt = hpBefore - nes.cpu.mem[PC_HP];
+  }
+  assert.ok(dealt !== null, 'sixty rounds and the snake never cast its spell');
+  // statAt(4, 3, 3) = 4 + 3*(3-1) = 10; 30 - 10 = 20. A wrong implementation
+  // that ignores mdefPerLevel would instead read mdef as a flat 4: 30-4=26.
+  assert.equal(dealt, 20, 'the target\'s own level growth should defend, not just baseMdef');
+});
+
+test('test 28: a heal is unaffected by mdef on the healed member (sample-rpg)', {
+  skip: needsSample
+}, async (t) => {
+  const rom = await buildVariant(t, 'mdefheal', (project) => {
+    project.party[0].baseMdef = 50;
+  });
+  const nes = bootPastNaming(rom);
+  assert.ok(walkIntoEncounter(nes));
+  waitForMenu(nes);
+  nes.cpu.mem[PC_SPELLS] |= 2; // Mend
+  nes.cpu.mem[PC_HP] = 5;
+  nes.cpu.mem[PC_MP] = 20;
+
+  chooseCommand(nes, BC_MAGIC);
+  tap(nes, DOWN, 4);
+  tap(nes, A, 6);
+  tap(nes, A, 10);
+
+  // A wrong implementation that mistakenly reused spell_damage's own
+  // subtract-and-floor logic for cast_heal too would instead underflow
+  // (18 < 50), floor to 1, and heal only 5 + 1 = 6.
+  assert.equal(nes.cpu.mem[PC_HP], 23, 'mdef must never be read for a heal -- 5 + 18, unaffected by the caster\'s own baseMdef');
+});
+
 // --- spell amount ranges (Magic Forge phase 2, roll_spell_amount/mod8) -----
 //
 // Every seed below was derived offline by hand-simulating engine/rpg.asm's

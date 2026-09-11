@@ -71,6 +71,8 @@ import {
   projectUsesPaletteFx,
   projectUsesFace,
   projectUsesItems,
+  projectUsesMagicPower,
+  projectUsesMagicDefence,
   projectUsesSting,
   projectUsesSfx,
   projectUsesAudioFx,
@@ -2491,6 +2493,14 @@ export async function generateAssets({ dir, project, log = () => {} }) {
   // Computed once here for the same drift-avoidance reason actorCount is.
   const itemsEnabled = projectUsesItems(project);
   const itemCount = project.items?.length ?? 0;
+  // Whether combatant_mag/combatant_mdef and spell_damage/cast_heal's own
+  // call-site additions assemble at all -- MAGIC_POWER_ENABLED/MAGIC_DEFENCE_
+  // ENABLED below, docs/design-magic-power.md §8. Two independent flags, not
+  // one: a project can author one stat without the other, and each must be
+  // gated on its own so a build using only one never assembles the other's
+  // code (§8's own delta-measurement trap).
+  const magicPowerEnabled = projectUsesMagicPower(project);
+  const magicDefenceEnabled = projectUsesMagicDefence(project);
 
   // The HUD hearts, stamped after the placeholder check so an empty sprite table
   // is still recognised as empty. Two tiles, and only for a game that can hurt
@@ -3009,6 +3019,13 @@ export async function generateAssets({ dir, project, log = () => {} }) {
     // guarantee than that existing precedent.
     `BOUND_TILE_ENABLED = ${usesBoundTiles ? 1 : 0}`,
     `BOUND_CAP = ${LIMITS.boundTilesPerScreen}`,
+    // combatant_mag/pc_mag_at/mon_mag and spell_damage's/cast_heal's own
+    // add, and combatant_mdef/pc_mdef_at/mon_mdef and spell_damage's own
+    // subtract-and-floor -- see projectUsesMagicPower/projectUsesMagicDefence
+    // (shared/project.js) and docs/design-magic-power.md §7/§8. Two
+    // independent flags: a project can author one stat without the other.
+    `MAGIC_POWER_ENABLED = ${magicPowerEnabled ? 1 : 0}`,
+    `MAGIC_DEFENCE_ENABLED = ${magicDefenceEnabled ? 1 : 0}`,
     ''
   ].join('\n');
   await fs.writeFile(path.join(assetsDir, 'config.inc'), config);

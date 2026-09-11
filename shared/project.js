@@ -3993,6 +3993,10 @@ export function createPartyMember(id, name = DEFAULT_MEMBER_NAME(id)) {
     atkPerLevel: 1,
     baseDef: 4,
     defPerLevel: 1,
+    baseMag: 0,
+    magPerLevel: 0,
+    baseMdef: 0,
+    mdefPerLevel: 0,
     speed: 4,
     acc: 200,
     eva: 8,
@@ -4957,6 +4961,8 @@ function normalizeActor(raw, id, itemCtx = EMPTY_ITEM_CTX) {
     battle: {
       atk: clamp(battle.atk, 0, 255, 4),
       def: clamp(battle.def, 0, 255, 2),
+      mag: clamp(battle.mag, 0, 255, 0),
+      mdef: clamp(battle.mdef, 0, 255, 0),
       acc: clamp(battle.acc, 0, 255, 180),
       eva: clamp(battle.eva, 0, 255, 4),
       speed: clamp(battle.speed, 0, 255, 4),
@@ -5062,6 +5068,10 @@ function normalizePartyMember(raw, id, spellCount, maxLevel) {
     atkPerLevel: num('atkPerLevel', 0, 16),
     baseDef: num('baseDef', 0, 255),
     defPerLevel: num('defPerLevel', 0, 16),
+    baseMag: num('baseMag', 0, 255),
+    magPerLevel: num('magPerLevel', 0, 16),
+    baseMdef: num('baseMdef', 0, 255),
+    mdefPerLevel: num('mdefPerLevel', 0, 16),
     speed: num('speed', 0, 255),
     acc: num('acc', 0, 255),
     eva: num('eva', 0, 255),
@@ -5929,6 +5939,38 @@ export function projectUsesFace(project) {
  */
 export function projectUsesItems(project) {
   return (project.items?.length ?? 0) > 0;
+}
+
+/**
+ * Whether magic power -- a caster's `baseMag`/`magPerLevel`/`battle.mag`
+ * adding into a spell's own rolled amount -- is worth assembling at all.
+ * Drives the generated `MAGIC_POWER_ENABLED` flag the same shape
+ * `projectUsesItems` already takes: an author's authored choice, taken at
+ * face value, not a resolved-reachability question (docs/design-magic-power.md
+ * §6). Deliberately a separate predicate from `projectUsesMagicDefence`,
+ * never folded into one -- a project can author one stat without the other,
+ * and the two flags have to be able to disagree so each stat's own engine
+ * code assembles independently (§8).
+ */
+export function projectUsesMagicPower(project) {
+  if ((project.party ?? []).some((member) => member.baseMag > 0 || member.magPerLevel > 0)) {
+    return true;
+  }
+  return (project.sprites?.actors ?? []).some((actor) => (actor.battle?.mag ?? 0) > 0);
+}
+
+/**
+ * Whether magic defence -- a target's `baseMdef`/`mdefPerLevel`/`battle.mdef`
+ * subtracting from a spell's own rolled amount before its elemental modifier
+ * -- is worth assembling at all. The identical shape as `projectUsesMagicPower`,
+ * its own separate predicate for the identical reason (docs/design-magic-power.md
+ * §6/§8).
+ */
+export function projectUsesMagicDefence(project) {
+  if ((project.party ?? []).some((member) => member.baseMdef > 0 || member.mdefPerLevel > 0)) {
+    return true;
+  }
+  return (project.sprites?.actors ?? []).some((actor) => (actor.battle?.mdef ?? 0) > 0);
 }
 
 export function validateProject(project) {

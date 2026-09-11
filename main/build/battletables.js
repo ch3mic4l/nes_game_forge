@@ -40,6 +40,8 @@ import {
   itemMissing,
   isMonsterActor,
   projectUsesItems,
+  projectUsesMagicPower,
+  projectUsesMagicDefence,
   projectUsesHeroNaming,
   projectUsesJoinNaming,
   projectUsesNameEntry,
@@ -136,6 +138,18 @@ export function battleTables(project, battleStrings = BATTLE_STRINGS) {
   chunks.push(`mon_mp:\n${dbRows(battle((b) => b.mp ?? 0))}`);
   chunks.push(`mon_atk:\n${dbRows(battle((b) => b.atk ?? 4))}`);
   chunks.push(`mon_def:\n${dbRows(battle((b) => b.def ?? 2))}`);
+  // Emitted only when projectUsesMagicPower/projectUsesMagicDefence is true --
+  // the identical items-block stub-avoidance rule just below: dbRows([])
+  // still emits a one-byte ".db $00" stub for an empty array, so pushing
+  // these unconditionally would cost every magic-power/magic-defence-off RPG
+  // real banked bytes for a table nothing in that build ever reads. See
+  // docs/design-magic-power.md §8.
+  if (projectUsesMagicPower(project)) {
+    chunks.push(`mon_mag:\n${dbRows(battle((b) => b.mag ?? 0))}`);
+  }
+  if (projectUsesMagicDefence(project)) {
+    chunks.push(`mon_mdef:\n${dbRows(battle((b) => b.mdef ?? 0))}`);
+  }
   chunks.push(`mon_acc:\n${dbRows(battle((b) => b.acc ?? 180))}`);
   chunks.push(`mon_eva:\n${dbRows(battle((b) => b.eva ?? 4))}`);
   chunks.push(`mon_speed:\n${dbRows(battle((b) => b.speed ?? 4))}`);
@@ -275,6 +289,14 @@ export function battleTables(project, battleStrings = BATTLE_STRINGS) {
   chunks.push(`pc_mp_at:\n${dbRows(levelTable((m, l) => statAt(m.baseMp, m.mpPerLevel, l)), rpg.maxLevel)}`);
   chunks.push(`pc_atk_at:\n${dbRows(levelTable((m, l) => statAt(m.baseAtk, m.atkPerLevel, l)), rpg.maxLevel)}`);
   chunks.push(`pc_def_at:\n${dbRows(levelTable((m, l) => statAt(m.baseDef, m.defPerLevel, l)), rpg.maxLevel)}`);
+  // Emitted only when projectUsesMagicPower/projectUsesMagicDefence is true --
+  // the identical stub-avoidance rule mon_mag/mon_mdef use above.
+  if (projectUsesMagicPower(project)) {
+    chunks.push(`pc_mag_at:\n${dbRows(levelTable((m, l) => statAt(m.baseMag, m.magPerLevel, l)), rpg.maxLevel)}`);
+  }
+  if (projectUsesMagicDefence(project)) {
+    chunks.push(`pc_mdef_at:\n${dbRows(levelTable((m, l) => statAt(m.baseMdef, m.mdefPerLevel, l)), rpg.maxLevel)}`);
+  }
 
   // Which spells a member knows at a level: one bitmask byte per member per
   // level, so up to eight spells each. Spells are learned and never forgotten.
@@ -545,6 +567,25 @@ export const BASE_BATTLE_CODE_BYTES_BY_MAPPER = { 30: 4220, 1: 4220, 4: 4266 };
 // nothing this term covers branches on SPLIT_ENABLED or any other
 // mapper-specific fact, only on ITEMS_ENABLED.
 export const ITEM_LIST_FILTER_BATTLE_ALLOWANCE = 17;
+
+// combatant_mag (engine/battleturn.asm) plus spell_damage's and cast_heal's
+// own two call-site additions -- measured on all three RPG-capable boards
+// (docs/design-magic-power.md §9), flat rather than per-mapper because
+// nothing here branches on SPLIT_ENABLED or anything else board-specific.
+// Gated on projectUsesMagicPower, independently of MAGIC_DEFENCE_BATTLE_
+// ALLOWANCE below -- see that constant's own comment for why the two must
+// never share one gate.
+export const MAGIC_POWER_BATTLE_ALLOWANCE = 72;
+
+// combatant_mdef plus spell_damage's own single call-site addition (park,
+// then subtract-and-floor) -- measured the identical way, on all three
+// boards, flat for the identical reason. Gated on projectUsesMagicDefence,
+// deliberately independent of MAGIC_POWER_BATTLE_ALLOWANCE: a project can
+// author one stat without the other, and measuring either allowance in
+// isolation requires the other's own gate to be free to stay off while this
+// one is toggled -- a shared gate would make removing one of two co-gated
+// features measure a delta of zero (docs/design-magic-power.md §8).
+export const MAGIC_DEFENCE_BATTLE_ALLOWANCE = 65;
 
 // In-game party-member naming (docs/design-name-entry.md §5/§11) -- the
 // banked half. Two independently-gated terms, not one: NAME_ENTRY_BATTLE_
@@ -830,7 +871,9 @@ export function battleRegionBytes(project, mapper) {
     battleTableBytes(project) +
     (projectUsesItems(project) ? ITEM_LIST_FILTER_BATTLE_ALLOWANCE : 0) +
     (projectUsesNameEntry(project) && banked ? NAME_ENTRY_BATTLE_ALLOWANCE : 0) +
-    (projectNeedsNameSeed(project) && banked ? NAME_COPY_BATTLE_ALLOWANCE : 0)
+    (projectNeedsNameSeed(project) && banked ? NAME_COPY_BATTLE_ALLOWANCE : 0) +
+    (projectUsesMagicPower(project) ? MAGIC_POWER_BATTLE_ALLOWANCE : 0) +
+    (projectUsesMagicDefence(project) ? MAGIC_DEFENCE_BATTLE_ALLOWANCE : 0)
   );
 }
 

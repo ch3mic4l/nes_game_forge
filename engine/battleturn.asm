@@ -324,10 +324,26 @@ cast_all_next:
   jmp battle_say_actor
 
 ; A heal restores whoever is casting -- either side -- and cures their poison
-; with it, which is what makes poison worth curing.
+; with it, which is what makes poison worth curing. Magic power adds its own
+; block ahead of the roll (docs/design-magic-power.md §7): mag is parked in
+; bt_ret before the roll runs, since bt_tmp -- where the rolled amount lands
+; -- is exactly what level_row, reached through combatant_mag's own party-side
+; branch, clobbers first. No magic-defence block here at all, deliberately: a
+; heal has no defending target (§5).
 cast_heal:
+  .if MAGIC_POWER_ENABLED
+  lda bt_actor
+  jsr combatant_mag          ; bt_ret = mag(bt_actor); X/Y untouched
+  .endif
   ldx bt_arg
   jsr roll_spell_amount
+  .if MAGIC_POWER_ENABLED
+  clc
+  adc bt_ret
+  bcc cast_heal_mag_ok
+  lda #$FF
+cast_heal_mag_ok:
+  .endif
   sta bt_tmp
   lda bt_actor
   cmp #MAX_PARTY
@@ -680,6 +696,67 @@ combatant_def_ret:
   lda bt_ret
   rts
 
+; A = combatant index in (0-3 party, 4-7 monster). Returns A = mag(combatant),
+; staged in bt_ret too. Preserves X and Y. Clobbers bt_tmp via level_row on
+; the party path. Never touches bt_tmp2. Assembled only under
+; MAGIC_POWER_ENABLED. Mirrors combatant_atk/combatant_def exactly -- see
+; docs/design-magic-power.md §7.
+  .if MAGIC_POWER_ENABLED
+combatant_mag:
+  stx bt_x
+  sty bt_y
+  cmp #MAX_PARTY
+  bcs combatant_mag_mon
+  tax
+  txa
+  jsr level_row
+  lda pc_mag_at,y
+  jmp combatant_mag_ret
+combatant_mag_mon:
+  sec
+  sbc #MAX_PARTY
+  tax
+  ldy mon_slot_actor,x
+  lda mon_mag,y
+combatant_mag_ret:
+  sta bt_ret
+  ldx bt_x
+  ldy bt_y
+  lda bt_ret
+  rts
+  .endif
+
+; A = combatant index in. Returns A = mdef(combatant), staged in bt_ret too
+; (spell_damage's own call site parks the result in bt_dmg_lo instead,
+; immediately after the call -- bt_ret would otherwise be clobbered by the
+; combatant_mag call that follows it). Preserves X and Y. Clobbers bt_tmp via
+; level_row on the party path. Never touches bt_tmp2, bt_dmg_lo or bt_dmg_hi
+; anywhere in its own body. Assembled only under MAGIC_DEFENCE_ENABLED.
+  .if MAGIC_DEFENCE_ENABLED
+combatant_mdef:
+  stx bt_x
+  sty bt_y
+  cmp #MAX_PARTY
+  bcs combatant_mdef_mon
+  tax
+  txa
+  jsr level_row
+  lda pc_mdef_at,y
+  jmp combatant_mdef_ret
+combatant_mdef_mon:
+  sec
+  sbc #MAX_PARTY
+  tax
+  ldy mon_slot_actor,x
+  lda mon_mdef,y
+combatant_mdef_ret:
+  sta bt_ret
+  ldx bt_x
+  ldy bt_y
+  lda bt_ret
+  rts
+  .endif
+
 ; X = spell index (bt_arg, at both call sites). Returns A = the rolled
 ; amount. spell_amount_n,x == 1 means min == max: no roll, no RNG
 ; consumed, byte-for-byte the old flat-amount read. X is preserved
@@ -729,10 +806,49 @@ mod8_no_sub:
   rts
 
 ; The spell's own number, then the element: half again against a weakness, half
-; against a resistance, and never less than one.
+; against a resistance, and never less than one. Magic power and magic
+; defence (docs/design-magic-power.md §7) add their own blocks ahead of the
+; roll: mdef is parked in bt_dmg_lo (dead here -- the roll's own first write
+; to bt_dmg_lo is well after this value is consumed), mag is parked in bt_ret,
+; then the roll runs, then mag is added (saturating at 255), then mdef is
+; subtracted (floored at 1) before the element modifier below.
 spell_damage:
+  .if MAGIC_DEFENCE_ENABLED
+  lda bt_target
+  jsr combatant_mdef         ; A = mdef(bt_target); X/Y untouched
+  sta bt_dmg_lo               ; park it -- dead here
+  .endif
+  .if MAGIC_POWER_ENABLED
+  lda bt_actor
+  jsr combatant_mag          ; bt_ret = mag(bt_actor); X/Y untouched;
+                              ; bt_dmg_lo untouched
+  .endif
   ldx bt_arg
   jsr roll_spell_amount
+  .if MAGIC_POWER_ENABLED
+  clc
+  adc bt_ret
+  bcc spell_damage_mag_ok
+  lda #$FF                    ; saturate: no high byte to promote into --
+                               ; bt_dmg_hi doubles as the XP accumulator and
+                               ; $FF already means "no number"
+spell_damage_mag_ok:
+  .endif
+  .if MAGIC_DEFENCE_ENABLED
+  sec
+  sbc bt_dmg_lo                ; (roll [+ mag]) - mdef; bt_dmg_lo still
+                                ; holds the parked mdef value from above
+  bcs spell_damage_mdef_floor   ; no underflow: A is the real difference
+  lda #0                         ; mdef exceeded the roll: force 0, the
+                                  ; identical idiom physical_damage_floor
+                                  ; already uses for atk-def
+spell_damage_mdef_floor:
+  bne spell_damage_mdef_done      ; nonzero: the subtraction already stands
+  lda #1                           ; zero, whether forced above or exact:
+                                    ; floor at 1, "even a hopeless attack
+                                    ; scratches" applied to the spell side
+spell_damage_mdef_done:
+  .endif
   sta bt_dmg_lo
   lda #0
   sta bt_dmg_hi
