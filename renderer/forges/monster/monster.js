@@ -119,7 +119,9 @@ export function battleSection(actor, index, rerender) {
     row(
       field('Attack', number(battle.atk ?? 4, 0, 255, (value) => set('atk', value))),
       field('Defence', number(battle.def ?? 2, 0, 255, (value) => set('def', value))),
-      field('Speed', number(battle.speed ?? 4, 0, 255, (value) => set('speed', value)))
+      field('Speed', number(battle.speed ?? 4, 0, 255, (value) => set('speed', value))),
+      field('Magic', number(battle.mag ?? 0, 0, 255, (value) => set('mag', value))),
+      field('Magic defence', number(battle.mdef ?? 0, 0, 255, (value) => set('mdef', value)))
     ),
     row(
       field('Accuracy', number(battle.acc ?? 180, 0, 255, (value) => set('acc', value), 'Out of 255')),

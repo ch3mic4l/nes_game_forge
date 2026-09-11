@@ -7529,6 +7529,219 @@ const scenario = (dir, sampleDir, sampleRpgDir) => `
         'Monster Forge re-derives the live actor on every render, not a cached object',
         'a displayed battle field tracks the live store across undo and redo, not a stale reference to a detached actor object'
       );
+
+      // Magic and Magic defence fields (item 13/15 phase 2,
+      // docs/design-magic-power.md §10/§14 tests 10-11): the identical
+      // edit/undo/redo sequence as Attack above, extended with a
+      // save/reload disk round trip -- the brief's own "commit, undo,
+      // reload" requirement, which the Attack sequence above stops short of
+      // (it only goes as far as redo). Both fields round-trip through
+      // sampleRpgDir, a mkdtemp temp copy (confirmed by reading the fs.cp
+      // calls near the end of this file), so this never touches the
+      // checked-in sample-rpg/ fixture; each sequence's own cleanup step
+      // restores the original value on both the live store and disk before
+      // moving on, so the later sampleRpgDir reopen blocks (the
+      // Monster/Sprite navigation-contract tests below) still see values
+      // they never actually inspect -- see the report for what those
+      // blocks assert on instead.
+      for (const [label, key, value] of [
+        ['Magic', 'mag', 37],
+        ['Magic defence', 'mdef', 23]
+      ]) {
+        const original = monsterStore.project.sprites.actors[snakeId].battle?.[key] ?? 0;
+
+        const fieldBeforeEdit = findFieldInput(label);
+        if (!fieldBeforeEdit) throw new Error('Monster Forge has no ' + label + ' field for Snake');
+        fieldBeforeEdit.value = String(value);
+        fieldBeforeEdit.dispatchEvent(new Event('change', { bubbles: true }));
+        await wait(150);
+        if (monsterStore.project.sprites.actors[snakeId].battle[key] !== value) {
+          throw new Error('editing Snake’s ' + label + ' field did not reach the store');
+        }
+        const fieldAfterEdit = findFieldInput(label);
+        if (Number(fieldAfterEdit?.value) !== value) {
+          throw new Error('Monster Forge did not render the edited ' + label + ' value, saw ' + fieldAfterEdit?.value);
+        }
+
+        if (!monsterStore.undo()) throw new Error('undo returned false for the ' + label + ' edit');
+        await wait(150);
+        const fieldAfterUndo = findFieldInput(label);
+        if (Number(fieldAfterUndo?.value) !== original) {
+          throw new Error(
+            'after undo, Monster Forge still rendered the edited ' +
+              label +
+              ' value (' +
+              fieldAfterUndo?.value +
+              ') instead of the live store’s (' +
+              original +
+              ') -- a cached actor object would do exactly this'
+          );
+        }
+
+        if (!monsterStore.redo()) throw new Error('redo returned false for the ' + label + ' edit');
+        await wait(150);
+        const fieldAfterRedo = findFieldInput(label);
+        if (Number(fieldAfterRedo?.value) !== value) {
+          throw new Error('after redo, Monster Forge did not render the reapplied ' + label + ' value, saw ' + fieldAfterRedo?.value);
+        }
+
+        const magicRoundTrip = await window.forge.project.save(monsterStore.dir, monsterStore.project);
+        if (!magicRoundTrip.ok) throw new Error('save after the ' + label + ' edit: ' + magicRoundTrip.error);
+        const magicReopened = await window.forge.project.open(monsterStore.dir);
+        if (!magicReopened.ok) throw new Error('reopen after the ' + label + ' edit: ' + magicReopened.error);
+        if (magicReopened.value.project.sprites.actors[snakeId].battle[key] !== value) {
+          throw new Error('Snake’s ' + label + ' value did not survive the save/reload disk round trip');
+        }
+
+        // Cleanup: leave Snake’s field at its original value, on both the
+        // live store and disk.
+        if (!monsterStore.undo()) throw new Error('undo (cleanup for the ' + label + ' edit) returned false');
+        await wait(150);
+        if ((monsterStore.project.sprites.actors[snakeId].battle?.[key] ?? 0) !== original) {
+          throw new Error('cleanup undo did not restore Snake’s original ' + label + ' value');
+        }
+        const magicCleanupSave = await window.forge.project.save(monsterStore.dir, monsterStore.project);
+        if (!magicCleanupSave.ok) throw new Error('cleanup save after the ' + label + ' edit: ' + magicCleanupSave.error);
+
+        step(
+          'Monster Forge ' + label + ' field edit/undo/redo/reload',
+          'Snake’s battle.' + key + ' reaches the store as ' + value + ', survives undo/redo against the live rendered value, and survives a save/reload disk round trip'
+        );
+      }
+    }
+
+    // Character Forge Magic and Magic defence fields, plus both per-level
+    // fields (item 13/15 phase 2, docs/design-magic-power.md §10/§14 test
+    // 10) -- genuinely new coverage, since there is no existing per-stat
+    // smoke test on this Forge to extend. Run inside this same Monster
+    // Forge section (not the earlier Character Forge section above, whose
+    // party the smoke script never saves to disk) precisely because
+    // sampleRpgDir here is the on-disk copy as loaded: party [Rian, Iris],
+    // no synthesized members, so a round trip here does not persist the
+    // earlier section's in-memory-only [Hero, Iris, Doc] party.
+    {
+      await window.__app.goTo('character');
+      await wait(200);
+
+      const partyListSelect = () => document.querySelectorAll('#stage select')[0];
+      if (!partyListSelect() || partyListSelect().value !== '0') {
+        throw new Error('expected Rian (party index 0) selected by default on a freshly opened sample-rpg, saw value "' + partyListSelect()?.value + '"');
+      }
+
+      // §10 specifies the Magic row's placement (after Defence, before
+      // Speed) -- a row simply appended at the bottom would pass every
+      // value-carrying assertion below and only this DOM-order check would
+      // catch it.
+      const fieldLabelOrder = () =>
+        [...document.querySelectorAll('#stage .field')].map((f) => f.querySelector('.field-label')?.textContent);
+      const order = fieldLabelOrder();
+      const magicIndex = order.indexOf('Magic');
+      const defenceIndex = order.indexOf('Defence');
+      const speedIndex = order.indexOf('Speed');
+      if (magicIndex === -1 || defenceIndex === -1 || speedIndex === -1) {
+        throw new Error('Character Forge is missing Magic, Defence or Speed field, saw order ' + JSON.stringify(order));
+      }
+      if (!(defenceIndex < magicIndex && magicIndex < speedIndex)) {
+        throw new Error(
+          'Character Forge Magic row should sit after Defence and before Speed, saw order ' + JSON.stringify(order)
+        );
+      }
+
+      // findFieldInput is the same helper declared above for the Monster
+      // Forge's own fields -- it matches .field-label textContent exactly
+      // against #stage .field, which works identically once this section
+      // has navigated to the Character Forge instead.
+      // "+ / level" is not unique -- after this change there are six such
+      // fields (HP, MP, Attack, Defence, Magic, Magic defence) -- so the
+      // per-level input for Magic/Magic defence has to be found
+      // structurally: the field immediately after the one labelled
+      // "Magic"/"Magic defence" within the same row(...).
+      const findPerLevelInputAfter = (labelText) => {
+        const fields = [...document.querySelectorAll('#stage .field')];
+        const anchor = fields.find((f) => f.querySelector('.field-label')?.textContent === labelText);
+        if (!anchor) throw new Error('Character Forge has no "' + labelText + '" field to anchor the +/level lookup on');
+        const sibling = anchor.nextElementSibling;
+        const siblingLabel = sibling?.querySelector?.('.field-label')?.textContent;
+        if (!sibling || siblingLabel !== '+ / level') {
+          throw new Error(
+            'the field immediately after "' + labelText + '" is not labelled "+ / level", saw ' + JSON.stringify(siblingLabel)
+          );
+        }
+        return sibling.querySelector('input');
+      };
+
+      const charFields = [
+        ['Magic', 'baseMag', 41, () => findFieldInput('Magic')],
+        ['Magic + / level', 'magPerLevel', 7, () => findPerLevelInputAfter('Magic')],
+        ['Magic defence', 'baseMdef', 29, () => findFieldInput('Magic defence')],
+        ['Magic defence + / level', 'mdefPerLevel', 5, () => findPerLevelInputAfter('Magic defence')]
+      ];
+
+      for (const [label, key, value, getInput] of charFields) {
+        const original = monsterStore.project.party[0][key] ?? 0;
+
+        const inputBeforeEdit = getInput();
+        if (!inputBeforeEdit) throw new Error('Character Forge has no input for ' + label);
+        inputBeforeEdit.value = String(value);
+        inputBeforeEdit.dispatchEvent(new Event('change', { bubbles: true }));
+        await wait(150);
+        if (monsterStore.project.party[0][key] !== value) {
+          throw new Error('editing Rian’s ' + label + ' field did not reach the store');
+        }
+        const inputAfterEdit = getInput();
+        if (Number(inputAfterEdit?.value) !== value) {
+          throw new Error('Character Forge did not render the edited ' + label + ' value, saw ' + inputAfterEdit?.value);
+        }
+
+        if (!monsterStore.undo()) throw new Error('undo returned false for the ' + label + ' edit');
+        await wait(150);
+        const inputAfterUndo = getInput();
+        if (Number(inputAfterUndo?.value) !== original) {
+          throw new Error(
+            'after undo, Character Forge still rendered the edited ' +
+              label +
+              ' value (' +
+              inputAfterUndo?.value +
+              ') instead of the live store’s (' +
+              original +
+              ')'
+          );
+        }
+
+        if (!monsterStore.redo()) throw new Error('redo returned false for the ' + label + ' edit');
+        await wait(150);
+        const inputAfterRedo = getInput();
+        if (Number(inputAfterRedo?.value) !== value) {
+          throw new Error('after redo, Character Forge did not render the reapplied ' + label + ' value, saw ' + inputAfterRedo?.value);
+        }
+
+        const charRoundTrip = await window.forge.project.save(monsterStore.dir, monsterStore.project);
+        if (!charRoundTrip.ok) throw new Error('save after the ' + label + ' edit: ' + charRoundTrip.error);
+        const charReopened = await window.forge.project.open(monsterStore.dir);
+        if (!charReopened.ok) throw new Error('reopen after the ' + label + ' edit: ' + charReopened.error);
+        if (charReopened.value.project.party[0][key] !== value) {
+          throw new Error('Rian’s ' + label + ' value did not survive the save/reload disk round trip');
+        }
+
+        // Cleanup: leave Rian’s field at its original value, on both the
+        // live store and disk.
+        if (!monsterStore.undo()) throw new Error('undo (cleanup for the ' + label + ' edit) returned false');
+        await wait(150);
+        if ((monsterStore.project.party[0][key] ?? 0) !== original) {
+          throw new Error('cleanup undo did not restore Rian’s original ' + label + ' value');
+        }
+        const charCleanupSave = await window.forge.project.save(monsterStore.dir, monsterStore.project);
+        if (!charCleanupSave.ok) throw new Error('cleanup save after the ' + label + ' edit: ' + charCleanupSave.error);
+
+        step(
+          'Character Forge ' + label + ' field edit/undo/redo/reload',
+          'Rian’s ' + key + ' reaches the store as ' + value + ', survives undo/redo against the live rendered value, and survives a save/reload disk round trip'
+        );
+      }
+
+      // Leave the Forge where the rest of this section expects it.
+      await window.__app.goTo('monster');
+      await wait(200);
     }
 
     // Test 1a-level (phase 2, docs/design-monster.md §3/§6): battle.level is

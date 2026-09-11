@@ -184,6 +184,14 @@ export function mount(container, app) {
         field('+ / level', number(member.defPerLevel, 0, 32, (v) => setMember(index, 'defPerLevel', v)))
       ),
       row(
+        field('Magic', number(member.baseMag, 0, 255, (v) => setMember(index, 'baseMag', v))),
+        field('+ / level', number(member.magPerLevel, 0, 16, (v) => setMember(index, 'magPerLevel', v)))
+      ),
+      row(
+        field('Magic defence', number(member.baseMdef, 0, 255, (v) => setMember(index, 'baseMdef', v))),
+        field('+ / level', number(member.mdefPerLevel, 0, 16, (v) => setMember(index, 'mdefPerLevel', v)))
+      ),
+      row(
         field('Speed', number(member.speed, 0, 255, (v) => setMember(index, 'speed', v))),
         field('Accuracy', number(member.acc, 0, 255, (v) => setMember(index, 'acc', v))),
         field('Evasion', number(member.eva, 0, 255, (v) => setMember(index, 'eva', v)))
