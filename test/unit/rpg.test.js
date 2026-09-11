@@ -68,6 +68,8 @@ const BT_MON_COL = 4; // engine/constants.asm
 const GOLD_LO = 0x63;
 const PARTY_SIZE = 0x65;
 const BT_LEN = 0x6b;
+const BT_ARG = 0x6d;
+const VRAM_LEN = 0x3c;
 const MSG_ROW = 21; // engine/constants.asm -- the message area and the lists share these rows
 const MSG_COL = 2; // engine/constants.asm
 const INV_ITEMS = 0x378;
@@ -1852,7 +1854,7 @@ test('test 5: a monster caster\'s spell is scaled by its own mag, read through t
 }, async (t) => {
   const rom = await buildVariant(t, 'monmag', (project) => {
     project.maps[0].encounters = { rate: 0, actorIds: [] };
-    project.sprites.actors[3].battle = { ...project.sprites.actors[3].battle, spellId: 0, mag: 40 };
+    project.sprites.actors[3].battle = { ...project.sprites.actors[3].battle, spellIds: [0], mag: 40 };
     project.sprites.actors[0].battle = { ...project.sprites.actors[0].battle, mag: 200 };
     project.party[0].baseHp = 200;
   });
@@ -2353,7 +2355,7 @@ test('test 25: a target at level > 1 is defended by statAt(baseMdef, mdefPerLeve
     project.spells[0].amountMin = 30;
     project.spells[0].amountMax = 30;
     project.spells[0].element = 'none';
-    project.sprites.actors[3].battle = { ...project.sprites.actors[3].battle, spellId: 0, mag: 0 };
+    project.sprites.actors[3].battle = { ...project.sprites.actors[3].battle, spellIds: [0], mag: 0 };
     project.party[0].baseMdef = 4;
     project.party[0].mdefPerLevel = 3;
     project.party[0].baseHp = 200; // headroom across up to sixty rounds of physical scratches
@@ -2877,7 +2879,7 @@ test('a monster healing itself near the top of a byte clamps to its own max', {
     project.maps[0].encounters = { rate: 0, actorIds: [] };
     // The snake casts Mend instead of Venom, and cannot brute-force the fight
     // ending before it does; the party can sit through sixty rounds of it.
-    project.sprites.actors[3].battle = { ...project.sprites.actors[3].battle, atk: 0, spellId: 1 };
+    project.sprites.actors[3].battle = { ...project.sprites.actors[3].battle, atk: 0, spellIds: [1] };
     project.party[0].baseHp = 200;
   });
   const nes = bootPastNaming(rom);
@@ -3813,6 +3815,256 @@ test('draining one wipe row costs a small fraction of the ~2273-cycle vblank win
     drainCycles < 1000,
     `draining one wipe row (${drainCycles} cycles) should leave generous room under the ~2273-cycle vblank window, ` +
       'even after the OAM DMA\'s own 513 cycles and NMI\'s register save/restore'
+  );
+});
+
+// --- the monster spell list (docs/design-monster-spell-list.md), phase 1 --
+// engine-harness tests 6-9 of §12's own test plan. Tests 1-4, 11, 12 (schema
+// and generator) live in test/unit/project.test.js; test 2 (the banked
+// allowance isolation) lives in test/unit/bankedbytes.test.js; test 13 (the
+// Monster Forge's own single-select migration) lives in main/smoke.js.
+
+// rng_next (engine/rpg.asm:14-24), reproduced here in JS: an 8-bit Galois
+// LFSR. `rng == 0` is repaired to $A5 before shifting; the shift's own
+// carry-out XORs in $71. Every test below that predicts an exact rng byte
+// or cast/decline outcome computes it with this function, never a
+// hand-picked constant -- the same discipline lfsr-sim2.mjs (the design's
+// own simulation script) holds to.
+function rngNext(state) {
+  const seed = state === 0 ? 0xa5 : state;
+  const carryOut = (seed & 0x80) !== 0;
+  let next = (seed << 1) & 0xff;
+  if (carryOut) next ^= 0x71;
+  return next;
+}
+
+const MONSTER_PICK_LIMIT = { 2: 254, 3: 255, 4: 252 }; // floor(255/K)*K, indexed by K
+
+/**
+ * Simulates monster_turn's pick-first algorithm (docs/design-monster-spell-
+ * list.md §6's own listing) exactly, given the rng byte already in `rng`
+ * the instant monster_turn is entered and the number of currently-
+ * affordable entries in the scanned sub-list. Returns { idx, cast, rng,
+ * draws } -- idx is only meaningful when cast is true; rng is the byte left
+ * in `rng` once the routine returns (the post-coin boundary callRoutine's
+ * own return coincides with, under the acc: 0/flat-spell protocol below).
+ */
+function pickFirst(seedIn, affordableCount) {
+  let rng = seedIn;
+  let draws = 0;
+  let idx = 0;
+  if (affordableCount > 1) {
+    const limit = MONSTER_PICK_LIMIT[affordableCount];
+    for (;;) {
+      rng = rngNext(rng);
+      draws++;
+      const draw = rng - 1; // sec/sbc #1 -- rng_next() never returns 0, so no underflow
+      if (draw >= limit) continue; // rejected: redraw
+      idx = draw % affordableCount;
+      break;
+    }
+  }
+  rng = rngNext(rng);
+  draws++;
+  const cast = (rng & 1) === 0;
+  return { idx, cast, rng, draws };
+}
+
+/**
+ * The §12 engine-harness protocol for tests 6, 8 and 9: builds `mutate`'s
+ * own sample-rpg variant, boots it, selects the battle bank, and runs the
+ * one-time setup (the real party_init/setup_monsters routines, not
+ * hand-listed values) with `testedActorId` seated in monster slot 0
+ * (combatant index MAX_PARTY). Returns a `trial(mp, seed)` stepper that
+ * performs the full per-trial reset (§12) and calls monster_turn once
+ * through callRoutine, leaving rng/mon_slot_mp/bt_arg in their post-call
+ * state for the caller to read.
+ */
+async function buildMonsterTurnHarness(t, name, testedActorId, mutate) {
+  const built = await buildVariantFull(t, name, mutate);
+  const nes = bootPastNaming(built.romPath, 10);
+  const addrOf = selectBattleBank(nes, built);
+
+  callRoutine(nes, addrOf('party_init'));
+  nes.cpu.mem[MON_SLOT_ACTOR] = testedActorId;
+  for (let slot = 1; slot < 4; slot++) nes.cpu.mem[MON_SLOT_ACTOR + slot] = 0xff; // NO_ACTOR
+  callRoutine(nes, addrOf('setup_monsters'));
+  nes.cpu.mem[BT_ACTOR] = 4; // MAX_PARTY + slot 0
+
+  return {
+    nes,
+    addrOf,
+    trial(mp, seed) {
+      nes.cpu.mem[MON_SLOT_MP] = mp;
+      nes.cpu.mem[PC_HP] = nes.cpu.mem[PC_HP_MAX];
+      nes.cpu.mem[PC_STATUS] = 0;
+      nes.cpu.mem[VRAM_LEN] = 0;
+      nes.cpu.mem[RNG] = seed;
+      callRoutine(nes, addrOf('monster_turn'));
+    }
+  };
+}
+
+test('test 6: pick-first (option i) diverges from an unconditional four-slot draw (option ii) on exactly 64 of 255 seeds, at a controlled MP value', {
+  skip: needsSample
+}, async (t) => {
+  const h = await buildMonsterTurnHarness(t, 'msl-test6', 3, (project) => {
+    project.sprites.actors[3].battle = {
+      ...project.sprites.actors[3].battle,
+      acc: 0,
+      spellIds: [2, 0] // Venom (cost 2), Ember (cost 3)
+    };
+  });
+
+  let divergences = 0;
+  for (let seed = 1; seed <= 255; seed++) {
+    h.trial(2, seed); // MP=2: Venom affordable, Ember is not -- bt_len==1, the coin alone decides
+    const castVenom = h.nes.cpu.mem[MON_SLOT_MP] !== 2;
+
+    const draw = rngNext(seed); // both algorithms' own single first draw, from the identical seed
+    const castI = (draw & 1) === 0; // option (i): bt_len==1's own coin-only short circuit
+    const castII = (draw & 3) === 0; // option (ii): unconditional 4-slot index, slot 0 (Venom) only
+
+    assert.equal(castVenom, castI, `seed ${seed}: real hardware should match option (i)'s own coin-only prediction`);
+    if (castI !== castII) divergences++;
+    if (seed === 1) {
+      assert.equal(castI, true, "named witness (design §6/§12 test 6): seed 1's real hardware should cast Venom");
+      assert.equal(castII, false, 'named witness: option (ii) attacks on the identical seed (the drawn slot is $FF padding)');
+    }
+  }
+  assert.equal(
+    divergences,
+    64,
+    'option (i) and option (ii) should disagree on cast-vs-attack for exactly 64 of the 255 seeds, computed exhaustively'
+  );
+});
+
+test('test 7: mod_monster_len computes dividend mod divisor exactly, for every dividend 0-254 at every divisor 2, 3, 4', {
+  skip: needsSample
+}, async (t) => {
+  const built = await buildVariantFull(t, 'msl-test7', (project) => {
+    project.sprites.actors[3].battle = {
+      ...project.sprites.actors[3].battle,
+      spellIds: [2, 0] // turns MONSTER_SPELL_LIST_ENABLED on project-wide
+    };
+  });
+  const nes = bootPastNaming(built.romPath, 10);
+  const addrOf = selectBattleBank(nes, built);
+  const modMonsterLen = addrOf('mod_monster_len');
+
+  for (const divisor of [2, 3, 4]) {
+    for (let dividend = 0; dividend <= 254; dividend++) {
+      nes.cpu.mem[BT_LEN] = divisor;
+      nes.cpu.REG_ACC = dividend;
+      callRoutine(nes, modMonsterLen);
+      assert.equal(
+        nes.cpu.REG_ACC,
+        dividend % divisor,
+        `mod_monster_len(${dividend}, ${divisor}) should be ${dividend % divisor}`
+      );
+    }
+  }
+});
+
+// K -> {ids, costs}: Snake's own spellIds in order, and each entry's own MP
+// cost, pairwise distinct at every K (Venom 2, Ember 3, Mend 4, Frost 1 --
+// the extra flat spell the harness intro (§12) adds), so an MP spend alone
+// identifies the chosen index independent of and in addition to bt_arg.
+const MSL_TEST8_CONFIGS = {
+  2: { ids: [2, 0], costs: [2, 3] },
+  3: { ids: [2, 0, 1], costs: [2, 3, 4] },
+  4: { ids: [2, 0, 1, 3], costs: [2, 3, 4, 1] }
+};
+
+test('test 8: exhaustive per-seed coin+picker check at K=2,3,4 -- cast/decline, chosen index, and exit rng, against the pickFirst oracle', {
+  skip: needsSample
+}, async (t) => {
+  for (const K of [2, 3, 4]) {
+    const { ids, costs } = MSL_TEST8_CONFIGS[K];
+    const h = await buildMonsterTurnHarness(t, `msl-test8-k${K}`, 3, (project) => {
+      project.spells.push({
+        id: 3, name: 'Frost', kind: 'damage', amountMin: 6, amountMax: 6,
+        element: 'none', scope: 'one', mpCost: 1
+      });
+      project.sprites.actors[3].battle = { ...project.sprites.actors[3].battle, acc: 0, spellIds: ids };
+    });
+
+    for (let seed = 1; seed <= 255; seed++) {
+      h.trial(4, seed); // 4 affords every one of the four costs at once
+      const expected = pickFirst(seed, K);
+      const mpAfter = h.nes.cpu.mem[MON_SLOT_MP];
+      const cast = mpAfter !== 4;
+      assert.equal(cast, expected.cast, `K=${K} seed ${seed}: cast/decline should match the oracle`);
+      if (expected.cast) {
+        assert.equal(
+          mpAfter,
+          4 - costs[expected.idx],
+          `K=${K} seed ${seed}: MP spend should match the predicted index's own cost`
+        );
+        assert.equal(
+          h.nes.cpu.mem[BT_ARG],
+          ids[expected.idx],
+          `K=${K} seed ${seed}: bt_arg (the cast spell id) should identify the predicted index`
+        );
+      }
+      assert.equal(
+        h.nes.cpu.mem[RNG],
+        expected.rng,
+        `K=${K} seed ${seed}: rng at callRoutine's own return should match the oracle's post-coin value`
+      );
+    }
+  }
+});
+
+test('test 9: RNG-consumption identity for a single-affordable-entry monster, feature off entirely vs on project-wide (a second actor enabling it)', {
+  skip: needsSample
+}, async (t) => {
+  const seed = 1; // rngNext(1) = 2, even -- the coin passes on this seed
+  const mp = 2; // Venom's own cost, affordable
+
+  const off = await buildMonsterTurnHarness(t, 'msl-test9-off', 3, (project) => {
+    project.sprites.actors[3].battle = { ...project.sprites.actors[3].battle, acc: 0, spellIds: [2] };
+  });
+  off.trial(mp, seed);
+  const rngOff = off.nes.cpu.mem[RNG];
+
+  const on = await buildMonsterTurnHarness(t, 'msl-test9-on', 3, (project) => {
+    project.sprites.actors[3].battle = { ...project.sprites.actors[3].battle, acc: 0, spellIds: [2] };
+    // A second actor with 2+ entries -- turns MONSTER_SPELL_LIST_ENABLED on
+    // project-wide without the tested actor (Snake) ever exercising the
+    // pick-retry block itself.
+    project.sprites.actors[0].battle = { ...project.sprites.actors[0].battle, spellIds: [0, 1] };
+  });
+  on.trial(mp, seed);
+  const rngOn = on.nes.cpu.mem[RNG];
+
+  assert.equal(
+    off.nes.cpu.mem[MON_SLOT_MP],
+    mp - 2,
+    'sanity: the feature-off build should have cast Venom on this seed'
+  );
+  assert.equal(
+    on.nes.cpu.mem[MON_SLOT_MP],
+    mp - 2,
+    'sanity: the feature-on build should have cast Venom on this seed too'
+  );
+  // rngOn === rngOff alone cannot distinguish "both consumed one draw" from
+  // "both consumed two" -- pin each side to the single draw rngNext(seed)
+  // itself predicts (round-1 review, finding 2), not just to each other.
+  assert.equal(
+    rngOff,
+    rngNext(seed),
+    'the feature-off build should leave rng at exactly the coin\'s own single draw'
+  );
+  assert.equal(
+    rngOn,
+    rngNext(seed),
+    'the feature-on build should leave rng at exactly the coin\'s own single draw too, not a second (pick) draw'
+  );
+  assert.equal(
+    rngOn,
+    rngOff,
+    'the on build should consume the same single rng_next call the off build does, both landing on the byte rngNext predicts'
   );
 });
 

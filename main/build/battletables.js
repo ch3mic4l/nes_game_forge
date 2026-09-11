@@ -45,6 +45,7 @@ import {
   projectUsesHeroNaming,
   projectUsesJoinNaming,
   projectUsesNameEntry,
+  projectUsesMonsterSpellList,
   battleBankEnabled,
   projectWithoutHeroNaming,
   projectWithoutJoinNaming,
@@ -189,12 +190,35 @@ export function battleTables(project, battleStrings = BATTLE_STRINGS) {
   );
   chunks.push(`mon_w:\n${dbRows(battle((b) => b.battleW ?? 4))}`);
   chunks.push(`mon_h:\n${dbRows(battle((b) => b.battleH ?? 4))}`);
-  // The spell this monster casts when it can afford to. $FF = it only swings;
-  // a stale id past the spell table is treated the same rather than compiled.
+  // The spell(s) this monster casts when it can afford to. $FF = nothing in
+  // that slot; a stale id past the spell table is treated the same rather
+  // than compiled. Under the same label either way
+  // (docs/design-monster-spell-list.md §7 -- the off-path engine body must
+  // keep reading a table called mon_spell): RPG_LIMITS.monsterSpells bytes
+  // per actor, $FF-padded, when projectUsesMonsterSpellList is true; the old
+  // one byte per actor (the list's first entry, or $FF) when it is false, so
+  // an off project's build stays byte-identical to before this feature
+  // existed. Every slot is built by Array.from, never a bare slice/length
+  // assignment -- a sparse array would leave a hole hex()'s `& 0xff` masks
+  // into a real spell id 0 rather than $FF (finding 9).
+  const monsterSpellIdOk = (id) => typeof id === 'number' && id < spells.length;
   chunks.push(
-    `mon_spell:\n${dbRows(
-      battle((b) => (b.spellId === null || b.spellId === undefined || b.spellId >= spells.length ? 0xff : b.spellId))
-    )}`
+    projectUsesMonsterSpellList(project)
+      ? `mon_spell:\n${dbRows(
+          battle((b) => {
+            const ids = Array.isArray(b.spellIds) ? b.spellIds : [];
+            return Array.from({ length: RPG_LIMITS.monsterSpells }, (_, i) =>
+              monsterSpellIdOk(ids[i]) ? ids[i] : 0xff
+            );
+          }).flat(),
+          RPG_LIMITS.monsterSpells
+        )}`
+      : `mon_spell:\n${dbRows(
+          battle((b) => {
+            const id = Array.isArray(b.spellIds) ? b.spellIds[0] : undefined;
+            return monsterSpellIdOk(id) ? id : 0xff;
+          })
+        )}`
   );
   // One attribute byte tints the monster's whole block, which is why the art is
   // anchored to a 4x4 grid: a block that size lies inside one attribute cell.
@@ -598,6 +622,15 @@ export const MAGIC_DEFENCE_BATTLE_ALLOWANCE = 65;
 export const NAME_ENTRY_BATTLE_ALLOWANCE = 765;
 export const NAME_COPY_BATTLE_ALLOWANCE = 47;
 
+// monster_turn's pick-first rewrite plus its two gated helpers
+// (mod_monster_len, monster_pick_limit) -- docs/design-monster-spell-list.md
+// §6/§7, measured (a real prototype, rebuilt and remeasured, §6's own
+// "Measurement" section) flat across all three RPG-capable boards, no
+// SPLIT_ENABLED branch. Gated on projectUsesMonsterSpellList: a project
+// with no actor's battle.spellIds at two or more entries assembles the old,
+// unguarded monster_turn body and pays none of this.
+export const MONSTER_SPELL_LIST_BATTLE_ALLOWANCE = 153;
+
 // Deliberate headroom, and its job is NOT the job KERNEL_SLACK does. There is
 // no estimation error here for it to absorb -- see the exactness note above --
 // so this is purely a buffer against the stock code growing a byte or two
@@ -873,7 +906,8 @@ export function battleRegionBytes(project, mapper) {
     (projectUsesNameEntry(project) && banked ? NAME_ENTRY_BATTLE_ALLOWANCE : 0) +
     (projectNeedsNameSeed(project) && banked ? NAME_COPY_BATTLE_ALLOWANCE : 0) +
     (projectUsesMagicPower(project) ? MAGIC_POWER_BATTLE_ALLOWANCE : 0) +
-    (projectUsesMagicDefence(project) ? MAGIC_DEFENCE_BATTLE_ALLOWANCE : 0)
+    (projectUsesMagicDefence(project) ? MAGIC_DEFENCE_BATTLE_ALLOWANCE : 0) +
+    (projectUsesMonsterSpellList(project) ? MONSTER_SPELL_LIST_BATTLE_ALLOWANCE : 0)
   );
 }
 

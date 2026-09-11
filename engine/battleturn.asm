@@ -967,9 +967,118 @@ wipe_monster_cell:
 
 ; ---------------------------------------------------------- monsters' turn
 
-; A monster with a spell it can still afford casts it about half the time, and
-; swings the rest -- a coin rather than a plan, because a monster with a plan
-; would need an opinion. Its MP is per slot, seeded from the actor's mp stat.
+; A monster with an affordable spell in its list casts one about half the
+; time. Up to MONSTER_SPELLS spell ids per actor, $FF-padded; a stale id
+; past the spell table is dropped to $FF by the generator, never compiled.
+; MONSTER_SPELLS is generated into config.inc from RPG_LIMITS.monsterSpells
+; (the NUM_VARIABLES precedent); NO_SPELL = $FF is hand-defined here, an
+; engine sentinel, not project-derived (finding 7 -- these are NOT the same
+; kind of constant and must not share one declaration).
+;
+; The pick is drawn BEFORE the coin (finding 1 -- see this file's own design
+; doc §6 for why): rejection-sampling two consecutive LFSR outputs by
+; drawing the pick right after the coin is biased, exhaustively confirmed.
+; Drawing the pick first and parking it in bt_arg across the coin's own draw
+; avoids conditioning the pick's input on the coin's low bit.
+;
+; Entry: bt_actor = this combatant's index (>= MAX_PARTY). Exit: either
+; falls into monster_turn_attack, or spends MP and tail-calls cast_spell
+; with bt_arg/bt_target set. Clobbers A/X/Y and bt_tmp/bt_arg/bt_x/bt_list/
+; bt_len/ptr_lo/ptr_hi. Never touches bt_tmp2 (see contract above -- not
+; because cast_all requires it, but because nothing here needs it and
+; nothing here nests inside cast_all's own loop).
+  .if MONSTER_SPELL_LIST_ENABLED
+monster_turn:
+  lda bt_actor
+  sec
+  sbc #MAX_PARTY
+  sta bt_x                     ; slot parked for the whole turn
+  tax
+  ldy mon_slot_actor,x         ; Y = this monster's actor id
+  ; ptr_lo/ptr_hi = &mon_spell[actor_id * MONSTER_SPELLS]. MONSTER_SPELLS=4
+  ; is a compile-time power of two: two asl/rol pairs are exact and O(1).
+  ; LIMITS.actors = 255, so actor_id can reach 254 and 254*4 = 1016
+  ; overflows a byte -- the 16-bit product is not optional.
+  tya
+  sta bt_tmp
+  lda #0
+  sta ptr_hi
+  asl bt_tmp
+  rol ptr_hi
+  asl bt_tmp
+  rol ptr_hi                   ; bt_tmp/ptr_hi = actor_id * 4, 16-bit
+  lda bt_tmp
+  clc
+  adc #LOW(mon_spell)
+  sta ptr_lo
+  lda ptr_hi
+  adc #HIGH(mon_spell)
+  sta ptr_hi
+  ; Scan the 4 slots, building the affordable sub-list into bt_list/bt_len.
+  lda #0
+  sta bt_len
+  ldy #0
+monster_turn_scan:
+  lda [ptr_lo],y
+  cmp #NO_SPELL
+  beq monster_turn_scan_next
+  sta bt_arg                   ; park the scanned id -- X is about to hold it
+  tax
+  lda spell_cost,x
+  sta bt_tmp                   ; this spell's MP cost
+  ldx bt_x
+  lda mon_slot_mp,x
+  cmp bt_tmp
+  bcc monster_turn_scan_next   ; can't afford it -- leave it out
+  ldx bt_len
+  lda bt_arg
+  sta bt_list,x
+  inc bt_len
+monster_turn_scan_next:
+  iny
+  cpy #MONSTER_SPELLS
+  bne monster_turn_scan
+  lda bt_len
+  bne monster_turn_have_list
+  jmp monster_turn_attack       ; nothing affordable: attack, NO draw at all
+monster_turn_have_list:
+  lda bt_len
+  cmp #1
+  beq monster_turn_only
+  ; Uniform pick among bt_len (2-4) affordable entries, drawn BEFORE the
+  ; coin. monster_pick_limit holds floor(255/K)*K for K=2,3,4 (indexed K-2).
+  ldx bt_len
+monster_turn_pick_retry:
+  jsr rng_next
+  sec
+  sbc #1                        ; draw = rng_next() - 1, uniform over 0-254
+  cmp monster_pick_limit-2,x
+  bcs monster_turn_pick_retry   ; rejected: redraw. Terminates a.s.
+  jsr mod_monster_len           ; A (draw) -> A (draw mod bt_len)
+  tay
+  jmp monster_turn_coin
+monster_turn_only:
+  ldy #0
+monster_turn_coin:
+  sty bt_arg                   ; park the chosen index across the coin draw
+  jsr rng_next
+  and #1
+  bne monster_turn_attack      ; a parked pick (2+ entries) is simply discarded
+  ldy bt_arg                   ; recover the chosen index
+  lda bt_list,y
+  sta bt_arg                   ; bt_arg now becomes the spell id
+  tax
+  lda spell_cost,x
+  sta bt_tmp
+  ldx bt_x
+  lda mon_slot_mp,x
+  sec
+  sbc bt_tmp
+  sta mon_slot_mp,x
+  jsr pick_party_target
+  jmp cast_spell
+  .endif
+  .if !MONSTER_SPELL_LIST_ENABLED
 monster_turn:
   lda bt_actor
   sec
@@ -995,6 +1104,7 @@ monster_turn:
   sta mon_slot_mp,x
   jsr pick_party_target
   jmp cast_spell
+  .endif
 monster_turn_attack:
   jsr pick_party_target
   jsr roll_hit
@@ -1009,6 +1119,29 @@ monster_missed:
   sta bt_dmg_hi
   lda #BS_MISSES
   jmp battle_say_actor
+
+  .if MONSTER_SPELL_LIST_ENABLED
+; A = dividend (0-254) in. bt_len = divisor (2-4). Returns A = dividend mod
+; bt_len. Clobbers Y and bt_tmp; never touches bt_tmp2 (see contract above).
+mod_monster_len:
+  sta bt_tmp
+  lda #0
+  ldy #8
+mod_monster_len_loop:
+  asl bt_tmp
+  rol a
+  cmp bt_len
+  bcc mod_monster_len_no_sub
+  sbc bt_len
+mod_monster_len_no_sub:
+  dey
+  bne mod_monster_len_loop
+  rts
+
+; floor(255/K)*K for K=2,3,4, indexed by K-2.
+monster_pick_limit:
+  .db 254, 255, 252
+  .endif
 
 ; The first member still standing. A monster with a choice would need an
 ; opinion, and a random one reads as arbitrary rather than clever.

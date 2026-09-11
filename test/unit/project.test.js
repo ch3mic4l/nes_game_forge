@@ -112,7 +112,7 @@ import { resolveMapper, rpgCapable } from '../../shared/cartridge.js';
 import { flattenScreens, resolveEntityByte, checkCapacity } from '../../main/build/generate.js';
 import { compileText, opIndex, OP_JUMP, OP_STING, encodeString, TXT_NAME, TXT_END } from '../../main/build/textcompile.js';
 import { createSong, songFrameLength, songByte, sfxByte, sfxFrameLength, normalizeSfx } from '../../shared/audio.js';
-import { battleTables } from '../../main/build/battletables.js';
+import { battleTables, battleTableBytes } from '../../main/build/battletables.js';
 import { FONT_BASE, fontChrPages, textToTiles } from '../../shared/font.js';
 import { tilesetLimit } from '../../shared/cartridge.js';
 import { BLANK_TILE } from '../../shared/chr.js';
@@ -1243,7 +1243,7 @@ test('actors carry battle stats whether or not the project uses them', () => {
 
 // -------------------------------------------------------- battle.level (Monster Forge phase 2)
 
-test('battle.level normalizes null-or-clamp like spellId/battleTile, and is a fixed point under re-normalization', () => {
+test('battle.level normalizes null-or-clamp like battleTile, and is a fixed point under re-normalization', () => {
   const cases = [
     { input: 7, expected: 7 },
     { input: undefined, expected: null },
@@ -1807,7 +1807,7 @@ test('a map’s wandering-encounter table is renumbered when an actor is deleted
 // is what exercises it for real. These tests call the export directly, the
 // same way the item/actor siblings' tests do above.
 
-test('deleting a spell renumbers a party member’s learned entries and a monster’s cast spell, without attaching a level to the wrong spell', () => {
+test('deleting a spell renumbers a party member’s learned entries and a monster’s cast spell list, without attaching a level to the wrong spell', () => {
   const project = createProject('Quest', 'rpg');
   // The brief's own reproduction: Fire/Ice/Bolt, a member who learned Ice at
   // level 3 and Bolt at level 5 (in that authoring order), and a monster that
@@ -1818,7 +1818,7 @@ test('deleting a spell renumbers a party member’s learned entries and a monste
   project.party = [
     { ...createPartyMember(0, 'Hero'), spells: [{ spellId: 1, level: 3 }, { spellId: 2, level: 5 }] }
   ];
-  project.sprites.actors = [{ name: 'Slime', damage: 1, battle: { spellId: 2 } }];
+  project.sprites.actors = [{ name: 'Slime', damage: 1, battle: { spellIds: [2] } }];
 
   renumberSpellDeletion(project, 0); // delete "Fire"
   project.spells.splice(0, 1);
@@ -1834,7 +1834,7 @@ test('deleting a spell renumbers a party member’s learned entries and a monste
   assert.ok(learnedBolt, 'Hero should still know Bolt, now at its shifted id');
   assert.equal(learnedBolt.level, 5, 'Bolt must keep its own authored level too');
 
-  assert.equal(project.sprites.actors[0].battle.spellId, 1, 'the monster’s cast spell (Bolt) shifts down to its new id, not dropped');
+  assert.deepEqual(project.sprites.actors[0].battle.spellIds, [1], 'the monster’s cast spell (Bolt) shifts down to its new id, not dropped');
 
   // Wrong implementation this fixture exists to catch: the pre-fix Spells…
   // modal's Save handler, which filtered a member's learned entries down to
@@ -1863,43 +1863,69 @@ test('deleting a spell renumbers a party member’s learned entries and a monste
   );
 });
 
-test('a monster’s battle.spellId naming exactly the deleted spell becomes null', () => {
+test('a monster’s battle.spellIds naming exactly the deleted spell drops it, and the list closes up', () => {
   const project = createProject('Quest', 'rpg');
   project.spells = [createSpell(0, 'Fire'), createSpell(1, 'Ice')];
-  project.sprites.actors = [{ name: 'Slime', damage: 1, battle: { spellId: 0 } }];
+  project.sprites.actors = [{ name: 'Slime', damage: 1, battle: { spellIds: [0] } }];
 
   renumberSpellDeletion(project, 0); // delete "Fire", which the monster casts
 
-  assert.equal(
-    project.sprites.actors[0].battle.spellId,
-    null,
+  assert.deepEqual(
+    project.sprites.actors[0].battle.spellIds,
+    [],
     'a monster whose one spell was just deleted casts nothing, not spell 0 by accident'
   );
 
   // Wrong implementation this catches: shift-only logic with no exact-match
-  // branch (`shift(id) => id > index ? id - 1 : id` applied unconditionally,
-  // no `=== index` check at all) would leave 0 as 0 here, silently pointing
-  // the monster at whatever now occupies id 0 instead of casting nothing.
+  // drop at all (`shift(id) => id > index ? id - 1 : id` applied
+  // unconditionally, no `.filter((id) => id !== index)` step) would leave
+  // [0] as [0], silently pointing the monster at whatever now occupies id 0
+  // instead of casting nothing.
 });
 
-test('a monster’s battle.spellId naming a spell above the deleted one is decremented, not left alone or zeroed', () => {
+test('a monster’s battle.spellIds naming a spell above the deleted one is decremented, not left alone or dropped', () => {
   const project = createProject('Quest', 'rpg');
   project.spells = [createSpell(0, 'Fire'), createSpell(1, 'Ice'), createSpell(2, 'Bolt')];
-  project.sprites.actors = [{ name: 'Golem', damage: 1, battle: { spellId: 2 } }]; // casts "Bolt"
+  project.sprites.actors = [{ name: 'Golem', damage: 1, battle: { spellIds: [2] } }]; // casts "Bolt"
 
   renumberSpellDeletion(project, 0); // delete "Fire"
 
-  assert.equal(
-    project.sprites.actors[0].battle.spellId,
-    1,
+  assert.deepEqual(
+    project.sprites.actors[0].battle.spellIds,
+    [1],
     'a monster casting a spell above the deleted one should shift down to the spell’s new id'
   );
 
-  // Wrong implementation this catches: treating every non-null spellId as
-  // untouchable except an exact match (i.e. only handling the sentinel case
-  // from the previous test, with no `shift()` for ids above the deletion)
-  // would leave this at 2, which after the catalog shrinks to 2 entries names
-  // nothing at all.
+  // Wrong implementation this catches: dropping every non-empty spellIds
+  // entry unconditionally (i.e. only handling the exact-match case from the
+  // previous test, with no shift() for ids above the deletion) would leave
+  // this at [2], which after the catalog shrinks to 2 entries names nothing
+  // at all.
+});
+
+test('a monster’s battle.spellIds applies the shift rule per entry: duplicates below the deleted id are untouched, only entries above shift', () => {
+  const project = createProject('Quest', 'rpg');
+  project.spells = Array.from({ length: 4 }, (_, id) => createSpell(id));
+  // [1, 3, 1]: the corrected worked example (docs/design-monster-spell-list.md
+  // §11, finding 14) -- deleting spell id 2 leaves [1, 2, 1]. The two entries
+  // valued 1 are untouched (1 < 2, shift() leaves them alone) and the entry
+  // valued 3 shifts to 2 (3 > 2) -- duplicates are kept throughout, never
+  // collapsed.
+  project.sprites.actors = [{ name: 'Hydra', damage: 1, battle: { spellIds: [1, 3, 1] } }];
+
+  renumberSpellDeletion(project, 2); // delete id 2, named by neither entry
+
+  assert.deepEqual(
+    project.sprites.actors[0].battle.spellIds,
+    [1, 2, 1],
+    'entries below the deleted index stay put and duplicates are preserved; only the entry above it shifts down'
+  );
+
+  // Wrong implementation this catches: a rewrite that shifts every entry
+  // regardless of its own value relative to the deleted index (e.g. `id - 1`
+  // unconditionally for every non-dropped entry) would produce [0, 2, 0]
+  // instead, moving the two untouched 1s down as though they too were above
+  // the deletion.
 });
 
 test('a party member’s learned entry naming the deleted spell is removed entirely, not clamped to a sentinel', () => {
@@ -1921,39 +1947,54 @@ test('a party member’s learned entry naming the deleted spell is removed entir
   // faithful "forgot this spell" representation.
 });
 
-test('battle.spellId === null before deletion stays null after — the fixed point is not disturbed', () => {
+test('battle.spellIds === [] before deletion stays [] after — an empty list is not somehow given an entry', () => {
   const project = createProject('Quest', 'rpg');
   project.spells = [createSpell(0, 'Fire'), createSpell(1, 'Ice')];
-  project.sprites.actors = [{ name: 'Rat', damage: 1, battle: { spellId: null } }];
+  project.sprites.actors = [{ name: 'Rat', damage: 1, battle: { spellIds: [] } }];
 
-  // Deleting index 1, not 0: a mutation that coerces a missing spellId to a
-  // live numeric sentinel before the shift (see below) only produces a
-  // *different* number than the deleted index when the two are not equal --
-  // deleting index 0 would let the coerced value collide with the
-  // exact-match branch and mask the defect by coincidence.
   renumberSpellDeletion(project, 1);
 
-  assert.equal(project.sprites.actors[0].battle.spellId, null, 'a monster that already cast nothing should still cast nothing');
+  assert.deepEqual(project.sprites.actors[0].battle.spellIds, [], 'a monster that already cast nothing should still cast nothing');
 
-  // Wrong implementation this catches, run and confirmed to fail: treating a
-  // missing spellId as the numeric sentinel 0 before shifting --
-  // `const spellId = actor.battle?.spellId ?? 0;` in place of the real
-  // `typeof spellId !== 'number'` guard, so `null` becomes `shift(0)` = `0`
-  // (0 is not > 1) instead of staying `null`. Run against this exact
-  // fixture: `actor.battle.spellId` came back `0`, not `null` -- a live,
-  // wrong spell id where the monster should still be casting nothing.
+  // Wrong implementation this does NOT catch: unconditionally reading
+  // actor.battle.spellIds and running it through .filter/.map with no
+  // Array.isArray guard at all -- since [] is already an array, this
+  // fixture alone cannot distinguish that from the real, guarded
+  // implementation. See the sibling test below for the case an empty array
+  // cannot exercise: a battle record with no spellIds key at all.
+});
+
+test('battle.spellIds missing entirely (no key at all) is left alone, not manufactured into []', () => {
+  const project = createProject('Quest', 'rpg');
+  project.spells = [createSpell(0, 'Fire'), createSpell(1, 'Ice')];
+  project.sprites.actors = [{ name: 'Bystander', damage: 0, battle: {} }];
+
+  renumberSpellDeletion(project, 1); // must not throw
+
+  assert.equal(
+    project.sprites.actors[0].battle.spellIds,
+    undefined,
+    'a battle record with no spellIds key at all should stay that way -- the walk continues past it, it does not manufacture an empty list'
+  );
+
+  // Wrong implementation this catches: reading actor.battle.spellIds
+  // directly and running it through .filter/.map with no
+  // `!Array.isArray(actor.battle.spellIds)` half of the guard -- an
+  // existing empty array (the sibling test above) is already an array and
+  // cannot exercise this; only a battle record with the key missing
+  // entirely throws here, since `undefined.filter` is a TypeError.
 });
 
 test('deleting the last of a 32-entry catalog shifts nothing anywhere, and the primitive still does not touch project.spells itself', () => {
   const project = createProject('Quest', 'rpg');
   project.spells = Array.from({ length: 32 }, (_, id) => createSpell(id));
-  project.sprites.actors = [{ name: 'Boss', damage: 1, battle: { spellId: 30 } }];
+  project.sprites.actors = [{ name: 'Boss', damage: 1, battle: { spellIds: [30] } }];
   project.party = [{ ...createPartyMember(0, 'Hero'), spells: [{ spellId: 30, level: 10 }] }];
   const spellsBefore = project.spells.slice(); // same array entries, captured before the call
 
   renumberSpellDeletion(project, 31); // delete the last entry, id 31, named by nothing
 
-  assert.equal(project.sprites.actors[0].battle.spellId, 30, 'a reference below the deleted last entry must not move');
+  assert.deepEqual(project.sprites.actors[0].battle.spellIds, [30], 'a reference below the deleted last entry must not move');
   assert.equal(project.party[0].spells.length, 1, 'a learned entry below the deleted last entry must survive');
   assert.equal(project.party[0].spells[0].spellId, 30, 'and must not shift, since nothing above it was deleted');
   assert.equal(project.party[0].spells[0].level, 10, 'and keeps its authored level');
@@ -1980,6 +2021,151 @@ test('deleting the last of a 32-entry catalog shifts nothing anywhere, and the p
   // so no shift-arithmetic slip this fixture's own numbers can express is
   // exposed by it -- the splice/restamp mutation above is what this fixture
   // actually catches.
+});
+
+// --- the monster spell list (docs/design-monster-spell-list.md), phase 1 --
+// schema/generator tests 4, 3 and 11 of §12's own test plan. Tests 1, 2 (the
+// six-fixture SHA-256 gate, unchanged, and the banked-region isolation
+// figure) live in test/unit/nameentry.test.js and test/unit/bankedbytes.test.js
+// respectively; tests 6-9 (the engine harness) live in test/unit/rpg.test.js;
+// test 13 (the Monster Forge's own single-select migration) lives in
+// main/smoke.js, since this repo has no jsdom-equivalent dependency to mount
+// a renderer Forge module directly (test/unit/monster.test.js's own header).
+
+test('test 4: the actor normalizer keeps duplicate spell ids in battle.spellIds rather than deduplicating them', () => {
+  const project = normalizeProject({
+    project: { gameType: 'rpg' },
+    sprites: { actors: [{ name: 'Hydra', damage: 1, battle: { spellIds: [0, 0, 1] } }] }
+  });
+  assert.deepEqual(
+    project.sprites.actors[0].battle.spellIds,
+    [0, 0, 1],
+    'duplicates are the weighting primitive (§2/§3) and must survive normalization intact, in order'
+  );
+
+  // Wrong implementation this catches: running the array through a Set (or
+  // any other order-losing dedup) before storing it, e.g.
+  // `[...new Set(battle.spellIds)]`, which would silently destroy an
+  // author's weighting the first time they relied on it -- run against this
+  // exact fixture, that produces [0, 1], not [0, 0, 1].
+});
+
+test('test 3: mon_spell grows by exactly (N-1) bytes per actor when the monster spell list feature is on, for every actor -- not only hostile ones', () => {
+  const base = normalizeProject({
+    project: { gameType: 'rpg' },
+    sprites: {
+      actors: [
+        { name: 'Caster', damage: 1, battle: { spellIds: [0, 1] } }, // 2 entries -- turns the feature on project-wide
+        { name: 'Bystander', damage: 0, battle: {} } // not hostile, no spellIds at all
+      ]
+    },
+    spells: [{ id: 0, name: 'A' }, { id: 1, name: 'B' }]
+  });
+  const withExtra = structuredClone(base);
+  withExtra.sprites.actors.push({ id: 2, name: 'Filler', damage: 0, hp: 1, anims: {}, battle: {} });
+
+  const mon_spell = (project) => {
+    const row = /^mon_spell:\n((?:\s*\.db .*\n?)+)/m.exec(battleTables(project));
+    assert.ok(row, 'battleTables should emit a mon_spell table');
+    return row[1].trim().split('\n').flatMap((line) =>
+      line.replace(/^\s*\.db\s*/, '').split(',').map((s) => parseInt(s.replace('$', ''), 16))
+    );
+  };
+
+  const before = mon_spell(base);
+  const after = mon_spell(withExtra);
+  assert.equal(
+    after.length - before.length,
+    RPG_LIMITS.monsterSpells,
+    'the new (non-hostile, no spellIds) actor still pays its own full N-byte row -- the table is keyed by actor id ' +
+      'across the whole roster, not filtered to hostile actors'
+  );
+
+  // Wrong implementation this catches: emitting mon_spell off
+  // monsterActorIds(project) (hostile actors only) instead of every actor in
+  // project.sprites.actors, which would under-charge a project with
+  // non-monster actors and desynchronize every later actor's own row.
+
+  // §12's own accounting assertion (round-1 review, finding 3): the
+  // OFF-to-ON delta through battleTableBytes itself, on the roster that
+  // includes the non-hostile actor, not just a hand-parsed row count.
+  const offBase = structuredClone(base);
+  offBase.sprites.actors[0].battle.spellIds = [0]; // one entry -- turns the feature off
+  assert.equal(
+    battleTableBytes(base) - battleTableBytes(offBase),
+    (RPG_LIMITS.monsterSpells - 1) * base.sprites.actors.length,
+    'the OFF-to-ON delta through battleTableBytes should equal (N-1) bytes per actor across the whole roster, ' +
+      'the non-hostile actor included'
+  );
+});
+
+test('test 11: a single-entry battle.spellIds compiles to [id, $FF, $FF, $FF], never [id, $00, $00, $00]', () => {
+  const project = normalizeProject({
+    project: { gameType: 'rpg' },
+    sprites: {
+      actors: [
+        { name: 'Caster', damage: 1, battle: { spellIds: [0, 1] } }, // turns the feature on project-wide
+        { name: 'OneSpell', damage: 1, battle: { spellIds: [0] } }
+      ]
+    },
+    spells: [{ id: 0, name: 'A' }, { id: 1, name: 'B' }]
+  });
+  const row = /^mon_spell:\n((?:\s*\.db .*\n?)+)/m.exec(battleTables(project));
+  assert.ok(row, 'battleTables should emit a mon_spell table');
+  const bytes = row[1].trim().split('\n').flatMap((line) =>
+    line.replace(/^\s*\.db\s*/, '').split(',').map((s) => parseInt(s.replace('$', ''), 16))
+  );
+  const oneSpellRow = bytes.slice(RPG_LIMITS.monsterSpells, RPG_LIMITS.monsterSpells * 2);
+  assert.deepEqual(
+    oneSpellRow,
+    [0, 0xff, 0xff, 0xff],
+    'the padding slots must be the real $FF sentinel, never $00 -- $00 would silently compile to "always cast spell 0"'
+  );
+
+  // Wrong implementation this catches: hex()'s own `& 0xff` masks a missing
+  // array entry (`undefined & 0xff === 0` in JavaScript) into a real spell
+  // id 0 rather than $FF -- e.g. building the padded row with
+  // `Array.from({length: N}); row[i] = ids[i]` (leaving genuine holes) or a
+  // bare `ids.slice(0, N)` on a shorter-than-N array (which leaves the row
+  // short, not padded) instead of an explicit `ids[i] ?? ... : 0xff` over
+  // every index.
+});
+
+test('test 12: two actors each with two-or-more-entry spellIds both widen mon_spell, not just the first one measured', () => {
+  const project = normalizeProject({
+    project: { gameType: 'rpg' },
+    sprites: {
+      actors: [
+        { name: 'First', damage: 1, battle: { spellIds: [0, 1] } },
+        { name: 'Second', damage: 1, battle: { spellIds: [1, 0] } }
+      ]
+    },
+    spells: [{ id: 0, name: 'A' }, { id: 1, name: 'B' }]
+  });
+  const row = /^mon_spell:\n((?:\s*\.db .*\n?)+)/m.exec(battleTables(project));
+  assert.ok(row, 'battleTables should emit a mon_spell table');
+  const bytes = row[1].trim().split('\n').flatMap((line) =>
+    line.replace(/^\s*\.db\s*/, '').split(',').map((s) => parseInt(s.replace('$', ''), 16))
+  );
+  assert.equal(
+    bytes.length,
+    project.sprites.actors.length * RPG_LIMITS.monsterSpells,
+    'every actor in the roster gets a full N-byte row once the feature is on, the second actor included'
+  );
+  assert.deepEqual(bytes.slice(0, 4), [0, 1, 0xff, 0xff], 'the first actor’s own row');
+  assert.deepEqual(bytes.slice(4, 8), [1, 0, 0xff, 0xff], 'the second actor’s own row, not just the first one measured');
+
+  // §12's own accounting assertion (round-1 review, finding 3): the
+  // OFF-to-ON delta through battleTableBytes itself, on the two-caster
+  // roster, not just the two hand-parsed rows above.
+  const off = structuredClone(project);
+  off.sprites.actors[0].battle.spellIds = [0];
+  off.sprites.actors[1].battle.spellIds = [1];
+  assert.equal(
+    battleTableBytes(project) - battleTableBytes(off),
+    (RPG_LIMITS.monsterSpells - 1) * project.sprites.actors.length,
+    'the OFF-to-ON delta through battleTableBytes should equal (N-1) bytes per actor across both casters'
+  );
 });
 
 // --- renumberPartyMemberDeletion (join-guard brief,

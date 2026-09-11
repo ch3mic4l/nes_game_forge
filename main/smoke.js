@@ -6635,7 +6635,7 @@ const scenario = (dir, sampleDir, sampleRpgDir) => `
       { spellId: 1, level: 3 }, // Ice
       { spellId: 2, level: 5 } // Bolt
     ];
-    project.sprites.actors[0].battle = { ...project.sprites.actors[0].battle, spellId: 2 }; // casts Bolt
+    project.sprites.actors[0].battle = { ...project.sprites.actors[0].battle, spellIds: [2] }; // casts Bolt
   });
   await wait(150);
 
@@ -6694,7 +6694,7 @@ const scenario = (dir, sampleDir, sampleRpgDir) => `
     const learnedBolt = rpgStore.project.party[0].spells.find((entry) => spellsAfterFire[entry.spellId]?.name === 'Bolt');
     if (!learnedIce || learnedIce.level !== 3) throw new Error('Ice should still be learned at level 3, saw: ' + JSON.stringify(learnedIce));
     if (!learnedBolt || learnedBolt.level !== 5) throw new Error('Bolt should still be learned at level 5, saw: ' + JSON.stringify(learnedBolt));
-    const monsterSpellId = rpgStore.project.sprites.actors[0].battle.spellId;
+    const monsterSpellId = rpgStore.project.sprites.actors[0].battle.spellIds[0];
     if (spellsAfterFire[monsterSpellId]?.name !== 'Bolt') {
       throw new Error('the monster should now name Bolt at its shifted id, saw spellId ' + monsterSpellId);
     }
@@ -7608,6 +7608,72 @@ const scenario = (dir, sampleDir, sampleRpgDir) => `
           'Snake’s battle.' + key + ' reaches the store as ' + value + ', survives undo/redo against the live rendered value, and survives a save/reload disk round trip'
         );
       }
+
+      // Monster spell list, phase 1's own minimal Forge migration (§8/§12
+      // test 13, docs/design-monster-spell-list.md): the Casts select stays
+      // one select, rebound to spellIds[0], but must preserve a hand-edited
+      // list's own entries 1-3 -- only entry 0 is reachable from this Forge
+      // until phase 2. spell ids 5 and 7 are stale in sample-rpg's own
+      // three-spell catalog, deliberately: the point is that this select
+      // does not touch them at all, stale or not.
+      {
+        monsterStore.commit('smoke: seed a hand-authored 3-entry spellIds list on Snake', (project) => {
+          project.sprites.actors[snakeId].battle = {
+            ...project.sprites.actors[snakeId].battle,
+            spellIds: [2, 5, 7] // Venom, plus two entries this select cannot reach yet
+          };
+        });
+        await wait(150);
+
+        const castsSelect = findFieldSelect('Casts');
+        if (!castsSelect) throw new Error('Monster Forge has no Casts select for Snake');
+        const expectedTooltip =
+          'Cast about half the time while the MP above lasts, choosing at random among the affordable ones; otherwise it attacks';
+        if (castsSelect.title !== expectedTooltip) {
+          throw new Error('the Casts select tooltip was not updated to the new text, saw: ' + castsSelect.title);
+        }
+        const selectedOption = [...castsSelect.options].find((o) => o.selected);
+        if (selectedOption?.textContent !== 'Venom') {
+          throw new Error('the Casts select should show entry 0 (Venom) selected, saw: ' + selectedOption?.textContent);
+        }
+
+        const emberOption = [...castsSelect.options].find((o) => o.textContent === 'Ember');
+        if (!emberOption) throw new Error('Monster Forge Casts select has no Ember option');
+        castsSelect.value = emberOption.value;
+        castsSelect.dispatchEvent(new Event('change', { bubbles: true }));
+        await wait(150);
+        const afterEmber = monsterStore.project.sprites.actors[snakeId].battle.spellIds;
+        if (JSON.stringify(afterEmber) !== JSON.stringify([0, 5, 7])) {
+          throw new Error(
+            'choosing a spell should write [chosenId, ...spellIds.slice(1)], preserving entries 1-2, saw: ' +
+              JSON.stringify(afterEmber)
+          );
+        }
+
+        const castsSelectAgain = findFieldSelect('Casts');
+        if (!castsSelectAgain) throw new Error('Monster Forge lost its Casts select after the Ember edit');
+        castsSelectAgain.value = '';
+        castsSelectAgain.dispatchEvent(new Event('change', { bubbles: true }));
+        await wait(150);
+        const afterNothing = monsterStore.project.sprites.actors[snakeId].battle.spellIds;
+        if (JSON.stringify(afterNothing) !== JSON.stringify([5, 7])) {
+          throw new Error(
+            'choosing Nothing should write spellIds.slice(1), closing the list up with no leading gap, saw: ' +
+              JSON.stringify(afterNothing)
+          );
+        }
+
+        // Cleanup: leave Snake’s spellIds back at its original single entry.
+        monsterStore.commit('smoke: restore Snake’s original spellIds', (project) => {
+          project.sprites.actors[snakeId].battle = { ...project.sprites.actors[snakeId].battle, spellIds: [2] };
+        });
+        await wait(150);
+
+        step(
+          'Monster Forge phase-1 Casts select migration preserves entries 1-3 of a hand-edited spellIds list',
+          'bound to spellIds[0]: choosing a spell writes [chosenId, ...rest]; choosing Nothing writes rest, closing the list up'
+        );
+      }
     }
 
     // Character Forge Magic and Magic defence fields, plus both per-level
@@ -8025,7 +8091,7 @@ const scenario = (dir, sampleDir, sampleRpgDir) => `
             gold: 88,
             weak: 'fire',
             strong: 'ice',
-            spellId: null,
+            spellIds: [],
             drop: null,
             dropPct: 40,
             battleTile: 5,

@@ -848,6 +848,13 @@ NO_SFX      = $FF           ; project.sfx has nothing at this index. Matches
 NO_COMMON_EVENT = $FF       ; OP_CALL's own operand: the named common event
                             ; does not resolve to a table slot -- see
                             ; script_op_call
+NO_SPELL    = $FF           ; mon_spell: no spell in that slot. A compile-time
+                            ; engine sentinel, not project-derived -- unlike
+                            ; MONSTER_SPELLS (config.inc, generated from
+                            ; RPG_LIMITS.monsterSpells), these are not the
+                            ; same kind of constant and must not share one
+                            ; declaration. docs/design-monster-spell-list.md
+                            ; §6/§7.
 
 ; An item's effect, in the same order as ITEM_EFFECT_KINDS in
 ; shared/project.js -- item_effect_kind (engine/ui.asm's use_item_apply)

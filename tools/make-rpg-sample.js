@@ -262,7 +262,7 @@ project.sprites.actors = [
       mp: 8, xp: 5, gold: 3,
       weak: 'wind', strong: 'earth',
       drop: null, dropPct: 0, heal: 0,
-      spellId: 2,
+      spellIds: [2],
       battleTile: null
     }
   }

@@ -73,6 +73,7 @@ import {
   projectUsesItems,
   projectUsesMagicPower,
   projectUsesMagicDefence,
+  projectUsesMonsterSpellList,
   projectUsesSting,
   projectUsesSfx,
   projectUsesAudioFx,
@@ -2204,7 +2205,7 @@ export function checkCapacity(project) {
   //
   // Attributed to the Build panel's own capacity math for a project fed by
   // every Forge listed here: a monster's own battle stats (attack, drops,
-  // weak/resist, spellId, battle artwork) are edited in the Monster Forge;
+  // weak/resist, spell list, battle artwork) are edited in the Monster Forge;
   // hp and name are general actor fields, edited in the Sprite Forge's own
   // Actor panel; a spell's own catalog entry (name, kind, damage/heal
   // range, MP cost, element, scope) is edited in the Magic Forge; an
@@ -2501,6 +2502,9 @@ export async function generateAssets({ dir, project, log = () => {} }) {
   // code (§8's own delta-measurement trap).
   const magicPowerEnabled = projectUsesMagicPower(project);
   const magicDefenceEnabled = projectUsesMagicDefence(project);
+  // monster_turn's pick-first rewrite (docs/design-monster-spell-list.md
+  // §6/§7) -- true iff some actor's battle.spellIds has two or more entries.
+  const monsterSpellListEnabled = projectUsesMonsterSpellList(project);
 
   // The HUD hearts, stamped after the placeholder check so an empty sprite table
   // is still recognised as empty. Two tiles, and only for a game that can hurt
@@ -3026,6 +3030,15 @@ export async function generateAssets({ dir, project, log = () => {} }) {
     // independent flags: a project can author one stat without the other.
     `MAGIC_POWER_ENABLED = ${magicPowerEnabled ? 1 : 0}`,
     `MAGIC_DEFENCE_ENABLED = ${magicDefenceEnabled ? 1 : 0}`,
+    // monster_turn's pick-first rewrite and its two gated helpers
+    // (mod_monster_len, monster_pick_limit) -- see projectUsesMonsterSpellList
+    // (shared/project.js) and docs/design-monster-spell-list.md §6/§7.
+    // MONSTER_SPELLS is generated from RPG_LIMITS.monsterSpells the same way
+    // NUM_VARIABLES above is generated from RPG_LIMITS.variables;
+    // NO_SPELL is hand-defined in engine/constants.asm instead, a compile-time
+    // engine sentinel rather than a project-derived limit.
+    `MONSTER_SPELLS = ${RPG_LIMITS.monsterSpells}`,
+    `MONSTER_SPELL_LIST_ENABLED = ${monsterSpellListEnabled ? 1 : 0}`,
     ''
   ].join('\n');
   await fs.writeFile(path.join(assetsDir, 'config.inc'), config);

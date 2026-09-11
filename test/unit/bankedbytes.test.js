@@ -69,7 +69,8 @@ import {
   NAME_ENTRY_BATTLE_ALLOWANCE,
   NAME_COPY_BATTLE_ALLOWANCE,
   MAGIC_POWER_BATTLE_ALLOWANCE,
-  MAGIC_DEFENCE_BATTLE_ALLOWANCE
+  MAGIC_DEFENCE_BATTLE_ALLOWANCE,
+  MONSTER_SPELL_LIST_BATTLE_ALLOWANCE
 } from '../../main/build/battletables.js';
 import {
   SUPPORTED_MAPPERS,
@@ -454,6 +455,34 @@ test('MAGIC_DEFENCE_BATTLE_ALLOWANCE is exact, on every RPG-capable board', {
       `${mapper.name}: magic defence costs ${delta} bytes of banked code (${codeOff} -> ${codeOn}), but ` +
         `MAGIC_DEFENCE_BATTLE_ALLOWANCE reserves ${MAGIC_DEFENCE_BATTLE_ALLOWANCE} -- this allowance must equal ` +
         'the real cost exactly, on every board.'
+    );
+  }
+});
+
+// The monster spell list (docs/design-monster-spell-list.md §6/§7/§12 test
+// 2) -- the identical isolation shape just above. "on" needs a monster with
+// two or more entries in battle.spellIds to flip
+// MONSTER_SPELL_LIST_ENABLED project-wide; sample-rpg's own Snake already
+// has one entry (spellIds: [2], Venom) so this only has to add a second.
+test('MONSTER_SPELL_LIST_BATTLE_ALLOWANCE is exact, on every RPG-capable board', {
+  skip: !hasNesasm && 'nesasm not found on PATH'
+}, async (t) => {
+  for (const mapper of CAPABLE_MAPPERS) {
+    const off = await measureRegion(t, mapper);
+    const on = await measureRegion(t, mapper, (p) => {
+      const snake = p.sprites.actors.find((a) => a.battle?.spellIds?.length);
+      assert.ok(snake, 'sample-rpg should have a caster with a live spellIds entry to extend');
+      snake.battle.spellIds = [...snake.battle.spellIds, 0];
+    });
+    const codeOff = off.used - battleTableBytes(off.project);
+    const codeOn = on.used - battleTableBytes(on.project);
+    const delta = codeOn - codeOff;
+    assert.equal(
+      delta,
+      MONSTER_SPELL_LIST_BATTLE_ALLOWANCE,
+      `${mapper.name}: the monster spell list costs ${delta} bytes of banked code (${codeOff} -> ${codeOn}), but ` +
+        `MONSTER_SPELL_LIST_BATTLE_ALLOWANCE reserves ${MONSTER_SPELL_LIST_BATTLE_ALLOWANCE} -- this allowance must ` +
+        'equal the real cost exactly, on every board.'
     );
   }
 });

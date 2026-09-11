@@ -140,12 +140,28 @@ export function battleSection(actor, index, rerender) {
         el(
           'select',
           {
-            title: 'Cast about half the time while the MP above lasts; otherwise it attacks',
-            onchange: (event) => set('spellId', event.target.value === '' ? null : Number(event.target.value))
+            title:
+              'Cast about half the time while the MP above lasts, choosing at random among the affordable ones; otherwise it attacks',
+            onchange: (event) => {
+              const chosen = event.target.value === '' ? null : Number(event.target.value);
+              store.commit('Change battle stats', (project) => {
+                const target = project.sprites.actors[index];
+                const rest = (target.battle?.spellIds ?? []).slice(1);
+                target.battle = {
+                  ...target.battle,
+                  spellIds: chosen === null ? rest : [chosen, ...rest]
+                };
+              });
+              rerender();
+            }
           },
-          el('option', { value: '', selected: battle.spellId === null || battle.spellId === undefined }, 'Nothing'),
+          el(
+            'option',
+            { value: '', selected: (battle.spellIds ?? [])[0] === undefined },
+            'Nothing'
+          ),
           store.project.spells.map((spell, id) =>
-            el('option', { value: id, selected: id === battle.spellId }, spell.name)
+            el('option', { value: id, selected: id === (battle.spellIds ?? [])[0] }, spell.name)
           )
         )
       )

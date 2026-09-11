@@ -1229,7 +1229,7 @@ test('32: a successful monster import can leave the project one build away from 
     battle: {
       atk: 4, def: 2, acc: 180, eva: 4, speed: 4, mp: 0, xp: 4, gold: 2,
       weak: 'none', strong: 'none', drop: null, dropPct: 10, heal: 0,
-      spellId: null, battleTile: null, battleW: 4, battleH: 4, battlePalette: 2, level: null
+      spellIds: [], battleTile: null, battleW: 4, battleH: 4, battlePalette: 2, level: null
     }
   });
 

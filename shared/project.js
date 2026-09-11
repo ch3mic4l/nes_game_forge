@@ -1116,6 +1116,11 @@ export const CHOICE_LIMITS = {
 export const RPG_LIMITS = {
   party: 4,
   monstersPerBattle: 4,
+  // How many spells a hostile actor's own battle.spellIds may hold --
+  // docs/design-monster-spell-list.md §2/§5/§14 (Chris, N=4). The Forge's
+  // own field count and the engine's generated MONSTER_SPELLS equate both
+  // read this, so the count cannot drift between the three.
+  monsterSpells: 4,
   switches: 64,
   // Named 8-bit counters, alongside the switches: a quest stage, how many of
   // something has been handed over, a stat a later scene reads back. Sixteen
@@ -2528,19 +2533,20 @@ export function renumberItemDeletion(project, index) {
  * `project.spells`: the spell-space sibling of `renumberActorDeletion`/
  * `renumberItemDeletion` above, covering the two fields that name a spell —
  * a party member's own learned `{spellId, level}` entries, and a hostile
- * actor's `battle.spellId` (the one spell it may cast).
+ * actor's `battle.spellIds` (the spells it may cast).
  *
  * The two fields do **not** share a sentinel discipline, unlike the actor/
  * item siblings' own uniform shift-or-fixed-point shape, so this is not that
- * shape copied mechanically. `actors[].battle.spellId` already has a
- * sentinel for "casts nothing" — `null` — and it is a fixed point for the
- * identical reason `NO_ACTOR`/`NO_ITEM` are ones above: walking it down
- * would let it decay back into range as the catalog shrinks further. A
- * party member's learned entry has no such sentinel at all — there is no
- * "learned nothing" entry sitting in the array to fall back to — so a
- * reference to the deleted spell is **dropped** from `member.spells`
- * entirely rather than clamped to anything: a learn record naming a spell
- * that no longer exists is not a record, it is stale data.
+ * shape copied mechanically. A party member's learned entry has no sentinel
+ * at all — there is no "learned nothing" entry sitting in the array to fall
+ * back to — so a reference to the deleted spell is **dropped** from
+ * `member.spells` entirely rather than clamped to anything: a learn record
+ * naming a spell that no longer exists is not a record, it is stale data.
+ * `actors[].battle.spellIds` (docs/design-monster-spell-list.md §5) uses the
+ * identical discipline, for the identical reason: a list has no single
+ * sentinel value to hold as a fixed point the way a scalar's `null` was, so
+ * a deleted id is **dropped** from the list and every higher id shifts down
+ * by one, same as `member.spells`.
  *
  * `RPG_LIMITS.spells = 32` means nothing near `$FF` is ever a live id, so
  * unlike `NO_ACTOR`/`NO_ITEM` there is no compiled sentinel value to collide
@@ -2555,9 +2561,10 @@ export function renumberItemDeletion(project, index) {
 export function renumberSpellDeletion(project, index) {
   const shift = (id) => (id > index ? id - 1 : id);
   for (const actor of project.sprites?.actors ?? []) {
-    const spellId = actor.battle?.spellId;
-    if (typeof spellId !== 'number') continue; // already null -- "casts nothing," a fixed point
-    actor.battle.spellId = spellId === index ? null : shift(spellId);
+    if (!actor.battle || !Array.isArray(actor.battle.spellIds)) continue;
+    actor.battle.spellIds = actor.battle.spellIds
+      .filter((id) => id !== index)
+      .map((id) => shift(id));
   }
   for (const member of project.party ?? []) {
     member.spells = (member.spells ?? [])
@@ -4992,10 +4999,25 @@ function normalizeActor(raw, id, itemCtx = EMPTY_ITEM_CTX) {
       dropPct: clamp(battle.dropPct, 0, 100, 10),
       // How much this actor heals when used from the bag. 0 = not a potion.
       heal: clamp(battle.heal, 0, 255, 0),
-      // The spell this monster casts in battle when it can afford the MP.
-      // Clamped to a byte here; the generator drops an id past the spell table.
-      spellId:
-        battle.spellId === null || battle.spellId === undefined ? null : clamp(battle.spellId, 0, 255, 0),
+      // The spells this monster may cast in battle when it can afford the MP,
+      // uniformly among whichever ones it can currently afford -- duplicates
+      // are kept as a weighting primitive, never deduplicated
+      // (docs/design-monster-spell-list.md §2/§3/§5). One-time migration from
+      // the old scalar battle.spellId: a number becomes a one-entry array,
+      // null/undefined becomes empty; the old key is not kept as a mirror.
+      // Each entry clamped to a byte, sliced to RPG_LIMITS.monsterSpells --
+      // an entry past the current spell catalog is left alone here (the
+      // catalog may still grow) and dropped to $FF by the generator instead,
+      // the same discipline mon_spell already applied for the single-id case.
+      spellIds: (
+        Array.isArray(battle.spellIds)
+          ? battle.spellIds
+          : typeof battle.spellId === 'number'
+            ? [battle.spellId]
+            : []
+      )
+        .slice(0, RPG_LIMITS.monsterSpells)
+        .map((id) => clamp(id, 0, 255, 0)),
       // Battle artwork: a block of background tiles on the battle tileset. null
       // falls back to drawing the actor's `battle` animation as sprites.
       battleTile:
@@ -5971,6 +5993,20 @@ export function projectUsesMagicDefence(project) {
     return true;
   }
   return (project.sprites?.actors ?? []).some((actor) => (actor.battle?.mdef ?? 0) > 0);
+}
+
+/**
+ * Whether the monster spell-list engine (docs/design-monster-spell-list.md
+ * §6/§7) is worth assembling at all -- true iff some actor's
+ * `battle.spellIds` has two or more entries. A one-entry list is today's
+ * single-spell feature exactly, so a project that has never authored a
+ * second spell for any monster assembles byte-identical to before this
+ * feature existed (the six-fixture SHA-256 gate proves it). Drives the
+ * generated `MONSTER_SPELL_LIST_ENABLED` flag the same shape
+ * `projectUsesMagicPower` already takes.
+ */
+export function projectUsesMonsterSpellList(project) {
+  return (project.sprites?.actors ?? []).some((actor) => (actor.battle?.spellIds?.length ?? 0) >= 2);
 }
 
 export function validateProject(project) {
