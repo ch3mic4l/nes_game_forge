@@ -12,7 +12,7 @@
 // monsterActorIds (shared/project.js).
 
 import { store } from '../../store.js';
-import { el, fill, field } from '../../ui.js';
+import { el, fill, field, showModal, toast } from '../../ui.js';
 import {
   ELEMENTS,
   RPG_LIMITS,
@@ -20,7 +20,10 @@ import {
   itemPickerOptions,
   monsterActorIds,
   battleBlockIndices,
-  describeBattleTileState
+  describeBattleTileState,
+  MONSTER_GROWTH_FIELDS,
+  planMonsterGrowth,
+  applyMonsterGrowth
 } from '../../../shared/project.js';
 import { FONT_BASE } from '../../../shared/font.js';
 import { drawSheet, sheetIndexFromEvent, SHEET_COLS } from '../../widgets/sheet.js';
@@ -43,6 +46,12 @@ const number = (value, min, max, onChange, title = null) =>
 // depth, not the normal path. Unlike normalizeActor's own on-disk garbage
 // fallback (1, shared/project.js), unparseable input here means the author
 // typed nothing usable, not "level 1."
+// Rounds the parsed value (docs/design-monster-level-scaling.md §3.5) so a
+// fractional Level typed here can never sit un-rounded in battle.level --
+// planMonsterGrowth would otherwise have to treat a fractional stored level
+// as if the button's own `!= null` enable check disagreed with it. Only
+// caller today is the Level field below; a second one would need its own
+// parameter rather than sharing this behaviour silently.
 const numberOrNull = (value, min, max, onChange, title = null) =>
   el('input', {
     type: 'number',
@@ -52,7 +61,11 @@ const numberOrNull = (value, min, max, onChange, title = null) =>
     title,
     onchange: (event) => {
       const parsed = Number(event.target.value);
-      onChange(event.target.value === '' || !Number.isFinite(parsed) ? null : Math.max(min, Math.min(max, parsed)));
+      onChange(
+        event.target.value === '' || !Number.isFinite(parsed)
+          ? null
+          : Math.max(min, Math.min(max, Math.round(parsed)))
+      );
     }
   });
 
@@ -64,6 +77,14 @@ const select = (options, value, onChange) =>
   );
 
 const row = (...children) => el('div.field-row', { style: { gap: '8px', marginBottom: '6px' } }, ...children);
+
+// The renderer default for each of the seven derivable stats -- read by both
+// battleSection's own per-field `?? default` widgets below and the derive
+// modal's own Base pre-fill (mount()'s openDeriveModal), so the two numbers
+// cannot drift apart (round-2 review finding 5). Keyed to match
+// MONSTER_GROWTH_FIELDS (shared/project.js) exactly; not every battleSection
+// field has an entry here, only the ones the derive modal also covers.
+const BATTLE_DEFAULTS = { atk: 4, def: 2, mp: 0, gold: 2, mag: 0, mdef: 0, xp: 4 };
 
 // Casts, Also, or, or, ... -- the label for each of RPG_LIMITS.monsterSpells
 // spell slots (§8): the first two are distinct, every slot after repeats
@@ -79,7 +100,7 @@ const SPELL_SLOT_LABELS = ['Casts', 'Also'];
  * discipline this code already followed, now the one this whole Forge is
  * held to (docs/design-monster.md §2).
  */
-export function battleSection(actor, index, rerender) {
+export function battleSection(actor, index, rerender, openDerive) {
   const battle = actor.battle ?? {};
   const set = (key, value) => {
     store.commit('Change battle stats', (project) => {
@@ -160,23 +181,36 @@ export function battleSection(actor, index, rerender) {
           (value) => set('level', value),
           'For your own reference only -- the battle system never reads this'
         )
+      ),
+      el(
+        'button.btn.btn-sm',
+        {
+          style: { alignSelf: 'flex-end' },
+          disabled: battle.level === null || battle.level === undefined,
+          title:
+            battle.level === null || battle.level === undefined
+              ? 'Set a Level above first'
+              : 'Fill in Attack, Defence, Magic, Magic defence, Magic points, Experience and Gold from a base value plus growth per level',
+          onclick: () => openDerive(actor, index)
+        },
+        'Derive from level…'
       )
     ),
     row(
-      field('Attack', number(battle.atk ?? 4, 0, 255, (value) => set('atk', value))),
-      field('Defence', number(battle.def ?? 2, 0, 255, (value) => set('def', value))),
+      field('Attack', number(battle.atk ?? BATTLE_DEFAULTS.atk, 0, 255, (value) => set('atk', value))),
+      field('Defence', number(battle.def ?? BATTLE_DEFAULTS.def, 0, 255, (value) => set('def', value))),
       field('Speed', number(battle.speed ?? 4, 0, 255, (value) => set('speed', value))),
-      field('Magic', number(battle.mag ?? 0, 0, 255, (value) => set('mag', value))),
-      field('Magic defence', number(battle.mdef ?? 0, 0, 255, (value) => set('mdef', value)))
+      field('Magic', number(battle.mag ?? BATTLE_DEFAULTS.mag, 0, 255, (value) => set('mag', value))),
+      field('Magic defence', number(battle.mdef ?? BATTLE_DEFAULTS.mdef, 0, 255, (value) => set('mdef', value)))
     ),
     row(
       field('Accuracy', number(battle.acc ?? 180, 0, 255, (value) => set('acc', value), 'Out of 255')),
       field('Evasion', number(battle.eva ?? 4, 0, 255, (value) => set('eva', value))),
-      field('Magic points', number(battle.mp ?? 0, 0, 255, (value) => set('mp', value)))
+      field('Magic points', number(battle.mp ?? BATTLE_DEFAULTS.mp, 0, 255, (value) => set('mp', value)))
     ),
     row(
-      field('Experience', number(battle.xp ?? 4, 0, 65535, (value) => set('xp', value))),
-      field('Gold', number(battle.gold ?? 2, 0, 255, (value) => set('gold', value)))
+      field('Experience', number(battle.xp ?? BATTLE_DEFAULTS.xp, 0, 65535, (value) => set('xp', value))),
+      field('Gold', number(battle.gold ?? BATTLE_DEFAULTS.gold, 0, 255, (value) => set('gold', value)))
     ),
     row(
       field('Weak to', select(ELEMENTS, battle.weak ?? 'none', (value) => set('weak', value))),
@@ -268,6 +302,85 @@ function artPicker(battle, set) {
 
 export function mount(container, app) {
   const state = { selectedActorId: null };
+  // Set by destroy() below, read by openDeriveModal's own post-await guard
+  // (docs/design-monster-level-scaling.md §3.8) -- a per-mount closure
+  // variable, never module scope, so a fresh mount after destroy always
+  // starts clean.
+  let destroyed = false;
+
+  // "Derive from level..." (ROADMAP item 14 point 2, phase 3): the modal's
+  // own onClick returns only the raw { key: {base, perLevel} } pairs typed
+  // into it -- nothing fallible, since showModal (renderer/ui.js) awaits
+  // that callback before ever calling close(), and a throw there would
+  // leave the dialog unresolved by the failed action until some later,
+  // unrelated dismissal happened to settle it. Every fallible step -- the
+  // three lifetime guards, planMonsterGrowth, the commit -- runs only
+  // *after* the await, in one synchronous continuation with no further
+  // await (design §3.1).
+  async function openDeriveModal(actor, actorIndex) {
+    const capturedActorId = actorIndex;
+    const revisionAtOpen = store.revision;
+    const battle = actor.battle ?? {};
+    // BATTLE_DEFAULTS (module scope, above) is the single copy of these
+    // numbers -- shared with battleSection's own reads, so a missing
+    // field's starting Base can never drift from what the actor's own
+    // panel already shows for it (round-2 review finding 5).
+    const picked = {};
+    for (const f of MONSTER_GROWTH_FIELDS) {
+      picked[f.key] = { base: battle[f.key] ?? BATTLE_DEFAULTS[f.key], perLevel: 0 };
+    }
+
+    const growth = await showModal({
+      title: 'Derive stats from level',
+      body: el(
+        'div',
+        null,
+        el(
+          'p.hint',
+          { style: { marginBottom: '10px' } },
+          'Base is the value this stat would have at level 1 -- the numbers shown are only a ' +
+            'starting suggestion, not a remembered curve. Growth is never linked to a later Level ' +
+            'edit: at level 12, Base 10 with + / level 2 gives 32; reopening this shows Base 32, ' +
+            '+ / level 0 -- typing 2 again gives 54, not another 32.'
+        ),
+        ...MONSTER_GROWTH_FIELDS.map((f) =>
+          row(
+            field(
+              f.label,
+              number(picked[f.key].base, 0, f.ceiling, (v) => {
+                picked[f.key].base = v;
+              })
+            ),
+            field(
+              '+ / level',
+              number(picked[f.key].perLevel, 0, f.perLevelMax, (v) => {
+                picked[f.key].perLevel = v;
+              })
+            )
+          )
+        )
+      ),
+      actions: [
+        { label: 'Cancel', value: null },
+        { label: 'Apply', primary: true, onClick: () => ({ ...picked }) }
+      ]
+    });
+
+    if (!growth) return;
+    if (destroyed) return;
+    if (store.revision !== revisionAtOpen) {
+      toast('The project changed while this dialog was open — try again.', 'error');
+      return;
+    }
+    if (state.selectedActorId !== capturedActorId) {
+      toast('The selected monster changed while this dialog was open — try again.', 'error');
+      return;
+    }
+    const plan = planMonsterGrowth(store.project, capturedActorId, growth);
+    if (!plan) return;
+    store.commit('Derive stats from level', (project) => applyMonsterGrowth(project, plan));
+    render();
+  }
 
   // A cross-link from the Sprite Forge (app.goTo('monster', { actorId })).
   // No further validation here: render()'s own `ids.includes` fallback below
@@ -373,7 +486,7 @@ export function mount(container, app) {
                   'Harmless — a map’s encounter table or a Start a battle command still names this actor, ' +
                     'so it stays listed here, whether or not that reference currently reaches a fight.'
                 ),
-            battleSection(actor, state.selectedActorId, render)
+            battleSection(actor, state.selectedActorId, render, openDeriveModal)
           )
         : el(
             'p.hint',
@@ -396,6 +509,7 @@ export function mount(container, app) {
 
   return {
     destroy() {
+      destroyed = true;
       app.setMeta('');
     },
     onProjectChange: render

@@ -734,6 +734,9 @@ already has. Must prove: the §5 same-tree byte-identity test (two builds differ
 monster's `level` is set, identical output); the existing suite stays green (count rises by the new
 tests this phase adds).
 
+Phase 3 is now designed and shipped, in `docs/design-monster-level-scaling.md`, which supersedes
+the sketch below.
+
 **Phase 3 — optional, build-time-derived stat convenience, only if requested.** A per-stat
 `base`/`perLevel` pair (or a single shared growth multiplier, whichever the actual authoring UI
 review prefers) that computes the same `atk`/`def`/etc. numbers `statAt` would produce for the

@@ -260,59 +260,61 @@ renderer, and `node:test` alike.
   renderer error for a redraw that never arrives in a throttled window). The smoke test resizes the
   real window and asserts the map screen grew, since a hardcoded zoom looks correct at whatever
   size it was written for.
-- **A Forge selection must check it is still the current one after its own `await`.**
+- **A Forge selection must check it is still current after its own `await`.**
   `selectForge(id)` (`renderer/app.js`) is called unawaited from `store.subscribe`'s `'open'`
-  handler, so two selections can be in flight and the *earlier* one can finish last. A module-level
-  `selectionToken` counter is bumped once by every call that gets past its own guards and re-checked
-  after `await entry.load()` and again in the `catch`; a superseded call returns before it mounts
-  anything or sets the status bar, but has still torn the stage down — the token is taken *before*
-  `mounted` is destroyed and `dom.stage` cleared — safe only because the winner took its own token
-  later and tears down again, mounting after both. Missing the check looks like a screenshot or
-  harness artefact rather than a bug: the second Forge mounts, then the first one's late import
-  mounts over it, leaving two `.forge` elements in `#stage`, exactly what `main/smoke.js`'s own
-  same-tick selection race step asserts against.
-- **The same token also bounds a navigation context's lifetime**, added for the Monster ↔ Sprite deep
-  link. `app.goTo(id, context)` writes `pendingRequest = { targetId, context, atRevision:
-  store.revision }` and calls `selectForge(id)`, which claims `pendingRequest` unconditionally as
-  its first statement, before either of its own early returns. `activeContext = { token, context }`
-  is bound only after `await entry.load()`, and only if `store.revision` has not moved since the
-  request was made — a bounds check on a captured actor id cannot see a delete that renumbered
-  everything in between, only the revision check can. `app.consumeContext()` hands the context to
-  the mounting Forge at most once, only when `activeContext.token === selectionToken`, so a
-  superseded navigation's context never reaches the winner. `main/smoke.js` exercises this contract
-  end-to-end; see `docs/design-monster.md` §2 for the full mechanism and race analysis.
+  handler, so two selections can be in flight with the *earlier* finishing last. A module-level
+  `selectionToken` bumps once per call past its own guards, re-checked after `await entry.load()`
+  and again in the `catch`; a superseded call returns before mounting anything or setting the
+  status bar, but has already torn the stage down — the token is taken *before* `mounted` is
+  destroyed and `dom.stage` cleared, safe only because the winner's own later token tears down
+  again, mounting after both. Missing the check reads like a screenshot or harness artefact, not a
+  bug: the second Forge mounts, then the first's late import mounts over it, leaving two `.forge`
+  elements in `#stage` — exactly what `main/smoke.js`'s same-tick selection race step catches.
+- **The same token also bounds a navigation context's lifetime**, added for the Monster ↔ Sprite
+  deep link. `app.goTo(id, context)` writes `pendingRequest = { targetId, context, atRevision:
+  store.revision }`, then calls `selectForge(id)`, claiming `pendingRequest` unconditionally before
+  either early return. `activeContext = { token, context }` binds only after `await entry.load()`
+  and only if `store.revision` hasn't moved since — a bounds check on a captured actor id can't see
+  a delete that renumbered everything in between; only the revision check can. `app.consumeContext()`
+  hands the context to the mounting Forge once, only when `activeContext.token === selectionToken`,
+  so a superseded navigation's context never reaches the winner — `main/smoke.js` exercises this
+  end-to-end, `docs/design-monster.md` §2 has the full race analysis.
 
 Each Forge is a module exporting `mount(container, app)` and returning
 `{ destroy?, onProjectChange? }`; `renderer/app.js`'s `FORGES` array is the single writer for
-which Forges exist and lazily imports them — the Items Forge (`renderer/forges/items/items.js`,
-item 5's own place to author an item's name, effect and backing Pickup actor) is one of these, not
-a special case. `app.forgeIds` is that registry's own derived getter
-(`FORGES.filter(...).map((f) => f.id)`), not a second writer — it exists so `main/smoke.js`'s
-"visit every Forge" step can read `FORGES` without a hand-maintained list of its own, the drift
-that let the Items Forge almost ship unvisited by that very test. The Magic Forge
-(`renderer/forges/magic/magic.js`, item 13's own spell catalog — turn-based RPG projects only) is
-`FORGES`' first entry to carry a `gameTypes` field, and the Monster Forge
-(`renderer/forges/monster/monster.js`, item 14's own module) is the second; every other entry is
-unconditional, so the field is additive.
+which Forges exist, lazily importing them — the Items Forge (`renderer/forges/items/items.js`,
+item 5's place to author an item's name, effect and backing Pickup actor) is one of these, no
+special case. `app.forgeIds` is that registry's derived getter
+(`FORGES.filter(...).map((f) => f.id)`), not a second writer — so `main/smoke.js`'s "visit every
+Forge" step reads `FORGES` directly rather than keeping its own hand-maintained list, the drift
+that nearly shipped the Items Forge unvisited. The Magic Forge (`renderer/forges/magic/magic.js`,
+item 13's spell catalog, RPG-only) is `FORGES`' first `gameTypes` entry; the
+Monster Forge (`renderer/forges/monster/monster.js`, item 14) is the second — every other entry
+is unconditional, so the field is additive.
 `monsterActorIds(project)` (`shared/project.js`) is the Monster Forge's single catalog predicate:
-it reads `allCommands` (mentioned, disabled branches included) rather than `liveCommands`
-(compiles), and raw `command.monsters`/`map.encounters.actorIds` rather than
-`battleFormationSlice`/`mapEncounterFormation`, so an over-cap or rate-zero monster still appears —
-the concern is never hiding an actor an author is looking at. `battle.level` is the one
-Monster-Forge-only field with no compiled reader: it normalizes to `null` or
-`clamp(1, RPG_LIMITS.maxLevel)`, the fixed constant and never `project.rpg.maxLevel`, so lowering
-the Build panel's own level cap as a capacity lever cannot silently reclamp an already-authored
-bestiary. See `docs/design-monster.md` §2 for the Forge-boundary argument and
-`test/unit/monsterlevel.test.js` for the level field's byte-identity proof.
-`isForgeAvailable(entry, project)` is the single predicate for whether an entry applies to the
-open project, read by exactly three call sites — `renderRail()`, the `app.forgeIds` getter (why
-"visit every Forge" stays correct on an action project without special-casing Magic), and
-`selectForge`, which guards itself a second way: `activeForgeId` is a bare module-level variable
-that outlives a project close, so a stale `'magic'` can reach `selectForge` on a path the rail
-never rendered a button for, falling back to `'tile'`. `main/smoke.js`'s own negative case reads
-the rendered `.rail-item` titles rather than `forgeIds` — the wrong implementation it catches is a
-`renderRail()` that filters differently from the getter, offering a real, clickable button into a
-Forge `forgeIds` already excludes.
+it reads `allCommands` (mentioned, disabled branches included), not `liveCommands` (compiles), and
+raw `command.monsters`/`map.encounters.actorIds`, not `battleFormationSlice`/`mapEncounterFormation`
+— so an over-cap or rate-zero monster still appears, never hiding an actor an author is
+watching. `battle.level` is the one Monster-Forge-only field with no compiled reader: it
+normalizes to `null` or `clamp(1, RPG_LIMITS.maxLevel)`, the fixed constant and never
+`project.rpg.maxLevel`, so lowering the Build panel's own level cap as a capacity lever cannot
+silently reclamp an already-authored bestiary. See `docs/design-monster.md` §2 for the
+Forge-boundary argument and `test/unit/monsterlevel.test.js` for the level field's byte-identity
+proof. It also has a renderer-side reader, "Derive from level…"
+(`planMonsterGrowth`/`applyMonsterGrowth`, `shared/project.js`): a plan/apply pair like
+`planLibraryImport`/`applyPlannedProject`, commit skipped on `null`, writing only the flat
+`battle.*` fields `MONSTER_GROWTH_FIELDS` names — single writer of each stat's Base ceiling and
+`+ / level` max, read by modal and core; `hp` excluded per the boundary above. `statAt`
+now lives here too, with an optional `ceiling`, re-exported verbatim from `battletables.js` for
+its importers — the `songByte` precedent. `docs/design-monster-level-scaling.md`,
+`test/unit/monstergrowth.test.js`.
+`isForgeAvailable(entry, project)` is the single predicate for whether an entry applies to the open
+project, read by three call sites — `renderRail()`, the `app.forgeIds` getter ("visit every
+Forge" needs no Magic special-case), and `selectForge`, guarding a second way: a stale
+`activeForgeId` (a bare module-level variable outliving a project close) falls back to `'tile'`,
+not reaching a Forge the rail never rendered a button for. `main/smoke.js`'s negative
+case reads the rendered `.rail-item` titles, not `forgeIds` — catching a `renderRail()` that
+filters differently from the getter, offering a clickable button into an excluded Forge.
 `renderer/store.js` is the single project state:
 `commit()` for a discrete edit, `beginStroke()`/`touch()`/`endStroke()` so a drag is one undo entry.
 Undo is whole-project `structuredClone` snapshots.
@@ -1431,28 +1433,28 @@ saturating loop over four bytes.
 Three shapes worth keeping:
 
 - **Combatants are one index space**: 0-3 party, 4-7 monsters. `turn_order`, targeting, the cursor
-  and "is this one still standing" are each one routine rather than two that have to agree — and
-  it is what lets a monster cast the same spells the party does: `cast_spell`, `cast_heal` and
-  `cast_all` all take either side, with `other_side` deciding who a group spell reaches.
+  and "is this one still standing" are each one routine, not two that must agree — letting a
+  monster cast the same spells the party does: `cast_spell`, `cast_heal` and `cast_all` all take
+  either side, `other_side` deciding who a group spell reaches.
 - **The `combatant_*` lookups preserve X and Y and return through `bt_ret`**, because they are
   called from loops that own those registers — and restoring a register sets the flags, so the
   answer has to be reloaded last.
 - **Status effects are independent bits, ticked by the message flow.** `pc_status`/`mon_slot_status`
-  carry them — `STATUS_POISON`/`STATUS_BURN` (`engine/constants.asm`), set by `ora` rather than a
+  carry them — `STATUS_POISON`/`STATUS_BURN` (`engine/constants.asm`), set by `ora`, not a
   plain store, so casting one never erases the other. `battle_message_done` dispatches the tick:
   once the actor's own line is dismissed, `status_pending` walks every set bit lowest-first, one
-  tick and one line per bit, before the turn advances. No status survives past the battle that gave
+  tick and line per bit, before the turn advances. No status survives past the battle that gave
   it — `battle_begin`/`battle_end` (`engine/rpg.asm`) zero the array on entry and on a normal exit
   (won included); a loss skips `battle_end` (`battle_finish` jumps straight to `player_died`), so
-  that clear lives in `init_session` (`engine/combat.asm`) instead, enforced at every exit rather
-  than documented at one. A heal or a potion cures everything at once, mid-battle. See
+  that clear lives in `init_session` (`engine/combat.asm`) instead, enforced at every exit, not
+  just one. A heal or a potion cures everything at once, mid-battle. See
   `docs/design-status-effects.md` for the dispatch mechanism and what a third status would need.
 - **A spell's amount is a range, not a fixed number**: `amountMin`/`amountMax` in the schema,
   `spell_amount_min`/`spell_amount_n`/`spell_amount_limit` (`main/build/battletables.js`) in ROM,
   rolled by `roll_spell_amount` + `mod8` (`engine/battleturn.asm`) — a draw rejected at or above
-  `spell_amount_limit,x` keeps the accepted range uniform rather than masked-and-biased.
+  `spell_amount_limit,x` keeps the accepted range uniform, not masked-and-biased.
   `spell_amount_n,x == 1` is byte-for-byte the old flat `spell_amount,x` read and draws nothing
-  from the RNG, letting a project migrated from the old schema replay its battles identically. Both
+  from the RNG, so a project migrated from the old schema replays its battles identically. Both
   routines run inside `cast_all`'s own per-target loop, so `bt_tmp2` — that loop's own end-of-side
   sentinel — must survive untouched across the whole `spell_damage` → `roll_spell_amount` → `mod8`
   chain; the regression guard is an RNG-state assertion in `test/unit/rpg.test.js`'s `'an
@@ -1469,24 +1471,24 @@ so the engine needs no length byte.
 `item_chosen` can apply consistently — so a `damage`-kind item, or a `heal`-kind item at `Amount`
 0, is a real, valid item for Give/Take/Carrying/drops but never a selectable row here.
 `battle_menu_item` gates on the *filtered* list length, not raw `inv_count`, building the list
-first so the gate sees the real count: deciding from `inv_count` alone would open onto an empty
-list whose row-select code indexes a stale entry and whose Up press underflows the selection to
-`$FF`. `build_spell_list` needs no such ordering — a spell's own membership test (`pc_spells`, a
+first so the gate sees the real count: gating from `inv_count` alone would open an empty list
+whose row-select code indexes a stale entry and whose Up press underflows to `$FF`.
+`build_spell_list` needs no such ordering — a spell's own membership test (`pc_spells`, a
 bitmask) already is what building the list applies, so gating before building can never disagree
 with it; items introduce a second, independent filter `inv_count` knows nothing about. The
-`ITEMS_ENABLED`-false path keeps both routines exactly as they were, byte-for-byte, since that
+`ITEMS_ENABLED`-false path keeps both routines byte-for-byte as they were, since that
 economy has no `effect` field to filter on.
 
 **Two capacity terms follow the item's own kind/amount reader into their respective banks, both
 item-conditional and both flat across boards** (see "The kernel budget" above for why a term earns
 its own name only once real variance is measured). `ITEM_EFFECT_KERNEL_ALLOWANCE_BY_GAME_TYPE`
-(`main/build/generate.js`) is `use_item_apply`'s own kernel-lo cost, split by *game type* rather
-than by board — because `BATTLE_ENABLED` picks a genuinely differently-sized damage branch
+(`main/build/generate.js`) is `use_item_apply`'s own kernel-lo cost, split by *game type*, not
+board — because `BATTLE_ENABLED` picks a differently-sized damage branch
 (`party_damage` vs `lose_hearts`), not because any board differs: 61 bytes for an action project,
 59 for an RPG. `ITEM_LIST_FILTER_BATTLE_ALLOWANCE` (17 bytes, `main/build/battletables.js`) is
 `build_item_list`'s and `battle_menu_item`'s combined cost in the banked battle-code region,
 uniform across all three RPG-capable boards since neither routine branches on `SPLIT_ENABLED` — its
-own line beside the base rather than folded into it, avoiding the mistake
+own line beside the base, not folded into it, avoiding the mistake
 `TITLE_KERNEL_ALLOWANCE_BY_MAPPER` already had to undo on the kernel side, charging every project a
 cost only `ITEMS_ENABLED` builds actually pay.
 
@@ -1496,11 +1498,10 @@ one-entry list assembles byte-identical to before, why all six fixtures stay off
 Snake carries exactly one). `MONSTER_SPELL_LIST_BATTLE_ALLOWANCE` (125, flat on every RPG-capable
 board, `main/build/battletables.js`) is the banked-region cost; the table keeps the old `mon_spell`
 label so the off-path `monster_turn` body (`engine/battleturn.asm`) reads it unchanged. On,
-`monster_turn` picks uniformly among whichever entries the monster can afford, duplicates as
-weighting, before the existing cast-or-attack coin flip — pick-first
-(`docs/design-monster-spell-list.md` §6). The Monster Forge's four selects collapse to `spellIds`
-by deriving from the store's own array, never the other selects' DOM values, since a stale id
-renders as `Nothing` and reading that back would drop it.
+`monster_turn` picks uniformly among affordable entries, duplicates weighting them, before the
+existing cast-or-attack coin flip — pick-first (`docs/design-monster-spell-list.md` §6). The
+Monster Forge's four selects collapse to `spellIds` from the store's own array, never the other
+selects' DOM values, since a stale id renders as `Nothing` and reading it back would drop it.
 
 ### The emulator
 
@@ -1669,21 +1670,25 @@ Each of these cost real debugging time and now has a regression test. They are e
 
 - Generated output (`build/`, `sample/build/`) is never hand-edited; change the generator or the
   authored source instead.
-- When the UI offers something the engine does not implement, label it as such in the UI rather
-  than letting it look functional. No such case remains; the
-  surviving form of the same idea is narrower — an action bound in a state it means nothing in
-  (confirm while walking around) is labelled "ignored here" rather than silently doing nothing.
+- When the UI offers something the engine does not implement, label it as such rather than letting
+  it look functional. No such case remains; the surviving, narrower form is an action bound in a
+  state it means nothing in (confirm while walking around), labelled "ignored here", not
+  silently doing nothing.
 - Capacity limits are enforced in the generator with messages naming the Forge responsible, so
   users never see raw assembler output.
 - Re-render a node with `fill(node, ...)` from `renderer/ui.js`, never `clear(node).append(...)`.
   `el()` skips nulls and flattens arrays; the DOM's `append` stringifies both, so a conditional
-  child renders as the word "null" and a list of rows as "[object HTMLDivElement]" — which reads
-  as bad data rather than the wrong append, and cost the Map Forge its whole placed-actor list
-  (remove buttons included) until it was noticed in a screenshot. Bare `clear()` is still right
-  for the clear-then-append-in-a-loop cases.
+  child renders as "null" and a list of rows as "[object HTMLDivElement]" — reading as bad data,
+  not a wrong append, and it cost the Map Forge its whole placed-actor list (remove buttons
+  included) until a screenshot caught it. Bare `clear()` is still right for the
+  clear-then-append-in-a-loop case.
 - `showModal` (`renderer/ui.js`) resolves `null` for Escape, a backdrop click, a bare `close()`,
   and an action with `value: undefined` — a caller can't tell "dismissed" from a chosen `null`
-  through the promise alone. A caller needing that brings its own sentinel: `editEvent`
+  through the promise alone; one needing that brings its own sentinel: `editEvent`
   (`renderer/forges/map/events.js`) resolves Clear event and an emptied-draft Save through a
   private `CLEAR_EVENT` Symbol, folded by `resolveEventEditorResult` (pinned by
-  `events.test.js`).
+  `events.test.js`). One `showModal` trap: an action's `onClick` must do nothing fallible —
+  `renderer/ui.js` awaits it before `close()`, so a throw leaves the dialog unresolved until a
+  later dismissal settles it; the derive modal above returns only raw inputs; planning reads the
+  project only after the `await` and its guards. Its overlay blocks pointer
+  clicks only, not keyboard activation.

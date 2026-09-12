@@ -8012,6 +8012,309 @@ const scenario = (dir, sampleDir, sampleRpgDir) => `
       );
     }
 
+    // Test 1a-derive (phase 3, ROADMAP item 14 point 2,
+    // docs/design-monster-level-scaling.md §3.1/§3.7/§3.8/§3.10): "Derive
+    // from level..." end to end through the real button and modal --
+    // planMonsterGrowth/applyMonsterGrowth are unit-tested directly in
+    // test/unit/monstergrowth.test.js; this is the UI half, the only thing
+    // that can prove the button, the modal's own rendered bounds and the
+    // commit-in-one-continuation ordering actually reach an author.
+    {
+      const snakeIdForDerive = monsterStore.project.sprites.actors.findIndex((a) => a.name === 'Snake');
+      if (!selectByName('Snake')) throw new Error('Monster Forge catalog does not list Snake for the derive test');
+      await wait(150);
+
+      const findDeriveButton = () =>
+        [...document.querySelectorAll('#stage button.btn.btn-sm')].find(
+          (b) => b.textContent.trim() === 'Derive from level…'
+        );
+
+      // battle.level is null here -- Test 1a-level's own cleanup left it
+      // that way -- so the button must be disabled (design §3.6).
+      const deriveButtonDisabled = findDeriveButton();
+      if (!deriveButtonDisabled) throw new Error('Monster Forge has no "Derive from level..." button for Snake');
+      if (!deriveButtonDisabled.disabled) {
+        throw new Error('the derive button should be disabled while battle.level is unset');
+      }
+
+      // Set a level so the rest of this test can open the modal.
+      const levelFieldForDerive = findFieldInput('Level');
+      levelFieldForDerive.value = '12';
+      levelFieldForDerive.dispatchEvent(new Event('change', { bubbles: true }));
+      await wait(150);
+      if (monsterStore.project.sprites.actors[snakeIdForDerive].battle.level !== 12) {
+        throw new Error('setting Snake’s Level for the derive test did not reach the store');
+      }
+      const deriveButton = findDeriveButton();
+      if (deriveButton.disabled) throw new Error('the derive button should be enabled once battle.level is set');
+
+      const modalRow = (label) => {
+        const fieldDiv = [...document.querySelectorAll('#modalHost .field')].find(
+          (f) => f.querySelector('.field-label')?.textContent === label
+        );
+        if (!fieldDiv) return null;
+        const fields = [...fieldDiv.closest('.field-row').querySelectorAll('.field')];
+        return { base: fields[0].querySelector('input'), perLevel: fields[1].querySelector('input') };
+      };
+
+      // Open, then check the rendered bounds against MONSTER_GROWTH_FIELDS
+      // itself (N7): a widget hardcoding the wrong maximum would pass every
+      // same-tree arithmetic test and still ship a UI an author can't reach
+      // the documented range through.
+      deriveButton.click();
+      await until('the derive modal', () => document.querySelector('#modalHost .modal-head'));
+      if (document.querySelector('#modalHost .modal-head').textContent !== 'Derive stats from level') {
+        throw new Error('unexpected modal opened: ' + document.querySelector('#modalHost .modal-head').textContent);
+      }
+      const { MONSTER_GROWTH_FIELDS: fieldsForCheck } = await import('../shared/project.js');
+      const goldRow = modalRow('Gold');
+      if (!goldRow) throw new Error('the derive modal has no Gold row');
+      const goldDescriptor = fieldsForCheck.find((f) => f.key === 'gold');
+      if (
+        Number(goldRow.base.max) !== goldDescriptor.ceiling ||
+        Number(goldRow.perLevel.max) !== goldDescriptor.perLevelMax
+      ) {
+        throw new Error(
+          'Gold’s rendered max attributes do not match MONSTER_GROWTH_FIELDS: base max ' +
+            goldRow.base.max +
+            ', +/level max ' +
+            goldRow.perLevel.max
+        );
+      }
+      const xpRow = modalRow('Experience');
+      const xpDescriptor = fieldsForCheck.find((f) => f.key === 'xp');
+      if (Number(xpRow.base.max) !== xpDescriptor.ceiling || Number(xpRow.perLevel.max) !== xpDescriptor.perLevelMax) {
+        throw new Error('Experience’s rendered max attributes do not match MONSTER_GROWTH_FIELDS');
+      }
+
+      // Derive Attack: Base 10, + / level 2, at Level 12 -> 10 + 2*11 = 32.
+      const attackRow = modalRow('Attack');
+      const originalAttackForDerive = monsterStore.project.sprites.actors[snakeIdForDerive].battle.atk;
+      attackRow.base.value = '10';
+      attackRow.base.dispatchEvent(new Event('change', { bubbles: true }));
+      attackRow.perLevel.value = '2';
+      attackRow.perLevel.dispatchEvent(new Event('change', { bubbles: true }));
+
+      const undoLengthBeforeApply = monsterStore.undoStack.length;
+      const applyButton = [...document.querySelectorAll('#modalHost button')].find(
+        (b) => b.textContent.trim() === 'Apply'
+      );
+      if (!applyButton) throw new Error('the derive modal has no Apply button');
+      applyButton.click();
+      await until('the derive modal to close', () => document.querySelector('#modalHost').hidden);
+
+      if (monsterStore.project.sprites.actors[snakeIdForDerive].battle.atk !== 32) {
+        throw new Error(
+          'deriving Attack (Base 10, +2/level, Level 12) did not produce 32, saw ' +
+            monsterStore.project.sprites.actors[snakeIdForDerive].battle.atk
+        );
+      }
+      if (monsterStore.undoStack.length !== undoLengthBeforeApply + 1) {
+        throw new Error(
+          'Apply should add exactly one undo entry, saw ' + (monsterStore.undoStack.length - undoLengthBeforeApply)
+        );
+      }
+
+      if (!monsterStore.undo()) throw new Error('undo returned false for the derive commit');
+      if (monsterStore.project.sprites.actors[snakeIdForDerive].battle.atk !== originalAttackForDerive) {
+        throw new Error('undo did not restore Snake’s original Attack after the derive');
+      }
+      await wait(150);
+
+      step(
+        'Monster Forge "Derive from level..." fills Attack from Base/+ per level at the current Level, in one undo entry',
+        'disabled while Level is unset; rendered Base/+ per level max attributes match MONSTER_GROWTH_FIELDS; Base 10 + 2/level at Level 12 -> 32, undone in one step'
+      );
+    }
+
+    // Test 1a-derive-guards (§3.8's own regression list, the cases the real
+    // window can drive without a second, unmockable dialog): a catalog
+    // selection change, the Forge being destroyed, and an unrelated commit,
+    // each while the derive modal sits open, must all refuse to commit
+    // and (the first and third) toast rather than silently write onto the
+    // wrong actor or over a stale project; Cancel must commit nothing at
+    // all. Round-2 review finding 2, fixed: every case now types an
+    // unmistakable Attack value into the modal first -- none equal to
+    // Snake's own current Attack, and no two cases share a value -- so a
+    // wrongly-run plan would actually show up in the comparison below,
+    // rather than merely happening to compute a null plan regardless of
+    // whether the guard fired at all. Each case snapshots the whole
+    // project (by content, via JSON.stringify -- the same idiom this file
+    // already uses elsewhere for "byte-identical to its own snapshot"),
+    // revision, dirty and both stack lengths beforehand, and requires every
+    // one of those exactly unchanged afterward (the intervening-commit case
+    // is the one exception: its own one real, unrelated commit is the only
+    // expected change). For the two toasting cases, a toast must be a
+    // genuinely NEW node -- not merely text that happens to already be
+    // on screen from an earlier case -- with the exact expected message,
+    // not a substring shared with a different case's own toast (the
+    // second false positive round-2 review found: both toasts shared the
+    // substring "changed while this dialog was open").
+    {
+      if (!selectByName('Snake')) throw new Error('Monster Forge catalog does not list Snake for the guard test');
+      await wait(150);
+
+      const findDeriveButton = () =>
+        [...document.querySelectorAll('#stage button.btn.btn-sm')].find(
+          (b) => b.textContent.trim() === 'Derive from level…'
+        );
+      const modalAttackRow = () => {
+        const fieldDiv = [...document.querySelectorAll('#modalHost .field')].find(
+          (f) => f.querySelector('.field-label')?.textContent === 'Attack'
+        );
+        if (!fieldDiv) return null;
+        const fields = [...fieldDiv.closest('.field-row').querySelectorAll('.field')];
+        return { base: fields[0].querySelector('input'), perLevel: fields[1].querySelector('input') };
+      };
+      const typeAttack = (base, perLevel) => {
+        const attackRow = modalAttackRow();
+        if (!attackRow) throw new Error('the derive modal has no Attack row');
+        attackRow.base.value = String(base);
+        attackRow.base.dispatchEvent(new Event('change', { bubbles: true }));
+        attackRow.perLevel.value = String(perLevel);
+        attackRow.perLevel.dispatchEvent(new Event('change', { bubbles: true }));
+      };
+      const clickModalApply = () => {
+        const applyButton = [...document.querySelectorAll('#modalHost button')].find(
+          (b) => b.textContent.trim() === 'Apply'
+        );
+        if (!applyButton) throw new Error('the derive modal has no Apply button');
+        applyButton.click();
+      };
+      const snapshotGuardState = () => ({
+        project: JSON.stringify(monsterStore.project),
+        revision: monsterStore.revision,
+        dirty: monsterStore.dirty,
+        undoLength: monsterStore.undoStack.length,
+        redoLength: monsterStore.redoStack.length
+      });
+      const assertGuardStateUnchanged = (before, site) => {
+        if (JSON.stringify(monsterStore.project) !== before.project) {
+          throw new Error('Apply must not have written anything (' + site + ') -- the project changed');
+        }
+        if (monsterStore.revision !== before.revision) throw new Error('Apply must not bump revision on refusal (' + site + ')');
+        if (monsterStore.dirty !== before.dirty) throw new Error('Apply must not change dirty on refusal (' + site + ')');
+        if (monsterStore.undoStack.length !== before.undoLength) {
+          throw new Error('Apply must not push an undo entry on refusal (' + site + ')');
+        }
+        if (monsterStore.redoStack.length !== before.redoLength) {
+          throw new Error('Apply must not touch the redo stack on refusal (' + site + ')');
+        }
+      };
+      const waitForNewExactToast = async (beforeNodes, exactText, site) => {
+        await until(site + ' toast', () =>
+          [...document.querySelectorAll('#toastHost .toast')].some(
+            (node) => node.textContent === exactText && !beforeNodes.has(node)
+          )
+        );
+      };
+
+      // Case: the catalog selection changes while the modal is open.
+      {
+        const before = snapshotGuardState();
+        const toastsBefore = new Set(document.querySelectorAll('#toastHost .toast'));
+        findDeriveButton().click();
+        await until('the derive modal (selection-guard case)', () => document.querySelector('#modalHost .modal-head'));
+        typeAttack(61, 2);
+        if (!selectByName('Slime')) {
+          throw new Error('Monster Forge catalog does not list Slime, needed for the selection-guard case');
+        }
+        await wait(150);
+        clickModalApply();
+        await until('the derive modal to close (selection-guard case)', () => document.querySelector('#modalHost').hidden);
+        await waitForNewExactToast(
+          toastsBefore,
+          'The selected monster changed while this dialog was open — try again.',
+          'the selection-guard'
+        );
+        assertGuardStateUnchanged(before, 'selection-guard');
+        if (!selectByName('Snake')) throw new Error('Monster Forge catalog does not list Snake after the selection-guard case');
+        await wait(150);
+      }
+
+      // Case: the Monster Forge itself is destroyed (navigated away from)
+      // while the modal is open. The modal lives in the shared #modalHost,
+      // outside any Forge's own container, so navigating away does not
+      // close it -- only the destroyed flag, read after the await, stops
+      // Apply from committing onto a Forge instance that no longer exists.
+      // No toast is expected here: the guard returns silently.
+      {
+        const before = snapshotGuardState();
+        findDeriveButton().click();
+        await until('the derive modal (destroyed-guard case)', () => document.querySelector('#modalHost .modal-head'));
+        typeAttack(73, 4);
+        const spriteRailForDestroyedCase = [...document.querySelectorAll('.rail-item')].find(
+          (b) => b.title === 'Sprite Forge'
+        );
+        if (!spriteRailForDestroyedCase) throw new Error('no Sprite Forge rail button found for the destroyed-guard case');
+        spriteRailForDestroyedCase.click();
+        await wait(200);
+        clickModalApply();
+        await until('the derive modal to close (destroyed-guard case)', () => document.querySelector('#modalHost').hidden);
+        assertGuardStateUnchanged(before, 'destroyed-guard');
+        const monsterRailForDestroyedCase = [...document.querySelectorAll('.rail-item')].find(
+          (b) => b.title === 'Monster Forge'
+        );
+        if (!monsterRailForDestroyedCase) throw new Error('no Monster Forge rail button found to switch back for the destroyed-guard case');
+        monsterRailForDestroyedCase.click();
+        await wait(200);
+        if (!selectByName('Snake')) throw new Error('Monster Forge catalog does not list Snake after the destroyed-guard case');
+        await wait(150);
+      }
+
+      // Case: an unrelated commit while the modal is open. The one
+      // exception to "everything unchanged": the intervening commit is a
+      // real commit (a no-op rename), so revision and the undo stack both
+      // advance by exactly one -- what matters is that Apply adds nothing
+      // *on top of* that one, unrelated, already-real change.
+      {
+        const before = snapshotGuardState();
+        const toastsBefore = new Set(document.querySelectorAll('#toastHost .toast'));
+        findDeriveButton().click();
+        await until('the derive modal (revision-guard case)', () => document.querySelector('#modalHost .modal-head'));
+        typeAttack(85, 1);
+        monsterStore.commit('Smoke: intervening no-op change while the derive modal is open', (project) => {
+          project.sprites.actors[0].name = project.sprites.actors[0].name;
+        });
+        const afterInterveningCommit = snapshotGuardState();
+        if (
+          afterInterveningCommit.revision !== before.revision + 1 ||
+          afterInterveningCommit.undoLength !== before.undoLength + 1
+        ) {
+          throw new Error('the intervening commit itself did not advance revision/undo the expected one step');
+        }
+        clickModalApply();
+        await until('the derive modal to close (revision-guard case)', () => document.querySelector('#modalHost').hidden);
+        await waitForNewExactToast(
+          toastsBefore,
+          'The project changed while this dialog was open — try again.',
+          'the revision-guard'
+        );
+        assertGuardStateUnchanged(afterInterveningCommit, 'revision-guard, on top of the intervening commit');
+        if (!monsterStore.undo()) throw new Error('undo (cleanup for the intervening no-op commit) returned false');
+      }
+
+      // Cancel: nothing written at all, no toast.
+      {
+        const before = snapshotGuardState();
+        findDeriveButton().click();
+        await until('the derive modal (cancel case)', () => document.querySelector('#modalHost .modal-head'));
+        typeAttack(97, 5);
+        const cancelButton = [...document.querySelectorAll('#modalHost button')].find(
+          (b) => b.textContent.trim() === 'Cancel'
+        );
+        if (!cancelButton) throw new Error('the derive modal has no Cancel button');
+        cancelButton.click();
+        await until('the derive modal to close (cancel case)', () => document.querySelector('#modalHost').hidden);
+        assertGuardStateUnchanged(before, 'cancel');
+      }
+
+      step(
+        'Monster Forge "Derive from level..." refuses to commit after a selection change, being navigated away from, or an intervening commit while its modal is open, and Cancel commits nothing',
+        'each case types an unmistakable Attack value first; a full project/revision/dirty/undo/redo snapshot proves nothing moved beyond what the case itself legitimately caused, and the two toasting cases require a newly created toast node with the exact expected message'
+      );
+    }
+
     // Test 1b (§2, catalog-exit fallback #1): a selected actor that becomes
     // harmless *and* has no authored reference anywhere leaves the catalog
     // outright -- unlike Test 3 below, whose actor stays referenced and
@@ -8353,6 +8656,498 @@ const scenario = (dir, sampleDir, sampleRpgDir) => `
         'a wrapping block (battleTile 250, 4x2) paints its real, disjoint cells including the wrapped row 0/col 10; ' +
           'an explicit battleTile: 255 reads as "no block chosen" with no "Use the animation" button'
       );
+    }
+
+    // Test 1a-derive-destructive (§3.8's own regression list, round-2
+    // review finding 3): the three cases requiring a real destructive or
+    // superseding state change, each in its own block so state can be
+    // restored (or, for the last one, simply needs none) without disturbing
+    // whatever the rest of this section depends on. Placed at the very end
+    // of the Monster Forge section deliberately: the "project replaced"
+    // case below goes through the real store.open(), which -- exactly like
+    // a genuine project replace -- resets the undo/redo stacks and dirty
+    // flag, and the navigation-contract section immediately following this
+    // one already documents that it depends on none of this section's own
+    // leftover state.
+    {
+      const findDeriveButtonForDestructive = () =>
+        [...document.querySelectorAll('#stage button.btn.btn-sm')].find(
+          (b) => b.textContent.trim() === 'Derive from level…'
+        );
+      const modalAttackRowForDestructive = () => {
+        const fieldDiv = [...document.querySelectorAll('#modalHost .field')].find(
+          (f) => f.querySelector('.field-label')?.textContent === 'Attack'
+        );
+        if (!fieldDiv) return null;
+        const fields = [...fieldDiv.closest('.field-row').querySelectorAll('.field')];
+        return { base: fields[0].querySelector('input'), perLevel: fields[1].querySelector('input') };
+      };
+      const typeAttackForDestructive = (base, perLevel) => {
+        const attackRow = modalAttackRowForDestructive();
+        if (!attackRow) throw new Error('the derive modal has no Attack row');
+        attackRow.base.value = String(base);
+        attackRow.base.dispatchEvent(new Event('change', { bubbles: true }));
+        attackRow.perLevel.value = String(perLevel);
+        attackRow.perLevel.dispatchEvent(new Event('change', { bubbles: true }));
+      };
+      const clickModalApplyForDestructive = () => {
+        const applyButton = [...document.querySelectorAll('#modalHost button')].find(
+          (b) => b.textContent.trim() === 'Apply'
+        );
+        if (!applyButton) throw new Error('the derive modal has no Apply button');
+        applyButton.click();
+      };
+      const ensureLevelSet = async (value) => {
+        const levelField = findFieldInput('Level');
+        if (!levelField) throw new Error('Monster Forge has no Level field');
+        if (levelField.value === String(value)) return;
+        levelField.value = String(value);
+        levelField.dispatchEvent(new Event('change', { bubbles: true }));
+        await wait(150);
+      };
+
+      // Case: the captured actor is deleted (a real Sprite-Forge-shaped
+      // delete -- splice, id restamp, entity filter/shift,
+      // renumberActorDeletion, the exact sequence sprite.js's own
+      // delete-actor handler runs at sprite.js:916-933) while the modal
+      // sits open, and the deleted actor is the LAST one in the roster --
+      // so nothing slides into its old slot, and the captured index is
+      // genuinely vacant afterward (round-3 review N1: by this point in
+      // the section Snake sits at index 1 and Fresh, added by Test 2 above
+      // with no Level of its own, sits at index 2 -- deleting Snake used to
+      // slide Fresh into the captured slot, so a premature
+      // planMonsterGrowth read a real, if underspecified, actor and
+      // returned null rather than throwing on a missing one; an isolated
+      // actor added at the end of the roster closes that gap).
+      {
+        const rosterSnapshotBeforeVacantDeleteSetup = JSON.stringify(monsterStore.project.sprites.actors);
+        let isolatedIdForVacantDelete;
+        monsterStore.commit('smoke: add an isolated actor for the vacant-slot deletion regression', (project) => {
+          const id = project.sprites.actors.length;
+          const anims = {};
+          for (const { id: slot } of ANIM_SLOTS) anims[slot] = null;
+          if (project.sprites.animations.length) anims.idle = 0;
+          project.sprites.actors.push({ id, name: 'Vacant-Delete-Smoke', behavior: 'patroller', speed: 1, hp: 1, damage: 3, anims });
+          isolatedIdForVacantDelete = id;
+        });
+        await wait(150);
+
+        if (!selectByName('Vacant-Delete-Smoke')) {
+          throw new Error('Monster Forge catalog does not list the isolated actor for the vacant-slot deletion regression');
+        }
+        await wait(150);
+        await ensureLevelSet(9);
+        const capturedIndexForVacantDelete = monsterStore.project.sprites.actors.findIndex((a) => a.name === 'Vacant-Delete-Smoke');
+        if (capturedIndexForVacantDelete !== monsterStore.project.sprites.actors.length - 1) {
+          throw new Error(
+            'the isolated actor for the vacant-slot deletion regression must be last in the roster, saw index ' +
+              capturedIndexForVacantDelete +
+              ' of ' +
+              monsterStore.project.sprites.actors.length
+          );
+        }
+
+        findDeriveButtonForDestructive().click();
+        await until('the derive modal (vacant-slot deletion case)', () => document.querySelector('#modalHost .modal-head'));
+        typeAttackForDestructive(151, 7);
+
+        const { renumberActorDeletion: renumberActorDeletionForVacantDelete } = await import('../shared/project.js');
+        monsterStore.commit('Delete actor', (project) => {
+          project.sprites.actors.splice(capturedIndexForVacantDelete, 1);
+          project.sprites.actors.forEach((entry, position) => (entry.id = position));
+          for (const map of project.maps) {
+            for (const screen of map.screens) {
+              screen.entities = screen.entities
+                .filter((entity) => entity.actorId !== capturedIndexForVacantDelete)
+                .map((entity) => ({
+                  ...entity,
+                  actorId: entity.actorId > capturedIndexForVacantDelete ? entity.actorId - 1 : entity.actorId
+                }));
+            }
+          }
+          renumberActorDeletionForVacantDelete(project, capturedIndexForVacantDelete);
+        });
+        if (monsterStore.project.sprites.actors[capturedIndexForVacantDelete] !== undefined) {
+          throw new Error(
+            'the captured index must be genuinely vacant after deleting the last (isolated) actor, saw ' +
+              JSON.stringify(monsterStore.project.sprites.actors[capturedIndexForVacantDelete])
+          );
+        }
+        const postVacantDeleteSnapshot = JSON.stringify(monsterStore.project);
+        const revisionAfterVacantDelete = monsterStore.revision;
+        const undoLengthAfterVacantDelete = monsterStore.undoStack.length;
+
+        clickModalApplyForDestructive();
+        await until('the derive modal to close (vacant-slot deletion case)', () => document.querySelector('#modalHost').hidden);
+
+        if (JSON.stringify(monsterStore.project) !== postVacantDeleteSnapshot) {
+          throw new Error('Apply after the captured actor was deleted (a genuinely vacant slot) must not write anything on top of the delete');
+        }
+        if (monsterStore.revision !== revisionAfterVacantDelete) {
+          throw new Error('Apply after a vacant-slot delete must not bump revision');
+        }
+        if (monsterStore.undoStack.length !== undoLengthAfterVacantDelete) {
+          throw new Error('Apply after a vacant-slot delete must not push an undo entry');
+        }
+
+        // Three commits happened since this block's own snapshot (add the
+        // isolated actor, set its Level, delete it) -- undo restores each
+        // in reverse order, and the roster is compared against that
+        // snapshot afterward (not merely its length) so a leftover
+        // Vacant-Delete-Smoke, or any other drift, cannot pass unnoticed.
+        if (!monsterStore.undo()) throw new Error('undo (restoring the isolated actor after the delete) returned false');
+        if (!monsterStore.undo()) throw new Error('undo (removing the Level edit on the isolated actor) returned false');
+        if (!monsterStore.undo()) throw new Error('undo (removing the isolated actor added for the vacant-slot deletion regression) returned false');
+        if (JSON.stringify(monsterStore.project.sprites.actors) !== rosterSnapshotBeforeVacantDeleteSetup) {
+          throw new Error('the vacant-slot deletion regression must restore the roster to exactly what it found, not merely the same length');
+        }
+
+        step(
+          'Monster Forge "Derive from level..." settles cleanly when its captured actor is deleted and the slot is left genuinely vacant (nothing slides into it) while the modal is open',
+          'an isolated actor added at the end of the roster is captured, then deleted the same Sprite-Forge-shaped way (splice, id restamp, entity filter/shift, renumberActorDeletion) -- the captured index resolves to undefined afterward, not a different actor; Apply settles with no console error, no write on top of the delete, and no revision/history change'
+        );
+      }
+
+      // Case: the open project itself is replaced (store.open with a clone,
+      // the same call a real project replace makes -- it bumps revision and
+      // swaps store.project, exactly like main/project-io.js's own open
+      // path) while the modal sits open, and the replacement's own actor
+      // array is truncated so the captured index no longer exists at all
+      // (round-3 review N1: the prior clone kept an identical roster, so
+      // the captured index still resolved to the same live Snake there
+      // too, and a premature planMonsterGrowth would succeed rather than
+      // encounter a missing actor).
+      {
+        if (!selectByName('Snake')) throw new Error('Monster Forge catalog does not list Snake for the project-replaced regression');
+        await wait(150);
+        await ensureLevelSet(9);
+        const snakeIndexForReplace = monsterStore.project.sprites.actors.findIndex((a) => a.name === 'Snake');
+
+        findDeriveButtonForDestructive().click();
+        await until('the derive modal (project-replaced case)', () => document.querySelector('#modalHost .modal-head'));
+        typeAttackForDestructive(131, 8);
+
+        const restoreSnapshot = structuredClone(monsterStore.project);
+        const truncatedCloneForReplace = structuredClone(monsterStore.project);
+        // Truncate to end BEFORE the captured index -- not a splice that
+        // would shift a later actor into it, the same distinction the
+        // deletion case above draws.
+        truncatedCloneForReplace.sprites.actors = truncatedCloneForReplace.sprites.actors.slice(0, snakeIndexForReplace);
+        monsterStore.open(monsterStore.dir, truncatedCloneForReplace);
+        if (monsterStore.project.sprites.actors[snakeIndexForReplace] !== undefined) {
+          throw new Error(
+            'the captured index must be genuinely out of range after the truncated replace, saw ' +
+              JSON.stringify(monsterStore.project.sprites.actors[snakeIndexForReplace])
+          );
+        }
+        const postReplaceSnapshot = JSON.stringify(monsterStore.project);
+        const revisionAfterReplace = monsterStore.revision;
+        const undoLengthAfterReplace = monsterStore.undoStack.length;
+
+        clickModalApplyForDestructive();
+        await until('the derive modal to close (project-replaced case)', () => document.querySelector('#modalHost').hidden);
+
+        if (JSON.stringify(monsterStore.project) !== postReplaceSnapshot) {
+          throw new Error('Apply after the project was replaced (captured index truncated out of range) while the modal was open must not write anything');
+        }
+        if (monsterStore.revision !== revisionAfterReplace) {
+          throw new Error('Apply after a truncated project replace must not bump revision');
+        }
+        if (monsterStore.undoStack.length !== undoLengthAfterReplace) {
+          throw new Error('Apply after a truncated project replace must not push an undo entry');
+        }
+
+        // Restore: store.open() always resets the undo/redo stacks and
+        // dirty flag -- a real project replace's own contract, not a
+        // smoke-only artifact -- so this cannot bring back whatever
+        // undo/redo history existed before this test. That is exactly why
+        // this whole block runs at the very end of the Monster Forge
+        // section (see the section-opening comment above).
+        monsterStore.open(monsterStore.dir, restoreSnapshot);
+        await wait(200);
+
+        step(
+          'Monster Forge "Derive from level..." settles cleanly when the open project is replaced (store.open) with the captured index truncated genuinely out of range while the modal is open',
+          'a real store.open() swap to a project whose actor array ends before the captured index -- not merely a different actor sliding into it -- bumps revision while the modal sits open; Apply settles with no console error, no write on top of the replace, and no revision/history change'
+        );
+      }
+
+      // Case: a second modal supersedes the derive dialog (the
+      // Unsaved-changes dialog, per ensureProjectCanBeReplaced in
+      // renderer/app.js, is one real instance of this -- not the only one:
+      // any showModal call while another is pending replaces #modalHost's
+      // DOM the identical way). Cancelling the second modal must leave the
+      // first one's own DOM gone, and a fresh Derive invocation afterward
+      // must still commit cleanly, in one undo entry.
+      {
+        if (!selectByName('Snake')) throw new Error('Monster Forge catalog does not list Snake for the modal-supersession regression');
+        await wait(150);
+        await ensureLevelSet(9);
+        const snakeIndexForSupersede = monsterStore.project.sprites.actors.findIndex((a) => a.name === 'Snake');
+
+        findDeriveButtonForDestructive().click();
+        await until('the derive modal (supersession case, first open)', () => document.querySelector('#modalHost .modal-head'));
+
+        const { showModal: showModalForSupersede } = await import('../renderer/ui.js');
+        const supersedingModalPromise = showModalForSupersede({
+          title: 'Smoke: a second modal supersedes the derive dialog',
+          body: 'placeholder',
+          actions: [{ label: 'Cancel', value: null }]
+        });
+        await until(
+          'the superseding modal',
+          () => document.querySelector('#modalHost .modal-head')?.textContent === 'Smoke: a second modal supersedes the derive dialog'
+        );
+        const supersedingCancel = [...document.querySelectorAll('#modalHost button')].find(
+          (b) => b.textContent.trim() === 'Cancel'
+        );
+        if (!supersedingCancel) throw new Error('the superseding modal has no Cancel button');
+        supersedingCancel.click();
+        await supersedingModalPromise;
+        await until('the modal host to close after the superseding modal is cancelled', () => document.querySelector('#modalHost').hidden);
+        if (document.querySelector('#modalHost .modal-head')) {
+          throw new Error('the derive dialog’s own DOM should be gone once superseded and the replacement is cancelled');
+        }
+
+        const undoLengthBeforeReopen = monsterStore.undoStack.length;
+        const levelForSupersede = monsterStore.project.sprites.actors[snakeIndexForSupersede].battle.level;
+        findDeriveButtonForDestructive().click();
+        await until('the derive modal (supersession case, reopened)', () => document.querySelector('#modalHost .modal-head'));
+        typeAttackForDestructive(77, 3);
+        clickModalApplyForDestructive();
+        await until('the derive modal to close (supersession case, reopened)', () => document.querySelector('#modalHost').hidden);
+
+        if (monsterStore.undoStack.length !== undoLengthBeforeReopen + 1) {
+          throw new Error('the reopened derive dialog must commit in exactly one undo entry after the supersession');
+        }
+        const expectedAttackForSupersede = Math.max(0, Math.min(255, 77 + 3 * (levelForSupersede - 1)));
+        if (monsterStore.project.sprites.actors[snakeIndexForSupersede].battle.atk !== expectedAttackForSupersede) {
+          throw new Error(
+            'the reopened derive dialog did not land the expected Attack value, expected ' +
+              expectedAttackForSupersede +
+              ' saw ' +
+              monsterStore.project.sprites.actors[snakeIndexForSupersede].battle.atk
+          );
+        }
+        if (!monsterStore.undo()) throw new Error('undo (cleanup for the reopened derive commit) returned false');
+
+        step(
+          'Monster Forge "Derive from level..." dialog, once superseded by a second modal and the replacement cancelled, leaves its own DOM gone, and a freshly reopened Derive still commits cleanly in one undo entry',
+          'the Unsaved-changes dialog is one real instance of this shared-modal supersession, not the only one -- any showModal call while the derive dialog is pending replaces it the same way'
+        );
+      }
+    }
+
+    // Test 1a-derive-defaults (round-2 review finding 4): a fresh actor
+    // created through the real Sprite Forge Add button carries no battle
+    // key at all (sprite.js's own Add handler, verified in shared/project
+    // .js:4969-onward's own normalizeActor -- this is the on-disk shape
+    // before any save/reload has run). Opening Derive on it must render
+    // every Base input at the same renderer default battleSection itself
+    // shows for a missing field, not zero or an empty input. Separately,
+    // an untouched Apply on an already fully-populated actor (Snake, its
+    // battle stats populated by this test's own setup below -- Test 1c
+    // above already replaced sample-rpg's own normalized Snake with a bare
+    // placeholder, so this can no longer claim to test "as loaded") must be
+    // the strong no-op design promises: store.dirty, store.revision and
+    // both undo/redo stacks' own contents exactly unchanged from whatever
+    // they held right before Apply, proven through the real UI, not only
+    // the pure planMonsterGrowth unit tests.
+    {
+      const findFieldInputForDefaults = (labelText) => {
+        const fieldDiv = [...document.querySelectorAll('#stage .field')].find(
+          (f) => f.querySelector('.field-label')?.textContent === labelText
+        );
+        return fieldDiv ? fieldDiv.querySelector('input') : null;
+      };
+
+      const spriteRailForDefaults = [...document.querySelectorAll('.rail-item')].find((b) => b.title === 'Sprite Forge');
+      if (!spriteRailForDefaults) throw new Error('no Sprite Forge rail button found for the Add-actor defaults regression');
+      spriteRailForDefaults.click();
+      await wait(250);
+      const actorsTabForDefaults = [...document.querySelectorAll('#stage .tab')].find((t) => t.textContent === 'Actors');
+      if (!actorsTabForDefaults) throw new Error('Sprite Forge has no Actors tab for the Add-actor defaults regression');
+      actorsTabForDefaults.click();
+      await wait(250);
+
+      const spriteStoreForDefaults = window.__app.store;
+      const beforeAddCount = spriteStoreForDefaults.project.sprites.actors.length;
+      const addButtonForDefaults = [...document.querySelectorAll('#stage button.btn.btn-sm')].find(
+        (b) => b.textContent.trim() === '+'
+      );
+      if (!addButtonForDefaults) throw new Error('Actors tab has no "+" button for the Add-actor defaults regression');
+      addButtonForDefaults.click();
+      await wait(250);
+      if (spriteStoreForDefaults.project.sprites.actors.length !== beforeAddCount + 1) {
+        throw new Error('the "+" button did not append exactly one new actor');
+      }
+      const freshActorId = spriteStoreForDefaults.project.sprites.actors.length - 1;
+      if (spriteStoreForDefaults.project.sprites.actors[freshActorId].battle !== undefined) {
+        throw new Error('a freshly added actor should carry no battle key at all -- the exact same-session state this regression needs');
+      }
+
+      const damageFieldForDefaults = findFieldInputForDefaults('Contact damage');
+      if (!damageFieldForDefaults) throw new Error('Sprite Forge has no Contact damage field for the Add-actor defaults regression');
+      damageFieldForDefaults.value = '1';
+      damageFieldForDefaults.dispatchEvent(new Event('change', { bubbles: true }));
+      await wait(150);
+
+      const monsterRailForDefaults = [...document.querySelectorAll('.rail-item')].find((b) => b.title === 'Monster Forge');
+      if (!monsterRailForDefaults) throw new Error('no Monster Forge rail button found for the Add-actor defaults regression');
+      monsterRailForDefaults.click();
+      await wait(250);
+      const freshActorName = spriteStoreForDefaults.project.sprites.actors[freshActorId].name;
+      if (!selectByName(freshActorName)) {
+        throw new Error('Monster Forge catalog does not list the freshly added, now-hostile actor');
+      }
+      await wait(150);
+
+      const levelFieldForDefaults = findFieldInput('Level');
+      if (!levelFieldForDefaults) throw new Error('Monster Forge has no Level field for the fresh actor');
+      levelFieldForDefaults.value = '5';
+      levelFieldForDefaults.dispatchEvent(new Event('change', { bubbles: true }));
+      await wait(150);
+
+      const findDeriveButtonForDefaults = () =>
+        [...document.querySelectorAll('#stage button.btn.btn-sm')].find(
+          (b) => b.textContent.trim() === 'Derive from level…'
+        );
+      findDeriveButtonForDefaults().click();
+      await until('the derive modal (defaults regression)', () => document.querySelector('#modalHost .modal-head'));
+
+      const expectedDefaults = { atk: 4, def: 2, mp: 0, gold: 2, mag: 0, mdef: 0, xp: 4 };
+      const labelForKey = {
+        atk: 'Attack',
+        def: 'Defence',
+        mp: 'Magic points',
+        gold: 'Gold',
+        mag: 'Magic',
+        mdef: 'Magic defence',
+        xp: 'Experience'
+      };
+      for (const [key, expected] of Object.entries(expectedDefaults)) {
+        const label = labelForKey[key];
+        const fieldDiv = [...document.querySelectorAll('#modalHost .field')].find(
+          (f) => f.querySelector('.field-label')?.textContent === label
+        );
+        if (!fieldDiv) throw new Error('the derive modal has no ' + label + ' row (defaults regression)');
+        const baseInput = fieldDiv.closest('.field-row').querySelectorAll('.field')[0].querySelector('input');
+        if (Number(baseInput.value) !== expected) {
+          throw new Error(
+            label + '’s rendered Base should default to ' + expected + ' for a missing field, saw ' + baseInput.value
+          );
+        }
+      }
+      const cancelButtonForDefaults = [...document.querySelectorAll('#modalHost button')].find(
+        (b) => b.textContent.trim() === 'Cancel'
+      );
+      if (!cancelButtonForDefaults) throw new Error('the derive modal has no Cancel button (defaults regression)');
+      cancelButtonForDefaults.click();
+      await until('the derive modal to close (defaults regression)', () => document.querySelector('#modalHost').hidden);
+
+      step(
+        'Monster Forge "Derive from level..." pre-fills Base from the renderer’s own defaults for a fresh, same-session actor with no battle key at all',
+        'a real Sprite Forge Add followed by Contact damage > 0 (no save/reload) renders Base 4/2/0/2/0/0/4 for Attack/Defence/Magic points/Gold/Magic/Magic defence/Experience, matching battleSection’s own per-field defaults exactly'
+      );
+
+      // Clean up the fresh actor so it does not linger for whatever follows
+      // this section: three commits happened since beforeAddCount (Add
+      // actor, the Contact damage edit, the Level field edit) -- undo
+      // restores each in reverse order.
+      if (!monsterStore.undo()) throw new Error('undo (removing the Level edit) returned false');
+      if (!monsterStore.undo()) throw new Error('undo (removing the Contact damage edit) returned false');
+      if (!monsterStore.undo()) throw new Error('undo (removing the freshly added actor) returned false');
+      if (monsterStore.project.sprites.actors.length !== beforeAddCount) {
+        throw new Error('undo did not remove the freshly added actor, actor count is ' + monsterStore.project.sprites.actors.length);
+      }
+
+      // The strong no-op, through the real UI. Snake cannot be assumed to
+      // still carry sample-rpg's own fixture battle stats here -- Test 1c
+      // above (this section's own catalog-exit fallback #2) wipes every
+      // actor and restores only a bare placeholder Slime/Snake with no
+      // battle record at all, so this test populates every
+      // MONSTER_GROWTH_FIELDS key itself first, the same one-time setup the
+      // Level field already gets below, rather than depending on
+      // normalization this section has since destroyed.
+      if (!selectByName('Snake')) throw new Error('Monster Forge catalog does not list Snake for the strong-no-op regression');
+      await wait(150);
+      const snakeIndexForNoOp = monsterStore.project.sprites.actors.findIndex((a) => a.name === 'Snake');
+      monsterStore.commit('smoke: fully populate Snake’s battle stats for the no-op regression', (project) => {
+        const snake = project.sprites.actors[snakeIndexForNoOp];
+        snake.battle = { ...snake.battle, atk: 11, def: 6, mp: 3, gold: 9, mag: 2, mdef: 1, xp: 40 };
+      });
+      await wait(150);
+      const levelFieldForNoOp = findFieldInput('Level');
+      if (!levelFieldForNoOp) throw new Error('Monster Forge has no Level field for the strong-no-op regression');
+      if (levelFieldForNoOp.value !== '9') {
+        levelFieldForNoOp.value = '9';
+        levelFieldForNoOp.dispatchEvent(new Event('change', { bubbles: true }));
+        await wait(150);
+      }
+
+      // N2 (round-3 review): a nonempty redo stack, and both stacks'
+      // contents (not merely their lengths) captured in the baseline --
+      // a faulty null-plan branch that clears redo, or sets dirty, without
+      // ever committing would otherwise still pass a lengths-only or
+      // empty-redo baseline. dirty is deliberately compared against its
+      // OWN setup value, not asserted false: commit/undo/redo all set it
+      // true (renderer/store.js), and nothing here saves, so a genuinely
+      // clean start is not obtainable without a real save -- see the step
+      // text below.
+      monsterStore.commit('smoke: throwaway commit to seed a nonempty redo stack for the no-op regression', (project) => {
+        project.sprites.actors[0].name = project.sprites.actors[0].name;
+      });
+      if (!monsterStore.undo()) throw new Error('undo (seeding the redo stack for the no-op regression) returned false');
+
+      const beforeNoOp = {
+        project: JSON.stringify(monsterStore.project),
+        revision: monsterStore.revision,
+        dirty: monsterStore.dirty,
+        undoStackContent: JSON.stringify(monsterStore.undoStack),
+        redoStackContent: JSON.stringify(monsterStore.redoStack)
+      };
+      if (beforeNoOp.redoStackContent === '[]') {
+        throw new Error('the no-op regression’s own setup must leave a nonempty redo stack, saw an empty one');
+      }
+      const findDeriveButtonForNoOp = () =>
+        [...document.querySelectorAll('#stage button.btn.btn-sm')].find(
+          (b) => b.textContent.trim() === 'Derive from level…'
+        );
+      findDeriveButtonForNoOp().click();
+      await until('the derive modal (strong no-op regression)', () => document.querySelector('#modalHost .modal-head'));
+      // Every Base/+level input is left exactly at its own pre-filled
+      // default -- no typing at all -- so the resulting plan must be null.
+      const applyButtonForNoOp = [...document.querySelectorAll('#modalHost button')].find(
+        (b) => b.textContent.trim() === 'Apply'
+      );
+      if (!applyButtonForNoOp) throw new Error('the derive modal has no Apply button (strong no-op regression)');
+      applyButtonForNoOp.click();
+      await until('the derive modal to close (strong no-op regression)', () => document.querySelector('#modalHost').hidden);
+
+      if (JSON.stringify(monsterStore.project) !== beforeNoOp.project) {
+        throw new Error('an untouched Apply on a fully populated actor must not change the project at all');
+      }
+      if (monsterStore.revision !== beforeNoOp.revision) throw new Error('an untouched Apply must not bump revision');
+      if (monsterStore.dirty !== beforeNoOp.dirty) throw new Error('an untouched Apply must not change dirty from its setup value');
+      if (JSON.stringify(monsterStore.undoStack) !== beforeNoOp.undoStackContent) {
+        throw new Error('an untouched Apply must not change the undo stack’s own contents, not merely its length');
+      }
+      if (JSON.stringify(monsterStore.redoStack) !== beforeNoOp.redoStackContent) {
+        throw new Error('an untouched Apply must not change the redo stack’s own contents, not merely its length');
+      }
+
+      step(
+        'Monster Forge "Derive from level..." on an already fully-populated, unchanged actor is the strong no-op through the real UI',
+        'an untouched Apply on Snake, its battle stats populated by this test’s own setup, leaves store.revision, both undo/redo stacks’ own contents (seeded nonempty beforehand), and store.dirty all exactly as they were right before Apply -- dirty is compared against that setup value rather than asserted false, since nothing here saves'
+      );
+
+      // No further cleanup: the throwaway commit's own undo leaves one
+      // content-identical entry sitting on the redo stack, and undo/redo
+      // has no way to erase an entry rather than move it between the two
+      // stacks. Harmless -- the section immediately following this one
+      // (the navigation contract) reopens its own fresh sample-rpg through
+      // window.forge.project.open()/store.open(), which resets both stacks
+      // unconditionally regardless of what this section leaves behind.
     }
   }
 

@@ -52,8 +52,16 @@ import {
   projectNeedsNameSeed,
   projectUsesNameToken,
   projectWithoutNameToken,
-  projectWithoutMonsterSpellList
+  projectWithoutMonsterSpellList,
+  statAt
 } from '../../shared/project.js';
+// statAt itself now lives in shared/project.js (docs/design-monster-level-scaling.md
+// §3.4) -- planMonsterGrowth needs it there, and this file cannot be imported
+// upward from shared/. Re-exported verbatim, the identical shape CLAUDE.md's
+// "music format" passage records for songByte/NO_SONG moving to
+// shared/audio.js, so existing external importers (test/unit/rpg.test.js,
+// test/unit/save.test.js) keep working unchanged.
+export { statAt } from '../../shared/project.js';
 import { NESASM_BANK_BYTES } from '../../shared/cartridge.js';
 import { textToTiles } from '../../shared/font.js';
 
@@ -105,11 +113,6 @@ export function xpCurve({ xpBase, xpGrow, maxLevel }) {
     totals.push(Math.min(0xffff, running));
   }
   return totals;
-}
-
-/** A party member's stats at a given level: base plus growth, capped at a byte. */
-export function statAt(base, perLevel, level) {
-  return Math.max(0, Math.min(255, base + perLevel * (level - 1)));
 }
 
 /** A name as glyph tiles, padded to NAME_LIMIT so the engine needs no length. */

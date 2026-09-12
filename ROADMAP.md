@@ -1627,10 +1627,20 @@ monsters the way item 5's shipped phases were for items.
    code.~~ — **done** (`9e66fe2`): `battle.level`, nullable, clamped to the fixed
    `RPG_LIMITS.maxLevel` — not the project's own, separately adjustable `rpg.maxLevel`, because
    lowering the Build panel's own level cap as a capacity lever must not silently reclamp an
-   already-authored bestiary — display-only, with no compiled-byte reader anywhere under
-   `main/build/` or `engine/`, proved ROM-neutral by `test/unit/monsterlevel.test.js`'s same-tree
-   byte-identical ROM comparison. Scaling/curve stays deferred per `docs/design-monster.md` §3/§6
-   phase 3, explicitly not committed to.
+   already-authored bestiary — initially display-only; now also the one-time derive action's own
+   input (below); still no compiled-byte reader anywhere under `main/build/` or `engine/`, proved
+   ROM-neutral by `test/unit/monsterlevel.test.js`'s same-tree byte-identical comparison of
+   changing Level without re-deriving. Phase 3 — the "Derive from level…" action — is also **done**
+   (this change, `docs/design-monster-level-scaling.md`): a Monster Forge modal fills
+   Attack/Defence/Magic/Magic defence/Magic points/Experience/Gold from a Base plus growth-per-level
+   pair, collapsed into the existing flat `battle.*` fields at Apply time — no new schema, no
+   compiled reader of Level or the growth inputs themselves (the flat output fields already have
+   their own compiled readers, unaffected), and no growth-specific compiled overhead: derived stats
+   carry exactly the capacity effects hand-typed values already have, a first positive Magic or
+   Magic defence flipping the existing gate included (`docs/design-monster-level-scaling.md` §3.9).
+   `hp` stays excluded per the Forge boundary above, and a seed-value picker (pre-filling Base from
+   an existing actor) was considered and deferred. A live scaling curve — continuous, not this
+   one-time collapse — remains undesigned; nothing here commits to one.
 3. **Battle-side animations** — battle art is a static block today, with no motion and no
    attack/cast animation on a monster at all. This shares the same open "what is an animation on the
    battle screen" question item 13 records for spells (metasprite flipbook vs. `PALETTE_FX` reuse vs.

@@ -1,5 +1,6 @@
-// A source scanner for the guard tests in test/unit/starters.test.js, built
-// on acorn's own tokenizer -- the project's first non-Electron dependency,
+// A source scanner for the guard tests in test/unit/starters.test.js and
+// test/unit/monstergrowth.test.js, built on acorn's own tokenizer -- the
+// project's first non-Electron dependency,
 // a devDependency used only here (nothing under main/, renderer/, shared/
 // or tools/ may import it). It replaced three successive rounds of a
 // hand-rolled regex/division and comment/string heuristic: each round's
@@ -194,4 +195,117 @@ export function fixtureReferences(text) {
 export function literalOccurrences(text, needle) {
   const { strings } = scanSource(text);
   return strings.filter((value) => value.includes(needle));
+}
+
+// Two more primitives, in the identical acorn-token style as the specifier
+// scanning above -- added for test/unit/monstergrowth.test.js's own
+// structural proof that main/build/battletables.js's `statAt` binding is
+// really an import, not a local re-implementation
+// (docs/design-monster-level-scaling.md §3.4). `scanSource`'s own
+// `identifiers`/`imports` were not enough: `identifiers` records every name
+// token with the *next* token's label, not the *previous* one, so it cannot
+// tell "a name following `function`" (a declaration) from "a name preceding
+// `(`" (a call); and `imports` records every specifier string reachable at
+// all, with no link back to which imported *name* came from which one.
+//
+// Round-2 review finding 1: the first version of `namedImportSource` below
+// collected every name token inside an import clause's `{ }`, imported and
+// aliased-local alike, so `{ statAt as unusedSharedStatAt }` still matched a
+// search for `statAt` even though no local binding named `statAt` exists in
+// that case at all -- a real local reimplementation could hide behind that
+// exact shape and pass unnoticed. Fixed by actually parsing each clause
+// entry as `imported [as local]` and matching only on `local`.
+
+/**
+ * @param {string} text
+ * @returns {Set<string>} every name this module declares as a *local*
+ *   binding via `function`, `class`, `const`, `let`, or `var` -- not merely
+ *   `function`, per round-2 review finding 1 ("a `const statAt = (...) =>
+ *   ...` arrow reimplementation must be caught too, not only a `function
+ *   statAt` one"). `function foo(...)`, `export function foo(...)`,
+ *   `export default function foo(...)` and the `class` equivalents all
+ *   count, since none of them changes what immediately follows the
+ *   `function`/`class` keyword itself. `let` has no keyword token of its
+ *   own in acorn -- it tokenizes as an ordinary `name` token whose value
+ *   happens to be `"let"` -- so it is matched by value, not by
+ *   `type.label`; that is safe only because `sourceType: 'module'` is
+ *   always strict mode, where `let` can never legally be used as an
+ *   ordinary identifier instead of the keyword. Only the *first* declared
+ *   name after the keyword is captured -- `const a = 1, b = 2;` misses
+ *   `b` -- since nothing in this codebase's own style, nor anything this
+ *   function exists to catch, ever declares more than one binding per
+ *   statement; a destructuring pattern (`const { a } = x;`) is equally out
+ *   of scope, for the same reason.
+ */
+export function declaredLocalNames(text) {
+  const tokens = [...tokenizer(text, TOKENIZER_OPTIONS)];
+  const names = new Set();
+  for (let i = 0; i < tokens.length; i++) {
+    const token = tokens[i];
+    const isDeclarationKeyword =
+      token.type.label === 'function' ||
+      token.type.label === 'class' ||
+      token.type.label === 'const' ||
+      token.type.label === 'var' ||
+      (token.type.label === 'name' && token.value === 'let');
+    if (isDeclarationKeyword && tokens[i + 1]?.type.label === 'name') {
+      names.add(tokens[i + 1].value);
+    }
+  }
+  return names;
+}
+
+/**
+ * @param {string} text
+ * @param {string} name
+ * @returns {string|null} the module specifier of the first
+ *   `import { ... } from 'specifier'` statement whose named clause binds
+ *   the *local* name `name` -- `null` if there is none. Each clause entry
+ *   is parsed as `imported [as local]`, matching only on `local` (an entry
+ *   with no `as` has `local === imported`): searching for `statAt` against
+ *   `{ statAt as unusedSharedStatAt }` correctly returns `null` (no local
+ *   `statAt` exists), and searching for `unusedSharedStatAt` against the
+ *   same clause returns the specifier -- the fix for round-2 review finding
+ *   1. Only a named `{ }` clause is examined; this codebase never mixes it
+ *   with a default import on the same statement for anything this needs to
+ *   check, so that combined form is out of scope, not silently mishandled.
+ *   A bare `export { name } from 'specifier'` re-export is deliberately
+ *   **not** a match: it forwards a binding without creating one in this
+ *   module's own scope, the reverse of the question this function
+ *   answers -- the token immediately before the `{` must be `import`,
+ *   never `export`.
+ */
+export function namedImportSource(text, name) {
+  const tokens = [...tokenizer(text, TOKENIZER_OPTIONS)];
+  for (let i = 0; i < tokens.length; i++) {
+    if (tokens[i].type.label !== 'import' || tokens[i + 1]?.type.label !== '{') continue;
+    let j = i + 2;
+    let matchesLocalName = false;
+    while (j < tokens.length && tokens[j].type.label !== '}') {
+      if (tokens[j].type.label !== 'name') {
+        j++;
+        continue;
+      }
+      const imported = tokens[j].value;
+      let local = imported;
+      j++;
+      if (tokens[j]?.type.label === 'name' && tokens[j].value === 'as' && tokens[j + 1]?.type.label === 'name') {
+        local = tokens[j + 1].value;
+        j += 2;
+      }
+      if (local === name) matchesLocalName = true;
+      // j now sits on a `,` (skipped by the loop's own scan) or the `}`.
+    }
+    const fromToken = tokens[j + 1];
+    const specifierToken = tokens[j + 2];
+    if (
+      matchesLocalName &&
+      fromToken?.type.label === 'name' &&
+      fromToken.value === 'from' &&
+      specifierToken?.type.label === 'string'
+    ) {
+      return specifierToken.value;
+    }
+  }
+  return null;
 }

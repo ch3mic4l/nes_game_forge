@@ -5054,6 +5054,80 @@ function normalizeActor(raw, id, itemCtx = EMPTY_ITEM_CTX) {
   };
 }
 
+/**
+ * A stat's value at a given level: base plus per-level growth, capped. Moved
+ * here (from main/build/battletables.js, which re-exports it verbatim) for
+ * the Monster Forge's own "Derive from level..." action (ROADMAP item 14
+ * point 2, phase 3, docs/design-monster-level-scaling.md §3.4) -- the
+ * commit-free core below needs it and shared/ cannot import main/build/.
+ * The fourth parameter lets a caller whose real range exceeds a byte
+ * (Experience) avoid the default ceiling every other stat uses.
+ */
+export function statAt(base, perLevel, level, ceiling = 255) {
+  return Math.max(0, Math.min(ceiling, base + perLevel * (level - 1)));
+}
+
+/**
+ * One entry per battle.* field the derive action covers, each carrying its
+ * own Base ceiling and its own +/level maximum -- the single place either
+ * bound is written, read by both the Monster Forge's modal widgets and
+ * planMonsterGrowth below, so the two cannot disagree (a real v2 bug this
+ * design closed: docs/design-monster-level-scaling.md §3.5). Ranges mirror
+ * the Character Forge's own growth fields where one exists (atk/def/mp
+ * 0-32, mag/mdef 0-16); xp/gold have no party analogue, so xp keeps its own
+ * real range and gold mirrors atk/def's posture. hp is deliberately absent
+ * -- see docs/design-monster.md §2 and design-monster-level-scaling.md §3.3.
+ */
+export const MONSTER_GROWTH_FIELDS = [
+  { key: 'atk', label: 'Attack', ceiling: 255, perLevelMax: 32 },
+  { key: 'def', label: 'Defence', ceiling: 255, perLevelMax: 32 },
+  { key: 'mp', label: 'Magic points', ceiling: 255, perLevelMax: 32 },
+  { key: 'gold', label: 'Gold', ceiling: 255, perLevelMax: 32 },
+  { key: 'mag', label: 'Magic', ceiling: 255, perLevelMax: 16 },
+  { key: 'mdef', label: 'Magic defence', ceiling: 255, perLevelMax: 16 },
+  { key: 'xp', label: 'Experience', ceiling: 65535, perLevelMax: 65535 }
+];
+
+/**
+ * The pure half of "Derive from level...": never mutates `project`. Returns
+ * `null` when `battle.level` is unset (nothing to derive from -- never
+ * treated as level 1, docs/design-monster-level-scaling.md §3.6) or when
+ * every computed value already equals the field's own stored value (the
+ * strong "no-op" reading -- an already-populated, unchanged actor leaves
+ * dirty state, undo/redo and store.revision genuinely untouched, §3.1/§3.5);
+ * otherwise a plan naming exactly the fields that would change. `growth` is
+ * `{ [key]: { base, perLevel } }`, one entry per MONSTER_GROWTH_FIELDS key,
+ * as typed into the modal -- unclamped, unrounded, the caller's problem to
+ * bound, which is exactly what this function does before ever calling
+ * `statAt`.
+ */
+export function planMonsterGrowth(project, actorIndex, growth) {
+  const actor = project.sprites.actors[actorIndex];
+  const rawLevel = actor.battle?.level;
+  if (rawLevel === null || rawLevel === undefined) return null;
+  const level = clamp(rawLevel, 1, RPG_LIMITS.maxLevel);
+  const battle = actor.battle ?? {};
+  const writes = {};
+  for (const { key, ceiling, perLevelMax } of MONSTER_GROWTH_FIELDS) {
+    const g = growth[key];
+    if (!g) continue;
+    const base = clamp(g.base, 0, ceiling);
+    const perLevel = clamp(g.perLevel, 0, perLevelMax);
+    const value = statAt(base, perLevel, level, ceiling);
+    if (battle[key] !== value) writes[key] = value;
+  }
+  return Object.keys(writes).length ? { actorIndex, writes } : null;
+}
+
+/**
+ * The apply half: an `Object.assign` onto the actor's own `battle` object,
+ * exactly the shape `applyPlannedProject` above already is for a whole
+ * project -- called inside exactly one `store.commit`, never on its own.
+ */
+export function applyMonsterGrowth(project, plan) {
+  Object.assign(project.sprites.actors[plan.actorIndex].battle, plan.writes);
+}
+
 function normalizeSpell(raw, id) {
   const base = createSpell(id);
   // One-time migration, exactly the `deriveItemEffect` idiom above: a spell
