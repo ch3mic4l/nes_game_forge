@@ -238,6 +238,11 @@ corrected per N5)**: the renderer's `xp`/`gold` defaults (4/2, `:178-179`) **agr
 `normalizeActor`'s fallback (`shared/project.js:4995-4996`) — only `battletables.js`'s compiled
 fallback (`?? 0`, `:158-160`) differs from both. A never-saved actor compiles to `mon_xp = 0` today
 but reaches `4` the moment Apply runs once — a pre-existing mismatch this design did not create.
+**Update:** fixed. `dropPct` turned out to be a third field with the identical mismatch (renderer
+and `normalizeActor` both defaulted to 10, `battletables.js` to 0 via `dropThreshold(undefined)`).
+All three now read one exported `ACTOR_BATTLE_DEFAULTS` table (`shared/project.js`), the single
+writer `normalizeActor`, `battleTables` and the Monster Forge all read; see
+`test/unit/battledefaults.test.js`.
 
 ### §3.6 `battle.level` nullable — unchanged, refuse
 
@@ -393,7 +398,7 @@ identical to what hand-typing the same number costs today.
 3. **Is the seed picker (§2) worth a follow-up slice?** Not free (N4): no party `xp`/`gold` fields
    to copy, and a partial actor seed needs its fallback rule.
 4. **The pre-existing `xp`/`gold` renderer-vs-compiler mismatch (§3.5)**: worth its own fix,
-   independent of this design? Surfaced, not proposed to fix here.
+   independent of this design? Surfaced, not proposed to fix here. Fixed -- see §3.5.
 
 ## §7. Changelog
 

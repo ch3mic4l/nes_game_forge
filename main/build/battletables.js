@@ -53,7 +53,8 @@ import {
   projectUsesNameToken,
   projectWithoutNameToken,
   projectWithoutMonsterSpellList,
-  statAt
+  statAt,
+  ACTOR_BATTLE_DEFAULTS
 } from '../../shared/project.js';
 // statAt itself now lives in shared/project.js (docs/design-monster-level-scaling.md
 // §3.4) -- planMonsterGrowth needs it there, and this file cannot be imported
@@ -140,9 +141,9 @@ export function battleTables(project, battleStrings = BATTLE_STRINGS) {
   const battle = (pick) => column((actor) => pick(actor.battle ?? {}, actor));
 
   chunks.push(`mon_hp:\n${dbRows(column((actor) => actor.hp ?? 1))}`);
-  chunks.push(`mon_mp:\n${dbRows(battle((b) => b.mp ?? 0))}`);
-  chunks.push(`mon_atk:\n${dbRows(battle((b) => b.atk ?? 4))}`);
-  chunks.push(`mon_def:\n${dbRows(battle((b) => b.def ?? 2))}`);
+  chunks.push(`mon_mp:\n${dbRows(battle((b) => b.mp ?? ACTOR_BATTLE_DEFAULTS.mp))}`);
+  chunks.push(`mon_atk:\n${dbRows(battle((b) => b.atk ?? ACTOR_BATTLE_DEFAULTS.atk))}`);
+  chunks.push(`mon_def:\n${dbRows(battle((b) => b.def ?? ACTOR_BATTLE_DEFAULTS.def))}`);
   // Emitted only when projectUsesMagicPower/projectUsesMagicDefence is true --
   // the identical items-block stub-avoidance rule just below: dbRows([])
   // still emits a one-byte ".db $00" stub for an empty array, so pushing
@@ -150,17 +151,17 @@ export function battleTables(project, battleStrings = BATTLE_STRINGS) {
   // real banked bytes for a table nothing in that build ever reads. See
   // docs/design-magic-power.md §8.
   if (projectUsesMagicPower(project)) {
-    chunks.push(`mon_mag:\n${dbRows(battle((b) => b.mag ?? 0))}`);
+    chunks.push(`mon_mag:\n${dbRows(battle((b) => b.mag ?? ACTOR_BATTLE_DEFAULTS.mag))}`);
   }
   if (projectUsesMagicDefence(project)) {
-    chunks.push(`mon_mdef:\n${dbRows(battle((b) => b.mdef ?? 0))}`);
+    chunks.push(`mon_mdef:\n${dbRows(battle((b) => b.mdef ?? ACTOR_BATTLE_DEFAULTS.mdef))}`);
   }
-  chunks.push(`mon_acc:\n${dbRows(battle((b) => b.acc ?? 180))}`);
-  chunks.push(`mon_eva:\n${dbRows(battle((b) => b.eva ?? 4))}`);
-  chunks.push(`mon_speed:\n${dbRows(battle((b) => b.speed ?? 4))}`);
-  chunks.push(`mon_xp_lo:\n${dbRows(battle((b) => (b.xp ?? 0) & 0xff))}`);
-  chunks.push(`mon_xp_hi:\n${dbRows(battle((b) => ((b.xp ?? 0) >> 8) & 0xff))}`);
-  chunks.push(`mon_gold:\n${dbRows(battle((b) => b.gold ?? 0))}`);
+  chunks.push(`mon_acc:\n${dbRows(battle((b) => b.acc ?? ACTOR_BATTLE_DEFAULTS.acc))}`);
+  chunks.push(`mon_eva:\n${dbRows(battle((b) => b.eva ?? ACTOR_BATTLE_DEFAULTS.eva))}`);
+  chunks.push(`mon_speed:\n${dbRows(battle((b) => b.speed ?? ACTOR_BATTLE_DEFAULTS.speed))}`);
+  chunks.push(`mon_xp_lo:\n${dbRows(battle((b) => (b.xp ?? ACTOR_BATTLE_DEFAULTS.xp) & 0xff))}`);
+  chunks.push(`mon_xp_hi:\n${dbRows(battle((b) => ((b.xp ?? ACTOR_BATTLE_DEFAULTS.xp) >> 8) & 0xff))}`);
+  chunks.push(`mon_gold:\n${dbRows(battle((b) => b.gold ?? ACTOR_BATTLE_DEFAULTS.gold))}`);
   chunks.push(`mon_weak:\n${dbRows(battle((b) => elementIndex(b.weak)))}`);
   chunks.push(`mon_strong:\n${dbRows(battle((b) => elementIndex(b.strong)))}`);
   // NO_ITEM ($FF) is "leaves nothing behind" -- for a drop that names no
@@ -180,20 +181,22 @@ export function battleTables(project, battleStrings = BATTLE_STRINGS) {
   chunks.push(
     `mon_drop:\n${dbRows(battle((b) => (itemMissing(project.items, b.drop) ? NO_ITEM : b.drop)))}`
   );
-  chunks.push(`mon_drop_pct:\n${dbRows(battle((b) => dropThreshold(b.dropPct)))}`);
+  chunks.push(
+    `mon_drop_pct:\n${dbRows(battle((b) => dropThreshold(b.dropPct ?? ACTOR_BATTLE_DEFAULTS.dropPct)))}`
+  );
   // The ITEMS_ENABLED-false path's own table: item_chosen (engine/
   // battleturn.asm) still reads this, keyed by actor id, when a project has
   // no items[] at all and the bag still holds legacy actor ids. Stays
   // alongside item_heal below rather than being replaced by it -- see this
   // file's own header note on why both tables exist.
-  chunks.push(`mon_heal:\n${dbRows(battle((b) => b.heal ?? 0))}`);
+  chunks.push(`mon_heal:\n${dbRows(battle((b) => b.heal ?? ACTOR_BATTLE_DEFAULTS.heal))}`);
   // Background art on the battle tileset. $FF means "no block art"; the engine
   // falls back to the actor's own metasprite, so every actor can fight.
   chunks.push(
     `mon_tile:\n${dbRows(battle((b) => (b.battleTile === null || b.battleTile === undefined ? 0xff : b.battleTile)))}`
   );
-  chunks.push(`mon_w:\n${dbRows(battle((b) => b.battleW ?? 4))}`);
-  chunks.push(`mon_h:\n${dbRows(battle((b) => b.battleH ?? 4))}`);
+  chunks.push(`mon_w:\n${dbRows(battle((b) => b.battleW ?? ACTOR_BATTLE_DEFAULTS.battleW))}`);
+  chunks.push(`mon_h:\n${dbRows(battle((b) => b.battleH ?? ACTOR_BATTLE_DEFAULTS.battleH))}`);
   // The spell(s) this monster casts when it can afford to. $FF = nothing in
   // that slot; a stale id past the spell table is treated the same rather
   // than compiled. Under the same label either way
@@ -226,7 +229,7 @@ export function battleTables(project, battleStrings = BATTLE_STRINGS) {
   );
   // One attribute byte tints the monster's whole block, which is why the art is
   // anchored to a 4x4 grid: a block that size lies inside one attribute cell.
-  chunks.push(`mon_attr:\n${dbRows(battle((b) => (b.battlePalette ?? 2) * 0x55))}`);
+  chunks.push(`mon_attr:\n${dbRows(battle((b) => (b.battlePalette ?? ACTOR_BATTLE_DEFAULTS.battlePalette) * 0x55))}`);
   chunks.push(`mon_name:\n${dbRows(actors.flatMap((actor) => nameTiles(actor.name)), NAME_LIMIT)}`);
 
   // --- items (ITEMS_ENABLED path only) ---------------------------------------

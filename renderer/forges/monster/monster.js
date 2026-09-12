@@ -23,7 +23,8 @@ import {
   describeBattleTileState,
   MONSTER_GROWTH_FIELDS,
   planMonsterGrowth,
-  applyMonsterGrowth
+  applyMonsterGrowth,
+  ACTOR_BATTLE_DEFAULTS
 } from '../../../shared/project.js';
 import { FONT_BASE } from '../../../shared/font.js';
 import { drawSheet, sheetIndexFromEvent, SHEET_COLS } from '../../widgets/sheet.js';
@@ -83,8 +84,21 @@ const row = (...children) => el('div.field-row', { style: { gap: '8px', marginBo
 // modal's own Base pre-fill (mount()'s openDeriveModal), so the two numbers
 // cannot drift apart (round-2 review finding 5). Keyed to match
 // MONSTER_GROWTH_FIELDS (shared/project.js) exactly; not every battleSection
-// field has an entry here, only the ones the derive modal also covers.
-const BATTLE_DEFAULTS = { atk: 4, def: 2, mp: 0, gold: 2, mag: 0, mdef: 0, xp: 4 };
+// field has an entry here, only the ones the derive modal also covers. Its
+// values are ACTOR_BATTLE_DEFAULTS' (shared/project.js), not re-typed --
+// battleSection's own remaining `?? N` widgets and battleTables
+// (main/build/battletables.js) read that identical shared table too, so a
+// never-saved actor built in-session compiles the same numbers this panel
+// shows for it.
+const BATTLE_DEFAULTS = {
+  atk: ACTOR_BATTLE_DEFAULTS.atk,
+  def: ACTOR_BATTLE_DEFAULTS.def,
+  mp: ACTOR_BATTLE_DEFAULTS.mp,
+  gold: ACTOR_BATTLE_DEFAULTS.gold,
+  mag: ACTOR_BATTLE_DEFAULTS.mag,
+  mdef: ACTOR_BATTLE_DEFAULTS.mdef,
+  xp: ACTOR_BATTLE_DEFAULTS.xp
+};
 
 // Casts, Also, or, or, ... -- the label for each of RPG_LIMITS.monsterSpells
 // spell slots (§8): the first two are distinct, every slot after repeats
@@ -199,13 +213,13 @@ export function battleSection(actor, index, rerender, openDerive) {
     row(
       field('Attack', number(battle.atk ?? BATTLE_DEFAULTS.atk, 0, 255, (value) => set('atk', value))),
       field('Defence', number(battle.def ?? BATTLE_DEFAULTS.def, 0, 255, (value) => set('def', value))),
-      field('Speed', number(battle.speed ?? 4, 0, 255, (value) => set('speed', value))),
+      field('Speed', number(battle.speed ?? ACTOR_BATTLE_DEFAULTS.speed, 0, 255, (value) => set('speed', value))),
       field('Magic', number(battle.mag ?? BATTLE_DEFAULTS.mag, 0, 255, (value) => set('mag', value))),
       field('Magic defence', number(battle.mdef ?? BATTLE_DEFAULTS.mdef, 0, 255, (value) => set('mdef', value)))
     ),
     row(
-      field('Accuracy', number(battle.acc ?? 180, 0, 255, (value) => set('acc', value), 'Out of 255')),
-      field('Evasion', number(battle.eva ?? 4, 0, 255, (value) => set('eva', value))),
+      field('Accuracy', number(battle.acc ?? ACTOR_BATTLE_DEFAULTS.acc, 0, 255, (value) => set('acc', value), 'Out of 255')),
+      field('Evasion', number(battle.eva ?? ACTOR_BATTLE_DEFAULTS.eva, 0, 255, (value) => set('eva', value))),
       field('Magic points', number(battle.mp ?? BATTLE_DEFAULTS.mp, 0, 255, (value) => set('mp', value)))
     ),
     row(
@@ -234,7 +248,7 @@ export function battleSection(actor, index, rerender, openDerive) {
           dropOptions.healthy.map((option) => el('option', { value: option.value, selected: option.selected }, option.label))
         )
       ),
-      field('Chance %', number(battle.dropPct ?? 10, 0, 100, (value) => set('dropPct', value)))
+      field('Chance %', number(battle.dropPct ?? ACTOR_BATTLE_DEFAULTS.dropPct, 0, 100, (value) => set('dropPct', value)))
     ),
 
     el('div.panel-head', { style: { paddingLeft: '0', marginTop: '12px' } }, 'Battle artwork'),
@@ -247,9 +261,9 @@ export function battleSection(actor, index, rerender, openDerive) {
     ),
     artPicker(battle, set),
     row(
-      field('Tiles across', number(battle.battleW ?? 4, 1, RPG_LIMITS.battleArtTiles, (v) => set('battleW', v))),
-      field('Tiles down', number(battle.battleH ?? 4, 1, RPG_LIMITS.battleArtTiles, (v) => set('battleH', v))),
-      field('Palette', number(battle.battlePalette ?? 2, 0, 3, (value) => set('battlePalette', value)))
+      field('Tiles across', number(battle.battleW ?? ACTOR_BATTLE_DEFAULTS.battleW, 1, RPG_LIMITS.battleArtTiles, (v) => set('battleW', v))),
+      field('Tiles down', number(battle.battleH ?? ACTOR_BATTLE_DEFAULTS.battleH, 1, RPG_LIMITS.battleArtTiles, (v) => set('battleH', v))),
+      field('Palette', number(battle.battlePalette ?? ACTOR_BATTLE_DEFAULTS.battlePalette, 0, 3, (value) => set('battlePalette', value)))
     )
   );
 }
@@ -263,9 +277,9 @@ export function battleSection(actor, index, rerender, openDerive) {
 function artPicker(battle, set) {
   const tilesets = store.project.tilesets;
   const tileset = tilesets[store.project.rpg?.battleTilesetId ?? 0] ?? tilesets[0];
-  const palette = store.project.palettes.bg[battle.battlePalette ?? 2] ?? store.project.palettes.bg[0];
-  const width = battle.battleW ?? 4;
-  const height = battle.battleH ?? 4;
+  const palette = store.project.palettes.bg[battle.battlePalette ?? ACTOR_BATTLE_DEFAULTS.battlePalette] ?? store.project.palettes.bg[0];
+  const width = battle.battleW ?? ACTOR_BATTLE_DEFAULTS.battleW;
+  const height = battle.battleH ?? ACTOR_BATTLE_DEFAULTS.battleH;
   const fontRow = FONT_BASE / SHEET_COLS;
   const { hasBlock, label } = describeBattleTileState({ battle });
 

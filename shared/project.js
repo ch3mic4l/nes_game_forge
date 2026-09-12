@@ -4966,6 +4966,34 @@ function normalizeAnimation(raw, id) {
 
 const elementId = (value) => (ELEMENTS.some((e) => e.id === value) ? value : 'none');
 
+/**
+ * The single writer for every plain-number default in an actor's battle
+ * record -- normalizeActor's own clamp calls, battleTables (main/build/
+ * battletables.js) and the Monster Forge's widgets all read the same table,
+ * so a never-normalized actor (pushed straight onto project.sprites.actors
+ * by the Sprite Forge's "+" button, with no `battle` key at all) compiles
+ * identically to the same project after a save/reopen round trip, which runs
+ * every actor through normalizeActor first. Excludes drop/weak/strong/
+ * spellIds/battleTile/level, none of which is a plain numeric default.
+ */
+export const ACTOR_BATTLE_DEFAULTS = Object.freeze({
+  atk: 4,
+  def: 2,
+  mag: 0,
+  mdef: 0,
+  acc: 180,
+  eva: 4,
+  speed: 4,
+  mp: 0,
+  xp: 4,
+  gold: 2,
+  dropPct: 10,
+  heal: 0,
+  battleW: 4,
+  battleH: 4,
+  battlePalette: 2
+});
+
 function normalizeActor(raw, id, itemCtx = EMPTY_ITEM_CTX) {
   const anims = {};
   for (const { id: slot } of ANIM_SLOTS) {
@@ -4984,16 +5012,16 @@ function normalizeActor(raw, id, itemCtx = EMPTY_ITEM_CTX) {
     damage: clamp(raw?.damage, 0, 8, 0),
     anims,
     battle: {
-      atk: clamp(battle.atk, 0, 255, 4),
-      def: clamp(battle.def, 0, 255, 2),
-      mag: clamp(battle.mag, 0, 255, 0),
-      mdef: clamp(battle.mdef, 0, 255, 0),
-      acc: clamp(battle.acc, 0, 255, 180),
-      eva: clamp(battle.eva, 0, 255, 4),
-      speed: clamp(battle.speed, 0, 255, 4),
-      mp: clamp(battle.mp, 0, 255, 0),
-      xp: clamp(battle.xp, 0, 65535, 4),
-      gold: clamp(battle.gold, 0, 255, 2),
+      atk: clamp(battle.atk, 0, 255, ACTOR_BATTLE_DEFAULTS.atk),
+      def: clamp(battle.def, 0, 255, ACTOR_BATTLE_DEFAULTS.def),
+      mag: clamp(battle.mag, 0, 255, ACTOR_BATTLE_DEFAULTS.mag),
+      mdef: clamp(battle.mdef, 0, 255, ACTOR_BATTLE_DEFAULTS.mdef),
+      acc: clamp(battle.acc, 0, 255, ACTOR_BATTLE_DEFAULTS.acc),
+      eva: clamp(battle.eva, 0, 255, ACTOR_BATTLE_DEFAULTS.eva),
+      speed: clamp(battle.speed, 0, 255, ACTOR_BATTLE_DEFAULTS.speed),
+      mp: clamp(battle.mp, 0, 255, ACTOR_BATTLE_DEFAULTS.mp),
+      xp: clamp(battle.xp, 0, 65535, ACTOR_BATTLE_DEFAULTS.xp),
+      gold: clamp(battle.gold, 0, 255, ACTOR_BATTLE_DEFAULTS.gold),
       weak: elementId(battle.weak),
       strong: elementId(battle.strong),
       // What this monster may leave behind: an item id, resolved through
@@ -5014,9 +5042,9 @@ function normalizeActor(raw, id, itemCtx = EMPTY_ITEM_CTX) {
           : itemCtx.migrating
             ? (typeof battle.drop === 'number' ? itemCtx.actorToItem.get(battle.drop) : undefined) ?? null
             : (Number.isInteger(battle.drop) && battle.drop >= 0 && battle.drop <= 255 ? battle.drop : NO_ITEM),
-      dropPct: clamp(battle.dropPct, 0, 100, 10),
+      dropPct: clamp(battle.dropPct, 0, 100, ACTOR_BATTLE_DEFAULTS.dropPct),
       // How much this actor heals when used from the bag. 0 = not a potion.
-      heal: clamp(battle.heal, 0, 255, 0),
+      heal: clamp(battle.heal, 0, 255, ACTOR_BATTLE_DEFAULTS.heal),
       // The spells this monster may cast in battle when it can afford the MP,
       // uniformly among whichever ones it can currently afford -- duplicates
       // are kept as a weighting primitive, never deduplicated
@@ -5042,9 +5070,9 @@ function normalizeActor(raw, id, itemCtx = EMPTY_ITEM_CTX) {
         battle.battleTile === null || battle.battleTile === undefined
           ? null
           : clamp(battle.battleTile, 0, LIMITS.tilesPerTable - 1, 0),
-      battleW: clamp(battle.battleW, 1, RPG_LIMITS.battleArtTiles, 4),
-      battleH: clamp(battle.battleH, 1, RPG_LIMITS.battleArtTiles, 4),
-      battlePalette: clamp(battle.battlePalette, 0, LIMITS.palettes - 1, 2),
+      battleW: clamp(battle.battleW, 1, RPG_LIMITS.battleArtTiles, ACTOR_BATTLE_DEFAULTS.battleW),
+      battleH: clamp(battle.battleH, 1, RPG_LIMITS.battleArtTiles, ACTOR_BATTLE_DEFAULTS.battleH),
+      battlePalette: clamp(battle.battlePalette, 0, LIMITS.palettes - 1, ACTOR_BATTLE_DEFAULTS.battlePalette),
       // Display-only, no compiled reader; clamped to the fixed
       // RPG_LIMITS.maxLevel, not project.rpg.maxLevel -- see docs/design-monster.md §3.
       level: battle.level === null || battle.level === undefined

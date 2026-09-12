@@ -1460,7 +1460,10 @@ Three shapes worth keeping:
 
 Anything the engine would need a multiply for is a table instead: `main/build/battletables.js`
 precomputes per-level stats and the experience curve, and pads every name to `RPG_LIMITS.nameLength`
-so the engine needs no length byte.
+so the engine needs no length byte. `ACTOR_BATTLE_DEFAULTS` (`shared/project.js`) is the single
+writer for every plain-number default in an actor's battle record, read by `normalizeActor`,
+`battleTables` and the Monster Forge alike -- because a never-saved actor built in-session must
+compile identically to the same project reopened.
 
 **The RPG battle ITEM menu does not list everything `use_item` can spend.** `build_item_list`
 (`engine/battleui.asm`) filters the bag to `kind == heal AND amount > 0` — exactly what
