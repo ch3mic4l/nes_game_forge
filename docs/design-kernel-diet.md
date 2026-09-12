@@ -958,6 +958,39 @@ design's own delivery does not depend on either answer to.
 
 ## §14. Changelog
 
+- **Shipped (`bd24eb0`)**: the implementation commit, on top of v5 below. Every zero-page operand
+  in `engine/*.asm` prefixed with `<`: 1431 instructions across 20 files, each one byte shorter.
+  `test/lib/equates.js` (the equate resolver, the per-mnemonic zero-page addressing-mode table, and
+  the instruction scanner) plus `test/unit/zeropage.test.js` (three directions: an admitted bare
+  operand, a `<` on a name resolving ≥ `$100`, a `<` in a mode the 6502 has no zero-page form of)
+  keep the diet from regressing one instruction at a time. Every kernel-lo and banked-region ledger
+  constant re-measured from nesasm: base kernel-lo `{NROM 5952→5367, MMC1 6022→5428, MMC3
+  6039→5449, UNROM 512 6217→5617}`, banked base `{4220→3783, MMC3 4266→3823}`, and every allowance
+  in between (`WAIT`/`SHAKE`/`FADE`/`FLASH` moved only because their names are expression-defined
+  equates `parseEquates` never saw); `KERNEL_SLACK` stays 20 on both banks. The final measured
+  figures match this design's own provisional table exactly, past the one 675-vs-683 discrepancy
+  the design itself traced and predicted correctly (§4/§15 above) — checked directly against the
+  current `main/build/generate.js`/`battletables.js` for this docs pass, not merely assumed.
+  `ITEM_KERNEL_ALLOWANCE`/`ITEM_EFFECT_KERNEL_ALLOWANCE_BY_GAME_TYPE`'s individual split (§15) is
+  also resolved, by direct instruction accounting rather than a project toggle: 16 (`ITEM_KERNEL_
+  ALLOWANCE`, unaffected by the diet) plus 61/59 (`ITEM_EFFECT...BY_GAME_TYPE`, action/rpg). Every
+  combination CLAUDE.md's "Documented limitations" listed as a refusal now builds and is asserted
+  by a real `buildProject` run, each with a padded sibling that keeps the refusal-advice path under
+  test. `test/unit/split.test.js` gained the §7 deadline invariant this design specified, with
+  missing-entry, late-initial-arm and register-preserving late-follow-up negative controls. The
+  one-time structural acceptance step (§6) passed on all six fixtures: label set/order identical,
+  pre-reset tables and reset at identical addresses, later labels ≤ old, whole-ROM byte equality
+  outside the two code masks and the vectors, split register sequence identical on `sample-mmc3`.
+  `npm test` 1591/1591 (0 skipped), `npm run smoke` 222/222. Mesen's `engine_smoke`/SRAM/flash
+  checks and their negative controls on `sample`/`sample-rpg-mmc1`/`sample-u512` all pass. Three Lua
+  checks fail, confirmed pre-existing and unrelated to the diet on a clean pre-diet worktree:
+  `engine_smoke.lua` on `sample-mmc3` (exit 5 `NO_TRANSITION` — that script is written for
+  `sample/`, and CLAUDE.md never names `sample-mmc3` for it, so this was never a documented claim);
+  `test/lua/run_bound_tile_nmi_check.sh` (its fixture could not even build before the diet —
+  kernel-lo overflow, "253 bytes needed, 78 free" — now builds, but the runner fails exit 3, dialog
+  never opened); `test/lua/run_flash_nmi_check.sh` (exit 3, identical pre- and post-diet). Reviewer
+  GO at round 2 — a post-implementation review, separate from this design document's own five
+  rounds below.
 - **v5 (this round)**: fix round 4, two P2s addressed, both in §7's split-trace specification —
   1. the one-time acceptance check moved from raw register-value sequence equality to a normalized
      projection — `$C000`/`$8000`/`$8001`'s own meaningful values kept, `$E000`/`$C001`/`$E001`'s
@@ -1053,32 +1086,55 @@ design's own delivery does not depend on either answer to.
 
 ## §15. Claims reasoned rather than pinned
 
-- **Four terms' zero deltas (`SAVE_BATTLE_KERNEL_ALLOWANCE`, `HERO_NAMING_KERNEL_ALLOWANCE`,
+- ~~Four terms' zero deltas (`SAVE_BATTLE_KERNEL_ALLOWANCE`, `HERO_NAMING_KERNEL_ALLOWANCE`,
   `AUDIO_FX_KERNEL_ALLOWANCE`, `STING_SFX_INTERACTION_ALLOWANCE`) are observed identical in both
-  scopes, not proved by inspection the way `HERO_DEFAULT_KERNEL_ALLOWANCE`'s is** (§4, corrected
-  this round from a self-contradictory claim). Implementation should trace each directly — the same
-  direct source check §4 applied to `HERO_DEFAULT` — before relying on any of the four staying zero
-  under a future engine edit.
-- **`engine/split.asm:141-163`'s own write-then-rearm sequence timing** (§7) now has a fully
-  specified measurement design — the instrumentation, a baseline-free invariant with its own deadline
-  anchored to the split program's schedule (not to the arm's own completion), a negative control,
-  and a one-time acceptance check over a normalized register-operation projection with an explicit
-  settled-frame criterion — but the measurement itself has not been taken; this design does not know
-  whether the split's own code shrank enough to matter for the rearm-vs-next-A12-edge relationship.
-- **The full §4b inventory's individual new numbers beyond those explicitly derived this round**
+  scopes, not proved by inspection the way `HERO_DEFAULT_KERNEL_ALLOWANCE`'s is~~ — **half resolved
+  by the implementation, half still open.** `AUDIO_FX_KERNEL_ALLOWANCE` and
+  `STING_SFX_INTERACTION_ALLOWANCE` were traced directly, the same way §4 traced
+  `HERO_DEFAULT_KERNEL_ALLOWANCE`, but by two different mechanisms, not one: `AUDIO_FX_KERNEL_
+  ALLOWANCE`'s `music_channel` check-and-self-clear block indexes `force_trig,x` ($543) and
+  `mus_trig,x` ($358), both well above `$100`, never a bare zero-page operand; `STING_SFX_
+  INTERACTION_ALLOWANCE`'s `sting_restore_silence` ownership guard (`engine/music.asm:486-491`) is
+  `ldy sfx_state / bne` — a plain absolute load of `sfx_state` ($0568), not an indexed array access
+  at all — also never a bare zero-page operand. Either way the diet provably has nothing to shrink
+  (`main/build/generate.js`'s own comments on each constant). `SAVE_BATTLE_KERNEL_ALLOWANCE` and
+  `HERO_NAMING_KERNEL_ALLOWANCE` were not traced — both still say "observed, not yet traced to a
+  specific reason" in their own comments — and stay open: implementation should trace each directly
+  before relying on either staying zero under a future engine edit.
+- ~~`engine/split.asm:141-163`'s own write-then-rearm sequence timing (§7) now has a fully
+  specified measurement design ... but the measurement itself has not been taken~~ — **resolved by
+  the implementation.** `test/unit/split.test.js` implements exactly this design: a baseline-free
+  deadline invariant for the MMC3 split's reload/enable writes, anchored to the split program's own
+  schedule via an externally-tracked frame tag rather than the arm's own observed position, with
+  missing-entry, late-initial-arm and register-preserving late-follow-up negative controls, all
+  passing against the diet's own shrunk code.
+- ~~`test/lib/equates.js` and the appendix's own sweep script are design artifacts, not yet real
+  repository files~~ — **resolved by the implementation.** `test/lib/equates.js` is a real,
+  committed module (`test/unit/zeropage.test.js`'s own dependency), not a design artifact.
+- ~~The full §4b inventory's individual new numbers beyond those explicitly derived this round
   (Move+split's 488, the `:1791` row's 189/198/(189,198] band, the `:2238`/`:2256` 337/516/853
-  messages, `move.test.js`'s own 337, and the eight §5 scenarios) are still implementation work —
-  this design specifies which of the remaining rows need which *kind* of change, not their final
-  values.
-- **The individual `ITEM_KERNEL_ALLOWANCE`/`ITEM_EFFECT_KERNEL_ALLOWANCE_BY_GAME_TYPE` split**
-  remains unresolved — no existing project toggle isolates one from the other.
+  messages, `move.test.js`'s own 337, and the eight §5 scenarios) are still implementation work~~ —
+  **shipped.** `test/unit/kernelbytes.test.js:1714` asserts Move+split's 488 directly; `:1849`/
+  `:1864` assert the 189-code/198-combined MMC1 suggestion; `:2438`/`:2456` assert the 337/516/853
+  Save-and-Move advice messages — all re-derived against a real `checkCapacity()` run, not carried
+  over from the old proportions, matching what this design specified.
+- ~~The individual `ITEM_KERNEL_ALLOWANCE`/`ITEM_EFFECT_KERNEL_ALLOWANCE_BY_GAME_TYPE` split remains
+  unresolved — no existing project toggle isolates one from the other.~~ — **resolved by the
+  implementation, without a toggle.** `main/build/generate.js`'s own comment on
+  `ITEM_KERNEL_ALLOWANCE` gives a direct instruction-by-instruction accounting instead:
+  `add_item`'s gated `cmp #NO_ITEM`/`beq` (4 bytes) plus `draw_item_icon` in full (12 bytes) = 16,
+  unaffected by the diet because neither touches a zero-page-eligible operand — so the entire
+  combined-delta shrinkage (79→77 action, 76→75 rpg) is provably `ITEM_EFFECT_KERNEL_ALLOWANCE_
+  BY_GAME_TYPE`'s alone (→ 61/59).
 - **Whether any test beyond the eight directly rebuilt in §5 has a genuinely different naming/
   item/audio state than its neighbors** (finding 6's broader point) has not been checked
   exhaustively — only the eight named rows were individually reconstructed from their own test
   constructors, across both fix rounds.
-- **`test/lib/equates.js` and the appendix's own sweep script are design artifacts, not yet real
-  repository files** — the dry-run confirmation (appendix) was run against scratch copies this
-  session, not against a committed module; implementation creates the real files.
+- **Diagnostic fields not recorded**: `test/unit/split.test.js`'s split trace (above) does not
+  capture scanline, dot or the command byte for each event, only the address/frame/entry data the
+  deadline invariant itself needs — the event-order checks did not need them. Left out deliberately,
+  not an oversight; add them if a future failure needs finer-grained diagnosis than pass/fail plus
+  frame and entry number.
 
 ## Appendix: the sweep script, verbatim, as a real consumer of `test/lib/equates.js`
 

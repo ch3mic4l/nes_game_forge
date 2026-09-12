@@ -586,6 +586,24 @@ one is now a measured fact rather than a forecast:
   builds this combination with room to spare) is what an author in this exact corner is told. See
   CLAUDE.md's own kernel-budget section for the arithmetic and why each closing and reopening has
   been the mechanism working, not a hole in it.
+
+  **Done, engine-wide, well after this phase: the zero-page kernel diet
+  (`docs/design-kernel-diet.md`) closed this exact 11-byte MMC3 refusal for good, along with every
+  other documented-limitation refusal this file and CLAUDE.md had accumulated.** Unlike the
+  `player.asm` diet above — one routine, 70 bytes, MMC3-only pressure — this one is a single
+  mechanical sweep: nesasm v3.1 assembles a bare zero-page operand as 3-byte absolute unless it
+  carries a `<` prefix, and every one of the engine's 1431 zero-page sites had gone unprefixed for
+  the engine's whole life. Prefixing all 1431 (`test/unit/zeropage.test.js` now guards the sweep
+  from regressing) recovered roughly 590 kernel-lo bytes and 440 banked bytes per board, with no
+  other engine change. Every combination CLAUDE.md's "Documented limitations" paragraph used to list
+  as a refusal now builds, confirmed by a real `buildProject` run rather than `checkCapacity` alone:
+  MMC3 Save+Move+item (this bullet's own 11-byte shortfall), UNROM 512 Save+Move, MMC3 Save+Move
+  with a live Sting or a live bound tile, MMC1's own bound-tile reopening, and all six of the
+  SFX-driven refusal rows from item 6's own costing pass below. See `docs/design-kernel-diet.md` for
+  the full before/after ledger and the one-time structural acceptance step that checked label order,
+  relocated-table addresses and whole-ROM data equality outside the swept code — structural and data
+  preservation, not a proof of runtime behaviour, which the test suite, `npm run smoke` and the
+  Mesen checks establish separately.
 - **`SAVE_LAYOUT_VERSION` 1 → 2 breaks existing saves.** That was a deliberate choice, not a silent
   migration, landed in 4b rather than deferred to phase 6: the capability exists in the engine the
   moment 4b ships, so the break has to be unconditional and immediate, not phased in alongside the
@@ -937,6 +955,14 @@ combination with no `Save` fits with 483 bytes free — confirming again that it
 specifically, not the verb count alone, that closes the gap. None of this needed a fourth kernel diet
 or a banked region to ship, `Sfx` included; each refusal is an accepted, documented limitation the same
 way `Save`+`Move` already was.
+
+**All of these figures and refusals are pre-diet history now.** The zero-page kernel diet
+(`docs/design-kernel-diet.md`, done note under item 5 above) re-measured every allowance named in
+this passage and closed every refusal it describes — the SFX-driven rows included — confirmed by a
+real build, not only `checkCapacity`. The margins above (220 bytes free on MMC1's worst case, 72
+bytes left after `Turn`+`Wait`+`Show`/`Hide`, and so on) are what the ledger looked like before that
+diet, kept here as the reasoning that shaped item 6, not as the current budget — see CLAUDE.md's own
+"Current allowance figures" for what is live today.
 
 **Recommendation: do not make a banked region item 6's primary vehicle.** Ship the verbs that are
 cheap and need no `mtptr` access (`Turn`, `Wait`, `Show`/`Hide`, shake) as ordinary conditional
@@ -1685,7 +1711,7 @@ bank) take theirs off the front. A bigger *authored* world does not, by itself, 
 it is just more screens in more regions; what changes is which screens have to be resident and
 switched in as the camera moves, and that is item 12's question, not this item's.
 
-**The binding constraint on world size today is the fixed per-screen kernel-lo lookup tables, not
+**The binding constraint on world size is the fixed per-screen kernel-lo lookup tables, not
 the one-byte reference format and not PRG capacity — and a large-world design has to reckon with
 that ordering, not the format alone.** `kernelTableBytes(project)` (`main/build/generate.js`)
 charges every screen and map against the fixed kernel-lo bank regardless of board: **13 bytes per
@@ -1703,10 +1729,22 @@ falls back to the largest figure on record, UNROM 512's 6399 — 20 bytes more e
 leaves one fewer screen's worth of table room), and **52 on the unbanked boards** — NROM-256, CNROM,
 GxROM, Color Dreams — where the limit is plain screen-region packing rather than the kernel-lo table
 budget ("This project has 53
-screens but NROM-256 holds 52"). A stock project is therefore refused at roughly a hundred screens on
-the best board, nowhere near the 256 a one-byte reference could otherwise name, and every real
-project's own content (actors, metasprites, items, switch-bound tiles) only lowers those figures
-further.
+screens but NROM-256 holds 52"). A stock project was therefore refused at roughly a hundred screens on
+the best board, as of that de19269 measurement, nowhere near the 256 a one-byte reference could
+otherwise name, and every real project's own content (actors, metasprites, items, switch-bound tiles)
+only lowers those figures further.
+
+**The kernel-lo-bound ceilings above are pre-diet and stale, not re-taken.** The zero-page kernel
+diet (`bd24eb0`, `docs/design-kernel-diet.md`) freed roughly 590 kernel-lo bytes per board since
+de19269 — the `baseKernelCodeBytes` figures above (6399 UNROM 512, 6379 MMC3) are no longer what
+those functions return — so the MMC1/MMC3/UNROM 512 (and UxROM) screen-count ceilings above are out
+of date and have not been re-measured against the current tree. **The 52-screen figure for the
+unbanked boards (NROM-256, CNROM, GxROM, Color Dreams) is unaffected and still current**: it is
+plain screen-region packing (`screenCapacity(mapper, 305)`, verified against the current tree —
+still 52 on all four), with no kernel-lo code term in it at all for the diet to move. The mechanism
+the kernel-lo-bound boards demonstrate is unaffected: the fixed 13-bytes-per-screen/9-bytes-per-map
+table cost is still what binds their world size, still ahead of the one-byte reference format and
+PRG capacity on those boards — only their specific screen counts above are pre-diet history.
 
 **The one-byte reference ceiling is real as a *format* fact, but unreachable in a successful build
 today because the table budget refuses first.** Every flat screen reference in this engine is one
@@ -1719,10 +1757,11 @@ independent of that table budget: `LIMITS` (`shared/project.js`) caps screens *p
 needs at least one map"; `addMapCore`/`duplicateMapCore` (item 7) impose no ceiling of their own
 either. So there genuinely is no explicit `flatLength <= 256` rule anywhere — but there does not need
 to be one today, because a minimal project constructed directly against `checkCapacity` and pushed to
-257 screens on MMC3 (the boundary a byte cannot express) is refused at "The lookup tables need 3508
-bytes but only 1384 are free alongside the engine code," on the same table-budget grounds as every
-other oversized project, roughly 150 screens before the reference format would even become the
-constraint. Door and warp targets are also clamped before any byte-masking could matter: `byte(value,
+257 screens on MMC3 (the boundary a byte cannot express) was refused, at the same de19269 measurement
+above, at "The lookup tables need 3508 bytes but only 1384 are free alongside the engine code," on
+the same table-budget grounds as every other oversized project — that free-byte figure is pre-diet
+and stale the identical way, but the table budget refusing well before the byte-format ceiling could
+matter is the same durable conclusion either way. Door and warp targets are also clamped before any byte-masking could matter: `byte(value,
 limit)` (`main/build/textcompile.js`) and `resolveEntityByte`'s own `Math.min(...)`
 (`main/build/generate.js`) both bound a stored operand against the *project's own current screen
 count* — a limit that would itself need to exceed 255 before a legitimate target of 256 could survive
@@ -1778,6 +1817,18 @@ capacity check (`battleRegionBytes`, `BASE_BATTLE_CODE_BYTES_BY_MAPPER`, `BATTLE
 `main/build/battletables.js`, asserted in `test/unit/bankedbytes.test.js`) rather than fighting
 kernel-lo's exhausted margin. Naming that precedent is as far as this item goes; which bank a
 streaming driver would live in, and what it would cost, is undesigned.
+
+**The dozen refusals cited above are pre-diet: the zero-page kernel diet (`docs/design-kernel-diet.md`,
+done note under item 5 above) closed every one of them, recovering roughly 590 kernel-lo bytes and
+440 banked bytes per board.** MMC3's Save+Move-no-item row no longer holds 88 bytes free before
+Sting/SFX/a bound tile close it — none of those three close it anymore, and CLAUDE.md's own
+"Documented limitations" paragraph names none of these as a current refusal. The old "almost
+certainly cannot ship as ordinary conditional kernel-lo code" conclusion above was a preference
+based on margins that no longer hold — the recovered headroom is comparable to the low end of item
+12's own 500-1000+ byte floor estimate for the rendering path, which the diet leaves unchanged.
+Whether a streaming driver would fit as ordinary kernel-lo code, or needs its own bank the way the
+battle system does, is an open, unmeasured question against a fresh budget for the actual feature
+combination and driver — not settled by this note, in either direction.
 
 **This is likely to be board-gated, for capacity reasons rather than register ones.** `rpgCapable()`
 (`shared/cartridge.js`) is the existing precedent for a whole feature gated on what a board can
@@ -1914,7 +1965,14 @@ still has no built mechanism to even measure: the refusal is accepted as a docum
 (`checkCapacity` still offers dropping Move, dropping Save, or switching to MMC1), not a gate on
 shipping. (The persistent-tile-change comparison this sentence used to draw no longer applies: that
 reading shipped as switch-bound tiles, and item 6's own section above and CLAUDE.md now measure its
-cost directly rather than leaving it undesigned.)
+cost directly rather than leaving it undesigned.) ~~The 11-byte MMC3 refusal, and every other
+documented-limitation refusal named in this section and in item 6's own section above, is accepted
+and not chased with another diet.~~ — **superseded, done**: the zero-page kernel diet
+(`docs/design-kernel-diet.md`, done note under item 5 above) chased every one of them after all,
+engine-wide, re-measuring roughly 590 kernel-lo bytes and 440 banked bytes per board back and
+closing this exact MMC3 Save+Move+item row along with the rest. This section's own figures — the
+7745/8192 UNROM 512 and 7589/8192 MMC3 reservations, the 11-byte shortfall — are pre-diet history,
+kept for the reasoning; CLAUDE.md's "Current allowance figures" carry what is live today.
 
 The rest of item 3 also has a better claim on being next than its position suggests, for the same
 kind of reason it was cheap: none of the remaining bullets cost any ROM either. Item 1 made 64

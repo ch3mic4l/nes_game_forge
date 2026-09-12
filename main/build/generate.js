@@ -1180,17 +1180,19 @@ export const HERO_NAMING_TITLELESS_KERNEL_ALLOWANCE = 14;
 // part of this delta to begin with; P1-2's own fix, below, is what corrects
 // this term from a wrong 699 that had subtracted 21 instead of 11).
 // Re-measured for the zero-page kernel diet: 683 (down from 709), in
-// dependency order -- the raw combined delta this triangulates from
-// (hero(N+H+ACTION+DEFAULT), action placement) is 811 post-diet, DOWN from
-// 845 pre-diet (709+115+10+11), not unchanged by the diet itself: what is
-// unchanged is that the same 811 falls out of both the titled and the
-// titleless measurement paths, which is what the triangulation test's own
-// two-path agreement checks. Re-deriving with the diet's own corrected N
-// (107) and H (10) gives 811 - 107 - 10 - 11 = 683, confirmed by a real
-// rerun of this file's own triangulation test rather than computed by
-// hand -- this is the exact stale-subtrahend trap docs/design-kernel-diet.md's
-// own §4/§15 predicted (675 + (115-107) = 683) resolved for real, not
-// merely assumed.
+// dependency order -- the raw combined delta this triangulates from is NOT
+// the same number on both measurement paths: the titled path's own raw
+// deltaTitled is 811 post-diet (down from 845 pre-diet: 709+115+10+11), the
+// titleless path's own raw deltaTitleless is 825, 14 higher, because it
+// carries HERO_NAMING_TITLELESS_KERNEL_ALLOWANCE (14) as a fourth subtrahend
+// the titled path never pays. What the triangulation test's own two-path
+// agreement checks is that the two paths converge on the same FINAL 683 once
+// each subtracts its own respective shared terms -- titled: 811 - 107 (N) -
+// 10 (H) - 11 (DEFAULT) = 683; titleless: 825 - 107 (N) - 10 (H) - 14 (HT) -
+// 11 (DEFAULT) = 683 -- confirmed by a real rerun of this file's own
+// triangulation test rather than computed by hand -- this is the exact
+// stale-subtrahend trap docs/design-kernel-diet.md's own §4/§15 predicted
+// (675 + (115-107) = 683) resolved for real, not merely assumed.
 export const NAME_ENTRY_ACTION_KERNEL_ALLOWANCE = 683;
 // init_session's own 11-byte action-side copy loop that reads
 // hero_name_default (engine/combat.asm) -- the loop ALONE, not the table:

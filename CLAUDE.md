@@ -514,9 +514,12 @@ packet-building code can share a frame with whichever *one* of `move_tick`/`wait
 among themselves). `main_loop` calls `flash_tick` before `settle_owed`/`dispatch_input`/`ui_tick`,
 so on a frame where a Flash edge and one of the frozen-world four target the same address, Flash's
 packet is queued first and the other second, landing last in that NMI's drain and winning the
-screen — an author who needs the opposite has to sequence with an explicit `Wait`. Measured against
-real hardware timing via the Mesen Lua layer (`flash_nmi_timing.lua.template`), not jsnes, which
-does not enforce this deadline.
+screen — an author who needs the opposite has to sequence with an explicit `Wait`. Meant to be
+measured against real hardware timing via the Mesen Lua layer
+(`test/lua/flash_nmi_timing.lua.template`, `test/lua/run_flash_nmi_check.sh`), not jsnes, which does
+not enforce it — but as of this commit the runner fails (exit 3), identically before and after the
+zero-page kernel diet, so right now nothing proves this deadline against real timing. A follow-up
+slice, not fixed here.
 
 **A live switch-bound tile is a third producer.** `flip_tick` (`engine/entities.asm`) ticks
 unconditionally from `main_loop`, called *before* `flash_tick` — so on a frame where a flip, a
@@ -524,10 +527,14 @@ Flash edge and one of the frozen-world four all land together, the flip's own pa
 first, Flash's second, and whichever frozen-world tick is running third. The worst-case bound is
 now 81 of `vram_buf`'s 256 bytes, up from 71 with Flash alone.
 `test/lua/bound_tile_nmi_timing.lua.template` (built by `test/lua/build_bound_tile_nmi_roms.mjs`,
-run by `test/lua/run_bound_tile_nmi_check.sh`) proves this exact three-producer frame against real
-Mesen timing, the same "prove the workload, then trust the deadline" shape
-`flash_nmi_timing.lua.template` established. **A fourth independent producer must re-open this
-accounting again, not assume it still holds.**
+run by `test/lua/run_bound_tile_nmi_check.sh`) is meant to prove this exact three-producer frame
+against real Mesen timing, the same "prove the workload, then trust the deadline" shape
+`flash_nmi_timing.lua.template` established — but it proves nothing yet: before the zero-page
+kernel diet its own fixture could not even build (kernel-lo overflow, "253 bytes needed, 78 free"),
+and after the diet it builds but the runner still fails, exit 3, the dialog never opened. So as of
+this commit the three-producer deadline above is asserted by nothing, for a reason unrelated to the
+diet. **A fourth independent producer must re-open this accounting again once the runner is fixed,
+not assume it still holds.**
 
 `box_close` keeps no copy of what the box covered: the box is tile rows 24-29, which is exactly
 metatile rows 12-14 with no half-row left over, so it rebuilds those rows straight out of
@@ -999,6 +1006,12 @@ capacity philosophy (below, under "The Code Forge") refuses to model — the ker
 fixed 8,192-byte region shared by engine code and every project's own lookup tables, and
 `checkCapacity` (`main/build/generate.js`) has to know both halves exactly. Seven rules hold that
 model together, and they are the ones any change to this ledger has to keep:
+
+Every figure in "Current allowance figures" further down was re-measured by the zero-page kernel
+diet (`docs/design-kernel-diet.md`) and is post-diet. The design doc's own §6 records a one-time
+acceptance step for that sweep — label order, relocated-table addresses and whole-ROM data equality
+outside the swept code — structural and data preservation, not a proof of runtime behaviour, which
+the test suite, `npm run smoke` and the Mesen checks assert separately.
 
 - **A conditional feature's cost is a separate generated allowance, never folded into a base.**
   `kernelCodeBytes` charges Move, Turn, Wait, Save, Sting, Sfx, switch-bound tiles, Fade/Flash and
@@ -1640,6 +1653,17 @@ Each of these cost real debugging time and now has a regression test. They are e
   (`docs/design-magic-power.md` §13 item 11); regression test in `test/unit/codebuild.test.js`, "a
   column-0 `.if` is read by nesasm as a label...", with indented controls proving the column is what
   fails, not the snippet.
+- **nesasm v3.1 assembles a bare zero-page operand as 3-byte absolute, not the 2-byte zero-page
+  encoding, unless it carries a `<` prefix.** Every zero-page operand in `engine/*.asm` went
+  unprefixed for the engine's entire life — 1431 sites across 20 files — costing roughly 590
+  kernel-lo bytes and 440 banked bytes per board. `<` is not free to add blind, either: on a name
+  whose value resolves to `$100` or above, nesasm refuses it outright ("Incorrect zero page
+  address!") but still exits 0
+  — the pipeline's own `# N error(s)` count, not the exit code, is what actually fails the build.
+  Regression test `test/unit/zeropage.test.js`, three directions (an admitted bare operand, a `<`
+  on a name resolving too high, and a `<` in an addressing mode the 6502 has no zero-page form of)
+  over the shared equate resolver and per-mnemonic mode table in `test/lib/equates.js`. See
+  `docs/design-kernel-diet.md` for the full sweep and the ledger it re-measured.
 
 ## Conventions
 
