@@ -516,12 +516,12 @@ packet-building code can share a frame with whichever *one* of `move_tick`/`wait
 among themselves). `main_loop` calls `flash_tick` before `settle_owed`/`dispatch_input`/`ui_tick`,
 so on a frame where a Flash edge and one of the frozen-world four target the same address, Flash's
 packet is queued first and the other second, landing last in that NMI's drain and winning the
-screen — an author who needs the opposite has to sequence with an explicit `Wait`. Meant to be
-measured against real hardware timing via the Mesen Lua layer
-(`test/lua/flash_nmi_timing.lua.template`, `test/lua/run_flash_nmi_check.sh`), not jsnes, which does
-not enforce it — but as of this commit the runner fails (exit 3), identically before and after the
-zero-page kernel diet, so right now nothing proves this deadline against real timing. A follow-up
-slice, not fixed here.
+screen — an author who needs the opposite has to sequence with an explicit `Wait`. Proven against
+real hardware timing via the Mesen Lua layer (`test/lua/flash_nmi_timing.lua.template`,
+`test/lua/run_flash_nmi_check.sh`), not jsnes, which does not enforce it. Trap this check itself
+caught: its fixture is built from `sample/` and inherits whatever `sample/` turns on — hero naming
+going live there (882b454) put the naming grid between the script's B press and the box, with
+nothing in `npm test` able to see it.
 
 **A live switch-bound tile is a third producer.** `flip_tick` (`engine/entities.asm`) ticks
 unconditionally from `main_loop`, called *before* `flash_tick` — so on a frame where a flip, a
@@ -529,14 +529,10 @@ Flash edge and one of the frozen-world four all land together, the flip's own pa
 first, Flash's second, and whichever frozen-world tick is running third. The worst-case bound is
 now 81 of `vram_buf`'s 256 bytes, up from 71 with Flash alone.
 `test/lua/bound_tile_nmi_timing.lua.template` (built by `test/lua/build_bound_tile_nmi_roms.mjs`,
-run by `test/lua/run_bound_tile_nmi_check.sh`) is meant to prove this exact three-producer frame
-against real Mesen timing, the same "prove the workload, then trust the deadline" shape
-`flash_nmi_timing.lua.template` established — but it proves nothing yet: before the zero-page
-kernel diet its own fixture could not even build (kernel-lo overflow, "253 bytes needed, 78 free"),
-and after the diet it builds but the runner still fails, exit 3, the dialog never opened. So as of
-this commit the three-producer deadline above is asserted by nothing, for a reason unrelated to the
-diet. **A fourth independent producer must re-open this accounting again once the runner is fixed,
-not assume it still holds.**
+run by `test/lua/run_bound_tile_nmi_check.sh`) proves this exact three-producer frame against real
+Mesen timing, the same "prove the workload, then trust the deadline" shape
+`flash_nmi_timing.lua.template` established. **A fourth independent producer must re-open this
+accounting again, not assume it still holds.**
 
 `box_close` keeps no copy of what the box covered: the box is tile rows 24-29, which is exactly
 metatile rows 12-14 with no half-row left over, so it rebuilds those rows straight out of

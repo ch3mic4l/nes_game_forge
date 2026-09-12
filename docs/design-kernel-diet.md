@@ -990,7 +990,10 @@ design's own delivery does not depend on either answer to.
   kernel-lo overflow, "253 bytes needed, 78 free" — now builds, but the runner fails exit 3, dialog
   never opened); `test/lua/run_flash_nmi_check.sh` (exit 3, identical pre- and post-diet). Reviewer
   GO at round 2 — a post-implementation review, separate from this design document's own five
-  rounds below.
+  rounds below. Update: both NMI checks now pass — their fixtures inherited `sample/`'s hero
+  naming (turned on by 882b454, unrelated to this diet) and booted into the naming grid instead of
+  reaching the box; the `sample-mmc3` `engine_smoke` result above was never a defect, as already
+  noted.
 - **v5 (this round)**: fix round 4, two P2s addressed, both in §7's split-trace specification —
   1. the one-time acceptance check moved from raw register-value sequence equality to a normalized
      projection — `$C000`/`$8000`/`$8001`'s own meaningful values kept, `$E000`/`$C001`/`$E001`'s

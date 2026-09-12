@@ -37,6 +37,7 @@ import { loadProject, saveProject } from '../../main/project-io.js';
 import { buildProject } from '../../main/build/pipeline.js';
 import { parseSymbolFile } from '../../main/build/symbols.js';
 import { Emulator } from '../../renderer/emulator/runcontrol.js';
+import { projectUsesNameEntry } from '../../shared/project.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const SAMPLE = path.join(ROOT, 'sample');
@@ -71,6 +72,14 @@ async function main() {
       }
     ];
     project.code = { overrides: [], files: [{ name: 'flash_left_probe.asm', text: 'flash_left_probe:\n  .db flash_left\n' }] };
+    // sample/ ships hero naming on; this fixture proves the box-raise NMI
+    // frame, not the naming grid, so turn it off before saveProject, so the
+    // on-disk project buildProject reads back and the in-memory one cannot
+    // disagree.
+    project.party[0].renamable = false;
+    if (projectUsesNameEntry(project)) {
+      throw new Error('this fixture must never boot into the naming grid -- projectUsesNameEntry says otherwise');
+    }
     await saveProject(dir, project);
     const built = await buildProject({ dir, project, log: () => {} });
 
