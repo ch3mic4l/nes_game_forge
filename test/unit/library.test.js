@@ -20,6 +20,7 @@ import { normalizeSfx, normalizeSong, sfxFrameLength, songFrameLength, SFX_MAX_S
 import {
   createProject,
   createScreen,
+  createMap,
   validateProject,
   reservedPaletteSlots,
   bgRefCount,
@@ -1235,6 +1236,19 @@ test('32: a successful monster import can leave the project one build away from 
 
   const project = createProject('Test', 'action');
   assert.equal(hasLookupError(project), false, 'a fresh project must not already be over the kernel-lo ceiling');
+  // 20 filler maps first: the zero-page kernel diet (docs/design-kernel-diet.md)
+  // gave this fresh action project real extra kernel-lo headroom, so
+  // LIMITS.actors' own 255-actor ceiling is no longer enough on its own to
+  // reach a real overflow (255 actors x 8 bytes/actor falls short of the
+  // new margin) -- re-derived against a real checkCapacity() run, not
+  // assumed. Extra maps (9 bytes/map of kernel-lo table space, unrelated to
+  // the actor id-space axis this test is actually about) close the rest of
+  // the gap so the actor-filling loop below still finds a real tip-over
+  // point within the actor cap.
+  for (let m = 0; m < 20; m++) {
+    project.maps.push(createMap(project.maps.length));
+  }
+  assert.equal(hasLookupError(project), false, 'the filler maps alone must not already tip the project over');
   let guard = 0;
   while (!hasLookupError(project) && guard < LIMITS.actors) {
     project.sprites.actors.push(fillerActor(project.sprites.actors.length));

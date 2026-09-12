@@ -536,10 +536,17 @@ test('magic power and magic defence pass the combined base+tables equality check
 test('a mag-only build assembles byte-identical whether or not magic defence exists in the source', {
   skip: !hasNesasm && 'nesasm not found on PATH'
 }, async (t) => {
+  // Re-pinned after the zero-page kernel diet (docs/design-kernel-diet.md):
+  // every operand's own encoding changed (2 bytes instead of 3), which
+  // reflows every later address in the ROM, so the whole-ROM hash moves even
+  // though the byte-identity claim itself -- MAGIC_DEFENCE_ENABLED's `.if`
+  // blocks assemble to nothing when off -- is untouched by the diet (it is a
+  // property of conditional assembly, not of which addressing mode a
+  // surviving instruction uses).
   const HASHES = {
-    1: '2fec99599343d1002f9d6139eb4a82cb446f5e664c3f6c08013980fbf4ad68e3', // MMC1
-    4: '6c3edd4da93c6378c63d0428e2249bb9ec7f2bfad6b15c34b64c31ab64c51785', // MMC3
-    30: '1f37c3aebe01ef08322eec515012b63dd0b2d38b4ee9bd7c06f2772a9e34db2b' // UNROM 512
+    1: '8ba6e4b3b6df1cf98b6b3b351d4dbab0594f467cc7e97dc2f0625c98e959521a', // MMC1
+    4: '9b3eae678572ed33fbaced014fd621b96c4df5fe1bb957465e4f6d3df3db5e36', // MMC3
+    30: 'f94f6c2cfcb4f04b336e628bc99ece76254fae051ea379286ed68a3ab033e418' // UNROM 512
   };
   for (const mapper of CAPABLE_MAPPERS) {
     const dir = await fsp.mkdtemp(path.join(os.tmpdir(), 'forge-magonly-hash-'));
@@ -758,7 +765,7 @@ test('the fixture assembles into its region with at least BATTLE_SLACK to spare'
 // a full RPG_LIMITS.spells-entry catalog, each spell carrying a real (non-flat)
 // amountMin/amountMax range rather than the flat one every other fixture in
 // this file authors, still has to fit the region on MMC3 -- the tightest of
-// the three boards (46 bytes of stock code more than MMC1/UNROM 512, per
+// the three boards (40 bytes of stock code more than MMC1/UNROM 512, per
 // BASE_BATTLE_CODE_BYTES_BY_MAPPER's own comment). A flat range would let
 // spell_amount_n compile to 1 for every entry and prove nothing about the two
 // new table rows a ranged spell actually occupies (spell_amount_n,
@@ -1181,17 +1188,18 @@ test('a relocating override of the battle sources is warned about, not refused',
 
 // The reviewer's case, and the one this advice got wrong first time round: the
 // region is the same 8 KB on every RPG-capable board, but the stock code
-// inside it is not the same size, so MMC3 has 46 fewer usable bytes than the
-// other two. A flat "changing mapper does not help" is false for an MMC3
-// project over by 1 to 46 bytes, which is exactly the band where an author is
-// most likely to act on it.
-test('an MMC3 project inside the 46-byte band is told a different board fits', async () => {
+// inside it is not the same size, so MMC3 has 40 fewer usable bytes than the
+// other two (re-measured after the zero-page kernel diet,
+// docs/design-kernel-diet.md -- was 46). A flat "changing mapper does not
+// help" is false for an MMC3 project over by 1 to 40 bytes, which is exactly
+// the band where an author is most likely to act on it.
+test('an MMC3 project inside the 40-byte band is told a different board fits', async () => {
   const base = await loadProject(SAMPLE_RPG);
   const mmc3 = SUPPORTED_MAPPERS.find((entry) => entry.id === 4);
   const mmc1 = SUPPORTED_MAPPERS.find((entry) => entry.id === 1);
   assert.equal(
     baseBattleCodeBytes(mmc3) - baseBattleCodeBytes(mmc1),
-    46,
+    40, // recalibrated for the zero-page kernel diet, docs/design-kernel-diet.md -- was 46
     'this test exists because MMC3 spends more of the region on stock code — re-derive it if that changed'
   );
 
@@ -1251,7 +1259,7 @@ test('an MMC3 project inside the 46-byte band is told a different board fits', a
   assert.ok(far, 'the crowded project should still be refused');
   assert.match(far.message, /changing mapper does not help/);
   // ...and the reason given has to be true. MMC1 and UNROM 512 really do spend
-  // 46 fewer bytes of this region than MMC3; what they do not spend is *enough*
+  // 40 fewer bytes of this region than MMC3; what they do not spend is *enough*
   // less to close a deficit this size. Saying they spend no less at all would
   // be a false statement in support of a correct conclusion.
   assert.doesNotMatch(
@@ -1361,17 +1369,17 @@ test('switchableMappers offers only boards the project survives switching to', a
       }
     }
   });
-  // No filler content needed: sample-rpg's own Save+Move combination on
-  // UNROM 512 already overflows kernel-lo by 167 bytes on its own, now that
-  // the forced title cost is actually charged -- this is the same documented
-  // shortfall test/unit/kernelbytes.test.js's own "does not build" test
-  // covers, re-derived here rather than assumed (that file's own comment
-  // beside the figure has the full history of how it moved; this one only
-  // needs the current number, checked directly above rather than repeated
-  // by hand). Before finding 1 of the phase4a round-2 review, this needed 12
-  // filler actors to reach a real deficit at all, because a titleless
-  // project was undercharged by exactly the title term; that undercharge is
-  // what this whole case is now free of.
+  // Filler content needed again: the zero-page kernel diet
+  // (docs/design-kernel-diet.md) closed sample-rpg's own Save+Move
+  // combination on UNROM 512 for real (see
+  // test/unit/kernelbytes.test.js's own "builds" test for that row), so this
+  // case -- which needs a project that genuinely still overflows kernel-lo
+  // there -- pads the same way that file's own padded sibling does, rather
+  // than relying on the unpadded row alone.
+  const heavyTemplate = heavy.sprites.actors[0];
+  for (let i = 0; i < 70; i++) {
+    heavy.sprites.actors.push({ ...structuredClone(heavyTemplate), id: 2000 + i, name: `HeavyFiller${i}` });
+  }
   const { fixedBytes, tableBytes } = kernelTableBytes(heavy);
   const u512 = resolveMapper(30);
   assert.ok(

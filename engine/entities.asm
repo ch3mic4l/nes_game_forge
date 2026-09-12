@@ -11,25 +11,25 @@ spawn_clear:
   dex
   bpl spawn_clear
   lda #NO_ENTITY            ; ...and owing nothing, until a record says otherwise
-  sta pending_ent
+  sta <pending_ent
   lda #1                    ; the rest of this frame is not the new screen's
-  sta screen_fresh
+  sta <screen_fresh
 
-  ldy flat_screen
+  ldy <flat_screen
   lda screen_ent_lo,y
-  sta esptr_lo
+  sta <esptr_lo
   lda screen_ent_hi,y
-  sta esptr_hi
+  sta <esptr_hi
 
   ldy #0
   lda [esptr_lo],y          ; how many actors this screen places
   bne spawn_any             ; inverted into a jump: the record loop between here
   jmp spawn_done            ; and spawn_done is past a branch's 128-byte reach
 spawn_any:
-  sta ent_tmp
+  sta <ent_tmp
   ldx #0
   lda #0
-  sta ent_spawn_rec          ; the first record in the list is ordinal 0
+  sta <ent_spawn_rec          ; the first record in the list is ordinal 0
   iny                       ; step past the count byte
 ; A record is read into the slot before it is known whether it belongs there: the
 ; slot is only marked active once the hide switch has had its say, so a hidden
@@ -70,13 +70,13 @@ spawn_place:
   lda #ENT_PRESENT           ; visible by default -- ENT_HIDDEN is never set
                               ; here, so Hide never survives a redraw
   sta ent_active,x
-  lda ent_spawn_rec
+  lda <ent_spawn_rec
   sta ent_record,x          ; which record this slot came from, not which slot
-  sty ent_tmp2              ; the record cursor, which the actor lookup needs Y for
+  sty <ent_tmp2              ; the record cursor, which the actor lookup needs Y for
   ldy ent_actor,x
   lda actor_hp,y
   sta ent_hp,x
-  ldy ent_tmp2
+  ldy <ent_tmp2
   lda #DIR_DOWN
   sta ent_dir,x
   lda #0
@@ -99,8 +99,8 @@ spawn_armed:
   cpx #MAX_ENTITIES
   beq spawn_done            ; every slot is full; the rest of the list is over
 spawn_next:
-  inc ent_spawn_rec          ; the next record is one further along, placed or not
-  dec ent_tmp
+  inc <ent_spawn_rec          ; the next record is one further along, placed or not
+  dec <ent_tmp
   beq spawn_done
   jmp spawn_loop            ; the top of the record is out of a branch's reach
 spawn_done:
@@ -156,7 +156,7 @@ update_entities_next:
 entity_patrol:
   ldy ent_actor,x
   lda actor_speed,y
-  sta ent_tmp
+  sta <ent_tmp
 
   lda ent_dir,x
   cmp #DIR_LEFT
@@ -166,31 +166,31 @@ entity_patrol:
   beq entity_patrol_up
   lda ent_y,x               ; down
   clc
-  adc ent_tmp
+  adc <ent_tmp
   cmp #MAX_Y+1
   bcs entity_turn
-  sta ent_tmp2
+  sta <ent_tmp2
   clc
   adc #BODY_B
-  sta probe_y
+  sta <probe_y
   jmp entity_patrol_probe_v
 entity_patrol_up:
   lda ent_y,x
   sec
-  sbc ent_tmp
+  sbc <ent_tmp
   bcc entity_turn
-  sta ent_tmp2
+  sta <ent_tmp2
   clc
   adc #BODY_T
-  sta probe_y
+  sta <probe_y
 entity_patrol_probe_v:
   lda ent_x,x
   clc
   adc #BODY_L
-  sta probe_x
+  sta <probe_x
   jsr probe_solid
   bne entity_turn
-  lda ent_tmp2
+  lda <ent_tmp2
   sta ent_y,x
   rts
 
@@ -199,31 +199,31 @@ entity_patrol_horizontal:
   beq entity_patrol_left
   lda ent_x,x               ; right
   clc
-  adc ent_tmp
+  adc <ent_tmp
   cmp #MAX_X+1
   bcs entity_turn
-  sta ent_tmp2
+  sta <ent_tmp2
   clc
   adc #BODY_R
-  sta probe_x
+  sta <probe_x
   jmp entity_patrol_probe_h
 entity_patrol_left:
   lda ent_x,x
   sec
-  sbc ent_tmp
+  sbc <ent_tmp
   bcc entity_turn
-  sta ent_tmp2
+  sta <ent_tmp2
   clc
   adc #BODY_L
-  sta probe_x
+  sta <probe_x
 entity_patrol_probe_h:
   lda ent_y,x
   clc
   adc #BODY_B
-  sta probe_y
+  sta <probe_y
   jsr probe_solid
   bne entity_turn
-  lda ent_tmp2
+  lda <ent_tmp2
   sta ent_x,x
   rts
 
@@ -238,13 +238,13 @@ entity_turn:
 entity_chase:
   ldy ent_actor,x
   lda actor_speed,y
-  sta ent_tmp
+  sta <ent_tmp
 
   ; Face the axis the player is furthest away on. Deciding this once, before
   ; moving, is what makes the Sprite Forge's sideways animation reachable:
   ; setting the facing inside each movement branch let the second branch
   ; overwrite the first, so a chaser only ever faced up or down.
-  lda player_x
+  lda <player_x
   sec
   sbc ent_x,x
   bcs entity_chase_dx
@@ -252,8 +252,8 @@ entity_chase:
   clc
   adc #1
 entity_chase_dx:
-  sta chase_dx
-  lda player_y
+  sta <chase_dx
+  lda <player_y
   sec
   sbc ent_y,x
   bcs entity_chase_dy
@@ -261,11 +261,11 @@ entity_chase_dx:
   clc
   adc #1
 entity_chase_dy:
-  sta chase_dy
-  cmp chase_dx              ; A still holds the vertical distance
+  sta <chase_dy
+  cmp <chase_dx              ; A still holds the vertical distance
   bcc entity_chase_face_side
 
-  lda player_y
+  lda <player_y
   cmp ent_y,x
   bcc entity_chase_face_up
   lda #DIR_DOWN
@@ -277,7 +277,7 @@ entity_chase_face_up:
   jmp entity_chase_horizontal
 
 entity_chase_face_side:
-  lda player_x
+  lda <player_x
   cmp ent_x,x
   bcc entity_chase_face_left
   lda #DIR_RIGHT
@@ -288,71 +288,71 @@ entity_chase_face_left:
   sta ent_dir,x
 
 entity_chase_horizontal:
-  lda player_x
+  lda <player_x
   cmp ent_x,x
   beq entity_chase_vertical
   bcs entity_chase_right
   lda ent_x,x               ; player is to the left
   sec
-  sbc ent_tmp
+  sbc <ent_tmp
   bcc entity_chase_vertical
-  sta ent_tmp2
+  sta <ent_tmp2
   clc
   adc #BODY_L
-  sta probe_x
+  sta <probe_x
   jmp entity_chase_probe_h
 entity_chase_right:
   lda ent_x,x
   clc
-  adc ent_tmp
+  adc <ent_tmp
   cmp #MAX_X+1
   bcs entity_chase_vertical
-  sta ent_tmp2
+  sta <ent_tmp2
   clc
   adc #BODY_R
-  sta probe_x
+  sta <probe_x
 entity_chase_probe_h:
   lda ent_y,x
   clc
   adc #BODY_B
-  sta probe_y
+  sta <probe_y
   jsr probe_solid
   bne entity_chase_vertical
-  lda ent_tmp2
+  lda <ent_tmp2
   sta ent_x,x
 
 entity_chase_vertical:
-  lda player_y
+  lda <player_y
   cmp ent_y,x
   beq entity_chase_done
   bcs entity_chase_down
   lda ent_y,x               ; player is above
   sec
-  sbc ent_tmp
+  sbc <ent_tmp
   bcc entity_chase_done
-  sta ent_tmp2
+  sta <ent_tmp2
   clc
   adc #BODY_T
-  sta probe_y
+  sta <probe_y
   jmp entity_chase_probe_v
 entity_chase_down:
   lda ent_y,x
   clc
-  adc ent_tmp
+  adc <ent_tmp
   cmp #MAX_Y+1
   bcs entity_chase_done
-  sta ent_tmp2
+  sta <ent_tmp2
   clc
   adc #BODY_B
-  sta probe_y
+  sta <probe_y
 entity_chase_probe_v:
   lda ent_x,x
   clc
   adc #BODY_L
-  sta probe_x
+  sta <probe_x
   jsr probe_solid
   bne entity_chase_done
-  lda ent_tmp2
+  lda <ent_tmp2
   sta ent_y,x
 entity_chase_done:
   rts
@@ -371,7 +371,7 @@ entity_pickup:
   bne entity_pickup_done
   lda #0
   sta ent_active,x
-  inc pickups
+  inc <pickups
   .if ITEMS_ENABLED
   lda ent_to_scr,x
   .endif
@@ -389,13 +389,13 @@ entity_door:
   jsr entity_touching_player
   bne entity_door_done
   lda #1
-  sta warp_ready
+  sta <warp_ready
   lda ent_to_scr,x
-  sta warp_scr
+  sta <warp_scr
   lda ent_to_x,x
-  sta warp_x
+  sta <warp_x
   lda ent_to_y,x
-  sta warp_y
+  sta <warp_y
 entity_door_done:
   rts
 
@@ -410,10 +410,10 @@ arm_event:
   lda ent_event,x
   cmp #NO_EVENT
   beq arm_event_done
-  lda pending_ent
+  lda <pending_ent
   cmp #NO_ENTITY
   bne arm_event_done        ; something already owns this frame
-  stx pending_ent
+  stx <pending_ent
 arm_event_done:
   rts
 
@@ -452,7 +452,7 @@ entity_trigger_done:
 entity_touching_player:
   lda ent_x,x
   sec
-  sbc player_x
+  sbc <player_x
   bcs entity_touching_dx
   eor #$FF
   clc
@@ -462,7 +462,7 @@ entity_touching_dx:
   bcs entity_touching_far
   lda ent_y,x
   sec
-  sbc player_y
+  sbc <player_y
   bcs entity_touching_dy
   eor #$FF
   clc
@@ -491,20 +491,20 @@ entity_touching_far:
 ; needed.
 entity_animation:
   lda ent_actor,x
-  sta ptr_lo
+  sta <ptr_lo
   lda #0
-  asl ptr_lo
+  asl <ptr_lo
   rol a
-  asl ptr_lo
+  asl <ptr_lo
   rol a                     ; {a,ptr_lo} = ent_actor,x * 4, as a 16-bit value
-  sta ptr_hi
-  lda ptr_lo
+  sta <ptr_hi
+  lda <ptr_lo
   clc
   adc #LOW(actor_anim_dir)
-  sta ptr_lo
-  lda ptr_hi
+  sta <ptr_lo
+  lda <ptr_hi
   adc #HIGH(actor_anim_dir)
-  sta ptr_hi
+  sta <ptr_hi
   ldy ent_dir,x
   lda [ptr_lo],y
   rts
@@ -516,22 +516,22 @@ entity_animate:
   beq entity_animate_done
   tay
   lda anim_count,y
-  sta ent_tmp2
+  sta <ent_tmp2
   lda anim_ptr_lo,y
-  sta ptr_lo
+  sta <ptr_lo
   lda anim_ptr_hi,y
-  sta ptr_hi
+  sta <ptr_hi
 
   ; Turning can swap in a shorter animation, so bring the frame back in range
   ; before anything indexes it.
   lda ent_frame,x
-  cmp ent_tmp2
+  cmp <ent_tmp2
   bcc entity_animate_in_range
   lda #0
   sta ent_frame,x
   sta ent_timer,x
 entity_animate_in_range:
-  lda ent_tmp2
+  lda <ent_tmp2
   cmp #2
   bcc entity_animate_done   ; a single frame never advances
 
@@ -547,7 +547,7 @@ entity_animate_in_range:
   sta ent_timer,x
   inc ent_frame,x
   lda ent_frame,x
-  cmp ent_tmp2
+  cmp <ent_tmp2
   bcc entity_animate_done
   lda #0
   sta ent_frame,x
@@ -573,7 +573,7 @@ draw_entities_next:
   cpx #MAX_ENTITIES
   bne draw_entities_loop
 
-  ldy oam_idx
+  ldy <oam_idx
   beq draw_entities_done    ; the shadow is completely full
 draw_entities_park:
   lda #$FF                  ; reloaded every pass: the four INYs below do not
@@ -595,18 +595,18 @@ draw_one_entity_show:
   lda ent_y,x               ; OAM Y sits one scanline above the sprite
   sec
   sbc #1
-  sta de_ey
+  sta <de_ey
   lda ent_x,x
-  sta de_ex
+  sta <de_ex
 
   jsr entity_animation
   cmp #NO_ANIM
   beq draw_one_entity_none
   tay
   lda anim_ptr_lo,y
-  sta ptr_lo
+  sta <ptr_lo
   lda anim_ptr_hi,y
-  sta ptr_hi
+  sta <ptr_hi
   lda ent_frame,x
   asl a
   tay
@@ -622,20 +622,20 @@ draw_metasprite:
   tay
   lda ms_count,y
   beq draw_metasprite_done
-  sta de_left
+  sta <de_left
   lda ms_ptr_lo,y
-  sta msptr_lo
+  sta <msptr_lo
   lda ms_ptr_hi,y
-  sta msptr_hi
+  sta <msptr_hi
 
   txa
   pha                       ; free X up for the sprite shadow index
   ldy #0
 draw_metasprite_tile:
-  ldx oam_idx
+  ldx <oam_idx
   lda [msptr_lo],y          ; y offset
   clc
-  adc de_ey
+  adc <de_ey
   sta OAM,x
   iny
   lda [msptr_lo],y          ; tile
@@ -646,15 +646,15 @@ draw_metasprite_tile:
   iny
   lda [msptr_lo],y          ; x offset
   clc
-  adc de_ex
+  adc <de_ex
   sta OAM+3,x
   iny
   txa
   clc
   adc #4
-  sta oam_idx
+  sta <oam_idx
   beq draw_metasprite_full  ; wrapped past the 64th sprite
-  dec de_left
+  dec <de_left
   bne draw_metasprite_tile
 draw_metasprite_full:
   pla
@@ -693,13 +693,13 @@ draw_metasprite_done:
   .if MOVE_ENABLED
 move_tick:
   jsr move_speed
-  cmp mv_left
+  cmp <mv_left
   bcc move_tick_step        ; a whole step still fits inside what is left
-  lda mv_left               ; the last one, and short
+  lda <mv_left               ; the last one, and short
 move_tick_step:
-  sta mv_step
+  sta <mv_step
 
-  lda mv_dir
+  lda <mv_dir
   cmp #DIR_LEFT
   bcs move_tick_horizontal
 
@@ -707,31 +707,31 @@ move_tick_step:
   beq move_tick_up
   jsr move_get_y            ; down
   clc
-  adc mv_step
+  adc <mv_step
   cmp #MAX_Y+1
   bcs move_wall
-  sta mv_tmp
+  sta <mv_tmp
   clc
   adc #BODY_B
-  sta probe_y
+  sta <probe_y
   jmp move_tick_probe_v
 move_tick_up:
   jsr move_get_y
   sec
-  sbc mv_step
+  sbc <mv_step
   bcc move_wall
-  sta mv_tmp
+  sta <mv_tmp
   clc
   adc #BODY_T
-  sta probe_y
+  sta <probe_y
 move_tick_probe_v:
   jsr move_get_x
   clc
   adc #BODY_L
-  sta probe_x
+  sta <probe_x
   jsr probe_solid
   bne move_wall
-  lda mv_tmp
+  lda <mv_tmp
   jsr move_set_y
   jmp move_advance
 
@@ -747,31 +747,31 @@ move_tick_horizontal:
   beq move_tick_left
   jsr move_get_x            ; right
   clc
-  adc mv_step
+  adc <mv_step
   cmp #MAX_X+1
   bcs move_wall
-  sta mv_tmp
+  sta <mv_tmp
   clc
   adc #BODY_R
-  sta probe_x
+  sta <probe_x
   jmp move_tick_probe_h
 move_tick_left:
   jsr move_get_x
   sec
-  sbc mv_step
+  sbc <mv_step
   bcc move_wall
-  sta mv_tmp
+  sta <mv_tmp
   clc
   adc #BODY_L
-  sta probe_x
+  sta <probe_x
 move_tick_probe_h:
   jsr move_get_y
   clc
   adc #BODY_B
-  sta probe_y
+  sta <probe_y
   jsr probe_solid
   bne move_wall
-  lda mv_tmp
+  lda <mv_tmp
   jsr move_set_x
   ; fall through
 
@@ -779,10 +779,10 @@ move_tick_probe_h:
 ; sliding, then take it off what is owed.
 move_advance:
   jsr move_animate
-  lda mv_left
+  lda <mv_left
   sec
-  sbc mv_step
-  sta mv_left
+  sbc <mv_step
+  sta <mv_left
   bne move_tick_running
   jmp move_finish
 move_tick_running:
@@ -793,7 +793,7 @@ move_tick_running:
 ; nothing else in the world is running.
 move_blocked:
   lda #0
-  sta mv_left
+  sta <mv_left
 move_finish:
   jmp script_resume
 
@@ -805,46 +805,46 @@ move_finish:
 
 ; A = the mover's x.
 move_get_x:
-  lda mv_who
+  lda <mv_who
   bne move_get_x_player
-  ldx talk_ent
+  ldx <talk_ent
   lda ent_x,x
   rts
 move_get_x_player:
-  lda player_x
+  lda <player_x
   rts
 
 ; A = the mover's y.
 move_get_y:
-  lda mv_who
+  lda <mv_who
   bne move_get_y_player
-  ldx talk_ent
+  ldx <talk_ent
   lda ent_y,x
   rts
 move_get_y_player:
-  lda player_y
+  lda <player_y
   rts
 
 ; A = the x to store.
 move_set_x:
-  ldx mv_who
+  ldx <mv_who
   bne move_set_x_player
-  ldx talk_ent
+  ldx <talk_ent
   sta ent_x,x
   rts
 move_set_x_player:
-  sta player_x
+  sta <player_x
   rts
 
 ; A = the y to store.
 move_set_y:
-  ldx mv_who
+  ldx <mv_who
   bne move_set_y_player
-  ldx talk_ent
+  ldx <talk_ent
   sta ent_y,x
   rts
 move_set_y_player:
-  sta player_y
+  sta <player_y
   rts
 
   .endif
@@ -859,13 +859,13 @@ move_set_y_player:
 ; way rather than folded into MOVE_KERNEL_ALLOWANCE or TURN_KERNEL_ALLOWANCE.
   .if FACE_ENABLED
 move_face:
-  ldx mv_who
+  ldx <mv_who
   bne move_face_player
-  ldx talk_ent
+  ldx <talk_ent
   sta ent_dir,x
   rts
 move_face_player:
-  sta player_dir
+  sta <player_dir
   rts
   .endif
 
@@ -877,9 +877,9 @@ move_face_player:
 ; would wait forever on a walk that never happens. One pixel a frame is the
 ; slowest a move can be and still be one.
 move_speed:
-  lda mv_who
+  lda <mv_who
   bne move_speed_player
-  ldx talk_ent
+  ldx <talk_ent
   ldy ent_actor,x
   lda actor_speed,y
   bne move_speed_done
@@ -896,20 +896,20 @@ move_speed_player:
 ; the anim_frame/anim_timer pair update_player_anim owns -- so this is the one
 ; place that difference is spelled out, the same as the accessors above.
 move_animate:
-  lda mv_who
+  lda <mv_who
   bne move_animate_player
-  ldx talk_ent
+  ldx <talk_ent
   jmp entity_animate
 move_animate_player:
-  inc anim_timer
-  lda anim_timer
+  inc <anim_timer
+  lda <anim_timer
   cmp #ANIM_RATE
   bcc move_animate_done
   lda #0
-  sta anim_timer
-  lda anim_frame
+  sta <anim_timer
+  lda <anim_frame
   eor #1
-  sta anim_frame
+  sta <anim_frame
 move_animate_done:
   rts
   .endif
@@ -920,7 +920,7 @@ move_animate_done:
 ; into, so there is nothing here but the countdown and the resume.
   .if WAIT_ENABLED
 wait_tick:
-  dec wt_left
+  dec <wt_left
   bne wait_tick_running
   jmp script_resume
 wait_tick_running:
@@ -940,26 +940,26 @@ wait_tick_running:
 ; on target -- resuming a script that had already moved on.
   .if FADE_ENABLED
 fade_tick:
-  dec fade_left
+  dec <fade_left
   bne fade_tick_rts
-  lda fade_step
-  cmp fade_target
+  lda <fade_step
+  cmp <fade_target
   bcc fade_tick_darken        ; fade_step < target: darkening
-  dec fade_step               ; fade_step > target: lightening
+  dec <fade_step               ; fade_step > target: lightening
   jmp fade_apply
 fade_tick_darken:
-  inc fade_step
+  inc <fade_step
 fade_apply:
   jsr fade_apply_palette
-  lda fade_step
-  cmp fade_target
+  lda <fade_step
+  cmp <fade_target
   beq fade_tick_done          ; this was the terminal step
   lda #FADE_STEP_FRAMES        ; more steps remain -- reload the hold timer,
-  sta fade_left                ; and nothing else: fade_left staying non-zero
+  sta <fade_left                ; and nothing else: fade_left staying non-zero
   rts                          ; is exactly what tells ui_tick to come back
 fade_tick_done:
   lda #0
-  sta fade_left                ; the terminal step's own signature: fade_left
+  sta <fade_left                ; the terminal step's own signature: fade_left
                                 ; at 0 is what stops ui_tick dispatching into
                                 ; this routine again next frame
   jmp script_resume
@@ -1010,12 +1010,12 @@ fade_tick_rts:
 ; body below, so a Fade-only build assembles identically to before.
   .if PALETTE_FX_ENABLED
 fade_apply_palette:
-  lda fade_step
+  lda <fade_step
   asl a
   asl a
   asl a
   asl a
-  sta tmp2                    ; the amount to subtract this step (fade_step*$10)
+  sta <tmp2                    ; the amount to subtract this step (fade_step*$10)
   lda #$3F
   ldy #$00
   jsr vram_open
@@ -1023,7 +1023,7 @@ fade_apply_palette:
 fade_apply_loop:
   lda palette_data,x
   sec
-  sbc tmp2
+  sbc <tmp2
   bcs fade_apply_check        ; no borrow: fell cleanly within the target row
   lda #$0F                    ; borrowed past row 0: clamp to safe black
 fade_apply_check:
@@ -1124,7 +1124,7 @@ flip_tick_done:
 
   .if FLASH_ENABLED
 flash_tick:
-  lda flash_left
+  lda <flash_left
   beq flash_tick_rts          ; idle -- nothing to do
   cmp #FLASH_PENDING
   beq flash_tick_confirm      ; last tick queued the restore -- this tick just
@@ -1134,10 +1134,10 @@ flash_tick:
   bne flash_tick_hold          ; not the tick that just armed it
   jsr flash_apply_on           ; first tick since arming: push the flash colour
 flash_tick_hold:
-  dec flash_left
+  dec <flash_left
   bne flash_tick_rts           ; more hold frames remain
   lda #FLASH_PENDING
-  sta flash_left               ; NOT 0 -- a redraw landing on THIS exact frame,
+  sta <flash_left               ; NOT 0 -- a redraw landing on THIS exact frame,
                                 ; before the NMI that drains the packet below
                                 ; has run, must still see something
                                 ; outstanding (vram_reset, engine/text.asm)
@@ -1147,7 +1147,7 @@ flash_tick_hold:
   rts
 flash_tick_confirm:
   lda #0
-  sta flash_left                ; genuinely idle now -- the restore is drained
+  sta <flash_left                ; genuinely idle now -- the restore is drained
   rts
 flash_tick_rts:
   rts

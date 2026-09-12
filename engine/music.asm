@@ -25,7 +25,7 @@
 ; as honest as this wrapper does, rather than needing to know a rule only
 ; set_music followed.
 set_music:
-  cmp cur_song
+  cmp <cur_song
   beq set_music_done
   jmp music_play
 set_music_done:
@@ -44,11 +44,11 @@ set_music_done:
 ; both run through before this ever sees the new screen -- makes the compare
 ; fail and the map's own song takes over regardless of what was playing.
 apply_map_music:
-  ldy flat_screen
+  ldy <flat_screen
   lda screen_map,y
-  cmp cur_map
+  cmp <cur_map
   beq apply_map_music_done
-  sta cur_map
+  sta <cur_map
   tay
   lda map_song,y
   jmp set_music
@@ -61,7 +61,7 @@ apply_map_music_done:
 ; storing here rather than by convention -- a rule spread across callers is a
 ; rule a Code Forge routine calling this directly has no way to know.
 music_play:
-  sta cur_song
+  sta <cur_song
   .if STING_ENABLED
   ; A sting borrows cur_song for its own duration (script_op_sting, engine/
   ; script.asm), so any request that reaches here while one is playing is, by
@@ -87,17 +87,17 @@ music_play_no_cancel:
   ; across it so `tya` can restore the song index afterward.
   tay
   lda song_inst_base,y
-  sta mus_inst_base
+  sta <mus_inst_base
   tya
   asl a
   asl a                     ; four channel pointers per song
-  sta mus_tmp
+  sta <mus_tmp
 
   ldx #0
 music_play_loop:
   txa
   clc
-  adc mus_tmp
+  adc <mus_tmp
   tay
   lda song_ptr_lo,y
   sta mus_ptr_lo,x
@@ -107,7 +107,7 @@ music_play_loop:
   sta mus_dur,x
   sta mus_step,x
   sta mus_trig,x
-  lda mus_inst_base         ; every channel starts on this song's base
+  lda <mus_inst_base         ; every channel starts on this song's base
   sta mus_inst,x            ; instrument (BASE + 0), not local 0 unadjusted
   lda #$FF
   sta mus_note,x
@@ -118,7 +118,7 @@ music_play_loop:
   lda #$0F                  ; enable both pulses, triangle and noise
   sta $4015
   lda #1
-  sta mus_enabled
+  sta <mus_enabled
   rts
 
 ; A separate entry point as well as music_play's own NO_SONG case, so a
@@ -127,9 +127,9 @@ music_play_loop:
 ; relying on always arriving here through music_play's branch.
 music_stop:
   lda #NO_SONG
-  sta cur_song
+  sta <cur_song
   lda #0
-  sta mus_enabled
+  sta <mus_enabled
   .if STING_ENABLED
   ; init_session calls this directly, bypassing music_play/set_music entirely
   ; -- without this, a sting mid-flight at a game over or a fresh boot would
@@ -159,10 +159,10 @@ music_stop_skip_noise:
 
 music_tick:
   .if SFX_ENABLED
-  lda mus_enabled
+  lda <mus_enabled
   ora sfx_state
   .else
-  lda mus_enabled
+  lda <mus_enabled
   .endif
   beq music_tick_done
   ldx #0
@@ -176,7 +176,7 @@ music_tick_loop:
   jsr sfx_channel_tick
   jmp music_tick_next
 music_tick_normal:
-  lda mus_enabled
+  lda <mus_enabled
   beq music_tick_next          ; Silence -- do not run this channel's normal
                                 ; logic against a stopped song's stale state
   .endif
@@ -224,9 +224,9 @@ music_channel_done:
 ; Pull events off this channel's stream until one sets a duration.
 music_read_event:
   lda mus_ptr_lo,x
-  sta ptr_lo
+  sta <ptr_lo
   lda mus_ptr_hi,x
-  sta ptr_hi
+  sta <ptr_hi
 
 music_read_fetch:
   ldy #0
@@ -235,12 +235,12 @@ music_read_fetch:
   bne music_read_not_loop
   iny                       ; $FF is followed by the address to jump to
   lda [ptr_lo],y
-  sta mus_tmp
+  sta <mus_tmp
   iny
   lda [ptr_lo],y
-  sta ptr_hi
-  lda mus_tmp
-  sta ptr_lo
+  sta <ptr_hi
+  lda <mus_tmp
+  sta <ptr_lo
   jmp music_read_fetch
 
 music_read_not_loop:
@@ -250,7 +250,7 @@ music_read_not_loop:
   bcc music_read_note
   and #$07                  ; $F0-$F7 selects a LOCAL instrument 0-7 --
   clc                       ; item 12's per-song BASE turns that into this
-  adc mus_inst_base         ; song's own absolute slot in the flat tables
+  adc <mus_inst_base         ; song's own absolute slot in the flat tables
   sta mus_inst,x
   jsr music_advance_one
   jmp music_read_fetch
@@ -270,19 +270,19 @@ music_read_duration:
   ldy #1
   lda [ptr_lo],y
   sta mus_dur,x
-  lda ptr_lo                ; step past the event and its duration byte
+  lda <ptr_lo                ; step past the event and its duration byte
   clc
   adc #2
   sta mus_ptr_lo,x
-  lda ptr_hi
+  lda <ptr_hi
   adc #0
   sta mus_ptr_hi,x
   rts
 
 music_advance_one:
-  inc ptr_lo
+  inc <ptr_lo
   bne music_advance_one_done
-  inc ptr_hi
+  inc <ptr_hi
 music_advance_one_done:
   rts
 
@@ -303,7 +303,7 @@ music_apply_pulse:
   txa
   asl a
   asl a
-  sta mus_reg               ; $4000 or $4004
+  sta <mus_reg               ; $4000 or $4004
   ldy mus_inst,x
   lda inst_duty,y
   asl a
@@ -313,26 +313,26 @@ music_apply_pulse:
   asl a
   asl a                     ; duty occupies the top two bits
   ora #$30                  ; halt the length counter, use constant volume
-  ora mus_vol
-  ldy mus_reg
+  ora <mus_vol
+  ldy <mus_reg
   sta $4000,y
 
   lda mus_trig,x            ; retuning every frame would restart the phase
   beq music_apply_done
   ldy mus_note,x
   lda period_lo,y
-  ldy mus_reg
+  ldy <mus_reg
   sta $4002,y
   ldy mus_note,x
   lda period_hi,y
   ora #$08
-  ldy mus_reg
+  ldy <mus_reg
   sta $4003,y
 music_apply_done:
   rts
 
 music_apply_triangle:
-  lda mus_vol               ; the triangle has no volume, only on or off
+  lda <mus_vol               ; the triangle has no volume, only on or off
   bne music_apply_triangle_on
   jmp music_silence_triangle
 music_apply_triangle_on:
@@ -357,16 +357,16 @@ music_apply_triangle_period:
 
 music_apply_noise:
   lda #$30
-  ora mus_vol
+  ora <mus_vol
   sta $400C
   lda mus_trig,x
   beq music_apply_done
   lda mus_note,x
   and #$0F
-  sta mus_tmp
+  sta <mus_tmp
   lda #15                   ; higher notes pick shorter periods
   sec
-  sbc mus_tmp
+  sbc <mus_tmp
   sta $400E
   lda #$08
   sta $400F
@@ -396,9 +396,9 @@ music_silence_noise:
 music_volume:
   ldy mus_inst,x
   lda inst_env_lo,y
-  sta ptr_lo
+  sta <ptr_lo
   lda inst_env_hi,y
-  sta ptr_hi
+  sta <ptr_hi
   lda mus_step,x
   cmp inst_env_len,y
   bcc music_volume_read
@@ -407,7 +407,7 @@ music_volume_read:
   tay
   lda [ptr_lo],y
   and #$0F
-  sta mus_vol
+  sta <mus_vol
   rts
 
 ; ------------------------------------------------------------------ sting
@@ -436,11 +436,11 @@ sting_snapshot_loop:
   inx
   cpx #24
   bne sting_snapshot_loop
-  lda cur_song
+  lda <cur_song
   sta sting_shadow_song
-  lda mus_enabled
+  lda <mus_enabled
   sta sting_shadow_enabled
-  lda mus_inst_base
+  lda <mus_inst_base
   sta sting_shadow_inst_base
   rts
 
@@ -465,11 +465,11 @@ sting_restore_loop:
   cpx #24
   bne sting_restore_loop
   lda sting_shadow_song
-  sta cur_song
+  sta <cur_song
   lda sting_shadow_inst_base
-  sta mus_inst_base
+  sta <mus_inst_base
   lda sting_shadow_enabled
-  sta mus_enabled
+  sta <mus_enabled
   beq sting_restore_silence
   ldx #0
 sting_retrig_loop:
@@ -534,7 +534,7 @@ sfx_channel_tick:
   ; sfx_state == 2: the cleanup frame -- resolve exactly once, then idle.
   lda #0
   sta sfx_state
-  lda mus_enabled
+  lda <mus_enabled
   beq sfx_tick_cleanup_silence
   lda #1
   sta force_trig+SFX_CHANNEL   ; hand back -- see design-sfx.md §3.4 for what
@@ -580,9 +580,9 @@ sfx_channel_tick_done:
 ; genuinely separate code from music_read_event, not a shared reader.
 sfx_read_event:
   lda sfx_ptr_lo
-  sta ptr_lo
+  sta <ptr_lo
   lda sfx_ptr_hi
-  sta ptr_hi
+  sta <ptr_hi
   ldy #0
   lda [ptr_lo],y
   cmp #MUS_REST
@@ -598,11 +598,11 @@ sfx_read_duration:
   ldy #1
   lda [ptr_lo],y
   sta sfx_dur
-  lda ptr_lo
+  lda <ptr_lo
   clc
   adc #2
   sta sfx_ptr_lo
-  lda ptr_hi
+  lda <ptr_hi
   adc #0
   sta sfx_ptr_hi
   rts
@@ -630,10 +630,10 @@ sfx_apply_sounding:
   sta sfx_trig
   lda sfx_note
   and #$0F
-  sta tmp
+  sta <tmp
   lda #15
   sec
-  sbc tmp
+  sbc <tmp
   sta $400E
   lda #$08
   sta $400F

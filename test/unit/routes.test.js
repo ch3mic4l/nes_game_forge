@@ -279,6 +279,17 @@ test('a route-wrapped Move still triggers the documented UNROM 512 refusal, with
       }
     }
   });
+  // Padded: the zero-page kernel diet (docs/design-kernel-diet.md) closed
+  // this exact combination for real on its own (see
+  // test/unit/kernelbytes.test.js's own "builds" test for the bare-Move
+  // row), so this test -- which is about the route-wrapped advice string,
+  // not whether the row itself still refuses -- pads back into a real
+  // deficit the same way that file's own padded sibling does (70 filler
+  // actors, deficit 74).
+  const template = project.sprites.actors[0];
+  for (let i = 0; i < 70; i++) {
+    project.sprites.actors.push({ ...structuredClone(template), id: 1000 + i, name: `Filler${i}` });
+  }
   const { problems } = checkCapacity(project);
   const error = problems.find((p) => p.severity === 'error' && /lookup tables/.test(p.message));
   assert.ok(error, 'this combination is a documented refusal on UNROM 512 -- checkCapacity must still refuse it');

@@ -376,8 +376,11 @@ test('do_interact enters the bag with the actor’s own id when the project has 
 // unconditional kernel code (music.asm is always assembled), so it moves
 // every project's hash regardless of items or gameType, the identical shape
 // the actor*4 fix's own re-pin above already explains. ROM size unchanged
-// (40976).
-const PINNED_BASELINE_HASH = 'a7d9612ed96b95d094d2d652faf6516b86efa1f3651837b3101a45b5612ed92a';
+// (40976). Re-pinned again after the zero-page kernel diet
+// (docs/design-kernel-diet.md): every operand's own encoding changed (2
+// bytes instead of 3 for a surviving zero-page access), reflowing the whole
+// ROM's contents without changing its size.
+const PINNED_BASELINE_HASH = 'a439c25f4b62b2f8a8e41eeb788d67c88a1c1f0538e9f4fb7310abb53a589be0';
 const PINNED_BASELINE_SIZE = 40976;
 
 test('a project with no items and no Save is byte-identical to the pre-phase-4b master build', async (t) => {
@@ -548,7 +551,12 @@ test('a project with no items and no Save is byte-identical to the pre-phase-4b 
 // (engine/music.asm) now look up and apply a per-song instrument BASE --
 // unconditional kernel code, present on every RPG build regardless of items,
 // Save or spells. Size still unchanged (still 147472).
-const PINNED_RPG_BASELINE_HASH = 'a252a26b4360f19bedeeb31cd220cfe4ce804ef09cea133a4ba01372d773eea0';
+//
+// Re-pinned again after the zero-page kernel diet (docs/design-kernel-diet.md):
+// every operand's own encoding changed (2 bytes instead of 3 for a surviving
+// zero-page access), reflowing the whole ROM's contents without changing its
+// size.
+const PINNED_RPG_BASELINE_HASH = '6e5db72887cd78fceaa51ce3e360bb5fd878ad871e586bb4a4fe2af12048d637';
 const PINNED_RPG_BASELINE_SIZE = 147472;
 
 test('an RPG with no items and no Save is byte-identical to the pre-round-4 master build', async (t) => {

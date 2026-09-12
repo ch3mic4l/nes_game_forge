@@ -8,19 +8,19 @@
 set_screen_ptr:
   ; Screen data lives in the switchable window, so select its bank before any of
   ; the pointers below are dereferenced. A no-op on an unbanked cartridge.
-  ldy flat_screen
+  ldy <flat_screen
   lda screen_bank,y
   jsr switch_prg_bank
 
-  ldy flat_screen
+  ldy <flat_screen
   lda screen_mt_lo,y
-  sta mtptr_lo
+  sta <mtptr_lo
   lda screen_mt_hi,y
-  sta mtptr_hi
+  sta <mtptr_hi
   lda screen_at_lo,y
-  sta atptr_lo
+  sta <atptr_lo
   lda screen_at_hi,y
-  sta atptr_hi
+  sta <atptr_hi
   rts
 
 ; Must run with rendering disabled.
@@ -32,20 +32,20 @@ draw_screen:
   sta $2006
 
   lda #0
-  sta ds_row
+  sta <ds_row
 draw_screen_row:
-  lda ds_row
+  lda <ds_row
   asl a
   asl a
   asl a
   asl a                     ; row * 16 = offset of this row's first metatile
-  sta ds_base
+  sta <ds_base
 
   ldx #0                    ; upper half: top-left and top-right of each
 draw_screen_top:
   txa
   clc
-  adc ds_base
+  adc <ds_base
   tay
   .if BOUND_TILE_ENABLED
   jsr bound_tile_lookup
@@ -65,7 +65,7 @@ draw_screen_top:
 draw_screen_bottom:
   txa
   clc
-  adc ds_base
+  adc <ds_base
   tay
   .if BOUND_TILE_ENABLED
   jsr bound_tile_lookup
@@ -81,8 +81,8 @@ draw_screen_bottom:
   cpx #16
   bne draw_screen_bottom
 
-  inc ds_row
-  lda ds_row
+  inc <ds_row
+  lda <ds_row
   cmp #15
   bne draw_screen_row
 
@@ -134,14 +134,14 @@ redraw_screen:
   ; flag, so it stays 0 here and this branch is skipped -- which is exactly
   ; "a plain redraw with a fade at level N must not restore brightness," the
   ; sticky property a completed fade depends on.
-  lda fade_reload
+  lda <fade_reload
   beq redraw_screen_no_fade_reload
   lda #0
-  sta fade_reload
+  sta <fade_reload
   jsr load_palette
 redraw_screen_no_fade_reload:
   .endif
-  ldy flat_screen
+  ldy <flat_screen
   lda screen_tileset,y
   jsr switch_chr_bank
   jsr set_screen_ptr
@@ -197,11 +197,11 @@ btl_hit:
 ; switch-matching pass is tile_switch_changed's own, separate walk.
 rebuild_bound_cache:
   ldx #0                    ; active-cache write cursor
-  ldy flat_screen
+  ldy <flat_screen
   lda screen_bound_lo,y
-  sta bdptr_lo
+  sta <bdptr_lo
   lda screen_bound_hi,y
-  sta bdptr_hi
+  sta <bdptr_hi
   ldy #0
   lda [bdptr_lo],y          ; this screen's own authored-binding count (0-8)
   beq rbc_done

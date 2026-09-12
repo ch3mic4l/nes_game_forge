@@ -2,32 +2,32 @@
 
 update_player:
   lda #0
-  sta moving
+  sta <moving
 
   ; player_iframes counts down here regardless of which health model this
   ; build has: an action game's own invincible window, and an RPG's cooldown
   ; on its Damage-metatile hazard (player_hazard, engine/combat.asm) -- see
   ; that routine's own header for why reusing this byte is what keeps a
   ; standing player from being drained once a frame.
-  lda player_iframes
+  lda <player_iframes
   beq update_player_knock
-  dec player_iframes
+  dec <player_iframes
 update_player_knock:
   .if !BATTLE_ENABLED
-  lda kb_timer
+  lda <kb_timer
   beq update_player_input
   jsr knockback_step        ; thrown clear of whatever hit you: no pad this frame
   jmp update_player_anim
   .endif
 
 update_player_input:
-  lda pad
+  lda <pad
   and #BTN_LEFT
   beq update_player_right
   jsr move_left
   jmp update_player_vertical
 update_player_right:
-  lda pad
+  lda <pad
   and #BTN_RIGHT
   beq update_player_vertical
   jsr move_right
@@ -41,21 +41,21 @@ update_player_right:
 ; monsters. So the frame stops here instead. main_loop clears screen_fresh
 ; before calling this, and stops as well.
 update_player_vertical:
-  lda screen_fresh
+  lda <screen_fresh
   bne update_player_crossed
-  lda pad
+  lda <pad
   and #BTN_UP
   beq update_player_down
   jsr move_up
   jmp update_player_anim
 update_player_down:
-  lda pad
+  lda <pad
   and #BTN_DOWN
   beq update_player_anim
   jsr move_down
 
 update_player_anim:
-  lda screen_fresh
+  lda <screen_fresh
   bne update_player_crossed
   jsr player_hazard         ; after moving, so stepping onto a spike costs a heart
   .if BATTLE_ENABLED
@@ -63,26 +63,26 @@ update_player_anim:
   ; engine/combat.asm) -- an encounter reaching its threshold on the very same
   ; step must not then overwrite ST_GAMEOVER with ST_BATTLE, so this stops the
   ; frame exactly as a screen edge or a fresh screen already does above.
-  lda game_state
+  lda <game_state
   bne update_player_crossed
   jsr check_encounter       ; ...and wandering monsters count the steps
   .endif
-  lda moving
+  lda <moving
   beq update_player_stand
-  inc anim_timer
-  lda anim_timer
+  inc <anim_timer
+  lda <anim_timer
   cmp #ANIM_RATE
   bcc update_player_done
   lda #0
-  sta anim_timer
-  lda anim_frame
+  sta <anim_timer
+  lda <anim_frame
   eor #1
-  sta anim_frame
+  sta <anim_frame
   rts
 update_player_stand:
   lda #0
-  sta anim_frame
-  sta anim_timer
+  sta <anim_frame
+  sta <anim_timer
 update_player_done:
 update_player_crossed:
   rts
@@ -112,31 +112,31 @@ update_player_crossed:
 
 move_left:
   lda #DIR_LEFT
-  sta player_dir
-  lda player_x
-  cmp cur_speed
+  sta <player_dir
+  lda <player_x
+  cmp <cur_speed
   bcs move_left_inside
   jmp cross_left            ; already against the edge: change screen
 move_left_inside:
   sec
-  sbc cur_speed
-  sta new_pos
+  sbc <cur_speed
+  sta <new_pos
   clc
   adc #BODY_L
   jmp move_horizontal_probe
 
 move_right:
   lda #DIR_RIGHT
-  sta player_dir
-  lda player_x
+  sta <player_dir
+  lda <player_x
   clc
-  adc cur_speed
-  sta new_pos
+  adc <cur_speed
+  sta <new_pos
   cmp #MAX_X+1
   bcc move_right_inside
   jmp cross_right
 move_right_inside:
-  lda new_pos
+  lda <new_pos
   clc
   adc #BODY_R
   jmp move_horizontal_probe
@@ -144,22 +144,22 @@ move_right_inside:
 ; A = the probe point's x (already offset by BODY_L or BODY_R). new_pos is
 ; the candidate player_x a caller has already stored.
 move_horizontal_probe:
-  sta probe_x
-  lda player_y
+  sta <probe_x
+  lda <player_y
   clc
   adc #BODY_T
-  sta probe_y
+  sta <probe_y
   jsr probe_solid
   bne move_horizontal_done
-  lda player_y
+  lda <player_y
   clc
   adc #BODY_B
-  sta probe_y
+  sta <probe_y
   jsr probe_solid
   bne move_horizontal_done
-  lda new_pos
-  sta player_x
-  inc moving
+  lda <new_pos
+  sta <player_x
+  inc <moving
 ; move_left_done / move_right_done: kept as aliases on this same address (no
 ; bytes emitted) rather than deleted -- a Code Forge user file is free to
 ; reference a stock engine label, and these two existed before the dedup.
@@ -172,31 +172,31 @@ move_right_done:
 
 move_up:
   lda #DIR_UP
-  sta player_dir
-  lda player_y
-  cmp cur_speed
+  sta <player_dir
+  lda <player_y
+  cmp <cur_speed
   bcs move_up_inside
   jmp cross_up
 move_up_inside:
   sec
-  sbc cur_speed
-  sta new_pos
+  sbc <cur_speed
+  sta <new_pos
   clc
   adc #BODY_T
   jmp move_vertical_probe
 
 move_down:
   lda #DIR_DOWN
-  sta player_dir
-  lda player_y
+  sta <player_dir
+  lda <player_y
   clc
-  adc cur_speed
-  sta new_pos
+  adc <cur_speed
+  sta <new_pos
   cmp #MAX_Y+1
   bcc move_down_inside
   jmp cross_down
 move_down_inside:
-  lda new_pos
+  lda <new_pos
   clc
   adc #BODY_B
   jmp move_vertical_probe
@@ -204,22 +204,22 @@ move_down_inside:
 ; A = the probe point's y (already offset by BODY_T or BODY_B). new_pos is
 ; the candidate player_y a caller has already stored.
 move_vertical_probe:
-  sta probe_y
-  lda player_x
+  sta <probe_y
+  lda <player_x
   clc
   adc #BODY_L
-  sta probe_x
+  sta <probe_x
   jsr probe_solid
   bne move_vertical_done
-  lda player_x
+  lda <player_x
   clc
   adc #BODY_R
-  sta probe_x
+  sta <probe_x
   jsr probe_solid
   bne move_vertical_done
-  lda new_pos
-  sta player_y
-  inc moving
+  lda <new_pos
+  sta <player_y
+  inc <moving
 ; move_up_done / move_down_done: the same aliasing move_horizontal_done makes
 ; above, for the same reason.
 move_vertical_done:
@@ -233,16 +233,16 @@ move_down_done:
 ; The metatile index is (y & $F0) + (x >> 4) because a screen is 16 metatiles
 ; wide, so the row stride and the metatile size are the same 16.
 probe_type:
-  lda probe_y
+  lda <probe_y
   and #$F0
-  sta tmp
-  lda probe_x
+  sta <tmp
+  lda <probe_x
   lsr a
   lsr a
   lsr a
   lsr a
   clc
-  adc tmp
+  adc <tmp
   tay
   .if BOUND_TILE_ENABLED
   jsr bound_tile_lookup
@@ -266,43 +266,43 @@ probe_solid_done:
 ; ------------------------------------------------------- screen transitions
 
 cross_left:
-  ldy flat_screen
+  ldy <flat_screen
   lda screen_left,y
   cmp #NO_SCREEN
   beq cross_none
-  sta flat_screen
+  sta <flat_screen
   lda #MAX_X
-  sta player_x
+  sta <player_x
   jmp redraw_screen
 
 cross_right:
-  ldy flat_screen
+  ldy <flat_screen
   lda screen_right,y
   cmp #NO_SCREEN
   beq cross_none
-  sta flat_screen
+  sta <flat_screen
   lda #0
-  sta player_x
+  sta <player_x
   jmp redraw_screen
 
 cross_up:
-  ldy flat_screen
+  ldy <flat_screen
   lda screen_up,y
   cmp #NO_SCREEN
   beq cross_none
-  sta flat_screen
+  sta <flat_screen
   lda #MAX_Y
-  sta player_y
+  sta <player_y
   jmp redraw_screen
 
 cross_down:
-  ldy flat_screen
+  ldy <flat_screen
   lda screen_down,y
   cmp #NO_SCREEN
   beq cross_none
-  sta flat_screen
+  sta <flat_screen
   lda #0
-  sta player_y
+  sta <player_y
   jmp redraw_screen
 
 cross_none:

@@ -85,7 +85,9 @@ import {
   projectWithoutNameToken,
   metaspriteKernelBytes,
   RPG_LIMITS,
-  BUTTONS
+  LIMITS,
+  BUTTONS,
+  validateProject
 } from '../../shared/project.js';
 import { fontBankSplit, projectUsesText } from '../../shared/font.js';
 import { createSong } from '../../shared/audio.js';
@@ -1087,46 +1089,22 @@ test(
     // assumption: measured as its own build, the same as every other
     // configuration here.
     //
-    // UNROM 512 is deliberately excluded here, not merely unmeasured: this
-    // combination on that board is a real, currently unfixed shortfall --
-    // sample-rpg with Save and Move together overflows kernel-lo bank 62 by
-    // enough that nesasm itself refuses it (`Bank overflow, offset > $1FFF!`
-    // in music.asm), confirmed by building past checkCapacity's own refusal
-    // and letting the assembler answer directly, the same way this file's
-    // own MMC3 story below was confirmed. That story closed by finding 12
-    // bytes; this one is 167 short (checkCapacity: "the lookup tables need
-    // 129 bytes but only -38 are free alongside the engine code"). This
-    // comment used to record 155, but that was already stale before this
-    // session touched anything: rebuilding the identical scenario at the
-    // commit before item 6 (a worktree at aa8c628) gives "-35 are free",
-    // a true pre-existing deficit of 164, not 155. Of the 12-byte gap
-    // between the two recorded figures, only 3 are battle_end's own
-    // talk_ent fix (item 6's Turn/Wait slice, unconditional kernel-lo cost
-    // on every RPG build) -- the other 9 were this comment drifting from
-    // reality before that fix ever existed, caught only by re-measuring
-    // rather than arithmetic on the old number. Which reads as a real gap
-    // rather than reservation conservatism, and closing it is not this
-    // phase's own work. Bracketed precisely, not just excluded here, by
-    // "sample-rpg with Save and Move on UNROM 512 does not build" below.
-    //
-    // MMC3 joined UNROM 512's exclusion once already, for one revision of
-    // this file, for the identical reason UNROM 512 stays excluded:
-    // sample-rpg carries a live item, and ITEM_KERNEL_ALLOWANCE (16 bytes,
-    // measured, main/build/generate.js) plus item_metasprite's own table
-    // byte was real cost the combination's 21-byte real margin (1 byte of
-    // modelled headroom beyond KERNEL_SLACK) did not have. A kernel diet in
-    // engine/player.asm (the four movement direction routines' identical
-    // two-corner probe-and-commit tail, collapsed into one shared routine
-    // per axis) recovered enough real kernel-lo headroom that this
-    // combination briefly closed again, with real headroom rather than a
-    // single spare byte -- and round 2 (ROADMAP item 5 phase 4c,
-    // use_item_apply) spent exactly that headroom and 8 bytes more.
-    // ITEM_EFFECT_KERNEL_ALLOWANCE_BY_GAME_TYPE.rpg (60 bytes, measured) is
-    // real cost the diet's own margin did not have room for a second time,
-    // the identical shape this exclusion already documents for UNROM 512 --
-    // see "sample-rpg with Save, Move and its one live item does not build
-    // on MMC3" below, the direct mirror of the UNROM 512 test just past it.
-    for (const mapper of saveMappers.filter((m) => m.id !== 30 && m.id !== 4)) {
+    // MMC3 and UNROM 512 used to be excluded here: sample-rpg's own Save +
+    // Move + one live item combination was a real, documented shortfall on
+    // both boards (167 bytes short on UNROM 512, 90 on MMC3 at last
+    // measurement before this diet). The zero-page kernel diet
+    // (docs/design-kernel-diet.md) re-measured every kernel-lo term this
+    // combination pays and closed both for real, with real margin rather
+    // than a single spare byte -- confirmed directly by this very loop now
+    // covering all three boards with the standard assertCovers band, and by
+    // "sample-rpg with Save and Move on UNROM 512 builds" / "sample-rpg with
+    // Save, Move and its one live item does not build on MMC1 [padded]"
+    // below, which keep the pre-diet history and the still-refusing padded
+    // controls on record. Round 1 review finding 4b: this exclusion had
+    // gone stale (design §4b already calls for both boards to be included)
+    // and nothing else in the suite replaced this loop's own upper/lower
+    // calibration check for either board.
+    for (const mapper of saveMappers) {
       const { project, codeBytes } = await measureCodeBytes(t, mapper, { withSave: true, withMove: true });
       assertCovers({ mapper, codeBytes }, kernelCodeBytes(project, mapper), 'a live Save command and a live Move command');
     }
@@ -1637,6 +1615,33 @@ function inflateMetasprites(project, count) {
   }
 }
 
+// Round 1 review finding 3: several fixtures below call inflate() with a
+// count that, added to the fixture's own starting actors, exceeds
+// LIMITS.actors (255) -- a real, separate "This project has N actors" error
+// that the tests only ever selected the lookup-tables error away from,
+// leaving each one's own "removing X frees Y and fits" claim untested
+// against a project that could not legally hold that many actors at all.
+// This is the drop-in replacement: it fills up to the real actor ceiling
+// first, then makes up the rest of the identical kernel-lo byte total with
+// zero-frame animations -- kernelTableBytes' own per-animation term is
+// exactly 4 bytes (half a filler actor's 8, verified empirically, the same
+// measurement inflateMetasprites' own header comment above already leans
+// on), so two animations per actor this function could not legally add
+// reproduce the same table-byte contribution a (now illegal) count-many
+// actor-only inflate() would have. Same signature and same total byte cost
+// as inflate() -- every call site below keeps its own already-calibrated
+// count unchanged, only the padding's own composition (never its total)
+// changes when count would otherwise cross the actor ceiling.
+function inflateLegal(project, count) {
+  const maxFillerActors = Math.max(0, LIMITS.actors - project.sprites.actors.length);
+  const actorCount = Math.min(count, maxFillerActors);
+  inflate(project, actorCount);
+  const remainingUnits = count - actorCount; // each unit is one filler actor's own 8-byte cost
+  for (let i = 0; i < remainingUnits * 2; i++) {
+    project.sprites.animations.push({ id: 4000 + i, name: `FillerAnim${i}`, frames: [] });
+  }
+}
+
 test('a kernel-lo shortfall a live Move command alone would close names Move', async () => {
   const project = await loadProject(SAMPLE_RPG);
   project.cartridge.mapper = 4; // MMC3
@@ -1648,11 +1653,11 @@ test('a kernel-lo shortfall a live Move command alone would close names Move', a
     y: 16,
     props: { event: { pages: [{ cond: { type: 'none', arg: 0 }, commands: [{ op: 'move', who: 'self', dir: 'up', dist: 16 }] }] } }
   });
-  // 80, not the original 70: MMC3's own base dropped 70 bytes with the
-  // kernel diet's movement-tail dedup (engine/player.asm), so the old count
-  // no longer produces any deficit at all; re-derived against a real
-  // checkCapacity() run, not assumed from the base delta alone.
-  inflate(project, 80);
+  // 160, not the earlier 80: the zero-page kernel diet (docs/design-kernel-diet.md)
+  // dropped MMC3's own base by roughly 590 bytes, so the old count no longer
+  // produces any deficit at all; re-derived against a real checkCapacity()
+  // run, not assumed from the base delta alone.
+  inflate(project, 160);
   const message = kernelShortfallMessage(project);
   assert.match(message, /removing every Move command/);
   assert.doesNotMatch(message, /Save command/, 'this project never turns Save on, so it must not be offered as a fix');
@@ -1666,50 +1671,50 @@ test('a kernel-lo shortfall a live Move command alone would close names Move', a
 // flat allowances (395 for Move) would miss the 165 bytes SPLIT_KERNEL_ALLOWANCE
 // also frees here and wrongly fall through past a deficit only just over
 // what Move alone frees.
-test('a kernel-lo shortfall Move alone would not close by its own allowance can still close when dropping it also turns off the split term', () => {
-  const project = createProject('Action', 'action');
-  project.cartridge.mapper = 4; // MMC3
-  // The project's only event, and its only command -- the project's sole
-  // reason projectUsesText (and so fontBankSplit) is true at all.
-  project.maps[0].screens[0].entities.push({
-    actorId: 0,
-    x: 16,
-    y: 16,
-    props: { event: { pages: [{ cond: { type: 'none', arg: 0 }, commands: [{ op: 'move', who: 'self', dir: 'up', dist: 16 }] }] } }
-  });
-  // 210, not the earlier 201: handoff-magic/brief-split-term-1.md re-measured
-  // SPLIT_KERNEL_ALLOWANCE at 165, not 19 -- the true cost of MMC3's whole
-  // font-bank split machinery, not just switch_prg_bank's own critical
-  // section -- which widened this test's band from (395, 414] to
-  // (395, 560] (395 + 165). The combined MMC3 reservation for a project that
-  // shows text is unchanged by that fix (base dropped by exactly as much as
-  // the split term grew, conserving the sum), so the deficit at any given
-  // inflate() count is unaffected up to this point -- what changed is how
-  // much room the band itself has to be recentred in. Re-derived against a
-  // real checkCapacity() run: 210 lands the deficit at 476, almost exactly
-  // centred in the new band (477.5 is the midpoint).
-  inflate(project, 210); // deficit 476, strictly above 395 and at or below 560
-  // The band a deficit has to sit in for the split term's own extra bytes to
-  // be the thing making the difference is strictly above Move's own
-  // allowance alone (395) and at or below the combined figure (560) -- below
-  // 395 and Move alone already covers it without the split term in the
-  // picture at all, and above 560 neither figure would close the gap.
-  const deficit = kernelShortfallDeficit(project);
-  const moveAlone = MOVE_KERNEL_ALLOWANCE + FACE_KERNEL_ALLOWANCE;
-  assert.ok(
-    deficit > moveAlone,
-    `deficit ${deficit} must exceed MOVE_KERNEL_ALLOWANCE + FACE_KERNEL_ALLOWANCE (${moveAlone}) alone, or this ` +
-      'case does not exercise the split term being freed alongside Move at all'
-  );
-  assert.ok(
-    deficit <= moveAlone + SPLIT_KERNEL_ALLOWANCE,
-    'deficit ' +
-      `${deficit} must not exceed MOVE_KERNEL_ALLOWANCE + FACE_KERNEL_ALLOWANCE + SPLIT_KERNEL_ALLOWANCE ` +
-      `(${moveAlone + SPLIT_KERNEL_ALLOWANCE}), or dropping Move would not close the gap either`
-  );
-  const message = kernelShortfallMessage(project);
-  assert.match(message, /removing every Move command \(frees 560 bytes\)/);
-});
+test(
+  'a kernel-lo shortfall Move alone would not close by its own allowance can still close when dropping it also turns off the split term',
+  { skip: !hasNesasm && 'nesasm not found on PATH' },
+  async (t) => {
+    const project = createProject('Action', 'action');
+    project.cartridge.mapper = 4; // MMC3
+    // The project's only event, and its only command -- the project's sole
+    // reason projectUsesText (and so fontBankSplit) is true at all.
+    project.maps[0].screens[0].entities.push({
+      actorId: 0,
+      x: 16,
+      y: 16,
+      props: { event: { pages: [{ cond: { type: 'none', arg: 0 }, commands: [{ op: 'move', who: 'self', dir: 'up', dist: 16 }] }] } }
+    });
+    // 275, not the earlier 210: the zero-page kernel diet (docs/design-kernel-diet.md)
+    // re-measured MOVE_KERNEL_ALLOWANCE + FACE_KERNEL_ALLOWANCE to 337 (from
+    // 395) and SPLIT_KERNEL_ALLOWANCE to 151 (from 165), narrowing this test's
+    // own band to (337, 488]. Re-derived against a real checkCapacity() run:
+    // 275 lands the deficit at 404, comfortably inside the new band (412.5 is
+    // the midpoint).
+    inflateLegal(project, 275); // deficit 404, strictly above 337 and at or below 488
+    // The band a deficit has to sit in for the split term's own extra bytes to
+    // be the thing making the difference is strictly above Move's own
+    // allowance alone (337) and at or below the combined figure (488) -- below
+    // 337 and Move alone already covers it without the split term in the
+    // picture at all, and above 488 neither figure would close the gap.
+    const deficit = kernelShortfallDeficit(project);
+    const moveAlone = MOVE_KERNEL_ALLOWANCE + FACE_KERNEL_ALLOWANCE;
+    assert.ok(
+      deficit > moveAlone,
+      `deficit ${deficit} must exceed MOVE_KERNEL_ALLOWANCE + FACE_KERNEL_ALLOWANCE (${moveAlone}) alone, or this ` +
+        'case does not exercise the split term being freed alongside Move at all'
+    );
+    assert.ok(
+      deficit <= moveAlone + SPLIT_KERNEL_ALLOWANCE,
+      'deficit ' +
+        `${deficit} must not exceed MOVE_KERNEL_ALLOWANCE + FACE_KERNEL_ALLOWANCE + SPLIT_KERNEL_ALLOWANCE ` +
+        `(${moveAlone + SPLIT_KERNEL_ALLOWANCE}), or dropping Move would not close the gap either`
+    );
+    const message = kernelShortfallMessage(project);
+    assert.match(message, /removing every Move command \(frees 488 bytes\)/);
+    await assertDropFits(t, project, ['move'], 'Move alone would not close but with the split term freed too');
+  }
+);
 
 test('a kernel-lo shortfall a live Save command alone would close names Save, with that board’s own allowance', async () => {
   const project = await loadProject(SAMPLE_RPG);
@@ -1725,7 +1730,10 @@ test('a kernel-lo shortfall a live Save command alone would close names Save, wi
     y: 16,
     props: { event: { pages: [{ cond: { type: 'none', arg: 0 }, commands: [{ op: 'save' }] }] } }
   });
-  inflate(project, 100);
+  // 170, not the earlier 100: the zero-page kernel diet (docs/design-kernel-diet.md)
+  // dropped MMC1's own base enough that the old count no longer opens any
+  // deficit at all; re-derived against a real checkCapacity() run.
+  inflate(project, 170);
   const message = kernelShortfallMessage(project);
   assert.match(
     message,
@@ -1764,12 +1772,13 @@ test('a kernel-lo shortfall neither Save nor Move would close, but a roomier boa
   // until 119 -- no count opens the window this test needs). A metasprite
   // costs kernel-lo's own spriteBytes term the same way a filler actor does,
   // but is never a row in battleTables' own tables, so it cannot touch the
-  // banked region at all -- see inflateMetasprites' own comment above. 52
-  // metasprites land a 41-byte kernel-lo deficit on UNROM 512 while leaving
-  // MMC1's banked region exactly where it started (re-measured against a
-  // real checkCapacity() run, not derived by arithmetic, per this file's own
-  // rule on why that matters).
-  inflateMetasprites(project, 52);
+  // banked region at all -- see inflateMetasprites' own comment above.
+  // 85, not the earlier 52: the zero-page kernel diet
+  // (docs/design-kernel-diet.md) dropped every board's own kernel-lo base,
+  // widening the window this test needs; re-measured against a real
+  // checkCapacity() run, not derived by arithmetic, per this file's own
+  // rule on why that matters.
+  inflateMetasprites(project, 85);
   const message = kernelShortfallMessage(project);
   assert.match(message, /Try MMC1 in the Build panel/);
 });
@@ -1815,8 +1824,19 @@ test(
     // Zero-tile filler metasprites, not inflateMetasprites (which clones a
     // real, 4-tile template) -- a real tile costs 4 kernel-lo bytes/tile on
     // every board alike and would swamp the small, table-only gap this
-    // reproduction depends on long before the deficit reaches 196.
-    for (let i = 0; i < 220; i++) project.sprites.metasprites.push({ id: 1000 + i, name: `FillerMS${i}`, tiles: [] });
+    // reproduction depends on long before the deficit reaches the target
+    // band. Combined with zero-frame animations (the identical table-only,
+    // no-code-cost shape, LIMITS.metasprites also being 255): the zero-page
+    // kernel diet (docs/design-kernel-diet.md) narrowed the code-only gap
+    // from 195 to 189 and freed hundreds of extra bytes of headroom on every
+    // board, so 220 metasprites alone no longer reaches ANY deficit at all
+    // (confirmed directly: even 252, the most metasprites this project can
+    // hold, leaves 182 bytes free) -- animations fill the rest. 252
+    // metasprites (the cap, 3 already shipped) plus 129 animations lands the
+    // deficit at 194, inside the new (189, 198] band; re-derived against a
+    // real checkCapacity() run, not assumed from the old proportions.
+    for (let i = 0; i < 252; i++) project.sprites.metasprites.push({ id: 1000 + i, name: `FillerMS${i}`, tiles: [] });
+    for (let i = 0; i < 129; i++) project.sprites.animations.push({ id: 2000 + i, name: `FillerAnim${i}`, frames: [] });
 
     const mapper30 = SUPPORTED_MAPPERS.find((m) => m.id === 30);
     const mapper1 = SUPPORTED_MAPPERS.find((m) => m.id === 1);
@@ -1826,14 +1846,14 @@ test(
     };
     const codeSaved = kernelCodeBytes(project, mapper30) - kernelCodeBytes(project, mapper1);
     const tableSaved = occupancyOn(mapper30) - occupancyOn(mapper1) - codeSaved;
-    assert.equal(codeSaved, 195, 'the reproduction must still isolate to exactly 195 code-only bytes saved by MMC1, or this is testing a different shape');
+    assert.equal(codeSaved, 189, 'the reproduction must still isolate to exactly 189 code-only bytes saved by MMC1, or this is testing a different shape');
     assert.equal(tableSaved, 9, 'the reproduction must still isolate to exactly 9 table-only bytes saved by MMC1 (the CHR-RAM streaming tables), or this is testing a different shape');
 
     const { problems } = checkCapacity(project);
     const error = problems.find((p) => p.severity === 'error' && /lookup tables/.test(p.message));
     assert.ok(error, 'expected checkCapacity to refuse this project on UNROM 512');
     const deficit = Number(error.message.match(/need (\d+) bytes but only (-?\d+) are free/)?.[1]) - Number(error.message.match(/need (\d+) bytes but only (-?\d+) are free/)?.[2]);
-    assert.equal(deficit, 196, 'the reproduction must still isolate to exactly a 196-byte deficit, or this is testing a different shape');
+    assert.equal(deficit, 194, 'the reproduction must still isolate to exactly a 194-byte deficit, or this is testing a different shape');
     assert.ok(
       deficit > codeSaved,
       `this case only exercises the bug if the code-only savings (${codeSaved}) alone would NOT cover the deficit (${deficit})`
@@ -1841,7 +1861,7 @@ test(
 
     assert.match(
       error.message,
-      /Try MMC1 in the Build panel — it reserves 204 fewer bytes for the same features\.$/,
+      /Try MMC1 in the Build panel — it reserves 198 fewer bytes for the same features\.$/,
       `expected the full-occupancy MMC1 suggestion; got: ${error.message}`
     );
     assert.doesNotMatch(
@@ -1880,7 +1900,7 @@ test('a mapper suggestion is withheld from a project carrying hand-written code'
   base.cartridge.mapper = 30; // UNROM 512 -- the case above proves MMC1 is offered here
   base.project.titleMap = 0;
   base.project.titleScreen = 0;
-  inflateMetasprites(base, 52); // see the identical recalibration note on the case above
+  inflateMetasprites(base, 85); // see the identical recalibration note on the case above
 
   assert.match(
     kernelShortfallMessage(structuredClone(base)),
@@ -1924,17 +1944,12 @@ test('a mapper suggestion never recommends a board that cannot hold this project
   project.project.titleMap = 0;
   project.project.titleScreen = 0;
   while (project.tilesets.length < 17) project.tilesets.push(createTileset(project.tilesets.length));
-  // 126, not the original 120: the kernel diet's movement-tail dedup
-  // (engine/player.asm) dropped MMC3's own base by 70 bytes, so 120 no
-  // longer produces a deficit at all. Re-derived against a real
-  // checkCapacity() run: 126 currently lands a 72-byte deficit (7 at the
-  // last measurement of this figure), comfortably inside the 206 bytes
-  // MMC1's own savings would otherwise "cover" -- unlike the UNROM 512 case
-  // above, this project's 126 fillers leave the banked battle-code region on
-  // MMC1 with 90 bytes to spare, so the tileset ceiling below is genuinely
-  // the only thing ruling MMC1 out here, not a second, unnoticed capacity
-  // wall.
-  inflate(project, 126); // forces a kernel-lo shortfall MMC1's own savings would otherwise "cover"
+  // 200, not the earlier 126: the zero-page kernel diet
+  // (docs/design-kernel-diet.md) dropped MMC3's own base by roughly 590
+  // bytes, so 126 no longer produces a deficit at all. Re-derived against a
+  // real checkCapacity() run: 200 lands a real deficit MMC1's own savings
+  // would otherwise "cover" were it not for the 17-tileset ceiling below.
+  inflate(project, 200); // forces a kernel-lo shortfall MMC1's own savings would otherwise "cover"
   const before = structuredClone(project);
   const message = kernelShortfallMessage(project);
   assert.doesNotMatch(
@@ -2011,6 +2026,38 @@ function dropCommand(project, op) {
   return cloned;
 }
 
+/**
+ * Round 1 review finding 3: a test claiming "removing X frees Y and fits"
+ * used to stop at the advice message's own text -- never confirming the
+ * counterfactual (X, and only X, actually dropped) is itself free of every
+ * OTHER validation or capacity error, or that it genuinely assembles. This
+ * drops every named op in turn (dropCommand, above), asserts
+ * validateProject and checkCapacity both come back clean of errors, then
+ * does a real nesasm build and asserts the ROM exists -- the same
+ * discipline the file's own assertSfxRefusal/documented-limitation tests
+ * already hold themselves to, generalized so the many single- and
+ * two-verb kernel-lo cases below can share it rather than repeat it.
+ */
+async function assertDropFits(t, project, ops, label) {
+  let dropped = project;
+  for (const op of ops) dropped = dropCommand(dropped, op);
+  assert.deepEqual(
+    validateProject(dropped).filter((p) => p.severity === 'error'),
+    [],
+    `${label}: dropping ${ops.join('+')} should leave the project free of validation errors`
+  );
+  assert.deepEqual(
+    checkCapacity(dropped).problems.filter((p) => p.severity === 'error'),
+    [],
+    `${label}: dropping ${ops.join('+')} should leave the project free of capacity errors`
+  );
+  const dir = await fsp.mkdtemp(path.join(os.tmpdir(), 'forge-counterfactual-'));
+  t.after(() => fsp.rm(dir, { recursive: true, force: true }));
+  await saveProject(dir, dropped);
+  const built = await buildProject({ dir, project: dropped, log: () => {} });
+  assert.ok(built.romPath, `${label}: dropping ${ops.join('+')} should be a real, buildable fix`);
+}
+
 // The outcome this whole change was scoped against, and its history in four
 // parts now, not three. sample-rpg with a live Save command *and* a live
 // Move command, on MMC3, used to be short of the kernel-lo bank (332 bytes
@@ -2036,20 +2083,25 @@ function dropCommand(project, op) {
 // accident: use_item_apply is real engine code this phase always needed,
 // gated by the same ITEMS_ENABLED toggle as everything phase 4b already
 // charged, and ITEM_EFFECT_KERNEL_ALLOWANCE_BY_GAME_TYPE.rpg (60 bytes,
-// measured on all three RPG-capable boards) is exactly what it costs. The
-// user decided this outcome explicitly rather than asking for another kernel
-// diet: sample-rpg with Save, Move and its one live item no longer fits on
-// MMC3, and that is accepted as a real, documented limitation -- the
-// identical shape "sample-rpg with Save and Move on UNROM 512 does not
-// build" below already holds to, not a silent gap.
+// measured on all three RPG-capable boards) is exactly what it costs.
+//
+// The zero-page kernel diet (docs/design-kernel-diet.md) closed the gap a
+// third time -- for real this time, confirmed by an actual build, not
+// merely a checkCapacity() pass: MMC3's own kernel-lo base dropped by
+// roughly 590 bytes, leaving 675 bytes free for this exact combination.
+// This was CLAUDE.md's own first documented-limitation row (§5 of the
+// design), and the design's own real-build proof is reproduced here as a
+// permanent regression test -- if a future kernel-lo growth ever reopens
+// this gap a fourth time, this test must fail and force a conscious
+// decision, the same way the gap's first two closures and reopenings were
+// each a deliberate, noticed event rather than a silent drift.
 test(
-  'sample-rpg with Save, Move and its one live item does not build on MMC3 -- round 2 reopened the gap the kernel diet had closed, a documented limitation',
+  'sample-rpg with Save, Move and its one live item builds on MMC3 -- the zero-page kernel diet closed this documented limitation for real',
   { skip: !hasNesasm && 'nesasm not found on PATH' },
   async (t) => {
     const project = await loadProject(SAMPLE_RPG);
-    // Naming off explicitly (phase 5): this documented-limitation figure is
-    // CLAUDE.md's own pinned number for Save+Move+item alone, computed clean
-    // of sample-rpg's own naming, which now opts in for real.
+    // Naming off explicitly (phase 5): this is CLAUDE.md's own pinned clean
+    // baseline for Save+Move+item alone.
     project.party[0].renamable = false;
     if (project.party[1]) project.party[1].renamable = false;
     project.cartridge.mapper = 4; // MMC3
@@ -2058,72 +2110,188 @@ test(
     project.maps[0].screens[0].entities.push(saveAndMoveEvent());
     assert.ok(project.items.length > 0, 'this case needs sample-rpg\'s own live item still in play');
 
-    const message = kernelShortfallMessage(project);
-    assert.match(
-      message,
-      new RegExp(
-        `removing every Move command \\(frees ${MOVE_KERNEL_ALLOWANCE + FACE_KERNEL_ALLOWANCE} bytes\\) or every Save command ` +
-          `\\(frees ${SAVE_KERNEL_ALLOWANCE_BY_MAPPER[4] + SAVE_BATTLE_KERNEL_ALLOWANCE} bytes\\)`
-      ),
-      'the refusal should name both commands and both of their real byte figures, not just report the deficit'
-    );
+    assert.deepEqual(checkCapacity(project).problems.filter((p) => p.severity === 'error'), [], 'this combination must fit on MMC3 now');
 
-    // The design's own mitigations (drop Move; switch to MMC1) still work,
-    // exactly as they did before round 2 -- this is what checkCapacity's own
-    // advice above names, confirmed as a real fix rather than merely claimed.
-    const droppedMove = structuredClone(project);
-    droppedMove.maps[0].screens[0].entities.at(-1).props.event.pages[0].commands =
-      droppedMove.maps[0].screens[0].entities.at(-1).props.event.pages[0].commands.filter((c) => c.op !== 'move');
-    assert.deepEqual(
-      checkCapacity(droppedMove).problems.filter((p) => p.severity === 'error'),
-      [],
-      'dropping Move should still be a real fix'
-    );
-
-    const onMmc1 = structuredClone(project);
-    onMmc1.cartridge.mapper = 1;
-    assert.deepEqual(
-      checkCapacity(onMmc1).problems.filter((p) => p.severity === 'error'),
-      [],
-      'the same combination should still fit comfortably on MMC1'
-    );
-    {
-      const mmc1Dir = await fsp.mkdtemp(path.join(os.tmpdir(), 'forge-savemove-mmc1-'));
-      t.after(() => fsp.rm(mmc1Dir, { recursive: true, force: true }));
-      await saveProject(mmc1Dir, onMmc1);
-      const mmc1Lines = [];
-      const mmc1Built = await buildProject({ dir: mmc1Dir, project: onMmc1, log: (line) => mmc1Lines.push(line) });
-      assert.ok(mmc1Built.romPath, 'nesasm should have assembled a ROM on MMC1');
-      const mmc1BankLine = mmc1Lines.find((line) => /^BANK\s+14\s/.test(line));
-      assert.ok(mmc1BankLine, "MMC1's own kernel-lo bank (14) should appear in nesasm's usage table");
-      const mmc1Free = Number(mmc1BankLine.match(/\d+\/\s*(\d+)\s*$/)?.[1]);
-      assert.ok(mmc1Free >= KERNEL_SLACK, `expected at least KERNEL_SLACK (${KERNEL_SLACK}) free, got ${mmc1Free}`);
-    }
+    const dir = await fsp.mkdtemp(path.join(os.tmpdir(), 'forge-savemove-mmc3-'));
+    t.after(() => fsp.rm(dir, { recursive: true, force: true }));
+    await saveProject(dir, project);
+    const lines = [];
+    const built = await buildProject({ dir, project, log: (line) => lines.push(line) });
+    assert.ok(built.romPath, 'nesasm should have assembled a ROM on MMC3');
+    const bankLine = lines.find((line) => /^BANK\s+30\s/.test(line));
+    assert.ok(bankLine, "MMC3's own kernel-lo bank (30) should appear in nesasm's usage table");
+    const free = Number(bankLine.match(/\d+\/\s*(\d+)\s*$/)?.[1]);
+    assert.ok(free >= KERNEL_SLACK, `expected at least KERNEL_SLACK (${KERNEL_SLACK}) free, got ${free}`);
   }
 );
 
-// The UNROM 512 mirror of the MMC3 story just above -- except this
-// combination does not close, and is not expected to (see the comment
-// excluding mapper 30 from the Save+Move loop earlier in this file, and the
-// flash-save landing report). Bracketed precisely rather than left as a
-// silent exclusion from that loop: Save alone fits and genuinely assembles,
-// Move alone fits and genuinely assembles, and only the combination is
-// refused -- by checkCapacity itself, before nesasm ever runs, exactly the
-// "the assembler is the capacity check" property this file's own header
-// comment describes for the case where the reservation actually is
-// accurate. kernelShortfallAdvice must name both commands and both of their
-// real byte figures, because at this exact deficit either alone would close
-// it (see the "offers both as a choice" test below for that same shape).
-// The deficit itself is deliberately not asserted: it will drift with any
-// unrelated change to kernel-lo, and pinning it would fail on a harmless
-// change elsewhere the same way a literal free-byte count would (see the
-// comment a few tests up). What must not drift silently is the *fact* of
-// the refusal and which two things it blames -- if a future kernel diet on
-// this board ever closes the gap, this test should fail and force a
-// conscious update, the same way flipping SAVE_FLASH_IMPLEMENTED itself
-// was a single flag someone had to notice and change.
+// design-kernel-diet.md §5's own second row: the identical scenario with
+// naming left AS sample-rpg ships (hero+Join both live, phase 5's own real
+// fixture content) rather than stripped -- round 1 of the design wrongly
+// attributed this variant to the naming-off constructor; this is the actual
+// as-shipped-naming build the design's own table cites (7701/8192 used, 491
+// free). Round 1 review finding 4c: implementation had the naming-off
+// baseline covered but never this one, which the design explicitly lists as
+// its own separate row.
 test(
-  'sample-rpg with Save and Move on UNROM 512 does not build -- a documented limitation, not a silent gap',
+  'sample-rpg with Save, Move and its one live item builds on MMC3 with naming left AS SHIPPED -- design-kernel-diet.md §5\'s own second row',
+  { skip: !hasNesasm && 'nesasm not found on PATH' },
+  async (t) => {
+    const project = await loadProject(SAMPLE_RPG);
+    // Naming deliberately left untouched here -- sample-rpg ships hero+Join
+    // naming live for real (phase 5), and this row is specifically about
+    // that as-shipped state, not the naming-off baseline the test above
+    // already covers.
+    assert.ok(project.party[0].renamable, 'this row needs sample-rpg\'s own as-shipped hero naming to still be live');
+    project.cartridge.mapper = 4; // MMC3
+    project.project.titleMap = 0;
+    project.project.titleScreen = 0;
+    project.maps[0].screens[0].entities.push(saveAndMoveEvent());
+    assert.ok(project.items.length > 0, 'this case needs sample-rpg\'s own live item still in play');
+
+    assert.deepEqual(checkCapacity(project).problems.filter((p) => p.severity === 'error'), [], 'this combination must fit on MMC3 with naming left live too');
+
+    const dir = await fsp.mkdtemp(path.join(os.tmpdir(), 'forge-savemove-mmc3-naming-'));
+    t.after(() => fsp.rm(dir, { recursive: true, force: true }));
+    await saveProject(dir, project);
+    const built = await buildProject({ dir, project, log: () => {} });
+    assert.ok(built.romPath, 'nesasm should have assembled a ROM on MMC3 with naming left live');
+  }
+);
+
+// The still-refusing case: padded past the diet's own real headroom, so the
+// advice path this whole family exists to prove -- "name both commands and
+// both real byte figures, never a mapper the switch itself would still fail
+// on" -- stays under real test coverage even though the un-padded row no
+// longer exercises it.
+test('sample-rpg with Save, Move, its one live item, AND enough padding still does not build on MMC3 -- keeps the advice path covered', async () => {
+  const project = await loadProject(SAMPLE_RPG);
+  project.party[0].renamable = false;
+  if (project.party[1]) project.party[1].renamable = false;
+  project.cartridge.mapper = 4; // MMC3
+  project.project.titleMap = 0;
+  project.project.titleScreen = 0;
+  project.maps[0].screens[0].entities.push(saveAndMoveEvent());
+  assert.ok(project.items.length > 0, 'this case needs sample-rpg\'s own live item still in play');
+  inflate(project, 115); // pads past the diet's own real headroom for this combination
+
+  const message = kernelShortfallMessage(project);
+  assert.match(
+    message,
+    new RegExp(
+      `removing every Move command \\(frees ${MOVE_KERNEL_ALLOWANCE + FACE_KERNEL_ALLOWANCE} bytes\\) or every Save command ` +
+        `\\(frees ${SAVE_KERNEL_ALLOWANCE_BY_MAPPER[4] + SAVE_BATTLE_KERNEL_ALLOWANCE} bytes\\)`
+    ),
+    'the refusal should name both commands and both of their real byte figures, not just report the deficit'
+  );
+
+  // The design's own mitigations (drop Move; switch to MMC1) still work.
+  const droppedMove = structuredClone(project);
+  droppedMove.maps[0].screens[0].entities.at(-1).props.event.pages[0].commands =
+    droppedMove.maps[0].screens[0].entities.at(-1).props.event.pages[0].commands.filter((c) => c.op !== 'move');
+  assert.deepEqual(
+    checkCapacity(droppedMove).problems.filter((p) => p.severity === 'error'),
+    [],
+    'dropping Move should still be a real fix'
+  );
+
+  // Switching board is checked against the UNPADDED combination -- the
+  // padding above exists only to keep this row's own advice message under
+  // test, not to claim a heavily-padded project also fits elsewhere.
+  const onMmc1 = await loadProject(SAMPLE_RPG);
+  onMmc1.party[0].renamable = false;
+  if (onMmc1.party[1]) onMmc1.party[1].renamable = false;
+  onMmc1.cartridge.mapper = 1;
+  onMmc1.project.titleMap = 0;
+  onMmc1.project.titleScreen = 0;
+  onMmc1.maps[0].screens[0].entities.push(saveAndMoveEvent());
+  assert.deepEqual(
+    checkCapacity(onMmc1).problems.filter((p) => p.severity === 'error'),
+    [],
+    'the same (unpadded) combination should still fit comfortably on MMC1'
+  );
+});
+
+// design-kernel-diet.md §10's own "still-refuses control": the synthetic
+// maximal-stress scenario -- a titled MMC3 sample-rpg, naming left live,
+// every measured conditional feature stacked at once (Save/Move/Turn/Wait/
+// Shake/Visible/Fade/Flash/Sting/Sfx/a bound tile/its one item) -- genuinely
+// still refuses under the patched ledger, not vacuously: the seven real
+// builds above (and their own naming-live/naming-off siblings) already
+// prove the diet does not simply refuse everything. Round 1 review finding
+// 4c: this control was named in the design (§5's own closing paragraph,
+// §10 item 5) but never implemented.
+test(
+  'sample-rpg with every measured conditional feature stacked at once, naming left live, still does not build on MMC3 -- design-kernel-diet.md §10\'s own still-refuses control',
+  { skip: !hasNesasm && 'nesasm not found on PATH' },
+  async (t) => {
+    const project = await loadProject(SAMPLE_RPG);
+    // Naming deliberately left untouched -- the design's own control is
+    // explicit that naming stays live here, the harder of the two states.
+    assert.ok(project.party[0].renamable, 'this control needs sample-rpg\'s own as-shipped hero naming to still be live');
+    project.cartridge.mapper = 4; // MMC3
+    project.project.titleMap = 0;
+    project.project.titleScreen = 0;
+    project.songs = [createSong('Fanfare')];
+    project.sfx = [{ name: 'Boop', volume: 10, steps: [{ note: 5, duration: 4 }] }];
+    const paintedId = project.maps[0].screens[0].metatiles[0];
+    project.maps[0].screens[0].boundTiles = [{ switchId: 0, row: 0, col: 0, metatileId: paintedId }];
+    assert.ok(project.items.length > 0, 'this control needs sample-rpg\'s own live item still in play');
+    project.maps[0].screens[0].entities.push({
+      actorId: 0,
+      x: 16,
+      y: 16,
+      props: {
+        event: {
+          pages: [
+            {
+              cond: { type: 'none', arg: 0 },
+              commands: [
+                { op: 'save' },
+                { op: 'move', who: 'self', dir: 'up', dist: 16 },
+                { op: 'turn', who: 'self', dir: 'up' },
+                { op: 'wait', frames: 10 },
+                { op: 'shake', frames: 10 },
+                { op: 'visible', state: 'hidden' },
+                { op: 'visible', state: 'shown' },
+                { op: 'fade', dir: 'out' },
+                { op: 'flash' },
+                { op: 'sting', song: 0 },
+                { op: 'sfx', sfx: 0 }
+              ]
+            }
+          ]
+        }
+      }
+    });
+
+    const kernelLoProblem = checkCapacity(project).problems.find(
+      (p) => p.severity === 'error' && /lookup tables/.test(p.message)
+    );
+    assert.ok(kernelLoProblem, 'this maximal-stress combination should still be refused, by name, over kernel-lo capacity');
+
+    const dir = await fsp.mkdtemp(path.join(os.tmpdir(), 'forge-maxstress-mmc3-'));
+    t.after(() => fsp.rm(dir, { recursive: true, force: true }));
+    await saveProject(dir, project);
+    await assert.rejects(
+      buildProject({ dir, project, log: () => {} }),
+      'this maximal-stress combination should still fail a real nesasm build, not merely checkCapacity\'s own preflight'
+    );
+  }
+);
+
+// The UNROM 512 mirror of the MMC3 story above -- except this combination
+// used to be refused unconditionally and is not any more: the zero-page
+// kernel diet (docs/design-kernel-diet.md) closed it for real, the same way
+// it closed the MMC3 Save+Move+item row (see the converted test above this
+// one). Save alone and Move alone both already fit and assemble; what
+// changed is that the combination now does too, with real room to spare --
+// so this test is rewritten to prove the build, both with sample-rpg's
+// default item and with it stripped (the two configurations the old test
+// distinguished), and a new, padded sibling below keeps the refusal-message
+// advice path covered.
+test(
+  'sample-rpg with Save and Move on UNROM 512 builds -- the zero-page kernel diet closed this documented limitation for real',
   { skip: !hasNesasm && 'nesasm not found on PATH' },
   async (t) => {
     const saveOnly = await loadProject(SAMPLE_RPG);
@@ -2171,28 +2339,22 @@ test(
     both.project.titleMap = 0;
     both.project.titleScreen = 0;
     both.maps[0].screens[0].entities.push(saveAndMoveEvent());
-    const message = kernelShortfallMessage(both);
-    assert.match(
-      message,
-      new RegExp(
-        `removing every Move command \\(frees ${MOVE_KERNEL_ALLOWANCE + FACE_KERNEL_ALLOWANCE} bytes\\) or every Save command ` +
-          `\\(frees ${SAVE_KERNEL_ALLOWANCE_BY_MAPPER[30] + SAVE_BATTLE_KERNEL_ALLOWANCE} bytes\\)`
-      ),
-      'the refusal should name both commands and both of their real byte figures, not just report the deficit'
+    assert.deepEqual(
+      checkCapacity(both).problems.filter((p) => p.severity === 'error'),
+      [],
+      'sample-rpg with its default item, Save and Move together should now fit on UNROM 512'
     );
+    const bothDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'forge-unrom512-both-'));
+    t.after(() => fsp.rm(bothDir, { recursive: true, force: true }));
+    await saveProject(bothDir, both);
+    const bothBuilt = await buildProject({ dir: bothDir, project: both, log: () => {} });
+    assert.ok(bothBuilt.romPath, 'Save and Move together should now fit and assemble on UNROM 512, with the default item');
 
     // sample-rpg carries one live item by default, so `both` above exercises
     // the item-bearing reservation (ITEM_KERNEL_ALLOWANCE included) -- not
-    // the item-free one ROADMAP.md's own "Suggested order" section cites this
-    // test for. The two are close enough (17 bytes apart at last measurement:
-    // ITEM_KERNEL_ALLOWANCE plus item_metasprite's own one-byte table entry)
-    // that a future saving landing between them would let the item-free
-    // configuration fit while `both` above kept refusing and kept passing --
-    // the exact silent-drift failure this file's header comment describes,
-    // just relocated to a sentence in ROADMAP.md instead of a constant here.
-    // Isolated the same way withItems does in measureCodeBytes above, rather
-    // than reused from a shared helper, because this is the one place that
-    // needs the *refusal* to survive the strip, not the code-byte count.
+    // the item-free one ROADMAP.md's own "Suggested order" section used to
+    // cite this test for. Both configurations are checked here since the
+    // diet's own margin easily covers the 17-byte gap between them.
     const bothItemFree = await loadProject(SAMPLE_RPG);
     bothItemFree.party[0].renamable = false; // naming off explicitly, phase 5
     if (bothItemFree.party[1]) bothItemFree.party[1].renamable = false;
@@ -2206,18 +2368,44 @@ test(
       'this case exists to isolate the item-free reservation -- confirm the strip actually turned usesItems off'
     );
     bothItemFree.maps[0].screens[0].entities.push(saveAndMoveEvent());
-    const itemFreeMessage = kernelShortfallMessage(bothItemFree);
-    assert.match(
-      itemFreeMessage,
-      new RegExp(
-        `removing every Move command \\(frees ${MOVE_KERNEL_ALLOWANCE + FACE_KERNEL_ALLOWANCE} bytes\\) or every Save command ` +
-          `\\(frees ${SAVE_KERNEL_ALLOWANCE_BY_MAPPER[30] + SAVE_BATTLE_KERNEL_ALLOWANCE} bytes\\)`
-      ),
-      'the item-free configuration must still be refused on UNROM 512 -- if this ever fits, ROADMAP.md\'s ' +
-        '"Suggested order" section is citing a test that no longer backs its claim'
+    assert.deepEqual(
+      checkCapacity(bothItemFree).problems.filter((p) => p.severity === 'error'),
+      [],
+      'the item-free configuration should also now fit on UNROM 512'
     );
+    const itemFreeDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'forge-unrom512-itemfree-'));
+    t.after(() => fsp.rm(itemFreeDir, { recursive: true, force: true }));
+    await saveProject(itemFreeDir, bothItemFree);
+    const itemFreeBuilt = await buildProject({ dir: itemFreeDir, project: bothItemFree, log: () => {} });
+    assert.ok(itemFreeBuilt.romPath, 'the item-free configuration should now assemble on UNROM 512 too');
   }
 );
+
+// The padded sibling of the row just closed: with enough filler content to
+// force the deficit back open, the combination still refuses, and the
+// advice still names both commands and both of their real byte figures --
+// this is what keeps the refusal-message assertion (and its "either alone
+// would close it" arithmetic) under test now that the unpadded row itself
+// builds.
+test('sample-rpg with Save and Move on UNROM 512, padded, still does not build -- keeps the advice path covered', async () => {
+  const project = await loadProject(SAMPLE_RPG);
+  project.party[0].renamable = false; // naming off explicitly, phase 5
+  if (project.party[1]) project.party[1].renamable = false;
+  project.cartridge.mapper = 30; // UNROM 512
+  project.project.titleMap = 0;
+  project.project.titleScreen = 0;
+  project.maps[0].screens[0].entities.push(saveAndMoveEvent());
+  inflate(project, 70); // deficit 74, comfortably short of both allowances
+  const message = kernelShortfallMessage(project);
+  assert.match(
+    message,
+    new RegExp(
+      `removing every Move command \\(frees ${MOVE_KERNEL_ALLOWANCE + FACE_KERNEL_ALLOWANCE} bytes\\) or every Save command ` +
+        `\\(frees ${SAVE_KERNEL_ALLOWANCE_BY_MAPPER[30] + SAVE_BATTLE_KERNEL_ALLOWANCE} bytes\\)`
+    ),
+    'the padded refusal should still name both commands and both of their real byte figures'
+  );
+});
 
 // Both drops individually clearing the gap is still a real code path — a
 // project short by less than either allowance should be offered a choice
@@ -2245,9 +2433,9 @@ test('a kernel-lo shortfall either Save or Move alone would close offers both as
   project.project.titleMap = 0;
   project.project.titleScreen = 0;
   project.maps[0].screens[0].entities.push(saveAndMoveEvent());
-  inflate(project, 25);
+  inflate(project, 100); // recalibrated for the zero-page kernel diet, docs/design-kernel-diet.md -- deficit 145, within (0, 337]
   const message = kernelShortfallMessage(project);
-  assert.match(message, /removing every Move command \(frees 395 bytes\) or every Save command \(frees 560 bytes\)/);
+  assert.match(message, /removing every Move command \(frees 337 bytes\) or every Save command \(frees 516 bytes\)/);
 });
 
 // Neither allowance alone covers a big enough deficit, but the two together
@@ -2263,9 +2451,9 @@ test('a kernel-lo shortfall neither Save nor Move alone would close, but both to
   project.project.titleMap = 0;
   project.project.titleScreen = 0;
   project.maps[0].screens[0].entities.push(saveAndMoveEvent());
-  inflate(project, 88);
+  inflate(project, 150); // recalibrated for the zero-page kernel diet, docs/design-kernel-diet.md -- deficit 545, above 516 and within 853
   const message = kernelShortfallMessage(project);
-  assert.match(message, /removing every Move command and every Save command together \(frees 955 bytes\)/);
+  assert.match(message, /removing every Move command and every Save command together \(frees 853 bytes\)/);
 });
 
 // Turn and Wait were added to kernelShortfallAdvice's own active-feature list
@@ -2287,23 +2475,31 @@ test('a kernel-lo shortfall neither Save nor Move alone would close, but both to
 // only needs to sit inside -- 222 also lands inside it, at 43, only 5 bytes
 // below the boundary, which left no room to catch a regression that grew
 // the deficit rather than shrank it.
-test('a kernel-lo shortfall a live Wait command alone would close names Wait', () => {
-  const project = createProject('Action', 'action');
-  project.cartridge.mapper = 1; // MMC1 -- no split term to complicate the arithmetic
-  project.maps[0].screens[0].entities.push({
-    actorId: 0,
-    x: 16,
-    y: 16,
-    props: { event: { pages: [{ cond: { type: 'none', arg: 0 }, commands: [{ op: 'wait', frames: 30 }] }] } }
-  });
-  inflate(project, 213);
-  const deficit = kernelShortfallDeficit(project);
-  assert.ok(deficit <= WAIT_KERNEL_ALLOWANCE, `deficit ${deficit} must not exceed WAIT_KERNEL_ALLOWANCE (${WAIT_KERNEL_ALLOWANCE}) or this case does not exercise Wait alone closing the gap`);
-  const message = kernelShortfallMessage(project);
-  assert.match(message, new RegExp(`removing every Wait command \\(frees ${WAIT_KERNEL_ALLOWANCE} bytes\\)`));
-  assert.doesNotMatch(message, /Turn command/, 'this project never turns Turn on, so it must not be offered as a fix');
-  assert.doesNotMatch(message, /Move command/, 'this project never turns Move on, so it must not be offered as a fix');
-});
+test(
+  'a kernel-lo shortfall a live Wait command alone would close names Wait',
+  { skip: !hasNesasm && 'nesasm not found on PATH' },
+  async (t) => {
+    const project = createProject('Action', 'action');
+    project.cartridge.mapper = 1; // MMC1 -- no split term to complicate the arithmetic
+    project.maps[0].screens[0].entities.push({
+      actorId: 0,
+      x: 16,
+      y: 16,
+      props: { event: { pages: [{ cond: { type: 'none', arg: 0 }, commands: [{ op: 'wait', frames: 30 }] }] } }
+    });
+    // 286, not the earlier 213: the zero-page kernel diet (docs/design-kernel-diet.md)
+    // dropped MMC1's own action-side base, so the old count no longer opens
+    // any deficit at all; re-derived against a real checkCapacity() run.
+    inflateLegal(project, 286);
+    const deficit = kernelShortfallDeficit(project);
+    assert.ok(deficit <= WAIT_KERNEL_ALLOWANCE, `deficit ${deficit} must not exceed WAIT_KERNEL_ALLOWANCE (${WAIT_KERNEL_ALLOWANCE}) or this case does not exercise Wait alone closing the gap`);
+    const message = kernelShortfallMessage(project);
+    assert.match(message, new RegExp(`removing every Wait command \\(frees ${WAIT_KERNEL_ALLOWANCE} bytes\\)`));
+    assert.doesNotMatch(message, /Turn command/, 'this project never turns Turn on, so it must not be offered as a fix');
+    assert.doesNotMatch(message, /Move command/, 'this project never turns Move on, so it must not be offered as a fix');
+    await assertDropFits(t, project, ['wait'], 'Wait alone would close it');
+  }
+);
 
 // The dependent-combination half: a project with both a live Turn and a live
 // Wait, and no Move, so Turn is the project's only reason move_face
@@ -2327,39 +2523,46 @@ test('a kernel-lo shortfall a live Wait command alone would close names Wait', (
 // and at or below the combined one (99). 217 also lands inside the band, at
 // 54, but that sits only 3 bytes above the lower boundary; inflate() moves
 // in exact 8-byte steps, so 220 is the nearest centred count.
-test('a kernel-lo shortfall neither Turn nor Wait alone would close, but both together would, names the combination', () => {
-  const project = createProject('Action', 'action');
-  project.cartridge.mapper = 1; // MMC1 -- no split term to complicate the arithmetic
-  project.maps[0].screens[0].entities.push({
-    actorId: 0,
-    x: 16,
-    y: 16,
-    props: {
-      event: {
-        pages: [
-          {
-            cond: { type: 'none', arg: 0 },
-            commands: [
-              { op: 'turn', who: 'self', dir: 'left' },
-              { op: 'wait', frames: 30 }
-            ]
-          }
-        ]
+test(
+  'a kernel-lo shortfall neither Turn nor Wait alone would close, but both together would, names the combination',
+  { skip: !hasNesasm && 'nesasm not found on PATH' },
+  async (t) => {
+    const project = createProject('Action', 'action');
+    project.cartridge.mapper = 1; // MMC1 -- no split term to complicate the arithmetic
+    project.maps[0].screens[0].entities.push({
+      actorId: 0,
+      x: 16,
+      y: 16,
+      props: {
+        event: {
+          pages: [
+            {
+              cond: { type: 'none', arg: 0 },
+              commands: [
+                { op: 'turn', who: 'self', dir: 'left' },
+                { op: 'wait', frames: 30 }
+              ]
+            }
+          ]
+        }
       }
-    }
-  });
-  inflate(project, 213);
-  const deficit = kernelShortfallDeficit(project);
-  const turnAlone = TURN_KERNEL_ALLOWANCE + FACE_KERNEL_ALLOWANCE;
-  const combined = TURN_KERNEL_ALLOWANCE + WAIT_KERNEL_ALLOWANCE + FACE_KERNEL_ALLOWANCE;
-  assert.ok(
-    deficit > turnAlone && deficit > WAIT_KERNEL_ALLOWANCE,
-    `deficit ${deficit} must exceed both Turn alone (${turnAlone}) and Wait alone (${WAIT_KERNEL_ALLOWANCE}), or this case does not exercise the combination at all`
-  );
-  assert.ok(deficit <= combined, `deficit ${deficit} must not exceed the combined figure (${combined}), or dropping both would not close the gap either`);
-  const message = kernelShortfallMessage(project);
-  assert.match(message, new RegExp(`removing every Turn command and every Wait command together \\(frees ${combined} bytes\\)`));
-});
+    });
+    // 284, not the earlier 213: the zero-page kernel diet dropped MMC1's own
+    // action-side base; re-derived against a real checkCapacity() run.
+    inflateLegal(project, 284);
+    const deficit = kernelShortfallDeficit(project);
+    const turnAlone = TURN_KERNEL_ALLOWANCE + FACE_KERNEL_ALLOWANCE;
+    const combined = TURN_KERNEL_ALLOWANCE + WAIT_KERNEL_ALLOWANCE + FACE_KERNEL_ALLOWANCE;
+    assert.ok(
+      deficit > turnAlone && deficit > WAIT_KERNEL_ALLOWANCE,
+      `deficit ${deficit} must exceed both Turn alone (${turnAlone}) and Wait alone (${WAIT_KERNEL_ALLOWANCE}), or this case does not exercise the combination at all`
+    );
+    assert.ok(deficit <= combined, `deficit ${deficit} must not exceed the combined figure (${combined}), or dropping both would not close the gap either`);
+    const message = kernelShortfallMessage(project);
+    assert.match(message, new RegExp(`removing every Turn command and every Wait command together \\(frees ${combined} bytes\\)`));
+    await assertDropFits(t, project, ['turn', 'wait'], 'Turn+Wait together would close it');
+  }
+);
 
 // Shake's own solo case: it shares no dependent term with anything (no
 // Face-like companion routine another command also calls), so this is the
@@ -2377,7 +2580,10 @@ test('a kernel-lo shortfall neither Turn nor Wait alone would close, but both to
 // which left no room to catch a regression that grew the deficit rather
 // than shrank it. The two negative-control tests below reuse this
 // identical count, per their own comments.
-test('a kernel-lo shortfall a live Shake command alone would close names Shake', () => {
+test(
+  'a kernel-lo shortfall a live Shake command alone would close names Shake',
+  { skip: !hasNesasm && 'nesasm not found on PATH' },
+  async (t) => {
   const project = createProject('Action', 'action');
   project.cartridge.mapper = 1; // MMC1 -- no split term to complicate the arithmetic
   project.maps[0].screens[0].entities.push({
@@ -2386,14 +2592,18 @@ test('a kernel-lo shortfall a live Shake command alone would close names Shake',
     y: 16,
     props: { event: { pages: [{ cond: { type: 'none', arg: 0 }, commands: [{ op: 'shake', frames: 30 }] }] } }
   });
-  inflate(project, 212);
+  // 286, not the earlier 212: the zero-page kernel diet dropped MMC1's own
+  // action-side base; re-derived against a real checkCapacity() run.
+  inflateLegal(project, 286);
   const deficit = kernelShortfallDeficit(project);
   assert.ok(deficit <= SHAKE_KERNEL_ALLOWANCE, `deficit ${deficit} must not exceed SHAKE_KERNEL_ALLOWANCE (${SHAKE_KERNEL_ALLOWANCE}) or this case does not exercise Shake alone closing the gap`);
   const message = kernelShortfallMessage(project);
   assert.match(message, new RegExp(`removing every Shake command \\(frees ${SHAKE_KERNEL_ALLOWANCE} bytes\\)`));
   assert.doesNotMatch(message, /Turn command/, 'this project never turns Turn on, so it must not be offered as a fix');
   assert.doesNotMatch(message, /Wait command/, 'this project never turns Wait on, so it must not be offered as a fix');
-});
+    await assertDropFits(t, project, ['shake'], 'Shake alone would close it');
+  }
+);
 
 // The combination half: Shake and Wait together, purely additive since
 // neither shares a dependent term with the other (unlike Turn+Move's own
@@ -2408,38 +2618,43 @@ test('a kernel-lo shortfall a live Shake command alone would close names Shake',
 // also lands inside the band, at 68, only 3 bytes above the lower boundary;
 // inflate() moves in exact 8-byte steps, so 220 is the nearest centred
 // count.
-test('a kernel-lo shortfall neither Shake nor Wait alone would close, but both together would, names the combination', () => {
-  const project = createProject('Action', 'action');
-  project.cartridge.mapper = 1; // MMC1 -- no split term to complicate the arithmetic
-  project.maps[0].screens[0].entities.push({
-    actorId: 0,
-    x: 16,
-    y: 16,
-    props: {
-      event: {
-        pages: [
-          {
-            cond: { type: 'none', arg: 0 },
-            commands: [
-              { op: 'shake', frames: 30 },
-              { op: 'wait', frames: 30 }
-            ]
-          }
-        ]
+test(
+  'a kernel-lo shortfall neither Shake nor Wait alone would close, but both together would, names the combination',
+  { skip: !hasNesasm && 'nesasm not found on PATH' },
+  async (t) => {
+    const project = createProject('Action', 'action');
+    project.cartridge.mapper = 1; // MMC1 -- no split term to complicate the arithmetic
+    project.maps[0].screens[0].entities.push({
+      actorId: 0,
+      x: 16,
+      y: 16,
+      props: {
+        event: {
+          pages: [
+            {
+              cond: { type: 'none', arg: 0 },
+              commands: [
+                { op: 'shake', frames: 30 },
+                { op: 'wait', frames: 30 }
+              ]
+            }
+          ]
+        }
       }
-    }
-  });
-  inflate(project, 213);
-  const deficit = kernelShortfallDeficit(project);
-  const combined = SHAKE_KERNEL_ALLOWANCE + WAIT_KERNEL_ALLOWANCE;
-  assert.ok(
-    deficit > SHAKE_KERNEL_ALLOWANCE && deficit > WAIT_KERNEL_ALLOWANCE,
-    `deficit ${deficit} must exceed both Shake alone (${SHAKE_KERNEL_ALLOWANCE}) and Wait alone (${WAIT_KERNEL_ALLOWANCE}), or this case does not exercise the combination at all`
-  );
-  assert.ok(deficit <= combined, `deficit ${deficit} must not exceed the combined figure (${combined}), or dropping both would not close the gap either`);
-  const message = kernelShortfallMessage(project);
-  assert.match(message, new RegExp(`removing every Wait command and every Shake command together \\(frees ${combined} bytes\\)`));
-});
+    });
+    inflateLegal(project, 284); // recalibrated for the zero-page kernel diet, docs/design-kernel-diet.md
+    const deficit = kernelShortfallDeficit(project);
+    const combined = SHAKE_KERNEL_ALLOWANCE + WAIT_KERNEL_ALLOWANCE;
+    assert.ok(
+      deficit > SHAKE_KERNEL_ALLOWANCE && deficit > WAIT_KERNEL_ALLOWANCE,
+      `deficit ${deficit} must exceed both Shake alone (${SHAKE_KERNEL_ALLOWANCE}) and Wait alone (${WAIT_KERNEL_ALLOWANCE}), or this case does not exercise the combination at all`
+    );
+    assert.ok(deficit <= combined, `deficit ${deficit} must not exceed the combined figure (${combined}), or dropping both would not close the gap either`);
+    const message = kernelShortfallMessage(project);
+    assert.match(message, new RegExp(`removing every Wait command and every Shake command together \\(frees ${combined} bytes\\)`));
+    await assertDropFits(t, project, ['shake', 'wait'], 'Shake+Wait together would close it');
+  }
+);
 
 // Show/Hide's own solo case: it shares no dependent term with anything (no
 // Face-like companion routine another command also calls), the identical
@@ -2453,33 +2668,38 @@ test('a kernel-lo shortfall neither Shake nor Wait alone would close, but both t
 // action project real headroom on MMC1 the old base withheld -- re-derived
 // against a real checkCapacity() run, landing a 36-byte deficit, under
 // VISIBLE_KERNEL_ALLOWANCE (49).
-test('a kernel-lo shortfall a live Show/Hide command alone would close names Show/Hide', () => {
-  const project = createProject('Action', 'action');
-  project.cartridge.mapper = 1; // MMC1 -- no split term to complicate the arithmetic
-  project.maps[0].screens[0].entities.push({
-    actorId: 0,
-    x: 16,
-    y: 16,
-    props: { event: { pages: [{ cond: { type: 'none', arg: 0 }, commands: [{ op: 'visible', state: 'hidden' }] }] } }
-  });
-  // 213, not 214: metaspriteKernelBytes' own empty-table placeholder fix
-  // (phase 3 fix round 3b -- ms_data_0/anim_data_0's real one-byte
-  // generator placeholder, previously unmodelled) adds 2 predicted bytes to
-  // this project's kernelTableBytes (its metasprites and animations are
-  // both empty), which at the old 214 pushed the deficit from 48 to 50 --
-  // over VISIBLE_KERNEL_ALLOWANCE. Re-measured, not adjusted by hand: one
-  // fewer filler actor (8 bytes/actor) lands back at 42.
-  inflate(project, 213);
-  const deficit = kernelShortfallDeficit(project);
-  assert.ok(
-    deficit <= VISIBLE_KERNEL_ALLOWANCE,
-    `deficit ${deficit} must not exceed VISIBLE_KERNEL_ALLOWANCE (${VISIBLE_KERNEL_ALLOWANCE}) or this case does not exercise Show/Hide alone closing the gap`
-  );
-  const message = kernelShortfallMessage(project);
-  assert.match(message, new RegExp(`removing every Show/Hide command \\(frees ${VISIBLE_KERNEL_ALLOWANCE} bytes\\)`));
-  assert.doesNotMatch(message, /Shake command/, 'this project never turns Shake on, so it must not be offered as a fix');
-  assert.doesNotMatch(message, /Wait command/, 'this project never turns Wait on, so it must not be offered as a fix');
-});
+test(
+  'a kernel-lo shortfall a live Show/Hide command alone would close names Show/Hide',
+  { skip: !hasNesasm && 'nesasm not found on PATH' },
+  async (t) => {
+    const project = createProject('Action', 'action');
+    project.cartridge.mapper = 1; // MMC1 -- no split term to complicate the arithmetic
+    project.maps[0].screens[0].entities.push({
+      actorId: 0,
+      x: 16,
+      y: 16,
+      props: { event: { pages: [{ cond: { type: 'none', arg: 0 }, commands: [{ op: 'visible', state: 'hidden' }] }] } }
+    });
+    // 213, not 214: metaspriteKernelBytes' own empty-table placeholder fix
+    // (phase 3 fix round 3b -- ms_data_0/anim_data_0's real one-byte
+    // generator placeholder, previously unmodelled) adds 2 predicted bytes to
+    // this project's kernelTableBytes (its metasprites and animations are
+    // both empty), which at the old 214 pushed the deficit from 48 to 50 --
+    // over VISIBLE_KERNEL_ALLOWANCE. Re-measured, not adjusted by hand: one
+    // fewer filler actor (8 bytes/actor) lands back at 42.
+    inflateLegal(project, 286); // recalibrated for the zero-page kernel diet, docs/design-kernel-diet.md
+    const deficit = kernelShortfallDeficit(project);
+    assert.ok(
+      deficit <= VISIBLE_KERNEL_ALLOWANCE,
+      `deficit ${deficit} must not exceed VISIBLE_KERNEL_ALLOWANCE (${VISIBLE_KERNEL_ALLOWANCE}) or this case does not exercise Show/Hide alone closing the gap`
+    );
+    const message = kernelShortfallMessage(project);
+    assert.match(message, new RegExp(`removing every Show/Hide command \\(frees ${VISIBLE_KERNEL_ALLOWANCE} bytes\\)`));
+    assert.doesNotMatch(message, /Shake command/, 'this project never turns Shake on, so it must not be offered as a fix');
+    assert.doesNotMatch(message, /Wait command/, 'this project never turns Wait on, so it must not be offered as a fix');
+    await assertDropFits(t, project, ['visible'], 'Show/Hide alone would close it');
+  }
+);
 
 // The combination half: Shake and Show/Hide together, purely additive since
 // neither shares a dependent term with the other -- SHAKE_KERNEL_ALLOWANCE +
@@ -2493,38 +2713,43 @@ test('a kernel-lo shortfall a live Show/Hide command alone would close names Sho
 // or below the combined one. 217 also lands inside the band, at 69, only 4
 // bytes above the lower boundary; inflate() moves in exact 8-byte steps, so
 // 220 is the nearest centred count.
-test('a kernel-lo shortfall neither Shake nor Show/Hide alone would close, but both together would, names the combination', () => {
-  const project = createProject('Action', 'action');
-  project.cartridge.mapper = 1; // MMC1 -- no split term to complicate the arithmetic
-  project.maps[0].screens[0].entities.push({
-    actorId: 0,
-    x: 16,
-    y: 16,
-    props: {
-      event: {
-        pages: [
-          {
-            cond: { type: 'none', arg: 0 },
-            commands: [
-              { op: 'shake', frames: 30 },
-              { op: 'visible', state: 'hidden' }
-            ]
-          }
-        ]
+test(
+  'a kernel-lo shortfall neither Shake nor Show/Hide alone would close, but both together would, names the combination',
+  { skip: !hasNesasm && 'nesasm not found on PATH' },
+  async (t) => {
+    const project = createProject('Action', 'action');
+    project.cartridge.mapper = 1; // MMC1 -- no split term to complicate the arithmetic
+    project.maps[0].screens[0].entities.push({
+      actorId: 0,
+      x: 16,
+      y: 16,
+      props: {
+        event: {
+          pages: [
+            {
+              cond: { type: 'none', arg: 0 },
+              commands: [
+                { op: 'shake', frames: 30 },
+                { op: 'visible', state: 'hidden' }
+              ]
+            }
+          ]
+        }
       }
-    }
-  });
-  inflate(project, 213);
-  const deficit = kernelShortfallDeficit(project);
-  const combined = SHAKE_KERNEL_ALLOWANCE + VISIBLE_KERNEL_ALLOWANCE;
-  assert.ok(
-    deficit > SHAKE_KERNEL_ALLOWANCE && deficit > VISIBLE_KERNEL_ALLOWANCE,
-    `deficit ${deficit} must exceed both Shake alone (${SHAKE_KERNEL_ALLOWANCE}) and Show/Hide alone (${VISIBLE_KERNEL_ALLOWANCE}), or this case does not exercise the combination at all`
-  );
-  assert.ok(deficit <= combined, `deficit ${deficit} must not exceed the combined figure (${combined}), or dropping both would not close the gap either`);
-  const message = kernelShortfallMessage(project);
-  assert.match(message, new RegExp(`removing every Shake command and every Show/Hide command together \\(frees ${combined} bytes\\)`));
-});
+    });
+    inflateLegal(project, 284); // recalibrated for the zero-page kernel diet, docs/design-kernel-diet.md
+    const deficit = kernelShortfallDeficit(project);
+    const combined = SHAKE_KERNEL_ALLOWANCE + VISIBLE_KERNEL_ALLOWANCE;
+    assert.ok(
+      deficit > SHAKE_KERNEL_ALLOWANCE && deficit > VISIBLE_KERNEL_ALLOWANCE,
+      `deficit ${deficit} must exceed both Shake alone (${SHAKE_KERNEL_ALLOWANCE}) and Show/Hide alone (${VISIBLE_KERNEL_ALLOWANCE}), or this case does not exercise the combination at all`
+    );
+    assert.ok(deficit <= combined, `deficit ${deficit} must not exceed the combined figure (${combined}), or dropping both would not close the gap either`);
+    const message = kernelShortfallMessage(project);
+    assert.match(message, new RegExp(`removing every Shake command and every Show/Hide command together \\(frees ${combined} bytes\\)`));
+    await assertDropFits(t, project, ['shake', 'visible'], 'Shake+Show/Hide together would close it');
+  }
+);
 
 // Fade's own solo case, no Flash anywhere in the project: dropping the only
 // live Fade command turns off both FADE_ENABLED and PALETTE_FX_ENABLED (no
@@ -2542,25 +2767,30 @@ test('a kernel-lo shortfall neither Shake nor Show/Hide alone would close, but b
 // active.push({ op: 'fade', ... }) is missing from kernelShortfallAdvice:
 // without it, Fade is never considered at all and the message falls through
 // to a mapper suggestion or the generic one instead of naming it.
-test('a kernel-lo shortfall a live Fade command alone would close names Fade', () => {
-  const project = createProject('Action', 'action');
-  project.cartridge.mapper = 1; // MMC1 -- no split term to complicate the arithmetic
-  project.maps[0].screens[0].entities.push({
-    actorId: 0,
-    x: 16,
-    y: 16,
-    props: { event: { pages: [{ cond: { type: 'none', arg: 0 }, commands: [{ op: 'fade', dir: 'out' }] }] } }
-  });
-  inflate(project, 210);
-  const deficit = kernelShortfallDeficit(project);
-  const freed = FADE_KERNEL_ALLOWANCE + PALETTE_FX_KERNEL_ALLOWANCE;
-  assert.ok(deficit <= freed, `deficit ${deficit} must not exceed FADE_KERNEL_ALLOWANCE + PALETTE_FX_KERNEL_ALLOWANCE (${freed}) or this case does not exercise Fade alone closing the gap`);
-  const message = kernelShortfallMessage(project);
-  assert.match(message, new RegExp(`removing every Fade command \\(frees ${freed} bytes\\)`));
-  assert.doesNotMatch(message, /Turn command/, 'this project never turns Turn on, so it must not be offered as a fix');
-  assert.doesNotMatch(message, /Shake command/, 'this project never turns Shake on, so it must not be offered as a fix');
-  assert.doesNotMatch(message, /Flash command/, 'this project never turns Flash on, so it must not be offered as a fix');
-});
+test(
+  'a kernel-lo shortfall a live Fade command alone would close names Fade',
+  { skip: !hasNesasm && 'nesasm not found on PATH' },
+  async (t) => {
+    const project = createProject('Action', 'action');
+    project.cartridge.mapper = 1; // MMC1 -- no split term to complicate the arithmetic
+    project.maps[0].screens[0].entities.push({
+      actorId: 0,
+      x: 16,
+      y: 16,
+      props: { event: { pages: [{ cond: { type: 'none', arg: 0 }, commands: [{ op: 'fade', dir: 'out' }] }] } }
+    });
+    inflateLegal(project, 284); // recalibrated for the zero-page kernel diet, docs/design-kernel-diet.md
+    const deficit = kernelShortfallDeficit(project);
+    const freed = FADE_KERNEL_ALLOWANCE + PALETTE_FX_KERNEL_ALLOWANCE;
+    assert.ok(deficit <= freed, `deficit ${deficit} must not exceed FADE_KERNEL_ALLOWANCE + PALETTE_FX_KERNEL_ALLOWANCE (${freed}) or this case does not exercise Fade alone closing the gap`);
+    const message = kernelShortfallMessage(project);
+    assert.match(message, new RegExp(`removing every Fade command \\(frees ${freed} bytes\\)`));
+    assert.doesNotMatch(message, /Turn command/, 'this project never turns Turn on, so it must not be offered as a fix');
+    assert.doesNotMatch(message, /Shake command/, 'this project never turns Shake on, so it must not be offered as a fix');
+    assert.doesNotMatch(message, /Flash command/, 'this project never turns Flash on, so it must not be offered as a fix');
+    await assertDropFits(t, project, ['fade'], 'Fade alone would close it');
+  }
+);
 
 // The combination half: Shake and Fade together, purely additive since
 // neither shares a dependent term with the other -- SHAKE_KERNEL_ALLOWANCE +
@@ -2574,39 +2804,44 @@ test('a kernel-lo shortfall a live Fade command alone would close names Fade', (
 // action project real headroom on MMC1 the old base withheld -- re-derived
 // against a real checkCapacity() run, landing a 245-byte deficit -- strictly
 // above both solo figures and at or below the combined one.
-test('a kernel-lo shortfall neither Shake nor Fade alone would close, but both together would, names the combination', () => {
-  const project = createProject('Action', 'action');
-  project.cartridge.mapper = 1; // MMC1 -- no split term to complicate the arithmetic
-  project.maps[0].screens[0].entities.push({
-    actorId: 0,
-    x: 16,
-    y: 16,
-    props: {
-      event: {
-        pages: [
-          {
-            cond: { type: 'none', arg: 0 },
-            commands: [
-              { op: 'shake', frames: 30 },
-              { op: 'fade', dir: 'out' }
-            ]
-          }
-        ]
+test(
+  'a kernel-lo shortfall neither Shake nor Fade alone would close, but both together would, names the combination',
+  { skip: !hasNesasm && 'nesasm not found on PATH' },
+  async (t) => {
+    const project = createProject('Action', 'action');
+    project.cartridge.mapper = 1; // MMC1 -- no split term to complicate the arithmetic
+    project.maps[0].screens[0].entities.push({
+      actorId: 0,
+      x: 16,
+      y: 16,
+      props: {
+        event: {
+          pages: [
+            {
+              cond: { type: 'none', arg: 0 },
+              commands: [
+                { op: 'shake', frames: 30 },
+                { op: 'fade', dir: 'out' }
+              ]
+            }
+          ]
+        }
       }
-    }
-  });
-  inflate(project, 213);
-  const deficit = kernelShortfallDeficit(project);
-  const fadeAlone = FADE_KERNEL_ALLOWANCE + PALETTE_FX_KERNEL_ALLOWANCE;
-  const combined = SHAKE_KERNEL_ALLOWANCE + fadeAlone;
-  assert.ok(
-    deficit > SHAKE_KERNEL_ALLOWANCE && deficit > fadeAlone,
-    `deficit ${deficit} must exceed both Shake alone (${SHAKE_KERNEL_ALLOWANCE}) and Fade alone (${fadeAlone}), or this case does not exercise the combination at all`
-  );
-  assert.ok(deficit <= combined, `deficit ${deficit} must not exceed the combined figure (${combined}), or dropping both would not close the gap either`);
-  const message = kernelShortfallMessage(project);
-  assert.match(message, new RegExp(`removing every Shake command and every Fade command together \\(frees ${combined} bytes\\)`));
-});
+    });
+    inflateLegal(project, 286); // recalibrated for the zero-page kernel diet, docs/design-kernel-diet.md
+    const deficit = kernelShortfallDeficit(project);
+    const fadeAlone = FADE_KERNEL_ALLOWANCE + PALETTE_FX_KERNEL_ALLOWANCE;
+    const combined = SHAKE_KERNEL_ALLOWANCE + fadeAlone;
+    assert.ok(
+      deficit > SHAKE_KERNEL_ALLOWANCE && deficit > fadeAlone,
+      `deficit ${deficit} must exceed both Shake alone (${SHAKE_KERNEL_ALLOWANCE}) and Fade alone (${fadeAlone}), or this case does not exercise the combination at all`
+    );
+    assert.ok(deficit <= combined, `deficit ${deficit} must not exceed the combined figure (${combined}), or dropping both would not close the gap either`);
+    const message = kernelShortfallMessage(project);
+    assert.match(message, new RegExp(`removing every Shake command and every Fade command together \\(frees ${combined} bytes\\)`));
+    await assertDropFits(t, project, ['shake', 'fade'], 'Shake+Fade together would close it');
+  }
+);
 
 // item 6's own new-slice case: dropping Fade when a live Flash is ALSO
 // present frees only FADE_KERNEL_ALLOWANCE -- the shared PALETTE_FX_ENABLED
@@ -2623,45 +2858,50 @@ test('a kernel-lo shortfall neither Shake nor Fade alone would close, but both t
 // against a real checkCapacity() run, landing a 118-byte deficit, strictly
 // above FLASH_KERNEL_ALLOWANCE (98) and at or below FADE_KERNEL_ALLOWANCE
 // (146).
-test('a kernel-lo shortfall with both Flash and Fade live: dropping Fade alone frees only FADE_KERNEL_ALLOWANCE, not the shared term', () => {
-  const project = createProject('Action', 'action');
-  project.cartridge.mapper = 1; // MMC1 -- no split term to complicate the arithmetic
-  project.maps[0].screens[0].entities.push({
-    actorId: 0,
-    x: 16,
-    y: 16,
-    props: {
-      event: {
-        pages: [
-          {
-            cond: { type: 'none', arg: 0 },
-            commands: [
-              { op: 'flash' },
-              { op: 'fade', dir: 'out' }
-            ]
-          }
-        ]
+test(
+  'a kernel-lo shortfall with both Flash and Fade live: dropping Fade alone frees only FADE_KERNEL_ALLOWANCE, not the shared term',
+  { skip: !hasNesasm && 'nesasm not found on PATH' },
+  async (t) => {
+    const project = createProject('Action', 'action');
+    project.cartridge.mapper = 1; // MMC1 -- no split term to complicate the arithmetic
+    project.maps[0].screens[0].entities.push({
+      actorId: 0,
+      x: 16,
+      y: 16,
+      props: {
+        event: {
+          pages: [
+            {
+              cond: { type: 'none', arg: 0 },
+              commands: [
+                { op: 'flash' },
+                { op: 'fade', dir: 'out' }
+              ]
+            }
+          ]
+        }
       }
-    }
-  });
-  inflate(project, 193);
-  const deficit = kernelShortfallDeficit(project);
-  assert.ok(
-    deficit > FLASH_KERNEL_ALLOWANCE,
-    `deficit ${deficit} must exceed FLASH_KERNEL_ALLOWANCE (${FLASH_KERNEL_ALLOWANCE}) alone, or Flash would also be offered as a solo drop, muddying what this test isolates`
-  );
-  assert.ok(
-    deficit <= FADE_KERNEL_ALLOWANCE,
-    `deficit ${deficit} must not exceed FADE_KERNEL_ALLOWANCE (${FADE_KERNEL_ALLOWANCE}) alone, or this case does not exercise "drop Fade alone" closing the gap on its own`
-  );
-  const message = kernelShortfallMessage(project);
-  assert.match(message, new RegExp(`removing every Fade command \\(frees ${FADE_KERNEL_ALLOWANCE} bytes\\)`));
-  assert.doesNotMatch(
-    message,
-    new RegExp(`frees ${FADE_KERNEL_ALLOWANCE + PALETTE_FX_KERNEL_ALLOWANCE} bytes`),
-    'dropping Fade here must not claim the Fade-alone (no-Flash) figure -- Flash keeps the shared term charged'
-  );
-});
+    });
+    inflateLegal(project, 270); // recalibrated for the zero-page kernel diet, docs/design-kernel-diet.md -- deficit 122, above FLASH_KERNEL_ALLOWANCE and at or below FADE_KERNEL_ALLOWANCE
+    const deficit = kernelShortfallDeficit(project);
+    assert.ok(
+      deficit > FLASH_KERNEL_ALLOWANCE,
+      `deficit ${deficit} must exceed FLASH_KERNEL_ALLOWANCE (${FLASH_KERNEL_ALLOWANCE}) alone, or Flash would also be offered as a solo drop, muddying what this test isolates`
+    );
+    assert.ok(
+      deficit <= FADE_KERNEL_ALLOWANCE,
+      `deficit ${deficit} must not exceed FADE_KERNEL_ALLOWANCE (${FADE_KERNEL_ALLOWANCE}) alone, or this case does not exercise "drop Fade alone" closing the gap on its own`
+    );
+    const message = kernelShortfallMessage(project);
+    assert.match(message, new RegExp(`removing every Fade command \\(frees ${FADE_KERNEL_ALLOWANCE} bytes\\)`));
+    assert.doesNotMatch(
+      message,
+      new RegExp(`frees ${FADE_KERNEL_ALLOWANCE + PALETTE_FX_KERNEL_ALLOWANCE} bytes`),
+      'dropping Fade here must not claim the Fade-alone (no-Flash) figure -- Flash keeps the shared term charged'
+    );
+    await assertDropFits(t, project, ['fade'], 'Fade alone (Flash still live) would close it');
+  }
+);
 
 // Round 2, item 4e: the negative control the earlier positive-only tests
 // could not provide on their own. A project with no live Fade command at
@@ -2682,26 +2922,31 @@ test('a kernel-lo shortfall with both Flash and Fade live: dropping Fade alone f
 // filter outright -- for instance, a message-string builder that mentions
 // Fade unconditionally alongside whatever real candidate closed the gap,
 // rather than only a candidate that survived the `freed >= deficit` check.
-test('a kernel-lo shortfall with no live Fade command never names Fade as droppable advice', () => {
-  const project = createProject('Action', 'action');
-  project.cartridge.mapper = 1; // MMC1 -- no split term to complicate the arithmetic
-  project.maps[0].screens[0].entities.push({
-    actorId: 0,
-    x: 16,
-    y: 16,
-    props: { event: { pages: [{ cond: { type: 'none', arg: 0 }, commands: [{ op: 'shake', frames: 30 }] }] } }
-  });
-  inflate(project, 212); // the identical Shake-solo deficit measured above
-  const deficit = kernelShortfallDeficit(project);
-  assert.ok(deficit <= SHAKE_KERNEL_ALLOWANCE, `deficit ${deficit} must not exceed SHAKE_KERNEL_ALLOWANCE (${SHAKE_KERNEL_ALLOWANCE}) or this case does not exercise Shake alone closing the gap`);
-  const message = kernelShortfallMessage(project);
-  assert.match(message, new RegExp(`removing every Shake command \\(frees ${SHAKE_KERNEL_ALLOWANCE} bytes\\)`));
-  assert.doesNotMatch(
-    message,
-    /Fade command/,
-    'this project never turns Fade on, so it must never be offered as a fix -- neither solo nor as part of a combination'
-  );
-});
+test(
+  'a kernel-lo shortfall with no live Fade command never names Fade as droppable advice',
+  { skip: !hasNesasm && 'nesasm not found on PATH' },
+  async (t) => {
+    const project = createProject('Action', 'action');
+    project.cartridge.mapper = 1; // MMC1 -- no split term to complicate the arithmetic
+    project.maps[0].screens[0].entities.push({
+      actorId: 0,
+      x: 16,
+      y: 16,
+      props: { event: { pages: [{ cond: { type: 'none', arg: 0 }, commands: [{ op: 'shake', frames: 30 }] }] } }
+    });
+    inflateLegal(project, 286); // recalibrated for the zero-page kernel diet, docs/design-kernel-diet.md
+    const deficit = kernelShortfallDeficit(project);
+    assert.ok(deficit <= SHAKE_KERNEL_ALLOWANCE, `deficit ${deficit} must not exceed SHAKE_KERNEL_ALLOWANCE (${SHAKE_KERNEL_ALLOWANCE}) or this case does not exercise Shake alone closing the gap`);
+    const message = kernelShortfallMessage(project);
+    assert.match(message, new RegExp(`removing every Shake command \\(frees ${SHAKE_KERNEL_ALLOWANCE} bytes\\)`));
+    assert.doesNotMatch(
+      message,
+      /Fade command/,
+      'this project never turns Fade on, so it must never be offered as a fix -- neither solo nor as part of a combination'
+    );
+    await assertDropFits(t, project, ['shake'], 'Shake alone would close it (no Fade anywhere in this project)');
+  }
+);
 
 // design-flash.md §9 test 15: the identical negative control for Flash,
 // mirroring Fade's own shape and its own comment's honesty above. A project
@@ -2721,26 +2966,31 @@ test('a kernel-lo shortfall with no live Fade command never names Fade as droppa
 // either way, so this fixture cannot distinguish the two implementations at
 // all. What this test actually verifies is the user-visible outcome: no
 // advice ever names a command the project does not use.
-test('a kernel-lo shortfall with no live Flash command never names Flash as droppable advice', () => {
-  const project = createProject('Action', 'action');
-  project.cartridge.mapper = 1; // MMC1 -- no split term to complicate the arithmetic
-  project.maps[0].screens[0].entities.push({
-    actorId: 0,
-    x: 16,
-    y: 16,
-    props: { event: { pages: [{ cond: { type: 'none', arg: 0 }, commands: [{ op: 'shake', frames: 30 }] }] } }
-  });
-  inflate(project, 212); // the identical Shake-solo deficit measured above
-  const deficit = kernelShortfallDeficit(project);
-  assert.ok(deficit <= SHAKE_KERNEL_ALLOWANCE, `deficit ${deficit} must not exceed SHAKE_KERNEL_ALLOWANCE (${SHAKE_KERNEL_ALLOWANCE}) or this case does not exercise Shake alone closing the gap`);
-  const message = kernelShortfallMessage(project);
-  assert.match(message, new RegExp(`removing every Shake command \\(frees ${SHAKE_KERNEL_ALLOWANCE} bytes\\)`));
-  assert.doesNotMatch(
-    message,
-    /Flash command/,
-    'this project never turns Flash on, so it must never be offered as a fix -- neither solo nor as part of a combination'
-  );
-});
+test(
+  'a kernel-lo shortfall with no live Flash command never names Flash as droppable advice',
+  { skip: !hasNesasm && 'nesasm not found on PATH' },
+  async (t) => {
+    const project = createProject('Action', 'action');
+    project.cartridge.mapper = 1; // MMC1 -- no split term to complicate the arithmetic
+    project.maps[0].screens[0].entities.push({
+      actorId: 0,
+      x: 16,
+      y: 16,
+      props: { event: { pages: [{ cond: { type: 'none', arg: 0 }, commands: [{ op: 'shake', frames: 30 }] }] } }
+    });
+    inflateLegal(project, 286); // recalibrated for the zero-page kernel diet, docs/design-kernel-diet.md
+    const deficit = kernelShortfallDeficit(project);
+    assert.ok(deficit <= SHAKE_KERNEL_ALLOWANCE, `deficit ${deficit} must not exceed SHAKE_KERNEL_ALLOWANCE (${SHAKE_KERNEL_ALLOWANCE}) or this case does not exercise Shake alone closing the gap`);
+    const message = kernelShortfallMessage(project);
+    assert.match(message, new RegExp(`removing every Shake command \\(frees ${SHAKE_KERNEL_ALLOWANCE} bytes\\)`));
+    assert.doesNotMatch(
+      message,
+      /Flash command/,
+      'this project never turns Flash on, so it must never be offered as a fix -- neither solo nor as part of a combination'
+    );
+    await assertDropFits(t, project, ['shake'], 'Shake alone would close it (no Flash anywhere in this project)');
+  }
+);
 
 // ------------------------------------------------------------------ Sting
 // Item 6, sound-effect slice (handoff-sting/design-sting.md §12, tests 3/15). Two questions this
@@ -2795,56 +3045,84 @@ test(
 // count is unaffected -- what changed is how much room the band has to be recentred in. Re-derived
 // against a real checkCapacity() run: inflate(210) lands the deficit at 256, almost exactly centred
 // in the new band (257.5 is the midpoint).
-test('a kernel-lo shortfall Sting alone would not close by its own allowance can still close when dropping it also turns off the split term', () => {
-  const project = createProject('Action', 'action');
-  project.cartridge.mapper = 4; // MMC3
-  project.songs = [createSong('Fanfare')];
-  // The project's only event, and its only command -- the project's sole reason projectUsesText
-  // (and so fontBankSplit) is true at all.
-  project.maps[0].screens[0].entities.push({
-    actorId: 0,
-    x: 16,
-    y: 16,
-    props: { event: { pages: [{ cond: { type: 'none', arg: 0 }, commands: [{ op: 'sting', song: 0 }] }] } }
-  });
-  inflate(project, 210); // deficit 256, strictly above 175 and at or below 340
-  const deficit = kernelShortfallDeficit(project);
-  assert.ok(
-    deficit > (STING_KERNEL_ALLOWANCE_STANDALONE + AUDIO_FX_KERNEL_ALLOWANCE),
-    `deficit ${deficit} must exceed (STING_KERNEL_ALLOWANCE_STANDALONE + AUDIO_FX_KERNEL_ALLOWANCE) (${(STING_KERNEL_ALLOWANCE_STANDALONE + AUDIO_FX_KERNEL_ALLOWANCE)}) alone, or this case ` +
-      'does not exercise the split term being freed alongside Sting at all'
-  );
-  assert.ok(
-    deficit <= (STING_KERNEL_ALLOWANCE_STANDALONE + AUDIO_FX_KERNEL_ALLOWANCE) + SPLIT_KERNEL_ALLOWANCE,
-    `deficit ${deficit} must not exceed (STING_KERNEL_ALLOWANCE_STANDALONE + AUDIO_FX_KERNEL_ALLOWANCE) + SPLIT_KERNEL_ALLOWANCE ` +
-      `(${(STING_KERNEL_ALLOWANCE_STANDALONE + AUDIO_FX_KERNEL_ALLOWANCE) + SPLIT_KERNEL_ALLOWANCE}), or dropping Sting would not close the gap either`
-  );
-  const message = kernelShortfallMessage(project);
-  assert.match(
-    message,
-    new RegExp(`removing every Sting command \\(frees ${(STING_KERNEL_ALLOWANCE_STANDALONE + AUDIO_FX_KERNEL_ALLOWANCE) + SPLIT_KERNEL_ALLOWANCE} bytes\\)`),
-    'an implementation that sums the flat (STING_KERNEL_ALLOWANCE_STANDALONE + AUDIO_FX_KERNEL_ALLOWANCE) constant directly instead of asking ' +
-      'kernelCodeBytes what a Sting-free version of the project would actually cost would report ' +
-      `${(STING_KERNEL_ALLOWANCE_STANDALONE + AUDIO_FX_KERNEL_ALLOWANCE)} alone here, wrong by exactly the split term`
-  );
-});
-
-// design-sting.md §9: the documented limitation Sting creates -- DEVIATION,
-// review-fixes slice C, item 12: MMC3 Save+Move-no-item used to have enough
-// margin that Sting's own allowance alone was the row's real tipping point
-// (175 bytes, against a deficit just above it, matching the CLAUDE.md figure
-// this comment used to cite). Item 12's own base growth (+15/board,
-// unconditional -- see BASE_KERNEL_CODE_BYTES_BY_MAPPER's own comment in
-// generate.js) already pushes this exact row 8 bytes over budget with NO
-// Sting live at all, so Sting is no longer what tips it and dropping Sting
-// alone no longer closes it (its own allowance grew too, to 187, but the
-// deficit it would have to clear grew to 195) -- Move or Save, both much
-// larger allowances, are the only single-command fixes left, and neither
-// depends on whether Sting is live. What this test still proves is that
-// Sting genuinely does not make the refusal disappear on its own now, not
-// that it is what causes it.
 test(
-  'sample-rpg with Save, Move (no item) and a live Sting does not build on MMC3 -- a documented limitation',
+  'a kernel-lo shortfall Sting alone would not close by its own allowance can still close when dropping it also turns off the split term',
+  { skip: !hasNesasm && 'nesasm not found on PATH' },
+  async (t) => {
+    const project = createProject('Action', 'action');
+    project.cartridge.mapper = 4; // MMC3
+    project.songs = [createSong('Fanfare')];
+    // The project's only event, and its only command -- the project's sole reason projectUsesText
+    // (and so fontBankSplit) is true at all.
+    project.maps[0].screens[0].entities.push({
+      actorId: 0,
+      x: 16,
+      y: 16,
+      props: { event: { pages: [{ cond: { type: 'none', arg: 0 }, commands: [{ op: 'sting', song: 0 }] }] } }
+    });
+    inflateLegal(project, 270); // recalibrated for the zero-page kernel diet, docs/design-kernel-diet.md -- deficit 208, strictly above 181 and at or below 332
+    const deficit = kernelShortfallDeficit(project);
+    assert.ok(
+      deficit > (STING_KERNEL_ALLOWANCE_STANDALONE + AUDIO_FX_KERNEL_ALLOWANCE),
+      `deficit ${deficit} must exceed (STING_KERNEL_ALLOWANCE_STANDALONE + AUDIO_FX_KERNEL_ALLOWANCE) (${(STING_KERNEL_ALLOWANCE_STANDALONE + AUDIO_FX_KERNEL_ALLOWANCE)}) alone, or this case ` +
+        'does not exercise the split term being freed alongside Sting at all'
+    );
+    assert.ok(
+      deficit <= (STING_KERNEL_ALLOWANCE_STANDALONE + AUDIO_FX_KERNEL_ALLOWANCE) + SPLIT_KERNEL_ALLOWANCE,
+      `deficit ${deficit} must not exceed (STING_KERNEL_ALLOWANCE_STANDALONE + AUDIO_FX_KERNEL_ALLOWANCE) + SPLIT_KERNEL_ALLOWANCE ` +
+        `(${(STING_KERNEL_ALLOWANCE_STANDALONE + AUDIO_FX_KERNEL_ALLOWANCE) + SPLIT_KERNEL_ALLOWANCE}), or dropping Sting would not close the gap either`
+    );
+    const message = kernelShortfallMessage(project);
+    assert.match(
+      message,
+      new RegExp(`removing every Sting command \\(frees ${(STING_KERNEL_ALLOWANCE_STANDALONE + AUDIO_FX_KERNEL_ALLOWANCE) + SPLIT_KERNEL_ALLOWANCE} bytes\\)`),
+      'an implementation that sums the flat (STING_KERNEL_ALLOWANCE_STANDALONE + AUDIO_FX_KERNEL_ALLOWANCE) constant directly instead of asking ' +
+        'kernelCodeBytes what a Sting-free version of the project would actually cost would report ' +
+        `${(STING_KERNEL_ALLOWANCE_STANDALONE + AUDIO_FX_KERNEL_ALLOWANCE)} alone here, wrong by exactly the split term`
+    );
+    await assertDropFits(t, project, ['sting'], 'Sting alone would close it (with the split term freed too)');
+  }
+);
+
+// design-sting.md §9's documented limitation, closed for real by the
+// zero-page kernel diet (docs/design-kernel-diet.md): MMC3 Save+Move-no-item
+// with a live Sting now fits with real room to spare. The padded sibling
+// test right below keeps the refusal-message advice path (Move and Save
+// offered, Sting correctly left out) and both mitigation checks (dropping
+// Sting alone is not enough; dropping Move alone, with Sting still live, is
+// a real fix) under test.
+test(
+  'sample-rpg with Save, Move (no item) and a live Sting builds on MMC3 -- the zero-page kernel diet closed this documented limitation for real',
+  { skip: !hasNesasm && 'nesasm not found on PATH' },
+  async (t) => {
+    const project = await loadProject(SAMPLE_RPG);
+    project.cartridge.mapper = 4; // MMC3
+    project.project.titleMap = 0;
+    project.project.titleScreen = 0;
+    project.items = []; // isolate the no-item row this refusal used to land on
+    project.songs = [createSong('Fanfare')];
+    project.maps[0].screens[0].entities.push(saveAndMoveEvent());
+    project.maps[0].screens[0].entities.push({
+      actorId: 0,
+      x: 32,
+      y: 32,
+      props: { event: { pages: [{ cond: { type: 'none', arg: 0 }, commands: [{ op: 'sting', song: 0 }] }] } }
+    });
+    assert.deepEqual(
+      checkCapacity(project).problems.filter((p) => p.severity === 'error'),
+      [],
+      'sample-rpg with Save, Move (no item) and a live Sting should now fit on MMC3'
+    );
+    const dir = await fsp.mkdtemp(path.join(os.tmpdir(), 'forge-sting-limitation-'));
+    t.after(() => fsp.rm(dir, { recursive: true, force: true }));
+    await saveProject(dir, project);
+    const built = await buildProject({ dir, project, log: () => {} });
+    assert.ok(built.romPath, 'Save, Move (no item) and a live Sting should now assemble on MMC3');
+  }
+);
+
+test(
+  'sample-rpg with Save, Move (no item) and a live Sting, padded, still does not build on MMC3 -- keeps the advice path covered',
   { skip: !hasNesasm && 'nesasm not found on PATH' },
   async (t) => {
     const project = await loadProject(SAMPLE_RPG);
@@ -2860,39 +3138,38 @@ test(
       y: 32,
       props: { event: { pages: [{ cond: { type: 'none', arg: 0 }, commands: [{ op: 'sting', song: 0 }] }] } }
     });
+    inflate(project, 75); // recalibrated for the zero-page kernel diet, docs/design-kernel-diet.md -- deficit 232, above STING but at or below MOVE
 
     const message = kernelShortfallMessage(project);
-    // Move and Save, not Sting: dropping Sting alone (187 bytes) no longer
-    // closes this row's own deficit (195), so kernelShortfallAdvice's solo
-    // pass correctly leaves it out -- see the header comment above.
+    // Move and Save, not Sting: dropping Sting alone does not close this
+    // padded row's own deficit, so kernelShortfallAdvice's solo pass
+    // correctly leaves it out.
     assert.match(message, /every Move command \(frees \d+ bytes\)/, 'the refusal should offer dropping Move');
     assert.match(message, /every Save command \(frees \d+ bytes\)/, 'the refusal should offer dropping Save');
     assert.doesNotMatch(
       message,
       /Sting/,
-      'Sting alone no longer closes this row (its own allowance grew to 187, but so did the deficit, to 195) -- ' +
-        'offering it here would be advice that does not actually work'
+      'Sting alone does not close this padded row -- offering it here would be advice that does not actually work'
     );
 
-    // Dropping Sting alone is NOT a real fix any more -- confirms the
-    // deficit above is genuine, not an artifact of kernelShortfallMessage's
-    // own arithmetic.
+    // Dropping Sting alone is NOT a real fix -- confirms the deficit above
+    // is genuine, not an artifact of kernelShortfallMessage's own
+    // arithmetic.
     const droppedSting = structuredClone(project);
     droppedSting.maps[0].screens[0].entities.pop();
-    const dirSting = await fsp.mkdtemp(path.join(os.tmpdir(), 'forge-sting-limitation-'));
+    const dirSting = await fsp.mkdtemp(path.join(os.tmpdir(), 'forge-sting-limitation-padded-'));
     t.after(() => fsp.rm(dirSting, { recursive: true, force: true }));
     await saveProject(dirSting, droppedSting);
     await assert.rejects(
       buildProject({ dir: dirSting, project: droppedSting, log: () => {} }),
-      'dropping only the Sting command should still fail to build -- this row is now over budget with no ' +
-        'Sting live at all'
+      'dropping only the Sting command should still fail to build on this padded row'
     );
 
     // Confirm the design's own stated mitigation still holds: dropping Move
     // ALONE -- Save stays live -- (one of the two fixes the message above
     // actually offers) is a real fix, with Sting still live too.
     const droppedMove = dropCommand(project, 'move');
-    const dirMove = await fsp.mkdtemp(path.join(os.tmpdir(), 'forge-sting-limitation-move-'));
+    const dirMove = await fsp.mkdtemp(path.join(os.tmpdir(), 'forge-sting-limitation-padded-move-'));
     t.after(() => fsp.rm(dirMove, { recursive: true, force: true }));
     await saveProject(dirMove, droppedMove);
     const built = await buildProject({ dir: dirMove, project: droppedMove, log: () => {} });
@@ -2974,7 +3251,7 @@ test(
           'Sting-only project has always paid must not move now that force_trig\'s own gate reads ' +
           'AUDIO_FX_ENABLED instead of STING_ENABLED alone (design-sfx.md §7 test 10).'
       );
-      assert.equal(delta, 187, `${mapper.name}: the historical Sting-only figure itself must not have moved`);
+      assert.equal(delta, 181, `${mapper.name}: the Sting-only figure (re-measured after the zero-page kernel diet, docs/design-kernel-diet.md) must not have moved`);
     }
   }
 );
@@ -3152,13 +3429,9 @@ function sfxCommandEvent(project, x = 80, y = 80) {
 }
 
 /**
- * Builds `sample-rpg` on `mapper` with `rowCommands` on one placed actor,
- * plus a live SFX command on a second (and, if `withSting`, a live Sting on
- * a third) -- confirms checkCapacity() refuses it, that the refusal names
- * "Play a sound effect" with its real freed-byte figure, and that dropping
- * just the SFX command is a real, buildable fix (an actual nesasm build,
- * not only the JS-side prediction), the identical discipline the existing
- * Sting/bound-tile documented-limitation tests already hold themselves to.
+ * Builds the same `sample-rpg`-on-`mapper` project both assertSfxRefusal and
+ * assertSfxFits construct: `rowCommands` on one placed actor, plus a live
+ * SFX command on a second (and, if `withSting`, a live Sting on a third).
  *
  * `noTitle` (code review round 1, finding 3): a title screen used to be
  * forced on unconditionally here, for every row, including ones whose own
@@ -3170,7 +3443,7 @@ function sfxCommandEvent(project, x = 80, y = 80) {
  * has nothing to do with SFX at all -- pass `noTitle: true` for any row
  * whose name does not include Save.
  */
-async function assertSfxRefusal(t, mapperId, rowCommands, { noItem = false, withSting = false, noTitle = false, mapperLabel } = {}) {
+async function buildSfxRow(mapperId, rowCommands, { noItem = false, withSting = false, noTitle = false, pad = 0 } = {}) {
   const project = await loadProject(SAMPLE_RPG);
   // Naming off explicitly (phase 5): these documented-limitation rows are
   // CLAUDE.md's own pinned figures, computed clean of sample-rpg's own
@@ -3191,6 +3464,41 @@ async function assertSfxRefusal(t, mapperId, rowCommands, { noItem = false, with
     project.maps[0].screens[0].entities.push(commandsEvent([{ op: 'sting', song: 0 }], 96, 96));
   }
   project.maps[0].screens[0].entities.push(sfxCommandEvent(project));
+  if (pad) inflate(project, pad);
+  return project;
+}
+
+/**
+ * The zero-page kernel diet (docs/design-kernel-diet.md) closed every one of
+ * this section's former documented-limitation rows for real -- confirms the
+ * unpadded row now fits checkCapacity and actually assembles.
+ */
+async function assertSfxFits(t, mapperId, rowCommands, opts = {}) {
+  const project = await buildSfxRow(mapperId, rowCommands, opts);
+  assert.deepEqual(
+    checkCapacity(project).problems.filter((p) => p.severity === 'error'),
+    [],
+    `${opts.mapperLabel}: this row should now fit on the real, unpadded project`
+  );
+  const dir = await fsp.mkdtemp(path.join(os.tmpdir(), 'forge-sfx-fits-'));
+  t.after(() => fsp.rm(dir, { recursive: true, force: true }));
+  await saveProject(dir, project);
+  const built = await buildProject({ dir, project, log: () => {} });
+  assert.ok(built.romPath, `${opts.mapperLabel}: this row should now assemble for real`);
+}
+
+/**
+ * The padded sibling of assertSfxFits: with enough filler content to force
+ * the deficit back open, confirms checkCapacity() still refuses it, that the
+ * refusal names "Play a sound effect" with its real freed-byte figure, and
+ * that dropping just the SFX command is a real, buildable fix (an actual
+ * nesasm build, not only the JS-side prediction) -- the identical discipline
+ * the existing Sting/bound-tile documented-limitation tests already hold
+ * themselves to. This is what keeps the advice-path assertion under test now
+ * that the unpadded row itself builds.
+ */
+async function assertSfxRefusal(t, mapperId, rowCommands, { noItem = false, withSting = false, noTitle = false, mapperLabel, pad = 100 } = {}) {
+  const project = await buildSfxRow(mapperId, rowCommands, { noItem, withSting, noTitle, pad });
 
   const message = kernelShortfallMessage(project);
   assert.match(
@@ -3208,20 +3516,41 @@ async function assertSfxRefusal(t, mapperId, rowCommands, { noItem = false, with
   assert.ok(built.romPath, `${mapperLabel}: dropping the SFX command alone should still be a real fix`);
 }
 
-// DEVIATION, review-fixes slice C, item 12: this row does not go through
-// assertSfxRefusal any more. Item 12's own base growth (+15/board,
-// unconditional) already pushes MMC3 Save+Move-no-item 8 bytes over budget
-// with no SFX live at all (the identical finding the Sting documented-
-// limitation test above now records) -- so SFX no longer "reaches" a
-// previously-fitting row, it lands on one that was already refused, and
-// SFX_KERNEL_ALLOWANCE_STANDALONE's own 295-byte allowance is not what the
-// message names any more (Move/Save, both larger, are). Kept as its own
-// test, inline rather than through the shared helper, because the helper's
-// assertion (SFX must be named) is still correct for every other row that
-// calls it (45-49 below) and must not be weakened for all of them to
-// accommodate this one row's own now-different reality.
+// The zero-page kernel diet (docs/design-kernel-diet.md) closed this row for
+// real too: MMC3 Save+Move-no-item with a live SFX now fits with real room
+// to spare. The padded sibling test right below keeps the refusal-message
+// advice path (Move and Save offered, SFX correctly left out) and both
+// mitigation checks under test.
 test(
-  'sample-rpg with Save, Move (no item) and a live SFX does not build on MMC3 -- the already-known documented limitation, now also reached by SFX',
+  'sample-rpg with Save, Move (no item) and a live SFX builds on MMC3 -- the zero-page kernel diet closed this documented limitation for real',
+  { skip: !hasNesasm && 'nesasm not found on PATH' },
+  async (t) => {
+    const project = await loadProject(SAMPLE_RPG);
+    project.party[0].renamable = false;
+    if (project.party[1]) project.party[1].renamable = false;
+    project.cartridge.mapper = 4; // MMC3
+    project.project.titleMap = 0;
+    project.project.titleScreen = 0;
+    project.items = [];
+    project.maps[0].screens[0].entities.push(
+      commandsEvent([{ op: 'save' }, { op: 'move', who: 'self', dir: 'up', dist: 16 }])
+    );
+    project.maps[0].screens[0].entities.push(sfxCommandEvent(project));
+    assert.deepEqual(
+      checkCapacity(project).problems.filter((p) => p.severity === 'error'),
+      [],
+      'sample-rpg with Save, Move (no item) and a live SFX should now fit on MMC3'
+    );
+    const dir = await fsp.mkdtemp(path.join(os.tmpdir(), 'forge-sfx-limitation-mmc3-'));
+    t.after(() => fsp.rm(dir, { recursive: true, force: true }));
+    await saveProject(dir, project);
+    const built = await buildProject({ dir, project, log: () => {} });
+    assert.ok(built.romPath, 'Save, Move (no item) and a live SFX should now assemble on MMC3');
+  }
+);
+
+test(
+  'sample-rpg with Save, Move (no item) and a live SFX, padded, still does not build on MMC3 -- keeps the advice path covered',
   { skip: !hasNesasm && 'nesasm not found on PATH' },
   async (t) => {
     const project = await loadProject(SAMPLE_RPG);
@@ -3238,6 +3567,7 @@ test(
       commandsEvent([{ op: 'save' }, { op: 'move', who: 'self', dir: 'up', dist: 16 }])
     );
     project.maps[0].screens[0].entities.push(sfxCommandEvent(project));
+    inflate(project, 92); // recalibrated for the zero-page kernel diet, docs/design-kernel-diet.md -- deficit 301, above SFX's own allowance but at or below Move's
 
     const message = kernelShortfallMessage(project);
     assert.match(message, /every Move command \(frees \d+ bytes\)/, 'the refusal should offer dropping Move');
@@ -3245,26 +3575,25 @@ test(
     assert.doesNotMatch(
       message,
       /sound effect/,
-      'SFX alone no longer closes this row -- the baseline is already over budget without it, so offering ' +
-        'it here would be advice that does not actually work'
+      'SFX alone does not close this padded row -- the baseline is already over budget without it, so ' +
+        'offering it here would be advice that does not actually work'
     );
 
-    // Dropping SFX alone is NOT a real fix any more.
+    // Dropping SFX alone is NOT a real fix.
     const droppedSfx = structuredClone(project);
     droppedSfx.maps[0].screens[0].entities.pop();
-    const dirSfx = await fsp.mkdtemp(path.join(os.tmpdir(), 'forge-sfx-limitation-mmc3-'));
+    const dirSfx = await fsp.mkdtemp(path.join(os.tmpdir(), 'forge-sfx-limitation-mmc3-padded-'));
     t.after(() => fsp.rm(dirSfx, { recursive: true, force: true }));
     await saveProject(dirSfx, droppedSfx);
     await assert.rejects(
       buildProject({ dir: dirSfx, project: droppedSfx, log: () => {} }),
-      'dropping only the SFX command should still fail to build -- this row is now over budget with no SFX ' +
-        'live at all'
+      'dropping only the SFX command should still fail to build on this padded row'
     );
 
     // Move ALONE -- Save stays live -- (one of the two fixes actually
     // offered above) is a real fix.
     const droppedMove = dropCommand(project, 'move');
-    const dirMove = await fsp.mkdtemp(path.join(os.tmpdir(), 'forge-sfx-limitation-move-'));
+    const dirMove = await fsp.mkdtemp(path.join(os.tmpdir(), 'forge-sfx-limitation-padded-move-'));
     t.after(() => fsp.rm(dirMove, { recursive: true, force: true }));
     await saveProject(dirMove, droppedMove);
     const built = await buildProject({ dir: dirMove, project: droppedMove, log: () => {} });
@@ -3272,23 +3601,43 @@ test(
   }
 );
 
+// The zero-page kernel diet (docs/design-kernel-diet.md) closed this row for
+// real; the padded sibling call keeps SFX_KERNEL_ALLOWANCE_STANDALONE's own
+// refusal-advice path under test.
 test(
-  'sample-rpg with Save, Move and its one live item does not build on MMC1 once a live SFX is added -- newly refused, per SFX_KERNEL_ALLOWANCE_STANDALONE\'s own real measurement',
+  'sample-rpg with Save, Move and its one live item builds on MMC1 once a live SFX is added -- the zero-page kernel diet closed this documented limitation for real',
+  { skip: !hasNesasm && 'nesasm not found on PATH' },
+  async (t) => {
+    await assertSfxFits(t, 1, [{ op: 'save' }, { op: 'move', who: 'self', dir: 'up', dist: 16 }], { mapperLabel: 'MMC1' });
+  }
+);
+
+test(
+  'sample-rpg with Save, Move and its one live item, padded, still does not build on MMC1 once a live SFX is added -- keeps the advice path covered',
   { skip: !hasNesasm && 'nesasm not found on PATH' },
   async (t) => {
     await assertSfxRefusal(t, 1, [{ op: 'save' }, { op: 'move', who: 'self', dir: 'up', dist: 16 }], { mapperLabel: 'MMC1' });
   }
 );
 
-// DECLARED DEVIATION (see the section comment above): the design predicted
-// this exact row -- MMC1 Save+Move-no-item -- as a razor-thin FIT control at
-// its own 298-byte estimate (+1 free). The real, measured
-// SFX_KERNEL_ALLOWANCE_STANDALONE (295, not 283) moves the real marginal
-// cost to 310, which refuses this row too (a real, measured 31-byte
-// deficit) -- so this test asserts the real outcome, a sixth refusal, in
-// place of the design's own now-superseded fit-control test.
+// DECLARED DEVIATION history (see the section comment above): the design
+// predicted MMC1 Save+Move-no-item as a razor-thin FIT control; the real,
+// measured SFX allowance instead refused it, until the zero-page kernel diet
+// (docs/design-kernel-diet.md) closed it for real, with room to spare. The
+// padded sibling call keeps the refusal-advice path under test.
 test(
-  'sample-rpg with Save and Move, no item, does not build on MMC1 once a live SFX is added -- DEVIATION: the design predicted this row as a +1 fit control at its own 283-byte SFX estimate; the real, measured 295-byte figure refuses it instead',
+  'sample-rpg with Save and Move, no item, builds on MMC1 once a live SFX is added -- the zero-page kernel diet closed this documented limitation for real',
+  { skip: !hasNesasm && 'nesasm not found on PATH' },
+  async (t) => {
+    await assertSfxFits(t, 1, [{ op: 'save' }, { op: 'move', who: 'self', dir: 'up', dist: 16 }], {
+      noItem: true,
+      mapperLabel: 'MMC1'
+    });
+  }
+);
+
+test(
+  'sample-rpg with Save and Move, no item, padded, still does not build on MMC1 once a live SFX is added -- keeps the advice path covered',
   { skip: !hasNesasm && 'nesasm not found on PATH' },
   async (t) => {
     await assertSfxRefusal(t, 1, [{ op: 'save' }, { op: 'move', who: 'self', dir: 'up', dist: 16 }], {
@@ -3299,7 +3648,18 @@ test(
 );
 
 test(
-  'sample-rpg with every shipped verb, Move and its one live item, no Save, does not build on MMC3 once a live SFX is added',
+  'sample-rpg with every shipped verb, Move and its one live item, no Save, builds on MMC3 once a live SFX is added -- the zero-page kernel diet closed this documented limitation for real',
+  { skip: !hasNesasm && 'nesasm not found on PATH' },
+  async (t) => {
+    await assertSfxFits(t, 4, [...allSevenVerbsCommands(), { op: 'move', who: 'self', dir: 'up', dist: 16 }], {
+      noTitle: true,
+      mapperLabel: 'MMC3'
+    });
+  }
+);
+
+test(
+  'sample-rpg with every shipped verb, Move and its one live item, no Save, padded, still does not build on MMC3 once a live SFX is added -- keeps the advice path covered',
   { skip: !hasNesasm && 'nesasm not found on PATH' },
   async (t) => {
     await assertSfxRefusal(t, 4, [...allSevenVerbsCommands(), { op: 'move', who: 'self', dir: 'up', dist: 16 }], {
@@ -3310,7 +3670,15 @@ test(
 );
 
 test(
-  'sample-rpg with a live Save command and its one live item does not build on UNROM 512 once a live SFX is added',
+  'sample-rpg with a live Save command and its one live item builds on UNROM 512 once a live SFX is added -- the zero-page kernel diet closed this documented limitation for real',
+  { skip: !hasNesasm && 'nesasm not found on PATH' },
+  async (t) => {
+    await assertSfxFits(t, 30, [{ op: 'save' }], { mapperLabel: 'UNROM 512' });
+  }
+);
+
+test(
+  'sample-rpg with a live Save command and its one live item, padded, still does not build on UNROM 512 once a live SFX is added -- keeps the advice path covered',
   { skip: !hasNesasm && 'nesasm not found on PATH' },
   async (t) => {
     await assertSfxRefusal(t, 30, [{ op: 'save' }], { mapperLabel: 'UNROM 512' });
@@ -3318,7 +3686,18 @@ test(
 );
 
 test(
-  'sample-rpg with every shipped verb, Move and its one live item, no Save, does not build on UNROM 512 once a live SFX is added',
+  'sample-rpg with every shipped verb, Move and its one live item, no Save, builds on UNROM 512 once a live SFX is added -- the zero-page kernel diet closed this documented limitation for real',
+  { skip: !hasNesasm && 'nesasm not found on PATH' },
+  async (t) => {
+    await assertSfxFits(t, 30, [...allSevenVerbsCommands(), { op: 'move', who: 'self', dir: 'up', dist: 16 }], {
+      noTitle: true,
+      mapperLabel: 'UNROM 512'
+    });
+  }
+);
+
+test(
+  'sample-rpg with every shipped verb, Move and its one live item, no Save, padded, still does not build on UNROM 512 once a live SFX is added -- keeps the advice path covered',
   { skip: !hasNesasm && 'nesasm not found on PATH' },
   async (t) => {
     await assertSfxRefusal(t, 30, [...allSevenVerbsCommands(), { op: 'move', who: 'self', dir: 'up', dist: 16 }], {
@@ -3328,23 +3707,42 @@ test(
   }
 );
 
-// DECLARED DEVIATION (see the section comment above): assertSfxRefusal's own
-// contract -- dropping SFX alone is always a real, buildable fix -- no longer
-// holds for this one row. Item 11's re-measurement moved
-// BASE_KERNEL_CODE_BYTES_BY_MAPPER[1] from 5954 to 6007 (entity_animation and
-// draw_actor_icon both needed a 16-bit pointer where an 8-bit actor*4 used to
-// silently wrap at actor id 64), which raises this row's real deficit from
-// 283 to 336 -- 36 bytes past what dropping SFX alone frees here (300:
-// SFX_KERNEL_ALLOWANCE_STANDALONE + AUDIO_FX_KERNEL_ALLOWANCE +
-// STING_SFX_INTERACTION_ALLOWANCE - AUDIO_FX_KERNEL_ALLOWANCE, unchanged by
-// this slice). Verified against a real checkCapacity() run, not a re-derived
-// formula: the refusal now names Move (395) or Save (555 -- 552 before name
-// entry phase 1's own +3 to SAVE_KERNEL_ALLOWANCE_BY_MAPPER[1], see the
-// comment above the two message tests near this file's Save/Move choice
-// tests), never SFX, and dropping Move alone (Save's own event keeps its
-// `save` command) is confirmed as a real, buildable fix in its place.
+// The zero-page kernel diet (docs/design-kernel-diet.md) closed this row for
+// real too, with real room to spare. The padded sibling test right below
+// keeps the refusal-message advice path (Move or Save offered, neither
+// Sting nor SFX) and the "dropping Move alone is a real fix" mitigation
+// check under test.
 test(
-  'sample-rpg with Save, Move and its one live item does not build on MMC1 with a live Sting AND a live SFX together -- DEVIATION: item 11\'s base re-measurement means dropping SFX alone no longer closes this one, only Move or Save does',
+  'sample-rpg with Save, Move and its one live item builds on MMC1 with a live Sting AND a live SFX together -- the zero-page kernel diet closed this documented limitation for real',
+  { skip: !hasNesasm && 'nesasm not found on PATH' },
+  async (t) => {
+    const project = await loadProject(SAMPLE_RPG);
+    project.party[0].renamable = false;
+    if (project.party[1]) project.party[1].renamable = false;
+    project.cartridge.mapper = 1;
+    project.project.titleMap = 0;
+    project.project.titleScreen = 0;
+    project.maps[0].screens[0].entities.push(
+      commandsEvent([{ op: 'save' }, { op: 'move', who: 'self', dir: 'up', dist: 16 }])
+    );
+    project.songs = [createSong('Fanfare')];
+    project.maps[0].screens[0].entities.push(commandsEvent([{ op: 'sting', song: 0 }], 96, 96));
+    project.maps[0].screens[0].entities.push(sfxCommandEvent(project));
+    assert.deepEqual(
+      checkCapacity(project).problems.filter((p) => p.severity === 'error'),
+      [],
+      'sample-rpg with Save, Move, its one live item, a live Sting and a live SFX should now fit on MMC1'
+    );
+    const dir = await fsp.mkdtemp(path.join(os.tmpdir(), 'forge-sfx-sting-limitation-'));
+    t.after(() => fsp.rm(dir, { recursive: true, force: true }));
+    await saveProject(dir, project);
+    const built = await buildProject({ dir, project, log: () => {} });
+    assert.ok(built.romPath, 'MMC1: this combination should now assemble for real');
+  }
+);
+
+test(
+  'sample-rpg with Save, Move and its one live item, padded, still does not build on MMC1 with a live Sting AND a live SFX together -- keeps the advice path covered',
   { skip: !hasNesasm && 'nesasm not found on PATH' },
   async (t) => {
     const project = await loadProject(SAMPLE_RPG);
@@ -3362,17 +3760,18 @@ test(
     project.songs = [createSong('Fanfare')];
     project.maps[0].screens[0].entities.push(commandsEvent([{ op: 'sting', song: 0 }], 96, 96));
     project.maps[0].screens[0].entities.push(sfxCommandEvent(project));
+    inflate(project, 85); // recalibrated for the zero-page kernel diet, docs/design-kernel-diet.md -- deficit 295, above Sting/SFX but at or below Move/Save
 
     const message = kernelShortfallMessage(project);
     assert.match(
       message,
-      /removing every Move command \(frees 395 bytes\) or every Save command \(frees 555 bytes\)/,
+      /removing every Move command \(frees 337 bytes\) or every Save command \(frees 511 bytes\)/,
       `MMC1: dropping Move or Save, not SFX, should be the offered fix once the deficit exceeds what SFX alone frees -- got: ${message}`
     );
     assert.doesNotMatch(
       message,
       /Play a sound effect/,
-      'SFX alone no longer frees enough to close this particular deficit, so it must not be offered as a solo fix'
+      'SFX alone does not free enough to close this padded deficit, so it must not be offered as a solo fix'
     );
 
     // Dropping Move alone (Save's own command stays in the same event) is
@@ -3381,7 +3780,7 @@ test(
     const droppedMove = structuredClone(project);
     const saveMoveEntity = droppedMove.maps[0].screens[0].entities.at(-3); // pushed first of the three appended above
     saveMoveEntity.props.event.pages[0].commands = saveMoveEntity.props.event.pages[0].commands.filter((c) => c.op !== 'move');
-    const dir = await fsp.mkdtemp(path.join(os.tmpdir(), 'forge-sfx-sting-limitation-'));
+    const dir = await fsp.mkdtemp(path.join(os.tmpdir(), 'forge-sfx-sting-limitation-padded-'));
     t.after(() => fsp.rm(dir, { recursive: true, force: true }));
     await saveProject(dir, droppedMove);
     const built = await buildProject({ dir, project: droppedMove, log: () => {} });
@@ -3518,28 +3917,40 @@ test(
   }
 );
 
-// design-tile.md §9's own new documented-limitation ledger paragraph: MMC3
-// Save+Move-no-item used to have 88 bytes free (CLAUDE.md's own documented
-// figure, the row Sting's own documented limitation already lands on) --
-// BOUND_TILE_KERNEL_ALLOWANCE plus the fixed/table terms a bound tile also
-// carries (design-tile.md §8's own occupancy accounting) exceeded that by a
-// wide margin, so a live bound tile on this exact configuration was a clean
-// NO FIT, the same shape as Sting's own refusal a few tests up.
-//
-// DEVIATION, review-fixes slice C, item 12: the baseline itself moved.
-// Item 12's own base growth (+15/board, unconditional) already pushes this
-// exact row 8 bytes over budget with no bound tile live at all (the
-// identical finding the Sting and SFX documented-limitation tests above now
-// record) -- so a live bound tile here is landing on an already-refused row,
-// not creating one. Its own allowance (420 bytes) is no longer even the
-// dominant single-command fix, and does not clear the deficit alone: only
-// Save (557 bytes) does. Dropping Move alone (with the bound tile still
-// live) does not fix it either -- 395 bytes is short of what this
-// particular deficit needs once the bound tile's own real occupancy cost
-// (code, the fixed row table and the per-screen pointer table together,
-// design-tile.md §8) is added on top.
+// The zero-page kernel diet (docs/design-kernel-diet.md) closed this row for
+// real too, with real room to spare. The padded sibling test right below
+// keeps the refusal-message advice path (Save offered, neither the bound
+// tile's own allowance nor Move) and the "dropping Save alone is a real
+// fix" mitigation check under test.
 test(
-  'sample-rpg with Save, Move (no item) and a live bound tile does not build on MMC3 -- a documented limitation',
+  'sample-rpg with Save, Move (no item) and a live bound tile builds on MMC3 -- the zero-page kernel diet closed this documented limitation for real',
+  { skip: !hasNesasm && 'nesasm not found on PATH' },
+  async (t) => {
+    const project = await loadProject(SAMPLE_RPG);
+    project.party[0].renamable = false;
+    if (project.party[1]) project.party[1].renamable = false;
+    project.cartridge.mapper = 4; // MMC3
+    project.project.titleMap = 0;
+    project.project.titleScreen = 0;
+    project.items = []; // isolate the no-item row this refusal used to land on
+    project.maps[0].screens[0].entities.push(saveAndMoveEvent());
+    const paintedId = project.maps[0].screens[0].metatiles[0];
+    project.maps[0].screens[0].boundTiles = [{ switchId: 0, row: 0, col: 0, metatileId: paintedId }];
+    assert.deepEqual(
+      checkCapacity(project).problems.filter((p) => p.severity === 'error'),
+      [],
+      'sample-rpg with Save, Move (no item) and a live bound tile should now fit on MMC3'
+    );
+    const dir = await fsp.mkdtemp(path.join(os.tmpdir(), 'forge-boundtile-limitation-mmc3-'));
+    t.after(() => fsp.rm(dir, { recursive: true, force: true }));
+    await saveProject(dir, project);
+    const built = await buildProject({ dir, project, log: () => {} });
+    assert.ok(built.romPath, 'Save, Move (no item) and a live bound tile should now assemble on MMC3');
+  }
+);
+
+test(
+  'sample-rpg with Save, Move (no item) and a live bound tile, padded, still does not build on MMC3 -- keeps the advice path covered',
   { skip: !hasNesasm && 'nesasm not found on PATH' },
   async (t) => {
     const project = await loadProject(SAMPLE_RPG);
@@ -3555,38 +3966,38 @@ test(
     project.maps[0].screens[0].entities.push(saveAndMoveEvent());
     const paintedId = project.maps[0].screens[0].metatiles[0];
     project.maps[0].screens[0].boundTiles = [{ switchId: 0, row: 0, col: 0, metatileId: paintedId }];
+    inflate(project, 100); // recalibrated for the zero-page kernel diet, docs/design-kernel-diet.md -- deficit 480, above bound tile/Move but at or below Save
 
     const message = kernelShortfallMessage(project);
     // Save only: neither the bound tile's own allowance nor Move alone
-    // clears this deficit any more -- see the header comment above.
+    // clears this padded deficit.
     assert.match(message, /every Save command \(frees \d+ bytes\)/, 'the refusal should offer dropping Save');
     assert.doesNotMatch(
       message,
       /switch-bound tile/,
-      'the bound tile\'s own allowance no longer closes this row alone -- offering it here would be advice ' +
-        'that does not actually work'
+      'the bound tile\'s own allowance does not close this padded row alone -- offering it here would be ' +
+        'advice that does not actually work'
     );
     assert.doesNotMatch(
       message,
       /every Move command/,
-      'Move alone does not close this row either, once the bound tile\'s own real occupancy is added on top'
+      'Move alone does not close this padded row either, once the bound tile\'s own real occupancy is added on top'
     );
 
-    // Dropping the bound tile alone is NOT a real fix any more.
+    // Dropping the bound tile alone is NOT a real fix.
     const droppedBound = structuredClone(project);
     droppedBound.maps[0].screens[0].boundTiles = [];
-    const dirBound = await fsp.mkdtemp(path.join(os.tmpdir(), 'forge-boundtile-limitation-mmc3-'));
+    const dirBound = await fsp.mkdtemp(path.join(os.tmpdir(), 'forge-boundtile-limitation-mmc3-padded-'));
     t.after(() => fsp.rm(dirBound, { recursive: true, force: true }));
     await saveProject(dirBound, droppedBound);
     await assert.rejects(
       buildProject({ dir: dirBound, project: droppedBound, log: () => {} }),
-      'dropping only the bound tile should still fail to build -- this row is now over budget with no bound ' +
-        'tile live at all'
+      'dropping only the bound tile should still fail to build on this padded row'
     );
 
     // Save (the one fix the message above actually offers) is a real fix.
     const droppedSave = dropCommand(project, 'save');
-    const dirSave = await fsp.mkdtemp(path.join(os.tmpdir(), 'forge-boundtile-limitation-save-'));
+    const dirSave = await fsp.mkdtemp(path.join(os.tmpdir(), 'forge-boundtile-limitation-save-padded-'));
     t.after(() => fsp.rm(dirSave, { recursive: true, force: true }));
     await saveProject(dirSave, droppedSave);
     const built = await buildProject({ dir: dirSave, project: droppedSave, log: () => {} });
@@ -3594,13 +4005,37 @@ test(
   }
 );
 
-// design-tile.md §9: MMC1 Save+Move+item is the one RPG-capable-board
-// configuration comfortable enough (195 bytes free, per this file's own
-// Save+Move+item narrative) to absorb everything else measured against it --
-// until a bound tile is added on top, per the design's own occupancy
-// accounting.
+// The zero-page kernel diet (docs/design-kernel-diet.md) closed this row for
+// real too. The padded sibling test right below keeps the "switch-bound
+// tile is a named droppable fix" advice-path assertion under test.
 test(
-  'sample-rpg with Save, Move and its one live item does not build on MMC1 once a bound tile is added -- a documented limitation',
+  'sample-rpg with Save, Move and its one live item builds on MMC1 once a bound tile is added -- the zero-page kernel diet closed this documented limitation for real',
+  { skip: !hasNesasm && 'nesasm not found on PATH' },
+  async (t) => {
+    const project = await loadProject(SAMPLE_RPG);
+    project.party[0].renamable = false;
+    if (project.party[1]) project.party[1].renamable = false;
+    project.cartridge.mapper = 1; // MMC1
+    project.project.titleMap = 0;
+    project.project.titleScreen = 0;
+    project.maps[0].screens[0].entities.push(saveAndMoveEvent());
+    const paintedId = project.maps[0].screens[0].metatiles[0];
+    project.maps[0].screens[0].boundTiles = [{ switchId: 0, row: 0, col: 0, metatileId: paintedId }];
+    assert.deepEqual(
+      checkCapacity(project).problems.filter((p) => p.severity === 'error'),
+      [],
+      'sample-rpg with Save, Move, its one live item and a live bound tile should now fit on MMC1'
+    );
+    const dir = await fsp.mkdtemp(path.join(os.tmpdir(), 'forge-boundtile-limitation-mmc1-'));
+    t.after(() => fsp.rm(dir, { recursive: true, force: true }));
+    await saveProject(dir, project);
+    const built = await buildProject({ dir, project, log: () => {} });
+    assert.ok(built.romPath, 'Save, Move, its one live item and a live bound tile should now assemble on MMC1');
+  }
+);
+
+test(
+  'sample-rpg with Save, Move and its one live item, padded, still does not build on MMC1 once a bound tile is added -- keeps the advice path covered',
   { skip: !hasNesasm && 'nesasm not found on PATH' },
   async (t) => {
     const project = await loadProject(SAMPLE_RPG);
@@ -3615,6 +4050,7 @@ test(
     project.maps[0].screens[0].entities.push(saveAndMoveEvent());
     const paintedId = project.maps[0].screens[0].metatiles[0];
     project.maps[0].screens[0].boundTiles = [{ switchId: 0, row: 0, col: 0, metatileId: paintedId }];
+    inflate(project, 60); // recalibrated for the zero-page kernel diet, docs/design-kernel-diet.md
 
     const message = kernelShortfallMessage(project);
     assert.match(
@@ -3625,11 +4061,11 @@ test(
 
     const droppedBound = structuredClone(project);
     droppedBound.maps[0].screens[0].boundTiles = [];
-    const dir = await fsp.mkdtemp(path.join(os.tmpdir(), 'forge-boundtile-limitation-mmc1-'));
+    const dir = await fsp.mkdtemp(path.join(os.tmpdir(), 'forge-boundtile-limitation-mmc1-padded-'));
     t.after(() => fsp.rm(dir, { recursive: true, force: true }));
     await saveProject(dir, droppedBound);
     const built = await buildProject({ dir, project: droppedBound, log: () => {} });
-    assert.ok(built.romPath, 'dropping the bound tile should still be a real fix, leaving Save+Move+item to build as before');
+    assert.ok(built.romPath, 'dropping the bound tile should still be a real fix, leaving the padded Save+Move+item row to build');
   }
 );
 
@@ -3922,12 +4358,14 @@ test(
   'in-game naming: rows 16-18 -- naming (hero+join) + title + Save all live, real assembly on the boards it fits',
   { skip: !hasNesasm && 'nesasm not found on PATH' },
   async (t) => {
-    // MMC1 and MMC3 fit; UNROM 512 does not -- a new, real, documented
-    // limitation (its own SAVE_KERNEL_ALLOWANCE_BY_MAPPER entry, 686, is the
-    // largest of the three, the identical reason every other Save-adjacent
-    // shortfall in this ledger already singles UNROM 512 out), confirmed
-    // below rather than silently skipped.
-    for (const mapper of CAPABLE_MAPPERS.filter((m) => m.id !== 30)) {
+    // MMC1 and MMC3 fit. UNROM 512 used to be a real, documented limitation
+    // (its own SAVE_KERNEL_ALLOWANCE_BY_MAPPER entry, the largest of the
+    // three, the identical reason every other Save-adjacent shortfall in
+    // this ledger already singles UNROM 512 out) -- the zero-page kernel
+    // diet (docs/design-kernel-diet.md) closed it for real, so this row now
+    // also just asserts a clean assertCovers pass; a padded sibling below
+    // keeps the "every named Join" advice-path assertion under test.
+    for (const mapper of CAPABLE_MAPPERS) {
       const entry = await measureCodeBytes(t, mapper, {
         withTitle: true,
         withSave: true,
@@ -3936,7 +4374,13 @@ test(
       });
       assertCovers({ mapper, codeBytes: entry.codeBytes }, kernelCodeBytes(entry.project, mapper), 'naming + title + Save (worst case)');
     }
+  }
+);
 
+test(
+  'in-game naming: rows 16-18, padded, still does not build on UNROM 512 -- keeps the advice path covered',
+  { skip: !hasNesasm && 'nesasm not found on PATH' },
+  async () => {
     const u512 = CAPABLE_MAPPERS.find((m) => m.id === 30);
     const project = await loadProject(SAMPLE_RPG);
     project.cartridge.mapper = 30;
@@ -3950,11 +4394,12 @@ test(
       y: 16,
       props: { event: { pages: [{ cond: { type: 'none', arg: 0 }, commands: [{ op: 'save' }] }] } }
     });
+    inflate(project, 85); // recalibrated for the zero-page kernel diet, docs/design-kernel-diet.md
     const message = kernelShortfallMessage(project);
     assert.match(
       message,
       /every named Join \(frees \d+ bytes\)/,
-      `${u512.name}: naming + title + Save should refuse, offering "every named Join" as one real fix`
+      `${u512.name}: naming + title + Save should refuse when padded, offering "every named Join" as one real fix`
     );
   }
 );
@@ -3967,7 +4412,7 @@ test(
     assert.ok(nrom, 'NROM should be a supported mapper');
     assert.equal(
       baseKernelCodeBytes(nrom),
-      5952,
+      5367, // recalibrated for the zero-page kernel diet, docs/design-kernel-diet.md
       'BASE_KERNEL_CODE_BYTES_BY_MAPPER should have a real, measured NROM entry now, not the UNROM 512 fallback'
     );
 
@@ -3978,12 +4423,11 @@ test(
     assertCovers({ mapper: nrom, codeBytes: entry.codeBytes }, kernelCodeBytes(entry.project, nrom), 'hero naming on sample, NROM');
 
     // The three small, save-capable action fixtures (each already carries a
-    // live Save command, unlike sample itself) with hero naming added do not
-    // fit at all -- the documented limitation §11 predicts (mmc1 -45, mmc3
-    // -244, u512 -412 against the design's own static count; real, measured
-    // figures differ slightly but the refusal itself is exact and real).
-    // checkCapacity refuses with real advice rather than measureCodeBytes
-    // ever reaching nesasm.
+    // live Save command, unlike sample itself) with hero naming added used
+    // to be a real, documented limitation on all three boards -- the
+    // zero-page kernel diet (docs/design-kernel-diet.md) closed all three
+    // for real. The padded sibling test below keeps the "hero naming is a
+    // named droppable fix" advice-path assertion under test.
     for (const [fixtureName, mapperId] of [
       ['sample-mmc1', 1],
       ['sample-mmc3', 4],
@@ -3991,11 +4435,43 @@ test(
     ]) {
       const project = await loadProject(path.join(ROOT, fixtureName));
       project.party[0].renamable = true;
+      assert.deepEqual(
+        checkCapacity(project).problems.filter((p) => p.severity === 'error'),
+        [],
+        `${fixtureName} (mapper ${mapperId}): hero naming should now fit`
+      );
+      // Round 1 review finding 4a: checkCapacity alone does not prove this
+      // -- the six-hash fixture tests build these exact fixtures unmutated
+      // (naming still off), so nothing else in the suite ever actually
+      // assembled any of them with hero naming live. Never save back into
+      // the checked-in fixture directory itself (CLAUDE.md's own
+      // no-regeneration rule) -- the mutated project is saved to a scratch
+      // copy instead.
+      const dir = await fsp.mkdtemp(path.join(os.tmpdir(), `forge-heroname-${fixtureName}-`));
+      t.after(() => fsp.rm(dir, { recursive: true, force: true }));
+      await saveProject(dir, project);
+      const built = await buildProject({ dir, project, log: () => {} });
+      assert.ok(built.romPath, `${fixtureName} (mapper ${mapperId}): hero naming should now actually assemble`);
+    }
+  }
+);
+
+test(
+  'in-game naming: the three small save-capable action fixtures with hero naming, padded, still do not build -- keeps the advice path covered',
+  async () => {
+    for (const [fixtureName, mapperId, pad] of [
+      ['sample-mmc1', 1, 80],
+      ['sample-mmc3', 4, 60],
+      ['sample-u512', 30, 40]
+    ]) {
+      const project = await loadProject(path.join(ROOT, fixtureName));
+      project.party[0].renamable = true;
+      inflate(project, pad); // recalibrated for the zero-page kernel diet, docs/design-kernel-diet.md
       const message = kernelShortfallMessage(project);
       assert.match(
         message,
         /hero naming at the start of a new game \(frees \d+ bytes\)/,
-        `${fixtureName} (mapper ${mapperId}): the refusal should offer removing hero naming as a fix`
+        `${fixtureName} (mapper ${mapperId}): the padded refusal should offer removing hero naming as a fix`
       );
     }
   }
@@ -4178,17 +4654,15 @@ test(
 test(
   'phase 4 (Say token): kernelShortfallAdvice offers "the name token" as a removal candidate',
   async () => {
-    // MMC1, Save + Move + Turn + Wait: 38 bytes free before the token (real,
-    // nesasm-independent -- checked via kernelCodeBytes/kernelTableBytes
-    // directly). Adding a live token deepens that to a 20-byte deficit
-    // (58 - 38), and the token alone frees the full 58, so it must be
-    // offered as one real solo fix alongside Move/Turn/Wait/Save.
+    // The zero-page kernel diet (docs/design-kernel-diet.md) gave MMC1 real
+    // headroom here, so this project needs padding to force a deficit small
+    // enough for the token alone to be offered as a solo fix alongside
+    // Move/Turn/Wait/Save.
     const project = await loadProject(SAMPLE_RPG);
     // Hero/Join naming off explicitly (phase 5): sample-rpg's own naming is
     // now live for real, and either would already need the name seed
     // (projectNeedsNameSeed) regardless of the token -- this case is about
-    // the token alone, and the "38 bytes free" calibration in the comment
-    // above assumes a naming-off baseline.
+    // the token alone.
     project.party[0].renamable = false;
     if (project.party[1]) project.party[1].renamable = false;
     project.cartridge.mapper = 1;
@@ -4215,6 +4689,7 @@ test(
         }
       }
     });
+    inflate(project, 92); // recalibrated for the zero-page kernel diet, docs/design-kernel-diet.md
     const message = kernelShortfallMessage(project);
     assert.match(message, /the name token \(frees \d+ bytes\)/, 'the token should be offered as one real fix');
   }
@@ -4689,14 +5164,15 @@ test('in-game naming: kernelTableBytes only charges the input-row 4 bytes when t
 });
 
 test('in-game naming: kernelShortfallAdvice offers every named Join as a solo candidate, on a board where naming + title + Save does not fit', async () => {
-  // UNROM 512: naming + title + Save all live does not fit (confirmed by
-  // the real-assembly test above) -- JOIN_NAMING_KERNEL_ALLOWANCE alone
-  // (64 bytes) already exceeds this project's own 44-byte deficit here, so
-  // the generic solo search finds it without ever reaching the combination
-  // search (hero naming alone frees less than the deficit on this exact
-  // project, so it is correctly absent from this particular message --
-  // the combination-search test above covers "neither alone, both
-  // together").
+  // UNROM 512: naming + title + Save all live used to not fit unpadded; the
+  // zero-page kernel diet (docs/design-kernel-diet.md) closed that (see the
+  // "rows 16-18" test above), so this project is padded back into a real
+  // deficit -- JOIN_NAMING_KERNEL_ALLOWANCE alone (64 bytes) still exceeds
+  // the padded deficit here, so the generic solo search finds it without
+  // ever reaching the combination search (hero naming alone frees less than
+  // the deficit on this exact project, so it is correctly absent from this
+  // particular message -- the combination-search test above covers
+  // "neither alone, both together").
   const project = await loadProject(SAMPLE_RPG);
   project.cartridge.mapper = 30;
   project.project.titleMap = 0;
@@ -4710,6 +5186,7 @@ test('in-game naming: kernelShortfallAdvice offers every named Join as a solo ca
     props: { event: { pages: [{ cond: { type: 'none', arg: 0 }, commands: [{ op: 'save' }] }] } }
   });
   assert.ok(projectUsesHeroNaming(project) && projectUsesJoinNaming(project), 'fixture should exercise both naming features');
+  inflate(project, 85); // recalibrated for the zero-page kernel diet, docs/design-kernel-diet.md
   const message = kernelShortfallMessage(project);
   assert.match(message, /every named Join \(frees \d+ bytes\)/, 'advice should name Join naming as a real, solo fix');
 });

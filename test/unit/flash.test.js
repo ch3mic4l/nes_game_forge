@@ -1010,10 +1010,15 @@ test('a coincident Flash and Fade edge: Flash queues first, Fade wins the pixel'
 // same-sized mutation of fade_apply_palette or the PPUADDR fix that a byte
 // *count* check (the measured kernel-lo allowance deltas) cannot
 // distinguish from an unchanged routine.
+// Re-captured after the zero-page kernel diet (docs/design-kernel-diet.md):
+// `lda <fade_step`, `sta <tmp2` and `sbc <tmp2` each now assemble 2-byte
+// zero-page instead of 3-byte absolute, so the routine itself is 3 bytes
+// shorter (47 -> 44) -- a real, intended shrink from the diet, not a drift
+// this pin failed to catch. Re-derived from a real build, not hand-edited.
 const REFERENCE_FADE_APPLY_PALETTE_BYTES_FROM_8BEBA40 = [
-  173, 156, 0, 10, 10, 10, 10, 141, 7, 0, 169, 63, 160, 0, 32, 223, 208, 162,
-  0, 189, 0, 192, 56, 237, 7, 0, 176, 2, 169, 15, 201, 13, 208, 2, 169, 15,
-  32, 254, 208, 232, 224, 32, 208, 231, 76, 20, 209
+  165, 156, 10, 10, 10, 10, 133, 7, 169, 63, 160, 0, 32, 134, 210, 162, 0,
+  189, 0, 192, 56, 229, 7, 176, 2, 169, 15, 201, 13, 208, 2, 169, 15, 32,
+  160, 210, 232, 224, 32, 208, 232, 76, 177, 210
 ];
 // jsr vram_drain (the block's own predecessor, always 3 bytes -- 6502's JSR
 // has only one addressing mode) through nmi_fade_ppuaddr_done.
@@ -1032,11 +1037,13 @@ const REFERENCE_NMI_PPUADDR_BLOCK_BYTES_FROM_8BEBA40 = [32, 35, 209, 169, 0, 141
 // asserts the *current* build's own bytes at those offsets decode to the
 // *current* symbol table, then masks them out of both sides before the
 // remaining, genuinely fixed bytes are compared against history.
+// Offsets recalibrated for the routine's own 3-byte shrink (see the
+// reference array's own comment above).
 const FADE_APPLY_PALETTE_RELOCATIONS = [
-  { offset: 15, symbol: 'vram_open' }, // JSR vram_open
-  { offset: 20, symbol: 'palette_data' }, // LDA palette_data,X
-  { offset: 37, symbol: 'vram_push' }, // JSR vram_push
-  { offset: 45, symbol: 'vram_end' } // JMP vram_end
+  { offset: 13, symbol: 'vram_open' }, // JSR vram_open
+  { offset: 18, symbol: 'palette_data' }, // LDA palette_data,X
+  { offset: 34, symbol: 'vram_push' }, // JSR vram_push
+  { offset: 42, symbol: 'vram_end' } // JMP vram_end
 ];
 const NMI_PPUADDR_BLOCK_RELOCATIONS = [
   { offset: 1, symbol: 'vram_drain' } // JSR vram_drain, the block's own predecessor

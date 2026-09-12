@@ -15,7 +15,7 @@
 cursor_write:
   pha
   lda #BT_CMD_COL-1
-  sta bt_col
+  sta <bt_col
   jsr queue_at
   pla
   jsr vram_push
@@ -23,14 +23,14 @@ cursor_write:
 
 ; bt_row / bt_col -> an open one-byte packet in the NMI queue.
 queue_at:
-  lda bt_row
+  lda <bt_row
   lsr a
   lsr a
   lsr a
   clc
   adc #$20
   pha
-  lda bt_row
+  lda <bt_row
   and #7
   asl a
   asl a
@@ -38,18 +38,18 @@ queue_at:
   asl a
   asl a
   clc
-  adc bt_col
+  adc <bt_col
   tay
   pla
   jmp vram_open
 
 ; The command cursor, at whichever of the four rows bt_sel names.
 cursor_row_for_sel:
-  lda bt_sel
+  lda <bt_sel
   asl a
   clc
   adc #BT_CMD_ROW
-  sta bt_row
+  sta <bt_row
   rts
 
 show_cursor:
@@ -74,11 +74,11 @@ hide_cursor:
   .if SPLIT_ENABLED
 show_target:
   lda #1
-  sta bt_tgt_vis
+  sta <bt_tgt_vis
   rts
 hide_target:
   lda #0
-  sta bt_tgt_vis
+  sta <bt_tgt_vis
   rts
   .endif
   .if !SPLIT_ENABLED
@@ -92,14 +92,14 @@ hide_target:
   jmp cursor_write
   .endif
 target_row:
-  lda bt_target
+  lda <bt_target
   sec
   sbc #MAX_PARTY
   asl a
   asl a
   clc
   adc #BT_MON_ROW+1
-  sta bt_row
+  sta <bt_row
   rts
 
 ; ------------------------------------------------------------ the menu
@@ -107,34 +107,34 @@ target_row:
 ; Whose turn it is chooses; the D-pad moves the highlight and A confirms, both
 ; hardwired because a battle menu has exactly one shape.
 battle_menu:
-  lda pad_new
+  lda <pad_new
   and #BTN_DOWN
   beq battle_menu_up
   jsr hide_cursor
-  inc bt_sel
-  lda bt_sel
+  inc <bt_sel
+  lda <bt_sel
   cmp #NUM_COMMANDS
   bcc battle_menu_moved
   lda #0
-  sta bt_sel
+  sta <bt_sel
   jmp battle_menu_moved
 battle_menu_up:
-  lda pad_new
+  lda <pad_new
   and #BTN_UP
   beq battle_menu_press
   jsr hide_cursor
-  dec bt_sel
+  dec <bt_sel
   bpl battle_menu_moved
   lda #NUM_COMMANDS-1
-  sta bt_sel
+  sta <bt_sel
 battle_menu_moved:
   jmp show_cursor
 
 battle_menu_press:
-  lda pad_new
+  lda <pad_new
   and #BTN_A
   beq battle_menu_done
-  lda bt_sel
+  lda <bt_sel
   cmp #BC_FIGHT
   beq battle_menu_fight
   cmp #BC_MAGIC
@@ -147,23 +147,23 @@ battle_menu_done:
 
 battle_menu_fight:
   lda #BC_FIGHT
-  sta bt_cmd
+  sta <bt_cmd
   jsr hide_cursor
   jsr first_live_monster
   lda #BP_TARGET
-  sta bt_phase
+  sta <bt_phase
   jmp show_target
 
 battle_menu_magic:
-  ldx bt_actor
+  ldx <bt_actor
   lda pc_spells,x           ; nothing to cast is nothing to open a window for
   beq battle_menu_done
   jsr hide_cursor
   lda #0
-  sta bt_sel
-  sta bt_scroll
+  sta <bt_sel
+  sta <bt_scroll
   lda #BP_SPELLS
-  sta bt_phase
+  sta <bt_phase
   jmp draw_list
 
 ; Phase 4c round 3, finding 5 (phase4-design.md §9): whether Items opens must
@@ -185,23 +185,23 @@ battle_menu_magic:
 battle_menu_item:
   .if ITEMS_ENABLED
   jsr build_item_list       ; build first, so the gate below sees the real count
-  lda bt_len
+  lda <bt_len
   beq battle_menu_done
   .endif
   .if !ITEMS_ENABLED
-  lda inv_count
+  lda <inv_count
   beq battle_menu_done
   .endif
   jsr hide_cursor
   lda #0
-  sta bt_sel
-  sta bt_scroll
+  sta <bt_sel
+  sta <bt_scroll
   lda #BP_ITEMS
-  sta bt_phase
+  sta <bt_phase
   jmp draw_list
 
 battle_menu_run:
-  lda bt_esc
+  lda <bt_esc
   bne battle_menu_flee
   lda #BS_NORUN
   jmp battle_say_actor
@@ -210,7 +210,7 @@ battle_menu_flee:
   cmp #100                  ; a bit better than even odds
   bcs battle_menu_failed
   lda #1
-  sta bt_flee
+  sta <bt_flee
   lda #BS_FLED
   jmp battle_say_actor
 battle_menu_failed:
@@ -220,21 +220,21 @@ battle_menu_failed:
 ; --------------------------------------------------------------- targeting
 
 battle_target:
-  lda pad_new
+  lda <pad_new
   and #BTN_DOWN
   bne battle_target_move
-  lda pad_new
+  lda <pad_new
   and #BTN_UP
   bne battle_target_move
-  lda pad_new
+  lda <pad_new
   and #BTN_B
   bne battle_target_back
-  lda pad_new
+  lda <pad_new
   and #BTN_A
   beq battle_target_done
   jsr hide_target
   lda #BP_ACT
-  sta bt_phase
+  sta <bt_phase
 battle_target_done:
   rts
 
@@ -246,27 +246,27 @@ battle_target_move:
 battle_target_back:
   jsr hide_target
   lda #BP_MENU
-  sta bt_phase
+  sta <bt_phase
   jmp show_cursor
 
 ; bt_target = the first monster still standing.
 first_live_monster:
   lda #MAX_PARTY-1
-  sta bt_target
+  sta <bt_target
   ; fall through
 
 ; Step bt_target on to the next live monster, wrapping.
 next_live_monster:
   ldy #MAX_MONSTERS
 next_live_step:
-  inc bt_target
-  lda bt_target
+  inc <bt_target
+  lda <bt_target
   cmp #NUM_COMBATANTS
   bcc next_live_check
   lda #MAX_PARTY
-  sta bt_target
+  sta <bt_target
 next_live_check:
-  lda bt_target
+  lda <bt_target
   sec
   sbc #MAX_PARTY
   tax
@@ -282,38 +282,38 @@ next_live_done:
 ; Four rows of the box, scrolled with the D-pad. Spells and items share the
 ; code: which table a row names is the only difference, and that is one branch.
 battle_list:
-  lda pad_new
+  lda <pad_new
   and #BTN_DOWN
   beq battle_list_up
-  inc bt_sel
-  lda bt_sel
-  cmp bt_len
+  inc <bt_sel
+  lda <bt_sel
+  cmp <bt_len
   bcc battle_list_scroll
   lda #0
-  sta bt_sel
+  sta <bt_sel
   jmp battle_list_scroll
 battle_list_up:
-  lda pad_new
+  lda <pad_new
   and #BTN_UP
   beq battle_list_press
-  dec bt_sel
+  dec <bt_sel
   bpl battle_list_scroll
-  lda bt_len
+  lda <bt_len
   sec
   sbc #1
-  sta bt_sel
+  sta <bt_sel
 battle_list_scroll:
   jsr list_follow
   jmp draw_list
 
 battle_list_press:
-  lda pad_new
+  lda <pad_new
   and #BTN_B
   bne battle_list_back
-  lda pad_new
+  lda <pad_new
   and #BTN_A
   beq battle_list_done
-  lda bt_phase
+  lda <bt_phase
   cmp #BP_SPELLS
   bne battle_list_use_item
   jmp spell_chosen
@@ -325,27 +325,27 @@ battle_list_done:
 battle_list_back:
   jsr clear_message
   lda #BP_MENU
-  sta bt_phase
+  sta <bt_phase
   jsr draw_commands_queued
   jmp show_cursor
 
 ; Keep the highlight inside the four visible rows.
 list_follow:
-  lda bt_sel
-  cmp bt_scroll
+  lda <bt_sel
+  cmp <bt_scroll
   bcc list_follow_up
   sec
-  sbc bt_scroll
+  sbc <bt_scroll
   cmp #4
   bcc list_follow_done
-  lda bt_sel
+  lda <bt_sel
   sec
   sbc #3
-  sta bt_scroll
+  sta <bt_scroll
   rts
 list_follow_up:
-  lda bt_sel
-  sta bt_scroll
+  lda <bt_sel
+  sta <bt_scroll
 list_follow_done:
   rts
 
@@ -356,21 +356,21 @@ list_follow_done:
 ; the generator's doing: `pc_spells_at` is precomputed per level.
 build_spell_list:
   lda #0
-  sta bt_len
-  ldx bt_actor
+  sta <bt_len
+  ldx <bt_actor
   lda pc_spells,x
-  sta bt_tmp
+  sta <bt_tmp
   ldy #0
 build_spell_slot:
   cpy #NUM_SPELLS
   bcs build_spell_done
   lda bit_mask,y
-  and bt_tmp
+  and <bt_tmp
   beq build_spell_next
-  ldx bt_len
+  ldx <bt_len
   tya
   sta bt_list,x
-  inc bt_len
+  inc <bt_len
 build_spell_next:
   iny
   cpy #8                    ; one bitmask byte, so eight spells a member
@@ -393,10 +393,10 @@ build_spell_done:
 ; promise for content this phase promises not to touch.
 build_item_list:
   lda #0
-  sta bt_len
+  sta <bt_len
   ldy #0
 build_item_slot:
-  cpy inv_count
+  cpy <inv_count
   bcs build_item_done
   lda inv_items,y
   .if ITEMS_ENABLED
@@ -408,9 +408,9 @@ build_item_slot:
   beq build_item_next
   txa
   .endif
-  ldx bt_len
+  ldx <bt_len
   sta bt_list,x
-  inc bt_len
+  inc <bt_len
 build_item_next:
   iny
   cpy #MAX_ITEMS
@@ -423,7 +423,7 @@ build_item_done:
 ; Four rows of names in the message area, with the cursor beside the highlight.
 ; One packet per row, which is under the queue's per-vblank budget.
 draw_list:
-  lda bt_phase
+  lda <bt_phase
   cmp #BP_SPELLS
   bne draw_list_items
   jsr build_spell_list
@@ -436,20 +436,20 @@ draw_list_rows:
   ; to zero. Sharing the byte re-zeroed the counter on every named row, which
   ; hung the tick in this loop the first time a list held two entries.
   lda #0
-  sta bt_vrow
+  sta <bt_vrow
 draw_list_row:
-  lda bt_vrow
+  lda <bt_vrow
   clc
   adc #MSG_ROW
-  sta bt_row
+  sta <bt_row
   lda #MSG_COL-1
-  sta bt_col
+  sta <bt_col
   jsr queue_at
   ; The cursor, then the name.
-  lda bt_vrow
+  lda <bt_vrow
   clc
-  adc bt_scroll
-  cmp bt_sel
+  adc <bt_scroll
+  cmp <bt_sel
   bne draw_list_nocursor
   lda #ARROW_TILE
   jmp draw_list_cursor
@@ -457,10 +457,10 @@ draw_list_nocursor:
   lda #TILE_SPACE
 draw_list_cursor:
   jsr vram_push
-  lda bt_vrow
+  lda <bt_vrow
   clc
-  adc bt_scroll
-  cmp bt_len
+  adc <bt_scroll
+  cmp <bt_len
   bcs draw_list_blank
   jsr draw_list_name
   jmp draw_list_end
@@ -473,8 +473,8 @@ draw_list_pad:
   bne draw_list_pad
 draw_list_end:
   jsr vram_end
-  inc bt_vrow
-  lda bt_vrow
+  inc <bt_vrow
+  lda <bt_vrow
   cmp #LIST_ROWS
   bne draw_list_row
   rts
@@ -488,36 +488,36 @@ draw_list_end:
 draw_list_name:
   tax
   lda bt_list,x
-  sta bt_tmp                ; the entry's own id, while ptr_lo/hi is chosen
-  lda bt_phase
+  sta <bt_tmp                ; the entry's own id, while ptr_lo/hi is chosen
+  lda <bt_phase
   cmp #BP_SPELLS
   bne draw_list_name_item
   lda #LOW(spell_name)
-  sta ptr_lo
+  sta <ptr_lo
   lda #HIGH(spell_name)
-  sta ptr_hi
+  sta <ptr_hi
   jmp draw_list_name_go
 draw_list_name_item:
   .if ITEMS_ENABLED
   lda #LOW(item_name)
-  sta ptr_lo
+  sta <ptr_lo
   lda #HIGH(item_name)
-  sta ptr_hi
+  sta <ptr_hi
   .endif
   .if !ITEMS_ENABLED
   lda #LOW(mon_name)
-  sta ptr_lo
+  sta <ptr_lo
   lda #HIGH(mon_name)
-  sta ptr_hi
+  sta <ptr_hi
   .endif
 draw_list_name_go:
-  lda bt_tmp
+  lda <bt_tmp
   jsr name_offset_pc         ; the same stride for every name table
 draw_list_name_char:
   lda [ptr_lo],y
   jsr vram_push
   iny
-  dec bt_tmp2
+  dec <bt_tmp2
   bne draw_list_name_char
   rts
 
@@ -527,14 +527,14 @@ draw_list_name_char:
 ; battle text both live.
 clear_message:
   lda #0
-  sta bt_tmp2
+  sta <bt_tmp2
 clear_message_row:
-  lda bt_tmp2
+  lda <bt_tmp2
   clc
   adc #MSG_ROW
-  sta bt_row
+  sta <bt_row
   lda #MSG_COL-1
-  sta bt_col
+  sta <bt_col
   jsr queue_at
   ldy #MSG_COLS+1
 clear_message_cell:
@@ -543,8 +543,8 @@ clear_message_cell:
   dey
   bne clear_message_cell
   jsr vram_end
-  inc bt_tmp2
-  lda bt_tmp2
+  inc <bt_tmp2
+  lda <bt_tmp2
   cmp #LIST_ROWS
   bne clear_message_row
   rts
@@ -552,27 +552,27 @@ clear_message_cell:
 ; Put FIGHT / MAGIC / ITEM / RUN back after a list or a message covered them.
 draw_commands_queued:
   lda #0
-  sta bt_tmp
+  sta <bt_tmp
 draw_cq_row:
-  lda bt_tmp
+  lda <bt_tmp
   asl a
   clc
   adc #BT_CMD_ROW
-  sta bt_row
+  sta <bt_row
   lda #BT_CMD_COL
-  sta bt_col
+  sta <bt_col
   jsr queue_at
-  lda bt_tmp
+  lda <bt_tmp
   jsr name_offset_cmd
 draw_cq_char:
   lda cmd_names,y
   jsr vram_push
   iny
-  dec bt_tmp2
+  dec <bt_tmp2
   bne draw_cq_char
   jsr vram_end
-  inc bt_tmp
-  lda bt_tmp
+  inc <bt_tmp
+  lda <bt_tmp
   cmp #NUM_COMMANDS
   bne draw_cq_row
   rts
@@ -582,35 +582,35 @@ draw_cq_char:
 ; thread beforehand -- never formatted inside NMI, which is a rule this engine
 ; inherited from the game it is modelled on.
 battle_say_actor:
-  sta bt_str
-  lda bt_actor
+  sta <bt_str
+  lda <bt_actor
   jmp battle_say
 
 ; A = the combatant whose name heads the message; bt_str is the line.
 battle_say:
-  sta bt_tmp
+  sta <bt_tmp
   lda #MSG_ROW
-  sta bt_row
+  sta <bt_row
   lda #MSG_COL
-  sta bt_col
+  sta <bt_col
   jsr queue_at
-  lda bt_tmp
+  lda <bt_tmp
   jsr push_combatant_name
   jsr vram_end
 
   lda #MSG_ROW+1
-  sta bt_row
+  sta <bt_row
   lda #MSG_COL
-  sta bt_col
+  sta <bt_col
   jsr queue_at
-  lda bt_str
+  lda <bt_str
   jsr push_battle_string
   jsr vram_end
 
   lda #MSG_HOLD
-  sta bt_timer
+  sta <bt_timer
   lda #BP_MESSAGE
-  sta bt_phase
+  sta <bt_phase
   rts
 
 ; A = combatant index. Party members read out of pc_name, monsters out of
@@ -618,29 +618,29 @@ battle_say:
 push_combatant_name:
   cmp #MAX_PARTY
   bcs push_combatant_monster
-  sta bt_tmp                 ; the party slot, while ptr_lo/hi is loaded
+  sta <bt_tmp                 ; the party slot, while ptr_lo/hi is loaded
   ; The battle message box's own combatant-name reader, swapped the same way
   ; draw_panel's is (docs/design-name-entry.md §3) -- pc_name_ram once naming
   ; is on, so "Rian attacks!" says whatever the player actually typed.
   .if NAME_ENTRY_ENABLED
   lda #LOW(pc_name_ram)
-  sta ptr_lo
+  sta <ptr_lo
   lda #HIGH(pc_name_ram)
-  sta ptr_hi
+  sta <ptr_hi
   .endif
   .if !NAME_ENTRY_ENABLED
   lda #LOW(pc_name)
-  sta ptr_lo
+  sta <ptr_lo
   lda #HIGH(pc_name)
-  sta ptr_hi
+  sta <ptr_hi
   .endif
-  lda bt_tmp
+  lda <bt_tmp
   jsr name_offset_pc
 push_pc_char:
   lda [ptr_lo],y
   jsr vram_push
   iny
-  dec bt_tmp2
+  dec <bt_tmp2
   bne push_pc_char
   rts
 push_combatant_monster:
@@ -648,27 +648,27 @@ push_combatant_monster:
   sbc #MAX_PARTY
   tax
   lda mon_slot_actor,x
-  sta bt_tmp                 ; the actor id, while ptr_lo/hi is loaded
+  sta <bt_tmp                 ; the actor id, while ptr_lo/hi is loaded
   lda #LOW(mon_name)
-  sta ptr_lo
+  sta <ptr_lo
   lda #HIGH(mon_name)
-  sta ptr_hi
-  lda bt_tmp
+  sta <ptr_hi
+  lda <bt_tmp
   jsr name_offset_pc          ; same stride, different table
 push_mon_char:
   lda [ptr_lo],y
   jsr vram_push
   iny
-  dec bt_tmp2
+  dec <bt_tmp2
   bne push_mon_char
   rts
 
 ; A = string index. The last three columns are overwritten by bt_digits when the
 ; line has a number in it, which is how "hits" becomes "hits    12".
 push_battle_string:
-  sta bt_tmp
+  sta <bt_tmp
   lda #0
-  ldy bt_tmp
+  ldy <bt_tmp
   beq push_bs_len
 push_bs_stride:
   clc
@@ -678,15 +678,15 @@ push_bs_stride:
 push_bs_len:
   tay
   lda #0
-  sta bt_tmp
+  sta <bt_tmp
 push_bs_char:
-  lda bt_tmp
+  lda <bt_tmp
   cmp #MSG_COLS-3
   bcc push_bs_plain
-  lda bt_dmg_hi             ; a number of $FFxx means "no number here"
+  lda <bt_dmg_hi             ; a number of $FFxx means "no number here"
   cmp #$FF
   beq push_bs_plain
-  lda bt_tmp
+  lda <bt_tmp
   sec
   sbc #MSG_COLS-3
   tax
@@ -697,18 +697,18 @@ push_bs_plain:
 push_bs_write:
   jsr vram_push
   iny
-  inc bt_tmp
-  lda bt_tmp
+  inc <bt_tmp
+  lda <bt_tmp
   cmp #MSG_COLS
   bne push_bs_char
   rts
 
 ; Hold the line for a moment, or until the player presses on.
 battle_message_wait:
-  lda pad_new
+  lda <pad_new
   and #BTN_A
   bne battle_message_done
-  dec bt_timer
+  dec <bt_timer
   bne battle_message_hold
 battle_message_done:
   jsr clear_message
@@ -719,14 +719,14 @@ battle_message_done:
   ; is a status tick, not the action's own, so dismissing it either ticks the
   ; next bit or -- once none are left -- advances the turn. See
   ; docs/design-status-effects.md.
-  lda bt_ptick
+  lda <bt_ptick
   bne battle_status_dispatch
-  lda bt_actor
+  lda <bt_actor
   jsr combatant_status
   beq battle_message_advance
-  sta status_pending
+  sta <status_pending
   lda #1
-  sta bt_ptick
+  sta <bt_ptick
 ; A combatant that died since the last tick -- to the action itself, or to an
 ; earlier status tick the same turn (poison killing it before burn gets its
 ; own line) -- owes no further tick and no further message: apply_damage_mon
@@ -737,33 +737,33 @@ battle_message_done:
 ; can see. Checked on every re-entry, not just the first, because each tick
 ; suspends through battle_message_wait and comes back here once dismissed.
 battle_status_dispatch:
-  lda bt_actor
+  lda <bt_actor
   jsr combatant_alive
   bne battle_status_check_poison
   lda #0
-  sta status_pending
+  sta <status_pending
   jmp battle_message_advance
 battle_status_check_poison:
-  lda status_pending
+  lda <status_pending
   and #STATUS_POISON
   beq battle_status_check_burn
-  lda status_pending
+  lda <status_pending
   and #$FE                  ; clears STATUS_POISON (bit 0)
-  sta status_pending
+  sta <status_pending
   jmp poison_tick
 battle_status_check_burn:
-  lda status_pending
+  lda <status_pending
   and #STATUS_BURN
   beq battle_message_advance
-  lda status_pending
+  lda <status_pending
   and #$FD                  ; clears STATUS_BURN (bit 1)
-  sta status_pending
+  sta <status_pending
   jmp burn_tick
 battle_message_advance:
   lda #0
-  sta bt_ptick
+  sta <bt_ptick
   lda #BP_NEXT
-  sta bt_phase
+  sta <bt_phase
 battle_message_hold:
   rts
 
@@ -774,8 +774,8 @@ print_num:
   lda #0
   sta bt_digits
   sta bt_digits+1
-  lda bt_dmg_lo
-  sta bt_tmp
+  lda <bt_dmg_lo
+  sta <bt_tmp
 print_num_hundreds:
   cmp #100
   bcc print_num_tens
@@ -784,7 +784,7 @@ print_num_hundreds:
   inc bt_digits
   jmp print_num_hundreds
 print_num_tens:
-  sta bt_tmp
+  sta <bt_tmp
 print_num_tens_loop:
   cmp #10
   bcc print_num_ones
@@ -840,7 +840,7 @@ battle_sprite_clear:
   inx
   bne battle_sprite_clear
   lda #0
-  sta oam_idx
+  sta <oam_idx
   ldx #0
 battle_sprite_pc:
   lda pc_in_party,x
@@ -850,9 +850,9 @@ battle_sprite_pc:
   lda pc_metasprite,x
   cmp #$FF
   beq battle_sprite_pc_next
-  sta bt_tmp
+  sta <bt_tmp
   lda #BT_PARTY_X
-  sta de_ex
+  sta <de_ex
   txa
   asl a
   asl a
@@ -861,8 +861,8 @@ battle_sprite_pc:
   asl a                     ; slot * BT_PARTY_STEP
   clc
   adc #BT_PARTY_Y
-  sta de_ey
-  lda bt_tmp
+  sta <de_ey
+  lda <bt_tmp
   jsr draw_metasprite
 battle_sprite_pc_next:
   inx
@@ -878,7 +878,7 @@ battle_sprite_mon:
   cmp #$FF
   bne battle_sprite_mon_next ; it has block art, already on the background
   lda #BT_MON_COL*8
-  sta de_ex
+  sta <de_ex
   txa
   asl a
   asl a
@@ -887,7 +887,7 @@ battle_sprite_mon:
   asl a                     ; slot * 32 pixels
   clc
   adc #BT_MON_ROW*8
-  sta de_ey
+  sta <de_ey
   tya
   jsr draw_actor_icon
 battle_sprite_mon_next:
@@ -900,10 +900,10 @@ battle_sprite_mon_next:
   ; monster's row band. Appended last, so a full shadow costs the cursor its
   ; slot rather than a combatant theirs -- and the shadow is 64 sprites against
   ; a four-member party, so in practice it always fits.
-  lda bt_tgt_vis
+  lda <bt_tgt_vis
   beq battle_sprite_cursor_done
-  ldy oam_idx
-  lda bt_target
+  ldy <oam_idx
+  lda <bt_target
   sec
   sbc #MAX_PARTY
   asl a
@@ -924,7 +924,7 @@ battle_sprite_mon_next:
   lda #(BT_CMD_COL-1)*8
   sta OAM,y
   iny
-  sty oam_idx
+  sty <oam_idx
 battle_sprite_cursor_done:
   .endif
 

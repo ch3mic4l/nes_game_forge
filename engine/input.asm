@@ -4,8 +4,8 @@
 ; A B Select Start Up Down Left Right in bits 7..0.
 
 read_pad:
-  lda pad
-  sta pad_last
+  lda <pad
+  sta <pad_last
 
   lda #$01
   sta $4016
@@ -16,14 +16,14 @@ read_pad:
 read_pad_loop:
   lda $4016
   lsr a
-  rol pad
+  rol <pad
   dex
   bne read_pad_loop
 
-  lda pad                   ; buttons that went down this frame
-  eor pad_last
-  and pad
-  sta pad_new
+  lda <pad                   ; buttons that went down this frame
+  eor <pad_last
+  and <pad
+  sta <pad_new
   rts
 
 button_mask:
@@ -43,7 +43,7 @@ button_mask:
 
 dispatch_input:
   lda #0
-  sta dash_on
+  sta <dash_on
   .if NAME_ENTRY_ENABLED
   sta nm_acted               ; the per-frame grid-action latch (§4) -- reset
                               ; here, set inside nameentry_select/
@@ -53,31 +53,31 @@ dispatch_input:
 
   ldx #0
 dispatch_loop:
-  lda game_state
+  lda <game_state
   asl a
   asl a                     ; state * NUM_BUTTONS
-  stx tmp
+  stx <tmp
   clc
-  adc tmp
+  adc <tmp
   tay
   lda input_actions,y
-  sta tmp2
+  sta <tmp2
 
   cmp #ACT_DASH
   bne dispatch_pressed
-  lda pad                   ; dash applies for as long as it is held
+  lda <pad                   ; dash applies for as long as it is held
   and button_mask,x
   beq dispatch_next
-  inc dash_on
+  inc <dash_on
   jmp dispatch_next
 
 dispatch_pressed:
-  lda pad_new
+  lda <pad_new
   and button_mask,x
   beq dispatch_next
   txa
   pha                       ; the handlers use X to walk the entity slots
-  lda tmp2
+  lda <tmp2
   jsr do_action
   pla
   tax
@@ -87,8 +87,8 @@ dispatch_pressed:
   ; together would begin the game and then immediately talk to whatever the first
   ; screen spawned -- on a screen the player has not seen a frame of, and before
   ; the event that screen owes has been spoken.
-  lda screen_fresh
-  ora warp_ready
+  lda <screen_fresh
+  ora <warp_ready
   bne dispatch_done
 
 dispatch_next:
@@ -98,11 +98,11 @@ dispatch_next:
 
 dispatch_done:
   lda #PLAYER_SPEED
-  ldy dash_on
+  ldy <dash_on
   beq dispatch_speed
   asl a                     ; dashing doubles the walking speed
 dispatch_speed:
-  sta cur_speed
+  sta <cur_speed
   rts
 
 ; A = the action bound to the button that was just pressed. Free to clobber X
@@ -146,17 +146,17 @@ do_action_none:
   rts
 
 do_action_attack:
-  lda game_state            ; the world is frozen behind a menu or a conversation
+  lda <game_state            ; the world is frozen behind a menu or a conversation
   bne do_action_none
   jmp do_attack
 
 do_action_interact:
-  lda game_state
+  lda <game_state
   bne do_action_none
   jmp do_interact
 
 do_action_item:
-  lda game_state
+  lda <game_state
   cmp #ST_MENU
   beq do_action_close       ; a second press puts the bag away
   cmp #ST_GAMEPLAY
@@ -168,15 +168,15 @@ do_action_item:
 ; docs/design-name-entry.md §4.
 do_action_confirm:
   .if NAME_ENTRY_ENABLED
-  lda box_state
+  lda <box_state
   cmp #BOX_NAMEENTRY
   bne do_action_confirm_notname
-  lda box_row
+  lda <box_row
   cmp #BOX_TEXT_ROWS
   bcc do_action_confirm_wait ; still raising -- LOCAL rts, never the distant
                               ; do_action_none
   jsr name_select             ; shim (engine/ui.asm) -- returns here either way
-  lda box_state
+  lda <box_state
   cmp #BOX_NAMEDONE
   bne do_action_confirm_wait  ; LOCAL rts
   jmp script_resume
@@ -184,7 +184,7 @@ do_action_confirm_wait:
   rts
 do_action_confirm_notname:
   .endif
-  lda game_state
+  lda <game_state
   cmp #ST_MENU
   beq do_action_use
   cmp #ST_DIALOG
@@ -204,7 +204,7 @@ do_action_use:
 ; on any other state or with nothing to load has nothing to do, the same as
 ; any action bound somewhere it is ignored.
 do_action_continue:
-  lda game_state
+  lda <game_state
   cmp #ST_TITLE
   bne do_action_none
   jsr save_check_valid
@@ -214,17 +214,17 @@ do_action_continue:
 
 do_action_cancel:
   .if NAME_ENTRY_ENABLED
-  lda box_state
+  lda <box_state
   cmp #BOX_NAMEENTRY
   bne do_action_cancel_notname
-  lda box_row
+  lda <box_row
   cmp #BOX_TEXT_ROWS
   bcc do_action_cancel_wait  ; still raising -- LOCAL rts
   jmp name_cancel             ; shim (engine/ui.asm) -- tail call, never ends
                                ; the session
 do_action_cancel_notname:
   .endif
-  lda game_state
+  lda <game_state
   .if NAME_ENTRY_ENABLED
   beq do_action_cancel_wait  ; RETARGETED from do_action_none -- the identical
                               ; rts either way, now always in range regardless
@@ -254,14 +254,14 @@ do_action_cancel_wait:
 ; mid-typewriter is ignored rather than skipping what is still being said.
 ; Without one there is nothing to advance, so the conversation just ends.
 do_action_dialog:
-  lda box_state
+  lda <box_state
   beq do_action_close
   jmp text_advance
 
 do_action_pause:
-  lda paused                ; pause freezes the world in every state
+  lda <paused                ; pause freezes the world in every state
   eor #1
-  sta paused
+  sta <paused
   rts
 
 ; Take a hit off the nearest actor that is not a pickup, and beat it when that
@@ -289,7 +289,7 @@ do_attack_loop:
 do_attack_beaten:
   lda #0
   sta ent_active,x
-  inc defeated
+  inc <defeated
 do_attack_done:
   rts
 do_attack_next:
@@ -317,7 +317,7 @@ do_interact_loop:
   bne do_interact_next
   lda #0
   sta ent_active,x
-  inc pickups
+  inc <pickups
   ; Same ent_to_scr overload entity_pickup uses -- see its own comment.
   .if ITEMS_ENABLED
   lda ent_to_scr,x
@@ -366,7 +366,7 @@ do_talk_next:
 entity_in_reach:
   lda ent_x,x
   sec
-  sbc player_x
+  sbc <player_x
   bcs entity_in_reach_dx
   eor #$FF                  ; absolute value
   clc
@@ -376,7 +376,7 @@ entity_in_reach_dx:
   bcs entity_in_reach_far
   lda ent_y,x
   sec
-  sbc player_y
+  sbc <player_y
   bcs entity_in_reach_dy
   eor #$FF
   clc

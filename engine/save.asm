@@ -116,22 +116,22 @@
 ; shape corruption or a torn write takes.
 save_checksum:
   lda #0
-  sta tmp
-  sta tmp2
+  sta <tmp
+  sta <tmp2
   ldy #0
 save_checksum_loop:
   lda SAVE_BASE,y
   clc
-  adc tmp
-  sta tmp
+  adc <tmp
+  sta <tmp
   clc
-  adc tmp2
-  sta tmp2
+  adc <tmp2
+  sta <tmp2
   iny
   cpy #SAVE_BODY_LEN
   bne save_checksum_loop
-  lda tmp
-  ldx tmp2
+  lda <tmp
+  ldx <tmp2
   rts
 
 ; Refreshes SAVE_BASE from wherever the record actually lives, before
@@ -160,7 +160,7 @@ save_checksum_loop:
 ; time this was only conditional on the inside.
   .if SAVE_FLASH
 save_media_fetch:
-  lda mapper_shadow
+  lda <mapper_shadow
   pha
   lda #SAVE_BANK
   jsr switch_prg_bank
@@ -201,7 +201,7 @@ save_media_commit:
   lda #$00
   sta $2000                  ; NMI off, genuinely -- not merely masked
   sta $2001                  ; rendering off
-  lda mapper_shadow
+  lda <mapper_shadow
   pha
   ldx #0
 save_media_commit_copy:
@@ -409,11 +409,11 @@ save_check_invalid:
 ; the two directions cannot drift into disagreeing about the record's shape
 ; the way eighteen separately hand-written loops eventually would.
 save_field_setup:
-  ldx sv_idx
+  ldx <sv_idx
   lda save_field_lo,x
-  sta save_ptr_lo
+  sta <save_ptr_lo
   lda save_field_hi,x
-  sta save_ptr_hi
+  sta <save_ptr_hi
   lda save_field_len,x        ; X is still sv_idx -- none of the above touch it
   tax
   rts
@@ -427,34 +427,34 @@ save_field_setup:
 ; will do.
 save_write_body:
   lda #LOW(SAVE_BASE)
-  sta save_cursor_lo
+  sta <save_cursor_lo
   lda #HIGH(SAVE_BASE)
-  sta save_cursor_hi
+  sta <save_cursor_hi
   lda #0
-  sta sv_idx
+  sta <sv_idx
 save_write_field:
   jsr save_field_setup
-  stx sv_len
+  stx <sv_len
   ldy #0
-  cpy sv_len
+  cpy <sv_len
   beq save_write_field_done   ; a zero-length field never occurs, but costs
                               ; nothing to not assume
 save_write_byte:
   lda [save_ptr_lo],y
   sta [save_cursor_lo],y
   iny
-  cpy sv_len
+  cpy <sv_len
   bne save_write_byte
 save_write_field_done:
-  lda save_cursor_lo
+  lda <save_cursor_lo
   clc
-  adc sv_len
-  sta save_cursor_lo
+  adc <sv_len
+  sta <save_cursor_lo
   bcc save_write_next
-  inc save_cursor_hi
+  inc <save_cursor_hi
 save_write_next:
-  inc sv_idx
-  lda sv_idx
+  inc <sv_idx
+  lda <sv_idx
   cmp #SAVE_FIELD_COUNT
   bne save_write_field
   rts
@@ -499,33 +499,33 @@ script_op_save:
 ; than a known-fresh session.
 load_apply_body:
   lda #LOW(SAVE_BASE)
-  sta save_cursor_lo
+  sta <save_cursor_lo
   lda #HIGH(SAVE_BASE)
-  sta save_cursor_hi
+  sta <save_cursor_hi
   lda #0
-  sta sv_idx
+  sta <sv_idx
 load_apply_field:
   jsr save_field_setup
-  stx sv_len
+  stx <sv_len
   ldy #0
-  cpy sv_len
+  cpy <sv_len
   beq load_apply_field_done
 load_apply_byte:
   lda [save_cursor_lo],y
   sta [save_ptr_lo],y
   iny
-  cpy sv_len
+  cpy <sv_len
   bne load_apply_byte
 load_apply_field_done:
-  lda save_cursor_lo
+  lda <save_cursor_lo
   clc
-  adc sv_len
-  sta save_cursor_lo
+  adc <sv_len
+  sta <save_cursor_lo
   bcc load_apply_next
-  inc save_cursor_hi
+  inc <save_cursor_hi
 load_apply_next:
-  inc sv_idx
-  lda sv_idx
+  inc <sv_idx
+  lda <sv_idx
   cmp #SAVE_FIELD_COUNT
   bne load_apply_field
   rts
@@ -559,10 +559,10 @@ continue_game:
   jsr call_battle
   .endif
   lda #NO_ENTITY
-  sta talk_ent
+  sta <talk_ent
   lda #0
-  sta box_state
+  sta <box_state
   lda #ST_GAMEPLAY
-  sta game_state
+  sta <game_state
   jmp redraw_screen
   .endif

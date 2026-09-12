@@ -552,7 +552,11 @@ export function checkBattleTables(project) {
 // identical reasoning the BE_RESTORE paragraph above already gives for its
 // own uniform +18. MMC3's own extra 46-byte SPLIT_ENABLED gap is unchanged by
 // it (4007 - 3961 = 46).
-export const BASE_BATTLE_CODE_BYTES_BY_MAPPER = { 30: 4220, 1: 4220, 4: 4266 };
+// Re-measured for the zero-page kernel diet (docs/design-kernel-diet.md):
+// { 30: 3783, 1: 3783, 4: 3823 } -- the MMC3-vs-other-two SPLIT_ENABLED gap
+// narrows from 46 to 40 bytes (3823 - 3783 = 40); bankedbytes.test.js's own
+// asserted constant and CLAUDE.md's own prose both need the same update.
+export const BASE_BATTLE_CODE_BYTES_BY_MAPPER = { 30: 3783, 1: 3783, 4: 3823 };
 
 // Phase 4c round 3, finding 6 (phase4-design.md §9), corrected round 3b
 // (review K1): the two-menu-consistency filter (build_item_list's kind/
@@ -591,6 +595,12 @@ export const BASE_BATTLE_CODE_BYTES_BY_MAPPER = { 30: 4220, 1: 4220, 4: 4266 };
 // ITEM_KERNEL_ALLOWANCE (generate.js) is flat rather than *_BY_MAPPER:
 // nothing this term covers branches on SPLIT_ENABLED or any other
 // mapper-specific fact, only on ITEMS_ENABLED.
+// Unchanged by the zero-page kernel diet, and the reason is cancellation,
+// not absence of sites: build_item_list/battle_menu_item (engine/
+// battleui.asm) DO contain several bare zero-page operands (bt_len,
+// inv_count), but they are shared, unconditional accesses both the
+// item-on and item-off isolation builds already pay identically -- the
+// delta this constant measures cancels them out, so it stays 17.
 export const ITEM_LIST_FILTER_BATTLE_ALLOWANCE = 17;
 
 // combatant_mag (engine/battleturn.asm) plus spell_damage's and cast_heal's
@@ -600,7 +610,8 @@ export const ITEM_LIST_FILTER_BATTLE_ALLOWANCE = 17;
 // Gated on projectUsesMagicPower, independently of MAGIC_DEFENCE_BATTLE_
 // ALLOWANCE below -- see that constant's own comment for why the two must
 // never share one gate.
-export const MAGIC_POWER_BATTLE_ALLOWANCE = 72;
+// Re-measured for the zero-page kernel diet: 62 (down from 72).
+export const MAGIC_POWER_BATTLE_ALLOWANCE = 62;
 
 // combatant_mdef plus spell_damage's own single call-site addition (park,
 // then subtract-and-floor) -- measured the identical way, on all three
@@ -610,7 +621,8 @@ export const MAGIC_POWER_BATTLE_ALLOWANCE = 72;
 // isolation requires the other's own gate to be free to stay off while this
 // one is toggled -- a shared gate would make removing one of two co-gated
 // features measure a delta of zero (docs/design-magic-power.md §8).
-export const MAGIC_DEFENCE_BATTLE_ALLOWANCE = 65;
+// Re-measured for the zero-page kernel diet: 56 (down from 65).
+export const MAGIC_DEFENCE_BATTLE_ALLOWANCE = 56;
 
 // In-game party-member naming (docs/design-name-entry.md §5/§11) -- the
 // banked half. Two independently-gated terms, not one: NAME_ENTRY_BATTLE_
@@ -620,8 +632,13 @@ export const MAGIC_DEFENCE_BATTLE_ALLOWANCE = 65;
 // wider NAME_SEED_ENABLED && banked -- a token-only RPG (phase 4) trips the
 // copy loop with no naming feature live at all, so charging the two under one
 // gate would under-reserve that project by 47 real bytes.
-export const NAME_ENTRY_BATTLE_ALLOWANCE = 765;
-export const NAME_COPY_BATTLE_ALLOWANCE = 47;
+// Re-measured for the zero-page kernel diet: 737 (down from 765) -- the
+// combined NAME_ENTRY_BATTLE_ALLOWANCE + NAME_COPY_BATTLE_ALLOWANCE delta
+// dropped from 812 to 780; NAME_COPY_BATTLE_ALLOWANCE's own isolated delta
+// (below) is what splits the two.
+export const NAME_ENTRY_BATTLE_ALLOWANCE = 737;
+// Re-measured for the zero-page kernel diet: 43 (down from 47).
+export const NAME_COPY_BATTLE_ALLOWANCE = 43;
 
 // monster_turn's pick-first rewrite plus its two gated helpers
 // (mod_monster_len, monster_pick_limit) -- docs/design-monster-spell-list.md
@@ -630,7 +647,8 @@ export const NAME_COPY_BATTLE_ALLOWANCE = 47;
 // SPLIT_ENABLED branch. Gated on projectUsesMonsterSpellList: a project
 // with no actor's battle.spellIds at two or more entries assembles the old,
 // unguarded monster_turn body and pays none of this.
-export const MONSTER_SPELL_LIST_BATTLE_ALLOWANCE = 153;
+// Re-measured for the zero-page kernel diet: 125 (down from 153).
+export const MONSTER_SPELL_LIST_BATTLE_ALLOWANCE = 125;
 
 // Deliberate headroom, and its job is NOT the job KERNEL_SLACK does. There is
 // no estimation error here for it to absorb -- see the exactness note above --

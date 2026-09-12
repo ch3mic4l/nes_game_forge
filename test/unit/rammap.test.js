@@ -34,6 +34,7 @@ import { spawnSync } from 'node:child_process';
 import { createProject } from '../../shared/project.js';
 import { saveProject } from '../../main/project-io.js';
 import { buildProject } from '../../main/build/pipeline.js';
+import { scanEquates, resolveEquates } from '../lib/equates.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const hasNesasm = spawnSync('nesasm', [], { stdio: 'ignore' }).error?.code !== 'ENOENT';
@@ -190,91 +191,12 @@ function resolveKnownSize(spec, symbols) {
   return symbols.get(spec);
 }
 
-/**
- * Record every `NAME = expr` line's shape into `pending`, keyed by name, so
- * the two files can be scanned independently before anything is resolved --
- * a line whose grammar this guard cannot parse is a defect in the guard
- * itself (or a deliberate widening it has not been taught yet) and has to
- * fail here, not vanish from the audit the way a silently-skipped line
- * would. First definition wins, matching nesasm's own `=`.
- */
-function scanEquates(text, pending) {
-  for (const line of text.split('\n')) {
-    const m = line.match(/^([A-Za-z_][A-Za-z0-9_]*)\s*=\s*([^;]+)/);
-    if (!m) continue;
-    const [, name, rawExpr] = m;
-    if (pending.has(name)) continue;
-    const expr = rawExpr.trim();
-    const hex = expr.match(/^\$([0-9A-Fa-f]+)$/);
-    const dec = expr.match(/^(\d+)$/);
-    const sum = expr.match(/^([A-Za-z_][A-Za-z0-9_]*)\s*\+\s*([A-Za-z_][A-Za-z0-9_]*|\d+)$/);
-    // BOUND_BOX_FIRST_CELL = BOX_MT_ROW*16 (engine/constants.asm) is the first
-    // equate to need this: a deliberate multiplicative relationship, kept as
-    // an expression rather than the literal 192 so the two can never drift
-    // apart (see that equate's own comment). Not a RAM address itself --
-    // isRamName excludes it downstream -- but scanEquates parses every `NAME
-    // = expr` line in the file, so it still has to fit a grammar shape.
-    const product = expr.match(/^([A-Za-z_][A-Za-z0-9_]*)\s*\*\s*([A-Za-z_][A-Za-z0-9_]*|\d+)$/);
-    const bare = expr.match(/^([A-Za-z_][A-Za-z0-9_]*)$/);
-    if (hex) pending.set(name, { kind: 'literal', value: parseInt(hex[1], 16) });
-    else if (dec) pending.set(name, { kind: 'literal', value: parseInt(dec[1], 10) });
-    else if (sum) pending.set(name, { kind: 'sum', base: sum[1], add: sum[2] });
-    else if (product) pending.set(name, { kind: 'product', base: product[1], mul: product[2] });
-    else if (bare) pending.set(name, { kind: 'bare', ref: bare[1] });
-    else {
-      // A future equate genuinely can need a wider grammar than this -- the
-      // fix then is to widen scanEquates on purpose, with eyes on what it
-      // now accepts, not to let a line it cannot read disappear from the
-      // audit the way `continue` here would.
-      throw new Error(
-        `${name} = ${expr} does not fit the restricted equate grammar this guard parses (literal $hex/decimal, ` +
-          `a bare name, name+token, or name*token). Widen scanEquates deliberately, or fix the line.`
-      );
-    }
-  }
-}
-
-/**
- * Resolve every entry `scanEquates` recorded into `symbols`, in as many
- * passes as it takes for one name to unblock the next -- a name is free to
- * be defined in either file and referenced from the other (NUM_VARIABLES
- * lives in the generated config.inc; the array it sizes lives in
- * constants.asm). What is left once a pass adds nothing is not waiting on
- * anything else; it is a dangling reference, and resolveEquates fails
- * naming it rather than leaving it out of `symbols` for later code to miss.
- */
-function resolveEquates(pending, symbols) {
-  let progress = true;
-  while (progress) {
-    progress = false;
-    for (const [name, spec] of pending) {
-      let value;
-      if (spec.kind === 'literal') {
-        value = spec.value;
-      } else if (spec.kind === 'sum') {
-        const base = symbols.get(spec.base);
-        const add = /^\d+$/.test(spec.add) ? parseInt(spec.add, 10) : symbols.get(spec.add);
-        if (base === undefined || add === undefined) continue;
-        value = base + add;
-      } else if (spec.kind === 'product') {
-        const base = symbols.get(spec.base);
-        const mul = /^\d+$/.test(spec.mul) ? parseInt(spec.mul, 10) : symbols.get(spec.mul);
-        if (base === undefined || mul === undefined) continue;
-        value = base * mul;
-      } else {
-        const v = symbols.get(spec.ref);
-        if (v === undefined) continue;
-        value = v;
-      }
-      symbols.set(name, value);
-      pending.delete(name);
-      progress = true;
-    }
-  }
-  if (pending.size) {
-    throw new Error(`could not resolve: ${[...pending.keys()].join(', ')} -- each names something never defined`);
-  }
-}
+// scanEquates/resolveEquates now live in test/lib/equates.js -- lifted there
+// (docs/design-kernel-diet.md v5 §2) as the single-writer resolver shared
+// with the zero-page sweep and test/unit/zeropage.test.js. This file's own
+// contribution stays exactly what it was: isRamName below and the two-input
+// scan (constants first, generated config second, into one pending map,
+// resolved together) in auditRamMap.
 
 /** `NAME = ... @size=TOKEN` -- TOKEN a decimal literal or another equate's name. */
 function parseSizeAnnotations(text) {

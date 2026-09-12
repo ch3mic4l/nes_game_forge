@@ -387,15 +387,16 @@ test('kernelShortfallAdvice frees the bound-tile-dependent fixed/table terms too
   // Inflate until the project is short by a deficit strictly between the
   // flat allowance and the full freed amount, then confirm checkCapacity's
   // advice names the real, larger figure. Each filler actor costs
-  // kernelTableBytes' spriteBytes exactly 8 bytes, so a real build (measured
-  // against this exact fixture) crosses BOUND_TILE_KERNEL_ALLOWANCE (388)
-  // around 113 filler actors and the full freed amount (420) around 117 --
-  // a narrow, real window, scanned one actor at a time rather than assumed.
-  // checkCapacity itself is quadratic in actor count for reasons unrelated
-  // to bound tiles, so this stays in a small range (100-130, well under
-  // LIMITS.actors' own 255-actor ceiling) to stay fast.
+  // kernelTableBytes' spriteBytes exactly 8 bytes; re-scanned against a real
+  // checkCapacity() run after the zero-page kernel diet
+  // (docs/design-kernel-diet.md) gave this board real extra headroom, the
+  // window now opens around 185 filler actors -- a narrow, real window,
+  // scanned one actor at a time rather than assumed. checkCapacity itself is
+  // quadratic in actor count for reasons unrelated to bound tiles, so this
+  // stays in a small range (170-200, well under LIMITS.actors' own
+  // 255-actor ceiling) to stay fast.
   let deficitMessage = null;
-  for (let n = 100; n <= 130 && !deficitMessage; n++) {
+  for (let n = 170; n <= 200 && !deficitMessage; n++) {
     const trial = structuredClone(project);
     inflate(trial, n);
     const { problems } = checkCapacity(trial);

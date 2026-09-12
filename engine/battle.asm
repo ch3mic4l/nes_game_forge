@@ -18,7 +18,7 @@
 ; path rather than two that have to agree.
 
 battle_entry:
-  lda bt_call
+  lda <bt_call
   bne battle_entry_tick
   jmp party_init
 battle_entry_tick:
@@ -28,7 +28,7 @@ battle_entry_tick:
 battle_entry_join:
   cmp #BE_JOIN
   bne battle_entry_restore
-  ldx bt_arg                ; the Join command, run from the field mid-script
+  ldx <bt_arg                ; the Join command, run from the field mid-script
   ; A stale or hand-edited member (NO_MEMBER, or a numeric one the deleting
   ; party member's own party.length no longer covers) must not reach
   ; party_apply_level -> level_row, whose per-level tables are sized to
@@ -58,7 +58,7 @@ battle_entry_restore:
 be_name_begin_chk:
   cmp #BE_NAME_BEGIN
   bne be_name_tick_chk
-  lda bt_arg
+  lda <bt_arg
   jmp nameentry_begin
 be_name_tick_chk:
   cmp #BE_NAME_TICK
@@ -86,9 +86,9 @@ be_entry_done:
 ; party are left out until a Join command recruits them.
 party_init:
   lda #0
-  sta party_size
-  sta gold_lo
-  sta gold_hi
+  sta <party_size
+  sta <gold_lo
+  sta <gold_hi
   ldx #0
 party_init_slot:
   lda #0
@@ -114,7 +114,7 @@ party_join:
   bne party_join_done
   lda #1
   sta pc_in_party,x
-  inc party_size
+  inc <party_size
   ; Seeds pc_name_ram from the banked pc_name table -- widened from
   ; NAME_ENTRY_ENABLED to the wider NAME_SEED_ENABLED union
   ; (docs/design-name-entry.md §8, P1-2): party_init already calls this
@@ -124,12 +124,12 @@ party_join:
   ; instant a naming session opens.
   .if NAME_SEED_ENABLED
   lda #LOW(pc_name)
-  sta ptr_lo
+  sta <ptr_lo
   lda #HIGH(pc_name)
-  sta ptr_hi
+  sta <ptr_hi
   txa
   jsr name_offset_pc
-  stx bt_tmp
+  stx <bt_tmp
   lda #0
 name_copy_dst_loop:
   cpx #0
@@ -148,7 +148,7 @@ name_copy_loop:
   inx
   cpy #NAME_LEN
   bne name_copy_loop
-  ldx bt_tmp
+  ldx <bt_tmp
   .endif
   jsr party_apply_level
   lda pc_hp_max,x
@@ -207,9 +207,9 @@ party_restore_slot:
 
 ; A = member index; returns Y = that member's row for their current level.
 level_row:
-  sta bt_tmp
+  sta <bt_tmp
   lda #0
-  ldy bt_tmp
+  ldy <bt_tmp
   beq level_row_add         ; member 0 needs no stride
 level_row_stride:
   clc
@@ -251,42 +251,42 @@ battle_tick:
 ; lower slot inherited whatever row the interrupted one had reached and its
 ; own earlier rows were never queued at all.
 wipe_tick:
-  lda bt_wipe_mask
+  lda <bt_wipe_mask
   bne wipe_tick_go
   rts
 wipe_tick_go:
-  lda bt_wipe_row
+  lda <bt_wipe_row
   bne wipe_tick_slot        ; mid-wipe: bt_wipe_slot already names who
   ldx #0
 wipe_tick_bit:
   lda bit_mask,x
-  and bt_wipe_mask
+  and <bt_wipe_mask
   bne wipe_tick_pick
   inx
   cpx #MAX_MONSTERS
   bne wipe_tick_bit
   rts                       ; unreachable: bt_wipe_mask was non-zero above
 wipe_tick_pick:
-  stx bt_wipe_slot
+  stx <bt_wipe_slot
 wipe_tick_slot:
-  ldx bt_wipe_slot
+  ldx <bt_wipe_slot
   jsr wipe_monster
-  inc bt_wipe_row
-  lda bt_wipe_row
+  inc <bt_wipe_row
+  lda <bt_wipe_row
   cmp #4
   bcc wipe_tick_done
   lda #0
-  sta bt_wipe_row
-  ldx bt_wipe_slot
+  sta <bt_wipe_row
+  ldx <bt_wipe_slot
   lda bit_mask,x
   eor #$FF
-  and bt_wipe_mask
-  sta bt_wipe_mask
+  and <bt_wipe_mask
+  sta <bt_wipe_mask
 wipe_tick_done:
   rts
 
 battle_dispatch:
-  lda bt_phase
+  lda <bt_phase
   cmp #BP_INTRO
   bne battle_tick_menu
   jmp battle_intro
@@ -332,18 +332,18 @@ battle_intro:
   jsr draw_battle_screen
   jsr battle_round
   lda #BP_MENU
-  sta bt_phase
+  sta <bt_phase
   lda #0
-  sta bt_actor
+  sta <bt_actor
   jmp battle_first_turn
 
 ; Fill in each monster slot's hit points from its actor's row.
 setup_monsters:
   lda #0
-  sta bt_count
-  sta bt_wipe_mask
-  sta bt_wipe_row
-  sta bt_wipe_slot
+  sta <bt_count
+  sta <bt_wipe_mask
+  sta <bt_wipe_row
+  sta <bt_wipe_slot
   ldx #0
 setup_monsters_slot:
   lda #0
@@ -360,7 +360,7 @@ setup_monsters_slot:
   sta mon_slot_mp,x
   lda #1
   sta mon_slot_alive,x
-  inc bt_count
+  inc <bt_count
 setup_monsters_next:
   inx
   cpx #MAX_MONSTERS
@@ -384,9 +384,9 @@ draw_battle_screen:
   lda #BATTLE_TILESET
   jsr switch_chr_bank
 
-  ldy flat_screen
+  ldy <flat_screen
   lda screen_map,y
-  sta bt_tmp2               ; this map's backdrop tiles
+  sta <bt_tmp2               ; this map's backdrop tiles
 
   bit $2002
   lda #$20
@@ -395,18 +395,18 @@ draw_battle_screen:
   sta $2006
 
   lda #0
-  sta bt_tmp                ; row
+  sta <bt_tmp                ; row
 draw_bs_row:
-  lda bt_tmp
+  lda <bt_tmp
   cmp #BT_SKY_ROWS
   bcc draw_bs_sky
   cmp #BT_BOX_ROW
   bcs draw_bs_box
-  ldy bt_tmp2
+  ldy <bt_tmp2
   lda map_battle_ground,y
   jmp draw_bs_fill
 draw_bs_sky:
-  ldy bt_tmp2
+  ldy <bt_tmp2
   lda map_battle_sky,y
   jmp draw_bs_fill
 draw_bs_box:
@@ -417,8 +417,8 @@ draw_bs_cell:
   sta $2007
   dey
   bne draw_bs_cell
-  inc bt_tmp
-  lda bt_tmp
+  inc <bt_tmp
+  lda <bt_tmp
   cmp #30
   bne draw_bs_row
 
@@ -435,12 +435,12 @@ draw_bs_cell:
 ; off. Same furniture as the message box, so the two read as one interface.
 draw_box_frame:
   lda #BT_BOX_ROW
-  sta bt_row
+  sta <bt_row
 draw_box_row:
   lda #0
-  sta bt_col
+  sta <bt_col
   jsr seek_at
-  lda bt_row
+  lda <bt_row
   cmp #BT_BOX_ROW
   beq draw_box_edge
   cmp #29
@@ -468,8 +468,8 @@ draw_box_bar:
   lda #BORDER_CORNER
   sta $2007
 draw_box_next:
-  inc bt_row
-  lda bt_row
+  inc <bt_row
+  lda <bt_row
   cmp #30
   bne draw_box_row
   rts
@@ -478,7 +478,7 @@ draw_box_next:
 ; is $400 bytes, so the high byte is $20 + (row >> 3) and the low byte cannot
 ; carry: (row & 7) * 32 + col tops out at 255.
 seek_at:
-  lda bt_row
+  lda <bt_row
   lsr a
   lsr a
   lsr a
@@ -486,7 +486,7 @@ seek_at:
   adc #$20
   bit $2002
   sta $2006
-  lda bt_row
+  lda <bt_row
   and #7
   asl a
   asl a
@@ -494,7 +494,7 @@ seek_at:
   asl a
   asl a
   clc
-  adc bt_col
+  adc <bt_col
   sta $2006
   rts
 
@@ -520,23 +520,23 @@ draw_mon_next:
 ; X = monster slot, Y = its actor id.
 draw_mon_block:
   lda mon_tile,y
-  sta bt_tmp                ; the row's first tile
+  sta <bt_tmp                ; the row's first tile
   lda mon_h,y
-  sta bt_tmp2               ; rows left
+  sta <bt_tmp2               ; rows left
   txa
   asl a
   asl a                     ; slot * BT_MON_STEP
   clc
   adc #BT_MON_ROW
-  sta bt_row
+  sta <bt_row
 draw_mon_block_row:
   lda #BT_MON_COL
-  sta bt_col
+  sta <bt_col
   jsr seek_at
   ldy mon_slot_actor,x
   lda mon_w,y
   sta bt_digits             ; columns left
-  lda bt_tmp
+  lda <bt_tmp
   sta bt_digits+1           ; the tile being written
 draw_mon_block_cell:
   lda bt_digits+1
@@ -544,12 +544,12 @@ draw_mon_block_cell:
   inc bt_digits+1
   dec bt_digits
   bne draw_mon_block_cell
-  lda bt_tmp
+  lda <bt_tmp
   clc
   adc #16                   ; the art is a 16-wide region of the tileset
-  sta bt_tmp
-  inc bt_row
-  dec bt_tmp2
+  sta <bt_tmp
+  inc <bt_row
+  dec <bt_tmp2
   bne draw_mon_block_row
   rts
 
@@ -598,13 +598,13 @@ draw_attr_mon:
   asl a
   clc
   adc #1                    ; attribute column 1 holds tile columns 4-7
-  sta bt_tmp
+  sta <bt_tmp
   bit $2002
   lda #$23
   sta $2006
   lda #$C0
   clc
-  adc bt_tmp
+  adc <bt_tmp
   sta $2006
   ldy mon_slot_actor,x
   lda mon_attr,y
@@ -618,26 +618,26 @@ draw_attr_mon_next:
 ; FIGHT / MAGIC / ITEM / RUN down the left of the box.
 draw_commands:
   lda #0
-  sta bt_tmp
+  sta <bt_tmp
 draw_cmd_row:
-  lda bt_tmp
+  lda <bt_tmp
   asl a
   clc
   adc #BT_CMD_ROW
-  sta bt_row
+  sta <bt_row
   lda #BT_CMD_COL
-  sta bt_col
+  sta <bt_col
   jsr seek_at
-  lda bt_tmp
+  lda <bt_tmp
   jsr name_offset_cmd
 draw_cmd_char:
   lda cmd_names,y
   sta $2007
   iny
-  dec bt_tmp2
+  dec <bt_tmp2
   bne draw_cmd_char
-  inc bt_tmp
-  lda bt_tmp
+  inc <bt_tmp
+  lda <bt_tmp
   cmp #NUM_COMMANDS
   bne draw_cmd_row
   rts
@@ -649,7 +649,7 @@ name_offset_cmd:
   asl a                     ; CMD_NAME_LEN is 8
   tay
   lda #8
-  sta bt_tmp2
+  sta <bt_tmp2
   rts
 
 ; Names and hit points down the right of the box, one member per two rows.
@@ -662,24 +662,24 @@ draw_panel_slot:
   asl a
   clc
   adc #BT_PANEL_ROW
-  sta bt_row
+  sta <bt_row
   lda #BT_PANEL_COL
-  sta bt_col
+  sta <bt_col
   jsr seek_at
   ; A party slot's own name reads pc_name_ram once naming is on -- the
   ; player's actual, possibly-typed name, not the compiled default
   ; (docs/design-name-entry.md §3).
   .if NAME_ENTRY_ENABLED
   lda #LOW(pc_name_ram)
-  sta ptr_lo
+  sta <ptr_lo
   lda #HIGH(pc_name_ram)
-  sta ptr_hi
+  sta <ptr_hi
   .endif
   .if !NAME_ENTRY_ENABLED
   lda #LOW(pc_name)
-  sta ptr_lo
+  sta <ptr_lo
   lda #HIGH(pc_name)
-  sta ptr_hi
+  sta <ptr_hi
   .endif
   txa
   jsr name_offset_pc
@@ -687,7 +687,7 @@ draw_panel_char:
   lda [ptr_lo],y
   sta $2007
   iny
-  dec bt_tmp2
+  dec <bt_tmp2
   bne draw_panel_char
 draw_panel_next:
   inx
@@ -721,18 +721,18 @@ name_offset_pc:
   beq name_offset_pc_len
 name_offset_pc_stride:
   clc
-  lda ptr_lo
+  lda <ptr_lo
   adc #NAME_LEN
-  sta ptr_lo
+  sta <ptr_lo
   bcc name_offset_pc_nocarry
-  inc ptr_hi
+  inc <ptr_hi
 name_offset_pc_nocarry:
   dey
   bne name_offset_pc_stride
 name_offset_pc_len:
   ldy #0
   lda #NAME_LEN
-  sta bt_tmp2
+  sta <bt_tmp2
   rts
 
   .include "battleui.asm"

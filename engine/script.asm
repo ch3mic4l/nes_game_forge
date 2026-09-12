@@ -21,11 +21,11 @@
 ; leaves the old portrait-only dialogue in place.
 script_start:
   lda #0
-  sta script_active
-  sta box_state
-  sta call_depth            ; a fresh conversation starts with an empty stack
+  sta <script_active
+  sta <box_state
+  sta <call_depth            ; a fresh conversation starts with an empty stack
   .if MOVE_ENABLED
-  sta mv_left               ; ...and with nothing walking. Nothing known can
+  sta <mv_left               ; ...and with nothing walking. Nothing known can
                             ; leave a move running -- the world is frozen for
                             ; the whole of one and only move_tick clears it --
                             ; but a stale counter here would have ui_tick
@@ -33,13 +33,13 @@ script_start:
                             ; ended, and resuming a script that is not there
   .endif
   .if WAIT_ENABLED
-  sta wt_left                ; the identical reasoning, for a wait: nothing
+  sta <wt_left                ; the identical reasoning, for a wait: nothing
                             ; known can leave one running into a fresh
                             ; conversation, and a stale counter here would
                             ; have ui_tick resuming a script that is not there
   .endif
   .if FADE_ENABLED
-  sta fade_left              ; and nothing mid-fade either -- fade_step is
+  sta <fade_left              ; and nothing mid-fade either -- fade_step is
                             ; deliberately NOT cleared here: it is the
                             ; palette's actual current darkness, which must
                             ; survive into whatever the new script does next
@@ -49,9 +49,9 @@ script_start:
   beq script_start_done
   tay
   lda event_ptr_lo,y
-  sta script_ptr_lo
+  sta <script_ptr_lo
   lda event_ptr_hi,y
-  sta script_ptr_hi
+  sta <script_ptr_hi
   jmp script_page
 script_start_done:
   rts
@@ -84,7 +84,7 @@ script_page_run:
   lda #EVT_PAGE_HEAD
   jsr script_skip
   lda #1
-  sta script_active
+  sta <script_active
   ; fall through
 
 ; Run commands until one suspends or the event ends. The compares are spread
@@ -243,19 +243,19 @@ script_run_bad:
 ; because the player leaving the screen ends the conversation regardless of
 ; how many calls deep it was.
 script_end:
-  lda call_depth
+  lda <call_depth
   beq script_finish
-  dec call_depth
-  ldx call_depth
-  lda call_ret_lo,x
-  sta script_ptr_lo
-  lda call_ret_hi,x
-  sta script_ptr_hi
+  dec <call_depth
+  ldx <call_depth
+  lda <call_ret_lo,x
+  sta <script_ptr_lo
+  lda <call_ret_hi,x
+  sta <script_ptr_hi
   jmp script_run
 
 script_finish:
   lda #0
-  sta script_active
+  sta <script_active
   jmp box_close             ; which returns to gameplay once the box is down
 
 script_op_say:
@@ -263,9 +263,9 @@ script_op_say:
   lda [script_ptr_lo],y     ; string id
   tay
   lda str_ptr_lo,y
-  sta msg_ptr_lo
+  sta <msg_ptr_lo
   lda str_ptr_hi,y
-  sta msg_ptr_hi
+  sta <msg_ptr_hi
   lda #2
   jsr script_skip
   jmp box_say               ; suspends here; the box drives the rest
@@ -361,15 +361,15 @@ script_next2:
 script_op_warp:
   ldy #1
   lda [script_ptr_lo],y
-  sta warp_scr
+  sta <warp_scr
   iny
   lda [script_ptr_lo],y
-  sta warp_x
+  sta <warp_x
   iny
   lda [script_ptr_lo],y
-  sta warp_y
+  sta <warp_y
   lda #1
-  sta warp_ready
+  sta <warp_ready
   jmp script_finish
 
   .if BATTLE_ENABLED
@@ -394,7 +394,7 @@ script_op_join:
   cmp #NO_MEMBER
   beq script_op_join_dangling
   and #$7F
-  sta bt_arg
+  sta <bt_arg
   cmp #PARTY_SIZE
   bcs script_op_join_unname
   tax
@@ -408,7 +408,7 @@ script_op_join:
   jmp script_op_join_call
 script_op_join_dangling:
   lda #NO_MEMBER
-  sta bt_arg
+  sta <bt_arg
 script_op_join_unname:
   lda #0
   sta nm_named
@@ -429,7 +429,7 @@ script_op_join_plain:
   .if !JOIN_NAMING_ENABLED
 script_op_join:
   jsr script_arg
-  sta bt_arg
+  sta <bt_arg
   lda #BE_JOIN
   jsr call_battle
   jmp script_next2
@@ -467,9 +467,9 @@ script_op_battle_slot:
   cpx #MAX_MONSTERS
   bne script_op_battle_slot
   lda #NO_ENTITY
-  sta bt_from_ent            ; not a touch or a step -- nothing to despawn
+  sta <bt_from_ent            ; not a touch or a step -- nothing to despawn
   lda #0
-  sta bt_esc                 ; a scripted fight cannot be run from
+  sta <bt_esc                 ; a scripted fight cannot be run from
   lda #1+MAX_MONSTERS
   jsr script_skip
   jmp battle_begin
@@ -513,7 +513,7 @@ script_op_damage:
   .endif
   .if !BATTLE_ENABLED
   jsr lose_hearts
-  lda player_hp
+  lda <player_hp
   bne script_op_damage_done
   jmp player_died
   .endif
@@ -542,13 +542,13 @@ script_op_damage_done:
 script_op_move:
   ldy #1
   lda [script_ptr_lo],y
-  sta mv_who
+  sta <mv_who
   iny
   lda [script_ptr_lo],y
-  sta mv_dir
+  sta <mv_dir
   iny
   lda [script_ptr_lo],y
-  sta mv_left
+  sta <mv_left
   lda #4
   jsr script_skip
   ; MOVE_SELF with nobody to be: defense in depth rather than a live case --
@@ -558,18 +558,18 @@ script_op_move:
   ; would read and *write* a byte 240 past the end of the entity arrays. Stop
   ; the event, the same answer script_run_bad gives an opcode it cannot run and
   ; script_op_give gives a NO_ITEM operand.
-  lda mv_who
+  lda <mv_who
   bne script_op_move_ready
-  lda talk_ent
+  lda <talk_ent
   cmp #NO_ENTITY
   bne script_op_move_ready
   jmp script_finish
 script_op_move_ready:
-  lda mv_left
+  lda <mv_left
   bne script_op_move_wait
   jmp script_run
 script_op_move_wait:
-  lda mv_dir
+  lda <mv_dir
   jmp move_face             ; sets the mover's facing and returns to our caller,
                             ; which suspends the script exactly as box_say does
   .endif
@@ -587,12 +587,12 @@ script_op_move_wait:
 script_op_turn:
   ldy #1
   lda [script_ptr_lo],y
-  sta mv_who
+  sta <mv_who
   ; MOVE_SELF with nobody to be: the identical defense-in-depth
   ; script_op_move's own comment explains, applied to the same write
   ; (move_face's ent_dir,x) reached through the same mv_who/talk_ent path.
   bne script_op_turn_ready
-  lda talk_ent
+  lda <talk_ent
   cmp #NO_ENTITY
   bne script_op_turn_ready
   jmp script_finish
@@ -618,10 +618,10 @@ script_op_turn_ready:
 script_op_wait:
   ldy #1
   lda [script_ptr_lo],y
-  sta wt_left
+  sta <wt_left
   lda #2
   jsr script_skip
-  lda wt_left
+  lda <wt_left
   bne script_op_wait_suspend
   jmp script_run
 script_op_wait_suspend:
@@ -651,7 +651,7 @@ script_op_shake:
   ldy #1
   lda [script_ptr_lo],y
   beq script_op_shake_done
-  sta shake_left
+  sta <shake_left
 script_op_shake_done:
   jmp script_next2
   .endif
@@ -677,12 +677,12 @@ script_op_shake_done:
 ; same insurance those two commands already buy.
   .if VISIBLE_ENABLED
 script_op_visible:
-  lda talk_ent
+  lda <talk_ent
   cmp #NO_ENTITY
   bne script_op_visible_ready
   jmp script_finish
 script_op_visible_ready:
-  ldx talk_ent
+  ldx <talk_ent
   ldy #1
   lda [script_ptr_lo],y      ; state: 0 = hidden, 1 = shown
   bne script_op_visible_shown
@@ -749,19 +749,19 @@ script_op_fade:
 script_op_fade_dir_in:
   lda #0
 script_op_fade_target:
-  cmp fade_step
+  cmp <fade_step
   beq script_op_fade_skip    ; already there: nothing to wait for, the
                               ; identical reason a Move of distance 0 does
                               ; not suspend
-  sta fade_target
+  sta <fade_target
   lda #FADE_STEP_FRAMES
-  sta fade_left               ; only touched once a real ramp is committed to
+  sta <fade_left               ; only touched once a real ramp is committed to
 script_op_fade_skip:
   lda #2
   jsr script_skip             ; past the opcode and the operand -- reached
                               ; only after every decision above is already
                               ; final and, if a ramp was armed, already in RAM
-  lda fade_left
+  lda <fade_left
   bne script_op_fade_suspend
   jmp script_run              ; FADE_NONE or already-there: carry straight on
 script_op_fade_suspend:
@@ -789,7 +789,7 @@ script_op_fade_suspend:
   .if FLASH_ENABLED
 script_op_flash:
   lda #FLASH_ARM_VALUE
-  sta flash_left
+  sta <flash_left
   lda #1
   jsr script_skip              ; past the opcode alone -- no operand to skip
   jmp script_run
@@ -873,17 +873,17 @@ script_op_sfx_go:
   lda [script_ptr_lo],y       ; sfx id
   tay
   lda sfx_ptr_table_lo,y
-  sta ptr_lo
+  sta <ptr_lo
   lda sfx_ptr_table_hi,y
-  sta ptr_hi
+  sta <ptr_hi
   ldy #0
   lda [ptr_lo],y               ; the compiled stream's own leading volume byte
   sta sfx_volume
-  lda ptr_lo
+  lda <ptr_lo
   clc
   adc #1
   sta sfx_ptr_lo
-  lda ptr_hi
+  lda <ptr_hi
   adc #0
   sta sfx_ptr_hi
   lda #0
@@ -944,33 +944,33 @@ script_op_sfx_go:
 script_op_call:
   ldy #1
   lda [script_ptr_lo],y      ; which common event's table slot, or NO_COMMON_EVENT
-  sta tmp
+  sta <tmp
   lda #2
   jsr script_skip            ; past the opcode and the argument -- the return
                               ; point, saved below before script_ptr moves again
-  lda tmp
+  lda <tmp
   cmp #NO_COMMON_EVENT
   bne script_op_call_depth   ; a real slot: fall through to the depth check
   jmp script_finish          ; the sentinel: stop, the same answer script_run_bad
                               ; and script_op_give/take give an operand naming nothing
 script_op_call_depth:
-  lda call_depth
+  lda <call_depth
   cmp #CALL_STACK_DEPTH
   bcc script_op_call_push    ; below the bound: push the return point and call
   jmp script_run             ; at the bound already: skip the call, keep going
                               ; -- script_run is well past a branch's reach
 script_op_call_push:
-  ldx call_depth
-  lda script_ptr_lo
-  sta call_ret_lo,x
-  lda script_ptr_hi
-  sta call_ret_hi,x
-  inc call_depth
-  ldy tmp
+  ldx <call_depth
+  lda <script_ptr_lo
+  sta <call_ret_lo,x
+  lda <script_ptr_hi
+  sta <call_ret_hi,x
+  inc <call_depth
+  ldy <tmp
   lda event_ptr_lo,y
-  sta script_ptr_lo
+  sta <script_ptr_lo
   lda event_ptr_hi,y
-  sta script_ptr_hi
+  sta <script_ptr_hi
   jmp script_page
 
 ; --------------------------------------------------------------- branching
@@ -1054,7 +1054,7 @@ script_choose:
   clc
   adc #2                    ; the opcode, the count, and one string id per option
   jsr script_skip
-  ldx choice_sel
+  ldx <choice_sel
   beq script_choose_enter
 ; Two steps per record rather than one sum, for the reason script_page's skip
 ; takes two: a record may be 255 bytes long, and adding its length byte to that
@@ -1101,10 +1101,10 @@ script_op_addvar:
 
 script_op_subvar:
   jsr script_var
-  sta script_val
+  sta <script_val
   lda variables,x
   sec
-  sbc script_val
+  sbc <script_val
   bcs script_var_store
   lda #0
 script_var_store:
@@ -1131,7 +1131,7 @@ script_arg:
 
 ; The player dismissed the message: pick up where the event left off.
 script_resume:
-  lda script_active
+  lda <script_active
   beq script_resume_done    ; inverted into a jmp: the command loop is well past
   jmp script_run            ; a branch's 128-byte reach
 script_resume_done:
@@ -1140,10 +1140,10 @@ script_resume_done:
 ; A = bytes to advance script_ptr by.
 script_skip:
   clc
-  adc script_ptr_lo
-  sta script_ptr_lo
+  adc <script_ptr_lo
+  sta <script_ptr_lo
   bcc script_skip_done
-  inc script_ptr_hi
+  inc <script_ptr_hi
 script_skip_done:
   rts
 
@@ -1211,12 +1211,12 @@ script_cond_fail:
 script_cond_var:
   ldy #2
   lda [script_ptr_lo],y     ; the value the page compares against
-  sta script_val
+  sta <script_val
   ldy #1
   lda [script_ptr_lo],y     ; which variable
   tax
   lda variables,x
-  cmp script_val
+  cmp <script_val
   rts
 
 ; ------------------------------------------------------------- the switches
@@ -1230,52 +1230,52 @@ script_cond_var:
 ; A = switch number. Splits it into switch_idx (which byte) and switch_bit
 ; (which bit). Preserves X and Y.
 switch_split:
-  sta switch_idx
+  sta <switch_idx
   and #7
-  sta switch_bit
+  sta <switch_bit
   lda #1
 switch_split_shift:
-  dec switch_bit
+  dec <switch_bit
   bmi switch_split_done
   asl a
   jmp switch_split_shift
 switch_split_done:
-  sta switch_bit
-  lsr switch_idx
-  lsr switch_idx
-  lsr switch_idx
+  sta <switch_bit
+  lsr <switch_idx
+  lsr <switch_idx
+  lsr <switch_idx
   rts
 
 ; A = switch number. Returns A = 0 (Z set) when the switch is off. Y is put back
 ; before the AND, so the flags describe the switch and not the reload.
 switch_test:
-  sty switch_y
+  sty <switch_y
   jsr switch_split
-  ldy switch_idx
+  ldy <switch_idx
   lda switches,y
-  ldy switch_y
-  and switch_bit
+  ldy <switch_y
+  and <switch_bit
   rts
 
 switch_set:
-  sty switch_y
+  sty <switch_y
   jsr switch_split
-  ldy switch_idx
+  ldy <switch_idx
   lda switches,y
-  ora switch_bit
+  ora <switch_bit
   sta switches,y
-  ldy switch_y
+  ldy <switch_y
   rts
 
 switch_clear:
-  sty switch_y
+  sty <switch_y
   jsr switch_split
-  ldy switch_idx
-  lda switch_bit
+  ldy <switch_idx
+  lda <switch_bit
   eor #$FF
   and switches,y
   sta switches,y
-  ldy switch_y
+  ldy <switch_y
   rts
 
   .if BOUND_TILE_ENABLED
@@ -1291,7 +1291,7 @@ switch_clear:
 flip_cell_blocked:
   cpy #BOUND_BOX_FIRST_CELL
   bcc fcb_free
-  lda box_state
+  lda <box_state
   beq fcb_free                ; BOX_CLOSED (0): the box owns nothing right now
   sec
   rts
@@ -1392,11 +1392,11 @@ qf_dedupe_done:
 tile_switch_changed:
   sta bnd_switch
   jsr rebuild_bound_cache
-  ldy flat_screen
+  ldy <flat_screen
   lda screen_bound_lo,y
-  sta bdptr_lo
+  sta <bdptr_lo
   lda screen_bound_hi,y
-  sta bdptr_hi
+  sta <bdptr_hi
   ldy #0
   lda [bdptr_lo],y
   beq tsc_done
@@ -1431,13 +1431,13 @@ tsc_done:
 ; A = item id under ITEMS_ENABLED, the legacy backing-actor id otherwise.
 ; Returns A = 0 (Z set) when the bag holds one.
 has_item:
-  sta script_tmp
-  ldx inv_count
+  sta <script_tmp
+  ldx <inv_count
   beq has_item_no
 has_item_loop:
   dex
   lda inv_items,x
-  cmp script_tmp
+  cmp <script_tmp
   beq has_item_yes
   cpx #0
   bne has_item_loop

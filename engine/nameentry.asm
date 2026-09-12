@@ -38,9 +38,9 @@ nameentry_begin:
 
 nameentry_seed_len:
   lda #LOW(pc_name_ram)
-  sta ptr_lo
+  sta <ptr_lo
   lda #HIGH(pc_name_ram)
-  sta ptr_hi
+  sta <ptr_hi
   lda nm_target
   jsr nameentry_stride
   ldy #NAME_LEN-1
@@ -67,11 +67,11 @@ nameentry_stride:
   beq nameentry_stride_done
 nameentry_stride_loop:
   clc
-  lda ptr_lo
+  lda <ptr_lo
   adc #NAME_LEN
-  sta ptr_lo
+  sta <ptr_lo
   bcc nameentry_stride_next
-  inc ptr_hi
+  inc <ptr_hi
 nameentry_stride_next:
   dex
   bne nameentry_stride_loop
@@ -80,30 +80,30 @@ nameentry_stride_done:
   rts
 
 nameentry_tick:
-  lda box_row
+  lda <box_row
   cmp #BOX_TEXT_ROWS
   bcs nameentry_tick_idle
   jmp nameentry_raise_step
 nameentry_tick_idle:
-  lda pad_new
+  lda <pad_new
   and #BTN_LEFT
   beq nameentry_tick_right
   jsr nameentry_move_left
   jmp nameentry_tick_done
 nameentry_tick_right:
-  lda pad_new
+  lda <pad_new
   and #BTN_RIGHT
   beq nameentry_tick_up
   jsr nameentry_move_right
   jmp nameentry_tick_done
 nameentry_tick_up:
-  lda pad_new
+  lda <pad_new
   and #BTN_UP
   beq nameentry_tick_down
   jsr nameentry_move_up
   jmp nameentry_tick_done
 nameentry_tick_down:
-  lda pad_new
+  lda <pad_new
   and #BTN_DOWN
   beq nameentry_tick_done
   jsr nameentry_move_down
@@ -112,7 +112,7 @@ nameentry_tick_done:
 
 nameentry_raise_step:
   jsr box_text_row_addr
-  lda box_row
+  lda <box_row
   bne nameentry_raise_not0
   jsr nameentry_draw_preview
   jmp nameentry_raise_next
@@ -132,18 +132,18 @@ nameentry_raise_ctrl:
   jsr nameentry_draw_ctrl
 nameentry_raise_next:
   jsr vram_end
-  inc box_row
+  inc <box_row
   rts
 
 nameentry_draw_letters:
-  sta bt_tmp
+  sta <bt_tmp
   lda #TILE_SPACE
   jsr vram_push
   ldx #0
 nameentry_letters_loop:
   txa
   clc
-  adc bt_tmp
+  adc <bt_tmp
   jsr vram_push
   inx
   cpx #26
@@ -155,9 +155,9 @@ nameentry_draw_preview:
   lda #TILE_SPACE
   jsr vram_push
   lda #LOW(pc_name_ram)
-  sta ptr_lo
+  sta <ptr_lo
   lda #HIGH(pc_name_ram)
-  sta ptr_hi
+  sta <ptr_hi
   lda nm_target
   jsr nameentry_stride
 nameentry_preview_loop:
@@ -216,7 +216,7 @@ nameentry_queue_cell:
   tay
   lda #BOX_ADDR_HI
   jsr vram_open
-  lda bt_tmp
+  lda <bt_tmp
   jsr vram_push
   jmp vram_end
 
@@ -234,7 +234,7 @@ nameentry_select:
   cmp #NAME_LEN
   bcs nameentry_select_done
   jsr nameentry_current_tile
-  sta bt_tmp
+  sta <bt_tmp
   jsr nameentry_write_cell
   jmp nameentry_select_done
 nameentry_select_ctrl:
@@ -244,7 +244,7 @@ nameentry_select_ctrl:
   jmp nameentry_select_done
 nameentry_select_end:
   lda #BOX_NAMEDONE
-  sta box_state
+  sta <box_state
 nameentry_select_done:
   rts
 
@@ -271,13 +271,13 @@ nameentry_ct_go:
 
 nameentry_write_cell:
   lda #LOW(pc_name_ram)
-  sta ptr_lo
+  sta <ptr_lo
   lda #HIGH(pc_name_ram)
-  sta ptr_hi
+  sta <ptr_hi
   lda nm_target
   jsr nameentry_stride
   ldy nm_len
-  lda bt_tmp
+  lda <bt_tmp
   sta [ptr_lo],y
   jsr nameentry_queue_cell
   inc nm_len
@@ -288,15 +288,15 @@ nameentry_delete:
   beq nameentry_delete_done
   dec nm_len
   lda #LOW(pc_name_ram)
-  sta ptr_lo
+  sta <ptr_lo
   lda #HIGH(pc_name_ram)
-  sta ptr_hi
+  sta <ptr_hi
   lda nm_target
   jsr nameentry_stride
   ldy nm_len
   lda #TILE_SPACE
   sta [ptr_lo],y
-  sta bt_tmp
+  sta <bt_tmp
   jsr nameentry_queue_cell
 nameentry_delete_done:
   rts
@@ -405,7 +405,7 @@ nameentry_snap_del:
   rts
 
 draw_nameentry_cursor:
-  ldy oam_idx
+  ldy <oam_idx
   beq draw_ne_cursor_done
   lda nm_row
   clc
@@ -426,7 +426,7 @@ draw_nameentry_cursor:
   jsr nameentry_cursor_x
   sta OAM,y
   iny
-  sty oam_idx
+  sty <oam_idx
 draw_ne_cursor_done:
   rts
 

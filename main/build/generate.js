@@ -675,7 +675,12 @@ const TITLE_PROMPT_ROW = 19;
 // three are (title off, sample's own default item kept and its 79-byte
 // ITEM_KERNEL_ALLOWANCE + ITEM_EFFECT_KERNEL_ALLOWANCE_BY_GAME_TYPE.action
 // subtracted back out): 6031 - 79 = 5952.
-export const BASE_KERNEL_CODE_BYTES_BY_MAPPER = { 0: 5952, 1: 6022, 4: 6039, 30: 6217 };
+// Re-measured for the zero-page kernel diet (docs/design-kernel-diet.md):
+// every board's own kernel-lo code shrank once every bare zero-page operand
+// carries nesasm's `<` zero-page-addressing prefix instead of assembling
+// absolute. Historical figures above stay as history; current measured
+// values: { 0: 5367, 1: 5428, 4: 5449, 30: 5617 }.
+export const BASE_KERNEL_CODE_BYTES_BY_MAPPER = { 0: 5367, 1: 5428, 4: 5449, 30: 5617 };
 const FALLBACK_BASE_KERNEL_CODE_BYTES = Math.max(...Object.values(BASE_KERNEL_CODE_BYTES_BY_MAPPER));
 export function baseKernelCodeBytes(mapper) {
   return BASE_KERNEL_CODE_BYTES_BY_MAPPER[mapper.id] ?? FALLBACK_BASE_KERNEL_CODE_BYTES;
@@ -741,7 +746,12 @@ export function baseKernelCodeBytes(mapper) {
 // caller that does not pre-check, which is the same "a newly implemented
 // board with no measured entry must fail loudly" rule the Save table's own
 // comment argues, now actually enforced rather than assumed unreachable.
-export const BATTLE_KERNEL_ALLOWANCE_BY_MAPPER = { 1: 253, 4: 265, 30: 253 };
+// Re-measured for the zero-page kernel diet (docs/design-kernel-diet.md):
+// { 1: 229, 4: 240, 30: 229 } -- MMC3's own gap over the other two boards is
+// 11 bytes now, 12 before the diet (240-229=11, was 265-253=12): still
+// traces to the identical split_select `.if BATTLE_ENABLED` arm; the arm
+// itself shrank by one byte under the diet, not the gap's own cause.
+export const BATTLE_KERNEL_ALLOWANCE_BY_MAPPER = { 1: 229, 4: 240, 30: 229 };
 
 /** Whether `battleKernelAllowance` has a real, measured entry for `mapper`. */
 export function hasBattleKernelAllowance(mapper) {
@@ -763,7 +773,8 @@ export function battleKernelAllowance(mapper) {
   return BATTLE_KERNEL_ALLOWANCE_BY_MAPPER[mapper.id];
 }
 
-export const TITLE_KERNEL_ALLOWANCE_BY_MAPPER = { 30: 212, 1: 212, 4: 224 };
+// Re-measured for the zero-page kernel diet: { 30: 200, 1: 200, 4: 211 }.
+export const TITLE_KERNEL_ALLOWANCE_BY_MAPPER = { 30: 200, 1: 200, 4: 211 };
 const FALLBACK_TITLE_KERNEL_ALLOWANCE = Math.max(...Object.values(TITLE_KERNEL_ALLOWANCE_BY_MAPPER));
 export function titleKernelAllowance(mapper) {
   return TITLE_KERNEL_ALLOWANCE_BY_MAPPER[mapper.id] ?? FALLBACK_TITLE_KERNEL_ALLOWANCE;
@@ -791,10 +802,14 @@ export function titleKernelAllowance(mapper) {
 // action-side 686 plus SAVE_BATTLE_KERNEL_ALLOWANCE's 41, below) against
 // roughly 1500 bytes of headroom before KERNEL_SLACK and the fallback base
 // even enter the picture.
-export const SAVE_KERNEL_ALLOWANCE_BY_MAPPER = { 1: 514, 4: 519, 30: 686 };
+// Re-measured for the zero-page kernel diet: { 1: 470, 4: 475, 30: 640 }.
+export const SAVE_KERNEL_ALLOWANCE_BY_MAPPER = { 1: 470, 4: 475, 30: 640 };
 // The RPG-only supplement the paragraph above this table derives -- flat,
 // not *_BY_MAPPER, and why, is argued there in full; this is only the
-// declaration, kept next to the table it supplements.
+// declaration, kept next to the table it supplements. Unchanged by the
+// zero-page kernel diet -- save_check_valid's own `.if BATTLE_ENABLED`
+// range-check block measures identically before and after (observed, not
+// yet traced to a specific reason why it has no eligible bare operand).
 export const SAVE_BATTLE_KERNEL_ALLOWANCE = 41;
 // move_tick/move_get_x/y/move_set_x/y/move_speed/move_animate only --
 // move_face moved out to its own FACE_KERNEL_ALLOWANCE below (item 6's
@@ -806,7 +821,10 @@ export const SAVE_BATTLE_KERNEL_ALLOWANCE = 41;
 // on MMC1, MMC3 and UNROM 512, which is what justifies each staying a flat
 // constant rather than *_BY_MAPPER the way SAVE_KERNEL_ALLOWANCE_BY_MAPPER
 // has to be -- nothing any of these four gate on branches by board.
-export const MOVE_KERNEL_ALLOWANCE = 379;
+// Re-measured for the zero-page kernel diet: 324 (down from 379) -- the
+// FACE/MOVE split above it derived from the identical MOVE+TURN+FACE(once)
+// triangulation this figure was originally split out of.
+export const MOVE_KERNEL_ALLOWANCE = 324;
 // move_face alone (engine/entities.asm), gated on FACE_ENABLED
 // (projectUsesFace = projectUsesMove || projectUsesTurn) -- charged once
 // whenever either Move or Turn is live, never twice when both are. Measured
@@ -815,16 +833,23 @@ export const MOVE_KERNEL_ALLOWANCE = 379;
 // Move and Turn live measures exactly MOVE_KERNEL_ALLOWANCE +
 // TURN_KERNEL_ALLOWANCE + this (379 + 35 + 16 = 430) -- not 430 + 16 again --
 // confirming the routine is charged once, not twice, when both commands are.
-export const FACE_KERNEL_ALLOWANCE = 16;
+// Re-measured for the zero-page kernel diet: 13 (down from 16), re-derived
+// from the same MOVE+TURN+FACE(once) triangulation as MOVE_KERNEL_ALLOWANCE.
+export const FACE_KERNEL_ALLOWANCE = 13;
 // script_op_turn plus its own dispatch-chain entry in script_run
 // (engine/script.asm) -- not move_face, which is FACE_KERNEL_ALLOWANCE.
-export const TURN_KERNEL_ALLOWANCE = 35;
+// Re-measured for the zero-page kernel diet: 33 (down from 35).
+export const TURN_KERNEL_ALLOWANCE = 33;
 // script_op_wait, wait_tick, both dispatch-chain entries (script_run and
 // ui_tick), and script_start's own wt_left clear. Additive with
 // TURN_KERNEL_ALLOWANCE exactly (35 + 48 = 99, the real measured delta of a
 // build with both live and neither Move), because Wait touches no code Turn
-// or Face also touch.
-export const WAIT_KERNEL_ALLOWANCE = 48;
+// or Face also touch. Re-measured for the zero-page kernel diet: 43 (down
+// from 48) -- wt_left (engine/constants.asm) is an expression-chained name
+// the diet's own expanded resolver reaches; TURN+WAIT together now measure
+// 33 + 43 = 76, still additive, still real (the identical delta a build with
+// both live and neither Move reports).
+export const WAIT_KERNEL_ALLOWANCE = 43;
 // The shake block inside nmi_scroll (engine/boot.asm) plus script_op_shake
 // and its dispatch-chain entry in script_run (engine/script.asm) plus the
 // shake_left clear in vram_reset (engine/text.asm). Flat across boards --
@@ -837,7 +862,10 @@ export const WAIT_KERNEL_ALLOWANCE = 48;
 // before script_op_shake's own zero-operand check (a Shake of 0 must not
 // stomp a shake already running, the identical "zero means nothing happens"
 // rule Wait/Heal/Damage already hold to) added its own beq and label.
-export const SHAKE_KERNEL_ALLOWANCE = 65;
+// Re-measured for the zero-page kernel diet: 60 (down from 65) --
+// shake_left (engine/constants.asm) is an expression-chained name the
+// diet's own expanded resolver reaches.
+export const SHAKE_KERNEL_ALLOWANCE = 60;
 // script_op_visible and its dispatch-chain entry in script_run
 // (engine/script.asm) plus the ENT_HIDDEN check in draw_entities
 // (engine/entities.asm). Flat across boards for the identical reason
@@ -845,7 +873,8 @@ export const SHAKE_KERNEL_ALLOWANCE = 65;
 // other mapper-specific fact -- measured identically (49) on UNROM 512,
 // MMC1 and MMC3. Shares no dependent term with anything else -- no other
 // command calls script_op_visible or reads ENT_HIDDEN.
-export const VISIBLE_KERNEL_ALLOWANCE = 49;
+// Re-measured for the zero-page kernel diet: 47 (down from 49).
+export const VISIBLE_KERNEL_ALLOWANCE = 47;
 // script_op_fade and fade_tick only (engine/script.asm, engine/entities.asm)
 // -- NOT fade_apply_palette or the NMI PPUADDR fix, which moved to
 // PALETTE_FX_KERNEL_ALLOWANCE below when Flash's own design (handoff-flash/
@@ -864,7 +893,12 @@ export const VISIBLE_KERNEL_ALLOWANCE = 49;
 // three real measured deltas (Fade live/Flash absent; Flash live/Fade
 // absent; both live) per test/unit/kernelbytes.test.js's own three-equation
 // procedure -- see PALETTE_FX_KERNEL_ALLOWANCE/FLASH_KERNEL_ALLOWANCE below.
-export const FADE_KERNEL_ALLOWANCE = 146;
+// Re-measured for the zero-page kernel diet: FADE_KERNEL_ALLOWANCE +
+// PALETTE_FX_KERNEL_ALLOWANCE together now equal 176 (down from 201) --
+// fade_step/fade_target/fade_left/fade_reload (engine/constants.asm) are
+// all expression-chained names the diet's own expanded resolver reaches.
+// Re-solved from the same three-equation procedure: 124 (down from 146).
+export const FADE_KERNEL_ALLOWANCE = 124;
 // fade_apply_palette's own body plus the NMI PPUADDR fix (engine/
 // entities.asm, engine/boot.asm) -- one physical copy, gated on the derived
 // PALETTE_FX_ENABLED (projectUsesPaletteFx = projectUsesFade ||
@@ -877,7 +911,10 @@ export const FADE_KERNEL_ALLOWANCE = 146;
 // measured deltas (Fade alone, Flash alone, both together) --
 // test/unit/kernelbytes.test.js asserts the exported constant equals the
 // solved value, not merely that some triple satisfying the equations exists.
-export const PALETTE_FX_KERNEL_ALLOWANCE = 55;
+// Re-measured for the zero-page kernel diet: 52 (down from 55), re-solved
+// from the same three-equation procedure as FADE_KERNEL_ALLOWANCE/
+// FLASH_KERNEL_ALLOWANCE.
+export const PALETTE_FX_KERNEL_ALLOWANCE = 52;
 // script_op_flash, flash_tick, flash_apply_on, the main_loop hook, and
 // vram_reset's own cancellation glue (engine/script.asm, engine/entities.asm,
 // engine/boot.asm, engine/text.asm) -- NOT fade_apply_palette or the NMI
@@ -888,8 +925,15 @@ export const PALETTE_FX_KERNEL_ALLOWANCE = 55;
 // mapper-specific fact. Solved, not summed from two independently-measured
 // "Flash alone" figures for the combined build -- FLASH_KERNEL_ALLOWANCE =
 // D_flash - PALETTE_FX_KERNEL_ALLOWANCE, the same three-equation procedure.
-export const FLASH_KERNEL_ALLOWANCE = 98;
-export const SPLIT_KERNEL_ALLOWANCE = 165;
+// Re-measured for the zero-page kernel diet: 91 (down from 98), re-solved
+// from the same three-equation procedure as FADE_KERNEL_ALLOWANCE/
+// PALETTE_FX_KERNEL_ALLOWANCE.
+export const FLASH_KERNEL_ALLOWANCE = 91;
+// Re-measured for the zero-page kernel diet: 151 (down from 165) --
+// split_lock (engine/constants.asm) is an expression-chained name the
+// diet's own expanded resolver reaches, on top of every literal-equate site
+// already inside split.asm's own font-bank-split machinery.
+export const SPLIT_KERNEL_ALLOWANCE = 151;
 // Phase 4b: item_metasprite's own draw_item_icon routine (gated on
 // ITEMS_ENABLED as a whole routine, not just its callers -- see
 // engine/ui.asm) plus add_item's centralized NO_ITEM guard, gated by
@@ -902,6 +946,18 @@ export const SPLIT_KERNEL_ALLOWANCE = 165;
 // own combinatorial test, which diffs a with-items build against an
 // items-stripped one and asserts equality, the same shape every other
 // allowance here is measured by -- rather than trusted from the estimate.
+// Unchanged by the zero-page kernel diet: the combined ITEM_KERNEL_ALLOWANCE
+// + ITEM_EFFECT_KERNEL_ALLOWANCE_BY_GAME_TYPE delta did shrink (see that
+// table's own comment below), but no project toggle isolates this term from
+// that one -- both are charged together the instant `usesItems` is true,
+// regardless of any item's own effect kind. A direct instruction-by-
+// instruction accounting confirms all of the shrinkage really does belong
+// to the other term, not a guess pending a future isolation: this one is
+// exactly `add_item`'s own gated `cmp #NO_ITEM` / `beq` (4 bytes,
+// engine/ui.asm) plus `draw_item_icon` in full (12 bytes) = 16, unaffected
+// by the diet because neither instruction touches a zero-page-eligible
+// operand -- `item_metasprite,y` is `assets/items.inc` table data, well
+// above $100.
 export const ITEM_KERNEL_ALLOWANCE = 16;
 // use_item_apply and the ITEMS_ENABLED half of use_item (engine/ui.asm) --
 // round 2's own cost, kept as its own named constant separate from
@@ -927,7 +983,11 @@ export const ITEM_KERNEL_ALLOWANCE = 16;
 // was discovered instead of charging every board the worst one's figure --
 // asserted exactly (not merely "covers enough"), the same discipline
 // every other allowance here is held to.
-export const ITEM_EFFECT_KERNEL_ALLOWANCE_BY_GAME_TYPE = { action: 63, rpg: 60 };
+// Re-measured for the zero-page kernel diet: { action: 61, rpg: 59 } -- the
+// combined ITEM_KERNEL_ALLOWANCE+this delta dropped from 79 to 77 (action)
+// and from 76 to 75 (rpg); see ITEM_KERNEL_ALLOWANCE's own comment above for
+// why the entire drop lands here rather than being split between the two.
+export const ITEM_EFFECT_KERNEL_ALLOWANCE_BY_GAME_TYPE = { action: 61, rpg: 59 };
 const FALLBACK_ITEM_EFFECT_KERNEL_ALLOWANCE = Math.max(...Object.values(ITEM_EFFECT_KERNEL_ALLOWANCE_BY_GAME_TYPE));
 // A project not yet through normalizeProject (the app is holding one mid-edit,
 // same reasoning kernelCodeBytes' own callers already have to live with
@@ -975,7 +1035,11 @@ export function itemEffectKernelAllowance(project) {
 // inside the outer `.if STING_ENABLED` block, so none of it is AUDIO_FX_KERNEL_ALLOWANCE's shared
 // force_trig code. Re-measured Sting-only delta: 187 on every RPG-capable board (was 175); 187 - 15
 // (AUDIO_FX_KERNEL_ALLOWANCE, unmoved) = 172.
-export const STING_KERNEL_ALLOWANCE_STANDALONE = 172;
+// Re-measured for the zero-page kernel diet: 166 (down from 172), re-derived
+// as the Sting-alone combined delta (181) minus AUDIO_FX_KERNEL_ALLOWANCE
+// (15, unchanged) -- see that constant's own comment for why it is
+// unaffected.
+export const STING_KERNEL_ALLOWANCE_STANDALONE = 166;
 // force_trig's own check-and-self-clear inside music_channel (engine/music.asm) -- shared by
 // Sting and SFX, gated AUDIO_FX_ENABLED rather than STING_ENABLED alone. Already fully paid by
 // STING_KERNEL_ALLOWANCE_STANDALONE + this term summing to the historical 175 for a Sting-only
@@ -985,6 +1049,13 @@ export const STING_KERNEL_ALLOWANCE_STANDALONE = 172;
 // (Sting-only, Sfx-only or both -- identical either way, confirming the block assembles once
 // regardless of which flag turned AUDIO_FX_ENABLED on) -- 28 - 13 = 15, matching design-sfx.md's
 // own estimate exactly, on every RPG-capable board.
+// Unchanged by the zero-page kernel diet: re-measured directly via the
+// identical music_channel..music_channel_tick label-span-growth isolation
+// (test/unit/kernelbytes.test.js) this constant was originally split from,
+// and the growth is still exactly 15 -- the force_trig check-and-clear
+// block itself indexes force_trig,x ($543) and mus_trig,x ($358), both well
+// above $100, never a bare zero-page operand, so the diet has nothing to
+// shrink there.
 export const AUDIO_FX_KERNEL_ALLOWANCE = 15;
 // sting_restore_silence's own ownership guard (ldy sfx_state / bne skip, engine/music.asm) -- a
 // genuine Sting x SFX interaction term, not SFX-standalone code: the guard is nested inside the
@@ -993,6 +1064,11 @@ export const AUDIO_FX_KERNEL_ALLOWANCE = 15;
 // Measured directly: nesasm's own symbol table gives the sting_restore_silence..sting_tick label
 // span as 17 bytes on a Sting-only build and 22 on a both-live build -- 22 - 17 = 5, matching
 // design-sfx.md's own estimate exactly, on every RPG-capable board.
+// Unchanged by the zero-page kernel diet: re-measured directly via the
+// identical sting_restore_silence..sting_tick span-growth isolation, still
+// exactly 5 -- the nested-ownership guard indexes data, not a bare
+// zero-page operand, the identical reason AUDIO_FX_KERNEL_ALLOWANCE above
+// is unaffected.
 export const STING_SFX_INTERACTION_ALLOWANCE = 5;
 // The restructured music_tick, script_op_sfx (including its sfx_state/$4015 writes), the
 // two-phase sfx_channel_tick/sfx_read_event/sfx_apply, the script_run dispatch entry, music_stop's
@@ -1006,7 +1082,10 @@ export const STING_SFX_INTERACTION_ALLOWANCE = 5;
 // 310 - AUDIO_FX_KERNEL_ALLOWANCE (15) = 295. Consistent with the both-live measurement too: 160 +
 // 295 + 15 + 5 = 475, exactly the measured both-live delta on every board. The 12-byte gap from the
 // design's own 283 is a real, declared deviation -- see sfx-implementation-report.md.
-export const SFX_KERNEL_ALLOWANCE_STANDALONE = 295;
+// Re-measured for the zero-page kernel diet: 283 (down from 295), re-derived
+// as the Sfx-alone combined delta (298) minus AUDIO_FX_KERNEL_ALLOWANCE (15,
+// unchanged).
+export const SFX_KERNEL_ALLOWANCE_STANDALONE = 283;
 // design-tile.md §8: bound_tile_lookup, rebuild_bound_cache, the
 // script_op_set/script_op_clear hooks, tile_switch_changed,
 // queue_or_defer_flip (with dedupe), flip_cell_blocked, flip_emit/
@@ -1038,7 +1117,8 @@ export const SFX_KERNEL_ALLOWANCE_STANDALONE = 295;
 // 218 + 23 = 388 exactly, with nothing left unaccounted -- see
 // handoff-tile/tile-code-fixes1-report.md for the full symbol-span trace
 // this correction came from.
-export const BOUND_TILE_KERNEL_ALLOWANCE = 388;
+// Re-measured for the zero-page kernel diet: 381 (down from 388).
+export const BOUND_TILE_KERNEL_ALLOWANCE = 381;
 
 // In-game party-member naming (docs/design-name-entry.md §4/§11). Six
 // kernel-lo terms. NAME_ENTRY_KERNEL_ALLOWANCE, JOIN_NAMING_KERNEL_ALLOWANCE,
@@ -1069,15 +1149,22 @@ export const BOUND_TILE_KERNEL_ALLOWANCE = 388;
 // is v13's own shim rewrite landing higher than the pre-implementation
 // static count (95) predicted -- the five shims are a genuinely new
 // kernel-lo block neither v12 nor the static estimate had to include.
-export const NAME_ENTRY_KERNEL_ALLOWANCE = 115;
+// Re-measured for the zero-page kernel diet: 107 (down from 115), from the
+// identical triangulation (N = (off->join) + (off->hero) - (off->both)).
+export const NAME_ENTRY_KERNEL_ALLOWANCE = 107;
 // script_op_join's own growth (engine/script.asm) -- RPG-only, since Join is
 // itself an RPG-only command.
-export const JOIN_NAMING_KERNEL_ALLOWANCE = 64;
+// Re-measured for the zero-page kernel diet: 63 (down from 64).
+export const JOIN_NAMING_KERNEL_ALLOWANCE = 63;
 // start_game's own naming arm (engine/title.asm) -- both game types.
+// Unchanged by the zero-page kernel diet: start_game's own naming arm
+// measures identically (10) in both scopes -- observed, not yet traced to a
+// specific reason.
 export const HERO_NAMING_KERNEL_ALLOWANCE = 10;
 // reset's own titleless naming arm (engine/boot.asm) -- only paid when there
 // is no title screen to reach start_game through instead.
-export const HERO_NAMING_TITLELESS_KERNEL_ALLOWANCE = 15;
+// Re-measured for the zero-page kernel diet: 14 (down from 15).
+export const HERO_NAMING_TITLELESS_KERNEL_ALLOWANCE = 14;
 // The naming grid's own body (engine/nameentry.asm, nameentry_begin through
 // draw_nameentry_cursor) when it has nowhere else to live: on an RPG this is
 // banked (NAME_ENTRY_BATTLE_ALLOWANCE, battletables.js), charged here only
@@ -1092,7 +1179,19 @@ export const HERO_NAMING_TITLELESS_KERNEL_ALLOWANCE = 15;
 // hero_name_default's own 10-byte table lives BEFORE reset, so it was never
 // part of this delta to begin with; P1-2's own fix, below, is what corrects
 // this term from a wrong 699 that had subtracted 21 instead of 11).
-export const NAME_ENTRY_ACTION_KERNEL_ALLOWANCE = 709;
+// Re-measured for the zero-page kernel diet: 683 (down from 709), in
+// dependency order -- the raw combined delta this triangulates from
+// (hero(N+H+ACTION+DEFAULT), action placement) is 811 post-diet, DOWN from
+// 845 pre-diet (709+115+10+11), not unchanged by the diet itself: what is
+// unchanged is that the same 811 falls out of both the titled and the
+// titleless measurement paths, which is what the triangulation test's own
+// two-path agreement checks. Re-deriving with the diet's own corrected N
+// (107) and H (10) gives 811 - 107 - 10 - 11 = 683, confirmed by a real
+// rerun of this file's own triangulation test rather than computed by
+// hand -- this is the exact stale-subtrahend trap docs/design-kernel-diet.md's
+// own §4/§15 predicted (675 + (115-107) = 683) resolved for real, not
+// merely assumed.
+export const NAME_ENTRY_ACTION_KERNEL_ALLOWANCE = 683;
 // init_session's own 11-byte action-side copy loop that reads
 // hero_name_default (engine/combat.asm) -- the loop ALONE, not the table:
 // hero_name_default's own 10-byte .db table is charged in kernelTableBytes's
@@ -1106,6 +1205,10 @@ export const NAME_ENTRY_ACTION_KERNEL_ALLOWANCE = 709;
 // sta abs,y(3) + dey(1) + bpl(2) = 11), not measured in isolation -- see
 // NAME_ENTRY_ACTION_KERNEL_ALLOWANCE's own comment for why this phase has
 // no build-time lever that could isolate it from that term.
+// Unchanged by the zero-page kernel diet, and provably so, not merely
+// observed: five unbranching instructions (ldy #imm/lda abs,y/sta abs,y/
+// dey/bpl), none a bare zero-page operand -- hero_name_default,y is
+// indexed-absolute, not zero page, so `<` never applies to it at all.
 export const HERO_DEFAULT_KERNEL_ALLOWANCE = 11;
 // The Say token's own text_type_step arm (engine/text.asm, docs/
 // design-name-entry.md §9a) -- gated on NAME_TOKEN_ENABLED alone, no
@@ -1114,7 +1217,8 @@ export const HERO_DEFAULT_KERNEL_ALLOWANCE = 11;
 // MMC1/MMC3/UNROM 512 (test/unit/kernelbytes.test.js's own withNameToken
 // isolation, sample-rpg) -- text_type_step has no SPLIT_ENABLED arm of its
 // own, so this stays flat rather than becoming a *_BY_MAPPER table.
-export const NAME_TOKEN_KERNEL_ALLOWANCE = 58;
+// Re-measured for the zero-page kernel diet: 55 (down from 58).
+export const NAME_TOKEN_KERNEL_ALLOWANCE = 55;
 
 export const KERNEL_SLACK = 20;
 

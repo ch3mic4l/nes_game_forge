@@ -450,14 +450,15 @@ test('stepOut() bailing early on a breakpoint mid-battle_begin is treated as inc
   const emulator = loadedEmulator(romPath, build);
   bootPast(emulator);
 
-  // battle_begin's own bytes: `lda #ST_BATTLE` (2 bytes) then `sta game_state`
-  // (3 bytes, absolute -- confirmed by reading the assembled ROM directly,
-  // not assumed) = 5. This breakpoint lands exactly after game_state already
-  // reads ST_BATTLE and before anything else in battle_begin's body has run
-  // -- the specific case a bare "game_state === ST_BATTLE" check cannot tell
-  // apart from a real completion, and the reason stepOut() needs its own
-  // result checked instead.
-  emulator.breakpoints.add(build.symbols.battle_begin + 5);
+  // battle_begin's own bytes: `lda #ST_BATTLE` (2 bytes) then `sta <game_state`
+  // (2 bytes, zero-page -- the zero-page kernel diet, docs/design-kernel-diet.md,
+  // confirmed by reading the assembled ROM directly, not assumed) = 4. This
+  // breakpoint lands exactly after game_state already reads ST_BATTLE and
+  // before anything else in battle_begin's body has run -- the specific case
+  // a bare "game_state === ST_BATTLE" check cannot tell apart from a real
+  // completion, and the reason stepOut() needs its own result checked
+  // instead.
+  emulator.breakpoints.add(build.symbols.battle_begin + 4);
   try {
     assert.throws(() => applyBattleTest(emulator, pad4([3]), build), /battle_begin did not run to completion/);
   } finally {

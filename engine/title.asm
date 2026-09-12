@@ -14,7 +14,7 @@
 ; and while rendering is still off. Draws nothing unless the game is on its title.
 title_draw:
   .if TITLE_ENABLED
-  lda game_state
+  lda <game_state
   cmp #ST_TITLE
   bne title_draw_done
   ; The two bands the text lands in are forced to background palette 0 first.
@@ -103,17 +103,17 @@ title_pick_prompt:
   jsr save_check_valid
   beq title_pick_prompt_continue
   lda #LOW(sys_press_start)
-  sta title_prompt_lo
+  sta <title_prompt_lo
   lda #HIGH(sys_press_start)
-  sta title_prompt_hi
+  sta <title_prompt_hi
   lda #HIGH(TITLE_PROMPT_ADDR)
   ldx #LOW(TITLE_PROMPT_ADDR)
   rts
 title_pick_prompt_continue:
   lda #LOW(sys_press_start_continue)
-  sta title_prompt_lo
+  sta <title_prompt_lo
   lda #HIGH(sys_press_start_continue)
-  sta title_prompt_hi
+  sta <title_prompt_hi
   lda #HIGH(TITLE_PROMPT_CONTINUE_ADDR)
   ldx #LOW(TITLE_PROMPT_CONTINUE_ADDR)
   rts
@@ -141,22 +141,22 @@ title_clear_attr_loop:
 ; The prompt blinks, which is the whole of the title screen's animation. It goes
 ; through the NMI queue like everything else drawn while the picture is on.
 title_tick:
-  lda frame_cnt
+  lda <frame_cnt
   and #$1F
   bne title_tick_input      ; only on the frame the phase changes
-  lda frame_cnt
+  lda <frame_cnt
   and #$20
   beq title_tick_hide
   lda #0
   .if SAVE_ENABLED
-  sta ui_slot                ; title_prompt_write needs A free for its own
+  sta <ui_slot                ; title_prompt_write needs A free for its own
   .endif                     ; jsr to title_pick_prompt -- see below
   jsr title_prompt_write
   jmp title_tick_input
 title_tick_hide:
   lda #1
   .if SAVE_ENABLED
-  sta ui_slot
+  sta <ui_slot
   .endif
   jsr title_prompt_write
 
@@ -165,7 +165,7 @@ title_tick_input:
   ; get past because of a rebinding would be a trap. Every other button goes
   ; through the Controller Forge's title row -- dispatch_input runs in every
   ; state, and do_action knows what a bound `confirm` means here.
-  lda pad_new
+  lda <pad_new
   and #BTN_START
   beq title_tick_done
   jmp start_game
@@ -189,7 +189,7 @@ title_prompt_write:
 title_prompt_loop:
   lda [title_prompt_lo],y
   beq title_prompt_done
-  ldx ui_slot
+  ldx <ui_slot
   beq title_prompt_push
   lda #TILE_SPACE
 title_prompt_push:
@@ -205,7 +205,7 @@ title_prompt_done:
 ; indirection and no register-juggling to reach vram_open's own A/Y -- the
 ; caller hands the flag straight through in A.
 title_prompt_write:
-  sta ui_slot
+  sta <ui_slot
   lda #HIGH(TITLE_PROMPT_ADDR)
   ldy #LOW(TITLE_PROMPT_ADDR)
   jsr vram_open
@@ -213,7 +213,7 @@ title_prompt_write:
 title_prompt_loop:
   lda sys_press_start,y
   beq title_prompt_done
-  ldx ui_slot
+  ldx <ui_slot
   beq title_prompt_push
   lda #TILE_SPACE
 title_prompt_push:
@@ -233,20 +233,20 @@ title_prompt_done:
 start_game:
   jsr init_session
   lda #NO_ENTITY
-  sta talk_ent
+  sta <talk_ent
   lda #START_SCREEN
-  sta flat_screen
+  sta <flat_screen
   lda #START_X
-  sta player_x
+  sta <player_x
   lda #START_Y
-  sta player_y
+  sta <player_y
   lda #DIR_DOWN
-  sta player_dir
+  sta <player_dir
   lda #0
-  sta box_state
+  sta <box_state
   .if HERO_NAMING_ENABLED
   lda #ST_NAMEENTRY
-  sta game_state
+  sta <game_state
   jsr redraw_screen
   lda #0
   jsr name_begin              ; shim (engine/ui.asm) -- A = party slot 0
@@ -255,7 +255,7 @@ start_game:
   .endif
   .if !HERO_NAMING_ENABLED
   lda #ST_GAMEPLAY
-  sta game_state
+  sta <game_state
   jmp redraw_screen
   .endif
 
@@ -266,13 +266,13 @@ restart_game:
   .if TITLE_ENABLED
   jsr init_session
   lda #NO_ENTITY
-  sta talk_ent
+  sta <talk_ent
   lda #TITLE_FLAT_SCREEN
-  sta flat_screen
+  sta <flat_screen
   lda #0
-  sta box_state
+  sta <box_state
   lda #ST_TITLE
-  sta game_state
+  sta <game_state
   jmp redraw_screen
   .endif
   .if !TITLE_ENABLED

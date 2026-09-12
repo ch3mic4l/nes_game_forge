@@ -1075,113 +1075,100 @@ Current allowance figures (`main/build/generate.js` unless noted; each named cod
 delta `kernelbytes.test.js` measures exactly, on every board named — the base, the derived table
 sizes, the route zero-cost proof and `KERNEL_SLACK` itself are each checked their own way, below):
 
-- `BASE_KERNEL_CODE_BYTES_BY_MAPPER = { 0 (NROM): 5952, 1 (MMC1): 6022, 4 (MMC3): 6039, 30 (UNROM
-  512): 6217 }` — action-side, nothing conditional on, falling back to the largest of the four for
+- `BASE_KERNEL_CODE_BYTES_BY_MAPPER = { 0 (NROM): 5367, 1 (MMC1): 5428, 4 (MMC3): 5449, 30 (UNROM
+  512): 5617 }` — action-side, nothing conditional on, falling back to the largest of the four for
   an unmeasured mapper (`docs/kernel-base-overcharge-report.md`; the NROM entry was added measuring
-  in-game naming's own isolation deltas, below). `BATTLE_KERNEL_ALLOWANCE_BY_MAPPER = { 1: 253,
-  4: 265, 30: 253 }` is its RPG-only supplement — no fallback, deliberately, the same reason Save's
-  table has none; MMC3's extra 12 bytes are `split_select`'s second `.if BATTLE_ENABLED` arm
+  in-game naming's own isolation deltas, below). Re-measured by the zero-page kernel diet
+  (`docs/design-kernel-diet.md`), which prefixes `<` on every bare zero-page operand in `engine/*.asm`
+  so nesasm emits 2-byte zero-page encodings instead of 3-byte absolute ones — every figure in this
+  section moved, none of the mechanisms did. `BATTLE_KERNEL_ALLOWANCE_BY_MAPPER = { 1: 229,
+  4: 240, 30: 229 }` is its RPG-only supplement — no fallback, deliberately, the same reason Save's
+  table has none; MMC3's extra 11 bytes are `split_select`'s second `.if BATTLE_ENABLED` arm
   (`engine/split.asm`). Its gate, `battleEnabledFor` (`codeRegions(...).length > 0`), does not
   imply `rpgCapable(mapper)`, so `battleKernelAllowance(mapper)` THROWS on a missing entry rather
   than `undefined`-then-`NaN`; `checkCapacity` pre-checks the project's own mapper and reports a
   named problem, and `switchableMappers` filters out any candidate that would hit the throw.
-- `TITLE_KERNEL_ALLOWANCE_BY_MAPPER = { 30: 212, 1: 212, 4: 224 }`, charged whenever a project has
-  a title screen — MMC3's extra 12 bytes are its own `.if TITLE_ENABLED` branch in `split_select`.
+- `TITLE_KERNEL_ALLOWANCE_BY_MAPPER = { 30: 200, 1: 200, 4: 211 }`, charged whenever a project has
+  a title screen — MMC3's extra 11 bytes are its own `.if TITLE_ENABLED` branch in `split_select`.
   A live `Save` command pays this term even with `titleMap` currently unset, because
   `validateProject` requires a title wherever Save is live.
-- `SAVE_KERNEL_ALLOWANCE_BY_MAPPER = { 1: 514, 4: 519, 30: 686 }` plus flat
+- `SAVE_KERNEL_ALLOWANCE_BY_MAPPER = { 1: 470, 4: 475, 30: 640 }` plus flat
   `SAVE_BATTLE_KERNEL_ALLOWANCE = 41` — two terms: the table is the action-side base every
   save-capable board pays (UNROM 512 costs more — flash-rewrite, not battery-WRAM); the flat
   RPG-only supplement is `save_check_valid`'s own `.if BATTLE_ENABLED` range-check block plus
-  `BE_RESTORE`'s call site, summing to RPG totals `{1: 555, 4: 560, 30: 727}`, flat because the gap
+  `BE_RESTORE`'s call site, summing to RPG totals `{1: 511, 4: 516, 30: 681}`, flat because the gap
   measures identical on all three boards. Its gate is NOT `gameType === 'rpg'`: `kernelCodeBytes`
   recomputes `codeRegions(...).length > 0`, the real predicate `BATTLE_ENABLED` is emitted from,
   strictly narrower on a CHR-RAM board whose tileset payloads have claimed every switchable region.
-- `MOVE_KERNEL_ALLOWANCE = 379` plus `FACE_KERNEL_ALLOWANCE = 16` (the facing routine Move and
-  `Turn` share, charged once) — 395 total for a Move-only project.
-- `SPLIT_KERNEL_ALLOWANCE = 165`, MMC3-only, charged whenever `projectUsesText` is true on that
+- `MOVE_KERNEL_ALLOWANCE = 324` plus `FACE_KERNEL_ALLOWANCE = 13` (the facing routine Move and
+  `Turn` share, charged once) — 337 total for a Move-only project.
+- `SPLIT_KERNEL_ALLOWANCE = 151`, MMC3-only, charged whenever `projectUsesText` is true on that
   board — including a project whose only live event is a Move or a Sting, not just dialogue.
   Pinned by a text-on/off isolation on a fresh action project plus a zero-delta control on every
   non-`scanlineIrq` board, not an old residual guess — `docs/split-lock-not-pinned-report.md` §8.
-- `ITEM_KERNEL_ALLOWANCE = 16` (flat) plus 3 `kernelTableBytes` bytes *per item*
-  (`item_metasprite`, `item_effect_kind`, `item_effect_amount`, one byte each in
-  `assets/items.inc`); `ITEM_EFFECT_KERNEL_ALLOWANCE_BY_GAME_TYPE = { action: 63, rpg: 60 }` for
-  `use_item_apply`.
+- `ITEM_KERNEL_ALLOWANCE = 16` (flat, unmoved by the kernel diet — no toggle isolates it from the
+  effect term below, so the diet's own savings landed entirely on the latter) plus 3
+  `kernelTableBytes` bytes *per item* (`item_metasprite`, `item_effect_kind`, `item_effect_amount`,
+  one byte each in `assets/items.inc`); `ITEM_EFFECT_KERNEL_ALLOWANCE_BY_GAME_TYPE = { action: 61,
+  rpg: 59 }` for `use_item_apply`.
 - In-game party-member naming, seven kernel-lo terms plus two banked ones — flat across every board
   on both game types, nesasm-measured by triangulating real deltas rather than guessed
-  (`docs/design-name-entry.md` §4/§11): `NAME_ENTRY_KERNEL_ALLOWANCE = 115` (the hook glue every
+  (`docs/design-name-entry.md` §4/§11): `NAME_ENTRY_KERNEL_ALLOWANCE = 107` (the hook glue every
   naming feature shares — `nm_acted`, the `do_action`/`draw_ui`/`ui_tick`/`text_tick` naming arms,
   and the five `name_begin`/`tick`/`draw`/`select`/`cancel` shims above), charged whenever hero or
-  Join naming is live; `JOIN_NAMING_KERNEL_ALLOWANCE = 64` (`script_op_join`'s own growth,
-  RPG-only); `HERO_NAMING_KERNEL_ALLOWANCE = 10` (`start_game`'s naming arm, both game types);
-  `HERO_NAMING_TITLELESS_KERNEL_ALLOWANCE = 15` (`reset`'s own titleless naming arm, paid only with
-  no title screen to reach `start_game` through — `sample-rpg`, as shipped, pays this);
-  `NAME_ENTRY_ACTION_KERNEL_ALLOWANCE = 709` (the grid's own body, `engine/nameentry.asm`, when an
-  action project has no battle bank to place it in — banked instead, `NAME_ENTRY_BATTLE_ALLOWANCE
-  = 765`, on an RPG: the grid's own body plus `battle_entry`'s own dispatch growth, not the grid
-  alone); `HERO_DEFAULT_KERNEL_ALLOWANCE = 11` (`init_session`'s copy loop alone — the
-  10-byte `hero_name_default` table itself is a `kernelTableBytes` term instead, since it assembles
-  before `reset`); `NAME_TOKEN_KERNEL_ALLOWANCE = 58` (`text_type_name`, flat on every board and
-  both game types, gated on `NAME_TOKEN_ENABLED` alone); banked `NAME_COPY_BATTLE_ALLOWANCE = 47`
-  (`party_join`'s own name-copy loop, gated on `projectNeedsNameSeed` — a token-only RPG pays this
-  even with no `renamable` party member, since the token still needs a seeded name to read).
-- `STING_KERNEL_ALLOWANCE_STANDALONE = 172` (+12: `sting_snapshot`/`restore` now also shadow
-  `mus_inst_base`) plus the shared `AUDIO_FX_KERNEL_ALLOWANCE = 15` (paid by either);
-  `SFX_KERNEL_ALLOWANCE_STANDALONE = 295`; `STING_SFX_INTERACTION_ALLOWANCE = 5` more when both
-  live. Aggregate: Sting-only 187, Sfx-only 310, both live 487.
-- `BOUND_TILE_KERNEL_ALLOWANCE = 388`, plus a 30-byte fixed table (`bound_row_lo`/`bound_row_hi`)
+  Join naming is live; `JOIN_NAMING_KERNEL_ALLOWANCE = 63` (`script_op_join`'s own growth,
+  RPG-only); `HERO_NAMING_KERNEL_ALLOWANCE = 10` (`start_game`'s naming arm, both game types,
+  unmoved by the diet); `HERO_NAMING_TITLELESS_KERNEL_ALLOWANCE = 14` (`reset`'s own titleless
+  naming arm, paid only with no title screen to reach `start_game` through — `sample-rpg`, as
+  shipped, pays this); `NAME_ENTRY_ACTION_KERNEL_ALLOWANCE = 683` (the grid's own body,
+  `engine/nameentry.asm`, when an action project has no battle bank to place it in — banked
+  instead, `NAME_ENTRY_BATTLE_ALLOWANCE = 737`, on an RPG: the grid's own body plus
+  `battle_entry`'s own dispatch growth, not the grid alone); `HERO_DEFAULT_KERNEL_ALLOWANCE = 11`
+  (`init_session`'s copy loop alone, unmoved by the diet — the 10-byte `hero_name_default` table
+  itself is a `kernelTableBytes` term instead, since it assembles before `reset`);
+  `NAME_TOKEN_KERNEL_ALLOWANCE = 55` (`text_type_name`, flat on every board and both game types,
+  gated on `NAME_TOKEN_ENABLED` alone); banked `NAME_COPY_BATTLE_ALLOWANCE = 43` (`party_join`'s
+  own name-copy loop, gated on `projectNeedsNameSeed` — a token-only RPG pays this even with no
+  `renamable` party member, since the token still needs a seeded name to read).
+- `STING_KERNEL_ALLOWANCE_STANDALONE = 166` (`sting_snapshot`/`restore` shadow `mus_inst_base`)
+  plus the shared `AUDIO_FX_KERNEL_ALLOWANCE = 15` (paid by either, unmoved by the diet);
+  `SFX_KERNEL_ALLOWANCE_STANDALONE = 283`; `STING_SFX_INTERACTION_ALLOWANCE = 5` more when both
+  live (unmoved). Aggregate: Sting-only 181, Sfx-only 298, both live 469.
+- `BOUND_TILE_KERNEL_ALLOWANCE = 381`, plus a 30-byte fixed table (`bound_row_lo`/`bound_row_hi`)
   and 2 `kernelTableBytes` bytes per screen (`screen_bound_lo`/`hi`) — the first allowance whose
   removal `kernelShortfallAdvice` has to price by full kernel-lo occupancy (code and table
   together), the rule above.
-- `TURN_KERNEL_ALLOWANCE = 35` composes with `FACE_KERNEL_ALLOWANCE` above (Move+Turn cost
-  379+35+16=430, facing routine charged once); `WAIT_KERNEL_ALLOWANCE = 48` shares no other code
-  with Turn (35+16+48=99 for Turn+Wait, no Move). `SHAKE_KERNEL_ALLOWANCE = 65` and
-  `VISIBLE_KERNEL_ALLOWANCE = 49` (Show/Hide) are each flat, with no dependent term.
-- `FADE_KERNEL_ALLOWANCE = 146` and `FLASH_KERNEL_ALLOWANCE = 98` name each routine's own cost;
-  both share `PALETTE_FX_KERNEL_ALLOWANCE = 55` (`fade_apply_palette` plus the NMI PPUADDR fix,
-  charged once whether Fade or Flash or both are live) — 201 total for Fade-only, the unchanged
-  shipped figure from before the two were split apart.
+- `TURN_KERNEL_ALLOWANCE = 33` composes with `FACE_KERNEL_ALLOWANCE` above (Move+Turn cost
+  324+33+13=370, facing routine charged once); `WAIT_KERNEL_ALLOWANCE = 43` shares no other code
+  with Turn (33+13+43=89 for Turn+Wait, no Move). `SHAKE_KERNEL_ALLOWANCE = 60` and
+  `VISIBLE_KERNEL_ALLOWANCE = 47` (Show/Hide) are each flat, with no dependent term.
+- `FADE_KERNEL_ALLOWANCE = 124` and `FLASH_KERNEL_ALLOWANCE = 91` name each routine's own cost;
+  both share `PALETTE_FX_KERNEL_ALLOWANCE = 52` (`fade_apply_palette` plus the NMI PPUADDR fix,
+  charged once whether Fade or Flash or both are live) — 176 total for Fade-only.
 - A `route` (`docs/design-routes.md`) compiles to the identical bytes as hand-chaining
   the same `move`/`turn`/`wait` commands — zero additional kernel cost, proven by
   `test/unit/routes.test.js`'s byte-identical-ROM comparison and confirmed with a cross-tree
   SHA-256 gate.
-- `KERNEL_SLACK = 20` — the floor `assertCovers` (`kernelbytes.test.js`) holds every measured
-  margin to (`margin >= KERNEL_SLACK`): a correctly measured base should leave *exactly* this once
-  every conditional term is counted. It also enforces a ceiling at `KERNEL_SLACK * 2` — a drift
-  alarm, not spare headroom: too wide a margin means some term stopped tracking the engine closely.
+- `KERNEL_SLACK = 20` (unmoved by the diet) — the floor `assertCovers` (`kernelbytes.test.js`)
+  holds every measured margin to (`margin >= KERNEL_SLACK`): a correctly measured base should leave
+  *exactly* this once every conditional term is counted. It also enforces a ceiling at
+  `KERNEL_SLACK * 2` — a drift alarm, not spare headroom: too wide a margin means some term stopped
+  tracking the engine closely.
 
-**Documented limitations** — combinations `checkCapacity` refuses today, each backed by its own
-named test in `kernelbytes.test.js` rather than a silent gap; every figure below is a naming-off
-figure. Most of the tests behind them strip naming explicitly (`project.party[0].renamable =
-false`, and `party[1]` where present), inline or through the shared `assertSfxRefusal` helper.
-Two do not: the `Sting`-deepens-it row's own test ("`sample-rpg` with Save, Move (no item) and a
-live Sting does not build on MMC3") runs with `sample-rpg`'s naming left live — 391 bytes short
-there, not the 198 pinned below — and asserts only the advice-message shape, never a byte figure,
-so the 198 is pinned by this file, not computed by that test. The Sfx-only fits control
-("`sample-rpg` with its one live item and a live SFX and nothing else still builds on MMC3," one
-of the "two fits controls" below) also leaves naming live; naming only adds cost, so "still builds"
-holds *a fortiori* with it stripped too.
-
-- MMC3, `Save` + `Move` + one live item: 90 bytes short (fits on MMC1 with 121 free).
-- UNROM 512, `Save` + `Move`, no item: 167 bytes short — unrelated to items; dropping one does not
-  close this the way it closes MMC3's.
-- MMC3, `Save` + `Move`, no item: 11 bytes short alone. A live `Sting` deepens it to 198 short,
-  closed by `Move` (395) or `Save` (560). A live bound tile deepens it to 431 short instead, where
-  `Move` (395) alone is 36 short — only `Save` (560) closes it.
-- The same bound tile (marginal cost `388 + 30 + 2 × screen count` = 420 bytes, this ledger's
-  largest single feature cost) also reopens MMC1's `Save` + `Move` + one live item row, to 299
-  short (was 121 free).
-- A live `Sfx` command adds five more refusal rows: MMC1 Save+Move+item (189 short); MMC1
-  Save+Move-no-item (110 short); MMC3 ALL-7-verbs+Move+item-no-Save (112 short); UNROM 512
-  Save-only-with-item (161 short); UNROM 512 ALL-7-verbs+Move+item-no-Save (113 short); and it
-  reopens MMC1's Save+Move+item row a second way, to 366 short (Sting live).
-- Two fits controls confirm the boundary is real: `sample-rpg`'s one live item plus a live Sfx
-  alone still builds on MMC3 (the tightest board), and the seven item-6 commands plus that item
-  with Sting *and* Sfx both live still builds on MMC3 too — no Save/Move/title live on that row.
-
-`kernelShortfallAdvice` names a real, buildable fix for every refusal above (which live command(s)
-to drop, or occasionally a different mapper) — a refusal here is `checkCapacity` doing its job on a
-bank that is, by design, allowed to run out, not a bug in the mechanism.
+**Documented limitations**: the zero-page kernel diet (`docs/design-kernel-diet.md`) closed every
+combination this section used to list as a refusal — MMC3 Save+Move+item, UNROM 512 Save+Move,
+MMC3 Save+Move with a live Sting/bound tile, MMC1's own bound-tile reopening, and all six of the
+SFX-driven refusal rows all build now, each confirmed by a real `buildProject` run, not only
+`checkCapacity`. `kernelbytes.test.js`'s own former documented-limitation tests are now "builds"
+assertions; each carries a padded sibling (extra filler content, unrelated to the feature under
+test) that reproduces the original refusal and its advice message, so the advice path itself — and
+`kernelShortfallAdvice`'s own real, buildable fix for whichever board or command combination
+genuinely does overflow — stays under test. See `docs/design-kernel-diet.md` §4b for the full
+before/after ledger of every row this closed. Two controls in the same file were never refusals to
+begin with, and stay that way: `sample-rpg`'s one live item plus a live SFX alone building on MMC3
+(the tightest board), and the seven item-6 commands plus that item with Sting *and* Sfx both live
+also building on MMC3, no Save/Move/title live on that row — both confirm the boundary is real by
+showing where it does *not* bite, not by naming a former refusal that closed.
 
 ### The Code Forge
 
@@ -1196,7 +1183,14 @@ Three rules hold it together:
 - **The engine folder is the single writer of what a stock file is.** `engineFileNames()` in
   `generate.js` is that list; `checkCapacity` uses it to refuse a user file that would collide
   with an engine name, and to *warn* rather than fail on an override naming a file this version
-  does not ship — a project saved by a later version still has to build.
+  does not ship — a project saved by a later version still has to build. An override of
+  `constants.asm` that moves a symbol out of zero page (or in) must keep every stock consumer that
+  reads it with a `<` prefix in agreement — override those consumers too, or nesasm reports
+  `Incorrect zero page address!` at assemble time for any surviving `<name` whose `name` no longer
+  resolves below `$100`. The zero-page diet's own guard test (`test/unit/zeropage.test.js`,
+  `docs/design-kernel-diet.md` §3) never catches this ahead of time: it audits the stock repository
+  source, by design, not a project's own build-time copy, so a mismatched override is caught by the
+  assembler, not by this guard.
 - **Overrides are copied in at their own name and their own line numbers.** The generator writes
   the stock engine in first and the overrides over the top, so nesasm's `file:line` refers to
   exactly what the editor shows, and the Build panel's error line can open it. `build/` is
@@ -1308,23 +1302,24 @@ check exists to prevent, one layer out. `battletables.js` imports only from `sha
 that way; `renderer/forges/build/build.js` importing it is the same move
 `renderer/forges/sound/sound.js` already makes with `main/build/songcompile.js`.
 
-`BASE_BATTLE_CODE_BYTES_BY_MAPPER` is per board (UNROM 512 4220, MMC1 4220, MMC3 4266), measured
+`BASE_BATTLE_CODE_BYTES_BY_MAPPER` is per board (UNROM 512 3783, MMC1 3783, MMC3 3823), measured
 directly rather than reconstructed from a running fix history — the same mistake
-`BASE_KERNEL_CODE_BYTES_BY_MAPPER` had to undo. `battle_status_dispatch`'s `combatant_alive` guard
-and `bt_wipe_mask`'s staggered-death queueing (see that array's own comment in
-`engine/constants.asm`) are folded into this figure. MMC3's extra 46 bytes are the `.if
-SPLIT_ENABLED` blocks inside the region itself (`battle.asm`'s split arm, `battleui.asm`'s sprite
-targeting cursor), and need **no** separate conditional term the way `SPLIT_KERNEL_ALLOWANCE` does:
-this region exists only for an RPG, so there is no MMC3-RPG-without-the-split to overcharge. Every
-board that can reach the region has its own measured entry, because `codeRegions()` hands back
-nothing unless the project is an RPG and needs `rpgCapable()`; the fallback in
-`baseBattleCodeBytes` stands in for no real board and exists only so an unmeasured one cannot make
-the budget `NaN` and silently stop the refusal firing. `test/unit/bankedbytes.test.js` asserts it is
-unreachable.
+`BASE_KERNEL_CODE_BYTES_BY_MAPPER` had to undo, and re-measured again by the zero-page kernel diet
+(`docs/design-kernel-diet.md`) for the same `<`-prefix reason every other figure in this file moved.
+`battle_status_dispatch`'s `combatant_alive` guard and `bt_wipe_mask`'s staggered-death queueing
+(see that array's own comment in `engine/constants.asm`) are folded into this figure. MMC3's extra
+40 bytes are the `.if SPLIT_ENABLED` blocks inside the region itself (`battle.asm`'s split arm,
+`battleui.asm`'s sprite targeting cursor), and need **no** separate conditional term the way
+`SPLIT_KERNEL_ALLOWANCE` does: this region exists only for an RPG, so there is no MMC3-RPG-without-
+the-split to overcharge. Every board that can reach the region has its own measured entry, because
+`codeRegions()` hands back nothing unless the project is an RPG and needs `rpgCapable()`; the
+fallback in `baseBattleCodeBytes` stands in for no real board and exists only so an unmeasured one
+cannot make the budget `NaN` and silently stop the refusal firing. `test/unit/bankedbytes.test.js`
+asserts it is unreachable.
 
 **A different board can help here, which is the opposite of how it first reads.** The ceiling never
 moves — every RPG-capable board gives this region the same 8 KB — but the stock code inside it does,
-and MMC3 spends 46 more bytes of it. So an MMC3 project over by 1 to 46 bytes fits unchanged on MMC1
+and MMC3 spends 40 more bytes of it. So an MMC3 project over by 1 to 40 bytes fits unchanged on MMC1
 or UNROM 512, and a flat "changing mapper does not help" is false advice in exactly the band where
 advice matters. `battleShortfallAdvice` *computes* the claim and only makes it when no candidate
 fits.
@@ -1474,8 +1469,8 @@ item-conditional and both flat across boards** (see "The kernel budget" above fo
 its own name only once real variance is measured). `ITEM_EFFECT_KERNEL_ALLOWANCE_BY_GAME_TYPE`
 (`main/build/generate.js`) is `use_item_apply`'s own kernel-lo cost, split by *game type* rather
 than by board — because `BATTLE_ENABLED` picks a genuinely differently-sized damage branch
-(`party_damage` vs `lose_hearts`), not because any board differs: 63 bytes for an action project,
-60 for an RPG. `ITEM_LIST_FILTER_BATTLE_ALLOWANCE` (17 bytes, `main/build/battletables.js`) is
+(`party_damage` vs `lose_hearts`), not because any board differs: 61 bytes for an action project,
+59 for an RPG. `ITEM_LIST_FILTER_BATTLE_ALLOWANCE` (17 bytes, `main/build/battletables.js`) is
 `build_item_list`'s and `battle_menu_item`'s combined cost in the banked battle-code region,
 uniform across all three RPG-capable boards since neither routine branches on `SPLIT_ENABLED` — its
 own line beside the base rather than folded into it, avoiding the mistake
@@ -1485,7 +1480,7 @@ cost only `ITEMS_ENABLED` builds actually pay.
 **A monster's own spell list** replaces the old single `mon_spell` byte with an N-stride table,
 gated on `projectUsesMonsterSpellList` (some actor's `battle.spellIds` has two or more entries — a
 one-entry list assembles byte-identical to before, why all six fixtures stay off; `sample-rpg`'s
-Snake carries exactly one). `MONSTER_SPELL_LIST_BATTLE_ALLOWANCE` (153, flat on every RPG-capable
+Snake carries exactly one). `MONSTER_SPELL_LIST_BATTLE_ALLOWANCE` (125, flat on every RPG-capable
 board, `main/build/battletables.js`) is the banked-region cost; the table keeps the old `mon_spell`
 label so the off-path `monster_turn` body (`engine/battleturn.asm`) reads it unchanged. On,
 `monster_turn` picks uniformly among whichever entries the monster can afford, duplicates as

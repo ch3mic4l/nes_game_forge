@@ -72,7 +72,7 @@ split_prog_start:
 ; and the store of split_mode is the only word it says to the interrupt side.
 split_select:
   .if TITLE_ENABLED
-  lda game_state
+  lda <game_state
   cmp #ST_TITLE
   bne split_select_not_title
   lda #SPL_TITLE
@@ -80,7 +80,7 @@ split_select:
 split_select_not_title:
   .endif
   .if BATTLE_ENABLED
-  lda game_state
+  lda <game_state
   cmp #ST_BATTLE
   bne split_select_not_battle
   lda #SPL_BATTLE
@@ -88,11 +88,11 @@ split_select_not_title:
 split_select_not_battle:
   .endif
   lda #SPL_OFF
-  ldx box_state               ; any box state but CLOSED is showing glyphs
+  ldx <box_state               ; any box state but CLOSED is showing glyphs
   beq split_select_store
   lda #SPL_BOX
 split_select_store:
-  sta split_mode
+  sta <split_mode
   rts
 
 ; Called from NMI with A, X and Y already saved, during vblank: put the live
@@ -110,22 +110,22 @@ split_select_store:
 ; costs at most one frame of the wrong CHR bank on the split and never a
 ; corrupted PRG or CHR register.
 split_arm:
-  lda split_lock
+  lda <split_lock
   beq split_arm_unlocked
   rts
 split_arm_unlocked:
   lda #1                      ; select R1, the $0800-$0FFF background slot
   sta $8000
-  lda chr_r1
+  lda <chr_r1
   sta $8001
-  lda split_mode
+  lda <split_mode
   bne split_arm_go
   sta $E000                   ; no split this frame: disable and acknowledge
   rts
 split_arm_go:
   tax
   lda split_prog_start-1,x    ; modes are 1-based
-  sta split_idx
+  sta <split_idx
   tax
   lda split_progs,x
   sta $C000                   ; the latch...
@@ -140,22 +140,22 @@ irq:
   sta $E000                   ; ack + disable while we work; value irrelevant
   txa
   pha
-  ldx split_idx
+  ldx <split_idx
   lda split_progs+1,x         ; the entry's target
   beq irq_art
   lda #FONT_R1
   jmp irq_switch
 irq_art:
-  lda chr_r1
+  lda <chr_r1
 irq_switch:
-  sta irq_tmp
+  sta <irq_tmp
   lda #1
   sta $8000
-  lda irq_tmp
+  lda <irq_tmp
   sta $8001
   inx
   inx
-  stx split_idx
+  stx <split_idx
   lda split_progs,x           ; the next entry's count, or 0 = done this frame
   beq irq_done
   sta $C000

@@ -19,17 +19,17 @@ battle_round_clear:
   bne battle_round_clear
 
   lda #0
-  sta bt_tmp2               ; how many are in the list so far
-  sta bt_cmd                ; the combatant being considered
+  sta <bt_tmp2               ; how many are in the list so far
+  sta <bt_cmd                ; the combatant being considered
 battle_round_add:
-  lda bt_cmd
+  lda <bt_cmd
   jsr combatant_alive
   beq battle_round_next
-  lda bt_cmd
+  lda <bt_cmd
   jsr order_insert
 battle_round_next:
-  inc bt_cmd
-  lda bt_cmd
+  inc <bt_cmd
+  lda <bt_cmd
   cmp #NUM_COMBATANTS
   bne battle_round_add
   rts
@@ -38,29 +38,29 @@ battle_round_next:
 ; eight-entry list once a round does not deserve anything cleverer, and a bubble
 ; is the version that is obviously right.
 order_insert:
-  ldy bt_tmp2
+  ldy <bt_tmp2
   sta turn_order,y
-  inc bt_tmp2
+  inc <bt_tmp2
 order_insert_bubble:
   cpy #0
   beq order_insert_done
-  sty bt_y
+  sty <bt_y
   lda turn_order,y
   jsr combatant_speed
-  sta bt_arg
-  ldy bt_y
+  sta <bt_arg
+  ldy <bt_y
   dey
-  sty bt_y
+  sty <bt_y
   lda turn_order,y
   jsr combatant_speed
-  ldy bt_y
-  cmp bt_arg
+  ldy <bt_y
+  cmp <bt_arg
   bcs order_insert_done     ; the one in front is at least as fast: settled
   lda turn_order,y
-  sta bt_tmp
+  sta <bt_tmp
   lda turn_order+1,y
   sta turn_order,y
-  lda bt_tmp
+  lda <bt_tmp
   sta turn_order+1,y
   jmp order_insert_bubble
 order_insert_done:
@@ -68,8 +68,8 @@ order_insert_done:
 
 ; A = combatant. Returns A = its speed, from whichever table it belongs to.
 combatant_speed:
-  stx bt_x
-  sty bt_y
+  stx <bt_x
+  sty <bt_y
   cmp #MAX_PARTY
   bcs combatant_speed_mon
   tax
@@ -82,16 +82,16 @@ combatant_speed_mon:
   ldy mon_slot_actor,x
   lda mon_speed,y
 combatant_speed_ret:
-  sta bt_ret
-  ldx bt_x
-  ldy bt_y
-  lda bt_ret
+  sta <bt_ret
+  ldx <bt_x
+  ldy <bt_y
+  lda <bt_ret
   rts
 
 ; A = combatant. Returns A = 0 (Z set) when it is out of the fight.
 combatant_alive:
-  stx bt_x
-  sty bt_y
+  stx <bt_x
+  sty <bt_y
   cmp #MAX_PARTY
   bcs combatant_alive_mon
   tax
@@ -108,72 +108,72 @@ combatant_alive_mon:
   tax
   lda mon_slot_alive,x
 combatant_alive_ret:
-  sta bt_ret
-  ldx bt_x
-  ldy bt_y
-  lda bt_ret
+  sta <bt_ret
+  ldx <bt_x
+  ldy <bt_y
+  lda <bt_ret
   rts
 
 ; ------------------------------------------------------------------ turns
 
 battle_first_turn:
   lda #0
-  sta bt_round
+  sta <bt_round
   jmp battle_take_turn
 
 battle_next:
-  inc bt_round
-  lda bt_round
+  inc <bt_round
+  lda <bt_round
   cmp #NUM_COMBATANTS
   bcc battle_take_turn
   jsr battle_round          ; a fresh round, re-sorted for anything that died
   lda #0
-  sta bt_round
+  sta <bt_round
   ; fall through
 
 battle_take_turn:
   jsr check_over
-  lda bt_phase
+  lda <bt_phase
   cmp #BP_MENU
   beq battle_take_turn_go
   cmp #BP_NEXT
   beq battle_take_turn_go
   rts                       ; check_over has ended the fight
 battle_take_turn_go:
-  ldy bt_round
+  ldy <bt_round
   lda turn_order,y
   cmp #$FF
   beq battle_take_turn_skip
-  sta bt_actor
+  sta <bt_actor
   jsr combatant_alive       ; it may have died earlier this round
   beq battle_take_turn_skip
-  lda bt_actor
+  lda <bt_actor
   cmp #MAX_PARTY
   bcs battle_take_turn_monster
   ; A party member: hand the box over.
   lda #0
-  sta bt_sel
+  sta <bt_sel
   lda #BP_MENU
-  sta bt_phase
+  sta <bt_phase
   jsr draw_commands_queued
   jmp show_cursor
 battle_take_turn_monster:
   jmp monster_turn
 battle_take_turn_skip:
-  inc bt_round
-  lda bt_round
+  inc <bt_round
+  lda <bt_round
   cmp #NUM_COMBATANTS
   bcc battle_take_turn
   jsr battle_round
   lda #0
-  sta bt_round
+  sta <bt_round
   jmp battle_take_turn
 
 ; ---------------------------------------------------------------- actions
 
 ; The player has chosen a target for a plain attack.
 battle_act:
-  lda bt_cmd
+  lda <bt_cmd
   cmp #BC_MAGIC
   beq battle_act_spell
   jmp attack_target
@@ -182,36 +182,36 @@ battle_act_spell:
 
 ; A spell was picked from the list: charge for it, then aim.
 spell_chosen:
-  ldx bt_sel
+  ldx <bt_sel
   lda bt_list,x
-  sta bt_arg
+  sta <bt_arg
   tax
   lda spell_cost,x
-  sta bt_tmp
-  ldx bt_actor
+  sta <bt_tmp
+  ldx <bt_actor
   lda pc_mp,x
-  cmp bt_tmp
+  cmp <bt_tmp
   bcs spell_affordable
   lda #BS_NOMP
   jmp battle_say_actor
 spell_affordable:
   sec
-  sbc bt_tmp
+  sbc <bt_tmp
   sta pc_mp,x
   jsr clear_message
   lda #BC_MAGIC
-  sta bt_cmd
+  sta <bt_cmd
   ; A spell that reaches everything needs no target.
-  ldx bt_arg
+  ldx <bt_arg
   lda spell_scope,x
   bne spell_chosen_all
   jsr first_live_monster
   lda #BP_TARGET
-  sta bt_phase
+  sta <bt_phase
   jmp show_target
 spell_chosen_all:
   lda #BP_ACT
-  sta bt_phase
+  sta <bt_phase
   rts
 
 ; An item was picked: spend it and heal whoever is acting. bt_list holds item
@@ -219,9 +219,9 @@ spell_chosen_all:
 ; mon_heal are keyed to match, so this is the one place that needs to know
 ; which economy is live; the arithmetic below is identical either way.
 item_chosen:
-  ldx bt_sel
+  ldx <bt_sel
   lda bt_list,x
-  sta bt_arg
+  sta <bt_arg
   tay
   .if ITEMS_ENABLED
   lda item_heal,y
@@ -230,15 +230,15 @@ item_chosen:
   lda mon_heal,y
   .endif
   beq item_chosen_none      ; not a potion, so nothing to do with it here
-  sta bt_tmp
-  lda bt_arg
+  sta <bt_tmp
+  lda <bt_arg
   jsr remove_item
-  ldx bt_actor              ; items come off the menu, so this is a party member
+  ldx <bt_actor              ; items come off the menu, so this is a party member
   lda #0
   sta pc_status,x           ; a potion flushes the poison out with it
   lda pc_hp,x
   clc
-  adc bt_tmp
+  adc <bt_tmp
   bcs item_chosen_max       ; wrapped past 255: certainly over this member's max
   cmp pc_hp_max,x
   bcc item_chosen_store
@@ -246,10 +246,10 @@ item_chosen_max:
   lda pc_hp_max,x
 item_chosen_store:
   sta pc_hp,x
-  lda bt_tmp
-  sta bt_dmg_lo
+  lda <bt_tmp
+  sta <bt_dmg_lo
   lda #0
-  sta bt_dmg_hi
+  sta <bt_dmg_hi
   jsr print_num
   jsr clear_message
   lda #BS_HEALS
@@ -270,7 +270,7 @@ attack_target:
   jmp battle_say_actor
 attack_missed:
   lda #$FF
-  sta bt_dmg_hi             ; no number on this line
+  sta <bt_dmg_hi             ; no number on this line
   lda #BS_MISSES
   jmp battle_say_actor
 
@@ -278,7 +278,7 @@ attack_missed:
 ; whoever is casting, or a status effect (poison, burn). The kind numbers
 ; index SPELL_KINDS in shared/project.js -- that order is the wire format.
 cast_spell:
-  ldx bt_arg
+  ldx <bt_arg
   lda spell_kind,x
   cmp #SK_POISON
   bne cast_spell_burn_chk
@@ -304,20 +304,20 @@ cast_spell_dmg:
 ; party member casts it, the party when a monster does.
 cast_all:
   jsr other_side
-  sta bt_target
+  sta <bt_target
   clc
   adc #MAX_PARTY            ; both sides are the same four slots wide
-  sta bt_tmp2
+  sta <bt_tmp2
 cast_all_loop:
-  ldx bt_target
+  ldx <bt_target
   jsr combatant_alive_x
   beq cast_all_next
   jsr spell_damage
   jsr apply_damage
 cast_all_next:
-  inc bt_target
-  lda bt_target
-  cmp bt_tmp2
+  inc <bt_target
+  lda <bt_target
+  cmp <bt_tmp2
   bcc cast_all_loop
   jsr print_num
   lda #BS_HITS
@@ -332,20 +332,20 @@ cast_all_next:
 ; heal has no defending target (§5).
 cast_heal:
   .if MAGIC_POWER_ENABLED
-  lda bt_actor
+  lda <bt_actor
   jsr combatant_mag          ; bt_ret = mag(bt_actor); X/Y untouched
   .endif
-  ldx bt_arg
+  ldx <bt_arg
   jsr roll_spell_amount
   .if MAGIC_POWER_ENABLED
   clc
-  adc bt_ret
+  adc <bt_ret
   bcc cast_heal_mag_ok
   lda #$FF
 cast_heal_mag_ok:
   .endif
-  sta bt_tmp
-  lda bt_actor
+  sta <bt_tmp
+  lda <bt_actor
   cmp #MAX_PARTY
   bcs cast_heal_mon
   tax
@@ -353,7 +353,7 @@ cast_heal_mag_ok:
   sta pc_status,x
   lda pc_hp,x
   clc
-  adc bt_tmp
+  adc <bt_tmp
   bcs cast_heal_max         ; wrapped past 255: certainly over this member's max
   cmp pc_hp_max,x
   bcc cast_heal_store
@@ -370,7 +370,7 @@ cast_heal_mon:
   sta mon_slot_status,x
   lda mon_slot_hp,x
   clc
-  adc bt_tmp
+  adc <bt_tmp
   bcs cast_heal_mon_max     ; wrapped past 255: certainly over this slot's max
   cmp mon_slot_max,x
   bcc cast_heal_mon_store
@@ -379,10 +379,10 @@ cast_heal_mon_max:
 cast_heal_mon_store:
   sta mon_slot_hp,x
 cast_heal_say:
-  lda bt_tmp
-  sta bt_dmg_lo
+  lda <bt_tmp
+  sta <bt_dmg_lo
   lda #0
-  sta bt_dmg_hi
+  sta <bt_dmg_hi
   jsr print_num
   lda #BS_HEALS
   jmp battle_say_actor
@@ -393,37 +393,37 @@ cast_heal_say:
 ; (engine/battleui.asm) and docs/design-status-effects.md. Burn just below is
 ; the identical shape with its own bit, amount and strings.
 cast_poison:
-  ldx bt_arg
+  ldx <bt_arg
   lda spell_scope,x
   bne cast_poison_all
   jsr poison_target
   jmp cast_poison_say
 cast_poison_all:
   jsr other_side
-  sta bt_target
+  sta <bt_target
   clc
   adc #MAX_PARTY
-  sta bt_tmp2
+  sta <bt_tmp2
 cast_poison_loop:
-  ldx bt_target
+  ldx <bt_target
   jsr combatant_alive_x
   beq cast_poison_next
   jsr poison_target
 cast_poison_next:
-  inc bt_target
-  lda bt_target
-  cmp bt_tmp2
+  inc <bt_target
+  lda <bt_target
+  cmp <bt_tmp2
   bcc cast_poison_loop
 cast_poison_say:
   lda #$FF
-  sta bt_dmg_hi             ; no number on this line
+  sta <bt_dmg_hi             ; no number on this line
   lda #BS_POISONS
   jmp battle_say_actor
 
 ; Set STATUS_POISON on bt_target, whichever side it is on -- ora, not a plain
 ; store, so an existing burn (or any other status) survives being poisoned.
 poison_target:
-  lda bt_target
+  lda <bt_target
   cmp #MAX_PARTY
   bcs poison_target_mon
   tax
@@ -443,36 +443,36 @@ poison_target_mon:
 ; Burn: the identical mechanism as poison just above, its own bit and its own
 ; landing message.
 cast_burn:
-  ldx bt_arg
+  ldx <bt_arg
   lda spell_scope,x
   bne cast_burn_all
   jsr burn_target
   jmp cast_burn_say
 cast_burn_all:
   jsr other_side
-  sta bt_target
+  sta <bt_target
   clc
   adc #MAX_PARTY
-  sta bt_tmp2
+  sta <bt_tmp2
 cast_burn_loop:
-  ldx bt_target
+  ldx <bt_target
   jsr combatant_alive_x
   beq cast_burn_next
   jsr burn_target
 cast_burn_next:
-  inc bt_target
-  lda bt_target
-  cmp bt_tmp2
+  inc <bt_target
+  lda <bt_target
+  cmp <bt_tmp2
   bcc cast_burn_loop
 cast_burn_say:
   lda #$FF
-  sta bt_dmg_hi             ; no number on this line
+  sta <bt_dmg_hi             ; no number on this line
   lda #BS_BURNS
   jmp battle_say_actor
 
 ; Set STATUS_BURN on bt_target -- see poison_target just above.
 burn_target:
-  lda bt_target
+  lda <bt_target
   cmp #MAX_PARTY
   bcs burn_target_mon
   tax
@@ -491,7 +491,7 @@ burn_target_mon:
 
 ; A = the first combatant on the acting side's opposite side.
 other_side:
-  lda bt_actor
+  lda <bt_actor
   cmp #MAX_PARTY
   bcs other_side_party
   lda #MAX_PARTY
@@ -521,12 +521,12 @@ combatant_status_mon:
 ; which already owns bt_ptick and status_pending -- this only ever does
 ; poison's own amount and message.
 poison_tick:
-  lda bt_actor
-  sta bt_target
+  lda <bt_actor
+  sta <bt_target
   lda #POISON_DMG
-  sta bt_dmg_lo
+  sta <bt_dmg_lo
   lda #0
-  sta bt_dmg_hi
+  sta <bt_dmg_hi
   jsr apply_damage
   jsr print_num
   lda #BS_SUFFERS
@@ -535,12 +535,12 @@ poison_tick:
 ; Burn: the identical mechanism as poison_tick just above, its own amount and
 ; message.
 burn_tick:
-  lda bt_actor
-  sta bt_target
+  lda <bt_actor
+  sta <bt_target
   lda #BURN_DMG
-  sta bt_dmg_lo
+  sta <bt_dmg_lo
   lda #0
-  sta bt_dmg_hi
+  sta <bt_dmg_hi
   jsr apply_damage
   jsr print_num
   lda #BS_SCORCHED
@@ -557,19 +557,19 @@ combatant_alive_x:
 ; a target more evasive than the attacker is accurate can never be hit.
 ; Returns A = 0 (Z set) on a hit.
 roll_hit:
-  lda bt_actor
+  lda <bt_actor
   jsr combatant_acc
-  sta bt_tmp
-  lda bt_target
+  sta <bt_tmp
+  lda <bt_target
   jsr combatant_eva
-  sta bt_tmp2
-  lda bt_tmp
+  sta <bt_tmp2
+  lda <bt_tmp
   sec
-  sbc bt_tmp2
+  sbc <bt_tmp2
   bcc roll_hit_miss
-  sta bt_tmp
+  sta <bt_tmp
   jsr rng_next
-  cmp bt_tmp
+  cmp <bt_tmp
   bcs roll_hit_miss
   lda #0
   rts
@@ -578,8 +578,8 @@ roll_hit_miss:
   rts
 
 combatant_acc:
-  stx bt_x
-  sty bt_y
+  stx <bt_x
+  sty <bt_y
   cmp #MAX_PARTY
   bcs combatant_acc_mon
   tax
@@ -592,15 +592,15 @@ combatant_acc_mon:
   ldy mon_slot_actor,x
   lda mon_acc,y
 combatant_acc_ret:
-  sta bt_ret
-  ldx bt_x
-  ldy bt_y
-  lda bt_ret
+  sta <bt_ret
+  ldx <bt_x
+  ldy <bt_y
+  lda <bt_ret
   rts
 
 combatant_eva:
-  stx bt_x
-  sty bt_y
+  stx <bt_x
+  sty <bt_y
   cmp #MAX_PARTY
   bcs combatant_eva_mon
   tax
@@ -613,46 +613,46 @@ combatant_eva_mon:
   ldy mon_slot_actor,x
   lda mon_eva,y
 combatant_eva_ret:
-  sta bt_ret
-  ldx bt_x
-  ldy bt_y
-  lda bt_ret
+  sta <bt_ret
+  ldx <bt_x
+  ldy <bt_y
+  lda <bt_ret
   rts
 
 ; max(1, attack - defence) plus a little noise, into bt_dmg_lo.
 physical_damage:
-  lda bt_actor
+  lda <bt_actor
   jsr combatant_atk
-  sta bt_tmp
-  lda bt_target
+  sta <bt_tmp
+  lda <bt_target
   jsr combatant_def
-  sta bt_tmp2
-  lda bt_tmp
+  sta <bt_tmp2
+  lda <bt_tmp
   sec
-  sbc bt_tmp2
+  sbc <bt_tmp2
   bcs physical_damage_floor
   lda #0
 physical_damage_floor:
   bne physical_damage_noise
   lda #1                    ; even a hopeless attack scratches
 physical_damage_noise:
-  sta bt_tmp
+  sta <bt_tmp
   jsr rng_next
   and #3
   clc
-  adc bt_tmp
+  adc <bt_tmp
   bcc physical_damage_store
   lda #$FF                  ; an attack of 253+ carried past 255: saturate, or the
                             ; noise roll turns the hardest hit into a scratch
 physical_damage_store:
-  sta bt_dmg_lo
+  sta <bt_dmg_lo
   lda #0
-  sta bt_dmg_hi
+  sta <bt_dmg_hi
   rts
 
 combatant_atk:
-  stx bt_x
-  sty bt_y
+  stx <bt_x
+  sty <bt_y
   cmp #MAX_PARTY
   bcs combatant_atk_mon
   tax
@@ -667,15 +667,15 @@ combatant_atk_mon:
   ldy mon_slot_actor,x
   lda mon_atk,y
 combatant_atk_ret:
-  sta bt_ret
-  ldx bt_x
-  ldy bt_y
-  lda bt_ret
+  sta <bt_ret
+  ldx <bt_x
+  ldy <bt_y
+  lda <bt_ret
   rts
 
 combatant_def:
-  stx bt_x
-  sty bt_y
+  stx <bt_x
+  sty <bt_y
   cmp #MAX_PARTY
   bcs combatant_def_mon
   tax
@@ -690,10 +690,10 @@ combatant_def_mon:
   ldy mon_slot_actor,x
   lda mon_def,y
 combatant_def_ret:
-  sta bt_ret
-  ldx bt_x
-  ldy bt_y
-  lda bt_ret
+  sta <bt_ret
+  ldx <bt_x
+  ldy <bt_y
+  lda <bt_ret
   rts
 
 ; A = combatant index in (0-3 party, 4-7 monster). Returns A = mag(combatant),
@@ -703,8 +703,8 @@ combatant_def_ret:
 ; docs/design-magic-power.md §7.
   .if MAGIC_POWER_ENABLED
 combatant_mag:
-  stx bt_x
-  sty bt_y
+  stx <bt_x
+  sty <bt_y
   cmp #MAX_PARTY
   bcs combatant_mag_mon
   tax
@@ -719,10 +719,10 @@ combatant_mag_mon:
   ldy mon_slot_actor,x
   lda mon_mag,y
 combatant_mag_ret:
-  sta bt_ret
-  ldx bt_x
-  ldy bt_y
-  lda bt_ret
+  sta <bt_ret
+  ldx <bt_x
+  ldy <bt_y
+  lda <bt_ret
   rts
   .endif
 
@@ -734,8 +734,8 @@ combatant_mag_ret:
 ; anywhere in its own body. Assembled only under MAGIC_DEFENCE_ENABLED.
   .if MAGIC_DEFENCE_ENABLED
 combatant_mdef:
-  stx bt_x
-  sty bt_y
+  stx <bt_x
+  sty <bt_y
   cmp #MAX_PARTY
   bcs combatant_mdef_mon
   tax
@@ -750,10 +750,10 @@ combatant_mdef_mon:
   ldy mon_slot_actor,x
   lda mon_mdef,y
 combatant_mdef_ret:
-  sta bt_ret
-  ldx bt_x
-  ldy bt_y
-  lda bt_ret
+  sta <bt_ret
+  ldx <bt_x
+  ldy <bt_y
+  lda <bt_ret
   rts
   .endif
 
@@ -790,11 +790,11 @@ roll_spell_amount_flat:
 ; cannot exceed 2^i - 1 after i steps for any divisor or dividend, so the
 ; ordinary compare/subtract below is already exact on the whole byte domain.
 mod8:
-  sta bt_tmp                    ; the dividend, shifted left one bit per iteration
+  sta <bt_tmp                    ; the dividend, shifted left one bit per iteration
   lda #0                        ; the remainder, built up one bit per iteration
   ldy #8
 mod8_loop:
-  asl bt_tmp                    ; dividend's next MSB -> carry
+  asl <bt_tmp                    ; dividend's next MSB -> carry
   rol a                         ; carry -> remainder's LSB
   cmp spell_amount_n,x
   bcc mod8_no_sub                ; remainder < n: nothing to subtract
@@ -814,20 +814,20 @@ mod8_no_sub:
 ; subtracted (floored at 1) before the element modifier below.
 spell_damage:
   .if MAGIC_DEFENCE_ENABLED
-  lda bt_target
+  lda <bt_target
   jsr combatant_mdef         ; A = mdef(bt_target); X/Y untouched
-  sta bt_dmg_lo               ; park it -- dead here
+  sta <bt_dmg_lo               ; park it -- dead here
   .endif
   .if MAGIC_POWER_ENABLED
-  lda bt_actor
+  lda <bt_actor
   jsr combatant_mag          ; bt_ret = mag(bt_actor); X/Y untouched;
                               ; bt_dmg_lo untouched
   .endif
-  ldx bt_arg
+  ldx <bt_arg
   jsr roll_spell_amount
   .if MAGIC_POWER_ENABLED
   clc
-  adc bt_ret
+  adc <bt_ret
   bcc spell_damage_mag_ok
   lda #$FF                    ; saturate: no high byte to promote into --
                                ; bt_dmg_hi doubles as the XP accumulator and
@@ -836,7 +836,7 @@ spell_damage_mag_ok:
   .endif
   .if MAGIC_DEFENCE_ENABLED
   sec
-  sbc bt_dmg_lo                ; (roll [+ mag]) - mdef; bt_dmg_lo still
+  sbc <bt_dmg_lo                ; (roll [+ mag]) - mdef; bt_dmg_lo still
                                 ; holds the parked mdef value from above
   bcs spell_damage_mdef_floor   ; no underflow: A is the real difference
   lda #0                         ; mdef exceeded the roll: force 0, the
@@ -849,17 +849,17 @@ spell_damage_mdef_floor:
                                     ; scratches" applied to the spell side
 spell_damage_mdef_done:
   .endif
-  sta bt_dmg_lo
+  sta <bt_dmg_lo
   lda #0
-  sta bt_dmg_hi
-  lda bt_target
+  sta <bt_dmg_hi
+  lda <bt_target
   cmp #MAX_PARTY
   bcc spell_damage_done     ; elements only describe monsters
   sec
   sbc #MAX_PARTY
   tax
   ldy mon_slot_actor,x
-  ldx bt_arg
+  ldx <bt_arg
   lda spell_element,x
   beq spell_damage_done     ; an elementless spell has nothing to match
   cmp mon_weak,y
@@ -868,36 +868,36 @@ spell_damage_mdef_done:
   beq spell_damage_strong
   rts
 spell_damage_weak:
-  lda bt_dmg_lo             ; one and a half times
+  lda <bt_dmg_lo             ; one and a half times
   lsr a
   clc
-  adc bt_dmg_lo
+  adc <bt_dmg_lo
   bcc spell_damage_weak_store
   lda #$FF                  ; carried past 255: saturate rather than wrap -- there
                             ; is no high byte to promote into (bt_dmg_hi doubles
                             ; as the XP accumulator and $FF means "no number")
 spell_damage_weak_store:
-  sta bt_dmg_lo
+  sta <bt_dmg_lo
   rts
 spell_damage_strong:
-  lda bt_dmg_lo
+  lda <bt_dmg_lo
   lsr a
   bne spell_damage_store
   lda #1
 spell_damage_store:
-  sta bt_dmg_lo
+  sta <bt_dmg_lo
 spell_damage_done:
   rts
 
 ; Take bt_dmg_lo off bt_target, and note if that finished it.
 apply_damage:
-  lda bt_target
+  lda <bt_target
   cmp #MAX_PARTY
   bcs apply_damage_mon
   tax
   lda pc_hp,x
   sec
-  sbc bt_dmg_lo
+  sbc <bt_dmg_lo
   bcs apply_damage_pc_store
   lda #0
 apply_damage_pc_store:
@@ -917,7 +917,7 @@ apply_damage_mon:
   beq apply_damage_done
   lda mon_slot_hp,x
   sec
-  sbc bt_dmg_lo
+  sbc <bt_dmg_lo
   bcs apply_damage_mon_store
   lda #0
 apply_damage_mon_store:
@@ -925,14 +925,14 @@ apply_damage_mon_store:
   bne apply_damage_done
   lda #0
   sta mon_slot_alive,x
-  dec bt_count
+  dec <bt_count
   ; Owe this slot a wipe rather than drawing it now -- wipe_tick
   ; (engine/battle.asm) pays it down one row a frame, so four monsters dying
   ; in the same tick can never queue more than one vblank's worth between
   ; them. See bt_wipe_mask's own comment, engine/constants.asm.
   lda bit_mask,x
-  ora bt_wipe_mask
-  sta bt_wipe_mask
+  ora <bt_wipe_mask
+  sta <bt_wipe_mask
 apply_damage_done:
   rts
 
@@ -947,19 +947,19 @@ wipe_monster:
   clc
   adc #BT_MON_ROW
   clc
-  adc bt_wipe_row
-  sta bt_row
-  ldy flat_screen
+  adc <bt_wipe_row
+  sta <bt_row
+  ldy <flat_screen
   lda screen_map,y
   tay
   lda map_battle_ground,y   ; hoisted: the fill never changes mid-wipe, and a
-  sta bt_fill               ; spell may be halfway through using bt_arg
+  sta <bt_fill               ; spell may be halfway through using bt_arg
   lda #BT_MON_COL
-  sta bt_col
+  sta <bt_col
   jsr queue_at
   ldy #8
 wipe_monster_cell:
-  lda bt_fill
+  lda <bt_fill
   jsr vram_push
   dey
   bne wipe_monster_cell
@@ -989,10 +989,10 @@ wipe_monster_cell:
 ; nothing here nests inside cast_all's own loop).
   .if MONSTER_SPELL_LIST_ENABLED
 monster_turn:
-  lda bt_actor
+  lda <bt_actor
   sec
   sbc #MAX_PARTY
-  sta bt_x                     ; slot parked for the whole turn
+  sta <bt_x                     ; slot parked for the whole turn
   tax
   ldy mon_slot_actor,x         ; Y = this monster's actor id
   ; ptr_lo/ptr_hi = &mon_spell[actor_id * MONSTER_SPELLS]. MONSTER_SPELLS=4
@@ -1000,54 +1000,54 @@ monster_turn:
   ; LIMITS.actors = 255, so actor_id can reach 254 and 254*4 = 1016
   ; overflows a byte -- the 16-bit product is not optional.
   tya
-  sta bt_tmp
+  sta <bt_tmp
   lda #0
-  sta ptr_hi
-  asl bt_tmp
-  rol ptr_hi
-  asl bt_tmp
-  rol ptr_hi                   ; bt_tmp/ptr_hi = actor_id * 4, 16-bit
-  lda bt_tmp
+  sta <ptr_hi
+  asl <bt_tmp
+  rol <ptr_hi
+  asl <bt_tmp
+  rol <ptr_hi                   ; bt_tmp/ptr_hi = actor_id * 4, 16-bit
+  lda <bt_tmp
   clc
   adc #LOW(mon_spell)
-  sta ptr_lo
-  lda ptr_hi
+  sta <ptr_lo
+  lda <ptr_hi
   adc #HIGH(mon_spell)
-  sta ptr_hi
+  sta <ptr_hi
   ; Scan the 4 slots, building the affordable sub-list into bt_list/bt_len.
   lda #0
-  sta bt_len
+  sta <bt_len
   ldy #0
 monster_turn_scan:
   lda [ptr_lo],y
   cmp #NO_SPELL
   beq monster_turn_scan_next
-  sta bt_arg                   ; park the scanned id -- X is about to hold it
+  sta <bt_arg                   ; park the scanned id -- X is about to hold it
   tax
   lda spell_cost,x
-  sta bt_tmp                   ; this spell's MP cost
-  ldx bt_x
+  sta <bt_tmp                   ; this spell's MP cost
+  ldx <bt_x
   lda mon_slot_mp,x
-  cmp bt_tmp
+  cmp <bt_tmp
   bcc monster_turn_scan_next   ; can't afford it -- leave it out
-  ldx bt_len
-  lda bt_arg
+  ldx <bt_len
+  lda <bt_arg
   sta bt_list,x
-  inc bt_len
+  inc <bt_len
 monster_turn_scan_next:
   iny
   cpy #MONSTER_SPELLS
   bne monster_turn_scan
-  lda bt_len
+  lda <bt_len
   bne monster_turn_have_list
   jmp monster_turn_attack       ; nothing affordable: attack, NO draw at all
 monster_turn_have_list:
-  lda bt_len
+  lda <bt_len
   cmp #1
   beq monster_turn_only
   ; Uniform pick among bt_len (2-4) affordable entries, drawn BEFORE the
   ; coin. monster_pick_limit holds floor(255/K)*K for K=2,3,4 (indexed K-2).
-  ldx bt_len
+  ldx <bt_len
 monster_turn_pick_retry:
   jsr rng_next
   sec
@@ -1060,27 +1060,27 @@ monster_turn_pick_retry:
 monster_turn_only:
   ldy #0
 monster_turn_coin:
-  sty bt_arg                   ; park the chosen index across the coin draw
+  sty <bt_arg                   ; park the chosen index across the coin draw
   jsr rng_next
   and #1
   bne monster_turn_attack      ; a parked pick (2+ entries) is simply discarded
-  ldy bt_arg                   ; recover the chosen index
+  ldy <bt_arg                   ; recover the chosen index
   lda bt_list,y
-  sta bt_arg                   ; bt_arg now becomes the spell id
+  sta <bt_arg                   ; bt_arg now becomes the spell id
   tax
   lda spell_cost,x
-  sta bt_tmp
-  ldx bt_x
+  sta <bt_tmp
+  ldx <bt_x
   lda mon_slot_mp,x
   sec
-  sbc bt_tmp
+  sbc <bt_tmp
   sta mon_slot_mp,x
   jsr pick_party_target
   jmp cast_spell
   .endif
   .if !MONSTER_SPELL_LIST_ENABLED
 monster_turn:
-  lda bt_actor
+  lda <bt_actor
   sec
   sbc #MAX_PARTY
   tax
@@ -1088,19 +1088,19 @@ monster_turn:
   lda mon_spell,y
   cmp #$FF
   beq monster_turn_attack
-  sta bt_arg
+  sta <bt_arg
   tay
   lda spell_cost,y
-  sta bt_tmp
+  sta <bt_tmp
   lda mon_slot_mp,x
-  cmp bt_tmp
+  cmp <bt_tmp
   bcc monster_turn_attack
   jsr rng_next
   and #1
   bne monster_turn_attack
   lda mon_slot_mp,x
   sec
-  sbc bt_tmp
+  sbc <bt_tmp
   sta mon_slot_mp,x
   jsr pick_party_target
   jmp cast_spell
@@ -1116,7 +1116,7 @@ monster_turn_attack:
   jmp battle_say_actor
 monster_missed:
   lda #$FF
-  sta bt_dmg_hi
+  sta <bt_dmg_hi
   lda #BS_MISSES
   jmp battle_say_actor
 
@@ -1124,15 +1124,15 @@ monster_missed:
 ; A = dividend (0-254) in. bt_len = divisor (2-4). Returns A = dividend mod
 ; bt_len. Clobbers Y and bt_tmp; never touches bt_tmp2 (see contract above).
 mod_monster_len:
-  sta bt_tmp
+  sta <bt_tmp
   lda #0
   ldy #8
 mod_monster_len_loop:
-  asl bt_tmp
+  asl <bt_tmp
   rol a
-  cmp bt_len
+  cmp <bt_len
   bcc mod_monster_len_no_sub
-  sbc bt_len
+  sbc <bt_len
 mod_monster_len_no_sub:
   dey
   bne mod_monster_len_loop
@@ -1156,23 +1156,23 @@ pick_party_step:
   bne pick_party_step
   ldx #0
 pick_party_found:
-  stx bt_target
+  stx <bt_target
   rts
 
 ; ----------------------------------------------------------- how it ends
 
 ; Called before every turn. Sets the phase when one side has run out.
 check_over:
-  lda bt_flee
+  lda <bt_flee
   beq check_over_monsters
   lda #BP_FLEE
-  sta bt_phase
+  sta <bt_phase
   rts
 check_over_monsters:
-  lda bt_count
+  lda <bt_count
   bne check_over_party
   lda #BP_VICTORY
-  sta bt_phase
+  sta <bt_phase
   jmp award_spoils
 check_over_party:
   ldx #0
@@ -1184,7 +1184,7 @@ check_over_party_step:
   cpx #MAX_PARTY
   bne check_over_party_step
   lda #BP_DEFEAT
-  sta bt_phase
+  sta <bt_phase
   rts
 check_over_alive:
   rts
@@ -1194,27 +1194,27 @@ check_over_alive:
 ; over every slot that held something.
 award_spoils:
   lda #0
-  sta bt_dmg_lo
-  sta bt_dmg_hi
+  sta <bt_dmg_lo
+  sta <bt_dmg_hi
   ldx #0
 award_loop:
   lda mon_slot_actor,x
   cmp #$FF
   beq award_next
   tay
-  lda bt_dmg_lo
+  lda <bt_dmg_lo
   clc
   adc mon_xp_lo,y
-  sta bt_dmg_lo
-  lda bt_dmg_hi
+  sta <bt_dmg_lo
+  lda <bt_dmg_hi
   adc mon_xp_hi,y
-  sta bt_dmg_hi
-  lda gold_lo
+  sta <bt_dmg_hi
+  lda <gold_lo
   clc
   adc mon_gold,y
-  sta gold_lo
+  sta <gold_lo
   bcc award_gold_done
-  inc gold_hi
+  inc <gold_hi
 award_gold_done:
   jsr roll_drop
 award_next:
@@ -1230,10 +1230,10 @@ award_xp_loop:
   beq award_xp_next
   lda pc_xp_lo,x
   clc
-  adc bt_dmg_lo
+  adc <bt_dmg_lo
   sta pc_xp_lo,x
   lda pc_xp_hi,x
-  adc bt_dmg_hi
+  adc <bt_dmg_hi
   sta pc_xp_hi,x
   jsr try_level_up
 award_xp_next:
@@ -1249,10 +1249,10 @@ roll_drop:
   lda mon_drop,y
   cmp #NO_ITEM
   beq roll_drop_done
-  sta bt_tmp
+  sta <bt_tmp
   lda mon_drop_pct,y
   beq roll_drop_done
-  sta bt_tmp2
+  sta <bt_tmp2
   txa
   pha
   jsr rng_next
@@ -1265,9 +1265,9 @@ roll_drop:
   ; value the shift below can produce.
   lsr a
   lsr a                     ; 0-63
-  cmp bt_tmp2
+  cmp <bt_tmp2
   bcs roll_drop_missed
-  lda bt_tmp
+  lda <bt_tmp
   jsr add_item
 roll_drop_missed:
   pla
@@ -1299,7 +1299,7 @@ try_level_done:
 
 ; Victory, defeat and running away all wait for a press and then leave.
 battle_outcome:
-  lda bt_phase
+  lda <bt_phase
   cmp #BP_VICTORY
   beq battle_outcome_win
   cmp #BP_DEFEAT
@@ -1312,27 +1312,27 @@ battle_outcome_win:
 battle_outcome_lose:
   lda #BS_DEFEAT
 battle_outcome_say:
-  sta bt_str
+  sta <bt_str
   jsr clear_message
   lda #MSG_ROW+1
-  sta bt_row
+  sta <bt_row
   lda #MSG_COL
-  sta bt_col
+  sta <bt_col
   jsr queue_at
-  lda bt_str
+  lda <bt_str
   jsr push_battle_string
   jsr vram_end
   lda #BP_DONE
-  sta bt_phase
+  sta <bt_phase
   rts
 
 ; The press that leaves. Defeat goes to the game-over screen the action engine
 ; already has, so there is one way for a game to end however it was played.
 battle_finish:
-  lda pad_new
+  lda <pad_new
   and #BTN_A
   bne battle_finish_go
-  lda pad_new
+  lda <pad_new
   and #BTN_START
   beq battle_finish_wait
 battle_finish_go:

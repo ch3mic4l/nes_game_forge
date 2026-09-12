@@ -302,12 +302,14 @@ test(
   { skip: !hasNesasm && 'nesasm not found on PATH' },
   async (t) => {
     const short = await buildFlashSaveable(t, 0);
-    // Enough filler actors to measurably move flash_commit_driver without
-    // risking the kernel-lo margin -- this build already carries a touch
-    // event and a Saver actor of its own on top of sample-rpg's base
-    // content, so it has less headroom than kernelbytes.test.js's own
-    // Save-alone measurement; 15 stays comfortably inside it.
-    const long = await buildFlashSaveable(t, 15);
+    // Enough filler actors to measurably move flash_commit_driver across a
+    // page boundary (not just to a different address) without risking the
+    // kernel-lo margin. Recalibrated after the zero-page kernel diet
+    // (docs/design-kernel-diet.md) gave this fixture real extra headroom --
+    // 15 filler actors no longer moves the driver past $100, so this needs
+    // 30 to cross into a new high byte (re-derived against a real build,
+    // not assumed).
+    const long = await buildFlashSaveable(t, 30);
 
     const shortBytes = fs.readFileSync(short.romPath);
     const longBytes = fs.readFileSync(long.romPath);

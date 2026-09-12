@@ -45,11 +45,13 @@ const BT_TGT_VIS = 0x78;
 const ENT_X = 0x310;
 const ENT_Y = 0x318;
 const OAM = 0x200;
+const SPLIT_LOCK = 0x99; // split_lock = mv_tmp+1 = mv_step+2 = mv_left+3, resolved via test/lib/equates.js against engine/constants.asm
 
 const ST_GAMEPLAY = 0;
 const ST_DIALOG = 2;
 const ST_TITLE = 3;
 const ST_BATTLE = 5;
+const BOX_CLOSED = 0;
 const BOX_PAGEWAIT = 3;
 const BP_MENU = 1;
 const BP_TARGET = 2;
@@ -427,4 +429,436 @@ test('an MMC3 action project splits over the naming grid, kernel-lo placement', 
   // empirically, same as the other two naming probes below) while sitting
   // tight against the real boundary, one row above the box's own row 24.
   probeRows(nes, 'action placement');
+});
+
+
+// --------------------------------------------------------- cycle-timing gate
+//
+// docs/design-kernel-diet.md §7: a permanent, baseline-free invariant on
+// engine/split.asm's own arm-before-deadline discipline, independent of
+// whether the zero-page diet ever ships -- a real correctness property of
+// the split machinery itself. This is deliberately test-side instrumentation
+// only (wrapping the vendored core's own `nes.mmap.write`/`clockIrqCounter`
+// from here), never a change to the vendored core -- nothing here belongs in
+// FORGE-PATCHES.md.
+//
+// Round 1 review finding 1: the first cut of this checker only extracted
+// OBSERVED $C000/$C001/$E001 triples and thresholded their count -- it never
+// read the active split program, so a missing entry (a dropped rearm) or an
+// entry-0 arm delayed past its own intended clock (by moving the query bound
+// used to find that clock) both passed. The checker below instead reads
+// `game_state`/`box_state` every frame (mirroring `split_select`'s own
+// decision, engine/split.asm:73-96, for a project with TITLE_ENABLED and no
+// BATTLE_ENABLED -- the one this file's scratch project builds), constructs
+// the EXPECTED arm count for each program (`split_progs`, :51-63: box and
+// battle each have one real entry, title has four, off has none, the zero
+// terminator never counted), and requires the REAL observed chain to match
+// that count exactly before checking any deadline at all -- a dropped entry
+// is caught as a count mismatch, not silently absorbed into a passing
+// threshold.
+//
+// The hazard the design calls out: "the next counter clock after the
+// rearm's own write" is circular -- a late rearm would just find whatever
+// clock came after it and call that on time. Worse, `clockIrqCounter`'s own
+// comment (mapper4.js) says the counter runs whether or not the IRQ is
+// enabled, so a clock that lands while an entry is mid-arm silently
+// consumes a count with no trace. Two independent anchors close this:
+//
+// - **Entry 0** (armed from NMI, `split_arm`) anchors to the frame's own
+//   FIRST counter clock of any kind -- not the next clock after the arm's
+//   own observed `$C000` (round 1's mistake: delaying the arm past its
+//   intended clock moves that query bound and the check passes by
+//   construction). Every recorded event carries the harness's OWN loop
+//   counter as its `frame` tag, assigned *before* `nes.frame()` runs --  a
+//   fact fixed independently of how long any code inside that call takes.
+//   jsnes's own `frameEnded` fires at the top of vblank (ppu/index.js:312),
+//   so one `nes.frame()` call runs from one vblank-start to the next,
+//   servicing the pending NMI (hence `split_arm`) at its own top and running
+//   that same frame's real rendering (hence every counter clock the just-
+//   armed program produces) before returning -- confirmed directly: a
+//   delay inserted before entry 0's own `$C000` write does not change which
+//   frame its own resulting clocks are tagged with unless the delay is long
+//   enough to blow through the rest of vblank, in which case the expected-
+//   count check above catches it as a missing entry instead. Anchoring to
+//   "first clock tagged with this same frame" is therefore independent of
+//   the arm's own delayed position, closing the exact hole finding 1 named.
+// - **Each follow-up** (armed from inside `irq:`) anchors to the next clock
+//   after the clock that asserted the PRECEDING entry's own IRQ -- kept
+//   unchanged from before per the reviewer's own instruction ("keep the
+//   correctly chosen follow-up asserting-clock anchor"): that clock already
+//   happened, in the past, before the follow-up's own handler invocation
+//   even begins, so nothing the follow-up's own arm does can move it.
+//
+// Two shapes of arm exist, structurally distinguished by what precedes
+// their own $C000 write (no RAM peek needed): an NMI-issued entry 0 is
+// preceded by split_arm's own $8000/$8001 restore with nothing before that
+// in the same short window; a follow-up (armed from inside `irq:`) is
+// preceded by $8000/$8001 (applying the firing entry) and, before that, the
+// handler's own $E000 acknowledge.
+
+/** Wraps nes.mmap.write/clockIrqCounter to record every split-relevant
+ * register write and every counter clock, in real execution order -- a
+ * single-threaded, cycle-accurate trace, so array position IS chronological
+ * order -- tagged with the harness's own frame counter (set by the caller
+ * before each nes.frame() call, never derived from the trace itself).
+ * Test-side only; the vendored mapper is otherwise untouched. */
+function attachSplitTrace(nes, frameRef) {
+  const events = [];
+  const mmap = nes.mmap;
+  const originalWrite = mmap.write.bind(mmap);
+  mmap.write = (address, value) => {
+    if (address === 0x8000 || address === 0x8001 || address === 0xc000 || address === 0xc001 || address === 0xe000 || address === 0xe001) {
+      events.push({ kind: 'write', address, value, frame: frameRef.frame });
+    }
+    return originalWrite(address, value);
+  };
+  const originalClock = mmap.clockIrqCounter.bind(mmap);
+  mmap.clockIrqCounter = () => {
+    const enabledBefore = mmap.irqEnable;
+    originalClock();
+    events.push({ kind: 'clock', fired: enabledBefore === 1 && mmap.irqCounter === 0, frame: frameRef.frame });
+  };
+  return events;
+}
+
+/**
+ * Finds the next write of `address` at or after `from` -- but bails (-1)
+ * if a *different* `boundary`-address write is found first (default
+ * $C000, the start of the next arm). Round 1 finding 1: the original
+ * search had no such bound and could borrow a later arm's own $C001/$E001
+ * to complete an earlier, actually-incomplete triple.
+ */
+function nextWrite(events, from, address, boundary = 0xc000) {
+  for (let i = from + 1; i < events.length; i++) {
+    const e = events[i];
+    if (e.kind !== 'write') continue;
+    if (e.address === address) return i;
+    if (e.address === boundary && address !== boundary) return -1;
+  }
+  return -1;
+}
+
+function prevWrite(events, from) {
+  for (let i = from - 1; i >= 0; i--) {
+    if (events[i].kind === 'write') return i;
+  }
+  return -1;
+}
+
+/** Every real, COMPLETE $C000/$C001/$E001 arm triple in the trace, each
+ * tagged with whether it is a follow-up (armed from inside the IRQ handler)
+ * or an NMI-issued entry 0 -- decided from the exact three writes
+ * immediately before its own $C000, never from a RAM peek. An incomplete
+ * triple (bounded out by nextWrite above) is skipped, not silently
+ * stitched from a later arm's writes. */
+function extractArms(events) {
+  const arms = [];
+  let from = -1;
+  for (;;) {
+    const c000 = nextWrite(events, from, 0xc000);
+    if (c000 === -1) break;
+    const c001 = nextWrite(events, c000, 0xc001);
+    if (c001 === -1) {
+      from = c000; // incomplete -- try again from the next real $C000
+      continue;
+    }
+    const e001 = nextWrite(events, c001, 0xe001);
+    if (e001 === -1) {
+      from = c000;
+      continue;
+    }
+    const w1 = prevWrite(events, c000); // expected $8001 (both shapes)
+    const w2 = w1 === -1 ? -1 : prevWrite(events, w1); // expected $8000 (both shapes)
+    const w3 = w2 === -1 ? -1 : prevWrite(events, w2); // $e000 only for a follow-up
+    const isFollowUp = w3 !== -1 && events[w3].address === 0xe000 && events[w1]?.address === 0x8001 && events[w2]?.address === 0x8000;
+    arms.push({ start: c000, end: e001, isFollowUp });
+    from = e001;
+  }
+  return arms;
+}
+
+/** Groups arms by the frame their own $C000 write was tagged with -- the
+ * whole chain (entry 0 plus every follow-up) for one active program lands
+ * in exactly one frame's own trace bucket (see the header comment above for
+ * why: NMI services at the top of a jsnes frame() call, and that same
+ * call's own rendering produces every clock the just-armed program needs,
+ * all before the call returns). */
+function groupArmsByFrame(events, arms) {
+  const byFrame = new Map();
+  for (const arm of arms) {
+    const frame = events[arm.start].frame;
+    if (!byFrame.has(frame)) byFrame.set(frame, []);
+    byFrame.get(frame).push(arm);
+  }
+  return byFrame;
+}
+
+/** Mirrors split_select's own decision (engine/split.asm:73-96) for a
+ * project with TITLE_ENABLED and no BATTLE_ENABLED -- this file's own
+ * scratch project below -- and split_arm's own lock check (:112-115).
+ * Returns the number of real (count,target) entries the active program
+ * holds before its own zero terminator (:51-63): 4 for the title's own
+ * four-entry program, 1 for the box's one-entry program, 0 for SPL_OFF or
+ * a locked frame (split_arm's own early `rts` skips the whole arm, matching
+ * "split_lock frame = no arm expected"). */
+function expectedEntryCount(gameState, boxState, locked) {
+  if (locked) return 0;
+  if (gameState === ST_TITLE) return 4;
+  if (boxState !== BOX_CLOSED) return 1;
+  return 0;
+}
+
+/**
+ * Checks the arm-before-deadline invariant over an already-recorded trace,
+ * cross-checked against the program `split_select` actually decided each
+ * frame (`perCallState`, one entry per traced `nes.frame()` call: the
+ * engine RAM read immediately after that call, i.e. as of the end of that
+ * call's own mainline -- exactly what that call's own trailing NMI read to
+ * decide the NEXT frame's arm). Bucket 0 is never checked (no prior state
+ * exists to derive an expectation from). Returns every violation found
+ * (empty when the split machinery is both complete and on time) as
+ * structured records -- `{ frame, entry, kind, message }`, `entry` null for
+ * a whole-frame violation (missing/unexpected) -- never bare strings, so a
+ * caller can classify a failure (which entry, which kind) without parsing
+ * prose back out of a message meant for humans.
+ */
+function checkSplitProgram(events, perCallState) {
+  const arms = extractArms(events);
+  const chainsByFrame = groupArmsByFrame(events, arms);
+  const allClocks = [];
+  const firedClocks = [];
+  events.forEach((e, i) => {
+    if (e.kind !== 'clock') return;
+    allClocks.push(i);
+    if (e.fired) firedClocks.push(i);
+  });
+
+  const failures = [];
+  for (let frame = 1; frame < perCallState.length; frame++) {
+    const prior = perCallState[frame - 1];
+    const expected = expectedEntryCount(prior.gameState, prior.boxState, prior.locked);
+    const chain = chainsByFrame.get(frame) ?? [];
+
+    if (expected === 0) {
+      if (chain.length > 0) {
+        failures.push({
+          frame,
+          entry: null,
+          kind: 'unexpected',
+          message:
+            `frame ${frame}: expected no split arm (game_state=${prior.gameState}, box_state=${prior.boxState}, ` +
+            `locked=${prior.locked}), but observed ${chain.length}`
+        });
+      }
+      continue;
+    }
+    if (chain.length !== expected) {
+      failures.push({
+        frame,
+        entry: null,
+        kind: 'missing',
+        message: `frame ${frame}: expected ${expected} arm(s) from the active program, observed ${chain.length} -- a missing (or extra) expected entry`
+      });
+      continue;
+    }
+    if (chain[0].isFollowUp) {
+      failures.push({ frame, entry: 0, kind: 'order', message: `frame ${frame}: entry 0 must be NMI-issued, not a follow-up` });
+      continue;
+    }
+    for (let k = 1; k < chain.length; k++) {
+      if (!chain[k].isFollowUp) {
+        failures.push({ frame, entry: k, kind: 'order', message: `frame ${frame}: entry ${k} should be a follow-up (armed from inside the IRQ handler)` });
+      }
+    }
+
+    // Entry 0's own deadline: the frame's first counter clock of any kind --
+    // fixed by this frame's own tag, never by this arm's own observed start.
+    const entry0Deadline = allClocks.find((idx) => events[idx].frame === frame);
+    if (entry0Deadline === undefined || !(chain[0].end < entry0Deadline)) {
+      failures.push({
+        frame,
+        entry: 0,
+        kind: 'deadline',
+        message:
+          `frame ${frame} entry 0: arm completing at trace index ${chain[0].end} missed the frame's own first ` +
+          `counter-clock deadline (index ${entry0Deadline ?? '(none)'})`
+      });
+    }
+
+    // Each follow-up's deadline: the next clock after the one that fired
+    // the entry immediately before it -- already in the past by the time
+    // this follow-up's own handler starts, so its own timing cannot move it.
+    let previousEnd = chain[0].end;
+    for (let k = 1; k < chain.length; k++) {
+      const firedClock = firedClocks.find((idx) => idx > previousEnd);
+      const deadline = firedClock === undefined ? undefined : allClocks.find((idx) => idx > firedClock);
+      if (deadline === undefined || !(chain[k].end < deadline)) {
+        failures.push({
+          frame,
+          entry: k,
+          kind: 'deadline',
+          message:
+            `frame ${frame} entry ${k}: arm completing at trace index ${chain[k].end} missed its independently-anchored ` +
+            `deadline clock (index ${deadline ?? '(none)'}, anchored to the clock that fired entry ${k - 1})`
+        });
+      }
+      previousEnd = chain[k].end;
+    }
+  }
+  return { arms, failures };
+}
+
+/** Builds an MMC3 project with a title screen (the one program with real
+ * follow-up entries, docs/design-kernel-diet.md §7) and, optionally, a Code
+ * Forge override of split.asm -- used by the negative controls below to
+ * exercise the real instruction stream the invariant polices, never an
+ * emulator-side artificial delay. */
+async function buildSplitTraceProject(t, overrideText) {
+  const dir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'forge-split-trace-'));
+  t.after(() => fs.promises.rm(dir, { recursive: true, force: true }));
+  const project = createProject('SplitTrace');
+  project.cartridge.mapper = 4; // MMC3
+  project.project.titleMap = 0;
+  project.project.titleScreen = 0;
+  if (overrideText) project.code = { overrides: [{ name: 'split.asm', text: overrideText }], files: [] };
+  await saveProject(dir, project);
+  const built = await buildProject({ dir, project, log: () => {} });
+  return built.romPath;
+}
+
+/** Boots `romPath`, then traces `frames` further frames, returning the raw
+ * event trace and, per traced frame, the engine RAM state as of the end of
+ * that frame's own mainline (what that frame's own trailing NMI read to
+ * decide the arm for the NEXT frame). */
+function traceSplitFrames(romPath, { warmup = 15, frames = 60 } = {}) {
+  const nes = new NES({ onFrame: () => {}, emulateSound: false });
+  nes.loadROM(new Uint8Array(fs.readFileSync(romPath)));
+  for (let i = 0; i < warmup; i++) nes.frame();
+
+  const frameRef = { frame: 0 };
+  const events = attachSplitTrace(nes, frameRef);
+  const perCallState = [];
+  for (let i = 0; i < frames; i++) {
+    frameRef.frame = i;
+    nes.frame();
+    perCallState.push({
+      gameState: nes.cpu.mem[GAME_STATE],
+      boxState: nes.cpu.mem[BOX_STATE],
+      locked: nes.cpu.mem[SPLIT_LOCK] !== 0
+    });
+  }
+  return { events, perCallState };
+}
+
+test('the split-arm sequence completes before its own independently-anchored counter-clock deadline, every expected entry present', async (t) => {
+  const romPath = await buildSplitTraceProject(t);
+  const { events, perCallState } = traceSplitFrames(romPath);
+
+  const { arms, failures } = checkSplitProgram(events, perCallState);
+  const followUps = arms.filter((a) => a.isFollowUp).length;
+  assert.ok(arms.length > 100, `expected substantial real coverage from 60 title frames, only saw ${arms.length} arms`);
+  assert.ok(followUps > 100, `expected the title program's own follow-up entries to dominate, only saw ${followUps} of ${arms.length}`);
+  assert.deepEqual(failures, [], 'every expected entry must be present, complete, and on time');
+});
+
+test('the split-arm invariant is not vacuous -- a dropped expected entry fails it', async (t) => {
+  const stockSplit = fs.readFileSync(path.join(ROOT, 'engine', 'split.asm'), 'utf8');
+  // Drops split_prog_title's own final (7,0) entry, turning the real
+  // four-entry title program into a three-entry one -- a real, source-level
+  // missing rearm, not a synthetic trace with no engine behind it.
+  const marker =
+    "split_prog_title:\n  .db TITLE_NAME_ROW*8-1, 1       ; font in for the game's name...\n" +
+    "  .db 7, 0                        ; ...one row later, the map's art returns\n" +
+    '  .db (TITLE_PROMPT_ROW-TITLE_NAME_ROW-1)*8-1, 1\n' +
+    "  .db 7, 0                        ; and the same band around the prompt\n" +
+    '  .db 0\n';
+  const truncated = stockSplit.replace(
+    marker,
+    "split_prog_title:\n  .db TITLE_NAME_ROW*8-1, 1       ; font in for the game's name...\n" +
+      "  .db 7, 0                        ; ...one row later, the map's art returns\n" +
+      '  .db (TITLE_PROMPT_ROW-TITLE_NAME_ROW-1)*8-1, 1\n' +
+      '  .db 0                            ; SABOTAGE-CONTROL: dropped the final (7,0) entry\n'
+  );
+  assert.notEqual(truncated, stockSplit, 'the split_prog_title marker must match engine/split.asm verbatim, or this control is not exercising real source');
+
+  const romPath = await buildSplitTraceProject(t, truncated);
+  const { events, perCallState } = traceSplitFrames(romPath);
+
+  const { failures } = checkSplitProgram(events, perCallState);
+  const missing = failures.filter((f) => f.kind === 'missing');
+  assert.ok(missing.length > 0, 'a dropped expected entry must be reported as a missing-entry violation');
+  assert.equal(missing.length, failures.length, 'every failure here should be the same missing-entry shape, on every checked frame');
+});
+
+test('the split-arm invariant is not vacuous -- a late initial (NMI-armed) entry fails it', async (t) => {
+  const stockSplit = fs.readFileSync(path.join(ROOT, 'engine', 'split.asm'), 'utf8');
+  // A register-preserving delay between split_arm_go's own count load and
+  // its $C000 latch write. X and Y are both dead here (the header comment
+  // says "Called from NMI with A, X and Y already saved" -- the OUTER NMI
+  // wrapper in boot.asm restores all three from its own stack-saved copies
+  // regardless of what split_arm does internally, so nothing needs an
+  // explicit push/pull to be safe against the CALLER -- but A itself is
+  // still needed a few instructions later for the $C000/$C001/$E001 writes,
+  // so it is pushed and popped around the delay rather than merely trusted
+  // to survive). Calibrated empirically against a real build: split_arm
+  // normally finishes its own arm several scanlines before the counter's
+  // first real clock even fires (a wide, genuine vblank margin) -- a short
+  // delay (as used for the follow-up control below) lands nowhere near it,
+  // so this control needs enough cycles to actually cross that margin.
+  const marker =
+    'split_arm_go:\n  tax\n  lda split_prog_start-1,x    ; modes are 1-based\n  sta <split_idx\n  tax\n  lda split_progs,x\n  sta $C000                   ; the latch...\n';
+  const delayed = stockSplit.replace(
+    marker,
+    'split_arm_go:\n  tax\n  lda split_prog_start-1,x    ; modes are 1-based\n  sta <split_idx\n  tax\n  lda split_progs,x\n  pha\n  ldx #2\nsplit_arm_delay_outer:\n  ldy #200\nsplit_arm_delay_inner:\n  dey\n  bne split_arm_delay_inner\n  dex\n  bne split_arm_delay_outer\n  pla\n  sta $C000                   ; the latch...\n'
+  );
+  assert.notEqual(delayed, stockSplit, 'the split_arm_go marker must match engine/split.asm verbatim, or this control is not exercising real source');
+
+  const romPath = await buildSplitTraceProject(t, delayed);
+  const { events, perCallState } = traceSplitFrames(romPath);
+
+  const { arms, failures } = checkSplitProgram(events, perCallState);
+  const entry0Failures = failures.filter((f) => f.entry === 0);
+  const missing = failures.filter((f) => f.kind === 'missing');
+  assert.equal(missing.length, 0, 'the delayed build should still execute every expected entry -- only its timing should be wrong');
+  assert.ok(entry0Failures.length > 0, 'a late initial arm must be reported as an entry-0 deadline violation');
+  assert.equal(entry0Failures.length, failures.length, 'every failure here should be an entry-0 violation, never a follow-up one');
+  assert.ok(arms.length > 100, 'the delayed build should still reach the same real coverage as the stock one');
+});
+
+test('the split-arm invariant is not vacuous -- a source-level delayed follow-up rearm fails it, with every register preserved', async (t) => {
+  const stockSplit = fs.readFileSync(path.join(ROOT, 'engine', 'split.asm'), 'utf8');
+  // Round 1 review finding 2: the original delay clobbered Y with no
+  // save/restore. `irq:`'s own prologue (:139-143) only saves A and X --
+  // Y belongs to the asynchronously interrupted mainline code and is never
+  // touched by the stock handler at all, so a delay here must save and
+  // restore it itself. A does not need saving across this specific point:
+  // it holds the just-applied target value, but the code immediately after
+  // the delay (`inx`/`inx`/`stx <split_idx`/`lda split_progs,x`) reloads A
+  // fresh before ever reading it again.
+  const marker = 'irq_switch:\n  sta <irq_tmp\n  lda #1\n  sta $8000\n  lda <irq_tmp\n  sta $8001\n  inx\n';
+  const delayed = stockSplit.replace(
+    marker,
+    'irq_switch:\n  sta <irq_tmp\n  lda #1\n  sta $8000\n  lda <irq_tmp\n  sta $8001\n  tya\n  pha\n  ldy #40\nirq_delay_loop:\n  dey\n  bne irq_delay_loop\n  pla\n  tay\n  inx\n'
+  );
+  assert.notEqual(delayed, stockSplit, 'the irq_switch marker must match engine/split.asm verbatim, or this control is not exercising real source');
+
+  const romPath = await buildSplitTraceProject(t, delayed);
+  const { events, perCallState } = traceSplitFrames(romPath);
+
+  const { arms, failures } = checkSplitProgram(events, perCallState);
+  const missing = failures.filter((f) => f.kind === 'missing');
+  const followUpFailures = failures.filter((f) => f.entry !== 0);
+  // Bucket 0 (the very first traced frame) is never checked -- see
+  // checkSplitProgram's own header comment -- so its own follow-ups can
+  // never register a failure; excluded here rather than asserted against
+  // the raw total, which would overcount by exactly that one frame's worth.
+  const checkableFollowUps = arms.filter((a) => a.isFollowUp && events[a.start].frame > 0).length;
+  assert.equal(missing.length, 0, 'the delayed build should still execute every expected entry -- only its timing should be wrong');
+  assert.equal(failures.length, followUpFailures.length, 'every reported failure must belong to a follow-up entry, never entry 0');
+  assert.equal(
+    failures.length,
+    checkableFollowUps,
+    `every checkable follow-up rearm should now miss its deadline (the delay sits on the one path every follow-up ` +
+      `takes), but only ${failures.length} of ${checkableFollowUps} did`
+  );
 });

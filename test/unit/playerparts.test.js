@@ -420,9 +420,13 @@ test('sample/ builds a byte-identical ROM after PLAYER_FRAMES/PLAYER_TILES moved
   // sample/ now carries hero naming live and the Say token in the slime's
   // plain dialogue -- the identical new hash nameentry.test.js's own
   // BASELINES.sample re-pins to, confirmed to agree with it directly.
+  // Re-pinned again for the zero-page kernel diet (docs/design-kernel-diet.md):
+  // every operand's own encoding changed (2 bytes instead of 3 for a
+  // surviving zero-page access) -- the identical new hash
+  // nameentry.test.js's own BASELINES.sample re-pins to.
   assert.equal(
     hash,
-    '26899435c92ce55ec1314da290944472c359d27181227fc8e2bfc4c09b6035a5',
+    '442565369e9da7011901b459317adb4d3c07d9c24fd8f388bcf92b731829e846',
     'moving PLAYER_FRAMES/PLAYER_TILES into shared/project.js is a single-writer move, not a behaviour ' +
       'change -- sample/ must assemble byte-for-byte identically to the pinned pre-move build (captured ' +
       'from this exact working tree, immediately before this move, by building createProject-free sample/)'

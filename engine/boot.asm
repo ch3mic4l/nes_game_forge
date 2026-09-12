@@ -49,7 +49,7 @@ boot_wait2:
   jsr init_session          ; hearts, bag and switches, exactly as a restart does
   .if FADE_ENABLED
   lda #0
-  sta fade_reload            ; consumed by nobody here -- reset draws the
+  sta <fade_reload            ; consumed by nobody here -- reset draws the
                               ; first screen itself (below) and already ran
                               ; load_palette moments earlier, so a flag left
                               ; armed from cold boot would otherwise survive
@@ -58,30 +58,30 @@ boot_wait2:
   .endif
 
   lda #START_SCREEN         ; place the player where the Map Forge said
-  sta flat_screen
+  sta <flat_screen
   lda #START_X
-  sta player_x
+  sta <player_x
   lda #START_Y
-  sta player_y
+  sta <player_y
   lda #DIR_DOWN
-  sta player_dir
+  sta <player_dir
   lda #PLAYER_SPEED
-  sta cur_speed
+  sta <cur_speed
   lda #NO_ENTITY            ; nobody is talking; the rest of the UI state is
-  sta talk_ent              ; zero, which boot_clear has already arranged
+  sta <talk_ent              ; zero, which boot_clear has already arranged
 
   .if TITLE_ENABLED
   lda #TITLE_FLAT_SCREEN    ; the cartridge boots into its title, not its world
-  sta flat_screen
+  sta <flat_screen
   lda #ST_TITLE
-  sta game_state
+  sta <game_state
   .endif
   ; A titleless cold boot never reaches start_game at all, so hero naming
   ; needs its own arrival here too (docs/design-name-entry.md §8).
   .if !TITLE_ENABLED
   .if HERO_NAMING_ENABLED
   lda #ST_NAMEENTRY
-  sta game_state
+  sta <game_state
   lda #0
   jsr name_begin             ; shim (engine/ui.asm) -- A = party slot 0
   lda #BOX_NAMEENTRY
@@ -94,7 +94,7 @@ boot_wait2:
   ; apply_map_music reads whichever screen is actually about to be drawn.
   jsr apply_map_music
 
-  ldy flat_screen           ; select the starting map's tileset before drawing
+  ldy <flat_screen           ; select the starting map's tileset before drawing
   lda screen_tileset,y
   jsr switch_chr_bank
 
@@ -159,27 +159,27 @@ main_loop:
   jsr settle_owed
   bne main_loop_draw        ; it took the frame; the frame was the transition's
   lda #0
-  sta screen_fresh          ; nothing has been drawn this frame yet
+  sta <screen_fresh          ; nothing has been drawn this frame yet
   jsr dispatch_input        ; button actions from the Controller Forge
-  lda paused
+  lda <paused
   bne main_loop_draw        ; a pause action freezes the world, not the screen
-  lda game_state
+  lda <game_state
   bne main_loop_ui          ; so do the menu and dialogue states
   ; The buttons can have made work of their own. A warp, from an interact whose
   ; event carried one -- and the world must not update on the screen being left,
   ; where a door could overwrite the destination on its way past.
-  lda warp_ready
+  lda <warp_ready
   bne main_loop_owed_warp
   ; ...or a whole screen: Start, on the title, draws one from inside
   ; dispatch_input. The frame belongs to the screen that arrived, and the event
   ; it owes is settled at the top of the next one.
-  lda screen_fresh
+  lda <screen_fresh
   bne main_loop_draw
   jsr update_player
   ; Crossing a screen edge redraws from inside update_player, and the rest of
   ; this frame does not belong to the screen that just arrived: its actors have
   ; spawned but its own event has not had its turn yet.
-  lda screen_fresh
+  lda <screen_fresh
   bne main_loop_draw
   jsr update_entities
 ; A name for the moment a door is decided, emitting nothing: it is where the
@@ -189,7 +189,7 @@ main_loop:
 ; cartridge nothing while an assumption about which instruction follows
 ; update_entities would cost it correctness.
 main_loop_warp:
-  lda warp_ready            ; a door fires outside the entity loop, so the
+  lda <warp_ready            ; a door fires outside the entity loop, so the
   beq main_loop_draw        ; respawn cannot clear the array mid-walk
 main_loop_owed_warp:
   jsr take_door
@@ -202,23 +202,23 @@ main_loop_owed_warp:
 ; that needs it before dispatch_input: buttons are read in every state, but a
 ; warp and a pending event are gameplay's alone.
 settle_owed:
-  lda paused
+  lda <paused
   bne settle_owed_none      ; a pause freezes the world, and this is the world
-  lda game_state
+  lda <game_state
   bne settle_owed_none      ; so do the menu, dialogue and battle states
   ; A warp first: an event that warps finishes while the box is still up, so the
   ; frame that reads warp_ready after update_entities never runs. Without this
   ; the world gets one more update on a screen the player has already left.
-  lda warp_ready
+  lda <warp_ready
   bne settle_owed_warp
   ; Then the event: a screen that has just arrived, or an actor the player
   ; walked into on the frame before.
-  lda pending_ent
+  lda <pending_ent
   cmp #NO_ENTITY
   beq settle_owed_none
   tax
   lda #NO_ENTITY
-  sta pending_ent           ; disarmed before it runs, not after: the event is
+  sta <pending_ent           ; disarmed before it runs, not after: the event is
                             ; free to warp, and the redraw that follows arms
                             ; whatever the next screen owes
   ; The slot must still hold an actor. Nothing between the arming and here can
@@ -243,7 +243,7 @@ main_loop_ui:
   jsr ui_tick               ; the world is frozen: run the overlay instead
 main_loop_draw:
   .if BATTLE_ENABLED
-  lda game_state
+  lda <game_state
   cmp #ST_BATTLE
   beq main_loop_ready       ; a battle owns the whole sprite shadow and has
   .endif                    ; already rebuilt it in ui_tick
@@ -260,24 +260,24 @@ main_loop_ready:
   ; The handshake with NMI, and deliberately the last store of the frame: until
   ; it lands the queue may be half-written, and NMI leaves a half-written queue
   ; alone rather than drawing part of it.
-  lda vram_len
+  lda <vram_len
   beq main_loop_idle        ; inverted into a jump: the frame between here and
   lda #1                    ; the top is past a branch's 128-byte reach
-  sta vram_ready
+  sta <vram_ready
 main_loop_idle:
   jmp main_loop
 
 take_door:
   lda #0
-  sta warp_ready
-  lda warp_scr
+  sta <warp_ready
+  lda <warp_scr
   cmp #NUM_SCREENS
   bcs take_door_done        ; a target that no longer exists is ignored
-  sta flat_screen
-  lda warp_x
-  sta player_x
-  lda warp_y
-  sta player_y
+  sta <flat_screen
+  lda <warp_x
+  sta <player_x
+  lda <warp_y
+  sta <player_y
   jmp redraw_screen
 take_door_done:
   rts
@@ -286,9 +286,9 @@ take_door_done:
 
 wait_vblank:
   lda #0
-  sta vblank
+  sta <vblank
 wait_vblank_loop:
-  lda vblank
+  lda <vblank
   beq wait_vblank_loop
   rts
 
@@ -348,7 +348,7 @@ nmi:
   lda #$02
   sta $4014                 ; OAM DMA from $0200
 
-  lda vram_ready            ; a frame that ran long has not finished appending;
+  lda <vram_ready            ; a frame that ran long has not finished appending;
   beq nmi_scroll            ; skipping leaves the writes for the next vblank
   jsr vram_drain
 
@@ -419,10 +419,10 @@ nmi_scroll:
   ; a per-frame cost of roughly 1,500-1,600 cycles against a ~2,273-cycle
   ; vblank budget that already spends 513 on that same DMA).
   .if SHAKE_ENABLED
-  lda shake_left
+  lda <shake_left
   beq nmi_scroll_no_shake
-  dec shake_left
-  lda shake_left
+  dec <shake_left
+  lda <shake_left
   and #1
   bne nmi_scroll_shake_neg
   lda #PPUCTRL_ON
@@ -451,9 +451,9 @@ nmi_scroll_done:
   jsr split_arm             ; art back in for the top, first IRQ armed
   .endif
 
-  inc frame_cnt
+  inc <frame_cnt
   lda #1
-  sta vblank
+  sta <vblank
 
   pla
   tay

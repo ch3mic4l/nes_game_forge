@@ -88,13 +88,17 @@ const hasNesasm = spawnSync('nesasm', [], { stdio: 'ignore' }).error?.code !== '
 // dialogue), and sample-rpg-mmc1/ carries Join naming live on Iris alone --
 // all three moved. sample-mmc1/, sample-mmc3/ and sample-u512/ opt into
 // nothing new this phase and are byte-identical to their phase-4 hashes.
+// Re-pinned again for the zero-page kernel diet (docs/design-kernel-diet.md):
+// every operand's own encoding changed (2 bytes instead of 3 for a
+// surviving zero-page access), reflowing every fixture's ROM without
+// changing any of their sizes.
 const BASELINES = {
-  sample: '26899435c92ce55ec1314da290944472c359d27181227fc8e2bfc4c09b6035a5',
-  'sample-rpg': '791b86a9c4a7c64eff0435815e53e92dbe9ee74287e9ab0cc7d8e6f8ce130159',
-  'sample-mmc1': 'f24816f2bd35c7e4df6974823409db384b92cb90bea263b08bdc05fa4d4e2b76',
-  'sample-mmc3': '689bf6cc813dc21870be606d7eac2e892b1fdeb6c33be4238db61d24ad79bf97',
-  'sample-u512': '2a2f9d63a30cde781e34951dff595f777f7beba65472014c881cb525691da3ae',
-  'sample-rpg-mmc1': 'd794127a8c8c49c2d2cf5593e6a75009754517b05ada16c419f66dccd6e4fef5'
+  sample: '442565369e9da7011901b459317adb4d3c07d9c24fd8f388bcf92b731829e846',
+  'sample-rpg': '9c679d1a231a79e21ace5327e4ba69f8d78bf7ef772ab080b41bcaa3445f89c2',
+  'sample-mmc1': '54150a3dc8bc958c56a08b7105423046c8d2503e2c9986210be61387109e9833',
+  'sample-mmc3': '7069a6341ae75c5ed1187981a8a1486cf1e61c4ccb3cdc6b208acec5017362ec',
+  'sample-u512': '44b4d10952d4ce7da7c7113f8bf186fa19b5558ad1cc12caf7a1ee8472547525',
+  'sample-rpg-mmc1': '2d8ad7deb0d24f1ff370d21890e2b0d315dec5a14ef2a1720aeb1427cb5b9a62'
 };
 
 for (const name of Object.keys(BASELINES)) {

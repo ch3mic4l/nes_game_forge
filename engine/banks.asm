@@ -45,13 +45,13 @@ switch_chr_bank:
   lda #0
 switch_chr_mmc1_ok:
   asl a
-  sta mmc_tmp
+  sta <mmc_tmp
   ldx #5
 mmc1_chr_loop:
-  lda mmc_tmp
+  lda <mmc_tmp
   sta $A000                 ; only bit 0 is taken
   lsr a
-  sta mmc_tmp
+  sta <mmc_tmp
   dex
   bne mmc1_chr_loop
   rts
@@ -72,17 +72,17 @@ switch_chr_mmc3_ok:
   asl a
   asl a
   asl a                     ; tileset -> first of its eight 1 KB banks
-  sta mmc_tmp
+  sta <mmc_tmp
   .if SPLIT_ENABLED
   clc                       ; the split's interrupts need to know what "the
   adc #2                    ; map's own art" means for R1 -- see split.asm
-  sta chr_r1
+  sta <chr_r1
   .endif
   ldx #0
 mmc3_chr_loop:
   txa
   sta $8000                 ; registers 0-5 are the CHR slots, in order
-  lda mmc_tmp
+  lda <mmc_tmp
   clc
   adc mmc3_chr_offsets,x
   sta $8001
@@ -107,10 +107,10 @@ switch_chr_u512_ok:
   asl a
   asl a
   asl a                     ; tileset -> bits 5-6
-  sta mmc_tmp
-  lda mapper_shadow
+  sta <mmc_tmp
+  lda <mapper_shadow
   and #$1F                  ; keep the PRG bank
-  ora mmc_tmp
+  ora <mmc_tmp
   jmp write_mapper_reg
   .endif
 
@@ -169,13 +169,13 @@ switch_prg_bank:
 ; the one of the two a player could not even notice happened.
 switch_prg_bank:
   and #$0F                  ; hold PRG-RAM enabled -- see the comment above
-  sta mmc_tmp
+  sta <mmc_tmp
   ldx #5
 mmc1_prg_loop:
-  lda mmc_tmp
+  lda <mmc_tmp
   sta $E000                 ; only bit 0 is taken
   lsr a
-  sta mmc_tmp
+  sta <mmc_tmp
   dex
   bne mmc1_prg_loop
   rts
@@ -206,26 +206,26 @@ mmc1_prg_loop:
 ; rather than a corrupted register.
 switch_prg_bank:
   asl a                     ; 16 KB bank -> the first of its two 8 KB banks
-  sta mmc_tmp               ; shared scratch; only one mapper family is ever built
+  sta <mmc_tmp               ; shared scratch; only one mapper family is ever built
   .if SPLIT_ENABLED
   php
   sei
   lda #1
-  sta split_lock
+  sta <split_lock
   .endif
   lda #6
   sta $8000
-  lda mmc_tmp
+  lda <mmc_tmp
   sta $8001
   lda #7
   sta $8000
-  lda mmc_tmp
+  lda <mmc_tmp
   clc
   adc #1
   sta $8001
   .if SPLIT_ENABLED
   lda #0
-  sta split_lock
+  sta <split_lock
   plp
   .endif
   rts
@@ -240,10 +240,10 @@ mmc3_init:
   .if PRG_SWITCH_UNROM512
 switch_prg_bank:
   and #$1F
-  sta mmc_tmp
-  lda mapper_shadow
+  sta <mmc_tmp
+  lda <mapper_shadow
   and #$E0                  ; keep the CHR page and the mirroring bit
-  ora mmc_tmp
+  ora <mmc_tmp
   jmp write_mapper_reg
 
 ; A = the whole register value. The identity table is 128 bytes of `.db i` in the
@@ -251,7 +251,7 @@ switch_prg_bank:
 ; matches what the ROM is driving onto the bus. It must not live in the switchable
 ; window, or the write would swap the table out from under the read.
 write_mapper_reg:
-  sta mapper_shadow
+  sta <mapper_shadow
   tax
   lda unrom512_identity,x
   sta unrom512_identity,x
@@ -290,13 +290,13 @@ mapper_init:
   lda #$80
   sta $8000                 ; reset the serial port
   lda #($0C | MAPPER_MIRROR)
-  sta mmc_tmp
+  sta <mmc_tmp
   ldx #5
 mmc1_ctrl_loop:
-  lda mmc_tmp
+  lda <mmc_tmp
   sta $8000
   lsr a
-  sta mmc_tmp
+  sta <mmc_tmp
   dex
   bne mmc1_ctrl_loop
   rts
@@ -328,7 +328,7 @@ mapper_init:
 ; comes from the header on this board, so bit 7 stays clear.
 mapper_init:
   lda #0
-  sta mapper_shadow
+  sta <mapper_shadow
   jmp write_mapper_reg
   .endif
 
@@ -352,19 +352,19 @@ mapper_init:
 chr_ram_init:
   ldx #0
 cri_next:
-  stx chr_init_idx
+  stx <chr_init_idx
   txa
   jsr switch_chr_bank       ; select the destination page
-  ldx chr_init_idx
+  ldx <chr_init_idx
   lda tileset_bank,x
   jsr switch_prg_bank       ; and the bank the payload lives in
-  ldx chr_init_idx
+  ldx <chr_init_idx
   lda tileset_lo,x
-  sta ptr_lo
+  sta <ptr_lo
   lda tileset_hi,x
-  sta ptr_hi
+  sta <ptr_hi
   jsr copy_chr_page
-  ldx chr_init_idx
+  ldx <chr_init_idx
   inx
   cpx #NUM_TILESETS
   bne cri_next
@@ -385,7 +385,7 @@ ccp_byte:
   sta $2007
   iny
   bne ccp_byte
-  inc ptr_hi
+  inc <ptr_hi
   dex
   bne ccp_page
   rts
@@ -408,7 +408,7 @@ chr_ram_init:
 ; nothing to call into otherwise.
   .if BATTLE_ENABLED
 call_battle:                ; A = a BE_* entry point
-  sta bt_call
+  sta <bt_call
   lda #BATTLE_BANK
   jsr switch_prg_bank
   jsr battle_entry

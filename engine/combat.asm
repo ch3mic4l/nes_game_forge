@@ -57,18 +57,18 @@
 ; "new game" means the same thing both times.
 init_session:
   lda #MAX_HEARTS
-  sta player_hp
+  sta <player_hp
   lda #0
-  sta player_iframes
-  sta kb_timer
-  sta pickups
-  sta defeated
-  sta inv_count
-  sta inv_sel
-  sta items_used
-  sta paused
+  sta <player_iframes
+  sta <kb_timer
+  sta <pickups
+  sta <defeated
+  sta <inv_count
+  sta <inv_sel
+  sta <items_used
+  sta <paused
   .if MOVE_ENABLED
-  sta mv_left               ; a new game has nothing mid-walk, whatever the last
+  sta <mv_left               ; a new game has nothing mid-walk, whatever the last
                             ; one was doing when it ended
   .endif
   .if FADE_ENABLED
@@ -80,18 +80,18 @@ init_session:
   ; arms a flag; the actual palette restore happens in redraw_screen, under
   ; its own guaranteed forced blank, which every one of this routine's
   ; callers reaches immediately afterward with nothing in between.
-  sta fade_step
-  sta fade_target
-  sta fade_left              ; and no countdown left running either, the same
+  sta <fade_step
+  sta <fade_target
+  sta <fade_left              ; and no countdown left running either, the same
                             ; defensive-clear reasoning mv_left's own clear
                             ; above already applies
   lda #1
-  sta fade_reload             ; "the next redraw_screen must reload the
+  sta <fade_reload             ; "the next redraw_screen must reload the
                               ; palette" -- consumed there, under its own
                               ; forced blank, never here
   lda #0                      ; restore A = 0 for the rest of this routine
   .endif
-  sta talk_ent              ; NO_ENTITY is $FF, but boot re-writes it after this
+  sta <talk_ent              ; NO_ENTITY is $FF, but boot re-writes it after this
   ldx #7
 init_session_switches:
   sta switches,x
@@ -103,7 +103,7 @@ init_session_vars:          ; are the same kind of state and outlive a screen
   dex
   bpl init_session_vars
   lda #NO_MAP               ; forces apply_map_music to redecide even when the
-  sta cur_map               ; next screen is the same map index the player was
+  sta <cur_map               ; next screen is the same map index the player was
                              ; already on -- a game over must not inherit it
   jsr music_stop             ; makes the session's silence real rather than
                               ; merely believed: resetting cur_map is not
@@ -126,7 +126,7 @@ init_session_vars:          ; are the same kind of state and outlive a screen
   .endif
   .if BATTLE_ENABLED
   lda #0
-  sta enc_step
+  sta <enc_step
   ; A status only means anything inside a battle -- battle_begin and
   ; battle_end (engine/rpg.asm) both already hold that at the two ordinary
   ; edges of one, but a defeat is not an ordinary edge: battle_finish jumps
@@ -169,17 +169,17 @@ init_session_name_loop:
 ; it was the floor, which knocks the player straight backwards instead).
 ; Does nothing while the player is still invincible from the last hit.
 hurt_player:
-  ldy player_iframes
+  ldy <player_iframes
   bne hurt_player_done
   pha                        ; hearts to lose -- knockback_dir clobbers A
   lda #IFRAME_TIME
-  sta player_iframes
+  sta <player_iframes
   jsr knockback_dir
   lda #KNOCKBACK_TIME
-  sta kb_timer
+  sta <kb_timer
   pla
   jsr lose_hearts
-  lda player_hp
+  lda <player_hp
   bne hurt_player_done
   jmp player_died
 hurt_player_done:
@@ -201,14 +201,14 @@ hurt_player_done:
 ; reason every caller decides player_died for itself instead of trusting a
 ; callee to jump there on its behalf.
 lose_hearts:
-  sta tmp
-  lda player_hp
+  sta <tmp
+  lda <player_hp
   sec
-  sbc tmp
+  sbc <tmp
   bcs lose_hearts_store
   lda #0                     ; more damage than hearts left
 lose_hearts_store:
-  sta player_hp
+  sta <player_hp
   rts
 
 ; A = hearts to restore, saturating at MAX_HEARTS. The Heal command's own
@@ -218,17 +218,17 @@ lose_hearts_store:
 ; against a MAX_HEARTS far below that, and a value clamped to a byte at
 ; authoring time can still be handed here as large as 255.
 gain_hearts:
-  sta tmp
-  lda player_hp
+  sta <tmp
+  lda <player_hp
   clc
-  adc tmp
+  adc <tmp
   bcs gain_hearts_max         ; wrapped past 255: certainly over MAX_HEARTS
   cmp #MAX_HEARTS+1
   bcc gain_hearts_store
 gain_hearts_max:
   lda #MAX_HEARTS
 gain_hearts_store:
-  sta player_hp
+  sta <player_hp
   rts
 
 ; Which way to be thrown: away from the actor in slot X, on whichever axis it is
@@ -237,12 +237,12 @@ gain_hearts_store:
 knockback_dir:
   cpx #MAX_ENTITIES
   bcc knockback_from_actor
-  lda player_dir            ; hurt by the floor: bounce back the way you came
+  lda <player_dir            ; hurt by the floor: bounce back the way you came
   eor #1
-  sta kb_dir
+  sta <kb_dir
   rts
 knockback_from_actor:
-  lda player_x
+  lda <player_x
   sec
   sbc ent_x,x
   bcs knockback_dx
@@ -250,8 +250,8 @@ knockback_from_actor:
   clc
   adc #1
 knockback_dx:
-  sta chase_dx
-  lda player_y
+  sta <chase_dx
+  lda <player_y
   sec
   sbc ent_y,x
   bcs knockback_dy
@@ -259,30 +259,30 @@ knockback_dx:
   clc
   adc #1
 knockback_dy:
-  sta chase_dy
-  cmp chase_dx              ; A still holds the vertical distance
+  sta <chase_dy
+  cmp <chase_dx              ; A still holds the vertical distance
   bcc knockback_side
 
-  lda player_y
+  lda <player_y
   cmp ent_y,x
   bcs knockback_down
   lda #DIR_UP
-  sta kb_dir
+  sta <kb_dir
   rts
 knockback_down:
   lda #DIR_DOWN
-  sta kb_dir
+  sta <kb_dir
   rts
 knockback_side:
-  lda player_x
+  lda <player_x
   cmp ent_x,x
   bcs knockback_right
   lda #DIR_LEFT
-  sta kb_dir
+  sta <kb_dir
   rts
 knockback_right:
   lda #DIR_RIGHT
-  sta kb_dir
+  sta <kb_dir
   rts
 
 ; Run instead of reading the pad while kb_timer lasts, so being hit throws you
@@ -290,10 +290,10 @@ knockback_right:
 ; Screen edges and walls still stop the slide -- the move_* routines do the
 ; collision, exactly as they do for a step the player asked for.
 knockback_step:
-  dec kb_timer
+  dec <kb_timer
   lda #KNOCKBACK_SPEED
-  sta cur_speed
-  lda kb_dir
+  sta <cur_speed
+  lda <kb_dir
   cmp #DIR_UP
   beq knockback_up
   cmp #DIR_LEFT
@@ -324,22 +324,22 @@ knockback_right_step:
 player_hazard:
   lda #COMBAT_ENABLED
   beq player_hazard_done
-  lda player_iframes
+  lda <player_iframes
   bne player_hazard_done
-  lda player_x
+  lda <player_x
   clc
   adc #8
-  sta probe_x
-  lda player_y
+  sta <probe_x
+  lda <player_y
   clc
   adc #12
-  sta probe_y
+  sta <probe_y
   jsr probe_type
   cmp #COL_DAMAGE
   bne player_hazard_done
   .if BATTLE_ENABLED
   lda #IFRAME_TIME
-  sta player_iframes
+  sta <player_iframes
   lda #1
   jsr party_damage
   bne player_hazard_done    ; someone recruited is still standing
@@ -364,20 +364,20 @@ entity_contact:
   ; IFRAME_TIME (player_hazard, above) silently suppressing every contact
   ; battle for the next ~60 frames, RPG monsters included. See combat.test.js.
   .if !BATTLE_ENABLED
-  lda player_iframes
+  lda <player_iframes
   bne entity_contact_done
   .endif
   ldy ent_actor,x
   lda actor_damage,y
   beq entity_contact_done
-  sta ent_tmp2
+  sta <ent_tmp2
   jsr entity_touching_player
   bne entity_contact_done
   .if BATTLE_ENABLED
   jmp touch_encounter       ; in an RPG, walking into a monster starts a fight
   .endif
   .if !BATTLE_ENABLED
-  lda ent_tmp2
+  lda <ent_tmp2
   jmp hurt_player
   .endif
 entity_contact_done:
@@ -385,19 +385,19 @@ entity_contact_done:
 
 player_died:
   lda #0
-  sta player_iframes
-  sta kb_timer
-  sta script_active
+  sta <player_iframes
+  sta <kb_timer
+  sta <script_active
   lda #NO_ENTITY
-  sta talk_ent
+  sta <talk_ent
   lda #ST_GAMEOVER
-  sta game_state
+  sta <game_state
   ; The game-over screen is the message box saying one thing, which is why the
   ; string is emitted whether or not the project has any dialogue of its own.
   lda #LOW(sys_game_over)
-  sta msg_ptr_lo
+  sta <msg_ptr_lo
   lda #HIGH(sys_game_over)
-  sta msg_ptr_hi
+  sta <msg_ptr_hi
   jmp box_say
 
 ; Start, on the game-over screen, goes through restart_game in title.asm: where
@@ -416,10 +416,10 @@ player_died:
 draw_hud:
   lda #COMBAT_ENABLED
   beq draw_hud_done
-  lda game_state
+  lda <game_state
   cmp #ST_TITLE
   beq draw_hud_done         ; no hearts before the game has started
-  ldy oam_idx
+  ldy <oam_idx
   beq draw_hud_done         ; the shadow is completely full
   ldx #0
 draw_hud_loop:
@@ -427,7 +427,7 @@ draw_hud_loop:
   sta OAM,y
   iny
   txa
-  cmp player_hp
+  cmp <player_hp
   bcs draw_hud_empty
   lda #HEART_FULL_TILE
   jmp draw_hud_tile
@@ -452,7 +452,7 @@ draw_hud_tile:
   cpx #MAX_HEARTS
   bne draw_hud_loop
 draw_hud_full:
-  sty oam_idx
+  sty <oam_idx
 draw_hud_done:
   rts
   .endif

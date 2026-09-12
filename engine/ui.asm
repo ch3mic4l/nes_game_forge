@@ -33,11 +33,11 @@ add_item:
   cmp #NO_ITEM
   beq add_item_done
   .endif
-  ldy inv_count
+  ldy <inv_count
   cpy #MAX_ITEMS
   bcs add_item_done
   sta inv_items,y
-  inc inv_count
+  inc <inv_count
 add_item_done:
   rts
 
@@ -46,42 +46,42 @@ add_item_done:
 ; Shares use_item's shape: the bag closes up over the gap, so the row on
 ; screen never has a hole in it and the highlight never points past the end.
 remove_item:
-  sta script_tmp
+  sta <script_tmp
   ldx #0
 remove_item_find:
-  cpx inv_count
+  cpx <inv_count
   bcs remove_item_done      ; not carrying one
   lda inv_items,x
-  cmp script_tmp
+  cmp <script_tmp
   beq remove_item_shift
   inx
   jmp remove_item_find
 remove_item_shift:
   inx
-  cpx inv_count
+  cpx <inv_count
   bcs remove_item_shifted
   lda inv_items,x
   sta inv_items-1,x
   jmp remove_item_shift
 remove_item_shifted:
-  dec inv_count
-  lda inv_sel
-  cmp inv_count
+  dec <inv_count
+  lda <inv_sel
+  cmp <inv_count
   bcc remove_item_done
-  ldx inv_count
+  ldx <inv_count
   beq remove_item_first
   dex
 remove_item_first:
-  stx inv_sel
+  stx <inv_sel
 remove_item_done:
   rts
 
 ; The item action, from gameplay.
 open_menu:
   lda #0
-  sta inv_sel
+  sta <inv_sel
   lda #ST_MENU
-  sta game_state
+  sta <game_state
   rts
 
 ; Shared by cancel, by a second press of item, and by the end of a conversation:
@@ -90,12 +90,12 @@ open_menu:
 ; ended.
 close_ui:
   lda #NO_ENTITY
-  sta talk_ent
+  sta <talk_ent
   lda #0
-  sta box_state
-  sta script_active
+  sta <box_state
+  sta <script_active
   lda #ST_GAMEPLAY
-  sta game_state
+  sta <game_state
   rts
 
 ; use_item_apply's own return code -- purely internal to this file, not part
@@ -119,10 +119,10 @@ USE_ITEM_DIED  = 2
 ; makes that jmp safe here: there is no return address of use_item's own on
 ; the stack to strand.
 use_item:
-  lda inv_count
+  lda <inv_count
   beq use_item_done         ; an empty bag has nothing to spend
-  ldx inv_sel
-  cpx inv_count
+  ldx <inv_sel
+  cpx <inv_count
   bcs use_item_done
   .if ITEMS_ENABLED
   lda inv_items,x
@@ -130,26 +130,26 @@ use_item:
   cmp #USE_ITEM_NONE
   beq use_item_done            ; a key item: nothing applied, nothing spent
   pha                          ; remember alive-vs-died across the shift below, which clobbers A
-  ldx inv_sel                  ; reload explicitly -- X is not trustworthy after use_item_apply
+  ldx <inv_sel                  ; reload explicitly -- X is not trustworthy after use_item_apply
   .endif
 use_item_shift:
   inx
-  cpx inv_count
+  cpx <inv_count
   bcs use_item_shifted
   lda inv_items,x
   sta inv_items-1,x
   jmp use_item_shift
 use_item_shifted:
-  dec inv_count
-  inc items_used
-  lda inv_sel               ; spending the last item pulls the highlight back
-  cmp inv_count
+  dec <inv_count
+  inc <items_used
+  lda <inv_sel               ; spending the last item pulls the highlight back
+  cmp <inv_count
   bcc use_item_highlight_done
-  ldx inv_count
+  ldx <inv_count
   beq use_item_first
   dex
 use_item_first:
-  stx inv_sel
+  stx <inv_sel
 use_item_highlight_done:
   .if ITEMS_ENABLED
   pla
@@ -208,7 +208,7 @@ use_item_apply_damage:
   .endif
   .if !BATTLE_ENABLED
   jsr lose_hearts
-  lda player_hp
+  lda <player_hp
   bne use_item_apply_alive
   .endif
   lda #USE_ITEM_DIED
@@ -227,9 +227,9 @@ use_item_apply_none:
 ; its event; an actor without one still gets the portrait, which is all this
 ; engine had before there was a font.
 start_dialog:
-  stx talk_ent
+  stx <talk_ent
   lda #ST_DIALOG
-  sta game_state
+  sta <game_state
   jmp script_start
 
 ; ------------------------------------------------------------------ tick
@@ -259,13 +259,13 @@ ui_tick:
   ; table: a table is a second place an order has to be kept in step with
   ; something else, for two entries that do not need one.
   .if MOVE_ENABLED
-  lda mv_left
+  lda <mv_left
   beq ui_tick_wait
   jmp move_tick
   .endif
 ui_tick_wait:
   .if WAIT_ENABLED
-  lda wt_left
+  lda <wt_left
   beq ui_tick_fade
   jmp wait_tick
   .endif
@@ -275,12 +275,12 @@ ui_tick_fade:
   ; more than one be non-zero at a time, so this is one more flat `lda`/`beq`/
   ; `jmp` triplet rather than a second mechanism.
   .if FADE_ENABLED
-  lda fade_left
+  lda <fade_left
   beq ui_tick_state
   jmp fade_tick
   .endif
 ui_tick_state:
-  lda game_state
+  lda <game_state
   cmp #ST_DIALOG
   bne ui_tick_gameover
   jmp text_tick             ; the box types itself out one step per frame
@@ -311,29 +311,29 @@ ui_tick_nameentry:
 ui_tick_menu:
   cmp #ST_MENU
   bne ui_tick_done
-  lda inv_count
+  lda <inv_count
   cmp #2
   bcc ui_tick_done          ; nothing to choose between
-  lda pad_new
+  lda <pad_new
   and #BTN_LEFT
   beq ui_tick_right
-  ldx inv_sel
+  ldx <inv_sel
   bne ui_tick_left
-  ldx inv_count             ; the row wraps at both ends
+  ldx <inv_count             ; the row wraps at both ends
 ui_tick_left:
   dex
-  stx inv_sel
+  stx <inv_sel
 ui_tick_right:
-  lda pad_new
+  lda <pad_new
   and #BTN_RIGHT
   beq ui_tick_done
-  ldx inv_sel
+  ldx <inv_sel
   inx
-  cpx inv_count
+  cpx <inv_count
   bcc ui_tick_store
   ldx #0
 ui_tick_store:
-  stx inv_sel
+  stx <inv_sel
 ui_tick_done:
   rts
 
@@ -343,10 +343,10 @@ ui_tick_done:
 ; is not one.
 ui_tick_dead:
   jsr text_tick
-  lda box_state
+  lda <box_state
   cmp #BOX_ENDWAIT
   bne ui_tick_dead_done     ; the message is still typing itself out
-  lda pad_new
+  lda <pad_new
   and #BTN_START
   beq ui_tick_dead_done
   jmp restart_game
@@ -357,17 +357,17 @@ ui_tick_dead_done:
 
 draw_ui:
   .if NAME_ENTRY_ENABLED
-  lda box_state
+  lda <box_state
   cmp #BOX_NAMEENTRY
   bne draw_ui_notname
-  lda box_row
+  lda <box_row
   cmp #BOX_TEXT_ROWS
   bcc draw_ui_notname
   jmp name_draw              ; shim -- tail call either way, runs
                               ; draw_nameentry_cursor
 draw_ui_notname:
   .endif
-  lda game_state
+  lda <game_state
   cmp #ST_MENU
   beq draw_menu
   cmp #ST_DIALOG
@@ -375,13 +375,13 @@ draw_ui_notname:
   rts
 
 draw_menu:
-  lda inv_count
+  lda <inv_count
   beq draw_menu_done        ; an empty bag draws nothing at all
   lda #0
-  sta ui_slot
+  sta <ui_slot
 draw_menu_loop:
   lda #ITEM_ROW_X
-  ldx ui_slot
+  ldx <ui_slot
   beq draw_menu_placed
 draw_menu_step:
   clc
@@ -389,20 +389,20 @@ draw_menu_step:
   dex
   bne draw_menu_step
 draw_menu_placed:
-  sta de_ex
+  sta <de_ex
 
   lda #ITEM_ROW_Y
-  sta de_ey
-  lda ui_slot               ; the highlighted item bobs: that is the cursor
-  cmp inv_sel
+  sta <de_ey
+  lda <ui_slot               ; the highlighted item bobs: that is the cursor
+  cmp <inv_sel
   bne draw_menu_item
-  lda frame_cnt
+  lda <frame_cnt
   and #$10
   beq draw_menu_item
   lda #ITEM_ROW_Y-ITEM_LIFT
-  sta de_ey
+  sta <de_ey
 draw_menu_item:
-  ldx ui_slot
+  ldx <ui_slot
   lda inv_items,x
   .if ITEMS_ENABLED
   jsr draw_item_icon
@@ -411,30 +411,30 @@ draw_menu_item:
   jsr draw_actor_icon
   .endif
 
-  inc ui_slot
-  lda ui_slot
-  cmp inv_count
+  inc <ui_slot
+  lda <ui_slot
+  cmp <inv_count
   bne draw_menu_loop
 draw_menu_done:
   rts
 
 draw_dialog:
-  lda box_state
+  lda <box_state
   bne draw_dialog_done      ; a message box speaks for itself
-  ldx talk_ent
+  ldx <talk_ent
   cpx #MAX_ENTITIES
   bcs draw_dialog_done      ; NO_ENTITY: nobody is speaking
   lda ent_active,x
   beq draw_dialog_done      ; the slot emptied out from under the conversation
   lda #PORTRAIT_X
-  sta de_ex
+  sta <de_ex
   lda #PORTRAIT_Y
-  sta de_ey
-  lda frame_cnt
+  sta <de_ey
+  lda <frame_cnt
   and #$10
   beq draw_dialog_speaker
   lda #PORTRAIT_Y-PORTRAIT_LIFT
-  sta de_ey
+  sta <de_ey
 draw_dialog_speaker:
   lda ent_actor,x
   jmp draw_actor_icon
@@ -453,29 +453,29 @@ draw_dialog_done:
 ; preserved automatically -- the battle sprite loop relies on X surviving the
 ; jsr.
 draw_actor_icon:
-  sta ptr_lo
+  sta <ptr_lo
   lda #0
-  asl ptr_lo
+  asl <ptr_lo
   rol a
-  asl ptr_lo
+  asl <ptr_lo
   rol a                     ; {a,ptr_lo} = actor * 4, as a 16-bit value
-  sta ptr_hi
-  lda ptr_lo
+  sta <ptr_hi
+  lda <ptr_lo
   clc
   adc #LOW(actor_anim_dir)
-  sta ptr_lo
-  lda ptr_hi
+  sta <ptr_lo
+  lda <ptr_hi
   adc #HIGH(actor_anim_dir)
-  sta ptr_hi
+  sta <ptr_hi
   ldy #0                    ; DIR_DOWN: the icon always faces the camera
   lda [ptr_lo],y
   cmp #NO_ANIM
   beq draw_actor_icon_done
   tay
   lda anim_ptr_lo,y
-  sta ptr_lo
+  sta <ptr_lo
   lda anim_ptr_hi,y
-  sta ptr_hi
+  sta <ptr_hi
   ldy #0
   lda [ptr_lo],y            ; frame 0's metasprite
   jmp draw_metasprite
@@ -522,7 +522,7 @@ draw_item_icon_done:
 name_begin:                 ; A = the party slot to name -- always 0, the
                              ; hero, from every hook site that reaches this
   .if NAME_ENTRY_BANKED
-  sta bt_arg
+  sta <bt_arg
   lda #BE_NAME_BEGIN
   jmp call_battle
   .endif
