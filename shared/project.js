@@ -3328,6 +3328,114 @@ export function renumberMetaspriteDeletion(project, index) {
 }
 
 // ---------------------------------------------------------------------------
+// Battle-side animation (ROADMAP item 14 point 3 + item 13 point 2), phase 1a:
+// the animation reference-integrity fix (docs/design-battle-animation.md §3.1).
+// ---------------------------------------------------------------------------
+
+/**
+ * The one top-level rule for whether `id` names a real row in
+ * `project.sprites.animations`. `id < NO_ANIM` matters independently of
+ * catalog length: `LIMITS.animations = NO_ANIM = 255` is a ceiling, not a
+ * count, so a hand-edited or foreign project's catalog can genuinely hold
+ * more than 255 rows, or a reference can simply be 255 on a much smaller
+ * catalog -- `id < animations.length` alone would treat a 255 reference as
+ * "the last real entry" whenever the catalog happened to have 256+ rows.
+ */
+export function isValidAnimationRef(id, project) {
+  return Number.isInteger(id) && id >= 0 && id < project.sprites.animations.length && id < NO_ANIM;
+}
+
+/**
+ * The second hop: a real, in-range animation is not yet safe to play.
+ * `draw_metasprite` (`engine/entities.asm`) dereferences whatever
+ * `metaspriteId` a frame names with no bounds check of its own, and
+ * `normalizeAnimation` only clamps a frame's `metaspriteId` to a byte, never
+ * to the metasprite catalog. An animation with zero frames is vacuously
+ * playable (`.every()` on an empty array is `true`) -- that is deliberate;
+ * a separate, later check is what turns "playable but empty" into "arms
+ * nothing."
+ */
+export function isPlayableBattleAnimation(id, project) {
+  if (!isValidAnimationRef(id, project)) return false;
+  const frames = project.sprites.animations[id].frames ?? [];
+  return frames.every(
+    (frame) =>
+      Number.isInteger(frame.metaspriteId) &&
+      frame.metaspriteId >= 0 &&
+      frame.metaspriteId < project.sprites.metasprites.length
+  );
+}
+
+/**
+ * The single location authority for every place an animation id is stored:
+ * an actor's four `ANIM_SLOTS` (`battleOnly: false`), an actor's own
+ * `battle.attackAnim` (`battleOnly: true`), and a spell's own `anim`
+ * (`battleOnly: true`). Used by deletion, validation, and (in a later phase)
+ * battle-id collection -- not a claim that every existing semantic reader of
+ * an animation id goes through this (`animFor`, `reachablePoses`, and
+ * palette-swap's own cloning still read/write actor `anims` directly, for
+ * their own directional-pose or worst-case-tile-count questions).
+ */
+export function* animationReferenceLocations(project) {
+  const actors = project.sprites?.actors ?? [];
+  for (let actorIndex = 0; actorIndex < actors.length; actorIndex++) {
+    const actor = actors[actorIndex];
+    for (const { id: slot, label } of ANIM_SLOTS) {
+      yield {
+        // Optional chaining on the read only: an actor missing `anims`
+        // entirely (hand-constructed test data, or foreign/hand-edited data
+        // predating normalizeActor) must read as "no reference" rather than
+        // crash the whole traversal for every other, well-formed location.
+        // The setter is never reached in that case -- every caller skips a
+        // null/undefined `get()` before calling `set()`.
+        get: () => actor.anims?.[slot],
+        set: (id) => { actor.anims[slot] = id; },
+        battleOnly: false,
+        describe: () => `Actor ${actorIndex} ("${actor.name}")'s ${label}`
+      };
+    }
+    if (actor.battle) {
+      yield {
+        get: () => actor.battle.attackAnim,
+        set: (id) => { actor.battle.attackAnim = id; },
+        battleOnly: true,
+        describe: () => `Actor ${actorIndex} ("${actor.name}")'s attack animation`
+      };
+    }
+  }
+  const spells = project.spells ?? [];
+  for (let spellIndex = 0; spellIndex < spells.length; spellIndex++) {
+    const spell = spells[spellIndex];
+    yield {
+      get: () => spell.anim,
+      set: (id) => { spell.anim = id; },
+      battleOnly: true,
+      describe: () => `Spell ${spellIndex} ("${spell.name}")'s cast animation`
+    };
+  }
+}
+
+/**
+ * Must be called BEFORE `project.sprites.animations[index]` is spliced out --
+ * `isValidAnimationRef` queries `animations.length`, so calling this after
+ * the splice would validate every reference against the wrong, already-
+ * shrunk catalog. Only a reference that is already valid against the
+ * pre-splice catalog is ever touched; an invalid one (255, or an id past an
+ * already over-cap catalog) is left exactly as it is -- visibly invalid,
+ * never silently decremented into a real, wrong id.
+ */
+export function renumberAnimationDeletion(project, index) {
+  for (const location of animationReferenceLocations(project)) {
+    const id = location.get();
+    if (id === null || id === undefined) continue;
+    if (!isValidAnimationRef(id, project)) continue;
+    if (id === index) location.set(null);
+    else if (id > index) location.set(id - 1);
+  }
+  return project;
+}
+
+// ---------------------------------------------------------------------------
 // Palette-swap an existing sprite (ROADMAP item 8): duplicate an actor with
 // every tile currently painted in one sprite palette slot repainted into
 // another. `actor.anims` -> `project.sprites.animations` -> `project.sprites.
@@ -3868,12 +3976,15 @@ export function describeFieldDensityWarning(project, mapIndex, screenIndex, coun
  * otherwise" shape the Sprite Forge's own Add-actor/Add-metasprite handlers
  * already use. Also refuses, the identical way, if `source.anims` names an
  * animation id with no matching entry in `project.sprites.animations` --
- * reachable today because "Delete animation" (`renderer/forges/sprite/
- * sprite.js`) never fixes up an actor's own `anims` the way
- * `renumberActorDeletion`/`renumberMetaspriteDeletion` do for their own id
- * spaces, so a stale reference is real, existing data this function must not
- * crash on (`structuredClone(undefined)`) or silently mis-clone (a stale
- * index that now aliases a different, real animation). The identical guard
+ * "Delete animation" (`renderer/forges/sprite/sprite.js`) now cascades
+ * through `renumberAnimationDeletion` the same way
+ * `renumberActorDeletion`/`renumberMetaspriteDeletion` already do for their
+ * own id spaces, so this guard is for a project saved by the OLD,
+ * non-cascading Delete handler before this change (a real, likely source),
+ * or hand-edited or later-version data, rather than a gap in today's Sprite
+ * Forge: a stale reference is still real data this function must not crash
+ * on (`structuredClone(undefined)`) or silently mis-clone (a stale index
+ * that now aliases a different, real animation). The identical guard
  * applies one hop further into the graph, for a frame naming a metasprite id
  * with no matching entry in `project.sprites.metasprites` -- not reachable
  * through today's Sprite Forge (`renumberMetaspriteDeletion` does cascade-fix
@@ -3906,15 +4017,17 @@ export function duplicateActorPaletteSwapCore(project, actorIndex, fromPalette, 
   if (project.sprites.actors.length >= LIMITS.actors) return;
   if (project.sprites.metasprites.length + metaspriteIds.length > LIMITS.metasprites) return;
   if (project.sprites.animations.length + animIds.length > LIMITS.animations) return;
-  // A stale animation id (reachable today: "Delete animation" in
-  // renderer/forges/sprite/sprite.js splices project.sprites.animations and
-  // renumbers .id fields, but never fixes up any actor's own anims the way
-  // renumberActorDeletion/renumberMetaspriteDeletion do for their own id
-  // spaces) has nothing real to clone -- structuredClone(undefined) throws,
-  // and worse, the stale index could now alias a different, real animation.
-  // Refused the same way an over-cap clone already is, not fixed up: the
-  // pre-existing "Delete animation doesn't cascade" defect is out of this
-  // slice's scope.
+  // A stale animation id -- possible on a project saved by the OLD,
+  // non-cascading Delete handler before this change (a real, likely source),
+  // or on hand-edited or later-version data; "Delete animation" in
+  // renderer/forges/sprite/sprite.js now cascades through
+  // renumberAnimationDeletion the same way
+  // renumberActorDeletion/renumberMetaspriteDeletion already do for their own
+  // id spaces -- has nothing real to clone: structuredClone(undefined)
+  // throws, and worse, the stale index could now alias a different, real
+  // animation. Refused the same way an over-cap clone already is, not fixed
+  // up: repairing an older save or hand-edited/foreign data is out of this
+  // function's scope.
   if (animIds.some((id) => !project.sprites.animations[id])) return;
   // The identical guard, one hop further into the same graph: a frame naming
   // a metasprite id with no matching entry. Not reachable through today's
@@ -6690,6 +6803,57 @@ export function validateProject(project) {
       `This project has ${project.sprites.metasprites.length} metasprites but the Forge holds ` +
         `${LIMITS.metasprites} (ids 0-${LIMITS.metasprites - 1}) — id $FF is reserved to mean “no icon”. Delete ` +
         `${project.sprites.metasprites.length - LIMITS.metasprites} of them before this can build.`
+    );
+  }
+
+  // The animation catalog's own ceiling -- the LIMITS.actors/items/metasprites
+  // sibling -- checked FIRST, since it is a fact about the project as a
+  // whole, not about any one reference (docs/design-battle-animation.md
+  // §3.1).
+  if (project.sprites.animations.length > LIMITS.animations) {
+    add(
+      'error',
+      'Sprite Forge',
+      `This project has ${project.sprites.animations.length} animations but the Forge holds ` +
+        `${LIMITS.animations} (ids 0-${LIMITS.animations - 1}) — id $FF is reserved to mean “no ` +
+        `animation”. Delete ${project.sprites.animations.length - LIMITS.animations} of them before ` +
+        'this can build.'
+    );
+  }
+
+  // Hop 1: is the reference itself valid?
+  const badAnimationRefs = [];
+  for (const location of animationReferenceLocations(project)) {
+    const id = location.get();
+    if (id === null || id === undefined) continue;
+    if (!isValidAnimationRef(id, project)) badAnimationRefs.push(location.describe());
+  }
+  if (badAnimationRefs.length) {
+    add(
+      'error',
+      'Sprite Forge',
+      `${badAnimationRefs.length} animation reference(s) (${badAnimationRefs.join(', ')}) do not ` +
+        'name a real animation. Pick one or clear it.'
+    );
+  }
+
+  // Hop 2: for a battle-only reference, are the animation's own frames valid?
+  const unplayableBattleAnims = [];
+  for (const location of animationReferenceLocations(project)) {
+    if (!location.battleOnly) continue;
+    const id = location.get();
+    if (id === null || id === undefined) continue;
+    if (isValidAnimationRef(id, project) && !isPlayableBattleAnimation(id, project)) {
+      unplayableBattleAnims.push(location.describe());
+    }
+  }
+  if (unplayableBattleAnims.length) {
+    add(
+      'error',
+      'Sprite Forge',
+      `${unplayableBattleAnims.length} battle animation(s) (${unplayableBattleAnims.join(', ')}) ` +
+        'name an animation with a frame that does not name a real metasprite. Fix the animation in ' +
+        'the Sprite Forge or pick a different one.'
     );
   }
 

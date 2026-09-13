@@ -13,6 +13,7 @@ import {
   tilesetAt,
   renumberActorDeletion,
   renumberMetaspriteDeletion,
+  renumberAnimationDeletion,
   overCapDeleteWarning,
   monsterActorIds,
   actorAnimationIds,
@@ -539,6 +540,7 @@ export function mount(container, app) {
               if (!(await confirmModal('Delete animation', `Delete "${animation.name}"?`, 'Delete'))) return;
               const index = state.animation;
               store.commit('Delete animation', (project) => {
+                renumberAnimationDeletion(project, index);
                 project.sprites.animations.splice(index, 1);
                 project.sprites.animations.forEach((entry, position) => (entry.id = position));
               });
@@ -703,9 +705,11 @@ export function mount(container, app) {
     if (!actor) return 'Select an actor first';
     const animIds = actorAnimationIds(actor);
     if (!animIds.length) return 'This actor has no animation assigned, so there is nothing to swap';
-    // "Delete animation" does not fix up any actor's own anims (a
-    // pre-existing gap outside this feature's scope) -- surfaced here rather
-    // than left for the core function to refuse silently on click.
+    // "Delete animation" now cascades through renumberAnimationDeletion, so
+    // this fires on a project saved by the OLD, non-cascading handler before
+    // this change (a real, likely source -- the whole reason the fix exists),
+    // or on hand-edited or later-version data -- surfaced here rather than
+    // left for the core function to refuse silently on click.
     if (animIds.some((id) => !sprites().animations[id])) {
       return 'This actor references a deleted animation, so it cannot be safely duplicated';
     }

@@ -33,6 +33,12 @@ import {
   renumberItemDeletion,
   renumberMetaspriteDeletion,
   renumberSpellDeletion,
+  // Battle-side animation, phase 1a (docs/design-battle-animation.md §3.1) --
+  NO_ANIM,
+  isValidAnimationRef,
+  isPlayableBattleAnimation,
+  animationReferenceLocations,
+  renumberAnimationDeletion,
   renumberPartyMemberDeletion,
   NO_MEMBER,
   battleFormationSlice,
@@ -2744,6 +2750,286 @@ test('renumberMetaspriteDeletion: an item’s exact-match case is NO_METASPRITE,
   assert.equal(above.metaspriteId, 3, 'an item above the deleted metasprite should shift down');
   assert.equal(alreadyNothing.metaspriteId, NO_METASPRITE, 'an item already carrying NO_METASPRITE should stay that way');
   assert.equal(unset.metaspriteId, null, 'an item that was never set should stay unset, not become NO_METASPRITE');
+});
+
+// --- Battle-side animation, phase 1a (docs/design-battle-animation.md §3.1,
+// §6): the reference-integrity fix for "Delete animation"
+// (renderer/forges/sprite/sprite.js) never renumbering any actor's `anims`,
+// an actor's `battle.attackAnim`, or a spell's `anim`. `battle.attackAnim`
+// and `spell.anim` are not normalizer fields yet (phase 1b) -- set by hand
+// directly on the object, which the traversal does not care about.
+
+function animatedActor(anims, extra = {}) {
+  return { name: 'Actor', anims, ...extra };
+}
+
+test('renumberAnimationDeletion: a reference below the deleted index is untouched, at it becomes null, above it shifts down -- all four anims slots', () => {
+  const project = createProject('Quest');
+  project.sprites.animations = Array.from({ length: 5 }, (_, id) => ({ id, name: `A${id}`, loop: false, frames: [] }));
+  project.sprites.actors = [
+    animatedActor({ idle: 0, walkDown: 2, walkUp: 3, walkSide: 4 })
+  ];
+
+  renumberAnimationDeletion(project, 2);
+
+  // Wrong implementation it catches: a shift that forgets one of the four
+  // ANIM_SLOTS (e.g. only fixing idle/walkDown), leaving walkUp/walkSide
+  // stale after the splice.
+  assert.deepEqual(
+    project.sprites.actors[0].anims,
+    { idle: 0, walkDown: null, walkUp: 2, walkSide: 3 },
+    'idle (below) is untouched, walkDown (exact) becomes null, walkUp and walkSide (above) shift down by one'
+  );
+});
+
+test('renumberAnimationDeletion: a hand-set actor.battle.attackAnim shifts the same way', () => {
+  const project = createProject('Quest');
+  project.sprites.animations = Array.from({ length: 5 }, (_, id) => ({ id, name: `A${id}`, loop: false, frames: [] }));
+  project.sprites.actors = [
+    animatedActor({ idle: 0, walkDown: null, walkUp: null, walkSide: null }, { battle: { attackAnim: 4 } })
+  ];
+
+  renumberAnimationDeletion(project, 2);
+
+  // Wrong implementation it catches: a traversal that only visits
+  // ANIM_SLOTS and never yields battle.attackAnim, leaving it stale.
+  assert.equal(project.sprites.actors[0].battle.attackAnim, 3, 'attackAnim above the deleted index shifts down by one');
+});
+
+test('renumberAnimationDeletion: a hand-set spell.anim shifts the same way', () => {
+  const project = createProject('Quest', 'rpg');
+  project.sprites.animations = Array.from({ length: 5 }, (_, id) => ({ id, name: `A${id}`, loop: false, frames: [] }));
+  project.spells = [{ ...createSpell(0, 'Bolt'), anim: 4 }];
+
+  renumberAnimationDeletion(project, 2);
+
+  // Wrong implementation it catches: a traversal that stops at actors and
+  // never yields a spell's own `anim`.
+  assert.equal(project.spells[0].anim, 3, 'a spell’s cast animation above the deleted index shifts down by one');
+});
+
+test('renumberAnimationDeletion: two actors naming the same animation both shift', () => {
+  const project = createProject('Quest');
+  project.sprites.animations = Array.from({ length: 5 }, (_, id) => ({ id, name: `A${id}`, loop: false, frames: [] }));
+  project.sprites.actors = [
+    animatedActor({ idle: 4, walkDown: null, walkUp: null, walkSide: null }),
+    animatedActor({ idle: 4, walkDown: null, walkUp: null, walkSide: null })
+  ];
+
+  renumberAnimationDeletion(project, 2);
+
+  // Wrong implementation it catches: a shift keyed to "the first location
+  // found" that stops once one reference to the shared id is fixed.
+  assert.equal(project.sprites.actors[0].anims.idle, 3, 'the first actor sharing the deleted-above reference shifts');
+  assert.equal(project.sprites.actors[1].anims.idle, 3, 'the second actor sharing the same reference shifts too');
+});
+
+test('renumberAnimationDeletion: null stays null, and 255 on a normal-size catalog stays 255 (invalid, never decremented into 254)', () => {
+  const project = createProject('Quest');
+  project.sprites.animations = Array.from({ length: 5 }, (_, id) => ({ id, name: `A${id}`, loop: false, frames: [] }));
+  project.sprites.actors = [
+    animatedActor({ idle: null, walkDown: 255, walkUp: null, walkSide: null })
+  ];
+
+  renumberAnimationDeletion(project, 2);
+
+  // Wrong implementation it catches: a blind `id > index ? id - 1 : id`
+  // shift with no isValidAnimationRef guard, decrementing 255 into 254 (a
+  // real, wrong animation) instead of leaving the invalid sentinel alone.
+  assert.equal(project.sprites.actors[0].anims.idle, null, 'null must stay null');
+  assert.equal(project.sprites.actors[0].anims.walkDown, 255, '255 on a 5-entry catalog is already invalid and must be left exactly as it is');
+});
+
+test('renumberAnimationDeletion: on a 256-entry (over-cap) catalog, an invalid 255 reference is untouched and a valid low reference shifts normally', () => {
+  const project = createProject('Quest');
+  project.sprites.animations = Array.from({ length: 256 }, (_, id) => ({ id, name: `A${id}`, loop: false, frames: [] }));
+  project.sprites.actors = [
+    animatedActor({ idle: 255, walkDown: 5, walkUp: null, walkSide: null })
+  ];
+
+  renumberAnimationDeletion(project, 2);
+  project.sprites.animations.splice(2, 1);
+
+  // Wrong implementation it catches (§6 "Deletion below/at/above..." row):
+  // a check that treats "over-cap catalog" as reason to skip every
+  // reference, or one that shifts 255 anyway because animations.length is
+  // now 255 and 255 < 255 is false either way -- id < NO_ANIM must still
+  // refuse it regardless of catalog size.
+  assert.equal(project.sprites.actors[0].anims.idle, 255, 'id 255 is invalid (id < NO_ANIM fails) on any catalog size and must be left untouched');
+  assert.equal(project.sprites.actors[0].anims.walkDown, 4, 'a real, valid low reference above the deleted index shifts down normally even on an over-cap catalog');
+});
+
+test('renumberAnimationDeletion: must be called BEFORE the splice -- calling it after gives a different, wrong answer for the old last index', () => {
+  const beforeProject = createProject('Quest');
+  beforeProject.sprites.animations = Array.from({ length: 5 }, (_, id) => ({ id, name: `A${id}`, loop: false, frames: [] }));
+  beforeProject.sprites.actors = [animatedActor({ idle: 4, walkDown: null, walkUp: null, walkSide: null })];
+  renumberAnimationDeletion(beforeProject, 2);
+  beforeProject.sprites.animations.splice(2, 1);
+
+  const afterProject = createProject('Quest');
+  afterProject.sprites.animations = Array.from({ length: 5 }, (_, id) => ({ id, name: `A${id}`, loop: false, frames: [] }));
+  afterProject.sprites.actors = [animatedActor({ idle: 4, walkDown: null, walkUp: null, walkSide: null })];
+  afterProject.sprites.animations.splice(2, 1);
+  renumberAnimationDeletion(afterProject, 2);
+
+  // This demonstrates renumberAnimationDeletion's own call-order CONTRACT --
+  // it cannot see, and does not prove anything about, whether the real
+  // Sprite Forge handler actually calls it before the splice. That is a
+  // property of sprite.js's own commit body, which only a real end-to-end
+  // exercise of the handler can check: the smoke step 'sprite forge delete
+  // animation (real UI) renumbers every reference' is what enforces the UI
+  // ordering, not this unit test.
+  assert.equal(beforeProject.sprites.actors[0].anims.idle, 3, 'called before the splice, the old last index (4) correctly shifts to 3');
+  assert.equal(afterProject.sprites.actors[0].anims.idle, 4, 'called after the splice, the same reference is wrongly left stale at 4 -- proving the call-order contract');
+  assert.notEqual(beforeProject.sprites.actors[0].anims.idle, afterProject.sprites.actors[0].anims.idle, 'the two call orders must disagree');
+});
+
+test('isValidAnimationRef: rejects non-integer, negative, == length, and 255 on a 256-entry catalog', () => {
+  const project = createProject('Quest');
+  project.sprites.animations = Array.from({ length: 5 }, (_, id) => ({ id, name: `A${id}`, loop: false, frames: [] }));
+
+  // Wrong implementation each assertion catches: a check missing
+  // Number.isInteger (accepting 1.5), missing the >= 0 clause (accepting
+  // -1), using <= instead of < against length (accepting 5), or omitting
+  // the id < NO_ANIM clause entirely (accepting 255 whenever the catalog
+  // happens to be 256+ entries).
+  assert.equal(isValidAnimationRef(1.5, project), false, 'a non-integer id is invalid');
+  assert.equal(isValidAnimationRef(-1, project), false, 'a negative id is invalid');
+  assert.equal(isValidAnimationRef(5, project), false, 'an id equal to animations.length is invalid (one past the end)');
+  assert.equal(isValidAnimationRef(4, project), true, 'the real last index is valid');
+
+  const overCap = createProject('Quest');
+  overCap.sprites.animations = Array.from({ length: 256 }, (_, id) => ({ id, name: `A${id}`, loop: false, frames: [] }));
+  assert.equal(isValidAnimationRef(255, overCap), false, '255 is invalid even on a 256-entry catalog where it would otherwise be "the last real entry"');
+});
+
+test('isPlayableBattleAnimation: an invalid frame metaspriteId (negative, non-integer, or == metasprites.length) makes it unplayable; an empty-frames animation is playable; an invalid top-level id is unplayable', () => {
+  const project = createProject('Quest');
+  project.sprites.metasprites = [{ id: 0, name: 'M0', tiles: [] }, { id: 1, name: 'M1', tiles: [] }];
+  project.sprites.animations = [
+    { id: 0, name: 'Empty', loop: false, frames: [] },
+    { id: 1, name: 'Ok', loop: false, frames: [{ metaspriteId: 1, duration: 8 }] },
+    { id: 2, name: 'Negative', loop: false, frames: [{ metaspriteId: -1, duration: 8 }] },
+    { id: 3, name: 'NonInteger', loop: false, frames: [{ metaspriteId: 0.5, duration: 8 }] },
+    { id: 4, name: 'PastEnd', loop: false, frames: [{ metaspriteId: 2, duration: 8 }] }
+  ];
+
+  // Wrong implementation it catches: a predicate that never inspects
+  // frame.metaspriteId at all (only checking the top-level id, the exact
+  // defect the reviewer's worked example named), or one whose `.every`
+  // check uses <= metasprites.length instead of <.
+  assert.equal(isPlayableBattleAnimation(0, project), true, 'an animation with zero frames is vacuously playable');
+  assert.equal(isPlayableBattleAnimation(1, project), true, 'a frame naming a real metasprite is playable');
+  assert.equal(isPlayableBattleAnimation(2, project), false, 'a frame with a negative metaspriteId is unplayable');
+  assert.equal(isPlayableBattleAnimation(3, project), false, 'a frame with a non-integer metaspriteId is unplayable');
+  assert.equal(isPlayableBattleAnimation(4, project), false, 'a frame naming exactly metasprites.length (one past the end) is unplayable');
+  assert.equal(isPlayableBattleAnimation(255, project), false, 'an invalid top-level id (fails isValidAnimationRef) is unplayable regardless of frames');
+});
+
+test("validateProject: the reviewer's worked example -- spell.anim names an animation whose one frame names a metasprite past the end reports exactly one hop-2 error, and no hop-1 error", () => {
+  const project = normalizeProject({ project: { name: 'Quest', gameType: 'rpg' } });
+  project.sprites.metasprites = [{ id: 0, name: 'M0', tiles: [] }];
+  project.sprites.animations = [{ id: 0, name: 'Bad', loop: false, frames: [{ metaspriteId: 5, duration: 8 }] }];
+  project.spells = [{ ...createSpell(0, 'Bolt'), anim: 0 }];
+
+  const problems = validateProject(project);
+  const hop1 = problems.filter((p) => p.where === 'Sprite Forge' && p.message.includes('do not name a real animation'));
+  const hop2 = problems.filter((p) => p.where === 'Sprite Forge' && p.message.includes('does not name a real metasprite'));
+
+  // Wrong implementation it catches: the exact defect this whole section
+  // closes -- a validator that only checks "is the id real" (hop 1) and
+  // never inspects the animation's own frames (hop 2), letting a garbage
+  // metaspriteId reach draw_metasprite unchecked. Also: a rewrite that
+  // demotes hop 2 to a warning, or that names the wrong location.
+  assert.equal(hop1.length, 0, 'the top-level reference (animation 0) is real, so hop 1 must not fire');
+  assert.equal(hop2.length, 1, 'hop 2 must report exactly one unplayable battle animation');
+  assert.equal(hop2[0].severity, 'error', 'a battle animation with a bad frame is an error, not a warning');
+  assert.ok(hop2[0].message.includes('Spell 0'), 'the message must name the offending spell by index');
+  assert.ok(hop2[0].message.includes('Bolt'), 'the message must name the offending spell by name');
+});
+
+test('validateProject: an actor anims slot naming a deleted animation reports hop 1 and not hop 2 (battleOnly: false skips frame checks)', () => {
+  const project = createProject('Quest');
+  project.sprites.animations = [{ id: 0, name: 'A0', loop: false, frames: [] }];
+  project.sprites.actors = [animatedActor({ idle: 5, walkDown: null, walkUp: null, walkSide: null })];
+
+  const problems = validateProject(project);
+  const hop1 = problems.filter((p) => p.where === 'Sprite Forge' && p.message.includes('do not name a real animation'));
+  const hop2 = problems.filter((p) => p.where === 'Sprite Forge' && p.message.includes('does not name a real metasprite'));
+
+  // Wrong implementation it catches: with an INVALID top-level reference
+  // (id 5 on a one-entry catalog), isValidAnimationRef alone already
+  // suppresses hop 2 for every location, battleOnly or not -- so this case
+  // by itself would pass even with `if (!location.battleOnly) continue`
+  // deleted from the hop-2 loop. It only proves hop 1 fires and hop 2 stays
+  // silent for an overworld slot; it does not yet prove hop 2 is SKIPPED
+  // because the location is overworld, as opposed to skipped because the
+  // reference already failed hop 1. The second case below closes that gap.
+  assert.equal(hop1.length, 1, 'an invalid overworld anims reference reports hop 1');
+  assert.equal(hop2.length, 0, 'an overworld anims slot (battleOnly: false) is never subject to the hop-2 frame check');
+
+  // The gap: a VALID overworld reference (idle: 0) whose animation has a
+  // frame naming a metasprite past the end. isValidAnimationRef(0, project)
+  // is true here, so hop 2 would fire on this location if the battleOnly
+  // guard were ever deleted -- this is the case a mutant that removes
+  // `if (!location.battleOnly) continue` actually needs to be caught by.
+  const validRefProject = createProject('Quest');
+  validRefProject.sprites.metasprites = [{ id: 0, name: 'M0', tiles: [] }];
+  validRefProject.sprites.animations = [
+    { id: 0, name: 'BadFrame', loop: false, frames: [{ metaspriteId: 5, duration: 8 }] }
+  ];
+  validRefProject.sprites.actors = [animatedActor({ idle: 0, walkDown: null, walkUp: null, walkSide: null })];
+
+  const validRefProblems = validateProject(validRefProject);
+  const validRefHop1 = validRefProblems.filter((p) => p.where === 'Sprite Forge' && p.message.includes('do not name a real animation'));
+  const validRefHop2 = validRefProblems.filter((p) => p.where === 'Sprite Forge' && p.message.includes('does not name a real metasprite'));
+
+  assert.equal(validRefHop1.length, 0, 'a valid top-level reference must not report hop 1');
+  assert.equal(
+    validRefHop2.length,
+    0,
+    'an overworld anims slot must never be subject to hop 2, even when its animation is otherwise valid but its own frame is not -- ' +
+      'the case the battleOnly guard actually exists to suppress'
+  );
+});
+
+test('validateProject: a 256-entry animation catalog with a 255 reference reports BOTH the cap error and the hop-1 error, in that order', () => {
+  const project = createProject('Quest');
+  project.sprites.animations = Array.from({ length: 256 }, (_, id) => ({ id, name: `A${id}`, loop: false, frames: [] }));
+  project.sprites.actors = [animatedActor({ idle: 255, walkDown: null, walkUp: null, walkSide: null })];
+
+  const problems = validateProject(project);
+  const spriteForgeAnimErrors = problems.filter(
+    (p) => p.where === 'Sprite Forge' && (p.message.includes('animations but the Forge holds') || p.message.includes('do not name a real animation'))
+  );
+
+  // Wrong implementation it catches: an early return after the cap check
+  // that would collect only the first matching diagnostic instead of both,
+  // or a severity downgrade on either one.
+  assert.equal(spriteForgeAnimErrors.length, 2, 'both the cap error and the bad-reference error must be reported, not just the first');
+  assert.ok(spriteForgeAnimErrors[0].message.includes('animations but the Forge holds'), 'the cap error is reported first');
+  assert.equal(spriteForgeAnimErrors[0].severity, 'error', 'the cap diagnostic must be an error');
+  assert.ok(spriteForgeAnimErrors[1].message.includes('do not name a real animation'), 'the bad-reference error is reported second');
+  assert.equal(spriteForgeAnimErrors[1].severity, 'error', 'the bad-reference diagnostic must be an error');
+});
+
+test('validateProject: none of the three new animation-reference messages fire on any of the six checked-in fixtures', async () => {
+  const fixtures = ['sample', 'sample-rpg', 'sample-mmc1', 'sample-mmc3', 'sample-u512', 'sample-rpg-mmc1'];
+  for (const fixture of fixtures) {
+    const project = await loadProject(path.join(ROOT, fixture));
+    const problems = validateProject(project);
+    const newErrors = problems.filter(
+      (p) =>
+        p.where === 'Sprite Forge' &&
+        (p.message.includes('animations but the Forge holds') ||
+          p.message.includes('do not name a real animation') ||
+          p.message.includes('does not name a real metasprite'))
+    );
+    // Wrong implementation it catches: a predicate mismatched against real
+    // normalized data (e.g. reading a field the normalizer never sets),
+    // firing false positives on every project that has ever loaded cleanly.
+    assert.deepEqual(newErrors, [], `${fixture} must raise none of the three new animation-reference messages`);
+  }
 });
 
 // Round 4 finding (Medium 4): a malformed explicit metaspriteId must not

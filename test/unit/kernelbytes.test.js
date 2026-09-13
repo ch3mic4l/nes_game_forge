@@ -4869,6 +4869,22 @@ test(
   }
 );
 
+// Phase 1a (docs/design-battle-animation.md §3.1) made validateProject
+// refuse a stale animation reference. The three tests below load SAMPLE and
+// then replace project.sprites.metasprites/animations wholesale with a
+// small, deliberately-controlled array to isolate one table's own byte
+// cost -- leaving SAMPLE's own actors, whose anims name SAMPLE's real
+// (now-replaced) animation ids, stale by construction. None of these tests
+// care what an actor draws; this clears every actor's anims/attackAnim so
+// the resulting project stays valid under the new check, with the same
+// actor count and shape kernelCodeBytes/kernelTableBytes already assumed.
+function clearActorAnimationRefs(project) {
+  for (const actor of project.sprites.actors) {
+    if (actor.anims) actor.anims = { idle: null, walkDown: null, walkUp: null, walkSide: null };
+    if (actor.battle) actor.battle.attackAnim = null;
+  }
+}
+
 // P1-A2 fix (phase 3 fix round 3b): metaspriteKernelBytes' own new
 // placeholder terms -- going from zero metasprites (or zero animations) to
 // one real one (non-empty tiles/frames, so this stays clear of the
@@ -4886,6 +4902,7 @@ test(
       project.cartridge.mapper = mapper.id;
       project.sprites.metasprites = metasprite ? [{ id: 0, name: 'MS', tiles: [{ tile: 1 }] }] : [];
       project.sprites.animations = animation ? [{ id: 0, name: 'Anim', loop: true, frames: [{ metaspriteId: 0 }] }] : [];
+      clearActorAnimationRefs(project);
       const dir = await fsp.mkdtemp(path.join(os.tmpdir(), 'forge-msplaceholder-'));
       t.after(() => fsp.rm(dir, { recursive: true, force: true }));
       const built = await buildProject({ dir, project, log: () => {} });
@@ -4933,6 +4950,7 @@ test(
       project.cartridge.mapper = mapper.id;
       project.sprites.metasprites = [{ id: 0, name: 'MS', tiles }];
       project.sprites.animations = [{ id: 0, name: 'Anim', loop: true, frames }];
+      clearActorAnimationRefs(project);
       const dir = await fsp.mkdtemp(path.join(os.tmpdir(), 'forge-msperentry-'));
       t.after(() => fsp.rm(dir, { recursive: true, force: true }));
       const built = await buildProject({ dir, project, log: () => {} });
@@ -4994,6 +5012,7 @@ test(
         { id: 0, name: 'A', loop: true, frames: [] },
         { id: 1, name: 'B', loop: true, frames: [] }
       ];
+      clearActorAnimationRefs(project);
       const margin = await measureWholeBank(t, mapper, project);
       assert.ok(margin >= KERNEL_SLACK, `${mapper.name}: whole-bank margin ${margin} is under KERNEL_SLACK`);
       assert.ok(margin <= KERNEL_SLACK * 2, `${mapper.name}: whole-bank margin ${margin} is over 2*KERNEL_SLACK`);

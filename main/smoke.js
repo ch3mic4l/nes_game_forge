@@ -4318,6 +4318,166 @@ const scenario = (dir, sampleDir, sampleRpgDir) => `
   }
   step('sprite forge tabs', 'animations and actors render');
 
+  // Phase 1a follow-up (docs/design-battle-animation.md §3.1): the Sprite
+  // Forge's real "Delete animation" button must call renumberAnimationDeletion
+  // BEFORE splicing the catalog, the same way the exported function's own
+  // unit tests exercise it directly -- but nothing here ever clicked the real
+  // ✕ button, so deleting that one call from sprite.js failed no test.
+  // Catches: the handler splicing without calling renumberAnimationDeletion
+  // at all (a stale reference survives untouched), or calling it after the
+  // splice (every reference is checked against the wrong, already-shrunk
+  // catalog, so the old last index is wrongly left stale instead of
+  // shifting). Runs while sample/ still has exactly its own three
+  // animations, before the palette-swap step below adds two more.
+  {
+    const animDeleteStore = window.__app.store;
+    // Snapshotted before anything here runs, and restored by directly
+    // reassigning these two arrays back (not store.undo()): commit() mutates
+    // store.project in place, and undo() would only swap store.project to a
+    // clone, leaving sample.value.project itself -- the very object every
+    // later sample-based step reopens by reference -- still carrying this
+    // block's own edits (see the items delete-race comment above, and the
+    // over-cap delete-warning step below, for the same trap).
+    const beforeAnimations = structuredClone(animDeleteStore.project.sprites.animations);
+    const beforeActors = structuredClone(animDeleteStore.project.sprites.actors);
+
+    // sample/ ships exactly three animations (below/exact/above all real
+    // indices); top up with scratch ones only if some future fixture change
+    // ever leaves fewer than three to pick those indices from.
+    if (animDeleteStore.project.sprites.animations.length < 3) {
+      animDeleteStore.commit('Smoke: scratch animations for the delete-animation UI check', (project) => {
+        while (project.sprites.animations.length < 3) {
+          const id = project.sprites.animations.length;
+          project.sprites.animations.push({ id, name: 'Scratch ' + id, loop: true, frames: [] });
+        }
+      });
+    }
+
+    const deleteIndex = 1;
+    const belowIndex = deleteIndex - 1;
+    const aboveIndex = deleteIndex + 1;
+
+    animDeleteStore.commit('Smoke: scratch actor for the delete-animation UI check', (project) => {
+      const id = project.sprites.actors.length;
+      project.sprites.actors.push({
+        id,
+        name: 'Anim-Delete-Smoke',
+        behavior: 'npc',
+        speed: 0,
+        hp: 1,
+        damage: 0,
+        anims: { idle: belowIndex, walkDown: deleteIndex, walkUp: aboveIndex, walkSide: null }
+      });
+    });
+    await wait(150);
+
+    [...document.querySelectorAll('#stage .tab')].find((t) => t.textContent === 'Animations').click();
+    await wait(250);
+    const preSelectAnimRow = document.querySelectorAll('#stage .field-row')[0];
+    const preSelectAnimSelect = preSelectAnimRow && preSelectAnimRow.querySelector('select');
+    if (!preSelectAnimSelect) throw new Error('Animations tab has no animation select');
+    preSelectAnimSelect.value = String(deleteIndex);
+    preSelectAnimSelect.dispatchEvent(new Event('change'));
+    await wait(200);
+
+    // The change just dispatched runs sprite.js's own onchange handler,
+    // which calls render() synchronously -- renderAnimationPane() replaces
+    // the pane's children through fill(), so preSelectAnimRow (and any
+    // button inside it) is now a detached, stale DOM subtree. Re-query the
+    // live row after the change has settled, or the ✕ this clicks belongs
+    // to the animation that was selected BEFORE the change, not the one
+    // just chosen for deletion.
+    const animRow = document.querySelectorAll('#stage .field-row')[0];
+    if (!animRow) throw new Error('Animations tab has no field-row after selecting the target animation');
+
+    // Read before the click, from the live project -- not the confirmation
+    // dialog's own text -- so this proves the dialog names the animation
+    // actually about to be deleted rather than merely containing some name.
+    const deletedAnimationName = animDeleteStore.project.sprites.animations[deleteIndex].name;
+    // Recorded here, after the (possible) top-up above and right before the
+    // click: beforeAnimations is the pre-top-up snapshot kept for the
+    // revert, but the real deletion always removes exactly one entry from
+    // whatever the catalog holds at the moment of the click, which can be
+    // longer than beforeAnimations when the top-up branch ran.
+    const lengthBeforeDelete = animDeleteStore.project.sprites.animations.length;
+
+    // Scoped to the top field-row (select + "+" + "✕") specifically, not
+    // just any '✕' in #stage -- a frame row (below, once an animation is
+    // selected) renders its own '✕' per frame, and the selected animation
+    // here has one.
+    const deleteAnimButton = [...animRow.querySelectorAll('button.btn.btn-sm')].find((b) => b.textContent.trim() === '✕');
+    if (!deleteAnimButton) throw new Error('Animations tab has no delete-animation button');
+    if (!deleteAnimButton.isConnected) throw new Error('the queried delete-animation button is not connected to the live DOM');
+    deleteAnimButton.click();
+    await until('the delete-animation confirmation', () => document.querySelector('#modalHost .modal-head'));
+    if (document.querySelector('#modalHost .modal-head').textContent !== 'Delete animation') {
+      throw new Error('unexpected modal opened: ' + document.querySelector('#modalHost .modal-head').textContent);
+    }
+    const confirmBodyText = document.querySelector('#modalHost p') ? document.querySelector('#modalHost p').textContent : '';
+    if (!confirmBodyText.includes(deletedAnimationName)) {
+      throw new Error(
+        'the delete-animation confirmation must name the animation actually being deleted ("' +
+          deletedAnimationName +
+          '"), saw: "' +
+          confirmBodyText +
+          '"'
+      );
+    }
+    const confirmDeleteAnim = [...document.querySelectorAll('#modalHost button')].find((b) => b.textContent.trim() === 'Delete');
+    if (!confirmDeleteAnim) throw new Error('the delete-animation confirmation has no Delete button');
+    confirmDeleteAnim.click();
+    await until('the delete-animation confirmation to close', () => document.querySelector('#modalHost').hidden);
+    await wait(150);
+
+    const scratchActorAfter = animDeleteStore.project.sprites.actors.find((a) => a.name === 'Anim-Delete-Smoke');
+    if (!scratchActorAfter) throw new Error('the scratch actor for the delete-animation UI check is gone');
+    if (scratchActorAfter.anims.idle !== belowIndex) {
+      throw new Error('the below reference must be untouched, saw ' + scratchActorAfter.anims.idle + ', expected ' + belowIndex);
+    }
+    if (scratchActorAfter.anims.walkDown !== null) {
+      throw new Error('the exact reference must become null, saw ' + scratchActorAfter.anims.walkDown);
+    }
+    if (scratchActorAfter.anims.walkUp !== aboveIndex - 1) {
+      throw new Error('the above reference must shift down by one, saw ' + scratchActorAfter.anims.walkUp + ', expected ' + (aboveIndex - 1));
+    }
+    if (animDeleteStore.project.sprites.animations.length !== lengthBeforeDelete - 1) {
+      throw new Error(
+        'the catalog must be exactly one shorter, saw ' +
+          animDeleteStore.project.sprites.animations.length +
+          ', expected ' +
+          (lengthBeforeDelete - 1)
+      );
+    }
+    animDeleteStore.project.sprites.animations.forEach((entry, position) => {
+      if (entry.id !== position) throw new Error('animation at position ' + position + ' has stale id ' + entry.id + ' -- the pre-existing renumbering broke');
+    });
+    step(
+      'sprite forge delete animation (real UI) renumbers every reference',
+      'below (' + belowIndex + ') untouched, exact reference became null, above shifted from ' + aboveIndex + ' to ' + (aboveIndex - 1) + ', catalog ids re-stamped'
+    );
+
+    // Restore sample.value.project (the object this store still is, since
+    // nothing above called store.open) to exactly what it held before this
+    // block, so every later sample-based step sees the roster it expects.
+    animDeleteStore.commit('Smoke: revert delete-animation UI check', (project) => {
+      project.sprites.animations = beforeAnimations;
+      project.sprites.actors = beforeActors;
+    });
+    await wait(150);
+    if (JSON.stringify(animDeleteStore.project.sprites.animations) !== JSON.stringify(beforeAnimations)) {
+      throw new Error('animations were not fully reverted after the delete-animation UI check');
+    }
+    if (JSON.stringify(animDeleteStore.project.sprites.actors) !== JSON.stringify(beforeActors)) {
+      throw new Error('actors were not fully reverted after the delete-animation UI check');
+    }
+    step('sprite forge delete-animation probe reverted', 'animations and actors back to their pre-check contents');
+
+    // The palette-swap step right below assumes it starts on the Actors tab
+    // (it clicks no tab of its own) -- leave the UI where this block found it.
+    [...document.querySelectorAll('#stage .tab')].find((t) => t.textContent === 'Actors').click();
+    await wait(250);
+  }
+
   // ROADMAP item 8: Palette-swap an existing sprite. Still on the Actors tab,
   // with the sample's own "Slime" (actor 0, anims idle=0/walkSide=2, both
   // resolving to metasprites painted sprite palette 1) selected by default.
