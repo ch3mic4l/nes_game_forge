@@ -1161,6 +1161,16 @@ existing first.
 - **No new duration knob** — an animation's own authored per-frame durations already decide,
   capped at whatever the message hold leaves.
 
+Chris answered all five of the above on 2026-09-13, accepting every recommendation as written:
+target-vs-caster as §3.3 implements it (target for single-target damage/status, caster for heal
+and all-target — confirmed explicitly against the two alternatives, always-the-target and
+every-target-at-once, neither wanted); a palette-swapped clone keeps sharing the source's
+`attackAnim`; a stale animation reference refuses to build, both hops; no party-member attack
+visual in this slice — a deferral, not a dismissal: Chris asked for it to be on the roadmap, so
+ROADMAP item 14 now carries it as its own later slice (point 5), a Character Forge question as §9
+already says; and no duration knob. The primary path throughout this document already follows
+every one of these, so nothing above needed re-deriving.
+
 ## §9. Out of scope, explicitly
 
 - Party-member attack animations of their own (§8).

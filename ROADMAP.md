@@ -1662,6 +1662,14 @@ monsters the way item 5's shipped phases were for items.
    values. `battleShortfallAdvice` offers removing every monster's extra spells
    (`projectWithoutMonsterSpellList`) as its own banked-region lever. See
    `docs/design-monster-spell-list.md`.
+5. **A party member's own attack visual** — deferred out of the battle-side animation slice
+   (`docs/design-battle-animation.md` §8/§9) by Chris's decision on 2026-09-13, not dropped: that
+   slice gives a *monster* an authored `battle.attackAnim` and a *spell* an authored `anim`, but a
+   party member's physical attack still shows nothing of its own. Authoring it belongs on the
+   Character Forge, beside the member's other battle fields, and playing it needs no new engine
+   primitive — the same `bt_fx_*` flipbook the shared slice adds, armed from `attack_target`'s
+   party-side call site over the attacker's own slot, plus one more banked table indexed by party
+   member. Its own design round comes after the shared slice's phases 1a/1b ship.
 
 **Shared with item 13, not repeated here**: which bank future engine work in either Forge would draw
 from — item 13's own paragraph above, which this item's battle-side animations (point 3) are equally
