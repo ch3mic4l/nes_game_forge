@@ -6721,6 +6721,37 @@ const scenario = (dir, sampleDir, sampleRpgDir) => `
     );
   }
 
+  // Phase 2a hit feedback (docs/design-battle-animation.md §12.7) -- the
+  // Build Forge's own "RPG progression" panel gains its first boolean
+  // field, the label.check + input[type=checkbox] idiom the Character
+  // Forge's own Renamable checkbox already uses. A click commits through
+  // the panel's existing set(), one store.commit -- reverted here by
+  // reassigning in a follow-up commit (not store.undo()), the same
+  // cleanup shape the Attack animation picker round trip above uses.
+  {
+    const hitFeedbackCheckbox = [...document.querySelectorAll('#stage label.check')]
+      .find((l) => l.textContent.trim() === 'Hit feedback')
+      ?.querySelector('input[type=checkbox]');
+    if (!hitFeedbackCheckbox) throw new Error('the Build panel showed no "Hit feedback" checkbox for an RPG project');
+    if (hitFeedbackCheckbox.checked) throw new Error('sample-rpg’s own rpg.hitFeedback should default to false');
+    hitFeedbackCheckbox.click();
+    await wait(150);
+    if (window.__app.store.project.rpg.hitFeedback !== true) {
+      throw new Error('clicking the Hit feedback checkbox did not commit rpg.hitFeedback = true');
+    }
+    window.__app.store.commit('smoke: revert hit feedback toggle', (draft) => {
+      draft.rpg.hitFeedback = false;
+    });
+    await wait(150);
+    if (window.__app.store.project.rpg.hitFeedback !== false) {
+      throw new Error('reverting the Hit feedback toggle did not commit rpg.hitFeedback = false');
+    }
+    step(
+      'Build Forge Hit feedback checkbox round trip',
+      'clicking commits rpg.hitFeedback = true, reverted to false by a follow-up commit'
+    );
+  }
+
   // ...and again past the ceiling, so the boundary itself is crossed on screen
   // rather than only the comfortable side of it being checked. Enough actors
   // to overflow an 8 KB region; the exact count does not matter, only that the

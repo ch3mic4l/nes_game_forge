@@ -56,6 +56,8 @@ import {
   projectUsesBattleAnimation,
   isPlayableBattleAnimation,
   projectWithoutBattleAnimation,
+  projectUsesHitFeedback,
+  projectWithoutHitFeedback,
   NO_ANIM,
   statAt,
   ACTOR_BATTLE_DEFAULTS
@@ -705,6 +707,15 @@ export const MONSTER_SPELL_LIST_BATTLE_ALLOWANCE = 125;
 // too.
 export const BATTLE_ANIM_BATTLE_ALLOWANCE = 243;
 
+// Phase 2a hit feedback (docs/design-battle-animation.md §12.7):
+// battle_hurt_arm/battle_hurt_attr_open/battle_hurt_tick/
+// battle_hurt_restore_slot plus the blink-skip checks in battle_sprite_pc/
+// battle_sprite_mon and the apply_damage/battle_tick/setup_monsters
+// call-site insertions. Measured flat across all three RPG-capable boards.
+// Gated on projectUsesHitFeedback, with NO `&& banked` guard -- the
+// identical shape BATTLE_ANIM_BATTLE_ALLOWANCE above uses.
+export const HIT_FEEDBACK_BATTLE_ALLOWANCE = 235;
+
 // Deliberate headroom, and its job is NOT the job KERNEL_SLACK does. There is
 // no estimation error here for it to absorb -- see the exactness note above --
 // so this is purely a buffer against the stock code growing a byte or two
@@ -982,7 +993,8 @@ export function battleRegionBytes(project, mapper) {
     (projectUsesMagicPower(project) ? MAGIC_POWER_BATTLE_ALLOWANCE : 0) +
     (projectUsesMagicDefence(project) ? MAGIC_DEFENCE_BATTLE_ALLOWANCE : 0) +
     (projectUsesMonsterSpellList(project) ? MONSTER_SPELL_LIST_BATTLE_ALLOWANCE : 0) +
-    (projectUsesBattleAnimation(project) ? BATTLE_ANIM_BATTLE_ALLOWANCE : 0)
+    (projectUsesBattleAnimation(project) ? BATTLE_ANIM_BATTLE_ALLOWANCE : 0) +
+    (projectUsesHitFeedback(project) ? HIT_FEEDBACK_BATTLE_ALLOWANCE : 0)
   );
 }
 
@@ -1134,6 +1146,10 @@ export function battleShortfallAdvice(project, mapper, deficit, { alternatives =
     // docs/design-battle-animation.md §3.5.
     if (battleBankEnabled(project, mapper) && projectUsesBattleAnimation(project)) {
       bankedFeatures.push({ label: 'every battle animation reference', strip: projectWithoutBattleAnimation });
+    }
+    // docs/design-battle-animation.md §12.7.
+    if (battleBankEnabled(project, mapper) && projectUsesHitFeedback(project)) {
+      bankedFeatures.push({ label: 'hit feedback', strip: projectWithoutHitFeedback });
     }
   }
   if (bankedFeatures.length) {

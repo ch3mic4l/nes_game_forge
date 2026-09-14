@@ -75,6 +75,7 @@ import {
   projectUsesMagicDefence,
   projectUsesMonsterSpellList,
   projectUsesBattleAnimation,
+  projectUsesHitFeedback,
   battleCombatantOamMax,
   MAX_OAM_ENTRIES,
   projectUsesSting,
@@ -2617,6 +2618,10 @@ export async function generateAssets({ dir, project, log = () => {} }) {
   // Battle-side animation (docs/design-battle-animation.md §3.5):
   // battle_fx_tick/arm/draw.
   const battleAnimEnabled = projectUsesBattleAnimation(project);
+  // Phase 2a hit feedback (docs/design-battle-animation.md §12.7):
+  // battle_hurt_arm/tick/attr_open/restore_slot, gated independently of
+  // BATTLE_ANIM_ENABLED.
+  const hitFeedbackEnabled = projectUsesHitFeedback(project);
   // One generated constant, not a duplicated engine-side MAX_OAM_ENTRIES
   // equate plus a runtime add (§3.6). BATTLE_FX_OAM_ROOM is the room left for
   // the running effect once the worst-case combatant icons and the
@@ -3167,6 +3172,10 @@ export async function generateAssets({ dir, project, log = () => {} }) {
     // reads (engine/battleui.asm); BATTLE_COMBATANT_OAM_MAX is never emitted.
     `BATTLE_ANIM_ENABLED = ${battleAnimEnabled ? 1 : 0}`,
     `BATTLE_FX_OAM_ROOM = ${battleFxOamRoom}`,
+    // Phase 2a hit feedback (docs/design-battle-animation.md §12.7):
+    // battle_hurt_arm/tick/attr_open/restore_slot, and the blink-skip checks
+    // in battle_sprite_pc/battle_sprite_mon. Independent of BATTLE_ANIM_ENABLED.
+    `HIT_FEEDBACK_ENABLED = ${hitFeedbackEnabled ? 1 : 0}`,
     ''
   ].join('\n');
   await fs.writeFile(path.join(assetsDir, 'config.inc'), config);

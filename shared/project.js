@@ -4226,7 +4226,8 @@ export function defaultRpg() {
     xpGrow: 12, // added to each subsequent level's requirement
     maxLevel: RPG_LIMITS.maxLevel,
     battleTilesetId: 0, // the CHR bank the battle screen switches to
-    encounterMusic: null
+    encounterMusic: null,
+    hitFeedback: false // sprite hit-blink / block-art attribute flash, phase 2a
   };
 }
 
@@ -5494,7 +5495,8 @@ function normalizeRpg(raw, tilesetCount) {
     xpGrow: clamp(raw?.xpGrow, 0, 255, base.xpGrow),
     maxLevel: clamp(raw?.maxLevel, 1, RPG_LIMITS.maxLevel, base.maxLevel),
     battleTilesetId: clamp(raw?.battleTilesetId, 0, Math.max(0, tilesetCount - 1), 0),
-    encounterMusic: raw?.encounterMusic ?? null
+    encounterMusic: raw?.encounterMusic ?? null,
+    hitFeedback: Boolean(raw?.hitFeedback)
   };
 }
 
@@ -6410,6 +6412,26 @@ export function projectWithoutBattleAnimation(project) {
   for (const actor of clone.sprites?.actors ?? []) {
     if (actor.battle) actor.battle.attackAnim = null;
   }
+  return clone;
+}
+
+/**
+ * Phase 2a hit feedback (docs/design-battle-animation.md §12.7): whether
+ * `HIT_FEEDBACK_ENABLED` should be live. A `gameType === 'rpg'` check is
+ * required, not merely a nicety -- `HIT_FEEDBACK_ENABLED` is generated into
+ * every project's own `config.inc` unconditionally, so a boolean-only read
+ * would make an action project carrying a stray `rpg.hitFeedback: true`
+ * (surviving a game-type switch, or a hand edit) generate the flag as 1
+ * with nothing in the ROM to justify it.
+ */
+export function projectUsesHitFeedback(project) {
+  return project.project.gameType === 'rpg' && Boolean(project.rpg?.hitFeedback);
+}
+
+/** The battleShortfallAdvice removal candidate for hit feedback. */
+export function projectWithoutHitFeedback(project) {
+  const clone = structuredClone(project);
+  if (clone.rpg) clone.rpg.hitFeedback = false;
   return clone;
 }
 

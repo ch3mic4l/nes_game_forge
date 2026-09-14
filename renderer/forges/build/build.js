@@ -98,6 +98,16 @@ function rpgProgression(project) {
       `Reaching level ${rpg.maxLevel} takes ` +
         `${xpTotalFor(rpg)} experience in all. Monster artwork is drawn from the battle tileset, so ` +
         'that is where it has to live.'
+    ),
+    el(
+      'label.check',
+      { title: 'A blinking sprite icon, or a flashing block-art tint, on the combatant a hit just landed on' },
+      el('input', {
+        type: 'checkbox',
+        checked: rpg.hitFeedback,
+        onchange: (event) => set('hitFeedback', event.target.checked)
+      }),
+      ' Hit feedback'
     )
   );
 }

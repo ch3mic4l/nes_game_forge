@@ -6343,3 +6343,1173 @@ test('the armed effect renders ON TOP of the combatant icon it overlaps, on the 
   const iconOnly = pixelAt(x, y);
   assert.equal(before, iconOnly, 'sanity: the icon-only colour is stable and reproducible');
 });
+
+// ---------------------------------------------------------------------------
+// Battle-side animation, phase 2a -- hit feedback (docs/design-battle-
+// animation.md §12). The shared bt_hurt_slot/bt_hurt_left pair: a sprite
+// blink for a metasprite-drawn combatant, an attribute flash for a
+// block-art monster. Driven almost entirely through isolated callRoutine
+// calls, per the brief's own trap note: resuming real frame-stepping after
+// a callRoutine excursion mid-battle-transition reproducibly crashes
+// jsnes, so a lifecycle test (walking into a fight, playing it out) and an
+// isolated routine test never mix on the same `nes` instance here.
+// ---------------------------------------------------------------------------
+
+const BT_TMP2 = 0x5d; // engine/constants.asm -- cast_all's own end-of-side sentinel
+const PAD_NEW = 0x18; // engine/constants.asm -- buttons pressed this frame only
+const VRAM_BUF = 0x0400; // engine/constants.asm
+const BTN_A = 0x80; // engine/constants.asm
+const BTN_B = 0x40;
+const BTN_DOWN = 0x04;
+const BP_ACT = 5; // engine/constants.asm -- resolve the chosen action
+const BT_CMD = 0x6c; // engine/constants.asm -- the command chosen this turn
+
+/**
+ * Decode vram_buf's own packets -- [addr_hi, addr_lo, count, bytes...]
+ * repeated up to `len`, a $00 high byte terminating early -- into a list of
+ * {addr, bytes} (bytes including the 3-byte header), for tests that need to
+ * see the real packet composition, not just the total queued length.
+ */
+function decodeVramBuf(nes, len) {
+  const out = [];
+  let i = 0;
+  while (i < len) {
+    const hi = nes.cpu.mem[VRAM_BUF + i];
+    if (hi === 0) break;
+    const count = nes.cpu.mem[VRAM_BUF + i + 2];
+    out.push({ addr: (hi << 8) | nes.cpu.mem[VRAM_BUF + i + 1], bytes: count + 3 });
+    i += 3 + count;
+  }
+  return out;
+}
+// draw_battle_attr's own attribute-table base ($23C0) plus the per-monster
+// offset battle_hurt_attr_open/battle_hurt_restore_slot/draw_battle_attr all
+// compute the same way: (slot+1)*8 rows down, +1 column in.
+const ATTR_BASE = 0x23c0;
+const attrAddrForMonSlot = (slot) => ATTR_BASE + (slot + 1) * 8 + 1;
+const BT_GROUND_ATTR = 0x55; // engine/constants.asm
+const FLASH_TINT = 0xff; // battle_hurt_tick's own flash write
+
+/**
+ * A hit-feedback build: no wandering encounters (every scenario below drives
+ * combat state directly), rpg.hitFeedback on, and Slime's own battlePalette
+ * bumped to 2 (attribute byte 0xAA) so the three attribute values this
+ * section cares about -- ground (0x55), an authored tint (0xAA), and the
+ * flash tint (0xFF) -- are always three DIFFERENT bytes. Left at Slime's
+ * shipped palette (3 -> 0xFF) the authored tint and the flash tint would be
+ * numerically identical, and no assertion here could tell them apart.
+ */
+async function buildHitFeedback(t, name, mutate = () => {}) {
+  return buildVariantFull(t, name, (project) => {
+    project.maps[0].encounters = { rate: 0, actorIds: [] };
+    project.rpg.hitFeedback = true;
+    project.sprites.actors[0].battle = { ...project.sprites.actors[0].battle, battlePalette: 2 };
+    mutate(project);
+  });
+}
+
+/** Resolve the two bt_hurt_* zero-page bytes out of a build's own constants.asm. */
+function resolveHurtAddrs(built) {
+  const dir = path.dirname(path.dirname(built.romPath));
+  const constantsText = fs.readFileSync(path.join(dir, 'build', 'constants.asm'), 'utf8');
+  return {
+    BT_HURT_SLOT: resolveEngineAddress(constantsText, 'bt_hurt_slot'),
+    BT_HURT_LEFT: resolveEngineAddress(constantsText, 'bt_hurt_left')
+  };
+}
+
+function resolveOamIdx(built) {
+  const dir = path.dirname(path.dirname(built.romPath));
+  const constantsText = fs.readFileSync(path.join(dir, 'build', 'constants.asm'), 'utf8');
+  return resolveEngineAddress(constantsText, 'oam_idx');
+}
+
+/** Resolve the wipe state-machine's own two zero-page bytes. */
+function resolveWipeAddrs(built) {
+  const dir = path.dirname(path.dirname(built.romPath));
+  const constantsText = fs.readFileSync(path.join(dir, 'build', 'constants.asm'), 'utf8');
+  return {
+    BT_WIPE_MASK: resolveEngineAddress(constantsText, 'bt_wipe_mask'),
+    BT_WIPE_ROW: resolveEngineAddress(constantsText, 'bt_wipe_row')
+  };
+}
+
+/**
+ * Round 1 review, finding 1: a test that calls a routine directly proves
+ * that routine, not that the game ever reaches it. The tests below drive
+ * the REAL dispatcher by calling battle_tick itself (not a producer inside
+ * it) through callRoutine -- a jsr into a stub, never nes.frame() -- with
+ * pad_new poked directly to stand in for a button press for that one tick.
+ * This is the battle-anim design reviewer's own independently-verified
+ * technique; the orchestrator confirmed it reaches the real design-doc
+ * figures (127, 48) against the unmodified engine and asked that it be
+ * reused rather than rebuilt. It is not a return to isolated-call testing:
+ * battle_tick is the real, complete per-frame dispatcher (wipe_tick ->
+ * battle_hurt_tick -> battle_dispatch -> battle_draw_sprites), run start to
+ * finish every time; only the controller hardware's own serial-read timing
+ * is bypassed, which holding a real button down across several
+ * nes.frame()/Emulator.stepInstruction() calls was found to desynchronize
+ * badly enough to spuriously end the battle and re-trigger the touch
+ * encounter several ticks later -- a hazard of simulating hardware timing
+ * this precisely, not a hit-feedback defect (checked independently against
+ * a clean, un-mutated battle with no hit feedback at all, where it does not
+ * reproduce either).
+ */
+
+/**
+ * Like callRoutine, but samples `readValue()` once per visit to `sampleAddr`
+ * (not once per cycle spent there), until PC returns to the stub -- the
+ * instrumented-trace fallback the brief's own §14 round 2 row calls for,
+ * since a post-return read of a loop's own scratch byte can legitimately
+ * differ from what the loop itself saw on every iteration (push_combatant_
+ * name/cast_all_next both reuse bt_tmp2 for different things at different
+ * moments).
+ */
+function callRoutineTrace(nes, address, sampleAddr, readValue) {
+  nes.mmap.write(0x2000, 0);
+  nes.cpu.irqRequested = false;
+  nes.cpu.F_INTERRUPT = 1;
+  nes.cpu.mem.set([0x20, address & 255, address >> 8, 0xea], 0x700);
+  nes.cpu.REG_PC = 0x6ff;
+  const samples = [];
+  let wasAt = false;
+  let steps = 0;
+  while ((nes.cpu.REG_PC + 1) !== 0x703) {
+    const at = (nes.cpu.REG_PC + 1) === sampleAddr;
+    if (at && !wasAt) samples.push(readValue());
+    wasAt = at;
+    nes.cpu.emulate();
+    assert.ok(++steps < 200000, 'routine never returned to the stub');
+  }
+  return samples;
+}
+
+// §14 round 2 (finding 4, P2) -- multi-target sentinel integrity, corrected
+// observation point. Two cases: a low actor id (0, sample-rpg's own Slime)
+// and a high one (31, a real, in-range actor above the loop boundary for a
+// genuine 32-actor project, padActorsTo's own shape). bt_tmp2 is sampled
+// AT cast_all_next, immediately after every apply_damage call -- never
+// after cast_all returns, since push_combatant_name legitimately reuses
+// bt_tmp2 once the loop is over.
+//
+// Wrong implementation this catches: the stated design (§12.3) is already
+// correct here -- battle_hurt_attr_open/battle_hurt_restore_slot never
+// touch bt_tmp2 at all -- so this row exists to make sure the TEST oracle
+// watches the right moment; a test written as "call cast_all, then read
+// bt_tmp2" would accept a broken engine that corrupts the sentinel mid-loop
+// and then happens to leave it readable again by the time the call returns.
+for (const [label, actorId, setup] of [
+  ['low actor id (0, Slime)', 0, (project) => {}],
+  ['high actor id (31, a padded 32-actor project)', 31, (project) => padActorsTo(project, 32)]
+]) {
+  test(`multi-target sentinel integrity: bt_tmp2 survives cast_all’s own loop, ${label}`, {
+    skip: needsSample
+  }, async (t) => {
+    const built = await buildHitFeedback(t, `hf-sentinel-${actorId}`, (project) => {
+      setup(project);
+      project.spells[0].scope = 'all';
+      project.spells[0].amountMin = 1;
+      project.spells[0].amountMax = 1; // deterministic: n=1, no RNG dependency
+      project.sprites.actors[actorId].hp = 100; // must survive its own hit
+    });
+    const nes = bootPastNaming(built.romPath);
+    const addrOf = selectBattleBank(nes, built);
+    const castAllNext = addrOf('cast_all_next');
+
+    nes.cpu.mem[BT_PHASE] = BP_MENU;
+    nes.cpu.mem[BT_ACTOR] = 0; // a party member -- other_side() targets the monster side
+    nes.cpu.mem[BT_ARG] = 0; // spell 0, mutated to scope 'all' above
+    for (let slot = 0; slot < 4; slot++) {
+      nes.cpu.mem[MON_SLOT_ACTOR + slot] = actorId;
+      nes.cpu.mem[MON_ALIVE + slot] = 1;
+      nes.cpu.mem[MON_HP + slot] = 100;
+    }
+    const hpBefore = [0, 1, 2, 3].map((slot) => nes.cpu.mem[MON_HP + slot]);
+    const pcHpBefore = [0, 1, 2, 3].map((slot) => nes.cpu.mem[PC_HP + slot]);
+
+    const samples = callRoutineTrace(nes, addrOf('cast_all'), castAllNext, () => nes.cpu.mem[BT_TMP2]);
+
+    assert.equal(samples.length, 4, 'cast_all_next should be visited exactly once per monster slot');
+    for (const [i, sample] of samples.entries()) {
+      assert.equal(sample, MAX_PARTY + 4, `bt_tmp2 must read cast_all’s own end-of-side sentinel (8) at iteration ${i}, not a corrupted value`);
+    }
+    for (let slot = 0; slot < 4; slot++) {
+      assert.equal(hpBefore[slot] - nes.cpu.mem[MON_HP + slot], 1, `monster slot ${slot} must have taken exactly the rolled amount`);
+    }
+    for (let slot = 0; slot < 4; slot++) {
+      assert.equal(nes.cpu.mem[PC_HP + slot], pcHpBefore[slot], `party member ${slot} must be untouched -- the cast targeted the other side`);
+    }
+  });
+}
+
+// mon_tile guard (§2(e)'s own limitation against Appendix C, reopened and
+// closed by §12.1's explicit check): Snake (actor 3, sample-rpg) has no
+// block art (battleTile: null -> mon_tile == $FF), so hit feedback on its
+// slot must be a pure sprite blink -- battle_hurt_tick queues nothing, and
+// only battle_sprite_mon’s own icon-skip applies.
+test('mon_tile guard: hit feedback armed on a metasprite-fallback monster queues no attribute packet, only the icon skip happens', {
+  skip: needsSample
+}, async (t) => {
+  const built = await buildHitFeedback(t, 'hf-montile-guard');
+  const nes = bootPastNaming(built.romPath);
+  const addrOf = selectBattleBank(nes, built);
+  const { BT_HURT_SLOT, BT_HURT_LEFT } = resolveHurtAddrs(built);
+  const OAM_IDX = resolveOamIdx(built);
+
+  nes.cpu.mem[BT_PHASE] = BP_MENU;
+  nes.cpu.mem[MON_SLOT_ACTOR] = 3; // Snake -- mon_tile == $FF
+  nes.cpu.mem[MON_ALIVE] = 1;
+  nes.cpu.mem[MON_HP] = 10;
+  nes.cpu.mem[BT_HURT_SLOT] = MAX_PARTY; // combatant 4 = monster slot 0
+  nes.cpu.mem[BT_HURT_LEFT] = 5;
+  nes.cpu.mem[VRAM_LEN] = 0;
+
+  callRoutine(nes, addrOf('battle_hurt_tick'));
+  assert.equal(nes.cpu.mem[VRAM_LEN], 0, 'battle_hurt_tick must queue no attribute packet for a metasprite-fallback monster');
+  assert.equal(nes.cpu.mem[BT_HURT_LEFT], 4, 'the shared timer must still count down even though nothing is drawn to the background');
+
+  // The icon-skip half of the same mechanism still applies to Snake, on a
+  // skip-band tick (2 & 2 != 0).
+  nes.cpu.mem.fill(0xff, 0x200, 0x300);
+  nes.cpu.mem[OAM_IDX] = 0;
+  for (let slot = 0; slot < 4; slot++) nes.cpu.mem[PC_IN_PARTY + slot] = 0; // isolate the monster
+  nes.cpu.mem[BT_HURT_LEFT] = 2; // 2 & 2 != 0 -- skip band
+  nes.cpu.REG_X = 0;
+  callRoutine(nes, addrOf('battle_sprite_mon'));
+  assert.equal(nes.cpu.mem[OAM_IDX], 0, 'the icon itself must still be skipped on a skip-band tick');
+
+  nes.cpu.mem.fill(0xff, 0x200, 0x300);
+  nes.cpu.mem[OAM_IDX] = 0;
+  nes.cpu.mem[BT_HURT_LEFT] = 4; // 4 & 2 == 0 -- draw band
+  nes.cpu.REG_X = 0;
+  callRoutine(nes, addrOf('battle_sprite_mon'));
+  assert.ok(nes.cpu.mem[OAM_IDX] > 0, 'sanity: the icon does draw on a draw-band tick, so the skip-band result above is not a setup mistake');
+});
+
+// §14 round 1 -- dead-monster restoration, not abandonment (finding 2, P2).
+// Round 1 review finding 3 (P2): rewritten for a REAL kill and a REAL wipe.
+// A block-art monster reaches its starting tint (flash or authored) through
+// real battle_hurt_tick ticks -- read off the PPU attribute byte afterwards,
+// never written there directly -- then takes a lethal hit through a real
+// attack_target (roll_hit -> physical_damage -> apply_damage ->
+// apply_damage_mon, the same chain a real party turn runs), with a second
+// monster alive throughout. Real battle_tick calls then run until wipe_tick
+// has erased all four of the dead monster's rows and cleared its own
+// bt_wipe_mask bit, checking at every step that the dead cell already reads
+// BT_GROUND_ATTR and stays there, and that the live monster's own cell never
+// moves.
+// Wrong implementation this catches: the design's own previous policy
+// ("abandon, no restore") passing this exact scenario with a permanently
+// stranded $FF -- round 1's own seeded/isolated version of this test
+// already caught that same mutation (round 2 review), so what this
+// rewrite adds is integration through the real kill and the real wipe
+// (apply_damage_mon's own bt_wipe_mask bit, wipe_tick's own row-by-row
+// sweep) rather than a bug the helper-level check could not see at all.
+for (const [label, framesBeforeDeath] of [
+  ['mid-flash-tint (bt_hurt_left & 2 != 0)', 7], // decrements to 6; 6 & 2 = 2
+  ['mid-authored-tint (bt_hurt_left & 2 == 0)', 6] // decrements to 5; 5 & 2 = 0
+]) {
+  test(`dead-monster restoration: a real killing hit on a flashing block-art monster restores BT_GROUND_ATTR through a real wipe, ${label}`, {
+    skip: needsSample
+  }, async (t) => {
+    const built = await buildHitFeedback(t, `hf-dead-restore-real-${framesBeforeDeath}`, (project) => {
+      project.party[0].acc = 255; // attacker: guarantee the lethal hit lands
+      project.sprites.actors[0].battle = { ...project.sprites.actors[0].battle, eva: 0 };
+    });
+    const nes = bootPastNaming(built.romPath);
+    const addrOf = selectBattleBank(nes, built);
+    const { BT_HURT_SLOT, BT_HURT_LEFT } = resolveHurtAddrs(built);
+    const { BT_WIPE_MASK, BT_WIPE_ROW } = resolveWipeAddrs(built);
+    const battleTickAddr = addrOf('battle_tick');
+
+    nes.cpu.mem[BT_PHASE] = BP_MENU;
+    for (let slot = 0; slot < 2; slot++) {
+      nes.cpu.mem[MON_SLOT_ACTOR + slot] = 0; // Slime, block art, attr 0xAA
+      nes.cpu.mem[MON_ALIVE + slot] = 1;
+      nes.cpu.mem[MON_HP + slot] = slot === 0 ? 1 : 100; // slot 0 dies to any scratch; slot 1 survives
+    }
+    nes.cpu.mem[BT_WIPE_MASK] = 0;
+    nes.cpu.mem[BT_WIPE_ROW] = 0;
+    nes.cpu.mem[RNG] = 0;
+    nes.ppu.vramMem[attrAddrForMonSlot(1)] = 0xaa; // sentinel: the still-alive monster's own cell
+
+    // Establish the real starting tint: arm slot 0, then run ONE real
+    // battle_hurt_tick and drain it -- the attribute byte this produces is
+    // read back below, never assumed.
+    nes.cpu.mem[BT_HURT_SLOT] = MAX_PARTY + 0;
+    nes.cpu.mem[BT_HURT_LEFT] = framesBeforeDeath;
+    nes.cpu.mem[VRAM_LEN] = 0;
+    callRoutine(nes, addrOf('battle_hurt_tick'));
+    callRoutine(nes, addrOf('vram_drain'));
+    const expectedStartTint = (nes.cpu.mem[BT_HURT_LEFT] & 2) !== 0 ? FLASH_TINT : 0xaa;
+    assert.equal(
+      nes.ppu.vramMem[attrAddrForMonSlot(0)],
+      expectedStartTint,
+      `a real tick must have produced the ${label} starting tint before the kill`
+    );
+
+    // The lethal hit through real damage handling: bt_actor (party member 0)
+    // attacks bt_target (monster slot 0), with monster slot 1 alive and
+    // untouched throughout.
+    nes.cpu.mem[BT_ACTOR] = 0;
+    nes.cpu.mem[BT_TARGET] = MAX_PARTY + 0;
+    callRoutine(nes, addrOf('attack_target'));
+    assert.equal(nes.cpu.mem[MON_ALIVE + 0], 0, 'the real attack must have killed slot 0');
+    assert.equal(nes.cpu.mem[MON_ALIVE + 1], 1, 'slot 1 must still be alive -- only slot 0 was targeted');
+    assert.notEqual(nes.cpu.mem[BT_WIPE_MASK] & 1, 0, 'apply_damage_mon must have queued slot 0 for a real wipe');
+
+    // Real ticks: battle_hurt_tick's own dead-check fires on the very next
+    // tick (bt_hurt_slot still names the now-dead slot 0), forcing
+    // BT_GROUND_ATTR; wipe_tick pays down slot 0's four rows one a tick.
+    // Both run inside the SAME real battle_tick dispatcher, not called in
+    // isolation.
+    for (let tick = 0; tick < 6; tick++) {
+      nes.cpu.mem[PAD_NEW] = 0;
+      nes.cpu.mem[VRAM_LEN] = 0;
+      callRoutine(nes, battleTickAddr);
+      callRoutine(nes, addrOf('vram_drain')); // real battle_tick only queues; NMI is what normally drains
+      const attr0 = nes.ppu.vramMem[attrAddrForMonSlot(0)];
+      assert.equal(attr0, BT_GROUND_ATTR, `tick ${tick}: the dead monster’s own cell must read as ground, never the stranded flash tint or its own authored tint`);
+      assert.equal(nes.ppu.vramMem[attrAddrForMonSlot(1)], 0xaa, `tick ${tick}: the still-alive monster’s own cell must be untouched throughout`);
+    }
+    assert.equal(nes.cpu.mem[BT_WIPE_MASK], 0, 'four real ticks must have paid down all of slot 0’s rows and cleared its own wipe bit');
+    assert.equal(nes.cpu.mem[BT_WIPE_ROW], 0, 'the wipe row counter must be back at zero once slot 0’s own sweep is complete');
+  });
+}
+
+// §14 round 1 -- arm-time death restoration (finding 2's second path). An
+// all-target spell's own cast_all loop kills a flashing block-art monster
+// on an early iteration, then re-arms onto a different target on a later
+// iteration in the SAME tick -- battle_hurt_tick never gets another chance
+// to see the now-abandoned slot, so battle_hurt_restore_slot's own
+// arm-time dead-check is the only thing that can still fix it.
+// Wrong implementation this catches: battle_hurt_restore_slot skipping the
+// dead old slot's own restore entirely (using mon_attr instead of
+// BT_GROUND_ATTR), stranding the tint the tick-based fix alone cannot reach
+// once the shared pair has moved on.
+test('arm-time death restoration: cast_all killing the flashing monster then re-arming onto a later target restores BT_GROUND_ATTR', {
+  skip: needsSample
+}, async (t) => {
+  const built = await buildHitFeedback(t, 'hf-armtime-death', (project) => {
+    project.spells[0].scope = 'all';
+    project.spells[0].amountMin = 1;
+    project.spells[0].amountMax = 1;
+    project.sprites.actors[0].hp = 1; // every hit on this actor is lethal
+  });
+  const nes = bootPastNaming(built.romPath);
+  const addrOf = selectBattleBank(nes, built);
+  const { BT_HURT_SLOT, BT_HURT_LEFT } = resolveHurtAddrs(built);
+
+  nes.cpu.mem[BT_PHASE] = BP_MENU;
+  nes.cpu.mem[BT_ACTOR] = 0;
+  nes.cpu.mem[BT_ARG] = 0;
+  for (let slot = 0; slot < 2; slot++) {
+    nes.cpu.mem[MON_SLOT_ACTOR + slot] = 0; // Slime, block art
+    nes.cpu.mem[MON_ALIVE + slot] = 1;
+    nes.cpu.mem[MON_HP + slot] = 1; // one hit each -- slot 0 dies on the first target processed
+  }
+  nes.ppu.vramMem[attrAddrForMonSlot(0)] = 0xaa; // sentinel: not yet ground
+
+  // Already flashing on slot 0 (target index MAX_PARTY+0) before the cast.
+  nes.cpu.mem[BT_HURT_SLOT] = MAX_PARTY + 0;
+  nes.cpu.mem[BT_HURT_LEFT] = 20;
+
+  callRoutine(nes, addrOf('cast_all'));
+  callRoutine(nes, addrOf('vram_drain'));
+
+  assert.equal(
+    nes.ppu.vramMem[attrAddrForMonSlot(0)],
+    BT_GROUND_ATTR,
+    'the killed monster’s own cell must read as ground once the shared pair has moved on to a later target'
+  );
+  // Round 1 review: this message previously said "surviving target," but
+  // slot 1 also has 1 HP and dies to the identical hit -- survival is not
+  // what this path needs (battle_hurt_restore_slot's arm-time dead-check
+  // fires the same way for a live or an already-dead new target); only that
+  // the shared pair genuinely moved on to a LATER target is being asserted.
+  assert.equal(nes.cpu.mem[BT_HURT_SLOT], MAX_PARTY + 1, 'the shared pair must have moved on to the later target processed by cast_all’s own loop');
+});
+
+// Multi-target hit-feedback policy: only the LAST target processed by an
+// all-target spell ends up blinking/flashing. Round 1 review finding 4
+// (P2): rewritten to give the three monsters distinct authored attribute
+// values and observe the EARLIER targets' own visible cells -- not merely
+// bt_hurt_slot/bt_hurt_left -- across a real battle_tick's own cast and
+// every real feedback tick that follows. Wrong implementation this
+// catches: an implementation that restores an earlier target's cell to the
+// wrong value (or leaves the flash tint on it) once the shared pair moves
+// off it, invisible to a test that only ever checks bt_hurt_slot/
+// bt_hurt_left and never reads what the earlier targets' own cells
+// actually show.
+test('multi-target hit-feedback policy: an all-target spell hitting 3 living monsters leaves only the last slot flashing, through a real battle_tick', {
+  skip: needsSample
+}, async (t) => {
+  const built = await buildHitFeedback(t, 'hf-multitarget-policy-real', (project) => {
+    project.spells[0].scope = 'all';
+    project.spells[0].amountMin = 1;
+    project.spells[0].amountMax = 1;
+    // Three block-art monsters, three distinct authored attribute values
+    // (palette*0x55): slot 0 = 0x00, slot 1 = 0xAA -- both deliberately off
+    // BT_GROUND_ATTR (0x55) and FLASH_TINT (0xFF), so a sabotage that
+    // stamps either reserved value on an earlier slot cannot hide behind a
+    // coincidental match. Slot 2 (the one still named by the shared pair
+    // afterwards) gets the remaining palette, 0x55 -- harmless there, since
+    // this test never exercises ground-restore on a still-living monster.
+    project.sprites.actors[0].battle = { ...project.sprites.actors[0].battle, battleTile: 32, battlePalette: 0 }; // Slime -> slot 0
+    project.sprites.actors[1].battle = { ...project.sprites.actors[1].battle, battleTile: 32, battlePalette: 2 }; // Potion -> slot 1
+    project.sprites.actors[3].battle = { ...project.sprites.actors[3].battle, battleTile: 32, battlePalette: 1 }; // Snake -> slot 2
+    project.sprites.actors[0].hp = 100;
+    project.sprites.actors[1].hp = 100;
+    project.sprites.actors[3].hp = 100;
+  });
+  const nes = bootPastNaming(built.romPath);
+  const addrOf = selectBattleBank(nes, built);
+  const { BT_HURT_SLOT, BT_HURT_LEFT } = resolveHurtAddrs(built);
+  const battleTickAddr = addrOf('battle_tick');
+  const ATTR0 = 0x00;
+  const ATTR1 = 0xaa;
+  const ATTR2 = 0x55;
+
+  nes.cpu.mem[BT_PHASE] = BP_ACT; // a cast is pending, as in the queue-length tests above
+  nes.cpu.mem[BT_ACTOR] = 0;
+  nes.cpu.mem[BT_ARG] = 0;
+  nes.cpu.mem[BT_CMD] = BC_MAGIC;
+  nes.cpu.mem[MON_SLOT_ACTOR + 0] = 0; // Slime
+  nes.cpu.mem[MON_SLOT_ACTOR + 1] = 1; // Potion
+  nes.cpu.mem[MON_SLOT_ACTOR + 2] = 3; // Snake
+  for (let slot = 0; slot < 3; slot++) {
+    nes.cpu.mem[MON_ALIVE + slot] = 1;
+    nes.cpu.mem[MON_HP + slot] = 100;
+  }
+  nes.cpu.mem[MON_ALIVE + 3] = 0; // only 3 living monsters this tick
+  nes.cpu.mem[BT_HURT_LEFT] = 0; // nothing armed beforehand
+  nes.cpu.mem[PAD_NEW] = 0;
+  nes.cpu.mem[VRAM_LEN] = 0;
+
+  // Round 2 review, "also from the review's notes": sample the final slot's
+  // own cell too, before AND on this same cast frame. battle_hurt_tick runs
+  // BEFORE battle_dispatch every tick (battle_tick's own order), and
+  // bt_hurt_left was still 0 -- nothing armed -- at the moment this tick's
+  // own battle_hurt_tick ran, so cast_all's own arm of slot 2 (later the
+  // same tick) has nothing yet drawn for it. This build never calls
+  // draw_battle_screen, so slot 2's attribute cell holds whatever the field
+  // screen's own last redraw left at that nametable offset, not a bare
+  // zero -- captured here rather than assumed, so the assertion below is
+  // "still exactly what it was," not a guess at the byte's own value.
+  const preCastAttr2 = nes.ppu.vramMem[attrAddrForMonSlot(2)];
+
+  callRoutine(nes, battleTickAddr);
+  callRoutine(nes, addrOf('vram_drain'));
+
+  assert.equal(nes.cpu.mem[BT_HURT_SLOT], MAX_PARTY + 2, 'only the LAST living target processed should end up named by the shared pair');
+  assert.equal(nes.cpu.mem[BT_HURT_LEFT], 20, 'the shared timer should be freshly armed for that last target, not left mid-count from an earlier one');
+  assert.equal(nes.ppu.vramMem[attrAddrForMonSlot(0)], ATTR0, 'slot 0 must already show its own authored attribute on the very frame the shared pair moved past it');
+  assert.equal(nes.ppu.vramMem[attrAddrForMonSlot(1)], ATTR1, 'slot 1 must already show its own authored attribute on the very frame the shared pair moved past it');
+  assert.equal(nes.ppu.vramMem[attrAddrForMonSlot(2)], preCastAttr2, 'slot 2, newly armed this same tick, must show nothing drawn yet -- battle_hurt_tick had already run, with nothing armed, before cast_all armed it');
+
+  // Every following real tick: slots 0 and 1 must keep their own authored
+  // values throughout -- not a single visible tick of anything else --
+  // while only slot 2 (the one still named by the shared pair) alternates
+  // between the flash tint and its own authored value. Slot 2's own
+  // expectation is derived from an INDEPENDENTLY PREDICTED countdown
+  // (max(0, 20 - (tick + 1)), the identical convention the party-blink
+  // real-lifecycle test uses), asserted against the real register first --
+  // deriving "expected" from the observed bt_hurt_left instead (round 2
+  // review) cannot tell a real countdown apart from a frozen one, since
+  // both read back self-consistently against whatever battle_hurt_tick did
+  // or did not do.
+  for (let tick = 0; tick < 20; tick++) {
+    nes.cpu.mem[PAD_NEW] = 0;
+    nes.cpu.mem[VRAM_LEN] = 0;
+    callRoutine(nes, battleTickAddr);
+    callRoutine(nes, addrOf('vram_drain'));
+    assert.equal(nes.ppu.vramMem[attrAddrForMonSlot(0)], ATTR0, `tick ${tick}: slot 0 must never show anything but its own authored attribute`);
+    assert.equal(nes.ppu.vramMem[attrAddrForMonSlot(1)], ATTR1, `tick ${tick}: slot 1 must never show anything but its own authored attribute`);
+    const predictedLeft = Math.max(0, 20 - (tick + 1));
+    assert.equal(nes.cpu.mem[BT_HURT_LEFT], predictedLeft, `tick ${tick}: battle_tick's own battle_hurt_tick must have decremented bt_hurt_left for real`);
+    const expectedSlot2 = predictedLeft !== 0 && (predictedLeft & 2) !== 0 ? FLASH_TINT : ATTR2;
+    assert.equal(
+      nes.ppu.vramMem[attrAddrForMonSlot(2)],
+      expectedSlot2,
+      `tick ${tick}: slot 2 (predicted bt_hurt_left=${predictedLeft}) should show ${expectedSlot2 === FLASH_TINT ? 'the flash tint' : 'its own authored attribute'}`
+    );
+  }
+});
+
+// §14 round 2 -- vram_buf queue-length, corrected schedules (finding 1, P2).
+// Two cases, both counted on the queue itself. Round 1 review finding 1:
+// rewritten to drive both schedules through a REAL battle_tick execution --
+// the old versions called battle_hurt_tick and cast_all directly (case a)
+// or wipe_tick/battle_hurt_tick/battle_list_back directly with a seeded
+// open list (case b), which proves each producer's own byte cost in
+// isolation but never that the real dispatcher reaches all of them
+// together on one tick, and the reviewer showed all 14 engine tests (this
+// pair included) still pass with battle_tick's own jsr battle_hurt_tick
+// replaced by three nops. Both cases below call battle_tick itself --
+// wipe_tick, battle_hurt_tick, battle_dispatch and battle_draw_sprites are
+// all reached in their real order, in one call -- through callRoutine (a
+// jsr into the stub, never nes.frame()), with pad_new poked directly to
+// stand in for a button press: this is the design reviewer's own
+// independently-verified technique (review-runtime.mjs), reused here
+// rather than rebuilt, because it sidesteps a real hazard the orchestrator
+// confirmed empirically: holding a real controller button down across
+// several nes.frame()/Emulator.stepInstruction() calls (needed to land
+// exactly mid-tick, before that tick's own NMI drains the queue) was found
+// to desynchronize dispatch_input's own edge detection badly enough to
+// spuriously end the battle and re-trigger the touch encounter, several
+// ticks later -- a real hazard of simulating hardware button timing this
+// precisely, not a defect in do_action_cancel or the hit-feedback engine
+// code itself (do_action_cancel's own ST_BATTLE fallthrough to close_ui
+// was independently checked against a clean, minimal, un-mutated battle
+// and never reproduced there). Driving pad_new directly is not a
+// step down to an isolated call: battle_tick is still the real, complete
+// per-frame dispatcher, run start to finish: nothing about its own
+// sequencing is bypassed, only the controller hardware's own serial-read
+// timing is, which no wrong implementation of hit feedback could exploit.
+// Wrong implementation this catches: a producer that the real dispatch
+// chain never actually reaches on the tick §12.6/the brief describes --
+// entirely invisible to a test that calls each producer directly instead
+// of letting battle_tick's own real sequencing decide what runs.
+test('vram_buf queue length: the 20-byte feedback maximum, distinct from cast_all’s own 28-byte message, through a real battle_tick', {
+  skip: needsSample
+}, async (t) => {
+  const built = await buildHitFeedback(t, 'hf-vrambuf-20', (project) => {
+    project.spells[0].scope = 'all';
+    project.spells[0].amountMin = 1;
+    project.spells[0].amountMax = 1;
+    project.sprites.actors[0].hp = 100;
+  });
+  const nes = bootPastNaming(built.romPath);
+  const addrOf = selectBattleBank(nes, built);
+  const { BT_HURT_SLOT, BT_HURT_LEFT } = resolveHurtAddrs(built);
+  const battleTickAddr = addrOf('battle_tick');
+  const printNumAddr = addrOf('print_num');
+
+  for (let slot = 0; slot < 4; slot++) {
+    nes.cpu.mem[MON_SLOT_ACTOR + slot] = 0; // Slime, block art, attr 0xAA
+    nes.cpu.mem[MON_ALIVE + slot] = 1;
+    nes.cpu.mem[MON_HP + slot] = 100;
+  }
+  nes.cpu.mem[BT_ACTOR] = 0; // a party member -- other_side() targets the monster side
+  nes.cpu.mem[BT_ARG] = 0; // spell 0, mutated to scope 'all' above
+  nes.cpu.mem[BT_CMD] = BC_MAGIC; // battle_act checks this to reach cast_spell, not attack_target
+  // Already flashing on the 4th monster (slot 3, combatant MAX_PARTY+3).
+  nes.cpu.mem[BT_HURT_SLOT] = MAX_PARTY + 3;
+  nes.cpu.mem[BT_HURT_LEFT] = 20;
+  // bt_phase = BP_ACT: the real dispatcher resolves the pending cast on
+  // this very tick (the same state spell_chosen's own scope-'all' branch
+  // leaves behind, one real button press earlier -- seeding straight to it
+  // is the allowed "precondition in RAM," the event under test is real).
+  nes.cpu.mem[BT_PHASE] = BP_ACT;
+  nes.cpu.mem[PAD_NEW] = 0;
+  nes.cpu.mem[VRAM_LEN] = 0;
+
+  // Sample vram_len the instant this tick's own execution reaches
+  // print_num (cast_all's own trailing message), so the feedback packets
+  // are counted separately from the message -- a temporary
+  // nes.cpu.emulate() wrapper observing PC on every real instruction this
+  // single battle_tick call executes, never a second, separate call.
+  let sampledAt20 = null;
+  const originalEmulate = nes.cpu.emulate.bind(nes.cpu);
+  nes.cpu.emulate = () => {
+    if (sampledAt20 === null && (nes.cpu.REG_PC + 1) === printNumAddr) sampledAt20 = nes.cpu.mem[VRAM_LEN];
+    return originalEmulate();
+  };
+  callRoutine(nes, battleTickAddr);
+  nes.cpu.emulate = originalEmulate;
+
+  assert.equal(sampledAt20, 20, 'exactly 5 feedback packets (20 bytes) must be queued by the time this tick’s own cast_all reaches its own message, through the real battle_tick dispatcher (wipe_tick -> battle_hurt_tick -> battle_dispatch -> battle_act -> cast_spell -> cast_all)');
+  assert.equal(nes.cpu.mem[VRAM_LEN], 48, 'the full tick must queue 20 feedback bytes plus cast_all’s own 28-byte message (13 name + 15 string), 48 total');
+
+  // Round 2 review, "also from the review's notes": decodeVramBuf was
+  // written but never used -- assert the actual packet COMPOSITION, not
+  // only the totals a coincidentally-wrong sum could still satisfy. The
+  // first 5 packets queued (indices 0-19 of the 48 total) must each be a
+  // bare 4-byte attribute write (3-byte header + 1 attribute byte) --
+  // battle_hurt_arm/battle_hurt_restore_slot's own shape -- and the
+  // remaining bytes must be cast_all's own two message packets, 13 and 15
+  // bytes, in that order (the name row, then the rest of the line).
+  const packets = decodeVramBuf(nes, 48);
+  const feedbackPackets = packets.slice(0, 5);
+  const messagePackets = packets.slice(5);
+  assert.equal(feedbackPackets.length, 5, 'exactly 5 packets must be queued before the message packets');
+  for (const [i, p] of feedbackPackets.entries()) {
+    assert.equal(p.bytes, 4, `feedback packet ${i}: must be a bare 4-byte attribute write (3-byte header + 1 attribute byte), not a differently-shaped packet`);
+  }
+  // Round 3 review finding 2 (P3): a same-sized packet queued at the WRONG
+  // cell would satisfy the byte-count assertions above -- assert each
+  // packet's own destination. Order: battle_hurt_tick's own ongoing flash
+  // on the already-flashing slot 3, then cast_all's own loop restoring the
+  // superseded slot -- 3 again (the shared pair moving off it onto target
+  // 0), then 0, then 1, then 2 (each restored as the pair moves on to the
+  // next target).
+  assert.deepEqual(
+    feedbackPackets.map((p) => p.addr),
+    [3, 3, 0, 1, 2].map((slot) => attrAddrForMonSlot(slot)),
+    'the five feedback packets must land at monster slots [3, 3, 0, 1, 2] in that order -- the ongoing flash on slot 3, then the restore of slot 3 as the pair moves onto target 0, then the restores of 0, 1 and 2 as it moves on again each time'
+  );
+  assert.deepEqual(messagePackets.map((p) => p.bytes), [13, 15], 'cast_all’s own message must be exactly two packets, 13 bytes then 15 bytes, following the 5 feedback packets');
+});
+
+// §12.6's own six-tick sequence: an all-target spell kills three monsters
+// and leaves the fourth flashing; A dismisses the message; the next actor's
+// own menu opens; Down selects MAGIC; A opens the spell list; B closes it.
+// Six real battle_tick calls, each with pad_new poked to stand in for
+// exactly the one button that tick's own real dispatch would have read --
+// the design reviewer's own independently-verified technique
+// (review-runtime.mjs), confirmed to reach 127 on the real, unmodified
+// engine before this brief's own round of work began.
+test('vram_buf queue length: the 127-byte whole-frame maximum (a wipe, a flash, and battle_list_back closing in the same tick), through six real battle_tick executions', {
+  skip: needsSample
+}, async (t) => {
+  const built = await buildHitFeedback(t, 'hf-vrambuf-127', (project) => {
+    project.spells[0].scope = 'all';
+    project.spells[0].amountMin = 5;
+    project.spells[0].amountMax = 5; // deterministic: kills the three 5-HP monsters, not the 999-HP fourth
+  });
+  const nes = bootPastNaming(built.romPath);
+  const addrOf = selectBattleBank(nes, built);
+  const { BT_HURT_SLOT, BT_HURT_LEFT } = resolveHurtAddrs(built);
+  const battleTickAddr = addrOf('battle_tick');
+  const dir = path.dirname(path.dirname(built.romPath));
+  const constantsText = fs.readFileSync(path.join(dir, 'build', 'constants.asm'), 'utf8');
+  const ram = (name) => resolveEngineAddress(constantsText, name);
+  const BT_WIPE_MASK = ram('bt_wipe_mask');
+  const BT_WIPE_ROW = ram('bt_wipe_row');
+  const BT_CMD = ram('bt_cmd');
+  const BT_ROUND = ram('bt_round');
+  const BT_FLEE = ram('bt_flee');
+  const BT_PTICK = ram('bt_ptick');
+  const STATUS_PENDING = ram('status_pending');
+  const PC_STATUS = ram('pc_status');
+  const PC_SPELLS = ram('pc_spells');
+  const TURN_ORDER = ram('turn_order');
+  const BT_COUNT = ram('bt_count');
+
+  for (let slot = 0; slot < 4; slot++) {
+    nes.cpu.mem[MON_SLOT_ACTOR + slot] = 0; // Slime, block art
+    nes.cpu.mem[MON_ALIVE + slot] = 1;
+    // Round 2 review finding 3 (P3): 999 written into MON_HP -- a
+    // Uint8Array-backed view -- silently truncates to 231, not the intended
+    // "survives everything" figure; 100 is a genuinely in-range HP that
+    // still survives the 5-damage cast on the three doomed slots.
+    nes.cpu.mem[MON_HP + slot] = slot < 3 ? 5 : 100; // slots 0-2 die to the cast, slot 3 survives
+    nes.cpu.mem[PC_STATUS + slot] = 0;
+    nes.cpu.mem[PC_SPELLS + slot] = 1; // party member 0 knows spell 0
+    nes.cpu.mem[TURN_ORDER + slot] = slot;
+  }
+  nes.cpu.mem[BT_ACTOR] = 0;
+  nes.cpu.mem[BT_ARG] = 0;
+  nes.cpu.mem[BT_HURT_SLOT] = MAX_PARTY;
+  nes.cpu.mem[BT_HURT_LEFT] = 0; // nothing flashing yet -- the cast arms it for real
+  nes.cpu.mem[BT_PHASE] = BP_ACT; // seeded straight to "a cast is pending", as in the 20-byte test above
+  nes.cpu.mem[BT_CMD] = BC_MAGIC;
+  nes.cpu.mem[BT_ROUND] = 0;
+  nes.cpu.mem[BT_FLEE] = 0;
+  nes.cpu.mem[BT_PTICK] = 0;
+  nes.cpu.mem[STATUS_PENDING] = 0;
+  nes.cpu.mem[BT_WIPE_MASK] = 0;
+  nes.cpu.mem[BT_WIPE_ROW] = 0;
+  // Round 2 review finding 3: four living monsters need bt_count = 4 --
+  // left at its RAM-reset default of 0, the three kills below underflow it
+  // to 253 instead of a real, in-range surviving count.
+  nes.cpu.mem[BT_COUNT] = 4;
+
+  const ticks = [
+    ['(1) cast the all-target spell', 0],
+    ['(2) A dismisses the resulting message', BTN_A],
+    ["(3) the next actor's own menu opens", 0],
+    ['(4) Down selects MAGIC', BTN_DOWN],
+    ['(5) A opens the spell list', BTN_A],
+    ['(6) B closes it -- battle_list_back, on the same tick as the still-owed wipe row and the still-live flash', BTN_B]
+  ];
+  let queued = null;
+  for (const [label, pad] of ticks) {
+    nes.cpu.mem[PAD_NEW] = pad;
+    nes.cpu.mem[VRAM_LEN] = 0;
+    callRoutine(nes, battleTickAddr);
+    queued = nes.cpu.mem[VRAM_LEN];
+    if (label.startsWith('(1)')) {
+      assert.equal(nes.cpu.mem[MON_ALIVE + 0], 0, 'slot 0 should have died to the cast');
+      assert.equal(nes.cpu.mem[MON_ALIVE + 1], 0, 'slot 1 should have died to the cast');
+      assert.equal(nes.cpu.mem[MON_ALIVE + 2], 0, 'slot 2 should have died to the cast');
+      assert.equal(nes.cpu.mem[MON_ALIVE + 3], 1, 'slot 3 should have survived the cast');
+      assert.equal(nes.cpu.mem[BT_HURT_SLOT], MAX_PARTY + 3, 'the shared pair should be flashing the surviving 4th monster after the cast');
+      assert.equal(nes.cpu.mem[BT_COUNT], 1, 'bt_count must read a real, in-range surviving count (1) after the three kills, not an underflowed 253');
+      assert.equal(nes.cpu.mem[MON_HP + 3], 93, 'the survivor’s own HP must reflect a real, in-range starting value taking the cast’s own damage, not a truncated 999-turned-231 sentinel');
+    }
+  }
+
+  assert.equal(queued, 127, 'the whole-frame maximum on the sixth (B-press) tick must be exactly 11 (wipe) + 4 (flash) + 112 (battle_list_back) = 127 bytes');
+
+  // Round 2 review, "also from the review's notes": assert the sixth tick's
+  // own packet COMPOSITION with decodeVramBuf, not only its 127-byte total
+  // -- one 11-byte wipe-row packet (the still-owed wipe from the earlier
+  // kills), one 4-byte attribute packet at the still-flashing monster's own
+  // cell, and battle_list_back's own packets summing to 112.
+  const packets = decodeVramBuf(nes, queued);
+  assert.equal(packets[0].bytes, 11, 'the first packet on this tick must be the 11-byte wipe row still owed from the earlier kills');
+  assert.equal(packets[1].bytes, 4, 'the second packet must be the 4-byte attribute write for the still-flashing monster’s own cell');
+  // Round 3 review finding 2 (P3): a same-sized packet queued at the WRONG
+  // address would satisfy the byte-count assertion above while still
+  // corrupting a different cell -- assert the second packet's own
+  // destination, not only its length.
+  assert.equal(packets[1].addr, attrAddrForMonSlot(3), 'the second packet must land at slot 3’s own attribute cell -- the still-flashing survivor -- not merely be 4 bytes long');
+  const listBackBytes = packets.slice(2).reduce((sum, p) => sum + p.bytes, 0);
+  assert.equal(listBackBytes, 112, 'every packet after the wipe and the flash must be battle_list_back’s own closing redraw, summing to exactly 112 bytes');
+});
+
+// §14 round 1 (corrected round 2) -- hit-flash trace, both bands and
+// cessation. Samples the real PPU attribute byte on every tick of the
+// full BT_HURT_FRAMES (20) countdown.
+test('hit-flash trace: two-tick bands of each tint, the terminal tick forcing the authored tint, cessation confirmed on the queue itself', {
+  skip: needsSample
+}, async (t) => {
+  const built = await buildHitFeedback(t, 'hf-flash-trace');
+  const nes = bootPastNaming(built.romPath);
+  const addrOf = selectBattleBank(nes, built);
+  const { BT_HURT_SLOT, BT_HURT_LEFT } = resolveHurtAddrs(built);
+
+  nes.cpu.mem[BT_PHASE] = BP_MENU;
+  nes.cpu.mem[MON_SLOT_ACTOR] = 0; // Slime, block art, attr 0xAA
+  nes.cpu.mem[MON_ALIVE] = 1;
+  nes.cpu.mem[MON_HP] = 10;
+  nes.cpu.mem[BT_HURT_SLOT] = MAX_PARTY;
+  nes.cpu.mem[BT_HURT_LEFT] = 20; // BT_HURT_FRAMES
+
+  const tints = [];
+  const queued = [];
+  for (let tick = 0; tick < 22; tick++) {
+    nes.cpu.mem[VRAM_LEN] = 0;
+    callRoutine(nes, addrOf('battle_hurt_tick'));
+    queued.push(nes.cpu.mem[VRAM_LEN] > 0);
+    callRoutine(nes, addrOf('vram_drain'));
+    tints.push(nes.ppu.vramMem[attrAddrForMonSlot(0)]);
+  }
+
+  // Ticks 1-19 (index 0-18): the countdown decrements from 20 to 1, so the
+  // value tested by "and #2" is bt_hurt_left AFTER the decrement, i.e.
+  // 19,18,...,1 across these 19 ticks -- two-tick bands of each tint.
+  for (let i = 0; i < 19; i++) {
+    const leftAfterDec = 19 - i; // 19 down to 1
+    const expected = (leftAfterDec & 2) !== 0 ? FLASH_TINT : 0xaa;
+    assert.equal(tints[i], expected, `tick ${i + 1}: bt_hurt_left=${leftAfterDec} should show ${expected === FLASH_TINT ? 'the flash tint' : 'the authored tint'}`);
+    assert.ok(queued[i], `tick ${i + 1}: a packet must be queued every tick while bt_hurt_left is nonzero`);
+  }
+  // Tick 20 (index 19): bt_hurt_left reaches 0 -- the terminal tick, which
+  // must force the authored tint regardless of which band it would
+  // otherwise have landed in.
+  assert.equal(tints[19], 0xaa, 'the terminal tick must force the authored tint');
+  assert.ok(queued[19], 'the terminal tick must still queue its own packet');
+  // No packet on any tick after the terminal one -- cessation confirmed on
+  // the queue itself, not merely a stable PPU byte (which cannot by itself
+  // distinguish "nothing queued" from "the same value queued twice").
+  for (let i = 20; i < 22; i++) {
+    assert.equal(queued[i], false, `tick ${i + 1}: no packet may be queued once the countdown has already reached 0`);
+    assert.equal(tints[i], 0xaa, `tick ${i + 1}: the last-drawn tint must still read as the authored one, unchanged`);
+  }
+});
+
+// §14 round 5 -- BP_INTRO guard, hurt timer (split from the old combined
+// row). A stale timer from a previous battle must not tick or queue
+// anything while bt_phase still reads BP_INTRO.
+test('BP_INTRO guard: a stale bt_hurt_left neither decrements nor queues anything on the first, still-BP_INTRO tick', {
+  skip: needsSample
+}, async (t) => {
+  const built = await buildHitFeedback(t, 'hf-bpintro-guard');
+  const nes = bootPastNaming(built.romPath);
+  const addrOf = selectBattleBank(nes, built);
+  const { BT_HURT_SLOT, BT_HURT_LEFT } = resolveHurtAddrs(built);
+
+  nes.cpu.mem[BT_PHASE] = BP_INTRO;
+  nes.cpu.mem[MON_SLOT_ACTOR] = 0;
+  nes.cpu.mem[MON_ALIVE] = 1;
+  nes.cpu.mem[BT_HURT_SLOT] = MAX_PARTY; // stale from a previous battle
+  nes.cpu.mem[BT_HURT_LEFT] = 20;
+  nes.cpu.mem[VRAM_LEN] = 0;
+
+  callRoutine(nes, addrOf('battle_hurt_tick'));
+
+  assert.equal(nes.cpu.mem[BT_HURT_LEFT], 20, 'battle_hurt_tick must not decrement the stale timer while bt_phase still reads BP_INTRO');
+  assert.equal(nes.cpu.mem[VRAM_LEN], 0, 'battle_hurt_tick must queue nothing while bt_phase still reads BP_INTRO');
+});
+
+// §14 round 5 -- battle-entry reset, hurt timer (split from the old
+// combined row). A timer left counting down at the end of one battle
+// (neither battle_end nor player_died clears it, §12.4) must read 0 once
+// the NEXT battle's own setup_monsters has run.
+test('battle-entry reset: a hurt timer still counting down at the end of one battle reads 0 once the next battle’s setup_monsters has run', {
+  skip: needsSample
+}, async (t) => {
+  const built = await buildHitFeedback(t, 'hf-entry-reset');
+  const nes = bootPastNaming(built.romPath);
+  const addrOf = selectBattleBank(nes, built);
+  const { BT_HURT_SLOT, BT_HURT_LEFT } = resolveHurtAddrs(built);
+
+  nes.cpu.mem[BT_HURT_SLOT] = MAX_PARTY;
+  nes.cpu.mem[BT_HURT_LEFT] = 11; // still counting down, as if the battle just ended mid-flash
+
+  callRoutine(nes, addrOf('setup_monsters'));
+
+  assert.equal(nes.cpu.mem[BT_HURT_LEFT], 0, 'setup_monsters must clear bt_hurt_left for the next battle');
+});
+
+// Orchestrator addition (not a §14 row): party-member blink. The case a
+// player sees most, and no §14 row covers it -- battle_sprite_pc's own
+// skip-check, isolated the identical way the monster-side tests above are.
+test('party-member blink: the named party member’s icon is absent from OAM exactly on skip-band ticks; an unrelated member draws on every tick', {
+  skip: needsSample
+}, async (t) => {
+  const built = await buildHitFeedback(t, 'hf-party-blink');
+  const nes = bootPastNaming(built.romPath);
+  const addrOf = selectBattleBank(nes, built);
+  const { BT_HURT_SLOT, BT_HURT_LEFT } = resolveHurtAddrs(built);
+  const OAM_IDX = resolveOamIdx(built);
+
+  // Isolate member 0 alone: no other party member, no living monster, so
+  // any OAM bytes written can only be member 0's own icon.
+  nes.cpu.mem[PC_IN_PARTY] = 1;
+  nes.cpu.mem[PC_HP] = 50;
+  for (let slot = 1; slot < 4; slot++) nes.cpu.mem[PC_IN_PARTY + slot] = 0;
+  for (let slot = 0; slot < 4; slot++) nes.cpu.mem[MON_ALIVE + slot] = 0;
+  nes.cpu.mem[BT_HURT_SLOT] = 0; // member 0
+
+  let drawnBytes = null;
+  for (let hurtLeft = 0; hurtLeft <= 20; hurtLeft++) {
+    nes.cpu.mem.fill(0xff, 0x200, 0x300);
+    nes.cpu.mem[OAM_IDX] = 0;
+    nes.cpu.mem[BT_HURT_LEFT] = hurtLeft;
+    nes.cpu.REG_X = 0;
+    callRoutine(nes, addrOf('battle_sprite_pc'));
+    const skipped = hurtLeft !== 0 && (hurtLeft & 2) !== 0;
+    if (!skipped) {
+      if (drawnBytes === null) drawnBytes = nes.cpu.mem[OAM_IDX];
+      assert.equal(nes.cpu.mem[OAM_IDX], drawnBytes, `hurtLeft=${hurtLeft}: a draw tick must write the same byte count every time`);
+      assert.ok(drawnBytes > 0, 'sanity: a draw tick must write at least one OAM entry');
+    } else {
+      assert.equal(nes.cpu.mem[OAM_IDX], 0, `hurtLeft=${hurtLeft} (a skip-band tick, bit 1 set): the icon must be entirely absent from OAM`);
+    }
+  }
+
+  // An unrelated combatant (member 1, bt_hurt_slot still naming member 0)
+  // must draw on every tick, regardless of bt_hurt_left.
+  nes.cpu.mem[PC_IN_PARTY] = 0;
+  nes.cpu.mem[PC_IN_PARTY + 1] = 1;
+  nes.cpu.mem[PC_HP + 1] = 50;
+  let unrelatedBytes = null;
+  for (const hurtLeft of [0, 2, 3, 4, 20]) {
+    nes.cpu.mem.fill(0xff, 0x200, 0x300);
+    nes.cpu.mem[OAM_IDX] = 0;
+    nes.cpu.mem[BT_HURT_LEFT] = hurtLeft;
+    nes.cpu.REG_X = 0;
+    callRoutine(nes, addrOf('battle_sprite_pc'));
+    if (unrelatedBytes === null) unrelatedBytes = nes.cpu.mem[OAM_IDX];
+    assert.ok(nes.cpu.mem[OAM_IDX] > 0, `hurtLeft=${hurtLeft}: an unrelated party member must still draw`);
+    assert.equal(nes.cpu.mem[OAM_IDX], unrelatedBytes, `hurtLeft=${hurtLeft}: an unrelated party member’s own draw must be unaffected by bt_hurt_left`);
+  }
+});
+
+// Round 2 review finding 2 (P2): the two lifecycle tests below previously
+// only ever SEEDED bt_phase = BP_INTRO by hand -- an undeclared substitute
+// for the brief's own explicit "a real battle ends through battle_end ... a
+// real next battle entry" requirement, since no battle_end or battle_begin
+// call ever actually ran, and the all-$FF monster array was a synthetic
+// formation rather than one a real entry point populated. This helper drives
+// both for real, through callRoutine (the instruction-step harness -- never
+// resuming nes.frame(), which the brief says is unnecessary here and which
+// 1b's own history already showed can desynchronize dispatch_input's edge
+// detection when a real button is held across several frame-stepped calls):
+// a coherent battle about to end, with bt_hurt_left nonzero because a hit is
+// still counting down, ends through a real battle_end (kernel-resident, so
+// the field's own screen bank -- not the battle bank -- must still be
+// switched in for its own jsr redraw_screen to draw the right screen); then
+// a real, valid one-monster formation is seeded as the precondition
+// battle_begin does not itself own (the same precondition allowance already
+// used elsewhere in this file, e.g. the monster HP/alive seeds before a
+// cast); then a real battle_begin (also kernel-resident) enters the next
+// battle for real. Only once both real transitions have run does this
+// switch in the battle bank, for the caller's own first real battle_tick.
+async function enterBattleForRealAfterEnding(t, name, hurtLeftBeforeEnd) {
+  const built = await buildHitFeedback(t, name);
+  const nes = bootPastNaming(built.romPath);
+  const dir = path.dirname(path.dirname(built.romPath));
+  const constantsText = fs.readFileSync(path.join(dir, 'build', 'constants.asm'), 'utf8');
+  const ram = (n) => resolveEngineAddress(constantsText, n);
+  const symbols = fs.readFileSync(built.symbolPath, 'utf8');
+  const kernelAddrOf = (label) => {
+    const m = symbols.match(new RegExp(`^${label}\\s*=\\s*\\$([0-9A-Fa-f]+)`, 'm'));
+    assert.ok(m, `${label} should be a named symbol in game.fns`);
+    return parseInt(m[1], 16);
+  };
+  const { BT_HURT_SLOT, BT_HURT_LEFT } = resolveHurtAddrs(built);
+  const BT_FROM_ENT = ram('bt_from_ent');
+  const BT_FLEE = ram('bt_flee');
+  const TALK_ENT = ram('talk_ent');
+  const BT_OWNER_ENT = ram('bt_owner_ent');
+  const SCRIPT_ACTIVE = ram('script_active');
+
+  // A coherent battle about to end, with a hit still counting down.
+  // Round 3 review finding 3 (P3): battle_end's own event-owner restore
+  // (engine/rpg.asm) keys off bt_owner_ent -- left at whatever boot
+  // happened to leave it (a real, in-range entity slot, 0), it walked
+  // ent_active/ent_record looking for a match and, on finding one,
+  // silently restored talk_ent to that slot, exercising the SCRIPTED-
+  // event-owner path instead of the clean no-owner one this scenario means
+  // to seed. bt_owner_ent = NO_ENTITY ($FF) takes battle_end's own
+  // `cpx #MAX_ENTITIES / bcs battle_end_no_restore` branch immediately, the
+  // same way bt_from_ent/talk_ent already do for their own checks.
+  // script_active is kept explicitly 0 too, for the same reason: this is a
+  // non-scripted scenario (a random or contact-damage fight, never one
+  // reached mid-script), and battle_end's own post-restore branch
+  // (gameplay vs. frozen dialog) reads it to decide which.
+  nes.cpu.mem[BT_HURT_SLOT] = MAX_PARTY;
+  nes.cpu.mem[BT_HURT_LEFT] = hurtLeftBeforeEnd;
+  nes.cpu.mem[BT_FROM_ENT] = 0xff; // NO_ENTITY -- no touch-encounter actor to restore
+  nes.cpu.mem[BT_FLEE] = 0; // not fleeing -- battle_end's own entity-touch branch runs
+  nes.cpu.mem[TALK_ENT] = 0xff; // NO_ENTITY -- nobody being spoken to
+  nes.cpu.mem[BT_OWNER_ENT] = 0xff; // NO_ENTITY -- no suspended script's own event to restore
+  nes.cpu.mem[SCRIPT_ACTIVE] = 0; // no script mid-run -- the clean gameplay path, not the frozen-dialog one
+  // battle_outcome (engine/battleturn.asm) is what actually sets bt_phase
+  // to BP_DONE, right before battle_dispatch's own BP_DONE branch reaches
+  // battle_finish -> battle_end -- BP_DONE, not BP_INTRO/boot's own
+  // default, is the real phase a battle is in the instant battle_end runs.
+  nes.cpu.mem[BT_PHASE] = BP_DONE;
+  nes.cpu.mem[GAME_STATE] = ST_BATTLE;
+
+  callRoutine(nes, kernelAddrOf('battle_end'));
+  assert.equal(nes.cpu.mem[GAME_STATE], 0, 'battle_end must have returned to ordinary gameplay for real'); // ST_GAMEPLAY, engine/constants.asm
+  // The clean no-owner path was taken: battle_end must not have restored
+  // talk_ent to a real entity slot -- it must still read NO_ENTITY, exactly
+  // as seeded above, never overwritten by a spurious owner match.
+  assert.equal(nes.cpu.mem[TALK_ENT], 0xff, 'battle_end must not have restored talk_ent to any entity -- bt_owner_ent named NO_ENTITY, so the clean no-owner path must have run');
+
+  // Another valid formation -- one living block-art monster -- seeded as
+  // the precondition battle_begin itself does not own (the field's own
+  // start_encounter populates this before jmp battle_begin in the real
+  // engine; battle_begin takes no monster argument at all).
+  nes.cpu.mem[MON_SLOT_ACTOR] = 0;
+  for (let slot = 1; slot < 4; slot++) nes.cpu.mem[MON_SLOT_ACTOR + slot] = 0xff;
+
+  callRoutine(nes, kernelAddrOf('battle_begin'));
+  assert.equal(nes.cpu.mem[GAME_STATE], ST_BATTLE, 'battle_begin must have entered a real battle for real');
+  assert.equal(nes.cpu.mem[BT_PHASE], BP_INTRO, 'battle_begin must have set bt_phase to BP_INTRO for real');
+  assert.equal(nes.cpu.mem[BT_HURT_LEFT], hurtLeftBeforeEnd, 'battle_begin itself must not touch bt_hurt_left -- only setup_monsters, reached later through a real battle_tick, does');
+
+  const addrOf = selectBattleBank(nes, built);
+  return { nes, addrOf, BT_HURT_LEFT, battleTickAddr: addrOf('battle_tick'), battleDispatchAddr: addrOf('battle_dispatch') };
+}
+
+// §14 round 5 -- BP_INTRO guard, hurt timer: round 1 review finding 1's own
+// lifecycle version, beside the isolated one above (kept as a direct unit
+// check of the guard in isolation). Round 2 review finding 2: reaches this
+// same first tick through a REAL battle_end then a REAL battle_begin
+// (enterBattleForRealAfterEnding above), not a seeded bt_phase. Wrong
+// implementation this catches: the guard's own absence on the hurt side --
+// integration through the real end/entry lifecycle is what this version
+// adds; the retained isolated test above already catches the guard's
+// removal in isolation, so this one is not needed to detect that mutation
+// alone, only to prove the guard still holds once a real end/entry is what
+// produced the tick under test.
+test('BP_INTRO guard, real lifecycle: a stale bt_hurt_left neither decrements nor queues anything on battle_tick’s own first, still-BP_INTRO tick, after a real battle_end and a real battle_begin', {
+  skip: needsSample
+}, async (t) => {
+  const { nes, addrOf, BT_HURT_LEFT, battleTickAddr, battleDispatchAddr } = await enterBattleForRealAfterEnding(t, 'hf-bpintro-guard-real', 20);
+  nes.cpu.mem[PAD_NEW] = 0;
+  nes.cpu.mem[VRAM_LEN] = 0;
+
+  // Sample right after battle_hurt_tick returns -- battle_dispatch's own
+  // entry, the very next thing battle_tick does -- before battle_dispatch's
+  // own BP_INTRO branch can reach battle_intro -> setup_monsters, which
+  // ALSO clears bt_hurt_left unconditionally: checking only once the whole
+  // tick has finished could not tell "the guard worked" apart from
+  // "setup_monsters reset it anyway, a tick late."
+  let sampledLeft = null;
+  let sampledVram = null;
+  const originalEmulate = nes.cpu.emulate.bind(nes.cpu);
+  nes.cpu.emulate = () => {
+    if (sampledLeft === null && (nes.cpu.REG_PC + 1) === battleDispatchAddr) {
+      sampledLeft = nes.cpu.mem[BT_HURT_LEFT];
+      sampledVram = nes.cpu.mem[VRAM_LEN];
+    }
+    return originalEmulate();
+  };
+  callRoutine(nes, battleTickAddr);
+  nes.cpu.emulate = originalEmulate;
+
+  assert.equal(sampledLeft, 20, 'battle_hurt_tick must not decrement the stale timer on the real first tick, while bt_phase still reads BP_INTRO');
+  assert.equal(sampledVram, 0, 'battle_hurt_tick must queue nothing on the real first tick, while bt_phase still reads BP_INTRO');
+});
+
+// §14 round 5 -- battle-entry reset, hurt timer: round 1 review finding 1's
+// own lifecycle version, beside the isolated setup_monsters unit check
+// above. Round 2 review finding 2: reaches setup_monsters through a real
+// battle_end then a real battle_begin then a real battle_tick
+// (enterBattleForRealAfterEnding above) -- not a seeded bt_phase, and not a
+// direct call to setup_monsters itself. Wrong implementation this catches:
+// setup_monsters clearing bt_hurt_left only when called in isolation but
+// never actually reached once a real end/entry (not merely a seeded
+// BP_INTRO) is what produced the tick -- integration the retained isolated
+// setup_monsters unit test above cannot, by itself, exercise, since it
+// never runs battle_end/battle_begin/battle_dispatch at all.
+test('battle-entry reset, real lifecycle: a hurt timer still counting down reads 0 once a real battle_tick has run the next battle’s own setup_monsters, after a real battle_end and a real battle_begin', {
+  skip: needsSample
+}, async (t) => {
+  const { nes, addrOf, BT_HURT_LEFT, battleTickAddr } = await enterBattleForRealAfterEnding(t, 'hf-entry-reset-real', 11);
+  nes.cpu.mem[PAD_NEW] = 0;
+
+  // The real next battle's own first tick: battle_dispatch's own BP_INTRO
+  // branch reaches battle_intro -> setup_monsters for real.
+  callRoutine(nes, battleTickAddr);
+
+  assert.equal(nes.cpu.mem[BT_HURT_LEFT], 0, 'a real battle_tick reaching setup_monsters through battle_intro must clear bt_hurt_left for the next battle');
+});
+
+// Orchestrator addition (not a §14 row), round 1 review finding 1's own
+// lifecycle version: a monster's REAL attack (monster_turn_attack -- the
+// complete, real physical-attack turn: pick_party_target -> roll_hit ->
+// apply_damage -> battle_hurt_arm, not an isolated poke of bt_hurt_slot/
+// left) lands on a party member, then real battle_tick calls draw (or skip)
+// the icon every tick that follows, through the real battle_draw_sprites ->
+// battle_sprite_pc path -- beside the isolated branch/parity unit test
+// above, which still covers "an unrelated member draws on every tick" on
+// its own, but in a SEPARATE run from the victim, so it cannot prove both
+// at once.
+// Round 2 review finding 1 (P2): the previous draft removed every party
+// member but the victim (pc_in_party cleared for every other slot), so
+// nothing in this test could ever fail a wrong implementation that also
+// stops drawing every OTHER present member the instant the victim blinks --
+// battle_sprite_pc's loop keeps going past the victim's own slot in the
+// real routine, but a test with no one left in that loop cannot see a
+// wrong implementation that exits it early. Both of sample-rpg's party
+// members (Rian, slot 0; Iris, slot 1 -- the only two this project's own
+// per-level tables cover) are now kept alive and present throughout, and
+// each one's own OAM contribution is identified by POSITION: draw_metasprite
+// writes each tile's Y byte as its own metasprite offset plus
+// BT_PARTY_Y + slot*BT_PARTY_STEP (engine/constants.asm), so the two
+// members' sprites land in disjoint, non-overlapping 32-pixel Y bands with
+// no ambiguity about which slot drew what.
+// Wrong implementation this catches: battle_hurt_arm never actually being
+// reached from the monster's real attack path (e.g. wired only into the
+// player-side/cast_all call sites, invisible to a test that pokes
+// bt_hurt_slot/bt_hurt_left directly), AND (round 2 review) a skip branch
+// that exits battle_sprite_pc's own loop early instead of only skipping the
+// victim's own draw_metasprite call, which would silently stop every
+// present member after the victim from drawing too.
+test('party-member blink, real lifecycle: a monster’s real landed attack arms hit feedback on the target, and real battle_tick draws track it tick by tick, with another present member drawing throughout', {
+  skip: needsSample
+}, async (t) => {
+  const built = await buildHitFeedback(t, 'hf-party-blink-real', (project) => {
+    project.sprites.actors[0].battle = { ...project.sprites.actors[0].battle, acc: 255 }; // guarantee the hit
+    project.party[0].eva = 0;
+    project.party[1].eva = 0; // both members equally hittable -- pick_party_target's own choice is asserted below, not assumed
+  });
+  const nes = bootPastNaming(built.romPath);
+  const addrOf = selectBattleBank(nes, built);
+  const { BT_HURT_SLOT, BT_HURT_LEFT } = resolveHurtAddrs(built);
+
+  // engine/constants.asm: BT_PARTY_Y = 32, BT_PARTY_STEP = 32 -- each party
+  // slot's own metasprite tiles land at Y = (a small per-tile offset) +
+  // BT_PARTY_Y + slot*BT_PARTY_STEP, so slot 0 occupies [32,63], slot 1
+  // [64,95], and so on: 32-pixel bands wide enough that no real metasprite
+  // (a handful of pixels tall) can straddle two of them.
+  const BT_PARTY_Y = 32;
+  const BT_PARTY_STEP = 32;
+  const oamEntriesInSlotBand = (slot) => {
+    const lowY = BT_PARTY_Y + slot * BT_PARTY_STEP;
+    const highY = lowY + BT_PARTY_STEP - 1;
+    let count = 0;
+    for (let i = 0; i < 64; i++) {
+      const y = nes.cpu.mem[0x200 + i * 4];
+      if (y === 0xff) continue; // battle_sprite_clear's own park value -- unused slot
+      if (y >= lowY && y <= highY) count++;
+    }
+    return count;
+  };
+
+  nes.cpu.mem[BT_ACTOR] = MAX_PARTY; // the attacking monster's own combatant slot
+  nes.cpu.mem[MON_SLOT_ACTOR] = 0;
+  nes.cpu.mem[MON_ALIVE] = 1;
+  for (let slot = 0; slot < 2; slot++) {
+    nes.cpu.mem[PC_IN_PARTY + slot] = 1;
+    nes.cpu.mem[PC_HP + slot] = 50;
+  }
+  for (let slot = 2; slot < 4; slot++) nes.cpu.mem[PC_IN_PARTY + slot] = 0; // sample-rpg has no real per-level table for these
+  nes.cpu.mem[BT_HURT_LEFT] = 0; // nothing armed yet
+  nes.cpu.mem[RNG] = 0; // acc 255 / eva 0: any roll but 255 hits; a fixed low seed keeps this deterministic
+
+  // Round 3 review finding 1 (P2): record BOTH members' HP before the
+  // attack, so the real victim can be established from the attack's own
+  // EFFECT (who actually lost HP), independently of whatever bt_hurt_slot
+  // says -- reading bt_hurt_slot alone (round 2's own version) proves only
+  // that drawing follows the feedback state, never that the feedback
+  // named the member the attack actually damaged.
+  const hpBefore = [nes.cpu.mem[PC_HP + 0], nes.cpu.mem[PC_HP + 1]];
+
+  // The monster's real, complete turn -- not an isolated poke of
+  // bt_hurt_slot/bt_hurt_left.
+  callRoutine(nes, addrOf('monster_turn_attack'));
+
+  const hpAfter = [nes.cpu.mem[PC_HP + 0], nes.cpu.mem[PC_HP + 1]];
+  const damaged = [0, 1].filter((slot) => hpAfter[slot] < hpBefore[slot]);
+  assert.equal(damaged.length, 1, `exactly one of the two present members must have lost HP to the real attack, got ${JSON.stringify(hpAfter)} from ${JSON.stringify(hpBefore)}`);
+  const victimSlot = damaged[0];
+  const otherSlot = victimSlot === 0 ? 1 : 0;
+  assert.equal(hpAfter[otherSlot], hpBefore[otherSlot], `the other present member (slot ${otherSlot}) must not have lost any HP to an attack that landed on slot ${victimSlot}`);
+  // With this fixture's own deterministic setup (pick_party_target picks
+  // the first alive combatant from slot 0, and both members are equally
+  // hittable), the real victim must be slot 0 -- asserted explicitly, per
+  // the brief: report an unexpected target rather than silently adapting
+  // every later assertion to wherever the attack happened to land.
+  assert.equal(victimSlot, 0, 'this fixture’s own deterministic setup must send the real attack to party member 0 -- an attack landing anywhere else is unexpected and must fail here, not be adapted to');
+
+  // Feedback must name the SAME member the attack actually damaged, both
+  // by bt_hurt_slot (the shared hit-feedback pair) and bt_target (the
+  // attack's own chosen target, still readable here since monster_turn_attack
+  // never clears it) -- not merely a present member.
+  assert.equal(nes.cpu.mem[BT_HURT_SLOT], victimSlot, 'bt_hurt_slot must name the same member the real attack actually damaged');
+  assert.equal(nes.cpu.mem[BT_TARGET], victimSlot, 'bt_target -- the attack’s own chosen target -- must equal the independently established victim too');
+  assert.equal(nes.cpu.mem[BT_HURT_LEFT], 20, 'the landed hit should have armed a fresh timer');
+
+  // A living, drawable member must follow the victim in party order --
+  // the precondition the concurrent-OAM checks below depend on to mean
+  // anything at all.
+  assert.equal(nes.cpu.mem[PC_IN_PARTY + otherSlot], 1, `party member ${otherSlot}, following the victim in party order, must be present`);
+  assert.ok(nes.cpu.mem[PC_HP + otherSlot] > 0, `party member ${otherSlot}, following the victim in party order, must be alive`);
+  const pcMetasprite = addrOf('pc_metasprite'); // a ROM table (main/build/battletables.js), not a RAM equate -- resolved off game.fns like any other battle-bank label
+  assert.notEqual(nes.cpu.mem[pcMetasprite + otherSlot], 0xff, `party member ${otherSlot}, following the victim in party order, must be drawable (a real metasprite, not $FF)`);
+
+  // Real ticks: battle_tick's own battle_draw_sprites -> battle_sprite_pc
+  // draws (or skips) the icon every tick, unconditionally -- no button
+  // needed, and bt_hurt_left is read back AFTER each tick's own
+  // battle_hurt_tick has already decremented it, the same value
+  // battle_sprite_pc's own skip check used on that same tick.
+  nes.cpu.mem[BT_PHASE] = BP_MENU;
+  for (let tick = 0; tick < 20; tick++) {
+    nes.cpu.mem.fill(0xff, 0x200, 0x300);
+    nes.cpu.mem[PAD_NEW] = 0;
+    callRoutine(nes, addrOf('battle_tick'));
+    // Predicted independently of whatever the register currently reads --
+    // battle_tick's own battle_hurt_tick must actually decrement it one
+    // frame at a time from BT_HURT_FRAMES (20), floored at 0. Re-deriving
+    // "expected" from the CURRENT bt_hurt_left value instead (as an earlier
+    // draft of this test did) cannot tell "the real countdown ran" apart
+    // from "battle_hurt_tick never ran at all and bt_hurt_left is still its
+    // initial 20" -- both cases dead-reckon into a self-consistent parity,
+    // since battle_sprite_pc reads the identical (frozen) byte the test
+    // would also be reading. This is the check that catches Finding 1's own
+    // required sabotage (battle_tick's `jsr battle_hurt_tick` -> nops).
+    const predictedLeft = Math.max(0, 20 - (tick + 1));
+    assert.equal(nes.cpu.mem[BT_HURT_LEFT], predictedLeft, `tick ${tick}: battle_tick's own battle_hurt_tick must have decremented bt_hurt_left for real`);
+    const skipped = predictedLeft !== 0 && (predictedLeft & 2) !== 0;
+    const victimCount = oamEntriesInSlotBand(victimSlot);
+    if (skipped) {
+      assert.equal(victimCount, 0, `tick ${tick}: the hit member's (slot ${victimSlot}) icon must be entirely absent from OAM on a real skip-band tick (predicted hurtLeft=${predictedLeft})`);
+    } else {
+      assert.ok(victimCount > 0, `tick ${tick}: the hit member's (slot ${victimSlot}) icon must have drawn at least one OAM entry on a real draw tick (predicted hurtLeft=${predictedLeft})`);
+    }
+    // Round 2 review finding 1: the OTHER present member must draw on
+    // EVERY tick, skip-band or not -- bt_hurt_slot never names it, so
+    // battle_sprite_pc's own skip check can never apply to it.
+    assert.ok(oamEntriesInSlotBand(otherSlot) > 0, `tick ${tick}: the other present member (slot ${otherSlot}) must still draw at least one OAM entry, regardless of the victim's own skip/draw state`);
+  }
+});

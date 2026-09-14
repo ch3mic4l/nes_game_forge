@@ -465,6 +465,23 @@ bt_fx_slot  = bt_fx_anim+1
 bt_fx_frame = bt_fx_slot+1
 bt_fx_timer = bt_fx_frame+1
 
+; Phase 2a hit feedback (docs/design-battle-animation.md §12.2): the one
+; shared bt_hurt_slot/bt_hurt_left pair -- bt_hurt_slot names the combatant
+; (0-7) most recently hit, bt_hurt_left counts down from BT_HURT_FRAMES.
+; Which of the two hit-feedback halves applies (sprite blink vs attribute
+; flash) is decided at read time from what bt_hurt_slot currently names,
+; never both. Chained after bt_fx_timer, unconditionally, for the identical
+; reason bt_fx_anim itself was chained after mus_inst_base: a switched-off
+; feature must not move any other symbol's address.
+bt_hurt_slot = bt_fx_timer+1
+bt_hurt_left = bt_hurt_slot+1
+BT_HURT_FRAMES = 20
+; draw_battle_attr's own ground-row fill (engine/battle.asm) -- rows 1-4 of
+; the attribute table get this value before any live monster's own mon_attr
+; is written over the top. This is what a dead monster's own cell must be
+; restored to, not its own (now-meaningless) authored tint.
+BT_GROUND_ATTR = $55
+
 ; The $10-per-row darken trick reaches solid black in at most this many
 ; subtractions from any starting row; the hold between steps is an engine
 ; constant, not authored -- see OP_FADE below and shared/project.js's

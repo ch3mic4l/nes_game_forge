@@ -235,8 +235,119 @@ battle_tick:
   .if BATTLE_ANIM_ENABLED
   jsr battle_fx_tick
   .endif
+  .if HIT_FEEDBACK_ENABLED
+  jsr battle_hurt_tick
+  .endif
   jsr battle_dispatch
   jmp battle_draw_sprites
+
+; Phase 2a hit feedback (docs/design-battle-animation.md §12.3) -- ticks the
+; shared hit-feedback pair. Guarded on BP_INTRO the identical reason
+; battle_fx_tick already is: this runs before battle_dispatch on every tick,
+; including the very first one of a fresh battle, where bt_phase is still
+; genuinely BP_INTRO and bt_hurt_left has not been reset yet for this battle
+; -- setup_monsters (below) is reached only through battle_dispatch ->
+; battle_intro, later the same tick.
+;
+; Which of the two hit-feedback halves applies is decided here, every tick,
+; from what bt_hurt_slot currently names:
+;   - a party member, or a metasprite-fallback monster (mon_tile == $FF):
+;     nothing to queue -- battle_sprite_pc/battle_sprite_mon read
+;     bt_hurt_slot/bt_hurt_left directly at draw time and skip the icon on
+;     alternate frames.
+;   - a block-art monster (mon_tile != $FF): the attribute-flash half.
+;
+; If the named monster has died since it was armed (mon_slot_alive == 0),
+; this is the LAST chance to fix its attribute cell before the shared state
+; moves on to a different slot -- wipe_tick only ever rewrites that
+; monster's own TILES, one row a frame; it never touches the attribute byte
+; at all, so whatever this mechanism last queued for that cell (the flash
+; tint, $FF, or the monster's own authored tint) would otherwise sit there,
+; uncorrected, on top of the wiped ground, for the rest of the battle.
+; Fixed by forcing one last packet: BT_GROUND_ATTR, never the dead
+; monster's own now-meaningless mon_attr.
+  .if HIT_FEEDBACK_ENABLED
+battle_hurt_tick:
+  lda <bt_phase
+  cmp #BP_INTRO
+  beq battle_hurt_tick_rts
+  lda <bt_hurt_left
+  beq battle_hurt_tick_rts
+  lda <bt_hurt_slot
+  cmp #MAX_PARTY
+  bcc battle_hurt_tick_dec       ; a party member -- nothing to queue, just tick
+  sec
+  sbc #MAX_PARTY
+  tax
+  lda mon_slot_alive,x
+  bne battle_hurt_tick_dec
+  lda #0
+  sta <bt_hurt_left               ; stop ticking regardless of block art
+  lda mon_slot_actor,x
+  tay
+  lda mon_tile,y
+  cmp #$FF
+  beq battle_hurt_tick_rts        ; no block art -- nothing to restore
+  jsr battle_hurt_attr_open       ; X = monster slot, preserved
+  lda #BT_GROUND_ATTR
+  jsr vram_push
+  jmp vram_end
+battle_hurt_tick_dec:
+  dec <bt_hurt_left
+  lda <bt_hurt_slot
+  cmp #MAX_PARTY
+  bcc battle_hurt_tick_rts        ; party member: sprite blink only, done
+  sec
+  sbc #MAX_PARTY
+  tax
+  lda mon_slot_actor,x
+  tay
+  lda mon_tile,y
+  cmp #$FF
+  beq battle_hurt_tick_rts        ; metasprite fallback -- sprite blink only
+  jsr battle_hurt_attr_open       ; X = monster slot, preserved
+  lda mon_slot_actor,x            ; re-read (X survives the call); Y was
+  tay                             ; clobbered by battle_hurt_attr_open itself
+  lda <bt_hurt_left
+  beq battle_hurt_attr_restore
+  and #2
+  bne battle_hurt_attr_flash
+battle_hurt_attr_restore:
+  lda mon_attr,y
+  jmp battle_hurt_attr_push
+battle_hurt_attr_flash:
+  lda #$FF
+battle_hurt_attr_push:
+  jsr vram_push
+  jmp vram_end
+battle_hurt_tick_rts:
+  rts
+
+; X = monster slot. Opens vram_buf at that monster's own anchored attribute
+; cell (draw_battle_attr's own per-monster offset). The address math is a
+; pure function of the slot number (X), never the actor id, so this never
+; needs to park anything in shared scratch to do its own job -- cast_all's
+; own end-of-side sentinel (bt_tmp2, engine/battleturn.asm) survives
+; untouched. X itself survives the call (never touched here after the
+; address math begins, and vram_open its own self saves/restores X
+; internally) -- callers that need the actor id re-read mon_slot_actor,x
+; themselves once this returns, at no cost, rather than trust a value
+; parked here. Clobbers A, Y.
+battle_hurt_attr_open:
+  txa
+  clc
+  adc #1
+  asl a
+  asl a
+  asl a
+  clc
+  adc #1
+  clc
+  adc #$C0
+  tay
+  lda #$23
+  jmp vram_open
+  .endif
 
 ; A dying monster's own block wipe is budgeted at one row a frame (see
 ; bt_wipe_mask/bt_wipe_row/bt_wipe_slot, engine/constants.asm): four dead
@@ -350,6 +461,19 @@ setup_monsters:
   .if BATTLE_ANIM_ENABLED
   lda #NO_ANIM
   sta <bt_fx_anim           ; no effect carries in from a previous battle
+  .endif
+  ; A fresh battle must not inherit a countdown, or a slot, left over from
+  ; the previous one (neither is cleared by battle_end or player_died --
+  ; see the design's own §12.4 for why that is safe now that
+  ; battle_hurt_tick guards on BP_INTRO). A cannot be trusted to still be 0
+  ; here: the BATTLE_ANIM_ENABLED block above, when it runs, leaves NO_ANIM
+  ; ($FF) in A, not 0. This gets its own lda #0 rather than sharing one with
+  ; a MISS-side reset (docs/design-battle-animation.md §12.7's own ledger
+  ; decision, option (i)): two independent toggles cannot share a load that
+  ; only one of them may assemble.
+  .if HIT_FEEDBACK_ENABLED
+  lda #0
+  sta <bt_hurt_left
   .endif
   ldx #0
 setup_monsters_slot:
@@ -578,7 +702,7 @@ draw_attr_byte:
   beq draw_attr_zero        ; row 0: the sky
   cmp #5
   bcs draw_attr_zero        ; rows 5-7: the box
-  lda #$55                  ; rows 1-4: the ground
+  lda #BT_GROUND_ATTR       ; rows 1-4: the ground
   jmp draw_attr_write
 draw_attr_zero:
   lda #$00

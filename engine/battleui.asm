@@ -870,6 +870,20 @@ battle_sprite_pc:
   beq battle_sprite_pc_next
   lda pc_hp,x
   beq battle_sprite_pc_next ; a fallen member is not drawn
+  ; Phase 2a hit feedback (docs/design-battle-animation.md §12.3): skip the
+  ; icon on alternate frames while this combatant is the one named by the
+  ; shared bt_hurt_slot/bt_hurt_left pair -- ent_hurt's own trick
+  ; (engine/entities.asm), extended to combatants.
+  .if HIT_FEEDBACK_ENABLED
+  lda <bt_hurt_left
+  beq battle_sprite_pc_draw
+  cpx <bt_hurt_slot
+  bne battle_sprite_pc_draw
+  lda <bt_hurt_left
+  and #2
+  bne battle_sprite_pc_next
+battle_sprite_pc_draw:
+  .endif
   lda pc_metasprite,x
   cmp #$FF
   beq battle_sprite_pc_next
@@ -900,6 +914,21 @@ battle_sprite_mon:
   lda mon_tile,y
   cmp #$FF
   bne battle_sprite_mon_next ; it has block art, already on the background
+  ; Phase 2a hit feedback: the identical skip, combatant index = monster
+  ; slot + MAX_PARTY.
+  .if HIT_FEEDBACK_ENABLED
+  lda <bt_hurt_left
+  beq battle_sprite_mon_draw
+  txa
+  clc
+  adc #MAX_PARTY
+  cmp <bt_hurt_slot
+  bne battle_sprite_mon_draw
+  lda <bt_hurt_left
+  and #2
+  bne battle_sprite_mon_next
+battle_sprite_mon_draw:
+  .endif
   lda #BT_MON_COL*8
   sta <de_ex
   txa

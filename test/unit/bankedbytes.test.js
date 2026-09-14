@@ -71,7 +71,8 @@ import {
   MAGIC_POWER_BATTLE_ALLOWANCE,
   MAGIC_DEFENCE_BATTLE_ALLOWANCE,
   MONSTER_SPELL_LIST_BATTLE_ALLOWANCE,
-  BATTLE_ANIM_BATTLE_ALLOWANCE
+  BATTLE_ANIM_BATTLE_ALLOWANCE,
+  HIT_FEEDBACK_BATTLE_ALLOWANCE
 } from '../../main/build/battletables.js';
 import {
   SUPPORTED_MAPPERS,
@@ -91,7 +92,9 @@ import {
   projectWithoutHeroNaming,
   projectWithoutJoinNaming,
   projectUsesMonsterSpellList,
-  projectWithoutMonsterSpellList
+  projectWithoutMonsterSpellList,
+  projectUsesHitFeedback,
+  projectWithoutHitFeedback
 } from '../../shared/project.js';
 import { FONT_BASE, SPRITE_ARROW_TILE, fontChrPages } from '../../shared/font.js';
 import { BLANK_TILE } from '../../shared/chr.js';
@@ -516,6 +519,96 @@ test('BATTLE_ANIM_BATTLE_ALLOWANCE is exact, on every RPG-capable board', {
         `BATTLE_ANIM_BATTLE_ALLOWANCE reserves ${BATTLE_ANIM_BATTLE_ALLOWANCE} -- this allowance must equal the ` +
         'real cost exactly, on every board.'
     );
+  }
+});
+
+// Phase 2a hit feedback (docs/design-battle-animation.md §12.7, §14 "Hit
+// feedback alone -- ledger and cross-gating"). The identical isolation
+// shape as BATTLE_ANIM_BATTLE_ALLOWANCE just above, plus a source/symbol
+// check that turning HIT_FEEDBACK_ENABLED on never pulls in any MISS-side
+// routine (§7's own cross-gating rule: nothing MISS-specific may key off
+// this flag). MISS does not exist in the tree yet, so the negative half of
+// this check cannot fail until phase 2b adds those labels -- it exists now
+// so a future phase 2b that wires MISS to the wrong flag is caught by an
+// existing test rather than a new one nobody thinks to write.
+//
+// Wrong implementation this catches: a stale HIT_FEEDBACK_BATTLE_ALLOWANCE
+// drifting from the real assembled cost; a HIT_FEEDBACK_ENABLED-gated block
+// that also assembles MISS's own code.
+test('HIT_FEEDBACK_BATTLE_ALLOWANCE is exact, on every RPG-capable board, and pulls in none of battle_miss_*/miss_tiles', {
+  skip: !hasNesasm && 'nesasm not found on PATH'
+}, async (t) => {
+  for (const mapper of CAPABLE_MAPPERS) {
+    const off = await measureRegion(t, mapper);
+    const on = await measureRegion(t, mapper, (p) => {
+      p.rpg.hitFeedback = true;
+    });
+    const codeOff = off.used - battleTableBytes(off.project);
+    const codeOn = on.used - battleTableBytes(on.project);
+    const delta = codeOn - codeOff;
+    assert.equal(
+      delta,
+      HIT_FEEDBACK_BATTLE_ALLOWANCE,
+      `${mapper.name}: hit feedback costs ${delta} bytes of banked code (${codeOff} -> ${codeOn}), but ` +
+        `HIT_FEEDBACK_BATTLE_ALLOWANCE reserves ${HIT_FEEDBACK_BATTLE_ALLOWANCE} -- this allowance must equal ` +
+        'the real cost exactly, on every board.'
+    );
+
+    // Symbol-table check: build directly (measureRegion discards
+    // symbolPath) once per mapper, hit feedback on, and confirm the real
+    // engine labels exist and no MISS-side label has leaked in.
+    const dir = await fsp.mkdtemp(path.join(os.tmpdir(), 'forge-hitfeedback-symbols-'));
+    t.after(() => fsp.rm(dir, { recursive: true, force: true }));
+    const project = await loadProject(SAMPLE_RPG);
+    project.cartridge.mapper = mapper.id;
+    project.party[0].renamable = false;
+    if (project.party[1]) project.party[1].renamable = false;
+    project.rpg.hitFeedback = true;
+    await saveProject(dir, project);
+    const built = await buildProject({ dir, project, log: () => {} });
+    const symbols = await fsp.readFile(built.symbolPath, 'utf8');
+    for (const label of ['battle_hurt_arm', 'battle_hurt_tick', 'battle_hurt_attr_open', 'battle_hurt_restore_slot']) {
+      assert.match(
+        symbols,
+        new RegExp(`^${label}\\s*=`, 'm'),
+        `${mapper.name}: ${label} should be a named symbol in game.fns once HIT_FEEDBACK_ENABLED is on`
+      );
+    }
+    for (const label of ['battle_miss_arm', 'battle_miss_tick', 'battle_miss_draw', 'miss_tiles']) {
+      assert.doesNotMatch(
+        symbols,
+        new RegExp(`^${label}\\s*=`, 'm'),
+        `${mapper.name}: ${label} must not exist -- MISS's own code does not exist in the tree yet (phase 2b), ` +
+          'and HIT_FEEDBACK_ENABLED must never pull it in even once it does'
+      );
+    }
+
+    // And the off build must carry none of hit feedback's own labels either,
+    // NOR any MISS-side label -- round 1 review finding 2: the coder report
+    // claimed both builds were checked for MISS symbols, but only the ON
+    // build's own negative loop above ever ran; MISS not existing in the
+    // tree yet says nothing about which build a stray future MISS label
+    // might leak into, so both builds need their own independent check.
+    // Wrong implementation this catches: a MISS-side (or hit-feedback-side)
+    // label gated on the OFF branch of some future flag rather than genuinely
+    // absent -- invisible to a check that only ever reads the ON build's own
+    // symbol table.
+    const offSymbols = await fsp.readFile(path.join(off.dir, 'build', 'game.fns'), 'utf8');
+    for (const label of ['battle_hurt_arm', 'battle_hurt_tick', 'battle_hurt_attr_open', 'battle_hurt_restore_slot']) {
+      assert.doesNotMatch(
+        offSymbols,
+        new RegExp(`^${label}\\s*=`, 'm'),
+        `${mapper.name}: ${label} must not exist when HIT_FEEDBACK_ENABLED is off`
+      );
+    }
+    for (const label of ['battle_miss_arm', 'battle_miss_tick', 'battle_miss_draw', 'miss_tiles']) {
+      assert.doesNotMatch(
+        offSymbols,
+        new RegExp(`^${label}\\s*=`, 'm'),
+        `${mapper.name}: ${label} must not exist in the off build either -- MISS's own code does not exist in ` +
+          'the tree yet (phase 2b), and neither HIT_FEEDBACK_ENABLED being on nor off may ever pull it in'
+      );
+    }
   }
 });
 
@@ -1986,6 +2079,60 @@ test('monster spell list: battleShortfallAdvice offers "every monster\'s extra s
     `advice should combine both candidates in one sentence, got: ${combinedAdvice}`
   );
   assert.deepEqual(project, snapshotBeforeCombined, 'battleShortfallAdvice must not mutate the project');
+});
+
+// Phase 2a hit feedback (docs/design-battle-animation.md §12.7), orchestrator
+// addition (not a §14 row): battleShortfallAdvice's own hit-feedback lever,
+// the identical solo-candidate shape monster spell list/the name token
+// already use, above -- HIT_FEEDBACK_BATTLE_ALLOWANCE is flat, so freed must
+// equal it exactly (no N-stride table term the way the spell list has).
+// Wrong implementation this catches: the lever firing when hit feedback is
+// off, or firing/not firing at the wrong deficit boundary.
+test('hit feedback: battleShortfallAdvice offers "hit feedback" exactly when stripping it alone closes the deficit, never when it is off', async () => {
+  const project = await loadProject(SAMPLE_RPG);
+  const mapper = SUPPORTED_MAPPERS.find((entry) => entry.id === project.cartridge.mapper);
+  project.party[0].renamable = false;
+  if (project.party[1]) project.party[1].renamable = false;
+
+  assert.equal(project.rpg.hitFeedback, false, 'sample-rpg should ship with hit feedback off');
+  const offSnapshot = structuredClone(project);
+  const offAdvice = battleShortfallAdvice(project, mapper, 1);
+  assert.doesNotMatch(offAdvice, /hit feedback/i, `the lever must not fire when hit feedback is off, got: ${offAdvice}`);
+  assert.deepEqual(project, offSnapshot, 'battleShortfallAdvice must not mutate the project');
+
+  project.rpg.hitFeedback = true;
+  const preStripSnapshot = structuredClone(project);
+  const budget = battleRegionBytes(project, mapper);
+  const freed = budget - battleRegionBytes(projectWithoutHitFeedback(project), mapper);
+  assert.equal(
+    freed,
+    HIT_FEEDBACK_BATTLE_ALLOWANCE,
+    `stripping hit feedback alone should free exactly HIT_FEEDBACK_BATTLE_ALLOWANCE (${HIT_FEEDBACK_BATTLE_ALLOWANCE}), got ${freed}`
+  );
+  assert.deepEqual(project, preStripSnapshot, 'projectWithoutHitFeedback must not mutate its input');
+
+  const soloAdvice = battleShortfallAdvice(project, mapper, freed);
+  assert.match(
+    soloAdvice,
+    /removing hit feedback/i,
+    `advice should offer hit feedback as a fix at deficit = freed, got: ${soloAdvice}`
+  );
+  assert.deepEqual(project, preStripSnapshot, 'battleShortfallAdvice must not mutate the project');
+
+  const tooMuchAdvice = battleShortfallAdvice(project, mapper, freed + 1);
+  assert.doesNotMatch(
+    tooMuchAdvice,
+    /hit feedback/i,
+    `advice must not offer hit feedback when it cannot close the deficit, got: ${tooMuchAdvice}`
+  );
+
+  const overriddenAdvice = battleShortfallAdvice(project, mapper, 1, { exact: false });
+  assert.doesNotMatch(
+    overriddenAdvice,
+    /hit feedback/i,
+    `the hit feedback candidate must be suppressed too when exact is false, got: ${overriddenAdvice}`
+  );
+  assert.deepEqual(project, preStripSnapshot, 'battleShortfallAdvice must not mutate the project');
 });
 
 test('in-game naming: the register-write source scan -- nameentry.asm never touches $8000/$8001', async () => {

@@ -971,8 +971,87 @@ spell_damage_store:
 spell_damage_done:
   rts
 
+; Phase 2a hit feedback (docs/design-battle-animation.md §12.3) -- the
+; single arm point for the shared bt_hurt_slot/bt_hurt_left pair, called
+; from apply_damage's own single choke point (every landed physical hit,
+; spell hit, and status tick). Fixes the "stranded tint" limitation: if the
+; slot this call is about to steal was a block-art monster whose flash was
+; still counting down, its cell is force-restored NOW, rather than left to
+; a countdown that will never reach zero for that slot again once
+; bt_hurt_slot points elsewhere.
+;
+; The multi-target hit policy this bakes in (an all-target spell's own
+; cast_all loop calls apply_damage, and so this, several times in one
+; tick): only the LAST target processed ends up blinking/flashing -- each
+; earlier target in the same volley is armed and then immediately
+; superseded before a single tick of feedback is ever drawn for it. This
+; follows directly from Chris's own decision to share one slot/timer pair
+; rather than a per-slot array or bitmask.
+  .if HIT_FEEDBACK_ENABLED
+battle_hurt_arm:
+  lda <bt_hurt_left
+  beq battle_hurt_arm_set        ; nothing live to strand
+  lda <bt_hurt_slot
+  cmp <bt_target
+  beq battle_hurt_arm_set        ; same slot re-hit -- just restart the timer
+  cmp #MAX_PARTY
+  bcc battle_hurt_arm_set        ; stolen slot was a party member -- sprite
+                                  ; blink only, nothing was ever queued to strand
+  jsr battle_hurt_restore_slot   ; stolen slot was a monster -- restore its
+                                  ; cell now if it had block art
+battle_hurt_arm_set:
+  lda <bt_target
+  sta <bt_hurt_slot
+  lda #BT_HURT_FRAMES
+  sta <bt_hurt_left
+  rts
+
+; The OLD bt_hurt_slot (still in <bt_hurt_slot on entry) is a monster --
+; force-queue its own attribute cell back if it has block art. A no-op for
+; a metasprite-fallback monster (mon_tile == $FF).
+;
+; If that monster has ALREADY died since it was armed (mon_slot_alive ==
+; 0), this call -- happening because a DIFFERENT target is about to steal
+; the shared pair -- is the LAST chance to fix its cell before
+; bt_hurt_slot forgets it entirely; battle_hurt_tick (engine/battle.asm)
+; will never check this slot again once a new one is armed. Restores
+; BT_GROUND_ATTR in that case, never the dead monster's own now-meaningless
+; mon_attr -- the identical policy battle_hurt_tick's own dead-check uses.
+;
+; This and battle_hurt_attr_open (engine/battle.asm) between them never
+; park the actor id in shared scratch -- see that routine's own header for
+; why (cast_all's own bt_tmp2 sentinel). Clobbers A, X, Y.
+battle_hurt_restore_slot:
+  lda <bt_hurt_slot
+  sec
+  sbc #MAX_PARTY
+  tax
+  lda mon_slot_actor,x
+  tay
+  lda mon_tile,y
+  cmp #$FF
+  beq battle_hurt_restore_slot_rts   ; no block art -- nothing to restore
+  jsr battle_hurt_attr_open          ; X = monster slot, preserved
+  lda mon_slot_alive,x
+  bne battle_hurt_restore_slot_alive
+  lda #BT_GROUND_ATTR
+  jmp battle_hurt_restore_slot_push
+battle_hurt_restore_slot_alive:
+  lda mon_slot_actor,x                ; re-read (X survives the call); Y was
+  tay                                  ; clobbered by battle_hurt_attr_open
+  lda mon_attr,y
+battle_hurt_restore_slot_push:
+  jsr vram_push
+  jmp vram_end
+battle_hurt_restore_slot_rts:
+  rts
+  .endif
+
 ; Take bt_dmg_lo off bt_target, and note if that finished it.
 apply_damage:
+  .if HIT_FEEDBACK_ENABLED
+  jsr battle_hurt_arm
+  .endif
   lda <bt_target
   cmp #MAX_PARTY
   bcs apply_damage_mon

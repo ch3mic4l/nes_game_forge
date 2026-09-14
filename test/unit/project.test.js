@@ -111,7 +111,11 @@ import {
   joinNamingCandidate,
   // Name entry phase 4 -- the Say token (docs/design-name-entry.md §9a) -----
   projectUsesNameToken,
-  projectWithoutNameToken
+  projectWithoutNameToken,
+  // Battle-side animation, phase 2a -- hit feedback (docs/design-battle-animation.md §12.7)
+  defaultRpg,
+  projectUsesHitFeedback,
+  projectWithoutHitFeedback
 } from '../../shared/project.js';
 import { resolveStartAt } from '../../shared/playscenario.js';
 import fs from 'node:fs/promises';
@@ -3183,6 +3187,158 @@ test('projectWithoutBattleAnimation: clones and nulls every spell.anim and every
   assert.equal(stripped.sprites.actors[0].battle.attackAnim, null, 'the clone\'s battle.attackAnim must be nulled');
   assert.equal(project.spells[0].anim, 1, 'the source project must be untouched (a clone, not a mutation)');
   assert.equal(project.sprites.actors[0].battle.attackAnim, 2, 'the source project must be untouched (a clone, not a mutation)');
+});
+
+// Battle-side animation, phase 2a -- hit feedback (docs/design-battle-
+// animation.md §12.7). Orchestrator addition, not a §14 row: normalization
+// and the action-project predicate gate. Wrong implementation this catches:
+// normalizeRpg reading raw.hitFeedback with no Boolean() coercion (a
+// truthy-but-non-boolean stored value surviving verbatim), or
+// projectUsesHitFeedback missing its own gameType === 'rpg' check (§12.7's
+// own round 6 finding) -- either would let an action project's stray
+// rpg.hitFeedback: true generate HIT_FEEDBACK_ENABLED = 1 with nothing in
+// the ROM to justify it.
+test('hit feedback: defaultRpg defaults to false; normalizeRpg preserves true and defaults an absent field to false, on both game types; projectUsesHitFeedback is action-gated', () => {
+  assert.equal(defaultRpg().hitFeedback, false, 'defaultRpg().hitFeedback must default to false');
+
+  const rpgProject = createProject('Quest', 'rpg');
+  assert.equal(rpgProject.rpg.hitFeedback, false, 'a fresh RPG project must default to hitFeedback false');
+
+  const rpgOn = normalizeProject({ ...structuredClone(rpgProject), rpg: { ...rpgProject.rpg, hitFeedback: true } });
+  assert.equal(rpgOn.rpg.hitFeedback, true, 'normalizeRpg must keep an authored true as true');
+  assert.equal(projectUsesHitFeedback(rpgOn), true, 'an RPG project with hitFeedback true must read as using it');
+
+  const rpgAbsent = normalizeProject({ ...structuredClone(rpgProject), rpg: undefined });
+  assert.equal(rpgAbsent.rpg.hitFeedback, false, 'an absent rpg.hitFeedback field must normalize to false, on an RPG project');
+
+  const actionProject = createProject('Quest', 'action');
+  assert.equal(actionProject.rpg.hitFeedback, false, 'an action project still normalizes rpg.hitFeedback, defaulting to false');
+  const actionOn = normalizeProject({ ...structuredClone(actionProject), rpg: { ...actionProject.rpg, hitFeedback: true } });
+  assert.equal(
+    actionOn.rpg.hitFeedback,
+    true,
+    'normalizeRpg stores the boolean as written on every game type, with no reconciliation and no validateProject refusal'
+  );
+  assert.equal(
+    projectUsesHitFeedback(actionOn),
+    false,
+    'projectUsesHitFeedback must be false for an action project even with a stored true -- HIT_FEEDBACK_ENABLED must never assemble outside an RPG'
+  );
+
+  const actionAbsent = normalizeProject({ ...structuredClone(actionProject), rpg: undefined });
+  assert.equal(actionAbsent.rpg.hitFeedback, false, 'an absent rpg.hitFeedback field must normalize to false, on an action project too');
+
+  // Round 1 review finding 5 (P3): the comment above promised a coercion
+  // oracle the assertions never exercised -- only literal `true` and an
+  // absent field were ever driven through normalizeProject. Truthy and
+  // falsy NON-boolean values must coerce strictly to true/false, on both
+  // game types, the way Boolean(raw?.hitFeedback) does and `raw?.hitFeedback
+  // ?? false` (the sabotage below) does not: `raw?.hitFeedback ?? false`
+  // only ever substitutes false for null/undefined, so a truthy-but-non-
+  // boolean survivor like '' or 0 would pass through unmodified instead of
+  // coercing to a strict boolean.
+  for (const gameType of ['rpg', 'action']) {
+    const base = createProject('Quest', gameType);
+    for (const [raw, expected] of [
+      [1, true],
+      ['yes', true],
+      [0, false],
+      ['', false],
+      [null, false]
+    ]) {
+      const normalized = normalizeProject({ ...structuredClone(base), rpg: { ...base.rpg, hitFeedback: raw } });
+      assert.strictEqual(
+        normalized.rpg.hitFeedback,
+        expected,
+        `${gameType} project: rpg.hitFeedback: ${JSON.stringify(raw)} must normalize strictly to ${expected}`
+      );
+    }
+  }
+
+  // An existing rpg object -- every OTHER field present and realistic,
+  // exactly the shape a project saved before this field existed would
+  // carry -- with only hitFeedback itself missing (not merely undefined by
+  // spread, but genuinely absent as a key), representing the real migration
+  // case rather than a synthetic `rpg: undefined` whole-object substitution.
+  for (const gameType of ['rpg', 'action']) {
+    const base = createProject('Quest', gameType);
+    const preExistingRpg = {
+      xpBase: 30,
+      xpGrow: 10,
+      maxLevel: 20,
+      battleTilesetId: base.rpg.battleTilesetId,
+      encounterMusic: null
+    };
+    assert.ok(!('hitFeedback' in preExistingRpg), 'sanity: the migration fixture must genuinely omit the key');
+    const migrated = normalizeProject({ ...structuredClone(base), rpg: preExistingRpg });
+    assert.strictEqual(
+      migrated.rpg.hitFeedback,
+      false,
+      `${gameType} project: an rpg object saved before hitFeedback existed must normalize the missing key to false`
+    );
+    assert.equal(migrated.rpg.xpBase, 30, 'sanity: the migration fixture’s other fields must still normalize through untouched');
+  }
+});
+
+test('projectWithoutHitFeedback: clones and clears rpg.hitFeedback, leaving the source untouched', () => {
+  const project = createProject('Quest', 'rpg');
+  project.rpg.hitFeedback = true;
+
+  const stripped = projectWithoutHitFeedback(project);
+  assert.equal(stripped.rpg.hitFeedback, false, 'the clone’s rpg.hitFeedback must be cleared');
+  assert.equal(project.rpg.hitFeedback, true, 'the source project must be untouched (a clone, not a mutation)');
+});
+
+// §14 round 6 (finding 1, P3), test row 3 ("Action-project hit-feedback
+// gating"). rpg.hitFeedback is set true by hand-editing the loaded project
+// object -- never reachable through the UI, since rpgProgression only
+// renders for an RPG (renderer/forges/build/build.js) -- and saved into its
+// own mkdtemp directory, never into the checked-in sample/ fixture. Wrong
+// implementation this catches: projectUsesHitFeedback reading
+// project.rpg.hitFeedback alone with no game-type check, which would make
+// an action project's config.inc read HIT_FEEDBACK_ENABLED = 1 and would
+// leave the two ROMs free to diverge (they must not, since no gated engine
+// code is reachable from an action build regardless).
+test('an action project with rpg.hitFeedback true generates HIT_FEEDBACK_ENABLED = 0 and builds a byte-identical ROM to hitFeedback false', {
+  skip: !hasNesasm && 'nesasm not found on PATH'
+}, async (t) => {
+  const readFlag = async (dir) => {
+    const text = await fs.readFile(path.join(dir, 'build', 'assets', 'config.inc'), 'utf8');
+    const match = /^HIT_FEEDBACK_ENABLED\s*=\s*(\d+)/m.exec(text);
+    assert.ok(match, 'HIT_FEEDBACK_ENABLED must be a named constant in config.inc');
+    return Number(match[1]);
+  };
+
+  const dirOff = await fs.mkdtemp(path.join(os.tmpdir(), 'forge-hitfeedback-action-off-'));
+  t.after(() => fs.rm(dirOff, { recursive: true, force: true }));
+  const projectOff = await loadProject(SAMPLE); // action
+  assert.equal(projectOff.project.gameType, 'action', 'sample/ must be an action project');
+  projectOff.rpg.hitFeedback = false;
+  await saveProject(dirOff, projectOff);
+  const builtOff = await buildProject({ dir: dirOff, project: projectOff, log: () => {} });
+  assert.equal(await readFlag(dirOff), 0, 'hitFeedback: false must generate HIT_FEEDBACK_ENABLED = 0');
+
+  const dirOn = await fs.mkdtemp(path.join(os.tmpdir(), 'forge-hitfeedback-action-on-'));
+  t.after(() => fs.rm(dirOn, { recursive: true, force: true }));
+  const projectOn = await loadProject(SAMPLE);
+  projectOn.rpg.hitFeedback = true; // hand-edited, never reachable through the UI on an action project
+  await saveProject(dirOn, projectOn);
+  const builtOn = await buildProject({ dir: dirOn, project: projectOn, log: () => {} });
+  assert.equal(
+    await readFlag(dirOn),
+    0,
+    'hitFeedback: true on an action project must STILL generate HIT_FEEDBACK_ENABLED = 0 -- ' +
+      'projectUsesHitFeedback must be gated on gameType === \'rpg\''
+  );
+
+  const romOff = await fs.readFile(builtOff.romPath);
+  const romOn = await fs.readFile(builtOn.romPath);
+  assert.deepEqual(
+    [...romOff],
+    [...romOn],
+    'an action project’s ROM must be byte-identical whether or not rpg.hitFeedback is stored true -- ' +
+      'nothing in the ROM or its artwork can justify a difference, since HIT_FEEDBACK_ENABLED reads 0 either way'
+  );
 });
 
 test('allBattleAnimationIds: collects only battleOnly locations, dedupes, and ignores null/undefined', () => {
