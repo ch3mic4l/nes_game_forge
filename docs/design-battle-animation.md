@@ -1140,40 +1140,83 @@ is the acceptance proof.
   writing) — a concrete candidate: compressing the "Documented limitations" sentences the zero-page
   kernel diet closed into one summary sentence pointing at `docs/design-kernel-diet.md` §4b.
 
-**Phase 2, superseded by the shippable design below — recommended as ONE phase, not settled by
-Chris as one.** Attribution, precisely: Chris's own answer 1 (§10) says the two HIT-FEEDBACK halves
-(sprite blink, attribute flash) ship together, sharing one `bt_hurt_slot`/`bt_hurt_left` pair — it
-says nothing about whether MISS (answer 3, a separate, new requirement) joins them in the same
-release. Whether hit feedback and MISS ship as one phase or two is this document's own
-recommendation, not a recorded Chris decision, and §8 still lists it as an open question for that
-reason.
+**Phase 2a — hit feedback, ships first (Chris's own decision, §10, v5.1).** The sprite hit-blink and
+the block-art attribute flash, sharing one `bt_hurt_slot`/`bt_hurt_left` pair (Chris's phase-2-round-1
+answer 1, unaffected by this split), gated on its own `project.rpg.hitFeedback` field and generated
+`HIT_FEEDBACK_ENABLED` flag (schema and ledger in §12.7). This document's own recommendation was ONE
+combined phase behind ONE shared toggle (§8); Chris chose two independently-gated phases instead, so
+this is what ships:
 
-Splitting into 2a (hit feedback) / 2b (MISS) was considered and rejected as the DEFAULT, not ruled
-out: the two share no code (hit feedback's `bt_hurt_*` pair and MISS's `bt_miss_*` pair are
-independent state, per §12/§13 — see §13.2's own "why not merge with `bt_hurt_*`" note), so
-splitting would not simplify either side's own review, and MISS alone is a materially smaller and
-lower-risk change (134 of the combined 367 banked bytes, no attribute-cell/`wipe_tick` interaction
-to get right) that could ship first if Chris would rather de-risk in two steps — a real option,
-still open in §8, since nothing about the mechanism forces one order. **Recommendation: one phase**,
-because the two together are still a small, ROM-neutral (gated) addition, and reviewing the shared
-arm-point discipline (§12.3) once, against both halves at once, is more likely to catch a real
-interaction bug than reviewing it twice against each half in isolation — round 1's own review, which
-found real bugs in exactly that shared arm-point discipline, is itself evidence for this.
+- Gated on `HIT_FEEDBACK_ENABLED` alone (§12.7) — nothing MISS-specific may key off this flag, and
+  §12's own engine code (§12.3-§12.6) never reads or writes anything §13 defines.
+- ROM-neutral with the toggle off: all six checked-in fixtures stay off and byte-identical, since
+  `normalizeRpg` defaults `hitFeedback` to `false` and none authors it (§12.7).
+- No save-format change: `bt_hurt_slot`/`bt_hurt_left` are battle-local, reset every fresh battle
+  (§12.2/§12.4) the same way `bt_fx_anim` already is, never written to a save record.
+- Ships with no MISS code, art, or OAM term existing anywhere in the tree yet — §13 does not exist
+  until phase 2b.
 
-- Gated the identical shape phase 1 already established — see §12.7 for the gating options and the
-  recommendation, an open question for Chris (§8).
-- All six checked-in fixtures stay off; every test needing the feature builds its own `mkdtemp`
-  variant, the identical policy phase 1b already holds to.
-- No save-format change: none of `bt_hurt_slot`/`bt_hurt_left`/`bt_miss_slot`/`bt_miss_left` is
-  session state — all four are battle-local, reset every fresh battle (§12.2, §13.2) the same way
-  `bt_fx_anim` already is, never written to a save record.
+**Phase 2b — MISS, ships after phase 2a (Chris's own decision, §10, v5.1).** The floating MISS
+overlay, gated on its own `project.rpg.miss` field and generated `MISS_ENABLED` flag (schema and
+ledger in §13.9), independent of hit feedback's own gate.
+
+- Gated on `MISS_ENABLED` alone (§13.9) — nothing hit-feedback-specific may key off this flag. §13's
+  own engine code (§13.4) already reads and writes only `bt_miss_slot`/`bt_miss_left`, never
+  `bt_hurt_*` — the runtime independence §12.4 already states ("different zero-page bytes, different
+  arm points... can be live on DIFFERENT slots at the same time with no interference") extends
+  cleanly to independent GATES, not merely independent runtime state, with one exception spelled out
+  below (the RAM chain).
+- ROM-neutral with the toggle off, the identical fixture-neutrality phase 2a holds to.
 - The MISS glyph art (§13.5) and the `spriteReservedRanges`/`BATTLE_FX_OAM_ROOM` generator changes
   (§13.6) ship in the same commit as the engine routines — a MISS overlay with no tiles stamped for
   it, or an OAM budget that does not yet know about it, is not a partial feature, it is a silent
   garbage-tile bug the moment the first attack misses.
 
+**What phase 2b depends on from phase 2a, stated exactly.** Not code — §12 and §13's own routines
+share no call and no drawing/tick code (previous paragraph). The one real dependency is the RAM
+chain §13.2 designs around: `bt_miss_slot = bt_hurt_left+1`, chained onto hit feedback's own last
+equate rather than onto `bt_fx_timer+1` directly. Chris's chosen order (hit feedback first) is the
+one order that needs no rework of that chain: by the time phase 2b is implemented, `bt_hurt_left`
+already exists as a real, shipped equate from phase 2a, so phase 2b's own diff simply extends the
+existing chain exactly as §13.2 already designs it. The reverse order would have needed phase 2a
+(MISS) to chain onto `bt_fx_timer+1` directly and phase 2b (hit feedback) to either insert itself
+before `bt_miss_*` in the chain or renumber it — real rework this order avoids.
+
+**Equates stay unconditional, so the RAM chain works in every toggle combination, including MISS
+alone with hit feedback off.** `bt_hurt_slot`/`bt_hurt_left`/`bt_miss_slot`/`bt_miss_left` are
+declared exactly the way `bt_fx_anim`/`bt_fx_slot`/`bt_fx_frame`/`bt_fx_timer` already are
+(`engine/constants.asm:463-466`) — plain `label = address` equates with no `.if` around the
+declaration itself, costing zero ROM bytes regardless of whether `HIT_FEEDBACK_ENABLED`/
+`MISS_ENABLED` gate any CODE that reads or writes them (CLAUDE.md's own battle-animation passage:
+"the unconditionally-appended RAM equates... need no gate of their own to stay fixture-neutral," the
+identical rule §12.2/§13.2 already state for this exact pair). So a project shipping
+`MISS_ENABLED = 1` with `HIT_FEEDBACK_ENABLED = 0` still assembles `bt_hurt_slot`/`bt_hurt_left` as
+real zero-page addresses — unread and unwritten by any gated code, but present — and
+`bt_miss_slot = bt_hurt_left+1` resolves exactly as designed, with no special case and no build
+failure. **This corrects §13.2's own prior wording**, which warned that stripping hit feedback out
+"or a future project that ships MISS without hit feedback" would leave `bt_miss_slot` "referencing
+an undefined equate" unless re-chained by hand — true only of the ISOLATED MEASUREMENT copies §11
+describes (a scratch build with hit feedback's own equate LINES physically deleted from the source,
+used solely to measure MISS's own allowance in isolation), never of a real toggle-gated project,
+where the equate line is never deleted, only the code around it gated. §13.2 is corrected below to
+say so plainly.
+
+**All four toggle combinations are legal, real, buildable projects once both phases have shipped:**
+
+| `hitFeedback` | `miss` | What it means | Ledger (§12.7/§13.9) |
+|---|---|---|---|
+| off | off | Neither feature; byte-identical to before phase 2 existed | +0 |
+| on | off | Phase 2a alone | +235 |
+| off | on | Phase 2b alone — the floating MISS text with no sprite-blink/attribute-flash reaction | +134 |
+| on | on | Both | +369 (§12.7's own ledger decision) |
+
+The off/on row (MISS alone) is not merely theoretical: §12 and §13's own engine code was already
+written as independent mechanisms before this split existed (§12.4), so nothing in either §12 or §13
+needs to change to make it buildable — only the two flags need to be independently readable in
+`config.inc`, which the schema in §12.7/§13.9 already provides.
+
 **Phase 3 — UI polish.** The Magic Forge preview canvas, gated on a frame-for-frame trace test
-existing first. Unaffected by phase 2 — no shared code with either hit feedback or MISS.
+existing first. Unaffected by phase 2a/2b — no shared code with either hit feedback or MISS.
 
 ## §8. Open questions for Chris
 
@@ -1204,7 +1247,15 @@ ROADMAP item 14 now carries it as its own later slice (point 5), a Character For
 already says; and no duration knob. The primary path throughout this document already follows
 every one of these, so nothing above needed re-deriving.
 
-### Phase 2's own open questions (unanswered as of this writing)
+### Phase 2's own open questions, answered by Chris on 2026-09-14
+
+The three bullets immediately below are kept exactly as originally written — including their own
+recommendations — as the historical record of what was proposed. A fourth matter, whether hit
+feedback and MISS ship as one phase or two, was raised in §7's own prose rather than bulleted here;
+§7 pointed here for it ("an open question for Chris (§8)") without a literal bullet existing — noted
+for accuracy, not corrected, since the question itself was real and is answered below regardless of
+which section literally listed it. The paragraph after the three bullets records what Chris actually
+decided on all four matters, which disagrees with the recommendation on two of them.
 
 - **Gating.** Phase 2 has no authored field today — the three answers in §10's own phase-2 entry
   decided the *shape*, not whether a project can opt out. Three options, costed, each now stating
@@ -1268,6 +1319,28 @@ every one of these, so nothing above needed re-deriving.
   the 8-pixel upward offset, §12/§13's own reasoned, not measured, choices) — genuine taste calls,
   not determinable from the code. Recommendation: ship the values in §13 as a starting point, tune
   after a real playtest; none of them affects the measured byte cost (§12.7), only the visual.
+
+**Chris answered all four of the above on 2026-09-14** (recorded verbatim in §10's own new
+changelog entry). Two match this document's own recommendation; two go against it:
+
+1. **Gating: option (B), a new authored project toggle.** Matches the recommendation's own SHAPE —
+   not always-on (A), not piggybacked on `projectUsesBattleAnimation` (C) — but not its illustrative
+   ONE-field example, superseded by answer 2 immediately below.
+2. **TWO independent toggles, one for hit feedback, one for MISS — AGAINST the "one flag"
+   recommendation.** `project.rpg.hitFeedback: boolean` and `project.rpg.miss: boolean`, each its
+   own generated flag (`HIT_FEEDBACK_ENABLED`/`MISS_ENABLED`) and its own banked ledger term
+   (§12.7/§13.9) — not the single combined field/flag/term the recommendation illustrated. Every
+   `projectUsesHitMiss`/`HIT_MISS_ENABLED`/`HIT_MISS_BATTLE_ALLOWANCE` reference elsewhere in this
+   document (before this answer) named the now-superseded single-toggle shape; §12/§13 below are
+   corrected to the two-flag shape this answer settles on.
+3. **Phasing: hit feedback ships FIRST as its own phase (2a); MISS ships AFTER as a separate phase
+   (2b) — AGAINST the "one phase" recommendation.** §7 is rewritten around this split; see its own
+   "what phase 2b depends on from phase 2a" paragraph for the one real (RAM-chain) consequence.
+4. **MISS art, timing and placement: ship the v5 values as starting points, tune after playtest —
+   matches the recommendation exactly.** `MISS_TILE_M/I/S`, `BT_MISS_FRAMES = 30`, the 8-pixel
+   upward offset, and message-dismissal clearing (§13.4) ship unchanged; none of these affects the
+   measured byte cost (§12.7/§13.9), only the visual, so this answer required no further design work
+   beyond marking it settled.
 
 ## §9. Out of scope, explicitly
 
@@ -1480,6 +1553,129 @@ Also acted on the review's own remaining note: the hit-flash trace test row (§1
 direct `vram_buf` queue observation for cessation past the terminal tick, not source inspection
 alone.
 
+### Phase 2 answers round (2026-09-14) — v5.1, Chris's own §8 answers recorded
+
+`docs/design-battle-animation.md` v5 (`f071d8d`, reviewer GO) left four questions open in §8's own
+"Phase 2's own open questions" passage (three bulleted there, one raised in §7's prose). Chris
+answered all four on 2026-09-14, recorded verbatim:
+
+1. Gating: option (B), a new authored project toggle. Not always-on, not piggybacked.
+2. TWO independent toggles: one for hit feedback (the sprite hit-blink plus the block-art attribute
+   flash, together), one for MISS. Not one shared toggle.
+3. Phasing: hit feedback ships FIRST as its own phase; MISS ships AFTER as a separate phase.
+   Not one phase.
+4. MISS art, timing and placement: ship the v5 values ($FA-$FC sprite tiles, `BT_MISS_FRAMES = 30`,
+   8 px above the combatant, cleared by message dismissal) as starting values, tune after playtest.
+
+Answers 1 and 4 match this document's own recommendations; answers 2 and 3 do not, and are real
+design changes, not a note — every `projectUsesHitMiss`/`HIT_MISS_ENABLED`/`HIT_MISS_BATTLE_
+ALLOWANCE` reference in v5 named a single combined toggle/flag/term, superseded here by two
+independent ones (`hitFeedback`/`HIT_FEEDBACK_ENABLED`/`HIT_FEEDBACK_BATTLE_ALLOWANCE` and
+`miss`/`MISS_ENABLED`/`MISS_BATTLE_ALLOWANCE`, §12.7/§13.9), and every "one phase" framing in v5's §7
+is superseded by an explicit 2a (hit feedback) / 2b (MISS) split, in that release order. Changed:
+
+- **§7** rewritten around the 2a/2b split: what each phase gates, ships, and stays ROM-neutral on;
+  the one real dependency 2b has on 2a (the `bt_miss_slot = bt_hurt_left+1` RAM chain, which the
+  chosen ship order needs no rework of); confirmation that equates stay unconditional so the chain
+  and every toggle combination (including MISS alone) work with no special case; a table of all four
+  legal toggle combinations and their ledger cost.
+- **§8** marks all four questions answered, keeping the three original bulleted recommendations (and
+  a note about the fourth, unbulleted one) as history.
+- **§12.7** renamed from the single combined predicate/flag/term to `project.rpg.hitFeedback` /
+  `projectUsesHitFeedback` / `HIT_FEEDBACK_ENABLED` / `HIT_FEEDBACK_BATTLE_ALLOWANCE = 235`, with a
+  new Schema passage (field, default, `normalizeRpg`, UI location) and a `bankedFeatures` entry for
+  `battleShortfallAdvice`.
+- **§13.2** corrected: the prior "or a future project that ships MISS without hit feedback... must
+  be re-chained... or the build fails outright" sentence conflated the isolated-measurement variant
+  (equate lines hand-deleted) with a real toggle-gated project (equate lines always present, only the
+  surrounding code gated) — the real case needs no re-chaining at all. See §7's own corrected
+  treatment.
+- **§13.5/§13.6** renamed `projectUsesHitMiss`/`HIT_MISS_ENABLED` to `projectUsesMiss`/`MISS_ENABLED`
+  throughout — the MISS-only gate these sections' own reservation, stamping, OAM terms and warning
+  text always belonged to, never hit feedback's.
+- **New §13.9** ("Gating and the ledger," MISS's own, mirroring §12.7's shape): `project.rpg.miss` /
+  `projectUsesMiss` / `MISS_ENABLED` / `MISS_BATTLE_ALLOWANCE = 134`, Schema passage, a
+  `battleShortfallAdvice` entry, and the ledger decision below.
+- **Ledger decision**: with two independent gates, `setup_monsters`' own shared `lda #0` (the exact
+  2-byte gap §11's own bullet already identifies between 235+134=369 and Appendix D's measured 367)
+  cannot be kept as a single unconditional load once either half can be off while the other is on —
+  it must itself be gated somehow. Decided: **separate the two resets under their own `.if` blocks**
+  (each pays its own `lda #0`/`sta`, 235 and 134 stay exactly as measured, and the combined figure
+  becomes a clean sum, 369) rather than keep one shared load behind a negative interaction term
+  (`STING_SFX_INTERACTION_ALLOWANCE`, `main/build/generate.js:1075`, is this codebase's only
+  interaction-term precedent, and it is positive — real glue code that only exists when both features
+  are live, not a hand-tuned micro-optimization's accounting artifact). See §13.9 for the full
+  reasoning; §12.7's own combined-figure cross-reference and Appendix D's own intro prose (outside
+  its frozen fence) are both corrected to state that a real two-gate implementation pays 369 for
+  "both on," not the single-build prototype's 367, and that the implementation phases must re-measure
+  `HIT_FEEDBACK_BATTLE_ALLOWANCE`/`MISS_BATTLE_ALLOWANCE`/the combined total with
+  `bankedbytes.test.js` equality assertions on MMC1, MMC3 and UNROM 512, including the both-on case.
+- **§14** rows assigned to phase 2a or 2b; the off-path/ledger rows rewritten into four rows — one
+  per toggle combination (neither, hit-feedback alone, MISS alone, both) — each asserting ROM
+  neutrality or the correct ledger delta AND that the flag NOT under test leaked no bytes of its own
+  code into the build (a cross-gating leak: e.g. MISS alone must not silently pull in any
+  `bt_hurt_*`-touching code, and vice versa).
+- Appendix D's fenced diff is untouched (still the single, unconditional, no-`.if` measurement
+  build); a new paragraph before the fence explains it must now be read as measuring the SUM of the
+  two real allowances plus the shared-load saving the real implementation deliberately gives up, not
+  as a preview of the real gated code's own combined byte count.
+
+### Phase 2 design review, round 5 fixes (2026-09-14) — v5.1
+
+Round 5 review (`handoff-next/battle-anim-phase2-design-review5.md`) found three issues in the
+answers round above, all fixed here; no design decision changed, only its documentation.
+
+1. **P2 — `projectUsesMiss` gated action projects into MISS reservation/stamping.** The
+   round-5 review confirmed `spriteReservedRanges` is called by `validateProject`
+   (`shared/project.js:6556`, `:6577`) BEFORE its `gameType === 'rpg'` block (`:6593`) and by the
+   Tile Forge unconditionally (`renderer/forges/tile/tile.js:231`, `:410`) — so the prior claim that
+   it has "battle-only callers" an action project could never reach was false, and a boolean-only
+   `projectUsesMiss` would reserve $FA-$FC and stamp MISS art on an action project carrying
+   `rpg.miss: true`. Fixed: `projectUsesMiss` now returns `project.project.gameType === 'rpg' &&
+   Boolean(project.rpg?.miss)` (§13.5, §13.9, both copies of the snippet), with the reasoning
+   rewritten in place of the old shared "battle-only callers" citation. `projectUsesHitFeedback` was
+   judged NOT to need an equivalent change here, reasoning that its only battle-region consumer,
+   `battleRegionBytes`, is unreachable from an action project since `codeRegions()` allocates that
+   region only when `rpgCapable()` already holds — **a judgment round 6 found incomplete: see the
+   round-6 entry below.** §14 gains a dedicated round-5 row proving an action project with `rpg.miss`
+   true vs. false builds byte-identical, with no reservation and no refusal on painted `$FA` artwork.
+2. **P2 — the phase-2a acceptance plan deferred §12.4's own initialization checks to `both`.** The
+   BP_INTRO guard and battle-entry reset rows were tagged `both` outright, so a phase-2a brief built
+   strictly from `2a`-tagged rows never got a runtime check that a stale hurt timer is actually
+   ignored during `BP_INTRO`, or actually reset to 0 afterward — the cross-gating ledger rows check
+   byte counts and code presence, not that behavior. Fixed: both rows split into a hurt-timer `2a`
+   row, a MISS-timer `2b` row, and a lighter `both`-tagged integration row kept beside each pair; the
+   six-fixture off-path identity row is likewise split into its own `2a` and `2b` rows instead of one
+   `both` row. Message-cap asymmetry and the combined 369-byte ledger equality genuinely exercise an
+   interaction between the two timers/allowances and stay tagged `both`, per the brief.
+3. **P3 — Appendix D's own v5.1 note called 367 an "upper bound" on 369.** 367 is two bytes smaller
+   than 369, so it cannot bound it from above; the direction was simply backwards. Fixed: reworded to
+   "the frozen shared-load prototype measurement, two bytes below the selected independently-gated
+   layout." Appendix D's own fenced diff is untouched.
+
+### Phase 2 design review, round 6 nit (2026-09-14) — v5.1
+
+Round 6 review (`handoff-next/battle-anim-phase2-design-review6.md`, verdict GO-with-nits) found one
+P3: round 5's own reasoning for leaving `projectUsesHitFeedback` ungated by game type (§12.7,
+changelog above) only checked `battleRegionBytes`, missing that `HIT_FEEDBACK_ENABLED` is also
+generated into `config.inc` (§12.7's own "Generated flag and gates" passage), which
+`main/build/generate.js` writes for every project (`:3168`, `:3172`) and `engine/main.asm:32`
+includes unconditionally — action projects included. The reviewer reproduced an action project with
+`rpg.hitFeedback: true` generating `HIT_FEEDBACK_ENABLED = 1`. No ROM or artwork consequence (the
+gated routines all live in battle source an action build never assembles regardless of the config
+flag), but the generated flag and this document's own claim about it were wrong.
+
+Fixed: `projectUsesHitFeedback` now returns `project.project.gameType === 'rpg' &&
+Boolean(project.rpg?.hitFeedback)`, the identical shape `projectUsesMiss` already took (§12.7's own
+predicate and rationale, rewritten). §13.9's own comparison of the two predicates is corrected to
+state the real, shared reason both are RPG-gated (both reach `config.inc`, which an action build
+evaluates), rather than treating hit feedback as needing no check at all. §14 gains a phase-2a row
+asserting an action project generates `HIT_FEEDBACK_ENABLED = 0` for either stored value of
+`rpg.hitFeedback` and builds byte-identical ROMs either way. `normalizeRpg` stays non-destructive,
+no new `validateProject` refusal is added, and `HIT_FEEDBACK_BATTLE_ALLOWANCE` (235) is unchanged —
+this predicate's RPG-only battle-region consumer was never reachable from an action project either
+way; only the generated config flag was.
+
 ## §11. Places a claim could not be pinned to a line and was reasoned instead
 
 - **The exact vblank/mainline cycle cost of the new call sites, including `draw_metasprite`'s own
@@ -1521,7 +1717,11 @@ alone.
   `sta <bt_miss_left` — a 2-byte instruction, paid once in the combined build but once EACH
   (independently, since each isolated variant still needs the load for its own single store) in the
   two isolated builds used to derive 235 and 134. `2 = 235 + 134 - 367` is exactly that one shared
-  `LDA #$00`, not noise.
+  `LDA #$00`, not noise. **v5.1 note**: this shared load is exactly what the two-independent-gate
+  design (Chris's own answer 2, §10) can no longer keep — §12.7's own ledger decision separates it
+  into two independently-gated resets, so the real shipped combined figure becomes 369, not this
+  diff's own 367; this bullet still correctly explains why Appendix D's OWN frozen measurement shows
+  367, it is just no longer the real shipped combined figure.
 - **The MISS overlay's own cycle cost and vblank headroom** (§12/§13's new tick/draw routines,
   `battle_hurt_attr_open`'s shared addressing math) is bounded the identical way the phase-1
   flipbook's is (§11's own first bullet, above) — a fixed, small number of OAM writes per tick, and
@@ -1993,16 +2193,132 @@ ledger entry this becomes, the identical shape `BATTLE_ANIM_BATTLE_ALLOWANCE` al
 export const HIT_FEEDBACK_BATTLE_ALLOWANCE = 235; // measured, §12.7 -- flat, all three boards
 ```
 
-gated on a new `projectUsesHitMiss`-shaped predicate (§8's own open gating question) and wired into
-`battleRegionBytes` the identical no-`&& banked` shape `BATTLE_ANIM_BATTLE_ALLOWANCE` already uses.
-**No kernel-lo term at all** — every routine in §12.3 lives entirely in the banked battle region;
-nothing here is reachable from the field. No OAM cost at all (the sprite-blink half only ever
-*skips* drawing an icon already counted in `battleCombatantOamMax`, never adds one — unlike MISS,
-§13.6); the `vram_buf` cost is bounded in §12.6, not zero as the pre-fix design claimed.
+**Schema (Chris's own §8 answers 1 and 2, v5.1).** `project.rpg.hitFeedback: boolean`, defaulting to
+`false` — `defaultRpg()` (`shared/project.js:4223-4231`) gains the field, and `normalizeRpg`
+(`shared/project.js:5490-5499`) normalizes it as `Boolean(raw?.hitFeedback)`, the identical shape
+`renamable`'s own boolean normalization already takes elsewhere in this schema. No reconciliation
+and no new `validateProject` refusal: unlike `battleTilesetId` (clamped against `tilesetCount`) or
+the cartridge fields `reconcileCartridge` exists for, a plain boolean with two always-legal states
+needs neither — the same reason `BATTLE_ANIM_ENABLED`'s own gate (driven by `attackAnim`/`spell.anim`
+content, not a toggle field, but equally reconciliation-free) needs none either. **UI**: the Build
+Forge's own "RPG progression" panel, `rpgProgression(project)`
+(`renderer/forges/build/build.js:54-103`) — the panel this document's own comparable project-level
+RPG settings (`xpBase`, `xpGrow`, `maxLevel`, `battleTilesetId`) are already edited in, using its
+existing `number()`/`select` field helpers for those; this field is the panel's first BOOLEAN one,
+so it follows the `label.check` + `input[type=checkbox]` idiom the Character Forge's own
+`renamable` checkbox already uses (`renderer/forges/character/character.js:278-302`) rather than
+inventing a second checkbox shape. The predicate:
 
-See §13.6 for the combined figure (367) and the isolated MISS figure (134), and §11's own bullet for
-the exact, now-identified 2-byte gap between the two isolated deltas summed and the real combined
-delta.
+```js
+// shared/project.js, beside projectUsesBattleAnimation
+export function projectUsesHitFeedback(project) {
+  return project.project.gameType === 'rpg' && Boolean(project.rpg?.hitFeedback);
+}
+```
+
+**A `gameType === 'rpg'` check IS required here — round 6's own finding, correcting round 5's own
+mistake below.** Round 5 argued this predicate needed no gating because `battleRegionBytes` (its
+only battle-region consumer) is only ever reached for an RPG project with an allocated battle
+region (`codeRegions().length > 0` implies `rpgCapable`) — true as far as it goes, but incomplete:
+`HIT_FEEDBACK_ENABLED` is not only wired into `battleRegionBytes`, it is also generated straight
+into `config.inc` (below, "Generated flag and gates") the identical `FLAG = predicate(project) ? 1
+: 0` shape every other feature flag in this codebase uses — and `config.inc` is written for every
+project (`main/build/generate.js:3168`, `:3172`) and `.include`d by `engine/main.asm:32`
+unconditionally, action projects included. A boolean-only `projectUsesHitFeedback` therefore made an
+action project carrying `rpg.hitFeedback: true` generate `HIT_FEEDBACK_ENABLED = 1` in its own
+`config.inc` — reproduced directly by the round-6 review against the real generator. This has no
+runtime or artwork consequence (every routine `HIT_FEEDBACK_ENABLED` gates lives entirely inside the
+battle source, which stays excluded from an action build's own assembled sources regardless of the
+config flag's value, per `main/build/generate.js:2757`, `:2865`), but the generated flag and this
+document's own prior claim about it were still wrong. Gating the predicate on `gameType === 'rpg'`,
+the identical shape `projectUsesMiss` (§13.9) now takes, closes it at the same single point:
+`HIT_FEEDBACK_ENABLED`'s own emission, `battleRegionBytes` (below), and `battleShortfallAdvice`
+(below) all call `projectUsesHitFeedback`, none of them reads `project.rpg.hitFeedback` directly.
+`normalizeRpg` keeps storing the boolean exactly as written on every project — no destructive
+rewrite, no new `validateProject` refusal, and the 235-byte `HIT_FEEDBACK_BATTLE_ALLOWANCE` is
+unchanged (this predicate's RPG-only consumer, `battleRegionBytes`, was never reachable from an
+action project either way; only the generated config flag was).
+
+Gated on `projectUsesHitFeedback` and wired into `battleRegionBytes`
+(`main/build/battletables.js:974-987`) the identical no-`&& banked` shape
+`BATTLE_ANIM_BATTLE_ALLOWANCE` already uses. **No kernel-lo term at all** — every routine in §12.3
+lives entirely in the banked battle region; nothing here is reachable from the field. No OAM cost at
+all (the sprite-blink half only ever *skips* drawing an icon already counted in
+`battleCombatantOamMax`, never adds one — unlike MISS, §13.6, whose OAM terms are entirely
+`MISS_ENABLED`'s own territory; `HIT_FEEDBACK_ENABLED` gates nothing in §13.6 at all. The `vram_buf`
+cost is bounded in §12.6, not zero as the pre-fix design claimed.
+
+**Shortfall advice.** `battleShortfallAdvice`'s own `bankedFeatures` list
+(`main/build/battletables.js:1101-1137`) gains:
+
+```js
+// main/build/battletables.js -- battleShortfallAdvice, beside the battle-animation entry
+if (battleBankEnabled(project, mapper) && projectUsesHitFeedback(project)) {
+  bankedFeatures.push({ label: 'hit feedback', strip: projectWithoutHitFeedback });
+}
+```
+
+`projectWithoutHitFeedback` (`shared/project.js`, beside `projectWithoutBattleAnimation`) clones the
+project and sets `rpg.hitFeedback = false`, the identical shape every other strip helper in that
+family already takes.
+
+**Generated flag and gates, stated exhaustively — nothing MISS-specific may key off this one.**
+`HIT_FEEDBACK_ENABLED` (`main/build/generate.js`, emitted into `config.inc` the identical
+`FLAG = predicate(project) ? 1 : 0` shape `BATTLE_ANIM_ENABLED` already is) gates, and ONLY gates:
+`battle_hurt_arm`/`battle_hurt_attr_open`/`battle_hurt_tick`/`battle_hurt_restore_slot` and their
+call sites (`apply_damage`, `battle_tick`, §12.3); `battle_sprite_pc`/`battle_sprite_mon`'s own
+blink-skip checks (§3.3/Appendix B's mechanism, existing routines gaining a new gated branch); and
+its own half of `setup_monsters`' reset (§12.4, and see the ledger decision below for why this half
+gets its OWN `lda #0` rather than sharing one with MISS's). It gates NOTHING in §13 — no MISS art,
+no MISS tick/draw/arm routine, no reservation range, no OAM term, no warning-text clause. The
+equates themselves (`bt_hurt_slot`/`bt_hurt_left`/`BT_HURT_FRAMES`) are NOT gated by it at all —
+they stay unconditional, per §7's own corrected treatment.
+
+**Ledger decision (v5.1) — two independent gates cannot keep the single shared `lda #0` that
+produced the measured 367.** §11's own bullet already identifies the 2-byte gap: `setup_monsters`'
+combined reset shares one `lda #0` between `sta <bt_hurt_left` and `sta <bt_miss_left`, which a
+single unconditional (or single-flag-gated) build can do freely, but two INDEPENDENT flags cannot —
+if `HIT_FEEDBACK_ENABLED` alone is on, only `bt_hurt_left`'s own store may assemble, and the shared
+`lda #0` immediately before it either has to be duplicated (paid by whichever flag is on) or kept
+behind some OTHER conditional that reasons about both flags at once. Two ways to resolve this,
+decided here:
+
+- **(i) Separate the two resets under their own `.if` blocks — chosen.** Each half pays its own
+  `lda #0`/`sta` (4 bytes each), so `HIT_FEEDBACK_BATTLE_ALLOWANCE` (235) and `MISS_BATTLE_ALLOWANCE`
+  (134, §13.9) stay exactly as measured in isolation, and the combined, both-on figure becomes a
+  clean sum — **369**, not 367. This costs 2 more ROM bytes than the single-flag design when both
+  are live, in exchange for the two ledger terms being genuinely independent: no interaction term to
+  keep in sync, and `battleShortfallAdvice`'s own `bankedFreed` (which recomputes `battleRegionBytes`
+  before/after a strip, never sums named constants) frees EXACTLY 235 or EXACTLY 134 when either
+  toggle is removed, matching its own named allowance with no asterisk.
+- **(ii) Keep the shared `lda #0`, guarded on `HIT_FEEDBACK_ENABLED || MISS_ENABLED`, with a negative
+  interaction term** (`HIT_MISS_SHARED_RESET_ALLOWANCE = -2` or similar, applied only when both
+  flags are live) — considered, not chosen. `STING_SFX_INTERACTION_ALLOWANCE`
+  (`main/build/generate.js:1075`) is this codebase's only existing interaction-term precedent, and it
+  is POSITIVE: real glue code (`sting_restore_silence`'s own ownership guard) that only exists,
+  functionally, when both Sting and Sfx are live — not an accounting correction for a hand-tuned
+  byte-saving optimization. A negative interaction term here would be a different kind of thing: it
+  exists purely because the reset was WRITTEN to share an instruction, not because sharing it is
+  functionally required (each `sta` clobbers nothing the other needs, so nothing stops them from
+  being independent stores). It would also make `bankedFreed([hitFeedback])` free 233, not 235, when
+  MISS is also live — correct by construction (it recomputes the real total either way) but a real
+  reader-facing subtlety this document would then have to explain, which option (i) has no need of.
+
+**Recommendation, and why: option (i).** Two bytes of ROM is a rounding error next to either
+allowance; genuine gate independence — each term measured, named, and freed in isolation with no
+interaction correction anywhere in this ledger — is worth more than the 2-byte saving, and matches
+Chris's own answer 2: choosing two INDEPENDENT toggles is itself a signal that independence is the
+property being asked for here, not an optimized-but-coupled combination. **The implementation phases
+for 2a and 2b must each re-measure their own term, and phase 2b must additionally re-measure the
+combined both-on total, with `bankedbytes.test.js` equality assertions (`assert.equal`, not a margin
+check, the identical discipline every other banked-region term in this ledger already holds to) on
+MMC1, MMC3 and UNROM 512** — this section states the DECISION and its expected consequence (369, not
+367), not a substitute for building and measuring the real `.if`-separated code once phase 2b exists.
+Appendix D's own diff (frozen, unconditional, single-build) is not proof of this figure — see its own
+intro paragraph, corrected below, for how to read it now.
+
+See §13.9 for MISS's own schema, gate, ledger term (134) and shortfall-advice entry, and the ledger
+decision above for why the combined figure is 369, not the single-flag prototype's 367.
 
 ## §13. Phase 2b — MISS, a new design
 
@@ -2079,14 +2395,24 @@ harmless), while MISS specifically must be capped there (§13.4) or a stale "MIS
 be reading a target from the turn before. Two different lifetime rules cannot share one timer
 without either compromise; two bytes is a small price for keeping both rules exact.
 
-**Round 1 finding 8's own re-chaining note.** `bt_miss_slot`'s own definition (`= bt_hurt_left+1`)
-depends on `bt_hurt_left` existing — if hit feedback (§12) is ever stripped out on its own (the
-isolated-measurement variant this design's own figures are built from, or a future project that
-ships MISS without hit feedback), `bt_miss_slot` must be re-chained to `bt_fx_timer+1` directly, or
-it is left referencing an undefined equate and the build fails outright. Both isolated variants
-Appendix D's own figures come from do this re-chaining as part of stripping the other half; it is
-not automatic and must be done by hand each time, since nesasm has no notion of "chain to whichever
-of these two symbols happens to exist."
+**Round 1 finding 8's own re-chaining note, corrected by v5.1 §7 now that the real project has two
+independent gates.** `bt_miss_slot`'s own definition (`= bt_hurt_left+1`) depends on `bt_hurt_left`
+existing as a declared equate — true always, in the real shipped engine, regardless of
+`HIT_FEEDBACK_ENABLED`/`MISS_ENABLED`, since §12.2/§7 both establish that this equate DECLARATION
+carries no `.if` of its own (the identical unconditional shape `bt_fx_anim` already has) and costs
+zero ROM bytes whether or not any gated code ever reads or writes it. So a real project shipping
+`MISS_ENABLED = 1` with `HIT_FEEDBACK_ENABLED = 0` — a legal, real combination now that the two
+gates are independent, §7's own toggle-combination table — needs NO re-chaining: `bt_hurt_left`
+is still there to chain onto, unread and unwritten but present. Re-chaining `bt_miss_slot` to
+`bt_fx_timer+1` directly is needed ONLY for the ISOLATED MEASUREMENT variants §11 describes and
+Appendix D's own figures come from — scratch copies where hit feedback's own equate LINES are
+physically deleted from the source (not merely gated) purely to measure MISS's allowance in
+isolation; deleting a source line is not the same as gating the code around it, and no real shipped
+project ever does the former. Both isolated variants Appendix D's own figures come from do this
+re-chaining as part of stripping the other half's own lines out; it is not automatic and must be
+done by hand each time such a measurement copy is built, since nesasm has no notion of "chain to
+whichever of these two symbols happens to exist" — but this is a measurement-methodology detail,
+never a real toggle-combination's own concern.
 
 ### §13.3 Where the glyphs come from — costed, recommended
 
@@ -2263,10 +2589,14 @@ early A press) before the next actor's own turn can ever begin, and dismissal is
 `bt_miss_left` is forced to 0 — so `battle_miss_arm`'s own fresh write always starts from a clean
 slate, never stacking on top of a still-counting-down previous miss.
 
-**Battle-entry reset**: `setup_monsters` clears `bt_miss_left` to 0 alongside `bt_hurt_left` (§12.4),
-same `lda #0` store (round 1 finding 8's own explanation of the 2-byte measurement gap).
-`bt_miss_left`'s own lifetime across `battle_end`/`player_died` is identical to `bt_hurt_left`'s
-(§12.4): neither routine clears it, and the `BP_INTRO` guard above is what makes that safe.
+**Battle-entry reset**: `setup_monsters` clears `bt_miss_left` to 0 alongside `bt_hurt_left` (§12.4)
+— in Appendix D's own single-build measurement prototype, via one shared `lda #0` store (round 1
+finding 8's own explanation of the 2-byte measurement gap); in the real, independently-gated
+implementation, under its OWN `.if MISS_ENABLED` block with its own `lda #0` (§12.7/§13.9's own v5.1
+ledger decision, option (i) — each gate pays for its own reset, so the two stay genuinely
+independent). `bt_miss_left`'s own lifetime across `battle_end`/`player_died` is identical to
+`bt_hurt_left`'s (§12.4): neither routine clears it, and the `BP_INTRO` guard above is what makes
+that safe.
 
 ### §13.5 Sprite-table reservation and the generator
 
@@ -2307,14 +2637,24 @@ hand-typed literals in `engine/constants.asm`:
 ```
 
 **The reservation itself**, the `spriteReservedRanges` precedent extended with a third range, gated
-the identical shape as the new `HIT_MISS_ENABLED` flag (§12.7/§8's own gating question):
+on MISS's own `projectUsesMiss`/`MISS_ENABLED` (§13.9, v5.1, RPG-gated as of round 5 — never
+`HIT_FEEDBACK_ENABLED`, which gates nothing in this section):
 
 ```js
 // shared/project.js -- spriteReservedRanges
-if (projectUsesHitMiss(project)) {
+export function projectUsesMiss(project) {
+  return project.project.gameType === 'rpg' && Boolean(project.rpg?.miss);
+}
+// ...
+if (projectUsesMiss(project)) {
   ranges.push({ start: MISS_TILE_M, end: MISS_TILE_S + 1, label: 'the MISS overlay' });
 }
 ```
+
+The `gameType === 'rpg'` check matters specifically for THIS call site: `spriteReservedRanges` is
+called from `validateProject` before its own RPG-gate block and from the Tile Forge unconditionally
+(§13.9's own v5.1 note has the full round-5 finding and file:line evidence) — an action project must
+never reserve or refuse against these three tiles no matter what `project.rpg.miss` holds.
 
 **Stamping**, the `SPRITE_ARROW_ART` precedent (`main/build/generate.js:2672-2673`), applied to all
 three MISS glyphs, into every tileset (a project can set ANY tileset as its `battleTilesetId`, so
@@ -2323,7 +2663,7 @@ uses):
 
 ```js
 // main/build/generate.js
-if (projectUsesHitMiss(project)) {
+if (projectUsesMiss(project)) {
   for (const tileset of tilesets) {
     tileset.sprites[MISS_TILE_M] = MISS_TILE_M_ART;
     tileset.sprites[MISS_TILE_I] = MISS_TILE_I_ART;
@@ -2404,9 +2744,10 @@ the flipbook and MISS both need to fit alongside the SAME worst-case combatant t
 return { used: battleCombatantOamMax(project, mapper) + fxTiles + MISS_OAM_TILES, limit: MAX_OAM_ENTRIES };
 ```
 
-gated the same way as the rest of §13 (only when `projectUsesHitMiss`, §12.7/§8) — a project that
-never opts in pays nothing here either, the identical byte-identity discipline `fxTiles` itself
-already holds to when no battle animation is authored. `validateProject`'s own gate is
+gated the same way as the rest of §13 (only when `projectUsesMiss`, §13.9, v5.1 — never
+`HIT_FEEDBACK_ENABLED`, which has no OAM term of its own at all, §12.7) — a project that never opts
+into MISS pays nothing here either, the identical byte-identity discipline `fxTiles` itself already
+holds to when no battle animation is authored. `validateProject`'s own gate is
 `battleBudget.used > battleBudget.limit` (`shared/project.js:7402`, strictly greater — `used == 64`
 does not warn), which is what §14's own test rows below assert through, not the raw formatted string
 `describeBattleSpriteWarning` returns (`shared/project.js:3750`) — that function is an unconditional
@@ -2480,7 +2821,7 @@ otherwise:
 // byte-for-byte identical to what ships today.
 export function describeBattleAnimationOamWarning(project, mapper) {
   const combatantMax = battleCombatantOamMax(project, mapper);
-  const missTiles = projectUsesHitMiss(project) ? MISS_OAM_TILES : 0;
+  const missTiles = projectUsesMiss(project) ? MISS_OAM_TILES : 0;
   let worstId = null;
   let worstTiles = 0;
   for (const animId of allBattleAnimationIds(project)) {
@@ -2526,36 +2867,178 @@ duplicates it: the text says who missed, the overlay says who dodged. Both fire 
 call sites (`attack_missed`/`monster_missed`) in the same tick; neither reads or depends on the
 other's own state.
 
+### §13.9 Gating and the ledger
+
+MISS's own gate (Chris's own answer 2, §10, v5.1) — independent of hit feedback's own (§12.7),
+mirroring its structure exactly.
+
+**Schema.** `project.rpg.miss: boolean`, defaulting to `false` — `defaultRpg()`
+(`shared/project.js:4223-4231`) gains the field beside `hitFeedback`, and `normalizeRpg`
+(`shared/project.js:5490-5499`) normalizes it as `Boolean(raw?.miss)`, the identical shape
+`hitFeedback`'s own normalization takes. No reconciliation and no new `validateProject` refusal, for
+the identical reasons §12.7 states for `hitFeedback` — a plain, always-legal boolean with no
+mapper/tileset dependency. **UI**: the Build Forge's own "RPG progression" panel,
+`rpgProgression(project)` (`renderer/forges/build/build.js:54-103`), a second `label.check` +
+`input[type=checkbox]` row beside `hitFeedback`'s own (Character Forge's `renamable` idiom,
+`renderer/forges/character/character.js:278-302`), in the same panel this document's own comparable
+project-level RPG settings are already edited in.
+
+```js
+// shared/project.js -- beside projectUsesHitFeedback
+export function projectUsesMiss(project) {
+  return project.project.gameType === 'rpg' && Boolean(project.rpg?.miss);
+}
+```
+
+**A `gameType === 'rpg'` check IS required here, the identical shape `projectUsesHitFeedback` now
+takes (§12.7) — round 5 found this predicate's own leak, round 6 found the same leak in
+`projectUsesHitFeedback` too, for a reason round 5 had not yet traced.** Every prior draft of this
+document (through round 4) justified omitting the check on either predicate by claiming their only
+consumers — `spriteReservedRanges` here, `battleRegionBytes` for hit feedback — are battle-only and
+therefore unreachable from an action project regardless of gating. Both predicates ended up wrongly
+gated, but for two different reasons: `spriteReservedRanges`'s own reachability claim was simply
+false, while `battleRegionBytes`'s reachability claim was true — it is genuinely unreachable — and
+the mistake was calling it hit feedback's ONLY consumer, when a second, reachable one existed all
+along (below). `spriteReservedRanges` is false because `validateProject` calls it
+directly, twice, BEFORE the `gameType === 'rpg'` block that begins at `shared/project.js:6593` — the
+occupied-artwork refusal at `:6556` and the blank-reference collision check at `:6577` — and the
+Tile Forge's own shading calls it unconditionally too (`renderer/forges/tile/tile.js:231`, `:410`).
+`normalizeRpg` preserves `project.rpg.miss` verbatim regardless of game type (no per-field gameType
+guard on it), so an action project carrying `rpg.miss: true` — unreachable through
+`rpgProgression`'s own checkbox, which only renders when `isRpg`, but not unreachable full stop: a
+project saved by a later version, or one hand-edited outside the UI, keeps the field exactly as
+stored — would reserve $FA-$FC and stamp MISS artwork into every tileset with no battle overlay ever
+drawn there to justify it. Hiding the checkbox makes the value unreachable from the UI, not
+unreachable from the data the schema already round-trips.
+
+Gating the predicate itself, rather than patching each caller, closes this at the one point every
+MISS consumer already reads through instead of the stored field directly: the reservation
+(`spriteReservedRanges`, above), the stamping loop (`main/build/generate.js`), the two OAM terms
+(§13.6), the warning clause (`describeBattleAnimationOamWarning`), the ledger term and
+`battleShortfallAdvice` entry (below), `MISS_ENABLED`'s own generated-flag emission, and
+`MISS_ENABLED` itself all call `projectUsesMiss` — none of them reads `project.rpg.miss` directly.
+`normalizeRpg` keeps storing the boolean exactly as written on every project, action or RPG — no
+destructive rewrite, and no new `validateProject` refusal for setting it on an action project; the
+predicate alone decides whether the value does anything.
+
+**`battleRegionBytes` genuinely IS unreachable from an action project — that half of the old claim
+was correct — but it is not `projectUsesHitFeedback`'s only consumer, and round 5 stopped looking
+once it had confirmed that half.** `HIT_FEEDBACK_ENABLED` is not only wired into `battleRegionBytes`
+(§12.7's own banked-region gate); it is also emitted straight into `config.inc` the same
+`FLAG = predicate(project) ? 1 : 0` shape every generated flag in this codebase takes (§12.7's own
+"Generated flag and gates" passage), and `config.inc` is written for every project
+(`main/build/generate.js:3168`, `:3172`) and `.include`d by `engine/main.asm:32` unconditionally —
+action projects included. So a boolean-only `projectUsesHitFeedback` generated
+`HIT_FEEDBACK_ENABLED = 1` for an action project carrying `rpg.hitFeedback: true`, reproduced
+directly by round 6's own review against the real generator: no runtime or artwork consequence,
+since every routine the flag gates lives entirely inside battle source excluded from an action
+build's own assembled sources regardless of the config flag (`main/build/generate.js:2757`,
+`:2865`), but a wrong generated value and a wrong claim in this document either way. Both
+predicates are RPG-gated for the same underlying reason as of round 6 — both reach `config.inc`,
+which an action project's own build evaluates — and MISS is additionally gated for the further
+reasons above (reservation, stamping, OAM). No sentence in this document may say
+`battleRegionBytes` is `projectUsesHitFeedback`'s only consumer, or that its generated flag is
+unreachable from an action project, except as the round-5 mistake corrected history now is.
+
+**Ledger.** Measured in isolation against the same Appendix D diff (a second scratch copy with every
+hit-feedback-specific addition removed, §12.7's own methodology mirrored):
+
+```js
+// main/build/battletables.js
+export const MISS_BATTLE_ALLOWANCE = 134; // measured, §13 -- flat, all three boards
+```
+
+gated on `projectUsesMiss` and wired into `battleRegionBytes` (`main/build/battletables.js:974-987`)
+the identical no-`&& banked` shape `HIT_FEEDBACK_BATTLE_ALLOWANCE`/`BATTLE_ANIM_BATTLE_ALLOWANCE`
+already use. No kernel-lo term (§13.4's own routines live entirely in the banked battle region);
+`vram_buf` cost is zero (§13.7).
+
+**Shortfall advice.** `battleShortfallAdvice`'s own `bankedFeatures` list
+(`main/build/battletables.js:1101-1137`) gains:
+
+```js
+// main/build/battletables.js -- battleShortfallAdvice, beside the hit-feedback entry
+if (battleBankEnabled(project, mapper) && projectUsesMiss(project)) {
+  bankedFeatures.push({ label: 'the MISS overlay', strip: projectWithoutMiss });
+}
+```
+
+`projectWithoutMiss` (`shared/project.js`, beside `projectWithoutHitFeedback`) clones the project
+and sets `rpg.miss = false`.
+
+**Generated flag and gates, stated exhaustively — nothing hit-feedback-specific may key off this
+one.** `MISS_ENABLED` (`main/build/generate.js`, the identical `FLAG = predicate(project) ? 1 : 0`
+shape) gates, and ONLY gates: `battle_miss_arm`/`battle_miss_tick`/`battle_miss_draw` and their call
+sites (`attack_missed`/`monster_missed`, `battle_tick`, `battle_draw_sprites`, §13.4); MISS's own
+half of `setup_monsters`' reset and `battle_message_done`'s own `bt_miss_left` clear (§13.4); the
+`MISS_TILE_M/I/S` generator stamping loop and the `spriteReservedRanges` MISS range push (§13.5);
+`BATTLE_FX_OAM_ROOM`'s own `- MISS_OAM_TILES` term, `battleSpriteBudget`'s own `+ MISS_OAM_TILES`
+term, and `describeBattleAnimationOamWarning`'s own `missClause` (§13.6); and `MISS_BATTLE_ALLOWANCE`
+itself. It gates NOTHING in §12 — no hit-blink skip-check, no attribute-flash tick/arm/restore
+routine, no OAM term (hit feedback has none, §12.7), no ledger term of hit feedback's own. The
+equates (`bt_miss_slot`/`bt_miss_left`/`BT_MISS_FRAMES`) are NOT gated by it — unconditional, per
+§7's own corrected treatment.
+
+**The ledger decision itself — separating `setup_monsters`' shared `lda #0` — is recorded once, in
+§12.7, since it is a single decision about ONE shared instruction both flags' own resets used to
+share; see §12.7 for the full reasoning (options (i)/(ii), the recommendation, and the
+`bankedbytes.test.js` re-measurement requirement for both 2a and 2b's own implementation phases,
+including the both-on combination).**
+
 ## §14. Phase 2 test plan
 
 The identical §6-style table — shape, and the wrong implementation each row catches. Rows marked
 **round 1** are new or rewritten in response to round 1's review; rows marked **round 2** are new
-or rewritten in response to round 2's; the rest are carried over unchanged.
+or rewritten in response to round 2's; the rest are carried over unchanged. Each row is now tagged
+with which phase it belongs to — **(2a)** hit feedback, **(2b)** MISS, or **(both)** for a row that
+inherently needs both flags live to exercise what it tests — per the brief's own v5.1 instruction to
+assign every row to a phase. **Round 5 correction**: the phase-2a acceptance plan built from rows
+tagged `2a` alone must be complete on its own — a reader assembling a phase-2a brief should never
+have to reach into a `both`-tagged row to get a check phase 2a actually needs. Two consequences: the
+six-fixture off-path identity check is now its own `2a` row, repeated (re-run once MISS's own code
+exists) as its own `2b` row, rather than one `both` row covering both toggles being off at once; and
+the BP_INTRO guard and battle-entry reset rows — §12.4's own initialization-regression checks, which
+a phase-2a brief needs regardless of whether MISS exists yet — are each split into a hurt-timer `2a`
+row and a MISS-timer `2b` row, neither of which inherently needs the other flag live, with a lighter
+`both`-tagged integration row kept beside each pair. Message-cap asymmetry and the combined 369-byte
+ledger genuinely test an interaction between the two timers/allowances and stay tagged `both`. The
+five rows immediately below replace the single-toggle "off-path/ledger" rows v5 had, since a single
+off-path row and three ledger rows no longer cover what two INDEPENDENT gates need: every one of the
+four legal toggle combinations (§7's own table) needs both its own ROM-neutrality/ledger claim AND a
+check that the flag NOT under test contributed no bytes and no behavior of its own — a cross-gating
+leak neither flag is allowed to have into the other's code.
 
-| Test | Shape | Wrong implementation it catches |
-|---|---|---|
-| Off-path byte-identity | `monsterlevel.test.js`-shape, `HIT_MISS_ENABLED` off | A gate that assembles even one byte of §12/§13's own code unconditionally |
-| Ledger isolation, hit feedback alone | `bankedbytes.test.js`-shape, `assert.equal` on the measured 235-byte delta, all three boards | A stale allowance figure drifting from the real assembled cost |
-| Ledger isolation, MISS alone | Identical shape, the measured 134-byte delta | Same, for the independently-measured MISS figure |
-| Combined equality | Both live together, the measured 367-byte delta — NOT the sum of the two isolated deltas (369), the real combined figure, 2 bytes different for the identified reason (§11) | A ledger that sums two allowances instead of measuring the real combined cost, silently 2 bytes wrong |
-| **round 2 — Multi-target sentinel integrity, corrected observation point (finding 4, P2, supersedes round 1's own row)** | Drive a real all-target spell through `cast_all` with a controlled formation of 4 living block-art monsters at LOW actor id (0) AND, in a second case, HIGH actor id (31, the reviewer's own reproduction, genuinely in range and above the loop boundary for a real 32-actor project); observe `bt_tmp2` with a breakpoint/trace AT `cast_all_next`, immediately after EACH `apply_damage` call — never after `cast_all` returns, since `battle_say_actor`'s own name lookup (`push_combatant_name`, `engine/battleui.asm:639-666`) legitimately reuses `bt_tmp2` as its own character-countdown scratch once the loop has finished, so a post-return read is 0 by design and proves nothing about the loop's own integrity; assert (a) `bt_tmp2` reads exactly `cast_all`'s own end-of-side sentinel at every one of those in-loop observations, (b) every intended target's own HP dropped by the rolled amount, and (c) no combatant OUTSIDE the intended side took damage | The stated design (§12.3) is already correct — this row exists to make sure the TEST oracle observes the right moment; a test written as "call `cast_all`, then check `bt_tmp2`" would reject the correct engine (round 2's own reproduction: sentinel 8 at every in-loop observation, 0 on return, both expected) |
-| mon_tile guard | Arm hit feedback on a metasprite-fallback monster's slot; assert no attribute packet is ever queued for it, only the icon-skip draws | The missing guard §2(e) recorded against Appendix C, reopened |
-| **round 1 — Dead-monster restoration, not abandonment (finding 2, P2, replaces the old "Dead-monster abandon" row)** | Arm the flash on a block-art monster with another monster ALSO alive; land a lethal hit on the flashing one (setting `bt_wipe_mask`'s own bit) at both blink parities (mid-flash-tint and mid-authored-tint) in separate cases; let `wipe_tick` run to completion (4 ticks, full row erase); assert the PPU attribute byte for that cell reads `BT_GROUND_ATTR` ($55) once the dead-check has fired, not the flash tint and not the monster's own `mon_attr` — and assert the STILL-ALIVE monster's own cell is untouched throughout | The design's own previous policy ("abandon, no restore") passing this exact scenario with a permanently stranded `$FF` — round 1's own review reproduced this directly against the assembled prototype |
-| **round 1 — Arm-time death restoration (finding 2's second path)** | An all-target spell's own `cast_all` loop kills a flashing block-art monster on an early iteration, then re-arms onto a different target on a later iteration in the SAME tick; assert the killed monster's own cell reads `BT_GROUND_ATTR`, not stranded, even though `battle_hurt_tick` never gets another chance to see that slot | `battle_hurt_restore_slot` skipping the dead old slot entirely (its pre-fix behavior), stranding the tint the tick-based fix alone cannot reach once the shared pair has moved on |
-| Multi-target hit-feedback policy | An all-target spell hitting 3 living monsters in one tick; assert only the LAST-processed slot ends up blinking, and that each EARLIER slot's own arm-then-supersede never left a visible blink (one tick, per the stranding fix) | A partial fix that blinks the first target instead of the last, or leaves an earlier target visibly blinking for a stray tick |
-| **round 2 — vram_buf queue-length, corrected schedules (finding 1, P2, supersedes round 1's own row, which requested 5 block-art monsters — one more than `MAX_MONSTERS = 4` allows)** | Two cases, both driven through real dispatcher transitions: (a) the 20-byte feedback maximum — an already-armed hurt slot 7 (the 4th monster, block-art, already flashing from an earlier hit) superseded by an all-target spell hitting all 4 LIVING block-art monster slots 4-7 in turn, never a fifth monster; assert exactly 5 feedback packets (1 tick + 4 re-arms, 20 bytes) queued, distinct from `cast_all`'s own 28-byte message; (b) the 127-byte whole-frame maximum — the six-`battle_tick` sequence in §12.6 (an all-target spell kills 3 monsters and leaves the 4th flashing, A dismisses the message, the next actor's own menu opens, Down selects MAGIC, A opens the spell list, B closes it); assert the queue length/packet count on the LAST tick is exactly 11 (wipe) + 4 (flash) + 112 (`battle_list_back`) = 127 bytes — not merely that a sampled PPU byte looks stable, which cannot distinguish "no packet queued" from "the same value queued twice" | The round-1 test's own impossible 5-monster construction (silently vacuous, since no real project can reach it); a reachable-schedule claim that stops at the wrong (too-small, wrong-chain) 112-byte figure instead of the real, larger 127-byte one. This row exercises only the two DEMONSTRATED cases (20/48 bytes and 127 bytes, §12.6); the 111- and 59-byte rows are upper-bound arithmetic only, not independently tested here or anywhere else in this plan (round 3 finding 3) |
-| **round 2 — MISS OAM overflow, corrected boundary and oracle (finding 2, P2, supersedes round 1's own row, which wrongly called 64-without-MISS "already overflowing")** | Four projects, each with `battleCombatantOamMax` values of exactly 60, 61, 64, and 65 (multiple icons, no `attackAnim` authored anywhere), each built both with MISS off and MISS on, asserted through `validateProject`'s own warning array (`used > limit`, `shared/project.js:7402`), never through calling `describeBattleSpriteWarning` directly (an unconditional formatter, not a gate): (a) at 60, MISS off or on, no warning (60, then 64, neither exceeds 64); (b) at 61, no warning MISS off, a NEW warning MISS on (65 > 64) — the case MISS itself causes; (c) at 64, no warning MISS off (exactly at the limit, not over it — round 1's own row wrongly assumed this already warned), a NEW warning MISS on (68 > 64); (d) at 65, a warning already fires MISS off (genuine pre-existing overflow, unrelated to MISS), and still fires MISS on, unchanged in cause | Round 1's own row's false premise that 64-without-MISS already warns, which would have let a test pass while asserting the wrong thing at the exact boundary that matters; asserting via `describeBattleSpriteWarning` instead of the real gate, which can be called and formatted without ever having actually fired |
-| **round 2 — MISS OAM overflow, exact-fit boundary restored (finding 5, P2, IN ADDITION to the row above, not a replacement)** | A project where `battleCombatantOamMax` + the worst authored `attackAnim`/`spell.anim` frame + `MISS_OAM_TILES` sums to EXACTLY 64; assert the flipbook's own fit check (`battle_fx_draw`'s `cmp #BATTLE_FX_OAM_ROOM+1`, `engine/battleui.asm:1013`) still admits that frame. A second case: increase the animation's own worst frame by one tile (total 65); assert the WHOLE frame is now rejected (never a partial draw) | A generated `BATTLE_FX_OAM_ROOM` formula missing its own `- MISS_OAM_TILES` term (§13.6) — the row above (no flipbook authored) cannot catch this at all, since it never exercises `battle_fx_draw`'s own runtime fit check; small animations and icons would still render "correctly" with the subtraction missing, silently narrowing the room every future flipbook frame actually gets |
-| **round 3 — describeBattleAnimationOamWarning accounts for MISS, corrected off-path oracle (finding 3, P2 from round 2, corrected by round 3 finding 2)** | The reviewer's own reproduction: 60 combatants, one referenced playable `battle.attackAnim`/`spell.anim` animation at 1 tile, MISS enabled (total 60+1+4=65, over the limit); assert the warning text names MISS's own 4 sprites as part of what pushed the total over, not just the animation and the combatants (whose own sum, 61, does not itself exceed 64 and so cannot be the stated reason on its own), AND that every other character of the returned string matches the committed text exactly (the em dash, and the full "Use a smaller animation, or reduce the party/formation/cursor cost elsewhere." advice suffix). **Corrected**: the SAME 60-combatant/1-tile layout does NOT overflow with MISS off (61 ≤ 64), so `validateProject` never calls the helper at all in that case — two off-path assertions instead of one: (i) call `describeBattleAnimationOamWarning` directly with MISS disabled and assert its output is byte-for-byte identical to the committed string (`shared/project.js:3865-3871`); (ii) separately, a layout that still overflows with MISS OFF (e.g. combatants at 65 alone), asserted through `validateProject`, to confirm the real end-to-end off-path warning text is unaffected by this change | The pre-fix warning text citing only the animation and combatants (61) as if that explained an overflow past 64 — a maintainer reading the message would have no way to see that MISS was the actual cause; round 2's own "MISS disabled" case asserted through `validateProject` at a layout (61 total) that never calls the helper at all, silently passing without exercising the off-path code path |
-| **round 1 — Real attack-path miss coverage (finding 6, P2, replaces the old "Sole-miss invariant" row)** | Drive `attack_target` (party) and `monster_turn_attack` (monster) through `roll_hit` with a controlled RNG forcing a miss on each path in turn; assert `battle_miss_arm` fires, `bt_miss_slot`/`bt_miss_left` are set to the real dodging target, the overlay renders at that target's own anchor, the message ("X misses") and the overlay both appear, and the overlay disappears exactly at `BT_MISS_FRAMES` ticks (30) OR at message dismissal, whichever comes first. A second case: dismiss the message EARLY (before 30 ticks), then immediately force a SECOND miss on the next turn; assert the first overlay is gone and the second one starts clean, never overlapping | The impossible-construction row it replaces would still pass if a future engine change made a spell or status path call `roll_hit` — it asserted nothing about either real call site ever invoking the overlay at all |
-| **round 1 — Non-miss negative coverage (finding 6)** | Drive `item_chosen_none` (a non-healing item — round 2 finding 6: the item is never consumed either, since `item_chosen`'s own `beq item_chosen_none` branches around `remove_item` before it runs, §13.1), `battle_menu_failed` (a failed flee roll), a damage spell, a status-effect spell, and a status tick (poison/burn); assert `battle_miss_arm` is never called and `bt_miss_left` never becomes nonzero from any of these five paths | A future call site wired to `battle_miss_arm` by mistake, or a broadened `roll_hit` call reaching one of these paths without the design noticing |
-| **round 1 — Hit-flash trace, both bands and cessation (finding 6, corrected per round 2's own remaining note)** | Arm the flash on a living block-art monster; sample the real PPU attribute byte every tick across the full `BT_HURT_FRAMES` (20) countdown; assert both the authored-tint band and the flash-tint band are each visible for two consecutive ticks (the `and #2` cadence, §12.1/round 1 finding 9), the terminal tick forces the authored tint regardless of which band it would otherwise be in, and that cessation past the terminal tick is confirmed by a DIRECT queue observation (no packet appended to `vram_buf` on any tick after the terminal one) — not source inspection alone, which the round-1 design leaned on for this exact claim | A cadence that silently reverts to single-tick alternation, or a terminal tick that lands mid-band and leaves the wrong tint; a queue that keeps appending duplicate packets past cessation, invisible to a PPU-byte-only check the same way finding 1's own reachability claim was |
-| BP_INTRO guard (round 1 finding 7) | Leave `bt_hurt_left`/`bt_miss_left` nonzero (simulating a stale value from a previous battle or uninitialized RAM), start a fresh battle, and inspect `vram_buf`/OAM writes specifically on the FIRST tick, while `bt_phase` still reads `BP_INTRO` — not just the timer values after `setup_monsters` has run; assert neither tick routine decrements or queues anything on that tick | The guard's own absence (round 1's own review reproduced a stale timer of 20 becoming 19 and queuing a real packet during `BP_INTRO`, before reset) |
-| Battle-entry reset | Leave `bt_hurt_left`/`bt_miss_left` nonzero at the end of one battle (a hit or miss still counting down when the fight ends, and NOT cleared by `battle_end`/`player_died` — §12.4's own accurate lifetime statement), start a fresh battle, assert both read 0 once `setup_monsters` has run (post-`BP_INTRO`) | Appendix B/C's own recorded limitation, reopened |
-| Message-cap asymmetry | Land a hit AND draw a miss in close succession, dismiss the miss's own message early; assert `bt_miss_left` is force-cleared at dismissal while a separately-still-counting `bt_hurt_left` (from an earlier, unrelated hit) is NOT | A blanket cap that treats both timers the same, contradicting §12.4/§13.4's own stated asymmetry |
-| Rendered-pixel MISS overlay | Real `nes.ppu` frame-buffer read, arm MISS over a combatant, assert the M/I/S/S tiles are visible at the expected offset | A draw-order or coordinate regression |
-| Rendered-pixel priority | Arm both a flipbook AND MISS in the same tick (a monster's own missed attack, §12.4); assert both are visible, neither silently dropped by an OAM-budget miscalculation | The combined-frame OAM interaction (§13.6) going untested until a real project hits it |
-| **round 3 — Reservation integration, on/off, corrected blank-reference oracle (finding 5, P2 from round 2, corrected by round 3 finding 1)** | Eight cases against a project with `HIT_MISS_ENABLED` on, mirroring `SPRITE_ARROW_TILE`'s own existing test coverage: (a) artwork painted at `$FA`-`$FC` in a tileset is refused, naming "the MISS overlay" and the real `$FA`-`$FC` range, never the cursor's own `$FD` wording; (b) **corrected** — a metasprite that REFERENCES a blank `$FA`-`$FC` tile IS refused (`shared/project.js:6577-6590`'s own existing, generic reference-collision check: stamping would replace that blank with a MISS glyph, so a metasprite pointing at it would unexpectedly display one), naming "the MISS overlay" and the tileset — the identical mechanism `SPRITE_ARROW_TILE`/the HUD hearts already inherit, extended automatically once `spriteReservedRanges` carries the MISS range; (b2) a genuinely blank, UNREFERENCED `$FA`-`$FC` tile (no metasprite points at it) is ALLOWED, not refused — the distinct, permitted case (b) used to conflate with the refused one; (b3) the SAME blank-reference scenario from (b), in an otherwise-clean project (no other applicable reservation or unrelated validation error) with `HIT_MISS_ENABLED` OFF, produces no error at all — confirming the refusal is genuinely gated on the feature, not a pre-existing check that happened to already cover `$FA`-`$FC`; (c) the Tile Forge's own shading hint names the MISS range and reason, not the cursor's; (d) the Tile Forge's own tile shading covers `$FA`-`$FC` when `HIT_MISS_ENABLED`; (e) `MISS_TILE_M`/`I`/`S` art is stamped into EVERY tileset, on all three RPG-capable boards, not only the currently-selected battle tileset; (f) with `HIT_MISS_ENABLED` off, none of the above fires and no tileset gains the stamped art — off-path byte-identity for the reservation itself | No existing §14 row exercised the range-aware refusal/hint changes at all (round 1's own finding 5 was a design-only fix, unverified); off-path ROM identity and a rendered MISS overlay cannot themselves catch a wrong warning label or a reservation that silently fails to refuse occupied artwork; round 2's own (b) row asserted the OPPOSITE of `shared/project.js:6577-6590`'s own existing contract — it would have rejected the correctly integrated implementation, or encouraged removing an existing protection to make the (wrong) test pass |
+| Test | Phase | Shape | Wrong implementation it catches |
+|---|---|---|---|
+| **round 5 — Off-path byte-identity, phase 2a (split from the old "Neither toggle" row, finding 2)** | 2a | `monsterlevel.test.js`-shape: build all six checked-in fixtures with `HIT_FEEDBACK_ENABLED` off (every fixture's own default, before MISS's code exists in the tree); assert every ROM is byte-identical to its pre-phase-2 build | `HIT_FEEDBACK_ENABLED`'s own gate assembling even one byte of §12's code unconditionally |
+| **round 5 — Off-path byte-identity, phase 2b (split from the old "Neither toggle" row, finding 2)** | 2b | Identical shape, re-run once MISS's own code and the v5.1 reset split (§12.7/§13.9) both exist: build all six fixtures with `HIT_FEEDBACK_ENABLED` and `MISS_ENABLED` both off; assert every ROM is still byte-identical to its pre-phase-2 build — confirming MISS's own addition, including splitting `setup_monsters`' reset into two separate `.if` blocks, introduced no unconditional byte on either side | Either gate assembling even one byte of §12 or §13's own code unconditionally; specifically, the reset split leaking a byte into the off path once a second `.if` block sits beside hit feedback's already-shipped one |
+| Hit feedback alone — ledger and cross-gating | 2a | `bankedbytes.test.js`-shape: `assert.equal` on the measured 235-byte delta (`HIT_FEEDBACK_ENABLED` on, `MISS_ENABLED` off), all three boards; PLUS a source/symbol-table check that no `bt_miss_*`-touching routine (`battle_miss_arm`/`tick`/`draw`), no MISS art, and no MISS reservation range is present in the build | A stale `HIT_FEEDBACK_BATTLE_ALLOWANCE` drifting from the real assembled cost; a `HIT_FEEDBACK_ENABLED`-gated block that accidentally also assembles MISS's own code (a cross-gating leak in the direction §7 says must never happen) |
+| **round 6 — Action-project hit-feedback gating (finding 1, P3)** | 2a | An action project (`project.project.gameType !== 'rpg'`) with `project.rpg.hitFeedback` set `true` by hand-editing the saved JSON (never reachable through the UI, since `rpgProgression`'s own progression panel is RPG-only — `renderer/forges/build/build.js:621`, `:656`) built two ways, `hitFeedback` `true` and `hitFeedback` `false`; assert `config.inc` reads `HIT_FEEDBACK_ENABLED = 0` in BOTH builds, and that the two ROMs are byte-identical | The predicate reading `project.rpg.hitFeedback` alone with no game-type check (the shape this document carried through round 5): an action project generates `HIT_FEEDBACK_ENABLED = 1` in its own `config.inc` purely because a stored boolean survived a game-type switch or a hand edit, even though nothing in the ROM or its artwork actually changes as a result |
+| MISS alone — ledger and cross-gating | 2b | Identical shape, the measured 134-byte delta (`MISS_ENABLED` on, `HIT_FEEDBACK_ENABLED` off); PLUS a check that no `bt_hurt_*`-touching routine (`battle_hurt_arm`/`attr_open`/`tick`/`restore_slot`) and no blink-skip branch in `battle_sprite_pc`/`battle_sprite_mon` is present | Same, for the independently-measured MISS figure; the leak in the OTHER direction — MISS-only code accidentally pulling in hit-feedback's own routines |
+| Both toggles — combined ledger | both | Both live together, `assert.equal` on the real assembled combined delta — **369**, the clean sum of 235+134 under the v5.1 ledger decision (§12.7/§13.9, option (i): each toggle's own reset pays its own `lda #0`, so there is no 2-byte shared-load saving to measure here, unlike Appendix D's own frozen single-build prototype, which measured 367) | A ledger that reuses Appendix D's own 367 figure for the real two-gate implementation instead of re-measuring the actual `.if`-separated code; a shared-load "optimization" that crept back in despite the decision against it, silently making the two terms non-additive again |
+| **round 2 — Multi-target sentinel integrity, corrected observation point (finding 4, P2, supersedes round 1's own row)** | 2a | Drive a real all-target spell through `cast_all` with a controlled formation of 4 living block-art monsters at LOW actor id (0) AND, in a second case, HIGH actor id (31, the reviewer's own reproduction, genuinely in range and above the loop boundary for a real 32-actor project); observe `bt_tmp2` with a breakpoint/trace AT `cast_all_next`, immediately after EACH `apply_damage` call — never after `cast_all` returns, since `battle_say_actor`'s own name lookup (`push_combatant_name`, `engine/battleui.asm:639-666`) legitimately reuses `bt_tmp2` as its own character-countdown scratch once the loop has finished, so a post-return read is 0 by design and proves nothing about the loop's own integrity; assert (a) `bt_tmp2` reads exactly `cast_all`'s own end-of-side sentinel at every one of those in-loop observations, (b) every intended target's own HP dropped by the rolled amount, and (c) no combatant OUTSIDE the intended side took damage | The stated design (§12.3) is already correct — this row exists to make sure the TEST oracle observes the right moment; a test written as "call `cast_all`, then check `bt_tmp2`" would reject the correct engine (round 2's own reproduction: sentinel 8 at every in-loop observation, 0 on return, both expected) |
+| mon_tile guard | 2a | Arm hit feedback on a metasprite-fallback monster's slot; assert no attribute packet is ever queued for it, only the icon-skip draws | The missing guard §2(e) recorded against Appendix C, reopened |
+| **round 1 — Dead-monster restoration, not abandonment (finding 2, P2, replaces the old "Dead-monster abandon" row)** | 2a | Arm the flash on a block-art monster with another monster ALSO alive; land a lethal hit on the flashing one (setting `bt_wipe_mask`'s own bit) at both blink parities (mid-flash-tint and mid-authored-tint) in separate cases; let `wipe_tick` run to completion (4 ticks, full row erase); assert the PPU attribute byte for that cell reads `BT_GROUND_ATTR` ($55) once the dead-check has fired, not the flash tint and not the monster's own `mon_attr` — and assert the STILL-ALIVE monster's own cell is untouched throughout | The design's own previous policy ("abandon, no restore") passing this exact scenario with a permanently stranded `$FF` — round 1's own review reproduced this directly against the assembled prototype |
+| **round 1 — Arm-time death restoration (finding 2's second path)** | 2a | An all-target spell's own `cast_all` loop kills a flashing block-art monster on an early iteration, then re-arms onto a different target on a later iteration in the SAME tick; assert the killed monster's own cell reads `BT_GROUND_ATTR`, not stranded, even though `battle_hurt_tick` never gets another chance to see that slot | `battle_hurt_restore_slot` skipping the dead old slot entirely (its pre-fix behavior), stranding the tint the tick-based fix alone cannot reach once the shared pair has moved on |
+| Multi-target hit-feedback policy | 2a | An all-target spell hitting 3 living monsters in one tick; assert only the LAST-processed slot ends up blinking, and that each EARLIER slot's own arm-then-supersede never left a visible blink (one tick, per the stranding fix) | A partial fix that blinks the first target instead of the last, or leaves an earlier target visibly blinking for a stray tick |
+| **round 2 — vram_buf queue-length, corrected schedules (finding 1, P2, supersedes round 1's own row, which requested 5 block-art monsters — one more than `MAX_MONSTERS = 4` allows)** | 2a | Two cases, both driven through real dispatcher transitions: (a) the 20-byte feedback maximum — an already-armed hurt slot 7 (the 4th monster, block-art, already flashing from an earlier hit) superseded by an all-target spell hitting all 4 LIVING block-art monster slots 4-7 in turn, never a fifth monster; assert exactly 5 feedback packets (1 tick + 4 re-arms, 20 bytes) queued, distinct from `cast_all`'s own 28-byte message; (b) the 127-byte whole-frame maximum — the six-`battle_tick` sequence in §12.6 (an all-target spell kills 3 monsters and leaves the 4th flashing, A dismisses the message, the next actor's own menu opens, Down selects MAGIC, A opens the spell list, B closes it); assert the queue length/packet count on the LAST tick is exactly 11 (wipe) + 4 (flash) + 112 (`battle_list_back`) = 127 bytes — not merely that a sampled PPU byte looks stable, which cannot distinguish "no packet queued" from "the same value queued twice" | The round-1 test's own impossible 5-monster construction (silently vacuous, since no real project can reach it); a reachable-schedule claim that stops at the wrong (too-small, wrong-chain) 112-byte figure instead of the real, larger 127-byte one. This row exercises only the two DEMONSTRATED cases (20/48 bytes and 127 bytes, §12.6); the 111- and 59-byte rows are upper-bound arithmetic only, not independently tested here or anywhere else in this plan (round 3 finding 3) |
+| **round 2 — MISS OAM overflow, corrected boundary and oracle (finding 2, P2, supersedes round 1's own row, which wrongly called 64-without-MISS "already overflowing")** | 2b | Four projects, each with `battleCombatantOamMax` values of exactly 60, 61, 64, and 65 (multiple icons, no `attackAnim` authored anywhere), each built both with MISS off and MISS on, asserted through `validateProject`'s own warning array (`used > limit`, `shared/project.js:7402`), never through calling `describeBattleSpriteWarning` directly (an unconditional formatter, not a gate): (a) at 60, MISS off or on, no warning (60, then 64, neither exceeds 64); (b) at 61, no warning MISS off, a NEW warning MISS on (65 > 64) — the case MISS itself causes; (c) at 64, no warning MISS off (exactly at the limit, not over it — round 1's own row wrongly assumed this already warned), a NEW warning MISS on (68 > 64); (d) at 65, a warning already fires MISS off (genuine pre-existing overflow, unrelated to MISS), and still fires MISS on, unchanged in cause | Round 1's own row's false premise that 64-without-MISS already warns, which would have let a test pass while asserting the wrong thing at the exact boundary that matters; asserting via `describeBattleSpriteWarning` instead of the real gate, which can be called and formatted without ever having actually fired |
+| **round 2 — MISS OAM overflow, exact-fit boundary restored (finding 5, P2, IN ADDITION to the row above, not a replacement)** | 2b | A project where `battleCombatantOamMax` + the worst authored `attackAnim`/`spell.anim` frame + `MISS_OAM_TILES` sums to EXACTLY 64; assert the flipbook's own fit check (`battle_fx_draw`'s `cmp #BATTLE_FX_OAM_ROOM+1`, `engine/battleui.asm:1013`) still admits that frame. A second case: increase the animation's own worst frame by one tile (total 65); assert the WHOLE frame is now rejected (never a partial draw) | A generated `BATTLE_FX_OAM_ROOM` formula missing its own `- MISS_OAM_TILES` term (§13.6) — the row above (no flipbook authored) cannot catch this at all, since it never exercises `battle_fx_draw`'s own runtime fit check; small animations and icons would still render "correctly" with the subtraction missing, silently narrowing the room every future flipbook frame actually gets |
+| **round 3 — describeBattleAnimationOamWarning accounts for MISS, corrected off-path oracle (finding 3, P2 from round 2, corrected by round 3 finding 2)** | 2b | The reviewer's own reproduction: 60 combatants, one referenced playable `battle.attackAnim`/`spell.anim` animation at 1 tile, MISS enabled (total 60+1+4=65, over the limit); assert the warning text names MISS's own 4 sprites as part of what pushed the total over, not just the animation and the combatants (whose own sum, 61, does not itself exceed 64 and so cannot be the stated reason on its own), AND that every other character of the returned string matches the committed text exactly (the em dash, and the full "Use a smaller animation, or reduce the party/formation/cursor cost elsewhere." advice suffix). **Corrected**: the SAME 60-combatant/1-tile layout does NOT overflow with MISS off (61 ≤ 64), so `validateProject` never calls the helper at all in that case — two off-path assertions instead of one: (i) call `describeBattleAnimationOamWarning` directly with MISS disabled and assert its output is byte-for-byte identical to the committed string (`shared/project.js:3865-3871`); (ii) separately, a layout that still overflows with MISS OFF (e.g. combatants at 65 alone), asserted through `validateProject`, to confirm the real end-to-end off-path warning text is unaffected by this change | The pre-fix warning text citing only the animation and combatants (61) as if that explained an overflow past 64 — a maintainer reading the message would have no way to see that MISS was the actual cause; round 2's own "MISS disabled" case asserted through `validateProject` at a layout (61 total) that never calls the helper at all, silently passing without exercising the off-path code path |
+| **round 1 — Real attack-path miss coverage (finding 6, P2, replaces the old "Sole-miss invariant" row)** | 2b | Drive `attack_target` (party) and `monster_turn_attack` (monster) through `roll_hit` with a controlled RNG forcing a miss on each path in turn; assert `battle_miss_arm` fires, `bt_miss_slot`/`bt_miss_left` are set to the real dodging target, the overlay renders at that target's own anchor, the message ("X misses") and the overlay both appear, and the overlay disappears exactly at `BT_MISS_FRAMES` ticks (30) OR at message dismissal, whichever comes first. A second case: dismiss the message EARLY (before 30 ticks), then immediately force a SECOND miss on the next turn; assert the first overlay is gone and the second one starts clean, never overlapping | The impossible-construction row it replaces would still pass if a future engine change made a spell or status path call `roll_hit` — it asserted nothing about either real call site ever invoking the overlay at all |
+| **round 1 — Non-miss negative coverage (finding 6)** | 2b | Drive `item_chosen_none` (a non-healing item — round 2 finding 6: the item is never consumed either, since `item_chosen`'s own `beq item_chosen_none` branches around `remove_item` before it runs, §13.1), `battle_menu_failed` (a failed flee roll), a damage spell, a status-effect spell, and a status tick (poison/burn); assert `battle_miss_arm` is never called and `bt_miss_left` never becomes nonzero from any of these five paths | A future call site wired to `battle_miss_arm` by mistake, or a broadened `roll_hit` call reaching one of these paths without the design noticing |
+| **round 1 — Hit-flash trace, both bands and cessation (finding 6, corrected per round 2's own remaining note)** | 2a | Arm the flash on a living block-art monster; sample the real PPU attribute byte every tick across the full `BT_HURT_FRAMES` (20) countdown; assert both the authored-tint band and the flash-tint band are each visible for two consecutive ticks (the `and #2` cadence, §12.1/round 1 finding 9), the terminal tick forces the authored tint regardless of which band it would otherwise be in, and that cessation past the terminal tick is confirmed by a DIRECT queue observation (no packet appended to `vram_buf` on any tick after the terminal one) — not source inspection alone, which the round-1 design leaned on for this exact claim | A cadence that silently reverts to single-tick alternation, or a terminal tick that lands mid-band and leaves the wrong tint; a queue that keeps appending duplicate packets past cessation, invisible to a PPU-byte-only check the same way finding 1's own reachability claim was |
+| **round 5 — BP_INTRO guard, hurt timer (split from the old combined row, finding 2)** | 2a | Build with `HIT_FEEDBACK_ENABLED` on, `MISS_ENABLED` off. Leave `bt_hurt_left` nonzero (simulating a stale value from a previous battle or uninitialized RAM), start a fresh battle, and inspect `vram_buf`/OAM writes specifically on the FIRST tick, while `bt_phase` still reads `BP_INTRO` — not just the timer value after `setup_monsters` has run; assert `battle_hurt_tick` does not decrement or queue anything on that tick | The guard's own absence on the hurt side (round 1's own review reproduced a stale timer of 20 becoming 19 and queuing a real packet during `BP_INTRO`, before reset); a hurt-only build cannot rely on a `both`-tagged row to catch this |
+| **round 5 — BP_INTRO guard, MISS timer (split from the old combined row, finding 2)** | 2b | Identical shape with `MISS_ENABLED` on, `HIT_FEEDBACK_ENABLED` off, `bt_miss_left` left stale from a previous battle; assert `battle_miss_tick` does not decrement or queue anything on the first `BP_INTRO` tick | The guard's own absence on the MISS side — the same reproduction mirrored onto the independent timer |
+| **round 5 — BP_INTRO guard, both live (integration)** | both | With both flags on and both timers left stale, confirm the two checks above hold simultaneously in the same battle entry — that neither tick routine's own guard is conditioned on the other flag's state, and that running both ticks against `BP_INTRO` in the same frame surfaces no interaction the two isolated checks above cannot see | Either guard implemented so it depends on the other flag also being on, or a shared scratch byte between the two tick routines that only misbehaves when both run in the same frame |
+| **round 5 — Battle-entry reset, hurt timer (split from the old combined row, finding 2)** | 2a | Build with `HIT_FEEDBACK_ENABLED` on, `MISS_ENABLED` off. Leave `bt_hurt_left` nonzero at the end of one battle (a hit still counting down when the fight ends, and NOT cleared by `battle_end`/`player_died` — §12.4's own accurate lifetime statement), start a fresh battle, assert it reads 0 once `setup_monsters` has run (post-`BP_INTRO`) — under the v5.1 ledger decision (§12.7) this half resets under its own `.if HIT_FEEDBACK_ENABLED` block | Appendix B's own recorded limitation, reopened on the hurt side alone; a `.if`-separated reset whose hurt half never runs when MISS is not also live in the same build |
+| **round 5 — Battle-entry reset, MISS timer (split from the old combined row, finding 2)** | 2b | Identical shape with `MISS_ENABLED` on, `HIT_FEEDBACK_ENABLED` off, `bt_miss_left` left stale at the end of one battle; assert it reads 0 once `setup_monsters` has run, under its own `.if MISS_ENABLED` block (§13.9) | Appendix C's own recorded limitation, reopened on the MISS side alone; a `.if`-separated reset whose MISS half never runs when hit feedback is not also live in the same build |
+| **round 5 — Battle-entry reset, both live (integration)** | both | Run with both flags on, both timers left stale; assert both read 0 once `setup_monsters` has run — confirming the split under the v5.1 ledger decision (§12.7/§13.9) kept BOTH `.if` blocks rather than one silently replacing the other when both are compiled into the same build | A `.if`-separated reset that drops one half specifically when both flags coexist — a failure mode the two single-flag rows above cannot see, since each only ever assembles its own half |
+| Message-cap asymmetry | both | Requires both flags live (the asymmetry is between the two timers). Land a hit AND draw a miss in close succession, dismiss the miss's own message early; assert `bt_miss_left` is force-cleared at dismissal while a separately-still-counting `bt_hurt_left` (from an earlier, unrelated hit) is NOT | A blanket cap that treats both timers the same, contradicting §12.4/§13.4's own stated asymmetry |
+| Rendered-pixel MISS overlay | 2b | Real `nes.ppu` frame-buffer read, arm MISS over a combatant, assert the M/I/S/S tiles are visible at the expected offset | A draw-order or coordinate regression |
+| Rendered-pixel priority | 2b | Requires `BATTLE_ANIM_ENABLED` (phase 1b's own flipbook, unconditional content-driven gate) and `MISS_ENABLED` together — not `HIT_FEEDBACK_ENABLED`, which this scenario does not touch at all. Arm both a flipbook AND MISS in the same tick (a monster's own missed attack, §12.4); assert both are visible, neither silently dropped by an OAM-budget miscalculation | The combined-frame OAM interaction (§13.6) going untested until a real project hits it |
+| **round 3 — Reservation integration, on/off, corrected blank-reference oracle (finding 5, P2 from round 2, corrected by round 3 finding 1)** | 2b | Eight cases against a project with `MISS_ENABLED` on, mirroring `SPRITE_ARROW_TILE`'s own existing test coverage: (a) artwork painted at `$FA`-`$FC` in a tileset is refused, naming "the MISS overlay" and the real `$FA`-`$FC` range, never the cursor's own `$FD` wording; (b) **corrected** — a metasprite that REFERENCES a blank `$FA`-`$FC` tile IS refused (`shared/project.js:6577-6590`'s own existing, generic reference-collision check: stamping would replace that blank with a MISS glyph, so a metasprite pointing at it would unexpectedly display one), naming "the MISS overlay" and the tileset — the identical mechanism `SPRITE_ARROW_TILE`/the HUD hearts already inherit, extended automatically once `spriteReservedRanges` carries the MISS range; (b2) a genuinely blank, UNREFERENCED `$FA`-`$FC` tile (no metasprite points at it) is ALLOWED, not refused — the distinct, permitted case (b) used to conflate with the refused one; (b3) the SAME blank-reference scenario from (b), in an otherwise-clean project (no other applicable reservation or unrelated validation error) with `MISS_ENABLED` OFF, produces no error at all — confirming the refusal is genuinely gated on the feature, not a pre-existing check that happened to already cover `$FA`-`$FC`; (c) the Tile Forge's own shading hint names the MISS range and reason, not the cursor's; (d) the Tile Forge's own tile shading covers `$FA`-`$FC` when `MISS_ENABLED`; (e) `MISS_TILE_M`/`I`/`S` art is stamped into EVERY tileset, on all three RPG-capable boards, not only the currently-selected battle tileset; (f) with `MISS_ENABLED` off, none of the above fires and no tileset gains the stamped art — off-path byte-identity for the reservation itself; (g) `HIT_FEEDBACK_ENABLED` on with `MISS_ENABLED` off produces the identical off-path result as (f) — confirming the reservation is genuinely MISS's own gate, never hit feedback's | No existing §14 row exercised the range-aware refusal/hint changes at all (round 1's own finding 5 was a design-only fix, unverified); off-path ROM identity and a rendered MISS overlay cannot themselves catch a wrong warning label or a reservation that silently fails to refuse occupied artwork; round 2's own (b) row asserted the OPPOSITE of `shared/project.js:6577-6590`'s own existing contract — it would have rejected the correctly integrated implementation, or encouraged removing an existing protection to make the (wrong) test pass; case (g) specifically catches the reservation being wired to the wrong flag entirely |
+| **round 5 — Action-project MISS gating (finding 1, P2)** | 2b | An action project (`project.project.gameType !== 'rpg'`) with `project.rpg.miss` set `true` by hand-editing the saved JSON (never reachable through the UI, since `rpgProgression`'s own checkbox row only renders when `isRpg`) built two ways, `miss` `true` and `miss` `false`; assert the two ROMs are byte-identical — no `$FA`-`$FC` reservation, no stamped MISS art, no `spriteReservedRanges` entry either way — confirming `projectUsesMiss`'s own `gameType === 'rpg'` check, not the checkbox's visibility, is what keeps an action build MISS-free. A second case: the SAME action project, `miss: true`, with artwork painted at `$FA` in a tileset; assert `validateProject` raises no error | The predicate reading `project.rpg.miss` alone with no game-type check (the shape this document carried through round 4): an action project either surfaces a real occupied-artwork refusal over ordinary artwork, or silently ships stamped MISS art with no battle overlay ever drawn to justify it, purely because a stored boolean survived a game-type switch or a hand edit that the UI's own hidden checkbox never prevents |
 
 ## Appendix A — the prototype's full diff (phase 1, corrected)
 
@@ -3876,12 +4359,29 @@ mechanically stripping the other half's own lines from a copy of this exact diff
 | UNROM 512 (mapper 30) | 4294 | 4661 | 367 |
 
 **367 bytes, flat, on all three boards** — up from the pre-round-1 combined figure of 330; both
-§12.7 (hit feedback alone, 235, up from 204) and §13.6 (MISS alone, 134, up from 128) are measured
+§12.7 (hit feedback alone, 235, up from 204) and §13.9 (MISS alone, 134, up from 128) are measured
 against this same rebuilt diff. See §11's own bullet for the exact, now-identified 2-byte gap
 between 235+134=369 and this real combined figure (round 1 finding 8: the shared `lda #0` in
 `setup_monsters`). Unconditional (no `.if` gate) throughout, the identical measurement-only shape
-Appendix A/B/C already used — a real shipped version gates all of it on `HIT_MISS_ENABLED` (§12.7/
-§13.5/§8's own open gating question).
+Appendix A/B/C already used.
+
+**v5.1 note — read this 367 figure as the frozen shared-load prototype measurement, two bytes below
+the selected independently-gated layout, not as its combined ledger figure.** (Round 5 correction:
+367 is smaller than 369, so it cannot be described as an upper bound on it — the prior wording here
+had the direction backwards.) This diff still measures ONE unconditional
+build sharing a single `lda #0` between both timer resets, the shape a single combined toggle would
+have kept. Chris's own answer 2 (§10) chose two INDEPENDENT toggles instead
+(`HIT_FEEDBACK_ENABLED`/`MISS_ENABLED`, §12.7/§13.9), and the v5.1 ledger decision (§12.7/§13.9,
+option (i)) is to separate that shared load into two independently-gated resets rather than keep it
+behind an interaction term — so the real shipped both-on total is **369**, not this diff's own 367;
+the 2-byte difference is exactly the shared-load saving this diff still contains and the real
+implementation deliberately gives up for gate independence. Hit-feedback-alone (235) and MISS-alone
+(134) are UNAFFECTED by this — each isolated variant already paid its own full `lda #0` (§11's own
+bullet), so only the combined figure moves. The implementation phases for 2a and 2b must each build
+and measure their own `.if`-gated code for real, with `bankedbytes.test.js` equality assertions on
+MMC1, MMC3 and UNROM 512 (including the both-on case) — this diff is not a substitute for that
+measurement once two real, independent flags exist, only for the single-flag design this document
+no longer recommends.
 
 Round 1 findings this diff fixes, restated as a checklist against the code below:
 
