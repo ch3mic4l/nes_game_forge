@@ -1,7 +1,9 @@
-# Design: battle-side animation (ROADMAP item 14 point 3 + item 13 point 2), v4.1
+# Design: battle-side animation (ROADMAP item 14 point 3 + item 13 point 2), v5
 
 What an animation is on the battle screen, and the one engine mechanism that plays a monster's own
-attack/cast visual and a spell's own cast visual through it.
+attack/cast visual and a spell's own cast visual through it. v5 adds phase 2 in full: hit/miss
+feedback (§2(e)'s own candidate, turned into a shippable design in §12) and a new MISS indicator
+(§13), both real, measured prototypes (Appendix D).
 
 ## §0. What was read
 
@@ -277,9 +279,14 @@ phase-1 work:**
   the identical partial-coverage fact the stock engine already has, not something this candidate
   makes worse.
 
-Together, both real, cheap, and now both reviewable. Shipping both together would share the
-arm/tick infrastructure (one `bt_hurt_slot`/`bt_hurt_left` pair), a real but unmeasured saving
-relative to summing the two standalone figures.
+Together, both real, cheap, and now both reviewable. Shipping both together shares the arm/tick
+infrastructure (one `bt_hurt_slot`/`bt_hurt_left` pair) — no longer an unmeasured estimate: §12.7
+measures the real, unified, round-1-corrected mechanism at 235 bytes flat. That is MORE than the
+naive 50 + 76 = 126 sum of the two standalone prototypes' own figures, not less — sharing the arm
+point saves nothing on its own; the real cost is dominated by the correctness fixes neither
+standalone prototype needed to make (§12.3): the stranded-tint restore, the dead-monster
+ground-default restore, and the register-preservation rework that replaced `bt_tmp2` parking. The
+old "a real but unmeasured saving" claim here was wrong in direction, not just unverified.
 
 ## §3. The recommended shape in full
 
@@ -1133,14 +1140,40 @@ is the acceptance proof.
   writing) — a concrete candidate: compressing the "Documented limitations" sentences the zero-page
   kernel diet closed into one summary sentence pointing at `docs/design-kernel-diet.md` §4b.
 
-**Phase 2 — hit/miss feedback (§2(e)), independently gated and independently ROM-neutral.** The
-sprite hit-blink and the block-art attribute flash, each its own small addition (Appendix B/C),
-sharing one `bt_hurt_slot`/`bt_hurt_left` pair if both ship together. Deciding between the
-packet-every-tick shape measured here and an edge-only shape is this phase's own design question,
-not settled by this document.
+**Phase 2, superseded by the shippable design below — recommended as ONE phase, not settled by
+Chris as one.** Attribution, precisely: Chris's own answer 1 (§10) says the two HIT-FEEDBACK halves
+(sprite blink, attribute flash) ship together, sharing one `bt_hurt_slot`/`bt_hurt_left` pair — it
+says nothing about whether MISS (answer 3, a separate, new requirement) joins them in the same
+release. Whether hit feedback and MISS ship as one phase or two is this document's own
+recommendation, not a recorded Chris decision, and §8 still lists it as an open question for that
+reason.
+
+Splitting into 2a (hit feedback) / 2b (MISS) was considered and rejected as the DEFAULT, not ruled
+out: the two share no code (hit feedback's `bt_hurt_*` pair and MISS's `bt_miss_*` pair are
+independent state, per §12/§13 — see §13.2's own "why not merge with `bt_hurt_*`" note), so
+splitting would not simplify either side's own review, and MISS alone is a materially smaller and
+lower-risk change (134 of the combined 367 banked bytes, no attribute-cell/`wipe_tick` interaction
+to get right) that could ship first if Chris would rather de-risk in two steps — a real option,
+still open in §8, since nothing about the mechanism forces one order. **Recommendation: one phase**,
+because the two together are still a small, ROM-neutral (gated) addition, and reviewing the shared
+arm-point discipline (§12.3) once, against both halves at once, is more likely to catch a real
+interaction bug than reviewing it twice against each half in isolation — round 1's own review, which
+found real bugs in exactly that shared arm-point discipline, is itself evidence for this.
+
+- Gated the identical shape phase 1 already established — see §12.7 for the gating options and the
+  recommendation, an open question for Chris (§8).
+- All six checked-in fixtures stay off; every test needing the feature builds its own `mkdtemp`
+  variant, the identical policy phase 1b already holds to.
+- No save-format change: none of `bt_hurt_slot`/`bt_hurt_left`/`bt_miss_slot`/`bt_miss_left` is
+  session state — all four are battle-local, reset every fresh battle (§12.2, §13.2) the same way
+  `bt_fx_anim` already is, never written to a save record.
+- The MISS glyph art (§13.5) and the `spriteReservedRanges`/`BATTLE_FX_OAM_ROOM` generator changes
+  (§13.6) ship in the same commit as the engine routines — a MISS overlay with no tiles stamped for
+  it, or an OAM budget that does not yet know about it, is not a partial feature, it is a silent
+  garbage-tile bug the moment the first attack misses.
 
 **Phase 3 — UI polish.** The Magic Forge preview canvas, gated on a frame-for-frame trace test
-existing first.
+existing first. Unaffected by phase 2 — no shared code with either hit feedback or MISS.
 
 ## §8. Open questions for Chris
 
@@ -1170,6 +1203,71 @@ visual in this slice — a deferral, not a dismissal: Chris asked for it to be o
 ROADMAP item 14 now carries it as its own later slice (point 5), a Character Forge question as §9
 already says; and no duration knob. The primary path throughout this document already follows
 every one of these, so nothing above needed re-deriving.
+
+### Phase 2's own open questions (unanswered as of this writing)
+
+- **Gating.** Phase 2 has no authored field today — the three answers in §10's own phase-2 entry
+  decided the *shape*, not whether a project can opt out. Three options, costed, each now stating
+  its own fixture/test consequence explicitly rather than leaving it implied (round 1's own "other
+  conclusions" note: "These are consequences, not a new gating decision on Chris's behalf"):
+  - **(A) Always on for every RPG, no new field.** Every RPG-capable board's own
+    `BASE_BATTLE_CODE_BYTES_BY_MAPPER` would absorb 367 bytes unconditionally — the one thing every
+    other battle-region feature in this document (`MONSTER_SPELL_LIST_BATTLE_ALLOWANCE`,
+    `BATTLE_ANIM_BATTLE_ALLOWANCE` itself) deliberately does NOT do, precisely so a project that
+    does not use a feature does not pay its base cost (CLAUDE.md's own kernel-budget rule, "a
+    conditional feature's cost is a separate generated allowance, never folded into a base," applied
+    here by the identical logic). **Fixture consequence**: changes `sample-rpg` and
+    `sample-rpg-mmc1`'s own ROM bytes specifically — the two RPG fixtures, not the other four action
+    fixtures, which never reach the battle region at all — forcing a re-pin of
+    `test/unit/nameentry.test.js`'s own six-fixture SHA-256 gate (`:92-119`) and of
+    `test/unit/playerparts.test.js`'s duplicate literal hash. Beyond the literal hash references,
+    it also requires retuning `BASE_BATTLE_CODE_BYTES_BY_MAPPER`'s own equality assertions and every
+    capacity-refusal test whose padding was calibrated to the pre-phase-2 base — the identical
+    re-pinning cost every past feature that touched those fixtures has paid, but here for a feature
+    an author cannot turn off.
+  - **(B) A new authored toggle, `projectUsesHitMiss`-shaped** (recommended). One field —
+    `project.rpg.hitFeedback: boolean`, say — gates a new `HIT_MISS_ENABLED` flag and a new
+    `HIT_MISS_BATTLE_ALLOWANCE = 367` banked ledger term (§12.7), the identical shape
+    `BATTLE_ANIM_ENABLED`/`BATTLE_ANIM_BATTLE_ALLOWANCE` already established. **Fixture consequence**:
+    can preserve all six fixture ROMs byte-for-byte, PROVIDED every one of the engine call sites,
+    the glyph stamping (§13.5), the OAM adjustments (§13.6) and the allowance itself are ALL gated on
+    the one flag with no exception — none has ever authored the field, since it does not exist yet,
+    so absent unconditionally means false. The unconditionally-appended RAM equates (§12.2/§13.2)
+    alone emit no ROM bytes and do not shift any existing RAM address, so they need no gate of their
+    own to stay fixture-neutral. A Build-panel or RPG-settings checkbox, not a per-actor or
+    per-spell field, since neither half is tied to specific content the way `attackAnim`/`anim` are.
+  - **(C) Piggyback on `projectUsesBattleAnimation`** (considered, not recommended): a project that
+    has authored any `attackAnim`/`spell.anim` gets hit feedback and MISS "for free," no new field.
+    Rejected because it conflates two genuinely separate authoring decisions — a project can
+    reasonably want the universal hit-blink/MISS reaction without ever authoring a single custom
+    attack visual (or vice versa) — and ties a feature's presence to unrelated content in a way this
+    document's own single-writer discipline elsewhere refuses to do. **Fixture consequence**: also
+    leaves all six checked-in fixtures off (none authors `attackAnim`/`spell.anim` today either), but
+    unlike (B) it changes the EXISTING opt-in battle-animation test variants and their own exact
+    allowance expectations (`test/unit/bankedbytes.test.js:501`, the `BATTLE_ANIM_BATTLE_ALLOWANCE`
+    equality test) — any test that already turns `projectUsesBattleAnimation` on to measure phase 1b
+    in isolation would now ALSO pull in phase 2's own bytes, entangling two allowances a reader would
+    reasonably expect to vary independently.
+
+  **Recommendation: (B).** It is the only option that keeps every existing fixture AND every
+  existing test's own isolation byte-identical without an author's own choice, and it is the shape
+  every other battle-region feature in this codebase already uses.
+- **One toggle for both halves, or two independent ones?** §7 recommends shipping hit feedback and
+  MISS as one phase; a single `hitFeedback` flag covering both is the natural extension of that and
+  the smaller UI/ledger surface (one flag, one allowance term). Two independent flags would give an
+  author finer control (hit blink without MISS, say) at the cost of a second field, a second
+  generated flag, and a second ledger term to keep isolated from the first (the identical
+  `MONSTER_SPELL_LIST_BATTLE_ALLOWANCE` vs `BATTLE_ANIM_BATTLE_ALLOWANCE` precedent — two independent
+  gates, never one gate covering two costs, is how this document's own §7 finding for magic
+  power/defence was decided; the same argument could cut the other way here). **Recommendation: one
+  flag**, since — unlike magic power and magic defence, which are independently authorable stats — 
+  nothing about hit feedback and MISS is separately *authored* content an author would want on its
+  own; they are both universal reactions to the same event class (a resolved physical/spell hit or
+  miss), so splitting the toggle buys configurability nobody has asked for.
+- **The MISS glyph art itself, and its exact timing/placement constants** (`BT_MISS_FRAMES = 30`,
+  the 8-pixel upward offset, §12/§13's own reasoned, not measured, choices) — genuine taste calls,
+  not determinable from the code. Recommendation: ship the values in §13 as a starting point, tune
+  after a real playtest; none of them affects the measured byte cost (§12.7), only the visual.
 
 ## §9. Out of scope, explicitly
 
@@ -1260,6 +1358,128 @@ Distinguished what the PPU trace proves (flashing, restoration) from what source
 one-line "Prototype limitations: see §2(e)" cross-reference to each of Appendix B's and Appendix C's
 own introductions, without duplicating the list.
 
+### Phase 2 round 1 (2026-09-13) — Chris's own answers, and the shippable design they authorize
+
+Phases 1a (`b65144a`) and 1b (`c4e67c8`) shipped. Chris then answered §7's own open phase-2
+question and one new requirement, both recorded here verbatim as the brief that authorized v5:
+
+1. **The two hit halves ship together**, sharing one `bt_hurt_slot`/`bt_hurt_left` pair: the sprite
+   hit-blink (Appendix B) for party icons and metasprite-drawn monsters, and the block-art
+   attribute flash (Appendix C) for block-art monsters.
+2. **The attribute flash is a BLINK**, emitted as a packet every tick while armed — the measured
+   Appendix C shape. Not edge-only, not a solid tint.
+3. **NEW: when an attack misses, the text MISS must appear next to the monster or party sprite that
+   was missed.**
+
+§12 turns (1) and (2) into a shippable design, fixing every §2(e) prototype limitation. §13 is the
+new MISS design. Appendix D is the real, measured, complete prototype diff for both together — see
+§12.7 for the measured figures and how they were obtained (a `git worktree add --detach` scratch
+copy of the tree at this commit, `buildProject` against `sample-rpg` on all three RPG-capable
+boards, then removed; the main tree and `git worktree list` were both checked clean afterward).
+
+### Phase 2 round 2 — review round 1 (`handoff-next/battle-anim-phase2-design-review1.md`), verdict
+FIX: 1 P1, 5 P2, 3 P3, all nine fixed
+
+1. **P1 — `battle_hurt_attr_open` corrupted `cast_all`'s own end-of-side sentinel** (`bt_tmp2`).
+   Fixed by removing the scratch-byte parking entirely — the attribute address is a pure function of
+   the monster slot (`X`), which survives the whole call untouched, so callers needing the actor id
+   just re-read `mon_slot_actor,x` themselves (§12.3).
+2. **P2 — a killing hit during a flash could permanently strand the tint**, since `wipe_monster`
+   rewrites tiles only, never the attribute byte. Fixed on two paths (the tick routine's own
+   dead-check, and the arm-time restore when a different target supersedes the shared pair first),
+   both restoring `BT_GROUND_ATTR` ($55, `draw_battle_attr`'s own ground-row fill), never the dead
+   monster's own now-meaningless `mon_attr` (§12.3, §12.5).
+3. **P2 — the `vram_buf` bound omitted re-arm restoration packets.** Recomputed: up to 5 packets/20
+   bytes in the worst reachable tick (an all-target spell's own volley), not "at most one" — a real
+   reachable schedule of 112 bytes and a fully conservative combination of 143 bytes, both well
+   inside the 256-byte buffer (§12.6).
+4. **P2 — MISS's fixed OAM charge was not protected against pre-existing combatant overflow.**
+   Specified as an explicitly accepted limitation, matching §3.6's own established precedent for the
+   flipbook's combatant/cursor figure exactly — not a new runtime check or a stricter refusal (§13.6).
+5. **P2 — the sprite reservation had no single JS authority and two UI consumers were not
+   range-aware.** Redesigned to mirror `SPRITE_ARROW_TILE`'s own precedent exactly: one JS authority
+   in `shared/font.js`, engine equates generated from it, and both `validateProject`'s
+   occupied-artwork message and the Tile Forge's shading hint made range-aware instead of assuming
+   every non-heart reservation is the cursor (§13.5).
+6. **P2 — the sole-miss test row was not an executable regression oracle**, and the exclusions it
+   implicitly relied on were never stated. Replaced with real attack-path coverage (controlled hits
+   and misses through both real call sites), explicit non-miss negative coverage (item/flee/spell/
+   status), and a hit-flash trace proving both cadence bands, terminal restoration, and cessation
+   (§13.1, §14).
+7. **P3 — the new tick helpers ran before `setup_monsters` reset them during `BP_INTRO`.** Both
+   gained the identical guard `battle_fx_tick` already has; `battle_end`/`player_died`'s own timer
+   lifetime (never cleared there, same as `bt_fx_anim`) is now stated accurately rather than assumed
+   safe (§12.4).
+8. **P3 — the 2-byte measurement gap was speculative.** Identified exactly: one shared `lda #0` in
+   `setup_monsters` between the two stores, needed independently by each isolated variant. The
+   `bt_miss_slot` re-chaining an isolated-MISS build needs is now documented (§11, §12.7, §13.2).
+9. **P3 — the cadence prose contradicted the code.** Corrected to the real two-tick-band shape (a
+   packet every tick, a colour change every other tick), not single-tick alternation (§12.1).
+
+Also fixed: §2(e)'s own stale "unmeasured saving" claim (now points at the real 235-byte measured
+figure, and corrects the direction of the comparison — MORE than the naive 126-byte sum, not less);
+§7's over-attribution of one-phase shipping to Chris (only the two hit halves are his own decision;
+shipping MISS in the same phase is this document's recommendation, restated as still-open in §8);
+and §8's gating options now each state their own fixture/test consequence explicitly. Every prototype
+figure in §12.7/§13.6/Appendix D was rebuilt and remeasured against the round-1-fixed code, not
+patched onto the old numbers.
+
+### Phase 2 round 3 — review round 2 (`handoff-next/battle-anim-phase2-design-review2.md`), verdict
+FIX: 5 P2, 2 P3, all seven fixed; round-1 engine fixes independently reconfirmed (367/235/134)
+
+Documentation and test-plan only — no engine code changed, so Appendix D is untouched this round
+(all three figures independently reconfirmed by the reviewer's own rebuild).
+
+1. **P2 — the "reachable" vram_buf schedule combined the wrong two chains, and a larger real one
+   exists.** `cast_all` ends by calling `battle_say_actor` directly (28 bytes: a 13-byte name packet
+   plus a 15-byte string packet) — it never reaches the 92-byte `battle_message_done` →
+   status-tick → `battle_say` chain, which only runs on a LATER tick, when a previous message is
+   dismissed. Corrected reachable total for that path: 48 bytes (20 feedback + 28 message), not 112.
+   A genuinely larger reachable schedule was found by driving real dispatcher transitions: 127 bytes
+   (11-byte wipe + 4-byte flash + 112-byte `battle_list_back`, via a six-tick sequence). The existing
+   143-byte conservative bound still safely covers both — this was a reachability/accounting error,
+   not a newly discovered overflow (§12.6). The queue-length test was rewritten to stop requesting a
+   5th block-art monster (above `MAX_MONSTERS = 4`) and to cover both the 20-byte and 127-byte real
+   schedules (§14).
+2. **P2 — the OAM policy claimed MISS "does not make overflow worse," which is false for the
+   61-64-combatant range** (65-68 once MISS's own 4 tiles are added — a NEW overflow MISS itself
+   causes, not merely alongside a pre-existing one). Restated honestly: the advisory-warning POLICY
+   is unchanged (still the explicit, accepted choice), but the claim about what MISS causes is
+   corrected. The test's own 64-combatant row was wrong (64 without MISS does NOT warn — `used >
+   limit` is strict, and 64 is exactly the limit); rebuilt with a genuine 60/61/64/65 boundary,
+   asserted through `validateProject`'s own warning array, not `describeBattleSpriteWarning` (an
+   unconditional formatter, not a gate) (§13.6, §14).
+3. **P2 — `describeBattleAnimationOamWarning` never accounted for MISS's own 4 entries in its own
+   text**, so its stated reasoning stopped adding up the moment MISS was what pushed a project over
+   (reproduced: 60 combatants + a 1-tile animation = 61, which does not itself exceed 64 — MISS's
+   own 4 is the missing term). Fixed to add a MISS clause to the same explanation, gated on
+   `projectUsesHitMiss`, with the off-path (MISS disabled) text unchanged (§13.6, §14).
+4. **P2 — the sentinel test asked to observe `bt_tmp2` after `cast_all` returns**, which is the
+   wrong moment: `battle_say_actor`'s own name lookup legitimately reuses `bt_tmp2` as scratch once
+   the loop has finished, reading 0 by design. Corrected to observe at `cast_all_next`, immediately
+   after each `apply_damage` call, with both a low (0) and a high (31) actor id (§14).
+5. **P2 — replacing the combined OAM boundary test with the no-flipbook row lost the oracle for the
+   simultaneous flipbook+MISS reservation.** The no-flipbook row cannot catch a `BATTLE_FX_OAM_ROOM`
+   formula missing its own `- MISS_OAM_TILES` term. Restored the exact-fit/one-over boundary test
+   (combatants + effect + MISS = 64, admitted; +1, the whole frame rejected) IN ADDITION to the new
+   advisory-overflow row, not instead of it. Also added the missing §13.5 reservation on/off
+   integration rows (occupied-artwork refusal wording, blank referenced tiles, Tile Forge hint and
+   shading, glyph stamping in every tileset on each board) round 1's own finding 5 designed but never
+   got test coverage for (§14).
+6. **P3 — the item-failure explanation said the item "is simply spent on nothing."** Wrong:
+   `item_chosen`'s own `beq item_chosen_none` branches around `remove_item` before it ever runs, so
+   the item is never consumed at all, only the message differs. Fixed in §13.1.
+7. **P3 — §11 still compared the old 50+76=126 estimate against 367 (which includes MISS), not
+   235 (hit-only, the actual comparable scope).** Already fixed correctly in §2(e) from round 1;
+   §11's own bullet had the stale comparison and is now aligned with it. Also fixed the "BP_INTRO
+   guard (2 routines)" attribution in §12.7's own hit-only paragraph — that variant contains only
+   `battle_hurt_tick`'s own guard; `battle_miss_tick`'s guard belongs to MISS-only's own +6, since
+   the hit-only variant has no MISS code at all.
+
+Also acted on the review's own remaining note: the hit-flash trace test row (§14) now requires a
+direct `vram_buf` queue observation for cessation past the terminal tick, not source inspection
+alone.
+
 ## §11. Places a claim could not be pinned to a line and was reasoned instead
 
 - **The exact vblank/mainline cycle cost of the new call sites, including `draw_metasprite`'s own
@@ -1272,13 +1492,1070 @@ own introductions, without duplicating the list.
   animation pickers** remains a UI judgment call, reasoned as "no, one shared catalog" for
   consistency with other reused-catalog precedents, not verified against any existing UI-filtering
   convention.
-- **The exact combined byte cost of shipping both phase-2 halves together** is reasoned from the
-  shared-state argument (less than 50 + 76 = 126), not itself built as a third prototype.
+- **The exact combined byte cost of shipping the two hit-feedback halves together — superseded, now
+  measured, not reasoned (§12.7).** This bullet previously reasoned "less than 50 + 76 = 126" from a
+  shared-state argument, before either half had been unified into a real shippable mechanism — an
+  estimate for the TWO HIT-FEEDBACK HALVES alone, never MISS. That estimate is now moot in both
+  directions: the *shippable* hit-feedback design (§12) is a real, built, measured prototype at
+  **235 bytes** (§12.7, Appendix D's own hit-only isolation) — far more than 126, because it adds
+  real new logic neither standalone prototype had (the stranded-tint fix, the dead-monster
+  ground-default restore on both the tick and arm-time paths, the register-preservation rework that
+  dropped `bt_tmp2` parking, and the `BP_INTRO` guard) on top of unifying the two. **367 bytes is a
+  separate figure** — hit feedback PLUS MISS combined (§13.6, Appendix D's own exact-diff
+  measurement) — and is not what the 126-byte estimate was ever about; comparing 126 against 367
+  compares two different scopes (two halves vs. three) and was corrected in round 3 after round 2's
+  own fix report incorrectly claimed this bullet was already aligned with §2(e)'s (correct) one.
+  Kept here only as a record of what earlier-round reasoning got wrong, not as a live claim.
 - **Whether an edge-only (two-packets-per-hit) shipped version of the attribute flash would cost more,
   fewer, or the same code bytes as the measured packet-every-tick prototype** is genuinely unknown —
   the EDGE-ONLY shape specifically was not built, and this document makes no claim about it either
   way (round 3, finding 6; corrected wording round 4, finding 1 — the packet-every-tick shape *was*
   built, and, as of round 4, correctly, so only one of the two shapes is actually unmeasured here).
+  Chris's own phase-2 answer 2 (§10) settles this for the shippable design regardless: blink, not
+  edge-only.
+- **The 2-byte gap between the two isolated deltas summed (235 + 134 = 369) and the real combined
+  delta (367, §12.7) — superseded, now identified, not reasoned (round 1 finding 8).** This bullet
+  previously reasoned the gap as "bank-alignment or branch-offset noise," explicitly stating nothing
+  in the design shares bytes between the two halves. That was wrong: `setup_monsters`'s own reset
+  (§12.4/§13.4) shares ONE `lda #0` immediate load between `sta <bt_hurt_left` and
+  `sta <bt_miss_left` — a 2-byte instruction, paid once in the combined build but once EACH
+  (independently, since each isolated variant still needs the load for its own single store) in the
+  two isolated builds used to derive 235 and 134. `2 = 235 + 134 - 367` is exactly that one shared
+  `LDA #$00`, not noise.
+- **The MISS overlay's own cycle cost and vblank headroom** (§12/§13's new tick/draw routines,
+  `battle_hurt_attr_open`'s shared addressing math) is bounded the identical way the phase-1
+  flipbook's is (§11's own first bullet, above) — a fixed, small number of OAM writes per tick, and
+  `vram_buf` traffic bounded in §12.6 (up to 5 packets/20 bytes in the worst reachable tick, not "at
+  most one" as an earlier draft of this section claimed) — not measured against a cycle-accurate
+  tool.
+- **The exact pixel offset (8px up) and duration (`BT_MISS_FRAMES = 30`) for the MISS overlay** are
+  reasoned placement/timing choices (§13.4), not verified against a real playtest or against every
+  possible author-painted metasprite/block-art size — stated as tunable in §8's own new open
+  question, not claimed correct by construction.
+
+## §12. Phase 2a — hit feedback, the shippable design
+
+Turns Appendix B (sprite hit-blink) and Appendix C (block-art attribute flash) into one unified,
+shippable mechanism, fixing every limitation §2(e) recorded against the two standalone prototypes
+**and** every correctness defect round 1's review found in this design's own first draft (P1
+finding 1, P2 findings 2 and 3, P3 finding 7 below). Chris's own answers 1-2 (§10) fixed the shape
+— one shared `bt_hurt_slot`/`bt_hurt_left` pair, packet-every-tick — so this section designs the
+*correctness* the prototypes left open, not the shape itself.
+
+### §12.1 What changes, and why one pair can mean two different things
+
+`bt_hurt_slot` names a combatant (0-7); `bt_hurt_left` counts down from `BT_HURT_FRAMES` (20,
+unchanged from both prototypes). Which of the two hit-feedback halves applies is decided **at read
+time**, every time, from what `bt_hurt_slot` currently names — never stored as its own flag,
+because it is always recoverable from data that already exists:
+
+- `bt_hurt_slot < MAX_PARTY` (a party member), or `bt_hurt_slot >= MAX_PARTY` and that monster's
+  `mon_tile == $FF` (drawn as a sprite, no block art): the **sprite blink** — `battle_sprite_pc`/
+  `battle_sprite_mon` skip the icon on alternate frames while `bt_hurt_left` is nonzero and the slot
+  matches, `ent_hurt`'s own trick (`engine/entities.asm:590-593`) extended to combatants. Unchanged
+  from Appendix B.
+- `bt_hurt_slot >= MAX_PARTY` and that monster's `mon_tile != $FF` (has block art): the
+  **attribute flash** — a vram_buf packet queued every tick. **Round 1 finding 9: this is a
+  packet EVERY tick, but a colour change every OTHER tick** — the `and #2` test on `bt_hurt_left`
+  produces two-tick bands (tint held for two consecutive ticks, then the other tint for two more),
+  not single-tick alternation; §2(e)'s own round-3 trace already recorded this exact cadence for
+  Appendix C, and this design's first draft mis-described it as "odd ticks... even ticks" as if the
+  colour itself changed every tick. It does not: only the packet does. The terminal tick forces the
+  authored tint back regardless of which band it lands in. The missing `mon_tile != $FF` guard
+  (§2(e)'s own limitation 4) is now checked, so a metasprite-fallback monster's slot never queues a
+  background write for art that does not exist.
+
+A monster can never be named by `bt_hurt_slot` under both conditions at once — `mon_tile` does not
+change mid-battle — so there is no case where both halves fire for the same slot; picking one is not
+a priority rule, it is which one is even *possible* for that slot.
+
+### §12.2 RAM
+
+Two zero-page bytes, chained unconditionally after `bt_fx_timer` (`engine/constants.asm:463-466`,
+phase 1b), the identical cost either standalone prototype already had — sharing the pair, per
+Chris's own answer 1, is what keeps this at 2 bytes rather than 4:
+
+```asm
+bt_hurt_slot = bt_fx_timer+1    ; the combatant most recently hit (0-7)
+bt_hurt_left = bt_hurt_slot+1   ; shared countdown, from BT_HURT_FRAMES
+BT_HURT_FRAMES = 20
+```
+
+One more constant, not RAM — `BT_GROUND_ATTR = $55`, `draw_battle_attr`'s own ground-row fill
+(`engine/battle.asm:581`, rows 1-4 of the attribute table, written before any live monster's own
+`mon_attr` is stamped over the top). Round 1 finding 2 needs this value by name: see §12.5.
+
+Reset unconditionally in `setup_monsters`, beside `bt_fx_anim`'s own existing clear (§12.4) — the
+one Appendix B/C limitation (§2(e), "neither prototype resets `bt_hurt_left` at battle entry") this
+design closes outright rather than accepting.
+
+### §12.3 The engine, complete
+
+**The arm point — one routine, called from `apply_damage`'s own single choke point** (every landed
+physical hit, spell hit, and status tick, `engine/battleturn.asm:974`). This is also where the
+multi-target policy and the stranded-tint fix both live:
+
+```asm
+; The single arm point for the shared bt_hurt_slot/bt_hurt_left pair, called
+; from apply_damage's own single choke point. Fixes the "stranded tint"
+; limitation (§2(e)): if the slot this call is about to steal was a
+; block-art monster whose flash was still counting down, its cell is
+; force-restored NOW, rather than left to a countdown that will never
+; reach zero for that slot again once bt_hurt_slot points elsewhere.
+battle_hurt_arm:
+  lda <bt_hurt_left
+  beq battle_hurt_arm_set        ; nothing live to strand
+  lda <bt_hurt_slot
+  cmp <bt_target
+  beq battle_hurt_arm_set        ; same slot re-hit -- just restart the timer
+  cmp #MAX_PARTY
+  bcc battle_hurt_arm_set        ; stolen slot was a party member -- sprite
+                                  ; blink only, nothing was ever queued to strand
+  jsr battle_hurt_restore_slot   ; stolen slot was a monster -- restore its
+                                  ; cell now if it had block art
+battle_hurt_arm_set:
+  lda <bt_target
+  sta <bt_hurt_slot
+  lda #BT_HURT_FRAMES
+  sta <bt_hurt_left
+  rts
+```
+
+**The multi-target policy, stated exactly**: an all-target spell's own `cast_all` loop
+(`engine/battleturn.asm:387-406`) calls `apply_damage`, and so this arm point, once per living
+target in one tick. Only the LAST target processed ends up blinking/flashing — every earlier target
+in the same volley is armed and then immediately superseded (via the stranding fix above) before a
+single tick of feedback is ever visible for it. This follows directly from the single shared pair
+(Chris's own answer 1): extending coverage to every target in a volley would need either a per-slot
+RAM array (8 bytes instead of 2) or a bitmask-plus-loop, neither of which the "one pair" decision
+leaves room for. Accepted as the shippable policy — a visual gap for what is a bonus reaction, not
+a core information channel; the damage numbers and HP bars, both untouched by this design, are what
+actually tell the player what happened to every target.
+
+**Round 1 P1 finding 1, in full — the previous draft corrupted `cast_all`'s own loop.** `apply_damage`
+is called FROM WITHIN `cast_all`'s own loop, which stores its end-of-side sentinel (`MAX_PARTY` or
+`NUM_COMBATANTS`) in `bt_tmp2` and compares against it after every `apply_damage` call
+(`engine/battleturn.asm:387`, `:392`, `:398`, `:402` — CLAUDE.md's own "6502 traps" section names
+`bt_tmp2` as the one scratch byte this exact chain may not pick). The first draft's own
+`battle_hurt_attr_open` parked the restore target's actor id in `bt_tmp2` to read `mon_attr,y`
+after `vram_open` returned — silently overwriting the sentinel `cast_all` was still relying on for
+every remaining iteration of the SAME call. Reproduced directly against the assembled prototype:
+old hurt slot 4, a re-arm onto slot 5, actor id 0 at slot 4 — `battle_hurt_arm` left `bt_tmp2 = 0`
+where `cast_all` needed `8`, silently truncating or extending the volley depending on which
+direction the corruption ran.
+
+**The fix does not park anything in shared scratch at all.** The attribute address `X` (the monster
+slot) maps to is a pure function of `X` alone — it never depends on the actor id — so `X` itself,
+which is never touched by the address math and is separately preserved by `vram_open` internally
+(`stx`/`ldx` around its own body), survives the whole call untouched. A caller that needs the actor
+id for `mon_attr,y` just re-reads `mon_slot_actor,x` itself once the call returns, at the cost of
+one extra `lda`/`tay`, rather than trust a value parked in scratch it does not own:
+
+```asm
+; X = monster slot. Opens vram_buf at that monster's own anchored
+; attribute cell (draw_battle_attr's own per-monster offset). The address
+; math is a pure function of the slot number (X), never the actor id, so
+; this never needs to park anything in shared scratch to do its own job.
+; X itself survives the call (never touched here after the address math
+; begins, and vram_open's own body saves/restores X internally) --
+; callers that need the actor id re-read mon_slot_actor,x themselves once
+; this returns. Clobbers A, Y.
+battle_hurt_attr_open:
+  txa
+  clc
+  adc #1
+  asl a
+  asl a
+  asl a
+  clc
+  adc #1
+  clc
+  adc #$C0
+  tay
+  lda #$23
+  jmp vram_open
+```
+
+**Round 1 P2 finding 2, in full — a killing hit could strand the flash tint forever.** `wipe_monster`
+(`engine/battleturn.asm:1021-1048`, unchanged) rewrites only the eight *tile* bytes of one row a
+tick; it never touches the *attribute* byte at all — `draw_battle_attr` (`engine/battle.asm:566-...`)
+is the only routine that ever initializes attributes, and it runs once, at battle draw time, never
+again. The first draft's own dead-check abandoned the countdown on a killing hit with no restore at
+all, reasoning "`wipe_tick` owns its cell" — false: whatever the flash last queued (very possibly
+`$FF`, the flash tint, mid-band) is the LAST write that cell will ever receive, sitting there for
+the rest of the battle, on top of the wiped ground. Reproduced against the assembled prototype: an
+alive flash queues its normal 4-byte packet; the following tick, once `mon_slot_alive` reads 0, the
+prototype's first draft cleared the timer and queued NOTHING — leaving the previous tick's `$FF`
+stranded.
+
+**The fix restores the ground default, `BT_GROUND_ATTR`, not the dead monster's own (now
+meaningless) `mon_attr`** — that monster's own tiles are being wiped to ground either this tick or
+imminently, so the cell should read as ground, the same value `draw_battle_attr` itself paints
+everywhere a monster's own art does not cover:
+
+```asm
+; Ticks the shared hit-feedback pair. Guarded on BP_INTRO the identical
+; reason battle_fx_tick already is (round 1 finding 7, §12.4): this runs
+; before battle_dispatch on every tick, including the very first one of a
+; fresh battle, where neither byte has been reset yet.
+battle_hurt_tick:
+  lda <bt_phase
+  cmp #BP_INTRO
+  beq battle_hurt_tick_rts
+  lda <bt_hurt_left
+  beq battle_hurt_tick_rts
+  lda <bt_hurt_slot
+  cmp #MAX_PARTY
+  bcc battle_hurt_tick_dec       ; a party member -- nothing to queue, just tick
+  sec
+  sbc #MAX_PARTY
+  tax
+  lda mon_slot_alive,x
+  bne battle_hurt_tick_dec
+  lda #0
+  sta <bt_hurt_left               ; stop ticking regardless of block art
+  lda mon_slot_actor,x
+  tay
+  lda mon_tile,y
+  cmp #$FF
+  beq battle_hurt_tick_rts        ; no block art -- nothing to restore
+  jsr battle_hurt_attr_open       ; X = monster slot, preserved
+  lda #BT_GROUND_ATTR
+  jsr vram_push
+  jmp vram_end
+battle_hurt_tick_dec:
+  dec <bt_hurt_left
+  lda <bt_hurt_slot
+  cmp #MAX_PARTY
+  bcc battle_hurt_tick_rts        ; party member: sprite blink only, done
+  sec
+  sbc #MAX_PARTY
+  tax
+  lda mon_slot_actor,x
+  tay
+  lda mon_tile,y
+  cmp #$FF
+  beq battle_hurt_tick_rts        ; metasprite fallback -- sprite blink only
+  jsr battle_hurt_attr_open       ; X = monster slot, preserved
+  lda mon_slot_actor,x            ; re-read (X survives the call); Y was
+  tay                             ; clobbered by battle_hurt_attr_open itself
+  lda <bt_hurt_left
+  beq battle_hurt_attr_restore
+  and #2
+  bne battle_hurt_attr_flash
+battle_hurt_attr_restore:
+  lda mon_attr,y
+  jmp battle_hurt_attr_push
+battle_hurt_attr_flash:
+  lda #$FF
+battle_hurt_attr_push:
+  jsr vram_push
+  jmp vram_end
+battle_hurt_tick_rts:
+  rts
+```
+
+**A second death path, found by tracing what happens to the OLD slot at arm time, not only at tick
+time.** `cast_all`'s own loop can kill the combatant `bt_hurt_slot` currently names and, on the VERY
+NEXT iteration, re-arm onto a different target — all inside one call to `battle_dispatch`, before
+`battle_hurt_tick` ever runs again for that now-abandoned slot (the shared pair has already moved on
+to the new target by then, so the tick routine above can never see the old one again). The arm-time
+restore therefore needs the identical ground-default fallback, or this second path strands the tint
+exactly as finding 2 originally described, just reached a different way:
+
+```asm
+; The OLD bt_hurt_slot (still in <bt_hurt_slot on entry) is a monster --
+; force-queue its own attribute cell back if it has block art. A no-op for
+; a metasprite-fallback monster.
+;
+; If that monster has ALREADY died since it was armed (mon_slot_alive ==
+; 0) -- possible because THIS very apply_damage call is what is about to
+; re-arm a different target, and a previous call in the same cast_all
+; volley already killed it -- this is the LAST chance to fix its cell
+; before the shared pair forgets it forever. Restores BT_GROUND_ATTR in
+; that case, the identical policy battle_hurt_tick's own dead-check uses.
+battle_hurt_restore_slot:
+  lda <bt_hurt_slot
+  sec
+  sbc #MAX_PARTY
+  tax
+  lda mon_slot_actor,x
+  tay
+  lda mon_tile,y
+  cmp #$FF
+  beq battle_hurt_restore_slot_rts   ; no block art -- nothing to restore
+  jsr battle_hurt_attr_open          ; X = monster slot, preserved
+  lda mon_slot_alive,x
+  bne battle_hurt_restore_slot_alive
+  lda #BT_GROUND_ATTR
+  jmp battle_hurt_restore_slot_push
+battle_hurt_restore_slot_alive:
+  lda mon_slot_actor,x                ; re-read (X survives the call); Y was
+  tay                                  ; clobbered by battle_hurt_attr_open
+  lda mon_attr,y
+battle_hurt_restore_slot_push:
+  jsr vram_push
+  jmp vram_end
+battle_hurt_restore_slot_rts:
+  rts
+```
+
+**Drawing** needs no new code at all beyond Appendix B's own two skip-checks (`battle_sprite_pc`/
+`battle_sprite_mon`, unchanged from Appendix B except reading the shared pair's real names) — the
+attribute flash has no draw-time component; its packets are queued entirely from the tick and arm
+routines above.
+
+### §12.4 Battle-entry reset, the BP_INTRO guard, and the flipbook interaction
+
+**Battle-entry reset** — the one Appendix B/C limitation this design does not merely record, it
+closes: `setup_monsters` (`engine/battle.asm:441-456`, phase 1b's own `bt_fx_anim` reset site) also
+clears `bt_hurt_left` to 0. `bt_hurt_slot` needs no reset of its own — every reader gates on
+`bt_hurt_left` first, the identical discipline `bt_fx_anim`/`bt_fx_slot` already use. One correction
+against Appendix B/C's own text: `A` cannot be assumed to still be 0 at that point the way a first
+draft of this design assumed — the `.if BATTLE_ANIM_ENABLED` block immediately above leaves
+`NO_ANIM` ($FF) in `A` when it runs, not 0, so the reset reloads `lda #0` explicitly rather than
+relying on a stale register.
+
+**Round 1 P3 finding 7 — the reset above runs too late to protect the tick routines on the very
+first tick of a battle.** `battle_hurt_tick`/`battle_miss_tick` (§12.3, §13.4) both run from
+`battle_tick`, which calls them BEFORE `battle_dispatch` — and `setup_monsters` is reached only
+*inside* `battle_dispatch`, via `battle_intro`, on the tick `bt_phase` still reads `BP_INTRO`
+(`engine/battle.asm:233`, `:291-295`, `:333`). So on that exact tick, both new tick routines would
+run against whatever `bt_hurt_left`/`bt_miss_left` held BEFORE reset — reproduced directly:
+a stale hit-feedback timer of 20, left over from a previous battle, decremented to 19 and queued a
+real packet while `bt_phase` was still `BP_INTRO`, before `setup_monsters` had run at all. The
+shipped flipbook (`battle_fx_tick`, phase 1b) already guards exactly this ordering; both new tick
+routines above now carry the identical guard (`lda <bt_phase / cmp #BP_INTRO / beq ...rts`) —
+visible in the code blocks in §12.3 and §13.4.
+
+**This ordering hazard is real but was never a visible bug**, and the design should not overstate
+what it would have caused: `draw_battle_screen` calls `vram_reset` on every battle entry
+(`engine/battle.asm:387`), which discards any stale queued packet before it is ever displayed, and
+returning to the field afterward goes through `redraw_screen`
+(`engine/screens.asm:116`), which discards whatever is still queued the same way. The guard closes
+a real correctness gap (the packet WAS queued, the timer WAS decremented against stale data) without
+it ever having been the source of a visible on-screen glitch — worth fixing regardless, since a
+future change to either discard path could turn it into one.
+
+**Timer lifetime across `battle_end` and `player_died`, stated accurately rather than assumed.**
+Neither routine clears `bt_hurt_left`/`bt_miss_left` — `battle_end` (`engine/rpg.asm:153-...`)
+clears `pc_status`/`game_state`/`enc_step` but not either timer; `player_died`
+(`engine/combat.asm:386-...`, reached from a party wipe via `battle_finish`'s own
+`jmp player_died`) clears `player_iframes`/`kb_timer`/`script_active`/`talk_ent`/`game_state` but
+not either timer either. This is not a gap this design needs to close: it is the IDENTICAL lifetime
+`bt_fx_anim` already has (phase 1b, never cleared at `battle_end` or `player_died` either), and the
+BP_INTRO guard above is exactly what makes that lifetime safe — whatever either timer holds when a
+battle ends (win, flee, or a wipe) sits untouched until the next `setup_monsters` runs, and the new
+guard means neither tick routine can act on that stale value in the one-tick window before the reset
+lands.
+
+**Interaction with `bt_fx_*` (phase 1b's own flipbook), stated exactly**: the two are independent
+state — different zero-page bytes, different arm points (`battle_fx_arm_attack`/`battle_fx_arm_at`
+vs `battle_hurt_arm`), different tick and draw routines — and can be live on DIFFERENT slots at the
+same time with no interference: a monster's own `attackAnim` flipbook plays over the ATTACKER's
+slot (armed before `roll_hit`, so it plays whether the hit lands or misses, per §3.3), while hit
+feedback plays over the TARGET's slot once `apply_damage` runs. The one shared concern is `oam_idx`
+budget, not correctness — see §13.6.
+
+### §12.5 The wipe_tick / attribute-flash interaction, restated after the round 1 fix
+
+Superseded by §12.3's own dead-check and arm-time fixes above; kept here as the one-paragraph
+summary of WHAT is now guaranteed, since §2(e)'s own limitations list and round 1's review both
+pointed at this exact interaction.
+
+A lethal hit sets `bt_wipe_mask`'s own bit for that slot (`apply_damage_mon`,
+`engine/battleturn.asm:988-1019`), and `wipe_tick` (`engine/battle.asm`, unchanged) starts erasing
+that monster's block art one row a tick, via its own `vram_buf` packets, starting the NEXT tick
+(`wipe_tick` runs before `apply_damage_mon` could ever set the bit on the SAME tick, since
+`battle_tick` calls `wipe_tick` first, before `battle_dispatch` — so the wipe always starts a tick
+after death, never the same one). **The attribute cell for a monster that dies while flashing is now
+always left at `BT_GROUND_ATTR`**, restored either by `battle_hurt_tick`'s own dead-check (the
+common case: nothing else touches the shared pair before its next tick) or by
+`battle_hurt_restore_slot` (the less common case: something else re-arms the shared pair onto a
+different target before the tick routine gets another chance) — never left holding a stale flash or
+authored tint. See §12.6 for the `vram_buf` byte cost this adds.
+
+### §12.6 vram_buf accounting
+
+**Round 1 P2 finding 3 — the first draft's own "at most one packet a tick" claim was false for the
+real design.** Every restore this section can queue (the tick routine's own terminal/dead-monster
+restore, AND `battle_hurt_restore_slot`'s own arm-time restore) is a real, separate `vram_buf`
+producer, and `cast_all`'s own loop (`engine/battleturn.asm:387`) can call `apply_damage`, and so
+`battle_hurt_arm`, up to four times in one tick — once per living target of an all-target spell.
+Recomputed exactly, distinguishing what is *reachable* from what is merely *conservative*:
+
+- **The tick routine's own packet**: at most one a tick (the flash/restore/dead-restore branches in
+  §12.3 are mutually exclusive with each other) — 4 bytes.
+- **Arm-time restores**: `cast_all`'s own loop can supersede the shared pair up to 4 times in one
+  tick (living targets 1 through 4, each potentially restoring the PREVIOUS target's own cell) — up
+  to 4 × 4 = 16 bytes.
+- **Combined hit-feedback worst case this tick: 5 packets, 20 bytes** — matching round 1's own
+  independently-derived figure exactly. This part was already correct.
+
+**Round 2 P2 finding 1 — the "reachable schedule" combined the WRONG two chains, and a larger real
+schedule exists.** The first-fix draft claimed hit feedback's own 20 bytes combines with "the
+92-byte `battle_message_done` → status-tick → `battle_say` chain (§3.4)" because `cast_all` "always
+ends by calling `battle_say_actor`... in the SAME tick." That premise conflated two different
+things: `cast_all` ends by calling `battle_say_actor` directly (`engine/battleturn.asm:404-406`) —
+it never reaches `battle_message_done`, `clear_message`, or the status-tick dispatch at all, since
+those only run when a PREVIOUS message is being dismissed, on whatever LATER tick that dismissal
+happens, not the tick `cast_all` itself queues its own message. The two chains cannot coincide the
+way the first draft claimed.
+
+**`cast_all`'s own message costs 28 bytes, not 92** — `battle_say`'s two packets
+(`engine/battleui.asm:589-608`): the name row (3-byte header + `NAME_LEN` = 10 data bytes = 13) and
+the string row (3-byte header + `MSG_COLS` = 12 data bytes = 15), 13 + 15 = 28. Reproduced directly
+against the assembled prototype: an already-armed hurt slot 7, superseded by an all-target spell
+over slots 4-7, queued five 4-byte feedback packets (20 bytes) plus the 13- and 15-byte message
+packets — **48 bytes**, not the previously claimed 112.
+
+**A genuinely larger reachable schedule exists, found by driving real dispatcher transitions rather
+than assuming the largest single chain is the largest reachable total.** Six consecutive
+`battle_tick` calls: an all-target spell kills three monsters and leaves the fourth alive and
+flashing; A dismisses the resulting message; the next party member's own turn opens the menu; Down
+selects MAGIC; A opens the spell list; B closes it (`battle_list_back`,
+`engine/battleui.asm:325-330`). On that LAST tick, three real producers queue in the same frame:
+the still-owed wipe row for one of the three dead monsters (11 bytes, `wipe_tick`, which runs before
+`battle_dispatch` every tick — `engine/battle.asm:233`), the still-live flash on the fourth monster
+(4 bytes), and `battle_list_back`'s own 112-byte chain (§3.4, unchanged) — **11 + 4 + 112 = 127
+bytes**, using only real, ordinary dispatch transitions, no impossible fifth monster or
+simultaneous-menu-and-damage-loop assumption. This design deliberately does not cap hit feedback on
+message dismissal (§12.4), which is exactly why a still-flashing monster can survive long enough to
+coincide with a LATER, unrelated menu action.
+
+**Per-dispatcher-case UPPER BOUNDS, replacing the single (wrong) 112-byte figure** — round 3 finding
+3: these are arithmetic sums of each case's own worst-case terms, not all four independently shown
+to be constructible game states; only the first two rows below are DEMONSTRATED reachable (§12.6's
+own repro above, and §14's own test rows), the last two are conservative sums only:
+
+| Dispatcher case | Producers | Bytes | Reachability |
+|---|---|---|---|
+| Menu/list-back, a wipe and a flash still owed | `battle_list_back` (112) + wipe (11) + flash tick (4) | **127** | **Demonstrated** — the six-tick sequence above |
+| An all-target spell's own message, its own worst feedback | `cast_all`'s own message (28) + tick (4) + four re-arm restores (16) | **48** | **Demonstrated** — the old-slot-7/targets-4-7 repro above |
+| A dismissed message's own status-tick chain, one re-arm, a wipe | status chain (92) + tick (4) + one re-arm restore (4) + wipe (11) | **111** | Upper bound only, not shown reachable |
+| An all-target spell's own message, its own worst feedback, a wipe | `cast_all`'s own message (28) + tick (4) + four re-arm restores (16) + wipe (11) | **59** | Upper bound only, **not constructible as stated** |
+
+**The 59-byte row cannot actually happen the way it is summed.** Four re-arm restores need four
+DISTINCT, LIVING monster targets in the same `cast_all` volley (`cast_all` skips dead targets via
+`combatant_alive_x`, `engine/battleturn.asm:393-398`) — but there are only `MAX_MONSTERS = 4` monster
+slots total (`engine/constants.asm:556`). A pending wipe row needs a DIFFERENT monster that already
+died on an EARLIER tick (`wipe_tick` runs before `battle_dispatch`, `engine/battle.asm:233`, so a
+kill from THIS SAME volley cannot supply THIS SAME tick's own wipe row — that death's wipe only
+starts NEXT tick). With only four monster slots, "four living targets for the re-arms" and "a fifth,
+already-dead monster mid-wipe" cannot both be true at once — the two terms this row sums are
+mutually exclusive states of the same fixed-size monster roster, not two things that can coincide.
+The 111-byte row is not similarly disproven, but is likewise not independently demonstrated — it is
+kept as a conservative upper bound only, the identical epistemic status the 143-byte combination
+below already has.
+
+**127 bytes is the largest DEMONSTRATED reachable total**; the 143-byte conservative combination
+below still bounds it with room to spare, so the correction changes which schedule is cited as
+reachable, not the safety conclusion:
+
+**The fully conservative combination**, matching §3.4's own existing discipline (which already
+states the menu-chain-plus-wipe combination as "conservative, not demonstrated reachable" rather
+than asserting it cannot happen): the existing 123-byte figure (112-byte menu chain + 11-byte
+`wipe_monster` row, §3.4) plus this section's own 20 bytes gives **143 bytes** — comfortably inside
+`vram_buf`'s 256-byte capacity before the shared `$00` terminator. **143 bytes still safely bounds
+the largest reachable schedule found (127)**, so neither establishes an overflow; the correction is
+a reachability/accounting fix, not a newly discovered risk.
+
+A test observing queue length/packet count directly at the real dispatcher transitions above (not
+just a stable PPU byte, which cannot by itself distinguish "no packet queued" from "the same value
+queued twice") is in §14.
+
+### §12.7 Gating and the ledger
+
+**Measured, real prototype** (Appendix D; methodology below). Built on top of the phase 1b
+checkpoint (`c4e67c8`) in a `git worktree add --detach` scratch copy, unconditional (no `.if` gate,
+the identical measurement-only shape Appendix A/B/C already used), against `sample-rpg` on all three
+RPG-capable boards, with both `renamable` flags forced off (`test/unit/bankedbytes.test.js`'s own
+`measureRegion` convention):
+
+| board | off (phase 1b baseline) | on (hit feedback alone, round 1 fixes) | delta |
+|---|---|---|---|
+| MMC1 (mapper 1) | 4294 | 4529 | 235 |
+| MMC3 (mapper 4) | 4334 | 4569 | 235 |
+| UNROM 512 (mapper 30) | 4294 | 4529 | 235 |
+
+**235 bytes, flat, on all three boards** — up from the pre-fix design's own 204, the +31 bytes being
+exactly the round 1 correctness fixes above: `battle_hurt_tick`'s own `BP_INTRO` guard (one
+routine — `battle_miss_tick`'s own guard is the OTHER routine, and belongs to MISS's own +6, §13.6,
+since this variant has no MISS code at all to carry it), the ground-default restore path in both
+the tick routine and the arm-time restore, and the register-preservation rework that replaced
+`bt_tmp2` parking with a re-read. Measured in isolation by building a second copy of the prototype
+with every MISS-specific addition removed (§13 has no code in this variant at all), so this figure
+is hit feedback's own cost, not a share of the combined total. The banked-region
+ledger entry this becomes, the identical shape `BATTLE_ANIM_BATTLE_ALLOWANCE` already established:
+
+```js
+// main/build/battletables.js
+export const HIT_FEEDBACK_BATTLE_ALLOWANCE = 235; // measured, §12.7 -- flat, all three boards
+```
+
+gated on a new `projectUsesHitMiss`-shaped predicate (§8's own open gating question) and wired into
+`battleRegionBytes` the identical no-`&& banked` shape `BATTLE_ANIM_BATTLE_ALLOWANCE` already uses.
+**No kernel-lo term at all** — every routine in §12.3 lives entirely in the banked battle region;
+nothing here is reachable from the field. No OAM cost at all (the sprite-blink half only ever
+*skips* drawing an icon already counted in `battleCombatantOamMax`, never adds one — unlike MISS,
+§13.6); the `vram_buf` cost is bounded in §12.6, not zero as the pre-fix design claimed.
+
+See §13.6 for the combined figure (367) and the isolated MISS figure (134), and §11's own bullet for
+the exact, now-identified 2-byte gap between the two isolated deltas summed and the real combined
+delta.
+
+## §13. Phase 2b — MISS, a new design
+
+Chris's own answer 3 (§10): when an attack misses, the text MISS must appear next to the monster or
+party sprite that was missed. Unlike hit feedback (§12), phase 1 shipped nothing for this — every
+piece below is new.
+
+### §13.1 Where a miss can happen — evidence from the code
+
+Searched every `roll_hit` call site and every damage-application path (`engine/battleturn.asm`) for
+anywhere a hit can fail to land:
+
+- **`attack_target`** (`:267-274`) — a party member's own plain attack. `roll_hit`, `bne
+  attack_missed`.
+- **`monster_turn_attack`** (`:1255-1266`) — a monster's own plain attack, the "real, and only,
+  physical-attack path" per its own comment. `roll_hit`, `bne monster_missed`.
+- **`spell_damage`** (`:897-...`), reached from `cast_spell_dmg`/`cast_all` — **never calls
+  `roll_hit`**. A spell's own damage always lands; only its *amount* varies (magic power/defence,
+  the element modifier). Confirmed by reading the routine in full: the roll it performs is
+  `roll_spell_amount`, not `roll_hit`.
+- **`cast_heal`** (`:415-...`) — no `roll_hit`; a heal always lands.
+- **`poison_target`/`cast_poison`, `burn_target`/`cast_burn`** (`:472-...`) — no `roll_hit`; a
+  status effect always lands.
+- **`poison_tick`/`burn_tick`** (`engine/battleui.asm`'s own status dispatch calls these,
+  `battleturn.asm:605-629`) — self-damage (`bt_target` is set to `bt_actor`, the afflicted
+  combatant itself), no `roll_hit`. A status tick cannot miss because it has no target to evade.
+
+**Round 1 finding 6 — the non-miss exclusions, named explicitly rather than left implicit.** Two
+more failure paths exist that superficially resemble a miss (an action that does not do what it
+normally would) but are NOT attack-evasion misses and must not trigger the MISS overlay:
+
+- **`item_chosen_none`** (`engine/battleturn.asm:257-260`) — using an item with no heal effect
+  (`kind != heal` or `amount == 0`, under `ITEMS_ENABLED`) or, under the flat economy, an actor with
+  no `mon_heal`. Prints `BS_NOTHING`. No `bt_target` evasion is involved, and — round 2 finding
+  6 — the item is not consumed either: `item_chosen`'s own `beq item_chosen_none` branches around
+  `jsr remove_item` (`:232-235`) before it ever runs, so the failure path only clears the message
+  and prints the "no effect" line; the inventory is untouched.
+- **`battle_menu_failed`** (`engine/battleui.asm:216-218`) — a prohibited or failed flee attempt
+  (`battle_menu_flee`'s own `rng_next` roll, `:209-211`). Prints `BS_NORUN`. There is no dodging
+  combatant at all; running away is a property of the whole encounter, not an attack on a target.
+
+Neither path calls `roll_hit`, sets `bt_target` to a combatant being evaded, or reaches
+`attack_missed`/`monster_missed`; neither should ever arm `battle_miss_arm`, and this design does
+not wire either one to it.
+
+**Conclusion: exactly two miss paths exist, both physical attacks, both party-vs-monster or
+monster-vs-party — never a spell, never a status tick, never an item or flee failure.** This has a
+real consequence for the design below: because this is a turn-based system where exactly one
+combatant acts per turn, and only a physical attack (a single-target action) can ever miss, **at
+most one MISS can ever be live at a time** — the "two misses landing close together" question the
+brief raised cannot actually arise from the ENGINE's own turn structure. (Round 1's own "other
+conclusions" note is more precise than this document's first draft was: consecutive turns CAN each
+produce their own miss, one after another; it is specifically the message-dismissal cap in §13.4,
+not turn-based scheduling by itself, that keeps one miss's own overlay from ever overlapping the
+next one's.) No queueing or multi-slot policy is needed for MISS at all, unlike hit feedback's own
+multi-target question (§12.3), which arises specifically because an all-target *spell* can hit
+several combatants in one tick and spells never miss.
+
+### §13.2 RAM
+
+Two more zero-page bytes, chained after hit feedback's own pair:
+
+```asm
+bt_miss_slot = bt_hurt_left+1   ; the single most recent miss's target
+bt_miss_left = bt_miss_slot+1   ; countdown, from BT_MISS_FRAMES
+BT_MISS_FRAMES = 30
+```
+
+**Why not merge with `bt_hurt_*`?** A miss and a landed hit are mutually exclusive per action
+(`apply_damage` is never reached on the miss paths, §13.1), so at first glance one shared pair could
+cover both. Rejected: `bt_hurt_left` is deliberately NOT capped at message dismissal (§12.4's own
+reasoning — it is purely time-based and short enough that letting it run past an early dismissal is
+harmless), while MISS specifically must be capped there (§13.4) or a stale "MISS" label would still
+be reading a target from the turn before. Two different lifetime rules cannot share one timer
+without either compromise; two bytes is a small price for keeping both rules exact.
+
+**Round 1 finding 8's own re-chaining note.** `bt_miss_slot`'s own definition (`= bt_hurt_left+1`)
+depends on `bt_hurt_left` existing — if hit feedback (§12) is ever stripped out on its own (the
+isolated-measurement variant this design's own figures are built from, or a future project that
+ships MISS without hit feedback), `bt_miss_slot` must be re-chained to `bt_fx_timer+1` directly, or
+it is left referencing an undefined equate and the build fails outright. Both isolated variants
+Appendix D's own figures come from do this re-chaining as part of stripping the other half; it is
+not automatic and must be done by hand each time, since nesasm has no notion of "chain to whichever
+of these two symbols happens to exist."
+
+### §13.3 Where the glyphs come from — costed, recommended
+
+Two real candidates, both traced against real constraints rather than assumed:
+
+- **(a) Background tiles, reusing the resident font (`$A0-$FF`, `shared/font.js`)** — the same
+  mechanism every other piece of battle text already uses (`battle_say`, `print_num`). Rejected for
+  the field (the monster/party rows, `BT_MON_ROW`/`BT_PARTY_Y`): on a split-font board
+  (`fontBankSplit`, MMC3), the font lives in a *separate* CHR page that `split_select` maps in only
+  below the split rows — the message box (row 24), the battle box (row 20), the title's two text
+  bands (CLAUDE.md's own "MMC3's scanline IRQ" passage). The field rows (4-19, where every combatant
+  stands) are OUTSIDE that window, painted from the *combatant* tileset's own CHR page instead — the
+  identical reason `SPRITE_ARROW_TILE`/`engine/battleui.asm:65-93`'s own targeting cursor is a
+  BACKGROUND tile everywhere except a split-font RPG board, where it becomes a sprite specifically
+  because it points at a monster above the box. Writing an `$A0-$FF` tile id into the field on MMC3
+  would display whatever art the *combatant* tileset happens to have at that index, not a letter —
+  silent garbage, not a build error. Genuinely safe on the other two boards (MMC1, UNROM 512 have no
+  separate font page at all — the font is co-resident everywhere), but not board-uniform, so shipping
+  it would mean two different mechanisms gated on `fontBankSplit`, mirroring the cursor's own
+  precedent exactly.
+- **(b) Sprite tiles — recommended.** Sidesteps the whole font-page question: sprites are drawn from
+  their own, separately-mapped pattern table, so where the BG CHR page happens to be pointed is
+  irrelevant. Also sidesteps restoration entirely — a sprite that stops being drawn (timer reaches 0)
+  needs no "put back what was there," unlike a background write, which would need to know the exact
+  tile that was under it (trivial over the flat `map_battle_ground`/`map_battle_sky` fill
+  `draw_battle_screen` paints everywhere except a monster's own block art, but NOT trivial over that
+  block art itself — `draw_mon_block`, `engine/battle.asm:625-...`, grows an author's own tiles down
+  and right from each monster's anchor, up to `RPG_LIMITS.battleArtTiles` = 12 tiles either
+  dimension, so there is no single, uniform "restore" tile the way the attribute flash's own
+  `mon_attr,y` byte is). Costs: 3 new sprite tiles (M, I, S — the second S in "MISS" reuses the
+  first), reserved the identical way `SPRITE_ARROW_TILE` already is (§13.5), and OAM room for 4
+  sprites while armed (§13.6). **Recommendation: (b), uniformly on every board** — not (a)'s
+  per-board split — because a floating "MISS" specifically wants consistent, board-independent
+  behaviour (it is new content every project would see, not an internal mechanism like the cursor
+  that already has an established board-split precedent), and sprites-over-anything (block art,
+  ground, another sprite) need no placement-avoidance logic at all, since the NES's own
+  lower-OAM-index-wins priority makes MISS legible regardless of what is underneath it — subject to
+  the OAM-budget limitation §13.6 states honestly.
+
+The live battle sprite patterns for either option come from `BATTLE_TILESET`
+(`engine/battle.asm:391`); MMC3 maps that tileset's own sprite pages independently of the BG split
+(`engine/banks.asm:64`), and MMC1/UNROM 512 select or load the identical tileset the same way — so
+option (b)'s own reservation applies uniformly to the one tileset a battle actually draws from, on
+every board, with no split-specific exception of its own (unlike option (a)).
+
+### §13.4 The engine, complete
+
+**Arming**, from both miss branches, since `bt_target` already names who dodged at both call sites
+(`roll_hit`'s own comment: "an underflow is a miss"):
+
+```asm
+; engine/battleturn.asm
+attack_missed:
+  jsr battle_miss_arm
+  lda #$FF
+  sta <bt_dmg_hi             ; no number on this line
+  lda #BS_MISSES
+  jmp battle_say_actor
+
+battle_miss_arm:
+  lda <bt_target
+  sta <bt_miss_slot
+  lda #BT_MISS_FRAMES
+  sta <bt_miss_left
+  rts
+```
+
+(`monster_missed` gets the identical `jsr battle_miss_arm` inserted the same way.)
+
+**Ticking**, from `battle_tick` alongside `battle_hurt_tick` — no `vram_buf` work at all, since MISS
+is sprite-drawn. Guarded on `BP_INTRO` for the identical reason `battle_hurt_tick` is (round 1
+finding 7, §12.4):
+
+```asm
+battle_miss_tick:
+  lda <bt_phase
+  cmp #BP_INTRO
+  beq battle_miss_tick_rts
+  lda <bt_miss_left
+  beq battle_miss_tick_rts
+  dec <bt_miss_left
+battle_miss_tick_rts:
+  rts
+```
+
+**Drawing**, from `battle_draw_sprites` right after the flipbook (`battle_fx_draw`, §3.3) and before
+the combatant-icon loops — the identical "draw first, while `oam_idx` is still low, for foreground
+priority" rule §3.3 already established, so MISS is never hidden behind the icon it names:
+
+```asm
+; engine/battleui.asm
+battle_miss_draw:
+  lda <bt_miss_left
+  beq battle_miss_draw_rts
+  lda <bt_miss_slot
+  cmp #MAX_PARTY
+  bcs battle_miss_draw_mon
+  lda <bt_miss_slot
+  asl a
+  asl a
+  asl a
+  asl a
+  asl a                     ; slot * BT_PARTY_STEP
+  clc
+  adc #BT_PARTY_Y-8         ; one tile above the icon's own anchor row
+  sta <bt_tmp
+  lda #BT_PARTY_X
+  jmp battle_miss_draw_go
+battle_miss_draw_mon:
+  lda <bt_miss_slot
+  sec
+  sbc #MAX_PARTY
+  asl a
+  asl a
+  asl a
+  asl a
+  asl a                     ; monster slot * 32 pixels
+  clc
+  adc #BT_MON_ROW*8-8
+  sta <bt_tmp
+  lda #BT_MON_COL*8
+battle_miss_draw_go:
+  sta <bt_tmp2
+  ldy <oam_idx
+  ldx #0
+battle_miss_draw_cell:
+  lda <bt_tmp
+  sta OAM,y
+  iny
+  lda miss_tiles,x
+  sta OAM,y
+  iny
+  lda #0
+  sta OAM,y
+  iny
+  lda <bt_tmp2
+  sta OAM,y
+  iny
+  clc
+  adc #8
+  sta <bt_tmp2
+  inx
+  cpx #4
+  bne battle_miss_draw_cell
+  sty <oam_idx
+battle_miss_draw_rts:
+  rts
+
+miss_tiles:
+  .db MISS_TILE_M, MISS_TILE_I, MISS_TILE_S, MISS_TILE_S
+```
+
+**Placement, reasoned rather than measured (§8's own open question, §11's own bullet)**: the
+identical per-slot anchor math `battle_fx_draw` already uses (`BT_PARTY_X`/`BT_PARTY_Y`/
+`BT_PARTY_STEP` for a party slot, `BT_MON_COL*8`/`BT_MON_ROW*8` + slot × 32 for a monster slot),
+duplicated rather than factored out of that already-shipped phase-1b routine — a deliberate choice
+to keep this addition purely additive against reviewed, shipped code rather than risk regressing it
+for a small byte saving. Offset 8 pixels up from the icon's own anchor row, so the glyphs read as
+"next to" the sprite Chris asked for rather than dead-centered on it. `draw_mon_block`'s own art
+grows DOWN and RIGHT from a monster's anchor (§13.3), never up, so this offset is clear of THAT
+monster's own art by construction; a taller PRECEDING monster's block art growing down into a LATER
+slot's own row band is a real, accepted possibility at the largest authored sizes — the identical
+"accepted limitation" class the attribute flash's own anchored-cell coverage already has (§2(e)),
+not something this design tries to solve, since sprites drawn over background art (whatever it is)
+remain legible regardless via priority — subject, again, to §13.6's own OAM-budget limitation.
+
+**Message-hold interaction**: `battle_message_done` (`engine/battleui.asm:713-...`, phase 1b's own
+`bt_fx_anim` clear site) also clears `bt_miss_left` to 0, unconditionally — the identical cap the
+flipbook already gets, and the reason MISS needs its own timer rather than sharing `bt_hurt_left`
+(§13.2). `bt_hurt_left` is deliberately NOT capped the same way (§12.4) — a real, stated asymmetry,
+not an oversight. This is also the mechanism that makes a SECOND miss, on the very next turn, never
+overlap the first one's own overlay: the first miss's own message is dismissed (by timeout or an
+early A press) before the next actor's own turn can ever begin, and dismissal is exactly where
+`bt_miss_left` is forced to 0 — so `battle_miss_arm`'s own fresh write always starts from a clean
+slate, never stacking on top of a still-counting-down previous miss.
+
+**Battle-entry reset**: `setup_monsters` clears `bt_miss_left` to 0 alongside `bt_hurt_left` (§12.4),
+same `lda #0` store (round 1 finding 8's own explanation of the 2-byte measurement gap).
+`bt_miss_left`'s own lifetime across `battle_end`/`player_died` is identical to `bt_hurt_left`'s
+(§12.4): neither routine clears it, and the `BP_INTRO` guard above is what makes that safe.
+
+### §13.5 Sprite-table reservation and the generator
+
+**Round 1 finding 5 — the previous draft named the tile IDs in `engine/constants.asm` with no
+single JS authority, and the two existing consumers of `spriteReservedRanges` were not range-aware.**
+Fixed by mirroring the `SPRITE_ARROW_TILE` precedent exactly, at every point it touches:
+
+**One JS authority.** `shared/font.js` gains the three IDs and their pixel art, beside
+`SPRITE_ARROW_TILE`/`SPRITE_ARROW_ART` (`:36`, `:194-197`) rather than in a second module — this is
+sprite-table reservation bookkeeping, the identical category the arrow tile already lives in:
+
+```js
+// shared/font.js
+export const MISS_TILE_M = 0xfa;
+export const MISS_TILE_I = 0xfb;
+export const MISS_TILE_S = 0xfc;
+export const MISS_TILE_M_ART = rowsToTile([...], '1');
+export const MISS_TILE_I_ART = rowsToTile([...], '1');
+export const MISS_TILE_S_ART = rowsToTile([...], '1');
+```
+
+placed to sit beside the existing reservations without colliding: `SPRITE_ARROW_TILE` ($FD, the
+battle targeting cursor / naming grid) and the HUD hearts (`$FE`/`$FF`, action-projects-only, never
+reserved on an RPG at all — `projectUsesHeartArt` always answers false for an RPG regardless of
+`projectUsesCombat`, per CLAUDE.md's own "The engine" passage). The actual pixel art (the `[...]`
+row data) does not exist yet — drawing it is implementation work, the identical shape
+`SPRITE_ARROW_ART` already is, not a design question.
+
+**Engine equates generated FROM that authority**, the identical shape
+`SPRITE_ARROW_TILE = ${hex(SPRITE_ARROW_TILE)}` already is (`main/build/generate.js:3008`) — NOT
+hand-typed literals in `engine/constants.asm`:
+
+```js
+// main/build/generate.js, beside the existing SPRITE_ARROW_TILE line
+`MISS_TILE_M = ${hex(MISS_TILE_M)}`,
+`MISS_TILE_I = ${hex(MISS_TILE_I)}`,
+`MISS_TILE_S = ${hex(MISS_TILE_S)}`,
+```
+
+**The reservation itself**, the `spriteReservedRanges` precedent extended with a third range, gated
+the identical shape as the new `HIT_MISS_ENABLED` flag (§12.7/§8's own gating question):
+
+```js
+// shared/project.js -- spriteReservedRanges
+if (projectUsesHitMiss(project)) {
+  ranges.push({ start: MISS_TILE_M, end: MISS_TILE_S + 1, label: 'the MISS overlay' });
+}
+```
+
+**Stamping**, the `SPRITE_ARROW_ART` precedent (`main/build/generate.js:2672-2673`), applied to all
+three MISS glyphs, into every tileset (a project can set ANY tileset as its `battleTilesetId`, so
+every one keeps the slots free, the identical reasoning the arrow tile's own stamping already
+uses):
+
+```js
+// main/build/generate.js
+if (projectUsesHitMiss(project)) {
+  for (const tileset of tilesets) {
+    tileset.sprites[MISS_TILE_M] = MISS_TILE_M_ART;
+    tileset.sprites[MISS_TILE_I] = MISS_TILE_I_ART;
+    tileset.sprites[MISS_TILE_S] = MISS_TILE_S_ART;
+  }
+}
+```
+
+**The two EXISTING consumers of `spriteReservedRanges` must become range-aware, not just
+range-counting.** Both currently branch on a literal string equality against `'the HUD hearts'` and
+otherwise assume the range IS the cursor — true today (only two ranges ever coexist, per
+CLAUDE.md's own "Never more than two ranges at once" note), false the moment a third range exists:
+
+```js
+// shared/project.js:6563-6567 -- validateProject's occupied-artwork refusal, TODAY
+const message =
+  range.label === 'the HUD hearts'
+    ? `Tileset "${tileset.name}" has artwork in the last two sprite tiles, which the HUD hearts reserve ` +
+      'while anything in the project can hurt the player.'
+    : `Tileset "${tileset.name}" has artwork in sprite tile $${range.start.toString(16).toUpperCase()}, ` +
+      'which the battle targeting cursor reserves on this cartridge.'; // WRONG for the MISS range
+```
+
+```js
+// renderer/forges/tile/tile.js:415-419 -- the Tile Forge shading hint, TODAY
+range.label === 'the HUD hearts'
+  ? `Tiles $${HEART_FULL_TILE...}–$FF are shaded because this project can hurt the player: ...`
+  : `Tile $${SPRITE_ARROW_TILE...} is shaded because this project's battle system reserves it ` +
+    'for the targeting cursor, ...'; // WRONG tile id AND wrong reason for the MISS range
+```
+
+Both need a real per-label message (or a small label→message map keyed by `range.label`, since
+`spriteReservedRanges` already emits a distinct label per range) rather than a binary "hearts or
+cursor" branch, so an author with MISS-slot artwork sees "the MISS overlay reserves" naming the
+RIGHT tiles ($FA-$FC) and the RIGHT reason, not a stale claim about the cursor at the wrong address.
+This is implementation work with a clear shape (the branch becomes a lookup on `range.label`, one
+more arm), not a further design decision.
+
+**The author cost, stated honestly**: three sprite indices unavailable in **every** tileset of an
+opted-in project — not merely the currently-selected battle tileset, since `battleTilesetId` can
+change later and every tileset must keep the slots free regardless (the identical reasoning
+`SPRITE_ARROW_TILE`'s own stamping already applies). 48 bytes of CHR art (3 tiles × 16 bytes) inside
+already-allocated tileset payloads, not additional payload size.
+
+### §13.6 OAM accounting
+
+**MISS costs a FIXED 4 tiles when armed, never variable** — unlike the flipbook (§3.6), whose own
+frame size depends on what an author painted, MISS is always exactly `M`+`I`+`S`+`S`:
+
+```js
+// shared/project.js
+export const MISS_OAM_TILES = 4;
+```
+
+**Both MISS and a playing `attackAnim` flipbook can need room in the same tick — confirmed, not
+assumed**: `monster_turn_attack` arms the flipbook (`battle_fx_arm_attack`) BEFORE `roll_hit`
+(`engine/battleturn.asm:1255-1266`, phase 1b's own comment: "the swing plays whether the hit lands
+or misses") — so on a miss, the ATTACKER's own flipbook is still ticking/drawing on the exact same
+tick MISS arms over the TARGET. `BATTLE_FX_OAM_ROOM`'s own formula reserves room for both, not just
+the combatant/cursor worst case:
+
+```js
+// main/build/generate.js -- was: MAX_OAM_ENTRIES - battleCombatantOamMax(project, mapper)
+const battleFxOamRoom = Math.max(
+  0,
+  MAX_OAM_ENTRIES - battleCombatantOamMax(project, mapper) - MISS_OAM_TILES
+);
+```
+
+`battle_fx_draw`'s own fit check (`cmp #BATTLE_FX_OAM_ROOM+1`, §3.3) needs no code change —
+pre-subtracting `MISS_OAM_TILES` at the SAME point `battleCombatantOamMax` is already subtracted
+means the flipbook's existing check automatically leaves MISS its own reserved room too, whenever
+the flipbook and MISS both need to fit alongside the SAME worst-case combatant total.
+`battleSpriteBudget`'s own `used` figure (§3.6) gains the identical flat addition:
+
+```js
+// shared/project.js -- battleSpriteBudget, was: battleCombatantOamMax(...) + fxTiles
+return { used: battleCombatantOamMax(project, mapper) + fxTiles + MISS_OAM_TILES, limit: MAX_OAM_ENTRIES };
+```
+
+gated the same way as the rest of §13 (only when `projectUsesHitMiss`, §12.7/§8) — a project that
+never opts in pays nothing here either, the identical byte-identity discipline `fxTiles` itself
+already holds to when no battle animation is authored. `validateProject`'s own gate is
+`battleBudget.used > battleBudget.limit` (`shared/project.js:7402`, strictly greater — `used == 64`
+does not warn), which is what §14's own test rows below assert through, not the raw formatted string
+`describeBattleSpriteWarning` returns (`shared/project.js:3750`) — that function is an unconditional
+formatter, not a gate, and can be called on a budget that never triggers a warning at all.
+
+**Round 1 P2 finding 4, corrected by round 2 finding 2, and corrected again by round 3 finding 5 —
+MISS's fixed cost is a real, additional OAM consumer with no exception.** The first fix draft
+claimed "MISS does not make a project's pre-existing combatant overflow worse," and round 2's own
+fix narrowed that claim to "true only for a project whose combatants ALONE already exceed 64" —
+still false. `MISS_OAM_TILES` (4) is added to `battleSpriteBudget`'s own total unconditionally once
+the feature is enabled, so it changes the total in EVERY case, with two genuinely different
+consequences that must not be conflated:
+
+- **Newly introduced overflow** — a project whose combatants alone sit in **61-64** fits today (no
+  warning); adding MISS's own 4 tiles pushes the total to **65-68**, a warning that did not exist
+  before this feature. `MISS_OAM_TILES` is the entire cause here, not merely present alongside a
+  pre-existing problem.
+- **Increased existing overcommitment** — a project whose combatants alone ALREADY exceed 64 (say,
+  65) still warns either way (warning PRESENCE is unchanged, true), but the real total grows from 65
+  to **69** once MISS is added — MORE OAM entries are actually competing for the same 64 hardware
+  slots, a larger real exposure even though the boolean "does it warn" answer does not change.
+  Warning presence staying the same is not the same claim as the underlying budget or runtime risk
+  staying the same, and this document must not conflate the two.
+
+`battle_miss_draw` (§13.4) always writes its four entries unconditionally, at the LOW end of
+`oam_idx` (drawn first, for priority) — but `draw_metasprite`'s own tile-copy loop stops only when
+the byte-sized `oam_idx` itself wraps past 255 back to 0 (`engine/entities.asm:635`, `:655`), and a
+LATER combatant draw call (`battle_sprite_pc`/`battle_sprite_mon`, `engine/battleui.asm:875`,
+`:897`) always starts its own count from wherever `oam_idx` currently sits — so once total OAM usage
+this tick reaches 64 entries (256 bytes) and wraps, whatever draws AFTER the wrap overwrites
+whatever was written at the START. MISS's own four entries are exactly as exposed to this as any
+other combatant's, in every case above — never more protected, never less.
+
+**Policy: an explicitly accepted limitation, stated honestly rather than minimized** — advisory, not
+a new runtime admission/skip check or a stricter build refusal. A project that opts into MISS and
+whose combatants alone sit in 61-64 can newly see `battleSpriteBudget`'s own warning
+(`describeBattleSpriteWarning`, gated through `validateProject`'s `used > limit` check) where none
+fired before, and — whether the overflow is newly caused by MISS or was already there without it —
+the response is identical: a build-time warning, never a refusal, and MISS itself costs the
+identical, fixed 16 bytes of OAM every time it draws, never more, regardless of which case applies.
+A stricter refusal or a new runtime check would make this phase-2 cosmetic feature the FIRST
+mechanism in this codebase to actually solve a class of OAM overflow every other battle-region
+feature (the flipbook included) has already, deliberately, left to the same advisory warning. Test
+coverage for the exact 60/61/64/65-combatant boundary (no flipbook authored) is in §14, asserted
+through `validateProject`'s own warning array.
+
+**Round 2 P2 finding 3 — `describeBattleAnimationOamWarning` must also account for MISS's own 4
+entries, or its own explanation stops adding up the moment MISS is what pushes a project over.**
+`validateProject` calls this helper whenever `battleSpriteBudget`'s own revised total (now including
+`MISS_OAM_TILES`) overflows — but the helper's own text (§3.6) sums only the worst playable
+animation's tiles and `battleCombatantOamMax`, with no term for MISS at all. Reproduced: combatants
+60, one referenced playable animation at 1 tile, MISS enabled — the real total is 60 + 1 + 4 = 65,
+over the limit, so the warning fires; the OLD text would say `"X" (1 sprite tile) plus this
+project's own worst-case combatants and cursor (60) would need more than the NES's 64 sprites at
+once` — 1 + 60 = 61, which does NOT exceed 64, so the stated reasoning does not itself explain why
+the warning fired at all. Fixed by adding MISS's own term to the SAME explanation, present only
+when the project has opted in (the off-path text, MISS disabled, is unchanged byte-for-byte):
+
+**Round 3 finding 2 — the pseudocode above did not actually preserve the committed off-path text**:
+it changed the committed em dash (`—`) to a plain `--` and dropped the entire trailing advice
+sentence ("Use a smaller animation, or reduce the party/formation/cursor cost elsewhere."), so the
+claim that MISS-disabled output stays byte-for-byte unchanged was false the moment it was checked
+against the real string (`shared/project.js:3865-3871`). Corrected below to change only what the
+`missClause` insertion requires, character-for-character identical to the committed string
+otherwise:
+
+```js
+// shared/project.js -- describeBattleAnimationOamWarning, was: no MISS term at all.
+// Every character outside the inserted ${missClause} matches the committed string exactly
+// (shared/project.js:3865-3871) -- when missClause is '' (MISS disabled), the output is
+// byte-for-byte identical to what ships today.
+export function describeBattleAnimationOamWarning(project, mapper) {
+  const combatantMax = battleCombatantOamMax(project, mapper);
+  const missTiles = projectUsesHitMiss(project) ? MISS_OAM_TILES : 0;
+  let worstId = null;
+  let worstTiles = 0;
+  for (const animId of allBattleAnimationIds(project)) {
+    if (!isPlayableBattleAnimation(animId, project)) continue;
+    const tiles = Math.max(
+      0,
+      ...project.sprites.animations[animId].frames.map((frame) => project.sprites.metasprites[frame.metaspriteId].tiles.length)
+    );
+    if (tiles > worstTiles) { worstTiles = tiles; worstId = animId; }
+  }
+  if (worstId === null) return null;
+  const name = project.sprites.animations[worstId].name;
+  const missClause = missTiles ? ` plus MISS's own ${missTiles} sprites` : '';
+  return (
+    `"${name}" (${worstTiles} sprite tiles) plus this project's own worst-case combatants and cursor ` +
+    `(${combatantMax})${missClause} would need more than the NES's ${MAX_OAM_ENTRIES} sprites at once, so it will be ` +
+    'skipped in-game whenever it does not fit — even in a battle with real room, since the check is a ' +
+    "project-wide worst case, not this battle's own. Use a smaller animation, or reduce the party/" +
+    'formation/cursor cost elsewhere.'
+  );
+}
+```
+
+so the reproduced case above now reads `"X" (1 sprite tile) plus this project's own worst-case
+combatants and cursor (60) plus MISS's own 4 sprites would need more than the NES's 64 sprites at
+once` — a total (1 + 60 + 4 = 65) that actually matches why `validateProject` called the helper in
+the first place. Test coverage for this exact reproduction (60 combatants, a referenced 1-tile
+animation, MISS on) is in §14.
+
+### §13.7 vram_buf accounting
+
+**Zero.** MISS is entirely sprite-drawn (§13.3's own recommendation); no `vram_open`/`vram_push`/
+`queue_at` call anywhere in §13.4. The only phase-2 `vram_buf` traffic at all is hit feedback's own
+attribute-flash and restore packets (§12.6).
+
+### §13.8 Interaction with the existing "misses" text message
+
+**Additive, not a replacement.** `battle_say_actor`/`battle_say` (`engine/battleui.asm:580-614`,
+unchanged) already prints the acting combatant's own name and "misses" as a two-line text message,
+held for `MSG_HOLD` (45 ticks) or until dismissed — this design adds a SECOND, independent signal
+(the floating overlay, naming the TARGET rather than the attacker) that reinforces rather than
+duplicates it: the text says who missed, the overlay says who dodged. Both fire from the same two
+call sites (`attack_missed`/`monster_missed`) in the same tick; neither reads or depends on the
+other's own state.
+
+## §14. Phase 2 test plan
+
+The identical §6-style table — shape, and the wrong implementation each row catches. Rows marked
+**round 1** are new or rewritten in response to round 1's review; rows marked **round 2** are new
+or rewritten in response to round 2's; the rest are carried over unchanged.
+
+| Test | Shape | Wrong implementation it catches |
+|---|---|---|
+| Off-path byte-identity | `monsterlevel.test.js`-shape, `HIT_MISS_ENABLED` off | A gate that assembles even one byte of §12/§13's own code unconditionally |
+| Ledger isolation, hit feedback alone | `bankedbytes.test.js`-shape, `assert.equal` on the measured 235-byte delta, all three boards | A stale allowance figure drifting from the real assembled cost |
+| Ledger isolation, MISS alone | Identical shape, the measured 134-byte delta | Same, for the independently-measured MISS figure |
+| Combined equality | Both live together, the measured 367-byte delta — NOT the sum of the two isolated deltas (369), the real combined figure, 2 bytes different for the identified reason (§11) | A ledger that sums two allowances instead of measuring the real combined cost, silently 2 bytes wrong |
+| **round 2 — Multi-target sentinel integrity, corrected observation point (finding 4, P2, supersedes round 1's own row)** | Drive a real all-target spell through `cast_all` with a controlled formation of 4 living block-art monsters at LOW actor id (0) AND, in a second case, HIGH actor id (31, the reviewer's own reproduction, genuinely in range and above the loop boundary for a real 32-actor project); observe `bt_tmp2` with a breakpoint/trace AT `cast_all_next`, immediately after EACH `apply_damage` call — never after `cast_all` returns, since `battle_say_actor`'s own name lookup (`push_combatant_name`, `engine/battleui.asm:639-666`) legitimately reuses `bt_tmp2` as its own character-countdown scratch once the loop has finished, so a post-return read is 0 by design and proves nothing about the loop's own integrity; assert (a) `bt_tmp2` reads exactly `cast_all`'s own end-of-side sentinel at every one of those in-loop observations, (b) every intended target's own HP dropped by the rolled amount, and (c) no combatant OUTSIDE the intended side took damage | The stated design (§12.3) is already correct — this row exists to make sure the TEST oracle observes the right moment; a test written as "call `cast_all`, then check `bt_tmp2`" would reject the correct engine (round 2's own reproduction: sentinel 8 at every in-loop observation, 0 on return, both expected) |
+| mon_tile guard | Arm hit feedback on a metasprite-fallback monster's slot; assert no attribute packet is ever queued for it, only the icon-skip draws | The missing guard §2(e) recorded against Appendix C, reopened |
+| **round 1 — Dead-monster restoration, not abandonment (finding 2, P2, replaces the old "Dead-monster abandon" row)** | Arm the flash on a block-art monster with another monster ALSO alive; land a lethal hit on the flashing one (setting `bt_wipe_mask`'s own bit) at both blink parities (mid-flash-tint and mid-authored-tint) in separate cases; let `wipe_tick` run to completion (4 ticks, full row erase); assert the PPU attribute byte for that cell reads `BT_GROUND_ATTR` ($55) once the dead-check has fired, not the flash tint and not the monster's own `mon_attr` — and assert the STILL-ALIVE monster's own cell is untouched throughout | The design's own previous policy ("abandon, no restore") passing this exact scenario with a permanently stranded `$FF` — round 1's own review reproduced this directly against the assembled prototype |
+| **round 1 — Arm-time death restoration (finding 2's second path)** | An all-target spell's own `cast_all` loop kills a flashing block-art monster on an early iteration, then re-arms onto a different target on a later iteration in the SAME tick; assert the killed monster's own cell reads `BT_GROUND_ATTR`, not stranded, even though `battle_hurt_tick` never gets another chance to see that slot | `battle_hurt_restore_slot` skipping the dead old slot entirely (its pre-fix behavior), stranding the tint the tick-based fix alone cannot reach once the shared pair has moved on |
+| Multi-target hit-feedback policy | An all-target spell hitting 3 living monsters in one tick; assert only the LAST-processed slot ends up blinking, and that each EARLIER slot's own arm-then-supersede never left a visible blink (one tick, per the stranding fix) | A partial fix that blinks the first target instead of the last, or leaves an earlier target visibly blinking for a stray tick |
+| **round 2 — vram_buf queue-length, corrected schedules (finding 1, P2, supersedes round 1's own row, which requested 5 block-art monsters — one more than `MAX_MONSTERS = 4` allows)** | Two cases, both driven through real dispatcher transitions: (a) the 20-byte feedback maximum — an already-armed hurt slot 7 (the 4th monster, block-art, already flashing from an earlier hit) superseded by an all-target spell hitting all 4 LIVING block-art monster slots 4-7 in turn, never a fifth monster; assert exactly 5 feedback packets (1 tick + 4 re-arms, 20 bytes) queued, distinct from `cast_all`'s own 28-byte message; (b) the 127-byte whole-frame maximum — the six-`battle_tick` sequence in §12.6 (an all-target spell kills 3 monsters and leaves the 4th flashing, A dismisses the message, the next actor's own menu opens, Down selects MAGIC, A opens the spell list, B closes it); assert the queue length/packet count on the LAST tick is exactly 11 (wipe) + 4 (flash) + 112 (`battle_list_back`) = 127 bytes — not merely that a sampled PPU byte looks stable, which cannot distinguish "no packet queued" from "the same value queued twice" | The round-1 test's own impossible 5-monster construction (silently vacuous, since no real project can reach it); a reachable-schedule claim that stops at the wrong (too-small, wrong-chain) 112-byte figure instead of the real, larger 127-byte one. This row exercises only the two DEMONSTRATED cases (20/48 bytes and 127 bytes, §12.6); the 111- and 59-byte rows are upper-bound arithmetic only, not independently tested here or anywhere else in this plan (round 3 finding 3) |
+| **round 2 — MISS OAM overflow, corrected boundary and oracle (finding 2, P2, supersedes round 1's own row, which wrongly called 64-without-MISS "already overflowing")** | Four projects, each with `battleCombatantOamMax` values of exactly 60, 61, 64, and 65 (multiple icons, no `attackAnim` authored anywhere), each built both with MISS off and MISS on, asserted through `validateProject`'s own warning array (`used > limit`, `shared/project.js:7402`), never through calling `describeBattleSpriteWarning` directly (an unconditional formatter, not a gate): (a) at 60, MISS off or on, no warning (60, then 64, neither exceeds 64); (b) at 61, no warning MISS off, a NEW warning MISS on (65 > 64) — the case MISS itself causes; (c) at 64, no warning MISS off (exactly at the limit, not over it — round 1's own row wrongly assumed this already warned), a NEW warning MISS on (68 > 64); (d) at 65, a warning already fires MISS off (genuine pre-existing overflow, unrelated to MISS), and still fires MISS on, unchanged in cause | Round 1's own row's false premise that 64-without-MISS already warns, which would have let a test pass while asserting the wrong thing at the exact boundary that matters; asserting via `describeBattleSpriteWarning` instead of the real gate, which can be called and formatted without ever having actually fired |
+| **round 2 — MISS OAM overflow, exact-fit boundary restored (finding 5, P2, IN ADDITION to the row above, not a replacement)** | A project where `battleCombatantOamMax` + the worst authored `attackAnim`/`spell.anim` frame + `MISS_OAM_TILES` sums to EXACTLY 64; assert the flipbook's own fit check (`battle_fx_draw`'s `cmp #BATTLE_FX_OAM_ROOM+1`, `engine/battleui.asm:1013`) still admits that frame. A second case: increase the animation's own worst frame by one tile (total 65); assert the WHOLE frame is now rejected (never a partial draw) | A generated `BATTLE_FX_OAM_ROOM` formula missing its own `- MISS_OAM_TILES` term (§13.6) — the row above (no flipbook authored) cannot catch this at all, since it never exercises `battle_fx_draw`'s own runtime fit check; small animations and icons would still render "correctly" with the subtraction missing, silently narrowing the room every future flipbook frame actually gets |
+| **round 3 — describeBattleAnimationOamWarning accounts for MISS, corrected off-path oracle (finding 3, P2 from round 2, corrected by round 3 finding 2)** | The reviewer's own reproduction: 60 combatants, one referenced playable `battle.attackAnim`/`spell.anim` animation at 1 tile, MISS enabled (total 60+1+4=65, over the limit); assert the warning text names MISS's own 4 sprites as part of what pushed the total over, not just the animation and the combatants (whose own sum, 61, does not itself exceed 64 and so cannot be the stated reason on its own), AND that every other character of the returned string matches the committed text exactly (the em dash, and the full "Use a smaller animation, or reduce the party/formation/cursor cost elsewhere." advice suffix). **Corrected**: the SAME 60-combatant/1-tile layout does NOT overflow with MISS off (61 ≤ 64), so `validateProject` never calls the helper at all in that case — two off-path assertions instead of one: (i) call `describeBattleAnimationOamWarning` directly with MISS disabled and assert its output is byte-for-byte identical to the committed string (`shared/project.js:3865-3871`); (ii) separately, a layout that still overflows with MISS OFF (e.g. combatants at 65 alone), asserted through `validateProject`, to confirm the real end-to-end off-path warning text is unaffected by this change | The pre-fix warning text citing only the animation and combatants (61) as if that explained an overflow past 64 — a maintainer reading the message would have no way to see that MISS was the actual cause; round 2's own "MISS disabled" case asserted through `validateProject` at a layout (61 total) that never calls the helper at all, silently passing without exercising the off-path code path |
+| **round 1 — Real attack-path miss coverage (finding 6, P2, replaces the old "Sole-miss invariant" row)** | Drive `attack_target` (party) and `monster_turn_attack` (monster) through `roll_hit` with a controlled RNG forcing a miss on each path in turn; assert `battle_miss_arm` fires, `bt_miss_slot`/`bt_miss_left` are set to the real dodging target, the overlay renders at that target's own anchor, the message ("X misses") and the overlay both appear, and the overlay disappears exactly at `BT_MISS_FRAMES` ticks (30) OR at message dismissal, whichever comes first. A second case: dismiss the message EARLY (before 30 ticks), then immediately force a SECOND miss on the next turn; assert the first overlay is gone and the second one starts clean, never overlapping | The impossible-construction row it replaces would still pass if a future engine change made a spell or status path call `roll_hit` — it asserted nothing about either real call site ever invoking the overlay at all |
+| **round 1 — Non-miss negative coverage (finding 6)** | Drive `item_chosen_none` (a non-healing item — round 2 finding 6: the item is never consumed either, since `item_chosen`'s own `beq item_chosen_none` branches around `remove_item` before it runs, §13.1), `battle_menu_failed` (a failed flee roll), a damage spell, a status-effect spell, and a status tick (poison/burn); assert `battle_miss_arm` is never called and `bt_miss_left` never becomes nonzero from any of these five paths | A future call site wired to `battle_miss_arm` by mistake, or a broadened `roll_hit` call reaching one of these paths without the design noticing |
+| **round 1 — Hit-flash trace, both bands and cessation (finding 6, corrected per round 2's own remaining note)** | Arm the flash on a living block-art monster; sample the real PPU attribute byte every tick across the full `BT_HURT_FRAMES` (20) countdown; assert both the authored-tint band and the flash-tint band are each visible for two consecutive ticks (the `and #2` cadence, §12.1/round 1 finding 9), the terminal tick forces the authored tint regardless of which band it would otherwise be in, and that cessation past the terminal tick is confirmed by a DIRECT queue observation (no packet appended to `vram_buf` on any tick after the terminal one) — not source inspection alone, which the round-1 design leaned on for this exact claim | A cadence that silently reverts to single-tick alternation, or a terminal tick that lands mid-band and leaves the wrong tint; a queue that keeps appending duplicate packets past cessation, invisible to a PPU-byte-only check the same way finding 1's own reachability claim was |
+| BP_INTRO guard (round 1 finding 7) | Leave `bt_hurt_left`/`bt_miss_left` nonzero (simulating a stale value from a previous battle or uninitialized RAM), start a fresh battle, and inspect `vram_buf`/OAM writes specifically on the FIRST tick, while `bt_phase` still reads `BP_INTRO` — not just the timer values after `setup_monsters` has run; assert neither tick routine decrements or queues anything on that tick | The guard's own absence (round 1's own review reproduced a stale timer of 20 becoming 19 and queuing a real packet during `BP_INTRO`, before reset) |
+| Battle-entry reset | Leave `bt_hurt_left`/`bt_miss_left` nonzero at the end of one battle (a hit or miss still counting down when the fight ends, and NOT cleared by `battle_end`/`player_died` — §12.4's own accurate lifetime statement), start a fresh battle, assert both read 0 once `setup_monsters` has run (post-`BP_INTRO`) | Appendix B/C's own recorded limitation, reopened |
+| Message-cap asymmetry | Land a hit AND draw a miss in close succession, dismiss the miss's own message early; assert `bt_miss_left` is force-cleared at dismissal while a separately-still-counting `bt_hurt_left` (from an earlier, unrelated hit) is NOT | A blanket cap that treats both timers the same, contradicting §12.4/§13.4's own stated asymmetry |
+| Rendered-pixel MISS overlay | Real `nes.ppu` frame-buffer read, arm MISS over a combatant, assert the M/I/S/S tiles are visible at the expected offset | A draw-order or coordinate regression |
+| Rendered-pixel priority | Arm both a flipbook AND MISS in the same tick (a monster's own missed attack, §12.4); assert both are visible, neither silently dropped by an OAM-budget miscalculation | The combined-frame OAM interaction (§13.6) going untested until a real project hits it |
+| **round 3 — Reservation integration, on/off, corrected blank-reference oracle (finding 5, P2 from round 2, corrected by round 3 finding 1)** | Eight cases against a project with `HIT_MISS_ENABLED` on, mirroring `SPRITE_ARROW_TILE`'s own existing test coverage: (a) artwork painted at `$FA`-`$FC` in a tileset is refused, naming "the MISS overlay" and the real `$FA`-`$FC` range, never the cursor's own `$FD` wording; (b) **corrected** — a metasprite that REFERENCES a blank `$FA`-`$FC` tile IS refused (`shared/project.js:6577-6590`'s own existing, generic reference-collision check: stamping would replace that blank with a MISS glyph, so a metasprite pointing at it would unexpectedly display one), naming "the MISS overlay" and the tileset — the identical mechanism `SPRITE_ARROW_TILE`/the HUD hearts already inherit, extended automatically once `spriteReservedRanges` carries the MISS range; (b2) a genuinely blank, UNREFERENCED `$FA`-`$FC` tile (no metasprite points at it) is ALLOWED, not refused — the distinct, permitted case (b) used to conflate with the refused one; (b3) the SAME blank-reference scenario from (b), in an otherwise-clean project (no other applicable reservation or unrelated validation error) with `HIT_MISS_ENABLED` OFF, produces no error at all — confirming the refusal is genuinely gated on the feature, not a pre-existing check that happened to already cover `$FA`-`$FC`; (c) the Tile Forge's own shading hint names the MISS range and reason, not the cursor's; (d) the Tile Forge's own tile shading covers `$FA`-`$FC` when `HIT_MISS_ENABLED`; (e) `MISS_TILE_M`/`I`/`S` art is stamped into EVERY tileset, on all three RPG-capable boards, not only the currently-selected battle tileset; (f) with `HIT_MISS_ENABLED` off, none of the above fires and no tileset gains the stamped art — off-path byte-identity for the reservation itself | No existing §14 row exercised the range-aware refusal/hint changes at all (round 1's own finding 5 was a design-only fix, unverified); off-path ROM identity and a rendered MISS overlay cannot themselves catch a wrong warning label or a reservation that silently fails to refuse occupied artwork; round 2's own (b) row asserted the OPPOSITE of `shared/project.js:6577-6590`'s own existing contract — it would have rejected the correctly integrated implementation, or encouraged removing an existing protection to make the (wrong) test pass |
 
 ## Appendix A — the prototype's full diff (phase 1, corrected)
 
@@ -2569,4 +3846,550 @@ index 0232247..ace53ab 100644
  ; The $10-per-row darken trick reaches solid black in at most this many
  ; subtractions from any starting row; the hold between steps is an engine
  ; constant, not authored -- see OP_FADE below and shared/project.js's
+```
+
+## Appendix D — the phase-2 shippable prototype's full diff (hit feedback + MISS, measured, round 1 fixes applied)
+
+Supersedes the round-1-reviewed version of this appendix in full — this is the SAME measurement
+methodology (a `git worktree add --detach` scratch copy on top of the phase 1b checkpoint,
+`c4e67c8`, unconditional, no `.if` gate), rebuilt with every round-1 correctness fix (findings 1, 2,
+7) applied, and remeasured. Appendix B and Appendix C remain in this document as the historical
+record of the two standalone, never-shipped measurement prototypes §2(e) originally costed, and as
+the source of the limitations list this design closes; they are not what ships.
+
+Built at `/tmp/claude-1000/-home-chris-nes-game-forge/d294e3d1-9b11-4aa3-ad94-a9ae53720915/scratchpad/
+phase2-fix1`, measured with `buildProject` against `sample-rpg` on all three RPG-capable boards
+(both `renamable` flags forced off, `test/unit/bankedbytes.test.js`'s own `measureRegion`
+convention) via the identical methodology `test/unit/bankedbytes.test.js` itself uses (parsing
+nesasm's own `BANK N used/free` line for the banked battle region). The diff below was saved
+(`git diff -- engine/`) BEFORE the worktree was removed, so it is exactly the code that produced
+every figure in this appendix and in §12.7/§13.6 — not reconstructed afterward. The worktree and its
+two isolated-measurement copies (`phase2-fix1-hurtonly`, `phase2-fix1-missonly`, each built by
+mechanically stripping the other half's own lines from a copy of this exact diff, verified by
+`grep`ing each stripped copy for the removed symbols before building) were all removed afterward;
+`git worktree list`/`git status --short` on the main tree confirmed clean.
+
+| board (RPG-capable) | region used, off | region used, on (combined) | delta |
+|---|---|---|---|
+| MMC1 (mapper 1) | 4294 | 4661 | 367 |
+| MMC3 (mapper 4) | 4334 | 4701 | 367 |
+| UNROM 512 (mapper 30) | 4294 | 4661 | 367 |
+
+**367 bytes, flat, on all three boards** — up from the pre-round-1 combined figure of 330; both
+§12.7 (hit feedback alone, 235, up from 204) and §13.6 (MISS alone, 134, up from 128) are measured
+against this same rebuilt diff. See §11's own bullet for the exact, now-identified 2-byte gap
+between 235+134=369 and this real combined figure (round 1 finding 8: the shared `lda #0` in
+`setup_monsters`). Unconditional (no `.if` gate) throughout, the identical measurement-only shape
+Appendix A/B/C already used — a real shipped version gates all of it on `HIT_MISS_ENABLED` (§12.7/
+§13.5/§8's own open gating question).
+
+Round 1 findings this diff fixes, restated as a checklist against the code below:
+
+- **P1 finding 1** — `battle_hurt_attr_open` no longer writes `bt_tmp2` (or any shared scratch byte)
+  at all; callers that need the actor id re-read `mon_slot_actor,x` themselves, since `X` (the
+  monster slot) survives the call untouched. `cast_all`'s own end-of-side sentinel is never touched
+  by any routine in this diff.
+- **P2 finding 2** — a monster that dies while flashing has its attribute cell force-restored to
+  `BT_GROUND_ATTR` ($55), on two paths: `battle_hurt_tick`'s own dead-check (the common case), and
+  `battle_hurt_restore_slot`'s own arm-time check (the case where a different target supersedes the
+  shared pair before the tick routine gets another chance at the dead one).
+- **P2 finding 3** — no code change was needed; §12.6 recomputes the `vram_buf` bound analytically
+  against this same diff's own packet-producing call sites (the tick routine's one packet, and up to
+  four arm-time restores from an all-target spell's own `cast_all` loop).
+- **P2 finding 4** — no code change; §13.6 states the MISS OAM-overflow policy as an accepted
+  limitation, matching §3.6's own established precedent for the flipbook's combatant/cursor figure.
+- **P2 finding 5** — no engine code change; §13.5 redesigns the JS-side single authority and the two
+  UI consumers that need to become range-aware, neither of which is part of this ASM prototype.
+- **P2 finding 6** — no code change; §13.1/§14 record the exclusions and the real test coverage.
+- **P3 finding 7** — `battle_hurt_tick`/`battle_miss_tick` both gained a `BP_INTRO` guard, matching
+  `battle_fx_tick`'s own existing one.
+- **P3 finding 8** — no code change; §11/§12.7/§13.4 now explain the 2-byte measurement gap exactly
+  (the shared `lda #0` in `setup_monsters`) instead of attributing it to alignment noise, and §13.2
+  documents the `bt_miss_slot` re-chaining every isolated-MISS measurement needs.
+- **P3 finding 9** — no code change (the `and #2` cadence was already correct); §12.1 corrects the
+  PROSE that mis-described it as single-tick alternation.
+
+**Round 3 finding 5 — a note on this frozen diff's own prototype comment.** `battle_miss_draw`'s own
+header comment below still reads "This mechanism neither causes nor repairs that pre-existing
+exposure" (round 1's own wording, when the design believed MISS made no genuine difference to a
+combatant-only overflow either way). This diff is the exact, byte-identical patch that produced
+every figure in §12.7/§13.6, and is kept frozen rather than hand-edited to match later prose
+corrections — so that comment is NOT touched here. **It is superseded by §13.6's own corrected
+explanation** (round 3 finding 5): MISS's own fixed cost is a real, additional OAM consumer in
+every case, not one that "neither causes nor repairs" anything — it can newly introduce overflow in
+a project whose combatants alone sit at 61-64, and it increases the real exposure of a project
+already past 64 (65 becomes 69), even though the boolean warning-fires/does-not-fire answer differs
+between those two cases. Treat §13.6, not this comment, as the current statement of the policy.
+
+```diff
+diff --git a/engine/battle.asm b/engine/battle.asm
+index 93546bf..efec7f6 100644
+--- a/engine/battle.asm
++++ b/engine/battle.asm
+@@ -235,9 +235,137 @@ battle_tick:
+   .if BATTLE_ANIM_ENABLED
+   jsr battle_fx_tick
+   .endif
++  jsr battle_hurt_tick      ; PROTOTYPE, phase-2 measurement only
++  jsr battle_miss_tick      ; PROTOTYPE, phase-2 measurement only
+   jsr battle_dispatch
+   jmp battle_draw_sprites
+ 
++; PROTOTYPE, phase-2 design measurement ONLY (docs/design-battle-animation.md
++; v6) -- ticks the shared hit-feedback pair. Guarded on BP_INTRO the
++; identical reason battle_fx_tick already is (round 1 finding 7): this runs
++; before battle_dispatch on every tick, including the very first one of a
++; fresh battle, where bt_phase is still genuinely BP_INTRO and neither
++; bt_hurt_left nor bt_miss_left has been reset yet for this battle --
++; setup_monsters (below) is reached only through battle_dispatch ->
++; battle_intro, later the same tick.
++;
++; Which of the two hit-feedback halves applies is decided here, every
++; tick, from what bt_hurt_slot currently names:
++;   - a party member, or a metasprite-fallback monster (mon_tile == $FF):
++;     nothing to queue -- battle_sprite_pc/battle_sprite_mon read
++;     bt_hurt_slot/bt_hurt_left directly at draw time and skip the icon on
++;     alternate frames.
++;   - a block-art monster (mon_tile != $FF): the attribute-flash half.
++;
++; Round 1 finding 2: if the named monster has died since it was armed
++; (mon_slot_alive == 0), this is the LAST chance to fix its attribute cell
++; before the shared state moves on to a different slot -- wipe_tick
++; (engine/battleturn.asm) only ever rewrites that monster's own TILES, one
++; row a frame; it never touches the attribute byte at all, so whatever
++; this mechanism last queued for that cell (the flash tint, $FF, or the
++; monster's own authored tint) would otherwise sit there, uncorrected, on
++; top of the wiped ground, for the rest of the battle. Fixed by forcing one
++; last packet: BT_GROUND_ATTR ($55, draw_battle_attr's own ground-row
++; fill), never the dead monster's own now-meaningless mon_attr.
++battle_hurt_tick:
++  lda <bt_phase
++  cmp #BP_INTRO
++  beq battle_hurt_tick_rts
++  lda <bt_hurt_left
++  beq battle_hurt_tick_rts
++  lda <bt_hurt_slot
++  cmp #MAX_PARTY
++  bcc battle_hurt_tick_dec       ; a party member -- nothing to queue, just tick
++  sec
++  sbc #MAX_PARTY
++  tax
++  lda mon_slot_alive,x
++  bne battle_hurt_tick_dec
++  lda #0
++  sta <bt_hurt_left               ; stop ticking regardless of block art
++  lda mon_slot_actor,x
++  tay
++  lda mon_tile,y
++  cmp #$FF
++  beq battle_hurt_tick_rts        ; no block art -- nothing to restore
++  jsr battle_hurt_attr_open        ; X = monster slot, preserved
++  lda #BT_GROUND_ATTR
++  jsr vram_push
++  jmp vram_end
++battle_hurt_tick_dec:
++  dec <bt_hurt_left
++  lda <bt_hurt_slot
++  cmp #MAX_PARTY
++  bcc battle_hurt_tick_rts        ; party member: sprite blink only, done
++  sec
++  sbc #MAX_PARTY
++  tax
++  lda mon_slot_actor,x
++  tay
++  lda mon_tile,y
++  cmp #$FF
++  beq battle_hurt_tick_rts        ; metasprite fallback -- sprite blink only
++  jsr battle_hurt_attr_open       ; X = monster slot, preserved
++  lda mon_slot_actor,x            ; re-read (X survives the call); Y was
++  tay                             ; clobbered by battle_hurt_attr_open itself
++  lda <bt_hurt_left
++  beq battle_hurt_attr_restore
++  and #2
++  bne battle_hurt_attr_flash
++battle_hurt_attr_restore:
++  lda mon_attr,y
++  jmp battle_hurt_attr_push
++battle_hurt_attr_flash:
++  lda #$FF
++battle_hurt_attr_push:
++  jsr vram_push
++  jmp vram_end
++battle_hurt_tick_rts:
++  rts
++
++; X = monster slot. Opens vram_buf at that monster's own anchored
++; attribute cell (draw_battle_attr's own per-monster offset). The address
++; math is a pure function of the slot number (X), never the actor id, so
++; this never needs to park anything in shared scratch to do its own job --
++; round 1 finding 1's fix: the previous version stashed the actor id in
++; bt_tmp2 so its caller could read mon_attr,y afterward, but bt_tmp2 is
++; cast_all's own end-of-side sentinel across the whole apply_damage call
++; this chain is nested inside, and cast_all is UNAWARE this routine ever
++; runs. X itself survives the call (never touched here after the address
++; math begins, and vram_open its own self saves/restores X internally) --
++; callers that need the actor id re-read mon_slot_actor,x themselves once
++; this returns, at no cost, rather than trust a value parked here. Clobbers
++; A, Y.
++battle_hurt_attr_open:
++  txa
++  clc
++  adc #1
++  asl a
++  asl a
++  asl a
++  clc
++  adc #1
++  clc
++  adc #$C0
++  tay
++  lda #$23
++  jmp vram_open
++
++; PROTOTYPE, phase-2 design measurement ONLY -- ticks the independent MISS
++; overlay's own countdown. Guarded on BP_INTRO for the identical reason
++; battle_hurt_tick is (round 1 finding 7). No vram_buf work: MISS is
++; sprite-drawn (see battle_miss_draw, engine/battleui.asm), so ticking it
++; costs nothing but the countdown itself.
++battle_miss_tick:
++  lda <bt_phase
++  cmp #BP_INTRO
++  beq battle_miss_tick_rts
++  lda <bt_miss_left
++  beq battle_miss_tick_rts
++  dec <bt_miss_left
++battle_miss_tick_rts:
++  rts
++
+ ; A dying monster's own block wipe is budgeted at one row a frame (see
+ ; bt_wipe_mask/bt_wipe_row/bt_wipe_slot, engine/constants.asm): four dead
+ ; monsters in the same tick used to queue wipe_monster's whole four-row sweep
+@@ -351,6 +479,19 @@ setup_monsters:
+   lda #NO_ANIM
+   sta <bt_fx_anim           ; no effect carries in from a previous battle
+   .endif
++  ; PROTOTYPE, phase-2 measurement only -- a fresh battle must not inherit
++  ; a countdown, or a slot, left over from the previous one (neither is
++  ; cleared by battle_end or player_died -- see the design's own §12.4/
++  ; §13.4 for why that is safe now that battle_hurt_tick/battle_miss_tick
++  ; both guard on BP_INTRO). A cannot be trusted to still be 0 here: the
++  ; block above only runs .if BATTLE_ANIM_ENABLED, and when it does it
++  ; leaves NO_ANIM ($FF) in A, not 0. Round 1 finding 8: this ONE lda #0
++  ; is shared between both stores below -- stripping either byte in
++  ; isolation still needs it, so it is not itself evidence of a designed
++  ; saving, only of amortizing one shared load over two stores.
++  lda #0
++  sta <bt_hurt_left
++  sta <bt_miss_left
+   ldx #0
+ setup_monsters_slot:
+   lda #0
+diff --git a/engine/battleturn.asm b/engine/battleturn.asm
+index 4289aa9..3fe1573 100644
+--- a/engine/battleturn.asm
++++ b/engine/battleturn.asm
+@@ -273,11 +273,24 @@ attack_target:
+   lda #BS_HITS
+   jmp battle_say_actor
+ attack_missed:
++  jsr battle_miss_arm        ; PROTOTYPE, phase-2 measurement only
+   lda #$FF
+   sta <bt_dmg_hi             ; no number on this line
+   lda #BS_MISSES
+   jmp battle_say_actor
+ 
++; PROTOTYPE, phase-2 design measurement ONLY -- the MISS overlay's own arm
++; point, called from both miss branches (attack_missed above,
++; monster_missed below). bt_target already names who dodged at both call
++; sites -- roll_hit's own comment: "an underflow is a miss" -- so this
++; needs no argument.
++battle_miss_arm:
++  lda <bt_target
++  sta <bt_miss_slot
++  lda #BT_MISS_FRAMES
++  sta <bt_miss_left
++  rts
++
+ ; Battle-side animation (docs/design-battle-animation.md §3.3).
+ ;
+ ; A = an animation id (or NO_ANIM -- does nothing), Y = the combatant slot
+@@ -971,8 +984,84 @@ spell_damage_store:
+ spell_damage_done:
+   rts
+ 
++; PROTOTYPE, phase-2 design measurement ONLY (docs/design-battle-animation.md
++; v6) -- the single arm point for the shared bt_hurt_slot/bt_hurt_left pair,
++; called from apply_damage's own single choke point (every landed physical
++; hit, spell hit, and status tick). Fixes the "stranded tint" limitation: if
++; the slot this call is about to steal was a block-art monster whose flash
++; was still counting down, its cell is force-restored NOW, rather than left
++; to a countdown that will never reach zero for that slot again once
++; bt_hurt_slot points elsewhere.
++;
++; The multi-target hit policy this bakes in (an all-target spell's own
++; cast_all loop calls apply_damage, and so this, several times in one
++; tick): only the LAST target processed ends up blinking/flashing -- each
++; earlier target in the same volley is armed and then immediately
++; superseded before a single tick of feedback is ever drawn for it. This
++; follows directly from Chris's own decision to share one slot/timer pair
++; rather than a per-slot array or bitmask.
++battle_hurt_arm:
++  lda <bt_hurt_left
++  beq battle_hurt_arm_set        ; nothing live to strand
++  lda <bt_hurt_slot
++  cmp <bt_target
++  beq battle_hurt_arm_set        ; same slot re-hit -- just restart the timer
++  cmp #MAX_PARTY
++  bcc battle_hurt_arm_set        ; stolen slot was a party member -- sprite
++                                  ; blink only, nothing was ever queued to strand
++  jsr battle_hurt_restore_slot   ; stolen slot was a monster -- restore its
++                                  ; cell now if it had block art
++battle_hurt_arm_set:
++  lda <bt_target
++  sta <bt_hurt_slot
++  lda #BT_HURT_FRAMES
++  sta <bt_hurt_left
++  rts
++
++; The OLD bt_hurt_slot (still in <bt_hurt_slot on entry) is a monster --
++; force-queue its own attribute cell back if it has block art. A no-op for
++; a metasprite-fallback monster (mon_tile == $FF).
++;
++; Round 1 finding 2's second half: if that monster has ALREADY died since
++; it was armed (mon_slot_alive == 0), this call -- happening because a
++; DIFFERENT target is about to steal the shared pair -- is the LAST chance
++; to fix its cell before bt_hurt_slot forgets it entirely; battle_hurt_tick
++; (engine/battle.asm) will never check this slot again once a new one is
++; armed. Restores BT_GROUND_ATTR in that case, never the dead monster's
++; own now-meaningless mon_attr -- the identical policy battle_hurt_tick's
++; own dead-check uses.
++;
++; Round 1 finding 1's fix: this and battle_hurt_attr_open (engine/battle.asm)
++; between them replace the previous version's own bt_tmp2 parking -- see
++; that routine's own header for why. Clobbers A, X, Y.
++battle_hurt_restore_slot:
++  lda <bt_hurt_slot
++  sec
++  sbc #MAX_PARTY
++  tax
++  lda mon_slot_actor,x
++  tay
++  lda mon_tile,y
++  cmp #$FF
++  beq battle_hurt_restore_slot_rts   ; no block art -- nothing to restore
++  jsr battle_hurt_attr_open          ; X = monster slot, preserved
++  lda mon_slot_alive,x
++  bne battle_hurt_restore_slot_alive
++  lda #BT_GROUND_ATTR
++  jmp battle_hurt_restore_slot_push
++battle_hurt_restore_slot_alive:
++  lda mon_slot_actor,x                ; re-read (X survives the call); Y was
++  tay                                  ; clobbered by battle_hurt_attr_open
++  lda mon_attr,y
++battle_hurt_restore_slot_push:
++  jsr vram_push
++  jmp vram_end
++battle_hurt_restore_slot_rts:
++  rts
++
+ ; Take bt_dmg_lo off bt_target, and note if that finished it.
+ apply_damage:
++  jsr battle_hurt_arm          ; PROTOTYPE, phase-2 measurement only
+   lda <bt_target
+   cmp #MAX_PARTY
+   bcs apply_damage_mon
+@@ -1265,6 +1354,7 @@ monster_turn_attack:
+   lda #BS_HITS
+   jmp battle_say_actor
+ monster_missed:
++  jsr battle_miss_arm        ; PROTOTYPE, phase-2 measurement only
+   lda #$FF
+   sta <bt_dmg_hi
+   lda #BS_MISSES
+diff --git a/engine/battleui.asm b/engine/battleui.asm
+index 9aa5b5b..f542597 100644
+--- a/engine/battleui.asm
++++ b/engine/battleui.asm
+@@ -719,6 +719,15 @@ battle_message_done:
+   lda #NO_ANIM
+   sta <bt_fx_anim
+   .endif
++  ; PROTOTYPE, phase-2 measurement only -- the MISS overlay is capped the
++  ; identical way: it must not survive into the NEXT action's own message,
++  ; naming a target that already had its turn. Hit feedback (bt_hurt_left)
++  ; is deliberately NOT capped here -- it is purely time-based (20 ticks,
++  ; under MSG_HOLD's 45), so letting it run past an early dismissal into
++  ; the next tick or two is harmless and simpler than adding a second
++  ; unconditional clear for state that already self-terminates.
++  lda #0
++  sta <bt_miss_left
+   jsr clear_message
+   ; After the acting combatant's own line, every status it carries gets a
+   ; word in, one tick and one line per bit, lowest first: status_pending
+@@ -864,12 +873,25 @@ battle_sprite_clear:
+   .if BATTLE_ANIM_ENABLED
+   jsr battle_fx_draw
+   .endif
++  jsr battle_miss_draw      ; PROTOTYPE, phase-2 measurement only
+   ldx #0
+ battle_sprite_pc:
+   lda pc_in_party,x
+   beq battle_sprite_pc_next
+   lda pc_hp,x
+   beq battle_sprite_pc_next ; a fallen member is not drawn
++  ; PROTOTYPE, phase-2 measurement only (docs/design-battle-animation.md
++  ; v6): skip the icon on alternate frames while this combatant is the one
++  ; named by the shared bt_hurt_slot/bt_hurt_left pair -- ent_hurt's own
++  ; trick (engine/entities.asm), extended to combatants.
++  lda <bt_hurt_left
++  beq battle_sprite_pc_draw
++  cpx <bt_hurt_slot
++  bne battle_sprite_pc_draw
++  lda <bt_hurt_left
++  and #2
++  bne battle_sprite_pc_next
++battle_sprite_pc_draw:
+   lda pc_metasprite,x
+   cmp #$FF
+   beq battle_sprite_pc_next
+@@ -900,6 +922,19 @@ battle_sprite_mon:
+   lda mon_tile,y
+   cmp #$FF
+   bne battle_sprite_mon_next ; it has block art, already on the background
++  ; PROTOTYPE, phase-2 measurement only -- the identical skip, combatant
++  ; index = monster slot + MAX_PARTY.
++  lda <bt_hurt_left
++  beq battle_sprite_mon_draw
++  txa
++  clc
++  adc #MAX_PARTY
++  cmp <bt_hurt_slot
++  bne battle_sprite_mon_draw
++  lda <bt_hurt_left
++  and #2
++  bne battle_sprite_mon_next
++battle_sprite_mon_draw:
+   lda #BT_MON_COL*8
+   sta <de_ex
+   txa
+@@ -1048,5 +1083,81 @@ battle_fx_draw_rts:
+   rts
+   .endif
+ 
++; PROTOTYPE, phase-2 design measurement ONLY (docs/design-battle-animation.md
++; v6) -- draws the MISS overlay while bt_miss_left is counting down. Reuses
++; the identical per-slot anchor math battle_fx_draw already uses, offset 8
++; pixels up from the icon's own anchor row so the glyphs read as "next to"
++; the sprite rather than dead-centered on it.
++;
++; Round 1 finding 4: this is a FIXED, unconditional 4-sprite write, drawn
++; first (oam_idx still low) for foreground priority over the icon it
++; names -- the identical "accepted limitation" §3.6 already states for the
++; flipbook's own worst-case combatant/cursor figure: a project whose
++; combatants ALONE already need more than 60 OAM entries (permitted, with
++; only a warning -- describeBattleSpriteWarning, shared/project.js) can
++; still see a LATER combatant draw wrap oam_idx back to 0 and overwrite
++; these four entries, or vice versa. This mechanism neither causes nor
++; repairs that pre-existing exposure; it costs the identical fixed 16 bytes
++; of OAM every time it draws, never more.
++battle_miss_draw:
++  lda <bt_miss_left
++  beq battle_miss_draw_rts
++  lda <bt_miss_slot
++  cmp #MAX_PARTY
++  bcs battle_miss_draw_mon
++  lda <bt_miss_slot
++  asl a
++  asl a
++  asl a
++  asl a
++  asl a                     ; slot * BT_PARTY_STEP
++  clc
++  adc #BT_PARTY_Y-8         ; one tile above the icon's own anchor row
++  sta <bt_tmp
++  lda #BT_PARTY_X
++  jmp battle_miss_draw_go
++battle_miss_draw_mon:
++  lda <bt_miss_slot
++  sec
++  sbc #MAX_PARTY
++  asl a
++  asl a
++  asl a
++  asl a
++  asl a                     ; monster slot * 32 pixels
++  clc
++  adc #BT_MON_ROW*8-8
++  sta <bt_tmp
++  lda #BT_MON_COL*8
++battle_miss_draw_go:
++  sta <bt_tmp2
++  ldy <oam_idx
++  ldx #0
++battle_miss_draw_cell:
++  lda <bt_tmp
++  sta OAM,y
++  iny
++  lda miss_tiles,x
++  sta OAM,y
++  iny
++  lda #0
++  sta OAM,y
++  iny
++  lda <bt_tmp2
++  sta OAM,y
++  iny
++  clc
++  adc #8
++  sta <bt_tmp2
++  inx
++  cpx #4
++  bne battle_miss_draw_cell
++  sty <oam_idx
++battle_miss_draw_rts:
++  rts
++
++miss_tiles:
++  .db MISS_TILE_M, MISS_TILE_I, MISS_TILE_S, MISS_TILE_S
++
+ bit_mask:
+   .db $01,$02,$04,$08,$10,$20,$40,$80
+diff --git a/engine/constants.asm b/engine/constants.asm
+index 1644a00..0537e45 100644
+--- a/engine/constants.asm
++++ b/engine/constants.asm
+@@ -465,6 +465,32 @@ bt_fx_slot  = bt_fx_anim+1
+ bt_fx_frame = bt_fx_slot+1
+ bt_fx_timer = bt_fx_frame+1
+ 
++; PROTOTYPE, phase-2 design v6 (docs/design-battle-animation.md, hit
++; feedback + MISS) -- measurement only, unconditional (no feature gate),
++; not shipped as-is. bt_hurt_slot/bt_hurt_left are the ONE shared pair for
++; both hit-feedback halves (sprite blink for a metasprite-drawn combatant,
++; attribute flash for a block-art monster) -- which mechanism applies is
++; decided at read time from what bt_hurt_slot currently names, never both.
++; bt_miss_slot/bt_miss_left are the independent MISS overlay's own state.
++bt_hurt_slot = bt_fx_timer+1
++bt_hurt_left = bt_hurt_slot+1
++bt_miss_slot = bt_hurt_left+1
++bt_miss_left = bt_miss_slot+1
++BT_HURT_FRAMES = 20
++BT_MISS_FRAMES = 30
++; Sprite-table reservation for the MISS glyphs -- 3 unique tiles (M, I, S;
++; the second S reuses the first), placed beside SPRITE_ARROW_TILE ($FD) and
++; the heart tiles ($FE/$FF) without colliding with either.
++MISS_TILE_M = $FA
++MISS_TILE_I = $FB
++MISS_TILE_S = $FC
++; draw_battle_attr's own ground-row fill (engine/battle.asm) -- rows 1-4 of
++; the attribute table get $55 before any live monster's own mon_attr is
++; written over the top. This is what a dead monster's own cell must be
++; restored to, not its own (now-meaningless) authored tint -- round 1
++; finding 2.
++BT_GROUND_ATTR = $55
++
+ ; The $10-per-row darken trick reaches solid black in at most this many
+ ; subtractions from any starting row; the hold between steps is an engine
+ ; constant, not authored -- see OP_FADE below and shared/project.js's
+
 ```
