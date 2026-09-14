@@ -702,6 +702,14 @@ edited on the Sprite Forge's own `party` tab; that tab is removed entirely, a lo
 than a copy — two editing surfaces for one record is the drift this codebase refuses. See
 `docs/design-character-forge.md`.
 
+`battle.attackAnim`/`spell.anim` name a `sprites.animations` row, whose frames name a
+`sprites.metasprites` row (`docs/design-battle-animation.md`). `isValidAnimationRef`/
+`isPlayableBattleAnimation` check each hop; `validateProject` refuses both, plus
+`LIMITS.animations = NO_ANIM`. `animationReferenceLocations(project)` is the traversal
+`renumberAnimationDeletion` (Sprite Forge's "Delete animation") and both refusals share, run
+before the splice. `animationPickerOptions` answers a stale id with "Missing animation N", not a
+rewrite.
+
 **`SAVE_LAYOUT_VERSION` is 3**, bumped 1→2 when `inv_items`' own bytes started meaning an item
 id rather than an actor id, then 2→3 when name entry (phase 1) added `pc_name_ram` to the body —
 both cases `saveIdentity`'s own derived sizes cannot catch and what the version byte exists for. A
@@ -1117,30 +1125,29 @@ sizes, the route zero-cost proof and `KERNEL_SLACK` itself are each checked thei
   board — including a project whose only live event is a Move or a Sting, not just dialogue.
   Pinned by a text-on/off isolation on a fresh action project plus a zero-delta control on every
   non-`scanlineIrq` board, not an old residual guess — `docs/split-lock-not-pinned-report.md` §8.
-- `ITEM_KERNEL_ALLOWANCE = 16` (flat, unmoved by the kernel diet — no toggle isolates it from the
-  effect term below, so the diet's own savings landed entirely on the latter) plus 3
-  `kernelTableBytes` bytes *per item* (`item_metasprite`, `item_effect_kind`, `item_effect_amount`,
+- `ITEM_KERNEL_ALLOWANCE = 16` (flat, unmoved by the kernel diet) plus 3 `kernelTableBytes` bytes
+  *per item* (`item_metasprite`, `item_effect_kind`, `item_effect_amount`,
   one byte each in `assets/items.inc`); `ITEM_EFFECT_KERNEL_ALLOWANCE_BY_GAME_TYPE = { action: 61,
   rpg: 59 }` for `use_item_apply`.
 - In-game party-member naming, seven kernel-lo terms plus two banked ones — flat across every board
-  on both game types, nesasm-measured by triangulating real deltas rather than guessed
-  (`docs/design-name-entry.md` §4/§11): `NAME_ENTRY_KERNEL_ALLOWANCE = 107` (the hook glue every
+  on both game types, nesasm-measured, not guessed (`docs/design-name-entry.md` §4/§11):
+  `NAME_ENTRY_KERNEL_ALLOWANCE = 107` (the hook glue every
   naming feature shares — `nm_acted`, the `do_action`/`draw_ui`/`ui_tick`/`text_tick` naming arms,
   and the five `name_begin`/`tick`/`draw`/`select`/`cancel` shims above), charged whenever hero or
   Join naming is live; `JOIN_NAMING_KERNEL_ALLOWANCE = 63` (`script_op_join`'s own growth,
   RPG-only); `HERO_NAMING_KERNEL_ALLOWANCE = 10` (`start_game`'s naming arm, both game types,
   unmoved by the diet); `HERO_NAMING_TITLELESS_KERNEL_ALLOWANCE = 14` (`reset`'s own titleless
-  naming arm, paid only with no title screen to reach `start_game` through — `sample-rpg`, as
-  shipped, pays this); `NAME_ENTRY_ACTION_KERNEL_ALLOWANCE = 683` (the grid's own body,
+  naming arm, paid only with no title screen to reach `start_game` through);
+  `NAME_ENTRY_ACTION_KERNEL_ALLOWANCE = 683` (the grid's own body,
   `engine/nameentry.asm`, when an action project has no battle bank to place it in — banked
   instead, `NAME_ENTRY_BATTLE_ALLOWANCE = 737`, on an RPG: the grid's own body plus
   `battle_entry`'s own dispatch growth, not the grid alone); `HERO_DEFAULT_KERNEL_ALLOWANCE = 11`
   (`init_session`'s copy loop alone, unmoved by the diet — the 10-byte `hero_name_default` table
-  itself is a `kernelTableBytes` term instead, since it assembles before `reset`);
+  itself is a `kernelTableBytes` term instead);
   `NAME_TOKEN_KERNEL_ALLOWANCE = 55` (`text_type_name`, flat on every board and both game types,
   gated on `NAME_TOKEN_ENABLED` alone); banked `NAME_COPY_BATTLE_ALLOWANCE = 43` (`party_join`'s
   own name-copy loop, gated on `projectNeedsNameSeed` — a token-only RPG pays this even with no
-  `renamable` party member, since the token still needs a seeded name to read).
+  `renamable` party member).
 - `STING_KERNEL_ALLOWANCE_STANDALONE = 166` (`sting_snapshot`/`restore` shadow `mus_inst_base`)
   plus the shared `AUDIO_FX_KERNEL_ALLOWANCE = 15` (paid by either, unmoved by the diet);
   `SFX_KERNEL_ALLOWANCE_STANDALONE = 283`; `STING_SFX_INTERACTION_ALLOWANCE = 5` more when both
@@ -1160,26 +1167,15 @@ sizes, the route zero-cost proof and `KERNEL_SLACK` itself are each checked thei
   the same `move`/`turn`/`wait` commands — zero additional kernel cost, proven by
   `test/unit/routes.test.js`'s byte-identical-ROM comparison and confirmed with a cross-tree
   SHA-256 gate.
-- `KERNEL_SLACK = 20` (unmoved by the diet) — the floor `assertCovers` (`kernelbytes.test.js`)
-  holds every measured margin to (`margin >= KERNEL_SLACK`): a correctly measured base should leave
-  *exactly* this once every conditional term is counted. It also enforces a ceiling at
-  `KERNEL_SLACK * 2` — a drift alarm, not spare headroom: too wide a margin means some term stopped
-  tracking the engine closely.
+- `KERNEL_SLACK = 20` (unmoved by the diet): `kernelbytes.test.js`'s `assertCovers` requires
+  `KERNEL_SLACK <= margin <= KERNEL_SLACK * 2`. Correct accounting of the base and every conditional
+  term should leave exactly the floor; the ceiling detects drift, not spare headroom.
 
 **Documented limitations**: the zero-page kernel diet (`docs/design-kernel-diet.md`) closed every
-combination this section used to list as a refusal — MMC3 Save+Move+item, UNROM 512 Save+Move,
-MMC3 Save+Move with a live Sting/bound tile, MMC1's own bound-tile reopening, and all six of the
-SFX-driven refusal rows all build now, each confirmed by a real `buildProject` run, not only
-`checkCapacity`. `kernelbytes.test.js`'s own former documented-limitation tests are now "builds"
-assertions; each carries a padded sibling (extra filler content, unrelated to the feature under
-test) that reproduces the original refusal and its advice message, so the advice path itself — and
-`kernelShortfallAdvice`'s own real, buildable fix for whichever board or command combination
-genuinely does overflow — stays under test. See `docs/design-kernel-diet.md` §4b for the full
-before/after ledger of every row this closed. Two controls in the same file were never refusals to
-begin with, and stay that way: `sample-rpg`'s one live item plus a live SFX alone building on MMC3
-(the tightest board), and the seven item-6 commands plus that item with Sting *and* Sfx both live
-also building on MMC3, no Save/Move/title live on that row — both confirm the boundary is real by
-showing where it does *not* bite, not by naming a former refusal that closed.
+refusal listed here, each confirmed by a real `buildProject` run with a padded sibling (unrelated
+filler reproducing the refusal/advice) — §14 ~977, shipped; §5 alone names 8 of 12.
+Two controls (`sample-rpg` item+SFX alone on MMC3, the tightest board, and item 6's 7 commands plus
+that item with Sting and Sfx, both on MMC3, no Save/Move/title live) never refused.
 
 ### The Code Forge
 
@@ -1382,10 +1378,10 @@ for `checkBattleStringsCapacity`, the generator guard this parameter lets be exe
 **Exact for the *stock* battle code, and that qualifier is load-bearing.** A Code Forge override
 of `battle.asm` — or of `battleui.asm`/`battleturn.asm`, which it includes — is hand-written 6502
 whose assembled size cannot be known from its text, so the base term becomes a measurement of a
-file no longer being assembled. `battleCodeOverridden` is the single predicate for that. The rule
-about hand-written code cuts **both** ways: a guess would either refuse a project that fits or
-promise room the assembler then denies. So an override project is not refused on the stock base at
-all — that would turn away someone's *smaller* battle system for the engine's larger one — it is
+file no longer being assembled. `battleCodeOverridden` is the single predicate for that. The Code
+Forge's own hand-written-code rule (above) cuts **both** ways here too. So an override project is
+not refused on the stock base at all — that would turn away someone's *smaller* battle system for
+the engine's larger one — it is
 checked against the one bound an override cannot move, the generated tables alone; past that the
 assembler answers, with the `.fail` below as the backstop. The advice changes with it: a reduction
 that would close an exact deficit is only "the least that could fit" when the base is unknown, and
@@ -1501,6 +1497,17 @@ label so the off-path `monster_turn` body (`engine/battleturn.asm`) reads it unc
 existing cast-or-attack coin flip — pick-first (`docs/design-monster-spell-list.md` §6). The
 Monster Forge's four selects collapse to `spellIds` from the store's own array, never the other
 selects' DOM values, since a stale id renders as `Nothing` and reading it back would drop it.
+
+`BATTLE_ANIM_BATTLE_ALLOWANCE = 243` (`main/build/battletables.js`) charges
+`battle_fx_arm_at`/`arm_attack`/`tick`/`draw`, gated on `projectUsesBattleAnimation`
+(`BATTLE_ANIM_ENABLED`), flat on MMC1/MMC3/UNROM 512, per `bankedbytes.test.js`.
+`bt_fx_anim`/`slot`/`frame`/`timer` (`engine/constants.asm`) hold the effect; `setup_monsters`/
+`battle_message_done` reset only `bt_fx_anim`, to `NO_ANIM` (both gated) — `battle_fx_arm_at` sets
+the slot and zeroes frame/timer on arm. `battleCombatantOamMax` counts every `project.party` member
+as joined; `BATTLE_FX_OAM_ROOM` (`generate.js`) floors `MAX_OAM_ENTRIES` minus it at 0, while
+`battleSpriteBudget` adds the largest frame tile count among playable battle-animation references,
+once; invalid or unreferenced ones contribute 0. `describeBattleAnimationOamWarning` names an
+oversized one.
 
 ### The emulator
 
