@@ -74,6 +74,9 @@ import {
   projectUsesMagicPower,
   projectUsesMagicDefence,
   projectUsesMonsterSpellList,
+  projectUsesBattleAnimation,
+  battleCombatantOamMax,
+  MAX_OAM_ENTRIES,
   projectUsesSting,
   projectUsesSfx,
   projectUsesAudioFx,
@@ -2611,6 +2614,19 @@ export async function generateAssets({ dir, project, log = () => {} }) {
   // monster_turn's pick-first rewrite (docs/design-monster-spell-list.md
   // §6/§7) -- true iff some actor's battle.spellIds has two or more entries.
   const monsterSpellListEnabled = projectUsesMonsterSpellList(project);
+  // Battle-side animation (docs/design-battle-animation.md §3.5):
+  // battle_fx_tick/arm/draw.
+  const battleAnimEnabled = projectUsesBattleAnimation(project);
+  // One generated constant, not a duplicated engine-side MAX_OAM_ENTRIES
+  // equate plus a runtime add (§3.6). BATTLE_FX_OAM_ROOM is the room left for
+  // the running effect once the worst-case combatant icons and the
+  // split-only cursor have taken their own share -- battle_fx_draw's own fit
+  // check (engine/battleui.asm) compares a frame's ms_count against this
+  // single figure directly (`cmp #BATTLE_FX_OAM_ROOM+1`), no addition and so
+  // no byte-overflow question. Emitted unconditionally (an equate costs
+  // nothing unless used, and it is only ever read inside
+  // .if BATTLE_ANIM_ENABLED code).
+  const battleFxOamRoom = Math.max(0, MAX_OAM_ENTRIES - battleCombatantOamMax(project, mapper));
 
   // The HUD hearts, stamped after the placeholder check so an empty sprite table
   // is still recognised as empty. Two tiles, and only for a game that can hurt
@@ -3145,6 +3161,12 @@ export async function generateAssets({ dir, project, log = () => {} }) {
     // engine sentinel rather than a project-derived limit.
     `MONSTER_SPELLS = ${RPG_LIMITS.monsterSpells}`,
     `MONSTER_SPELL_LIST_ENABLED = ${monsterSpellListEnabled ? 1 : 0}`,
+    // Battle-side animation (docs/design-battle-animation.md §3.5/§3.6):
+    // battle_fx_tick/arm/draw, gated on BATTLE_ANIM_ENABLED.
+    // BATTLE_FX_OAM_ROOM is the compiled fit-check constant battle_fx_draw
+    // reads (engine/battleui.asm); BATTLE_COMBATANT_OAM_MAX is never emitted.
+    `BATTLE_ANIM_ENABLED = ${battleAnimEnabled ? 1 : 0}`,
+    `BATTLE_FX_OAM_ROOM = ${battleFxOamRoom}`,
     ''
   ].join('\n');
   await fs.writeFile(path.join(assetsDir, 'config.inc'), config);

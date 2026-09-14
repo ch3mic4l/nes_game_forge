@@ -7011,6 +7011,42 @@ const scenario = (dir, sampleDir, sampleRpgDir) => `
     step('Magic Forge backwards range swap', 'amountMin=' + afterBackwards.amountMin + ', amountMax=' + afterBackwards.amountMax + ' -- the exact swapped pair landed');
   }
 
+  // Test 4b (docs/design-battle-animation.md phase 1b, §4): the Animation
+  // picker lands the chosen animation id in the store, and putting Ice back
+  // the way the phase 1a smoke step already does -- reassigning null in a
+  // follow-up store.commit, not store.undo() -- leaves it exactly as every
+  // later section that reopens this same project by reference expects.
+  {
+    const iceIndex3 = rpgStore.project.spells.findIndex((s) => s.name === 'Ice');
+    if (iceIndex3 === -1) throw new Error('Ice should still be present for the Animation picker test');
+    const findAnimSelect = (labelText) => {
+      const fieldDiv = [...document.querySelectorAll('#stage .field')].find(
+        (f) => f.querySelector('.field-label')?.textContent === labelText
+      );
+      return fieldDiv ? fieldDiv.querySelector('select') : null;
+    };
+    const animSelect = findAnimSelect('Animation');
+    if (!animSelect) throw new Error('Magic Forge has no Animation field for Ice');
+    const slimeOption = [...animSelect.options].find((o) => o.textContent === 'Slime');
+    if (!slimeOption) throw new Error('Magic Forge Animation select has no Slime option (sample-rpg’s own catalog)');
+    animSelect.value = slimeOption.value;
+    animSelect.dispatchEvent(new Event('change', { bubbles: true }));
+    await wait(150);
+    if (rpgStore.project.spells[iceIndex3].anim !== Number(slimeOption.value)) {
+      throw new Error(
+        'choosing Slime in the Animation select did not commit the id to Ice.anim, saw ' + rpgStore.project.spells[iceIndex3].anim
+      );
+    }
+    rpgStore.commit('smoke: revert Ice’s battle animation', (project) => {
+      project.spells[iceIndex3].anim = null;
+    });
+    await wait(150);
+    if (rpgStore.project.spells[iceIndex3].anim !== null) {
+      throw new Error('Ice’s animation was not reverted to null after the Animation picker test');
+    }
+    step('Magic Forge Animation picker round trip', 'choosing Slime commits spell.anim = ' + slimeOption.value + ', reverted to null by a follow-up commit');
+  }
+
   // Test 5 (join-guard brief, handoff-next/join-guard-brief.md; moved to the
   // Character Forge under docs/design-character-forge.md): the Character
   // Forge's Remove button now renumbers every Join command's own member, in
@@ -7766,6 +7802,39 @@ const scenario = (dir, sampleDir, sampleRpgDir) => `
         step(
           'Monster Forge ' + label + ' field edit/undo/redo/reload',
           'Snake’s battle.' + key + ' reaches the store as ' + value + ', survives undo/redo against the live rendered value, and survives a save/reload disk round trip'
+        );
+      }
+
+      // docs/design-battle-animation.md phase 1b, §4: the Attack animation
+      // picker lands the chosen animation id in the store, and putting
+      // Snake back the way phase 1a's own smoke step already does --
+      // reassigning null in a follow-up store.commit, not store.undo() --
+      // leaves it exactly as every later section that reopens this same
+      // project by reference expects.
+      {
+        const attackAnimSelect = findFieldSelect('Attack animation');
+        if (!attackAnimSelect) throw new Error('Monster Forge has no Attack animation field for Snake');
+        const potionOption = [...attackAnimSelect.options].find((o) => o.textContent === 'Potion');
+        if (!potionOption) throw new Error('Monster Forge Attack animation select has no Potion option (sample-rpg’s own catalog)');
+        attackAnimSelect.value = potionOption.value;
+        attackAnimSelect.dispatchEvent(new Event('change', { bubbles: true }));
+        await wait(150);
+        if (monsterStore.project.sprites.actors[snakeId].battle.attackAnim !== Number(potionOption.value)) {
+          throw new Error(
+            'choosing Potion in the Attack animation select did not commit the id to battle.attackAnim, saw ' +
+              monsterStore.project.sprites.actors[snakeId].battle.attackAnim
+          );
+        }
+        monsterStore.commit('smoke: revert Snake’s attack animation', (project) => {
+          project.sprites.actors[snakeId].battle.attackAnim = null;
+        });
+        await wait(150);
+        if (monsterStore.project.sprites.actors[snakeId].battle.attackAnim !== null) {
+          throw new Error('Snake’s attack animation was not reverted to null after the Attack animation picker test');
+        }
+        step(
+          'Monster Forge Attack animation picker round trip',
+          'choosing Potion commits battle.attackAnim = ' + potionOption.value + ', reverted to null by a follow-up commit'
         );
       }
 

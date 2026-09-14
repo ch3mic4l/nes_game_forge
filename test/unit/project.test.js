@@ -98,6 +98,13 @@ import {
   hasBattleBlockArt,
   battleBlockIndices,
   battleSpriteBudget,
+  // Battle-side animation, phase 1b (docs/design-battle-animation.md) -------
+  battleCombatantOamMax,
+  allBattleAnimationIds,
+  describeBattleAnimationOamWarning,
+  projectUsesBattleAnimation,
+  projectWithoutBattleAnimation,
+  animationPickerOptions,
   // Character Forge phase 2 (docs/design-character-forge.md) ---------------
   characterCap,
   normalizeCharacterName,
@@ -2948,6 +2955,31 @@ test("validateProject: the reviewer's worked example -- spell.anim names an anim
   assert.ok(hop2[0].message.includes('Bolt'), 'the message must name the offending spell by name');
 });
 
+// Phase 1b, docs/design-battle-animation.md §2(a)'s own worked example, its
+// second half: independently of validateProject's own refusal above,
+// battleTables() -- the generator's defense in depth -- must never compile
+// the bogus metaspriteId. A project that bypasses validation entirely (a
+// stale hand-edited project, or the generator called directly the way
+// buildProject does) must still get NO_ANIM here, never metasprite 5's own
+// garbage bytes reaching draw_metasprite unchecked.
+test("battleTables: the reviewer's worked example -- a spell whose valid animation names a frame with a missing metasprite compiles to NO_ANIM, never the bogus id", () => {
+  const project = normalizeProject({
+    project: { name: 'Quest', gameType: 'rpg' },
+    sprites: { metasprites: [{ id: 0, name: 'M0', tiles: [] }], actors: [] }
+  });
+  project.sprites.animations = [{ id: 0, name: 'Bad', loop: false, frames: [{ metaspriteId: 5, duration: 8 }] }];
+  project.spells = [{ ...createSpell(0, 'Bolt'), anim: 0 }];
+
+  const source = battleTables(project);
+  const spellAnimLine = source.split('\n').find((line) => line.startsWith('spell_anim:'));
+  assert.ok(spellAnimLine, 'battleTables should emit a spell_anim label at all, since a spell.anim is authored');
+  const dataLine = source.split('\n')[source.split('\n').indexOf(spellAnimLine) + 1];
+  // Wrong implementation this catches: emitting spell.anim (0) directly,
+  // or resolving through isValidAnimationRef alone (which the id 0 already
+  // passes) rather than the two-hop isPlayableBattleAnimation.
+  assert.match(dataLine, /^\s*\.db \$FF\s*$/, `spell_anim's one entry must be NO_ANIM ($FF), saw: ${dataLine}`);
+});
+
 test('validateProject: an actor anims slot naming a deleted animation reports hop 1 and not hop 2 (battleOnly: false skips frame checks)', () => {
   const project = createProject('Quest');
   project.sprites.animations = [{ id: 0, name: 'A0', loop: false, frames: [] }];
@@ -3030,6 +3062,171 @@ test('validateProject: none of the three new animation-reference messages fire o
     // firing false positives on every project that has ever loaded cleanly.
     assert.deepEqual(newErrors, [], `${fixture} must raise none of the three new animation-reference messages`);
   }
+});
+
+// ---------------------------------------------------------------------------
+// Battle-side animation, phase 1b (docs/design-battle-animation.md §3.1,
+// §3.5, §3.6, §4): schema, gating, the OAM budget and its paired warning, and
+// the Magic/Monster Forge picker's own options. The reference-integrity half
+// (isValidAnimationRef, isPlayableBattleAnimation, animationReferenceLocations,
+// renumberAnimationDeletion, and validateProject's three refusals) is phase
+// 1a, tested above -- nothing here re-tests that half.
+// ---------------------------------------------------------------------------
+
+test('normalizeSpell: anim clamps to a byte range, preserves an imported 255, and defaults to null', () => {
+  const cases = [
+    { input: 7, expected: 7 },
+    { input: undefined, expected: null },
+    { input: null, expected: null },
+    // Wrong implementation this catches: a validity check against
+    // sprites.animations.length INSIDE the normalizer -- normalizeSpell has
+    // no access to that array, so 255 must survive unexamined here, the
+    // identical discipline battle.spellIds already holds to.
+    { input: 255, expected: 255 },
+    { input: -1, expected: null },
+    { input: 1.5, expected: null },
+    { input: 'boss', expected: null }
+  ];
+  for (const { input, expected } of cases) {
+    const project = normalizeProject({
+      project: { gameType: 'rpg' },
+      spells: [{ ...createSpell(0, 'Bolt'), anim: input }]
+    });
+    assert.equal(
+      project.spells[0].anim,
+      expected,
+      `spell.anim: ${JSON.stringify(input)} should normalize to ${JSON.stringify(expected)}`
+    );
+    // Fixed point: re-normalizing an already-normalized project must not move the value again.
+    const again = normalizeProject(normalizeProject(project));
+    assert.equal(again.spells[0].anim, expected, `spell.anim: ${JSON.stringify(input)} must be a fixed point`);
+  }
+});
+
+test('normalizeActor: battle.attackAnim clamps to a byte range, preserves an imported 255, and defaults to null', () => {
+  const cases = [
+    { input: 7, expected: 7 },
+    { input: undefined, expected: null },
+    { input: null, expected: null },
+    { input: 255, expected: 255 },
+    { input: -1, expected: null },
+    { input: 1.5, expected: null },
+    { input: 'boss', expected: null }
+  ];
+  for (const { input, expected } of cases) {
+    const project = normalizeProject({
+      project: { gameType: 'rpg' },
+      sprites: { actors: [{ name: 'Slime', damage: 1, battle: { attackAnim: input } }] }
+    });
+    assert.equal(
+      project.sprites.actors[0].battle.attackAnim,
+      expected,
+      `battle.attackAnim: ${JSON.stringify(input)} should normalize to ${JSON.stringify(expected)}`
+    );
+    const again = normalizeProject(normalizeProject(project));
+    assert.equal(again.sprites.actors[0].battle.attackAnim, expected, `battle.attackAnim: ${JSON.stringify(input)} must be a fixed point`);
+  }
+});
+
+test('battle.attackAnim survives a disk round trip, both set and null', async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'forge-attackanim-'));
+  const project = normalizeProject({
+    project: { gameType: 'rpg' },
+    sprites: {
+      actors: [
+        { name: 'Slime', damage: 1, battle: { attackAnim: 3 } },
+        { name: 'Rat', damage: 1, battle: { attackAnim: null } }
+      ]
+    }
+  });
+  await saveProject(dir, project);
+  const reopened = await loadProject(dir);
+  assert.equal(reopened.sprites.actors[0].battle.attackAnim, 3, 'a set attackAnim must survive save/load');
+  assert.equal(reopened.sprites.actors[1].battle.attackAnim, null, 'a null attackAnim must survive save/load as null');
+});
+
+test('spell.anim survives a disk round trip, both set and null', async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'forge-spellanim-'));
+  const project = normalizeProject({
+    project: { gameType: 'rpg' },
+    spells: [
+      { ...createSpell(0, 'Bolt'), anim: 2 },
+      { ...createSpell(1, 'Mend'), anim: null }
+    ]
+  });
+  await saveProject(dir, project);
+  const reopened = await loadProject(dir);
+  assert.equal(reopened.spells[0].anim, 2, 'a set spell.anim must survive save/load');
+  assert.equal(reopened.spells[1].anim, null, 'a null spell.anim must survive save/load as null');
+});
+
+test('projectUsesBattleAnimation: true iff some spell.anim or some actor.battle.attackAnim is set, false for a fresh project', () => {
+  const fresh = createProject('Quest', 'rpg');
+  assert.equal(projectUsesBattleAnimation(fresh), false, 'a fresh RPG project authors no battle animation');
+
+  const spellOnly = createProject('Quest', 'rpg');
+  spellOnly.spells[0] = { ...spellOnly.spells[0], anim: 0 };
+  assert.equal(projectUsesBattleAnimation(spellOnly), true, 'a live spell.anim alone must flip this on');
+
+  const actorOnly = createProject('Quest', 'rpg');
+  actorOnly.sprites.actors.push({ id: 0, name: 'Slime', damage: 1, anims: {}, battle: { attackAnim: 0 } });
+  assert.equal(projectUsesBattleAnimation(actorOnly), true, 'a live battle.attackAnim alone must flip this on');
+});
+
+test('projectWithoutBattleAnimation: clones and nulls every spell.anim and every actor.battle.attackAnim, leaving the source untouched', () => {
+  const project = createProject('Quest', 'rpg');
+  project.spells[0] = { ...project.spells[0], anim: 1 };
+  project.sprites.actors.push({ id: 0, name: 'Slime', damage: 1, anims: {}, battle: { attackAnim: 2 } });
+
+  const stripped = projectWithoutBattleAnimation(project);
+  assert.equal(stripped.spells[0].anim, null, 'the clone\'s spell.anim must be nulled');
+  assert.equal(stripped.sprites.actors[0].battle.attackAnim, null, 'the clone\'s battle.attackAnim must be nulled');
+  assert.equal(project.spells[0].anim, 1, 'the source project must be untouched (a clone, not a mutation)');
+  assert.equal(project.sprites.actors[0].battle.attackAnim, 2, 'the source project must be untouched (a clone, not a mutation)');
+});
+
+test('allBattleAnimationIds: collects only battleOnly locations, dedupes, and ignores null/undefined', () => {
+  const project = createProject('Quest', 'rpg');
+  project.spells[0] = { ...project.spells[0], anim: 2 };
+  project.sprites.actors.push({ id: 0, name: 'A', damage: 1, anims: { idle: 5 }, battle: { attackAnim: 2 } }); // dup of the spell's own id
+  project.sprites.actors.push({ id: 1, name: 'B', damage: 1, anims: { idle: 5 }, battle: { attackAnim: 7 } });
+  project.sprites.actors.push({ id: 2, name: 'C', damage: 1, anims: {}, battle: { attackAnim: null } });
+
+  const ids = allBattleAnimationIds(project);
+  // Wrong implementation this catches: walking every location (including
+  // the overworld anims slots, battleOnly: false) instead of filtering to
+  // battleOnly, which would also pick up id 5 here.
+  assert.deepEqual([...ids].sort((a, b) => a - b), [2, 7], 'only the battleOnly ids, deduped, no null');
+});
+
+test('animationPickerOptions: healthy lists every catalog entry by name; a stale selectedId becomes a distinct, always-selected "missing" option; null selects nothing', () => {
+  const project = createProject('Quest', 'rpg');
+  project.sprites.animations = [
+    { id: 0, name: 'Idle', loop: true, frames: [] },
+    { id: 1, name: 'Swing', loop: false, frames: [] }
+  ];
+
+  const none = animationPickerOptions(project, null);
+  assert.equal(none.missing, null, 'null must never produce a missing option');
+  assert.deepEqual(none.healthy.map((o) => o.label), ['Idle', 'Swing']);
+  assert.ok(none.healthy.every((o) => o.selected === false), 'nothing should be selected when the stored id is null');
+
+  const real = animationPickerOptions(project, 1);
+  assert.equal(real.missing, null, 'a real, valid id must never produce a missing option');
+  assert.deepEqual(
+    real.healthy.map((o) => o.selected),
+    [false, true],
+    'the real id must select its own healthy row, not the missing slot'
+  );
+
+  // Wrong implementation this catches: silently falling back to "None" (or
+  // to a real catalog entry) for a stale/invalid id instead of surfacing it
+  // -- the picker must never rewrite an authored value the user did not choose.
+  const stale = animationPickerOptions(project, 99);
+  assert.ok(stale.missing, 'a stale id (past the catalog) must produce a missing option');
+  assert.equal(stale.missing.value, 99, 'the missing option must carry the stale id itself');
+  assert.equal(stale.missing.selected, true, 'the missing option must be the one shown as selected');
+  assert.ok(stale.healthy.every((o) => o.selected === false), 'no healthy row may be selected while the stored id is stale');
 });
 
 // Round 4 finding (Medium 4): a malformed explicit metaspriteId must not
@@ -6109,7 +6306,11 @@ test('monsterActorIds unions live hostility with authored mentions, ascending an
 
 test('an RPG project round-trips through normalize unchanged', () => {
   const project = createProject('Quest', 'rpg');
-  project.spells.push(createSpell(0, 'Cure'));
+  // anim: null explicit -- createSpell itself does not carry this field (it
+  // predates phase 1b), but normalizeSpell always writes it, so the
+  // pre-normalize side has to agree or this round-trip check would be
+  // comparing against a shape normalizeProject can never actually produce.
+  project.spells.push({ ...createSpell(0, 'Cure'), anim: null });
   project.party.push(createPartyMember(1, 'Mage'));
   project.party[1].spells.push({ spellId: 0, level: 3 });
   project.switches.push('Chest opened');
@@ -9688,6 +9889,201 @@ test('battleSpriteBudget: an actor with battle.battleTile explicitly set to 255 
   project.maps[0].screens[0].entities.push({ actorId, x: 0, y: 0, props: {} });
 
   assert.equal(battleSpriteBudget(project, resolveMapper(project.cartridge.mapper)).used, 3);
+});
+
+// ---------------------------------------------------------------------------
+// Battle-side animation, phase 1b, §3.6: battleCombatantOamMax split out of
+// battleSpriteBudget, the fxTiles term, and the paired warning policy.
+// ---------------------------------------------------------------------------
+
+/** A project with one hostile, metasprite-only actor placed on the field
+ *  (so battleCombatantOamMax counts it), and an animation catalog the caller
+ *  can add battle-animation frames to. `iconTiles` is the combatant's own
+ *  resting-icon cost. */
+function projectWithHostileIcon(iconTiles) {
+  const project = createProject('Fx budget', 'rpg');
+  const metaspriteId = project.sprites.metasprites.length;
+  project.sprites.metasprites.push({
+    id: metaspriteId,
+    name: 'Icon',
+    tiles: Array.from({ length: iconTiles }, (_, i) => ({ tile: 32 + i, x: 0, y: 0, palette: 0 }))
+  });
+  const animId = project.sprites.animations.length;
+  project.sprites.animations.push({ id: animId, name: 'Walk', loop: true, frames: [{ metaspriteId }] });
+  const actorId = project.sprites.actors.length;
+  project.sprites.actors.push({
+    id: actorId,
+    name: 'Sentinel monster',
+    behavior: 'patroller',
+    speed: 1,
+    hp: 1,
+    damage: 1,
+    anims: { walkDown: animId },
+    battle: {}
+  });
+  project.maps[0].screens[0].entities.push({ actorId, x: 0, y: 0, props: {} });
+  return { project, actorId };
+}
+
+test('battleCombatantOamMax equals battleSpriteBudget’s own used figure when no battle animation is authored', () => {
+  const { project } = projectWithHostileIcon(3);
+  const mapper = resolveMapper(project.cartridge.mapper);
+  assert.equal(battleCombatantOamMax(project, mapper), 3);
+  assert.equal(battleSpriteBudget(project, mapper).used, 3, 'fxTiles must be 0 with no battle animation authored');
+});
+
+test('battleSpriteBudget: fxTiles is the worst PLAYABLE battle animation frame, added once -- an invalid reference costs exactly 0', () => {
+  const { project, actorId } = projectWithHostileIcon(3);
+  // A battle-anim animation with a bigger frame (10 tiles) than the combatant's own icon (3).
+  const fxMetaId = project.sprites.metasprites.length;
+  project.sprites.metasprites.push({
+    id: fxMetaId,
+    name: 'Swing',
+    tiles: Array.from({ length: 10 }, (_, i) => ({ tile: 64 + i, x: 0, y: 0, palette: 0 }))
+  });
+  const fxAnimId = project.sprites.animations.length;
+  project.sprites.animations.push({ id: fxAnimId, name: 'Swing', loop: false, frames: [{ metaspriteId: fxMetaId }] });
+  project.sprites.actors[actorId].battle.attackAnim = fxAnimId;
+
+  const mapper = resolveMapper(project.cartridge.mapper);
+  assert.equal(battleSpriteBudget(project, mapper).used, 3 + 10, 'combatantMax (3) plus the one playable frame (10)');
+
+  // Wrong implementation this catches: charging an invalid/unplayable
+  // reference too, instead of treating it as costing nothing -- the same
+  // "won't actually play" fact the engine's own arm-time guard acts on.
+  project.sprites.actors[actorId].battle.attackAnim = 99; // stale, past the catalog
+  assert.equal(battleSpriteBudget(project, mapper).used, 3, 'a stale reference must cost exactly 0, never the frame it could not resolve');
+});
+
+// Review round 1, P3 finding 5: the test above uses one reference and one
+// frame, so it cannot tell "the worst frame across every reference, added
+// once" apart from "sum every reference's own worst frame" (which happens
+// to equal the single value here), nor "the worst frame within one
+// animation" apart from "that animation's own first frame" (a one-frame
+// animation has only one frame to be either of). This one distinguishes
+// all three, with three references (two actors' own attackAnim, one
+// spell's own anim) of unequal size, one of them multi-frame with its OWN
+// worst frame NOT first:
+//  - max vs sum: if fxTiles summed every reference instead of taking the
+//    largest, this would report combatantMax + (12 + 6 + 7) = 28, not 15.
+//  - first frame vs worst frame: animA's own first frame is 4 tiles, but
+//    its second frame (12) is the real worst -- reading only frame 0 of
+//    the winning animation would report combatantMax + 4 = 7, not 15.
+test('battleSpriteBudget: fxTiles is the single largest frame across every reference, not a sum of them, and the WORST frame within one animation, not its first', () => {
+  const { project, actorId: actorA } = projectWithHostileIcon(3);
+  const actorB = project.sprites.actors.length;
+  project.sprites.actors.push({
+    id: actorB, name: 'Second hostile', behavior: 'patroller', speed: 1, hp: 1, damage: 1,
+    anims: { idle: null, walkDown: null, walkUp: null, walkSide: null }, battle: {}
+  });
+  project.maps[0].screens[0].entities.push({ actorId: actorB, x: 8, y: 0, props: {} });
+
+  const meta = (tiles) => {
+    const id = project.sprites.metasprites.length;
+    project.sprites.metasprites.push({
+      id,
+      name: `M${id}`,
+      tiles: Array.from({ length: tiles }, (_, i) => ({ tile: 64 + id * 16 + i, x: 0, y: 0, palette: 0 }))
+    });
+    return id;
+  };
+
+  // animA: two frames, worst (12) is the SECOND, not the first (4) -- actor A's own attackAnim.
+  const animA = project.sprites.animations.length;
+  project.sprites.animations.push({ id: animA, name: 'A', loop: false, frames: [{ metaspriteId: meta(4) }, { metaspriteId: meta(12) }] });
+  project.sprites.actors[actorA].battle.attackAnim = animA;
+
+  // animB: one frame, 6 tiles -- a spell's own anim, smaller than animA's worst.
+  const animB = project.sprites.animations.length;
+  project.sprites.animations.push({ id: animB, name: 'B', loop: false, frames: [{ metaspriteId: meta(6) }] });
+  project.spells[0] = { ...project.spells[0], anim: animB };
+
+  // animC: one frame, 7 tiles -- actor B's own attackAnim, also smaller than animA's worst.
+  const animC = project.sprites.animations.length;
+  project.sprites.animations.push({ id: animC, name: 'C', loop: false, frames: [{ metaspriteId: meta(7) }] });
+  project.sprites.actors[actorB].battle.attackAnim = animC;
+
+  const mapper = resolveMapper(project.cartridge.mapper);
+  assert.equal(
+    battleSpriteBudget(project, mapper).used,
+    3 + 12,
+    'combatantMax (3) plus the single largest frame across all three references (animA’s own worst, 12) -- never their sum (28), and never animA’s own first frame (4)'
+  );
+});
+
+test('describeBattleAnimationOamWarning: null with no playable battle animation authored; names the worst one otherwise', () => {
+  const { project, actorId } = projectWithHostileIcon(3);
+  const mapper = resolveMapper(project.cartridge.mapper);
+  assert.equal(describeBattleAnimationOamWarning(project, mapper), null, 'no battle animation authored at all');
+
+  const smallMetaId = project.sprites.metasprites.length;
+  project.sprites.metasprites.push({ id: smallMetaId, name: 'Small', tiles: [{ tile: 90, x: 0, y: 0, palette: 0 }] });
+  const smallAnimId = project.sprites.animations.length;
+  project.sprites.animations.push({ id: smallAnimId, name: 'Small', loop: false, frames: [{ metaspriteId: smallMetaId }] });
+
+  const bigMetaId = project.sprites.metasprites.length;
+  project.sprites.metasprites.push({
+    id: bigMetaId,
+    name: 'Big',
+    tiles: Array.from({ length: 20 }, (_, i) => ({ tile: 100 + i, x: 0, y: 0, palette: 0 }))
+  });
+  const bigAnimId = project.sprites.animations.length;
+  project.sprites.animations.push({ id: bigAnimId, name: 'Big Swing', loop: false, frames: [{ metaspriteId: bigMetaId }] });
+
+  project.spells[0] = { ...project.spells[0], anim: smallAnimId };
+  project.sprites.actors[actorId].battle.attackAnim = bigAnimId;
+
+  const warning = describeBattleAnimationOamWarning(project, mapper);
+  assert.ok(warning, 'a battle animation is now authored');
+  assert.ok(warning.includes('Big Swing'), 'the warning must name the WORST (largest) animation, not merely any one');
+  assert.ok(!warning.includes('"Small"'), 'the warning must not name the smaller animation');
+});
+
+test('validateProject: a project with no battle animation and an over-budget combatant load triggers only the Build warning, unchanged text', () => {
+  const { project } = projectWithHostileIcon(70); // alone already over MAX_OAM_ENTRIES (64)
+  const problems = validateProject(project);
+  const buildWarnings = problems.filter((p) => p.where === 'Build' && /A battle could need/.test(p.message));
+  const monsterForgeWarnings = problems.filter((p) => p.where === 'Monster Forge' && /would need more than the NES/.test(p.message));
+  assert.equal(buildWarnings.length, 1, 'the pre-existing combatant/cursor overflow warning must still fire');
+  // Review round 1, P3 finding 6: pinned to the literal historical string,
+  // not re-derived by calling describeBattleSpriteWarning -- that helper is
+  // the same one validateProject itself calls, so comparing its own output
+  // against itself would still pass a wording change that kept the
+  // "A battle could need" phrase the filter above already matches on. This
+  // is what actually proves the wording is byte-identical to what shipped
+  // before this slice, not merely internally consistent with itself.
+  assert.equal(
+    buildWarnings[0].message,
+    'A battle could need 70 sprites at once; the NES can only show 64.',
+    'this exact sentence must survive unchanged for a project with no battle animation'
+  );
+  // Wrong implementation this catches: a warning rewrite that always adds
+  // the second, animation-specific line even when fxTiles is 0.
+  assert.equal(monsterForgeWarnings.length, 0, 'no battle animation is authored, so the second warning must not fire');
+});
+
+test('validateProject: a project whose battle animation pushes the budget over the limit triggers BOTH warnings, the second naming the animation', () => {
+  const { project, actorId } = projectWithHostileIcon(40);
+  const bigMetaId = project.sprites.metasprites.length;
+  project.sprites.metasprites.push({
+    id: bigMetaId,
+    name: 'Overload',
+    tiles: Array.from({ length: 30 }, (_, i) => ({ tile: 100 + i, x: 0, y: 0, palette: 0 }))
+  });
+  const bigAnimId = project.sprites.animations.length;
+  project.sprites.animations.push({ id: bigAnimId, name: 'Overload', loop: false, frames: [{ metaspriteId: bigMetaId }] });
+  project.sprites.actors[actorId].battle.attackAnim = bigAnimId;
+
+  const mapper = resolveMapper(project.cartridge.mapper);
+  const budget = battleSpriteBudget(project, mapper);
+  assert.ok(budget.used > budget.limit, 'sanity: this fixture must actually overflow (40 + 30 > 64)');
+
+  const problems = validateProject(project);
+  const buildWarnings = problems.filter((p) => p.where === 'Build' && /A battle could need/.test(p.message));
+  const monsterForgeWarnings = problems.filter((p) => p.where === 'Monster Forge' && /would need more than the NES/.test(p.message));
+  assert.equal(buildWarnings.length, 1, 'the combatant/cursor overflow warning must still fire alongside the new one');
+  assert.equal(monsterForgeWarnings.length, 1, 'the second, animation-specific warning must fire');
+  assert.ok(monsterForgeWarnings[0].message.includes('Overload'), 'it must name the offending animation');
 });
 
 test('validateProject: neither an unset battleTile nor an explicit 255 collides with the message font -- caught: skipping only null/undefined and letting an explicit 255 fall through into the last-tile-index math', () => {

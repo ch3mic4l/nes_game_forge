@@ -15,7 +15,8 @@ import NES from '../../renderer/emulator/core/nes.js';
 import { Emulator, BUTTON } from '../../renderer/emulator/runcontrol.js';
 import { loadProject, saveProject } from '../../main/project-io.js';
 import { buildProject } from '../../main/build/pipeline.js';
-import { createProject, NO_MEMBER } from '../../shared/project.js';
+import { createProject, NO_MEMBER, createSpell, battleCombatantOamMax, MAX_OAM_ENTRIES } from '../../shared/project.js';
+import { resolveMapper } from '../../shared/cartridge.js';
 import { checkCapacity } from '../../main/build/generate.js';
 import { statAt, xpCurve, nameTiles, NAME_LIMIT, dropThreshold } from '../../main/build/battletables.js';
 import { parseSymbolFile } from '../../main/build/symbols.js';
@@ -106,6 +107,7 @@ const ST_GAMEOVER = 4;
 const ST_BATTLE = 5;
 
 const MAX_PARTY = 4; // engine/constants.asm -- combatant indices 0-3 party, 4-7 monsters
+const MSG_HOLD = 45; // engine/constants.asm -- frames a line of battle text stays up unpressed
 
 const BOX_PAGEWAIT = 3;
 const BOX_ENDWAIT = 6;
@@ -5160,3 +5162,1184 @@ test(
     );
   }
 );
+
+// ---------------------------------------------------------------------------
+// Battle-side animation (docs/design-battle-animation.md v4.1, phase 1b).
+// The reference-integrity half (isValidAnimationRef, isPlayableBattleAnimation,
+// validateProject's refusals) is JS-only and tested in project.test.js; this
+// section is the engine mechanism itself, driven through the real ROM.
+// ---------------------------------------------------------------------------
+
+/** Resolve the four bt_fx_* zero-page bytes out of a build's own constants.asm. */
+function resolveFxAddrs(built) {
+  const dir = path.dirname(path.dirname(built.romPath));
+  const constantsText = fs.readFileSync(path.join(dir, 'build', 'constants.asm'), 'utf8');
+  return {
+    BT_FX_ANIM: resolveEngineAddress(constantsText, 'bt_fx_anim'),
+    BT_FX_SLOT: resolveEngineAddress(constantsText, 'bt_fx_slot'),
+    BT_FX_FRAME: resolveEngineAddress(constantsText, 'bt_fx_frame'),
+    BT_FX_TIMER: resolveEngineAddress(constantsText, 'bt_fx_timer')
+  };
+}
+
+const NO_ANIM = 0xff;
+
+test('a monster’s own physical attack arms its attackAnim before roll_hit runs, whether the roll then hits or misses', {
+  skip: needsSample
+}, async (t) => {
+  // Slime (actor 0) never casts (no spellIds), so monster_turn always falls
+  // through to monster_turn_attack -- the real, only physical-attack path
+  // for a monster (round 2's own finding, Appendix A's attack_target comment).
+  const built = await buildVariantFull(t, 'fx-monster-attack', (project) => {
+    project.maps[0].encounters = { rate: 0, actorIds: [] };
+    project.sprites.actors[0].battle = { ...project.sprites.actors[0].battle, attackAnim: 1 }; // "Slime" animation
+  });
+  const { BT_FX_ANIM, BT_FX_SLOT } = resolveFxAddrs(built);
+  const nes = bootPastNaming(built.romPath);
+  const addrOf = selectBattleBank(nes, built);
+  const monsterTurnAttack = addrOf('monster_turn_attack');
+
+  // Isolated call: bt_actor names the acting monster (slot 4, the first
+  // monster combatant), mon_slot_actor[0] maps that slot to Slime's own
+  // actor id, and pc_in_party[0]/pc_hp[0] give pick_party_target a live
+  // target to land on -- all of it plain RAM, poke-able directly, unlike
+  // the compiled mon_acc/pc_eva tables roll_hit itself reads.
+  const setup = () => {
+    nes.cpu.mem[BT_ACTOR] = MAX_PARTY; // slot 4
+    nes.cpu.mem[MON_SLOT_ACTOR] = 0; // Slime
+    nes.cpu.mem[PC_IN_PARTY] = 1;
+    nes.cpu.mem[PC_HP] = 50;
+    nes.cpu.mem[BT_FX_ANIM] = NO_ANIM;
+  };
+
+  // Case 1: sample-rpg's own default acc/eva -- rig the RNG so the very
+  // next roll_hit call is a genuine hit (referenceRngNext(0) is small, well
+  // under the sample's own threshold).
+  setup();
+  nes.cpu.mem[RNG] = 0;
+  callRoutine(nes, monsterTurnAttack);
+  assert.equal(nes.cpu.mem[BT_FX_ANIM], 1, 'the attack visual must be armed on a hit');
+  assert.equal(nes.cpu.mem[BT_FX_SLOT], MAX_PARTY, 'armed over the ACTOR’s own slot (the swing), not the target’s');
+  assert.notEqual(nes.cpu.mem[BT_DMG_HI], 0xff, 'sanity: this roll must actually have been a hit');
+
+  // Case 2: a forced miss -- Slime's own acc set to 0 underflows against any
+  // eva, roll_hit's own unconditional bcc branch, no RNG dependency at all.
+  const missBuilt = await buildVariantFull(t, 'fx-monster-miss', (project) => {
+    project.maps[0].encounters = { rate: 0, actorIds: [] };
+    project.sprites.actors[0].battle = { ...project.sprites.actors[0].battle, attackAnim: 1, acc: 0 };
+  });
+  const missAddrs = resolveFxAddrs(missBuilt);
+  const missNes = bootPastNaming(missBuilt.romPath);
+  const missAddrOf = selectBattleBank(missNes, missBuilt);
+  missNes.cpu.mem[BT_ACTOR] = MAX_PARTY;
+  missNes.cpu.mem[MON_SLOT_ACTOR] = 0;
+  missNes.cpu.mem[PC_IN_PARTY] = 1;
+  missNes.cpu.mem[PC_HP] = 50;
+  missNes.cpu.mem[missAddrs.BT_FX_ANIM] = NO_ANIM;
+  callRoutine(missNes, missAddrOf('monster_turn_attack'));
+  assert.equal(missNes.cpu.mem[missAddrs.BT_FX_ANIM], 1, 'the attack visual must be armed on a forced miss too');
+  assert.equal(missNes.cpu.mem[missAddrs.BT_FX_SLOT], MAX_PARTY, 'still armed over the actor’s own slot on a miss');
+  assert.equal(missNes.cpu.mem[BT_DMG_HI], 0xff, 'sanity: this roll must actually have missed');
+});
+
+// Review round 1, P2 finding 2 / round 2 P2 finding 1: setup_monsters' own
+// clear (engine/battle.asm) is what stops a running effect from leaking
+// from one battle into the next -- not merely the identical clear
+// battle_message_done already performs on every message dismissal,
+// including a battle's own closing Victory/Defeat/Fled line, and not merely
+// the OTHER two guards this design has (battle_fx_tick/battle_fx_draw's own
+// BP_INTRO checks, proven separately below). Proving the LIFECYCLE property
+// means leaving a long effect genuinely "running" at the moment the second
+// battle's own intro starts, in the same emulator, with no reboot and no
+// hand-clearing of the FX bytes in between -- so the state is deliberately
+// RE-ARMED right after the first battle's own Victory message has already
+// dismissed (and, with it, already cleared bt_fx_anim through the ordinary
+// message path), which is what makes this test fail on a REMOVED
+// setup_monsters clear specifically, rather than passing vacuously because
+// nothing was ever "running" to begin with.
+//
+// Round 2's own correction: the seed must be a REAL, legitimately
+// mid-flight state in an animation that actually has that many frames and
+// that long a hold -- not frame 3 of a one-frame, duration-16 animation,
+// which a broken intro guard could dereference past the end of without ever
+// proving anything about the guard itself. This test also now checks that
+// the seed survives on the field side, right up to the moment BP_INTRO is
+// reached (before the battle bank's own first tick has run at all) -- a
+// stronger claim than "bt_fx_anim reads NO_ANIM once intro is over," which
+// alone cannot tell "setup's own clear ran" apart from "something on the
+// field side already stepped on it first."
+//
+// What this test does NOT attempt: pausing mid-BP_INTRO to call
+// battle_fx_tick/battle_fx_draw in isolation and then resuming real
+// frame-stepping on the SAME emulator afterward. That was tried and
+// reproducibly crashes jsnes ("invalid opcode at address $808") even with
+// nothing more than a single isolated switch_prg_bank call in between --
+// narrowed by disabling first the tick/draw calls (resuming worked), then
+// selectBattleBank alone (still crashed), which places the fault in
+// resuming normal frame-stepping after ANY callRoutine-driven excursion at
+// this exact point, not in this test's own bt_fx_* logic. The next test,
+// `battle_fx_tick and battle_fx_draw's own BP_INTRO guards leave a
+// mid-flight effect and OAM entirely untouched`, proves the same two guards
+// with a dedicated, fully isolated harness (fresh nes, never resumed)
+// instead -- exactly the fallback the review itself named ("an isolated
+// callRoutine ... is acceptable").
+test('a long effect deliberately re-armed after one battle ends is cleared by the NEXT battle’s own setup, not by leftover message-dismissal state', {
+  skip: needsSample
+}, async (t) => {
+  const longAnimId = 3; // pushed below -- a real, multi-frame, long-duration animation
+  const SEED_SLOT = 1; // a slot the second battle will never itself use for combatant 4
+  const SEED_FRAME = 1; // the middle of three frames -- neither just-armed nor about to finish
+  const SEED_TIMER = 50; // well under this frame's own 200-tick hold
+  const built = await buildVariantFull(t, 'fx-stale-across-battles', (project) => {
+    project.maps[0].encounters = { rate: 0, actorIds: [] };
+    project.sprites.animations.push({
+      id: longAnimId,
+      name: 'LongRunning',
+      loop: false,
+      frames: [
+        { metaspriteId: 1, duration: 200 },
+        { metaspriteId: 1, duration: 200 },
+        { metaspriteId: 1, duration: 200 }
+      ]
+    });
+    project.sprites.actors[0].battle = { ...project.sprites.actors[0].battle, attackAnim: longAnimId };
+  });
+  const { BT_FX_ANIM, BT_FX_SLOT, BT_FX_FRAME, BT_FX_TIMER } = resolveFxAddrs(built);
+  const nes = bootPastNaming(built.romPath);
+
+  // First battle: Slime, the deterministic touch encounter, won in one hit.
+  walkTo(nes, 160, 176);
+  walkTo(nes, 176, 176, 200);
+  assert.equal(nes.cpu.mem[GAME_STATE], ST_BATTLE, 'walking into the slime did not start a fight');
+  waitForMenu(nes);
+  nes.cpu.mem[MON_HP] = 1; // guaranteed one-hit kill, whether the attack lands this round or a later one
+  let rounds = 0;
+  while (nes.cpu.mem[GAME_STATE] === ST_BATTLE && nes.cpu.mem[MON_ALIVE] === 1 && rounds++ < 12) {
+    if (nes.cpu.mem[BT_PHASE] === BP_MENU) chooseCommand(nes, BC_FIGHT);
+    tap(nes, A, 20);
+  }
+  const firstBattleOutcome = pressThrough(nes, 60);
+  assert.equal(firstBattleOutcome, ST_GAMEPLAY, 'the first battle never actually ended');
+
+  // By now, battle_message_done's own unconditional clear has already run
+  // at least once (the Victory line's own dismissal) -- confirmed, not
+  // assumed, so the deliberate re-arm just below is proven necessary rather
+  // than redundant.
+  assert.equal(nes.cpu.mem[BT_FX_ANIM], NO_ANIM, 'sanity: the message-dismissal clear already ran once, ending the first battle’s own effect');
+
+  // Deliberately re-seed a "still running" effect AFTER the first battle is
+  // over -- nothing in ordinary gameplay does this; it exists purely so the
+  // next assertions are testing the SECOND battle's own setup clear, not
+  // merely observing the message clear a second time.
+  nes.cpu.mem[BT_FX_ANIM] = longAnimId;
+  nes.cpu.mem[BT_FX_SLOT] = SEED_SLOT;
+  nes.cpu.mem[BT_FX_FRAME] = SEED_FRAME;
+  nes.cpu.mem[BT_FX_TIMER] = SEED_TIMER;
+
+  // Second battle, same emulator, no reboot: Snake's own touch encounter.
+  walkTo(nes, 32, 176);
+  walkTo(nes, 32, 208, 300);
+  assert.equal(nes.cpu.mem[GAME_STATE], ST_BATTLE, 'walking into the snake did not start the second fight');
+
+  // The field side sets game_state (and bt_phase, fresh, to BP_INTRO) before
+  // the battle bank's own first tick ever runs -- so the very first
+  // observable frame of the second battle IS BP_INTRO, and the seeded state
+  // must still be exactly what this test put there: nothing on the field
+  // side has any business touching bt_fx_*.
+  assert.equal(nes.cpu.mem[BT_PHASE], BP_INTRO, 'the second battle must begin at BP_INTRO, before its own first tick has run');
+  assert.equal(nes.cpu.mem[BT_FX_ANIM], longAnimId, 'the seeded state must survive on the field side, before BP_INTRO’s own first tick');
+  assert.equal(nes.cpu.mem[BT_FX_FRAME], SEED_FRAME, 'the seeded frame must survive on the field side');
+  assert.equal(nes.cpu.mem[BT_FX_TIMER], SEED_TIMER, 'the seeded timer must survive on the field side');
+
+  // Now let the real intro/setup actually run.
+  for (let i = 0; i < 30 && nes.cpu.mem[BT_PHASE] === BP_INTRO; i++) nes.frame();
+  assert.notEqual(nes.cpu.mem[BT_PHASE], BP_INTRO, 'the second battle’s own intro never finished');
+
+  // The running effect this test re-seeded must be gone: setup_monsters'
+  // own clear is what actually does this. Removing setup_monsters' own
+  // clear leaves bt_fx_anim exactly at longAnimId here, which is the
+  // sabotage this assertion exists to catch.
+  assert.equal(nes.cpu.mem[BT_FX_ANIM], NO_ANIM, 'setup_monsters must clear bt_fx_anim to $FF for the second battle -- a re-armed effect from the first must not survive into it');
+
+  waitForMenu(nes);
+  // The second battle's own first menu/draw: still no trace of the old
+  // effect, several ticks in, not merely on the one tick this test could
+  // otherwise have gotten lucky on.
+  for (let i = 0; i < 5; i++) {
+    nes.frame();
+    assert.equal(nes.cpu.mem[BT_FX_ANIM], NO_ANIM, 'the second battle’s own first menu/draw must show no trace of the first battle’s effect');
+  }
+});
+
+// Review round 2, P2 finding 1's own fallback, taken: battle_fx_tick's and
+// battle_fx_draw's own BP_INTRO guards, proven directly with a dedicated,
+// fully isolated harness -- a fresh boot, bt_phase forced to BP_INTRO by
+// hand, and a REAL, valid mid-flight seed (the identical 3-frame,
+// duration-200 animation and frame/timer values the lifecycle test above
+// uses), rather than resumed inside that same lifecycle sequence (see that
+// test's own comment for why: resuming real frame-stepping after a
+// callRoutine excursion at this exact point reproducibly crashes jsnes,
+// unrelated to anything this design added). This is what actually
+// distinguishes "the guard blocked it" from "setup's later clear cleaned up
+// after it ran," which the lifecycle test's own bt_fx_anim-after-intro
+// assertion cannot do on its own.
+test('battle_fx_tick and battle_fx_draw’s own BP_INTRO guards leave a mid-flight effect and OAM entirely untouched', {
+  skip: needsSample
+}, async (t) => {
+  const longAnimId = 3;
+  const SEED_SLOT = 1;
+  const SEED_FRAME = 1;
+  const SEED_TIMER = 50;
+  const built = await buildVariantFull(t, 'fx-intro-guards', (project) => {
+    project.maps[0].encounters = { rate: 0, actorIds: [] };
+    project.sprites.animations.push({
+      id: longAnimId,
+      name: 'LongRunning',
+      loop: false,
+      frames: [
+        { metaspriteId: 1, duration: 200 },
+        { metaspriteId: 1, duration: 200 },
+        { metaspriteId: 1, duration: 200 }
+      ]
+    });
+    project.sprites.actors[0].battle = { ...project.sprites.actors[0].battle, attackAnim: longAnimId };
+  });
+  const { BT_FX_ANIM, BT_FX_SLOT, BT_FX_FRAME, BT_FX_TIMER } = resolveFxAddrs(built);
+  const dir = path.dirname(path.dirname(built.romPath));
+  const OAM_IDX = resolveEngineAddress(fs.readFileSync(path.join(dir, 'build', 'constants.asm'), 'utf8'), 'oam_idx');
+  const nes = bootPastNaming(built.romPath);
+  const addrOf = selectBattleBank(nes, built);
+
+  nes.cpu.mem[BT_PHASE] = BP_INTRO;
+  nes.cpu.mem[BT_FX_ANIM] = longAnimId;
+  nes.cpu.mem[BT_FX_SLOT] = SEED_SLOT;
+  nes.cpu.mem[BT_FX_FRAME] = SEED_FRAME;
+  nes.cpu.mem[BT_FX_TIMER] = SEED_TIMER;
+
+  callRoutine(nes, addrOf('battle_fx_tick'));
+  assert.equal(nes.cpu.mem[BT_FX_ANIM], longAnimId, 'battle_fx_tick’s own BP_INTRO guard must not end the effect either');
+  assert.equal(nes.cpu.mem[BT_FX_SLOT], SEED_SLOT, 'battle_fx_tick’s own BP_INTRO guard must leave the seeded slot untouched');
+  assert.equal(nes.cpu.mem[BT_FX_FRAME], SEED_FRAME, 'battle_fx_tick’s own BP_INTRO guard must leave the seeded frame untouched');
+  assert.equal(nes.cpu.mem[BT_FX_TIMER], SEED_TIMER, 'battle_fx_tick’s own BP_INTRO guard must leave the seeded timer untouched');
+
+  nes.cpu.mem.fill(0xff, 0x200, 0x300); // battle_sprite_clear's own park step, done by hand for this isolated call
+  nes.cpu.mem[OAM_IDX] = 0;
+  callRoutine(nes, addrOf('battle_fx_draw'));
+  assert.equal(nes.cpu.mem[OAM_IDX], 0, 'battle_fx_draw’s own BP_INTRO guard must draw nothing at all');
+  assert.deepEqual([...nes.cpu.mem.slice(0x200, 0x300)], new Array(0x100).fill(0xff), 'battle_fx_draw’s own BP_INTRO guard must leave the entire OAM shadow parked, not merely its first byte');
+  assert.equal(nes.cpu.mem[BT_FX_ANIM], longAnimId, 'battle_fx_draw’s own BP_INTRO guard must not end the effect either');
+  assert.equal(nes.cpu.mem[BT_FX_SLOT], SEED_SLOT, 'battle_fx_draw’s own BP_INTRO guard must leave the seeded slot untouched');
+  assert.equal(nes.cpu.mem[BT_FX_FRAME], SEED_FRAME, 'battle_fx_draw’s own BP_INTRO guard must leave the seeded frame untouched');
+  assert.equal(nes.cpu.mem[BT_FX_TIMER], SEED_TIMER, 'battle_fx_draw’s own BP_INTRO guard must leave the seeded timer untouched');
+});
+
+// cast_spell's own arming block (docs/design-battle-animation.md §3.3): a
+// monster caster (bt_actor = MAX_PARTY, Slime, attackAnim authored) and a
+// second monster caster (Snake, attackAnim explicitly null) casting eight
+// spells that between them cover every branch the review round 1 asked
+// for: attack-anim fallback, spell-only (no fallback to have won against),
+// "both" (the spell's own anim winning over a real fallback) for a
+// single-target damage AND a single-target status spell (both target the
+// victim), a heal and an all-target spell (both target the caster), the
+// party "neither" no-op (battle_fx_arm_attack's own unconditional `bcc
+// rts`), and the MONSTER "neither" no-op (mon_anim_attack itself is
+// NO_ANIM, battle_fx_arm_at's own `cmp NO_ANIM / beq rts` -- a genuinely
+// different no-op path the party case cannot exercise).
+//
+// Review round 1, P2 finding 3 / round 2 P3 finding 3 / round 3 wording nit:
+// cases 1, 2, 4, 5 and 8 each give their own spell and the spell at its
+// "accidental index" (whatever id the arming block's own `tax` calls leave
+// in X if the `ldx <bt_arg` reload were missing on that specific branch)
+// DIFFERENT kinds (not merely amounts -- round 2's own correction, see
+// below), so a reload missing on the branch each exercises is caught by
+// kind, not just amount. Case 3 is not one of these: Case 3 uses spell index
+// 2 and animation id 2, so its intended and accidental dispatch indices
+// coincide. A missing reload there would coincidentally still read
+// StatusTarget's own kind, and case 3 exists to prove the "both" precedence
+// rule instead (see its own comment below), not reload integrity. Every
+// assertion below checks the exact resulting HP/status regardless, not
+// merely that something changed:
+//  - Case 1 (AttackFallback, bt_arg=0) arms through battle_fx_arm_attack,
+//    which ends with X = FALLBACK_ANIM (3) -- a real, valid spell index
+//    (HealCaster, kind 'heal'). Round 2 found that an earlier version of
+//    this fixture aliased FALLBACK_ANIM to SpellWins's own index (1)
+//    instead, and gave the two the SAME kind and scope ('damage'/'one'),
+//    differing only in amount -- but `spell_damage` (engine/battleturn.asm)
+//    reloads X from bt_arg itself before rolling the amount, so a reload
+//    missing only on the fallback branch still dealt AttackFallback's own
+//    correct 30 regardless: the kind dispatch (which reads spell_kind,x
+//    with the STILL-corrupted X) took the identical 'damage'/'one' branch
+//    either way, and the amount roll's own reload masked the rest. Aliasing
+//    HealCaster instead means a reload missing here sends the dispatch into
+//    the SK_HEAL branch entirely -- healing the caster instead of damaging
+//    the target -- which no inner reload can mask.
+//  - Cases 2, 4, 5 (SpellWins/HealCaster/AllCaster) all share `anim:
+//    SPELL_ANIM` (2, StatusTarget's own index, kind 'poison'). Arming
+//    through battle_fx_arm_at ends with X = SPELL_ANIM. A reload missing
+//    only after the spell-anim branch would read spell 2's own kind
+//    ('poison') for every one of these three instead of their own (damage/
+//    heal/damage), so none of their real, distinct, exact effects would
+//    land, and PC_STATUS would incorrectly show POISON instead.
+//  - Case 8 (MonsterNeither, bt_arg=7, Snake) independently exercises the
+//    identical fallback-branch reload, aliasing HealCaster (3) the same
+//    way as case 1 now does, by coincidence of X's own value after
+//    battle_fx_arm_attack's "no attackAnim, no-op" path -- round 2's review
+//    identified this as the case that actually caught the round-1 sabotage
+//    result, before case 1 itself was fixed to also distinguish it.
+//
+// Run twice, under both spell-list gates (MONSTER_SPELL_LIST_ENABLED on and
+// off): cast_spell's own animation-arming block sits outside
+// `.if MONSTER_SPELL_LIST_ENABLED` entirely, so nothing here should ever
+// differ between the two builds -- a fallback reading the wrong field, or a
+// test that only ever exercised one gate, is what this doubling catches.
+for (const spellListOn of [true, false]) {
+  test(`cast_spell animation precedence, target-vs-caster policy, and post-arm dispatch integrity -- MONSTER_SPELL_LIST_ENABLED ${spellListOn ? 'on' : 'off'}`, {
+    skip: needsSample
+  }, async (t) => {
+    const SPELL_ANIM = 2; // "Potion" -- also StatusTarget's own real index (2)
+    const SPELL_ONLY_ANIM = 3; // pushed below -- a real animation, also HealCaster's own real spell index (3)
+    // Slime's own attackAnim -- deliberately the SAME real animation id as
+    // SPELL_ONLY_ANIM (3), which is what makes X = 3 (HealCaster, kind
+    // 'heal') the accidental spell index if the fallback branch's own
+    // reload were missing (see the header comment above for why this must
+    // be a different KIND from AttackFallback's own 'damage', not merely a
+    // different amount).
+    const FALLBACK_ANIM = SPELL_ONLY_ANIM;
+    const built = await buildVariantFull(t, `fx-cast-precedence-${spellListOn ? 'on' : 'off'}`, (project) => {
+      project.maps[0].encounters = { rate: 0, actorIds: [] };
+      project.sprites.animations.push({ id: SPELL_ONLY_ANIM, name: 'SpellOnly', loop: false, frames: [{ metaspriteId: 1, duration: 8 }] });
+      project.spells = [
+        { ...createSpell(0, 'AttackFallback'), kind: 'damage', scope: 'one', amountMin: 30, amountMax: 30, anim: null },
+        { ...createSpell(1, 'SpellWins'), kind: 'damage', scope: 'one', amountMin: 50, amountMax: 50, anim: SPELL_ANIM },
+        { ...createSpell(2, 'StatusTarget'), kind: 'poison', scope: 'one', anim: SPELL_ANIM },
+        { ...createSpell(3, 'HealCaster'), kind: 'heal', scope: 'one', amountMin: 5, amountMax: 5, anim: SPELL_ANIM },
+        { ...createSpell(4, 'AllCaster'), kind: 'damage', scope: 'all', amountMin: 20, amountMax: 20, anim: SPELL_ANIM },
+        { ...createSpell(5, 'Neither'), kind: 'damage', scope: 'one', amountMin: 40, amountMax: 40, anim: null },
+        { ...createSpell(6, 'SpellOnly'), kind: 'damage', scope: 'one', amountMin: 75, amountMax: 75, anim: SPELL_ONLY_ANIM },
+        { ...createSpell(7, 'MonsterNeither'), kind: 'damage', scope: 'one', amountMin: 60, amountMax: 60, anim: null }
+      ];
+      project.sprites.actors[0].battle = {
+        ...project.sprites.actors[0].battle,
+        attackAnim: FALLBACK_ANIM,
+        spellIds: spellListOn ? [0, 1] : [0]
+      };
+      // Snake (actor 3): a second monster with NO attackAnim of its own,
+      // for the spell-only and monster-neither cases -- Slime's own
+      // attackAnim is always real, so every case above it would still pass
+      // even if battle_fx_arm_attack's own mon_anim_attack == NO_ANIM path
+      // (as opposed to the party's unconditional bt_actor < MAX_PARTY path)
+      // were broken.
+      project.sprites.actors[3].battle = { ...project.sprites.actors[3].battle, attackAnim: null };
+    });
+    const { BT_FX_ANIM, BT_FX_SLOT } = resolveFxAddrs(built);
+    const nes = bootPastNaming(built.romPath);
+    const addrOf = selectBattleBank(nes, built);
+    const castSpell = addrOf('cast_spell');
+
+    const reset = (actorId = 0) => {
+      nes.cpu.mem[MON_SLOT_ACTOR] = actorId; // monster slot 0 (combatant 4)
+      nes.cpu.mem[PC_IN_PARTY] = 1;
+      nes.cpu.mem[PC_HP] = 200;
+      nes.cpu.mem[PC_STATUS] = 0;
+      nes.cpu.mem[MON_HP] = 200;
+      nes.cpu.mem[MON_SLOT_MAX] = 253;
+      nes.cpu.mem[MON_ALIVE] = 1;
+      nes.cpu.mem[MON_STATUS] = 0;
+      nes.cpu.mem[BT_FX_ANIM] = NO_ANIM;
+    };
+
+    // Case 1: attack-anim fallback, target for a single-target damage spell.
+    // Accidental index if the reload is missing only on this branch: 3
+    // (HealCaster, kind 'heal') -- a different KIND, not merely a different
+    // amount (round 2's own correction: spell_damage reloads X from bt_arg
+    // itself before rolling the amount, so two same-kind spells differing
+    // only in amount cannot distinguish this branch -- see the header
+    // comment above).
+    reset();
+    nes.cpu.mem[BT_ACTOR] = MAX_PARTY;
+    nes.cpu.mem[BT_TARGET] = 0;
+    nes.cpu.mem[MON_HP] = 200;
+    nes.cpu.mem[BT_ARG] = 0; // AttackFallback
+    callRoutine(nes, castSpell);
+    assert.equal(nes.cpu.mem[BT_FX_ANIM], FALLBACK_ANIM, 'AttackFallback: no spell.anim authored -- must fall back to the caster’s own attackAnim');
+    assert.equal(nes.cpu.mem[BT_FX_SLOT], MAX_PARTY, 'the fallback always plays over the caster’s own slot');
+    assert.equal(nes.cpu.mem[PC_HP], 200 - 30, 'AttackFallback must deal exactly its own 30 damage to the target, not silently do nothing (the accidental index’s own heal never touches the target’s HP at all)');
+    assert.equal(nes.cpu.mem[MON_HP], 200, 'AttackFallback must not have healed the caster instead of damaging the target (HealCaster, the accidental index if the fallback branch’s own reload were missing)');
+
+    // Case 2 ("both"): the spell's own anim wins over a real fallback,
+    // single-target damage -- target. Accidental index if the reload is
+    // missing only on the spell-anim branch: 2 (StatusTarget, poison) --
+    // would apply no damage and the wrong status instead of this exact 50.
+    reset();
+    nes.cpu.mem[BT_ACTOR] = MAX_PARTY;
+    nes.cpu.mem[BT_TARGET] = 0;
+    nes.cpu.mem[BT_ARG] = 1; // SpellWins
+    callRoutine(nes, castSpell);
+    assert.equal(nes.cpu.mem[BT_FX_ANIM], SPELL_ANIM, 'SpellWins: the spell’s own anim must win over the caster’s attackAnim fallback');
+    assert.equal(nes.cpu.mem[BT_FX_SLOT], 0, 'a single-target damage spell plays over the TARGET, not the caster');
+    assert.equal(nes.cpu.mem[PC_HP], 200 - 50, 'SpellWins must deal exactly its own 50, not StatusTarget’s own poison (the accidental index if the spell-anim branch’s own reload were missing)');
+    assert.equal(nes.cpu.mem[PC_STATUS], 0, 'and must not have poisoned the target instead');
+
+    // Case 3: single-target status -- also the target, not the caster.
+    reset();
+    nes.cpu.mem[BT_ACTOR] = MAX_PARTY;
+    nes.cpu.mem[BT_TARGET] = 0;
+    nes.cpu.mem[BT_ARG] = 2; // StatusTarget
+    callRoutine(nes, castSpell);
+    assert.equal(nes.cpu.mem[BT_FX_ANIM], SPELL_ANIM, 'StatusTarget must play its own authored anim');
+    assert.equal(nes.cpu.mem[BT_FX_SLOT], 0, 'a single-target status spell plays over the TARGET');
+    assert.equal(nes.cpu.mem[PC_STATUS], STATUS_POISON, 'StatusTarget’s own poison must still have landed on the target');
+    assert.equal(nes.cpu.mem[PC_HP], 200, 'and must not have dealt any damage');
+
+    // Case 4: heal -- the caster, never the target. Accidental index if the
+    // reload is missing only on the spell-anim branch: 2 (StatusTarget,
+    // poison, targeting bt_target) -- would leave MON_HP untouched and
+    // incorrectly poison the party instead of healing the caster.
+    reset();
+    nes.cpu.mem[BT_ACTOR] = MAX_PARTY;
+    nes.cpu.mem[BT_TARGET] = 0;
+    nes.cpu.mem[MON_HP] = 100;
+    nes.cpu.mem[BT_ARG] = 3; // HealCaster
+    callRoutine(nes, castSpell);
+    assert.equal(nes.cpu.mem[BT_FX_ANIM], SPELL_ANIM, 'HealCaster must play its own authored anim');
+    assert.equal(nes.cpu.mem[BT_FX_SLOT], MAX_PARTY, 'a heal plays over the CASTER, never the target -- no one target to point at');
+    assert.equal(nes.cpu.mem[MON_HP], 100 + 5, 'HealCaster must heal exactly its own 5, not silently do nothing (the accidental index’s own poison never touches HP at all)');
+    assert.equal(nes.cpu.mem[PC_HP], 200, 'and must not have touched the (unrelated) target at all');
+    assert.equal(nes.cpu.mem[PC_STATUS], 0, 'nor poisoned it instead of healing the caster');
+
+    // Case 5: an all-target spell -- the caster, the flourish reading, not
+    // any one target. Accidental index if the reload is missing only on
+    // the spell-anim branch: 2 (StatusTarget, poison, scope one) -- would
+    // poison just the one target instead of damaging the whole party.
+    reset();
+    nes.cpu.mem[BT_ACTOR] = MAX_PARTY;
+    nes.cpu.mem[BT_TARGET] = 0;
+    nes.cpu.mem[BT_ARG] = 4; // AllCaster
+    callRoutine(nes, castSpell);
+    assert.equal(nes.cpu.mem[BT_FX_ANIM], SPELL_ANIM, 'AllCaster must play its own authored anim');
+    assert.equal(nes.cpu.mem[BT_FX_SLOT], MAX_PARTY, 'an all-target spell plays over the CASTER, not any one member of the other side');
+    assert.equal(nes.cpu.mem[PC_HP], 200 - 20, 'AllCaster must deal exactly its own 20 to the party, not silently poison one member instead');
+    assert.equal(nes.cpu.mem[PC_STATUS], 0, 'and must not have poisoned the target instead of damaging the party');
+
+    // Case 6: neither field authored -- a PARTY caster's own attackAnim
+    // fallback is unconditionally a no-op (battle_fx_arm_attack's own
+    // `bcc rts` for bt_actor < MAX_PARTY), so this is the true "arms
+    // nothing" case. bt_fx_anim is pre-set to a sentinel, not NO_ANIM, to
+    // prove the call genuinely touches nothing at all, not merely that it
+    // happens to leave NO_ANIM where NO_ANIM already was.
+    reset();
+    nes.cpu.mem[BT_ACTOR] = 0; // a party member
+    nes.cpu.mem[BT_TARGET] = MAX_PARTY; // Slime, the monster combatant
+    nes.cpu.mem[BT_FX_ANIM] = 77; // sentinel, not NO_ANIM
+    nes.cpu.mem[BT_ARG] = 5; // Neither
+    callRoutine(nes, castSpell);
+    assert.equal(nes.cpu.mem[BT_FX_ANIM], 77, 'Neither: no spell.anim and a party caster’s own fallback is a no-op -- the sentinel must be untouched');
+    assert.equal(nes.cpu.mem[MON_HP], 200 - 40, 'Neither’s own damage must still have landed on the target, exactly its own 40');
+
+    // Case 7 ("spell-only", review round 1 finding 3): Snake, a monster
+    // with NO attackAnim of its own, casting a spell that DOES have one --
+    // there is no real fallback to have won against here at all, unlike
+    // cases 2/4/5's "both" shape.
+    reset(3); // Snake
+    nes.cpu.mem[BT_ACTOR] = MAX_PARTY;
+    nes.cpu.mem[BT_TARGET] = 0;
+    nes.cpu.mem[BT_ARG] = 6; // SpellOnly
+    callRoutine(nes, castSpell);
+    assert.equal(nes.cpu.mem[BT_FX_ANIM], SPELL_ONLY_ANIM, 'SpellOnly: the spell’s own anim must play with no caster attackAnim to have won against at all');
+    assert.equal(nes.cpu.mem[BT_FX_SLOT], 0, 'a single-target damage spell plays over the TARGET');
+    assert.equal(nes.cpu.mem[PC_HP], 200 - 75, 'SpellOnly must deal exactly its own 75');
+
+    // Case 8 ("monster neither", review round 1 finding 3): Snake casting a
+    // spell with no anim of its own AND no attackAnim to fall back to --
+    // the genuinely different no-op path from case 6's party-side one:
+    // battle_fx_arm_attack reaches battle_fx_arm_at with
+    // A = mon_anim_attack[Snake] = NO_ANIM, so it is `battle_fx_arm_at`'s
+    // own `cmp #NO_ANIM / beq rts` that no-ops here, never the party's
+    // `bt_actor < MAX_PARTY` branch (Snake IS a monster combatant, MAX_PARTY
+    // and up).
+    reset(3); // Snake
+    nes.cpu.mem[BT_ACTOR] = MAX_PARTY;
+    nes.cpu.mem[BT_TARGET] = 0;
+    nes.cpu.mem[BT_FX_ANIM] = 77; // sentinel, not NO_ANIM
+    nes.cpu.mem[BT_ARG] = 7; // MonsterNeither
+    callRoutine(nes, castSpell);
+    assert.equal(nes.cpu.mem[BT_FX_ANIM], 77, 'MonsterNeither: no spell.anim and no attackAnim -- battle_fx_arm_at’s own NO_ANIM no-op, the sentinel must be untouched');
+    assert.equal(nes.cpu.mem[PC_HP], 200 - 60, 'MonsterNeither’s own damage must still have landed, exactly its own 60');
+  });
+}
+
+// battle_fx_tick's own duration timing (docs/design-battle-animation.md
+// §3.3), isolated: battle_fx_arm_at/battle_fx_tick called directly, never
+// through a real battle message (whose own MSG_HOLD = 45 would cap a
+// duration-255 animation long before it could finish on its own -- the
+// separate message-cap test below is what proves THAT half). Three
+// single-frame animations, durations 1/2/255, added to the catalog and
+// referenced directly by id -- not through spell_anim/mon_anim_attack at
+// all, since battle_fx_arm_at/battle_fx_tick read anim_count/anim_ptr_lo/hi,
+// the pre-existing overworld sprite tables every animation gets regardless
+// of whether anything battle-side references it.
+test('battle_fx_tick duration timing, isolated: duration 1 ends after exactly 1 tick, duration 2 after exactly 2, duration 255 at the compare on tick 255', {
+  skip: needsSample
+}, async (t) => {
+  const dur1 = 3; // sample-rpg ships animations 0-2; these are appended after
+  const dur2 = 4;
+  const dur255 = 5;
+  const built = await buildVariantFull(t, 'fx-duration', (project) => {
+    project.maps[0].encounters = { rate: 0, actorIds: [] };
+    for (const [id, duration] of [[dur1, 1], [dur2, 2], [dur255, 255]]) {
+      project.sprites.animations.push({ id, name: `Dur${duration}`, loop: false, frames: [{ metaspriteId: 1, duration }] });
+    }
+    project.sprites.actors[0].battle = { ...project.sprites.actors[0].battle, attackAnim: dur1 }; // flips the gate on
+  });
+  const { BT_FX_ANIM, BT_FX_FRAME, BT_FX_TIMER } = resolveFxAddrs(built);
+  const nes = bootPastNaming(built.romPath);
+  const addrOf = selectBattleBank(nes, built);
+  const armAt = addrOf('battle_fx_arm_at');
+  const tick = addrOf('battle_fx_tick');
+  // battle_fx_tick's own BP_INTRO guard (the same first-tick reasoning
+  // setup_monsters's own reset needs) would make every isolated call here a
+  // no-op if bt_phase were still (or ever) BP_INTRO -- a real battle always
+  // moves off it before the first tick, so pin it to any other phase.
+  nes.cpu.mem[BT_PHASE] = BP_MENU;
+
+  const arm = (animId) => {
+    nes.cpu.REG_ACC = animId;
+    nes.cpu.REG_Y = MAX_PARTY; // slot 4, arbitrary
+    callRoutine(nes, armAt);
+    assert.equal(nes.cpu.mem[BT_FX_ANIM], animId, `sanity: arming animation ${animId} should set bt_fx_anim`);
+    assert.equal(nes.cpu.mem[BT_FX_FRAME], 0);
+    assert.equal(nes.cpu.mem[BT_FX_TIMER], 0);
+  };
+
+  arm(dur1);
+  callRoutine(nes, tick);
+  assert.equal(nes.cpu.mem[BT_FX_ANIM], NO_ANIM, 'duration 1 must end after exactly 1 tick');
+
+  arm(dur2);
+  callRoutine(nes, tick);
+  assert.equal(nes.cpu.mem[BT_FX_ANIM], dur2, 'duration 2 must NOT have ended after only 1 tick');
+  callRoutine(nes, tick);
+  assert.equal(nes.cpu.mem[BT_FX_ANIM], NO_ANIM, 'duration 2 must end after exactly 2 ticks');
+
+  arm(dur255);
+  for (let i = 0; i < 254; i++) {
+    callRoutine(nes, tick);
+    assert.equal(nes.cpu.mem[BT_FX_ANIM], dur255, `duration 255 must not end before tick 255 (still running after tick ${i + 1})`);
+  }
+  callRoutine(nes, tick); // the 255th tick
+  assert.equal(nes.cpu.mem[BT_FX_ANIM], NO_ANIM, 'duration 255 must end at the compare on tick 255, with no byte ever needing to exceed it');
+});
+
+// A 3+ frame sequence, isolated the identical way: bt_fx_frame must advance
+// through each frame in order, timed from the arm tick -- an off-by-one here
+// is invisible to a 1- or 2-frame test (both above), since neither ever
+// exercises a MIDDLE frame's own transition.
+test('battle_fx_tick advances a 3-frame animation in order, each frame held for exactly its own authored duration', {
+  skip: needsSample
+}, async (t) => {
+  const seqId = 3;
+  const built = await buildVariantFull(t, 'fx-sequence', (project) => {
+    project.maps[0].encounters = { rate: 0, actorIds: [] };
+    project.sprites.animations.push({
+      id: seqId,
+      name: 'Sequence',
+      loop: false,
+      frames: [
+        { metaspriteId: 1, duration: 2 },
+        { metaspriteId: 1, duration: 3 },
+        { metaspriteId: 1, duration: 4 }
+      ]
+    });
+    project.sprites.actors[0].battle = { ...project.sprites.actors[0].battle, attackAnim: seqId };
+  });
+  const { BT_FX_ANIM, BT_FX_FRAME } = resolveFxAddrs(built);
+  const nes = bootPastNaming(built.romPath);
+  const addrOf = selectBattleBank(nes, built);
+  nes.cpu.mem[BT_PHASE] = BP_MENU;
+  nes.cpu.REG_ACC = seqId;
+  nes.cpu.REG_Y = MAX_PARTY;
+  callRoutine(nes, addrOf('battle_fx_arm_at'));
+  assert.equal(nes.cpu.mem[BT_FX_FRAME], 0);
+
+  const tick = addrOf('battle_fx_tick');
+  const expected = [
+    [1, 0], [2, 1], // frame 0 (duration 2): held ticks 1, advances to 1 on tick 2
+    [3, 1], [4, 1], [5, 2], // frame 1 (duration 3): held ticks 3-4, advances to 2 on tick 5
+    [6, 2], [7, 2], [8, 2], [9, NO_ANIM] // frame 2 (duration 4): held ticks 6-8, done on tick 9
+  ];
+  for (const [tickNumber, frameOrDone] of expected) {
+    callRoutine(nes, tick);
+    if (frameOrDone === NO_ANIM) {
+      assert.equal(nes.cpu.mem[BT_FX_ANIM], NO_ANIM, `tick ${tickNumber}: the sequence should have ended`);
+    } else {
+      assert.equal(nes.cpu.mem[BT_FX_ANIM], seqId, `tick ${tickNumber}: the sequence should still be running`);
+      assert.equal(nes.cpu.mem[BT_FX_FRAME], frameOrDone, `tick ${tickNumber}: expected frame ${frameOrDone}`);
+    }
+  }
+});
+
+// Message-cap termination, through a REAL battle message this time (not the
+// isolated-routine harness above, which cannot observe MSG_HOLD at all):
+// an animation authored at duration 255 must end when the message is
+// dismissed -- long before tick 255, since MSG_HOLD caps it first.
+test('a duration-255 animation ends when the battle message is dismissed, not at its own natural end', {
+  skip: needsSample
+}, async (t) => {
+  const longAnimId = 3;
+  const built = await buildVariantFull(t, 'fx-message-cap', (project) => {
+    project.maps[0].encounters = { rate: 0, actorIds: [] };
+    project.sprites.animations.push({ id: longAnimId, name: 'Long', loop: false, frames: [{ metaspriteId: 1, duration: 255 }] });
+    project.spells[0].anim = longAnimId; // Ember
+  });
+  const { BT_FX_ANIM } = resolveFxAddrs(built);
+  const nes = bootPastNaming(built.romPath);
+  walkTo(nes, 160, 176);
+  walkTo(nes, 176, 176, 200);
+  assert.equal(nes.cpu.mem[GAME_STATE], ST_BATTLE);
+  waitForMenu(nes);
+
+  chooseCommand(nes, BC_MAGIC);
+  tap(nes, A, 6); // Ember, the first row
+  tap(nes, A, 10); // aim it at the slime -- the attack's own message should now be up
+  assert.equal(nes.cpu.mem[BT_PHASE], BP_MESSAGE, 'the cast’s own message should be up');
+  assert.equal(nes.cpu.mem[BT_FX_ANIM], longAnimId, 'the long animation should still be running while the message holds');
+
+  tap(nes, A, 10); // dismiss the message well before tick 255
+  assert.equal(nes.cpu.mem[BT_FX_ANIM], NO_ANIM, 'dismissing the message must end the effect immediately, regardless of its own authored duration');
+});
+
+// review round 1, P2 finding 4: §6's own required case is the NORMAL
+// MSG_HOLD timeout, not early dismissal -- the early-A test above proves
+// dismissing the message clears the effect, but says nothing about the
+// no-input path, which is a genuinely different route through the same
+// `battle_message_done` clear (battle_message_wait's own `dec <bt_timer> /
+// bne battle_message_hold` branch, never the `BTN_A` one). A production bug
+// that cleared the effect only on the A-press branch, leaving it running
+// forever on a message nobody dismisses, would still pass the test above.
+test('a duration-255 animation ends when the battle message times out on its own, with no input at all, long before tick 255', {
+  skip: needsSample
+}, async (t) => {
+  const longAnimId = 3;
+  const built = await buildVariantFull(t, 'fx-message-timeout', (project) => {
+    project.maps[0].encounters = { rate: 0, actorIds: [] };
+    project.sprites.animations.push({ id: longAnimId, name: 'Long', loop: false, frames: [{ metaspriteId: 1, duration: 255 }] });
+    project.spells[0].anim = longAnimId; // Ember
+  });
+  const { BT_FX_ANIM } = resolveFxAddrs(built);
+  const nes = bootPastNaming(built.romPath);
+  walkTo(nes, 160, 176);
+  walkTo(nes, 176, 176, 200);
+  assert.equal(nes.cpu.mem[GAME_STATE], ST_BATTLE);
+  waitForMenu(nes);
+
+  chooseCommand(nes, BC_MAGIC);
+  tap(nes, A, 6); // Ember, the first row
+  tap(nes, A, 10); // aim it at the slime -- the attack's own message should now be up
+  assert.equal(nes.cpu.mem[BT_PHASE], BP_MESSAGE, 'the cast’s own message should be up');
+  assert.equal(nes.cpu.mem[BT_FX_ANIM], longAnimId, 'the long animation should still be running while the message holds');
+
+  // No input at all from here on. MSG_HOLD (45) is well short of the
+  // authored duration (255), so ending here proves the timeout path
+  // specifically, not the natural end of a 255-tick flipbook -- and since
+  // `tap(nes, A, 10)` above already let some of the message's own hold run
+  // out settling the cast, this counts frames from HERE rather than
+  // assuming the timer was still fresh at exactly MSG_HOLD.
+  let framesWaited = 0;
+  while (nes.cpu.mem[BT_PHASE] === BP_MESSAGE && framesWaited < MSG_HOLD + 5) {
+    assert.equal(nes.cpu.mem[BT_FX_ANIM], longAnimId, `the effect must stay armed for every frame the message is still up, unpressed (frame ${framesWaited})`);
+    nes.frame();
+    framesWaited++;
+  }
+  assert.notEqual(nes.cpu.mem[BT_PHASE], BP_MESSAGE, `the message must have timed out on its own within MSG_HOLD (${MSG_HOLD}) frames of no input, saw it still up after ${framesWaited}`);
+  assert.ok(framesWaited > 0, 'sanity: the message must not have been already gone the instant it appeared');
+  assert.equal(nes.cpu.mem[BT_FX_ANIM], NO_ANIM, 'the message timing out with no input at all must end the effect too, well before its own tick 255');
+});
+
+// Register/scratch contract (docs/design-battle-animation.md §3.3's own
+// table): none of the four routines may touch bt_tmp/bt_tmp2/bt_digits/
+// bt_list -- scratch other in-flight battle code (cast_all's own bt_tmp2
+// sentinel among them) depends on surviving untouched across a call. A
+// future edit reaching for shared scratch instead of its own bytes is what
+// this catches. It says nothing about A/X/Y beyond that scope, but not
+// every routine here is free to clobber all three regardless: the
+// contract table's own row for `battle_fx_arm_at` requires it to PRESERVE
+// Y specifically (both real call sites carry the target/caster slot in Y
+// across the call) -- this test does not assert that (Y is out of its own
+// stated scope, bt_tmp/bt_tmp2/bt_digits/bt_list), so it is not where that
+// guarantee is checked.
+test('none of battle_fx_arm_at/arm_attack/tick/draw touch bt_tmp, bt_tmp2, bt_digits or bt_list', {
+  skip: needsSample
+}, async (t) => {
+  const animId = 3;
+  const built = await buildVariantFull(t, 'fx-scratch-contract', (project) => {
+    project.maps[0].encounters = { rate: 0, actorIds: [] };
+    project.sprites.animations.push({ id: animId, name: 'Swing', loop: false, frames: [{ metaspriteId: 1, duration: 8 }] });
+    project.sprites.actors[0].battle = { ...project.sprites.actors[0].battle, attackAnim: animId };
+  });
+  const dir = path.dirname(path.dirname(built.romPath));
+  const constantsText = fs.readFileSync(path.join(dir, 'build', 'constants.asm'), 'utf8');
+  const BT_TMP = resolveEngineAddress(constantsText, 'bt_tmp');
+  const BT_TMP2 = resolveEngineAddress(constantsText, 'bt_tmp2');
+  const BT_DIGITS = resolveEngineAddress(constantsText, 'bt_digits');
+  const { BT_FX_ANIM } = resolveFxAddrs(built);
+
+  const nes = bootPastNaming(built.romPath);
+  const addrOf = selectBattleBank(nes, built);
+  nes.cpu.mem[BT_PHASE] = BP_MENU;
+  nes.cpu.mem[MON_SLOT_ACTOR] = 0;
+
+  const sentinels = () => {
+    nes.cpu.mem[BT_TMP] = 0x11;
+    nes.cpu.mem[BT_TMP2] = 0x22;
+    for (let i = 0; i < 3; i++) nes.cpu.mem[BT_DIGITS + i] = 0x33 + i;
+    for (let i = 0; i < 8; i++) nes.cpu.mem[BT_LIST + i] = 0x44 + i;
+  };
+  const assertScratchUntouched = (label) => {
+    assert.equal(nes.cpu.mem[BT_TMP], 0x11, `${label}: bt_tmp must be untouched`);
+    assert.equal(nes.cpu.mem[BT_TMP2], 0x22, `${label}: bt_tmp2 must be untouched`);
+    for (let i = 0; i < 3; i++) assert.equal(nes.cpu.mem[BT_DIGITS + i], 0x33 + i, `${label}: bt_digits[${i}] must be untouched`);
+    for (let i = 0; i < 8; i++) assert.equal(nes.cpu.mem[BT_LIST + i], 0x44 + i, `${label}: bt_list[${i}] must be untouched`);
+  };
+
+  sentinels();
+  nes.cpu.REG_ACC = animId;
+  nes.cpu.REG_Y = MAX_PARTY;
+  callRoutine(nes, addrOf('battle_fx_arm_at'));
+  assertScratchUntouched('battle_fx_arm_at');
+
+  sentinels();
+  nes.cpu.mem[BT_ACTOR] = MAX_PARTY;
+  callRoutine(nes, addrOf('battle_fx_arm_attack'));
+  assertScratchUntouched('battle_fx_arm_attack');
+
+  sentinels();
+  nes.cpu.mem[BT_FX_ANIM] = animId; // something genuinely running
+  callRoutine(nes, addrOf('battle_fx_tick'));
+  assertScratchUntouched('battle_fx_tick');
+
+  sentinels();
+  nes.cpu.mem[BT_FX_ANIM] = animId;
+  callRoutine(nes, addrOf('battle_fx_draw'));
+  assertScratchUntouched('battle_fx_draw');
+});
+
+// The conservative, project-wide fit check (docs/design-battle-animation.md
+// §3.3/§3.6): BATTLE_FX_OAM_ROOM is a single build-time constant --
+// `max(0, MAX_OAM_ENTRIES - battleCombatantOamMax(project, mapper))` -- and
+// battle_fx_draw compares a frame's own ms_count against it directly, with
+// no notion of "how many sprites this particular battle happens to be
+// using" at all. The four filler monsters below, named in a live but
+// never-triggered `battle` command, exist purely to inflate
+// battleCombatantOamMax (and so shrink the compiled room) well past what
+// the real, small touch-encounter fight (Slime alone) would ever need --
+// proving the room used is the project's own worst case, not a live count,
+// without this test ever needing to actually fight that inflated formation.
+async function buildFxFitFixture(t) {
+  let room;
+  let oversizedAnimId;
+  let mixedAnimId;
+  let exactAnimId;
+  let oneOverAnimId;
+  let fillerIds;
+  const built = await buildVariantFull(t, 'fx-conservative-fit', (project) => {
+    project.maps[0].encounters = { rate: 0, actorIds: [] };
+    // Every id below is read back from the array's own length at the moment
+    // of each push, never hardcoded -- a hardcoded id here would silently
+    // collide with (or leave a gap against) whatever sample-rpg's own
+    // catalog already holds, aliasing one animation's compiled table row
+    // onto a completely different entry.
+    const bigMetaId = project.sprites.metasprites.length;
+    project.sprites.metasprites.push({
+      id: bigMetaId,
+      name: 'Big filler',
+      tiles: Array.from({ length: 12 }, (_, i) => ({ tile: 64 + i, x: 0, y: 0, palette: 0 }))
+    });
+    const bigAnimId = project.sprites.animations.length;
+    project.sprites.animations.push({ id: bigAnimId, name: 'BigWalk', loop: true, frames: [{ metaspriteId: bigMetaId }] });
+    fillerIds = [];
+    for (let i = 0; i < 4; i++) {
+      const id = project.sprites.actors.length;
+      project.sprites.actors.push({
+        id, name: `Filler${i}`, behavior: 'npc', speed: 1, hp: 1, damage: 0,
+        anims: { idle: bigAnimId, walkDown: null, walkUp: null, walkSide: null },
+        battle: {}
+      });
+      fillerIds.push(id);
+    }
+    // Live (cond: none, never disabled) but never actually triggered by
+    // this test's own playthrough -- battleFormations walks liveCommands
+    // regardless of whether a placement is ever interacted with.
+    project.maps[0].screens[0].entities.push({
+      actorId: 0, x: 240, y: 224, props: { event: { pages: [{ commands: [{ op: 'battle', monsters: fillerIds }] }] } }
+    });
+
+    room = MAX_OAM_ENTRIES - battleCombatantOamMax(project, resolveMapper(project.cartridge.mapper));
+    assert.ok(room >= 3 && room < 40, `sanity: expected a small but real room, got ${room}`);
+
+    const oversized = room + 10;
+    const smallMetaId = project.sprites.metasprites.length;
+    project.sprites.metasprites.push({
+      id: smallMetaId,
+      name: 'Small',
+      tiles: [{ tile: 90, x: 0, y: 0, palette: 0 }, { tile: 91, x: 0, y: 0, palette: 0 }]
+    });
+    const oversizedMetaId = project.sprites.metasprites.length;
+    project.sprites.metasprites.push({
+      id: oversizedMetaId,
+      name: 'Oversized',
+      tiles: Array.from({ length: oversized }, (_, i) => ({ tile: 100 + i, x: 0, y: 0, palette: 0 }))
+    });
+    oversizedAnimId = project.sprites.animations.length;
+    project.sprites.animations.push({
+      id: oversizedAnimId,
+      name: 'Oversized',
+      loop: false,
+      frames: [{ metaspriteId: oversizedMetaId }]
+    });
+    mixedAnimId = project.sprites.animations.length;
+    project.sprites.animations.push({
+      id: mixedAnimId,
+      name: 'Mixed',
+      loop: false,
+      frames: [{ metaspriteId: smallMetaId }, { metaspriteId: oversizedMetaId }]
+    });
+
+    // review round 1, P2 finding 1: the admission boundary itself --
+    // exactly `room` tiles (must be admitted, every entry written) and
+    // exactly `room + 1` (must be rejected outright), not room+10 (which
+    // only pins "way too big," and survives `cmp #BATTLE_FX_OAM_ROOM+2`
+    // unchanged, per the reviewer's own supplied sabotage result).
+    const exactMetaId = project.sprites.metasprites.length;
+    project.sprites.metasprites.push({
+      id: exactMetaId,
+      name: 'ExactFit',
+      tiles: Array.from({ length: room }, (_, i) => ({ tile: 150 + i, x: 0, y: 0, palette: 0 }))
+    });
+    exactAnimId = project.sprites.animations.length;
+    project.sprites.animations.push({ id: exactAnimId, name: 'ExactFit', loop: false, frames: [{ metaspriteId: exactMetaId }] });
+
+    const oneOverMetaId = project.sprites.metasprites.length;
+    project.sprites.metasprites.push({
+      id: oneOverMetaId,
+      name: 'OneOver',
+      tiles: Array.from({ length: room + 1 }, (_, i) => ({ tile: 150 + i, x: 0, y: 0, palette: 0 }))
+    });
+    oneOverAnimId = project.sprites.animations.length;
+    project.sprites.animations.push({ id: oneOverAnimId, name: 'OneOver', loop: false, frames: [{ metaspriteId: oneOverMetaId }] });
+
+    project.sprites.actors[0].battle = { ...project.sprites.actors[0].battle, attackAnim: oversizedAnimId };
+  });
+  return {
+    built,
+    room: () => room,
+    oversizedAnimId: () => oversizedAnimId,
+    mixedAnimId: () => mixedAnimId,
+    exactAnimId: () => exactAnimId,
+    oneOverAnimId: () => oneOverAnimId,
+    fillerIds: () => fillerIds
+  };
+}
+
+test('conservative fit: BATTLE_FX_OAM_ROOM is the project-wide worst case, and an animation exceeding it is skipped on every one of several ticks, not merely the first', {
+  skip: needsSample
+}, async (t) => {
+  const { built, room, oversizedAnimId: oversizedAnimIdFn } = await buildFxFitFixture(t);
+  const oversizedAnimId = oversizedAnimIdFn();
+  const dir = path.dirname(path.dirname(built.romPath));
+  const configText = fs.readFileSync(path.join(dir, 'build', 'assets', 'config.inc'), 'utf8');
+  const compiledRoom = Number(configText.match(/^BATTLE_FX_OAM_ROOM\s*=\s*(\d+)/m)?.[1]);
+  assert.equal(compiledRoom, room(), 'BATTLE_FX_OAM_ROOM must equal MAX_OAM_ENTRIES - battleCombatantOamMax exactly -- the compiled figure IS the worst case, computed once, never a live count');
+
+  const { BT_FX_ANIM, BT_FX_FRAME } = resolveFxAddrs(built);
+  const OAM_IDX = resolveEngineAddress(fs.readFileSync(path.join(dir, 'build', 'constants.asm'), 'utf8'), 'oam_idx');
+  const nes = bootPastNaming(built.romPath);
+  const addrOf = selectBattleBank(nes, built);
+  nes.cpu.mem[BT_PHASE] = BP_MENU;
+  nes.cpu.REG_ACC = oversizedAnimId;
+  nes.cpu.REG_Y = MAX_PARTY;
+  callRoutine(nes, addrOf('battle_fx_arm_at'));
+  assert.equal(nes.cpu.mem[BT_FX_ANIM], oversizedAnimId, 'sanity: the oversized animation should have armed');
+
+  const draw = addrOf('battle_fx_draw');
+  for (let tick = 0; tick < 3; tick++) {
+    nes.cpu.mem.fill(0xff, 0x200, 0x300); // battle_sprite_clear's own park step, done by hand for this isolated call
+    nes.cpu.mem[OAM_IDX] = 0;
+    callRoutine(nes, draw);
+    assert.equal(nes.cpu.mem[OAM_IDX], 0, `tick ${tick}: oam_idx must stay 0 -- nothing may be drawn`);
+    assert.equal(nes.cpu.mem[0x200], 0xff, `tick ${tick}: OAM byte 0 must stay parked at $FF -- the frame does not fit and must be skipped, every tick, not merely the first`);
+    assert.equal(nes.cpu.mem[BT_FX_ANIM], oversizedAnimId, `tick ${tick}: being skipped at draw time must not end the effect -- it is still "running," simply invisible`);
+  }
+});
+
+test('conservative fit: within one animation, a small frame draws and an oversized frame is skipped, independently, frame by frame', {
+  skip: needsSample
+}, async (t) => {
+  const { built, mixedAnimId: mixedAnimIdFn } = await buildFxFitFixture(t);
+  const mixedAnimId = mixedAnimIdFn();
+  const dir = path.dirname(path.dirname(built.romPath));
+  const constantsText = fs.readFileSync(path.join(dir, 'build', 'constants.asm'), 'utf8');
+  const OAM_IDX = resolveEngineAddress(constantsText, 'oam_idx');
+  const { BT_FX_ANIM, BT_FX_FRAME } = resolveFxAddrs(built);
+
+  const nes = bootPastNaming(built.romPath);
+  const addrOf = selectBattleBank(nes, built);
+  nes.cpu.mem[BT_PHASE] = BP_MENU;
+  nes.cpu.REG_ACC = mixedAnimId;
+  nes.cpu.REG_Y = MAX_PARTY;
+  callRoutine(nes, addrOf('battle_fx_arm_at'));
+  assert.equal(nes.cpu.mem[BT_FX_FRAME], 0, 'sanity: armed on frame 0, the small one');
+
+  const draw = addrOf('battle_fx_draw');
+  nes.cpu.mem.fill(0xff, 0x200, 0x300);
+  nes.cpu.mem[OAM_IDX] = 0;
+  callRoutine(nes, draw);
+  assert.notEqual(nes.cpu.mem[OAM_IDX], 0, 'frame 0 (2 tiles) fits its own room and must draw real sprites');
+  assert.notEqual(nes.cpu.mem[0x200], 0xff, 'frame 0 must have written a real OAM entry, not left the park byte');
+
+  // Advance to frame 1 (the oversized one) directly -- bt_fx_frame is the
+  // one byte that decides which frame draws, so poking it is equivalent to
+  // ticking there for this isolated check.
+  nes.cpu.mem[BT_FX_FRAME] = 1;
+  nes.cpu.mem.fill(0xff, 0x200, 0x300);
+  nes.cpu.mem[OAM_IDX] = 0;
+  callRoutine(nes, draw);
+  assert.equal(nes.cpu.mem[OAM_IDX], 0, 'frame 1 (oversized) must be skipped -- oam_idx must stay 0');
+  assert.equal(nes.cpu.mem[0x200], 0xff, 'frame 1 must leave the OAM park byte untouched');
+});
+
+// review round 1, P2 finding 1: the admission boundary itself, pinned on
+// both sides. `cmp #BATTLE_FX_OAM_ROOM+1 / bcs skip` means "admit anything
+// up to and including room, reject room+1 and up" -- a frame of exactly
+// room tiles is the largest one this project can ever be shown drawing, and
+// room+1 is the smallest one it must never draw. Neither the room+10
+// ("oversized") nor the 2-tile ("small") fixtures used by the two tests
+// above can distinguish a `+1` boundary from a `+2` or an off-by-one in the
+// other direction -- both survive comfortably on either side of either
+// wrong comparison. Checked across several ticks, both ways, so a
+// "skip/admit once, then flip" bug cannot hide either.
+test('conservative fit: the OAM admission boundary is exact -- room tiles admits and draws every one, room+1 rejects the whole frame, on every tick', {
+  skip: needsSample
+}, async (t) => {
+  const {
+    built,
+    room: roomFn,
+    exactAnimId: exactAnimIdFn,
+    oneOverAnimId: oneOverAnimIdFn,
+    fillerIds: fillerIdsFn
+  } = await buildFxFitFixture(t);
+  const room = roomFn();
+  const exactAnimId = exactAnimIdFn();
+  const oneOverAnimId = oneOverAnimIdFn();
+  const dir = path.dirname(path.dirname(built.romPath));
+  const constantsText = fs.readFileSync(path.join(dir, 'build', 'constants.asm'), 'utf8');
+  const OAM_IDX = resolveEngineAddress(constantsText, 'oam_idx');
+  const { BT_FX_ANIM } = resolveFxAddrs(built);
+
+  const nes = bootPastNaming(built.romPath);
+  const addrOf = selectBattleBank(nes, built);
+  const armAt = addrOf('battle_fx_arm_at');
+  const draw = addrOf('battle_fx_draw');
+  nes.cpu.mem[BT_PHASE] = BP_MENU;
+
+  // Exactly `room`: admitted, every one of the room entries actually
+  // written (not merely "oam_idx moved") -- checked across three ticks, so
+  // an admit-once-then-reject bug cannot hide behind the first tick alone.
+  nes.cpu.REG_ACC = exactAnimId;
+  nes.cpu.REG_Y = MAX_PARTY;
+  callRoutine(nes, armAt);
+  assert.equal(nes.cpu.mem[BT_FX_ANIM], exactAnimId, 'sanity: the exact-fit animation should have armed');
+  for (let tick = 0; tick < 3; tick++) {
+    nes.cpu.mem.fill(0xff, 0x200, 0x300);
+    nes.cpu.mem[OAM_IDX] = 0;
+    callRoutine(nes, draw);
+    assert.equal(nes.cpu.mem[OAM_IDX], room * 4, `tick ${tick}: exactly room (${room}) entries must be written, oam_idx should read ${room * 4}`);
+    for (let i = 0; i < room; i++) {
+      assert.notEqual(nes.cpu.mem[0x200 + i * 4], 0xff, `tick ${tick}: OAM entry ${i} of ${room} must be a real, written sprite, not the park byte`);
+    }
+    // Nothing past the room'th entry may have been touched.
+    assert.equal(nes.cpu.mem[0x200 + room * 4], 0xff, `tick ${tick}: the entry immediately after the admitted room must stay parked`);
+  }
+
+  // Exactly room + 1: rejected outright, the WHOLE OAM shadow and oam_idx
+  // left exactly as battle_sprite_clear's own park step leaves them --
+  // checked across three ticks the identical way.
+  nes.cpu.REG_ACC = oneOverAnimId;
+  nes.cpu.REG_Y = MAX_PARTY;
+  callRoutine(nes, armAt);
+  assert.equal(nes.cpu.mem[BT_FX_ANIM], oneOverAnimId, 'sanity: the one-over animation should have armed');
+  for (let tick = 0; tick < 3; tick++) {
+    nes.cpu.mem.fill(0xff, 0x200, 0x300);
+    nes.cpu.mem[OAM_IDX] = 0;
+    callRoutine(nes, draw);
+    assert.equal(nes.cpu.mem[OAM_IDX], 0, `tick ${tick}: room+1 must be rejected outright -- oam_idx must stay 0`);
+    for (let i = 0x200; i < 0x300; i++) {
+      assert.equal(nes.cpu.mem[i], 0xff, `tick ${tick}: the WHOLE OAM shadow must stay parked at $FF when room+1 is rejected, byte ${i - 0x200} did not`);
+    }
+  }
+
+  // Review round 2, P3 finding 2: the follow-on draw must exercise the
+  // ACTUAL worst-case reserved load that produced the compiled `room`, not
+  // whatever happens to be alive by default (this fixture never fights the
+  // four filler monsters for real, so mon_slot_alive is all zero at boot --
+  // the earlier version's own oam_idx >= room*4 check would have passed
+  // even if battle_sprite_pc had drawn nothing at all). Populating the four
+  // filler monsters as the CURRENT battle's own combatants makes
+  // battle_sprite_pc's own fall-through into battle_sprite_mon draw exactly
+  // the formation battleCombatantOamMax priced in; the party side is forced
+  // present and alive below (a normal boot alone leaves it short, see that
+  // comment), which is what makes it match battleCombatantOamMax's own party
+  // term -- the same project data that term reads -- and this project's
+  // mapper (MMC1, sample-rpg's own default) has no split cursor to add. By
+  // construction, room + battleCombatantOamMax
+  // = MAX_OAM_ENTRIES exactly (`room` above IS `MAX_OAM_ENTRIES -
+  // battleCombatantOamMax`), so admitting the exact-fit effect (`room`
+  // entries) and then this exact worst-case combatant load
+  // (`battleCombatantOamMax` entries) must fill the OAM shadow to precisely
+  // 64 sprites -- an exact multiple of the 256-byte shadow, which
+  // legitimately wraps oam_idx back to 0 rather than leaving it at some
+  // larger value, exactly as the design allows and the review named.
+  nes.cpu.mem.fill(0xff, 0x200, 0x300);
+  nes.cpu.mem[OAM_IDX] = 0;
+  nes.cpu.REG_ACC = exactAnimId;
+  nes.cpu.REG_Y = MAX_PARTY;
+  callRoutine(nes, armAt);
+  callRoutine(nes, draw);
+  assert.equal(nes.cpu.mem[OAM_IDX], room * 4, 'sanity: the exact-fit effect drew its own room entries before the combatant load runs');
+  const effectBytesBeforeCombatants = [...nes.cpu.mem.slice(0x200, 0x200 + room * 4)];
+
+  const fillerIds = fillerIdsFn();
+  for (let i = 0; i < fillerIds.length; i++) {
+    nes.cpu.mem[MON_SLOT_ACTOR + i] = fillerIds[i];
+    nes.cpu.mem[MON_ALIVE + i] = 1;
+  }
+  // battleCombatantOamMax's own party term (shared/project.js) sums EVERY
+  // party array entry unconditionally -- the worst case it reserves for
+  // covers a member who has not joined yet, not merely whoever pc_in_party
+  // already holds at this fresh boot. sample-rpg's own second member (Iris)
+  // starts outside the party, so a fresh boot's own real draw would
+  // otherwise fall 4 tiles short of the reserved worst case for a reason
+  // that has nothing to do with this test's own OAM boundary claim -- force
+  // every one of the MAX_PARTY combatant slots present; pc_metasprite's own
+  // $FF ("no icon") for whichever slots this project genuinely has no
+  // member in is what naturally makes this match battleCombatantOamMax's
+  // own real party sum exactly, not an assumption this test makes on its
+  // own.
+  for (let i = 0; i < MAX_PARTY; i++) {
+    nes.cpu.mem[PC_IN_PARTY + i] = 1;
+    if (nes.cpu.mem[PC_HP + i] === 0) nes.cpu.mem[PC_HP + i] = 1;
+  }
+  nes.cpu.REG_X = 0;
+  callRoutine(nes, addrOf('battle_sprite_pc'));
+
+  const effectBytesAfterCombatants = [...nes.cpu.mem.slice(0x200, 0x200 + room * 4)];
+  assert.deepEqual(
+    effectBytesAfterCombatants,
+    effectBytesBeforeCombatants,
+    'the reserved worst-case combatant load must never overwrite the exact-fit effect’s own admitted OAM entries'
+  );
+  const combatantMax = MAX_OAM_ENTRIES - room; // by construction -- see comment above
+  assert.equal(
+    nes.cpu.mem[OAM_IDX],
+    0,
+    `the exact-fit effect (${room}) plus the real worst-case combatant load (${combatantMax}) must total exactly ` +
+      `${MAX_OAM_ENTRIES} sprites -- oam_idx legitimately wraps to 0, not merely growing past room*4`
+  );
+  // And it must be a real wrap from actually drawing 64 sprites, not a
+  // no-op that coincidentally also reads oam_idx as 0 -- the bytes the
+  // combatant load was responsible for (everything from room*4 onward, one
+  // full wrap around the 256-byte shadow) must no longer be the park byte.
+  for (let i = room * 4; i < 0x100; i++) {
+    assert.notEqual(nes.cpu.mem[0x200 + i], 0xff, `byte ${i} (part of the real worst-case combatant load) must have been actually written, not left parked`);
+  }
+});
+
+// Rendered-pixel overlap (docs/design-battle-animation.md §3.3): a real
+// battle, a real combatant icon, a real armed effect over the same slot,
+// and the actual jsnes PPU frame buffer read back -- not OAM order, not
+// vram_buf, the pixels a player would actually see. Both the combatant's
+// own icon (Slime's metasprite 1) and the effect get their own single,
+// solid, distinct-colour tile (SOLID_TILE's own shape) so the overlap is
+// unambiguous: whichever one rendered is directly readable off the screen,
+// with no dependence on either art's own real (here, blank) pixel content.
+test('the armed effect renders ON TOP of the combatant icon it overlaps, on the real PPU frame buffer', {
+  skip: needsSample
+}, async (t) => {
+  const ICON_COLOR = '1'.repeat(64);
+  const FX_COLOR = '2'.repeat(64);
+  let fxAnimId;
+  const built = await buildVariantFull(t, 'fx-pixel-overlap', (project) => {
+    project.maps[0].encounters = { rate: 0, actorIds: [] };
+    const tileset = project.tilesets[project.rpg.battleTilesetId];
+    const iconTile = 200;
+    const fxTile = 201;
+    tileset.sprites.tiles[iconTile] = ICON_COLOR;
+    tileset.sprites.tiles[fxTile] = FX_COLOR;
+    // Slime's own resting icon (draw_actor_icon -> its walkDown animation's
+    // frame 0 -> this metasprite) becomes one solid, opaque tile.
+    const slimeMetaId = project.sprites.actors[0].anims.walkDown;
+    project.sprites.metasprites[slimeMetaId].tiles = [{ tile: iconTile, x: 0, y: 0, palette: 0, hflip: false, vflip: false }];
+    const fxMetaId = project.sprites.metasprites.length;
+    project.sprites.metasprites.push({
+      id: fxMetaId,
+      name: 'FxOverlap',
+      tiles: [{ tile: fxTile, x: 0, y: 0, palette: 0, hflip: false, vflip: false }]
+    });
+    fxAnimId = project.sprites.animations.length;
+    project.sprites.animations.push({ id: fxAnimId, name: 'FxOverlap', loop: false, frames: [{ metaspriteId: fxMetaId, duration: 30 }] });
+    // Flips BATTLE_ANIM_ENABLED on -- without it, battle_fx_draw does not
+    // even assemble, and setup_monsters never clears bt_fx_anim at all.
+    // This test arms the effect by poking RAM directly, never through a
+    // real cast, so which reference flips the gate does not matter.
+    // battleTile: null forces Slime to draw as a SPRITE (draw_actor_icon)
+    // rather than its shipped block art -- sample-rpg's own Slime has real
+    // battle artwork, which battle_sprite_mon skips as an OAM sprite
+    // entirely (it is drawn on the background instead), leaving nothing at
+    // the combatant's own slot for the effect to overlap.
+    project.sprites.actors[0].battle = { ...project.sprites.actors[0].battle, attackAnim: fxAnimId, battleTile: null };
+  });
+  const { BT_FX_ANIM, BT_FX_SLOT, BT_FX_FRAME, BT_FX_TIMER } = resolveFxAddrs(built);
+
+  const state = { frame: null };
+  const nes = new NES({ onFrame: (buffer) => (state.frame = buffer), emulateSound: false });
+  nes.loadROM(new Uint8Array(fs.readFileSync(built.romPath)));
+  for (let i = 0; i < 40; i++) nes.frame(); // boot()'s own settle, mirrored here for the frame-capturing nes
+  finishNamingIfOpen(nes);
+  const pixelAt = (x, y) => state.frame[y * 256 + x];
+
+  walkTo(nes, 160, 176);
+  walkTo(nes, 176, 176, 200);
+  assert.equal(nes.cpu.mem[GAME_STATE], ST_BATTLE);
+  waitForMenu(nes);
+  assert.equal(nes.cpu.mem[BT_FX_ANIM], NO_ANIM, 'sanity: nothing armed yet');
+
+  // Read a pixel inside the combatant's own 8x8 icon, one tile down and
+  // right of the monster row/col origin's corner -- away from the exact
+  // corner, which real hardware renders one scanline off (CLAUDE.md's own
+  // split-cursor note).
+  const x = BT_MON_COL * 8 + 4;
+  const y = BT_MON_ROW * 8 + 4;
+  nes.frame();
+  const before = pixelAt(x, y);
+
+  nes.cpu.mem[BT_FX_ANIM] = fxAnimId;
+  nes.cpu.mem[BT_FX_SLOT] = MAX_PARTY; // the same slot the icon draws over
+  nes.cpu.mem[BT_FX_FRAME] = 0;
+  nes.cpu.mem[BT_FX_TIMER] = 0;
+  nes.frame();
+  // OAM DMA runs at the START of vblank, copying whatever mainline built
+  // during the PREVIOUS frame -- so the frame that just ran rebuilt the
+  // shadow with the effect now in it, but the sprite memory the PPU
+  // actually reads for THAT frame's own picture is still last frame's. One
+  // more frame is what actually gets the new shadow on screen.
+  nes.frame();
+  const after = pixelAt(x, y);
+
+  assert.notEqual(after, before, 'arming the effect over the combatant’s own slot must change what renders at the overlap');
+  // The two solid colours are read back directly from a frame where only
+  // one or the other could possibly have drawn there, rather than assumed.
+  nes.cpu.mem[BT_FX_ANIM] = NO_ANIM; // revert to icon-only for the control read
+  nes.frame();
+  nes.frame();
+  const iconOnly = pixelAt(x, y);
+  assert.equal(before, iconOnly, 'sanity: the icon-only colour is stable and reproducible');
+});

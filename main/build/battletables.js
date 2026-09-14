@@ -53,6 +53,10 @@ import {
   projectUsesNameToken,
   projectWithoutNameToken,
   projectWithoutMonsterSpellList,
+  projectUsesBattleAnimation,
+  isPlayableBattleAnimation,
+  projectWithoutBattleAnimation,
+  NO_ANIM,
   statAt,
   ACTOR_BATTLE_DEFAULTS
 } from '../../shared/project.js';
@@ -120,6 +124,20 @@ export function xpCurve({ xpBase, xpGrow, maxLevel }) {
 export function nameTiles(name) {
   const text = String(name ?? '').slice(0, NAME_LIMIT).padEnd(NAME_LIMIT, ' ');
   return textToTiles(text).tiles;
+}
+
+/**
+ * Phase 1b (docs/design-battle-animation.md §3.1): a one-line call to the
+ * single exported predicate (`isPlayableBattleAnimation`, shared/project.js)
+ * -- not a second, locally-repeated validity rule. That predicate is itself
+ * two hops: `isValidAnimationRef` (in range, not `NO_ANIM`) AND every frame's
+ * own `metaspriteId` also in range -- so a reference whose animation exists
+ * but whose frames do not compiles to `NO_ANIM` here exactly as an
+ * out-of-range top-level id already did, never a fake metasprite id
+ * `draw_metasprite` (engine/entities.asm) would dereference unchecked.
+ */
+function validAnimId(id, project) {
+  return isPlayableBattleAnimation(id, project) ? id : NO_ANIM;
 }
 
 /**
@@ -230,6 +248,18 @@ export function battleTables(project, battleStrings = BATTLE_STRINGS) {
   // One attribute byte tints the monster's whole block, which is why the art is
   // anchored to a 4x4 grid: a block that size lies inside one attribute cell.
   chunks.push(`mon_attr:\n${dbRows(battle((b) => (b.battlePalette ?? ACTOR_BATTLE_DEFAULTS.battlePalette) * 0x55))}`);
+  // Battle-side animation (docs/design-battle-animation.md §3.5): which
+  // animation this monster plays over its own combatant slot when it acts.
+  // NO_ANIM when unset OR when the id is stale/out of range -- defense in
+  // depth beside validateProject's own refusal (shared/project.js), since
+  // buildProject compiles whatever project is in hand, not one that has
+  // necessarily passed validation. Same stub-avoidance rule mon_mag/mon_mdef
+  // use above -- emitted only when projectUsesBattleAnimation is true.
+  if (projectUsesBattleAnimation(project)) {
+    chunks.push(
+      `mon_anim_attack:\n${dbRows(battle((b) => validAnimId(b.attackAnim, project)))}`
+    );
+  }
   chunks.push(`mon_name:\n${dbRows(actors.flatMap((actor) => nameTiles(actor.name)), NAME_LIMIT)}`);
 
   // --- items (ITEMS_ENABLED path only) ---------------------------------------
@@ -297,6 +327,15 @@ export function battleTables(project, battleStrings = BATTLE_STRINGS) {
   chunks.push(`spell_element:\n${dbRows(spells.map((spell) => elementIndex(spell.element)))}`);
   chunks.push(`spell_scope:\n${dbRows(spells.map((spell) => scopeIndex(spell.scope)))}`);
   chunks.push(`spell_name:\n${dbRows(spells.flatMap((spell) => nameTiles(spell.name)), NAME_LIMIT)}`);
+  // Battle-side animation (docs/design-battle-animation.md §3.5): which
+  // animation this spell plays when cast -- over the target for a
+  // single-target damage/status spell, over the caster for a heal or an
+  // all-target spell (cast_spell, engine/battleturn.asm, decides which).
+  // NO_ANIM when unset or stale/out of range (defense in depth, the same
+  // rule as mon_anim_attack above). Same stub-avoidance rule.
+  if (projectUsesBattleAnimation(project)) {
+    chunks.push(`spell_anim:\n${dbRows(spells.map((spell) => validAnimId(spell.anim, project)))}`);
+  }
 
   // --- the party ------------------------------------------------------------
   // Stats are pre-computed per level rather than derived at runtime: the engine
@@ -656,6 +695,16 @@ export const NAME_COPY_BATTLE_ALLOWANCE = 43;
 // Re-measured for the zero-page kernel diet: 125 (down from 153).
 export const MONSTER_SPELL_LIST_BATTLE_ALLOWANCE = 125;
 
+// Battle-side animation (docs/design-battle-animation.md §3.5, Appendix A):
+// battle_fx_arm_at/battle_fx_arm_attack/battle_fx_tick/battle_fx_draw plus
+// the arming call-site insertions in monster_turn_attack and cast_spell.
+// Measured flat across all three RPG-capable boards. Gated on
+// projectUsesBattleAnimation, with NO `&& banked` guard -- the identical
+// shape MONSTER_SPELL_LIST_BATTLE_ALLOWANCE above uses, since
+// projectUsesBattleAnimation alone is what the table emitters above gate on
+// too.
+export const BATTLE_ANIM_BATTLE_ALLOWANCE = 243;
+
 // Deliberate headroom, and its job is NOT the job KERNEL_SLACK does. There is
 // no estimation error here for it to absorb -- see the exactness note above --
 // so this is purely a buffer against the stock code growing a byte or two
@@ -932,7 +981,8 @@ export function battleRegionBytes(project, mapper) {
     (projectNeedsNameSeed(project) && banked ? NAME_COPY_BATTLE_ALLOWANCE : 0) +
     (projectUsesMagicPower(project) ? MAGIC_POWER_BATTLE_ALLOWANCE : 0) +
     (projectUsesMagicDefence(project) ? MAGIC_DEFENCE_BATTLE_ALLOWANCE : 0) +
-    (projectUsesMonsterSpellList(project) ? MONSTER_SPELL_LIST_BATTLE_ALLOWANCE : 0)
+    (projectUsesMonsterSpellList(project) ? MONSTER_SPELL_LIST_BATTLE_ALLOWANCE : 0) +
+    (projectUsesBattleAnimation(project) ? BATTLE_ANIM_BATTLE_ALLOWANCE : 0)
   );
 }
 
@@ -1080,6 +1130,10 @@ export function battleShortfallAdvice(project, mapper, deficit, { alternatives =
     // overridden, so the two gates are not the same test.
     if (battleBankEnabled(project, mapper) && projectUsesMonsterSpellList(project)) {
       bankedFeatures.push({ label: "every monster's extra spells", strip: projectWithoutMonsterSpellList });
+    }
+    // docs/design-battle-animation.md §3.5.
+    if (battleBankEnabled(project, mapper) && projectUsesBattleAnimation(project)) {
+      bankedFeatures.push({ label: 'every battle animation reference', strip: projectWithoutBattleAnimation });
     }
   }
   if (bankedFeatures.length) {

@@ -232,6 +232,9 @@ level_row_add:
 ; shadow rather than appending to it.
 battle_tick:
   jsr wipe_tick
+  .if BATTLE_ANIM_ENABLED
+  jsr battle_fx_tick
+  .endif
   jsr battle_dispatch
   jmp battle_draw_sprites
 
@@ -344,6 +347,10 @@ setup_monsters:
   sta <bt_wipe_mask
   sta <bt_wipe_row
   sta <bt_wipe_slot
+  .if BATTLE_ANIM_ENABLED
+  lda #NO_ANIM
+  sta <bt_fx_anim           ; no effect carries in from a previous battle
+  .endif
   ldx #0
 setup_monsters_slot:
   lda #0

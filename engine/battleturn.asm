@@ -259,7 +259,11 @@ item_chosen_none:
   lda #BS_NOTHING
   jmp battle_say_actor
 
-; A plain attack from whoever is acting on to bt_target.
+; A plain attack from whoever is acting on to bt_target. Never a monster's own
+; attack: monsters swing through monster_turn_attack below, which is the
+; real, and only, physical-attack path that needs to arm battle.attackAnim --
+; bt_actor is always < MAX_PARTY on this path, so arming here would be dead
+; code.
 attack_target:
   jsr roll_hit
   bne attack_missed
@@ -274,11 +278,89 @@ attack_missed:
   lda #BS_MISSES
   jmp battle_say_actor
 
+; Battle-side animation (docs/design-battle-animation.md §3.3).
+;
+; A = an animation id (or NO_ANIM -- does nothing), Y = the combatant slot
+; (0-7) to play it over. Arms the flipbook from frame 0. Clobbers A and X;
+; preserves Y.
+;
+; An empty animation (anim_count = 0, the legal "no metasprite yet" shape) is
+; treated exactly like NO_ANIM: staged into bt_fx_anim first, then reverted,
+; rather than left to reach battle_fx_tick/battle_fx_draw and dereference a
+; table row with nothing in it. This is the one and only place that check
+; needs to live, since every arming path (both below) funnels through here.
+  .if BATTLE_ANIM_ENABLED
+battle_fx_arm_at:
+  cmp #NO_ANIM
+  beq battle_fx_arm_at_rts
+  sta <bt_fx_anim
+  tax
+  lda anim_count,x
+  beq battle_fx_arm_at_empty
+  sty <bt_fx_slot
+  lda #0
+  sta <bt_fx_frame
+  sta <bt_fx_timer
+battle_fx_arm_at_rts:
+  rts
+battle_fx_arm_at_empty:
+  lda #NO_ANIM
+  sta <bt_fx_anim
+  rts
+
+; Arms whoever is acting's own mon_anim_attack over their own slot (bt_actor),
+; if bt_actor is a monster with one authored -- the caster's own swing or
+; cast, never a target. A party member has no authored attack visual (yet)
+; and is left alone. Clobbers A, X and Y (the `ldy <bt_actor` below).
+battle_fx_arm_attack:
+  lda <bt_actor
+  cmp #MAX_PARTY
+  bcc battle_fx_arm_attack_rts
+  sec
+  sbc #MAX_PARTY
+  tax
+  lda mon_slot_actor,x
+  tax
+  lda mon_anim_attack,x
+  ldy <bt_actor
+  jmp battle_fx_arm_at
+battle_fx_arm_attack_rts:
+  rts
+  .endif
+
 ; The spell in bt_arg: damage on bt_target or the whole other side, a heal on
 ; whoever is casting, or a status effect (poison, burn). The kind numbers
 ; index SPELL_KINDS in shared/project.js -- that order is the wire format.
+;
+; Battle-side animation (docs/design-battle-animation.md §3.3): a spell's own
+; `anim`, when authored, plays over the TARGET for a single-target
+; damage/status spell (kind != SK_HEAL and scope = one) -- an impact -- and
+; over the CASTER for a heal or an all-target spell, where there is no one
+; target to point at and the visual reads as a casting flourish instead. No
+; spell.anim at all falls back to the caster's own attackAnim, the identical
+; policy a physical attack already uses.
 cast_spell:
   ldx <bt_arg
+  .if BATTLE_ANIM_ENABLED
+  lda spell_anim,x
+  cmp #NO_ANIM
+  bne cast_spell_fx_spell
+  jsr battle_fx_arm_attack        ; no spell visual authored -- fall back
+  jmp cast_spell_fx_done
+cast_spell_fx_spell:
+  ldy <bt_actor                   ; default: the caster (heal / all-scope)
+  lda spell_kind,x
+  cmp #SK_HEAL
+  beq cast_spell_fx_go
+  lda spell_scope,x
+  bne cast_spell_fx_go            ; scope != one ("all") -- stays the caster
+  ldy <bt_target                  ; single-target damage/status -- the target
+cast_spell_fx_go:
+  lda spell_anim,x
+  jsr battle_fx_arm_at
+cast_spell_fx_done:
+  ldx <bt_arg                     ; reload -- the dispatch below needs it back
+  .endif
   lda spell_kind,x
   cmp #SK_POISON
   bne cast_spell_burn_chk
@@ -965,6 +1047,66 @@ wipe_monster_cell:
   bne wipe_monster_cell
   jmp vram_end
 
+; Battle-side animation (docs/design-battle-animation.md §3.3). Advances the
+; running action visual, if any, one frame at a time -- entity_animate's own
+; shape (engine/entities.asm), reimplemented here rather than shared, because
+; that routine is indexed by an entity slot (ent_frame,x/ent_timer,x) and this
+; state is a single running effect, not one array entry per combatant. Ends
+; the effect (bt_fx_anim = NO_ANIM) once the flipbook has played through once
+; -- a single-frame animation ends too, after its own duration, unlike
+; entity_animate's own "a single frame never advances" rule, which is right
+; for an idle overworld pose and wrong for a one-shot reaction. `loop` is
+; deliberately never read: the battle bank plays every flipbook one-shot
+; regardless of the catalog's own loop flag. Nothing here waits for the
+; message box to close, so an animation shorter than MSG_HOLD finishes on its
+; own, and battle_message_done's own unconditional clear (engine/battleui.asm)
+; is what caps a longer one at the message hold. Runs from battle_tick, ahead
+; of battle_dispatch, so it never executes nested inside cast_all's own
+; bt_tmp2-owning loop -- both are separate, sequential jsr calls within the
+; same tick, never concurrent.
+  .if BATTLE_ANIM_ENABLED
+battle_fx_tick:
+  ; On the very first tick of a battle, this runs BEFORE battle_dispatch has
+  ; had a chance to reach battle_intro -> setup_monsters, which is the only
+  ; place bt_fx_anim is reset for a fresh battle -- reading it here on that
+  ; one tick would see whatever the previous battle (or, before the first
+  ; battle of a session, uninitialized RAM) left behind. Skipping the whole
+  ; routine during BP_INTRO is cheaper than moving the reset earlier and just
+  ; as correct, since nothing is ever drawn or ticked before the first real
+  ; phase runs anyway.
+  lda <bt_phase
+  cmp #BP_INTRO
+  beq battle_fx_tick_rts
+  lda <bt_fx_anim
+  cmp #NO_ANIM
+  beq battle_fx_tick_rts
+  tax
+  inc <bt_fx_timer
+  lda anim_ptr_lo,x
+  sta <ptr_lo
+  lda anim_ptr_hi,x
+  sta <ptr_hi
+  lda <bt_fx_frame
+  asl a
+  tay
+  iny                        ; offset to the current frame's duration byte
+  lda <bt_fx_timer
+  cmp [ptr_lo],y             ; holds for EXACTLY `duration` ticks: timer <
+  bcc battle_fx_tick_rts     ; duration stays, timer >= duration advances --
+                              ; correct even at duration 255, since the byte
+                              ; never has to exceed it to detect the boundary
+  lda #0
+  sta <bt_fx_timer
+  inc <bt_fx_frame
+  lda <bt_fx_frame
+  cmp anim_count,x
+  bcc battle_fx_tick_rts
+  lda #NO_ANIM               ; one pass through the flipbook: done, whether it
+  sta <bt_fx_anim             ; had one frame or several
+battle_fx_tick_rts:
+  rts
+  .endif
+
 ; ---------------------------------------------------------- monsters' turn
 
 ; A monster with an affordable spell in its list casts one about half the
@@ -1105,7 +1247,15 @@ monster_turn:
   jsr pick_party_target
   jmp cast_spell
   .endif
+; This -- not attack_target above -- is the real monster physical-attack path
+; (both MONSTER_SPELL_LIST_ENABLED and the flat single-spell variant fall
+; through to this same shared label), so this is where battle.attackAnim
+; actually has to arm. Before pick_party_target/roll_hit: the swing plays
+; whether the hit lands or misses.
 monster_turn_attack:
+  .if BATTLE_ANIM_ENABLED
+  jsr battle_fx_arm_attack
+  .endif
   jsr pick_party_target
   jsr roll_hit
   bne monster_missed

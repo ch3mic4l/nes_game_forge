@@ -70,7 +70,8 @@ import {
   NAME_COPY_BATTLE_ALLOWANCE,
   MAGIC_POWER_BATTLE_ALLOWANCE,
   MAGIC_DEFENCE_BATTLE_ALLOWANCE,
-  MONSTER_SPELL_LIST_BATTLE_ALLOWANCE
+  MONSTER_SPELL_LIST_BATTLE_ALLOWANCE,
+  BATTLE_ANIM_BATTLE_ALLOWANCE
 } from '../../main/build/battletables.js';
 import {
   SUPPORTED_MAPPERS,
@@ -485,6 +486,35 @@ test('MONSTER_SPELL_LIST_BATTLE_ALLOWANCE is exact, on every RPG-capable board',
       `${mapper.name}: the monster spell list costs ${delta} bytes of banked code (${codeOff} -> ${codeOn}), but ` +
         `MONSTER_SPELL_LIST_BATTLE_ALLOWANCE reserves ${MONSTER_SPELL_LIST_BATTLE_ALLOWANCE} -- this allowance must ` +
         'equal the real cost exactly, on every board.'
+    );
+  }
+});
+
+// Battle-side animation (docs/design-battle-animation.md §3.5, phase 1b) --
+// the identical isolation shape as MONSTER_SPELL_LIST_BATTLE_ALLOWANCE just
+// above. "on" sets one monster's own battle.attackAnim to a real, playable
+// animation id (sample-rpg's own catalog: 0 Hero, 1 Slime, 2 Potion, each
+// with one frame naming a real metasprite) to flip BATTLE_ANIM_ENABLED
+// project-wide. Wrong implementation this catches: a stale allowance
+// drifting from the real assembled cost (measured directly against nesasm's
+// own bank-usage line, not re-derived from the instruction listing).
+test('BATTLE_ANIM_BATTLE_ALLOWANCE is exact, on every RPG-capable board', {
+  skip: !hasNesasm && 'nesasm not found on PATH'
+}, async (t) => {
+  for (const mapper of CAPABLE_MAPPERS) {
+    const off = await measureRegion(t, mapper);
+    const on = await measureRegion(t, mapper, (p) => {
+      p.sprites.actors[0].battle.attackAnim = 1; // Slime's own animation
+    });
+    const codeOff = off.used - battleTableBytes(off.project);
+    const codeOn = on.used - battleTableBytes(on.project);
+    const delta = codeOn - codeOff;
+    assert.equal(
+      delta,
+      BATTLE_ANIM_BATTLE_ALLOWANCE,
+      `${mapper.name}: battle-side animation costs ${delta} bytes of banked code (${codeOff} -> ${codeOn}), but ` +
+        `BATTLE_ANIM_BATTLE_ALLOWANCE reserves ${BATTLE_ANIM_BATTLE_ALLOWANCE} -- this allowance must equal the ` +
+        'real cost exactly, on every board.'
     );
   }
 });

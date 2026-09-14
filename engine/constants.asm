@@ -453,6 +453,18 @@ bt_wipe_slot = bt_wipe_row+1
 ; chained after bt_wipe_row: this must not move any other symbol's address.
 mus_inst_base = bt_wipe_slot+1
 
+; Battle-side animation (docs/design-battle-animation.md §3.2): the one
+; running action visual -- bt_fx_anim is an animation id or NO_ANIM (idle),
+; bt_fx_slot the combatant index (0-7) it plays over, bt_fx_frame/bt_fx_timer
+; its own entity_animate-shaped progress. Chained after mus_inst_base,
+; unconditionally, for the identical reason mus_inst_base itself was chained
+; after bt_wipe_slot: a switched-off feature must not move any other symbol's
+; address.
+bt_fx_anim  = mus_inst_base+1
+bt_fx_slot  = bt_fx_anim+1
+bt_fx_frame = bt_fx_slot+1
+bt_fx_timer = bt_fx_frame+1
+
 ; The $10-per-row darken trick reaches solid black in at most this many
 ; subtractions from any starting row; the hold between steps is an engine
 ; constant, not authored -- see OP_FADE below and shared/project.js's

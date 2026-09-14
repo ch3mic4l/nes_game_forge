@@ -711,6 +711,14 @@ battle_message_wait:
   dec <bt_timer
   bne battle_message_hold
 battle_message_done:
+  ; Battle-side animation (docs/design-battle-animation.md §3.3): a running
+  ; action visual is capped at the message hold it was armed alongside --
+  ; dismissing the line (by timeout or by pressing A early) ends it
+  ; unconditionally, whether or not its own flipbook had finished on its own.
+  .if BATTLE_ANIM_ENABLED
+  lda #NO_ANIM
+  sta <bt_fx_anim
+  .endif
   jsr clear_message
   ; After the acting combatant's own line, every status it carries gets a
   ; word in, one tick and one line per bit, lowest first: status_pending
@@ -841,6 +849,21 @@ battle_sprite_clear:
   bne battle_sprite_clear
   lda #0
   sta <oam_idx
+  ; Battle-side animation (docs/design-battle-animation.md §3.3): the running
+  ; action visual is drawn FIRST, while oam_idx is still zero, so it always
+  ; lands at the lowest OAM indices -- this hardware's own "priority: lower
+  ; index in secondary OAM = higher priority" (renderer/emulator/core/ppu/
+  ; index.js) is what makes it a true foreground overlay in front of whichever
+  ; combatant icon it plays over, not a layer buried behind it.
+  ; battle_fx_draw's own fit check is what keeps this admission safe: it
+  ; knows, from BATTLE_FX_OAM_ROOM (a compiled constant, main/build/
+  ; generate.js -- the room left after the combatant loops below and the
+  ; cursor take their own worst-case share), and skips the WHOLE effect frame
+  ; rather than let it eat into that room. It does not, by itself, fix a
+  ; project whose combatants alone already overflow.
+  .if BATTLE_ANIM_ENABLED
+  jsr battle_fx_draw
+  .endif
   ldx #0
 battle_sprite_pc:
   lda pc_in_party,x
@@ -929,6 +952,101 @@ battle_sprite_cursor_done:
   .endif
 
   rts
+
+; Battle-side animation (docs/design-battle-animation.md §3.3). Draws the
+; current frame of the running action visual, if any, over its own combatant
+; slot -- the same ex/ey formulas battle_sprite_pc/battle_sprite_mon use.
+; Called from battle_draw_sprites while oam_idx is still zero (see that
+; routine's own comment for why that is what makes this a foreground overlay,
+; not a layer buried behind the icon it plays over).
+;
+; The fit check: this frame's own ms_count must not exceed BATTLE_FX_OAM_ROOM
+; -- a single compiled constant (main/build/generate.js) already computed as
+; `max(0, MAX_OAM_ENTRIES - battleCombatantOamMax(project, mapper))`, i.e. the
+; room left over once the worst-case combatant/cursor draw that follows this
+; one is accounted for. No addition happens here at all -- comparing directly
+; against a pre-subtracted room is simpler and cannot overflow a byte the way
+; adding two byte-sized figures together first could. If the frame does not
+; fit, the WHOLE frame's draw is skipped -- never a partial one -- because
+; draw_metasprite itself has no notion of "how much room is left downstream";
+; it only wraps oam_idx back to zero on overflow (engine/entities.asm), which
+; would silently let a later combatant's own sprites overwrite this frame's
+; tail instead.
+;
+; This is a real, project-wide STATIC bound, not the current formation's own
+; live count -- it can reject a frame that would actually have fit this
+; particular battle (a smaller-than-worst-case formation), and it rejects
+; that SAME oversized frame on every tick it is current, never only once: an
+; animation whose every frame is too large for its own room is simply never
+; drawn, in any battle, ever, not merely delayed. See docs/design-battle-
+; animation.md §3.6 for the build-time half and the warning this is paired
+; with.
+;
+; This guard protects only the new effect against corrupting what draws after
+; it. It does not retroactively fix a project whose combatants alone (with no
+; effect at all) already exceed 64 -- draw_metasprite's own wrap-to-zero
+; (engine/entities.asm) and the split cursor's own unguarded write
+; (battle_sprite_cursor_done, above) are pre-existing exposure this slice
+; neither created nor repairs.
+  .if BATTLE_ANIM_ENABLED
+battle_fx_draw:
+  ; The same first-tick reasoning as battle_fx_tick's own guard -- bt_fx_anim
+  ; is not reset for THIS battle until battle_intro's own setup_monsters runs,
+  ; later in this same tick.
+  lda <bt_phase
+  cmp #BP_INTRO
+  beq battle_fx_draw_rts
+  lda <bt_fx_anim
+  cmp #NO_ANIM
+  beq battle_fx_draw_rts
+  tax
+  lda <bt_fx_frame
+  asl a
+  tay
+  lda anim_ptr_lo,x
+  sta <ptr_lo
+  lda anim_ptr_hi,x
+  sta <ptr_hi
+  lda [ptr_lo],y             ; this frame's metasprite id
+  tax                        ; park it -- the animation id in X is done with
+  lda ms_count,x
+  cmp #BATTLE_FX_OAM_ROOM+1
+  bcs battle_fx_draw_rts     ; does not fit alongside what draws after it
+  lda <bt_fx_slot
+  cmp #MAX_PARTY
+  bcs battle_fx_draw_mon
+  lda #BT_PARTY_X
+  sta <de_ex
+  lda <bt_fx_slot
+  asl a
+  asl a
+  asl a
+  asl a
+  asl a                     ; slot * BT_PARTY_STEP
+  clc
+  adc #BT_PARTY_Y
+  sta <de_ey
+  jmp battle_fx_draw_go
+battle_fx_draw_mon:
+  lda #BT_MON_COL*8
+  sta <de_ex
+  lda <bt_fx_slot
+  sec
+  sbc #MAX_PARTY
+  asl a
+  asl a
+  asl a
+  asl a
+  asl a                     ; monster slot * 32 pixels
+  clc
+  adc #BT_MON_ROW*8
+  sta <de_ey
+battle_fx_draw_go:
+  txa                       ; recover the metasprite id
+  jmp draw_metasprite        ; tail call -- its own rts returns to our caller
+battle_fx_draw_rts:
+  rts
+  .endif
 
 bit_mask:
   .db $01,$02,$04,$08,$10,$20,$40,$80

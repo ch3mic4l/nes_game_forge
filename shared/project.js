@@ -3435,6 +3435,44 @@ export function renumberAnimationDeletion(project, index) {
   return project;
 }
 
+/**
+ * Phase 1b: every distinct animation id any live `spell.anim` or
+ * `battle.attackAnim` names -- `battleSpriteBudget`'s own input for the
+ * flipbook's worst-case OAM cost (§3.6). Filters `animationReferenceLocations`
+ * to `battleOnly`, never the overworld `anims` slots, which answer a
+ * different question (`reachablePoses`).
+ */
+export function allBattleAnimationIds(project) {
+  const ids = new Set();
+  for (const location of animationReferenceLocations(project)) {
+    if (!location.battleOnly) continue;
+    const id = location.get();
+    if (id !== null && id !== undefined) ids.add(id);
+  }
+  return ids;
+}
+
+/**
+ * The Magic/Monster Forge picker's own options, the `itemPickerOptions` shape
+ * applied to an animation reference: `healthy` is every real catalog entry,
+ * `missing` is a synthetic, always-selected option naming a stale/invalid
+ * `selectedId` (a deleted animation, an imported 255) so re-rendering the
+ * select never silently substitutes a different, real animation for it --
+ * the picker only ever writes a value the author actually chose.
+ */
+export function animationPickerOptions(project, selectedId) {
+  const healthy = project.sprites.animations.map((anim, id) => ({
+    value: id,
+    label: anim.name,
+    selected: id === selectedId
+  }));
+  const missing =
+    selectedId !== null && selectedId !== undefined && !isValidAnimationRef(selectedId, project)
+      ? { value: selectedId, label: `Missing animation ${selectedId}`, selected: true }
+      : null;
+  return { healthy, missing };
+}
+
 // ---------------------------------------------------------------------------
 // Palette-swap an existing sprite (ROADMAP item 8): duplicate an actor with
 // every tile currently painted in one sprite palette slot repainted into
@@ -3714,12 +3752,13 @@ export function describeBattleSpriteWarning(budget) {
 }
 
 /**
- * The project-wide battle OAM figure: party (an RPG's own live members, drawn
- * via each member's explicit `pc_metasprite`), the worst monster formation
- * the project can reach (battle_draw_sprites draws only a no-block-art
- * monster as a sprite, through the exact draw_actor_icon resolver), and the
- * MMC3 targeting cursor, whenever the split font is live -- the same
- * SPLIT_ENABLED gate the engine's own cursor draw uses
+ * The project-wide worst-case OAM cost of every combatant icon and the
+ * split-only targeting cursor, as a plain number -- party (an RPG's own live
+ * members, drawn via each member's explicit `pc_metasprite`), the worst
+ * monster formation the project can reach (battle_draw_sprites draws only a
+ * no-block-art monster as a sprite, through the exact draw_actor_icon
+ * resolver), and the MMC3 targeting cursor, whenever the split font is live
+ * -- the same SPLIT_ENABLED gate the engine's own cursor draw uses
  * (engine/battleui.asm's `.if SPLIT_ENABLED`). `mapper` is already-resolved,
  * the same discipline fontBankSplit's own callers already keep, so this
  * function never has to import resolveMapper itself.
@@ -3728,15 +3767,24 @@ export function describeBattleSpriteWarning(budget) {
  * (engine/combat.asm) jumps to `hurt_player`, never `touch_encounter`, unless
  * `BATTLE_ENABLED` -- so a hostile placement's "singleton formation" and a
  * map's own encounter table are both engine fictions on that build, and this
- * returns `{used: 0, limit: MAX_OAM_ENTRIES}` before walking any of it. Gated
- * on `gameType`, the same fact the party term below already keys off of, not
- * on `codeRegions(...)` (whether the mapper actually has room for the battle
- * bank): a CHR-RAM board too small for the battle region is already refused
- * by `checkCapacity` on its own, so computing a battle figure for that
- * project anyway is harmless -- game type alone is the real, single gate.
+ * returns `0` before walking any of it. Gated on `gameType`, the same fact
+ * the party term below already keys off of, not on `codeRegions(...)`
+ * (whether the mapper actually has room for the battle bank): a CHR-RAM
+ * board too small for the battle region is already refused by
+ * `checkCapacity` on its own, so computing a battle figure for that project
+ * anyway is harmless -- game type alone is the real, single gate.
+ *
+ * Phase 1b (docs/design-battle-animation.md §3.6): split out of
+ * `battleSpriteBudget` below, which used to compute exactly this and return
+ * it directly as `used`. The generator's own `BATTLE_FX_OAM_ROOM` constant
+ * (main/build/generate.js) needs this same numeric figure at build time to
+ * decide, from `battle_fx_draw` (engine/battleui.asm), whether the running
+ * effect's own frame -- drawn FIRST so it wins sprite priority over whatever
+ * combatant icon it overlaps -- still leaves room for every combatant that
+ * draws after it.
  */
-export function battleSpriteBudget(project, mapper) {
-  if (project.project?.gameType !== 'rpg') return { used: 0, limit: MAX_OAM_ENTRIES };
+export function battleCombatantOamMax(project, mapper) {
+  if (project.project?.gameType !== 'rpg') return 0;
   const actorCount = project.sprites.actors.length;
   const party = project.party.reduce((total, member) => {
     const metasprite = project.sprites.metasprites[member.metaspriteId];
@@ -3745,7 +3793,82 @@ export function battleSpriteBudget(project, mapper) {
   const formations = battleFormations(project, actorCount);
   const monsters = Math.max(0, ...formations.map((formation) => formationSpriteCost(formation, project)));
   const cursor = fontBankSplit(project, mapper) ? 1 : 0;
-  return { used: party + monsters + cursor, limit: MAX_OAM_ENTRIES };
+  return party + monsters + cursor;
+}
+
+/**
+ * The project-wide battle OAM figure the Build panel and `validateProject`
+ * actually compare against the hardware limit: `{used, limit}`, where
+ * `limit` is always `MAX_OAM_ENTRIES` and `used` is `battleCombatantOamMax`
+ * (above) plus `fxTiles` (phase 1b, docs/design-battle-animation.md §3.6) --
+ * the single largest frame of any PLAYABLE battle animation reference in the
+ * project, added once. An action project returns `{used: 0, limit:
+ * MAX_OAM_ENTRIES}`, the identical short-circuit `battleCombatantOamMax`
+ * takes, for the identical reason.
+ *
+ * Only a reference `isPlayableBattleAnimation` accepts contributes anything
+ * -- a stale id, or one whose own frames name a missing metasprite, costs
+ * exactly 0, the same "won't actually play" fact the engine's own arm-time
+ * guard and generator defense already act on. Only one effect plays at a
+ * time regardless of formation size or how many distinct references the
+ * project authors, so the single worst frame across all of them is added
+ * once, never summed and never per formation slot.
+ */
+export function battleSpriteBudget(project, mapper) {
+  if (project.project?.gameType !== 'rpg') return { used: 0, limit: MAX_OAM_ENTRIES };
+  const fxTiles = Math.max(
+    0,
+    ...[...allBattleAnimationIds(project)]
+      .filter((animId) => isPlayableBattleAnimation(animId, project))
+      .flatMap((animId) =>
+        project.sprites.animations[animId].frames.map(
+          (frame) => project.sprites.metasprites[frame.metaspriteId].tiles.length
+        )
+      )
+  );
+  return { used: battleCombatantOamMax(project, mapper) + fxTiles, limit: MAX_OAM_ENTRIES };
+}
+
+/**
+ * A second, distinct warning, paired with `describeBattleSpriteWarning`
+ * rather than replacing it (docs/design-battle-animation.md §3.6): that one
+ * says the PROJECT as a whole may need more sprites than the NES can show;
+ * this one names WHICH authored battle animation is large enough that
+ * `battle_fx_draw`'s own conservative, project-wide fit check
+ * (engine/battleui.asm) will sometimes -- or, if every one of its frames is
+ * this large, ALWAYS -- skip it rather than risk corrupting what draws after
+ * it. Returns `null` when no playable battle animation is part of the
+ * picture (a pure combatant/cursor overflow, unrelated to this feature) --
+ * the caller adds nothing in that case, so a project with no battle
+ * animation at all triggers only the first warning, byte-for-byte unchanged
+ * from before this slice existed.
+ */
+export function describeBattleAnimationOamWarning(project, mapper) {
+  const combatantMax = battleCombatantOamMax(project, mapper);
+  let worstId = null;
+  let worstTiles = 0;
+  for (const animId of allBattleAnimationIds(project)) {
+    if (!isPlayableBattleAnimation(animId, project)) continue;
+    const tiles = Math.max(
+      0,
+      ...project.sprites.animations[animId].frames.map(
+        (frame) => project.sprites.metasprites[frame.metaspriteId].tiles.length
+      )
+    );
+    if (tiles > worstTiles) {
+      worstTiles = tiles;
+      worstId = animId;
+    }
+  }
+  if (worstId === null) return null;
+  const name = project.sprites.animations[worstId].name;
+  return (
+    `"${name}" (${worstTiles} sprite tiles) plus this project's own worst-case combatants and cursor ` +
+    `(${combatantMax}) would need more than the NES's ${MAX_OAM_ENTRIES} sprites at once, so it will be ` +
+    'skipped in-game whenever it does not fit — even in a battle with real room, since the check is a ' +
+    "project-wide worst case, not this battle's own. Use a smaller animation, or reduce the party/" +
+    'formation/cursor cost elsewhere.'
+  );
 }
 
 // Every formation the project can reach, from all three sources the engine
@@ -5186,6 +5309,21 @@ function normalizeActor(raw, id, itemCtx = EMPTY_ITEM_CTX) {
       battleW: clamp(battle.battleW, 1, RPG_LIMITS.battleArtTiles, ACTOR_BATTLE_DEFAULTS.battleW),
       battleH: clamp(battle.battleH, 1, RPG_LIMITS.battleArtTiles, ACTOR_BATTLE_DEFAULTS.battleH),
       battlePalette: clamp(battle.battlePalette, 0, LIMITS.palettes - 1, ACTOR_BATTLE_DEFAULTS.battlePalette),
+      // Battle-side animation (docs/design-battle-animation.md §3.1, phase
+      // 1b): an animation id this monster plays over its own combatant slot
+      // when it attacks or, absent a spell's own visual, casts. null = no
+      // visual. Not validated against project.sprites.animations.length here
+      // -- normalizeActor has no access to that array, the identical reason
+      // battle.spellIds is clamped to a byte range alone and left for the
+      // generator to drop a stale id to NO_ANIM (mon_anim_attack, main/build/
+      // battletables.js). Not in ACTOR_BATTLE_DEFAULTS: like drop/battleTile/
+      // level, this is a nullable reference, not a plain numeric default --
+      // validAnimId's own undefined-in/NO_ANIM-out handling already covers a
+      // never-normalized actor with no `battle` key at all.
+      attackAnim:
+        Number.isInteger(battle.attackAnim) && battle.attackAnim >= 0 && battle.attackAnim <= 255
+          ? battle.attackAnim
+          : null,
       // Display-only, no compiled reader; clamped to the fixed
       // RPG_LIMITS.maxLevel, not project.rpg.maxLevel -- see docs/design-monster.md §3.
       level: battle.level === null || battle.level === undefined
@@ -5298,7 +5436,16 @@ function normalizeSpell(raw, id) {
     amountMin,
     amountMax,
     element: elementId(raw?.element),
-    scope: SPELL_SCOPES.some((s) => s.id === raw?.scope) ? raw.scope : base.scope
+    scope: SPELL_SCOPES.some((s) => s.id === raw?.scope) ? raw.scope : base.scope,
+    // Battle-side animation (docs/design-battle-animation.md §3.1, phase 1b):
+    // an animation id played when this spell is cast -- over the target or
+    // the caster, decided by cast_spell (engine/battleturn.asm) from the
+    // spell's own kind/scope, not by this field. null = no visual. Clamped to
+    // a byte range only, like battle.attackAnim below -- normalizeSpell has
+    // no access to project.sprites.animations.length, so a stale or 255
+    // reference is preserved here and left for isValidAnimationRef/
+    // isPlayableBattleAnimation to judge.
+    anim: Number.isInteger(raw?.anim) && raw.anim >= 0 && raw.anim <= 255 ? raw.anim : null
   };
 }
 
@@ -6240,6 +6387,30 @@ export function projectUsesMagicDefence(project) {
  */
 export function projectUsesMonsterSpellList(project) {
   return (project.sprites?.actors ?? []).some((actor) => (actor.battle?.spellIds?.length ?? 0) >= 2);
+}
+
+/**
+ * Whether any monster's own attack visual or any spell's own cast visual is
+ * authored at all -- true iff some actor's `battle.attackAnim` or some
+ * spell's own `anim` field is set. Off on every project that has never
+ * authored one, the identical shape `projectUsesMonsterSpellList` already
+ * takes for `BATTLE_ANIM_ENABLED` (docs/design-battle-animation.md §3.5).
+ */
+export function projectUsesBattleAnimation(project) {
+  if ((project.spells ?? []).some((spell) => spell.anim !== null && spell.anim !== undefined)) return true;
+  return (project.sprites?.actors ?? []).some(
+    (actor) => actor.battle?.attackAnim !== null && actor.battle?.attackAnim !== undefined
+  );
+}
+
+/** The battleShortfallAdvice removal candidate for the battle-anim slice. */
+export function projectWithoutBattleAnimation(project) {
+  const clone = structuredClone(project);
+  for (const spell of clone.spells ?? []) spell.anim = null;
+  for (const actor of clone.sprites?.actors ?? []) {
+    if (actor.battle) actor.battle.attackAnim = null;
+  }
+  return clone;
 }
 
 export function validateProject(project) {
@@ -7231,6 +7402,10 @@ export function validateProject(project) {
   const battleBudget = battleSpriteBudget(project, artworkMapper);
   if (battleBudget.used > battleBudget.limit) {
     add('warning', 'Build', describeBattleSpriteWarning(battleBudget));
+    // Phase 1b: a second, distinct warning -- see describeBattleAnimationOamWarning's
+    // own comment for why this is not folded into the one above.
+    const animWarning = describeBattleAnimationOamWarning(project, artworkMapper);
+    if (animWarning) add('warning', 'Monster Forge', animWarning);
   }
 
   return problems;
