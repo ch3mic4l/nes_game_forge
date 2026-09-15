@@ -719,6 +719,17 @@ battle_message_done:
   lda #NO_ANIM
   sta <bt_fx_anim
   .endif
+  ; Phase 2b MISS overlay (docs/design-battle-animation.md §13.4): capped the
+  ; identical way -- it must not survive into the NEXT action's own message,
+  ; naming a target that already had its turn. Hit feedback (bt_hurt_left) is
+  ; deliberately NOT capped here (§12.4) -- it is purely time-based (20 ticks,
+  ; under MSG_HOLD's 45), so letting it run past an early dismissal into the
+  ; next tick or two is harmless, and simpler than adding a second
+  ; unconditional clear for state that already self-terminates.
+  .if MISS_ENABLED
+  lda #0
+  sta <bt_miss_left
+  .endif
   jsr clear_message
   ; After the acting combatant's own line, every status it carries gets a
   ; word in, one tick and one line per bit, lowest first: status_pending
@@ -863,6 +874,13 @@ battle_sprite_clear:
   ; project whose combatants alone already overflow.
   .if BATTLE_ANIM_ENABLED
   jsr battle_fx_draw
+  .endif
+  ; Phase 2b MISS overlay (docs/design-battle-animation.md §13.4): drawn next,
+  ; still at a low OAM index, so it is never hidden behind the icon it names --
+  ; the identical "draw first, while oam_idx is still low, for foreground
+  ; priority" rule the flipbook above already established.
+  .if MISS_ENABLED
+  jsr battle_miss_draw
   .endif
   ldx #0
 battle_sprite_pc:
@@ -1075,6 +1093,90 @@ battle_fx_draw_go:
   jmp draw_metasprite        ; tail call -- its own rts returns to our caller
 battle_fx_draw_rts:
   rts
+  .endif
+
+; Phase 2b MISS overlay (docs/design-battle-animation.md §13.4). Draws the
+; floating MISS text while bt_miss_left is counting down. Reuses the identical
+; per-slot anchor math battle_fx_draw already uses, offset 8 pixels up from
+; the icon's own anchor row so the glyphs read as "next to" the sprite rather
+; than dead-centered on it.
+;
+; A FIXED, unconditional 4-sprite write, drawn while oam_idx is still low, for
+; the identical foreground-priority reason battle_fx_draw already is -- the
+; same "accepted limitation" §13.6 states honestly, stated exactly, not
+; softened: with combatants alone already at 61-64 entries (permitted, with
+; only a warning), these four additional entries can push the real total
+; past 64 and cause an overflow where none existed before MISS was enabled;
+; past 64 already, they instead increase how much oam_idx overcommits and
+; wraps. Advisory in both cases -- no admission check and no build refusal --
+; it costs the identical fixed 16 bytes of OAM every time it draws, never
+; more.
+;
+; Clobbers A, X, Y, bt_tmp, bt_tmp2 -- none of which battle_draw_sprites (or
+; anything it runs after this call) relies on surviving: X is reloaded with
+; ldx #0 immediately below, bt_tmp is only ever read back right after its own
+; fresh store inside battle_sprite_pc, and bt_tmp2 is not read again anywhere
+; in this routine's remaining callers.
+  .if MISS_ENABLED
+battle_miss_draw:
+  lda <bt_miss_left
+  beq battle_miss_draw_rts
+  lda <bt_miss_slot
+  cmp #MAX_PARTY
+  bcs battle_miss_draw_mon
+  lda <bt_miss_slot
+  asl a
+  asl a
+  asl a
+  asl a
+  asl a                     ; slot * BT_PARTY_STEP
+  clc
+  adc #BT_PARTY_Y-8         ; one tile above the icon's own anchor row
+  sta <bt_tmp
+  lda #BT_PARTY_X
+  jmp battle_miss_draw_go
+battle_miss_draw_mon:
+  lda <bt_miss_slot
+  sec
+  sbc #MAX_PARTY
+  asl a
+  asl a
+  asl a
+  asl a
+  asl a                     ; monster slot * 32 pixels
+  clc
+  adc #BT_MON_ROW*8-8
+  sta <bt_tmp
+  lda #BT_MON_COL*8
+battle_miss_draw_go:
+  sta <bt_tmp2
+  ldy <oam_idx
+  ldx #0
+battle_miss_draw_cell:
+  lda <bt_tmp
+  sta OAM,y
+  iny
+  lda miss_tiles,x
+  sta OAM,y
+  iny
+  lda #0
+  sta OAM,y
+  iny
+  lda <bt_tmp2
+  sta OAM,y
+  iny
+  clc
+  adc #8
+  sta <bt_tmp2
+  inx
+  cpx #4
+  bne battle_miss_draw_cell
+  sty <oam_idx
+battle_miss_draw_rts:
+  rts
+
+miss_tiles:
+  .db MISS_TILE_M, MISS_TILE_I, MISS_TILE_S, MISS_TILE_S
   .endif
 
 bit_mask:

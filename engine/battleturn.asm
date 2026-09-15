@@ -273,10 +273,26 @@ attack_target:
   lda #BS_HITS
   jmp battle_say_actor
 attack_missed:
+  .if MISS_ENABLED
+  jsr battle_miss_arm
+  .endif
   lda #$FF
   sta <bt_dmg_hi             ; no number on this line
   lda #BS_MISSES
   jmp battle_say_actor
+
+; Phase 2b MISS overlay's own arm point (docs/design-battle-animation.md
+; §13.4), called from both miss branches (attack_missed above, monster_missed
+; below). bt_target already names who dodged at both call sites -- roll_hit's
+; own comment: "an underflow is a miss" -- so this needs no argument.
+  .if MISS_ENABLED
+battle_miss_arm:
+  lda <bt_target
+  sta <bt_miss_slot
+  lda #BT_MISS_FRAMES
+  sta <bt_miss_left
+  rts
+  .endif
 
 ; Battle-side animation (docs/design-battle-animation.md §3.3).
 ;
@@ -1344,6 +1360,9 @@ monster_turn_attack:
   lda #BS_HITS
   jmp battle_say_actor
 monster_missed:
+  .if MISS_ENABLED
+  jsr battle_miss_arm
+  .endif
   lda #$FF
   sta <bt_dmg_hi
   lda #BS_MISSES

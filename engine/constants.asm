@@ -476,6 +476,19 @@ bt_fx_timer = bt_fx_frame+1
 bt_hurt_slot = bt_fx_timer+1
 bt_hurt_left = bt_hurt_slot+1
 BT_HURT_FRAMES = 20
+
+; Phase 2b MISS overlay (docs/design-battle-animation.md §13.2): the single
+; most recent miss's own target and countdown -- bt_miss_slot names the
+; combatant (0-7) that dodged, bt_miss_left counts down from BT_MISS_FRAMES.
+; Chained after bt_hurt_left, unconditionally -- true regardless of
+; HIT_FEEDBACK_ENABLED/MISS_ENABLED, since neither equate DECLARATION carries
+; a gate of its own, the identical unconditional shape bt_fx_anim already
+; takes (§7's own corrected treatment: a real project shipping MISS_ENABLED=1
+; with HIT_FEEDBACK_ENABLED=0 needs no re-chaining -- bt_hurt_left is still
+; there to chain onto, unread and unwritten but present).
+bt_miss_slot = bt_hurt_left+1
+bt_miss_left = bt_miss_slot+1
+BT_MISS_FRAMES = 30
 ; draw_battle_attr's own ground-row fill (engine/battle.asm) -- rows 1-4 of
 ; the attribute table get this value before any live monster's own mon_attr
 ; is written over the top. This is what a dead monster's own cell must be

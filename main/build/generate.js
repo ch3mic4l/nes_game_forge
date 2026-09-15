@@ -25,6 +25,12 @@ import {
   HEART_TILES,
   SPRITE_ARROW_ART,
   SPRITE_ARROW_TILE,
+  MISS_TILE_M,
+  MISS_TILE_I,
+  MISS_TILE_S,
+  MISS_TILE_M_ART,
+  MISS_TILE_I_ART,
+  MISS_TILE_S_ART,
   TILE_SPACE,
   fontBankSplit,
   fontChrPages,
@@ -76,6 +82,8 @@ import {
   projectUsesMonsterSpellList,
   projectUsesBattleAnimation,
   projectUsesHitFeedback,
+  projectUsesMiss,
+  MISS_OAM_TILES,
   battleCombatantOamMax,
   MAX_OAM_ENTRIES,
   projectUsesSting,
@@ -2622,16 +2630,23 @@ export async function generateAssets({ dir, project, log = () => {} }) {
   // battle_hurt_arm/tick/attr_open/restore_slot, gated independently of
   // BATTLE_ANIM_ENABLED.
   const hitFeedbackEnabled = projectUsesHitFeedback(project);
+  // Phase 2b MISS overlay (docs/design-battle-animation.md §13.9):
+  // battle_miss_arm/tick/draw, gated independently of both
+  // BATTLE_ANIM_ENABLED and HIT_FEEDBACK_ENABLED.
+  const missEnabled = projectUsesMiss(project);
   // One generated constant, not a duplicated engine-side MAX_OAM_ENTRIES
   // equate plus a runtime add (§3.6). BATTLE_FX_OAM_ROOM is the room left for
-  // the running effect once the worst-case combatant icons and the
-  // split-only cursor have taken their own share -- battle_fx_draw's own fit
-  // check (engine/battleui.asm) compares a frame's ms_count against this
-  // single figure directly (`cmp #BATTLE_FX_OAM_ROOM+1`), no addition and so
-  // no byte-overflow question. Emitted unconditionally (an equate costs
-  // nothing unless used, and it is only ever read inside
-  // .if BATTLE_ANIM_ENABLED code).
-  const battleFxOamRoom = Math.max(0, MAX_OAM_ENTRIES - battleCombatantOamMax(project, mapper));
+  // the running effect once the worst-case combatant icons, the split-only
+  // cursor and MISS's own fixed 4 tiles (§13.6, when live) have taken their
+  // own share -- battle_fx_draw's own fit check (engine/battleui.asm)
+  // compares a frame's ms_count against this single figure directly
+  // (`cmp #BATTLE_FX_OAM_ROOM+1`), no addition and so no byte-overflow
+  // question. Emitted unconditionally (an equate costs nothing unless used,
+  // and it is only ever read inside .if BATTLE_ANIM_ENABLED code).
+  const battleFxOamRoom = Math.max(
+    0,
+    MAX_OAM_ENTRIES - battleCombatantOamMax(project, mapper) - (missEnabled ? MISS_OAM_TILES : 0)
+  );
 
   // The HUD hearts, stamped after the placeholder check so an empty sprite table
   // is still recognised as empty. Two tiles, and only for a game that can hurt
@@ -2676,6 +2691,18 @@ export async function generateAssets({ dir, project, log = () => {} }) {
   // slot this stamps.
   if ((fontSplit && codeRegionCount(project)) || projectUsesNameEntry(project)) {
     for (const tileset of tilesets) tileset.sprites[SPRITE_ARROW_TILE] = SPRITE_ARROW_ART;
+  }
+
+  // Phase 2b MISS overlay (docs/design-battle-animation.md §13.5): every
+  // tileset, not the battle tileset alone -- battleTilesetId can change
+  // later, and every tileset must keep the slots free regardless, the
+  // identical reasoning the arrow tile's own stamping above already uses.
+  if (missEnabled) {
+    for (const tileset of tilesets) {
+      tileset.sprites[MISS_TILE_M] = MISS_TILE_M_ART;
+      tileset.sprites[MISS_TILE_I] = MISS_TILE_I_ART;
+      tileset.sprites[MISS_TILE_S] = MISS_TILE_S_ART;
+    }
   }
 
   // Each tileset becomes one 8 KB payload: background table then sprite table,
@@ -3011,6 +3038,12 @@ export async function generateAssets({ dir, project, log = () => {} }) {
     `SPLIT_ENABLED = ${fontSplit ? 1 : 0}`,
     `FONT_R1       = ${fontSplit ? project.tilesets.length * 8 + 2 : 0}`,
     `SPRITE_ARROW_TILE = ${hex(SPRITE_ARROW_TILE)}`,
+    // Phase 2b MISS overlay (docs/design-battle-animation.md §13.5) --
+    // generated FROM shared/font.js's own single JS authority, never
+    // hand-typed in engine/constants.asm.
+    `MISS_TILE_M = ${hex(MISS_TILE_M)}`,
+    `MISS_TILE_I = ${hex(MISS_TILE_I)}`,
+    `MISS_TILE_S = ${hex(MISS_TILE_S)}`,
     // Action-mode combat. Zero when no actor deals damage and no Damage metatile
     // is painted, in which case the hearts are not drawn and nothing can call in.
     `COMBAT_ENABLED = ${usesCombat ? 1 : 0}`,
@@ -3176,6 +3209,10 @@ export async function generateAssets({ dir, project, log = () => {} }) {
     // battle_hurt_arm/tick/attr_open/restore_slot, and the blink-skip checks
     // in battle_sprite_pc/battle_sprite_mon. Independent of BATTLE_ANIM_ENABLED.
     `HIT_FEEDBACK_ENABLED = ${hitFeedbackEnabled ? 1 : 0}`,
+    // Phase 2b MISS overlay (docs/design-battle-animation.md §13.9):
+    // battle_miss_arm/tick/draw. Independent of both BATTLE_ANIM_ENABLED and
+    // HIT_FEEDBACK_ENABLED.
+    `MISS_ENABLED = ${missEnabled ? 1 : 0}`,
     ''
   ].join('\n');
   await fs.writeFile(path.join(assetsDir, 'config.inc'), config);

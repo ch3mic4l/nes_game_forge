@@ -115,7 +115,11 @@ import {
   // Battle-side animation, phase 2a -- hit feedback (docs/design-battle-animation.md §12.7)
   defaultRpg,
   projectUsesHitFeedback,
-  projectWithoutHitFeedback
+  projectWithoutHitFeedback,
+  projectUsesMiss,
+  projectWithoutMiss,
+  spriteReservedRanges,
+  MISS_OAM_TILES
 } from '../../shared/project.js';
 import { resolveStartAt } from '../../shared/playscenario.js';
 import fs from 'node:fs/promises';
@@ -3339,6 +3343,158 @@ test('an action project with rpg.hitFeedback true generates HIT_FEEDBACK_ENABLED
     'an action project’s ROM must be byte-identical whether or not rpg.hitFeedback is stored true -- ' +
       'nothing in the ROM or its artwork can justify a difference, since HIT_FEEDBACK_ENABLED reads 0 either way'
   );
+});
+
+// Battle-side animation, phase 2b -- the MISS overlay (docs/design-battle-
+// animation.md §13.9). Orchestrator addition, mirroring test/unit/
+// project.test.js:3201's hit-feedback shape exactly (line numbers as of
+// 9e192bc). Wrong implementation this catches: normalizeRpg reading
+// raw.miss with no Boolean() coercion, or projectUsesMiss missing its own
+// gameType === 'rpg' check -- either would let an action project's stray
+// rpg.miss: true reserve/stamp the MISS glyphs with nothing in the ROM to
+// justify it.
+test('MISS overlay: defaultRpg defaults to false; normalizeRpg preserves true and defaults an absent field to false, on both game types; projectUsesMiss is action-gated', () => {
+  assert.equal(defaultRpg().miss, false, 'defaultRpg().miss must default to false');
+
+  const rpgProject = createProject('Quest', 'rpg');
+  assert.equal(rpgProject.rpg.miss, false, 'a fresh RPG project must default to miss false');
+
+  const rpgOn = normalizeProject({ ...structuredClone(rpgProject), rpg: { ...rpgProject.rpg, miss: true } });
+  assert.equal(rpgOn.rpg.miss, true, 'normalizeRpg must keep an authored true as true');
+  assert.equal(projectUsesMiss(rpgOn), true, 'an RPG project with miss true must read as using it');
+
+  const rpgAbsent = normalizeProject({ ...structuredClone(rpgProject), rpg: undefined });
+  assert.equal(rpgAbsent.rpg.miss, false, 'an absent rpg.miss field must normalize to false, on an RPG project');
+
+  const actionProject = createProject('Quest', 'action');
+  assert.equal(actionProject.rpg.miss, false, 'an action project still normalizes rpg.miss, defaulting to false');
+  const actionOn = normalizeProject({ ...structuredClone(actionProject), rpg: { ...actionProject.rpg, miss: true } });
+  assert.equal(
+    actionOn.rpg.miss,
+    true,
+    'normalizeRpg stores the boolean as written on every game type, with no reconciliation and no validateProject refusal'
+  );
+  assert.equal(
+    projectUsesMiss(actionOn),
+    false,
+    'projectUsesMiss must be false for an action project even with a stored true -- MISS_ENABLED must never assemble outside an RPG'
+  );
+
+  const actionAbsent = normalizeProject({ ...structuredClone(actionProject), rpg: undefined });
+  assert.equal(actionAbsent.rpg.miss, false, 'an absent rpg.miss field must normalize to false, on an action project too');
+
+  // The identical strict-Boolean coercion table hitFeedback's own test uses
+  // (test/unit/project.test.js:3240): raw?.miss ?? false would let a
+  // truthy-but-non-boolean survivor like '' or 0 through unmodified.
+  for (const gameType of ['rpg', 'action']) {
+    const base = createProject('Quest', gameType);
+    for (const [raw, expected] of [
+      [1, true],
+      ['yes', true],
+      [0, false],
+      ['', false],
+      [null, false]
+    ]) {
+      const normalized = normalizeProject({ ...structuredClone(base), rpg: { ...base.rpg, miss: raw } });
+      assert.strictEqual(
+        normalized.rpg.miss,
+        expected,
+        `${gameType} project: rpg.miss: ${JSON.stringify(raw)} must normalize strictly to ${expected}`
+      );
+    }
+  }
+
+  // The identical real-migration-fixture shape hitFeedback's own test uses:
+  // every other field present and realistic, only miss itself genuinely
+  // absent as a key (not merely undefined by spread).
+  for (const gameType of ['rpg', 'action']) {
+    const base = createProject('Quest', gameType);
+    const preExistingRpg = {
+      xpBase: 30,
+      xpGrow: 10,
+      maxLevel: 20,
+      battleTilesetId: base.rpg.battleTilesetId,
+      encounterMusic: null,
+      hitFeedback: false
+    };
+    assert.ok(!('miss' in preExistingRpg), 'sanity: the migration fixture must genuinely omit the key');
+    const migrated = normalizeProject({ ...structuredClone(base), rpg: preExistingRpg });
+    assert.strictEqual(
+      migrated.rpg.miss,
+      false,
+      `${gameType} project: an rpg object saved before miss existed must normalize the missing key to false`
+    );
+    assert.equal(migrated.rpg.xpBase, 30, 'sanity: the migration fixture’s other fields must still normalize through untouched');
+  }
+});
+
+test('projectWithoutMiss: clones and clears rpg.miss, leaving the source untouched', () => {
+  const project = createProject('Quest', 'rpg');
+  project.rpg.miss = true;
+
+  const stripped = projectWithoutMiss(project);
+  assert.equal(stripped.rpg.miss, false, 'the clone’s rpg.miss must be cleared');
+  assert.equal(project.rpg.miss, true, 'the source project must be untouched (a clone, not a mutation)');
+});
+
+// §14 round 5, test row "Action-project MISS gating" (finding 1, P2).
+// rpg.miss is set true by hand-editing the loaded project object -- never
+// reachable through the UI, since rpgProgression only renders for an RPG --
+// and saved into its own mkdtemp directory, never into sample/. Wrong
+// implementation this catches: projectUsesMiss reading project.rpg.miss
+// alone with no game-type check, which would reserve/stamp the MISS glyphs
+// on an action project purely because a stored boolean survived a
+// game-type switch, and would let the two ROMs diverge with no battle
+// overlay ever drawn to justify it.
+test('an action project with rpg.miss true generates MISS_ENABLED = 0 and builds a byte-identical ROM to miss false; artwork at $FA raises no error', {
+  skip: !hasNesasm && 'nesasm not found on PATH'
+}, async (t) => {
+  const readFlag = async (dir) => {
+    const text = await fs.readFile(path.join(dir, 'build', 'assets', 'config.inc'), 'utf8');
+    const match = /^MISS_ENABLED\s*=\s*(\d+)/m.exec(text);
+    assert.ok(match, 'MISS_ENABLED must be a named constant in config.inc');
+    return Number(match[1]);
+  };
+
+  const dirOff = await fs.mkdtemp(path.join(os.tmpdir(), 'forge-miss-action-off-'));
+  t.after(() => fs.rm(dirOff, { recursive: true, force: true }));
+  const projectOff = await loadProject(SAMPLE); // action
+  assert.equal(projectOff.project.gameType, 'action', 'sample/ must be an action project');
+  projectOff.rpg.miss = false;
+  await saveProject(dirOff, projectOff);
+  const builtOff = await buildProject({ dir: dirOff, project: projectOff, log: () => {} });
+  assert.equal(await readFlag(dirOff), 0, 'miss: false must generate MISS_ENABLED = 0');
+
+  const dirOn = await fs.mkdtemp(path.join(os.tmpdir(), 'forge-miss-action-on-'));
+  t.after(() => fs.rm(dirOn, { recursive: true, force: true }));
+  const projectOn = await loadProject(SAMPLE);
+  projectOn.rpg.miss = true; // hand-edited, never reachable through the UI on an action project
+  await saveProject(dirOn, projectOn);
+  const builtOn = await buildProject({ dir: dirOn, project: projectOn, log: () => {} });
+  assert.equal(
+    await readFlag(dirOn),
+    0,
+    'miss: true on an action project must STILL generate MISS_ENABLED = 0 -- projectUsesMiss must be gated on gameType === \'rpg\''
+  );
+
+  const romOff = await fs.readFile(builtOff.romPath);
+  const romOn = await fs.readFile(builtOn.romPath);
+  assert.deepEqual(
+    [...romOff],
+    [...romOn],
+    'an action project’s ROM must be byte-identical whether or not rpg.miss is stored true -- ' +
+      'nothing in the ROM or its artwork can justify a difference, since MISS_ENABLED reads 0 either way'
+  );
+
+  // Second case: the same action project, miss: true, with artwork painted
+  // at $FA in a tileset -- validateProject must raise no error, since
+  // spriteReservedRanges never reserves $FA on an action project regardless
+  // of the stored field.
+  const projectArt = structuredClone(projectOn);
+  projectArt.tilesets[0].sprites.tiles[0xfa] = '1'.repeat(64);
+  const problems = validateProject(projectArt);
+  const fa = problems.filter((p) => p.severity === 'error' && /\$FA/i.test(p.message));
+  assert.equal(fa.length, 0, 'ordinary artwork at $FA on an action project with miss:true must raise no error');
 });
 
 test('allBattleAnimationIds: collects only battleOnly locations, dedupes, and ignores null/undefined', () => {
@@ -10240,6 +10396,123 @@ test('validateProject: a project whose battle animation pushes the budget over t
   assert.equal(buildWarnings.length, 1, 'the combatant/cursor overflow warning must still fire alongside the new one');
   assert.equal(monsterForgeWarnings.length, 1, 'the second, animation-specific warning must fire');
   assert.ok(monsterForgeWarnings[0].message.includes('Overload'), 'it must name the offending animation');
+});
+
+// §14 round 2 (finding 2, P2), test row "MISS OAM overflow, corrected
+// boundary and oracle". Four combatant maxima -- 60, 61, 64, 65 -- each
+// built both with MISS off and MISS on, asserted through validateProject's
+// own warning array (used > limit), never describeBattleSpriteWarning
+// directly. Wrong implementation this catches: 64-without-MISS already
+// warning (it must not -- exactly at the limit, not over it); MISS_OAM_TILES
+// missing from the total so 61/64-with-MISS never warn when they must.
+test('battleSpriteBudget/validateProject: MISS OAM overflow boundary -- 60/61/64/65 combatants, MISS off and on', () => {
+  const buildWarningFires = (project) =>
+    validateProject(project).some((p) => p.where === 'Build' && /A battle could need/.test(p.message));
+
+  // (a) 60: MISS off or on, no warning (60, then 64, neither exceeds 64).
+  {
+    const { project } = projectWithHostileIcon(60);
+    assert.equal(battleSpriteBudget(project, resolveMapper(project.cartridge.mapper)).used, 60);
+    assert.equal(buildWarningFires(project), false, '60 combatants, MISS off, must not warn');
+    project.rpg.miss = true;
+    assert.equal(battleSpriteBudget(project, resolveMapper(project.cartridge.mapper)).used, 64);
+    assert.equal(buildWarningFires(project), false, '60 + MISS (4) = 64, exactly at the limit, must not warn');
+  }
+
+  // (b) 61: no warning MISS off, a NEW warning MISS on (65 > 64).
+  {
+    const { project } = projectWithHostileIcon(61);
+    assert.equal(buildWarningFires(project), false, '61 combatants alone must not warn');
+    project.rpg.miss = true;
+    assert.equal(battleSpriteBudget(project, resolveMapper(project.cartridge.mapper)).used, 65);
+    assert.equal(buildWarningFires(project), true, '61 + MISS (4) = 65 must warn -- the case MISS itself causes');
+  }
+
+  // (c) 64: no warning MISS off (exactly at the limit), a NEW warning MISS on (68 > 64).
+  {
+    const { project } = projectWithHostileIcon(64);
+    assert.equal(buildWarningFires(project), false, '64 combatants alone, exactly at the limit, must not warn');
+    project.rpg.miss = true;
+    assert.equal(battleSpriteBudget(project, resolveMapper(project.cartridge.mapper)).used, 68);
+    assert.equal(buildWarningFires(project), true, '64 + MISS (4) = 68 must warn');
+  }
+
+  // (d) 65: a warning already fires MISS off (genuine pre-existing overflow),
+  // and still fires MISS on, unchanged in cause.
+  {
+    const { project } = projectWithHostileIcon(65);
+    assert.equal(buildWarningFires(project), true, '65 combatants alone must already warn');
+    project.rpg.miss = true;
+    assert.equal(battleSpriteBudget(project, resolveMapper(project.cartridge.mapper)).used, 69);
+    assert.equal(buildWarningFires(project), true, '65 + MISS (4) = 69 must still warn');
+  }
+});
+
+// §14 round 3 (finding 2, corrected by finding 2 again), test row
+// "describeBattleAnimationOamWarning accounts for MISS". The reviewer's own
+// reproduction: 60 combatants, one referenced 1-tile playable animation,
+// MISS enabled -- total 60+1+4=65, over the limit -- the warning text must
+// name MISS's own 4 sprites, since 60+1=61 alone cannot explain an overflow
+// past 64. Off-path: (i) the helper called directly with MISS off is
+// byte-for-byte identical to the committed string; (ii) a layout that still
+// overflows with MISS off (65 alone) is unaffected by this change.
+test('describeBattleAnimationOamWarning: names MISS\'s own 4 sprites when MISS is what pushes the total over, and leaves the off-path text byte-for-byte unchanged', () => {
+  const { project, actorId } = projectWithHostileIcon(60);
+  const smallMetaId = project.sprites.metasprites.length;
+  project.sprites.metasprites.push({ id: smallMetaId, name: 'Jab', tiles: [{ tile: 90, x: 0, y: 0, palette: 0 }] });
+  const smallAnimId = project.sprites.animations.length;
+  project.sprites.animations.push({ id: smallAnimId, name: 'Jab', loop: false, frames: [{ metaspriteId: smallMetaId }] });
+  project.sprites.actors[actorId].battle.attackAnim = smallAnimId;
+  const mapper = resolveMapper(project.cartridge.mapper);
+
+  // (i) MISS off: byte-for-byte identical to the committed string (61 total,
+  // does not itself overflow, so this is the direct-call off-path check).
+  const offText = describeBattleAnimationOamWarning(project, mapper);
+  assert.equal(
+    offText,
+    '"Jab" (1 sprite tiles) plus this project\'s own worst-case combatants and cursor (60) would need more ' +
+      "than the NES's 64 sprites at once, so it will be skipped in-game whenever it does not fit — even in a " +
+      "battle with real room, since the check is a project-wide worst case, not this battle's own. Use a " +
+      'smaller animation, or reduce the party/formation/cursor cost elsewhere.',
+    'the MISS-disabled text must be byte-for-byte identical to the committed string'
+  );
+
+  // MISS on: 60 + 1 + 4 = 65, over the limit -- the text must name MISS's
+  // own 4 sprites, since 60 + 1 = 61 alone cannot explain the overflow.
+  project.rpg.miss = true;
+  assert.equal(battleSpriteBudget(project, mapper).used, 65, 'sanity: 60 + 1 + 4 = 65, over the limit');
+  const onText = describeBattleAnimationOamWarning(project, mapper);
+  assert.equal(
+    onText,
+    '"Jab" (1 sprite tiles) plus this project\'s own worst-case combatants and cursor (60) plus MISS\'s own 4 ' +
+      "sprites would need more than the NES's 64 sprites at once, so it will be skipped in-game whenever it " +
+      "does not fit — even in a battle with real room, since the check is a project-wide worst case, not this " +
+      "battle's own. Use a smaller animation, or reduce the party/formation/cursor cost elsewhere.",
+    'the MISS-enabled text must name MISS\'s own 4 sprites as part of the total'
+  );
+  // Every character outside the inserted clause must match the off-path text.
+  assert.equal(
+    onText.replace(" plus MISS's own 4 sprites", ''),
+    offText,
+    'every character outside the inserted missClause must match the MISS-disabled text exactly'
+  );
+
+  // (ii) a layout that still overflows with MISS off -- the real end-to-end
+  // off-path warning text through validateProject is unaffected.
+  const { project: overProject, actorId: overActorId } = projectWithHostileIcon(65);
+  overProject.sprites.metasprites.push({ id: smallMetaId, name: 'Jab', tiles: [{ tile: 90, x: 0, y: 0, palette: 0 }] });
+  overProject.sprites.animations.push({ id: smallAnimId, name: 'Jab', loop: false, frames: [{ metaspriteId: smallMetaId }] });
+  overProject.sprites.actors[overActorId].battle.attackAnim = smallAnimId;
+  const overMapper = resolveMapper(overProject.cartridge.mapper);
+  const overProblems = validateProject(overProject);
+  const overWarning = overProblems.find((p) => p.where === 'Monster Forge' && /Jab/.test(p.message));
+  assert.ok(overWarning, 'sanity: the 65-alone overflow must still surface the animation warning');
+  assert.ok(!overWarning.message.includes('MISS'), 'off-path (MISS disabled) text must not mention MISS');
+  assert.equal(
+    overWarning.message,
+    describeBattleAnimationOamWarning(overProject, overMapper),
+    'validateProject must call the same unconditional formatter, unaffected by this change'
+  );
 });
 
 test('validateProject: neither an unset battleTile nor an explicit 255 collides with the message font -- caught: skipping only null/undefined and letting an explicit 255 fall through into the last-tile-index math', () => {

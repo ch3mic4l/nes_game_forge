@@ -15,14 +15,14 @@ import NES from '../../renderer/emulator/core/nes.js';
 import { Emulator, BUTTON } from '../../renderer/emulator/runcontrol.js';
 import { loadProject, saveProject } from '../../main/project-io.js';
 import { buildProject } from '../../main/build/pipeline.js';
-import { createProject, NO_MEMBER, createSpell, battleCombatantOamMax, MAX_OAM_ENTRIES } from '../../shared/project.js';
+import { createProject, NO_MEMBER, createSpell, battleCombatantOamMax, MAX_OAM_ENTRIES, MISS_OAM_TILES } from '../../shared/project.js';
 import { resolveMapper } from '../../shared/cartridge.js';
 import { checkCapacity } from '../../main/build/generate.js';
 import { statAt, xpCurve, nameTiles, NAME_LIMIT, dropThreshold } from '../../main/build/battletables.js';
 import { parseSymbolFile } from '../../main/build/symbols.js';
 import { compileText, opIndex, EVT_PAGES_END } from '../../main/build/textcompile.js';
 import { decodeBody } from '../lib/eventdecoder.js';
-import { textToTiles } from '../../shared/font.js';
+import { textToTiles, MISS_TILE_M, MISS_TILE_M_ART, MISS_TILE_I_ART, MISS_TILE_S_ART } from '../../shared/font.js';
 import {
   BOX_ROW,
   NM_ROW,
@@ -5934,7 +5934,13 @@ test('none of battle_fx_arm_at/arm_attack/tick/draw touch bt_tmp, bt_tmp2, bt_di
 // the real, small touch-encounter fight (Slime alone) would ever need --
 // proving the room used is the project's own worst case, not a live count,
 // without this test ever needing to actually fight that inflated formation.
-async function buildFxFitFixture(t) {
+// `miss` (default false, preserving every existing caller's behavior exactly):
+// when true, the fixture also turns on rpg.miss and shrinks `room` by
+// MISS_OAM_TILES -- BATTLE_FX_OAM_ROOM's own generated formula
+// (main/build/generate.js) -- so the SAME exact-fit/one-over animations this
+// fixture already builds land on the MISS-aware boundary instead, with no
+// duplicated fixture.
+async function buildFxFitFixture(t, { miss = false } = {}) {
   let room;
   let oversizedAnimId;
   let mixedAnimId;
@@ -5943,6 +5949,7 @@ async function buildFxFitFixture(t) {
   let fillerIds;
   const built = await buildVariantFull(t, 'fx-conservative-fit', (project) => {
     project.maps[0].encounters = { rate: 0, actorIds: [] };
+    if (miss) project.rpg.miss = true;
     // Every id below is read back from the array's own length at the moment
     // of each push, never hardcoded -- a hardcoded id here would silently
     // collide with (or leave a gap against) whatever sample-rpg's own
@@ -5973,7 +5980,7 @@ async function buildFxFitFixture(t) {
       actorId: 0, x: 240, y: 224, props: { event: { pages: [{ commands: [{ op: 'battle', monsters: fillerIds }] }] } }
     });
 
-    room = MAX_OAM_ENTRIES - battleCombatantOamMax(project, resolveMapper(project.cartridge.mapper));
+    room = MAX_OAM_ENTRIES - battleCombatantOamMax(project, resolveMapper(project.cartridge.mapper)) - (miss ? MISS_OAM_TILES : 0);
     assert.ok(room >= 3 && room < 40, `sanity: expected a small but real room, got ${room}`);
 
     const oversized = room + 10;
@@ -6253,6 +6260,87 @@ test('conservative fit: the OAM admission boundary is exact -- room tiles admits
   }
 });
 
+// §14 round 2, test row "MISS OAM overflow, exact-fit boundary restored"
+// (finding 5, P2) -- the runtime half the phase-2b report scaled down to a
+// compiled-constant-only check. The identical admission-boundary shape as
+// the test just above, but with rpg.miss ALSO on: buildFxFitFixture's own
+// MISS-aware room (`MAX_OAM_ENTRIES - battleCombatantOamMax - MISS_OAM_TILES`)
+// means `room` here is 4 tiles smaller than the plain-fit fixture's own --
+// by construction, room + battleCombatantOamMax + MISS_OAM_TILES sums to
+// exactly MAX_OAM_ENTRIES (64), which is what the design's own row 5 asks
+// for. Exercises battle_fx_draw's own real compiled `cmp #BATTLE_FX_OAM_ROOM+1`
+// (engine/battleui.asm) -- not a re-read of the JS-side formula -- so a
+// generator that forgets the `- MISS_OAM_TILES` term produces a REAL,
+// wider compiled room that admits the room+1 frame this test expects
+// rejected.
+//
+// Wrong implementation this catches: `battleFxOamRoom` (main/build/
+// generate.js) computed without its own `- MISS_OAM_TILES` term -- with
+// MISS on, the room+1 ("one tile larger than the MISS-aware room") frame
+// would then be admitted instead of rejected, since the real compiled room
+// would still be 4 tiles too generous.
+test('conservative fit, MISS-aware: with rpg.miss on, room shrinks by MISS_OAM_TILES and the same admission boundary holds exactly -- room admits and draws every tile, room+1 rejects the whole frame', {
+  skip: needsSample
+}, async (t) => {
+  const {
+    built,
+    room: roomFn,
+    exactAnimId: exactAnimIdFn,
+    oneOverAnimId: oneOverAnimIdFn
+  } = await buildFxFitFixture(t, { miss: true });
+  const room = roomFn();
+  const exactAnimId = exactAnimIdFn();
+  const oneOverAnimId = oneOverAnimIdFn();
+  const dir = path.dirname(path.dirname(built.romPath));
+  const constantsText = fs.readFileSync(path.join(dir, 'build', 'constants.asm'), 'utf8');
+  const OAM_IDX = resolveEngineAddress(constantsText, 'oam_idx');
+  const { BT_FX_ANIM } = resolveFxAddrs(built);
+
+  const nes = bootPastNaming(built.romPath);
+  const addrOf = selectBattleBank(nes, built);
+  const armAt = addrOf('battle_fx_arm_at');
+  const draw = addrOf('battle_fx_draw');
+  nes.cpu.mem[BT_PHASE] = BP_MENU;
+
+  // Exactly `room` (already 4 smaller than the plain-fit fixture's own,
+  // since this build turned rpg.miss on): admitted, every entry actually
+  // written, checked across three ticks.
+  nes.cpu.REG_ACC = exactAnimId;
+  nes.cpu.REG_Y = MAX_PARTY;
+  callRoutine(nes, armAt);
+  assert.equal(nes.cpu.mem[BT_FX_ANIM], exactAnimId, 'sanity: the exact-fit (MISS-aware) animation should have armed');
+  for (let tick = 0; tick < 3; tick++) {
+    nes.cpu.mem.fill(0xff, 0x200, 0x300);
+    nes.cpu.mem[OAM_IDX] = 0;
+    callRoutine(nes, draw);
+    assert.equal(nes.cpu.mem[OAM_IDX], room * 4, `tick ${tick}: exactly room (${room}, MISS-aware) entries must be written, oam_idx should read ${room * 4}`);
+    for (let i = 0; i < room; i++) {
+      assert.notEqual(nes.cpu.mem[0x200 + i * 4], 0xff, `tick ${tick}: OAM entry ${i} of ${room} must be a real, written sprite, not the park byte`);
+    }
+    assert.equal(nes.cpu.mem[0x200 + room * 4], 0xff, `tick ${tick}: the entry immediately after the admitted room must stay parked`);
+  }
+
+  // Exactly room + 1: rejected outright -- the WHOLE OAM shadow and oam_idx
+  // left exactly as battle_sprite_clear's own park step leaves them. This is
+  // the assertion a missing `- MISS_OAM_TILES` term breaks: with the term
+  // missing, the real compiled BATTLE_FX_OAM_ROOM is 4 tiles wider than
+  // `room` here, so a room+1-tile frame would still fit under the
+  // (wrongly generous) real room and would be admitted instead of rejected.
+  nes.cpu.REG_ACC = oneOverAnimId;
+  nes.cpu.REG_Y = MAX_PARTY;
+  callRoutine(nes, armAt);
+  assert.equal(nes.cpu.mem[BT_FX_ANIM], oneOverAnimId, 'sanity: the one-over (MISS-aware) animation should have armed');
+  for (let tick = 0; tick < 3; tick++) {
+    nes.cpu.mem.fill(0xff, 0x200, 0x300);
+    nes.cpu.mem[OAM_IDX] = 0;
+    callRoutine(nes, draw);
+    assert.equal(nes.cpu.mem[OAM_IDX], 0, `tick ${tick}: room+1 (MISS-aware) must be rejected outright -- oam_idx must stay 0`);
+    for (let i = 0x200; i < 0x300; i++) {
+      assert.equal(nes.cpu.mem[i], 0xff, `tick ${tick}: the WHOLE OAM shadow must stay parked at $FF when room+1 (MISS-aware) is rejected, byte ${i - 0x200} did not`);
+    }
+  }
+});
+
 // Rendered-pixel overlap (docs/design-battle-animation.md §3.3): a real
 // battle, a real combatant icon, a real armed effect over the same slot,
 // and the actual jsnes PPU frame buffer read back -- not OAM order, not
@@ -6367,8 +6455,11 @@ const BT_CMD = 0x6c; // engine/constants.asm -- the command chosen this turn
 /**
  * Decode vram_buf's own packets -- [addr_hi, addr_lo, count, bytes...]
  * repeated up to `len`, a $00 high byte terminating early -- into a list of
- * {addr, bytes} (bytes including the 3-byte header), for tests that need to
- * see the real packet composition, not just the total queued length.
+ * {addr, bytes, data} (bytes including the 3-byte header, data the raw
+ * payload bytes alone), for tests that need to see the real packet
+ * composition, not just the total queued length. `data` is fix2's own
+ * addition (item 1): existing callers only ever read `.addr`/`.bytes`, so
+ * this is additive, not a behavior change for them.
  */
 function decodeVramBuf(nes, len) {
   const out = [];
@@ -6377,7 +6468,9 @@ function decodeVramBuf(nes, len) {
     const hi = nes.cpu.mem[VRAM_BUF + i];
     if (hi === 0) break;
     const count = nes.cpu.mem[VRAM_BUF + i + 2];
-    out.push({ addr: (hi << 8) | nes.cpu.mem[VRAM_BUF + i + 1], bytes: count + 3 });
+    const data = [];
+    for (let j = 0; j < count; j++) data.push(nes.cpu.mem[VRAM_BUF + i + 3 + j]);
+    out.push({ addr: (hi << 8) | nes.cpu.mem[VRAM_BUF + i + 1], bytes: count + 3, data });
     i += 3 + count;
   }
   return out;
@@ -7229,8 +7322,22 @@ test('party-member blink: the named party member’s icon is absent from OAM exa
 // cast); then a real battle_begin (also kernel-resident) enters the next
 // battle for real. Only once both real transitions have run does this
 // switch in the battle bank, for the caller's own first real battle_tick.
-async function enterBattleForRealAfterEnding(t, name, hurtLeftBeforeEnd) {
-  const built = await buildHitFeedback(t, name);
+// `missLeftBeforeEnd` (fix1, brief item 3): the stale MISS value alongside
+// `hurtLeftBeforeEnd`, rather than a duplicated MISS-only helper. `null`
+// (the default, every pre-fix1 call site's own behavior, unchanged) means
+// "this timer is not part of this scenario": hurtLeftBeforeEnd === null
+// turns rpg.hitFeedback OFF for the build (a real MISS-alone lifecycle),
+// missLeftBeforeEnd === null leaves rpg.miss at its own default (false,
+// since buildHitFeedback never sets it) -- both non-null builds a real
+// both-toggles-live lifecycle. buildHitFeedback's own mutate callback runs
+// AFTER its unconditional `project.rpg.hitFeedback = true`, so this can
+// still override it back to false for the MISS-alone case with no change
+// to buildHitFeedback itself.
+async function enterBattleForRealAfterEnding(t, name, hurtLeftBeforeEnd, missLeftBeforeEnd = null) {
+  const built = await buildHitFeedback(t, name, (project) => {
+    if (hurtLeftBeforeEnd === null) project.rpg.hitFeedback = false;
+    if (missLeftBeforeEnd !== null) project.rpg.miss = true;
+  });
   const nes = bootPastNaming(built.romPath);
   const dir = path.dirname(path.dirname(built.romPath));
   const constantsText = fs.readFileSync(path.join(dir, 'build', 'constants.asm'), 'utf8');
@@ -7242,13 +7349,15 @@ async function enterBattleForRealAfterEnding(t, name, hurtLeftBeforeEnd) {
     return parseInt(m[1], 16);
   };
   const { BT_HURT_SLOT, BT_HURT_LEFT } = resolveHurtAddrs(built);
+  const { BT_MISS_SLOT, BT_MISS_LEFT } = resolveMissAddrs(built); // unconditional equates -- always resolvable, gated or not
   const BT_FROM_ENT = ram('bt_from_ent');
   const BT_FLEE = ram('bt_flee');
   const TALK_ENT = ram('talk_ent');
   const BT_OWNER_ENT = ram('bt_owner_ent');
   const SCRIPT_ACTIVE = ram('script_active');
 
-  // A coherent battle about to end, with a hit still counting down.
+  // A coherent battle about to end, with a hit and/or a miss still counting
+  // down (whichever this scenario asked for -- see the header comment).
   // Round 3 review finding 3 (P3): battle_end's own event-owner restore
   // (engine/rpg.asm) keys off bt_owner_ent -- left at whatever boot
   // happened to leave it (a real, in-range entity slot, 0), it walked
@@ -7262,8 +7371,14 @@ async function enterBattleForRealAfterEnding(t, name, hurtLeftBeforeEnd) {
   // non-scripted scenario (a random or contact-damage fight, never one
   // reached mid-script), and battle_end's own post-restore branch
   // (gameplay vs. frozen dialog) reads it to decide which.
-  nes.cpu.mem[BT_HURT_SLOT] = MAX_PARTY;
-  nes.cpu.mem[BT_HURT_LEFT] = hurtLeftBeforeEnd;
+  if (hurtLeftBeforeEnd !== null) {
+    nes.cpu.mem[BT_HURT_SLOT] = MAX_PARTY;
+    nes.cpu.mem[BT_HURT_LEFT] = hurtLeftBeforeEnd;
+  }
+  if (missLeftBeforeEnd !== null) {
+    nes.cpu.mem[BT_MISS_SLOT] = MAX_PARTY;
+    nes.cpu.mem[BT_MISS_LEFT] = missLeftBeforeEnd;
+  }
   nes.cpu.mem[BT_FROM_ENT] = 0xff; // NO_ENTITY -- no touch-encounter actor to restore
   nes.cpu.mem[BT_FLEE] = 0; // not fleeing -- battle_end's own entity-touch branch runs
   nes.cpu.mem[TALK_ENT] = 0xff; // NO_ENTITY -- nobody being spoken to
@@ -7293,10 +7408,22 @@ async function enterBattleForRealAfterEnding(t, name, hurtLeftBeforeEnd) {
   callRoutine(nes, kernelAddrOf('battle_begin'));
   assert.equal(nes.cpu.mem[GAME_STATE], ST_BATTLE, 'battle_begin must have entered a real battle for real');
   assert.equal(nes.cpu.mem[BT_PHASE], BP_INTRO, 'battle_begin must have set bt_phase to BP_INTRO for real');
-  assert.equal(nes.cpu.mem[BT_HURT_LEFT], hurtLeftBeforeEnd, 'battle_begin itself must not touch bt_hurt_left -- only setup_monsters, reached later through a real battle_tick, does');
+  if (hurtLeftBeforeEnd !== null) {
+    assert.equal(nes.cpu.mem[BT_HURT_LEFT], hurtLeftBeforeEnd, 'battle_begin itself must not touch bt_hurt_left -- only setup_monsters, reached later through a real battle_tick, does');
+  }
+  if (missLeftBeforeEnd !== null) {
+    assert.equal(nes.cpu.mem[BT_MISS_LEFT], missLeftBeforeEnd, 'battle_begin itself must not touch bt_miss_left -- only setup_monsters, reached later through a real battle_tick, does');
+  }
 
   const addrOf = selectBattleBank(nes, built);
-  return { nes, addrOf, BT_HURT_LEFT, battleTickAddr: addrOf('battle_tick'), battleDispatchAddr: addrOf('battle_dispatch') };
+  return {
+    nes,
+    addrOf,
+    BT_HURT_LEFT,
+    BT_MISS_LEFT,
+    battleTickAddr: addrOf('battle_tick'),
+    battleDispatchAddr: addrOf('battle_dispatch')
+  };
 }
 
 // §14 round 5 -- BP_INTRO guard, hurt timer: round 1 review finding 1's own
@@ -7362,6 +7489,107 @@ test('battle-entry reset, real lifecycle: a hurt timer still counting down reads
   callRoutine(nes, battleTickAddr);
 
   assert.equal(nes.cpu.mem[BT_HURT_LEFT], 0, 'a real battle_tick reaching setup_monsters through battle_intro must clear bt_hurt_left for the next battle');
+});
+
+// fix1 item 3 -- the MISS-side real-lifecycle twins §14 rows 3032/3035 (MISS
+// alone) and 3033/3036 (both live) ask for, the same shape as the hit-side
+// pair just above (2a's own :7401/:7476), through the identical extended
+// enterBattleForRealAfterEnding. Sabotage sites 1 and 6 from the phase-2b
+// report's own disconnected-call-site table were re-run against these
+// twins (see the report for this round); both now fail here too, not only
+// against the isolated callRoutine tests.
+//
+// Wrong implementation this catches: the guard's own absence on the MISS
+// side -- integration through the real end/entry lifecycle is what this
+// version adds; the isolated test elsewhere in this file already catches
+// the guard's removal in isolation, so this one is not needed to detect
+// that mutation alone, only to prove the guard still holds once a real
+// end/entry is what produced the tick under test.
+test('BP_INTRO guard, real lifecycle: a stale bt_miss_left does not decrement on battle_tick’s own first, still-BP_INTRO tick, after a real battle_end and a real battle_begin', {
+  skip: needsSample
+}, async (t) => {
+  const { nes, BT_MISS_LEFT, battleTickAddr, battleDispatchAddr } = await enterBattleForRealAfterEnding(t, 'miss-bpintro-guard-real', null, 30);
+  nes.cpu.mem[PAD_NEW] = 0;
+
+  // Sample right after battle_miss_tick returns -- battle_dispatch's own
+  // entry, the very next thing battle_tick does -- before battle_dispatch's
+  // own BP_INTRO branch can reach battle_intro -> setup_monsters, which
+  // ALSO clears bt_miss_left unconditionally: checking only once the whole
+  // tick has finished could not tell "the guard worked" apart from
+  // "setup_monsters reset it anyway, a tick late."
+  let sampledLeft = null;
+  const originalEmulate = nes.cpu.emulate.bind(nes.cpu);
+  nes.cpu.emulate = () => {
+    if (sampledLeft === null && (nes.cpu.REG_PC + 1) === battleDispatchAddr) {
+      sampledLeft = nes.cpu.mem[BT_MISS_LEFT];
+    }
+    return originalEmulate();
+  };
+  callRoutine(nes, battleTickAddr);
+  nes.cpu.emulate = originalEmulate;
+
+  assert.equal(sampledLeft, 30, 'battle_miss_tick must not decrement the stale timer on the real first tick, while bt_phase still reads BP_INTRO');
+});
+
+// Wrong implementation this catches: either guard implemented so it depends
+// on the other flag also being on, or a shared scratch byte between the two
+// tick routines that only misbehaves when both run in the same frame.
+test('BP_INTRO guard, real lifecycle, both live: neither bt_hurt_left nor bt_miss_left decrements on battle_tick’s own first, still-BP_INTRO tick, after a real battle_end and a real battle_begin', {
+  skip: needsSample
+}, async (t) => {
+  const { nes, BT_HURT_LEFT, BT_MISS_LEFT, battleTickAddr, battleDispatchAddr } = await enterBattleForRealAfterEnding(t, 'both-bpintro-guard-real', 20, 30);
+  nes.cpu.mem[PAD_NEW] = 0;
+  nes.cpu.mem[VRAM_LEN] = 0;
+
+  let sampledHurt = null;
+  let sampledMiss = null;
+  let sampledVram = null;
+  const originalEmulate = nes.cpu.emulate.bind(nes.cpu);
+  nes.cpu.emulate = () => {
+    if (sampledHurt === null && (nes.cpu.REG_PC + 1) === battleDispatchAddr) {
+      sampledHurt = nes.cpu.mem[BT_HURT_LEFT];
+      sampledMiss = nes.cpu.mem[BT_MISS_LEFT];
+      sampledVram = nes.cpu.mem[VRAM_LEN];
+    }
+    return originalEmulate();
+  };
+  callRoutine(nes, battleTickAddr);
+  nes.cpu.emulate = originalEmulate;
+
+  assert.equal(sampledHurt, 20, 'battle_hurt_tick must not decrement the stale timer on the real first tick, with MISS also live');
+  assert.equal(sampledMiss, 30, 'battle_miss_tick must not decrement the stale timer on the real first tick, with hit feedback also live');
+  assert.equal(sampledVram, 0, 'neither guard may queue anything on the real first tick');
+});
+
+// Wrong implementation this catches: an `.if`-separated reset whose MISS
+// half never runs when hit feedback is not also live in the same build --
+// integration through the real end/entry lifecycle is what this version
+// adds beyond the isolated setup_monsters unit test elsewhere in this file.
+test('battle-entry reset, real lifecycle: a MISS timer still counting down reads 0 once a real battle_tick has run the next battle’s own setup_monsters, after a real battle_end and a real battle_begin', {
+  skip: needsSample
+}, async (t) => {
+  const { nes, BT_MISS_LEFT, battleTickAddr } = await enterBattleForRealAfterEnding(t, 'miss-entry-reset-real', null, 17);
+  nes.cpu.mem[PAD_NEW] = 0;
+
+  callRoutine(nes, battleTickAddr);
+
+  assert.equal(nes.cpu.mem[BT_MISS_LEFT], 0, 'a real battle_tick reaching setup_monsters through battle_intro must clear bt_miss_left for the next battle');
+});
+
+// Wrong implementation this catches: a reset that drops one half
+// specifically when both flags coexist -- a failure mode the two
+// single-flag real-lifecycle tests above cannot see, since each only ever
+// assembles its own half.
+test('battle-entry reset, real lifecycle, both live: both bt_hurt_left and bt_miss_left read 0 once a real battle_tick has run the next battle’s own setup_monsters, after a real battle_end and a real battle_begin', {
+  skip: needsSample
+}, async (t) => {
+  const { nes, BT_HURT_LEFT, BT_MISS_LEFT, battleTickAddr } = await enterBattleForRealAfterEnding(t, 'both-entry-reset-real', 11, 17);
+  nes.cpu.mem[PAD_NEW] = 0;
+
+  callRoutine(nes, battleTickAddr);
+
+  assert.equal(nes.cpu.mem[BT_HURT_LEFT], 0, 'a real battle_tick must still clear bt_hurt_left with MISS also live');
+  assert.equal(nes.cpu.mem[BT_MISS_LEFT], 0, 'a real battle_tick must still clear bt_miss_left with hit feedback also live');
 });
 
 // Orchestrator addition (not a §14 row), round 1 review finding 1's own
@@ -7511,5 +7739,949 @@ test('party-member blink, real lifecycle: a monster’s real landed attack arms 
     // EVERY tick, skip-band or not -- bt_hurt_slot never names it, so
     // battle_sprite_pc's own skip check can never apply to it.
     assert.ok(oamEntriesInSlotBand(otherSlot) > 0, `tick ${tick}: the other present member (slot ${otherSlot}) must still draw at least one OAM entry, regardless of the victim's own skip/draw state`);
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Battle-side animation, phase 2b -- the MISS overlay (docs/design-battle-
+// animation.md §13). Independent of phase 2a's bt_hurt_slot/bt_hurt_left
+// pair: its own bt_miss_slot/bt_miss_left, its own arm/tick/draw routines,
+// gated on MISS_ENABLED alone. Driven through isolated callRoutine calls,
+// the identical discipline the phase 2a section above uses.
+// ---------------------------------------------------------------------------
+
+/** A MISS-only build: no wandering encounters, rpg.miss on, hitFeedback left off. */
+async function buildMissFixture(t, name, mutate = () => {}) {
+  return buildVariantFull(t, name, (project) => {
+    project.maps[0].encounters = { rate: 0, actorIds: [] };
+    project.rpg.miss = true;
+    mutate(project);
+  });
+}
+
+/** Resolve the two bt_miss_* zero-page bytes out of a build's own constants.asm. */
+function resolveMissAddrs(built) {
+  const dir = path.dirname(path.dirname(built.romPath));
+  const constantsText = fs.readFileSync(path.join(dir, 'build', 'constants.asm'), 'utf8');
+  return {
+    BT_MISS_SLOT: resolveEngineAddress(constantsText, 'bt_miss_slot'),
+    BT_MISS_LEFT: resolveEngineAddress(constantsText, 'bt_miss_left')
+  };
+}
+
+// §14 round 5 -- BP_INTRO guard, MISS timer (split from the old combined
+// row, MISS's own side). A stale timer from a previous battle must not
+// tick anything while bt_phase still reads BP_INTRO.
+// Wrong implementation this catches: battle_miss_tick missing its own
+// BP_INTRO guard.
+test('BP_INTRO guard: a stale bt_miss_left does not decrement on the first, still-BP_INTRO tick', {
+  skip: needsSample
+}, async (t) => {
+  const built = await buildMissFixture(t, 'miss-bpintro-guard');
+  const nes = bootPastNaming(built.romPath);
+  const addrOf = selectBattleBank(nes, built);
+  const { BT_MISS_SLOT, BT_MISS_LEFT } = resolveMissAddrs(built);
+
+  nes.cpu.mem[BT_PHASE] = BP_INTRO;
+  nes.cpu.mem[BT_MISS_SLOT] = MAX_PARTY; // stale from a previous battle
+  nes.cpu.mem[BT_MISS_LEFT] = 30;
+
+  callRoutine(nes, addrOf('battle_miss_tick'));
+
+  assert.equal(nes.cpu.mem[BT_MISS_LEFT], 30, 'battle_miss_tick must not decrement the stale timer while bt_phase still reads BP_INTRO');
+});
+
+// §14 round 5 -- BP_INTRO guard, both live (integration). Neither guard may
+// depend on the other flag also being on, and running both in the same
+// frame must surface no interaction the two isolated checks above cannot
+// see.
+test('BP_INTRO guard: both bt_hurt_left and bt_miss_left stay untouched on the same still-BP_INTRO tick, with both toggles live', {
+  skip: needsSample
+}, async (t) => {
+  const built = await buildHitFeedback(t, 'both-bpintro-guard', (project) => {
+    project.rpg.miss = true;
+  });
+  const nes = bootPastNaming(built.romPath);
+  const addrOf = selectBattleBank(nes, built);
+  const { BT_HURT_SLOT, BT_HURT_LEFT } = resolveHurtAddrs(built);
+  const { BT_MISS_SLOT, BT_MISS_LEFT } = resolveMissAddrs(built);
+
+  nes.cpu.mem[BT_PHASE] = BP_INTRO;
+  nes.cpu.mem[MON_SLOT_ACTOR] = 0;
+  nes.cpu.mem[MON_ALIVE] = 1;
+  nes.cpu.mem[BT_HURT_SLOT] = MAX_PARTY;
+  nes.cpu.mem[BT_HURT_LEFT] = 20;
+  nes.cpu.mem[BT_MISS_SLOT] = MAX_PARTY;
+  nes.cpu.mem[BT_MISS_LEFT] = 30;
+  nes.cpu.mem[VRAM_LEN] = 0;
+
+  callRoutine(nes, addrOf('battle_hurt_tick'));
+  callRoutine(nes, addrOf('battle_miss_tick'));
+
+  assert.equal(nes.cpu.mem[BT_HURT_LEFT], 20, 'the hurt timer must not decrement while bt_phase still reads BP_INTRO, with MISS also live');
+  assert.equal(nes.cpu.mem[BT_MISS_LEFT], 30, 'the MISS timer must not decrement while bt_phase still reads BP_INTRO, with hit feedback also live');
+  assert.equal(nes.cpu.mem[VRAM_LEN], 0, 'neither guard may queue anything while bt_phase still reads BP_INTRO');
+});
+
+// §14 round 5 -- battle-entry reset, MISS timer (split from the old
+// combined row, MISS's own side). A timer left counting down at the end of
+// one battle (neither battle_end nor player_died clears it, §13.4) must
+// read 0 once the next battle's own setup_monsters has run.
+test('battle-entry reset: a MISS timer still counting down at the end of one battle reads 0 once the next battle’s setup_monsters has run', {
+  skip: needsSample
+}, async (t) => {
+  const built = await buildMissFixture(t, 'miss-entry-reset');
+  const nes = bootPastNaming(built.romPath);
+  const addrOf = selectBattleBank(nes, built);
+  const { BT_MISS_SLOT, BT_MISS_LEFT } = resolveMissAddrs(built);
+
+  nes.cpu.mem[BT_MISS_SLOT] = MAX_PARTY;
+  nes.cpu.mem[BT_MISS_LEFT] = 17; // still counting down, as if the battle just ended mid-overlay
+
+  callRoutine(nes, addrOf('setup_monsters'));
+
+  assert.equal(nes.cpu.mem[BT_MISS_LEFT], 0, 'setup_monsters must clear bt_miss_left for the next battle');
+});
+
+// §14 round 5 -- battle-entry reset, both live (integration). Confirms the
+// split under the v5.1 ledger decision kept BOTH .if blocks rather than one
+// silently replacing the other when both are compiled into the same build.
+test('battle-entry reset: both bt_hurt_left and bt_miss_left read 0 after one setup_monsters, with both toggles live', {
+  skip: needsSample
+}, async (t) => {
+  const built = await buildHitFeedback(t, 'both-entry-reset', (project) => {
+    project.rpg.miss = true;
+  });
+  const nes = bootPastNaming(built.romPath);
+  const addrOf = selectBattleBank(nes, built);
+  const { BT_HURT_SLOT, BT_HURT_LEFT } = resolveHurtAddrs(built);
+  const { BT_MISS_SLOT, BT_MISS_LEFT } = resolveMissAddrs(built);
+
+  nes.cpu.mem[BT_HURT_SLOT] = MAX_PARTY;
+  nes.cpu.mem[BT_HURT_LEFT] = 11;
+  nes.cpu.mem[BT_MISS_SLOT] = MAX_PARTY;
+  nes.cpu.mem[BT_MISS_LEFT] = 17;
+
+  callRoutine(nes, addrOf('setup_monsters'));
+
+  assert.equal(nes.cpu.mem[BT_HURT_LEFT], 0, 'setup_monsters must still clear bt_hurt_left with MISS also live');
+  assert.equal(nes.cpu.mem[BT_MISS_LEFT], 0, 'setup_monsters must still clear bt_miss_left with hit feedback also live');
+});
+
+// §14 round 1 -- Real attack-path miss coverage (finding 6, P2). Both real
+// call sites -- attack_target (party) and monster_turn_attack (monster) --
+// through a real roll_hit, forced to miss deterministically on BOTH of its
+// two exits: the underflow branch (party attacker, evasion above accuracy)
+// and the RNG branch (monster attacker, seed chosen so rng_next returns AT
+// the margin -- predicted with referenceRngNext, never searched for at test
+// time: referenceRngNext(100) === 200, and the monster's own acc/eva are set
+// so the margin is exactly 200, so the roll ties the margin -- roll_hit's
+// own `bcs roll_hit_miss` takes a tie as a miss).
+//
+// fix2 P2 (review 1): the previous version of this fixture ALSO set Slime's
+// own eva to 0, which made Rian's own acc:0 attack compute 0-0 -- carry SET
+// (no borrow), so `bcc roll_hit_miss` was never taken at all; the "underflow"
+// case actually fell through to the identical RNG-tie exit case 2 already
+// covers, through a margin of 0 (any rng_next() >= 0 is a miss, unconditionally,
+// on every byte). Fixed by leaving Slime's own eva at sample-rpg's own
+// default (4, confirmed by the precondition assertion below) -- strictly
+// above Rian's forced acc:0, so 0-4 genuinely underflows regardless of RNG.
+// Distinguished from the RNG exit independently of the outcome by the RNG
+// byte itself ($62, rpg.test.js's own RNG constant): the underflow branch's
+// own `bcc roll_hit_miss` returns before ever reaching `jsr rng_next`, so the
+// byte must read back UNCHANGED across the party's own attack, and CHANGED
+// (to referenceRngNext's own predicted value) across the monster's.
+test('real attack-path miss coverage: attack_target (underflow) and monster_turn_attack (RNG) both arm the MISS overlay on the real dodging target', {
+  skip: needsSample
+}, async (t) => {
+  const built = await buildMissFixture(t, 'miss-real-attack-path', (project) => {
+    // Party member 0 (Rian) attacking: acc forced to 0 so it underflows
+    // against Slime's own eva (left at its default, 4) regardless of the
+    // RNG state at all -- Slime's own eva is NEVER overridden here.
+    project.party[0].acc = 0;
+    // Slime (actor 0) attacking: acc set so the margin is exactly 200 --
+    // referenceRngNext(100) === 200 (predicted below, not searched for).
+    // This does not touch Slime's own eva at all -- the party's own attack
+    // above needs it left at its default.
+    project.sprites.actors[0].battle = { ...project.sprites.actors[0].battle, acc: 200 };
+    project.party[0].eva = 0;
+    assert.equal(project.sprites.actors[0].battle.eva, 4, 'sanity: Slime must ship eva 4 by default -- this fixture never overrides it');
+    assert.ok(project.party[0].acc < project.sprites.actors[0].battle.eva, `precondition: Rian's own acc (${project.party[0].acc}) must be strictly below Slime's own eva (${project.sprites.actors[0].battle.eva}) for the party's own attack to genuinely underflow`);
+  });
+  const { BT_MISS_SLOT, BT_MISS_LEFT } = resolveMissAddrs(built);
+  const BT_PARTY_X = 200, BT_PARTY_Y = 32, BT_PARTY_STEP = 32; // engine/constants.asm
+  const OAM_IDX = resolveOamIdx(built);
+
+  // --- Case 1: attack_target, underflow branch --------------------------
+  {
+    const nes = bootPastNaming(built.romPath);
+    const addrOf = selectBattleBank(nes, built);
+    nes.cpu.mem[BT_PHASE] = BP_MENU;
+    nes.cpu.mem[MON_SLOT_ACTOR + 0] = 0; // Slime
+    nes.cpu.mem[MON_ALIVE + 0] = 1;
+    nes.cpu.mem[BT_ACTOR] = 0; // Rian
+    nes.cpu.mem[BT_TARGET] = MAX_PARTY + 0; // the monster in slot 0 -- who dodges
+    nes.cpu.mem[BT_MISS_LEFT] = 0;
+    nes.cpu.mem[VRAM_LEN] = 0;
+    const vramLenBefore = nes.cpu.mem[VRAM_LEN];
+    nes.cpu.mem[RNG] = 77; // an arbitrary, real value the underflow exit must never touch
+    const rngBefore = nes.cpu.mem[RNG];
+
+    callRoutine(nes, addrOf('attack_target'));
+
+    assert.equal(nes.cpu.mem[RNG], rngBefore, 'the underflow exit must never call rng_next -- the RNG byte must read back exactly as seeded');
+
+    assert.equal(nes.cpu.mem[BT_DMG_HI], 0xff, 'sanity: this roll must actually have missed (underflow)');
+    assert.equal(nes.cpu.mem[BT_MISS_SLOT], MAX_PARTY + 0, 'bt_miss_slot must name the real dodging target -- the monster bt_target named, not the attacker');
+    assert.equal(nes.cpu.mem[BT_MISS_LEFT], 30, 'bt_miss_left must be freshly armed to BT_MISS_FRAMES (30)');
+    assert.ok(nes.cpu.mem[VRAM_LEN] > vramLenBefore, 'the "misses" message must have been queued into vram_buf');
+
+    // OAM: the four MISS tiles at the monster's own anchor, one row (8px)
+    // above BT_MON_ROW*8, computed independently of bt_miss_slot itself.
+    nes.cpu.mem.fill(0xff, 0x200, 0x300);
+    nes.cpu.mem[OAM_IDX] = 0;
+    callRoutine(nes, addrOf('battle_miss_draw'));
+    const expectedY = BT_MON_ROW * 8 - 8; // slot 0 -- no +32*slot offset
+    const expectedX = BT_MON_COL * 8;
+    for (let i = 0; i < 4; i++) {
+      assert.equal(nes.cpu.mem[0x200 + i * 4 + 0], expectedY, `MISS tile ${i}: Y must be the monster's own anchor row minus 8`);
+      assert.equal(nes.cpu.mem[0x200 + i * 4 + 3], expectedX + i * 8, `MISS tile ${i}: X must step 8px per glyph from the monster's own anchor column`);
+    }
+    assert.equal(nes.cpu.mem[OAM_IDX], 16, 'battle_miss_draw must have written exactly 4 OAM entries (16 bytes)');
+
+    // Lifecycle: 30 real battle_miss_tick calls exhaust the countdown to
+    // exactly 0, and a 31st call queues nothing further (already 0).
+    for (let tick = 1; tick <= 30; tick++) {
+      callRoutine(nes, addrOf('battle_miss_tick'));
+      assert.equal(nes.cpu.mem[BT_MISS_LEFT], Math.max(0, 30 - tick), `tick ${tick}: bt_miss_left must count down for real`);
+    }
+    assert.equal(nes.cpu.mem[BT_MISS_LEFT], 0, 'the countdown must reach exactly 0 at BT_MISS_FRAMES (30) ticks');
+    nes.cpu.mem.fill(0xff, 0x200, 0x300);
+    nes.cpu.mem[OAM_IDX] = 0;
+    callRoutine(nes, addrOf('battle_miss_draw'));
+    assert.equal(nes.cpu.mem[OAM_IDX], 0, 'once bt_miss_left is 0, battle_miss_draw must draw nothing');
+  }
+
+  // --- Case 2: monster_turn_attack, RNG branch, plus early dismissal ------
+  {
+    const nes = bootPastNaming(built.romPath);
+    const addrOf = selectBattleBank(nes, built);
+    nes.cpu.mem[BT_PHASE] = BP_MENU;
+    nes.cpu.mem[BT_ACTOR] = MAX_PARTY + 0; // Slime attacking
+    nes.cpu.mem[MON_SLOT_ACTOR + 0] = 0;
+    nes.cpu.mem[MON_ALIVE + 0] = 1;
+    nes.cpu.mem[PC_IN_PARTY + 0] = 1;
+    nes.cpu.mem[PC_HP + 0] = 50;
+    nes.cpu.mem[RNG] = 100; // referenceRngNext(100) === 200, tying the margin (200) -- a miss
+
+    callRoutine(nes, addrOf('monster_turn_attack'));
+
+    // fix2 P2: the RNG branch, unlike the underflow one, must actually
+    // consume the RNG byte -- rng_next's own LFSR advance (engine/rpg.asm)
+    // leaves it at referenceRngNext(100) = 200, never the seeded 100 it
+    // started from.
+    assert.equal(nes.cpu.mem[RNG], referenceRngNext(100), 'the RNG branch must have called rng_next for real -- the RNG byte must read the LFSR-advanced value, not the seeded one');
+    assert.equal(nes.cpu.mem[BT_DMG_HI], 0xff, 'sanity: this roll must actually have missed (RNG tie)');
+    assert.equal(nes.cpu.mem[BT_TARGET], 0, 'sanity: pick_party_target must have chosen party member 0');
+    assert.equal(nes.cpu.mem[BT_MISS_SLOT], 0, 'bt_miss_slot must name the real dodging party member (0), from bt_target, not the attacking monster');
+    assert.equal(nes.cpu.mem[BT_MISS_LEFT], 30, 'bt_miss_left must be freshly armed');
+
+    nes.cpu.mem.fill(0xff, 0x200, 0x300);
+    nes.cpu.mem[OAM_IDX] = 0;
+    callRoutine(nes, addrOf('battle_miss_draw'));
+    const expectedY = BT_PARTY_Y - 8; // slot 0 -- no +BT_PARTY_STEP*slot offset
+    for (let i = 0; i < 4; i++) {
+      assert.equal(nes.cpu.mem[0x200 + i * 4 + 0], expectedY, `MISS tile ${i}: Y must be the party member's own anchor row minus 8`);
+      assert.equal(nes.cpu.mem[0x200 + i * 4 + 3], BT_PARTY_X + i * 8, `MISS tile ${i}: X must step from the party's fixed BT_PARTY_X`);
+    }
+
+    // Early dismissal, then a second, independent miss on the next turn:
+    // the first overlay must be gone (forced to 0 by battle_message_done),
+    // and the second must start clean at 30 with no overlap.
+    callRoutine(nes, addrOf('battle_message_done'));
+    assert.equal(nes.cpu.mem[BT_MISS_LEFT], 0, 'battle_message_done must force-clear bt_miss_left on dismissal');
+
+    nes.cpu.mem[RNG] = 100; // force the same RNG-branch miss again, on the next turn
+    callRoutine(nes, addrOf('monster_turn_attack'));
+    assert.equal(nes.cpu.mem[BT_MISS_SLOT], 0, 'the second, independent miss must re-arm on the real dodging target');
+    assert.equal(nes.cpu.mem[BT_MISS_LEFT], 30, 'the second miss must start clean at 30, never inheriting anything from the first');
+  }
+});
+
+// fix2 P2 (review 1): the required real dismissal/next-turn lifecycle,
+// missing from the isolated coverage above -- which calls
+// battle_message_done and monster_turn_attack directly, checks only the
+// timer, and never drives A through battle_tick/battle_message_wait or
+// observes the old glyphs actually disappear from that tick's own OAM
+// shadow. Driven exclusively through callRoutine(battle_tick) with pad_new
+// seeded -- the accepted harness the 127-byte six-tick test and the
+// dispatch-chain test above already use -- never a direct call to
+// battle_message_done or monster_turn_attack anywhere in this test. One
+// real party turn (FIGHT -> target -> act, item 2's own corrected underflow
+// fixture), its own countdown observed on real ticks against an
+// independently predicted value (never re-read from itself), an early A
+// dismissal observed on THAT SAME tick both in bt_miss_left and in the real
+// OAM shadow, and the next scheduled turn (the monster's own, forced to
+// miss via the RNG-tie fixture from case 2 above) producing a second,
+// independent miss starting clean at 30. Both messages are decoded with
+// decodeVramBuf and checked against the real "misses" text, not merely
+// "some text was queued."
+//
+// Wrong implementation this catches: battle_message_done's own
+// `sta <bt_miss_left` clear NOPed -- the isolated tests above already catch
+// this on the timer alone; this test must ALSO catch it on the dismissal
+// tick's own OAM shadow (MISS_TILE_M still present where the clear should
+// have stopped battle_miss_draw from writing it).
+test('real dismissal and next-turn lifecycle: a real miss dismisses cleanly through battle_tick, and the next scheduled turn arms a second, independent miss', {
+  skip: needsSample
+}, async (t) => {
+  const built = await buildMissFixture(t, 'miss-real-dismissal-lifecycle', (project) => {
+    // The identical, corrected underflow/RNG-tie fixture from the test
+    // above: Rian's own acc:0 underflows against Slime's own eva (left at
+    // its default, 4); Slime's own acc:200 against Rian's own eva (forced
+    // to 0) ties the RNG margin at 200. Speeds are left at their own
+    // defaults (Rian 4 > Slime 3), so the party goes first without needing
+    // any override.
+    project.party[0].acc = 0;
+    project.sprites.actors[0].battle = { ...project.sprites.actors[0].battle, acc: 200 };
+    project.party[0].eva = 0;
+  });
+  const { BT_MISS_SLOT, BT_MISS_LEFT } = resolveMissAddrs(built);
+  const OAM_IDX = resolveOamIdx(built);
+  const dir = path.dirname(path.dirname(built.romPath));
+  const constantsText = fs.readFileSync(path.join(dir, 'build', 'constants.asm'), 'utf8');
+  const ram = (name) => resolveEngineAddress(constantsText, name);
+  const BT_ROUND = ram('bt_round');
+  const BT_FLEE = ram('bt_flee');
+  const BT_PTICK = ram('bt_ptick');
+  const STATUS_PENDING = ram('status_pending');
+  const PC_STATUS = ram('pc_status');
+  const MON_STATUS = ram('mon_slot_status');
+  const TURN_ORDER = ram('turn_order');
+  const BT_COUNT = ram('bt_count');
+  const BP_NEXT = 7; // engine/constants.asm -- advance the turn order
+  const { BT_WIPE_MASK, BT_WIPE_ROW } = resolveWipeAddrs(built);
+
+  const nes = bootPastNaming(built.romPath);
+  const addrOf = selectBattleBank(nes, built);
+  const battleTickAddr = addrOf('battle_tick');
+
+  // A fresh, one-monster battle's own RAM, seeded directly -- the identical
+  // shape the 127-byte six-tick test above already uses (never a real
+  // battle_intro/setup_monsters call): Rian (party 0) and Slime (monster
+  // slot 0), Rian first in turn order (speed 4 > 3, unmodified).
+  nes.cpu.mem[MON_SLOT_ACTOR + 0] = 0;
+  nes.cpu.mem[MON_ALIVE + 0] = 1;
+  nes.cpu.mem[MON_HP + 0] = 200;
+  nes.cpu.mem[PC_IN_PARTY + 0] = 1;
+  nes.cpu.mem[PC_HP + 0] = 50;
+  nes.cpu.mem[PC_STATUS + 0] = 0;
+  nes.cpu.mem[MON_STATUS + 0] = 0;
+  nes.cpu.mem[BT_COUNT] = 1;
+  nes.cpu.mem[BT_FLEE] = 0;
+  nes.cpu.mem[BT_PTICK] = 0;
+  nes.cpu.mem[STATUS_PENDING] = 0;
+  nes.cpu.mem[BT_WIPE_MASK] = 0;
+  nes.cpu.mem[BT_WIPE_ROW] = 0;
+  nes.cpu.mem[BT_ROUND] = 0;
+  nes.cpu.mem[BT_SEL] = 0; // BC_FIGHT
+  nes.cpu.mem[BT_ACTOR] = 0; // Rian's own turn first
+  nes.cpu.mem[TURN_ORDER + 0] = 0;
+  nes.cpu.mem[TURN_ORDER + 1] = MAX_PARTY + 0;
+  for (let slot = 2; slot < 8; slot++) nes.cpu.mem[TURN_ORDER + slot] = 0xff;
+  nes.cpu.mem[BT_PHASE] = BP_MENU;
+
+  // Tick 1: BP_MENU + A -- FIGHT is already selected (bt_sel 0), and
+  // first_live_monster (called from battle_menu_fight) targets the one
+  // monster in the formation.
+  nes.cpu.mem[PAD_NEW] = BTN_A;
+  callRoutine(nes, battleTickAddr);
+  assert.equal(nes.cpu.mem[BT_PHASE], BP_TARGET, 'FIGHT should have asked who to hit');
+
+  // Tick 2: BP_TARGET + A -- confirm the target.
+  nes.cpu.mem[PAD_NEW] = BTN_A;
+  callRoutine(nes, battleTickAddr);
+  assert.equal(nes.cpu.mem[BT_PHASE], BP_ACT, 'confirming the target should have moved to BP_ACT');
+
+  // Tick 3: BP_ACT -- the real attack resolves this tick, forced to miss
+  // (underflow) -- attack_target -> attack_missed -> battle_miss_arm, all
+  // reached through battle_act's own dispatch, never called directly.
+  nes.cpu.mem[PAD_NEW] = 0;
+  nes.cpu.mem[VRAM_LEN] = 0;
+  callRoutine(nes, battleTickAddr);
+  assert.equal(nes.cpu.mem[BT_PHASE], BP_MESSAGE, 'the resolved attack should be holding its own message');
+  assert.equal(nes.cpu.mem[BT_DMG_HI], 0xff, 'sanity: the real party attack must have missed');
+  assert.equal(nes.cpu.mem[BT_MISS_SLOT], MAX_PARTY + 0, 'bt_miss_slot must name the real dodging monster');
+  assert.equal(nes.cpu.mem[BT_MISS_LEFT], 30, 'bt_miss_left must be freshly armed to BT_MISS_FRAMES (30), never decremented on its own arming tick');
+  {
+    const packets = decodeVramBuf(nes, nes.cpu.mem[VRAM_LEN]);
+    assert.equal(packets.length, 2, 'a plain "X misses" message is exactly two packets: the name, then the string');
+    assert.deepEqual(packets[0].data, nameTiles('Rian'), 'the first packet must be the attacker’s own real name, "Rian" -- not merely some text');
+    assert.deepEqual(packets[1].data.slice(0, 9), battleStringTiles('misses'), 'the second packet must be the real "misses" line -- not merely some text');
+  }
+
+  // Ticks 4-8: the message held, five real ticks -- the countdown observed
+  // against an independently computed value, never re-read from bt_miss_left
+  // itself.
+  for (let tick = 1; tick <= 5; tick++) {
+    nes.cpu.mem[PAD_NEW] = 0;
+    callRoutine(nes, battleTickAddr);
+    assert.equal(nes.cpu.mem[BT_MISS_LEFT], 30 - tick, `tick ${tick} of the held message: bt_miss_left must count down for real`);
+  }
+  assert.equal(nes.cpu.mem[BT_PHASE], BP_MESSAGE, 'sanity: the message must still be held after five ticks, well under MSG_HOLD (45)');
+
+  // Early dismissal: A during BP_MESSAGE. On THIS tick, battle_message_done
+  // force-clears bt_miss_left, and battle_draw_sprites (running at the end
+  // of this SAME tick) must draw nothing for MISS -- the four glyph entries
+  // must be gone from the OAM shadow THIS tick, not merely next tick.
+  nes.cpu.mem.fill(0xff, 0x200, 0x300);
+  nes.cpu.mem[OAM_IDX] = 0;
+  nes.cpu.mem[PAD_NEW] = BTN_A;
+  callRoutine(nes, battleTickAddr);
+  assert.equal(nes.cpu.mem[BT_MISS_LEFT], 0, 'the dismissal tick itself must read bt_miss_left as 0, observed on that tick, not the one after it');
+  assert.notEqual(nes.cpu.mem[0x200 + 1], MISS_TILE_M, 'the dismissal tick’s own OAM shadow must not carry MISS_TILE_M at entry 0 -- battle_miss_draw must have drawn nothing this tick');
+  assert.equal(nes.cpu.mem[BT_PHASE], BP_NEXT, 'dismissing a plain message with no status pending must advance straight to BP_NEXT, the same tick');
+
+  // The next scheduled turn: BP_NEXT -> battle_next -> the monster's own
+  // real turn, forced to miss via the RNG-tie fixture (case 2 above), all
+  // synchronously within this ONE tick -- never a direct call to
+  // monster_turn_attack.
+  nes.cpu.mem[RNG] = 100; // referenceRngNext(100) === 200, tying the monster's own margin (200)
+  nes.cpu.mem[PAD_NEW] = 0;
+  nes.cpu.mem[VRAM_LEN] = 0;
+  callRoutine(nes, battleTickAddr);
+  assert.equal(nes.cpu.mem[BT_ROUND], 1, 'sanity: the round must have advanced to the monster’s own turn');
+  assert.equal(nes.cpu.mem[BT_PHASE], BP_MESSAGE, 'the monster’s own real turn must have resolved into its own message, the same tick');
+  assert.equal(nes.cpu.mem[BT_DMG_HI], 0xff, 'sanity: the real monster attack must have missed (RNG tie)');
+  assert.equal(nes.cpu.mem[BT_MISS_SLOT], 0, 'the second miss must name the real dodging party member (0), from the monster’s own bt_target');
+  assert.equal(nes.cpu.mem[BT_MISS_LEFT], 30, 'the second, independent miss must start clean at 30, with no overlap from the first');
+  {
+    const packets = decodeVramBuf(nes, nes.cpu.mem[VRAM_LEN]);
+    assert.equal(packets.length, 2, 'the monster’s own "X misses" message is exactly two packets too');
+    assert.deepEqual(packets[0].data, nameTiles('Slime'), 'the first packet must be the attacking monster’s own real name, "Slime"');
+    assert.deepEqual(packets[1].data.slice(0, 9), battleStringTiles('misses'), 'the second packet must be the real "misses" line');
+  }
+});
+
+// fix2 P2 (review 1): the both-live message-cap asymmetry, driven the
+// identical real-tick way as the test just above (never a direct call to
+// battle_message_done or a physical-attack routine): a real landed hit
+// first, arming hit feedback for real through apply_damage -> battle_hurt_arm
+// (never seeded by hand), so bt_hurt_left is genuinely counting down on its
+// own real clock; then the monster's own real miss, arming bt_miss_left;
+// then an early dismissal of the miss's own message, asserting bt_hurt_left
+// keeps following its own independently predicted countdown, completely
+// untouched by the clear that only ever targets bt_miss_left. The isolated
+// asymmetry test elsewhere in this file (which seeds both timers directly
+// and calls battle_message_done in isolation) is kept alongside this one.
+test('message-cap asymmetry, real lifecycle: a real landed hit keeps counting on its own clock across a real miss’s own early dismissal', {
+  skip: needsSample
+}, async (t) => {
+  const built = await buildHitFeedback(t, 'asymmetry-both-real-lifecycle', (project) => {
+    project.rpg.miss = true;
+    // Rian's own attack against Slime must LAND for certain: acc 255
+    // against Slime's own eva forced to 0, plus a controlled RNG roll well
+    // under the margin (no chance left to the emulator's own RNG state).
+    project.party[0].acc = 255;
+    // Slime's own attack against Rian must MISS for certain, through the
+    // underflow branch (no RNG dependency at all): acc 0 against Rian's own
+    // eva, left at its default (8) -- strictly above Slime's forced 0.
+    project.sprites.actors[0].battle = { ...project.sprites.actors[0].battle, acc: 0, eva: 0 };
+    assert.ok(project.sprites.actors[0].battle.acc < project.party[0].eva, `precondition: Slime's own acc (${project.sprites.actors[0].battle.acc}) must be strictly below Rian's own eva (${project.party[0].eva}) for the monster's own attack to underflow`);
+  });
+  const { BT_HURT_SLOT, BT_HURT_LEFT } = resolveHurtAddrs(built);
+  const { BT_MISS_SLOT, BT_MISS_LEFT } = resolveMissAddrs(built);
+  const dir = path.dirname(path.dirname(built.romPath));
+  const constantsText = fs.readFileSync(path.join(dir, 'build', 'constants.asm'), 'utf8');
+  const ram = (name) => resolveEngineAddress(constantsText, name);
+  const BT_ROUND = ram('bt_round');
+  const BT_FLEE = ram('bt_flee');
+  const BT_PTICK = ram('bt_ptick');
+  const STATUS_PENDING = ram('status_pending');
+  const PC_STATUS = ram('pc_status');
+  const MON_STATUS = ram('mon_slot_status');
+  const TURN_ORDER = ram('turn_order');
+  const BT_COUNT = ram('bt_count');
+  const BP_NEXT = 7; // engine/constants.asm -- advance the turn order
+  const { BT_WIPE_MASK, BT_WIPE_ROW } = resolveWipeAddrs(built);
+
+  const nes = bootPastNaming(built.romPath);
+  const addrOf = selectBattleBank(nes, built);
+  const battleTickAddr = addrOf('battle_tick');
+
+  nes.cpu.mem[MON_SLOT_ACTOR + 0] = 0;
+  nes.cpu.mem[MON_ALIVE + 0] = 1;
+  nes.cpu.mem[MON_HP + 0] = 200;
+  nes.cpu.mem[PC_IN_PARTY + 0] = 1;
+  nes.cpu.mem[PC_HP + 0] = 50;
+  nes.cpu.mem[PC_STATUS + 0] = 0;
+  nes.cpu.mem[MON_STATUS + 0] = 0;
+  nes.cpu.mem[BT_COUNT] = 1;
+  nes.cpu.mem[BT_FLEE] = 0;
+  nes.cpu.mem[BT_PTICK] = 0;
+  nes.cpu.mem[STATUS_PENDING] = 0;
+  nes.cpu.mem[BT_WIPE_MASK] = 0;
+  nes.cpu.mem[BT_WIPE_ROW] = 0;
+  nes.cpu.mem[BT_ROUND] = 0;
+  nes.cpu.mem[BT_SEL] = 0; // BC_FIGHT
+  nes.cpu.mem[BT_ACTOR] = 0;
+  nes.cpu.mem[TURN_ORDER + 0] = 0;
+  nes.cpu.mem[TURN_ORDER + 1] = MAX_PARTY + 0;
+  for (let slot = 2; slot < 8; slot++) nes.cpu.mem[TURN_ORDER + slot] = 0xff;
+  nes.cpu.mem[BT_PHASE] = BP_MENU;
+
+  // Tick 1-2: FIGHT, confirm the target.
+  nes.cpu.mem[PAD_NEW] = BTN_A;
+  callRoutine(nes, battleTickAddr);
+  assert.equal(nes.cpu.mem[BT_PHASE], BP_TARGET);
+  nes.cpu.mem[PAD_NEW] = BTN_A;
+  callRoutine(nes, battleTickAddr);
+  assert.equal(nes.cpu.mem[BT_PHASE], BP_ACT);
+
+  // Tick 3: the real attack resolves, forced to land -- RNG seeded to a
+  // value well under the 255 margin (referenceRngNext(1) === 2).
+  nes.cpu.mem[RNG] = 1;
+  nes.cpu.mem[PAD_NEW] = 0;
+  callRoutine(nes, battleTickAddr);
+  assert.equal(nes.cpu.mem[BT_PHASE], BP_MESSAGE, 'the resolved attack should be holding its own message');
+  assert.equal(nes.cpu.mem[BT_DMG_HI], 0, 'sanity: the real party attack must have landed, not missed');
+  assert.equal(nes.cpu.mem[BT_HURT_SLOT], MAX_PARTY + 0, 'the real hit must have armed hit feedback on the real target, through apply_damage -> battle_hurt_arm');
+  assert.equal(nes.cpu.mem[BT_HURT_LEFT], 20, 'bt_hurt_left must be freshly armed to BT_HURT_FRAMES (20)');
+  assert.equal(nes.cpu.mem[BT_MISS_LEFT], 0, 'sanity: nothing has missed yet -- bt_miss_left must still read 0');
+  let hurtElapsed = 0; // real battle_tick calls since bt_hurt_left armed (tick 3, inclusive of this one)
+
+  // Ticks 4-5: the hit's own message held.
+  for (let tick = 1; tick <= 2; tick++) {
+    nes.cpu.mem[PAD_NEW] = 0;
+    callRoutine(nes, battleTickAddr);
+    hurtElapsed++;
+    assert.equal(nes.cpu.mem[BT_HURT_LEFT], 20 - hurtElapsed, `tick ${tick} of the hit's own held message: bt_hurt_left must count down for real`);
+  }
+
+  // Dismiss the hit's own message -- battle_message_done never touches
+  // bt_hurt_left at all (§12.4's own asymmetry, the identical rule this
+  // whole test is about), so only the real battle_hurt_tick's own decrement
+  // (running before dispatch on this same tick) applies.
+  nes.cpu.mem[PAD_NEW] = BTN_A;
+  callRoutine(nes, battleTickAddr);
+  hurtElapsed++;
+  assert.equal(nes.cpu.mem[BT_HURT_LEFT], 20 - hurtElapsed, 'dismissing the LANDED hit’s own message must not itself clear or otherwise perturb bt_hurt_left');
+  assert.equal(nes.cpu.mem[BT_PHASE], BP_NEXT, 'dismissing the hit’s own message must advance straight to BP_NEXT');
+
+  // The next scheduled turn: the monster's own real attack, forced to miss
+  // (underflow, no RNG dependency) -- arms bt_miss_left for real, in the
+  // same tick bt_hurt_left keeps counting on its own independent clock.
+  nes.cpu.mem[PAD_NEW] = 0;
+  callRoutine(nes, battleTickAddr);
+  hurtElapsed++;
+  assert.equal(nes.cpu.mem[BT_ROUND], 1, 'sanity: the round must have advanced to the monster’s own turn');
+  assert.equal(nes.cpu.mem[BT_PHASE], BP_MESSAGE, 'the monster’s own real turn must have resolved into its own message');
+  assert.equal(nes.cpu.mem[BT_DMG_HI], 0xff, 'sanity: the real monster attack must have missed (underflow)');
+  assert.equal(nes.cpu.mem[BT_MISS_SLOT], 0, 'the real miss must name the real dodging party member (0)');
+  assert.equal(nes.cpu.mem[BT_MISS_LEFT], 30, 'bt_miss_left must be freshly armed to BT_MISS_FRAMES (30)');
+  assert.equal(nes.cpu.mem[BT_HURT_LEFT], 20 - hurtElapsed, 'bt_hurt_left must still be following its own independent countdown, unaffected by the monster’s own miss arming');
+
+  // Ticks: hold the miss's own message for two more real ticks, both
+  // timers counting down independently.
+  for (let tick = 1; tick <= 2; tick++) {
+    nes.cpu.mem[PAD_NEW] = 0;
+    callRoutine(nes, battleTickAddr);
+    hurtElapsed++;
+    assert.equal(nes.cpu.mem[BT_HURT_LEFT], 20 - hurtElapsed, `tick ${tick} of the miss's own held message: bt_hurt_left must still count down on its own clock`);
+    assert.equal(nes.cpu.mem[BT_MISS_LEFT], 30 - tick, `tick ${tick} of the miss's own held message: bt_miss_left must count down for real`);
+  }
+
+  // Early dismissal of the MISS's own message: battle_message_done
+  // force-clears bt_miss_left, but bt_hurt_left must follow ONLY its own
+  // real countdown across this same tick, untouched by the clear.
+  nes.cpu.mem[PAD_NEW] = BTN_A;
+  callRoutine(nes, battleTickAddr);
+  hurtElapsed++;
+  assert.equal(nes.cpu.mem[BT_MISS_LEFT], 0, 'the dismissal tick itself must force-clear bt_miss_left');
+  assert.equal(nes.cpu.mem[BT_HURT_LEFT], 20 - hurtElapsed, 'bt_hurt_left must follow its own independently predicted countdown across the dismissal tick, untouched by the clear that only ever targets bt_miss_left');
+});
+
+// Orchestrator addition (not a §14 row) -- disconnected-call-site coverage.
+// Every other MISS test above calls battle_miss_tick/battle_miss_draw
+// DIRECTLY, which cannot catch battle_tick's own `jsr battle_miss_tick` or
+// battle_draw_sprites' own `jsr battle_miss_draw` being replaced by NOPs --
+// the exact trap 2a's own round 1 review found (its own call sites inside
+// battle_tick). This drives battle_tick itself, for real, across a full
+// BT_MISS_FRAMES countdown, and confirms the OAM draw dispatch chain reaches
+// battle_miss_draw too.
+test('battle_tick’s own dispatch chain really calls battle_miss_tick and battle_draw_sprites really calls battle_miss_draw', {
+  skip: needsSample
+}, async (t) => {
+  const built = await buildMissFixture(t, 'miss-real-tick-dispatch');
+  const nes = bootPastNaming(built.romPath);
+  const addrOf = selectBattleBank(nes, built);
+  const { BT_MISS_SLOT, BT_MISS_LEFT } = resolveMissAddrs(built);
+  const OAM_IDX = resolveOamIdx(built);
+
+  nes.cpu.mem[BT_PHASE] = BP_MENU;
+  nes.cpu.mem[MON_SLOT_ACTOR + 0] = 0;
+  nes.cpu.mem[MON_ALIVE + 0] = 1;
+  nes.cpu.mem[PC_IN_PARTY + 0] = 1;
+  nes.cpu.mem[PC_HP + 0] = 50;
+  nes.cpu.mem[BT_MISS_SLOT] = MAX_PARTY + 0; // the monster in slot 0
+  nes.cpu.mem[BT_MISS_LEFT] = 30;
+
+  for (let tick = 1; tick <= 31; tick++) {
+    nes.cpu.mem.fill(0xff, 0x200, 0x300);
+    nes.cpu.mem[PAD_NEW] = 0;
+    callRoutine(nes, addrOf('battle_tick'));
+    const predictedLeft = Math.max(0, 30 - tick);
+    assert.equal(
+      nes.cpu.mem[BT_MISS_LEFT],
+      predictedLeft,
+      `tick ${tick}: battle_tick's own real dispatch chain must have decremented bt_miss_left to ${predictedLeft}`
+    );
+    // battle_draw_sprites clears the shadow to $FF and re-parks oam_idx to 0
+    // every tick, then draws MISS FIRST when it is still counting -- so OAM
+    // entry 0's own TILE byte (offset 1) must read MISS_TILE_M specifically,
+    // not merely "not $FF" (a combatant icon drawn at entry 0 instead, which
+    // is exactly what happens once the sabotaged jsr is a no-op, is also
+    // "not $FF" and would pass a weaker check).
+    if (predictedLeft > 0) {
+      assert.equal(
+        nes.cpu.mem[0x200 + 1],
+        MISS_TILE_M,
+        `tick ${tick}: OAM entry 0's own tile must be MISS_TILE_M ($${MISS_TILE_M.toString(16)}) -- real evidence battle_draw_sprites reached battle_miss_draw, not merely that SOMETHING drew there`
+      );
+    } else {
+      // Once exhausted, MISS draws nothing -- entry 0 is then whatever the
+      // combatant loops drew instead (also real, just never MISS_TILE_M).
+      assert.notEqual(nes.cpu.mem[0x200 + 1], MISS_TILE_M, `tick ${tick}: once bt_miss_left is 0, MISS_TILE_M must not appear at OAM entry 0`);
+    }
+  }
+});
+
+// §14 round 1 -- Non-miss negative coverage (finding 6). Five paths that
+// resemble a miss but are not attack-evasion misses (§13.1's own
+// enumeration): item_chosen_none (and round 2 finding 6: the item is not
+// consumed either), battle_menu_failed, a damage spell, a status-effect
+// spell, and a status tick. None of these may ever call battle_miss_arm.
+test('non-miss negative coverage: item_chosen_none, battle_menu_failed, a damage spell, a status spell and a status tick never touch bt_miss_left', {
+  skip: needsSample
+}, async (t) => {
+  const built = await buildMissFixture(t, 'miss-negative-coverage');
+  const { BT_MISS_SLOT, BT_MISS_LEFT } = resolveMissAddrs(built);
+
+  const freshNes = () => {
+    const nes = bootPastNaming(built.romPath);
+    const addrOf = selectBattleBank(nes, built);
+    nes.cpu.mem[BT_PHASE] = BP_MENU;
+    nes.cpu.mem[BT_ACTOR] = 0;
+    nes.cpu.mem[BT_TARGET] = 0;
+    nes.cpu.mem[MON_SLOT_ACTOR + 0] = 0;
+    nes.cpu.mem[MON_ALIVE + 0] = 1;
+    nes.cpu.mem[PC_IN_PARTY + 0] = 1;
+    nes.cpu.mem[PC_HP + 0] = 50;
+    nes.cpu.mem[BT_MISS_SLOT] = 0xff;
+    nes.cpu.mem[BT_MISS_LEFT] = 0;
+    return { nes, addrOf };
+  };
+
+  // item_chosen_none: also confirm the item is not consumed (round 2
+  // finding 6) -- inv_count/items_used untouched.
+  {
+    const { nes, addrOf } = freshNes();
+    nes.cpu.mem[INV_COUNT] = 3;
+    nes.cpu.mem[ITEMS_USED] = 1;
+    callRoutine(nes, addrOf('item_chosen_none'));
+    assert.equal(nes.cpu.mem[BT_MISS_LEFT], 0, 'item_chosen_none must never touch bt_miss_left');
+    assert.equal(nes.cpu.mem[INV_COUNT], 3, 'item_chosen_none must not consume the item');
+    assert.equal(nes.cpu.mem[ITEMS_USED], 1, 'item_chosen_none must not consume the item');
+  }
+
+  // battle_menu_failed: a failed flee attempt.
+  {
+    const { nes, addrOf } = freshNes();
+    callRoutine(nes, addrOf('battle_menu_failed'));
+    assert.equal(nes.cpu.mem[BT_MISS_LEFT], 0, 'battle_menu_failed must never touch bt_miss_left');
+  }
+
+  // A damage spell (Ember, id 0, scope one) -- spells never call roll_hit.
+  {
+    const { nes, addrOf } = freshNes();
+    nes.cpu.mem[BT_ARG] = 0;
+    callRoutine(nes, addrOf('cast_spell'));
+    assert.equal(nes.cpu.mem[BT_MISS_LEFT], 0, 'a damage spell must never touch bt_miss_left');
+  }
+
+  // A status-effect spell (Venom, id 2, poison).
+  {
+    const { nes, addrOf } = freshNes();
+    nes.cpu.mem[BT_ARG] = 2;
+    callRoutine(nes, addrOf('cast_spell'));
+    assert.equal(nes.cpu.mem[BT_MISS_LEFT], 0, 'a status-effect spell must never touch bt_miss_left');
+  }
+
+  // A status tick (poison_tick) -- self-damage, bt_target set to bt_actor,
+  // no roll_hit at all.
+  {
+    const { nes, addrOf } = freshNes();
+    callRoutine(nes, addrOf('poison_tick'));
+    assert.equal(nes.cpu.mem[BT_MISS_LEFT], 0, 'a status tick must never touch bt_miss_left');
+  }
+});
+
+// §14 -- Message-cap asymmetry (both). Requires both flags live. A miss's
+// own message dismissal must force-clear bt_miss_left while a
+// separately-still-counting bt_hurt_left (from an earlier, unrelated hit) is
+// NOT cleared the same way (§12.4's own stated asymmetry).
+test('message-cap asymmetry: battle_message_done force-clears bt_miss_left but leaves a still-counting bt_hurt_left alone', {
+  skip: needsSample
+}, async (t) => {
+  const built = await buildHitFeedback(t, 'asymmetry-both', (project) => {
+    project.rpg.miss = true;
+  });
+  const nes = bootPastNaming(built.romPath);
+  const addrOf = selectBattleBank(nes, built);
+  const { BT_HURT_SLOT, BT_HURT_LEFT } = resolveHurtAddrs(built);
+  const { BT_MISS_SLOT, BT_MISS_LEFT } = resolveMissAddrs(built);
+  const dir = path.dirname(path.dirname(built.romPath));
+  const constantsText = fs.readFileSync(path.join(dir, 'build', 'constants.asm'), 'utf8');
+  const BT_PTICK = resolveEngineAddress(constantsText, 'bt_ptick');
+
+  nes.cpu.mem[BT_PHASE] = BP_MENU;
+  nes.cpu.mem[MON_SLOT_ACTOR + 0] = 0;
+  nes.cpu.mem[MON_ALIVE + 0] = 1;
+  // An earlier, unrelated hit still counting down.
+  nes.cpu.mem[BT_HURT_SLOT] = 0;
+  nes.cpu.mem[BT_HURT_LEFT] = 15;
+  // A miss just drawn this turn.
+  nes.cpu.mem[BT_MISS_SLOT] = MAX_PARTY + 0;
+  nes.cpu.mem[BT_MISS_LEFT] = 10;
+  nes.cpu.mem[BT_ACTOR] = 0;
+  nes.cpu.mem[BT_PTICK] = 0;
+
+  callRoutine(nes, addrOf('battle_message_done'));
+
+  assert.equal(nes.cpu.mem[BT_MISS_LEFT], 0, 'battle_message_done must force-clear bt_miss_left on dismissal');
+  assert.equal(nes.cpu.mem[BT_HURT_LEFT], 15, 'battle_message_done must leave a still-counting bt_hurt_left untouched -- the stated asymmetry');
+});
+
+// fix1 item 2 -- rows 12/13 (design lines 3038/3039), the real-frame path,
+// tried before any OAM-shadow fallback. Real frames and real button
+// presses only (walkIntoEncounter -> chooseCommand -> tap), never a
+// callRoutine excursion followed by nes.frame() -- the trap 1b's own
+// history already found. The miss is forced deterministically through the
+// attacking side's own stats (accuracy 0 underflows against any evasion,
+// roll_hit's own unconditional branch), so no RNG control is needed
+// mid-frame. Both attempts below worked on the first real try: no crash,
+// no state that could not be reached -- see the report for the narrative.
+//
+// NES sprites display one scanline BELOW their own OAM Y byte (a
+// well-documented hardware quirk this emulator reproduces exactly --
+// renderer/emulator/core/ppu/index.js's own `dy = sprY + 1`), so the pixel
+// row read back for glyph row 0 is the OAM Y plus 1, not the OAM Y itself.
+//
+// Wrong implementation this catches: a draw-order or coordinate
+// regression in battle_miss_draw -- the glyph landing at the wrong anchor,
+// the wrong tile order (M/I/S/S), or a palette/attribute byte that paints
+// the wrong colour -- invisible to the OAM-shadow-only tests elsewhere in
+// this file, which never actually render a frame.
+test('MISS overlay: the real M/I/S/S glyph shape renders at the dodging monster’s own anchor, on the real PPU frame buffer', {
+  skip: needsSample
+}, async (t) => {
+  const built = await buildVariantFull(t, 'miss-pixel-real', (project) => {
+    project.rpg.miss = true;
+    project.party[0].acc = 0; // guaranteed underflow miss on the party's own attack -- no RNG needed
+  });
+
+  const state = { frame: null };
+  const nes = new NES({ onFrame: (buffer) => (state.frame = buffer), emulateSound: false });
+  nes.loadROM(new Uint8Array(fs.readFileSync(built.romPath)));
+  for (let i = 0; i < 40; i++) nes.frame(); // boot()'s own settle, mirrored here for the frame-capturing nes
+  finishNamingIfOpen(nes);
+  const pixelAt = (x, y) => state.frame[y * 256 + x];
+
+  assert.ok(walkIntoEncounter(nes), 'no wandering monster after nine hundred steps');
+  waitForMenu(nes);
+  chooseCommand(nes, BC_FIGHT);
+  assert.equal(nes.cpu.mem[BT_PHASE], BP_TARGET, 'FIGHT should ask who to hit');
+
+  // Baseline, BEFORE the attack: the sky above the single monster's own
+  // icon row, where the overlay lands one tile up from its anchor.
+  const anchorX = BT_MON_COL * 8;
+  const anchorY = BT_MON_ROW * 8 - 8 + 1; // +1: the OAM-Y hardware offset
+  const before = [];
+  for (let py = 0; py < 8; py++) {
+    for (let px = 0; px < 32; px++) before.push(pixelAt(anchorX + px, anchorY + py));
+  }
+
+  // Confirm the target: the attack resolves the very same tick, forced to
+  // miss (party acc: 0), arming the overlay for real through
+  // attack_missed -> battle_miss_arm. A modest frame budget lands well
+  // inside the 30-tick countdown and past the one-frame OAM-DMA lag the
+  // phase 1b pixel test above already documents.
+  tap(nes, A, 5);
+  assert.notEqual(nes.cpu.mem[BT_DMG_HI], 0, 'sanity: this must have been a miss, not a landed hit');
+
+  const after = [];
+  for (let py = 0; py < 8; py++) {
+    for (let px = 0; px < 32; px++) after.push(pixelAt(anchorX + px, anchorY + py));
+  }
+
+  // Compared through the real sprite palette, not a hand-typed colour:
+  // MISS's own glyphs are drawn in sprite palette 0, slot 1
+  // (battle_miss_draw's own attribute byte is 0) -- shared/nespalette.js's
+  // resolved RGB for that slot, read back off the booted ROM itself.
+  const sprColor1 = nes.ppu.sprPalette[1];
+  const glyphs = [MISS_TILE_M_ART, MISS_TILE_I_ART, MISS_TILE_S_ART, MISS_TILE_S_ART];
+  const glyphNames = ['M', 'I', 'S', 'S'];
+  for (let tile = 0; tile < 4; tile++) {
+    const art = glyphs[tile];
+    for (let row = 0; row < 8; row++) {
+      for (let col = 0; col < 8; col++) {
+        const idx = row * 32 + tile * 8 + col;
+        const on = art[row * 8 + col] === '1';
+        if (on) {
+          assert.equal(
+            after[idx], sprColor1,
+            `tile ${tile} (${glyphNames[tile]}) row ${row} col ${col}: an "on" pixel in the authored art must show the glyph's own slot-1 colour`
+          );
+        } else {
+          assert.equal(
+            after[idx], before[idx],
+            `tile ${tile} (${glyphNames[tile]}) row ${row} col ${col}: an "off" pixel in the authored art must be unchanged from before the miss (sprite colour 0 is transparent)`
+          );
+        }
+      }
+    }
+  }
+});
+
+// Row 13: the same real-frame path, with an attackAnim authored on the
+// MONSTER (BATTLE_ANIM_ENABLED on, HIT_FEEDBACK_ENABLED off) so its own
+// missed attack plays the flipbook over its own (attacking) slot at the
+// same time MISS plays over the party member it missed -- the two
+// combatant slots' own anchors (BT_MON_ROW*8 for the monster, BT_PARTY_Y
+// for the party) sit at the identical Y band by coincidence in this
+// project (both 32) but at entirely different X (BT_MON_COL*8=32 vs.
+// BT_PARTY_X=200), so there is no risk of the two OAM draws overlapping
+// pixel-for-pixel; each is read back from its own, disjoint anchor.
+//
+// Wrong implementation this catches: the combined-frame OAM interaction
+// (§13.6) going untested until a real project hits it -- an OAM-budget
+// miscalculation silently dropping one of the two draws would leave that
+// one's own anchor unchanged from its own pre-attack baseline.
+test('MISS overlay + battle animation: both the flipbook’s own frame and the MISS glyph render in the same rendered frame, at their own disjoint anchors', {
+  skip: needsSample
+}, async (t) => {
+  // Distinct, solid, unambiguous colours (the 1b pixel-overlap test's own
+  // precedent above) -- the monster's own resting icon is replaced with its
+  // OWN solid tile too, or a "before" read here could coincidentally match
+  // the flipbook's own colour through Slime's stock art sharing the same
+  // palette index, proving nothing.
+  const ICON_COLOR = '1'.repeat(64);
+  const FX_COLOR = '2'.repeat(64);
+  let fxAnimId;
+  const built = await buildVariantFull(t, 'miss-plus-fx-pixel-real', (project) => {
+    project.rpg.miss = true;
+    // The monster's own attack must miss (acc: 0, underflow, no RNG
+    // needed) and must carry the flipbook. The PARTY's own attack, taken
+    // first (default speeds: Rian 4 > Slime 3, unchanged), must instead
+    // LAND for certain (acc: 255, the monster's own eva forced to 0) --
+    // it must never itself become a miss, or it would arm bt_miss_left
+    // over the WRONG combatant before this test ever reaches the monster's
+    // own turn. battleTile: null draws the monster as a sprite icon.
+    project.party[0].acc = 255;
+    project.sprites.actors[0].battle = { ...project.sprites.actors[0].battle, acc: 0, eva: 0, battleTile: null };
+    const tileset = project.tilesets[project.rpg.battleTilesetId];
+    const iconTile = 200;
+    const fxTile = 201;
+    tileset.sprites.tiles[iconTile] = ICON_COLOR;
+    tileset.sprites.tiles[fxTile] = FX_COLOR;
+    const slimeMetaId = project.sprites.actors[0].anims.walkDown;
+    project.sprites.metasprites[slimeMetaId].tiles = [{ tile: iconTile, x: 0, y: 0, palette: 0, hflip: false, vflip: false }];
+    const fxMetaId = project.sprites.metasprites.length;
+    project.sprites.metasprites.push({
+      id: fxMetaId,
+      name: 'FxMiss',
+      tiles: [{ tile: fxTile, x: 0, y: 0, palette: 0, hflip: false, vflip: false }]
+    });
+    fxAnimId = project.sprites.animations.length;
+    project.sprites.animations.push({ id: fxAnimId, name: 'FxMiss', loop: false, frames: [{ metaspriteId: fxMetaId, duration: 30 }] });
+    project.sprites.actors[0].battle.attackAnim = fxAnimId;
+  });
+
+  const state = { frame: null };
+  const nes = new NES({ onFrame: (buffer) => (state.frame = buffer), emulateSound: false });
+  nes.loadROM(new Uint8Array(fs.readFileSync(built.romPath)));
+  for (let i = 0; i < 40; i++) nes.frame();
+  finishNamingIfOpen(nes);
+  const pixelAt = (x, y) => state.frame[y * 256 + x];
+
+  assert.ok(walkIntoEncounter(nes), 'no wandering monster after nine hundred steps');
+  waitForMenu(nes);
+
+  // The party's own turn, forced to land (never a miss): FIGHT, confirm
+  // the target, and let the exchange resolve into the message it prints.
+  // Both battle_fx_anim and bt_miss_left are still untouched here -- the
+  // party's own physical attack never arms either.
+  chooseCommand(nes, BC_FIGHT);
+  assert.equal(nes.cpu.mem[BT_PHASE], BP_TARGET, 'FIGHT should ask who to hit');
+  tap(nes, A, 3);
+  assert.equal(nes.cpu.mem[BT_DMG_HI], 0, 'sanity: the party’s own attack must have landed (acc: 255, eva: 0)');
+  assert.equal(nes.cpu.mem[BT_PHASE], BP_MESSAGE, 'the party’s own message should still be up, not yet dismissed');
+
+  // Baseline reads: the message is still up, one turn away from the
+  // monster's own -- the monster's own icon cell (the flipbook's anchor,
+  // still its own resting ICON_COLOR) and the sky above the party's own
+  // row (the MISS anchor, plain background).
+  const BT_PARTY_X = 200; // engine/constants.asm
+  const BT_PARTY_Y = 32;
+  const fxX = BT_MON_COL * 8 + 4;
+  const fxY = BT_MON_ROW * 8 + 4 + 1; // +1: OAM-Y hardware offset
+  const missAnchorX = BT_PARTY_X;
+  const missAnchorY = BT_PARTY_Y - 8 + 1;
+  const fxBefore = pixelAt(fxX, fxY);
+  const missBefore = [];
+  for (let py = 0; py < 8; py++) {
+    for (let px = 0; px < 32; px++) missBefore.push(pixelAt(missAnchorX + px, missAnchorY + py));
+  }
+
+  // Dismiss the party's own message -- battle_message_advance moves the
+  // round on to the monster, whose own turn (monster_turn_attack, forced
+  // to miss) runs synchronously, within the very same tick, arming both
+  // the flipbook (over its own attacking slot) and MISS (over the party
+  // member it missed) for real.
+  tap(nes, A, 5);
+  assert.notEqual(nes.cpu.mem[BT_DMG_HI], 0, 'sanity: the monster’s own attack must have missed (acc: 0)');
+  for (let i = 0; i < 2; i++) nes.frame(); // settle past the one-frame OAM-DMA lag
+
+  const fxAfter = pixelAt(fxX, fxY);
+  const missAfter = [];
+  for (let py = 0; py < 8; py++) {
+    for (let px = 0; px < 32; px++) missAfter.push(pixelAt(missAnchorX + px, missAnchorY + py));
+  }
+
+  assert.notEqual(fxAfter, fxBefore, 'the flipbook’s own frame must have rendered over the attacking monster’s own slot');
+  assert.equal(fxAfter, nes.ppu.sprPalette[2], 'the flipbook’s own frame must show FX_COLOR’s own resolved sprite-palette slot 2');
+
+  const sprColor1 = nes.ppu.sprPalette[1];
+  const glyphs = [MISS_TILE_M_ART, MISS_TILE_I_ART, MISS_TILE_S_ART, MISS_TILE_S_ART];
+  const glyphNames = ['M', 'I', 'S', 'S'];
+  for (let tile = 0; tile < 4; tile++) {
+    const art = glyphs[tile];
+    for (let row = 0; row < 8; row++) {
+      for (let col = 0; col < 8; col++) {
+        const idx = row * 32 + tile * 8 + col;
+        const on = art[row * 8 + col] === '1';
+        if (on) {
+          assert.equal(
+            missAfter[idx], sprColor1,
+            `tile ${tile} (${glyphNames[tile]}) row ${row} col ${col}: MISS's own glyph must still render at its own anchor alongside the flipbook`
+          );
+        } else {
+          assert.equal(
+            missAfter[idx], missBefore[idx],
+            `tile ${tile} (${glyphNames[tile]}) row ${row} col ${col}: unchanged background where the art is "off"`
+          );
+        }
+      }
+    }
   }
 });

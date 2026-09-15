@@ -51,6 +51,8 @@ import {
   NAME_TOKEN,
   NAME_LENGTH,
   SPRITE_ARROW_TILE,
+  MISS_TILE_M,
+  MISS_TILE_S,
   fontBankSplit,
   projectUsesText,
   projectUsesHeartArt,
@@ -3059,6 +3061,12 @@ export function spriteReservedRanges(project, mapper) {
   ) {
     ranges.push({ start: SPRITE_ARROW_TILE, end: SPRITE_ARROW_TILE + 1, label: 'the naming grid or battle cursor' });
   }
+  // Phase 2b MISS overlay (docs/design-battle-animation.md §13.5): reserved
+  // only when projectUsesMiss answers true -- never HIT_FEEDBACK_ENABLED,
+  // which reserves nothing here at all.
+  if (projectUsesMiss(project)) {
+    ranges.push({ start: MISS_TILE_M, end: MISS_TILE_S + 1, label: 'the MISS overlay' });
+  }
   return ranges;
 }
 
@@ -3826,7 +3834,8 @@ export function battleSpriteBudget(project, mapper) {
         )
       )
   );
-  return { used: battleCombatantOamMax(project, mapper) + fxTiles, limit: MAX_OAM_ENTRIES };
+  const missTiles = projectUsesMiss(project) ? MISS_OAM_TILES : 0;
+  return { used: battleCombatantOamMax(project, mapper) + fxTiles + missTiles, limit: MAX_OAM_ENTRIES };
 }
 
 /**
@@ -3845,6 +3854,7 @@ export function battleSpriteBudget(project, mapper) {
  */
 export function describeBattleAnimationOamWarning(project, mapper) {
   const combatantMax = battleCombatantOamMax(project, mapper);
+  const missTiles = projectUsesMiss(project) ? MISS_OAM_TILES : 0;
   let worstId = null;
   let worstTiles = 0;
   for (const animId of allBattleAnimationIds(project)) {
@@ -3862,9 +3872,10 @@ export function describeBattleAnimationOamWarning(project, mapper) {
   }
   if (worstId === null) return null;
   const name = project.sprites.animations[worstId].name;
+  const missClause = missTiles ? ` plus MISS's own ${missTiles} sprites` : '';
   return (
     `"${name}" (${worstTiles} sprite tiles) plus this project's own worst-case combatants and cursor ` +
-    `(${combatantMax}) would need more than the NES's ${MAX_OAM_ENTRIES} sprites at once, so it will be ` +
+    `(${combatantMax})${missClause} would need more than the NES's ${MAX_OAM_ENTRIES} sprites at once, so it will be ` +
     'skipped in-game whenever it does not fit — even in a battle with real room, since the check is a ' +
     "project-wide worst case, not this battle's own. Use a smaller animation, or reduce the party/" +
     'formation/cursor cost elsewhere.'
@@ -4227,7 +4238,8 @@ export function defaultRpg() {
     maxLevel: RPG_LIMITS.maxLevel,
     battleTilesetId: 0, // the CHR bank the battle screen switches to
     encounterMusic: null,
-    hitFeedback: false // sprite hit-blink / block-art attribute flash, phase 2a
+    hitFeedback: false, // sprite hit-blink / block-art attribute flash, phase 2a
+    miss: false // floating MISS overlay, phase 2b -- independent of hitFeedback
   };
 }
 
@@ -5496,7 +5508,8 @@ function normalizeRpg(raw, tilesetCount) {
     maxLevel: clamp(raw?.maxLevel, 1, RPG_LIMITS.maxLevel, base.maxLevel),
     battleTilesetId: clamp(raw?.battleTilesetId, 0, Math.max(0, tilesetCount - 1), 0),
     encounterMusic: raw?.encounterMusic ?? null,
-    hitFeedback: Boolean(raw?.hitFeedback)
+    hitFeedback: Boolean(raw?.hitFeedback),
+    miss: Boolean(raw?.miss)
   };
 }
 
@@ -6435,6 +6448,32 @@ export function projectWithoutHitFeedback(project) {
   return clone;
 }
 
+/**
+ * Phase 2b MISS overlay (docs/design-battle-animation.md §13.9): whether
+ * `MISS_ENABLED` should be live -- independent of `projectUsesHitFeedback`
+ * above. A `gameType === 'rpg'` check is required for the identical reason
+ * that predicate needs one, and for further reasons unique to MISS:
+ * `spriteReservedRanges` (below) is called by `validateProject` before its
+ * own `gameType === 'rpg'` block and by the Tile Forge unconditionally, so a
+ * boolean-only read would reserve and stamp the MISS glyphs on an action
+ * project carrying a stray `rpg.miss: true` (surviving a game-type switch, or
+ * a hand edit) with no battle overlay ever drawn to justify it.
+ */
+export function projectUsesMiss(project) {
+  return project.project.gameType === 'rpg' && Boolean(project.rpg?.miss);
+}
+
+/** The battleShortfallAdvice removal candidate for the MISS overlay. */
+export function projectWithoutMiss(project) {
+  const clone = structuredClone(project);
+  if (clone.rpg) clone.rpg.miss = false;
+  return clone;
+}
+
+/** Phase 2b MISS overlay (docs/design-battle-animation.md §13.6): the fixed
+ * OAM cost while armed -- M+I+S+S, never variable, unlike a flipbook frame. */
+export const MISS_OAM_TILES = 4;
+
 export function validateProject(project) {
   const problems = [];
   const add = (severity, where, message) => problems.push({ severity, where, message });
@@ -6581,12 +6620,20 @@ export function validateProject(project) {
         (tile, index) => index >= range.start && index < range.end && tile !== BLANK_TILE
       );
       if (occupied < 0) continue;
-      const message =
-        range.label === 'the HUD hearts'
-          ? `Tileset "${tileset.name}" has artwork in the last two sprite tiles, which the HUD hearts reserve ` +
-            'while anything in the project can hurt the player.'
-          : `Tileset "${tileset.name}" has artwork in sprite tile $${range.start.toString(16).toUpperCase()}, ` +
-            'which the battle targeting cursor reserves on this cartridge.';
+      let message;
+      if (range.label === 'the HUD hearts') {
+        message =
+          `Tileset "${tileset.name}" has artwork in the last two sprite tiles, which the HUD hearts reserve ` +
+          'while anything in the project can hurt the player.';
+      } else if (range.label === 'the MISS overlay') {
+        message =
+          `Tileset "${tileset.name}" has artwork in sprite tiles $${range.start.toString(16).toUpperCase()}-` +
+          `$${(range.end - 1).toString(16).toUpperCase()}, which the MISS overlay reserves on this project.`;
+      } else {
+        message =
+          `Tileset "${tileset.name}" has artwork in sprite tile $${range.start.toString(16).toUpperCase()}, ` +
+          'which the battle targeting cursor reserves on this cartridge.';
+      }
       add('error', 'Tile Forge', message);
     }
   }

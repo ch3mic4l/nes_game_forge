@@ -108,6 +108,16 @@ function rpgProgression(project) {
         onchange: (event) => set('hitFeedback', event.target.checked)
       }),
       ' Hit feedback'
+    ),
+    el(
+      'label.check',
+      { title: 'A floating MISS overlay next to the combatant a physical attack just failed to hit' },
+      el('input', {
+        type: 'checkbox',
+        checked: rpg.miss,
+        onchange: (event) => set('miss', event.target.checked)
+      }),
+      ' MISS overlay'
     )
   );
 }

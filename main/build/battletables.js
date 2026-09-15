@@ -58,6 +58,8 @@ import {
   projectWithoutBattleAnimation,
   projectUsesHitFeedback,
   projectWithoutHitFeedback,
+  projectUsesMiss,
+  projectWithoutMiss,
   NO_ANIM,
   statAt,
   ACTOR_BATTLE_DEFAULTS
@@ -716,6 +718,19 @@ export const BATTLE_ANIM_BATTLE_ALLOWANCE = 243;
 // identical shape BATTLE_ANIM_BATTLE_ALLOWANCE above uses.
 export const HIT_FEEDBACK_BATTLE_ALLOWANCE = 235;
 
+// Phase 2b MISS overlay (docs/design-battle-animation.md §13.9):
+// battle_miss_arm/battle_miss_tick/battle_miss_draw plus the
+// attack_missed/monster_missed/battle_tick/battle_draw_sprites/
+// battle_message_done/setup_monsters call-site insertions. Measured flat
+// across all three RPG-capable boards, in isolation (HIT_FEEDBACK_ENABLED
+// off) -- independent of HIT_FEEDBACK_BATTLE_ALLOWANCE above; the combined
+// both-on figure is the clean sum of the two (§12.7/§13.9's own ledger
+// decision, option (i): each toggle's own setup_monsters reset pays its own
+// lda #0, so there is no shared-load saving to net out here). Gated on
+// projectUsesMiss, with NO `&& banked` guard, the identical shape
+// HIT_FEEDBACK_BATTLE_ALLOWANCE above uses.
+export const MISS_BATTLE_ALLOWANCE = 134;
+
 // Deliberate headroom, and its job is NOT the job KERNEL_SLACK does. There is
 // no estimation error here for it to absorb -- see the exactness note above --
 // so this is purely a buffer against the stock code growing a byte or two
@@ -994,7 +1009,8 @@ export function battleRegionBytes(project, mapper) {
     (projectUsesMagicDefence(project) ? MAGIC_DEFENCE_BATTLE_ALLOWANCE : 0) +
     (projectUsesMonsterSpellList(project) ? MONSTER_SPELL_LIST_BATTLE_ALLOWANCE : 0) +
     (projectUsesBattleAnimation(project) ? BATTLE_ANIM_BATTLE_ALLOWANCE : 0) +
-    (projectUsesHitFeedback(project) ? HIT_FEEDBACK_BATTLE_ALLOWANCE : 0)
+    (projectUsesHitFeedback(project) ? HIT_FEEDBACK_BATTLE_ALLOWANCE : 0) +
+    (projectUsesMiss(project) ? MISS_BATTLE_ALLOWANCE : 0)
   );
 }
 
@@ -1150,6 +1166,10 @@ export function battleShortfallAdvice(project, mapper, deficit, { alternatives =
     // docs/design-battle-animation.md §12.7.
     if (battleBankEnabled(project, mapper) && projectUsesHitFeedback(project)) {
       bankedFeatures.push({ label: 'hit feedback', strip: projectWithoutHitFeedback });
+    }
+    // docs/design-battle-animation.md §13.9.
+    if (battleBankEnabled(project, mapper) && projectUsesMiss(project)) {
+      bankedFeatures.push({ label: 'the MISS overlay', strip: projectWithoutMiss });
     }
   }
   if (bankedFeatures.length) {

@@ -428,6 +428,36 @@ const scenario = (dir, sampleDir, sampleRpgDir) => `
   if (p4HintWith('targeting cursor')) throw new Error('the battle-cursor hint survived switching to MMC1');
   step('Tile Forge (b): $FD shading and the cursor hint disappear on MMC1', 'ok');
 
+  // Phase 2b MISS overlay (docs/design-battle-animation.md §13.9/§14 test
+  // 14(c)/(d)) -- still an RPG on MMC1 from (b) above. $FA-$FC shade in and
+  // the reservation hint names "MISS" and "$FA" once rpg.miss is committed;
+  // reverting reverses both.
+  const p4Fa = p4CellPixel(10, 15); // $FA
+  const p4Fb = p4CellPixel(11, 15); // $FB
+  const p4FcBeforeMiss = p4CellPixel(12, 15); // $FC
+  if (p4HintWith('MISS')) throw new Error('the MISS-overlay hint must not appear before rpg.miss is set');
+  window.__app.store.commit('smoke: enable the MISS overlay', (project) => {
+    project.rpg.miss = true;
+  });
+  await wait(80);
+  if (p4CellPixel(10, 15) === p4Fa) throw new Error('$FA did not shade once rpg.miss was enabled');
+  if (p4CellPixel(11, 15) === p4Fb) throw new Error('$FB did not shade once rpg.miss was enabled');
+  if (p4CellPixel(12, 15) === p4FcBeforeMiss) throw new Error('$FC did not shade once rpg.miss was enabled');
+  const p4MissHint = p4HintWith('MISS');
+  if (!p4MissHint) throw new Error('expected a MISS-overlay hint once rpg.miss was enabled');
+  if (!p4MissHint.textContent.includes('$FA')) throw new Error('the MISS-overlay hint did not name $FA');
+  step('Tile Forge (c)/(d): $FA-$FC shade and the hint names MISS and $FA once rpg.miss is enabled', 'ok');
+
+  window.__app.store.commit('smoke: disable the MISS overlay', (project) => {
+    project.rpg.miss = false;
+  });
+  await wait(80);
+  if (p4CellPixel(10, 15) !== p4Fa) throw new Error('$FA stayed shaded after rpg.miss was disabled');
+  if (p4CellPixel(11, 15) !== p4Fb) throw new Error('$FB stayed shaded after rpg.miss was disabled');
+  if (p4CellPixel(12, 15) !== p4FcBeforeMiss) throw new Error('$FC stayed shaded after rpg.miss was disabled');
+  if (p4HintWith('MISS')) throw new Error('the MISS-overlay hint survived rpg.miss being disabled');
+  step('Tile Forge (c)/(d): $FA-$FC shading and the MISS hint disappear once rpg.miss is disabled', 'ok');
+
   // (c) the table-conflation fix (§6.3): the two sheets' own reserved-range
   // lists must be genuinely independent. This project is still text-using
   // (gameType 'rpg') and non-MMC3 (mapper switched to MMC1 just above), so
@@ -6749,6 +6779,32 @@ const scenario = (dir, sampleDir, sampleRpgDir) => `
     step(
       'Build Forge Hit feedback checkbox round trip',
       'clicking commits rpg.hitFeedback = true, reverted to false by a follow-up commit'
+    );
+  }
+
+  // Phase 2b MISS overlay (docs/design-battle-animation.md §13.9) -- the
+  // identical round trip, its own independent toggle beside Hit feedback.
+  {
+    const missCheckbox = [...document.querySelectorAll('#stage label.check')]
+      .find((l) => l.textContent.trim() === 'MISS overlay')
+      ?.querySelector('input[type=checkbox]');
+    if (!missCheckbox) throw new Error('the Build panel showed no "MISS overlay" checkbox for an RPG project');
+    if (missCheckbox.checked) throw new Error('sample-rpg’s own rpg.miss should default to false');
+    missCheckbox.click();
+    await wait(150);
+    if (window.__app.store.project.rpg.miss !== true) {
+      throw new Error('clicking the MISS overlay checkbox did not commit rpg.miss = true');
+    }
+    window.__app.store.commit('smoke: revert MISS overlay toggle', (draft) => {
+      draft.rpg.miss = false;
+    });
+    await wait(150);
+    if (window.__app.store.project.rpg.miss !== false) {
+      throw new Error('reverting the MISS overlay toggle did not commit rpg.miss = false');
+    }
+    step(
+      'Build Forge MISS overlay checkbox round trip',
+      'clicking commits rpg.miss = true, reverted to false by a follow-up commit'
     );
   }
 

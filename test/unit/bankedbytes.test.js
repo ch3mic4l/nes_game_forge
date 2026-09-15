@@ -72,7 +72,8 @@ import {
   MAGIC_DEFENCE_BATTLE_ALLOWANCE,
   MONSTER_SPELL_LIST_BATTLE_ALLOWANCE,
   BATTLE_ANIM_BATTLE_ALLOWANCE,
-  HIT_FEEDBACK_BATTLE_ALLOWANCE
+  HIT_FEEDBACK_BATTLE_ALLOWANCE,
+  MISS_BATTLE_ALLOWANCE
 } from '../../main/build/battletables.js';
 import {
   SUPPORTED_MAPPERS,
@@ -94,7 +95,9 @@ import {
   projectUsesMonsterSpellList,
   projectWithoutMonsterSpellList,
   projectUsesHitFeedback,
-  projectWithoutHitFeedback
+  projectWithoutHitFeedback,
+  projectUsesMiss,
+  projectWithoutMiss
 } from '../../shared/project.js';
 import { FONT_BASE, SPRITE_ARROW_TILE, fontChrPages } from '../../shared/font.js';
 import { BLANK_TILE } from '../../shared/chr.js';
@@ -527,10 +530,9 @@ test('BATTLE_ANIM_BATTLE_ALLOWANCE is exact, on every RPG-capable board', {
 // shape as BATTLE_ANIM_BATTLE_ALLOWANCE just above, plus a source/symbol
 // check that turning HIT_FEEDBACK_ENABLED on never pulls in any MISS-side
 // routine (§7's own cross-gating rule: nothing MISS-specific may key off
-// this flag). MISS does not exist in the tree yet, so the negative half of
-// this check cannot fail until phase 2b adds those labels -- it exists now
-// so a future phase 2b that wires MISS to the wrong flag is caught by an
-// existing test rather than a new one nobody thinks to write.
+// this flag). MISS's own code now exists in the tree (phase 2b), so this
+// check is real: both the on and off builds below are asserted to carry
+// none of battle_miss_arm/battle_miss_tick/battle_miss_draw/miss_tiles.
 //
 // Wrong implementation this catches: a stale HIT_FEEDBACK_BATTLE_ALLOWANCE
 // drifting from the real assembled cost; a HIT_FEEDBACK_ENABLED-gated block
@@ -609,6 +611,118 @@ test('HIT_FEEDBACK_BATTLE_ALLOWANCE is exact, on every RPG-capable board, and pu
           'the tree yet (phase 2b), and neither HIT_FEEDBACK_ENABLED being on nor off may ever pull it in'
       );
     }
+  }
+});
+
+// Phase 2b MISS overlay (docs/design-battle-animation.md §13.9, §14 "MISS
+// alone -- ledger and cross-gating"). The identical isolation shape as
+// HIT_FEEDBACK_BATTLE_ALLOWANCE just above, mirrored in the OTHER
+// direction: MISS_ENABLED on, HIT_FEEDBACK_ENABLED off, and a source/symbol
+// check that turning MISS_ENABLED on never pulls in any hit-feedback-side
+// routine or its blink-skip branches.
+//
+// Wrong implementation this catches: a stale MISS_BATTLE_ALLOWANCE drifting
+// from the real assembled cost; a MISS_ENABLED-gated block that also
+// assembles hit feedback's own code (the leak in the OTHER direction from
+// the test above).
+test('MISS_BATTLE_ALLOWANCE is exact, on every RPG-capable board, and pulls in none of battle_hurt_*', {
+  skip: !hasNesasm && 'nesasm not found on PATH'
+}, async (t) => {
+  for (const mapper of CAPABLE_MAPPERS) {
+    const off = await measureRegion(t, mapper);
+    const on = await measureRegion(t, mapper, (p) => {
+      p.rpg.miss = true;
+    });
+    const codeOff = off.used - battleTableBytes(off.project);
+    const codeOn = on.used - battleTableBytes(on.project);
+    const delta = codeOn - codeOff;
+    assert.equal(
+      delta,
+      MISS_BATTLE_ALLOWANCE,
+      `${mapper.name}: MISS costs ${delta} bytes of banked code (${codeOff} -> ${codeOn}), but ` +
+        `MISS_BATTLE_ALLOWANCE reserves ${MISS_BATTLE_ALLOWANCE} -- this allowance must equal ` +
+        'the real cost exactly, on every board.'
+    );
+
+    const dir = await fsp.mkdtemp(path.join(os.tmpdir(), 'forge-miss-symbols-'));
+    t.after(() => fsp.rm(dir, { recursive: true, force: true }));
+    const project = await loadProject(SAMPLE_RPG);
+    project.cartridge.mapper = mapper.id;
+    project.party[0].renamable = false;
+    if (project.party[1]) project.party[1].renamable = false;
+    project.rpg.miss = true;
+    await saveProject(dir, project);
+    const built = await buildProject({ dir, project, log: () => {} });
+    const symbols = await fsp.readFile(built.symbolPath, 'utf8');
+    for (const label of ['battle_miss_arm', 'battle_miss_tick', 'battle_miss_draw', 'miss_tiles']) {
+      assert.match(
+        symbols,
+        new RegExp(`^${label}\\s*=`, 'm'),
+        `${mapper.name}: ${label} should be a named symbol in game.fns once MISS_ENABLED is on`
+      );
+    }
+    for (const label of ['battle_hurt_arm', 'battle_hurt_tick', 'battle_hurt_attr_open', 'battle_hurt_restore_slot']) {
+      assert.doesNotMatch(
+        symbols,
+        new RegExp(`^${label}\\s*=`, 'm'),
+        `${mapper.name}: ${label} must not exist -- MISS_ENABLED must never pull in hit feedback's own code`
+      );
+    }
+
+    const offSymbols = await fsp.readFile(path.join(off.dir, 'build', 'game.fns'), 'utf8');
+    for (const label of ['battle_miss_arm', 'battle_miss_tick', 'battle_miss_draw', 'miss_tiles']) {
+      assert.doesNotMatch(
+        offSymbols,
+        new RegExp(`^${label}\\s*=`, 'm'),
+        `${mapper.name}: ${label} must not exist when MISS_ENABLED is off`
+      );
+    }
+    for (const label of ['battle_hurt_arm', 'battle_hurt_tick', 'battle_hurt_attr_open', 'battle_hurt_restore_slot']) {
+      assert.doesNotMatch(
+        offSymbols,
+        new RegExp(`^${label}\\s*=`, 'm'),
+        `${mapper.name}: ${label} must not exist in the off build either`
+      );
+    }
+  }
+});
+
+// Phase 2b MISS overlay (docs/design-battle-animation.md §12.7/§13.9 ledger
+// decision, §14 "Both toggles -- combined ledger"). Both flags live
+// together: the real assembled combined delta must be the clean sum
+// 235+134=369, NOT Appendix D's own frozen single-build measurement of 367
+// -- the two-independent-gate design (option (i)) pays 2 more bytes than
+// the shared-lda#0 prototype, since each toggle's own setup_monsters reset
+// now pays its own load.
+//
+// Wrong implementation this catches: a ledger that reuses Appendix D's own
+// 367 figure for the real two-gate implementation instead of re-measuring
+// the actual .if-separated code; a shared-load "optimization" that crept
+// back in despite the decision against it.
+test('both hit feedback and MISS together cost exactly 369 bytes of banked code, on every RPG-capable board', {
+  skip: !hasNesasm && 'nesasm not found on PATH'
+}, async (t) => {
+  for (const mapper of CAPABLE_MAPPERS) {
+    const off = await measureRegion(t, mapper);
+    const on = await measureRegion(t, mapper, (p) => {
+      p.rpg.hitFeedback = true;
+      p.rpg.miss = true;
+    });
+    const codeOff = off.used - battleTableBytes(off.project);
+    const codeOn = on.used - battleTableBytes(on.project);
+    const delta = codeOn - codeOff;
+    assert.equal(
+      delta,
+      369,
+      `${mapper.name}: both toggles together cost ${delta} bytes of banked code (${codeOff} -> ${codeOn}), ` +
+        'expected exactly 369 -- the clean sum of HIT_FEEDBACK_BATTLE_ALLOWANCE (235) and ' +
+        'MISS_BATTLE_ALLOWANCE (134), per the v5.1 ledger decision (option (i): each toggle pays its own reset load)'
+    );
+    assert.equal(
+      HIT_FEEDBACK_BATTLE_ALLOWANCE + MISS_BATTLE_ALLOWANCE,
+      369,
+      'sanity: the two named allowances must sum to the combined figure with no interaction term'
+    );
   }
 });
 
@@ -2131,6 +2245,59 @@ test('hit feedback: battleShortfallAdvice offers "hit feedback" exactly when str
     overriddenAdvice,
     /hit feedback/i,
     `the hit feedback candidate must be suppressed too when exact is false, got: ${overriddenAdvice}`
+  );
+  assert.deepEqual(project, preStripSnapshot, 'battleShortfallAdvice must not mutate the project');
+});
+
+// Phase 2b MISS overlay (docs/design-battle-animation.md §13.9), orchestrator
+// addition (not a §14 row, mirroring the hit-feedback shortfall-lever test
+// just above): "the MISS overlay" is offered exactly when stripping it
+// alone closes the deficit, never when it is off. Wrong implementation this
+// catches: the lever firing when MISS is off, or firing/not firing at the
+// wrong deficit boundary.
+test('MISS overlay: battleShortfallAdvice offers "the MISS overlay" exactly when stripping it alone closes the deficit, never when it is off', async () => {
+  const project = await loadProject(SAMPLE_RPG);
+  const mapper = SUPPORTED_MAPPERS.find((entry) => entry.id === project.cartridge.mapper);
+  project.party[0].renamable = false;
+  if (project.party[1]) project.party[1].renamable = false;
+
+  assert.equal(project.rpg.miss, false, 'sample-rpg should ship with MISS off');
+  const offSnapshot = structuredClone(project);
+  const offAdvice = battleShortfallAdvice(project, mapper, 1);
+  assert.doesNotMatch(offAdvice, /MISS overlay/i, `the lever must not fire when MISS is off, got: ${offAdvice}`);
+  assert.deepEqual(project, offSnapshot, 'battleShortfallAdvice must not mutate the project');
+
+  project.rpg.miss = true;
+  const preStripSnapshot = structuredClone(project);
+  const budget = battleRegionBytes(project, mapper);
+  const freed = budget - battleRegionBytes(projectWithoutMiss(project), mapper);
+  assert.equal(
+    freed,
+    MISS_BATTLE_ALLOWANCE,
+    `stripping MISS alone should free exactly MISS_BATTLE_ALLOWANCE (${MISS_BATTLE_ALLOWANCE}), got ${freed}`
+  );
+  assert.deepEqual(project, preStripSnapshot, 'projectWithoutMiss must not mutate its input');
+
+  const soloAdvice = battleShortfallAdvice(project, mapper, freed);
+  assert.match(
+    soloAdvice,
+    /removing the MISS overlay/i,
+    `advice should offer the MISS overlay as a fix at deficit = freed, got: ${soloAdvice}`
+  );
+  assert.deepEqual(project, preStripSnapshot, 'battleShortfallAdvice must not mutate the project');
+
+  const tooMuchAdvice = battleShortfallAdvice(project, mapper, freed + 1);
+  assert.doesNotMatch(
+    tooMuchAdvice,
+    /MISS overlay/i,
+    `advice must not offer the MISS overlay when it cannot close the deficit, got: ${tooMuchAdvice}`
+  );
+
+  const overriddenAdvice = battleShortfallAdvice(project, mapper, 1, { exact: false });
+  assert.doesNotMatch(
+    overriddenAdvice,
+    /MISS overlay/i,
+    `the MISS overlay candidate must be suppressed too when exact is false, got: ${overriddenAdvice}`
   );
   assert.deepEqual(project, preStripSnapshot, 'battleShortfallAdvice must not mutate the project');
 });

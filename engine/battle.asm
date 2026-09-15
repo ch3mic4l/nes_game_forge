@@ -238,6 +238,9 @@ battle_tick:
   .if HIT_FEEDBACK_ENABLED
   jsr battle_hurt_tick
   .endif
+  .if MISS_ENABLED
+  jsr battle_miss_tick
+  .endif
   jsr battle_dispatch
   jmp battle_draw_sprites
 
@@ -347,6 +350,25 @@ battle_hurt_attr_open:
   tay
   lda #$23
   jmp vram_open
+  .endif
+
+; Phase 2b MISS overlay (docs/design-battle-animation.md §13.4) -- ticks the
+; independent MISS overlay's own countdown. Guarded on BP_INTRO for the
+; identical reason battle_hurt_tick is: this runs before battle_dispatch on
+; every tick, including the very first one of a fresh battle, where bt_phase
+; is still genuinely BP_INTRO and bt_miss_left has not been reset yet for
+; this battle. No vram_buf work: MISS is sprite-drawn (see battle_miss_draw,
+; engine/battleui.asm), so ticking it costs nothing but the countdown itself.
+  .if MISS_ENABLED
+battle_miss_tick:
+  lda <bt_phase
+  cmp #BP_INTRO
+  beq battle_miss_tick_rts
+  lda <bt_miss_left
+  beq battle_miss_tick_rts
+  dec <bt_miss_left
+battle_miss_tick_rts:
+  rts
   .endif
 
 ; A dying monster's own block wipe is budgeted at one row a frame (see
@@ -474,6 +496,14 @@ setup_monsters:
   .if HIT_FEEDBACK_ENABLED
   lda #0
   sta <bt_hurt_left
+  .endif
+  ; MISS's own half of the same reset (docs/design-battle-animation.md
+  ; §13.4/§13.9 ledger decision, option (i)): its own lda #0 rather than
+  ; sharing hit feedback's, so the two allowances stay genuinely independent
+  ; and a MISS-only build pays for this even with HIT_FEEDBACK_ENABLED off.
+  .if MISS_ENABLED
+  lda #0
+  sta <bt_miss_left
   .endif
   ldx #0
 setup_monsters_slot:

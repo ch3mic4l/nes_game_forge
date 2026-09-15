@@ -64,11 +64,12 @@ import {
   projectUsesItems,
   createMap,
   createPartyMember,
-  RPG_LIMITS
+  RPG_LIMITS,
+  projectUsesMiss
 } from '../../shared/project.js';
 import { MAX_ITEMS as SAVE_MAX_ITEMS, saveIdentity } from '../../shared/save.js';
 import { mapperById } from '../../shared/cartridge.js';
-import { HEART_FULL_TILE, SPRITE_ARROW_TILE } from '../../shared/font.js';
+import { HEART_FULL_TILE, SPRITE_ARROW_TILE, MISS_TILE_M, MISS_TILE_S } from '../../shared/font.js';
 import { reservedRangeRects } from '../../renderer/widgets/sheetgeom.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
@@ -1024,6 +1025,131 @@ test('validateProject: the new blank-reference-in-active-range error never fires
     const problems = validateProject(project);
     const newErrors = problems.filter((p) => p.message.includes('references a blank tile inside the range'));
     assert.deepEqual(newErrors, [], `${fixture} must raise no blank-reference-in-active-range error`);
+  }
+});
+
+// --------------------------------------------------------------------------
+// Phase 2b MISS overlay (docs/design-battle-animation.md §13.5, §14 round 3
+// "Reservation integration, on/off"). Eight cases against an RPG project
+// with MISS_ENABLED on, mirroring SPRITE_ARROW_TILE's own existing coverage
+// above. (c) and (d) -- the Tile Forge's own hint/shading -- are DOM code,
+// covered in main/smoke.js instead (per the brief); this file covers (a),
+// (b), (b2), (b3), (e)-as-generator-stamping-proxy, (f), (g) directly.
+// --------------------------------------------------------------------------
+
+function makeMissRpg(mutate = () => {}) {
+  const project = createProject('MISS reservation', 'rpg');
+  project.rpg.miss = true;
+  mutate(project);
+  return project;
+}
+
+test('spriteReservedRanges: an RPG with miss:true reserves $FA-$FC as "the MISS overlay", on every RPG-capable board -- never gated on HIT_FEEDBACK_ENABLED', () => {
+  const project = makeMissRpg();
+  for (const mapper of [mapperById(1), mapperById(4), mapperById(30)]) {
+    const ranges = spriteReservedRanges(project, mapper);
+    const missRange = ranges.find((r) => r.label === 'the MISS overlay');
+    assert.ok(missRange, `${mapper.name}: expected a MISS overlay range`);
+    assert.deepEqual(missRange, { start: MISS_TILE_M, end: MISS_TILE_S + 1, label: 'the MISS overlay' });
+  }
+});
+
+// (a) artwork painted at $FA-$FC in a tileset is refused, naming "the MISS
+// overlay" and the real $FA-$FC range, never the cursor's own $FD wording.
+test('validateProject: (a) an RPG with miss:true and artwork at $FA gets exactly the MISS-overlay error, naming $FA-$FC, never the cursor wording', () => {
+  const project = makeMissRpg();
+  project.tilesets[0].sprites.tiles[MISS_TILE_M] = RESERVED_ART_TILE;
+
+  const problems = validateProject(project);
+  const missErrors = problems.filter((p) => p.severity === 'error' && p.where === 'Tile Forge' && /MISS overlay/.test(p.message));
+  assert.equal(missErrors.length, 1, 'expected exactly one MISS-overlay error');
+  assert.deepEqual(missErrors[0], {
+    severity: 'error',
+    where: 'Tile Forge',
+    message:
+      `Tileset "${project.tilesets[0].name}" has artwork in sprite tiles $FA-$FC, which the MISS overlay ` +
+      'reserves on this project.'
+  });
+  assert.ok(!missErrors[0].message.includes('targeting cursor'), 'must never use the cursor wording');
+});
+
+// (b) a metasprite that REFERENCES a blank $FA-$FC tile IS refused (the
+// existing generic reference-collision check, extended automatically once
+// spriteReservedRanges carries the MISS range), naming "the MISS overlay".
+// (b2) a genuinely blank, UNREFERENCED $FA-$FC tile is ALLOWED.
+// (b3) the same blank-reference scenario with MISS_ENABLED OFF raises no
+// error at all -- the refusal is genuinely gated on the feature.
+test('validateProject: (b)/(b2)/(b3) a metasprite referencing a blank $FA tile is refused only while MISS is live and only when actually referenced', () => {
+  const referencing = makeMissRpg();
+  referencing.sprites.metasprites.push({
+    id: referencing.sprites.metasprites.length,
+    name: 'Icon',
+    tiles: [{ tile: MISS_TILE_M, x: 0, y: 0, palette: 0 }]
+  });
+  const problems = validateProject(referencing);
+  const newErrors = problems.filter((p) => p.message.includes('references a blank tile inside the range'));
+  // A fresh RPG project ships two tilesets ("Main" and "Battle"), and the
+  // referenced tile is blank in both -- one error per tileset, not one flat
+  // "1 collision" count.
+  assert.equal(
+    newErrors.length,
+    referencing.tilesets.length,
+    '(b): a metasprite referencing a blank MISS tile must be refused once per tileset it is blank in'
+  );
+  assert.deepEqual(newErrors[0], {
+    severity: 'error',
+    where: 'Sprite Forge',
+    message:
+      'Metasprite "Icon" references a blank tile inside the range reserved for the MISS overlay ' +
+      `on tileset "${referencing.tilesets[0].name}" — the build will draw the MISS overlay there instead ` +
+      'of leaving it empty.'
+  });
+
+  // (b2) a genuinely blank, UNREFERENCED $FA-$FC tile is allowed.
+  const unreferenced = makeMissRpg();
+  assert.deepEqual(
+    validateProject(unreferenced).filter((p) => p.message.includes('MISS')),
+    [],
+    '(b2): a blank, unreferenced MISS tile must raise no error'
+  );
+
+  // (b3) the identical blank-reference scenario with MISS_ENABLED off
+  // raises no error at all.
+  const missOff = makeMissRpg((p) => { p.rpg.miss = false; });
+  missOff.sprites.metasprites.push({
+    id: missOff.sprites.metasprites.length,
+    name: 'Icon',
+    tiles: [{ tile: MISS_TILE_M, x: 0, y: 0, palette: 0 }]
+  });
+  assert.deepEqual(
+    validateProject(missOff).filter((p) => p.message.includes('MISS')),
+    [],
+    '(b3): with MISS off, the identical blank reference must raise no error at all'
+  );
+});
+
+// (f) with MISS_ENABLED off, none of the above fires and no tileset gains
+// the stamped art -- off-path byte-identity for the reservation itself.
+// (g) HIT_FEEDBACK_ENABLED on with MISS_ENABLED off produces the identical
+// off-path result as (f) -- confirming the reservation is genuinely MISS's
+// own gate, never hit feedback's.
+test('spriteReservedRanges: (f)/(g) an RPG with miss:false reserves nothing MISS-shaped, whether or not hitFeedback is on', () => {
+  const missOff = createProject('MISS off', 'rpg');
+  assert.equal(projectUsesMiss(missOff), false);
+  for (const mapper of [mapperById(1), mapperById(4), mapperById(30)]) {
+    const ranges = spriteReservedRanges(missOff, mapper);
+    assert.equal(ranges.find((r) => r.label === 'the MISS overlay'), undefined, '(f): no MISS range with miss:false');
+  }
+
+  const hitFeedbackOn = createProject('Hit feedback only', 'rpg');
+  hitFeedbackOn.rpg.hitFeedback = true;
+  for (const mapper of [mapperById(1), mapperById(4), mapperById(30)]) {
+    const ranges = spriteReservedRanges(hitFeedbackOn, mapper);
+    assert.equal(
+      ranges.find((r) => r.label === 'the MISS overlay'),
+      undefined,
+      '(g): hitFeedback alone must not reserve the MISS range -- the reservation is MISS\'s own gate'
+    );
   }
 });
 

@@ -416,8 +416,12 @@ export function mount(container, app) {
                 range.label === 'the HUD hearts'
                   ? `Tiles $${HEART_FULL_TILE.toString(16).toUpperCase()}–$FF are shaded because this project can hurt ` +
                     'the player: the HUD hearts are stamped over them when the ROM is built.'
-                  : `Tile $${SPRITE_ARROW_TILE.toString(16).toUpperCase()} is shaded because this project’s battle ` +
-                    'system reserves it for the targeting cursor, stamped over it when the ROM is built.'
+                  : range.label === 'the MISS overlay'
+                    ? `Tiles $${range.start.toString(16).toUpperCase()}–$${(range.end - 1).toString(16).toUpperCase()} ` +
+                      'are shaded because this project’s battle system reserves them for the MISS overlay, ' +
+                      'stamped over them when the ROM is built.'
+                    : `Tile $${SPRITE_ARROW_TILE.toString(16).toUpperCase()} is shaded because this project’s battle ` +
+                      'system reserves it for the targeting cursor, stamped over it when the ROM is built.'
               )
             )
         : null,

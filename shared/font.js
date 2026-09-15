@@ -35,6 +35,16 @@ export const HEART_EMPTY_TILE = 0xff;
  */
 export const SPRITE_ARROW_TILE = 0xfd;
 
+/**
+ * The phase 2b MISS overlay's three sprite tiles (docs/design-battle-
+ * animation.md §13.5) — M, I and S, the second S in "MISS" reusing
+ * MISS_TILE_S. Reserved only when projectUsesMiss (shared/project.js)
+ * answers true; never on an action project regardless of the stored field.
+ */
+export const MISS_TILE_M = 0xfa;
+export const MISS_TILE_I = 0xfb;
+export const MISS_TILE_S = 0xfc;
+
 /** The message window's text area: 4 rows of 28 characters. */
 export const BOX_COLS = 28;
 export const BOX_ROWS = 4;
@@ -193,6 +203,22 @@ export const HEART_TILES = {
 // hearts so it takes a colour every sprite palette actually defines.
 export const SPRITE_ARROW_ART = rowsToTile(
   ['#....', '##...', '###..', '####.', '###..', '##...', '#....'],
+  '1'
+);
+
+// The phase 2b MISS overlay's own glyphs (docs/design-battle-animation.md
+// §13.5), drawn in slot 1 like the arrow and the hearts so they take a
+// colour every sprite palette actually defines.
+export const MISS_TILE_M_ART = rowsToTile(
+  ['#...#', '##.##', '#.#.#', '#...#', '#...#', '#...#', '#...#'],
+  '1'
+);
+export const MISS_TILE_I_ART = rowsToTile(
+  ['###', '.#.', '.#.', '.#.', '.#.', '.#.', '###'],
+  '1'
+);
+export const MISS_TILE_S_ART = rowsToTile(
+  ['.####', '#....', '#....', '.###.', '....#', '....#', '####.'],
   '1'
 );
 
