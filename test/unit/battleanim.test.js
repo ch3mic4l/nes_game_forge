@@ -41,7 +41,8 @@ import { generateAssets } from '../../main/build/generate.js';
 import { projectUsesBattleAnimation, projectWithoutBattleAnimation } from '../../shared/project.js';
 import { MISS_TILE_M, MISS_TILE_I, MISS_TILE_S, MISS_TILE_M_ART, MISS_TILE_I_ART, MISS_TILE_S_ART } from '../../shared/font.js';
 import { encodeTiles } from '../../shared/chr.js';
-import { SUPPORTED_MAPPERS, rpgCapable } from '../../shared/cartridge.js';
+import { SUPPORTED_MAPPERS, rpgCapable, resolveMapper } from '../../shared/cartridge.js';
+import { battleFxOamRoom } from '../../shared/project.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const SAMPLE_RPG = path.join(ROOT, 'sample-rpg');
@@ -193,4 +194,74 @@ test('MISS overlay: the compiled BATTLE_FX_OAM_ROOM subtracts MISS_OAM_TILES onc
     expectedRoom,
     `BATTLE_FX_OAM_ROOM must equal MAX_OAM_ENTRIES - battleCombatantOamMax - MISS_OAM_TILES (${expectedRoom}) once MISS is live`
   );
+});
+
+// Phase 3 (docs/design-battle-animation.md §15.3, §15.7's own matrix): the
+// generator's own BATTLE_FX_OAM_ROOM arithmetic was extracted into
+// shared/project.js's own battleFxOamRoom export so the Magic/Monster Forge
+// preview widget can call the identical figure rather than duplicating it.
+// This is a PERMANENT regression pin, not a one-off proof: it asserts the
+// compiled config.inc constant against a HARDCODED expected value measured
+// from the pre-extraction baseline (5e34722) -- never by calling
+// battleFxOamRoom itself to derive the expectation, which would only check
+// the extraction against itself and could not catch a change to the
+// arithmetic smuggled in alongside the move. It also asserts the shared
+// export returns the identical number, pinning the export and the generated
+// equate to each other AND to a fixed figure.
+//
+// Six numbers, one per board x configuration, all measured at 5e34722 (this
+// phase's own starting commit) via a scratch `git worktree add` build of
+// sample-rpg with project.sprites.actors[0].battle.attackAnim = 1 and
+// project.spells[0].anim = 1 authored (a live, playable battle-animation
+// reference -- the six checked-in fixtures never author one, per §15.7's own
+// matrix row, so they cannot be used to measure this).
+const MEASURED_BATTLE_FX_OAM_ROOM = {
+  // measured at 5e34722
+  1: { fxOnly: 52, fxHitMiss: 48 }, // MMC1
+  4: { fxOnly: 51, fxHitMiss: 47 }, // MMC3
+  30: { fxOnly: 52, fxHitMiss: 48 } // UNROM 512
+};
+
+test('phase 3: the extracted battleFxOamRoom export and the compiled BATTLE_FX_OAM_ROOM equate agree, and both match a hardcoded figure measured pre-extraction', async (t) => {
+  for (const mapper of SUPPORTED_MAPPERS.filter(rpgCapable)) {
+    const expected = MEASURED_BATTLE_FX_OAM_ROOM[mapper.id];
+    assert.ok(expected, `no measured expectation recorded for mapper ${mapper.id} (${mapper.name})`);
+
+    for (const [configName, wantMiss] of [['fxOnly', false], ['fxHitMiss', true]]) {
+      const dir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'forge-battlefxoamroom-'));
+      t.after(() => fs.promises.rm(dir, { recursive: true, force: true }));
+      const project = await loadProject(SAMPLE_RPG);
+      project.cartridge.mapper = mapper.id;
+      project.sprites.actors[0].battle.attackAnim = 1;
+      project.spells[0].anim = 1;
+      if (wantMiss) {
+        project.rpg.hitFeedback = true;
+        project.rpg.miss = true;
+      }
+      await generateAssets({ dir, project });
+
+      const config = await fs.promises.readFile(path.join(dir, 'build', 'assets', 'config.inc'), 'utf8');
+      const match = config.match(/^BATTLE_FX_OAM_ROOM\s*=\s*(\d+)/m);
+      assert.ok(match, `${mapper.name}/${configName}: BATTLE_FX_OAM_ROOM must be a named constant in config.inc`);
+      const compiled = Number(match[1]);
+      const wantValue = wantMiss ? expected.fxHitMiss : expected.fxOnly;
+
+      assert.equal(
+        compiled,
+        wantValue,
+        `${mapper.name}/${configName}: compiled BATTLE_FX_OAM_ROOM (${compiled}) must equal the hardcoded ` +
+          `figure measured at 5e34722 (${wantValue})`
+      );
+
+      const resolvedMapper = resolveMapper(mapper.id);
+      const exported = battleFxOamRoom(project, resolvedMapper);
+      assert.equal(
+        exported,
+        wantValue,
+        `${mapper.name}/${configName}: shared/project.js's own battleFxOamRoom(project, mapper) (${exported}) ` +
+          `must equal the same hardcoded figure (${wantValue}) -- the shared export and the generated equate ` +
+          `must be pinned to each other AND to a fixed number, not merely to each other`
+      );
+    }
+  }
 });

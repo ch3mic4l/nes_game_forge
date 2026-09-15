@@ -85,6 +85,7 @@ import {
   projectUsesMiss,
   MISS_OAM_TILES,
   battleCombatantOamMax,
+  battleFxOamRoom,
   MAX_OAM_ENTRIES,
   projectUsesSting,
   projectUsesSfx,
@@ -2643,10 +2644,12 @@ export async function generateAssets({ dir, project, log = () => {} }) {
   // (`cmp #BATTLE_FX_OAM_ROOM+1`), no addition and so no byte-overflow
   // question. Emitted unconditionally (an equate costs nothing unless used,
   // and it is only ever read inside .if BATTLE_ANIM_ENABLED code).
-  const battleFxOamRoom = Math.max(
-    0,
-    MAX_OAM_ENTRIES - battleCombatantOamMax(project, mapper) - (missEnabled ? MISS_OAM_TILES : 0)
-  );
+  // Single-writer extraction (docs/design-battle-animation.md §15.3): the
+  // arithmetic itself now lives in shared/project.js's own battleFxOamRoom,
+  // called here under a renamed local so the import is never shadowed by its
+  // own initializer (a `const battleFxOamRoom = battleFxOamRoom(...)` line
+  // would be a TDZ ReferenceError on every build).
+  const battleFxRoom = battleFxOamRoom(project, mapper);
 
   // The HUD hearts, stamped after the placeholder check so an empty sprite table
   // is still recognised as empty. Two tiles, and only for a game that can hurt
@@ -3204,7 +3207,7 @@ export async function generateAssets({ dir, project, log = () => {} }) {
     // BATTLE_FX_OAM_ROOM is the compiled fit-check constant battle_fx_draw
     // reads (engine/battleui.asm); BATTLE_COMBATANT_OAM_MAX is never emitted.
     `BATTLE_ANIM_ENABLED = ${battleAnimEnabled ? 1 : 0}`,
-    `BATTLE_FX_OAM_ROOM = ${battleFxOamRoom}`,
+    `BATTLE_FX_OAM_ROOM = ${battleFxRoom}`,
     // Phase 2a hit feedback (docs/design-battle-animation.md §12.7):
     // battle_hurt_arm/tick/attr_open/restore_slot, and the blink-skip checks
     // in battle_sprite_pc/battle_sprite_mon. Independent of BATTLE_ANIM_ENABLED.

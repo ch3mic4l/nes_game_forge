@@ -15,6 +15,7 @@ import {
   renumberSpellDeletion,
   animationPickerOptions
 } from '../../../shared/project.js';
+import { mountBattleFxPreview } from '../../widgets/battlefxpreview.js';
 
 const NAME_LIMIT = RPG_LIMITS.nameLength;
 
@@ -62,10 +63,24 @@ const animationSelect = (selectedId, onChange) => {
 export function mount(container, app) {
   const state = { selected: 0 };
 
+  // A persistent fields/preview split (docs/design-battle-animation.md
+  // §15.5): fieldsHost is replaceable on every render(), previewHost is
+  // handed to mountBattleFxPreview ONCE at mount and never touched by
+  // fill() again -- the same failure sprite.js's own comment documents for
+  // its own tabs, applied here as one panel-body split in two rather than
+  // several persistent siblings.
   const body = el('div.panel-body');
+  const fieldsHost = el('div');
+  const previewHost = el('div', { style: { marginTop: '16px', maxWidth: '360px' } });
+  fill(body, fieldsHost, previewHost);
 
   const spells = () => store.project.spells;
   const spell = () => spells()[state.selected] ?? null;
+
+  const preview = mountBattleFxPreview(previewHost, {
+    getProject: () => store.project,
+    getAnimationId: () => spell()?.anim ?? null
+  });
 
   function updateSpell(label, mutate) {
     const index = state.selected;
@@ -100,7 +115,7 @@ export function mount(container, app) {
     const current = spell();
 
     fill(
-      body,
+      fieldsHost,
       el(
         'p.hint',
         { style: { marginBottom: '12px', maxWidth: '640px' } },
@@ -242,6 +257,8 @@ export function mount(container, app) {
           )
         : null
     );
+
+    preview.sync();
   }
 
   const root = el(
@@ -256,8 +273,10 @@ export function mount(container, app) {
 
   return {
     destroy() {
+      preview.destroy();
       app.setMeta('');
     },
-    onProjectChange: render
+    onProjectChange: render,
+    stepPreview: () => preview.stepPreview()
   };
 }

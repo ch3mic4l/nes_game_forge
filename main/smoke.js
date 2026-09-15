@@ -7134,6 +7134,1359 @@ const scenario = (dir, sampleDir, sampleRpgDir) => `
     step('Magic Forge Animation picker round trip', 'choosing Slime commits spell.anim = ' + slimeOption.value + ', reverted to null by a follow-up commit');
   }
 
+  // --- Battle-side animation, phase 3: the Magic/Monster Forge preview
+  // canvas (docs/design-battle-animation.md §15, §15.7's own smoke row).
+  // Still on Magic Forge with sample-rpg open, immediately after the
+  // Animation-picker round trip above -- Ice is back to anim: null.
+  {
+    const battleTilesetForPreview = rpgStore.project.tilesets[rpgStore.project.rpg.battleTilesetId];
+    const previewTileA = 110;
+    const previewTileB = 111;
+    const solidA = '1'.repeat(64);
+    const solidB = '2'.repeat(64);
+    const animationsBeforePreview = rpgStore.project.sprites.animations.length;
+    const metaspritesBeforePreview = rpgStore.project.sprites.metasprites.length;
+    const originalTileA = battleTilesetForPreview.sprites.tiles[previewTileA];
+    const originalTileB = battleTilesetForPreview.sprites.tiles[previewTileB];
+    const boltSpellIndexForPreview = rpgStore.project.spells.findIndex((s) => s.name === 'Bolt');
+    if (boltSpellIndexForPreview === -1) {
+      throw new Error('Bolt spell should still be present for the battle-fx preview smoke test');
+    }
+
+    const blankPreviewCanvas = () => document.querySelector('#stage canvas.battlefx-canvas');
+
+    let previewAnimId;
+    rpgStore.commit('smoke: seed a two-frame battle-fx preview fixture', (project) => {
+      const bt = project.rpg.battleTilesetId;
+      project.tilesets[bt].sprites.tiles[previewTileA] = solidA;
+      project.tilesets[bt].sprites.tiles[previewTileB] = solidB;
+      const metaA = project.sprites.metasprites.length;
+      project.sprites.metasprites.push({
+        id: metaA,
+        name: 'PreviewA',
+        tiles: [{ x: 0, y: 0, tile: previewTileA, palette: 0, hflip: false, vflip: false }]
+      });
+      const metaB = project.sprites.metasprites.length;
+      project.sprites.metasprites.push({
+        id: metaB,
+        name: 'PreviewB',
+        tiles: [{ x: 0, y: 0, tile: previewTileB, palette: 0, hflip: false, vflip: false }]
+      });
+      previewAnimId = project.sprites.animations.length;
+      project.sprites.animations.push({
+        id: previewAnimId,
+        name: 'PreviewFx',
+        loop: false,
+        frames: [
+          { metaspriteId: metaA, duration: 30 },
+          { metaspriteId: metaB, duration: 20 }
+        ]
+      });
+      project.spells[boltSpellIndexForPreview].anim = previewAnimId;
+    });
+    await wait(150);
+
+    const findSpellSelectForPreview = (name) =>
+      [...document.querySelectorAll('#stage select')].find((s) => [...s.options].some((o) => o.textContent === name));
+    const spellListForBolt = findSpellSelectForPreview('Bolt');
+    if (!spellListForBolt) throw new Error('Magic Forge has no spell list select with a Bolt option');
+    const boltOptionIndex = [...spellListForBolt.options].findIndex((o) => o.textContent === 'Bolt');
+    // P2-1 fix: the genuine arm (selecting Bolt, whose spell.anim was just
+    // set to a real animation, forces render()'s own preview.sync() to
+    // re-arm synchronously inside this dispatchEvent call) through every
+    // observation below runs in ONE synchronous block with no await
+    // anywhere inside it. An await here would let the widget's own real
+    // rAF loop (already scheduled by the re-arm) tick against frames this
+    // test has not yet observed -- exactly the race the reviewer reproduced
+    // by extracting this block into an unthrottled window (round-1 P2-1).
+    spellListForBolt.value = String(boltOptionIndex);
+    spellListForBolt.dispatchEvent(new Event('change', { bubbles: true }));
+
+    const obs0 = blankPreviewCanvas().toDataURL();
+    // The "blank" reference must be a canvas of the SAME logical dimensions
+    // as the live preview -- bounds/zoom are derived from the animation's
+    // own tile extents (§15.5), not the unrelated 64x64 "unplayable"
+    // fallback, so a blank reference of a DIFFERENT size would always read
+    // as "different" regardless of whether the canvas was actually cleared.
+    const blankRefSameSize = document.createElement('canvas');
+    blankRefSameSize.width = blankPreviewCanvas().width;
+    blankRefSameSize.height = blankPreviewCanvas().height;
+    const blankSnapshot = blankRefSameSize.toDataURL();
+    if (obs0 === blankSnapshot) {
+      throw new Error('battle-fx preview observation 0 must differ from a blank canvas');
+    }
+
+    // Frame boundary: frame 0's own duration is 30.
+    for (let i = 0; i < 30; i++) window.__app.current.stepPreview();
+    const obsBoundary = blankPreviewCanvas().toDataURL();
+    if (obsBoundary === obs0) {
+      throw new Error('battle-fx preview must show different pixels at the frame boundary than at observation 0');
+    }
+
+    // Frame 1's own duration is 20 -- this reaches natural termination.
+    for (let i = 0; i < 20; i++) window.__app.current.stepPreview();
+    const obsTerminated = blankPreviewCanvas().toDataURL();
+    if (obsTerminated !== blankSnapshot) {
+      throw new Error('battle-fx preview must clear to blank on natural termination');
+    }
+    const buttonAfterTermination = document.querySelector('#stage .battlefx-button');
+    if (!buttonAfterTermination || buttonAfterTermination.textContent !== 'Replay') {
+      throw new Error('expected the button to read Replay after natural termination, saw ' + buttonAfterTermination?.textContent);
+    }
+
+    // +2 past termination: still blank.
+    window.__app.current.stepPreview();
+    window.__app.current.stepPreview();
+    const obsPlus2 = blankPreviewCanvas().toDataURL();
+    if (obsPlus2 !== blankSnapshot) {
+      throw new Error('battle-fx preview must still be blank two ticks past termination');
+    }
+
+    // Replay must reproduce observation 0 byte-for-byte. The button's own
+    // onclick calls sync({ forceReplay: true }) synchronously (P2-1: no
+    // await between the click and this capture either).
+    buttonAfterTermination.click();
+    const obsAfterReplay = blankPreviewCanvas().toDataURL();
+    if (obsAfterReplay !== obs0) {
+      throw new Error('battle-fx preview Replay must reproduce observation 0 byte-for-byte');
+    }
+    step(
+      'battle-fx preview: Magic Forge two-frame fixture',
+      'observation 0 differs from blank, frame boundary differs from observation 0, termination equals blank with Replay shown, +2 stays blank, Replay reproduces observation 0'
+    );
+
+    rpgStore.commit('smoke: revert the battle-fx preview fixture', (project) => {
+      const bt = project.rpg.battleTilesetId;
+      project.sprites.animations.length = animationsBeforePreview;
+      project.sprites.metasprites.length = metaspritesBeforePreview;
+      project.spells[boltSpellIndexForPreview].anim = null;
+      project.tilesets[bt].sprites.tiles[previewTileA] = originalTileA;
+      project.tilesets[bt].sprites.tiles[previewTileB] = originalTileB;
+    });
+    await wait(150);
+  }
+
+  // --- battle-fx preview: scratch-mounted widget tests (fake project + fake
+  // clock), items 2-3-4-5-6-7 of §15.7's own smoke row. Fully isolated from
+  // the real store -- a hand-built fake project object is enough to drive
+  // mountBattleFxPreview directly, since it never reaches into store/app.
+  {
+    const { mountBattleFxPreview: mountScratchPreview } = await import('./widgets/battlefxpreview.js');
+
+    const makeFakeProject = ({ animations, metasprites, tiles }) => ({
+      project: { gameType: 'action' }, // battleCombatantOamMax/projectUsesMiss both short-circuit for a non-RPG
+      cartridge: { mapper: 0 },
+      rpg: { battleTilesetId: 0, miss: false },
+      sprites: { animations, metasprites, actors: [] },
+      party: [],
+      palettes: { sprite: [[0x0f, 0x16, 0x27, 0x30]] },
+      tilesets: [{ sprites: { tiles } }]
+    });
+
+    const scratchHost = document.createElement('div');
+    scratchHost.style.position = 'fixed';
+    scratchHost.style.left = '-9999px';
+    scratchHost.style.top = '0px';
+    scratchHost.style.width = '300px';
+    scratchHost.style.height = '300px';
+    document.body.appendChild(scratchHost);
+    const scratchCanvas = () => scratchHost.querySelector('canvas.battlefx-canvas');
+    const scratchCaption = () => scratchHost.querySelector('p.battlefx-caption');
+    const scratchButton = () => scratchHost.querySelector('button.battlefx-button');
+
+    // Item 2: fitting-then-oversized-then-end. The canvas clears on the
+    // second frame's own tick (the skip, caption present) and stays cleared
+    // through termination.
+    {
+      const fittingMeta = { id: 0, name: 'Fit', tiles: [{ x: 0, y: 0, tile: 0, palette: 0, hflip: false, vflip: false }] };
+      const oversizedMeta = {
+        id: 1,
+        name: 'Oversized',
+        tiles: Array.from({ length: 100 }, () => ({ x: 0, y: 0, tile: 0, palette: 0, hflip: false, vflip: false }))
+      };
+      const anim2 = { frames: [{ metaspriteId: 0, duration: 5 }, { metaspriteId: 1, duration: 5 }] };
+      const proj2 = makeFakeProject({ animations: [anim2], metasprites: [fittingMeta, oversizedMeta], tiles: ['1'.repeat(64)] });
+      const w2 = mountScratchPreview(scratchHost, { getProject: () => proj2, getAnimationId: () => 0, now: () => 0, schedule: () => {} });
+      w2.sync();
+      for (let i = 0; i < 5; i++) w2.stepPreview();
+      const capOnSkip = scratchCaption().textContent;
+      if (capOnSkip.indexOf("won't draw in-game") === -1) {
+        throw new Error('expected the fit-skip caption on the oversized frame, saw: ' + JSON.stringify(capOnSkip));
+      }
+      const canvasOnSkip = scratchCanvas().toDataURL();
+      for (let i = 0; i < 5; i++) w2.stepPreview();
+      const canvasTerminated = scratchCanvas().toDataURL();
+      if (canvasTerminated !== canvasOnSkip) {
+        throw new Error('expected the canvas to stay identically cleared from the skip through natural termination');
+      }
+      w2.destroy();
+      step('battle-fx preview: (2) fitting-then-oversized-then-end clears on the skip and stays cleared to termination', '...');
+    }
+
+    // Item 2b (P2-2 fix): the fake, gameType: 'action' project above can
+    // never see the REAL RPG room path -- battleCombatantOamMax short-
+    // circuits to 0 for it, so battleFxOamRoom always answers the full 64,
+    // and its own 100-tile "oversized" frame is larger than normalizeProject
+    // would ever let a real metasprite become. Replacing the widget's own
+    // battleFxOamRoom(project, mapper) call with the literal 64 passed
+    // every assertion above. This block instead mutates the LIVE,
+    // already-normalized sample-rpg project (commit + revert, the same
+    // shape the earlier real-Forge fixture already uses) with four 12-tile
+    // filler monsters -- rpg.test.js's own buildFxFitFixture shape -- to
+    // pull the compiled room below 16, then reads the expected room back
+    // from shared/project.js's OWN battleFxOamRoom/battleCombatantOamMax:
+    // the identical arithmetic the widget itself must call, not a value
+    // this test invents independently.
+    {
+      const {
+        battleFxOamRoom: computeRoomForRoomTest,
+        MISS_OAM_TILES: missOamTilesForRoomTest
+      } = await import('../shared/project.js');
+      const { resolveMapper: resolveMapperForRoomTest } = await import('../shared/cartridge.js');
+
+      const animsBeforeRoom = rpgStore.project.sprites.animations.length;
+      const metasBeforeRoom = rpgStore.project.sprites.metasprites.length;
+      const actorsBeforeRoom = rpgStore.project.sprites.actors.length;
+      const entitiesBeforeRoom = rpgStore.project.maps[0].screens[0].entities.length;
+      const missBeforeRoom = rpgStore.project.rpg.miss;
+      // Real, opaque pixel data for the exact-fit/one-over metasprites'
+      // OWN tile indices -- the room ceiling is under 16, so 20 tiles
+      // (150-169) comfortably covers room2b and room2b+1 either way. A
+      // blank (never-drawn) tile index here would silently paint nothing at
+      // all, which is indistinguishable from a correctly-skipped frame.
+      const roomTileBase = 150;
+      const roomTileCount = 20;
+      const battleTilesetForRoom = rpgStore.project.tilesets[rpgStore.project.rpg.battleTilesetId];
+      const originalRoomTiles = Array.from({ length: roomTileCount }, (_, i) => battleTilesetForRoom.sprites.tiles[roomTileBase + i]);
+
+      let room2b;
+      let fitMetaId2b;
+      let overMetaId2b;
+      let fitAnimId2b;
+      let mixedAnimId2b;
+      let mapperForRoom2b;
+      rpgStore.commit('smoke: seed a room-shrinking filler formation for the battle-fx room test', (project) => {
+        const bigMetaId = project.sprites.metasprites.length;
+        project.sprites.metasprites.push({
+          id: bigMetaId,
+          name: 'RoomFiller',
+          tiles: Array.from({ length: 12 }, (_, i) => ({ x: 0, y: 0, tile: 64 + i, palette: 0, hflip: false, vflip: false }))
+        });
+        const bigAnimId = project.sprites.animations.length;
+        project.sprites.animations.push({ id: bigAnimId, name: 'RoomFillerWalk', loop: true, frames: [{ metaspriteId: bigMetaId, duration: 8 }] });
+        const fillerIds = [];
+        for (let i = 0; i < 4; i++) {
+          const id = project.sprites.actors.length;
+          project.sprites.actors.push({
+            id,
+            name: 'RoomFiller' + i,
+            behavior: 'npc',
+            speed: 1,
+            hp: 1,
+            damage: 0,
+            anims: { idle: bigAnimId, walkDown: null, walkUp: null, walkSide: null },
+            battle: {}
+          });
+          fillerIds.push(id);
+        }
+        // Live (cond: none, never disabled) but never actually triggered by
+        // this scenario -- battleFormations walks liveCommands regardless of
+        // whether a placement is ever interacted with (rpg.test.js's own
+        // buildFxFitFixture comment explains the same trick).
+        project.maps[0].screens[0].entities.push({
+          actorId: 0,
+          x: 8,
+          y: 8,
+          props: { event: { pages: [{ commands: [{ op: 'battle', monsters: fillerIds }] }] } }
+        });
+
+        mapperForRoom2b = resolveMapperForRoomTest(project.cartridge.mapper);
+        room2b = computeRoomForRoomTest(project, mapperForRoom2b);
+
+        const bt2b = project.rpg.battleTilesetId;
+        for (let i = 0; i < roomTileCount; i++) {
+          project.tilesets[bt2b].sprites.tiles[roomTileBase + i] = '1'.repeat(64);
+        }
+
+        fitMetaId2b = project.sprites.metasprites.length;
+        project.sprites.metasprites.push({
+          id: fitMetaId2b,
+          name: 'RoomFit',
+          tiles: Array.from({ length: room2b }, (_, i) => ({ x: 0, y: 0, tile: 150 + i, palette: 0, hflip: false, vflip: false }))
+        });
+        fitAnimId2b = project.sprites.animations.length;
+        project.sprites.animations.push({ id: fitAnimId2b, name: 'RoomFitAnim', loop: false, frames: [{ metaspriteId: fitMetaId2b, duration: 5 }] });
+
+        overMetaId2b = project.sprites.metasprites.length;
+        project.sprites.metasprites.push({
+          id: overMetaId2b,
+          name: 'RoomOver',
+          tiles: Array.from({ length: room2b + 1 }, (_, i) => ({ x: 0, y: 0, tile: 150 + i, palette: 0, hflip: false, vflip: false }))
+        });
+        mixedAnimId2b = project.sprites.animations.length;
+        project.sprites.animations.push({
+          id: mixedAnimId2b,
+          name: 'RoomMixedAnim',
+          loop: false,
+          frames: [
+            { metaspriteId: fitMetaId2b, duration: 5 },
+            { metaspriteId: overMetaId2b, duration: 5 }
+          ]
+        });
+      });
+      await wait(150);
+
+      if (!(room2b >= 3 && room2b < 16)) {
+        throw new Error('sanity: expected the filler formation to shrink the compiled room below 16, got ' + room2b);
+      }
+      // Every authored tile count must survive normalization untouched, or
+      // the "exact-fit"/"one-over" frames below are not what the widget will
+      // actually see once the store round-trips them. P3-2 fix: store.commit
+      // mutates the in-memory project and notifies -- it never normalizes
+      // (renderer/store.js) -- so reading rpgStore.project straight back
+      // only proves the fixture was built as authored; it can never observe
+      // anything normalizeProject would change. Actually cross that
+      // boundary: normalize a disposable structuredClone and assert on THAT
+      // returned object, then hand the normalized copy to the widgets below
+      // so they see what a real build would.
+      const { normalizeProject: normalizeProject2b } = await import('../shared/project.js');
+      const normalizedProject2b = normalizeProject2b(structuredClone(rpgStore.project));
+      if (normalizedProject2b.sprites.metasprites[fitMetaId2b].tiles.length !== room2b) {
+        throw new Error('the exact-fit metasprite lost tiles to normalization, expected ' + room2b);
+      }
+      if (normalizedProject2b.sprites.metasprites[overMetaId2b].tiles.length !== room2b + 1) {
+        throw new Error('the one-over metasprite lost tiles to normalization, expected ' + (room2b + 1));
+      }
+      if (computeRoomForRoomTest(normalizedProject2b, mapperForRoom2b) !== room2b) {
+        throw new Error('the compiled room itself changed after normalization, expected it to stay ' + room2b);
+      }
+
+      const roomBlankRef = (w, h) => {
+        const c = document.createElement('canvas');
+        c.width = w;
+        c.height = h;
+        return c.toDataURL();
+      };
+
+      // (i) the exact-fit frame draws real pixels -- differs from a
+      // same-sized blank -- and shows no caption. Handed the NORMALIZED copy
+      // (not the live store object) so this widget sees what a real build
+      // would.
+      const wRoomFit = mountScratchPreview(scratchHost, { getProject: () => normalizedProject2b, getAnimationId: () => fitAnimId2b, now: () => 0, schedule: () => {} });
+      wRoomFit.sync();
+      const roomFitCanvas = scratchCanvas();
+      const roomFitPixels = roomFitCanvas.toDataURL();
+      if (roomFitPixels === roomBlankRef(roomFitCanvas.width, roomFitCanvas.height)) {
+        throw new Error('expected the exact-fit RPG-room frame to draw real pixels, not a blank canvas (room=' + room2b + ')');
+      }
+      const roomFitCaption = scratchCaption().textContent;
+      if (roomFitCaption !== '') {
+        throw new Error('expected no caption for a frame that fits the real room, saw: ' + JSON.stringify(roomFitCaption));
+      }
+      wRoomFit.destroy();
+
+      // (ii) the mixed fit-then-oversized animation: the second (room+1)
+      // frame skips with the EXACT room/count caption string (not a
+      // substring), on a same-sized blank canvas, and stays blank through
+      // termination.
+      const wRoomMixed = mountScratchPreview(scratchHost, { getProject: () => normalizedProject2b, getAnimationId: () => mixedAnimId2b, now: () => 0, schedule: () => {} });
+      wRoomMixed.sync();
+      for (let i = 0; i < 5; i++) wRoomMixed.stepPreview(); // frame 0 (fits) -> frame 1 (room2b+1, oversized)
+      const roomSkipCanvas = scratchCanvas();
+      const roomSkipCaption = scratchCaption().textContent;
+      const expectedSkipCaption =
+        "This frame won't draw in-game (" + (room2b + 1) + ' tiles, only ' + room2b + " available) — reduce the party, formation, or the frame's own tile count.";
+      if (roomSkipCaption !== expectedSkipCaption) {
+        throw new Error('expected the EXACT room/count caption, saw: ' + JSON.stringify(roomSkipCaption) + ' wanted: ' + JSON.stringify(expectedSkipCaption));
+      }
+      const roomSkipPixels = roomSkipCanvas.toDataURL();
+      if (roomSkipPixels !== roomBlankRef(roomSkipCanvas.width, roomSkipCanvas.height)) {
+        throw new Error('expected the skip tick to be a same-sized blank canvas (real room=' + room2b + ')');
+      }
+      for (let i = 0; i < 5; i++) wRoomMixed.stepPreview(); // reach termination
+      const roomTerminatedPixels = scratchCanvas().toDataURL();
+      if (roomTerminatedPixels !== roomBlankRef(scratchCanvas().width, scratchCanvas().height)) {
+        throw new Error('expected termination to stay a same-sized blank canvas');
+      }
+      wRoomMixed.destroy();
+
+      // (iii) MISS toggle: the SAME room-sized (fits) frame skips once
+      // rpg.miss is true -- MISS_OAM_TILES shrinks the room by 4 -- with its
+      // own exact caption naming the shrunk room.
+      rpgStore.commit('smoke: turn on MISS for the battle-fx room test', (project) => {
+        project.rpg.miss = true;
+      });
+      await wait(150);
+      const roomWithMiss2b = computeRoomForRoomTest(rpgStore.project, mapperForRoom2b);
+      if (roomWithMiss2b !== room2b - missOamTilesForRoomTest) {
+        throw new Error(
+          'sanity: expected MISS to shrink the room by exactly ' + missOamTilesForRoomTest + ', got room=' + room2b + ' roomWithMiss=' + roomWithMiss2b
+        );
+      }
+      // Re-normalize a fresh disposable copy now that rpg.miss is live --
+      // the earlier normalizedProject2b was taken before this commit and
+      // does not carry it. Assert the MISS-shrunk room also survives
+      // normalization, then hand THIS copy to the widget too (MISS variant
+      // included, per the P3-2 fix).
+      const normalizedProjectMiss2b = normalizeProject2b(structuredClone(rpgStore.project));
+      if (computeRoomForRoomTest(normalizedProjectMiss2b, mapperForRoom2b) !== roomWithMiss2b) {
+        throw new Error('the MISS-shrunk compiled room changed after normalization, expected it to stay ' + roomWithMiss2b);
+      }
+      const wRoomMiss = mountScratchPreview(scratchHost, { getProject: () => normalizedProjectMiss2b, getAnimationId: () => fitAnimId2b, now: () => 0, schedule: () => {} });
+      wRoomMiss.sync();
+      const missSkipCaption = scratchCaption().textContent;
+      const expectedMissCaption =
+        "This frame won't draw in-game (" + room2b + ' tiles, only ' + roomWithMiss2b + " available) — reduce the party, formation, or the frame's own tile count.";
+      if (missSkipCaption !== expectedMissCaption) {
+        throw new Error('expected the MISS-on caption naming the shrunk room, saw: ' + JSON.stringify(missSkipCaption) + ' wanted: ' + JSON.stringify(expectedMissCaption));
+      }
+      const missSkipPixels = scratchCanvas().toDataURL();
+      if (missSkipPixels !== roomBlankRef(scratchCanvas().width, scratchCanvas().height)) {
+        throw new Error('expected the MISS-on skip to be a same-sized blank canvas');
+      }
+      wRoomMiss.destroy();
+
+      rpgStore.commit('smoke: revert MISS for the battle-fx room test', (project) => {
+        project.rpg.miss = missBeforeRoom;
+      });
+      await wait(150);
+
+      rpgStore.commit('smoke: revert the room-shrinking filler formation', (project) => {
+        project.sprites.animations.length = animsBeforeRoom;
+        project.sprites.metasprites.length = metasBeforeRoom;
+        project.sprites.actors.length = actorsBeforeRoom;
+        project.maps[0].screens[0].entities.length = entitiesBeforeRoom;
+        const bt2bRevert = project.rpg.battleTilesetId;
+        for (let i = 0; i < roomTileCount; i++) {
+          project.tilesets[bt2bRevert].sprites.tiles[roomTileBase + i] = originalRoomTiles[i];
+        }
+      });
+      await wait(150);
+
+      step(
+        'battle-fx preview: (2b) a NORMALIZED RPG fixture proves the real room path, not a hardcoded 64',
+        'room=' + room2b + ': exact-fit frame draws real pixels with no caption; a room+1 frame skips with the EXACT room/count caption on a same-sized blank through termination; MISS true shrinks the room by ' + missOamTilesForRoomTest + ' with its own exact caption'
+      );
+    }
+
+    // Item 3: the fake-clock widget timing test.
+    {
+      const eightMetasprites = Array.from({ length: 8 }, (_, i) => ({
+        id: i,
+        name: 'F' + i,
+        tiles: [{ x: i * 8, y: 0, tile: 0, palette: 0, hflip: false, vflip: false }]
+      }));
+      const eightAnimation = { frames: Array.from({ length: 8 }, (_, i) => ({ metaspriteId: i, duration: 1 })) };
+      const projTiming = makeFakeProject({ animations: [eightAnimation], metasprites: eightMetasprites, tiles: ['1'.repeat(64)] });
+
+      // Independent reference for "frame 4's own pixels": a fresh widget,
+      // stepped there deterministically via stepPreview(), never via the pacer.
+      const refWidget = mountScratchPreview(scratchHost, { getProject: () => projTiming, getAnimationId: () => 0, now: () => 0, schedule: () => {} });
+      refWidget.sync();
+      for (let i = 0; i < 4; i++) refWidget.stepPreview();
+      const expectedFrame4 = scratchCanvas().toDataURL();
+      refWidget.destroy();
+
+      let mainTime = 0;
+      const mainQueue = [];
+      const mainSchedule = (fn) => {
+        mainQueue.push(fn);
+      };
+      const widgetTiming = mountScratchPreview(scratchHost, {
+        getProject: () => projTiming,
+        getAnimationId: () => 0,
+        now: () => mainTime,
+        schedule: mainSchedule
+      });
+
+      mainTime = 0;
+      widgetTiming.sync(); // arms at t=0 -- observation 0, frame 0 visible
+      if (mainQueue.length !== 1) {
+        throw new Error('expected exactly one callback queued after arming, saw ' + mainQueue.length);
+      }
+      const frame0Pixels = scratchCanvas().toDataURL();
+
+      mainTime = 1000;
+      const cb1 = mainQueue.shift();
+      cb1(); // invoke the queued callback by hand -- consumes the capped 4 ticks
+      if (mainQueue.length !== 1) {
+        throw new Error('expected exactly one callback pending after invoking the first one, saw ' + mainQueue.length);
+      }
+      const framesAfterJump = scratchCanvas().toDataURL();
+      if (framesAfterJump !== expectedFrame4) {
+        throw new Error('expected frame 4 pixels after a capped 4-tick jump at t=1000 (an omitted arm-time advanceTo would still show frame 0)');
+      }
+      if (scratchButton().textContent !== 'Play') {
+        throw new Error('expected the preview to still be live after the capped jump (4 of 8 frames consumed), saw ' + scratchButton().textContent);
+      }
+
+      // Finish synchronously via stepPreview(), bypassing the pacer entirely.
+      for (let i = 0; i < 10 && scratchButton().textContent !== 'Replay'; i++) widgetTiming.stepPreview();
+      if (scratchButton().textContent !== 'Replay') {
+        throw new Error('expected the preview to reach Replay after finishing via stepPreview()');
+      }
+
+      // Click Replay at a new fake time -- must not start a second callback chain.
+      mainTime = 5000;
+      if (mainQueue.length !== 1) {
+        throw new Error('expected exactly one callback still pending before Replay, saw ' + mainQueue.length);
+      }
+      scratchButton().click();
+      if (mainQueue.length !== 1) {
+        throw new Error('Replay must not start a second callback chain -- expected exactly one pending, saw ' + mainQueue.length);
+      }
+      const frame0AfterReplay = scratchCanvas().toDataURL();
+      if (frame0AfterReplay !== frame0Pixels) {
+        throw new Error('Replay must reproduce frame 0 pixels byte-for-byte');
+      }
+
+      mainTime += 1000;
+      const cb2 = mainQueue.shift();
+      cb2();
+      if (mainQueue.length !== 1) {
+        throw new Error('expected exactly one callback pending after the post-Replay jump, saw ' + mainQueue.length);
+      }
+      const framesAfterSecondJump = scratchCanvas().toDataURL();
+      if (framesAfterSecondJump !== expectedFrame4) {
+        throw new Error('expected frame 4 pixels again after the post-Replay capped jump');
+      }
+
+      // Teardown: destroy(), then invoke the RETAINED queued callback.
+      widgetTiming.destroy();
+      const queueLenBeforeTeardownInvoke = mainQueue.length;
+      const retainedCallback = mainQueue[0];
+      const canvasBeforeTeardownInvoke = scratchCanvas().toDataURL();
+      let threwOnTeardownInvoke = false;
+      try {
+        retainedCallback();
+      } catch (e) {
+        threwOnTeardownInvoke = true;
+      }
+      if (threwOnTeardownInvoke) {
+        throw new Error('invoking the retained post-destroy callback must not throw');
+      }
+      const canvasAfterTeardownInvoke = scratchCanvas().toDataURL();
+      if (canvasAfterTeardownInvoke !== canvasBeforeTeardownInvoke) {
+        throw new Error('the canvas must be unchanged after invoking the retained post-destroy callback');
+      }
+      if (mainQueue.length !== queueLenBeforeTeardownInvoke) {
+        throw new Error('invoking the retained post-destroy callback must queue ZERO new callbacks, saw a queue length change to ' + mainQueue.length);
+      }
+      step(
+        'battle-fx preview: (3) the fake-clock widget timing test',
+        'frame 4 after a capped jump, Replay reproduces frame 0, a second capped jump lands on frame 4 again, post-destroy callback is inert and queues nothing new'
+      );
+    }
+
+    // Item 3b (P2-3 fix): Replay's own re-arm must call pacer.reset(), not
+    // merely the still-present arm-time pacer.advanceTo(now()) -- with the
+    // 1000ms jumps item 3 above uses, the capped-at-4 accrual leaves no
+    // fraction, and the arm-time advanceTo updates lastTime regardless of
+    // whether reset() ran, so those numbers cannot tell the two apart
+    // (removing only pacer.reset() from the widget passed every assertion
+    // above). A SHORT interval leaves a fraction instead: two ~16ms
+    // intervals bracketing a Replay. nesFps = 60.0988, so 16ms of debt is
+    // 16 * 60.0988 / 1000 = 0.9615808 ticks -- under 1, so neither interval
+    // alone crosses a frame boundary (duration 1 on the first frame here).
+    // A fresh origin (reset() ran) owes another 0.9615808 after Replay,
+    // total 0.9615808 < 1 -- still frame 0. Leaked pre-Replay debt (reset()
+    // omitted) already carries 0.9615808 INTO the post-Replay interval,
+    // total 1.9231616 -- floor 1, one real tick, frame 1. The two owe
+    // "0 or 1" vs "more," exactly the reviewer's own suggested shape.
+    {
+      const metaA = { id: 0, tiles: [{ x: 0, y: 0, tile: 0, palette: 0, hflip: false, vflip: false }] };
+      const metaB = { id: 1, tiles: [{ x: 8, y: 0, tile: 0, palette: 0, hflip: false, vflip: false }] };
+      const animReset = { frames: [{ metaspriteId: 0, duration: 1 }, { metaspriteId: 1, duration: 50 }] };
+      const projReset = makeFakeProject({ animations: [animReset], metasprites: [metaA, metaB], tiles: ['1'.repeat(64)] });
+
+      let resetTime = 0;
+      const resetQueue = [];
+      const resetSchedule = (fn) => {
+        resetQueue.push(fn);
+      };
+      const wReset = mountScratchPreview(scratchHost, {
+        getProject: () => projReset,
+        getAnimationId: () => 0,
+        now: () => resetTime,
+        schedule: resetSchedule
+      });
+
+      resetTime = 0;
+      wReset.sync(); // arms fresh: frame 0, timer 0, pacer origin at t=0
+      if (resetQueue.length !== 1) {
+        throw new Error('expected exactly one callback queued after arming, saw ' + resetQueue.length);
+      }
+      const frame0PixelsReset = scratchCanvas().toDataURL();
+
+      // First ~16ms interval: 0.9615808 ticks accrued, floor 0 -- no
+      // repaint, no visible change yet (ticks === 0 skips paintAndCaption).
+      resetTime = 16;
+      const cbReset1 = resetQueue.shift();
+      cbReset1();
+      const afterFirstInterval = scratchCanvas().toDataURL();
+      if (afterFirstInterval !== frame0PixelsReset) {
+        throw new Error('sanity: under 1 tick of debt (~0.96) must not have crossed the frame boundary yet');
+      }
+      if (resetQueue.length !== 1) {
+        throw new Error('expected exactly one callback pending after the first interval, saw ' + resetQueue.length);
+      }
+
+      // Replay at the SAME fake time -- forces a real re-arm, which is
+      // exactly where reset() must run.
+      const buttonReset = scratchButton();
+      buttonReset.click();
+      const afterReplayReset = scratchCanvas().toDataURL();
+      if (afterReplayReset !== frame0PixelsReset) {
+        throw new Error('Replay must reproduce frame 0 pixels');
+      }
+      if (resetQueue.length !== 1) {
+        throw new Error('Replay must not start a second callback chain -- expected exactly one pending, saw ' + resetQueue.length);
+      }
+
+      // Second ~16ms interval after Replay. A fresh pacer origin (reset()
+      // ran) owes another ~0.96 ticks -- still floor 0, still frame 0. An
+      // omitted reset() instead carries the ~0.96 leaked from BEFORE Replay,
+      // crossing 1.0 this interval and landing on frame 1's own pixels.
+      resetTime = 32;
+      const cbReset2 = resetQueue.shift();
+      cbReset2();
+      const afterSecondInterval = scratchCanvas().toDataURL();
+      if (afterSecondInterval !== frame0PixelsReset) {
+        throw new Error(
+          'a fresh re-arm must still be on frame 0 after two ~16ms intervals (~1.92 ticks total from a leaked origin, but only ~0.96 from a fresh one, floor 0) -- ' +
+          'an omitted pacer.reset() would have carried the pre-Replay debt across and crossed into frame 1'
+        );
+      }
+      wReset.destroy();
+      step(
+        'battle-fx preview: (3b) Replay re-arm resets the pacer’s own fractional debt, not just its time origin',
+        'a fresh re-arm after two short (~16ms) intervals stays on frame 0 -- a leaked pre-Replay fraction would have crossed into frame 1'
+      );
+    }
+
+    // Item 4: sync() synchronization, six cases (a)-(f).
+    // (a) frame deleted during playback. P2-4 fix: the old version accepted
+    // EITHER Play or Replay as the post-recovery button state and never
+    // checked observation-0 pixels/viewport right after sync() at all --
+    // only that nothing threw. Done properly: assert the shrunken
+    // animation's own REAL observation-0 pixels (an independent fresh
+    // widget on the same, already-shrunk project), the exact 8x8 viewport,
+    // and specifically 'Play' (not 'Replay' -- the shrunken animation is
+    // still live), all immediately on sync()'s own return, before any tick.
+    {
+      const metaA = { id: 0, tiles: [{ x: 0, y: 0, tile: 0, palette: 0, hflip: false, vflip: false }] };
+      const metaB = { id: 1, tiles: [{ x: 8, y: 0, tile: 0, palette: 0, hflip: false, vflip: false }] };
+      const metaC = { id: 2, tiles: [{ x: 16, y: 0, tile: 0, palette: 0, hflip: false, vflip: false }] };
+      const anim4a = { frames: [{ metaspriteId: 0, duration: 3 }, { metaspriteId: 1, duration: 3 }, { metaspriteId: 2, duration: 3 }] };
+      const proj4a = makeFakeProject({ animations: [anim4a], metasprites: [metaA, metaB, metaC], tiles: ['1'.repeat(64)] });
+      const w4a = mountScratchPreview(scratchHost, { getProject: () => proj4a, getAnimationId: () => 0, now: () => 0, schedule: () => {} });
+      w4a.sync();
+      for (let i = 0; i < 6; i++) w4a.stepPreview(); // now at frame 2 (the last), timer 0
+      proj4a.sprites.animations[0].frames.splice(1); // in-place, now length 1 -- state.frame (2) is now out of range
+      let threw4a = false;
+      try {
+        w4a.sync();
+      } catch (e) {
+        threw4a = true;
+      }
+      if (threw4a) {
+        throw new Error('sync() must not throw when the armed animation shrinks out from under a running stepper');
+      }
+
+      // Capture the RECOVERING widget's (w4a's) own observations RIGHT HERE,
+      // before anything else is mounted into the shared scratchHost. P2-1
+      // fix: mountBattleFxPreview replaces the host's children at mount
+      // (battlefxpreview.js:63's own fill(host, ...)), so mounting a second
+      // widget into scratchHost -- even a reference one, even destroyed
+      // right after -- silently redirects scratchCanvas()/scratchButton() to
+      // the NEW widget's own DOM. Reading w4a's canvas/button AFTER that
+      // point would compare the reference against itself, which is what let
+      // a re-arm that clears playback to null on a shrinking frame count
+      // pass unnoticed: a fresh reference widget's first sync() always has
+      // armedSignature === null, so that wrong implementation never fires
+      // for the reference -- only for w4a, whose own DOM nothing was left
+      // reading.
+      const canvas4a = scratchCanvas();
+      const width4a = canvas4a.width;
+      const height4a = canvas4a.height;
+      const obs4aAfterShrink = canvas4a.toDataURL();
+      const button4a = scratchButton();
+      const buttonState4a = button4a.textContent;
+      const buttonDisabled4a = button4a.disabled;
+
+      if (width4a !== 8 || height4a !== 8) {
+        throw new Error('expected the viewport to refresh to the shrunken animation’s own 8x8 bounds immediately on sync() return, saw ' + width4a + 'x' + height4a);
+      }
+
+      // A fresh, independent reference for "observation 0 of the now-1-frame
+      // animation": a brand-new widget on the SAME (already-shrunk) project,
+      // synced once, never stepped -- mounted only AFTER w4a's own
+      // observations above were captured, so it cannot be what those
+      // selectors actually read.
+      const ref4a = mountScratchPreview(scratchHost, { getProject: () => proj4a, getAnimationId: () => 0, now: () => 0, schedule: () => {} });
+      ref4a.sync();
+      const referenceObs0After4a = scratchCanvas().toDataURL();
+      ref4a.destroy();
+
+      if (obs4aAfterShrink !== referenceObs0After4a) {
+        throw new Error('sync() must land on the shrunken animation’s own real observation-0 pixels immediately, not merely avoid throwing');
+      }
+      if (buttonState4a !== 'Play') {
+        throw new Error('expected the live control state to read Play (not Replay) immediately after the frame-deletion recovery, saw ' + buttonState4a);
+      }
+      if (buttonDisabled4a) {
+        throw new Error('expected the recovered control to be live/armed (enabled), not finished/disabled, immediately after the frame-deletion recovery');
+      }
+      w4a.destroy();
+      step(
+        'battle-fx preview sync(): (a) frame deleted during playback recovers to the shrunken animation’s real observation 0, viewport and control state, immediately on sync()',
+        '...'
+      );
+    }
+
+    // (b) duration edit. P2-4 fix: the old version edited duration while
+    // frame 0 was STILL showing (timer 2 of a duration-5 frame 0), so "frame
+    // 0 at timer 2" and "frame 0 at timer 0" are the same pixels -- dropping
+    // duration from frameSignature entirely still passed. Done properly:
+    // genuinely cross into frame 1 first (pixels differ from frame 0), edit
+    // frame 0's own duration in place, sync(), assert frame 0's pixels are
+    // back immediately, AND that the NEW hold length (9) actually takes
+    // effect -- 8 more ticks still holds frame 0, the 9th crosses into
+    // frame 1 at its own exact new boundary.
+    {
+      const metaA = { id: 0, tiles: [{ x: 0, y: 0, tile: 0, palette: 0, hflip: false, vflip: false }] };
+      const metaB = { id: 1, tiles: [{ x: 8, y: 0, tile: 0, palette: 0, hflip: false, vflip: false }] };
+      const anim4b = { frames: [{ metaspriteId: 0, duration: 2 }, { metaspriteId: 1, duration: 5 }] };
+      const proj4b = makeFakeProject({ animations: [anim4b], metasprites: [metaA, metaB], tiles: ['1'.repeat(64)] });
+      const w4b = mountScratchPreview(scratchHost, { getProject: () => proj4b, getAnimationId: () => 0, now: () => 0, schedule: () => {} });
+      w4b.sync();
+      const obs0_4b = scratchCanvas().toDataURL();
+      w4b.stepPreview();
+      w4b.stepPreview(); // crosses frame 0's own duration (2) -- now genuinely in frame 1, timer 0
+      const midFlight4b = scratchCanvas().toDataURL();
+      if (midFlight4b === obs0_4b) {
+        throw new Error('sanity: frame 1 must look different from frame 0 before the duration edit, or this test cannot tell a re-arm from a no-op');
+      }
+      proj4b.sprites.animations[0].frames[0].duration = 9; // edited in place -- frame 0's OWN duration
+      w4b.sync();
+      const afterEdit4b = scratchCanvas().toDataURL();
+      if (afterEdit4b !== obs0_4b) {
+        throw new Error(
+          'a duration edit must re-arm cleanly back to frame 0’s own pixels, not stay on frame 1 -- the wrong implementation this catches: a frameSignature that omits duration'
+        );
+      }
+      for (let i = 0; i < 8; i++) w4b.stepPreview(); // the new duration is 9 -- 8 ticks must still hold frame 0
+      const stillFrame0_4b = scratchCanvas().toDataURL();
+      if (stillFrame0_4b !== obs0_4b) {
+        throw new Error('expected the new duration (9) to still be holding frame 0 after 8 ticks');
+      }
+      w4b.stepPreview(); // the 9th tick -- crosses the new, longer duration
+      const crossedAfterEdit4b = scratchCanvas().toDataURL();
+      if (crossedAfterEdit4b !== midFlight4b) {
+        throw new Error('expected the 9th tick to cross into frame 1 at the NEW duration’s own exact boundary');
+      }
+      w4b.destroy();
+      step(
+        'battle-fx preview sync(): (b) duration edit mid-frame re-arms to observation 0 and the new hold length ends at its own exact boundary',
+        '...'
+      );
+    }
+
+    // (c) in-place art movement preserving position AND repainting new extents.
+    {
+      const movable = { id: 0, tiles: [{ x: 0, y: 0, tile: 0, palette: 0, hflip: false, vflip: false }] };
+      const other = { id: 1, tiles: [{ x: 8, y: 0, tile: 0, palette: 0, hflip: false, vflip: false }] };
+      const anim4c = { frames: [{ metaspriteId: 0, duration: 10 }, { metaspriteId: 1, duration: 10 }] };
+      const proj4c = makeFakeProject({ animations: [anim4c], metasprites: [movable, other], tiles: ['1'.repeat(64)] });
+
+      const w4c = mountScratchPreview(scratchHost, { getProject: () => proj4c, getAnimationId: () => 0, now: () => 0, schedule: () => {} });
+      w4c.sync();
+      w4c.stepPreview();
+      w4c.stepPreview();
+      w4c.stepPreview(); // frame 0, timer 3 of 10
+      const canvasBeforeMove4c = scratchCanvas().toDataURL();
+
+      proj4c.sprites.metasprites[0].tiles[0].x = 100; // in-place move, signature unchanged
+      w4c.sync();
+      const canvasAfterMove4c = scratchCanvas().toDataURL();
+      if (canvasAfterMove4c === canvasBeforeMove4c) {
+        throw new Error('an in-place art move must repaint immediately with the new extents, not the stale ones');
+      }
+
+      for (let i = 0; i < 7; i++) w4c.stepPreview(); // exactly enough to cross frame 0's own duration IF timer(3) was preserved
+      const canvasAfter7Ticks = scratchCanvas().toDataURL();
+      w4c.destroy();
+
+      // Independent reference: a fresh widget on the SAME (already-moved)
+      // project, armed fresh and stepped to frame 1 the ordinary way.
+      const refWidget4c = mountScratchPreview(scratchHost, { getProject: () => proj4c, getAnimationId: () => 0, now: () => 0, schedule: () => {} });
+      refWidget4c.sync();
+      for (let i = 0; i < 10; i++) refWidget4c.stepPreview();
+      const referenceFrame1Pixels = scratchCanvas().toDataURL();
+      refWidget4c.destroy();
+
+      if (canvasAfter7Ticks !== referenceFrame1Pixels) {
+        throw new Error('an in-place art move must preserve playback position/timer -- expected frame 1 after exactly 7 more ticks (timer 3 -> 10)');
+      }
+      step('battle-fx preview sync(): (c) in-place art move repaints new extents immediately and preserves playback position/timer', '...');
+    }
+
+    // (d) A -> None -> A re-arms at observation 0.
+    {
+      const metaA = { id: 0, tiles: [{ x: 0, y: 0, tile: 0, palette: 0, hflip: false, vflip: false }] };
+      const metaB = { id: 1, tiles: [{ x: 8, y: 0, tile: 0, palette: 0, hflip: false, vflip: false }] };
+      const anim4d = { frames: [{ metaspriteId: 0, duration: 3 }, { metaspriteId: 1, duration: 20 }] };
+      const proj4d = makeFakeProject({ animations: [anim4d], metasprites: [metaA, metaB], tiles: ['1'.repeat(64)] });
+      let idFor4d = 0;
+      const w4d = mountScratchPreview(scratchHost, { getProject: () => proj4d, getAnimationId: () => idFor4d, now: () => 0, schedule: () => {} });
+      w4d.sync();
+      const obs0_4d = scratchCanvas().toDataURL();
+      for (let i = 0; i < 5; i++) w4d.stepPreview(); // crosses into frame 1 (timer 2 of 20)
+      const midFlight4d = scratchCanvas().toDataURL();
+      if (midFlight4d === obs0_4d) {
+        throw new Error('sanity: mid-flight (frame 1) should look different from observation 0 (frame 0)');
+      }
+
+      idFor4d = null;
+      w4d.sync();
+      const captionCleared4d = scratchCaption().textContent;
+      if (captionCleared4d !== 'No animation selected') {
+        throw new Error('expected the None caption, saw: ' + JSON.stringify(captionCleared4d));
+      }
+      if (!scratchButton().disabled) {
+        throw new Error('expected the button disabled while None is selected');
+      }
+
+      idFor4d = 0;
+      w4d.sync();
+      const afterReturn4d = scratchCanvas().toDataURL();
+      if (afterReturn4d !== obs0_4d) {
+        throw new Error('A -> None -> A must re-arm fresh at observation 0, not resume mid-flight');
+      }
+      if (afterReturn4d === midFlight4d) {
+        throw new Error('sanity: the re-armed observation 0 must differ from the earlier mid-flight snapshot');
+      }
+      w4d.destroy();
+      step('battle-fx preview sync(): (d) A -> None -> A re-arms fresh at observation 0', '...');
+    }
+
+    // (e) first mount paints correctly on the first sync() call.
+    {
+      const metaA = { id: 0, tiles: [{ x: 0, y: 0, tile: 0, palette: 0, hflip: false, vflip: false }] };
+      const anim4e = { frames: [{ metaspriteId: 0, duration: 10 }] };
+      const proj4e = makeFakeProject({ animations: [anim4e], metasprites: [metaA], tiles: ['1'.repeat(64)] });
+      const w4e = mountScratchPreview(scratchHost, { getProject: () => proj4e, getAnimationId: () => 0, now: () => 0, schedule: () => {} });
+      w4e.sync(); // the FIRST ever sync() call -- no prior warm-up
+      const canvas4e = scratchCanvas();
+      const blankRef4e = document.createElement('canvas');
+      blankRef4e.width = canvas4e.width;
+      blankRef4e.height = canvas4e.height;
+      if (canvas4e.toDataURL() === blankRef4e.toDataURL()) {
+        throw new Error('the FIRST sync() call must already paint real pixels, not a blank canvas');
+      }
+      if (canvas4e.width !== 8 || canvas4e.height !== 8) {
+        throw new Error('expected an 8x8 logical viewport on first mount, saw ' + canvas4e.width + 'x' + canvas4e.height);
+      }
+      w4e.destroy();
+      step('battle-fx preview sync(): (e) first mount paints correctly on the very first sync() call', '...');
+    }
+
+    // (f) art movement after termination refreshes bounds while still cleared.
+    {
+      const metaA = {
+        id: 0,
+        tiles: [
+          { x: 0, y: 0, tile: 0, palette: 0, hflip: false, vflip: false },
+          { x: 8, y: 0, tile: 0, palette: 0, hflip: false, vflip: false }
+        ]
+      };
+      const anim4f = { frames: [{ metaspriteId: 0, duration: 1 }] };
+      const proj4f = makeFakeProject({ animations: [anim4f], metasprites: [metaA], tiles: ['1'.repeat(64)] });
+      const w4f = mountScratchPreview(scratchHost, { getProject: () => proj4f, getAnimationId: () => 0, now: () => 0, schedule: () => {} });
+      w4f.sync();
+      w4f.stepPreview(); // terminates (duration 1)
+      const canvas4f = scratchCanvas();
+      if (canvas4f.width !== 16 || canvas4f.height !== 8) {
+        throw new Error('expected the terminated bounds to be 16x8 before the move, saw ' + canvas4f.width + 'x' + canvas4f.height);
+      }
+
+      proj4f.sprites.metasprites[0].tiles[1].x = 100; // in-place move -- the second tile now spans much further right
+      w4f.sync(); // must NOT re-arm (state stays null/terminated) but bounds must refresh
+      if (canvas4f.width !== 108 || canvas4f.height !== 8) {
+        throw new Error('expected the bounds to refresh to the new, wider extent (108x8) even while terminated, saw ' + canvas4f.width + 'x' + canvas4f.height);
+      }
+      const blankRef4f = document.createElement('canvas');
+      blankRef4f.width = 108;
+      blankRef4f.height = 8;
+      if (canvas4f.toDataURL() !== blankRef4f.toDataURL()) {
+        throw new Error('expected the canvas to remain cleared/blank after the post-termination art move');
+      }
+      w4f.destroy();
+      step('battle-fx preview sync(): (f) art movement after termination refreshes bounds while still cleared', '...');
+    }
+
+    // Item 5: empty-animation control.
+    {
+      const emptyAnim5 = { frames: [] };
+      const proj5 = makeFakeProject({ animations: [emptyAnim5], metasprites: [], tiles: ['1'.repeat(64)] });
+      const w5 = mountScratchPreview(scratchHost, { getProject: () => proj5, getAnimationId: () => 0, now: () => 0, schedule: () => {} });
+      w5.sync();
+      const caption5 = scratchCaption().textContent;
+      if (caption5 !== 'This animation has no frames.') {
+        throw new Error('expected the empty-animation caption, saw: ' + JSON.stringify(caption5));
+      }
+      if (!scratchButton().disabled) {
+        throw new Error('expected the button disabled for an empty animation');
+      }
+      w5.destroy();
+
+      const metaA5 = { id: 0, tiles: [{ x: 0, y: 0, tile: 0, palette: 0, hflip: false, vflip: false }] };
+      const realAnim5 = { frames: [{ metaspriteId: 0, duration: 20 }] };
+      const proj5b = makeFakeProject({ animations: [realAnim5, emptyAnim5], metasprites: [metaA5], tiles: ['1'.repeat(64)] });
+      let id5b = 0;
+      const w5b = mountScratchPreview(scratchHost, { getProject: () => proj5b, getAnimationId: () => id5b, now: () => 0, schedule: () => {} });
+      w5b.sync();
+      const livePixels5b = scratchCanvas().toDataURL();
+      id5b = 1; // the empty one
+      w5b.sync();
+      const cleared5b = scratchCanvas().toDataURL();
+      if (cleared5b === livePixels5b) {
+        throw new Error('switching to an empty animation must clear the canvas, not keep the previous live pixels');
+      }
+      const caption5b = scratchCaption().textContent;
+      if (caption5b !== 'This animation has no frames.') {
+        throw new Error('expected the empty caption after switching, saw: ' + JSON.stringify(caption5b));
+      }
+      w5b.destroy();
+      step('battle-fx preview: (5) empty-animation control shows the right caption/disabled state, and switching to it clears cleanly', '...');
+    }
+
+    // Item 6: resize/crop. P2-7 fix: the old version called w6.sync() itself
+    // after narrowing the host, which recomputes zoom/crop independently of
+    // the ResizeObserver wiring -- neither the observer callback nor actual
+    // containment was ever tested, and only the caption was checked
+    // (disconnecting the observer's own redraw body, or switching the stage
+    // to overflow: visible, both passed). Also: x = 200 exceeds the
+    // normalized tile-offset range (-128..127, shared/project.js's own
+    // normalizeMetasprite), an illegal fixture. Done properly: a legal
+    // x = 127, a tracked ResizeObserver double installed for this block only
+    // (restored in finally even on failure) so the resize is driven through
+    // the REAL observer callback the widget itself registered -- never a
+    // manual sync() standing in for it -- plus an actual containment check
+    // (the canvas's own CSS box against the stage's box), not merely the
+    // caption string.
+    {
+      const metaWide6 = {
+        id: 0,
+        tiles: [
+          { x: 0, y: 0, tile: 0, palette: 0, hflip: false, vflip: false },
+          { x: 127, y: 0, tile: 0, palette: 0, hflip: false, vflip: false }
+        ]
+      };
+      const anim6 = { frames: [{ metaspriteId: 0, duration: 20 }] };
+      const proj6 = makeFakeProject({ animations: [anim6], metasprites: [metaWide6], tiles: ['1'.repeat(64)] });
+      scratchHost.style.width = '300px';
+
+      const RealResizeObserver6 = window.ResizeObserver;
+      let capturedResizeCallback6 = null;
+      let observeCalls6 = 0;
+      let disconnectCalls6 = 0;
+      window.ResizeObserver = class {
+        constructor(cb) {
+          capturedResizeCallback6 = cb;
+        }
+        observe() {
+          observeCalls6++;
+        }
+        disconnect() {
+          disconnectCalls6++;
+        }
+      };
+      try {
+        const w6 = mountScratchPreview(scratchHost, { getProject: () => proj6, getAnimationId: () => 0, now: () => 0, schedule: () => {} });
+        w6.sync();
+        if (!capturedResizeCallback6) {
+          throw new Error('expected the widget to install a ResizeObserver on mount');
+        }
+        if (observeCalls6 !== 1) {
+          throw new Error('expected exactly one observe() call, saw ' + observeCalls6);
+        }
+
+        const captionWide6 = scratchCaption().textContent;
+        if (captionWide6 === 'Art extends beyond the preview area') {
+          throw new Error('expected no crop caption while the stage is wide enough');
+        }
+        const zoomWide6 = parseFloat(scratchCanvas().style.width) / scratchCanvas().width;
+
+        scratchHost.style.width = '50px';
+        // Drive the resize NOTIFICATION itself -- the observer's own
+        // callback, never a manual sync() standing in for it (P2-7).
+        capturedResizeCallback6();
+        const captionNarrow6 = scratchCaption().textContent;
+        if (captionNarrow6 !== 'Art extends beyond the preview area') {
+          throw new Error('expected the crop caption once the resize callback ran on a narrower stage, saw: ' + JSON.stringify(captionNarrow6));
+        }
+        const zoomNarrow6 = parseFloat(scratchCanvas().style.width) / scratchCanvas().width;
+        if (!(zoomNarrow6 < zoomWide6)) {
+          throw new Error('expected the zoom to shrink once the resize callback ran, saw wide=' + zoomWide6 + ' narrow=' + zoomNarrow6);
+        }
+
+        // Containment: the widget does not shrink the canvas below 1x zoom
+        // to force a fit -- it leaves the canvas element logically wider
+        // than the stage and relies on the stage's own overflow: hidden
+        // to clip what actually renders, which is why "the canvas box fits
+        // inside the stage box" is not the right question to ask (it is
+        // false by design once cropped). First confirm this really IS an
+        // overflow case (the canvas box genuinely exceeds the stage box --
+        // otherwise the check below would pass vacuously), then confirm the
+        // one CSS property that actually prevents the overflow from
+        // spilling past the stage/panel box is really in force. Switching
+        // the stage to overflow: visible changes neither the zoom nor
+        // either element's own measured box (a block box with an explicit
+        // width/height is not enlarged by overflowing content either way),
+        // so only reading the computed style itself can catch it.
+        const stageEl6 = scratchHost.querySelector('.battlefx-stage');
+        const stageRect6 = stageEl6.getBoundingClientRect();
+        const canvasRect6 = scratchCanvas().getBoundingClientRect();
+        if (!(canvasRect6.width > stageRect6.width)) {
+          throw new Error(
+            'sanity: expected the canvas box to genuinely exceed the stage box once cropped (canvas=' + canvasRect6.width + ' stage=' + stageRect6.width + '), or this containment check is vacuous'
+          );
+        }
+        const stageOverflow6 = getComputedStyle(stageEl6).overflow;
+        if (stageOverflow6 !== 'hidden') {
+          throw new Error('expected the stage to clip an oversized canvas via overflow: hidden, saw overflow: ' + JSON.stringify(stageOverflow6));
+        }
+
+        w6.destroy();
+        if (disconnectCalls6 !== 1) {
+          throw new Error('expected destroy() to disconnect the tracked ResizeObserver exactly once, saw ' + disconnectCalls6);
+        }
+      } finally {
+        window.ResizeObserver = RealResizeObserver6;
+        scratchHost.style.width = '300px';
+      }
+      step(
+        'battle-fx preview: (6) a narrow stage shows the crop caption for a wide animation, driven through the REAL ResizeObserver callback, with the stage clipping a genuinely larger canvas box via overflow: hidden',
+        '...'
+      );
+    }
+
+    // Item 7: zero-tile end-to-end.
+    {
+      const zeroMeta7 = { id: 0, tiles: [] };
+      const anim7 = { frames: [{ metaspriteId: 0, duration: 20 }] };
+      const proj7 = makeFakeProject({ animations: [anim7], metasprites: [zeroMeta7], tiles: ['1'.repeat(64)] });
+      const w7 = mountScratchPreview(scratchHost, { getProject: () => proj7, getAnimationId: () => 0, now: () => 0, schedule: () => {} });
+      w7.sync();
+      const canvas7 = scratchCanvas();
+      if (canvas7.width !== 64 || canvas7.height !== 64) {
+        throw new Error('expected the named 64x64 fallback viewport for an all-zero-tile animation, saw ' + canvas7.width + 'x' + canvas7.height);
+      }
+      const blankRef7 = document.createElement('canvas');
+      blankRef7.width = 64;
+      blankRef7.height = 64;
+      if (canvas7.toDataURL() !== blankRef7.toDataURL()) {
+        throw new Error('expected a blank 64x64 canvas for a zero-tile animation');
+      }
+      const caption7 = scratchCaption().textContent;
+      if (caption7 !== '') {
+        throw new Error('expected NO caption for a live, zero-tile frame (a deliberate held beat), saw: ' + JSON.stringify(caption7));
+      }
+      w7.destroy();
+      step('battle-fx preview: (7) an all-zero-tile animation mounts as a blank 64x64 canvas with no caption', '...');
+    }
+
+    document.body.removeChild(scratchHost);
+  }
+
+  // Item 8: Monster Forge -- select an actor with a live attackAnim, assert
+  // the canvas mounts and stepPreview() through the Monster Forge's own
+  // mount contract steps it.
+  {
+    const animationsBeforeMonster = rpgStore.project.sprites.animations.length;
+    const metaspritesBeforeMonster = rpgStore.project.sprites.metasprites.length;
+    const monsterTileA = 120;
+    const monsterTileB = 121;
+    const battleTilesetForMonster = rpgStore.project.tilesets[rpgStore.project.rpg.battleTilesetId];
+    const originalMonsterTileA = battleTilesetForMonster.sprites.tiles[monsterTileA];
+    const originalMonsterTileB = battleTilesetForMonster.sprites.tiles[monsterTileB];
+
+    let monsterAnimId;
+    rpgStore.commit('smoke: seed a live attackAnim for Slime (Monster Forge preview)', (project) => {
+      const bt = project.rpg.battleTilesetId;
+      project.tilesets[bt].sprites.tiles[monsterTileA] = '1'.repeat(64);
+      project.tilesets[bt].sprites.tiles[monsterTileB] = '2'.repeat(64);
+      const metaA = project.sprites.metasprites.length;
+      project.sprites.metasprites.push({
+        id: metaA,
+        name: 'MonsterPreviewA',
+        tiles: [{ x: 0, y: 0, tile: monsterTileA, palette: 0, hflip: false, vflip: false }]
+      });
+      const metaB = project.sprites.metasprites.length;
+      project.sprites.metasprites.push({
+        id: metaB,
+        name: 'MonsterPreviewB',
+        tiles: [{ x: 0, y: 0, tile: monsterTileB, palette: 0, hflip: false, vflip: false }]
+      });
+      monsterAnimId = project.sprites.animations.length;
+      project.sprites.animations.push({
+        id: monsterAnimId,
+        name: 'MonsterPreviewAnim',
+        loop: false,
+        frames: [
+          { metaspriteId: metaA, duration: 5 },
+          { metaspriteId: metaB, duration: 5 }
+        ]
+      });
+      project.sprites.actors[0].battle = { ...project.sprites.actors[0].battle, attackAnim: monsterAnimId };
+    });
+    await wait(150);
+
+    window.__app.goTo('monster');
+    await wait(200);
+
+    const monsterSelect = document.querySelector('#stage select');
+    if (!monsterSelect) throw new Error('Monster Forge has no actor list select');
+    const slimeOption = [...monsterSelect.options].find((o) => o.textContent.indexOf('Slime') !== -1);
+    if (!slimeOption) throw new Error('Monster Forge has no Slime option');
+    const snakeOption = [...monsterSelect.options].find((o) => o.textContent.indexOf('Snake') !== -1);
+    if (!snakeOption) throw new Error('Monster Forge has no Snake option (needed to force a genuine re-arm off Slime)');
+
+    // P2-1 fix: Monster Forge auto-selects Slime (the catalog's own first
+    // entry) the instant it mounts, above -- which means the await
+    // wait(200) that used to follow reached here with the real rAF loop
+    // already ticking against an arm this test never observed, and
+    // reselecting the ALREADY-selected Slime below would not re-arm an
+    // unchanged signature either (armedId/armedSignature already match).
+    // Select Snake first -- Snake has no attackAnim, so this forces the
+    // widget into its unplayable branch (armedId/armedSignature -> null) --
+    // then reselect Slime, which genuinely differs from null and forces a
+    // real re-arm. Both dispatched synchronously back-to-back with no
+    // await in between and none before the observation-0 capture: a
+    // dispatchEvent call is synchronous, so no real rAF tick can land
+    // between the arm and the capture below (round-1 P2-1).
+    monsterSelect.value = snakeOption.value;
+    monsterSelect.dispatchEvent(new Event('change', { bubbles: true }));
+    monsterSelect.value = slimeOption.value;
+    monsterSelect.dispatchEvent(new Event('change', { bubbles: true }));
+
+    const monsterCanvas = document.querySelector('#stage canvas.battlefx-canvas');
+    if (!monsterCanvas) throw new Error('Monster Forge preview canvas did not mount for an actor with a live attackAnim');
+    const monsterObs0 = monsterCanvas.toDataURL();
+
+    // Frame boundary: frame 0's own duration is 5.
+    for (let i = 0; i < 5; i++) window.__app.current.stepPreview();
+    const monsterBoundary = document.querySelector('#stage canvas.battlefx-canvas').toDataURL();
+    if (monsterBoundary === monsterObs0) {
+      throw new Error('expected the Monster Forge preview pixels to change at the frame boundary via stepPreview()');
+    }
+
+    // Frame 1's own duration is 5 -- this reaches natural termination.
+    for (let i = 0; i < 5; i++) window.__app.current.stepPreview();
+    const monsterTerminated = document.querySelector('#stage canvas.battlefx-canvas').toDataURL();
+    const monsterBlankRef = document.createElement('canvas');
+    monsterBlankRef.width = monsterCanvas.width;
+    monsterBlankRef.height = monsterCanvas.height;
+    if (monsterTerminated !== monsterBlankRef.toDataURL()) {
+      throw new Error('expected the Monster Forge preview to clear to blank at natural termination');
+    }
+    const monsterButton = document.querySelector('#stage .battlefx-button');
+    if (!monsterButton || monsterButton.textContent !== 'Replay') {
+      throw new Error('expected the Monster Forge preview to reach Replay after its own duration, saw ' + monsterButton?.textContent);
+    }
+
+    step(
+      'battle-fx preview: (8) Monster Forge mounts and steps through its own mount contract',
+      'canvas mounted for Slime, pixels changed at the frame boundary, blank at termination with Replay shown'
+    );
+
+    rpgStore.commit('smoke: revert Slime’s attackAnim fixture', (project) => {
+      const bt = project.rpg.battleTilesetId;
+      project.sprites.animations.length = animationsBeforeMonster;
+      project.sprites.metasprites.length = metaspritesBeforeMonster;
+      delete project.sprites.actors[0].battle.attackAnim;
+      project.tilesets[bt].sprites.tiles[monsterTileA] = originalMonsterTileA;
+      project.tilesets[bt].sprites.tiles[monsterTileB] = originalMonsterTileB;
+    });
+    await wait(150);
+
+    window.__app.goTo('magic');
+    await wait(200);
+  }
+
+  // --- battle-fx preview: Forge-owned teardown (P2-5 fix round 1). A
+  // PERMANENT smoke step proving each Forge's OWN destroy() -- not the
+  // scratch widget's own destroy(), which item 3 above already covers in
+  // isolation -- really disposes the preview canvas's rAF loop and
+  // ResizeObserver. Mounts Magic/Monster through their own real
+  // mount(container, app) contract (the exact function app.goTo/selectForge
+  // would call), with a queued global rAF and a tracked ResizeObserver
+  // installed for this block only (restored in finally even on failure),
+  // then calls the returned destroy() and asserts zero live callbacks/
+  // observers remain. Mounted into a fresh, detached host rather than
+  // through app.goTo/#stage: a global ResizeObserver override also catches
+  // the Tile/Sprite/Map Forges' own canvases (fitZoom/observeSize,
+  // CLAUDE.md's own "A pixel canvas is sized from its stage" section), so
+  // routing this through the real navigation would count an unrelated
+  // Forge's own observer as a "leak" the moment app.goTo landed on one of
+  // them.
+  {
+    const { mount: mountMagicForTeardown } = await import('./forges/magic/magic.js');
+    const { mount: mountMonsterForTeardown } = await import('./forges/monster/monster.js');
+
+    const teardownAnimsBefore = rpgStore.project.sprites.animations.length;
+    const teardownMetasBefore = rpgStore.project.sprites.metasprites.length;
+    const teardownTileA = 122;
+    const teardownTileB = 123;
+    const battleTilesetForTeardown = rpgStore.project.tilesets[rpgStore.project.rpg.battleTilesetId];
+    const originalTeardownTileA = battleTilesetForTeardown.sprites.tiles[teardownTileA];
+    const originalTeardownTileB = battleTilesetForTeardown.sprites.tiles[teardownTileB];
+    const boltIndexForTeardown = rpgStore.project.spells.findIndex((s) => s.name === 'Bolt');
+    if (boltIndexForTeardown === -1) throw new Error('Bolt spell should still be present for the Forge-owned teardown test');
+
+    let teardownAnimId;
+    rpgStore.commit('smoke: seed a live animation for the Forge-owned teardown test', (project) => {
+      const bt = project.rpg.battleTilesetId;
+      project.tilesets[bt].sprites.tiles[teardownTileA] = '1'.repeat(64);
+      project.tilesets[bt].sprites.tiles[teardownTileB] = '2'.repeat(64);
+      const metaA = project.sprites.metasprites.length;
+      project.sprites.metasprites.push({
+        id: metaA,
+        name: 'TeardownA',
+        tiles: [{ x: 0, y: 0, tile: teardownTileA, palette: 0, hflip: false, vflip: false }]
+      });
+      teardownAnimId = project.sprites.animations.length;
+      project.sprites.animations.push({ id: teardownAnimId, name: 'TeardownAnim', loop: true, frames: [{ metaspriteId: metaA, duration: 10 }] });
+      project.spells[boltIndexForTeardown].anim = teardownAnimId;
+      project.sprites.actors[0].battle = { ...project.sprites.actors[0].battle, attackAnim: teardownAnimId };
+    });
+    await wait(150);
+
+    const teardownHost = document.createElement('div');
+    teardownHost.style.position = 'fixed';
+    teardownHost.style.left = '-9999px';
+    teardownHost.style.top = '0px';
+    teardownHost.style.width = '400px';
+    teardownHost.style.height = '400px';
+    document.body.appendChild(teardownHost);
+    const fakeAppForTeardown = { setMeta() {}, consumeContext: () => null, goTo() {} };
+
+    const RealRAFForTeardown = window.requestAnimationFrame;
+    const RealCAFForTeardown = window.cancelAnimationFrame;
+    const RealResizeObserverForTeardown = window.ResizeObserver;
+    const pendingRafForTeardown = new Map();
+    let nextRafIdForTeardown = 0;
+    window.requestAnimationFrame = (fn) => {
+      const id = ++nextRafIdForTeardown;
+      pendingRafForTeardown.set(id, fn);
+      return id;
+    };
+    window.cancelAnimationFrame = (id) => {
+      pendingRafForTeardown.delete(id);
+    };
+    let liveObserversForTeardown = 0;
+    window.ResizeObserver = class {
+      observe() {
+        liveObserversForTeardown++;
+      }
+      disconnect() {
+        liveObserversForTeardown--;
+      }
+    };
+
+    try {
+      for (const [name, mountForge, arm] of [
+        [
+          'Magic',
+          mountMagicForTeardown,
+          () => {
+            const spellListSelectTeardown = [...teardownHost.querySelectorAll('select')].find((s) => [...s.options].some((o) => o.textContent === 'Bolt'));
+            if (!spellListSelectTeardown) throw new Error('Magic Forge teardown test: no spell list select with a Bolt option');
+            const boltOptTeardown = [...spellListSelectTeardown.options].findIndex((o) => o.textContent === 'Bolt');
+            spellListSelectTeardown.value = String(boltOptTeardown);
+            spellListSelectTeardown.dispatchEvent(new Event('change', { bubbles: true }));
+          }
+        ],
+        [
+          'Monster',
+          mountMonsterForTeardown,
+          () => {
+            const monsterSelectTeardown = teardownHost.querySelector('select');
+            if (!monsterSelectTeardown) throw new Error('Monster Forge teardown test: no actor list select');
+            const slimeOptTeardown = [...monsterSelectTeardown.options].find((o) => o.textContent.indexOf('Slime') !== -1);
+            if (!slimeOptTeardown) throw new Error('Monster Forge teardown test: no Slime option');
+            monsterSelectTeardown.value = slimeOptTeardown.value;
+            monsterSelectTeardown.dispatchEvent(new Event('change', { bubbles: true }));
+          }
+        ]
+      ]) {
+        const rafBaseline = pendingRafForTeardown.size;
+        const observerBaseline = liveObserversForTeardown;
+        const mountedForTeardown = mountForge(teardownHost, fakeAppForTeardown);
+        arm();
+
+        const teardownCanvas = teardownHost.querySelector('canvas.battlefx-canvas');
+        if (!teardownCanvas) throw new Error(name + ' Forge teardown test: preview canvas did not mount');
+        const teardownBlank = document.createElement('canvas');
+        teardownBlank.width = teardownCanvas.width;
+        teardownBlank.height = teardownCanvas.height;
+        if (teardownCanvas.toDataURL() === teardownBlank.toDataURL()) {
+          throw new Error(name + ' Forge preview did not paint before the teardown check');
+        }
+        if (pendingRafForTeardown.size <= rafBaseline) {
+          throw new Error(name + ' Forge: expected a new live queued rAF callback after arming');
+        }
+        if (liveObserversForTeardown <= observerBaseline) {
+          throw new Error(name + ' Forge: expected a new live ResizeObserver after mounting');
+        }
+
+        const retainedForTeardown = [...pendingRafForTeardown.values()];
+        mountedForTeardown.destroy();
+        if (pendingRafForTeardown.size !== rafBaseline) {
+          throw new Error(name + ' Forge destroy leaked ' + (pendingRafForTeardown.size - rafBaseline) + ' queued rAF callback(s)');
+        }
+        if (liveObserversForTeardown !== observerBaseline) {
+          throw new Error(name + ' Forge destroy leaked ' + (liveObserversForTeardown - observerBaseline) + ' live ResizeObserver(s)');
+        }
+        // The retained callback (the browser's own real rAF would still
+        // hold it) must be inert once invoked by hand -- queues nothing new
+        // and repaints nothing (mirrors item 3's own scratch-widget check,
+        // now proven for the Forge's own teardown).
+        const canvasBeforeRetainedInvoke = teardownCanvas.toDataURL();
+        for (const fn of retainedForTeardown) fn();
+        if (pendingRafForTeardown.size !== rafBaseline) {
+          throw new Error(name + ' Forge: a retained callback queued a new one after destroy()');
+        }
+        if (teardownCanvas.toDataURL() !== canvasBeforeRetainedInvoke) {
+          throw new Error(name + ' Forge: a retained callback repainted after destroy()');
+        }
+
+        teardownHost.innerHTML = ''; // clear this Forge's own DOM before the next one mounts
+      }
+      step(
+        'battle-fx preview: Forge-owned teardown leaves no live rAF callbacks or ResizeObservers, for BOTH Magic and Monster',
+        'each Forge painted a real frame after arming through its own mount(container, app) contract, then its own destroy() left zero pending callbacks and zero observers, and any already-queued (browser-retained) callback is inert'
+      );
+    } finally {
+      window.requestAnimationFrame = RealRAFForTeardown;
+      window.cancelAnimationFrame = RealCAFForTeardown;
+      window.ResizeObserver = RealResizeObserverForTeardown;
+      document.body.removeChild(teardownHost);
+    }
+
+    rpgStore.commit('smoke: revert the Forge-owned teardown fixture', (project) => {
+      const bt = project.rpg.battleTilesetId;
+      project.sprites.animations.length = teardownAnimsBefore;
+      project.sprites.metasprites.length = teardownMetasBefore;
+      project.spells[boltIndexForTeardown].anim = null;
+      delete project.sprites.actors[0].battle.attackAnim;
+      project.tilesets[bt].sprites.tiles[teardownTileA] = originalTeardownTileA;
+      project.tilesets[bt].sprites.tiles[teardownTileB] = originalTeardownTileB;
+    });
+    await wait(150);
+  }
+
   // Test 5 (join-guard brief, handoff-next/join-guard-brief.md; moved to the
   // Character Forge under docs/design-character-forge.md): the Character
   // Forge's Remove button now renumbers every Join command's own member, in

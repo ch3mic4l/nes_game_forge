@@ -15,7 +15,8 @@ import NES from '../../renderer/emulator/core/nes.js';
 import { Emulator, BUTTON } from '../../renderer/emulator/runcontrol.js';
 import { loadProject, saveProject } from '../../main/project-io.js';
 import { buildProject } from '../../main/build/pipeline.js';
-import { createProject, NO_MEMBER, createSpell, battleCombatantOamMax, MAX_OAM_ENTRIES, MISS_OAM_TILES } from '../../shared/project.js';
+import { createProject, NO_MEMBER, createSpell, battleCombatantOamMax, MAX_OAM_ENTRIES, MISS_OAM_TILES, normalizeProject, battleFxOamRoom } from '../../shared/project.js';
+import { armBattleFx, tickBattleFx, drawnBattleFx } from '../../renderer/widgets/battlefx.js';
 import { resolveMapper } from '../../shared/cartridge.js';
 import { checkCapacity } from '../../main/build/generate.js';
 import { statAt, xpCurve, nameTiles, NAME_LIMIT, dropThreshold } from '../../main/build/battletables.js';
@@ -6338,6 +6339,385 @@ test('conservative fit, MISS-aware: with rpg.miss on, room shrinks by MISS_OAM_T
     for (let i = 0x200; i < 0x300; i++) {
       assert.equal(nes.cpu.mem[i], 0xff, `tick ${tick}: the WHOLE OAM shadow must stay parked at $FF when room+1 (MISS-aware) is rejected, byte ${i - 0x200} did not`);
     }
+  }
+});
+
+// Phase 3 (docs/design-battle-animation.md §15.6): THE GATE -- the
+// frame-for-frame trace test that must exist and pass before a single line of
+// renderer/forges/magic/magic.js's own canvas/controls is written (§7's own
+// phasing). The ROM is the oracle; renderer/widgets/battlefx.js's DOM-free
+// stepper (armBattleFx/tickBattleFx/drawnBattleFx) is what is under test --
+// the sfx.test.js shape (test/unit/sfx.test.js:521-576, "the ROM driver and
+// SfxReplayer agree on every frame").
+//
+// One fixture builder, extending buildFxFitFixture's own shape above, with
+// three differences §15.6 requires: (1) every frame's own duration is
+// authored explicitly, never left to normalizeAnimation's default; (2) the
+// four filler combatants are 13 tiles each, not 12, so room lands in
+// 3 <= room <= 6 (the design's own retuning, §15.6, "the 16-tile ceiling and
+// the exact-room/room+1/room+10 relationship"); (3) every admitted
+// metasprite gets its own disjoint tile-id block, so the OAM tile byte
+// battle_fx_draw actually wrote identifies which one drew, never inferred
+// from re-running the JS side's own fit arithmetic.
+//
+// Board: sample-rpg's own default (MMC1, mapper 1) only. buildFxFitFixture
+// (above) does not parameterize the board either -- the brief's own
+// allowance ("if it does not, one board is acceptable -- say which") is
+// exercised here explicitly. The design's own measured rooms (§15.6) are
+// MMC1 4, MMC3 3, UNROM 512 4; this fixture asserts 3 <= room <= 6 on
+// whichever board it runs (MMC1 here) rather than hardcoding one of the
+// three -- the assertion is the same regardless of board, only the build
+// target differs.
+async function buildFxTraceFixture(t) {
+  const dir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'forge-fx-trace-'));
+  t.after(() => fs.promises.rm(dir, { recursive: true, force: true }));
+  const project = await loadProject(SAMPLE);
+  project.maps[0].encounters = { rate: 0, actorIds: [] };
+
+  // Four filler combatants at 13 tiles each (buildFxFitFixture's own shape,
+  // above, uses 12 -- §15.6's own retuning needs 13 so room lands in
+  // 3 <= room <= 6 rather than buildFxFitFixture's own wider range).
+  const bigMetaId = project.sprites.metasprites.length;
+  project.sprites.metasprites.push({
+    id: bigMetaId,
+    name: 'Big filler',
+    tiles: Array.from({ length: 13 }, (_, i) => ({ tile: 90 + i, x: 0, y: 0, palette: 0 }))
+  });
+  const bigAnimId = project.sprites.animations.length;
+  project.sprites.animations.push({ id: bigAnimId, name: 'BigWalk', loop: true, frames: [{ metaspriteId: bigMetaId, duration: 8 }] });
+  const fillerIds = [];
+  for (let i = 0; i < 4; i++) {
+    const id = project.sprites.actors.length;
+    project.sprites.actors.push({
+      id, name: `TraceFiller${i}`, behavior: 'npc', speed: 1, hp: 1, damage: 0,
+      anims: { idle: bigAnimId, walkDown: null, walkUp: null, walkSide: null },
+      battle: {}
+    });
+    fillerIds.push(id);
+  }
+  project.maps[0].screens[0].entities.push({
+    actorId: 0, x: 232, y: 216, props: { event: { pages: [{ commands: [{ op: 'battle', monsters: fillerIds }] }] } }
+  });
+
+  // MISS off, unconditionally (§15.6: "the fit trace runs with MISS OFF" --
+  // with the 13-tile filler tuning, a MISS-on room clamps to 0 on every
+  // board, leaving no positive room for any fitting case at all).
+  project.rpg.miss = false;
+
+  // Every admitted metasprite gets its own disjoint tile-id block (none of
+  // these ranges overlap, and none overlaps the 90-102 filler block above),
+  // so the drawn OAM tile byte alone identifies which metasprite drew.
+  const push = (name, tiles) => {
+    const id = project.sprites.metasprites.length;
+    project.sprites.metasprites.push({ id, name, tiles: tiles.map((tile) => ({ tile, x: 0, y: 0, palette: 0 })) });
+    return id;
+  };
+  const pushAnim = (name, frames) => {
+    const id = project.sprites.animations.length;
+    project.sprites.animations.push({ id, name, loop: false, frames });
+    return id;
+  };
+
+  const dur1MetaId = push('Dur1', [30]);
+  const dur1AnimId = pushAnim('Dur1', [{ metaspriteId: dur1MetaId, duration: 1 }]);
+
+  const dur255MetaId = push('Dur255', [31]);
+  const dur255AnimId = pushAnim('Dur255', [{ metaspriteId: dur255MetaId, duration: 255 }]);
+
+  const seq0MetaId = push('Seq0', [34]);
+  const seq1MetaId = push('Seq1', [35]);
+  const seq2MetaId = push('Seq2', [36]);
+  const seq3MetaId = push('Seq3', [37]);
+  const seqAnimId = pushAnim('Sequence', [
+    { metaspriteId: seq0MetaId, duration: 2 },
+    { metaspriteId: seq1MetaId, duration: 3 },
+    { metaspriteId: seq2MetaId, duration: 4 },
+    { metaspriteId: seq3MetaId, duration: 255 }
+  ]);
+
+  const emptyAnimId = pushAnim('Empty', []);
+
+  const zeroTileMetaId = push('ZeroTile', []);
+  const zeroTileAnimId = pushAnim('ZeroTile', [{ metaspriteId: zeroTileMetaId, duration: 3 }]);
+
+  const smallMetaId = push('Small', [40, 41]);
+
+  // room is computed AFTER normalization (below); the Oversized/ExactFit/
+  // OneOver metasprites are built once room is known, all still well under
+  // the 16-tile ceiling (room in 3..6, so room+10 in 13..16).
+  const mapper = resolveMapper(project.cartridge.mapper);
+  const preliminaryRoom = MAX_OAM_ENTRIES - battleCombatantOamMax(project, mapper);
+  assert.ok(preliminaryRoom >= 3 && preliminaryRoom <= 6, `sanity: preliminary room (${preliminaryRoom}) must be in 3..6 before the fit metasprites are even built`);
+
+  const oversizedCount = preliminaryRoom + 10;
+  const oversizedMetaId = push('Oversized', Array.from({ length: oversizedCount }, (_, i) => 50 + i));
+  const exactCount = preliminaryRoom;
+  const exactMetaId = push('ExactFit', Array.from({ length: exactCount }, (_, i) => 70 + i));
+  const oneOverCount = preliminaryRoom + 1;
+  const oneOverMetaId = push('OneOver', Array.from({ length: oneOverCount }, (_, i) => 80 + i));
+
+  const exactAnimId = pushAnim('ExactFit', [{ metaspriteId: exactMetaId, duration: 5 }]);
+  const oneOverAnimId = pushAnim('OneOver', [{ metaspriteId: oneOverMetaId, duration: 5 }]);
+  const mixed1AnimId = pushAnim('SmallThenOversized', [
+    { metaspriteId: smallMetaId, duration: 2 },
+    { metaspriteId: oversizedMetaId, duration: 2 }
+  ]);
+  const mixed2AnimId = pushAnim('OversizedThenSmall', [
+    { metaspriteId: oversizedMetaId, duration: 2 },
+    { metaspriteId: smallMetaId, duration: 2 }
+  ]);
+
+  project.sprites.actors[0].battle = { ...project.sprites.actors[0].battle, attackAnim: dur1AnimId }; // flips BATTLE_ANIM_ENABLED on
+
+  // The single normalization boundary (§15.6): normalizeProject is called
+  // exactly ONCE, and that SAME returned object feeds both the ROM build
+  // and the JS trace's own animation/metasprite reads -- never a private
+  // normalizeAnimation/normalizeMetasprite import (neither is exported),
+  // and never two independently normalized copies that could disagree.
+  const normalized = normalizeProject(project);
+
+  const room = battleFxOamRoom(normalized, resolveMapper(normalized.cartridge.mapper));
+  assert.ok(room >= 3 && room <= 6, `room (${room}) must be in 3..6 after normalization -- the fixture's own retuning depends on this`);
+  assert.equal(room, preliminaryRoom, 'room must not have moved between the preliminary (pre-fit-metasprite) measurement and the post-normalization one');
+
+  // Fail loudly, never skip: every fixture metasprite's own normalized
+  // tiles.length must equal its authored count -- nothing here may have been
+  // silently sliced by normalizeMetasprite's own 16-tile ceiling.
+  const expectedCounts = {
+    [dur1MetaId]: 1,
+    [dur255MetaId]: 1,
+    [seq0MetaId]: 1,
+    [seq1MetaId]: 1,
+    [seq2MetaId]: 1,
+    [seq3MetaId]: 1,
+    [zeroTileMetaId]: 0,
+    [smallMetaId]: 2,
+    [oversizedMetaId]: oversizedCount,
+    [exactMetaId]: exactCount,
+    [oneOverMetaId]: oneOverCount
+  };
+  for (const [id, expectedCount] of Object.entries(expectedCounts)) {
+    const actualCount = normalized.sprites.metasprites[Number(id)].tiles.length;
+    assert.equal(actualCount, expectedCount, `metasprite ${id} must keep its authored ${expectedCount} tiles after normalization, got ${actualCount} -- normalizeMetasprite's 16-tile ceiling must not have truncated it`);
+  }
+
+  await saveProject(dir, normalized);
+  const built = await buildProject({ dir, project: normalized, log: () => {} });
+
+  // A reverse lookup from a drawn OAM tile byte back to the metasprite id it
+  // came from -- the ROM's own answer must be identified this way, never by
+  // re-running the JS side's own fit arithmetic (§15.6).
+  const tileToMetaspriteId = new Map();
+  for (const id of [
+    dur1MetaId, dur255MetaId, seq0MetaId, seq1MetaId, seq2MetaId, seq3MetaId,
+    smallMetaId, oversizedMetaId, exactMetaId, oneOverMetaId
+  ]) {
+    const firstTile = normalized.sprites.metasprites[id].tiles[0]?.tile;
+    assert.ok(firstTile !== undefined, `metasprite ${id} must have at least one tile to key the reverse lookup on`);
+    assert.ok(!tileToMetaspriteId.has(firstTile), `tile ${firstTile} must not already be claimed by another admitted metasprite -- disjoint blocks required`);
+    tileToMetaspriteId.set(firstTile, id);
+  }
+
+  return {
+    built,
+    normalized,
+    room,
+    mapper,
+    tileToMetaspriteId,
+    ids: {
+      dur1AnimId, dur255AnimId, seqAnimId, emptyAnimId, zeroTileAnimId,
+      exactAnimId, oneOverAnimId, mixed1AnimId, mixed2AnimId
+    }
+  };
+}
+
+test('phase 3 §15.6 THE GATE: the frame-for-frame ROM trace matches renderer/widgets/battlefx.js exactly, case by case', {
+  skip: needsSample
+}, async (t) => {
+  const { built, normalized, room, tileToMetaspriteId, ids } = await buildFxTraceFixture(t);
+  const { BT_FX_ANIM, BT_FX_FRAME, BT_FX_TIMER } = resolveFxAddrs(built);
+  const dir = path.dirname(path.dirname(built.romPath));
+  const OAM_IDX = resolveEngineAddress(fs.readFileSync(path.join(dir, 'build', 'constants.asm'), 'utf8'), 'oam_idx');
+
+  const nes = bootPastNaming(built.romPath);
+  const addrOf = selectBattleBank(nes, built);
+  const armAt = addrOf('battle_fx_arm_at');
+  const tick = addrOf('battle_fx_tick');
+  const draw = addrOf('battle_fx_draw');
+  nes.cpu.mem[BT_PHASE] = BP_MENU;
+
+  const tileCount = (metaspriteId) => normalized.sprites.metasprites[metaspriteId].tiles.length;
+
+  // Reads battle_fx_draw's own answer straight off the OAM shadow it wrote,
+  // the :5386-5429/:6050-6079 way -- never derived from bt_fx_frame/anim.
+  const readRomDrawn = () => {
+    nes.cpu.mem.fill(0xff, 0x200, 0x300);
+    nes.cpu.mem[OAM_IDX] = 0;
+    callRoutine(nes, draw);
+    if (nes.cpu.mem[OAM_IDX] === 0) return null;
+    const tile = nes.cpu.mem[0x201]; // first OAM entry's own tile byte
+    const metaspriteId = tileToMetaspriteId.get(tile);
+    assert.ok(metaspriteId !== undefined, `drawn tile ${tile} must map back to one of the admitted metasprites' own disjoint blocks`);
+    return metaspriteId;
+  };
+
+  const romObserve = () => {
+    const anim = nes.cpu.mem[BT_FX_ANIM];
+    const live = anim !== NO_ANIM;
+    const rawFrame = nes.cpu.mem[BT_FX_FRAME];
+    const rawTimer = nes.cpu.mem[BT_FX_TIMER];
+    return {
+      live,
+      frame: live ? rawFrame : null,
+      timer: live ? rawTimer : null,
+      drawn: readRomDrawn(),
+      _rawFrame: rawFrame,
+      _rawTimer: rawTimer
+    };
+  };
+
+  /**
+   * Runs one fixture case: arms both the ROM (through battle_fx_arm_at, a
+   * real call, never poking bt_fx_* by hand) and the JS stepper
+   * (armBattleFx), then observes both at index 0 (BEFORE any tick) and after
+   * every tick through `bound + 2`, asserting {live, frame, timer, drawn}
+   * agree at every index. `animId` is NO_ANIM (0xff) for the "arms nothing"
+   * cases; `jsAnimation` is null for those same cases (armBattleFx(null) is
+   * the JS equivalent).
+   */
+  function traceCase(label, { animId, jsAnimation, bound }) {
+    // Every case seeds a known, clean, inactive ROM state first (§15.6) --
+    // explicitly reset, never left over from whatever the previous case's
+    // own trace ended on.
+    nes.cpu.mem[BT_FX_ANIM] = NO_ANIM;
+    nes.cpu.mem[BT_FX_FRAME] = 0;
+    nes.cpu.mem[BT_FX_TIMER] = 0;
+
+    nes.cpu.REG_ACC = animId;
+    nes.cpu.REG_Y = MAX_PARTY; // an arbitrary combatant slot, per the existing arm() helper above
+    callRoutine(nes, armAt);
+
+    let jsState = armBattleFx(jsAnimation);
+
+    const compare = (index) => {
+      const rom = romObserve();
+      const jsDrawnId = drawnBattleFx(jsState, room, tileCount);
+      const js = {
+        live: jsState !== null,
+        frame: jsState?.frame ?? null,
+        timer: jsState?.timer ?? null,
+        drawn: jsDrawnId
+      };
+      assert.deepEqual(
+        { live: rom.live, frame: rom.frame, timer: rom.timer, drawn: rom.drawn },
+        js,
+        `${label}: observation ${index} (ROM raw frame/timer were ${rom._rawFrame}/${rom._rawTimer})`
+      );
+    };
+
+    compare(0); // observation 0, taken BEFORE the first battle_fx_tick call (§15.6)
+    for (let i = 1; i <= bound + 2; i++) {
+      callRoutine(nes, tick);
+      jsState = tickBattleFx(jsState);
+      compare(i);
+    }
+  }
+
+  const animOf = (id) => normalized.sprites.animations[id];
+  const sumDurations = (id) => animOf(id).frames.reduce((total, f) => total + f.duration, 0);
+
+  // Case 1: one frame, duration 1.
+  traceCase('case 1 (dur1)', { animId: ids.dur1AnimId, jsAnimation: animOf(ids.dur1AnimId), bound: sumDurations(ids.dur1AnimId) });
+
+  // Case 2: one frame, duration 255.
+  traceCase('case 2 (dur255)', { animId: ids.dur255AnimId, jsAnimation: animOf(ids.dur255AnimId), bound: sumDurations(ids.dur255AnimId) });
+
+  // Case 3: 4 frames, distinct durations, one at 255.
+  traceCase('case 3 (sequence)', { animId: ids.seqAnimId, jsAnimation: animOf(ids.seqAnimId), bound: sumDurations(ids.seqAnimId) });
+
+  // Case 4: an empty animation -- arms and immediately reverts.
+  traceCase('case 4 (empty)', { animId: ids.emptyAnimId, jsAnimation: animOf(ids.emptyAnimId), bound: 0 });
+
+  // Case 5: a single frame whose metasprite has zero tiles -- live and
+  // ticking, but never draws (the room compare PASSES for it; it is
+  // draw_metasprite's own separate, later ms_count == 0 return that stops it).
+  traceCase('case 5 (zero-tile)', { animId: ids.zeroTileAnimId, jsAnimation: animOf(ids.zeroTileAnimId), bound: sumDurations(ids.zeroTileAnimId) });
+
+  // Case 6: exact-room and room+1 fit cases.
+  traceCase('case 6 (exact fit)', { animId: ids.exactAnimId, jsAnimation: animOf(ids.exactAnimId), bound: sumDurations(ids.exactAnimId) });
+  traceCase('case 6 (one over)', { animId: ids.oneOverAnimId, jsAnimation: animOf(ids.oneOverAnimId), bound: sumDurations(ids.oneOverAnimId) });
+
+  // Case 7: one frame exceeds room, one fits, in both orders.
+  traceCase('case 7 (small then oversized)', { animId: ids.mixed1AnimId, jsAnimation: animOf(ids.mixed1AnimId), bound: sumDurations(ids.mixed1AnimId) });
+  traceCase('case 7 (oversized then small)', { animId: ids.mixed2AnimId, jsAnimation: animOf(ids.mixed2AnimId), bound: sumDurations(ids.mixed2AnimId) });
+
+  // Case 8: NO_ANIM itself, from a clean state -- genuinely armed (REG_ACC =
+  // NO_ANIM), not skipped.
+  traceCase('case 8 (NO_ANIM from clean)', { animId: NO_ANIM, jsAnimation: null, bound: 0 });
+
+  // The two ROM-only cases (§15.6): arming over an ALREADY-LIVE effect,
+  // asserting the engine's own contract directly -- armBattleFx is
+  // deliberately restricted to fresh construction and models neither case,
+  // so there is no JS side to compare against here.
+  {
+    // Live effect (the Sequence, mid-flight), then armed with NO_ANIM: the
+    // second arm call must be a complete no-op (the early cmp #NO_ANIM/beq
+    // returns before touching any state).
+    nes.cpu.mem[BT_FX_ANIM] = NO_ANIM;
+    nes.cpu.REG_ACC = ids.seqAnimId;
+    nes.cpu.REG_Y = MAX_PARTY;
+    callRoutine(nes, armAt);
+    callRoutine(nes, tick);
+    callRoutine(nes, tick); // frame 0, timer 2 of a duration-2 first frame -- advanced into frame 1, timer 0
+    // P3-9 fix: two ticks alone leaves timer at exactly 0 (the Sequence's
+    // own frame 0 has duration 2), which an incorrect arm path that resets
+    // timer to 0 would also produce -- "timer unchanged" below could not
+    // tell preservation from clearing. One more tick (frame 1's own
+    // duration is 3) leaves BOTH frame and timer genuinely nonzero first.
+    callRoutine(nes, tick);
+    const animBefore = nes.cpu.mem[BT_FX_ANIM];
+    const frameBefore = nes.cpu.mem[BT_FX_FRAME];
+    const timerBefore = nes.cpu.mem[BT_FX_TIMER];
+    assert.equal(animBefore, ids.seqAnimId, 'sanity: must genuinely still be live and mid-flight before the second arm call');
+    assert.notEqual(frameBefore, 0, 'sanity: frame must be genuinely nonzero before the second arm call');
+    assert.notEqual(timerBefore, 0, 'sanity: timer must be genuinely nonzero before the second arm call -- P3-9: two ticks alone leaves it at exactly 0');
+
+    nes.cpu.REG_ACC = NO_ANIM;
+    nes.cpu.REG_Y = MAX_PARTY;
+    callRoutine(nes, armAt);
+    assert.equal(nes.cpu.mem[BT_FX_ANIM], animBefore, 'ROM-only case: arming NO_ANIM over a live effect must leave bt_fx_anim unchanged');
+    assert.equal(nes.cpu.mem[BT_FX_FRAME], frameBefore, 'ROM-only case: arming NO_ANIM over a live effect must leave bt_fx_frame unchanged');
+    assert.equal(nes.cpu.mem[BT_FX_TIMER], timerBefore, 'ROM-only case: arming NO_ANIM over a live effect must leave bt_fx_timer unchanged');
+  }
+  {
+    // Live effect (the Sequence, mid-flight again), then armed with a real,
+    // EMPTY animation: bt_fx_anim becomes NO_ANIM, but bt_fx_frame/timer are
+    // left at whatever the previous effect held them at -- NOT reset to 0.
+    nes.cpu.mem[BT_FX_ANIM] = NO_ANIM;
+    nes.cpu.REG_ACC = ids.seqAnimId;
+    nes.cpu.REG_Y = MAX_PARTY;
+    callRoutine(nes, armAt);
+    callRoutine(nes, tick);
+    callRoutine(nes, tick); // frame 0, timer 2 of a duration-2 first frame -- advanced into frame 1, timer 0
+    // P3-9 fix: the identical off-by-zero as the NO_ANIM case above -- one
+    // more tick before capturing frameBefore/timerBefore so both are
+    // genuinely nonzero, or "unchanged" cannot distinguish preservation
+    // from clearing.
+    callRoutine(nes, tick);
+    const animLiveBefore = nes.cpu.mem[BT_FX_ANIM];
+    const frameBefore = nes.cpu.mem[BT_FX_FRAME];
+    const timerBefore = nes.cpu.mem[BT_FX_TIMER];
+    assert.equal(animLiveBefore, ids.seqAnimId, 'sanity: must genuinely still be live and mid-flight before the second arm call');
+    assert.notEqual(frameBefore, 0, 'sanity: frame must be genuinely nonzero before the second arm call');
+    assert.notEqual(timerBefore, 0, 'sanity: timer must be genuinely nonzero before the second arm call -- P3-9: two ticks alone leaves it at exactly 0');
+
+    nes.cpu.REG_ACC = ids.emptyAnimId;
+    nes.cpu.REG_Y = MAX_PARTY;
+    callRoutine(nes, armAt);
+    assert.equal(nes.cpu.mem[BT_FX_ANIM], NO_ANIM, 'ROM-only case: arming a real, empty animation over a live effect must revert bt_fx_anim to NO_ANIM');
+    assert.notEqual(nes.cpu.mem[BT_FX_ANIM], animLiveBefore, 'sanity: bt_fx_anim must actually have moved from the live Sequence id');
+    assert.equal(nes.cpu.mem[BT_FX_FRAME], frameBefore, 'ROM-only case: arming an empty animation over a live effect must NOT reset bt_fx_frame to 0 -- battle_fx_arm_at_empty never touches it');
+    assert.equal(nes.cpu.mem[BT_FX_TIMER], timerBefore, 'ROM-only case: arming an empty animation over a live effect must NOT reset bt_fx_timer to 0 either -- only bt_fx_anim moved');
   }
 });
 

@@ -3839,6 +3839,29 @@ export function battleSpriteBudget(project, mapper) {
 }
 
 /**
+ * How much OAM room is left for a running battle-side effect (flipbook) to
+ * draw into, once the worst-case combatant icons, the split-only cursor and
+ * MISS's own fixed 4 tiles (when live) have taken their own share --
+ * `battle_fx_draw`'s own fit check (`engine/battleui.asm`) compares a
+ * frame's tile count against this single generated figure directly
+ * (docs/design-battle-animation.md §15.3). Distinct from `battleSpriteBudget`
+ * above: that one answers "does this project overflow 64 sprites" (adding
+ * the worst authored flipbook frame AND the miss tiles to the combatants);
+ * this one answers "how much room is left for the effect to draw into" (no
+ * flipbook term at all, since the flipbook is the very thing being asked
+ * whether it fits). Single-writer extraction of `main/build/generate.js`'s
+ * own arithmetic -- moved here so the Magic/Monster Forge preview widget
+ * (`renderer/widgets/battlefxpreview.js`) can call the identical figure
+ * rather than duplicating it (§15.3, §15.9).
+ */
+export function battleFxOamRoom(project, mapper) {
+  return Math.max(
+    0,
+    MAX_OAM_ENTRIES - battleCombatantOamMax(project, mapper) - (projectUsesMiss(project) ? MISS_OAM_TILES : 0)
+  );
+}
+
+/**
  * A second, distinct warning, paired with `describeBattleSpriteWarning`
  * rather than replacing it (docs/design-battle-animation.md §3.6): that one
  * says the PROJECT as a whole may need more sprites than the NES can show;

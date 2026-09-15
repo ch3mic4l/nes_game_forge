@@ -1390,6 +1390,17 @@ Two are genuinely his:
   scope" list exists to name. A future slice can move `animationSelect` beside the shared preview
   widget (§15.8) with no coupling to anything phase 3 ships.
 
+**Chris answered both of the above on 2026-09-14** (recorded verbatim in §10's own new changelog
+entry). Both match this document's own recommendation:
+
+1. **Does the Monster Forge get the identical preview in phase 3? YES** — matches the
+   recommendation. The Monster Forge ships the same persistent-host `mountBattleFxPreview` split as
+   the Magic Forge, in this same phase, with no separate stepper or trace test of its own (§15.6's
+   gate proves the engine contract once, not once per Forge).
+2. **Deduplicate `animationSelect` into the shared widget module in this phase? NO** — matches the
+   recommendation. It stays byte-for-byte duplicated in `magic.js`/`monster.js` for now; a future
+   slice can move it beside the shared preview widget with no coupling to anything phase 3 ships.
+
 ## §9. Out of scope, explicitly
 
 - Party-member attack animations of their own (§8).
@@ -2048,6 +2059,20 @@ all four round-4 findings resolved and §15 sufficient to brief phase 3 from; it
 applied — the smoke row's post-`destroy()` assertion now also requires zero newly queued callbacks,
 with the disposed check stated to run before both rescheduling and stepping (§15.5, §15.7), and
 §15.9's own scope summary no longer implies `paintMetasprite`'s origin arguments are new (§15.9).
+
+### Phase 3 answers round (2026-09-14) — Chris's own §8 answers recorded
+
+`docs/design-battle-animation.md` (5e34722, reviewer GO-with-nits) left two questions open in §8's
+own "Phase 3's own open questions" passage. Chris answered both on 2026-09-14, recorded verbatim:
+
+1. Does the Monster Forge get the identical preview in phase 3? YES — matches the recommendation.
+2. Deduplicate `animationSelect` into the shared widget module in this phase? NO — matches the
+   recommendation.
+
+Both match this document's own recommendation, so no design decision changes: §15.8's own "Both
+scope questions stay open for Chris in §8" paragraph is amended with one sentence recording the
+answers; phase 3 ships the widget in both Forges (§15.5's persistent-host split, applied to both
+`magic.js` and `monster.js`) and leaves `animationSelect` untouched in both files.
 
 ## §11. Places a claim could not be pinned to a line and was reasoned instead
 
@@ -4520,6 +4545,10 @@ recommendation each, exactly the shape every other §8 entry already takes:
   duplicated) be deduplicated into the same shared module in this same phase?** Recommendation:
   no — real drift hazard, but not what a UI-polish phase is for; a future slice can move it beside
   the shared preview widget with no coupling to anything phase 3 ships.
+
+Both were answered by Chris on 2026-09-14 (§10's own new changelog entry): yes to the Monster
+Forge, no to deduplicating `animationSelect` — so phase 3 ships the widget in both Forges and
+leaves `animationSelect` alone.
 
 §8's own "Phase 3's own open questions" subsection is the one place both are actually put to
 Chris; this section states the design and the recommendation, §8 asks.

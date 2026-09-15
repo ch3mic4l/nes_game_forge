@@ -29,6 +29,7 @@ import {
 } from '../../../shared/project.js';
 import { FONT_BASE } from '../../../shared/font.js';
 import { drawSheet, sheetIndexFromEvent, SHEET_COLS } from '../../widgets/sheet.js';
+import { mountBattleFxPreview } from '../../widgets/battlefxpreview.js';
 
 const number = (value, min, max, onChange, title = null) =>
   el('input', {
@@ -429,7 +430,25 @@ export function mount(container, app) {
     state.selectedActorId = context.actorId;
   }
 
+  // A persistent fields/preview split (docs/design-battle-animation.md
+  // §15.5, §15.8): fieldsHost is replaceable on every render(), previewHost
+  // is handed to mountBattleFxPreview ONCE at mount and never touched by
+  // fill() again -- the identical split Magic gets, not a bare field()
+  // insertion inside battleSection (which would be rebuilt and lost on
+  // every render, §15.8's own corrected cost).
   const body = el('div.panel-body');
+  const fieldsHost = el('div');
+  const previewHost = el('div', { style: { marginTop: '16px', maxWidth: '360px' } });
+  fill(body, fieldsHost, previewHost);
+
+  const preview = mountBattleFxPreview(previewHost, {
+    getProject: () => store.project,
+    getAnimationId: () => {
+      if (state.selectedActorId === null) return null;
+      const actor = store.project.sprites.actors[state.selectedActorId];
+      return actor?.battle?.attackAnim ?? null;
+    }
+  });
 
   function render() {
     // The catalog and the live actor are both re-derived fresh on every
@@ -445,7 +464,7 @@ export function mount(container, app) {
     const actor = state.selectedActorId === null ? null : store.project.sprites.actors[state.selectedActorId] ?? null;
 
     fill(
-      body,
+      fieldsHost,
       el(
         'p.hint',
         { style: { marginBottom: '12px', maxWidth: '640px' } },
@@ -532,6 +551,8 @@ export function mount(container, app) {
               'command. Give an actor contact damage in the Sprite Forge to make it a monster.'
           )
     );
+
+    preview.sync();
   }
 
   const root = el(
@@ -547,8 +568,10 @@ export function mount(container, app) {
   return {
     destroy() {
       destroyed = true;
+      preview.destroy();
       app.setMeta('');
     },
-    onProjectChange: render
+    onProjectChange: render,
+    stepPreview: () => preview.stepPreview()
   };
 }
