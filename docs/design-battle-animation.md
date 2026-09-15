@@ -1230,6 +1230,18 @@ insufficient on its own — the six fixtures never author a live battle-animatio
 cannot exercise the mapper-dependent room arithmetic §15.3's extraction actually touches; the
 matrix's own `sample-rpg`-on-every-board, both-configurations rows are what closes that gap)**.
 
+**Phase 4 — a party member's own attack visual, designed in full in §16 (ROADMAP item 14 point 5),
+this round's own new work.** Independent of phases 1-3: its own gate
+(`PARTY_ATTACK_ANIM_ENABLED`/`projectUsesPartyAttackAnim`, §16.6), unaffected by hit feedback or
+MISS (neither reads or writes `pc_anim_attack` or the new party branch, §16.7), and its own banked
+allowance (`PARTY_ATTACK_ANIM_BATTLE_ALLOWANCE = 11`, measured, §16.9) layered on top of
+`BATTLE_ANIM_BATTLE_ALLOWANCE`'s own base — a project already using phase 1b (monster/spell
+animation) pays no new bytes for phase 4 unless it also authors a party member's own `attackAnim`
+(§16.6's own byte-identity proof). Depends on phase 1b's own `bt_fx_*` mechanism existing at all
+(the shared flipbook, §16.1) but shares no toggle, RAM byte, or table with phases 2a/2b/3. Ships
+after an implementation brief is assembled from §16 alone, per this round's own scope (a design
+round only — Appendix E is the measured prototype, not shipped code).
+
 ## §8. Open questions for Chris
 
 - **Target-vs-caster remains the recommendation** (target for single-target damage/status, caster
@@ -1401,9 +1413,56 @@ entry). Both match this document's own recommendation:
    recommendation. It stays byte-for-byte duplicated in `magic.js`/`monster.js` for now; a future
    slice can move it beside the shared preview widget with no coupling to anything phase 3 ships.
 
+### §16's own open questions
+
+Round 1 (this document's own first draft of §16) wrongly treated one of the two questions below as
+already settled by the code's own shape rather than putting it to Chris — corrected this round
+(review round 1, P2 finding 1). Two are genuinely his:
+
+- **Should a party member's own `attackAnim` also play when they cast a spell with no `spell.anim`
+  of its own — the identical fallback policy a monster's `attackAnim` already has
+  (`cast_spell`, `engine/battleturn.asm:358-379`, "no spell visual authored -- fall back")?**
+  **The concrete case**: a healer whose `attackAnim` is a sword swing, casting an un-animated Heal
+  — under the symmetric policy (recommended below), that sword swing plays every time that
+  character heals. An author who wants their healer's spells to look different from their physical
+  swing has one escape hatch either way: author `spell.anim` explicitly on that spell, the same
+  override a monster already has (§16.3). Two options:
+  - **(i) Symmetric — recommended.** No `cast_spell` change beyond what §16.2 already builds
+    (`battle_fx_arm_attack`'s own party branch, reached by `cast_spell`'s existing, unconditional
+    fallback call with no code of its own to add). Matches the monster's own existing policy
+    exactly, needs no new flag, and costs nothing beyond the already-measured 11 bytes (§16.9). An
+    author who authors an `attackAnim` at all is choosing "this is what I look like when I act, by
+    default" — a spell being an "act" too is consistent with that framing, and the escape hatch
+    above covers the healer case without adding a rule.
+  - **(ii) Physical-only — `cast_spell`'s own fallback suppressed for a party caster.** A party
+    member's `attackAnim` would play on their own physical Attack (`attack_target`, always) but
+    NEVER as a spell-cast fallback (only a monster's `attackAnim` would still fall back for a
+    spell). Implementation: one more `.if PARTY_ATTACK_ANIM_ENABLED` guard inside `cast_spell`'s
+    own fallback branch (`:363-365`), testing `bt_actor < MAX_PARTY` and skipping the
+    `jsr battle_fx_arm_attack` call entirely for a party caster —
+    `lda <bt_actor` (2) / `cmp #MAX_PARTY` (2) / `bcc cast_spell_fx_done` (2) = **6 bytes, reasoned,
+    not measured** — added on top of, not instead of, the party branch §16.2 already costs (that
+    branch is still needed for the physical-Attack path), so option (ii) is a reasoned ~17
+    code-byte total against option (i)'s measured 11. Not built this round — a small enough
+    difference that it should not itself decide the question, and building it only makes sense
+    once the POLICY is chosen.
+
+  **Recommendation: (i), symmetric** — matches the only existing precedent this engine has for the
+  fallback policy, costs less, and leaves an explicit per-spell override available for exactly the
+  healer case above. The prototype (Appendix E) is built as (i); §16.9's own table and §16.10's own
+  test rows are written conditionally on this answer, not as settled fact.
+- **A third copy of `animationSelect` (`character.js`), or fold all three Forges' own copies into
+  the shared module now?** §16.8 designs and recommends a third copy, matching Chris's own
+  2026-09-14 decision not to dedupe Magic/Monster's pair (immediately above) for the identical
+  reason: the duplication predates this slice, nothing this slice ships depends on it being fixed,
+  and folding an unrelated cleanup into a feature slice is the same scope creep §9 already names.
+  **Recommendation: a third copy**, unless Chris would rather pay down the hazard now that a THIRD
+  consumer is about to exist.
+
 ## §9. Out of scope, explicitly
 
-- Party-member attack animations of their own (§8).
+- ~~Party-member attack animations of their own~~ — no longer out of scope: designed in full in §16
+  (ROADMAP item 14 point 5), a deferral from §8's own 2026-09-13 answers, not a dismissal.
 - Screen shake in battle (a separate, already-real field-side mechanism, untouched here).
 - A per-element default visual — every visual here is per-spell/per-actor authored.
 - Ambient idle-cycling for metasprite-fallback monsters (§2(d)).
@@ -2073,6 +2132,170 @@ Both match this document's own recommendation, so no design decision changes: §
 scope questions stay open for Chris in §8" paragraph is amended with one sentence recording the
 answers; phase 3 ships the widget in both Forges (§15.5's persistent-host split, applied to both
 `magic.js` and `monster.js`) and leaves `animationSelect` untouched in both files.
+
+### §16 design round (2026-09-15) — a party member's own attack visual, ROADMAP item 14 point 5
+
+HEAD `8cb76fc` at the start of this round (unchanged since the CLAUDE.md docs pass, per §0). Design
+only — no code, test, fixture, CLAUDE.md or ROADMAP.md change in the real tree; every change lives
+in this document (§16, a new §7 phasing paragraph, a new §8 subsection, §9's first bullet amended,
+this entry) or in a throwaway `git worktree` prototype (Appendix E), built, measured, regression-run
+against the full suite (1736/1736 passing, six fixtures byte-identical), and torn down.
+
+Settled: the ROADMAP's own sketch (§16, opening paragraph) held on both its claims, confirmed by a
+real, executed prototype rather than relayed — "no new engine primitive" (the existing `bt_fx_*`
+flipbook, reused via a grown `battle_fx_arm_attack`) and "indexed by party member" (no mapping at
+all: a `project.party` index and a party combatant slot are the same number because every hand-off
+that carries one — Join's own `bt_arg`, `party_join`'s own direct RAM write, `party_restore`'s own
+in-place recomputation, save/restore's own positional copy, `turn_order`'s own list-of-identifiers
+— indexes directly with no translation step, corrected in fix round 2 from an earlier "equal
+capacities" framing that stated the cause backwards; `RPG_LIMITS.party === MAX_PARTY` is a
+necessary BOUND on this holding, not itself the reason it holds, §16.4). One real design hazard was
+found only by attempting the naive "fold into
+the existing gate" shape and building it: a party-only project would leave `battle_fx_arm_attack`'s
+existing monster branch referencing a `mon_anim_attack` table that does not exist, an
+undefined-symbol assembly failure rather than a byte-count error — closed by a broadened
+`projectUsesAnyBattleAnimation` gating the shared base and both existing tables, while the NEW party
+branch and table stay on their own narrower `PARTY_ATTACK_ANIM_ENABLED` (§16.6). A second real bug
+was found by the SAME measurement discipline that closed the first: `attack_target`'s own new arm
+call, first gated on the broadened flag, cost 3 dead bytes on every monster/spell-only project;
+found by the regression measurement failing by exactly 3 bytes, fixed by re-gating to the narrower
+flag, re-measured to exact equality with the pre-existing 250-byte figure.
+
+Measured (Appendix E, §16.9): `PARTY_ATTACK_ANIM_BATTLE_ALLOWANCE = 11`, flat on MMC1/MMC3/UNROM
+512, on top of the unchanged `BATTLE_ANIM_BATTLE_ALLOWANCE = 243` base (now charged on the
+broadened gate). Two functional SCRATCH probes (arm-on-miss, spell-caster fallback) were built, run
+against the real assembled ROM, and passed, then reverted before the diff was taken. One open
+question for Chris (§8's own new "§16's own open questions" subsection): whether `animationSelect`
+stays a third byte-for-byte copy in `character.js` (recommended, matching his own 2026-09-14
+decision not to dedupe Magic/Monster's pair) or gets folded now that a third consumer exists.
+
+### §16 fix round 1 (2026-09-15) — review verdict FIX, 5 P2 + 2 P3, no P1, all seven dispositioned
+
+`handoff-next/battle-anim-party-attack-design-review1.md`. Every finding checked against the code
+independently before being accepted, per the fix brief's own instruction; none was found wrong.
+
+1. **P2 — spell fallback was wrongly settled, not put to Chris.** Fixed: moved to §8's own new
+   subsection with a recommendation (symmetric), the concrete healer/sword-swing case illustrated,
+   and the physical-only alternative reasoned at ~17 code bytes total (vs. symmetric's measured 11)
+   — a real, not merely asserted, cost difference. §16.3, §16.9's own table and §16.10's own test
+   rows are now conditioned on this answer rather than written as settled.
+2. **P2 — candidate (b)'s rejection rested on a false claim.** Withdrawn: `cast_spell`'s own
+   single-target damage/status branch already arms the flipbook AND hit feedback on the identical
+   `bt_target` slot, in the same tick, today — real, shipped precedent for two effects sharing a
+   slot. (b) is now costed properly (identical code/OAM/author cost to (a); a genuine
+   semantic/visual choice, not a technical one); (c)'s zero cost is stated explicitly; the "gating
+   option not picked" comparison now separates code bytes from `pc_anim_attack`'s own `party.length`
+   table bytes. Recommendation stays (a), now grounded in the ROADMAP's own explicit words rather
+   than the withdrawn "no precedent" claim. §16.1, §16.6.
+3. **P2 — the removal-lever label overpromised.** Fixed in Appendix E itself (rebuilt, not
+   hand-edited): `projectWithoutBattleAnimation`'s own pre-existing label renamed from `'every
+   battle animation reference'` to `'every monster attack or spell animation reference'` (fix round
+   2, review round 2 P3-1, corrects fix round 1's own first attempt, `'every monster or spell attack
+   animation reference'`, which still read as though both halves meant "attack" — misleading for an
+   authored Heal or other caster-anchored spell visual, which this same strip also clears); the
+   party lever stays independent; `battleShortfallAdvice`'s own existing solo/combined solver needs
+   no third lever. Proven by a real, executed mixed-reference probe (§16.9, probe G): stripping
+   monster/spell alone frees 0 when a party reference remains, party alone frees 13, both free 263,
+   and the combined advice text now names both scopes correctly. §16.5, §16.6, §16.9.
+4. **P2 — the test plan was not yet a reproducible specification.** Fixed: every row now names its
+   isolated helper(s) and exact `rpg.test.js` line numbers, the RNG-rigged hit case (probe A) is new
+   and proves the successful-attack path arms correctly (the forced-miss case, probe B, is what
+   actually rejects hit-only arming — corrected in round 3, P3-1, this summary previously said A
+   itself distinguished arm-before-roll from arm-after-a-successful-roll, which it cannot: both
+   placements produce the identical result whenever the roll happens to succeed), a four-member
+   Join-with-holes probe (C), an explicit `projectWithoutBattleAnimation` contract probe (F), a
+   party-member-deletion-preserves-a-survivor probe (E), and the null-attack case (B) now keeps a
+   DIFFERENT member's animation authored so the gate stays live. The blanket "every row proven"
+   claim is replaced with an EXECUTED/PLANNED column, honest about what remains unbuilt (hop-2 for a
+   party reference specifically, the whole UI, item 1's physical-only alternative, and — narrowed
+   again in round 3 — a genuine save/load regression test, since probe C's own `party_restore` call
+   proves only that arming member index 3 still works after recomputation, not that any index is
+   preserved).
+   §16.9, §16.10.
+5. **P2 — regression provenance.** Fixed: the regeneration-reading recipe is removed from §16.9 and
+   this changelog; the reviewer's own independent, clean six-fixture result (`59/59`,
+   `nameentry.test.js` + `bankedbytes.test.js`, checked-in fixtures untouched) is recorded as the
+   fixture-identity evidence, and the full suite was re-run in a fresh rebuilt worktree using ONLY
+   `build:sample*`/`cli.js` (assembly of the checked-in projects, never `npm run sample*`
+   regeneration) — `1736/1736` passing, `0` failed, `0` skipped, no skip reason named anywhere.
+   §16.9.
+6. **P3 — the index-space proof and two register claims.** Fixed: replaced the "equal capacities"
+   inference with the Join/`bt_arg`/`party_join`, `party_restore`, save/restore positional-copy, and
+   `turn_order`-is-a-list-of-identifiers evidence chain the review named, each citation re-verified
+   directly. Corrected "none of the downstream routines accepts A/X/Y" to the precise claim
+   (`battle_say_actor` does take A; safe because `attack_target` reloads it after, `:273-274`).
+   Corrected the "first time" party-anchor claim (`cast_spell`'s own heal/all-target and
+   single-target-at-a-party-member cases already reach it). Added an explicit, diff-verified
+   statement that neither arm branch nor `battle_fx_arm_at` touches `bt_tmp`/`bt_tmp2`/`bt_arg`/
+   `bt_actor`/`bt_target`. §16.2, §16.4, §16.7.
+7. **P3 — the preview's user-visible contract was unstated.** Fixed: §16.8 now states explicitly
+   that the Character Forge mounts the identical shared, effect-only preview (animation-local
+   bounds, no character backdrop, no battle-position simulation), and that selecting a different
+   member with the SAME animation id retains playback rather than restarting it
+   (`battlefxpreview.js:254`'s own re-arm check, unchanged). A same-id/stale-id/undo smoke
+   assertion is added to §16.10's own test plan, PLANNED (no `renderer/` file touched this round).
+   The `animationSelect` copy-vs-dedupe question stays with Chris, unchanged. §16.8.
+
+Re-measured (Appendix E rebuilt with items 1 and 3 applied): `PARTY_ATTACK_ANIM_BATTLE_ALLOWANCE`
+unchanged at 11 (the label rename is a pure string change, no ROM byte moved), confirmed on all
+three boards, code and table bytes now reported separately (§16.9's own table). Off/monster-only/
+spell-only ROMs confirmed byte-identical to a clean `8cb76fc` build by full-ROM SHA-256, not merely
+by usage-figure equality — nine comparisons, all identical.
+
+### §16 fix round 2 (2026-09-15) — review verdict FIX, 2 P2 + 2 P3, no P1, no engine defect, all four dispositioned
+
+`handoff-next/battle-anim-party-attack-design-review2.md`. Round 1's own findings 1, 2, 3 (by
+accepted alternative), 5 and 7 confirmed resolved; findings 4 and 6 partly resolved, closed by this
+round's own P2-1/P2-2/P3-2. Every finding re-checked against the code before being accepted; none
+was found wrong.
+
+1. **P2-1 — the hit-test claim and the restore row both overclaimed.** Fixed: the hit probe (A) is
+   now described as proving the successful-attack path specifically, not as distinguishing
+   before-roll arming from hit-only arming — that distinction belongs to the forced-miss probe (B),
+   corrected to say so explicitly (both the prose and the §16.10 wrong-implementation column). The
+   restore row is narrowed to what it actually tests — `party_restore` never touches `pc_in_party`,
+   so re-arming after calling it proves only that in-place stat recomputation does not disturb which
+   ROM row a slot reaches, not that a real save/load preserves membership. A genuine save-load
+   regression test (save a party with holes and distinct state, disturb RAM, run the real
+   `load_apply_body`/`continue_game` path, assert membership `[1,0,0,1]` and member 3's own state
+   BEFORE its animation) is added to §16.10, marked PLANNED, not claimed as proven by probe C.
+   §16.9, §16.10.
+2. **P2-2 — a false counterfactual about clobbering scratch/identity bytes.** Fixed: deleted the
+   claim that touching `bt_tmp`/`bt_tmp2`/`bt_arg`/`bt_actor`/`bt_target` would have needed no
+   caller change. `bt_arg`/`bt_actor`/`bt_target` all have live downstream readers that trust their
+   contents as identity (`cast_spell`'s own `X` reload only works because `bt_arg` itself was never
+   touched; `roll_hit`/`physical_damage` read `bt_actor`/`bt_target` directly) — corrupting any of
+   the three would be a real, silent misdirection, not a harmless no-op. Only `bt_tmp`/`bt_tmp2` are
+   genuinely free to clobber on this path, since `roll_hit`/`physical_damage` overwrite them fresh
+   before reading either back. The verified preservation statement and the X-reload explanation are
+   kept, the false "would need no change" sentence is not. §16.2.
+3. **P3-1 — the renamed label still read as though every spell reference were an "attack."** Fixed
+   in Appendix E itself (rebuilt again, in a fresh throwaway worktree, not hand-edited): relabeled
+   to `'every monster attack or spell animation reference'`, correctly covering a caster-anchored
+   Heal or other non-attack spell visual, which this same strip has always cleared. A string-only
+   change — no byte figures moved (`PARTY_ATTACK_ANIM_BATTLE_ALLOWANCE` still 11), reconfirmed by
+   re-running probe G's own numeric checks (`0`/`13`/`263`, unchanged) and
+   `node --test test/unit/nameentry.test.js test/unit/bankedbytes.test.js` (`59/59`, never `npm run
+   sample*`). §16.5, §16.6, §16.9, Appendix E.
+4. **P3-2 — surviving "equal capacities" wording stated the proof backwards.** Fixed in this
+   changelog's own round-1 entry and in §16.11: both now state that the index spaces agree because
+   every hand-off (Join's own `bt_arg`, `party_join`, `party_restore`, save/restore, `turn_order`)
+   indexes directly, with `RPG_LIMITS.party === MAX_PARTY` kept only as the BOUND this depends on,
+   not the reason. §16.11's own future-risk bullet is corrected further: raising party capacity is
+   not merely "a fifth boot member stays unreachable" — `battle_entry_join`'s own guard is bounded
+   by `PARTY_SIZE` (a JS-controlled ceiling), not `MAX_PARTY`, so raising `RPG_LIMITS.party` without
+   a matching engine change could let a Join write out of bounds into the fixed `pc_in_party`/
+   `pc_spells` RAM layout — a real corruption risk, not an inert one. Auditing both boot AND
+   Join/restore against the fixed RAM layout is now the stated requirement.
+
+### §16 design review, round 3 (2026-09-15) — GO-with-nits, both nits applied
+
+`handoff-next/battle-anim-party-attack-design-review3.md`: all four round-2 findings resolved, §16
+sufficient to brief implementation from. Two P3 prose nits, both fixed: the isolated
+`party_restore` check's own claim is narrowed to exactly what it demonstrates (arming still works
+after recomputation, not index preservation) and its redundant §16.10 row is dropped in favor of
+the already-PLANNED real save/load test; the expanded-party Join risk (§16.11) is corrected to say
+raising `RPG_LIMITS.party` alone changes nothing until a project actually authors a longer party.
 
 ## §11. Places a claim could not be pinned to a line and was reasoned instead
 
@@ -4770,6 +4993,854 @@ under test, not a fourth case of the same parameter sweep.
   6` on at least some boards) is this document's own pick, made for real margin below the ceiling
   rather than the tightest value that happens to work.
 
+## §16. A party member's own attack visual (ROADMAP item 14 point 5)
+
+Design round, `8cb76fc` (clean, `master`). §8 (2026-09-13) deferred this rather than dismissing it
+and asked for it on the roadmap; ROADMAP item 14 point 5 is the result, with a sketch (quoted in
+full in the brief that seeded this round): "authoring it belongs on the Character Forge, beside the
+member's other battle fields, and playing it needs no new engine primitive — the same `bt_fx_*`
+flipbook, armed from `attack_target`'s party-side call site over the attacker's own slot, plus one
+more banked table indexed by party member." **Both halves of that sketch held** — the "no new
+primitive" claim and the "indexed by party member" claim, item 4 below — confirmed by direct read
+and by a real, measured, executed prototype (Appendix E), not merely relayed.
+
+### §16.1 The candidates, costed (item 1)
+
+- **(a) A flipbook over the ATTACKER's own party slot — recommended, and the one built.** The
+  ROADMAP's own sketch: reuse `battle_fx_arm_at`/`battle_fx_tick`/`battle_fx_draw`
+  (`engine/battleturn.asm:308-345`, `engine/battleui.asm:1039-1094` at `8cb76fc`) exactly as a
+  monster's own `mon_anim_attack` already does, arming from the party's own physical-attack call
+  site (`attack_target`, `engine/battleturn.asm:267-282`) the identical way `monster_turn_attack`
+  (`:1350-1361`) already arms a monster's. What the player sees: the acting party member's own
+  slot (`BT_PARTY_X`/`BT_PARTY_Y` + `slot * BT_PARTY_STEP`, `engine/battleui.asm:1065-1076`) plays
+  a short flipbook when that member swings or casts with no `spell.anim` of its own (§16.3) — the
+  identical "swing or cast" visual language §1 already established for a monster, now symmetric
+  across both sides of the fight. Measured cost (Appendix E, §16.9): **11 code bytes** on top of the
+  already-paid `BATTLE_ANIM_BATTLE_ALLOWANCE` base, plus 1 table byte per party member (`party.length`
+  bytes, never more than `RPG_LIMITS.party` = 4, §16.4). OAM consequence: none beyond what
+  `allBattleAnimationIds`/`battleSpriteBudget` already account for (§16.7) — a party member's own
+  flipbook is the SAME shared `bt_fx_*` effect a monster's already is, so it costs no second OAM
+  budget line, only a possibly-larger worst-case frame if the party's own animation happens to be
+  the largest one authored. Authoring cost: one more animation picker per party member, on the
+  Character Forge (§16.8).
+- **(b) A flipbook over the TARGET monster's own slot (an impact) — costed properly this round;
+  round 1's own rejection reason was false and is withdrawn.** Round 1 rejected this on the ground
+  that no two independent visual effects had ever targeted the same slot on the same tick before —
+  **false, confirmed by direct read.** `cast_spell`'s own single-target damage/status branch
+  already arms the shared `bt_fx_*` flipbook on `bt_target`, not the caster
+  (`cast_spell_fx_go`, `engine/battleturn.asm:373-376`), and whatever routine then applies that
+  spell's damage reaches `apply_damage` (`:1067-1070` at `8cb76fc`), which — when
+  `HIT_FEEDBACK_ENABLED` — arms hit feedback (`battle_hurt_arm`) on the exact same `bt_target` in
+  the same tick, before the damage itself lands. This composition already ships today for a
+  monster casting a single-target spell at a party member, or a party member casting one at a
+  monster: both the flipbook and hit feedback target the identical slot, and the two effects
+  already have a real, working answer for which one is visible — `battle_fx_draw` runs BEFORE the
+  combatant-icon draw calls (`engine/battleui.asm:864-877`, `oam_idx` still zero), so the flipbook
+  wins sprite priority over an icon `battle_sprite_pc`/`battle_sprite_mon` might otherwise skip via
+  the hit-blink check; hit feedback's OTHER half (the block-art attribute flash) is a background
+  attribute write, not sprite OAM at all, so it never competes for priority with the flipbook in
+  the first place. So candidate (b) is technically viable, and would reuse this exact,
+  already-shipped composition with no new interaction rule to invent.
+  **Costed**: anchor and call-site choice — no new anchor math at all, since `battle_fx_draw`'s
+  existing `bt_fx_slot < MAX_PARTY` branch (`engine/battleui.asm:1063-1064`) already resolves
+  either a party or a monster slot; arming would swap one register load at the party's own call
+  site, `ldy <bt_target` in place of `ldy <bt_actor` — the same 2-byte zero-page load either way, so
+  **the code-byte cost is identical to (a)'s, not a distinguishing factor**. OAM cost: identical to
+  (a) — `allBattleAnimationIds`/`battleSpriteBudget` (§16.7) account for the single largest
+  playable frame regardless of which slot it draws over. Author cost: identical (one animation
+  field, the same authoring surface). What changes is purely what the field MEANS for a party
+  member specifically: (a) reads as "my own flourish, over my own slot," matching what
+  `battle.attackAnim` and `spell.anim`'s own heal/all-target case already mean; (b) reads as "an
+  impact on whoever I hit," matching what `spell.anim`'s own single-target-damage case already
+  means. Both meanings are real, already-shipped precedents in this same document — the choice
+  between them is genuinely a visual/semantic one, not a technical one.
+- **(c) Doing nothing new — the honest baseline, its own zero cost stated explicitly.** Hit
+  feedback (§12) already blinks or flashes whichever monster a party member's physical attack lands
+  on, and MISS (§13) already floats "MISS" over whichever monster dodged. So "a party member's own
+  attack visual" is not, today, visually silent — the REACTION side already exists. **Incremental
+  cost: exactly 0** — 0 code bytes (no new routine, no new call site), 0 table bytes (no new
+  `pc_anim_attack` table), 0 OAM change (nothing new to budget for), 0 schema field. What it costs
+  an author: nothing, since nothing changes. What the player sees: exactly today's game. This is
+  not what ROADMAP item 14 point 5 asks for — it asks for an AUTHORED visual belonging to the
+  attacker, the same authoring surface a monster's `battle.attackAnim` already is — so (c) is
+  recorded here as the honest baseline this design must justify shipping something more than, not
+  as a real candidate.
+
+**Recommendation: (a), on the ROADMAP's own explicit words** ("armed from `attack_target`'s
+party-side call site over THE ATTACKER'S OWN SLOT" — the brief that seeded this whole slice, quoted
+in full at the top of §16), not on the withdrawn "no precedent for (b)" argument. Since (a) and (b)
+cost the identical number of bytes (above), this is a textual/aesthetic call the ROADMAP's own
+sketch already makes, not a byte-driven or OAM-driven one — I do not believe a genuine aesthetic
+question remains open past what the ROADMAP's own words already settle, but if Chris reads it
+differently, (b) is now costed well enough (this paragraph) to decide from directly rather than
+needing another design pass.
+
+### §16.2 The arm point (item 2)
+
+**Before `roll_hit`, at the very start of `attack_target`** (`engine/battleturn.asm:267` at
+`8cb76fc`) — the identical placement `monster_turn_attack` (`:1350-1353`) already uses, and for the
+identical reason its own comment states: "the swing plays whether the hit lands or misses." Proven,
+not merely argued: Appendix E's own SCRATCH probe (run and passed, §16.9) armed a party member's
+attack with a forced miss (`acc: 0`, no RNG dependency, the identical trick
+`fx-monster-miss` already uses at `test/unit/rpg.test.js:5228-5230`) and confirmed `bt_fx_anim`/
+`bt_fx_slot` are set correctly even though the hit itself missed.
+
+**Which registers are live there — corrected this round: the claim is that nothing needs the
+PRE-arm-call register values, not that no downstream routine ever takes a register as an input at
+all.** `attack_target` is reached by `jsr` from whatever dispatched the party's own physical Attack;
+the very NEXT instruction after the new arm call is `jsr roll_hit`
+(`engine/battleturn.asm:267-268` at `8cb76fc`, unshifted by this slice), which reads its own inputs
+fresh from `bt_actor`/`bt_target` (ZP state, not A/X/Y) — so nothing `battle_fx_arm_attack`'s
+documented clobber (A, X, Y, its own existing header comment) leaves behind is ever read. Further
+downstream, `battle_say_actor` DOES take an argument in A (the message id) — `lda #BS_HITS` /
+`jmp battle_say_actor` (`:273-274`) and `lda #BS_MISSES` (`:281`) — but this is safe for the
+identical reason every earlier call already made it safe before this slice existed: `attack_target`
+loads A explicitly, immediately before that jump, every time, several instructions and two
+register-clobbering calls (`roll_hit`, then `physical_damage`/`apply_damage`/`print_num` on the hit
+path) after the new arm call ever ran. The precise claim is: no register value that exists AT THE
+MOMENT the arm call runs is read again anywhere in `attack_target` afterward — every later consumer
+of A, X or Y loads its own value first. This matches `monster_turn_attack`'s own identical
+placement, which clobbers the same three registers before its own `jsr pick_party_target` with no
+issue today.
+
+**Scratch preservation, stated explicitly and verified against the REBUILT diff (Appendix E), not
+copied from a prior claim.** Neither arm branch inside `battle_fx_arm_attack` (party or monster,
+§16.2) nor the unchanged `battle_fx_arm_at` (`engine/battleturn.asm:308-325`) writes to `bt_tmp`,
+`bt_tmp2`, `bt_arg`, `bt_actor` or `bt_target` — re-read line by line against Appendix E's own
+diff: the party branch only ever `lda`s/`tax`s/`ldy`s (register-only) before `jmp battle_fx_arm_at`,
+which itself only writes `bt_fx_anim`/`bt_fx_slot`/`bt_fx_frame`/`bt_fx_timer`.
+
+**Corrected this round (review round 2, P2-2): that preservation is required, not merely harmless
+to violate — the two are different claims, and the prior text conflated them.** `bt_arg`,
+`bt_actor` and `bt_target` all have LIVE readers immediately downstream that treat their contents
+as the identity of who is acting, who is targeted, or which spell is being resolved — a corrupted
+value in any of the three would be wrong, not merely stale. `cast_spell`'s own dispatch
+(`engine/battleturn.asm:358-380`) reloads `X` from `bt_arg` after its arming block (`:378`)
+precisely because reloading recovers the correct spell index ONLY IF `bt_arg` itself was never
+touched — a reload cannot repair a `bt_arg` the arm call had actually clobbered, it can only
+re-read whatever is there. `roll_hit` (`:657-666`) and `physical_damage` (`:721-730`) both read
+`bt_actor`/`bt_target` directly (`lda <bt_actor`/`lda <bt_target`) to look up accuracy, evasion,
+attack and defence — a corrupted `bt_actor` there would silently redirect the roll and the damage
+to a different combatant, and a corrupted `bt_target` would silently damage the wrong one. Only
+`bt_tmp`/`bt_tmp2` are genuinely free to clobber on this specific path, because `roll_hit` and
+`physical_damage` both overwrite them with fresh values of their own before reading either back
+(`:658-663`, `:723-727`) — nothing on this path ever reads a STALE `bt_tmp`/`bt_tmp2` left over
+from before either call runs. The verified fact stands (none of the five is actually touched); the
+withdrawn claim is that touching the other three would have been safe.
+
+**`battle_fx_arm_attack` grows a party branch, rather than `attack_target` calling
+`battle_fx_arm_at` directly.** Both were considered; the byte difference is what decided it, not
+taste:
+
+- **Growing `battle_fx_arm_attack` (chosen).** `attack_target` gains one `.if
+  PARTY_ATTACK_ANIM_ENABLED / jsr battle_fx_arm_attack / .endif` (11 bytes: `jsr abs` = 3, but see
+  below — the routine ITSELF is what grows). `battle_fx_arm_attack` (`:331-345` at `8cb76fc`) grows a
+  new party arm inside a `.if PARTY_ATTACK_ANIM_ENABLED / ... / .else / [byte-identical to today] /
+  .endif` split (Appendix E). Reusing the shared routine is also what makes §16.3 (the spell
+  fallback) work for free: `cast_spell`'s own existing, UNCHANGED call to `battle_fx_arm_attack`
+  (`:364`) automatically reaches the new party branch too, with no `cast_spell` edit at all.
+- **A bespoke call site in `attack_target` reading `pc_anim_attack` directly** (considered, not
+  chosen). Would leave `battle_fx_arm_attack` monster-only and add a self-contained ~11-byte block to
+  `attack_target` instead (no `cmp #MAX_PARTY` branch needed there at all, since `attack_target` is
+  ALWAYS the party's own path — its own existing comment already states `bt_actor` is always `<
+  MAX_PARTY` on this path). Byte cost is within a byte or two of the chosen design (not built, since
+  (a) above already answers the "which candidate" question and this is a pure code-shape choice
+  within it) — but it would leave `cast_spell`'s own fallback call reaching only the monster branch,
+  making §16.3's answer "no, not extended" instead, a real behavioural difference from the chosen
+  design, not merely a smaller one.
+
+**The "would be dead code" comment is corrected.** `attack_target`'s own header comment
+(`8cb76fc:262-266`) said arming there "would be dead code" because `bt_actor` is always `< MAX_PARTY`
+on this path — true only because no engine primitive read a party member's own attack visual before
+this slice. Appendix E rewrites the comment to say `bt_actor < MAX_PARTY` is exactly what makes this
+the ONE path that must arm a party member's own visual (§16's own diff, `engine/battleturn.asm`).
+
+### §16.3 The spell-fallback consequence (item 3)
+
+**Corrected this round: this is Chris's call, not a consequence the code's own shape gets to
+decide — moved to §8's own new "§16's own open questions" subsection, with a recommendation.**
+Round 1's own framing ("not a taste call, the natural, measured consequence of reusing
+`battle_fx_arm_attack`") conflated two different claims: that reusing the shared helper MAKES the
+fallback happen (true, and cheap, §16.2) is not the same claim as that it SHOULD happen for every
+party member who authors an `attackAnim`. The concrete case the helper shape cannot answer: a
+healer whose `attackAnim` is a sword swing, casting an un-animated Heal — under the symmetric
+policy, that sword swing now plays every time that character heals, whether or not an author wants
+their healer visibly swinging a sword to mend a wound. That is a real, author-facing aesthetic
+question a monster never has to answer today (nothing in this document asks whether a monster's
+own physical `attackAnim` should visually suit ITS spells, since the monster side of this precedent
+predates this round entirely) — see §8 for the full write-up and recommendation. §16.9's own second
+SCRATCH probe still proves the MECHANISM works exactly as built (a party caster with `attackAnim`
+authored and a `spell.anim: null` spell arms the caster's own `attackAnim` on cast) — that remains
+true regardless of which policy Chris picks, since the probe only shows what the SHIPPED prototype
+does, not what it ought to do. **§16.9's own table and the test plan (§16.10) are both conditioned
+on this answer, not written as if it were already settled.**
+
+### §16.4 The table and the index space (item 4)
+
+**The index space question (reading-list item 4) resolves to "no mapping at all" — corrected this
+round to a direct proof from how a member's own index reaches and stays in that slot, not an
+"equal capacities" inference.** Round 1's own version of this proof leaned on `RPG_LIMITS.party = 4`
+(`shared/project.js:1119`) equalling `MAX_PARTY = 4` (`engine/constants.asm:585`) plus
+`party_init`'s own boot loop bound — true, but equal CAPACITIES do not by themselves prove the SAME
+NUMBER is used as the index everywhere; a real mapping could still exist between two equally-sized
+spaces. The real proof is that every place a party member's own index is EVER carried — recruitment,
+save/restore, and turn order — carries the SAME number through, with no translation step anywhere:
+
+- **A Join names the member by the identical index the whole party array already uses, and nothing
+  translates it.** `script_op_join` (`engine/script.asm:391-417`) writes the compiled member index
+  straight into `bt_arg` (`:397`, `sta <bt_arg`) and calls `call_battle`; `battle_entry_join`
+  (`engine/battle.asm:31-42`) loads that SAME value into `X` (`ldx <bt_arg`, `:31`) and, after only a
+  range guard (`cpx #PARTY_SIZE`), jumps to `party_join` WITH IT. `party_join`
+  (`:112-117`) uses that `X` directly as the RAM combatant-slot index (`sta pc_in_party,x`, `:116`)
+  — so recruiting `project.party[3]` via a Join lands that member at RAM slot 3 directly, with no
+  intermediate lookup anywhere in the chain.
+- **Recomputing a member's own stats never moves them.** `party_restore` (`engine/battle.asm:199-205`)
+  loops `X` over every slot in place (`ldx #0` / `jsr party_apply_level` / `inx` / `cpx #PARTY_SIZE`)
+  and `party_apply_level` (`:151-157`, called from `party_join` too) reads/writes `pc_hp_max,x`/
+  `pc_mp_max,x`/`pc_spells,x` at that SAME `X` — recomputation is always in-place, never a resort.
+- **A save/restore is a positional copy, not a permutation.** `load_apply_body`
+  (`engine/save.asm:500-530`) walks `SAVE_FIELD_COUNT` fields in a fixed order and copies each one's
+  bytes straight from the save record into the SAME RAM addresses (`sta [save_ptr_lo],y`, `:515`) —
+  `continue_game` (`:540-559`) calls it after `init_session`, with no step anywhere that could move a
+  restored member's own array position.
+- **Turn order sorts a LIST of combatant identifiers; it never renumbers the identifiers
+  themselves.** `battle_round`/`order_insert` (`engine/battleturn.asm:20-43`) build `turn_order` as a
+  list of real combatant ids (0-7) reordered by speed — the LIST POSITION is the turn sequence, never
+  the combatant's own identity. `battle_take_turn` (`:145-150`) reads `turn_order,y` (list position
+  `y`) and stores the VALUE found there into `bt_actor` (`:147`) — so `bt_actor` always holds a real
+  combatant id, exactly the same number Join/`party_init` originally assigned that member, regardless
+  of where they land in this round's own turn sequence.
+
+Together: a party member's `project.party` array index, the RAM combatant-slot index every `pc_*`
+RAM array uses, the ROM table index every `pc_*` ROM table (`pc_metasprite`/`pc_speed`/`pc_acc`/
+`pc_eva`, `main/build/battletables.js:357-360`) uses, and what `bt_actor` holds during that member's
+own turn are the SAME number at every one of these hand-offs, with no translation step anywhere in
+the chain — not merely two equally-sized spaces that happen to agree by capacity. This is WHY
+`battle_fx_arm_attack`'s new party arm (§16.2) needs no arithmetic at all beyond `tax` on `bt_actor`
+— `lda <bt_actor / cmp #MAX_PARTY / [party branch] tax / lda pc_anim_attack,x` (Appendix E) —
+genuinely simpler than the monster branch's own `sec / sbc #MAX_PARTY / tax / lda mon_slot_actor,x /
+tax` detour through `mon_slot_actor` (needed because a MONSTER'S combatant slot and its ACTOR id are
+two different numbers; a party member's combatant slot and its `project.party` index never are).
+
+**The table: `pc_anim_attack`**, `mon_anim_attack`'s own shape applied to the party
+(`main/build/battletables.js`, beside `pc_eva`, Appendix E), one byte per `project.party` entry
+(`party.length`, never more than `RPG_LIMITS.party` = 4), indexed by the SAME number `bt_actor`
+already holds — no second table, no lookup. **An unset or stale/unplayable reference emits
+`NO_ANIM`** (`$FF`), the identical `validAnimId(id, project)` defense-in-depth call
+(`main/build/battletables.js:143-145`) `mon_anim_attack`/`spell_anim` already use — `validAnimId`
+resolves through `isPlayableBattleAnimation` (§16.5), so a reference whose animation exists but
+whose own frame names a missing metasprite compiles to `NO_ANIM` here exactly as it already does for
+an actor or a spell, never a fake metasprite id `draw_metasprite` would dereference unchecked.
+
+**It sits AFTER `pc_eva` and BEFORE `pc_name`** in `battleTables()`'s own emission order
+(`main/build/battletables.js:357-361` at `8cb76fc`, Appendix E) — grouped with the party's own
+per-member numeric fields, not with `pc_starts`/`pc_metasprite` (identity/drawing fields) or
+`pc_spells_at` (the per-level table further down). No particular ordering is load-bearing (nesasm
+resolves every label regardless of source order within the bank); this is purely for a human reader
+scanning the file to find one more per-member field beside its siblings.
+
+**`battleTableBytes` needs no ledger change at all** — it counts `battleTables()`'s own emitted
+output directly (CLAUDE.md's own "battleTableBytes counts emitted output... so that half can't
+drift" rule; `main/build/battletables.js`'s own `battleTableBytes` export), so `pc_anim_attack`'s
+`party.length` bytes are automatically counted the moment the table exists, with no separate byte
+count anywhere in this document to keep in sync. Only the CODE portion (§16.2's new party branch)
+needed a named allowance constant (§16.6).
+
+### §16.5 Schema and reference integrity (item 5)
+
+**Field name: `attackAnim`, flat on the party member object** — `project.party[i].attackAnim`, not
+nested under a `battle` sub-object the way an actor's is (`actor.battle.attackAnim`). Justified by
+the existing shape: `createPartyMember`/`normalizePartyMember` (`shared/project.js:4278-4302`,
+`:5488-5524` at `8cb76fc`) already keep every per-member field flat (`baseHp`, `speed`, `acc`,
+`eva`, …, no `battle` sub-object anywhere on a party member) — nesting a NEW field under a `battle`
+key that does not otherwise exist on this object would be the one field breaking that shape, not
+matching it. `normalizePartyMember` gains the identical byte-range clamp `normalizeActor`'s own
+`battle.attackAnim` already uses (`raw.attackAnim >= 0 && raw.attackAnim <= 255 ? raw.attackAnim :
+null`, Appendix E) — preserves a foreign or hand-edited `255` exactly as the actor/spell fields
+already do, for the identical reason (§3.1: normalization preserves, authoring cannot produce it).
+`createPartyMember` gains `attackAnim: null` (Appendix E).
+
+**Every traversal that must learn about it, each verified by direct execution against a real
+project (§16.9), not merely read:**
+
+- **`animationReferenceLocations`** (`shared/project.js:3387-3424` at `8cb76fc`) gains one more
+  yield loop, over `project.party`, `battleOnly: true` (Appendix E) — the SAME shape the actor's
+  `battle.attackAnim` block already has, four lines up. **The wrong implementation this catches**:
+  omitting this loop leaves the shared traversal — "the single location authority for deletion,
+  validation, and battle-id collection" (its own header comment) — blind to the one new reference
+  kind, so every consumer below silently mis-handles it despite each of THEM doing nothing wrong on
+  their own.
+  - **`battleSpriteBudget`/`describeBattleAnimationOamWarning`** (via `allBattleAnimationIds`,
+    `shared/project.js:3453-3460`, unchanged): confirmed live — a party `attackAnim` of `1` on a
+    project with animation `1` playable makes `allBattleAnimationIds` yield `1` (verified,
+    §16.9). **Wrong implementation it catches**: a party attack visual authored large enough to
+    overflow 64 OAM entries would silently NOT be counted, so the warning (§3.6) would under-report
+    — an author ships a project the engine then skips the effect in, with no warning ever having
+    fired.
+  - **`renumberAnimationDeletion`** (`shared/project.js:3435-3444`, unchanged): confirmed live — with
+    animations `[0, 1]` and `party[0].attackAnim = 1`, deleting animation `0` (called BEFORE the
+    splice, the existing contract) shifts `party[0].attackAnim` to `0` (verified, §16.9). **Wrong
+    implementation it catches**: the Sprite Forge's "Delete animation" handler
+    (`sprite.js:539-543`) would silently corrupt every party member's own attack visual reference
+    into pointing at the wrong (or a stale) animation on every deletion below it, with no error and
+    no warning — the exact defect class `renumberAnimationDeletion` exists to prevent for actors and
+    spells already.
+  - **`validateProject`'s two-hop refusal** (`shared/project.js:7076-7120` at `8cb76fc`, unchanged
+    code, now reachable for a party reference through the broadened traversal): confirmed live — a
+    party member's `attackAnim` set to a stale id (`99`, no catalog entry at all) produces the exact
+    `error`/`Sprite Forge` diagnostic naming `Party member 0 ("Hero")'s attack animation` (verified,
+    §16.9, literal output captured). **Wrong implementation it catches**: a stale party reference
+    would resolve silently at build time (`validAnimId`'s own defense-in-depth, §16.4) with no
+    author-visible error at all — the project builds, the effect just never plays, and nothing tells
+    the author why.
+- **`projectUsesBattleAnimation`/`projectWithoutBattleAnimation`** (`shared/project.js:6452-6467`)
+  keep their EXISTING CODE unchanged (actor/spell only) — but round 1's own patch left the
+  PRE-EXISTING label, `'every battle animation reference'`
+  (`main/build/battletables.js:1163-1165` at `8cb76fc`), attached to that narrow helper, which is
+  exactly the "wrong implementation" round 1's own prose warned against and then shipped anyway
+  (review round 1, P2 finding 3) — a mixed project (a monster's own `attackAnim` AND a party
+  member's own) offered that advice would see its party effect, and the shared 243-byte mechanism,
+  survive the "removal," with nothing in the label saying so. **Fixed in Appendix E itself, not
+  merely in prose: the label is renamed to `'every monster attack or spell animation reference'`**
+  (fix round 2, review round 2 P3-1 — round 1's own first rename, `'every monster or spell attack
+  animation reference'`, still read as though both halves meant "attack," misleading for an
+  authored Heal or other caster-anchored spell visual this same strip also clears,
+  `engine/battleturn.asm:347-355,367-370`), scope-accurate for what `projectWithoutBattleAnimation`
+  has always actually stripped, both before and after this slice. A SIBLING lever,
+  `projectUsesPartyAttackAnim`/`projectWithoutPartyAttackAnim` (unchanged from round 1, labeled
+  `'every party member's own attack animation'`), stays independent — the identical shape
+  `HIT_FEEDBACK`/`MISS` already established for their own independent strip levers
+  (`projectWithoutHitFeedback`/`projectWithoutMiss`). **A genuinely combined "strip everything"
+  lever needs no THIRD entry**: `battleShortfallAdvice`'s own solver already tries every single
+  lever alone (`soloWinners`) AND all of `bankedFeatures` combined
+  (`main/build/battletables.js:1176-1198`, the `bankedFreed(bankedFeatures) >= deficit` branch) — with
+  both correctly-scoped, correctly-labeled levers present, "all combined" already IS "strip
+  monster/spell AND party," computed by the SAME before/after recomputation this document already
+  relies on, so a third, redundant lever would duplicate what the solver's own "all combined" step
+  already answers. **Wrong implementation this closes**: an author reading "every battle animation
+  reference" and believing it means what it says, when it silently excluded an entire authoring
+  surface this same document introduced — a real, shipped defect in round 1's own patch, not a
+  hypothetical. **Proven by a real, executed mixed-reference probe** (§16.9): a project with both a
+  monster's own `attackAnim` and a party member's own produces `bankedFeatures` entries whose
+  labels now match what each one's own `strip` function actually removes, and whose combined
+  removal frees the full total.
+- **A third, broader predicate, `projectUsesAnyBattleAnimation`** (Appendix E, `shared/project.js`)
+  is new — NOT requested by the reading list directly, but required by §16.6's own gating finding:
+  `projectUsesBattleAnimation(project) || projectUsesPartyAttackAnim(project)`, the one predicate
+  that decides whether the SHARED `bt_fx_*` mechanism (`battle_fx_arm_at`/`tick`/`draw`, the
+  `mon_anim_attack`/`spell_anim` tables) assembles at all. See §16.6 for why this exists and why it
+  is not merely `projectUsesBattleAnimation` broadened in place.
+
+**No save-format change follows — checked against `shared/save.js`'s own inputs directly, not
+asserted.** `SAVE_FIELDS` (`shared/save.js:102-132` at `8cb76fc`) names every RAM array a save
+record carries; `pc_anim_attack` is a ROM table (`main/build/battletables.js`), never RAM, and
+appears in neither `SAVE_FIELDS` nor any of `saveIdentity`'s own folded inputs
+(`shared/save.js:224-230` — `screenCount`/`mapCount`/`actorCount`/`maxLevel`/`partyCount`/
+`battleEnabled`/`itemsEnabled`/`itemCount`, none of them animation-related). Adding a field to
+`project.party[i]` changes neither list.
+
+**`samplegen.test.js`'s load-equality pin (`test/unit/samplegen.test.js:74-98`) and
+`starters.test.js`'s byte-identical-to-`createProject` pin (`test/unit/starters.test.js:52-62`)
+both survive unaffected, for the SAME underlying reason, checked against each mechanism
+directly.** `samplegen.test.js` compares `loadProject(checkedIn)` against `loadProject(regenerated)`
+— both paths call the SAME (now-broadened) `normalizePartyMember`, so both sides gain
+`attackAnim: null` identically; `assert.deepEqual` still holds because the field is IDENTICAL on
+both sides, not because it is absent from either. `starters.test.js`'s own pin
+(`assert.deepStrictEqual(blankAction.build('X'), createProject('X', 'action'))`,
+`:61-62`) compares two LIVE calls to the same `createProject`/`createPartyMember` chain, never a
+hardcoded literal — so a new field added to `createPartyMember` changes both sides of the comparison
+together, by construction, and cannot desync them. Neither test needed a single line changed; both
+were re-run against the real prototype and pass (§16.9's own regression run, `test/unit/
+samplegen.test.js` and `test/unit/starters.test.js` included in the six-fixture/full-suite pass).
+
+### §16.6 Gating and the ledger (item 6)
+
+**Decision: an independent gate and allowance term, `PARTY_ATTACK_ANIM_ENABLED`/
+`PARTY_ATTACK_ANIM_BATTLE_ALLOWANCE = 11`** (measured, Appendix E, §16.9) — CLAUDE.md's own rule
+("a conditional feature's cost is a separate generated allowance, never folded into a base"),
+applied here by the identical logic every other battle-region feature in this document already
+follows. **But this needed one real correction along the way, found only by trying to fold it in
+first and hitting an assembly-time hazard, not reasoned in the abstract:**
+
+- **A naive "fold party into the existing `projectUsesBattleAnimation`/`BATTLE_ANIM_ENABLED` gate,
+  with no separate flag at all" was tried first and rejected — not merely considered, actually
+  attempted and found to under-charge, then found to risk a dangling symbol.** `battle_fx_arm_attack`
+  (§16.2) is called UNCONDITIONALLY from `monster_turn_attack` whenever `BATTLE_ANIM_ENABLED` is
+  live, for ANY reason — so if `BATTLE_ANIM_ENABLED` turned on for a PARTY-only project (no actor or
+  spell ever authors a reference) while the `mon_anim_attack`/`spell_anim` TABLE emission gates
+  stayed on the NARROW `projectUsesBattleAnimation` check, `battle_fx_arm_attack`'s own existing
+  monster branch would reference a `mon_anim_attack` table THAT DOES NOT EXIST in that build — an
+  undefined-symbol assembly failure, not a silent byte-count error. This is exactly the kind of
+  interaction a delta-based measurement alone cannot see (CLAUDE.md's own kernel-ledger game-type
+  trap lesson, applied here to a table-existence hazard rather than a byte-count one) — found only
+  by building the party-only case for real (Appendix E, §16.9) and watching what `battle_fx_arm_attack`
+  actually references.
+- **The fix: `projectUsesAnyBattleAnimation` (§16.5) — the broadened OR — gates the FLAG
+  (`BATTLE_ANIM_ENABLED`) and BOTH existing table emissions (`mon_anim_attack`, `spell_anim`,
+  `main/build/battletables.js:265`, `:347` at `8cb76fc`, Appendix E), so whenever
+  `battle_fx_arm_attack`'s monster branch can be reached (which is whenever `BATTLE_ANIM_ENABLED` is
+  live, unconditionally), the table it references is guaranteed to exist.** The NEW
+  `pc_anim_attack` table and the NEW party branch inside `battle_fx_arm_attack` stay on the
+  NARROWER `PARTY_ATTACK_ANIM_ENABLED`/`projectUsesPartyAttackAnim` — nothing references
+  `pc_anim_attack` at all unless that narrower flag is live, so gating it any broader would be
+  pure waste for a monster/spell-only project.
+- **`BATTLE_ANIM_BATTLE_ALLOWANCE` (243) stays charged whenever the BROADENED flag is live, not
+  only when the NARROW one is** — `battleRegionBytes`'s own wiring changes from
+  `projectUsesBattleAnimation(project) ? 243 : 0` to `projectUsesAnyBattleAnimation(project) ? 243 :
+  0` (Appendix E) — a party-only project needs the WHOLE shared base mechanism
+  (`battle_fx_arm_at`/`tick`/`draw`, `cast_spell`'s wiring, `monster_turn_attack`'s call site), the
+  identical machinery a monster/spell-only project already pays 243 for, so it must pay the SAME 243
+  — this is not double-charging, it is the SAME base cost attributed correctly to whichever
+  predicate actually turned the flag on.
+
+**Existing `BATTLE_ANIM_ENABLED` projects that author no party visual stay byte-identical — proven,
+not merely claimed.** `battle_fx_arm_attack`'s own `.else` branch (Appendix E) is, instruction for
+instruction, IDENTICAL to the routine's pre-§16 body, and `attack_target`'s own new arm call is
+gated on `PARTY_ATTACK_ANIM_ENABLED` specifically (a real fix mid-prototype, below) — so with party
+off, nothing about the routine's assembled bytes changes. Confirmed by measurement (§16.9): a
+monster-only `sample-rpg` variant (narrow `projectUsesBattleAnimation` true, party false) assembles
+to EXACTLY the pre-existing 250-byte delta (243 code + 7 table) on all three boards, matching §2(a)'s
+own pinned figure to the byte, both predicted (`battleRegionBytes`) and real (`nesasm`'s own usage
+table). **This did not hold on the first attempt** — the first build of `attack_target`'s own new
+arm call was gated on the BROADENED `BATTLE_ANIM_ENABLED` rather than the narrower
+`PARTY_ATTACK_ANIM_ENABLED`, costing 3 dead bytes (`jsr battle_fx_arm_attack`, a guaranteed no-op
+under the `.else` branch) for every monster/spell-only project — found by the SAME regression
+measurement failing by exactly 3 bytes, fixed by re-gating the call, re-measured to exact equality.
+Kept here as the concrete shape of "a real mistake this exact discipline catches," not a
+hypothetical.
+
+**All six checked-in fixtures stay byte-identical** — none authors `attackAnim` anywhere, actor,
+spell or party — confirmed directly: `test/unit/nameentry.test.js`'s own six-fixture SHA-256 gate
+passes unmodified against the real prototype (§16.9), all six hashes matching the pinned baselines
+exactly.
+
+**The gating option not picked, costed — corrected this round to separate code bytes from table
+bytes, not code alone.** Folding the party branch permanently into `BATTLE_ANIM_BATTLE_ALLOWANCE`
+(no `PARTY_ATTACK_ANIM_ENABLED` flag at all, no `.else` byte-identical fallback, and — this is the
+part round 1's own version omitted — no gate on `pc_anim_attack`'s own table emission either) would
+cost EVERY `BATTLE_ANIM_ENABLED` project two independent things, not one: **11 CODE bytes**
+(`PARTY_ATTACK_ANIM_BATTLE_ALLOWANCE`'s own already-measured figure, §16.9, raising the base
+allowance to 254) unconditionally, PLUS **`party.length` TABLE bytes** (never more than
+`RPG_LIMITS.party` = 4) for a `pc_anim_attack` table that would exist but never be read by anything
+a monster/spell-only project's own code paths reach — pure waste for that project, since
+`battleTableBytes` counts whatever `battleTables()` actually emits (§16.4) regardless of whether the
+gate that controls it is narrow or absent. Neither figure was separately built: the code figure is
+exactly the isolated 11-byte delta already measured; the table figure is exactly `party.length`,
+the same arithmetic `pc_anim_attack`'s own gated emission already uses (§16.4) — folding vs. gating
+changes only whether either cost is conditional, not either one's size.
+
+### §16.7 OAM and vram_buf (item 7)
+
+**`battle_fx_draw`'s own per-slot anchor math (`engine/battleui.asm:1039-1094`) needs no change at
+all** — it already branches on `bt_fx_slot < MAX_PARTY` (`:1063-1064`) to choose the party anchor
+(`BT_PARTY_X`/`BT_PARTY_Y` + `slot * BT_PARTY_STEP`) versus the monster anchor (`BT_MON_COL`/
+`BT_MON_ROW`), and a party member's own attack visual is armed with exactly its own combatant slot
+(`ldy <bt_actor`, §16.2) — the SAME `bt_fx_slot` a monster's own arm already writes, just now
+sometimes `< MAX_PARTY`. **Corrected this round: the party side of this branch is not newly
+reachable — a monster's own single-target spell aimed at a party member, and a party member's own
+heal/all-target cast, already reach it.** `cast_spell_fx_go` (`engine/battleturn.asm:367-376`)
+already arms `Y = bt_target` for a single-target spell (which is a party slot when a MONSTER casts
+one at a party member) and `Y = bt_actor` for a heal or all-target cast (already a party slot when
+a PARTY member casts one) — both existing, shipped paths already drive `bt_fx_slot < MAX_PARTY`
+before this round. What §16 actually adds is a NEW ARM POINT (`attack_target`, a physical swing)
+that can reach the SAME, already-proven branch — not a new branch.
+
+**`battleCombatantOamMax`/`battleSpriteBudget`/`battleFxOamRoom` need no change beyond seeing the
+new references — confirmed by direct execution, not by code inspection alone.** `battleSpriteBudget`
+(`shared/project.js:3825-3839`) already derives `fxTiles` from `allBattleAnimationIds(project)`
+filtered through `isPlayableBattleAnimation`, and `allBattleAnimationIds` already walks
+`animationReferenceLocations`'s `battleOnly` entries (§16.5) — so the moment the traversal gained a
+party yield, `battleSpriteBudget`'s own `fxTiles` figure automatically includes a party member's own
+worst frame, with zero lines changed in either `battleSpriteBudget` or `battleFxOamRoom`
+(`shared/project.js:3857-3862`, both unchanged). Verified directly (§16.9): `allBattleAnimationIds`
+on a project with `party[0].attackAnim = 1` yields `1`, the identical id a monster or spell
+reference would.
+
+**Concurrency with MISS and hit feedback, worked through explicitly, not merely asserted safe.**
+`BATTLE_FX_OAM_ROOM`'s own formula (`MAX_OAM_ENTRIES - battleCombatantOamMax - MISS_OAM_TILES`
+when `MISS_ENABLED`, §13.6) already reserves room for "whatever the ONE running `bt_fx_*` effect is,
+PLUS MISS" without caring which side owns the effect — a party member's own flipbook competing with
+MISS on a miss is the IDENTICAL interaction §13.6 already measured and reserved room for, just with
+the attacker and target sides swapped from the monster case (§13.6's own worked example has a
+monster's flipbook on the ATTACKER's slot 4-7 and MISS on the TARGET's slot 0-3 at the same tick;
+here it is the party's own flipbook on slot 0-3 and MISS on a MONSTER's slot 4-7 — different slots
+either way, so no new same-slot collision, and the SAME total-budget arithmetic covers it). Hit
+feedback (`bt_hurt_slot`, §12) reacts on `bt_target` — for a party member's OWN attack, that is
+always a MONSTER slot (4-7), never the attacking party member's own slot (0-3) — so a party
+member's own flipbook and the hit-feedback reaction to their OWN swing landing are, by construction,
+never on the same slot in the same tick, the identical non-interference §12.4 already states for
+the monster case. The one scenario worth naming explicitly: could a party member's own JUST-ARMED
+flipbook (from their own attack) still be "running" when, on a LATER tick, an enemy hits that SAME
+party member (`bt_hurt_slot` now naming the SAME slot)? No — the caller invariant (§3.3: every real
+arm call site is reached right after a clear) means the party's own flipbook is cleared the moment
+THAT action's own message is dismissed, well before any later enemy turn reaches the same slot
+again, the identical reasoning that already makes a monster's own attacker-slot flipbook safe from a
+later hit-feedback reaction on the SAME monster.
+
+**Confirmed: no new `vram_buf` packet appears (§3.4, §12.6).** Appendix E adds no
+`vram_open`/`vram_push`/`queue_at` call anywhere — `battle_fx_arm_attack`'s new party branch only
+writes ZP scratch (`bt_fx_anim`/`bt_fx_slot`/`bt_fx_frame`/`bt_fx_timer`, via the unchanged
+`battle_fx_arm_at`) and `battle_fx_draw` draws via `draw_metasprite` (sprite OAM, not the nametable),
+the identical `vram_buf`-free shape the existing monster/spell path already has.
+
+### §16.8 The UI (item 8)
+
+**Where the field goes, RPG only.** The Character Forge's `renderDetail` (`renderer/forges/
+character/character.js:250-355` at `8cb76fc`) already has one `isRpg`-only block for the "Battle
+sprite" picker (`:326-349`) — the new "Attack animation" picker is a sibling field in that SAME
+block, beside the battle-sprite `<select>`, since both answer "how does this member fight," not
+inside `renderStats` (`:169-248`, numeric stats and learned spells, a different concern). Wired
+through the existing generic `setMember(index, 'attackAnim', value)` helper (`:81-86`), no new
+commit path needed.
+
+**The preview: yes, the shipped widget, following the SAME persistent-host restructuring Magic and
+Monster already needed (§15.5) — with one real difference from both, worked through explicitly.**
+Magic and Monster each mount their preview ONCE, unconditionally, because both Forges are
+`isForgeAvailable`-gated to RPG projects only (`renderer/app.js`'s own `FORGES` array; Magic/Monster
+`gameTypes` entries) — the preview widget's own "no animation selected" caption (§15.5 step 1) is
+never shown to an action project because the Forge itself never mounts there. The Character Forge
+is DIFFERENT: it mounts on BOTH game types (the hero always has a character card), so mounting the
+preview unconditionally would show a battle-animation caption on an action project's Character Forge
+visit — noise for a concept that project can never use. **Decision: mount `mountBattleFxPreview`
+ONCE at `mount()` time regardless of game type (the same "never call it fresh per render" rule
+§15.5's own P2-6 finding establishes), but restructure the RIGHT panel's own `panel-body`
+(`character.js:377-382`) into the `fieldsHost`/`previewHost` split (`magic.js:71-75`,
+`monster.js:439-442`), and toggle `previewHost`'s own `style.display` — never its children —
+between `isRpg` states inside `render()`.** This keeps the widget's own internal state (canvas,
+armed/playing flipbook) untouched across a game-type check, uses no `fill()` call on `previewHost`
+itself (the stale-id/lost-state trap §15.5's own P2-6 finding already names), and shows nothing at
+all on an action project — a style toggle, not a mount/unmount cycle. `getAnimationId` returns
+`party[state.selected]?.attackAnim ?? null` when `isRpg`, else `null` — the identical "return null
+when there is nothing to preview" shape Monster's own `getAnimationId` already takes
+(`monster.js:446-450`) for `state.selectedActorId === null`, which `sync()`'s own None-handling
+branch (§15.5 step 1) already resolves correctly with no new widget code. `destroy()` gains
+`preview.destroy()` (`character.js:390-393`, alongside the existing `app.setMeta('')`), and
+`onProjectChange: render` needs no change (it already calls `render()`, which gains one
+`preview.sync()` call at its own end, the identical placement `magic.js:261`/`monster.js:555`
+already use). `stepPreview: () => preview.stepPreview()` is added to the mount contract, matching
+both existing Forges.
+
+**What the preview actually shows — stated explicitly this round, per review round 1's own finding
+7.** The Character Forge uses the IDENTICAL shared widget Magic/Monster already mount
+(`renderer/widgets/battlefxpreview.js`), with no member-specific or battle-position rendering of
+any kind: it draws the selected animation's OWN artwork inside the animation's OWN local
+bounding box (`battleFxBounds`, the union of every frame's own tile extents, `battlefxpreview.js:
+234-243`, `:16` for the `64×64` blank fallback) — never the selected party member's own field or
+battle sprite, never a simulated combatant icon or battle-screen background behind the effect. This
+is the identical "effect-only" contract Magic (previewing a spell's own `anim`) and Monster
+(previewing an actor's own `attackAnim`) already have; nothing about mounting it a third time, for
+a party member's own `attackAnim`, changes what it draws.
+
+**Selecting a different party member with the SAME animation id: playback is retained, not
+restarted — the widget's own existing behaviour, unchanged by this slice.** `sync()`'s own re-arm
+check (`battlefxpreview.js:254`, `id !== armedId || signature !== armedSignature`) re-arms only when
+the id OR the animation's own frame signature actually changes — switching from a member whose
+`attackAnim` is `1` to another member whose `attackAnim` is ALSO `1` leaves `id`/`signature`
+unchanged, so the SAME running flipbook keeps playing through the switch with no restart, the
+identical behaviour the widget already has for two spells sharing one `anim` id today. This needs no
+new code in the widget; §16.8's own `getAnimationId` closure is the only thing that changes per
+Forge.
+
+**A third copy of `animationSelect`, not a dedupe — put to Chris as a scope question (§16's own §8
+subsection below), since he declined the dedupe once already (2026-09-14, §10's own changelog
+entry) for the identical reason that would still apply here.** `animationSelect`
+(`magic.js:50-61`, `monster.js:89-99`) is byte-for-byte duplicated between the two existing Forges
+today, a real drift hazard with no test pinning the two copies to agree, but Chris's own phase-3
+decision was explicit: leave it alone, a future slice can move it beside the shared preview widget
+with no coupling to whatever ships it. Cost of a third copy: the identical ~11-line duplication,
+paid once more. Cost of deduping NOW, across THREE call sites instead of two: extracting
+`animationSelect` into `renderer/widgets/battlefxpreview.js` (or a new sibling module) — no
+technical blocker, purely a scope call about whether THIS round is the moment to pay down a
+pre-existing hazard three consumers, not two, now share. **Recommendation: a third copy**, matching
+precedent exactly and keeping this round's own diff scoped to what ROADMAP item 14 point 5 actually
+asked for.
+
+**The stale-id rule holds here too, with no new code.** `animationSelect` already renders a
+synthetic "Missing animation N" option whenever the stored id does not resolve
+(`animationPickerOptions`, §4) — a party member's stale `attackAnim` reaches the IDENTICAL picker
+function, so it gets the IDENTICAL treatment, never a silent rewrite. Confirmed by the SAME
+`validateProject` refusal already proven live for a stale party reference (§16.5, §16.9) — the
+picker and the build refusal read the same stored value the same way an actor's or a spell's
+already do.
+
+### §16.9 A measured prototype (item 9)
+
+Rebuilt in fix round 1 with items 1 and 3 applied (item 1: the recommended symmetric option, §8, is
+what the prototype builds — no `cast_spell` change; item 3: the removal-lever label rename) on top
+of round 1's own diff. Built and measured in a fresh `git worktree add --detach` scratch copy off
+`8cb76fc` (`node_modules` symlinked from the main tree), the identical `bankedbytes.test.js`'s own
+`measureRegion` methodology (`test/unit/bankedbytes.test.js:134-161`): `sample-rpg`, both
+`renamable` flags forced off, one `mutate` callback per variant, `buildProject` run for real,
+nesasm's own usage table parsed for the battle-region bank, `battleTableBytes(project)` called
+directly to separate table bytes from code bytes rather than inferring the split. Full diff (the
+same four files as round 1: `engine/battleturn.asm`, `main/build/battletables.js`,
+`main/build/generate.js`, `shared/project.js`) is Appendix E, exactly what was measured — no test
+files are part of it (seven SCRATCH probes, A-G below, were written, run, confirmed passing, and
+reverted before taking the diff).
+
+| board (RPG-capable) | off | monster-only | spell-only | party-only | table bytes (off / monster / spell / party) |
+|---|---|---|---|---|---|
+| MMC1 (mapper 1) | 4294 | 4544 (Δ250) | 4544 (Δ250) | 4557 (Δ263) | 494 / 501 / 501 / 503 |
+| MMC3 (mapper 4) | 4334 | 4584 (Δ250) | 4584 (Δ250) | 4597 (Δ263) | 494 / 501 / 501 / 503 |
+| UNROM 512 (mapper 30) | 4294 | 4544 (Δ250) | 4544 (Δ250) | 4557 (Δ263) | 494 / 501 / 501 / 503 |
+
+Every predicted figure (`battleRegionBytes`) matched nesasm's real usage to the byte, on every row,
+for all four variants (`predictedMatchesReal`, all `true`, all three boards) — both before and
+after `PARTY_ATTACK_ANIM_BATTLE_ALLOWANCE` was corrected from an initial `0` placeholder to the
+measured `11` (§16.6 records the one real bug this measurement caught along the way in round 1:
+`attack_target`'s new arm call gated on the wrong flag, costing 3 stray bytes on a monster-only
+project — found by exactly this equality check failing by 3, not by inspection; round 1's own fix
+is unchanged and reconfirmed this round).
+
+**Code and table bytes, separated — corrected this round (review P2 finding 2's own "separate the
+ungated comparison" requirement, extended to every row here, not only the ungated one):**
+party-only vs. monster-only is **263 − 250 = 13 total = 11 code (`PARTY_ATTACK_ANIM_BATTLE_ALLOWANCE`)
++ 2 table** (`pc_anim_attack`'s own `party.length` = 2 bytes for `sample-rpg`'s two-member party,
+`503 − 501`); monster-only vs. off is **250 total = 243 code (`BATTLE_ANIM_BATTLE_ALLOWANCE`) + 7
+table** (`mon_anim_attack` 4 bytes + `spell_anim` 3 bytes, `501 − 494`). Both splits computed
+directly from `battleTableBytes(project)`, not inferred from a difference of totals.
+
+**The gating option not picked** (folding the party branch permanently into
+`BATTLE_ANIM_BATTLE_ALLOWANCE`, no `PARTY_ATTACK_ANIM_ENABLED` flag, no gate on `pc_anim_attack`'s
+own table emission either) costs the identical isolated **11 code bytes PLUS `party.length` table
+bytes** on every `BATTLE_ANIM_ENABLED` project regardless of whether it authors a party reference
+(§16.6) — not separately built, since folding changes only whether both costs are conditional,
+never either one's size.
+
+**Off, monster-only and spell-only ROMs confirmed byte-identical to a clean `8cb76fc` build —
+full-ROM SHA-256, not merely the battle-region usage figure, on all three boards (9 comparisons,
+all identical).** Built each variant twice — once from the unmodified main tree, once from the
+fix-round-1 worktree — and compared complete `.nes` file hashes directly, the identical
+verification the round 1 review performed independently and this round reproduces rather than
+merely re-asserts.
+
+**Six-fixture ROM identity: confirmed the same way — the reviewer's own independent, clean result
+is the evidence of record, not a regenerated re-run.** `test/unit/nameentry.test.js` +
+`test/unit/bankedbytes.test.js` (`59/59`, `0` failed, `0` skipped) against Appendix E applied to a
+fresh `8cb76fc` worktree with the checked-in fixtures left completely untouched (round 1 review's
+own independent verification, reproduced verbatim in the round-1 review document). This round's own
+rebuild re-ran the identical two files the same way and got the identical `59/59` result.
+
+**Full regression provenance, corrected this round (review P2 finding 5) — the regeneration recipe
+is removed; only `build:sample*`/`cli.js` (assembly of the CHECKED-IN projects, never
+regeneration) were used.** Round 1's own §16.9 described running "the six `npm run sample*`/
+`build:sample*` scripts" before the full suite — wording that reads as regenerating the fixtures
+in place, which CLAUDE.md's own rule refuses ("No test may mutate `sample/`... running one of the
+`npm run sample*` scripts over a checked-in fixture is data loss, not a refresh"). This round's own
+run used only the non-destructive half: `npm run build:sample`, `build:sample:rpg`,
+`build:sample:mmc1`, `build:sample:mmc3`, `build:sample:u512` (each `node main/build/cli.js
+<dir>`, assembling the EXISTING checked-in `project.json` — no generator script touched), plus
+`node main/build/cli.js sample-rpg-mmc1` directly (it has no dedicated `npm run build:sample:*`
+script). **Result: `npm test` inside the prototype worktree, 1736/1736 passing, 0 failed, 0
+skipped** — no test named a skip reason at all, confirming every ROM-gated test found the ROM it
+needed from this non-destructive assembly step alone. `bankedbytes.test.js`'s own equality
+assertions for every EXISTING allowance (`BASE_BATTLE_CODE_BYTES_BY_MAPPER`,
+`BATTLE_ANIM_BATTLE_ALLOWANCE`, `HIT_FEEDBACK_BATTLE_ALLOWANCE`, `MISS_BATTLE_ALLOWANCE`) are part
+of that 1736, all still exact, none disturbed by this slice.
+
+**Seven functional SCRATCH probes (A-G), run and passed against the real assembled ROM or the real
+predicate/advice functions, then reverted before the diff was taken — an accurate executed/planned
+split, replacing round 1's own blanket "every row proven" claim (review P2 finding 4):**
+
+- **A — arm on a genuine hit, RNG rigged** (`RNG = 0`, the identical rig `fx-monster-attack`'s own
+  Case 1 uses, `test/unit/rpg.test.js:5216-5224` — `rng_next(0)` returns `$3B` (59,
+  `engine/rpg.asm:14-24`), below the party-versus-Slime accuracy-minus-evasion threshold, so this
+  really is a genuine, deterministic hit, not an RNG failure): **proves the successful-attack path
+  arms correctly — corrected this round (review round 2, P2-1): this probe alone does NOT
+  distinguish arming before `roll_hit` from arming only after a successful roll**, since both
+  placements produce the identical final state (`bt_fx_anim`/`bt_fx_slot` armed, `bt_dmg_hi` showing
+  a landed hit) whenever the roll happens to succeed. §16.2's own evidence for the successful-attack
+  case specifically, executed.
+- **B — arm on a forced miss** (`acc: 0`, the identical `fx-monster-miss` shape,
+  `rpg.test.js:5228-5243`, no RNG dependency): **this is the probe that actually rejects hit-only
+  arming** — if the arm call lived inside `roll_hit`'s own hit branch instead of before it, a
+  guaranteed-fail roll would leave `bt_fx_anim` un-armed; B shows it arms anyway, which is what
+  proves the placement is unconditional on the outcome, not merely present after a hit. A and B
+  TOGETHER are what §16.2's own claim rests on: A proves the successful case still works, B proves
+  arming does not depend on the roll's own result. (Exact instruction-order proof — that the arm
+  literally executes before `roll_hit`'s own first instruction, rather than merely "regardless of
+  outcome" — would need inspecting `bt_fx_anim` at entry to `roll_hit` itself inside the isolated
+  harness; not built this round, since B already settles the behavioural claim this design needs.)
+- **C — a later member, recruited via the REAL Join mechanism (`battle_entry`, `bt_call = BE_JOIN`),
+  with holes at earlier indices, reaches their own `pc_anim_attack` entry.** A four-member project
+  (`createPartyMember(2)`, `createPartyMember(3)` pushed, `startsInParty: false` on both, member 1
+  already non-starting), member 0's `attackAnim = 0` ("Hero"), member 3's `attackAnim = 1`
+  ("Slime") — distinct. Confirms `pc_in_party[1..3] = 0` before Join; Join (`bt_arg = 3`) sets
+  `pc_in_party[3] = 1` directly; `battle_fx_arm_attack` with `bt_actor = 3` arms `1` (member 3's
+  own), never `0` (member 0's) — §16.4's own index-space claim, executed for a LATE-JOINED,
+  non-starting member specifically, not only member 0. **The `party_restore` call in this same probe
+  proves LESS than round 1 or round 2 claimed — corrected again this round (review round 3, P3-1):
+  what was actually executed is only that arming member index 3 still works after recomputation,
+  not that a restore preserves the index at all.** `party_restore`
+  (`engine/battle.asm:199-205`) only recomputes `pc_hp_max`/`pc_mp_max`/`pc_spells` in place; it
+  never reads or writes `pc_in_party`, and `battle_fx_arm_attack`
+  (`engine/battleturn.asm:309-324`, Appendix E's own party branch) selects animation state from
+  whatever raw `bt_actor` value it is given, with no membership or identity check of its own —
+  so re-arming with `bt_actor = 3` after calling `party_restore` and getting `1` back is
+  UNCONDITIONALLY true regardless of what `party_restore` did or did not do to RAM: `pc_anim_attack`
+  is a fixed, build-time ROM table indexed directly by the raw value fed to it, so this assertion
+  cannot distinguish "the index was preserved" from "the index moved but the ROM table was read at
+  the same raw slot number anyway." The honest description of what this probe demonstrates is
+  exactly this and no more: **arming member index 3 still works after recomputation** — that calling
+  `party_restore` does not crash, corrupt registers, or otherwise disrupt a subsequent arm call, not
+  that it preserves anything about identity or membership. Round 2's own "narrower coverage" framing
+  still overclaimed by describing this as pinning an invariant about "which ROM row a later member's
+  index reaches" — there is no invariant this probe's own assertion can pin, since the ROM read is
+  independent of RAM entirely. It says NOTHING about whether the REAL save/load path
+  (`load_apply_body`/`continue_game`, `engine/save.asm:500-530,540-559`) correctly restores WHICH
+  members are recruited — a bug that compacted member 3's RAM state into slot 1 and cleared slot 3
+  during a real load would leave this isolated probe passing regardless. **A genuine save-load
+  regression test — PLANNED, not executed this round**: save
+  a party with holes and distinct per-member state, disturb RAM, run the real load path
+  (`load_apply_body`/`continue_game`), then assert membership `[1, 0, 0, 1]` and member 3's own
+  distinct state (e.g. `pc_level[3]`, `pc_hp_max[3]`) survived at index 3 — BEFORE checking that
+  member 3's own animation still arms correctly, so a membership or identity bug is caught by its
+  own assertion rather than being masked by a coincidentally-correct animation read.
+- **D — spell-fallback, re-verified after the label-rename fix**: a party caster with `attackAnim`
+  authored and a spell with `anim: null` arms the caster's own `attackAnim` on cast, over the
+  caster's own slot, damage still landing — the identical `AttackFallback` shape
+  (`rpg.test.js:5552-5568`) applied to a party caster — §16.3's own mechanism evidence (the POLICY
+  question itself is Chris's, §8; this probe only proves what the shipped prototype, symmetric,
+  actually does).
+- **E — deleting an earlier party member preserves a surviving member's own `attackAnim`** (pure
+  JS, no ROM): two members, delete index 0 via the Character Forge's own `renumberPartyMemberDeletion`
+  + splice + re-id shape (`character.js:108-119`), assert the survivor's own `attackAnim` is
+  unchanged — confirms deletion is a plain object-carrying splice with no separate byte-indexed
+  array this field could be orphaned from.
+- **F — an explicit `projectWithoutBattleAnimation` contract test**: actor/spell/party all set,
+  strip, assert actor and spell become `null` and party is UNCHANGED — the scope boundary §16.5's
+  own prose now states is exercised directly, not merely described.
+- **G — a mixed monster+party project, the removal-lever fix (item 3), verified numerically AND by
+  advice text — re-run in fix round 2 after the label wording fix (P3-1), figures unchanged**:
+  `sample-rpg` with both an actor's own `attackAnim` and a party member's own set, `renamable` off
+  (isolating the message from sample-rpg's own unrelated hero/Join naming state). Stripping the
+  monster/spell lever ALONE frees **0** bytes (the party reference alone still needs the shared
+  243-byte base — `projectUsesAnyBattleAnimation` stays true); stripping the party lever ALONE
+  frees **13** (its own isolated delta); stripping BOTH frees the full **263** — a pure string
+  change moves none of these. The advice text at a deficit only the combination closes now reads
+  exactly `"Removing every monster attack or spell animation reference and every party member's
+  own attack animation would free enough."` — scope-accurate for both scopes, matching neither
+  over- nor under-claiming, and no longer implying every spell reference is specifically an
+  "attack."
+
+**Reference-integrity traversal (non-probe items, still checked by direct execution against a real
+project, §16.5/§16.7, unchanged from round 1)**: `animationReferenceLocations` yields the new party
+location; `allBattleAnimationIds` includes it; `isValidAnimationRef`/`isPlayableBattleAnimation`
+answer correctly for both a real and a stale (`99`) id; `renumberAnimationDeletion` shifts the
+party reference correctly across a deletion; `validateProject` produces the exact expected error
+diagnostic for a stale party reference.
+
+**What remains PLANNED, not executed this round, stated honestly rather than folded into "every row
+proven":** hop-2 validation for a party reference specifically (an animation that exists but whose
+own frame names a missing metasprite) — the identical, already-proven actor/spell code path
+(`isPlayableBattleAnimation`, shared with every other reference kind), not separately re-probed;
+the whole Character Forge UI (§16.8) — no `renderer/` file was touched this round, a design-round
+scope boundary (the brief's own item 8/9 scope, and the fix brief's own "only
+`docs/design-battle-animation.md` changes"); the smoke-test selection-change assertion (§16.10);
+and item 1's physical-only alternative (§8), reasoned, not built, since the policy question itself
+is unresolved.
+
+Worktree removed after the diff was saved to the session scratchpad; `git status --short` and
+`git worktree list` on the main tree, both confirming a clean return, are in the session report
+(`handoff-next/battle-anim-party-attack-design-fix1-report.md`).
+
+### §16.10 Test plan (item 10)
+
+The identical §6/§14-style table — setup, assertions, and the wrong implementation each row
+catches, not a bare "proven this round" claim (review P2 finding 4). Each row names the isolated
+helper(s) and exact `rpg.test.js` line numbers it reuses, and whether it was EXECUTED this round
+(probes A-G, §16.9) or is PLANNED (designed, not yet built — honestly labeled, not folded into the
+executed set). Rows 1-7 and 12 are conditioned on §8's own spell-fallback answer where relevant, not
+written as settled fact.
+
+| Test | Setup and assertions | Wrong implementation it catches | Status |
+|---|---|---|---|
+| Arm on a genuine hit (the successful-attack path) | `attack_target`, isolated `callRoutine` (`callRoutine`, `rpg.test.js:357-371`), `bt_actor = 0`, `bt_target = MAX_PARTY`, **`RNG = 0`** (the deterministic-hit rig `fx-monster-attack`'s own Case 1 uses, `:5216-5224` — accuracy-minus-evasion against the RNG, `engine/battleturn.asm:657-679`; default acc/eva alone does NOT force a hit). Assert `bt_fx_anim`/`bt_fx_slot` armed AND `bt_dmg_hi != 0xFF` (the hit actually landed). **Corrected this round (review round 2, P2-1): this row alone does not distinguish "armed before the roll" from "armed only because the roll happened to succeed" — both placements produce the identical result here whenever the roll succeeds; that distinction is what the MISS row below is for** | The successful-attack path never arming at all (a stray branch or a flag check preventing the call from ever running on a real hit) | EXECUTED — probe A |
+| Arm on a forced miss (rejects hit-only arming) | Same isolated call, `party[0].acc = 0` (forces `roll_hit`'s own subtraction to underflow, no RNG dependency, `fx-monster-miss` shape `:5228-5243`). Assert `bt_fx_anim`/`bt_fx_slot` STILL armed, `bt_dmg_hi == 0xFF` | **This is the row that actually catches hit-only arming**: if the arm call lived inside `roll_hit`'s own hit branch instead of before it, a guaranteed-fail roll would leave `bt_fx_anim` un-armed; this row shows it arms anyway | EXECUTED — probe B |
+| The slot the effect plays over | From either probe above: assert `bt_fx_slot` equals the PARTY member's own combatant index (0-3), never `bt_target` | Candidate (b)'s own shape (§16.1) reaching the field by accident, or the monster branch's own `sbc #MAX_PARTY` left in by copy-paste mistake | EXECUTED — probes A/B |
+| A party member with `attackAnim: null` leaves the flipbook untouched, WITH the gate live | `battle_fx_arm_attack`, isolated call, `party[0].attackAnim = null` but `party[1].attackAnim` set (keeps `PARTY_ATTACK_ANIM_ENABLED` on), `bt_actor = 0`, `bt_fx_anim` pre-set to a sentinel (`77`, not `NO_ANIM`). Assert the sentinel is untouched | `battle_fx_arm_at`'s own `NO_ANIM` no-op path reached with the wrong operand; a gate check that assumes "party is off" instead of "this member's own entry is `NO_ANIM`" | EXECUTED — probe B |
+| A later, non-starting member reaches their own `pc_anim_attack` entry, with holes at earlier indices | Four-member project (`createPartyMember(2)`/`(3)` pushed, both `startsInParty: false`, member 1 already non-starting), member 0 `attackAnim = 0`, member 3 `attackAnim = 1` — distinct. Recruit member 3 via the REAL Join mechanism (`battle_entry`, isolated, `bt_call = BE_JOIN` (2), `bt_arg = 3`). Assert `pc_in_party[1..3] == 0` before, `pc_in_party[3] == 1` after; arm with `bt_actor = 3`, assert `bt_fx_anim == 1` (member 3's own), never `0` | The index-space claim (§16.4) holding only for member 0 (always recruited at boot) and silently failing for anyone recruited later, or Join recruiting into the wrong RAM slot | EXECUTED — probe C |
+| A real save/load restores membership AND per-member state correctly — the genuine restore regression test (round 3, P3-1: the isolated `party_restore`-then-re-arm check round 1/2 listed as its own row is dropped here — its own assertion is unconditionally true regardless of what `party_restore` does to RAM, since `pc_anim_attack` is a fixed ROM table read by whatever raw index it is given; all it actually showed, executed as part of probe C, is that arming member index 3 still works after recomputation, not that any index or identity is preserved, per §16.9's own corrected account) | Save a party with holes and distinct per-member state (e.g. members 0 and 3 recruited, 1 and 2 not, each with its own `pc_level`/`attackAnim`), disturb RAM afterward, run the REAL load path (`load_apply_body`/`continue_game`, `engine/save.asm:500-530,540-559`). Assert membership `[1, 0, 0, 1]` and member 3's own distinct state (e.g. `pc_level[3]`) at index 3 FIRST, then confirm member 3's own animation still arms correctly | A load that compacts or renumbers recruited members — nothing else in this test plan can catch it, since `pc_anim_attack` is a build-time ROM table `battle_fx_arm_attack` reads by raw index with no membership check, so a compaction bug leaves an index-only re-arm check passing regardless | PLANNED — not executed this round |
+| Spell-fallback, party caster | `cast_spell`, isolated call, a `kind: 'damage', anim: null` spell, caster's own `attackAnim` set. Assert the fallback fires exactly as built (symmetric, §8) — **conditioned on §8's own answer**: if Chris picks the physical-only alternative, this row's own expected result flips to "must NOT arm," and the isolated `.if PARTY_ATTACK_ANIM_ENABLED` suppression check (§8's own reasoned ~6-byte addition) needs its own row here instead | A fallback reading the wrong field for a party `bt_actor`, or the reload bug `rpg.test.js`'s own header comment already warns about (`X` from `bt_arg`, `:378`), now reachable from the party side too | EXECUTED (symmetric mechanism) — probe D; policy itself PLANNED pending §8 |
+| Deleting an earlier party member preserves a surviving member's own `attackAnim` | Pure JS, no ROM: two members, `renumberPartyMemberDeletion(project, 0)` + `splice` + re-id (`character.js:108-119`'s own shape). Assert the survivor's own `attackAnim` is unchanged | A future removeMember rewrite that keys attack visuals by array position instead of letting them travel with the member object | EXECUTED — probe E |
+| `projectWithoutBattleAnimation`'s own scope boundary | Pure JS: actor/spell/party all set, strip, assert actor/spell become `null`, party UNCHANGED, and the original project is not mutated | This lever silently widening to strip party content too (or vice versa, the party lever silently touching actor/spell) | EXECUTED — probe F |
+| Mixed-reference removal accounting and advice text | `sample-rpg`, actor `attackAnim` AND party `attackAnim` both set, `renamable` off. Assert: stripping monster/spell ALONE frees exactly `0`; party ALONE frees exactly `13`; BOTH frees exactly `263`; the advice text at a deficit only the combination closes names both scopes with the corrected labels | The exact review P2 finding 3 defect: a scope-inaccurate label, or `battleShortfallAdvice`'s own before/after recomputation silently under/over-freeing when both references coexist | EXECUTED — probe G |
+| `animationReferenceLocations` yields the party location; `allBattleAnimationIds`/OAM budget sees it; `renumberAnimationDeletion` shifts it; `validateProject` refuses a stale one (hop 1) | Direct execution against a real (non-ROM) project — see §16.9's own "reference-integrity traversal" paragraph for the exact values checked | The traversal silently missing the one new reference kind — every consumer downstream inherits the miss | EXECUTED — §16.9 (non-probe) |
+| `validateProject` hop 2 for a party reference (a real animation whose own frame names a missing metasprite) | Not separately built — follows the identical, already-proven actor/spell code path (`isPlayableBattleAnimation`, one shared predicate, no party-specific branch) | An off-by-one or type-coercion gap specific to how the party traversal computes its own `isPlayableBattleAnimation` call | PLANNED — same predicate as an existing, already-tested actor/spell case; an implementation brief should still add the party-specific instance for completeness |
+| Ledger equality, all three boards, gate on/off, code and table bytes separately | §16.9's own measured table; promote into a `bankedbytes.test.js` case the identical shape `HIT_FEEDBACK_BATTLE_ALLOWANCE`'s own equality test already uses | A stale `PARTY_ATTACK_ANIM_BATTLE_ALLOWANCE` figure, or a table-byte count, drifting from the real assembled cost | EXECUTED — §16.9 |
+| Fixture ROM identity (six checked-in fixtures, untouched) | `test/unit/nameentry.test.js` against the checked-in fixtures, no regeneration | A gate that assembles even one byte unconditionally for a project authoring neither field | EXECUTED — §16.9 (reviewer's own independent result, reproduced) |
+| Off/monster-only/spell-only full-ROM identity to a clean build | Full-ROM SHA-256 against an unmodified `8cb76fc` build, both directions, all three boards | A change to the SHARED base mechanism (not merely its gate) that happens to net to the same byte COUNT while producing different bytes | EXECUTED — §16.9 |
+| Character Forge field + preview smoke step | `main/smoke.js`'s existing Character Forge coverage (`:8491-8798`) gains: pick an animation, confirm the field persists across a re-render and an undo; confirm the preview canvas mounts on an RPG project and is hidden (`style.display`, §16.8) on an action project; **new this round (review finding 7)**: select a DIFFERENT party member whose own `attackAnim` is the SAME id, assert playback is retained (not restarted, `battlefxpreview.js:254`'s own `id !== armedId \|\| signature !== armedSignature` check); select a member with a STALE `attackAnim` (no catalog entry), assert the "Missing animation N" / unplayable caption (§4, §16.8); undo back across a selection change, assert the preview reflects the restored project | A field that does not survive `fill()`'s own children-replacement; a preview left visible/broken on an action project's Character Forge visit; a same-id switch that wrongly restarts playback; a stale-id switch that silently substitutes a real animation | PLANNED — no `renderer/` file was touched this design round |
+
+### §16.11 What could go wrong, and places reasoned rather than read (item 11)
+
+- **The multi-target case has no analogue here worth naming, and this document should not invent
+  one.** A party member's own physical attack (`attack_target`) is always single-target — there is
+  no all-target party attack in this engine at all, so §12.3's own "only the LAST target ends up
+  visible" caveat for `cast_all` simply does not apply to a party member's own SWING. A party
+  CASTER's own all-target spell (`AllCaster`, cast on the OTHER side) already plays over the
+  CASTER's own slot (§3.3's own scope rule, unchanged by this slice) — so it is not "hitting several
+  targets and losing all but one," it was never target-anchored at all.
+- **A party member's own `attackAnim` interacting with a FUTURE party-side status effect or a
+  future party-side MISS reaction was not explored** — §13 (MISS) and §12 (hit feedback) both
+  already react on whichever slot was HIT, regardless of which side did the hitting, so nothing
+  about THIS slice changes their own reach; a future feature that reacts specifically to the
+  ATTACKING party member (rather than whoever was hit) would need its own review of this
+  interaction, not assumed safe by extension from what is checked here.
+- **Reasoned, not read**: the exact vblank/mainline cycle cost of the new party branch (a handful of
+  extra instructions inside `battle_fx_arm_attack`) was not measured against a cycle-accurate tool
+  — the defensible claim is that it is bounded (a fixed, small instruction sequence, not a loop),
+  the identical §11 discipline this document already holds every other addition to.
+- **Reasoned, not read**: whether an author would want a party member's own `attackAnim` to also be
+  offered in the overworld animation pickers was not investigated — `animationReferenceLocations`'s
+  own party yield is `battleOnly: true` (§16.5), the identical scope boundary `battle.attackAnim`
+  already draws for an actor, so this slice does not widen that question, only answers it
+  consistently for the new field.
+- **Reasoned, not read**: the Character Forge's own `previewHost` visibility toggle (§16.8, `style.
+  display`) was designed and reasoned through in detail but not built — no worktree change touched
+  `renderer/` at all this round (a DESIGN round, per the brief's own scope rule), so its own
+  behaviour under a live game-type change (an undo that crosses from an RPG project back to... this
+  cannot actually happen, since `gameType` is fixed at project creation and never changes in place,
+  confirmed by grep — `project.project.gameType` is written only by `createProject`, never by any
+  Forge) was reasoned from that fact, not exercised.
+- **What could go wrong, §5-style — corrected again this round (review round 3, P3-2): raising
+  `RPG_LIMITS.party` alone changes nothing for any existing project; the risk needs an actual
+  longer party authored, and the write it enables is conditional, not automatic.** `party_init`'s
+  own loop (`engine/battle.asm:87-109`) IS bounded at `MAX_PARTY` (`cpx #MAX_PARTY`, `:107`), so a
+  fifth-or-later member genuinely cannot be reached at boot regardless of `RPG_LIMITS.party`'s own
+  value — that half is safe, inert. `battle_entry_join` (`:31-42`) guards Join with
+  `cpx #PARTY_SIZE` (`:40`), NOT `cpx #MAX_PARTY` — but `PARTY_SIZE` is NOT `RPG_LIMITS.party`
+  itself; it is the AUTHORED `project.party.length` for the specific project being built
+  (`main/build/battletables.js:154,347`; `RPG_LIMITS.party` is only the ceiling `normalizeProject`
+  clamps that length against, `shared/project.js:4274-4276,5925-5927` — raising the ceiling
+  permits a LONGER project, it does not retroactively lengthen any existing one). So: **if the cap
+  is raised AND a project actually authors five members, Join member 4 passes `PARTY_SIZE = 5`. It
+  then reads `pc_in_party+4`, which aliases `pc_spells[0]` (`engine/constants.asm:595-596`,
+  `pc_in_party = $03B4` sized 4, `pc_spells = $03B8` immediately after); if that byte happens to be
+  zero, `party_join` (`:113-116`, `lda pc_in_party,x` / `bne party_join_done` / ... / `sta
+  pc_in_party,x`) writes `1` there and continues, corrupting `pc_spells[0]` outside the intended
+  array — if that byte is already nonzero, `party_join` instead treats member 4 as "already
+  recruited" and returns without writing anything, so the corruption is conditional on RAM state
+  at that moment, not automatic. Member 5 needs an actual authored length of at least six to reach
+  the equivalent write one byte further in.** Raising `RPG_LIMITS.party` alone, on projects that
+  stay at 4 members or fewer, changes `PARTY_SIZE` for none of them and is exactly as safe as
+  today. **Raising party capacity for real (both the ceiling AND an actual longer authored party)
+  therefore needs auditing BOTH boot (`party_init`, safe by construction, bounded at `MAX_PARTY`)
+  AND Join/restore (`battle_entry_join`'s own `PARTY_SIZE` guard, genuinely unsafe past
+  `MAX_PARTY` once a project's own length exceeds it) against the fixed RAM layout — not merely
+  widening `MAX_PARTY`/`NUM_COMBATANTS` and assuming Join follows.**
+  Capacity equality (`RPG_LIMITS.party === MAX_PARTY`, true today) is what keeps this latent, as a
+  bound this document depends on holding — not, as an earlier draft of this section stated, the
+  REASON the index spaces agree (§16.4's own corrected proof rests on direct indexing, not on the
+  two constants happening to match).
+- **What could go wrong**: **believing `battle_fx_arm_attack`'s `.else` branch is byte-identical
+  because it LOOKS identical, rather than because it was measured.** Two branches of an `.if`/
+  `.else` reading the same instructions in the same order are not automatically the same bytes on
+  every assembler (macro expansion, alignment directives, or a label resolving differently inside a
+  conditional block could all, in principle, break this) — this document's own claim rests on the
+  REAL measured 250-byte delta matching §2(a)'s own pinned figure to the byte (§16.6, §16.9), not on
+  the source text looking the same.
+
 ## Appendix A — the prototype's full diff (phase 1, corrected)
 
 Built and measured in the same `cp -r` scratch copy of the real tree at `38627b7`
@@ -6622,4 +7693,339 @@ index 1644a00..0537e45 100644
  ; subtractions from any starting row; the hold between steps is an engine
  ; constant, not authored -- see OP_FADE below and shared/project.js's
 
+```
+
+## Appendix E — the party-attack-visual prototype's full diff (§16, measured, fix round 2)
+
+Fix round 2 (review round 2, P3-1): re-applied fix round 1's own diff in a fresh throwaway
+`git worktree` off `8cb76fc`, then made ONE string change on top — the `bankedFeatures` label,
+`'every monster or spell attack animation reference'` to `'every monster attack or spell animation
+reference'` — and re-took the diff. No byte figure changes for a string-only edit (confirmed,
+§16.9): `PARTY_ATTACK_ANIM_BATTLE_ALLOWANCE` stays `11`, probe G's own `0`/`13`/`263` figures are
+unchanged, and `node --test test/unit/nameentry.test.js test/unit/bankedbytes.test.js` still passes
+`59/59` (never any `npm run sample*` script). This replaces fix round 1's own Appendix E in full —
+the only content difference from that diff is the renamed label string; every other line is
+unchanged.
+
+```diff
+diff --git a/engine/battleturn.asm b/engine/battleturn.asm
+index 1b611f7..13f13a6 100644
+--- a/engine/battleturn.asm
++++ b/engine/battleturn.asm
+@@ -260,11 +260,16 @@ item_chosen_none:
+   jmp battle_say_actor
+ 
+ ; A plain attack from whoever is acting on to bt_target. Never a monster's own
+-; attack: monsters swing through monster_turn_attack below, which is the
+-; real, and only, physical-attack path that needs to arm battle.attackAnim --
+-; bt_actor is always < MAX_PARTY on this path, so arming here would be dead
+-; code.
++; attack: monsters swing through monster_turn_attack below. bt_actor is
++; always < MAX_PARTY on this path, which is the real, and only, physical-
++; attack path that arms a PARTY member's own attack visual (§16 prototype,
++; docs/design-battle-animation.md) -- before roll_hit, the identical
++; monster_turn_attack placement below, so the swing plays whether the hit
++; lands or misses.
+ attack_target:
++  .if PARTY_ATTACK_ANIM_ENABLED
++  jsr battle_fx_arm_attack
++  .endif
+   jsr roll_hit
+   bne attack_missed
+   jsr physical_damage
+@@ -324,13 +329,32 @@ battle_fx_arm_at_empty:
+   sta <bt_fx_anim
+   rts
+ 
+-; Arms whoever is acting's own mon_anim_attack over their own slot (bt_actor),
+-; if bt_actor is a monster with one authored -- the caster's own swing or
+-; cast, never a target. A party member has no authored attack visual (yet)
+-; and is left alone. Clobbers A, X and Y (the `ldy <bt_actor` below).
++; Arms whoever is acting's own attack visual over their own slot (bt_actor)
++; -- the caster's own swing or cast, never a target. A monster reads
++; mon_anim_attack; a party member reads pc_anim_attack (§16 prototype,
++; docs/design-battle-animation.md), only when PARTY_ATTACK_ANIM_ENABLED is
++; live -- with it off, a party member is left alone exactly as before (the
++; .else arm below is byte-identical to the routine's pre-§16 shape). Clobbers
++; A, X and Y (the `ldy <bt_actor` below, on both arms).
+ battle_fx_arm_attack:
+   lda <bt_actor
+   cmp #MAX_PARTY
++  .if PARTY_ATTACK_ANIM_ENABLED
++  bcs battle_fx_arm_attack_mon
++  tax
++  lda pc_anim_attack,x
++  ldy <bt_actor
++  jmp battle_fx_arm_at
++battle_fx_arm_attack_mon:
++  sec
++  sbc #MAX_PARTY
++  tax
++  lda mon_slot_actor,x
++  tax
++  lda mon_anim_attack,x
++  ldy <bt_actor
++  jmp battle_fx_arm_at
++  .else
+   bcc battle_fx_arm_attack_rts
+   sec
+   sbc #MAX_PARTY
+@@ -343,6 +367,7 @@ battle_fx_arm_attack:
+ battle_fx_arm_attack_rts:
+   rts
+   .endif
++  .endif
+ 
+ ; The spell in bt_arg: damage on bt_target or the whole other side, a heal on
+ ; whoever is casting, or a status effect (poison, burn). The kind numbers
+diff --git a/main/build/battletables.js b/main/build/battletables.js
+index ad0582a..93ce22e 100644
+--- a/main/build/battletables.js
++++ b/main/build/battletables.js
+@@ -54,6 +54,9 @@ import {
+   projectWithoutNameToken,
+   projectWithoutMonsterSpellList,
+   projectUsesBattleAnimation,
++  projectUsesAnyBattleAnimation,
++  projectUsesPartyAttackAnim,
++  projectWithoutPartyAttackAnim,
+   isPlayableBattleAnimation,
+   projectWithoutBattleAnimation,
+   projectUsesHitFeedback,
+@@ -258,8 +261,12 @@ export function battleTables(project, battleStrings = BATTLE_STRINGS) {
+   // depth beside validateProject's own refusal (shared/project.js), since
+   // buildProject compiles whatever project is in hand, not one that has
+   // necessarily passed validation. Same stub-avoidance rule mon_mag/mon_mdef
+-  // use above -- emitted only when projectUsesBattleAnimation is true.
+-  if (projectUsesBattleAnimation(project)) {
++  // use above -- emitted whenever projectUsesAnyBattleAnimation is true (§16
++  // prototype: broadened from the narrow projectUsesBattleAnimation, since
++  // monster_turn_attack's own call to battle_fx_arm_attack is unconditional
++  // under BATTLE_ANIM_ENABLED -- a party-only project's monster turns can
++  // still reach this table even though no actor itself authors an anim).
++  if (projectUsesAnyBattleAnimation(project)) {
+     chunks.push(
+       `mon_anim_attack:\n${dbRows(battle((b) => validAnimId(b.attackAnim, project)))}`
+     );
+@@ -336,8 +343,9 @@ export function battleTables(project, battleStrings = BATTLE_STRINGS) {
+   // single-target damage/status spell, over the caster for a heal or an
+   // all-target spell (cast_spell, engine/battleturn.asm, decides which).
+   // NO_ANIM when unset or stale/out of range (defense in depth, the same
+-  // rule as mon_anim_attack above). Same stub-avoidance rule.
+-  if (projectUsesBattleAnimation(project)) {
++  // rule as mon_anim_attack above). Same stub-avoidance rule, same §16
++  // broadened gate as mon_anim_attack immediately above.
++  if (projectUsesAnyBattleAnimation(project)) {
+     chunks.push(`spell_anim:\n${dbRows(spells.map((spell) => validAnimId(spell.anim, project)))}`);
+   }
+ 
+@@ -351,6 +359,13 @@ export function battleTables(project, battleStrings = BATTLE_STRINGS) {
+   chunks.push(`pc_speed:\n${dbRows(party.map((member) => member.speed))}`);
+   chunks.push(`pc_acc:\n${dbRows(party.map((member) => member.acc))}`);
+   chunks.push(`pc_eva:\n${dbRows(party.map((member) => member.eva))}`);
++  // §16 prototype: this member's own attack visual, mon_anim_attack's own
++  // shape applied to the party -- gated narrowly on projectUsesPartyAttackAnim
++  // (not the broadened flag above), since nothing references this table at
++  // all unless PARTY_ATTACK_ANIM_ENABLED is itself live.
++  if (projectUsesPartyAttackAnim(project)) {
++    chunks.push(`pc_anim_attack:\n${dbRows(party.map((member) => validAnimId(member.attackAnim, project)))}`);
++  }
+   chunks.push(`pc_name:\n${dbRows(party.flatMap((member) => nameTiles(member.name)), NAME_LIMIT)}`);
+ 
+   // One row of maxLevel entries per member, so `member * MAX_LEVEL + level - 1`
+@@ -731,6 +746,15 @@ export const HIT_FEEDBACK_BATTLE_ALLOWANCE = 235;
+ // HIT_FEEDBACK_BATTLE_ALLOWANCE above uses.
+ export const MISS_BATTLE_ALLOWANCE = 134;
+ 
++// §16 prototype: a party member's own attack visual. battle_fx_arm_attack's
++// own new party branch (attack_target's arm call reaches it exactly like
++// monster_turn_attack's already does) -- the shared base mechanism itself
++// (battle_fx_arm_at/tick/draw, cast_spell's wiring) stays inside
++// BATTLE_ANIM_BATTLE_ALLOWANCE above, charged whenever
++// projectUsesAnyBattleAnimation is true; this term is ONLY the party
++// branch's own delta on top of that, gated on projectUsesPartyAttackAnim.
++export const PARTY_ATTACK_ANIM_BATTLE_ALLOWANCE = 11; // measured, §16 -- flat, all three boards
++
+ // Deliberate headroom, and its job is NOT the job KERNEL_SLACK does. There is
+ // no estimation error here for it to absorb -- see the exactness note above --
+ // so this is purely a buffer against the stock code growing a byte or two
+@@ -1008,7 +1032,8 @@ export function battleRegionBytes(project, mapper) {
+     (projectUsesMagicPower(project) ? MAGIC_POWER_BATTLE_ALLOWANCE : 0) +
+     (projectUsesMagicDefence(project) ? MAGIC_DEFENCE_BATTLE_ALLOWANCE : 0) +
+     (projectUsesMonsterSpellList(project) ? MONSTER_SPELL_LIST_BATTLE_ALLOWANCE : 0) +
+-    (projectUsesBattleAnimation(project) ? BATTLE_ANIM_BATTLE_ALLOWANCE : 0) +
++    (projectUsesAnyBattleAnimation(project) ? BATTLE_ANIM_BATTLE_ALLOWANCE : 0) +
++    (projectUsesPartyAttackAnim(project) ? PARTY_ATTACK_ANIM_BATTLE_ALLOWANCE : 0) +
+     (projectUsesHitFeedback(project) ? HIT_FEEDBACK_BATTLE_ALLOWANCE : 0) +
+     (projectUsesMiss(project) ? MISS_BATTLE_ALLOWANCE : 0)
+   );
+@@ -1159,9 +1184,40 @@ export function battleShortfallAdvice(project, mapper, deficit, { alternatives =
+     if (battleBankEnabled(project, mapper) && projectUsesMonsterSpellList(project)) {
+       bankedFeatures.push({ label: "every monster's extra spells", strip: projectWithoutMonsterSpellList });
+     }
+-    // docs/design-battle-animation.md §3.5.
++    // docs/design-battle-animation.md §3.5. §16 fix round 1 (review round 1 P2
++    // finding 3): this label is renamed from the pre-existing 'every battle
++    // animation reference' to a scope-accurate one -- projectWithoutBattleAnimation
++    // has always stripped only actor/spell references, never a party member's
++    // own, and once a party attackAnim authoring surface exists that old
++    // label overpromises. Fix round 2 (review round 2 P3-1): 'every monster
++    // OR spell ATTACK animation reference' still read as though both halves
++    // meant "attack" -- misleading for an authored Heal or other caster-
++    // anchored spell visual, which this same strip also clears
++    // (engine/battleturn.asm:347-355,367-370 support exactly that). Reworded
++    // to 'every monster attack or spell animation reference' -- a monster's
++    // own attack visual, OR any spell's own animation reference regardless of
++    // that spell's own kind. The party-only lever immediately below is
++    // independent; battleShortfallAdvice's own solver (below) already tries
++    // every bankedFeatures entry both alone (soloWinners) and all of them
++    // combined, so no third, redundant "everything" lever is needed for a
++    // project that authors both kinds of reference to see a correct combined
++    // saving.
+     if (battleBankEnabled(project, mapper) && projectUsesBattleAnimation(project)) {
+-      bankedFeatures.push({ label: 'every battle animation reference', strip: projectWithoutBattleAnimation });
++      bankedFeatures.push({
++        label: 'every monster attack or spell animation reference',
++        strip: projectWithoutBattleAnimation
++      });
++    }
++    // §16 prototype: a party member's own attack visual, independent of the
++    // actor/spell removal lever above -- stripping one does not necessarily
++    // free BATTLE_ANIM_BATTLE_ALLOWANCE if the other is still authored, which
++    // battleRegionBytes's own before/after recomputation (below) prices
++    // correctly with no special case here.
++    if (battleBankEnabled(project, mapper) && projectUsesPartyAttackAnim(project)) {
++      bankedFeatures.push({
++        label: "every party member's own attack animation",
++        strip: projectWithoutPartyAttackAnim
++      });
+     }
+     // docs/design-battle-animation.md §12.7.
+     if (battleBankEnabled(project, mapper) && projectUsesHitFeedback(project)) {
+diff --git a/main/build/generate.js b/main/build/generate.js
+index ac41ee0..2196fc9 100644
+--- a/main/build/generate.js
++++ b/main/build/generate.js
+@@ -80,7 +80,8 @@ import {
+   projectUsesMagicPower,
+   projectUsesMagicDefence,
+   projectUsesMonsterSpellList,
+-  projectUsesBattleAnimation,
++  projectUsesAnyBattleAnimation,
++  projectUsesPartyAttackAnim,
+   projectUsesHitFeedback,
+   projectUsesMiss,
+   MISS_OAM_TILES,
+@@ -2625,8 +2626,13 @@ export async function generateAssets({ dir, project, log = () => {} }) {
+   // §6/§7) -- true iff some actor's battle.spellIds has two or more entries.
+   const monsterSpellListEnabled = projectUsesMonsterSpellList(project);
+   // Battle-side animation (docs/design-battle-animation.md §3.5):
+-  // battle_fx_tick/arm/draw.
+-  const battleAnimEnabled = projectUsesBattleAnimation(project);
++  // battle_fx_tick/arm/draw. §16 prototype: broadened to
++  // projectUsesAnyBattleAnimation (actor/spell OR party) -- a party-only
++  // project still needs the whole bt_fx_* mechanism and the mon_anim_attack/
++  // spell_anim tables, since monster_turn_attack's own call to
++  // battle_fx_arm_attack is unconditional under this flag.
++  const partyAttackAnimEnabled = projectUsesPartyAttackAnim(project);
++  const battleAnimEnabled = projectUsesAnyBattleAnimation(project);
+   // Phase 2a hit feedback (docs/design-battle-animation.md §12.7):
+   // battle_hurt_arm/tick/attr_open/restore_slot, gated independently of
+   // BATTLE_ANIM_ENABLED.
+@@ -3207,6 +3213,11 @@ export async function generateAssets({ dir, project, log = () => {} }) {
+     // BATTLE_FX_OAM_ROOM is the compiled fit-check constant battle_fx_draw
+     // reads (engine/battleui.asm); BATTLE_COMBATANT_OAM_MAX is never emitted.
+     `BATTLE_ANIM_ENABLED = ${battleAnimEnabled ? 1 : 0}`,
++    // §16 prototype: the party branch inside battle_fx_arm_attack and the
++    // pc_anim_attack table, gated independently of BATTLE_ANIM_ENABLED's own
++    // (now broadened) predicate so a project with only monster/spell content
++    // never pays for either.
++    `PARTY_ATTACK_ANIM_ENABLED = ${partyAttackAnimEnabled ? 1 : 0}`,
+     `BATTLE_FX_OAM_ROOM = ${battleFxRoom}`,
+     // Phase 2a hit feedback (docs/design-battle-animation.md §12.7):
+     // battle_hurt_arm/tick/attr_open/restore_slot, and the blink-skip checks
+diff --git a/shared/project.js b/shared/project.js
+index 1080708..7bc7715 100644
+--- a/shared/project.js
++++ b/shared/project.js
+@@ -3421,6 +3421,18 @@ export function* animationReferenceLocations(project) {
+       describe: () => `Spell ${spellIndex} ("${spell.name}")'s cast animation`
+     };
+   }
++  // §16 prototype: a party member's own attack visual, the identical shape
++  // an actor's battle.attackAnim already takes above.
++  const party = project.party ?? [];
++  for (let memberIndex = 0; memberIndex < party.length; memberIndex++) {
++    const member = party[memberIndex];
++    yield {
++      get: () => member.attackAnim,
++      set: (id) => { member.attackAnim = id; },
++      battleOnly: true,
++      describe: () => `Party member ${memberIndex} ("${member.name}")'s attack animation`
++    };
++  }
+ }
+ 
+ /**
+@@ -4297,6 +4309,7 @@ export function createPartyMember(id, name = DEFAULT_MEMBER_NAME(id)) {
+     speed: 4,
+     acc: 200,
+     eva: 8,
++    attackAnim: null, // this member's own attack visual (§16 prototype)
+     spells: [] // { spellId, level } — learned on reaching that level
+   };
+ }
+@@ -5513,6 +5526,8 @@ function normalizePartyMember(raw, id, spellCount, maxLevel) {
+     speed: num('speed', 0, 255),
+     acc: num('acc', 0, 255),
+     eva: num('eva', 0, 255),
++    attackAnim:
++      Number.isInteger(raw?.attackAnim) && raw.attackAnim >= 0 && raw.attackAnim <= 255 ? raw.attackAnim : null,
+     spells: (Array.isArray(raw?.spells) ? raw.spells : [])
+       .filter((entry) => spellCount > 0 && Number(entry?.spellId) < spellCount)
+       .slice(0, RPG_LIMITS.spells)
+@@ -6451,6 +6466,43 @@ export function projectWithoutBattleAnimation(project) {
+   return clone;
+ }
+ 
++/**
++ * §16 prototype: whether any party member's own attack visual is authored --
++ * a third, independent authoring surface for the same bt_fx_* flipbook
++ * `projectUsesBattleAnimation` already answers for actors/spells. Kept
++ * separate rather than folded into that predicate: `battleShortfallAdvice`'s
++ * own monster/spell removal lever (`projectWithoutBattleAnimation`) must not
++ * be offered, nor its allowance charged, for a project that has authored
++ * nothing an actor/spell strip would ever touch.
++ */
++export function projectUsesPartyAttackAnim(project) {
++  return (project.party ?? []).some(
++    (member) => member.attackAnim !== null && member.attackAnim !== undefined
++  );
++}
++
++/**
++ * §16 prototype: the ONE combined predicate that decides whether the shared
++ * bt_fx_* engine mechanism (battle_fx_arm_at/tick/draw, the mon_anim_attack/
++ * spell_anim tables) must assemble at all -- true whenever EITHER an actor/
++ * spell OR a party member authors a reference. Kept distinct from the narrow
++ * `projectUsesBattleAnimation` because monster_turn_attack's own call to
++ * battle_fx_arm_attack is unconditional under BATTLE_ANIM_ENABLED: whenever
++ * that flag is live for ANY reason, a monster's turn can still reach
++ * mon_anim_attack, so that table (and spell_anim beside it) must be emitted
++ * whenever this combined predicate is true, not only when the narrow one is.
++ */
++export function projectUsesAnyBattleAnimation(project) {
++  return projectUsesBattleAnimation(project) || projectUsesPartyAttackAnim(project);
++}
++
++/** The battleShortfallAdvice removal candidate for a party member's own attack visual. */
++export function projectWithoutPartyAttackAnim(project) {
++  const clone = structuredClone(project);
++  for (const member of clone.party ?? []) member.attackAnim = null;
++  return clone;
++}
++
+ /**
+  * Phase 2a hit feedback (docs/design-battle-animation.md §12.7): whether
+  * `HIT_FEEDBACK_ENABLED` should be live. A `gameType === 'rpg'` check is
 ```
