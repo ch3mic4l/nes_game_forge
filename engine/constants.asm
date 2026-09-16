@@ -489,6 +489,17 @@ BT_HURT_FRAMES = 20
 bt_miss_slot = bt_hurt_left+1
 bt_miss_left = bt_miss_slot+1
 BT_MISS_FRAMES = 30
+
+; §16 (docs/design-battle-animation.md, fix round 1): the acting party
+; member's own forward step, held by BP_WALK -- counts UP from 0 to
+; WALK_TICKS, doubling as the draw-time X-offset input directly (2 pixels
+; per tick, the asl in battle_sprite_pc/battle_fx_draw, so the total
+; distance is WALK_TICKS * 2 = 16 pixels; no separate distance constant,
+; since nothing else would ever read one independently of that shift).
+; Chained after bt_miss_left, unconditionally -- true for every RPG project,
+; not merely one authoring an attackAnim, since the walk itself has no gate.
+bt_walk_step = bt_miss_left+1
+WALK_TICKS = 8
 ; draw_battle_attr's own ground-row fill (engine/battle.asm) -- rows 1-4 of
 ; the attribute table get this value before any live monster's own mon_attr
 ; is written over the top. This is what a dead monster's own cell must be
@@ -932,6 +943,12 @@ BP_VICTORY  = 8
 BP_DEFEAT   = 9
 BP_FLEE     = 10
 BP_DONE     = 11            ; leave the battle on the next tick
+; §16 (docs/design-battle-animation.md, fix round 1): a party member's own
+; step forward, before BP_ACT resolves either a physical Attack or a spell
+; cast -- held for WALK_TICKS the same way BP_MESSAGE holds for bt_timer
+; ticks. Unconditional: every RPG project's own battle bank gets this phase,
+; not merely one that authors an attackAnim.
+BP_WALK     = 12
 
 ; What the trampoline is being asked for. One entry point, because every extra
 ; one is another place the bank could be left switched in.

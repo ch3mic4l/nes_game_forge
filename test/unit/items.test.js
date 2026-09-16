@@ -556,7 +556,14 @@ test('a project with no items and no Save is byte-identical to the pre-phase-4b 
 // every operand's own encoding changed (2 bytes instead of 3 for a surviving
 // zero-page access), reflowing the whole ROM's contents without changing its
 // size.
-const PINNED_RPG_BASELINE_HASH = '6e5db72887cd78fceaa51ce3e360bb5fd878ad871e586bb4a4fe2af12048d637';
+//
+// Re-pinned again (§16, docs/design-battle-animation.md, fix round 1): the
+// party-caster walk forward (BP_WALK) is unconditional code in the RPG
+// battle bank, per Chris's own "always on for RPGs" answer -- present even
+// on this items-free, spell-free baseline. Size still unchanged (still
+// 147472): the walk added no new PRG bank, only spare room already inside
+// the existing battle-region bank.
+const PINNED_RPG_BASELINE_HASH = 'f8ba3cd039e5e16823495ef09c03043d524e79c2e4f95e7761e2440868110392';
 const PINNED_RPG_BASELINE_SIZE = 147472;
 
 test('an RPG with no items and no Save is byte-identical to the pre-round-4 master build', async (t) => {

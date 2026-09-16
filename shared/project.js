@@ -3421,6 +3421,16 @@ export function* animationReferenceLocations(project) {
       describe: () => `Spell ${spellIndex} ("${spell.name}")'s cast animation`
     };
   }
+  const party = project.party ?? [];
+  for (let memberIndex = 0; memberIndex < party.length; memberIndex++) {
+    const member = party[memberIndex];
+    yield {
+      get: () => member.attackAnim,
+      set: (id) => { member.attackAnim = id; },
+      battleOnly: true,
+      describe: () => `Party member ${memberIndex} ("${member.name}")'s attack animation`
+    };
+  }
 }
 
 /**
@@ -4297,6 +4307,7 @@ export function createPartyMember(id, name = DEFAULT_MEMBER_NAME(id)) {
     speed: 4,
     acc: 200,
     eva: 8,
+    attackAnim: null, // this member's flipbook on a physical attack (§16)
     spells: [] // { spellId, level } — learned on reaching that level
   };
 }
@@ -5513,6 +5524,13 @@ function normalizePartyMember(raw, id, spellCount, maxLevel) {
     speed: num('speed', 0, 255),
     acc: num('acc', 0, 255),
     eva: num('eva', 0, 255),
+    // Not validated against project.sprites.animations.length here, the
+    // identical reason actor.battle.attackAnim isn't either -- the generator
+    // drops a stale id to NO_ANIM (pc_anim_attack, main/build/battletables.js).
+    attackAnim:
+      Number.isInteger(raw?.attackAnim) && raw.attackAnim >= 0 && raw.attackAnim <= 255
+        ? raw.attackAnim
+        : null,
     spells: (Array.isArray(raw?.spells) ? raw.spells : [])
       .filter((entry) => spellCount > 0 && Number(entry?.spellId) < spellCount)
       .slice(0, RPG_LIMITS.spells)
@@ -6441,7 +6459,9 @@ export function projectUsesBattleAnimation(project) {
   );
 }
 
-/** The battleShortfallAdvice removal candidate for the battle-anim slice. */
+/** The battleShortfallAdvice removal candidate for the battle-anim slice --
+ * monster and spell references only; a party member's own attackAnim is a
+ * separate, independent lever (projectWithoutPartyAttackAnim, below). */
 export function projectWithoutBattleAnimation(project) {
   const clone = structuredClone(project);
   for (const spell of clone.spells ?? []) spell.anim = null;
@@ -6449,6 +6469,41 @@ export function projectWithoutBattleAnimation(project) {
     if (actor.battle) actor.battle.attackAnim = null;
   }
   return clone;
+}
+
+/**
+ * §16 (docs/design-battle-animation.md): whether any party member's own
+ * `attackAnim` is authored -- the same shape projectUsesBattleAnimation
+ * takes for actor/spell references, kept independent since a party member's
+ * own attack visual is a separate authoring surface from a monster's or a
+ * spell's.
+ */
+export function projectUsesPartyAttackAnim(project) {
+  return (project.party ?? []).some((member) => member.attackAnim !== null && member.attackAnim !== undefined);
+}
+
+/** The battleShortfallAdvice removal candidate for a party member's own attackAnim. */
+export function projectWithoutPartyAttackAnim(project) {
+  const clone = structuredClone(project);
+  for (const member of clone.party ?? []) member.attackAnim = null;
+  return clone;
+}
+
+/**
+ * §16: the broadened OR that gates BATTLE_ANIM_ENABLED and the shared
+ * mon_anim_attack/spell_anim table emission. Needed because
+ * battle_fx_arm_attack's own monster branch, and cast_spell's fallback call
+ * to it, are reached unconditionally whenever BATTLE_ANIM_ENABLED is live at
+ * all, for ANY reason -- including a party-only project whose only reference
+ * is a party member's own attackAnim (armed directly in attack_target, never
+ * through battle_fx_arm_attack, but still needing battle_fx_arm_at/tick/draw
+ * to exist). Gating those on the narrow projectUsesBattleAnimation alone
+ * would leave a party-only build's battle_fx_arm_attack referencing a
+ * mon_anim_attack table that does not exist -- an undefined-symbol assembly
+ * failure, not a byte-count error.
+ */
+export function projectUsesAnyBattleAnimation(project) {
+  return projectUsesBattleAnimation(project) || projectUsesPartyAttackAnim(project);
 }
 
 /**

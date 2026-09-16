@@ -92,13 +92,18 @@ const hasNesasm = spawnSync('nesasm', [], { stdio: 'ignore' }).error?.code !== '
 // every operand's own encoding changed (2 bytes instead of 3 for a
 // surviving zero-page access), reflowing every fixture's ROM without
 // changing any of their sizes.
+// Re-pinned again (§16, docs/design-battle-animation.md, fix round 1): the
+// party-caster walk forward (BP_WALK) is unconditional code in the RPG
+// battle bank, per Chris's own "always on for RPGs" answer -- both RPG
+// fixtures move; the four action fixtures (sample, sample-mmc1, sample-mmc3,
+// sample-u512), which never reach the battle region at all, stay unchanged.
 const BASELINES = {
   sample: '442565369e9da7011901b459317adb4d3c07d9c24fd8f388bcf92b731829e846',
-  'sample-rpg': '9c679d1a231a79e21ace5327e4ba69f8d78bf7ef772ab080b41bcaa3445f89c2',
+  'sample-rpg': '6944a5a3c80cfe15ab8f044f0c8520b53351d649195f41f2b6ef0a3c07525623',
   'sample-mmc1': '54150a3dc8bc958c56a08b7105423046c8d2503e2c9986210be61387109e9833',
   'sample-mmc3': '7069a6341ae75c5ed1187981a8a1486cf1e61c4ccb3cdc6b208acec5017362ec',
   'sample-u512': '44b4d10952d4ce7da7c7113f8bf186fa19b5558ad1cc12caf7a1ee8472547525',
-  'sample-rpg-mmc1': '2d8ad7deb0d24f1ff370d21890e2b0d315dec5a14ef2a1720aeb1427cb5b9a62'
+  'sample-rpg-mmc1': 'bd51f3d6be9e5459754afcf9b5620a794225e57a33339f7c8b4e28de7255021d'
 };
 
 for (const name of Object.keys(BASELINES)) {

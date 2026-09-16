@@ -54,6 +54,9 @@ import {
   projectWithoutNameToken,
   projectWithoutMonsterSpellList,
   projectUsesBattleAnimation,
+  projectUsesAnyBattleAnimation,
+  projectUsesPartyAttackAnim,
+  projectWithoutPartyAttackAnim,
   isPlayableBattleAnimation,
   projectWithoutBattleAnimation,
   projectUsesHitFeedback,
@@ -258,8 +261,12 @@ export function battleTables(project, battleStrings = BATTLE_STRINGS) {
   // depth beside validateProject's own refusal (shared/project.js), since
   // buildProject compiles whatever project is in hand, not one that has
   // necessarily passed validation. Same stub-avoidance rule mon_mag/mon_mdef
-  // use above -- emitted only when projectUsesBattleAnimation is true.
-  if (projectUsesBattleAnimation(project)) {
+  // use above -- emitted whenever projectUsesAnyBattleAnimation is true
+  // (§16, fix round 1: broadened from the narrow projectUsesBattleAnimation,
+  // since battle_fx_arm_attack's own monster branch, and cast_spell's
+  // fallback call to it, are reached whenever BATTLE_ANIM_ENABLED is live
+  // for ANY reason, including a party-only project).
+  if (projectUsesAnyBattleAnimation(project)) {
     chunks.push(
       `mon_anim_attack:\n${dbRows(battle((b) => validAnimId(b.attackAnim, project)))}`
     );
@@ -337,7 +344,7 @@ export function battleTables(project, battleStrings = BATTLE_STRINGS) {
   // all-target spell (cast_spell, engine/battleturn.asm, decides which).
   // NO_ANIM when unset or stale/out of range (defense in depth, the same
   // rule as mon_anim_attack above). Same stub-avoidance rule.
-  if (projectUsesBattleAnimation(project)) {
+  if (projectUsesAnyBattleAnimation(project)) {
     chunks.push(`spell_anim:\n${dbRows(spells.map((spell) => validAnimId(spell.anim, project)))}`);
   }
 
@@ -351,6 +358,16 @@ export function battleTables(project, battleStrings = BATTLE_STRINGS) {
   chunks.push(`pc_speed:\n${dbRows(party.map((member) => member.speed))}`);
   chunks.push(`pc_acc:\n${dbRows(party.map((member) => member.acc))}`);
   chunks.push(`pc_eva:\n${dbRows(party.map((member) => member.eva))}`);
+  // §16 (docs/design-battle-animation.md, fix round 1): which animation this
+  // party member plays on a physical swing, or -- with no spell.anim of its
+  // own authored -- shows nothing extra beyond the walk (attack_target,
+  // engine/battleturn.asm). NO_ANIM when unset or stale/out of range, the
+  // identical defense-in-depth mon_anim_attack/spell_anim above already use.
+  // Emitted only when projectUsesPartyAttackAnim is true -- the independent,
+  // narrower gate attack_target's own new arm block reads.
+  if (projectUsesPartyAttackAnim(project)) {
+    chunks.push(`pc_anim_attack:\n${dbRows(party.map((member) => validAnimId(member.attackAnim, project)))}`);
+  }
   chunks.push(`pc_name:\n${dbRows(party.flatMap((member) => nameTiles(member.name)), NAME_LIMIT)}`);
 
   // One row of maxLevel entries per member, so `member * MAX_LEVEL + level - 1`
@@ -605,7 +622,29 @@ export function checkBattleTables(project) {
 // { 30: 3783, 1: 3783, 4: 3823 } -- the MMC3-vs-other-two SPLIT_ENABLED gap
 // narrows from 46 to 40 bytes (3823 - 3783 = 40); bankedbytes.test.js's own
 // asserted constant and CLAUDE.md's own prose both need the same update.
-export const BASE_BATTLE_CODE_BYTES_BY_MAPPER = { 30: 3783, 1: 3783, 4: 3823 };
+//
+// §16 (docs/design-battle-animation.md, fix round 1): +56 on every board,
+// folded straight in rather than a conditional allowance -- unlike every
+// other term this file names, the party-caster walk forward (BP_WALK,
+// battle_walk_wait, and the two BP_WALK routing insertions in
+// spell_chosen_all/battle_target) is UNCONDITIONAL for every RPG project,
+// per Chris's own "always on for RPGs" answer (no project.rpg field, no
+// PARTY_ATTACK_ANIM_ENABLED-style flag) -- so this is not the "folded a
+// conditional feature into a base" mistake CLAUDE.md's own kernel-budget
+// rule warns against; there is no author who does not pay it, the identical
+// reasoning BE_RESTORE's own +18 and the join-guard's own +5 above already
+// establish for unconditional battle-bank growth. Measured directly, with
+// items stripped out of the comparison the same way the join-guard's own
+// paragraph above isolates its delta (sample-rpg carries a live item, whose
+// own ITEM_LIST_FILTER_BATTLE_ALLOWANCE = 17 code bytes is a SEPARATE,
+// already-existing term battleRegionBytes adds on top of this base, not
+// part of it): a real "off" build's own code usage rose from 3800/3800/3840
+// (base 3783/3783/3823 + the pre-existing 17-byte item term) to
+// 3856/3856/3896 -- 3856 - 17 = 3839, 3896 - 17 = 3879, the identical +56
+// on every board since nothing in the walk branches on SPLIT_ENABLED or
+// anything else mapper-specific -- battle_sprite_pc's and battle_fx_draw's
+// own draw-time offset math is sprite-side only, no CHR-bank interaction.
+export const BASE_BATTLE_CODE_BYTES_BY_MAPPER = { 30: 3839, 1: 3839, 4: 3879 };
 
 // Phase 4c round 3, finding 6 (phase4-design.md §9), corrected round 3b
 // (review K1): the two-menu-consistency filter (build_item_list's kind/
@@ -701,13 +740,36 @@ export const MONSTER_SPELL_LIST_BATTLE_ALLOWANCE = 125;
 
 // Battle-side animation (docs/design-battle-animation.md §3.5, Appendix A):
 // battle_fx_arm_at/battle_fx_arm_attack/battle_fx_tick/battle_fx_draw plus
-// the arming call-site insertions in monster_turn_attack and cast_spell.
-// Measured flat across all three RPG-capable boards. Gated on
-// projectUsesBattleAnimation, with NO `&& banked` guard -- the identical
-// shape MONSTER_SPELL_LIST_BATTLE_ALLOWANCE above uses, since
-// projectUsesBattleAnimation alone is what the table emitters above gate on
-// too.
-export const BATTLE_ANIM_BATTLE_ALLOWANCE = 243;
+// the arming call-site insertions in monster_turn_attack and cast_spell,
+// PLUS (§16, fix round 2) battle_fx_draw's own follow-the-walker snippet --
+// 243 (the pre-existing shared machinery) + 21 (the follow snippet) = 264.
+// Consolidated into ONE constant, fix round 2 (review round 2, P2-3):
+// amendment round 1/fix round 1 kept the follow snippet as a separately
+// NAMED `WALK_FX_FOLLOW_BATTLE_ALLOWANCE`, but since fix round 1 made the
+// walk unconditional, that snippet's only remaining gate is
+// projectUsesAnyBattleAnimation -- the IDENTICAL single predicate this
+// constant already uses -- so no build variant can ever isolate 21 from 243
+// by delta measurement; keeping them as two names bought no independently
+// checkable claim, only the appearance of one (an opposite drift in the two
+// halves that kept their SUM at 264 would have passed the old two-name
+// equality test undetected). One gate, one measured, equality-checkable
+// allowance. Gated on projectUsesAnyBattleAnimation (§16, fix round 1:
+// broadened from the narrow projectUsesBattleAnimation, since a party-only
+// project needs the WHOLE shared base mechanism too), with NO `&& banked`
+// guard -- the identical shape MONSTER_SPELL_LIST_BATTLE_ALLOWANCE above
+// uses. Measured flat across all three RPG-capable boards.
+export const BATTLE_ANIM_BATTLE_ALLOWANCE = 264;
+
+// §16 (docs/design-battle-animation.md, fix round 1): attack_target's own
+// direct arm of a party member's attackAnim (ldx/lda pc_anim_attack,x/
+// ldy/jsr battle_fx_arm_at) -- battle_fx_arm_attack itself is UNTOUCHED,
+// monster-only, exactly as it already was before this slice existed (P2-4:
+// the reviewer's own leaner alternative to growing that shared routine,
+// chosen and measured this round). Independent of PARTY_CAST_WALK -- there
+// is no such flag any more, since the walk is unconditional for every RPG
+// (Chris's own "always on for RPGs" answer). Gated on
+// projectUsesPartyAttackAnim, flat across all three RPG-capable boards.
+export const PARTY_ATTACK_ANIM_BATTLE_ALLOWANCE = 10;
 
 // Phase 2a hit feedback (docs/design-battle-animation.md §12.7):
 // battle_hurt_arm/battle_hurt_attr_open/battle_hurt_tick/
@@ -1008,7 +1070,8 @@ export function battleRegionBytes(project, mapper) {
     (projectUsesMagicPower(project) ? MAGIC_POWER_BATTLE_ALLOWANCE : 0) +
     (projectUsesMagicDefence(project) ? MAGIC_DEFENCE_BATTLE_ALLOWANCE : 0) +
     (projectUsesMonsterSpellList(project) ? MONSTER_SPELL_LIST_BATTLE_ALLOWANCE : 0) +
-    (projectUsesBattleAnimation(project) ? BATTLE_ANIM_BATTLE_ALLOWANCE : 0) +
+    (projectUsesAnyBattleAnimation(project) ? BATTLE_ANIM_BATTLE_ALLOWANCE : 0) +
+    (projectUsesPartyAttackAnim(project) ? PARTY_ATTACK_ANIM_BATTLE_ALLOWANCE : 0) +
     (projectUsesHitFeedback(project) ? HIT_FEEDBACK_BATTLE_ALLOWANCE : 0) +
     (projectUsesMiss(project) ? MISS_BATTLE_ALLOWANCE : 0)
   );
@@ -1159,9 +1222,31 @@ export function battleShortfallAdvice(project, mapper, deficit, { alternatives =
     if (battleBankEnabled(project, mapper) && projectUsesMonsterSpellList(project)) {
       bankedFeatures.push({ label: "every monster's extra spells", strip: projectWithoutMonsterSpellList });
     }
-    // docs/design-battle-animation.md §3.5.
+    // docs/design-battle-animation.md §3.5. Renamed from the pre-existing
+    // 'every battle animation reference' (fix round 4, restoring a rename
+    // accepted in the ORIGINAL §16 review cycle and lost in amendment fix
+    // round 1's own rebuild): projectWithoutBattleAnimation strips only
+    // actor and spell references, never a party member's own, so the old
+    // label overpromised once a party attackAnim authoring surface existed.
     if (battleBankEnabled(project, mapper) && projectUsesBattleAnimation(project)) {
-      bankedFeatures.push({ label: 'every battle animation reference', strip: projectWithoutBattleAnimation });
+      bankedFeatures.push({
+        label: 'every monster attack or spell animation reference',
+        strip: projectWithoutBattleAnimation
+      });
+    }
+    // §16 (docs/design-battle-animation.md, fix round 1): a party member's
+    // own attackAnim is a separate, independent lever from the monster/spell
+    // one above -- stripping it alone frees PARTY_ATTACK_ANIM_BATTLE_
+    // ALLOWANCE, and (if no monster/spell reference remains either) the
+    // whole shared BATTLE_ANIM_BATTLE_ALLOWANCE base too (264, fix round 2's
+    // own consolidated figure), via battleRegionBytes' own before/after
+    // recomputation -- no separate lever needed for the walk itself, since
+    // the walk cannot be stripped at all (it is unconditional).
+    if (battleBankEnabled(project, mapper) && projectUsesPartyAttackAnim(project)) {
+      bankedFeatures.push({
+        label: "every party member's own attack animation",
+        strip: projectWithoutPartyAttackAnim
+      });
     }
     // docs/design-battle-animation.md §12.7.
     if (battleBankEnabled(project, mapper) && projectUsesHitFeedback(project)) {

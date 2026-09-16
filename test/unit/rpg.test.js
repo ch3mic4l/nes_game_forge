@@ -15,7 +15,7 @@ import NES from '../../renderer/emulator/core/nes.js';
 import { Emulator, BUTTON } from '../../renderer/emulator/runcontrol.js';
 import { loadProject, saveProject } from '../../main/project-io.js';
 import { buildProject } from '../../main/build/pipeline.js';
-import { createProject, NO_MEMBER, createSpell, battleCombatantOamMax, MAX_OAM_ENTRIES, MISS_OAM_TILES, normalizeProject, battleFxOamRoom } from '../../shared/project.js';
+import { createProject, createPartyMember, NO_MEMBER, createSpell, battleCombatantOamMax, MAX_OAM_ENTRIES, MISS_OAM_TILES, normalizeProject, battleFxOamRoom } from '../../shared/project.js';
 import { armBattleFx, tickBattleFx, drawnBattleFx } from '../../renderer/widgets/battlefx.js';
 import { resolveMapper } from '../../shared/cartridge.js';
 import { checkCapacity } from '../../main/build/generate.js';
@@ -60,6 +60,7 @@ const ITEMS_USED = 0x39;
 const BOX_STATE = 0x40;
 const BT_PHASE = 0x53;
 const BT_ACTOR = 0x54;
+const BT_WALK_STEP = 0xae; // engine/constants.asm -- chained after bt_miss_left, unconditionally
 const BT_SEL = 0x55;
 const BT_TARGET = 0x56;
 const BT_DMG_LO = 0x58;
@@ -70,6 +71,7 @@ const BT_MON_COL = 4; // engine/constants.asm
 const GOLD_LO = 0x63;
 const PARTY_SIZE = 0x65;
 const BT_LEN = 0x6b;
+const BT_CALL = 0x67; // engine/constants.asm -- which BE_* entry point the trampoline is jumping to
 const BT_ARG = 0x6d;
 const VRAM_LEN = 0x3c;
 const MSG_ROW = 21; // engine/constants.asm -- the message area and the lists share these rows
@@ -120,12 +122,16 @@ const BP_SPELLS = 3;
 const BP_ITEMS = 4;
 const BP_MESSAGE = 6;
 const BP_DONE = 11;
+const BP_WALK = 12; // engine/constants.asm -- §16, fix round 1: the party caster's own step forward
+const WALK_TICKS = 8; // engine/constants.asm -- §16, fix round 1
 
 const BC_FIGHT = 0;
 const BC_MAGIC = 1;
 const BC_ITEM = 2;
 const BC_RUN = 3;
 const NUM_COMMANDS = 4;
+
+const BE_JOIN = 2; // engine/constants.asm -- recruit the party member in bt_arg
 
 const A = 0;
 const B = 1;
@@ -275,6 +281,29 @@ function findBossSlot(nes, actorId) {
 function waitForMenu(nes, budget = 900) {
   for (let i = 0; i < budget && nes.cpu.mem[BT_PHASE] !== BP_MENU; i++) nes.frame();
   assert.equal(nes.cpu.mem[BT_PHASE], BP_MENU, 'the menu never came round');
+}
+
+/** §16 (docs/design-battle-animation.md, fix round 1): a party caster's own
+ *  step forward now sits between confirming a physical Attack's target or an
+ *  all-target spell cast, and BP_ACT actually resolving it -- WALK_TICKS
+ *  frames of BP_WALK, plus one more for the phase transition itself, before
+ *  battle_act ever runs. Every test that used to assert on BP_ACT/BP_MESSAGE
+ *  the frame right after confirming a FIGHT target or a MAGIC cast now needs
+ *  to run past BP_WALK first, the identical "drive past a mechanism every
+ *  battle-driving test must get through before its own assertions can run"
+ *  shape bootPastNaming already established for the naming grid. */
+function stepPastWalk(nes, budget = WALK_TICKS + 4) {
+  for (let i = 0; i < budget && nes.cpu.mem[BT_PHASE] === BP_WALK; i++) nes.frame();
+}
+
+/** The identical shape as stepPastWalk, for a test driving battle_tick
+ *  directly through callRoutine (an isolated-routine harness, no real input
+ *  polling) rather than nes.frame()'s own button/PPU-driven loop. Lands on
+ *  BP_ACT, the tick battle_walk_wait's own bcs branch sets it on -- one
+ *  more real tick (the caller's own, not this helper's) is what actually
+ *  runs battle_act and moves past it. */
+function callThroughWalk(nes, battleTickAddr, budget = WALK_TICKS + 4) {
+  for (let i = 0; i < budget && nes.cpu.mem[BT_PHASE] === BP_WALK; i++) callRoutine(nes, battleTickAddr);
 }
 
 /**
@@ -3611,17 +3640,19 @@ test('killing a whole formation in one tick queues at most one wipe row a frame,
     return originalWrite(address, value);
   };
 
-  nes.buttonDown(1, A); // Ember, scope "all" -- resolves immediately, killing all four
+  nes.buttonDown(1, A); // Ember, scope "all" -- walks forward, THEN resolves, killing all four
   current = 0;
   nes.frame();
   writesPerFrame.push(current);
   nes.buttonUp(1, A);
-  // Just long enough to cover the cast's own message and the full wipe
-  // drain (measured at 16 frames for four monsters' four rows each) --
-  // deliberately short of MSG_HOLD (45 frames), past which the message
-  // auto-advances on its own and queues unrelated post-battle traffic
-  // (the victory line, and so on) that has nothing to do with this fix.
-  for (let i = 0; i < 25; i++) {
+  // §16 (docs/design-battle-animation.md, fix round 1): the walk (WALK_TICKS
+  // frames of BP_WALK, plus one more for the phase transition) now sits
+  // between this A-press and the cast actually resolving -- push the budget
+  // out by that much on top of the original "cast's own message and the
+  // full wipe drain" window (still deliberately short of MSG_HOLD, 45
+  // frames, past which the message auto-advances and queues unrelated
+  // post-battle traffic that has nothing to do with this fix).
+  for (let i = 0; i < 25 + WALK_TICKS + 4; i++) {
     current = 0;
     nes.frame();
     writesPerFrame.push(current);
@@ -4219,12 +4250,25 @@ test('a combatant poisoned and burned on its own turn takes both ticks, in order
   const actorAtStart = nes.cpu.mem[BT_ACTOR];
   chooseCommand(nes, BC_FIGHT);
   assert.equal(nes.cpu.mem[BT_PHASE], BP_TARGET, 'FIGHT should ask who to hit');
-  tap(nes, A, 5); // confirm the target -- the attack lands and its own line shows
+  tap(nes, A, 5); // confirm the target -- walks forward, then the attack lands and its own line shows
+  stepPastWalk(nes);
+  nes.frame(); // the tick that lands on BP_ACT does not itself run battle_act
   assert.equal(nes.cpu.mem[BT_PHASE], BP_MESSAGE, "the attack's own line should be up");
+  // §16 (docs/design-battle-animation.md, fix round 2, P2-4): the walk offset
+  // is still held at its full, stepped-forward value while the action's own
+  // message is up -- the reset only fires at message DISMISSAL
+  // (battle_message_done), not before.
+  assert.equal(nes.cpu.mem[BT_WALK_STEP], WALK_TICKS, "the actor's own walk offset should still be at its full, stepped-forward value with the attack's own line up");
   const startHp = nes.cpu.mem[PC_HP];
 
   tap(nes, A, 5); // dismiss the attack's own line -- poison should go first, lowest bit
   assert.equal(nes.cpu.mem[BT_PHASE], BP_MESSAGE, 'a status tick should have raised its own line');
+  // §16 (fix round 2, P2-4): dismissing the action's own message resets the
+  // walk offset BEFORE the status tick's own line ever shows -- every status
+  // line is drawn at the actor's ORIGINAL position, never the walked-forward
+  // one (§16.3a/§16.3b, corrected from amendment round 1's own wrong claim
+  // that it stayed stepped-forward through status ticks too).
+  assert.equal(nes.cpu.mem[BT_WALK_STEP], 0, "the walk offset must already be reset before poison's own line shows");
   assert.equal(startHp - nes.cpu.mem[PC_HP], POISON_DMG, "the first tick should be poison's own amount");
   assert.deepEqual(
     nametableRow(nes, MSG_ROW + 1, MSG_COL, 9),
@@ -4234,6 +4278,7 @@ test('a combatant poisoned and burned on its own turn takes both ticks, in order
 
   tap(nes, A, 5); // dismiss the poison tick -- burn should follow, on the same turn
   assert.equal(nes.cpu.mem[BT_PHASE], BP_MESSAGE, 'the second status tick should have raised its own line');
+  assert.equal(nes.cpu.mem[BT_WALK_STEP], 0, "the walk offset must stay reset before burn's own line shows too");
   assert.equal(startHp - nes.cpu.mem[PC_HP], POISON_DMG + BURN_DMG, "the second tick should add burn's own amount, not repeat poison's");
   assert.deepEqual(
     nametableRow(nes, MSG_ROW + 1, MSG_COL, 9),
@@ -4253,6 +4298,151 @@ test('a combatant poisoned and burned on its own turn takes both ticks, in order
     STATUS_POISON | STATUS_BURN,
     'a tick must not cure the status it just bit from -- only a heal or a potion does'
   );
+});
+
+// §16.10 row "A LETHAL status tick (poison or burn) that kills the ACTING
+// party member" (design fix round 4, review round 4, P2-2). Distinct from
+// the dual-status test above, which is non-lethal on both ticks: status acts
+// on bt_actor, never bt_target (poison_tick/burn_tick copy bt_actor INTO
+// bt_target before apply_damage, engine/battleturn.asm), so a status tick
+// that is actually lethal to the ACTOR takes a different code path --
+// apply_damage's own party-side saturating subtract (engine/battleturn.asm)
+// has no "this combatant just died" branch of its own the way apply_damage_mon
+// does, so the KO is discovered later, when the turn tries to advance
+// (check_over, via battle_take_turn) -- not synchronously inside apply_damage
+// itself. Wrong implementation this catches: a walk reset that only fires on
+// a survived tick (leaving bt_walk_step nonzero because a KO branch returns
+// early), a status bit that keeps ticking a dead actor on a later turn, or a
+// status-line-then-KO message ordering that differs from a physical attack's
+// own already-tested KO ordering.
+test('§16 test 4: a LETHAL poison tick on the acting party member resets the walk, kills cleanly, and reaches defeat with no further ticks', {
+  skip: needsSample
+}, async (t) => {
+  const built = await buildVariantFull(t, 'lethal-status', (project) => {
+    project.maps[0].encounters = { rate: 0, actorIds: [] };
+    // Never hits back, so the monster cannot itself finish the party member
+    // off -- only the status tick under test may.
+    project.sprites.actors[0].battle = { ...project.sprites.actors[0].battle, acc: 0 };
+  });
+  // A pure symbol-table lookup (game.fns text), never an emulator call --
+  // the same shape 'apply_damage does not touch an already-dead monster
+  // slot a second time' already uses, not selectBattleBank's own
+  // isolated-callRoutine bank switch, which would corrupt the real,
+  // already-switched-in battle bank this test drives through frame-by-frame
+  // play.
+  const symbols = fs.readFileSync(built.symbolPath, 'utf8');
+  const addrOfLabel = (label) => {
+    const m = symbols.match(new RegExp(`^${label}\\s*=\\s*\\$([0-9A-Fa-f]+)`, 'm'));
+    assert.ok(m, `${label} should be a named symbol in game.fns`);
+    return parseInt(m[1], 16);
+  };
+  const poisonTickAddr = addrOfLabel('poison_tick');
+
+  const nes = bootPastNaming(built.romPath);
+  walkTo(nes, 160, 176);
+  walkTo(nes, 176, 176, 200);
+  assert.equal(nes.cpu.mem[GAME_STATE], ST_BATTLE);
+  waitForMenu(nes);
+
+  // Poison alone (not burn too), HP at exactly the tick's own damage -- the
+  // acting party member is healthy going in, and the monster is healthy
+  // too (this is about a physical Attack landing on a HEALTHY target, not
+  // the other way around).
+  nes.cpu.mem[PC_STATUS] = STATUS_POISON;
+  nes.cpu.mem[PC_HP] = POISON_DMG;
+  assert.ok(nes.cpu.mem[MON_HP] > 0, 'sanity: the monster must be healthy going in');
+
+  chooseCommand(nes, BC_FIGHT);
+  assert.equal(nes.cpu.mem[BT_PHASE], BP_TARGET, 'FIGHT should ask who to hit');
+  tap(nes, A, 5); // confirm the target -- walks forward, then the attack lands and its own line shows
+  stepPastWalk(nes);
+  nes.frame(); // the tick that lands on BP_ACT does not itself run battle_act
+  assert.equal(nes.cpu.mem[BT_PHASE], BP_MESSAGE, "the attack's own line should be up");
+  assert.equal(nes.cpu.mem[BT_WALK_STEP], WALK_TICKS, "the actor's own walk offset should still be at its full, stepped-forward value with the attack's own line up");
+  assert.equal(nes.cpu.mem[PC_HP], POISON_DMG, 'the attack itself must not have touched the acting member -- the monster never hits back (acc: 0)');
+
+  // Review round 1, P1 finding 1: a read taken only AFTER dismissing the
+  // attack's own message cannot tell "reset before poison's own damage"
+  // apart from "reset after it, right before returning" -- both leave the
+  // same post-dismissal snapshot. A temporary nes.cpu.emulate() wrapper
+  // (the identical technique this file already uses at the print_num/
+  // battle_dispatch sampling points above) samples bt_actor/pc_hp/
+  // bt_walk_step the INSTANT execution reaches poison_tick's own first
+  // instruction -- proving the reset already happened before the tick's own
+  // damage, not merely by the time the dismissing button press returns to
+  // JS. Left installed through the rest of the test (including the defeat
+  // poll below) to count every entry into poison_tick, proving none of them
+  // belong to the now-dead actor -- the absence of a second poison LINE
+  // alone cannot distinguish "no second tick ran" from "a second tick ran
+  // but its own message never got a chance to show" (e.g. a defeat handler
+  // racing ahead of it). Restored in `finally`, whether or not an
+  // assertion below throws first.
+  let entrySnapshot = null;
+  let entryCount = 0;
+  const originalEmulate = nes.cpu.emulate.bind(nes.cpu);
+  nes.cpu.emulate = () => {
+    if ((nes.cpu.REG_PC + 1) === poisonTickAddr) {
+      entryCount++;
+      if (entrySnapshot === null) {
+        entrySnapshot = {
+          actor: nes.cpu.mem[BT_ACTOR],
+          hp: nes.cpu.mem[PC_HP],
+          walkStep: nes.cpu.mem[BT_WALK_STEP]
+        };
+      }
+    }
+    return originalEmulate();
+  };
+
+  try {
+    // Dismissing the attack's own message resets the walk BEFORE the status
+    // dispatch runs (battle_message_done's own unconditional reset, ahead of
+    // clear_message and everything after it), and poison_tick then runs
+    // synchronously within this same dismissal.
+    tap(nes, A, 5);
+    assert.ok(entrySnapshot, 'poison_tick must actually have been observed at entry -- an observer that never fires proves nothing');
+    assert.equal(entrySnapshot.actor, 0, 'poison_tick must have been entered with bt_actor naming the poisoned party member (slot 0)');
+    assert.equal(entrySnapshot.hp, POISON_DMG, 'at ENTRY to poison_tick, the acting member’s own HP must still be the pre-tick amount -- the damage has not landed yet');
+    assert.equal(entrySnapshot.walkStep, 0, 'at ENTRY to poison_tick, bt_walk_step must already read 0 -- the reset genuinely happens BEFORE the tick’s own damage, not merely by the time the button press returns');
+
+    assert.equal(nes.cpu.mem[BT_PHASE], BP_MESSAGE, "poison's own lethal tick should have raised its own line");
+    assert.equal(nes.cpu.mem[BT_WALK_STEP], 0, 'the walk offset must still read 0 after the lethal tick, exactly as it is for a survived one');
+    assert.equal(nes.cpu.mem[PC_HP], 0, 'the lethal tick must have saturated HP at 0, never wrapped or gone negative');
+    assert.deepEqual(
+      nametableRow(nes, MSG_ROW + 1, MSG_COL, 9),
+      battleStringTiles('poisoned'),
+      'the lethal tick must still show its own correct status line, not a generic hit message'
+    );
+
+    // Dismissing the (now-lethal) poison line: battle_status_dispatch's own
+    // combatant_alive check finds the actor dead and skips straight to
+    // battle_message_advance -- no further tick, no further status line, the
+    // turn simply advances (BP_NEXT), and check_over (reached once the turn
+    // engine tries to hand the next turn to anyone) finds no living party
+    // member and reaches BP_DEFEAT.
+    tap(nes, A, 5);
+    assert.notDeepEqual(
+      nametableRow(nes, MSG_ROW + 1, MSG_COL, 9),
+      battleStringTiles('poisoned'),
+      'no second poison line may appear for an already-dead actor'
+    );
+
+    let ended = nes.cpu.mem[GAME_STATE];
+    for (let i = 0; i < 60 && ended === ST_BATTLE; i++) {
+      if (nes.cpu.mem[BT_PHASE] === BP_DONE) tap(nes, A, 10);
+      else nes.frame();
+      ended = nes.cpu.mem[GAME_STATE];
+    }
+    assert.equal(ended, ST_GAMEOVER, 'a lethal status tick with nobody else in the party must reach the same defeat flow a lethal physical hit already does');
+
+    // Counting invocations, not merely the absence of a second line: proves
+    // no further tick ran for the dead actor even if one had somehow run
+    // silently (no message, or a message that never made it on screen
+    // before defeat took over).
+    assert.equal(entryCount, 1, 'poison_tick must be entered exactly once for the whole scenario -- no further tick may run for the already-dead actor, all the way through defeat');
+  } finally {
+    nes.cpu.emulate = originalEmulate;
+  }
 });
 
 // --- review finding 8: a dead monster ticked again decrements bt_count twice --
@@ -5241,6 +5431,766 @@ test('a monster’s own physical attack arms its attackAnim before roll_hit runs
   assert.equal(missNes.cpu.mem[missAddrs.BT_FX_ANIM], 1, 'the attack visual must be armed on a forced miss too');
   assert.equal(missNes.cpu.mem[missAddrs.BT_FX_SLOT], MAX_PARTY, 'still armed over the actor’s own slot on a miss');
   assert.equal(missNes.cpu.mem[BT_DMG_HI], 0xff, 'sanity: this roll must actually have missed');
+});
+
+// ---------------------------------------------------------------------------
+// §16 (docs/design-battle-animation.md): a party member's own attack visual,
+// and the walk forward that now precedes it. W1-W3 are the design's own
+// scratch probes, made permanent; the rest are new engine coverage this
+// phase adds. See docs/design-battle-animation.md §16.9/§16.10 for the full
+// test plan these rows are numbered against.
+// ---------------------------------------------------------------------------
+
+// W1 ("The acting party member's own sprite X ramps"). Wrong implementation
+// this catches: the offset math applied to the wrong slot, computed backward
+// (walking AWAY from monsters), not applied at all, or a phantom
+// uninitialized "party member" masking the real one at the same OAM index.
+test('§16 W1: the acting party member\'s own sprite X ramps forward with bt_walk_step, through the real battle_target routing point', {
+  skip: needsSample
+}, async (t) => {
+  const built = await buildVariantFull(t, 'walk-w1', () => {});
+  const nes = bootPastNaming(built.romPath);
+  const addrOf = selectBattleBank(nes, built);
+  const battleTarget = addrOf('battle_target');
+  const battleDrawSprites = addrOf('battle_draw_sprites');
+
+  nes.cpu.mem[BT_ACTOR] = 0;
+  nes.cpu.mem[BT_TARGET] = MAX_PARTY;
+  nes.cpu.mem[BT_CMD] = BC_FIGHT;
+  nes.cpu.mem[PAD_NEW] = BTN_A;
+  callRoutine(nes, battleTarget);
+  assert.equal(nes.cpu.mem[BT_PHASE], BP_WALK, 'confirming a FIGHT target must start the walk');
+
+  // Only the acting member (slot 0) may draw -- every other party slot is
+  // explicitly cleared, so an uninitialized RAM byte reading non-zero cannot
+  // draw a phantom "party member" over the real one at the same OAM index.
+  for (let slot = 1; slot < MAX_PARTY; slot++) nes.cpu.mem[PC_IN_PARTY + slot] = 0;
+  nes.cpu.mem[PC_IN_PARTY] = 1;
+  if (nes.cpu.mem[PC_HP] === 0) nes.cpu.mem[PC_HP] = 1;
+  for (let slot = 0; slot < 8; slot++) nes.cpu.mem[MON_ALIVE + slot] = 0;
+
+  const expected = { 0: 200, 2: 196, 4: 192, 8: 184 }; // BT_PARTY_X - walk_step * 2
+  for (const [step, x] of Object.entries(expected)) {
+    nes.cpu.mem[BT_WALK_STEP] = Number(step);
+    callRoutine(nes, battleDrawSprites);
+    assert.equal(nes.cpu.mem[0x0203], x, `bt_walk_step=${step}: party slot 0's own first tile X (OAM+3) should read ${x}`);
+  }
+});
+
+// W2 ("Neither attack_target nor cast_spell arms until the walk completes").
+// Wrong implementation this catches: the walk and the swing racing (arming
+// before the walk visually finishes), or the phase transition itself being
+// one tick early/late relative to battle_dispatch's own re-entry. The
+// acting member's attackAnim is a real, playable id so the arm is
+// observable at all.
+test('§16 W2: neither attack_target nor cast_spell arms until the walk completes, one tick late, never early, for a physical Attack', {
+  skip: needsSample
+}, async (t) => {
+  const built = await buildVariantFull(t, 'walk-w2', (project) => {
+    project.maps[0].encounters = { rate: 0, actorIds: [] };
+    project.party[0].attackAnim = 1; // "Slime" animation, real and playable
+  });
+  const { BT_FX_ANIM } = resolveFxAddrs(built);
+  const nes = bootPastNaming(built.romPath);
+  const addrOf = selectBattleBank(nes, built);
+  const battleTarget = addrOf('battle_target');
+  const battleTick = addrOf('battle_tick');
+
+  nes.cpu.mem[BT_ACTOR] = 0;
+  nes.cpu.mem[BT_TARGET] = MAX_PARTY;
+  nes.cpu.mem[MON_SLOT_ACTOR] = 0; // Slime
+  nes.cpu.mem[MON_ALIVE] = 1;
+  nes.cpu.mem[MON_HP] = 50;
+  nes.cpu.mem[PC_IN_PARTY] = 1;
+  nes.cpu.mem[PC_HP] = 50;
+  nes.cpu.mem[RNG] = 0; // a guaranteed hit against sample-rpg's own default acc/eva
+  nes.cpu.mem[BT_FX_ANIM] = NO_ANIM;
+  nes.cpu.mem[BT_CMD] = BC_FIGHT;
+  nes.cpu.mem[PAD_NEW] = BTN_A;
+  callRoutine(nes, battleTarget);
+  assert.equal(nes.cpu.mem[BT_PHASE], BP_WALK, 'confirming a FIGHT target must start the walk');
+  nes.cpu.mem[PAD_NEW] = 0;
+
+  for (let call = 1; call <= 8; call++) {
+    callRoutine(nes, battleTick);
+    assert.equal(nes.cpu.mem[BT_PHASE], BP_WALK, `call ${call}: still walking`);
+    assert.equal(nes.cpu.mem[BT_FX_ANIM], NO_ANIM, `call ${call}: nothing may have armed yet`);
+  }
+  // Call 9: battle_walk_wait's own bcs fires and moves bt_phase to BP_ACT,
+  // but attack_target has not run yet THIS SAME tick.
+  callRoutine(nes, battleTick);
+  assert.equal(nes.cpu.mem[BT_PHASE], BP_ACT, 'call 9 should move the phase to BP_ACT');
+  assert.equal(nes.cpu.mem[BT_FX_ANIM], NO_ANIM, 'call 9: the phase changed, but attack_target has not run on this same tick');
+  // Call 10: the first tick battle_dispatch actually sees BP_ACT -- this is
+  // the one that runs attack_target and arms the flipbook.
+  callRoutine(nes, battleTick);
+  assert.equal(nes.cpu.mem[BT_FX_ANIM], 1, 'call 10 should have armed the party member\'s own attackAnim');
+});
+
+// W3 ("bt_walk_step resets to 0 at message dismissal"), three sub-cases: a
+// direct reset probe, the early A-press branch, and with the acting member
+// already at 0 HP. Wrong implementation this catches: a reset that only
+// fires on the direct-call path (leaving an early-dismissed or KO'd actor
+// stepped-forward permanently), or one gated on the actor still being alive.
+test('§16 W3: bt_walk_step resets to 0 at message dismissal -- direct call, an early A-press, and actor-at-0-HP', {
+  skip: needsSample
+}, async (t) => {
+  const built = await buildVariantFull(t, 'walk-w3', () => {});
+  const nes = bootPastNaming(built.romPath);
+  const addrOf = selectBattleBank(nes, built);
+  const battleMessageDone = addrOf('battle_message_done');
+  const battleMessageWait = addrOf('battle_message_wait');
+
+  // Sub-case 1: a direct call (a local reset probe, not the ordinary timeout
+  // path itself).
+  nes.cpu.mem[BT_WALK_STEP] = WALK_TICKS;
+  nes.cpu.mem[BT_ACTOR] = 0;
+  nes.cpu.mem[PC_HP] = 50;
+  nes.cpu.mem[PC_IN_PARTY] = 1;
+  callRoutine(nes, battleMessageDone);
+  assert.equal(nes.cpu.mem[BT_WALK_STEP], 0, 'a direct battle_message_done call must reset bt_walk_step');
+
+  // Sub-case 2: the early A-press branch through battle_message_wait -- a
+  // DIFFERENT code path from the direct call above.
+  nes.cpu.mem[BT_WALK_STEP] = WALK_TICKS;
+  nes.cpu.mem[PAD_NEW] = BTN_A;
+  callRoutine(nes, battleMessageWait);
+  assert.equal(nes.cpu.mem[BT_WALK_STEP], 0, 'an early A-press dismissal through battle_message_wait must reset bt_walk_step too');
+  nes.cpu.mem[PAD_NEW] = 0;
+
+  // Sub-case 3: the acting member already at 0 HP -- the closest reachable
+  // proxy for "the actor died mid-sequence" this synchronous engine allows.
+  // The reset has no alive-check of its own to skip.
+  nes.cpu.mem[BT_WALK_STEP] = WALK_TICKS;
+  nes.cpu.mem[PC_HP] = 0;
+  callRoutine(nes, battleMessageDone);
+  assert.equal(nes.cpu.mem[BT_WALK_STEP], 0, 'battle_message_done must reset bt_walk_step even when the acting member is at 0 HP');
+});
+
+// §16.10 row "A/B pressed during BP_WALK leave the command, selection and
+// phase intact". Wrong implementation this catches: a stray pad_new read
+// inside battle_walk_wait (there is none in the design) letting a mistimed
+// press skip or cancel the walk.
+test('§16: A and B pressed during BP_WALK leave bt_phase/bt_cmd/bt_sel untouched -- the walk reads no input', {
+  skip: needsSample
+}, async (t) => {
+  const built = await buildVariantFull(t, 'walk-ab', () => {});
+  const nes = bootPastNaming(built.romPath);
+  const addrOf = selectBattleBank(nes, built);
+  const battleWalkWait = addrOf('battle_walk_wait');
+
+  nes.cpu.mem[BT_PHASE] = BP_WALK;
+  nes.cpu.mem[BT_WALK_STEP] = 3;
+  nes.cpu.mem[BT_CMD] = BC_FIGHT;
+  nes.cpu.mem[BT_SEL] = BC_FIGHT;
+
+  nes.cpu.mem[PAD_NEW] = BTN_A;
+  callRoutine(nes, battleWalkWait);
+  assert.equal(nes.cpu.mem[BT_PHASE], BP_WALK, 'an A press mid-ramp must not advance the phase');
+  assert.equal(nes.cpu.mem[BT_CMD], BC_FIGHT, 'an A press mid-ramp must not touch bt_cmd');
+  assert.equal(nes.cpu.mem[BT_SEL], BC_FIGHT, 'an A press mid-ramp must not touch bt_sel');
+
+  nes.cpu.mem[PAD_NEW] = BTN_B;
+  callRoutine(nes, battleWalkWait);
+  assert.equal(nes.cpu.mem[BT_PHASE], BP_WALK, 'a B press mid-ramp must not advance or reroute the phase');
+  assert.equal(nes.cpu.mem[BT_CMD], BC_FIGHT, 'a B press mid-ramp must not touch bt_cmd');
+  assert.equal(nes.cpu.mem[BT_SEL], BC_FIGHT, 'a B press mid-ramp must not touch bt_sel');
+});
+
+// §16.10 row "The real auto-advance TIMEOUT path through battle_message_wait
+// resets the walk" -- a genuine one-tick-to-zero countdown, no button read
+// at all, distinct from W3's own explicit A-press sub-case through the same
+// routine. Wrong implementation this catches: a reset that only fires on the
+// DIRECT battle_message_done entry point or the A-press branch, missing the
+// auto-advance path that reaches the identical clearing code via bt_timer
+// reaching 0 on its own.
+test('§16: the real auto-advance timeout through battle_message_wait resets bt_walk_step too', {
+  skip: needsSample
+}, async (t) => {
+  const built = await buildVariantFull(t, 'walk-timeout', () => {});
+  const nes = bootPastNaming(built.romPath);
+  const addrOf = selectBattleBank(nes, built);
+  const battleMessageWait = addrOf('battle_message_wait');
+
+  nes.cpu.mem[BT_WALK_STEP] = WALK_TICKS;
+  nes.cpu.mem[BT_ACTOR] = 0;
+  nes.cpu.mem[PC_HP] = 50;
+  nes.cpu.mem[PC_IN_PARTY] = 1;
+  nes.cpu.mem[PAD_NEW] = 0;
+  // bt_timer lives beside bt_walk_step's own siblings; resolve it the same
+  // way resolveFxAddrs resolves bt_fx_*, rather than guessing an offset.
+  const dir = path.dirname(path.dirname(built.romPath));
+  const constantsText = fs.readFileSync(path.join(dir, 'build', 'constants.asm'), 'utf8');
+  const BT_TIMER = resolveEngineAddress(constantsText, 'bt_timer');
+  nes.cpu.mem[BT_TIMER] = 1; // one tick to zero, no button pressed at all
+  callRoutine(nes, battleMessageWait);
+  assert.equal(nes.cpu.mem[BT_WALK_STEP], 0, 'the pure auto-advance timeout path must reset bt_walk_step, the same as the direct call and the A-press branch');
+});
+
+// §16.10 row "A fresh battle started with a stale bt_walk_step from a PRIOR
+// battle starts clean". Wrong implementation this catches: a battle-to-
+// battle carryover leaving the first party member's own icon visibly
+// stepped-forward for no reason at the start of a new fight.
+test('§16: setup_monsters resets a stale bt_walk_step left over from a prior battle', {
+  skip: needsSample
+}, async (t) => {
+  const built = await buildVariantFull(t, 'walk-fresh', () => {});
+  const nes = bootPastNaming(built.romPath);
+  const addrOf = selectBattleBank(nes, built);
+  const setupMonsters = addrOf('setup_monsters');
+
+  nes.cpu.mem[BT_WALK_STEP] = 0x2a; // an arbitrary nonzero sentinel
+  nes.cpu.mem[BT_COUNT] = 1;
+  nes.cpu.mem[MON_SLOT_ACTOR] = 0;
+  callRoutine(nes, setupMonsters);
+  assert.equal(nes.cpu.mem[BT_WALK_STEP], 0, 'setup_monsters must reset bt_walk_step for a fresh battle');
+});
+
+// §16.10 row "Both real entry paths ... start BP_WALK, and no damage/
+// message/effect appears until it completes" -- the MAGIC all-target half
+// specifically (FIGHT is covered by W1/W2 and the real regression rows).
+// spell_chosen_all (engine/battleturn.asm) needs no register input at all:
+// it is ALWAYS a party member's own cast (spell_chosen's one caller has no
+// monster-AI caller of its own), so it unconditionally resets bt_walk_step
+// and starts BP_WALK. Wrong implementation this catches: either insertion
+// point silently keeping the OLD direct-to-BP_ACT transition, or resolving
+// the action's own effect one tick early (mid-walk).
+test('§16 test 5: MAGIC all-target entry path (spell_chosen_all) starts BP_WALK immediately, no damage/effect until it completes', {
+  skip: needsSample
+}, async (t) => {
+  const built = await buildVariantFull(t, 'walk-magic-all', () => {});
+  const { BT_FX_ANIM } = resolveFxAddrs(built);
+  const nes = bootPastNaming(built.romPath);
+  const addrOf = selectBattleBank(nes, built);
+  const spellChosenAll = addrOf('spell_chosen_all');
+  const battleTick = addrOf('battle_tick');
+
+  nes.cpu.mem[BT_DMG_HI] = 0x42; // a sentinel, distinct from both 0 and 0xFF
+  nes.cpu.mem[BT_FX_ANIM] = NO_ANIM;
+  callRoutine(nes, spellChosenAll);
+  assert.equal(nes.cpu.mem[BT_PHASE], BP_WALK, 'spell_chosen_all must start BP_WALK immediately -- there is no separate targeting step for an all-target cast');
+  assert.equal(nes.cpu.mem[BT_WALK_STEP], 0, 'the walk must start at 0');
+
+  for (let call = 1; call <= WALK_TICKS; call++) {
+    callRoutine(nes, battleTick);
+    assert.equal(nes.cpu.mem[BT_PHASE], BP_WALK, `call ${call}: still walking`);
+    assert.equal(nes.cpu.mem[BT_DMG_HI], 0x42, `call ${call}: no damage may have resolved yet`);
+    assert.equal(nes.cpu.mem[BT_FX_ANIM], NO_ANIM, `call ${call}: nothing may have armed yet`);
+  }
+});
+
+// §16.10 row "Deterministic party hit AND a forced miss with an authored
+// party attackAnim". The hit case alone cannot distinguish "armed before the
+// roll" from "armed only because the roll happened to succeed"; the miss
+// case is what actually rejects hit-only arming -- if the arm call lived
+// inside roll_hit's own hit branch instead of before it, a guaranteed-fail
+// roll would leave the effect un-armed.
+test('§16 test 9: a party member\'s own physical attack arms attackAnim before roll_hit runs, whether the roll then hits or misses', {
+  skip: needsSample
+}, async (t) => {
+  const hitBuilt = await buildVariantFull(t, 'walk-party-hit', (project) => {
+    project.maps[0].encounters = { rate: 0, actorIds: [] };
+    project.party[0].attackAnim = 1; // "Slime" animation, real and playable
+    project.party[0].acc = 255;
+    project.sprites.actors[0].battle = { ...project.sprites.actors[0].battle, eva: 0 };
+  });
+  const hitAddrs = resolveFxAddrs(hitBuilt);
+  const hitNes = bootPastNaming(hitBuilt.romPath);
+  const hitAddrOf = selectBattleBank(hitNes, hitBuilt);
+  hitNes.cpu.mem[BT_ACTOR] = 0;
+  hitNes.cpu.mem[BT_TARGET] = MAX_PARTY;
+  hitNes.cpu.mem[MON_SLOT_ACTOR] = 0;
+  hitNes.cpu.mem[MON_ALIVE] = 1;
+  hitNes.cpu.mem[MON_HP] = 50;
+  hitNes.cpu.mem[PC_IN_PARTY] = 1;
+  hitNes.cpu.mem[PC_HP] = 50;
+  hitNes.cpu.mem[RNG] = 0; // a real, deterministic roll well under the 255 threshold
+  hitNes.cpu.mem[hitAddrs.BT_FX_ANIM] = NO_ANIM;
+  callRoutine(hitNes, hitAddrOf('attack_target'));
+  assert.equal(hitNes.cpu.mem[hitAddrs.BT_FX_ANIM], 1, 'the armed effect id must be pc_anim_attack[bt_actor]');
+  assert.equal(hitNes.cpu.mem[hitAddrs.BT_FX_SLOT], 0, 'armed over the acting party member\'s own slot');
+  assert.notEqual(hitNes.cpu.mem[BT_DMG_HI], 0xff, 'sanity: this roll must actually have landed');
+
+  const missBuilt = await buildVariantFull(t, 'walk-party-miss', (project) => {
+    project.maps[0].encounters = { rate: 0, actorIds: [] };
+    project.party[0].attackAnim = 1;
+    project.party[0].acc = 0; // a guaranteed miss -- the zero threshold, not a subtraction underflow
+    project.sprites.actors[0].battle = { ...project.sprites.actors[0].battle, eva: 0 };
+  });
+  const missAddrs = resolveFxAddrs(missBuilt);
+  const missNes = bootPastNaming(missBuilt.romPath);
+  const missAddrOf = selectBattleBank(missNes, missBuilt);
+  missNes.cpu.mem[BT_ACTOR] = 0;
+  missNes.cpu.mem[BT_TARGET] = MAX_PARTY;
+  missNes.cpu.mem[MON_SLOT_ACTOR] = 0;
+  missNes.cpu.mem[MON_ALIVE] = 1;
+  missNes.cpu.mem[MON_HP] = 50;
+  missNes.cpu.mem[PC_IN_PARTY] = 1;
+  missNes.cpu.mem[PC_HP] = 50;
+  missNes.cpu.mem[missAddrs.BT_FX_ANIM] = NO_ANIM;
+  callRoutine(missNes, missAddrOf('attack_target'));
+  assert.equal(missNes.cpu.mem[missAddrs.BT_FX_ANIM], 1, 'the flipbook must still arm even though the roll missed -- the swing plays whether the hit lands or misses');
+  assert.equal(missNes.cpu.mem[missAddrs.BT_FX_SLOT], 0, 'still armed over the actor\'s own slot on a miss');
+  assert.equal(missNes.cpu.mem[BT_DMG_HI], 0xff, 'sanity: this roll must actually have missed');
+});
+
+// §16.10 row "Member 0 with a null attackAnim, WITH another member's own
+// attackAnim keeping PARTY_ATTACK_ANIM_ENABLED live, leaves the flipbook
+// untouched". Wrong implementation this catches: battle_fx_arm_at's own
+// NO_ANIM no-op path reached with the wrong operand, or a gate check that
+// wrongly assumes "the party feature is off" instead of "THIS member's own
+// entry is NO_ANIM".
+test('§16 test 10: member 0\'s own null attackAnim leaves an armed sentinel untouched, even with member 1\'s attackAnim live', {
+  skip: needsSample
+}, async (t) => {
+  const built = await buildVariantFull(t, 'walk-member0-null', (project) => {
+    project.maps[0].encounters = { rate: 0, actorIds: [] };
+    project.party[0].attackAnim = null; // explicit -- the default
+    project.party[1].attackAnim = 1; // keeps PARTY_ATTACK_ANIM_ENABLED live
+    project.sprites.actors[0].battle = { ...project.sprites.actors[0].battle, acc: 0 }; // never hits back
+  });
+  const { BT_FX_ANIM, BT_FX_SLOT } = resolveFxAddrs(built);
+  const nes = bootPastNaming(built.romPath);
+  const addrOf = selectBattleBank(nes, built);
+
+  const SENTINEL = 42; // not NO_ANIM ($FF)
+  nes.cpu.mem[BT_ACTOR] = 0;
+  nes.cpu.mem[BT_TARGET] = MAX_PARTY;
+  nes.cpu.mem[MON_SLOT_ACTOR] = 0;
+  nes.cpu.mem[MON_ALIVE] = 1;
+  nes.cpu.mem[MON_HP] = 50;
+  nes.cpu.mem[PC_IN_PARTY] = 1;
+  nes.cpu.mem[PC_HP] = 50;
+  nes.cpu.mem[RNG] = 0;
+  nes.cpu.mem[BT_FX_ANIM] = SENTINEL;
+  nes.cpu.mem[BT_FX_SLOT] = SENTINEL;
+  callRoutine(nes, addrOf('attack_target'));
+  assert.equal(nes.cpu.mem[BT_FX_ANIM], SENTINEL, 'member 0\'s own NO_ANIM entry must leave a pre-armed sentinel untouched, not overwrite it with garbage');
+  assert.equal(nes.cpu.mem[BT_FX_SLOT], SENTINEL, 'the slot byte must be untouched too -- battle_fx_arm_at\'s NO_ANIM branch is a pure no-op');
+});
+
+// §16.10 row "A later, non-starting member reaches their own pc_anim_attack
+// entry, with membership holes at earlier indices" -- the index-space claim
+// (§16.4) holding for a member recruited well after boot, not merely for
+// member 0 (always recruited at boot). Wrong implementation this catches:
+// the index-space claim holding only for member 0 and silently failing for
+// anyone recruited later, or Join recruiting into the wrong RAM slot.
+test('§16 test 11: a member recruited via the real BE_JOIN, with holes at earlier indices, arms their OWN pc_anim_attack entry, never member 0\'s', {
+  skip: needsSample
+}, async (t) => {
+  const built = await buildVariantFull(t, 'walk-join-holes', (project) => {
+    project.maps[0].encounters = { rate: 0, actorIds: [] };
+    project.party[0].attackAnim = 0; // Hero's own animation -- must NOT be what arms
+    project.party[1].startsInParty = false;
+    project.party.push({ ...createPartyMember(2, 'Member2'), startsInParty: false });
+    project.party.push({ ...createPartyMember(3, 'Member3'), startsInParty: false, attackAnim: 1 }); // Slime's own animation -- distinct
+  });
+  const { BT_FX_ANIM, BT_FX_SLOT } = resolveFxAddrs(built);
+  const nes = bootPastNaming(built.romPath);
+  const addrOf = selectBattleBank(nes, built);
+
+  for (let slot = 1; slot < 4; slot++) {
+    assert.equal(nes.cpu.mem[PC_IN_PARTY + slot], 0, `slot ${slot} must not be in the party before the Join`);
+  }
+
+  nes.cpu.mem[BT_CALL] = BE_JOIN;
+  nes.cpu.mem[BT_ARG] = 3;
+  callRoutine(nes, addrOf('battle_entry'));
+  assert.equal(nes.cpu.mem[PC_IN_PARTY + 3], 1, 'member 3 must be in the party after the real Join');
+  assert.equal(nes.cpu.mem[PC_IN_PARTY + 1], 0, 'member 1 must still be untouched by member 3\'s own Join');
+  assert.equal(nes.cpu.mem[PC_IN_PARTY + 2], 0, 'member 2 must still be untouched by member 3\'s own Join');
+
+  nes.cpu.mem[BT_ACTOR] = 3;
+  nes.cpu.mem[BT_TARGET] = MAX_PARTY;
+  nes.cpu.mem[MON_SLOT_ACTOR] = 0;
+  nes.cpu.mem[MON_ALIVE] = 1;
+  nes.cpu.mem[MON_HP] = 50;
+  nes.cpu.mem[PC_HP + 3] = nes.cpu.mem[PC_HP_MAX + 3] || 50;
+  nes.cpu.mem[RNG] = 0;
+  nes.cpu.mem[BT_FX_ANIM] = NO_ANIM;
+  callRoutine(nes, addrOf('attack_target'));
+  assert.equal(nes.cpu.mem[BT_FX_ANIM], 1, 'member 3\'s own attackAnim (1) must arm, never member 0\'s (0)');
+  assert.equal(nes.cpu.mem[BT_FX_SLOT], 3, 'armed over member 3\'s own combatant slot');
+});
+
+// §16.10 row "A real save/load or Continue restores membership AND per-member
+// animation identity correctly". Wrong implementation this catches: a load
+// that compacts or renumbers recruited members -- nothing else in this test
+// plan catches it, since pc_anim_attack is a build-time ROM table the direct
+// arm block reads by raw index with no membership check, so a compaction bug
+// leaves an index-only re-arm check passing regardless. Membership and level
+// are asserted FIRST, before the animation arm, per the design's own row.
+test('§16 test 12: a real save/load with membership holes restores membership and level, then still arms the recruited member\'s own attackAnim', {
+  skip: needsSample
+}, async (t) => {
+  const dir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'forge-walk-save-'));
+  t.after(() => fs.promises.rm(dir, { recursive: true, force: true }));
+  const project = await loadProject(SAMPLE); // sample-rpg -- an RPG project already, on MMC1's own save fixture shape
+  project.cartridge.mapper = 1; // MMC1, the same board save.test.js's own BE_RESTORE fixtures build on
+  project.project.titleMap = 0;
+  project.project.titleScreen = 0;
+  project.maps[0].encounters = { rate: 0, actorIds: [] };
+  project.party[0].attackAnim = 0; // Hero's own animation -- must NOT be what arms for member 3
+  project.party[1].startsInParty = false;
+  project.party.push({ ...createPartyMember(2, 'M2'), startsInParty: false });
+  project.party.push({ ...createPartyMember(3, 'M3'), startsInParty: false, attackAnim: 1 }); // Slime's own animation -- distinct
+  const saverId = project.sprites.actors.length;
+  project.sprites.actors.push({ name: 'Saver', behavior: 'npc', hp: 1, damage: 0 });
+  project.maps[0].screens[0].entities.push({
+    actorId: saverId,
+    x: 64,
+    y: 96,
+    props: { trigger: 'touch', event: { pages: [{ cond: { type: 'none', arg: 0 }, commands: [{ op: 'save' }] }] } }
+  });
+  // A real, field-driven Join for member 3 -- resuming nes.frame() after a
+  // callRoutine excursion mid-battle-transition reproducibly crashes jsnes
+  // (the brief's own documented trap), so a test that needs BOTH a real
+  // recruit AND a real save/load afterward must recruit through the actual
+  // event system, not an isolated battle_entry(BE_JOIN) call.
+  const recruiterId = project.sprites.actors.length;
+  project.sprites.actors.push({ name: 'Recruiter', behavior: 'npc', hp: 1, damage: 0 });
+  project.maps[0].screens[0].entities.push({
+    actorId: recruiterId,
+    x: 48,
+    y: 96,
+    props: { trigger: 'interact', event: { pages: [{ cond: { type: 'none', arg: 0 }, commands: [{ op: 'join', member: 3 }] }] } }
+  });
+  await saveProject(dir, project);
+  const built = await buildProject({ dir, project, log: () => {} });
+
+  // A live Save command requires a title screen (validateProject), so
+  // unlike the rest of this file's own bootPastNaming() shape, a new game
+  // has to be started explicitly here -- the identical startNewGame shape
+  // save.test.js's own BE_RESTORE fixtures already use.
+  const nes = boot(built.romPath);
+  tap(nes, START);
+  finishNamingIfOpen(nes);
+
+  // Recruit member 3 through the real field, leaving 1 and 2 out --
+  // membership [1, 0, 0, 1].
+  walkTo(nes, 48, 96);
+  assert.ok(talkThrough(nes), 'the recruiter\'s own event never finished -- member 3 is not renamable, so no naming grid should have opened');
+  assert.deepEqual(
+    [0, 1, 2, 3].map((i) => nes.cpu.mem[PC_IN_PARTY + i]),
+    [1, 0, 0, 1],
+    'sanity: membership before the save must already be [1, 0, 0, 1]'
+  );
+  const distinctLevel = 3;
+  nes.cpu.mem[PC_LEVEL + 3] = distinctLevel;
+
+  // A real save, through the field -- touching the saver, exactly like the
+  // existing BE_RESTORE tests in save.test.js.
+  walkTo(nes, 64, 96);
+  for (let i = 0; i < 30; i++) nes.frame();
+  const SRAM_BASE = 0x6000;
+  const battery = nes.cpu.mem.slice(SRAM_BASE, SRAM_BASE + 0x2000);
+
+  // Fake a power cycle: reload the ROM fresh, then restore the battery --
+  // the same shape save.test.js's own powerCycle uses.
+  nes.reloadROM();
+  nes.cpu.mem.set(battery, SRAM_BASE);
+  for (let i = 0; i < 40; i++) nes.frame();
+  tap(nes, SELECT); // Continue
+  for (let i = 0; i < 30; i++) nes.frame();
+
+  assert.deepEqual(
+    [0, 1, 2, 3].map((i) => nes.cpu.mem[PC_IN_PARTY + i]),
+    [1, 0, 0, 1],
+    'membership must survive the real load exactly, no compaction or renumbering'
+  );
+  assert.equal(nes.cpu.mem[PC_LEVEL + 3], distinctLevel, 'member 3\'s own distinct level must survive the real load, at index 3');
+
+  // The arm itself is checked through an isolated callRoutine, the same way
+  // every other isolated-routine test in this file ends its own scenario --
+  // nothing further resumes real frame-stepping on this nes afterward.
+  const addrOf = selectBattleBank(nes, built);
+  const { BT_FX_ANIM, BT_FX_SLOT } = resolveFxAddrs(built);
+  nes.cpu.mem[BT_ACTOR] = 3;
+  nes.cpu.mem[BT_TARGET] = MAX_PARTY;
+  nes.cpu.mem[MON_SLOT_ACTOR] = 0;
+  nes.cpu.mem[MON_ALIVE] = 1;
+  nes.cpu.mem[MON_HP] = 50;
+  nes.cpu.mem[RNG] = 0;
+  nes.cpu.mem[BT_FX_ANIM] = NO_ANIM;
+  callRoutine(nes, addrOf('attack_target'));
+  assert.equal(nes.cpu.mem[BT_FX_ANIM], 1, 'member 3\'s own attackAnim must still arm correctly after a real load');
+  assert.equal(nes.cpu.mem[BT_FX_SLOT], 3, 'armed over member 3\'s own restored slot');
+});
+
+// §16.10 rows "Single-target damage spell", "A heal", and "An unanimated
+// party cast with a LIVE party attackAnim" -- all three through the real
+// MAGIC -> battle_target routing, ticks 1-8 unchanged, tick 9 phase-only,
+// tick 10 resolves. Every read below is a direct nes.cpu.mem[] read or a
+// nametable read, never an isolated callRoutine -- these three tests mix
+// real frame-driving throughout, and the brief's own documented trap
+// (resuming nes.frame() after a callRoutine excursion mid-battle-transition
+// crashes jsnes) rules out selectBattleBank/callRoutine here entirely.
+
+test('§16 test 13: single-target damage spell timing through real MAGIC -> battle_target, resolution lands only on tick 10', {
+  skip: needsSample
+}, async (t) => {
+  const built = await buildVariantFull(t, 'walk-spell-dmg', (project) => {
+    project.maps[0].encounters = { rate: 0, actorIds: [] };
+    // never hits back; weak: 'none' and enough HP so Ember's own flat 10
+    // lands exactly, unmultiplied by Slime's own default fire weakness and
+    // unsaturated by its default 12 HP.
+    project.sprites.actors[0].battle = { ...project.sprites.actors[0].battle, acc: 0, weak: 'none' };
+    project.sprites.actors[0].hp = 100;
+  });
+  const { BT_FX_ANIM } = resolveFxAddrs(built);
+  const nes = bootPastNaming(built.romPath);
+  walkTo(nes, 160, 176);
+  walkTo(nes, 176, 176, 200);
+  assert.equal(nes.cpu.mem[GAME_STATE], ST_BATTLE);
+  waitForMenu(nes);
+
+  chooseCommand(nes, BC_MAGIC);
+  assert.equal(nes.cpu.mem[BT_PHASE], BP_SPELLS);
+  tap(nes, A, 6); // Ember, scope one, kind damage -- confirming enters BP_TARGET
+
+  assert.equal(nes.cpu.mem[BT_PHASE], BP_TARGET, 'choosing Ember should ask who to hit');
+  nes.buttonDown(1, A);
+  nes.frame();
+  nes.buttonUp(1, A);
+  assert.equal(nes.cpu.mem[BT_PHASE], BP_WALK, 'confirming the target must start the walk immediately');
+
+  const hpSnap = nes.cpu.mem[MON_HP];
+  const msgSnap = nametableRow(nes, MSG_ROW + 1, MSG_COL, 9);
+  const fxSnap = nes.cpu.mem[BT_FX_ANIM];
+
+  for (let call = 1; call <= WALK_TICKS; call++) {
+    nes.frame();
+    assert.equal(nes.cpu.mem[BT_PHASE], BP_WALK, `tick ${call}: still walking`);
+    assert.equal(nes.cpu.mem[MON_HP], hpSnap, `tick ${call}: no damage may have resolved yet`);
+    assert.deepEqual(nametableRow(nes, MSG_ROW + 1, MSG_COL, 9), msgSnap, `tick ${call}: message must be unchanged`);
+    assert.equal(nes.cpu.mem[BT_FX_ANIM], fxSnap, `tick ${call}: nothing may have armed/changed yet`);
+  }
+
+  nes.frame(); // tick 9: the phase transition alone, battle_act has not run
+  assert.equal(nes.cpu.mem[BT_PHASE], BP_ACT, 'tick 9 should move the phase to BP_ACT');
+  assert.equal(nes.cpu.mem[MON_HP], hpSnap, 'tick 9: the phase changed, but cast_spell has not run on this same tick');
+  assert.deepEqual(nametableRow(nes, MSG_ROW + 1, MSG_COL, 9), msgSnap, 'tick 9: message must still be unchanged');
+  assert.equal(nes.cpu.mem[BT_FX_ANIM], fxSnap, 'tick 9: bt_fx_anim must still be unchanged -- the phase changed, but nothing has armed yet');
+
+  nes.frame(); // tick 10: battle_act -> cast_spell actually resolves
+  assert.equal(nes.cpu.mem[MON_HP], hpSnap - 10, "tick 10: the target's own HP must have dropped by Ember's own real amount");
+  // The queued message is drawn by NMI the frame AFTER it is queued
+  // (vram_buf's own producer/drain split, CLAUDE.md's "Nothing but text.asm
+  // may write to the nametable while rendering is on") -- HP is plain RAM
+  // and changes the instant apply_damage runs, but the nametable needs one
+  // more frame to reflect the newly-queued line.
+  nes.frame();
+  assert.notDeepEqual(nametableRow(nes, MSG_ROW + 1, MSG_COL, 9), msgSnap, 'tick 10 (+1 drain frame): the message must have changed');
+});
+
+test('§16 test 14: heal timing through real MAGIC -> battle_target, the caster-anchored effect follows the walk', {
+  skip: needsSample
+}, async (t) => {
+  // Review round 1, P1 finding 2: reading OAM $0203 unconditionally cannot
+  // tell "the heal effect drew there" apart from "the party icon happened
+  // to draw there instead, at the identical walked-forward X" -- the
+  // reviewer reproduced this with the spell arm (cast_spell_fx_go's own
+  // jsr battle_fx_arm_at) disconnected: nothing arms, so battle_fx_draw
+  // draws nothing, and battle_sprite_pc's own icon (Rian, stepped forward
+  // to the SAME 184) becomes the first sprite instead, at the same address.
+  // The fix identifies the effect's own metasprite by TILE id, independent
+  // of the ROM under test -- read from a freshly, separately loaded copy of
+  // the same fixture, before this test's own mutate ever runs, so it is
+  // never re-read from the byte under test.
+  const referenceProject = await loadProject(SAMPLE);
+  const healEffectMetasprite = referenceProject.sprites.metasprites[1]; // "Slime" -- Mend's own authored anim (id 1) plays this
+  assert.equal(healEffectMetasprite.name, 'Slime', 'sanity: sample-rpg’s own metasprite 1 must still be "Slime", or this fixture’s own tile-identity assumption is stale');
+  const healEffectTile = healEffectMetasprite.tiles[0].tile; // the effect's own first (and, drawn first, lowest-OAM-index) tile
+
+  const built = await buildVariantFull(t, 'walk-spell-heal', (project) => {
+    project.maps[0].encounters = { rate: 0, actorIds: [] };
+    project.sprites.actors[0].battle = { ...project.sprites.actors[0].battle, acc: 0 }; // never hits back
+    project.spells[1].anim = 1; // Mend gets a real, playable cast animation ("Slime", tile 0 at offset (0,0))
+  });
+  const { BT_FX_ANIM, BT_FX_SLOT } = resolveFxAddrs(built);
+  const nes = bootPastNaming(built.romPath);
+  walkTo(nes, 160, 176);
+  walkTo(nes, 176, 176, 200);
+  assert.equal(nes.cpu.mem[GAME_STATE], ST_BATTLE);
+  waitForMenu(nes);
+
+  nes.cpu.mem[PC_SPELLS] |= 2; // Mend, authored at level 3, granted the way a level would
+  nes.cpu.mem[PC_HP] = 5;
+
+  chooseCommand(nes, BC_MAGIC);
+  tap(nes, DOWN, 4); // Ember is first; Mend is the second row
+  tap(nes, A, 6);    // choose it -> BP_TARGET (self/ally)
+
+  const startHp = nes.cpu.mem[PC_HP];
+  const fxSnap = nes.cpu.mem[BT_FX_ANIM];
+  nes.buttonDown(1, A);
+  nes.frame();
+  nes.buttonUp(1, A);
+  assert.equal(nes.cpu.mem[BT_PHASE], BP_WALK, 'confirming the heal target must start the walk immediately');
+
+  const msgSnap = nametableRow(nes, MSG_ROW + 1, MSG_COL, 9);
+  for (let call = 1; call <= WALK_TICKS; call++) {
+    nes.frame();
+    assert.equal(nes.cpu.mem[BT_PHASE], BP_WALK, `tick ${call}: still walking`);
+    assert.equal(nes.cpu.mem[PC_HP], startHp, `tick ${call}: no heal may have resolved yet`);
+    assert.deepEqual(nametableRow(nes, MSG_ROW + 1, MSG_COL, 9), msgSnap, `tick ${call}: message must be unchanged`);
+    assert.equal(nes.cpu.mem[BT_FX_ANIM], fxSnap, `tick ${call}: bt_fx_anim must be unchanged -- nothing may have armed yet`);
+  }
+  nes.frame(); // tick 9
+  assert.equal(nes.cpu.mem[BT_PHASE], BP_ACT);
+  assert.equal(nes.cpu.mem[PC_HP], startHp, 'tick 9: the phase changed, but cast_spell has not run yet');
+  assert.deepEqual(nametableRow(nes, MSG_ROW + 1, MSG_COL, 9), msgSnap, 'tick 9: message must still be unchanged');
+  assert.equal(nes.cpu.mem[BT_FX_ANIM], fxSnap, 'tick 9: bt_fx_anim must still be unchanged');
+
+  nes.frame(); // tick 10: resolves
+  const expectedHp = Math.min(startHp + 18, nes.cpu.mem[PC_HP_MAX]);
+  assert.equal(nes.cpu.mem[PC_HP], expectedHp, "tick 10: the caster's own HP must have risen by Mend's real amount");
+  // The independently authored id (Mend's own spell.anim, 1) and the
+  // caster's own slot (Rian, party index 0 = bt_actor) -- proves cast_heal
+  // really did arm THIS effect, not merely that "something" changed OAM.
+  assert.equal(nes.cpu.mem[BT_FX_ANIM], 1, 'tick 10: bt_fx_anim must be Mend’s own authored animation id (1)');
+  assert.equal(nes.cpu.mem[BT_FX_SLOT], nes.cpu.mem[BT_ACTOR], 'tick 10: bt_fx_slot must be the caster’s own combatant slot');
+  // The queued message is drawn by NMI the frame AFTER it is queued
+  // (vram_buf's own producer/drain split) -- HP is plain RAM and changes
+  // the instant cast_heal runs, but the nametable needs one more frame.
+  nes.frame();
+  assert.notDeepEqual(nametableRow(nes, MSG_ROW + 1, MSG_COL, 9), msgSnap, 'tick 10 (+1 drain frame): the message must have changed');
+
+  // The walk has not snapped back yet -- the reset only fires at message
+  // dismissal (§16.3a) -- so the caster-anchored effect's own OAM X must
+  // read the STEPPED-FORWARD anchor (184 for slot 0), not the pre-walk 200.
+  // Identify the effect's OWN sprite by its own tile id first (never
+  // assume OAM index 0 is the effect just because it usually is), THEN
+  // check that sprite's own X -- a disconnected arm leaves no OAM entry
+  // carrying healEffectTile at all, which the search below catches
+  // directly rather than coincidentally matching the party icon's X.
+  assert.equal(nes.cpu.mem[BT_WALK_STEP], WALK_TICKS, 'the walk offset must still be at its full value with the heal\'s own message up');
+  let effectOamIndex = -1;
+  for (let entry = 0; entry < 64; entry++) {
+    if (nes.cpu.mem[0x0200 + entry * 4 + 1] === healEffectTile) {
+      effectOamIndex = entry;
+      break;
+    }
+  }
+  assert.notEqual(effectOamIndex, -1, `the heal effect's own tile (${healEffectTile}, "Slime") must appear somewhere in the OAM shadow -- it never armed at all`);
+  assert.equal(
+    nes.cpu.mem[0x0200 + effectOamIndex * 4 + 3],
+    184,
+    `the heal effect's own sprite (OAM entry ${effectOamIndex}, tile ${healEffectTile}) must be drawn at the stepped-forward anchor, not the pre-walk 200`
+  );
+});
+
+// battle_fx_draw's own follow-the-walker check must compare bt_fx_slot
+// against bt_actor specifically, not against the literal 0 -- the sabotage
+// this test exists to catch (found because the heal test above always has
+// bt_actor == 0, so it cannot tell "compares against bt_actor" apart from
+// "compares against 0" by itself). Isolated: bt_actor is a NONZERO slot
+// (2), and two armings are checked in the same walk state -- one on
+// bt_actor's own slot (must follow: stepped-forward), one on a DIFFERENT,
+// non-acting slot that happens to be 0 (must NOT follow: plain anchor).
+// Review round 1, nit: `cmp #0` fails BOTH cases, not merely the first --
+// slot 2 (the real actor) does not equal the literal 0, so case 1 wrongly
+// stays plain; slot 0 (NOT the actor here) does equal the literal 0, so
+// case 2 wrongly follows too. Only `cmp <bt_actor` passes both.
+test('§16: battle_fx_draw follows the walk on bt_actor\'s own slot specifically, never merely slot 0', {
+  skip: needsSample
+}, async (t) => {
+  const built = await buildVariantFull(t, 'walk-fx-follow-actor', (project) => {
+    // BATTLE_ANIM_ENABLED must be live for battle_fx_arm_at/battle_fx_draw to
+    // assemble at all -- any authored reference turns it on; this test arms
+    // by hand, so which one is irrelevant.
+    project.sprites.actors[0].battle.attackAnim = 1;
+  });
+  const { BT_FX_ANIM, BT_FX_SLOT } = resolveFxAddrs(built);
+  const nes = bootPastNaming(built.romPath);
+  const addrOf = selectBattleBank(nes, built);
+  const armAt = addrOf('battle_fx_arm_at');
+  const draw = addrOf('battle_fx_draw');
+  const dir = path.dirname(path.dirname(built.romPath));
+  const OAM_IDX = resolveEngineAddress(fs.readFileSync(path.join(dir, 'build', 'constants.asm'), 'utf8'), 'oam_idx');
+
+  nes.cpu.mem[BT_PHASE] = BP_MENU; // battle_fx_draw's own BP_INTRO guard must not suppress this
+  nes.cpu.mem[BT_ACTOR] = 2; // a nonzero acting slot
+  nes.cpu.mem[BT_WALK_STEP] = WALK_TICKS;
+
+  // Case 1: armed over bt_actor's own slot (2) -- must follow the walk.
+  nes.cpu.REG_ACC = 0; // "Hero" animation, tile 0 at offset (0, 0)
+  nes.cpu.REG_Y = 2;
+  callRoutine(nes, armAt);
+  assert.equal(nes.cpu.mem[BT_FX_SLOT], 2, 'sanity: armed over slot 2');
+  nes.cpu.mem.fill(0xff, 0x200, 0x300);
+  nes.cpu.mem[OAM_IDX] = 0;
+  callRoutine(nes, draw);
+  assert.notEqual(nes.cpu.mem[OAM_IDX], 0, 'sanity: the effect must actually have drawn something');
+  assert.equal(nes.cpu.mem[0x0203], 184, 'an effect armed over the ACTING member\'s own slot must follow the walk (stepped-forward anchor)');
+
+  // Case 2: armed over slot 0 -- NOT the acting member (bt_actor is 2) --
+  // must NOT follow the walk, even though the slot number is literally 0.
+  nes.cpu.REG_ACC = 0;
+  nes.cpu.REG_Y = 0;
+  callRoutine(nes, armAt);
+  assert.equal(nes.cpu.mem[BT_FX_SLOT], 0, 'sanity: armed over slot 0');
+  nes.cpu.mem.fill(0xff, 0x200, 0x300);
+  nes.cpu.mem[OAM_IDX] = 0;
+  callRoutine(nes, draw);
+  assert.notEqual(nes.cpu.mem[OAM_IDX], 0, 'sanity: the effect must actually have drawn something');
+  assert.equal(nes.cpu.mem[0x0203], 200, 'an effect armed over a slot that is NOT the acting member must stay at the plain, pre-walk anchor, even when that slot is 0');
+});
+
+test('§16 test 15: an un-animated party cast, with a LIVE party attackAnim authored, still resolves for real and never arms the fallback', {
+  skip: needsSample
+}, async (t) => {
+  const built = await buildVariantFull(t, 'walk-spell-unanimated', (project) => {
+    project.maps[0].encounters = { rate: 0, actorIds: [] };
+    // never hits back; weak: 'none' and enough HP so Ember's own flat 10
+    // lands exactly, unmultiplied and unsaturated (the identical fixture
+    // adjustment test 13 above needed).
+    project.sprites.actors[0].battle = { ...project.sprites.actors[0].battle, acc: 0, weak: 'none' };
+    project.sprites.actors[0].hp = 100;
+    project.party[0].attackAnim = 1; // live -- must never leak into the spell-cast path as a fallback
+    // project.spells[0].anim stays null -- Ember, the spell actually cast, is un-animated
+  });
+  const { BT_FX_ANIM } = resolveFxAddrs(built);
+  const nes = bootPastNaming(built.romPath);
+  walkTo(nes, 160, 176);
+  walkTo(nes, 176, 176, 200);
+  assert.equal(nes.cpu.mem[GAME_STATE], ST_BATTLE);
+  waitForMenu(nes);
+
+  chooseCommand(nes, BC_MAGIC);
+  assert.equal(nes.cpu.mem[BT_PHASE], BP_SPELLS);
+  tap(nes, A, 6); // Ember -- no anim of its own
+
+  assert.equal(nes.cpu.mem[BT_PHASE], BP_TARGET);
+  nes.buttonDown(1, A);
+  nes.frame();
+  nes.buttonUp(1, A);
+  assert.equal(nes.cpu.mem[BT_PHASE], BP_WALK);
+
+  const hpSnap = nes.cpu.mem[MON_HP];
+  const msgSnap = nametableRow(nes, MSG_ROW + 1, MSG_COL, 9);
+  const fxSnap = nes.cpu.mem[BT_FX_ANIM];
+  assert.equal(fxSnap, NO_ANIM, 'sanity: bt_fx_anim must start at NO_ANIM immediately after confirmation');
+  for (let call = 1; call <= WALK_TICKS; call++) {
+    nes.frame();
+    assert.equal(nes.cpu.mem[BT_PHASE], BP_WALK, `tick ${call}: still walking`);
+    assert.equal(nes.cpu.mem[MON_HP], hpSnap, `tick ${call}: no damage may have resolved yet`);
+    assert.deepEqual(nametableRow(nes, MSG_ROW + 1, MSG_COL, 9), msgSnap, `tick ${call}: message must be unchanged`);
+    assert.equal(nes.cpu.mem[BT_FX_ANIM], fxSnap, `tick ${call}: nothing may have armed`);
+  }
+  nes.frame(); // tick 9
+  assert.equal(nes.cpu.mem[BT_PHASE], BP_ACT);
+  assert.equal(nes.cpu.mem[MON_HP], hpSnap, 'tick 9: not yet resolved');
+  assert.deepEqual(nametableRow(nes, MSG_ROW + 1, MSG_COL, 9), msgSnap, 'tick 9: message must still be unchanged');
+  assert.equal(nes.cpu.mem[BT_FX_ANIM], fxSnap, 'tick 9: bt_fx_anim must still be unchanged -- the phase changed, but nothing has armed yet');
+
+  nes.frame(); // tick 10: real resolution
+  assert.equal(nes.cpu.mem[MON_HP], hpSnap - 10, "tick 10: Ember's own real damage must have landed");
+  assert.equal(nes.cpu.mem[BT_FX_ANIM], NO_ANIM, "tick 10: bt_fx_anim must STILL be NO_ANIM -- the party member's own live attackAnim must never substitute for an un-animated spell");
+  // The queued message is drawn by NMI the frame AFTER it is queued.
+  nes.frame();
+  assert.notDeepEqual(nametableRow(nes, MSG_ROW + 1, MSG_COL, 9), msgSnap, 'tick 10 (+1 drain frame): the message must have changed -- real resolution genuinely happened');
+  assert.equal(nes.cpu.mem[BT_FX_ANIM], NO_ANIM, 'still NO_ANIM one frame later too');
 });
 
 // Review round 1, P2 finding 2 / round 2 P2 finding 1: setup_monsters' own
@@ -7239,6 +8189,17 @@ test('multi-target hit-feedback policy: an all-target spell hitting 3 living mon
   const addrOf = selectBattleBank(nes, built);
   const { BT_HURT_SLOT, BT_HURT_LEFT } = resolveHurtAddrs(built);
   const battleTickAddr = addrOf('battle_tick');
+  // Root-caused, review round 2 of the amendment: this test's own callRoutine
+  // masks NMI via $2000 but leaves rendering ON via $2001, so a manual
+  // vram_drain (an NMI-only routine, engine/text.asm:150-176) can run on a
+  // visible scanline, where rendering itself moves the PPU address between
+  // the $2006 pair and the $2007 write -- not a phase-2a engine defect, a
+  // test-harness contract violation (vram_drain assumes it only ever runs
+  // during NMI, exactly as engine/boot.asm:351-353 calls it). Forced blank
+  // for manual VRAM drains outside NMI, in this isolated test only -- never
+  // inside callRoutine itself, since other callers assert real rendered
+  // pixels and depend on rendering staying on.
+  nes.mmap.write(0x2001, 0);
   const ATTR0 = 0x00;
   const ATTR1 = 0xaa;
   const ATTR2 = 0x55;
@@ -8478,10 +9439,16 @@ test('real dismissal and next-turn lifecycle: a real miss dismisses cleanly thro
   callRoutine(nes, battleTickAddr);
   assert.equal(nes.cpu.mem[BT_PHASE], BP_TARGET, 'FIGHT should have asked who to hit');
 
-  // Tick 2: BP_TARGET + A -- confirm the target.
+  // Tick 2: BP_TARGET + A -- confirm the target. §16 (docs/design-battle-
+  // animation.md, fix round 1): this now walks first (BP_WALK) before
+  // BP_ACT -- callThroughWalk drives past it, the identical mechanism
+  // stepPastWalk uses for a frame-paced test.
   nes.cpu.mem[PAD_NEW] = BTN_A;
   callRoutine(nes, battleTickAddr);
-  assert.equal(nes.cpu.mem[BT_PHASE], BP_ACT, 'confirming the target should have moved to BP_ACT');
+  assert.equal(nes.cpu.mem[BT_PHASE], BP_WALK, 'confirming the target should have started the walk forward');
+  nes.cpu.mem[PAD_NEW] = 0;
+  callThroughWalk(nes, battleTickAddr);
+  assert.equal(nes.cpu.mem[BT_PHASE], BP_ACT, 'the walk should have moved on to BP_ACT');
 
   // Tick 3: BP_ACT -- the real attack resolves this tick, forced to miss
   // (underflow) -- attack_target -> attack_missed -> battle_miss_arm, all
@@ -8610,12 +9577,16 @@ test('message-cap asymmetry, real lifecycle: a real landed hit keeps counting on
   for (let slot = 2; slot < 8; slot++) nes.cpu.mem[TURN_ORDER + slot] = 0xff;
   nes.cpu.mem[BT_PHASE] = BP_MENU;
 
-  // Tick 1-2: FIGHT, confirm the target.
+  // Tick 1-2: FIGHT, confirm the target. §16 (docs/design-battle-animation.md,
+  // fix round 1): confirming now starts the walk (BP_WALK) before BP_ACT.
   nes.cpu.mem[PAD_NEW] = BTN_A;
   callRoutine(nes, battleTickAddr);
   assert.equal(nes.cpu.mem[BT_PHASE], BP_TARGET);
   nes.cpu.mem[PAD_NEW] = BTN_A;
   callRoutine(nes, battleTickAddr);
+  assert.equal(nes.cpu.mem[BT_PHASE], BP_WALK);
+  nes.cpu.mem[PAD_NEW] = 0;
+  callThroughWalk(nes, battleTickAddr);
   assert.equal(nes.cpu.mem[BT_PHASE], BP_ACT);
 
   // Tick 3: the real attack resolves, forced to land -- RNG seeded to a
@@ -8891,12 +9862,18 @@ test('MISS overlay: the real M/I/S/S glyph shape renders at the dodging monster�
     for (let px = 0; px < 32; px++) before.push(pixelAt(anchorX + px, anchorY + py));
   }
 
-  // Confirm the target: the attack resolves the very same tick, forced to
+  // Confirm the target: §16 (docs/design-battle-animation.md, fix round 1)
+  // walks forward first (BP_WALK), THEN the attack resolves, forced to
   // miss (party acc: 0), arming the overlay for real through
-  // attack_missed -> battle_miss_arm. A modest frame budget lands well
-  // inside the 30-tick countdown and past the one-frame OAM-DMA lag the
-  // phase 1b pixel test above already documents.
+  // attack_missed -> battle_miss_arm. A modest frame budget past the walk
+  // lands well inside the 30-tick countdown and past the one-frame OAM-DMA
+  // lag the phase 1b pixel test above already documents.
   tap(nes, A, 5);
+  stepPastWalk(nes);
+  // The tick that lands on BP_ACT does not itself run battle_act; a few
+  // more for the OAM-DMA lag, the identical slack the pre-walk
+  // tap(nes, A, 5) budget already gave this same assertion.
+  for (let i = 0; i < 6; i++) nes.frame();
   assert.notEqual(nes.cpu.mem[BT_DMG_HI], 0, 'sanity: this must have been a miss, not a landed hit');
 
   const after = [];
@@ -9003,7 +9980,11 @@ test('MISS overlay + battle animation: both the flipbook’s own frame and the M
   // party's own physical attack never arms either.
   chooseCommand(nes, BC_FIGHT);
   assert.equal(nes.cpu.mem[BT_PHASE], BP_TARGET, 'FIGHT should ask who to hit');
+  // §16 (docs/design-battle-animation.md, fix round 1): confirming now
+  // walks forward (BP_WALK) before the attack resolves.
   tap(nes, A, 3);
+  stepPastWalk(nes);
+  nes.frame(); // the tick that lands on BP_ACT does not itself run battle_act
   assert.equal(nes.cpu.mem[BT_DMG_HI], 0, 'sanity: the party’s own attack must have landed (acc: 255, eva: 0)');
   assert.equal(nes.cpu.mem[BT_PHASE], BP_MESSAGE, 'the party’s own message should still be up, not yet dismissed');
 

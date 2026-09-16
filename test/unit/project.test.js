@@ -104,6 +104,10 @@ import {
   describeBattleAnimationOamWarning,
   projectUsesBattleAnimation,
   projectWithoutBattleAnimation,
+  // §16 (docs/design-battle-animation.md): the party attack visual ---------
+  projectUsesPartyAttackAnim,
+  projectWithoutPartyAttackAnim,
+  projectUsesAnyBattleAnimation,
   animationPickerOptions,
   // Character Forge phase 2 (docs/design-character-forge.md) ---------------
   characterCap,
@@ -3509,6 +3513,159 @@ test('allBattleAnimationIds: collects only battleOnly locations, dedupes, and ig
   // the overworld anims slots, battleOnly: false) instead of filtering to
   // battleOnly, which would also pick up id 5 here.
   assert.deepEqual([...ids].sort((a, b) => a - b), [2, 7], 'only the battleOnly ids, deduped, no null');
+});
+
+// ---------------------------------------------------------------------------
+// §16 (docs/design-battle-animation.md): a party member's own attack visual
+// -- the JS-only reference-integrity half. The engine mechanism itself
+// (BP_WALK, the direct attack_target arm, the ledger) is driven through the
+// real ROM in rpg.test.js/bankedbytes.test.js; this section is pure project
+// data, the identical split phase 1b's own comment (above allBattleAnimationIds)
+// already draws between the two.
+// ---------------------------------------------------------------------------
+
+test('§16: animationReferenceLocations yields the party location; allBattleAnimationIds sees it; renumberAnimationDeletion shifts party[0].attackAnim', () => {
+  const project = createProject('Quest', 'rpg');
+  project.sprites.animations = Array.from({ length: 3 }, (_, id) => ({ id, name: `A${id}`, loop: false, frames: [] }));
+  project.party[0].attackAnim = 1;
+
+  // Wrong implementation this catches: animationReferenceLocations never
+  // gaining a party loop at all, leaving the shared traversal -- "the single
+  // location authority for deletion, validation, and battle-id collection"
+  // -- blind to this one reference kind.
+  const partyLocation = [...animationReferenceLocations(project)].find((loc) => loc.describe().startsWith('Party member 0'));
+  assert.ok(partyLocation, 'animationReferenceLocations must yield a location for party member 0');
+  assert.equal(partyLocation.battleOnly, true, 'a party member\'s own attack animation is battle-only, never an overworld reference');
+  assert.equal(partyLocation.get(), 1, 'the yielded location must read the real, live value');
+  assert.equal(partyLocation.describe(), 'Party member 0 ("Hero")\'s attack animation');
+
+  // Wrong implementation this catches: allBattleAnimationIds walking only
+  // actor/spell locations, silently under-reporting the OAM budget for a
+  // party-only project (§16.5's own "wrong implementation it catches").
+  assert.ok(allBattleAnimationIds(project).has(1), 'allBattleAnimationIds must include a live party attackAnim');
+
+  // Wrong implementation this catches: the Sprite Forge's own "Delete
+  // animation" handler corrupting every party member's own reference on a
+  // deletion below it, with no error and no warning (§16.5).
+  renumberAnimationDeletion(project, 0);
+  assert.equal(project.party[0].attackAnim, 0, 'a party attackAnim above the deleted index must shift down by one, the identical rule an actor/spell reference already follows');
+});
+
+test('§16: validateProject refuses a stale party attackAnim (hop 1) with the exact message and Forge', () => {
+  const project = createProject('Quest', 'rpg');
+  project.sprites.animations = [{ id: 0, name: 'A0', loop: false, frames: [] }];
+  project.party[0].attackAnim = 99; // no such animation
+
+  const problems = validateProject(project);
+  const hop1 = problems.filter(
+    (p) => p.where === 'Sprite Forge' && p.severity === 'error' && p.message.includes('do not name a real animation')
+  );
+  // Wrong implementation this catches: a stale party reference resolving
+  // silently at build time (validAnimId's own defense in depth) with no
+  // author-visible error at all.
+  assert.equal(hop1.length, 1, 'exactly one hop-1 refusal for the stale party reference');
+  assert.ok(
+    hop1[0].message.includes('Party member 0 ("Hero")\'s attack animation'),
+    `the refusal must name the party member by index and name, got: ${hop1[0].message}`
+  );
+});
+
+test('§16: validateProject refuses a party attackAnim naming a real animation with an unplayable frame (hop 2)', () => {
+  const project = createProject('Quest', 'rpg');
+  project.sprites.metasprites = [{ id: 0, name: 'M0', tiles: [] }];
+  project.sprites.animations = [{ id: 0, name: 'Bad', loop: false, frames: [{ metaspriteId: 5, duration: 8 }] }]; // 5 is past the one real metasprite
+  project.party[0].attackAnim = 0;
+
+  const problems = validateProject(project);
+  const hop1 = problems.filter((p) => p.where === 'Sprite Forge' && p.message.includes('do not name a real animation'));
+  const hop2 = problems.filter((p) => p.where === 'Sprite Forge' && p.message.includes('does not name a real metasprite'));
+  // Wrong implementation this catches: an off-by-one or type-coercion gap
+  // specific to how the party traversal computes its own
+  // isPlayableBattleAnimation call, distinct from the already-proven
+  // actor/spell hop-2 path above.
+  assert.equal(hop1.length, 0, 'animation 0 is a real, valid top-level reference, so hop 1 must not fire');
+  assert.equal(hop2.length, 1, 'hop 2 must report exactly one unplayable battle animation');
+  assert.ok(hop2[0].message.includes('Party member 0'), 'the hop-2 message must name the offending party member');
+});
+
+test('§16: renumberPartyMemberDeletion leaves a surviving member\'s own attackAnim unchanged', () => {
+  const project = createProject('Quest', 'rpg');
+  project.sprites.animations = Array.from({ length: 3 }, (_, id) => ({ id, name: `A${id}`, loop: false, frames: [] }));
+  project.party.push({ ...createPartyMember(1, 'Ally'), attackAnim: 2, startsInParty: false });
+  project.party[0].attackAnim = 1;
+
+  // The Character Forge's own party Remove handler shape: renumber, then
+  // splice, then let array position carry on (join-guard brief).
+  renumberPartyMemberDeletion(project, 0);
+  project.party.splice(0, 1);
+
+  // Wrong implementation this catches: a future removeMember rewrite that
+  // keys attack visuals by array position instead of letting them travel
+  // with the member object (§16.10's own carried test, restated here for
+  // this specific field).
+  assert.equal(project.party[0].attackAnim, 2, 'the surviving member\'s own attackAnim must travel with the object, not the array slot it used to occupy');
+});
+
+test('§16: projectWithoutBattleAnimation and projectWithoutPartyAttackAnim are scope-exact opposites, neither mutating', () => {
+  const project = createProject('Quest', 'rpg');
+  project.spells[0] = { ...project.spells[0], anim: 1 };
+  project.sprites.actors.push({ id: 0, name: 'Slime', damage: 1, anims: {}, battle: { attackAnim: 2 } });
+  project.party[0].attackAnim = 3;
+  const snapshot = structuredClone(project);
+
+  const strippedBattle = projectWithoutBattleAnimation(project);
+  assert.equal(strippedBattle.spells[0].anim, null, 'projectWithoutBattleAnimation must null a spell\'s anim');
+  assert.equal(strippedBattle.sprites.actors[0].battle.attackAnim, null, 'projectWithoutBattleAnimation must null an actor\'s attackAnim');
+  assert.equal(strippedBattle.party[0].attackAnim, 3, 'projectWithoutBattleAnimation must leave party attackAnim UNCHANGED -- a separate, independent lever');
+
+  const strippedParty = projectWithoutPartyAttackAnim(project);
+  assert.equal(strippedParty.party[0].attackAnim, null, 'projectWithoutPartyAttackAnim must null the party attackAnim');
+  assert.equal(strippedParty.spells[0].anim, 1, 'projectWithoutPartyAttackAnim must leave a spell\'s anim UNCHANGED');
+  assert.equal(strippedParty.sprites.actors[0].battle.attackAnim, 2, 'projectWithoutPartyAttackAnim must leave an actor\'s attackAnim UNCHANGED');
+
+  assert.deepEqual(project, snapshot, 'neither strip helper may mutate its input');
+});
+
+test('§16: projectUsesPartyAttackAnim / projectUsesAnyBattleAnimation, and normalizePartyMember\'s attackAnim clamp', () => {
+  const action = createProject('Quest', 'action');
+  const rpg = createProject('Quest', 'rpg');
+  for (const project of [action, rpg]) {
+    // Absent -> null (createPartyMember's own default).
+    assert.equal(project.party[0].attackAnim, null, 'createPartyMember must default attackAnim to null');
+    assert.equal(projectUsesPartyAttackAnim(project), false, 'a fresh project must not read as using a party attackAnim');
+    assert.equal(projectUsesAnyBattleAnimation(project), false, 'a fresh project must not read as using any battle animation');
+
+    // normalizePartyMember's own byte-range clamp, the identical shape
+    // normalizeActor's battle.attackAnim already uses -- exercised through
+    // normalizeProject, since normalizePartyMember itself is not exported.
+    const reloaded = normalizeProject({
+      ...structuredClone(project),
+      party: [
+        { ...project.party[0], attackAnim: 255 }, // preserved -- a hand-edited or foreign sentinel
+        ...(project.party.slice(1))
+      ]
+    });
+    assert.equal(reloaded.party[0].attackAnim, 255, '255 must be preserved, never authored, the identical rule battle.attackAnim already follows');
+
+    const outOfRange = normalizeProject({
+      ...structuredClone(project),
+      party: [{ ...project.party[0], attackAnim: 999 }, ...project.party.slice(1)]
+    });
+    assert.equal(outOfRange.party[0].attackAnim, null, 'an out-of-range attackAnim must normalize to null');
+
+    const absent = normalizeProject({
+      ...structuredClone(project),
+      party: [(() => { const { attackAnim, ...rest } = project.party[0]; return rest; })(), ...project.party.slice(1)]
+    });
+    assert.equal(absent.party[0].attackAnim, null, 'an absent attackAnim must normalize to null');
+  }
+
+  // Wrong implementation this catches: projectUsesPartyAttackAnim flipping
+  // on when a live reference exists.
+  rpg.party[0].attackAnim = 0;
+  assert.equal(projectUsesPartyAttackAnim(rpg), true, 'a live party attackAnim must flip this on');
+  assert.equal(projectUsesAnyBattleAnimation(rpg), true, 'the broadened OR must see a party-only reference too');
+  assert.equal(projectUsesBattleAnimation(rpg), false, 'the NARROW actor/spell-only predicate must stay false for a party-only reference');
 });
 
 test('animationPickerOptions: healthy lists every catalog entry by name; a stale selectedId becomes a distinct, always-selected "missing" option; null selects nothing', () => {

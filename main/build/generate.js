@@ -80,7 +80,8 @@ import {
   projectUsesMagicPower,
   projectUsesMagicDefence,
   projectUsesMonsterSpellList,
-  projectUsesBattleAnimation,
+  projectUsesAnyBattleAnimation,
+  projectUsesPartyAttackAnim,
   projectUsesHitFeedback,
   projectUsesMiss,
   MISS_OAM_TILES,
@@ -2625,8 +2626,19 @@ export async function generateAssets({ dir, project, log = () => {} }) {
   // §6/§7) -- true iff some actor's battle.spellIds has two or more entries.
   const monsterSpellListEnabled = projectUsesMonsterSpellList(project);
   // Battle-side animation (docs/design-battle-animation.md §3.5):
-  // battle_fx_tick/arm/draw.
-  const battleAnimEnabled = projectUsesBattleAnimation(project);
+  // battle_fx_tick/arm/draw. Broadened (§16, fix round 1) to
+  // projectUsesAnyBattleAnimation -- battle_fx_arm_attack's own monster
+  // branch and cast_spell's fallback call to it are reached whenever this
+  // flag is live for ANY reason, including a party-only project, so the
+  // shared mon_anim_attack/spell_anim tables must exist whenever a party
+  // member's own attackAnim alone turns this flag on.
+  const battleAnimEnabled = projectUsesAnyBattleAnimation(project);
+  // §16 (docs/design-battle-animation.md, fix round 1): a party member's own
+  // attackAnim, armed directly in attack_target (never through
+  // battle_fx_arm_attack, which stays monster-only and untouched) -- an
+  // independent gate from battleAnimEnabled above, since a project can want
+  // either without the other.
+  const partyAttackAnimEnabled = projectUsesPartyAttackAnim(project);
   // Phase 2a hit feedback (docs/design-battle-animation.md §12.7):
   // battle_hurt_arm/tick/attr_open/restore_slot, gated independently of
   // BATTLE_ANIM_ENABLED.
@@ -3208,6 +3220,13 @@ export async function generateAssets({ dir, project, log = () => {} }) {
     // reads (engine/battleui.asm); BATTLE_COMBATANT_OAM_MAX is never emitted.
     `BATTLE_ANIM_ENABLED = ${battleAnimEnabled ? 1 : 0}`,
     `BATTLE_FX_OAM_ROOM = ${battleFxRoom}`,
+    // §16 (docs/design-battle-animation.md, fix round 1): attack_target's
+    // own direct arm of a party member's attackAnim (pc_anim_attack),
+    // independent of BATTLE_ANIM_ENABLED above -- a project can want either
+    // without the other. The walk itself (BP_WALK) has no flag: it is
+    // unconditional for every RPG project, per Chris's own "always on for
+    // RPGs" answer, so it needs no generated equate at all.
+    `PARTY_ATTACK_ANIM_ENABLED = ${partyAttackAnimEnabled ? 1 : 0}`,
     // Phase 2a hit feedback (docs/design-battle-animation.md §12.7):
     // battle_hurt_arm/tick/attr_open/restore_slot, and the blink-skip checks
     // in battle_sprite_pc/battle_sprite_mon. Independent of BATTLE_ANIM_ENABLED.

@@ -233,7 +233,15 @@ battle_target:
   and #BTN_A
   beq battle_target_done
   jsr hide_target
-  lda #BP_ACT
+  ; §16 (docs/design-battle-animation.md, fix round 1): both a physical
+  ; Attack's own targeting and a single-target spell's own targeting share
+  ; this routine, and both now walk first -- no bt_cmd check needed, since
+  ; the walk applies identically either way (the earlier design's own
+  ; BC_MAGIC-only check is gone with it, per Chris's own "Attacks walk too"
+  ; answer, §8).
+  lda #0
+  sta <bt_walk_step
+  lda #BP_WALK
   sta <bt_phase
 battle_target_done:
   rts
@@ -730,6 +738,13 @@ battle_message_done:
   lda #0
   sta <bt_miss_left
   .endif
+  ; §16 (docs/design-battle-animation.md, fix round 1): the acting member's
+  ; own forward step is capped here too, unconditionally -- the identical
+  ; "ends at message dismissal, whether or not it finished on its own" rule
+  ; bt_fx_anim/bt_miss_left already follow above, joined by one more
+  ; unconditional reset since the walk has no gate to nest this under.
+  lda #0
+  sta <bt_walk_step
   jsr clear_message
   ; After the acting combatant's own line, every status it carries gets a
   ; word in, one tick and one line per bit, lowest first: status_pending
@@ -784,6 +799,24 @@ battle_message_advance:
   lda #BP_NEXT
   sta <bt_phase
 battle_message_hold:
+  rts
+
+; §16 (docs/design-battle-animation.md, fix round 1): hold BP_WALK for
+; WALK_TICKS ticks, the identical "hold a phase for N ticks" shape
+; battle_message_wait above already uses for bt_timer -- an UP-counter here
+; instead, since bt_walk_step doubles as the draw-time offset's own input
+; (battle_sprite_pc/battle_fx_draw), so there is nothing else to reuse
+; bt_timer's own down-counter for. Unconditional: every RPG project's own
+; battle bank reaches this the moment a party member's own turn begins.
+battle_walk_wait:
+  lda <bt_walk_step
+  cmp #WALK_TICKS
+  bcs battle_walk_done
+  inc <bt_walk_step
+  rts
+battle_walk_done:
+  lda #BP_ACT
+  sta <bt_phase
   rts
 
 ; bt_dmg_lo/hi -> three glyphs in bt_digits, leading zeros blanked. Repeated
@@ -906,7 +939,24 @@ battle_sprite_pc_draw:
   cmp #$FF
   beq battle_sprite_pc_next
   sta <bt_tmp
+  ; §16 (docs/design-battle-animation.md, fix round 1): the acting member's
+  ; own icon draws stepped-forward while bt_walk_step is nonzero -- bt_tmp2
+  ; is free here (battle_dispatch has already finished for this tick by the
+  ; time battle_draw_sprites runs, so cast_all's own end-of-side sentinel use
+  ; of it is long over).
+  cpx <bt_actor
+  bne battle_sprite_pc_x_plain
+  lda <bt_walk_step
+  beq battle_sprite_pc_x_plain
+  asl a
+  sta <bt_tmp2
   lda #BT_PARTY_X
+  sec
+  sbc <bt_tmp2
+  jmp battle_sprite_pc_x_set
+battle_sprite_pc_x_plain:
+  lda #BT_PARTY_X
+battle_sprite_pc_x_set:
   sta <de_ex
   txa
   asl a
@@ -1062,7 +1112,26 @@ battle_fx_draw:
   lda <bt_fx_slot
   cmp #MAX_PARTY
   bcs battle_fx_draw_mon
+  ; §16 (docs/design-battle-animation.md, fix round 1): a caster-anchored
+  ; effect (heal/all-target, or a party member's own attackAnim) follows the
+  ; walk when it is armed on the CURRENTLY-acting member's own slot -- so it
+  ; plays where the sprite visually is, not behind it. Only reachable when
+  ; BATTLE_ANIM_ENABLED is live at all (this whole routine is), so this stays
+  ; a named cost of THAT flag, not the walk itself, which has no flag.
+  lda <bt_fx_slot
+  cmp <bt_actor
+  bne battle_fx_draw_x_plain
+  lda <bt_walk_step
+  beq battle_fx_draw_x_plain
+  asl a
+  sta <bt_tmp2
   lda #BT_PARTY_X
+  sec
+  sbc <bt_tmp2
+  jmp battle_fx_draw_x_set
+battle_fx_draw_x_plain:
+  lda #BT_PARTY_X
+battle_fx_draw_x_set:
   sta <de_ex
   lda <bt_fx_slot
   asl a

@@ -210,7 +210,13 @@ spell_affordable:
   sta <bt_phase
   jmp show_target
 spell_chosen_all:
-  lda #BP_ACT
+  ; §16 (docs/design-battle-animation.md, fix round 1): always a party
+  ; member's own cast (spell_chosen's one caller, the SPELLS list's own "A
+  ; pressed" handler) -- unconditionally routed to BP_WALK instead of
+  ; BP_ACT, the walk having no gate of its own.
+  lda #0
+  sta <bt_walk_step
+  lda #BP_WALK
   sta <bt_phase
   rts
 
@@ -260,11 +266,23 @@ item_chosen_none:
   jmp battle_say_actor
 
 ; A plain attack from whoever is acting on to bt_target. Never a monster's own
-; attack: monsters swing through monster_turn_attack below, which is the
-; real, and only, physical-attack path that needs to arm battle.attackAnim --
-; bt_actor is always < MAX_PARTY on this path, so arming here would be dead
-; code.
+; attack: monsters swing through monster_turn_attack below. bt_actor is
+; always < MAX_PARTY on this path, which is the real, and only,
+; physical-attack path that arms a PARTY member's own attack visual (§16,
+; docs/design-battle-animation.md, fix round 1) -- before roll_hit, the
+; identical monster_turn_attack placement below, so the swing plays whether
+; the hit lands or misses. Armed directly here, not through
+; battle_fx_arm_attack (a party member's own combatant slot IS their own
+; project.party index, §16.4, so no sec/sbc detour is needed the way a
+; monster's own arm needs) -- leaving battle_fx_arm_attack itself untouched,
+; monster-only, exactly as it already was before this slice existed.
 attack_target:
+  .if PARTY_ATTACK_ANIM_ENABLED
+  ldx <bt_actor
+  lda pc_anim_attack,x
+  ldy <bt_actor
+  jsr battle_fx_arm_at
+  .endif
   jsr roll_hit
   bne attack_missed
   jsr physical_damage

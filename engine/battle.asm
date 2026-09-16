@@ -456,8 +456,12 @@ battle_tick_next:
   jmp battle_next
 battle_tick_over:
   cmp #BP_DONE
-  bne battle_tick_end
+  bne battle_tick_walk
   jmp battle_finish
+battle_tick_walk:
+  cmp #BP_WALK
+  bne battle_tick_end
+  jmp battle_walk_wait
 battle_tick_end:
   jmp battle_outcome        ; victory, defeat and running away all wait here
 
@@ -505,6 +509,14 @@ setup_monsters:
   lda #0
   sta <bt_miss_left
   .endif
+  ; §16 (docs/design-battle-animation.md, fix round 1): a fresh battle must
+  ; not inherit a stepped-forward sprite from whatever battle came before --
+  ; unconditional, the identical "a switched-off feature must not move any
+  ; other symbol's address" chain reasoning does not apply here since the
+  ; walk has no gate at all; this is just the ordinary per-battle reset every
+  ; other bt_* countdown above already gets.
+  lda #0
+  sta <bt_walk_step
   ldx #0
 setup_monsters_slot:
   lda #0

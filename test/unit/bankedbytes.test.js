@@ -37,6 +37,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import crypto from 'node:crypto';
+import fs from 'node:fs';
 import fsp from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -45,6 +46,7 @@ import { loadProject, saveProject } from '../../main/project-io.js';
 import { buildProject } from '../../main/build/pipeline.js';
 import {
   checkCapacity,
+  codeRegionCount,
   kernelCodeBytes,
   kernelTableBytes,
   switchableMappers
@@ -72,6 +74,7 @@ import {
   MAGIC_DEFENCE_BATTLE_ALLOWANCE,
   MONSTER_SPELL_LIST_BATTLE_ALLOWANCE,
   BATTLE_ANIM_BATTLE_ALLOWANCE,
+  PARTY_ATTACK_ANIM_BATTLE_ALLOWANCE,
   HIT_FEEDBACK_BATTLE_ALLOWANCE,
   MISS_BATTLE_ALLOWANCE
 } from '../../main/build/battletables.js';
@@ -97,13 +100,18 @@ import {
   projectUsesHitFeedback,
   projectWithoutHitFeedback,
   projectUsesMiss,
-  projectWithoutMiss
+  projectWithoutMiss,
+  projectUsesBattleAnimation,
+  projectWithoutBattleAnimation,
+  projectUsesPartyAttackAnim,
+  projectWithoutPartyAttackAnim
 } from '../../shared/project.js';
 import { FONT_BASE, SPRITE_ARROW_TILE, fontChrPages } from '../../shared/font.js';
 import { BLANK_TILE } from '../../shared/chr.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const SAMPLE_RPG = path.join(ROOT, 'sample-rpg');
+const SAMPLE = path.join(ROOT, 'sample');
 // Builds its own ROMs from scratch, so it gates on nesasm itself rather than on
 // a checked-in sample-rpg/build/game.nes — the same reasoning
 // kernelbytes.test.js gives: gating on the fixture ROM is what lets a clean
@@ -504,6 +512,19 @@ test('MONSTER_SPELL_LIST_BATTLE_ALLOWANCE is exact, on every RPG-capable board',
 // project-wide. Wrong implementation this catches: a stale allowance
 // drifting from the real assembled cost (measured directly against nesasm's
 // own bank-usage line, not re-derived from the instruction listing).
+//
+// §16 (docs/design-battle-animation.md, fix round 2, P2-3): consolidated
+// back into ONE constant. Fix round 1's own two-name split (243 +
+// WALK_FX_FOLLOW_BATTLE_ALLOWANCE = 21) could never be independently
+// verified by any delta measurement -- the follow snippet lives inside
+// battle_fx_draw's own `.if BATTLE_ANIM_ENABLED` block with no further
+// condition of its own (the walk itself has no flag to gate it on), so
+// every build that turns BATTLE_ANIM_ENABLED on assembles both parts at
+// once; there was no third build variant where one existed without the
+// other. Folding them into one 264-byte constant makes this test what it
+// always effectively was: a real, equality-checkable isolation of the
+// WHOLE shared battle-animation mechanism, not an approximation of two
+// unverifiable halves.
 test('BATTLE_ANIM_BATTLE_ALLOWANCE is exact, on every RPG-capable board', {
   skip: !hasNesasm && 'nesasm not found on PATH'
 }, async (t) => {
@@ -523,6 +544,326 @@ test('BATTLE_ANIM_BATTLE_ALLOWANCE is exact, on every RPG-capable board', {
         'real cost exactly, on every board.'
     );
   }
+});
+
+// §16 (docs/design-battle-animation.md, fix round 1): PARTY_ATTACK_ANIM_
+// BATTLE_ALLOWANCE isolated from BATTLE_ANIM_BATTLE_ALLOWANCE (264, fix
+// round 2's own consolidated figure) by starting from a monster-only
+// baseline (which already pays the shared base) rather than "off" --
+// attack_target's own
+// direct arm (ldx/lda pc_anim_attack,x/ldy/jsr battle_fx_arm_at) is what
+// this isolates, not battle_fx_arm_attack itself, which stays untouched.
+// Wrong implementation this catches: a stale PARTY_ATTACK_ANIM_BATTLE_
+// ALLOWANCE, or attack_target's own new block silently pulling in more of
+// the shared base than it should.
+test('PARTY_ATTACK_ANIM_BATTLE_ALLOWANCE is exact, on every RPG-capable board', {
+  skip: !hasNesasm && 'nesasm not found on PATH'
+}, async (t) => {
+  for (const mapper of CAPABLE_MAPPERS) {
+    const monsterOnly = await measureRegion(t, mapper, (p) => {
+      p.sprites.actors[0].battle.attackAnim = 1;
+    });
+    const monsterAndParty = await measureRegion(t, mapper, (p) => {
+      p.sprites.actors[0].battle.attackAnim = 1;
+      p.party[0].attackAnim = 0; // Hero's own animation
+    });
+    const codeOff = monsterOnly.used - battleTableBytes(monsterOnly.project);
+    const codeOn = monsterAndParty.used - battleTableBytes(monsterAndParty.project);
+    const delta = codeOn - codeOff;
+    assert.equal(
+      delta,
+      PARTY_ATTACK_ANIM_BATTLE_ALLOWANCE,
+      `${mapper.name}: a party member's own attackAnim costs ${delta} bytes of banked code (${codeOff} -> ` +
+        `${codeOn}), but PARTY_ATTACK_ANIM_BATTLE_ALLOWANCE reserves ${PARTY_ATTACK_ANIM_BATTLE_ALLOWANCE} -- ` +
+        'this allowance must equal the real cost exactly, on every board.'
+    );
+  }
+});
+
+// §16 (docs/design-battle-animation.md), test plan row "Symbol check on
+// game.fns": pc_anim_attack is gated on the NARROW projectUsesPartyAttackAnim
+// alone (main/build/battletables.js), so it must be absent from a build that
+// never authors a party member's own attackAnim, even one that authors a
+// monster's or a spell's. battle_walk_wait has no gate at all (§16.3a/§16.3b)
+// -- present in every RPG battle bank, including the "off" build with no
+// battle-animation reference of any kind. Wrong implementation this catches:
+// pc_anim_attack emitted whenever the BROAD projectUsesAnyBattleAnimation is
+// live (the same mistake the table-existence hazard §16.6 warns about, run
+// the other direction -- a table nothing reads, rather than a missing one);
+// or battle_walk_wait accidentally gated on PARTY_ATTACK_ANIM_ENABLED,
+// leaving an unauthored-but-otherwise-ordinary RPG project unable to resolve
+// a physical Attack or a spell cast at all.
+test('game.fns: pc_anim_attack only in a party-on build, battle_walk_wait in every RPG build including off', {
+  skip: !hasNesasm && 'nesasm not found on PATH'
+}, async (t) => {
+  for (const mapper of CAPABLE_MAPPERS) {
+    const off = await measureRegion(t, mapper, () => {});
+    const monsterOnly = await measureRegion(t, mapper, (p) => {
+      p.sprites.actors[0].battle.attackAnim = 1;
+    });
+    const partyOnly = await measureRegion(t, mapper, (p) => {
+      p.party[0].attackAnim = 0;
+    });
+    const symbolsFor = async (measured) => fsp.readFile(path.join(measured.dir, 'build', 'game.fns'), 'utf8');
+
+    const offSymbols = await symbolsFor(off);
+    assert.doesNotMatch(offSymbols, /^pc_anim_attack\s*=/m, `${mapper.name}: an off build must not emit pc_anim_attack`);
+    assert.match(offSymbols, /^battle_walk_wait\s*=/m, `${mapper.name}: even an off build must carry battle_walk_wait -- the walk is unconditional`);
+
+    const monsterSymbols = await symbolsFor(monsterOnly);
+    assert.doesNotMatch(
+      monsterSymbols,
+      /^pc_anim_attack\s*=/m,
+      `${mapper.name}: a monster-only build must not emit pc_anim_attack -- PARTY_ATTACK_ANIM_ENABLED is a narrower gate than BATTLE_ANIM_ENABLED`
+    );
+    assert.match(monsterSymbols, /^battle_walk_wait\s*=/m, `${mapper.name}: a monster-only build must still carry battle_walk_wait`);
+
+    const partySymbols = await symbolsFor(partyOnly);
+    assert.match(partySymbols, /^pc_anim_attack\s*=/m, `${mapper.name}: a party-only build must emit pc_anim_attack`);
+    assert.match(partySymbols, /^battle_walk_wait\s*=/m, `${mapper.name}: a party-only build must still carry battle_walk_wait`);
+  }
+});
+
+// §16.10 row "Absolute battleRegionBytes(project, mapper) == nesasm usage,
+// per mapper, for ALL FIVE variants" -- the existing isolation tests above
+// only ever check a CODE DELTA between two variants (discarding the absolute
+// predicted figure); this asserts the absolute prediction against nesasm's
+// real usage directly, for every one of the five variants named in §16.9's
+// own measured table, on every RPG-capable board -- plus the two table-byte
+// deltas explicitly. Wrong implementation this catches: a battleRegionBytes
+// prediction that happens to match on the two variants the isolation tests
+// already build (off, monster-only) while silently drifting on spell-only or
+// party-only specifically, invisible to a delta-only test suite.
+const BATTLE_ANIM_FIVE_VARIANTS = {
+  off: (p) => { p.items = []; },
+  'monster-only': (p) => { p.items = []; p.sprites.actors[0].battle.attackAnim = 1; },
+  'spell-only': (p) => { p.items = []; p.spells[0].anim = 2; },
+  'party-only': (p) => { p.items = []; p.party[0].attackAnim = 0; },
+  mixed: (p) => { p.items = []; p.sprites.actors[0].battle.attackAnim = 1; p.party[0].attackAnim = 0; }
+};
+
+test('absolute battleRegionBytes == nesasm usage, per board, for all five battle-animation variants', {
+  skip: !hasNesasm && 'nesasm not found on PATH'
+}, async (t) => {
+  for (const mapper of CAPABLE_MAPPERS) {
+    const measured = {};
+    for (const [label, mutate] of Object.entries(BATTLE_ANIM_FIVE_VARIANTS)) {
+      const result = await measureRegion(t, mapper, mutate);
+      measured[label] = { ...result, tables: battleTableBytes(result.project) };
+      assert.equal(
+        result.used,
+        result.predicted,
+        `${mapper.name} (${label}): nesasm used ${result.used} bytes but battleRegionBytes predicts ${result.predicted}`
+      );
+    }
+    assert.equal(
+      measured['monster-only'].tables - measured.off.tables,
+      7,
+      `${mapper.name}: monster-only vs off should add exactly 7 table bytes (mon_anim_attack + spell_anim)`
+    );
+    assert.equal(
+      measured['spell-only'].tables - measured.off.tables,
+      7,
+      `${mapper.name}: spell-only vs off should add exactly 7 table bytes (mon_anim_attack + spell_anim)`
+    );
+    assert.equal(
+      measured['party-only'].tables - measured['monster-only'].tables,
+      2,
+      `${mapper.name}: party-only vs monster-only should add exactly 2 table bytes (pc_anim_attack, sample-rpg's own party.length)`
+    );
+    assert.equal(
+      measured.mixed.tables - measured['monster-only'].tables,
+      2,
+      `${mapper.name}: mixed vs monster-only should add exactly 2 table bytes too`
+    );
+  }
+});
+
+// §16.10 row "Mixed-reference removal ARITHMETIC" -- split from the labels
+// test below, which never actually called battleShortfallAdvice (review round
+// 3, P2-1). A project with both a monster's own attackAnim AND a party
+// member's own set: stripping the monster/spell reference alone must free 0
+// bytes (the party reference alone still needs the whole shared 264-byte
+// mechanism), stripping the party reference alone must free 12 (10 code + 2
+// table), and stripping both must free 283 (264 + 10 code, 7 + 2 table) --
+// identical on every RPG-capable board. Wrong implementation this catches: a
+// scope-inaccurate strip helper (one that also clears the OTHER reference
+// kind), or battleRegionBytes' own before/after recomputation silently
+// under/over-freeing when both references coexist.
+test('mixed-reference removal arithmetic: 0 / 12 / 283, on every RPG-capable board', async () => {
+  for (const mapper of CAPABLE_MAPPERS) {
+    const project = await loadProject(SAMPLE_RPG);
+    project.cartridge.mapper = mapper.id;
+    project.party[0].renamable = false;
+    if (project.party[1]) project.party[1].renamable = false;
+    project.sprites.actors[0].battle.attackAnim = 1;
+    project.party[0].attackAnim = 0;
+    const snapshot = structuredClone(project);
+
+    const budget = battleRegionBytes(project, mapper);
+    const monsterFreed = budget - battleRegionBytes(projectWithoutBattleAnimation(project), mapper);
+    const partyFreed = budget - battleRegionBytes(projectWithoutPartyAttackAnim(project), mapper);
+    const bothFreed = budget - battleRegionBytes(projectWithoutPartyAttackAnim(projectWithoutBattleAnimation(project)), mapper);
+
+    assert.equal(monsterFreed, 0, `${mapper.name}: stripping the monster/spell reference alone must free 0 bytes -- the party reference still needs the shared mechanism`);
+    assert.equal(partyFreed, 12, `${mapper.name}: stripping the party reference alone must free exactly 12 bytes (10 code + 2 table)`);
+    assert.equal(bothFreed, 283, `${mapper.name}: stripping both must free exactly 283 bytes (264 + 10 code, 7 + 2 table)`);
+    assert.deepEqual(project, snapshot, 'neither strip helper may mutate the project it was handed');
+  }
+});
+
+// §16.10 row "battleShortfallAdvice's own LABELS and recomputed savings" --
+// the monster/spell-scoped label and the party-scoped label must each appear
+// with their own correct recomputed savings, the zero-saving monster/spell
+// strip must never be offered as sufficient relief on its own, and no
+// walk-removal advice may appear anywhere (there is no such lever any more,
+// §16.6). Wrong implementation this catches: an advisor offering a lever that
+// frees nothing as if it were sufficient, mislabeling which scope a lever
+// strips (including the pre-existing, un-renamed 'every battle animation
+// reference' string, which overpromises), or a regression resurrecting a
+// walk-removal suggestion.
+test('battleShortfallAdvice: monster/spell and party attack-animation labels, correctly scoped and never a solo zero-saving offer', async () => {
+  const project = await loadProject(SAMPLE_RPG);
+  const mapper = SUPPORTED_MAPPERS.find((entry) => entry.id === project.cartridge.mapper);
+  project.party[0].renamable = false;
+  if (project.party[1]) project.party[1].renamable = false;
+  project.sprites.actors[0].battle.attackAnim = 1;
+  project.party[0].attackAnim = 0;
+
+  const budget = battleRegionBytes(project, mapper);
+  const monsterFreed = budget - battleRegionBytes(projectWithoutBattleAnimation(project), mapper);
+  const partyFreed = budget - battleRegionBytes(projectWithoutPartyAttackAnim(project), mapper);
+  const bothFreed = budget - battleRegionBytes(projectWithoutPartyAttackAnim(projectWithoutBattleAnimation(project)), mapper);
+  assert.equal(monsterFreed, 0);
+  assert.equal(partyFreed, 12);
+  assert.equal(bothFreed, 283);
+
+  const snapshot = structuredClone(project);
+
+  // A deficit only the party-only strip closes (> monsterFreed(0), <= partyFreed(12)).
+  // battleShortfallAdvice's own generic reduce levers (fewer actors/spells/
+  // party members, a lower level cap) are computed unconditionally alongside
+  // the banked-feature ones, so the message can be a list -- this only
+  // checks the party-scoped label's own presence/absence, the identical
+  // substring-match shape the pre-existing monster-spell-list/hero-naming
+  // tests above already use for the same reason.
+  const partyOnlyAdvice = battleShortfallAdvice(project, mapper, partyFreed);
+  assert.match(
+    partyOnlyAdvice,
+    /removing every party member's own attack animation/i,
+    `advice at deficit=${partyFreed} should offer the party-scoped lever, got: ${partyOnlyAdvice}`
+  );
+  assert.doesNotMatch(
+    partyOnlyAdvice,
+    /monster attack or spell animation reference/i,
+    `the zero-saving monster/spell lever must never be offered as sufficient alone, got: ${partyOnlyAdvice}`
+  );
+  assert.doesNotMatch(partyOnlyAdvice, /walk/i, 'no walk-removal advice may ever appear -- there is no such lever');
+  assert.deepEqual(project, snapshot, 'battleShortfallAdvice must not mutate the project');
+
+  // A deficit only the COMBINED strip closes (> partyFreed(12), <= bothFreed(283)).
+  const combinedAdvice = battleShortfallAdvice(project, mapper, bothFreed);
+  assert.match(
+    combinedAdvice,
+    /removing every monster attack or spell animation reference and every party member's own attack animation/i,
+    `advice at deficit=${bothFreed} should combine both correctly-scoped labels, got: ${combinedAdvice}`
+  );
+  assert.doesNotMatch(combinedAdvice, /walk/i, 'no walk-removal advice may ever appear -- there is no such lever');
+  assert.deepEqual(project, snapshot, 'battleShortfallAdvice must not mutate the project');
+
+  // The old, scope-inaccurate label must never appear anywhere -- a real
+  // regression this rename fixed once already (§16.5, fix round 4).
+  assert.doesNotMatch(partyOnlyAdvice, /'every battle animation reference'/, 'the old, un-renamed label must never appear');
+  assert.doesNotMatch(combinedAdvice, /'every battle animation reference'/, 'the old, un-renamed label must never appear');
+});
+
+// §16.10 row "Action projects reach zero effective battle-region
+// contribution, INCLUDING one that authors a battle-animation reference" --
+// battleRegionBytes(project, mapper) is a pure function of project content
+// and returns a real, nonzero HYPOTHETICAL figure for an action project
+// carrying an actor's own attackAnim, exactly as it would for an RPG; the
+// real exclusion happens one layer up, through codeRegions(), gated on
+// codeRegionCount(project) (gameType === 'rpg' alone). Wrong implementation
+// this catches: gating the battle region on battleRegionBytes(project,
+// mapper) > 0 instead of on gameType, letting an action project with an
+// authored attackAnim silently acquire a real battle-code bank it can never
+// reach.
+// Review round 1, P2 finding 4: comparing two ROMs built by THIS SAME
+// (candidate) implementation, with and without an authored attackAnim,
+// cannot detect an unintended change both builds happen to share -- it only
+// proves the reference itself doesn't move anything, not that nothing else
+// moved. The baseline-derived hash below closes that: the identical
+// authored project (mapper 1, sample's own actor 0 given attackAnim: 0) was
+// built once at a real f31987d worktree (`git worktree add <scratchpad>/
+// baseline-f31987d f31987d`, `node_modules` symlinked from the main tree),
+// its ROM sha256 recorded, and the worktree removed -- no worktree is
+// created at test time. sample's own actor.battle.attackAnim field already
+// existed at f31987d (a monster's own attack-animation reference predates
+// this whole party-visual slice), so the identical mutate function applies
+// unchanged there.
+const ACTION_ANIM_BASELINE_HASH = 'f47e7789bebc9a75463863cf48a3fe60d08014c34f8b7502405a3381e28339f9'; // f31987d, mapper 1, sample/ with actor 0's attackAnim = 0
+const ACTION_ANIM_BASELINE_SIZE = 139280;
+
+test('an action project authoring an actor\'s own attackAnim requests no battle region, and its built ROM carries no walk-related code', {
+  skip: !hasNesasm && 'nesasm not found on PATH'
+}, async (t) => {
+  const mapper = SUPPORTED_MAPPERS.find((entry) => entry.id === 1); // MMC1 -- rpgCapable, but this project's gameType stays 'action'
+  const buildActionVariant = async (name, mutate) => {
+    const dir = await fsp.mkdtemp(path.join(os.tmpdir(), `forge-${name}-`));
+    t.after(() => fsp.rm(dir, { recursive: true, force: true }));
+    const project = await loadProject(SAMPLE);
+    project.cartridge.mapper = mapper.id;
+    mutate(project);
+    await saveProject(dir, project);
+    const built = await buildProject({ dir, project, log: () => {} });
+    return { project, built, dir };
+  };
+
+  const withAnim = await buildActionVariant('actionanim-with', (p) => {
+    p.sprites.actors[0].battle.attackAnim = 0; // "Slime idle" -- a real, playable animation
+  });
+  assert.equal(withAnim.project.project.gameType, 'action', 'sanity: this must be an action project');
+  // battleRegionBytes itself is content-driven and does not know about
+  // gameType -- confirmed real and nonzero here, which is exactly why the
+  // exclusion must happen through codeRegionCount/codeRegions instead.
+  assert.ok(
+    battleRegionBytes(withAnim.project, mapper) > 0,
+    'sanity: battleRegionBytes must report a real, nonzero hypothetical figure for this project -- it is content-driven, not gameType-driven'
+  );
+  assert.equal(codeRegionCount(withAnim.project), 0, 'an action project must request zero banked code regions, regardless of its content');
+  assert.deepEqual(
+    codeRegions(mapper, withAnim.project.tilesets.length, codeRegionCount(withAnim.project)),
+    [],
+    'codeRegions must hand back nothing for an action project, even one authoring a battle-animation reference'
+  );
+
+  const hashOf = (romPath) => crypto.createHash('sha256').update(fs.readFileSync(romPath)).digest('hex');
+
+  // The baseline identity proof (review finding 4): this candidate build of
+  // the IDENTICAL authored project must match what f31987d itself produced,
+  // not merely match a second candidate build that could share an
+  // unintended change with the first.
+  assert.equal(
+    fs.statSync(withAnim.built.romPath).size,
+    ACTION_ANIM_BASELINE_SIZE,
+    'the candidate ROM size must match the f31987d baseline exactly'
+  );
+  assert.equal(
+    hashOf(withAnim.built.romPath),
+    ACTION_ANIM_BASELINE_HASH,
+    'the candidate build of this exact authored project must be byte-identical to the same project built at f31987d -- a change both a "with" and a "without" candidate build could share would be invisible to a candidate-vs-candidate comparison alone'
+  );
+
+  const withoutAnim = await buildActionVariant('actionanim-without', () => {});
+  assert.equal(
+    hashOf(withAnim.built.romPath),
+    hashOf(withoutAnim.built.romPath),
+    'an action project’s built ROM must be byte-identical whether or not an actor authors attackAnim -- the reference must never reach assembled code'
+  );
+
+  const symbols = await fsp.readFile(path.join(withAnim.dir, 'build', 'game.fns'), 'utf8');
+  assert.doesNotMatch(symbols, /^battle_walk_wait\s*=/m, 'an action build must carry no battle_walk_wait symbol at all');
+  assert.doesNotMatch(symbols, /^pc_anim_attack\s*=/m, 'an action build must carry no pc_anim_attack symbol at all');
 });
 
 // Phase 2a hit feedback (docs/design-battle-animation.md §12.7, §14 "Hit
@@ -780,10 +1121,16 @@ test('a mag-only build assembles byte-identical whether or not magic defence exi
   // blocks assemble to nothing when off -- is untouched by the diet (it is a
   // property of conditional assembly, not of which addressing mode a
   // surviving instruction uses).
+  // Re-pinned again (§16, docs/design-battle-animation.md, fix round 1): the
+  // party-caster walk forward (BP_WALK) is unconditional code in the RPG
+  // battle bank, per Chris's own "always on for RPGs" answer -- it moves
+  // every RPG-capable board's own hash the same way BE_RESTORE's +18 and the
+  // join-guard's own +5 above already did, unrelated to magic power/defence
+  // themselves.
   const HASHES = {
-    1: '8ba6e4b3b6df1cf98b6b3b351d4dbab0594f467cc7e97dc2f0625c98e959521a', // MMC1
-    4: '9b3eae678572ed33fbaced014fd621b96c4df5fe1bb957465e4f6d3df3db5e36', // MMC3
-    30: 'f94f6c2cfcb4f04b336e628bc99ece76254fae051ea379286ed68a3ab033e418' // UNROM 512
+    1: '7e29c9a1f3cd8e702c1c5d172755c24f54a79fca5315faae842102dfbffee32d', // MMC1
+    4: 'ce04db38e68a75c30a7cb5c54c9de5ab08cbf6bc66bc0a6de3c42c3467f63bd9', // MMC3
+    30: 'aa0a8b318ac4983476dabe4cf7ff7040c3448e8efd3f1f8129caa68eba75a130' // UNROM 512
   };
   for (const mapper of CAPABLE_MAPPERS) {
     const dir = await fsp.mkdtemp(path.join(os.tmpdir(), 'forge-magonly-hash-'));

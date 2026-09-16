@@ -1289,7 +1289,7 @@ check exists to prevent, one layer out. `battletables.js` imports only from `sha
 that way; `renderer/forges/build/build.js` importing it is the same move
 `renderer/forges/sound/sound.js` already makes with `main/build/songcompile.js`.
 
-`BASE_BATTLE_CODE_BYTES_BY_MAPPER` is per board (UNROM 512 3783, MMC1 3783, MMC3 3823), measured
+`BASE_BATTLE_CODE_BYTES_BY_MAPPER` is per board (UNROM 512 3839, MMC1 3839, MMC3 3879), measured
 directly rather than reconstructed from a running fix history — the same mistake
 `BASE_KERNEL_CODE_BYTES_BY_MAPPER` had to undo, and re-measured again by the zero-page kernel diet
 (`docs/design-kernel-diet.md`) for the same `<`-prefix reason every other figure in this file moved.
