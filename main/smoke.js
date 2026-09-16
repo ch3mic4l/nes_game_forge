@@ -8896,6 +8896,555 @@ const scenario = (dir, sampleDir, sampleRpgDir) => `
       }
     }
 
+    // Battle-side animation phase 2 (docs/design-battle-animation.md §16.8,
+    // §16.10's own last two PLANNED rows): the shared animationSelect
+    // dedupe across Magic, Monster and Character, and the Character Forge's
+    // own new field/preview. Still sample-rpg (rpgStore), party back to
+    // [firstMemberName, Iris, Doc] from the block above.
+    {
+      const findAnimationSelect = (labelText) => {
+        const label = [...document.querySelectorAll('#stage .field-label')].find((node) => node.textContent === labelText);
+        return label ? label.parentElement.querySelector('select') : null;
+      };
+      const optionsOf = (select) => [...select.options].map((o) => ({ text: o.textContent, value: o.value, selected: o.selected }));
+      const catalogListSelect = () => document.querySelector('#stage select'); // each Forge’s own catalog/party list is the first select rendered
+
+      const selectByText = (text) => {
+        const sel = catalogListSelect();
+        if (!sel) throw new Error('no catalog select found while choosing "' + text + '"');
+        const option = [...sel.options].find((o) => o.textContent === text);
+        if (!option) throw new Error('catalog select has no "' + text + '" option');
+        sel.value = option.value;
+        sel.dispatchEvent(new Event('change', { bubbles: true }));
+      };
+
+      // Item 5(a): three-Forge picker identity.
+      {
+        const iceIndexForIdentity = rpgStore.project.spells.findIndex((s) => s.name === 'Ice');
+        if (iceIndexForIdentity === -1) throw new Error('Ice should still be present for the animationSelect identity test');
+        const slimeActorIdForIdentity = rpgStore.project.sprites.actors.findIndex((a) => a.name === 'Slime');
+        if (slimeActorIdForIdentity === -1) throw new Error('Slime should still be present for the animationSelect identity test');
+        const realAnimId = rpgStore.project.sprites.animations.findIndex((a) => a.name === 'Slime');
+        if (realAnimId === -1) throw new Error('the Slime animation should still be present for the animationSelect identity test');
+        const staleAnimId = 250; // well past sample-rpg’s own three-entry catalog
+
+        const originalSpellAnim = rpgStore.project.spells[iceIndexForIdentity].anim;
+        const originalActorAnim = rpgStore.project.sprites.actors[slimeActorIdForIdentity].battle.attackAnim;
+        const originalMemberAnim = rpgStore.project.party[0].attackAnim;
+        const originalIrisRenamable = rpgStore.project.party[1].renamable;
+
+        const captureAllThree = async (value, label) => {
+          rpgStore.commit('smoke: set ' + label + ' on all three animationSelect fields', (project) => {
+            project.spells[iceIndexForIdentity].anim = value;
+            project.sprites.actors[slimeActorIdForIdentity].battle.attackAnim = value;
+            project.party[0].attackAnim = value;
+          });
+          await wait(150);
+
+          window.__app.goTo('magic');
+          await wait(200);
+          selectByText('Ice');
+          await wait(150);
+          const magicSelect = findAnimationSelect('Animation');
+          if (!magicSelect) throw new Error('Magic Forge has no Animation field for the identity test (' + label + ')');
+          const magicOptions = optionsOf(magicSelect);
+
+          window.__app.goTo('monster');
+          await wait(200);
+          selectByText('Slime');
+          await wait(150);
+          const monsterSelect = findAnimationSelect('Attack animation');
+          if (!monsterSelect) throw new Error('Monster Forge has no Attack animation field for the identity test (' + label + ')');
+          const monsterOptions = optionsOf(monsterSelect);
+
+          window.__app.goTo('character');
+          await wait(200);
+          selectByText(rpgStore.project.party[0].name);
+          await wait(150);
+          const characterSelect = findAnimationSelect('Attack animation');
+          if (!characterSelect) throw new Error('Character Forge has no Attack animation field for the identity test (' + label + ')');
+          const characterOptions = optionsOf(characterSelect);
+
+          if (
+            JSON.stringify(magicOptions) !== JSON.stringify(monsterOptions) ||
+            JSON.stringify(magicOptions) !== JSON.stringify(characterOptions)
+          ) {
+            throw new Error(
+              'the three Forges disagree on their own animation select options for ' +
+                label +
+                ': magic=' +
+                JSON.stringify(magicOptions) +
+                ' monster=' +
+                JSON.stringify(monsterOptions) +
+                ' character=' +
+                JSON.stringify(characterOptions)
+            );
+          }
+          return magicOptions;
+        };
+
+        const realOptions = await captureAllThree(realAnimId, 'a real animation id');
+        const realSelectedCount = realOptions.filter((o) => o.selected).length;
+        if (realSelectedCount !== 1) throw new Error('expected exactly one selected option for a real id, saw ' + realSelectedCount);
+
+        const staleOptions = await captureAllThree(staleAnimId, 'a stale id');
+        const staleSelected = staleOptions.find((o) => o.selected);
+        if (!staleSelected || staleSelected.text.indexOf('Missing animation') === -1) {
+          throw new Error('expected a selected "Missing animation N" option for a stale id, saw ' + JSON.stringify(staleSelected));
+        }
+
+        const nullOptions = await captureAllThree(null, 'null');
+        const nullSelected = nullOptions.find((o) => o.selected);
+        if (!nullSelected || nullSelected.text !== 'None') {
+          throw new Error('expected the None option selected for null, saw ' + JSON.stringify(nullSelected));
+        }
+
+        step(
+          'animationSelect identity across Magic, Monster and Character',
+          'a real id, a stale id (Missing animation N selected) and null (None selected) each produce identical option lists on all three Forges'
+        );
+
+        // Catalog freshness across a project-object SWAP, not just a
+        // commit-time mutation: store.commit mutates project.sprites.
+        // animations in place, so a cached reference to the same array
+        // would already see any addition, and could never be caught by a
+        // commit-only probe. store.undo()/store.redo() REPLACE store.
+        // project wholesale with a structuredClone snapshot -- a stale
+        // cached REFERENCE (as opposed to a stale cached value) would keep
+        // rendering the pre-swap catalog. This is what a defect caching the
+        // project inside the shared animationSelect (either a bare
+        // reference or a structuredClone snapshot taken once) fails against.
+        {
+          window.__app.goTo('character');
+          await wait(200);
+          selectByText(rpgStore.project.party[0].name);
+          await wait(150);
+
+          const animationsBeforeCatalogProbe = rpgStore.project.sprites.animations.length;
+          const hasProbeOption = () => {
+            const field = findAnimationSelect('Attack animation');
+            if (!field) throw new Error('Character Forge has no Attack animation field for the catalog-freshness probe');
+            return [...field.options].some((o) => o.textContent === 'IdentityProbe');
+          };
+
+          rpgStore.commit('smoke: add a catalog entry to probe animationSelect catalog freshness', (project) => {
+            project.sprites.animations.push({ id: animationsBeforeCatalogProbe, name: 'IdentityProbe', loop: false, frames: [] });
+          });
+          await wait(150);
+          if (!hasProbeOption()) {
+            throw new Error('expected the Character Attack animation select to gain the IdentityProbe option after the commit that added it');
+          }
+
+          if (!rpgStore.undo()) throw new Error('undo returned false for the catalog-freshness probe commit');
+          await wait(150);
+          if (hasProbeOption()) {
+            throw new Error('expected the IdentityProbe option to be gone from the freshly re-rendered select after undo replaced store.project');
+          }
+
+          if (!rpgStore.redo()) throw new Error('redo returned false for the catalog-freshness probe commit');
+          await wait(150);
+          if (!hasProbeOption()) {
+            throw new Error('expected the IdentityProbe option back after redo replaced store.project again');
+          }
+
+          rpgStore.commit('smoke: revert the catalog-freshness probe entry', (project) => {
+            project.sprites.animations.length = animationsBeforeCatalogProbe;
+          });
+          await wait(150);
+          if (hasProbeOption()) {
+            throw new Error('expected the IdentityProbe option gone after reverting the probe entry');
+          }
+          step(
+            'animationSelect catalog freshness across store.undo()/redo() (a project-object swap, not just a mutation)',
+            'the Character Attack animation select gains IdentityProbe on commit, loses it on undo (a fresh store.project object), and regains it on redo'
+          );
+        }
+
+        // The callback conversion and re-render persistence, on Character --
+        // the new consumer this phase adds.
+        window.__app.goTo('character');
+        await wait(200);
+        selectByText(rpgStore.project.party[0].name);
+        await wait(150);
+        const characterAnimSelect = findAnimationSelect('Attack animation');
+        if (!characterAnimSelect) throw new Error('Character Forge has no Attack animation field for the conversion test');
+        const slimeOptionOnCharacter = [...characterAnimSelect.options].find((o) => o.textContent === 'Slime');
+        if (!slimeOptionOnCharacter) throw new Error('Character Forge Attack animation select has no Slime option');
+        characterAnimSelect.value = slimeOptionOnCharacter.value;
+        characterAnimSelect.dispatchEvent(new Event('change', { bubbles: true }));
+        await wait(150);
+        if (typeof rpgStore.project.party[0].attackAnim !== 'number') {
+          throw new Error(
+            'choosing a real animation should commit a Number, saw ' +
+              JSON.stringify(rpgStore.project.party[0].attackAnim) +
+              ' (' +
+              typeof rpgStore.project.party[0].attackAnim +
+              ')'
+          );
+        }
+        const numericChoice = rpgStore.project.party[0].attackAnim;
+
+        // An unrelated commit forces a fresh render() elsewhere in the
+        // store -- the choice must still be there afterward, proving the
+        // field reads the live store rather than a value captured at mount.
+        rpgStore.commit('smoke: an unrelated commit, to prove the picker persists across a re-render', (project) => {
+          project.party[1].renamable = !project.party[1].renamable;
+        });
+        await wait(150);
+        const characterAnimSelectAfterRerender = findAnimationSelect('Attack animation');
+        if (Number(characterAnimSelectAfterRerender.value) !== numericChoice) {
+          throw new Error('the chosen animation did not survive an unrelated commit’s own re-render, saw ' + characterAnimSelectAfterRerender.value);
+        }
+        rpgStore.commit('smoke: revert the unrelated re-render probe', (project) => {
+          project.party[1].renamable = originalIrisRenamable;
+        });
+        await wait(150);
+
+        // Re-query after that commit's own render() -- the element captured
+        // above (characterAnimSelectAfterRerender) was already replaced by
+        // it, so dispatching on the stale reference would only prove its
+        // OLD, now-detached listener still commits, not that the control
+        // the user actually sees does. isConnected asserts the freshly
+        // queried node really is the one currently in the document.
+        const noneFieldB = findAnimationSelect('Attack animation');
+        if (!noneFieldB) throw new Error('Character Forge has no Attack animation field to choose None on');
+        if (!noneFieldB.isConnected) throw new Error('the re-queried Attack animation select is not connected to the document');
+        noneFieldB.value = '';
+        noneFieldB.dispatchEvent(new Event('change', { bubbles: true }));
+        await wait(150);
+        if (rpgStore.project.party[0].attackAnim !== null) {
+          throw new Error('choosing None should commit null, saw ' + JSON.stringify(rpgStore.project.party[0].attackAnim));
+        }
+        // Re-query again after the change's own render() -- the same
+        // detached-reference trap applies a second time if this were
+        // skipped, and this is the assertion finding 4 says was missing
+        // entirely: the freshly visible control, not just the store.
+        const noneFieldAfterB = findAnimationSelect('Attack animation');
+        if (!noneFieldAfterB) throw new Error('Character Forge lost its Attack animation field after choosing None');
+        if (!noneFieldAfterB.isConnected) throw new Error('the Attack animation select is not connected to the document after choosing None');
+        if (noneFieldAfterB.value !== '') {
+          throw new Error('expected the visible Attack animation select to read empty (None) after the commit, saw ' + JSON.stringify(noneFieldAfterB.value));
+        }
+        const noneSelectedOptionB = [...noneFieldAfterB.options].find((o) => o.selected);
+        if (!noneSelectedOptionB || noneSelectedOptionB.textContent !== 'None') {
+          throw new Error('expected the visible Attack animation select to show None selected, saw ' + JSON.stringify(noneSelectedOptionB?.textContent));
+        }
+        step(
+          'Character Forge Attack animation select: numeric/null conversion and re-render persistence',
+          'a chosen id commits as a Number, None commits null on the freshly re-queried, connected select, and the choice survives an unrelated commit’s own re-render'
+        );
+
+        rpgStore.commit('smoke: revert the animationSelect identity fixture', (project) => {
+          project.spells[iceIndexForIdentity].anim = originalSpellAnim;
+          project.sprites.actors[slimeActorIdForIdentity].battle.attackAnim = originalActorAnim;
+          project.party[0].attackAnim = originalMemberAnim;
+        });
+        await wait(150);
+      }
+
+      // Item 5(b): the Character Forge field + preview.
+      {
+        window.__app.goTo('character');
+        await wait(200);
+        selectByText(rpgStore.project.party[0].name);
+        await wait(150);
+
+        const realAnimId2 = rpgStore.project.sprites.animations.findIndex((a) => a.name === 'Slime');
+        if (realAnimId2 === -1) throw new Error('the Slime animation should still be present for the Character Forge field+preview test');
+
+        // Pick a real animation for the selected member: committed, and the
+        // select still shows it after the re-render the click itself causes.
+        const fieldSelectB = findAnimationSelect('Attack animation');
+        if (!fieldSelectB) throw new Error('Character Forge has no Attack animation field for member 0');
+        const slimeOptionB = [...fieldSelectB.options].find((o) => o.textContent === 'Slime');
+        if (!slimeOptionB) throw new Error('Character Forge Attack animation select has no Slime option');
+        fieldSelectB.value = slimeOptionB.value;
+        fieldSelectB.dispatchEvent(new Event('change', { bubbles: true }));
+        await wait(150);
+        if (rpgStore.project.party[0].attackAnim !== realAnimId2) {
+          throw new Error('expected party[0].attackAnim to commit to ' + realAnimId2 + ', saw ' + rpgStore.project.party[0].attackAnim);
+        }
+        if (Number(findAnimationSelect('Attack animation').value) !== realAnimId2) {
+          throw new Error('the Attack animation select did not keep showing the chosen id after its own re-render');
+        }
+
+        // store.undo() clears it back to null; the select shows None.
+        if (!rpgStore.undo()) throw new Error('undo returned false for the Attack animation commit');
+        await wait(150);
+        if (rpgStore.project.party[0].attackAnim !== null) {
+          throw new Error('expected party[0].attackAnim back to null after undo, saw ' + JSON.stringify(rpgStore.project.party[0].attackAnim));
+        }
+        const selectAfterUndo = findAnimationSelect('Attack animation');
+        const noneSelectedAfterUndo = [...selectAfterUndo.options].find((o) => o.selected);
+        if (!noneSelectedAfterUndo || noneSelectedAfterUndo.textContent !== 'None') {
+          throw new Error('expected the None option selected after undo, saw ' + JSON.stringify(noneSelectedAfterUndo?.textContent));
+        }
+
+        // Redo to keep the later steps’ state as they expect.
+        if (!rpgStore.redo()) throw new Error('redo returned false for the Attack animation commit');
+        await wait(150);
+        if (rpgStore.project.party[0].attackAnim !== realAnimId2) {
+          throw new Error('expected party[0].attackAnim back to ' + realAnimId2 + ' after redo, saw ' + rpgStore.project.party[0].attackAnim);
+        }
+        step(
+          'Character Forge Attack animation field commits, persists across a re-render, and undoes/redoes cleanly',
+          'party[0].attackAnim: null -> ' + realAnimId2 + ' -> null (undo) -> ' + realAnimId2 + ' (redo)'
+        );
+
+        // A second member (Iris, index 1) with the SAME animation id:
+        // playback must be RETAINED, not restarted (docs/design-battle-
+        // animation.md §16.8's own "playback is retained" rule). A
+        // dedicated two-frame fixture (durations 30 then 20, the identical
+        // shape the Magic Forge preview smoke test above already uses) so
+        // "still mid-flight" is unambiguous from a single canvas snapshot.
+        const tileA = 40; // background tile ids used nowhere else on this tileset’s own reserved range
+        const tileB = 41;
+        const tileC = 42;
+        const tileD = 43;
+        const battleTilesetIdForB = rpgStore.project.rpg.battleTilesetId;
+        const originalTileAForB = rpgStore.project.tilesets[battleTilesetIdForB].sprites.tiles[tileA];
+        const originalTileBForB = rpgStore.project.tilesets[battleTilesetIdForB].sprites.tiles[tileB];
+        const originalTileCForB = rpgStore.project.tilesets[battleTilesetIdForB].sprites.tiles[tileC];
+        const originalTileDForB = rpgStore.project.tilesets[battleTilesetIdForB].sprites.tiles[tileD];
+        const animationsBeforeB = rpgStore.project.sprites.animations.length;
+        const metaspritesBeforeB = rpgStore.project.sprites.metasprites.length;
+        let retainAnimId;
+        rpgStore.commit('smoke: seed a two-frame playback-retention fixture for the Character Forge preview', (project) => {
+          const bt = project.rpg.battleTilesetId;
+          project.tilesets[bt].sprites.tiles[tileA] = '3'.repeat(64);
+          project.tilesets[bt].sprites.tiles[tileB] = '2'.repeat(64); // a VALID palette index (0-3) -- '4' silently falls back to 0/transparent (shared/chr.js tileFromString), indistinguishable from a truly-cleared canvas
+          const metaA = project.sprites.metasprites.length;
+          project.sprites.metasprites.push({
+            id: metaA,
+            name: 'RetainA',
+            tiles: [{ x: 0, y: 0, tile: tileA, palette: 0, hflip: false, vflip: false }]
+          });
+          const metaB = project.sprites.metasprites.length;
+          project.sprites.metasprites.push({
+            id: metaB,
+            name: 'RetainB',
+            tiles: [{ x: 0, y: 0, tile: tileB, palette: 0, hflip: false, vflip: false }]
+          });
+          retainAnimId = project.sprites.animations.length;
+          project.sprites.animations.push({
+            id: retainAnimId,
+            name: 'RetainFx',
+            loop: false,
+            frames: [
+              { metaspriteId: metaA, duration: 30 },
+              { metaspriteId: metaB, duration: 20 }
+            ]
+          });
+          project.party[0].attackAnim = retainAnimId;
+          project.party[1].attackAnim = retainAnimId; // Iris -- the SAME id
+        });
+
+        // Already on Character Forge with member 0 selected (the block
+        // above never navigated away), so no goTo/selectByText/await is
+        // needed to arm -- and deliberately none is used from here through
+        // the termination check below. The Magic Forge preview smoke test
+        // above hit exactly this race once (its own P2-1 comment): an
+        // an await between the arm and an observation lets the widget's own
+        // REAL requestAnimationFrame loop (already running once armed,
+        // since this widget uses the real scheduler, not a fake one) tick
+        // against frames this test has not yet observed, racing the
+        // explicit stepPreview() calls below. The whole arm-through-
+        // termination sequence therefore runs as one synchronous block, the
+        // same fix that test already applies.
+        const previewCanvasB = () => document.querySelector('#stage canvas.battlefx-canvas');
+        if (!previewCanvasB()) throw new Error('Character Forge preview canvas did not mount for a member with a live attackAnim');
+        const obs0B = previewCanvasB().toDataURL();
+
+        // Cross into frame 1 (timer 5 of 20), still mid-flight -- the same
+        // stepPreview()-through-the-mount-contract technique the Magic/
+        // Monster preview smoke steps already use.
+        for (let i = 0; i < 35; i++) window.__app.current.stepPreview();
+        const midFlightB = previewCanvasB().toDataURL();
+        if (midFlightB === obs0B) {
+          throw new Error('sanity: mid-flight (frame 1) should look different from observation 0 (frame 0)');
+        }
+
+        // Switch selection to Iris (SAME attackAnim id): still no await, so
+        // if playback is retained (armedId/armedSignature unchanged ->
+        // sync() does not re-arm) the canvas must be pixel-identical to the
+        // pre-switch mid-flight snapshot, not reset to observation 0.
+        selectByText('Iris');
+        const afterSwitchB = previewCanvasB().toDataURL();
+        if (afterSwitchB !== midFlightB) {
+          throw new Error('switching to a different member with the SAME attackAnim id must retain playback, not restart it -- expected the pre-switch mid-flight pixels');
+        }
+        if (afterSwitchB === obs0B) {
+          throw new Error('sanity: the retained mid-flight snapshot must still differ from observation 0');
+        }
+
+        // And playback keeps advancing normally from there (proving this is
+        // a live, still-running widget, not a frozen leftover canvas) --
+        // ticked until the button reads "Replay" (natural termination,
+        // bt_fx_anim == NO_ANIM's own JS mirror), the same signal the
+        // Magic Forge preview smoke test above reads, rather than a fixed
+        // count, so this cannot drift against exactly how many ticks
+        // mid-flight already consumed.
+        const previewButtonB = () => document.querySelector('#stage .battlefx-button');
+        const previewCaptionB = () => document.querySelector('#stage p.battlefx-caption');
+        const buttonTextRightAfterSwitch = previewButtonB().textContent;
+        let ticksToTerminationB = 0;
+        while (previewButtonB().textContent !== 'Replay' && ticksToTerminationB < 40) {
+          window.__app.current.stepPreview();
+          ticksToTerminationB++;
+        }
+        if (previewButtonB().textContent !== 'Replay') {
+          throw new Error('expected the preview to reach natural termination (button reading Replay) within 40 more ticks after the switch, saw button="' + previewButtonB().textContent + '"');
+        }
+        const terminatedB = previewCanvasB().toDataURL();
+        if (terminatedB === afterSwitchB) {
+          throw new Error(
+            'expected playback to keep advancing (to termination) after the member switch, not stay frozen -- diagnostics: buttonRightAfterSwitch="' +
+              buttonTextRightAfterSwitch +
+              '" ticksToTermination=' +
+              ticksToTerminationB +
+              ' captionAtTermination=' +
+              JSON.stringify(previewCaptionB()?.textContent) +
+              ' canvasWH=' +
+              previewCanvasB().width +
+              'x' +
+              previewCanvasB().height +
+              ' afterSwitchLen=' +
+              afterSwitchB.length +
+              ' terminatedLen=' +
+              terminatedB.length
+          );
+        }
+        step(
+          'Character Forge preview: switching to a different member with the SAME attackAnim id retains playback, not restarted',
+          'mid-flight pixels survive the switch unchanged, then continue advancing to natural termination in ' + ticksToTerminationB + ' more ticks'
+        );
+
+        // Per-member correctness: the retention test above deliberately gives
+        // member 0 and Iris the SAME attackAnim id, so it cannot catch
+        // getAnimationId reading the wrong member (e.g. always party[0])
+        // -- a bug the identity check above also cannot catch, since it
+        // never changes which member is selected. Doc (party[2]) carries a
+        // DIFFERENT animation (RetainFxWide, two tiles side by side, 16px
+        // wide) from member 0's (RetainFx, one tile, 8px wide), so the
+        // preview's own canvas width is ground truth for which member's
+        // animation is actually showing. A separate commit from the
+        // retention fixture above, deliberately -- bundling it into that
+        // commit measurably shifted the real-time RAF pacing the retention
+        // test's own tick budget depends on and made it flaky.
+        let retainWideAnimId;
+        rpgStore.commit('smoke: seed a second, differently-sized attackAnim fixture for a non-member-0 selection check', (project) => {
+          const bt = project.rpg.battleTilesetId;
+          project.tilesets[bt].sprites.tiles[tileC] = '1'.repeat(64);
+          project.tilesets[bt].sprites.tiles[tileD] = '3'.repeat(64);
+          const metaWide = project.sprites.metasprites.length;
+          project.sprites.metasprites.push({
+            id: metaWide,
+            name: 'RetainWide',
+            tiles: [
+              { x: 0, y: 0, tile: tileC, palette: 0, hflip: false, vflip: false },
+              { x: 8, y: 0, tile: tileD, palette: 0, hflip: false, vflip: false }
+            ]
+          });
+          retainWideAnimId = project.sprites.animations.length;
+          project.sprites.animations.push({
+            id: retainWideAnimId,
+            name: 'RetainFxWide',
+            loop: false,
+            frames: [{ metaspriteId: metaWide, duration: 30 }]
+          });
+          project.party[2].attackAnim = retainWideAnimId; // Doc -- a DIFFERENT id, different bounds, from member 0’s
+        });
+        await wait(150);
+
+        selectByText(rpgStore.project.party[0].name);
+        await wait(150);
+        const member0PreviewWidthB = previewCanvasB().width;
+        if (member0PreviewWidthB !== 8) {
+          throw new Error('expected member 0 (RetainFx, one 8x8 tile) to report an 8px-wide preview, saw ' + member0PreviewWidthB);
+        }
+        selectByText('Doc');
+        await wait(150);
+        const docPreviewWidthB = previewCanvasB().width;
+        if (docPreviewWidthB !== 16) {
+          throw new Error(
+            'expected Doc, whose own attackAnim (RetainFxWide, two side-by-side tiles) differs from member 0’s, to report a 16px-wide preview -- saw ' +
+              docPreviewWidthB +
+              'px (getAnimationId must read the SELECTED member, not always member 0)'
+          );
+        }
+        step(
+          "Character Forge preview reflects the SELECTED member's own attackAnim, not always member 0's",
+          'member 0 (RetainFx, 8px wide) and Doc (RetainFxWide, 16px wide) each report their own distinct preview width'
+        );
+        selectByText(rpgStore.project.party[0].name);
+        await wait(150);
+
+        // A STALE id: the picker shows "Missing animation N" selected, and
+        // the preview shows the widget’s own missing-reference caption.
+        selectByText(rpgStore.project.party[0].name);
+        await wait(150);
+        rpgStore.commit('smoke: give member 0 a stale attackAnim', (project) => {
+          project.party[0].attackAnim = 251;
+        });
+        await wait(150);
+        const staleFieldB = findAnimationSelect('Attack animation');
+        const staleSelectedB = [...staleFieldB.options].find((o) => o.selected);
+        if (!staleSelectedB || staleSelectedB.textContent.indexOf('Missing animation') === -1) {
+          throw new Error('expected a selected "Missing animation N" option for the stale id, saw ' + JSON.stringify(staleSelectedB?.textContent));
+        }
+        const staleCaptionB = document.querySelector('#stage p.battlefx-caption');
+        if (!staleCaptionB || staleCaptionB.textContent !== 'This animation no longer exists') {
+          throw new Error('expected the widget’s own missing-reference caption, saw ' + JSON.stringify(staleCaptionB?.textContent));
+        }
+        step(
+          'Character Forge: a stale attackAnim shows "Missing animation N" selected and the preview’s own missing-reference caption',
+          'caption="' + staleCaptionB.textContent + '"'
+        );
+
+        // Undo back across a selection change: switch which member is
+        // selected in the UI (a local, uncommitted Forge state) BEFORE
+        // undoing the stale-id commit, then switch back and confirm the
+        // undo landed on the right member regardless of who the UI was
+        // showing when undo() was called -- proving the field re-derives
+        // the live member fresh on every render rather than trusting a
+        // cached reference captured at selection time.
+        selectByText('Doc');
+        await wait(150);
+        if (!rpgStore.undo()) throw new Error('undo returned false for the stale-attackAnim commit');
+        await wait(150);
+        if (rpgStore.project.party[0].attackAnim !== retainAnimId) {
+          throw new Error('expected party[0].attackAnim back to ' + retainAnimId + ' after undo, saw ' + JSON.stringify(rpgStore.project.party[0].attackAnim));
+        }
+        selectByText(rpgStore.project.party[0].name);
+        await wait(150);
+        const restoredFieldB = findAnimationSelect('Attack animation');
+        if (Number(restoredFieldB.value) !== retainAnimId) {
+          throw new Error('expected the Attack animation select to show ' + retainAnimId + ' again after undoing across a selection change, saw ' + restoredFieldB.value);
+        }
+        step(
+          'Character Forge: undo across a selection change lands on the right member',
+          'undoing the stale-id commit while Doc was selected still correctly restored member 0’s own field'
+        );
+
+        // Cleanup: revert the fixture entirely, by commit, never by
+        // store.undo() past this point (the remaining undo history is left
+        // alone for whatever runs after this block).
+        rpgStore.commit('smoke: revert the playback-retention fixture', (project) => {
+          project.party[0].attackAnim = null;
+          project.party[1].attackAnim = null;
+          project.party[2].attackAnim = null;
+          project.sprites.animations.length = animationsBeforeB;
+          project.sprites.metasprites.length = metaspritesBeforeB;
+          const bt = project.rpg.battleTilesetId;
+          project.tilesets[bt].sprites.tiles[tileA] = originalTileAForB;
+          project.tilesets[bt].sprites.tiles[tileB] = originalTileBForB;
+          project.tilesets[bt].sprites.tiles[tileC] = originalTileCForB;
+          project.tilesets[bt].sprites.tiles[tileD] = originalTileDForB;
+        });
+        await wait(150);
+      }
+    }
+
     // Back to Magic Forge, active rail item and all -- the next block (§11.3
     // bullet 3) depends on that being true going in, the same way this block
     // depended on it being true when it started (Magic Forge was the active
@@ -8945,6 +9494,27 @@ const scenario = (dir, sampleDir, sampleRpgDir) => `
     if (addButtonAction.title.indexOf('one character') === -1) {
       throw new Error('expected the Add button’s disabled reason to explain the one-character limit, saw: ' + JSON.stringify(addButtonAction.title));
     }
+
+    // §16.8: no Attack animation field on an action project (isRpg-only),
+    // and the preview host stays hidden -- a style toggle, never a
+    // mount/unmount, so it exists in the DOM but must not be displayed.
+    const actionAttackAnimLabel = [...document.querySelectorAll('#stage .field-label')].find((node) => node.textContent === 'Attack animation');
+    if (actionAttackAnimLabel) {
+      throw new Error('an action project’s Character Forge must have no Attack animation field at all');
+    }
+    const actionPreviewCanvas = document.querySelector('#stage canvas.battlefx-canvas');
+    if (!actionPreviewCanvas) {
+      throw new Error('the preview widget must still be mounted (in the DOM) on an action project, only hidden');
+    }
+    const actionPreviewHost = actionPreviewCanvas.closest('.battlefx-preview').parentElement;
+    if (getComputedStyle(actionPreviewHost).display !== 'none') {
+      throw new Error('expected the Character Forge preview host to be display:none on an action project, saw ' + getComputedStyle(actionPreviewHost).display);
+    }
+    step(
+      'Character Forge action project: no Attack animation field, and the preview host is mounted but not displayed',
+      'display="' + getComputedStyle(actionPreviewHost).display + '"'
+    );
+
     const fieldSpriteLink = [...document.querySelectorAll('#stage button')].find(
       (b) => b.textContent.trim() === 'Edit in the Tile Forge →'
     );

@@ -12,10 +12,9 @@ import {
   SPELL_KINDS,
   SPELL_SCOPES,
   createSpell,
-  renumberSpellDeletion,
-  animationPickerOptions
+  renumberSpellDeletion
 } from '../../../shared/project.js';
-import { mountBattleFxPreview } from '../../widgets/battlefxpreview.js';
+import { mountBattleFxPreview, animationSelect } from '../../widgets/battlefxpreview.js';
 
 const NAME_LIMIT = RPG_LIMITS.nameLength;
 
@@ -41,24 +40,6 @@ const select = (options, value, onChange) =>
     { onchange: (event) => onChange(event.target.value) },
     options.map((entry) => el('option', { value: entry.id, selected: entry.id === value }, entry.label))
   );
-
-// A battle animation picker: "None" (null) plus every catalog entry, plus --
-// only when the currently stored id does not resolve -- a synthetic, always-
-// selected "Missing animation N" option, so re-rendering the select never
-// silently substitutes a real animation for a stale one
-// (docs/design-battle-animation.md §4, animationPickerOptions/shared/project.js).
-const animationSelect = (selectedId, onChange) => {
-  const options = animationPickerOptions(store.project, selectedId);
-  return el(
-    'select',
-    { onchange: (event) => onChange(event.target.value === '' ? null : Number(event.target.value)) },
-    el('option', { value: '', selected: selectedId === null || selectedId === undefined }, 'None'),
-    options.missing
-      ? el('option', { value: options.missing.value, selected: true }, options.missing.label)
-      : null,
-    options.healthy.map((option) => el('option', { value: option.value, selected: option.selected }, option.label))
-  );
-};
 
 export function mount(container, app) {
   const state = { selected: 0 };
@@ -250,7 +231,7 @@ export function mount(container, app) {
             field('Scope', select(SPELL_SCOPES, current.scope, (value) => updateSpell('Change spell scope', (entry) => (entry.scope = value)))),
             field(
               'Animation',
-              animationSelect(current.anim ?? null, (value) =>
+              animationSelect(store.project, current.anim ?? null, (value) =>
                 updateSpell('Change spell animation', (entry) => (entry.anim = value))
               )
             )

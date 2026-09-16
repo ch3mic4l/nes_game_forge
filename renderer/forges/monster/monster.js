@@ -24,12 +24,11 @@ import {
   MONSTER_GROWTH_FIELDS,
   planMonsterGrowth,
   applyMonsterGrowth,
-  ACTOR_BATTLE_DEFAULTS,
-  animationPickerOptions
+  ACTOR_BATTLE_DEFAULTS
 } from '../../../shared/project.js';
 import { FONT_BASE } from '../../../shared/font.js';
 import { drawSheet, sheetIndexFromEvent, SHEET_COLS } from '../../widgets/sheet.js';
-import { mountBattleFxPreview } from '../../widgets/battlefxpreview.js';
+import { mountBattleFxPreview, animationSelect } from '../../widgets/battlefxpreview.js';
 
 const number = (value, min, max, onChange, title = null) =>
   el('input', {
@@ -80,24 +79,6 @@ const select = (options, value, onChange) =>
   );
 
 const row = (...children) => el('div.field-row', { style: { gap: '8px', marginBottom: '6px' } }, ...children);
-
-// A battle animation picker: "None" (null) plus every catalog entry, plus --
-// only when the currently stored id does not resolve -- a synthetic, always-
-// selected "Missing animation N" option, so re-rendering the select never
-// silently substitutes a real animation for a stale one
-// (docs/design-battle-animation.md §4, animationPickerOptions/shared/project.js).
-const animationSelect = (selectedId, onChange) => {
-  const options = animationPickerOptions(store.project, selectedId);
-  return el(
-    'select',
-    { onchange: (event) => onChange(event.target.value === '' ? null : Number(event.target.value)) },
-    el('option', { value: '', selected: selectedId === null || selectedId === undefined }, 'None'),
-    options.missing
-      ? el('option', { value: options.missing.value, selected: true }, options.missing.label)
-      : null,
-    options.healthy.map((option) => el('option', { value: option.value, selected: option.selected }, option.label))
-  );
-};
 
 // The renderer default for each of the seven derivable stats -- read by both
 // battleSection's own per-field `?? default` widgets below and the derive
@@ -286,7 +267,7 @@ export function battleSection(actor, index, rerender, openDerive) {
       field('Palette', number(battle.battlePalette ?? ACTOR_BATTLE_DEFAULTS.battlePalette, 0, 3, (value) => set('battlePalette', value))),
       field(
         'Attack animation',
-        animationSelect(battle.attackAnim ?? null, (value) => set('attackAnim', value))
+        animationSelect(store.project, battle.attackAnim ?? null, (value) => set('attackAnim', value))
       )
     )
   );

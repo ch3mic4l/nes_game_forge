@@ -9,11 +9,40 @@
 import { el, fill, fitZoom, observeSize } from '../ui.js';
 import { armBattleFx, tickBattleFx, drawnBattleFx, createBattleFxPacer, battleFxBounds } from './battlefx.js';
 import { drawMetaspritePreview } from './metasprite.js';
-import { isPlayableBattleAnimation, isValidAnimationRef, battleFxOamRoom, tilesetAt } from '../../shared/project.js';
+import {
+  isPlayableBattleAnimation,
+  isValidAnimationRef,
+  battleFxOamRoom,
+  tilesetAt,
+  animationPickerOptions
+} from '../../shared/project.js';
 import { tileFromString } from '../../shared/chr.js';
 import { resolveMapper } from '../../shared/cartridge.js';
 
 const BLANK_BOUNDS = { width: 64, height: 64, originX: 0, originY: 0 };
+
+// A battle animation picker: "None" (null) plus every catalog entry, plus --
+// only when the currently stored id does not resolve -- a synthetic, always-
+// selected "Missing animation N" option, so re-rendering the select never
+// silently substitutes a real animation for a stale one
+// (docs/design-battle-animation.md §4, animationPickerOptions/shared/project.js).
+// §16.8: deduped here (Chris's own "Dedupe all three now" answer) rather than
+// living in each Forge -- `project` is an explicit parameter, not a
+// closed-over global reference, so this module keeps the same
+// caller-supplies-everything shape mountBattleFxPreview's own
+// getProject/getAnimationId callbacks already use.
+export function animationSelect(project, selectedId, onChange) {
+  const options = animationPickerOptions(project, selectedId);
+  return el(
+    'select',
+    { onchange: (event) => onChange(event.target.value === '' ? null : Number(event.target.value)) },
+    el('option', { value: '', selected: selectedId === null || selectedId === undefined }, 'None'),
+    options.missing
+      ? el('option', { value: options.missing.value, selected: true }, options.missing.label)
+      : null,
+    options.healthy.map((option) => el('option', { value: option.value, selected: option.selected }, option.label))
+  );
+}
 
 /**
  * Mounts the preview into `host`, which the widget owns completely: a canvas

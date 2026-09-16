@@ -20,6 +20,7 @@ import {
   storageIndex
 } from '../../../shared/project.js';
 import { drawMetaspritePreview } from '../../widgets/metasprite.js';
+import { mountBattleFxPreview, animationSelect } from '../../widgets/battlefxpreview.js';
 
 const number = (value, min, max, onChange, title = null) =>
   el('input', {
@@ -76,7 +77,28 @@ export function mount(container, app) {
   const state = { selected: 0 };
 
   const listHost = el('div');
+
+  // A persistent fields/preview split (docs/design-battle-animation.md
+  // §16.8, §15.5's own precedent): detailHost is replaceable on every
+  // render(), previewHost is handed to mountBattleFxPreview ONCE at mount
+  // and never touched by fill() again. Unlike Magic/Monster, this Forge
+  // mounts on BOTH game types, so previewHost's own visibility is toggled
+  // by render() (isRpg ? '' : 'none') rather than always shown -- a style
+  // toggle, never a mount/unmount cycle, so the widget's own playback state
+  // survives switching between an RPG's Character Forge and an action
+  // project's.
+  const detailBody = el('div.panel-body');
   const detailHost = el('div');
+  const previewHost = el('div', { style: { marginTop: '16px', maxWidth: '360px' } });
+  fill(detailBody, detailHost, previewHost);
+
+  const preview = mountBattleFxPreview(previewHost, {
+    getProject: () => store.project,
+    getAnimationId: () => {
+      if (store.project.project.gameType !== 'rpg') return null;
+      return store.project.party[state.selected]?.attackAnim ?? null;
+    }
+  });
 
   function setMember(index, key, value) {
     store.commit('Change character', (project) => {
@@ -346,6 +368,14 @@ export function mount(container, app) {
                 battleCanvas
               );
             })()
+          : null,
+        isRpg
+          ? el(
+              'div',
+              null,
+              el('div.field-label', null, 'Attack animation'),
+              animationSelect(store.project, member.attackAnim ?? null, (value) => setMember(index, 'attackAnim', value))
+            )
           : null
       ),
       isRpg
@@ -363,6 +393,13 @@ export function mount(container, app) {
     if (state.selected >= party.length) state.selected = Math.max(0, party.length - 1);
     renderList();
     renderDetail();
+
+    // previewHost is never touched by fill() -- only its own visibility
+    // toggles, so the widget's own internal playback state survives a
+    // game-type check untouched (docs/design-battle-animation.md §16.8).
+    const isRpg = store.project.project.gameType === 'rpg';
+    previewHost.style.display = isRpg ? '' : 'none';
+    preview.sync();
   }
 
   const root = el(
@@ -378,7 +415,7 @@ export function mount(container, app) {
       'div.panel',
       { style: { borderRight: 'none' } },
       el('div.panel-head', null, 'Character Forge'),
-      el('div.panel-body', null, detailHost)
+      detailBody
     )
   );
 
@@ -388,8 +425,10 @@ export function mount(container, app) {
 
   return {
     destroy() {
+      preview.destroy();
       app.setMeta('');
     },
-    onProjectChange: render
+    onProjectChange: render,
+    stepPreview: () => preview.stepPreview()
   };
 }
