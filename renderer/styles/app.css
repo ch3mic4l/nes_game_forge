@@ -1381,6 +1381,18 @@ canvas.sheet {
   background: var(--accent);
 }
 
+.code-tab-kind {
+  flex: none;
+  padding: 1px 5px;
+  border-radius: 999px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: 9px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
 .code-tab-close {
   flex: none;
   background: none;
@@ -1434,7 +1446,8 @@ canvas.sheet {
 /* One pane normally, two side by side once a second tab is opened in the
    split pane (`.code-pane[hidden]` then, via the global `[hidden]` rule
    above). Each pane is an ordinary flex box, not an integer-zoomed pixel
-   canvas, so a divider between them is plain CSS -- no resize handler. */
+   canvas, so the draggable divider between them (below) sets a plain
+   percentage flex-basis and needs no window-resize handler of its own. */
 .code-panes {
   flex: 1;
   min-height: 0;
@@ -1450,8 +1463,31 @@ canvas.sheet {
   overflow: hidden;
 }
 
-.code-pane + .code-pane {
+/* Sits between the two panes -- hidden with them by the same global `[hidden]`
+   rule above, so there is nothing to drag while single. Percent-based (the
+   left pane's own inline `flex-basis`, set in code.js), not a resize handler,
+   so a window resize keeps whatever ratio it was left at. Its own real 6px of
+   flex layout width, not a zero-net-width item pulled over its neighbors with
+   negative margins -- that overlapped the left textarea's own scrollbar by
+   3px, stealing clicks meant for it (review round 1). */
+.code-divider {
+  flex: none;
+  width: 6px;
   border-left: 1px solid var(--line-soft);
+  cursor: col-resize;
+}
+
+.code-divider:hover,
+.code-panes.dragging .code-divider {
+  border-left-color: var(--accent-line);
+  background: var(--accent-soft);
+}
+
+/* While dragging, the panes must neither steal the pointer nor select text
+   out from under it. */
+.code-panes.dragging .code-pane {
+  pointer-events: none;
+  user-select: none;
 }
 
 .code-hint {

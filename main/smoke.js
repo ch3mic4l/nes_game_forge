@@ -13931,6 +13931,229 @@ export async function runSmoke(window) {
     // this way for exactly this reason.
     const findsInStrip = (selector, text) =>
       `[...document.querySelectorAll('#stage ${selector}')].some((n) => n.textContent.trim() === ${JSON.stringify(text)})`;
+
+    // Fix round 2: a shared window.fetch gate for forge://app/engine/*
+    // requests, keyed per file name, each with its own arrival/release/
+    // responded signals -- so a step can prove a request genuinely reached
+    // the gate and genuinely completed, instead of sleeping a guessed number
+    // of milliseconds and hoping. install/uninstall are idempotent so
+    // several steps can share one installation.
+    const installFetchGate = () =>
+      window.webContents.executeJavaScript(`(() => {
+        if (window.__smokeGateInstalled) return true;
+        window.__smokeGateInstalled = true;
+        window.__smokeRealFetch = window.fetch.bind(window);
+        window.__smokeGates = new Map();
+        // Names in here get a synthetic failure instead of the real fetch --
+        // a non-ok Response, which is exactly what readStock's own
+        // \`if (!response.ok) throw\` already treats as a stock-read error.
+        window.__smokeGateFail = new Set();
+        window.fetch = (...args) => {
+          const url = args[0];
+          if (typeof url !== 'string' || !url.startsWith('forge://app/engine/')) {
+            return window.__smokeRealFetch(...args);
+          }
+          const name = url.slice('forge://app/engine/'.length);
+          let gate = window.__smokeGates.get(name);
+          if (!gate) {
+            let resolveArrived, resolveRelease, resolveResponded;
+            gate = {
+              arrived: new Promise((resolve) => { resolveArrived = resolve; }),
+              release: new Promise((resolve) => { resolveRelease = resolve; }),
+              responded: new Promise((resolve) => { resolveResponded = resolve; })
+            };
+            gate.resolveArrived = resolveArrived;
+            gate.resolveRelease = resolveRelease;
+            gate.resolveResponded = resolveResponded;
+            window.__smokeGates.set(name, gate);
+          }
+          gate.resolveArrived();
+          // Both captured locally, right now, at call time -- not re-read
+          // off their globals once this promise chain's own continuation
+          // finally runs. uninstallFetchGate() resolves every outstanding
+          // release precisely so a request in flight at teardown is never
+          // stranded forever, which means that continuation can run *after*
+          // uninstall has already deleted window.__smokeRealFetch and
+          // window.__smokeGateFail -- re-reading either at that point would
+          // throw (or silently pick the wrong fail/no-fail decision).
+          const realFetch = window.__smokeRealFetch;
+          const shouldFail = window.__smokeGateFail.has(name);
+          return gate.release.then(async () => {
+            if (shouldFail) {
+              gate.resolveResponded();
+              return new Response('', { status: 404, statusText: 'Not Found (smoke gate)' });
+            }
+            const response = await realFetch(...args);
+            // responded fires only once the body is actually consumed here
+            // -- not merely once the Response object exists -- and the
+            // caller gets a *fresh* Response over the same text, since a
+            // body can only be read once and this wrapper just read it.
+            const text = await response.text();
+            gate.resolveResponded();
+            return new Response(text, { status: response.status, statusText: response.statusText });
+          });
+        };
+        return true;
+      })()`);
+    const uninstallFetchGate = () =>
+      window.webContents.executeJavaScript(`(() => {
+        if (!window.__smokeGateInstalled) return true;
+        // Resolve every outstanding release first -- a throw between
+        // install and uninstall must not strand a gated load pending
+        // forever; each one still runs through its own locally-captured
+        // realFetch, safe to resolve even after the globals below are gone.
+        for (const gate of window.__smokeGates.values()) gate.resolveRelease();
+        window.fetch = window.__smokeRealFetch;
+        window.__smokeGateInstalled = false;
+        delete window.__smokeRealFetch;
+        delete window.__smokeGates;
+        delete window.__smokeGateFail;
+        return true;
+      })()`);
+    const markGateFail = (name) =>
+      window.webContents.executeJavaScript(`(() => { window.__smokeGateFail?.add(${JSON.stringify(name)}); return true; })()`);
+    // Polls (in-page, no extra IPC round trips) for the gate's own entry to
+    // exist -- it is created lazily by the first matching fetch, which may
+    // not have happened yet the instant this is called -- then races its
+    // `arrived` signal against the remaining time on `timeout`.
+    const waitForGateArrival = (name, timeout = 4000) =>
+      window.webContents.executeJavaScript(`(async () => {
+        const deadline = Date.now() + ${timeout};
+        while (!window.__smokeGates?.get(${JSON.stringify(name)}) && Date.now() < deadline) {
+          await new Promise((resolve) => setTimeout(resolve, 20));
+        }
+        const gate = window.__smokeGates?.get(${JSON.stringify(name)});
+        if (!gate) return 'no-gate';
+        return Promise.race([
+          gate.arrived.then(() => 'arrived'),
+          new Promise((resolve) => setTimeout(() => resolve('timeout'), Math.max(0, deadline - Date.now())))
+        ]);
+      })()`);
+    const releaseGate = (name) =>
+      window.webContents.executeJavaScript(
+        `(() => { window.__smokeGates?.get(${JSON.stringify(name)})?.resolveRelease(); return true; })()`
+      );
+    // `responded` only proves the fetch's own body was consumed -- readStock
+    // still has to await response.text() again (a fresh read, off the clone
+    // this gate hands back), ensureTab's own check-and-push tail still has
+    // to run, and compareWithStock's continuation still has to reach its
+    // placement. None of readStock, ensureTab or compareWithStock ever
+    // touches a timer, so that whole chain is microtask-only -- which means
+    // two setTimeout(0) turns *after* responded is a real completion proof
+    // for it, not a guessed delay: a macrotask boundary can only be reached
+    // once every microtask queued before it (this chain included, however
+    // many links long) has already drained.
+    const waitForGateSettled = (name, timeout = 4000) =>
+      window.webContents.executeJavaScript(`(async () => {
+        const gate = window.__smokeGates?.get(${JSON.stringify(name)});
+        if (!gate) return 'no-gate';
+        const responded = await Promise.race([
+          gate.responded.then(() => 'responded'),
+          new Promise((resolve) => setTimeout(() => resolve('timeout'), ${timeout}))
+        ]);
+        if (responded !== 'responded') return responded;
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        return 'settled';
+      })()`);
+    const clickCompareButton = (name) =>
+      window.webContents.executeJavaScript(`(() => {
+        const row = [...document.querySelectorAll('#stage .tree-row')].find(
+          (n) => n.querySelector('.tree-name').textContent === ${JSON.stringify(name)}
+        );
+        const button = row?.querySelector('.tree-action[title="Show the original beside your copy"]');
+        if (!button) return false;
+        button.click();
+        return true;
+      })()`);
+    const seedOverride = (name, text) =>
+      window.webContents.executeJavaScript(`(() => {
+        window.__app.store.commit('smoke seed ' + ${JSON.stringify(name)} + ' override', (project) => {
+          project.code.overrides.push({ name: ${JSON.stringify(name)}, text: ${JSON.stringify(text)} });
+        });
+        return true;
+      })()`);
+    // Removes `name`'s override directly, settles any gated load still in
+    // flight for it, then *asserts* (not just hopes) the clean state that
+    // follows once onProjectChange has pruned any compared original -- used
+    // between fix round 2's own gated scenarios and steps 9-11, so a failure
+    // in one cannot cascade into the next through leftover tabs. If the
+    // prune itself failed, closes the stale original directly (so whatever
+    // runs next still starts clean) and says so in the same failure line,
+    // rather than reporting a bare pass/fail with no diagnosis.
+    const resetOverride = async (name) => {
+      await window.webContents.executeJavaScript(`(() => {
+        window.__app.store.commit('smoke reset ' + ${JSON.stringify(name)} + ' override (isolation)', (project) => {
+          const index = project.code.overrides.findIndex((o) => o.name === ${JSON.stringify(name)});
+          if (index >= 0) project.code.overrides.splice(index, 1);
+        });
+        return true;
+      })()`);
+      // A compare for this file may still be mid-fetch, sharing a gate this
+      // reset did not itself install -- settle it before sampling, or an
+      // in-flight continuation could create a tab after this function has
+      // already decided the state is clean.
+      const hasGate = await window.webContents.executeJavaScript(
+        `!!window.__smokeGateInstalled && !!window.__smokeGates?.get(${JSON.stringify(name)})`
+      );
+      let gateTimedOut = false;
+      if (hasGate) {
+        const settled = await waitForGateSettled(name);
+        // 'no-gate' cannot happen here (hasGate already confirmed the entry
+        // exists); 'timeout' means the wait itself never proved completion,
+        // so whatever this function samples next cannot be trusted either.
+        if (settled === 'timeout') gateTimedOut = true;
+      }
+      for (
+        let waited = 0;
+        waited < 4000 &&
+        (await window.webContents.executeJavaScript(`document.querySelectorAll('#stage .code-input').length`)) !== 1;
+        waited += 100
+      ) {
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      }
+      const sampleState = () =>
+        window.webContents.executeJavaScript(`(() => {
+          const panes = [...document.querySelectorAll('#stage .code-pane')].filter((p) => !p.hidden);
+          const staleTabCount = [...document.querySelectorAll('#stage .code-tab')].filter(
+            (n) => n.title === ${JSON.stringify(name)} + ' (original)'
+          ).length;
+          return { paneCount: panes.length, staleTabCount };
+        })()`);
+      let state = await sampleState();
+      let closedStale = false;
+      if (state.staleTabCount > 0) {
+        // Every tab titled `<name> (original)`, not just the first -- a
+        // broken prune could in principle have left more than one behind,
+        // and closing only one would leave this function reporting clean
+        // while a second original still sat in the strip.
+        await window.webContents.executeJavaScript(`(() => {
+          for (const tab of [...document.querySelectorAll('#stage .code-tab')]) {
+            if (tab.title === ${JSON.stringify(name)} + ' (original)') tab.querySelector('.code-tab-close')?.click();
+          }
+          return true;
+        })()`);
+        closedStale = true;
+        // Re-assert rather than assume the manual close above worked --
+        // closing a tab is itself a state change (it can collapse a split),
+        // so the state this function ultimately reports has to reflect what
+        // is actually on screen afterward, not the pre-close sample.
+        state = await sampleState();
+      }
+      // `closedStale` is its own failure condition, not just a footnote on
+      // one: needing manual recovery at all means the automatic prune this
+      // reset was counting on did not run, even if the recovery leaves the
+      // post-recovery state clean. Reporting only the post-recovery state
+      // would let that prune failure go unnoticed whenever the recovery
+      // happened to fully succeed.
+      if (gateTimedOut || closedStale || state.paneCount !== 1 || state.staleTabCount > 0) {
+        problems.push(
+          `resetOverride('${name}') did not settle to one clean pane on its own (${JSON.stringify({ gateTimedOut, closedStale, ...state })})` +
+            (closedStale ? ' -- closed every stale original directly so the next step starts clean' : '')
+        );
+      }
+    };
+
     await window.webContents.executeJavaScript(
       `[...document.querySelectorAll('#stage .tree-row')].find((n) => n.querySelector('.tree-name').textContent === 'constants.asm').click(); true`
     );
@@ -14381,6 +14604,1546 @@ export async function runSmoke(window) {
             'survivor genuinely focused on the left'
         );
       }
+    }
+
+    // ROADMAP item 9, phase 2 (A): the original beside your copy. player.asm
+    // carries an override from the "focused menu undo" scenario above --
+    // confirmed here rather than assumed, with a fallback that creates one if
+    // an earlier step ever stops leaving it behind.
+    const overrideBefore = await window.webContents.executeJavaScript(`(async () => {
+      let entry = window.__app.store.project.code.overrides.find((o) => o.name === 'player.asm');
+      if (!entry) {
+        const stockResponse = await fetch('forge://app/engine/player.asm');
+        const stockText = await stockResponse.text();
+        window.__app.store.commit('smoke seed player override for compare test', (project) => {
+          project.code.overrides.push({ name: 'player.asm', text: '; smoke compare seed\\n' + stockText });
+        });
+        entry = window.__app.store.project.code.overrides.find((o) => o.name === 'player.asm');
+      }
+      return { text: entry.text };
+    })()`);
+
+    // Real-focus the right pane first (same harness quirk as rounds 2-4
+    // above): split a parked tab into the right pane and genuinely focus it,
+    // so a `compareWithStock` that fell back to `pickTargetPane()` would land
+    // the copy or the original in the wrong pane.
+    await window.webContents.executeJavaScript(`(() => {
+      const tab = [...document.querySelectorAll('#stage .code-tab')].find(
+        (n) => n.querySelector('.code-tab-name').textContent === 'constants.asm'
+      );
+      tab?.querySelector('.code-tab-split')?.click();
+      return true;
+    })()`);
+    for (
+      let waited = 0;
+      waited < 4000 && (await window.webContents.executeJavaScript(`document.querySelectorAll('#stage .code-input').length`)) < 2;
+      waited += 100
+    ) {
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    await window.webContents.executeJavaScript(`(() => {
+      const panes = [...document.querySelectorAll('#stage .code-pane')].filter((pane) => !pane.hidden);
+      const el = panes[1]?.querySelector('.code-input');
+      if (!el) return false;
+      el.focus();
+      el.dispatchEvent(new FocusEvent('focusin', { bubbles: true }));
+      return true;
+    })()`);
+
+    // Scoped to player.asm's own tree row, not a bare title match -- by this
+    // point in the run constants.asm also carries an override (from the
+    // phase 1 split-pane debounce-timer scenario above), so a plain title
+    // lookup finds whichever overridden file's ◫ button comes first in the
+    // tree rather than player.asm's own.
+    const compareClicked = await window.webContents.executeJavaScript(`(() => {
+      const row = [...document.querySelectorAll('#stage .tree-row')].find(
+        (n) => n.querySelector('.tree-name').textContent === 'player.asm'
+      );
+      const button = row?.querySelector('.tree-action[title="Show the original beside your copy"]');
+      if (!button) return false;
+      button.click();
+      return true;
+    })()`);
+    for (
+      let waited = 0;
+      waited < 4000 &&
+      !(await window.webContents.executeJavaScript(findsInStrip('.code-tab .code-tab-kind', 'original')));
+      waited += 100
+    ) {
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    const originalFetched = await window.webContents.executeJavaScript(
+      `fetch('forge://app/engine/player.asm').then((r) => r.text())`
+    );
+    const compareState = await window.webContents.executeJavaScript(`(() => {
+      const panes = [...document.querySelectorAll('#stage .code-pane')].filter((pane) => !pane.hidden);
+      const findTab = (predicate) => [...document.querySelectorAll('#stage .code-tab')].find(predicate);
+      const leftTab = findTab((n) => n.classList.contains('active'));
+      const rightTab = findTab((n) => n.classList.contains('active-split'));
+      const rightInput = panes[1]?.querySelector('.code-input');
+      const leftInput = panes[0]?.querySelector('.code-input');
+      return {
+        paneCount: panes.length,
+        leftIsPlayer: leftTab?.querySelector('.code-tab-name').textContent === 'player.asm',
+        leftHasNoBadge: !leftTab?.querySelector('.code-tab-kind'),
+        rightIsPlayer: rightTab?.querySelector('.code-tab-name').textContent === 'player.asm',
+        rightBadge: rightTab?.querySelector('.code-tab-kind')?.textContent ?? null,
+        rightReadOnly: !!rightInput?.readOnly,
+        rightValue: rightInput?.value ?? '',
+        leftValue: leftInput?.value ?? '',
+        focusedIsLeft: document.activeElement === leftInput
+      };
+    })()`);
+    if (!compareClicked) {
+      problems.push('player.asm has no "Show the original beside your copy" tree action button');
+    } else if (
+      compareState.paneCount !== 2 ||
+      !compareState.leftIsPlayer ||
+      !compareState.leftHasNoBadge ||
+      !compareState.rightIsPlayer ||
+      compareState.rightBadge !== 'original' ||
+      !compareState.rightReadOnly ||
+      compareState.rightValue !== originalFetched ||
+      !compareState.leftValue.startsWith(overrideBefore.text) ||
+      !compareState.focusedIsLeft
+    ) {
+      problems.push(
+        `compareWithStock did not open the copy left / original right correctly (${JSON.stringify(compareState)})`
+      );
+    } else {
+      console.log('  ok  ◫ opens the override left, the original right, read-only, focus left');
+    }
+
+    // Typing into the copy leaves the original alone. Also bypasses the right
+    // pane's own `readOnly` DOM attribute (setting `.value` directly and
+    // dispatching `input`, the same way a future caller could reach `onChange`
+    // without going through the keyboard) to prove the stock tab's own wiring
+    // -- not merely the textarea's `readOnly` attribute -- refuses to commit.
+    await window.webContents.executeJavaScript(`(() => {
+      const panes = [...document.querySelectorAll('#stage .code-pane')].filter((pane) => !pane.hidden);
+      const leftInput = panes[0].querySelector('.code-input');
+      const rightInput = panes[1].querySelector('.code-input');
+      leftInput.focus();
+      leftInput.setSelectionRange(0, 0);
+      document.execCommand('insertText', false, '; compare edit\\n');
+      rightInput.value = '; sneaked into the original\\n' + rightInput.value;
+      rightInput.dispatchEvent(new Event('input', { bubbles: true }));
+      return true;
+    })()`);
+    await new Promise((resolve) => setTimeout(resolve, 900)); // past the commit delay
+    const afterCompareTyping = await window.webContents.executeJavaScript(`(() => {
+      const panes = [...document.querySelectorAll('#stage .code-pane')].filter((pane) => !pane.hidden);
+      const rightInput = panes[1]?.querySelector('.code-input');
+      const rightTab = [...document.querySelectorAll('#stage .code-tab')].find((n) => n.classList.contains('active-split'));
+      const override = window.__app.store.project.code.overrides.find((o) => o.name === 'player.asm');
+      return {
+        paneCount: panes.length,
+        overrideText: override?.text ?? '',
+        rightValue: rightInput?.value ?? '',
+        rightHasDot: !!rightTab?.querySelector('.code-tab-dot')
+      };
+    })()`);
+    if (
+      !afterCompareTyping.overrideText.startsWith('; compare edit\n') ||
+      afterCompareTyping.overrideText.includes('sneaked into the original') ||
+      afterCompareTyping.paneCount !== 2 ||
+      afterCompareTyping.rightValue !== '; sneaked into the original\n' + originalFetched ||
+      afterCompareTyping.rightHasDot
+    ) {
+      problems.push(
+        `typing into the copy left the original tab wired to commit (${JSON.stringify(afterCompareTyping)})`
+      );
+    } else {
+      console.log('  ok  typing into the copy commits normally; the original tab never wires into commitTab');
+    }
+
+    // Revert closes the original.
+    const revertClicked = await window.webContents.executeJavaScript(`(() => {
+      const button = [...document.querySelectorAll('#stage .tree-action')].find(
+        (n) => n.title === 'Revert player.asm to the original'
+      );
+      if (!button) return false;
+      button.click();
+      return true;
+    })()`);
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    const revertConfirmed = await window.webContents.executeJavaScript(`(() => {
+      const button = document.querySelector('#modalHost .btn-accent');
+      if (!button) return false;
+      button.click();
+      return true;
+    })()`);
+    for (
+      let waited = 0;
+      waited < 4000 &&
+      (await window.webContents.executeJavaScript(`document.querySelectorAll('#stage .code-input').length`)) !== 1;
+      waited += 100
+    ) {
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    const afterRevert = await window.webContents.executeJavaScript(`(() => {
+      const panes = [...document.querySelectorAll('#stage .code-pane')].filter((pane) => !pane.hidden);
+      const leftInput = panes[0]?.querySelector('.code-input');
+      const hasStockTab = [...document.querySelectorAll('#stage .code-tab .code-tab-kind')].some(
+        (n) => n.textContent === 'original'
+      );
+      const overrides = window.__app.store.project.code.overrides;
+      return {
+        paneCount: panes.length,
+        hasStockTab,
+        leftValue: leftInput?.value ?? '',
+        focusedIsLeft: document.activeElement === leftInput,
+        hasOverride: overrides.some((o) => o.name === 'player.asm')
+      };
+    })()`);
+    if (
+      !revertClicked ||
+      !revertConfirmed ||
+      afterRevert.hasStockTab ||
+      afterRevert.paneCount !== 1 ||
+      afterRevert.leftValue !== originalFetched ||
+      !afterRevert.focusedIsLeft ||
+      afterRevert.hasOverride
+    ) {
+      problems.push(`reverting player.asm did not close the original tab (${JSON.stringify(afterRevert)})`);
+    } else {
+      console.log('  ok  reverting closes the original tab and leaves the copy pane alone, editable and stock again');
+    }
+
+    // Undo closes the original too. A fresh override on a different engine
+    // file (oam.asm), compared, then undone by the menu -- proving decision
+    // A4's prune fires on the undo path too, not only revert's.
+    await window.webContents.executeJavaScript(
+      `[...document.querySelectorAll('#stage .tree-row')].find((n) => n.querySelector('.tree-name').textContent === 'oam.asm').click(); true`
+    );
+    for (
+      let waited = 0;
+      waited < 4000 &&
+      !(await window.webContents.executeJavaScript(findsInStrip('.code-tab .code-tab-name', 'oam.asm')));
+      waited += 100
+    ) {
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    await window.webContents.executeJavaScript(`(() => {
+      const input = document.querySelector('#stage .code-input');
+      input.focus();
+      input.setSelectionRange(0, 0);
+      document.execCommand('insertText', false, '; undo compare test\\n');
+      return true;
+    })()`);
+    await new Promise((resolve) => setTimeout(resolve, 900)); // committed as an override
+    // Scoped to oam.asm's own tree row for the same reason as the compare
+    // click above -- constants.asm's own override (and possibly player.asm's,
+    // depending on the outcome above) is still live, so more than one file's
+    // ◫ button can exist at once.
+    const oamCompareClicked = await window.webContents.executeJavaScript(`(() => {
+      const row = [...document.querySelectorAll('#stage .tree-row')].find(
+        (n) => n.querySelector('.tree-name').textContent === 'oam.asm'
+      );
+      const button = row?.querySelector('.tree-action[title="Show the original beside your copy"]');
+      if (!button) return false;
+      button.click();
+      return true;
+    })()`);
+    for (
+      let waited = 0;
+      waited < 4000 &&
+      !(await window.webContents.executeJavaScript(findsInStrip('.code-tab .code-tab-kind', 'original')));
+      waited += 100
+    ) {
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    // Fix round 1 (review P3): the polling deadline above does not itself
+    // fail the test, so a compare opener that quietly did nothing for
+    // oam.asm would let the undo step "pass" with nothing to prune. Assert
+    // the original genuinely appeared before sending the undo.
+    const compareAppearedBeforeUndo = await window.webContents.executeJavaScript(`(() => {
+      const panes = [...document.querySelectorAll('#stage .code-pane')].filter((pane) => !pane.hidden);
+      const hasStockTab = [...document.querySelectorAll('#stage .code-tab .code-tab-kind')].some(
+        (n) => n.textContent === 'original'
+      );
+      return { paneCount: panes.length, hasStockTab };
+    })()`);
+    if (!oamCompareClicked || !compareAppearedBeforeUndo.hasStockTab || compareAppearedBeforeUndo.paneCount !== 2) {
+      problems.push(
+        `the compared original never appeared before the undo test sent its undo (${JSON.stringify(compareAppearedBeforeUndo)})`
+      );
+    }
+    // Blur so the native per-textarea undo history is not what Ctrl+Z reaches
+    // -- app.js's undoInFocusedEditor() intercepts the menu action first when
+    // a code editor is focused, and this test means to exercise the project's
+    // own store.undo() (and thus onProjectChange), not the textarea's.
+    await window.webContents.executeJavaScript('document.activeElement && document.activeElement.blur(); true');
+    window.webContents.send('menu:action', 'edit:undo');
+    for (
+      let waited = 0;
+      waited < 4000 &&
+      (await window.webContents.executeJavaScript(`document.querySelectorAll('#stage .code-input').length`)) !== 1;
+      waited += 100
+    ) {
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    const afterUndoCompare = await window.webContents.executeJavaScript(`(() => {
+      const panes = [...document.querySelectorAll('#stage .code-pane')].filter((pane) => !pane.hidden);
+      const hasStockTab = [...document.querySelectorAll('#stage .code-tab .code-tab-kind')].some(
+        (n) => n.textContent === 'original'
+      );
+      const overrides = window.__app.store.project.code.overrides;
+      return {
+        paneCount: panes.length,
+        hasStockTab,
+        hasOverride: overrides.some((o) => o.name === 'oam.asm')
+      };
+    })()`);
+    if (
+      !oamCompareClicked ||
+      afterUndoCompare.hasStockTab ||
+      afterUndoCompare.paneCount !== 1 ||
+      afterUndoCompare.hasOverride
+    ) {
+      problems.push(`undoing a fresh override left its compared original tab open (${JSON.stringify(afterUndoCompare)})`);
+    } else {
+      console.log('  ok  undoing the override that created it also closes the compared original tab');
+    }
+
+
+    // Fix round 1, step 9: two clicks, one original. input.asm has never
+    // been opened before this point in the run, so its stock text is not in
+    // the session cache; the override is seeded directly (not typed) so the
+    // click race below is exactly two compare clicks racing each other's
+    // `readStock`, nothing else in flight.
+    await window.webContents.executeJavaScript(`(() => {
+      window.__app.store.commit('smoke seed input.asm override', (project) => {
+        project.code.overrides.push({ name: 'input.asm', text: '; smoke input override\\n' });
+      });
+      return true;
+    })()`);
+    const inputCompareDoubleClicked = await window.webContents.executeJavaScript(`(() => {
+      const row = [...document.querySelectorAll('#stage .tree-row')].find(
+        (n) => n.querySelector('.tree-name').textContent === 'input.asm'
+      );
+      const button = row?.querySelector('.tree-action[title="Show the original beside your copy"]');
+      if (!button) return false;
+      button.click();
+      button.click();
+      return true;
+    })()`);
+    for (
+      let waited = 0;
+      waited < 4000 &&
+      !(await window.webContents.executeJavaScript(findsInStrip('.code-tab .code-tab-kind', 'original')));
+      waited += 100
+    ) {
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    await new Promise((resolve) => setTimeout(resolve, 300)); // let a second creation land, if it would
+    const afterDoubleCompare = await window.webContents.executeJavaScript(`(() => {
+      const panes = [...document.querySelectorAll('#stage .code-pane')].filter((pane) => !pane.hidden);
+      const originalBadges = [...document.querySelectorAll('#stage .code-tab .code-tab-kind')].filter(
+        (n) => n.textContent === 'original'
+      );
+      // Fix round 2 (review counterexample): the stock-tab count alone
+      // passes a wrong implementation that dedupes the original but still
+      // creates two engine tabs, since only one of those two ever gets
+      // mounted into a pane -- count every input.asm tab-strip entry, not
+      // just what is visible.
+      const inputTabs = [...document.querySelectorAll('#stage .code-tab')].filter(
+        (n) => n.querySelector('.code-tab-name').textContent === 'input.asm'
+      );
+      const editableInputTabs = inputTabs.filter((n) => !n.querySelector('.code-tab-kind'));
+      return {
+        paneCount: panes.length,
+        originalBadgeCount: originalBadges.length,
+        inputTabCount: inputTabs.length,
+        editableInputTabCount: editableInputTabs.length
+      };
+    })()`);
+    if (
+      !inputCompareDoubleClicked ||
+      afterDoubleCompare.originalBadgeCount !== 1 ||
+      afterDoubleCompare.editableInputTabCount !== 1 ||
+      afterDoubleCompare.inputTabCount !== 2 ||
+      afterDoubleCompare.paneCount !== 2
+    ) {
+      problems.push(
+        `two compare clicks in one tick did not produce exactly one original and one editable copy (${JSON.stringify(afterDoubleCompare)})`
+      );
+    } else {
+      console.log('  ok  two compare clicks on the same never-opened file in one tick produce exactly one original tab and one editable copy');
+    }
+
+    // Leave a clean single pane for the steps that follow: remove input.asm's
+    // override directly (onProjectChange prunes its compared original tab
+    // and, with it, the split) rather than letting it linger into steps 10
+    // and 11, which each need to start from a known, unsplit state.
+    await resetOverride('input.asm');
+
+    // Fix round 1 (rewritten in fix round 2), step 10: undo during the fetch
+    // leaves no original. entities.asm has also never been opened, so its
+    // stock text is not cached. Proves the ordering instead of sleeping
+    // through it: awaits the gate's own "a request arrived" signal before
+    // doing anything else, polls the store directly for the override to be
+    // gone *before* releasing the gate (not a guessed sleep), then awaits
+    // the gate's own "the gated fetch responded" signal before sampling
+    // final state. try/finally uninstalls the shim (and, if anything above
+    // threw, releases the gate) even on failure.
+    await installFetchGate();
+    try {
+      await seedOverride('entities.asm', '; smoke entities override\n');
+      const entitiesCompareClicked = await clickCompareButton('entities.asm');
+      const arrival = await waitForGateArrival('entities.asm');
+      await window.webContents.executeJavaScript('document.activeElement && document.activeElement.blur(); true');
+      window.webContents.send('menu:action', 'edit:undo');
+      // Poll the store directly rather than sleeping a guessed duration --
+      // this is the one thing that must be true *before* the gate opens.
+      for (
+        let waited = 0;
+        waited < 4000 &&
+        (await window.webContents.executeJavaScript(
+          `window.__app.store.project.code.overrides.some((o) => o.name === 'entities.asm')`
+        ));
+        waited += 50
+      ) {
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      }
+      const overrideGoneBeforeRelease = !(await window.webContents.executeJavaScript(
+        `window.__app.store.project.code.overrides.some((o) => o.name === 'entities.asm')`
+      ));
+      await releaseGate('entities.asm');
+      // Not just "responded" (the fetch itself resolved) -- "settled" waits
+      // two further setTimeout(0) turns, a real completion proof for the
+      // microtask-only chain from there through compareWithStock's own
+      // continuation (see waitForGateSettled's own comment).
+      const settled = await waitForGateSettled('entities.asm');
+      const afterFetchGate = await window.webContents.executeJavaScript(`(() => {
+        const panes = [...document.querySelectorAll('#stage .code-pane')].filter((pane) => !pane.hidden);
+        const hasStockTab = [...document.querySelectorAll('#stage .code-tab .code-tab-kind')].some(
+          (n) => n.textContent === 'original'
+        );
+        const overrides = window.__app.store.project.code.overrides;
+        return {
+          paneCount: panes.length,
+          hasStockTab,
+          hasOverride: overrides.some((o) => o.name === 'entities.asm')
+        };
+      })()`);
+      if (
+        !entitiesCompareClicked ||
+        arrival !== 'arrived' ||
+        !overrideGoneBeforeRelease ||
+        settled !== 'settled' ||
+        afterFetchGate.hasStockTab ||
+        afterFetchGate.paneCount !== 1 ||
+        afterFetchGate.hasOverride
+      ) {
+        problems.push(
+          `undoing the override while its compare fetch was still pending left an original tab (${JSON.stringify({ entitiesCompareClicked, arrival, overrideGoneBeforeRelease, settled, afterFetchGate })})`
+        );
+      } else {
+        console.log('  ok  undoing the override while its compare fetch is still pending creates no original tab');
+      }
+    } finally {
+      await uninstallFetchGate();
+    }
+    await resetOverride('entities.asm');
+
+    // Fix round 1, step 11: two tree clicks, one tab. ui.asm has never been
+    // opened either -- the same not-yet-open race as step 9, through the
+    // plain tree-click path `ensureTab` also serves.
+    const uiDoubleClicked = await window.webContents.executeJavaScript(`(() => {
+      const row = [...document.querySelectorAll('#stage .tree-row')].find(
+        (n) => n.querySelector('.tree-name').textContent === 'ui.asm'
+      );
+      if (!row) return false;
+      row.click();
+      row.click();
+      return true;
+    })()`);
+    for (
+      let waited = 0;
+      waited < 4000 &&
+      !(await window.webContents.executeJavaScript(findsInStrip('.code-tab .code-tab-name', 'ui.asm')));
+      waited += 100
+    ) {
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    // Fix round 2 (review counterexample): the tab/input counts alone pass a
+    // wrong implementation that creates the one tab read-only, with the
+    // wrong text, or without landing focus in it -- so also fetch the real
+    // stock text in-page and check the mounted editor against it directly.
+    const uiOriginalFetched = await window.webContents.executeJavaScript(
+      `fetch('forge://app/engine/ui.asm').then((r) => r.text())`
+    );
+    const afterDoubleTreeClick = await window.webContents.executeJavaScript(`(() => {
+      const uiTabs = [...document.querySelectorAll('#stage .code-tab .code-tab-name')].filter(
+        (n) => n.textContent === 'ui.asm'
+      );
+      const input = document.querySelector('#stage .code-input');
+      return {
+        uiTabCount: uiTabs.length,
+        inputCount: document.querySelectorAll('#stage .code-input').length,
+        readOnly: !!input?.readOnly,
+        value: input?.value ?? '',
+        focusedIsInput: document.activeElement === input
+      };
+    })()`);
+    if (
+      !uiDoubleClicked ||
+      afterDoubleTreeClick.uiTabCount !== 1 ||
+      afterDoubleTreeClick.inputCount !== 1 ||
+      afterDoubleTreeClick.readOnly ||
+      afterDoubleTreeClick.value !== uiOriginalFetched ||
+      !afterDoubleTreeClick.focusedIsInput
+    ) {
+      problems.push(
+        `two tree clicks on the same never-opened file in one tick did not produce exactly one editable, focused tab (${JSON.stringify(afterDoubleTreeClick)})`
+      );
+    } else {
+      console.log('  ok  two tree clicks on the same never-opened file in one tick produce exactly one editable, focused engine tab with the real stock text');
+    }
+    await resetOverride('ui.asm'); // no override to remove here, but settles back to one pane defensively
+
+    // Fix round 2, P2: both placements happen together, after the last
+    // await. A tab-strip click during the stock fetch used to move the copy
+    // to a different pane before this fix; completion then placed only the
+    // original beside whatever was left on the left, mismatching the pair
+    // (review round 2's own reproduction). save.asm has never been opened,
+    // so its stock text is not cached.
+    await installFetchGate();
+    try {
+      await seedOverride('save.asm', '; smoke save override\n');
+      const saveCompareClicked = await clickCompareButton('save.asm');
+      const arrival = await waitForGateArrival('save.asm');
+      // Intervening pane change: an ordinary tab-strip click on a different,
+      // already-open (parked) tab while the compare's own stock fetch is
+      // still gated -- main.asm has been open since the phase 1 scenarios
+      // above and untouched since this Forge's own step 1.
+      const mainClicked = await window.webContents.executeJavaScript(`(() => {
+        const tab = [...document.querySelectorAll('#stage .code-tab')].find(
+          (n) => n.querySelector('.code-tab-name').textContent === 'main.asm'
+        );
+        if (!tab || tab.classList.contains('active') || tab.classList.contains('active-split')) return false;
+        tab.click();
+        return true;
+      })()`);
+      const leftAfterInterveningClick = await window.webContents.executeJavaScript(`(() => {
+        const leftTab = [...document.querySelectorAll('#stage .code-tab')].find((n) => n.classList.contains('active'));
+        return leftTab?.querySelector('.code-tab-name').textContent ?? null;
+      })()`);
+      await releaseGate('save.asm');
+      const settled = await waitForGateSettled('save.asm');
+      const saveOriginalFetched = await window.webContents.executeJavaScript(
+        `fetch('forge://app/engine/save.asm').then((r) => r.text())`
+      );
+      const afterDelayedCompare = await window.webContents.executeJavaScript(`(() => {
+        const panes = [...document.querySelectorAll('#stage .code-pane')].filter((p) => !p.hidden);
+        const findTab = (pred) => [...document.querySelectorAll('#stage .code-tab')].find(pred);
+        const leftTab = findTab((n) => n.classList.contains('active'));
+        const rightTab = findTab((n) => n.classList.contains('active-split'));
+        const rightInput = panes[1]?.querySelector('.code-input');
+        const leftInput = panes[0]?.querySelector('.code-input');
+        return {
+          paneCount: panes.length,
+          leftIsSave: leftTab?.querySelector('.code-tab-name').textContent === 'save.asm',
+          leftHasNoBadge: !leftTab?.querySelector('.code-tab-kind'),
+          rightIsSave: rightTab?.querySelector('.code-tab-name').textContent === 'save.asm',
+          rightBadge: rightTab?.querySelector('.code-tab-kind')?.textContent ?? null,
+          rightValue: rightInput?.value ?? '',
+          focusedIsLeft: document.activeElement === leftInput
+        };
+      })()`);
+      if (
+        !saveCompareClicked ||
+        arrival !== 'arrived' ||
+        !mainClicked ||
+        leftAfterInterveningClick !== 'main.asm' ||
+        settled !== 'settled' ||
+        afterDelayedCompare.paneCount !== 2 ||
+        !afterDelayedCompare.leftIsSave ||
+        !afterDelayedCompare.leftHasNoBadge ||
+        !afterDelayedCompare.rightIsSave ||
+        afterDelayedCompare.rightBadge !== 'original' ||
+        afterDelayedCompare.rightValue !== saveOriginalFetched ||
+        !afterDelayedCompare.focusedIsLeft
+      ) {
+        problems.push(
+          `a pane change during the compare's own stock fetch left a mismatched pair (${JSON.stringify({
+            saveCompareClicked,
+            arrival,
+            mainClicked,
+            leftAfterInterveningClick,
+            settled,
+            afterDelayedCompare
+          })})`
+        );
+      } else {
+        console.log(
+          '  ok  a tab-strip click during the stock fetch does not survive compare completion -- the copy and the original still land as a pair'
+        );
+      }
+    } finally {
+      await uninstallFetchGate();
+    }
+    await resetOverride('save.asm');
+
+    // Fix round 2, P2: a superseded compare does not place. Two ◫ clicks on
+    // two different overridden files, both stock fetches gated, released in
+    // *reverse* click order -- the panes must show the last-*clicked* pair
+    // (script.asm) regardless of which one's fetch actually resolves last
+    // (rpg.asm, released second, is the one whose fetch completes last).
+    // Neither file has been opened before this point in the run.
+    await installFetchGate();
+    try {
+      await seedOverride('rpg.asm', '; smoke rpg override\n');
+      await seedOverride('script.asm', '; smoke script override\n');
+      const rpgClicked = await clickCompareButton('rpg.asm');
+      const rpgArrival = await waitForGateArrival('rpg.asm');
+      const scriptClicked = await clickCompareButton('script.asm');
+      const scriptArrival = await waitForGateArrival('script.asm');
+      await releaseGate('script.asm');
+      const scriptSettled = await waitForGateSettled('script.asm');
+      // Wait until the script.asm pair is actually *shown* before releasing
+      // rpg.asm's gate at all -- this is what makes the no-compareSeq
+      // sabotage fail deterministically, on every run, rather than only
+      // when rpg.asm's own fetch happens to be slower: releasing script
+      // first only proves *response* order, not which compare's own
+      // continuation *finishes* first, and a last-completed-wins
+      // implementation could still show script by accident if its body
+      // happened to arrive late. Confirming script is shown before rpg.asm
+      // is even allowed to proceed removes that timing dependence entirely.
+      for (
+        let waited = 0;
+        waited < 4000 &&
+        !(await window.webContents.executeJavaScript(`(() => {
+          const findTab = (pred) => [...document.querySelectorAll('#stage .code-tab')].find(pred);
+          const leftTab = findTab((n) => n.classList.contains('active'));
+          const rightTab = findTab((n) => n.classList.contains('active-split'));
+          return (
+            leftTab?.querySelector('.code-tab-name').textContent === 'script.asm' &&
+            rightTab?.querySelector('.code-tab-name').textContent === 'script.asm' &&
+            rightTab?.querySelector('.code-tab-kind')?.textContent === 'original'
+          );
+        })()`));
+        waited += 100
+      ) {
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      }
+      const scriptShownBeforeRpgReleased = await window.webContents.executeJavaScript(`(() => {
+        const findTab = (pred) => [...document.querySelectorAll('#stage .code-tab')].find(pred);
+        const leftTab = findTab((n) => n.classList.contains('active'));
+        const rightTab = findTab((n) => n.classList.contains('active-split'));
+        return (
+          leftTab?.querySelector('.code-tab-name').textContent === 'script.asm' &&
+          rightTab?.querySelector('.code-tab-name').textContent === 'script.asm' &&
+          rightTab?.querySelector('.code-tab-kind')?.textContent === 'original'
+        );
+      })()`);
+      await releaseGate('rpg.asm');
+      const rpgSettled = await waitForGateSettled('rpg.asm');
+      // rpg.asm's own original must exist too, parked -- its own badge,
+      // specifically, now that script's pair is confirmed shown first.
+      for (
+        let waited = 0;
+        waited < 4000 &&
+        !(await window.webContents.executeJavaScript(
+          `[...document.querySelectorAll('#stage .code-tab')].some((n) => n.title === 'rpg.asm (original)')`
+        ));
+        waited += 100
+      ) {
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      }
+      const afterSupersession = await window.webContents.executeJavaScript(`(() => {
+        const panes = [...document.querySelectorAll('#stage .code-pane')].filter((p) => !p.hidden);
+        const findTab = (pred) => [...document.querySelectorAll('#stage .code-tab')].find(pred);
+        const leftTab = findTab((n) => n.classList.contains('active'));
+        const rightTab = findTab((n) => n.classList.contains('active-split'));
+        const rpgOriginalParked = [...document.querySelectorAll('#stage .code-tab')].some(
+          (n) =>
+            n.title === 'rpg.asm (original)' &&
+            !n.classList.contains('active') &&
+            !n.classList.contains('active-split')
+        );
+        return {
+          paneCount: panes.length,
+          leftIsScript: leftTab?.querySelector('.code-tab-name').textContent === 'script.asm',
+          rightIsScript: rightTab?.querySelector('.code-tab-name').textContent === 'script.asm',
+          rightBadge: rightTab?.querySelector('.code-tab-kind')?.textContent ?? null,
+          rpgOriginalParked
+        };
+      })()`);
+      if (
+        !rpgClicked ||
+        rpgArrival !== 'arrived' ||
+        !scriptClicked ||
+        scriptArrival !== 'arrived' ||
+        scriptSettled !== 'settled' ||
+        !scriptShownBeforeRpgReleased ||
+        rpgSettled !== 'settled' ||
+        afterSupersession.paneCount !== 2 ||
+        !afterSupersession.leftIsScript ||
+        !afterSupersession.rightIsScript ||
+        afterSupersession.rightBadge !== 'original' ||
+        !afterSupersession.rpgOriginalParked
+      ) {
+        problems.push(
+          `two compares racing each other did not leave the last-clicked pair shown (${JSON.stringify({
+            rpgClicked,
+            rpgArrival,
+            scriptClicked,
+            scriptArrival,
+            scriptSettled,
+            scriptShownBeforeRpgReleased,
+            rpgSettled,
+            afterSupersession
+          })})`
+        );
+      } else {
+        console.log(
+          '  ok  two compares racing each other, released in reverse click order, leave the panes showing the last-clicked pair with the other left parked'
+        );
+      }
+    } finally {
+      await uninstallFetchGate();
+    }
+    // script.asm first: it is the pair actually shown (2 panes), so its own
+    // reset is what collapses back to one. rpg.asm's own compare was only
+    // ever parked (never placed), so its reset only prunes that one tab and
+    // does not, and must not, itself need to see a pane change.
+    await resetOverride('script.asm');
+    await resetOverride('rpg.asm');
+
+
+    // Fix round 3, P2: abort precedence. Two same-file compares sharing one
+    // in-flight stock load through pendingLoads -- the reviewer's exact
+    // sequence: compare text.asm (call A, creates its engine tab E1 and
+    // starts the gated stock fetch), close E1 via the tab-strip × while the
+    // fetch is still gated, click ◫ again (call B, creates a fresh engine
+    // tab E2 and shares call A's already-in-flight stock load), release,
+    // await completion. Checking supersession before "is my own copy still
+    // open" is what saves this: call A (seq 1) resumes first and, since it
+    // is no longer the latest, touches nothing rather than closing the
+    // shared original out from under call B; call B (seq 2, the latest)
+    // resumes with its own copy (E2) and the original both still present
+    // and places them. text.asm has never been opened before this point.
+    await installFetchGate();
+    try {
+      await seedOverride('text.asm', '; smoke text override\n');
+      const textCompareClickedA = await clickCompareButton('text.asm');
+      const textArrival = await waitForGateArrival('text.asm');
+      const textCopyClosed = await window.webContents.executeJavaScript(`(() => {
+        const tab = [...document.querySelectorAll('#stage .code-tab')].find(
+          (n) => n.querySelector('.code-tab-name').textContent === 'text.asm' && !n.querySelector('.code-tab-kind')
+        );
+        const closeButton = tab?.querySelector('.code-tab-close');
+        if (!closeButton) return false;
+        closeButton.click();
+        return true;
+      })()`);
+      const textCompareClickedB = await clickCompareButton('text.asm');
+      await releaseGate('text.asm');
+      const textSettled = await waitForGateSettled('text.asm');
+      const afterCloseReopen = await window.webContents.executeJavaScript(`(() => {
+        const panes = [...document.querySelectorAll('#stage .code-pane')].filter((p) => !p.hidden);
+        const findTab = (pred) => [...document.querySelectorAll('#stage .code-tab')].find(pred);
+        const leftTab = findTab((n) => n.classList.contains('active'));
+        const rightTab = findTab((n) => n.classList.contains('active-split'));
+        const originalTabs = [...document.querySelectorAll('#stage .code-tab')].filter(
+          (n) => n.title === 'text.asm (original)'
+        );
+        return {
+          paneCount: panes.length,
+          leftIsText: leftTab?.querySelector('.code-tab-name').textContent === 'text.asm',
+          leftHasNoBadge: !leftTab?.querySelector('.code-tab-kind'),
+          rightIsText: rightTab?.querySelector('.code-tab-name').textContent === 'text.asm',
+          rightBadge: rightTab?.querySelector('.code-tab-kind')?.textContent ?? null,
+          originalTabCount: originalTabs.length
+        };
+      })()`);
+      const focusedIsLeft = await window.webContents.executeJavaScript(`(() => {
+        const panes = [...document.querySelectorAll('#stage .code-pane')].filter((p) => !p.hidden);
+        const leftInput = panes[0]?.querySelector('.code-input');
+        return document.activeElement === leftInput;
+      })()`);
+      if (
+        !textCompareClickedA ||
+        textArrival !== 'arrived' ||
+        !textCopyClosed ||
+        !textCompareClickedB ||
+        textSettled !== 'settled' ||
+        afterCloseReopen.paneCount !== 2 ||
+        !afterCloseReopen.leftIsText ||
+        !afterCloseReopen.leftHasNoBadge ||
+        !afterCloseReopen.rightIsText ||
+        afterCloseReopen.rightBadge !== 'original' ||
+        afterCloseReopen.originalTabCount !== 1 ||
+        !focusedIsLeft
+      ) {
+        problems.push(
+          `closing a compare's copy mid-fetch, then comparing again, did not leave one copy and one original (${JSON.stringify(
+            { textCompareClickedA, textArrival, textCopyClosed, textCompareClickedB, textSettled, afterCloseReopen, focusedIsLeft }
+          )})`
+        );
+      } else {
+        console.log(
+          '  ok  closing a compare’s copy mid-fetch, then comparing the same file again, shares the in-flight load and leaves exactly one original'
+        );
+      }
+    } finally {
+      await uninstallFetchGate();
+    }
+    await resetOverride('text.asm');
+
+    // Fix round 3, item 2: every created tab is rendered, structurally.
+    // Gate music.asm's stock fetch and make it fail outright (a synthetic
+    // 404 Response, which readStock's own `if (!response.ok) throw` already
+    // treats as a stock-read error) -- the engine copy ensureTab creates
+    // before the failing stock load must still appear in the tab strip,
+    // even though the compare that created it never places anything and
+    // returns immediately once the stock load rejects. music.asm has never
+    // been opened before this point.
+    await installFetchGate();
+    try {
+      await seedOverride('music.asm', '; smoke music override\n');
+      await markGateFail('music.asm');
+      const toastCountBefore = await window.webContents.executeJavaScript(
+        `document.querySelectorAll('#toastHost .toast').length`
+      );
+      const musicCompareClicked = await clickCompareButton('music.asm');
+      const musicArrival = await waitForGateArrival('music.asm');
+      await releaseGate('music.asm');
+      const musicSettled = await waitForGateSettled('music.asm');
+      const afterFailedStock = await window.webContents.executeJavaScript(`(() => {
+        const panes = [...document.querySelectorAll('#stage .code-pane')].filter((p) => !p.hidden);
+        const copyTab = [...document.querySelectorAll('#stage .code-tab')].find(
+          (n) => n.querySelector('.code-tab-name').textContent === 'music.asm' && !n.querySelector('.code-tab-kind')
+        );
+        return {
+          paneCount: panes.length,
+          copyInStrip: !!copyTab,
+          toastCount: document.querySelectorAll('#toastHost .toast').length
+        };
+      })()`);
+      if (
+        !musicCompareClicked ||
+        musicArrival !== 'arrived' ||
+        musicSettled !== 'settled' ||
+        !afterFailedStock.copyInStrip ||
+        afterFailedStock.paneCount !== 1 ||
+        afterFailedStock.toastCount <= toastCountBefore
+      ) {
+        problems.push(
+          `a failed stock fetch left the engine copy it had already created out of the tab strip (${JSON.stringify(
+            { musicCompareClicked, musicArrival, musicSettled, toastCountBefore, afterFailedStock }
+          )})`
+        );
+      } else {
+        console.log(
+          '  ok  a failed stock fetch still shows the engine copy ensureTab already created, one pane, with an error toast'
+        );
+      }
+    } finally {
+      await uninstallFetchGate();
+    }
+    await resetOverride('music.asm');
+
+
+    // Fix round 4, P2: closeTab must take its index *after* the commit, not
+    // before. The reviewer's own reproduction: compare an overridden file
+    // (battle.asm), close its editable copy (leaving the original open
+    // alone), reopen the copy from the tree (tabs are now
+    // [stock:battle.asm, engine:battle.asm]), open a third file after it
+    // ([stock, engine copy, engine third] = [S, E2, E3]), bring the copy
+    // back to the left pane, type it back to *exactly* the stock text, and
+    // close the copy's own tab via its × before the 600ms debounce ever
+    // fires -- closeTab's own commit flushes immediately regardless of the
+    // timer. That commit removes the override, which synchronously prunes
+    // the earlier-positioned original (S) through onProjectChange, shifting
+    // every index after it. Taking the copy's own index *before* that
+    // commit (round 3's regression) then splices whatever now sits at the
+    // stale index -- E3, not E2 -- leaving E2 in `tabs` with a destroyed
+    // editor and E3 wrongly gone. battle.asm and split.asm have never been
+    // opened before this point in the run.
+    await seedOverride('battle.asm', '; smoke battle override\n');
+    const battleCompareClicked = await clickCompareButton('battle.asm');
+    for (
+      let waited = 0;
+      waited < 4000 &&
+      !(await window.webContents.executeJavaScript(findsInStrip('.code-tab .code-tab-kind', 'original')));
+      waited += 100
+    ) {
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    const battleStockText = await window.webContents.executeJavaScript(
+      `fetch('forge://app/engine/battle.asm').then((r) => r.text())`
+    );
+    // Close the editable copy (currently the left/active pane), leaving the
+    // original open alone -- the reviewer's own step 1.
+    const copyClosedOnce = await window.webContents.executeJavaScript(`(() => {
+      const tab = [...document.querySelectorAll('#stage .code-tab')].find(
+        (n) => n.querySelector('.code-tab-name').textContent === 'battle.asm' && !n.querySelector('.code-tab-kind')
+      );
+      const closeButton = tab?.querySelector('.code-tab-close');
+      if (!closeButton) return false;
+      closeButton.click();
+      return true;
+    })()`);
+    // Reopen the copy from the tree -- a fresh engine tab, pushed after the
+    // still-open original, so tabs are now [stock:battle.asm, engine:battle.asm].
+    await window.webContents.executeJavaScript(
+      `[...document.querySelectorAll('#stage .tree-row')].find((n) => n.querySelector('.tree-name').textContent === 'battle.asm').click(); true`
+    );
+    for (
+      let waited = 0;
+      waited < 4000 &&
+      !(await window.webContents.executeJavaScript(`(() => {
+        return [...document.querySelectorAll('#stage .code-tab')].some(
+          (n) => n.querySelector('.code-tab-name').textContent === 'battle.asm' && !n.querySelector('.code-tab-kind')
+        );
+      })()`));
+      waited += 100
+    ) {
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    // Open a third file after it: tabs are now [stock:battle.asm,
+    // engine:battle.asm, engine:split.asm].
+    await window.webContents.executeJavaScript(
+      `[...document.querySelectorAll('#stage .tree-row')].find((n) => n.querySelector('.tree-name').textContent === 'split.asm').click(); true`
+    );
+    for (
+      let waited = 0;
+      waited < 4000 &&
+      !(await window.webContents.executeJavaScript(findsInStrip('.code-tab .code-tab-name', 'split.asm')));
+      waited += 100
+    ) {
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    // Bring the (parked) copy back to the left pane.
+    const copyReselected = await window.webContents.executeJavaScript(`(() => {
+      const tab = [...document.querySelectorAll('#stage .code-tab')].find(
+        (n) => n.querySelector('.code-tab-name').textContent === 'battle.asm' && !n.querySelector('.code-tab-kind')
+      );
+      if (!tab || tab.classList.contains('active') || tab.classList.contains('active-split')) return false;
+      tab.click();
+      return true;
+    })()`);
+    // Type the copy back to exactly the stock text, then close it via its
+    // own × in the same synchronous script -- no 600ms ever elapses between
+    // the edit and the close, so closeTab's own explicit flush (not the
+    // debounce timer) is what commits.
+    const typedAndClosed = await window.webContents.executeJavaScript(`(() => {
+      const panes = [...document.querySelectorAll('#stage .code-pane')].filter((p) => !p.hidden);
+      const input = panes[0]?.querySelector('.code-input');
+      if (!input) return false;
+      input.focus();
+      input.select();
+      document.execCommand('insertText', false, ${JSON.stringify(battleStockText)});
+      const tab = [...document.querySelectorAll('#stage .code-tab')].find(
+        (n) => n.querySelector('.code-tab-name').textContent === 'battle.asm' && !n.querySelector('.code-tab-kind')
+      );
+      const closeButton = tab?.querySelector('.code-tab-close');
+      if (!closeButton) return false;
+      closeButton.click();
+      return true;
+    })()`);
+    const afterCloseFlush = await window.webContents.executeJavaScript(`(() => {
+      const tabNames = [...document.querySelectorAll('#stage .code-tab')].map((n) => ({
+        name: n.querySelector('.code-tab-name').textContent,
+        hasBadge: !!n.querySelector('.code-tab-kind')
+      }));
+      const panes = [...document.querySelectorAll('#stage .code-pane')].filter((p) => !p.hidden);
+      return {
+        copyStillInStrip: tabNames.some((t) => t.name === 'battle.asm' && !t.hasBadge),
+        hasOriginal: tabNames.some((t) => t.name === 'battle.asm' && t.hasBadge),
+        hasThirdFile: tabNames.some((t) => t.name === 'split.asm'),
+        hasOverride: window.__app.store.project.code.overrides.some((o) => o.name === 'battle.asm'),
+        inputCount: document.querySelectorAll('#stage .code-input').length,
+        shownTabCount: panes.length
+      };
+    })()`);
+    if (
+      !battleCompareClicked ||
+      !copyClosedOnce ||
+      !copyReselected ||
+      !typedAndClosed ||
+      afterCloseFlush.copyStillInStrip ||
+      afterCloseFlush.hasOriginal ||
+      !afterCloseFlush.hasThirdFile ||
+      afterCloseFlush.hasOverride ||
+      afterCloseFlush.inputCount !== afterCloseFlush.shownTabCount
+    ) {
+      problems.push(
+        `closing a compare's copy right after typing it back to stock removed the wrong tab (${JSON.stringify({
+          battleCompareClicked,
+          copyClosedOnce,
+          copyReselected,
+          typedAndClosed,
+          afterCloseFlush
+        })})`
+      );
+    } else {
+      console.log(
+        '  ok  closing a compare’s copy right after typing it back to stock removes the copy itself, not whatever a stale pre-commit index now names'
+      );
+    }
+    await resetOverride('battle.asm');
+    await resetOverride('split.asm'); // no override here, but settles back to one pane defensively
+
+
+    // Fix round 5, P2: flushPendingEdits iterates a snapshot, not the live
+    // array. combat.asm (X) and boot.asm (Y) have never been opened before
+    // this point. Reproduces the reviewer's exact sequence: compare X,
+    // close its copy (leaving the original open alone), reopen the copy
+    // from the tree (tabs now [stock:X, engine:X]), open Y after it (tabs
+    // now [stock:X, engine:X, engine:Y]), bring both copies into view (X's
+    // copy left, Y's copy split right, X's original parked) -- then, in one
+    // executeJavaScript, set X's copy to exactly its stock text and edit
+    // Y's copy, dispatching 'input' on both with no wait between them, so
+    // both debounce timers are still pending when the save fires. A save
+    // through the real path (menu:action project:save -- app.js's own
+    // saveProject() flushes pending edits, then immediately reads
+    // store.project for the IPC write) commits both: X's own commit
+    // synchronously prunes stock:X through onProjectChange, shifting every
+    // tab after it in `tabs` -- a live-array for-of would skip Y's own
+    // commit entirely, and the save would then serialize Y's stale text.
+    const combatStockText = await window.webContents.executeJavaScript(
+      `fetch('forge://app/engine/combat.asm').then((r) => r.text())`
+    );
+    await seedOverride('combat.asm', '; smoke combat override\n');
+    const combatCompareClicked = await clickCompareButton('combat.asm');
+    for (
+      let waited = 0;
+      waited < 4000 &&
+      !(await window.webContents.executeJavaScript(findsInStrip('.code-tab .code-tab-kind', 'original')));
+      waited += 100
+    ) {
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    // Close the editable copy, leaving the original open alone.
+    const combatCopyClosedOnce = await window.webContents.executeJavaScript(`(() => {
+      const tab = [...document.querySelectorAll('#stage .code-tab')].find(
+        (n) => n.querySelector('.code-tab-name').textContent === 'combat.asm' && !n.querySelector('.code-tab-kind')
+      );
+      const closeButton = tab?.querySelector('.code-tab-close');
+      if (!closeButton) return false;
+      closeButton.click();
+      return true;
+    })()`);
+    // Reopen the copy from the tree -- tabs are now [stock:combat.asm, engine:combat.asm].
+    await window.webContents.executeJavaScript(
+      `[...document.querySelectorAll('#stage .tree-row')].find((n) => n.querySelector('.tree-name').textContent === 'combat.asm').click(); true`
+    );
+    for (
+      let waited = 0;
+      waited < 4000 &&
+      !(await window.webContents.executeJavaScript(`(() => {
+        return [...document.querySelectorAll('#stage .code-tab')].some(
+          (n) => n.querySelector('.code-tab-name').textContent === 'combat.asm' && !n.querySelector('.code-tab-kind')
+        );
+      })()`));
+      waited += 100
+    ) {
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    // Open Y after it -- tabs are now [stock:combat.asm, engine:combat.asm, engine:boot.asm].
+    await window.webContents.executeJavaScript(
+      `[...document.querySelectorAll('#stage .tree-row')].find((n) => n.querySelector('.tree-name').textContent === 'boot.asm').click(); true`
+    );
+    for (
+      let waited = 0;
+      waited < 4000 &&
+      !(await window.webContents.executeJavaScript(findsInStrip('.code-tab .code-tab-name', 'boot.asm')));
+      waited += 100
+    ) {
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    // Bring combat.asm's copy back to the left pane...
+    const combatCopyReselected = await window.webContents.executeJavaScript(`(() => {
+      const tab = [...document.querySelectorAll('#stage .code-tab')].find(
+        (n) => n.querySelector('.code-tab-name').textContent === 'combat.asm' && !n.querySelector('.code-tab-kind')
+      );
+      if (!tab || tab.classList.contains('active') || tab.classList.contains('active-split')) return false;
+      tab.click();
+      return true;
+    })()`);
+    // ...then boot.asm's copy into the split (right) pane via its own ⧉ --
+    // it was just evicted to parked when combat.asm's copy took the left
+    // pane, so this is the "open in split pane" click, not "close split pane".
+    const bootSplitOpened = await window.webContents.executeJavaScript(`(() => {
+      const tab = [...document.querySelectorAll('#stage .code-tab')].find(
+        (n) => n.querySelector('.code-tab-name').textContent === 'boot.asm'
+      );
+      const splitButton = tab?.querySelector('.code-tab-split');
+      if (!splitButton) return false;
+      splitButton.click();
+      return true;
+    })()`);
+    for (
+      let waited = 0;
+      waited < 4000 &&
+      (await window.webContents.executeJavaScript(`document.querySelectorAll('#stage .code-input').length`)) < 2;
+      waited += 100
+    ) {
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    const shownBeforeEdit = await window.webContents.executeJavaScript(`(() => {
+      const findTab = (pred) => [...document.querySelectorAll('#stage .code-tab')].find(pred);
+      const leftTab = findTab((n) => n.classList.contains('active'));
+      const rightTab = findTab((n) => n.classList.contains('active-split'));
+      const originalParked = [...document.querySelectorAll('#stage .code-tab')].some(
+        (n) => n.title === 'combat.asm (original)' && !n.classList.contains('active') && !n.classList.contains('active-split')
+      );
+      return {
+        leftIsCombatCopy: leftTab?.querySelector('.code-tab-name').textContent === 'combat.asm' && !leftTab?.querySelector('.code-tab-kind'),
+        rightIsBootCopy: rightTab?.querySelector('.code-tab-name').textContent === 'boot.asm',
+        originalParked
+      };
+    })()`);
+    // Set combat.asm's copy to exactly its stock text and edit boot.asm's
+    // copy, dispatching 'input' on both in the same synchronous script --
+    // no wait between them, so both debounce timers are still pending when
+    // the save below fires.
+    const bothTypedNoWait = await window.webContents.executeJavaScript(`(() => {
+      const panes = [...document.querySelectorAll('#stage .code-pane')].filter((p) => !p.hidden);
+      const leftInput = panes[0]?.querySelector('.code-input');
+      const rightInput = panes[1]?.querySelector('.code-input');
+      if (!leftInput || !rightInput) return false;
+      leftInput.focus();
+      leftInput.select();
+      document.execCommand('insertText', false, ${JSON.stringify(combatStockText)});
+      rightInput.focus();
+      rightInput.setSelectionRange(0, 0);
+      document.execCommand('insertText', false, '; smoke flush edit\\n');
+      return true;
+    })()`);
+    const bootTextBeforeSave = await window.webContents.executeJavaScript(`(() => {
+      const panes = [...document.querySelectorAll('#stage .code-pane')].filter((p) => !p.hidden);
+      return panes[1]?.querySelector('.code-input')?.value ?? '';
+    })()`);
+    // Save through the real path -- exactly the call the live-array bug can
+    // make miss the later edit.
+    window.webContents.send('menu:action', 'project:save');
+    for (
+      let waited = 0;
+      waited < 4000 && (await window.webContents.executeJavaScript('window.__app.store.dirty'));
+      waited += 100
+    ) {
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    const afterSave = await window.webContents.executeJavaScript(`(() => {
+      const hasStockTab = [...document.querySelectorAll('#stage .code-tab')].some(
+        (n) => n.title === 'combat.asm (original)'
+      );
+      const anyDirtyDot = document.querySelectorAll('#stage .code-tab-dot').length > 0;
+      return {
+        dirty: window.__app.store.dirty,
+        hasPendingEdits: window.__app.current?.hasPendingEdits?.() ?? null,
+        hasStockTab,
+        anyDirtyDot,
+        hasOverride: window.__app.store.project.code.overrides.some((o) => o.name === 'combat.asm')
+      };
+    })()`);
+    const savedProject = await loadProject(dir);
+    const savedOverrides = savedProject.code.overrides;
+    const savedBoot = savedOverrides.find((o) => o.name === 'boot.asm');
+    if (
+      !combatCompareClicked ||
+      !combatCopyClosedOnce ||
+      !combatCopyReselected ||
+      !bootSplitOpened ||
+      !shownBeforeEdit.leftIsCombatCopy ||
+      !shownBeforeEdit.rightIsBootCopy ||
+      !shownBeforeEdit.originalParked ||
+      !bothTypedNoWait ||
+      afterSave.dirty ||
+      afterSave.hasPendingEdits !== false ||
+      afterSave.hasStockTab ||
+      afterSave.anyDirtyDot ||
+      afterSave.hasOverride ||
+      savedOverrides.some((o) => o.name === 'combat.asm') ||
+      !savedBoot ||
+      savedBoot.text !== bootTextBeforeSave
+    ) {
+      problems.push(
+        `a save while a stock prune and a later dirty tab race did not commit both edits (${JSON.stringify({
+          combatCompareClicked,
+          combatCopyClosedOnce,
+          combatCopyReselected,
+          bootSplitOpened,
+          shownBeforeEdit,
+          bothTypedNoWait,
+          afterSave,
+          savedBootText: savedBoot?.text,
+          bootTextBeforeSave,
+          savedHasCombat: savedOverrides.some((o) => o.name === 'combat.asm')
+        })})`
+      );
+    } else {
+      console.log(
+        '  ok  a save that flushes a dirty tab whose commit prunes an earlier stock tab still reaches a later dirty tab’s own commit'
+      );
+    }
+    // Collapse back to a single pane before the isolation resets below --
+    // two legitimately still-open editable tabs, not a stale stock tab, so
+    // resetOverride itself would otherwise see a non-1 pane count it has no
+    // way to explain (and no reason to try, since neither file named there
+    // is what is occupying the split).
+    await window.webContents.executeJavaScript(`(() => {
+      const tab = [...document.querySelectorAll('#stage .code-tab')].find((n) => n.classList.contains('active-split'));
+      tab?.querySelector('.code-tab-split')?.click();
+      return true;
+    })()`);
+    for (
+      let waited = 0;
+      waited < 4000 &&
+      (await window.webContents.executeJavaScript(`document.querySelectorAll('#stage .code-input').length`)) !== 1;
+      waited += 100
+    ) {
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    await resetOverride('boot.asm');
+    await resetOverride('combat.asm');
+
+    // ROADMAP item 9, phase 2 (B): a draggable divider between the panes.
+    // Open two more tabs and split them, the same idiom used above.
+    await window.webContents.executeJavaScript(
+      `[...document.querySelectorAll('#stage .tree-row')].find((n) => n.querySelector('.tree-name').textContent === 'flash.asm').click(); true`
+    );
+    for (
+      let waited = 0;
+      waited < 4000 &&
+      !(await window.webContents.executeJavaScript(findsInStrip('.code-tab .code-tab-name', 'flash.asm')));
+      waited += 100
+    ) {
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    await window.webContents.executeJavaScript(
+      `[...document.querySelectorAll('#stage .tree-row')].find((n) => n.querySelector('.tree-name').textContent === 'title.asm').click(); true`
+    );
+    for (
+      let waited = 0;
+      waited < 4000 &&
+      !(await window.webContents.executeJavaScript(findsInStrip('.code-tab .code-tab-name', 'title.asm')));
+      waited += 100
+    ) {
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    await window.webContents.executeJavaScript(`(() => {
+      const tab = [...document.querySelectorAll('#stage .code-tab')].find(
+        (n) => n.querySelector('.code-tab-name').textContent === 'flash.asm'
+      );
+      tab?.querySelector('.code-tab-split')?.click();
+      return true;
+    })()`);
+    for (
+      let waited = 0;
+      waited < 4000 && (await window.webContents.executeJavaScript(`document.querySelectorAll('#stage .code-input').length`)) < 2;
+      waited += 100
+    ) {
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    const valuesBeforeDrag = await window.webContents.executeJavaScript(
+      `[...document.querySelectorAll('#stage .code-input')].map((input) => input.value)`
+    );
+
+    // Drag resizes by percent and clamps.
+    await window.webContents.executeJavaScript(`(() => {
+      const inputs = [...document.querySelectorAll('#stage .code-input')];
+      inputs[0].scrollLeft = 37;
+      inputs[0].scrollTop = 11;
+      inputs[0].dispatchEvent(new Event('scroll'));
+      inputs[1].scrollLeft = 5;
+      inputs[1].scrollTop = 22;
+      inputs[1].dispatchEvent(new Event('scroll'));
+      return true;
+    })()`);
+    const beforeDrag = await window.webContents.executeJavaScript(`(() => {
+      const panes = [...document.querySelectorAll('#stage .code-pane')].filter((p) => !p.hidden);
+      const host = document.querySelector('#stage .code-panes');
+      return { leftWidth: panes[0].getBoundingClientRect().width, containerWidth: host.getBoundingClientRect().width };
+    })()`);
+    await window.webContents.executeJavaScript(`(() => {
+      const divider = document.querySelector('#stage .code-divider');
+      const rect = divider.getBoundingClientRect();
+      const x = rect.left + rect.width / 2;
+      const y = rect.top + rect.height / 2;
+      divider.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, pointerId: 7, clientX: x, clientY: y }));
+      divider.dispatchEvent(new PointerEvent('pointermove', { bubbles: true, pointerId: 7, clientX: x + 120, clientY: y }));
+      divider.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, pointerId: 7, clientX: x + 120, clientY: y }));
+      return true;
+    })()`);
+    const afterDrag = await window.webContents.executeJavaScript(`(() => {
+      const panes = [...document.querySelectorAll('#stage .code-pane')].filter((p) => !p.hidden);
+      const inputs = [...document.querySelectorAll('#stage .code-input')];
+      // A width change can itself clamp scrollLeft (the widened pane may no
+      // longer have anything to scroll at the offset set above) -- a real,
+      // separate browser behavior, not a claim this test makes about scroll
+      // position surviving a resize. Re-dispatch 'scroll' so syncScroll runs
+      // against whatever scrollLeft/scrollTop is now, which is what actually
+      // proves the three-layer metric agreement held through the resize.
+      inputs.forEach((input) => input.dispatchEvent(new Event('scroll')));
+      return {
+        leftWidth: panes[0].getBoundingClientRect().width,
+        inputCount: inputs.length,
+        values: inputs.map((input) => input.value),
+        hl: inputs.map((input) => {
+          const hl = input.closest('.code-scroll').querySelector('.code-hl');
+          return { transform: hl.style.transform, expected: \`translate(\${-input.scrollLeft}px, \${-input.scrollTop}px)\` };
+        })
+      };
+    })()`);
+    if (
+      Math.abs(afterDrag.leftWidth - (beforeDrag.leftWidth + 120)) > 4 ||
+      afterDrag.inputCount !== 2 ||
+      JSON.stringify(afterDrag.values) !== JSON.stringify(valuesBeforeDrag) ||
+      afterDrag.hl.some((entry) => entry.transform !== entry.expected)
+    ) {
+      problems.push(
+        `dragging the divider did not resize by the pointer delta (${JSON.stringify({ beforeDrag, afterDrag })})`
+      );
+    } else {
+      console.log('  ok  dragging the divider resizes the left pane by percent; values and scroll-sync intact');
+    }
+
+    await window.webContents.executeJavaScript(`(() => {
+      const divider = document.querySelector('#stage .code-divider');
+      const rect = divider.getBoundingClientRect();
+      const y = rect.top + rect.height / 2;
+      divider.dispatchEvent(
+        new PointerEvent('pointerdown', { bubbles: true, pointerId: 8, clientX: rect.left + rect.width / 2, clientY: y })
+      );
+      divider.dispatchEvent(new PointerEvent('pointermove', { bubbles: true, pointerId: 8, clientX: -9999, clientY: y }));
+      divider.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, pointerId: 8, clientX: -9999, clientY: y }));
+      return true;
+    })()`);
+    const afterClamp = await window.webContents.executeJavaScript(`(() => {
+      const panes = [...document.querySelectorAll('#stage .code-pane')].filter((p) => !p.hidden);
+      const host = document.querySelector('#stage .code-panes');
+      return {
+        leftWidth: panes[0].getBoundingClientRect().width,
+        containerWidth: host.getBoundingClientRect().width,
+        flex: panes[0].style.flex
+      };
+    })()`);
+    // Checks the width actually lands at 20%, not merely "not less than" it --
+    // an unclamped ratio drives a negative flex-basis, which CSS treats as an
+    // invalid `flex` shorthand and silently leaves the pane at whatever it was
+    // before, which a lower-bound-only check cannot tell apart from a real
+    // clamp to 0.2.
+    if (Math.abs(afterClamp.leftWidth - afterClamp.containerWidth * 0.2) > 4) {
+      problems.push(
+        `dragging the divider past the edge did not clamp to 0.2 (${JSON.stringify(afterClamp)})`
+      );
+    } else {
+      console.log('  ok  dragging the divider past the edge clamps the ratio at 0.2');
+    }
+
+    // Double-click resets.
+    await window.webContents.executeJavaScript(`(() => {
+      const divider = document.querySelector('#stage .code-divider');
+      divider.dispatchEvent(new MouseEvent('dblclick', { bubbles: true }));
+      return true;
+    })()`);
+    const afterDblClick = await window.webContents.executeJavaScript(`(() => {
+      const panes = [...document.querySelectorAll('#stage .code-pane')].filter((p) => !p.hidden);
+      return { leftWidth: panes[0].getBoundingClientRect().width, rightWidth: panes[1].getBoundingClientRect().width };
+    })()`);
+    if (Math.abs(afterDblClick.leftWidth - afterDblClick.rightWidth) > 8) {
+      problems.push(`double-clicking the divider did not reset the split to roughly even (${JSON.stringify(afterDblClick)})`);
+    } else {
+      console.log('  ok  double-clicking the divider resets the split to 0.5');
+    }
+
+
+    // Fix round 1: drag recovery. Review round 1 classified a genuinely lost
+    // pointer capture as synthetic-dispatch-only in Chromium, not a
+    // reproduced real-pointer bug -- this proves the window-level fallback
+    // exists and works, not that real use hits it. `pointerup` dispatched on
+    // `window`, not the divider, only reaches a listener registered on
+    // `window` itself; the divider's own pointerup/pointercancel listeners
+    // never see an event dispatched directly at a different target.
+    await window.webContents.executeJavaScript(`(() => {
+      const divider = document.querySelector('#stage .code-divider');
+      const rect = divider.getBoundingClientRect();
+      divider.dispatchEvent(
+        new PointerEvent('pointerdown', {
+          bubbles: true,
+          pointerId: 42,
+          clientX: rect.left + rect.width / 2,
+          clientY: rect.top + rect.height / 2
+        })
+      );
+      return true;
+    })()`);
+    await window.webContents.executeJavaScript(`(() => {
+      window.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, pointerId: 42, clientX: 0, clientY: 0 }));
+      return true;
+    })()`);
+    const afterWindowPointerUp = await window.webContents.executeJavaScript(`(() => {
+      const host = document.querySelector('#stage .code-panes');
+      const leftInput = document.querySelectorAll('#stage .code-pane')[0]?.querySelector('.code-input');
+      const rect = leftInput.getBoundingClientRect();
+      const hit = document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2);
+      return {
+        dragging: host.classList.contains('dragging'),
+        hitIsInsideLeftPane: !!hit && leftInput.closest('.code-pane').contains(hit)
+      };
+    })()`);
+    if (afterWindowPointerUp.dragging || !afterWindowPointerUp.hitIsInsideLeftPane) {
+      problems.push(`a pointerup dispatched on window did not recover from a stuck drag (${JSON.stringify(afterWindowPointerUp)})`);
+    } else {
+      console.log('  ok  a pointerup dispatched on window (not the divider) still ends the drag and frees the editors');
+    }
+
+    // Fix round 2: the same recovery, from a fresh drag, via `pointercancel`
+    // dispatched on window instead -- proving the *other* window listener,
+    // not just pointerup's.
+    await window.webContents.executeJavaScript(`(() => {
+      const divider = document.querySelector('#stage .code-divider');
+      const rect = divider.getBoundingClientRect();
+      divider.dispatchEvent(
+        new PointerEvent('pointerdown', {
+          bubbles: true,
+          pointerId: 43,
+          clientX: rect.left + rect.width / 2,
+          clientY: rect.top + rect.height / 2
+        })
+      );
+      return true;
+    })()`);
+    await window.webContents.executeJavaScript(`(() => {
+      window.dispatchEvent(new PointerEvent('pointercancel', { bubbles: true, pointerId: 43 }));
+      return true;
+    })()`);
+    const afterWindowPointerCancel = await window.webContents.executeJavaScript(`(() => {
+      const host = document.querySelector('#stage .code-panes');
+      const leftInput = document.querySelectorAll('#stage .code-pane')[0]?.querySelector('.code-input');
+      const rect = leftInput.getBoundingClientRect();
+      const hit = document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2);
+      return {
+        dragging: host.classList.contains('dragging'),
+        hitIsInsideLeftPane: !!hit && leftInput.closest('.code-pane').contains(hit)
+      };
+    })()`);
+    if (afterWindowPointerCancel.dragging || !afterWindowPointerCancel.hitIsInsideLeftPane) {
+      problems.push(
+        `a pointercancel dispatched on window did not recover from a stuck drag (${JSON.stringify(afterWindowPointerCancel)})`
+      );
+    } else {
+      console.log('  ok  a pointercancel dispatched on window (not the divider) also ends the drag and frees the editors');
+    }
+
+    // The ratio survives leaving the Forge: drag to ~0.3, leave, come back,
+    // and re-open a split (the Forge remounts, so the tabs themselves do not
+    // survive -- only the module-level ratio should).
+    await window.webContents.executeJavaScript(`(() => {
+      const divider = document.querySelector('#stage .code-divider');
+      const host = document.querySelector('#stage .code-panes');
+      const rect = host.getBoundingClientRect();
+      const dividerRect = divider.getBoundingClientRect();
+      const y = dividerRect.top + dividerRect.height / 2;
+      const targetX = rect.left + rect.width * 0.3;
+      divider.dispatchEvent(
+        new PointerEvent('pointerdown', {
+          bubbles: true,
+          pointerId: 9,
+          clientX: dividerRect.left + dividerRect.width / 2,
+          clientY: y
+        })
+      );
+      divider.dispatchEvent(new PointerEvent('pointermove', { bubbles: true, pointerId: 9, clientX: targetX, clientY: y }));
+      divider.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, pointerId: 9, clientX: targetX, clientY: y }));
+      return true;
+    })()`);
+    await window.webContents.executeJavaScript("window.__app.goTo('tile'); true");
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    await window.webContents.executeJavaScript("window.__app.goTo('code'); true");
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    await window.webContents.executeJavaScript(
+      `[...document.querySelectorAll('#stage .tree-row')].find((n) => n.querySelector('.tree-name').textContent === 'flash.asm').click(); true`
+    );
+    for (
+      let waited = 0;
+      waited < 4000 &&
+      !(await window.webContents.executeJavaScript(findsInStrip('.code-tab .code-tab-name', 'flash.asm')));
+      waited += 100
+    ) {
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    await window.webContents.executeJavaScript(
+      `[...document.querySelectorAll('#stage .tree-row')].find((n) => n.querySelector('.tree-name').textContent === 'title.asm').click(); true`
+    );
+    for (
+      let waited = 0;
+      waited < 4000 &&
+      !(await window.webContents.executeJavaScript(findsInStrip('.code-tab .code-tab-name', 'title.asm')));
+      waited += 100
+    ) {
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    await window.webContents.executeJavaScript(`(() => {
+      const tab = [...document.querySelectorAll('#stage .code-tab')].find(
+        (n) => n.querySelector('.code-tab-name').textContent === 'flash.asm'
+      );
+      tab?.querySelector('.code-tab-split')?.click();
+      return true;
+    })()`);
+    for (
+      let waited = 0;
+      waited < 4000 && (await window.webContents.executeJavaScript(`document.querySelectorAll('#stage .code-input').length`)) < 2;
+      waited += 100
+    ) {
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    const afterReopen = await window.webContents.executeJavaScript(`(() => {
+      const panes = [...document.querySelectorAll('#stage .code-pane')].filter((p) => !p.hidden);
+      const host = document.querySelector('#stage .code-panes');
+      return { leftWidth: panes[0].getBoundingClientRect().width, containerWidth: host.getBoundingClientRect().width };
+    })()`);
+    const wantedLeft = afterReopen.containerWidth * 0.3;
+    if (Math.abs(afterReopen.leftWidth - wantedLeft) > 4) {
+      problems.push(
+        `the split ratio did not survive leaving and returning to the Code Forge (left=${afterReopen.leftWidth}, wanted≈${wantedLeft})`
+      );
+    } else {
+      console.log('  ok  the divider ratio survives leaving the Forge and coming back within the session');
+    }
+
+    // No split, no divider.
+    await window.webContents.executeJavaScript(`(() => {
+      const tab = [...document.querySelectorAll('#stage .code-tab')].find((n) => n.classList.contains('active-split'));
+      tab?.querySelector('.code-tab-split')?.click();
+      return true;
+    })()`);
+    for (
+      let waited = 0;
+      waited < 4000 &&
+      (await window.webContents.executeJavaScript(`document.querySelectorAll('#stage .code-input').length`)) !== 1;
+      waited += 100
+    ) {
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    const afterSplitClose = await window.webContents.executeJavaScript(`(() => {
+      const divider = document.querySelector('#stage .code-divider');
+      const panes = [...document.querySelectorAll('#stage .code-pane')];
+      return {
+        dividerHidden: divider.hidden,
+        leftFlex: panes[0].style.flex,
+        // Fix round 1 (review P3): the old assertion only checked the
+        // divider and the left pane's own inline style -- a rightPane.hidden
+        // regression (with divider.hidden still correctly set) would pass it
+        // while the right pane stayed visibly on screen.
+        visiblePaneCount: panes.filter((pane) => !pane.hidden).length
+      };
+    })()`);
+    if (
+      !afterSplitClose.dividerHidden ||
+      afterSplitClose.leftFlex !== '' ||
+      afterSplitClose.visiblePaneCount !== 1
+    ) {
+      problems.push(`closing the split did not hide the divider and clear the inline flex (${JSON.stringify(afterSplitClose)})`);
+    } else {
+      console.log('  ok  closing the split hides the divider and clears the left pane’s inline flex');
     }
 
     // The map screen is drawn at the largest whole zoom its stage has room for,
