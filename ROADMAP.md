@@ -1477,12 +1477,16 @@ this item's own new table bytes would land and grow.
    scope, add/delete — moved there in full; a party member's own *learned* spells (which ones, at
    what level) stay on the Character Forge, cross-linked to the Magic Forge rather than
    opening the old `Spells…` modal.
-2. **Spell animations** — nothing exists today: casting is message lines and HP changes, with no
+2. ~~**Spell animations** — nothing exists today: casting is message lines and HP changes, with no
    per-spell visual at all. This is the least-designed part of the item, and stays that way here
    rather than being forced to a figure: what an animation even *is* on the battle screen —
    a metasprite flipbook drawn over the target (`draw_metasprite`, `engine/entities.asm`), a palette
    flash reusing the existing `PALETTE_FX` machinery (`PALETTE_FX_ENABLED`, shared by `Fade`/`Flash`),
-   or something else entirely — is an open design question this item records rather than settles.
+   or something else entirely — is an open design question this item records rather than settles.~~
+   — **done** (`c4e67c8` phase 1b): `spell.anim` names a `sprites.animations` row, armed by
+   `cast_spell` over the caster for heal/all-target spells and the target otherwise through the
+   shared `bt_fx_*` flipbook — the metasprite-flipbook answer, not `PALETTE_FX` reuse. See
+   `docs/design-battle-animation.md`.
 3. ~~**Damage/heal ranges (min-max)** — `spell.amount` is one flat byte today~~ — **done**:
    `amountMin`/`amountMax` replace it (`normalizeSpell`, one-time migration; a backwards pair is
    swapped, not rejected), compiled into three tables (`spell_amount_min`/`spell_amount_n`/
@@ -1641,11 +1645,15 @@ monsters the way item 5's shipped phases were for items.
    `hp` stays excluded per the Forge boundary above, and a seed-value picker (pre-filling Base from
    an existing actor) was considered and deferred. A live scaling curve — continuous, not this
    one-time collapse — remains undesigned; nothing here commits to one.
-3. **Battle-side animations** — battle art is a static block today, with no motion and no
+3. ~~**Battle-side animations** — battle art is a static block today, with no motion and no
    attack/cast animation on a monster at all. This shares the same open "what is an animation on the
    battle screen" question item 13 records for spells (metasprite flipbook vs. `PALETTE_FX` reuse vs.
    something else) rather than restating it — the two items would want one shared answer, not two
-   separately designed ones.
+   separately designed ones.~~ — **done** (`b65144a`/`c4e67c8` phase 1a/1b, `9e192bc`/`227ccb1`
+   phase 2a/2b, `83c27db` phase 3): a monster's own `battle.attackAnim` and a spell's own `anim`
+   each arm the shared `bt_fx_*` flipbook; hit feedback and a MISS overlay are independent RPG-only
+   toggles; the Magic/Monster Forge preview canvas renders it live. See
+   `docs/design-battle-animation.md`.
 4. ~~**A monster's own spell list** — several spells, weighted by duplicate entries, picked
    uniformly among the affordable ones, replacing the single `battle.spellId` it has today;
    designed, priced, gated and tested in `docs/design-monster-spell-list.md` v9.2.~~ — **done**
@@ -1662,14 +1670,18 @@ monsters the way item 5's shipped phases were for items.
    values. `battleShortfallAdvice` offers removing every monster's extra spells
    (`projectWithoutMonsterSpellList`) as its own banked-region lever. See
    `docs/design-monster-spell-list.md`.
-5. **A party member's own attack visual** — deferred out of the battle-side animation slice
+5. ~~**A party member's own attack visual** — deferred out of the battle-side animation slice
    (`docs/design-battle-animation.md` §8/§9) by Chris's decision on 2026-09-13, not dropped: that
    slice gives a *monster* an authored `battle.attackAnim` and a *spell* an authored `anim`, but a
    party member's physical attack still shows nothing of its own. Authoring it belongs on the
    Character Forge, beside the member's other battle fields, and playing it needs no new engine
    primitive — the same `bt_fx_*` flipbook the shared slice adds, armed from `attack_target`'s
    party-side call site over the attacker's own slot, plus one more banked table indexed by party
-   member. Its own design round comes after the shared slice's phases 1a/1b ship.
+   member. Its own design round comes after the shared slice's phases 1a/1b ship.~~ — **done**
+   (`8247f6d` engine/generator, `2bec033` Character Forge): `project.party[i].attackAnim` compiles
+   to `pc_anim_attack`, armed by `attack_target` before `roll_hit`; every RPG's acting member walks
+   forward first (`BP_WALK`), always on. `animationSelect` is the one picker Magic, Monster and
+   Character all render. See `docs/design-battle-animation.md` §16.
 
 **Shared with item 13, not repeated here**: which bank future engine work in either Forge would draw
 from — item 13's own paragraph above, which this item's battle-side animations (point 3) are equally

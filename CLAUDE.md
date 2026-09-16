@@ -1474,15 +1474,15 @@ existing cast-or-attack coin flip — pick-first (`docs/design-monster-spell-lis
 Monster Forge's four selects collapse to `spellIds` from the store's own array, never the other
 selects' DOM values, since a stale id renders as `Nothing` and reading it back would drop it.
 
-`BATTLE_ANIM_BATTLE_ALLOWANCE = 243` (`main/build/battletables.js`) charges
-`battle_fx_arm_at`/`arm_attack`/`tick`/`draw`, gated on `projectUsesBattleAnimation`
-(`BATTLE_ANIM_ENABLED`), flat on MMC1/MMC3/UNROM 512, per `bankedbytes.test.js`.
+`BATTLE_ANIM_BATTLE_ALLOWANCE = 264` (`main/build/battletables.js`; 243 plus the 21-byte
+follow-the-walker block in `battle_fx_draw`, one name because both share one gate) charges
+`battle_fx_arm_at`/`arm_attack`/`tick`/`draw`, gated on `projectUsesAnyBattleAnimation`
+(`BATTLE_ANIM_ENABLED` — an actor, spell OR party reference; the same broad predicate gates the
+`mon_anim_attack`/`spell_anim` tables, or a party-only build would reference a table that does
+not exist), flat on MMC1/MMC3/UNROM 512, per `bankedbytes.test.js`.
 `bt_fx_anim`/`slot`/`frame`/`timer` (`engine/constants.asm`) hold the effect; `setup_monsters`/
 `battle_message_done` reset only `bt_fx_anim`, to `NO_ANIM` (both gated) — `battle_fx_arm_at` sets
-the slot and zeroes frame/timer on arm. `battleCombatantOamMax` counts every `project.party` member
-as joined; `battleSpriteBudget` adds the largest frame tile count among playable battle-animation
-references once (0 if none), plus `MISS_OAM_TILES` when MISS is live;
-`describeBattleAnimationOamWarning` names an oversized one. `battleFxOamRoom`
+the slot and zeroes frame/timer on arm. `battleFxOamRoom`
 (`shared/project.js`, below) is the complement: room left for the effect, not the overflow check.
 
 **Phases 2a (hit feedback) and 2b (MISS)** are independent RPG-only toggles. `bt_hurt_slot`/
@@ -1515,13 +1515,16 @@ how much room the flipbook has left). `generate.js` calls it as the local `battl
 same-named-import TDZ `ReferenceError`; the preview widget (`renderer/widgets/battlefxpreview.js`)
 calls the identical export, and `battleanim.test.js` pins both to hardcoded, pre-extraction
 figures. `renderer/widgets/battlefx.js` is the pure, DOM-free model; `battlefxpreview.js`'s
-`mountBattleFxPreview` is its DOM wrapper, shared by the Magic and Monster Forges. `battleFxBounds`
+`mountBattleFxPreview` is its DOM wrapper, shared by the Magic, Monster and Character
+Forges. `battleFxBounds`
 lives in the DOM-free file, not the wrapper, since its own unit tests (§15.7) run under plain
-`node:test`. `rpg.test.js`'s "phase 3 §15.6 THE GATE" is the acceptance proof
-— the built ROM is the oracle, the JS stepper is under test, the same shape `sfx.test.js`'s own
-golden trace already established. `paintMetasprite` (`renderer/widgets/metasprite.js`) gains a
-trailing, optional `height` parameter defaulting to `width`, fixing a clip
-bug: a tile's `py` was tested against `width`, not `height`.
+`node:test`.
+
+**A party member's attack visual** (ROADMAP 14.5,
+`docs/design-battle-animation.md` §16) adds `project.party[i].attackAnim`, compiled to
+`pc_anim_attack` behind `PARTY_ATTACK_ANIM_ENABLED`
+(`PARTY_ATTACK_ANIM_BATTLE_ALLOWANCE = 10`); the acting party member walks forward (both RPG fixtures
+re-pinned).
 
 ### The emulator
 
