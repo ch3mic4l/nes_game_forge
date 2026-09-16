@@ -133,9 +133,7 @@ renderer, because the renderer gets destroyed if the user navigates away mid-bui
 per-mount flag there can't stop a second caller from racing `generate.js`'s own `fs.rm(buildDir)`.
 It only covers that one channel — unit and Lua tests import `buildProject`
 (`main/build/pipeline.js`) directly, bypassing both this gate and `main/build/cli.js`, and
-`npm run smoke` is the only thing that goes through `build:run` and is covered by it. There's no CI
-configuration in this repository — `main/build/cli.js`'s own bypass, regenerating the checked-in
-fixtures' ROMs by hand, is the one described above.
+`npm run smoke` is the only thing that goes through `build:run` and is covered by it.
 
 ### The single-writer rule
 
@@ -1081,9 +1079,7 @@ sizes, the route zero-cost proof and `KERNEL_SLACK` itself are each checked thei
 - `BASE_KERNEL_CODE_BYTES_BY_MAPPER = { 0 (NROM): 5367, 1 (MMC1): 5428, 4 (MMC3): 5449, 30 (UNROM
   512): 5617 }` — action-side, nothing conditional on, falling back to the largest of the four for
   an unmeasured mapper (`docs/kernel-base-overcharge-report.md`; the NROM entry was added measuring
-  in-game naming's own isolation deltas, below). Re-measured by the zero-page kernel diet
-  (`docs/design-kernel-diet.md` — see the nesasm zero-page trap below for the `<`-prefix mechanism)
-  — every figure in this section moved, none of the mechanisms did.
+  in-game naming's own isolation deltas, below).
   `BATTLE_KERNEL_ALLOWANCE_BY_MAPPER = { 1: 229, 4: 240, 30: 229 }` is its RPG-only supplement — no
   fallback, deliberately, the same reason Save's table has none; MMC3's extra 11 bytes are
   `split_select`'s second `.if BATTLE_ENABLED` arm (`engine/split.asm`). Its gate,
@@ -1153,11 +1149,9 @@ sizes, the route zero-cost proof and `KERNEL_SLACK` itself are each checked thei
   `KERNEL_SLACK <= margin <= KERNEL_SLACK * 2`. Correct accounting of the base and every conditional
   term should leave exactly the floor; the ceiling detects drift, not spare headroom.
 
-**Documented limitations**: the zero-page kernel diet (`docs/design-kernel-diet.md`) closed every
-refusal listed here, each confirmed by a real `buildProject` run with a padded sibling (unrelated
-filler reproducing the refusal/advice) — §14 ~977, shipped; §5 alone names 8 of 12.
-Two controls (`sample-rpg` item+SFX alone on MMC3, the tightest board, and item 6's 7 commands plus
-that item with Sting and Sfx, both on MMC3, no Save/Move/title live) never refused.
+**Documented limitations**: every refusal formerly listed here is resolved — the zero-page
+kernel diet (`docs/design-kernel-diet.md` §14) closed each, confirmed by a real `buildProject`
+run.
 
 ### The Code Forge
 
@@ -1203,12 +1197,10 @@ is what the deep-link needs.
 **nesasm v3.1 also crashes outright on a long label**, an undocumented limit found while building
 the SFX feature: a label of 31 or more characters aborts the assembler with a glibc
 `_FORTIFY_SOURCE` buffer-overflow error (exit 134) rather than a normal error line; 30 characters
-assembles cleanly (`docs/sfx-implementation-report.md` §2). Unlike the "6502 traps" list below,
-this has no regression test — recorded here as a known assembler limit to keep new labels under,
-not a claim this codebase actively guards against.
+assembles cleanly (`docs/sfx-implementation-report.md` §2). No regression test guards this limit.
 
 The editor (`renderer/forges/code/`) is hand-rolled — the no-runtime-dependency/no-bundler
-constraints rule out Monaco/CodeMirror, not the CSP; CodeMirror 6 needs no `unsafe-eval` at all.
+constraints rule out Monaco/CodeMirror.
 `highlight.js` is a pure per-line tokenizer (nesasm has no multi-line construct), and its one
 invariant — joining the tokens reproduces the line — is asserted over every line of the engine. Two
 metric rules in `editor.js`: the gutter, the highlight layer and the textarea must agree on every
@@ -1218,6 +1210,18 @@ and discards anything set first — a read-only generated file's `gotoLine` only
 commits to the store on a pause rather than per keystroke (an unusable undo stack) or on blur (a
 commit that may never come), so `saveProject` in `app.js` calls the mount contract's optional
 `flushPendingEdits()` first.
+
+**Two panes (ROADMAP item 9).** `code.js` shows up to two open tabs, `activeKey` left and
+`splitKey` right, under four rules. A fresh open lands in the pane whose textarea last held
+focus, left by default (`pickTargetPane`). **Every pane reassignment ends in
+`placeInPane`/`focusPane`**, the one place that corrects a `focusedPane` naming an empty split
+pane. Each tab owns its commit timer, so typing in one pane cannot cancel the other's pending
+commit. Ctrl+Z drains the focused textarea's own native stack before the project stack. An
+override's original is a fourth, read-only `stock` tab (◫ on an overridden tree row: copy left,
+original right, **both placed after the last `await`**), pruned by `onProjectChange` the moment
+the override is gone; `REFERENCE_LABELS` names the read-only kinds and **`ensureTab` is the
+single load-or-reuse path**. The divider sets the left pane's flex-basis in percent —
+module-level, never saved.
 
 - Stock label stability: an internal movement-code dedup removed
   `move_left_done`/`move_right_done`/`move_up_done`/`move_down_done` as standalone labels, but they

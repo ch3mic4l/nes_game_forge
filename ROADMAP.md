@@ -1109,7 +1109,7 @@ are demos worth starting from — `sample/` and `sample-rpg/`; `sample-mmc1/`, `
 `sample-u512/` and `sample-rpg-mmc1/` exist to cover a board rather than to show a game (CLAUDE.md's
 own "six fixtures, deliberately" passage), and are not what this item means.
 
-## 9. Split-pane editing in the Code Forge
+## 9. Split-pane editing in the Code Forge — **done**
 
 Hand-written 6502 in the Code Forge nearly always needs a second file in view.
 `engine/constants.asm` is the single allocation map for zero page and the `$0300+` RAM arrays, so
@@ -1179,6 +1179,22 @@ This is pure editor work — no engine change, no assembly, no kernel bytes, no 
 exactly like item 2 was. That matters because the kernel-lo bank is the binding constraint on item
 6's remaining cutscene commands — items 7 and 8 are editor and asset work with no kernel cost of
 their own, same as this one — and this item is not subject to it at all.
+
+**Fixed, in two phases.** Phase 1 (`6af74d7`) shipped the two panes themselves: `activeKey` left
+and `splitKey` right, `pickTargetPane`'s focused-pane landing rule, a commit timer per tab instead
+of one shared timeout, and `placeInPane`/`focusPane` as the single place every pane reassignment
+ends, closing the bare-`focusedPane`-write bugs four review rounds kept finding. Phase 2 (`24c2bb2`)
+shipped the override-beside-stock view: a fourth, read-only `stock` tab kind (◫ on an overridden
+tree row, copy left and original right, both placed only after the load's last `await` to survive
+supersession) and `ensureTab` as the single load-or-reuse path every tab creation now goes through,
+plus the draggable percent-based divider. The three questions the diagnosis above left open are
+answered as shipped: a deep link or fresh open whose target is not already showing lands in the
+pane whose textarea last held focus, left by default (a target already in a pane stays there and
+only moves its caret); Ctrl+Z drains the focused textarea's own native undo stack before falling back to
+the project stack, exactly the ordering the diagnosis found already implicit in the single-pane
+code — recorded here, not changed; and an override's original is not a second identity bolted onto
+the same tab but a distinct `stock` tab kind, named in `REFERENCE_LABELS` and pruned by
+`onProjectChange` the moment its override is gone.
 
 ## 10. The Map Forge's settings pane scrolls sideways — **done**
 
