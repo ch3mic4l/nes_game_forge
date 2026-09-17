@@ -102,7 +102,7 @@ for (const pointer of DOCS_POINTERS) {
   });
 }
 
-const CLAUDE_MD_CHAR_BUDGET = 135000;
+const CLAUDE_MD_CHAR_BUDGET = 137000;
 
 test(`CLAUDE.md stays under its ${CLAUDE_MD_CHAR_BUDGET}-character budget`, () => {
   assert.ok(

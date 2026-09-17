@@ -28,6 +28,7 @@ npm run smoke      # end-to-end: boots the real UI and drives it
 | **Controller Forge** | Done — buttons bound to engine actions per game state, plus keyboard bindings for the player |
 | **Code Forge** | Done — the engine's 6502 source in a tabbed editor with syntax highlighting; edits are kept per project, and you can add your own `.asm` files; two files at once in split panes with a draggable divider, including an overridden file beside the stock original it diverges from |
 | **Build & Play** | Done — generates assembly, assembles with `nesasm`, verifies the ROM, plays it in-app |
+| **Camera** | Done — an optional slide between neighbouring screens instead of a hard cut (16 frames, the world paused), one checkbox in the Build panel beside Mirroring; which axis slides follows the cartridge's mirroring, and UNROM 512's four-screen slides both ways |
 | **Emulator + debugger** | Done — breakpoints, step/over/out, scanline & frame step, disassembly with symbols, memory editor, a labelled switch/variable inspector, PPU viewers, invincibility/encounters-off/collision-off test toggles (collision-off is terrain only — screen transitions, damage tiles and door triggers still work; invincibility covers floor hazards only in an RPG, not battle damage), and a "↻ Reload Test" control that rebuilds the project and resumes whichever play-from-here or battle-test scenario is running — a named map, screen or actor is found again by that name even after other changes elsewhere, but renaming the one actually being tracked makes it refuse rather than guess, and an unnamed screen has no name to follow at all, so it's found again by its position within its map instead, which resizing that map can retarget or lose, plus 📷 Shot and ⏺ Record, which write a PNG of the screen at its native 256×240 and an animated GIF of what plays out (every third emulated frame, 20 fps, up to 300 frames / ~15 s) (ordinary ▶ Build & Play always starts fresh from the project's own start instead; a build that fails leaves whatever was already running untouched) |
 | **Turn-based RPG mode** | Done — party, spells, monster stats, encounters, FF-style menu battles with XP, gold, levels, elements and drops |
 | **Tutorial** | Done — a guided tour of every Forge under 🎓 Learn in the rail, with jumps into the Forge each topic explains |
@@ -585,10 +586,19 @@ the single place a program bank is selected.
 **UNROM 512** also offers **four-screen mirroring** — four independent nametables
 instead of two mirrored pairs — which no other board here can provide. It is not
 free: the extra nametables are backed by the last CHR-RAM page, so choosing it
-drops the tileset ceiling from 4 to 3. And the engine only ever draws nametable 0,
-so the extra nametables are currently unused; pick four-screen for cartridge-board
-compatibility, not for anything the engine does with it today. The Build panel says
-as much when it is selected.
+drops the tileset ceiling from 4 to 3. With the camera off, the engine draws only
+nametable 0, so the extra nametables buy nothing; with it on, four-screen is what
+lets a crossing slide on both axes instead of just one. The Build panel says which
+applies.
+
+The Build panel's Camera checkbox, beside Mirroring, turns on the screen-edge slide
+described above: crossing into a neighbouring screen slides it into view over 16
+frames instead of cutting to it outright, the world paused, the player standing
+wherever they landed. Which edge slides follows the cartridge's own mirroring —
+vertical slides left/right, horizontal slides up/down, four-screen slides all four.
+A map's own outer edge is never walked across — it is a wall, not a crossing — so
+every slide stays inside one map, sharing a tileset on both sides; a door or warp
+between maps redraws as it always did. ▶ Test from the Map Forge stays a cut, unchanged.
 
 **UNROM 512** is the odd one out in another way too: it has no graphics ROM at all. Its four pattern
 pages are RAM, and the engine streams each tileset into them from program space at
@@ -632,25 +642,31 @@ every metatile can carry its own palette with no compromise.
 ## The engine
 
 `engine/` is a small top-down adventure in 6502 assembly (nesasm syntax). One
-screen is one nametable; walking off an edge loads the neighbour. The generator
-emits every value the engine and the tooling both depend on into
-`assets/config.inc`, so there is exactly one writer for each and the two cannot
-drift apart.
+screen is one nametable; walking off an edge loads the neighbour (or, with the
+camera on, slides to it). The generator emits every value the engine and the
+tooling both depend on into `assets/config.inc`, so there is exactly one writer
+for each and the two cannot drift apart.
 
 ```
 engine/main.asm       header, bank layout, includes
 engine/constants.asm  zero page map
 engine/boot.asm       reset, main loop, NMI
+engine/banks.asm      CHR/PRG bank switching per mapper family
+engine/split.asm      MMC3's scanline font split
 engine/screens.asm    expanding metatiles into a nametable
+engine/camera.asm     the screen-edge slide
 engine/player.asm     movement, collision, edge transitions
 engine/entities.asm   actor spawning, behaviour and drawing
 engine/oam.asm        the player metasprite
 engine/ui.asm         the inventory menu and the dialogue state
+engine/nameentry.asm  the in-game naming grid
 engine/text.asm       the NMI VRAM queue and the message box
 engine/script.asm     running an actor's event
 engine/combat.asm     hearts, contact damage and the game-over screen
 engine/title.asm      the screen the cartridge boots into
 engine/rpg.asm        the kernel's half of the battle system: RNG, encounters
+engine/flash.asm      UNROM 512's flash-save driver
+engine/save.asm       the one save slot
 engine/battle.asm     the battle system itself, in a switchable bank
 engine/battleui.asm   its menus, lists, cursor and messages
 engine/battleturn.asm its turn order, damage and outcomes

@@ -18,7 +18,67 @@ round-3 finding names them.
 
 ## 11. Changelog
 
-**Round 6 nits**, listed first (round 6's own brief: `handoff-next/brief-camera-design-nits.md`;
+**Implementation outcome (phases 1-3 shipped, 2026-09-16/17)**, prepended ahead of the design rounds
+below (this design shipped as `51d1a36`; phase 1 `34b4c96`; phase 2 `cba27dc`; phase 3 `65eabda`).
+The shipped build implements candidate (b)'s register and slide mechanism, with the implementation
+differences listed below. It renamed the six camera ledger constants and re-measured two of them
+lower, because candidate (b) never needed the design's own candidate-(a) `_for` shims once actually
+built — `set_screen_ptr`/`rebuild_bound_cache` already read `<flat_screen` internally, and (b)
+never draws the outgoing screen, so `engine/camera.asm` calls them directly rather than through a
+parametrized wrapper. `main/build/generate.js`'s own comment above
+`CAMERA_SLIDE_KERNEL_ALLOWANCE` has the full decomposition, cited below.
+
+- `CAMERA_PHASE1_KERNEL_ALLOWANCE` shipped as `CAMERA_KERNEL_ALLOWANCE`, unchanged at **20**.
+- `SHAKE_CAMERA_PHASE1_INTERACTION` shipped as `CAMERA_SHAKE_INTERACTION_ALLOWANCE`, unchanged at
+  **19**.
+- `CAMERA_B_CONSUMER_BASE` (303) shipped as `CAMERA_SLIDE_KERNEL_ALLOWANCE`, re-measured at **298**
+  — the prototype's own `set_screen_ptr_for` shim cost +5 over the shipped plain `jsr
+  set_screen_ptr` (the shim itself +5 bytes, minus the 4 bytes it let the original routine drop,
+  plus the 4 bytes its own two caller-side `ldy <flat_screen` sites cost: +5 -4 +4 = +5).
+- `CAMERA_B_AXIS_ALLOWANCE` shipped as `CAMERA_AXIS_KERNEL_ALLOWANCE`, unchanged at **52** — it
+  never depended on the `_for` shims.
+- `CAMERA_B_SPLIT_INTERACTION` shipped as `CAMERA_SPLIT_INTERACTION_ALLOWANCE`, unchanged at **6**
+  — it never depended on the `_for` shims either.
+- `BOUND_TILE_CAMERA_B_INTERACTION` (13) shipped as `BOUND_TILE_CAMERA_INTERACTION_ALLOWANCE`,
+  re-measured at **6** — the prototype's own `rebuild_bound_cache_for` shim nets a separate +7 the
+  same way (+5 shim, -2 for the one `ldy <flat_screen` the original no longer needs, +4 across two
+  caller-side `ldy`s: +5 -2 +4 = +7); the shipped build's two plain `jsr rebuild_bound_cache` calls
+  cost 3 bytes each (6 total) when `BOUND_TILE_ENABLED` is live, with no shim-shaped
+  argument-passing cost on top.
+- One live axis therefore totals `20 + 298 + 52 = **370**`, five bytes under this document's own
+  375-byte prototype total — exactly the slide base's own 303 → 298 saving, since the axis and
+  register terms are unchanged. The bound-tile interaction's own 13 → 6 saving is separate and
+  only paid (or saved) by a project with switch-bound tiles live, so it is not part of the
+  one-axis figure above.
+- `draw_screen_at` shipped as specified (Appendix C's own shape); `draw_screen` became its
+  two-instruction wrapper (`lda #0` / `jmp draw_screen_at`) rather than a separate parametrized
+  routine, in a `CAMERA_SLIDE_ENABLED` build — the original `draw_screen` body is kept
+  byte-identical when the flag is off.
+- `cameraAxes` (§5/Q3) shipped with the specified axis-resolution logic and optional access to
+  `cartridge?.mirroring`; `describeCameraAxes` was added beside it in phase 3, for the Build
+  panel's own hint text — not specified here, since Q8 only asked for the indicator's existence,
+  not its own helper function.
+- The checkbox lives in the Build Forge's **Cartridge section, beside Mirroring** — not the Map
+  Forge. §8's "Map Forge checkbox" phrasing was a slip; Q8's own "a checkbox beside the mirroring
+  selector" was the actual intent, and `project.cartridge` has exactly one editing surface
+  (CLAUDE.md's own single-writer discipline) for `renderer/forges/build/build.js` to extend.
+- The per-edge "this edge will cut, not slide" tileset-mismatch note (§8, Q8) was **not built**: a
+  tileset is a per-map property and `flattenScreens` (`main/build/generate.js`) never pairs
+  neighbouring screens across a map boundary, so no authoring path in this codebase can ever produce
+  a mismatched pair for the note to warn about (`handoff-next/camera-phase3-report.md`'s own
+  "Decision 6 reading"). The engine's own tileset-compare cut fallback (`cross_right`'s
+  `screen_tileset` check, among others) is kept as defence in depth regardless.
+- The mirroring row shows on **every** board once camera is on, not only UNROM 512 — with the
+  camera on, mirroring picks the sliding axis on every board, not just the four-screen one.
+- §7's First-visible-frame row is satisfied by phase 2's own test,
+  `test/unit/camera.test.js`'s "the coordinate lands on the PPU before rendering turns on, both at
+  arm and at completion".
+- Chris's own §9 answers: candidate (b), the player sprite pinned at the landing position, a fixed
+  16 frames, slide-only for v1. Left open, each its own future design round: phase 4 (MMC1/MMC3
+  runtime re-mirroring), a `Pan` cutscene verb, item 15's own streaming consumer, and an
+  author-visible speed control.
+
+**Round 6 nits**, listed first among the design rounds (round 6's own brief: `handoff-next/brief-camera-design-nits.md`;
 review addressed: `handoff-next/camera-design-1-review6.md`, verdict **GO**, three P3 nits, applied
 exactly and nothing else): (1) the stale "65 cycles" worst-case Shake+camera figure in §1 (two
 occurrences) replaced with the authoritative table's own 83, with the mistake's own cause noted
@@ -271,7 +331,11 @@ text**, since a reviewer implementing from this document alone cannot follow "se
   between the `ldy <flat_screen` at `cross_right`'s own top and the jump touches Y, so reloading it
   would be the same "assume nothing, verify everything" discipline applied to a register that was,
   in this one case, provably never at risk — the comment exists so a future edit inserting code
-  between them does not assume the same safety without re-checking it.
+  between them does not assume the same safety without re-checking it. **Shipped:** the shipped
+  `engine/camera.asm` calls the plain, unparametrized `set_screen_ptr`/`rebuild_bound_cache`
+  directly rather than a `_for` variant — both already read `<flat_screen` internally, and
+  candidate (b) never draws the outgoing screen, so no parametrized wrapper was needed; the
+  re-select discipline above still holds for the plain calls.
 - **The mirroring-hint reversal**: unchanged from round 1 and round 2's own correction (Q3, below)
   — the engine's own mirroring math (`renderer/emulator/core/ppu/index.js:209-225`) says horizontal
   mirroring supports *vertical* scrolling and vertical mirroring supports *horizontal* scrolling,
@@ -963,13 +1027,22 @@ CAMERA_B_SPLIT_INTERACTION = 6              -- MMC3 only, gated on SPLIT_ENABLED
 BOUND_TILE_CAMERA_B_INTERACTION = 13        -- flat, gated on BOUND_TILE_ENABLED
 ```
 
+**Shipped:** `CAMERA_PHASE1_KERNEL_ALLOWANCE` → `CAMERA_KERNEL_ALLOWANCE` (20, unchanged);
+`SHAKE_CAMERA_PHASE1_INTERACTION` → `CAMERA_SHAKE_INTERACTION_ALLOWANCE` (19, unchanged);
+`CAMERA_B_CONSUMER_BASE` → `CAMERA_SLIDE_KERNEL_ALLOWANCE` (303 → 298); `CAMERA_B_AXIS_ALLOWANCE` →
+`CAMERA_AXIS_KERNEL_ALLOWANCE` (52, unchanged); `CAMERA_B_SPLIT_INTERACTION` →
+`CAMERA_SPLIT_INTERACTION_ALLOWANCE` (6, unchanged); `BOUND_TILE_CAMERA_B_INTERACTION` →
+`BOUND_TILE_CAMERA_INTERACTION_ALLOWANCE` (13 → 6) — §11's own changelog entry has the full
+decomposition of both re-measured figures.
+
 **The full-camera total for a real, shipping one-axis project is the SUM of both gates**: `20 + 303
 + 52 = 375` — identical to every already-measured total in this document, now correctly *derived*
 from two disjoint terms rather than accidentally matching while one term silently double-counted
 the other. **If 323 is written anywhere else in this document, it must be labelled "full-camera
 subtotal = 20 (register) + 303 (consumer base)" and never added to the phase-1 term again** — it is
 a convenience subtotal for the common case (both flags on, which is every real shipping project,
-Q6 above), not an independent cost.
+Q6 above), not an independent cost. **Shipped: 20 + 298 + 52 = 370**, five bytes under this
+prototype total (§11's changelog entry).
 
 **Consumer-only incremental delta, measured directly against a phase-1-on build (not camera-off),
 on NROM and MMC3, confirming 303/303+6**:
@@ -1173,6 +1246,13 @@ slide" note where tilesets differ; **new this round**, the same indicator should
 to a four-screen-to-other mapper switch (Q3, above), reactively, off the existing mirroring-change
 store subscription. ▶ Test stays a cut, unchanged.
 
+**Shipped:** the checkbox is in the Build panel's Cartridge section, beside Mirroring, confirming
+"beside the mirroring selector" rather than the Map Forge; the per-edge mismatch note was not built,
+since no authoring path can produce a mismatched pair (`flattenScreens` never pairs neighbours
+across a map boundary); the mirroring row shows on every board once camera is on, not only on a
+four-screen switch. ▶ Test was confirmed unchanged by reading `renderer/emulator/testplay.js` in
+full — no reference to `cross_*`, `CAM_*` or any camera symbol.
+
 ## 6. What could go wrong (fixes: round 2 findings 1, 2; round 1 findings 3, 4, 6, 7 — kept)
 
 **Round 1's own findings, restated in full** (round 2 pointed at this text rather than repeating
@@ -1211,7 +1291,10 @@ it):
    way `set_screen_ptr_for` already is, called once per screen inside `redraw_screen_slide`, back
    to back under the same forced blank with nothing else able to read or write the cache in
    between, so two persistent caches were never needed — one, reused sequentially, is always
-   correct for whichever screen is about to be drawn.
+   correct for whichever screen is about to be drawn. **Shipped:** candidate (b) calls plain `jsr
+   rebuild_bound_cache` once at arming and once at completion, under separate forced blanks. Both
+   calls read the incoming `<flat_screen`; the outgoing screen is never redrawn, so no
+   parametrized wrapper or second cache is needed.
 4. **`vram_reset` drops queued packets exactly as it does today.** A Flash or Fade command that was
    mid-flight the instant a screen edge is crossed loses its queued packet the same way it already
    would under today's hard cut. Nothing about the slide makes this worse; it is `redraw_screen`'s
@@ -1275,7 +1358,7 @@ finding 8 asks for, applied to every row, not only the ones it called out by nam
 | **Diagonal crossing, axis priority correctly attributed (finding 7, corrected)** | Both a horizontal and vertical direction held at the crossing threshold | Which axis slides | Exactly one — **`update_player`'s own horizontal-then-vertical movement order** decides which axis is even evaluated first (`update_player` checks/applies the horizontal step, then the vertical one, every ordinary frame, slide or not); `dispatch_input` never sees a direction at all, since directions are read and applied inside `update_player`, not dispatched as `ACT_*` actions | A live slide and simultaneous-axis input interacting badly, and — separately — misattributing this to `dispatch_input`, which owns none of it |
 | World frozen every tick | Sample `game_state`/`enc_step`/every entity's position on each of the 16 ticks | All 16 samples | Identical to the arming frame's own values | A mid-sequence tick falling through to ordinary updates |
 | **Shake wrap lows, both nametables (marked synthetic)** | **Synthetic**: hand-set `cam_x_lo` to 0/1/254/255, both at rest (`cam_nt=0`) and mid-slide (`cam_nt=cam_far`) — a slide's own 16-step arithmetic does not naturally land on every one of these eight boundary combinations within a single crossing, so they are injected directly rather than driven to by play | Composed $2005 output | Correct for all eight combinations | The carry/borrow polarity being right at one nametable and wrong at the other |
-| First-visible-frame | Read the PPU's actual scroll immediately after forced blank lifts, with and without an NMI landing before the first visible scanline | Camera position shown | Matches the published coordinate either way | Finding 1 (round 1) regressing |
+| First-visible-frame | Read the PPU's actual scroll immediately after forced blank lifts, with and without an NMI landing before the first visible scanline | Camera position shown | Matches the published coordinate either way | Finding 1 (round 1) regressing. **Shipped:** satisfied by phase 2's own `test/unit/camera.test.js` test, "the coordinate lands on the PPU before rendering turns on, both at arm and at completion". |
 | Bound-cache cross-bank | Distinct active bindings on outgoing and incoming screens | Collision result on the incoming screen immediately post-slide | Matches the incoming screen's own bindings, not the outgoing's | Finding 4 (round 1) regressing |
 | Default-project vertical fallback | Default mirroring (`vertical`), cross a vertical edge | Whether a slide or a cut happens | A cut — `CAMERA_SLIDE_V` is 0 under vertical mirroring | The axis gate being backwards for the shipped default |
 | **`cameraAxes` four-screen-as-each-other-board (finding 3)** | Evaluate `cameraAxes(candidateMapper, {mirroring: 'fourscreen'})` for each of the seven non-UNROM-512 boards in turn | The returned `{horizontal, vertical}` | H-only every time (`{horizontal: true, vertical: false}`) — never both, matching the `'vertical'` fallback, not the raw `fourscreen` value the candidate mapper cannot provide | The bug finding 3 found: `mirroringById` alone resolving successfully regardless of which mapper is asking |
@@ -1295,7 +1378,10 @@ from the full candidate's own figures.
 - **Phase 1 — the camera register and NMI rewrite alone (Q1), no consumer.** **Gate**:
   `CAMERA_ENABLED` alone (round 4's own split, `main/build/generate.js`) — this is now genuinely
   independent of whether any consumer exists: `CAMERA_SLIDE_ENABLED` is the separate flag gating
-  `screens.asm`'s `draw_screen_at`/`set_screen_ptr_for`/`rebuild_bound_cache_for` family,
+  `screens.asm`'s `draw_screen_at`/`set_screen_ptr_for`/`rebuild_bound_cache_for` family
+  (**Shipped: only `draw_screen_at` shipped** — `set_screen_ptr`/`rebuild_bound_cache` are called
+  directly, unparametrized, since they already read `<flat_screen` internally and (b) never draws
+  the outgoing screen; see the note on §0/§6's own `_for` mentions below),
   `player.asm`'s `cross_*` stub modifications, `main.asm`'s own `camera*.asm` include, and
   `boot.asm`'s own frozen-world gate in `main_loop` — none of that consumer code assembles when
   `CAMERA_SLIDE_ENABLED` is 0, even with `CAMERA_ENABLED` on. **Off-path identity**: with
@@ -1318,7 +1404,8 @@ from the full candidate's own figures.
   `assert.equal`'d against its own delta per CLAUDE.md's own per-term discipline, gated on
   `CAMERA_ENABLED` alone; an absolute row (`kernelCodeBytes` with phase-1-only vs. real `codeBytes`)
   belongs beside §5/Q5's own candidate-(b) rows once phase 1 is implemented for real, following the
-  identical methodology. **Round 5 finding 2's own correction**: `CAMERA_B_CONSUMER_BASE`/axis/split
+  identical methodology. **Shipped as `CAMERA_KERNEL_ALLOWANCE`** — same figure, same isolation
+  methodology. **Round 5 finding 2's own correction**: `CAMERA_B_CONSUMER_BASE`/axis/split
   terms (§5) are the *consumer's own* incremental delta measured against a **phase-1-on** build, not
   against camera-off — round 4's own text here claimed the old `CAMERA_B_SHARED_BASE = 323` was
   "additive, not overlapping" with this 20-byte term, which was wrong: 323 was measured against
@@ -1337,14 +1424,25 @@ from the full candidate's own figures.
   bound-tile is the consumer's own interaction, +19 Shake is the register gate's own** (not the
   consumer's — moved in round 5, finding 2). Combined with phase 1's own 20, the full one-axis total
   is 375, matching every other measurement in this document. **Ledger/test wiring**: §5/Q5 in
-  full, §7's own per-term equality rows.
+  full, §7's own per-term equality rows. **Shipped: 298 base + 52/axis + 6 split, 6 bound-tile, 370
+  total for one axis** — the shipped build never needed candidate (a)'s `_for` shims, so both the
+  base and the bound-tile interaction re-measured lower than this prototype's 303/13 (§11's
+  changelog entry has the exact decomposition).
 - **Phase 3 — UI (Q8).** **Gate**: none new — this is renderer-only (the Map Forge checkbox, the
   reworded hints, the per-edge tileset-mismatch note, and the Build panel's axis-loss indicator,
   finding 5) with no engine code or generated byte of its own, the same "renderer-only" shape
   item 13/14's own Phase 3 preview canvas used (CLAUDE.md's own precedent). **Off-path identity**:
   trivially holds — no ROM byte changes. **On-path allowance**: zero engine bytes; whatever the
   checkbox itself costs is ordinary renderer code, not kernel-lo. **Wiring**: `main/smoke.js`'s own
-  "visit every Forge" coverage, not a Mesen/kernel-lo check.
+  "visit every Forge" coverage, not a Mesen/kernel-lo check. **Shipped:** the checkbox landed in the
+  Build Forge's Cartridge section, beside Mirroring, not the Map Forge — this bullet's own phrasing
+  was a slip, and Q8's "beside the mirroring selector" was the actual intent
+  (`project.cartridge` has exactly one editing surface). The per-edge tileset-mismatch note was not
+  built: it is unreachable by authoring, since a tileset is per map and `flattenScreens` never pairs
+  neighbours across a map boundary (`handoff-next/camera-phase3-report.md`'s "Decision 6 reading");
+  the engine's own tileset-compare cut fallback is kept regardless. The mirroring row shows on
+  every board once camera is on, not only UNROM 512, since mirroring picks the sliding axis on
+  every board once the camera is live.
 - **Phase 4 (open) — MMC1/MMC3 runtime re-mirroring.** **Gate**: not yet designed — would need its
   own flag distinguishing "camera live" from "re-mirror on crossing," since a project could want the
   former without the latter. **Off-path identity**: not yet measured — this phase is costed only at

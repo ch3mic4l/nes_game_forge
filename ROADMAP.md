@@ -1402,14 +1402,14 @@ resetting on either changing.
 
 ---
 
-## 12. Camera / scroll control
+## 12. Camera / scroll control — **done**
 
 Split out of item 6, where it originally lived as one of seven cutscene/presentation bullets. Item
 6's own recommendation ("Split camera/scroll out of this item entirely into its own future roadmap
 entry — it is a different kind of thing than the other six, not a bigger version of the same thing")
 is executed here.
 
-**Confirmed larger than item 6's other six verbs, and not really the same *kind* of thing.**
+~~**Confirmed larger than item 6's other six verbs, and not really the same *kind* of thing.**
 `boot.asm`'s NMI writes `$2005` twice every vblank, resetting to (0,0) on the no-shake path — with
 `SHAKE_ENABLED` and a live shake, it writes a transient ±2-pixel horizontal offset instead (`$02` or
 the 9-bit `$FE` representation, `$00` vertically) for as many frames as the shake lasts, not (0,0). No
@@ -1422,11 +1422,38 @@ edge — double-buffered nametable content streamed in under the vblank budget, 
 `redraw_screen`, the mirroring model, and UNROM 512's CHR-RAM streaming path. Floor estimate
 **500-1000+ bytes**, likely conservative, and it deserves its own design pass rather than being
 bundled into another item's costing. Nothing about this estimate has been revisited since the split;
-no design work has started.
+no design work has started.~~
 
-Item 15 (Large streamed worlds) is the world-scale half this mechanism would exist to serve — a
-continuous authored world instead of a grid of disjoint screens — and is blocked on this item without
-restating its analysis.
+**Done.** Design `51d1a36` (`docs/design-camera.md`, six review rounds) chose candidate (b) —
+screen-edge slides — over (a) (a heavier double-draw) and (c-lite) (row-major nametable streaming,
+kept only as future queue-protocol experience for item 15), on Mesen-measured evidence. Three phases
+shipped it: phase 1 `34b4c96` (the camera register and an NMI rewrite, a `cam_dirty`-gated snapshot so
+Shake composes onto it without ever showing a torn coordinate); phase 2 `cba27dc` (the 16-frame
+slide); phase 3 `65eabda` (the Build panel checkbox and axis indicator). The mechanism, in three
+sentences: the register-and-NMI path publishes a snapshot as above; on a screen-edge crossing,
+`redraw_screen_slide` (`engine/camera.asm`) draws the incoming screen into the far nametable under
+forced blank, ticks `camera_slide_tick` for `CAM_SLIDE_FRAMES` (16) frames with the whole world frozen
+(`main_loop` skips `settle_owed`, input dispatch and world updates while ticking the slide;
+controller polling, music and the enabled Sting, flip-budget and Flash ticks still run), then a
+second forced blank redraws nametable 0; which axis slides follows the cartridge's own mirroring
+(`cameraAxes`, `shared/cartridge.js` — vertical mirroring slides horizontally, horizontal
+vertically, UNROM 512's four-screen slides both). Measured, not estimated:
+`CAMERA_KERNEL_ALLOWANCE` 20 (the register) +
+`CAMERA_SLIDE_KERNEL_ALLOWANCE` 298 (the consumer) + `CAMERA_AXIS_KERNEL_ALLOWANCE` 52 (per live axis)
+= **370** for one axis, plus `CAMERA_SHAKE_INTERACTION_ALLOWANCE` 19,
+`CAMERA_SPLIT_INTERACTION_ALLOWANCE` 6 (MMC3) and `BOUND_TILE_CAMERA_INTERACTION_ALLOWANCE` 6 where
+those features are also live — against this section's own earlier "500-1000+ bytes" guess, and five
+bytes under the design document's own 375-byte prototype (candidate (b) never needed the design's
+`_for` shims once built for real). "Double-buffered content streamed in under the vblank budget" also
+did not happen: candidate (b) draws one screen per forced blank, no streaming — the design's §3
+measured why that suffices. The toggle lives in the Build panel's Cartridge section, beside Mirroring,
+not the Map Forge; UNROM 512's four-screen mirroring is no longer "currently unused" once camera is
+on. Left open, each its own future design round: phase 4 (MMC1/MMC3 runtime re-mirroring), a `Pan`
+verb, item 15's own streaming consumer, and an author-visible speed control.
+
+Item 15 (Large streamed worlds) was the world-scale half this mechanism would exist to serve — a
+continuous authored world instead of a grid of disjoint screens. Item 12 shipped as slide-only v1;
+item 15's own world-scale half is what remains, no longer blocked on this item's own mechanism.
 
 ---
 
@@ -1710,16 +1737,12 @@ subject to, not a separate claim; and item 5's scope list is where both Forges' 
 The user's own ask: "I want to be able to build large overworlds for RPG games with tile streaming
 or levels like Mario Brothers 3 with tile streaming."
 
-**Blocked on item 12; this is the world-scale half, not a rewrite of it.** Item 12 (Camera / scroll
-control) stays exactly what it is — the engine-side rendering path: streaming nametable content in
-ahead of the camera, the mirroring model, the vblank budget, its own 500-1000+ byte floor estimate.
-Nothing about that analysis is restated here. This item is the *world-scale* half that would consume
-it: a continuous authored world in place of a grid of disjoint 256×240 screens, the data layout and
-capacity a large world needs, and the Map Forge tooling to author one. Item 12's mechanism has
-nothing to stream between without a world model bigger than the current 4×4-screen map, and this
-item's world model has nothing to render smoothly without item 12's mechanism — so this item cannot
-ship first, and building item 12 alone buys smoother transitions between existing screens, not an
-SMB3-scale level.
+**Item 12 shipped as a slide-only v1 (`65eabda`); this item's streaming consumer is the remaining
+half.** Item 12 supplies the camera register, NMI snapshot publication, mirroring-based axis
+selection and screen-edge slides. This item still needs a streaming consumer and its vblank/queue
+protocol, a continuous authored world in place of disjoint 256×240 screens, the data layout and
+capacity a large world needs, and the Map Forge tooling to author it. The shipped slide improves
+transitions between existing screens; it does not provide an SMB3-scale level.
 
 **Non-goal: this is not platformer physics.** The user's SMB3 reference is about *streaming a wide
 level*, not about becoming a side-scrolling platformer. `update_player` (`engine/player.asm`) is
@@ -1867,11 +1890,11 @@ streaming driver would live in, and what it would cost, is undesigned.
 **The dozen refusals cited above are pre-diet: the zero-page kernel diet (`docs/design-kernel-diet.md`,
 done note under item 5 above) closed every one of them, recovering roughly 590 kernel-lo bytes and
 440 banked bytes per board.** MMC3's Save+Move-no-item row no longer holds 88 bytes free before
-Sting/SFX/a bound tile close it — none of those three close it anymore, and CLAUDE.md's own
-"Documented limitations" paragraph names none of these as a current refusal. The old "almost
-certainly cannot ship as ordinary conditional kernel-lo code" conclusion above was a preference
-based on margins that no longer hold — the recovered headroom is comparable to the low end of item
-12's own 500-1000+ byte floor estimate for the rendering path, which the diet leaves unchanged.
+Sting/SFX/a bound tile close it — none of those three close it anymore; these are no longer
+current refusals. The old "almost certainly cannot ship as ordinary conditional kernel-lo code"
+conclusion above was a preference based on margins that no longer hold — the recovered headroom
+is comparable to the low end of item 12's own 500-1000+ byte floor estimate for the rendering
+path, which the diet leaves unchanged.
 Whether a streaming driver would fit as ordinary kernel-lo code, or needs its own bank the way the
 battle system does, is an open, unmeasured question against a fresh budget for the actual feature
 combination and driver — not settled by this note, in either direction.
@@ -1940,10 +1963,10 @@ later, on its own, and costs zero engine bytes (`sample/` builds to an identical
 after) — pure editor and data-model work with nothing to weigh against the kernel-lo budget the rest
 of this section is about.
 
-Item 15 (large streamed worlds) is further out than anything below this line: it is blocked on item
-12, and item 12 itself — like camera/scroll generally, further down this section — has no built
-mechanism yet to even measure a kernel-lo cost for. Item 15 is not a candidate for "next" until item
-12 has a real design and a real figure.
+Item 15 (large streamed worlds) is further out than anything below this line: item 12 has shipped
+with a measured figure (370 bytes, one axis), so item 15 is unblocked on the mechanism existing at
+all, but it remains further out on its own world-model scope — the data layout and Map Forge tooling
+a large world needs, none of which item 12's slide-only v1 built.
 
 **The kernel bank is the constraint on everything below this line, and it is close to full.** Move
 found it: ~395 bytes against 161 free on the worst battery board, and it only shipped by becoming
@@ -1989,9 +2012,10 @@ passage for the full figures. The persistent-tile-change reading was settled, an
 switch-bound tiles — a third design neither of item 6's original two readings anticipated
 (`BOUND_TILE_KERNEL_ALLOWANCE` 388, plus a 30-byte fixed table and 2 bytes/screen), closing two
 previously-comfortable rows on its own (item 6's own section, above; CLAUDE.md's "Switch-bound tiles
-(design-tile.md)" passage). Camera/scroll is the one item-6 verb that was never designed and is now
-split into its own roadmap entry — item 12 — for exactly the "different kind of thing entirely"
-reason given above; it has no kernel-lo cost to weigh yet because no mechanism has been designed.
+(design-tile.md)" passage). Camera/scroll was the one item-6 verb never designed at the time this
+passage was written; it was split into its own roadmap entry — item 12 — for exactly the "different
+kind of thing entirely" reason given above, and has since been designed and shipped: the `CAMERA_*`
+allowances above, 370 bytes for one axis.
 ~~What remains open under item 6 itself: the route-authoring/preview convenience for `Move`/`Turn`/
 `Wait` (pure Map Forge/compiler work, no engine cost) and a true sound effect.~~ — **done**
 (`b36093e`, `84482ef`): the route-authoring/preview convenience shipped at zero engine cost, exactly as

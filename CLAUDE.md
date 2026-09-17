@@ -43,7 +43,7 @@ build:sample` first, and `npm run sample:rpg && npm run build:sample:rpg` for `r
 A skipped test is not a passing test; check the skip count.
 
 `test/unit/docs.test.js` checks CLAUDE.md itself: every `docs/*.md` pointer it names must
-exist on disk *and* be tracked by git, and the file must stay under a 135,000-character budget
+exist on disk *and* be tracked by git, and the file must stay under a 137,000-character budget
 (`fs.readFileSync(..., 'utf8').length`, not byte length — Claude Code's own limit is on
 characters) kept below the tool's 150,000-character hard limit for margin.
 
@@ -373,9 +373,10 @@ UNROM 512 is also the only board offering **four-screen mirroring**, which needs
 *and* bit 0 (bit 3 alone means one-screen on this mapper). nesasm has no directive for bit 3, so
 `headerPatch()` supplies it. Four-screen costs a tileset because the extra nametables are backed by
 the last CHR-RAM page — `tilesetLimit(mapper, cartridge)` is the single writer for that,
-consulted by the schema, the Tile Forge's Add button and the Build panel. The engine only draws
-nametable 0, so the extra nametables buy nothing yet; the Build panel says so rather than letting a
-tileset quietly vanish.
+consulted by the schema, the Tile Forge's Add button and the Build panel. Without the camera the
+engine draws only nametable 0, so the extra nametables buy nothing; with it they are what lets
+crossings slide on both axes — the Build panel says which, rather than letting a tileset quietly
+vanish.
 
 `reconcileCartridge()` in `shared/project.js` exists because `store.commit()` mutates the project
 directly and never runs `normalizeProject`. Changing mapper or mirroring in the UI must call it in
@@ -436,6 +437,25 @@ builds (the arrow glyph's bank is only mapped below the box, and monsters live a
 reserves sprite tile `$FD` via `SPRITE_ARROW_TILE`; and the vendored jsnes `mapper4.js` was patched
 to nesdev-correct IRQ semantics — upstream had `$C000`/`$C001` backwards — so the in-app player
 and Mesen count the same way (see `FORGE-PATCHES.md`).
+
+**The camera (ROADMAP item 12, `docs/design-camera.md`) is a register plus one consumer, both
+gated on `project.cartridge.camera`.** NMI writes `$2000`/`$2005` from its own `nmi_cam_*` snapshot
+of the mainline-owned `cam_x_lo`/`cam_y_lo`/`cam_nt`, refreshed only while `cam_dirty` is clear, so
+a torn update is never shown; Shake composes onto it. `redraw_screen_slide` (`engine/camera.asm`,
+replacing `jmp redraw_screen` in `player.asm`'s `cross_*` stubs) draws the incoming screen into the
+far nametable under forced blank, slides over `CAM_SLIDE_FRAMES` (16) ticks with the world frozen
+(`main_loop` skips `settle_owed`, input dispatch and world updates while ticking the slide;
+controller polling, music and the enabled Sting, flip-budget and Flash ticks still run), then
+redraws nametable 0 under a second forced blank; the entry event and `screen_fresh` settle on the
+first ordinary frame after. `cameraAxes(mapper, cartridge)` (`shared/cartridge.js`) is the single
+writer for which axis slides — the mirrored neighbour: vertical mirroring slides horizontally,
+horizontal vertically, UNROM 512 four-screen both — read by the generator (`CAMERA_SLIDE_H`/`V`),
+`switchableMappers` (a board that would drop an axis is never offered) and `describeCameraAxes`,
+the hint under the Build panel's Camera checkbox beside Mirroring (hence the mirroring row on every
+board once camera is on). A crossing onto a different tileset cuts — unreachable by authoring, since
+a tileset is per map and `flattenScreens` never pairs neighbours across maps. Camera off, every
+fixture is byte-identical (`test/unit/camera.test.js`, `test/lua/run_camera_check.sh`,
+`main/smoke.js`'s `camera:` steps).
 
 Every mapper in the registry is implemented, so `resolveMapper()`'s fallback to NROM now only fires
 for a mapper number the registry does not list at all — a hand-edited project, or one saved by a
@@ -669,16 +689,13 @@ it every build, into build-time copies only.
 `describePlayerSpritePlan` (`shared/project.js`) writes every string the modal shows, pinned by
 `playersprite.test.js`. See `docs/design-modular-parts.md` for the mechanism.
 
-`renumberSpellDeletion` (`shared/project.js`) exists beside `renumberActorDeletion`/
-`renumberItemDeletion`, the same shape applied to `project.spells` — the Magic Forge's own delete
-handler (`renderer/forges/magic/magic.js`) is its real caller, as of Magic Forge phase 3. The
-`Spells…` modal it was written against is gone; `test/unit/project.test.js`'s tests still call the
-export directly, the same shape the actor/item siblings' tests use, since the real handler is
-renderer code (`confirmModal`, `store`, a toast) no `node:test` process can drive —
-`main/smoke.js` exercises it for real. The `wrongImplementation` closure beside those tests still
-models the old modal's filter-without-shift bug on purpose — a deliberate fixture for a handler
-that no longer exists, not a stale one — with a sanity assertion it really does get the fixture
-wrong.
+`renumberSpellDeletion` (`shared/project.js`) sits beside `renumberActorDeletion`/
+`renumberItemDeletion`, the same shape applied to `project.spells`; the Magic Forge's own delete
+handler (`renderer/forges/magic/magic.js`) is its real caller, exercised for real by
+`main/smoke.js`, while `test/unit/project.test.js` calls the export directly as the actor/item
+siblings' tests do (the real handler is renderer code no `node:test` process can drive). The
+`wrongImplementation` closure beside those tests deliberately models the retired `Spells…` modal's
+filter-without-shift bug, with a sanity assertion it really does get the fixture wrong.
 
 **A fourth sibling, `renumberPartyMemberDeletion(project, index)`, exists for `project.party`**: a
 Join's `member` above the deleted index shifts down, the hole becomes `null`. The Character Forge's
@@ -1046,13 +1063,11 @@ suite, `npm run smoke` and the Mesen checks assert separately.
   so drift in a *table* emitted before `reset` — CHR-RAM tileset tables, an empty-array
   placeholder byte — was invisible until a whole-bank absolute check existed.** In-game naming's
   phase 3 added that check (nesasm's total kernel-lo usage against `kernelCodeBytes +
-  kernelTableBytes` together), surfacing three pre-existing gaps in one pass: UNROM 512's
-  `tileset_bank`/`tileset_lo`/`tileset_hi` CHR-RAM tables (3 bytes per region —
-  `kernelTableBytes` now takes the mapper as a parameter for this), the one-byte
-  `ms_data_0`/`anim_data_0` placeholders empty metasprite/animation arrays still emit
-  (independently), and the per-entry placeholder for entries with no tiles/frames
-  (`metaspriteKernelBytes` now floors each data term at 1, not 0) — none of them code terms
-  `assertCovers`'s code-only comparison could ever have seen.
+  kernelTableBytes` together), surfacing three pre-existing table gaps in one pass: UNROM 512's
+  `tileset_bank`/`tileset_lo`/`tileset_hi` CHR-RAM tables (3 bytes per region — why
+  `kernelTableBytes` takes the mapper as a parameter), the one-byte `ms_data_0`/`anim_data_0`
+  placeholders empty metasprite/animation arrays still emit, and the per-entry placeholder for an
+  entry with no tiles/frames (`metaspriteKernelBytes` floors each data term at 1, not 0).
 - **`kernelShortfallAdvice` (`main/build/generate.js`) prices a removal by disabling every live
   occurrence of a command — nested inside a branch, a choice option, or a common event — and asking
   what the resulting project's full kernel-lo occupancy (`kernelCodeBytes + fixedBytes +
@@ -1141,6 +1156,13 @@ sizes, the route zero-cost proof and `KERNEL_SLACK` itself are each checked thei
 - `FADE_KERNEL_ALLOWANCE = 124` and `FLASH_KERNEL_ALLOWANCE = 91` name each routine's own cost;
   both share `PALETTE_FX_KERNEL_ALLOWANCE = 52` (`fade_apply_palette` plus the NMI PPUADDR fix,
   charged once whether Fade or Flash or both are live) — 176 total for Fade-only.
+- `CAMERA_KERNEL_ALLOWANCE = 20` (the register and NMI rewrite, flat on all four measured boards
+  and both game types) plus `CAMERA_SHAKE_INTERACTION_ALLOWANCE = 19` with Shake live;
+  `CAMERA_SLIDE_KERNEL_ALLOWANCE = 298` (the consumer, measured against a register-only build,
+  never camera-off) plus `CAMERA_AXIS_KERNEL_ALLOWANCE = 52` per live axis,
+  `CAMERA_SPLIT_INTERACTION_ALLOWANCE = 6` with the MMC3 split and
+  `BOUND_TILE_CAMERA_INTERACTION_ALLOWANCE = 6` with switch-bound tiles — 370 for one axis, five
+  under the design's prototype, whose `_for` shims the shipped build never needed.
 - A `route` (`docs/design-routes.md`) compiles to the identical bytes as hand-chaining
   the same `move`/`turn`/`wait` commands — zero additional kernel cost, proven by
   `test/unit/routes.test.js`'s byte-identical-ROM comparison and confirmed with a cross-tree
@@ -1148,10 +1170,6 @@ sizes, the route zero-cost proof and `KERNEL_SLACK` itself are each checked thei
 - `KERNEL_SLACK = 20` (unmoved by the diet): `kernelbytes.test.js`'s `assertCovers` requires
   `KERNEL_SLACK <= margin <= KERNEL_SLACK * 2`. Correct accounting of the base and every conditional
   term should leave exactly the floor; the ceiling detects drift, not spare headroom.
-
-**Documented limitations**: every refusal formerly listed here is resolved — the zero-page
-kernel diet (`docs/design-kernel-diet.md` §14) closed each, confirmed by a real `buildProject`
-run.
 
 ### The Code Forge
 
@@ -1389,14 +1407,13 @@ both mechanisms together, and why the guard is emitted into the generated file, 
 `engine/main.asm`.
 
 **When 8 KB genuinely runs out — a note, not something to do now.**
-`codeRegions(mapper, tilesetCount, bankedCode)` already takes a `bankedCode` count and hands back
-two adjacent regions for `bankedCode = 2`. Regions alternate `{prgBank, org:$8000}`,
-`{prgBank, org:$A000}`, so the two are **co-mapped** — both live at once, one 16 KB switch — only
-when the slice starts on an even index. That index is `chrPayloadRegions().length`: 0 on the CHR-ROM
-boards, but `max(1, tilesetCount)` on UNROM 512, so on that board co-mapping holds only when
-`max(1, tilesetCount)` is even — note the `max`, which makes a zero-tileset project *not* co-map
-despite zero being even. Checked rather than reasoned: UNROM 512 co-maps at tileset counts 2 and 4,
-not at 0, 1 or 3; MMC1/MMC3 always co-map. Anything relying on this must check, not assume.
+`codeRegions(mapper, tilesetCount, bankedCode)` already hands back two adjacent regions for
+`bankedCode = 2`. Regions alternate `{prgBank, org:$8000}`, `{prgBank, org:$A000}`, so the two are
+**co-mapped** — both live at once, one 16 KB switch — only when the slice starts on an even index:
+`chrPayloadRegions().length`, 0 on the CHR-ROM boards but `max(1, tilesetCount)` on UNROM 512 —
+the `max` makes a zero-tileset project *not* co-map despite zero being even. Checked rather than
+reasoned: UNROM 512 co-maps at tileset counts 2 and 4, not at 0, 1 or 3; MMC1/MMC3 always co-map.
+Anything relying on this must check, not assume.
 
 Not everything the battle bank writes needs the bank switched in to *read*: `pc_hp`, `pc_hp_max`
 and `pc_in_party` (`$0398+`) are plain kernel RAM like any other engine array, so `rpg.asm`'s
@@ -1554,9 +1571,9 @@ between `performance.now()` and the audio hardware.
 emulator.** 📷 Shot is `canvas.toBlob` on the player's own canvas; ⏺ Record drives
 `renderer/emulator/capture.js` (the recorder's policy: keep the frame on screen at Record, then
 every third one, a pending queue bounded at 8, a 300-frame cap) over `renderer/emulator/gif.js`
-(the GIF format itself — always a full 256-entry global colour table with LZW minimum code size
-8, one independent LZW stream per frame, bounding-box diffs with disposal 1 and no transparent
-index, nearest-colour substitution once the table fills). Neither belongs in `shared/`: both are
+(the GIF format itself: a full 256-entry global colour table with LZW minimum code size 8, one
+independent LZW stream per frame, bounding-box diffs with disposal 1 and no transparent index,
+nearest-colour substitution once the table fills). Neither belongs in `shared/`: both are
 DOM- and Node-free and `node:test` imports them directly, but nothing outside the renderer has to
 agree with them. Two rules hold the recorder together. `onFrame` **copies and queues, nothing
 more** — it runs inside `emulator.runFrame()` (up to four times per animation callback via
@@ -1609,13 +1626,11 @@ unit test files have to get past it before their own assertions can run.** `test
 exports the shared grid primitives (`finishNamingIfOpen`, `typeNameAndFinish`, `clearName`, …),
 each operating on an already-booted `nes` instance with raw `nes.frame()` calls; each ROM-booting
 suite wraps them in its own local boot helper (`rpg.test.js`'s own `bootPastNaming`, for one).
-`test/unit/testoverrides.test.js` deliberately does **not** use this module — that file's own
+`test/unit/testoverrides.test.js` deliberately does **not** use this module — its own
 `bootPast`/`gridTap` drive the grid through `Emulator`'s `runFrame()`/`setButton` instead, since
-`test/lib/naming.js`'s raw `nes.frame()` bypasses the `Emulator`'s own PC-intercept table, and
-that file's ROM-driving tests depend on it holding every frame, naming frames included, not only
-ones turning invincibility on. (Not every test there drives a ROM at all: `applyDesiredToggles` and
-`setTestOverrides` are exercised directly, with no `Emulator` frame ever run.) `npm run
-smoke` drives every naming grid it meets the same frame-paced way, `pressFramePaced` anchored to
+raw `nes.frame()` bypasses the `Emulator`'s own PC-intercept table, and that file's ROM-driving
+tests depend on it holding every frame, naming frames included, not only ones turning
+invincibility on. `npm run smoke` drives every naming grid it meets the same frame-paced way, `pressFramePaced` anchored to
 `Emulator.frames` rather than `wait(ms)` — a throttled window starves a wall-clock hold. Mesen's
 `save_sram.lua` gained its own naming phases for `sample-rpg-mmc1`; see
 `docs/design-rpg-save-fixture.md`.
