@@ -71,6 +71,8 @@ import {
   projectUsesTurn,
   projectUsesWait,
   projectUsesShake,
+  projectUsesCamera,
+  projectWithoutCamera,
   projectUsesVisible,
   projectUsesFade,
   projectUsesFlash,
@@ -880,6 +882,29 @@ export const WAIT_KERNEL_ALLOWANCE = 43;
 // shake_left (engine/constants.asm) is an expression-chained name the
 // diet's own expanded resolver reaches.
 export const SHAKE_KERNEL_ALLOWANCE = 60;
+// docs/design-camera.md §8, phase 1: nmi_scroll's own camera-register path
+// (engine/boot.asm) -- the cam_dirty-gated snapshot refresh plus the
+// unconditional $2000/$2005 write, with no consumer built on top of it yet
+// (that is the consumer's own gate, a later phase). The design document calls
+// this term CAMERA_PHASE1_KERNEL_ALLOWANCE; shipped under this name because
+// "phase 1" is a rollout concept for this document's own rollout plan, not a
+// feature the ledger needs to name -- the byte cost is simply what turning
+// the camera register on costs, regardless of how the rollout was staged.
+// Flat across boards -- measured identically on NROM, MMC1, MMC3 and
+// UNROM 512 (test/unit/kernelbytes.test.js), the same reasoning
+// SHAKE_KERNEL_ALLOWANCE/VISIBLE_KERNEL_ALLOWANCE are flat.
+export const CAMERA_KERNEL_ALLOWANCE = 20;
+// The Shake+camera composition branch inside nmi_scroll's own `.if
+// CAMERA_ENABLED` block (engine/boot.asm) -- composing the +-2 pixel offset
+// onto a *variable* nmi_cam_x_lo/nmi_cam_nt pair costs more than composing
+// it onto the constant (0,0) SHAKE_KERNEL_ALLOWANCE already charges for: the
+// ADC carry and SBC borrow each fire at a different threshold of
+// nmi_cam_x_lo (255 vs 0..1), so the +2 and -2 phases need their own
+// nametable-toggle arithmetic instead of sharing one carry test. Charged
+// only when camera AND Shake are both live, the STING_SFX_INTERACTION_
+// ALLOWANCE shape -- neither term alone assembles this branch. Flat across
+// boards, the same reasoning CAMERA_KERNEL_ALLOWANCE is.
+export const CAMERA_SHAKE_INTERACTION_ALLOWANCE = 19;
 // script_op_visible and its dispatch-chain entry in script_run
 // (engine/script.asm) plus the ENT_HIDDEN check in draw_entities
 // (engine/entities.asm). Flat across boards for the identical reason
@@ -1294,6 +1319,7 @@ export function kernelCodeBytes(project, mapper) {
   const usesTurn = projectUsesTurn(project);
   const usesWait = projectUsesWait(project);
   const usesShake = projectUsesShake(project);
+  const usesCamera = projectUsesCamera(project);
   const usesVisible = projectUsesVisible(project);
   const usesFade = projectUsesFade(project);
   const usesFlash = projectUsesFlash(project);
@@ -1361,6 +1387,8 @@ export function kernelCodeBytes(project, mapper) {
     (usesTurn ? TURN_KERNEL_ALLOWANCE : 0) +
     (usesWait ? WAIT_KERNEL_ALLOWANCE : 0) +
     (usesShake ? SHAKE_KERNEL_ALLOWANCE : 0) +
+    (usesCamera ? CAMERA_KERNEL_ALLOWANCE : 0) +
+    (usesCamera && usesShake ? CAMERA_SHAKE_INTERACTION_ALLOWANCE : 0) +
     (usesVisible ? VISIBLE_KERNEL_ALLOWANCE : 0) +
     (usesFade ? FADE_KERNEL_ALLOWANCE : 0) +
     (usesFlash ? FLASH_KERNEL_ALLOWANCE : 0) +
@@ -1629,6 +1657,7 @@ function kernelShortfallAdvice(project, mapper, deficit) {
   const usesTurn = projectUsesTurn(project);
   const usesWait = projectUsesWait(project);
   const usesShake = projectUsesShake(project);
+  const usesCamera = projectUsesCamera(project);
   const usesVisible = projectUsesVisible(project);
   const usesFade = projectUsesFade(project);
   const usesFlash = projectUsesFlash(project);
@@ -1648,6 +1677,11 @@ function kernelShortfallAdvice(project, mapper, deficit) {
   if (usesTurn) active.push({ label: 'every Turn command', strip: (p) => projectWithoutCommands(p, ['turn']) });
   if (usesWait) active.push({ label: 'every Wait command', strip: (p) => projectWithoutCommands(p, ['wait']) });
   if (usesShake) active.push({ label: 'every Shake command', strip: (p) => projectWithoutCommands(p, ['shake']) });
+  // docs/design-camera.md §8, phase 1: not a command strip -- priced by full
+  // occupancy like every other lever, so on a project with Shake also live
+  // this frees CAMERA_KERNEL_ALLOWANCE + CAMERA_SHAKE_INTERACTION_ALLOWANCE
+  // together (39), not just the 20-byte register term alone.
+  if (usesCamera) active.push({ label: 'the camera', strip: (p) => projectWithoutCamera(p) });
   if (usesVisible) {
     active.push({ label: 'every Show/Hide command', strip: (p) => projectWithoutCommands(p, ['visible']) });
   }
@@ -2676,6 +2710,7 @@ export async function generateAssets({ dir, project, log = () => {} }) {
   const usesTurn = projectUsesTurn(project);
   const usesWait = projectUsesWait(project);
   const usesShake = projectUsesShake(project);
+  const usesCamera = projectUsesCamera(project);
   const usesVisible = projectUsesVisible(project);
   const usesFade = projectUsesFade(project);
   const usesFlash = projectUsesFlash(project);
@@ -3156,6 +3191,11 @@ export async function generateAssets({ dir, project, log = () => {} }) {
     // No companion *_ENABLED the way Turn has FACE_ENABLED: nothing else calls
     // into Shake's own code.
     `SHAKE_ENABLED = ${usesShake ? 1 : 0}`,
+    // docs/design-camera.md §8, phase 1: gates the camera-register path
+    // inside nmi_scroll (engine/boot.asm) alone -- no consumer of the
+    // register exists yet, so this is the whole of what CAMERA_ENABLED
+    // means in this build. See projectUsesCamera (shared/project.js).
+    `CAMERA_ENABLED = ${usesCamera ? 1 : 0}`,
     // OP_VISIBLE, the same shape again -- see projectUsesVisible
     // (shared/project.js). No companion *_ENABLED: nothing else calls
     // script_op_visible or reads ENT_HIDDEN.

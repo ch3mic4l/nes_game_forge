@@ -2687,6 +2687,16 @@ export function projectWithoutHeroNaming(project) {
   return clone;
 }
 
+// The kernelShortfallAdvice removal candidate for the camera (docs/design-
+// camera.md §8 phase 1): a plain cartridge-flag clear, the same one-line
+// shape as flipping mapper/mirroring back, since projectUsesCamera reads
+// nothing but this field.
+export function projectWithoutCamera(project) {
+  const clone = structuredClone(project);
+  clone.cartridge.camera = false;
+  return clone;
+}
+
 // Strips renamable from exactly the members joinNamingCandidate would ever
 // admit -- not "every member but 0", which would over-strip a
 // renamable-but-startsInParty member 1-3 whose flag joinNamingCandidate never
@@ -4345,7 +4355,7 @@ export function createProject(name = 'Untitled Game', gameType = 'action') {
       // such edit has happened yet," which is why a fresh project starts here.
       saveCompatToken: 0
     },
-    cartridge: { mapper: defaultMapperFor(type), mirroring: 'vertical' },
+    cartridge: { mapper: defaultMapperFor(type), mirroring: 'vertical', camera: false },
     tilesets: rpg
       ? [createTileset(0, 'Main'), createTileset(1, 'Battle')]
       : [createTileset(0, 'Main')],
@@ -4512,7 +4522,12 @@ function normalizeCartridge(raw) {
   // producing a header describing hardware the cartridge does not have.
   const allowed = mirroringOptions(mapper);
   const mirroring = allowed.some((entry) => entry.id === raw?.mirroring) ? raw.mirroring : 'vertical';
-  return { mapper: mapper.id, mirroring };
+  // docs/design-camera.md §5/Q6: any non-boolean coerces to false, never a
+  // throw -- a hand-edited or future-version project with an unrecognized
+  // value degrades to "off," the same policy every other boolean cartridge
+  // flag here holds to.
+  const camera = raw?.camera === true;
+  return { mapper: mapper.id, mirroring, camera };
 }
 
 function normalizePaletteSet(input, fallback) {
@@ -6207,6 +6222,18 @@ export function projectUsesShake(project) {
     }
   }
   return false;
+}
+
+/**
+ * Drives the generated `CAMERA_ENABLED` (docs/design-camera.md §5/Q6, §8
+ * phase 1). Unlike `projectUsesShake` and its siblings, this is not a
+ * command-liveness scan: the camera register and its NMI rewrite are gated
+ * on a plain cartridge-level boolean, `project.cartridge.camera`, the same
+ * shape `mapper`/`mirroring` already are -- there is no scripted verb to
+ * search for, since phase 1 ships no consumer of the register at all.
+ */
+export function projectUsesCamera(project) {
+  return Boolean(project.cartridge.camera);
 }
 
 /**

@@ -500,6 +500,48 @@ BT_MISS_FRAMES = 30
 ; not merely one authoring an attackAnim, since the walk itself has no gate.
 bt_walk_step = bt_miss_left+1
 WALK_TICKS = 8
+
+; ---------------------------------------------------------------- camera RAM
+; docs/design-camera.md §2/§8, phase 1: the camera register nmi_scroll (engine/
+; boot.asm) applies every vblank in place of the constant (0,0), plus the NMI's
+; own publication protocol for it. Reserved unconditionally the moment
+; CAMERA_ENABLED exists as a build option -- the same reasoning flash_driver
+; and pc_name_ram already hold to -- so a board that never assembles
+; `.if CAMERA_ENABLED` code still reserves the chain, and a future consumer
+; (the phase 2 slide) adds no RAM of its own and moves no symbol here.
+; Chained after bt_walk_step, unconditionally.
+cam_x_lo      = bt_walk_step+1   ; horizontal scroll, 0-255 -- mainline-owned
+cam_y_lo      = cam_x_lo+1       ; vertical scroll, 0-239 -- mainline-owned
+cam_nt        = cam_y_lo+1       ; PPUCTRL bits 0-1 -- mainline-owned
+cam_slide_left = cam_nt+1        ; phase 2: frames left in an active slide;
+                                  ; 0 = idle. Always 0 in phase 1, since
+                                  ; nothing yet writes it.
+cam_slide_dir = cam_slide_left+1 ; phase 2: the DIR_* the active slide animates
+cam_far       = cam_slide_dir+1  ; phase 2: resolved far-nametable index,
+                                  ; staged across the slide's own draw
+; cam_dirty is the publication lock a mainline wrap update raises before its
+; first coordinate store and releases after its last (cam_x_lo/y_lo/nt are
+; two-plus-one bytes, not one atomic write) -- see nmi_scroll's own comment
+; for why the lock covers the whole pair, not just the last store of it, and
+; for the coherent-stale-frame policy it protects. Always 0 in phase 1, since
+; nothing yet writes cam_x_lo/y_lo/nt outside boot's own RAM clear.
+cam_dirty     = cam_far+1
+; nmi_cam_x_lo/y_lo/nt are NMI's own last-complete snapshot of cam_x_lo/y_lo/
+; nt -- the value nmi_scroll actually composes with Shake and writes to
+; $2000/$2005 every vblank, refreshed from cam_x_lo/y_lo/cam_nt only while
+; cam_dirty is clear. Never written by mainline code.
+nmi_cam_x_lo  = cam_dirty+1
+nmi_cam_y_lo  = nmi_cam_x_lo+1
+nmi_cam_nt    = nmi_cam_y_lo+1
+; nmi_tmp is NMI-private scratch for the Shake+camera composition math
+; (engine/boot.asm's nmi_scroll), never touched by mainline code -- nmi only
+; saves/restores A/X/Y (nmi: pha/txa/pha/tya/pha), so reusing mainline's <tmp
+; here would corrupt whatever mainline routine (e.g. probe_type, engine/
+; player.asm) is mid-use of it on a long frame.
+nmi_tmp       = nmi_cam_nt+1
+; phase 2, candidate (b) only: non-zero means an active slide still owes its
+; completion redraw once cam_slide_left reaches zero. Always 0 in phase 1.
+cam_slide_b_pending = nmi_tmp+1
 ; draw_battle_attr's own ground-row fill (engine/battle.asm) -- rows 1-4 of
 ; the attribute table get this value before any live monster's own mon_attr
 ; is written over the top. This is what a dead monster's own cell must be

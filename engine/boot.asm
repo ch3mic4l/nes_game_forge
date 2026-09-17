@@ -418,6 +418,7 @@ nmi_scroll:
   ; sprites needs the OAM DMA above reordered behind the shake decision, plus
   ; a per-frame cost of roughly 1,500-1,600 cycles against a ~2,273-cycle
   ; vblank budget that already spends 513 on that same DMA).
+  .if !CAMERA_ENABLED
   .if SHAKE_ENABLED
   lda <shake_left
   beq nmi_scroll_no_shake
@@ -445,6 +446,93 @@ nmi_scroll_no_shake:
   lda #$00                  ; this engine draws one screen at a time
   sta $2005
   sta $2005
+  .endif
+
+  ; docs/design-camera.md §2: cam_x_lo/cam_y_lo/cam_nt replace the constant
+  ; (0,0) above once a project turns the camera on. Shake still perturbs the
+  ; horizontal 9-bit coordinate by +-2, only now that coordinate is
+  ; cam_nt/cam_x_lo instead of always (0,0) -- the ADC carry and SBC borrow
+  ; each fire at a different threshold of cam_x_lo (255 vs 0..1), so the +2
+  ; and -2 phases cannot share one carry test the way a fixed-at-zero shake
+  ; could get away with skipping entirely. Reduces to today's exact
+  ; PPUCTRL/$2005 sequence when cam_x_lo=cam_nt=0 (camera at rest) -- see
+  ; camera.test.js's own shake-over-rest-camera assertion.
+  .if CAMERA_ENABLED
+  ; docs/design-camera.md §2: cam_dirty is a publication lock, raised before
+  ; the first store of a wrap update (the low-byte coordinate) and released
+  ; after the last (the cam_nt toggle) by whichever consumer writes cam_*,
+  ; covering both stores of the pair, not just the second one -- a lock that
+  ; only guards the last store is not a lock. nmi_scroll's own camera path
+  ; never *skips* the scroll write when dirty is set: the drain above
+  ; (vram_drain) and PALETTE_FX_ENABLED's own PPUADDR cleanup both already
+  ; move the PPU's v/t register before nmi_scroll ever runs, so "skip the
+  ; write and the PPU keeps the last value" is false here -- not rewriting
+  ; $2000/$2005 below would leave the picture scrolled to wherever the drain
+  ; last pointed it, not to any camera position at all. Instead nmi_scroll
+  ; maintains its own last-complete snapshot (nmi_cam_x_lo/y_lo/nt, below):
+  ; refreshed from cam_x_lo/y_lo/cam_nt only while cam_dirty is clear, left
+  ; alone (the last known-good coordinate) while it is set, and always what
+  ; gets composed with Shake and written to $2000/$2005 -- so every vblank
+  ; writes a real, complete coordinate, torn or not, refreshed or stale (the
+  ; coherent-stale-frame policy, docs/design-camera.md §2).
+  lda <cam_dirty
+  bne nmi_scroll_cam_stale
+  lda <cam_x_lo
+  sta <nmi_cam_x_lo
+  lda <cam_y_lo
+  sta <nmi_cam_y_lo
+  lda <cam_nt
+  sta <nmi_cam_nt
+nmi_scroll_cam_stale:
+  .if SHAKE_ENABLED
+  ; docs/design-camera.md §2: nmi_tmp, not mainline <tmp -- nmi only saves/
+  ; restores A/X/Y (this handler's own pha/txa/pha/tya/pha above), so reusing
+  ; mainline's <tmp here would corrupt whatever mainline routine (e.g.
+  ; probe_type, engine/player.asm) is mid-use of it on a long frame. Composes
+  ; on nmi_cam_x_lo/nmi_cam_nt (the snapshot), not cam_x_lo/cam_nt directly --
+  ; those may be mid-update.
+  lda <shake_left
+  beq nmi_scroll_cam_no_shake
+  dec <shake_left
+  lda <shake_left
+  and #1
+  bne nmi_scroll_cam_shake_neg
+  lda <nmi_cam_x_lo
+  clc
+  adc #2
+  sta <nmi_tmp
+  lda <nmi_cam_nt
+  bcc nmi_scroll_cam_shake_pos_nt
+  eor #1
+nmi_scroll_cam_shake_pos_nt:
+  jmp nmi_scroll_cam_shake_apply
+nmi_scroll_cam_shake_neg:
+  lda <nmi_cam_x_lo
+  sec
+  sbc #2
+  sta <nmi_tmp
+  lda <nmi_cam_nt
+  bcs nmi_scroll_cam_shake_neg_nt
+  eor #1
+nmi_scroll_cam_shake_neg_nt:
+nmi_scroll_cam_shake_apply:
+  ora #PPUCTRL_ON
+  sta $2000
+  lda <nmi_tmp
+  sta $2005
+  lda <nmi_cam_y_lo
+  sta $2005
+  jmp nmi_scroll_done
+nmi_scroll_cam_no_shake:
+  .endif
+  lda <nmi_cam_nt
+  ora #PPUCTRL_ON
+  sta $2000
+  lda <nmi_cam_x_lo
+  sta $2005
+  lda <nmi_cam_y_lo
+  sta $2005
+  .endif
 nmi_scroll_done:
 
   .if SPLIT_ENABLED

@@ -23,6 +23,7 @@ import { statAt, xpCurve, nameTiles, NAME_LIMIT, dropThreshold } from '../../mai
 import { parseSymbolFile } from '../../main/build/symbols.js';
 import { compileText, opIndex, EVT_PAGES_END } from '../../main/build/textcompile.js';
 import { decodeBody } from '../lib/eventdecoder.js';
+import { callRoutine } from '../lib/callroutine.js';
 import { textToTiles, MISS_TILE_M, MISS_TILE_M_ART, MISS_TILE_I_ART, MISS_TILE_S_ART } from '../../shared/font.js';
 import {
   BOX_ROW,
@@ -378,26 +379,8 @@ async function buildVariant(t, name, mutate) {
 
 // --- calling one engine routine in isolation --------------------------------
 //
-// A stub JSR/NOP pair at $0700 (plain RAM, mirrored from $0000-$07FF, so it is
-// executable regardless of which PRG bank is currently mapped), landing PC
-// one byte before it so the very first emulate() step fetches the JSR. Used
-// to unit-test a single routine's own contract without driving the whole
-// game loop up to the exact frame that would reach it.
-function callRoutine(nes, address) {
-  nes.mmap.write(0x2000, 0); // NMI generation off -- a stray NMI mid-stub would
-                              // both divert PC and inflate the returned cycle count
-  nes.cpu.irqRequested = false;
-  nes.cpu.F_INTERRUPT = 1; // and IRQ must not land mid-stub either
-  nes.cpu.mem.set([0x20, address & 255, address >> 8, 0xea], 0x700);
-  nes.cpu.REG_PC = 0x6ff;
-  let cycles = 0;
-  let steps = 0;
-  while ((nes.cpu.REG_PC + 1) !== 0x703) {
-    cycles += nes.cpu.emulate();
-    assert.ok(++steps < 20000, 'routine never returned to the stub');
-  }
-  return cycles;
-}
+// callRoutine itself now lives in test/lib/callroutine.js (lifted once
+// camera.test.js needed the identical stub) -- see that file's own comment.
 
 /**
  * The battle system's own code (battle.asm/battleui.asm/battleturn.asm) lives

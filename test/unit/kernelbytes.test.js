@@ -44,6 +44,8 @@ import {
   TURN_KERNEL_ALLOWANCE,
   WAIT_KERNEL_ALLOWANCE,
   SHAKE_KERNEL_ALLOWANCE,
+  CAMERA_KERNEL_ALLOWANCE,
+  CAMERA_SHAKE_INTERACTION_ALLOWANCE,
   VISIBLE_KERNEL_ALLOWANCE,
   FADE_KERNEL_ALLOWANCE,
   FLASH_KERNEL_ALLOWANCE,
@@ -83,6 +85,8 @@ import {
   projectWithoutJoinNaming,
   projectUsesNameToken,
   projectWithoutNameToken,
+  projectUsesCamera,
+  projectWithoutCamera,
   metaspriteKernelBytes,
   RPG_LIMITS,
   LIMITS,
@@ -153,6 +157,10 @@ async function measureCodeBytes(
     withRouteTurn = false,
     withWait = false,
     withShake = false,
+    // docs/design-camera.md §8, phase 1: a plain cartridge-flag set, not a
+    // command -- the same shape withHeroNaming below sets a plain field
+    // rather than pushing a command.
+    withCamera = false,
     withVisible = false,
     withFade = false,
     withFlash = false,
@@ -195,6 +203,7 @@ async function measureCodeBytes(
   // so a caller can isolate ITEM_KERNEL_ALLOWANCE's own delta the same way
   // withSave/withMove/withTitle isolate theirs.
   if (!withItems) project.items = [];
+  project.cartridge.camera = Boolean(withCamera);
   if (withTitle || withSave) {
     project.project.titleMap = 0;
     project.project.titleScreen = 0;
@@ -5241,3 +5250,195 @@ test('in-game naming: removing hero naming or join naming ALONE frees only H or 
     'stripping both frees the full N+H+J -- NAME_ENTRY_ENABLED finally turns off too'
   );
 });
+
+// ---------------------------------------------------------------------------
+// Camera register, phase 1 (docs/design-camera.md §8): CAMERA_KERNEL_ALLOWANCE
+// and CAMERA_SHAKE_INTERACTION_ALLOWANCE. No consumer exists yet in this
+// phase -- the register and NMI rewrite are the whole of what CAMERA_ENABLED
+// assembles -- so every isolation here is against a project carrying nothing
+// else the camera could depend on.
+// ---------------------------------------------------------------------------
+
+const CAMERA_LEDGER_MAPPERS = SUPPORTED_MAPPERS.filter((mapper) => [0, 1, 4, 30].includes(mapper.id));
+
+/** A brand-new, unsaved project written to its own temp directory -- for an
+ * isolation delta that must not carry any of a checked-in fixture's own
+ * content (an existing dialogue string, a pre-authored event) into the
+ * measurement. */
+async function freshProjectDir(t, gameType) {
+  const dir = await fsp.mkdtemp(path.join(os.tmpdir(), 'forge-camera-fresh-'));
+  t.after(() => fsp.rm(dir, { recursive: true, force: true }));
+  await saveProject(dir, createProject(gameType === 'rpg' ? 'Fresh RPG' : 'Fresh Action', gameType));
+  return dir;
+}
+
+test(
+  'CAMERA_KERNEL_ALLOWANCE covers the real, isolated cost of the camera register exactly, on every measured board, action game type',
+  { skip: !hasNesasm && 'nesasm not found on PATH' },
+  async (t) => {
+    // A fresh project with no events at all: camera alone assembles no event
+    // of its own, so there is no live-text side effect (fontBankSplit) to
+    // isolate away the way withMove:true isolates it for the interaction
+    // test below.
+    for (const mapper of CAMERA_LEDGER_MAPPERS) {
+      const dir = await freshProjectDir(t, 'action');
+      const off = await measureCodeBytes(t, mapper, { fixture: dir });
+      const on = await measureCodeBytes(t, mapper, { fixture: dir, withCamera: true });
+      assertCovers({ mapper, codeBytes: off.codeBytes }, kernelCodeBytes(off.project, mapper), 'camera off, fresh action project');
+      assertCovers({ mapper, codeBytes: on.codeBytes }, kernelCodeBytes(on.project, mapper), 'camera on, fresh action project');
+      const delta = on.codeBytes - off.codeBytes;
+      assert.equal(
+        delta,
+        CAMERA_KERNEL_ALLOWANCE,
+        `${mapper.name}: camera-only costs ${delta} bytes of kernel code (${off.codeBytes} -> ${on.codeBytes}), ` +
+          `but CAMERA_KERNEL_ALLOWANCE reserves ${CAMERA_KERNEL_ALLOWANCE} -- this allowance must equal phase 1's ` +
+          'real cost exactly, on every board.'
+      );
+    }
+  }
+);
+
+test(
+  'CAMERA_KERNEL_ALLOWANCE covers the real, isolated cost of the camera register exactly, on every RPG-capable board',
+  { skip: !hasNesasm && 'nesasm not found on PATH' },
+  async (t) => {
+    for (const mapper of CAPABLE_MAPPERS) {
+      const dir = await freshProjectDir(t, 'rpg');
+      const off = await measureCodeBytes(t, mapper, { fixture: dir });
+      const on = await measureCodeBytes(t, mapper, { fixture: dir, withCamera: true });
+      assertCovers({ mapper, codeBytes: off.codeBytes }, kernelCodeBytes(off.project, mapper), 'camera off, fresh RPG project');
+      assertCovers({ mapper, codeBytes: on.codeBytes }, kernelCodeBytes(on.project, mapper), 'camera on, fresh RPG project');
+      const delta = on.codeBytes - off.codeBytes;
+      assert.equal(
+        delta,
+        CAMERA_KERNEL_ALLOWANCE,
+        `${mapper.name}: camera-only costs ${delta} bytes of kernel code (${off.codeBytes} -> ${on.codeBytes}) on an ` +
+          `RPG, but CAMERA_KERNEL_ALLOWANCE reserves ${CAMERA_KERNEL_ALLOWANCE} -- the design measured this flat ` +
+          'across game type, and this is the RPG half of that claim.'
+      );
+    }
+  }
+);
+
+test(
+  'CAMERA_SHAKE_INTERACTION_ALLOWANCE: camera and Shake compose, isolated on every measured board',
+  { skip: !hasNesasm && 'nesasm not found on PATH' },
+  async (t) => {
+    // withMove: true as the baseline on every leg -- the identical isolation
+    // the Sting/Sfx tests above use (see their own comment): a bare
+    // Shake-or-camera-only delta on MMC3 would also turn the split term on
+    // (any surviving event does, projectUsesText), so comparing against a
+    // baseline that already has a different, surviving event (Move) charges
+    // the split term equally on both sides of every subtraction below,
+    // cancelling it out.
+    for (const mapper of CAMERA_LEDGER_MAPPERS) {
+      const dir = await freshProjectDir(t, 'action');
+      const shakeOnly = await measureCodeBytes(t, mapper, { fixture: dir, withMove: true, withShake: true });
+      const cameraOnly = await measureCodeBytes(t, mapper, { fixture: dir, withMove: true, withCamera: true });
+      const both = await measureCodeBytes(t, mapper, { fixture: dir, withMove: true, withShake: true, withCamera: true });
+      assertCovers({ mapper, codeBytes: both.codeBytes }, kernelCodeBytes(both.project, mapper), 'camera and Shake both live');
+
+      const deltaFromShake = both.codeBytes - shakeOnly.codeBytes;
+      assert.equal(
+        deltaFromShake,
+        CAMERA_KERNEL_ALLOWANCE + CAMERA_SHAKE_INTERACTION_ALLOWANCE,
+        `${mapper.name}: adding camera to a Shake-only build costs ${deltaFromShake} bytes ` +
+          `(${shakeOnly.codeBytes} -> ${both.codeBytes}), but CAMERA_KERNEL_ALLOWANCE + ` +
+          `CAMERA_SHAKE_INTERACTION_ALLOWANCE reserves ${CAMERA_KERNEL_ALLOWANCE + CAMERA_SHAKE_INTERACTION_ALLOWANCE}.`
+      );
+
+      const deltaFromCamera = both.codeBytes - cameraOnly.codeBytes;
+      assert.equal(
+        deltaFromCamera,
+        SHAKE_KERNEL_ALLOWANCE + CAMERA_SHAKE_INTERACTION_ALLOWANCE,
+        `${mapper.name}: adding Shake to a camera-only build costs ${deltaFromCamera} bytes ` +
+          `(${cameraOnly.codeBytes} -> ${both.codeBytes}), but SHAKE_KERNEL_ALLOWANCE + ` +
+          `CAMERA_SHAKE_INTERACTION_ALLOWANCE reserves ${SHAKE_KERNEL_ALLOWANCE + CAMERA_SHAKE_INTERACTION_ALLOWANCE}.`
+      );
+    }
+  }
+);
+
+test(
+  'a kernel-lo shortfall the camera alone would close names the camera',
+  { skip: !hasNesasm && 'nesasm not found on PATH' },
+  async (t) => {
+    const project = createProject('Action', 'action');
+    project.cartridge.mapper = 1; // MMC1 -- no split term to complicate the arithmetic
+    project.cartridge.camera = true;
+    inflateLegal(project, 288); // measured: lands a 15-byte deficit, inside (0, CAMERA_KERNEL_ALLOWANCE]
+    const deficit = kernelShortfallDeficit(project);
+    assert.ok(
+      deficit > 0 && deficit <= CAMERA_KERNEL_ALLOWANCE,
+      `deficit ${deficit} must sit in (0, CAMERA_KERNEL_ALLOWANCE] (${CAMERA_KERNEL_ALLOWANCE}) or this case does ` +
+        'not exercise the camera alone closing the gap'
+    );
+    const message = kernelShortfallMessage(project);
+    assert.match(message, new RegExp(`the camera \\(frees ${CAMERA_KERNEL_ALLOWANCE} bytes\\)`));
+    const dropped = structuredClone(project);
+    dropped.cartridge.camera = false;
+    assert.deepEqual(
+      validateProject(dropped).filter((p) => p.severity === 'error'),
+      [],
+      'dropping the camera should leave the project free of validation errors'
+    );
+    assert.deepEqual(
+      checkCapacity(dropped).problems.filter((p) => p.severity === 'error'),
+      [],
+      'dropping the camera should leave the project free of capacity errors'
+    );
+    const dir = await fsp.mkdtemp(path.join(os.tmpdir(), 'forge-camera-shortfall-'));
+    t.after(() => fsp.rm(dir, { recursive: true, force: true }));
+    await saveProject(dir, dropped);
+    const built = await buildProject({ dir, project: dropped, log: () => {} });
+    assert.ok(built.romPath, 'dropping the camera should be a real, buildable fix');
+  }
+);
+
+// docs/design-camera.md §8: with Shake also live, dropping the camera must
+// free CAMERA_KERNEL_ALLOWANCE + CAMERA_SHAKE_INTERACTION_ALLOWANCE (39)
+// together, not the register term alone (20) -- kernelShortfallAdvice prices
+// every lever by full occupancy for exactly this reason (see its own
+// comment). Sized so the deficit exceeds the register term alone but not the
+// combined figure, so a regression that dropped the interaction term from
+// this lever's own freedByDropping computation would fail this test even
+// though the camera-alone test above still passes.
+test(
+  'a kernel-lo shortfall the camera and Shake interaction closes: dropping the camera frees 39, not 20, when Shake is also live',
+  { skip: !hasNesasm && 'nesasm not found on PATH' },
+  async (t) => {
+    const project = createProject('Action', 'action');
+    project.cartridge.mapper = 1; // MMC1
+    project.cartridge.camera = true;
+    project.maps[0].screens[0].entities.push({
+      actorId: 0,
+      x: 16,
+      y: 16,
+      props: { event: { pages: [{ cond: { type: 'none', arg: 0 }, commands: [{ op: 'shake', frames: 30 }] }] } }
+    });
+    inflateLegal(project, 281); // measured: lands a 38-byte deficit
+    const deficit = kernelShortfallDeficit(project);
+    const combined = CAMERA_KERNEL_ALLOWANCE + CAMERA_SHAKE_INTERACTION_ALLOWANCE;
+    assert.ok(
+      deficit > CAMERA_KERNEL_ALLOWANCE && deficit <= combined,
+      `deficit ${deficit} must exceed the camera's own register cost alone (${CAMERA_KERNEL_ALLOWANCE}) but not the ` +
+        `combined figure (${combined}), or this case does not exercise the interaction term`
+    );
+    const message = kernelShortfallMessage(project);
+    assert.match(
+      message,
+      new RegExp(`the camera \\(frees ${combined} bytes\\)`),
+      'dropping the camera while Shake stays live must free the register cost AND the interaction term together, ' +
+        'not the register cost alone'
+    );
+    const dropped = structuredClone(project);
+    dropped.cartridge.camera = false;
+    assert.deepEqual(validateProject(dropped).filter((p) => p.severity === 'error'), []);
+    assert.deepEqual(checkCapacity(dropped).problems.filter((p) => p.severity === 'error'), []);
+    const dir = await fsp.mkdtemp(path.join(os.tmpdir(), 'forge-camera-shortfall-'));
+    t.after(() => fsp.rm(dir, { recursive: true, force: true }));
+    await saveProject(dir, dropped);
+    const built = await buildProject({ dir, project: dropped, log: () => {} });
+    assert.ok(built.romPath, 'dropping the camera, with Shake still live, should be a real, buildable fix');
+  }
+);

@@ -123,7 +123,10 @@ import {
   projectUsesMiss,
   projectWithoutMiss,
   spriteReservedRanges,
-  MISS_OAM_TILES
+  MISS_OAM_TILES,
+  // Camera register, phase 1 (docs/design-camera.md §5/Q6) ------------------
+  projectUsesCamera,
+  projectWithoutCamera
 } from '../../shared/project.js';
 import { resolveStartAt } from '../../shared/playscenario.js';
 import fs from 'node:fs/promises';
@@ -310,6 +313,50 @@ test('turning a project into an RPG raises the mapper, and only then', () => {
   const problems = validateProject(loaded).filter((p) => p.severity === 'error');
   assert.equal(problems.length, 1);
   assert.match(problems[0].message, /program bank switching/);
+});
+
+// docs/design-camera.md §5/Q6: project.cartridge.camera, boolean, default
+// false, coerced rather than thrown on anything else.
+test('project.cartridge.camera defaults to false and coerces any non-boolean to false', () => {
+  const fresh = createProject('Camera Schema');
+  assert.equal(fresh.cartridge.camera, false);
+  assert.equal(projectUsesCamera(fresh), false);
+
+  for (const junk of ['yes', 1, null, undefined, 0, '', {}, []]) {
+    const project = normalizeProject({ cartridge: { camera: junk } });
+    assert.equal(project.cartridge.camera, false, `camera: ${JSON.stringify(junk)} must normalize to false, never throw`);
+  }
+});
+
+test('project.cartridge.camera: true round-trips through save/load, and projectUsesCamera answers accordingly', async (t) => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'forge-camera-schema-'));
+  t.after(() => fs.rm(dir, { recursive: true, force: true }));
+
+  const project = createProject('Camera Round Trip');
+  project.cartridge.camera = true;
+  assert.equal(projectUsesCamera(project), true);
+  await saveProject(dir, project);
+  const loaded = await loadProject(dir);
+  assert.equal(loaded.cartridge.camera, true, 'a true camera flag must survive a save/load round trip');
+  assert.equal(projectUsesCamera(loaded), true);
+
+  const stripped = projectWithoutCamera(loaded);
+  assert.equal(stripped.cartridge.camera, false);
+  assert.equal(projectUsesCamera(stripped), false);
+  assert.equal(loaded.cartridge.camera, true, 'projectWithoutCamera must not mutate its input');
+});
+
+test('reconcileCartridge leaves project.cartridge.camera alone on a mapper change', () => {
+  const project = createProject('Camera Reconcile', 'rpg');
+  project.cartridge.camera = true;
+  project.cartridge.mapper = 4; // MMC3
+  reconcileCartridge(project);
+  assert.equal(project.cartridge.mapper, 4);
+  assert.equal(project.cartridge.camera, true, 'a mapper change is unrelated to whether the camera register is on');
+
+  project.cartridge.mapper = 1; // MMC1
+  reconcileCartridge(project);
+  assert.equal(project.cartridge.camera, true);
 });
 
 test('every input state carries a full row of bindings', () => {
