@@ -37,8 +37,18 @@ export const PRG_SWITCH = {
  * is not free — see `costsChrPage`.
  */
 export const MIRRORING = [
-  { id: 'horizontal', value: 0, label: 'Horizontal', hint: 'Rooms scroll side to side.' },
-  { id: 'vertical', value: 1, label: 'Vertical', hint: 'Rooms scroll up and down.' },
+  {
+    id: 'horizontal',
+    value: 0,
+    label: 'Horizontal',
+    hint: 'Rooms scroll up and down; side-to-side neighbours use hard cuts.'
+  },
+  {
+    id: 'vertical',
+    value: 1,
+    label: 'Vertical',
+    hint: 'Rooms scroll side to side; up/down neighbours use hard cuts.'
+  },
   {
     id: 'fourscreen',
     value: 1,
@@ -47,7 +57,7 @@ export const MIRRORING = [
     // On UNROM 512 the extra nametables are backed by the last CHR-RAM page, so
     // choosing this spends a tileset.
     costsChrPage: true,
-    hint: 'Four independent nametables instead of two mirrored pairs. The engine only ever draws nametable 0, so this currently costs a tileset and gains nothing — pick it for cartridge-board compatibility, not for the engine.'
+    hint: 'Four independent nametables -- the only choice that can scroll both ways at once. Costs a tileset; pick it for that, not for cartridge-board compatibility alone.'
   }
 ];
 
@@ -85,6 +95,24 @@ export function cameraAxes(mapper, cartridge) {
     horizontal: mirroring.id === 'vertical' || Boolean(mirroring.fourScreen),
     vertical: mirroring.id === 'horizontal' || Boolean(mirroring.fourScreen)
   };
+}
+
+/**
+ * docs/design-camera.md §8 phase 3 (Q3, Q8): the Build panel's own axis-loss
+ * indicator, one string built ONLY from cameraAxes' two booleans -- never
+ * from the raw mirroring string, so a four-screen value evaluated against a
+ * board that cannot provide it describes the fallback cameraAxes actually
+ * resolved to, not the request. cameraAxes never answers "neither axis" (its
+ * own doc comment above), so there is no fourth string here; a caller that
+ * somehow gets both false is a bug in cameraAxes itself, not a case this
+ * function should paper over with an invented message.
+ */
+export function describeCameraAxes(mapper, cartridge) {
+  const axes = cameraAxes(mapper, cartridge);
+  if (axes.horizontal && axes.vertical) return 'Crossings slide in every direction (four-screen mirroring).';
+  if (axes.horizontal) return 'Side-to-side crossings slide; up and down crossings cut (vertical mirroring).';
+  if (axes.vertical) return 'Up and down crossings slide; side-to-side crossings cut (horizontal mirroring).';
+  throw new Error('cameraAxes answered neither axis, which should be unreachable');
 }
 
 /**

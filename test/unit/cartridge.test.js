@@ -22,11 +22,13 @@ import {
 } from '../../shared/project.js';
 import {
   cameraAxes,
+  describeCameraAxes,
   chrBanksFor,
   chrRegisterTable,
   mapperById,
   resolveMapper,
   MAPPERS,
+  MIRRORING,
   SUPPORTED_MAPPERS,
   chrPayloadRegions,
   headerPatch,
@@ -765,4 +767,64 @@ test('cameraAxes: an invalid mirroring string degrades to the identical H-only f
       `${mapper.name}: a value that fails even mirroringById's own lookup must degrade to the 'vertical' fallback's axes`
     );
   }
+});
+
+// docs/design-camera.md §8 phase 3 (Decision 2): describeCameraAxes(mapper,
+// cartridge) is one string built ONLY from cameraAxes' own two booleans,
+// never from the raw mirroring string -- so a four-screen value evaluated
+// against a board that cannot provide it describes the fallback cameraAxes
+// actually resolved to, the describePlayerSpritePlan/playersprite.test.js
+// precedent for asserting the literal strings with assert.equal.
+test('describeCameraAxes: the three literal strings for UNROM 512 under vertical/horizontal/fourscreen', () => {
+  const u512 = mapperById(30);
+  assert.equal(
+    describeCameraAxes(u512, { mirroring: 'vertical' }),
+    'Side-to-side crossings slide; up and down crossings cut (vertical mirroring).'
+  );
+  assert.equal(
+    describeCameraAxes(u512, { mirroring: 'horizontal' }),
+    'Up and down crossings slide; side-to-side crossings cut (horizontal mirroring).'
+  );
+  assert.equal(
+    describeCameraAxes(u512, { mirroring: 'fourscreen' }),
+    'Crossings slide in every direction (four-screen mirroring).'
+  );
+});
+
+test('describeCameraAxes: a four-screen value evaluated against a board that cannot provide it describes the fallback, not the request', () => {
+  const nrom = mapperById(0);
+  assert.equal(
+    describeCameraAxes(nrom, { mirroring: 'fourscreen' }),
+    'Side-to-side crossings slide; up and down crossings cut (vertical mirroring).'
+  );
+});
+
+test('describeCameraAxes: an invalid mirroring string degrades to the identical H-only fallback string, for any board', () => {
+  for (const mapper of SUPPORTED_MAPPERS) {
+    assert.equal(
+      describeCameraAxes(mapper, { mirroring: 'garbage' }),
+      'Side-to-side crossings slide; up and down crossings cut (vertical mirroring).',
+      `${mapper.name}: a value that fails even mirroringById's own lookup must describe the 'vertical' fallback`
+    );
+  }
+});
+
+// docs/design-camera.md §8 phase 3 (Decision 3): the MIRRORING hints become
+// Q3's three literals, and the array's ids/order stay untouched -- other
+// consumers (mirroringValue, the header) depend on them.
+test('MIRRORING: the three hint strings match Decision 3 exactly, ids and order unchanged', () => {
+  assert.deepEqual(MIRRORING.map((m) => m.id), ['horizontal', 'vertical', 'fourscreen']);
+  assert.equal(
+    MIRRORING.find((m) => m.id === 'horizontal').hint,
+    'Rooms scroll up and down; side-to-side neighbours use hard cuts.'
+  );
+  assert.equal(
+    MIRRORING.find((m) => m.id === 'vertical').hint,
+    'Rooms scroll side to side; up/down neighbours use hard cuts.'
+  );
+  assert.equal(
+    MIRRORING.find((m) => m.id === 'fourscreen').hint,
+    'Four independent nametables -- the only choice that can scroll both ways at once. Costs a tileset; ' +
+      'pick it for that, not for cartridge-board compatibility alone.'
+  );
 });

@@ -18,6 +18,7 @@ import { encodeTiles } from '../shared/chr.js';
 import { STARTERS } from '../shared/starters/index.js';
 import { buildProject } from './build/pipeline.js';
 import { Emulator, BUTTON } from '../renderer/emulator/runcontrol.js';
+import { finishNamingIfOpen } from '../test/lib/naming.js';
 
 /**
  * A canned CHR file payload for the files:readBinary override -- one flat,
@@ -3914,6 +3915,88 @@ const scenario = (dir, sampleDir, sampleRpgDir) => `
   if (mirrorSelect.value !== 'fourscreen') throw new Error('the mirroring selector shows the wrong mode');
   step('four-screen selectable', 'UNROM 512');
 
+  // docs/design-camera.md §8 phase 3: the Camera checkbox, beside the
+  // mirroring selector in the Build Forge's Cartridge section (renderSummary
+  // rebuilds this whole panel on every commit, via fill(), so every element
+  // below is re-queried fresh after each mutation rather than reused).
+  const findCameraCheckbox = () =>
+    [...document.querySelectorAll('#stage label.field-row')]
+      .find((row) => row.querySelector('span.field-label')?.textContent.trim() === 'Camera')
+      ?.querySelector('input[type=checkbox]');
+  const findMirrorSelect = () =>
+    [...document.querySelectorAll('#stage label.field-row')]
+      .find((row) => row.querySelector('span.field-label')?.textContent.trim() === 'Mirroring')
+      ?.querySelector('select');
+  const AXIS_HINT_STRINGS = [
+    'Crossings slide in every direction (four-screen mirroring).',
+    'Side-to-side crossings slide; up and down crossings cut (vertical mirroring).',
+    'Up and down crossings slide; side-to-side crossings cut (horizontal mirroring).'
+  ];
+  const findAxisHint = () =>
+    [...document.querySelectorAll('#stage p.hint')].find((p) => AXIS_HINT_STRINGS.includes(p.textContent));
+
+  const cameraCheckboxOff = findCameraCheckbox();
+  if (!cameraCheckboxOff) throw new Error('camera: the Build panel has no Camera checkbox');
+  if (cameraCheckboxOff.checked) throw new Error('camera: the checkbox should start unchecked on a fresh project');
+  if (findAxisHint()) throw new Error('camera: no axis hint should render while the checkbox is unchecked');
+  step('camera: checkbox unchecked and no axis hint on a fresh UNROM 512 four-screen project', 'ok');
+
+  // The preceding 'smoke u512' commit already left store.dirty === true,
+  // so a dirty assertion right after ticking would pass even against a
+  // direct-mutation sabotage that never commits at all. Establish a real
+  // clean baseline first (the same save path the file's other flush-based
+  // steps use), so the tick that follows is the only thing that can make
+  // store.dirty true again.
+  const cameraBaselineSaved = await window.__app.saveProject();
+  if (!cameraBaselineSaved) throw new Error('camera: failed to save a clean baseline before ticking the checkbox');
+  if (store.dirty) throw new Error('camera: expected a clean baseline (store.dirty === false) before ticking the checkbox');
+
+  findCameraCheckbox().checked = true;
+  findCameraCheckbox().dispatchEvent(new Event('change', { bubbles: true }));
+  await wait(120);
+  if (store.project.cartridge.camera !== true) throw new Error('camera: ticking the checkbox did not set cartridge.camera');
+  if (!store.dirty) throw new Error('camera: ticking the checkbox from a clean baseline did not mark the project dirty');
+  const fourScreenAxisHint = findAxisHint();
+  if (!fourScreenAxisHint || fourScreenAxisHint.textContent !== 'Crossings slide in every direction (four-screen mirroring).') {
+    throw new Error('camera: axis hint should read the four-screen string once camera is on, got: ' + fourScreenAxisHint?.textContent);
+  }
+  const mirrorOptionTitles = [...findMirrorSelect().options].map((o) => o.title);
+  const expectedMirrorTitles = [
+    'Rooms scroll up and down; side-to-side neighbours use hard cuts.',
+    'Rooms scroll side to side; up/down neighbours use hard cuts.',
+    'Four independent nametables -- the only choice that can scroll both ways at once. Costs a tileset; pick it ' +
+      'for that, not for cartridge-board compatibility alone.'
+  ];
+  if (JSON.stringify(mirrorOptionTitles) !== JSON.stringify(expectedMirrorTitles)) {
+    throw new Error('camera: mirroring option titles do not match: ' + JSON.stringify(mirrorOptionTitles));
+  }
+  step('camera: ticking the checkbox from a clean baseline commits one real change -- dirty, axis hint and mirroring titles match', 'ok');
+
+  // The later store.undo() in this block pops the mapper-select commit
+  // (whose own snapshot already holds camera: true), never the toggle's
+  // own commit -- so it proves mapper undo, not toggle undo. Undo/redo the
+  // toggle itself here, immediately, before the mapper switch ever runs,
+  // so the top of the undo stack is unambiguously the toggle's own commit.
+  store.undo();
+  await wait(120);
+  if (store.project.cartridge.camera !== false) throw new Error('camera: undo of the toggle should clear cartridge.camera');
+  if (findCameraCheckbox().checked) throw new Error('camera: undo of the toggle should leave the checkbox unchecked');
+  if (findAxisHint()) throw new Error('camera: undo of the toggle should remove the axis hint');
+  // Still UNROM 512, three mirroring modes -- the mirroring select must stay
+  // present regardless of camera, unrelated to this toggle's own undo.
+  if (!findMirrorSelect()) throw new Error('camera: the mirroring select should stay present on UNROM 512 after undoing the toggle');
+  step('camera: toggle is one undoable commit -- undo clears cartridge.camera, the checkbox and the axis hint', 'ok');
+
+  store.redo();
+  await wait(120);
+  if (store.project.cartridge.camera !== true) throw new Error('camera: redo of the toggle should set cartridge.camera again');
+  if (!findCameraCheckbox().checked) throw new Error('camera: redo of the toggle should recheck the checkbox');
+  const redoneToggleAxisHint = findAxisHint();
+  if (!redoneToggleAxisHint || redoneToggleAxisHint.textContent !== 'Crossings slide in every direction (four-screen mirroring).') {
+    throw new Error('camera: redo of the toggle should restore the four-screen axis hint, got: ' + redoneToggleAxisHint?.textContent);
+  }
+  step('camera: redo of the toggle restores cartridge.camera, the checkbox and the axis hint', 'ok');
+
   // ROADMAP item 8 (validate-as-you-draw), Phase 5 (docs/design-draw-
   // validation.md §6.4) -- the Build Forge's own project-wide battle-sprite
   // meter is RPG-only. This project is action-type, so the meter must be
@@ -3943,6 +4026,46 @@ const scenario = (dir, sampleDir, sampleRpgDir) => `
     throw new Error('moving to a board without nametable RAM should drop four-screen');
   }
   step('four-screen hidden elsewhere', 'CNROM falls back');
+
+  // With the camera on, mirroring picks the sliding axis on every board
+  // (docs/design-camera.md §5/Q3), not only on boards offering a choice
+  // beyond the usual two -- so switching to CNROM must NOT hide the
+  // mirroring row, and the axis hint must flip to the vertical-mirroring
+  // (H-only) string, the axis loss made visible by the same commit that
+  // dropped four-screen.
+  const cnromMirrorSelect = findMirrorSelect();
+  if (!cnromMirrorSelect) throw new Error('camera: the mirroring select must stay present on CNROM while camera is on');
+  const cnromMirrorLabels = [...cnromMirrorSelect.options].map((o) => o.textContent);
+  if (JSON.stringify(cnromMirrorLabels) !== JSON.stringify(['Horizontal', 'Vertical'])) {
+    throw new Error('camera: CNROM mirroring options should be exactly Horizontal, Vertical, got: ' + JSON.stringify(cnromMirrorLabels));
+  }
+  const cnromAxisHint = findAxisHint();
+  if (!cnromAxisHint || cnromAxisHint.textContent !== 'Side-to-side crossings slide; up and down crossings cut (vertical mirroring).') {
+    throw new Error('camera: axis hint should read the vertical-mirroring string on CNROM, got: ' + cnromAxisHint?.textContent);
+  }
+  step('camera: mirroring select survives the mapper switch to CNROM, axis hint shows the axis loss', 'ok');
+
+  store.undo();
+  await wait(120);
+  if (store.project.cartridge.mapper !== 30) throw new Error('camera: undo should put the mapper back to UNROM 512');
+  const undoneAxisHint = findAxisHint();
+  if (!undoneAxisHint || undoneAxisHint.textContent !== 'Crossings slide in every direction (four-screen mirroring).') {
+    throw new Error('camera: undo should flip the axis hint back to the four-screen string, got: ' + undoneAxisHint?.textContent);
+  }
+  step('camera: undo restores UNROM 512 and the four-screen axis hint', 'ok');
+
+  store.redo();
+  await wait(120);
+  if (store.project.cartridge.mapper !== 3) throw new Error('camera: redo should return to CNROM');
+  step('camera: redo returns to CNROM', 'ok');
+
+  findCameraCheckbox().checked = false;
+  findCameraCheckbox().dispatchEvent(new Event('change', { bubbles: true }));
+  await wait(120);
+  if (store.project.cartridge.camera !== false) throw new Error('camera: unticking the checkbox did not clear cartridge.camera');
+  if (findAxisHint()) throw new Error('camera: no axis hint should render once the checkbox is unticked');
+  if (findMirrorSelect()) throw new Error('camera: the mirroring select should hide again on CNROM once camera is off');
+  step('camera: unticking the checkbox hides the axis hint and the mirroring select on CNROM', 'ok');
 
   // Put the project back on NROM so later steps see the default cartridge.
   store.commit('smoke mapper back', (project) => {
@@ -13466,6 +13589,272 @@ export async function runSmoke(window) {
     console.log(
       `  ok  starter picker (File > New Project menu action): rpg -> gameType "rpg", ${rpgProject.maps.length} maps; ROM ` +
         'built (MMC1), title then gameplay, party 1/2'
+    );
+
+    // docs/design-camera.md §8 phase 3 test 4 (§7's last row): the crossing,
+    // driven for real -- buildProject + Emulator here in the main process,
+    // the same idiom the dungeon/rpg starter blocks above use, rather than
+    // folded into the giant renderer scenario template literal below.
+    // sample's own Greenwood map (loaded from sampleCopy, never sampleCopy's
+    // own files) gives a same-tileset right neighbour (screen 0 -> screen 1)
+    // under its default 'vertical' mirroring, which cameraAxes resolves to
+    // H-only -- the identical edge test/unit/camera.test.js's own fixture
+    // crosses.
+    // Under the suite's own `scratch` tree, not directly under os.tmpdir(),
+    // so the outer finally's fs.rm(scratch, ...) cleans this up too -- kept
+    // as its own mkdtemp'd subdirectory for the same isolation a bare
+    // os.tmpdir() prefix would have given it.
+    const cameraScratch = await fs.mkdtemp(path.join(scratch, 'camera-'));
+    const cameraOffDir = path.join(cameraScratch, 'off');
+    const cameraOnDir = path.join(cameraScratch, 'on');
+    await fs.mkdir(cameraOffDir, { recursive: true });
+    await fs.mkdir(cameraOnDir, { recursive: true });
+
+    const cameraOffProject = await loadProject(sampleCopy);
+    const cameraOnProject = structuredClone(cameraOffProject);
+    cameraOnProject.cartridge.camera = true;
+
+    const cameraOffBuild = await buildProject({ dir: cameraOffDir, project: cameraOffProject, log: () => {} });
+    const cameraOnBuild = await buildProject({ dir: cameraOnDir, project: cameraOnProject, log: () => {} });
+
+    // Addresses from engine/constants.asm. cam_* are expression equates
+    // (chained off bt_walk_step), so unlike every other address here they
+    // never reach game.fns -- resolved by hand by walking the chain:
+    // call_ret_lo=$7F, call_ret_hi=call_ret_lo+CALL_STACK_DEPTH(4)=$83,
+    // ent_spawn_rec=$87, bt_owner_ent=$88, bt_owner_rec=$89, cur_map=$8A,
+    // cur_song=$8B, title_prompt_lo=$8C, title_prompt_hi=$8D, save_ptr_lo=
+    // $8E, save_ptr_hi=$8F, save_cursor_lo=$90, save_cursor_hi=$91, sv_idx=
+    // $92, sv_len=$93, mv_who=$94, mv_dir=$95, mv_left=$96, mv_step=$97,
+    // mv_tmp=$98, split_lock=$99, wt_left=$9A, shake_left=$9B, fade_step=
+    // $9C, fade_target=$9D, fade_left=$9E, fade_reload=$9F, flash_left=$A0,
+    // status_pending=$A1, bt_wipe_mask=$A2, bt_wipe_row=$A3, bt_wipe_slot=
+    // $A4, mus_inst_base=$A5, bt_fx_anim=$A6, bt_fx_slot=$A7, bt_fx_frame=
+    // $A8, bt_fx_timer=$A9, bt_hurt_slot=$AA, bt_hurt_left=$AB, bt_miss_slot
+    // =$AC, bt_miss_left=$AD, bt_walk_step=$AE, cam_x_lo=$AF, cam_y_lo=$B0,
+    // cam_nt=$B1, cam_slide_left=$B2, cam_slide_dir=$B3, cam_far=$B4,
+    // cam_dirty=$B5, nmi_cam_x_lo=$B6, nmi_cam_y_lo=$B7, nmi_cam_nt=$B8,
+    // nmi_tmp=$B9, cam_slide_b_pending=$BA -- the identical figures
+    // test/unit/camera.test.js hardcodes with the same comment.
+    const CAM_PLAYER_X = 0x10;
+    const CAM_PLAYER_Y = 0x11;
+    const CAM_FLAT_SCREEN = 0x16;
+    const CAM_GAME_STATE = 0x25;
+    const CAM_SCREEN_FRESH = 0x7d;
+    const CAM_X_LO = 0xaf;
+    const CAM_Y_LO = 0xb0;
+    const CAM_NT = 0xb1;
+    const CAM_SLIDE_LEFT = 0xb2;
+    const CAM_SLIDE_B_PENDING = 0xba;
+    const CAM_ST_TITLE = 3;
+
+    // Boots the ROM at romPath, drives it past the title and the hero-naming
+    // grid, presses RIGHT until flat_screen leaves 0, and starts collecting
+    // every onFrame buffer from that first press onward -- the caller keeps
+    // driving frames (settling a slide, or padding to match frame counts)
+    // and reads .frames/.frameCount whenever it likes.
+    async function bootCameraCrossing(romPath) {
+      const frames = [];
+      let collecting = false;
+      // nes is read lazily inside the closure -- onFrame only ever fires
+      // from nes.frame(), which cannot run before `nes` below is assigned,
+      // so the binding is always live by the time it's read.
+      let nes;
+      const emulator = new Emulator({
+        onFrame: (buffer) => {
+          if (collecting) {
+            frames.push({
+              pixels: buffer.slice(),
+              slideLeft: nes.cpu.mem[CAM_SLIDE_LEFT],
+              camX: nes.cpu.mem[CAM_X_LO],
+              camNt: nes.cpu.mem[CAM_NT]
+            });
+          }
+        }
+      });
+      emulator.loadROM(new Uint8Array(await fs.readFile(romPath)));
+      nes = emulator.nes;
+      for (let i = 0; i < 40; i++) nes.frame();
+      if (nes.cpu.mem[CAM_GAME_STATE] === CAM_ST_TITLE) {
+        emulator.setButton(BUTTON.START, true);
+        nes.frame();
+        emulator.setButton(BUTTON.START, false);
+        for (let i = 0; i < 12; i++) nes.frame();
+      }
+      finishNamingIfOpen(nes);
+      if (
+        nes.cpu.mem[CAM_FLAT_SCREEN] !== 0 ||
+        nes.cpu.mem[CAM_PLAYER_X] !== 112 ||
+        nes.cpu.mem[CAM_PLAYER_Y] !== 112
+      ) {
+        throw new Error(
+          `camera crossing: unexpected start state flat_screen=${nes.cpu.mem[CAM_FLAT_SCREEN]} ` +
+            `x=${nes.cpu.mem[CAM_PLAYER_X]} y=${nes.cpu.mem[CAM_PLAYER_Y]}`
+        );
+      }
+      // Row 7 (y=112-127, the spawn's own row) is a Tree-walled alcove --
+      // solid metatile id 2 at both column 0 and column 15 of Greenwood's
+      // screen 0 (sample/maps/0.json's own screen 0 metatiles, confirmed
+      // against the built ROM: holding RIGHT alone from spawn stalls at
+      // x=226, well short of MAX_X). Row 6 (y=96-111) has its own Tree at
+      // column 0, but the rightward path from x=112 (well past it) to the
+      // edge is open, so a real walked crossing has to leave the alcove
+      // first -- UP until fully row-aligned (y==96, 8 frames at this
+      // project's 2px/frame speed) -- before RIGHT ever gets pressed. Not
+      // collected: the frame-collection window starts at the first RIGHT press.
+      emulator.setButton(BUTTON.UP, true);
+      let upFrames = 0;
+      while (nes.cpu.mem[CAM_PLAYER_Y] > 96 && upFrames < 60) {
+        nes.frame();
+        upFrames++;
+      }
+      emulator.setButton(BUTTON.UP, false);
+      if (nes.cpu.mem[CAM_PLAYER_Y] !== 96) {
+        throw new Error(`camera crossing: never left the row-7 alcove (y=${nes.cpu.mem[CAM_PLAYER_Y]}) after ${upFrames} frames of UP`);
+      }
+      collecting = true;
+      emulator.setButton(BUTTON.RIGHT, true);
+      let frameCount = 0;
+      while (nes.cpu.mem[CAM_FLAT_SCREEN] === 0 && frameCount < 200) {
+        nes.frame();
+        frameCount++;
+      }
+      emulator.setButton(BUTTON.RIGHT, false);
+      if (nes.cpu.mem[CAM_FLAT_SCREEN] !== 1) {
+        throw new Error(`camera crossing: never reached flat_screen 1 after ${frameCount} frames`);
+      }
+      return {
+        emulator,
+        nes,
+        frames,
+        get frameCount() {
+          return frameCount;
+        },
+        runTo(target) {
+          while (frameCount < target) {
+            nes.frame();
+            frameCount++;
+          }
+        }
+      };
+    }
+
+    const cameraOn = await bootCameraCrossing(cameraOnBuild.romPath);
+    const cameraOnCrossFrames = cameraOn.frameCount;
+    let sawSlideLeft = cameraOn.nes.cpu.mem[CAM_SLIDE_LEFT] !== 0;
+    let settleSteps = 0;
+    while (
+      !(
+        cameraOn.nes.cpu.mem[CAM_NT] === 0 &&
+        cameraOn.nes.cpu.mem[CAM_SLIDE_LEFT] === 0 &&
+        cameraOn.nes.cpu.mem[CAM_SLIDE_B_PENDING] === 0
+      ) &&
+      settleSteps < 60
+    ) {
+      if (cameraOn.nes.cpu.mem[CAM_SLIDE_LEFT] !== 0) sawSlideLeft = true;
+      cameraOn.runTo(cameraOn.frameCount + 1);
+      settleSteps++;
+    }
+    if (
+      !(
+        cameraOn.nes.cpu.mem[CAM_NT] === 0 &&
+        cameraOn.nes.cpu.mem[CAM_SLIDE_LEFT] === 0 &&
+        cameraOn.nes.cpu.mem[CAM_SLIDE_B_PENDING] === 0
+      )
+    ) {
+      throw new Error(
+        `camera crossing: the slide never settled (cam_nt=${cameraOn.nes.cpu.mem[CAM_NT]}, ` +
+          `cam_slide_left=${cameraOn.nes.cpu.mem[CAM_SLIDE_LEFT]}, ` +
+          `cam_slide_b_pending=${cameraOn.nes.cpu.mem[CAM_SLIDE_B_PENDING]}) after ${cameraOn.frameCount} frames`
+      );
+    }
+    // screen_fresh clears on the first ordinary world tick after the world
+    // unfreezes, one frame after the settle frame itself (confirmed
+    // empirically: still 1 on the settle frame, 0 one frame later) -- the
+    // identical "cleared once per frame before dispatch_input" rule a plain
+    // cut's own redraw already follows, just reached a frame later here
+    // because the settle frame is itself still part of the frozen slide.
+    cameraOn.runTo(cameraOn.frameCount + 1);
+    const cameraOnTotalFrames = cameraOn.frameCount;
+
+    const cameraOff = await bootCameraCrossing(cameraOffBuild.romPath);
+    const cameraOffCrossFrames = cameraOff.frameCount;
+    cameraOff.runTo(cameraOnTotalFrames);
+
+    // End state equal across the two runs.
+    for (const [label, addr] of [
+      ['flat_screen', CAM_FLAT_SCREEN],
+      ['player_x', CAM_PLAYER_X],
+      ['player_y', CAM_PLAYER_Y],
+      ['game_state', CAM_GAME_STATE],
+      ['screen_fresh', CAM_SCREEN_FRESH]
+    ]) {
+      if (cameraOn.nes.cpu.mem[addr] !== cameraOff.nes.cpu.mem[addr]) {
+        throw new Error(
+          `camera crossing: ${label} differs at end -- camera-on ${cameraOn.nes.cpu.mem[addr]}, ` +
+            `camera-off ${cameraOff.nes.cpu.mem[addr]}`
+        );
+      }
+    }
+    if (
+      cameraOn.nes.cpu.mem[CAM_X_LO] !== 0 ||
+      cameraOn.nes.cpu.mem[CAM_Y_LO] !== 0 ||
+      cameraOn.nes.cpu.mem[CAM_NT] !== 0
+    ) {
+      throw new Error(
+        `camera crossing: camera-on run must settle back to (0,0,nt0), got ` +
+          `(${cameraOn.nes.cpu.mem[CAM_X_LO]}, ${cameraOn.nes.cpu.mem[CAM_Y_LO]}, ${cameraOn.nes.cpu.mem[CAM_NT]})`
+      );
+    }
+
+    // A mid-scroll frame that only proves the player sprite moved also
+    // passes on a plain cut (at frame index 1 -- the walk, not the scroll).
+    // A real mid-slide frame must be one captured while cam_slide_left is
+    // genuinely mid-count (1..15, not the arm tick at 16
+    // and not the settled tick at 0), still differing in pixels from both
+    // this run's own first and last collected frame and not a forced-blank
+    // frame (>= 3 distinct colours); separately, at least one such frame
+    // must show cam_x_lo having actually advanced (16..240) -- proof the
+    // camera register itself moved, not just that a frame looked different.
+    const framesEqual = (a, b) => a.length === b.length && a.every((v, i) => v === b[i]);
+    const firstFrame = cameraOn.frames[0];
+    const lastFrame = cameraOn.frames[cameraOn.frames.length - 1];
+    if (!firstFrame || !lastFrame) throw new Error('camera crossing: the camera-on run collected no frames');
+    const midScrollCandidates = cameraOn.frames.filter(
+      (frame) =>
+        frame.slideLeft >= 1 &&
+        frame.slideLeft <= 15 &&
+        !framesEqual(frame.pixels, firstFrame.pixels) &&
+        !framesEqual(frame.pixels, lastFrame.pixels) &&
+        new Set(frame.pixels).size >= 3
+    );
+    if (!midScrollCandidates.length) {
+      throw new Error(
+        `camera crossing: no mid-slide frame found with cam_slide_left in 1..15 differing from both endpoints ` +
+          `with >= 3 colours, out of ${cameraOn.frames.length} collected frames`
+      );
+    }
+    if (!midScrollCandidates.some((frame) => frame.camX >= 16 && frame.camX <= 240)) {
+      throw new Error(
+        `camera crossing: no mid-slide frame showed cam_x_lo in 16..240 -- the camera register never advanced`
+      );
+    }
+
+    // The camera-on run's own settle took at least the slide's own 16 ticks
+    // past the crossing frame (a plain cut's own delta is 1, the trailing
+    // one-frame screen_fresh wait alone).
+    if (!(cameraOnTotalFrames - cameraOnCrossFrames >= 16)) {
+      throw new Error(
+        `camera crossing: camera-on total frames (${cameraOnTotalFrames}) minus its own crossing frame ` +
+          `(${cameraOnCrossFrames}) should be at least 16 (the slide's own ticks), got ` +
+          `${cameraOnTotalFrames - cameraOnCrossFrames}`
+      );
+    }
+    if (!sawSlideLeft) throw new Error('camera crossing: cam_slide_left was never observed non-zero');
+
+    console.log(
+      `  ok  camera slide crossing: camera-on ${cameraOnTotalFrames} frames total (crossed at ` +
+        `${cameraOnCrossFrames}), camera-off ${cameraOffCrossFrames} frames to cross, padded to ` +
+        `${cameraOnTotalFrames} for comparison`
     );
 
     const report = await window.webContents.executeJavaScript(scenario(dir, sampleCopy, sampleRpgCopy));

@@ -20,6 +20,7 @@ import {
   RPG_LIMITS,
   reconcileCartridge,
   projectUsesSave,
+  projectUsesCamera,
   projectScreenCeiling,
   battleSpriteBudget,
   describeBattleSpriteWarning,
@@ -35,7 +36,8 @@ import {
   rpgUnsupportedReason,
   saveCapable,
   saveUnsupportedReason,
-  tilesetLimit
+  tilesetLimit,
+  describeCameraAxes
 } from '../../../shared/cartridge.js';
 import { BLANK_TILE } from '../../../shared/chr.js';
 import { describePlayScenario, resolveStartAt, resolveFormation } from '../../../shared/playscenario.js';
@@ -546,8 +548,11 @@ export function mount(container, app) {
           })
         )
       ),
-      // Only worth showing when the board offers a choice beyond the usual two.
-      mirroringOptions(mapper).length > 2
+      // With the camera on, mirroring picks the sliding axis on every board
+      // (docs/design-camera.md §5/Q3's hints and axis gate) -- not only on
+      // the boards offering a choice beyond the usual two -- or the
+      // reworded hints below are unreachable.
+      projectUsesCamera(project) || mirroringOptions(mapper).length > 2
         ? el(
             'label.field-row',
             { style: { marginBottom: '8px', gap: '6px' } },
@@ -578,16 +583,52 @@ export function mount(container, app) {
             )
           )
         : null,
+      // docs/design-camera.md §5/Q8: the checkbox lives here, beside the
+      // mirroring selector -- project.cartridge already has exactly one
+      // editing surface (mapper and mirroring, both here), so a second
+      // surface for this one record would be the drift CLAUDE.md refuses.
+      // No reconcileCartridge call: the field is independent of mapper and
+      // mirroring (§5/Q6), and reconcileCartridge never touches it.
+      el(
+        'label.field-row',
+        {
+          style: { marginBottom: '8px', gap: '6px' },
+          title:
+            'When the player walks off a screen edge, scroll to the neighbouring screen over 16 frames instead ' +
+            'of cutting. Only the crossings the cartridge\'s mirroring supports slide; the others still cut.'
+        },
+        el('span.field-label', null, 'Camera'),
+        el('input', {
+          type: 'checkbox',
+          checked: projectUsesCamera(project),
+          onchange: (event) => {
+            const checked = event.target.checked;
+            store.commit('Toggle camera slide', (draft) => {
+              draft.cartridge.camera = checked;
+            });
+          }
+        }),
+        ' Slide between screens'
+      ),
+      // The axis-loss indicator (§5/Q3, §8 phase 3): re-renders for free off
+      // the same onProjectChange: renderSummary subscription that already
+      // rebuilds this whole summary on every commit, including a mirroring
+      // or mapper change that drops an axis.
+      projectUsesCamera(project)
+        ? el('p.hint', { style: { color: 'var(--accent)' } }, describeCameraAxes(mapper, project.cartridge))
+        : null,
       el('p.hint', null, `${mapper.name}: ${mapper.summary}`),
-      // Four-screen is real hardware the engine does not yet exploit, so say so
-      // rather than letting a tileset quietly disappear.
+      // Four-screen is real hardware the engine does not yet exploit without
+      // the camera, so say so rather than letting a tileset quietly disappear.
       mirroringById(project.cartridge.mirroring).fourScreen
         ? el(
             'p.hint',
             { style: { color: 'var(--accent)' } },
             `Four-screen mirroring spends one CHR-RAM page on nametables, so this cartridge holds ` +
               `${tilesetLimit(mapper, project.cartridge)} tilesets instead of ${mapper.maxChrBanks}. ` +
-              'The engine only draws nametable 0, so the extra nametables are unused for now.'
+              (projectUsesCamera(project)
+                ? 'With the camera slide on, they are what lets crossings slide both ways.'
+                : 'The engine only draws nametable 0, so the extra nametables are unused for now.')
           )
         : null,
       // A passive, standing note rather than a warning: it is a property of
