@@ -24,6 +24,7 @@ set_screen_ptr:
   rts
 
 ; Must run with rendering disabled.
+  .if !CAMERA_SLIDE_ENABLED
 draw_screen:
   bit $2002
   lda #$20
@@ -101,6 +102,110 @@ draw_screen_attr:
   cpy #64
   bne draw_screen_attr
   rts
+  .endif
+
+  .if CAMERA_SLIDE_ENABLED
+; design-camera.md §8: candidate (b) draws one screen per forced blank, into
+; either nametable -- the arming draw goes into the far nametable the slide
+; is about to reveal, the completion draw moves the identical content into
+; nametable 0. The nametable/attribute base addresses are therefore a
+; parameter (A = nametable index 0-3) rather than the off-path's own
+; hardcoded $20/$23; draw_screen itself becomes a two-instruction wrapper
+; (`lda #0 / jmp draw_screen_at`) that keeps calling it with nametable 0, so
+; every existing call site (redraw_screen included) is unchanged.
+; draw_screen_at parks the index in <tmp, which survives both loops below
+; untouched -- bound_tile_lookup (this file) is the only routine either loop
+; calls, and it never touches <tmp itself (switch_test/switch_split,
+; engine/script.asm, belong to rebuild_bound_cache's own cache rebuild, not
+; to either draw loop).
+draw_screen_at:
+  sta <tmp                  ; nt index -- survives the loops below untouched
+  asl a
+  asl a                      ; nt * 4 = nametable's own hi-byte offset from $20
+  clc
+  adc #$20
+  bit $2002
+  sta $2006
+  lda #$00
+  sta $2006
+
+  lda #0
+  sta <ds_row
+draw_screen_at_row:
+  lda <ds_row
+  asl a
+  asl a
+  asl a
+  asl a
+  sta <ds_base
+
+  ldx #0
+draw_screen_at_top:
+  txa
+  clc
+  adc <ds_base
+  tay
+  .if BOUND_TILE_ENABLED
+  jsr bound_tile_lookup
+  .else
+  lda [mtptr_lo],y
+  .endif
+  tay
+  lda mt_tl,y
+  sta $2007
+  lda mt_tr,y
+  sta $2007
+  inx
+  cpx #16
+  bne draw_screen_at_top
+
+  ldx #0
+draw_screen_at_bottom:
+  txa
+  clc
+  adc <ds_base
+  tay
+  .if BOUND_TILE_ENABLED
+  jsr bound_tile_lookup
+  .else
+  lda [mtptr_lo],y
+  .endif
+  tay
+  lda mt_bl,y
+  sta $2007
+  lda mt_br,y
+  sta $2007
+  inx
+  cpx #16
+  bne draw_screen_at_bottom
+
+  inc <ds_row
+  lda <ds_row
+  cmp #15
+  bne draw_screen_at_row
+
+  lda <tmp
+  asl a
+  asl a
+  clc
+  adc #$23
+  bit $2002
+  sta $2006
+  lda #$C0
+  sta $2006
+  ldy #0
+draw_screen_at_attr:
+  lda [atptr_lo],y
+  sta $2007
+  iny
+  cpy #64
+  bne draw_screen_at_attr
+  rts
+
+draw_screen:
+  lda #0
+  jmp draw_screen_at
+  .endif
 
 ; Swap to the screen already stored in flat_screen.
 redraw_screen:

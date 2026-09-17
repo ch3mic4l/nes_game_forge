@@ -124,6 +124,7 @@ import {
   PRG_SWITCH,
   SCREEN_REGION_BYTES,
   SUPPORTED_MAPPERS,
+  cameraAxes,
   chrBanksFor,
   chrPayloadRegions,
   chrRegisterTable,
@@ -905,6 +906,73 @@ export const CAMERA_KERNEL_ALLOWANCE = 20;
 // ALLOWANCE shape -- neither term alone assembles this branch. Flat across
 // boards, the same reasoning CAMERA_KERNEL_ALLOWANCE is.
 export const CAMERA_SHAKE_INTERACTION_ALLOWANCE = 19;
+// docs/design-camera.md §8, phase 2: the consumer's own incremental delta,
+// measured against a register-only build (CAMERA_ENABLED=1,
+// CAMERA_SLIDE_ENABLED=0 -- see the ledger test's own config.inc patch), NOT
+// against camera-off -- that would silently re-absorb CAMERA_KERNEL_ALLOWANCE
+// a second time. Covers redraw_screen_slide, camera_slide_tick and
+// camera_slide_complete_b (engine/camera.asm), the cross_* stub additions
+// (engine/player.asm) and draw_screen_at/draw_screen's own two-instruction
+// wrapper (`lda #0 / jmp draw_screen_at`, engine/screens.asm) -- smaller than
+// the design document's own prototype figure (303) because this build never
+// needed the design's candidate-(a) `_for` shims (set_screen_ptr/
+// rebuild_bound_cache already read flat_screen internally, and (b) never
+// draws the outgoing screen). Flat across boards, gated on projectUsesCamera
+// -- the same predicate CAMERA_KERNEL_ALLOWANCE uses, since
+// CAMERA_SLIDE_ENABLED is generated from the identical flag (main/build/
+// generate.js's own config.inc emission).
+// Measured at 298 (design document's own prototype figure: 303, with the
+// shims) -- this is the axis-independent share alone; CAMERA_AXIS_KERNEL_
+// ALLOWANCE below is the per-axis share. One live axis therefore totals
+// 20 (register) + 298 + 52 = 370, five bytes under the design's own +375.
+// The decomposition (docs/design-camera.md §5, Decision 4, re-verified
+// against isolated prototype-shim builds): the prototype's screen-pointer
+// shim nets +5 over this build's own plain `jsr set_screen_ptr` (the shim
+// itself is +5 bytes -- `ldy <flat_screen` (2) + `jmp set_screen_ptr_for`
+// (3) -- removing the original routine's own two `ldy <flat_screen` (2
+// sites x 2 bytes = 4) it no longer needs, and adding two caller-side
+// `ldy <flat_screen` at camera.asm's own two call sites, totaling four
+// bytes ACROSS both sites (2 sites x 2 bytes = 4): +5 -4 +4 = +5).
+// The bound-cache shim nets a SEPARATE +7 the same way (+5 shim, -2 for the
+// one `ldy <flat_screen` the original rebuild_bound_cache no longer needs,
+// +4 total across two caller-side `ldy`s: +5 -2 +4 = +7). The design's own
+// 13 is therefore this build's shipped two `jsr rebuild_bound_cache` calls
+// (6, BOUND_TILE_CAMERA_INTERACTION_ALLOWANCE below) plus the 7 that only
+// the `_for` shape ever paid -- not one term silently moved to another.
+export const CAMERA_SLIDE_KERNEL_ALLOWANCE = 298;
+// design-camera.md §5/Q3: the cross_* stub shape that actually attempts a
+// slide (vs. the plain-cut shape an axis with no live content compiles to)
+// costs this much PER enabled axis -- cameraAxes(mapper, project.cartridge)
+// answers one or two (never zero: "neither axis" is not a reachable
+// normalized state, cameraAxes' own doc comment). Flat per axis regardless
+// of which one (horizontal and vertical each touch one axis-independent
+// pair of cross_* stubs).
+export const CAMERA_AXIS_KERNEL_ALLOWANCE = 52;
+// The two `sta $E000` instructions in engine/camera.asm (redraw_screen_slide
+// and camera_slide_complete_b, one each, both under `.if SPLIT_ENABLED`)
+// that disable AND acknowledge MMC3's own scanline IRQ before each
+// forced-blank draw -- guarding against an already-armed IRQ from before
+// forced blank began still landing mid-draw, alongside each routine's own
+// $2000 NMI-off write. This is NOT a CHR-bank reselection, and NOT the same
+// reason redraw_screen's own `sta $E000` exists (engine/screens.asm, which
+// protects a switch_chr_bank $8000/$8001 register pair): draw_screen_at
+// itself calls neither switch_chr_bank NOR set_screen_ptr -- its only
+// conditional callee is bound_tile_lookup. It is redraw_screen_slide and
+// camera_slide_complete_b (engine/camera.asm) that call set_screen_ptr
+// (which selects PRG, not CHR) before either one calls draw_screen_at.
+// Charged only when both SPLIT_ENABLED and CAMERA_SLIDE_ENABLED are live,
+// the same STING_SFX_INTERACTION_ALLOWANCE shape.
+export const CAMERA_SPLIT_INTERACTION_ALLOWANCE = 6;
+// engine/camera.asm's own two extra rebuild_bound_cache call sites (arm and
+// completion, 3 bytes each) that only assemble once BOUND_TILE_ENABLED is
+// live -- draw_screen_at's own bound_tile_lookup arm costs nothing extra
+// here: it is the identical two-site swap BOUND_TILE_KERNEL_ALLOWANCE already
+// prices for draw_screen, just paid inside draw_screen_at instead once camera
+// replaces draw_screen with it (never both at once). Charged only when
+// camera and switch-bound tiles are both live. Measured at 6, not the design
+// document's own prototype figure of 13 -- that prototype called
+// rebuild_bound_cache_for (a shim this build does not carry, Decision 4).
+export const BOUND_TILE_CAMERA_INTERACTION_ALLOWANCE = 6;
 // script_op_visible and its dispatch-chain entry in script_run
 // (engine/script.asm) plus the ENT_HIDDEN check in draw_entities
 // (engine/entities.asm). Flat across boards for the identical reason
@@ -1377,6 +1445,15 @@ export function kernelCodeBytes(project, mapper) {
   const nameEntryBanked = battleEnabled;
   const needsHeroDefault = projectNeedsHeroDefault(project);
   const usesNameToken = projectUsesNameToken(project);
+  // design-camera.md §5/Q3: CAMERA_SLIDE_ENABLED is generated from the same
+  // projectUsesCamera flag CAMERA_ENABLED is (main/build/generate.js's own
+  // config.inc emission) -- there is no separate schema field -- so every
+  // consumer term below is gated on usesCamera too, never a second read of a
+  // flag that does not exist. axisCount is one or two (never zero --
+  // cameraAxes' own doc comment), from the project's own fixed mirroring
+  // choice against THIS mapper.
+  const cameraAxisFlags = cameraAxes(mapper, project.cartridge);
+  const cameraAxisCount = (cameraAxisFlags.horizontal ? 1 : 0) + (cameraAxisFlags.vertical ? 1 : 0);
   return (
     baseKernelCodeBytes(mapper) +
     (usesBattleBase ? battleKernelAllowance(mapper) : 0) +
@@ -1389,6 +1466,10 @@ export function kernelCodeBytes(project, mapper) {
     (usesShake ? SHAKE_KERNEL_ALLOWANCE : 0) +
     (usesCamera ? CAMERA_KERNEL_ALLOWANCE : 0) +
     (usesCamera && usesShake ? CAMERA_SHAKE_INTERACTION_ALLOWANCE : 0) +
+    (usesCamera ? CAMERA_SLIDE_KERNEL_ALLOWANCE : 0) +
+    (usesCamera ? CAMERA_AXIS_KERNEL_ALLOWANCE * cameraAxisCount : 0) +
+    (usesCamera && usesSplit ? CAMERA_SPLIT_INTERACTION_ALLOWANCE : 0) +
+    (usesCamera && usesBoundTiles ? BOUND_TILE_CAMERA_INTERACTION_ALLOWANCE : 0) +
     (usesVisible ? VISIBLE_KERNEL_ALLOWANCE : 0) +
     (usesFade ? FADE_KERNEL_ALLOWANCE : 0) +
     (usesFlash ? FLASH_KERNEL_ALLOWANCE : 0) +
@@ -1524,6 +1605,18 @@ export function switchableMappers(project, mapper, { checkBattleRegion = true } 
   // (the already-reconciled clone) and `candidate` rather than the
   // project's own current mapper.
   const boundTilesEnabled = projectUsesBoundTiles(project);
+  // design-camera.md §5/Q3: a candidate that would drop an axis the
+  // project's CURRENT mapper provides is excluded, the identical treatment
+  // CLAUDE.md's own existing rule already gives tilesets and mirroring --
+  // camera axes are a direct consequence of mirroring, not a new mechanism.
+  // currentCameraAxes is evaluated against `mapper` (the project's own
+  // current board); each candidate's own axes, below, are evaluated against
+  // that SAME candidate -- never the candidate both times. The question
+  // asked is "does switching lose an axis this project's mirroring choice
+  // currently provides", never "does the candidate support the raw
+  // mirroring string in the abstract".
+  const usesCamera = projectUsesCamera(project);
+  const currentCameraAxes = usesCamera ? cameraAxes(mapper, project.cartridge) : null;
 
   return SUPPORTED_MAPPERS.filter((candidate) => candidate.id !== mapper.id)
     .filter((candidate) => !isRpg || rpgCapable(candidate))
@@ -1531,6 +1624,14 @@ export function switchableMappers(project, mapper, { checkBattleRegion = true } 
     // project with a live Save command would just trade this shortfall for
     // validateProject's flash-unimplemented refusal -- not a fix.
     .filter((candidate) => !wantsSave || saveMediaImplemented(candidate))
+    .filter((candidate) => {
+      if (!usesCamera) return true;
+      const candidateAxes = cameraAxes(candidate, project.cartridge);
+      return (
+        (!currentCameraAxes.horizontal || candidateAxes.horizontal) &&
+        (!currentCameraAxes.vertical || candidateAxes.vertical)
+      );
+    })
     .filter((candidate) => {
       // Lossless? reconcileCartridge works in place, so this is done on a
       // clone -- nothing here may touch the project it is advising about.
@@ -3191,11 +3292,32 @@ export async function generateAssets({ dir, project, log = () => {} }) {
     // No companion *_ENABLED the way Turn has FACE_ENABLED: nothing else calls
     // into Shake's own code.
     `SHAKE_ENABLED = ${usesShake ? 1 : 0}`,
-    // docs/design-camera.md §8, phase 1: gates the camera-register path
-    // inside nmi_scroll (engine/boot.asm) alone -- no consumer of the
-    // register exists yet, so this is the whole of what CAMERA_ENABLED
-    // means in this build. See projectUsesCamera (shared/project.js).
+    // docs/design-camera.md §8: gates the camera-register path inside
+    // nmi_scroll (engine/boot.asm) -- the register and NMI rewrite phase 1
+    // shipped alone, now paired with phase 2's own consumer
+    // (CAMERA_SLIDE_ENABLED, below), derived from this identical flag. See
+    // projectUsesCamera (shared/project.js).
     `CAMERA_ENABLED = ${usesCamera ? 1 : 0}`,
+    // docs/design-camera.md §8, phase 2: the consumer's own gate --
+    // screens.asm's draw_screen_at/draw_screen family, player.asm's cross_*
+    // stub modifications, and main.asm's own camera.asm include. Derived
+    // from the identical projectUsesCamera flag CAMERA_ENABLED reads -- there
+    // is no separate project-level toggle; the split exists so a build that
+    // measures the register alone (this file's own kernel-lo ledger tests)
+    // can rewrite this one generated line without touching the schema.
+    `CAMERA_SLIDE_ENABLED = ${usesCamera ? 1 : 0}`,
+    // design-camera.md §5/Q3: which axis genuinely shows different content
+    // across an edge, decided once at build time from the project's own
+    // fixed mirroring choice against the real, resolved mirroring machinery
+    // (cameraAxes, shared/cartridge.js) rather than a raw mirroring string --
+    // vertical mirroring makes horizontal neighbours differ, horizontal
+    // mirroring makes vertical neighbours differ, four-screen (UNROM 512
+    // only) makes both differ. cross_left/right fold in CAMERA_SLIDE_H,
+    // cross_up/down fold in CAMERA_SLIDE_V; the crossing's own DIR_* decides
+    // which one applies, so no per-crossing runtime branch is needed -- the
+    // whole gate is one compile-time constant per stub.
+    `CAMERA_SLIDE_H = ${cameraAxes(mapper, project.cartridge).horizontal ? 1 : 0}`,
+    `CAMERA_SLIDE_V = ${cameraAxes(mapper, project.cartridge).vertical ? 1 : 0}`,
     // OP_VISIBLE, the same shape again -- see projectUsesVisible
     // (shared/project.js). No companion *_ENABLED: nothing else calls
     // script_op_visible or reads ENT_HIDDEN.

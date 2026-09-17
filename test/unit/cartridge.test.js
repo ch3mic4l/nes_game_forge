@@ -21,6 +21,7 @@ import {
   tilesetAt
 } from '../../shared/project.js';
 import {
+  cameraAxes,
   chrBanksFor,
   chrRegisterTable,
   mapperById,
@@ -730,4 +731,38 @@ test('reconcileCartridge keeps an in-memory project valid after a mapper change'
 
   // The result must match what a save/load round trip would produce.
   assert.deepEqual(normalizeProject(structuredClone(project)), project);
+});
+
+// docs/design-camera.md §5/Q3: cameraAxes(mapper, cartridge) -- which axes a
+// screen-edge crossing can slide along, resolved against THIS mapper's own
+// legal mirroring set (never a raw string), falling back to 'vertical' the
+// identical way normalizeCartridge/reconcileCartridge do.
+test('cameraAxes: vertical gives H only, horizontal gives V only, four-screen gives both', () => {
+  const nrom = mapperById(0);
+  assert.deepEqual(cameraAxes(nrom, { mirroring: 'vertical' }), { horizontal: true, vertical: false });
+  assert.deepEqual(cameraAxes(nrom, { mirroring: 'horizontal' }), { horizontal: false, vertical: true });
+  const u512 = mapperById(30);
+  assert.deepEqual(cameraAxes(u512, { mirroring: 'fourscreen' }), { horizontal: true, vertical: true });
+});
+
+test('cameraAxes: four-screen evaluated against every non-U512 board is H-only, never both (finding 3)', () => {
+  for (const mapper of SUPPORTED_MAPPERS) {
+    if (mapper.id === 30) continue; // the one board that can actually provide four-screen
+    assert.deepEqual(
+      cameraAxes(mapper, { mirroring: 'fourscreen' }),
+      { horizontal: true, vertical: false },
+      `${mapper.name}: four-screen is not in this board's own legal set, so cameraAxes must fall back to 'vertical' -- ` +
+        'H-only, never both, and never the raw fourscreen value this mapper cannot provide'
+    );
+  }
+});
+
+test('cameraAxes: an invalid mirroring string degrades to the identical H-only fallback, never a throw or undefined', () => {
+  for (const mapper of SUPPORTED_MAPPERS) {
+    assert.deepEqual(
+      cameraAxes(mapper, { mirroring: 'not-a-real-mirroring-value' }),
+      { horizontal: true, vertical: false },
+      `${mapper.name}: a value that fails even mirroringById's own lookup must degrade to the 'vertical' fallback's axes`
+    );
+  }
 });

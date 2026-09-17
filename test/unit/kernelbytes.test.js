@@ -28,7 +28,9 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { loadProject, saveProject } from '../../main/project-io.js';
 import { buildProject } from '../../main/build/pipeline.js';
+import { runNesasm } from '../../main/build/nesasm.js';
 import {
+  generateAssets,
   kernelCodeBytes,
   baseKernelCodeBytes,
   titleKernelAllowance,
@@ -46,6 +48,11 @@ import {
   SHAKE_KERNEL_ALLOWANCE,
   CAMERA_KERNEL_ALLOWANCE,
   CAMERA_SHAKE_INTERACTION_ALLOWANCE,
+  CAMERA_SLIDE_KERNEL_ALLOWANCE,
+  CAMERA_AXIS_KERNEL_ALLOWANCE,
+  CAMERA_SPLIT_INTERACTION_ALLOWANCE,
+  BOUND_TILE_CAMERA_INTERACTION_ALLOWANCE,
+  switchableMappers,
   VISIBLE_KERNEL_ALLOWANCE,
   FADE_KERNEL_ALLOWANCE,
   FLASH_KERNEL_ALLOWANCE,
@@ -71,10 +78,11 @@ import {
   HERO_DEFAULT_KERNEL_ALLOWANCE,
   NAME_TOKEN_KERNEL_ALLOWANCE
 } from '../../main/build/generate.js';
-import { SUPPORTED_MAPPERS, rpgCapable, saveMediaImplemented, prgLayout, resolveMapper } from '../../shared/cartridge.js';
+import { SUPPORTED_MAPPERS, cameraAxes, rpgCapable, saveMediaImplemented, prgLayout, resolveMapper } from '../../shared/cartridge.js';
 import {
   createTileset,
   createProject,
+  normalizeProject,
   createPartyMember,
   projectUsesItems,
   projectUsesBoundTiles,
@@ -161,6 +169,14 @@ async function measureCodeBytes(
     // command -- the same shape withHeroNaming below sets a plain field
     // rather than pushing a command.
     withCamera = false,
+    // Phase 2, Decision 8: isolates the register alone (CAMERA_ENABLED=1)
+    // with NO consumer assembled at all, by patching the one generated
+    // CAMERA_SLIDE_ENABLED line back to 0 in a mkdtemp build directory
+    // between generateAssets and nesasm -- a test-only patch, never a
+    // shipping env var, the identical "patch a generated file" technique
+    // the tileset-mismatch camera.test.js row uses. Only meaningful with
+    // withCamera: true.
+    registerOnly = false,
     withVisible = false,
     withFade = false,
     withFlash = false,
@@ -262,7 +278,22 @@ async function measureCodeBytes(
   if (project.party[1]) project.party[1].renamable = Boolean(withJoinNaming);
   await saveProject(dir, project);
   const lines = [];
-  const built = await buildProject({ dir, project, log: (line) => lines.push(line) });
+  let symbolPath;
+  if (registerOnly) {
+    const { buildDir } = await generateAssets({ dir, project, log: (line) => lines.push(line) });
+    const configPath = path.join(buildDir, 'assets', 'config.inc');
+    let config = await fsp.readFile(configPath, 'utf8');
+    const before = config;
+    config = config.replace(/^CAMERA_SLIDE_ENABLED = 1$/m, 'CAMERA_SLIDE_ENABLED = 0');
+    assert.notEqual(config, before, `${mapper.name}: CAMERA_SLIDE_ENABLED = 1 not found in generated config.inc -- registerOnly needs camera on`);
+    await fsp.writeFile(configPath, config);
+    const result = await runNesasm({ cwd: buildDir, source: 'main.asm', log: (line) => lines.push(line) });
+    assert.ok(result.ok, `${mapper.name}: register-only patched build failed to assemble: ${JSON.stringify(result.errors)}`);
+    symbolPath = path.join(buildDir, 'main.fns');
+  } else {
+    const built = await buildProject({ dir, project, log: (line) => lines.push(line) });
+    symbolPath = built.symbolPath;
+  }
 
   const { kernelLoBank } = prgLayout(mapper);
   // nesasm's own "segment usage" table, one row per bank: "BANK  62   7182/1010"
@@ -275,8 +306,8 @@ async function measureCodeBytes(
   const bankFree = Number(bankMatch?.[2]); // nesasm's own real free-byte count for the WHOLE kernel-lo bank
   assert.ok(Number.isFinite(used) && used > 0, `${mapper.name}: could not parse a used-byte count out of "${bankLine}"`);
 
-  assert.ok(built.symbolPath, `${mapper.name}: nesasm should have written a symbol file`);
-  const symbols = await fsp.readFile(built.symbolPath, 'utf8');
+  assert.ok(symbolPath, `${mapper.name}: nesasm should have written a symbol file`);
+  const symbols = await fsp.readFile(symbolPath, 'utf8');
   const resetMatch = symbols.match(/^reset\s*=\s*\$([0-9A-Fa-f]+)/m);
   assert.ok(resetMatch, `${mapper.name}: reset should be a named symbol in game.fns`);
   const resetAddr = parseInt(resetMatch[1], 16);
@@ -5252,11 +5283,21 @@ test('in-game naming: removing hero naming or join naming ALONE frees only H or 
 });
 
 // ---------------------------------------------------------------------------
-// Camera register, phase 1 (docs/design-camera.md §8): CAMERA_KERNEL_ALLOWANCE
-// and CAMERA_SHAKE_INTERACTION_ALLOWANCE. No consumer exists yet in this
-// phase -- the register and NMI rewrite are the whole of what CAMERA_ENABLED
-// assembles -- so every isolation here is against a project carrying nothing
-// else the camera could depend on.
+// Camera register + slide, phases 1-2 (docs/design-camera.md §8):
+// CAMERA_KERNEL_ALLOWANCE / CAMERA_SHAKE_INTERACTION_ALLOWANCE are the
+// REGISTER gate's own terms (charged whenever CAMERA_ENABLED is live,
+// consumer or not); CAMERA_SLIDE_KERNEL_ALLOWANCE / CAMERA_AXIS_KERNEL_
+// ALLOWANCE / CAMERA_SPLIT_INTERACTION_ALLOWANCE / BOUND_TILE_CAMERA_
+// INTERACTION_ALLOWANCE are the CONSUMER's own incremental delta over a
+// register-only build (never over camera-off, which would silently
+// re-absorb the register's own 20 bytes a second time -- Decision 8). A
+// real project always builds with both flags on (CAMERA_SLIDE_ENABLED is
+// generated from the identical projectUsesCamera flag CAMERA_ENABLED is),
+// so the register-only isolation below exists purely to keep the two
+// disjoint terms honest, via measureCodeBytes' own registerOnly option
+// (Decision 8: a test-only patch of a mkdtemp build directory's generated
+// config.inc, rewriting CAMERA_SLIDE_ENABLED = 1 back to 0 between
+// generateAssets and nesasm -- never a shipping env var).
 // ---------------------------------------------------------------------------
 
 const CAMERA_LEDGER_MAPPERS = SUPPORTED_MAPPERS.filter((mapper) => [0, 1, 4, 30].includes(mapper.id));
@@ -5273,7 +5314,7 @@ async function freshProjectDir(t, gameType) {
 }
 
 test(
-  'CAMERA_KERNEL_ALLOWANCE covers the real, isolated cost of the camera register exactly, on every measured board, action game type',
+  'CAMERA_KERNEL_ALLOWANCE covers the real, isolated cost of the camera register ALONE (no consumer assembled), on every measured board, action game type',
   { skip: !hasNesasm && 'nesasm not found on PATH' },
   async (t) => {
     // A fresh project with no events at all: camera alone assembles no event
@@ -5283,45 +5324,43 @@ test(
     for (const mapper of CAMERA_LEDGER_MAPPERS) {
       const dir = await freshProjectDir(t, 'action');
       const off = await measureCodeBytes(t, mapper, { fixture: dir });
-      const on = await measureCodeBytes(t, mapper, { fixture: dir, withCamera: true });
+      const registerOnly = await measureCodeBytes(t, mapper, { fixture: dir, withCamera: true, registerOnly: true });
       assertCovers({ mapper, codeBytes: off.codeBytes }, kernelCodeBytes(off.project, mapper), 'camera off, fresh action project');
-      assertCovers({ mapper, codeBytes: on.codeBytes }, kernelCodeBytes(on.project, mapper), 'camera on, fresh action project');
-      const delta = on.codeBytes - off.codeBytes;
+      const delta = registerOnly.codeBytes - off.codeBytes;
       assert.equal(
         delta,
         CAMERA_KERNEL_ALLOWANCE,
-        `${mapper.name}: camera-only costs ${delta} bytes of kernel code (${off.codeBytes} -> ${on.codeBytes}), ` +
-          `but CAMERA_KERNEL_ALLOWANCE reserves ${CAMERA_KERNEL_ALLOWANCE} -- this allowance must equal phase 1's ` +
-          'real cost exactly, on every board.'
+        `${mapper.name}: the camera register ALONE (no consumer) costs ${delta} bytes of kernel code ` +
+          `(${off.codeBytes} -> ${registerOnly.codeBytes}), but CAMERA_KERNEL_ALLOWANCE reserves ${CAMERA_KERNEL_ALLOWANCE} -- ` +
+          'this allowance must equal the register gate\'s real cost exactly, on every board.'
       );
     }
   }
 );
 
 test(
-  'CAMERA_KERNEL_ALLOWANCE covers the real, isolated cost of the camera register exactly, on every RPG-capable board',
+  'CAMERA_KERNEL_ALLOWANCE covers the real, isolated cost of the camera register ALONE, on every RPG-capable board',
   { skip: !hasNesasm && 'nesasm not found on PATH' },
   async (t) => {
     for (const mapper of CAPABLE_MAPPERS) {
       const dir = await freshProjectDir(t, 'rpg');
       const off = await measureCodeBytes(t, mapper, { fixture: dir });
-      const on = await measureCodeBytes(t, mapper, { fixture: dir, withCamera: true });
+      const registerOnly = await measureCodeBytes(t, mapper, { fixture: dir, withCamera: true, registerOnly: true });
       assertCovers({ mapper, codeBytes: off.codeBytes }, kernelCodeBytes(off.project, mapper), 'camera off, fresh RPG project');
-      assertCovers({ mapper, codeBytes: on.codeBytes }, kernelCodeBytes(on.project, mapper), 'camera on, fresh RPG project');
-      const delta = on.codeBytes - off.codeBytes;
+      const delta = registerOnly.codeBytes - off.codeBytes;
       assert.equal(
         delta,
         CAMERA_KERNEL_ALLOWANCE,
-        `${mapper.name}: camera-only costs ${delta} bytes of kernel code (${off.codeBytes} -> ${on.codeBytes}) on an ` +
-          `RPG, but CAMERA_KERNEL_ALLOWANCE reserves ${CAMERA_KERNEL_ALLOWANCE} -- the design measured this flat ` +
-          'across game type, and this is the RPG half of that claim.'
+        `${mapper.name}: the camera register ALONE costs ${delta} bytes of kernel code (${off.codeBytes} -> ` +
+          `${registerOnly.codeBytes}) on an RPG, but CAMERA_KERNEL_ALLOWANCE reserves ${CAMERA_KERNEL_ALLOWANCE} -- ` +
+          'the design measured this flat across game type, and this is the RPG half of that claim.'
       );
     }
   }
 );
 
 test(
-  'CAMERA_SHAKE_INTERACTION_ALLOWANCE: camera and Shake compose, isolated on every measured board',
+  'CAMERA_SHAKE_INTERACTION_ALLOWANCE: camera (register alone) and Shake compose, isolated on every measured board',
   { skip: !hasNesasm && 'nesasm not found on PATH' },
   async (t) => {
     // withMove: true as the baseline on every leg -- the identical isolation
@@ -5334,15 +5373,14 @@ test(
     for (const mapper of CAMERA_LEDGER_MAPPERS) {
       const dir = await freshProjectDir(t, 'action');
       const shakeOnly = await measureCodeBytes(t, mapper, { fixture: dir, withMove: true, withShake: true });
-      const cameraOnly = await measureCodeBytes(t, mapper, { fixture: dir, withMove: true, withCamera: true });
-      const both = await measureCodeBytes(t, mapper, { fixture: dir, withMove: true, withShake: true, withCamera: true });
-      assertCovers({ mapper, codeBytes: both.codeBytes }, kernelCodeBytes(both.project, mapper), 'camera and Shake both live');
+      const cameraOnly = await measureCodeBytes(t, mapper, { fixture: dir, withMove: true, withCamera: true, registerOnly: true });
+      const both = await measureCodeBytes(t, mapper, { fixture: dir, withMove: true, withShake: true, withCamera: true, registerOnly: true });
 
       const deltaFromShake = both.codeBytes - shakeOnly.codeBytes;
       assert.equal(
         deltaFromShake,
         CAMERA_KERNEL_ALLOWANCE + CAMERA_SHAKE_INTERACTION_ALLOWANCE,
-        `${mapper.name}: adding camera to a Shake-only build costs ${deltaFromShake} bytes ` +
+        `${mapper.name}: adding the camera register to a Shake-only build costs ${deltaFromShake} bytes ` +
           `(${shakeOnly.codeBytes} -> ${both.codeBytes}), but CAMERA_KERNEL_ALLOWANCE + ` +
           `CAMERA_SHAKE_INTERACTION_ALLOWANCE reserves ${CAMERA_KERNEL_ALLOWANCE + CAMERA_SHAKE_INTERACTION_ALLOWANCE}.`
       );
@@ -5351,13 +5389,207 @@ test(
       assert.equal(
         deltaFromCamera,
         SHAKE_KERNEL_ALLOWANCE + CAMERA_SHAKE_INTERACTION_ALLOWANCE,
-        `${mapper.name}: adding Shake to a camera-only build costs ${deltaFromCamera} bytes ` +
+        `${mapper.name}: adding Shake to a camera-register-only build costs ${deltaFromCamera} bytes ` +
           `(${cameraOnly.codeBytes} -> ${both.codeBytes}), but SHAKE_KERNEL_ALLOWANCE + ` +
           `CAMERA_SHAKE_INTERACTION_ALLOWANCE reserves ${SHAKE_KERNEL_ALLOWANCE + CAMERA_SHAKE_INTERACTION_ALLOWANCE}.`
       );
     }
   }
 );
+
+// ---------------------------------------------------------------------------
+// Phase 2's own consumer terms, measured incrementally against a
+// register-only build (never camera-off) -- CAMERA_SLIDE_KERNEL_ALLOWANCE +
+// CAMERA_AXIS_KERNEL_ALLOWANCE * axisCount, plus the split/bound-tile
+// interactions.
+// ---------------------------------------------------------------------------
+
+test(
+  'CAMERA_SLIDE_KERNEL_ALLOWANCE + one axis: camera on vs register-only, on NROM/MMC1/MMC3 (textless)/UNROM 512',
+  { skip: !hasNesasm && 'nesasm not found on PATH' },
+  async (t) => {
+    for (const mapper of CAMERA_LEDGER_MAPPERS) {
+      const dir = await freshProjectDir(t, 'action'); // default vertical mirroring -> one axis (H)
+      const registerOnly = await measureCodeBytes(t, mapper, { fixture: dir, withCamera: true, registerOnly: true });
+      const full = await measureCodeBytes(t, mapper, { fixture: dir, withCamera: true });
+      assertCovers({ mapper, codeBytes: full.codeBytes }, kernelCodeBytes(full.project, mapper), 'full camera on, one axis, fresh action project');
+      const delta = full.codeBytes - registerOnly.codeBytes;
+      const expected = CAMERA_SLIDE_KERNEL_ALLOWANCE + CAMERA_AXIS_KERNEL_ALLOWANCE;
+      assert.equal(
+        delta,
+        expected,
+        `${mapper.name}: the consumer's own delta over register-only, one axis, is ${delta} bytes ` +
+          `(${registerOnly.codeBytes} -> ${full.codeBytes}), but CAMERA_SLIDE_KERNEL_ALLOWANCE + ` +
+          `CAMERA_AXIS_KERNEL_ALLOWANCE reserves ${expected}.`
+      );
+    }
+  }
+);
+
+test(
+  'CAMERA_AXIS_KERNEL_ALLOWANCE: two axes vs one, UNROM 512 four-screen',
+  { skip: !hasNesasm && 'nesasm not found on PATH' },
+  async (t) => {
+    const mapper = resolveMapper(30);
+    const dir = await freshProjectDir(t, 'action');
+    const project = await loadProject(dir);
+    // The mapper must already be 30 before saving, or normalizeProject's own
+    // mirroringOptions(mapper) check (run at save/load) sees the project's
+    // still-NROM mapper, finds fourscreen illegal for it, and silently
+    // resets mirroring back to 'vertical' before measureCodeBytes ever gets
+    // a chance to force mapper=30 itself.
+    project.cartridge.mapper = 30;
+    project.cartridge.mirroring = 'fourscreen';
+    await saveProject(dir, project);
+    const oneAxisDir = await freshProjectDir(t, 'action'); // default vertical -> one axis
+    const oneAxis = await measureCodeBytes(t, mapper, { fixture: oneAxisDir, withCamera: true });
+    const twoAxes = await measureCodeBytes(t, mapper, { fixture: dir, withCamera: true });
+    assertCovers({ mapper, codeBytes: twoAxes.codeBytes }, kernelCodeBytes(twoAxes.project, mapper), 'full camera on, two axes, fresh action project');
+    const delta = twoAxes.codeBytes - oneAxis.codeBytes;
+    assert.equal(
+      delta,
+      CAMERA_AXIS_KERNEL_ALLOWANCE,
+      `UNROM 512 four-screen: two axes cost ${delta} bytes more than one (${oneAxis.codeBytes} -> ${twoAxes.codeBytes}), ` +
+        `but CAMERA_AXIS_KERNEL_ALLOWANCE reserves ${CAMERA_AXIS_KERNEL_ALLOWANCE} for the second axis alone.`
+    );
+  }
+);
+
+test(
+  'CAMERA_SPLIT_INTERACTION_ALLOWANCE: camera + MMC3 text (SPLIT_ENABLED)',
+  { skip: !hasNesasm && 'nesasm not found on PATH' },
+  async (t) => {
+    const mapper = resolveMapper(4);
+    const dir = await freshProjectDir(t, 'action');
+    const registerOnly = await measureCodeBytes(t, mapper, { fixture: dir, withCamera: true, registerOnly: true });
+    const textless = await measureCodeBytes(t, mapper, { fixture: dir, withCamera: true });
+
+    // A PLAIN Say (no {name} token) -- withNameToken's own commands push
+    // turns on NAME_TOKEN_ENABLED and its own kernel-lo terms too, which
+    // would contaminate this isolation with costs unrelated to SPLIT_ENABLED.
+    // The SAME baseline event must be present in BOTH the register-only and
+    // the full measurement below (not compared against the textless
+    // project's own register-only), so SPLIT_KERNEL_ALLOWANCE's own 151-byte
+    // base cost -- present either way once text is live at all -- cancels
+    // out of the delta, leaving only the camera-consumer's own interaction
+    // term (the same baseline-event trick phase 1's own report used for the
+    // identical reason).
+    const textDir = await freshProjectDir(t, 'action');
+    const textProject = await loadProject(textDir);
+    textProject.maps[0].screens[0].entities.push({
+      actorId: 0,
+      x: 16,
+      y: 16,
+      props: { event: { pages: [{ cond: { type: 'none', arg: 0 }, commands: [{ op: 'say', text: 'Hello there.' }] }] } }
+    });
+    await saveProject(textDir, textProject);
+    const textRegisterOnly = await measureCodeBytes(t, mapper, { fixture: textDir, withCamera: true, registerOnly: true });
+    const withText = await measureCodeBytes(t, mapper, { fixture: textDir, withCamera: true });
+    assertCovers({ mapper, codeBytes: withText.codeBytes }, kernelCodeBytes(withText.project, mapper), 'full camera on, one axis, MMC3 with text');
+    const textlessDelta = textless.codeBytes - registerOnly.codeBytes;
+    assert.equal(
+      textlessDelta,
+      CAMERA_SLIDE_KERNEL_ALLOWANCE + CAMERA_AXIS_KERNEL_ALLOWANCE,
+      `MMC3 textless: consumer delta is ${textlessDelta}, expected ${CAMERA_SLIDE_KERNEL_ALLOWANCE + CAMERA_AXIS_KERNEL_ALLOWANCE}`
+    );
+    const withTextDelta = withText.codeBytes - textRegisterOnly.codeBytes;
+    const expected = CAMERA_SLIDE_KERNEL_ALLOWANCE + CAMERA_AXIS_KERNEL_ALLOWANCE + CAMERA_SPLIT_INTERACTION_ALLOWANCE;
+    assert.equal(
+      withTextDelta,
+      expected,
+      `MMC3 with text: consumer delta over register-only is ${withTextDelta} bytes (${registerOnly.codeBytes} -> ` +
+        `${withText.codeBytes}), but slide + axis + CAMERA_SPLIT_INTERACTION_ALLOWANCE reserves ${expected}.`
+    );
+  }
+);
+
+test(
+  'BOUND_TILE_CAMERA_INTERACTION_ALLOWANCE: camera + a live switch-bound tile',
+  { skip: !hasNesasm && 'nesasm not found on PATH' },
+  async (t) => {
+    const mapper = resolveMapper(0);
+    const dir = await freshProjectDir(t, 'action');
+    const registerOnly = await measureCodeBytes(t, mapper, { fixture: dir, withCamera: true, registerOnly: true });
+    const withBoundTile = await measureCodeBytes(t, mapper, { fixture: dir, withCamera: true, withBoundTiles: true });
+    assertCovers({ mapper, codeBytes: withBoundTile.codeBytes }, kernelCodeBytes(withBoundTile.project, mapper), 'full camera on, one axis, one bound tile');
+    const delta = withBoundTile.codeBytes - registerOnly.codeBytes;
+    const expected = CAMERA_SLIDE_KERNEL_ALLOWANCE + CAMERA_AXIS_KERNEL_ALLOWANCE + BOUND_TILE_KERNEL_ALLOWANCE + BOUND_TILE_CAMERA_INTERACTION_ALLOWANCE;
+    assert.equal(
+      delta,
+      expected,
+      `NROM: camera + a live bound tile costs ${delta} bytes over register-only (${registerOnly.codeBytes} -> ` +
+        `${withBoundTile.codeBytes}), but slide + axis + BOUND_TILE_KERNEL_ALLOWANCE + ` +
+        `BOUND_TILE_CAMERA_INTERACTION_ALLOWANCE reserves ${expected}.`
+    );
+  }
+);
+
+test(
+  'camera + Shake vs camera alone still costs SHAKE_KERNEL_ALLOWANCE + CAMERA_SHAKE_INTERACTION_ALLOWANCE with the consumer live too',
+  { skip: !hasNesasm && 'nesasm not found on PATH' },
+  async (t) => {
+    for (const mapper of CAMERA_LEDGER_MAPPERS) {
+      const dir = await freshProjectDir(t, 'action');
+      const cameraOnly = await measureCodeBytes(t, mapper, { fixture: dir, withMove: true, withCamera: true });
+      const both = await measureCodeBytes(t, mapper, { fixture: dir, withMove: true, withShake: true, withCamera: true });
+      assertCovers({ mapper, codeBytes: both.codeBytes }, kernelCodeBytes(both.project, mapper), 'full camera + Shake, one axis');
+      const delta = both.codeBytes - cameraOnly.codeBytes;
+      const expected = SHAKE_KERNEL_ALLOWANCE + CAMERA_SHAKE_INTERACTION_ALLOWANCE;
+      assert.equal(
+        delta,
+        expected,
+        `${mapper.name}: adding Shake to a full-camera (consumer live) build costs ${delta} bytes ` +
+          `(${cameraOnly.codeBytes} -> ${both.codeBytes}), but SHAKE_KERNEL_ALLOWANCE + ` +
+          `CAMERA_SHAKE_INTERACTION_ALLOWANCE reserves ${expected} -- the interaction is entirely the register gate's ` +
+          "own, the consumer contributes nothing to it, so this must equal phase 1's own figure unchanged."
+      );
+    }
+  }
+);
+
+test(
+  'assertCovers holds for the full camera build (register + consumer, one axis) on both game types, every board this file covers',
+  { skip: !hasNesasm && 'nesasm not found on PATH' },
+  async (t) => {
+    for (const mapper of CAMERA_LEDGER_MAPPERS) {
+      const dir = await freshProjectDir(t, 'action');
+      const action = await measureCodeBytes(t, mapper, { fixture: dir, withCamera: true });
+      assertCovers({ mapper, codeBytes: action.codeBytes }, kernelCodeBytes(action.project, mapper), `full camera on, action, ${mapper.name}`);
+    }
+    for (const mapper of CAPABLE_MAPPERS) {
+      const dir = await freshProjectDir(t, 'rpg');
+      const rpg = await measureCodeBytes(t, mapper, { fixture: dir, withCamera: true });
+      assertCovers({ mapper, codeBytes: rpg.codeBytes }, kernelCodeBytes(rpg.project, mapper), `full camera on, RPG, ${mapper.name}`);
+    }
+  }
+);
+
+// docs/design-camera.md §5/Q3: switchableMappers excludes a candidate that
+// would drop an axis the project's CURRENT mapper provides.
+test('switchableMappers: a four-screen UNROM 512 camera project offers no board that drops the vertical axis', () => {
+  const project = normalizeProject(createProject('Fresh', 'action'));
+  project.cartridge.mapper = 30;
+  project.cartridge.mirroring = 'fourscreen';
+  project.cartridge.camera = true;
+  const candidates = switchableMappers(project, resolveMapper(30));
+  for (const candidate of candidates) {
+    assert.ok(
+      cameraAxes(candidate, project.cartridge).vertical,
+      `${candidate.name} was offered but would drop the vertical axis this four-screen project currently has`
+    );
+  }
+});
+
+test('switchableMappers: a vertical-mirroring NROM camera project still offers MMC1', () => {
+  const project = normalizeProject(createProject('Fresh', 'action'));
+  project.cartridge.mapper = 0;
+  project.cartridge.camera = true; // default mirroring: vertical
+  const candidates = switchableMappers(project, resolveMapper(0));
+  assert.ok(
+    candidates.some((c) => c.id === 1),
+    'MMC1 provides the identical H axis a vertical-mirroring project already has, so it must still be offered'
+  );
+});
 
 test(
   'a kernel-lo shortfall the camera alone would close names the camera',
@@ -5366,15 +5598,22 @@ test(
     const project = createProject('Action', 'action');
     project.cartridge.mapper = 1; // MMC1 -- no split term to complicate the arithmetic
     project.cartridge.camera = true;
-    inflateLegal(project, 288); // measured: lands a 15-byte deficit, inside (0, CAMERA_KERNEL_ALLOWANCE]
+    // The full camera figure is now the register (20) + the consumer's own
+    // base + one axis (298 + 52 = 350) = 370, not merely 20 -- Decision 8's
+    // own disjoint formula. Re-measured (not assumed) with the same
+    // inflateLegal count phase 1 used: the deficit moved from 15 to 369
+    // purely because kernelCodeBytes now charges 350 bytes more for the
+    // camera than phase 1 did, the same "camera off" baseline unchanged.
+    inflateLegal(project, 288); // measured: lands a 369-byte deficit, inside (0, 370]
     const deficit = kernelShortfallDeficit(project);
+    const full = CAMERA_KERNEL_ALLOWANCE + CAMERA_SLIDE_KERNEL_ALLOWANCE + CAMERA_AXIS_KERNEL_ALLOWANCE;
     assert.ok(
-      deficit > 0 && deficit <= CAMERA_KERNEL_ALLOWANCE,
-      `deficit ${deficit} must sit in (0, CAMERA_KERNEL_ALLOWANCE] (${CAMERA_KERNEL_ALLOWANCE}) or this case does ` +
+      deficit > 0 && deficit <= full,
+      `deficit ${deficit} must sit in (0, ${full}] (register + consumer base + one axis) or this case does ` +
         'not exercise the camera alone closing the gap'
     );
     const message = kernelShortfallMessage(project);
-    assert.match(message, new RegExp(`the camera \\(frees ${CAMERA_KERNEL_ALLOWANCE} bytes\\)`));
+    assert.match(message, new RegExp(`the camera \\(frees ${full} bytes\\)`));
     const dropped = structuredClone(project);
     dropped.cartridge.camera = false;
     assert.deepEqual(
@@ -5396,15 +5635,16 @@ test(
 );
 
 // docs/design-camera.md §8: with Shake also live, dropping the camera must
-// free CAMERA_KERNEL_ALLOWANCE + CAMERA_SHAKE_INTERACTION_ALLOWANCE (39)
-// together, not the register term alone (20) -- kernelShortfallAdvice prices
-// every lever by full occupancy for exactly this reason (see its own
-// comment). Sized so the deficit exceeds the register term alone but not the
-// combined figure, so a regression that dropped the interaction term from
-// this lever's own freedByDropping computation would fail this test even
-// though the camera-alone test above still passes.
+// free the REGISTER (20) + its own Shake interaction (19) + the CONSUMER's
+// own base + one axis (298 + 52) = 389 together, not any subset -- Decision
+// 8's own disjoint formula, all freed at once since projectWithoutCamera
+// clears the one project-level flag both the register and the consumer are
+// generated from. Sized so the deficit exceeds the register-alone figure
+// (20) but not the full combined one (389), so a regression that dropped
+// any one term from this lever's own freedByDropping computation would fail
+// this test even though the camera-alone test above still passes.
 test(
-  'a kernel-lo shortfall the camera and Shake interaction closes: dropping the camera frees 39, not 20, when Shake is also live',
+  'a kernel-lo shortfall the camera and Shake interaction closes: dropping the camera frees register + consumer + Shake interaction together, not any subset',
   { skip: !hasNesasm && 'nesasm not found on PATH' },
   async (t) => {
     const project = createProject('Action', 'action');
@@ -5416,9 +5656,9 @@ test(
       y: 16,
       props: { event: { pages: [{ cond: { type: 'none', arg: 0 }, commands: [{ op: 'shake', frames: 30 }] }] } }
     });
-    inflateLegal(project, 281); // measured: lands a 38-byte deficit
+    inflateLegal(project, 280); // measured: lands a 384-byte deficit
     const deficit = kernelShortfallDeficit(project);
-    const combined = CAMERA_KERNEL_ALLOWANCE + CAMERA_SHAKE_INTERACTION_ALLOWANCE;
+    const combined = CAMERA_KERNEL_ALLOWANCE + CAMERA_SHAKE_INTERACTION_ALLOWANCE + CAMERA_SLIDE_KERNEL_ALLOWANCE + CAMERA_AXIS_KERNEL_ALLOWANCE;
     assert.ok(
       deficit > CAMERA_KERNEL_ALLOWANCE && deficit <= combined,
       `deficit ${deficit} must exceed the camera's own register cost alone (${CAMERA_KERNEL_ALLOWANCE}) but not the ` +
@@ -5428,8 +5668,8 @@ test(
     assert.match(
       message,
       new RegExp(`the camera \\(frees ${combined} bytes\\)`),
-      'dropping the camera while Shake stays live must free the register cost AND the interaction term together, ' +
-        'not the register cost alone'
+      'dropping the camera while Shake stays live must free the register cost, its own Shake interaction, and the ' +
+        'whole consumer together, not any subset of them'
     );
     const dropped = structuredClone(project);
     dropped.cartridge.camera = false;

@@ -52,6 +52,9 @@
   .include "banks.asm"
   .include "split.asm"
   .include "screens.asm"
+  .if CAMERA_SLIDE_ENABLED
+  .include "camera.asm"
+  .endif
   .include "player.asm"
   .include "entities.asm"
   .include "oam.asm"

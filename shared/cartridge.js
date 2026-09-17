@@ -61,6 +61,33 @@ export function mirroringOptions(mapper) {
 }
 
 /**
+ * docs/design-camera.md §5/Q3: which axes a screen-edge crossing can slide
+ * along, for candidate (b) -- vertical mirroring makes horizontal neighbours
+ * differ (so a horizontal crossing has real content to draw into the far
+ * nametable), horizontal mirroring makes vertical neighbours differ, and
+ * four-screen (UNROM 512 only) makes both differ. Resolves the requested
+ * mirroring against THIS mapper's own legal set, not the global MIRRORING
+ * array, and falls back to 'vertical' -- the identical fallback
+ * normalizeCartridge/reconcileCartridge use for a value outside the board's
+ * own set -- so evaluating a candidate mapper other than the project's
+ * current one (switchableMappers' own camera rule, below) never reports an
+ * axis the candidate cannot actually provide. `mirroringById`'s own `??
+ * MIRRORING[1]` fallback additionally covers a raw value that fails even the
+ * first lookup, degrading to the identical H-only answer rather than
+ * throwing or answering "neither axis" -- a state no normalized project can
+ * ever reach.
+ */
+export function cameraAxes(mapper, cartridge) {
+  const requested = mirroringById(cartridge?.mirroring);
+  const legal = mirroringOptions(mapper);
+  const mirroring = legal.some((entry) => entry.id === requested.id) ? requested : mirroringById('vertical');
+  return {
+    horizontal: mirroring.id === 'vertical' || Boolean(mirroring.fourScreen),
+    vertical: mirroring.id === 'horizontal' || Boolean(mirroring.fourScreen)
+  };
+}
+
+/**
  * How many tilesets this cartridge can hold *as configured*. Four-screen on a
  * CHR-RAM board reserves the last pattern page for nametables, so the ceiling is
  * one lower than the mapper's raw maxChrBanks. `reservedChrPages` is any CHR

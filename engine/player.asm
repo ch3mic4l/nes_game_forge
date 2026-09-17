@@ -265,11 +265,50 @@ probe_solid_done:
 
 ; ------------------------------------------------------- screen transitions
 
+; design-camera.md: CAMERA_SLIDE_H/CAMERA_SLIDE_V (main/build/generate.js) are
+; compile-time 0/1 constants, one project-wide pair decided from the fixed
+; mirroring choice (cameraAxes, shared/cartridge.js) -- so each stub below
+; assembles in exactly one of three shapes, never a runtime branch on axis:
+; CAMERA_SLIDE_ENABLED with its own axis flag true (tileset-checked slide
+; attempt, fall back to a cut), CAMERA_SLIDE_ENABLED with its own axis flag
+; false (nothing extra at all -- the axis cannot show different content, so a
+; slide would either refuse or show a mirrored repeat, neither acceptable),
+; or CAMERA_SLIDE_ENABLED off entirely (today's code, untouched). On the
+; default project (mirroring: vertical), that means CAMERA_SLIDE_H=1/
+; CAMERA_SLIDE_V=0: cross_left/cross_right below assemble their slide-attempt
+; shape, cross_up/cross_down assemble their plain-cut shape -- horizontal
+; crossings slide, vertical crossings cut.
+
 cross_left:
   ldy <flat_screen
   lda screen_left,y
   cmp #NO_SCREEN
+  .if CAMERA_SLIDE_ENABLED
+  .if CAMERA_SLIDE_H
+  bne cross_have_left          ; a plain beq's target is now >128 bytes away
+  jmp cross_none
+cross_have_left:
+  pha
+  tax
+  lda screen_tileset,y
+  cmp screen_tileset,x
+  bne cross_left_cut
+  pla
+  sta <flat_screen
+  lda #MAX_X
+  sta <player_x
+  lda #DIR_LEFT
+  jmp redraw_screen_slide
+cross_left_cut:
+  pla
+  .endif
+  .if !CAMERA_SLIDE_H
   beq cross_none
+  .endif
+  .endif
+  .if !CAMERA_SLIDE_ENABLED
+  beq cross_none
+  .endif
   sta <flat_screen
   lda #MAX_X
   sta <player_x
@@ -279,7 +318,36 @@ cross_right:
   ldy <flat_screen
   lda screen_right,y
   cmp #NO_SCREEN
+  .if CAMERA_SLIDE_ENABLED
+  .if CAMERA_SLIDE_H
+  bne cross_have_right          ; a plain beq's target is now >128 bytes away
+  jmp cross_none
+cross_have_right:
+  ; design-camera.md §3: a slide needs both screens sharing a tileset -- the
+  ; far nametable draw below has no CHR bank of its own to fall back to
+  ; mid-slide. A mismatch falls back to today's hard cut rather than showing
+  ; the wrong tiles or refusing the crossing outright.
+  pha                          ; incoming id
+  tax
+  lda screen_tileset,y
+  cmp screen_tileset,x
+  bne cross_right_cut
+  pla                          ; A = incoming
+  sta <flat_screen
+  lda #0
+  sta <player_x
+  lda #DIR_RIGHT
+  jmp redraw_screen_slide
+cross_right_cut:
+  pla                          ; A = incoming, restored for the fallback
+  .endif
+  .if !CAMERA_SLIDE_H
   beq cross_none
+  .endif
+  .endif
+  .if !CAMERA_SLIDE_ENABLED
+  beq cross_none
+  .endif
   sta <flat_screen
   lda #0
   sta <player_x
@@ -289,7 +357,32 @@ cross_up:
   ldy <flat_screen
   lda screen_up,y
   cmp #NO_SCREEN
+  .if CAMERA_SLIDE_ENABLED
+  .if CAMERA_SLIDE_V
+  bne cross_have_up          ; a plain beq's target is now >128 bytes away
+  jmp cross_none
+cross_have_up:
+  pha
+  tax
+  lda screen_tileset,y
+  cmp screen_tileset,x
+  bne cross_up_cut
+  pla
+  sta <flat_screen
+  lda #MAX_Y
+  sta <player_y
+  lda #DIR_UP
+  jmp redraw_screen_slide
+cross_up_cut:
+  pla
+  .endif
+  .if !CAMERA_SLIDE_V
   beq cross_none
+  .endif
+  .endif
+  .if !CAMERA_SLIDE_ENABLED
+  beq cross_none
+  .endif
   sta <flat_screen
   lda #MAX_Y
   sta <player_y
@@ -299,7 +392,32 @@ cross_down:
   ldy <flat_screen
   lda screen_down,y
   cmp #NO_SCREEN
+  .if CAMERA_SLIDE_ENABLED
+  .if CAMERA_SLIDE_V
+  bne cross_have_down          ; a plain beq's target is now >128 bytes away
+  jmp cross_none
+cross_have_down:
+  pha
+  tax
+  lda screen_tileset,y
+  cmp screen_tileset,x
+  bne cross_down_cut
+  pla
+  sta <flat_screen
+  lda #0
+  sta <player_y
+  lda #DIR_DOWN
+  jmp redraw_screen_slide
+cross_down_cut:
+  pla
+  .endif
+  .if !CAMERA_SLIDE_V
   beq cross_none
+  .endif
+  .endif
+  .if !CAMERA_SLIDE_ENABLED
+  beq cross_none
+  .endif
   sta <flat_screen
   lda #0
   sta <player_y

@@ -150,6 +150,22 @@ main_loop:
                               ; a documented, tested contract (test/unit/
                               ; flash.test.js), not an incidental placement
   .endif
+  ; design-camera.md §3 "Frozen-world gate": a live slide owns the whole
+  ; frame, the same way paused/game_state already do below -- no buttons, no
+  ; settle_owed. Work CAN be owed mid-slide: redraw_screen_slide's own
+  ; spawn_entities already armed whatever the incoming screen owes
+  ; (pending_ent/screen_fresh) the instant the slide was armed -- but its
+  ; SETTLEMENT is deferred until this check falls through, once the slide's
+  ; last tick lands the camera on (0,0), so the very next frame reaches
+  ; settle_owed and picks it up. music_tick/flip_tick/flash_tick above keep
+  ; running during a slide; settle_owed/dispatch_input/the world below do not.
+  .if CAMERA_SLIDE_ENABLED
+  lda <cam_slide_left
+  beq main_loop_no_slide
+  jsr camera_slide_tick
+  jmp main_loop_draw
+main_loop_no_slide:
+  .endif
   ; What the last frame left owed, settled before the buttons are read into
   ; actions. It has to be before them and not merely before the world: an
   ; interact reaches start_dialog and an event is free to warp, so a button on
