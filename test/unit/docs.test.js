@@ -36,7 +36,19 @@ const CLAUDE_MD_PATH = path.join(ROOT, 'CLAUDE.md');
 // later, so it is left as-is rather than special-cased.
 const CLAUDE_MD_TEXT = fs.readFileSync(CLAUDE_MD_PATH, 'utf8');
 
-const DOCS_POINTERS = [...new Set(CLAUDE_MD_TEXT.match(/docs\/[A-Za-z0-9_.-]+\.md/g) ?? [])];
+// CLAUDE.md is an index: the mechanism depth it used to carry inline lives in docs/reference-*.md,
+// moved there verbatim so the file loaded into every turn of every session stays small. Those
+// reference docs carry most of the docs/design-*.md pointers now, so they are scanned for pointers
+// exactly as CLAUDE.md is -- a dangling pointer one hop away is still a dangling pointer.
+const REFERENCE_DOCS_TEXT = fs
+  .readdirSync(path.join(ROOT, 'docs'))
+  .filter((name) => /^reference-.*\.md$/.test(name))
+  .sort()
+  .map((name) => fs.readFileSync(path.join(ROOT, 'docs', name), 'utf8'))
+  .join('\n');
+const POINTER_SOURCE_TEXT = `${CLAUDE_MD_TEXT}\n${REFERENCE_DOCS_TEXT}`;
+
+const DOCS_POINTERS = [...new Set(POINTER_SOURCE_TEXT.match(/docs\/[A-Za-z0-9_.-]+\.md/g) ?? [])];
 
 test('the docs-pointer extraction regex actually matches something in CLAUDE.md', () => {
   // A regex that silently stops matching (CLAUDE.md's own pointer style drifts, or this file's
@@ -61,7 +73,7 @@ test('the docs-pointer extraction regex actually matches something in CLAUDE.md'
 // `Docs/`, and either would sail past the strict pattern unnoticed without a second check. So a
 // second, deliberately loose scan -- case-insensitive, no fixed slash structure -- catches
 // anything docs/*.md-shaped, and the strict set must cover all of it.
-const BROAD_DOCS_MATCHES = [...new Set(CLAUDE_MD_TEXT.match(/docs\/[\w./-]*\.md/gi) ?? [])];
+const BROAD_DOCS_MATCHES = [...new Set(POINTER_SOURCE_TEXT.match(/docs\/[\w./-]*\.md/gi) ?? [])];
 
 test('the strict pointer pattern is not silently narrower than a loose scan for anything docs-like', () => {
   const strictSet = new Set(DOCS_POINTERS);
@@ -102,7 +114,7 @@ for (const pointer of DOCS_POINTERS) {
   });
 }
 
-const CLAUDE_MD_CHAR_BUDGET = 137000;
+const CLAUDE_MD_CHAR_BUDGET = 40000;
 
 test(`CLAUDE.md stays under its ${CLAUDE_MD_CHAR_BUDGET}-character budget`, () => {
   assert.ok(
