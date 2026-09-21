@@ -2345,6 +2345,17 @@ export function kernelTableBytes(project, mapper) {
 export function checkCapacity(project) {
   const text = compileText(project);
   const problems = [...validateProject(project), ...text.problems, ...checkBattleTables(project)];
+  // Phase 1 of streamed worlds has a world model and no engine (docs/design-streamed-worlds.md
+  // §2): refuse before the assembler so the flag can never quietly produce an ordinary-map ROM.
+  // Phase 2 deletes this.
+  for (const map of project.maps) {
+    if (map.streamed !== true) continue;
+    problems.push({
+      severity: 'error',
+      where: 'Map Forge',
+      message: `Map "${map.name}" is a streamed map, and streamed maps have no engine yet, so this project cannot be built. Streamed is set in the project's map JSON ("streamed": true): remove it, or set it to false, for that map.`
+    });
+  }
   const { flat } = flattenScreens(project);
 
   const mapper = resolveMapper(project.cartridge.mapper);

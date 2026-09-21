@@ -7,7 +7,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { normalizeProject } from '../shared/project.js';
+import { normalizeProject, streamedGridProblems, StreamedGridError } from '../shared/project.js';
 import { STARTERS } from '../shared/starters/index.js';
 import { canonicalizePath } from './paths.js';
 import { createSaveQueue, awaitAllSettled } from './savequeue.js';
@@ -317,6 +317,11 @@ export async function loadProject(dir) {
     const song = await readJson(path.join(dir, 'songs', file));
     if (song) songs.push(song);
   }
+
+  // An illegal streamed grid is refused before normalization (which would throw the same error): the
+  // project is not opened and its files are untouched. The message reaches the renderer's open-failure toast.
+  const streamedProblems = streamedGridProblems({ maps });
+  if (streamedProblems.length) throw new StreamedGridError(streamedProblems);
 
   // Files added after a project was first written simply read as null and
   // normalizeProject fills them in, which is how older folders keep opening.

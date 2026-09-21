@@ -33,9 +33,13 @@ import {
   resolveMapper,
   mapperById,
   mirroringOptions,
+  mirroringById,
   tilesetLimit,
   rpgCapable,
   rpgUnsupportedReason,
+  streamCapable,
+  streamCapableFourScreen,
+  cameraAxes,
   saveMediaImplemented,
   saveUnsupportedReason,
   reservesFlashSaveRegion,
@@ -237,12 +241,24 @@ export function storageIndex(frame, row, col) {
 }
 
 /** Hard limits imposed by the NES and by the template engine. */
+// The one screen ceiling: 255, because NO_SCREEN ($FF, engine/constants.asm) is the neighbour-table
+// sentinel and an id space stops at its sentinel's own value. A streamed map's per-axis limit and
+// the project-wide screen count both derive from it, so they cannot drift apart.
+const SCREEN_CEILING = 255;
+
 export const LIMITS = {
   tilesPerTable: 256,
   metatiles: 64,
   screenCols: 16, // metatiles across a screen (16 * 16px = 256px)
   screenRows: 15, // metatiles down a screen (15 * 16px = 240px)
   mapGrid: 4, // screens per axis
+  // A *streamed* map's own per-axis ceiling and the project-wide screen ceiling
+  // (docs/design-streamed-worlds.md §3, "Save identity"): 255, not 256, because
+  // NO_SCREEN ($FF) is the neighbour-table sentinel -- the sentinel's own value,
+  // the same rule as actors/items/metasprites below. The region-packing limit
+  // (§4's aggregate check) is a separate, later, tighter refusal.
+  streamedGrid: SCREEN_CEILING,
+  projectScreens: SCREEN_CEILING,
   entitiesPerScreen: 8,
   boundTilesPerScreen: 8, // switch-bound tiles (design-tile.md §10) -- matches
                           // entitiesPerScreen's own precedent
@@ -1981,6 +1997,11 @@ export function deleteMapCore(project, mapIndex) {
  */
 export function growOrShrinkMap(project, mapIndex, newWidth, newHeight) {
   const map = project.maps[mapIndex];
+  // A streamed map may not be resized outside its limits (the ordinary limit is the size field's own
+  // clamp; this one guards every caller). Refused with null, before anything is touched.
+  if (map.streamed === true && streamedGridProblems({ maps: [{ streamed: true, gridW: newWidth, gridH: newHeight }] }).length) {
+    return null;
+  }
   const oldScreens = map.screens;
   const flatBefore = flatScreens(project); // captured before any mutation below
 
@@ -2138,7 +2159,9 @@ export function duplicateScreenViaGrowthCore(project, mapIndex, sourceScreen) {
   const cloned = structuredClone(sourceScreen);
 
   const { newWidth, newHeight } = growthTarget(destMap);
-  const { oldScreens, newScreens, flatBefore, flatAfter } = growOrShrinkMap(project, mapIndex, newWidth, newHeight);
+  const grown = growOrShrinkMap(project, mapIndex, newWidth, newHeight);
+  if (!grown) return null; // a streamed map at its limit: nothing was touched
+  const { oldScreens, newScreens, flatBefore, flatAfter } = grown;
   // The blank cell growth introduced: present in newScreens, absent from
   // oldScreens -- the first one in row-major order.
   const cloneScreen = newScreens.find((s) => !oldScreens.includes(s));
@@ -5150,9 +5173,69 @@ export function entityLabel(project, entity) {
   return entity?.props?.name?.trim() || actor?.name || `Actor ${entity?.actorId ?? 0}`;
 }
 
+/**
+ * Every streamed map's grid problems, read from a RAW (un-normalized) project:
+ * axes integers in 1..LIMITS.streamedGrid, the product within
+ * LIMITS.projectScreens, and no more authored screens than the grid holds.
+ * Reads only raw fields, allocates nothing, never mutates, and tolerates garbage
+ * (no maps, a map that is not an object, a string axis). An absent axis is the
+ * normalizer's own default of 1. The single writer of these limit rules:
+ * normalizeProject refuses on it, project load reports it, validateProject
+ * reuses it. Returns [{ mapIndex, message }].
+ */
+export function streamedGridProblems(raw) {
+  const problems = [];
+  const maps = Array.isArray(raw?.maps) ? raw.maps : [];
+  maps.forEach((map, mapIndex) => {
+    if (map?.streamed !== true) return;
+    const name = `Map "${typeof map.name === 'string' && map.name ? map.name : `Map ${mapIndex}`}"`;
+    const axis = (v) => (v === undefined ? 1 : v);
+    const w = axis(map.gridW);
+    const h = axis(map.gridH);
+    const validAxis = (n) => Number.isInteger(n) && n >= 1 && n <= LIMITS.streamedGrid;
+    const authored = Array.isArray(map.screens) ? map.screens.length : 0;
+    const limits =
+      `a streamed map holds at most ${LIMITS.projectScreens} screens, at most ${LIMITS.streamedGrid} along either side`;
+    if (!validAxis(w) || !validAxis(h) || w * h > LIMITS.projectScreens) {
+      problems.push({
+        mapIndex,
+        message: `${name} is ${w} x ${h} screens; ${limits}. Change its "gridW"/"gridH" in the project's map JSON, or shrink the map in the Map Forge.`
+      });
+    } else if (authored > w * h) {
+      problems.push({
+        mapIndex,
+        message: `${name} holds ${authored} screens but is only ${w} x ${h}; ${limits}. Fix its "gridW"/"gridH" in the project's map JSON so the grid holds every screen.`
+      });
+    }
+  });
+  return problems;
+}
+
+/** Thrown by normalizeProject (and reported by project load) for an illegal streamed grid: nothing is trimmed. */
+export class StreamedGridError extends Error {
+  constructor(problems) {
+    super(problems.map((p) => p.message).join(' '));
+    this.name = 'StreamedGridError';
+    this.problems = problems;
+  }
+}
+
+/**
+ * The per-axis grid ceiling for one map: the streamed ceiling only for a map
+ * that is actually streamed, so every ordinary map clamps exactly as before.
+ * The single writer -- normalizeMap, and (later) the Map Forge's size fields.
+ */
+export function mapGridLimit(map) {
+  return map?.streamed === true ? LIMITS.streamedGrid : LIMITS.mapGrid;
+}
+
 function normalizeMap(raw, id, itemCtx = EMPTY_ITEM_CTX) {
-  const gridW = clamp(raw?.gridW, 1, LIMITS.mapGrid, 1);
-  const gridH = clamp(raw?.gridH, 1, LIMITS.mapGrid, 1);
+  const streamed = raw?.streamed === true;
+  const axisLimit = mapGridLimit({ streamed });
+  const gridW = clamp(raw?.gridW, 1, axisLimit, 1);
+  const gridH = clamp(raw?.gridH, 1, axisLimit, 1);
+  // An illegal streamed grid never gets here: normalizeProject refuses it first
+  // (streamedGridProblems), so this clamp only ever sees a legal one.
   const count = gridW * gridH;
   const screens = [];
   for (let i = 0; i < count; i++) screens.push(normalizeScreen(raw?.screens?.[i], itemCtx));
@@ -5180,7 +5263,12 @@ function normalizeMap(raw, id, itemCtx = EMPTY_ITEM_CTX) {
     // default only covers a map created fresh in the current session, and
     // any field normalizeMap does not explicitly copy is simply absent from
     // every map read back off disk.
-    folder: typeof raw?.folder === 'string' ? raw.folder.trim().slice(0, AUTHOR_NAME_MAX) : null
+    folder: typeof raw?.folder === 'string' ? raw.folder.trim().slice(0, AUTHOR_NAME_MAX) : null,
+    // Absent unless true, so every project that never set it normalizes (and
+    // saves) byte-identically -- a `streamed: false` key would rewrite every
+    // fixture on its next save. Whether the board can honour it is
+    // validateProject's question, not this normalizer's.
+    ...(streamed ? { streamed: true } : {})
   };
 }
 
@@ -5855,6 +5943,10 @@ function migrateItemsFromActors(raw) {
 export function normalizeProject(raw) {
   const base = createProject(raw?.project?.name || 'Untitled Game');
   if (!raw || typeof raw !== 'object') return base;
+  // Refuse an illegal streamed grid before any clamp or allocation: trimming it would delete authored
+  // screens, and a malformed one breaks the screens.length === gridW * gridH invariant every consumer uses.
+  const streamedProblems = streamedGridProblems(raw);
+  if (streamedProblems.length) throw new StreamedGridError(streamedProblems);
 
   // A project written before game types existed is an action game: that is what
   // it was authored as, and nothing in it can have depended on a battle system.
@@ -5941,6 +6033,15 @@ export function normalizeProject(raw) {
     normalizeMap(map, id, itemCtx)
   );
   if (project.startMap >= maps.length) project.startMap = 0;
+  // The early clamps above cap a screen index at an ordinary map's 16; a
+  // streamed start/title map can hold up to 255, so re-clamp from the raw value
+  // against that map's own ceiling (an ordinary map is untouched).
+  if (maps[project.startMap].streamed) {
+    project.startScreen = clamp(raw.project?.startScreen, 0, LIMITS.projectScreens - 1, 0);
+  }
+  if (project.titleMap !== null && maps[project.titleMap]?.streamed) {
+    project.titleScreen = clamp(raw.project?.titleScreen, 0, LIMITS.projectScreens - 1, 0);
+  }
   if (project.startScreen >= maps[project.startMap].screens.length) project.startScreen = 0;
   // A map pointing at a tileset that the mapper change removed falls back to the
   // first one rather than generating a bank switch to nowhere.
@@ -6579,6 +6680,126 @@ export function projectWithoutMiss(project) {
  * OAM cost while armed -- M+I+S+S, never variable, unlike a flipbook frame. */
 export const MISS_OAM_TILES = 4;
 
+/**
+ * The player Moves a streamed map's events could run that might reach a
+ * screen's ownership edge (docs/design-streamed-worlds.md §5, "Movement"; the
+ * phase-1 warning). `liveCommands`/`allCommands` -- never a page's own top
+ * level -- and a `call` is followed into its common event. A legal starting
+ * position can be one pixel short of any edge, so the check can only ever
+ * bound the authored distance: any Move of at least a pixel qualifies, in
+ * every direction. Returns true if `event` holds one.
+ */
+function eventMovesPlayer(event, commonById, seen) {
+  for (const page of compiledPages(event)) {
+    // liveCommands yields a route's admitted legs without the route's own `who` (legs store none),
+    // so ownership comes from allCommands and liveness stays liveCommands' own: a leg counts only if
+    // it is both yielded live and belongs to a player route. A disabled ancestor, a switched-off
+    // route or a choice option past the compiled limit is never yielded, whoever owns it.
+    const playerLegs = new Set();
+    for (const command of allCommands(page.commands)) {
+      if (command.op === 'route' && command.who === 'player') for (const leg of routeLegs(command.legs)) playerLegs.add(leg);
+    }
+    for (const command of liveCommands(page.commands, CHOICE_LIMITS.options)) {
+      if (command.op === 'move' && command.dist > 0 && (command.who === 'player' || playerLegs.has(command))) return true;
+      if (command.op === 'call') {
+        const target = commonById.get(commonEventId(command.event));
+        if (target && !seen.has(target)) {
+          seen.add(target);
+          if (eventMovesPlayer(target, commonById, seen)) return true;
+        }
+      }
+    }
+  }
+  return false;
+}
+
+/**
+ * Every rule for `map.streamed`, in one place so validateProject stays
+ * readable. Board/mirroring gating, the grid ceilings, the two-nametable
+ * dead-axis restriction (docs/design-streamed-worlds.md §2-§3), and the
+ * player-Move warning (§5). The byte-level capacity refusal is not here.
+ */
+function validateStreamedMaps(project, add) {
+  const streamed = project.maps.map((map, index) => ({ map, index })).filter(({ map }) => map.streamed === true);
+  if (!streamed.length) return;
+
+  const mapper = resolveMapper(project.cartridge.mapper);
+  const mirroringId = project.cartridge.mirroring;
+  const capable = streamCapable(mapper, mirroringId);
+  // Under a mirroring that is not four-screen, one axis cannot scroll and holds
+  // exactly one screen of ring; cameraAxes is the single writer of which axis.
+  const deadAxes = [];
+  if (capable && !streamCapableFourScreen(mapper, mirroringId)) {
+    const axes = cameraAxes(mapper, project.cartridge);
+    if (!axes.horizontal) deadAxes.push('horizontal');
+    if (!axes.vertical) deadAxes.push('vertical');
+  }
+
+  const gridProblems = streamedGridProblems(project);
+  for (const { map, index } of streamed) {
+    const name = `Map "${map.name || `Map ${index}`}"`;
+    if (!capable) {
+      add(
+        'error',
+        'Build',
+        `${name} is streamed, but ${mapper.name} with ${mirroringById(mirroringId).label.toLowerCase()} mirroring ` +
+          'cannot stream a world. Streamed maps need UNROM 512 with four-screen mirroring, or MMC1, MMC3 or ' +
+          'UNROM 512 with horizontal or vertical mirroring -- change the board in the Build panel, or remove ' +
+          '"streamed" (or set it to false) for this map in the project\'s map JSON.'
+      );
+    }
+    for (const problem of gridProblems) if (problem.mapIndex === index) add('error', 'Map Forge', problem.message);
+    // 'horizontal' dead axis = it cannot slide sideways, so the map is one screen wide.
+    if (deadAxes.includes('horizontal') && map.gridW > 1) {
+      add(
+        'error',
+        'Map Forge',
+        `${name} is ${map.gridW} screens wide, but ${mapper.name} with ${mirroringById(mirroringId).label.toLowerCase()} ` +
+          'mirroring can only stream up and down, so a streamed map must be 1 screen wide (1 x N). Shrink the map, ' +
+          'or choose a mirroring that scrolls sideways in the Build panel.'
+      );
+    }
+    if (deadAxes.includes('vertical') && map.gridH > 1) {
+      add(
+        'error',
+        'Map Forge',
+        `${name} is ${map.gridH} screens tall, but ${mapper.name} with ${mirroringById(mirroringId).label.toLowerCase()} ` +
+          'mirroring can only stream side to side, so a streamed map must be 1 screen tall (N x 1). Shrink the map, ' +
+          'or choose a mirroring that scrolls up and down in the Build panel.'
+      );
+    }
+  }
+
+  const total = project.maps.reduce((sum, map) => sum + map.screens.length, 0);
+  if (total > LIMITS.projectScreens) {
+    add(
+      'error',
+      'Map Forge',
+      `The project holds ${total} screens; with a streamed map the limit is ${LIMITS.projectScreens} across all maps.`
+    );
+  }
+
+  // The commit-free player-Move warning: a scripted Move can walk the player
+  // to the far edge of a streamed screen, which the engine does not yet bound.
+  const commonById = new Map(liveCommonEvents(project).map(({ entry, id }) => [id, entry.event]));
+  for (const { map, index } of streamed) {
+    map.screens.forEach((screen, screenIndex) => {
+      for (const entity of screen.entities ?? []) {
+        const event = entity.props?.event;
+        if (event && eventMovesPlayer(event, commonById, new Set([event]))) {
+          add(
+            'warning',
+            'Map Forge',
+            `${screenLabel(project, index, screenIndex)} on the streamed map "${map.name}": the event on ` +
+              `${entityLabel(project, entity)} moves the player, and a long enough Move can walk them to the edge of ` +
+              'the screen. Keep player Moves short, or use a Warp to change screen.'
+          );
+        }
+      }
+    });
+  }
+}
+
 export function validateProject(project) {
   const problems = [];
   const add = (severity, where, message) => problems.push({ severity, where, message });
@@ -6763,6 +6984,8 @@ export function validateProject(project) {
       }
     }
   }
+
+  validateStreamedMaps(project, add);
 
   if (project.project.gameType === 'rpg') {
     const mapper = resolveMapper(project.cartridge.mapper);

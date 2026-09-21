@@ -245,6 +245,8 @@ export const MAPPERS = [
     // through it), and the chip itself is a software-unlocked SST39SF040
     // (see mapper30.js for the emulator's model of it). See headerPatch().
     saveMedia: 'flash',
+    // Streamed worlds (docs/design-streamed-worlds.md §2): a four-screen ring in phase 2, a two-nametable ring in phase 3.
+    streamable: true,
     // iNES cannot describe CHR-RAM or its size, so the header is rewritten to
     // NES 2.0 after nesasm has run. See headerPatch().
     nes2: { chrRamSize: 32768 },
@@ -266,6 +268,8 @@ export const MAPPERS = [
     // Battery-backed WRAM at $6000-$7FFF, wired through the PRG-RAM-disable bit
     // of MMC1's own bank register -- see switch_prg_bank in engine/banks.asm.
     saveMedia: 'battery',
+    // Streamed worlds (docs/design-streamed-worlds.md §2): a two-nametable ring (phase 3); no four-screen wiring.
+    streamable: true,
     supported: true,
     summary: 'Up to 128 KB of program and 128 KB of graphics: 16 tilesets and 7 screen banks.',
     hint: 'The mapper more NES games used than any other. Switches both graphics and screens, so pick it when you need both.'
@@ -288,6 +292,8 @@ export const MAPPERS = [
     // Battery-backed WRAM at $6000-$7FFF, enabled once at boot by mapper_init's
     // $A001 write -- see engine/banks.asm.
     saveMedia: 'battery',
+    // Streamed worlds (docs/design-streamed-worlds.md §2): a two-nametable ring (phase 3); no four-screen wiring.
+    streamable: true,
     supported: true,
     summary: 'Up to 512 KB of program and 256 KB of graphics: 32 tilesets and 15 screen banks.',
     hint: 'The largest cartridge on offer. Its scanline interrupt gives the message font its own graphics bank, so showing text costs no background tiles on this board.'
@@ -341,6 +347,32 @@ export function rpgUnsupportedReason(mapper) {
 }
 
 export const RPG_MAPPERS = SUPPORTED_MAPPERS.filter(rpgCapable);
+
+/**
+ * Can this board, under this mirroring, hold a streamed map on a four-screen
+ * ring (docs/design-streamed-worlds.md §2)? Per registry entry and per
+ * mirroring, never a session flag: it takes the board's own `streamable`
+ * datum *and* the mirroring, because UNROM 512 under vertical is a different
+ * answer from UNROM 512 under four-screen. `mirroringById` (not a raw string
+ * compare) so an unknown id resolves exactly as everything else resolves it.
+ */
+export function streamCapableFourScreen(mapper, mirroringId) {
+  return Boolean(mapper?.streamable && mapper.supportsFourScreen && mirroringById(mirroringId).fourScreen);
+}
+
+/**
+ * The two-nametable ring (phase 3, addressing only): any streamable board under
+ * a mirroring that is *not* four-screen. `validateProject` additionally
+ * restricts grid shape wherever this is the live capability.
+ */
+export function streamCapableTwoNametable(mapper, mirroringId) {
+  return Boolean(mapper?.streamable && !mirroringById(mirroringId).fourScreen);
+}
+
+/** Either ring: is a `map.streamed` legal on this board and mirroring at all? */
+export function streamCapable(mapper, mirroringId) {
+  return streamCapableFourScreen(mapper, mirroringId) || streamCapableTwoNametable(mapper, mirroringId);
+}
 
 /**
  * Can this board hold a save at all? Two media exist today -- see
