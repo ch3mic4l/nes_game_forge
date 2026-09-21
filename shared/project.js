@@ -6714,14 +6714,19 @@ function eventMovesPlayer(event, commonById, seen) {
 }
 
 /**
- * Every rule for `map.streamed`, in one place so validateProject stays
- * readable. Board/mirroring gating, the grid ceilings, the two-nametable
- * dead-axis restriction (docs/design-streamed-worlds.md §2-§3), and the
- * player-Move warning (§5). The byte-level capacity refusal is not here.
+ * The board-shaped half of `validateStreamedMaps`: per streamed map, whether the board and
+ * mirroring can stream at all (`kind: 'capability'`), its grid problems (`'grid'`) and the
+ * two-nametable dead-axis restriction (`'deadAxis'`), in validateProject's own order. Exported
+ * so the mapper/mirroring switch preflight (`checkStreamedMapperSwitch`, main/build/generate.js)
+ * asks the same rules instead of restating them. Reads the project's own cartridge fields;
+ * a caller wanting a candidate board applies it to a clone first.
  */
-function validateStreamedMaps(project, add) {
+export function streamedBoardProblems(project) {
+  const out = [];
+  let mapIndex = -1;
+  const add = (kind, where, message) => out.push({ mapIndex, kind, where, message });
   const streamed = project.maps.map((map, index) => ({ map, index })).filter(({ map }) => map.streamed === true);
-  if (!streamed.length) return;
+  if (!streamed.length) return out;
 
   const mapper = resolveMapper(project.cartridge.mapper);
   const mirroringId = project.cartridge.mirroring;
@@ -6737,10 +6742,11 @@ function validateStreamedMaps(project, add) {
 
   const gridProblems = streamedGridProblems(project);
   for (const { map, index } of streamed) {
+    mapIndex = index;
     const name = `Map "${map.name || `Map ${index}`}"`;
     if (!capable) {
       add(
-        'error',
+        'capability',
         'Build',
         `${name} is streamed, but ${mapper.name} with ${mirroringById(mirroringId).label.toLowerCase()} mirroring ` +
           'cannot stream a world. Streamed maps need UNROM 512 with four-screen mirroring, or MMC1, MMC3 or ' +
@@ -6748,11 +6754,11 @@ function validateStreamedMaps(project, add) {
           '"streamed" (or set it to false) for this map in the project\'s map JSON.'
       );
     }
-    for (const problem of gridProblems) if (problem.mapIndex === index) add('error', 'Map Forge', problem.message);
+    for (const problem of gridProblems) if (problem.mapIndex === index) add('grid', 'Map Forge', problem.message);
     // 'horizontal' dead axis = it cannot slide sideways, so the map is one screen wide.
     if (deadAxes.includes('horizontal') && map.gridW > 1) {
       add(
-        'error',
+        'deadAxis',
         'Map Forge',
         `${name} is ${map.gridW} screens wide, but ${mapper.name} with ${mirroringById(mirroringId).label.toLowerCase()} ` +
           'mirroring can only stream up and down, so a streamed map must be 1 screen wide (1 x N). Shrink the map, ' +
@@ -6761,7 +6767,7 @@ function validateStreamedMaps(project, add) {
     }
     if (deadAxes.includes('vertical') && map.gridH > 1) {
       add(
-        'error',
+        'deadAxis',
         'Map Forge',
         `${name} is ${map.gridH} screens tall, but ${mapper.name} with ${mirroringById(mirroringId).label.toLowerCase()} ` +
           'mirroring can only stream side to side, so a streamed map must be 1 screen tall (N x 1). Shrink the map, ' +
@@ -6769,6 +6775,19 @@ function validateStreamedMaps(project, add) {
       );
     }
   }
+  return out;
+}
+
+/**
+ * Every rule for `map.streamed`, in one place so validateProject stays
+ * readable. Board/mirroring gating, the grid ceilings, the two-nametable
+ * dead-axis restriction (docs/design-streamed-worlds.md §2-§3), and the
+ * player-Move warning (§5). The byte-level capacity refusal is not here.
+ */
+function validateStreamedMaps(project, add) {
+  const streamed = project.maps.map((map, index) => ({ map, index })).filter(({ map }) => map.streamed === true);
+  if (!streamed.length) return;
+  for (const problem of streamedBoardProblems(project)) add('error', problem.where, problem.message);
 
   const total = project.maps.reduce((sum, map) => sum + map.screens.length, 0);
   if (total > LIMITS.projectScreens) {

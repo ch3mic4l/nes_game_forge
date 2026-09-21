@@ -115,8 +115,10 @@ import {
   projectWithoutJoinNaming,
   projectWithoutNameToken,
   projectNeedsHeroDefault,
-  projectNeedsNameSeed
+  projectNeedsNameSeed,
+  streamedBoardProblems
 } from '../../shared/project.js';
+import { streamRegionsPerRow, mapTypeTableBytes } from '../../shared/streamlayout.js';
 import { SAVE_FIELDS, saveBodySize, saveIdentity } from '../../shared/save.js';
 import {
   CHR_BANK_BYTES,
@@ -1616,6 +1618,7 @@ export function switchableMappers(project, mapper, { checkBattleRegion = true } 
   // currently provides", never "does the candidate support the raw
   // mirroring string in the abstract".
   const usesCamera = projectUsesCamera(project);
+  const streamedWorld = project.maps.some((map) => map.streamed === true);
   const currentCameraAxes = usesCamera ? cameraAxes(mapper, project.cartridge) : null;
 
   return SUPPORTED_MAPPERS.filter((candidate) => candidate.id !== mapper.id)
@@ -1676,8 +1679,12 @@ export function switchableMappers(project, mapper, { checkBattleRegion = true } 
       for (const [key, count] of tally(validateProject(moved))) {
         if (count > (existing.get(key) ?? 0)) return false;
       }
-      // Still fits? Three banks, asked in the same terms checkCapacity asks.
-      if (
+      // Still fits? Three banks, asked in the same terms checkCapacity asks. A project with a streamed
+      // map asks checkStreamedMapperSwitch for the screen-region half instead of restating it: the
+      // streamed maps' own screens are not ordinary records, so the flat count below would be wrong.
+      if (streamedWorld) {
+        if (checkStreamedMapperSwitch(project, candidate.id, project.cartridge.mirroring).length) return false;
+      } else if (
         screenCapacityFor(
           candidate,
           moved.tilesets.length,
@@ -2184,11 +2191,12 @@ export function screenCapacityFor(
   flat,
   actorCount,
   reserveFlashSave = false,
-  boundTilesEnabled = false
+  boundTilesEnabled = false,
+  options = {}
 ) {
   const spare = [];
   let packed = 0;
-  for (const _region of screenRegions(mapper, tilesetCount, bankedCode, { reserveFlashSave })) {
+  for (const _region of options.regionsOverride ?? screenRegions(mapper, tilesetCount, bankedCode, { reserveFlashSave })) {
     let used = 0;
     while (packed < flat.length) {
       const size = screenRecordBytes(flat[packed], actorCount, boundTilesEnabled);
@@ -2222,12 +2230,16 @@ export function assignScreenBanks(
   reserveFlashSave,
   flat,
   actorCount,
-  boundTilesEnabled = false
+  boundTilesEnabled = false,
+  options = {}
 ) {
   const screenBank = new Array(flat.length).fill(0);
   const regionRanges = [];
   let cursor = 0;
-  for (const region of screenRegions(mapper, tilesetCount, bankedCode, { reserveFlashSave })) {
+  // `options.regionsOverride` packs against that region list in place of the mapper's full one: the
+  // streamed-first allocation (planStreamedRegions) hands the ordinary screens only what the
+  // streamed maps have not reserved. Absent, this is exactly the packer it always was.
+  for (const region of options.regionsOverride ?? screenRegions(mapper, tilesetCount, bankedCode, { reserveFlashSave })) {
     const from = cursor;
     let used = 0;
     while (cursor < flat.length) {
@@ -2246,6 +2258,136 @@ export function assignScreenBanks(
     throw new Error(`internal: ${flat.length - cursor} screens did not fit into ${mapper.name}'s PRG banks`);
   }
   return { screenBank, regionRanges };
+}
+
+/**
+ * Would these screens pack? The real packer in validation mode (assignScreenBanks), never a
+ * generic count: screenCapacityFor counts a region's leftover tail as room for one more *empty*
+ * screen, which can be too small for the real record being asked about. The eighth argument is
+ * forwarded -- a wrapper that stopped at seven would drop `regionsOverride` and check against the
+ * full region list, a false pass for exactly the project the streamed reservation exists to refuse.
+ */
+export function fitsCapacity(
+  mapper,
+  tilesetCount,
+  bankedCode,
+  reserveFlashSave,
+  flat,
+  actorCount,
+  boundTilesEnabled,
+  options
+) {
+  try {
+    assignScreenBanks(mapper, tilesetCount, bankedCode, reserveFlashSave, flat, actorCount, boundTilesEnabled, options);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Streamed-first region allocation (docs/design-streamed-worlds.md §4). A streamed map's row-chunks
+ * are whole 8 KB regions, so they are reserved first, off the front of the usable list, and the real
+ * packer runs against whatever is left for the ordinary screens.
+ *
+ * `baseBanks` is one entry per streamed map in project order: the ABSOLUTE nesasm bank number of that
+ * map's first region (`prgLayout`'s `nesasmBank`, the unit sw_locate_current adds row/chunk to), not an
+ * ordinal into the usable list -- code and CHR-payload regions come off the front of the full list, so
+ * the two differ. A map's regions are contiguous: `screenRegions` only ever removes a prefix (CHR
+ * payload, battle code) and a suffix (the flash sector), so what is left is a run of consecutive
+ * banks, and this asserts it rather than assuming it. Null while the streamed maps do not fit.
+ */
+export function planStreamedRegions(project, mapper, options = {}) {
+  const tilesetCount = options.tilesetCount ?? project.tilesets.length;
+  const reserveFlashSave = options.reserveFlashSave ?? reservesFlashSaveRegion(projectUsesSave(project), mapper);
+  const usable = screenRegions(mapper, tilesetCount, codeRegionCount(project), { reserveFlashSave });
+  const streamedMaps = project.maps
+    .map((map, mapIndex) => ({ map, mapIndex }))
+    .filter(({ map }) => map.streamed === true)
+    .map(({ map, mapIndex }) => ({ mapIndex, regionCount: map.gridH * streamRegionsPerRow(map.gridW) }));
+  const streamedNeed = streamedMaps.reduce((sum, entry) => sum + entry.regionCount, 0);
+  const fits = streamedNeed <= usable.length;
+  let baseBanks = null;
+  if (fits) {
+    baseBanks = [];
+    let cursor = 0;
+    for (const entry of streamedMaps) {
+      for (let k = 1; k < entry.regionCount; k++) {
+        if (usable[cursor + k].nesasmBank !== usable[cursor].nesasmBank + k) {
+          throw new Error(`internal: ${mapper.name}'s usable regions are not contiguous`);
+        }
+      }
+      baseBanks.push(usable[cursor].nesasmBank);
+      cursor += entry.regionCount;
+    }
+  }
+  return {
+    usable,
+    streamedMaps,
+    streamedNeed,
+    baseBanks,
+    remainingRegions: usable.slice(streamedNeed),
+    reserveFlashSave,
+    ordinaryFlat: flattenScreens(project).flat.filter((entry) => entry.map.streamed !== true)
+  };
+}
+
+/**
+ * The aggregate streamed-world capacity failures for a project on a board, in plain language, in
+ * order: too many streamed regions for the board, then ordinary screens that no longer fit beside
+ * them. Empty for a project with no streamed map. Reads `mapper` rather than the project's own
+ * cartridge so a candidate board can be asked about (checkStreamedMapperSwitch).
+ */
+function streamedCapacityProblems(project, mapper, options = {}) {
+  if (!project.maps.some((map) => map.streamed === true)) return [];
+  const plan = planStreamedRegions(project, mapper, options);
+  if (!plan.baseBanks) {
+    return [
+      `The streamed maps need ${plan.streamedNeed} of the ${plan.usable.length} 8 KB program regions ${mapper.name} has free ` +
+        'for world data. Shrink a streamed map, remove one, or choose a board with more program space in the Build panel.'
+    ];
+  }
+  const fits = fitsCapacity(
+    mapper,
+    project.tilesets.length,
+    codeRegionCount(project),
+    plan.reserveFlashSave,
+    plan.ordinaryFlat,
+    project.sprites.actors.length,
+    projectUsesBoundTiles(project),
+    { regionsOverride: plan.remainingRegions }
+  );
+  if (fits) return [];
+  return [
+    `The ${plan.ordinaryFlat.length} ordinary screens no longer fit beside the streamed maps, which take ${plan.streamedNeed} of ` +
+      `${mapper.name}'s ${plan.usable.length} 8 KB program regions. Remove a screen, shrink a map, or choose a board with more ` +
+      'program space in the Build panel.'
+  ];
+}
+
+/**
+ * Would switching this project to `candidateMapperId` (and, when given, `candidateMirroring`) leave
+ * every streamed map buildable? A pure preflight: it works on a structuredClone, applies the
+ * candidate, runs reconcileCartridge (a switch can itself shrink the tileset ceiling or force a
+ * mirroring, and the aggregate check must see the post-switch shape), then asks three checks in
+ * order and returns the first failing one's plain-language refusals -- (1) the candidate can stream
+ * at all, (2) its dead-axis restriction holds for every streamed map's grid, (3) the aggregate
+ * region check. An empty list means no objection; the real project is never touched. It lives in
+ * main/build rather than shared/ because check 3 needs assignScreenBanks, so it cannot be called
+ * from the renderer without moving that packer.
+ */
+export function checkStreamedMapperSwitch(project, candidateMapperId, candidateMirroring) {
+  if (!project.maps.some((map) => map.streamed === true)) return [];
+  const moved = structuredClone(project);
+  moved.cartridge.mapper = candidateMapperId;
+  if (candidateMirroring !== undefined) moved.cartridge.mirroring = candidateMirroring;
+  reconcileCartridge(moved);
+  const board = streamedBoardProblems(moved);
+  for (const kind of ['capability', 'deadAxis']) {
+    const failed = board.filter((problem) => problem.kind === kind);
+    if (failed.length) return failed.map((problem) => problem.message);
+  }
+  return streamedCapacityProblems(moved, resolveMapper(moved.cartridge.mapper));
 }
 
 /**
@@ -2336,8 +2478,19 @@ export function kernelTableBytes(project, mapper) {
   // bucket screen_ent_lo/hi already lives in (part of the 13-bytes/screen
   // term above), unlike that term conditional on the feature being used at
   // all.
-  const boundTileBytes = boundTilesEnabled ? 2 * flat.length : 0;
-  const tableBytes = 13 * flat.length + 9 * project.maps.length + spriteBytes + itemBytes + boundTileBytes;
+  //
+  // A streamed map (docs/design-streamed-worlds.md §3, "Charge, resolved") pays no per-screen column at
+  // all: 13 x ordinary screens, 9 per map (identity, paid by every map once), 6 per streamed map
+  // (tileset, fill, 4-byte locator) and the packed 1-bit map-type table. All of it is gated on a
+  // streamed map existing, so a project with none is charged exactly as before, type table included.
+  const streamedMapCount = project.maps.filter((map) => map.streamed === true).length;
+  const ordinaryScreens = streamedMapCount
+    ? flat.filter((entry) => entry.map.streamed !== true).length
+    : flat.length;
+  const streamedBytes = streamedMapCount ? 6 * streamedMapCount + mapTypeTableBytes(project.maps.length) : 0;
+  const boundTileBytes = boundTilesEnabled ? 2 * ordinaryScreens : 0;
+  const tableBytes =
+    13 * ordinaryScreens + 9 * project.maps.length + streamedBytes + spriteBytes + itemBytes + boundTileBytes;
   return { fixedBytes, tableBytes };
 }
 
@@ -2425,20 +2578,29 @@ export function checkCapacity(project) {
   // number quoted here is the number that will actually fit.
   const actorCount = project.sprites.actors.length;
   const boundTilesEnabled = projectUsesBoundTiles(project);
+  // With a streamed map, the ordinary screens pack into what the streamed maps leave (planStreamedRegions);
+  // otherwise this is exactly the call it always was.
+  const hasStreamed = project.maps.some((map) => map.streamed === true);
+  const streamedPlan = hasStreamed ? planStreamedRegions(project, mapper, { reserveFlashSave }) : null;
   const capacity = screenCapacityFor(
     mapper,
     project.tilesets.length,
     bankedCode,
-    flat,
+    streamedPlan ? streamedPlan.ordinaryFlat : flat,
     actorCount,
     reserveFlashSave,
-    boundTilesEnabled
+    boundTilesEnabled,
+    streamedPlan ? { regionsOverride: streamedPlan.remainingRegions } : {}
   );
 
   const musicBytes = musicSize(project.songs);
   const sfxBytes = sfxSize(project.sfx);
 
-  if (flat.length > capacity) {
+  if (hasStreamed) {
+    for (const message of streamedCapacityProblems(project, mapper, { reserveFlashSave })) {
+      problems.push({ severity: 'error', where: 'Map Forge', message });
+    }
+  } else if (flat.length > capacity) {
     problems.push({
       severity: 'error',
       where: 'Map Forge',
