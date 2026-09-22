@@ -150,6 +150,57 @@ sw_lc_orgset:
   rts
 
 ; ==========================================================================
+; sw_enter_screen -- the cold-landing counterpart sw_goto itself never was:
+; sw_goto only computes bank+mtptr TRANSIENTLY (sw_tmp..sw_tmp6), it never
+; persists the "current field screen" fields sw_locate_current/sw_cross_*
+; depend on. This is the one place those fields get a first, non-incremental
+; value -- called only at a landing (phase 2 slice 2b's sw_resolve_screen),
+; never mid-strip, never from NMI.
+;
+; In: A=screenCol, X=screenRow (the just-resolved streamed target).
+; Out: mtptr/PRG bank point at the screen's own terrain, offset 0 (sw_goto's
+; own contract); sw_col/sw_row/sw_col_rem/sw_col_region/sw_col_byte_lo/hi/
+; sw_row_bank_base all hold this screen's own values, ready for
+; sw_locate_current/sw_cross_* to build on. Clobbers A, X, Y, sw_tmp..sw_tmp6.
+; ==========================================================================
+sw_enter_screen:
+  sta sw_col
+  stx sw_row
+  jsr sw_goto
+  ; sw_goto's own transient scratch is still exactly what it computed --
+  ; switch_prg_bank (every mapper variant) clobbers only A/X, and nothing
+  ; else has run since -- so this is a straight copy, not a recompute.
+  lda sw_tmp
+  sta sw_col_rem
+  lda sw_tmp2
+  sta sw_col_region
+  lda sw_tmp5
+  sta sw_col_byte_lo
+  lda sw_tmp6
+  sta sw_col_byte_hi
+  lda sw_tmp4
+  sta sw_row_bank_base
+  rts
+
+; ==========================================================================
+; sw_adv_offset -- advance an [mtptr_lo],y byte cursor by one, crossing into
+; mtptr_hi+1 when Y wraps. A streamed record is STREAM_RECORD_BYTES (338)
+; long -- past any single 8-bit Y -- so a sequential field-by-field walk
+; past offset 255 (spawn_entities' own streamed branch, entities.asm) needs
+; this instead of a bare `iny`. The caller is responsible for leaving
+; mtptr_hi exactly as found once its own walk is done (jsr sw_locate_current
+; -- the same restore sw_peek_byte/sw_render_window already end with).
+; In/Out: Y. Clobbers nothing but Y; A/flags preserved by the caller's own
+; next `lda [mtptr_lo],y`.
+; ==========================================================================
+sw_adv_offset:
+  iny
+  bne sw_adv_offset_done
+  inc <mtptr_hi
+sw_adv_offset_done:
+  rts
+
+; ==========================================================================
 ; sw_peek_byte -- the whole switch/read/restore sequence as ONE routine,
 ; never split across a caller-side "switch here, restore there" pair: a
 ; caller cannot reselect its own code bank after a jsr that just switched
@@ -1364,3 +1415,235 @@ sw_rwa_fill_row:
 sw_rw_nt_hi:  .db $20, $24, $28, $2C
 sw_rw_ntx:    .db 0, 16, 0, 16
 sw_rw_nty:    .db 0, 0, 15, 15
+
+; ==========================================================================
+; sw_resolve_screen -- phase 2 slice 2b. The runtime counterpart of
+; main/build/streamed.js's own resolveGlobalScreen(): a map-order prefix
+; walk over map_base/stream_type_bits/stream_columns (every one already
+; emitted for some other consumer; no new ROM table exists for this) that
+; turns a GLOBAL screen id into either an ordinary table row or a streamed
+; landing. This is the single place either happens -- every one of the 5
+; landing sites (cold boot, start_game, restart_game, take_door via
+; redraw_screen, continue_game via redraw_screen) reaches this and only this.
+;
+; In: A = target GLOBAL screen id (0..NUM_SCREENS-1 -- the caller's own
+;     bounds check, take_door's `cmp #NUM_SCREENS`/save.asm's SAVE_FLAT_
+;     SCREEN check, already guarantee this).
+; Out: map_is_streamed set to 0 (ordinary) or 1 (streamed).
+;   Ordinary: ord_screen holds the compacted row index every *_bank/
+;   *_tileset/*_mt_lo/*_left/*_map/*_ent_lo/*_bound_lo table is keyed by.
+;   No other state touched -- the caller still does its own switch_chr_bank/
+;   set_screen_ptr/etc, unchanged.
+;   Streamed: mtptr/PRG bank/CHR bank already point at the target screen,
+;   win_col_screen/row+local already frame the entered screen as the
+;   window's own top-left origin (no local offset -- no scrolling wired
+;   yet, Part C's wall keeps the player here), cam_nt/cam_x_lo/cam_y_lo
+;   already hold that origin's own landing scroll, cur_map/music already
+;   updated (apply_map_music_direct). The caller must still call
+;   sw_render_window (the streamed "draw the picture" -- there is no
+;   redraw_screen-equivalent single call, by design: an ordinary landing's
+;   own draw_screen/rebuild_bound_cache/spawn_entities/etc split stays
+;   exactly what it is) and its own spawn_entities/build_oam/draw_entities/
+;   scroll-publish tail.
+; Clobbers: A, X, Y, sw_tmp..sw_tmp6.
+; ==========================================================================
+; STREAM_COL_TILESET/FILL/BASE_BANK/REGIONS_PER_ROW/GRID_W/GRID_H are
+; generated equates (config.inc, main/build/generate.js), the same
+; single-writer STREAM_MAP_COLUMNS shared/streamlayout.js's own emitter
+; uses -- not redefined here.
+sw_bit_mask: .db 1, 2, 4, 8, 16, 32, 64, 128
+
+sw_resolve_screen:
+  ; F9 (phase 2 slice 2b fix round 1): NO_SCREEN is rejected FIRST, before any
+  ; prefix walk -- the plan's own word for the result is "parked": the
+  ; resolved identity (map_is_streamed/ord_screen and everything the streamed
+  ; branch below sets) is left exactly as it was before this call, not
+  ; overwritten with a screen-0-shaped guess a caller might go on to render.
+  ; No shipping caller passes NO_SCREEN today (take_door/save.asm both bounds-
+  ; check first), so this is a contract completion, not a reachable-today fix.
+  cmp #NO_SCREEN
+  bne sw_resolve_not_parked
+  rts                        ; parked: previously-resolved identity untouched
+sw_resolve_not_parked:
+  sta sw_tmp                 ; target id
+  ; A real landing (never a park) also clears any strip-arming/in-flight state
+  ; slice 2a allocated: st_active is the master idle flag (0 = idle), and
+  ; nothing arms a strip yet (Part C's wall), so this is defensive against
+  ; slice 4b's future movement driver leaving stale state across a landing,
+  ; not a claim of a presently reachable race.
+  lda #0
+  sta st_active
+  sta sw_tmp3                 ; ordinaryPrefix
+  sta sw_tmp4                 ; streamedPrefix (== streamedMapIndex-so-far)
+  ldx #0                      ; X = mapIndex
+sw_resolve_loop:
+  ; next = (mapIndex+1 < NUM_MAPS) ? map_base[mapIndex+1] : NUM_SCREENS
+  inx
+  cpx #NUM_MAPS
+  bcc sw_resolve_next_table
+  lda #NUM_SCREENS
+  jmp sw_resolve_have_next
+sw_resolve_next_table:
+  lda map_base,x
+sw_resolve_have_next:
+  dex                         ; X = mapIndex again
+  sta sw_tmp5                 ; next
+  ; streamed = bit (mapIndex & 7) of stream_type_bits[mapIndex >> 3]
+  txa
+  lsr a
+  lsr a
+  lsr a
+  tay
+  lda stream_type_bits,y
+  sta sw_tmp6                  ; this map's own type-bits byte
+  txa
+  and #7
+  tay
+  lda sw_bit_mask,y
+  and sw_tmp6
+  sta sw_tmp6                  ; sw_tmp6 = streamed flag (0 or nonzero)
+  lda sw_tmp
+  cmp sw_tmp5                  ; id < next?
+  bcc sw_resolve_owner
+  lda sw_tmp6
+  beq sw_resolve_ordinary_advance
+  inc sw_tmp4                  ; streamedPrefix += 1
+  jmp sw_resolve_continue
+sw_resolve_ordinary_advance:
+  lda sw_tmp5
+  sec
+  sbc map_base,x
+  clc
+  adc sw_tmp3
+  sta sw_tmp3                  ; ordinaryPrefix += next - map_base[mapIndex]
+sw_resolve_continue:
+  inx
+  cpx #NUM_MAPS
+  bne sw_resolve_loop
+  ; Ran off the end without finding an owner -- cannot happen for an id the
+  ; caller's own bounds check already admitted; defensively resolve as
+  ; ordinary screen 0 rather than dispatch on garbage.
+  lda #0
+  sta <map_is_streamed
+  sta <ord_screen
+  rts
+
+sw_resolve_owner:
+  lda sw_tmp
+  sec
+  sbc map_base,x
+  sta sw_tmp5                  ; offset within the owning map (next no longer needed)
+  lda sw_tmp6
+  bne sw_resolve_owner_streamed
+  lda sw_tmp3
+  clc
+  adc sw_tmp5
+  sta <ord_screen
+  lda #0
+  sta <map_is_streamed
+  rts
+
+sw_resolve_owner_streamed:
+  lda #1
+  sta <map_is_streamed
+  txa
+  jsr apply_map_music_direct    ; X = owning raw mapIndex; A/X/Y free after
+  ; streamedMapIndex * STREAM_MAP_COLUMN_BYTES (6) as a real 16-bit pointer --
+  ; an 8-bit `*6` wraps past streamed map 43 (43*6=258, beyond Y's 255-byte
+  ; reach from a fixed base): the codebase's own "8-bit multiply used as a
+  ; table offset silently wraps; add into a 16-bit pointer instead" trap
+  ; (CLAUDE.md). sw_tmp/sw_tmp6 hold streamedMapIndex*2 (16-bit); ptr_lo/
+  ; ptr_hi (generic scratch pointer, untouched by apply_map_music_direct and
+  ; switch_chr_bank) accumulate *4 then +*2 = *6, then the table's own base
+  ; address, for indirect-indexed field reads below.
+  lda sw_tmp4                   ; streamedMapIndex
+  asl a
+  sta sw_tmp                    ; idx*2 lo
+  lda #0
+  rol a
+  sta sw_tmp6                   ; idx*2 hi
+  lda sw_tmp
+  sta <ptr_lo
+  lda sw_tmp6
+  sta <ptr_hi                   ; ptr_lo/ptr_hi = idx*2
+  asl <ptr_lo
+  rol <ptr_hi                   ; ptr_lo/ptr_hi = idx*4
+  lda <ptr_lo
+  clc
+  adc sw_tmp
+  sta <ptr_lo
+  lda <ptr_hi
+  adc sw_tmp6
+  sta <ptr_hi                   ; ptr_lo/ptr_hi = idx*4 + idx*2 = idx*6
+  lda <ptr_lo
+  clc
+  adc #LOW(stream_columns)
+  sta <ptr_lo
+  lda <ptr_hi
+  adc #HIGH(stream_columns)
+  sta <ptr_hi                   ; ptr_lo/ptr_hi = &stream_columns[idx*6]
+  ldy #STREAM_COL_TILESET
+  lda [ptr_lo],y
+  pha                            ; stashed across the RAM-mirror stores below
+  ldy #STREAM_COL_FILL
+  lda [ptr_lo],y
+  sta sw_fill_metatile_id
+  ldy #STREAM_COL_BASE_BANK
+  lda [ptr_lo],y
+  sta sw_base_bank
+  ldy #STREAM_COL_REGIONS_PER_ROW
+  lda [ptr_lo],y
+  sta sw_regions_per_row
+  ldy #STREAM_COL_GRID_W
+  lda [ptr_lo],y
+  sta sw_grid_w
+  sta sw_tmp2                    ; gridW, stashed for the division below
+  ldy #STREAM_COL_GRID_H
+  lda [ptr_lo],y
+  sta sw_grid_h
+  pla
+  jsr switch_chr_bank
+  ; screenCol = offset % gridW, screenRow = offset / gridW (bounded: a
+  ; streamed map's own screen count never exceeds 255, so the repeated
+  ; subtraction below runs at most gridH-1 times, cold path only)
+  lda #0
+  sta sw_tmp3                    ; screenRow accumulator
+sw_resolve_divloop:
+  lda sw_tmp5
+  cmp sw_tmp2
+  bcc sw_resolve_divdone
+  sec
+  sbc sw_tmp2
+  sta sw_tmp5
+  inc sw_tmp3
+  jmp sw_resolve_divloop
+sw_resolve_divdone:
+  ; sw_tmp5 = screenCol, sw_tmp3 = screenRow
+  lda sw_tmp5
+  sta win_col_screen
+  lda #0
+  sta win_col_local
+  lda sw_tmp3
+  sta win_row_screen
+  lda #0
+  sta win_row_local
+  ; Landing scroll: the window is aligned to the entered screen's own
+  ; top-left corner (no local offset), so the physical origin
+  ; sw_render_window computes always lands on a whole nametable multiple --
+  ; cam_x_lo/cam_y_lo are always 0, only the nametable-select bits vary,
+  ; one per axis, matching sw_rw_nt_hi's own bit0=horizontal/bit1=vertical
+  ; convention.
+  lda sw_tmp5
+  and #1
+  sta sw_tmp6
+  lda sw_tmp3
+  and #1
+  asl a
+  ora sw_tmp6
+  sta <cam_nt
+  lda #0
+  sta <cam_x_lo
+  sta <cam_y_lo
+  lda sw_tmp5                    ; A = screenCol
+  ldx sw_tmp3                    ; X = screenRow
+  jmp sw_enter_screen             ; tail call -- its own rts answers for ours

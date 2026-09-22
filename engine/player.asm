@@ -280,7 +280,20 @@ probe_solid_done:
 ; crossings slide, vertical crossings cut.
 
 cross_left:
+  .if STREAMING_ENABLED
+  ; Part C's interim wall: a streamed screen has no screen_left row at all,
+  ; and there is no strip-streaming machinery wired yet to cross into a
+  ; neighbour with -- every edge is solid while map_is_streamed is set,
+  ; the identical shape a real "no neighbour there" (screen_left==NO_SCREEN)
+  ; already takes, below.
+  lda <map_is_streamed
+  beq cross_left_ord               ; bne's target is now >128 bytes away
+  jmp cross_none
+cross_left_ord:
+  ldy <ord_screen
+  .else
   ldy <flat_screen
+  .endif
   lda screen_left,y
   cmp #NO_SCREEN
   .if CAMERA_SLIDE_ENABLED
@@ -294,7 +307,11 @@ cross_have_left:
   cmp screen_tileset,x
   bne cross_left_cut
   pla
+  .if STREAMING_ENABLED
+  jsr cross_set_screen
+  .else
   sta <flat_screen
+  .endif
   lda #MAX_X
   sta <player_x
   lda #DIR_LEFT
@@ -309,13 +326,25 @@ cross_left_cut:
   .if !CAMERA_SLIDE_ENABLED
   beq cross_none
   .endif
+  .if STREAMING_ENABLED
+  jsr cross_set_screen
+  .else
   sta <flat_screen
+  .endif
   lda #MAX_X
   sta <player_x
   jmp redraw_screen
 
 cross_right:
+  .if STREAMING_ENABLED
+  lda <map_is_streamed
+  beq cross_right_ord               ; bne's target is now >128 bytes away
+  jmp cross_none
+cross_right_ord:
+  ldy <ord_screen
+  .else
   ldy <flat_screen
+  .endif
   lda screen_right,y
   cmp #NO_SCREEN
   .if CAMERA_SLIDE_ENABLED
@@ -333,7 +362,11 @@ cross_have_right:
   cmp screen_tileset,x
   bne cross_right_cut
   pla                          ; A = incoming
+  .if STREAMING_ENABLED
+  jsr cross_set_screen
+  .else
   sta <flat_screen
+  .endif
   lda #0
   sta <player_x
   lda #DIR_RIGHT
@@ -348,13 +381,25 @@ cross_right_cut:
   .if !CAMERA_SLIDE_ENABLED
   beq cross_none
   .endif
+  .if STREAMING_ENABLED
+  jsr cross_set_screen
+  .else
   sta <flat_screen
+  .endif
   lda #0
   sta <player_x
   jmp redraw_screen
 
 cross_up:
+  .if STREAMING_ENABLED
+  lda <map_is_streamed
+  beq cross_up_ord               ; bne's target is now >128 bytes away
+  jmp cross_none
+cross_up_ord:
+  ldy <ord_screen
+  .else
   ldy <flat_screen
+  .endif
   lda screen_up,y
   cmp #NO_SCREEN
   .if CAMERA_SLIDE_ENABLED
@@ -368,7 +413,11 @@ cross_have_up:
   cmp screen_tileset,x
   bne cross_up_cut
   pla
+  .if STREAMING_ENABLED
+  jsr cross_set_screen
+  .else
   sta <flat_screen
+  .endif
   lda #MAX_Y
   sta <player_y
   lda #DIR_UP
@@ -383,13 +432,25 @@ cross_up_cut:
   .if !CAMERA_SLIDE_ENABLED
   beq cross_none
   .endif
+  .if STREAMING_ENABLED
+  jsr cross_set_screen
+  .else
   sta <flat_screen
+  .endif
   lda #MAX_Y
   sta <player_y
   jmp redraw_screen
 
 cross_down:
+  .if STREAMING_ENABLED
+  lda <map_is_streamed
+  beq cross_down_ord               ; bne's target is now >128 bytes away
+  jmp cross_none
+cross_down_ord:
+  ldy <ord_screen
+  .else
   ldy <flat_screen
+  .endif
   lda screen_down,y
   cmp #NO_SCREEN
   .if CAMERA_SLIDE_ENABLED
@@ -403,7 +464,11 @@ cross_have_down:
   cmp screen_tileset,x
   bne cross_down_cut
   pla
+  .if STREAMING_ENABLED
+  jsr cross_set_screen
+  .else
   sta <flat_screen
+  .endif
   lda #0
   sta <player_y
   lda #DIR_DOWN
@@ -418,10 +483,35 @@ cross_down_cut:
   .if !CAMERA_SLIDE_ENABLED
   beq cross_none
   .endif
+  .if STREAMING_ENABLED
+  jsr cross_set_screen
+  .else
   sta <flat_screen
+  .endif
   lda #0
   sta <player_y
   jmp redraw_screen
+
+  .if STREAMING_ENABLED
+; A crossing never leaves the current ordinary map -- screen_left/right/
+; up/down are per-map grid lookups, NO_SCREEN at every map edge -- so the
+; ordinary-compacted-index delta between the old and new screen equals the
+; global-id delta too. In: A = the new compacted index just fetched from
+; screen_left/right/up/down,y (y was <ord_screen>, the OLD compacted index).
+; Translates that delta onto <flat_screen> and adopts the new compacted
+; index into <ord_screen>, so flat_screen stays the global id (never a
+; compacted index) while ord_screen tracks the ordinary table row to use.
+cross_set_screen:
+  pha
+  sec
+  sbc <ord_screen
+  clc
+  adc <flat_screen
+  sta <flat_screen
+  pla
+  sta <ord_screen
+  rts
+  .endif
 
 cross_none:
   rts

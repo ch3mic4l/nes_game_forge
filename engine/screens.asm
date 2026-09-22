@@ -6,13 +6,36 @@
 ; run of $2007 writes.
 
 set_screen_ptr:
+  ; call_battle (engine/banks.asm) always ends `jmp set_screen_ptr` -- the
+  ; restore IS the return, for BE_INIT/BE_RESTORE too, so this runs even for
+  ; a non-fight session-lifecycle entry (init_session's own BE_INIT
+  ; tail-call, continue_game's BE_RESTORE). A streamed CURRENT screen has no
+  ; row in any *_bank/*_mt_lo/*_at_lo table at all -- sw_locate_current is
+  ; this routine's own streamed equivalent, restoring the same "mtptr/bank
+  ; point at the current field screen" contract from the persistently-
+  ; maintained sw_col_byte_lo/hi/sw_col_region/sw_row_bank_base.
+  .if STREAMING_ENABLED
+  lda <map_is_streamed
+  beq set_screen_ptr_ordinary
+  jsr sw_locate_current
+  rts
+set_screen_ptr_ordinary:
+  .endif
   ; Screen data lives in the switchable window, so select its bank before any of
   ; the pointers below are dereferenced. A no-op on an unbanked cartridge.
+  .if STREAMING_ENABLED
+  ldy <ord_screen
+  .else
   ldy <flat_screen
+  .endif
   lda screen_bank,y
   jsr switch_prg_bank
 
+  .if STREAMING_ENABLED
+  ldy <ord_screen
+  .else
   ldy <flat_screen
+  .endif
   lda screen_mt_lo,y
   sta <mtptr_lo
   lda screen_mt_hi,y
@@ -246,7 +269,57 @@ redraw_screen:
   jsr load_palette
 redraw_screen_no_fade_reload:
   .endif
+  ; Phase 2 slice 2b: flat_screen is the GLOBAL screen id (unchanged --
+  ; saves/warp targets/cross_* deltas all still use it); sw_resolve_screen
+  ; is the single place that turns it into either ord_screen (an ordinary
+  ; table row) or a streamed landing. A streamed landing draws itself
+  ; entirely differently from the ordinary body below (sw_render_window,
+  ; not draw_screen/rebuild_bound_cache/title_draw) and returns on its own.
+  ;
+  ; redraw_screen_dispatch brackets exactly this dispatch (to
+  ; redraw_screen_ordinary, below) -- unconditional, unlike
+  ; redraw_screen_no_fade_reload above (only assembled when FADE_ENABLED) --
+  ; so Part F's STREAMWORLD_REDRAW_KERNEL_ALLOWANCE can measure this span
+  ; directly off nesasm's own symbol table (kernelbytes.test.js) regardless
+  ; of whether the project this ROM happens to also use Fade.
+redraw_screen_dispatch:
+  .if STREAMING_ENABLED
+  lda <flat_screen
+  jsr sw_resolve_screen
+  lda <map_is_streamed
+  beq redraw_screen_ordinary
+  jsr sw_render_window
+  ; F3 (phase 2 slice 2b fix round 1): a streamed landing must not inherit
+  ; the previous OWNER screen's active bound-tile cache -- rebuild_bound_cache
+  ; itself already takes the empty-cache branch whenever map_is_streamed is
+  ; set (just above, this same file), so simply calling it here reuses that
+  ; single definition rather than duplicating the guard.
+  .if BOUND_TILE_ENABLED
+  jsr rebuild_bound_cache
+  .endif
+  jsr spawn_entities
+  jsr build_oam
+  jsr draw_entities
+  jsr wait_vblank_poll
+  ; enable_rendering's own $2005 write is hardcoded (0,0) -- not used here,
+  ; the same reason design-camera.md's redraw_screen_slide/
+  ; camera_slide_complete_b write their own $2000/$2005 sequence instead of
+  ; calling it, for a landing whose own scroll is not (0,0).
+  lda <cam_nt
+  ora #PPUCTRL_ON
+  sta $2000
+  lda <cam_x_lo
+  sta $2005
+  lda <cam_y_lo
+  sta $2005
+  lda #PPUMASK_ON
+  sta $2001
+  rts
+redraw_screen_ordinary:
+  ldy <ord_screen
+  .else
   ldy <flat_screen
+  .endif
   lda screen_tileset,y
   jsr switch_chr_bank
   jsr set_screen_ptr
@@ -265,6 +338,22 @@ redraw_screen_no_fade_reload:
   jsr build_oam
   jsr draw_entities
   jsr wait_vblank_poll
+  ; F2 (phase 2 slice 2b fix round 1): an ordinary landing reached AFTER a
+  ; streamed one (a Warp back off the streamed map) must not inherit the
+  ; streamed screen's own nonzero cam_nt/cam_x_lo/cam_y_lo -- streaming
+  ; requires the camera on (Part D item 8), so nmi_scroll's own
+  ; CAMERA_ENABLED snapshot path is always the one reading these bytes
+  ; whenever this reset matters. Still under forced blank (enable_rendering,
+  ; next, is the first PPUMASK write), so no cam_dirty lock is needed -- the
+  ; identical reasoning redraw_screen_slide's own (0,0) arm already relies on.
+redraw_screen_cam_reset:
+  .if STREAMING_ENABLED
+  lda #0
+  sta <cam_x_lo
+  sta <cam_y_lo
+  sta <cam_nt
+  .endif
+redraw_screen_cam_reset_done:
   jsr enable_rendering
   rts
 
@@ -302,7 +391,28 @@ btl_hit:
 ; switch-matching pass is tile_switch_changed's own, separate walk.
 rebuild_bound_cache:
   ldx #0                    ; active-cache write cursor
+  ; A streamed map is refused a bound tile of its own (Part D, phase 2 slice
+  ; 2b), but tile_switch_changed (engine/script.asm) can still reach this
+  ; reactively from an ordinary map's own Set/Clear while the player is
+  ; standing on a streamed screen -- ord_screen is meaningless there, so
+  ; this returns an empty cache rather than reading whatever stale row it
+  ; last held.
+  ;
+  ; rebuild_bound_cache_dispatch brackets exactly this guard (to
+  ; rebuild_bound_cache_ordinary, below) -- Part F's STREAMWORLD_BOUND_CACHE_
+  ; KERNEL_ALLOWANCE measures this span directly off nesasm's own symbol
+  ; table (kernelbytes.test.js), not by hand.
+rebuild_bound_cache_dispatch:
+  .if STREAMING_ENABLED
+  lda <map_is_streamed
+  beq rebuild_bound_cache_ordinary
+  stx bind_count             ; X is still 0
+  rts
+rebuild_bound_cache_ordinary:
+  ldy <ord_screen
+  .else
   ldy <flat_screen
+  .endif
   lda screen_bound_lo,y
   sta <bdptr_lo
   lda screen_bound_hi,y

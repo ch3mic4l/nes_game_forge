@@ -91,6 +91,23 @@ init_session:
                               ; forced blank, never here
   lda #0                      ; restore A = 0 for the rest of this routine
   .endif
+; init_session_streamed_dispatch/init_session_streamed_done bracket exactly
+; this block (nothing else sits between them) -- Part F's
+; STREAMWORLD_INIT_SESSION_KERNEL_ALLOWANCE measures this span directly off
+; nesasm's own symbol table (kernelbytes.test.js), the same reason
+; redraw_screen_dispatch/redraw_screen_ordinary already bracket theirs.
+init_session_streamed_dispatch:
+  .if STREAMING_ENABLED
+  ; A streamed landing is about to overwrite both of these for real (every
+  ; caller of init_session reaches a resolver dispatch immediately
+  ; afterward, same reasoning as fade_reload above) -- cleared defensively
+  ; anyway, so a stale value from the previous session's image state never
+  ; survives into a reactive read (rebuild_bound_cache, check_encounter)
+  ; that could in principle run before the first landing does.
+  sta <map_is_streamed
+  sta <ord_screen
+  .endif
+init_session_streamed_done:
   sta <talk_ent              ; NO_ENTITY is $FF, but boot re-writes it after this
   ldx #7
 init_session_switches:

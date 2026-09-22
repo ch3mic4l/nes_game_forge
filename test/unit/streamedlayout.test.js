@@ -11,7 +11,6 @@ import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { createProject, createMap, createScreen, createTileset, projectUsesBoundTiles } from '../../shared/project.js';
 import { mapperById, prgLayout } from '../../shared/cartridge.js';
-import { buildProject } from '../../main/build/pipeline.js';
 import {
   flattenScreens,
   ordinaryScreenView,
@@ -359,11 +358,14 @@ test('emitStreamedScreenRecord is the whole record for one screen', () => {
 
 // -----------------------------------------------------------------------------------------------
 // Phase 2 slice 1 (emitter wiring): generateAssets itself, not emitStreamedLayout called directly.
-// Every project here uses MMC1 + horizontal mirroring -- a streamed-capable board
-// (checkStreamedMapperSwitch's own capability gate would otherwise refuse before the "no engine
-// yet" refusal this slice's own test seam bypasses is even reached). bypassStreamedRefusal is the
-// test-only seam generate.js's generateAssets exposes; buildProject/cli.js never pass it, and a
-// dedicated test below confirms the public path still refuses with no seam.
+// Every project here uses UNROM 512 + four-screen mirroring -- since phase 2 slice 2b's Part D
+// item 1, the ONLY board/mirroring combination streamCapableFourScreen (and so validateProject)
+// accepts for a streamed map; camera is forced on (Part D item 8) and hero naming stays off
+// (createPartyMember's own default) since both are also refused on any project with a streamed
+// map. generateAssets/checkCapacity/buildProject need no seam any more -- Part E removed
+// bypassStreamedRefusal entirely, once the phase-1 blanket "no engine yet" refusal it existed to
+// bypass was itself deleted; these projects build through the exact same public path a real
+// caller uses.
 // -----------------------------------------------------------------------------------------------
 
 /** One generated `.db $xx,...` (or plain-decimal, for config.inc's `NAME = N` lines) table or
@@ -427,10 +429,9 @@ function mkbuild(t) {
  */
 function wiredMixedProject() {
   const p = blank();
-  p.cartridge.mapper = 1; // MMC1
-  // vertical mirroring: MMC1 streams side to side (N wide, 1 tall) only under vertical
-  // mirroring -- shared/project.js's own dead-axis restriction (validateProject).
-  p.cartridge.mirroring = 'vertical';
+  p.cartridge.mapper = 30; // UNROM 512: the only streamCapableFourScreen board (Part D item 1)
+  p.cartridge.mirroring = 'fourscreen';
+  p.cartridge.camera = true; // required for any streamed map (Part D item 8)
   // actorId 1 is a pickup: itemsEnabled + canBackItem routes its own entity's `target` through
   // resolveEntityByte's ITEM branch (itemIdForActor), never the screen-target branch the removed
   // withDefaults fallback used unconditionally -- a pickup's item id (7) and that fallback's
@@ -464,7 +465,7 @@ test('generateAssets wires emitStreamedLayout into a real build: streamed.inc an
   const { p, s } = wiredMixedProject();
   const streamedPlan = checkCapacity(p).streamedPlan;
   const dir = mkbuild(t);
-  await generateAssets({ dir, project: p, bypassStreamedRefusal: true });
+  await generateAssets({ dir, project: p });
 
   const streamedInc = fs.readFileSync(path.join(dir, 'build/assets/streamed.inc'), 'utf8');
   const configInc = fs.readFileSync(path.join(dir, 'build/assets/config.inc'), 'utf8');
@@ -546,42 +547,22 @@ test('generateAssets wires emitStreamedLayout into a real build: streamed.inc an
   assert.equal(configEquate(configInc, 'STREAM_BOUND_RECORD'), STREAM_BOUND_RECORD);
 });
 
-test('the public build path still refuses a streamed project, with no test seam', async (t) => {
-  // Catches bypassStreamedRefusal defaulting to true, or the "no engine yet" refusal being
-  // weakened for every caller instead of only the test-only seam. buildProject
-  // (main/build/pipeline.js) -- what main/build/cli.js and the Electron IPC handler actually call
-  // -- is exercised directly here, not generateAssets alone: that only proves the seam's own
-  // default, not that the real build path never threads a bypass through.
-  const { p } = wiredMixedProject();
-  const dir = mkbuild(t);
-  await assert.rejects(buildProject({ dir, project: p }), (error) => {
-    assert.match(error.message, /no engine yet/);
-    assert.ok(
-      error.problems?.some((problem) => problem.code === 'streamed-no-engine'),
-      "checkCapacity's own coded problem must still be present, not swallowed"
-    );
-    return true;
-  });
-});
+// Phase 2 slice 1/2a's "the public build path still refuses a streamed project, with no test
+// seam" and "bypassStreamedRefusal silences only the streamed-no-engine problem" tests lived here.
+// Phase 2 slice 2b's Part E deleted the blanket "no engine yet" refusal and the seam that bypassed
+// it entirely -- there is no longer a single coded problem to filter, and a streamed project now
+// builds successfully through the public path whenever it also clears Part D's per-item checks
+// (see validateStreamedMaps, shared/project.js). Part D's own positive/negative coverage for each
+// of those checks (board/mirroring, bound tiles, Move, Say, Fight, encounters, naming, Save,
+// camera) lives in test/unit/streamworld.test.js instead of here.
 
-test('bypassStreamedRefusal silences only the streamed-no-engine problem, never an unrelated error', async (t) => {
-  // Catches the seam widened to swallow every error (a project that also fails an unrelated check
-  // would then wrongly proceed to write real asset files under test) instead of exactly the one
-  // coded problem. checkCapacity's "no engine yet" problem is the ONLY problem object carrying a
-  // `code` field at all, so a genuinely different error (a tileset overflow: MMC1 holds 16, this
-  // project has 20) must still throw, and its message, even with the seam on.
+test('a genuinely unrelated capacity error (a tileset overflow) still throws with its own message', async (t) => {
+  // Catches generateAssets swallowing every error rather than only ever having filtered one coded
+  // problem -- there is no seam left to narrow, so this is now a plain capacity-error assertion.
   const { p } = wiredMixedProject();
   for (let i = p.tilesets.length; i < 20; i++) p.tilesets.push(createTileset(i));
   const dir = mkbuild(t);
-  await assert.rejects(generateAssets({ dir, project: p, bypassStreamedRefusal: true }), (error) => {
-    assert.match(error.message, /tilesets/);
-    assert.doesNotMatch(error.message, /no engine yet/, 'the coded problem was filtered from the throw...');
-    assert.ok(
-      error.problems.some((problem) => problem.code === 'streamed-no-engine'),
-      '...but checkCapacity still reported it -- only the throw filter narrowed, not checkCapacity itself'
-    );
-    return true;
-  });
+  await assert.rejects(generateAssets({ dir, project: p }), /tilesets/);
 });
 
 test('the ordinary tables are emitted from the compacted ordinaryFlat, never the raw global flat', async (t) => {
@@ -591,7 +572,7 @@ test('the ordinary tables are emitted from the compacted ordinaryFlat, never the
   // index, not coincidentally equal).
   const { p, a } = wiredMixedProject();
   const dir = mkbuild(t);
-  await generateAssets({ dir, project: p, bypassStreamedRefusal: true });
+  await generateAssets({ dir, project: p });
   const configInc = fs.readFileSync(path.join(dir, 'build/assets/config.inc'), 'utf8');
   const mapsInc = fs.readFileSync(path.join(dir, 'build/assets/maps.inc'), 'utf8');
 
@@ -667,7 +648,7 @@ test('NUM_SCREENS/START_SCREEN/TITLE_FLAT_SCREEN stay GLOBAL identities, never t
   // a value already truncated to the ordinary-only count here can never be recovered at runtime.
   const dir = mkbuild(t);
   const build = async (project) => {
-    await generateAssets({ dir, project, bypassStreamedRefusal: true });
+    await generateAssets({ dir, project });
     return fs.readFileSync(path.join(dir, 'build/assets/config.inc'), 'utf8');
   };
 
@@ -698,8 +679,9 @@ test('NUM_SCREENS/START_SCREEN/TITLE_FLAT_SCREEN stay GLOBAL identities, never t
   // An all-streamed project: the old bug's own Math.min(x, ordinaryFlat.length - 1) with
   // ordinaryFlat.length 0 produced NUM_SCREENS 0 and START_SCREEN -1 here.
   p = blank();
-  p.cartridge.mapper = 1;
-  p.cartridge.mirroring = 'vertical';
+  p.cartridge.mapper = 30;
+  p.cartridge.mirroring = 'fourscreen';
+  p.cartridge.camera = true;
   const onlyStreamed = makeMap(p, 'S', 2, 1, true);
   for (const screen of onlyStreamed.screens) screen.metatiles = screen.metatiles.map((v) => v & 63);
   p.project.startScreen = 1;
@@ -716,8 +698,9 @@ test('ordinary door targets stay GLOBAL, including across ordinary maps and into
   // count entirely -- the report's claimed ordinary/streamed asymmetry was wrong; both keep GLOBAL
   // targets.
   const p = blank();
-  p.cartridge.mapper = 1;
-  p.cartridge.mirroring = 'vertical';
+  p.cartridge.mapper = 30;
+  p.cartridge.mirroring = 'fourscreen';
+  p.cartridge.camera = true;
   const s = makeMap(p, 'S', 4, 1, true); // ids 0-3
   for (const screen of s.screens) screen.metatiles = screen.metatiles.map((v) => v & 63);
   const a = makeMap(p, 'A', 2, 1, false); // ids 4,5, compacted ordinary indices 0,1
@@ -730,7 +713,7 @@ test('ordinary door targets stay GLOBAL, including across ordinary maps and into
   a.screens[0].entities.push(ent(1, 2, 2, { toScreen: 3 })); // ordinary -> streamed (global 3, > compact count 2)
 
   const dir = mkbuild(t);
-  await generateAssets({ dir, project: p, bypassStreamedRefusal: true });
+  await generateAssets({ dir, project: p });
   const screensInc = fs.readFileSync(path.join(dir, 'build/assets/screens.inc'), 'utf8');
   const rec = dbBytesAt(screensInc, 'screen_0_ent');
   assert.equal(rec[0], 2, 'both entities placed');
@@ -747,10 +730,11 @@ test('two streamed maps of different sizes: every record in every allocated regi
   // Each map's per-screen terrain is unique (makeMap's own id-derived pattern, masked to 6 bits),
   // so content arriving under the wrong map's bank/offset is directly visible, not inferred.
   const p = blank();
-  p.cartridge.mapper = 1; // MMC1
-  p.cartridge.mirroring = 'vertical';
+  p.cartridge.mapper = 30; // UNROM 512: the only streamCapableFourScreen board (Part D item 1)
+  p.cartridge.mirroring = 'fourscreen';
+  p.cartridge.camera = true;
   const s1 = makeMap(p, 'Small', 1, 1, true); // 1 region
-  const s2 = makeMap(p, 'Big', 25, 1, true); // vertical mirroring streams side to side: N wide, 1 tall; 2 regions
+  const s2 = makeMap(p, 'Big', 25, 1, true); // 25 wide, 1 tall; 2 regions
   for (const m of [s1, s2]) for (const screen of m.screens) screen.metatiles = screen.metatiles.map((v) => v & 63);
 
   const { streamedPlan } = checkCapacity(p);
@@ -758,7 +742,7 @@ test('two streamed maps of different sizes: every record in every allocated regi
   assert.notEqual(streamedPlan.baseBanks[0], streamedPlan.baseBanks[1], 'sanity: the two maps get distinct banks');
 
   const dir = mkbuild(t);
-  await generateAssets({ dir, project: p, bypassStreamedRefusal: true });
+  await generateAssets({ dir, project: p });
   const regionsInc = fs.readFileSync(path.join(dir, 'build/assets/streamed_regions.inc'), 'utf8');
   const streamedInc = fs.readFileSync(path.join(dir, 'build/assets/streamed.inc'), 'utf8');
 

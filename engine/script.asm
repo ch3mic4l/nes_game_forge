@@ -1392,7 +1392,21 @@ qf_dedupe_done:
 tile_switch_changed:
   sta bnd_switch
   jsr rebuild_bound_cache
+  ; rebuild_bound_cache_dispatch above already handled "player standing on a
+  ; streamed screen while an ordinary map's own Set/Clear fires" by leaving
+  ; the active cache empty; this second, ROM-side walk (for the visual flip
+  ; queue) must not then index screen_bound_lo/hi by the GLOBAL flat_screen
+  ; id regardless -- ord_screen is the compacted index those tables are
+  ; sized for, and a streamed current screen has no row in them at all.
+tile_switch_changed_dispatch:
+  .if STREAMING_ENABLED
+  lda <map_is_streamed
+  bne tsc_done
+tile_switch_changed_ordinary:
+  ldy <ord_screen
+  .else
   ldy <flat_screen
+  .endif
   lda screen_bound_lo,y
   sta <bdptr_lo
   lda screen_bound_hi,y

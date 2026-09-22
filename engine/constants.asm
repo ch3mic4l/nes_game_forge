@@ -563,6 +563,13 @@ cam_slide_b_pending = nmi_tmp+1
 ; ITS OWN scratch, so sw_nmi_stream cannot share bytes with it. Twelve bytes,
 ; the first free zero-page run after cam_slide_b_pending ($BB-$C6); $C7
 ; onward is reserved for later slices (below), not allocated here.
+; sw_rw_shadow_lo/hi are the two exceptions: the 2a report's Part C expected
+; their first production writer to be a later NMI-streaming slice (its own
+; report called that slice "4a"), but sw_render_window (engine/streamworld.asm,
+; phase 2 slice 2b) already writes them for real, during its attribute pass --
+; a mainline call from boot's cold landing and redraw_screen's dispatch, with
+; rendering forced off, so it never races sw_nmi_stream. Safe to keep sharing
+; this run once sw_nmi_stream ships, for the same forced-blank reason.
 sw_ns_row       = $BB
 sw_ns_col       = $BC
 sw_ns_nt        = $BD
@@ -572,17 +579,27 @@ sw_ns_cm        = $C0
 sw_ns_ai        = $C1
 sw_ns_row_lo    = $C2
 sw_ns_row_hi    = $C3
-sw_rw_shadow_lo = $C4
-sw_rw_shadow_hi = $C5
+sw_rw_shadow_lo = $C4        ; written by sw_render_window (mainline, phase 2 slice 2b) -- see above
+sw_rw_shadow_hi = $C5        ; written by sw_render_window (mainline, phase 2 slice 2b) -- see above
 sw_ns_chunk     = $C6        ; sw_nmi_stream's own chunk-remaining counter
-; The current map's own streamed flag (docs/design-streamed-worlds.md's
-; complete RAM map): set at map entry/warp from a generated per-map table
-; (phase 2 slice 2b, not yet built); read by a runtime Save dispatch, a
-; player-Move same-axis bound choice and the capped-knockback map-mode
-; branch (all later slices). Allocated here because engine/streamworld.asm
-; is now resident and a later slice's first real writer needs a settled
-; address, not written by any code this slice.
+; The current screen's own streamed flag: set by sw_resolve_screen
+; (engine/streamworld.asm, phase 2 slice 2b) at every one of the 5 landing
+; sites (cold boot, start_game, restart_game, take_door, continue_game),
+; clear while ord_screen names a row in the ordinary *_bank/*_tileset/etc
+; tables, set while the field is a streamed screen (mtptr/PRG bank already
+; pointed at it, ord_screen meaningless). init_session (engine/combat.asm)
+; clears both this and ord_screen defensively before the first landing of a
+; session, so a stale value from image state never survives a restart.
 map_is_streamed = $FE
+; ord_screen -- the compacted 0..N-1 row index every ordinary *_bank/
+; *_tileset/*_mt_lo/*_left/*_map/*_ent_lo/*_bound_lo table is keyed by,
+; unconditionally real (RAM costs nothing whether or not STREAMING_ENABLED's
+; own code reads it, the same reasoning already applied to the reservations
+; below) -- single writer sw_resolve_screen, meaningful only while
+; map_is_streamed is clear. flat_screen itself stays the GLOBAL screen id
+; (unchanged) for saves/warp targets/cross_* deltas; ord_screen is the
+; resolver's own compacted view of it, never stored, never persisted.
+ord_screen = $FF
 ; Named here, in this same reserved zero-page run, but NOT allocated as an
 ; equate -- no code in this commit references any of them, so giving them a
 ; symbol would claim an address with nothing to prove it real. Recorded so a
@@ -591,7 +608,6 @@ map_is_streamed = $FE
 ;   $C8-$F2  dialogue scratch    -- the mapper/split-writer/attribute working set (slice 7a)
 ;   $F3-$FC  dialogue lifecycle  -- sw_dlg15_state and friends (slice 7b)
 ;   $FD      sw_event_freeze     -- the event-freeze policy flag (slice 4b)
-; ($FF stays free -- see design-streamed-worlds.md's own RAM map.)
 
 ; draw_battle_attr's own ground-row fill (engine/battle.asm) -- rows 1-4 of
 ; the attribute table get this value before any live monster's own mon_attr

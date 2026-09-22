@@ -6,8 +6,11 @@
 // code reads instead, since nothing in phase 1 has a consumer that could trigger it for real").
 //
 // Everything here builds its own project via test/lib/streamedproject.js rather than touching a
-// checked-in fixture, and passes bypassStreamedRefusal so buildProject will assemble a streamed
-// project at all -- the one seam main/build/pipeline.js threads for exactly this purpose.
+// checked-in fixture. Phase 2 slice 2b's Part D/E work deleted the phase-1 blanket "no engine yet"
+// refusal and the bypassStreamedRefusal seam that existed only to get past it: streamedproject.js's
+// default shape (UNROM 512, four-screen mirroring, camera on, hero naming off, no events/bound
+// tiles/encounters/Save authored) already clears every one of Part D's per-item checks, so these
+// builds now go through generateAssets/buildProject exactly as a real caller would.
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -234,7 +237,7 @@ async function buildStreaming(t, opts = {}) {
   const dir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'forge-streamworld-'));
   t.after(() => fs.promises.rm(dir, { recursive: true, force: true }));
   await saveProject(dir, project);
-  const built = await buildProject({ dir, project, log: () => {}, bypassStreamedRefusal: true });
+  const built = await buildProject({ dir, project, log: () => {} });
   const symbols = fs.readFileSync(built.symbolPath, 'utf8');
   const addrOf = (label) => {
     const m = symbols.match(new RegExp(`^${label}\\s*=\\s*\\$([0-9A-Fa-f]+)`, 'm'));
@@ -651,12 +654,12 @@ test('the streamed-world kernel-hi cost stays flat across game type and a mixed 
     const dir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'forge-streamworld-occ-'));
     try {
       await saveProject(dir, project);
-      // A successful build (bypassStreamedRefusal, no "bank overflow" from nesasm) is itself the
-      // assertion that this project's real kernel-hi usage fits inside the allowance measured for
-      // it -- the exact equality against nesasm's own report is kernelbytes.test.js's job
-      // (Part D), not this file's; this is a cross-check that the allowance holds for every game
-      // type and shape this slice's own generator produces, not a re-measurement.
-      const built = await buildProject({ dir, project, log: () => {}, bypassStreamedRefusal: true });
+      // A successful build (no "bank overflow" from nesasm) is itself the assertion that this
+      // project's real kernel-hi usage fits inside the allowance measured for it -- the exact
+      // equality against nesasm's own report is kernelbytes.test.js's job (Part F), not this
+      // file's; this is a cross-check that the allowance holds for every game type and shape this
+      // slice's own generator produces, not a re-measurement.
+      const built = await buildProject({ dir, project, log: () => {} });
       assert.ok(built.size > 0, `${JSON.stringify(opts)} must build successfully under the ${total}-byte allowance`);
     } finally {
       await fs.promises.rm(dir, { recursive: true, force: true });
@@ -664,21 +667,19 @@ test('the streamed-world kernel-hi cost stays flat across game type and a mixed 
   }
 });
 
-test('a streamed project still refuses to build without the test-only bypass, on every public path', async (t) => {
-  const project = createStreamedProject({});
-  markMetatiles(project);
-  const dir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'forge-streamworld-refuse-'));
-  t.after(() => fs.promises.rm(dir, { recursive: true, force: true }));
-  await saveProject(dir, project);
-  await assert.rejects(() => buildProject({ dir, project, log: () => {} }), /stream/i);
-  await assert.rejects(() => generateAssets({ dir, project, log: () => {} }), /stream/i);
-
-  // No shipping caller ever passes bypassStreamedRefusal: cli.js, ipc.js and the renderer's own
-  // build call all reach buildProject without it, so this seam only exists for a test that names
-  // it explicitly -- grep the whole non-test tree rather than trusting that description.
-  const grep = spawnSync('grep', ['-rl', 'bypassStreamedRefusal', 'main', 'renderer', 'shared'], { cwd: ROOT, encoding: 'utf8' });
+test('bypassStreamedRefusal no longer exists in any shipping file', () => {
+  // Part E deleted the seam entirely (it existed only to get past phase 1's blanket "no engine
+  // yet" refusal, itself deleted the same slice) -- grep the shipping tree rather than trusting
+  // that description; a straggler call site would otherwise silently keep working, unnoticed,
+  // since generateAssets/buildProject no longer declare the parameter at all. Not grepping test/
+  // too: several tests (this file included) still name the deleted seam in a historical comment
+  // explaining why it's gone, which is prose, not a call site.
+  const grep = spawnSync('grep', ['-rl', 'bypassStreamedRefusal', 'main', 'renderer', 'shared'], {
+    cwd: ROOT,
+    encoding: 'utf8'
+  });
   const hits = (grep.stdout || '').split('\n').filter(Boolean);
-  assert.deepEqual(hits.sort(), ['main/build/generate.js', 'main/build/pipeline.js'].sort(), 'bypassStreamedRefusal must only be threaded through the two build-internal files, never a real caller');
+  assert.deepEqual(hits, [], 'bypassStreamedRefusal must not appear anywhere in main/renderer/shared any more');
 });
 
 test("test/lib/streamedproject.js's own CLI writes the real on-disk project format, and loadProject reads a streamed map back", async (t) => {
@@ -703,14 +704,14 @@ test("test/lib/streamedproject.js's own CLI writes the real on-disk project form
   const expectedMap = createStreamedProject({}).maps.find((m) => m.streamed === true);
   assert.equal(streamedMap.gridW, expectedMap.gridW);
   assert.equal(streamedMap.gridH, expectedMap.gridH);
-  // fillMetatileId is deliberately NOT asserted here: normalizeMap (shared/project.js) never
-  // copies it into the object it returns, a real, pre-existing schema gap this slice does not fix
-  // (the reviewer's own ruling, streamed-worlds-phase2-s2a-review1.md -- fix and round-trip-test in
-  // phase 2 slice 2b). Asserting equality here would either fail honestly or, worse, pass by
-  // accident if a future edit narrows the gap without anyone noticing this test never exercised it.
+  // Phase 2 slice 2b, Part E fixed normalizeMap's own pre-existing gap (it used to drop
+  // fillMetatileId entirely): now asserted for real, closing the gap this test used to
+  // deliberately leave open (see test/unit/project.test.js's own dedicated round-trip test for
+  // the normalization/clamping rules).
+  assert.equal(streamedMap.fillMetatileId, expectedMap.fillMetatileId, 'fillMetatileId must survive a real save/load round trip');
 });
 
-test('the real public CLI (main/build/cli.js) refuses the generator CLI\'s own directory, non-zero exit, streamed-no-engine text', async (t) => {
+test('the real public CLI (main/build/cli.js) builds the generator CLI\'s own directory successfully, no seam of any kind', async (t) => {
   const dir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'forge-streamworld-cli-'));
   t.after(() => fs.promises.rm(dir, { recursive: true, force: true }));
 
@@ -719,9 +720,11 @@ test('the real public CLI (main/build/cli.js) refuses the generator CLI\'s own d
   const gen = spawnSync(process.execPath, [path.join(ROOT, 'test', 'lib', 'streamedproject.js'), dir], { encoding: 'utf8' });
   assert.equal(gen.status, 0, `the generator's own CLI must exit 0: ${gen.stderr}`);
 
+  // Part D/E: a streamed project now builds through the exact same public path a real user's
+  // `node main/build/cli.js <dir>` takes -- no test-only seam anywhere in this call.
   const result = spawnSync(process.execPath, [path.join(ROOT, 'main', 'build', 'cli.js'), dir], { encoding: 'utf8' });
-  assert.notEqual(result.status, 0, 'the CLI must exit non-zero for a streamed project with no bypass');
-  assert.match(result.stdout + result.stderr, /streamed maps have no engine yet/i, 'the CLI must print the real streamed-no-engine refusal, not a generic failure');
+  assert.equal(result.status, 0, `the CLI must build a default-shaped streamed project successfully: ${result.stdout}\n${result.stderr}`);
+  assert.ok(fs.existsSync(path.join(dir, 'build', 'game.nes')), 'the CLI must produce a real ROM');
 });
 
 // Part E's own requirement: a test pins the SHA-256 of the canonical JSON of
@@ -731,12 +734,13 @@ test('the real public CLI (main/build/cli.js) refuses the generator CLI\'s own d
 // drift. Three shapes, matching the ones Part D's kernel-hi equality test
 // and the occupancy test above already build: action, rpg, and action+mixed.
 const CANONICAL_HASHES = {
-  // fix round 1, finding 5: re-pinned deliberately -- the terrain formula changed (see
-  // streamedScreen's own comment in test/lib/streamedproject.js) to make consecutive bytes within
-  // a screen's own varied region distinguishable from each other.
-  action: '48f331376387c5d61cef6043e7d9e631f5e925d749232d542396bd5d7eb3898d',
-  rpg: 'dd40523519dde03eac9aa9c5cfadb55a5a876c6ff2aa5f3b20278847f37ccc9b',
-  'action-mixed': '4b8a4665fba3aeade83ce3e818c1c533faa92442e276ce18e0d4ff9213a4625c'
+  // Phase 2 slice 2b, Part E: re-pinned deliberately -- createStreamedProject's default
+  // cartridge.camera flipped from false to true (Part D item 8 refuses camera-off on any project
+  // with a streamed map; the prototype's own project.json this shape used to mirror predates that
+  // refusal). Nothing else about the generator's own shape changed this slice.
+  action: '775ea1794be3bcc9eb8f75dd98b49a4a041e6ecc380800ca00f8dec30315c440',
+  rpg: 'e4b99f663281712ca90fb124669c09415b9b999db25251ae994a7782de3a52d6',
+  'action-mixed': '27933007e23f5db4d9486c9fd356f74e558c9eb0da7a79fd1dc568931303ac47'
 };
 
 test('test/lib/streamedproject.js: the canonical JSON of each generator shape hashes to a pinned SHA-256', () => {

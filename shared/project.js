@@ -5268,7 +5268,20 @@ function normalizeMap(raw, id, itemCtx = EMPTY_ITEM_CTX) {
     // saves) byte-identically -- a `streamed: false` key would rewrite every
     // fixture on its next save. Whether the board can honour it is
     // validateProject's question, not this normalizer's.
-    ...(streamed ? { streamed: true } : {})
+    ...(streamed
+      ? {
+          streamed: true,
+          // Meaningless (and so never even round-tripped) on an ordinary map, for the same
+          // byte-identical-resave reason as `streamed` itself above. Previously dropped entirely
+          // by this normalizer (a real, pre-existing schema gap: main/build/streamed.js reads
+          // `map.fillMetatileId ?? 0` from the RAW project, so a value an author set survived only
+          // until the next save/reload round-trip). Clamped to a byte here, same convention as
+          // every other authored numeric field on this object; emitStreamedLayout's own `byteOf`
+          // check stays as defense-in-depth for a hand-built raw object that skips normalizeProject
+          // entirely (test/lib/streamedproject.js, deliberately, per its own header comment).
+          fillMetatileId: clamp(raw?.fillMetatileId, 0, 255, 0)
+        }
+      : {})
   };
 }
 
@@ -6714,6 +6727,32 @@ function eventMovesPlayer(event, commonById, seen) {
 }
 
 /**
+ * Phase 2 slice 2b: does `event` reach a live command whose op is in `ops`
+ * (a Set), following `call` into common events the same way eventMovesPlayer
+ * does? Used by validateStreamedMaps for the Say (Part D item 4) and Fight
+ * (item 6) refusals -- unlike eventMovesPlayer, ownership (who runs the
+ * command) does not matter for either of those: a Say opens a text box no
+ * matter who is "speaking," and a scripted Fight starts a battle no matter
+ * who triggers it, so this is a plain reachability walk with no route/player
+ * bookkeeping of its own.
+ */
+function eventHasOp(event, ops, commonById, seen) {
+  for (const page of compiledPages(event)) {
+    for (const command of liveCommands(page.commands, CHOICE_LIMITS.options)) {
+      if (ops.has(command.op)) return true;
+      if (command.op === 'call') {
+        const target = commonById.get(commonEventId(command.event));
+        if (target && !seen.has(target)) {
+          seen.add(target);
+          if (eventHasOp(target, ops, commonById, seen)) return true;
+        }
+      }
+    }
+  }
+  return false;
+}
+
+/**
  * The board-shaped half of `validateStreamedMaps`: per streamed map, whether the board and
  * mirroring can stream at all (`kind: 'capability'`), its grid problems (`'grid'`) and the
  * two-nametable dead-axis restriction (`'deadAxis'`), in validateProject's own order. Exported
@@ -6753,6 +6792,25 @@ export function streamedBoardProblems(project) {
           'UNROM 512 with horizontal or vertical mirroring -- change the board in the Build panel, or remove ' +
           '"streamed" (or set it to false) for this map in the project\'s map JSON.'
       );
+    } else if (!streamCapableFourScreen(mapper, mirroringId)) {
+      // Phase 2 slice 2b: the resolver/render engine (engine/streamworld.asm's
+      // sw_resolve_screen, cam_nt) was built and measured only against a
+      // four-screen ring's four independent physical nametables -- the
+      // two-nametable ring streamCapable() otherwise admits is phase 3,
+      // "addressing only" today (shared/cartridge.js's own doc comment on
+      // streamCapableTwoNametable), so a board that only qualifies through
+      // that ring is refused here even though streamCapable() calls it
+      // capable in the abstract. Distinct from the !capable message above:
+      // that one says "this board can never stream," this one says "not yet,
+      // on this board, in this build."
+      add(
+        'capability',
+        'Build',
+        `${name} is streamed on ${mapper.name} with ${mirroringById(mirroringId).label.toLowerCase()} mirroring, ` +
+          'which only reaches the two-nametable ring -- not implemented yet. Streamed maps need UNROM 512 with ' +
+          'four-screen mirroring today; change the board and mirroring in the Build panel, or remove "streamed" ' +
+          '(or set it to false) for this map in the project\'s map JSON.'
+      );
     }
     for (const problem of gridProblems) if (problem.mapIndex === index) add('grid', 'Map Forge', problem.message);
     // 'horizontal' dead axis = it cannot slide sideways, so the map is one screen wide.
@@ -6781,8 +6839,9 @@ export function streamedBoardProblems(project) {
 /**
  * Every rule for `map.streamed`, in one place so validateProject stays
  * readable. Board/mirroring gating, the grid ceilings, the two-nametable
- * dead-axis restriction (docs/design-streamed-worlds.md §2-§3), and the
- * player-Move warning (§5). The byte-level capacity refusal is not here.
+ * dead-axis restriction (docs/design-streamed-worlds.md §2-§3), and Part D's
+ * eight phase-2-slice-2b refusals below. The byte-level capacity refusal is
+ * not here.
  */
 function validateStreamedMaps(project, add) {
   const streamed = project.maps.map((map, index) => ({ map, index })).filter(({ map }) => map.streamed === true);
@@ -6798,24 +6857,131 @@ function validateStreamedMaps(project, add) {
     );
   }
 
-  // The commit-free player-Move warning: a scripted Move can walk the player
-  // to the far edge of a streamed screen, which the engine does not yet bound.
+  // Part D (phase 2 slice 2b): eight things the resolver/render engine does
+  // not support yet on a streamed screen, each refused here at build time --
+  // an error, not a warning, since nothing at runtime bounds any of these the
+  // way it bounds a plain screen-edge crossing (Part C's wall). The runtime's
+  // own defensive no-ops (rebuild_bound_cache/check_encounter's map_is_streamed
+  // guards) exist for the REACTIVE case -- an ordinary map's own Set/Clear, or
+  // check_encounter's own every-frame poll, reaching a screen while the
+  // player stands on a streamed one -- not to make any of these a supported
+  // authored combination. What was a warning through phase 2a (item 3, a
+  // scripted Move targeting the player) becomes an error here for the same
+  // reason: a Move sets player_x/player_y directly, never through cross_*, so
+  // Part C's wall cannot catch it either.
   const commonById = new Map(liveCommonEvents(project).map(({ entry, id }) => [id, entry.event]));
+  // Fix round 1, finding 4: every command that opens the text overlay
+  // (engine/text.asm's box_begin/box_choose), not just Say -- Choice
+  // dispatches straight to box_choose (engine/script.asm's script_op_choice,
+  // `jmp box_choose`), so a Choice-only event with no Say anywhere reached
+  // the same unsupported overlay this refusal exists to block. Join's own
+  // box_begin call (script_op_join, BOX_NAMEENTRY) needs no entry here: it
+  // is gated on JOIN_NAMING_ENABLED, itself gated on projectUsesJoinNaming,
+  // which item 5 below already refuses globally for any project with a
+  // streamed map -- that build option can never be on here.
+  const SAY_OPS = new Set(['say', 'choice']);
+  const FIGHT_OPS = new Set(['battle']);
   for (const { map, index } of streamed) {
     map.screens.forEach((screen, screenIndex) => {
+      const label = () => `${screenLabel(project, index, screenIndex)} on the streamed map "${map.name}"`;
+      // Item 2: bound tiles -- rebuild_bound_cache (engine/screens.asm)
+      // returns an empty cache for any streamed screen, so an authored
+      // binding there would silently never apply.
+      if ((screen.boundTiles ?? []).length > 0) {
+        add(
+          'error',
+          'Map Forge',
+          `${label()} has switch-bound tiles, which a streamed screen cannot use yet -- remove them, or make ` +
+            'this map ordinary.'
+        );
+      }
       for (const entity of screen.entities ?? []) {
-        const event = entity.props?.event;
-        if (event && eventMovesPlayer(event, commonById, new Set([event]))) {
+        // Item 6 (authored-contact half): an entity whose own actor starts a
+        // battle on touch (availableTriggers' own `startsBattle` rule --
+        // isMonsterActor in an RPG) needs no scripted event at all to reach
+        // call_battle, so this is checked independently of whether the
+        // entity carries one.
+        const actor = project.sprites?.actors?.[entity.actorId];
+        if (project.project.gameType === 'rpg' && isMonsterActor(actor)) {
           add(
-            'warning',
+            'error',
             'Map Forge',
-            `${screenLabel(project, index, screenIndex)} on the streamed map "${map.name}": the event on ` +
-              `${entityLabel(project, entity)} moves the player, and a long enough Move can walk them to the edge of ` +
-              'the screen. Keep player Moves short, or use a Warp to change screen.'
+            `${label()}: ${entityLabel(project, entity)} deals contact damage, which starts a battle on touch, and a ` +
+              'streamed screen cannot yet -- remove its damage, or make this map ordinary.'
+          );
+        }
+        const event = entity.props?.event;
+        if (!event) continue;
+        // Item 3.
+        if (eventMovesPlayer(event, commonById, new Set([event]))) {
+          add(
+            'error',
+            'Map Forge',
+            `${label()}: the event on ${entityLabel(project, entity)} moves the player, and a long enough Move ` +
+              'can walk them off the screen, which a streamed screen cannot bound yet. Remove the Move, use a ' +
+              'Warp instead, or make this map ordinary.'
+          );
+        }
+        // Item 4: Say/dialogue.
+        if (eventHasOp(event, SAY_OPS, commonById, new Set([event]))) {
+          add(
+            'error',
+            'Map Forge',
+            `${label()}: the event on ${entityLabel(project, entity)} shows text or asks a question, which a ` +
+              'streamed screen cannot yet -- remove it, or make this map ordinary.'
+          );
+        }
+        // Item 6 (scripted half): a Fight command.
+        if (eventHasOp(event, FIGHT_OPS, commonById, new Set([event]))) {
+          add(
+            'error',
+            'Map Forge',
+            `${label()}: the event on ${entityLabel(project, entity)} starts a battle, which a streamed screen ` +
+              'cannot yet -- remove it, or make this map ordinary.'
           );
         }
       }
     });
+    // Item 6 (random-encounter half): a streamed map's own wandering monsters.
+    if ((map.encounters?.rate ?? 0) > 0) {
+      add(
+        'error',
+        'Map Forge',
+        `The streamed map "${map.name}" has wandering monsters (a nonzero encounter rate), which a streamed ` +
+          'screen cannot yet -- set the rate to 0 for this map, or make it ordinary.'
+      );
+    }
+  }
+
+  // Item 5: hero/Join naming anywhere in a project that has a streamed map.
+  if (projectUsesHeroNaming(project) || projectUsesJoinNaming(project)) {
+    add(
+      'error',
+      'Map Forge',
+      'This project uses in-game naming (a renamable party member), which a project with a streamed map cannot ' +
+        'yet -- turn off naming, or remove the streamed map.'
+    );
+  }
+  // Item 7: a live Save anywhere in a project that has a streamed map.
+  if (projectUsesSave(project)) {
+    add(
+      'error',
+      'Map Forge',
+      'This project has a live Save command, which a project with a streamed map cannot yet -- remove Save, or ' +
+        'remove the streamed map.'
+    );
+  }
+  // Item 8: the camera off. engine/boot.asm's own nmi_scroll hardcodes scroll
+  // (0,0) and nametable 0 every vblank when CAMERA_ENABLED is off, which
+  // would silently overwrite a streamed landing's own non-(0,0) scroll one
+  // frame after it is drawn.
+  if (!project.cartridge.camera) {
+    add(
+      'error',
+      'Map Forge',
+      'This project has the camera off, and a streamed map needs it on to keep its own screen scrolled into ' +
+        'view after the landing frame -- turn the camera on in the Build panel, or remove the streamed map.'
+    );
   }
 }
 

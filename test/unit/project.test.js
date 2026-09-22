@@ -10224,6 +10224,50 @@ test(
   }
 );
 
+test('map.fillMetatileId (streamed maps only) round-trips through normalizeProject and save/load, is absent and unclamped-input-safe on an ordinary map', async (t) => {
+  // Phase 2 slice 2b, Part E: normalizeMap used to drop fillMetatileId entirely -- a real,
+  // pre-existing schema gap (streamed-worlds-phase2-s2a-review1.md), since main/build/streamed.js
+  // reads it straight off the RAW project, so an authored value survived only until the project's
+  // next save/reload round trip through normalizeProject. Fixed by copying it, clamped to a byte,
+  // only when the map is streamed -- same "absent unless it applies" convention as `streamed`
+  // itself, so an ordinary map's JSON never gains a key it never had.
+  const streamedRaw = { maps: [{ streamed: true, fillMetatileId: 200 }] };
+  const normalized = normalizeProject(streamedRaw);
+  assert.equal(normalized.maps[0].fillMetatileId, 200, 'a legal byte value survives normalization');
+  assert.equal(
+    normalizeProject(normalized).maps[0].fillMetatileId,
+    200,
+    'fillMetatileId survives a second normalization pass unchanged'
+  );
+
+  // Out-of-range input is clamped, not dropped or left to throw here -- the same convention as
+  // every other authored numeric field on this object (battleSkyTile, encounters.rate, ...);
+  // emitStreamedLayout's own byteOf check stays as defense-in-depth for a hand-built raw object
+  // that skips normalizeProject entirely (test/lib/streamedproject.js, deliberately).
+  assert.equal(normalizeProject({ maps: [{ streamed: true, fillMetatileId: 999 }] }).maps[0].fillMetatileId, 255);
+  assert.equal(normalizeProject({ maps: [{ streamed: true, fillMetatileId: -5 }] }).maps[0].fillMetatileId, 0);
+
+  // An ordinary map never carries the key at all, streamed or not set.
+  assert.ok(!('fillMetatileId' in normalizeProject({ maps: [{ fillMetatileId: 200 }] }).maps[0]));
+
+  // A real save/load round trip, not merely normalizeProject called twice in memory.
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'forge-fillmetatile-'));
+  t.after(() => fs.rm(dir, { recursive: true, force: true }));
+  const project = createProject('Fill metatile round trip');
+  project.cartridge.mapper = 30;
+  project.cartridge.mirroring = 'fourscreen';
+  project.cartridge.camera = true;
+  project.maps[0].streamed = true;
+  project.maps[0].fillMetatileId = 42;
+  await saveProject(dir, project);
+  const reloaded = await loadProject(dir);
+  assert.equal(
+    reloaded.maps[0].fillMetatileId,
+    42,
+    "the reloaded project's own fillMetatileId survives a real save/load round trip"
+  );
+});
+
 // §11 test 26
 test(
   'the draw-site census: saveCompatToken is redrawn on exactly the five qualifying structural edits, ' +

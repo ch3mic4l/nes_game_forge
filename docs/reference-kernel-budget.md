@@ -167,11 +167,87 @@ sizes, the route zero-cost proof and `KERNEL_SLACK` itself are each checked thei
 - `KERNEL_SLACK = 20` (unmoved by the diet): `kernelbytes.test.js`'s `assertCovers` requires
   `KERNEL_SLACK <= margin <= KERNEL_SLACK * 2`. Correct accounting of the base and every conditional
   term should leave exactly the floor; the ceiling detects drift, not spare headroom.
-- `STREAMWORLD_KERNEL_HI_ALLOWANCE = 2050` plus `STREAMWORLD_MT_PAL_KERNEL_HI_BYTES = LIMITS.metatiles`
+- `STREAMWORLD_KERNEL_HI_ALLOWANCE = 2432` plus `STREAMWORLD_MT_PAL_KERNEL_HI_BYTES = LIMITS.metatiles`
   (64) are the one pair of allowances charged against kernel-**hi** ($E000) rather than kernel-lo —
   the resident streamed-worlds package (`engine/streamworld.asm`) and its metatile attribute-quadrant
   lookup (`mt_pal`), both assembled inside `.if STREAMING_ENABLED` after `assets/text.inc`, gated on
   `projectUsesStreaming` (`shared/streamlayout.js`). Measured as the real kernel-hi bank usage delta
   between a streamed build and the same project with every map's `streamed` flag forced off, flat
-  at 2114 combined across game type, the `mixed` (streamed map alongside ordinary ones) shape, and
-  every streamed-capable board (UNROM 512, MMC1, MMC3) — equality-asserted by `kernelbytes.test.js`.
+  at 2496 combined across game type and the `mixed` (streamed map alongside ordinary ones) shape —
+  equality-asserted by `kernelbytes.test.js`. Phase 2 slice 2b's Part D narrowed streaming to UNROM
+  512 (`streamCapableFourScreen`) alone, so this is no longer measured per mapper; MMC1/MMC3 are
+  refused outright by `validateStreamedMaps` regardless of what this would measure there. Re-measured
+  up from 2050 to 2376 by this same slice's own landing-site resolver and render call sites
+  (`sw_resolve_screen`, `sw_render_window`, `sw_locate_current`), then to 2432 by fix round 1's own
+  finding 1 (a real 16-bit locator pointer, `sw_resolve_owner_streamed`, replacing an 8-bit multiply
+  that wrapped) and finding 9 (the `NO_SCREEN` park/`st_active` clear in `sw_resolve_screen`) — both
+  real net growth in this same resident file, re-measured directly each time, never derived by
+  adding a fix's own byte count to the prior figure by hand.
+- Phase 2 slice 2b, Part F: ten more kernel-**lo** terms streaming adds, each its own named
+  allowance (`main/build/generate.js`, all gated on `projectUsesStreaming`, added inside
+  `kernelCodeBytes`), measured as `symbolAddr(after) - symbolAddr(before)` off a real build between a
+  pair of unconditional boundary labels bracketing each site's own `.if STREAMING_ENABLED` addition
+  — flat across game type and the `mixed` shape, confirmed by measuring all three
+  (`test/lib/streamedproject.js`):
+  - `STREAMWORLD_RESOLVER_KERNEL_ALLOWANCE = 49` — `engine/boot.asm`'s own copy of the
+    resolve-and-render dispatch (cold boot draws its first screen inline rather than calling
+    `redraw_screen`): `jsr sw_resolve_screen` plus the `map_is_streamed` branch, the whole
+    streamed-landing render sequence, and the tail jump back into the ordinary path's shared tail.
+  - `STREAMWORLD_REDRAW_KERNEL_ALLOWANCE = 47` — `engine/screens.asm`'s `redraw_screen`, the
+    "re-keyed consumer" version of the identical dispatch, reached by every other landing
+    (`start_game`, `restart_game`, `take_door`, `continue_game`); 2 bytes less than the resolver
+    term because this copy ends in `rts` rather than boot's own 3-byte tail jump.
+  - `STREAMWORLD_SET_SCREEN_PTR_KERNEL_ALLOWANCE = 8` — `engine/screens.asm`'s `set_screen_ptr`: an
+    early return through `sw_locate_current` when the CURRENT screen is streamed (`call_battle`
+    always ends `jmp set_screen_ptr`, so this runs even for a non-fight session-lifecycle entry).
+  - `STREAMWORLD_SPAWN_KERNEL_ALLOWANCE = 12 + 164` — `engine/entities.asm`'s `spawn_entities`: the
+    streamed-vs-ordinary dispatch in `spawn_clear`'s own preamble (12) plus `spawn_streamed`'s own
+    body (164), the actor/x/y/target/toX/toY/event/trigger/hideSwitch field loop walked with
+    `sw_adv_offset` instead of a bare `iny` since a streamed record is `STREAM_RECORD_BYTES` long.
+  - `STREAMWORLD_MUSIC_KERNEL_ALLOWANCE = 0` — `engine/music.asm`'s `apply_map_music`/
+    `apply_map_music_direct`, named for consistency even though the measured delta is exactly zero:
+    `ldy <ord_screen` and `ldy <flat_screen` are both a 2-byte zero-page load.
+  - `STREAMWORLD_ENCOUNTER_KERNEL_ALLOWANCE = 4`, RPG-only (`usesBattleBase`, same gate as every
+    other RPG-only term on this page) — `engine/rpg.asm`'s `check_encounter`: no random encounter
+    while the current screen is streamed (defensive; Part D already refuses a nonzero encounter rate
+    reachable on any streamed map). `start_encounter`'s own re-keyed swap costs nothing, the same
+    zero-page-both reasoning as the music term above.
+  - `STREAMWORLD_INIT_SESSION_KERNEL_ALLOWANCE = 4` — `engine/combat.asm`'s `init_session`:
+    `map_is_streamed`/`ord_screen` cleared defensively on every "new game" and game-over restart, so
+    a stale value never survives into a reactive read that could run before the first landing does.
+    Unconditional whenever streaming is on — the one term the worst-case margin test caught that
+    Part F's own consumer list had missed.
+  - `STREAMWORLD_BOUND_CACHE_KERNEL_ALLOWANCE = 8`, gated on BOTH `projectUsesStreaming` and
+    `projectUsesBoundTiles` — `engine/screens.asm`'s `rebuild_bound_cache`: a streamed CURRENT
+    screen returns an empty cache rather than reading a stale row (Part D refuses a streamed map its
+    own bound tile, but `tile_switch_changed` can still reach this reactively from an ordinary map's
+    Set/Clear while the player stands on a streamed screen).
+  - `STREAMWORLD_CROSS_KERNEL_ALLOWANCE = 4 * 7` — `engine/player.asm`'s `cross_left/right/up/down`:
+    Part C's interim wall, every edge solid while the CURRENT screen is streamed (no strip-streaming
+    machinery wired to cross into a neighbour yet). Each direction is `lda/beq/jmp cross_none` (7
+    bytes), unconditional — `cross_*` has no feature gate of its own.
+  - `STREAMWORLD_CROSS_TRANSLATE_KERNEL_ALLOWANCE = 13 + 8` — `engine/player.asm`'s
+    `cross_set_screen`: past the interim wall, an ORDINARY crossing runs through this helper instead
+    of a bare `sta <flat_screen`, so `flat_screen` stays the global id while `ord_screen` adopts the
+    newly-crossed-to compacted index too (a real streamed crossing is not this helper's job at all —
+    slice 4b's own streamed movement driver, not yet built, owns that; see `docs/reference-
+    engine.md`'s own Part C note). The helper itself is a fixed 13 bytes; each of its 8 call
+    sites (the slide branch and the cut fallback, times all 4 directions) replaces a 2-byte store
+    with a 3-byte `jsr`, +1 byte each, all 8 always assembling since a streamed map is only ever
+    reachable on UNROM 512 with four-screen mirroring, whose `cameraAxes` answers both axes true.
+  - Fix round 1's own three additions, each measured as a marginal delta on top of the resolver/
+    redraw spans above, not restated from scratch: `STREAMWORLD_LANDING_BOUND_CACHE_KERNEL_
+    ALLOWANCE = 2 * 3`, gated on BOTH `projectUsesStreaming` and `projectUsesBoundTiles` — a `jsr
+    rebuild_bound_cache` added at EACH of the two streamed-landing call sites (boot's own inline
+    copy and `redraw_screen`'s), 3 bytes apiece, so a landing after a streamed map's own bound-tile
+    cache is never a stale row instead of the empty one `rebuild_bound_cache` itself already returns
+    for a streamed CURRENT screen. `STREAMWORLD_ORDINARY_CAM_RESET_KERNEL_ALLOWANCE = 8`, gated on
+    `projectUsesStreaming` alone — `redraw_screen_ordinary`'s own `cam_x_lo`/`cam_y_lo`/`cam_nt`
+    reset to 0 right before `enable_rendering`, so an ordinary landing reached AFTER a streamed one
+    does not inherit the streamed screen's own nonzero scroll (cold boot needs no equivalent: its
+    own RAM-clear loop already zeroes those bytes before that path ever runs, once). `STREAMWORLD_
+    TILE_SWITCH_KERNEL_ALLOWANCE = 4`, gated on BOTH `projectUsesStreaming` and
+    `projectUsesBoundTiles` — `tile_switch_changed`'s own SECOND, independent streamed guard
+    (`engine/script.asm`), distinct from `rebuild_bound_cache`'s own: its ROM-side flip-queueing walk
+    must also refuse to index `screen_bound_lo`/`hi` by `ord_screen` while the current screen is
+    streamed, since a streamed screen has no row in that table at all.

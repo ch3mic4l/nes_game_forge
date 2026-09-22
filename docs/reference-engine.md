@@ -141,6 +141,38 @@ later version. The `supported`/`unsupportedReason` fields and the Build panel's 
 rendering stay as the mechanism for adding a mapper honestly: declare it, let the UI show why it's
 not selectable, then implement it. No entry currently exercises that path.
 
+**Streamed worlds (ROADMAP item 15) add a third identity for "the current screen," alongside the
+ordinary global one.** `flat_screen` (`engine/constants.asm`) stays the GLOBAL screen id, unchanged
+by streaming — saves, warp targets and `cross_*`'s own deltas all still read it. `ord_screen` is new:
+the compacted `0..N-1` row index every ordinary `*_bank`/`*_tileset`/`*_mt_lo`/`*_left`/`*_map`/
+`*_ent_lo`/`*_bound_lo` table is keyed by, meaningful only while `map_is_streamed` is clear, never
+stored or persisted — the resolver's own compacted view of `flat_screen`, recomputed fresh at every
+landing. `cur_map` (`engine/constants.asm`, next to `cur_song`) is unrelated to either: `NO_MAP`
+until a screen decides the music, streamed or not. `set_screen_ptr` (`engine/screens.asm`) takes an
+early return through `sw_locate_current` — its streamed equivalent — when `map_is_streamed` is set,
+before ever touching `ord_screen`; this runs even for a non-fight session-lifecycle entry, since
+`call_battle` always ends `jmp set_screen_ptr` (the restore *is* the return).
+
+**`sw_resolve_screen` (`engine/streamworld.asm`) is the single place a landing is resolved** — the
+runtime counterpart of `main/build/streamed.js`'s `resolveGlobalScreen()`, a map-order prefix walk
+over `map_base`/`stream_type_bits`/`stream_columns` that turns a GLOBAL screen id into either an
+ordinary table row (sets `ord_screen`, touches nothing else) or a streamed landing (points
+`mtptr`/PRG bank/CHR bank at the target screen, frames it as the window's own top-left origin with
+no local offset, sets `cam_nt`/`cam_x_lo`/`cam_y_lo` to that origin's landing scroll, updates
+`cur_map`/music). Every one of the 5 landing sites — cold boot (`engine/boot.asm`'s own inline copy,
+since cold boot draws its first screen without calling `redraw_screen`), `start_game`,
+`restart_game`, `take_door` and `continue_game` (both through `redraw_screen`, `engine/screens.asm`)
+— reaches this and only this; there is no second implementation of "what a landing means."
+
+**Part C's interim wall**: `cross_left`/`cross_right`/`cross_up`/`cross_down` (`engine/player.asm`)
+treat every edge of a streamed CURRENT screen as solid — `lda/beq/jmp cross_none` per direction,
+unconditional, no feature gate of their own — because no strip-streaming machinery is wired to cross
+into a neighbour yet. `cross_set_screen` is the ORDINARY (non-streamed) crossing's own correction
+routine, already in place today (keeping `flat_screen` the global id while `ord_screen` adopts the
+newly-crossed-to compacted index) — it is not itself where a streamed crossing will run. The interim
+wall is pending replacement by slice 4b's own streamed movement driver, a different mechanism this
+codebase does not have yet, not a path through `cross_set_screen`.
+
 Two mappers were considered and deliberately left out rather than declared. AxROM (7) switches all
 32 KB at once, leaving no fixed window for the kernel, so the engine would need duplicating into
 every bank — which nesasm can't do by re-including code, since labels would collide. MMC5

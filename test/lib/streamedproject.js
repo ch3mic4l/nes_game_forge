@@ -1,12 +1,11 @@
-// A deterministic streamed-world test project (phase 2 slice 2a), built the same way
+// A deterministic streamed-world test project, built the same way
 // test/lib/streamedprovenance.mockfixture.js already does: createProject/createMap/createScreen,
-// with `streamed`/gridW/gridH/fillMetatileId set directly on the RAW (never normalizeProject'd)
-// objects. That earlier file proved generateAssets accepts this shape directly -- and it must,
-// since normalizeMap (shared/project.js) does not copy fillMetatileId at all (see that function's
-// own returned-object list), so a project that went through normalizeProject would silently lose
-// it before main/build/streamed.js ever reads `map.fillMetatileId ?? 0`. Building raw and skipping
-// normalizeProject sidesteps that gap rather than fixing it -- fixing normalizeMap's schema is out
-// of this slice's scope (see the phase 2 slice 2a report's open questions).
+// with `streamed`/gridW/gridH/fillMetatileId set directly on the objects those return. This never
+// runs normalizeProject -- not because it has to avoid one (phase 2 slice 2b, Part E, fixed
+// normalizeMap's own pre-existing gap that used to drop fillMetatileId entirely; see that
+// function's own comment and test/unit/project.test.js's round-trip test), but because createMap
+// already returns an object in normalizeMap's own output shape, so a normalizeProject pass over it
+// would be a no-op. generateAssets/buildProject accept this shape directly either way.
 //
 // Board/mirroring/tileset facts match the prototype's own minimal-u512-fix23-move-clean/
 // project.json exactly (mapper 30, mirroring "fourscreen", camera false, tilesetId 0) -- verified
@@ -89,8 +88,15 @@ function buildStreamedMap(id, name, gridW, gridH) {
  * none of the four reproduces the exact project those already assert against. A caller measuring
  * MMC1/MMC3 coverage passes `{mapper: 1 or 4, mirroring: 'vertical', gridH: 1}` --
  * streamCapableTwoNametable's board/mirroring combination, whose vertical mirroring makes the
- * vertical axis the dead one (shared/cartridge.js's cameraAxes), so a streamed map there needs
- * gridH === 1 (shared/project.js's streamedBoardProblems) or validateProject refuses the build.
+ * vertical axis the dead one (shared/cartridge.js's cameraAxes); phase 2 slice 2b's own Part D
+ * item 1 refuses that combination outright now (streamCapableFourScreen, UNROM 512 only), so a
+ * caller passing a two-nametable mapper/mirroring pair here is building the NEGATIVE control for
+ * that refusal, not a build that is expected to succeed.
+ * options.camera: defaults to true (Part D item 8 requires the camera on for any streamed map);
+ * pass `false` to build the negative control for that refusal.
+ * options.naming: defaults to false (Part D item 7's positive control -- hero naming already off
+ * by createPartyMember's own default); pass `true` to set party[0].renamable and build the
+ * negative control for that refusal.
  */
 export function createStreamedProject({
   gameType = 'action',
@@ -98,12 +104,15 @@ export function createStreamedProject({
   mapper = 30,
   mirroring = 'fourscreen',
   gridW = GRID_W,
-  gridH = GRID_H
+  gridH = GRID_H,
+  camera = true,
+  naming = false
 } = {}) {
   const project = createProject('Streamed Test', gameType);
   project.cartridge.mapper = mapper;
   project.cartridge.mirroring = mirroring;
-  project.cartridge.camera = false; // matches the prototype's own project.json exactly
+  project.cartridge.camera = camera;
+  if (naming && project.party[0]) project.party[0].renamable = true;
 
   const maps = [];
   let nextId = 0;

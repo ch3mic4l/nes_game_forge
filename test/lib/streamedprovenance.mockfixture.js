@@ -34,8 +34,9 @@ test('config.inc\'s STREAM_RECORD_BYTES line tracks a live import of shared/stre
 
   const p = createProject('MockProvenance');
   p.maps = [];
-  p.cartridge.mapper = 1; // MMC1: a streamed-capable board
-  p.cartridge.mirroring = 'horizontal';
+  p.cartridge.mapper = 30; // UNROM 512: the only streamCapableFourScreen board
+  p.cartridge.mirroring = 'fourscreen';
+  p.cartridge.camera = true; // required for any streamed map (Part D item 8)
   const m = createMap(0, 'S');
   m.gridW = 1;
   m.gridH = 1;
@@ -44,7 +45,7 @@ test('config.inc\'s STREAM_RECORD_BYTES line tracks a live import of shared/stre
 
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-streamed-provenance-'));
   try {
-    await generateAssets({ dir, project: p, bypassStreamedRefusal: true });
+    await generateAssets({ dir, project: p });
     const inc = fs.readFileSync(path.join(dir, 'build/assets/config.inc'), 'utf8');
     assert.match(inc, new RegExp(`STREAM_RECORD_BYTES = ${SENTINEL}\\b`));
     assert.doesNotMatch(inc, /STREAM_RECORD_BYTES = 338\b/);

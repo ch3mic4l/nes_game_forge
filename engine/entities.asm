@@ -15,7 +15,23 @@ spawn_clear:
   lda #1                    ; the rest of this frame is not the new screen's
   sta <screen_fresh
 
+; spawn_clear_dispatch/spawn_clear_ord bracket exactly the streamed dispatch
+; below (nothing else sits between them) -- Part F's STREAMWORLD_SPAWN_
+; KERNEL_ALLOWANCE measures this span directly off nesasm's own symbol
+; table (kernelbytes.test.js) rather than by hand, the same reason
+; redraw_screen_no_fade_reload/redraw_screen_ordinary already bracket theirs.
+spawn_clear_dispatch:
+  .if STREAMING_ENABLED
+  lda <map_is_streamed
+  beq spawn_entities_ord      ; bne's target (spawn_streamed) is >128 bytes away
+  jmp spawn_streamed
+spawn_entities_ord:
+  ldy <ord_screen
+  jmp spawn_have_ptr
+  .endif
+spawn_clear_ord:
   ldy <flat_screen
+spawn_have_ptr:
   lda screen_ent_lo,y
   sta <esptr_lo
   lda screen_ent_hi,y
@@ -105,6 +121,97 @@ spawn_next:
   jmp spawn_loop            ; the top of the record is out of a branch's reach
 spawn_done:
   rts
+
+  .if STREAMING_ENABLED
+; spawn_streamed -- phase 2 slice 2b. mtptr already points at the entered
+; streamed screen's own STREAM_RECORD (sw_resolve_screen's own contract),
+; so there is no esptr indirection to set up: the record is read in place.
+; STREAM_ENTITY_FIELDS (shared/streamlayout.js) is deliberately the ordinary
+; entity record's own field order, unchanged, so this loop's body is the
+; identical actor/x/y/target/toX/toY/event/trigger/hideSwitch sequence
+; spawn_any's own loop reads -- only the cursor differs: a streamed record
+; is STREAM_RECORD_BYTES (338) long, past any single Y, so sw_adv_offset
+; (not a bare iny) crosses into mtptr_hi+1 once the entity block's own
+; offsets (STREAM_OFF_ENTITIES=241 onward) pass 255.
+spawn_streamed:
+  ldy #STREAM_OFF_ENTITY_COUNT
+  lda [mtptr_lo],y
+  bne spawn_streamed_any
+  jmp spawn_streamed_done
+spawn_streamed_any:
+  sta <ent_tmp
+  ldx #0
+  lda #0
+  sta <ent_spawn_rec
+  ldy #STREAM_OFF_ENTITIES
+spawn_streamed_loop:
+  lda [mtptr_lo],y          ; actor id
+  sta ent_actor,x
+  jsr sw_adv_offset
+  lda [mtptr_lo],y          ; x
+  sta ent_x,x
+  jsr sw_adv_offset
+  lda [mtptr_lo],y          ; y
+  sta ent_y,x
+  jsr sw_adv_offset
+  lda [mtptr_lo],y          ; door target -- a GLOBAL screen id already
+  sta ent_to_scr,x
+  jsr sw_adv_offset
+  lda [mtptr_lo],y          ; door target x
+  sta ent_to_x,x
+  jsr sw_adv_offset
+  lda [mtptr_lo],y          ; door target y
+  sta ent_to_y,x
+  jsr sw_adv_offset
+  lda [mtptr_lo],y          ; the event it runs
+  sta ent_event,x
+  jsr sw_adv_offset
+  lda [mtptr_lo],y          ; and what makes it run
+  sta ent_trigger,x
+  jsr sw_adv_offset
+  lda [mtptr_lo],y          ; the switch that hides it once it is on
+  jsr sw_adv_offset
+  cmp #NO_SWITCH
+  beq spawn_streamed_place
+  jsr switch_test           ; preserves both X and Y
+  bne spawn_streamed_next
+
+spawn_streamed_place:
+  lda #ENT_PRESENT
+  sta ent_active,x
+  lda <ent_spawn_rec
+  sta ent_record,x
+  sty <ent_tmp2
+  ldy ent_actor,x
+  lda actor_hp,y
+  sta ent_hp,x
+  ldy <ent_tmp2
+  lda #DIR_DOWN
+  sta ent_dir,x
+  lda #0
+  sta ent_frame,x
+  sta ent_timer,x
+  sta ent_hurt,x
+  lda ent_trigger,x
+  cmp #TRIG_ENTER
+  bne spawn_streamed_armed
+  jsr arm_event
+spawn_streamed_armed:
+  inx
+  cpx #MAX_ENTITIES
+  beq spawn_streamed_done
+spawn_streamed_next:
+  inc <ent_spawn_rec
+  dec <ent_tmp
+  beq spawn_streamed_done
+  jmp spawn_streamed_loop
+spawn_streamed_done:
+  jsr sw_locate_current      ; sw_adv_offset may have left mtptr_hi past the
+                              ; entered screen's own page 0 -- restore before
+                              ; returning, the same rule sw_peek_byte/
+                              ; sw_render_window's own tail already holds to
+  rts
+  .endif
 
 ; ------------------------------------------------------------- behaviour
 

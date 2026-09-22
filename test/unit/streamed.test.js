@@ -40,9 +40,22 @@ const project = (mapperId, mirroring) => {
   const p = createProject('Streamed');
   p.cartridge.mapper = mapperId;
   p.cartridge.mirroring = mirroring;
+  // Part D item 8 refuses a streamed map with the camera off; every test in this file is about
+  // streamed-map behaviour, so on is the one sane default here (see streamedProblems' own comment
+  // on ITEM1_MESSAGE for the parallel reasoning about item 1's board restriction).
+  p.cartridge.camera = true;
   return p;
 };
-const streamedProblems = (p) => validateProject(p).filter((x) => /stream/i.test(x.message));
+// Phase 2 slice 2b, Part D item 1 added a SEPARATE board-availability message ("not implemented
+// yet... UNROM 512 with four-screen mirroring today") on top of everything this file already
+// tests: streamCapable/streamCapableTwoNametable and the dead-axis rules below are still exactly
+// what they were (the brief's own words: "streamCapable/streamedBoardProblems still call it
+// capable in the abstract for authoring"), and item 1 is a distinct, later-added restriction that
+// a real build now also enforces. Filtered out here so this file's own long-standing capability/
+// grid/dead-axis assertions keep testing exactly what they always tested; a dedicated test below
+// (in the "capability/board availability" section) covers item 1's own message on its own terms.
+const ITEM1_MESSAGE = /only reaches the two-nametable ring/;
+const streamedProblems = (p) => validateProject(p).filter((x) => /stream/i.test(x.message) && !ITEM1_MESSAGE.test(x.message));
 // A streamed map of the given grid, screens filled in by normalize's own rules.
 const gridMap = (p, w, h, streamed = true) => {
   const m = p.maps[0];
@@ -277,6 +290,22 @@ test('gating: an unsupported board or mirroring is refused, naming the Build pan
   }
 });
 
+test('Part D item 1: a two-nametable board (MMC1/MMC3/UNROM 512 non-fourscreen) is refused today, only UNROM 512 four-screen is not', () => {
+  // Catches item 1's new restriction never firing at all, or firing on the one board it must not.
+  const allProblems = (p) => validateProject(p).filter((x) => /stream/i.test(x.message));
+  for (const [mapperId, mirroring] of [[1, 'horizontal'], [4, 'vertical'], [30, 'vertical'], [30, 'horizontal']]) {
+    const p = project(mapperId, mirroring);
+    p.maps[0].streamed = true;
+    const found = allProblems(p).filter((x) => ITEM1_MESSAGE.test(x.message));
+    assert.equal(found.length, 1, `${mapperId}/${mirroring}`);
+    assert.equal(found[0].severity, 'error');
+    assert.equal(found[0].where, 'Build');
+  }
+  const four = project(30, 'fourscreen');
+  four.maps[0].streamed = true;
+  assert.equal(allProblems(four).filter((x) => ITEM1_MESSAGE.test(x.message)).length, 0);
+});
+
 test('an ordinary map on an incapable board raises no streamed problem at all', () => {
   const p = project(0, 'vertical');
   assert.deepEqual(streamedProblems(p), []);
@@ -383,7 +412,11 @@ const withEvent = (p, commands, { streamed = true, place = true } = {}) => {
   }
   return m;
 };
-const moveWarnings = (p) => validateProject(p).filter((x) => x.severity === 'warning' && /moves the player/.test(x.message));
+// Phase 2 slice 2b, Part D item 3 escalated this from a warning to an error (a scripted Move that
+// walks the player off a streamed screen's own bound), keeping the exact same message substring --
+// "Move warning" below is now a slight misnomer kept as the section/test-name label, since the
+// tests' own structure (which shapes warn/error, which don't) is otherwise unchanged.
+const moveWarnings = (p) => validateProject(p).filter((x) => x.severity === 'error' && /moves the player/.test(x.message));
 const mv = (extra = {}) => ({ op: 'move', who: 'player', dir: 'right', dist: 40, ...extra });
 
 test('Move warning: a player Move on a streamed map warns; the same on an ordinary map does not', () => {
@@ -431,12 +464,17 @@ test('Move warning: found on a map that is not the first, and only the middle of
   const found = streamedProblems(q);
   assert.equal(found.length, 1);
   assert.match(found[0].message, /"Middle"/);
+  // checkCapacity folds validateProject's own problems straight in (it spreads
+  // ...validateProject(project)), so the Move check above already proves checkCapacity itself
+  // scans every map too -- no separate "no engine yet" refusal exists any more to re-prove this
+  // against (Part D/E deleted the phase-1 blanket refusal entirely).
   const built = project(30, 'fourscreen');
   built.maps.push(createMap(1, 'Middle'), createMap(2, 'Last'));
   built.maps[1].streamed = true;
-  const refused = checkCapacity(built).problems.filter((x) => /no engine yet/.test(x.message));
-  assert.equal(refused.length, 1);
-  assert.match(refused[0].message, /"Middle"/);
+  built.maps[1].screens[0].entities = structuredClone(mid.screens[0].entities);
+  const builtRefused = checkCapacity(built).problems.filter((x) => /moves the player/.test(x.message));
+  assert.equal(builtRefused.length, 1);
+  assert.match(builtRefused[0].message, /"Middle"/);
 });
 
 test('Move warning: a leg under a disabled ancestor, or in a choice option past the limit, is not reachable', () => {
@@ -568,39 +606,47 @@ test('reconcileCartridge leaves a streamed map alone and the problem stands for 
 
 // ---------------------------------------------------------------- the build refusal
 
-test('build refusal: a streamed map is refused before the assembler, an ordinary one is not', async () => {
+// Phase 2 slice 2b, Part D/E deleted the phase-1 blanket "no engine yet" refusal these two tests
+// used to pin (every streamed map refused, unconditionally, before the assembler ever ran) and
+// replaced it with the per-item checks exercised throughout this file (board/mirroring, bound
+// tiles, Move, Say, Fight, encounters, naming, Save, camera). A minimally-shaped streamed map that
+// clears every one of those now builds successfully through the exact same public path a real
+// caller uses -- proven here; each individual refusal's own positive/negative coverage lives in
+// test/unit/streamworld.test.js.
+test('a minimally-shaped streamed map (UNROM 512, four-screen, camera on, no other content) builds successfully; an incapable board is still gated', async () => {
   const p = project(30, 'fourscreen');
   p.maps[0].streamed = true;
-  const refused = checkCapacity(p).problems.filter((x) => /no engine yet/.test(x.message));
-  assert.equal(refused.length, 1);
-  assert.equal(refused[0].severity, 'error');
-  assert.equal(refused[0].where, 'Map Forge');
-  // Finding 4: no instruction to use a Map Forge control that does not exist; it names the JSON flag.
-  assert.doesNotMatch(refused[0].message, /Turn Streamed off|in the Map Forge/);
-  assert.match(refused[0].message, /"streamed": true/);
+  assert.deepEqual(streamedProblems(p), [], 'nothing else is wrong with this project');
+
   const bad = project(0, 'vertical');
   bad.maps[0].streamed = true;
   const gate = streamedProblems(bad);
+  assert.equal(gate.length, 1);
+  // Finding 4 (phase 1): no instruction to use a Map Forge control that does not exist; it names
+  // the JSON flag.
   assert.doesNotMatch(gate[0].message, /Turn Streamed off/);
   assert.match(gate[0].message, /map JSON/);
-  // The refusal is a build-time problem, not a validateProject one: the editor's own problem list
-  // is not the place for a limitation phase 2 removes.
-  assert.equal(validateProject(p).filter((x) => /no engine yet/.test(x.message)).length, 0);
 
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-streamed-'));
   try {
-    await assert.rejects(generateAssets({ dir, project: p }), /streamed maps have no engine yet/);
-    assert.equal(fs.existsSync(path.join(dir, 'build', 'game.nes')), false);
-    p.maps[0].streamed = false;
-    assert.equal(checkCapacity(p).problems.filter((x) => /no engine yet/.test(x.message)).length, 0);
+    const built = await generateAssets({ dir, project: p, log: () => {} });
+    assert.ok(built, 'a project clearing every Part D check must build, not be refused');
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
 
-test('build refusal: a valid-board streamed map with a mixed project still refuses (any streamed map)', () => {
-  const p = project(1, 'vertical');
+test('a mixed project (ordinary + streamed maps together) on the one valid board builds successfully', async () => {
+  const p = project(30, 'fourscreen');
   p.maps.push(createMap(1, 'Streamed one'));
   p.maps[1].streamed = true;
-  assert.equal(checkCapacity(p).problems.filter((x) => /no engine yet/.test(x.message)).length, 1);
+  assert.deepEqual(streamedProblems(p), []);
+
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-streamed-mixed-'));
+  try {
+    const built = await generateAssets({ dir, project: p, log: () => {} });
+    assert.ok(built);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 });

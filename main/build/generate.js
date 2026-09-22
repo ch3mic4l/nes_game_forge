@@ -1286,17 +1286,25 @@ export const NAME_ENTRY_KERNEL_ALLOWANCE = 107;
 // build minus the same board's unstreamed baseline, minus
 // STREAMWORLD_MT_PAL_KERNEL_HI_BYTES below (both land in the same `.if
 // STREAMING_ENABLED` region, so the raw delta charges both together). Flat
-// at 2050 across game type and `mixed` (2114 combined with
+// at 2432 across game type and `mixed` (2496 combined with
 // STREAMWORLD_MT_PAL_KERNEL_HI_BYTES), measured and equality-asserted on
-// all three streamed-capable boards (UNROM 512, MMC1, MMC3) --
-// test/unit/kernelbytes.test.js. Fix round 1's own review (finding 2) found
-// the prior 2037 figure short by exactly 13 bytes: sw_nmi_stream_reduced,
-// its sw_nsr_go label and SW_STREAM_MIXED_CHUNK had been left out of the
-// migration from the prototype entirely -- 13 instruction bytes (3+2+1+2+2+3);
-// labels and equates emit nothing. The three 1-byte `<` prefix fixes on
-// `inc` operands are a separate, unrelated correction, already folded into
-// this same 2050 figure.
-export const STREAMWORLD_KERNEL_HI_ALLOWANCE = 2050;
+// UNROM 512 -- test/unit/kernelbytes.test.js. Phase 2 slice 2b's Part D
+// item 1 narrowed streaming to UNROM 512 (streamCapableFourScreen) alone,
+// so the per-mapper board list this comment used to name (MMC1/MMC3 too)
+// no longer applies; MMC1/MMC3 are refused outright by validateStreamedMaps
+// regardless of what this allowance would measure on them. Re-measured up
+// from 2050 by this same slice's own landing-site resolver/render call
+// sites (sw_resolve_screen, sw_render_window, sw_locate_current and the
+// rest of engine/streamworld.asm's phase 2 slice 2b growth) -- the prior
+// figure predates all of it. Fix round 1 (streamed-worlds-phase2-s2b-review1.
+// md) grew this again, from 2376 to 2432: finding 1's 16-bit locator pointer
+// (sw_resolve_owner_streamed) and finding 9's NO_SCREEN park/st_active clear
+// (sw_resolve_screen) both live in this same resident file, and both are
+// real net growth over the multiply-that-wraps and no-op-on-invalid-input
+// they replace. Re-measured directly (kernel-hi bank usage, streamed minus
+// unstreamed baseline), not derived by adding the two fixes' own byte counts
+// by hand.
+export const STREAMWORLD_KERNEL_HI_ALLOWANCE = 2432;
 // mt_pal (assets/streamworld_metatiles.inc, generated alongside but
 // separate from assets/metatiles.inc -- the ordinary metatile tables exist
 // on every project, this one only when streaming is live), the
@@ -1311,6 +1319,161 @@ export const STREAMWORLD_KERNEL_HI_ALLOWANCE = 2050;
 // region as streamworld.asm, right after it, so it is a kernel-HI cost too,
 // not kernel-lo -- see the same equality test.
 export const STREAMWORLD_MT_PAL_KERNEL_HI_BYTES = LIMITS.metatiles;
+// Phase 2 slice 2b, Part F: the kernel-LO terms streaming adds, each its own
+// named allowance rather than one lump sum -- every one of these lives
+// before assets/kernel_hi.inc in engine/main.asm's own include order (see
+// STREAMWORLD_KERNEL_HI_ALLOWANCE's own comment for the ones that don't),
+// gated on projectUsesStreaming, so an ordinary project assembles with none
+// of it. Measured directly off nesasm's own symbol table
+// (test/unit/kernelbytes.test.js), not by hand: each site now carries a
+// pair of unconditional boundary labels bracketing exactly its own `.if
+// STREAMING_ENABLED` addition (boot_streamed_landing/boot_draw_ordinary,
+// redraw_screen_dispatch/redraw_screen_ordinary, and so on), so the byte
+// count is `symbolAddr(after) - symbolAddr(before)` off a real build, the
+// same rigor every other allowance on this page already gets from a
+// deliberately-shaped project -- just read from a span instead of a
+// text/off delta, because unlike text there is no way to build "half of
+// streaming" to diff against. Flat across game type and the `mixed` shape
+// (test/lib/streamedproject.js) -- confirmed, not assumed, by measuring all
+// three.
+//
+// engine/boot.asm's own copy of the resolve-and-render dispatch (cold boot
+// draws its first screen inline rather than calling redraw_screen, so it
+// carries a second copy of the identical pattern -- see boot.asm's own
+// comment). 49 bytes: `jsr sw_resolve_screen` plus the map_is_streamed
+// branch plus the whole streamed-landing render sequence (sw_render_window,
+// spawn_entities, build_oam, draw_entities, wait_vblank_poll, the cam_nt/
+// cam_x_lo/cam_y_lo scroll write) plus the tail jmp back into the ordinary
+// path's own shared tail.
+export const STREAMWORLD_RESOLVER_KERNEL_ALLOWANCE = 49;
+// engine/screens.asm's redraw_screen -- the "re-keyed consumer" version of
+// the identical dispatch STREAMWORLD_RESOLVER_KERNEL_ALLOWANCE measures in
+// boot.asm, reached by every OTHER landing (start_game, restart_game,
+// take_door, continue_game). 47, not 49: this one ends in `rts` (1 byte)
+// where boot's copy ends in `jmp boot_draw_done` (3 bytes) back into its own
+// shared tail -- the only difference between the two copies.
+export const STREAMWORLD_REDRAW_KERNEL_ALLOWANCE = 47;
+// engine/screens.asm's set_screen_ptr: an early return through
+// sw_locate_current when the CURRENT screen is streamed (call_battle always
+// ends `jmp set_screen_ptr` -- the restore IS the return -- so this runs
+// even for a non-fight session-lifecycle entry). `lda/beq/jsr/rts` -- 8
+// bytes flat, no per-mapper variance measured.
+export const STREAMWORLD_SET_SCREEN_PTR_KERNEL_ALLOWANCE = 8;
+// engine/entities.asm's spawn_entities: the streamed-vs-ordinary dispatch in
+// spawn_clear's own preamble (12 bytes: map_is_streamed branch, `ldy
+// <ord_screen`/`jmp spawn_have_ptr` for the ordinary side reached through
+// the same shared join point) plus spawn_streamed's own body (164 bytes: the
+// actor/x/y/target/toX/toY/event/trigger/hideSwitch field loop, identical
+// order to spawn_any's own ordinary-record loop, walked with sw_adv_offset
+// instead of a bare `iny` since a streamed record is STREAM_RECORD_BYTES
+// long). One name for the whole consumer, matching how every other named
+// term on this page charges a single routine's own total delta rather than
+// a sub-block within it.
+export const STREAMWORLD_SPAWN_KERNEL_ALLOWANCE = 12 + 164;
+// engine/music.asm's apply_map_music/apply_map_music_direct: named because
+// Part F requires this consumer named individually like every other one,
+// even though its own measured delta is exactly zero -- `ldy <ord_screen`
+// and `ldy <flat_screen` are both a 2-byte zero-page load (zeropage.test.js
+// already guards every `<`-prefixed operand in the engine resolves below
+// $100), so swapping which one assembles costs nothing. Confirmed by
+// measuring the real ON/OFF delta directly rather than trusting that
+// reasoning alone (both builds: apply_map_music_direct - apply_map_music ==
+// 5, the identical `ldy <x` + `lda screen_map,y` span either way).
+export const STREAMWORLD_MUSIC_KERNEL_ALLOWANCE = 0;
+// engine/rpg.asm's check_encounter/start_encounter, the brief's one named
+// term for both (Part F): check_encounter -- no random encounter while the
+// current screen is streamed (Part D refuses a nonzero encounter rate
+// reachable on any streamed map regardless, so this is defensive, not
+// load-bearing) -- `lda <map_is_streamed` + `bne check_encounter_done`, 4
+// bytes. start_encounter's own re-keyed `ldy <ord_screen`/`ldy <flat_screen`
+// swap costs nothing, the identical zero-page-both reasoning
+// STREAMWORLD_MUSIC_KERNEL_ALLOWANCE documents, so the pair's combined
+// delta is check_encounter's 4 alone. RPG-only: rpg.asm's entire contents
+// assemble inside `.if BATTLE_ENABLED`, so this is gated on that too, the
+// same as every other RPG-only term on this page.
+export const STREAMWORLD_ENCOUNTER_KERNEL_ALLOWANCE = 4;
+// engine/combat.asm's init_session: a streamed landing is about to
+// overwrite both of these for real, but they're cleared defensively on
+// every "new game" anyway so a stale value from the previous session's
+// image state never survives into a reactive read that could in principle
+// run before the first landing does -- `sta <map_is_streamed` + `sta
+// <ord_screen`, 4 bytes, both zero page. Unconditional whenever streaming
+// is on (init_session runs on every boot and game-over restart, not gated
+// on game type or any other feature) -- the one term Part F's own listed
+// consumers didn't name but that the worst-case margin test below caught:
+// omitting it left kernelCodeBytes 4 bytes short of real usage on every
+// streamed project, flat regardless of shape, game type or which other
+// conditional terms were also active.
+export const STREAMWORLD_INIT_SESSION_KERNEL_ALLOWANCE = 4;
+// engine/screens.asm's rebuild_bound_cache: a streamed CURRENT screen
+// returns an empty cache rather than reading a stale row -- Part D refuses a
+// streamed map its own bound tile, but tile_switch_changed can still reach
+// this reactively from an ordinary map's own Set/Clear while the player
+// stands on a streamed screen. `lda/beq/stx bind_count/rts` -- 8 bytes
+// (`stx bind_count` is absolute, not zero page: bind_count lives at $0557).
+// Gated on BOTH projectUsesStreaming and projectUsesBoundTiles --
+// rebuild_bound_cache's entire body, this branch included, assembles only
+// inside `.if BOUND_TILE_ENABLED`, so a streamed project that never
+// authors a bound tile anywhere (including its ordinary maps) pays nothing.
+export const STREAMWORLD_BOUND_CACHE_KERNEL_ALLOWANCE = 8;
+// engine/player.asm's cross_left/cross_right/cross_up/cross_down: Part C's
+// interim wall -- every edge is solid while the CURRENT screen is streamed,
+// since there is no strip-streaming machinery wired to cross into a
+// neighbour with yet. Each direction is `lda/beq/jmp cross_none` -- 7 bytes
+// -- and all four assemble unconditionally (cross_* has no feature gate of
+// its own), so this is flat 4x7 = 28 regardless of project shape.
+export const STREAMWORLD_CROSS_KERNEL_ALLOWANCE = 4 * 7;
+// engine/player.asm's cross_set_screen: past the interim wall above, a real
+// crossing runs through this new helper instead of a bare `sta <flat_screen`,
+// so flat_screen stays the global id (decision 2, never a compacted index)
+// while ord_screen adopts the newly-crossed-to compacted index too -- the
+// delta-based fix for the stale/wrong-value defect sabotage case 8 names.
+// The helper itself (`pha/sec/sbc/clc/adc/sta/pla/sta/rts`, two 2-byte
+// zero-page operands, six 1-byte implied ones) is a fixed 13 bytes,
+// unconditional under STREAMING_ENABLED regardless of camera axis config.
+// Each of its 8 call sites (the slide branch and the cut fallback, times
+// all 4 directions) replaces a 2-byte `sta <flat_screen` with a 3-byte
+// `jsr cross_set_screen`, +1 byte each -- and all 8 always assemble: a
+// streamed map only ever reaches the build on UNROM 512 with four-screen
+// mirroring (the only ring implemented so far, shared/project.js's own
+// streamed-map validation), and cameraAxes answers both axes true under
+// four-screen, so there is no camera-axis-dependent variant to track here.
+export const STREAMWORLD_CROSS_TRANSLATE_KERNEL_ALLOWANCE = 13 + 8;
+// Fix round 1, finding 3: a streamed landing must not inherit the previous
+// OWNER screen's active bound-tile cache -- both landing-site copies of the
+// resolve-and-render dispatch (engine/boot.asm's boot_streamed_landing,
+// engine/screens.asm's redraw_screen_dispatch) now call rebuild_bound_cache,
+// which itself already takes the empty-cache branch whenever map_is_streamed
+// is set (STREAMWORLD_BOUND_CACHE_KERNEL_ALLOWANCE, above). Each call site is
+// `jsr rebuild_bound_cache` inside `.if BOUND_TILE_ENABLED` -- a fixed 3
+// bytes, falling inside the SAME bracketed spans STREAMWORLD_RESOLVER_
+// KERNEL_ALLOWANCE/STREAMWORLD_REDRAW_KERNEL_ALLOWANCE already measure, so
+// those two constants stay correct for a project with no bound tiles
+// (BOUND_TILE_ENABLED off, 0 bytes either way) and this is the marginal
+// term for a project that has both streaming AND a bound tile somewhere.
+export const STREAMWORLD_LANDING_BOUND_CACHE_KERNEL_ALLOWANCE = 2 * 3;
+// Fix round 1, finding 2: an ordinary landing reached AFTER a streamed one
+// (a Warp back off the streamed map) must reset cam_x_lo/cam_y_lo/cam_nt to
+// (0,0,0) rather than inherit the streamed screen's own nonzero values --
+// engine/screens.asm's redraw_screen_ordinary body, right before
+// enable_rendering (`lda #0` + three zero-page `sta`, 8 bytes). Cold boot's
+// OWN ordinary path (engine/boot.asm) needs no equivalent: reset's own
+// boot_clear loop zeroes all of $0000-$07FF (cam_x_lo/y_lo/nt included)
+// before that path ever runs, and it runs exactly once, so the reset there
+// would be unreachable dead weight, not a real fix.
+export const STREAMWORLD_ORDINARY_CAM_RESET_KERNEL_ALLOWANCE = 8;
+// Fix round 1, finding 5: engine/script.asm's tile_switch_changed carries a
+// SECOND streamed guard of its own, distinct from
+// STREAMWORLD_BOUND_CACHE_KERNEL_ALLOWANCE's rebuild_bound_cache guard above
+// -- rebuild_bound_cache_dispatch already leaves the active cache empty for
+// a streamed CURRENT screen, but tile_switch_changed's own second, ROM-side
+// walk (queuing visual flips) must ALSO refuse to index screen_bound_lo/hi
+// by ord_screen when the current screen is streamed, since a streamed
+// screen has no row in that table at all. `lda <map_is_streamed` + `bne
+// tsc_done`, 4 bytes, gated on the same projectUsesStreaming &&
+// projectUsesBoundTiles predicate (tile_switch_changed's whole body already
+// assembles only inside `.if BOUND_TILE_ENABLED`).
+export const STREAMWORLD_TILE_SWITCH_KERNEL_ALLOWANCE = 4;
 // script_op_join's own growth (engine/script.asm) -- RPG-only, since Join is
 // itself an RPG-only command.
 // Re-measured for the zero-page kernel diet: 63 (down from 64).
@@ -1506,6 +1669,13 @@ export function kernelCodeBytes(project, mapper) {
   // choice against THIS mapper.
   const cameraAxisFlags = cameraAxes(mapper, project.cartridge);
   const cameraAxisCount = (cameraAxisFlags.horizontal ? 1 : 0) + (cameraAxisFlags.vertical ? 1 : 0);
+  // Phase 2 slice 2b, Part F: usesStreaming alone gates every kernel-lo
+  // streaming term except the two that are ALSO gated on an existing
+  // feature flag the underlying routine itself only assembles behind
+  // (usesBattleBase for check_encounter/start_encounter -- rpg.asm's whole
+  // file is `.if BATTLE_ENABLED` -- and usesBoundTiles for
+  // rebuild_bound_cache, `.if BOUND_TILE_ENABLED`).
+  const usesStreaming = projectUsesStreaming(project);
   return (
     baseKernelCodeBytes(mapper) +
     (usesBattleBase ? battleKernelAllowance(mapper) : 0) +
@@ -1541,6 +1711,19 @@ export function kernelCodeBytes(project, mapper) {
     (usesHeroNaming && !nameEntryBanked ? NAME_ENTRY_ACTION_KERNEL_ALLOWANCE : 0) +
     (needsHeroDefault ? HERO_DEFAULT_KERNEL_ALLOWANCE : 0) +
     (usesNameToken ? NAME_TOKEN_KERNEL_ALLOWANCE : 0) +
+    (usesStreaming ? STREAMWORLD_RESOLVER_KERNEL_ALLOWANCE : 0) +
+    (usesStreaming ? STREAMWORLD_REDRAW_KERNEL_ALLOWANCE : 0) +
+    (usesStreaming ? STREAMWORLD_SET_SCREEN_PTR_KERNEL_ALLOWANCE : 0) +
+    (usesStreaming ? STREAMWORLD_SPAWN_KERNEL_ALLOWANCE : 0) +
+    (usesStreaming ? STREAMWORLD_MUSIC_KERNEL_ALLOWANCE : 0) +
+    (usesStreaming && usesBattleBase ? STREAMWORLD_ENCOUNTER_KERNEL_ALLOWANCE : 0) +
+    (usesStreaming && usesBoundTiles ? STREAMWORLD_BOUND_CACHE_KERNEL_ALLOWANCE : 0) +
+    (usesStreaming ? STREAMWORLD_CROSS_KERNEL_ALLOWANCE : 0) +
+    (usesStreaming ? STREAMWORLD_CROSS_TRANSLATE_KERNEL_ALLOWANCE : 0) +
+    (usesStreaming ? STREAMWORLD_INIT_SESSION_KERNEL_ALLOWANCE : 0) +
+    (usesStreaming && usesBoundTiles ? STREAMWORLD_LANDING_BOUND_CACHE_KERNEL_ALLOWANCE : 0) +
+    (usesStreaming ? STREAMWORLD_ORDINARY_CAM_RESET_KERNEL_ALLOWANCE : 0) +
+    (usesStreaming && usesBoundTiles ? STREAMWORLD_TILE_SWITCH_KERNEL_ALLOWANCE : 0) +
     KERNEL_SLACK
   );
 }
@@ -1806,6 +1989,20 @@ function projectWithoutBoundTiles(project) {
   return clone;
 }
 
+// Phase 2 slice 2b, Part F: the streaming-specific shape of the same
+// "what would dropping this feature free" question -- every streamed map's
+// own flag cleared, matching the exact operation kernelCodeBytes' own
+// usesStreaming reads (projectUsesStreaming). Reads the project only; never
+// mutates it. Not a suggestion that the result is otherwise valid (a
+// streamed map cleared this way can leave its fillMetatileId/gridW/gridH
+// fields behind, harmless once `streamed` is false) -- the same "occupancy
+// only" scope projectWithoutBoundTiles/projectWithoutCommands already have.
+function projectWithoutStreaming(project) {
+  const clone = structuredClone(project);
+  for (const map of clone.maps) map.streamed = false;
+  return clone;
+}
+
 function kernelShortfallAdvice(project, mapper, deficit) {
   // saveMediaImplemented for the same reason kernelCodeBytes itself reads it:
   // "active" below feeds freedByDropping, which calls kernelCodeBytes, so
@@ -1851,6 +2048,14 @@ function kernelShortfallAdvice(project, mapper, deficit) {
   // feature that is authored screen data, not an event command -- its own
   // strip cannot go through projectWithoutCommands at all.
   if (usesBoundTiles) active.push({ label: 'every switch-bound tile', strip: (p) => projectWithoutBoundTiles(p) });
+  // Phase 2 slice 2b, Part F: streaming's own resolver/render/dispatch cost
+  // (STREAMWORLD_RESOLVER_KERNEL_ALLOWANCE and the rest, above) is named here
+  // the same way every other feature is, rather than leaving a streaming
+  // project's overflow message silent about what its own biggest kernel-lo
+  // consumer actually is.
+  if (projectUsesStreaming(project)) {
+    active.push({ label: 'every streamed map', strip: (p) => projectWithoutStreaming(p) });
+  }
   if (usesSave) active.push({ label: 'every Save command', strip: (p) => projectWithoutCommands(p, ['save']) });
   // In-game naming (docs/design-name-entry.md §11): no bespoke combination
   // logic needed -- the existing solo-then-combination search below already
@@ -2578,18 +2783,6 @@ export function kernelTableBytes(project, mapper) {
 export function checkCapacity(project) {
   const text = compileText(project);
   const problems = [...validateProject(project), ...text.problems, ...checkBattleTables(project)];
-  // Phase 1 of streamed worlds has a world model and no engine (docs/design-streamed-worlds.md
-  // §2): refuse before the assembler so the flag can never quietly produce an ordinary-map ROM.
-  // Phase 2 deletes this.
-  for (const map of project.maps) {
-    if (map.streamed !== true) continue;
-    problems.push({
-      severity: 'error',
-      where: 'Map Forge',
-      code: 'streamed-no-engine',
-      message: `Map "${map.name}" is a streamed map, and streamed maps have no engine yet, so this project cannot be built. Streamed is set in the project's map JSON ("streamed": true): remove it, or set it to false, for that map.`
-    });
-  }
   const { flat } = flattenScreens(project);
 
   const mapper = resolveMapper(project.cartridge.mapper);
@@ -2886,16 +3079,9 @@ export function resolveEntityByte(entity, actor, itemsEnabled, itemIdForActor, f
   return { kind: 'screen', flatIndex: Math.min(entity.props?.toScreen ?? 0, Math.max(0, flatLength - 1)) };
 }
 
-export async function generateAssets({ dir, project, log = () => {}, bypassStreamedRefusal = false }) {
-  // bypassStreamedRefusal is a TEST-ONLY seam (docs/design-streamed-worlds.md §3, phase 2 slice 1):
-  // buildProject/cli.js never pass it, so the public build path still always refuses a streamed
-  // project here, exactly as before. It exists so the emitter-wiring test can reach real asset
-  // generation for a streamed project while checkCapacity's own "no engine yet" refusal (still the
-  // only production behaviour) keeps firing for every real caller.
+export async function generateAssets({ dir, project, log = () => {} }) {
   const { problems, capacity, reserveFlashSave, screenCount, streamedPlan } = checkCapacity(project);
-  const errors = problems.filter(
-    (problem) => problem.severity === 'error' && !(bypassStreamedRefusal && problem.code === 'streamed-no-engine')
-  );
+  const errors = problems.filter((problem) => problem.severity === 'error');
   if (errors.length) {
     const error = new Error(errors.map((problem) => `${problem.where}: ${problem.message}`).join('\n'));
     error.problems = problems;

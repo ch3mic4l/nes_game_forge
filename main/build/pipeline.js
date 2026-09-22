@@ -89,16 +89,11 @@ export function checkFlashSectorBlank(bytes, mapper) {
   }
 }
 
-// bypassStreamedRefusal (docs/design-streamed-worlds.md, phase 2 slice 2a): the ONLY seam past
-// the phase-1 streamed-worlds refusal, threading generateAssets' own test-only option one level
-// up so a test can assemble a real ROM from a streamed project. Never passed by cli.js, ipc.js/
-// buildgate.js or the renderer -- a public build of a streamed project refuses exactly as before,
-// on every path.
-export async function buildProject({ dir, project, log = () => {}, settings = {}, bypassStreamedRefusal = false }) {
+export async function buildProject({ dir, project, log = () => {}, settings = {} }) {
   const started = Date.now();
   log(`Building ${project.project.name}…`);
 
-  const { buildDir, warnings, stats } = await generateAssets({ dir, project, log, bypassStreamedRefusal });
+  const { buildDir, warnings, stats } = await generateAssets({ dir, project, log });
   for (const warning of warnings) log(`warning: ${warning.where}: ${warning.message}`);
 
   const result = await runNesasm({

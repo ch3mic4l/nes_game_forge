@@ -78,7 +78,20 @@ import {
   HERO_DEFAULT_KERNEL_ALLOWANCE,
   NAME_TOKEN_KERNEL_ALLOWANCE,
   STREAMWORLD_KERNEL_HI_ALLOWANCE,
-  STREAMWORLD_MT_PAL_KERNEL_HI_BYTES
+  STREAMWORLD_MT_PAL_KERNEL_HI_BYTES,
+  STREAMWORLD_RESOLVER_KERNEL_ALLOWANCE,
+  STREAMWORLD_REDRAW_KERNEL_ALLOWANCE,
+  STREAMWORLD_SET_SCREEN_PTR_KERNEL_ALLOWANCE,
+  STREAMWORLD_SPAWN_KERNEL_ALLOWANCE,
+  STREAMWORLD_MUSIC_KERNEL_ALLOWANCE,
+  STREAMWORLD_ENCOUNTER_KERNEL_ALLOWANCE,
+  STREAMWORLD_BOUND_CACHE_KERNEL_ALLOWANCE,
+  STREAMWORLD_CROSS_KERNEL_ALLOWANCE,
+  STREAMWORLD_CROSS_TRANSLATE_KERNEL_ALLOWANCE,
+  STREAMWORLD_INIT_SESSION_KERNEL_ALLOWANCE,
+  STREAMWORLD_LANDING_BOUND_CACHE_KERNEL_ALLOWANCE,
+  STREAMWORLD_ORDINARY_CAM_RESET_KERNEL_ALLOWANCE,
+  STREAMWORLD_TILE_SWITCH_KERNEL_ALLOWANCE
 } from '../../main/build/generate.js';
 import { SUPPORTED_MAPPERS, cameraAxes, rpgCapable, saveMediaImplemented, prgLayout, resolveMapper } from '../../shared/cartridge.js';
 import {
@@ -5217,11 +5230,11 @@ test(
  * standalone helper rather than a reuse of measureWholeBank, which only
  * ever looks at kernelLoBank.
  */
-async function measureKernelHiBank(t, mapper, project, { bypassStreamedRefusal = false } = {}) {
+async function measureKernelHiBank(t, mapper, project) {
   const dir = await fsp.mkdtemp(path.join(os.tmpdir(), 'forge-kernelhi-'));
   t.after(() => fsp.rm(dir, { recursive: true, force: true }));
   const lines = [];
-  await buildProject({ dir, project, log: (line) => lines.push(line), bypassStreamedRefusal });
+  await buildProject({ dir, project, log: (line) => lines.push(line) });
   const { kernelHiBank } = prgLayout(mapper);
   const bankLine = lines.find((line) => new RegExp(`^BANK\\s+${kernelHiBank}\\s`).test(line));
   assert.ok(bankLine, `${mapper.name}: nesasm's usage table never mentioned bank ${kernelHiBank} (kernel-hi)`);
@@ -5230,53 +5243,316 @@ async function measureKernelHiBank(t, mapper, project, { bypassStreamedRefusal =
   return used;
 }
 
-// Part D (phase 2 slice 2a): STREAMWORLD_KERNEL_HI_ALLOWANCE's own comment in
+// Part F (phase 2 slice 2b): STREAMWORLD_KERNEL_HI_ALLOWANCE's own comment in
 // generate.js promises this exact equality test. The real cost is isolated
 // the same way every other allowance on this page is -- build the project
 // once streamed, once with every map's `streamed` flag forced off (so
 // STREAMING_ENABLED and the whole `.if STREAMING_ENABLED` region drop out,
 // per projectUsesStreaming/shared/streamlayout.js), and take the kernel-hi
-// bank's real used-byte delta. Fix round 1, finding 7: every streamed-capable
-// board (UNROM 512 four-screen, MMC1/MMC3 two-nametable -- streamCapableFourScreen/
-// streamCapableTwoNametable, shared/cartridge.js), not just UNROM 512; MMC1/MMC3 take
-// vertical mirroring and a 3x1 grid because cameraAxes makes the vertical axis the dead one under
-// non-four-screen mirroring, and streamedBoardProblems (shared/project.js) requires gridH === 1
-// on that axis. Both game types plus the `mixed` shape (a streamed map alongside ordinary ones)
-// per the design contract's own required coverage, on every board.
+// bank's real used-byte delta. Phase 2 slice 2b's Part D item 1 narrowed the
+// engine's own availability to streamCapableFourScreen: UNROM 512 is the ONLY
+// board a streamed map can build on any more (MMC1/MMC3 are only
+// streamCapableTwoNametable -- "phase 3, addressing only" -- and are refused
+// outright by validateStreamedMaps), so the per-mapper board list this test
+// used to carry drops to that one entry. Both game types plus the `mixed`
+// shape (a streamed map alongside ordinary ones) per the design contract's
+// own required coverage.
 test(
-  'phase 2 slice 2a: STREAMWORLD_KERNEL_HI_ALLOWANCE + STREAMWORLD_MT_PAL_KERNEL_HI_BYTES equals the real kernel-hi cost of streaming, on every streamed-capable board, both game types and the mixed shape',
+  'phase 2 slice 2b: STREAMWORLD_KERNEL_HI_ALLOWANCE + STREAMWORLD_MT_PAL_KERNEL_HI_BYTES equals the real kernel-hi cost of streaming, on UNROM 512 (the only streamCapableFourScreen board), both game types and the mixed shape',
   { skip: !hasNesasm && 'nesasm not found on PATH' },
   async (t) => {
-    const boards = [
-      { mapperId: 30, mirroring: 'fourscreen', gridW: 3, gridH: 2 },
-      { mapperId: 1, mirroring: 'vertical', gridW: 3, gridH: 1 },
-      { mapperId: 4, mirroring: 'vertical', gridW: 3, gridH: 1 }
+    const mapper = resolveMapper(30);
+    const cases = [
+      { gameType: 'action', mixed: false, label: 'action' },
+      { gameType: 'rpg', mixed: false, label: 'rpg' },
+      { gameType: 'action', mixed: true, label: 'action, mixed' }
     ];
-    for (const { mapperId, mirroring, gridW, gridH } of boards) {
-      const mapper = resolveMapper(mapperId);
-      const cases = [
-        { gameType: 'action', mixed: false, label: 'action' },
-        { gameType: 'rpg', mixed: false, label: 'rpg' },
-        { gameType: 'action', mixed: true, label: 'action, mixed' }
-      ];
-      for (const { gameType, mixed, label } of cases) {
-        const streamed = createStreamedProject({ gameType, mixed, mapper: mapperId, mirroring, gridW, gridH });
-        const baseline = structuredClone(streamed);
-        for (const map of baseline.maps) map.streamed = false;
+    for (const { gameType, mixed, label } of cases) {
+      const streamed = createStreamedProject({ gameType, mixed });
+      const baseline = structuredClone(streamed);
+      for (const map of baseline.maps) map.streamed = false;
 
-        const streamedUsed = await measureKernelHiBank(t, mapper, streamed, { bypassStreamedRefusal: true });
-        const baselineUsed = await measureKernelHiBank(t, mapper, baseline);
+      const streamedUsed = await measureKernelHiBank(t, mapper, streamed);
+      const baselineUsed = await measureKernelHiBank(t, mapper, baseline);
 
-        const delta = streamedUsed - baselineUsed;
-        const expected = STREAMWORLD_KERNEL_HI_ALLOWANCE + STREAMWORLD_MT_PAL_KERNEL_HI_BYTES;
-        // fix round 1, finding 7/verification: printed on every run, pass or fail, not only in an
-        // assertion failure message -- an independent, per-mapper figure a report can quote.
-        console.log(`${mapper.name} (${label}): real kernel-hi delta ${delta} (expected ${expected})`);
-        assert.equal(
-          delta,
-          expected,
-          `${mapper.name} (${label}): real kernel-hi delta ${delta} != STREAMWORLD_KERNEL_HI_ALLOWANCE (${STREAMWORLD_KERNEL_HI_ALLOWANCE}) + STREAMWORLD_MT_PAL_KERNEL_HI_BYTES (${STREAMWORLD_MT_PAL_KERNEL_HI_BYTES}) = ${expected}`
-        );
+      const delta = streamedUsed - baselineUsed;
+      const expected = STREAMWORLD_KERNEL_HI_ALLOWANCE + STREAMWORLD_MT_PAL_KERNEL_HI_BYTES;
+      // fix round 1, finding 7/verification: printed on every run, pass or fail, not only in an
+      // assertion failure message -- an independent, per-mapper figure a report can quote.
+      console.log(`${mapper.name} (${label}): real kernel-hi delta ${delta} (expected ${expected})`);
+      assert.equal(
+        delta,
+        expected,
+        `${mapper.name} (${label}): real kernel-hi delta ${delta} != STREAMWORLD_KERNEL_HI_ALLOWANCE (${STREAMWORLD_KERNEL_HI_ALLOWANCE}) + STREAMWORLD_MT_PAL_KERNEL_HI_BYTES (${STREAMWORLD_MT_PAL_KERNEL_HI_BYTES}) = ${expected}`
+      );
+    }
+  }
+);
+
+// Part F: each kernel-LO streaming term, measured individually off a real
+// build's own symbol table rather than the bank-total delta the kernel-hi
+// test above uses -- these sites are call-site additions inside existing
+// (or new) kernel-lo routines, each bracketed by its own pair of
+// unconditional boundary labels (see STREAMWORLD_RESOLVER_KERNEL_ALLOWANCE's
+// own comment in generate.js for why), so `symbolAddr(after) -
+// symbolAddr(before)` on a single streamed build gives the exact byte count
+// directly -- no ON/OFF diff needed, because the `.if STREAMING_ENABLED`
+// bracket itself is the only thing between those two labels. Only UNROM 512
+// can ever assemble this code (Part D item 1); both game types plus the
+// `mixed` shape are checked since kernelCodeBytes' own formula must hold for
+// all three, matching the kernel-hi test just above.
+async function measureStreamedSpan(mapper, project, startLabel, endLabel) {
+  const dir = await fsp.mkdtemp(path.join(os.tmpdir(), 'forge-streamlo-'));
+  try {
+    const built = await buildProject({ dir, project, log: () => {} });
+    const symbols = await fsp.readFile(built.symbolPath, 'utf8');
+    return symbolAddr(symbols, endLabel) - symbolAddr(symbols, startLabel);
+  } finally {
+    await fsp.rm(dir, { recursive: true, force: true });
+  }
+}
+
+test(
+  'phase 2 slice 2b, Part F: every kernel-lo streaming term equals the real span nesasm assembled, on UNROM 512, both game types and the mixed shape',
+  { skip: !hasNesasm && 'nesasm not found on PATH' },
+  async () => {
+    const mapper = resolveMapper(30);
+    const SITES = [
+      ['STREAMWORLD_RESOLVER_KERNEL_ALLOWANCE', STREAMWORLD_RESOLVER_KERNEL_ALLOWANCE, 'boot_streamed_landing', 'boot_draw_ordinary'],
+      ['STREAMWORLD_REDRAW_KERNEL_ALLOWANCE', STREAMWORLD_REDRAW_KERNEL_ALLOWANCE, 'redraw_screen_dispatch', 'redraw_screen_ordinary'],
+      [
+        'STREAMWORLD_SET_SCREEN_PTR_KERNEL_ALLOWANCE',
+        STREAMWORLD_SET_SCREEN_PTR_KERNEL_ALLOWANCE,
+        'set_screen_ptr',
+        'set_screen_ptr_ordinary'
+      ],
+      ['STREAMWORLD_CROSS_KERNEL_ALLOWANCE (left)', STREAMWORLD_CROSS_KERNEL_ALLOWANCE / 4, 'cross_left', 'cross_left_ord'],
+      ['STREAMWORLD_CROSS_KERNEL_ALLOWANCE (right)', STREAMWORLD_CROSS_KERNEL_ALLOWANCE / 4, 'cross_right', 'cross_right_ord'],
+      ['STREAMWORLD_CROSS_KERNEL_ALLOWANCE (up)', STREAMWORLD_CROSS_KERNEL_ALLOWANCE / 4, 'cross_up', 'cross_up_ord'],
+      ['STREAMWORLD_CROSS_KERNEL_ALLOWANCE (down)', STREAMWORLD_CROSS_KERNEL_ALLOWANCE / 4, 'cross_down', 'cross_down_ord'],
+      [
+        'STREAMWORLD_CROSS_TRANSLATE_KERNEL_ALLOWANCE (helper)',
+        13,
+        'cross_set_screen',
+        'cross_none'
+      ],
+      [
+        'STREAMWORLD_INIT_SESSION_KERNEL_ALLOWANCE',
+        STREAMWORLD_INIT_SESSION_KERNEL_ALLOWANCE,
+        'init_session_streamed_dispatch',
+        'init_session_streamed_done'
+      ],
+      [
+        'STREAMWORLD_ORDINARY_CAM_RESET_KERNEL_ALLOWANCE',
+        STREAMWORLD_ORDINARY_CAM_RESET_KERNEL_ALLOWANCE,
+        'redraw_screen_cam_reset',
+        'redraw_screen_cam_reset_done'
+      ]
+    ];
+    for (const gameType of ['action', 'rpg']) {
+      const project = createStreamedProject({ gameType });
+      project.cartridge.mapper = mapper.id;
+      for (const [label, expected, start, end] of SITES) {
+        const real = await measureStreamedSpan(mapper, project, start, end);
+        assert.equal(real, expected, `${label} on ${gameType}: real span ${real} != ${expected}`);
+      }
+      // STREAMWORLD_CROSS_TRANSLATE_KERNEL_ALLOWANCE's 8-call-site half: not a
+      // single bracketed span (the 8 sites are scattered two-per-direction
+      // across cross_left/right/up/down), so measured as the real delta the
+      // full cross_left..cross_none region grows by when STREAMING_ENABLED
+      // flips on, same mapper/mirroring (and so identical CAMERA_SLIDE_H/V)
+      // both sides -- same technique the kernel-hi test above uses. Expected
+      // delta is STREAMWORLD_CROSS_KERNEL_ALLOWANCE's own 28 (the interim
+      // walls, which also only exist when streaming is on) plus this term's
+      // 21.
+      const baseline = structuredClone(project);
+      for (const map of baseline.maps) map.streamed = false;
+      const streamedCrossRegion = await measureStreamedSpan(mapper, project, 'cross_left', 'cross_none');
+      const baselineCrossRegion = await measureStreamedSpan(mapper, baseline, 'cross_left', 'cross_none');
+      const crossRegionDelta = streamedCrossRegion - baselineCrossRegion;
+      const expectedCrossRegionDelta = STREAMWORLD_CROSS_KERNEL_ALLOWANCE + STREAMWORLD_CROSS_TRANSLATE_KERNEL_ALLOWANCE;
+      assert.equal(
+        crossRegionDelta,
+        expectedCrossRegionDelta,
+        `cross_left..cross_none region on ${gameType}: real streaming-on delta ${crossRegionDelta} != ` +
+          `STREAMWORLD_CROSS_KERNEL_ALLOWANCE (${STREAMWORLD_CROSS_KERNEL_ALLOWANCE}) + ` +
+          `STREAMWORLD_CROSS_TRANSLATE_KERNEL_ALLOWANCE (${STREAMWORLD_CROSS_TRANSLATE_KERNEL_ALLOWANCE}) = ${expectedCrossRegionDelta}`
+      );
+      // spawn_entities: dispatch preamble + spawn_streamed's own body, two
+      // spans summed into the one named allowance (generate.js's own comment).
+      const dispatch = await measureStreamedSpan(mapper, project, 'spawn_clear_dispatch', 'spawn_clear_ord');
+      const body = await measureStreamedSpan(mapper, project, 'spawn_streamed', 'update_entities');
+      assert.equal(
+        dispatch + body,
+        STREAMWORLD_SPAWN_KERNEL_ALLOWANCE,
+        `STREAMWORLD_SPAWN_KERNEL_ALLOWANCE on ${gameType}: real span ${dispatch + body} != ${STREAMWORLD_SPAWN_KERNEL_ALLOWANCE}`
+      );
+      // apply_map_music: named at 0 (generate.js's own comment) -- the span
+      // measured here is NOT the delta (it includes the shared, unconditional
+      // `lda screen_map,y` after the branch too), only a regression guard that
+      // it stays the same fixed size the ldy-swap alone predicts.
+      assert.equal(STREAMWORLD_MUSIC_KERNEL_ALLOWANCE, 0, 'apply_map_music: ldy <ord_screen and ldy <flat_screen are equal length');
+      const musicSpan = await measureStreamedSpan(mapper, project, 'apply_map_music', 'apply_map_music_direct');
+      assert.equal(musicSpan, 5, `apply_map_music span on ${gameType}: ${musicSpan} != 5 (a 2-byte ldy + 3-byte lda screen_map,y)`);
+    }
+    // RPG-only: check_encounter's own guard (rpg.asm assembles entirely
+    // inside `.if BATTLE_ENABLED`).
+    const rpgProject = createStreamedProject({ gameType: 'rpg' });
+    rpgProject.cartridge.mapper = mapper.id;
+    const encounterSpan = await measureStreamedSpan(mapper, rpgProject, 'check_encounter_dispatch', 'check_encounter_live');
+    assert.equal(encounterSpan, STREAMWORLD_ENCOUNTER_KERNEL_ALLOWANCE);
+    // start_encounter's own half of the brief's combined "check_encounter/
+    // start_encounter" term: same ldy-swap-is-free reasoning as
+    // apply_map_music, a regression guard that its absolute span (not a
+    // delta) stays the fixed 2-byte `ldy <ord_screen` size.
+    const startEncounterSpan = await measureStreamedSpan(mapper, rpgProject, 'start_encounter_dispatch', 'start_encounter_ord');
+    assert.equal(startEncounterSpan, 2, `start_encounter span: ${startEncounterSpan} != 2 (a 2-byte zero-page ldy)`);
+    // Bound tiles only exist inside `.if BOUND_TILE_ENABLED`: authored on the
+    // mixed project's ordinary "before" map, never the streamed one (Part D
+    // item 2 refuses a bound tile there).
+    const boundProject = createStreamedProject({ gameType: 'action', mixed: true });
+    boundProject.cartridge.mapper = mapper.id;
+    const beforeScreen = boundProject.maps[0].screens[0];
+    beforeScreen.boundTiles = [{ switchId: 0, row: 0, col: 0, metatileId: beforeScreen.metatiles[0] }];
+    const boundSpan = await measureStreamedSpan(mapper, boundProject, 'rebuild_bound_cache_dispatch', 'rebuild_bound_cache_ordinary');
+    assert.equal(boundSpan, STREAMWORLD_BOUND_CACHE_KERNEL_ALLOWANCE);
+    // F3 (phase 2 slice 2b fix round 1): both streamed-landing copies now
+    // call rebuild_bound_cache under BOUND_TILE_ENABLED, so the resolver/
+    // redraw spans measured above (on the no-bound-tile `project`) grow by
+    // STREAMWORLD_LANDING_BOUND_CACHE_KERNEL_ALLOWANCE once a project also
+    // authors a bound tile -- measured here as the marginal delta on the
+    // same boundProject already built above, not a fresh guess.
+    const resolverWithBound = await measureStreamedSpan(mapper, boundProject, 'boot_streamed_landing', 'boot_draw_ordinary');
+    const redrawWithBound = await measureStreamedSpan(mapper, boundProject, 'redraw_screen_dispatch', 'redraw_screen_ordinary');
+    const resolverDelta = resolverWithBound - STREAMWORLD_RESOLVER_KERNEL_ALLOWANCE;
+    const redrawDelta = redrawWithBound - STREAMWORLD_REDRAW_KERNEL_ALLOWANCE;
+    // Both call sites cost the same fixed `jsr rebuild_bound_cache` (3 bytes
+    // each); the combined constant (2*3) is what the kernel-lo formula
+    // actually charges once, covering both sites in the same bank.
+    assert.equal(resolverDelta, 3, `boot_streamed_landing..boot_draw_ordinary with a bound tile: delta ${resolverDelta} != 3`);
+    assert.equal(redrawDelta, 3, `redraw_screen_dispatch..redraw_screen_ordinary with a bound tile: delta ${redrawDelta} != 3`);
+    assert.equal(
+      resolverDelta + redrawDelta,
+      STREAMWORLD_LANDING_BOUND_CACHE_KERNEL_ALLOWANCE,
+      `combined landing bound-cache delta ${resolverDelta + redrawDelta} != STREAMWORLD_LANDING_BOUND_CACHE_KERNEL_ALLOWANCE (${STREAMWORLD_LANDING_BOUND_CACHE_KERNEL_ALLOWANCE})`
+    );
+    // F5: tile_switch_changed's second (streaming) guard only exists inside
+    // `.if BOUND_TILE_ENABLED` (engine/script.asm), so it can only be
+    // measured on a project that authors a bound tile.
+    const tileSwitchSpan = await measureStreamedSpan(mapper, boundProject, 'tile_switch_changed_dispatch', 'tile_switch_changed_ordinary');
+    assert.equal(
+      tileSwitchSpan,
+      STREAMWORLD_TILE_SWITCH_KERNEL_ALLOWANCE,
+      `tile_switch_changed_dispatch..tile_switch_changed_ordinary: ${tileSwitchSpan} != STREAMWORLD_TILE_SWITCH_KERNEL_ALLOWANCE (${STREAMWORLD_TILE_SWITCH_KERNEL_ALLOWANCE})`
+    );
+  }
+);
+
+test(
+  'phase 2 slice 2b, Part F: kernelCodeBytes still covers a worst-case streamed project, margin in band',
+  { skip: !hasNesasm && 'nesasm not found on PATH' },
+  async () => {
+    // Streaming is refused alongside Save, hero/Join naming (Part D items 5
+    // and 7) anywhere in the project, and Move/Say/Fight/a nonzero encounter
+    // rate specifically on the streamed map's own entities -- so the widest
+    // legal combination is every OTHER conditional term, authored on the
+    // mixed shape's ordinary "before" map, alongside a real streamed map.
+    // Not the full "every conditional combination" matrix the RPG-capable
+    // test above runs (Save/naming make that combination illegal here), and
+    // not literally everything else either: camera is REQUIRED here (Part D
+    // item 8), and camera + every other term below already leaves no room
+    // for switch-bound tiles too (checkCapacity refuses that fourth
+    // combination outright -- a real, working limit, not a test bug) --
+    // this is the real worst case UNROM 512's kernel-lo can actually hold
+    // alongside a streamed map, not an arbitrary subset.
+    const mapper = resolveMapper(30);
+    const project = createStreamedProject({ gameType: 'action', mixed: true });
+    project.project.titleMap = 1;
+    project.project.titleScreen = 0;
+    project.items = [{ name: 'Potion', description: '', effect: { kind: 'heal', amount: 10 } }];
+    project.songs = [createSong('Sting Song')];
+    project.sfx = [{ name: 'Boop', volume: 10, steps: [{ note: 5, duration: 4 }] }];
+    const before = project.maps[0].screens[0];
+    // Not every compatible command at once -- each distinct command kind
+    // used anywhere in the project pays for its own lookup table, and that
+    // budget lives in the SAME kernel-lo bank as the code this test is
+    // measuring, so stacking all ten (as an earlier version of this test
+    // did) overflows the bank outright before assertCovers ever runs. Six
+    // kinds spanning the different subsystems (movement, timing, visual,
+    // audio, dialogue) is still a real multi-feature mix, and one this
+    // board can actually hold alongside a streamed map.
+    before.entities.push({
+      actorId: 0,
+      x: 32,
+      y: 32,
+      props: {
+        event: {
+          pages: [
+            {
+              cond: { type: 'none', arg: 0 },
+              commands: [
+                { op: 'move', who: 'self', dir: 'up', dist: 16 },
+                { op: 'wait', frames: 10 },
+                { op: 'shake', frames: 10 },
+                { op: 'visible', state: 'hidden' },
+                { op: 'sting', song: 0 },
+                { op: 'say', text: 'Hello {name}.' }
+              ]
+            }
+          ]
+        }
+      }
+    });
+    const dir = await fsp.mkdtemp(path.join(os.tmpdir(), 'forge-streamworst-'));
+    try {
+      const lines = [];
+      const built = await buildProject({ dir, project, log: (l) => lines.push(l) });
+      const { kernelLoBank } = prgLayout(mapper);
+      const bankLine = lines.find((line) => new RegExp(`^BANK\\s+${kernelLoBank}\\s`).test(line));
+      assert.ok(bankLine, `nesasm's usage table never mentioned bank ${kernelLoBank} (kernel-lo)`);
+      const used = Number(bankLine.match(/(\d+)\/\s*(\d+)\s*$/)?.[1]);
+      const symbols = await fsp.readFile(built.symbolPath, 'utf8');
+      const resetAddr = symbolAddr(symbols, 'reset');
+      const codeBytes = used - (resetAddr - 0xc000);
+      assertCovers({ mapper, codeBytes }, kernelCodeBytes(project, mapper), 'worst-case streamed (mixed, items, audio, event commands, title)');
+    } finally {
+      await fsp.rm(dir, { recursive: true, force: true });
+    }
+  }
+);
+
+test(
+  'phase 2 slice 2b fix round 1, F5: kernelCodeBytes still covers streaming + an ordinary bound tile, both game types, margin in band',
+  { skip: !hasNesasm && 'nesasm not found on PATH' },
+  async () => {
+    // The worst-case test just above already documents that camera + every
+    // other conditional term leaves no room for a bound tile too (a real
+    // checkCapacity refusal, not a test bug) -- so this is a separate,
+    // narrower worst case: streaming plus an authored ordinary bound tile
+    // alone, on both game types, since STREAMWORLD_LANDING_BOUND_CACHE_
+    // KERNEL_ALLOWANCE and STREAMWORLD_TILE_SWITCH_KERNEL_ALLOWANCE (F3/F5)
+    // are the two new terms this fix round adds and neither was covered by
+    // any pre-existing combined-margin test.
+    const mapper = resolveMapper(30);
+    for (const gameType of ['action', 'rpg']) {
+      const project = createStreamedProject({ gameType, mixed: true });
+      project.cartridge.mapper = mapper.id;
+      const before = project.maps[0].screens[0];
+      before.boundTiles = [{ switchId: 0, row: 0, col: 0, metatileId: before.metatiles[0] }];
+      const dir = await fsp.mkdtemp(path.join(os.tmpdir(), 'forge-streamboundworst-'));
+      try {
+        const lines = [];
+        const built = await buildProject({ dir, project, log: (l) => lines.push(l) });
+        const { kernelLoBank } = prgLayout(mapper);
+        const bankLine = lines.find((line) => new RegExp(`^BANK\\s+${kernelLoBank}\\s`).test(line));
+        assert.ok(bankLine, `nesasm's usage table never mentioned bank ${kernelLoBank} (kernel-lo)`);
+        const used = Number(bankLine.match(/(\d+)\/\s*(\d+)\s*$/)?.[1]);
+        const symbols = await fsp.readFile(built.symbolPath, 'utf8');
+        const resetAddr = symbolAddr(symbols, 'reset');
+        const codeBytes = used - (resetAddr - 0xc000);
+        assertCovers({ mapper, codeBytes }, kernelCodeBytes(project, mapper), `streaming + ordinary bound tile (${gameType})`);
+      } finally {
+        await fsp.rm(dir, { recursive: true, force: true });
       }
     }
   }

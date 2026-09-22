@@ -186,6 +186,9 @@ Supported: NROM, CNROM, GxROM, Color Dreams, UxROM, MMC1, MMC3, UNROM 512. Read
   to mapper or mirroring, because `store.commit()` never runs `normalizeProject`.
 - `engine/constants.asm` is the single allocation map for zero page and the `$0300+` RAM arrays.
   New engine state goes there; a collision is silent and will present as an unrelated bug.
+- A streamed world's current screen has a third identity (`flat_screen` global id, `ord_screen`
+  compacted table row, `cur_map`) alongside the ordinary one; `sw_resolve_screen` is the single
+  place a landing resolves it (`docs/reference-engine.md`).
 - `generate.js`'s `checkCapacity()` reports overflow in plain language *before* the assembler
   runs. Adding per-screen or per-actor data means updating the byte math there too.
 - **Nothing but `text.asm` may write to the nametable while rendering is on**; everything else

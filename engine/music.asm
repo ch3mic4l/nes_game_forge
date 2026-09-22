@@ -44,8 +44,22 @@ set_music_done:
 ; both run through before this ever sees the new screen -- makes the compare
 ; fail and the map's own song takes over regardless of what was playing.
 apply_map_music:
+  .if STREAMING_ENABLED
+  ldy <ord_screen
+  .else
   ldy <flat_screen
+  .endif
   lda screen_map,y
+; apply_map_music_direct -- phase 2 slice 2b. The identical old-vs-new
+; compare-before-write tail apply_map_music already had, entered with the
+; destination RAW map index in A directly instead of looking it up via
+; screen_map,y -- falls straight in from apply_map_music above (never a jmp:
+; it is the very next instruction, so a jmp to it would cost 3 bytes in
+; EVERY build, streaming or not), and is reached with an explicit `jsr` only
+; from sw_resolve_screen's own streamed branch (STREAMING_ENABLED only),
+; which already knows the owning map index (it is what the prefix walk just
+; found) -- a streamed screen has no screen_map row of its own to read.
+apply_map_music_direct:
   cmp <cur_map
   beq apply_map_music_done
   sta <cur_map

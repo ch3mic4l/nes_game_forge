@@ -2,6 +2,12 @@
 // mapper-switch preflight (docs/design-streamed-worlds.md §3 "Charge, resolved", §4). Every test
 // names the wrong implementation it would catch. Nothing here touches a checked-in fixture; every
 // project is built in memory from createProject.
+//
+// Phase 2 slice 2b, Part D item 1 (shared/project.js's streamedBoardProblems) later narrowed
+// "capable" to exactly one board+mirroring combination (UNROM 512, four-screen), sharing its
+// message's 'capability' kind with the original incapable-board message. The mapper-switch
+// preflight tests below were rewritten for that: see each test's own comment for what the
+// narrowing made unreachable and what it left provable.
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -246,16 +252,27 @@ test('the kernel-lo table charge: 13 x ordinary + 9 x maps + 6 x streamed + ceil
   assert.equal(kernelTableBytes(off, mapper).tableBytes, 13 * 43 + 9 * 3 + meta);
 });
 
-test('the phase-1 "no engine yet" refusal stays, alongside the aggregate checks', () => {
-  // Catches the new checks replacing the refusal: a project that fits would then build a ROM.
+test('the phase-1 "no engine yet" refusal is gone: a project clearing every Part D check builds with zero problems, alongside the aggregate checks', () => {
+  // Phase 2 slice 2b, Part D/E: the blanket refusal this test used to pin is deleted outright, and
+  // in its place a project that also clears every per-item authoring check (board/mirroring,
+  // camera on, no bound tiles/events/encounters/naming/Save) must produce zero problems -- not
+  // merely "no engine yet gone but something else silently still blocks it."
   const p = blank(UNROM512, 'fourscreen');
+  p.cartridge.camera = true;
   addMap(p, 1, 2, true);
   const list = messages(p);
-  assert.ok(list.some((m) => /no engine yet/.test(m)));
+  assert.ok(!list.some((m) => /no engine yet/.test(m)), 'the phase-1 blanket refusal must no longer fire');
   assert.deepEqual(streamedFailures(p), []);
+  assert.deepEqual(list, [], 'this project has nothing else wrong with it and must build with zero problems');
 });
 
-test('mapper-switch preflight: the three checks in order, the real project untouched', () => {
+test('mapper-switch preflight: the checks in order, the real project untouched', () => {
+  // Phase 2 slice 2b, Part D item 1 (shared/project.js's streamedBoardProblems) widens the
+  // 'capability' kind to also cover any board/mirroring that only reaches the two-nametable ring --
+  // so UNROM 512 four-screen is now the ONLY combination that ever clears it, and that combination
+  // has no dead axis at all (streamCapableFourScreen). checkStreamedMapperSwitch's own dead-axis
+  // branch is therefore unreachable through this function today: proved directly in step (2) below,
+  // not merely asserted.
   const build = (w, h) => {
     const p = blank(UNROM512, 'fourscreen');
     addMap(p, w, h, true);
@@ -263,7 +280,7 @@ test('mapper-switch preflight: the three checks in order, the real project untou
   };
   const snapshot = (p) => structuredClone(p);
 
-  // (1) capability first: NROM cannot stream. The map is also too big for it, and check 3 must not speak.
+  // (1) capability, the original incapable-board message: NROM cannot stream at all.
   let p = build(1, 40);
   let before = snapshot(p);
   let refusals = checkStreamedMapperSwitch(p, 0, 'fourscreen');
@@ -271,58 +288,80 @@ test('mapper-switch preflight: the three checks in order, the real project untou
   assert.match(refusals[0], /cannot stream a world/);
   assert.deepEqual(p, before);
 
-  // (2) dead axis second: MMC3 under vertical mirroring can only stream side to side, and this map is
-  // 40 tall; it is also too big for MMC3's regions (160 > 30), and check 3 must not speak.
+  // (2) capability, item 1's narrower message, PRE-EMPTING what would otherwise be a dead-axis
+  // violation: this map is also 40 screens tall, which MMC3 under vertical mirroring could never
+  // stream up and down either way -- but the message returned is item 1's "not implemented yet"
+  // text, never a "screens tall" dead-axis message.
   p = build(4, 40);
   before = snapshot(p);
   refusals = checkStreamedMapperSwitch(p, MMC3, 'vertical');
   assert.equal(refusals.length, 1);
-  assert.match(refusals[0], /screens tall/);
+  assert.match(refusals[0], /only reaches the two-nametable ring/);
+  assert.ok(!/screens tall/.test(refusals[0]), 'the dead-axis message must not surface through this function');
   assert.deepEqual(p, before);
 
-  // (3) aggregate third: MMC1 can stream a 1 x 40 map under horizontal mirroring but has too few regions.
-  p = build(1, 40);
+  // (3) aggregate, reachable only through the one board that clears capability: a UNROM 512
+  // four-screen map one screen taller than the board's own usable region count.
+  const usable = usableFor(build(1, 1)).length;
+  p = build(1, usable + 1);
   before = snapshot(p);
-  refusals = checkStreamedMapperSwitch(p, MMC1, 'horizontal');
+  refusals = checkStreamedMapperSwitch(p, UNROM512, 'fourscreen');
   assert.equal(refusals.length, 1);
-  assert.match(refusals[0], /streamed maps need 40 of the /);
+  assert.match(refusals[0], new RegExp(`need ${usable + 1} of the ${usable} `));
   assert.deepEqual(p, before);
 
   // ...and a candidate that passes all three answers nothing.
   const small = build(1, 20);
   before = snapshot(small);
-  assert.deepEqual(checkStreamedMapperSwitch(small, MMC3, 'horizontal'), []);
+  assert.deepEqual(checkStreamedMapperSwitch(small, UNROM512, 'fourscreen'), []);
   assert.deepEqual(small, before);
   // No streamed map: nothing to object to on any board.
   assert.deepEqual(checkStreamedMapperSwitch(blank(MMC1, 'vertical'), 0, 'horizontal'), []);
 });
 
 test('the preflight applies reconcileCartridge first: the post-switch shape is what is checked', () => {
-  // Catches a preflight that checks the pre-reconcile clone. MMC1 cannot hold four-screen mirroring,
-  // so reconcile rewrites it (to vertical); unreconciled, MMC1-with-four-screen reads as "cannot
-  // stream" and a legal 5 x 1 switch is refused. The real project's own fields never move.
+  // Catches a preflight that checks the pre-reconcile clone. UNROM 512 has no mirroring option
+  // named "bogus" (mirroringOptions, shared/cartridge.js); reconcileCartridge's own fallback
+  // rewrites an unrecognised mirroring to vertical. Item 1 now refuses every mirroring but
+  // four-screen on this board anyway, so the useful thing left to prove is that the message names
+  // the RECONCILED value ("vertical"), not the literal candidate string passed in.
   const p = blank(UNROM512, 'fourscreen');
   addMap(p, 5, 1, true);
   const before = structuredClone(p);
   const probe = structuredClone(p);
-  probe.cartridge.mapper = MMC1;
-  probe.cartridge.mirroring = 'fourscreen';
+  probe.cartridge.mirroring = 'bogus';
   reconcileCartridge(probe);
   assert.equal(probe.cartridge.mirroring, 'vertical', 'reconcile rewrites the mirroring');
-  assert.deepEqual(checkStreamedMapperSwitch(p, MMC1, 'fourscreen'), []);
+  const refusals = checkStreamedMapperSwitch(p, UNROM512, 'bogus');
+  assert.equal(refusals.length, 1);
+  assert.match(refusals[0], /UNROM 512 with vertical mirroring/);
   assert.deepEqual(p, before);
 });
 
-test('switchableMappers asks the preflight, and offers no board to hand-written 6502', () => {
-  // A UNROM 512 project with a 1 x 25 streamed map (25 regions): MMC1 cannot hold it, MMC3 can.
-  // Catches restating the fit by hand (the flat count would include the streamed maps' own
-  // screens) and a code-carrying project being offered a board.
+test('switchableMappers never offers a board to a streamed project, from any starting board', () => {
+  // Phase 2 slice 2b, Part D item 1: switchableMappers checks each candidate at the project's OWN
+  // current mirroring (main/build/generate.js's streamedWorld branch), never at a mirroring the
+  // candidate would itself need, and always excludes the project's current mapper from its own
+  // candidate list. Since the one combination item 1 leaves standing is UNROM 512 + four-screen,
+  // and that combination is only ever tried when the project is ALREADY on it -- which then
+  // excludes it as "the current board" -- no board is ever offered to a streamed project today,
+  // regardless of the starting board. This replaces the pre-item-1 "MMC1 excluded, MMC3 offered"
+  // behavior this test used to pin; it is a known, accepted limitation of the suggestion feature
+  // (documented in the phase 2 slice 2b report), not a bug this slice fixes.
   const p = blank(UNROM512, 'horizontal');
-  addMap(p, 1, 25, true);
-  const offered = switchableMappers(p, mapperById(UNROM512)).map((m) => m.id);
-  assert.ok(offered.includes(MMC3), `offered ${offered}`);
-  assert.ok(!offered.includes(MMC1), `offered ${offered}`);
-  assert.ok(!offered.includes(0), 'NROM cannot stream');
+  addMap(p, 1, 5, true);
+  assert.deepEqual(switchableMappers(p, mapperById(UNROM512)), []);
+  const onFourscreen = blank(UNROM512, 'fourscreen');
+  addMap(onFourscreen, 1, 5, true);
+  assert.deepEqual(
+    switchableMappers(onFourscreen, mapperById(UNROM512)),
+    [],
+    'even already on the one viable combination, no OTHER board can match it'
+  );
+  const fromMmc3 = blank(MMC3, 'vertical');
+  addMap(fromMmc3, 1, 5, true);
+  assert.deepEqual(switchableMappers(fromMmc3, mapperById(MMC3)), []);
+  // Hand-written 6502 still short-circuits before any of that: unchanged.
   const coded = structuredClone(p);
   coded.code.files.push({ name: 'user_hook.asm', text: 'forge_user_hook:\n  rts\n' });
   assert.deepEqual(switchableMappers(coded, mapperById(UNROM512)), []);

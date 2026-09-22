@@ -92,9 +92,55 @@ boot_wait2:
   ; flat_screen is final now -- the title's, if there is one -- so this is the
   ; one point boot decides the music instead of hardcoding the start map's:
   ; apply_map_music reads whichever screen is actually about to be drawn.
+  ;
+  ; Phase 2 slice 2b: cold boot draws its first screen inline rather than
+  ; calling redraw_screen (engine/screens.asm), so it carries its own copy of
+  ; that routine's own GLOBAL/resolved dispatch -- sw_resolve_screen either
+  ; leaves ord_screen naming an ordinary row (unchanged body below) or lands
+  ; the field screen itself and returns, the same split, same landing-frame
+  ; scroll write (cam_nt/cam_x_lo/cam_y_lo -- always (0,0) locally, only the
+  ; nametable index varies by screen parity; design derivation in
+  ; docs/reference-engine.md).
+  ;
+  ; boot_streamed_landing brackets exactly this dispatch (to boot_draw_ordinary,
+  ; below) -- Part F's STREAMWORLD_RESOLVER_KERNEL_ALLOWANCE measures this span
+  ; directly off nesasm's own symbol table (kernelbytes.test.js), not by hand.
+boot_streamed_landing:
+  .if STREAMING_ENABLED
+  lda <flat_screen
+  jsr sw_resolve_screen
+  lda <map_is_streamed
+  beq boot_draw_ordinary
+  jsr sw_render_window
+  ; F3 (phase 2 slice 2b fix round 1): see engine/screens.asm's identical
+  ; comment on redraw_screen's own streamed branch -- cold boot carries its
+  ; own copy of the same dispatch, so it needs the same empty-cache call.
+  .if BOUND_TILE_ENABLED
+  jsr rebuild_bound_cache
+  .endif
+  jsr spawn_entities
+  jsr build_oam
+  jsr draw_entities
+  jsr wait_vblank_poll
+  lda <cam_nt
+  ora #PPUCTRL_ON
+  sta $2000
+  lda <cam_x_lo
+  sta $2005
+  lda <cam_y_lo
+  sta $2005
+  lda #PPUMASK_ON
+  sta $2001
+  jmp boot_draw_done
+boot_draw_ordinary:
+  .endif
   jsr apply_map_music
 
+  .if STREAMING_ENABLED
+  ldy <ord_screen
+  .else
   ldy <flat_screen           ; select the starting map's tileset before drawing
+  .endif
   lda screen_tileset,y
   jsr switch_chr_bank
 
@@ -105,6 +151,7 @@ boot_wait2:
   jsr build_oam
   jsr draw_entities
   jsr enable_rendering
+boot_draw_done:
 
   .if SPLIT_ENABLED
   cli                       ; the MMC3 scanline counter is the only IRQ source:

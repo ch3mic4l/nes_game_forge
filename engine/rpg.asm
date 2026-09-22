@@ -29,8 +29,24 @@ rng_store:
 check_encounter:
   lda <moving
   beq check_encounter_done
+; check_encounter_dispatch/check_encounter_live bracket exactly this guard --
+; Part F's STREAMWORLD_ENCOUNTER_KERNEL_ALLOWANCE measures this span directly
+; off nesasm's own symbol table (kernelbytes.test.js), not by hand.
+check_encounter_dispatch:
+  .if STREAMING_ENABLED
+  ; No random encounters while the field is a streamed screen: Part D
+  ; refuses a nonzero encounter rate reachable on any streamed map, and
+  ; ord_screen is meaningless here regardless (map_is_streamed set).
+  lda <map_is_streamed
+  bne check_encounter_done
+  .endif
+check_encounter_live:
   jsr rng_next
+  .if STREAMING_ENABLED
+  ldy <ord_screen
+  .else
   ldy <flat_screen
+  .endif
   lda screen_map,y
   tay
   lda map_enc_rate,y
@@ -71,7 +87,23 @@ touch_encounter:
 start_encounter:
   lda #NO_ENTITY
   sta <bt_from_ent
+  ; Only ever reached via check_encounter's own tail (above), which already
+  ; refuses a streamed current screen -- rekeyed for the same mechanism-(b)
+  ; uniformity as every other consumer, not because this is exercised while
+  ; map_is_streamed is set. start_encounter_dispatch/start_encounter_ord
+  ; bracket exactly this span (Part F's STREAMWORLD_ENCOUNTER_KERNEL_
+  ; ALLOWANCE folds it in beside check_encounter's own dispatch, the brief's
+  ; single "check_encounter/start_encounter" named term) -- both branches
+  ; read a zero-page byte (`<ord_screen`/`<flat_screen`), so this measures
+  ; as 0 extra, the same reasoning apply_map_music's identical pattern
+  ; already established.
+start_encounter_dispatch:
+  .if STREAMING_ENABLED
+  ldy <ord_screen
+  .else
   ldy <flat_screen
+  .endif
+start_encounter_ord:
   lda screen_map,y
   asl a
   asl a                     ; four formation slots per map
