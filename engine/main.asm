@@ -36,6 +36,16 @@
   .include "assets/chrram.inc"
   .include "assets/code.inc"
   .include "assets/screens.inc"
+; docs/design-streamed-worlds.md (ROADMAP item 15), phase 2 slice 2a fix round 1, finding 1:
+; each stream_region_* block carries its own .bank/.org (main/build/generate.js's own
+; streamedRegionChunks), so this include needs no bank/org of its own -- it only has to land
+; after screens.inc's own regions have set the ambient bank/org for whichever one nesasm reads
+; next, which the assembler tracks per-.bank regardless of textual position. A project with no
+; streamed map assembles with this file absent (STREAMING_ENABLED gates the write, not just the
+; include): ROM byte-identical.
+  .if STREAMING_ENABLED
+  .include "assets/streamed_regions.inc"
+  .endif
 
 ; ------------------------------------------- fixed kernel: tables and code
 
@@ -47,6 +57,13 @@
   .include "assets/nameentry.inc"
   .include "assets/input.inc"
   .include "assets/maps.inc"
+; docs/design-streamed-worlds.md (ROADMAP item 15), phase 2 slice 2a fix round 1, finding 1: the
+; streamed-world type table and per-map locator columns, kernel-lo like assets/maps.inc beside it
+; -- no .bank/.org of its own, continuing in kernel_lo.inc's own ambient bank exactly as
+; palettes.inc/metatiles.inc/.../maps.inc already do.
+  .if STREAMING_ENABLED
+  .include "assets/streamed.inc"
+  .endif
   .include "assets/chrtables.inc"
   .include "boot.asm"
   .include "banks.asm"
@@ -101,6 +118,18 @@
   .include "assets/kernel_hi.inc"
   .include "assets/music.inc"
   .include "assets/text.inc"
+
+; docs/design-streamed-worlds.md (ROADMAP item 15), phase 2 slice 2a: the
+; streamed-worlds resident set, after the existing kernel-hi contents
+; (music, text) and before the vectors -- no .bank/.org of its own, it
+; continues in nesasm's own ambient bank here (the one assets/kernel_hi.inc's
+; header already opened), exactly as music.inc/text.inc already do. A
+; project with no streamed map assembles with both files absent: ROM
+; byte-identical.
+  .if STREAMING_ENABLED
+  .include "streamworld.asm"
+  .include "assets/streamworld_metatiles.inc"
+  .endif
 
   .org $FFFA
   .dw nmi

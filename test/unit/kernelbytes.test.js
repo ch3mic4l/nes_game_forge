@@ -76,7 +76,9 @@ import {
   HERO_NAMING_TITLELESS_KERNEL_ALLOWANCE,
   NAME_ENTRY_ACTION_KERNEL_ALLOWANCE,
   HERO_DEFAULT_KERNEL_ALLOWANCE,
-  NAME_TOKEN_KERNEL_ALLOWANCE
+  NAME_TOKEN_KERNEL_ALLOWANCE,
+  STREAMWORLD_KERNEL_HI_ALLOWANCE,
+  STREAMWORLD_MT_PAL_KERNEL_HI_BYTES
 } from '../../main/build/generate.js';
 import { SUPPORTED_MAPPERS, cameraAxes, rpgCapable, saveMediaImplemented, prgLayout, resolveMapper } from '../../shared/cartridge.js';
 import {
@@ -103,6 +105,7 @@ import {
 } from '../../shared/project.js';
 import { fontBankSplit, projectUsesText } from '../../shared/font.js';
 import { createSong } from '../../shared/audio.js';
+import { createStreamedProject } from '../lib/streamedproject.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const SAMPLE_RPG = path.join(ROOT, 'sample-rpg');
@@ -5201,6 +5204,80 @@ test(
       const label = `${mapper.name} (sample-rpg, RPG), token ON`;
       assert.ok(margin >= KERNEL_SLACK, `${label}: whole-bank margin ${margin} is under KERNEL_SLACK`);
       assert.ok(margin <= KERNEL_SLACK * 2, `${label}: whole-bank margin ${margin} is over 2*KERNEL_SLACK`);
+    }
+  }
+);
+
+/**
+ * measureWholeBank's own technique (nesasm's real "BANK n used/free" usage
+ * table row), aimed at the kernel-HI bank instead of kernel-lo --
+ * STREAMWORLD_KERNEL_HI_ALLOWANCE and STREAMWORLD_MT_PAL_KERNEL_HI_BYTES
+ * (main/build/generate.js) are the only two terms ever charged against
+ * kernel-hi rather than kernelCodeBytes/kernelTableBytes, so this is a
+ * standalone helper rather than a reuse of measureWholeBank, which only
+ * ever looks at kernelLoBank.
+ */
+async function measureKernelHiBank(t, mapper, project, { bypassStreamedRefusal = false } = {}) {
+  const dir = await fsp.mkdtemp(path.join(os.tmpdir(), 'forge-kernelhi-'));
+  t.after(() => fsp.rm(dir, { recursive: true, force: true }));
+  const lines = [];
+  await buildProject({ dir, project, log: (line) => lines.push(line), bypassStreamedRefusal });
+  const { kernelHiBank } = prgLayout(mapper);
+  const bankLine = lines.find((line) => new RegExp(`^BANK\\s+${kernelHiBank}\\s`).test(line));
+  assert.ok(bankLine, `${mapper.name}: nesasm's usage table never mentioned bank ${kernelHiBank} (kernel-hi)`);
+  const used = Number(bankLine.match(/(\d+)\/\s*(\d+)\s*$/)?.[1]);
+  assert.ok(Number.isFinite(used) && used > 0, `${mapper.name}: could not parse a used-byte count out of "${bankLine}"`);
+  return used;
+}
+
+// Part D (phase 2 slice 2a): STREAMWORLD_KERNEL_HI_ALLOWANCE's own comment in
+// generate.js promises this exact equality test. The real cost is isolated
+// the same way every other allowance on this page is -- build the project
+// once streamed, once with every map's `streamed` flag forced off (so
+// STREAMING_ENABLED and the whole `.if STREAMING_ENABLED` region drop out,
+// per projectUsesStreaming/shared/streamlayout.js), and take the kernel-hi
+// bank's real used-byte delta. Fix round 1, finding 7: every streamed-capable
+// board (UNROM 512 four-screen, MMC1/MMC3 two-nametable -- streamCapableFourScreen/
+// streamCapableTwoNametable, shared/cartridge.js), not just UNROM 512; MMC1/MMC3 take
+// vertical mirroring and a 3x1 grid because cameraAxes makes the vertical axis the dead one under
+// non-four-screen mirroring, and streamedBoardProblems (shared/project.js) requires gridH === 1
+// on that axis. Both game types plus the `mixed` shape (a streamed map alongside ordinary ones)
+// per the design contract's own required coverage, on every board.
+test(
+  'phase 2 slice 2a: STREAMWORLD_KERNEL_HI_ALLOWANCE + STREAMWORLD_MT_PAL_KERNEL_HI_BYTES equals the real kernel-hi cost of streaming, on every streamed-capable board, both game types and the mixed shape',
+  { skip: !hasNesasm && 'nesasm not found on PATH' },
+  async (t) => {
+    const boards = [
+      { mapperId: 30, mirroring: 'fourscreen', gridW: 3, gridH: 2 },
+      { mapperId: 1, mirroring: 'vertical', gridW: 3, gridH: 1 },
+      { mapperId: 4, mirroring: 'vertical', gridW: 3, gridH: 1 }
+    ];
+    for (const { mapperId, mirroring, gridW, gridH } of boards) {
+      const mapper = resolveMapper(mapperId);
+      const cases = [
+        { gameType: 'action', mixed: false, label: 'action' },
+        { gameType: 'rpg', mixed: false, label: 'rpg' },
+        { gameType: 'action', mixed: true, label: 'action, mixed' }
+      ];
+      for (const { gameType, mixed, label } of cases) {
+        const streamed = createStreamedProject({ gameType, mixed, mapper: mapperId, mirroring, gridW, gridH });
+        const baseline = structuredClone(streamed);
+        for (const map of baseline.maps) map.streamed = false;
+
+        const streamedUsed = await measureKernelHiBank(t, mapper, streamed, { bypassStreamedRefusal: true });
+        const baselineUsed = await measureKernelHiBank(t, mapper, baseline);
+
+        const delta = streamedUsed - baselineUsed;
+        const expected = STREAMWORLD_KERNEL_HI_ALLOWANCE + STREAMWORLD_MT_PAL_KERNEL_HI_BYTES;
+        // fix round 1, finding 7/verification: printed on every run, pass or fail, not only in an
+        // assertion failure message -- an independent, per-mapper figure a report can quote.
+        console.log(`${mapper.name} (${label}): real kernel-hi delta ${delta} (expected ${expected})`);
+        assert.equal(
+          delta,
+          expected,
+          `${mapper.name} (${label}): real kernel-hi delta ${delta} != STREAMWORLD_KERNEL_HI_ALLOWANCE (${STREAMWORLD_KERNEL_HI_ALLOWANCE}) + STREAMWORLD_MT_PAL_KERNEL_HI_BYTES (${STREAMWORLD_MT_PAL_KERNEL_HI_BYTES}) = ${expected}`
+        );
+      }
     }
   }
 );

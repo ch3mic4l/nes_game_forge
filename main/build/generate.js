@@ -129,7 +129,8 @@ import {
   STREAM_MAP_COLUMNS,
   STREAM_MAP_COLUMN_BYTES,
   STREAM_ENTITY_RECORD,
-  STREAM_BOUND_RECORD
+  STREAM_BOUND_RECORD,
+  projectUsesStreaming
 } from '../../shared/streamlayout.js';
 import { emitStreamedLayout } from './streamed.js';
 import { SAVE_FIELDS, saveBodySize, saveIdentity } from '../../shared/save.js';
@@ -1274,6 +1275,42 @@ export const BOUND_TILE_KERNEL_ALLOWANCE = 381;
 // Re-measured for the zero-page kernel diet: 107 (down from 115), from the
 // identical triangulation (N = (off->join) + (off->hero) - (off->both)).
 export const NAME_ENTRY_KERNEL_ALLOWANCE = 107;
+// docs/design-streamed-worlds.md (ROADMAP item 15), phase 2 slice 2a. The
+// resident streamed-worlds package (engine/streamworld.asm), a KERNEL-HI
+// allowance, not kernel-lo like every other one on this page: it is
+// assembled inside `.if STREAMING_ENABLED` after assets/text.inc, before
+// the CPU vectors, and charged against the $E000 half of the fixed kernel
+// (checkCapacity's own music+sfx+text check), never against kernelCodeBytes.
+// Fresh nesasm measurement (test/lib/streamedproject.js's generator, both
+// game types and its `mixed` shape): kernel-hi bank usage of a streamed
+// build minus the same board's unstreamed baseline, minus
+// STREAMWORLD_MT_PAL_KERNEL_HI_BYTES below (both land in the same `.if
+// STREAMING_ENABLED` region, so the raw delta charges both together). Flat
+// at 2050 across game type and `mixed` (2114 combined with
+// STREAMWORLD_MT_PAL_KERNEL_HI_BYTES), measured and equality-asserted on
+// all three streamed-capable boards (UNROM 512, MMC1, MMC3) --
+// test/unit/kernelbytes.test.js. Fix round 1's own review (finding 2) found
+// the prior 2037 figure short by exactly 13 bytes: sw_nmi_stream_reduced,
+// its sw_nsr_go label and SW_STREAM_MIXED_CHUNK had been left out of the
+// migration from the prototype entirely -- 13 instruction bytes (3+2+1+2+2+3);
+// labels and equates emit nothing. The three 1-byte `<` prefix fixes on
+// `inc` operands are a separate, unrelated correction, already folded into
+// this same 2050 figure.
+export const STREAMWORLD_KERNEL_HI_ALLOWANCE = 2050;
+// mt_pal (assets/streamworld_metatiles.inc, generated alongside but
+// separate from assets/metatiles.inc -- the ordinary metatile tables exist
+// on every project, this one only when streaming is live), the
+// per-metatile attribute-quadrant lookup sw_ns_draw_attr/sw_rw_attr_* need
+// to synthesize attribute bytes at render time -- the ordinary engine never
+// needs this (it reads a PRE-computed per-screen attribute block instead,
+// screenAttributes()), so no such table exists until streaming needs one. A
+// fixed LIMITS.metatiles bytes, exactly like mt_tl/tr/bl/br/mt_collision's
+// own charge above -- but gated on projectUsesStreaming, unlike those four,
+// or every project's kernel-hi would grow regardless of whether it uses
+// streaming at all. Assembled inside the same `.if STREAMING_ENABLED`
+// region as streamworld.asm, right after it, so it is a kernel-HI cost too,
+// not kernel-lo -- see the same equality test.
+export const STREAMWORLD_MT_PAL_KERNEL_HI_BYTES = LIMITS.metatiles;
 // script_op_join's own growth (engine/script.asm) -- RPG-only, since Join is
 // itself an RPG-only command.
 // Re-measured for the zero-page kernel diet: 63 (down from 64).
@@ -1631,7 +1668,7 @@ export function switchableMappers(project, mapper, { checkBattleRegion = true } 
   // currently provides", never "does the candidate support the raw
   // mirroring string in the abstract".
   const usesCamera = projectUsesCamera(project);
-  const streamedWorld = project.maps.some((map) => map.streamed === true);
+  const streamedWorld = projectUsesStreaming(project);
   const currentCameraAxes = usesCamera ? cameraAxes(mapper, project.cartridge) : null;
 
   return SUPPORTED_MAPPERS.filter((candidate) => candidate.id !== mapper.id)
@@ -2624,7 +2661,7 @@ export function checkCapacity(project) {
   const boundTilesEnabled = projectUsesBoundTiles(project);
   // With a streamed map, the ordinary screens pack into what the streamed maps leave (planStreamedRegions);
   // otherwise this is exactly the call it always was.
-  const hasStreamed = project.maps.some((map) => map.streamed === true);
+  const hasStreamed = projectUsesStreaming(project);
   const streamedPlan = hasStreamed ? planStreamedRegions(project, mapper, { reserveFlashSave }) : null;
   const capacity = screenCapacityFor(
     mapper,
@@ -2798,15 +2835,23 @@ export function checkCapacity(project) {
         `(ids 0-${LIMITS.songs - 1}). Delete ${project.songs.length - LIMITS.songs} of them before this can build.`
     });
   }
-  // Music, sound effects and text share the $E000 half of the fixed kernel, above the vectors.
-  if (musicBytes + sfxBytes + text.bytes > BANK_SIZE - 64) {
+  // Music, sound effects, text and (streaming only) the resident streamed-worlds package share
+  // the $E000 half of the fixed kernel, above the vectors (docs/design-streamed-worlds.md, phase 2
+  // slice 2a: STREAMWORLD_KERNEL_HI_ALLOWANCE + STREAMWORLD_MT_PAL_KERNEL_HI_BYTES, gated on
+  // projectUsesStreaming alone, zero for every project that does not use the feature).
+  const streamworldHiBytes = hasStreamed
+    ? STREAMWORLD_KERNEL_HI_ALLOWANCE + STREAMWORLD_MT_PAL_KERNEL_HI_BYTES
+    : 0;
+  if (musicBytes + sfxBytes + text.bytes + streamworldHiBytes > BANK_SIZE - 64) {
     problems.push({
       severity: 'error',
       where: musicBytes + sfxBytes > text.bytes ? 'Sound Forge' : 'Map Forge',
       message:
         `The songs and sound effects compile to ${musicBytes + sfxBytes} bytes (${musicBytes} music, ` +
-        `${sfxBytes} effects) and the dialogue to ${text.bytes}, which together do not fit the ` +
-        `${BANK_SIZE}-byte music and text bank. Shorten a song or effect, or cut some dialogue.`
+        `${sfxBytes} effects), the dialogue to ${text.bytes}` +
+        (streamworldHiBytes ? `, and the streaming engine to ${streamworldHiBytes}` : '') +
+        `, which together do not fit the ${BANK_SIZE}-byte music and text bank. Shorten a song or ` +
+        'effect, or cut some dialogue.'
     });
   }
   return {
@@ -3521,6 +3566,12 @@ export async function generateAssets({ dir, project, log = () => {}, bypassStrea
     // projectUsesMove (shared/project.js) for the measured numbers and why this
     // could not simply be added to every ROM the way Heal and Damage were.
     `MOVE_ENABLED = ${usesMove ? 1 : 0}`,
+    // Whether engine/streamworld.asm (the streamed-worlds resident set) is
+    // assembled at all, from ONE predicate, projectUsesStreaming
+    // (shared/streamlayout.js) -- docs/design-streamed-worlds.md, phase 2
+    // slice 2a. A project with no streamed map assembles with the file
+    // absent: ROM byte-identical.
+    `STREAMING_ENABLED = ${hasStreamed ? 1 : 0}`,
     // OP_TURN and OP_WAIT, the same shape as MOVE_ENABLED and each other --
     // see projectUsesTurn/projectUsesWait (shared/project.js). FACE_ENABLED
     // gates move_face (engine/entities.asm) on its own: both Move and Turn
@@ -3778,6 +3829,24 @@ export async function generateAssets({ dir, project, log = () => {}, bypassStrea
         : []),
       ''
     ].join('\n')
+  );
+
+  // docs/design-streamed-worlds.md (ROADMAP item 15), phase 2 slice 2a: mt_pal, the per-metatile
+  // attribute-quadrant lookup sw_ns_draw_attr/sw_rw_attr_* (engine/streamworld.asm) need to
+  // synthesize attribute bytes at render time -- the ordinary engine never needs this (it reads a
+  // PRE-computed per-screen attribute block instead, screenAttributes()). A SEPARATE file from
+  // metatiles.inc above and included from engine/main.asm inside the same `.if STREAMING_ENABLED`
+  // block as streamworld.asm itself, in the kernel-HI region, not kernel-lo like mt_tl/tr/bl/br
+  // above. Kernel-lo occupancy is NOT equal between a streamed and an unstreamed project any more
+  // (fix round 1, finding 1 gated `assets/streamed.inc`'s locator/type tables into kernel-lo
+  // beside `assets/maps.inc`); those tables are real, measured bytes -- kernelTableBytes' own
+  // `streamedBytes` term, above, not this file. The .inc is compiled out entirely, not merely
+  // empty, only when streaming is off.
+  await fs.writeFile(
+    path.join(assetsDir, 'streamworld_metatiles.inc'),
+    hasStreamed
+      ? `; Generated -- one attribute-quadrant palette entry per metatile id.\nmt_pal:\n${dbBlock(column((m) => m.palette ?? 0))}\n`
+      : '; Generated -- this project has no streamed map; nothing to emit.\n'
   );
 
   // --- sprites, animations and actors --------------------------------------

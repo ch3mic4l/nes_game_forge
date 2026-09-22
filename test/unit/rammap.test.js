@@ -184,6 +184,34 @@ function isKnownAlias(a, b) {
   return KNOWN_ALIASES.get(a) === b || KNOWN_ALIASES.get(b) === a;
 }
 
+/**
+ * Unlike KNOWN_ALIASES (identical start AND size), a documented PARTIAL
+ * overlap: one allocation entirely contains a smaller, differently-sized
+ * one at the same start address, on purpose. `attr_shadow` (256 bytes,
+ * phase 2 slice 2a, docs/design-streamed-worlds.md) deliberately starts at
+ * `flash_driver`'s own address (160 bytes) -- NOT safe because the two are
+ * never live at once (a flash commit genuinely can run with a
+ * streamed-world dialogue box open, a later slice), but because the
+ * commit's own resync (slice 9) rebuilds attr_shadow's content before
+ * anything reads it again -- attr_shadow's content is invalid from the
+ * instant a commit runs until that resync completes (see attr_shadow's own
+ * comment in constants.asm, which this entry must keep agreeing with).
+ *
+ * Both extents are pinned by NAME, not merely by "whichever of this pair is
+ * currently smaller/larger": a check that picked containing/contained from
+ * the two intervals' own live sizes could not tell attr_shadow shrinking to
+ * 128 bytes from a real fix, since flash_driver (160) would simply become
+ * the "larger" one and the same "smaller.end <= larger.end" test would still
+ * pass. `containingSize`/`containedSize` are the sizes each name must
+ * actually resolve to; a live size disagreeing with either fails the audit
+ * regardless of which one is textually first or currently wider.
+ */
+const KNOWN_PARTIAL_OVERLAPS = [{ containing: 'attr_shadow', containingSize: 256, contained: 'flash_driver', containedSize: 160 }];
+
+function findKnownPartialOverlap(a, b) {
+  return KNOWN_PARTIAL_OVERLAPS.find((p) => (p.containing === a && p.contained === b) || (p.containing === b && p.contained === a));
+}
+
 /** Resolve one KNOWN_MAX_SIZES entry to a number, against the same `symbols` the RAM addresses themselves resolved through. */
 function resolveKnownSize(spec, symbols) {
   if (typeof spec === 'number') return spec;
@@ -295,28 +323,68 @@ function auditRamMap(constantsText, configText) {
     // one -- the ent_spawn_rec/cur_map collision this guard exists to catch
     // shared a *starting* address, but an audit that stopped there would
     // have missed the equally real case of two starts that merely overlap.
+    //
+    // A running `frontier` (the furthest end address any interval processed
+    // so far reaches), not merely the immediately preceding array entry:
+    // comparing only adjacent pairs would miss a THIRD interval starting
+    // inside a containing interval's own span when the array position right
+    // before it happens to be a smaller, nested one instead -- e.g.
+    // attr_shadow (0-255), flash_driver (0-159, a documented partial overlap
+    // of attr_shadow, sorted second because they share a start), then some
+    // unrelated allocation starting at byte 100: adjacent-pair comparison
+    // checks flash_driver (ends 159) against it, sees no overlap, and the
+    // real collision with attr_shadow (which reaches all the way to 255)
+    // goes unreported. Tracking the frontier and which interval set it
+    // means every later interval is checked against the true reach of
+    // whichever containing interval is still live, not just its neighbour.
     intervals.sort((a, b) => a.start - b.start);
-    for (let i = 1; i < intervals.length; i++) {
-      const prev = intervals[i - 1];
-      const cur = intervals[i];
-      if (isKnownAlias(prev.name, cur.name)) {
-        // A real alias occupies exactly the same bytes as what it aliases --
-        // anything else (a different size, or a start that only partly
-        // overlaps) is not the documented relationship and must still fail.
-        assert.equal(
-          `${prev.start}:${prev.size}`,
-          `${cur.start}:${cur.size}`,
-          `${prev.name} and ${cur.name} are a documented alias but no longer occupy the same bytes -- ` +
-            'either the alias has drifted into a real collision, or KNOWN_ALIASES needs updating'
-        );
-        continue;
+    let frontier = -1;
+    let frontierOwner = null;
+    for (const cur of intervals) {
+      if (frontier >= 0 && cur.start <= frontier) {
+        const prev = frontierOwner;
+        if (isKnownAlias(prev.name, cur.name)) {
+          // A real alias occupies exactly the same bytes as what it aliases --
+          // anything else (a different size, or a start that only partly
+          // overlaps) is not the documented relationship and must still fail.
+          assert.equal(
+            `${prev.start}:${prev.size}`,
+            `${cur.start}:${cur.size}`,
+            `${prev.name} and ${cur.name} are a documented alias but no longer occupy the same bytes -- ` +
+              'either the alias has drifted into a real collision, or KNOWN_ALIASES needs updating'
+          );
+        } else {
+          const spec = findKnownPartialOverlap(prev.name, cur.name);
+          if (spec) {
+            // The documented relationship is "one contains the other, starting
+            // at the same address" -- same start, and each side's own size
+            // pinned by name (see KNOWN_PARTIAL_OVERLAPS' own comment for why
+            // a live-size comparison instead cannot catch the containing side
+            // shrinking). Anything else is not that relationship and must
+            // still fail.
+            const containing = spec.containing === prev.name ? prev : cur;
+            const contained = spec.containing === prev.name ? cur : prev;
+            assert.equal(containing.start, contained.start, `${prev.name} and ${cur.name} are a documented partial overlap but no longer share a start address`);
+            assert.equal(containing.size, spec.containingSize, `${containing.name}'s own size is ${containing.size}, but the documented partial overlap pins it at ${spec.containingSize}`);
+            assert.equal(contained.size, spec.containedSize, `${contained.name}'s own size is ${contained.size}, but the documented partial overlap pins it at ${spec.containedSize}`);
+            assert.ok(
+              contained.end <= containing.end,
+              `${contained.name} (through $${contained.end.toString(16)}) runs past ${containing.name}'s own end ` +
+                `($${containing.end.toString(16)}) -- the documented partial overlap no longer holds`
+            );
+          } else {
+            assert.fail(
+              `${prev.name} ($${prev.start.toString(16)}, ${prev.size} byte${prev.size === 1 ? '' : 's'}, through ` +
+                `$${prev.end.toString(16)}) overlaps ${cur.name} ($${cur.start.toString(16)}, ${cur.size} ` +
+                `byte${cur.size === 1 ? '' : 's'})`
+            );
+          }
+        }
       }
-      assert.ok(
-        prev.end < cur.start,
-        `${prev.name} ($${prev.start.toString(16)}, ${prev.size} byte${prev.size === 1 ? '' : 's'}, through ` +
-          `$${prev.end.toString(16)}) overlaps ${cur.name} ($${cur.start.toString(16)}, ${cur.size} ` +
-          `byte${cur.size === 1 ? '' : 's'})`
-      );
+      if (cur.end > frontier) {
+        frontier = cur.end;
+        frontierOwner = cur;
+      }
     }
 
     // Zero page is $00-$FF; an allocation that starts inside it and runs
@@ -372,6 +440,32 @@ test(
       () => auditRamMap(constantsText, configText),
       /ent_spawn_rec .* overlaps cur_map|cur_map .* overlaps ent_spawn_rec/,
       'the guard should have caught cur_map colliding with ent_spawn_rec through the override text'
+    );
+  }
+);
+
+test(
+  'KNOWN_PARTIAL_OVERLAPS pins attr_shadow\'s own size: shrinking its @size to 128 is caught, not silently reinterpreted as flash_driver containing attr_shadow',
+  { skip: !hasNesasm && 'nesasm not found on PATH' },
+  async (t) => {
+    // Before finding 3's fix, KNOWN_PARTIAL_OVERLAPS picked "containing"/"contained" from whichever
+    // of the pair's OWN CURRENT sizes was larger -- so shrinking attr_shadow to 128 (still >=
+    // flash_driver's start, still <= flash_driver's own end) would just make flash_driver (160) the
+    // "larger" one and the identical containment test would keep passing, silently validating a
+    // real regression instead of catching it.
+    const stockConstantsText = await fs.readFile(path.join(ROOT, 'engine', 'constants.asm'), 'utf8');
+    const shrunkText = stockConstantsText.replace(
+      /^attr_shadow(\s+)= \$0600(\s+); @size=256(.*)$/m,
+      'attr_shadow$1= $0600$2; @size=128$3 -- TEST OVERRIDE: shrunk on purpose'
+    );
+    assert.notEqual(shrunkText, stockConstantsText, 'the attr_shadow line to replace was not found -- did constants.asm change shape?');
+
+    const { constantsText, configText } = await buildAndRead(t, shrunkText);
+    assert.match(constantsText, /TEST OVERRIDE/, 'build/constants.asm does not contain the override -- the Code Forge override was not applied');
+    assert.throws(
+      () => auditRamMap(constantsText, configText),
+      /attr_shadow.*size is 128.*pins it at 256/,
+      'the guard should have caught attr_shadow no longer matching KNOWN_PARTIAL_OVERLAPS\' own pinned containing size'
     );
   }
 );

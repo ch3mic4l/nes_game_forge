@@ -53,3 +53,12 @@ export function streamRegionsPerRow(gridW) {
 export function mapTypeTableBytes(mapCount) {
   return Math.ceil(mapCount / 8);
 }
+
+// The single predicate for "does this project have a streamed map at all" -- phase 2 slice 2a.
+// Every place in main/build/ that used to ask `map.streamed === true` itself routes through this
+// instead, so STREAMING_ENABLED (config.inc), the streamed-worlds kernel-hi allowance and every
+// other streaming-gated emission can never independently disagree about whether a project uses the
+// feature.
+export function projectUsesStreaming(project) {
+  return project.maps.some((map) => map.streamed === true);
+}

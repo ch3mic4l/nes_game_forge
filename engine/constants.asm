@@ -554,6 +554,45 @@ nmi_tmp       = nmi_cam_nt+1
 ; cleared by camera_slide_tick_check right before it calls
 ; camera_slide_complete_b (engine/camera.asm).
 cam_slide_b_pending = nmi_tmp+1
+
+; ---------------------------------------------- streamed worlds: NMI scratch
+; docs/design-streamed-worlds.md (ROADMAP item 15), phase 2 slice 2a.
+; sw_nmi_stream's own drawing scratch (engine/streamworld.asm) -- NMI-private,
+; never touched by mainline code, for the identical reason nmi_tmp above is:
+; an NMI can interrupt mainline mid-sw_goto, which uses sw_tmp..sw_tmp6 as
+; ITS OWN scratch, so sw_nmi_stream cannot share bytes with it. Twelve bytes,
+; the first free zero-page run after cam_slide_b_pending ($BB-$C6); $C7
+; onward is reserved for later slices (below), not allocated here.
+sw_ns_row       = $BB
+sw_ns_col       = $BC
+sw_ns_nt        = $BD
+sw_ns_q         = $BE
+sw_ns_pb        = $BF
+sw_ns_cm        = $C0
+sw_ns_ai        = $C1
+sw_ns_row_lo    = $C2
+sw_ns_row_hi    = $C3
+sw_rw_shadow_lo = $C4
+sw_rw_shadow_hi = $C5
+sw_ns_chunk     = $C6        ; sw_nmi_stream's own chunk-remaining counter
+; The current map's own streamed flag (docs/design-streamed-worlds.md's
+; complete RAM map): set at map entry/warp from a generated per-map table
+; (phase 2 slice 2b, not yet built); read by a runtime Save dispatch, a
+; player-Move same-axis bound choice and the capped-knockback map-mode
+; branch (all later slices). Allocated here because engine/streamworld.asm
+; is now resident and a later slice's first real writer needs a settled
+; address, not written by any code this slice.
+map_is_streamed = $FE
+; Named here, in this same reserved zero-page run, but NOT allocated as an
+; equate -- no code in this commit references any of them, so giving them a
+; symbol would claim an address with nothing to prove it real. Recorded so a
+; later slice claiming a neighbour sees the reservation:
+;   $C7      sw_axis_pref        -- decision A's input-axis-ownership flag (slice 4b)
+;   $C8-$F2  dialogue scratch    -- the mapper/split-writer/attribute working set (slice 7a)
+;   $F3-$FC  dialogue lifecycle  -- sw_dlg15_state and friends (slice 7b)
+;   $FD      sw_event_freeze     -- the event-freeze policy flag (slice 4b)
+; ($FF stays free -- see design-streamed-worlds.md's own RAM map.)
+
 ; draw_battle_attr's own ground-row fill (engine/battle.asm) -- rows 1-4 of
 ; the attribute table get this value before any live monster's own mon_attr
 ; is written over the top. This is what a dead monster's own cell must be
@@ -606,6 +645,21 @@ mus_inst    = $034C  ; @size=MUS_CHANNELS
 mus_step    = $0350         ; envelope step  @size=MUS_CHANNELS
 mus_note    = $0354         ; $FF when the channel is resting  @size=MUS_CHANNELS
 mus_trig    = $0358         ; a note started this frame  @size=MUS_CHANNELS
+
+; ------------------------------------------- streamed worlds: camera origin
+; docs/design-streamed-worlds.md, phase 2 slice 2a. The streamed camera's own
+; world-space origin -- the world position already sitting at screen column/
+; row 0, sw_project_axis's second argument (engine/streamworld.asm). First
+; production writer is a later slice (the once-per-frame camera-origin
+; derivation); allocated here because sw_project_axis references it
+; structurally. Placed in the four bytes confirmed free right after mus_trig
+; ($035B) and before ent_to_scr ($0360), not appended to the sting-RAM block
+; below -- the smaller of this file's two other confirmed-free RAM blocks
+; (see also $03D8-$03E3, below), real and unclaimed until now.
+sw_cam_origin_x_lo = $035C
+sw_cam_origin_x_hi = $035D
+sw_cam_origin_y_lo = $035E
+sw_cam_origin_y_hi = $035F
 
 MUS_REST    = $FE
 MUS_LOOP    = $FF
@@ -667,7 +721,7 @@ mon_slot_alive = $03C8  ; @size=MAX_MONSTERS
 
 turn_order  = $03CC         ; NUM_COMBATANTS entries, fastest first  @size=NUM_COMBATANTS
 bt_digits   = $03D4         ; three decimal digits, most significant first  @size=3
-; $03D8-$03E3 (12 bytes) is free. It held bt_line, "the message area's
+; $03D8-$03E3 (12 bytes) was free. It held bt_line, "the message area's
 ; staging buffer" -- a byte array push_battle_string (engine/battleui.asm)
 ; never turned out to need: it writes each glyph straight to VRAM out of
 ; bs_text and bt_digits as it goes, with no local buffer to stage a line
@@ -675,6 +729,18 @@ bt_digits   = $03D4         ; three decimal digits, most significant first  @siz
 ; (test/unit/rammap.test.js) has no way to catch a block that is simply
 ; unused, only one that collides, so this was only found by checking every
 ; @size annotation against the code that actually indexes it.
+;
+; docs/design-streamed-worlds.md, phase 2 slice 2a claims the first two of
+; these twelve bytes: sw_walk_acc_x/y, sw_walk_step_x/y's own per-axis
+; subpixel accumulators (engine/streamworld.asm). First production writer is
+; a later slice (scripted Move before the walking driver exists); allocated
+; here because sw_walk_step_x/y reference them structurally.
+sw_walk_acc_x = $03D8
+sw_walk_acc_y = $03D9
+; The remaining ten bytes are named, not allocated -- no code in this commit
+; references them, only recorded so a later slice sees the reservation:
+;   $03DA-$03DB  sw_dlg_cam_x_lo/y_lo  -- dialogue's pre-nudge camera snapshot (slice 7b)
+;   $03DC-$03E3  sw_dlg_o*/r*          -- sw_dlg_metatile's own box-origin/resolve scratch (slice 7b)
 bt_list     = $03E4  ; the open spell or item list -- up to eight  @size=8
                             ; entries, not the four the box shows at once:
                             ; build_spell_list/build_item_list
@@ -873,6 +939,108 @@ nm_named    = $059D  ; script_op_join's own scratch
 nm_acted    = $059E  ; per-frame latch: at most one grid action per frame
 msg_name_idx = $059F ; TXT_NAME's own typewriter progress, 0-9 (docs/design-name-entry.md §9a)
 
+; ------------------------------------------------ streamed worlds: core state
+; docs/design-streamed-worlds.md (ROADMAP item 15), phase 2 slice 2a. The
+; whole engine/streamworld.asm scratch/state chain, one contiguous 95-byte
+; block starting at $05A0, the first free byte after msg_name_idx above (the
+; confirmed-unused $0568-$05FF gap sfx/name-entry RAM already appends into,
+; above) and ending at sw_rw_oob = $05FE -- one byte ($05FF) stays free. Most
+; of this is mainline-only scratch (sw_tmp.. sw_tmp6, the sw_ss_*/probe_*
+; fields), never touched by NMI, so it shares no reentrancy hazard with the
+; dedicated NMI scratch above ($BB-$C6) the way nmi_tmp/sw_tmp4 once did.
+sw_col              = $05A0  ; player's current absolute screen col
+sw_row              = $05A1  ; player's current absolute screen row
+sw_col_rem          = $05A2  ; sw_col mod STREAM_SCREENS_PER_REGION
+sw_col_region       = $05A3  ; sw_col div STREAM_SCREENS_PER_REGION
+; sw_col_byte_lo/hi: the 16-bit byte offset col_rem*STREAM_RECORD_BYTES
+; within the current region, maintained INCREMENTALLY (+/-STREAM_RECORD_BYTES
+; per crossing, sw_cross_right/left) so the hot path (sw_locate_current)
+; never multiplies -- only sw_goto's own cold, arbitrary-column path does.
+sw_col_byte_lo      = $05A4
+sw_col_byte_hi      = $05A5
+sw_row_bank_base    = $05A6
+sw_base_bank        = $05A7
+sw_regions_per_row  = $05A8
+sw_grid_w           = $05A9
+sw_grid_h           = $05AA
+sw_tmp              = $05AB
+sw_tmp2             = $05AC
+sw_tmp3             = $05AD
+sw_tmp4             = $05AE
+sw_tmp5             = $05AF  ; sw_goto's own byte_lo scratch
+sw_tmp6             = $05B0  ; sw_goto's own byte_hi scratch
+; win_col_local (0-15) and win_row_local (0-14) ARE the physical local
+; coordinate within whichever half win_col_screen/win_row_screen's own
+; PARITY selects -- never a window-relative offset from the left/top edge.
+win_col_screen      = $05B1
+win_col_local       = $05B2
+win_row_screen      = $05B3
+win_row_local       = $05B4
+; Streaming state + entering-edge buffer. st_vary is the physical ring
+; coordinate (0-29 for a column strip, 0-31 for a row strip), initialised at
+; arm time from the window's own current varying-axis start (parity*half +
+; local) and WRAPPED (not merely incremented) by sw_nmi_stream.
+st_active           = $05B5  ; 0 idle, 1 column strip, 2 row strip
+st_cur              = $05B6
+st_len              = $05B7
+st_ftile            = $05B8  ; fixed tile coordinate (2*local of the
+                              ; entering edge's own screen/local pair)
+st_fnt              = $05B9  ; fixed nametable-hi contribution (parity of
+                              ; the entering edge's own screenCol/Row * 4 or 8)
+st_vary             = $05BA
+ss_i                = $05BB
+sbuf                = $05BC  ; @size=32 -- the incremental strip's own
+                              ; in-flight read buffer
+; sw_ss_sc/lc/sr/lr: sw_stream_start_col/row's own saved entering-edge
+; (screen,local) argument -- column-strip and row-strip names share the same
+; four bytes, never live together.
+sw_ss_sc            = $05DC
+sw_ss_lc            = $05DD
+sw_ss_sr            = $05DE
+sw_ss_lr            = $05DF
+; Strip-arming / render-window probe scratch (main-loop side; never touched
+; by NMI).
+sw_probe_col_screen = $05E0
+sw_probe_col_local  = $05E1
+sw_probe_row_screen = $05E2
+sw_probe_row_local  = $05E3
+sw_last_screen_col  = $05E4
+sw_last_screen_row  = $05E5
+sw_rw_nt            = $05E6
+sw_rw_row           = $05E7
+sw_rw_col           = $05E8
+sw_rw_base_col      = $05E9
+sw_rw_base_row      = $05EA
+sw_rw_offset        = $05EB
+sw_rw_arow          = $05EC
+sw_rw_acol          = $05ED
+sw_rw_tmp           = $05EE
+sw_rw_tmp2          = $05EF
+; sw_render_window's own ring origin, computed once per call:
+; wbase_col = (win_col_screen&1)*16 + win_col_local, wbase_row =
+; (win_row_screen&1)*15 + win_row_local.
+sw_rw_wbase_col     = $05F0
+sw_rw_wbase_row     = $05F1
+; The caller's own PRG bank number, set by a BANKED caller before jsr
+; sw_read_transaction/sw_read_run, so the transaction can restore THAT bank
+; (not the field's current screen) before returning.
+sw_caller_bank      = $05F2
+sw_run_off          = $05F3
+sw_run_len          = $05F4  ; sw_read_run's byte count, 1-8
+; sw_read_run's own dedicated result buffer -- DELIBERATELY never aliases
+; sbuf above: a probe (sw_read_run) running mid-strip must not corrupt the
+; incremental strip's own in-flight buffer, and a strip resuming after a
+; probe must see nothing but its own bytes. The corrected model (this
+; slice) -- an earlier prototype shape read straight into sbuf, which this
+; migration does not carry forward.
+sw_run_buf          = $05F5  ; @size=8
+; The current map's own fill metatile id, per-map authored state (default 0).
+sw_fill_metatile_id = $05FD
+; 1 while sw_render_window's current probe (terrain or attribute quadrant)
+; has just resolved OFF the map (fill applies, no real screen to switch to);
+; 0 while it named a real in-bounds screen. ($05FF stays free.)
+sw_rw_oob           = $05FE
+
 ; ------------------------------------------------------------ inventory RAM
 ; One id per item carried, oldest first -- an item id under ITEMS_ENABLED, or
 ; the legacy backing-actor id on the disabled economy, which never gained a
@@ -911,6 +1079,18 @@ vram_buf    = $0400  ; @size=256
 ; whole -- see that guard for the real measured size.
 FLASH_DRIVER_MAX = 160
 flash_driver     = $0600  ; @size=FLASH_DRIVER_MAX
+; attr_shadow (docs/design-streamed-worlds.md, phase 2 slice 2a) --
+; sw_render_window/sw_nmi_stream's own byte-for-byte shadow of every
+; attribute byte currently on screen (engine/streamworld.asm), 256 bytes,
+; DELIBERATELY aliasing flash_driver's 160 at this same address: a flash
+; commit genuinely can run with a streamed-world dialogue box open (a later
+; slice), and the alias is safe not because the two are temporally
+; exclusive but because the commit's own resync rebuilds attr_shadow before
+; anything reads it again -- attr_shadow's content is invalid from the
+; instant a commit runs until that resync completes. See KNOWN_PARTIAL_
+; OVERLAPS in test/unit/rammap.test.js, the one deliberate carve-out from
+; this file's own no-overlap guard.
+attr_shadow      = $0600  ; @size=256 -- overlaps flash_driver, on purpose
 ; SAVE_RECORD_LEN (config.inc) is the whole record -- body, checksum,
 ; identity and marker together, the same span save.inc's own SAVE_BASE..
 ; SAVE_MARKER equates lay out contiguously. This is the flash medium's
@@ -918,6 +1098,13 @@ flash_driver     = $0600  ; @size=FLASH_DRIVER_MAX
 ; agree on the number $0700, not one computed from the other, the same
 ; situation MAX_ITEMS above is already in with shared/save.js's own copy.
 save_flash_buf   = $0700  ; @size=SAVE_RECORD_LEN
+; docs/design-streamed-worlds.md, phase 2 slice 2a: four more bytes named
+; here, in the free space above save_flash_buf's own SAVE_RECORD_LEN span,
+; but NOT allocated -- no code in this commit references them:
+;   $07F0  sw_dlg17_camhold     -- a nudge/un-nudge publication hold is open (slice 7b)
+;   $07F1  sw_dlg17_move_close  -- a close-for-Move draw-down is in progress (slice 8)
+;   $07F2  sw_dlg17_resync_i    -- the save-resync's own row/band loop counter (slice 9)
+;   $07F8  sw_dlg20_save_pending -- a deferred Save is waiting on a close-for-Save draw-down (slice 9)
 
 ; Behaviours, in the same order as BEHAVIORS in shared/project.js.
 BEH_PLAYER  = 0

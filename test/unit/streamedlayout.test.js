@@ -397,7 +397,7 @@ function pointerLabelsAt(inc, label) {
 }
 
 /** The `.bank N` / `.org $XXXX` header in force at the point `label:` appears in `inc` -- proves
- * where a label actually assembles, which reading the bytes underneath it cannot. */
+ * the enclosing bank/origin header only, which reading the bytes underneath it cannot. */
 function labelBankOrg(inc, label) {
   let bank = null;
   let org = null;
@@ -431,13 +431,24 @@ function wiredMixedProject() {
   // vertical mirroring: MMC1 streams side to side (N wide, 1 tall) only under vertical
   // mirroring -- shared/project.js's own dead-axis restriction (validateProject).
   p.cartridge.mirroring = 'vertical';
-  p.sprites.actors = [{ name: 'Guide', behavior: 'npc' }]; // actorCount = 1: actorId 5 below is deleted
+  // actorId 1 is a pickup: itemsEnabled + canBackItem routes its own entity's `target` through
+  // resolveEntityByte's ITEM branch (itemIdForActor), never the screen-target branch the removed
+  // withDefaults fallback used unconditionally -- a pickup's item id (7) and that fallback's
+  // Math.min(toScreen ?? 0, total-1) can never coincide by construction, so wiring the real
+  // production callback back to the old fallback is directly observable, not moot by coincidence
+  // (slice 1 review 2 nit b).
+  p.sprites.actors = [
+    { name: 'Guide', behavior: 'npc' },
+    { name: 'Berry', behavior: 'pickup' }
+  ]; // actorCount = 2: actorId 5 below is still deleted
+  p.items = [{ id: 7, name: 'Berry', actorId: 1 }];
   const s = makeMap(p, 'S', 2, 1, true); // ids 0,1
   // makeMap's own distinct-terrain generator can exceed LIMITS.metatiles (64); masked here so
   // validateProject's "maps reference N metatiles" check does not itself refuse the build, while
   // staying distinct screen to screen (the property these tests actually need it for).
   for (const screen of s.screens) screen.metatiles = screen.metatiles.map((v) => v & 63);
   s.screens[0].entities.push(ent(0, 10, 20, { dialogue: 'Hi', trigger: 'enter', toScreen: 1 }));
+  s.screens[0].entities.push(ent(1, 12, 20)); // the pickup: target must be its own item id, 7
   s.screens[0].entities.push(ent(5, 1, 1)); // deleted actor: must not reach the emitted record
   const a = makeMap(p, 'A', 2, 1, false); // ids 2,3 -> ordinary compacted 0,1
   for (const screen of a.screens) screen.metatiles = screen.metatiles.map((v) => v & 63);
@@ -474,13 +485,15 @@ test('generateAssets wires emitStreamedLayout into a real build: streamed.inc an
   // the deleted actor's absence.
   const screen0 = region.slice(0, STREAM_RECORD_BYTES);
   assert.deepEqual(screen0.slice(0, STREAM_TERRAIN_BYTES), s.screens[0].metatiles);
-  assert.equal(screen0[STREAM_OFFSETS.entityCount], 1, 'the deleted actor (id 5) must not be counted');
-  const e = screen0.slice(STREAM_OFFSETS.entities, STREAM_OFFSETS.entities + STREAM_ENTITY_RECORD);
+  assert.equal(screen0[STREAM_OFFSETS.entityCount], 2, 'the deleted actor (id 5) must not be counted');
+  const entityAt = (i) => screen0.slice(STREAM_OFFSETS.entities + i * STREAM_ENTITY_RECORD, STREAM_OFFSETS.entities + (i + 1) * STREAM_ENTITY_RECORD);
+  const e = entityAt(0);
   const field = (name) => e[STREAM_ENTITY_FIELDS.indexOf(name)];
   assert.equal(field('actor'), 0);
   assert.equal(field('x'), 10);
   assert.equal(field('y'), 20);
-  // itemsEnabled is false (no items in this project): resolveEntityByte's screen-target branch,
+  // Guide (actorId 0) is not a pickup, so itemsEnabled being true (this project now carries one
+  // item, actorId 1's Berry) does not move it off resolveEntityByte's screen-target branch:
   // min(toScreen, total - 1) = min(1, 3) = 1 -- NOT the streamed entity's own global id (1 would
   // also be the global id here by coincidence of this project's shape; the "streamed doors keep
   // their global id" property is pinned above, by the existing "NONZERO base" test).
@@ -494,6 +507,17 @@ test('generateAssets wires emitStreamedLayout into a real build: streamed.inc an
   // which generate.js's real entityFields callback deliberately leaves unreturned (see
   // handoff-next/progress-phase2-s1.md's "Decisions").
   assert.equal(field('hideSwitch'), 255);
+
+  // Berry (actorId 1) IS a pickup: itemsEnabled && canBackItem routes it through
+  // resolveEntityByte's 'item' branch, never the screen-target branch entity 0 above took --
+  // target must be its own item id (7), which the removed withDefaults fallback (screen-target
+  // only, no item concept at all) could never produce for an entity with no `toScreen` prop
+  // (it would read 0). This is the nit the wiring test's own top-level comment used to lack: a
+  // partial callback slipping back to that old fallback showed no observable difference before.
+  const e1 = entityAt(1);
+  const field1 = (name) => e1[STREAM_ENTITY_FIELDS.indexOf(name)];
+  assert.equal(field1('actor'), 1);
+  assert.equal(field1('target'), 7, "a pickup's target is its own item id, not a screen index");
 
   const screen1 = region.slice(STREAM_RECORD_BYTES, 2 * STREAM_RECORD_BYTES);
   assert.deepEqual(screen1.slice(0, STREAM_TERRAIN_BYTES), s.screens[1].metatiles);
@@ -715,11 +739,11 @@ test('ordinary door targets stay GLOBAL, including across ordinary maps and into
 });
 
 test('two streamed maps of different sizes: every record in every allocated region lands at its own checkCapacity-assigned bank/offset, distinguishable content', async (t) => {
-  // Catches every plausible "wrong bank" bug this wiring could have: baseBanks not threaded
-  // through at all (emitStreamedLayout's own default numbering, which only agrees with the real
-  // plan by coincidence), the two maps' own banks swapped or collapsed onto one, a middle or tail
-  // region silently dropped or shared, and finding 3's `.org` bug (a byte-content check alone
-  // cannot see a missing `$` or a wrong hex value -- only a literal text match on the header can).
+  // Catches: baseBanks not threaded through at all (emitStreamedLayout's own default numbering,
+  // which only agrees with the real plan by coincidence), the two maps' own banks swapped or
+  // collapsed onto one, a middle or tail region silently dropped or shared, and finding 3's `.org`
+  // bug (a byte-content check alone cannot see a missing `$` or a wrong hex value -- only a
+  // literal text match on the header can).
   // Each map's per-screen terrain is unique (makeMap's own id-derived pattern, masked to 6 bits),
   // so content arriving under the wrong map's bank/offset is directly visible, not inferred.
   const p = blank();

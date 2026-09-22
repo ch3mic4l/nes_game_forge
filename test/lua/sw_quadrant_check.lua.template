@@ -1,0 +1,95 @@
+-- sw_quadrant_check.lua.template -- phase 2 slice 2a, Part G.
+--
+-- This is a TEMPLATE, not the script Mesen runs directly. test/lua/build_sw_roms.mjs
+-- instantiates it once per built ROM shape, substituting the three __PLACEHOLDER__ tokens below
+-- with frame_cnt/game_state/ST_GAMEPLAY addresses resolved fresh out of THAT EXACT build's own
+-- build/constants.asm + build/assets/config.inc (test/lib/equates.js's scanEquates/resolveEquates
+-- -- game.fns, nesasm's own symbol dump, omits plain RAM equates entirely, only real code labels;
+-- confirmed empirically the same way build_camera_roms.mjs's own header already documents for
+-- cam_x_lo/flash_left). Fix round 2, MINOR 3: the prior version of this file hardcoded $1B/$25/0
+-- as a literal fallback with no build-time proof they were ever correct for a given build.
+--
+-- Baking the resolved values into a GENERATED script, rather than having this file read an
+-- external symbols file at Mesen runtime, is a deliberate choice, not an oversight: Mesen passes
+-- this script no arguments beyond what it reads from the ROM itself, and this sandboxed Lua
+-- cannot safely read a second file at runtime either -- save_sram.lua's own header records that
+-- writing one crashed the host process outright during development. Substituting at JS build time
+-- means a missing/unresolvable symbol is a loud `resolveEquates` throw before Mesen ever launches,
+-- never a silent runtime fallback.
+--
+--   node test/lua/build_sw_roms.mjs [outDir]
+--   Mesen --testRunner <outDir>/sw_<shape>_check.lua <outDir>/sw_<shape>.nes
+--
+-- (test/lua/run_sw_quadrant_check.sh does both steps, once per shape.)
+--
+-- Boot-sanity only: proves the mere PRESENCE of engine/streamworld.asm's resident set (gated
+-- behind `.if STREAMING_ENABLED`, unreachable from any real call site until slice 2b's map-entry
+-- loader) does not corrupt anything a real cartridge depends on -- the CPU vectors, the fixed
+-- kernel's own code, a normal boot -- on a second, independent, cycle-accurate emulator core
+-- (jsnes already proves this at the unit-test level in test/unit/streamworldresident.test.js;
+-- this is the cross-check CLAUDE.md's own "The emulator" section asks every Lua runner to be).
+--
+-- What this does NOT check: window-render parity (comparing sw_render_window's own output against
+-- an independent reference) needs a real call site to reach it from a fresh boot, which does not
+-- exist until slice 2b gives it one; owned there. Strip timing (sw_nmi_stream's own per-frame
+-- budget) is owned by slice 4a. run_sw_quadrant_check.sh's own --break=corrupt-reset-vector build
+-- (test/lua/build_sw_roms.mjs) is this file's negative control: a generic "does this check
+-- actually notice a ROM that cannot boot" proof, not a streamworld.asm-specific defect.
+--
+-- Positive proof, both required: frame_cnt (NMI-driven) genuinely ADVANCES between two samples,
+-- not merely nonzero once (a stuck nonzero value would pass a single `~= 0` check); and
+-- game_state settles on ST_GAMEPLAY -- the state createStreamedProject's own projects boot
+-- straight into (shared/project.js's createProject: titleMap is null, and no party member is
+-- renamable, so there is no title or naming state to wait through here).
+
+local frame_cnt   = __FRAME_CNT__   -- engine/constants.asm, resolved from this exact build
+local game_state  = __GAME_STATE__  -- engine/constants.asm, resolved from this exact build
+local ST_GAMEPLAY = __ST_GAMEPLAY__ -- engine/constants.asm, resolved from this exact build
+
+local EXIT_TIMEOUT   = 99
+local EXIT_NO_BOOT    = 2
+local EXIT_BAD_STATE  = 3
+
+local frame = 0
+local baselineFrameCnt = nil
+
+local function log(message) emu.log(message) end
+local function fail(code, message) log("FAIL: " .. message) emu.stop(code) end
+local function pass(message) log("ok   " .. message) end
+local function read(address) return emu.read(address, emu.memType.nesMemory) end
+
+local function onFrame()
+  frame = frame + 1
+
+  if frame == 30 then
+    baselineFrameCnt = read(frame_cnt)
+  end
+
+  if frame < 60 then return end
+
+  if frame == 60 and baselineFrameCnt == 0 and read(frame_cnt) == 0 then
+    fail(EXIT_NO_BOOT, "frame_cnt is still 0 after 60 frames -- the NMI is not running")
+    return
+  end
+
+  local current = read(frame_cnt)
+  local state = read(game_state)
+  if current ~= baselineFrameCnt and state == ST_GAMEPLAY then
+    pass(string.format("booted: frame_cnt %d -> %d, game_state=%d", baselineFrameCnt, current, state))
+    emu.stop(0)
+    return
+  end
+
+  if frame > 180 then
+    if current == baselineFrameCnt then
+      fail(EXIT_NO_BOOT, string.format(
+        "frame_cnt held at %d from frame 30 through frame %d -- the NMI stopped, or never really ran",
+        baselineFrameCnt, frame))
+    else
+      fail(EXIT_BAD_STATE, string.format(
+        "game_state is %d, not ST_GAMEPLAY (%d), %d frames after boot", state, ST_GAMEPLAY, frame))
+    end
+  end
+end
+
+emu.addEventCallback(onFrame, emu.eventType.endFrame)

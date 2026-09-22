@@ -167,3 +167,11 @@ sizes, the route zero-cost proof and `KERNEL_SLACK` itself are each checked thei
 - `KERNEL_SLACK = 20` (unmoved by the diet): `kernelbytes.test.js`'s `assertCovers` requires
   `KERNEL_SLACK <= margin <= KERNEL_SLACK * 2`. Correct accounting of the base and every conditional
   term should leave exactly the floor; the ceiling detects drift, not spare headroom.
+- `STREAMWORLD_KERNEL_HI_ALLOWANCE = 2050` plus `STREAMWORLD_MT_PAL_KERNEL_HI_BYTES = LIMITS.metatiles`
+  (64) are the one pair of allowances charged against kernel-**hi** ($E000) rather than kernel-lo —
+  the resident streamed-worlds package (`engine/streamworld.asm`) and its metatile attribute-quadrant
+  lookup (`mt_pal`), both assembled inside `.if STREAMING_ENABLED` after `assets/text.inc`, gated on
+  `projectUsesStreaming` (`shared/streamlayout.js`). Measured as the real kernel-hi bank usage delta
+  between a streamed build and the same project with every map's `streamed` flag forced off, flat
+  at 2114 combined across game type, the `mixed` (streamed map alongside ordinary ones) shape, and
+  every streamed-capable board (UNROM 512, MMC1, MMC3) — equality-asserted by `kernelbytes.test.js`.
