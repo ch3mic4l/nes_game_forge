@@ -118,7 +118,20 @@ import {
   projectNeedsNameSeed,
   streamedBoardProblems
 } from '../../shared/project.js';
-import { streamRegionsPerRow, mapTypeTableBytes } from '../../shared/streamlayout.js';
+import {
+  streamRegionsPerRow,
+  mapTypeTableBytes,
+  STREAM_RECORD_BYTES,
+  STREAM_OFFSETS,
+  STREAM_TERRAIN_BYTES,
+  STREAM_HIGH_PAGE,
+  STREAM_SCREENS_PER_REGION,
+  STREAM_MAP_COLUMNS,
+  STREAM_MAP_COLUMN_BYTES,
+  STREAM_ENTITY_RECORD,
+  STREAM_BOUND_RECORD
+} from '../../shared/streamlayout.js';
+import { emitStreamedLayout } from './streamed.js';
 import { SAVE_FIELDS, saveBodySize, saveIdentity } from '../../shared/save.js';
 import {
   CHR_BANK_BYTES,
@@ -2038,6 +2051,36 @@ export function flattenScreens(project) {
 }
 
 /**
+ * The ordinary screens' own compacted view (docs/design-streamed-worlds.md §3, "Charge,
+ * resolved"): flattenScreens' own global-identity flat, filtered to non-streamed maps, in the
+ * same row order planStreamedRegions' own ordinaryFlat already uses -- with left/right/up/down
+ * recomputed against THIS compacted numbering, never the raw flat array's. Every ordinary table
+ * generateAssets emits (maps.inc, screens.inc) is built from this, not from flattenScreens' own
+ * flat -- flattenScreens' own numbering is untouched and stays what resolveGlobalScreen,
+ * Warp/door operands and saves use. A neighbour is always within the same map, and a streamed
+ * map's screens never enter this view at all, so a found neighbour is always another entry of
+ * this same compacted list.
+ */
+export function ordinaryScreenView(project) {
+  const { flat } = flattenScreens(project);
+  const ordinaryFlat = flat.filter((entry) => entry.map.streamed !== true);
+  const compactIndex = new Map();
+  ordinaryFlat.forEach((entry, index) => compactIndex.set(entry.screen, index));
+  const at = (map, col, row) => {
+    if (col < 0 || row < 0 || col >= map.gridW || row >= map.gridH) return 0xff;
+    return compactIndex.get(map.screens[row * map.gridW + col]) ?? 0xff;
+  };
+  const neighbours = { left: [], right: [], up: [], down: [] };
+  for (const { map, col, row } of ordinaryFlat) {
+    neighbours.left.push(at(map, col - 1, row));
+    neighbours.right.push(at(map, col + 1, row));
+    neighbours.up.push(at(map, col, row - 1));
+    neighbours.down.push(at(map, col, row + 1));
+  }
+  return { ordinaryFlat, neighbours };
+}
+
+/**
  * The mirroring value for mappers that set it from their own register instead of
  * the iNES header. MMC1 control bits 0-1 use 2 for vertical and 3 for horizontal;
  * MMC3's $A000 bit 0 uses 0 for vertical and 1 for horizontal. `mirroringValue`
@@ -2328,7 +2371,7 @@ export function planStreamedRegions(project, mapper, options = {}) {
     baseBanks,
     remainingRegions: usable.slice(streamedNeed),
     reserveFlashSave,
-    ordinaryFlat: flattenScreens(project).flat.filter((entry) => entry.map.streamed !== true)
+    ordinaryFlat: ordinaryScreenView(project).ordinaryFlat
   };
 }
 
@@ -2506,6 +2549,7 @@ export function checkCapacity(project) {
     problems.push({
       severity: 'error',
       where: 'Map Forge',
+      code: 'streamed-no-engine',
       message: `Map "${map.name}" is a streamed map, and streamed maps have no engine yet, so this project cannot be built. Streamed is set in the project's map JSON ("streamed": true): remove it, or set it to false, for that map.`
     });
   }
@@ -2773,7 +2817,8 @@ export function checkCapacity(project) {
     musicBytes,
     sfxBytes,
     textBytes: text.bytes,
-    dataBankCount: layout.dataBankCount
+    dataBankCount: layout.dataBankCount,
+    streamedPlan
   };
 }
 
@@ -2796,9 +2841,16 @@ export function resolveEntityByte(entity, actor, itemsEnabled, itemIdForActor, f
   return { kind: 'screen', flatIndex: Math.min(entity.props?.toScreen ?? 0, Math.max(0, flatLength - 1)) };
 }
 
-export async function generateAssets({ dir, project, log = () => {} }) {
-  const { problems, capacity, reserveFlashSave, screenCount } = checkCapacity(project);
-  const errors = problems.filter((problem) => problem.severity === 'error');
+export async function generateAssets({ dir, project, log = () => {}, bypassStreamedRefusal = false }) {
+  // bypassStreamedRefusal is a TEST-ONLY seam (docs/design-streamed-worlds.md §3, phase 2 slice 1):
+  // buildProject/cli.js never pass it, so the public build path still always refuses a streamed
+  // project here, exactly as before. It exists so the emitter-wiring test can reach real asset
+  // generation for a streamed project while checkCapacity's own "no engine yet" refusal (still the
+  // only production behaviour) keeps firing for every real caller.
+  const { problems, capacity, reserveFlashSave, screenCount, streamedPlan } = checkCapacity(project);
+  const errors = problems.filter(
+    (problem) => problem.severity === 'error' && !(bypassStreamedRefusal && problem.code === 'streamed-no-engine')
+  );
   if (errors.length) {
     const error = new Error(errors.map((problem) => `${problem.where}: ${problem.message}`).join('\n'));
     error.problems = problems;
@@ -3236,7 +3288,12 @@ export async function generateAssets({ dir, project, log = () => {} }) {
   );
 
   // --- config --------------------------------------------------------------
-  const { flat, mapBase, neighbours } = flattenScreens(project);
+  const { flat, mapBase } = flattenScreens(project);
+  // The compacted view every ordinary table below is built from (finding 2, phase 2 slice 1): a
+  // streamed map's screens never occupy a row here, so this is shorter than `flat` whenever one
+  // exists, and identical to it -- byte for byte, including row order -- when none does.
+  const { ordinaryFlat, neighbours } = ordinaryScreenView(project);
+  const hasStreamed = streamedPlan !== null;
   const startFlat = (mapBase[project.project.startMap] ?? 0) + project.project.startScreen;
 
   // The title screen, if the project names one: a map screen of its own with two
@@ -3253,6 +3310,9 @@ export async function generateAssets({ dir, project, log = () => {} }) {
   // codebase's single-writer rule exists to prevent, "costs nothing to
   // compute" notwithstanding.
   const titleEnabled = projectUsesEffectiveTitle(project);
+  // GLOBAL, bounded by the GLOBAL screen count -- see NUM_SCREENS/START_SCREEN's own comment
+  // below (finding 1, phase 2 slice 1 fix round 1): a compacted ordinary bound here would clamp a
+  // title screen that legitimately lives on a later map.
   const titleFlat = titleEnabled
     ? Math.min((mapBase[titleMap] ?? 0) + (project.project.titleScreen ?? 0), flat.length - 1)
     : 0;
@@ -3279,6 +3339,13 @@ export async function generateAssets({ dir, project, log = () => {} }) {
   const usesNameSeed = projectNeedsNameSeed(project);
   const needsHeroDefault = projectNeedsHeroDefault(project);
   const usesNameToken = projectUsesNameToken(project);
+  // NUM_SCREENS/START_SCREEN are GLOBAL identities, not the compacted ordinaryFlat count/index:
+  // engine/boot.asm:290 (take_door) compares a GLOBAL warp target (warp_scr) against NUM_SCREENS,
+  // and engine/save.asm:301 (save_check_range) compares a GLOBAL saved id (SAVE_FLAT_SCREEN)
+  // against it too -- a value already truncated to the ordinary-only count here can never be
+  // recovered at runtime (phase 2 slice 1 fix round 1, finding 1). Only the ORDINARY TABLE row
+  // indices (screen_map, screen_bank, the pointer tables, screen_left/right/up/down) are compact;
+  // they are built from ordinaryFlat, below, not from this count.
   const config = [
     '; Generated by NES Game Forge -- do not edit.',
     `NUM_SCREENS   = ${flat.length}`,
@@ -3570,6 +3637,34 @@ export async function generateAssets({ dir, project, log = () => {} }) {
     // battle_miss_arm/tick/draw. Independent of both BATTLE_ANIM_ENABLED and
     // HIT_FEEDBACK_ENABLED.
     `MISS_ENABLED = ${missEnabled ? 1 : 0}`,
+    // Streamed worlds (docs/design-streamed-worlds.md §3), phase 2 slice 1: the wire layout's own
+    // constants, generated from shared/streamlayout.js (the single writer) rather than hand-typed
+    // here -- emitted only when the project actually has a streamed map, so an ordinary project's
+    // config.inc stays byte-for-byte what it always was. Nothing streamed reaches nesasm yet
+    // (checkCapacity's own refusal, still live): these exist for the emitted layout files below,
+    // and for the phase 2 engine that will read them.
+    ...(hasStreamed
+      ? [
+          `STREAM_RECORD_BYTES = ${STREAM_RECORD_BYTES}`,
+          `STREAM_TERRAIN_BYTES = ${STREAM_TERRAIN_BYTES}`,
+          `STREAM_HIGH_PAGE = ${STREAM_HIGH_PAGE}`,
+          `STREAM_SCREENS_PER_REGION = ${STREAM_SCREENS_PER_REGION}`,
+          `STREAM_MAP_COLUMN_BYTES = ${STREAM_MAP_COLUMN_BYTES}`,
+          `STREAM_OFF_TERRAIN = ${STREAM_OFFSETS.terrain}`,
+          `STREAM_OFF_ENTITY_COUNT = ${STREAM_OFFSETS.entityCount}`,
+          `STREAM_OFF_ENTITIES = ${STREAM_OFFSETS.entities}`,
+          `STREAM_OFF_BOUND_COUNT = ${STREAM_OFFSETS.boundCount}`,
+          `STREAM_OFF_BOUNDS = ${STREAM_OFFSETS.bounds}`,
+          `STREAM_COL_TILESET = ${STREAM_MAP_COLUMNS.tileset}`,
+          `STREAM_COL_FILL = ${STREAM_MAP_COLUMNS.fill}`,
+          `STREAM_COL_BASE_BANK = ${STREAM_MAP_COLUMNS.baseBank}`,
+          `STREAM_COL_REGIONS_PER_ROW = ${STREAM_MAP_COLUMNS.regionsPerRow}`,
+          `STREAM_COL_GRID_W = ${STREAM_MAP_COLUMNS.gridW}`,
+          `STREAM_COL_GRID_H = ${STREAM_MAP_COLUMNS.gridH}`,
+          `STREAM_ENTITY_RECORD = ${STREAM_ENTITY_RECORD}`,
+          `STREAM_BOUND_RECORD = ${STREAM_BOUND_RECORD}`
+        ]
+      : []),
     ''
   ].join('\n');
   await fs.writeFile(path.join(assetsDir, 'config.inc'), config);
@@ -3738,15 +3833,18 @@ export async function generateAssets({ dir, project, log = () => {} }) {
   // Decided before maps.inc is written, because the lookup tables there carry the
   // bank each screen lives in. reserveFlashSave came back from checkCapacity
   // above rather than being recomputed here, so this and checkCapacity's own
-  // screenCapacityFor call are provably looking at the same region list.
+  // screenCapacityFor call are provably looking at the same region list. With a streamed map,
+  // streamedPlan is checkCapacity's own too (reused, not recomputed), so this packs the ordinary
+  // screens into exactly what checkCapacity's own screenCapacityFor call already proved they fit.
   const { screenBank, regionRanges } = assignScreenBanks(
     mapper,
     project.tilesets.length,
     bankedCode,
     reserveFlashSave,
-    flat,
+    ordinaryFlat,
     actorCount,
-    usesBoundTiles
+    usesBoundTiles,
+    hasStreamed ? { regionsOverride: streamedPlan.remainingRegions } : {}
   );
 
   // --- maps ----------------------------------------------------------------
@@ -3771,10 +3869,10 @@ export async function generateAssets({ dir, project, log = () => {} }) {
       // music command's argument compiles to (see songByte) — apply_map_music
       // indexes this with screen_map's answer, one map lookup after the other.
       `map_song:\n${dbBlock(project.maps.map((map) => songByte(project.songs, map.songId)))}`,
-      `screen_map:\n${dbBlock(flat.map((entry) => project.maps.indexOf(entry.map)))}`,
+      `screen_map:\n${dbBlock(ordinaryFlat.map((entry) => project.maps.indexOf(entry.map)))}`,
       // One byte per screen rather than a map lookup at runtime: entering a
       // screen is the hot path, and screens.asm already has the flat index.
-      `screen_tileset:\n${dbBlock(flat.map((entry) => entry.map.tilesetId))}`,
+      `screen_tileset:\n${dbBlock(ordinaryFlat.map((entry) => entry.map.tilesetId))}`,
       // Which 16 KB PRG bank holds this screen's data. set_screen_ptr selects it
       // before dereferencing the pointers below.
       `screen_bank:\n${dbBlock(screenBank)}`,
@@ -3782,19 +3880,19 @@ export async function generateAssets({ dir, project, log = () => {} }) {
       `screen_right:\n${dbBlock(neighbours.right)}`,
       `screen_up:\n${dbBlock(neighbours.up)}`,
       `screen_down:\n${dbBlock(neighbours.down)}`,
-      `screen_mt_lo:\n${pointerBlock(flat, (i) => `LOW(${screenLabel(i)})`)}`,
-      `screen_mt_hi:\n${pointerBlock(flat, (i) => `HIGH(${screenLabel(i)})`)}`,
-      `screen_at_lo:\n${pointerBlock(flat, (i) => `LOW(${screenLabel(i)}_attr)`)}`,
-      `screen_at_hi:\n${pointerBlock(flat, (i) => `HIGH(${screenLabel(i)}_attr)`)}`,
-      `screen_ent_lo:\n${pointerBlock(flat, (i) => `LOW(${screenLabel(i)}_ent)`)}`,
-      `screen_ent_hi:\n${pointerBlock(flat, (i) => `HIGH(${screenLabel(i)}_ent)`)}`,
+      `screen_mt_lo:\n${pointerBlock(ordinaryFlat, (i) => `LOW(${screenLabel(i)})`)}`,
+      `screen_mt_hi:\n${pointerBlock(ordinaryFlat, (i) => `HIGH(${screenLabel(i)})`)}`,
+      `screen_at_lo:\n${pointerBlock(ordinaryFlat, (i) => `LOW(${screenLabel(i)}_attr)`)}`,
+      `screen_at_hi:\n${pointerBlock(ordinaryFlat, (i) => `HIGH(${screenLabel(i)}_attr)`)}`,
+      `screen_ent_lo:\n${pointerBlock(ordinaryFlat, (i) => `LOW(${screenLabel(i)}_ent)`)}`,
+      `screen_ent_hi:\n${pointerBlock(ordinaryFlat, (i) => `HIGH(${screenLabel(i)}_ent)`)}`,
       // design-tile.md §4/§8: emitted only when the project uses the feature
       // at all -- a feature-free project cannot emit records that do not
       // exist, so it cannot be charged for them (byte identity).
       ...(usesBoundTiles
         ? [
-            `screen_bound_lo:\n${pointerBlock(flat, (i) => `LOW(${screenLabel(i)}_bound)`)}`,
-            `screen_bound_hi:\n${pointerBlock(flat, (i) => `HIGH(${screenLabel(i)}_bound)`)}`
+            `screen_bound_lo:\n${pointerBlock(ordinaryFlat, (i) => `LOW(${screenLabel(i)}_bound)`)}`,
+            `screen_bound_hi:\n${pointerBlock(ordinaryFlat, (i) => `HIGH(${screenLabel(i)}_bound)`)}`
           ]
         : []),
       ''
@@ -3827,7 +3925,7 @@ export async function generateAssets({ dir, project, log = () => {} }) {
       '; event, trigger, hide switch).'
     ];
     for (let index = from; index < to; index++) {
-      const { screen } = flat[index];
+      const { screen } = ordinaryFlat[index];
       chunks.push(`${screenLabel(index)}:\n${dbBlock(screen.metatiles)}`);
       chunks.push(`${screenLabel(index)}_attr:\n${dbBlock([...screenAttributes(screen, project.metatiles)])}`);
 
@@ -3844,7 +3942,12 @@ export async function generateAssets({ dir, project, log = () => {} }) {
         // screens (every real one). NO_ITEM for a pickup actor no item's
         // actorId names (see validateProject's own warning for this case).
         // Every other behaviour keeps today's door-target expression,
-        // unchanged, entity_door being the field's only reader of it.
+        // unchanged, entity_door being the field's only reader of it. The
+        // bound is the GLOBAL screen count, not ordinaryFlat.length: an
+        // ordinary entity's door target is a GLOBAL id (resolveGlobalScreen's
+        // own input at runtime), the same as a streamed entity's below --
+        // only the ordinary LOOKUP TABLES this loop indexes into are compact
+        // (phase 2 slice 1 fix round 1, finding 2).
         const actor = project.sprites.actors[entity.actorId];
         const resolved = resolveEntityByte(entity, actor, itemsEnabled, itemIdForActor, flat.length);
         const target = resolved.kind === 'item' ? resolved.itemId : resolved.flatIndex;
@@ -3891,6 +3994,72 @@ export async function generateAssets({ dir, project, log = () => {} }) {
     path.join(assetsDir, 'screens.inc'),
     `; Generated -- screen data, packed into the switchable $8000-$BFFF window.\n${regionChunks.join('\n')}\n`
   );
+
+  // --- streamed layout -------------------------------------------------------
+  // Phase 2 slice 1 (docs/design-streamed-worlds.md §3): the emitter is wired into a real build,
+  // but checkCapacity's own refusal above still fires for every streamed project on every board,
+  // so nothing here has an engine consumer yet -- these files exist to be inspected and pinned by
+  // test/unit/streamedlayout.test.js, and slice 2 is what actually .includes them into a ROM.
+  // Emitted only when the project has a streamed map, matching every other conditional emission
+  // in this function (an ordinary project's build is untouched, file for file).
+  if (hasStreamed) {
+    // Reuses the exact functions the ordinary screen emitter above already calls
+    // (resolveEntityByte, text.eventFor, triggerIndex) rather than a second implementation of
+    // any of the three -- CLAUDE.md's single-writer rule, applied to a placement's own fields.
+    const streamedEntityFields = (entity, total) => {
+      const actor = project.sprites.actors[entity.actorId];
+      const resolved = resolveEntityByte(entity, actor, itemsEnabled, itemIdForActor, total);
+      return {
+        target: resolved.kind === 'item' ? resolved.itemId : resolved.flatIndex,
+        event: text.eventFor.get(entity) ?? NO_EVENT,
+        trigger: triggerIndex(entity, actor, project)
+      };
+    };
+    const streamedLayout = emitStreamedLayout(project, {
+      baseBanks: streamedPlan.baseBanks,
+      entityFields: streamedEntityFields,
+      actorCount
+    });
+    await fs.writeFile(
+      path.join(assetsDir, 'streamed.inc'),
+      [
+        '; Generated -- the streamed-world type table (one bit per raw map index) and the',
+        '; per-streamed-map locator columns (tileset, fill, base bank, regions per row, grid',
+        '; width, grid height), kernel-lo.',
+        `stream_type_bits:\n${dbBlock(streamedLayout.typeBits)}`,
+        `stream_columns:\n${dbBlock(streamedLayout.streamedColumns, STREAM_MAP_COLUMN_BYTES)}`,
+        ''
+      ].join('\n')
+    );
+    // One 8 KB region per row-chunk, at its own allocated absolute nesasm bank
+    // (planStreamedRegions' own baseBanks). The origin comes from `layout.regions`
+    // (shared/cartridge.js's own prgLayout(mapper), already computed above) -- the single writer
+    // for the bank-to-origin convention every other switchable-window region in this file already
+    // reads it from (regionRanges' own `region.org`, just above) -- rather than a second,
+    // hand-typed parity formula (phase 2 slice 1 fix round 1, finding 3: the prior formula's
+    // `.toString(16)` also omitted nesasm's required `$` prefix, so `.org 8000` assembled as
+    // decimal and `.org A000` as an undefined symbol).
+    const regionOrg = new Map(layout.regions.map((r) => [r.nesasmBank, r.org]));
+    const streamedRegionChunks = streamedLayout.maps
+      .filter((map) => map.streamed)
+      .flatMap((map) =>
+        map.regions.map((region) => {
+          const org = regionOrg.get(region.region);
+          if (org === undefined) {
+            throw new Error(`internal: streamed region ${region.region} is not one of ${mapper.name}'s switchable-window regions`);
+          }
+          return (
+            `  .bank ${region.region}\n` +
+            `  .org $${org.toString(16).toUpperCase()}\n` +
+            `stream_region_${region.region}:\n${dbBlock(region.bytes)}`
+          );
+        })
+      );
+    await fs.writeFile(
+      path.join(assetsDir, 'streamed_regions.inc'),
+      `; Generated -- streamed map data, packed into 8 KB program regions (${STREAM_RECORD_BYTES} bytes per screen).\n${streamedRegionChunks.join('\n')}\n`
+    );
+  }
 
   // The fixed kernel's two 8 KB halves.
   await fs.writeFile(
@@ -3946,7 +4115,7 @@ export async function generateAssets({ dir, project, log = () => {} }) {
 
   const banksUsed = new Set(screenBank).size;
   log(
-    `generated ${flat.length} screen${flat.length === 1 ? '' : 's'} across ${banksUsed} of ` +
+    `generated ${ordinaryFlat.length} screen${ordinaryFlat.length === 1 ? '' : 's'} across ${banksUsed} of ` +
       `${layout.dataBankCount} PRG bank${layout.dataBankCount === 1 ? '' : 's'}, capacity ${capacity}`
   );
   if (droppedEntities) {

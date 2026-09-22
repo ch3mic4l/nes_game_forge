@@ -2,9 +2,10 @@
 // functions over a normalized project returning bytes plus a structured description. Imports
 // only from shared/, the same rule battletables.js follows, so the renderer can use it later.
 //
-// Phase 1 refuses to build any streamed project (checkCapacity), so nothing here reaches a ROM
-// yet and generate.js does not call it; it is exported for the phase 2 engine and pinned by
-// test/unit/streamedlayout.test.js against the independent test/lib/streamdecoder.js.
+// Phase 1 refuses to build any streamed project (checkCapacity's own "no engine yet" error), so
+// nothing here reaches a ROM yet. Phase 2 slice 1 wires generate.js to call this for real (still
+// behind that same refusal); pinned by test/unit/streamedlayout.test.js against the independent
+// test/lib/streamdecoder.js.
 
 import { LIMITS } from '../../shared/project.js';
 import {
@@ -24,8 +25,6 @@ import {
   mapTypeTableBytes
 } from '../../shared/streamlayout.js';
 
-const NO_EVENT = 0xff; // main/build/textcompile.js's own value; that module is not importable from here.
-
 function byteOf(value, what) {
   if (!Number.isInteger(value) || value < 0 || value > 255) {
     throw new RangeError(`streamed layout: ${what} is ${value}, which is not a byte`);
@@ -34,25 +33,28 @@ function byteOf(value, what) {
 }
 
 /**
- * The default entity field resolution; generate.js's own resolution (the item-id byte, the
- * compiled event, the effective trigger) is passed in as `entityFields` when it is wired.
- * `total` is the project's final screen total, the clamp the ordinary door byte already uses.
+ * One streamed screen's record: exactly STREAM_RECORD_BYTES, unused entity/bound slots zero.
+ * `actorCount` drops a placed entity whose actorId names a deleted actor, the identical filter
+ * the ordinary screen emitter applies (generate.js's own `placed` filter) -- infinite by default,
+ * so a caller that does not pass it (every phase 1 test) keeps every entity, unfiltered, exactly
+ * as before.
+ *
+ * `entityFields(entity, total)` must return `{target, event, trigger}` for every placed entity --
+ * generate.js's own `streamedEntityFields` (resolveEntityByte, text.eventFor, triggerIndex, the
+ * exact functions/call sites the ordinary emitter already uses). There is deliberately no default
+ * resolution here any more (phase 2 slice 1 fix round 1, finding 4): keeping one merely to let a
+ * partial test callback omit `target` was a second, independent implementation of the same
+ * fallback the ordinary emitter and generate.js's real callback already compute, and it was never
+ * exercised in a real build (generate.js's callback always overrode every field it set). A test
+ * that wants the old default's shape builds its own local adapter. `hideSwitch` is NOT part of
+ * `entityFields`'s contract -- it stays a plain record-serialization default, identical to (and
+ * computed the same way as) the ordinary emitter's own `entity.props?.hideSwitch ?? 0xff`.
  */
-function defaultEntityFields(entity, total) {
-  return {
-    target: Math.min(entity.props?.toScreen ?? 0, Math.max(0, total - 1)),
-    event: NO_EVENT,
-    trigger: 0,
-    hideSwitch: entity.props?.hideSwitch ?? 0xff
-  };
-}
-
-/** One streamed screen's record: exactly STREAM_RECORD_BYTES, unused entity/bound slots zero. */
-export function emitStreamedScreenRecord(screen, map, total, entityFields = defaultEntityFields) {
+export function emitStreamedScreenRecord(screen, map, total, entityFields, actorCount = Infinity) {
   if (screen.metatiles.length !== STREAM_TERRAIN_BYTES) {
     throw new RangeError(`streamed layout: a screen holds ${screen.metatiles.length} metatiles, not ${STREAM_TERRAIN_BYTES}`);
   }
-  const entities = screen.entities ?? [];
+  const entities = (screen.entities ?? []).filter((entity) => entity.actorId < actorCount);
   const bound = screen.boundTiles ?? [];
   if (entities.length > STREAM_MAX_ENTITIES) {
     throw new RangeError(`streamed layout: ${entities.length} actors on one screen, the record holds ${STREAM_MAX_ENTITIES}`);
@@ -64,9 +66,12 @@ export function emitStreamedScreenRecord(screen, map, total, entityFields = defa
   screen.metatiles.forEach((id, i) => {
     bytes[STREAM_OFFSETS.terrain + i] = byteOf(id, 'a metatile id');
   });
+  if (entities.length && typeof entityFields !== 'function') {
+    throw new TypeError('streamed layout: a screen with placed entities needs an entityFields callback');
+  }
   bytes[STREAM_OFFSETS.entityCount] = entities.length;
   entities.forEach((entity, i) => {
-    const f = { ...defaultEntityFields(entity, total), ...entityFields(entity, total) };
+    const f = entityFields(entity, total);
     const at = STREAM_OFFSETS.entities + i * STREAM_ENTITY_RECORD;
     const values = {
       actor: entity.actorId,
@@ -77,7 +82,7 @@ export function emitStreamedScreenRecord(screen, map, total, entityFields = defa
       toY: entity.props?.toY ?? 0,
       event: f.event,
       trigger: f.trigger,
-      hideSwitch: f.hideSwitch
+      hideSwitch: entity.props?.hideSwitch ?? 0xff
     };
     STREAM_ENTITY_FIELDS.forEach((name, k) => {
       bytes[at + k] = byteOf(values[name], `an entity ${name}`);
@@ -111,7 +116,7 @@ export function emitStreamedScreenRecord(screen, map, total, entityFields = defa
  * streamed map). Region indices otherwise run consecutively from `firstRegion`.
  */
 export function emitStreamedLayout(project, options = {}) {
-  const { firstRegion = 0, baseBanks = null, entityFields } = options;
+  const { firstRegion = 0, baseBanks = null, entityFields, actorCount = Infinity } = options;
   const total = project.maps.reduce(
     (sum, map) => sum + (map.streamed === true ? map.gridW * map.gridH : map.screens.length),
     0
@@ -155,7 +160,7 @@ export function emitStreamedLayout(project, options = {}) {
         const from = chunk * STREAM_SCREENS_PER_REGION;
         const to = Math.min(map.gridW, from + STREAM_SCREENS_PER_REGION);
         for (let col = from; col < to; col++) {
-          bytes.push(...emitStreamedScreenRecord(map.screens[row * map.gridW + col], map, total, entityFields));
+          bytes.push(...emitStreamedScreenRecord(map.screens[row * map.gridW + col], map, total, entityFields, actorCount));
         }
         regions.push({ row, chunk, region: baseBank + row * perRow + chunk, bytes });
       }
