@@ -190,13 +190,13 @@ sizes, the route zero-cost proof and `KERNEL_SLACK` itself are each checked thei
 - `KERNEL_SLACK = 20` (unmoved by the diet): `kernelbytes.test.js`'s `assertCovers` requires
   `KERNEL_SLACK <= margin <= KERNEL_SLACK * 2`. Correct accounting of the base and every conditional
   term should leave exactly the floor; the ceiling detects drift, not spare headroom.
-- `STREAMWORLD_KERNEL_HI_ALLOWANCE = 2432` plus `STREAMWORLD_MT_PAL_KERNEL_HI_BYTES = LIMITS.metatiles`
+- `STREAMWORLD_KERNEL_HI_ALLOWANCE = 2611` plus `STREAMWORLD_MT_PAL_KERNEL_HI_BYTES = LIMITS.metatiles`
   (64) are the one pair of allowances charged against kernel-**hi** ($E000) rather than kernel-lo —
   the resident streamed-worlds package (`engine/streamworld.asm`) and its metatile attribute-quadrant
   lookup (`mt_pal`), both assembled inside `.if STREAMING_ENABLED` after `assets/text.inc`, gated on
   `projectUsesStreaming` (`shared/streamlayout.js`). Measured as the real kernel-hi bank usage delta
   between a streamed build and the same project with every map's `streamed` flag forced off, flat
-  at 2496 combined across game type and the `mixed` (streamed map alongside ordinary ones) shape —
+  at 2675 combined across game type and the `mixed` (streamed map alongside ordinary ones) shape —
   equality-asserted by `kernelbytes.test.js`. Phase 2 slice 2b's Part D narrowed streaming to UNROM
   512 (`streamCapableFourScreen`) alone, so this is no longer measured per mapper; MMC1/MMC3 are
   refused outright by `validateStreamedMaps` regardless of what this would measure there. Re-measured
@@ -205,7 +205,9 @@ sizes, the route zero-cost proof and `KERNEL_SLACK` itself are each checked thei
   finding 1 (a real 16-bit locator pointer, `sw_resolve_owner_streamed`, replacing an 8-bit multiply
   that wrapped) and finding 9 (the `NO_SCREEN` park/`st_active` clear in `sw_resolve_screen`) — both
   real net growth in this same resident file, re-measured directly each time, never derived by
-  adding a fix's own byte count to the prior figure by hand.
+  adding a fix's own byte count to the prior figure by hand. Re-measured again to 2611 by phase 2
+  slice 4a's own resident additions (`sw_oam_project_x`/`sw_oam_project_y`/`sw_oam_rowbase` and the
+  landing origin write in `sw_resolve_divdone`) — the same real-growth reasoning, not a formula fix.
 - Phase 2 slice 2b, Part F: ten more kernel-**lo** terms streaming adds, each its own named
   allowance (`main/build/generate.js`, all gated on `projectUsesStreaming`, added inside
   `kernelCodeBytes`), measured as `symbolAddr(after) - symbolAddr(before)` off a real build between a
@@ -274,3 +276,24 @@ sizes, the route zero-cost proof and `KERNEL_SLACK` itself are each checked thei
     (`engine/script.asm`), distinct from `rebuild_bound_cache`'s own: its ROM-side flip-queueing walk
     must also refuse to index `screen_bound_lo`/`hi` by `ord_screen` while the current screen is
     streamed, since a streamed screen has no row in that table at all.
+- Phase 2 slice 4a's own three kernel-lo terms, gated on `projectUsesStreaming` (`main/build/
+  generate.js`), each equality-asserted by `kernelbytes.test.js` on both game types and the `mixed`
+  shape:
+  - `STREAMWORLD_PROJECT_KERNEL_ALLOWANCE = 161` — the projection wiring's four purely-additive
+    spans (`engine/oam.asm`'s `build_oam_draw_dispatch`/`_dispatch_done` branch + `build_oam_draw_sw`/
+    `_end` routine, `engine/entities.asm`'s `draw_one_entity_show`/`de_show_dispatch_done` branch +
+    `draw_one_entity_ordinary_join`/`draw_one_entity_animate` routine), measured with the same
+    single-build-span technique as the Part F terms above (4 + 108 + 4 + 45).
+  - `STREAMWORLD_NMI_KERNEL_ALLOWANCE = 24` — the ONE exception to that additive technique:
+    `engine/boot.asm`'s NMI arbitration splice (`nmi_vram_dispatch`..`nmi_scroll`) *replaces* the
+    ordinary six-line drain with a bigger three-way one rather than adding a branch in front of it,
+    so this is the streamed build's own span over that boundary MINUS the same span on an ordinary
+    build, not a single-build span (a single-build span would overcount by the surviving `.else`
+    arm's own bytes).
+  - `STREAMWORLD_NMI_PALETTE_FX_KERNEL_ALLOWANCE = 8`, gated on BOTH `projectUsesStreaming` and
+    `usesPaletteFx` — the splice duplicates the `nmi_fade_ppuaddr`/`nmi_fade_ppuaddr_done` PPUADDR
+    cleanup block on its own two live-drain exits, one more occurrence than the ordinary `.else`
+    arm's single copy; isolated with the identical double-difference technique
+    `STREAMWORLD_MOVE_KERNEL_ALLOWANCE` above already uses, since a lone Flash command on an
+    ORDINARY map already pays for its own one copy of that block and would otherwise leak into a
+    naive single delta.

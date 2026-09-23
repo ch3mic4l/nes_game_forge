@@ -493,6 +493,241 @@ sw_project_visible:
   rts
 
 ; ==========================================================================
+; sw_oam_rowbase -- phase 2 slice 4a. row*240 (16-bit), for the Y half of a
+; tile's own world position (a screen is 240 px tall, not a power of two,
+; so unlike X -- world_x_hi is exactly sw_col/the tile's own carried screen
+; column, no arithmetic at all -- Y genuinely needs a multiply). row*240 =
+; row*256 - row*16: row*256 as a 16-bit pair is simply {hi=row, lo=0}, so
+; only row*16 needs computing, via 4 left shifts.
+;
+; Recomputed at every Y-axis OAM projection call (ruling 2/docs/reference-
+; kernel-budget.md) rather than cached across a whole OAM-build pass: the
+; only zero-page byte sw_project_axis's own clobber list (sw_tmp..sw_tmp4,
+; sw_tmp6) leaves free is sw_tmp5, one byte short of a 16-bit cache, and
+; every other RAM run near it ($C7-$FD zero page, $07F0-$07F8) is already
+; named for slices 7b-9 -- claiming either would collide with a real future
+; slice rather than reuse genuinely idle space. The shift-subtract itself
+; is mainline-only (never NMI) and cheap (~30 cycles), so recomputing it a
+; handful of times a frame (2 for the player's own top/bottom rows, one per
+; projected entity) costs far less than a new persistent byte would.
+;
+; In: A = absolute screen row (0-254). Out: sw_tmp/sw_tmp2 = row*240 lo/hi.
+; Clobbers A, X, sw_tmp, sw_tmp2.
+; ==========================================================================
+sw_oam_rowbase:
+  pha                          ; the original row, needed again after the
+                                ; shift below overwrites sw_tmp with row*16
+  sta sw_tmp
+  lda #0
+  sta sw_tmp2
+  ldx #4
+sw_oam_rowbase_shift:
+  asl sw_tmp
+  rol sw_tmp2
+  dex
+  bne sw_oam_rowbase_shift
+  ; sw_tmp/sw_tmp2 = row*16
+  lda #0
+  sec
+  sbc sw_tmp
+  sta sw_tmp
+  pla                          ; original row back
+  sbc sw_tmp2
+  sta sw_tmp2
+  rts
+
+; ==========================================================================
+; sw_oam_project_x -- phase 2 slice 4a. Projects one tile's own X position
+; (docs/design-streamed-worlds.md §7): world_x_lo is the tile's own local X
+; (already offset and wrapped by the caller, mod 256 -- a screen is exactly
+; 256 px wide, so no multiply is ever needed for this axis), world_x_hi is
+; sw_col plus whatever carry the caller's own offset-add produced (crossing
+; into the next screen column). No -1 convention on this axis (that belongs
+; to Y alone, sw_oam_project_y below).
+;
+; In: A = local X lo (post-offset, wrapped). Carry = 1 if the caller's own
+;     offset-add overflowed past 255 (the tile crossed into sw_col+1), 0
+;     otherwise -- the caller must set this explicitly (CLC for no offset,
+;     or the real ADC's own carry-out), never rely on incoming flags.
+; Out: A = the OAM X byte. Carry SET means hidden (sw_project_axis's own
+;     convention, passed straight through).
+; Clobbers A, sw_tmp..sw_tmp4, sw_tmp6 (sw_project_axis's own clobber set).
+; ==========================================================================
+sw_oam_project_x:
+  sta sw_tmp                  ; world_x lo
+  lda #0
+  adc #0                       ; the caller's own offset-add carry -> 0 or 1
+  clc
+  adc sw_col
+  jmp sw_oam_project_x_core     ; A = world_x hi = sw_col + carry
+
+; ==========================================================================
+; sw_oam_project_tile_x -- phase 2 slice 4a fix round 1 (reviewer finding
+; 2). The general SIGNED-offset counterpart of sw_oam_project_x above, for
+; one tile of an entity's own metasprite: docs/design-streamed-worlds.md's
+; metasprite offsets are legal across the full -128..127 range
+; (shared/project.js), not just the player's fixed non-negative +0/+8
+; corner offsets, so a tile can cross a screen boundary EITHER direction.
+; sw_oam_project_x's own "carry=1 means +1 screen" convention (a single
+; bit) can only express a forward crossing -- correct for the player, but
+; not general enough here. Standard 16-bit signed-add technique instead:
+; sign-extend the offset (0 if >=0, $FF if <0) and add THAT (with the low
+; byte's own real carry) to sw_col, rather than adding a bare 1-bit carry.
+;
+; In: A = signed x-offset byte (straight from the metasprite data, not
+;     pre-added by the caller -- unlike sw_oam_project_x above). <de_ex> =
+;     the entity's own base LOCAL x (unprojected, stashed by the caller
+;     once before its tile loop began, docs/reference-engine.md).
+; Out/clobbers: identical to sw_oam_project_x, plus X (used as scratch to
+;     hold the offset's own sign across the low-byte add).
+; ==========================================================================
+sw_oam_project_tile_x:
+  tax                          ; stash the offset -- its own sign decides the
+                                ; branch below, once the low-byte carry it
+                                ; also needs to produce is captured into A
+  clc
+  adc <de_ex
+  sta sw_tmp                   ; world_x lo (wrapped)
+  lda #0
+  adc #0                        ; raw unsigned add-carry -> 0 or 1
+  cpx #0                         ; offset's own sign (CPX unavoidably clobbers
+                                  ; Carry too, which is why it runs only AFTER
+                                  ; the carry above was already captured into A)
+  bpl sw_oam_project_tile_x_ext  ; offset >= 0: screenColDelta IS that raw carry
+  sec
+  sbc #1                          ; offset < 0: screenColDelta = carry-1
+                                    ; (raw carry 1 -> 0, raw carry 0 -> $FF/-1)
+sw_oam_project_tile_x_ext:
+  clc
+  adc sw_col
+sw_oam_project_x_core:
+  sta sw_tmp2                  ; world_x hi
+  lda sw_cam_origin_x_lo
+  sta sw_tmp3
+  lda sw_cam_origin_x_hi
+  sta sw_tmp4
+  lda #0                       ; visibleWidth = 256 (sw_project_axis's own
+                                ; 0 sentinel)
+  jmp sw_project_axis           ; tail call -- its own rts answers for ours
+
+; ==========================================================================
+; sw_oam_project_y -- phase 2 slice 4a. The Y-axis counterpart of
+; sw_oam_project_x above, with the one-scanline-early OAM convention
+; applied ONCE here (design §7: "a Y-axis caller subtracts 1 from the
+; returned byte before writing OAM") rather than by each of this routine's
+; own callers -- every caller of this routine IS a Y-axis caller, so there
+; is no second copy of that subtract anywhere. A hidden tile returns $FF
+; (the same park sentinel build_oam_park/draw_entities_park already use)
+; rather than a raw, meaningless byte.
+;
+; In: A = local Y lo (post-offset, wrapped). Carry = 1 if the caller's own
+;     offset-add overflowed past 255 (the tile crossed into sw_row+1), 0
+;     otherwise -- set explicitly by the caller, same contract as the X
+;     routine above.
+; Out: A = the OAM Y byte (already -1'd if visible, or $FF if hidden).
+;     Carry SET means hidden (matches sw_project_axis's own convention).
+; Clobbers A, X, sw_tmp..sw_tmp4, sw_tmp6 (sw_oam_rowbase's own clobber set
+; plus sw_project_axis's own).
+; ==========================================================================
+sw_oam_project_y:
+  sta sw_tmp6                  ; local Y lo, stashed -- sw_oam_rowbase below
+                                ; never touches sw_tmp6
+  lda #0
+  adc #0                        ; the caller's own offset-add carry -> 0 or 1
+  clc
+  adc sw_row
+  jsr sw_oam_rowbase             ; A = the tile's own absolute row; out
+                                 ; sw_tmp/sw_tmp2 = that row*240
+  lda sw_tmp
+  clc
+  adc sw_tmp6                    ; += local Y lo (0-255; may itself carry)
+  sta sw_tmp
+  lda sw_tmp2
+  adc #0
+  sta sw_tmp2                    ; sw_tmp/sw_tmp2 = world_y lo/hi
+  jmp sw_oam_project_worldy_core
+
+; ==========================================================================
+; sw_oam_project_tile_y -- phase 2 slice 4a fix round 1 (reviewer finding
+; 2). The sw_oam_project_tile_x counterpart for Y, same "a metasprite
+; offset is signed across the full -128..127 range" reasoning -- but Y
+; cannot reuse the same "sign-extend a 1-bit carry into sw_row" shortcut
+; sw_oam_project_tile_x uses for X: sw_oam_rowbase computes row*240 by
+; MULTIPLYING whatever absolute-row byte it is given, and multiplication
+; does not preserve two's-complement wraparound the way addition does -- if
+; sw_row is 0 and a tile's own offset crosses one row backward, feeding
+; sw_oam_rowbase a wrapped $FF (meant to mean "row -1") would compute the
+; UNSIGNED product for row 255, not the signed product for row -1, and
+; those differ by far more than a rounding error. So here the REAL row
+; (sw_row, always a genuine 0-254 screen) is multiplied exactly ONCE, by
+; the caller, before any tile's own offset is considered; every per-tile
+; signed Y offset is folded in afterward by pure 16-bit addition instead,
+; which -- unlike multiplication -- stays consistent under wraparound
+; regardless of how far net-negative the running total gets.
+;
+; In: A = signed y-offset byte (straight from the metasprite data). <de_ey>
+;     = the entity's own base LOCAL y. <tmp>/<tmp2> = rowBase16 (sw_row*240
+;     lo/hi), precomputed ONCE by the caller via sw_oam_rowbase before its
+;     tile loop began (docs/reference-engine.md).
+; Out/clobbers: identical to sw_oam_project_y.
+; ==========================================================================
+sw_oam_project_tile_y:
+  tax                            ; stash the offset -- its own sign decides
+                                  ; the high-byte extension below, computed
+                                  ; FIRST so nothing after it needs to survive
+                                  ; a compare's own carry-clobber
+  cpx #0
+  bmi sw_oam_project_tile_y_neg
+  lda #0
+  jmp sw_oam_project_tile_y_sext
+sw_oam_project_tile_y_neg:
+  lda #$FF
+sw_oam_project_tile_y_sext:
+  sta sw_tmp6                    ; the offset's own sign, extended to a full
+                                  ; byte ($00 or $FF) -- this file's one spare
+                                  ; scratch byte between calls (see sw_oam_
+                                  ; project_x_core's own header)
+
+  lda <tmp
+  clc
+  adc <de_ey
+  sta sw_tmp
+  lda <tmp2
+  adc #0                          ; local Y's own high byte is always 0
+  sta sw_tmp2                     ; sw_tmp/sw_tmp2 = rowBase16 + localY
+
+  txa
+  clc
+  adc sw_tmp
+  sta sw_tmp                      ; world_y lo, final
+  lda sw_tmp6
+  adc sw_tmp2                      ; sign-extended offset hi + the low add's
+                                     ; own carry (live: nothing between the
+                                     ; two ADCs above touches it)
+  sta sw_tmp2                       ; world_y hi, final
+  jmp sw_oam_project_worldy_core
+
+; The shared tail sw_oam_project_y/sw_oam_project_tile_y both reach once
+; their own world_y16 (sw_tmp/sw_tmp2) is ready: subtract the camera origin,
+; test visibility, apply the one-scanline-early OAM convention.
+sw_oam_project_worldy_core:
+  lda sw_cam_origin_y_lo
+  sta sw_tmp3
+  lda sw_cam_origin_y_hi
+  sta sw_tmp4
+  lda #240                        ; visibleWidth = 240 (Y's real bound)
+  jsr sw_project_axis
+  bcs sw_oam_project_y_hidden
+  sec
+  sbc #1                          ; the one-scanline-early convention
+  clc                              ; report "visible"
+  rts
+sw_oam_project_y_hidden:
+  lda #$FF
+  sec                              ; report "hidden"
+  rts
+
+; ==========================================================================
 ; sw_walk_step_x / sw_walk_step_y -- FALLEN STAR's own mechanism: WHOLE_STEP
 ; plus a per-axis subpixel accumulator that carries one extra pixel on
 ; overflow, duplicated per axis because the two axes need different
@@ -1553,7 +1788,11 @@ sw_rw_nty:    .db 0, 0, 15, 15
 ;   win_col_screen/row+local already frame the entered screen as the
 ;   window's own top-left origin (no local offset -- no scrolling wired
 ;   yet, Part C's wall keeps the player here), cam_nt/cam_x_lo/cam_y_lo
-;   already hold that origin's own landing scroll, cur_map/music already
+;   already hold that origin's own landing scroll, sw_cam_origin_x_lo/hi
+;   and sw_cam_origin_y_lo/hi already hold that SAME origin in world-space
+;   (screenCol*256, screenRow*240 -- phase 2 slice 4a, ruling 1: this is
+;   the origin's first production writer; slice 4b's movement driver
+;   becomes its CONTINUOUS per-frame writer), cur_map/music already
 ;   updated (apply_map_music_direct). The caller must still call
 ;   sw_render_window (the streamed "draw the picture" -- there is no
 ;   redraw_screen-equivalent single call, by design: an ordinary landing's
@@ -1759,6 +1998,37 @@ sw_resolve_divdone:
   lda #0
   sta <cam_x_lo
   sta <cam_y_lo
+  ; Streamed camera world-space origin (ruling 1, phase 2 slice 4a): the
+  ; still-fixed entry-screen origin sw_project_axis's real callers (oam.asm,
+  ; entities.asm) project sprite positions against. world_x = screenCol*256
+  ; + localX, and 256 divides a byte exactly, so the origin's own low byte
+  ; is always 0 and its high byte is the screen column itself -- no
+  ; arithmetic. world_y = screenRow*240 + localY needs a real multiply (240
+  ; is not a power of two): screenRow*240 = screenRow*256 - screenRow*16, a
+  ; shift-and-subtract, cold path only (this runs once per landing, never
+  ; per frame -- slice 4b's movement driver is this value's CONTINUOUS
+  ; writer, plan line 842's own obligation).
+  lda #0
+  sta sw_cam_origin_x_lo
+  lda sw_tmp5
+  sta sw_cam_origin_x_hi
+  lda sw_tmp3
+  sta sw_tmp                   ; row*16 lo, pre-shift
+  lda #0
+  sta sw_tmp2                  ; row*16 hi, pre-shift
+  ldx #4
+sw_resolve_originy_shift:
+  asl sw_tmp
+  rol sw_tmp2
+  dex
+  bne sw_resolve_originy_shift
+  lda #0
+  sec
+  sbc sw_tmp
+  sta sw_cam_origin_y_lo
+  lda sw_tmp3
+  sbc sw_tmp2
+  sta sw_cam_origin_y_hi
   lda sw_tmp5                    ; A = screenCol
   ldx sw_tmp3                    ; X = screenRow
   jmp sw_enter_screen             ; tail call -- its own rts answers for ours

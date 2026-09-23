@@ -1,0 +1,280 @@
+-- sw_nmi_deadline.lua.template -- Mesen (cycle-accurate) proof that phase 2 slice 4a's own NMI
+-- splice (engine/boot.asm's nmi_vram_dispatch) finishes inside vblank on real hardware timing,
+-- for both cases it can take: strip-only (sw_nmi_stream, SW_STREAM_CHUNK=3 blocks) and mixed (a
+-- real vram_buf drain plus sw_nmi_stream_reduced, SW_STREAM_MIXED_CHUNK=2 blocks) -- the
+-- "measured deadline" half of plan test 5. jsnes (test/unit/streamworldnmi.test.js's own core)
+-- has no hard vblank deadline, so a mechanically-correct but too-slow drain would still pass every
+-- behavioural NMI test; only a cycle-accurate core can fail this the way real hardware would --
+-- the identical reasoning flash_nmi_timing.lua.template's own header already documents for the
+-- Say+Flash two-producer NMI.
+--
+-- Deviation from a fully "real" trigger: phase 2 slice 4b (the per-frame movement driver that
+-- would arm a strip through real player movement) does not exist yet -- the unit tests already
+-- accept this (streamworldnmi.test.js's own header: "Its real production trigger... arrives in
+-- phase 2 slice 4b"), driving sw_stream_start_col/_row directly via CPU injection. Mesen's own Lua
+-- sandbox has no CPU-injection or register-write API (confirmed against this codebase's own
+-- established emu.* surface: addEventCallback/addMemoryCallback/read/write/setInput/getState/log/
+-- stop only -- test/lua/*.lua.template never use anything else), so this script arms the strip and
+-- queues the vram_buf packet by POKING THE SAME RAM sw_stream_start_col/_row and
+-- vram_open/push/end would themselves have written, at the one frame boundary
+-- (MAIN_LOOP_READY -- the same anchor flash_nmi_timing.lua.template already uses) that guarantees
+-- the very next nmi_rti is the one the poke primed. This never patches engine code and never
+-- bypasses the real draw/drain routines the NMI splice itself calls -- sw_nmi_stream,
+-- sw_nmi_stream_reduced and vram_drain all run for real, against the real (poked) RAM state.
+--
+-- This is a TEMPLATE, not the script Mesen runs directly.
+-- test/lua/build_sw_nmi_roms.mjs instantiates it into the same output directory as the ROM it
+-- built, substituting the __PLACEHOLDER__ tokens below with addresses resolved fresh out of that
+-- exact build's own game.fns (code labels) and constants.asm/assets/config.inc (RAM equates).
+-- Never edit the substituted addresses directly in the generated file -- edit this template and
+-- re-run the build script.
+--
+--   node test/lua/build_sw_nmi_roms.mjs [outDir] [--parity=even|odd] [--break=chunk4|mixed3]
+--   Mesen --testRunner <outDir>/sw_nmi_deadline.lua <outDir>/sw_nmi.nes
+--
+-- (test/lua/run_sw_nmi_check.sh runs both parities and all four case/break combinations.)
+local MAIN_LOOP_READY = __MAIN_LOOP_READY__ -- engine/boot.asm's own end-of-main_loop label
+local NMI_RTI          = __NMI_RTI__         -- zero-byte label on nmi's own rti (engine/boot.asm)
+
+-- Engine RAM, resolved fresh out of this exact build's own constants.asm/config.inc.
+local GAME_STATE       = __GAME_STATE__
+local ST_GAMEPLAY      = __ST_GAMEPLAY__
+local MAP_IS_STREAMED  = __MAP_IS_STREAMED__
+local ST_ACTIVE        = __ST_ACTIVE__
+local ST_CUR           = __ST_CUR__
+local ST_LEN           = __ST_LEN__
+local ST_FTILE         = __ST_FTILE__
+local ST_FNT           = __ST_FNT__
+local ST_VARY          = __ST_VARY__
+local SBUF             = __SBUF__
+local VRAM_LEN         = __VRAM_LEN__
+local VRAM_BUF         = __VRAM_BUF__
+local VRAM_READY       = __VRAM_READY__
+
+-- BREAK_MODE below is nil (no negative control), "chunk4" (build_sw_nmi_roms.mjs patched
+-- sw_ns_go's own `lda #SW_STREAM_CHUNK` operand 3 -> 4 in the ROM file), or "mixed3"
+-- (sw_nsr_go's own `lda #SW_STREAM_MIXED_CHUNK` operand patched 2 -> 3). Only informs the log
+-- messages below -- the deadline math itself does not need to know which case is expected to miss.
+local BREAK_MODE = __BREAK_MODE__
+
+local PACKET_ADDR_HI = 0x3F -- palette RAM, the same target flash_nmi_timing.lua.template's own
+                             -- Flash producer uses -- any real $2000-$3FFF target is fine here,
+                             -- this check only cares about the packet's own byte COUNT (32),
+                             -- never its content or destination.
+local PACKET_COUNT   = 32
+local PACKET_TOTAL   = 35 -- 3-byte header + 32-byte payload -- MIXED_VBLANK_MAX_BYTES itself
+                           -- (engine/constants.asm), the exact boundary case 9/10
+                           -- (streamworldnmi.test.js) already exercise on jsnes; Mesen proves the
+                           -- SAME boundary case finishes inside vblank on real timing.
+
+-- NTSC NES vblank: scanlines 241-260 inclusive, 341 dots (0-340) per scanline -- identical
+-- reasoning to flash_nmi_timing.lua.template's own header (finding 3/4 there): rti's own
+-- remaining execution (6 CPU cycles = 18 PPU dots, NTSC's 3-dots-per-cycle) is added to the
+-- sampled dot before checking it is still inside vblank, walking across a scanline boundary if it
+-- crosses one, rather than a single `>= DOTS_PER_SCANLINE` band.
+local VBLANK_FIRST_SCANLINE  = 241
+local VBLANK_LAST_SCANLINE   = 260
+local DOTS_PER_SCANLINE      = 341
+local PPU_DOTS_PER_CPU_CYCLE = 3
+local RTI_REMAINING_CYCLES   = 6
+local RTI_REMAINING_DOTS     = RTI_REMAINING_CYCLES * PPU_DOTS_PER_CPU_CYCLE
+
+local EXIT_TIMEOUT          = 99
+local EXIT_NO_BOOT          = 2
+local EXIT_NOT_STREAMED     = 3
+local EXIT_STALE_ANCHOR     = 4
+local EXIT_DEADLINE_MISS_A  = 5 -- phase A: strip-only (sw_nmi_stream)
+local EXIT_DEADLINE_MISS_B  = 6 -- phase B: mixed (vram_drain + sw_nmi_stream_reduced)
+local EXIT_UNEXPECTED_STATE = 7
+
+-- Confirmed empirically against this Mesen build (2026-09-22): headless --testRunner has no
+-- stdout/log-file channel this codebase's own Lua sandbox can reach -- emu.log() only feeds the
+-- GUI script window's own private buffer (Core/Debugger/ScriptingContext.cpp's _logRows, read
+-- back only by the GUI itself); emu.displayMessage() renders an OSD toast that testRunner mode
+-- never surfaces either; --enableStdout only forwards MessageManager's own separate "Log Window"
+-- messages (state loads, warnings), never a script's own emu.log() text; and this sandbox's io.*
+-- is disabled (flash_nmi_timing.lua.template's own header already documents this same finding for
+-- file I/O). The exit code is the ONLY channel a driving shell script can read. On a full pass
+-- (both phases inside vblank), this script therefore ENCODES the tighter of the two phases' own
+-- margin into the exit code itself: EXIT_PASS_BASE + floor(minMarginCycles / MARGIN_SCALE),
+-- clamped to the byte range an exit code can carry -- a real, if coarse (20-cycle resolution),
+-- measurement, rather than no measurement at all. test/lua/run_sw_nmi_check.sh decodes it back.
+local EXIT_PASS_BASE = 100
+local MARGIN_SCALE = 20 -- cycles per exit-code unit
+local EXIT_PASS_MAX = 255
+
+local frame = 0
+local stage = "boot" -- boot -> waitNmiA -> afterNmiA -> waitNmiB -> done
+local checkedAnchor = false
+
+local function log(message)
+  emu.log(string.format("[%5d] %s", frame, message))
+end
+
+local function fail(code, message)
+  log("FAIL: " .. message)
+  emu.stop(code)
+end
+
+local function pass(message)
+  log("ok   " .. message)
+end
+
+local function read(address)
+  return emu.read(address, emu.memType.nesMemory)
+end
+
+local function write(address, value)
+  emu.write(address, value, emu.memType.nesMemory)
+end
+
+-- Arms a fresh column strip (st_active=1) of ST_LEN blocks, sbuf filled with metatile id 0
+-- (always a real, valid id -- every project has at least metatile 0) throughout. st_active is
+-- written LAST so a stray earlier-than-expected nmi_rti during this same poke can never observe a
+-- half-armed state (Mesen's Lua callback runs atomically between CPU instructions -- no interrupt
+-- can land mid-callback -- but writing the state that GATES the drawer last is the same defensive
+-- ordering the real sw_stream_start_col/_row routines themselves use, per engine/streamworld.asm).
+local function armStrip()
+  write(ST_FTILE, 4)
+  write(ST_FNT, 0)
+  write(ST_VARY, 10) -- non-zero starting offset -- a real landing's own strip can start anywhere
+  write(ST_LEN, 30)
+  write(ST_CUR, 0)
+  for i = 0, 31 do
+    write(SBUF + i, 0)
+  end
+  write(ST_ACTIVE, 1)
+end
+
+-- Queues one real, full-size (MIXED_VBLANK_MAX_BYTES-byte) vram_buf packet, exactly the shape
+-- vram_open(addr)/vram_push(byte)*32/vram_end() would have produced, then arms a fresh strip
+-- alongside it (mirroring case 9's own "mixed at/below threshold" scenario) and raises
+-- vram_ready LAST -- the real dispatch-deciding flag, mirroring nmi_vram_dispatch's own read.
+local function armMixed()
+  write(VRAM_BUF + 0, PACKET_ADDR_HI)
+  write(VRAM_BUF + 1, 0x00)
+  write(VRAM_BUF + 2, PACKET_COUNT)
+  for i = 0, PACKET_COUNT - 1 do
+    write(VRAM_BUF + 3 + i, 0)
+  end
+  write(VRAM_BUF + PACKET_TOTAL, 0) -- vram_end's own terminator
+  write(VRAM_LEN, PACKET_TOTAL)
+  armStrip()
+  write(VRAM_READY, 1)
+end
+
+-- Shared deadline math for both phases -- identical reasoning to
+-- flash_nmi_timing.lua.template's own onNmiRti body.
+local function measureDeadline(label, missCode)
+  local state = emu.getState()
+  local scanline = state["ppu.scanline"]
+  local cycle = state["ppu.cycle"]
+  log(string.format("phase %s: nmi_rti reached at scanline=%d cycle=%d (+%d rti dots remaining)", label, scanline, cycle, RTI_REMAINING_DOTS))
+  if scanline < VBLANK_FIRST_SCANLINE or scanline > VBLANK_LAST_SCANLINE then
+    fail(missCode, string.format("phase %s: nmi_rti landed on scanline %d, outside vblank (%d-%d)", label, scanline, VBLANK_FIRST_SCANLINE, VBLANK_LAST_SCANLINE))
+    return nil
+  end
+  local finishDot = cycle + RTI_REMAINING_DOTS
+  local finishScanline = scanline
+  while finishDot >= DOTS_PER_SCANLINE do
+    finishDot = finishDot - DOTS_PER_SCANLINE
+    finishScanline = finishScanline + 1
+  end
+  if finishScanline > VBLANK_LAST_SCANLINE then
+    fail(missCode, string.format("phase %s: rti's own remaining %d dots push past vblank (from scanline %d, cycle %d, landing on scanline %d)", label, RTI_REMAINING_DOTS, scanline, cycle, finishScanline))
+    return nil
+  end
+  -- Margin, in CPU cycles, to the LAST legal dot of vblank (scanline 260, dot 340) -- the "how
+  -- much room to spare" figure the brief asks to be reported for the two passing cases. Returned
+  -- (not merely logged) because emu.log's own text is unrecoverable in this headless environment
+  -- -- see the EXIT_PASS_BASE header comment above.
+  local marginDots = (VBLANK_LAST_SCANLINE - finishScanline) * DOTS_PER_SCANLINE + (DOTS_PER_SCANLINE - 1 - finishDot)
+  local marginCycles = marginDots / PPU_DOTS_PER_CPU_CYCLE
+  pass(string.format("phase %s: finished at scanline %d, cycle %d (rti settles on scanline %d, dot %d) -- inside vblank (%d-%d), margin %.1f cycles to the last legal dot", label, scanline, cycle, finishScanline, finishDot, VBLANK_FIRST_SCANLINE, VBLANK_LAST_SCANLINE, marginCycles))
+  return marginCycles
+end
+
+local function onMainLoopReady()
+  if stage == "boot" then
+    if read(GAME_STATE) ~= ST_GAMEPLAY then return end
+    if read(MAP_IS_STREAMED) == 0 then
+      fail(EXIT_NOT_STREAMED, "map_is_streamed is 0 at main_loop_ready after boot -- the landing screen never engaged streaming")
+      return
+    end
+    armStrip()
+    pass(string.format("phase A armed (strip-only, column, %s) the instruction before this frame's own NMI -- watching nmi_rti next", BREAK_MODE and ("BROKEN: " .. BREAK_MODE) or "unbroken"))
+    stage = "waitNmiA"
+    return
+  end
+  if stage == "afterNmiA" then
+    armMixed()
+    pass(string.format("phase B armed (mixed, %d-byte vram_buf queue + a fresh active strip, %s) -- watching nmi_rti next", PACKET_TOTAL, BREAK_MODE and ("BROKEN: " .. BREAK_MODE) or "unbroken"))
+    stage = "waitNmiB"
+    return
+  end
+end
+
+local marginA = nil
+
+local function onNmiRti()
+  if stage == "waitNmiA" then
+    local curAfter = read(ST_CUR)
+    if curAfter == 0 then
+      fail(EXIT_UNEXPECTED_STATE, "phase A: st_cur is still 0 right at nmi_rti -- sw_nmi_stream did not draw anything this interrupt (st_active read as idle, or the splice took a different arm entirely)")
+      return
+    end
+    marginA = measureDeadline("A", EXIT_DEADLINE_MISS_A)
+    if marginA == nil then return end
+    log(string.format("phase A workload: st_cur advanced to %d", curAfter))
+    stage = "afterNmiA"
+    return
+  end
+  if stage == "waitNmiB" then
+    local vramLenAfter = read(VRAM_LEN)
+    local curAfter = read(ST_CUR)
+    if vramLenAfter ~= 0 then
+      fail(EXIT_UNEXPECTED_STATE, string.format("phase B: vram_len should be 0 right after the drain, saw %d", vramLenAfter))
+      return
+    end
+    if curAfter == 0 then
+      fail(EXIT_UNEXPECTED_STATE, "phase B: st_cur is still 0 right at nmi_rti -- the mixed arm did not also advance the strip this interrupt")
+      return
+    end
+    local marginB = measureDeadline("B", EXIT_DEADLINE_MISS_B)
+    if marginB == nil then return end
+    log(string.format("phase B workload: vram_buf drained (vram_len=0), st_cur advanced to %d", curAfter))
+    log("all phases passed")
+    local minMargin = math.min(marginA, marginB)
+    local code = math.min(EXIT_PASS_MAX, EXIT_PASS_BASE + math.floor(minMargin / MARGIN_SCALE))
+    log(string.format("min margin %.1f cycles -> exit code %d (decode: (code-%d)*%d <= margin < (code-%d+1)*%d, or a %d-cycle-or-more margin if code==%d)", minMargin, code, EXIT_PASS_BASE, MARGIN_SCALE, EXIT_PASS_BASE, MARGIN_SCALE, (EXIT_PASS_MAX - EXIT_PASS_BASE) * MARGIN_SCALE, EXIT_PASS_MAX))
+    emu.stop(code)
+    return
+  end
+end
+
+local function onFrame()
+  frame = frame + 1
+  if not checkedAnchor then
+    checkedAnchor = true
+    local nmiByte = read(NMI_RTI)
+    if nmiByte ~= 0x40 then
+      fail(EXIT_STALE_ANCHOR, string.format(
+        "byte at NMI_RTI (0x%04x) is 0x%02x, not rti ($40) -- this address is stale (engine/boot.asm's kernel-lo layout shifted since the build this address was resolved from); re-run build_sw_nmi_roms.mjs",
+        NMI_RTI, nmiByte))
+      return
+    end
+    pass(string.format("NMI_RTI anchor verified: byte at 0x%04x is $40 (rti)", NMI_RTI))
+  end
+  if stage == "boot" and frame > 300 then
+    fail(EXIT_NO_BOOT, "never reached ST_GAMEPLAY at main_loop_ready within 300 frames")
+    return
+  end
+  if frame > 2000 then
+    fail(EXIT_TIMEOUT, "timed out in stage " .. stage)
+    return
+  end
+end
+
+emu.addEventCallback(onFrame, emu.eventType.endFrame)
+emu.addMemoryCallback(onMainLoopReady, emu.callbackType.exec, MAIN_LOOP_READY)
+emu.addMemoryCallback(onNmiRti, emu.callbackType.exec, NMI_RTI)

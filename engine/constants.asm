@@ -994,6 +994,19 @@ win_col_screen      = $05B1
 win_col_local       = $05B2
 win_row_screen      = $05B3
 win_row_local       = $05B4
+; MIXED_VBLANK_MAX_BYTES -- boot.asm's own NMI arbitration splice (phase 2 slice 4a,
+; docs/design-streamed-worlds.md §5): the size ceiling, in bytes, of the PUBLISHED vram_buf
+; queue (not the strip's own chunk) that is still eligible to drain AND let a reduced strip
+; chunk (SW_STREAM_MIXED_CHUNK, engine/streamworld.asm) advance the SAME vblank. A queue at
+; or under this many bytes (one real packet) takes the mixed-service branch; a queue larger
+; than that (only ever built while the world is frozen, so it never actually competes with a
+; live strip) takes the exclusive-drain path instead, yielding the whole vblank to the
+; ordinary queue that frame. Engine-only: nothing in main/build/ ever reads this, so it lives
+; here (not a generated equate) -- and here rather than streamworld.asm specifically because
+; boot.asm's own .include (engine/main.asm) precedes streamworld.asm's, so a use in boot.asm
+; would be a forward reference to a same-pass equate streamworld.asm hasn't defined yet;
+; constants.asm's own .include comes first, so every consumer sees it defined already.
+MIXED_VBLANK_MAX_BYTES = 35
 ; Streaming state + entering-edge buffer. st_vary is the physical ring
 ; coordinate (0-29 for a column strip, 0-31 for a row strip), initialised at
 ; arm time from the window's own current varying-axis start (parity*half +

@@ -93,7 +93,10 @@ import {
   STREAMWORLD_ORDINARY_CAM_RESET_KERNEL_ALLOWANCE,
   STREAMWORLD_TILE_SWITCH_KERNEL_ALLOWANCE,
   STREAMWORLD_MOVE_KERNEL_ALLOWANCE,
-  STREAMWORLD_MOVE_KERNEL_HI_ALLOWANCE
+  STREAMWORLD_MOVE_KERNEL_HI_ALLOWANCE,
+  STREAMWORLD_NMI_KERNEL_ALLOWANCE,
+  STREAMWORLD_NMI_PALETTE_FX_KERNEL_ALLOWANCE,
+  STREAMWORLD_PROJECT_KERNEL_ALLOWANCE
 } from '../../main/build/generate.js';
 import { SUPPORTED_MAPPERS, cameraAxes, rpgCapable, saveMediaImplemented, prgLayout, resolveMapper } from '../../shared/cartridge.js';
 import {
@@ -5601,6 +5604,113 @@ test(
   }
 );
 
+// Phase 2 slice 4a, case 13: STREAMWORLD_PROJECT_KERNEL_ALLOWANCE is the combined ADDITIVE span
+// of the five purely-additive brackets the projection wiring adds (oam.asm's
+// build_oam_draw_dispatch/build_oam_draw_dispatch_done branch + build_oam_draw_sw/
+// build_oam_draw_sw_end routine, entities.asm's draw_one_entity_hurt_dispatch/draw_one_entity_show
+// fork (round 1 review fix: only a streaming build's own much larger draw_one_entity_show_sw pushes
+// draw_one_entity_none out of bne's +-128 range) + draw_one_entity_show/de_show_dispatch_done
+// branch + draw_one_entity_ordinary_join/draw_one_entity_animate routine) -- each label pair's
+// own comment (engine/entities.asm:702-707) names this the identical "single streaming build's
+// own span" technique Part F's SITES list above already uses, so a single streamed build per
+// shape is enough; no ON/OFF diff needed (unlike the NMI splice below, which REPLACES rather than
+// adds).
+test(
+  'phase 2 slice 4a, case 13: STREAMWORLD_PROJECT_KERNEL_ALLOWANCE equals the real combined span of the five additive projection-wiring brackets, on UNROM 512, both game types and the mixed shape',
+  { skip: !hasNesasm && 'nesasm not found on PATH' },
+  async () => {
+    const mapper = resolveMapper(30);
+    const cases = [
+      { gameType: 'action', mixed: false, label: 'action' },
+      { gameType: 'rpg', mixed: false, label: 'rpg' },
+      { gameType: 'action', mixed: true, label: 'action, mixed' }
+    ];
+    for (const { gameType, mixed, label } of cases) {
+      const project = createStreamedProject({ gameType, mixed });
+      const ordinaryProject = structuredClone(project);
+      for (const map of ordinaryProject.maps) map.streamed = false;
+      const dispatchSpan = await measureStreamedSpan(mapper, project, 'build_oam_draw_dispatch', 'build_oam_draw_dispatch_done');
+      const swDrawSpan = await measureStreamedSpan(mapper, project, 'build_oam_draw_sw', 'build_oam_draw_sw_end');
+      // draw_one_entity_hurt_dispatch/draw_one_entity_show is a REPLACE, not a purely-additive
+      // bracket (round 1 review fix: only a streaming build needs the extra jmp, so an ordinary
+      // build keeps its original 2-byte bne there too) -- streamed-minus-ordinary isolates the
+      // real supplement, the same double-difference technique the NMI splice case below uses.
+      const entityHurtStreamed = await measureStreamedSpan(mapper, project, 'draw_one_entity_hurt_dispatch', 'draw_one_entity_show');
+      const entityHurtOrdinary = await measureStreamedSpan(mapper, ordinaryProject, 'draw_one_entity_hurt_dispatch', 'draw_one_entity_show');
+      const entityHurtSpan = entityHurtStreamed - entityHurtOrdinary;
+      const entityDispatchSpan = await measureStreamedSpan(mapper, project, 'draw_one_entity_show', 'de_show_dispatch_done');
+      const entityJoinSpan = await measureStreamedSpan(mapper, project, 'draw_one_entity_ordinary_join', 'draw_one_entity_animate');
+      const total = dispatchSpan + swDrawSpan + entityHurtSpan + entityDispatchSpan + entityJoinSpan;
+      console.log(
+        `${mapper.name} (${label}): STREAMWORLD_PROJECT_KERNEL_ALLOWANCE total ${total} ` +
+          `(oam dispatch ${dispatchSpan}, oam sw ${swDrawSpan}, entity hurt ${entityHurtSpan} [streamed ${entityHurtStreamed}, ordinary ${entityHurtOrdinary}], entity dispatch ${entityDispatchSpan}, entity join ${entityJoinSpan}, expected ${STREAMWORLD_PROJECT_KERNEL_ALLOWANCE})`
+      );
+      assert.equal(
+        total,
+        STREAMWORLD_PROJECT_KERNEL_ALLOWANCE,
+        `${mapper.name} (${label}): the five projection-wiring spans sum to ${total}, but STREAMWORLD_PROJECT_KERNEL_ALLOWANCE reserves ${STREAMWORLD_PROJECT_KERNEL_ALLOWANCE} -- re-measure and correct it.`
+      );
+    }
+  }
+);
+
+// Phase 2 slice 4a, case 13: STREAMWORLD_NMI_KERNEL_ALLOWANCE/STREAMWORLD_NMI_PALETTE_FX_KERNEL_
+// ALLOWANCE are the ONE exception to the additive-span technique above: engine/boot.asm's own
+// comment on nmi_vram_dispatch/nmi_scroll is explicit that this splice REPLACES the ordinary
+// six-line drain rather than adding a branch in front of it, so a single-build span would count
+// the surviving `.else` arm's own bytes as if the streaming build had to pay for them too. Both
+// labels exist unconditionally on every build (streamed or not), so streamed-span-minus-ordinary-
+// span isolates the real supplement -- the identical double-difference technique
+// STREAMWORLD_MOVE_KERNEL_ALLOWANCE above already uses for the PALETTE_FX-gated portion
+// specifically (a Flash command alone, on an ORDINARY map, already assembles its own identical
+// `.if PALETTE_FX_ENABLED` block inside the `.else` arm -- engine/boot.asm:499-505 -- so a naive
+// single streamed-vs-ordinary delta with Flash on both sides would NOT isolate the streaming-
+// specific supplement without this same subtraction).
+test(
+  'phase 2 slice 4a, case 13: STREAMWORLD_NMI_KERNEL_ALLOWANCE and STREAMWORLD_NMI_PALETTE_FX_KERNEL_ALLOWANCE equal the real net replacement cost of the NMI splice, on UNROM 512, both game types, the mixed shape, and both PALETTE_FX conditions',
+  { skip: !hasNesasm && 'nesasm not found on PATH' },
+  async () => {
+    const mapper = resolveMapper(30);
+    const cases = [
+      { gameType: 'action', mixed: false, label: 'action' },
+      { gameType: 'rpg', mixed: false, label: 'rpg' },
+      { gameType: 'action', mixed: true, label: 'action, mixed' }
+    ];
+    for (const { gameType, mixed, label } of cases) {
+      const streamedNoPfx = createStreamedProject({ gameType, mixed });
+      const streamedPfx = createStreamedProject({ gameType, mixed, moveCommands: [{ op: 'flash' }] });
+      const ordinaryNoPfx = structuredClone(streamedNoPfx);
+      for (const map of ordinaryNoPfx.maps) map.streamed = false;
+      const ordinaryPfx = structuredClone(streamedPfx);
+      for (const map of ordinaryPfx.maps) map.streamed = false;
+
+      const spanStreamedNoPfx = await measureStreamedSpan(mapper, streamedNoPfx, 'nmi_vram_dispatch', 'nmi_scroll');
+      const spanOrdinaryNoPfx = await measureStreamedSpan(mapper, ordinaryNoPfx, 'nmi_vram_dispatch', 'nmi_scroll');
+      const spanStreamedPfx = await measureStreamedSpan(mapper, streamedPfx, 'nmi_vram_dispatch', 'nmi_scroll');
+      const spanOrdinaryPfx = await measureStreamedSpan(mapper, ordinaryPfx, 'nmi_vram_dispatch', 'nmi_scroll');
+
+      const nmiAllowance = spanStreamedNoPfx - spanOrdinaryNoPfx;
+      const pfxSupplement = (spanStreamedPfx - spanOrdinaryPfx) - nmiAllowance;
+      console.log(
+        `${mapper.name} (${label}): STREAMWORLD_NMI_KERNEL_ALLOWANCE ${nmiAllowance}, ` +
+          `STREAMWORLD_NMI_PALETTE_FX_KERNEL_ALLOWANCE supplement ${pfxSupplement} ` +
+          `(streamed no-PFX ${spanStreamedNoPfx}, ordinary no-PFX ${spanOrdinaryNoPfx}, ` +
+          `streamed PFX ${spanStreamedPfx}, ordinary PFX ${spanOrdinaryPfx})`
+      );
+      assert.equal(
+        nmiAllowance,
+        STREAMWORLD_NMI_KERNEL_ALLOWANCE,
+        `${mapper.name} (${label}): the NMI splice's own net replacement cost is ${nmiAllowance}, but STREAMWORLD_NMI_KERNEL_ALLOWANCE reserves ${STREAMWORLD_NMI_KERNEL_ALLOWANCE} -- re-measure and correct it.`
+      );
+      assert.equal(
+        pfxSupplement,
+        STREAMWORLD_NMI_PALETTE_FX_KERNEL_ALLOWANCE,
+        `${mapper.name} (${label}): the PALETTE_FX-gated portion of the NMI splice's own net replacement cost is ${pfxSupplement}, but STREAMWORLD_NMI_PALETTE_FX_KERNEL_ALLOWANCE reserves ${STREAMWORLD_NMI_PALETTE_FX_KERNEL_ALLOWANCE} -- re-measure and correct it.`
+      );
+    }
+  }
+);
+
 test(
   'phase 2 slice 2b, Part F: kernelCodeBytes still covers a worst-case streamed project, margin in band',
   { skip: !hasNesasm && 'nesasm not found on PATH' },
@@ -5630,10 +5740,24 @@ test(
     // used anywhere in the project pays for its own lookup table, and that
     // budget lives in the SAME kernel-lo bank as the code this test is
     // measuring, so stacking all ten (as an earlier version of this test
-    // did) overflows the bank outright before assertCovers ever runs. Six
+    // did) overflows the bank outright before assertCovers ever runs. Five
     // kinds spanning the different subsystems (movement, timing, visual,
-    // audio, dialogue) is still a real multi-feature mix, and one this
-    // board can actually hold alongside a streamed map.
+    // dialogue) used to be a real multi-feature mix this board could hold
+    // alongside a streamed map, and phase 2 slice 4a's own new NMI-
+    // arbitration and per-tile projection code (STREAMWORLD_NMI_KERNEL_
+    // ALLOWANCE, STREAMWORLD_PROJECT_KERNEL_ALLOWANCE, main/build/generate.js)
+    // already narrowed the margin enough that the sixth kind, Sting, stopped
+    // fitting alongside the other five (the project's own audio subsystem is
+    // still exercised -- `songs`/`sfx` above still compile -- just not via
+    // this event's own command list). The round 1 review fix (real per-tile
+    // clipping for entities, finding 2) grew STREAMWORLD_PROJECT_KERNEL_
+    // ALLOWANCE again, past what even those five now leave room for:
+    // measured directly, dropping Shake (frees CAMERA_SHAKE_INTERACTION_
+    // ALLOWANCE too, since Shake and the required camera interact) and the
+    // `{name}` token out of the Say text (frees NAME_TOKEN_KERNEL_ALLOWANCE)
+    // is the cheapest combination that clears the new shortfall -- move,
+    // wait, visible and Say (still spanning movement, timing and dialogue)
+    // is what this board can now actually hold alongside a streamed map.
     before.entities.push({
       actorId: 0,
       x: 32,
@@ -5646,10 +5770,8 @@ test(
               commands: [
                 { op: 'move', who: 'self', dir: 'up', dist: 16 },
                 { op: 'wait', frames: 10 },
-                { op: 'shake', frames: 10 },
                 { op: 'visible', state: 'hidden' },
-                { op: 'sting', song: 0 },
-                { op: 'say', text: 'Hello {name}.' }
+                { op: 'say', text: 'Hello.' }
               ]
             }
           ]

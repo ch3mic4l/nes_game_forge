@@ -123,9 +123,16 @@ function buildMixedProject() {
     { name: 'Greeter', behavior: 'npc', hp: 1, damage: 0 }
   );
 
-  const { mapBase } = flattenScreens(project);
-  const streamedBase = mapBase[1];
-  const afterBase = mapBase[2];
+  // Phase 2 slice 4a carry-over (slice 3 review MINOR): pinned as literals, not derived from
+  // flattenScreens -- deriving the EXPECTED wire values from the same function generateAssets
+  // itself calls to produce the ACTUAL ones would let a bug in flattenScreens cancel out against
+  // itself here instead of being caught (sabotage case (j) restores the flattenScreens-derived
+  // form and shows what stops catching a wrong implementation). The shape is
+  // createStreamedProject's own fixed layout (test/lib/streamedproject.js): Before is a 2x2
+  // ordinary map (4 screens, global ids 0-3) placed first, so the streamed map (the default 3x2
+  // grid) starts at global id 4, and the After map (also 2x2) starts right after it at 4+6=10.
+  const streamedBase = 4;
+  const afterBase = 10;
   const STREAM_TARGET_INDEX = 4; // col=1, row=1 of the 3x2 default grid: 1 + 1*3
   const STREAM_TARGET_GLOBAL = streamedBase + STREAM_TARGET_INDEX;
   const AFTER_TL = afterBase + 0; // (0,0)
@@ -389,16 +396,21 @@ test(
     // One streamed screen (global id 0) + one big ordinary map pushes NUM_SCREENS as close to the
     // NO_SCREEN=255 sentinel as this project's own kernel-lo budget allows on UNROM 512 (each
     // ordinary screen costs its own lookup-table row -- checkCapacity refuses a grid sized to
-    // reach literal id 254 outright, "need 3135 bytes but only 1388 are free", measured by
-    // building one and reading its own refusal message; 100 screens leaves comfortable room).
+    // reach literal id 254 outright, measured by building one and reading its own refusal
+    // message). Phase 2 slice 4a's own new NMI/projection code narrowed the old 100-screen margin
+    // to 80 (re-measured empirically: 85 screens still builds, 90 does not, "need 1211 bytes but
+    // only 1195 are free"); the round 1 review fix's own real per-tile clipping for entities
+    // (STREAMWORLD_PROJECT_KERNEL_ALLOWANCE, main/build/generate.js) narrowed it again, from 80 to
+    // 79 (re-measured empirically: 79 screens still builds, "need 1081 bytes but only 1070 are
+    // free" at 80).
     // Distinct from slice 4b's own high-world-*coordinate* projection tests, this is purely the
     // resolver's own global-id dispatch at the numeric edge of what NO_SCREEN could be mistaken
     // for.
     const project = createStreamedProject({ gridW: 1, gridH: 1 });
     // Append a second, large ordinary map after the 1x1 streamed one.
     const ordinary = createMap(1, 'Big');
-    const BIG_W = 10;
-    const BIG_H = 10; // 10*10 = 100 screens -> global ids 1..100
+    const BIG_W = 79;
+    const BIG_H = 1; // 79*1 = 79 screens -> global ids 1..79
     ordinary.gridW = BIG_W;
     ordinary.gridH = BIG_H;
     ordinary.screens = Array.from({ length: BIG_W * BIG_H }, () => createScreen());

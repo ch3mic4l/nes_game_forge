@@ -411,10 +411,6 @@ nmi:
   lda #$02
   sta $4014                 ; OAM DMA from $0200
 
-  lda <vram_ready            ; a frame that ran long has not finished appending;
-  beq nmi_scroll            ; skipping leaves the writes for the next vblank
-  jsr vram_drain
-
   ; Fade's own packets were the first producer into vram_buf whose own
   ; address ends inside palette space ($3F00-$3F1F): after vram_drain
   ; finishes a 32-byte packet from $3F00, the PPU's internal VRAM address
@@ -438,12 +434,75 @@ nmi:
   ; Fade-only build still assembles byte-identically to before: PALETTE_FX_
   ; ENABLED is true under exactly the same condition FADE_ENABLED alone used
   ; to be for that configuration.
+  ;
+  ; docs/design-streamed-worlds.md §5 (phase 2 slice 4a): a streamed
+  ; project's own arbitration splice, reachable but never armed in
+  ; production yet (nothing arms a strip until slice 4b's movement driver
+  ; exists) -- st_active alone gates sw_nmi_stream/sw_nmi_stream_reduced
+  ; (each rts's immediately when it is clear), never game_state/paused, so
+  ; this call site adds no flag check of its own. Exactly one vram_drain
+  ; call executes on any ready frame, in every one of the three exits below;
+  ; the strip's own $2006/$2007 writes all land before nmi_scroll's
+  ; $2000/$2005 rewrite (CLAUDE.md's NMI ordering rule), and neither
+  ; sw_nmi_stream nor sw_nmi_stream_reduced ever selects a PRG/CHR bank
+  ; (interrupt-time code must never switch banks, the same MMC3-split
+  ; discipline). A non-streamed project assembles this whole splice out --
+  ; byte-identical to before -- via the .else arm below.
+  ;
+  ; nmi_vram_dispatch/nmi_scroll bracket the WHOLE .if/.else pair (both
+  ; labels exist unconditionally, unlike every label inside either arm), so
+  ; test/unit/kernelbytes.test.js can measure this replacement's real net
+  ; cost directly: this span's byte count on a streaming build minus this
+  ; SAME span's byte count on an ordinary build is
+  ; STREAMWORLD_NMI_KERNEL_ALLOWANCE (main/build/generate.js) -- unlike every
+  ; other streaming kernel-lo term, which only ADDS a branch in front of
+  ; code that stays, this splice REPLACES the ordinary six-line drain with a
+  ; bigger three-way one, so the plain single-build span the other terms use
+  ; would overcount by the ordinary arm's own bytes.
+nmi_vram_dispatch:
+  .if STREAMING_ENABLED
+  lda <vram_ready
+  beq nmi_no_drain
+  lda <vram_len
+  cmp #MIXED_VBLANK_MAX_BYTES+1
+  bcs nmi_drain_big
+  jsr vram_drain
   .if PALETTE_FX_ENABLED
 nmi_fade_ppuaddr:
   lda #$00
   sta $2006
   sta $2006
 nmi_fade_ppuaddr_done:
+  .endif
+  jsr sw_nmi_stream_reduced    ; a small (<= MIXED_VBLANK_MAX_BYTES) queue
+                                ; still drained above, but a reduced strip
+                                ; chunk ALSO advances the same vblank
+  jmp nmi_scroll
+
+nmi_drain_big:                 ; too big for a mixed vblank (only ever built
+  jsr vram_drain                ; while the world is frozen) -- exclusive
+  .if PALETTE_FX_ENABLED         ; drain, the strip yields the whole window
+  lda #$00
+  sta $2006
+  sta $2006
+  .endif
+  jmp nmi_scroll
+
+nmi_no_drain:
+  jsr sw_nmi_stream             ; nothing else touched vram_buf this vblank
+                                ; -- the strip may advance a full chunk
+  jmp nmi_scroll
+  .else
+  lda <vram_ready            ; a frame that ran long has not finished appending;
+  beq nmi_scroll            ; skipping leaves the writes for the next vblank
+  jsr vram_drain
+  .if PALETTE_FX_ENABLED
+nmi_fade_ppuaddr:
+  lda #$00
+  sta $2006
+  sta $2006
+nmi_fade_ppuaddr_done:
+  .endif
   .endif
 
 nmi_scroll:

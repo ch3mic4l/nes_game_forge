@@ -1311,8 +1311,22 @@ export const NAME_ENTRY_KERNEL_ALLOWANCE = 107;
 // real net growth over the multiply-that-wraps and no-op-on-invalid-input
 // they replace. Re-measured directly (kernel-hi bank usage, streamed minus
 // unstreamed baseline), not derived by adding the two fixes' own byte counts
-// by hand.
-export const STREAMWORLD_KERNEL_HI_ALLOWANCE = 2432;
+// by hand. Phase 2 slice 4a grew this again, from 2432 to 2611: the three
+// new resident subroutines (sw_oam_rowbase, sw_oam_project_x,
+// sw_oam_project_y, engine/streamworld.asm) plus sw_resolve_divdone's own
+// new camera-origin write are the whole 179-byte difference -- re-measured
+// directly (real kernel-hi delta 2675 on UNROM 512, flat across action/rpg/
+// mixed; 2675 - STREAMWORLD_MT_PAL_KERNEL_HI_BYTES(64) = 2611), not derived
+// by hand from the new code's own line count. Phase 2 slice 4a round 1
+// review fix grew this again, from 2611 to 2689: real per-tile clipping
+// (finding 2) needs a general SIGNED offset projection per axis, not
+// sw_oam_project_x/y's own single-carry-bit contract, so each gained a
+// sibling (sw_oam_project_tile_x, sw_oam_project_tile_y) plus a small
+// shared core label each now falls through to -- all still resident in
+// this same file/region. Re-measured directly (real kernel-hi delta 2753 on
+// UNROM 512, flat across action/rpg/mixed; 2753 -
+// STREAMWORLD_MT_PAL_KERNEL_HI_BYTES(64) = 2689), not derived by hand.
+export const STREAMWORLD_KERNEL_HI_ALLOWANCE = 2689;
 // mt_pal (assets/streamworld_metatiles.inc, generated alongside but
 // separate from assets/metatiles.inc -- the ordinary metatile tables exist
 // on every project, this one only when streaming is live), the
@@ -1482,6 +1496,62 @@ export const STREAMWORLD_ORDINARY_CAM_RESET_KERNEL_ALLOWANCE = 8;
 // projectUsesBoundTiles predicate (tile_switch_changed's whole body already
 // assembles only inside `.if BOUND_TILE_ENABLED`).
 export const STREAMWORLD_TILE_SWITCH_KERNEL_ALLOWANCE = 4;
+// Phase 2 slice 4a (docs/design-streamed-worlds.md §5): engine/boot.asm's own
+// NMI arbitration splice (nmi_vram_dispatch..nmi_scroll) REPLACES the six-
+// line "drain if ready" the .else arm still carries for an ordinary project,
+// rather than adding a branch in front of code that stays -- unlike every
+// other term on this page, so this is the net delta (streaming's own span
+// minus the .else arm's own span it displaces), not the streaming span
+// alone. Measured directly (both spans exist unconditionally, bracketed by
+// the same two labels either way): 24, flat across action/RPG/mixed.
+// PALETTE_FX_ENABLED (Fade or Flash somewhere in the project) grows this by
+// a further 8 -- STREAMWORLD_NMI_PALETTE_FX_KERNEL_ALLOWANCE below -- the
+// $2006/$2006 VRAM-address-park block appears TWICE in the streaming arm
+// (the reduced-drain path and the exclusive-drain path each carry their own
+// copy) but only ONCE in the .else arm it replaces, so the net delta grows
+// by one extra copy's worth (8 bytes) rather than staying flat the way a
+// purely-additive term's PALETTE_FX_ENABLED interaction usually would.
+export const STREAMWORLD_NMI_KERNEL_ALLOWANCE = 24;
+export const STREAMWORLD_NMI_PALETTE_FX_KERNEL_ALLOWANCE = 8;
+// Phase 2 slice 4a: the OAM-build projection wiring, one combined term for
+// both call sites (engine/oam.asm's build_oam_draw_dispatch branch plus the
+// build_oam_draw_sw routine it reaches; engine/entities.asm's identical
+// draw_one_entity_show branch plus the streamed projection block ending at
+// draw_one_entity_animate) -- STREAMWORLD_SPAWN_KERNEL_ALLOWANCE's own
+// precedent for naming one consumer's several sub-blocks as a single term.
+// Both sites are purely additive (the ordinary body stays, unconditional,
+// either way), unlike the NMI splice above, so each site's own span
+// (nesasm's real symbol table, test/unit/kernelbytes.test.js) is exactly
+// its own new-byte count, no baseline subtraction needed: oam.asm 4
+// (branch) + 108 (build_oam_draw_sw..build_oam_draw_sw_end) = 112,
+// entities.asm 4 (branch) + 167 (draw_one_entity_ordinary_join..
+// draw_one_entity_animate) = 171, combined 283, PLUS a third entities.asm
+// term that -- unlike those two -- is a REPLACE, not a purely-additive
+// bracket: draw_one_entity_hurt_dispatch/draw_one_entity_show costs the
+// ordinary build its original 2-byte bne either way, and a streamed build
+// 5 bytes (a jmp's-worth more), so only the 3-byte streamed-minus-ordinary
+// delta belongs here (kernelbytes.test.js's own double-difference
+// technique, identical to how the NMI splice below is measured). The
+// entities.asm terms grew (45 -> 167, and a new +3) in the round-1 review
+// fix (real per-tile projection for entities, replacing origin-only
+// projection -- docs/design-streamed-worlds.md §7 rulings 3/4, phase 2
+// slice 4a round 1 review finding 2): the join span now also duplicates
+// entity_animation's own NO_ANIM/metasprite-id lookup (needed before X is
+// safe to spend on the per-tile projection calls, finding 1 of the same
+// review) rather than sharing it with draw_one_entity_animate's tail, and
+// that much larger streamed-only routine is what pushes draw_one_entity's
+// own ent_hurt dispatch out of a plain bne's +-128 range in a streaming
+// build alone. Combined: 283 + 3 = 286. A raw whole-kernel-lo-bank-USED
+// delta reads smaller than this (conflating it with an unrelated TABLE-
+// region shrink: an ordinary screen costs its own screen_ent_lo/hi row
+// that a streamed screen's own entity data, stored in the streamed region
+// instead, does not -- forcing map.streamed off to build the baseline for
+// a delta measurement adds that row back, which has nothing to do with
+// this code) -- kernelCodeBytes' own `used - (resetAddr - 0xC000)`
+// convention (the worst-case margin test's own technique) is what strips
+// that confound out, and cross-checked against it this term reads exactly
+// 286. Flat across action/RPG/mixed.
+export const STREAMWORLD_PROJECT_KERNEL_ALLOWANCE = 286;
 // Phase 2 slice 3 (docs/design-streamed-worlds.md §7, ruling 7): move_tick's
 // own streamed-player bound/crossing-probe arms in engine/entities.asm
 // (kernel-lo only -- the resident sw_move_probe/sw_move_probe_solid pair
@@ -1769,6 +1839,9 @@ export function kernelCodeBytes(project, mapper) {
     (usesStreaming ? STREAMWORLD_ORDINARY_CAM_RESET_KERNEL_ALLOWANCE : 0) +
     (usesStreaming && usesBoundTiles ? STREAMWORLD_TILE_SWITCH_KERNEL_ALLOWANCE : 0) +
     (usesStreaming && usesMove ? STREAMWORLD_MOVE_KERNEL_ALLOWANCE : 0) +
+    (usesStreaming ? STREAMWORLD_NMI_KERNEL_ALLOWANCE : 0) +
+    (usesStreaming && usesPaletteFx ? STREAMWORLD_NMI_PALETTE_FX_KERNEL_ALLOWANCE : 0) +
+    (usesStreaming ? STREAMWORLD_PROJECT_KERNEL_ALLOWANCE : 0) +
     KERNEL_SLACK
   );
 }

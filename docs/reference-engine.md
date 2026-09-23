@@ -158,8 +158,11 @@ runtime counterpart of `main/build/streamed.js`'s `resolveGlobalScreen()`, a map
 over `map_base`/`stream_type_bits`/`stream_columns` that turns a GLOBAL screen id into either an
 ordinary table row (sets `ord_screen`, touches nothing else) or a streamed landing (points
 `mtptr`/PRG bank/CHR bank at the target screen, frames it as the window's own top-left origin with
-no local offset, sets `cam_nt`/`cam_x_lo`/`cam_y_lo` to that origin's landing scroll, updates
-`cur_map`/music). Every one of the 5 landing sites — cold boot (`engine/boot.asm`'s own inline copy,
+no local offset, sets `cam_nt`/`cam_x_lo`/`cam_y_lo` to that origin's landing scroll and
+`sw_cam_origin_x_lo`/`hi`/`sw_cam_origin_y_lo`/`hi` (phase 2 slice 4a) to that same origin in
+world-space (`screenCol*256`, `screenRow*240`) — this is the pair's first production writer;
+slice 4b's movement driver becomes its continuous per-frame one — updates `cur_map`/music). Every
+one of the 5 landing sites — cold boot (`engine/boot.asm`'s own inline copy,
 since cold boot draws its first screen without calling `redraw_screen`), `start_game`,
 `restart_game`, `take_door` and `continue_game` (both through `redraw_screen`, `engine/screens.asm`)
 — reaches this and only this; there is no second implementation of "what a landing means."
@@ -301,6 +304,17 @@ run by `test/lua/run_bound_tile_nmi_check.sh`) proves this exact three-producer 
 Mesen timing, the same "prove the workload, then trust the deadline" shape
 `flash_nmi_timing.lua.template` established. **A fourth independent producer must re-open this
 accounting again, not assume it still holds.**
+
+**The streamed-world strip drawer (phase 2 slice 4a) is a fourth *consumer* of vblank time, not a
+`vram_buf` producer.** `sw_nmi_stream`/`sw_nmi_stream_reduced` (`engine/streamworld.asm`) draw
+straight from `sbuf` via their own `$2006`/`$2007` writes rather than queuing a packet, so they
+never compete for `vram_buf`'s own 256 bytes; the NMI splice's own arbitration on `vram_len` vs.
+`MIXED_VBLANK_MAX_BYTES` (35, `engine/boot.asm`'s `nmi_vram_dispatch`) is the accounting that lets
+the strip share a frame with the three `vram_buf` producers above — a queue at or under 35 bytes
+still gets `SW_STREAM_MIXED_CHUNK` (2) strip blocks drawn alongside it, and anything that raises a
+producer's own per-frame byte count above 35 falls back to the exclusive drain and stalls the
+strip for that one frame. `st_active` alone gates the strip drawer (never `game_state`/`paused`),
+and exactly one `vram_drain` call executes on any ready frame across the splice's three exits.
 
 `box_close` keeps no copy of what the box covered: the box is tile rows 24-29, which is exactly
 metatile rows 12-14 with no half-row left over, so it rebuilds those rows straight out of
