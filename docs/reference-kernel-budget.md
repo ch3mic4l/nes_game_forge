@@ -111,8 +111,31 @@ sizes, the route zero-cost proof and `KERNEL_SLACK` itself are each checked thei
   three boards. Its gate is NOT `gameType === 'rpg'` but `codeRegions(...).length > 0`
   (`kernelCodeBytes` recomputes it) — the real predicate `BATTLE_ENABLED` emits from, narrower on
   a CHR-RAM board whose tilesets have claimed every switchable region.
-- `MOVE_KERNEL_ALLOWANCE = 324` plus `FACE_KERNEL_ALLOWANCE = 13` (the facing routine Move and
-  `Turn` share, charged once) — 337 total for a Move-only project.
+- `MOVE_KERNEL_ALLOWANCE = 335` plus `FACE_KERNEL_ALLOWANCE = 13` (the facing routine Move and
+  `Turn` share, charged once) — 348 total for a Move-only project. Re-measured up from 324 for
+  phase 2 slice 3's `mv_ent` identity capture (docs/design-streamed-worlds.md §7, ruling 7):
+  `script_op_move`'s own 5-byte capture plus six call sites each trading a 2-byte `ldx <talk_ent`
+  for a 3-byte `ldx mv_ent` — unconditional on `MOVE_ENABLED` itself, paid by every project using
+  Move, streamed or not. `STREAMWORLD_MOVE_KERNEL_ALLOWANCE = 159` (kernel-lo only, gated
+  `usesStreaming && usesMove`) is the streaming-only remainder on top: `move_tick`'s own
+  streamed-player bound arms on all four directions and `move_speed_player`'s accumulator dispatch.
+  A separate `STREAMWORLD_MOVE_KERNEL_HI_ALLOWANCE = 80` (kernel-hi, same gate) charges the shared
+  crossing-probe routine, `sw_move_probe`/`sw_move_probe_solid` (`engine/streamworld.asm`, gated
+  `.if MOVE_ENABLED` there so a streamed project with no live Move pays nothing extra in kernel-hi
+  either). Fix round 1 (`handoff-next/streamed-worlds-phase2-s3-review1.md` findings 1 and 4)
+  replaced round 1's own clamp-to-the-exact-edge bound arms — which changed the wall's selected
+  semantics rather than just its accounting — with the ordinary wall's own shape at a wider bound:
+  an 8-bit carry is itself the wall for RIGHT (255 is the byte range's own maximum), a `cmp
+  #240`/`bcs` is the wall for DOWN, and a borrow is the wall for LEFT/UP, identical to the ordinary
+  wall and needing no streamed-specific arm at all. A step whose parity does not land exactly on
+  the edge stops short of it, the same way the ordinary wall already stops short of `MAX_X`/`MAX_Y`
+  on an off-parity step; this lowered kernel-lo from 172 to 159 (kernel-lo alone went down, since
+  the clamp arms cost more than the wider-bound checks they replaced), and moved the crossing
+  probe's own normalization — now one shared routine used by all four arms instead of a
+  right/down-only special case — into kernel-hi as a separate, independently measured 80-byte term.
+  Fix round 2: kernel-lo and kernel-hi are two different regions of the ROM, never added into one
+  combined figure — 159+80=239 is not a decrease from 172, it is 159 down in kernel-lo alongside a
+  new, separately charged 80 in kernel-hi.
 - `SPLIT_KERNEL_ALLOWANCE = 151`, MMC3-only, charged whenever `projectUsesText` is true on that
   board — including a project whose only live event is a Move or a Sting, not just dialogue.
   Pinned by a text-on/off isolation on a fresh action project, plus a zero-delta control on every
@@ -147,7 +170,7 @@ sizes, the route zero-cost proof and `KERNEL_SLACK` itself are each checked thei
   removal `kernelShortfallAdvice` has to price by full kernel-lo occupancy (code and table
   together), the rule above.
 - `TURN_KERNEL_ALLOWANCE = 33` composes with `FACE_KERNEL_ALLOWANCE` above (Move+Turn cost
-  324+33+13=370, facing routine charged once); `WAIT_KERNEL_ALLOWANCE = 43` shares no other code
+  335+33+13=381, facing routine charged once); `WAIT_KERNEL_ALLOWANCE = 43` shares no other code
   with Turn (33+13+43=89 for Turn+Wait, no Move). `SHAKE_KERNEL_ALLOWANCE = 60` and
   `VISIBLE_KERNEL_ALLOWANCE = 47` (Show/Hide) are each flat, with no dependent term.
 - `FADE_KERNEL_ALLOWANCE = 124` and `FLASH_KERNEL_ALLOWANCE = 91` name each routine's own cost;

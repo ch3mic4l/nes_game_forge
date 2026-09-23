@@ -173,6 +173,52 @@ newly-crossed-to compacted index) — it is not itself where a streamed crossing
 wall is pending replacement by slice 4b's own streamed movement driver, a different mechanism this
 codebase does not have yet, not a path through `cross_set_screen`.
 
+**A scripted Move on a streamed screen (phase 2 slice 3, docs/design-streamed-worlds.md §7, ruling
+7) is a separate mechanism from Part C's interim wall above**, and only applies to the PLAYER
+mover: `move_tick` (`engine/entities.asm`) bounds the player at the true 0-255/0-239 ownership
+rectangle edge, never the tighter `MAX_X`/`MAX_Y` actor-policy wall an NPC mover always keeps. The
+wall itself is the ORDINARY wall's own shape with a wider bound, not a separate clamp mechanism: an
+8-bit add that carries is itself the wall for RIGHT (255 is the screen's own natural byte maximum,
+so no comparison is needed at all — the carry flag from the step's own addition answers directly);
+an add reaching or passing 240 is the wall for DOWN (the same `cmp`/`bcs` shape the ordinary wall
+uses, just against 240 instead of `MAX_Y+1`); a borrow is the wall for LEFT/UP, identical to the
+ordinary wall's own bound (0 is the natural floor either way), so LEFT/UP need no streamed-specific
+wall arm at all — only their PROBE stage differs. A step whose parity does not land exactly on
+255/239/0 stops short of it on the frame that would have overshot, the same way the ordinary wall
+already stops short of `MAX_X`/`MAX_Y` on an off-parity step — fix round 1 tried clamping to the
+exact edge instead and found that changed the wall's own selected semantics (decision 2), not just
+its accounting; it was removed.
+
+`move_speed_player` dispatches through `sw_walk_step_x`/`sw_walk_step_y` — the same sub-pixel
+accumulator organic walking will share once slice 4b's driver exists — instead of a flat
+`PLAYER_SPEED`, so a scripted player Move advances at the identical irregular per-frame rate.
+`move_tick` calls `move_speed` (and so this dispatch) BEFORE the clip against what is left, the
+bound check and the probe — the shared step generator's own residue policy: a clipped or refused
+tick still keeps the accumulator advance it already made, with no refund, since the same tick shape
+held movement will use cannot roll back a fractional step it never separately committed. Boot
+clears all of `$0300+` (`engine/boot.asm`), so `sw_walk_acc_x/y` (`engine/constants.asm`) both start
+at 0 the first time any Move or held-movement step ever runs.
+
+A step whose BODY-inset probe point crosses the current screen's own edge reads the neighbour's
+terrain through `sw_move_probe`/`sw_move_probe_solid` (`engine/streamworld.asm`, gated
+`.if MOVE_ENABLED`) rather than `probe_solid`'s own current-screen-only table — one collision
+policy, not two. Fix round 1, finding 1: EITHER probe coordinate can leave the current screen
+regardless of which axis is moving — not only right/down's own moving axis, but every direction's
+own PERPENDICULAR axis too (the unchanged old_x/old_y, offset by the leading-edge BODY_* constant,
+can itself already sit near its own edge) — so `sw_move_probe` normalizes both coordinates before
+every probe, in all four arms: an X add that carries selects `screenCol+1` with the wrapped low
+byte as the offset; a Y at or past 240 selects `screenRow+1` with `y-240` as the offset; a corner
+selects both. Only when neither crosses does the probe stay the plain, current-screen-only
+`probe_solid`. The true player position itself never crosses; ownership does not change mid-Move (a
+Warp is still required to change screen). `script_op_move` (`engine/script.asm`) captures
+`talk_ent` into `mv_ent` once, at Move start; `move_get_*`/`move_set_*`/`move_speed`'s NPC
+branch/`move_animate`'s NPC branch read `mv_ent` from then on, never live `talk_ent` again, so a
+self-Move keeps its own mover even were `talk_ent` reassigned mid-flight (unreachable in
+production, but the fix cost +11 kernel-lo bytes -- `MOVE_KERNEL_ALLOWANCE` 324 → 335). A scripted
+Move that reaches this rectangle's own edge no longer
+refuses the build (`validateStreamedMaps`'s D.3, `shared/project.js`) — it warns instead, since the
+engine now bounds and stops it safely at runtime.
+
 Two mappers were considered and deliberately left out rather than declared. AxROM (7) switches all
 32 KB at once, leaving no fixed window for the kernel, so the engine would need duplicating into
 every bank — which nesasm can't do by re-including code, since labels would collide. MMC5

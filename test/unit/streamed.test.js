@@ -413,10 +413,10 @@ const withEvent = (p, commands, { streamed = true, place = true } = {}) => {
   return m;
 };
 // Phase 2 slice 2b, Part D item 3 escalated this from a warning to an error (a scripted Move that
-// walks the player off a streamed screen's own bound), keeping the exact same message substring --
-// "Move warning" below is now a slight misnomer kept as the section/test-name label, since the
-// tests' own structure (which shapes warn/error, which don't) is otherwise unchanged.
-const moveWarnings = (p) => validateProject(p).filter((x) => x.severity === 'error' && /moves the player/.test(x.message));
+// walks the player off a streamed screen's own bound); phase 2 slice 3 gave move_tick its own
+// bound and crossing probe for exactly this case (docs/design-streamed-worlds.md §7, ruling 7),
+// so it lifted back to a warning -- "Move warning" is the right label again, not a misnomer.
+const moveWarnings = (p) => validateProject(p).filter((x) => x.severity === 'warning' && /moves the player/.test(x.message));
 const mv = (extra = {}) => ({ op: 'move', who: 'player', dir: 'right', dist: 40, ...extra });
 
 test('Move warning: a player Move on a streamed map warns; the same on an ordinary map does not', () => {

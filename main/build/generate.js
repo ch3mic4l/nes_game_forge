@@ -857,7 +857,15 @@ export const SAVE_BATTLE_KERNEL_ALLOWANCE = 41;
 // Re-measured for the zero-page kernel diet: 324 (down from 379) -- the
 // FACE/MOVE split above it derived from the identical MOVE+TURN+FACE(once)
 // triangulation this figure was originally split out of.
-export const MOVE_KERNEL_ALLOWANCE = 324;
+// Re-measured again for phase 2 slice 3's ruling 7 (docs/design-streamed-
+// worlds.md): move_get_x/y, move_set_x/y, move_speed's NPC branch and
+// move_animate's NPC branch (engine/entities.asm) each traded a 2-byte
+// `ldx <talk_ent` for a 3-byte `ldx mv_ent` (mv_ent is $0300+ RAM, never
+// zero-page -- decision/ruling: no `<` prefix), and script_op_move
+// (engine/script.asm) gained a 5-byte `lda <talk_ent / sta mv_ent` capture.
+// Unconditional on MOVE_ENABLED itself, not gated on STREAMING_ENABLED --
+// every project using Move pays it, streamed or not. +11 bytes: 335.
+export const MOVE_KERNEL_ALLOWANCE = 335;
 // move_face alone (engine/entities.asm), gated on FACE_ENABLED
 // (projectUsesFace = projectUsesMove || projectUsesTurn) -- charged once
 // whenever either Move or Turn is live, never twice when both are. Measured
@@ -1474,6 +1482,42 @@ export const STREAMWORLD_ORDINARY_CAM_RESET_KERNEL_ALLOWANCE = 8;
 // projectUsesBoundTiles predicate (tile_switch_changed's whole body already
 // assembles only inside `.if BOUND_TILE_ENABLED`).
 export const STREAMWORLD_TILE_SWITCH_KERNEL_ALLOWANCE = 4;
+// Phase 2 slice 3 (docs/design-streamed-worlds.md §7, ruling 7): move_tick's
+// own streamed-player bound/crossing-probe arms in engine/entities.asm
+// (kernel-lo only -- the resident sw_move_probe/sw_move_probe_solid pair
+// this code calls into is a SEPARATE kernel-hi term,
+// STREAMWORLD_MOVE_KERNEL_HI_ALLOWANCE, below; fix round 1, finding 2
+// corrected this comment, which previously folded the resident helper's own
+// bytes into this kernel-lo figure by mistake). Every byte here is gated
+// `.if STREAMING_ENABLED`, so an ordinary (non-streamed) project pays
+// nothing regardless of Move. Measured in isolation
+// (test/unit/kernelbytes.test.js): streamed-with-Move minus streamed-
+// without-Move, minus the ordinary project's own Move-on/off delta (348 =
+// MOVE_KERNEL_ALLOWANCE + FACE_KERNEL_ALLOWANCE, cross-checked directly, not
+// assumed, since it must not have drifted) -- the streaming-only remainder,
+// flat across action, RPG and the mixed shape. Fix round 1, finding 4
+// removed the clamp-to-the-true-edge arms this figure used to include: the
+// streamed player's own wall is now the ordinary wall's shape with a wider
+// bound (an add that carries or a candidate of 240 is itself the wall for
+// right/down; a borrow is the wall for left/up, identical to the ordinary
+// bound so left/up need no separate wall arm at all any more), and finding
+// 1's probe-normalization arms (all four directions, not just right/down)
+// were added in the same pass -- both changes re-measured together, never
+// derived by adding one fix's own byte count to the prior figure by hand.
+export const STREAMWORLD_MOVE_KERNEL_ALLOWANCE = 159;
+// Fix round 1, finding 2: sw_move_probe/sw_move_probe_solid (engine/
+// streamworld.asm) are the resident half of ruling 7's own probe-crossing
+// mechanism -- kernel-HI, not kernel-lo, and gated `.if MOVE_ENABLED` inside
+// the already-`.if STREAMING_ENABLED` file, so a streamed project with no
+// live Move command pays nothing extra in kernel-hi either. Measured the
+// same isolated way as the kernel-lo term above (streamed-with-Move minus
+// streamed-without-Move, minus the ordinary project's own kernel-hi Move
+// delta -- fix round 2: that ordinary delta is 9 bank bytes of compiled
+// event data (the Move command's own operands), but its ENGINE-CODE
+// contribution is 0 -- an ordinary project's Move code never touches the
+// $E000 bank at all, only its own compiled event bytes live there), flat
+// across action, RPG and the mixed shape.
+export const STREAMWORLD_MOVE_KERNEL_HI_ALLOWANCE = 80;
 // script_op_join's own growth (engine/script.asm) -- RPG-only, since Join is
 // itself an RPG-only command.
 // Re-measured for the zero-page kernel diet: 63 (down from 64).
@@ -1724,6 +1768,7 @@ export function kernelCodeBytes(project, mapper) {
     (usesStreaming && usesBoundTiles ? STREAMWORLD_LANDING_BOUND_CACHE_KERNEL_ALLOWANCE : 0) +
     (usesStreaming ? STREAMWORLD_ORDINARY_CAM_RESET_KERNEL_ALLOWANCE : 0) +
     (usesStreaming && usesBoundTiles ? STREAMWORLD_TILE_SWITCH_KERNEL_ALLOWANCE : 0) +
+    (usesStreaming && usesMove ? STREAMWORLD_MOVE_KERNEL_ALLOWANCE : 0) +
     KERNEL_SLACK
   );
 }
@@ -3031,9 +3076,15 @@ export function checkCapacity(project) {
   // Music, sound effects, text and (streaming only) the resident streamed-worlds package share
   // the $E000 half of the fixed kernel, above the vectors (docs/design-streamed-worlds.md, phase 2
   // slice 2a: STREAMWORLD_KERNEL_HI_ALLOWANCE + STREAMWORLD_MT_PAL_KERNEL_HI_BYTES, gated on
-  // projectUsesStreaming alone, zero for every project that does not use the feature).
+  // projectUsesStreaming alone, zero for every project that does not use the feature). Fix round 1,
+  // finding 2: sw_move_probe/sw_move_probe_solid (engine/streamworld.asm, `.if MOVE_ENABLED`) are a
+  // THIRD, separately-gated kernel-hi term -- a streamed project with no live Move must not pay for
+  // a routine nothing could ever call, so this is gated on usesMoveHere := projectUsesMove(project)
+  // as well as hasStreamed, never folded into the unconditional pair above.
+  const usesMoveHere = projectUsesMove(project);
+  const streamworldMoveHiBytes = hasStreamed && usesMoveHere ? STREAMWORLD_MOVE_KERNEL_HI_ALLOWANCE : 0;
   const streamworldHiBytes = hasStreamed
-    ? STREAMWORLD_KERNEL_HI_ALLOWANCE + STREAMWORLD_MT_PAL_KERNEL_HI_BYTES
+    ? STREAMWORLD_KERNEL_HI_ALLOWANCE + STREAMWORLD_MT_PAL_KERNEL_HI_BYTES + streamworldMoveHiBytes
     : 0;
   if (musicBytes + sfxBytes + text.bytes + streamworldHiBytes > BANK_SIZE - 64) {
     problems.push({
@@ -3042,7 +3093,10 @@ export function checkCapacity(project) {
       message:
         `The songs and sound effects compile to ${musicBytes + sfxBytes} bytes (${musicBytes} music, ` +
         `${sfxBytes} effects), the dialogue to ${text.bytes}` +
-        (streamworldHiBytes ? `, and the streaming engine to ${streamworldHiBytes}` : '') +
+        (streamworldHiBytes
+          ? `, and the streaming engine${streamworldMoveHiBytes ? ' (including its scripted-Move probe)' : ''}` +
+            ` to ${streamworldHiBytes}`
+          : '') +
         `, which together do not fit the ${BANK_SIZE}-byte music and text bank. Shorten a song or ` +
         'effect, or cut some dialogue.'
     });

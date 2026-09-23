@@ -806,30 +806,127 @@ move_tick:
 move_tick_step:
   sta <mv_step
 
+; Ruling 7 (docs/design-streamed-worlds.md §7): the player mover's own
+; ownership-rectangle bound (0-255/0-239, carry-safe) applies only when the
+; CURRENT screen is streamed AND the mover is the player -- an NPC keeps the
+; tighter MAX_X/MAX_Y wall on every map (the actor policy), and the player
+; keeps today's MAX_X/MAX_Y wall on an ordinary map too. <tmp> (mainline
+; scratch, engine/constants.asm) holds that one decision for the rest of
+; this call -- reused rather than a new persistent byte, safe because
+; probe_type's own identical reuse of <tmp> never runs until every read of
+; it below is already done.
+  .if STREAMING_ENABLED
+  lda #0
+  sta <tmp
+  lda <mv_who
+  beq move_tick_bound_done   ; NPC: always the actor-policy wall
+  lda <map_is_streamed
+  beq move_tick_bound_done   ; ordinary map: today's wall, either mover
+  inc <tmp
+move_tick_bound_done:
+  .endif
+
   lda <mv_dir
   cmp #DIR_LEFT
+; STREAMING_ENABLED only: the crossing-probe arms below (finding 1) push this
+; branch past a short branch's own +-128 range (CLAUDE.md's own branch-range
+; trap), so a streamed build needs the branch-around-jump trampoline. A
+; project with streaming off assembles none of those arms, so its own
+; distance is unchanged -- the ordinary short branch stays byte-identical to
+; keep today's bytes exactly (ruling 7's own "ordinary map keeps today's
+; bytes" for ANY project that cannot even reach this feature).
+  .if STREAMING_ENABLED
+  bcc move_tick_vertical
+  jmp move_tick_horizontal
+move_tick_vertical:
+  .endif
+  .if !STREAMING_ENABLED
   bcs move_tick_horizontal
+  .endif
 
+; Down's own moving axis (candidate+BODY_B) can reach past the streamed
+; rectangle's own 239-row bound and past the current screen's 240px height
+; alike -- both handled below, the first by the wall's own wider cmp, the
+; second by sw_move_probe's own >=240 check (finding 1: NOT limited to down;
+; up's own candidate+BODY_T can reach the same threshold from a start near
+; the bottom of the rectangle, so the probe side normalizes both directions
+; the identical way -- only the WALL's own bound differs by direction).
   cmp #DIR_UP
   beq move_tick_up
-  jsr move_get_y            ; down
+  jsr move_get_y            ; down, A = old_y
+  .if STREAMING_ENABLED
+  ldy <tmp
+  bne move_tick_down_streamed
+  .endif
   clc
-  adc <mv_step
+  adc <mv_step               ; carry now answers "did this 8-bit add
+                              ; overflow" -- lda/ldy/beq below never touch
+                              ; carry, so it survives unread until here
   cmp #MAX_Y+1
   bcs move_wall
+  .if STREAMING_ENABLED
+  jmp move_tick_down_bounded
+; Finding 4: the streamed player's own wall is the ordinary wall's shape
+; with a wider bound (239, not MAX_Y) -- an add that reaches or passes the
+; 240px height is the wall, exactly as the ordinary cmp/bcs above is, no
+; separate "already at the edge" pre-check and no clamp. A step whose parity
+; does not land exactly on 239 stops short of it, same as the ordinary wall
+; stops short of MAX_Y on an off-parity step today.
+move_tick_down_streamed:
+  clc
+  adc <mv_step
+  cmp #240
+  bcs move_wall
+move_tick_down_bounded:
+  .endif
   sta <mv_tmp
   clc
   adc #BODY_B
+  .if STREAMING_ENABLED
+  ldy <tmp
+  beq move_tick_down_probe_same
+  ; Finding 1: the probe point can cross EITHER axis regardless of which one
+  ; is moving (down's own perpendicular x, old_x+BODY_L, crosses whenever
+  ; old_x is 254/255) -- sw_move_probe normalizes both, not just the one
+  ; this arm happens to move along.
+  sta <probe_y
+  jsr move_get_x
+  clc
+  adc #BODY_L
+  sta <probe_x
+  lda #0
+  adc #0
+  tay                        ; Y = dx (the x-probe's own carry, captured
+                              ; before anything below can disturb it)
+  jsr sw_move_probe
+  jmp move_tick_v_done
+move_tick_down_probe_same:
+  .endif
   sta <probe_y
   jmp move_tick_probe_v
 move_tick_up:
-  jsr move_get_y
+  jsr move_get_y             ; A = old_y
   sec
   sbc <mv_step
   bcc move_wall
   sta <mv_tmp
   clc
   adc #BODY_T
+  .if STREAMING_ENABLED
+  ldy <tmp
+  beq move_tick_up_probe_same
+  sta <probe_y
+  jsr move_get_x
+  clc
+  adc #BODY_L
+  sta <probe_x
+  lda #0
+  adc #0
+  tay
+  jsr sw_move_probe
+  jmp move_tick_v_done
+move_tick_up_probe_same:
+  .endif
   sta <probe_y
 move_tick_probe_v:
   jsr move_get_x
@@ -837,6 +934,7 @@ move_tick_probe_v:
   adc #BODY_L
   sta <probe_x
   jsr probe_solid
+move_tick_v_done:
   bne move_wall
   lda <mv_tmp
   jsr move_set_y
@@ -849,27 +947,81 @@ move_tick_probe_v:
 move_wall:
   jmp move_blocked
 
+; Right's own moving axis (candidate+BODY_R) can carry past the screen's own
+; 256px width exactly when it reaches the true 255 edge -- the 8-bit add's
+; own overflow IS both the wall test (finding 4: no separate cmp needed, a
+; carry out of 8 bits is itself "past 255") and the crossing test (finding 1:
+; that same wrapped sum IS the neighbour's own local x, with no separate
+; subtraction the way the 240px height needs). Left's own moving axis
+; (candidate-mv_step) never leaves the screen this way -- floored at 0 by the
+; borrow check below, so this axis needs no streamed-specific wall at all,
+; identical bound and bytes on every map -- but its OWN perpendicular probe
+; (old_y+BODY_B) can still cross the bottom edge (finding 1), so left's probe
+; stage needs the identical streamed-only branch right/down/up all have, even
+; though its wall does not.
 move_tick_horizontal:
   cmp #DIR_LEFT
   beq move_tick_left
-  jsr move_get_x            ; right
+  jsr move_get_x            ; right, A = old_x
+  .if STREAMING_ENABLED
+  ldy <tmp
+  bne move_tick_right_streamed
+  .endif
   clc
   adc <mv_step
   cmp #MAX_X+1
   bcs move_wall
+  .if STREAMING_ENABLED
+  jmp move_tick_right_bounded
+move_tick_right_streamed:
+  clc
+  adc <mv_step
+  bcs move_wall
+move_tick_right_bounded:
+  .endif
   sta <mv_tmp
   clc
   adc #BODY_R
+  .if STREAMING_ENABLED
+  ldy <tmp
+  beq move_tick_right_probe_same
+  sta <probe_x
+  lda #0
+  adc #0
+  tay                        ; Y = dx (right's own moving-axis carry)
+  jsr move_get_y
+  clc
+  adc #BODY_B
+  sta <probe_y
+  jsr sw_move_probe
+  jmp move_tick_h_done
+move_tick_right_probe_same:
+  .endif
   sta <probe_x
   jmp move_tick_probe_h
 move_tick_left:
-  jsr move_get_x
+  jsr move_get_x             ; A = old_x
   sec
   sbc <mv_step
   bcc move_wall
   sta <mv_tmp
   clc
   adc #BODY_L
+  .if STREAMING_ENABLED
+  ldy <tmp
+  beq move_tick_left_probe_same
+  sta <probe_x
+  lda #0
+  adc #0
+  tay
+  jsr move_get_y
+  clc
+  adc #BODY_B
+  sta <probe_y
+  jsr sw_move_probe
+  jmp move_tick_h_done
+move_tick_left_probe_same:
+  .endif
   sta <probe_x
 move_tick_probe_h:
   jsr move_get_y
@@ -877,6 +1029,7 @@ move_tick_probe_h:
   adc #BODY_B
   sta <probe_y
   jsr probe_solid
+move_tick_h_done:
   bne move_wall
   lda <mv_tmp
   jsr move_set_x
@@ -906,15 +1059,22 @@ move_finish:
 
 ; --------------------------------------------------- who is being moved
 ;
-; MOVE_SELF is talk_ent, whoever the conversation belongs to -- which is right
-; through a common event too, since a call does not change whose event it is.
-; Each of these clobbers X and Y; move_tick owns neither across them.
+; MOVE_SELF reads mv_ent, the entity slot script_op_move (engine/script.asm)
+; captured from talk_ent once, when the Move began -- not the live talk_ent
+; slot itself (ruling 7): the mover is decided once and stays that mover for
+; the whole walk, even were something else to reassign talk_ent mid-Move
+; (unreachable in production today -- settle_owed's own game_state gate
+; keeps a second start_dialog from running while mv_left is non-zero -- but
+; the fix costs nothing and removes the theoretical case outright). This is
+; right through a common event too, since a call does not change whose
+; event it is. Each of these clobbers X and Y; move_tick owns neither across
+; them.
 
 ; A = the mover's x.
 move_get_x:
   lda <mv_who
   bne move_get_x_player
-  ldx <talk_ent
+  ldx mv_ent
   lda ent_x,x
   rts
 move_get_x_player:
@@ -925,7 +1085,7 @@ move_get_x_player:
 move_get_y:
   lda <mv_who
   bne move_get_y_player
-  ldx <talk_ent
+  ldx mv_ent
   lda ent_y,x
   rts
 move_get_y_player:
@@ -936,7 +1096,7 @@ move_get_y_player:
 move_set_x:
   ldx <mv_who
   bne move_set_x_player
-  ldx <talk_ent
+  ldx mv_ent
   sta ent_x,x
   rts
 move_set_x_player:
@@ -947,7 +1107,7 @@ move_set_x_player:
 move_set_y:
   ldx <mv_who
   bne move_set_y_player
-  ldx <talk_ent
+  ldx mv_ent
   sta ent_y,x
   rts
 move_set_y_player:
@@ -986,14 +1146,32 @@ move_face_player:
 move_speed:
   lda <mv_who
   bne move_speed_player
-  ldx <talk_ent
+  ldx mv_ent
   ldy ent_actor,x
   lda actor_speed,y
   bne move_speed_done
   lda #1
 move_speed_done:
   rts
+; On a streamed CURRENT screen the player's own scripted-Move rate is the
+; shared streamed-walking accumulator (docs/design-streamed-worlds.md §5),
+; not the flat integer PLAYER_SPEED -- the identical sw_walk_step_x/y
+; engine/streamworld.asm's own resident package already defines, so a
+; scripted Move can never outrun the window's own margin any faster than
+; held movement already cannot (the contract's own words). mv_dir picks the
+; axis exactly as move_tick's own dispatch above does.
 move_speed_player:
+  .if STREAMING_ENABLED
+  lda <map_is_streamed
+  beq move_speed_player_ordinary
+  lda <mv_dir
+  cmp #DIR_LEFT
+  bcs move_speed_player_x
+  jmp sw_walk_step_y
+move_speed_player_x:
+  jmp sw_walk_step_x
+move_speed_player_ordinary:
+  .endif
   lda #PLAYER_SPEED
   rts
 
@@ -1005,7 +1183,7 @@ move_speed_player:
 move_animate:
   lda <mv_who
   bne move_animate_player
-  ldx <talk_ent
+  ldx mv_ent
   jmp entity_animate
 move_animate_player:
   inc <anim_timer

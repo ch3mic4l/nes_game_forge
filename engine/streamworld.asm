@@ -251,6 +251,121 @@ sw_tof_fill:
   rts
 
 ; ==========================================================================
+; sw_move_probe_solid -- a scripted Move's leading-edge probe once it has
+; crossed the CURRENT streamed screen's own edge (docs/design-streamed-
+; worlds.md §7, ruling 7). probe_type/probe_solid (engine/player.asm) only
+; ever answer for the current screen ([mtptr_lo],y); a probe point that has
+; crossed reads through sw_terrain_or_fill instead, then applies the
+; IDENTICAL mt_collision/COL_DAMAGE threshold probe_solid does -- one
+; collision policy, not a second one for the seam.
+;
+; In: A = target screenCol, X = target screenRow, probe_x/probe_y = the
+;     ALREADY-WRAPPED local pixel point on that target screen (the caller's
+;     own per-direction crossing arithmetic, engine/entities.asm's
+;     move_tick). mt_collision and COL_DAMAGE are both kernel-lo, reachable
+;     from this resident kernel-hi routine with no bank switch -- kernel-lo
+;     and kernel-hi are both always mapped, the same reason this file
+;     already calls sw_adv_offset/sw_locate_current the other way.
+; Out: A = 0 passable, nonzero blocked -- probe_solid's own convention.
+; Clobbers X, Y (as sw_terrain_or_fill's real-read case does) and <tmp>
+; (mainline scratch, the identical reuse probe_type itself makes).
+;
+; Gated on MOVE_ENABLED, not merely living inside this already-STREAMING_
+; ENABLED-gated file: move_tick (engine/entities.asm) is this routine's only
+; caller, and move_tick itself only exists when MOVE_ENABLED is on -- a
+; streamed project with no live Move command must not pay kernel-hi for a
+; routine nothing could ever call (phase 2 slice 3, Part D).
+; ==========================================================================
+  .if MOVE_ENABLED
+sw_move_probe_solid:
+  pha                        ; stash target screenCol
+  lda <probe_y
+  and #$F0
+  sta <tmp
+  lda <probe_x
+  lsr a
+  lsr a
+  lsr a
+  lsr a
+  clc
+  adc <tmp
+  tay                        ; Y = offset within the target screen (0-239)
+  pla                        ; A = target screenCol, restored; X (target
+                              ; screenRow) was never touched above
+  jsr sw_terrain_or_fill
+  tay
+  lda mt_collision,y
+  cmp #COL_DAMAGE
+  bcc sw_move_probe_solid_done
+  lda #0
+sw_move_probe_solid_done:
+  cmp #0
+  rts
+
+; ==========================================================================
+; sw_move_probe -- normalizes a scripted Move's own leading-edge probe point
+; before dispatching it (fix round 1, finding 1): EITHER coordinate of
+; (probe_x,probe_y) can leave the CURRENT streamed screen regardless of
+; which axis is actually moving -- right/down's own moving axis, but also
+; left/up/right/down's own PERPENDICULAR axis (old_x/old_y unchanged by the
+; move, offset by the leading-edge BODY_* constant) whenever that unchanged
+; coordinate already sits near its own edge. A corner needs both at once.
+; This is the one place both are checked, not four copies duplicating the
+; same two comparisons.
+;
+; In: <probe_x> = the raw candidate probe x, already 8-bit-wrapped by the
+;     caller's own `adc #BODY_L/R` the same way the screen's own 256px width
+;     wraps; <probe_y> = the raw candidate probe y (0-254, never wraps -- a
+;     screen is 240px tall, well under 256, so no information is lost the
+;     way an 8-bit x wrap would lose it). Y = 1 if the caller's own add that
+;     produced probe_x carried past 255 (screenCol+1), 0 otherwise --
+;     captured by the caller immediately after that add (`lda #0 / adc #0 /
+;     tay`), before this jsr, since the 8-bit wraparound itself throws the
+;     carry away and move_get_x/move_get_y (the caller's own next steps)
+;     touch only A and X, never Y, so it survives untouched.
+; Out: A = 0 passable, nonzero blocked (probe_solid's own convention), Z set
+;     to match. <probe_y> is normalized in place (-240) when it crossed;
+;     <probe_x>'s own wrapped value already IS the correct local x on the
+;     neighbour screen, needing no further adjustment.
+; Clobbers A, X, Y, <tmp> (sw_move_probe_solid's own reuse, the one path
+; that reaches it); win_col_screen/win_row_screen are read, never written.
+; ==========================================================================
+sw_move_probe:
+  tya
+  pha                         ; stash dx (Y) across the y-crossing check below
+  lda <probe_y
+  cmp #240
+  bcc sw_move_probe_no_dy
+  sec
+  sbc #240
+  sta <probe_y
+  ldy #1
+  jmp sw_move_probe_have_dy
+sw_move_probe_no_dy:
+  ldy #0
+sw_move_probe_have_dy:
+  pla                         ; A = dx, Z set from it
+  bne sw_move_probe_cross
+  cpy #0
+  beq sw_move_probe_same
+sw_move_probe_cross:
+  ; A = dx, Y = dy here (dx=0 falls through from the cpy/beq above with A
+  ; still holding the 0 pla just set).
+  clc
+  adc win_col_screen          ; A = target screenCol
+  pha
+  tya
+  clc
+  adc win_row_screen          ; A = target screenRow
+  tax
+  pla
+  jsr sw_move_probe_solid
+  rts
+sw_move_probe_same:
+  jmp probe_solid
+  .endif
+
+; ==========================================================================
 ; sw_read_transaction -- the general resident switch/read/restore
 ; transaction, distinct from sw_peek_byte: where sw_peek_byte always
 ; restores the CURRENT FIELD screen (correct only when the caller IS

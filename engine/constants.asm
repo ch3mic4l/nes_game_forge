@@ -749,8 +749,9 @@ bt_digits   = $03D4         ; three decimal digits, most significant first  @siz
 ; docs/design-streamed-worlds.md, phase 2 slice 2a claims the first two of
 ; these twelve bytes: sw_walk_acc_x/y, sw_walk_step_x/y's own per-axis
 ; subpixel accumulators (engine/streamworld.asm). First production writer is
-; a later slice (scripted Move before the walking driver exists); allocated
-; here because sw_walk_step_x/y reference them structurally.
+; THIS slice (phase 2 slice 3's scripted Move, move_speed_player's own
+; sw_walk_step_x/y dispatch) -- the continuous walking driver that will
+; share the identical accumulator, slice 4b, is still pending.
 sw_walk_acc_x = $03D8
 sw_walk_acc_y = $03D9
 ; The remaining ten bytes are named, not allocated -- no code in this commit
@@ -960,8 +961,9 @@ msg_name_idx = $059F ; TXT_NAME's own typewriter progress, 0-9 (docs/design-name
 ; whole engine/streamworld.asm scratch/state chain, one contiguous 95-byte
 ; block starting at $05A0, the first free byte after msg_name_idx above (the
 ; confirmed-unused $0568-$05FF gap sfx/name-entry RAM already appends into,
-; above) and ending at sw_rw_oob = $05FE -- one byte ($05FF) stays free. Most
-; of this is mainline-only scratch (sw_tmp.. sw_tmp6, the sw_ss_*/probe_*
+; above) and ending at sw_rw_oob = $05FE; the block's last byte ($05FF) is
+; mv_ent, below -- a phase 2 slice 3 claim, not part of this slice 2a span.
+; Most of this is mainline-only scratch (sw_tmp.. sw_tmp6, the sw_ss_*/probe_*
 ; fields), never touched by NMI, so it shares no reentrancy hazard with the
 ; dedicated NMI scratch above ($BB-$C6) the way nmi_tmp/sw_tmp4 once did.
 sw_col              = $05A0  ; player's current absolute screen col
@@ -1054,8 +1056,29 @@ sw_run_buf          = $05F5  ; @size=8
 sw_fill_metatile_id = $05FD
 ; 1 while sw_render_window's current probe (terrain or attribute quadrant)
 ; has just resolved OFF the map (fill applies, no real screen to switch to);
-; 0 while it named a real in-bounds screen. ($05FF stays free.)
+; 0 while it named a real in-bounds screen.
 sw_rw_oob           = $05FE
+
+; The scripted Move's own captured mover (ruling 7, phase 2 slice 3): written
+; once by script_op_move (engine/script.asm) when a Move begins, holding
+; talk_ent's value at that instant (meaningless when mv_who names the player
+; instead of MOVE_SELF) -- every move_get_*/move_set_*/move_speed/
+; move_animate (engine/entities.asm) reads this rather than the live
+; talk_ent, so an unrelated conversation reassigning that slot mid-Move (were
+; such an interleaving ever reachable -- it is not today; settle_owed's own
+; game_state gate keeps start_dialog from running again while mv_left is
+; non-zero) could never redirect an in-flight Move onto the wrong actor.
+; Valid only while mv_left is non-zero, the same lifetime mv_dir/mv_left/
+; mv_step/mv_tmp already have; stale between Moves, like them. Not a
+; zero-page byte: zero page is fully committed from mv_who through the
+; reserved-but-unallocated run above ($C7-$FD, phase 2 slices 4b/7a/7b's own
+; budget -- orchestrator ruling, phase 2 slice 3), so this claims the one
+; byte the comment directly above used to call free ($05FF, right after
+; sw_rw_oob, in the same confirmed-unused-by-anything-not-yet-named
+; streamed-worlds core-state block) instead of a zero-page one. A handful of
+; absolute ldx/sta a frame, never `<`-prefixed -- zeropage.test.js requires
+; that prefix be absent above $100 and enforces it.
+mv_ent              = $05FF
 
 ; ------------------------------------------------------------ inventory RAM
 ; One id per item carried, oldest first -- an item id under ITEMS_ENABLED, or

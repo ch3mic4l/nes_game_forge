@@ -42,13 +42,14 @@
 // 0) -- the exact same content the check's own oracle would otherwise wrongly agree with by
 // coincidence if the check itself were vacuous. A correct check must fail loudly against this ROM.
 //
-// --break=mid-block-attr leaves the corner (landing/other/fill) art intact but omits ONLY the
-// interior MID placement, so the real ROM's own MID block reverts to the default metatile (id 0)
-// while the oracle -- unconditionally, regardless of breakMode -- still expects MID's own distinct
-// tiles and palette there. This isolates a single non-corner attribute quadrant (MID sits at an
-// odd column/row, i.e. the BR quadrant, bits 6-7, of a non-corner, non-last-row attribute byte)
-// as the one thing that must trip, without touching any corner check blank-landing-tile already
-// exercises.
+// --break=mid-block-attr leaves the corner (landing/other/fill) art AND the MID block's own tiles
+// intact -- fix round 1, item 12 made this attribute-only: the interior MID placement keeps
+// MID_TILES (so every blockChecks entry, MID's own included, still matches) but is painted with a
+// deliberately wrong palette, while the oracle -- unconditionally, regardless of breakMode --
+// still expects MID's own real palette there. This isolates a single non-corner attribute
+// quadrant (MID sits at an odd column/row, i.e. the BR quadrant, bits 6-7, of a non-corner,
+// non-last-row attribute byte) as the one thing that must trip, with no tile-index difference for
+// a tile-comparing check to catch instead -- only a real attribute-byte check can catch this one.
 //
 // (test/lua/run_sw_render_check.sh does both steps and both --break modes.)
 import fs from 'node:fs';
@@ -73,12 +74,17 @@ if (breakMode && !KNOWN_BREAKS.includes(breakMode)) {
   throw new Error(`unknown --break mode: ${breakMode}`);
 }
 const blankCorners = breakMode === 'blank-landing-tile';
-const omitMid = breakMode === 'blank-landing-tile' || breakMode === 'mid-block-attr';
+const wrongMidPalette = breakMode === 'mid-block-attr';
 
 const GRID_W = 3;
 const GRID_H = 2;
 const LANDING_COL = 1;
 const LANDING_ROW = 1;
+// NT_SCREEN_TABLE below is a literal derived for exactly this (1,1) landing -- a change to
+// either constant needs a re-derived table, not a silent mismatch.
+if (LANDING_COL !== 1 || LANDING_ROW !== 1) {
+  throw new Error('NT_SCREEN_TABLE is a literal derived for LANDING_COL=1/LANDING_ROW=1 only -- re-derive it before changing either constant');
+}
 const LANDING_SCREEN_INDEX = LANDING_ROW * GRID_W + LANDING_COL; // 4
 const OTHER_COL = 2;
 const OTHER_ROW = 1;
@@ -103,36 +109,33 @@ const MID_RASTER_INDEX = MID_BLOCK_ROW * 16 + MID_BLOCK_COL; // 153
 const MID_METATILE_ID = 12;
 const MID_TILES = [12, 22, 32, 42];
 const MID_PALETTE = 1;
+// Fix round 1, item 12: mid-block-attr's own wrong-palette substitute -- the IDENTICAL tiles as
+// MID (so every blockChecks entry still matches, including MID's own), a different palette only,
+// so exclusively an attribute-byte check can ever catch this break.
+const MID_WRONG_PALETTE_METATILE_ID = 13;
+const MID_WRONG_PALETTE = (MID_PALETTE + 1) % 4;
 const DEFAULT_TILES = [0, 0, 0, 0];
 const DEFAULT_PALETTE = 0;
 
-// sw_rw_ntx/sw_rw_nty (engine/streamworld.asm) -- the fixed per-physical-nametable probe base
-// sw_render_window uses; sw_rw_nt_hi is that same 0/1/2/3 index's own $2006 high byte, i.e. this
-// nt's own PPU address is 0x2000 + nt*0x400.
-const SW_RW_NTX = [0, 16, 0, 16];
-const SW_RW_NTY = [0, 0, 15, 15];
-
 // resolveNtScreen -- WHICH single screen (or off-grid) physical nametable `nt` holds, in its
-// entirety, at this fixed-aligned landing (winCol,winRow, always local(0,0) per
-// sw_resolve_divdone). Reasons from the wrap/parity relationship the design's own header comment
-// states (engine/streamworld.asm:12-20), not from copying sw_rw_col_delta/sw_col_at_offset's own
-// instructions. Verified independently (see this file's own header) that the per-nametable block
-// index maps 1:1 onto that screen's own local metatile position, so once this single
-// (screenCol,screenRow) answer is known, no further wrap arithmetic is needed for content.
-function resolveNtScreen(nt, winCol, winRow, gridW, gridH) {
-  const wbaseCol = (winCol & 1) * 16;
-  const wbaseRow = (winRow & 1) * 15;
-  const deltaCol = (((SW_RW_NTX[nt] - wbaseCol) % 32) + 32) % 32;
-  const screenCol = (deltaCol >> 4) + winCol;
-  let deltaRow = SW_RW_NTY[nt] + 30 - wbaseRow;
-  if (deltaRow >= 30) deltaRow -= 30;
-  let rowOffset = 0;
-  let remaining = deltaRow;
-  while (remaining >= 15) {
-    remaining -= 15;
-    rowOffset += 1;
-  }
-  const screenRow = rowOffset + winRow;
+// entirety, at this file's own ONE fixed landing (LANDING_COL=1, LANDING_ROW=1, always local(0,0)
+// per sw_resolve_divdone). Fix round 1, item 12: this used to be the wrap/parity arithmetic
+// resolveNtScreen's own header once described (engine/streamworld.asm:12-20) -- correct, and
+// verified independently against the engine's own instructions, but still arithmetic an oracle
+// and the engine it checks could in principle share a bug in. Since this file only ever builds
+// the one fixed (1,1) landing, that arithmetic reduces to a constant table for the four physical
+// nametables; a flat literal has no arithmetic left to share a bug with sw_resolve_divdone/
+// sw_rw_col_delta/sw_rw_row_delta/sw_col_at_offset/sw_row_at_offset at all. NT0/NT1 land on
+// screen row 2, past the authored 3x2 grid's own row 0-1 range, so both read as off-grid (fill);
+// NT2 is the (2,1) OTHER screen; NT3 is the landing screen itself, (1,1).
+const NT_SCREEN_TABLE = [
+  { screenCol: 2, screenRow: 2 }, // NT0 -- off-grid (row 2 doesn't exist in a 3x2 grid): fill
+  { screenCol: 1, screenRow: 2 }, // NT1 -- off-grid: fill
+  { screenCol: 2, screenRow: 1 }, // NT2 -- the OTHER screen
+  { screenCol: 1, screenRow: 1 } // NT3 -- the landing screen itself
+];
+function resolveNtScreen(nt, gridW, gridH) {
+  const { screenCol, screenRow } = NT_SCREEN_TABLE[nt];
   const inBounds = screenCol >= 0 && screenCol < gridW && screenRow >= 0 && screenRow < gridH;
   return { screenCol, screenRow, inBounds };
 }
@@ -157,9 +160,9 @@ const map = buildStreamedMap(0, 'Streamed');
 if (!blankCorners) {
   map.screens[LANDING_SCREEN_INDEX].metatiles[0] = LANDING_METATILE_ID; // local(0,0) -- see header
   map.screens[OTHER_SCREEN_INDEX].metatiles[0] = OTHER_METATILE_ID;
-  if (!omitMid) {
-    map.screens[LANDING_SCREEN_INDEX].metatiles[MID_RASTER_INDEX] = MID_METATILE_ID;
-  }
+  // mid-block-attr paints the wrong-palette substitute here instead of MID itself -- same tiles,
+  // so only an attribute-byte check (never a tile-index one) can ever catch it.
+  map.screens[LANDING_SCREEN_INDEX].metatiles[MID_RASTER_INDEX] = wrongMidPalette ? MID_WRONG_PALETTE_METATILE_ID : MID_METATILE_ID;
 }
 project.maps = [map];
 project.project.startMap = 0;
@@ -173,6 +176,7 @@ if (!blankCorners) {
   project.metatiles[OTHER_METATILE_ID] = { id: OTHER_METATILE_ID, name: 'RenderCheckOther', tiles: OTHER_TILES, palette: OTHER_PALETTE, collision: 'open' };
   project.metatiles[FILL_METATILE_ID] = { id: FILL_METATILE_ID, name: 'RenderCheckFill', tiles: FILL_TILES, palette: FILL_PALETTE, collision: 'open' };
   project.metatiles[MID_METATILE_ID] = { id: MID_METATILE_ID, name: 'RenderCheckMid', tiles: MID_TILES, palette: MID_PALETTE, collision: 'open' };
+  project.metatiles[MID_WRONG_PALETTE_METATILE_ID] = { id: MID_WRONG_PALETTE_METATILE_ID, name: 'RenderCheckMidWrongPalette', tiles: MID_TILES, palette: MID_WRONG_PALETTE, collision: 'open' };
 }
 
 const CAM_NT = (LANDING_COL & 1) | ((LANDING_ROW & 1) << 1); // sw_resolve_divdone's own formula, computed independently
@@ -190,7 +194,7 @@ function metatileAt(screenIndex, raster) {
 const blockChecks = [];
 const attrChecks = [];
 for (const nt of [0, 1, 2, 3]) {
-  const { screenCol, screenRow, inBounds } = resolveNtScreen(nt, LANDING_COL, LANDING_ROW, GRID_W, GRID_H);
+  const { screenCol, screenRow, inBounds } = resolveNtScreen(nt, GRID_W, GRID_H);
   const screenIndex = screenRow * GRID_W + screenCol;
   const ntBase = 0x2000 + nt * 0x400;
   const label = inBounds

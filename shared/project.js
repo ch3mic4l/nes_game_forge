@@ -6857,7 +6857,7 @@ function validateStreamedMaps(project, add) {
     );
   }
 
-  // Part D (phase 2 slice 2b): eight things the resolver/render engine does
+  // Part D (phase 2 slice 2b): seven things the resolver/render engine does
   // not support yet on a streamed screen, each refused here at build time --
   // an error, not a warning, since nothing at runtime bounds any of these the
   // way it bounds a plain screen-edge crossing (Part C's wall). The runtime's
@@ -6865,10 +6865,17 @@ function validateStreamedMaps(project, add) {
   // guards) exist for the REACTIVE case -- an ordinary map's own Set/Clear, or
   // check_encounter's own every-frame poll, reaching a screen while the
   // player stands on a streamed one -- not to make any of these a supported
-  // authored combination. What was a warning through phase 2a (item 3, a
-  // scripted Move targeting the player) becomes an error here for the same
-  // reason: a Move sets player_x/player_y directly, never through cross_*, so
-  // Part C's wall cannot catch it either.
+  // authored combination. Item 3 (a scripted Move targeting the player) was
+  // an error through phase 2b for exactly that reason -- a Move sets
+  // player_x/player_y directly, never through cross_*, so Part C's wall
+  // could not catch it. Phase 2 slice 3 (docs/design-streamed-worlds.md §7,
+  // ruling 7) gives move_tick its own bound and crossing probe for exactly
+  // this case (the player-mover's own 0-255/0-239 ownership rectangle, carry-
+  // safe, plus sw_move_probe_solid reading the neighbour screen's terrain at
+  // the seam) -- the thing this refusal existed to prevent is now handled at
+  // runtime, so item 3 lifts back to the phase-1 warning below, the way
+  // ruling 7 always said it eventually would once the actor was addressed by
+  // identity (mv_ent) rather than live talk_ent.
   const commonById = new Map(liveCommonEvents(project).map(({ entry, id }) => [id, entry.event]));
   // Fix round 1, finding 4: every command that opens the text overlay
   // (engine/text.asm's box_begin/box_choose), not just Say -- Choice
@@ -6912,14 +6919,19 @@ function validateStreamedMaps(project, add) {
         }
         const event = entity.props?.event;
         if (!event) continue;
-        // Item 3.
+        // Item 3, lifted to a warning by phase 2 slice 3 (see the header
+        // comment above): move_tick now bounds and probes this case at
+        // runtime, so it no longer refuses the build -- but a scripted Move
+        // that reaches the ownership rectangle's own edge still cannot cross
+        // it (ownership itself never changes mid-page, ruling 7), so an
+        // author who wants a real screen change still needs a Warp instead.
         if (eventMovesPlayer(event, commonById, new Set([event]))) {
           add(
-            'error',
+            'warning',
             'Map Forge',
             `${label()}: the event on ${entityLabel(project, entity)} moves the player, and a long enough Move ` +
-              'can walk them off the screen, which a streamed screen cannot bound yet. Remove the Move, use a ' +
-              'Warp instead, or make this map ordinary.'
+              'can walk them to the edge of the screen. The engine now bounds and stops this at the edge, but it ' +
+              'cannot cross to a new screen -- keep player Moves within the screen, or use a Warp to change screen.'
           );
         }
         // Item 4: Say/dialogue.

@@ -91,7 +91,9 @@ import {
   STREAMWORLD_INIT_SESSION_KERNEL_ALLOWANCE,
   STREAMWORLD_LANDING_BOUND_CACHE_KERNEL_ALLOWANCE,
   STREAMWORLD_ORDINARY_CAM_RESET_KERNEL_ALLOWANCE,
-  STREAMWORLD_TILE_SWITCH_KERNEL_ALLOWANCE
+  STREAMWORLD_TILE_SWITCH_KERNEL_ALLOWANCE,
+  STREAMWORLD_MOVE_KERNEL_ALLOWANCE,
+  STREAMWORLD_MOVE_KERNEL_HI_ALLOWANCE
 } from '../../main/build/generate.js';
 import { SUPPORTED_MAPPERS, cameraAxes, rpgCapable, saveMediaImplemented, prgLayout, resolveMapper } from '../../shared/cartridge.js';
 import {
@@ -1743,16 +1745,18 @@ test(
     });
     // 275, not the earlier 210: the zero-page kernel diet (docs/design-kernel-diet.md)
     // re-measured MOVE_KERNEL_ALLOWANCE + FACE_KERNEL_ALLOWANCE to 337 (from
-    // 395) and SPLIT_KERNEL_ALLOWANCE to 151 (from 165), narrowing this test's
-    // own band to (337, 488]. Re-derived against a real checkCapacity() run:
-    // 275 lands the deficit at 404, comfortably inside the new band (412.5 is
-    // the midpoint).
-    inflateLegal(project, 275); // deficit 404, strictly above 337 and at or below 488
+    // 395) and SPLIT_KERNEL_ALLOWANCE to 151 (from 165); phase 2 slice 3's
+    // ruling 7 identity fix (mv_ent, engine/entities.asm and script.asm) then
+    // added another 11 to MOVE_KERNEL_ALLOWANCE, narrowing this test's own
+    // band to (348, 499]. Re-derived against a real checkCapacity() run: 275
+    // lands the deficit at 415, comfortably inside the new band (423.5 is the
+    // midpoint).
+    inflateLegal(project, 275); // deficit 415, strictly above 348 and at or below 499
     // The band a deficit has to sit in for the split term's own extra bytes to
     // be the thing making the difference is strictly above Move's own
-    // allowance alone (337) and at or below the combined figure (488) -- below
-    // 337 and Move alone already covers it without the split term in the
-    // picture at all, and above 488 neither figure would close the gap.
+    // allowance alone (348) and at or below the combined figure (499) -- below
+    // 348 and Move alone already covers it without the split term in the
+    // picture at all, and above 499 neither figure would close the gap.
     const deficit = kernelShortfallDeficit(project);
     const moveAlone = MOVE_KERNEL_ALLOWANCE + FACE_KERNEL_ALLOWANCE;
     assert.ok(
@@ -1767,7 +1771,7 @@ test(
         `(${moveAlone + SPLIT_KERNEL_ALLOWANCE}), or dropping Move would not close the gap either`
     );
     const message = kernelShortfallMessage(project);
-    assert.match(message, /removing every Move command \(frees 488 bytes\)/);
+    assert.match(message, /removing every Move command \(frees 499 bytes\)/);
     await assertDropFits(t, project, ['move'], 'Move alone would not close but with the split term freed too');
   }
 );
@@ -2489,9 +2493,9 @@ test('a kernel-lo shortfall either Save or Move alone would close offers both as
   project.project.titleMap = 0;
   project.project.titleScreen = 0;
   project.maps[0].screens[0].entities.push(saveAndMoveEvent());
-  inflate(project, 100); // recalibrated for the zero-page kernel diet, docs/design-kernel-diet.md -- deficit 145, within (0, 337]
+  inflate(project, 100); // recalibrated for phase 2 slice 3's ruling 7 (+11 to MOVE_KERNEL_ALLOWANCE) -- deficit 156, within (0, 348]
   const message = kernelShortfallMessage(project);
-  assert.match(message, /removing every Move command \(frees 337 bytes\) or every Save command \(frees 516 bytes\)/);
+  assert.match(message, /removing every Move command \(frees 348 bytes\) or every Save command \(frees 516 bytes\)/);
 });
 
 // Neither allowance alone covers a big enough deficit, but the two together
@@ -2507,9 +2511,9 @@ test('a kernel-lo shortfall neither Save nor Move alone would close, but both to
   project.project.titleMap = 0;
   project.project.titleScreen = 0;
   project.maps[0].screens[0].entities.push(saveAndMoveEvent());
-  inflate(project, 150); // recalibrated for the zero-page kernel diet, docs/design-kernel-diet.md -- deficit 545, above 516 and within 853
+  inflate(project, 150); // recalibrated for phase 2 slice 3's ruling 7 (+11 to MOVE_KERNEL_ALLOWANCE) -- deficit 556, above 516 and within 864
   const message = kernelShortfallMessage(project);
-  assert.match(message, /removing every Move command and every Save command together \(frees 853 bytes\)/);
+  assert.match(message, /removing every Move command and every Save command together \(frees 864 bytes\)/);
 });
 
 // Turn and Wait were added to kernelShortfallAdvice's own active-feature list
@@ -3816,12 +3820,12 @@ test(
     project.songs = [createSong('Fanfare')];
     project.maps[0].screens[0].entities.push(commandsEvent([{ op: 'sting', song: 0 }], 96, 96));
     project.maps[0].screens[0].entities.push(sfxCommandEvent(project));
-    inflate(project, 85); // recalibrated for the zero-page kernel diet, docs/design-kernel-diet.md -- deficit 295, above Sting/SFX but at or below Move/Save
+    inflate(project, 85); // recalibrated for phase 2 slice 3's ruling 7 (+11 to MOVE_KERNEL_ALLOWANCE) -- deficit 306, above Sting/SFX but at or below Move/Save
 
     const message = kernelShortfallMessage(project);
     assert.match(
       message,
-      /removing every Move command \(frees 337 bytes\) or every Save command \(frees 511 bytes\)/,
+      /removing every Move command \(frees 348 bytes\) or every Save command \(frees 511 bytes\)/,
       `MMC1: dropping Move or Save, not SFX, should be the offered fix once the deficit exceeds what SFX alone frees -- got: ${message}`
     );
     assert.doesNotMatch(
@@ -5284,6 +5288,155 @@ test(
         delta,
         expected,
         `${mapper.name} (${label}): real kernel-hi delta ${delta} != STREAMWORLD_KERNEL_HI_ALLOWANCE (${STREAMWORLD_KERNEL_HI_ALLOWANCE}) + STREAMWORLD_MT_PAL_KERNEL_HI_BYTES (${STREAMWORLD_MT_PAL_KERNEL_HI_BYTES}) = ${expected}`
+      );
+    }
+  }
+);
+
+/**
+ * measureCodeBytes' own bank-line parse, but off a createStreamedProject-shaped
+ * project directly rather than SAMPLE_RPG -- the whole-bank "used" total (not
+ * codeBytes - reset-offset) is exactly measureKernelHiBank's own technique,
+ * reused here for kernel-lo because a Move-on/off delta never touches the
+ * lookup-table half of the bank (screen/entity content is switchable-window
+ * data, not a kernel-lo table), so the raw bank delta and the code-only delta
+ * are identical for this isolation.
+ */
+async function measureKernelLoBank(t, mapper, project) {
+  const dir = await fsp.mkdtemp(path.join(os.tmpdir(), 'forge-kernello-'));
+  t.after(() => fsp.rm(dir, { recursive: true, force: true }));
+  const lines = [];
+  await buildProject({ dir, project, log: (line) => lines.push(line) });
+  const { kernelLoBank } = prgLayout(mapper);
+  const bankLine = lines.find((line) => new RegExp(`^BANK\\s+${kernelLoBank}\\s`).test(line));
+  assert.ok(bankLine, `${mapper.name}: nesasm's usage table never mentioned bank ${kernelLoBank} (kernel-lo)`);
+  const used = Number(bankLine.match(/(\d+)\/\s*(\d+)\s*$/)?.[1]);
+  assert.ok(Number.isFinite(used) && used > 0, `${mapper.name}: could not parse a used-byte count out of "${bankLine}"`);
+  return used;
+}
+
+// Phase 2 slice 3 fix round 1, finding 2: STREAMWORLD_MOVE_KERNEL_ALLOWANCE is
+// the kernel-lo-only supplement a live Move command costs beyond its ordinary
+// MOVE_KERNEL_ALLOWANCE + FACE_KERNEL_ALLOWANCE cost, charged only when the
+// project both streams and moves something (generate.js's own `usesStreaming
+// && usesMove` gate) -- the wider-bound wall arms and the sw_move_probe call
+// sites move_tick grew in engine/entities.asm. Isolating it needs FOUR builds
+// per case, not two: a streamed map's own Move-on/off delta also carries the
+// ordinary MOVE_KERNEL_ALLOWANCE + FACE_KERNEL_ALLOWANCE cost every project
+// pays for a live Move regardless of streaming, so that ordinary delta (built
+// off the identical project with every map's `streamed` forced false, the
+// STREAMWORLD_KERNEL_HI_ALLOWANCE test's own technique above) has to be
+// subtracted out to leave only the streamed-specific supplement. Both game
+// types plus the `mixed` shape, matching the kernel-hi test's own coverage.
+test(
+  'phase 2 slice 3 fix 1, finding 2: STREAMWORLD_MOVE_KERNEL_ALLOWANCE equals the real kernel-lo supplement a live Move costs on a streamed map, on UNROM 512, both game types and the mixed shape',
+  { skip: !hasNesasm && 'nesasm not found on PATH' },
+  async (t) => {
+    const mapper = resolveMapper(30);
+    const moveCommands = [{ op: 'move', who: 'self', dir: 'up', dist: 16 }];
+    const cases = [
+      { gameType: 'action', mixed: false, label: 'action' },
+      { gameType: 'rpg', mixed: false, label: 'rpg' },
+      { gameType: 'action', mixed: true, label: 'action, mixed' }
+    ];
+    for (const { gameType, mixed, label } of cases) {
+      const streamedWithMove = createStreamedProject({ gameType, mixed, moveCommands });
+      const streamedNoMove = createStreamedProject({ gameType, mixed });
+      const ordinaryWithMove = structuredClone(streamedWithMove);
+      for (const map of ordinaryWithMove.maps) map.streamed = false;
+      const ordinaryNoMove = structuredClone(streamedNoMove);
+      for (const map of ordinaryNoMove.maps) map.streamed = false;
+
+      const swMoveUsed = await measureKernelLoBank(t, mapper, streamedWithMove);
+      const swNoMoveUsed = await measureKernelLoBank(t, mapper, streamedNoMove);
+      const ordMoveUsed = await measureKernelLoBank(t, mapper, ordinaryWithMove);
+      const ordNoMoveUsed = await measureKernelLoBank(t, mapper, ordinaryNoMove);
+
+      const streamedDelta = swMoveUsed - swNoMoveUsed;
+      const ordinaryDelta = ordMoveUsed - ordNoMoveUsed;
+      const supplement = streamedDelta - ordinaryDelta;
+      // fix round 1, finding 7/verification: printed on every run, pass or
+      // fail -- an independent, per-shape figure a report can quote.
+      console.log(
+        `${mapper.name} (${label}): STREAMWORLD_MOVE_KERNEL_ALLOWANCE supplement ${supplement} ` +
+          `(streamed Move delta ${streamedDelta}, ordinary Move delta ${ordinaryDelta}, expected ${STREAMWORLD_MOVE_KERNEL_ALLOWANCE})`
+      );
+      assert.equal(
+        supplement,
+        STREAMWORLD_MOVE_KERNEL_ALLOWANCE,
+        `${mapper.name} (${label}): a live Move on a streamed map costs ${supplement} bytes of kernel-lo code beyond ` +
+          `an ordinary map's own Move cost (streamed delta ${streamedDelta} - ordinary delta ${ordinaryDelta}), but ` +
+          `STREAMWORLD_MOVE_KERNEL_ALLOWANCE reserves ${STREAMWORLD_MOVE_KERNEL_ALLOWANCE} -- re-measure and correct it.`
+      );
+    }
+  }
+);
+
+// Phase 2 slice 3 fix round 1, finding 2: STREAMWORLD_MOVE_KERNEL_HI_ALLOWANCE
+// is the kernel-hi charge for sw_move_probe/sw_move_probe_solid
+// (engine/streamworld.asm), gated identically to the kernel-lo term above.
+//
+// A naive streamed-with-Move-minus-streamed-without-Move single delta is
+// NOT this term in isolation: placing any live event on a screen at all --
+// regardless of which command it carries -- turns projectUsesText on
+// (shared/font.js: "only an event that survives to the ROM counts"), which
+// grows the compiled event/text tables text.inc emits into this same
+// kernel-hi bank by an amount that depends on the compiled command's own
+// wire length (main/build/textcompile.js's 'move' case emits 4 bytes,
+// [op, who, dir, dist]) -- entirely unrelated to sw_move_probe. Measured
+// directly (a single build's own symbolAddr('sw_read_transaction') -
+// symbolAddr('sw_move_probe_solid'), the exact span the `.if MOVE_ENABLED`
+// bracket in streamworld.asm opens) this term is 80; the naive single delta
+// reads 89 -- the missing 9 bytes are that same "any event exists" text.inc
+// growth, confirmed by comparing a Move-carrying event against a same-shaped
+// Wait-carrying one (delta 82, not 80: Wait's own 2-byte wire form still
+// costs 2 fewer text.inc bytes than Move's 4-byte form, the remaining gap).
+// The double-difference below is what actually cancels it: subtracting the
+// IDENTICAL confound measured on the ordinary-map pair (a live Move event on
+// a non-streamed map assembles no streamworld.asm content at all, so its own
+// kernel-hi delta is pure text.inc growth, unrelated to streaming) leaves
+// only the streaming-gated remainder -- 89 - 9 = 80, matching the direct
+// span measurement exactly. This is the identical technique the kernel-lo
+// term above already uses, and for the identical reason.
+test(
+  'phase 2 slice 3 fix 1, finding 2: STREAMWORLD_MOVE_KERNEL_HI_ALLOWANCE equals the real kernel-hi cost of sw_move_probe/sw_move_probe_solid, on UNROM 512, both game types and the mixed shape',
+  { skip: !hasNesasm && 'nesasm not found on PATH' },
+  async (t) => {
+    const mapper = resolveMapper(30);
+    const moveCommands = [{ op: 'move', who: 'self', dir: 'up', dist: 16 }];
+    const cases = [
+      { gameType: 'action', mixed: false, label: 'action' },
+      { gameType: 'rpg', mixed: false, label: 'rpg' },
+      { gameType: 'action', mixed: true, label: 'action, mixed' }
+    ];
+    for (const { gameType, mixed, label } of cases) {
+      const streamedWithMove = createStreamedProject({ gameType, mixed, moveCommands });
+      const streamedNoMove = createStreamedProject({ gameType, mixed });
+      const ordinaryWithMove = structuredClone(streamedWithMove);
+      for (const map of ordinaryWithMove.maps) map.streamed = false;
+      const ordinaryNoMove = structuredClone(streamedNoMove);
+      for (const map of ordinaryNoMove.maps) map.streamed = false;
+
+      const swMoveUsed = await measureKernelHiBank(t, mapper, streamedWithMove);
+      const swNoMoveUsed = await measureKernelHiBank(t, mapper, streamedNoMove);
+      const ordMoveUsed = await measureKernelHiBank(t, mapper, ordinaryWithMove);
+      const ordNoMoveUsed = await measureKernelHiBank(t, mapper, ordinaryNoMove);
+
+      const streamedDelta = swMoveUsed - swNoMoveUsed;
+      const ordinaryDelta = ordMoveUsed - ordNoMoveUsed;
+      const supplement = streamedDelta - ordinaryDelta;
+      console.log(
+        `${mapper.name} (${label}): STREAMWORLD_MOVE_KERNEL_HI_ALLOWANCE supplement ${supplement} ` +
+          `(streamed Move delta ${streamedDelta}, ordinary Move delta ${ordinaryDelta} -- the text.inc confound, ` +
+          `expected ${STREAMWORLD_MOVE_KERNEL_HI_ALLOWANCE})`
+      );
+      assert.equal(
+        supplement,
+        STREAMWORLD_MOVE_KERNEL_HI_ALLOWANCE,
+        `${mapper.name} (${label}): a live Move on a streamed map costs ${supplement} bytes of kernel-hi code ` +
+          `beyond an ordinary map's own Move cost (streamed delta ${streamedDelta} - ordinary delta ${ordinaryDelta}), ` +
+          `but STREAMWORLD_MOVE_KERNEL_HI_ALLOWANCE reserves ${STREAMWORLD_MOVE_KERNEL_HI_ALLOWANCE} -- re-measure ` +
+          'and correct it.'
       );
     }
   }

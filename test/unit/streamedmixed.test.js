@@ -54,6 +54,7 @@ const CUR_SONG = RAM.get('cur_song');
 const CAM_NT = RAM.get('cam_nt');
 const BIND_COUNT = RAM.get('bind_count');
 const SW_FILL_METATILE_ID = RAM.get('sw_fill_metatile_id');
+const ENC_STEP = RAM.get('enc_step');
 const NO_SCREEN = 0xff; // engine/constants.asm:1576
 const PROBE_X = 0x08; // engine/constants.asm's own literal equate
 const PROBE_Y = 0x09;
@@ -959,5 +960,152 @@ test(
     // through the streamed detour would perturb this (e.g. reading the wrong map's own rate/step
     // state), which a same-frame-count comparison catches directly.
     assert.equal(mixedFrames, baselineFrames, 'the encounter must fire on the exact same moving frame in both shapes');
+  }
+);
+
+// ==================================================================================
+// Phase 2 slice 3 fix round 1, Part E, item 11: every encounter/bound-tile check
+// above lands on the After map's own TL screen -- whose compacted ord_screen HAPPENS
+// to be 4 (Before's own 4 screens take ord 0-3, so After's own screens array order
+// TL/TR/BL/BR lands at ord 4/5/6/7). A sabotaged check_encounter that silently gates
+// or hardcodes on that one specific numeral (`ord_screen != 4` returns early) passes
+// every test above and still looks like a real wandering encounter. This proves
+// encounter firing AND the bound-tile cache independently after EACH of the four
+// crossings (ord_screen 4, 5, 7, 6 in visiting order), each on its own isolated
+// instance/snapshot, with cur_map/ord_screen asserted per crossing first.
+
+function buildMixedProjectForItem11() {
+  const built = buildMixedProjectForF7();
+  const { project } = built;
+  const after = project.maps[2];
+  // A rate the walk-to-target crossings never reach on their own (each crossing
+  // completes well inside holdUntilCross's own 200-frame ceiling, and at most three
+  // crossings are ever walked here) -- the encounter check below primes enc_step
+  // directly rather than relying on rate:1 to land exactly on the target screen's own
+  // first step, which a several-crossings-deep walk cannot promise.
+  after.encounters = { ...after.encounters, rate: 200 };
+  // The same switch-bound solid substitute already armed at TL (screen 0, via
+  // buildMixedProjectForF7's own 'enter' setSwitch) extended to the other three
+  // screens -- switchId 0 is a single global bit, already set by the time any of
+  // these screens is reached, so this tests whether EACH screen's own bound-tile
+  // cache is independently rebuilt from that shared state, not whether the switch
+  // itself works (F3 already proves that).
+  // row 7/col 7 (pixel 112-127,112-127), not (0,0): TR/BR/BL are all reached by crossing
+  // right and/or down, which land the player with x=0 and/or y=0 -- sitting the body's own
+  // collision box exactly inside metatile (0,0)'s column/row, where a fresh solid substitute
+  // there blocks every direction of travel outright (found by running this test: BR's own
+  // encounter check never fired because RIGHT never moved the player at all). Screen-center
+  // is clear of every crossing's own landing coordinates on all three screens.
+  after.screens[1].boundTiles = [{ switchId: 0, row: 7, col: 7, metatileId: SOLID_METATILE }]; // TR
+  after.screens[2].boundTiles = [{ switchId: 0, row: 7, col: 7, metatileId: SOLID_METATILE }]; // BL
+  after.screens[3].boundTiles = [{ switchId: 0, row: 7, col: 7, metatileId: SOLID_METATILE }]; // BR
+  return built;
+}
+
+test(
+  'phase 2 slice 3 fix 1, Part E item 11: the After map fires its own wandering encounter and reads its own active bound-tile cache after EACH crossing (ord_screen 4, 5, 7 and 6), not only on the initial ord_screen-4 landing',
+  { skip: !hasNesasm && 'nesasm not found on PATH' },
+  async () => {
+    const { project, AFTER_TL, AFTER_TR, AFTER_BL, AFTER_BR } = buildMixedProjectForItem11();
+    // Fix round 2 (review-2 finding 3, bullet 5): these are the AUTHORED ordinals -- Before's own
+    // 4 screens take ord 0-3 (buildMixedProjectForF7), and After's own screens array order
+    // TL/TR/BL/BR (buildMixedProjectForItem11) lands at ord 4/5/6/7 -- pinned as literals so the
+    // runtime RAM assertions below are independent of ordinaryScreenView, the very function this
+    // test exists to exercise.
+    const ORD_TL = 4;
+    const ORD_TR = 5;
+    const ORD_BL = 6;
+    const ORD_BR = 7;
+    const { ordinaryFlat } = ordinaryScreenView(project);
+    const after = project.maps[2];
+    const compactOf = (idx) => ordinaryFlat.findIndex((e) => e.screen === after.screens[idx]);
+    assert.equal(compactOf(0), ORD_TL, "sanity: ordinaryScreenView's own compaction must agree with the authored ordinal for TL");
+    assert.equal(compactOf(1), ORD_TR, "sanity: ordinaryScreenView's own compaction must agree with the authored ordinal for TR");
+    assert.equal(compactOf(2), ORD_BL, "sanity: ordinaryScreenView's own compaction must agree with the authored ordinal for BL");
+    assert.equal(compactOf(3), ORD_BR, "sanity: ordinaryScreenView's own compaction must agree with the authored ordinal for BR");
+
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-streamedmixed-item11-'));
+    let bytes;
+    let symbols;
+    try {
+      await saveProject(dir, project);
+      const built = await buildProject({ dir, project, log: () => {} });
+      bytes = new Uint8Array(fs.readFileSync(built.romPath));
+      symbols = fs.readFileSync(built.symbolPath, 'utf8');
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+    const addrOf = (label) => {
+      const m = symbols.match(new RegExp(`^${label}\\s*=\\s*\\$([0-9A-Fa-f]+)`, 'm'));
+      assert.ok(m, `${label} should be a named symbol in game.fns`);
+      return parseInt(m[1], 16);
+    };
+    const probeType = addrOf('probe_type');
+
+    /** Boots a fresh instance and walks it through the shared setup (Before -> Streamed ->
+     * After TL) plus `crossings`, landing on the target screen. */
+    function landAt(crossings) {
+      const nes = new NES({ onFrame: () => {}, emulateSound: false });
+      nes.loadROM(bytes);
+      const mem = nes.cpu.mem;
+      for (let i = 0; i < 8; i++) nes.frame();
+      runUntilFlatScreenChanges(nes, mem); // Before -> Streamed
+      runUntilFlatScreenChanges(nes, mem); // Streamed -> After (TL)
+      for (const button of crossings) holdUntilCross(nes, mem, button);
+      return { nes, mem };
+    }
+
+    // TL's own bound tile is buildMixedProjectForF7's existing one at (0,0) (its landing
+    // position is (100,100), no conflict); TR/BL/BR's own are at row 7/col 7 -- see
+    // buildMixedProjectForItem11's own comment for why (0,0) traps the player there instead).
+    // moveDir is the direction pressed for the encounter check: it must move the player AWAY
+    // from whichever edge that screen's own crossing(s) landed it on, not toward another
+    // crossing -- BL is reached by a LEFT crossing, which lands at the FAR (right) edge of the
+    // new screen, so RIGHT there would immediately re-cross into BR instead of just moving.
+    const targets = [
+      { label: 'TL (0 crossings)', crossings: [], flat: AFTER_TL, ord: ORD_TL, probeX: 0, probeY: 0, moveDir: RIGHT },
+      { label: 'TR (1 crossing: right)', crossings: [RIGHT], flat: AFTER_TR, ord: ORD_TR, probeX: 120, probeY: 120, moveDir: RIGHT },
+      { label: 'BR (2 crossings: right, down)', crossings: [RIGHT, DOWN], flat: AFTER_BR, ord: ORD_BR, probeX: 120, probeY: 120, moveDir: RIGHT },
+      { label: 'BL (3 crossings: right, down, left)', crossings: [RIGHT, DOWN, LEFT], flat: AFTER_BL, ord: ORD_BL, probeX: 120, probeY: 120, moveDir: LEFT }
+    ];
+
+    for (const { label, crossings, flat, ord, probeX, probeY, moveDir } of targets) {
+      // Encounter half: its own instance, since entering ST_BATTLE is not a state this
+      // file otherwise resumes ordinary field play from.
+      {
+        const { nes, mem } = landAt(crossings);
+        assert.equal(mem[FLAT_SCREEN], flat, `${label}: flat_screen must be the true global id`);
+        assert.equal(mem[ORD_SCREEN], ord, `${label}: ord_screen must be this screen's own independently expected compacted index`);
+        assert.equal(mem[CUR_MAP], 2, `${label}: cur_map must be the After map's own id`);
+        assert.equal(mem[MAP_IS_STREAMED], 0, `${label}: the After map is ordinary`);
+
+        // Primed one step short of firing, so the very next moving frame fires it
+        // deterministically -- a "gated on ord_screen != 4" (or any other
+        // screen-specific early return) sabotage leaves game_state stuck at
+        // ST_GAMEPLAY here on every target except TL.
+        mem[ENC_STEP] = 199;
+        nes.buttonDown(1, moveDir);
+        let frames = 0;
+        while (mem[GAME_STATE] !== ST_BATTLE && frames < 20) {
+          nes.frame();
+          frames++;
+        }
+        nes.buttonUp(1, moveDir);
+        assert.equal(mem[GAME_STATE], ST_BATTLE, `${label}: the primed wandering encounter must fire on this screen (ord_screen ${ord}), not only at ord_screen 4`);
+      }
+
+      // Bound-tile half: a separate, fresh instance -- callRoutine parks REG_PC and
+      // disables NMI, so this is always the last action taken on it.
+      {
+        const { nes, mem } = landAt(crossings);
+        assert.equal(mem[FLAT_SCREEN], flat, `${label}: flat_screen must be the true global id (bound-tile instance)`);
+        assert.equal(mem[ORD_SCREEN], ord, `${label}: ord_screen must match (bound-tile instance)`);
+        for (let i = 0; i < 30; i++) nes.frame(); // settle the shared switch's own cache rebuild
+        mem[PROBE_X] = probeX;
+        mem[PROBE_Y] = probeY;
+        callRoutine(nes, probeType);
+        assert.equal(nes.cpu.REG_ACC, COL_SOLID, `${label}: this screen's own bound-tile cache at (${probeX},${probeY}) must read solid, independently of the others`);
+      }
+    }
   }
 );

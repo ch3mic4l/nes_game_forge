@@ -549,6 +549,13 @@ script_op_move:
   iny
   lda [script_ptr_lo],y
   sta <mv_left
+  ; Ruling 7: the mover is captured here, once, whatever mv_who says --
+  ; move_get_*/move_set_*/move_speed/move_animate (engine/entities.asm) read
+  ; mv_ent from now on, never the live talk_ent slot again. Unconditional
+  ; (not gated on STREAMING_ENABLED): a correctness fix for MOVE_ENABLED
+  ; itself, not a streamed-world-only behaviour.
+  lda <talk_ent
+  sta mv_ent
   lda #4
   jsr script_skip
   ; MOVE_SELF with nobody to be: defense in depth rather than a live case --

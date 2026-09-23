@@ -1,10 +1,13 @@
 // Large streamed worlds (ROADMAP item 15), phase 2 slice 2b, Part H.
 //
 // This file covers what streamed.test.js's own "the build refusal" section points here: each of
-// Part D's eight refusals (shared/project.js's validateStreamedMaps), positive AND negative,
+// Part D's refusals (shared/project.js's validateStreamedMaps), positive AND negative,
 // built through the real public path -- not merely a validateProject message match, since a
 // refusal that only fired in validateProject but not generateAssets/buildProject would ship a
-// broken ROM to a user who bypassed the editor's own warning panel.
+// broken ROM to a user who bypassed the editor's own warning panel. Seven items refuse the build
+// (D.1, D.2, D.4-D.8 in this file's own section order); D.3 (a scripted Move reachable on a
+// streamed screen) lifted back to a warning in phase 2 slice 3 (move_tick's own bound/probe),
+// so its own section below checks a warning plus a clean build instead of a refusal.
 //
 // It also covers the brief's own public-path render proof: the generator's default project,
 // built through buildProject with no test-only option, booted headlessly for real (not
@@ -112,11 +115,22 @@ test(
   }
 );
 
-test('D.3 negative: a scripted Move reachable on a streamed screen is refused', () => {
-  const project = withEvent(createStreamedProject({}), [{ op: 'move', who: 'player', dir: 'up', dist: 16 }]);
-  const errors = streamedErrors(project);
-  assert.ok(errors.some((e) => /moves the player/.test(e.message)), JSON.stringify(errors));
-});
+test(
+  // Phase 2 slice 3 (docs/design-streamed-worlds.md §7, ruling 7): move_tick now bounds and
+  // probes this exact case at runtime (the player-mover's own 0-255/0-239 ownership rectangle,
+  // sw_move_probe_solid reading the neighbour screen's terrain at the seam), so item 3 lifted
+  // from an error back to the phase-1 warning -- it still warns, since the Move still cannot
+  // cross to a new screen (ownership never changes mid-page), but it no longer refuses the build.
+  'D.3: a scripted Move reachable on a streamed screen warns but no longer refuses the build',
+  { skip: !hasNesasm && 'nesasm not found on PATH' },
+  async () => {
+    const project = withEvent(createStreamedProject({}), [{ op: 'move', who: 'player', dir: 'up', dist: 16 }]);
+    assert.deepEqual(streamedErrors(project), []);
+    const warnings = validateProject(project).filter((x) => x.severity === 'warning' && /moves the player/.test(x.message));
+    assert.equal(warnings.length, 1, JSON.stringify(validateProject(project)));
+    assert.ok(await buildsClean(project));
+  }
+);
 
 // ---------------------------------------------------------------- D.4: Say
 

@@ -97,6 +97,14 @@ function buildStreamedMap(id, name, gridW, gridH) {
  * options.naming: defaults to false (Part D item 7's positive control -- hero naming already off
  * by createPartyMember's own default); pass `true` to set party[0].renamable and build the
  * negative control for that refusal.
+ * options.moveCommands: phase 2 slice 3 -- undefined by default (off), so every existing caller
+ * (every pinned hash, every Part-A-through-H test that predates slice 3) gets the identical
+ * project it always did. Pass an array of event commands (typically one `{op: 'move', ...}`,
+ * `who: 'self'` for an NPC mover or `who: 'player'` for D.3's own scripted-player-Move case) to
+ * place one entity carrying them on the streamed map's own screen at (options.moveScreen ?? 0),
+ * position (options.moveX ?? 32, options.moveY ?? 32) -- test/lib/streamedproject.js's own
+ * withEvent-shaped helper, folded in here rather than duplicated per test file, since
+ * streamedmove.test.js and streamworld.test.js's D.3 section both need the identical shape.
  */
 export function createStreamedProject({
   gameType = 'action',
@@ -106,7 +114,11 @@ export function createStreamedProject({
   gridW = GRID_W,
   gridH = GRID_H,
   camera = true,
-  naming = false
+  naming = false,
+  moveCommands,
+  moveScreen = 0,
+  moveX = 32,
+  moveY = 32
 } = {}) {
   const project = createProject('Streamed Test', gameType);
   project.cartridge.mapper = mapper;
@@ -124,7 +136,24 @@ export function createStreamedProject({
     before.screens = [createScreen(), createScreen(), createScreen(), createScreen()];
     maps.push(before);
   }
-  maps.push(buildStreamedMap(nextId++, 'Streamed', gridW, gridH));
+  const streamedMap = buildStreamedMap(nextId++, 'Streamed', gridW, gridH);
+  maps.push(streamedMap);
+  if (moveCommands) {
+    // createProject ships zero actors (shared/project.js), and an entity's actorId is an index
+    // into project.sprites.actors -- not a search on some actor's own `id` field (the convention
+    // test/unit/streamedcapacity.test.js's own `const actor = p.sprites.actors.length` already
+    // follows) -- so the only correct move here is to append a fresh actor and use its index.
+    const actorId = project.sprites.actors.length;
+    project.sprites.actors.push({ name: 'Mover', behavior: 'npc', hp: 1, damage: 0 });
+    const screen = streamedMap.screens[moveScreen];
+    screen.entities = screen.entities ?? [];
+    screen.entities.push({
+      actorId,
+      x: moveX,
+      y: moveY,
+      props: { event: { pages: [{ cond: { type: 'none', arg: 0 }, commands: moveCommands }] } }
+    });
+  }
   if (mixed) {
     const after = createMap(nextId++, 'After');
     after.gridW = 2;
