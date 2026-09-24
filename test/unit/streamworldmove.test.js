@@ -159,7 +159,10 @@ function predictDesiredWindow({ swCol, swRow, playerX, playerY, gridW, gridH }) 
   const camBlockY = camScreenRow * 15 + Math.floor(camLocalPxY / 16);
   const desiredBlockY = Math.max(camBlockY - 7, 0);
   const row = clampWindowAxis(Math.floor(desiredBlockY / 15), desiredBlockY % 15, gridH);
-  return { desCol: col.screen, desColLocal: col.local, desRow: row.screen, desRowLocal: row.local };
+  // camPx/camPy also returned (additive -- every existing caller destructures only the desCol/
+  // desColLocal/desRow/desRowLocal fields it already used) so the "landing" tests below can assert
+  // the published sw_cam_origin_x/y against the identical clamp formula without a second copy of it.
+  return { desCol: col.screen, desColLocal: col.local, desRow: row.screen, desRowLocal: row.local, camPx, camPy };
 }
 
 // sw_win_col_inc/dec, sw_win_row_inc/dec: step "current" by exactly one block, wrapping local mod
@@ -430,6 +433,63 @@ async function buildAndBoot(project, { requireStreamed = true } = {}) {
     // the hundreds of settle frames other passing tests already spend.
     for (let i = 0; i < 100; i++) nes.frame();
     return { nes, mem };
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+// Phase 2 slice "landing" fix round 1, finding 1: identical shape to buildAndBoot's own cold-boot
+// poll, except it also observes the landing's own REAL first displayed frame -- the actual $2001
+// write that turns rendering on (bits $18) while map_is_streamed is already 1 -- via a write hook
+// on the emulator's own memory-mapper, synchronously, before ANY later frame's own main-loop code
+// (including ordinary per-frame camera tracking) can run and repair a wrong initial publication.
+// game_state/map_is_streamed reaching ST_GAMEPLAY/1 (buildAndBoot's own poll condition) happens
+// well BEFORE this -- sw_render_window's own full-window forced-blank draw is still running -- so
+// the loop below polls for the real enable, not that state. Returns full RAM snapshots
+// (mem.slice(), plain data -- the emulator itself keeps running underneath) taken at that exact
+// write (firstEnableMem) and after exactly one more nes.frame() (afterFirstTrackingMem -- the
+// first ordinary per-frame tracking call following the landing), plus the live nes/mem (already a
+// further 99 frames settled, for the same additional stability checks buildAndBoot's own 100-frame
+// margin used to gate everything on).
+async function buildAndBootLanding(project) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-streamworldmove-'));
+  try {
+    await saveProject(dir, project);
+    const built = await buildProject({ dir, project, log: () => {} });
+    const bytes = new Uint8Array(fs.readFileSync(built.romPath));
+    const nes = new NES({ onFrame: () => {}, emulateSound: false });
+    nes.loadROM(bytes);
+    const mem = nes.cpu.mem;
+    let firstEnableMem = null;
+    // Fix round 2 (review round 2 finding (a)): the rendered PPU content -- nametable tiles and
+    // attribute bytes -- is not on `mem` at all (it lives on `nes.ppu`, separate emulated address
+    // space); a snapshot must be taken synchronously in this SAME write hook, at the SAME instant as
+    // firstEnableMem, or a later frame's own tracking/redraw could have already changed it by the
+    // time a caller reads `nes.ppu` back out. `.slice()` on each nametable's own `tile`/`attrib`
+    // Uint8Array copies the data out, same reasoning as `mem.slice()` above.
+    let firstEnablePPU = null;
+    const originalWrite = nes.mmap.write.bind(nes.mmap);
+    let previousMask = 0;
+    nes.mmap.write = (address, value) => {
+      if (address === 0x2001) {
+        if ((value & 0x18) && !(previousMask & 0x18) && mem[MAP_IS_STREAMED] === 1 && !firstEnableMem) {
+          firstEnableMem = mem.slice();
+          firstEnablePPU = nes.ppu.nameTable.map((nt) => ({ tile: nt.tile.slice(), attrib: nt.attrib.slice() }));
+        }
+        previousMask = value;
+      }
+      return originalWrite(address, value);
+    };
+    let frames = 0;
+    while (!firstEnableMem && frames < 400) {
+      nes.frame();
+      frames++;
+    }
+    assert.ok(firstEnableMem, 'the landing must reach its own real $2001 display-enable write (rendering turned on while streamed) within 400 frames');
+    nes.frame(); // the first ordinary per-frame tracking call after the landing's own display enable
+    const afterFirstTrackingMem = mem.slice();
+    for (let i = 0; i < 99; i++) nes.frame();
+    return { nes, mem, firstEnableMem, firstEnablePPU, afterFirstTrackingMem };
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
@@ -2126,3 +2186,352 @@ test(
     assert.ok(recrossedOnce, 'precondition: leg 2 must include a real screen crossing back');
   }
 );
+
+// Phase 2 slice "landing": the defect this closes -- sw_resolve_divdone used to align the window,
+// camera and physical scroll to the ENTERED SCREEN'S OWN top-left corner (win_*_local=0,
+// cam_x_lo/cam_y_lo=0, sw_cam_origin_x/y = that screen's own pixel origin) regardless of where the
+// player actually landed inside it. Boot and redraw_screen's streamed branch rendered and displayed
+// that top-left window immediately; sw_frame_camera_window's own per-frame tracking then only
+// caught up to the true player-centred, map-clamped origin ~70 frames later, publishing it
+// discontinuously (a visible jump) and leaving the visible rect outside completed content for that
+// whole span.
+//
+// The fix (engine/streamworld.asm): sw_resolve_divdone now runs `jsr sw_enter_screen` (the single
+// writer of sw_col/sw_row for this landing) then tail-calls the new sw_camera_window_install, which
+// itself calls sw_camera_window_recompute -- the exact clamp/centre arithmetic
+// sw_frame_camera_window's own per-frame tracking uses, factored out of it rather than copied --
+// and installs the result directly as win_col/row_screen/local instead of only reaching it a few
+// frames later via sw_win_arm's one-block-at-a-time approach. sw_frame_camera_window itself is now
+// just `jsr sw_camera_window_recompute` / `jmp sw_win_arm`, so ordinary per-frame tracking is
+// unchanged.
+//
+// Six landing positions -- an interior screen, each of the four clamped edges, and a clamped corner
+// -- each landed at via BOTH cold boot (project.project.startMap/startScreen/startX/startY) and a
+// warp/door through redraw_screen (an ordinary "Before" map with a spawn-triggered 'enter' event,
+// the identical shape streamedmixed.test.js's own buildMixedProject uses) -- the brief's own
+// "shared landing path (boot AND redraw_screen)" requirement. For each: the published camera origin
+// and window equal predictDesiredWindow's identical clamp/centre formula, computed independently
+// here rather than read back from a value the engine itself might have gotten wrong; the visible
+// rect is contained in completed content from the very first observation; a subsequent idle frame
+// (no button held) arms no strip and changes nothing (the "first tracking frame already at desired"
+// requirement); and the ownership bytes -- flat_screen, sw_col/sw_row, player_x/player_y -- match
+// the intended landing exactly as before this slice.
+const LANDING_GRID_W = 3;
+// 3, not the file's usual 2: at gridH=2 the Y window (30 blocks tall) exactly covers both screens
+// at once, so clampWindowAxis pins win_row_screen/local to (0,0) for EVERY landing regardless of
+// position -- indistinguishable from the window's own un-installed RAM default, which let a real
+// sabotage run (Y half of sw_camera_window_install skipped entirely) pass all 12 cases undetected.
+// gridH=3 gives the bottom-edge/corner cases a genuine, non-(0,0) desired row block.
+const LANDING_GRID_H = 3;
+// playerX/playerY are kept within [0,MAX_X]/[0,MAX_Y] (engine/constants.asm's own player-position
+// ceiling, 256-16/240-16) rather than the raw [0,255]/[0,239] screen range, so the SAME position
+// works identically via boot (project.project.startX/Y, uncompiled) and via door (the warp
+// command's own operand, byte-clamped to exactly this ceiling at compile time -- main/build/
+// textcompile.js's `byte(command.x, 240)`/`byte(command.y, 224)`, a pre-existing, in-scope-for-
+// every-map compile step this slice does not touch). MAX_X/MAX_Y is well past enough of each axis'
+// own clamp threshold (632/352 world-pixels, above) that every edge case below still lands on the
+// clamped side of the camera formula at this ceiling.
+const LANDING_CASES = [
+  { label: 'interior', swCol: 1, swRow: 0, playerX: 128, playerY: 200 },
+  { label: 'left edge', swCol: 0, swRow: 0, playerX: 0, playerY: 200 },
+  { label: 'right edge', swCol: 2, swRow: 0, playerX: MAX_X, playerY: 200 },
+  { label: 'top edge', swCol: 1, swRow: 0, playerX: 128, playerY: 0 },
+  { label: 'bottom edge', swCol: 1, swRow: 2, playerX: 128, playerY: MAX_Y },
+  { label: 'corner (bottom-right)', swCol: 2, swRow: 2, playerX: MAX_X, playerY: MAX_Y },
+  // Fix round 1, finding 3: every case above lands with camera Y in {0,88,480}, all even screen-
+  // row parity, so cam_nt's bit1 (the "vertical nametable bit") was never exercised as 1 by any
+  // case here. worldX=1*256+128=384, worldY=1*240+128=368; camPx=clamp(384-120,0,512)=264 (bit8=1),
+  // camPy=clamp(368-112,0,480)=256 (floor(256/240)=1, an ODD screen row) -- cam_nt=3, both bits
+  // set. This also lands the desired window on a genuinely NONZERO local offset on both axes
+  // (desColLocal=8, desRowLocal=9 -- worked by hand, matching test/lua/build_sw_render_roms.mjs's
+  // own identical owner/local pair, independently), the same gap finding 3 names for
+  // makeContainmentChecker's block-granular (not local-granular) containment math -- already
+  // correct for a nonzero local offset, unlike assertWindowMatchesDecoded (streamworld.test.js),
+  // which this case does not use.
+  { label: 'interior odd row', swCol: 1, swRow: 1, playerX: 128, playerY: 128 }
+];
+
+// TL-corner OAM projection (test/unit/streamworldprojection.test.js's own projectAxis/projectY,
+// mirrored here): delta = (world - origin) mod 65536. X reports the low byte directly (no width
+// restriction -- the TL corner's own delta is always < 256 for every LANDING_CASES entry, verified
+// by the assertions below, which is why this file never checks a `visible` flag alongside it); Y
+// reports (delta-1)&0xff, sw_oam_project_y's own one-scanline-early -1.
+function projectOamX(worldX, originX) {
+  return (worldX - originX) & 0xff;
+}
+function projectOamY(worldY, originY) {
+  return ((worldY - originY) & 0xffff) - 1 & 0xff;
+}
+
+// Fix round 2 (review round 2 finding (a)): rendered-content oracle for the landing group. Ported,
+// not reinvented, from test/lua/build_sw_render_roms.mjs's own resolveBlock/contentAt -- the same
+// per-BLOCK mapping (wbase_col/row, physical-to-world delta, colAtOffset/rowAtOffset) that oracle's
+// own header documents as a full transcription of sw_render_window's real algorithm
+// (engine/streamworld.asm), independently re-derived here rather than imported, matching this
+// file's own "read the file it is checking proves nothing" discipline. Unlike that Lua fixture
+// (which checks every block of all four physical nametables, appropriate for a single fixed cold-
+// boot landing), this covers only the VISIBLE rectangle -- the actual on-screen blocks implied by
+// the published scroll -- but does so for every LANDING_CASES entry, via both boot and redraw, at
+// the exact same firstEnableMem/firstEnablePPU boundary the bookkeeping assertions already use.
+//
+// Every one of the grid's LANDING_GRID_W*LANDING_GRID_H screens is authored with ONE uniform,
+// screen-unique metatile (distinct tile ids AND distinct palette, cycling 1-3) -- not
+// createStreamedProject's own default varied-then-fill pattern, which is mostly FILL_METATILE_ID
+// and so cannot tell a wrong block offset from a right one across most of a screen. A wrong
+// row-local or col-local offset at redraw time (this round's own discriminating mutation) shifts
+// which screen's own unique tile/palette appears at a given physical position, so it cannot
+// coincide with the correct picture.
+const SCREEN_METATILE_BASE = 1; // ids 1..LANDING_GRID_W*LANDING_GRID_H
+const FILL_METATILE_ID = 0; // matches buildStreamedMap's own fillMetatileId (test/lib/streamedproject.js)
+const FILL_TILES = [50, 60, 70, 80];
+const FILL_PALETTE = 0;
+function screenMetatileId(screenIndex) {
+  return SCREEN_METATILE_BASE + screenIndex;
+}
+function screenTiles(screenIndex) {
+  const t = screenMetatileId(screenIndex) * 4;
+  return [t, t + 1, t + 2, t + 3];
+}
+function screenPalette(screenIndex) {
+  return 1 + (screenIndex % 3); // never 0 (FILL_PALETTE)
+}
+function authorLandingTerrain(project) {
+  const map = project.maps.find((m) => m.streamed);
+  for (let i = 0; i < LANDING_GRID_W * LANDING_GRID_H; i++) {
+    map.screens[i].metatiles.fill(screenMetatileId(i));
+  }
+  project.metatiles[FILL_METATILE_ID] = { id: FILL_METATILE_ID, name: 'LandingFill', tiles: FILL_TILES, palette: FILL_PALETTE, collision: 'open' };
+  for (let i = 0; i < LANDING_GRID_W * LANDING_GRID_H; i++) {
+    const id = screenMetatileId(i);
+    project.metatiles[id] = { id, name: `LandingScreen${i}`, tiles: screenTiles(i), palette: screenPalette(i), collision: 'open' };
+  }
+}
+
+// wbase_col/row -- the window's own physical ring origin (sw_render_window, engine/streamworld.asm).
+function wbaseAxis(screen, local, screenSize) {
+  return (screen & 1) * screenSize + local;
+}
+// sw_col_at_offset's own inverse: a physical-ring column delta back to a world (screen,local).
+function colAtOffset(delta, winColScreen, winColLocal) {
+  const t = delta + winColLocal;
+  return { screen: winColScreen + (t >> 4), local: t & 15 };
+}
+// sw_row_at_offset's own inverse (240 isn't a power of two, so this is repeated subtraction, not a
+// shift, exactly like the reference oracle it is ported from).
+function rowAtOffset(delta, winRowScreen, winRowLocal) {
+  let t = delta + winRowLocal;
+  let count = 0;
+  while (t >= 15) {
+    t -= 15;
+    count += 1;
+  }
+  return { screen: winRowScreen + count, local: t };
+}
+// Given a physical ring position expressed as (colDelta,rowDelta) relative to the window's own
+// origin (both already in [0,31]/[0,29] -- the caller never passes an out-of-range delta), resolve
+// which physical nametable/block it lives in -- resolveBlock's own physCol/physRow -> nt/bc/br
+// split (NT_PHYS_COL=[0,16,0,16], NT_PHYS_ROW=[0,0,15,15]) run forward from the window's own wbase,
+// instead of backward from an already-known physical position.
+function physicalFromDelta(colDelta, rowDelta, window) {
+  const wbaseCol = wbaseAxis(window.colScreen, window.colLocal, 16);
+  const wbaseRow = wbaseAxis(window.rowScreen, window.rowLocal, 15);
+  const physCol = (wbaseCol + colDelta) % 32;
+  const physRow = (wbaseRow + rowDelta) % 30;
+  const nt = (physCol >= 16 ? 1 : 0) | (physRow >= 15 ? 2 : 0);
+  return { nt, bc: physCol % 16, br: physRow % 15 };
+}
+// The authored content a correctly-rendered block at ring offset (colDelta,rowDelta) from the
+// window's own origin must hold -- sw_col_at_offset/sw_row_at_offset's own inverse (colAtOffset/
+// rowAtOffset above), independently derived from the window's own current origin, never read back
+// from the engine.
+function expectedBlockContent(colDelta, rowDelta, window) {
+  const at = colAtOffset(colDelta, window.colScreen, window.colLocal);
+  const rowAt = rowAtOffset(rowDelta, window.rowScreen, window.rowLocal);
+  const inBounds = at.screen >= 0 && at.screen < LANDING_GRID_W && rowAt.screen >= 0 && rowAt.screen < LANDING_GRID_H;
+  if (!inBounds) return { tiles: FILL_TILES, palette: FILL_PALETTE };
+  const screenIndex = rowAt.screen * LANDING_GRID_W + at.screen;
+  return { tiles: screenTiles(screenIndex), palette: screenPalette(screenIndex) };
+}
+
+// Reads the visible rectangle (from the real published scroll -- camPx/camPy, block-granular, plus
+// the partial-edge block a nonzero fine offset exposes) out of a firstEnablePPU snapshot and asserts
+// every tile id and attribute byte against expectedBlockContent's independent oracle. `window` is
+// {colScreen,colLocal,rowScreen,rowLocal} -- predictDesiredWindow's own desCol/desColLocal/desRow/
+// desRowLocal fields, renamed here to match resolveBlock's own parameter shape.
+//
+// The window's own origin is NOT the visible rectangle's own top-left corner: predictDesiredWindow
+// deliberately starts the buffered window 8 blocks (X) / 7 blocks (Y) BEHIND the camera's own
+// viewport (desiredBlockX = camBlockX-8, desiredBlockY = camBlockY-7, each clamped) so there is
+// already-drawn content on both sides as the camera keeps moving. The delta from the window's own
+// flat origin to the visible rectangle's own top-left corner is therefore camBlock - windowFlat,
+// generally 8/7 but LESS at a grid edge where the window's own clamp already pins it at 0 -- an
+// earlier version of this function assumed delta 0 (the window's own origin) was always the first
+// visible block, which missed every real content defect this check exists to catch (verified against
+// the round-2 reviewer's own visible-content-tests.mjs sampler and its exact "bx=16,by=30" first
+// mismatch, reproduced here as the same (colDelta,rowDelta)=(8,21) position for the identical case).
+function assertVisibleContent(firstEnablePPU, window, camPx, camPy, tag) {
+  const windowFlatX = window.colScreen * 16 + window.colLocal;
+  const windowFlatY = window.rowScreen * 15 + window.rowLocal;
+  const colDeltaStart = Math.floor(camPx / 16) - windowFlatX;
+  const rowDeltaStart = Math.floor(camPy / 16) - windowFlatY;
+  const visBlocksX = 16 + (camPx % 16 !== 0 ? 1 : 0);
+  const visBlocksY = 15 + (camPy % 16 !== 0 ? 1 : 0);
+  for (let ry = 0; ry < visBlocksY; ry++) {
+    const rowDelta = rowDeltaStart + ry;
+    for (let rx = 0; rx < visBlocksX; rx++) {
+      const colDelta = colDeltaStart + rx;
+      const { nt, bc, br } = physicalFromDelta(colDelta, rowDelta, window);
+      const { tiles, palette } = expectedBlockContent(colDelta, rowDelta, window);
+      const ntable = firstEnablePPU[nt];
+      const base = 2 * br * 32 + 2 * bc; // NameTable width is 32 tiles (nametable.js)
+      const positions = [base, base + 1, base + 32, base + 33];
+      const corners = ['tl', 'tr', 'bl', 'br'];
+      for (let k = 0; k < 4; k++) {
+        assert.equal(ntable.tile[positions[k]], tiles[k],
+          `${tag}: visible block (nt ${nt}, ${bc},${br}) ${corners[k]} tile id`);
+        assert.equal(ntable.attrib[positions[k]], palette * 4,
+          `${tag}: visible block (nt ${nt}, ${bc},${br}) ${corners[k]} attribute/palette`);
+      }
+    }
+  }
+}
+
+async function landOnStreamedViaBoot({ swCol, swRow, playerX, playerY }) {
+  const project = createStreamedProject({ gridW: LANDING_GRID_W, gridH: LANDING_GRID_H });
+  authorLandingTerrain(project);
+  const screenIndex = swRow * LANDING_GRID_W + swCol;
+  project.project.startMap = 0;
+  project.project.startScreen = screenIndex;
+  project.project.startX = playerX;
+  project.project.startY = playerY;
+  const { nes, mem, firstEnableMem, firstEnablePPU, afterFirstTrackingMem } = await buildAndBootLanding(project);
+  return { nes, mem, firstEnableMem, firstEnablePPU, afterFirstTrackingMem, flatScreen: screenIndex };
+}
+
+async function landOnStreamedViaDoor({ swCol, swRow, playerX, playerY }) {
+  // mixed:true carries an ordinary 2x2 "Before" map (global screens 0-3) ahead of the streamed map
+  // (createStreamedProject's own fixed layout), so the streamed map's own screens start at global
+  // id 4 -- the identical arithmetic streamedmixed.test.js's own buildMixedProject uses. The player
+  // boots onto Before screen 0 (project's own startMap/startScreen defaults) and an 'enter'-
+  // triggered NPC sitting exactly at the default spawn (project.project.startX/Y) fires the warp
+  // the instant gameplay begins, the same "arrives already armed" shape buildMixedProject documents.
+  const project = createStreamedProject({ gridW: LANDING_GRID_W, gridH: LANDING_GRID_H, mixed: true });
+  authorLandingTerrain(project);
+  const [before] = project.maps;
+  const streamedBase = 4;
+  const screenIndex = swRow * LANDING_GRID_W + swCol;
+  const targetGlobal = streamedBase + screenIndex;
+  project.sprites.actors.push({ name: 'Door', behavior: 'npc', hp: 1, damage: 0 });
+  const actorId = project.sprites.actors.length - 1;
+  before.screens[0].entities.push({
+    actorId,
+    x: project.project.startX,
+    y: project.project.startY,
+    props: {
+      trigger: 'enter',
+      event: { pages: [{ cond: { type: 'none', arg: 0 }, commands: [{ op: 'warp', screen: targetGlobal, x: playerX, y: playerY }] }] }
+    }
+  });
+  const { nes, mem, firstEnableMem, firstEnablePPU, afterFirstTrackingMem } = await buildAndBootLanding(project);
+  return { nes, mem, firstEnableMem, firstEnablePPU, afterFirstTrackingMem, flatScreen: targetGlobal };
+}
+
+test('streamed landing installs the tracking window directly (phase 2 slice "landing")', { skip: !hasNesasm && 'nesasm not on PATH' }, async (t) => {
+  for (const via of ['boot', 'door']) {
+    for (const c of LANDING_CASES) {
+      await t.test(`${via}, ${c.label}`, async () => {
+        const { mem, firstEnableMem, firstEnablePPU, afterFirstTrackingMem, flatScreen } = via === 'boot'
+          ? await landOnStreamedViaBoot(c)
+          : await landOnStreamedViaDoor(c);
+        const tag = `${via}, ${c.label}`;
+
+        const expected = predictDesiredWindow({
+          swCol: c.swCol, swRow: c.swRow, playerX: c.playerX, playerY: c.playerY,
+          gridW: LANDING_GRID_W, gridH: LANDING_GRID_H
+        });
+        const expectedCamNt = ((expected.camPx >> 8) & 1) | ((Math.floor(expected.camPy / 240) & 1) << 1);
+        const worldX = c.swCol * 256 + c.playerX;
+        const worldY = c.swRow * 240 + c.playerY;
+        const expectedOamX = projectOamX(worldX, expected.camPx);
+        const expectedOamY = projectOamY(worldY, expected.camPy);
+
+        // ---- fix round 1, finding 1: the REAL first displayed frame -- firstEnableMem, a full RAM
+        // snapshot taken synchronously at the landing's own $2001 display-enable write, before ANY
+        // later frame's own tracking call could repair a wrong initial publication.
+
+        // Ownership: exactly today's fields, untouched by this slice.
+        assert.equal(firstEnableMem[FLAT_SCREEN], flatScreen, `${tag}: flat_screen at first display-enable`);
+        assert.equal(firstEnableMem[SW_COL], c.swCol, `${tag}: sw_col at first display-enable`);
+        assert.equal(firstEnableMem[SW_ROW], c.swRow, `${tag}: sw_row at first display-enable`);
+        assert.equal(firstEnableMem[PLAYER_X], c.playerX, `${tag}: player_x at first display-enable`);
+        assert.equal(firstEnableMem[PLAYER_Y], c.playerY, `${tag}: player_y at first display-enable`);
+
+        // Published world camera origin equals the identical clamped, player-centred formula
+        // tracking itself would compute -- independently derived here, never read back from the
+        // engine.
+        const camX0 = (firstEnableMem[SW_CAM_ORIGIN_X_HI] << 8) | firstEnableMem[SW_CAM_ORIGIN_X_LO];
+        const camY0 = (firstEnableMem[SW_CAM_ORIGIN_Y_HI] << 8) | firstEnableMem[SW_CAM_ORIGIN_Y_LO];
+        assert.equal(camX0, expected.camPx, `${tag}: sw_cam_origin_x at first display-enable`);
+        assert.equal(camY0, expected.camPy, `${tag}: sw_cam_origin_y at first display-enable`);
+        // The real PPU scroll/nametable-select half of the same publish (docs/reference-engine.md's
+        // "publish consistent camera/scroll/OAM before display enables"), not merely the world-space
+        // sw_cam_origin_x/y tracking value -- catches a landing that installs the window correctly
+        // but leaves cam_x_lo/cam_y_lo/cam_nt at their own boot-clear default (case 20's own
+        // "hardcoded 0" sabotage shape, phase 2 plan's sabotage list) -- checked here, at the real
+        // display-enable boundary, not after a later tracking call could have repaired it.
+        assert.equal(firstEnableMem[CAM_X_LO], expected.camPx & 0xff, `${tag}: cam_x_lo at first display-enable`);
+        assert.equal(firstEnableMem[CAM_Y_LO], expected.camPy % 240, `${tag}: cam_y_lo at first display-enable`);
+        assert.equal(firstEnableMem[CAM_NT], expectedCamNt, `${tag}: cam_nt at first display-enable`);
+
+        // The window itself is already the desired one on the first displayed frame -- not merely
+        // armed toward it.
+        assert.equal(firstEnableMem[WIN_COL_SCREEN], expected.desCol, `${tag}: win_col_screen at first display-enable`);
+        assert.equal(firstEnableMem[WIN_COL_LOCAL], expected.desColLocal, `${tag}: win_col_local at first display-enable`);
+        assert.equal(firstEnableMem[WIN_ROW_SCREEN], expected.desRow, `${tag}: win_row_screen at first display-enable`);
+        assert.equal(firstEnableMem[WIN_ROW_LOCAL], expected.desRowLocal, `${tag}: win_row_local at first display-enable`);
+        assert.equal(firstEnableMem[ST_ACTIVE], 0, `${tag}: st_active must be idle at first display-enable -- nothing left to arm`);
+
+        // The player's own on-screen (TL-corner) OAM position, independently projected from the
+        // same expected world camera origin above.
+        assert.equal(firstEnableMem[OAM + 3], expectedOamX, `${tag}: player's own TL-corner OAM X at first display-enable`);
+        assert.equal(firstEnableMem[OAM], expectedOamY, `${tag}: player's own TL-corner OAM Y at first display-enable`);
+
+        // The visible rect is inside completed content from the very first displayed frame.
+        makeContainmentChecker(firstEnableMem, { gridW: LANDING_GRID_W, gridH: LANDING_GRID_H })(`${tag}: first display-enable`);
+
+        // Fix round 2 (review round 2 finding (a)): the rendered PPU nametable/attribute content of
+        // the visible rectangle itself, from the same real $2001 display-enable snapshot, for BOTH
+        // boot and redraw (door) landings -- not merely the RAM bookkeeping above. A landing whose
+        // window/camera/OAM bookkeeping is all correct but whose render (sw_render_window/
+        // redraw_screen) drew the wrong row-local/col-local offset now fails here.
+        assertVisibleContent(
+          firstEnablePPU,
+          { colScreen: expected.desCol, colLocal: expected.desColLocal, rowScreen: expected.desRow, rowLocal: expected.desRowLocal },
+          expected.camPx, expected.camPy, `${tag}: first display-enable render`
+        );
+
+        // ---- the first real tracking call (one nes.frame() later) computes "already at desired"
+        // and arms nothing -- observed separately from the display-enable snapshot above.
+        assert.equal(afterFirstTrackingMem[ST_ACTIVE], 0, `${tag}: the first tracking frame must not arm a strip`);
+        assert.equal(afterFirstTrackingMem[WIN_COL_SCREEN], expected.desCol, `${tag}: win_col_screen must not drift on the first tracking frame`);
+        assert.equal(afterFirstTrackingMem[WIN_COL_LOCAL], expected.desColLocal, `${tag}: win_col_local must not drift on the first tracking frame`);
+        assert.equal(afterFirstTrackingMem[WIN_ROW_SCREEN], expected.desRow, `${tag}: win_row_screen must not drift on the first tracking frame`);
+        assert.equal(afterFirstTrackingMem[WIN_ROW_LOCAL], expected.desRowLocal, `${tag}: win_row_local must not drift on the first tracking frame`);
+        const camX1 = (afterFirstTrackingMem[SW_CAM_ORIGIN_X_HI] << 8) | afterFirstTrackingMem[SW_CAM_ORIGIN_X_LO];
+        const camY1 = (afterFirstTrackingMem[SW_CAM_ORIGIN_Y_HI] << 8) | afterFirstTrackingMem[SW_CAM_ORIGIN_Y_LO];
+        assert.equal(camX1, expected.camPx, `${tag}: sw_cam_origin_x must not drift on the first tracking frame`);
+        assert.equal(camY1, expected.camPy, `${tag}: sw_cam_origin_y must not drift on the first tracking frame`);
+        makeContainmentChecker(afterFirstTrackingMem, { gridW: LANDING_GRID_W, gridH: LANDING_GRID_H })(`${tag}: first tracking frame`);
+
+        // ---- additional stability check (kept from the pre-fix version): still settled a further
+        // 99 frames later (nes/mem are already advanced that far by buildAndBootLanding).
+        assert.equal(mem[ST_ACTIVE], 0, `${tag}: settled state must still have nothing armed`);
+        assert.equal(mem[WIN_COL_SCREEN], expected.desCol, `${tag}: win_col_screen must still match once settled`);
+        assert.equal(mem[WIN_COL_LOCAL], expected.desColLocal, `${tag}: win_col_local must still match once settled`);
+        assert.equal(mem[WIN_ROW_SCREEN], expected.desRow, `${tag}: win_row_screen must still match once settled`);
+        assert.equal(mem[WIN_ROW_LOCAL], expected.desRowLocal, `${tag}: win_row_local must still match once settled`);
+        makeContainmentChecker(mem, { gridW: LANDING_GRID_W, gridH: LANDING_GRID_H })(`${tag}: settled`);
+      });
+    }
+  }
+});

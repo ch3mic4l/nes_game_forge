@@ -98,9 +98,9 @@ boot_wait2:
   ; that routine's own GLOBAL/resolved dispatch -- sw_resolve_screen either
   ; leaves ord_screen naming an ordinary row (unchanged body below) or lands
   ; the field screen itself and returns, the same split, same landing-frame
-  ; scroll write (cam_nt/cam_x_lo/cam_y_lo -- always (0,0) locally, only the
-  ; nametable index varies by screen parity; design derivation in
-  ; docs/reference-engine.md).
+  ; scroll write (cam_nt/cam_x_lo/cam_y_lo -- phase 2 slice "landing": the
+  ; real clamped, player-centred window's own scroll, in general NOT
+  ; zero-local on either axis; design derivation in docs/reference-engine.md).
   ;
   ; boot_streamed_landing brackets exactly this dispatch (to boot_draw_ordinary,
   ; below) -- Part F's STREAMWORLD_RESOLVER_KERNEL_ALLOWANCE measures this span

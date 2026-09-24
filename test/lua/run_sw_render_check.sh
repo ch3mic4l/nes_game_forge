@@ -3,18 +3,25 @@
 # instantiated by test/lua/build_sw_render_roms.mjs against ONE streamed ROM, built through the
 # real public path, that boots straight onto a non-trivial-parity streamed landing.
 #
-#   test/lua/run_sw_render_check.sh [mesen-path] [--break=blank-landing-tile]
+#   test/lua/run_sw_render_check.sh [mesen-path] [--break=blank-landing-tile|old-top-left-landing]
 #
 # Exit code: 0 if the render-parity check passed, the check's own EXIT_* code otherwise (2 =
-# no boot, 3 = bad game_state, 4 = wrong map_is_streamed/cam_nt, 5 = wrong rendered tiles/palette
-# -- see sw_render_check.lua.template).
+# no boot, 3 = bad game_state, 4 = wrong map_is_streamed/cam_nt/cam_x_lo/cam_y_lo, 5 = wrong
+# rendered tiles/palette, 6 = rendering never enabled while streamed within the frame budget --
+# see sw_render_check.lua.template).
 #
 # --break=blank-landing-tile (fix round 1, F10): a reproducible, project-level negative control --
-# build_sw_render_roms.mjs builds the SAME check ROM but never authors the landing/other-screen/
-# fill metatiles, while the lua's own oracle keeps expecting their real values, so this run must
-# exit 5 (EXIT_WRONG_RENDER), not 0. Before this fix the only negative control on record was a
-# manual, non-reproducible engine-source sabotage (sw_render_window's own wbase_row parity
-# computation) -- see handoff-next/progress-phase2-s2b.md's Part I section for that run's result.
+# build_sw_render_roms.mjs builds the SAME check ROM but never authors the per-screen metatiles,
+# while the lua's own oracle keeps expecting their real values, so this run must exit 5
+# (EXIT_WRONG_RENDER), not 0.
+#
+# --break=old-top-left-landing (phase 2 slice "landing"; fix round 1, finding 2: reworked to
+# revert the engine, not the oracle): the ROM is built through project.code.overrides restoring
+# the exact PRE-"landing"-slice sw_resolve_divdone tail (window pinned to the entered screen's own
+# top-left corner, local always 0,0), while the lua's own oracle keeps expecting the real, current,
+# correct player-centred window -- see build_sw_render_roms.mjs's own header. Must fail (real run:
+# exit 4 -- the reverted engine's own wrong cam_x_lo/cam_y_lo/cam_nt is caught before the check
+# ever reaches nametable content).
 
 set -u
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"

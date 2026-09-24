@@ -403,19 +403,30 @@ function markTilesetTiles(project, count = 16) {
 // INDEPENDENT expected image derived from `decoded` (test/lib/streamdecoder.js's own decode of
 // the exact emitStreamedLayout bytes generate.js itself emits) -- never a self-comparison against
 // an earlier snapshot of the same running ROM, which review finding 6 (phase 2 slice 2b fix round
-// 1) found could be "equally incomplete" on both sides. Shared by the cold-boot render test and
-// decision 7's non-fight-return test below, so a broken render cannot pass one and fail the other
-// only because they duplicated the check slightly differently.
-const NT_SCREEN = [
-  { col: 0, row: 0 },
-  { col: 1, row: 0 },
-  { col: 0, row: 1 },
-  { col: 1, row: 1 }
-];
+// 1) found could be "equally incomplete" on both sides. Shared by the cold-boot render test,
+// decision 7's non-fight-return test, and the grid-corner landing test below, so a broken render
+// cannot pass one and fail the other only because they duplicated the check slightly differently.
+//
+// Phase 2 slice "landing": win_col_screen/win_row_screen read from RAM (never assumed (0,0)) --
+// engine/streamworld.asm:997-1000 -- and each nt's own screen is derived from the identical
+// parity rule sw_render_window itself uses (this session's own algebraic re-derivation from
+// wbase_col/row and sw_rw_col_delta/sw_rw_row_delta/sw_col_at_offset/sw_row_at_offset, also
+// transcribed independently in test/lua/build_sw_render_roms.mjs's own resolveNtScreen): nt's
+// own column half is win_col_screen when their parities (bit 0) agree, else win_col_screen+1;
+// symmetrically for the row half against nt's bit 1. At a landing pinned to (0,0) (every caller
+// before the grid-corner test) this collapses to the original hardcoded table exactly.
+const WIN_COL_SCREEN = 0x5b1, WIN_COL_LOCAL = 0x5b2, WIN_ROW_SCREEN = 0x5b3, WIN_ROW_LOCAL = 0x5b4; // engine/constants.asm:997-1000
+function ntScreen(nt, winColScreen, winRowScreen) {
+  const col = ((winColScreen & 1) === (nt & 1)) ? winColScreen : winColScreen + 1;
+  const row = ((winRowScreen & 1) === ((nt >> 1) & 1)) ? winRowScreen : winRowScreen + 1;
+  return { col, row };
+}
 function assertWindowMatchesDecoded(nes, mem, decoded) {
   const ATTR_SHADOW = 0x0600;
+  const winColScreen = mem[WIN_COL_SCREEN];
+  const winRowScreen = mem[WIN_ROW_SCREEN];
   for (let nt = 0; nt < 4; nt++) {
-    const { col: screenCol, row: screenRow } = NT_SCREEN[nt];
+    const { col: screenCol, row: screenRow } = ntScreen(nt, winColScreen, winRowScreen);
     const table = nes.ppu.nameTable[nes.ppu.ntable1[nt]];
     const terrain = decoded.screen(0, screenCol, screenRow).terrain;
     const terrainAt = (localCol, localRow) => terrain[localRow * 16 + localCol];
@@ -661,47 +672,76 @@ test(
 );
 
 test(
-  'landing on a streamed map\'s own grid corner renders its off-grid neighbour nametables as the fill metatile, not leftover/garbage tile data',
+  'landing on a streamed map\'s own grid corner clamps the window to real, in-grid neighbour screens and renders them correctly, never leftover/garbage tile data',
   { skip: !hasNesasm && 'nesasm not found on PATH' },
   async () => {
-    // sw_resolve_screen (engine/streamworld.asm ~1623) sets the window's own origin
-    // (win_col_screen/win_row_screen) directly to the LANDED screen's own coordinates,
-    // with no clamping at landing time. Phase 2 slice 4b made sw_clamp_col/sw_clamp_row
-    // (dead code when this test was first written) live: sw_frame_camera_window now runs
-    // unconditionally every frame once map_is_streamed, sliding the window toward its own
-    // player-centred, clamped-to-the-grid desired origin -- and for a landing at the
-    // grid's own bottom-right corner, that clamped desired origin is NOT the raw landing
-    // value (a 2-screen-wide window on a 3-screen-wide grid clamps its max origin to
-    // screen 1, not screen 2), so the corner's own window begins sliding away from the
-    // landing value within a handful of frames of the initial render completing --
-    // confirmed directly (scratchpad probe): unchanged through the render-settle poll
-    // below, then moving by the 4th frame after it. This test's own invariant (no
-    // leftover/garbage tile data for an off-grid neighbour) is real only in the window
-    // BEFORE the arm has moved anything, so it asserts immediately at the render-settle
-    // poll's own exit frame, with no extra frames afterward, and pins that precondition
-    // explicitly (below) rather than relying on an unchecked frame count. gridH: 3 (not
-    // the fixture's own default 2) keeps BOTH win_col_screen and win_row_screen even at
-    // that corner: sw_render_window's four physical nametables are a torus whose
-    // nt-to-screen-offset mapping flips with win_col_screen/win_row_screen's own parity
-    // (sw_rw_ntx/nty are fixed per nt index; wbase_col/row's (screen&1)*16-or-15 term is
-    // what actually picks which physical nt currently holds "this screen" vs "the next
-    // one"), and every other test in this file already lands on (0,0) -- even on both
-    // axes, where the clamp's lower bound already coincides with the landing value, so
-    // the arm has nowhere to slide -- so this is the first test to depend on that parity
-    // at all.
+    // Phase 2 slice "landing" (engine/streamworld.asm:2627-2648): a landing now installs
+    // sw_camera_window_install's own clamped, player-centred window directly, the SAME value
+    // sw_camera_window_recompute's per-frame tracking would otherwise only reach a few frames
+    // later -- not the raw entered screen, unclamped, the way this test's own pre-fix version
+    // read sw_resolve_divdone (its window origin used to be exactly (cornerCol,cornerRow),
+    // local (0,0), regardless of the player's own position in the screen, and the off-grid
+    // neighbour halves that raw corner implied had to render the fill metatile until slice 4b's
+    // always-live sw_clamp_col/row nudged the window inward a few frames later). A 2-screen-wide
+    // window on a 3-screen-wide (or tall) grid can never legally have its own screen half at the
+    // grid's own last column/row (sw_clamp_col/row's "max legal screen is gridSize-2" rule,
+    // engine/streamworld.asm:1399-1461) -- so a corner landing's window is now ALREADY inside the
+    // grid on both axes from frame 0, and stays exactly there for as long as the player doesn't
+    // move (sw_frame_camera_window finds desired==current and arms nothing): there is no more
+    // "before the arm slides it" caveat to pin, and no off-grid neighbour to expect fill for.
+    // What is still worth proving is the positive claim the old test's title got backwards --
+    // every physical nametable renders REAL, correct, in-grid terrain immediately, not garbage.
+    //
+    // clamp/centre/window formula -- re-derived independently here from engine/streamworld.asm's
+    // own sw_camera_window_recompute, the identical transcription test/unit/streamworldmove.
+    // test.js's own predictDesiredWindow and test/lua/build_sw_render_roms.mjs's own
+    // computeWindow use -- so this test's own expectation is computed, not hand-picked, and
+    // asserted below rather than merely assumed.
+    function clampWindowAxis(desiredScreen, desiredLocal, gridSize) {
+      const maxScreen = gridSize - 2;
+      if (desiredScreen > maxScreen || (desiredScreen === maxScreen && desiredLocal !== 0)) {
+        return { screen: maxScreen, local: 0 };
+      }
+      return { screen: desiredScreen, local: desiredLocal };
+    }
+    function computeWindow({ swCol, swRow, playerX, playerY, gridW, gridH }) {
+      const worldX = swCol * 256 + playerX;
+      const worldY = swRow * 240 + playerY;
+      const camPx = Math.min(Math.max(worldX - 120, 0), (gridW - 1) * 256);
+      const camPy = Math.min(Math.max(worldY - 112, 0), (gridH - 1) * 240);
+      const camScreenRow = Math.floor(camPy / 240);
+      const camLocalPxY = camPy % 240;
+      const desiredBlockX = Math.max(Math.floor(camPx / 16) - 8, 0);
+      const col = clampWindowAxis(Math.floor(desiredBlockX / 16), desiredBlockX % 16, gridW);
+      const camBlockY = camScreenRow * 15 + Math.floor(camLocalPxY / 16);
+      const desiredBlockY = Math.max(camBlockY - 7, 0);
+      const row = clampWindowAxis(Math.floor(desiredBlockY / 15), desiredBlockY % 15, gridH);
+      return { col, row };
+    }
+
     const project = createStreamedProject({ gridH: 3 });
     markMetatiles(project);
     markTilesetTiles(project);
     const streamedMap = project.maps.find((m) => m.streamed === true);
-    const FILL_ID = 1; // non-zero, so its rendered tiles/attribute bits are distinguishable from cleared RAM
-    streamedMap.fillMetatileId = FILL_ID;
     const mapIndex = project.maps.indexOf(streamedMap);
     project.project.startMap = mapIndex;
     const cornerCol = streamedMap.gridW - 1;
     const cornerRow = streamedMap.gridH - 1;
-    assert.equal(cornerCol % 2, 0, 'sanity: this test only means what it says at even screen parity');
-    assert.equal(cornerRow % 2, 0, 'sanity: this test only means what it says at even screen parity');
     project.project.startScreen = cornerRow * streamedMap.gridW + cornerCol;
+    // shared/project.js's own createProject defaults -- unchanged here, so the window this
+    // computes is the SAME one the real engine will install.
+    const START_X = 120, START_Y = 112;
+    const expectedWindow = computeWindow({
+      swCol: cornerCol, swRow: cornerRow, playerX: START_X, playerY: START_Y,
+      gridW: streamedMap.gridW, gridH: streamedMap.gridH
+    });
+    // Sanity: this grid/corner really does force a clamp away from the raw corner -- otherwise
+    // this test would coincidentally pass even if the fix's own clamping were missing entirely.
+    assert.notDeepEqual(
+      [expectedWindow.col.screen, expectedWindow.row.screen],
+      [cornerCol, cornerRow],
+      'sanity: the clamp must move the window off the raw corner, or this test proves nothing about clamping'
+    );
 
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-streamworld-corner-'));
     try {
@@ -718,62 +758,49 @@ test(
       nes.loadROM(bytes);
       const mem = nes.cpu.mem;
       const ATTR_SHADOW = 0x0600;
-      // nt 3 is the diagonal neighbour -- entirely off-grid here -- so its own
-      // attribute bytes, once rendered, are a fixed known constant: FILL_ID packed
-      // into all four quadrants. Poll for the LAST cell in this window's own render
-      // order (nt 0..3, each nt's tiles then its attributes, raster order within
-      // attributes -- so nt 3's own last attribute cell, (arow 6, acol 7), the last
-      // cell this loop below itself checks, is the last byte written), not merely
-      // nt 3's first cell: this scenario has no varied terrain anywhere in nt 1-3 to
-      // give an earlier cell a distinctive non-fill value, so polling only the first
-      // cell can report "rendered" while later cells in the same nt are still the
-      // power-on-0xFF/cleared-0x00 buildAndBoot's own comment describes, not yet
-      // written.
-      const expectedFillAttrByte = FILL_ID | (FILL_ID << 2) | (FILL_ID << 4) | (FILL_ID << 6);
-      const nt3AttrLast = () => mem[ATTR_SHADOW + 3 * 64 + 6 * 8 + 7];
+      // nt 3's own screen, computed from the SAME expected window (never the raw corner) via
+      // this file's own general ntScreen parity rule -- buildAndBoot's own poll cell (arow 2,
+      // acol 7): createStreamedProject's own varied terrain is rows 0-4 only (the rest is the
+      // fill metatile, indistinguishable from boot's own RAM-clear zero), so a poll cell must
+      // land inside that varied region to tell "rendered" apart from "cleared but never drawn".
+      // This corner's own clamped window happens to put nt 3 on screen (1,1) too (the identical
+      // screen buildAndBoot's own hardcoded case reads), so this is the same proven cell, not a
+      // coincidence to re-verify by hand.
+      const nt3Screen = ntScreen(3, expectedWindow.col.screen, expectedWindow.row.screen);
+      const nt3Terrain = decoded.screen(0, nt3Screen.col, nt3Screen.row).terrain;
+      const nt3At = (localCol, localRow) => nt3Terrain[localRow * 16 + localCol];
+      const expectedNt3AttrLast = nt3At(14, 4) | (nt3At(15, 4) << 2) | (nt3At(14, 5) << 4) | (nt3At(15, 5) << 6);
+      const nt3AttrLast = () => mem[ATTR_SHADOW + 3 * 64 + 2 * 8 + 7];
       let frames = 0;
-      while (nt3AttrLast() !== expectedFillAttrByte && frames < 200) {
+      while (nt3AttrLast() !== expectedNt3AttrLast && frames < 200) {
         nes.frame();
         frames++;
       }
       assert.ok(frames < 200, 'boot must reach a fully-rendered window well within 200 frames');
-      // Phase 2 slice 4b's own continuous camera-feed arm (sw_frame_camera_window,
-      // called unconditionally every frame once map_is_streamed) starts sliding this
-      // corner's window away from the raw landing origin within a handful of frames --
-      // asserting anything past this exact frame would be checking the arm's own
-      // correct, in-progress convergence, not landing's leftover-garbage invariant.
-      // Pin the precondition explicitly instead of trusting an unchecked frame count.
-      const WIN_COL_SCREEN = 0x5b1, WIN_COL_LOCAL = 0x5b2, WIN_ROW_SCREEN = 0x5b3, WIN_ROW_LOCAL = 0x5b4;
+      // A few more, cheap (all-fill) attribute cells remain after the polled one --
+      // buildAndBoot's own pad.
+      for (let i = 0; i < 5; i++) nes.frame();
+
       assert.deepEqual(
         [mem[WIN_COL_SCREEN], mem[WIN_COL_LOCAL], mem[WIN_ROW_SCREEN], mem[WIN_ROW_LOCAL]],
-        [cornerCol, 0, cornerRow, 0],
-        'the window origin must still be the raw landing corner at this exact frame -- if not, the arm has already begun sliding it and the assertions below no longer mean what they say'
+        [expectedWindow.col.screen, expectedWindow.col.local, expectedWindow.row.screen, expectedWindow.row.local],
+        'a corner landing must install the same clamped, player-centred window tracking would compute, not the raw entered screen'
+      );
+      // Stays put: with no player movement, sw_frame_camera_window finds desired==current on
+      // every subsequent frame and arms nothing -- unlike the old defect this replaces, there is
+      // no window still in the middle of catching up.
+      for (let i = 0; i < 10; i++) nes.frame();
+      assert.deepEqual(
+        [mem[WIN_COL_SCREEN], mem[WIN_COL_LOCAL], mem[WIN_ROW_SCREEN], mem[WIN_ROW_LOCAL]],
+        [expectedWindow.col.screen, expectedWindow.col.local, expectedWindow.row.screen, expectedWindow.row.local],
+        'an idle player must never see the window drift away from its own already-correct landing value'
       );
 
-      for (let nt = 1; nt <= 3; nt++) {
-        const table = nes.ppu.nameTable[nes.ppu.ntable1[nt]];
-        for (let row = 0; row < 30; row++) {
-          for (let col = 0; col < 32; col++) {
-            const expected = expectedTileId(FILL_ID, col, row);
-            assert.equal(table.tile[row * 32 + col], expected, `nt ${nt} (row ${row}, col ${col}) off-grid must render the fill metatile`);
-          }
-        }
-        for (let arow = 0; arow < 7; arow++) {
-          for (let acol = 0; acol < 8; acol++) {
-            assert.equal(mem[ATTR_SHADOW + nt * 64 + arow * 8 + acol], expectedFillAttrByte, `nt ${nt} attribute cell (${arow},${acol}) off-grid must render the fill metatile`);
-          }
-        }
-      }
-      // nt0 is the landed corner screen itself -- real, authored terrain, checked
-      // against the same decoded oracle assertWindowMatchesDecoded uses elsewhere.
-      const nt0Table = nes.ppu.nameTable[nes.ppu.ntable1[0]];
-      const terrain = decoded.screen(0, cornerCol, cornerRow).terrain;
-      for (let row = 0; row < 30; row++) {
-        for (let col = 0; col < 32; col++) {
-          const metatileId = terrain[(row >> 1) * 16 + (col >> 1)];
-          assert.equal(nt0Table.tile[row * 32 + col], expectedTileId(metatileId, col, row), `nt 0 (row ${row}, col ${col}) must match the landed screen's own authored terrain`);
-        }
-      }
+      // Every physical nametable now maps to a real, in-grid screen (the clamp guarantees
+      // col/row+1 <= gridSize-1) -- the shared decoded-terrain oracle every other render
+      // assertion in this file uses, generalized (assertWindowMatchesDecoded, above) rather than
+      // a second, narrower copy of the same loop.
+      assertWindowMatchesDecoded(nes, mem, decoded);
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }

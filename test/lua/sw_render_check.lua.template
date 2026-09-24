@@ -2,55 +2,67 @@
 --
 -- TEMPLATE, not run directly -- test/lua/build_sw_render_roms.mjs instantiates it, substituting
 -- __PLACEHOLDER__ tokens resolved fresh out of that exact build's own constants.asm/config.inc
--- (frame_cnt/game_state/ST_GAMEPLAY/map_is_streamed/cam_nt) plus an INDEPENDENT oracle computed
--- straight from the project JSON that built the ROM (expected tile ids, expected palette bytes,
--- the nametable/attribute PPU addresses to read) -- never by reading back what the ROM itself
--- wrote. See build_sw_render_roms.mjs's own header for why the oracle needs no re-implementation
--- of sw_render_window's own ring/torus instruction-level arithmetic: a landing always sets
--- win_col_local/win_row_local to 0, so each physical nametable maps onto exactly ONE authored
--- screen (or fill) for its entire block grid, verified independently there.
+-- (frame_cnt/game_state/ST_GAMEPLAY/map_is_streamed/cam_nt/cam_x_lo/cam_y_lo) plus an INDEPENDENT
+-- oracle computed straight from the project JSON that built the ROM (expected tile ids, expected
+-- palette bytes, the expected physical scroll, the nametable/attribute PPU addresses to read) --
+-- never by reading back what the ROM itself wrote. See build_sw_render_roms.mjs's own header for
+-- the oracle's own per-block window mapping (fix round 1: a landing's window can have a genuinely
+-- nonzero local offset on either axis, so a single physical nametable can hold blocks from more
+-- than one authored screen) and for --break=old-top-left-landing, the negative control that reverts
+-- the ENGINE (not the oracle) to the pre-"landing"-slice top-left-only window.
 --
--- The project boots straight onto a NON-TRIVIAL-parity streamed screen (col=1,row=1 -- both odd)
--- via startMap/startScreen, so this exercises cam_nt's real parity computation (case 20's own
--- finding), not the (0,0) trivial case every other check in this codebase already covers.
+-- Fix round 1, finding 1: the check now runs at the real display-enable boundary -- the FIRST
+-- $2001 write that turns rendering on (bits $18) while map_is_streamed is already 1 -- caught via
+-- emu.addMemoryCallback(..., emu.callbackType.write, 0x2001), synchronously, before any later
+-- frame's ordinary per-frame camera tracking can run and repair a wrong initial publication. This
+-- replaces the old "wait until frame 60, then read whatever the nametables currently hold" gate,
+-- which could not tell a correct initial publication from one that only became correct a few
+-- frames later. The published physical scroll itself (cam_x_lo, cam_y_lo, cam_nt) is now asserted
+-- directly against the independently-computed expected values, not merely used to pick which
+-- nametable to read -- a landing that installs the right window but leaves the scroll registers at
+-- their own boot-clear default is nametable-content-invisible (panning is orthogonal to content)
+-- but must still fail here.
 --
--- Fix round 2, R4: block_checks now covers EVERY metatile block (16x15) of all four physical
--- nametables (not only block(0,0)), and attr_checks covers EVERY attribute byte (8x8) of all
--- four (not only cell(0,0)'s TL quadrant) -- including the one non-corner block (MID) the second
--- --break mode corrupts in isolation, and the one genuine attribute-boundary limitation of this
--- design (the last attribute row's bottom-half quadrants are unconditionally zero, since a
--- nametable's own 15 block-rows have no even pairing and attribute bytes never span nametables).
+-- block_checks covers EVERY metatile block (16x15) of all four physical nametables, and
+-- attr_checks covers EVERY attribute byte (8x8) of all four -- including the one genuine
+-- attribute-boundary limitation of this design (the last attribute row's bottom-half quadrants are
+-- unconditionally zero, since a nametable's own 15 block-rows have no even pairing and attribute
+-- bytes never span nametables).
 --
---   node test/lua/build_sw_render_roms.mjs [outDir] [--break=blank-landing-tile|mid-block-attr]
+--   node test/lua/build_sw_render_roms.mjs [outDir] [--break=blank-landing-tile|old-top-left-landing]
 --   Mesen --testRunner <outDir>/sw_render_check.lua <outDir>/sw_render.nes
 --
--- Boot-sanity gate (frame_cnt advances, game_state settles on ST_GAMEPLAY) reuses
--- sw_quadrant_check.lua.template's own two-sample technique verbatim -- "did the mechanism run"
--- before correctness. Then: map_is_streamed must be 1 (the resolver's streamed branch actually
--- ran) and cam_nt must match the independently-computed parity value, both RAM reads: real, but
--- upstream of the render itself. The render check then reads every block's own four tiles
--- (mt_tl/tr/bl/br) and every attribute byte directly out of PPU memory, comparing each against
--- the oracle's expected values.
+-- Boot-sanity gate (frame_cnt advances) reuses sw_quadrant_check.lua.template's own two-sample
+-- technique verbatim -- "did the mechanism run" before correctness -- and stays a fallback,
+-- independent of the display-enable hook above: if rendering is simply never turned on while
+-- streamed (or game_state never reaches ST_GAMEPLAY), a frame-based timeout still fails explicitly
+-- rather than hanging.
 
 local frame_cnt        = __FRAME_CNT__
 local game_state       = __GAME_STATE__
 local ST_GAMEPLAY      = __ST_GAMEPLAY__
 local map_is_streamed  = __MAP_IS_STREAMED__
 local cam_nt            = __CAM_NT__
+local cam_x_lo          = __CAM_X_LO__
+local cam_y_lo          = __CAM_Y_LO__
 local expected_cam_nt   = __EXPECTED_CAM_NT__
+local expected_cam_x_lo = __EXPECTED_CAM_X_LO__
+local expected_cam_y_lo = __EXPECTED_CAM_Y_LO__
 
 local block_checks = __BLOCK_CHECKS__
 local attr_checks = __ATTR_CHECKS__
 
-local EXIT_TIMEOUT        = 99
-local EXIT_NO_BOOT        = 2
-local EXIT_BAD_STATE      = 3
-local EXIT_WRONG_STREAMED = 4
-local EXIT_WRONG_RENDER   = 5
+local EXIT_TIMEOUT          = 99
+local EXIT_NO_BOOT          = 2
+local EXIT_BAD_STATE        = 3
+local EXIT_WRONG_STREAMED   = 4
+local EXIT_WRONG_RENDER     = 5
+local EXIT_NO_RENDER_ENABLE = 6
 
 local frame = 0
 local baselineFrameCnt = nil
 local checked = false
+local previousMask = 0
 
 local function log(message) emu.log(message) end
 local function fail(code, message) log("FAIL: " .. message) emu.stop(code) end
@@ -69,7 +81,17 @@ local function checkRender()
   end
   local actualCamNt = readCpu(cam_nt)
   if actualCamNt ~= expected_cam_nt then
-    fail(EXIT_WRONG_STREAMED, string.format("cam_nt is %d, expected %d (screenCol=1,screenRow=1 parity) -- the landing scroll's own nametable-select bits", actualCamNt, expected_cam_nt))
+    fail(EXIT_WRONG_STREAMED, string.format("cam_nt is %d, expected %d -- the landing scroll's own nametable-select bits", actualCamNt, expected_cam_nt))
+    return false
+  end
+  local actualCamXLo = readCpu(cam_x_lo)
+  if actualCamXLo ~= expected_cam_x_lo then
+    fail(EXIT_WRONG_STREAMED, string.format("cam_x_lo is %d, expected %d -- the landing's own published horizontal scroll", actualCamXLo, expected_cam_x_lo))
+    return false
+  end
+  local actualCamYLo = readCpu(cam_y_lo)
+  if actualCamYLo ~= expected_cam_y_lo then
+    fail(EXIT_WRONG_STREAMED, string.format("cam_y_lo is %d, expected %d -- the landing's own published vertical scroll", actualCamYLo, expected_cam_y_lo))
     return false
   end
 
@@ -97,8 +119,24 @@ local function checkRender()
     end
   end
 
-  pass(string.format("window-render parity: cam_nt=%d, all %d blocks and %d attribute bytes match the independent project.json oracle", actualCamNt, #block_checks, #attr_checks))
+  pass(string.format(
+    "window-render parity at the real first display-enable frame: cam_nt=%d, cam_x_lo=%d, cam_y_lo=%d, all %d blocks and %d attribute bytes match the independent project.json oracle",
+    actualCamNt, actualCamXLo, actualCamYLo, #block_checks, #attr_checks))
   return true
+end
+
+-- The real display-enable boundary: the FIRST $2001 write with bits $18 (background+sprites) newly
+-- set, while map_is_streamed is already 1 -- fires synchronously at that exact write, before any
+-- later frame's own main-loop/NMI code (including ordinary per-frame camera tracking) can run.
+local function onMaskWrite(address, value)
+  local wasOn = (previousMask & 0x18) ~= 0
+  local isOn = (value & 0x18) ~= 0
+  previousMask = value
+  if checked then return end
+  if not isOn or wasOn then return end
+  if readCpu(map_is_streamed) ~= 1 then return end
+  checked = true
+  if checkRender() then emu.stop(0) end
 end
 
 local function onFrame()
@@ -115,25 +153,24 @@ local function onFrame()
     return
   end
 
-  local current = readCpu(frame_cnt)
-  local state = readCpu(game_state)
-  if current ~= baselineFrameCnt and state == ST_GAMEPLAY then
-    if checkRender() then emu.stop(0) end
-    checked = true
-    return
-  end
+  if checked then return end
 
   if frame > 180 then
-    if checked then return end
+    local current = readCpu(frame_cnt)
+    local state = readCpu(game_state)
     if current == baselineFrameCnt then
       fail(EXIT_NO_BOOT, string.format(
         "frame_cnt held at %d from frame 30 through frame %d -- the NMI stopped, or never really ran",
         baselineFrameCnt, frame))
-    else
+    elseif state ~= ST_GAMEPLAY then
       fail(EXIT_BAD_STATE, string.format(
         "game_state is %d, not ST_GAMEPLAY (%d), %d frames after boot", state, ST_GAMEPLAY, frame))
+    else
+      fail(EXIT_NO_RENDER_ENABLE, string.format(
+        "no $2001 write enabled rendering while map_is_streamed was 1 within %d frames", frame))
     end
   end
 end
 
 emu.addEventCallback(onFrame, emu.eventType.endFrame)
+emu.addMemoryCallback(onMaskWrite, emu.callbackType.write, 0x2001)

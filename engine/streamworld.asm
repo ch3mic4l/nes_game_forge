@@ -368,7 +368,23 @@ sw_move_probe_solid_done:
 ;     <probe_x>'s own wrapped value already IS the correct local x on the
 ;     neighbour screen, needing no further adjustment.
 ; Clobbers A, X, Y, <tmp> (sw_move_probe_solid's own reuse, the one path
-; that reaches it); win_col_screen/win_row_screen are read, never written.
+; that reaches it); sw_col/sw_row are read, never written.
+;
+; Phase 2 slice "landing": this used to add dx/dy to win_col_screen/win_row_
+; screen (the camera window's own origin) instead of sw_col/sw_row (the
+; player's own current screen) -- flagged, not fixed, by phase 2 slice 4b's
+; own progress notes as a latent quirk masked only because a landing back
+; then always pinned win_col_screen/win_row_screen to the entered screen
+; itself. This fix's own sw_camera_window_install ends that coincidence --
+; a landing's window is now the real, player-centred, clamped origin, which
+; a corner (or any edge) landing puts a whole screen away from sw_col/sw_row
+; -- so a scripted Move issued before the first real crossing could resolve
+; its leading-edge probe against the WRONG neighbour screen, letting an
+; off-grid crossing read real (passable) terrain instead of being refused
+; outright. sw_hazard_probe_type (below) already uses sw_col/sw_row for the
+; identical reason its own header gives; this brings sw_move_probe in line
+; with it rather than leaving two probes disagreeing on which screen is
+; "current".
 ; ==========================================================================
 sw_move_probe:
   tya
@@ -392,11 +408,11 @@ sw_move_probe_cross:
   ; A = dx, Y = dy here (dx=0 falls through from the cpy/beq above with A
   ; still holding the 0 pla just set).
   clc
-  adc win_col_screen          ; A = target screenCol
+  adc sw_col                  ; A = target screenCol
   pha
   tya
   clc
-  adc win_row_screen          ; A = target screenRow
+  adc sw_row                  ; A = target screenRow
   tax
   pla
   jsr sw_move_probe_solid
@@ -417,18 +433,17 @@ sw_move_probe_same:
 ; entity_touching_player never leaves the entity's spawn screen).
 ;
 ; Same dx/dy normalization shape as sw_move_probe (above), against sw_col/
-; sw_row rather than win_col_screen/win_row_screen: sw_col/sw_row is the
-; player's own CURRENT screen, the identity sw_locate_current/sw_enter_screen
-; are built around and sw_cross_left/right/up/down keep live every frame;
-; win_col_screen/win_row_screen is the camera WINDOW's own origin, which
-; slice 4b's own sw_win_col_inc/dec (above) deliberately step at most one
-; block a frame, up to a whole screen's own lag behind sw_col/sw_row while
-; the window arms -- reusing that tracker here would misresolve the target
-; screen for as long as an arm is still catching up. (sw_move_probe's own
-; use of win_col_screen/win_row_screen for a scripted Move's leading edge
-; predates this window-arm mechanism and was not touched by this slice; see
-; this slice's own progress notes for why that is flagged rather than
-; fixed here.)
+; sw_row: sw_col/sw_row is the player's own CURRENT screen, the identity
+; sw_locate_current/sw_enter_screen are built around and sw_cross_left/
+; right/up/down keep live every frame. win_col_screen/win_row_screen is the
+; camera WINDOW's own origin instead -- slice 4b's own sw_win_col_inc/dec
+; (above) deliberately step it at most one block a frame, up to a whole
+; screen's own lag behind sw_col/sw_row while the window arms, and phase 2
+; slice "landing" made a landing's own window generally differ from the
+; entered screen too -- reusing that tracker here would misresolve the
+; target screen. (sw_move_probe used win_col_screen/win_row_screen until
+; the "landing" fix exposed the same misresolution there; both probes now
+; agree on sw_col/sw_row as "current screen".)
 ;
 ; Unlike sw_move_probe_solid, this does not collapse the result to a solid/
 ; passable boolean -- player_hazard needs the RAW mt_collision type (an
@@ -2438,10 +2453,11 @@ sw_rw_nty:    .db 0, 0, 15, 15
 ;   No other state touched -- the caller still does its own switch_chr_bank/
 ;   set_screen_ptr/etc, unchanged.
 ;   Streamed: mtptr/PRG bank/CHR bank already point at the target screen,
-;   win_col_screen/row+local already frame the entered screen as the
-;   window's own top-left origin (no local offset -- no scrolling wired
-;   yet, Part C's wall keeps the player here), cam_nt/cam_x_lo/cam_y_lo
-;   already hold that origin's own landing scroll, sw_cam_origin_x_lo/hi
+;   win_col_screen/row+local already hold the real clamped, player-centred
+;   window sw_camera_window_install computes (phase 2 slice "landing" --
+;   sw_resolve_divdone, below -- not the entered screen's own top-left
+;   corner, and in general NOT zero-local on either axis), cam_nt/cam_x_lo/
+;   cam_y_lo already hold that origin's own landing scroll, sw_cam_origin_x_lo/hi
 ;   and sw_cam_origin_y_lo/hi already hold that SAME origin in world-space
 ;   (screenCol*256, screenRow*240 -- phase 2 slice 4a, ruling 1: this is
 ;   the origin's first production writer; slice 4b's movement driver
@@ -2626,65 +2642,26 @@ sw_resolve_divloop:
   jmp sw_resolve_divloop
 sw_resolve_divdone:
   ; sw_tmp5 = screenCol, sw_tmp3 = screenRow
-  lda sw_tmp5
-  sta win_col_screen
-  lda #0
-  sta win_col_local
-  lda sw_tmp3
-  sta win_row_screen
-  lda #0
-  sta win_row_local
-  ; Landing scroll: the window is aligned to the entered screen's own
-  ; top-left corner (no local offset), so the physical origin
-  ; sw_render_window computes always lands on a whole nametable multiple --
-  ; cam_x_lo/cam_y_lo are always 0, only the nametable-select bits vary,
-  ; one per axis, matching sw_rw_nt_hi's own bit0=horizontal/bit1=vertical
-  ; convention.
-  lda sw_tmp5
-  and #1
-  sta sw_tmp6
-  lda sw_tmp3
-  and #1
-  asl a
-  ora sw_tmp6
-  sta <cam_nt
-  lda #0
-  sta <cam_x_lo
-  sta <cam_y_lo
-  ; Streamed camera world-space origin (ruling 1, phase 2 slice 4a): the
-  ; still-fixed entry-screen origin sw_project_axis's real callers (oam.asm,
-  ; entities.asm) project sprite positions against. world_x = screenCol*256
-  ; + localX, and 256 divides a byte exactly, so the origin's own low byte
-  ; is always 0 and its high byte is the screen column itself -- no
-  ; arithmetic. world_y = screenRow*240 + localY needs a real multiply (240
-  ; is not a power of two): screenRow*240 = screenRow*256 - screenRow*16, a
-  ; shift-and-subtract, cold path only (this runs once per landing, never
-  ; per frame -- slice 4b's movement driver is this value's CONTINUOUS
-  ; writer, plan line 842's own obligation).
-  lda #0
-  sta sw_cam_origin_x_lo
-  lda sw_tmp5
-  sta sw_cam_origin_x_hi
-  lda sw_tmp3
-  sta sw_tmp                   ; row*16 lo, pre-shift
-  lda #0
-  sta sw_tmp2                  ; row*16 hi, pre-shift
-  ldx #4
-sw_resolve_originy_shift:
-  asl sw_tmp
-  rol sw_tmp2
-  dex
-  bne sw_resolve_originy_shift
-  lda #0
-  sec
-  sbc sw_tmp
-  sta sw_cam_origin_y_lo
-  lda sw_tmp3
-  sbc sw_tmp2
-  sta sw_cam_origin_y_hi
+  ;
+  ; Landing window (phase 2 slice "landing", fixing the defect fix round 2's
+  ; review found: a top-left-aligned landing window/scroll left the visible
+  ; rect outside completed content for ~70 frames until sw_frame_camera_
+  ; window's own per-frame tracking caught up -- docs/reference-engine.md).
+  ; sw_enter_screen must run FIRST: it is the single writer of sw_col/sw_row
+  ; (this screen's own grid position), and sw_camera_window_install's own
+  ; recompute reads those two bytes to build worldX/worldY, the identical
+  ; formula sw_frame_camera_window's per-frame tracking uses. player_x/
+  ; player_y are already the landing position -- every one of the 5 landing
+  ; sites (cold boot, start_game, restart_game, take_door, continue_game)
+  ; sets them before ever reaching sw_resolve_screen (docs/reference-
+  ; engine.md's own "5 landing sites" paragraph) -- so this is the SAME
+  ; clamped, player-centred camera/window computation tracking will make on
+  ; its very next frame, installed now instead of only published a few
+  ; frames later: single writer, sw_camera_window_recompute, below.
   lda sw_tmp5                    ; A = screenCol
   ldx sw_tmp3                    ; X = screenRow
-  jmp sw_enter_screen             ; tail call -- its own rts answers for ours
+  jsr sw_enter_screen
+  jmp sw_camera_window_install    ; tail call -- its own rts answers for ours
 
 ; ==========================================================================
 ; Phase 2 slice 4b -- the movement driver's own per-frame camera-feed and
@@ -2800,12 +2777,18 @@ sw_wedr_c1:
   rts
 
 ; ==========================================================================
-; sw_frame_camera_window -- the whole per-frame sequence: derive this
+; sw_camera_window_recompute -- the whole per-frame sequence: derive this
 ; frame's clamped camera position from the player's own world pixel
 ; position, publish it to cam_x_lo/cam_y_lo/cam_nt under the cam_dirty
-; lock (engine/camera.asm's own bracketing convention), derive the desired
-; window origin from that same clamped camera position, then tail-call the
-; arm decision. Mainline only, once a frame; never called from NMI.
+; lock (engine/camera.asm's own bracketing convention), then derive the
+; desired window origin from that same clamped camera position into
+; sw_fc_desc/desl/desr/desrl. Single writer of this whole computation --
+; sw_frame_camera_window (below) tail-calls sw_win_arm with it every
+; ordinary frame; sw_camera_window_install (below) installs its answer
+; directly as the window's own "current" origin at a landing, so a landing
+; renders the SAME clamped, player-centred rect tracking would otherwise
+; only reach ~70 frames later (the defect sw_resolve_divdone's own comment,
+; above, names).
 ;
 ; worldX is free: hi=sw_col, lo=player_x (a screen is exactly 256px, a full
 ; byte, so no arithmetic joins them). worldY = sw_row*240+player_y needs the
@@ -2830,9 +2813,10 @@ sw_wedr_c1:
 ; loop, the same cold-path idiom sw_resolve_screen's own screenRow divmod
 ; already uses (never more than sw_grid_h iterations, once a frame).
 ;
-; Clobbers A, X, Y, sw_tmp..sw_tmp6, sw_fc_*.
+; Out: sw_fc_desc/desl/desr/desrl = this call's own desired window origin
+; (screen+local, per axis). Clobbers A, X, Y, sw_tmp..sw_tmp6, sw_fc_*.
 ; ==========================================================================
-sw_frame_camera_window:
+sw_camera_window_recompute:
   ; ---- worldY = sw_row*240 + player_y (sw_tmp/sw_tmp2 = row<<4, staged) ----
   lda sw_row
   sta sw_tmp
@@ -3120,7 +3104,62 @@ sw_fcw_ydivmod15_done:
   jsr sw_clamp_row
   sta sw_fc_desr
   stx sw_fc_desrl
+  rts
+
+; ==========================================================================
+; sw_frame_camera_window -- the ordinary per-frame entry point: recompute
+; this frame's desired window (above), then tail-call the arm decision,
+; which steps the window's own "current" origin toward it by at most one
+; block and arms a fresh strip for the newly-entered edge. Called once a
+; frame from engine/player.asm's streamed update_player branch, after any
+; movement/knockback for the frame has already landed in player_x/player_y/
+; sw_col/sw_row. Always runs, whether or not the player actually moved this
+; frame -- cheap when nothing changed (the arm decision below finds
+; desired==current and does nothing), and camera-follow must keep working
+; through a capped knockback too.
+; ==========================================================================
+sw_frame_camera_window:
+  jsr sw_camera_window_recompute
   jmp sw_win_arm                ; tail call -- its own rts answers for ours
+
+; ==========================================================================
+; sw_camera_window_install -- the landing entry point (sw_resolve_divdone,
+; above): recompute the SAME clamped, player-centred desired window
+; sw_frame_camera_window's tracking would otherwise only reach a few frames
+; later, then install it DIRECTLY as the window's own "current" origin
+; (win_col_screen/local, win_row_screen/local) instead of sw_win_arm's own
+; approach-by-one-block-and-arm-a-strip dance -- there is no prior "current"
+; window to approach FROM at a landing, and sw_render_window (the caller's
+; very next call, engine/boot.asm/engine/screens.asm) renders whatever
+; win_col/row screen+local hold, so this must already be the full desired
+; rect before that call, not merely armed toward it. Because install sets
+; current equal to desired, sw_win_arm's own first ordinary comparison next
+; frame finds nothing to arm (the plan's own "the first tracking frame after
+; the landing must compute already-at-desired" requirement) -- unless the
+; player has itself moved in the interim (impossible between a landing and
+; its own very next frame).
+;
+; sw_camera_window_recompute's own cam_x_lo/cam_y_lo/cam_nt/sw_cam_origin_*
+; publish already ran by the time this returns, so the caller's own
+; enable_rendering-adjacent $2000/$2005/$2005 write sequence (identical in
+; boot.asm and screens.asm) reads the correct, already-clamped scroll --
+; camera, physical scroll and OAM are all consistent before display turns on.
+;
+; In: sw_col/sw_row/player_x/player_y already the landing position (set by
+; sw_enter_screen and by the caller, respectively, both of which run before
+; this). Clobbers exactly as sw_camera_window_recompute does.
+; ==========================================================================
+sw_camera_window_install:
+  jsr sw_camera_window_recompute
+  lda sw_fc_desc
+  sta win_col_screen
+  lda sw_fc_desl
+  sta win_col_local
+  lda sw_fc_desr
+  sta win_row_screen
+  lda sw_fc_desrl
+  sta win_row_local
+  rts
 
 ; ==========================================================================
 ; sw_win_arm -- compares this frame's desired window origin (sw_fc_desc/
@@ -3195,8 +3234,12 @@ sw_win_arm_done:
 sw_win_arm_region_end:
   ; Kernel-budget boundary label (unconditional): brackets sw_win_col_inc/dec,
   ; sw_win_row_inc/dec, sw_win_entering_col_right/row_down,
-  ; sw_frame_camera_window and sw_win_arm as one named kernel-hi term,
-  ; excluding sw_knockback_step below regardless of BATTLE_ENABLED (this
+  ; sw_camera_window_recompute, sw_frame_camera_window,
+  ; sw_camera_window_install (the landing slice's own factoring-out of the
+  ; per-frame tracking computation, shared with sw_resolve_divdone above --
+  ; single writer, no second copy of the clamp/centre arithmetic) and
+  ; sw_win_arm as one named kernel-hi term, excluding sw_knockback_step below
+  ; regardless of BATTLE_ENABLED (this
   ; label sits at the same address sw_knockback_step would start at on an
   ; action project, and at sw_update_player's own address on an RPG, where
   ; the `.if !BATTLE_ENABLED` block below assembles to nothing).

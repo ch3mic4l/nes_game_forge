@@ -220,16 +220,49 @@ project.maps = [map];
 project.project.startMap = 0;
 project.project.startScreen = alignLandingY ? LANDING_SCREEN_INDEX : PRE_LANDING_SCREEN_INDEX;
 project.project.startX = 120;
-// win_col_local/win_row_local are hardcoded to 0 at landing regardless of startY -- "the window is
-// aligned to the entered screen's own top-left corner" (engine/streamworld.asm:2628-2636) -- so the
-// camera-follow formula's own Y term has no bearing on workload (d)'s alignment at boot. startY is
-// a plain, single sane value; the real mechanism is the pre_down phase in the .lua.template (a
-// short real hold of Down before leg 1 begins, crossing from PRE_LANDING_ROW into LANDING_ROW and
-// misaligning win_row_local before the measured column arm). --align-landing-y is workload (d)'s own
-// negative control: it starts directly on LANDING_ROW and skips that pre-phase, leaving win_row_local
-// at its landing value of 0 -- screen-aligned -- so the column arm's entering edge stays trivially
-// aligned.
-project.project.startY = 120;
+// Phase 2 slice "landing" (engine/streamworld.asm:2627-2648) replaced the old "landing always sets
+// win_col_local/win_row_local to 0" behaviour with sw_camera_window_install's real, player-centred
+// clamp/centre computation (sw_camera_window_recompute) -- so win_row_local at a landing now
+// depends on startY in general, and is 0 only at whichever startY happens to be that formula's own
+// fixed point for this screen. --align-landing-y's whole point is a landing that is ALREADY
+// screen-aligned on the row axis (no pre_down misalignment needed), so it needs that fixed-point
+// startY specifically, not a plain sane value: computed here (not hand-picked) by re-deriving the
+// same clamp/centre/window formula test/unit/streamworldmove.test.js's own predictDesiredWindow and
+// build_sw_render_roms.mjs's own computeWindow use (independent re-transcriptions, not imported),
+// and searching the legal startY range for the one row.local===0 solution, asserted below rather
+// than merely assumed.
+function clampWindowAxis(desiredScreen, desiredLocal, gridSize) {
+  const maxScreen = gridSize - 2;
+  if (desiredScreen > maxScreen || (desiredScreen === maxScreen && desiredLocal !== 0)) {
+    return { screen: maxScreen, local: 0 };
+  }
+  return { screen: desiredScreen, local: desiredLocal };
+}
+function computeWindowRow({ swRow, playerY, gridH }) {
+  const worldY = swRow * 240 + playerY;
+  const camPy = Math.min(Math.max(worldY - 112, 0), (gridH - 1) * 240);
+  const camScreenRow = Math.floor(camPy / 240);
+  const camLocalPxY = camPy % 240;
+  const camBlockY = camScreenRow * 15 + Math.floor(camLocalPxY / 16);
+  const desiredBlockY = Math.max(camBlockY - 7, 0);
+  return clampWindowAxis(Math.floor(desiredBlockY / 15), desiredBlockY % 15, gridH);
+}
+// player_y's own legal range is [0, MAX_Y] (engine/constants.asm's MAX_Y=224, 240-16) -- see
+// MAX_Y's own use in test/unit/streamworldmove.test.js's landing-case table.
+const MAX_Y = 224;
+let alignLandingYStartY = null;
+for (let y = 0; y <= MAX_Y; y++) {
+  if (computeWindowRow({ swRow: LANDING_ROW, playerY: y, gridH: GRID_H }).local === 0) {
+    alignLandingYStartY = y;
+    break;
+  }
+}
+if (alignLandingYStartY === null) {
+  throw new Error('--align-landing-y: no startY in [0, MAX_Y] lands with win_row_local === 0');
+}
+// The non---align-landing-y build keeps the old plain startY=120: its own alignment comes from a
+// real pre_down crossing (below), not from landing itself, so it has no fixed-point requirement.
+project.project.startY = alignLandingY ? alignLandingYStartY : 120;
 
 function placeChasers(screenIdx, count, offset = 0) {
   if (noActors || count <= 0) return;

@@ -284,13 +284,23 @@ test(
     // cur_map directly -- otherwise cur_map reads correctly (asserted above) while cur_song is
     // left stale, playing the PREVIOUS map's music on the very frame that changed both.
     assert.equal(mem[CUR_SONG], 2, 'cur_song must become the Streamed map\'s own songId, not stay stuck on the Before map\'s song');
-    // Case 20 (phase 2 plan's sabotage list): sw_resolve_divdone must compute cam_nt from the
-    // landing screen's own (col&1)|((row&1)<<1) parity, not hardcode it to 0 -- STREAM_TARGET_INDEX
-    // is screen index 4 of the 3x2 grid (col=1, row=1), both odd, so a hardcoded-0 sabotage of the
-    // parity computation reads identically to a correct one at screen (0,0) (the only landing every
-    // OTHER test in this file and streamworld.test.js's own cam_nt check ever exercises) but is
-    // wrong here: (1&1) | ((1&1)<<1) = 3.
-    assert.equal(mem[CAM_NT], 3, 'cam_nt must reflect the landing screen\'s own column/row parity (col1,row1 -> 3), not a hardcoded 0');
+    // Case 20 (phase 2 plan's sabotage list) is now phase 2 slice "landing" history, not this
+    // assertion's own job any more: cam_nt used to come straight from the ENTERED screen's own
+    // (col&1)|((row&1)<<1) parity (STREAM_TARGET_INDEX's screen (col=1,row=1) gave 3), so a
+    // hardcoded-0 sabotage of that parity read identically to a correct one only at screen (0,0).
+    // sw_resolve_divdone no longer computes cam_nt itself at all -- it installs the SAME clamped,
+    // player-centred camera sw_camera_window_recompute's per-frame tracking would reach a few
+    // frames later (engine/streamworld.asm:2627-2648), and cam_nt falls out of that clamped
+    // camera position (bit0 = clamped camPx's own bit 8, bit1 = clamped camPy/240's own parity),
+    // not the entered screen's raw identity. For THIS warp (destination x=100,y=100 on a 3x2
+    // grid), that clamped position genuinely computes to parity 0 (worked by hand: worldX=1*256+
+    // 100=356, camPx=clamp(356-120,0,512)=236, bit8=0; worldY=1*240+100=340, camPy=clamp(340-112,
+    // 0,240)=228, floor(228/240)=0) -- so a hardcoded-0 sabotage would now coincidentally pass
+    // here too. The still-live version of case 20's own intent (distinguish the real clamp
+    // formula from a hardcoded constant) lives in test/unit/streamworldmove.test.js's own
+    // "streamed landing installs the tracking window directly" test, whose LANDING_CASES include
+    // landings where the real clamped cam_nt is genuinely nonzero (e.g. its "interior" case).
+    assert.equal(mem[CAM_NT], 0, 'cam_nt must be the real clamped camera\'s own parity for this warp\'s destination (0), not the entered screen\'s raw identity (3) the pre-fix engine used');
 
     // The high-offset entity (screen index 4 of the 3x2 grid: terrain alone starts at byte
     // offset >= 960 into the region) must have spawned -- proves the streamed branch's entity

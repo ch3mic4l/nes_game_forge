@@ -1346,8 +1346,27 @@ export const NAME_ENTRY_KERNEL_ALLOWANCE = 107;
 // sw_move_probe_solid and sw_hazard_probe_cross) plus the Finding A/B
 // rewrite of sw_pstep_up's crossing case (per-probe renormalization, plus
 // the bcc/jmp branch-range fix)), not derived by hand from the new code's
-// own line count.
-export const STREAMWORLD_KERNEL_HI_ALLOWANCE = 3437;
+// own line count. The "landing" slice (fixing the top-left-landing-window
+// defect: sw_resolve_divdone used to align a streamed landing to the
+// entered screen's own top-left corner, leaving the visible rect outside
+// completed content for ~70 frames until sw_frame_camera_window's own
+// per-frame tracking caught up) shrank this again, from 3437 to 3342:
+// sw_resolve_divdone's own inline top-left window/scroll/origin computation
+// (screenCol/screenRow into win_col/row screen+local with local always 0,
+// cam_nt/cam_x_lo/cam_y_lo from screen parity, sw_cam_origin_x/y from the
+// screen's own pixel origin) is gone outright, replaced by a two-call tail
+// (`jsr sw_enter_screen` / `jmp sw_camera_window_install`) that reuses
+// tracking's own clamp/centre arithmetic instead of a second copy of it --
+// real net shrinkage in this region, the code that moved growing
+// STREAMWORLD_WINDOW_KERNEL_HI_ALLOWANCE below instead. Re-measured
+// directly (real kernel-hi delta 4538 on UNROM 512 action, 4503 rpg, 4538
+// action-mixed; each equals STREAMWORLD_MT_PAL_KERNEL_HI_BYTES(64) +
+// STREAMWORLD_WINDOW_KERNEL_HI_ALLOWANCE(866) +
+// STREAMWORLD_KNOCKBACK_KERNEL_HI_ALLOWANCE(32, action only) +
+// streamworldUpdatePlayerKernelHiAllowance (170 action / 167 rpg) +
+// STREAMWORLD_HAZARD_KERNEL_HI_ALLOWANCE(64) + 3342 exactly, all three
+// shapes), not derived by hand from the new code's own line count.
+export const STREAMWORLD_KERNEL_HI_ALLOWANCE = 3342;
 // mt_pal (assets/streamworld_metatiles.inc, generated alongside but
 // separate from assets/metatiles.inc -- the ordinary metatile tables exist
 // on every project, this one only when streaming is live), the
@@ -1671,8 +1690,20 @@ export const STREAMWORLD_HAZARD_KERNEL_ALLOWANCE = 5 + 10;
 // oam.asm/entities.asm sw_project_axis consumers read that origin, not
 // cam_x_lo/cam_y_lo, so a continuous walk needs it kept live. Re-measured
 // directly (measureStreamedSpan, same boundary labels): 834, flat across
+// action/RPG/mixed. The "landing" slice grew this again, from 834 to 866:
+// the per-frame recompute (worldX/Y, the clamp, the desired-window divmods)
+// is factored out of sw_frame_camera_window into its own
+// sw_camera_window_recompute, called by two entry points in this same
+// span -- sw_frame_camera_window itself (jsr recompute / jmp sw_win_arm,
+// the ordinary per-frame tracking path, unchanged behaviour) and the new
+// sw_camera_window_install (jsr recompute, then four loads/stores copying
+// the desired window straight into win_col/row screen+local), the landing
+// path's own single reuse of tracking's clamp/centre arithmetic rather than
+// a second copy of it (sw_resolve_divdone, engine/streamworld.asm, now just
+// `jsr sw_enter_screen` / `jmp sw_camera_window_install`). Re-measured
+// directly (measureStreamedSpan, same boundary labels): 866, flat across
 // action/RPG/mixed.
-export const STREAMWORLD_WINDOW_KERNEL_HI_ALLOWANCE = 834;
+export const STREAMWORLD_WINDOW_KERNEL_HI_ALLOWANCE = 866;
 // Phase 2 slice 4b: sw_update_player's own interim capped-knockback branch
 // (engine/streamworld.asm's sw_knockback_step) -- kernel-hi, gated `.if
 // !BATTLE_ENABLED` (mixed-projects/action only, per the brief's own scope:
