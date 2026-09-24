@@ -354,6 +354,21 @@ do_talk_loop:
   bne do_talk_next          ; TRIG_INTERACT is zero
   jsr entity_in_reach
   bne do_talk_next
+  ; Phase 2 slice 4b: start_dialog itself sets game_state=ST_DIALOG
+  ; synchronously (engine/ui.asm), which already skips update_player this
+  ; same frame via main_loop's own game_state gate (engine/boot.asm) -- this
+  ; is a documented belt-and-suspenders companion for the streamed driver
+  ; specifically, matching the project's own stated principle ("a frame
+  ; that draws a screen or decides a warp belongs to that transition, not
+  ; the player"), placed on the actual event-starting path only (not
+  ; do_talk's entry) so an interact press into empty space never freezes a
+  ; frame that never needed freezing.
+do_talk_freeze_dispatch:
+  .if STREAMING_ENABLED
+  lda #1
+  sta <sw_event_freeze
+  .endif
+do_talk_freeze_done:
   jmp start_dialog          ; X = the slot being spoken to
 do_talk_next:
   inx

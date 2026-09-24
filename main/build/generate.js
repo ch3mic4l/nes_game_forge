@@ -1326,7 +1326,28 @@ export const NAME_ENTRY_KERNEL_ALLOWANCE = 107;
 // this same file/region. Re-measured directly (real kernel-hi delta 2753 on
 // UNROM 512, flat across action/rpg/mixed; 2753 -
 // STREAMWORLD_MT_PAL_KERNEL_HI_BYTES(64) = 2689), not derived by hand.
-export const STREAMWORLD_KERNEL_HI_ALLOWANCE = 2689;
+// Fix round 1 (streamed-worlds-phase2-s4b-fix1) grew this again, from 2689
+// to 3385: finding 1's real crossing implementation lives entirely in new
+// resident code (sw_hazard_probe_solid/sw_hazard_probe_solid_cross, six
+// small per-axis recompute helpers -- sw_pr_calc/sw_pl_calc/sw_pd_calc_a/
+// sw_pd_calc_b/sw_pu_calc_noborrow/sw_pu_calc_b -- and the four
+// sw_pstep_left/right/up/down routine bodies, all in engine/streamworld.asm
+// ahead of sw_update_player, all unconditional under STREAMING_ENABLED),
+// none of which falls inside any other named span. Re-measured directly
+// (fix round 2: real kernel-hi delta 4601 on UNROM 512 action, 4566 rpg,
+// 4601 action-mixed; each equals STREAMWORLD_MT_PAL_KERNEL_HI_BYTES(64) +
+// STREAMWORLD_WINDOW_KERNEL_HI_ALLOWANCE(834) +
+// STREAMWORLD_KNOCKBACK_KERNEL_HI_ALLOWANCE(32, action only) +
+// streamworldUpdatePlayerKernelHiAllowance (170 action / 167 rpg) +
+// STREAMWORLD_HAZARD_KERNEL_HI_ALLOWANCE(64, fix round 2 finding C shrank
+// sw_hazard_probe_cross's tail by 4 bytes) + 3437 exactly, all three
+// shapes -- the remaining +52 over the fix-round-1 value of 3385 is
+// sw_terrain_or_fill_solid_type (fix round 2 finding C, shared by
+// sw_move_probe_solid and sw_hazard_probe_cross) plus the Finding A/B
+// rewrite of sw_pstep_up's crossing case (per-probe renormalization, plus
+// the bcc/jmp branch-range fix)), not derived by hand from the new code's
+// own line count.
+export const STREAMWORLD_KERNEL_HI_ALLOWANCE = 3437;
 // mt_pal (assets/streamworld_metatiles.inc, generated alongside but
 // separate from assets/metatiles.inc -- the ordinary metatile tables exist
 // on every project, this one only when streaming is live), the
@@ -1438,28 +1459,46 @@ export const STREAMWORLD_INIT_SESSION_KERNEL_ALLOWANCE = 4;
 // inside `.if BOUND_TILE_ENABLED`, so a streamed project that never
 // authors a bound tile anywhere (including its ordinary maps) pays nothing.
 export const STREAMWORLD_BOUND_CACHE_KERNEL_ALLOWANCE = 8;
-// engine/player.asm's cross_left/cross_right/cross_up/cross_down: Part C's
-// interim wall -- every edge is solid while the CURRENT screen is streamed,
-// since there is no strip-streaming machinery wired to cross into a
-// neighbour with yet. Each direction is `lda/beq/jmp cross_none` -- 7 bytes
-// -- and all four assemble unconditionally (cross_* has no feature gate of
-// its own), so this is flat 4x7 = 28 regardless of project shape.
-export const STREAMWORLD_CROSS_KERNEL_ALLOWANCE = 4 * 7;
-// engine/player.asm's cross_set_screen: past the interim wall above, a real
-// crossing runs through this new helper instead of a bare `sta <flat_screen`,
-// so flat_screen stays the global id (decision 2, never a compacted index)
-// while ord_screen adopts the newly-crossed-to compacted index too -- the
-// delta-based fix for the stale/wrong-value defect sabotage case 8 names.
-// The helper itself (`pha/sec/sbc/clc/adc/sta/pla/sta/rts`, two 2-byte
-// zero-page operands, six 1-byte implied ones) is a fixed 13 bytes,
-// unconditional under STREAMING_ENABLED regardless of camera axis config.
-// Each of its 8 call sites (the slide branch and the cut fallback, times
-// all 4 directions) replaces a 2-byte `sta <flat_screen` with a 3-byte
-// `jsr cross_set_screen`, +1 byte each -- and all 8 always assemble: a
-// streamed map only ever reaches the build on UNROM 512 with four-screen
-// mirroring (the only ring implemented so far, shared/project.js's own
-// streamed-map validation), and cameraAxes answers both axes true under
-// four-screen, so there is no camera-axis-dependent variant to track here.
+// engine/player.asm's cross_left/cross_right/cross_up/cross_down. Phase 2
+// slice 4b originally replaced Part C's interim wall (every edge solid
+// while the CURRENT screen is streamed) with a real per-direction crossing
+// arm inside these four routines themselves (a grid-boundary "clamp edges"
+// guard plus a snap of the leaving axis) -- STREAMWORLD_CROSS_KERNEL_
+// ALLOWANCE used to price that, flat 21+27+21+27 = 96 bytes. Fix round 1
+// (streamed-worlds-phase2-s4b-fix1, finding 1) found that design itself
+// defective (a held crossing needs to land mid-frame at the TRUE 256(X)/
+// 240(Y) boundary with its signed overshoot, not snap to MAX_X/MAX_Y on the
+// FOLLOWING frame) and moved the real crossing entirely into
+// sw_pstep_left/right/up/down (engine/streamworld.asm) instead, reached
+// straight from sw_update_player, never from cross_left/right/up/down --
+// sw_update_player never falls through to move_left/right/up/down. That
+// left cross_left/right/up/down exactly as they were before slice 4b: pure
+// ordinary-screen crossing code with no map_is_streamed branch, no
+// grid-boundary guard, and no streaming-conditional byte cost beyond the
+// STREAMING_ENABLED ord_screen/flat_screen operand choice already priced by
+// STREAMWORLD_CROSS_TRANSLATE_KERNEL_ALLOWANCE's call-site half below (a
+// `ldy <ord_screen`/`ldy <flat_screen` swap costs the same 2 bytes either
+// way). Re-measured directly (test/unit/kernelbytes.test.js's own
+// measureStreamedSpan region-delta technique, cross_left..cross_none,
+// streamed minus unstreamed baseline: 21 exactly, matching
+// STREAMWORLD_CROSS_TRANSLATE_KERNEL_ALLOWANCE alone with nothing left
+// over) -- the old per-direction dispatch this constant priced is fully
+// gone, not merely relabeled, so it is retired rather than zeroed in place.
+// engine/player.asm's cross_set_screen: a real crossing runs through this
+// helper instead of a bare `sta <flat_screen`, so flat_screen stays the
+// global id (decision 2, never a compacted index) while ord_screen adopts
+// the newly-crossed-to compacted index too -- the delta-based fix for the
+// stale/wrong-value defect sabotage case 8 names. The helper itself
+// (`pha/sec/sbc/clc/adc/sta/pla/sta/rts`, two 2-byte zero-page operands,
+// six 1-byte implied ones) is a fixed 13 bytes, unconditional under
+// STREAMING_ENABLED regardless of camera axis config. Each of its 8 call
+// sites (the slide branch and the cut fallback, times all 4 directions)
+// replaces a 2-byte `sta <flat_screen` with a 3-byte `jsr cross_set_screen`,
+// +1 byte each -- and all 8 always assemble: a streamed map only ever
+// reaches the build on UNROM 512 with four-screen mirroring (the only ring
+// implemented so far, shared/project.js's own streamed-map validation), and
+// cameraAxes answers both axes true under four-screen, so there is no
+// camera-axis-dependent variant to track here.
 export const STREAMWORLD_CROSS_TRANSLATE_KERNEL_ALLOWANCE = 13 + 8;
 // Fix round 1, finding 3: a streamed landing must not inherit the previous
 // OWNER screen's active bound-tile cache -- both landing-site copies of the
@@ -1587,7 +1626,106 @@ export const STREAMWORLD_MOVE_KERNEL_ALLOWANCE = 159;
 // contribution is 0 -- an ordinary project's Move code never touches the
 // $E000 bank at all, only its own compiled event bytes live there), flat
 // across action, RPG and the mixed shape.
-export const STREAMWORLD_MOVE_KERNEL_HI_ALLOWANCE = 80;
+export const STREAMWORLD_MOVE_KERNEL_HI_ALLOWANCE = 76;
+// Phase 2 slice 4b (docs/design-streamed-worlds.md §5, the continuous
+// movement driver): engine/player.asm's update_player_knock own streamed
+// dispatch branch -- `lda <map_is_streamed / bne` into the capped (1px,
+// SW_KNOCKBACK_SPEED) knockback step instead of the ordinary 3px one, 7
+// bytes, gated `.if STREAMING_ENABLED`. Measured
+// (test/unit/kernelbytes.test.js's own measureStreamedSpan,
+// update_player_knock/update_player_knock_ord), flat across action/RPG/
+// mixed.
+export const STREAMWORLD_UPDATE_PLAYER_DISPATCH_KERNEL_ALLOWANCE = 7;
+// Phase 2 slice 4b: sw_event_freeze's own two call sites -- engine/
+// input.asm's do_talk (armed the same frame an interact opens a
+// conversation, so a page with nothing to wait on can't also let the
+// player step that frame) and engine/boot.asm's main_loop_idle (cleared
+// every frame gameplay is live, mirroring how dash_on itself is refreshed
+// rather than latched). Each site is `lda #imm/sta <sw_event_freeze` -- 4
+// bytes -- summed into one term, the STREAMWORLD_LANDING_BOUND_CACHE_
+// KERNEL_ALLOWANCE precedent for a two-call-site term. Both gated `.if
+// STREAMING_ENABLED`. Measured (measureStreamedSpan, do_talk_freeze_
+// dispatch/do_talk_freeze_done and main_loop_idle_freeze_dispatch/
+// main_loop_idle_freeze_done), flat across action/RPG/mixed.
+export const STREAMWORLD_EVENT_FREEZE_KERNEL_ALLOWANCE = 4 + 4;
+// Phase 2 slice 4b, orchestrator ruling 9: player_hazard's own straddling-
+// probe dispatch (engine/combat.asm) -- kernel-lo, unconditional (every
+// streamed project pays it, not merely a Move-using one): the dx-capture
+// triple right after the probe_x add (5 bytes) plus the map_is_streamed
+// dispatch into sw_hazard_probe_type vs. the ordinary probe_type fallthrough
+// (10 bytes), summed into one term the same way STREAMWORLD_EVENT_FREEZE_
+// KERNEL_ALLOWANCE sums its own two call sites. Measured (measureStreamedSpan,
+// player_hazard_dx_capture/player_hazard_dx_capture_end and player_hazard_
+// dispatch/player_hazard_dispatch_end), flat across action/RPG/mixed: 5 + 10.
+export const STREAMWORLD_HAZARD_KERNEL_ALLOWANCE = 5 + 10;
+// Phase 2 slice 4b: the window/camera-window region in engine/
+// streamworld.asm (sw_win_col_inc/dec, sw_win_row_inc/dec, sw_win_
+// entering_col_right/row_down, sw_frame_camera_window, sw_win_arm) --
+// kernel-hi, unconditional (no BATTLE_ENABLED interior gate, unlike
+// sw_knockback_step just below). Measured (measureStreamedSpan,
+// sw_win_col_inc/sw_win_arm_region_end), flat across action/RPG/mixed:
+// 816. Fix round 1 (finding 2, ruling B) grew this again, from 816 to
+// 834: sw_frame_camera_window now publishes the full clamped world-space
+// origin (sw_cam_origin_x/y_lo/hi) alongside the physical scroll every
+// frame under the same cam_dirty lock, not only at a landing -- the
+// oam.asm/entities.asm sw_project_axis consumers read that origin, not
+// cam_x_lo/cam_y_lo, so a continuous walk needs it kept live. Re-measured
+// directly (measureStreamedSpan, same boundary labels): 834, flat across
+// action/RPG/mixed.
+export const STREAMWORLD_WINDOW_KERNEL_HI_ALLOWANCE = 834;
+// Phase 2 slice 4b: sw_update_player's own interim capped-knockback branch
+// (engine/streamworld.asm's sw_knockback_step) -- kernel-hi, gated `.if
+// !BATTLE_ENABLED` (mixed-projects/action only, per the brief's own scope:
+// an RPG's knockback stays the ordinary battle-system one). nesasm emits
+// no symbol at all for a label inside a false `.if`, so this measured 0 on
+// an RPG build (no span to take -- sw_knockback_step_end's own address is
+// never reached by a build where the block never assembles), confirmed by
+// the label lookup throwing rather than by assuming the old "shares an
+// address with what follows" model. 32 on action/mixed.
+export const STREAMWORLD_KNOCKBACK_KERNEL_HI_ALLOWANCE = 32;
+// Phase 2 slice 4b: sw_update_player itself (engine/streamworld.asm) --
+// the per-frame driver dispatch: the sw_event_freeze check, the capped-
+// knockback branch above, axis arbitration via sw_axis_pref, the
+// accumulator dispatch into sw_pstep_left/right/up/down (fix round 1,
+// finding 1 -- no longer cross_left/right/up/down, which never see a
+// streamed crossing at all any more), player_hazard/check_encounter, and
+// the tail call into sw_frame_camera_window -- kernel-hi. Game-type-
+// varying: two blocks inside its own body are each gated on BATTLE_ENABLED
+// in opposite directions -- an action-only `.if !BATTLE_ENABLED`
+// knockback-dispatch arm near the top and an RPG-only `.if BATTLE_ENABLED`
+// check_encounter call near the bottom -- net difference +3 action over
+// rpg, exactly the measured 170-vs-167 gap (the same +3 the prior 135-vs-132
+// figures held, since fix round 1's growth -- findings 1/4/7: the true
+// 256/240 ownership commit and flat_screen update now live in
+// sw_pstep_left/right/up/down rather than here, but the screen_fresh gate
+// that arms them and the walk-animation restore on a same-frame crossing
+// (finding 7) both grew this body directly -- is identical on both game
+// types). Measured (measureStreamedSpan, sw_update_player/
+// sw_update_player_end) on both game types; the mixed shape (action
+// gameType, mixed:true) measures identical to plain action (170),
+// confirming this varies on gameType alone, not on mixed-ness. Mirrors
+// ITEM_EFFECT_KERNEL_ALLOWANCE_BY_GAME_TYPE's own by-game-type shape,
+// above.
+export const STREAMWORLD_UPDATE_PLAYER_KERNEL_HI_ALLOWANCE_BY_GAME_TYPE = { action: 170, rpg: 167 };
+const FALLBACK_STREAMWORLD_UPDATE_PLAYER_KERNEL_HI_ALLOWANCE = Math.max(
+  ...Object.values(STREAMWORLD_UPDATE_PLAYER_KERNEL_HI_ALLOWANCE_BY_GAME_TYPE)
+);
+export function streamworldUpdatePlayerKernelHiAllowance(project) {
+  return (
+    STREAMWORLD_UPDATE_PLAYER_KERNEL_HI_ALLOWANCE_BY_GAME_TYPE[project.project?.gameType] ??
+    FALLBACK_STREAMWORLD_UPDATE_PLAYER_KERNEL_HI_ALLOWANCE
+  );
+}
+// Phase 2 slice 4b, orchestrator ruling 9: sw_hazard_probe_type (engine/
+// streamworld.asm) -- player_hazard's own straddling-collision probe for a
+// scripted player Move's wider ownership rectangle. Kernel-hi, unconditional
+// (not gated on MOVE_ENABLED or BATTLE_ENABLED -- player_hazard calls this
+// on every streamed screen regardless of either). Measured
+// (measureStreamedSpan, sw_hazard_probe_type/sw_hazard_probe_type_end), flat
+// across action/RPG/mixed. Fix round 2 finding C: sw_hazard_probe_cross's
+// tail collapsed from `jsr sw_terrain_or_fill / tay / lda mt_collision,y /
+// rts` to `jsr sw_terrain_or_fill_solid_type / rts`, -4 bytes: 68 -> 64.
+export const STREAMWORLD_HAZARD_KERNEL_HI_ALLOWANCE = 64;
 // script_op_join's own growth (engine/script.asm) -- RPG-only, since Join is
 // itself an RPG-only command.
 // Re-measured for the zero-page kernel diet: 63 (down from 64).
@@ -1832,7 +1970,6 @@ export function kernelCodeBytes(project, mapper) {
     (usesStreaming ? STREAMWORLD_MUSIC_KERNEL_ALLOWANCE : 0) +
     (usesStreaming && usesBattleBase ? STREAMWORLD_ENCOUNTER_KERNEL_ALLOWANCE : 0) +
     (usesStreaming && usesBoundTiles ? STREAMWORLD_BOUND_CACHE_KERNEL_ALLOWANCE : 0) +
-    (usesStreaming ? STREAMWORLD_CROSS_KERNEL_ALLOWANCE : 0) +
     (usesStreaming ? STREAMWORLD_CROSS_TRANSLATE_KERNEL_ALLOWANCE : 0) +
     (usesStreaming ? STREAMWORLD_INIT_SESSION_KERNEL_ALLOWANCE : 0) +
     (usesStreaming && usesBoundTiles ? STREAMWORLD_LANDING_BOUND_CACHE_KERNEL_ALLOWANCE : 0) +
@@ -1842,6 +1979,9 @@ export function kernelCodeBytes(project, mapper) {
     (usesStreaming ? STREAMWORLD_NMI_KERNEL_ALLOWANCE : 0) +
     (usesStreaming && usesPaletteFx ? STREAMWORLD_NMI_PALETTE_FX_KERNEL_ALLOWANCE : 0) +
     (usesStreaming ? STREAMWORLD_PROJECT_KERNEL_ALLOWANCE : 0) +
+    (usesStreaming ? STREAMWORLD_UPDATE_PLAYER_DISPATCH_KERNEL_ALLOWANCE : 0) +
+    (usesStreaming ? STREAMWORLD_EVENT_FREEZE_KERNEL_ALLOWANCE : 0) +
+    (usesStreaming ? STREAMWORLD_HAZARD_KERNEL_ALLOWANCE : 0) +
     KERNEL_SLACK
   );
 }
@@ -3156,8 +3296,27 @@ export function checkCapacity(project) {
   // as well as hasStreamed, never folded into the unconditional pair above.
   const usesMoveHere = projectUsesMove(project);
   const streamworldMoveHiBytes = hasStreamed && usesMoveHere ? STREAMWORLD_MOVE_KERNEL_HI_ALLOWANCE : 0;
+  // Phase 2 slice 4b: sw_update_player's own driver body and the window/
+  // camera-window region it calls into are unconditional kernel-hi terms,
+  // paid by every streamed project regardless of Move -- STREAMWORLD_WINDOW_
+  // KERNEL_HI_ALLOWANCE (flat) plus streamworldUpdatePlayerKernelHiAllowance
+  // (by game type, see that function's own comment). sw_knockback_step is a
+  // FOURTH, separately-gated term, `.if !BATTLE_ENABLED` inside sw_update_
+  // player's own file -- an RPG never assembles it (nesasm emits no symbol
+  // for a label inside a false `.if`, confirmed directly rather than assumed
+  // to share an address with what follows), so this is gated on
+  // !battleEnabledFor(project, mapper), the same predicate the RPG-vs-action
+  // split already uses everywhere else in this function.
+  const streamworldKnockbackHiBytes =
+    hasStreamed && !battleEnabledFor(project, mapper) ? STREAMWORLD_KNOCKBACK_KERNEL_HI_ALLOWANCE : 0;
   const streamworldHiBytes = hasStreamed
-    ? STREAMWORLD_KERNEL_HI_ALLOWANCE + STREAMWORLD_MT_PAL_KERNEL_HI_BYTES + streamworldMoveHiBytes
+    ? STREAMWORLD_KERNEL_HI_ALLOWANCE +
+      STREAMWORLD_MT_PAL_KERNEL_HI_BYTES +
+      streamworldMoveHiBytes +
+      STREAMWORLD_WINDOW_KERNEL_HI_ALLOWANCE +
+      streamworldKnockbackHiBytes +
+      streamworldUpdatePlayerKernelHiAllowance(project) +
+      STREAMWORLD_HAZARD_KERNEL_HI_ALLOWANCE
     : 0;
   if (musicBytes + sfxBytes + text.bytes + streamworldHiBytes > BANK_SIZE - 64) {
     problems.push({

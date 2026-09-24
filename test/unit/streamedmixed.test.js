@@ -402,14 +402,17 @@ test(
     // only 1195 are free"); the round 1 review fix's own real per-tile clipping for entities
     // (STREAMWORLD_PROJECT_KERNEL_ALLOWANCE, main/build/generate.js) narrowed it again, from 80 to
     // 79 (re-measured empirically: 79 screens still builds, "need 1081 bytes but only 1070 are
-    // free" at 80).
+    // free" at 80). Phase 2 slice 4b's own driver/wall/event-freeze kernel growth (the allowances
+    // docs/reference-kernel-budget.md's own Part F/4b group names) narrowed it again, from 79 to
+    // 71 (re-measured empirically: 71 screens still builds, 72 does not, "need 977 bytes but only
+    // 972 are free").
     // Distinct from slice 4b's own high-world-*coordinate* projection tests, this is purely the
     // resolver's own global-id dispatch at the numeric edge of what NO_SCREEN could be mistaken
     // for.
     const project = createStreamedProject({ gridW: 1, gridH: 1 });
     // Append a second, large ordinary map after the 1x1 streamed one.
     const ordinary = createMap(1, 'Big');
-    const BIG_W = 79;
+    const BIG_W = 71;
     const BIG_H = 1; // 79*1 = 79 screens -> global ids 1..79
     ordinary.gridW = BIG_W;
     ordinary.gridH = BIG_H;

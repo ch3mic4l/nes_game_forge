@@ -167,14 +167,37 @@ since cold boot draws its first screen without calling `redraw_screen`), `start_
 `restart_game`, `take_door` and `continue_game` (both through `redraw_screen`, `engine/screens.asm`)
 — reaches this and only this; there is no second implementation of "what a landing means."
 
-**Part C's interim wall**: `cross_left`/`cross_right`/`cross_up`/`cross_down` (`engine/player.asm`)
-treat every edge of a streamed CURRENT screen as solid — `lda/beq/jmp cross_none` per direction,
-unconditional, no feature gate of their own — because no strip-streaming machinery is wired to cross
-into a neighbour yet. `cross_set_screen` is the ORDINARY (non-streamed) crossing's own correction
-routine, already in place today (keeping `flat_screen` the global id while `ord_screen` adopts the
-newly-crossed-to compacted index) — it is not itself where a streamed crossing will run. The interim
-wall is pending replacement by slice 4b's own streamed movement driver, a different mechanism this
-codebase does not have yet, not a path through `cross_set_screen`.
+**Part C's wall is lifted (phase 2 slice 4b, redesigned by fix round 1's finding 1)**: the original
+slice 4b design put a `map_is_streamed` branch directly inside `cross_left`/`cross_right`/
+`cross_up`/`cross_down` (`engine/player.asm`), calling a same-named `sw_cross_left/right/up/down`
+that snapped `player_x`/`player_y` to `MAX_X`/`MAX_Y` on the frame *after* the crossing. Fix round 1
+found that snap itself defective — a held crossing must land mid-frame at the TRUE 256(X)/240(Y)
+boundary with its own signed overshoot (ruling C), which a next-frame `MAX_X`/`MAX_Y` clamp cannot
+express — and retired it outright rather than patching it: `cross_left`/`cross_right`/`cross_up`/
+`cross_down` no longer branch on `map_is_streamed` at all, and are reached only on an ordinary
+screen (`sw_update_player`, below, never falls through to `move_left`/`right`/`up`/`down`, so a
+streamed screen never calls them). The real crossing lives entirely in `sw_pstep_left`/`right`/
+`up`/`down` (`engine/streamworld.asm`), called directly from `sw_update_player`'s own accumulator
+dispatch. Each is a straddling two-point probe against `sw_hazard_probe_solid`/`_cross` (the
+leading edge's top and bottom BODY_* points); because a neighbour-screen probe can itself reach
+`sw_goto` and clobber `sw_tmp`, every probe after the first recomputes its own candidate through a
+small `sw_p*_calc*` helper rather than trusting a value read before the `jsr`. A collision or an
+off-grid edge (`sw_col`/`sw_row` already at the grid boundary, ruling C: "grid edges stay walls")
+refuses outright, leaving `player_x`/`player_y` and every crossed/committed field completely
+untouched — never a partial commit. A successful step commits the true position, which may
+legitimately be `255`/`239` (an intentional overshoot, never a `MAX_X`/`MAX_Y` snap), and only when
+that step also crosses the boundary does it call `sw_cross_right`/`left`/`up`/`down` (the O(1)
+`sw_col`/`sw_row`/`flat_screen` bookkeeping in `engine/streamworld.asm` — a different, purely
+internal helper from the retired `cross_*`-dispatched one above, despite the shared name) followed
+by `sw_locate_current` (`ord_screen`) and `spawn_entities` (repopulating the newly-owned screen's
+entities), then **sets `screen_fresh=1`** — the opposite of the original design's "deliberately no
+`redraw_screen`" claim: a streamed crossing frame is flagged exactly like an ordinary one now, so
+`main_loop`'s existing `screen_fresh` gate correctly skips `update_entities` that same frame (the
+entities were already freshly repopulated by the `spawn_entities` call above, in the same frame
+`spawn_entities` — not `update_entities` — needs to own). `main_loop_after_player`
+(`engine/boot.asm`, fix round 1) is a zero-byte label reached every frame regardless of which branch
+that gate takes, added so a Mesen timing harness measuring `update_player`'s own cost has an anchor
+that does not silently go unreached on exactly the frame it most needs to measure.
 
 **A scripted Move on a streamed screen (phase 2 slice 3, docs/design-streamed-worlds.md §7, ruling
 7) is a separate mechanism from Part C's interim wall above**, and only applies to the PLAYER
@@ -193,7 +216,7 @@ exact edge instead and found that changed the wall's own selected semantics (dec
 its accounting; it was removed.
 
 `move_speed_player` dispatches through `sw_walk_step_x`/`sw_walk_step_y` — the same sub-pixel
-accumulator organic walking will share once slice 4b's driver exists — instead of a flat
+accumulator held movement's own driver (`sw_update_player`, below) shares — instead of a flat
 `PLAYER_SPEED`, so a scripted player Move advances at the identical irregular per-frame rate.
 `move_tick` calls `move_speed` (and so this dispatch) BEFORE the clip against what is left, the
 bound check and the probe — the shared step generator's own residue policy: a clipped or refused
@@ -315,6 +338,69 @@ still gets `SW_STREAM_MIXED_CHUNK` (2) strip blocks drawn alongside it, and anyt
 producer's own per-frame byte count above 35 falls back to the exclusive drain and stalls the
 strip for that one frame. `st_active` alone gates the strip drawer (never `game_state`/`paused`),
 and exactly one `vram_drain` call executes on any ready frame across the splice's three exits.
+`st_active` is armed by `sw_win_arm` (below) calling `sw_stream_start_col`/`sw_stream_start_row`,
+whose own last act sets it nonzero — phase 2 slice 4a proved this consumer's timing with a Mesen
+RAM-poke test that forced `st_active` directly; **phase 2 slice 4b's `sw_update_player` is now the
+real, continuous, per-frame arming path** (`sw_frame_camera_window`'s desired-window derivation
+feeding `sw_win_arm`'s compare-and-arm), so `sw_nmi_stream` is exercised by ordinary held movement,
+not only by the RAM-poke harness. Both are proven against real hardware timing in Mesen: the 4a
+RAM-poke check (`test/lua/*bound_tile_nmi*`/strip-timing fixtures) and 4b's own driver-timing check
+(`test/lua/sw_driver_timing.lua.template`/`run_sw_driver_timing_check.sh`, below).
+
+**`sw_update_player` (phase 2 slice 4b, `engine/streamworld.asm`) is the whole per-frame movement
+and camera dispatch on a streamed map** — `update_player` (`engine/player.asm`) branches to it
+wholesale on `map_is_streamed`, replacing the ordinary per-button pad dispatch entirely rather than
+supplementing it; its own `rts` returns straight to `update_player`'s caller (`main_loop`), the
+same "`jmp` ends in `rts`, lands past the jumper" shape `cross_*`/`redraw_screen` already use. In
+order:
+
+- **`sw_event_freeze`** (`engine/constants.asm`) is a one-frame latch: `do_talk`
+  (`engine/input.asm`), on the actual event-starting path only — never on an interact press into
+  empty space — sets it before `jmp start_dialog`. `sw_update_player`'s own first instruction reads
+  it and skips straight to `player_hazard` when set, so an event that starts this frame cannot also
+  move the player this frame. It is a documented belt-and-suspenders companion to
+  `start_dialog`'s own synchronous `game_state=ST_DIALOG` (which already skips `update_player`
+  entirely via `main_loop`'s `game_state` gate) — matching the project's own stated principle that
+  a frame deciding a transition belongs to the transition, not the player. `main_loop_idle`
+  (`engine/boot.asm`, **never `dispatch_done`**) clears it unconditionally every frame regardless of
+  state, since `sw_update_player` only ever reads it on a frame `update_player` itself runs, so
+  clearing unconditionally cannot leave it stuck set across a frame that never checked it.
+- **Capped knockback** (`!BATTLE_ENABLED` only): `kb_timer` active overrides axis arbitration
+  outright via `sw_knockback_step`, then falls through to the same `player_hazard` tail.
+- **Axis arbitration** (`sw_axis_pref`): with no held direction, nothing to arbitrate. A fresh
+  press this frame (`pad_new`, X axis checked first so a simultaneous fresh press of both axes has
+  X win the tie) reassigns `sw_axis_pref` outright — "most recently pressed axis owns." Absent a
+  fresh press, the current `sw_axis_pref` wins if that axis is still held; otherwise arbitration
+  falls back to whichever axis *is* held, since a stale pref can still name an axis released frames
+  ago while the other stays held.
+- **The accumulator** (`sw_walk_step_x`/`sw_walk_step_y`, the same FALLEN STAR sub-pixel mechanism
+  `move_speed_player`'s scripted Move dispatch shares, above) drives exactly one axis's `cur_speed`
+  per frame, then calls `sw_pstep_left`/`sw_pstep_right`/`sw_pstep_up`/`sw_pstep_down`
+  (`engine/streamworld.asm`) directly — **never** the ordinary `move_left`/`move_right`/`move_up`/
+  `move_down` a non-streamed screen uses; fix round 1's finding 1 replaced that indirection (see
+  "Part C's wall is lifted," above) with `sw_pstep_*`'s own straddling two-point probe and true
+  256/240-boundary crossing commit.
+- **`player_hazard` and `check_encounter`** (RPG only) run exactly as the ordinary path does, by
+  the same probe-safety proof.
+- **`sw_frame_camera_window`** (`engine/streamworld.asm`) runs every frame regardless of whether the
+  player moved: it derives this frame's clamped camera position from the player's own world pixel
+  position (`worldX` free — `hi=sw_col, lo=player_x`, a screen is exactly 256px; `worldY =
+  sw_row*240+player_y`, a shift-and-subtract identity since 240=256-16), publishes it to
+  `cam_x_lo`/`cam_y_lo`/`cam_nt` under `cam_dirty`'s own bracketing convention
+  (`engine/camera.asm`), derives the desired window origin from that same clamped position, then
+  tail-calls `sw_win_arm` — the compare-and-arm decision above that sets `st_active`. Mainline
+  only, once a frame, never called from NMI. The clamp is `docs/design-streamed-worlds.md`'s one
+  formula per axis: `cameraOrigin = clamp(desiredOrigin, 0, max(mapPixels-viewportPixels, 0))`.
+  `sw_win_arm` arms at most one axis per frame (blocked or unchanged axes simply retry next frame;
+  the window's own 7-8 block margin absorbs the slack) and only while `st_active==0`, since arming
+  while a strip is still draining would overwrite `sbuf`/`st_len`/`st_cur` out from under
+  `sw_nmi_stream`'s own in-flight read.
+
+Real driver timing, both required Mesen negative controls (a genuinely idle frame costs markedly
+less than a crossing/fresh-arm frame; an implementation paying the expensive arm path
+unconditionally is caught by a wide margin) and the frame-bound recomputation obligation 1 named
+are discharged by `test/lua/sw_driver_timing.lua.template` /
+`test/lua/build_sw_driver_timing_roms.mjs` / `test/lua/run_sw_driver_timing_check.sh`.
 
 `box_close` keeps no copy of what the box covered: the box is tile rows 24-29, which is exactly
 metatile rows 12-14 with no half-row left over, so it rebuilds those rows straight out of

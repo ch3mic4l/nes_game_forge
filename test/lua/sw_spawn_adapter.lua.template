@@ -1,0 +1,201 @@
+-- sw_spawn_adapter.lua.template -- Mesen (cycle-accurate) measurement of the streamed spawn
+-- adapter (`spawn_streamed`, engine/entities.asm), discharging design-streamed-worlds.md's
+-- obligation 2 ("Spawn adapter bound... The 44-cycle charge covers one metadata byte, but the
+-- streamed metadata is 73 bytes read by spawn_entities. Discharged by: bounding the complete
+-- adapter (pointer rebasing or actual accessor count, page crossings) and recomputing the
+-- crossing case.").
+--
+-- A LANDING scenario (cold boot), not a movement scenario -- see build_sw_spawn_adapter_roms.mjs's
+-- own header for why: a live streamed crossing never calls spawn_entities/spawn_streamed
+-- (confirmed by grep against engine/streamworld.asm and engine/player.asm during obligation 1's
+-- own investigation this slice).
+--
+-- Measures CPU cycles elapsed between the entry of `spawn_entities` (engine/entities.asm, the
+-- real per-landing call site `boot_streamed_landing` uses, engine/boot.asm:121) and the entry of
+-- `build_oam` (the very next `jsr` on that same cold-boot path, :122) -- the exact span the real
+-- engine spends spawning a streamed screen's entities on landing, including spawn_entities' own
+-- dispatch into spawn_streamed (map_is_streamed is set) and spawn_streamed's own tail
+-- (sw_locate_current + rts).
+--
+-- This is a single-shot measurement (one landing, one span) -- unlike sw_driver_timing's own
+-- multi-frame busy/idle walk, there is no per-frame repetition to classify here.
+--
+-- Missing-workload negative control: run_sw_spawn_adapter_check.sh builds and runs BOTH
+-- --actors=8 (the landing screen's entity block spans offsets 241-312, past the 8-bit Y register's
+-- own 256-byte wrap -- sw_adv_offset's page-crossing carry branch is taken partway through, no
+-- special engineering needed) and --actors=1 (the entity block never reaches offset 256, the carry
+-- branch never taken) through this SAME template, and asserts the 8-actor measurement is markedly
+-- more expensive than the 1-actor one -- the plan's own wording (streamed-worlds-phase2-plan.md:
+-- 874-889), "the cheap path's own measured cost when no [page crossing] actually happens".
+--
+-- No separate extra-cost negative control: unlike sw_win_arm (an explicit decision with a cheap
+-- and an expensive branch, sabotaged in sw_driver_timing via project.code.overrides),
+-- sw_adv_offset's own page-crossing arithmetic (engine/streamworld.asm:196-201) is a trivial,
+-- unconditional `iny / bne skip / inc mtptr_hi` sequence with no separate gateable "expensive
+-- path" to force -- the 8-actor scenario already IS the worst real case (every slot filled, every
+-- record crossing), not a scenario an implementation could cheat by skipping.
+--
+-- Fix round 2 (finding D/ruling M) adds two evidence checks the byte-count math alone cannot give:
+--   * carry-branch EXECUTION evidence -- a bare exec breakpoint on the branch's own target cannot
+--     tell "reached because it fell through" from "reached because the branch was taken" without
+--     also comparing PCs by hand, so engine/streamworld.asm now carries a dedicated
+--     sw_adv_offset_carry label, executed if and only if the page-crossing carry branch itself was
+--     taken. EXPECT_CARRY (true only for --actors=8) is asserted exactly, both ways: the 8-actor
+--     build must show it firing, the 1-actor build must show it NOT firing -- EXIT_CARRY_MISMATCH.
+--   * spawn-CONTENTS evidence -- ent_active's own sum (MAX_ENTITIES bytes) is read before and
+--     after the span and must land at exactly ACTOR_COUNT, the real count baked into this build --
+--     not merely "changed", the same gap review-s4b-round2-no-spawn.mjs found in sw_driver_timing's
+--     own pre-fix-round-2 shape (a crossing that moves state but never actually spawns the
+--     entities would otherwise pass unnoticed). EXIT_NO_SPAWN_CONTENTS.
+-- This is a TEMPLATE, not the script Mesen runs directly. test/lua/build_sw_spawn_adapter_roms.mjs
+-- instantiates it, substituting the __PLACEHOLDER__ tokens below with addresses resolved fresh out
+-- of that exact build's own game.fns.
+--
+--   node test/lua/build_sw_spawn_adapter_roms.mjs [outDir] --actors=1|8
+--   Mesen --testRunner <outDir>/sw_spawn_adapter.lua <outDir>/sw_spawn_adapter.nes
+--
+-- (test/lua/run_sw_spawn_adapter_check.sh runs both actor counts and compares.)
+local SPAWN_ENTITIES      = __SPAWN_ENTITIES__
+local BUILD_OAM           = __BUILD_OAM__
+local MAIN_LOOP_READY     = __MAIN_LOOP_READY__
+local SW_ADV_OFFSET_CARRY = __SW_ADV_OFFSET_CARRY__ -- fix round 2 (finding D/ruling M): engine/
+                                                      -- streamworld.asm's own new label, executed
+                                                      -- if and only if sw_adv_offset's page-
+                                                      -- crossing carry branch was actually TAKEN.
+local ENT_ACTIVE          = __ENT_ACTIVE__
+local MAX_ENTITIES        = 8
+local ACTOR_COUNT         = __ACTOR_COUNT__ -- the real actor count baked into this exact build.
+local EXPECT_CARRY        = __EXPECT_CARRY__ -- true only for the --actors=8 build.
+
+-- Fix round 2 (finding D/ruling M): emu.getState()["masterClock"] is monotonic and, calibrated
+-- empirically (sw_driver_timing.lua.template's own header has the full story), already reported
+-- in CPU-cycle-equivalent units -- no division needed. Replaces the old PPU scanline/dot
+-- reconstruction, which silently discards any span crossing a frame boundary.
+local CPU_CYCLES_PER_MASTER_CLOCK_UNIT = 1
+
+local EXIT_TIMEOUT           = 99
+local EXIT_NO_BOOT           = 2
+local EXIT_NO_SPAWN_SEEN     = 3 -- main_loop_ready reached without spawn_entities ever firing first
+local EXIT_CARRY_MISMATCH    = 4 -- sw_adv_offset_carry firing (or not) didn't match EXPECT_CARRY
+local EXIT_NO_SPAWN_CONTENTS = 5 -- ent_active's own sum after the span didn't equal ACTOR_COUNT
+
+-- Pass encoding: exit code = EXIT_PASS_BASE + floor(cycles / MARGIN_SCALE), clamped -- same
+-- channel-of-last-resort convention as sw_driver_timing.lua.template's own header documents.
+-- Real measurement (2026-09-23, re-confirmed under fix round 2's own corrected clock-based
+-- method -- this short single-shot span never risked the frame-boundary wraparound that made
+-- sw_driver_timing's own old PPU-dot figures unreliable, and the two methods agree exactly here):
+-- 8-actor landing 2,940-3,000 cyc, 1-actor landing 600-660 cyc; 60 cyc/unit leaves headroom to
+-- 9,300 cycles.
+local EXIT_PASS_BASE = 100
+local MARGIN_SCALE = 60
+local EXIT_PASS_MAX = 255
+
+local TIMEOUT_FRAMES = 400
+
+local frame = 0
+local spanStart = nil
+local spawnSeen = false
+local measuredCycles = nil
+local carryTaken = false
+local entActiveSumBefore = nil
+
+local function log(message)
+  emu.log(string.format("[%5d] %s", frame, message))
+end
+
+local function fail(code, message)
+  log("FAIL: " .. message)
+  emu.stop(code)
+end
+
+local function pass(message)
+  log("ok   " .. message)
+end
+
+local function clockPosition()
+  return emu.getState()["masterClock"]
+end
+
+local function read(address)
+  return emu.read(address, emu.memType.nesMemory)
+end
+
+local function entActiveSum()
+  local sum = 0
+  for i = 0, MAX_ENTITIES - 1 do
+    if read(ENT_ACTIVE + i) ~= 0 then sum = sum + 1 end
+  end
+  return sum
+end
+
+local function onSpawnEntitiesEntry()
+  if spawnSeen then return end -- cold boot only calls spawn_entities once on this path
+  spawnSeen = true
+  carryTaken = false
+  entActiveSumBefore = entActiveSum()
+  spanStart = clockPosition()
+end
+
+local function onCarryEntry()
+  if spanStart == nil then return end -- outside the measured span (or already measured)
+  carryTaken = true
+end
+
+local function onBuildOamEntry()
+  if spanStart == nil then return end -- spawn_entities' own entry callback has not fired yet
+  local spanEnd = clockPosition()
+  measuredCycles = (spanEnd - spanStart) / CPU_CYCLES_PER_MASTER_CLOCK_UNIT
+  spanStart = nil
+  log(string.format("spawn_entities span: %.1f cycles", measuredCycles))
+
+  if carryTaken ~= EXPECT_CARRY then
+    fail(EXIT_CARRY_MISMATCH, string.format(
+      "sw_adv_offset_carry firing=%s did not match EXPECT_CARRY=%s for a %d-actor build",
+      tostring(carryTaken), tostring(EXPECT_CARRY), ACTOR_COUNT))
+    return
+  end
+  log(string.format("carry-branch evidence ok: sw_adv_offset_carry firing=%s matches EXPECT_CARRY for %d actors", tostring(carryTaken), ACTOR_COUNT))
+
+  local entActiveSumAfter = entActiveSum()
+  if entActiveSumAfter ~= ACTOR_COUNT then
+    fail(EXIT_NO_SPAWN_CONTENTS, string.format(
+      "ent_active sum after spawn was %d, expected exactly ACTOR_COUNT=%d -- ent_active sum before spawn was %d",
+      entActiveSumAfter, ACTOR_COUNT, entActiveSumBefore))
+    return
+  end
+  log(string.format("spawn-contents evidence ok: ent_active sum %d -> %d matches ACTOR_COUNT=%d", entActiveSumBefore, entActiveSumAfter, ACTOR_COUNT))
+end
+
+local function onMainLoopReady()
+  if measuredCycles ~= nil then return end -- already measured and about to stop
+  if frame > TIMEOUT_FRAMES then
+    fail(EXIT_TIMEOUT, "timed out waiting for main_loop_ready after the measured spawn")
+    return
+  end
+  if not spawnSeen then
+    fail(EXIT_NO_SPAWN_SEEN, "main_loop_ready reached before spawn_entities ever fired -- the cold-boot landing path did not run as expected")
+    return
+  end
+  -- spawn_entities fired, but build_oam's own entry callback has not landed yet (spanStart still
+  -- set) -- wait one more main_loop_ready poll rather than failing outright.
+end
+
+local function onFrame()
+  frame = frame + 1
+  if frame > TIMEOUT_FRAMES then
+    fail(EXIT_TIMEOUT, "timed out")
+    return
+  end
+  if measuredCycles ~= nil then
+    local code = math.min(EXIT_PASS_MAX, EXIT_PASS_BASE + math.floor(measuredCycles / MARGIN_SCALE))
+    pass(string.format("spawn adapter max %.1f cycles -> exit code %d (decode: (code-%d)*%d <= cycles < (code-%d+1)*%d)",
+      measuredCycles, code, EXIT_PASS_BASE, MARGIN_SCALE, EXIT_PASS_BASE, MARGIN_SCALE))
+    emu.stop(code)
+  end
+end
+
+emu.addEventCallback(onFrame, emu.eventType.endFrame)
+emu.addMemoryCallback(onMainLoopReady, emu.callbackType.exec, MAIN_LOOP_READY)
+emu.addMemoryCallback(onSpawnEntitiesEntry, emu.callbackType.exec, SPAWN_ENTITIES)
+emu.addMemoryCallback(onCarryEntry, emu.callbackType.exec, SW_ADV_OFFSET_CARRY)
+emu.addMemoryCallback(onBuildOamEntry, emu.callbackType.exec, BUILD_OAM)

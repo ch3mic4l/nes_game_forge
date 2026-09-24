@@ -196,6 +196,13 @@ sw_enter_screen:
 sw_adv_offset:
   iny
   bne sw_adv_offset_done
+; Fix round 2 (finding D/ruling M): a bare exec breakpoint on the target of a conditional branch
+; cannot distinguish "reached because the branch fell through" from "reached because it was taken"
+; without also comparing PCs by hand -- this label gives the Mesen spawn-adapter harness (test/lua/
+; sw_spawn_adapter.lua.template) a direct, named point that is executed if and only if the page-
+; crossing carry branch was actually taken, real evidence rather than an inferred one from timing
+; alone. A label costs the cartridge nothing.
+sw_adv_offset_carry:
   inc <mtptr_hi
 sw_adv_offset_done:
   rts
@@ -251,6 +258,41 @@ sw_tof_fill:
   rts
 
 ; ==========================================================================
+; sw_terrain_or_fill_solid_type -- fix round 2, finding C: a MOVEMENT/
+; collision probe's own bounds check, never sw_terrain_or_fill's fill
+; passthrough. sw_fill_metatile_id is a per-map VISUAL choice (its own
+; collision type is whatever the project's tileset says, open by default),
+; so routing a collision probe through sw_terrain_or_fill lets an off-grid
+; probe stay passable on open fill (ruling L's named "outer-edge" defect) --
+; the two callers below (sw_move_probe_solid, sw_hazard_probe_cross's own
+; tail) need an off-grid probe to be unconditionally solid, independent of
+; fill, and to never reach sw_peek_byte's own bank switch. sw_terrain_or_
+; fill itself is untouched (test/unit/streamworldresident.test.js's own
+; direct-call test still exercises its documented fill behaviour) -- this
+; is a second, narrower accessor sharing its bounds check, not a change to
+; what sw_terrain_or_fill itself does for a caller that still wants fill.
+;
+; In: A=screenCol, X=screenRow, Y=offset within that screen (as
+;     sw_terrain_or_fill's own callers already compute).
+; Out: A = the metatile's own mt_collision type when in bounds (the real,
+;     restoring read); COL_SOLID when off grid, with no bank switch
+;     attempted. Clobbers X, Y (the in-bounds case, same as sw_peek_byte);
+;     clobbers nothing off grid.
+; ==========================================================================
+sw_terrain_or_fill_solid_type:
+  cmp sw_grid_w
+  bcs sw_tofst_solid           ; screenCol >= gridW (or wrapped negative) -> solid
+  cpx sw_grid_h
+  bcs sw_tofst_solid           ; screenRow >= gridH (or wrapped negative) -> solid
+  jsr sw_peek_byte
+  tay
+  lda mt_collision,y
+  rts
+sw_tofst_solid:
+  lda #COL_SOLID
+  rts
+
+; ==========================================================================
 ; sw_move_probe_solid -- a scripted Move's leading-edge probe once it has
 ; crossed the CURRENT streamed screen's own edge (docs/design-streamed-
 ; worlds.md §7, ruling 7). probe_type/probe_solid (engine/player.asm) only
@@ -292,9 +334,7 @@ sw_move_probe_solid:
   tay                        ; Y = offset within the target screen (0-239)
   pla                        ; A = target screenCol, restored; X (target
                               ; screenRow) was never touched above
-  jsr sw_terrain_or_fill
-  tay
-  lda mt_collision,y
+  jsr sw_terrain_or_fill_solid_type
   cmp #COL_DAMAGE
   bcc sw_move_probe_solid_done
   lda #0
@@ -364,6 +404,599 @@ sw_move_probe_cross:
 sw_move_probe_same:
   jmp probe_solid
   .endif
+
+; ==========================================================================
+; sw_hazard_probe_type -- engine/combat.asm's player_hazard, straddling case
+; (phase 2 slice 4b, orchestrator ruling 9). docs/design-streamed-worlds.md
+; §6's "natural ownership rectangle" lets a SCRIPTED player Move reach x up
+; to 255 / y up to 239 -- wider than held movement's own MAX_X/MAX_Y wall --
+; so player_hazard's own player_x+8/player_y+12 probe point can genuinely
+; land past the current streamed screen's own edge, the one case this
+; engine's "actor policy, current screen only" contract rule does not cover
+; (an entity itself never reaches this: entity_contact's own
+; entity_touching_player never leaves the entity's spawn screen).
+;
+; Same dx/dy normalization shape as sw_move_probe (above), against sw_col/
+; sw_row rather than win_col_screen/win_row_screen: sw_col/sw_row is the
+; player's own CURRENT screen, the identity sw_locate_current/sw_enter_screen
+; are built around and sw_cross_left/right/up/down keep live every frame;
+; win_col_screen/win_row_screen is the camera WINDOW's own origin, which
+; slice 4b's own sw_win_col_inc/dec (above) deliberately step at most one
+; block a frame, up to a whole screen's own lag behind sw_col/sw_row while
+; the window arms -- reusing that tracker here would misresolve the target
+; screen for as long as an arm is still catching up. (sw_move_probe's own
+; use of win_col_screen/win_row_screen for a scripted Move's leading edge
+; predates this window-arm mechanism and was not touched by this slice; see
+; this slice's own progress notes for why that is flagged rather than
+; fixed here.)
+;
+; Unlike sw_move_probe_solid, this does not collapse the result to a solid/
+; passable boolean -- player_hazard needs the RAW mt_collision type (an
+; exact COL_DAMAGE match, probe_type's own convention), a distinction a
+; wall and a damage tile would otherwise lose. Kept as its own routine
+; rather than a shared refactor of sw_move_probe_solid, matching this
+; file's own established precedent (sw_peek_byte's header) of keeping
+; separate bank-safe read contracts as separate named routines.
+;
+; In: <probe_x> = the raw candidate probe x, already 8-bit-wrapped by the
+;     caller's own `adc #8`; <probe_y> = the raw candidate probe y (0-254,
+;     never wraps). Y = 1 if the caller's own add that produced probe_x
+;     carried past 255, 0 otherwise -- captured by the caller immediately
+;     after that add, sw_move_probe's own convention.
+; Out: A = the metatile's own raw collision type (probe_type's own
+;     convention, not probe_solid's collapse). <probe_y> normalized in
+;     place (-240) when it crossed; <probe_x>'s own wrapped value already
+;     IS the correct local x on the neighbour screen.
+; Clobbers A, X, Y, <tmp>. Not gated on MOVE_ENABLED: player_hazard calls
+; this on every streamed screen regardless of whether the project uses Move
+; at all, so it lives unconditionally in this already-STREAMING_ENABLED-
+; gated file rather than sharing MOVE_ENABLED's own narrower gate.
+; ==========================================================================
+sw_hazard_probe_type:
+  tya
+  pha                         ; stash dx (Y) across the y-crossing check below
+  lda <probe_y
+  cmp #240
+  bcc sw_hazard_probe_no_dy
+  sec
+  sbc #240
+  sta <probe_y
+  ldy #1
+  jmp sw_hazard_probe_have_dy
+sw_hazard_probe_no_dy:
+  ldy #0
+sw_hazard_probe_have_dy:
+  pla                         ; A = dx, Z set from it
+  bne sw_hazard_probe_cross
+  cpy #0
+  beq sw_hazard_probe_same
+sw_hazard_probe_cross:
+  ; A = dx, Y = dy here (dx=0 falls through from the cpy/beq above with A
+  ; still holding the 0 pla just set).
+  clc
+  adc sw_col                  ; A = target screenCol
+  pha
+  tya
+  clc
+  adc sw_row                  ; A = target screenRow
+  tax
+  pla                         ; A = target screenCol, X = target screenRow
+  pha                         ; stash target screenCol across the offset calc
+  lda <probe_y
+  and #$F0
+  sta <tmp
+  lda <probe_x
+  lsr a
+  lsr a
+  lsr a
+  lsr a
+  clc
+  adc <tmp
+  tay                         ; Y = offset within the target screen (0-239)
+  pla                         ; A = target screenCol, restored; X (target
+                              ; screenRow) was never touched above
+  jsr sw_terrain_or_fill_solid_type
+  rts
+sw_hazard_probe_same:
+  jmp probe_type
+sw_hazard_probe_type_end:
+
+; ==========================================================================
+; sw_hazard_probe_solid / sw_hazard_probe_solid_cross -- fix round 1,
+; finding 3: probe_solid's own COL_DAMAGE collapse (open/solid/water block,
+; damage/warp pass -- handled elsewhere), applied to sw_hazard_probe_type's
+; straddling read instead of the current-screen-only probe_type. Two
+; entries share the collapse: the top one is sw_hazard_probe_type's own
+; auto-detecting entry (Y=dx, <probe_y> raw/unwrapped -- sw_pstep_left/
+; right's own contract, and sw_pstep_down/up's own case-A, no-row-crossing
+; probes); the _cross entry is sw_hazard_probe_type's own "cross" tail
+; called directly with a CALLER-SUPPLIED dx/dy (A/Y) and an
+; ALREADY-normalized <probe_x>/<probe_y> -- sw_pstep_down/up's own case B,
+; where the 240 (not 256) row boundary has already been crossed by the
+; step itself and re-deriving dy from a pre-wrapped <probe_y> would
+; misread it as the CURRENT row instead of the neighbour's.
+; ==========================================================================
+sw_hazard_probe_solid:
+  jsr sw_hazard_probe_type
+  jmp sw_hazard_probe_solid_collapse
+sw_hazard_probe_solid_cross:
+  jsr sw_hazard_probe_cross
+sw_hazard_probe_solid_collapse:
+  cmp #COL_DAMAGE
+  bcc sw_hazard_probe_solid_done
+  lda #0
+sw_hazard_probe_solid_done:
+  cmp #0
+  rts
+
+; ==========================================================================
+; sw_pstep_left/right/up/down -- fix round 1, findings 1/3/4/7: the held
+; streamed movement driver's own per-axis step, replacing the ordinary
+; move_left/right/up/down + cross_*_go pair sw_up_do_x/y and
+; sw_knockback_step used to reach. Crosses at the true 256 (X) / 240 (Y)
+; ownership boundary carrying the signed overshoot (contract §6), never the
+; ordinary MAX_X=240/MAX_Y=224 containment cut sw_pstep's own callers no
+; longer reach through. A crossing commit does the FULL contract §5 work in
+; the crossing frame, same-routine: sw_cross_*'s own O(1) bookkeeping (which
+; now also updates <flat_screen> -- finding 4, see sw_cross_right/left/up/
+; down below) and sw_locate_current re-point identity/bank; spawn_entities
+; repopulates the incoming screen's actors and arms its entry event (finding
+; 1); screen_fresh=1 stops the frame for the transition exactly as an
+; ordinary crossing's own redraw_screen path does (engine/player.asm's own
+; update_player_vertical/update_player_anim checks, boot.asm:245-247's
+; update_entities gate) -- sw_update_player's own restructured tail (below)
+; is what actually enforces the stop; setting the flag here is what lets it.
+;
+; X (left/right): candidate = player_x +/- cur_speed via plain 8-bit
+; adc/sbc -- 256 is a power of two, so the wrap IS the crossing test, no
+; explicit compare needed (the codebase's own established carry/borrow
+; convention, entities.asm's move_tick). Y (up/down): 240 is not a power of
+; two, so the crossing test is an explicit cmp #240/#0 the way
+; sw_hazard_probe_type's own header already documents.
+;
+; Each body-corner probe re-derives <probe_x>/<probe_y> and its own dx/dy
+; fresh: a resting position near the 256/240 edge (legally reachable via the
+; wide 0-255/0-239 ownership rectangle, docs/design-streamed-worlds.md §6 --
+; wider than the MAX_X/MAX_Y wall a scripted Move's sw_move_probe/
+; sw_move_probe_solid still use) plus a small BODY_* offset can overflow a
+; SECOND time on top of the step's own crossing; the two carries are summed
+; (`lda sw_tmp2 / adc #0`), not assumed independent, so a probe corner that
+; reaches a screen the step itself has not yet reached still resolves
+; against the right neighbour.
+;
+; Fix round 1 (post-review, second pass): sw_tmp/sw_tmp2/sw_tmp3 cannot be
+; trusted to survive a `jsr sw_hazard_probe_solid`/`_cross` call. A
+; straddling probe that lands on a real (in-bounds) neighbour screen reaches
+; sw_terrain_or_fill's non-fill path, which is sw_peek_byte, which is
+; sw_goto -- and sw_goto's own header (above) says outright: "Clobbers A, X,
+; Y, sw_tmp..sw_tmp6." Every probe below the FIRST one in each direction
+; therefore recomputes its candidate through a small per-axis `sw_p*_calc*`
+; helper (reading only player_x/player_y/cur_speed/sw_row, none of which
+; sw_goto touches) rather than re-reading sw_tmp left over from before the
+; jsr; the final commit (`sta player_x`/`sta player_y`) recomputes once more
+; for the same reason, after the SECOND probe's own jsr. The first probe in
+; each direction still reads the top-of-routine computation directly, since
+; nothing has jsr'd yet at that point. A candidate is fully determined by
+; player_x/player_y/cur_speed alone, which never change mid-routine, so a
+; recompute always reproduces the exact same value -- this is not a second,
+; independent calculation that could disagree with the first.
+;
+; Refuses outright (leaves player_x/y and every crossed/committed field
+; untouched) when blocked by collision or when the grid has no neighbour in
+; that direction -- ruling C: "grid edges stay walls," the physical ring's
+; torus is not permission to wrap the authored map, mirrored from
+; cross_right_go/cross_left_go/cross_up_go/cross_down_go's own now-removed
+; boundary checks (engine/player.asm).
+; ==========================================================================
+; Every collision-blocked exit below is a bare `rts` reached through an
+; inline `beq continue / rts`, never a shared far label: several of these
+; checks are well past a plain branch's +/-128 byte reach from their own
+; probe (the codebase's own established trap -- CLAUDE.md, "branches are
+; +/-128 bytes; long dispatch chains need jmp"), and jmp costs one more byte
+; than the branch it would replace at every one of these sites, where an
+; inline rts costs nothing extra (the byte a shared label's own rts would
+; have cost anyway, just moved next to the check instead of shared).
+sw_pr_calc:
+  lda <player_x
+  clc
+  adc <cur_speed
+  sta sw_tmp
+  lda #0
+  adc #0
+  sta sw_tmp2                    ; step's own dx: 0 or 1
+  rts
+
+sw_pstep_right:
+  lda #DIR_RIGHT
+  sta <player_dir
+  jsr sw_pr_calc
+  lda sw_tmp2
+  beq sw_pr_gok
+  lda sw_col
+  clc
+  adc #1
+  cmp sw_grid_w
+  bcc sw_pr_gok
+  rts
+sw_pr_gok:
+  lda sw_tmp
+  clc
+  adc #BODY_R
+  sta <probe_x
+  lda sw_tmp2
+  adc #0
+  tay
+  lda <player_y
+  clc
+  adc #BODY_T
+  sta <probe_y
+  jsr sw_hazard_probe_solid
+  beq sw_pr_c1
+  rts
+sw_pr_c1:
+  jsr sw_pr_calc                 ; the probe above may have reached sw_goto
+  lda sw_tmp
+  clc
+  adc #BODY_R
+  sta <probe_x
+  lda sw_tmp2
+  adc #0
+  tay
+  lda <player_y
+  clc
+  adc #BODY_B
+  sta <probe_y
+  jsr sw_hazard_probe_solid
+  beq sw_pr_c2
+  rts
+sw_pr_c2:
+  jsr sw_pr_calc                 ; likewise after the second probe
+  lda sw_tmp
+  sta <player_x
+  inc <moving
+  lda sw_tmp2
+  beq sw_pr_done
+  jsr sw_cross_right
+  jsr sw_locate_current
+  jsr spawn_entities
+  lda #1
+  sta <screen_fresh
+sw_pr_done:
+  rts
+
+sw_pl_calc:
+  lda <player_x
+  sec
+  sbc <cur_speed
+  sta sw_tmp
+  lda #0
+  sbc #0
+  sta sw_tmp2                    ; step's own dx: 0 or $FF(-1)
+  rts
+
+sw_pstep_left:
+  lda #DIR_LEFT
+  sta <player_dir
+  jsr sw_pl_calc
+  lda sw_tmp2
+  beq sw_pl_gok
+  lda sw_col
+  bne sw_pl_gok
+  rts
+sw_pl_gok:
+  lda sw_tmp
+  clc
+  adc #BODY_L
+  sta <probe_x
+  lda sw_tmp2
+  adc #0
+  tay
+  lda <player_y
+  clc
+  adc #BODY_T
+  sta <probe_y
+  jsr sw_hazard_probe_solid
+  beq sw_pl_c1
+  rts
+sw_pl_c1:
+  jsr sw_pl_calc
+  lda sw_tmp
+  clc
+  adc #BODY_L
+  sta <probe_x
+  lda sw_tmp2
+  adc #0
+  tay
+  lda <player_y
+  clc
+  adc #BODY_B
+  sta <probe_y
+  jsr sw_hazard_probe_solid
+  beq sw_pl_c2
+  rts
+sw_pl_c2:
+  jsr sw_pl_calc
+  lda sw_tmp
+  sta <player_x
+  inc <moving
+  lda sw_tmp2
+  beq sw_pl_done
+  jsr sw_cross_left
+  jsr sw_locate_current
+  jsr spawn_entities
+  lda #1
+  sta <screen_fresh
+sw_pl_done:
+  rts
+
+sw_pd_calc_a:
+  lda <player_y
+  clc
+  adc <cur_speed
+  sta sw_tmp                     ; raw candidate y, unwrapped (<=~241)
+  rts
+
+sw_pd_calc_b:
+  lda <player_y
+  clc
+  adc <cur_speed                 ; guaranteed >=240 whenever this is called
+  sec
+  sbc #240
+  sta sw_tmp                     ; wrapped local y on the row below (small)
+  rts
+
+sw_pstep_down:
+  lda #DIR_DOWN
+  sta <player_dir
+  jsr sw_pd_calc_a
+  lda sw_tmp
+  cmp #240
+  bcs sw_pd_cross
+  lda <player_x
+  clc
+  adc #BODY_L
+  sta <probe_x
+  lda #0
+  adc #0
+  tay
+  lda sw_tmp
+  clc
+  adc #BODY_B
+  sta <probe_y
+  jsr sw_hazard_probe_solid
+  beq sw_pd_c1
+  rts
+sw_pd_c1:
+  jsr sw_pd_calc_a               ; the probe above may have reached sw_goto
+  lda <player_x
+  clc
+  adc #BODY_R
+  sta <probe_x
+  lda #0
+  adc #0
+  tay
+  lda sw_tmp
+  clc
+  adc #BODY_B
+  sta <probe_y
+  jsr sw_hazard_probe_solid
+  beq sw_pd_c2
+  rts
+sw_pd_c2:
+  jsr sw_pd_calc_a               ; likewise after the second probe
+  lda sw_tmp
+  sta <player_y
+  inc <moving
+  rts
+sw_pd_cross:
+  lda sw_row
+  clc
+  adc #1
+  cmp sw_grid_h
+  bcc sw_pd_cok
+  rts
+sw_pd_cok:
+  jsr sw_pd_calc_b
+  lda <player_x
+  clc
+  adc #BODY_L
+  sta <probe_x
+  lda #0
+  adc #0
+  sta sw_tmp3
+  lda sw_tmp
+  clc
+  adc #BODY_B
+  sta <probe_y
+  ldy #1
+  lda sw_tmp3
+  jsr sw_hazard_probe_solid_cross
+  beq sw_pd_c3
+  rts
+sw_pd_c3:
+  jsr sw_pd_calc_b                ; the probe above may have reached sw_goto
+  lda <player_x
+  clc
+  adc #BODY_R
+  sta <probe_x
+  lda #0
+  adc #0
+  sta sw_tmp3
+  lda sw_tmp
+  clc
+  adc #BODY_B
+  sta <probe_y
+  ldy #1
+  lda sw_tmp3
+  jsr sw_hazard_probe_solid_cross
+  beq sw_pd_c4
+  rts
+sw_pd_c4:
+  jsr sw_pd_calc_b                ; likewise after the second probe
+  lda sw_tmp
+  sta <player_y
+  inc <moving
+  jsr sw_cross_down
+  jsr sw_locate_current
+  jsr spawn_entities
+  lda #1
+  sta <screen_fresh
+  rts
+
+sw_pu_calc_noborrow:
+  lda <player_y
+  sec
+  sbc <cur_speed
+  sta sw_tmp                     ; raw candidate y, no borrow (guaranteed)
+  rts
+
+sw_pu_calc_b:
+  lda <player_y
+  sec
+  sbc <cur_speed                 ; guaranteed to borrow whenever this is called
+  sec
+  sbc #16                        ; 256-240: the byte wrap's own excess
+  sta sw_tmp                     ; wrapped local y on the row above (small)
+  rts
+
+sw_pstep_up:
+  lda #DIR_UP
+  sta <player_dir
+  lda <player_y
+  sec
+  sbc <cur_speed
+  sta sw_tmp                     ; raw candidate y, 8-bit-wrapped if borrowed
+  bcc sw_pu_borrowed              ; carry clear = borrow = crossing
+; fix round 2 (findings A/B growth pushed sw_pu_noborrow past a plain
+; branch's +/-128 byte reach -- CLAUDE.md's own established trap, "branches
+; are +/-128 bytes; long dispatch chains need jmp").
+  jmp sw_pu_noborrow              ; carry set = no borrow = no crossing (far)
+sw_pu_borrowed:
+  lda sw_row
+  bne sw_pu_gok
+  rts
+sw_pu_gok:
+  jsr sw_pu_calc_b
+  lda <player_x
+  clc
+  adc #BODY_L
+  sta <probe_x
+  lda #0
+  adc #0
+  sta sw_tmp3
+  lda sw_tmp
+  clc
+  adc #BODY_T
+; fix round 2, finding B (ruling K): sw_tmp is already normalized into the
+; TARGET (crossing) row's own 0-239 local frame by sw_pu_calc_b, so adding
+; the body offset here can push a SECOND time past 240 -- not into a further
+; row above, but back down past the row boundary this step just crossed,
+; into the ORIGINAL row's own low y (the body straddles the seam). Passing
+; that un-renormalized sum straight to the _cross accessor's own already-
+; normalized-probe contract misreads it as row -1's own out-of-range offset,
+; which lands on that row's post-terrain metadata (an entity count, etc.)
+; instead of real terrain. Renormalize here, adjusting dy from -1 (the
+; target row) to 0 (the ORIGINAL row, dy relative to sw_row/sw_col -- this
+; step's own crossing is what made -1 the target in the first place) exactly
+; when the sum reaches back into it.
+  cmp #240
+  bcs sw_pu_p1_carry
+  sta <probe_y
+  ldy #$FF
+  jmp sw_pu_p1_go
+sw_pu_p1_carry:
+  sec
+  sbc #240
+  sta <probe_y
+  ldy #0
+sw_pu_p1_go:
+  lda sw_tmp3
+  jsr sw_hazard_probe_solid_cross
+  beq sw_pu_c1
+  rts
+sw_pu_c1:
+  jsr sw_pu_calc_b                ; the probe above may have reached sw_goto
+  lda <player_x
+  clc
+  adc #BODY_R
+  sta <probe_x
+  lda #0
+  adc #0
+  sta sw_tmp3
+  lda sw_tmp
+  clc
+  adc #BODY_T
+; same renormalization as the first probe above, and the same BODY_T (not
+; BODY_B) as the first probe -- fix round 2, finding A (ruling J): a
+; vertical move's two probes share ONE leading-edge Y offset (BODY_T for
+; Up, BODY_B for Down) and vary only X (BODY_L then BODY_R), the same shape
+; move_vertical_probe (engine/player.asm) already uses; this probe used
+; BODY_B before the fix, checking the trailing (not leading) edge and
+; leaving the true leading corner unchecked.
+  cmp #240
+  bcs sw_pu_p2_carry
+  sta <probe_y
+  ldy #$FF
+  jmp sw_pu_p2_go
+sw_pu_p2_carry:
+  sec
+  sbc #240
+  sta <probe_y
+  ldy #0
+sw_pu_p2_go:
+  lda sw_tmp3
+  jsr sw_hazard_probe_solid_cross
+  beq sw_pu_c2
+  rts
+sw_pu_c2:
+  jsr sw_pu_calc_b                ; likewise after the second probe
+  lda sw_tmp
+  sta <player_y
+  inc <moving
+  jsr sw_cross_up
+  jsr sw_locate_current
+  jsr spawn_entities
+  lda #1
+  sta <screen_fresh
+  rts
+sw_pu_noborrow:
+  lda <player_x
+  clc
+  adc #BODY_L
+  sta <probe_x
+  lda #0
+  adc #0
+  tay
+  lda sw_tmp
+  clc
+  adc #BODY_T
+  sta <probe_y
+  jsr sw_hazard_probe_solid
+  beq sw_pu_c3
+  rts
+sw_pu_c3:
+  jsr sw_pu_calc_noborrow         ; the probe above may have reached sw_goto
+  lda <player_x
+  clc
+  adc #BODY_R
+  sta <probe_x
+  lda #0
+  adc #0
+  tay
+  lda sw_tmp
+  clc
+  adc #BODY_T
+  sta <probe_y
+  jsr sw_hazard_probe_solid
+  beq sw_pu_c4
+  rts
+sw_pu_c4:
+  jsr sw_pu_calc_noborrow         ; likewise after the second probe
+  lda sw_tmp
+  sta <player_y
+  inc <moving
+  rts
+sw_pstep_end:
 
 ; ==========================================================================
 ; sw_read_transaction -- the general resident switch/read/restore
@@ -836,6 +1469,14 @@ sw_clamp_row_fine:
 ; runtime multiply on this path.
 sw_cross_right:
   inc sw_col
+  inc <flat_screen              ; fix round 1, finding 4: the global id moves
+                                 ; with the ownership commit, not only the
+                                 ; streamed sw_col/sw_row bookkeeping -- a
+                                 ; crossing never leaves the grid it started
+                                 ; in (grid edges are walls, ruling C), so
+                                 ; this is always a plain +/-1 (a column
+                                 ; step) or +/- sw_grid_w (a row step,
+                                 ; below), never a mixed-map prefix delta.
   inc sw_col_rem
   lda sw_col_rem
   cmp #STREAM_SCREENS_PER_REGION
@@ -857,6 +1498,7 @@ sw_cr_addbyte:
   rts
 
 sw_cross_left:
+  dec <flat_screen               ; finding 4 -- see sw_cross_right's own note
   lda sw_col_rem
   bne sw_cl_subbyte
   lda #STREAM_SCREENS_PER_REGION-1
@@ -894,6 +1536,10 @@ sw_cl_done:
 
 sw_cross_down:
   inc sw_row
+  lda <flat_screen               ; finding 4 -- a row step is +/- sw_grid_w,
+  clc                            ; the CURRENT map's own width (never a
+  adc sw_grid_w                  ; mixed-map prefix: a crossing never leaves
+  sta <flat_screen                ; the map it started in)
   lda sw_row_bank_base
   clc
   adc sw_regions_per_row
@@ -902,6 +1548,10 @@ sw_cross_down:
 
 sw_cross_up:
   dec sw_row
+  lda <flat_screen
+  sec
+  sbc sw_grid_w
+  sta <flat_screen
   lda sw_row_bank_base
   sec
   sbc sw_regions_per_row
@@ -1167,8 +1817,11 @@ sw_ns_finish:
 
 ; sw_nmi_stream_reduced -- the identical draw loop, armed with
 ; SW_STREAM_MIXED_CHUNK instead of the compiled SW_STREAM_CHUNK, for a
-; vblank that must share its budget with another producer. No caller yet
-; (phase 2b onward), migrated unreachable like the rest of this file.
+; vblank that must share its budget with another producer. Called from
+; boot.asm's own NMI arbitration splice since phase 2 slice 4a
+; (MIXED_VBLANK_MAX_BYTES) -- reachable in principle since then, but nothing
+; could arm a strip for it to drain until phase 2 slice 4b's movement driver
+; lifted Part C's wall, so this is that slice's first real exercise.
 sw_nmi_stream_reduced:
   lda st_active
   bne sw_nsr_go
@@ -2032,3 +2685,700 @@ sw_resolve_originy_shift:
   lda sw_tmp5                    ; A = screenCol
   ldx sw_tmp3                    ; X = screenRow
   jmp sw_enter_screen             ; tail call -- its own rts answers for ours
+
+; ==========================================================================
+; Phase 2 slice 4b -- the movement driver's own per-frame camera-feed and
+; window arm decision. Everything below is new; nothing in this file
+; consumed sw_cam_origin_x/y_lo/hi before this slice (grep confirms), so
+; this is the first real writer of the whole per-frame camera-to-PPU
+; publish path, not merely an update to something else already reads.
+;
+; Called once a frame from engine/player.asm's streamed update_player
+; branch, after any movement/knockback for the frame has already landed in
+; player_x/player_y/sw_col/sw_row. Always runs, whether or not the player
+; actually moved this frame -- cheap when nothing changed (the arm decision
+; below finds desired==current and does nothing), and camera-follow must
+; keep working through a capped knockback too.
+; ==========================================================================
+
+; sw_win_col_inc/dec, sw_win_row_inc/dec -- step the window's own persistent
+; "current" origin by exactly one block, wrapping local mod 16 (col) or mod
+; 15 (row) with a carry into screen. In/out: win_col_screen/win_col_local or
+; win_row_screen/win_row_local, in place. Clobbers A.
+sw_win_col_inc:
+  inc win_col_local
+  lda win_col_local
+  cmp #16
+  bne sw_win_col_inc_done
+  lda #0
+  sta win_col_local
+  inc win_col_screen
+sw_win_col_inc_done:
+  rts
+
+sw_win_col_dec:
+  lda win_col_local
+  bne sw_win_col_dec_simple
+  lda #15
+  sta win_col_local
+  dec win_col_screen
+  rts
+sw_win_col_dec_simple:
+  dec win_col_local
+  rts
+
+sw_win_row_inc:
+  inc win_row_local
+  lda win_row_local
+  cmp #15
+  bne sw_win_row_inc_done
+  lda #0
+  sta win_row_local
+  inc win_row_screen
+sw_win_row_inc_done:
+  rts
+
+sw_win_row_dec:
+  lda win_row_local
+  bne sw_win_row_dec_simple
+  lda #14
+  sta win_row_local
+  dec win_row_screen
+  rts
+sw_win_row_dec_simple:
+  dec win_row_local
+  rts
+
+; sw_win_entering_col_right / sw_win_entering_row_down -- the far (leading)
+; edge of the 32-block-wide (30-block-tall) window, computed from its own
+; just-stepped "current" (near) edge: entering = current + 31 blocks (col)
+; or +29 blocks (row) = current's own local+15 (col) or +14 (row), carrying
+; 1 screen if that stays under 16/15, or 2 screens (subtracting 16/15) if it
+; doesn't -- worked out and verified against two hand examples per axis,
+; docs/design-streamed-worlds.md's own "torus and window" section.
+; In: win_col_screen/win_col_local (or the row pair), already stepped.
+; Out: A=screenCol/screenRow, X=localCol/localRow of the entering edge, the
+; exact operand sw_stream_start_col/row expects. Clobbers nothing but A/X.
+sw_win_entering_col_right:
+  lda win_col_local
+  clc
+  adc #15
+  cmp #16
+  bcc sw_wecr_c1
+  sec
+  sbc #16
+  tax
+  lda win_col_screen
+  clc
+  adc #2
+  rts
+sw_wecr_c1:
+  tax
+  lda win_col_screen
+  clc
+  adc #1
+  rts
+
+sw_win_entering_row_down:
+  lda win_row_local
+  clc
+  adc #14
+  cmp #15
+  bcc sw_wedr_c1
+  sec
+  sbc #15
+  tax
+  lda win_row_screen
+  clc
+  adc #2
+  rts
+sw_wedr_c1:
+  tax
+  lda win_row_screen
+  clc
+  adc #1
+  rts
+
+; ==========================================================================
+; sw_frame_camera_window -- the whole per-frame sequence: derive this
+; frame's clamped camera position from the player's own world pixel
+; position, publish it to cam_x_lo/cam_y_lo/cam_nt under the cam_dirty
+; lock (engine/camera.asm's own bracketing convention), derive the desired
+; window origin from that same clamped camera position, then tail-call the
+; arm decision. Mainline only, once a frame; never called from NMI.
+;
+; worldX is free: hi=sw_col, lo=player_x (a screen is exactly 256px, a full
+; byte, so no arithmetic joins them). worldY = sw_row*240+player_y needs the
+; shift-and-subtract identity sw_resolve_screen's own landing-time code
+; already uses (240 = 256-16), reproduced here as this value's declared
+; CONTINUOUS per-frame writer (that routine's own comment, above).
+;
+; The camera clamp is docs/design-streamed-worlds.md's one formula per
+; axis: cameraOrigin = clamp(desiredOrigin, 0, max(mapPixels-viewportPixels,
+; 0)), desiredOrigin = worldPos-centre (centre=120 X, 112 Y -- half the
+; viewport less half the player's own sprite width).
+;
+; The X->cam_x_lo/cam_nt-bit0 step needs no window-relative subtraction at
+; all: physical ring position is a pure function of (screenCol&1, localCol)
+; (independent of screenCol's own higher bits -- the parity rule's whole
+; point, confirmed against sw_resolve_screen's own landing values above,
+; where camPx=screenCol*256 exactly and cam_x_lo/cam_nt-bit0 fall out of
+; this identical formula as their degenerate case). camPx's own low byte
+; already IS the local-pixel-within-screen value; camPx's bit 8 already IS
+; the screenCol's own parity. Y is not power-of-two (screen height 240, not
+; 256), so it needs a real camPy/240 divmod -- a bounded repeated-subtract
+; loop, the same cold-path idiom sw_resolve_screen's own screenRow divmod
+; already uses (never more than sw_grid_h iterations, once a frame).
+;
+; Clobbers A, X, Y, sw_tmp..sw_tmp6, sw_fc_*.
+; ==========================================================================
+sw_frame_camera_window:
+  ; ---- worldY = sw_row*240 + player_y (sw_tmp/sw_tmp2 = row<<4, staged) ----
+  lda sw_row
+  sta sw_tmp
+  lda #0
+  sta sw_tmp2
+  ldx #4
+sw_fcw_rowshift:
+  asl sw_tmp
+  rol sw_tmp2
+  dex
+  bne sw_fcw_rowshift
+  lda #0
+  sec
+  sbc sw_tmp
+  sta sw_fc_wy_lo
+  lda sw_row
+  sbc sw_tmp2
+  sta sw_fc_wy_hi
+  lda sw_fc_wy_lo
+  clc
+  adc <player_y
+  sta sw_fc_wy_lo
+  lda sw_fc_wy_hi
+  adc #0
+  sta sw_fc_wy_hi
+
+  ; ---- camPx = clamp(worldX-120, 0, (sw_grid_w-1)*256) ----
+  lda <player_x
+  sec
+  sbc #120
+  sta sw_fc_px_lo
+  lda sw_col
+  sbc #0
+  sta sw_fc_px_hi
+  bcs sw_fcw_x_nonneg
+  lda #0
+  sta sw_fc_px_lo
+  sta sw_fc_px_hi
+sw_fcw_x_nonneg:
+  lda sw_grid_w
+  sec
+  sbc #1
+  sta sw_tmp3                  ; ceiling hi (ceiling lo is always 0)
+  lda sw_fc_px_hi
+  cmp sw_tmp3
+  bcc sw_fcw_x_clamp_done
+  bne sw_fcw_x_over
+  lda sw_fc_px_lo
+  beq sw_fcw_x_clamp_done
+sw_fcw_x_over:
+  lda sw_tmp3
+  sta sw_fc_px_hi
+  lda #0
+  sta sw_fc_px_lo
+sw_fcw_x_clamp_done:
+
+  ; ---- camPy = clamp(worldY-112, 0, (sw_grid_h-1)*240) ----
+  lda sw_fc_wy_lo
+  sec
+  sbc #112
+  sta sw_fc_py_lo
+  lda sw_fc_wy_hi
+  sbc #0
+  sta sw_fc_py_hi
+  bcs sw_fcw_y_nonneg
+  lda #0
+  sta sw_fc_py_lo
+  sta sw_fc_py_hi
+sw_fcw_y_nonneg:
+  lda sw_grid_h
+  sec
+  sbc #1
+  sta sw_tmp4                  ; gridH-1
+  lda sw_tmp4
+  sta sw_tmp
+  lda #0
+  sta sw_tmp2
+  ldx #4
+sw_fcw_yceil_shift:
+  asl sw_tmp
+  rol sw_tmp2
+  dex
+  bne sw_fcw_yceil_shift
+  lda #0
+  sec
+  sbc sw_tmp
+  sta sw_tmp5                  ; ceiling lo
+  lda sw_tmp4
+  sbc sw_tmp2
+  sta sw_tmp6                  ; ceiling hi
+  lda sw_fc_py_hi
+  cmp sw_tmp6
+  bcc sw_fcw_y_clamp_done
+  bne sw_fcw_y_over
+  lda sw_fc_py_lo
+  cmp sw_tmp5
+  bcc sw_fcw_y_clamp_done
+  beq sw_fcw_y_clamp_done
+sw_fcw_y_over:
+  lda sw_tmp5
+  sta sw_fc_py_lo
+  lda sw_tmp6
+  sta sw_fc_py_hi
+sw_fcw_y_clamp_done:
+
+  ; ---- publish cam_x_lo/cam_nt-bit0 (X half); cam_dirty brackets both axes ----
+  inc <cam_dirty
+  lda sw_fc_px_lo
+  sta <cam_x_lo
+  ; Fix round 1, finding 2: the full clamped world-space origin is published
+  ; alongside the physical scroll, every frame, under this same cam_dirty
+  ; lock -- oam.asm/entities.asm's sw_project_axis consumers (:703-705,
+  ; :812-814) read sw_cam_origin_x/y_lo/hi, not cam_x_lo/cam_y_lo, so a
+  ; continuous walk with only the physical scroll updated leaves every
+  ; sprite projected against a stale (landing-only) origin. sw_fc_px_lo/hi
+  ; is exactly this axis's own clamped world value -- ruling B: "the landing
+  ; write in sw_resolve_divdone stays as the landing's own value," unchanged
+  ; above; this is the value's declared CONTINUOUS writer (this routine's
+  ; own header).
+  sta sw_cam_origin_x_lo
+  lda sw_fc_px_hi
+  sta sw_cam_origin_x_hi
+  and #1
+  sta sw_tmp                    ; stash bit0 across the Y divmod below
+
+  ; ---- camScreenRow = camPy/240, camLocalPxY = camPy mod 240 (destructive
+  ; to sw_fc_py_lo/hi) -- sw_cam_origin_y_lo/hi is published FIRST, from the
+  ; still-intact clamped value, before this loop consumes it. ----
+  lda sw_fc_py_lo
+  sta sw_cam_origin_y_lo
+  lda sw_fc_py_hi
+  sta sw_cam_origin_y_hi
+  lda #0
+  sta sw_fc_scr
+sw_fcw_ydiv_loop:
+  lda sw_fc_py_hi
+  bne sw_fcw_ydiv_sub
+  lda sw_fc_py_lo
+  cmp #240
+  bcc sw_fcw_ydiv_done
+sw_fcw_ydiv_sub:
+  lda sw_fc_py_lo
+  sec
+  sbc #240
+  sta sw_fc_py_lo
+  lda sw_fc_py_hi
+  sbc #0
+  sta sw_fc_py_hi
+  inc sw_fc_scr
+  jmp sw_fcw_ydiv_loop
+sw_fcw_ydiv_done:
+  lda sw_fc_py_lo
+  sta sw_fc_lpy
+  sta <cam_y_lo
+
+  lda sw_fc_scr
+  and #1
+  asl a
+  ora sw_tmp
+  sta <cam_nt
+  dec <cam_dirty
+
+  ; ---- desired window X: camBlockX = (camPx_hi<<4) + (camPx_lo>>4);
+  ; desiredBlockX = camBlockX-8, floored at 0; split by divmod 16; clamp ----
+  lda sw_fc_px_hi
+  sta sw_tmp
+  lda #0
+  sta sw_tmp2
+  ldx #4
+sw_fcw_blkx_shift:
+  asl sw_tmp
+  rol sw_tmp2
+  dex
+  bne sw_fcw_blkx_shift
+  lda sw_fc_px_lo
+  lsr a
+  lsr a
+  lsr a
+  lsr a
+  clc
+  adc sw_tmp
+  sta sw_tmp3                   ; camBlockX lo
+  lda sw_tmp2
+  adc #0
+  sta sw_tmp4                   ; camBlockX hi
+  lda sw_tmp3
+  sec
+  sbc #8
+  sta sw_tmp3
+  lda sw_tmp4
+  sbc #0
+  sta sw_tmp4
+  bcs sw_fcw_blkx_nonneg
+  lda #0
+  sta sw_tmp3
+  sta sw_tmp4
+sw_fcw_blkx_nonneg:
+  lda sw_tmp3
+  and #15
+  tax                           ; X = localCol
+  lda sw_tmp3
+  lsr a
+  lsr a
+  lsr a
+  lsr a
+  sta sw_tmp5
+  lda sw_tmp4
+  asl a
+  asl a
+  asl a
+  asl a                         ; safe: desiredBlockX < sw_grid_w*16 <= 4080,
+                                 ; so this hi byte is always <= 15
+  ora sw_tmp5
+  tay                           ; Y = screenCol (stashed -- X already holds
+                                 ; localCol and sw_clamp_col wants A=screenCol)
+  tya
+  jsr sw_clamp_col
+  sta sw_fc_desc
+  stx sw_fc_desl
+
+  ; ---- desired window Y: camBlockY = camScreenRow*15 + (camLocalPxY>>4);
+  ; desiredBlockY = camBlockY-7, floored at 0; divmod 15 (not power-of-2 --
+  ; bounded repeated-subtract, same cold-path idiom as above); clamp ----
+  lda sw_fc_scr
+  sta sw_tmp
+  lda #0
+  sta sw_tmp2
+  ldx #4
+sw_fcw_blky_shift:
+  asl sw_tmp
+  rol sw_tmp2
+  dex
+  bne sw_fcw_blky_shift
+  lda sw_tmp
+  sec
+  sbc sw_fc_scr
+  sta sw_tmp                    ; scr*16 - scr = scr*15, lo
+  lda sw_tmp2
+  sbc #0
+  sta sw_tmp2                   ; scr*15 hi
+  lda sw_fc_lpy
+  lsr a
+  lsr a
+  lsr a
+  lsr a
+  clc
+  adc sw_tmp
+  sta sw_tmp3                   ; camBlockY lo
+  lda sw_tmp2
+  adc #0
+  sta sw_tmp4                   ; camBlockY hi
+  lda sw_tmp3
+  sec
+  sbc #7
+  sta sw_tmp3
+  lda sw_tmp4
+  sbc #0
+  sta sw_tmp4
+  bcs sw_fcw_blky_nonneg
+  lda #0
+  sta sw_tmp3
+  sta sw_tmp4
+sw_fcw_blky_nonneg:
+  lda #0
+  sta sw_tmp5                   ; screenRow quotient
+sw_fcw_ydivmod15_loop:
+  lda sw_tmp4
+  bne sw_fcw_ydivmod15_sub
+  lda sw_tmp3
+  cmp #15
+  bcc sw_fcw_ydivmod15_done
+sw_fcw_ydivmod15_sub:
+  lda sw_tmp3
+  sec
+  sbc #15
+  sta sw_tmp3
+  lda sw_tmp4
+  sbc #0
+  sta sw_tmp4
+  inc sw_tmp5
+  jmp sw_fcw_ydivmod15_loop
+sw_fcw_ydivmod15_done:
+  lda sw_tmp5                   ; A = screenRow
+  ldx sw_tmp3                   ; X = localRow
+  jsr sw_clamp_row
+  sta sw_fc_desr
+  stx sw_fc_desrl
+  jmp sw_win_arm                ; tail call -- its own rts answers for ours
+
+; ==========================================================================
+; sw_win_arm -- compares this frame's desired window origin (sw_fc_desc/
+; desl/desr/desrl, just computed) against the window's own persistent
+; "current" origin, pair-order (screen first, then local). A differing axis
+; steps current by exactly one block toward desired and arms a fresh strip
+; for the newly-entered edge -- but ONLY while st_active==0 (engine/
+; constants.asm: "0 idle, 1 column strip, 2 row strip"): arming while a
+; strip is still draining would overwrite sbuf/st_len/st_cur out from under
+; sw_nmi_stream's own in-flight read (confirmed by reading its drain loop,
+; above). At most one axis arms per frame -- sw_stream_start_col/row's own
+; last act sets st_active nonzero, so the row check below naturally declines
+; if col just armed. A blocked or unchanged axis is simply retried next
+; frame; the window's own 7-8 block margin absorbs the slack.
+; ==========================================================================
+sw_win_arm:
+  lda win_col_screen
+  cmp sw_fc_desc
+  bne sw_win_arm_col_try
+  lda win_col_local
+  cmp sw_fc_desl
+  beq sw_win_arm_row
+sw_win_arm_col_try:
+  lda st_active
+  bne sw_win_arm_row
+  lda win_col_screen
+  cmp sw_fc_desc
+  bcc sw_win_arm_col_inc
+  bne sw_win_arm_col_dec
+  lda win_col_local
+  cmp sw_fc_desl
+  bcc sw_win_arm_col_inc
+sw_win_arm_col_dec:
+  jsr sw_win_col_dec
+  lda win_col_screen
+  ldx win_col_local
+  jsr sw_stream_start_col
+  jmp sw_win_arm_row
+sw_win_arm_col_inc:
+  jsr sw_win_col_inc
+  jsr sw_win_entering_col_right
+  jsr sw_stream_start_col
+sw_win_arm_row:
+  lda win_row_screen
+  cmp sw_fc_desr
+  bne sw_win_arm_row_try
+  lda win_row_local
+  cmp sw_fc_desrl
+  beq sw_win_arm_done
+sw_win_arm_row_try:
+  lda st_active
+  bne sw_win_arm_done
+  lda win_row_screen
+  cmp sw_fc_desr
+  bcc sw_win_arm_row_inc
+  bne sw_win_arm_row_dec
+  lda win_row_local
+  cmp sw_fc_desrl
+  bcc sw_win_arm_row_inc
+sw_win_arm_row_dec:
+  jsr sw_win_row_dec
+  lda win_row_screen
+  ldx win_row_local
+  jsr sw_stream_start_row
+  jmp sw_win_arm_done
+sw_win_arm_row_inc:
+  jsr sw_win_row_inc
+  jsr sw_win_entering_row_down
+  jsr sw_stream_start_row
+sw_win_arm_done:
+  rts
+sw_win_arm_region_end:
+  ; Kernel-budget boundary label (unconditional): brackets sw_win_col_inc/dec,
+  ; sw_win_row_inc/dec, sw_win_entering_col_right/row_down,
+  ; sw_frame_camera_window and sw_win_arm as one named kernel-hi term,
+  ; excluding sw_knockback_step below regardless of BATTLE_ENABLED (this
+  ; label sits at the same address sw_knockback_step would start at on an
+  ; action project, and at sw_update_player's own address on an RPG, where
+  ; the `.if !BATTLE_ENABLED` block below assembles to nothing).
+
+  .if !BATTLE_ENABLED
+; ==========================================================================
+; sw_knockback_step -- combat.asm's own knockback_step, capped: 1px/frame
+; (SW_KNOCKBACK_SPEED) instead of 3, so a hit's own slide never outruns the
+; window's own margin the way an uncapped 3px/frame could. Same dispatch
+; shape, same move_up/left/right/down reuse (their own probe never
+; straddles on a streamed map either -- see the report's own proof), same
+; jmp-ends-in-rts convention (lands back in sw_update_player's own caller).
+; !BATTLE_ENABLED-gated, matching knockback_step's own gate -- an RPG has no
+; knockback concept at all.
+; ==========================================================================
+sw_knockback_step:
+  dec <kb_timer
+  lda #SW_KNOCKBACK_SPEED
+  sta <cur_speed
+  lda <kb_dir
+  cmp #DIR_UP
+  beq sw_knockback_up
+  cmp #DIR_LEFT
+  beq sw_knockback_left
+  cmp #DIR_RIGHT
+  beq sw_knockback_right_step
+  jmp sw_pstep_down
+sw_knockback_up:
+  jmp sw_pstep_up
+sw_knockback_left:
+  jmp sw_pstep_left
+sw_knockback_right_step:
+  jmp sw_pstep_right
+  .endif
+sw_knockback_step_end:
+  ; Kernel-budget boundary label: brackets sw_knockback_step alone, gated
+  ; identically (`.if !BATTLE_ENABLED`) -- 0 bytes on an RPG, where the block
+  ; above assembles to nothing and this label lands at the same address as
+  ; sw_knockback_step itself.
+
+; ==========================================================================
+; sw_update_player -- phase 2 slice 4b: reached by a plain jmp from
+; engine/player.asm's update_player (map_is_streamed set), replacing the
+; ordinary per-button pad dispatch entirely. This routine's own rts
+; therefore returns directly to update_player's caller (main_loop), the
+; same "jmp ends in rts, lands past the jumper" shape cross_*/redraw_screen
+; already use.
+;
+; Order: iframes already decremented by the caller (update_player, before
+; the jmp here); <moving> already reset to 0 there too (update_player's own
+; top, before its streamed branch), so sw_pstep_*'s own `inc <moving>` is
+; this frame's only writer. sw_event_freeze (an event started this frame)
+; skips movement outright; capped knockback (kb_timer active, !BATTLE_ENABLED
+; only) overrides the ordinary axis dispatch; otherwise axis arbitration
+; (sw_axis_pref) plus the accumulator (sw_walk_step_x/y) drive exactly one
+; axis via cur_speed=delta into sw_pstep_left/right/up/down (fix round 1,
+; finding 3: the true 256/240 ownership boundary, never the ordinary
+; MAX_X/MAX_Y cut sw_pstep's callers no longer reach through).
+;
+; Fix round 1, finding 1: a crossing this frame (screen_fresh, set by
+; sw_pstep_*'s own ownership commit -- spawn_entities already run, identity
+; already updated) stops the frame's remaining per-screen work -- hazard,
+; encounter, walk animation -- exactly as the ordinary engine's own
+; update_player_vertical/update_player_anim checks do (engine/player.asm),
+; deferring to the next frame. Finding 7: walk animation runs in the
+; non-crossed path, the identical shape update_player_anim's own tail uses
+; (moving? advance anim_timer/toggle anim_frame : reset both). The window
+; arm decision and the continuous camera-feed derivation
+; (sw_frame_camera_window, above) still run every frame the player did NOT
+; just get a lethal hit on, whether or not the player moved and whether or
+; not this frame crossed -- a crossing changes player_x/player_y/sw_col/
+; sw_row in the very same frame, so the camera must follow immediately, not
+; on a one-frame lag.
+; ==========================================================================
+sw_update_player:
+  lda <sw_event_freeze
+  bne sw_up_hazard
+  .if !BATTLE_ENABLED
+  lda <kb_timer
+  beq sw_up_axis
+  jsr sw_knockback_step
+  jmp sw_up_hazard
+  .endif
+sw_up_axis:
+  lda <pad
+  and #BTN_LEFT+BTN_RIGHT+BTN_UP+BTN_DOWN
+  beq sw_up_hazard          ; no held direction -- nothing to arbitrate
+  ; A fresh press this frame (pad_new) reassigns ownership outright -- "most
+  ; recently pressed axis owns." X is checked first, so a simultaneous fresh
+  ; press of both axes has X win the tie.
+  lda <pad_new
+  and #BTN_LEFT+BTN_RIGHT
+  bne sw_up_axis_newx
+  lda <pad_new
+  and #BTN_UP+BTN_DOWN
+  bne sw_up_axis_newy
+  jmp sw_up_axis_continue
+sw_up_axis_newx:
+  lda #0
+  sta <sw_axis_pref
+  jmp sw_up_axis_continue
+sw_up_axis_newy:
+  lda #1
+  sta <sw_axis_pref
+sw_up_axis_continue:
+  ; No fresh press this frame (or one was just applied above): honour
+  ; sw_axis_pref if that axis is still held, otherwise fall back to
+  ; whichever axis IS held -- a stale pref can still name an axis the player
+  ; released frames ago while continuing to hold the other one.
+  lda <sw_axis_pref
+  bne sw_up_pref_y
+  lda <pad
+  and #BTN_LEFT+BTN_RIGHT
+  bne sw_up_do_x
+  lda <pad
+  and #BTN_UP+BTN_DOWN
+  beq sw_up_hazard
+  lda #1
+  sta <sw_axis_pref
+  jmp sw_up_do_y
+sw_up_pref_y:
+  lda <pad
+  and #BTN_UP+BTN_DOWN
+  bne sw_up_do_y
+  lda <pad
+  and #BTN_LEFT+BTN_RIGHT
+  beq sw_up_hazard
+  lda #0
+  sta <sw_axis_pref
+sw_up_do_x:
+  jsr sw_walk_step_x
+  sta <cur_speed
+  lda <pad
+  and #BTN_LEFT
+  beq sw_up_x_right
+  jsr sw_pstep_left
+  jmp sw_up_hazard
+sw_up_x_right:
+  jsr sw_pstep_right
+  jmp sw_up_hazard
+sw_up_do_y:
+  jsr sw_walk_step_y
+  sta <cur_speed
+  lda <pad
+  and #BTN_UP
+  beq sw_up_y_down
+  jsr sw_pstep_up
+  jmp sw_up_hazard
+sw_up_y_down:
+  jsr sw_pstep_down
+sw_up_hazard:
+  lda <screen_fresh
+  bne sw_up_camera
+  jsr player_hazard
+  .if BATTLE_ENABLED
+  lda <game_state
+  bne sw_up_done
+  jsr check_encounter
+  .endif
+  lda <moving
+  beq sw_up_stand
+  inc <anim_timer
+  lda <anim_timer
+  cmp #ANIM_RATE
+  bcc sw_up_camera
+  lda #0
+  sta <anim_timer
+  lda <anim_frame
+  eor #1
+  sta <anim_frame
+  jmp sw_up_camera
+sw_up_stand:
+  lda #0
+  sta <anim_frame
+  sta <anim_timer
+sw_up_camera:
+  jsr sw_frame_camera_window
+sw_up_done:
+  rts
+sw_update_player_end:
+  ; Kernel-budget boundary label: brackets sw_update_player itself (the
+  ; per-frame driver dispatch: event-freeze check, capped-knockback branch,
+  ; axis arbitration, the accumulator dispatch, player_hazard/check_encounter,
+  ; the tail call into sw_frame_camera_window), unconditional regardless of
+  ; BATTLE_ENABLED.

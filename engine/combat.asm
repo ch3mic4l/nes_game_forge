@@ -347,11 +347,42 @@ player_hazard:
   clc
   adc #8
   sta <probe_x
+  ; Phase 2 slice 4b, orchestrator ruling 9: a scripted player Move's own
+  ; wider ownership rectangle (x up to 255, y up to 239 -- docs/design-
+  ; streamed-worlds.md §6) makes this probe point genuinely able to
+  ; straddle the current streamed screen's own edge, unlike held movement's
+  ; tighter MAX_X/MAX_Y wall. Y must carry dx (whether the add above just
+  ; crossed past 255) all the way to sw_hazard_probe_type below, so it is
+  ; captured here, immediately after the add, the same convention
+  ; sw_move_probe's own header documents.
+  .if STREAMING_ENABLED
+player_hazard_dx_capture:
+  lda #0
+  adc #0
+  tay
+player_hazard_dx_capture_end:
+  .endif
   lda <player_y
   clc
   adc #12
   sta <probe_y
+  ; A same-screen probe keeps probe_type exactly as before (byte-identical
+  ; on a non-streaming build, and on a streaming build whose current map
+  ; isn't one). A streamed screen's own probe routes through
+  ; sw_hazard_probe_type instead, which normalizes the straddle and reads
+  ; the raw type through sw_terrain_or_fill/sw_peek_byte the same
+  ; bank-safe way every other cross-screen read in this engine does.
+  .if STREAMING_ENABLED
+player_hazard_dispatch:
+  lda <map_is_streamed
+  beq player_hazard_probe_same
+  jsr sw_hazard_probe_type
+  jmp player_hazard_have_type
+player_hazard_probe_same:
+player_hazard_dispatch_end:
+  .endif
   jsr probe_type
+player_hazard_have_type:
   cmp #COL_DAMAGE
   bne player_hazard_done
   .if BATTLE_ENABLED

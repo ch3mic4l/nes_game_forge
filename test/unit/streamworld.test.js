@@ -574,20 +574,21 @@ test(
     const actualBg = Array.from({ length: 16 }, (_, i) => nes.ppu.vramMem[0x3f00 + i]);
     assert.deepEqual(actualBg, expectedBg, "background palette RAM must hold the project's own authored colours");
 
-    // The interim wall (Part C): screen (0,0)'s right edge borders screen (1,0),
-    // a REAL neighbour in this project's 3x2 grid -- on an ordinary map this
-    // would cross; on the current streamed screen, Part C's cross_* wall must
-    // hold it instead. Enough frames to reach and well past the edge at
-    // PLAYER_SPEED=2px/frame from startX=120 if nothing stopped it.
+    // Part C's own placeholder was an "interim wall" that refused every crossing outright; phase 2
+    // slice 4b replaced it with the real thing (fix round 1, rulings A/D), so screen (0,0)'s right
+    // edge -- bordering screen (1,0), a REAL neighbour in this project's 3x2 grid -- must now cross
+    // into it, updating flat_screen to the new screen's own global id at the ownership commit
+    // (finding 4) rather than holding the player at the edge. Enough frames to reach and cross the
+    // edge at SW_SPEED_SUB_X's own cadence from startX=120.
     const flatScreenBefore = mem[FLAT_SCREEN];
     for (let i = 0; i < 150; i++) {
       nes.buttonDown(1, RIGHT);
       nes.frame();
     }
     nes.buttonUp(1, RIGHT);
-    assert.equal(mem[FLAT_SCREEN], flatScreenBefore, 'the interim wall must refuse to cross into a neighbour while the current screen is streamed');
-    assert.equal(mem[MAP_IS_STREAMED], 1, 'still on the streamed screen');
-    assert.ok(mem[PLAYER_X] < 256, 'player_x must be clamped, not wrapped, at the wall');
+    assert.equal(mem[FLAT_SCREEN], flatScreenBefore + 1, "crossing right onto a real neighbour must update flat_screen to the new screen's own global id");
+    assert.equal(mem[MAP_IS_STREAMED], 1, 'still on the streamed map after the crossing');
+    assert.ok(mem[PLAYER_X] < 256, 'player_x must be wrapped, not left unbounded, after the crossing');
   }
 );
 
@@ -665,21 +666,29 @@ test(
   async () => {
     // sw_resolve_screen (engine/streamworld.asm ~1623) sets the window's own origin
     // (win_col_screen/win_row_screen) directly to the LANDED screen's own coordinates,
-    // with no clamping (sw_clamp_col/sw_clamp_row exist in this file but are never
-    // called from anywhere -- dead code for a future slice). So landing on the grid's
-    // own bottom-right screen (gridW-1, gridH-1) guarantees the window's right,
-    // below and diagonal nametables want the neighbour one column/row past the grid's
-    // own edge, which sw_rw_read_metatile must substitute with sw_fill_metatile_id --
-    // the exact live path decodeStreamedLayout() cannot itself express, since
-    // decoded.screen() throws on an out-of-range (col,row) rather than describing
-    // "reads as fill". gridH: 3 (not the fixture's own default 2) keeps BOTH
-    // win_col_screen and win_row_screen even at that corner: sw_render_window's four
-    // physical nametables are a torus whose nt-to-screen-offset mapping flips with
-    // win_col_screen/win_row_screen's own parity (sw_rw_ntx/nty are fixed per nt
-    // index; wbase_col/row's (screen&1)*16-or-15 term is what actually picks which
-    // physical nt currently holds "this screen" vs "the next one"), and every other
-    // test in this file already lands on (0,0) -- even on both axes -- so this is the
-    // first test to depend on that parity at all.
+    // with no clamping at landing time. Phase 2 slice 4b made sw_clamp_col/sw_clamp_row
+    // (dead code when this test was first written) live: sw_frame_camera_window now runs
+    // unconditionally every frame once map_is_streamed, sliding the window toward its own
+    // player-centred, clamped-to-the-grid desired origin -- and for a landing at the
+    // grid's own bottom-right corner, that clamped desired origin is NOT the raw landing
+    // value (a 2-screen-wide window on a 3-screen-wide grid clamps its max origin to
+    // screen 1, not screen 2), so the corner's own window begins sliding away from the
+    // landing value within a handful of frames of the initial render completing --
+    // confirmed directly (scratchpad probe): unchanged through the render-settle poll
+    // below, then moving by the 4th frame after it. This test's own invariant (no
+    // leftover/garbage tile data for an off-grid neighbour) is real only in the window
+    // BEFORE the arm has moved anything, so it asserts immediately at the render-settle
+    // poll's own exit frame, with no extra frames afterward, and pins that precondition
+    // explicitly (below) rather than relying on an unchecked frame count. gridH: 3 (not
+    // the fixture's own default 2) keeps BOTH win_col_screen and win_row_screen even at
+    // that corner: sw_render_window's four physical nametables are a torus whose
+    // nt-to-screen-offset mapping flips with win_col_screen/win_row_screen's own parity
+    // (sw_rw_ntx/nty are fixed per nt index; wbase_col/row's (screen&1)*16-or-15 term is
+    // what actually picks which physical nt currently holds "this screen" vs "the next
+    // one"), and every other test in this file already lands on (0,0) -- even on both
+    // axes, where the clamp's lower bound already coincides with the landing value, so
+    // the arm has nowhere to slide -- so this is the first test to depend on that parity
+    // at all.
     const project = createStreamedProject({ gridH: 3 });
     markMetatiles(project);
     markTilesetTiles(project);
@@ -710,18 +719,36 @@ test(
       const mem = nes.cpu.mem;
       const ATTR_SHADOW = 0x0600;
       // nt 3 is the diagonal neighbour -- entirely off-grid here -- so its own
-      // attribute byte, once rendered, is a fixed known constant: FILL_ID packed
-      // into all four quadrants. Poll for that exact value, the same
-      // power-on-0xFF/cleared-0x00-versus-real-content reasoning buildAndBoot uses.
+      // attribute bytes, once rendered, are a fixed known constant: FILL_ID packed
+      // into all four quadrants. Poll for the LAST cell in this window's own render
+      // order (nt 0..3, each nt's tiles then its attributes, raster order within
+      // attributes -- so nt 3's own last attribute cell, (arow 6, acol 7), the last
+      // cell this loop below itself checks, is the last byte written), not merely
+      // nt 3's first cell: this scenario has no varied terrain anywhere in nt 1-3 to
+      // give an earlier cell a distinctive non-fill value, so polling only the first
+      // cell can report "rendered" while later cells in the same nt are still the
+      // power-on-0xFF/cleared-0x00 buildAndBoot's own comment describes, not yet
+      // written.
       const expectedFillAttrByte = FILL_ID | (FILL_ID << 2) | (FILL_ID << 4) | (FILL_ID << 6);
-      const nt3Attr00 = () => mem[ATTR_SHADOW + 3 * 64 + 0 * 8 + 0];
+      const nt3AttrLast = () => mem[ATTR_SHADOW + 3 * 64 + 6 * 8 + 7];
       let frames = 0;
-      while (nt3Attr00() !== expectedFillAttrByte && frames < 200) {
+      while (nt3AttrLast() !== expectedFillAttrByte && frames < 200) {
         nes.frame();
         frames++;
       }
       assert.ok(frames < 200, 'boot must reach a fully-rendered window well within 200 frames');
-      for (let i = 0; i < 5; i++) nes.frame();
+      // Phase 2 slice 4b's own continuous camera-feed arm (sw_frame_camera_window,
+      // called unconditionally every frame once map_is_streamed) starts sliding this
+      // corner's window away from the raw landing origin within a handful of frames --
+      // asserting anything past this exact frame would be checking the arm's own
+      // correct, in-progress convergence, not landing's leftover-garbage invariant.
+      // Pin the precondition explicitly instead of trusting an unchecked frame count.
+      const WIN_COL_SCREEN = 0x5b1, WIN_COL_LOCAL = 0x5b2, WIN_ROW_SCREEN = 0x5b3, WIN_ROW_LOCAL = 0x5b4;
+      assert.deepEqual(
+        [mem[WIN_COL_SCREEN], mem[WIN_COL_LOCAL], mem[WIN_ROW_SCREEN], mem[WIN_ROW_LOCAL]],
+        [cornerCol, 0, cornerRow, 0],
+        'the window origin must still be the raw landing corner at this exact frame -- if not, the arm has already begun sliding it and the assertions below no longer mean what they say'
+      );
 
       for (let nt = 1; nt <= 3; nt++) {
         const table = nes.ppu.nameTable[nes.ppu.ntable1[nt]];

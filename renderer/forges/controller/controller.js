@@ -5,6 +5,7 @@ import { store } from '../../store.js';
 import { el, fill, field, toast } from '../../ui.js';
 import { ACTIONS, BUTTONS, INPUT_STATES, projectUsesHeroNaming } from '../../../shared/project.js';
 import { projectUsesEffectiveTitle } from '../../../shared/font.js';
+import { projectUsesStreaming } from '../../../shared/streamlayout.js';
 
 // What the engine does with each action, in each game state. A `null` means the
 // engine ignores that action there — a bound button that does nothing is worth
@@ -104,6 +105,28 @@ export const bindableStates = (project) =>
       (state !== 'nameentry' || projectUsesHeroNaming(project))
   );
 
+// What the detail line under a button's dropdown says, for a given project/
+// action/state -- pulled out of renderActions (below) so it is directly
+// testable without a DOM. A streamed screen's own movement driver (engine/
+// streamworld.asm's sw_update_player) never reads dash_on at all -- the
+// accumulator's rate applies regardless -- so dash is genuinely ignored on a
+// streamed map, while an ordinary map in the same project still doubles
+// speed as usual (docs/design-streamed-worlds.md's own dash ruling). Fix
+// round 1, finding 8: the plan (streamed-worlds-phase2-plan.md:830-831)
+// requires this override regardless of state, not only in the row where
+// dash is otherwise supported -- the whole point of labelling a bound
+// action rather than leaving it silent (CLAUDE.md's own convention) is that
+// the user might bind dash to a menu/dialog/title/nameentry row too, and
+// deserves the same true-but-more-specific reason it is ignored there. A
+// locked slot (Start on the title) overrides both.
+export function actionDetail(project, action, stateName, { locked = false } = {}) {
+  if (locked) return 'Always begins the game — the one binding that cannot be taken away.';
+  if (action === 'dash' && projectUsesStreaming(project)) {
+    return 'The engine ignores dash on a streamed map.';
+  }
+  return ENGINE_SUPPORT[action]?.[stateName] ?? null;
+}
+
 const BUTTON_LABELS = { A: 'A', B: 'B', SELECT: 'Select', START: 'Start' };
 
 const KEY_SLOTS = [
@@ -164,9 +187,7 @@ export function mount(container, app) {
               // begins the game whatever this row says, so offering the select
               // would be offering a choice that is not one.
               const locked = stateName === 'title' && button === 'START';
-              const detail = locked
-                ? 'Always begins the game — the one binding that cannot be taken away.'
-                : ENGINE_SUPPORT[action]?.[stateName] ?? null;
+              const detail = actionDetail(store.project, action, stateName, { locked });
               return el(
                 'div',
                 {

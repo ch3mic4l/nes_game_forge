@@ -13,6 +13,19 @@ update_player:
   beq update_player_knock
   dec <player_iframes
 update_player_knock:
+  ; Phase 2 slice 4b: a streamed map replaces the whole rest of this routine
+  ; (pad dispatch, screen_fresh checks, ordinary knockback) with its own
+  ; driver -- axis arbitration, the accumulator, the window arm decision and
+  ; the continuous camera feed none of which the ordinary per-button
+  ; cascade below knows about. sw_update_player's own rts answers for this
+  ; jmp, landing back in main_loop exactly as update_player_done's rts
+  ; would have. See engine/streamworld.asm's own header for the full shape.
+  .if STREAMING_ENABLED
+  lda <map_is_streamed
+  beq update_player_knock_ord
+  jmp sw_update_player
+update_player_knock_ord:
+  .endif
   .if !BATTLE_ENABLED
   lda <kb_timer
   beq update_player_input
@@ -279,17 +292,20 @@ probe_solid_done:
 ; shape, cross_up/cross_down assemble their plain-cut shape -- horizontal
 ; crossings slide, vertical crossings cut.
 
+; Phase 2 slice 4b/fix round 1: a streamed screen's own edge is crossed
+; entirely inside sw_pstep_left/right/up/down (engine/streamworld.asm,
+; findings 1/3/4) -- the true 256/240-boundary ownership commit, entity
+; repopulation and global-identity update this MAX_X/MAX_Y-snap model
+; cannot express. sw_update_player (reached from update_player before
+; move_left/right/up/down ever would be, when map_is_streamed=1) never
+; calls move_left/right/up/down, so cross_left/right/up/down below are
+; reached only on an ordinary screen and need no map_is_streamed branch of
+; their own -- Part C's interim streamed wall is fully retired, not merely
+; bypassed. The STREAMING_ENABLED/ord_screen vs flat_screen choice stays:
+; a mixed-map build still indexes screen_left/right/up/down by the
+; compacted ordinary row (cross_set_screen's own single-writer, below).
 cross_left:
   .if STREAMING_ENABLED
-  ; Part C's interim wall: a streamed screen has no screen_left row at all,
-  ; and there is no strip-streaming machinery wired yet to cross into a
-  ; neighbour with -- every edge is solid while map_is_streamed is set,
-  ; the identical shape a real "no neighbour there" (screen_left==NO_SCREEN)
-  ; already takes, below.
-  lda <map_is_streamed
-  beq cross_left_ord               ; bne's target is now >128 bytes away
-  jmp cross_none
-cross_left_ord:
   ldy <ord_screen
   .else
   ldy <flat_screen
@@ -337,10 +353,6 @@ cross_left_cut:
 
 cross_right:
   .if STREAMING_ENABLED
-  lda <map_is_streamed
-  beq cross_right_ord               ; bne's target is now >128 bytes away
-  jmp cross_none
-cross_right_ord:
   ldy <ord_screen
   .else
   ldy <flat_screen
@@ -392,10 +404,6 @@ cross_right_cut:
 
 cross_up:
   .if STREAMING_ENABLED
-  lda <map_is_streamed
-  beq cross_up_ord               ; bne's target is now >128 bytes away
-  jmp cross_none
-cross_up_ord:
   ldy <ord_screen
   .else
   ldy <flat_screen
@@ -443,10 +451,6 @@ cross_up_cut:
 
 cross_down:
   .if STREAMING_ENABLED
-  lda <map_is_streamed
-  beq cross_down_ord               ; bne's target is now >128 bytes away
-  jmp cross_none
-cross_down_ord:
   ldy <ord_screen
   .else
   ldy <flat_screen

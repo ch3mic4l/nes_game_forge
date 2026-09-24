@@ -212,6 +212,58 @@ test('attr_shadow (256 bytes) and flash_driver (160 bytes) intersect on exactly 
   }
 });
 
+// Phase 2 slice 4b's own fresh RAM (orchestrator ruling 10): sw_axis_pref/sw_event_freeze (zero
+// page, the two named-but-unallocated reservations above ord_screen finally claimed) and
+// sw_frame_camera_window's twelve-byte working set at $0780-$078B (ordinary RAM, not zero page --
+// engine/constants.asm's own comment explains why: mainline-only, once a frame, never NMI, never
+// the kernel-lo hot path). Not part of the slice-2a RAM object above (that test is explicitly
+// scoped to what slice 2a allocated) -- this is the same address+size+collision discipline applied
+// to this slice's own separate, later claims.
+const RAM_4B = {
+  sw_axis_pref: 0xc7,
+  sw_event_freeze: 0xfd,
+  sw_fc_wy_lo: 0x0780, sw_fc_wy_hi: 0x0781,
+  sw_fc_px_lo: 0x0782, sw_fc_px_hi: 0x0783,
+  sw_fc_py_lo: 0x0784, sw_fc_py_hi: 0x0785,
+  sw_fc_scr: 0x0786, sw_fc_lpy: 0x0787,
+  sw_fc_desc: 0x0788, sw_fc_desl: 0x0789, sw_fc_desr: 0x078a, sw_fc_desrl: 0x078b
+};
+
+test('phase 2 slice 4b resident RAM: sw_axis_pref/sw_event_freeze/sw_frame_camera_window\'s own working set are at the address the BUILT engine/constants.asm actually says, and collide with nothing else in the engine', async (t) => {
+  const { symbols, resolveSize } = await buildForRamCheck(t);
+
+  for (const [name, expectedAddr] of Object.entries(RAM_4B)) {
+    const real = symbols.get(name);
+    assert.equal(
+      real,
+      expectedAddr,
+      `${name} (from engine/constants.asm) resolved to ${real === undefined ? 'nothing' : `$${real.toString(16)}`}, this file expects $${expectedAddr.toString(16)}`
+    );
+    assert.equal(resolveSize(name), 1, `${name} must be a single byte (no @size annotation expected)`);
+  }
+
+  const all = [];
+  for (const [name, addr] of symbols) {
+    if (!isRamName(name)) continue;
+    all.push({ name, start: addr, end: addr + resolveSize(name) - 1 });
+  }
+  const own = new Set(Object.keys(RAM_4B));
+  for (const name of own) {
+    const start = RAM_4B[name];
+    const end = start; // every entry here is one byte
+    for (const other of all) {
+      if (own.has(other.name)) continue;
+      assert.ok(
+        end < other.start || start > other.end,
+        `${name} ($${start.toString(16)}) overlaps ${other.name} ($${other.start.toString(16)}-$${other.end.toString(16)})`
+      );
+    }
+  }
+
+  // The one documented multi-byte span among this slice's own claims.
+  assert.equal(RAM_4B.sw_fc_desrl - RAM_4B.sw_fc_wy_lo + 1, 12, "sw_frame_camera_window's own working set is twelve bytes");
+});
+
 /**
  * Every streamed metatile id this project's terrain ever places (0-3) gets distinguishable
  * tiles/palette data instead of createMetatile's uniform default ({tiles:[0,0,0,0], palette:0}

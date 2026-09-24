@@ -119,10 +119,11 @@ sizes, the route zero-cost proof and `KERNEL_SLACK` itself are each checked thei
   Move, streamed or not. `STREAMWORLD_MOVE_KERNEL_ALLOWANCE = 159` (kernel-lo only, gated
   `usesStreaming && usesMove`) is the streaming-only remainder on top: `move_tick`'s own
   streamed-player bound arms on all four directions and `move_speed_player`'s accumulator dispatch.
-  A separate `STREAMWORLD_MOVE_KERNEL_HI_ALLOWANCE = 80` (kernel-hi, same gate) charges the shared
-  crossing-probe routine, `sw_move_probe`/`sw_move_probe_solid` (`engine/streamworld.asm`, gated
-  `.if MOVE_ENABLED` there so a streamed project with no live Move pays nothing extra in kernel-hi
-  either). Fix round 1 (`handoff-next/streamed-worlds-phase2-s3-review1.md` findings 1 and 4)
+  A separate `STREAMWORLD_MOVE_KERNEL_HI_ALLOWANCE = 76` (kernel-hi, same gate; down from 80 in fix
+  round 2, finding C: `sw_move_probe_solid`'s own tail shrank by 4 bytes when it switched to
+  `sw_terrain_or_fill_solid_type`) charges the shared crossing-probe routine, `sw_move_probe`/
+  `sw_move_probe_solid` (`engine/streamworld.asm`, gated `.if MOVE_ENABLED` there so a streamed
+  project with no live Move pays nothing extra in kernel-hi either). Fix round 1 (`handoff-next/streamed-worlds-phase2-s3-review1.md` findings 1 and 4)
   replaced round 1's own clamp-to-the-exact-edge bound arms — which changed the wall's selected
   semantics rather than just its accounting — with the ordinary wall's own shape at a wider bound:
   an 8-bit carry is itself the wall for RIGHT (255 is the byte range's own maximum), a `cmp
@@ -190,13 +191,13 @@ sizes, the route zero-cost proof and `KERNEL_SLACK` itself are each checked thei
 - `KERNEL_SLACK = 20` (unmoved by the diet): `kernelbytes.test.js`'s `assertCovers` requires
   `KERNEL_SLACK <= margin <= KERNEL_SLACK * 2`. Correct accounting of the base and every conditional
   term should leave exactly the floor; the ceiling detects drift, not spare headroom.
-- `STREAMWORLD_KERNEL_HI_ALLOWANCE = 2611` plus `STREAMWORLD_MT_PAL_KERNEL_HI_BYTES = LIMITS.metatiles`
+- `STREAMWORLD_KERNEL_HI_ALLOWANCE = 3437` plus `STREAMWORLD_MT_PAL_KERNEL_HI_BYTES = LIMITS.metatiles`
   (64) are the one pair of allowances charged against kernel-**hi** ($E000) rather than kernel-lo —
   the resident streamed-worlds package (`engine/streamworld.asm`) and its metatile attribute-quadrant
   lookup (`mt_pal`), both assembled inside `.if STREAMING_ENABLED` after `assets/text.inc`, gated on
   `projectUsesStreaming` (`shared/streamlayout.js`). Measured as the real kernel-hi bank usage delta
   between a streamed build and the same project with every map's `streamed` flag forced off, flat
-  at 2675 combined across game type and the `mixed` (streamed map alongside ordinary ones) shape —
+  at 3449 combined across game type and the `mixed` (streamed map alongside ordinary ones) shape —
   equality-asserted by `kernelbytes.test.js`. Phase 2 slice 2b's Part D narrowed streaming to UNROM
   512 (`streamCapableFourScreen`) alone, so this is no longer measured per mapper; MMC1/MMC3 are
   refused outright by `validateStreamedMaps` regardless of what this would measure there. Re-measured
@@ -207,13 +208,73 @@ sizes, the route zero-cost proof and `KERNEL_SLACK` itself are each checked thei
   real net growth in this same resident file, re-measured directly each time, never derived by
   adding a fix's own byte count to the prior figure by hand. Re-measured again to 2611 by phase 2
   slice 4a's own resident additions (`sw_oam_project_x`/`sw_oam_project_y`/`sw_oam_rowbase` and the
-  landing origin write in `sw_resolve_divdone`) — the same real-growth reasoning, not a formula fix.
-- Phase 2 slice 2b, Part F: ten more kernel-**lo** terms streaming adds, each its own named
-  allowance (`main/build/generate.js`, all gated on `projectUsesStreaming`, added inside
-  `kernelCodeBytes`), measured as `symbolAddr(after) - symbolAddr(before)` off a real build between a
-  pair of unconditional boundary labels bracketing each site's own `.if STREAMING_ENABLED` addition
-  — flat across game type and the `mixed` shape, confirmed by measuring all three
-  (`test/lib/streamedproject.js`):
+  landing origin write in `sw_resolve_divdone`), then to 2689 by that same slice's own round 1 review
+  fix (finding 2's real per-tile clipping needs a general signed offset projection per axis, not the
+  single-carry-bit contract the two `sw_oam_project_*` routines started with, so each gained a
+  sibling — `sw_oam_project_tile_x`/`_tile_y` — plus a small shared core) — the same real-growth
+  reasoning both times, not a formula fix. Grown again by *this* fix round
+  (streamed-worlds-phase2-s4b-fix1), from 2689 to 3385: finding 1's real crossing implementation
+  (ruling C's true 256(X)/240(Y) boundary with signed overshoot, replacing the old
+  `cross_left`/`right`/`up`/`down` wall — see `STREAMWORLD_CROSS_KERNEL_ALLOWANCE`'s own retirement
+  note below) lives entirely in new resident code — `sw_hazard_probe_solid`/
+  `sw_hazard_probe_solid_cross`, six small per-axis recompute helpers
+  (`sw_pr_calc`/`sw_pl_calc`/`sw_pd_calc_a`/`sw_pd_calc_b`/`sw_pu_calc_noborrow`/`sw_pu_calc_b`) and
+  the four `sw_pstep_left`/`right`/`up`/`down` routine bodies, all ahead of `sw_update_player`, all
+  unconditional under `STREAMING_ENABLED`, none of which falls inside any other named span.
+  Re-measured directly (fix round 2: real kernel-hi delta 4601 on UNROM 512 action, 4566 rpg, 4601
+  action-mixed; each equals `STREAMWORLD_MT_PAL_KERNEL_HI_BYTES`(64) +
+  `STREAMWORLD_WINDOW_KERNEL_HI_ALLOWANCE`(834) + `STREAMWORLD_KNOCKBACK_KERNEL_HI_ALLOWANCE`(32,
+  action only) + `streamworldUpdatePlayerKernelHiAllowance` (170 action / 167 rpg) +
+  `STREAMWORLD_HAZARD_KERNEL_HI_ALLOWANCE`(64) + 3437 exactly, all three shapes), not derived by
+  hand from the new code's own line count. The +52 over fix round 1's 3385 is
+  `sw_terrain_or_fill_solid_type` (fix round 2 finding C, shared by `sw_move_probe_solid` and
+  `sw_hazard_probe_cross`) plus the finding A/B rewrite of `sw_pstep_up`'s crossing case
+  (per-probe renormalization, plus the `bcc`/`jmp` branch-range fix) net of the 4-byte shrink
+  `STREAMWORLD_HAZARD_KERNEL_HI_ALLOWANCE` absorbed on its own (68 -> 64, below).
+- Phase 2 slice 4b (the continuous movement driver, `docs/reference-engine.md`'s own Part C/movement
+  section) adds four MORE kernel-hi terms, each its own named allowance rather than folded into
+  `STREAMWORLD_KERNEL_HI_ALLOWANCE` above (all still resident in `engine/streamworld.asm`, all still
+  gated on `projectUsesStreaming` alone, equality-asserted by `kernelbytes.test.js`'s Part F):
+  - `STREAMWORLD_HAZARD_KERNEL_HI_ALLOWANCE = 64` (down from 68 in fix round 2: finding C collapsed
+    `sw_hazard_probe_cross`'s tail from `jsr sw_terrain_or_fill / tay / lda mt_collision,y / rts` to
+    `jsr sw_terrain_or_fill_solid_type / rts`, -4 bytes) — `sw_hazard_probe_type`, `player_hazard`'s
+    own straddling-collision probe for a scripted player Move's wider ownership rectangle (Part C's
+    "straddling probe" section, `docs/reference-engine.md`). Unconditional — not gated on
+    `MOVE_ENABLED` or `BATTLE_ENABLED`, since `player_hazard` calls this on every streamed screen
+    regardless of either (orchestrator ruling 9). Flat across action/RPG/mixed.
+  - `STREAMWORLD_WINDOW_KERNEL_HI_ALLOWANCE = 834` — the window/camera-window region
+    (`sw_win_col_inc`/`_dec`, `sw_win_row_inc`/`_dec`, `sw_win_entering_col_right`/`_row_down`,
+    `sw_frame_camera_window`, `sw_win_arm`): the per-frame camera-to-PPU publish and the
+    current/desired window-block arm decision. Flat across game type and the `mixed` shape —
+    unconditional, no `BATTLE_ENABLED` interior gate.
+  - `STREAMWORLD_KNOCKBACK_KERNEL_HI_ALLOWANCE = 32` — `sw_knockback_step`, the interim capped (1px)
+    knockback step for a streamed map, gated `.if !BATTLE_ENABLED` inside this same file (action/
+    mixed only; an RPG's knockback stays the ordinary battle-system one). nesasm emits no symbol
+    table entry at all for a label inside a false `.if` — confirmed directly (the measurement's own
+    symbol lookup throws on an RPG build) rather than assumed to share an address with whatever
+    follows — so this is 0 on RPG, not merely unreachable.
+  - `STREAMWORLD_UPDATE_PLAYER_KERNEL_HI_ALLOWANCE_BY_GAME_TYPE = {action: 170, rpg: 167}` plus a
+    `streamworldUpdatePlayerKernelHiAllowance(project)` accessor (the `ITEM_EFFECT_KERNEL_ALLOWANCE_
+    BY_GAME_TYPE` shape, above) — `sw_update_player` itself, the per-frame driver dispatch (the
+    `sw_event_freeze` check, the capped-knockback branch above, axis arbitration via `sw_axis_pref`,
+    the accumulator dispatch into `sw_pstep_left`/`right`/`up`/`down` — fix round 1, finding 1
+    moved the true 256(X)/240(Y) crossing commit here from `cross_left`/`right`/`up`/`down`, which
+    no longer see a streamed crossing at all — `player_hazard`/`check_encounter`, the tail call into
+    `sw_frame_camera_window`). Game-type-varying because two blocks inside its own body are gated on
+    `BATTLE_ENABLED` in opposite directions: an action-only knockback-dispatch arm near the top, an
+    RPG-only `check_encounter` call near the bottom — net +3 action over rpg, exactly the measured
+    170-vs-167 gap (the same +3 the prior 135-vs-132 figures held, since fix round 1's own growth —
+    findings 1/4/7: the ownership commit and `flat_screen` update now live in `sw_pstep_*` rather
+    than here, but the `screen_fresh` gate that arms them and finding 7's walk-animation restore on
+    a same-frame crossing both grew this body directly — is identical on both game types). The
+    `mixed` shape measures identical to plain action (170), confirmed directly, not assumed from the
+    game type alone.
+- Phase 2 slice 2b, Part F: ten more kernel-**lo** terms streaming adds (plus two more from phase 2
+  slice 4b, listed at the end of this group), each its own named allowance (`main/build/generate.js`,
+  all gated on `projectUsesStreaming`, added inside `kernelCodeBytes`), measured as
+  `symbolAddr(after) - symbolAddr(before)` off a real build between a pair of unconditional boundary
+  labels bracketing each site's own `.if STREAMING_ENABLED` addition — flat across game type and the
+  `mixed` shape, confirmed by measuring all three (`test/lib/streamedproject.js`):
   - `STREAMWORLD_RESOLVER_KERNEL_ALLOWANCE = 49` — `engine/boot.asm`'s own copy of the
     resolve-and-render dispatch (cold boot draws its first screen inline rather than calling
     `redraw_screen`): `jsr sw_resolve_screen` plus the `map_is_streamed` branch, the whole
@@ -247,19 +308,50 @@ sizes, the route zero-cost proof and `KERNEL_SLACK` itself are each checked thei
     screen returns an empty cache rather than reading a stale row (Part D refuses a streamed map its
     own bound tile, but `tile_switch_changed` can still reach this reactively from an ordinary map's
     Set/Clear while the player stands on a streamed screen).
-  - `STREAMWORLD_CROSS_KERNEL_ALLOWANCE = 4 * 7` — `engine/player.asm`'s `cross_left/right/up/down`:
-    Part C's interim wall, every edge solid while the CURRENT screen is streamed (no strip-streaming
-    machinery wired to cross into a neighbour yet). Each direction is `lda/beq/jmp cross_none` (7
-    bytes), unconditional — `cross_*` has no feature gate of its own.
+  - `STREAMWORLD_CROSS_KERNEL_ALLOWANCE` is **retired** as of fix round 1
+    (streamed-worlds-phase2-s4b-fix1, finding 1) — it no longer exists in `generate.js`, not merely
+    zeroed in place. It used to price a per-direction crossing arm (the "clamp edges" grid-boundary
+    guard plus a snap of the leaving axis) that phase 2 slice 4b had built directly inside
+    `engine/player.asm`'s `cross_left`/`right`/`up`/`down` (flat `21 + 27 + 21 + 27 = 96` bytes,
+    LEFT/UP cheaper than RIGHT/DOWN because RIGHT/DOWN's boundary compare needs an extra `+1` against
+    `sw_grid_w`/`sw_grid_h`). Fix round 1 found that design itself defective: a held crossing needs
+    to land mid-frame at the TRUE 256(X)/240(Y) boundary with its own signed overshoot (ruling C),
+    not snap to `MAX_X`/`MAX_Y` on the *following* frame the way `cross_*` naturally would. The real
+    crossing moved entirely into `sw_pstep_left`/`right`/`up`/`down` (`engine/streamworld.asm`),
+    reached straight from `sw_update_player` — `sw_update_player` never falls through to
+    `move_left`/`right`/`up`/`down` any more, so `cross_left`/`right`/`up`/`down` never see a
+    streamed crossing at all. That left `cross_left`/`right`/`up`/`down` exactly as they were
+    *before* slice 4b: pure ordinary-screen crossing code with no `map_is_streamed` branch, no
+    grid-boundary guard, and no streaming-conditional byte cost beyond the `STREAMING_ENABLED`
+    `ord_screen`/`flat_screen` operand choice already priced by
+    `STREAMWORLD_CROSS_TRANSLATE_KERNEL_ALLOWANCE` below (a `ldy <ord_screen`/`ldy <flat_screen`
+    swap costs the same 2 bytes either way). Re-measured directly
+    (`measureStreamedSpan`'s `cross_left..cross_none` region-delta, streamed minus unstreamed
+    baseline: 21 exactly, matching `STREAMWORLD_CROSS_TRANSLATE_KERNEL_ALLOWANCE` alone with nothing
+    left over) — the crossing arm's own byte cost moved to `STREAMWORLD_UPDATE_PLAYER_KERNEL_HI_
+    ALLOWANCE_BY_GAME_TYPE` above, inside `sw_update_player`'s own growth from 135/132 to 170/167.
   - `STREAMWORLD_CROSS_TRANSLATE_KERNEL_ALLOWANCE = 13 + 8` — `engine/player.asm`'s
-    `cross_set_screen`: past the interim wall, an ORDINARY crossing runs through this helper instead
-    of a bare `sta <flat_screen`, so `flat_screen` stays the global id while `ord_screen` adopts the
-    newly-crossed-to compacted index too (a real streamed crossing is not this helper's job at all —
-    slice 4b's own streamed movement driver, not yet built, owns that; see `docs/reference-
-    engine.md`'s own Part C note). The helper itself is a fixed 13 bytes; each of its 8 call
+    `cross_set_screen`: an ORDINARY crossing runs through this helper instead of a bare
+    `sta <flat_screen`, so `flat_screen` stays the global id while `ord_screen` adopts the
+    newly-crossed-to compacted index too. The helper itself is a fixed 13 bytes; each of its 8 call
     sites (the slide branch and the cut fallback, times all 4 directions) replaces a 2-byte store
     with a 3-byte `jsr`, +1 byte each, all 8 always assembling since a streamed map is only ever
     reachable on UNROM 512 with four-screen mirroring, whose `cameraAxes` answers both axes true.
+  - Phase 2 slice 4b's own three more kernel-lo terms, the movement driver's caller-side glue outside
+    `engine/streamworld.asm` itself: `STREAMWORLD_UPDATE_PLAYER_DISPATCH_KERNEL_ALLOWANCE = 7` —
+    `engine/player.asm`'s `update_player_knock`, a `lda <map_is_streamed / bne` branch into the
+    capped (1px, `SW_KNOCKBACK_SPEED`) knockback step instead of the ordinary 3px one.
+    `STREAMWORLD_EVENT_FREEZE_KERNEL_ALLOWANCE = 4 + 4` — `sw_event_freeze`'s own two call sites
+    summed into one term (the `STREAMWORLD_LANDING_BOUND_CACHE_KERNEL_ALLOWANCE` two-call-site
+    precedent above): `engine/input.asm`'s `do_talk` (armed the same frame an interact press opens a
+    conversation, so a page with nothing to wait on can't also let the player step that frame) and
+    `engine/boot.asm`'s `main_loop_idle` (cleared every frame gameplay is live). Each site is
+    `lda #imm/sta <sw_event_freeze`, 4 bytes. `STREAMWORLD_HAZARD_KERNEL_ALLOWANCE = 5 + 10` —
+    `engine/combat.asm`'s `player_hazard`, summed the same two-site way (orchestrator ruling 9):
+    the dx-capture triple right after the probe_x add (5 bytes) plus the `map_is_streamed` dispatch
+    into `sw_hazard_probe_type` vs. the ordinary `probe_type` fallthrough (10 bytes). Unconditional
+    — every streamed project pays it, not merely a Move-using one, the same "sabotage case 13" gate
+    (above) this term's own dispatch half protects.
   - Fix round 1's own three additions, each measured as a marginal delta on top of the resolver/
     redraw spans above, not restated from scratch: `STREAMWORLD_LANDING_BOUND_CACHE_KERNEL_
     ALLOWANCE = 2 * 3`, gated on BOTH `projectUsesStreaming` and `projectUsesBoundTiles` — a `jsr
@@ -279,11 +371,21 @@ sizes, the route zero-cost proof and `KERNEL_SLACK` itself are each checked thei
 - Phase 2 slice 4a's own three kernel-lo terms, gated on `projectUsesStreaming` (`main/build/
   generate.js`), each equality-asserted by `kernelbytes.test.js` on both game types and the `mixed`
   shape:
-  - `STREAMWORLD_PROJECT_KERNEL_ALLOWANCE = 161` — the projection wiring's four purely-additive
-    spans (`engine/oam.asm`'s `build_oam_draw_dispatch`/`_dispatch_done` branch + `build_oam_draw_sw`/
-    `_end` routine, `engine/entities.asm`'s `draw_one_entity_show`/`de_show_dispatch_done` branch +
-    `draw_one_entity_ordinary_join`/`draw_one_entity_animate` routine), measured with the same
-    single-build-span technique as the Part F terms above (4 + 108 + 4 + 45).
+  - `STREAMWORLD_PROJECT_KERNEL_ALLOWANCE = 286` — the projection wiring's combined span, measured
+    with the same single-build-span technique as the Part F terms above: `engine/oam.asm`'s
+    `build_oam_draw_dispatch`/`_dispatch_done` branch (4) + `build_oam_draw_sw`/`_end` routine (108) =
+    112, plus `engine/entities.asm`'s `draw_one_entity_show`/`de_show_dispatch_done` branch (4) +
+    `draw_one_entity_ordinary_join`/`draw_one_entity_animate` routine (167) = 171, combined 283, plus
+    a third `entities.asm` term that is a REPLACE rather than a purely-additive bracket —
+    `draw_one_entity_hurt_dispatch`/`draw_one_entity_show` costs the ordinary build its original
+    2-byte `bne` either way, a streamed build 5 bytes (a `jmp`'s-worth more), so only the 3-byte
+    streamed-minus-ordinary delta belongs here (283 + 3 = 286). Grew from an earlier 45/161 in the
+    round 1 review fix (real per-tile projection for entities, replacing origin-only projection):
+    the join span now also duplicates `entity_animation`'s own `NO_ANIM`/metasprite-id lookup (needed
+    before X is safe to spend on the per-tile projection calls) rather than sharing it with
+    `draw_one_entity_animate`'s tail, and that larger streamed-only routine is what pushes
+    `draw_one_entity`'s own `ent_hurt` dispatch out of a plain `bne`'s ±128 range in a streaming build
+    alone.
   - `STREAMWORLD_NMI_KERNEL_ALLOWANCE = 24` — the ONE exception to that additive technique:
     `engine/boot.asm`'s NMI arbitration splice (`nmi_vram_dispatch`..`nmi_scroll`) *replaces* the
     ordinary six-line drain with a bigger three-way one rather than adding a branch in front of it,

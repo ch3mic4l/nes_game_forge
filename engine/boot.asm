@@ -160,6 +160,14 @@ boot_draw_done:
 
 main_loop:
   jsr wait_vblank
+; Fix round 2 (finding D/ruling M): the sw_driver_timing Mesen harness (test/lua/
+; sw_driver_timing.lua.template) anchors its own full-mainline-body span here -- the instant
+; wait_vblank's own blocking poll loop has returned, so the span excludes that poll's dead time
+; (real elapsed cycles, but not real work: it is however much of the frame was left over once the
+; PREVIOUS iteration's own body finished) and measures only actual game-logic/draw-prep cost,
+; ending at main_loop_ready (below) where the frame hands off to NMI. A label costs the cartridge
+; nothing, the same precedent main_loop_after_player already set.
+main_loop_body_start:
   jsr read_pad
   jsr music_tick            ; music keeps playing while the world is paused
   .if STING_ENABLED
@@ -242,6 +250,15 @@ main_loop_no_slide:
   ; Crossing a screen edge redraws from inside update_player, and the rest of
   ; this frame does not belong to the screen that just arrived: its actors have
   ; spawned but its own event has not had its turn yet.
+main_loop_after_player:
+  ; Reached on every frame immediately after update_player returns, whichever
+  ; way the screen_fresh check below goes. Fix round 1 (finding 5/ruling E):
+  ; the sw_driver_timing Mesen harness (test/lua/sw_driver_timing.lua.
+  ; template) anchors its own per-frame span here rather than on
+  ; update_entities' own entry point, because a continuous streamed ownership
+  ; crossing sets screen_fresh from inside update_player itself (finding 1),
+  ; and update_entities is skipped -- by design, see the comment above -- on
+  ; exactly that frame. A label costs the cartridge nothing.
   lda <screen_fresh
   bne main_loop_draw
   jsr update_entities
@@ -328,6 +345,17 @@ main_loop_ready:
   lda #1                    ; the top is past a branch's 128-byte reach
   sta <vram_ready
 main_loop_idle:
+  ; Phase 2 slice 4b: sw_event_freeze is a one-frame latch (engine/input.asm's
+  ; do_talk sets it), cleared unconditionally every frame regardless of state
+  ; -- the streamed driver only ever reads it on a frame update_player itself
+  ; runs, so clearing here rather than conditionally is simplest and cannot
+  ; leave it stuck set across a frame that never checked it.
+main_loop_idle_freeze_dispatch:
+  .if STREAMING_ENABLED
+  lda #0
+  sta <sw_event_freeze
+  .endif
+main_loop_idle_freeze_done:
   jmp main_loop
 
 take_door:

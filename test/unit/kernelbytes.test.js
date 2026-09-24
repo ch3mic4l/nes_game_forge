@@ -86,7 +86,6 @@ import {
   STREAMWORLD_MUSIC_KERNEL_ALLOWANCE,
   STREAMWORLD_ENCOUNTER_KERNEL_ALLOWANCE,
   STREAMWORLD_BOUND_CACHE_KERNEL_ALLOWANCE,
-  STREAMWORLD_CROSS_KERNEL_ALLOWANCE,
   STREAMWORLD_CROSS_TRANSLATE_KERNEL_ALLOWANCE,
   STREAMWORLD_INIT_SESSION_KERNEL_ALLOWANCE,
   STREAMWORLD_LANDING_BOUND_CACHE_KERNEL_ALLOWANCE,
@@ -96,7 +95,15 @@ import {
   STREAMWORLD_MOVE_KERNEL_HI_ALLOWANCE,
   STREAMWORLD_NMI_KERNEL_ALLOWANCE,
   STREAMWORLD_NMI_PALETTE_FX_KERNEL_ALLOWANCE,
-  STREAMWORLD_PROJECT_KERNEL_ALLOWANCE
+  STREAMWORLD_PROJECT_KERNEL_ALLOWANCE,
+  STREAMWORLD_UPDATE_PLAYER_DISPATCH_KERNEL_ALLOWANCE,
+  STREAMWORLD_EVENT_FREEZE_KERNEL_ALLOWANCE,
+  STREAMWORLD_HAZARD_KERNEL_ALLOWANCE,
+  STREAMWORLD_HAZARD_KERNEL_HI_ALLOWANCE,
+  STREAMWORLD_WINDOW_KERNEL_HI_ALLOWANCE,
+  STREAMWORLD_KNOCKBACK_KERNEL_HI_ALLOWANCE,
+  STREAMWORLD_UPDATE_PLAYER_KERNEL_HI_ALLOWANCE_BY_GAME_TYPE,
+  streamworldUpdatePlayerKernelHiAllowance
 } from '../../main/build/generate.js';
 import { SUPPORTED_MAPPERS, cameraAxes, rpgCapable, saveMediaImplemented, prgLayout, resolveMapper } from '../../shared/cartridge.js';
 import {
@@ -5283,14 +5290,28 @@ test(
       const baselineUsed = await measureKernelHiBank(t, mapper, baseline);
 
       const delta = streamedUsed - baselineUsed;
-      const expected = STREAMWORLD_KERNEL_HI_ALLOWANCE + STREAMWORLD_MT_PAL_KERNEL_HI_BYTES;
+      // Phase 2 slice 4b added four more unconditional-under-streaming
+      // kernel-hi regions to streamworld.asm -- the window/camera-window
+      // block, sw_update_player itself (game-type-varying),
+      // sw_knockback_step (action/mixed only, `.if !BATTLE_ENABLED`), and
+      // sw_hazard_probe_type (orchestrator ruling 9's straddling probe) --
+      // all four are part of this same raw bank-total delta, since baseline
+      // has STREAMING_ENABLED off entirely and none of streamworld.asm
+      // assembles.
+      const expected =
+        STREAMWORLD_KERNEL_HI_ALLOWANCE +
+        STREAMWORLD_MT_PAL_KERNEL_HI_BYTES +
+        STREAMWORLD_WINDOW_KERNEL_HI_ALLOWANCE +
+        (gameType === 'action' ? STREAMWORLD_KNOCKBACK_KERNEL_HI_ALLOWANCE : 0) +
+        streamworldUpdatePlayerKernelHiAllowance(streamed) +
+        STREAMWORLD_HAZARD_KERNEL_HI_ALLOWANCE;
       // fix round 1, finding 7/verification: printed on every run, pass or fail, not only in an
       // assertion failure message -- an independent, per-mapper figure a report can quote.
       console.log(`${mapper.name} (${label}): real kernel-hi delta ${delta} (expected ${expected})`);
       assert.equal(
         delta,
         expected,
-        `${mapper.name} (${label}): real kernel-hi delta ${delta} != STREAMWORLD_KERNEL_HI_ALLOWANCE (${STREAMWORLD_KERNEL_HI_ALLOWANCE}) + STREAMWORLD_MT_PAL_KERNEL_HI_BYTES (${STREAMWORLD_MT_PAL_KERNEL_HI_BYTES}) = ${expected}`
+        `${mapper.name} (${label}): real kernel-hi delta ${delta} != STREAMWORLD_KERNEL_HI_ALLOWANCE (${STREAMWORLD_KERNEL_HI_ALLOWANCE}) + STREAMWORLD_MT_PAL_KERNEL_HI_BYTES (${STREAMWORLD_MT_PAL_KERNEL_HI_BYTES}) + STREAMWORLD_WINDOW_KERNEL_HI_ALLOWANCE (${STREAMWORLD_WINDOW_KERNEL_HI_ALLOWANCE}) + knockback + sw_update_player + STREAMWORLD_HAZARD_KERNEL_HI_ALLOWANCE (${STREAMWORLD_HAZARD_KERNEL_HI_ALLOWANCE}) = ${expected}`
       );
     }
   }
@@ -5482,10 +5503,13 @@ test(
         'set_screen_ptr',
         'set_screen_ptr_ordinary'
       ],
-      ['STREAMWORLD_CROSS_KERNEL_ALLOWANCE (left)', STREAMWORLD_CROSS_KERNEL_ALLOWANCE / 4, 'cross_left', 'cross_left_ord'],
-      ['STREAMWORLD_CROSS_KERNEL_ALLOWANCE (right)', STREAMWORLD_CROSS_KERNEL_ALLOWANCE / 4, 'cross_right', 'cross_right_ord'],
-      ['STREAMWORLD_CROSS_KERNEL_ALLOWANCE (up)', STREAMWORLD_CROSS_KERNEL_ALLOWANCE / 4, 'cross_up', 'cross_up_ord'],
-      ['STREAMWORLD_CROSS_KERNEL_ALLOWANCE (down)', STREAMWORLD_CROSS_KERNEL_ALLOWANCE / 4, 'cross_down', 'cross_down_ord'],
+      // Fix round 1 (finding 1) moved the real crossing entirely into
+      // sw_pstep_left/right/up/down (engine/streamworld.asm); cross_left/
+      // right/up/down reverted to pure ordinary-screen code with no
+      // sub-span of their own to bracket (no more cross_left_ord etc.), so
+      // there is no per-direction site left to measure here -- only the
+      // cross_left..cross_none region delta below, which still covers
+      // cross_set_screen's own call sites inside these four routines.
       [
         'STREAMWORLD_CROSS_TRANSLATE_KERNEL_ALLOWANCE (helper)',
         13,
@@ -5503,6 +5527,12 @@ test(
         STREAMWORLD_ORDINARY_CAM_RESET_KERNEL_ALLOWANCE,
         'redraw_screen_cam_reset',
         'redraw_screen_cam_reset_done'
+      ],
+      [
+        'STREAMWORLD_UPDATE_PLAYER_DISPATCH_KERNEL_ALLOWANCE',
+        STREAMWORLD_UPDATE_PLAYER_DISPATCH_KERNEL_ALLOWANCE,
+        'update_player_knock',
+        'update_player_knock_ord'
       ]
     ];
     for (const gameType of ['action', 'rpg']) {
@@ -5517,22 +5547,24 @@ test(
       // across cross_left/right/up/down), so measured as the real delta the
       // full cross_left..cross_none region grows by when STREAMING_ENABLED
       // flips on, same mapper/mirroring (and so identical CAMERA_SLIDE_H/V)
-      // both sides -- same technique the kernel-hi test above uses. Expected
-      // delta is STREAMWORLD_CROSS_KERNEL_ALLOWANCE's own 28 (the interim
-      // walls, which also only exist when streaming is on) plus this term's
-      // 21.
+      // both sides -- same technique the kernel-hi test above uses. Fix
+      // round 1 (finding 1) moved the real crossing out of cross_left/right/
+      // up/down entirely (generate.js's own STREAMWORLD_CROSS_TRANSLATE_
+      // KERNEL_ALLOWANCE comment), so this region's only remaining
+      // streaming-on cost is this term's own 21 (the cross_set_screen
+      // helper plus its 8 call-site deltas) -- the old +96 dead-dispatch
+      // term is gone, not merely relabeled.
       const baseline = structuredClone(project);
       for (const map of baseline.maps) map.streamed = false;
       const streamedCrossRegion = await measureStreamedSpan(mapper, project, 'cross_left', 'cross_none');
       const baselineCrossRegion = await measureStreamedSpan(mapper, baseline, 'cross_left', 'cross_none');
       const crossRegionDelta = streamedCrossRegion - baselineCrossRegion;
-      const expectedCrossRegionDelta = STREAMWORLD_CROSS_KERNEL_ALLOWANCE + STREAMWORLD_CROSS_TRANSLATE_KERNEL_ALLOWANCE;
+      const expectedCrossRegionDelta = STREAMWORLD_CROSS_TRANSLATE_KERNEL_ALLOWANCE;
       assert.equal(
         crossRegionDelta,
         expectedCrossRegionDelta,
         `cross_left..cross_none region on ${gameType}: real streaming-on delta ${crossRegionDelta} != ` +
-          `STREAMWORLD_CROSS_KERNEL_ALLOWANCE (${STREAMWORLD_CROSS_KERNEL_ALLOWANCE}) + ` +
-          `STREAMWORLD_CROSS_TRANSLATE_KERNEL_ALLOWANCE (${STREAMWORLD_CROSS_TRANSLATE_KERNEL_ALLOWANCE}) = ${expectedCrossRegionDelta}`
+          `STREAMWORLD_CROSS_TRANSLATE_KERNEL_ALLOWANCE (${STREAMWORLD_CROSS_TRANSLATE_KERNEL_ALLOWANCE})`
       );
       // spawn_entities: dispatch preamble + spawn_streamed's own body, two
       // spans summed into the one named allowance (generate.js's own comment).
@@ -5550,7 +5582,91 @@ test(
       assert.equal(STREAMWORLD_MUSIC_KERNEL_ALLOWANCE, 0, 'apply_map_music: ldy <ord_screen and ldy <flat_screen are equal length');
       const musicSpan = await measureStreamedSpan(mapper, project, 'apply_map_music', 'apply_map_music_direct');
       assert.equal(musicSpan, 5, `apply_map_music span on ${gameType}: ${musicSpan} != 5 (a 2-byte ldy + 3-byte lda screen_map,y)`);
+      // Phase 2 slice 4b: sw_event_freeze's own two call sites, summed into
+      // one named term -- the STREAMWORLD_LANDING_BOUND_CACHE_KERNEL_
+      // ALLOWANCE precedent for a two-call-site sum.
+      const doTalkFreeze = await measureStreamedSpan(mapper, project, 'do_talk_freeze_dispatch', 'do_talk_freeze_done');
+      const idleFreeze = await measureStreamedSpan(mapper, project, 'main_loop_idle_freeze_dispatch', 'main_loop_idle_freeze_done');
+      assert.equal(
+        doTalkFreeze + idleFreeze,
+        STREAMWORLD_EVENT_FREEZE_KERNEL_ALLOWANCE,
+        `STREAMWORLD_EVENT_FREEZE_KERNEL_ALLOWANCE on ${gameType}: real span ${doTalkFreeze + idleFreeze} != ${STREAMWORLD_EVENT_FREEZE_KERNEL_ALLOWANCE}`
+      );
+      // Phase 2 slice 4b, orchestrator ruling 9: player_hazard's own dx-
+      // capture (5 bytes) plus its map_is_streamed dispatch into
+      // sw_hazard_probe_type (10 bytes), summed into one named term the
+      // same way as the event-freeze pair just above.
+      const hazardDxCapture = await measureStreamedSpan(
+        mapper,
+        project,
+        'player_hazard_dx_capture',
+        'player_hazard_dx_capture_end'
+      );
+      const hazardDispatch = await measureStreamedSpan(mapper, project, 'player_hazard_dispatch', 'player_hazard_dispatch_end');
+      assert.equal(
+        hazardDxCapture + hazardDispatch,
+        STREAMWORLD_HAZARD_KERNEL_ALLOWANCE,
+        `STREAMWORLD_HAZARD_KERNEL_ALLOWANCE on ${gameType}: real span ${hazardDxCapture + hazardDispatch} != ${STREAMWORLD_HAZARD_KERNEL_ALLOWANCE}`
+      );
+      // Phase 2 slice 4b, orchestrator ruling 9: sw_hazard_probe_type itself
+      // -- kernel-hi, unconditional, measured the same single-build
+      // bracketed-span technique as sw_win_col_inc/sw_win_arm_region_end
+      // just below.
+      const hazardProbeSpan = await measureStreamedSpan(mapper, project, 'sw_hazard_probe_type', 'sw_hazard_probe_type_end');
+      assert.equal(
+        hazardProbeSpan,
+        STREAMWORLD_HAZARD_KERNEL_HI_ALLOWANCE,
+        `STREAMWORLD_HAZARD_KERNEL_HI_ALLOWANCE on ${gameType}: real span ${hazardProbeSpan} != ${STREAMWORLD_HAZARD_KERNEL_HI_ALLOWANCE}`
+      );
+      // Phase 2 slice 4b: the kernel-hi window/camera-window region -- same
+      // single-build bracketed-span technique as the kernel-lo sites above,
+      // just landing in the $E000 half instead of $C000.
+      const windowSpan = await measureStreamedSpan(mapper, project, 'sw_win_col_inc', 'sw_win_arm_region_end');
+      assert.equal(
+        windowSpan,
+        STREAMWORLD_WINDOW_KERNEL_HI_ALLOWANCE,
+        `STREAMWORLD_WINDOW_KERNEL_HI_ALLOWANCE on ${gameType}: real span ${windowSpan} != ${STREAMWORLD_WINDOW_KERNEL_HI_ALLOWANCE}`
+      );
+      // Phase 2 slice 4b: sw_update_player itself, game-type-varying (two
+      // internal blocks are each gated on BATTLE_ENABLED in opposite
+      // directions -- see streamworldUpdatePlayerKernelHiAllowance's own
+      // comment).
+      const updatePlayerSpan = await measureStreamedSpan(mapper, project, 'sw_update_player', 'sw_update_player_end');
+      const expectedUpdatePlayer = streamworldUpdatePlayerKernelHiAllowance(project);
+      assert.equal(
+        updatePlayerSpan,
+        expectedUpdatePlayer,
+        `sw_update_player span on ${gameType}: real span ${updatePlayerSpan} != ${expectedUpdatePlayer}`
+      );
+      // Phase 2 slice 4b: sw_knockback_step is gated `.if !BATTLE_ENABLED`
+      // (action/mixed only) -- an RPG build assembles no symbol for it at
+      // all, confirmed here as a real rejection rather than assumed, not
+      // skipped.
+      if (gameType === 'action') {
+        const knockbackSpan = await measureStreamedSpan(mapper, project, 'sw_knockback_step', 'sw_knockback_step_end');
+        assert.equal(
+          knockbackSpan,
+          STREAMWORLD_KNOCKBACK_KERNEL_HI_ALLOWANCE,
+          `STREAMWORLD_KNOCKBACK_KERNEL_HI_ALLOWANCE on ${gameType}: real span ${knockbackSpan} != ${STREAMWORLD_KNOCKBACK_KERNEL_HI_ALLOWANCE}`
+        );
+      } else {
+        await assert.rejects(
+          () => measureStreamedSpan(mapper, project, 'sw_knockback_step', 'sw_knockback_step_end'),
+          `sw_knockback_step must assemble no symbol at all on ${gameType} (.if !BATTLE_ENABLED is false)`
+        );
+      }
     }
+    // sw_update_player is flat across the mixed shape too, matching
+    // STREAMWORLD_UPDATE_PLAYER_KERNEL_HI_ALLOWANCE_BY_GAME_TYPE's own
+    // comment -- checked directly here, not assumed from the action figure.
+    const mixedProject = createStreamedProject({ gameType: 'action', mixed: true });
+    mixedProject.cartridge.mapper = mapper.id;
+    const mixedUpdatePlayerSpan = await measureStreamedSpan(mapper, mixedProject, 'sw_update_player', 'sw_update_player_end');
+    assert.equal(
+      mixedUpdatePlayerSpan,
+      STREAMWORLD_UPDATE_PLAYER_KERNEL_HI_ALLOWANCE_BY_GAME_TYPE.action,
+      `sw_update_player span on mixed: real span ${mixedUpdatePlayerSpan} != ${STREAMWORLD_UPDATE_PLAYER_KERNEL_HI_ALLOWANCE_BY_GAME_TYPE.action}`
+    );
     // RPG-only: check_encounter's own guard (rpg.asm assembles entirely
     // inside `.if BATTLE_ENABLED`).
     const rpgProject = createStreamedProject({ gameType: 'rpg' });
@@ -5755,9 +5871,24 @@ test(
     // measured directly, dropping Shake (frees CAMERA_SHAKE_INTERACTION_
     // ALLOWANCE too, since Shake and the required camera interact) and the
     // `{name}` token out of the Say text (frees NAME_TOKEN_KERNEL_ALLOWANCE)
-    // is the cheapest combination that clears the new shortfall -- move,
-    // wait, visible and Say (still spanning movement, timing and dialogue)
-    // is what this board can now actually hold alongside a streamed map.
+    // is the cheapest combination that clears that shortfall -- move, wait,
+    // visible and Say (still spanning movement, timing and dialogue) is what
+    // this board could hold alongside a streamed map at that point. Phase 2
+    // slice 4b's own two new kernel-lo terms (STREAMWORLD_UPDATE_PLAYER_
+    // DISPATCH_KERNEL_ALLOWANCE + STREAMWORLD_EVENT_FREEZE_KERNEL_ALLOWANCE,
+    // 15 bytes combined, unconditional under streaming, main/build/
+    // generate.js) narrowed the margin again, past what even those four now
+    // leave room for: measured directly, dropping Wait (the cheapest
+    // remaining term, WAIT_KERNEL_ALLOWANCE 43) is what clears this
+    // shortfall -- move, visible and Say (movement, visual and dialogue) is
+    // what this board can now actually hold alongside a streamed map. Slice
+    // 4b's later "clamp edges" containment fix (the cross_* grid-boundary
+    // guards, STREAMWORLD_CROSS_KERNEL_ALLOWANCE 60 -> 96) narrowed it once
+    // more, past what even move+visible+Say now leave room for: measured
+    // directly, dropping Visible (the cheapest remaining term,
+    // VISIBLE_KERNEL_ALLOWANCE 47) is what clears this shortfall -- move and
+    // Say (movement and dialogue) is what this board can now actually hold
+    // alongside a streamed map.
     before.entities.push({
       actorId: 0,
       x: 32,
@@ -5769,8 +5900,6 @@ test(
               cond: { type: 'none', arg: 0 },
               commands: [
                 { op: 'move', who: 'self', dir: 'up', dist: 16 },
-                { op: 'wait', frames: 10 },
-                { op: 'visible', state: 'hidden' },
                 { op: 'say', text: 'Hello.' }
               ]
             }

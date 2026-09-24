@@ -1,0 +1,432 @@
+-- sw_driver_timing.lua.template -- Mesen (cycle-accurate) measurement of phase 2 slice 4b's own
+-- per-frame movement driver (sw_update_player, reached from engine/player.asm's update_player),
+-- discharging design-streamed-worlds.md's obligation 1 ("Driver specification and timing... The
+-- 660-cycle / 2.39% margin is PROVISIONAL until [the production driver is measured in the real
+-- engine on UNROM 512 and the frame bound recomputed from it]") AND fix round 2's own Finding D/
+-- ruling M, which found the obligation-1 discharge incomplete: the old fixture (a 12x2 grid, landing
+-- (5,0)) never reached the real 61-region-tall packing ceiling UNROM 512 actually allows, carried no
+-- real entity workload, never exercised the row axis or an axis handoff, and had no ownership/
+-- respawn evidence beyond sw_col changing (a crossing that moved sw_col but never actually spawned
+-- the new screen's entities would have passed unnoticed -- review-s4b-round2-no-spawn.mjs's own
+-- finding).
+--
+-- This script drives the REAL production driver through REAL scripted pad input (emu.setInput on
+-- inputPolled, the same technique test/lua/camera_check.lua.template already uses) -- per the
+-- brief's own ruling 4: "new, separate Lua checks armed by the real driver walking the player".
+--
+-- Grid: 3 wide x 61 tall (build_sw_driver_timing_roms.mjs's own GRID_W/GRID_H -- 61 is the real
+-- UNROM 512 PRG-region packing ceiling this slice's own ruling-N investigation established:
+-- roughly one 8 KB region per grid ROW regardless of width), landing at screen(1,58) -- an interior
+-- column and two rows from the tall edge, "away from any edge" (design-streamed-worlds.md ~1503).
+-- The busy phase is TWO LEGS, not one: Right (crossing the column axis, landing on a screen with 8
+-- real chaser actors -- MAX_ENTITIES, contact damage, the same canonical "busiest legal" shape
+-- design-streamed-worlds.md ~2413 and proto-tools/diag_f18_busy_frame.mjs already use for the
+-- ordinary engine's own worst mainline body), then immediately Down with NO idle gap in between
+-- (crossing the row axis, landing on a screen with 4 actors -- deliberately a DIFFERENT count so its
+-- own ent_active transition is distinguishable from the first) -- covering both orientations' strip
+-- fetches AND a release-handoff from one held axis directly to another, in the same real walk.
+--
+-- Measures TWO spans per frame, both anchored on real, zero-cost engine labels (a label costs the
+-- cartridge nothing -- the same precedent main_loop_after_player already set):
+--   1. The DRIVER span: `update_player` entry (engine/player.asm) to `main_loop_after_player`
+--      (engine/boot.asm) -- sw_update_player's own whole per-frame dispatch (movement, boundary
+--      probes, hazard/encounter checks, the crossing handlers). This is what obligation 1's own
+--      "driver" wording names.
+--   2. The MAINLINE span: `main_loop_body_start` (engine/boot.asm, placed immediately after
+--      wait_vblank returns -- fix round 2's own new label) to `main_loop_ready` (engine/boot.asm,
+--      reached once update_player/update_entities/build_oam/draw_entities/draw_ui have all already
+--      run, right before the NMI handshake). This is the REAL whole-frame game-logic cost the frame
+--      inequality (mainline + worst NMI < 29,780-cycle NTSC frame budget) needs -- it is what
+--      actually carries the 8 real chasers' own update_entities AI cost, which the driver span
+--      (anchored before update_entities even runs) cannot see.
+--
+-- Originally the driver span was anchored on `update_entities`' own entry instead -- correct only
+-- under the pre-finding-1 assumption that a streamed crossing never sets screen_fresh. Finding 1
+-- (fix round 1, ruling A) made a continuous ownership crossing do the real crossing work -- and set
+-- screen_fresh -- from inside update_player itself, so main_loop's own screen_fresh check now
+-- legitimately SKIPS update_entities on exactly that frame: the one frame this harness most needs to
+-- measure. main_loop_after_player fixes this (see fix round 1's own report for the full story).
+--
+-- Per driver-span frame, this script reads sw_col/sw_row/st_active/ent_active both before and after
+-- the span to classify the frame's own real workload:
+--   * "ownership-crossing" -- sw_col OR sw_row changed this frame (a real cross_right/cross_down +
+--     sw_locate_current + spawn_entities all ran).
+--   * "busy-arm" -- st_active transitioned 0 -> nonzero this frame (a fresh strip armed, not merely
+--     one already draining).
+--   * "respawn evidence" -- on ANY crossing frame, the sum of the 8 ent_active bytes (MAX_ENTITIES)
+--     must differ before vs after: the three screens on this walk carry 0/8/4 actors respectively
+--     (all distinct), so a real spawn always changes the sum and a skipped one (the no-spawn negative
+--     control) never does. Checked and enforced (EXIT_NO_RESPAWN_EVIDENCE, immediate) on every
+--     crossing frame, not merely logged -- this is the ownership/respawn evidence ruling M asks for,
+--     independent of sw_col/sw_row alone.
+-- The worst (maximum) cycle span seen across BOTH classes during the BUSY phase is what this script
+-- reports for the driver span (encoded in the exit code when REPORT_METRIC picks it) -- the real,
+-- combined worst-path figure obligation 1 asks the frame-bound arithmetic to be recomputed from. The
+-- mainline span's own busy-phase max is reported the same way when REPORT_METRIC="mainline".
+--
+-- Missing-workload negative control (self-contained, asserted inside this same run, driver span
+-- only -- the mainline span's own missing-workload control, "0 actors vs 8/4 actors", needs a SEPARATE
+-- ROM build, since actor placement is baked into the ROM at build time -- see
+-- build_sw_driver_timing_roms.mjs's own --no-actors flag and run_sw_driver_timing_check.sh's own
+-- comparison): the IDLE phase's own max span must be markedly cheaper than the BUSY phase's max.
+--
+-- Extra-cost negative control (driver span) lives OUTSIDE this template, in
+-- build_sw_driver_timing_roms.mjs's own --break=unconditional-arm mode (see that file's header).
+-- The no-spawn negative control (respawn evidence) also lives there, --break=no-spawn.
+--
+-- This is a TEMPLATE, not the script Mesen runs directly. test/lua/build_sw_driver_timing_roms.mjs
+-- instantiates it, substituting the __PLACEHOLDER__ tokens below with addresses resolved fresh out
+-- of that exact build's own game.fns / constants.asm / config.inc.
+--
+--   node test/lua/build_sw_driver_timing_roms.mjs [outDir] [--break=unconditional-arm|no-spawn] [--idle-only] [--no-actors]
+--   Mesen --testRunner <outDir>/sw_driver_timing.lua <outDir>/sw_driver_timing.nes
+--
+-- (test/lua/run_sw_driver_timing_check.sh runs the unbroken pass and the broken comparisons.)
+local UPDATE_PLAYER          = __UPDATE_PLAYER__          -- engine/player.asm's own real per-frame entry
+local MAIN_LOOP_AFTER_PLAYER = __MAIN_LOOP_AFTER_PLAYER__ -- engine/boot.asm, reached on every frame
+                                                           -- immediately after update_player returns.
+local MAIN_LOOP_BODY_START = __MAIN_LOOP_BODY_START__ -- engine/boot.asm, immediately after
+                                                        -- wait_vblank returns -- fix round 2's own
+                                                        -- new label, the mainline span's own start.
+local MAIN_LOOP_READY   = __MAIN_LOOP_READY__  -- engine/boot.asm, reached once per frame AFTER
+                                                -- update_player/update_entities/build_oam/
+                                                -- draw_entities/draw_ui have all already run --
+                                                -- the mainline span's own end, and also the anchor
+                                                -- sw_nmi_deadline.lua.template/flash_nmi_timing.lua.
+                                                -- template use for boot detection, needed here
+                                                -- because ST_GAMEPLAY is 0 (game_state's own
+                                                -- power-on RAM default too), so polling on endFrame
+                                                -- alone would false-positive on frame 1.
+
+local GAME_STATE       = __GAME_STATE__
+local ST_GAMEPLAY      = __ST_GAMEPLAY__
+local MAP_IS_STREAMED  = __MAP_IS_STREAMED__
+local SW_COL           = __SW_COL__
+local SW_ROW           = __SW_ROW__
+local ST_ACTIVE        = __ST_ACTIVE__
+local ENT_ACTIVE       = __ENT_ACTIVE__
+local MAX_ENTITIES     = 8
+
+-- IDLE_ONLY: true for the extra-cost negative-control run (no input ever held). false for the
+-- ordinary two-leg-busy-then-idle run.
+local IDLE_ONLY = __IDLE_ONLY__
+
+-- EXPECT_RESPAWN_EVIDENCE: false only for the --no-actors missing-workload control build (fix
+-- round 2's own mainline-metric negative control) -- with no actors placed on either target
+-- screen, a real crossing's own ent_active sum is legitimately 0 before AND after (nothing to
+-- spawn), so the respawn-evidence check below would otherwise false-fire on a build that never
+-- claimed to carry any workload in the first place. Every build that places real actors (the
+-- ordinary run AND the --break=no-spawn negative control, which places real actors but skips the
+-- spawn call) leaves this true, so the check still catches a real skipped spawn.
+local EXPECT_RESPAWN_EVIDENCE = __EXPECT_RESPAWN_EVIDENCE__
+
+-- REPORT_METRIC: which internal counter finish() encodes into the exit code.
+--   "expensive" (default) -- driver span, busy-phase crossing-or-fresh-arm max. The main obligation-1
+--     headline the old frame-bound estimate is recomputed from.
+--   "cheap" -- driver span, the true no-crossing/no-fresh-arm floor (pooled across both phases) --
+--     run_sw_driver_timing_check.sh's own extra-cost control compares this against a
+--     --break=unconditional-arm build's own idle-only max.
+--   "mainline" -- mainline span, busy-phase max (whichever leg). Fix round 2's own new metric --
+--     the real whole-frame game-logic cost (including the 8/4 real chasers' own update_entities AI),
+--     what the frame inequality (mainline + worst NMI < 29,780 cyc) is recomputed from.
+local REPORT_METRIC = "__REPORT_METRIC__"
+
+-- Fix round 2 (finding D/ruling M): the mainline span (unlike the driver span) genuinely straddles
+-- a PPU frame boundary -- wait_vblank returns near the START of vblank, and the rest of the frame's
+-- own game logic (read_pad..draw_ui) legitimately keeps running past the end of that vblank, into
+-- the NEXT PPU frame's own visible scanlines (completely ordinary NES programming: the CPU is never
+-- idle). scanline*DOTS_PER_SCANLINE+cycle resets every PPU frame, so a span crossing that reset
+-- produces a negative, silently-discarded delta (found empirically: maxMainlineBusyCycles never
+-- left 0 against this exact fixture until this fix, and the driver span's own old scanline/dot
+-- figure -- 15,150-15,500 cyc -- turned out to be quietly wrong too, for a frame busy enough that
+-- even the SHORTER driver span sometimes straddles the boundary). emu.getState()["masterClock"] is
+-- monotonic across frame boundaries (Mesen's own DisplayState.lua example script lists it) and,
+-- calibrated empirically against this exact build (onFrame-to-onFrame delta measured directly: a
+-- clean 29,780-29,781 every time, exactly the known NTSC CPU-cycles-per-frame figure, not the
+-- ~357,366 a raw 21.477 MHz master-clock-tick count would give) is ALREADY reported in whole CPU
+-- cycles, not master-clock ticks -- no division needed. Replaces the scanline/dot reconstruction
+-- outright rather than patching around the wrap.
+local CPU_CYCLES_PER_MASTER_CLOCK_UNIT = 1
+
+local EXIT_TIMEOUT               = 99
+local EXIT_NO_BOOT               = 2
+local EXIT_NOT_STREAMED          = 3
+local EXIT_NO_CROSSING_WORKLOAD  = 4  -- BUSY phase never saw sw_col/sw_row change
+local EXIT_NO_ARM_WORKLOAD       = 5  -- BUSY phase never saw a fresh (0->nonzero) st_active arm
+local EXIT_WORKLOAD_NOT_CHEAPER  = 6  -- IDLE phase's own max was not markedly cheaper than BUSY's
+local EXIT_NO_RESPAWN_EVIDENCE   = 7  -- a crossing frame's own ent_active sum did not change --
+                                       -- either a real bug or (deliberately) the no-spawn control.
+
+-- Pass encoding: exit code = EXIT_PASS_BASE + floor(maxCycles / MARGIN_SCALE), clamped -- the same
+-- channel-of-last-resort convention sw_nmi_deadline.lua.template's own header documents in full.
+local EXIT_PASS_BASE = 100
+-- cycles per exit-code unit. Real measurement against THIS fixture (3x61 grid, landing (1,58), real
+-- 8/4-chaser targets) is filled in by run_sw_driver_timing_check.sh's own header once measured --
+-- this constant must stay wide enough to encode the real worst case (driver span) AND the real
+-- worst mainline span (markedly larger, since it carries update_entities' own AI cost) without
+-- saturating either. See run_sw_driver_timing_check.sh's own MARGIN_SCALE/MAINLINE_MARGIN_SCALE
+-- comments for the exact figures this was set from.
+local MARGIN_SCALE = 150
+local MAINLINE_MARGIN_SCALE = 200
+-- An idle-only build reports sumIdleCycles/idleFrameCount (average), not a max -- a much smaller
+-- magnitude, so it gets its own, finer scale.
+local IDLE_AVG_SCALE = 100
+local EXIT_PASS_MAX = 255
+
+-- Right leg: ~256 px at ~1.4-1.5 px/frame plus margin for the initial arm-settle. Down leg:
+-- ~240 px, same margin logic. Both re-armed back to back (release-handoff, no idle gap) -- ruling
+-- M's own "release-handoff-to-another-held-axis" case.
+local FRAME_BUSY_LIMIT_RIGHT = 260
+local FRAME_BUSY_LIMIT_DOWN  = 240
+local FRAME_IDLE_LIMIT = 120
+local TIMEOUT_FRAMES = 2200
+
+local frame = 0
+local phase = "boot"  -- boot -> [busy_right -> busy_down ->] idle -> done (IDLE_ONLY skips both legs)
+local phaseStartFrame = 0
+local held = {}
+
+local swColBefore, swRowBefore, stActiveBefore, entActiveSumBefore = nil, nil, nil, nil
+local spanStart = nil
+local spanStart2 = nil
+
+local sawCrossing = false
+local sawFreshArm = false
+local maxBusyCycles = 0
+local maxIdleCycles = 0
+local maxCheapCycles = 0
+local maxExpensiveCycles = 0
+-- A per-frame uniform-overhead defect (unconditionally doing real work a gate should have
+-- skipped) can be CHEAPER, frame for frame, than a legitimate rare peak (e.g. a real one-time
+-- post-landing convergence) -- found empirically comparing --break=unconditional-arm's own
+-- idle-only MAX (7.8-8.0k cyc) against the unbroken idle-only MAX (13.0-13.2k cyc): the mutated
+-- build's own max was LOWER, even though it pays real extra cost on every single idle frame the
+-- unbroken build mostly does not. A max-of-run metric is blind to that shape. sumIdleCycles/
+-- idleFrameCount (AVERAGE, reported instead of the max for an idle-only build) is what the
+-- extra-cost control actually needs, and is only ever used for that build shape.
+local sumIdleCycles = 0
+local idleFrameCount = 0
+local maxMainlineBusyCycles = 0
+local maxMainlineIdleCycles = 0
+
+local function log(message)
+  emu.log(string.format("[%5d/%s] %s", frame, phase, message))
+end
+
+local function fail(code, message)
+  log("FAIL: " .. message)
+  emu.stop(code)
+end
+
+local function pass(message)
+  log("ok   " .. message)
+end
+
+local function read(address)
+  return emu.read(address, emu.memType.nesMemory)
+end
+
+local function entActiveSum()
+  local sum = 0
+  for i = 0, MAX_ENTITIES - 1 do
+    if read(ENT_ACTIVE + i) ~= 0 then sum = sum + 1 end
+  end
+  return sum
+end
+
+local function clockPosition()
+  local state = emu.getState()
+  return state["masterClock"]
+end
+
+local function onInput()
+  emu.setInput(held, 0)
+end
+
+local function onMainLoopBodyStartEntry()
+  if phase ~= "busy_right" and phase ~= "busy_down" and phase ~= "idle" then return end
+  spanStart2 = clockPosition()
+end
+
+local function onUpdatePlayerEntry()
+  if phase ~= "busy_right" and phase ~= "busy_down" and phase ~= "idle" then return end
+  swColBefore = read(SW_COL)
+  swRowBefore = read(SW_ROW)
+  stActiveBefore = read(ST_ACTIVE)
+  entActiveSumBefore = entActiveSum()
+  spanStart = clockPosition()
+end
+
+local function onMainLoopAfterPlayerEntry()
+  if spanStart == nil then return end -- update_player's own entry callback has not fired yet
+  local spanEnd = clockPosition()
+  local cycles = (spanEnd - spanStart) / CPU_CYCLES_PER_MASTER_CLOCK_UNIT
+  spanStart = nil
+
+  local swColAfter = read(SW_COL)
+  local swRowAfter = read(SW_ROW)
+  local stActiveAfter = read(ST_ACTIVE)
+  local crossed = (swColAfter ~= swColBefore) or (swRowAfter ~= swRowBefore)
+  local freshArm = stActiveBefore == 0 and stActiveAfter ~= 0
+
+  if crossed and EXPECT_RESPAWN_EVIDENCE then
+    local entActiveSumAfter = entActiveSum()
+    if entActiveSumAfter == entActiveSumBefore then
+      fail(EXIT_NO_RESPAWN_EVIDENCE, string.format(
+        "crossing frame (sw_col %d->%d, sw_row %d->%d) but ent_active sum stayed %d -- no real respawn evidence",
+        swColBefore, swColAfter, swRowBefore, swRowAfter, entActiveSumBefore))
+      return
+    end
+    log(string.format("respawn evidence ok: ent_active sum %d -> %d on crossing", entActiveSumBefore, entActiveSumAfter))
+  end
+
+  if phase == "busy_right" or phase == "busy_down" then
+    if crossed then sawCrossing = true end
+    if freshArm then sawFreshArm = true end
+    if cycles > maxBusyCycles then
+      maxBusyCycles = cycles
+      log(string.format("new busy max: %.1f cycles (crossed=%s freshArm=%s)", cycles, tostring(crossed), tostring(freshArm)))
+    end
+    if crossed or freshArm then
+      if cycles > maxExpensiveCycles then maxExpensiveCycles = cycles end
+    elseif cycles > maxCheapCycles then
+      maxCheapCycles = cycles
+    end
+  elseif phase == "idle" then
+    if cycles > maxIdleCycles then
+      maxIdleCycles = cycles
+      log(string.format("new idle max: %.1f cycles", cycles))
+    end
+    sumIdleCycles = sumIdleCycles + cycles
+    idleFrameCount = idleFrameCount + 1
+    if not freshArm and cycles > maxCheapCycles then
+      maxCheapCycles = cycles
+    end
+  end
+end
+
+local function onMainLoopReadyMeasure()
+  if spanStart2 == nil then return end
+  local spanEnd = clockPosition()
+  local cycles = (spanEnd - spanStart2) / CPU_CYCLES_PER_MASTER_CLOCK_UNIT
+  spanStart2 = nil
+  if phase == "busy_right" or phase == "busy_down" then
+    if cycles > maxMainlineBusyCycles then
+      maxMainlineBusyCycles = cycles
+      log(string.format("new mainline busy max: %.1f cycles", cycles))
+    end
+  elseif phase == "idle" then
+    if cycles > maxMainlineIdleCycles then
+      maxMainlineIdleCycles = cycles
+    end
+  end
+end
+
+local function finish()
+  if not IDLE_ONLY then
+    if not sawCrossing then
+      fail(EXIT_NO_CROSSING_WORKLOAD, "the busy phase never saw sw_col/sw_row change -- no real ownership-crossing was ever observed")
+      return
+    end
+    if not sawFreshArm then
+      fail(EXIT_NO_ARM_WORKLOAD, "the busy phase never saw st_active transition 0->nonzero -- no real busy-arm event was ever observed")
+      return
+    end
+    if maxCheapCycles >= maxExpensiveCycles then
+      fail(EXIT_WORKLOAD_NOT_CHEAPER, string.format(
+        "cheap-path max (%.1f cyc) was not cheaper than expensive-path max (%.1f cyc)", maxCheapCycles, maxExpensiveCycles))
+      return
+    end
+    pass(string.format("missing-workload control: cheap-path max %.1f cyc < expensive-path max %.1f cyc (busy max %.1f, idle max %.1f)",
+      maxCheapCycles, maxExpensiveCycles, maxBusyCycles, maxIdleCycles))
+    pass(string.format("workload evidence: crossing observed=%s, fresh arm observed=%s", tostring(sawCrossing), tostring(sawFreshArm)))
+    pass(string.format("mainline span: busy max %.1f cyc, idle max %.1f cyc", maxMainlineBusyCycles, maxMainlineIdleCycles))
+  end
+  local reportLabel, reportCycles, scale
+  if IDLE_ONLY then
+    local avgIdleCycles = sumIdleCycles / math.max(1, idleFrameCount)
+    pass(string.format("idle-only: max %.1f cyc, average %.2f cyc over %d frames (avg is what the extra-cost control reads -- a uniform per-frame defect can be cheaper than a legitimate rare peak and hide from a max-only metric)",
+      maxIdleCycles, avgIdleCycles, idleFrameCount))
+    reportLabel, reportCycles, scale = "idle-only-avg", avgIdleCycles, IDLE_AVG_SCALE
+  elseif REPORT_METRIC == "cheap" then
+    reportLabel, reportCycles, scale = "cheap-path", maxCheapCycles, MARGIN_SCALE
+  elseif REPORT_METRIC == "mainline" then
+    reportLabel, reportCycles, scale = "mainline-busy", maxMainlineBusyCycles, MAINLINE_MARGIN_SCALE
+  else
+    reportLabel, reportCycles, scale = "expensive-path", maxExpensiveCycles, MARGIN_SCALE
+  end
+  local code = math.min(EXIT_PASS_MAX, EXIT_PASS_BASE + math.floor(reportCycles / scale))
+  pass(string.format("%s max %.1f cycles -> exit code %d (decode: (code-%d)*%d <= cycles < (code-%d+1)*%d)",
+    reportLabel, reportCycles, code, EXIT_PASS_BASE, scale, EXIT_PASS_BASE, scale))
+  emu.stop(code)
+end
+
+local function onMainLoopReady()
+  onMainLoopReadyMeasure()
+  if phase ~= "boot" then return end
+  if frame > 400 then
+    fail(EXIT_NO_BOOT, "never reached ST_GAMEPLAY within 400 frames")
+    return
+  end
+  if read(GAME_STATE) ~= ST_GAMEPLAY then return end
+  if read(MAP_IS_STREAMED) == 0 then
+    fail(EXIT_NOT_STREAMED, "map_is_streamed is 0 after boot -- the landing screen never engaged streaming")
+    return
+  end
+  phaseStartFrame = frame
+  if IDLE_ONLY then
+    pass("boot reached ST_GAMEPLAY on a streamed map -- extra-cost control: idle phase only, no input ever held")
+    phase = "idle"
+    held = {}
+  else
+    pass("boot reached ST_GAMEPLAY on a streamed map -- starting busy phase, leg 1 (holding Right)")
+    phase = "busy_right"
+    held = { right = true }
+  end
+end
+
+local function onFrame()
+  frame = frame + 1
+  if frame > TIMEOUT_FRAMES then
+    fail(EXIT_TIMEOUT, "timed out in phase " .. phase)
+    return
+  end
+
+  if phase == "boot" then
+    return
+  end
+
+  if phase == "busy_right" then
+    if frame - phaseStartFrame >= FRAME_BUSY_LIMIT_RIGHT then
+      pass("busy leg 1 (Right) complete -- release-handoff straight to leg 2 (Down), no idle gap")
+      phase = "busy_down"
+      phaseStartFrame = frame
+      held = { down = true }
+    end
+    return
+  end
+
+  if phase == "busy_down" then
+    if frame - phaseStartFrame >= FRAME_BUSY_LIMIT_DOWN then
+      pass("busy leg 2 (Down) complete -- starting idle phase (no input)")
+      phase = "idle"
+      phaseStartFrame = frame
+      held = {}
+    end
+    return
+  end
+
+  if phase == "idle" then
+    if frame - phaseStartFrame >= FRAME_IDLE_LIMIT then
+      finish()
+    end
+    return
+  end
+end
+
+emu.addEventCallback(onFrame, emu.eventType.endFrame)
+emu.addEventCallback(onInput, emu.eventType.inputPolled)
+emu.addMemoryCallback(onMainLoopReady, emu.callbackType.exec, MAIN_LOOP_READY)
+emu.addMemoryCallback(onMainLoopBodyStartEntry, emu.callbackType.exec, MAIN_LOOP_BODY_START)
+emu.addMemoryCallback(onUpdatePlayerEntry, emu.callbackType.exec, UPDATE_PLAYER)
+emu.addMemoryCallback(onMainLoopAfterPlayerEntry, emu.callbackType.exec, MAIN_LOOP_AFTER_PLAYER)

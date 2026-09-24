@@ -600,14 +600,18 @@ map_is_streamed = $FE
 ; (unchanged) for saves/warp targets/cross_* deltas; ord_screen is the
 ; resolver's own compacted view of it, never stored, never persisted.
 ord_screen = $FF
-; Named here, in this same reserved zero-page run, but NOT allocated as an
-; equate -- no code in this commit references any of them, so giving them a
-; symbol would claim an address with nothing to prove it real. Recorded so a
-; later slice claiming a neighbour sees the reservation:
-;   $C7      sw_axis_pref        -- decision A's input-axis-ownership flag (slice 4b)
+; sw_axis_pref (decision A's input-axis-ownership flag) and sw_event_freeze
+; (the event-freeze policy flag) are phase 2 slice 4b's own two claims out of
+; this reserved run; both real equates now, first writer/reader
+; engine/player.asm's streamed movement driver and engine/input.asm's
+; do_talk respectively. The rest of the run stays a bare comment -- no code
+; in this commit references any of them, so giving them a symbol would claim
+; an address with nothing to prove it real:
 ;   $C8-$F2  dialogue scratch    -- the mapper/split-writer/attribute working set (slice 7a)
 ;   $F3-$FC  dialogue lifecycle  -- sw_dlg15_state and friends (slice 7b)
-;   $FD      sw_event_freeze     -- the event-freeze policy flag (slice 4b)
+sw_axis_pref    = $C7      ; 0 = X owns the accumulator, 1 = Y does
+sw_event_freeze = $FD      ; nonzero: an event ran this frame -- update_player's
+                            ; streamed branch skips movement entirely
 
 ; draw_battle_attr's own ground-row fill (engine/battle.asm) -- rows 1-4 of
 ; the attribute table get this value before any live monster's own mon_attr
@@ -1157,6 +1161,25 @@ save_flash_buf   = $0700  ; @size=SAVE_RECORD_LEN
 ;   $07F1  sw_dlg17_move_close  -- a close-for-Move draw-down is in progress (slice 8)
 ;   $07F2  sw_dlg17_resync_i    -- the save-resync's own row/band loop counter (slice 9)
 ;   $07F8  sw_dlg20_save_pending -- a deferred Save is waiting on a close-for-Save draw-down (slice 9)
+; Phase 2 slice 4b's own claim, twelve bytes starting right after save_flash_buf's own
+; SAVE_RECORD_LEN span (ends $077E) and clear of the four named-but-unallocated future bytes
+; above ($07F0-$07F8): sw_frame_camera_window's transient working set (engine/streamworld.asm).
+; Ordinary RAM, not zero page -- this runs mainline-only, once a frame, never from NMI and never
+; on the kernel-lo hot path, so the extra byte per absolute-mode instruction costs nothing that
+; matters. RAM byte count is free either way (only kernel PRG code size is budgeted); generous on
+; purpose rather than fighting sw_tmp..sw_tmp6 for a second, unrelated live range.
+sw_fc_wy_lo   = $0780   ; worldY lo (sw_row*240+player_y), 16-bit
+sw_fc_wy_hi   = $0781
+sw_fc_px_lo   = $0782   ; camPx lo = clamp(worldX-120, 0, mapPxX-256), 16-bit
+sw_fc_px_hi   = $0783
+sw_fc_py_lo   = $0784   ; camPy, then reused in place as the /240 divmod's own remainder
+sw_fc_py_hi   = $0785
+sw_fc_scr     = $0786   ; camPy/240 divmod quotient == camera's own current screen row
+sw_fc_lpy     = $0787   ; camPy/240 divmod remainder == cam_y_lo's own source value
+sw_fc_desc    = $0788   ; this frame's desired window screenCol
+sw_fc_desl    = $0789   ; this frame's desired window localCol
+sw_fc_desr    = $078A   ; this frame's desired window screenRow
+sw_fc_desrl   = $078B   ; this frame's desired window localRow
 
 ; Behaviours, in the same order as BEHAVIORS in shared/project.js.
 BEH_PLAYER  = 0
@@ -1300,6 +1323,11 @@ BURN_DMG    = 3             ; what a burned combatant loses after each turn
 IFRAME_TIME = 60
 KNOCKBACK_TIME = 8
 KNOCKBACK_SPEED = 3
+; Phase 2 slice 4b: capped knockback on a streamed map (mixed/!BATTLE_ENABLED projects only,
+; matching KNOCKBACK_SPEED/KNOCKBACK_TIME's own gate) -- 1px/frame instead of 3, so a hit never
+; outruns the window's own margin the way a 3px/frame slide could. KNOCKBACK_TIME is unchanged;
+; a capped knockback simply covers less ground over the same eight frames.
+SW_KNOCKBACK_SPEED = 1
 HURT_TIME   = 16            ; how long a struck actor flashes
 HUD_X       = 16            ; where the hearts sit, in screen pixels
 HUD_Y       = 16

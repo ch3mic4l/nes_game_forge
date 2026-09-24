@@ -316,43 +316,33 @@ test('a crossing probe reading passable (open) neighbour terrain lets the player
 // right column or bottom row, so sw_terrain_or_fill's bounds check -- not a real screen read --
 // decides. Each of the three shapes (right edge only, bottom edge only, both at once) is run with
 // the fill metatile both solid and open, matching Part D's explicit six-way requirement.
+// Fix round 2, finding C (ruling L): an off-grid movement/solid probe is unconditionally solid
+// before any bank switch, never sw_fill_metatile_id's own collision type -- open and solid fill
+// must produce IDENTICAL collision. This replaces the pre-fix expectation that an open fill let
+// the probe pass through to the accumulator's own predicted (wrong) endpoint.
 for (const solid of [true, false]) {
-  test(`off-grid RIGHT-edge crossing reads the fill metatile (${solid ? 'solid' : 'open'})`, boots, async () => {
+  test(`off-grid RIGHT-edge crossing is blocked identically regardless of fill (${solid ? 'solid' : 'open'})`, boots, async () => {
     const project = baseMoveProject({ dir: 'right', dist: 20, startX: 250, startY: 112, moveScreen: LAST_SCREEN });
     if (solid) project.metatiles[project.maps[0].fillMetatileId ?? 0].collision = 'solid';
     const { nes, mem } = await buildAndBoot(project);
     assert.ok(settleMove(nes));
-    if (solid) assert.equal(mem[PLAYER_X], 250, 'a solid fill must block the off-grid right-edge crossing');
-    else {
-      // Fix round 2, Part C item 5: the predicted exact endpoint, not merely > 250 -- a wrong
-      // implementation that allows one step then blocks prematurely still satisfies > 250.
-      const expected = walkToWall(SW_SPEED_SUB_X, 250, { towardZero: false, ceiling: 255 });
-      assert.equal(mem[PLAYER_X], expected.pos, 'an open fill must let the off-grid right-edge crossing pass exactly to the accumulator\'s own predicted endpoint');
-    }
+    assert.equal(mem[PLAYER_X], 250, `${solid ? 'a solid' : 'an open'} fill must block the off-grid right-edge crossing -- fix round 2, finding C`);
   });
 
-  test(`off-grid BOTTOM-edge crossing reads the fill metatile (${solid ? 'solid' : 'open'})`, boots, async () => {
+  test(`off-grid BOTTOM-edge crossing is blocked identically regardless of fill (${solid ? 'solid' : 'open'})`, boots, async () => {
     const project = baseMoveProject({ dir: 'down', dist: 20, startX: 112, startY: 230, moveScreen: LAST_SCREEN });
     if (solid) project.metatiles[project.maps[0].fillMetatileId ?? 0].collision = 'solid';
     const { nes, mem } = await buildAndBoot(project);
     assert.ok(settleMove(nes));
-    if (solid) assert.equal(mem[PLAYER_Y], 230, 'a solid fill must block the off-grid bottom-edge crossing');
-    else {
-      const expected = walkToWall(SW_SPEED_SUB_Y, 230, { towardZero: false, ceiling: 239 });
-      assert.equal(mem[PLAYER_Y], expected.pos, 'an open fill must let the off-grid bottom-edge crossing pass exactly to the accumulator\'s own predicted endpoint');
-    }
+    assert.equal(mem[PLAYER_Y], 230, `${solid ? 'a solid' : 'an open'} fill must block the off-grid bottom-edge crossing -- fix round 2, finding C`);
   });
 
-  test(`off-grid CORNER crossing reads the fill metatile (${solid ? 'solid' : 'open'})`, boots, async () => {
+  test(`off-grid CORNER crossing is blocked identically regardless of fill (${solid ? 'solid' : 'open'})`, boots, async () => {
     const project = baseMoveProject({ dir: 'right', dist: 20, startX: 250, startY: 239, moveScreen: LAST_SCREEN });
     if (solid) project.metatiles[project.maps[0].fillMetatileId ?? 0].collision = 'solid';
     const { nes, mem } = await buildAndBoot(project);
     assert.ok(settleMove(nes));
-    if (solid) assert.equal(mem[PLAYER_X], 250, 'a solid fill must block the off-grid corner crossing');
-    else {
-      const expected = walkToWall(SW_SPEED_SUB_X, 250, { towardZero: false, ceiling: 255 });
-      assert.equal(mem[PLAYER_X], expected.pos, 'an open fill must let the off-grid corner crossing pass exactly to the accumulator\'s own predicted endpoint');
-    }
+    assert.equal(mem[PLAYER_X], 250, `${solid ? 'a solid' : 'an open'} fill must block the off-grid corner crossing -- fix round 2, finding C`);
   });
 }
 
