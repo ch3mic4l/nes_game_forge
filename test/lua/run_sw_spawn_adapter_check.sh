@@ -39,17 +39,26 @@
 #     each build, not merely "changed" (the same gap
 #     review-s4b-round2-no-spawn.mjs found in sw_driver_timing's own
 #     pre-fix-round-2 shape).
+#   * spawn-CONTENT evidence (EXIT_SPAWN_CONTENT_MISMATCH=6, round-3 gate
+#     closure): every active slot's own actor id/x/y/trigger bipartite-
+#     matches EXPECTED_ACTORS -- distinct ids/coordinates/event fields, not
+#     only the slot count.
 #
-# No --break/extra-cost mode: sw_adv_offset's own page-crossing arithmetic
-# (engine/streamworld.asm:196-201) is an unconditional, ungateable
-# iny/bne/inc sequence with no separate "expensive path" a project.code.
-# overrides negative control could force -- the 8-actor scenario already IS
-# the worst real case. See sw_spawn_adapter.lua.template's own header for
-# the full reasoning.
+# Extra-cost control (gates round-1 finding 3/ruling R3): --break=extra-cost
+# (build_sw_spawn_adapter_roms.mjs) inserts three balanced `inc <mtptr_hi` /
+# `dec <mtptr_hi` pairs before the real `iny` in every sw_adv_offset call --
+# semantics-preserving, but real extra cost on all 72 calls the 8-actor
+# build makes. This script builds --actors=8 --break=extra-cost and asserts
+# its measured cost exceeds the plain --actors=8 build's own cost by at
+# least EXTRA_COST_MIN_DELTA cycles. sw_adv_offset's own page-crossing
+# branch (`bne`, engine/streamworld.asm:196-198) is a real conditional
+# branch, not unconditional -- see sw_spawn_adapter.lua.template's own
+# header for the full reasoning.
 #
-# Exit code: 0 if both runs passed (carry-branch AND spawn-contents evidence
-# both held) and the 8-actor measurement was markedly larger than the
-# 1-actor one; 1 otherwise.
+# Exit code: 0 if both plain runs passed (carry-branch AND spawn-contents
+# evidence both held), the 8-actor measurement was markedly larger than the
+# 1-actor one, and the extra-cost control's own delta cleared its floor;
+# 1 otherwise.
 
 set -u
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -69,20 +78,27 @@ EXIT_PASS_BASE=100
 EXIT_PASS_MAX=255
 EXIT_CARRY_MISMATCH=4
 EXIT_NO_SPAWN_CONTENTS=5
+EXIT_SPAWN_CONTENT_MISMATCH=6
 MARGIN_SCALE=60
 # The 8-actor-vs-1-actor delta must clear this many cycles to count as "markedly larger" -- real
 # measurement (2026-09-23): a 2,315-cycle (~4.6x) gap. Set well below that real gap so a genuine
 # regression (not just this exact fixture's own numbers moving slightly) still trips it.
 MIN_DELTA=1000
+# The extra-cost control's own broken-vs-baseline delta must clear this many cycles. Real
+# measurement (2026-09-23, this exact 3x2/screen(1,0) fixture): unbroken 8-actor floor 2,940 cyc,
+# broken(extra-cost) floor 5,100 cyc -- a 2,160-cycle gap (three balanced inc/dec pairs x 72 real
+# sw_adv_offset calls). Set well below that real gap so a genuine regression still trips it without
+# chasing this exact fixture's own bucket noise.
+EXTRA_COST_MIN_DELTA=1000
 
 overall=0
 
 run_one() {
   local label="$1"
   local out_dir="$2"
-  local actors="$3"
-  echo "[run_sw_spawn_adapter_check] building $label (--actors=$actors)..."
-  if ! node "$ROOT/test/lua/build_sw_spawn_adapter_roms.mjs" "$out_dir" "--actors=$actors"; then
+  shift 2
+  echo "[run_sw_spawn_adapter_check] building $label ($*)..."
+  if ! node "$ROOT/test/lua/build_sw_spawn_adapter_roms.mjs" "$out_dir" "$@"; then
     echo "sw_spawn_adapter ($label): FAIL -- build_sw_spawn_adapter_roms.mjs did not succeed"
     overall=1
     return 1
@@ -98,6 +114,7 @@ decode_fail() {
   case "$result" in
     "$EXIT_CARRY_MISMATCH") echo " -- EXIT_CARRY_MISMATCH: sw_adv_offset_carry's own firing did not match this build's real actor count" ;;
     "$EXIT_NO_SPAWN_CONTENTS") echo " -- EXIT_NO_SPAWN_CONTENTS: ent_active's own sum after the span did not equal this build's real actor count" ;;
+    "$EXIT_SPAWN_CONTENT_MISMATCH") echo " -- EXIT_SPAWN_CONTENT_MISMATCH: an active slot's own actor id/x/y/trigger did not bipartite-match EXPECTED_ACTORS" ;;
     *) echo "" ;;
   esac
 }
@@ -116,12 +133,15 @@ decode_pass() {
 
 EIGHT_DIR="$(mktemp -d "${TMPDIR:-/tmp}/nesforge-sw-spawn-8.XXXXXX")"
 ONE_DIR="$(mktemp -d "${TMPDIR:-/tmp}/nesforge-sw-spawn-1.XXXXXX")"
-trap "rm -rf '$EIGHT_DIR' '$ONE_DIR'" EXIT
+EXTRACOST_DIR="$(mktemp -d "${TMPDIR:-/tmp}/nesforge-sw-spawn-extracost.XXXXXX")"
+trap "rm -rf '$EIGHT_DIR' '$ONE_DIR' '$EXTRACOST_DIR'" EXIT
 
-run_one "8-actor (crossing)" "$EIGHT_DIR" 8
+run_one "8-actor (crossing)" "$EIGHT_DIR" --actors=8
 eight_result=$?
-run_one "1-actor (no crossing)" "$ONE_DIR" 1
+run_one "1-actor (no crossing)" "$ONE_DIR" --actors=1
 one_result=$?
+run_one "8-actor, broken(extra-cost)" "$EXTRACOST_DIR" --actors=8 --break=extra-cost
+extracost_result=$?
 
 if [ "$eight_result" -ge "$EXIT_PASS_BASE" ] && [ "$eight_result" -lt "$EXIT_PASS_MAX" ]; then
   echo "sw_spawn_adapter (8-actor): PASS -- exit $eight_result, ~$(decode_pass "$eight_result") cycles (carry-branch + spawn-contents evidence both held)"
@@ -150,6 +170,31 @@ if [ "$eight_result" -ge "$EXIT_PASS_BASE" ] && [ "$eight_result" -lt "$EXIT_PAS
   fi
 else
   echo "sw_spawn_adapter (missing-workload control): FAIL -- one or both runs did not PASS"
+  overall=1
+fi
+
+# Extra-cost control (gates round-1 finding 3/ruling R3): the broken(extra-cost) build must still
+# PASS every evidence check (carry-branch, spawn-contents, spawn-CONTENT) -- a PASS-range exit here
+# already proves the mutation is semantics-preserving (see sw_spawn_adapter.lua.template's own
+# header) -- and its own measured cost must exceed the plain 8-actor build's cost by a floor.
+if [ "$extracost_result" -ge "$EXIT_PASS_BASE" ] && [ "$extracost_result" -lt "$EXIT_PASS_MAX" ]; then
+  echo "sw_spawn_adapter (8-actor, broken(extra-cost)): reports exit $extracost_result, ~$(decode_pass "$extracost_result") cycles (carry-branch + spawn-contents + spawn-content evidence all held -- semantics preserved)"
+  if [ "$eight_result" -ge "$EXIT_PASS_BASE" ] && [ "$eight_result" -lt "$EXIT_PASS_MAX" ]; then
+    eight_lo=$(( (eight_result - EXIT_PASS_BASE) * MARGIN_SCALE ))
+    extracost_lo=$(( (extracost_result - EXIT_PASS_BASE) * MARGIN_SCALE ))
+    edelta=$((extracost_lo - eight_lo))
+    if [ "$edelta" -ge "$EXTRA_COST_MIN_DELTA" ]; then
+      echo "sw_spawn_adapter (extra-cost control): PASS -- broken(extra-cost) floor $extracost_lo cyc exceeds unbroken 8-actor floor $eight_lo cyc by $edelta (>= $EXTRA_COST_MIN_DELTA)"
+    else
+      echo "sw_spawn_adapter (extra-cost control): FAIL -- broken(extra-cost) floor $extracost_lo cyc is not markedly larger than unbroken 8-actor floor $eight_lo cyc (delta $edelta < $EXTRA_COST_MIN_DELTA) -- this harness would not catch an sw_adv_offset regression"
+      overall=1
+    fi
+  else
+    echo "sw_spawn_adapter (extra-cost control): FAIL -- the unbroken 8-actor build did not PASS, so no baseline to compare against"
+    overall=1
+  fi
+else
+  echo "sw_spawn_adapter (8-actor, broken(extra-cost)): FAIL -- exit $extracost_result$(decode_fail "$extracost_result") -- the mutation was expected to be semantics-preserving (same carry-branch/spawn-contents/spawn-content evidence as the unbroken 8-actor build), only more expensive"
   overall=1
 fi
 

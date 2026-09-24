@@ -39,6 +39,17 @@
 --      inequality (mainline + worst NMI < 29,780-cycle NTSC frame budget) needs -- it is what
 --      actually carries the 8 real chasers' own update_entities AI cost, which the driver span
 --      (anchored before update_entities even runs) cannot see.
+--   3. The NMI span (round-3 gate closure, Task 1): `nmi` entry (engine/boot.asm) to `nmi_rti` exit
+--      (engine/boot.asm) -- the WHOLE real NMI handler, including whatever vram_drain actually had
+--      queued (real crossing/flip/spawn packets, not a synthetic one), during this exact busy walk's
+--      own mixed-queue traffic. vram_len is sampled at nmi entry (before the drain consumes it) so
+--      every sample is a real (queue depth, cost) pair -- replaces the old hardcoded jsnes
+--      WORST_NMI_CYCLES=1543 with a real measurement. Fix round 1 (R4): the per-byte extrapolation
+--      this used to project to CLAUDE.md's own cited worst-case shared-frame queue depth ("flip_
+--      tick, flash_tick and one frozen-world tick are the three producers that can share a frame
+--      (worst case 81 of 256 bytes)") is REMOVED -- workload (e) below now triggers Shake/Flash/Sfx
+--      organically inside this same scripted walk instead, so the worst mixed-queue frame this
+--      script reports is a real measurement, not a projection.
 --
 -- Originally the driver span was anchored on `update_entities`' own entry instead -- correct only
 -- under the pre-finding-1 assumption that a streamed crossing never sets screen_fresh. Finding 1
@@ -78,8 +89,49 @@
 -- instantiates it, substituting the __PLACEHOLDER__ tokens below with addresses resolved fresh out
 -- of that exact build's own game.fns / constants.asm / config.inc.
 --
---   node test/lua/build_sw_driver_timing_roms.mjs [outDir] [--break=unconditional-arm|no-spawn] [--idle-only] [--no-actors]
+--   node test/lua/build_sw_driver_timing_roms.mjs [outDir]
+--     [--break=unconditional-arm|no-spawn|slow-driver]
+--     [--idle-only] [--no-actors] [--row8] [--row8-drop] [--align-landing-y] [--skip-contact]
+--     [--skip-release-fallback] [--skip-shake-flash]
 --   Mesen --testRunner <outDir>/sw_driver_timing.lua <outDir>/sw_driver_timing.nes
+--
+-- Fix round 1 (gates round-1, Task 1): five more workloads, asserted from real state observation
+-- (never assumed from the walk's own shape), each with its own workload-drop sabotage flag:
+--   (a) contact damage      -- player_iframes 0 -> IFRAME_TIME on a real hit (checked at
+--                              main_loop_ready, since entity_contact runs inside update_entities,
+--                              AFTER the driver span this template otherwise measures).
+--   (b) 8 actors, row arm   -- a separate --row8 build (see run_sw_driver_timing_check.sh); this
+--                              template's own EXPECT_RESPAWN_EVIDENCE is forced off for it. Fix
+--                              round 2 (gates round-2 finding 1): EXPECT_ROW8 now REQUIRES a real
+--                              observation -- a fresh ROW-axis arm (st_active 0->2) on the
+--                              Down-target screen (sw_col/sw_row == the builder's own
+--                              DOWN_TARGET_COL/ROW, not a hardcoded literal) with all eight
+--                              ent_active slots occupied, inside the measured busy phase. An
+--                              eight-slot observation on the Right target (which the ordinary,
+--                              non---row8 build already carries) does NOT satisfy this -- it is
+--                              gated on the Down-target identity and the ROW arm specifically.
+--                              --row8-drop is this workload's own drop control.
+--   (c) release-fallback    -- sw_axis_pref flips 0->1 on a frame with NO fresh pad_new press and
+--                              pad itself already showing only the row axis held (engine/
+--                              streamworld.asm:3317-3319's own fallback reassignment, distinct from
+--                              the ordinary fresh-press newy path at :3301-3303).
+--   (d) unaligned 3-screen  -- on the frame a column strip freshly arms, win_row_screen/win_row_local
+--                              (the window's own vertical position) must show the 30-block-tall
+--                              entering edge spanning three distinct screen-rows, not two, AND
+--                              (round-3 gate closure Task 1, gates round-3 finding 1) the ACTUAL
+--                              entering column -- sw_ss_sc, sw_stream_start_col's own saved operand
+--                              (engine/streamworld.asm:1569-1571), not the window's own near-edge
+--                              win_col_screen, which a positive-column arm's entering edge sits 31
+--                              blocks past and can stay in-bounds even when the real entering column
+--                              is off-map -- and all three entering screen-rows must be in grid
+--                              bounds (< GRID_W / < GRID_H), so an off-map fill cannot satisfy it.
+--                              --break=offmap-column is this workload's own off-map negative control.
+--   (e) Shake/Flash/Sfx vs a live strip -- (fix round 2, gates round-2 finding 2) at a real NMI
+--                              entry, vram_ready ~= 0 AND 0 < vram_len <= MIXED_VBLANK_MAX_BYTES AND
+--                              st_active ~= 0 -- the exact preconditions engine/boot.asm's
+--                              nmi_vram_dispatch reduced-streaming branch (~490) itself tests, not
+--                              merely vram_len>0 (which a not-ready or oversized queue could also
+--                              satisfy without ever taking that branch).
 --
 -- (test/lua/run_sw_driver_timing_check.sh runs the unbroken pass and the broken comparisons.)
 local UPDATE_PLAYER          = __UPDATE_PLAYER__          -- engine/player.asm's own real per-frame entry
@@ -107,9 +159,78 @@ local ST_ACTIVE        = __ST_ACTIVE__
 local ENT_ACTIVE       = __ENT_ACTIVE__
 local MAX_ENTITIES     = 8
 
+-- Round-3 gate closure Task 1: 'nmi'/'nmi_rti' (engine/boot.asm:430/701) bracket the WHOLE real NMI
+-- handler (register save, OAM DMA, sw_nmi_stream, vram_drain, frame_cnt/vblank bookkeeping, register
+-- restore) -- the real replacement for the old hardcoded jsnes WORST_NMI_CYCLES=1543. VRAM_LEN
+-- (engine/constants.asm's own vram_len, $3C) is read at nmi ENTRY, before vram_drain consumes it --
+-- the real queue depth this exact NMI is about to drain, so every sample can be tied to how much
+-- work it actually represents rather than assuming an instruction-level byte cost by hand.
+local NMI     = __NMI__
+local NMI_RTI = __NMI_RTI__
+local VRAM_LEN = __VRAM_LEN__
+
+-- Fix round 1 (gates round-1, Task 1) additions:
+--   win_row_screen/win_row_local (engine/constants.asm) -- the row window's own (screen, local)
+--     position, read on the frame a column strip freshly arms to derive workload (d)'s own
+--     three-screen entering-edge span.
+--   player_iframes/IFRAME_TIME (engine/constants.asm) -- workload (a)'s own hit evidence: a real
+--     hurt_player call sets player_iframes to exactly IFRAME_TIME.
+--   pad/pad_new/sw_axis_pref + BTN_UP/BTN_DOWN/BTN_LEFT/BTN_RIGHT -- workload (c)'s own
+--     release-fallback evidence (engine/streamworld.asm:3283-3328, sw_up_axis).
+local WIN_ROW_SCREEN = __WIN_ROW_SCREEN__
+local WIN_ROW_LOCAL  = __WIN_ROW_LOCAL__
+-- Round-3 gate closure Task 1 (gates round-3 finding 1) workload (d)'s own bounds check: SW_SS_SC
+-- is sw_ss_sc, sw_stream_start_col's own saved entering-column operand (engine/streamworld.asm:
+-- 1569-1571) -- the actual column the fill/read branch tests against the grid width, not the
+-- window's own near-edge win_col_screen (a positive-column arm's entering edge sits 31 blocks past
+-- it, and can stay in-bounds even when the real entering column is off-map). Read alongside the
+-- three entering screen-rows already read via WIN_ROW_SCREEN/WIN_ROW_LOCAL above.
+local SW_SS_SC = __SW_SS_SC__
+-- Fix round 2 (gates round-2 finding 2) workload (e)'s own strengthened mixed-vblank precondition:
+-- vram_ready (engine/constants.asm) and MIXED_VBLANK_MAX_BYTES (engine/boot.asm's
+-- nmi_vram_dispatch, ~490) -- the exact preconditions the reduced-streaming branch itself tests.
+local VRAM_READY = __VRAM_READY__
+local MIXED_VBLANK_MAX_BYTES = __MIXED_VBLANK_MAX_BYTES__
+-- Fix round 2 (gates round-2 finding 1) workload (b)'s own real identity/bounds constants, threaded
+-- from the builder's own JS-side constants rather than hardcoded literals in this template.
+local GRID_W = __GRID_W__
+local GRID_H = __GRID_H__
+local DOWN_TARGET_COL = __DOWN_TARGET_COL__
+local DOWN_TARGET_ROW = __DOWN_TARGET_ROW__
+local PLAYER_IFRAMES = __PLAYER_IFRAMES__
+local IFRAME_TIME    = __IFRAME_TIME__
+local PAD            = __PAD__
+local PAD_NEW        = __PAD_NEW__
+local SW_AXIS_PREF   = __SW_AXIS_PREF__
+local BTN_UP    = __BTN_UP__
+local BTN_DOWN  = __BTN_DOWN__
+local BTN_LEFT  = __BTN_LEFT__
+local BTN_RIGHT = __BTN_RIGHT__
+
 -- IDLE_ONLY: true for the extra-cost negative-control run (no input ever held). false for the
 -- ordinary two-leg-busy-then-idle run.
 local IDLE_ONLY = __IDLE_ONLY__
+
+-- Round-3 gate closure Task 1: SKIP_DOWN_LEG is true only for the workload-drop sabotage
+-- demonstration (build_sw_driver_timing_roms.mjs's own --skip-down-leg) -- the busy phase still runs
+-- leg 1 (Right, the column axis) in full, but skips leg 2 (Down, the row axis) entirely, going
+-- straight to idle. Real drop of real workload (the same pattern --no-actors already uses for the
+-- mainline missing-workload control), not a synthetic probe -- proves sawRowCrossing/sawRowFreshArm
+-- below actually depend on the row leg really running, not always-true by construction.
+local SKIP_DOWN_LEG = __SKIP_DOWN_LEG__
+
+-- Fix round 1 (gates round-1, Task 1): SKIP_RELEASE_FALLBACK is true only for workload (c)'s own
+-- sabotage demonstration (build_sw_driver_timing_roms.mjs's own --skip-release-fallback) -- leg 1
+-- holds Right ALONE (the old shape) instead of Right+Down together, so the leg1->leg2 handoff is a
+-- fresh Down press (sw_up_axis_newy) rather than the release-fallback branch.
+local SKIP_RELEASE_FALLBACK = __SKIP_RELEASE_FALLBACK__
+
+-- Fix round 1 (gates round-1, Task 1) workload (d)'s own negative control: true only for
+-- build_sw_driver_timing_roms.mjs's own --align-landing-y build. Skips the pre_down phase entirely
+-- (no real Down hold before leg 1 begins), so win_row_local stays at its landing value of 0
+-- (engine/streamworld.asm:2628-2636) -- screen-aligned -- and the column arm's entering edge should
+-- span exactly two screens, never three.
+local ALIGN_LANDING_Y = __ALIGN_LANDING_Y__
 
 -- EXPECT_RESPAWN_EVIDENCE: false only for the --no-actors missing-workload control build (fix
 -- round 2's own mainline-metric negative control) -- with no actors placed on either target
@@ -119,6 +240,16 @@ local IDLE_ONLY = __IDLE_ONLY__
 -- ordinary run AND the --break=no-spawn negative control, which places real actors but skips the
 -- spawn call) leaves this true, so the check still catches a real skipped spawn.
 local EXPECT_RESPAWN_EVIDENCE = __EXPECT_RESPAWN_EVIDENCE__
+
+-- EXPECT_ACTOR_WORKLOADS: false only for the --no-actors missing-workload control build -- workloads
+-- (a) (contact damage) and (e) (Shake/Flash/Sfx vs a live strip) both need a real placed actor,
+-- which that build deliberately omits.
+local EXPECT_ACTOR_WORKLOADS = __EXPECT_ACTOR_WORKLOADS__
+
+-- EXPECT_ROW8: true for --row8 AND --row8-drop (fix round 2, gates round-2 finding 1) -- gates
+-- workload (b)'s own eight-actor row-arm evidence check. False for every other build, which never
+-- claims to carry that workload in the first place.
+local EXPECT_ROW8 = __EXPECT_ROW8__
 
 -- REPORT_METRIC: which internal counter finish() encodes into the exit code.
 --   "expensive" (default) -- driver span, busy-phase crossing-or-fresh-arm max. The main obligation-1
@@ -156,6 +287,56 @@ local EXIT_NO_ARM_WORKLOAD       = 5  -- BUSY phase never saw a fresh (0->nonzer
 local EXIT_WORKLOAD_NOT_CHEAPER  = 6  -- IDLE phase's own max was not markedly cheaper than BUSY's
 local EXIT_NO_RESPAWN_EVIDENCE   = 7  -- a crossing frame's own ent_active sum did not change --
                                        -- either a real bug or (deliberately) the no-spawn control.
+-- Round-3 gate closure Task 1: "both strip orientations" asserted as having genuinely happened,
+-- not merely assumed from the two-leg walk's own shape -- distinct EXIT codes for each axis, so
+-- SKIP_DOWN_LEG's own drop of the row leg is caught here, not silently absorbed into the combined
+-- sawCrossing/sawFreshArm flags the busy-phase missing-workload control already used.
+local EXIT_NO_COL_CROSSING       = 10 -- the busy phase never saw sw_col change (column/Right axis)
+local EXIT_NO_ROW_CROSSING       = 11 -- the busy phase never saw sw_row change (row/Down axis) --
+                                       -- expected, deliberately, only under SKIP_DOWN_LEG.
+-- Fix round 1 (gates round-1, Task 1): one EXIT code per new workload's own evidence check.
+local EXIT_NO_CONTACT_DAMAGE           = 12 -- workload (a): player_iframes never went 0 -> IFRAME_TIME
+local EXIT_NO_RELEASE_FALLBACK         = 13 -- workload (c): sw_axis_pref never flipped via the
+                                             -- fallback branch (no fresh pad_new press that frame)
+local EXIT_NO_UNALIGNED_3SCREEN        = 14 -- workload (d): no column arm's own entering edge ever
+                                             -- spanned three distinct screen-rows
+local EXIT_NO_VRAM_STRIP_COOCCURRENCE  = 15 -- workload (e): vram_len was never nonzero at a real NMI
+                                             -- entry while st_active was also nonzero that frame
+local EXIT_NO_ROW8_EIGHT_ACTORS        = 16 -- fix round 2, gates round-2 finding 1 -- workload (b):
+                                             -- no fresh ROW arm on the Down-target screen was ever
+                                             -- observed with all eight ent_active slots occupied
+-- Round-3 gate closure Task 2: ABSOLUTE per-path regression ceilings, separate from encoding
+-- capacity (MARGIN_SCALE/MAINLINE_MARGIN_SCALE) and the NTSC frame budget (run_sw_driver_timing_
+-- check.sh's own frame-inequality check) -- calibrated from this exact fixture's own clean real
+-- measurement plus a stated small tolerance. Round-3 review's own review-s4b-round3-slow-check.sh
+-- (a 1,276-cycle busy-loop delay at every real sw_update_player entry, EVERY frame) proved every
+-- EXISTING check in this template is RELATIVE only (cheap < expensive; broken-arm average > plain
+-- idle average; real-actor mainline > no-actors mainline) -- a UNIFORM per-frame regression shifts
+-- both sides of every one of those comparisons together and passes them all. These two ceilings are
+-- ABSOLUTE, so a uniform regression that clears the encoding range and every relative check still
+-- fails here. Scoped to the ordinary busy-phase metrics only (guarded by `not IDLE_ONLY` below) --
+-- never applied to an idle-only build, so the --break=unconditional-arm control's own legitimately
+-- higher idle-only average (its whole point) is never at risk of tripping these.
+-- Recalibrated (Chris ruling, 2026-09-24, fix round 2): with all five workloads (a)-(e) genuinely
+-- live in the ordinary busy walk (gates round-1), the real clean measurement grew past the old
+-- 18,000/22,000 ceilings by a modest, real margin -- not a hardware/frame-budget overrun (the frame
+-- inequality below still holds with thousands of cycles of margin), but a real heavier scenario on
+-- unchanged engine source. Rule: take the LARGER clean upper bucket endpoint across the ordinary and
+-- --row8 builds, add 600 cycles of headroom, round UP to the next 100 cycles.
+-- Clean measurement (review round 2, this exact 3x61/row-58 fixture, real 8/4 (ordinary) or 8/8
+-- (--row8) chasers): expensive-path busy max ordinary 18,000-18,149 cyc, --row8 18,450-18,599 cyc
+-- (larger 18,599); mainline-busy max ordinary 23,400-23,599 cyc, --row8 23,400-23,599 cyc (same
+-- bucket -- the fix round 1 report's own cited 24,600-24,799 for --row8 came from a reverted debug
+-- encode and does not reproduce against the shipped harness; correct figure is 23,400-23,599, per
+-- fix round 2's own re-measurement). ceil100(18,599+600)=19,200; ceil100(23,599+600)=24,200.
+-- Verified against the in-tree --break=slow-driver control (the reviewer's ldx #255/dex/bne,
+-- ~1,276 cyc, at sw_update_player's own entry): expensive-path 19,350-19,499 cyc, mainline-busy
+-- 24,600-24,799 cyc under that mutation -- both real numbers clear both recalibrated ceilings with
+-- margin left over, not saturated.
+local EXIT_EXPENSIVE_REGRESSION  = 8
+local EXIT_MAINLINE_REGRESSION   = 9
+local EXPENSIVE_CEILING_CYCLES = 19200
+local MAINLINE_CEILING_CYCLES  = 24200
 
 -- Pass encoding: exit code = EXIT_PASS_BASE + floor(maxCycles / MARGIN_SCALE), clamped -- the same
 -- channel-of-last-resort convention sw_nmi_deadline.lua.template's own header documents in full.
@@ -171,6 +352,11 @@ local MAINLINE_MARGIN_SCALE = 200
 -- An idle-only build reports sumIdleCycles/idleFrameCount (average), not a max -- a much smaller
 -- magnitude, so it gets its own, finer scale.
 local IDLE_AVG_SCALE = 100
+-- A single NMI's own worst span is much smaller than a whole mainline frame -- a finer scale so the
+-- real figure (whatever this busy walk measures) has room to land inside the encodable range without
+-- guessing in advance; run_sw_driver_timing_check.sh's own header records the real measurement once
+-- taken, the same convention MARGIN_SCALE/MAINLINE_MARGIN_SCALE already follow.
+local NMI_MARGIN_SCALE = 20
 local EXIT_PASS_MAX = 255
 
 -- Right leg: ~256 px at ~1.4-1.5 px/frame plus margin for the initial arm-settle. Down leg:
@@ -179,10 +365,32 @@ local EXIT_PASS_MAX = 255
 local FRAME_BUSY_LIMIT_RIGHT = 260
 local FRAME_BUSY_LIMIT_DOWN  = 240
 local FRAME_IDLE_LIMIT = 120
+-- Fix round 1 (gates round-1, Task 1) workload (d): win_row_local was empirically confirmed (via a
+-- real Mesen debug probe) to stay at 0 through 80+ real frames of holding Down within a single
+-- screen -- it only moves once the player genuinely CROSSES a screen row (sw_row itself changes),
+-- which happens ~85 frames after a startY=120 landing. Rather than let that crossing land the
+-- player on LANDING_ROW at an unpredictable Y (disturbing leg 1/leg 2's own established geometry),
+-- build_sw_driver_timing_roms.mjs starts the ordinary (non---align-landing-y) build one row further
+-- north (PRE_LANDING_ROW) and this phase holds Down just long enough to cross back onto LANDING_ROW
+-- -- the exact screen leg 1 already expects -- before any busy phase begins. 95 frames gives a ~10-
+-- frame buffer past the ~85-frame crossing point (confirmed via the same probe: sw_row reads
+-- LANDING_ROW, not PRE_LANDING_ROW, at 90 and 95 frames) while staying well clear of a SECOND
+-- crossing onto DOWN_TARGET_ROW (~85 more frames away) and without meaningfully disturbing the
+-- busy-phase timing this fixture otherwise measures (not counted toward any cycle metric).
+local PRE_DOWN_FRAMES = 95
 local TIMEOUT_FRAMES = 2200
 
 local frame = 0
-local phase = "boot"  -- boot -> [busy_right -> busy_down ->] idle -> done (IDLE_ONLY skips both legs)
+-- Fix round 1 (gates round-1, Task 1) workload (d): boot always sets win_row_local to 0 -- "the
+-- window is aligned to the entered screen's own top-left corner" (engine/streamworld.asm:2628-2636)
+-- -- regardless of startY, so the column arm's own vertical entering edge is trivially aligned
+-- unless the row window has already taken at least one real step (sw_win_row_inc/dec, only reached
+-- via a genuine row arm) before that column arm fires. "pre_down" is a short phase, BEFORE the
+-- measured busy phases begin, holding Down alone just long enough for the camera-follow window to
+-- drift within the landing screen and take that first step -- not counted toward any cycle metric
+-- (every onXxxEntry callback below is gated to busy_right/busy_down/idle, which this phase name
+-- deliberately does not match).
+local phase = "boot"  -- boot -> pre_down -> [busy_right -> busy_down ->] idle -> done (IDLE_ONLY skips pre_down and both legs)
 local phaseStartFrame = 0
 local held = {}
 
@@ -192,6 +400,16 @@ local spanStart2 = nil
 
 local sawCrossing = false
 local sawFreshArm = false
+local sawColCrossing = false
+local sawRowCrossing = false
+-- Fix round 1 (gates round-1, Task 1) workload evidence flags.
+local sawContactDamage = false
+local sawReleaseFallback = false
+local sawUnaligned3Screen = false
+local sawVramStripCoOccurrence = false
+-- Fix round 2 (gates round-2 finding 1) workload (b)'s own evidence flag.
+local sawRow8EightActors = false
+local padBefore, padNewBefore, axisPrefBefore, iframesBeforeThisFrame = nil, nil, nil, nil
 local maxBusyCycles = 0
 local maxIdleCycles = 0
 local maxCheapCycles = 0
@@ -209,6 +427,15 @@ local idleFrameCount = 0
 local maxMainlineBusyCycles = 0
 local maxMainlineIdleCycles = 0
 
+local nmiSpanStart = nil
+local nmiVramLenAtEntry = nil
+local maxNmiCycles = 0
+local maxNmiVramLen = 0
+local maxObservedVramLen = 0
+-- Real (vram_len, worst cycles observed at that len) samples across the whole busy+idle run --
+-- printed in finish() as a real measured table (R4: no longer fit to an extrapolation).
+local nmiMaxByLen = {}
+
 local function log(message)
   emu.log(string.format("[%5d/%s] %s", frame, phase, message))
 end
@@ -224,6 +451,13 @@ end
 
 local function read(address)
   return emu.read(address, emu.memType.nesMemory)
+end
+
+-- Fix round 1 (gates round-1, Task 1): a single-bit test that needs no bitwise-AND operator (this
+-- Lua environment has none built in) -- valid for any power-of-two `bitValue` (BTN_UP/DOWN/LEFT/
+-- RIGHT all are).
+local function hasBit(value, bitValue)
+  return math.floor(value / bitValue) % 2 == 1
 end
 
 local function entActiveSum()
@@ -254,6 +488,13 @@ local function onUpdatePlayerEntry()
   swRowBefore = read(SW_ROW)
   stActiveBefore = read(ST_ACTIVE)
   entActiveSumBefore = entActiveSum()
+  -- Fix round 1 (gates round-1, Task 1) workloads (a)/(c): sampled before update_player runs (and,
+  -- for player_iframes, before update_entities too -- see onMainLoopReadyMeasure below, since
+  -- entity_contact only runs there).
+  padBefore = read(PAD)
+  padNewBefore = read(PAD_NEW)
+  axisPrefBefore = read(SW_AXIS_PREF)
+  iframesBeforeThisFrame = read(PLAYER_IFRAMES)
   spanStart = clockPosition()
 end
 
@@ -269,6 +510,67 @@ local function onMainLoopAfterPlayerEntry()
   local crossed = (swColAfter ~= swColBefore) or (swRowAfter ~= swRowBefore)
   local freshArm = stActiveBefore == 0 and stActiveAfter ~= 0
 
+  -- Fix round 2 (gates round-2 finding 1) workload (b): a fresh ROW-axis arm (stActiveAfter==2,
+  -- distinct from the column arm's own stActiveAfter==1 workload (d) checks below) on the
+  -- Down-target screen specifically (sw_col/sw_row == the builder's own DOWN_TARGET_COL/ROW, not
+  -- merely "some screen"), with all eight ent_active slots occupied. Gated on the real Down-target
+  -- identity so an eight-slot observation on the Right target (which the ordinary, non---row8 build
+  -- already has) cannot satisfy this.
+  if (phase == "busy_right" or phase == "busy_down") and EXPECT_ROW8 and not sawRow8EightActors
+      and freshArm and stActiveAfter == 2
+      and swColAfter == DOWN_TARGET_COL and swRowAfter == DOWN_TARGET_ROW
+      and entActiveSum() == 8 then
+    sawRow8EightActors = true
+    log("row8 evidence: fresh ROW arm on Down-target screen with all 8 ent_active slots occupied")
+  end
+
+  -- Fix round 1 (gates round-1, Task 1) workload (c): the release-fallback branch (engine/
+  -- streamworld.asm:3317-3319) is the ONLY path that can flip sw_axis_pref 0->1 on a frame where
+  -- pad_new shows no fresh press on EITHER axis, and pad itself already shows only the row axis
+  -- held -- distinct from the ordinary fresh-press path (sw_up_axis_newy, :3301-3303), which
+  -- requires a pad_new UP/DOWN bit.
+  if (phase == "busy_right" or phase == "busy_down") and not sawReleaseFallback then
+    local axisPrefAfter = read(SW_AXIS_PREF)
+    local noFreshPress = not hasBit(padNewBefore, BTN_LEFT) and not hasBit(padNewBefore, BTN_RIGHT)
+      and not hasBit(padNewBefore, BTN_UP) and not hasBit(padNewBefore, BTN_DOWN)
+    local rowOnlyHeld = not hasBit(padBefore, BTN_LEFT) and not hasBit(padBefore, BTN_RIGHT)
+      and hasBit(padBefore, BTN_DOWN)
+    if axisPrefBefore == 0 and axisPrefAfter == 1 and noFreshPress and rowOnlyHeld then
+      sawReleaseFallback = true
+      log("release-fallback evidence: sw_axis_pref 0->1, pad_new=0, pad shows Down only")
+    end
+  end
+
+  -- Fix round 1 (gates round-1, Task 1) workload (d): on the frame a COLUMN strip freshly arms
+  -- (stActiveAfter==1, from 0), the entering edge spans winBlocksY=30 blocks starting at
+  -- win_row_screen*15+win_row_local. win_row_local is hardcoded to 0 at landing regardless of
+  -- startY (engine/streamworld.asm:2628-2636), and sw_frame_camera_window's own desired-window
+  -- formula trails that by a 7-block margin -- so only the pre_down phase's own real Down hold
+  -- (PRE_DOWN_FRAMES, above) genuinely misaligns win_row_local before this, the first column arm
+  -- (the Right crossing), fires. --align-landing-y skips pre_down entirely, the negative control
+  -- that leaves win_row_local at 0 and this span at exactly two screens instead of three.
+  if (phase == "busy_right" or phase == "busy_down") and stActiveBefore == 0 and stActiveAfter == 1 then
+    local winRowScreen = read(WIN_ROW_SCREEN)
+    local winRowLocal = read(WIN_ROW_LOCAL)
+    local rowBlock = winRowScreen * 15 + winRowLocal
+    local spanStartScreen = math.floor(rowBlock / 15)
+    local spanEndScreen = math.floor((rowBlock + 29) / 15)
+    -- Round-3 gate closure Task 1 (gates round-3 finding 1): read the ACTUAL entering column
+    -- (sw_ss_sc, sw_stream_start_col's own saved operand) rather than the window's own near-edge
+    -- win_col_screen -- the fill/read branch tests sw_ss_sc against the grid width, and a positive-
+    -- column arm's entering edge sits 31 blocks past win_col_screen, so a valid near column does
+    -- not establish that the entering column is valid. All three entering screen-rows must also
+    -- stay in bounds -- an off-map fill (a fixture bug, or a future geometry that walked past the
+    -- grid edge) cannot satisfy this workload just by spanning three screen-row indices.
+    local enteringColScreen = read(SW_SS_SC)
+    local inBounds = enteringColScreen < GRID_W and spanStartScreen >= 0 and spanEndScreen < GRID_H
+    log(string.format("column arm entering-edge span: rowBlock=%d entering_col_screen=%d win_row_screen=%d win_row_local=%d screens [%d,%d] inBounds=%s",
+      rowBlock, enteringColScreen, winRowScreen, winRowLocal, spanStartScreen, spanEndScreen, tostring(inBounds)))
+    if spanEndScreen - spanStartScreen == 2 and inBounds then
+      sawUnaligned3Screen = true
+    end
+  end
+
   if crossed and EXPECT_RESPAWN_EVIDENCE then
     local entActiveSumAfter = entActiveSum()
     if entActiveSumAfter == entActiveSumBefore then
@@ -283,6 +585,8 @@ local function onMainLoopAfterPlayerEntry()
   if phase == "busy_right" or phase == "busy_down" then
     if crossed then sawCrossing = true end
     if freshArm then sawFreshArm = true end
+    if swColAfter ~= swColBefore then sawColCrossing = true end
+    if swRowAfter ~= swRowBefore then sawRowCrossing = true end
     if cycles > maxBusyCycles then
       maxBusyCycles = cycles
       log(string.format("new busy max: %.1f cycles (crossed=%s freshArm=%s)", cycles, tostring(crossed), tostring(freshArm)))
@@ -305,11 +609,60 @@ local function onMainLoopAfterPlayerEntry()
   end
 end
 
+local function onNmiEntry()
+  if phase ~= "busy_right" and phase ~= "busy_down" and phase ~= "idle" then return end
+  nmiVramLenAtEntry = read(VRAM_LEN)
+  -- Fix round 1 (gates round-1, Task 1) workload (e): a real vram_buf producer packet (Shake/Flash/
+  -- Sfx, queued by flash_tick) sharing this exact NMI with a still-active strip (st_active ~= 0).
+  -- Fix round 2 (gates round-2 finding 2): strengthened to the EXACT preconditions engine/
+  -- boot.asm's nmi_vram_dispatch reduced-streaming branch (~490) itself tests -- vram_ready ~= 0
+  -- (a half-built/not-ready queue instead takes nmi_no_drain) AND 0 < vram_len <=
+  -- MIXED_VBLANK_MAX_BYTES (an oversized queue instead takes nmi_drain_big) -- so a not-ready or
+  -- oversized queue can no longer satisfy this flag merely by having vram_len>0 and an active strip.
+  if (phase == "busy_right" or phase == "busy_down")
+      and read(VRAM_READY) ~= 0
+      and nmiVramLenAtEntry > 0 and nmiVramLenAtEntry <= MIXED_VBLANK_MAX_BYTES
+      and read(ST_ACTIVE) ~= 0 then
+    sawVramStripCoOccurrence = true
+  end
+  nmiSpanStart = clockPosition()
+end
+
+local function onNmiRtiExit()
+  if nmiSpanStart == nil then return end
+  local spanEnd = clockPosition()
+  local cycles = (spanEnd - nmiSpanStart) / CPU_CYCLES_PER_MASTER_CLOCK_UNIT
+  nmiSpanStart = nil
+  if phase ~= "busy_right" and phase ~= "busy_down" and phase ~= "idle" then return end
+  local len = nmiVramLenAtEntry or 0
+  if len > maxObservedVramLen then maxObservedVramLen = len end
+  local prevAtLen = nmiMaxByLen[len]
+  if prevAtLen == nil or cycles > prevAtLen then
+    nmiMaxByLen[len] = cycles
+  end
+  if cycles > maxNmiCycles then
+    maxNmiCycles = cycles
+    maxNmiVramLen = len
+    log(string.format("new nmi max: %.1f cycles (vram_len at entry=%d)", cycles, len))
+  end
+end
+
 local function onMainLoopReadyMeasure()
   if spanStart2 == nil then return end
   local spanEnd = clockPosition()
   local cycles = (spanEnd - spanStart2) / CPU_CYCLES_PER_MASTER_CLOCK_UNIT
   spanStart2 = nil
+  -- Fix round 1 (gates round-1, Task 1) workload (a): entity_contact (engine/combat.asm, called
+  -- from engine/entities.asm's own update_entities loop) runs strictly AFTER main_loop_after_player
+  -- but before main_loop_ready -- outside the driver span this template otherwise measures -- so
+  -- player_iframes' own before/after pair must straddle THIS span, not the driver span above.
+  if (phase == "busy_right" or phase == "busy_down") and iframesBeforeThisFrame ~= nil and not sawContactDamage then
+    local iframesAfter = read(PLAYER_IFRAMES)
+    if iframesBeforeThisFrame == 0 and iframesAfter == IFRAME_TIME then
+      sawContactDamage = true
+      log(string.format("contact damage evidence: player_iframes 0 -> %d", iframesAfter))
+    end
+  end
   if phase == "busy_right" or phase == "busy_down" then
     if cycles > maxMainlineBusyCycles then
       maxMainlineBusyCycles = cycles
@@ -323,6 +676,22 @@ local function onMainLoopReadyMeasure()
 end
 
 local function finish()
+  -- Round-3 gate closure Task 1: dump every real (vram_len, worst cycles) sample this run saw,
+  -- sorted by len, regardless of which REPORT_METRIC was selected -- real measured points, kept for
+  -- the report even though R4 (below) removed the extrapolation they used to feed.
+  local lens = {}
+  for len, _ in pairs(nmiMaxByLen) do lens[#lens + 1] = len end
+  table.sort(lens)
+  for _, len in ipairs(lens) do
+    log(string.format("nmi sample: vram_len=%d -> %.1f cycles", len, nmiMaxByLen[len]))
+  end
+  pass(string.format("nmi span: busy+idle max %.1f cycles (at vram_len=%d)", maxNmiCycles, maxNmiVramLen))
+  -- R4 (fix round 1 orchestrator ruling): the nmi-extrapolated report mode, and the per-byte
+  -- extrapolation it was computed from, are REMOVED here -- it projected a single organic run's own
+  -- samples to a cited worst-case queue depth instead of measuring a real mixed-queue frame, and the
+  -- ruling was explicit that it must not be replaced with another extrapolation. Workload (e) above
+  -- (sawVramStripCoOccurrence) now supplies a REAL measured mixed-queue sample instead -- see
+  -- run_sw_driver_timing_check.sh's own frame-inequality accounting for how that real figure is used.
   if not IDLE_ONLY then
     if not sawCrossing then
       fail(EXIT_NO_CROSSING_WORKLOAD, "the busy phase never saw sw_col/sw_row change -- no real ownership-crossing was ever observed")
@@ -332,15 +701,70 @@ local function finish()
       fail(EXIT_NO_ARM_WORKLOAD, "the busy phase never saw st_active transition 0->nonzero -- no real busy-arm event was ever observed")
       return
     end
+    if not sawColCrossing then
+      fail(EXIT_NO_COL_CROSSING, "the busy phase never saw sw_col change -- the column (Right) strip orientation was never genuinely exercised")
+      return
+    end
+    -- Deliberately unconditional (not exempted under SKIP_DOWN_LEG): the workload-drop sabotage
+    -- demonstration NEEDS this to fire when the row leg is dropped -- that IS the demonstration.
+    if not sawRowCrossing then
+      fail(EXIT_NO_ROW_CROSSING, "the busy phase never saw sw_row change -- the row (Down) strip orientation was never genuinely exercised")
+      return
+    end
     if maxCheapCycles >= maxExpensiveCycles then
       fail(EXIT_WORKLOAD_NOT_CHEAPER, string.format(
         "cheap-path max (%.1f cyc) was not cheaper than expensive-path max (%.1f cyc)", maxCheapCycles, maxExpensiveCycles))
+      return
+    end
+    -- Fix round 1 (gates round-1, Task 1): the four new workloads' own evidence checks run BEFORE
+    -- the absolute regression ceilings below -- both are real, independent gates and neither is
+    -- weakened by this order. The ceilings themselves are RULED (Chris, 2026-09-24; see
+    -- EXPENSIVE_CEILING_CYCLES/MAINLINE_CEILING_CYCLES's own comment above), and the ordinary
+    -- (non-sabotaged) build passes comfortably under both -- but a ceiling check ahead of these
+    -- would still mask a sabotage build's own specific evidence failure behind the same generic
+    -- ceiling code every other build already produces -- each sabotage flag needs to keep proving
+    -- ITS OWN targeted check still fires, not just that the shared ceiling still trips.
+    if EXPECT_ACTOR_WORKLOADS and not sawContactDamage then
+      fail(EXIT_NO_CONTACT_DAMAGE, "the busy phase never saw player_iframes go 0 -> IFRAME_TIME -- no real contact damage was ever observed")
+      return
+    end
+    if not sawReleaseFallback then
+      fail(EXIT_NO_RELEASE_FALLBACK, "the busy phase never saw sw_axis_pref flip via the release-fallback branch (no frame had a 0->1 flip with no fresh pad_new press)")
+      return
+    end
+    if not sawUnaligned3Screen then
+      fail(EXIT_NO_UNALIGNED_3SCREEN, "no column arm's own entering edge (win_row_screen/win_row_local) ever spanned three distinct screen-rows")
+      return
+    end
+    if EXPECT_ACTOR_WORKLOADS and not sawVramStripCoOccurrence then
+      fail(EXIT_NO_VRAM_STRIP_COOCCURRENCE, "vram_len was never nonzero at a real NMI entry while st_active was also nonzero that same frame")
+      return
+    end
+    if EXPECT_ROW8 and not sawRow8EightActors then
+      fail(EXIT_NO_ROW8_EIGHT_ACTORS, "the busy phase never saw a fresh ROW arm on the Down-target screen with all eight ent_active slots occupied -- workload (b)'s own eight-actor row-arm evidence is missing")
+      return
+    end
+    -- Round-3 gate closure Task 2: absolute regression ceilings -- see EXPENSIVE_CEILING_CYCLES/
+    -- MAINLINE_CEILING_CYCLES's own comment above for why these exist alongside the relative checks.
+    if maxExpensiveCycles > EXPENSIVE_CEILING_CYCLES then
+      fail(EXIT_EXPENSIVE_REGRESSION, string.format(
+        "expensive-path busy max (%.1f cyc) exceeds the absolute regression ceiling (%.1f cyc) -- a uniform per-frame regression can clear every relative check and still be a real regression",
+        maxExpensiveCycles, EXPENSIVE_CEILING_CYCLES))
+      return
+    end
+    if maxMainlineBusyCycles > MAINLINE_CEILING_CYCLES then
+      fail(EXIT_MAINLINE_REGRESSION, string.format(
+        "mainline-busy max (%.1f cyc) exceeds the absolute regression ceiling (%.1f cyc) -- a uniform per-frame regression can clear every relative check and still be a real regression",
+        maxMainlineBusyCycles, MAINLINE_CEILING_CYCLES))
       return
     end
     pass(string.format("missing-workload control: cheap-path max %.1f cyc < expensive-path max %.1f cyc (busy max %.1f, idle max %.1f)",
       maxCheapCycles, maxExpensiveCycles, maxBusyCycles, maxIdleCycles))
     pass(string.format("workload evidence: crossing observed=%s, fresh arm observed=%s", tostring(sawCrossing), tostring(sawFreshArm)))
     pass(string.format("mainline span: busy max %.1f cyc, idle max %.1f cyc", maxMainlineBusyCycles, maxMainlineIdleCycles))
+    pass(string.format("workload (a)/(c)/(d)/(e) evidence: contact damage=%s, release fallback=%s, unaligned 3-screen=%s, vram/strip co-occurrence=%s",
+      tostring(sawContactDamage), tostring(sawReleaseFallback), tostring(sawUnaligned3Screen), tostring(sawVramStripCoOccurrence)))
+    pass(string.format("workload (b) evidence (EXPECT_ROW8=%s): row8 eight-actor row arm=%s", tostring(EXPECT_ROW8), tostring(sawRow8EightActors)))
   end
   local reportLabel, reportCycles, scale
   if IDLE_ONLY then
@@ -352,6 +776,10 @@ local function finish()
     reportLabel, reportCycles, scale = "cheap-path", maxCheapCycles, MARGIN_SCALE
   elseif REPORT_METRIC == "mainline" then
     reportLabel, reportCycles, scale = "mainline-busy", maxMainlineBusyCycles, MAINLINE_MARGIN_SCALE
+  elseif REPORT_METRIC == "nmi" then
+    reportLabel, reportCycles, scale = "nmi-busy-max", maxNmiCycles, NMI_MARGIN_SCALE
+  elseif REPORT_METRIC == "nmi-max-len" then
+    reportLabel, reportCycles, scale = "nmi-max-observed-vram-len", maxObservedVramLen, 1
   else
     reportLabel, reportCycles, scale = "expensive-path", maxExpensiveCycles, MARGIN_SCALE
   end
@@ -378,10 +806,18 @@ local function onMainLoopReady()
     pass("boot reached ST_GAMEPLAY on a streamed map -- extra-cost control: idle phase only, no input ever held")
     phase = "idle"
     held = {}
-  else
-    pass("boot reached ST_GAMEPLAY on a streamed map -- starting busy phase, leg 1 (holding Right)")
+  elseif ALIGN_LANDING_Y then
+    pass("boot reached ST_GAMEPLAY on a streamed map -- ALIGN_LANDING_Y: skipping pre_down, going straight to busy phase leg 1")
     phase = "busy_right"
-    held = { right = true }
+    held = SKIP_RELEASE_FALLBACK and { right = true } or { right = true, down = true }
+  else
+    -- Fix round 1 (gates round-1, Task 1) workload (d): a short pre-phase, holding Down alone,
+    -- BEFORE the measured busy phases begin -- see PRE_DOWN_FRAMES above for why this is needed
+    -- (win_row_local is hardcoded to 0 at landing; only a real sw_win_row_inc step, reached only
+    -- via a genuine row arm, moves it away from that aligned value).
+    pass("boot reached ST_GAMEPLAY on a streamed map -- starting pre_down phase (holding Down alone)")
+    phase = "pre_down"
+    held = { down = true }
   end
 end
 
@@ -396,12 +832,43 @@ local function onFrame()
     return
   end
 
+  if phase == "pre_down" then
+    if frame - phaseStartFrame >= PRE_DOWN_FRAMES then
+      phaseStartFrame = frame
+      if SKIP_RELEASE_FALLBACK then
+        pass("pre_down complete -- starting busy phase, leg 1 (holding Right only -- SKIP_RELEASE_FALLBACK sabotage)")
+        phase = "busy_right"
+        held = { right = true }
+      else
+        -- Fix round 1 (gates round-1, Task 1) workload (c): Down is held ALONGSIDE Right from
+        -- frame 1 of leg 1 -- it was already held continuously through pre_down, so this is not a
+        -- fresh press (X still wins any tie regardless, engine/streamworld.asm:3287-3292, so leg
+        -- 1's own walk stays pure-X, unaffected). Down stays continuously held, never released,
+        -- all the way through leg 1. The leg1->leg2 boundary below (unchanged: `held = { down =
+        -- true }`) then drops ONLY Right -- since Down was already held (not a fresh press), this
+        -- is a genuine release-fallback handoff, not the fresh-press path a bare Right-then-Down
+        -- sequence would trigger.
+        pass("pre_down complete -- starting busy phase, leg 1 (holding Right+Down together)")
+        phase = "busy_right"
+        held = { right = true, down = true }
+      end
+    end
+    return
+  end
+
   if phase == "busy_right" then
     if frame - phaseStartFrame >= FRAME_BUSY_LIMIT_RIGHT then
-      pass("busy leg 1 (Right) complete -- release-handoff straight to leg 2 (Down), no idle gap")
-      phase = "busy_down"
-      phaseStartFrame = frame
-      held = { down = true }
+      if SKIP_DOWN_LEG then
+        pass("busy leg 1 (Right) complete -- SKIP_DOWN_LEG: workload-drop sabotage, going straight to idle without leg 2 (Down)")
+        phase = "idle"
+        phaseStartFrame = frame
+        held = {}
+      else
+        pass("busy leg 1 (Right) complete -- release-handoff straight to leg 2 (Down), no idle gap")
+        phase = "busy_down"
+        phaseStartFrame = frame
+        held = { down = true }
+      end
     end
     return
   end
@@ -430,3 +897,5 @@ emu.addMemoryCallback(onMainLoopReady, emu.callbackType.exec, MAIN_LOOP_READY)
 emu.addMemoryCallback(onMainLoopBodyStartEntry, emu.callbackType.exec, MAIN_LOOP_BODY_START)
 emu.addMemoryCallback(onUpdatePlayerEntry, emu.callbackType.exec, UPDATE_PLAYER)
 emu.addMemoryCallback(onMainLoopAfterPlayerEntry, emu.callbackType.exec, MAIN_LOOP_AFTER_PLAYER)
+emu.addMemoryCallback(onNmiEntry, emu.callbackType.exec, NMI)
+emu.addMemoryCallback(onNmiRtiExit, emu.callbackType.exec, NMI_RTI)

@@ -28,12 +28,21 @@
 -- more expensive than the 1-actor one -- the plan's own wording (streamed-worlds-phase2-plan.md:
 -- 874-889), "the cheap path's own measured cost when no [page crossing] actually happens".
 --
--- No separate extra-cost negative control: unlike sw_win_arm (an explicit decision with a cheap
--- and an expensive branch, sabotaged in sw_driver_timing via project.code.overrides),
--- sw_adv_offset's own page-crossing arithmetic (engine/streamworld.asm:196-201) is a trivial,
--- unconditional `iny / bne skip / inc mtptr_hi` sequence with no separate gateable "expensive
--- path" to force -- the 8-actor scenario already IS the worst real case (every slot filled, every
--- record crossing), not a scenario an implementation could cheat by skipping.
+-- Extra-cost negative control (gates round-1 finding 3/ruling R3, correcting the round-3/gates-
+-- round-1 claim that no gateable expensive path exists here): `iny / bne skip / inc mtptr_hi` is
+-- NOT unconditional -- `bne` on the target of `iny` IS a real conditional branch (the page-crossing
+-- carry path sw_adv_offset_carry, below, already proves this is taken/not-taken evidence, not
+-- inferred). A gateable mutation does not require selecting a pre-existing alternate
+-- implementation, either: build_sw_spawn_adapter_roms.mjs's own --break=extra-cost inserts three
+-- balanced `inc <mtptr_hi` / `dec <mtptr_hi` pairs before the real `iny` in every sw_adv_offset
+-- call -- semantics-preserving (mtptr_hi ends exactly where it started; A/flags are re-set by the
+-- following `iny` regardless of the pair), but real, unconditional extra cost paid on every one of
+-- the 72 calls (9 fields/actor, engine/entities.asm:150-173) the 8-actor build makes.
+-- run_sw_spawn_adapter_check.sh's own extra-cost control compares this build's measured cost
+-- against the SAME 8-actor unbroken build and asserts it rises by at least a stated floor -- the
+-- carry-branch and spawn-CONTENT checks above still run unchanged against this build (still real,
+-- still correct: the mutation never touches which bytes land where), so a PASS-range exit from
+-- this build is itself the "actor contents still match" evidence the mutation needs.
 --
 -- Fix round 2 (finding D/ruling M) adds two evidence checks the byte-count math alone cannot give:
 --   * carry-branch EXECUTION evidence -- a bare exec breakpoint on the branch's own target cannot
@@ -47,6 +56,17 @@
 --     not merely "changed", the same gap review-s4b-round2-no-spawn.mjs found in sw_driver_timing's
 --     own pre-fix-round-2 shape (a crossing that moves state but never actually spawns the
 --     entities would otherwise pass unnoticed). EXIT_NO_SPAWN_CONTENTS.
+--
+-- Round-3 gate closure (section (b)): the two checks above prove the right COUNT of slots went
+-- active and that a real byte-count-implying branch ran, but neither reads back WHICH actor ended
+-- up in which slot -- a metadata-adapter bug that swaps two actors' x/y, or drops one actor's real
+-- coordinates while still filling every slot (count and carry both still correct), would pass
+-- unnoticed. EXPECT_ACTORS (built_sw_spawn_adapter_roms.mjs's own EXPECTED_ACTORS substitution, one
+-- {actor=,x=,y=,trigger=} record per placed entity, in placement order) is matched against the
+-- real post-spawn contents of ent_actor/ent_x/ent_y/ent_trigger for every active slot -- an
+-- unordered (bipartite) match, not a same-index compare, since nothing in this obligation's own
+-- text promises placement order survives into slot order, only that the CONTENT does.
+-- EXIT_SPAWN_CONTENT_MISMATCH.
 -- This is a TEMPLATE, not the script Mesen runs directly. test/lua/build_sw_spawn_adapter_roms.mjs
 -- instantiates it, substituting the __PLACEHOLDER__ tokens below with addresses resolved fresh out
 -- of that exact build's own game.fns.
@@ -63,9 +83,14 @@ local SW_ADV_OFFSET_CARRY = __SW_ADV_OFFSET_CARRY__ -- fix round 2 (finding D/ru
                                                       -- if and only if sw_adv_offset's page-
                                                       -- crossing carry branch was actually TAKEN.
 local ENT_ACTIVE          = __ENT_ACTIVE__
+local ENT_ACTOR           = __ENT_ACTOR__
+local ENT_X               = __ENT_X__
+local ENT_Y               = __ENT_Y__
+local ENT_TRIGGER         = __ENT_TRIGGER__
 local MAX_ENTITIES        = 8
 local ACTOR_COUNT         = __ACTOR_COUNT__ -- the real actor count baked into this exact build.
 local EXPECT_CARRY        = __EXPECT_CARRY__ -- true only for the --actors=8 build.
+local EXPECTED_ACTORS     = __EXPECTED_ACTORS__ -- {{actor=,x=,y=,trigger=}, ...} in placement order.
 
 -- Fix round 2 (finding D/ruling M): emu.getState()["masterClock"] is monotonic and, calibrated
 -- empirically (sw_driver_timing.lua.template's own header has the full story), already reported
@@ -78,6 +103,7 @@ local EXIT_NO_BOOT           = 2
 local EXIT_NO_SPAWN_SEEN     = 3 -- main_loop_ready reached without spawn_entities ever firing first
 local EXIT_CARRY_MISMATCH    = 4 -- sw_adv_offset_carry firing (or not) didn't match EXPECT_CARRY
 local EXIT_NO_SPAWN_CONTENTS = 5 -- ent_active's own sum after the span didn't equal ACTOR_COUNT
+local EXIT_SPAWN_CONTENT_MISMATCH = 6 -- active slots' own actor id/x/y/trigger didn't bipartite-match EXPECTED_ACTORS
 
 -- Pass encoding: exit code = EXIT_PASS_BASE + floor(cycles / MARGIN_SCALE), clamped -- same
 -- channel-of-last-resort convention as sw_driver_timing.lua.template's own header documents.
@@ -128,6 +154,42 @@ local function entActiveSum()
   return sum
 end
 
+-- Round-3 gate closure: read back every active slot's real content, then bipartite-match it
+-- against EXPECTED_ACTORS. Returns nil on a full match, or a message describing the first
+-- expected record that found no unmatched real slot with the same actor/x/y/trigger.
+local function checkSpawnContents()
+  local actual = {}
+  for i = 0, MAX_ENTITIES - 1 do
+    if read(ENT_ACTIVE + i) ~= 0 then
+      actual[#actual + 1] = {
+        slot = i,
+        actor = read(ENT_ACTOR + i),
+        x = read(ENT_X + i),
+        y = read(ENT_Y + i),
+        trigger = read(ENT_TRIGGER + i),
+        matched = false
+      }
+    end
+  end
+  for _, expected in ipairs(EXPECTED_ACTORS) do
+    local found = false
+    for _, real in ipairs(actual) do
+      if not real.matched and real.actor == expected.actor and real.x == expected.x
+          and real.y == expected.y and real.trigger == expected.trigger then
+        real.matched = true
+        found = true
+        break
+      end
+    end
+    if not found then
+      return string.format(
+        "no active slot matches expected actor=%d x=%d y=%d trigger=%d",
+        expected.actor, expected.x, expected.y, expected.trigger)
+    end
+  end
+  return nil
+end
+
 local function onSpawnEntitiesEntry()
   if spawnSeen then return end -- cold boot only calls spawn_entities once on this path
   spawnSeen = true
@@ -164,6 +226,13 @@ local function onBuildOamEntry()
     return
   end
   log(string.format("spawn-contents evidence ok: ent_active sum %d -> %d matches ACTOR_COUNT=%d", entActiveSumBefore, entActiveSumAfter, ACTOR_COUNT))
+
+  local mismatch = checkSpawnContents()
+  if mismatch ~= nil then
+    fail(EXIT_SPAWN_CONTENT_MISMATCH, "spawn content mismatch: " .. mismatch)
+    return
+  end
+  log(string.format("spawn-content evidence ok: all %d active slots bipartite-match EXPECTED_ACTORS on actor/x/y/trigger", ACTOR_COUNT))
 end
 
 local function onMainLoopReady()

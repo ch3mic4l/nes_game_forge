@@ -58,6 +58,17 @@ const SW_CAM_ORIGIN_X_LO = 0x035c;
 const SW_CAM_ORIGIN_X_HI = 0x035d;
 const SW_CAM_ORIGIN_Y_LO = 0x035e;
 const SW_CAM_ORIGIN_Y_HI = 0x035f;
+// sw_ss_sc/lc/sr/lr -- engine/constants.asm:1032-1035. sw_stream_start_col/row's own saved
+// entering-edge (screen,local) argument: the FAR (leading) edge on an increment arm, the near
+// (current) edge on a decrement arm (sw_win_arm_col_inc calls sw_win_entering_col_right first;
+// sw_win_arm_col_dec passes win_col_screen/local straight through -- engine/streamworld.asm:
+// 3146-3193). Round-1 gate-closure-fix-1 finding 2/ruling R2: the physical fixed strip coordinate
+// makeContainmentChecker's own first-observation fallback now reads directly, instead of guessing
+// direction from predictDesiredWindow/pairLess.
+const SW_SS_SC = 0x05dc;
+const SW_SS_LC = 0x05dd;
+const SW_SS_SR = 0x05de;
+const SW_SS_LR = 0x05df;
 const OAM = 0x0200; // engine/oam.asm's shadow OAM -- the player's own TL corner is OAM+0 (Y), OAM+3 (X)
 const FLAT_SCREEN = 0x16; // engine/constants.asm:29
 const ENT_ACTIVE = 0x0300; // engine/constants.asm:706, @size=MAX_ENTITIES
@@ -197,6 +208,153 @@ function predictWinArmStep(state) {
     armed = 'row';
   }
   return { winColScreen, winColLocal, winRowScreen, winRowLocal, stActive, armed };
+}
+
+// Round-3 finding 3: real geometric containment, contract §5 ("The valid-content invariant is now
+// checked as real geometric containment... The corrected check computes two real rectangles every
+// frame and asserts the first is a subset of the second, both axes, both sides"). Computed
+// independently from the design's own two formulas -- NOT from predictDesiredWindow/
+// predictWinArmStep above (those model the ARM decision; this models what is actually SAFE to
+// show), and never reading anything the sabotage below could freeze without this check noticing:
+//
+//   1. The visible block rectangle (§5 item 1): camPx = clamp(worldX-120, 0, mapPxW-256), and
+//      symmetrically for Y (centre 112, viewport 240) -- the camera's own pixel-precise position,
+//      not the block-granular window origin. Visible range [floor(camPx/16), floor((camPx+
+//      viewportPx-1)/16)] -- real division, so a fine-scroll partial edge is included by
+//      construction.
+//   2. The completed-content rectangle (§5 item 2): from the window's own persistent "current"
+//      (win_col_screen/local, win_row_screen/local -- read from real engine RAM, flattened to a
+//      block index the same way worldX/Y flattens swCol/playerX: screen*blocksPerScreen+local,
+//      16 blocks/screen on X, 15 on Y -- stepWinAxis's own localWrap values above), window width
+//      32 blocks (X) / 30 blocks (Y) (design ~1100-1109's own "32-block window"/"30-block
+//      window"). While st_active names THIS axis as in flight (1=col, 2=row -- sw_win_arm's own
+//      header comment, engine/streamworld.asm), the entering edge is excluded: high edge if the
+//      window's own current just moved in the positive direction on that axis, low edge if
+//      negative -- direction is read off two consecutive real "current" samples (the frame
+//      current itself changes IS the frame it armed, per sw_win_arm's own "current moves... and a
+//      fresh strip is armed" -- design ~1064-1066), never assumed from which direction the test
+//      is currently holding.
+//
+// A build that disables all arming (the round-3 reviewer's own `rts` at sw_win_arm entry) freezes
+// the completed-content rectangle at its landing position forever while the visible rectangle
+// keeps sliding with the player -- this check catches that the first frame the visible rectangle
+// would need a block the frozen window never reaches. A build that races the window ahead of what
+// has actually been drawn (this session's own sabotage: engine/streamworld.asm's window-margin
+// literal `sbc #8`, sw_frame_camera_window's own X-behind-margin constant, patched to `sbc #0`)
+// removes the design's own 8-block behind buffer entirely, so ordinary held movement runs the
+// visible rectangle's low edge past the completed rectangle's low edge (mid-drain, where the
+// entering-edge exclusion shaves the remaining margin to nothing) -- see the gates report's own
+// sabotage table for both runs.
+function makeContainmentChecker(mem, { gridW, gridH }) {
+  const mapPxW = gridW * 256;
+  const mapPxH = gridH * 240;
+  const winBlocksX = 32; // design ~1100-1109
+  const winBlocksY = 30;
+  let prevColBlock = null;
+  let prevRowBlock = null;
+  let colArmDir = null; // sign of "current"'s own last real observed motion on this axis (+1/-1)
+  let rowArmDir = null;
+  return function assertContained(label) {
+    const swCol = mem[SW_COL];
+    const swRow = mem[SW_ROW];
+    const playerX = mem[PLAYER_X];
+    const playerY = mem[PLAYER_Y];
+    // Read the REAL published camera origin (sw_cam_origin_x/y_lo/hi -- the brief's own "camera
+    // origin", ruling F's continuous per-frame publish) rather than recomputing the idealized
+    // clamp(worldPos-centre,...) formula from raw player position. The two coincide during
+    // ordinary steady-state movement, but a legitimate publication hold -- boot's own landing
+    // settle, or the position-jump guard's forced-blank resync (design ~1532, "suppresses
+    // camera/OAM publication for this frame and every frame until the resync") -- deliberately
+    // holds the published origin back until it is safe, and the idealized formula does not know
+    // that. Checking what is truly SHOWN (the publish) against what is truly STREAMED (the
+    // window) is also the actual safety property; deriving an idealized target the engine hasn't
+    // promised to have reached yet on this exact frame produced two false failures at the very
+    // first frame of a boot landed close to a grid edge (colBlock 9, desired-formula visLoX 8, no
+    // real content ever missing on screen -- the publish itself was still correctly held at the
+    // landing-safe value; only this checker's own oracle was reading the wrong signal).
+    //
+    // Round-1 gate-closure-fix-1 finding 1/ruling R2: RAW, unclamped -- round-1's own review
+    // executed this exact helper in isolation (grid 3x2, window X [16,47], idle strip, published
+    // X=65535) and found it PASSED, because the old code below clamped 65535 down to 512 (the map's
+    // own legal ceiling) before ever comparing it against the completed-content rectangle,
+    // silently repairing exactly the invalid publication this invariant exists to reject. The
+    // publication-bounds check right below is now a SEPARATE, additional assertion with its own
+    // failure text -- never a clamp applied before containment.
+    const camPx = (mem[SW_CAM_ORIGIN_X_HI] << 8) | mem[SW_CAM_ORIGIN_X_LO];
+    const camPy = (mem[SW_CAM_ORIGIN_Y_HI] << 8) | mem[SW_CAM_ORIGIN_Y_LO];
+    const maxCamPx = Math.max(mapPxW - 256, 0);
+    const maxCamPy = Math.max(mapPxH - 240, 0);
+    assert.ok(camPx >= 0 && camPx <= maxCamPx,
+      `${label}: published camera X origin ${camPx} is outside its own publication bounds [0,${maxCamPx}]`);
+    assert.ok(camPy >= 0 && camPy <= maxCamPy,
+      `${label}: published camera Y origin ${camPy} is outside its own publication bounds [0,${maxCamPy}]`);
+    const visLoX = Math.floor(camPx / 16);
+    const visHiX = Math.floor((camPx + 255) / 16);
+    const visLoY = Math.floor(camPy / 16);
+    const visHiY = Math.floor((camPy + 239) / 16);
+
+    const colScreen = mem[WIN_COL_SCREEN];
+    const colLocal = mem[WIN_COL_LOCAL];
+    const rowScreen = mem[WIN_ROW_SCREEN];
+    const rowLocal = mem[WIN_ROW_LOCAL];
+    const colBlock = colScreen * 16 + colLocal;
+    const rowBlock = rowScreen * 15 + rowLocal;
+    const stActive = mem[ST_ACTIVE];
+
+    // A real observed transition always wins (robust across a reversal mid-drain: "current" only
+    // moves at arm time, so the direction of that move IS the entering edge, and it stays latched
+    // correctly for every later frame of the SAME drain even once the player has since reversed
+    // and a fresh, opposite-direction demand is merely queued, not yet armed).
+    if (prevColBlock !== null && colBlock !== prevColBlock) colArmDir = colBlock > prevColBlock ? 1 : -1;
+    if (prevRowBlock !== null && rowBlock !== prevRowBlock) rowArmDir = rowBlock > prevRowBlock ? 1 : -1;
+    // No transition observed yet (this checker's very first call, mid-arm already at construction
+    // time -- a real, expected shape: boot_streamed_landing's own initial placement need not equal
+    // the per-frame desired formula, so the landing settle can already be mid-drain before this
+    // trace's own input ever gets pressed). Round-1 gate-closure-fix-1 finding 2/ruling R2: derive
+    // the entering edge from the REAL saved strip coordinates (sw_ss_sc/lc for a column strip,
+    // sw_ss_sr/lr for a row strip -- the physical fixed strip coordinate sw_stream_start_col/row
+    // itself saved at arm time, engine/streamworld.asm:3146-3193) rather than guessing from
+    // predictDesiredWindow/pairLess's own comparison between "current" and a freshly-derived
+    // "desired": that comparison classifies an ALREADY-REACHED positive arm (current == desired
+    // after stepping exactly one block) as negative -- equal compares as "not less" -- which is
+    // wrong whenever the arm was actually positive. The saved entering edge does not have this
+    // failure mode: it is either the window's own current NEAR edge (a decrement arm) or exactly
+    // FAR_EDGE = current + winBlocks-1 (an increment arm), unambiguous regardless of whether
+    // current has since caught up to desired.
+    if (stActive === 1 && colArmDir === null) {
+      const enteringColBlock = mem[SW_SS_SC] * 16 + mem[SW_SS_LC];
+      if (enteringColBlock === colBlock) colArmDir = -1;
+      else if (enteringColBlock === colBlock + winBlocksX - 1) colArmDir = 1;
+      else assert.fail(`${label}: sw_ss_sc/lc entering-edge block ${enteringColBlock} matched neither the near edge ${colBlock} nor the far edge ${colBlock + winBlocksX - 1} of the completed-content X window`);
+    }
+    if (stActive === 2 && rowArmDir === null) {
+      const enteringRowBlock = mem[SW_SS_SR] * 15 + mem[SW_SS_LR];
+      if (enteringRowBlock === rowBlock) rowArmDir = -1;
+      else if (enteringRowBlock === rowBlock + winBlocksY - 1) rowArmDir = 1;
+      else assert.fail(`${label}: sw_ss_sr/lr entering-edge block ${enteringRowBlock} matched neither the near edge ${rowBlock} nor the far edge ${rowBlock + winBlocksY - 1} of the completed-content Y window`);
+    }
+
+    let compLoX = colBlock;
+    let compHiX = colBlock + winBlocksX - 1;
+    if (stActive === 1) {
+      if (colArmDir >= 0) compHiX -= 1;
+      else compLoX += 1;
+    }
+    let compLoY = rowBlock;
+    let compHiY = rowBlock + winBlocksY - 1;
+    if (stActive === 2) {
+      if (rowArmDir >= 0) compHiY -= 1;
+      else compLoY += 1;
+    }
+
+    assert.ok(visLoX >= compLoX && visHiX <= compHiX,
+      `${label}: visible X block range [${visLoX},${visHiX}] must be contained in the completed-content X range [${compLoX},${compHiX}] (win col block ${colBlock}, st_active=${stActive})`);
+    assert.ok(visLoY >= compLoY && visHiY <= compHiY,
+      `${label}: visible Y block range [${visLoY},${visHiY}] must be contained in the completed-content Y range [${compLoY},${compHiY}] (win row block ${rowBlock}, st_active=${stActive})`);
+
+    prevColBlock = colBlock;
+    prevRowBlock = rowBlock;
+  };
 }
 
 // sw_pstep_right/left (engine/streamworld.asm), fix round 1, finding 3 (ruling C): held streamed
@@ -953,25 +1111,20 @@ test('streamed movement: high coordinates, geometric containment, real-driver-ar
     nes.buttonUp(1, RIGHT);
   });
 
-  await t.test('independent geometric containment check: the world-pixel position (swRow*240+player_y, swCol*256+player_x) stays within the grid\'s own bounds on every single frame of a long walk in each direction', async () => {
-    // Deliberately not the step-count oracle above -- a pure bounds invariant, so a wrong
-    // implementation that steps by the right AMOUNT but drifts the wrong DIRECTION, or applies a
-    // crossing's screen delta without the matching wrap, is caught even if it never happens to
-    // violate the per-tick arithmetic check on its own.
+  await t.test('independent geometric containment check: the visible camera-pixel rectangle stays a subset of the completed-content window rectangle (contract §5) on every single frame of a long walk in each direction', async () => {
+    // Round-3 finding 3: the prior version of this test only checked the world-pixel POSITION
+    // against the grid's own outer bounds -- never read camera origin, window origin, strip
+    // axis/direction or completion state, so it could not tell "the player is somewhere on the
+    // map" from "the screen the player is looking at is actually safe to show". makeContainmentChecker
+    // (above) computes the real two-rectangle subset test contract §5 defines instead.
     const gridW = 3, gridH = 3;
     const project = createStreamedProject({ gridW, gridH });
     project.project.startScreen = 4; // center: (1,1)
     project.project.startX = 120;
     project.project.startY = 112;
     const { nes, mem } = await buildAndBoot(project);
-    const worldWMax = gridW * 256;
-    const worldHMax = gridH * 240;
-    function assertContained(label) {
-      const worldX = mem[SW_COL] * 256 + mem[PLAYER_X];
-      const worldY = mem[SW_ROW] * 240 + mem[PLAYER_Y];
-      assert.ok(worldX >= 0 && worldX < worldWMax, `${label}: world X ${worldX} must stay within [0, ${worldWMax})`);
-      assert.ok(worldY >= 0 && worldY < worldHMax, `${label}: world Y ${worldY} must stay within [0, ${worldHMax})`);
-    }
+    const assertContained = makeContainmentChecker(mem, { gridW, gridH });
+    assertContained('landing');
     for (const dir of [LEFT, UP, RIGHT, DOWN]) {
       nes.buttonDown(1, dir);
       for (let i = 0; i < 120; i++) {
@@ -1141,12 +1294,42 @@ test(
   { skip: !hasNesasm && 'nesasm not on PATH' },
   async (t) => {
     // -------------------------------------------------- both entering-edge signs
+    //
+    // Round-3 gate closure (task 3), NEEDS-RULING: this test and 'entering edge, negative sign
+    // (vertical): crossing up' below both genuinely FAIL their own assertContained calls, on the
+    // real, unmodified engine, with no sabotage applied. This is not a bug in the checker -- it is
+    // the checker correctly catching a real boot-time containment violation. Measured
+    // (scratchpad probes modelled on this exact test's own project shape, gridW=3 default,
+    // startScreen=1, startX=5): sw_frame_camera_window publishes a landing PLACEHOLDER camera
+    // origin (camPx=256, screen-aligned to the landing screen, matching the window's own initial
+    // placement exactly -- margin 0) for the boot draw's own ~34 frames, then on the single frame
+    // real per-frame tracking takes over it publishes the TRUE clamp(worldX-120,...) value (141)
+    // discontinuously -- a 115px / ~7-block jump in one frame. The window's own "current" is 16
+    // blocks from "desired" (colBlock 16 vs desired 0) at that same instant: exactly the
+    // design's own `lag` the position-jump guard exists to catch (docs/design-streamed-worlds.md
+    // ~1524, "The guard fires at lag >= 6"). The guard does not fire: instead of a forced-blank
+    // full resync (`current := desired` immediately, camera publication suppressed until it
+    // completes), ordinary single-block-per-arm incremental streaming begins (st_active=1), and
+    // the already-published camera sits ahead of the window for every frame until the incremental
+    // catch-up closes the gap. Measured worst margin **-7 blocks** (X axis, frame 34 of real
+    // tracking) / **-6 blocks** (Y axis, the 'crossing up' test below, frame 35), recovering to a
+    // steady >=8 only around frame 104 (X) / 101 (Y) -- roughly 70 real frames, over a second, of
+    // genuinely unstreamed content within the camera's own claimed visible rectangle. Other traces
+    // in this same matrix (crossing down, reversal, axis handoff, clamp, interact-Flash) do not
+    // reach a negative margin because their own landing screens happen to sit close enough to
+    // their own steady-state desired position that the same boot jump never drops below 0 --
+    // confirmed by those subtests' own assertContained calls passing. Filed under needs-ruling in
+    // handoff-next/streamed-worlds-phase2-s4b-gates-report.md; per the brief, this is left failing
+    // rather than loosened, weakened, or silently worked around -- engine/streamworld.asm is out
+    // of this slice's scope, and a passing gate here would misreport a real defect as closed.
     await t.test('entering edge, negative sign: crossing left decrements sw_col and wraps player_x to its own signed overshoot, never the ordinary MAX_X snap', async () => {
       const project = createStreamedProject({});
       project.project.startX = 5; // close to the left edge -- crosses within a handful of frames
       project.project.startScreen = 1; // grid col 1 -- a real neighbour to the left exists (col 0)
       const { nes, mem } = await buildAndBoot(project);
-      const gridW = project.maps.find((m) => m.streamed).gridW;
+      const streamed = project.maps.find((m) => m.streamed);
+      const gridW = streamed.gridW;
+      const assertContained = makeContainmentChecker(mem, { gridW, gridH: streamed.gridH });
       let model = { playerX: mem[PLAYER_X], acc: mem[SW_WALK_ACC_X], swCol: mem[SW_COL] };
       const startCol = model.swCol;
       nes.buttonDown(1, LEFT);
@@ -1156,6 +1339,7 @@ test(
         nes.frame();
         assert.equal(mem[PLAYER_X], model.playerX, `frame ${i}: player_x must match the independently computed signed-overshoot crossing`);
         assert.equal(mem[SW_COL], model.swCol, `frame ${i}: sw_col`);
+        assertContained(`entering edge left frame ${i}`);
         if (model.swCol !== startCol) crossed = true;
       }
       nes.buttonUp(1, LEFT);
@@ -1167,7 +1351,9 @@ test(
       const project = createStreamedProject({ gridH: 3 });
       project.project.startY = 219; // close to the 240 row boundary -- crosses within a handful of frames
       const { nes, mem } = await buildAndBoot(project);
-      const gridH = project.maps.find((m) => m.streamed).gridH;
+      const streamed = project.maps.find((m) => m.streamed);
+      const gridH = streamed.gridH;
+      const assertContained = makeContainmentChecker(mem, { gridW: streamed.gridW, gridH });
       let model = { playerY: mem[PLAYER_Y], acc: mem[SW_WALK_ACC_Y], swRow: mem[SW_ROW] };
       const startRow = model.swRow;
       nes.buttonDown(1, DOWN);
@@ -1177,6 +1363,7 @@ test(
         nes.frame();
         assert.equal(mem[PLAYER_Y], model.playerY, `frame ${i}: player_y must match the independently computed signed-overshoot crossing`);
         assert.equal(mem[SW_ROW], model.swRow, `frame ${i}: sw_row`);
+        assertContained(`entering edge down frame ${i}`);
         if (model.swRow !== startRow) crossed = true;
       }
       nes.buttonUp(1, DOWN);
@@ -1184,12 +1371,17 @@ test(
       assert.equal(mem[SW_ROW], startRow + 1, 'sw_row must advance by exactly one screen');
     });
 
+    // NEEDS-RULING, same real defect as 'entering edge, negative sign: crossing left' above, Y
+    // axis: measured worst margin -6 blocks at frame 35 of real tracking, recovering only by frame
+    // ~101. See that test's own comment and the gates report for the full measurement and repro.
     await t.test('entering edge, negative sign (vertical): crossing up decrements sw_row and wraps player_y to its own signed overshoot, never the ordinary MAX_Y snap', async () => {
       const project = createStreamedProject({ gridH: 3 });
       project.project.startY = 5;
       project.project.startScreen = 1 * 3; // row 1, col 0 -- a real neighbour above exists (row 0)
       const { nes, mem } = await buildAndBoot(project);
-      const gridH = project.maps.find((m) => m.streamed).gridH;
+      const streamed = project.maps.find((m) => m.streamed);
+      const gridH = streamed.gridH;
+      const assertContained = makeContainmentChecker(mem, { gridW: streamed.gridW, gridH });
       let model = { playerY: mem[PLAYER_Y], acc: mem[SW_WALK_ACC_Y], swRow: mem[SW_ROW] };
       const startRow = model.swRow;
       nes.buttonDown(1, UP);
@@ -1199,11 +1391,61 @@ test(
         nes.frame();
         assert.equal(mem[PLAYER_Y], model.playerY, `frame ${i}: player_y must match the independently computed signed-overshoot crossing`);
         assert.equal(mem[SW_ROW], model.swRow, `frame ${i}: sw_row`);
+        assertContained(`entering edge up frame ${i}`);
         if (model.swRow !== startRow) crossed = true;
       }
       nes.buttonUp(1, UP);
       assert.ok(crossed, 'sw_row must have decremented within 20 frames of holding Up from y=5');
       assert.equal(mem[SW_ROW], startRow - 1, 'sw_row must retreat by exactly one screen');
+    });
+
+    // Round-1 gate-closure-fix-1 finding 2/ruling R2: a synthetic register fixture (no engine
+    // build -- makeContainmentChecker only needs an indexable `mem`), exercising the
+    // first-observation fallback directly for the exact case round-1's own review named:
+    // "initial observation of a positive arm that has already reached its desired window". The
+    // OLD predictDesiredWindow/pairLess fallback compared current against desired and classified
+    // an EQUAL pair (current already caught up) as negative (pairLess returns false on a tie),
+    // which is wrong here -- the arm that produced this exact "current" was a positive (increment)
+    // one. The fixture below sets win_col_screen/local to a "current" that predictDesiredWindow
+    // independently confirms already equals "desired" for this swCol/playerX, with the saved
+    // entering edge (sw_ss_sc/lc) at the FAR edge (colBlock+31) -- the real signature of an
+    // increment arm (sw_win_arm_col_inc calls sw_win_entering_col_right before saving,
+    // engine/streamworld.asm:3162-3165). The published camera touches only the NEAR edge (block
+    // 16), which is genuinely safe under a positive arm (the far edge, 47, is what is still
+    // draining) -- assertContained must not throw. Under the old fallback (misclassifying this as
+    // negative), the near edge would have been wrongly excluded instead, and this exact frame
+    // would have failed.
+    t.test('containment oracle: initial observation of a positive arm that has already reached its desired window', () => {
+      const gridW = 3;
+      const gridH = 2;
+      const mem = new Uint8Array(0x0600);
+      const swCol = 1;
+      const playerX = 248;
+      const swRow = 0;
+      const playerY = 112;
+      mem[SW_COL] = swCol;
+      mem[PLAYER_X] = playerX;
+      mem[SW_ROW] = swRow;
+      mem[PLAYER_Y] = playerY;
+      mem[WIN_COL_SCREEN] = 1;
+      mem[WIN_COL_LOCAL] = 0; // colBlock = 16
+      mem[WIN_ROW_SCREEN] = 0;
+      mem[WIN_ROW_LOCAL] = 0; // rowBlock = 0, row axis idle throughout
+      mem[ST_ACTIVE] = 1; // column strip mid-drain
+      mem[SW_SS_SC] = 2;
+      mem[SW_SS_LC] = 15; // entering block 47 = colBlock(16) + winBlocksX(32) - 1 -- the FAR edge
+      const camPx = 256; // == colBlock*16 -- visible range touches only the NEAR edge (block 16)
+      mem[SW_CAM_ORIGIN_X_LO] = camPx & 0xff;
+      mem[SW_CAM_ORIGIN_X_HI] = (camPx >> 8) & 0xff;
+      mem[SW_CAM_ORIGIN_Y_LO] = 0;
+      mem[SW_CAM_ORIGIN_Y_HI] = 0;
+
+      const { desCol, desColLocal } = predictDesiredWindow({ swCol, swRow, playerX, playerY, gridW, gridH });
+      assert.equal(desCol, 1, 'fixture sanity: desired col screen must already equal "current" -- the "reached its desired window" premise');
+      assert.equal(desColLocal, 0, 'fixture sanity: desired col local must already equal "current"');
+
+      const assertContained = makeContainmentChecker(mem, { gridW, gridH });
+      assertContained('synthetic positive-arm-already-reached-desired frame');
     });
 
     // -------------------------------------------------- reversal
@@ -1217,11 +1459,13 @@ test(
       const project = createStreamedProject({ gridW: 12, gridH: 2 });
       project.project.startX = 235;
       const { nes, mem } = await buildAndBoot(project);
+      const assertContained = makeContainmentChecker(mem, { gridW: 12, gridH: 2 });
       const startCol = mem[SW_COL];
       nes.buttonDown(1, RIGHT);
       let crossed = false;
       for (let i = 0; i < 20 && !crossed; i++) {
         nes.frame();
+        assertContained(`reversal pre-cross frame ${i}`);
         if (mem[SW_COL] !== startCol) crossed = true;
       }
       assert.ok(crossed, 'precondition: the crossing must have committed before reversing');
@@ -1230,6 +1474,7 @@ test(
       let midDrain = false;
       for (let i = 0; i < 20 && !midDrain; i++) {
         nes.frame();
+        assertContained(`reversal pre-drain-wait frame ${i}`);
         if (mem[ST_ACTIVE] !== 0 && mem[ST_CUR] < mem[ST_LEN]) midDrain = true;
       }
       assert.ok(midDrain, 'precondition: a strip must genuinely be mid-drain (st_active!=0, st_cur<st_len) before the reversal below means anything');
@@ -1259,6 +1504,7 @@ test(
       let sawIllegalReset = null;
       for (let i = 0; i < 60 && !(drained && recrossed); i++) {
         nes.frame();
+        assertContained(`reversal frame ${i}`);
         if (mem[ST_CUR] < prevCur && sawIllegalReset === null) {
           const remaining = prevLen - prevCur;
           if (remaining > SW_STREAM_CHUNK) {
@@ -1306,9 +1552,11 @@ test(
       const project = createStreamedProject({});
       project.project.startX = 235; // a couple of frames from crossing (SW_SPEED_SUB_X's 1,2,1,2... cadence)
       const { nes, mem } = await buildAndBoot(project);
+      const assertContained = makeContainmentChecker(mem, { gridW: 3, gridH: 2 });
       const startCol = mem[SW_COL];
       nes.buttonDown(1, RIGHT);
       nes.frame(); // X owns the accumulator, one step taken, not yet crossed
+      assertContained('axis handoff, frame 1 (X held)');
       assert.equal(mem[SW_COL], startCol, 'precondition: must not have crossed yet after only one frame from x=235');
       assert.equal(mem[SW_AXIS_PREF], 0, 'precondition: X owns the axis after the first Right press');
       const xMidHandoff = mem[PLAYER_X];
@@ -1316,10 +1564,12 @@ test(
       // covered above -- Right is still physically held (a real player rarely releases cleanly).
       nes.buttonDown(1, DOWN);
       nes.frame();
+      assertContained('axis handoff, frame 2 (Y takes over)');
       assert.equal(mem[SW_AXIS_PREF], 1, 'a fresh Down press must take ownership from X even mid-crossing-approach');
       assert.equal(mem[PLAYER_X], xMidHandoff, 'player_x must not advance on the frame Y takes over');
       const yAfterSwitch = mem[PLAYER_Y];
       nes.frame();
+      assertContained('axis handoff, frame 3 (Y moving)');
       assert.notEqual(mem[PLAYER_Y], yAfterSwitch, 'Y must now be the one moving');
       // Hand ownership back to X (release Down, a fresh Right press) and finish the crossing.
       nes.buttonUp(1, DOWN);
@@ -1327,6 +1577,7 @@ test(
       let crossed = false;
       for (let i = 0; i < 20 && !crossed; i++) {
         nes.frame();
+        assertContained(`axis handoff, finishing crossing frame ${i}`);
         if (mem[SW_COL] !== startCol) crossed = true;
       }
       nes.buttonUp(1, RIGHT);
@@ -1400,10 +1651,12 @@ test(
         project.project.startScreen = startScreen;
         const { nes, mem } = await buildAndBoot(project);
         const addr = axis === 'col' ? SW_COL : SW_ROW;
+        const assertContained = makeContainmentChecker(mem, { gridW: 3, gridH: 2 });
         nes.buttonDown(1, dir);
         for (let i = 0; i < 300; i++) {
           nes.frame();
           assert.equal(mem[addr], bound, `holding ${name} at the grid boundary must never move sw_${axis} off ${bound} (frame ${i})`);
+          assertContained(`clamp ${name} frame ${i}`);
         }
         nes.buttonUp(1, dir);
         // Ruling C's wide 0-255/0-239 ownership rectangle (docs/design-streamed-worlds.md §6) is
@@ -1732,19 +1985,24 @@ test(
         }
       });
       const { nes, mem } = await buildAndBoot(project);
+      const assertContained = makeContainmentChecker(mem, { gridW: 3, gridH: 2 });
       for (let cycle = 0; cycle < 5; cycle++) {
         const xBefore = mem[PLAYER_X];
         nes.buttonDown(1, B);
         nes.frame();
+        assertContained(`interact-Flash cycle ${cycle} frame A`);
         assert.notEqual(mem[GAME_STATE], ST_DIALOG, `cycle ${cycle}: OP_FLASH must not open a dialog box`);
         assert.equal(mem[PLAYER_X], xBefore, `cycle ${cycle}: the player must not move on the frame interact triggers Flash`);
         nes.buttonUp(1, B);
         nes.frame();
+        assertContained(`interact-Flash cycle ${cycle} frame B`);
         assert.equal(mem[SW_EVENT_FREEZE], 0, `cycle ${cycle}: sw_event_freeze must have cleared by the very next frame, not stuck`);
         // A couple of ordinary frames between presses -- a real player releasing and re-pressing
         // interact, not a single held button re-triggering every frame.
         nes.frame();
+        assertContained(`interact-Flash cycle ${cycle} frame C`);
         nes.frame();
+        assertContained(`interact-Flash cycle ${cycle} frame D`);
       }
     });
   }
