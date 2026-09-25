@@ -3655,3 +3655,501 @@ sw_update_player_end:
   ; axis arbitration, the accumulator dispatch, player_hazard/check_encounter,
   ; the tail call into sw_frame_camera_window), unconditional regardless of
   ; BATTLE_ENABLED.
+
+; ==========================================================================
+; The dialogue overlay: address mapper, split-at-seam packet writer, and
+; masked-attribute code (docs/design-streamed-worlds.md §7, phase 2 slice
+; 7a -- the mapper/packet/attribute subset only; no lifecycle state machine
+; here, and no production call site into text.asm yet -- see the slice's
+; own "Left out"). Gated on TEXT_ENABLED as well as STREAMING_ENABLED (this
+; whole file's own guard): a streamed project with no text assembles none
+; of it. sw_dlg_mapper_start/end bracket the span for
+; STREAMWORLD_DIALOGUE_MAPPER_KERNEL_HI_ALLOWANCE (main/build/generate.js),
+; measured off nesasm's own symbol table, not by hand.
+;
+; Both mappers below assume the camera is already floored to a 16px
+; (metatile) boundary on both axes -- cam_x_lo/cam_y_lo's low 4 bits are 0
+; -- the precondition the lifecycle's own nudge (slice 7b) establishes
+; before it ever opens a box. Neither mapper re-floors; a caller that
+; violates the precondition gets an address computed from whatever
+; cam_x_lo/cam_y_lo actually hold, unchecked.
+sw_dlg_mapper_start:
+  .if TEXT_ENABLED
+
+; sw_dlg_attr_precompute's own 3-iteration band loop below assumes the box is
+; exactly BOX_ROWS_HIGH (6) tile rows -- 3 metatile-row bands -- high; two
+; one-directional comparisons, the same restricted `>`-only pattern
+; flash.asm's own driver-size guard uses (nesasm v3.1's expression grammar
+; has no working `!=`).
+  .if BOX_ROWS_HIGH > 6
+  .fail
+  .endif
+  .if 6 > BOX_ROWS_HIGH
+  .fail
+  .endif
+
+; ==========================================================================
+; sw_dlg_tile_addr -- the address mapper, tile granularity. A = box-
+; relative tile row (0-5, added to the fixed row-24 origin every ordinary
+; box already uses); X = box-local column (0-31). Returns A = $2006 hi
+; byte, Y = $2006 lo byte. physRow = (cam_y_lo>>3 + 24 + A) mod 30
+; (crossing XORs cam_nt bit 1); physCol = (cam_x_lo>>3 + X) mod 32
+; (crossing XORs cam_nt bit 0); addrLo = (physRow AND 7)<<5 OR physCol;
+; addrHi = sw_rw_nt_hi[cam_nt XOR ntbit] + (physRow>>3) -- sw_rw_nt_hi is
+; sw_render_window's own nametable-hi table, above, reused rather than a
+; second copy.
+; ==========================================================================
+sw_dlg_tile_addr:
+  clc
+  adc #BOX_MT_ROW*2         ; tile row 24 -- BOX_MT_ROW (metatile rows) in tile rows
+  sta <sw_dlgw_ta_tmp
+  lda <cam_y_lo
+  lsr a
+  lsr a
+  lsr a
+  clc
+  adc <sw_dlgw_ta_tmp
+  cmp #30
+  bcc sw_dlgta_row_ok
+  sbc #30
+  sta <sw_dlgw_ta_row
+  lda #2
+  jmp sw_dlgta_row_done
+sw_dlgta_row_ok:
+  sta <sw_dlgw_ta_row
+  lda #0
+sw_dlgta_row_done:
+  sta <sw_dlgw_ta_nt
+  lda <cam_x_lo
+  lsr a
+  lsr a
+  lsr a
+  sta <sw_dlgw_ta_tmp
+  txa
+  clc
+  adc <sw_dlgw_ta_tmp
+  cmp #32
+  bcc sw_dlgta_col_ok
+  sbc #32
+  sta <sw_dlgw_ta_col
+  lda <sw_dlgw_ta_nt
+  ora #1
+  jmp sw_dlgta_combine
+sw_dlgta_col_ok:
+  sta <sw_dlgw_ta_col
+  lda <sw_dlgw_ta_nt
+sw_dlgta_combine:
+  sta <sw_dlgw_ta_nt
+  lda <sw_dlgw_ta_row
+  and #7
+  asl a
+  asl a
+  asl a
+  asl a
+  asl a
+  ora <sw_dlgw_ta_col
+  tay
+  lda <cam_nt
+  eor <sw_dlgw_ta_nt
+  and #3
+  tax
+  lda <sw_dlgw_ta_row
+  lsr a
+  lsr a
+  lsr a
+  clc
+  adc sw_rw_nt_hi,x
+  rts
+
+; ==========================================================================
+; sw_dlg_write_row -- the split-at-seam packet writer, tile granularity.
+; A = box-relative tile row (0-5); sw_dlgw_srclo/hi point at 32 source
+; bytes. Queues them via the ordinary vram_open/push/end primitives
+; (engine/text.asm), split into two packets when the row straddles a
+; physical nametable seam. Never opens a packet it will not push to: the
+; r==0 case (camera exactly nametable-aligned horizontally) skips the
+; second packet outright rather than opening one with a zero count --
+; vram_drain_byte's own 256-byte trap (CLAUDE.md), applied to this
+; producer's own direct-write path.
+; ==========================================================================
+sw_dlg_write_row:
+  sta <sw_dlgw_band
+  lda <cam_x_lo
+  lsr a
+  lsr a
+  lsr a
+  sta <sw_dlgw_r
+  beq sw_dlgwr_nosplit
+  lda #32
+  sec
+  sbc <sw_dlgw_r
+  sta <sw_dlgw_count1
+  lda <sw_dlgw_band
+  ldx #0
+  jsr sw_dlg_tile_addr
+  jsr vram_open
+  ldy #0
+sw_dlgwr_seg1_loop:
+  lda [sw_dlgw_srclo],y
+  jsr vram_push
+  iny
+  cpy <sw_dlgw_count1
+  bne sw_dlgwr_seg1_loop
+  jsr vram_end
+  lda <sw_dlgw_band
+  ldx <sw_dlgw_count1
+  jsr sw_dlg_tile_addr
+  jsr vram_open
+  ldy <sw_dlgw_count1
+sw_dlgwr_seg2_loop:
+  lda [sw_dlgw_srclo],y
+  jsr vram_push
+  iny
+  cpy #32
+  bne sw_dlgwr_seg2_loop
+  jmp vram_end
+sw_dlgwr_nosplit:
+  lda <sw_dlgw_band
+  ldx #0
+  jsr sw_dlg_tile_addr
+  jsr vram_open
+  ldy #0
+sw_dlgwr_ns_loop:
+  lda [sw_dlgw_srclo],y
+  jsr vram_push
+  iny
+  cpy #32
+  bne sw_dlgwr_ns_loop
+  jmp vram_end
+
+; ==========================================================================
+; sw_dlg_attr_precompute -- must run once before any sw_dlg_attr_open_band/
+; sw_dlg_attr_close_band call for a given open box (the camera does not
+; move while one is up -- §7's own frozen-world pending-open rule -- so one
+; precompute per open/close transaction is enough). Computes, for each of
+; the box's three metatile-row bands (0-2, tile rows 24-25/26-27/28-29):
+; the attribute row (0-7) and row-wrap nt bit its own physical position
+; resolves to, and its own row-half mask (top $0F, bottom $F0) -- promoted
+; to the full byte ($FF) for BOTH bands of whichever adjacent pair shares
+; one physical attribute byte (docs/design-streamed-worlds.md §7's own
+; empirically-found addition: applying the half mask independently per row
+; is wrong when two band rows share a byte, since each would compute from
+; pristine attr_shadow and the second write would undo the first's already-
+; correct half; forcing the full mask on both makes the write idempotent
+; regardless of order). Also computes the column seam: edgeAc (the
+; attribute column straddling it), cxodd (nonzero when the seam falls
+; mid-attribute-column, needing a quadrant-only mask there) and wrapEnd
+; (the last attribute column the wrapped-nt segment touches).
+; ==========================================================================
+sw_dlg_attr_precompute:
+  lda <cam_y_lo
+  lsr a
+  lsr a
+  lsr a
+  lsr a
+  clc
+  adc #BOX_MT_ROW
+  sta <sw_dlgw_baserow      ; held constant across the loop -- see its own comment
+                              ; (engine/constants.asm) for why: each iteration below re-derives
+                              ; that band's UNWRAPPED logical row from this same untouched base
+                              ; plus its own index, rather than carrying a destructively-wrapped
+                              ; remainder forward, so a band on the far side of the seam (its own
+                              ; unwrapped row already >=15) is not mistaken for an unwrapped one
+                              ; just because the PRIOR band's remainder happened to fall < 15
+  ldx #0
+sw_dlgap_loop:
+  txa
+  clc
+  adc <sw_dlgw_baserow
+  cmp #15
+  bcc sw_dlgap_ok
+  sbc #15
+  sta <sw_dlgw_tmp
+  lda #2
+  sta <sw_dlgw_ntb,x
+  jmp sw_dlgap_store
+sw_dlgap_ok:
+  sta <sw_dlgw_tmp
+  lda #0
+  sta <sw_dlgw_ntb,x
+sw_dlgap_store:
+  lda <sw_dlgw_tmp
+  lsr a
+  sta <sw_dlgw_arow,x
+  lda <sw_dlgw_tmp
+  and #1
+  bne sw_dlgap_bottom
+  lda #$0F
+  jmp sw_dlgap_halfdone
+sw_dlgap_bottom:
+  lda #$F0
+sw_dlgap_halfdone:
+  sta <sw_dlgw_rowmask,x
+  inx
+  cpx #3
+  bne sw_dlgap_loop
+  ldx #0
+  lda <sw_dlgw_arow,x
+  ldx #1
+  cmp <sw_dlgw_arow,x
+  bne sw_dlgap_sh01_no
+  ldx #0
+  lda <sw_dlgw_ntb,x
+  ldx #1
+  cmp <sw_dlgw_ntb,x
+  bne sw_dlgap_sh01_no
+  lda #$FF
+  ldx #0
+  sta <sw_dlgw_rowmask,x
+  ldx #1
+  sta <sw_dlgw_rowmask,x
+sw_dlgap_sh01_no:
+  ldx #1
+  lda <sw_dlgw_arow,x
+  ldx #2
+  cmp <sw_dlgw_arow,x
+  bne sw_dlgap_sh12_no
+  ldx #1
+  lda <sw_dlgw_ntb,x
+  ldx #2
+  cmp <sw_dlgw_ntb,x
+  bne sw_dlgap_sh12_no
+  lda #$FF
+  ldx #1
+  sta <sw_dlgw_rowmask,x
+  ldx #2
+  sta <sw_dlgw_rowmask,x
+sw_dlgap_sh12_no:
+  lda <cam_x_lo
+  lsr a
+  lsr a
+  lsr a
+  lsr a
+  and #1
+  sta <sw_dlgw_cxodd
+  lda <cam_x_lo
+  lsr a
+  lsr a
+  lsr a
+  lsr a
+  lsr a
+  sta <sw_dlgw_edgeac
+  clc
+  adc <sw_dlgw_cxodd
+  sec
+  sbc #1
+  sta <sw_dlgw_wrapend
+  rts
+
+; sw_dlg_attr_addr -- A = column-seam nt bit (0 = home segment, 1 =
+; wrapped). Uses sw_dlgw_curarow/curntb (set by the caller) and
+; sw_dlgw_ac (the attribute column, 0-7) to compute both the $2006 hi/lo
+; pair (returned A=hi, Y=lo) and the matching attr_shadow offset (left in
+; sw_dlgw_shadowlo -- shadow's own high byte is always the constant
+; HIGH(attr_shadow), a whole 256-byte page, so only the low byte varies:
+; (nt<<6) | (arow<<3) | ac, the same bit-packed layout sw_ns_row_lo/
+; sw_rw_shadow_lo already use above). This routine itself writes that
+; constant into sw_dlgw_tmp (== sw_dlgw_shadowlo+1, the pointer's own hi
+; byte) as the last thing before returning, since sw_dlgw_tmp is also this
+; routine's own scratch for the seam-bit parameter earlier -- a caller
+; indirecting through [sw_dlgw_shadowlo],y right after this call sees a
+; valid pointer without setting anything up itself. The attribute region's
+; own $2006 hi byte is constant per nametable (sw_rw_nt_hi[nt]+3) regardless
+; of attribute row -- arow only ever affects the lo byte.
+sw_dlg_attr_addr:
+  sta <sw_dlgw_tmp
+  lda <cam_nt
+  eor <sw_dlgw_curntb
+  eor <sw_dlgw_tmp
+  and #3
+  pha
+  tax
+  txa
+  asl a
+  asl a
+  asl a
+  asl a
+  asl a
+  asl a
+  sta <sw_dlgw_shadowlo
+  lda <sw_dlgw_curarow
+  asl a
+  asl a
+  asl a
+  clc
+  adc <sw_dlgw_shadowlo
+  clc
+  adc <sw_dlgw_ac
+  sta <sw_dlgw_shadowlo
+  pla
+  tax
+  lda sw_rw_nt_hi,x
+  clc
+  adc #3
+  pha
+  lda <sw_dlgw_curarow
+  asl a
+  asl a
+  asl a
+  clc
+  adc <sw_dlgw_ac
+  clc
+  adc #$C0
+  tay
+  lda #HIGH(attr_shadow)      ; same symbolic form as sw_ns_row_hi/sw_rw_shadow_hi above
+                               ; (streamworld.asm:2008,2126) -- nesasm v3.1 accepts HIGH(), unlike
+                               ; a `>`-of-equate expression
+  sta <sw_dlgw_tmp
+  pla
+  rts
+
+; sw_dlg_attr_overlay -- A = column mask (quadrant bits actually inside the
+; band for the byte at sw_dlgw_shadowlo). Combines with sw_dlgw_currm (the
+; band's own row mask) and returns overlay = shadow AND NOT (row AND col)
+; in A -- the box's fixed background palette 0 (text.asm's identical
+; choice) makes "mask in the box palette" a plain clear, no OR needed.
+sw_dlg_attr_overlay:
+  and <sw_dlgw_currm
+  eor #$FF
+  sta <sw_dlgw_mask            ; NOT sw_dlgw_tmp -- sw_dlgw_tmp is [sw_dlgw_shadowlo]'s own
+                                ; pointer hi byte (sw_dlg_attr_addr's own doc comment); clobbering
+                                ; it here before the indirect read below would misdirect the read
+                                ; to page $00 or the mask's own byte instead of attr_shadow.
+  ldy #0
+  lda [sw_dlgw_shadowlo],y
+  and <sw_dlgw_mask
+  rts
+
+; ==========================================================================
+; sw_dlg_attr_open_band -- A = band index (0-2). Requires
+; sw_dlg_attr_precompute to have already run for this open. Writes the
+; masked attribute bytes for this band: one packet for the home-nt segment
+; (attribute columns edgeAc..7, full width -- the box always spans the
+; whole visible screen), one for the wrapped-nt segment (columns
+; 0..wrapEnd, only when non-empty), each byte computed straight from
+; attr_shadow via sw_dlg_attr_overlay -- attr_shadow itself is never
+; written here, only read.
+; ==========================================================================
+sw_dlg_attr_open_band:
+  tax
+  lda <sw_dlgw_arow,x
+  sta <sw_dlgw_curarow
+  lda <sw_dlgw_ntb,x
+  sta <sw_dlgw_curntb
+  lda <sw_dlgw_rowmask,x
+  sta <sw_dlgw_currm
+
+  lda <sw_dlgw_edgeac
+  sta <sw_dlgw_ac
+  lda #0
+  jsr sw_dlg_attr_addr
+  jsr vram_open
+sw_dlg_aob_home_loop:
+  lda <sw_dlgw_ac
+  cmp <sw_dlgw_edgeac
+  bne sw_dlg_aob_home_mask
+  lda <sw_dlgw_cxodd
+  beq sw_dlg_aob_home_mask
+  lda #$CC                    ; edge byte, home side: right quadrants only
+  jmp sw_dlg_aob_home_go
+sw_dlg_aob_home_mask:
+  lda #$FF
+sw_dlg_aob_home_go:
+  jsr sw_dlg_attr_overlay
+  jsr vram_push
+  inc <sw_dlgw_shadowlo
+  inc <sw_dlgw_ac
+  lda <sw_dlgw_ac
+  cmp #8
+  bne sw_dlg_aob_home_loop
+  jsr vram_end
+
+  lda <sw_dlgw_edgeac
+  ora <sw_dlgw_cxodd
+  beq sw_dlg_aob_done          ; wrapped segment empty -- never open its packet
+  lda #0
+  sta <sw_dlgw_ac
+  lda #1
+  jsr sw_dlg_attr_addr
+  jsr vram_open
+sw_dlg_aob_wrap_loop:
+  lda <sw_dlgw_ac
+  cmp <sw_dlgw_edgeac
+  bne sw_dlg_aob_wrap_mask
+  lda <sw_dlgw_cxodd
+  beq sw_dlg_aob_wrap_mask
+  lda #$33                    ; edge byte, wrapped side: left quadrants only
+  jmp sw_dlg_aob_wrap_go
+sw_dlg_aob_wrap_mask:
+  lda #$FF
+sw_dlg_aob_wrap_go:
+  jsr sw_dlg_attr_overlay
+  jsr vram_push
+  lda <sw_dlgw_ac
+  cmp <sw_dlgw_wrapend
+  beq sw_dlg_aob_wrap_end
+  inc <sw_dlgw_shadowlo
+  inc <sw_dlgw_ac
+  jmp sw_dlg_aob_wrap_loop
+sw_dlg_aob_wrap_end:
+  jsr vram_end
+sw_dlg_aob_done:
+  rts
+
+; ==========================================================================
+; sw_dlg_attr_close_band -- A = band index (0-2). Restores every attribute
+; byte sw_dlg_attr_open_band touched for this band, verbatim from
+; attr_shadow -- no mask math on close (docs/design-streamed-worlds.md
+; §7's "masked on open, plain on close, one rule": the masked write never
+; touches an outside-band quadrant, so every quadrant stays byte-identical
+; to attr_shadow for the whole transaction, and close can restore the
+; whole byte unmasked). Reads attr_shadow only; never writes it.
+; ==========================================================================
+sw_dlg_attr_close_band:
+  tax
+  lda <sw_dlgw_arow,x
+  sta <sw_dlgw_curarow
+  lda <sw_dlgw_ntb,x
+  sta <sw_dlgw_curntb
+
+  lda <sw_dlgw_edgeac
+  sta <sw_dlgw_ac
+  lda #0
+  jsr sw_dlg_attr_addr
+  jsr vram_open
+sw_dlg_acb_home_loop:
+  ldy #0
+  lda [sw_dlgw_shadowlo],y
+  jsr vram_push
+  inc <sw_dlgw_shadowlo
+  inc <sw_dlgw_ac
+  lda <sw_dlgw_ac
+  cmp #8
+  bne sw_dlg_acb_home_loop
+  jsr vram_end
+
+  lda <sw_dlgw_edgeac
+  ora <sw_dlgw_cxodd
+  beq sw_dlg_acb_done
+  lda #0
+  sta <sw_dlgw_ac
+  lda #1
+  jsr sw_dlg_attr_addr
+  jsr vram_open
+sw_dlg_acb_wrap_loop:
+  ldy #0
+  lda [sw_dlgw_shadowlo],y
+  jsr vram_push
+  lda <sw_dlgw_ac
+  cmp <sw_dlgw_wrapend
+  beq sw_dlg_acb_wrap_end
+  inc <sw_dlgw_shadowlo
+  inc <sw_dlgw_ac
+  jmp sw_dlg_acb_wrap_loop
+sw_dlg_acb_wrap_end:
+  jsr vram_end
+sw_dlg_acb_done:
+  rts
+
+  .endif
+sw_dlg_mapper_end:

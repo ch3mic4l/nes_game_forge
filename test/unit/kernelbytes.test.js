@@ -96,6 +96,7 @@ import {
   STREAMWORLD_TILE_SWITCH_KERNEL_ALLOWANCE,
   STREAMWORLD_MOVE_KERNEL_ALLOWANCE,
   STREAMWORLD_MOVE_KERNEL_HI_ALLOWANCE,
+  STREAMWORLD_DIALOGUE_MAPPER_KERNEL_HI_ALLOWANCE,
   STREAMWORLD_NMI_KERNEL_ALLOWANCE,
   STREAMWORLD_NMI_PALETTE_FX_KERNEL_ALLOWANCE,
   STREAMWORLD_PROJECT_KERNEL_ALLOWANCE,
@@ -5301,13 +5302,19 @@ test(
       // all four are part of this same raw bank-total delta, since baseline
       // has STREAMING_ENABLED off entirely and none of streamworld.asm
       // assembles.
+      // Phase 2 slice 7a added a FIFTH conditional region, gated on projectUsesText as well as
+      // streaming -- absent from baseline regardless (baseline never assembles streamworld.asm at
+      // all), so it inflates this raw delta only on a shape whose own default project happens to
+      // use text (RPG, unconditionally) rather than being a further confound the delta already
+      // cancels the way STREAMWORLD_MOVE_KERNEL_HI_ALLOWANCE's own text.inc growth is cancelled.
       const expected =
         STREAMWORLD_KERNEL_HI_ALLOWANCE +
         STREAMWORLD_MT_PAL_KERNEL_HI_BYTES +
         STREAMWORLD_WINDOW_KERNEL_HI_ALLOWANCE +
         (gameType === 'action' ? STREAMWORLD_KNOCKBACK_KERNEL_HI_ALLOWANCE : 0) +
         streamworldUpdatePlayerKernelHiAllowance(streamed) +
-        STREAMWORLD_HAZARD_KERNEL_HI_ALLOWANCE;
+        STREAMWORLD_HAZARD_KERNEL_HI_ALLOWANCE +
+        (projectUsesText(streamed) ? STREAMWORLD_DIALOGUE_MAPPER_KERNEL_HI_ALLOWANCE : 0);
       // fix round 1, finding 7/verification: printed on every run, pass or fail, not only in an
       // assertion failure message -- an independent, per-mapper figure a report can quote.
       console.log(`${mapper.name} (${label}): real kernel-hi delta ${delta} (expected ${expected})`);
@@ -5425,6 +5432,18 @@ test(
 // only the streaming-gated remainder -- 89 - 9 = 80, matching the direct
 // span measurement exactly. This is the identical technique the kernel-lo
 // term above already uses, and for the identical reason.
+//
+// Phase 2 slice 7a added a second, INDEPENDENT confound the double-difference
+// below does NOT cancel: STREAMWORLD_DIALOGUE_MAPPER_KERNEL_HI_ALLOWANCE is
+// gated on `hasStreamed && projectUsesText`, and streamedWithMove's own live
+// Move event trips projectUsesText the identical "any event exists" way the
+// text.inc confound above already does -- but unlike text.inc, this term
+// assembles NOTHING on the ordinary side regardless (streamworld.asm never
+// assembles off a non-streamed project), so ordinaryDelta carries none of it
+// to subtract out. Whenever streamedWithMove and streamedNoMove disagree on
+// projectUsesText (true only when the game type does not already force text
+// on by itself, e.g. plain action, non-mixed, no default title), that
+// disagreement is a real, separate addend to the expected supplement.
 test(
   'phase 2 slice 3 fix 1, finding 2: STREAMWORLD_MOVE_KERNEL_HI_ALLOWANCE equals the real kernel-hi cost of sw_move_probe/sw_move_probe_solid, on UNROM 512, both game types and the mixed shape',
   { skip: !hasNesasm && 'nesasm not found on PATH' },
@@ -5452,20 +5471,103 @@ test(
       const streamedDelta = swMoveUsed - swNoMoveUsed;
       const ordinaryDelta = ordMoveUsed - ordNoMoveUsed;
       const supplement = streamedDelta - ordinaryDelta;
+      // The dialogue-mapper term only ever appears on the streamed side (never ordinary), so it
+      // is not cancelled by the streamed/ordinary double-difference the way text.inc growth is --
+      // whenever the Move event's own presence is what flips projectUsesText, that difference is
+      // a real, separate addend to the expected supplement.
+      const dlgTerm =
+        (projectUsesText(streamedWithMove) ? STREAMWORLD_DIALOGUE_MAPPER_KERNEL_HI_ALLOWANCE : 0) -
+        (projectUsesText(streamedNoMove) ? STREAMWORLD_DIALOGUE_MAPPER_KERNEL_HI_ALLOWANCE : 0);
+      const expectedSupplement = STREAMWORLD_MOVE_KERNEL_HI_ALLOWANCE + dlgTerm;
       console.log(
         `${mapper.name} (${label}): STREAMWORLD_MOVE_KERNEL_HI_ALLOWANCE supplement ${supplement} ` +
           `(streamed Move delta ${streamedDelta}, ordinary Move delta ${ordinaryDelta} -- the text.inc confound, ` +
-          `expected ${STREAMWORLD_MOVE_KERNEL_HI_ALLOWANCE})`
+          `dialogue-mapper term ${dlgTerm}, expected ${expectedSupplement})`
       );
       assert.equal(
         supplement,
-        STREAMWORLD_MOVE_KERNEL_HI_ALLOWANCE,
+        expectedSupplement,
         `${mapper.name} (${label}): a live Move on a streamed map costs ${supplement} bytes of kernel-hi code ` +
           `beyond an ordinary map's own Move cost (streamed delta ${streamedDelta} - ordinary delta ${ordinaryDelta}), ` +
           `but STREAMWORLD_MOVE_KERNEL_HI_ALLOWANCE reserves ${STREAMWORLD_MOVE_KERNEL_HI_ALLOWANCE} -- re-measure ` +
           'and correct it.'
       );
     }
+  }
+);
+
+// Phase 2 slice 7a: STREAMWORLD_DIALOGUE_MAPPER_KERNEL_HI_ALLOWANCE. Unlike
+// the Move term above, this one needs no double-difference -- sw_dlg_mapper_
+// start/end (engine/streamworld.asm) bracket a fixed `.if TEXT_ENABLED`
+// span whose own byte count cannot be inflated or shrunk by how much text.inc
+// content exists elsewhere in the same kernel-hi bank, so the direct span is
+// itself the real, confound-free cost (the same cross-check the Move test's
+// own comment already used to corroborate its double-difference result).
+// Measured on RPG (text always on), an action project with a Say reachable
+// only on an ORDINARY map (mixed, so streaming and text are both live without
+// tripping the D.4 streamed-dialogue refusal), and the RPG+mixed shape --
+// every shape the allowance is charged on, per the plan's own "action, RPG
+// and mixed" requirement.
+function withOrdinaryDialogue(project) {
+  const map = project.maps.find((m) => !m.streamed);
+  const screen = map.screens[0];
+  screen.entities = screen.entities ?? [];
+  screen.entities.push({
+    actorId: 0,
+    x: 32,
+    y: 32,
+    props: { trigger: 'interact', event: { pages: [{ cond: { type: 'none', arg: 0 }, commands: [{ op: 'say', text: 'Hi.' }] }] } }
+  });
+  return project;
+}
+
+test(
+  'phase 2 slice 7a: STREAMWORLD_DIALOGUE_MAPPER_KERNEL_HI_ALLOWANCE equals the real sw_dlg_mapper_start..end span, on UNROM 512, action+mixed+text, RPG, and RPG+mixed',
+  { skip: !hasNesasm && 'nesasm not found on PATH' },
+  async (t) => {
+    const mapper = resolveMapper(30);
+    const cases = [
+      { project: withOrdinaryDialogue(createStreamedProject({ gameType: 'action', mixed: true })), label: 'action, mixed, with text' },
+      { project: createStreamedProject({ gameType: 'rpg' }), label: 'rpg' },
+      { project: createStreamedProject({ gameType: 'rpg', mixed: true }), label: 'rpg, mixed' }
+    ];
+    for (const { project, label } of cases) {
+      const dir = await fsp.mkdtemp(path.join(os.tmpdir(), 'forge-kernelhi-dlg-'));
+      t.after(() => fsp.rm(dir, { recursive: true, force: true }));
+      const built = await buildProject({ dir, project, log: () => {} });
+      const symbols = await fsp.readFile(built.symbolPath, 'utf8');
+      const span = symbolAddr(symbols, 'sw_dlg_mapper_end') - symbolAddr(symbols, 'sw_dlg_mapper_start');
+      assert.equal(
+        span,
+        STREAMWORLD_DIALOGUE_MAPPER_KERNEL_HI_ALLOWANCE,
+        `${mapper.name} (${label}): sw_dlg_mapper_start..end spans ${span} bytes but ` +
+          `STREAMWORLD_DIALOGUE_MAPPER_KERNEL_HI_ALLOWANCE reserves ${STREAMWORLD_DIALOGUE_MAPPER_KERNEL_HI_ALLOWANCE} -- ` +
+          're-measure and correct it.'
+      );
+    }
+  }
+);
+
+// The gate's off side: sw_dlg_mapper_start/end themselves are unconditional boundary labels
+// (placed either side of the `.if TEXT_ENABLED` span, engine/streamworld.asm) -- they always
+// exist, so "no text" is not "the symbol is absent" but "the span between them is exactly zero,"
+// confirmed directly rather than assumed.
+test(
+  'phase 2 slice 7a: a streamed project with no text assembles zero bytes between sw_dlg_mapper_start and sw_dlg_mapper_end',
+  { skip: !hasNesasm && 'nesasm not found on PATH' },
+  async (t) => {
+    const mapper = resolveMapper(30);
+    const project = createStreamedProject({ gameType: 'action' });
+    project.project.titleMap = null; // the default project's own title screen is itself a text source (projectUsesEffectiveTitle) -- must be off too, or this "no text" case would not isolate the gate at all
+    const dir = await fsp.mkdtemp(path.join(os.tmpdir(), 'forge-kernelhi-dlg-off-'));
+    t.after(() => fsp.rm(dir, { recursive: true, force: true }));
+    const built = await buildProject({ dir, project, log: () => {} });
+    const symbols = await fsp.readFile(built.symbolPath, 'utf8');
+    assert.equal(
+      symbolAddr(symbols, 'sw_dlg_mapper_end') - symbolAddr(symbols, 'sw_dlg_mapper_start'),
+      0,
+      `${mapper.name}: a text-free project must assemble zero bytes of dialogue-mapper code`
+    );
   }
 );
 

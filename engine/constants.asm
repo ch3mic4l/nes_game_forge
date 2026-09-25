@@ -607,9 +607,48 @@ ord_screen = $FF
 ; do_talk respectively. The rest of the run stays a bare comment -- no code
 ; in this commit references any of them, so giving them a symbol would claim
 ; an address with nothing to prove it real:
-;   $C8-$F2  dialogue scratch    -- the mapper/split-writer/attribute working set (slice 7a)
 ;   $F3-$FC  dialogue lifecycle  -- sw_dlg15_state and friends (slice 7b)
 sw_axis_pref    = $C7      ; 0 = X owns the accumulator, 1 = Y does
+; The dialogue overlay's own scratch (docs/design-streamed-worlds.md §7,
+; phase 2 slice 7a) -- transient per-open-box working state for
+; sw_dlg_tile_addr/sw_dlg_write_row (the tile mapper/split-packet writer)
+; and sw_dlg_attr_precompute/sw_dlg_attr_open_band/sw_dlg_attr_close_band
+; (the masked-attribute code), engine/streamworld.asm. Meaningless while no
+; box is open; owner: this slice. 29 of the reserved $C8-$F2 (43 bytes) are
+; named here -- $E5-$F2 stay free within this same reservation, nothing in
+; this slice references them.
+sw_dlgw_band     = $C8     ; sw_dlg_write_row's own band-relative tile row (0-5)
+sw_dlgw_r        = $C9     ; sw_dlg_write_row's own cam_x_lo>>3 remainder / split flag
+sw_dlgw_count1   = $CA     ; sw_dlg_write_row's own segment-1 length (32-r)
+sw_dlgw_srclo    = $CB     ; sw_dlg_write_row's own source pointer, lo
+sw_dlgw_srchi    = $CC     ; sw_dlg_write_row's own source pointer, hi
+sw_dlgw_ta_row   = $CD     ; sw_dlg_tile_addr's own private scratch (physRow)
+sw_dlgw_ta_col   = $CE     ; sw_dlg_tile_addr's own private scratch (physCol)
+sw_dlgw_ta_nt    = $CF     ; sw_dlg_tile_addr's own private scratch (nt XOR bits)
+sw_dlgw_ta_tmp   = $D0     ; sw_dlg_tile_addr's own private scratch
+sw_dlgw_arow     = $D1     ; @size=3 -- per-band attribute row (0-7), sw_dlg_attr_precompute
+sw_dlgw_ntb      = $D4     ; @size=3 -- per-band row-wrap nt bit (0 or 2)
+sw_dlgw_rowmask  = $D7     ; @size=3 -- per-band final row-half mask (top/bottom/full)
+sw_dlgw_edgeac   = $DA     ; the attribute column straddling the horizontal seam (cam_x_lo>>4)>>1
+sw_dlgw_cxodd    = $DB     ; nonzero when that seam falls mid-attribute-column
+sw_dlgw_wrapend  = $DC     ; last attribute column the wrapped-nt segment touches
+sw_dlgw_curarow  = $DD     ; the band currently being written -- its attribute row
+sw_dlgw_curntb   = $DE     ; the band currently being written -- its row-wrap nt bit
+sw_dlgw_currm    = $DF     ; the band currently being written -- its row mask
+sw_dlgw_ac       = $E0     ; the attribute column currently being written (0-7)
+sw_dlgw_shadowlo = $E1     ; attr_shadow offset matching the byte currently being written
+sw_dlgw_tmp      = $E2     ; general scratch (sw_dlg_attr_addr/precompute); ALSO doubles as
+                            ; [sw_dlgw_shadowlo]'s own pointer hi byte (shadowlo+1) once
+                            ; sw_dlg_attr_addr sets it -- never store anything else here between
+                            ; an sw_dlg_attr_addr call and the indirect read(s) it set the pointer
+                            ; up for
+sw_dlgw_mask     = $E3     ; sw_dlg_attr_overlay's own clear-mask scratch -- kept OUT of
+                            ; sw_dlgw_tmp on purpose (see its own comment above)
+sw_dlgw_baserow  = $E4     ; sw_dlg_attr_precompute's own unwrapped base metatile row
+                            ; (cam_y_lo>>4 + BOX_MT_ROW), held constant across its 3-band loop --
+                            ; kept OUT of sw_dlgw_tmp on purpose, so each iteration's row-wrap test
+                            ; (baserow + band index, compared fresh against 15) never sees an
+                            ; already-wrapped remainder from a prior iteration
 sw_event_freeze = $FD      ; nonzero: an event ran this frame -- update_player's
                             ; streamed branch skips movement entirely
 

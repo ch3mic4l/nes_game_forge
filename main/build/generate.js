@@ -1381,6 +1381,20 @@ export const STREAMWORLD_KERNEL_HI_ALLOWANCE = 3342;
 // region as streamworld.asm, right after it, so it is a kernel-HI cost too,
 // not kernel-lo -- see the same equality test.
 export const STREAMWORLD_MT_PAL_KERNEL_HI_BYTES = LIMITS.metatiles;
+// Phase 2 slice 7a: the dialogue overlay's address mapper, split-at-seam
+// packet writer and masked-attribute code (sw_dlg_mapper_start..end,
+// engine/streamworld.asm) -- no lifecycle state machine yet, so this is a
+// fresh isolated measurement, never a guessed fraction of the contract's
+// own combined open-questions-item-3 figures (finding 4). Gated on
+// projectUsesStreaming && projectUsesText: a streamed project with no text
+// assembles none of it (the span is itself `.if TEXT_ENABLED` inside the
+// `.if STREAMING_ENABLED` file). Measured directly off nesasm's own symbol
+// table (test/unit/kernelbytes.test.js), sw_dlg_mapper_end - sw_dlg_mapper_
+// start, on a fresh clean build -- action, RPG and mixed all equal. Round 2
+// fix (review round 1, finding A1): sw_dlg_attr_precompute now re-derives
+// each band's row from an unwrapped base held in its own sw_dlgw_baserow
+// byte instead of a destructively-wrapped running remainder -- 611 -> 613.
+export const STREAMWORLD_DIALOGUE_MAPPER_KERNEL_HI_ALLOWANCE = 613;
 // Phase 2 slice 2b, Part F: the kernel-LO terms streaming adds, each its own
 // named allowance rather than one lump sum -- every one of these lives
 // before assets/kernel_hi.inc in engine/main.asm's own include order (see
@@ -3419,6 +3433,12 @@ export function checkCapacity(project) {
   // split already uses everywhere else in this function.
   const streamworldKnockbackHiBytes =
     hasStreamed && !battleEnabledFor(project, mapper) ? STREAMWORLD_KNOCKBACK_KERNEL_HI_ALLOWANCE : 0;
+  // Phase 2 slice 7a: the dialogue mapper/packet/attribute code is a FIFTH,
+  // separately-gated kernel-hi term -- projectUsesText as well as
+  // hasStreamed, since it lives inside its own `.if TEXT_ENABLED` (see
+  // STREAMWORLD_DIALOGUE_MAPPER_KERNEL_HI_ALLOWANCE's own comment).
+  const streamworldDialogueMapperHiBytes =
+    hasStreamed && projectUsesText(project) ? STREAMWORLD_DIALOGUE_MAPPER_KERNEL_HI_ALLOWANCE : 0;
   const streamworldHiBytes = hasStreamed
     ? STREAMWORLD_KERNEL_HI_ALLOWANCE +
       STREAMWORLD_MT_PAL_KERNEL_HI_BYTES +
@@ -3426,7 +3446,8 @@ export function checkCapacity(project) {
       STREAMWORLD_WINDOW_KERNEL_HI_ALLOWANCE +
       streamworldKnockbackHiBytes +
       streamworldUpdatePlayerKernelHiAllowance(project) +
-      STREAMWORLD_HAZARD_KERNEL_HI_ALLOWANCE
+      STREAMWORLD_HAZARD_KERNEL_HI_ALLOWANCE +
+      streamworldDialogueMapperHiBytes
     : 0;
   if (musicBytes + sfxBytes + text.bytes + streamworldHiBytes > BANK_SIZE - 64) {
     problems.push({
