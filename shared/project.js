@@ -6887,7 +6887,6 @@ function validateStreamedMaps(project, add) {
   // which item 5 below already refuses globally for any project with a
   // streamed map -- that build option can never be on here.
   const SAY_OPS = new Set(['say', 'choice']);
-  const FIGHT_OPS = new Set(['battle']);
   for (const { map, index } of streamed) {
     map.screens.forEach((screen, screenIndex) => {
       const label = () => `${screenLabel(project, index, screenIndex)} on the streamed map "${map.name}"`;
@@ -6903,20 +6902,16 @@ function validateStreamedMaps(project, add) {
         );
       }
       for (const entity of screen.entities ?? []) {
-        // Item 6 (authored-contact half): an entity whose own actor starts a
-        // battle on touch (availableTriggers' own `startsBattle` rule --
-        // isMonsterActor in an RPG) needs no scripted event at all to reach
-        // call_battle, so this is checked independently of whether the
-        // entity carries one.
-        const actor = project.sprites?.actors?.[entity.actorId];
-        if (project.project.gameType === 'rpg' && isMonsterActor(actor)) {
-          add(
-            'error',
-            'Map Forge',
-            `${label()}: ${entityLabel(project, entity)} deals contact damage, which starts a battle on touch, and a ` +
-              'streamed screen cannot yet -- remove its damage, or make this map ordinary.'
-          );
-        }
+        // Item 6 (both halves -- authored contact and scripted Fight, plus
+        // the random-encounter half below) is LIFTED as of phase 2 slice 6:
+        // battle entry now cancels any in-flight strip before call_battle
+        // (engine/banks.asm) and battle return resyncs the window through
+        // the ordinary redraw_screen path (battle_end's own unconditional
+        // jsr redraw_screen, engine/rpg.asm, already suppresses the entry
+        // event and re-settles screen_fresh, both game-type-agnostic and
+        // predating streamed worlds), so a reachable battle entry on a
+        // streamed screen is no longer refused. See test/unit/
+        // streamworld.test.js's own D.6 positive tests.
         const event = entity.props?.event;
         if (!event) continue;
         // Item 3, lifted to a warning by phase 2 slice 3 (see the header
@@ -6943,26 +6938,8 @@ function validateStreamedMaps(project, add) {
               'streamed screen cannot yet -- remove it, or make this map ordinary.'
           );
         }
-        // Item 6 (scripted half): a Fight command.
-        if (eventHasOp(event, FIGHT_OPS, commonById, new Set([event]))) {
-          add(
-            'error',
-            'Map Forge',
-            `${label()}: the event on ${entityLabel(project, entity)} starts a battle, which a streamed screen ` +
-              'cannot yet -- remove it, or make this map ordinary.'
-          );
-        }
       }
     });
-    // Item 6 (random-encounter half): a streamed map's own wandering monsters.
-    if ((map.encounters?.rate ?? 0) > 0) {
-      add(
-        'error',
-        'Map Forge',
-        `The streamed map "${map.name}" has wandering monsters (a nonzero encounter rate), which a streamed ` +
-          'screen cannot yet -- set the rate to 0 for this map, or make it ordinary.'
-      );
-    }
   }
 
   // Item 5: hero/Join naming anywhere in a project that has a streamed map.

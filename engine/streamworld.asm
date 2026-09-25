@@ -3130,8 +3130,211 @@ sw_fcw_ydivmod15_done:
 ; through a capped knockback too.
 ; ==========================================================================
 sw_frame_camera_window:
+  ; Fix round 1, finding 2: an OUTER cam_dirty hold, raised before recompute
+  ; ever runs and released only once this frame's guard decision is known --
+  ; sw_camera_window_recompute's own inc/dec pair nests inside it (cam_dirty
+  ; goes 1->2->1 across that call, never back to 0), so nmi_scroll's own
+  ; `lda <cam_dirty / bne nmi_scroll_cam_stale` (engine/boot.asm) keeps
+  ; reading it as held and skips refreshing nmi_cam_x_lo/y_lo/nt from the
+  ; freshly-published-but-not-yet-decided cam_x_lo/y_lo/cam_nt for every
+  ; instruction between "camera published" and "the guard decides," not only
+  ; the handful right before the guard's own forced blank. An unrestricted
+  ; jump published first, even for one NMI, scans an unredrawn window --
+  ; detection has to precede publication, not merely follow it closely.
+  inc <cam_dirty
   jsr sw_camera_window_recompute
+  jsr sw_pjg_check
+  bne sw_pjg_trigger
+  ; Ordinary frame: no jump detected, so this frame's freshly published
+  ; camera is safe to publish for real -- release the outer hold now, same
+  ; instant sw_win_arm's own ordinary per-frame tail would have run before
+  ; this fix.
+  dec <cam_dirty
   jmp sw_win_arm                ; tail call -- its own rts answers for ours
+sw_pjg_trigger:
+  ; The outer hold stays raised across the whole guard transaction --
+  ; sw_position_jump_guard releases it itself, only once the transaction
+  ; (forced blank through resumed rendering) is complete.
+  jmp sw_position_jump_guard    ; jmp, not bne -- sw_pjg_check's own body
+                                 ; below is long enough to exceed a branch's
+                                 ; +-128 byte reach (CLAUDE.md's own trap)
+
+; ==========================================================================
+; sw_position_jump_guard -- obligation 3's own active response. Fires when
+; sw_pjg_check (below) finds either axis's lag (the window's own persistent
+; "current" origin vs. this frame's freshly computed "desired" one, both in
+; blocks) at or past the design's threshold of 6. Operative order, exactly
+; docs/design-streamed-worlds.md's own "position-jump guard" section:
+; suppress camera/OAM publication for this frame and every frame until the
+; resync completes (here, forcing $2000/$2001 off IS the suppression -- no
+; PPU-scanned content reaches the screen while blanked, so nothing "shows"
+; the still-mismatched camera/window pair sw_camera_window_recompute just
+; published) and cancel any in-flight strip (moot once the redraw below
+; repaints the whole window anyway); install the target window origin
+; directly (current := desired, both axes, no incremental approach); force
+; blank (both writes below -- true for the whole redraw's length, since
+; nothing else in this synchronous call chain returns to main_loop until
+; this routine's own rts, so mainline movement/input is frozen throughout,
+; the same "the world is frozen for the whole transaction" rule a dialogue
+; freeze already applies elsewhere); redraw the whole window at that target
+; origin (sw_render_window, never incremental); rebuild OAM against it;
+; publish the camera that redraw now genuinely agrees with (already sitting
+; in cam_nt/cam_x_lo/cam_y_lo from this frame's own recompute); resume
+; rendering only once all of that is done. This is NOT a screen ownership
+; change (unlike a landing) -- flat_screen/ord_screen/sw_col/sw_row are
+; already correct, so this never calls spawn_entities/rebuild_bound_cache/
+; apply_map_music the way a redraw_screen landing does: no entry event, no
+; screen_fresh, matching the contract's own transition matrix (docs/design-
+; streamed-worlds.md §8, "Teleport resync (lag guard)" row).
+; ==========================================================================
+sw_position_jump_guard:
+  lda #0
+  sta $2000                 ; NMI off while the redraw drives raw PPU writes
+  sta $2001                 ; rendering off -- forced blank for the whole
+                             ; resync, not merely this one frame
+  sta st_active              ; cancel any in-flight strip on guard entry
+  lda sw_fc_desc
+  sta win_col_screen         ; target-origin install: current := desired,
+  lda sw_fc_desl             ; both axes, immediately -- never sw_win_arm's
+  sta win_col_local           ; own one-block-at-a-time approach
+  lda sw_fc_desr
+  sta win_row_screen
+  lda sw_fc_desrl
+  sta win_row_local
+  jsr sw_render_window        ; full torus redraw at the target origin --
+                              ; never incremental
+  jsr build_oam
+  jsr draw_entities
+  jsr wait_vblank_poll
+  ; Fix round 1, finding 3: DMA the just-rebuilt shadow OAM into hardware
+  ; OAM here, under blank, before resuming -- NMI is off for the whole
+  ; redraw (the very first store this routine makes, above), so the ordinary
+  ; per-vblank `sta $2003 / lda #$02 / sta $4014` the nmi handler otherwise
+  ; does (engine/boot.asm) never ran during it. Without this, the hardware
+  ; OAM the PPU scans still describes the pre-guard frame at the first
+  ; display-enable below, even though the shadow (and the nametable/
+  ; attribute bytes sw_render_window just painted) are already correct.
+  lda #$00
+  sta $2003
+  lda #$02
+  sta $4014
+  lda <cam_nt                 ; already this frame's corrected values, from
+  ora #PPUCTRL_ON               ; sw_camera_window_recompute above -- the
+  sta $2000                    ; redraw just now made them true; re-applying
+  lda <cam_x_lo                 ; them is what "resumes ordinary rendering
+  sta $2005                     ; and publication" means
+  lda <cam_y_lo
+  sta $2005
+  lda #PPUMASK_ON
+  sta $2001
+  ; Fix round 1, finding 2: release the outer cam_dirty hold sw_frame_camera_
+  ; window raised, only now that the full guard transaction -- forced blank,
+  ; redraw, OAM DMA, resumed rendering -- is genuinely complete.
+  dec <cam_dirty
+  rts
+
+; sw_pjg_check -- both axes' lag, window "current" origin vs. this frame's
+; "desired" one (sw_fc_desc/desl/desr/desrl, sw_camera_window_recompute's own
+; output, just above), in blocks. Both axes are always checked (never a
+; short-circuit branch on the first one's own result) -- the two results are
+; ORed together via sw_fc_wy_lo -- sw_camera_window_recompute's own worldY-
+; shift scratch, already fully consumed and free by the time this runs,
+; never touched by sw_win_arm either. Out: Z clear when either axis's lag is
+; >= 6 (the caller's own `bne`), Z set otherwise. Clobbers A, sw_tmp..
+; sw_tmp5, sw_fc_wy_lo.
+;
+; Fix round 1, finding 4: this used to total both origins to 16-bit block
+; counts via a 4-iteration shift-and-add per side (four shift loops, two
+; 16-bit adds, two 16-bit subtracts, every frame) before ever comparing
+; them. Screens first, cheaper: equal screens need only the local-coordinate
+; difference; adjacent screens (current screen = desired screen +/-1) need
+; that same local difference adjusted by one axis's own screen span (16
+; blocks X, 15 Y) in the matching direction; origins two or more screens
+; apart necessarily differ by well over 6 blocks regardless of either
+; local coordinate (worst case, adjacent locals at opposite screen edges,
+; is still a 17-block gap for two screens) so no arithmetic beyond the
+; screen-index compare is needed at all. Every combined magnitude sw_pjg_
+; lag_trip below actually computes (equal: 0-14; adjacent: -30..31) fits a
+; signed byte with room to spare, so this needs no 16-bit math anywhere.
+sw_pjg_check:
+  ; ---- X axis ----
+  lda win_col_screen
+  sta sw_tmp
+  lda win_col_local
+  sta sw_tmp2
+  lda sw_fc_desc
+  sta sw_tmp3
+  lda sw_fc_desl
+  sta sw_tmp4
+  lda #16                     ; blocks per screen, X axis
+  sta sw_tmp5
+  jsr sw_pjg_lag_trip
+  sta sw_fc_wy_lo             ; stash: 1 if the X axis alone already tripped
+  ; ---- Y axis ----
+  lda win_row_screen
+  sta sw_tmp
+  lda win_row_local
+  sta sw_tmp2
+  lda sw_fc_desr
+  sta sw_tmp3
+  lda sw_fc_desrl
+  sta sw_tmp4
+  lda #15                     ; blocks per screen, Y axis
+  sta sw_tmp5
+  jsr sw_pjg_lag_trip
+  ora sw_fc_wy_lo             ; combine: nonzero (Z clear) iff either axis tripped
+  rts
+
+; sw_pjg_lag_trip -- in: sw_tmp/sw_tmp2 = one axis's current screen/local;
+; sw_tmp3/sw_tmp4 = that axis's desired screen/local; sw_tmp5 = that axis's
+; own blocks-per-screen span (16 X, 15 Y). Screen indices are small (well
+; under 128 for any real grid), so a plain signed byte subtraction of them
+; is exact -- never the fill/probe routines' own separate $ff off-map
+; sentinel (sw_rw_probe and friends), which this routine never reads. Out:
+; Z clear (A=1) when |current-desired|, in local units, is >= 6; Z set
+; (A=0) otherwise. Clobbers A, sw_tmp6.
+sw_pjg_lag_trip:
+  lda sw_tmp
+  sec
+  sbc sw_tmp3                 ; A = current screen - desired screen
+  beq sw_pjg_lt_same
+  cmp #1
+  beq sw_pjg_lt_pos1
+  cmp #$ff
+  beq sw_pjg_lt_neg1
+  bne sw_pjg_lt_yes            ; |screenDelta| >= 2: over threshold regardless of either local
+sw_pjg_lt_same:
+  lda sw_tmp2
+  sec
+  sbc sw_tmp4                 ; A = currentLocal - desiredLocal
+  jmp sw_pjg_lt_abs
+sw_pjg_lt_pos1:                ; current screen = desired screen + 1
+  lda sw_tmp5
+  clc
+  adc sw_tmp2
+  sec
+  sbc sw_tmp4                 ; A = unitsPerScreen + currentLocal - desiredLocal
+  jmp sw_pjg_lt_abs
+sw_pjg_lt_neg1:                ; current screen = desired screen - 1
+  lda sw_tmp2
+  sec
+  sbc sw_tmp4
+  sec
+  sbc sw_tmp5                  ; A = currentLocal - desiredLocal - unitsPerScreen
+sw_pjg_lt_abs:
+  bpl sw_pjg_lt_abs_done
+  eor #$ff
+  clc
+  adc #1                        ; two's-complement negate: A = |A|
+sw_pjg_lt_abs_done:
+  cmp #6
+  bcc sw_pjg_lt_no
+sw_pjg_lt_yes:
+  lda #1
+  rts
+sw_pjg_lt_no:
+  lda #0
+  rts
 
 ; ==========================================================================
 ; sw_camera_window_install -- the landing entry point (sw_resolve_divdone,

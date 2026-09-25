@@ -5,7 +5,7 @@
 // sw_driver_timing.lua.template's own header for the full measurement design.
 //
 //   node test/lua/build_sw_driver_timing_roms.mjs [outDir]
-//     [--break=unconditional-arm|no-spawn|slow-driver|offmap-column]
+//     [--break=unconditional-arm|no-spawn|slow-driver|offmap-column|idle-extra-work]
 //     [--idle-only] [--no-actors] [--row8] [--row8-drop] [--align-landing-y] [--skip-contact]
 //     [--skip-release-fallback] [--skip-shake-flash]
 //   Mesen --testRunner <outDir>/sw_driver_timing.lua <outDir>/sw_driver_timing.nes
@@ -71,6 +71,16 @@
 // reads and rejects the real saved entering column, not merely the window's own near-edge column
 // (the old WIN_COL_SCREEN read), which stays in-bounds even when the real entering column is
 // off-map.
+// --break=idle-extra-work: fix round 2 (fix2, finding A4) -- a BOUNDED, stationary-demand extra-work
+// cost control, distinct from --break=unconditional-arm. Inserts the SAME fixed ~1,276-cycle delay
+// loop --break=slow-driver already uses (ldx #255/dex/bne, at sw_update_player's own entry) but
+// always runs through the idle-only harness shape (implied, like unconditional-arm) instead of
+// slow-driver's own forced busy walk. Unlike unconditional-arm, this mutation never reads or writes
+// sw_col/sw_row/win_col_*/win_row_*/sw_fc_* -- the window's own desired/current origin can never
+// drift, so its own idle-only average settles at one fixed extra cost above baseline instead of
+// growing without bound, and the position-jump guard must never fire across its whole measured span
+// (sw_driver_timing.lua.template's own pjgFireCount assertion, run against every idle-only build,
+// unbroken baseline included -- see its own header comment).
 //
 // (test/lua/run_sw_driver_timing_check.sh runs the unbroken pass and the broken comparisons.)
 import fs from 'node:fs';
@@ -89,11 +99,11 @@ const TEMPLATE_PATH = path.join(ROOT, 'test/lua/sw_driver_timing.lua.template');
 const args = process.argv.slice(2);
 const breakArg = args.find((a) => a.startsWith('--break='));
 const breakMode = breakArg ? breakArg.slice('--break='.length) : null;
-const KNOWN_BREAKS = ['unconditional-arm', 'no-spawn', 'slow-driver', 'offmap-column'];
+const KNOWN_BREAKS = ['unconditional-arm', 'no-spawn', 'slow-driver', 'offmap-column', 'idle-extra-work'];
 if (breakMode && !KNOWN_BREAKS.includes(breakMode)) {
   throw new Error(`unknown --break mode: ${breakMode}`);
 }
-const idleOnly = args.includes('--idle-only') || breakMode === 'unconditional-arm';
+const idleOnly = args.includes('--idle-only') || breakMode === 'unconditional-arm' || breakMode === 'idle-extra-work';
 const noActors = args.includes('--no-actors');
 // Round-3 gate closure Task 1: --skip-down-leg is the workload-drop sabotage demonstration for the
 // new sawColCrossing/sawRowCrossing "both strip orientations" assertion (sw_driver_timing.lua.
@@ -364,7 +374,7 @@ function placeShakeFlashActor(screenIdx) {
 }
 placeShakeFlashActor(RIGHT_TARGET_INDEX);
 
-if (breakMode === 'unconditional-arm' || breakMode === 'no-spawn' || breakMode === 'slow-driver' || breakMode === 'offmap-column') {
+if (breakMode === 'unconditional-arm' || breakMode === 'no-spawn' || breakMode === 'slow-driver' || breakMode === 'offmap-column' || breakMode === 'idle-extra-work') {
   const stockPath = path.join(ROOT, 'engine', 'streamworld.asm');
   const stockText = fs.readFileSync(stockPath, 'utf8');
   let patched;
@@ -377,6 +387,17 @@ if (breakMode === 'unconditional-arm' || breakMode === 'no-spawn' || breakMode =
       throw new Error('sw_update_player\'s own label text did not match the expected shape -- engine/streamworld.asm has changed since this override was written; update the needle');
     }
     patched = stockText.replace(needle, needle + '  ldx #255\nreview_slow_loop:\n  dex\n  bne review_slow_loop\n');
+  } else if (breakMode === 'idle-extra-work') {
+    // Fix round 2 (fix2, finding A4): the SAME fixed delay loop as slow-driver, at the same
+    // entry point -- deliberately reused rather than invented fresh, since the point of this
+    // control is a KNOWN, already-measured fixed cost (~1,276 cycles), not a new unmeasured one --
+    // but this mutation is always run idle-only (see idleOnly above), and never touches window
+    // state, so its own idle-only average is a bounded, non-drifting regression signal.
+    const needle = 'sw_update_player:\n';
+    if (!stockText.includes(needle)) {
+      throw new Error('sw_update_player\'s own label text did not match the expected shape -- engine/streamworld.asm has changed since this override was written; update the needle');
+    }
+    patched = stockText.replace(needle, needle + '  ldx #255\nidle_extra_work_loop:\n  dex\n  bne idle_extra_work_loop\n');
   } else if (breakMode === 'unconditional-arm') {
     const needle =
       'sw_win_arm:\n' +
@@ -392,6 +413,27 @@ if (breakMode === 'unconditional-arm' || breakMode === 'no-spawn' || breakMode =
     if (!stockText.includes(needle)) {
       throw new Error('sw_win_arm\'s own comparison chain text did not match the expected shape -- engine/streamworld.asm has changed since this override was written; update the needle');
     }
+    // Fix round 1 (finding 4): tried two bounded redesigns of this mutation
+    // itself (an inc-then-immediate-dec that re-invoked sw_stream_start_col
+    // twice per frame, and a local-only cycle that never touched
+    // win_col_screen at all) before settling on leaving the mutation as-is.
+    // Both hung the ROM outright (Lua exit 99, TIMEOUT) rather than merely
+    // mismeasuring: sw_stream_start_col leaves its own streaming-strip state
+    // (sw_ss_sc/st_ftile/st_fnt/st_vary and friends) mid-transaction for a
+    // later per-frame pump to drain, and something downstream waits on that
+    // transaction completing in the shape the real engine always gives it
+    // (one arm step per frame, always progressing) -- neither redesign
+    // preserved that shape closely enough to avoid stalling it, and a coder
+    // sabotaging engine/streamworld.asm's own state machine to chase a test
+    // harness's encoding range is a materially riskier change than fixing
+    // the harness. The real defect this control exists to catch (an
+    // unconditionally-armed engine) is unbounded by construction -- forced
+    // every frame with no gate, current drifts off the authored grid
+    // entirely and stays getting worse, so there is no bounded "steady
+    // state" cost to design toward that remains a faithful reproduction of
+    // an unconditional arm. See sw_driver_timing.lua.template's own
+    // IDLE_AVG_SCALE comment for the actual fix: widen the encoding instead
+    // of bounding the defect.
     patched = stockText.replace(needle, 'sw_win_arm:\n  jmp sw_win_arm_col_inc\nsw_win_arm_col_try:\n');
   } else if (breakMode === 'offmap-column') {
     // Round-3 gate closure Task 1 (gates round-3 finding 1): forces the entering column
@@ -427,7 +469,7 @@ async function main() {
     // measurement (nmi entry to nmi_rti exit) during THIS SAME busy walk, instead of the old
     // hardcoded jsnes WORST_NMI_CYCLES=1543. Already-established anchors (flash_nmi_timing.lua.
     // template resolves nmi_rti the same way for its own two-producer-NMI deadline check).
-    for (const name of ['update_player', 'update_entities', 'main_loop_after_player', 'main_loop_body_start', 'main_loop_ready', 'nmi', 'nmi_rti']) {
+    for (const name of ['update_player', 'update_entities', 'main_loop_after_player', 'main_loop_body_start', 'main_loop_ready', 'nmi', 'nmi_rti', 'sw_position_jump_guard']) {
       if (!Number.isFinite(codeSymbols[name])) throw new Error(`${name} was not a named symbol in game.fns`);
     }
 
@@ -482,6 +524,7 @@ async function main() {
       __ENT_ACTIVE__: `0x${ramSymbols.get('ent_active').toString(16)}`,
       __NMI__: `0x${codeSymbols.nmi.toString(16)}`,
       __NMI_RTI__: `0x${codeSymbols.nmi_rti.toString(16)}`,
+      __SW_POSITION_JUMP_GUARD__: `0x${codeSymbols.sw_position_jump_guard.toString(16)}`,
       __VRAM_LEN__: `0x${ramSymbols.get('vram_len').toString(16)}`,
       __WIN_ROW_SCREEN__: `0x${ramSymbols.get('win_row_screen').toString(16)}`,
       __WIN_ROW_LOCAL__: `0x${ramSymbols.get('win_row_local').toString(16)}`,
@@ -493,6 +536,9 @@ async function main() {
       __DOWN_TARGET_COL__: `${DOWN_TARGET_COL}`,
       __DOWN_TARGET_ROW__: `${DOWN_TARGET_ROW}`,
       __EXPECT_ROW8__: row8 ? 'true' : 'false',
+      // Fix round 2 (fix2, finding A4): true for every idle-only build except --break=
+      // unconditional-arm, whose own drift is expected, eventually, to retrigger the guard.
+      __EXPECT_GUARD_SILENCE__: (idleOnly && breakMode !== 'unconditional-arm') ? 'true' : 'false',
       __PLAYER_IFRAMES__: `0x${ramSymbols.get('player_iframes').toString(16)}`,
       __IFRAME_TIME__: `${ramSymbols.get('IFRAME_TIME')}`,
       __PAD__: `0x${ramSymbols.get('pad').toString(16)}`,

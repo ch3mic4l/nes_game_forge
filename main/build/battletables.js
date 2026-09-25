@@ -644,7 +644,25 @@ export function checkBattleTables(project) {
 // on every board since nothing in the walk branches on SPLIT_ENABLED or
 // anything else mapper-specific -- battle_sprite_pc's and battle_fx_draw's
 // own draw-time offset math is sprite-side only, no CHR-bank interaction.
-export const BASE_BATTLE_CODE_BYTES_BY_MAPPER = { 30: 3839, 1: 3839, 4: 3879 };
+// Phase 2 slice 6: +2 on every board (pla/pla, engine/battleturn.asm's own
+// battle_finish_live) -- battle_tick's jsr battle_dispatch (engine/battle.asm)
+// pushes a return address that every OTHER bt_phase branch consumes normally
+// via its own eventual rts, but battle_finish_live's jmp battle_end bypassed
+// it, leaving it orphaned on the stack for battle_end's own later rts to
+// wrongly pop instead of call_battle's real one. NOT "harmless on an
+// ordinary screen, only a streamed one" (fix round 1 correction): the
+// orphaned address is numerically inside battle_dispatch, banked code, and
+// by the time anything could pop it again set_screen_ptr has already
+// restored the FIELD bank at $8000 on every project, streamed or not -- a
+// small fixture where the field and battle banks happen to coincide can
+// look safe purely by that placement accident, not because ordinary screens
+// are exempt; a larger project with the two in genuinely different banks
+// crashes on this leak with no streamed map involved at all
+// (review-s6-ordinary-large.test.mjs, fix round 1). The streamed
+// battle-return runtime test (test/unit/streamworldlifecycle.test.js) is
+// what originally caught this as a hard crash. Uniform across boards
+// because the fix branches on nothing mapper-specific.
+export const BASE_BATTLE_CODE_BYTES_BY_MAPPER = { 30: 3841, 1: 3841, 4: 3881 };
 
 // Phase 4c round 3, finding 6 (phase4-design.md §9), corrected round 3b
 // (review K1): the two-menu-consistency filter (build_item_list's kind/

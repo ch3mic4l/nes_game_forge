@@ -97,13 +97,18 @@ const hasNesasm = spawnSync('nesasm', [], { stdio: 'ignore' }).error?.code !== '
 // battle bank, per Chris's own "always on for RPGs" answer -- both RPG
 // fixtures move; the four action fixtures (sample, sample-mmc1, sample-mmc3,
 // sample-u512), which never reach the battle region at all, stay unchanged.
+// Re-pinned a third time (phase 2 slice 6): battle_finish_live's own pla/pla
+// (engine/battleturn.asm) is a further +2 uniform bytes in the RPG battle
+// bank -- see BASE_BATTLE_CODE_BYTES_BY_MAPPER's own comment (main/build/
+// battletables.js) for what it fixes. Only the two RPG fixtures move again;
+// the four action fixtures are untouched.
 const BASELINES = {
   sample: '442565369e9da7011901b459317adb4d3c07d9c24fd8f388bcf92b731829e846',
-  'sample-rpg': '6944a5a3c80cfe15ab8f044f0c8520b53351d649195f41f2b6ef0a3c07525623',
+  'sample-rpg': 'db6687d939470fde825b81f9b8b4a999097b09e26ba4255ce2ac4aa232d5e516',
   'sample-mmc1': '54150a3dc8bc958c56a08b7105423046c8d2503e2c9986210be61387109e9833',
   'sample-mmc3': '7069a6341ae75c5ed1187981a8a1486cf1e61c4ccb3cdc6b208acec5017362ec',
   'sample-u512': '44b4d10952d4ce7da7c7113f8bf186fa19b5558ad1cc12caf7a1ee8472547525',
-  'sample-rpg-mmc1': 'bd51f3d6be9e5459754afcf9b5620a794225e57a33339f7c8b4e28de7255021d'
+  'sample-rpg-mmc1': 'e6b2b19ad3c08795364e23b6d13e6dd60d0e98f86c5250334c7a5b7ded44dd12'
 };
 
 for (const name of Object.keys(BASELINES)) {

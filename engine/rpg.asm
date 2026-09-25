@@ -29,19 +29,26 @@ rng_store:
 check_encounter:
   lda <moving
   beq check_encounter_done
-; check_encounter_dispatch/check_encounter_live bracket exactly this guard --
-; Part F's STREAMWORLD_ENCOUNTER_KERNEL_ALLOWANCE measures this span directly
-; off nesasm's own symbol table (kernelbytes.test.js), not by hand.
+  jsr rng_next
+; check_encounter_dispatch/check_encounter_ord bracket exactly the streamed-
+; screen shortcut -- Part F's STREAMWORLD_ENCOUNTER_KERNEL_ALLOWANCE measures
+; this span directly off nesasm's own symbol table (kernelbytes.test.js), not
+; by hand. A streamed screen has no screen_map row of its own; cur_map
+; already holds the owning map's raw index (set at the landing by
+; apply_map_music_direct via sw_resolve_screen, engine/streamworld.asm), so
+; the encounter rate and formation resolve through it directly instead of
+; screen_map[ord_screen]. The ord_screen/flat_screen swap below the bracket
+; costs nothing extra -- the same reasoning STREAMWORLD_MUSIC_KERNEL_
+; ALLOWANCE's own comment documents -- so it and the shared screen_map
+; lookup stay outside this bracket.
 check_encounter_dispatch:
   .if STREAMING_ENABLED
-  ; No random encounters while the field is a streamed screen: Part D
-  ; refuses a nonzero encounter rate reachable on any streamed map, and
-  ; ord_screen is meaningless here regardless (map_is_streamed set).
   lda <map_is_streamed
-  bne check_encounter_done
+  beq check_encounter_ord
+  ldy <cur_map
+  jmp check_encounter_have_map
+check_encounter_ord:
   .endif
-check_encounter_live:
-  jsr rng_next
   .if STREAMING_ENABLED
   ldy <ord_screen
   .else
@@ -49,6 +56,8 @@ check_encounter_live:
   .endif
   lda screen_map,y
   tay
+check_encounter_have_map:
+check_encounter_live:
   lda map_enc_rate,y
   beq check_encounter_done  ; this map has no wandering monsters
   sta <bt_tmp
@@ -87,24 +96,31 @@ touch_encounter:
 start_encounter:
   lda #NO_ENTITY
   sta <bt_from_ent
-  ; Only ever reached via check_encounter's own tail (above), which already
-  ; refuses a streamed current screen -- rekeyed for the same mechanism-(b)
-  ; uniformity as every other consumer, not because this is exercised while
-  ; map_is_streamed is set. start_encounter_dispatch/start_encounter_ord
-  ; bracket exactly this span (Part F's STREAMWORLD_ENCOUNTER_KERNEL_
-  ; ALLOWANCE folds it in beside check_encounter's own dispatch, the brief's
-  ; single "check_encounter/start_encounter" named term) -- both branches
-  ; read a zero-page byte (`<ord_screen`/`<flat_screen`), so this measures
-  ; as 0 extra, the same reasoning apply_map_music's identical pattern
-  ; already established.
+  ; Reachable from a streamed current screen now that Part D's refusal is
+  ; lifted (shared/project.js) -- start_encounter_dispatch/start_encounter_
+  ; ord_screen bracket exactly the streamed-screen shortcut (Part F's
+  ; STREAMWORLD_ENCOUNTER_KERNEL_ALLOWANCE folds it in beside check_encounter's
+  ; own dispatch, the brief's single "check_encounter/start_encounter" named
+  ; term), the same cur_map-instead-of-screen_map[ord_screen] reasoning
+  ; check_encounter's own comment above gives. The ord_screen/flat_screen
+  ; swap that follows costs nothing extra, so it and the shared screen_map
+  ; lookup stay outside this bracket.
 start_encounter_dispatch:
+  .if STREAMING_ENABLED
+  lda <map_is_streamed
+  beq start_encounter_ord_screen
+  lda <cur_map
+  jmp start_encounter_have_map
+start_encounter_ord_screen:
+  .endif
   .if STREAMING_ENABLED
   ldy <ord_screen
   .else
   ldy <flat_screen
   .endif
-start_encounter_ord:
   lda screen_map,y
+start_encounter_have_map:
+start_encounter_ord:
   asl a
   asl a                     ; four formation slots per map
   sta <bt_tmp

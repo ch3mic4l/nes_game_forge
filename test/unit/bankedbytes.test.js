@@ -1127,10 +1127,14 @@ test('a mag-only build assembles byte-identical whether or not magic defence exi
   // every RPG-capable board's own hash the same way BE_RESTORE's +18 and the
   // join-guard's own +5 above already did, unrelated to magic power/defence
   // themselves.
+  // Re-pinned a third time (phase 2 slice 6): battle_finish_live's own
+  // pla/pla (engine/battleturn.asm) is a further +2 uniform bytes, unrelated
+  // to magic power/defence -- see BASE_BATTLE_CODE_BYTES_BY_MAPPER's own
+  // comment (main/build/battletables.js) for what it fixes.
   const HASHES = {
-    1: '7e29c9a1f3cd8e702c1c5d172755c24f54a79fca5315faae842102dfbffee32d', // MMC1
-    4: 'ce04db38e68a75c30a7cb5c54c9de5ab08cbf6bc66bc0a6de3c42c3467f63bd9', // MMC3
-    30: 'aa0a8b318ac4983476dabe4cf7ff7040c3448e8efd3f1f8129caa68eba75a130' // UNROM 512
+    1: 'a6e71f9eac77c1bd2fb7420111ba67540d598bb383ef74815ce89751305acd54', // MMC1
+    4: 'a302ff492d963d57ee7eb2c186fd57dd164043115089837aed6b204a4780fc92', // MMC3
+    30: 'fa2e0b793288de91161d1e5a629aa60a0a92ce85c358892f7c96efa11ed14bcd' // UNROM 512
   };
   for (const mapper of CAPABLE_MAPPERS) {
     const dir = await fsp.mkdtemp(path.join(os.tmpdir(), 'forge-magonly-hash-'));

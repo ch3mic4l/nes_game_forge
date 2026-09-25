@@ -1612,6 +1612,27 @@ battle_finish_check:
   bne battle_finish_check
   jmp player_died
 battle_finish_live:
+  ; battle_tick's own `jsr battle_dispatch` (engine/battle.asm) pushed a return
+  ; address expecting battle_dispatch to come back to it normally (landing on
+  ; `jmp battle_draw_sprites`) -- true for every other bt_phase this dispatch
+  ; chain can reach, all of which end in a plain rts, but not this one: battle_end
+  ; is kernel code, reached directly, and its own eventual rts is the one that
+  ; must consume call_battle's `jsr battle_entry` return (banks.asm's own "the
+  ; restore *is* the return"), not this dispatch's. Discarding it here is what
+  ; keeps that contract -- on ANY project, ordinary or streamed: the orphaned
+  ; return address is numerically inside battle_dispatch, banked code, and by
+  ; the time it could ever be reached again set_screen_ptr has already put the
+  ; FIELD bank back at $8000, so leaving it on the stack means some later rts
+  ; executes whichever bytes the field bank happens to hold at that address --
+  ; not battle_draw_sprites at all. A small fixture where the field and battle
+  ; banks happen to share the same bank can look harmless purely by that
+  ; placement accident (the address still holds real battle code there); it is
+  ; not a property of ordinary screens as such, and a larger project with the
+  ; field and battle code in genuinely different banks crashes on exactly this
+  ; leak with no other change -- the discriminator review-s6-ordinary-large.
+  ; test.mjs (fix round 1) exists to keep proving.
+  pla
+  pla
   jmp battle_end
 battle_finish_wait:
   rts

@@ -563,7 +563,11 @@ test('a project with no items and no Save is byte-identical to the pre-phase-4b 
 // on this items-free, spell-free baseline. Size still unchanged (still
 // 147472): the walk added no new PRG bank, only spare room already inside
 // the existing battle-region bank.
-const PINNED_RPG_BASELINE_HASH = 'f8ba3cd039e5e16823495ef09c03043d524e79c2e4f95e7761e2440868110392';
+// Re-pinned a third time (phase 2 slice 6): battle_finish_live's own
+// pla/pla (engine/battleturn.asm) is a further +2 uniform bytes -- see
+// BASE_BATTLE_CODE_BYTES_BY_MAPPER's own comment (main/build/battletables.js)
+// for what it fixes. Size still unchanged (still 147472).
+const PINNED_RPG_BASELINE_HASH = '32a07172e42a626b54c5c1ade9565e2479ffb974361be8eaf6690444e88948c8';
 const PINNED_RPG_BASELINE_SIZE = 147472;
 
 test('an RPG with no items and no Save is byte-identical to the pre-round-4 master build', async (t) => {

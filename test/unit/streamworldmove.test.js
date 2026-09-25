@@ -25,6 +25,7 @@ import NES from '../../renderer/emulator/core/nes.js';
 import { actionDetail } from '../../renderer/forges/controller/controller.js';
 import { createProject } from '../../shared/project.js';
 import { callRoutine } from '../lib/callroutine.js';
+import { watchPositionJumpGuard } from '../lib/pjgguard.js';
 
 const hasNesasm = spawnSync('nesasm', [], { stdio: 'ignore' }).error?.code !== 'ENOENT';
 // Fix round 1 (phase 2 slice 5): the retained negative-control test reads the real
@@ -486,6 +487,13 @@ async function buildAndBoot(project, { requireStreamed = true } = {}) {
     const nes = new NES({ onFrame: () => {}, emulateSound: false });
     nes.loadROM(bytes);
     const mem = nes.cpu.mem;
+    const symbols = fs.readFileSync(built.symbolPath, 'utf8');
+    // Fix round 3, finding 2: watch from before cold boot even starts, so a caller that goes on
+    // to drive an ordinary sustained-movement/containment/camera workload can call
+    // guard.assertNone(...) over its OWN driven span too, not only the boot settle -- the helper
+    // installs the watcher, the caller (which alone knows whether its own workload is meant to be
+    // ordinary or a deliberate over-budget negative control) decides whether/when to assert.
+    const guard = watchPositionJumpGuard(nes, symbols);
     let frames = 0;
     while ((mem[GAME_STATE] !== ST_GAMEPLAY || (requireStreamed && mem[MAP_IS_STREAMED] !== 1)) && frames < 200) {
       nes.frame();
@@ -500,7 +508,7 @@ async function buildAndBoot(project, { requireStreamed = true } = {}) {
     // ~38 nes.frame() calls; 100 is a generous, deterministic margin past that, cheap next to
     // the hundreds of settle frames other passing tests already spend.
     for (let i = 0; i < 100; i++) nes.frame();
-    return { nes, mem };
+    return { nes, mem, symbols, guard };
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
@@ -528,6 +536,9 @@ async function buildAndBootLanding(project) {
     const nes = new NES({ onFrame: () => {}, emulateSound: false });
     nes.loadROM(bytes);
     const mem = nes.cpu.mem;
+    // Round 2 finding A5: watch the whole landing (not just a settled-afterward workload) --
+    // installing the tracking window at a fresh landing must never itself need the guard's rescue.
+    const guard = watchPositionJumpGuard(nes, fs.readFileSync(built.symbolPath, 'utf8'));
     let firstEnableMem = null;
     // Fix round 2 (review round 2 finding (a)): the rendered PPU content -- nametable tiles and
     // attribute bytes -- is not on `mem` at all (it lives on `nes.ppu`, separate emulated address
@@ -557,7 +568,10 @@ async function buildAndBootLanding(project) {
     nes.frame(); // the first ordinary per-frame tracking call after the landing's own display enable
     const afterFirstTrackingMem = mem.slice();
     for (let i = 0; i < 99; i++) nes.frame();
-    return { nes, mem, firstEnableMem, firstEnablePPU, afterFirstTrackingMem };
+    guard.assertNone('streamed landing (boot or door), through settle');
+    guard.unwatch();
+    const symbols = fs.readFileSync(built.symbolPath, 'utf8');
+    return { nes, mem, firstEnableMem, firstEnablePPU, afterFirstTrackingMem, symbols };
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
@@ -566,7 +580,7 @@ async function buildAndBootLanding(project) {
 test('streamworldmove', { skip: !hasNesasm && 'nesasm not on PATH' }, async (t) => {
   await t.test('X accumulator: held Right steps player_x by the documented 1,2,1,2... cadence', async () => {
     const project = createStreamedProject({});
-    const { nes, mem } = await buildAndBoot(project);
+    const { nes, mem, guard } = await buildAndBoot(project);
     const trace = simulateWalk(SW_SPEED_SUB_X, 6);
     let expected = mem[PLAYER_X];
     nes.buttonDown(1, RIGHT);
@@ -576,11 +590,13 @@ test('streamworldmove', { skip: !hasNesasm && 'nesasm not on PATH' }, async (t) 
       assert.equal(mem[PLAYER_X], expected, `player_x after this tick`);
     }
     nes.buttonUp(1, RIGHT);
+    guard.assertNone('X accumulator, ordinary design-rate workload');
+    guard.unwatch();
   });
 
   await t.test('Y accumulator: held Down steps player_y by the documented 1,2,1,2... cadence', async () => {
     const project = createStreamedProject({});
-    const { nes, mem } = await buildAndBoot(project);
+    const { nes, mem, guard } = await buildAndBoot(project);
     const trace = simulateWalk(SW_SPEED_SUB_Y, 6);
     let expected = mem[PLAYER_Y];
     nes.buttonDown(1, DOWN);
@@ -590,11 +606,13 @@ test('streamworldmove', { skip: !hasNesasm && 'nesasm not on PATH' }, async (t) 
       assert.equal(mem[PLAYER_Y], expected, `player_y after this tick`);
     }
     nes.buttonUp(1, DOWN);
+    guard.assertNone('Y accumulator, ordinary design-rate workload');
+    guard.unwatch();
   });
 
   await t.test('dash is genuinely ignored: cadence is unchanged while dash_on is forced set', async () => {
     const project = createStreamedProject({});
-    const { nes, mem } = await buildAndBoot(project);
+    const { nes, mem, guard } = await buildAndBoot(project);
     const trace = simulateWalk(SW_SPEED_SUB_X, 6);
     let expected = mem[PLAYER_X];
     nes.buttonDown(1, RIGHT);
@@ -605,6 +623,8 @@ test('streamworldmove', { skip: !hasNesasm && 'nesasm not on PATH' }, async (t) 
       assert.equal(mem[PLAYER_X], expected, 'dash_on must not change the per-frame step');
     }
     nes.buttonUp(1, RIGHT);
+    guard.assertNone('dash-ignored, ordinary design-rate workload');
+    guard.unwatch();
   });
 
   // Fix round 1, finding 7: the streamed driver used to return without ever running the ordinary
@@ -615,7 +635,7 @@ test('streamworldmove', { skip: !hasNesasm && 'nesasm not on PATH' }, async (t) 
   // exact documented algorithm (inc timer; at ANIM_RATE, reset and toggle), not just a final value.
   await t.test('walk animation: moving on a streamed map advances anim_timer/toggles anim_frame at the ordinary ANIM_RATE cadence', async () => {
     const project = createStreamedProject({});
-    const { nes, mem } = await buildAndBoot(project);
+    const { nes, mem, guard } = await buildAndBoot(project);
     nes.buttonDown(1, RIGHT);
     let expectedTimer = 0;
     let expectedFrame = 0;
@@ -631,11 +651,13 @@ test('streamworldmove', { skip: !hasNesasm && 'nesasm not on PATH' }, async (t) 
       assert.equal(mem[ANIM_FRAME], expectedFrame, `frame ${i}: anim_frame must toggle exactly on the ANIM_RATE-th frame`);
     }
     nes.buttonUp(1, RIGHT);
+    guard.assertNone('walk animation advances, ordinary design-rate workload');
+    guard.unwatch();
   });
 
   await t.test('walk animation: releasing input resets moving/anim_timer/anim_frame to 0 the following frame', async () => {
     const project = createStreamedProject({});
-    const { nes, mem } = await buildAndBoot(project);
+    const { nes, mem, guard } = await buildAndBoot(project);
     nes.buttonDown(1, RIGHT);
     for (let i = 0; i < 10; i++) nes.frame();
     assert.equal(mem[MOVING], 1, 'precondition: still moving after 10 held frames');
@@ -644,12 +666,14 @@ test('streamworldmove', { skip: !hasNesasm && 'nesasm not on PATH' }, async (t) 
     assert.equal(mem[MOVING], 0, 'moving must clear the frame after the button is released');
     assert.equal(mem[ANIM_TIMER], 0, 'anim_timer must reset to 0 on a released/standing frame, matching update_player_stand');
     assert.equal(mem[ANIM_FRAME], 0, 'anim_frame must reset to 0 on a released/standing frame, matching update_player_stand');
+    guard.assertNone('walk animation release, ordinary design-rate workload');
+    guard.unwatch();
   });
 
   await t.test('walk animation freezes on the crossing frame itself, exactly as the ordinary engine\'s own screen_fresh check in update_player_anim', async () => {
     const project = createStreamedProject({});
     project.project.startX = 235; // close to MAX_X -- crosses within a handful of frames
-    const { nes, mem } = await buildAndBoot(project);
+    const { nes, mem, guard } = await buildAndBoot(project);
     const startCol = mem[SW_COL];
     nes.buttonDown(1, RIGHT);
     let timerBefore = mem[ANIM_TIMER];
@@ -676,11 +700,13 @@ test('streamworldmove', { skip: !hasNesasm && 'nesasm not on PATH' }, async (t) 
     }
     nes.buttonUp(1, RIGHT);
     assert.ok(crossed && resumed, 'must have crossed and then observed the resume frame within 20 frames');
+    guard.assertNone('walk animation freeze on crossing, ordinary design-rate workload');
+    guard.unwatch();
   });
 
   await t.test('axis arbitration: a fresh press on the other axis takes over mid-hold', async () => {
     const project = createStreamedProject({});
-    const { nes, mem } = await buildAndBoot(project);
+    const { nes, mem, guard } = await buildAndBoot(project);
     nes.buttonDown(1, LEFT);
     nes.frame();
     nes.frame();
@@ -696,11 +722,13 @@ test('streamworldmove', { skip: !hasNesasm && 'nesasm not on PATH' }, async (t) 
     assert.equal(mem[PLAYER_X], xAfterLeft, 'player_x must stay put while Y owns the accumulator');
     nes.buttonUp(1, LEFT);
     nes.buttonUp(1, UP);
+    guard.assertNone('axis arbitration (fresh press mid-hold), ordinary design-rate workload');
+    guard.unwatch();
   });
 
   await t.test('axis arbitration: a simultaneous fresh press of both axes has X win the tie', async () => {
     const project = createStreamedProject({});
-    const { nes, mem } = await buildAndBoot(project);
+    const { nes, mem, guard } = await buildAndBoot(project);
     const yBefore = mem[PLAYER_Y];
     const xBefore = mem[PLAYER_X];
     nes.buttonDown(1, LEFT);
@@ -711,12 +739,14 @@ test('streamworldmove', { skip: !hasNesasm && 'nesasm not on PATH' }, async (t) 
     assert.equal(mem[PLAYER_Y], yBefore, 'Y must not move on the tie-broken frame');
     nes.buttonUp(1, LEFT);
     nes.buttonUp(1, UP);
+    guard.assertNone('axis arbitration (simultaneous tie), ordinary design-rate workload');
+    guard.unwatch();
   });
 
   await t.test('crossing right: sw_col increments, player_x wraps to 0, the window keeps pace', async () => {
     const project = createStreamedProject({});
     project.project.startX = 235; // close to MAX_X=240 -- crosses within a handful of frames
-    const { nes, mem } = await buildAndBoot(project);
+    const { nes, mem, guard } = await buildAndBoot(project);
     const startCol = mem[SW_COL];
     nes.buttonDown(1, RIGHT);
     let crossed = false;
@@ -728,11 +758,13 @@ test('streamworldmove', { skip: !hasNesasm && 'nesasm not on PATH' }, async (t) 
     assert.ok(crossed, 'sw_col must have incremented within 20 frames of holding Right from x=235');
     assert.equal(mem[SW_COL], startCol + 1, 'sw_col must advance by exactly one screen');
     assert.ok(mem[PLAYER_X] < MAX_X, 'player_x must have wrapped to the new screen\'s left edge, not kept climbing past MAX_X');
+    guard.assertNone('crossing right, ordinary design-rate workload');
+    guard.unwatch();
   });
 
   await t.test('camera publish: cam_x_lo/cam_nt match the documented clamp formula while walking, unclamped', async () => {
     const project = createStreamedProject({});
-    const { nes, mem } = await buildAndBoot(project);
+    const { nes, mem, guard } = await buildAndBoot(project);
     const startX = mem[PLAYER_X]; // 120 (createProject's own default) -- camPx = worldX-120 = 0 at rest
     const frames = 8;
     const trace = simulateWalk(SW_SPEED_SUB_X, frames);
@@ -745,11 +777,13 @@ test('streamworldmove', { skip: !hasNesasm && 'nesasm not on PATH' }, async (t) 
     // (not clamped -- grid is 3 screens wide, ceiling is (3-1)*256=512, well above cumulative).
     assert.equal(mem[CAM_X_LO], cumulative & 0xff, 'cam_x_lo must equal camPx\'s own low byte');
     assert.equal(mem[CAM_NT] & 1, (cumulative >> 8) & 1, 'cam_nt bit0 must equal camPx\'s own bit 8 (screenCol parity)');
+    guard.assertNone('camera publish, ordinary design-rate workload');
+    guard.unwatch();
   });
 
   await t.test('window arm: win_col_local tracks the player leaving the margin, st_active drains back to 0', async () => {
     const project = createStreamedProject({});
-    const { nes, mem } = await buildAndBoot(project);
+    const { nes, mem, guard } = await buildAndBoot(project);
     const startLocal = mem[WIN_COL_LOCAL];
     const startScreen = mem[WIN_COL_SCREEN];
     nes.buttonDown(1, RIGHT);
@@ -769,6 +803,8 @@ test('streamworldmove', { skip: !hasNesasm && 'nesasm not on PATH' }, async (t) 
     for (let i = 0; i < 30 && mem[ST_ACTIVE] !== 0; i++) nes.frame();
     assert.equal(mem[ST_ACTIVE], 0, 'a strip armed by ordinary walking must finish draining, not corrupt/stall');
     nes.buttonUp(1, RIGHT);
+    guard.assertNone('window arm, ordinary design-rate workload');
+    guard.unwatch();
   });
 
   // Phase 2 slice 5's own accepted-hypothesis knockback pacing (16 frames at an average
@@ -858,6 +894,9 @@ test('streamworldmove', { skip: !hasNesasm && 'nesasm not on PATH' }, async (t) 
   test('phase 2 slice 5: streamed knockback (16 frames, 1.5px/frame average, distinct state)', { skip: !hasNesasm && 'nesasm not on PATH' }, async (t) => {
     // -------------------------------------------------- test 1: the gate itself
     await t.test('the streamed knockback gate fires on an all-streamed project and on a mixed one; the ordinary map in a mixed project keeps the ordinary 8-frame/3px gate', async () => {
+      // Opt-out (fix round 4, item 3), all 3 sub-cases below: synthetic direct-call routine probes
+      // (triggerFloorHit's own one-shot callRoutine dispatch into hurt_player), no further
+      // nes.frame() loop -- buildAndBootWithSymbols's own returned guard is unused, per its header.
       // (a) all-streamed
       {
         const project = createStreamedProject({});
@@ -887,6 +926,8 @@ test('streamworldmove', { skip: !hasNesasm && 'nesasm not on PATH' }, async (t) 
       }
       // (c) mixed, landed on the DEFAULT start -- the ordinary "Before" map (map index 0,
       // createStreamedProject's own default startMap)
+      // Opt-out (fix round 4, item 3): a synthetic direct-call routine probe (triggerFloorHit's own
+      // one-shot callRoutine dispatch) with no further nes.frame() loop, so no guard is installed.
       {
         const project = createStreamedProject({ mixed: true });
         const d = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-streamworldmove-'));
@@ -939,7 +980,11 @@ test('streamworldmove', { skip: !hasNesasm && 'nesasm not on PATH' }, async (t) 
       const phases = [0, 64, 128, 192];
       for (const [dirName, dirConst] of directions) {
         for (const phase of phases) {
-          const { nes, mem } = await buildAndBoot(project);
+          const { nes, mem, symbols } = await buildAndBoot(project);
+          // Round 2 finding A5: the shared guard hook, wired directly into this ordinary
+          // (design-rate) workload, not only into the dedicated "stays silent" duplicate test --
+          // a real violation reached only through this matrix's own case shapes must be caught here.
+          const guard = watchPositionJumpGuard(nes, symbols);
           const assertContained = makeContainmentChecker(mem, { gridW, gridH });
           checkAndTally(assertContained, 'idle-matrix', mem, `${dirName} phase ${phase}: landing`);
           mem[KB_DIR] = dirConst;
@@ -956,6 +1001,8 @@ test('streamworldmove', { skip: !hasNesasm && 'nesasm not on PATH' }, async (t) 
             nes.frame();
             checkAndTally(assertContained, 'idle-matrix', mem, `${dirName} phase ${phase}: post-knockback settle frame ${i}`);
           }
+          guard.assertNone(`idle-matrix ${dirName} phase ${phase}, ordinary design-rate workload`);
+          guard.unwatch();
         }
       }
     });
@@ -1003,7 +1050,8 @@ test('streamworldmove', { skip: !hasNesasm && 'nesasm not on PATH' }, async (t) 
           {
             const project = createStreamedProject({ gridW, gridH });
             project.project.startScreen = 12;
-            const { nes, mem } = await buildAndBoot(project);
+            const { nes, mem, symbols } = await buildAndBoot(project);
+            const guard = watchPositionJumpGuard(nes, symbols);
             const assertContained = makeContainmentChecker(mem, { gridW, gridH });
             const armFrames = approachUntilAxis(nes, mem, approachDirName, sameAxis);
             assert.ok(armFrames < 200, `${dirName} phase ${phase} same-axis: the ${approachDirName} approach must actually arm axis ${sameAxis} within 200 frames`);
@@ -1021,6 +1069,8 @@ test('streamworldmove', { skip: !hasNesasm && 'nesasm not on PATH' }, async (t) 
               nes.frame();
               checkAndTally(assertContained, 'in-flight-same-axis', mem, `${dirName} phase ${phase} same-axis: post-knockback settle frame ${i}`);
             }
+            guard.assertNone(`in-flight-same-axis ${dirName} phase ${phase}, ordinary design-rate workload`);
+            guard.unwatch();
           }
 
           // orthogonal-axis sub-case: the real strip in flight is on the OTHER axis from the
@@ -1028,7 +1078,8 @@ test('streamworldmove', { skip: !hasNesasm && 'nesasm not on PATH' }, async (t) 
           {
             const project = createStreamedProject({ gridW, gridH });
             project.project.startScreen = 12;
-            const { nes, mem } = await buildAndBoot(project);
+            const { nes, mem, symbols } = await buildAndBoot(project);
+            const guard = watchPositionJumpGuard(nes, symbols);
             const assertContained = makeContainmentChecker(mem, { gridW, gridH });
             const orthogonalApproachDirName = ORTHOGONAL_APPROACH[dirName];
             const armFrames = approachUntilAxis(nes, mem, orthogonalApproachDirName, orthogonalAxis);
@@ -1047,81 +1098,157 @@ test('streamworldmove', { skip: !hasNesasm && 'nesasm not on PATH' }, async (t) 
               nes.frame();
               checkAndTally(assertContained, 'in-flight-orthogonal-axis', mem, `${dirName} phase ${phase} orthogonal-axis: post-knockback settle frame ${i}`);
             }
+            guard.assertNone(`in-flight-orthogonal-axis ${dirName} phase ${phase}, ordinary design-rate workload`);
+            guard.unwatch();
           }
         }
       }
     });
 
-    // -------------------------------------------------- retained negative control (finding 1): a
-    // flat, faster-than-design knockback rate must fail CONTAINMENT specifically on this in-flight
-    // matrix, not merely a displacement/speed assertion -- this test only ever runs the containment
-    // checker (never predictKnockbackStep's own displacement oracle), so the only assertion capable
-    // of firing here is the containment check's own OOB failure. Bisected (this fix round's own
-    // scratch probes): rate 9px/frame is the smallest flat rate that fails containment on THIS single
-    // case (a RIGHT knockback against a column strip armed by a RIGHT approach) -- one unit tighter
-    // than the prior round's own rate-10 failure on the OLD idle-strip-only matrix, direct evidence
-    // the augmented matrix is strictly the stronger check the review demanded. Round 2 finding (b):
-    // this single case's own threshold (9) is a different number from the full 32-case matrix's own
-    // threshold -- the full matrix first fails at a flat rate 8 (on its own more sensitive RIGHT,
-    // phase 64, same-axis-reversing case, exercised for real just above), and passes rates 3-7. Rates
-    // 3-7 pass this single case too. A dedicated rate-8 control on that more sensitive case is right
-    // below.
-    await t.test('negative control: a faster-than-design flat knockback rate fails CONTAINMENT on the in-flight matrix, not merely displacement', async () => {
+    // -------------------------------------------------- superseded by phase 2 slice 6's position-
+    // jump guard: these two cases were retained negative controls through slice 5 (a flat,
+    // faster-than-design knockback rate reliably overran the completed-content window and failed
+    // containment, proving the checker's own sensitivity -- see git history for the pre-slice-6
+    // text). Slice 6 adds sw_pjg_check/sw_position_jump_guard (engine/streamworld.asm, called from
+    // sw_frame_camera_window right after sw_camera_window_recompute): once the window's own lag
+    // behind its desired origin reaches 6 blocks on either axis, it forces blank, snaps the window
+    // directly to the desired origin with a full sw_render_window redraw, and holds camera/OAM
+    // publication through that resync -- exactly the obligation-3 mechanism
+    // docs/design-streamed-worlds.md's "position-jump guard" section describes. A scratch probe
+    // (handoff-next/ for phase 2 slice 6) traced win_col_screen/local block-for-block through both
+    // these exact rate-8/9 bursts: with the slice-5 engine (git-stashed to confirm), lag climbs
+    // past 6 and the window sticks, exactly the old failure; with slice 6's engine, lag reaches
+    // exactly 5 the frame before it would hit 6, then the NEXT frame reads back lag 0 -- the guard
+    // firing mid-frame, before either containment check below ever sees an uncorrected sample. These
+    // two rates are consequently no longer negative controls (the defect they exercised is closed);
+    // they are now positive regression proof that the guard reaches this exact real-world scenario,
+    // not merely the synthetic direct-call case the dedicated obligation-3 test below covers.
+    await t.test('phase 2 slice 6: the position-jump guard closes the former negative control -- a faster-than-design flat knockback rate no longer breaks containment', async () => {
       const gridW = 5, gridH = 5;
       const rate = 9;
       const project = createStreamedProject({ gridW, gridH });
       project.project.startScreen = 12;
       fasterKnockbackOverride(project, rate);
-      const { nes, mem } = await buildAndBoot(project);
+      const { nes, mem, symbols } = await buildAndBoot(project);
       const assertContained = makeContainmentChecker(mem, { gridW, gridH });
+      // Fix round 1, finding 5: this rate is retained as a POSITIVE guard test (see the header
+      // comment above) -- it must show the guard actually firing, not merely that containment
+      // happens to hold; a mutation that made the guard a no-op but coincidentally left
+      // containment intact some other way would otherwise slip through silently.
+      const guard = watchPositionJumpGuard(nes, symbols);
       const armFrames = approachUntilAxis(nes, mem, 'right', 1);
-      assert.ok(armFrames < 200, 'negative control: the approach must still arm the column strip within 200 frames');
-      assert.equal(mem[ST_ACTIVE], 1, 'negative control: precondition -- a real strip must be in flight before the sabotaged burst');
+      assert.ok(armFrames < 200, 'the approach must still arm the column strip within 200 frames');
+      assert.equal(mem[ST_ACTIVE], 1, 'precondition -- a real strip must be in flight before the burst');
       mem[KB_DIR] = DIR_RIGHT;
       mem[SW_KB_TIMER] = SW_KB_TIME;
-      assert.throws(
-        () => {
-          for (let i = 0; i < SW_KB_TIME; i++) {
-            nes.frame();
-            assertContained(`negative control rate ${rate}: knockback frame ${i}`);
-          }
-        },
-        /must be contained in the completed-content/,
-        `a flat ${rate}px/frame knockback must overrun the completed-content window and fail the containment check's own range assertion, not some other unrelated failure`
-      );
+      for (let i = 0; i < SW_KB_TIME; i++) {
+        nes.frame();
+        assertContained(`rate ${rate}: knockback frame ${i}`);
+      }
+      for (let i = 0; i < 20; i++) {
+        nes.frame();
+        assertContained(`rate ${rate}: post-knockback settle frame ${i}`);
+      }
+      assert.ok(guard.count() > 0, `rate ${rate}: the position-jump guard should have fired at least once -- this rate exists to prove containment survives BECAUSE the guard catches it, not merely that it survives`);
+      // Round 2 finding A5: this over-speed rate must fail the SAME ordinary-workload assertion
+      // (guard.assertNone) the design-rate tests above rely on -- proving that assertion is a real
+      // negative control here, not merely an assertion nothing in this suite ever exercises.
+      assert.throws(() => guard.assertNone(`rate ${rate}`), /sw_position_jump_guard fired/,
+        `rate ${rate}: the ordinary-workload guard.assertNone oracle must fail on this deliberately over-speed rate`);
+      guard.unwatch();
     });
 
-    // -------------------------------------------------- retained negative control (round 2 finding
-    // (b)): the full matrix's own more sensitive case -- a LEFT approach arms the column strip, then
-    // a RIGHT knockback at starting phase 64 reverses back across it (the "same-axis reversing"
-    // sub-case, phaseIndex 1, of the augmented matrix above) -- fails containment at a flat 8px/frame,
-    // one unit below the single-case RIGHT/column control just above, which only fails at 9. This is
-    // the exact case the full-matrix run at rate 8 fails first (review-s5-round2-evidence/rate8.log:
-    // "right phase 64 same-axis (reversing): knockback frame 14").
-    await t.test('negative control: the full matrix\'s more sensitive reversing case fails containment at rate 8, one unit below the single-case control', async () => {
+    await t.test('phase 2 slice 6: the position-jump guard closes the former negative control -- the full matrix\'s more sensitive reversing case at rate 8 no longer breaks containment', async () => {
       const gridW = 5, gridH = 5;
       const rate = 8;
       const project = createStreamedProject({ gridW, gridH });
       project.project.startScreen = 12;
       fasterKnockbackOverride(project, rate);
-      const { nes, mem } = await buildAndBoot(project);
+      const { nes, mem, symbols } = await buildAndBoot(project);
       const assertContained = makeContainmentChecker(mem, { gridW, gridH });
+      const guard = watchPositionJumpGuard(nes, symbols);
       const armFrames = approachUntilAxis(nes, mem, 'left', 1);
-      assert.ok(armFrames < 200, 'negative control rate 8: the left approach must still arm the column strip within 200 frames');
-      assert.equal(mem[ST_ACTIVE], 1, 'negative control rate 8: precondition -- a real strip must be in flight before the sabotaged burst');
+      assert.ok(armFrames < 200, 'the left approach must still arm the column strip within 200 frames');
+      assert.equal(mem[ST_ACTIVE], 1, 'precondition -- a real strip must be in flight before the burst');
       mem[KB_DIR] = DIR_RIGHT;
       mem[SW_KB_ACC] = 64;
       mem[SW_KB_TIMER] = SW_KB_TIME;
-      assert.throws(
-        () => {
-          for (let i = 0; i < SW_KB_TIME; i++) {
-            nes.frame();
-            assertContained(`negative control rate ${rate} (RIGHT phase 64 reversing): knockback frame ${i}`);
+      for (let i = 0; i < SW_KB_TIME; i++) {
+        nes.frame();
+        assertContained(`rate ${rate} (RIGHT phase 64 reversing): knockback frame ${i}`);
+      }
+      for (let i = 0; i < 20; i++) {
+        nes.frame();
+        assertContained(`rate ${rate} (RIGHT phase 64 reversing): post-knockback settle frame ${i}`);
+      }
+      assert.ok(guard.count() > 0, `rate ${rate} (RIGHT phase 64 reversing): the position-jump guard should have fired at least once`);
+      assert.throws(() => guard.assertNone(`rate ${rate} (RIGHT phase 64 reversing)`), /sw_position_jump_guard fired/,
+        `rate ${rate} (RIGHT phase 64 reversing): the ordinary-workload guard.assertNone oracle must fail on this deliberately over-speed rate`);
+      guard.unwatch();
+    });
+
+    // -------------------------------------------------- fix round 1, finding 5: a shared test-side
+    // PC hook at sw_position_jump_guard (test/lib/pjgguard.js), proving the converse of the two
+    // rate-8/9 tests just above -- ORDINARY movement/strip/knockback, at the design's own real
+    // rate (fasterKnockbackOverride never applied), never needs the guard's rescue at all. The two
+    // rate-9/rate-8 tests above stayed useful as positive guard-reaches-this-scenario evidence
+    // (their own header explains why), but neither one -- nor the containment-only matrices around
+    // them -- had ever asserted that ordinary play stays clear of the guard; a coder mistake that
+    // silently widened the guard's own trip threshold, or slowed ordinary tracking enough to
+    // graze it, could have passed every existing containment assertion while still routing
+    // ordinary play through a mechanism meant only for the rescue case.
+    await t.test('phase 2 slice 6 fix round 1, finding 5: the position-jump guard stays silent through ordinary movement, strip and knockback, at the design\'s own rate', async () => {
+      // Idle-strip case: all four directions, all four starting phases, no approach -- the same
+      // scenario shape as the idle-matrix test above, at the un-sped-up design rate.
+      {
+        const project = createStreamedProject({});
+        const { gridW, gridH } = { gridW: 3, gridH: 2 };
+        const directions = [['up', DIR_UP], ['down', DIR_DOWN], ['left', DIR_LEFT], ['right', DIR_RIGHT]];
+        const phases = [0, 64, 128, 192];
+        for (const [dirName, dirConst] of directions) {
+          for (const phase of phases) {
+            const { nes, mem, symbols } = await buildAndBoot(project);
+            const guard = watchPositionJumpGuard(nes, symbols);
+            mem[KB_DIR] = dirConst;
+            mem[SW_KB_ACC] = phase;
+            mem[SW_KB_TIMER] = SW_KB_TIME;
+            for (let i = 0; i < SW_KB_TIME; i++) nes.frame();
+            for (let i = 0; i < 20; i++) nes.frame();
+            guard.assertNone(`idle-strip, ${dirName} phase ${phase}, design rate`);
+            guard.unwatch();
           }
-        },
-        /must be contained in the completed-content/,
-        `a flat ${rate}px/frame knockback on the full matrix's own more sensitive reversing case must overrun the completed-content window and fail the containment check's own range assertion, not some other unrelated failure`
-      );
+        }
+      }
+      // In-flight-strip case: a real approach arms the column strip (5x5 grid, centre landing,
+      // matching the rate-8/9 tests' own setup), then a design-rate knockback burst runs with that
+      // strip genuinely in flight.
+      {
+        const gridW = 5, gridH = 5;
+        const project = createStreamedProject({ gridW, gridH });
+        project.project.startScreen = 12;
+        const { nes, mem, symbols } = await buildAndBoot(project);
+        const guard = watchPositionJumpGuard(nes, symbols);
+        const armFrames = approachUntilAxis(nes, mem, 'right', 1);
+        assert.ok(armFrames < 200, 'the approach must still arm the column strip within 200 frames');
+        assert.equal(mem[ST_ACTIVE], 1, 'precondition -- a real strip must be in flight before the burst');
+        mem[KB_DIR] = DIR_RIGHT;
+        mem[SW_KB_TIMER] = SW_KB_TIME;
+        for (let i = 0; i < SW_KB_TIME; i++) nes.frame();
+        for (let i = 0; i < 20; i++) nes.frame();
+        guard.assertNone('in-flight strip, design rate');
+        guard.unwatch();
+      }
+      // Landing case: the guard must also stay silent across a fresh streamed landing and its own
+      // first tracking frames -- the same shape buildAndBoot itself exercises on every call above,
+      // watched explicitly here so a landing-specific regression cannot hide behind the burst cases.
+      {
+        const project = createStreamedProject({});
+        const { nes, symbols } = await buildAndBoot(project);
+        const guard = watchPositionJumpGuard(nes, symbols);
+        for (let i = 0; i < 60; i++) nes.frame();
+        guard.assertNone('post-landing settle, design rate');
+        guard.unwatch();
+      }
     });
 
     // -------------------------------------------------- ownership-boundary crossing, both axes
@@ -1139,7 +1266,8 @@ test('streamworldmove', { skip: !hasNesasm && 'nesasm not on PATH' }, async (t) 
         project.project.startScreen = startScreen;
         project.project.startX = startX;
         project.project.startY = startY;
-        const { nes, mem } = await buildAndBoot(project);
+        const { nes, mem, symbols } = await buildAndBoot(project);
+        const guard = watchPositionJumpGuard(nes, symbols);
         const assertContained = makeContainmentChecker(mem, { gridW: 3, gridH: 2 });
         assertContained(`crossing ${dirName}: landing`);
         const startSwCol = mem[SW_COL];
@@ -1157,6 +1285,8 @@ test('streamworldmove', { skip: !hasNesasm && 'nesasm not on PATH' }, async (t) 
           nes.frame();
           assertContained(`crossing ${dirName}: post-knockback settle frame ${i}`);
         }
+        guard.assertNone(`crossing ${dirName}, ordinary design-rate workload`);
+        guard.unwatch();
       }
     });
 
@@ -1180,7 +1310,8 @@ test('streamworldmove', { skip: !hasNesasm && 'nesasm not on PATH' }, async (t) 
         project.project.startScreen = 12;
         if (startX != null) project.project.startX = startX;
         if (startY != null) project.project.startY = startY;
-        const { nes, mem } = await buildAndBoot(project);
+        const { nes, mem, symbols } = await buildAndBoot(project);
+        const guard = watchPositionJumpGuard(nes, symbols);
         const assertContained = makeContainmentChecker(mem, { gridW, gridH });
         const startSwCol = mem[SW_COL];
         const startSwRow = mem[SW_ROW];
@@ -1206,6 +1337,8 @@ test('streamworldmove', { skip: !hasNesasm && 'nesasm not on PATH' }, async (t) 
           nes.frame();
           checkAndTally(assertContained, 'crossing-with-strip', mem, `crossing+strip ${dirName}: post-knockback settle frame ${i}`);
         }
+        guard.assertNone(`crossing+strip ${dirName}, ordinary design-rate workload`);
+        guard.unwatch();
       }
     });
 
@@ -1229,7 +1362,8 @@ test('streamworldmove', { skip: !hasNesasm && 'nesasm not on PATH' }, async (t) 
         project.project.startScreen = startScreen;
         project.project.startX = startX;
         project.project.startY = startY;
-        const { nes, mem } = await buildAndBoot(project);
+        const { nes, mem, symbols } = await buildAndBoot(project);
+        const guard = watchPositionJumpGuard(nes, symbols);
         const assertContained = makeContainmentChecker(mem, { gridW: 3, gridH: 2 });
         assertContained(`edge ${dirName}: landing`);
         mem[KB_DIR] = dirConst;
@@ -1242,6 +1376,8 @@ test('streamworldmove', { skip: !hasNesasm && 'nesasm not on PATH' }, async (t) 
           nes.frame();
           assertContained(`edge ${dirName}: post-knockback settle frame ${i}`);
         }
+        guard.assertNone(`edge ${dirName}, ordinary design-rate workload`);
+        guard.unwatch();
       }
     });
 
@@ -1266,7 +1402,8 @@ test('streamworldmove', { skip: !hasNesasm && 'nesasm not on PATH' }, async (t) 
         project.project.startScreen = startScreen;
         project.project.startX = startX;
         project.project.startY = startY;
-        const { nes, mem } = await buildAndBoot(project);
+        const { nes, mem, symbols } = await buildAndBoot(project);
+        const guard = watchPositionJumpGuard(nes, symbols);
         const assertContained = makeContainmentChecker(mem, { gridW, gridH });
         assert.equal(mem[edgeAddr], edgeValue, `edge+strip ${dirName}: precondition -- the landing must genuinely sit on the clamped map edge`);
         nes.buttonDown(1, approachButton);
@@ -1288,6 +1425,8 @@ test('streamworldmove', { skip: !hasNesasm && 'nesasm not on PATH' }, async (t) 
           nes.frame();
           checkAndTally(assertContained, 'edge-with-strip', mem, `edge+strip ${dirName}: post-knockback settle frame ${i}`);
         }
+        guard.assertNone(`edge+strip ${dirName}, ordinary design-rate workload`);
+        guard.unwatch();
       }
     });
 
@@ -1317,7 +1456,7 @@ test('streamworldmove', { skip: !hasNesasm && 'nesasm not on PATH' }, async (t) 
       for (const [dirName, dirConst, axisField] of directions) {
         for (const phase of phases) {
           const project = createStreamedProject({});
-          const { nes, mem } = await buildAndBoot(project);
+          const { nes, mem, guard } = await buildAndBoot(project);
           let model = { playerX: mem[PLAYER_X], playerY: mem[PLAYER_Y], acc: phase, swCol: mem[SW_COL], swRow: mem[SW_ROW] };
           const startAxis = model[axisField];
           mem[KB_DIR] = dirConst;
@@ -1345,6 +1484,8 @@ test('streamworldmove', { skip: !hasNesasm && 'nesasm not on PATH' }, async (t) 
               : model.swRow * 240 + model.playerY - startAxis;
           const signedExpected = dirName === 'right' || dirName === 'down' ? expectedTotal : -expectedTotal;
           assert.equal(netWorld, signedExpected, `${dirName} phase ${phase}: net world-space displacement over the burst must exactly match the independently summed walkStep trace from starting phase ${phase} (${expectedTotal}px), not a partial or over-shot amount`);
+          guard.assertNone(`knockback oracle ${dirName} phase ${phase}, ordinary design-rate workload`);
+          guard.unwatch();
         }
       }
     });
@@ -1358,6 +1499,8 @@ test('streamworldmove', { skip: !hasNesasm && 'nesasm not on PATH' }, async (t) 
     // PC. Kept alongside (not replaced by) the real, frame-driven end-to-end test below: this one
     // isolates the repeat-hit rule itself across all 4 directions cheaply; that one proves the same
     // rule holds through a real contact, a real oracle-matched burst and a real natural expiry.
+    // Opt-out (fix round 4, item 3): a synthetic direct-call routine probe, per the above -- no
+    // nes.frame() loop, so buildAndBootWithSymbols's own returned guard is unused here.
     await t.test('a repeated hit obeys IFRAME_TIME: no effect while invulnerable, a fresh non-compounding burst once it has elapsed', async () => {
       const directions = [DIR_RIGHT, DIR_LEFT, DIR_DOWN, DIR_UP];
       for (const dirConst of directions) {
@@ -1422,7 +1565,7 @@ test('streamworldmove', { skip: !hasNesasm && 'nesasm not on PATH' }, async (t) 
       screen.entities = screen.entities ?? [];
       screen.entities.push({ actorId: aid, x: npcPos.x, y: npcPos.y, props: {} });
       if (engineOverride) engineOverride(project);
-      const { nes, mem } = await buildAndBoot(project);
+      const { nes, mem, guard } = await buildAndBoot(project);
       const assertContained = makeContainmentChecker(mem, { gridW, gridH });
       const button = DIR_BUTTON[dirName];
       const oppositeButton = DIR_BUTTON[DIR_INVERSE[dirName]];
@@ -1501,6 +1644,8 @@ test('streamworldmove', { skip: !hasNesasm && 'nesasm not on PATH' }, async (t) 
         assert.equal(mem[PLAYER_IFRAMES], 0, `${dirName} hit ${hit}: invulnerability must reach exactly 0 via real per-frame decrement, never poked`);
       }
       assert.equal(mem[PLAYER_HP], hp0 - 2, `${dirName}: two real, separated contacts must take exactly two hearts total, non-compounding`);
+      guard.assertNone(`real hit path ${dirName}, ordinary design-rate workload`);
+      guard.unwatch();
     }
 
     await t.test('the real hit path, end-to-end, frame-driven only: natural contact, oracle-matched burst, blocked repeat, natural expiry, fresh non-compounding second hit', async () => {
@@ -1548,7 +1693,7 @@ test('streamworldmove', { skip: !hasNesasm && 'nesasm not on PATH' }, async (t) 
           event: { pages: [{ cond: { type: 'none', arg: 0 }, commands: [{ op: 'flash' }, { op: 'shake', frames: 20 }] }] }
         }
       });
-      const { nes, mem } = await buildAndBoot(project);
+      const { nes, mem, guard } = await buildAndBoot(project);
       const assertContained = makeContainmentChecker(mem, { gridW, gridH });
       assertContained('landing');
 
@@ -1594,6 +1739,8 @@ test('streamworldmove', { skip: !hasNesasm && 'nesasm not on PATH' }, async (t) 
         assert.notEqual(hit.stActive, 0, `a captured hit must co-occur with a real strip in flight: ${JSON.stringify(hit)}`);
         assert.notEqual(hit.swKbTimer, 0, `a captured hit must co-occur with a real knockback burst in flight: ${JSON.stringify(hit)}`);
       }
+      guard.assertNone('Flash+strip+knockback co-occurrence, ordinary design-rate workload');
+      guard.unwatch();
       fs.mkdirSync(path.join(ROOT, 'handoff-next', 'fix1-evidence'), { recursive: true });
       fs.writeFileSync(path.join(ROOT, 'handoff-next', 'fix1-evidence', 'flash-strip-hits.json'), JSON.stringify(hits, null, 2));
     });
@@ -1602,7 +1749,7 @@ test('streamworldmove', { skip: !hasNesasm && 'nesasm not on PATH' }, async (t) 
     // knockback step is never the ordinary uncapped KNOCKBACK_SPEED (3px/frame)
     await t.test('regression gate: a streamed knockback never steps 3px in a single frame (the ordinary uncapped KNOCKBACK_SPEED)', async () => {
       const project = createStreamedProject({});
-      const { nes, mem } = await buildAndBoot(project);
+      const { nes, mem, guard } = await buildAndBoot(project);
       mem[KB_DIR] = DIR_RIGHT;
       mem[SW_KB_ACC] = 0;
       mem[SW_KB_TIMER] = SW_KB_TIME;
@@ -1616,6 +1763,8 @@ test('streamworldmove', { skip: !hasNesasm && 'nesasm not on PATH' }, async (t) 
         prevX = mem[PLAYER_X];
       }
       assert.equal(total, 24, 'total displacement over the burst must be exactly 24px (16 frames averaging 1.5px/frame)');
+      guard.assertNone('regression gate (knockback speed cap), ordinary design-rate workload');
+      guard.unwatch();
     });
 
     // -------------------------------------------------- test 7: distinct state
@@ -1626,7 +1775,7 @@ test('streamworldmove', { skip: !hasNesasm && 'nesasm not on PATH' }, async (t) 
       // is reached directly, not through sw_walk_step_x/y).
       {
         const project = createStreamedProject({});
-        const { nes, mem } = await buildAndBoot(project);
+        const { nes, mem, guard } = await buildAndBoot(project);
         mem[KB_DIR] = DIR_RIGHT;
         mem[SW_KB_TIMER] = SW_KB_TIME;
         for (let i = 0; i < SW_KB_TIME; i++) {
@@ -1635,13 +1784,15 @@ test('streamworldmove', { skip: !hasNesasm && 'nesasm not on PATH' }, async (t) 
           assert.equal(mem[SW_WALK_ACC_X], 0, `frame ${i}: sw_walk_acc_x must stay untouched by a streamed knockback`);
           assert.equal(mem[SW_WALK_ACC_Y], 0, `frame ${i}: sw_walk_acc_y must stay untouched by a streamed knockback`);
         }
+        guard.assertNone('distinct-state (a) streamed knockback, ordinary design-rate workload');
+        guard.unwatch();
       }
       // (b) ordinary (non-streamed) knockback is completely unchanged: KNOCKBACK_TIME(8) frames
       // at KNOCKBACK_SPEED(3) px/frame, 24px total, using kb_timer/kb_dir -- and it must never
       // touch sw_kb_timer/sw_kb_acc, which mean nothing on an ordinary map.
       {
         const project = createStreamedProject({ mixed: true }); // default start: the ordinary "Before" map
-        const { nes, mem } = await buildAndBoot(project, { requireStreamed: false });
+        const { nes, mem, guard } = await buildAndBoot(project, { requireStreamed: false });
         assert.equal(mem[MAP_IS_STREAMED], 0, 'precondition: landed on the ordinary map');
         mem[KB_DIR] = DIR_RIGHT;
         mem[KB_TIMER] = KNOCKBACK_TIME_CONST;
@@ -1657,13 +1808,15 @@ test('streamworldmove', { skip: !hasNesasm && 'nesasm not on PATH' }, async (t) 
         }
         assert.equal(total, 24, 'ordinary knockback must still total exactly 24px over its own unchanged 8 frames');
         assert.equal(mem[KB_TIMER], 0, 'kb_timer must have counted all the way down');
+        guard.assertNone('distinct-state (b) ordinary-map knockback, ordinary design-rate workload');
+        guard.unwatch();
       }
       // (c) ordinary walking speed (both game surfaces) is unaffected -- sw_walk_acc_x's own
       // documented cadence (SW_SPEED_SUB_X=128, the same 1/2px alternation the walking tests
       // above already pin) is untouched by anything in this file.
       {
         const project = createStreamedProject({});
-        const { nes, mem } = await buildAndBoot(project);
+        const { nes, mem, guard } = await buildAndBoot(project);
         const startX = mem[PLAYER_X];
         const frames = 8;
         const trace = simulateWalk(SW_SPEED_SUB_X, frames);
@@ -1672,6 +1825,8 @@ test('streamworldmove', { skip: !hasNesasm && 'nesasm not on PATH' }, async (t) 
         for (let i = 0; i < frames; i++) nes.frame();
         nes.buttonUp(1, RIGHT);
         assert.equal(mem[PLAYER_X], startX + cumulative, 'ordinary walking speed/cadence on a streamed map must be exactly what it always was');
+        guard.assertNone('distinct-state (c) ordinary walking speed, ordinary design-rate workload');
+        guard.unwatch();
       }
     });
 
@@ -1704,7 +1859,7 @@ test('streamworldmove', { skip: !hasNesasm && 'nesasm not on PATH' }, async (t) 
         event: { pages: [{ cond: { type: 'none', arg: 0 }, commands: [{ op: 'wait', frames: 10 }] }] }
       }
     });
-    const { nes, mem } = await buildAndBoot(project);
+    const { nes, mem, guard } = await buildAndBoot(project);
     const xBefore = mem[PLAYER_X];
     nes.buttonDown(1, RIGHT);
     nes.buttonDown(1, B);
@@ -1713,11 +1868,13 @@ test('streamworldmove', { skip: !hasNesasm && 'nesasm not on PATH' }, async (t) 
     assert.equal(mem[PLAYER_X], xBefore, 'the player must not also move on the frame the conversation opens');
     nes.buttonUp(1, RIGHT);
     nes.buttonUp(1, B);
+    guard.assertNone('sw_event_freeze: interact opens conversation, ordinary design-rate workload');
+    guard.unwatch();
   });
 
   await t.test('an interact press that finds nobody in reach does not freeze movement', async () => {
     const project = createStreamedProject({});
-    const { nes, mem } = await buildAndBoot(project);
+    const { nes, mem, guard } = await buildAndBoot(project);
     const xBefore = mem[PLAYER_X];
     nes.buttonDown(1, RIGHT);
     nes.buttonDown(1, B);
@@ -1726,6 +1883,8 @@ test('streamworldmove', { skip: !hasNesasm && 'nesasm not on PATH' }, async (t) 
     assert.notEqual(mem[PLAYER_X], xBefore, 'pressing interact into empty space must not freeze a frame that never needed it');
     nes.buttonUp(1, RIGHT);
     nes.buttonUp(1, B);
+    guard.assertNone('interact finds nobody, ordinary design-rate workload');
+    guard.unwatch();
   });
 
   await t.test('sw_event_freeze survives within the SAME frame it is armed: a held direction plus a Flash-only interact must not also step', async () => {
@@ -1752,7 +1911,7 @@ test('streamworldmove', { skip: !hasNesasm && 'nesasm not on PATH' }, async (t) 
         event: { pages: [{ cond: { type: 'none', arg: 0 }, commands: [{ op: 'flash' }] }] }
       }
     });
-    const { nes, mem } = await buildAndBoot(project);
+    const { nes, mem, guard } = await buildAndBoot(project);
     const xBefore = mem[PLAYER_X];
     nes.buttonDown(1, RIGHT);
     nes.buttonDown(1, B);
@@ -1765,13 +1924,17 @@ test('streamworldmove', { skip: !hasNesasm && 'nesasm not on PATH' }, async (t) 
     );
     nes.buttonUp(1, RIGHT);
     nes.buttonUp(1, B);
+    guard.assertNone('sw_event_freeze survives within same frame (Flash), ordinary design-rate workload');
+    guard.unwatch();
   });
 
   await t.test('sw_event_freeze is cleared every frame in main_loop_idle', async () => {
     const project = createStreamedProject({});
-    const { nes, mem } = await buildAndBoot(project);
+    const { nes, mem, guard } = await buildAndBoot(project);
     nes.frame();
     assert.equal(mem[SW_EVENT_FREEZE], 0, 'sw_event_freeze must read 0 on an ordinary frame');
+    guard.assertNone('sw_event_freeze cleared every frame, ordinary design-rate workload');
+    guard.unwatch();
   });
 });
 
@@ -1803,6 +1966,8 @@ async function buildAndBootWithSymbols(project) {
   const nes = new NES({ onFrame: () => {}, emulateSound: false });
   nes.loadROM(bytes);
   const mem = nes.cpu.mem;
+  // Fix round 3, finding 2: same watcher, installed the same way buildAndBoot's own now is.
+  const guard = watchPositionJumpGuard(nes, symbols);
   let frames = 0;
   while ((mem[GAME_STATE] !== ST_GAMEPLAY || mem[MAP_IS_STREAMED] !== 1) && frames < 200) {
     nes.frame();
@@ -1810,9 +1975,19 @@ async function buildAndBootWithSymbols(project) {
   }
   assert.ok(frames < 200, 'cold boot must reach ST_GAMEPLAY well within 200 frames');
   for (let i = 0; i < 100; i++) nes.frame();
-  return { dir, nes, mem, addrOf };
+  // Opt-out (fix round 4, item 3): every caller of this helper drives its own probe with a single
+  // callRoutine dispatch (or a direct RAM poke + one hurt_player call via triggerFloorHit), never a
+  // further nes.frame() loop -- a synthetic direct-call routine probe, not an ordinary frame-driven
+  // movement workload the guard is meant to police, so its callers legitimately never assert
+  // guard.assertNone. The guard is still returned (unused by every caller) rather than removed, so a
+  // caller that changes shape to drive real frames regains it for free.
+  return { dir, nes, mem, addrOf, guard };
 }
 
+// Opt-out (fix round 4, item 3), every subtest in this file's own block: each is a synthetic
+// direct-call routine probe (a single callRoutine dispatch into sw_hazard_probe_type/player_hazard
+// after a RAM poke), never a further nes.frame() loop -- buildAndBootWithSymbols's own returned
+// guard is unused here, per its header comment.
 test('sw_hazard_probe_type (phase 2 slice 4b, orchestrator ruling 9)', { skip: !hasNesasm && 'nesasm not on PATH' }, async (t) => {
   await t.test('same-screen probe (dx=0, dy=0) matches probe_type on the current screen -- the "same" fallthrough, a control', async () => {
     const project = await buildHazardProject();
@@ -2009,35 +2184,43 @@ test('streamed vertical movement corner probing (fix round 2, findings A/B)', { 
   }
 
   await t.test('down-left-wall: a solid tile under the LEFT leading corner (BODY_L, BODY_B) blocks Down -- the diagonal-probe bug missed this by checking BODY_T there instead', async () => {
-    const { nes, mem } = await buildWallScenario({ startY: 32, col: 0, row: 3 });
+    const { nes, mem, guard } = await buildWallScenario({ startY: 32, col: 0, row: 3 });
     const before = mem[PLAYER_Y];
     nes.buttonDown(1, DOWN);
     nes.frame();
     assert.equal(mem[PLAYER_Y], before, 'a solid tile under the left BODY_B corner must block Down entirely');
+    guard.assertNone('down-left-wall, ordinary design-rate workload');
+    guard.unwatch();
   });
 
   await t.test('down-right-wall: a solid tile under the RIGHT leading corner (BODY_R, BODY_B) blocks Down -- a positive control the diagonal-probe bug already passed by accident', async () => {
-    const { nes, mem } = await buildWallScenario({ startY: 32, col: 1, row: 3 });
+    const { nes, mem, guard } = await buildWallScenario({ startY: 32, col: 1, row: 3 });
     const before = mem[PLAYER_Y];
     nes.buttonDown(1, DOWN);
     nes.frame();
     assert.equal(mem[PLAYER_Y], before, 'a solid tile under the right BODY_B corner must block Down');
+    guard.assertNone('down-right-wall, ordinary design-rate workload');
+    guard.unwatch();
   });
 
   await t.test('up-right-wall: a solid tile under the RIGHT leading corner (BODY_R, BODY_T) blocks Up -- the diagonal-probe bug missed this by checking BODY_B there instead', async () => {
-    const { nes, mem } = await buildWallScenario({ startY: 40, col: 1, row: 2 });
+    const { nes, mem, guard } = await buildWallScenario({ startY: 40, col: 1, row: 2 });
     const before = mem[PLAYER_Y];
     nes.buttonDown(1, UP);
     nes.frame();
     assert.equal(mem[PLAYER_Y], before, 'a solid tile under the right BODY_T corner must block Up entirely');
+    guard.assertNone('up-right-wall, ordinary design-rate workload');
+    guard.unwatch();
   });
 
   await t.test('up-left-wall: a solid tile under the LEFT leading corner (BODY_L, BODY_T) blocks Up -- a positive control the diagonal-probe bug already passed by accident', async () => {
-    const { nes, mem } = await buildWallScenario({ startY: 40, col: 0, row: 2 });
+    const { nes, mem, guard } = await buildWallScenario({ startY: 40, col: 0, row: 2 });
     const before = mem[PLAYER_Y];
     nes.buttonDown(1, UP);
     nes.frame();
     assert.equal(mem[PLAYER_Y], before, 'a solid tile under the left BODY_T corner must block Up');
+    guard.assertNone('up-left-wall, ordinary design-rate workload');
+    guard.unwatch();
   });
 
   // Ruling K's own explicit requirement: an up-seam crossing must move IDENTICALLY whether or not
@@ -2080,6 +2263,10 @@ test('streamed vertical movement corner probing (fix round 2, findings A/B)', { 
       'an unrelated entity on the incoming screen must never change whether/where the crossing lands'
     );
     assert.equal(state(empty.mem).row, 0, 'the empty-screen control itself must actually have crossed row 1 -> 0');
+    empty.guard.assertNone('up-seam-empty (control), ordinary design-rate workload');
+    empty.guard.unwatch();
+    actor.guard.assertNone('up-seam-actor (crossing with an unrelated incoming entity), ordinary design-rate workload');
+    actor.guard.unwatch();
   });
 });
 
@@ -2119,7 +2306,7 @@ test('streamed movement: high coordinates, geometric containment, real-driver-ar
     project.project.startScreen = 150; // gridH=1, so screen index === col
     project.project.startX = 8;
     project.project.startY = 112;
-    const { nes, mem } = await buildAndBoot(project);
+    const { nes, mem, guard } = await buildAndBoot(project);
     let oracle = { playerX: mem[PLAYER_X], swCol: mem[SW_COL], acc: 0 };
     assert.equal(oracle.swCol, 150, 'precondition: landed at the high column this case means to exercise');
     nes.buttonDown(1, RIGHT);
@@ -2133,6 +2320,8 @@ test('streamed movement: high coordinates, geometric containment, real-driver-ar
     }
     assert.ok(crossed, 'the walk must actually have crossed swCol 150 -> 151 within the frame budget');
     nes.buttonUp(1, RIGHT);
+    guard.assertNone('high unsigned world-coordinate crossing, ordinary design-rate workload');
+    guard.unwatch();
   });
 
   await t.test('independent geometric containment check: the visible camera-pixel rectangle stays a subset of the completed-content window rectangle (contract §5) on every single frame of a long walk in each direction', async () => {
@@ -2146,7 +2335,7 @@ test('streamed movement: high coordinates, geometric containment, real-driver-ar
     project.project.startScreen = 4; // center: (1,1)
     project.project.startX = 120;
     project.project.startY = 112;
-    const { nes, mem } = await buildAndBoot(project);
+    const { nes, mem, guard } = await buildAndBoot(project);
     const assertContained = makeContainmentChecker(mem, { gridW, gridH });
     assertContained('landing');
     for (const dir of [LEFT, UP, RIGHT, DOWN]) {
@@ -2157,6 +2346,8 @@ test('streamed movement: high coordinates, geometric containment, real-driver-ar
       }
       nes.buttonUp(1, dir);
     }
+    guard.assertNone('independent geometric containment check, ordinary design-rate workload');
+    guard.unwatch();
   });
 
   await t.test('next-NMI-first: the NMI immediately following a real arm is the first to service it -- no frame is ever wasted with st_active already set and nothing drawn', async () => {
@@ -2168,7 +2359,7 @@ test('streamed movement: high coordinates, geometric containment, real-driver-ar
     // opportunity is never missed (no frame N+1, N+2, ... goes by with st_active set and st_cur
     // unmoved).
     const project = createStreamedProject({});
-    const { nes, mem } = await buildAndBoot(project);
+    const { nes, mem, guard } = await buildAndBoot(project);
     nes.buttonDown(1, RIGHT);
     let armedAtFrame = null;
     for (let i = 0; i < 200 && armedAtFrame === null; i++) {
@@ -2183,11 +2374,13 @@ test('streamed movement: high coordinates, geometric containment, real-driver-ar
     const expected = Math.min(3, stLen);
     assert.equal(mem[ST_CUR], expected, `the very next frame's NMI (the first one to run after arming) must already have drawn min(SW_STREAM_CHUNK, st_len) = ${expected} blocks`);
     nes.buttonUp(1, RIGHT);
+    guard.assertNone('next-NMI-first, ordinary design-rate workload');
+    guard.unwatch();
   });
 
   await t.test('mixed chunk 2 at <=35 bytes: a real 35-byte vram_buf packet drains AND the real-armed strip still advances by SW_STREAM_MIXED_CHUNK (2) that same frame', async () => {
     const project = createStreamedProject({});
-    const { nes, mem } = await buildAndBoot(project);
+    const { nes, mem, guard } = await buildAndBoot(project);
     nes.buttonDown(1, RIGHT);
     let armed = false;
     for (let i = 0; i < 200 && !armed; i++) {
@@ -2208,11 +2401,13 @@ test('streamed movement: high coordinates, geometric containment, real-driver-ar
     nes.frame();
     assert.equal(mem[ST_CUR], curBefore + 2, 'a <=35-byte producer frame must still advance the strip by exactly SW_STREAM_MIXED_CHUNK (2)');
     assert.equal(mem[VRAM_READY], 0, 'the real 35-byte packet must have fully drained in the same frame');
+    guard.assertNone('mixed chunk <=35 bytes, ordinary design-rate workload');
+    guard.unwatch();
   });
 
   await t.test('exclusive drain above 35 bytes: a real 36-byte vram_buf packet still drains, but the real-armed strip is stalled (0 blocks) that frame', async () => {
     const project = createStreamedProject({});
-    const { nes, mem } = await buildAndBoot(project);
+    const { nes, mem, guard } = await buildAndBoot(project);
     nes.buttonDown(1, RIGHT);
     let armed = false;
     for (let i = 0; i < 200 && !armed; i++) {
@@ -2229,11 +2424,13 @@ test('streamed movement: high coordinates, geometric containment, real-driver-ar
     nes.frame();
     assert.equal(mem[ST_CUR], curBefore, 'a >35-byte producer frame must stall the strip entirely (0 blocks), not merely slow it');
     assert.equal(mem[VRAM_READY], 0, 'the real 36-byte packet must still have fully drained despite the strip stall -- the producer itself is never starved');
+    guard.assertNone('exclusive drain >35 bytes, ordinary design-rate workload');
+    guard.unwatch();
   });
 
   await t.test('active strip serviced while the world is frozen: `paused` stops the player, never the NMI strip drain (docs/reference-engine.md: "st_active alone gates the strip drawer, never game_state/paused")', async () => {
     const project = createStreamedProject({});
-    const { nes, mem } = await buildAndBoot(project);
+    const { nes, mem, guard } = await buildAndBoot(project);
     nes.buttonDown(1, RIGHT);
     let curAtArm = null;
     let lenAtArm = null;
@@ -2258,6 +2455,8 @@ test('streamed movement: high coordinates, geometric containment, real-driver-ar
       assert.equal(mem[PLAYER_X], playerXFrozen, `frame ${i} while paused: player_x must stay frozen -- the world, not the strip, is what "paused" freezes`);
     }
     assert.ok(cur > curAtArm, 'the strip must have made real progress across the paused frames, not merely held st_active nonzero');
+    guard.assertNone('active strip serviced while paused, ordinary design-rate workload');
+    guard.unwatch();
   });
 });
 
@@ -2350,7 +2549,7 @@ test(
       const project = createStreamedProject({});
       project.project.startX = 5; // close to the left edge -- crosses within a handful of frames
       project.project.startScreen = 1; // grid col 1 -- a real neighbour to the left exists (col 0)
-      const { nes, mem } = await buildAndBoot(project);
+      const { nes, mem, guard } = await buildAndBoot(project);
       const streamed = project.maps.find((m) => m.streamed);
       const gridW = streamed.gridW;
       const assertContained = makeContainmentChecker(mem, { gridW, gridH: streamed.gridH });
@@ -2369,12 +2568,18 @@ test(
       nes.buttonUp(1, LEFT);
       assert.ok(crossed, 'sw_col must have decremented within 20 frames of holding Left from x=5');
       assert.equal(mem[SW_COL], startCol - 1, 'sw_col must retreat by exactly one screen');
+      // Round-3 gate closure's own needs-ruling comment above documents that the guard does NOT
+      // fire during this exact scenario (ordinary incremental streaming takes over instead) --
+      // asserted here for real rather than left implicit, so a build that changes that would be
+      // caught, not silently reinterpreted as "the guard's job now".
+      guard.assertNone('entering edge left, ordinary design-rate workload');
+      guard.unwatch();
     });
 
     await t.test('entering edge, positive sign (vertical): crossing down increments sw_row and wraps player_y to its own signed overshoot', async () => {
       const project = createStreamedProject({ gridH: 3 });
       project.project.startY = 219; // close to the 240 row boundary -- crosses within a handful of frames
-      const { nes, mem } = await buildAndBoot(project);
+      const { nes, mem, guard } = await buildAndBoot(project);
       const streamed = project.maps.find((m) => m.streamed);
       const gridH = streamed.gridH;
       const assertContained = makeContainmentChecker(mem, { gridW: streamed.gridW, gridH });
@@ -2393,6 +2598,8 @@ test(
       nes.buttonUp(1, DOWN);
       assert.ok(crossed, 'sw_row must have incremented within 20 frames of holding Down from y=219');
       assert.equal(mem[SW_ROW], startRow + 1, 'sw_row must advance by exactly one screen');
+      guard.assertNone('entering edge down, ordinary design-rate workload');
+      guard.unwatch();
     });
 
     // NEEDS-RULING, same real defect as 'entering edge, negative sign: crossing left' above, Y
@@ -2402,7 +2609,7 @@ test(
       const project = createStreamedProject({ gridH: 3 });
       project.project.startY = 5;
       project.project.startScreen = 1 * 3; // row 1, col 0 -- a real neighbour above exists (row 0)
-      const { nes, mem } = await buildAndBoot(project);
+      const { nes, mem, guard } = await buildAndBoot(project);
       const streamed = project.maps.find((m) => m.streamed);
       const gridH = streamed.gridH;
       const assertContained = makeContainmentChecker(mem, { gridW: streamed.gridW, gridH });
@@ -2421,6 +2628,8 @@ test(
       nes.buttonUp(1, UP);
       assert.ok(crossed, 'sw_row must have decremented within 20 frames of holding Up from y=5');
       assert.equal(mem[SW_ROW], startRow - 1, 'sw_row must retreat by exactly one screen');
+      guard.assertNone('entering edge up, ordinary design-rate workload');
+      guard.unwatch();
     });
 
     // Round-1 gate-closure-fix-1 finding 2/ruling R2: a synthetic register fixture (no engine
@@ -2482,7 +2691,7 @@ test(
       // already-idle aftermath).
       const project = createStreamedProject({ gridW: 12, gridH: 2 });
       project.project.startX = 235;
-      const { nes, mem } = await buildAndBoot(project);
+      const { nes, mem, guard } = await buildAndBoot(project);
       const assertContained = makeContainmentChecker(mem, { gridW: 12, gridH: 2 });
       const startCol = mem[SW_COL];
       nes.buttonDown(1, RIGHT);
@@ -2569,13 +2778,15 @@ test(
         stCurAtReversal < stLenAtReversal,
         `sanity: the strip really was mid-drain at the moment of reversal (st_cur=${stCurAtReversal}, st_len=${stLenAtReversal})`
       );
+      guard.assertNone('reversal mid-drain, ordinary design-rate workload');
+      guard.unwatch();
     });
 
     // -------------------------------------------------- axis handoff
     await t.test('axis handoff mid-crossing: switching to the other axis before a crossing completes does not corrupt it', async () => {
       const project = createStreamedProject({});
       project.project.startX = 235; // a couple of frames from crossing (SW_SPEED_SUB_X's 1,2,1,2... cadence)
-      const { nes, mem } = await buildAndBoot(project);
+      const { nes, mem, guard } = await buildAndBoot(project);
       const assertContained = makeContainmentChecker(mem, { gridW: 3, gridH: 2 });
       const startCol = mem[SW_COL];
       nes.buttonDown(1, RIGHT);
@@ -2608,6 +2819,8 @@ test(
       assert.ok(crossed, 'the crossing must still complete correctly after an axis handoff interrupted its approach');
       assert.equal(mem[SW_COL], startCol + 1, 'sw_col must advance by exactly one screen, not corrupted by the interruption');
       assert.ok(mem[PLAYER_X] < MAX_X, 'player_x must wrap normally despite the handoff');
+      guard.assertNone('axis handoff mid-crossing, ordinary design-rate workload');
+      guard.unwatch();
     });
 
     // -------------------------------------------------- entity repopulation on a continuous
@@ -2639,7 +2852,7 @@ test(
         project.sprites.actors.push({ name: 'New', behavior: 'npc', hp: 1, damage: 0 });
         project.maps[0].screens[landingScreen].entities = [{ actorId: oldActorId, x: 32, y: 32, props: {} }];
         project.maps[0].screens[neighborScreen].entities = [{ actorId: newActorId, x: 32, y: 32, props: {} }];
-        const { nes, mem } = await buildAndBoot(project);
+        const { nes, mem, guard } = await buildAndBoot(project);
         assert.equal(mem[FLAT_SCREEN], landingScreen, 'precondition: landed on the expected center screen');
         assert.equal(mem[ENT_ACTIVE], 1, 'precondition: Old must be resident and active before any crossing');
         assert.equal(mem[ENT_ACTOR], oldActorId, 'precondition: the one active slot must be Old');
@@ -2658,6 +2871,8 @@ test(
         assert.ok(sawFreshOnCrossingFrame, `direction ${name}: screen_fresh must be set on the exact frame flat_screen changes -- the crossing frame stops via screen_fresh, ruling A`);
         assert.equal(mem[ENT_ACTIVE], 1, `direction ${name}: exactly one entity slot must be active after the crossing (New, freshly spawned)`);
         assert.equal(mem[ENT_ACTOR], newActorId, `direction ${name}: the active slot must now be New, not the stale Old`);
+        guard.assertNone(`entity repopulation ${name}, ordinary design-rate workload`);
+        guard.unwatch();
       });
     }
 
@@ -2673,7 +2888,7 @@ test(
       for (const { dir, name, startScreen, axis, bound } of cases) {
         const project = createStreamedProject({});
         project.project.startScreen = startScreen;
-        const { nes, mem } = await buildAndBoot(project);
+        const { nes, mem, guard } = await buildAndBoot(project);
         const addr = axis === 'col' ? SW_COL : SW_ROW;
         const assertContained = makeContainmentChecker(mem, { gridW: 3, gridH: 2 });
         nes.buttonDown(1, dir);
@@ -2690,13 +2905,15 @@ test(
         // further movement -- MAX_X/MAX_Y no longer bound held movement, only the screen size does.
         assert.ok(mem[PLAYER_X] >= 0 && mem[PLAYER_X] <= 255, `player_x must stay in its legal 0-255 range after 300 frames of ${name} at the boundary`);
         assert.ok(mem[PLAYER_Y] >= 0 && mem[PLAYER_Y] <= 239, `player_y must stay in its legal 0-239 range after 300 frames of ${name} at the boundary`);
+        guard.assertNone(`clamp edges ${name}, ordinary design-rate workload`);
+        guard.unwatch();
       }
     });
 
     // -------------------------------------------------- 1x1/1xN/Nx1/2-screen axis configurations
     await t.test('1x1 grid: every direction is refused immediately, sw_col/sw_row never move', async () => {
       const project = createStreamedProject({ gridW: 1, gridH: 1 });
-      const { nes, mem } = await buildAndBoot(project);
+      const { nes, mem, guard } = await buildAndBoot(project);
       for (const dir of [LEFT, RIGHT, UP, DOWN]) {
         nes.buttonDown(1, dir);
         for (let i = 0; i < 60; i++) {
@@ -2706,13 +2923,15 @@ test(
         }
         nes.buttonUp(1, dir);
       }
+      guard.assertNone('1x1 grid, ordinary design-rate workload');
+      guard.unwatch();
     });
 
     await t.test('1xN grid (gridW=1): only vertical crossing is legal, horizontal is refused', async () => {
       const project = createStreamedProject({ gridW: 1, gridH: 3 });
       project.project.startScreen = 1; // middle row -- both Up and Down have a real neighbour
       project.project.startY = 219;
-      const { nes, mem } = await buildAndBoot(project);
+      const { nes, mem, guard } = await buildAndBoot(project);
       nes.buttonDown(1, LEFT);
       for (let i = 0; i < 60; i++) {
         nes.frame();
@@ -2735,13 +2954,15 @@ test(
       nes.buttonUp(1, DOWN);
       assert.ok(crossed, 'gridW=1: Down must still legitimately cross rows');
       assert.equal(mem[SW_ROW], startRow + 1, 'sw_row must advance by exactly one screen');
+      guard.assertNone('1xN grid, ordinary design-rate workload');
+      guard.unwatch();
     });
 
     await t.test('Nx1 grid (gridH=1): only horizontal crossing is legal, vertical is refused', async () => {
       const project = createStreamedProject({ gridW: 3, gridH: 1 });
       project.project.startScreen = 1; // middle col -- both Left and Right have a real neighbour
       project.project.startX = 5;
-      const { nes, mem } = await buildAndBoot(project);
+      const { nes, mem, guard } = await buildAndBoot(project);
       nes.buttonDown(1, UP);
       for (let i = 0; i < 60; i++) {
         nes.frame();
@@ -2764,6 +2985,8 @@ test(
       nes.buttonUp(1, LEFT);
       assert.ok(crossed, 'gridH=1: Left must still legitimately cross columns');
       assert.equal(mem[SW_COL], startCol - 1, 'sw_col must retreat by exactly one screen');
+      guard.assertNone('Nx1 grid, ordinary design-rate workload');
+      guard.unwatch();
     });
 
     await t.test('2-screen grid: the window origin never leaves 0 on an axis whose grid span equals the window\'s own span', async () => {
@@ -2772,7 +2995,7 @@ test(
       // 2-screen-wide window leaves exactly one legal origin, 0, on that axis: win_col_screen/
       // win_col_local must never read anything else, on landing or after any amount of walking.
       const project = createStreamedProject({ gridW: 2, gridH: 2 });
-      const { nes, mem } = await buildAndBoot(project);
+      const { nes, mem, guard } = await buildAndBoot(project);
       assert.equal(mem[WIN_COL_SCREEN], 0, 'precondition: window origin starts at screen 0 on a 2-screen-wide grid');
       assert.equal(mem[WIN_COL_LOCAL], 0, 'precondition: window origin starts at local 0');
       nes.buttonDown(1, RIGHT);
@@ -2783,6 +3006,8 @@ test(
       }
       nes.buttonUp(1, RIGHT);
       assert.equal(mem[SW_COL], 1, 'sanity: the player did actually cross to the far column during those 400 frames');
+      guard.assertNone('2-screen grid (col axis), ordinary design-rate workload');
+      guard.unwatch();
     });
 
     await t.test('2-screen grid, row axis: the window origin never leaves 0 on the row axis either, not just column', async () => {
@@ -2794,7 +3019,7 @@ test(
       // this file. On a 2-screen-tall grid there is exactly one legal row origin, 0, the same as
       // the col case -- win_row_screen/win_row_local must never read anything else.
       const project = createStreamedProject({ gridW: 2, gridH: 2 });
-      const { nes, mem } = await buildAndBoot(project);
+      const { nes, mem, guard } = await buildAndBoot(project);
       assert.equal(mem[WIN_ROW_SCREEN], 0, 'precondition: window origin starts at screen 0 on a 2-screen-tall grid');
       assert.equal(mem[WIN_ROW_LOCAL], 0, 'precondition: window origin starts at local 0');
       nes.buttonDown(1, DOWN);
@@ -2805,6 +3030,8 @@ test(
       }
       nes.buttonUp(1, DOWN);
       assert.equal(mem[SW_ROW], 1, 'sanity: the player did actually cross to the far row during those 400 frames');
+      guard.assertNone('2-screen grid (row axis), ordinary design-rate workload');
+      guard.unwatch();
     });
 
     // -------------------------------------------------- camera clamp (finding 6, ruling F)
@@ -2822,7 +3049,7 @@ test(
     await t.test('camera clamp: the X axis holds at the world-width ceiling once the player reaches the grid\'s right edge, never exceeds it', async () => {
       const gridW = 3, gridH = 2;
       const project = createStreamedProject({ gridW, gridH });
-      const { nes, mem } = await buildAndBoot(project);
+      const { nes, mem, guard } = await buildAndBoot(project);
       nes.buttonDown(1, RIGHT);
       // 3 screens at SW_SPEED_SUB_X's own ~1.5px/frame average is ~500 frames; 700 is a generous
       // margin past that, including time to settle against the off-grid wall.
@@ -2839,12 +3066,14 @@ test(
       const camPx = Math.min(Math.max(worldX - 120, 0), (gridW - 1) * 256);
       assert.equal(mem[CAM_X_LO], camPx & 0xff, 'cam_x_lo must equal the CLAMPED camPx\'s own low byte, not the unclamped (larger) value');
       assert.equal(mem[CAM_NT] & 1, (camPx >> 8) & 1, 'cam_nt bit0 must equal the clamped camPx\'s own bit 8');
+      guard.assertNone('camera clamp (X ceiling), ordinary design-rate workload');
+      guard.unwatch();
     });
 
     await t.test('camera clamp: a 1-wide (1xN) grid pins the X axis at 0 throughout, and the Y axis holds at the world-height ceiling at the bottom edge', async () => {
       const gridW = 1, gridH = 3;
       const project = createStreamedProject({ gridW, gridH });
-      const { nes, mem } = await buildAndBoot(project);
+      const { nes, mem, guard } = await buildAndBoot(project);
       nes.buttonDown(1, DOWN);
       for (let i = 0; i < 700; i++) {
         nes.frame();
@@ -2865,12 +3094,14 @@ test(
       const camScreenRow = Math.floor(camPy / 240);
       assert.equal(mem[CAM_Y_LO], camPy % 240, 'cam_y_lo must equal the CLAMPED camPy mod 240, not the unclamped value');
       assert.equal((mem[CAM_NT] >> 1) & 1, camScreenRow & 1, 'cam_nt bit1 must equal floor(clamped camPy/240)\'s own parity');
+      guard.assertNone('camera clamp (1-wide grid), ordinary design-rate workload');
+      guard.unwatch();
     });
 
     await t.test('camera clamp: a 1-tall (Nx1) grid pins the Y axis at 0 throughout, mirroring the 1-wide case on the other axis', async () => {
       const gridW = 3, gridH = 1;
       const project = createStreamedProject({ gridW, gridH });
-      const { nes, mem } = await buildAndBoot(project);
+      const { nes, mem, guard } = await buildAndBoot(project);
       nes.buttonDown(1, RIGHT);
       for (let i = 0; i < 700; i++) {
         nes.frame();
@@ -2879,11 +3110,13 @@ test(
       }
       nes.buttonUp(1, RIGHT);
       assert.equal(mem[SW_COL], gridW - 1, 'sanity: the player did reach the grid\'s rightmost column during those 700 frames');
+      guard.assertNone('camera clamp (1-tall grid), ordinary design-rate workload');
+      guard.unwatch();
     });
 
     await t.test('camera clamp: a 1x1 grid pins both axes at 0 regardless of in-screen movement', async () => {
       const project = createStreamedProject({ gridW: 1, gridH: 1 });
-      const { nes, mem } = await buildAndBoot(project);
+      const { nes, mem, guard } = await buildAndBoot(project);
       for (const dir of [RIGHT, DOWN, LEFT, UP]) {
         nes.buttonDown(1, dir);
         for (let i = 0; i < 60; i++) {
@@ -2896,6 +3129,8 @@ test(
       }
       assert.equal(mem[SW_COL], 0, 'sanity: a 1x1 grid never advances sw_col');
       assert.equal(mem[SW_ROW], 0, 'sanity: a 1x1 grid never advances sw_row');
+      guard.assertNone('camera clamp (1x1 grid), ordinary design-rate workload');
+      guard.unwatch();
     });
 
     await t.test('camera clamp: the X axis stays pinned at 0 walking Left from the landing position, never underflows', async () => {
@@ -2905,7 +3140,7 @@ test(
       // via an unsigned/wrapping subtract instead of a real floor) would publish a huge wrapped
       // byte instead of holding at 0.
       const project = createStreamedProject({});
-      const { nes, mem } = await buildAndBoot(project);
+      const { nes, mem, guard } = await buildAndBoot(project);
       assert.equal(mem[CAM_X_LO], 0, 'precondition: camPx starts at its own floor, 0');
       nes.buttonDown(1, LEFT);
       for (let i = 0; i < 60; i++) {
@@ -2914,6 +3149,8 @@ test(
         assert.equal(mem[CAM_NT] & 1, 0, `frame ${i}: cam_nt bit0 must stay 0`);
       }
       nes.buttonUp(1, LEFT);
+      guard.assertNone('camera clamp (X pinned walking Left), ordinary design-rate workload');
+      guard.unwatch();
     });
 
     // ---------------------------------------------- moving camera OAM (finding 2, ruling F)
@@ -2938,7 +3175,7 @@ test(
         return visible ? (deltaLo - 1) & 0xff : 0xff;
       }
       const project = createStreamedProject({});
-      const { nes, mem } = await buildAndBoot(project);
+      const { nes, mem, guard } = await buildAndBoot(project);
       const startY = mem[PLAYER_Y];
       nes.buttonDown(1, DOWN);
       // Short enough to stay well inside the landing screen (no crossing, no animation freeze) --
@@ -2955,6 +3192,8 @@ test(
         assert.equal(mem[OAM], projectY(worldY, originY), `frame ${i}: the player's own TL-corner OAM Y must track this frame's real sw_cam_origin_y, not a stale/landing-only value`);
       }
       nes.buttonUp(1, DOWN);
+      guard.assertNone('moving camera OAM (Y axis), ordinary design-rate workload');
+      guard.unwatch();
     });
 
     await t.test('moving camera OAM (X axis): the player\'s own on-screen OAM X tracks sw_cam_origin_x\'s continuous per-frame publish, independently computed', async () => {
@@ -2970,7 +3209,7 @@ test(
         return delta >> 8 === 0 ? delta & 0xff : 0xff;
       }
       const project = createStreamedProject({});
-      const { nes, mem } = await buildAndBoot(project);
+      const { nes, mem, guard } = await buildAndBoot(project);
       const startX = mem[PLAYER_X];
       nes.buttonDown(1, RIGHT);
       // Short enough to stay well inside the landing screen (no crossing, no animation freeze).
@@ -2986,6 +3225,8 @@ test(
         assert.equal(mem[OAM + 3], projectX(worldX, originX), `frame ${i}: the player's own TL-corner OAM X must track this frame's real sw_cam_origin_x, not a stale/landing-only value`);
       }
       nes.buttonUp(1, RIGHT);
+      guard.assertNone('moving camera OAM (X axis), ordinary design-rate workload');
+      guard.unwatch();
     });
 
     // -------------------------------------------------- repeated interact-Flash
@@ -3008,7 +3249,7 @@ test(
           event: { pages: [{ cond: { type: 'none', arg: 0 }, commands: [{ op: 'flash' }] }] }
         }
       });
-      const { nes, mem } = await buildAndBoot(project);
+      const { nes, mem, guard } = await buildAndBoot(project);
       const assertContained = makeContainmentChecker(mem, { gridW: 3, gridH: 2 });
       for (let cycle = 0; cycle < 5; cycle++) {
         const xBefore = mem[PLAYER_X];
@@ -3028,6 +3269,8 @@ test(
         nes.frame();
         assertContained(`interact-Flash cycle ${cycle} frame D`);
       }
+      guard.assertNone('repeated interact-Flash, ordinary design-rate workload');
+      guard.unwatch();
     });
   }
 );
@@ -3043,7 +3286,7 @@ test(
     const project = createStreamedProject({});
     const streamedMap = project.maps.find((m) => m.streamed);
     const { gridW, gridH } = streamedMap;
-    const { nes, mem } = await buildAndBoot(project);
+    const { nes, mem, guard } = await buildAndBoot(project);
 
     // Seeded from the real post-landing RAM, not assumed -- this trace's own claim to being
     // "independent" rests on the documented formulas below, not on an unstated precondition.
@@ -3148,6 +3391,8 @@ test(
     }
     nes.buttonUp(1, LEFT);
     assert.ok(recrossedOnce, 'precondition: leg 2 must include a real screen crossing back');
+    guard.assertNone('plan test 7 (sustained crossing + reversal trace), ordinary design-rate workload');
+    guard.unwatch();
   }
 );
 

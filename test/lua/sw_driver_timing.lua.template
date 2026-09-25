@@ -169,6 +169,10 @@ local NMI     = __NMI__
 local NMI_RTI = __NMI_RTI__
 local VRAM_LEN = __VRAM_LEN__
 
+-- Fix round 2 (fix2, finding A4): engine/streamworld.asm's sw_position_jump_guard entry -- see
+-- EXIT_UNEXPECTED_GUARD_FIRE below for what this is asserted against.
+local SW_POSITION_JUMP_GUARD = __SW_POSITION_JUMP_GUARD__
+
 -- Fix round 1 (gates round-1, Task 1) additions:
 --   win_row_screen/win_row_local (engine/constants.asm) -- the row window's own (screen, local)
 --     position, read on the frame a column strip freshly arms to derive workload (d)'s own
@@ -251,6 +255,11 @@ local EXPECT_ACTOR_WORKLOADS = __EXPECT_ACTOR_WORKLOADS__
 -- claims to carry that workload in the first place.
 local EXPECT_ROW8 = __EXPECT_ROW8__
 
+-- Fix round 2 (fix2, finding A4): EXPECT_GUARD_SILENCE -- true for every idle-only build except
+-- --break=unconditional-arm (build_sw_driver_timing_roms.mjs computes this: idle-only AND not
+-- unconditional-arm). See EXIT_UNEXPECTED_GUARD_FIRE above.
+local EXPECT_GUARD_SILENCE = __EXPECT_GUARD_SILENCE__
+
 -- REPORT_METRIC: which internal counter finish() encodes into the exit code.
 --   "expensive" (default) -- driver span, busy-phase crossing-or-fresh-arm max. The main obligation-1
 --     headline the old frame-bound estimate is recomputed from.
@@ -305,6 +314,21 @@ local EXIT_NO_VRAM_STRIP_COOCCURRENCE  = 15 -- workload (e): vram_len was never 
 local EXIT_NO_ROW8_EIGHT_ACTORS        = 16 -- fix round 2, gates round-2 finding 1 -- workload (b):
                                              -- no fresh ROW arm on the Down-target screen was ever
                                              -- observed with all eight ent_active slots occupied
+-- Fix round 1 (finding 4): a measurement that would encode past EXIT_PASS_MAX is rejected outright
+-- rather than silently clamped to it -- the old behaviour made a real saturated (meaningless) result
+-- indistinguishable from a real, merely-large, valid one, both reporting bare exit 255. See the
+-- code = ... / if code >= EXIT_PASS_MAX check right below the encode, near the end of this file.
+local EXIT_MEASUREMENT_SATURATED       = 17
+-- Fix round 2 (fix2, finding A4): an idle-only build (stationary player, no input) has no reason
+-- the position-jump guard should ever fire -- "desired" and "current" never diverge without a
+-- real crossing or a poked discontinuity, neither of which an idle-only walk ever produces. Every
+-- idle-only build (the unbroken baseline AND --break=idle-extra-work, fix round 2's own bounded
+-- stationary-demand control) asserts zero fires across its WHOLE measured span, so the idle-cost
+-- figures those two builds report are provably free of any guard-driven interference -- unlike
+-- --break=unconditional-arm, whose own drifting window position is expected, eventually, to
+-- retrigger the guard repeatedly (that mutation is deliberately NOT held to this assertion).
+local EXIT_UNEXPECTED_GUARD_FIRE       = 18 -- an idle-only build's own position-jump guard fired at
+                                             -- least once during the measured idle span
 -- Round-3 gate closure Task 2: ABSOLUTE per-path regression ceilings, separate from encoding
 -- capacity (MARGIN_SCALE/MAINLINE_MARGIN_SCALE) and the NTSC frame budget (run_sw_driver_timing_
 -- check.sh's own frame-inequality check) -- calibrated from this exact fixture's own clean real
@@ -351,7 +375,23 @@ local MARGIN_SCALE = 150
 local MAINLINE_MARGIN_SCALE = 200
 -- An idle-only build reports sumIdleCycles/idleFrameCount (average), not a max -- a much smaller
 -- magnitude, so it gets its own, finer scale.
-local IDLE_AVG_SCALE = 100
+--
+-- Fix round 1 (finding 4): 100 was too fine for what --break=unconditional-arm actually measures.
+-- That mutation forces sw_win_arm's column step every frame with no st_active gate and no bound,
+-- so against a stationary idle-only player (a fixed desired origin) the current window origin
+-- marches off the authored grid entirely and never settles -- not a fixed elevated cost but one
+-- that keeps growing as the position-jump guard re-triggers multiple times within a single frame
+-- once the drift outruns it. At scale 100 the real average (independently measured in the low
+-- 100,000s of cycles/frame) landed far past (255-100)*100=15,500, saturating to a bare exit 255
+-- that is indistinguishable from a real large-but-valid measurement. A scratch reporting-only
+-- scale of 1,000 measured this same broken build at exit 242 -- average in [142000,143000) cyc/
+-- frame -- comfortably inside the encodable range with room to spare (ceiling (255-100)*1000 =
+-- 155,000 cyc), while the unbroken baseline (avg ~5,800-5,900 cyc/frame) still encodes distinctly
+-- (~105-106) and clears EXTRA_COST_MIN_DELTA (800 cyc, run_sw_driver_timing_check.sh) by a wide
+-- margin either way. Re-verified directly against the shipped, unmodified --break=unconditional-
+-- arm build. See EXIT_MEASUREMENT_SATURATED below for what happens if a future regression outgrows
+-- even this range -- an explicit reject, not a silent clamp.
+local IDLE_AVG_SCALE = 1000
 -- A single NMI's own worst span is much smaller than a whole mainline frame -- a finer scale so the
 -- real figure (whatever this busy walk measures) has room to land inside the encodable range without
 -- guessing in advance; run_sw_driver_timing_check.sh's own header records the real measurement once
@@ -426,6 +466,9 @@ local sumIdleCycles = 0
 local idleFrameCount = 0
 local maxMainlineBusyCycles = 0
 local maxMainlineIdleCycles = 0
+-- Fix round 2 (fix2, finding A4): counts real executions of sw_position_jump_guard's own entry --
+-- see EXIT_UNEXPECTED_GUARD_FIRE above for which builds this is asserted against and why.
+local pjgFireCount = 0
 
 local nmiSpanStart = nil
 local nmiVramLenAtEntry = nil
@@ -647,6 +690,14 @@ local function onNmiRtiExit()
   end
 end
 
+-- Fix round 2 (fix2, finding A4): counts every real entry into sw_position_jump_guard, for the
+-- whole run -- not phase-gated, so a fire during boot/pre_down is counted too, and the idle-only
+-- finish() check below (EXIT_UNEXPECTED_GUARD_FIRE) can assert against the count as observed at
+-- that point, whatever phase it happened in.
+local function onPositionJumpGuardEntry()
+  pjgFireCount = pjgFireCount + 1
+end
+
 local function onMainLoopReadyMeasure()
   if spanStart2 == nil then return end
   local spanEnd = clockPosition()
@@ -768,6 +819,17 @@ local function finish()
   end
   local reportLabel, reportCycles, scale
   if IDLE_ONLY then
+    -- Fix round 2 (fix2, finding A4): EXPECT_GUARD_SILENCE is true for every idle-only build EXCEPT
+    -- --break=unconditional-arm (its own drifting window position is expected, eventually, to
+    -- retrigger the guard repeatedly -- that IS the defect this control exists to catch, so it is
+    -- deliberately exempted rather than asserted against).
+    if EXPECT_GUARD_SILENCE and pjgFireCount > 0 then
+      fail(EXIT_UNEXPECTED_GUARD_FIRE, string.format(
+        "the position-jump guard fired %d time(s) during a stationary, idle-only run -- this build's own idle-cost figures cannot be trusted as pure idle overhead while the guard is also intervening",
+        pjgFireCount))
+      return
+    end
+    pass(string.format("position-jump guard: %d fire(s) observed (EXPECT_GUARD_SILENCE=%s)", pjgFireCount, tostring(EXPECT_GUARD_SILENCE)))
     local avgIdleCycles = sumIdleCycles / math.max(1, idleFrameCount)
     pass(string.format("idle-only: max %.1f cyc, average %.2f cyc over %d frames (avg is what the extra-cost control reads -- a uniform per-frame defect can be cheaper than a legitimate rare peak and hide from a max-only metric)",
       maxIdleCycles, avgIdleCycles, idleFrameCount))
@@ -783,7 +845,14 @@ local function finish()
   else
     reportLabel, reportCycles, scale = "expensive-path", maxExpensiveCycles, MARGIN_SCALE
   end
-  local code = math.min(EXIT_PASS_MAX, EXIT_PASS_BASE + math.floor(reportCycles / scale))
+  local rawCode = EXIT_PASS_BASE + math.floor(reportCycles / scale)
+  if rawCode >= EXIT_PASS_MAX then
+    fail(EXIT_MEASUREMENT_SATURATED, string.format(
+      "%s max %.1f cycles would encode to exit code %d, at or past EXIT_PASS_MAX (%d) -- rejecting rather than silently clamping to a bare, ambiguous exit %d",
+      reportLabel, reportCycles, rawCode, EXIT_PASS_MAX, EXIT_PASS_MAX))
+    return
+  end
+  local code = rawCode
   pass(string.format("%s max %.1f cycles -> exit code %d (decode: (code-%d)*%d <= cycles < (code-%d+1)*%d)",
     reportLabel, reportCycles, code, EXIT_PASS_BASE, scale, EXIT_PASS_BASE, scale))
   emu.stop(code)
@@ -899,3 +968,4 @@ emu.addMemoryCallback(onUpdatePlayerEntry, emu.callbackType.exec, UPDATE_PLAYER)
 emu.addMemoryCallback(onMainLoopAfterPlayerEntry, emu.callbackType.exec, MAIN_LOOP_AFTER_PLAYER)
 emu.addMemoryCallback(onNmiEntry, emu.callbackType.exec, NMI)
 emu.addMemoryCallback(onNmiRtiExit, emu.callbackType.exec, NMI_RTI)
+emu.addMemoryCallback(onPositionJumpGuardEntry, emu.callbackType.exec, SW_POSITION_JUMP_GUARD)

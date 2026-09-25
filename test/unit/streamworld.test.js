@@ -221,30 +221,56 @@ test(
   }
 );
 
-test('D.6 negative (a): a nonzero encounter rate on a streamed map is refused', () => {
-  const project = createStreamedProject({ gameType: 'rpg' });
-  const streamedMap = project.maps.find((m) => m.streamed === true);
-  streamedMap.encounters = { rate: 10, actorIds: [] };
-  const errors = streamedErrors(project);
-  assert.ok(errors.some((e) => /wandering monsters/.test(e.message)), JSON.stringify(errors));
-});
+// Phase 2 slice 6 lifts all three halves of the old Item 6 refusal: call_battle now cancels an
+// in-flight strip before the cross-bank switch (engine/banks.asm) and battle_end's own
+// unconditional jsr redraw_screen already resyncs the window, suppresses the entry event and
+// re-settles screen_fresh on return (game-type-agnostic, predating streamed worlds). A reachable
+// battle entry on a streamed screen is therefore accepted, not refused.
 
-test('D.6 negative (b): authored monster contact (an entity whose actor deals damage) on a streamed screen is refused', () => {
-  const project = createStreamedProject({ gameType: 'rpg' });
-  project.sprites.actors[0] = { name: 'Slime', damage: 1, battle: { atk: 5 } };
-  assert.ok(isMonsterActor(project.sprites.actors[0]));
-  const streamedMap = project.maps.find((m) => m.streamed === true);
-  const screen = streamedMap.screens[0];
-  screen.entities = [{ actorId: 0, x: 32, y: 32, props: {} }];
-  const errors = streamedErrors(project);
-  assert.ok(errors.some((e) => /deals contact damage/.test(e.message)), JSON.stringify(errors));
-});
+test(
+  'D.6 positive (a): a nonzero encounter rate on a streamed map is accepted and builds clean',
+  { skip: !hasNesasm && 'nesasm not found on PATH' },
+  async () => {
+    const project = createStreamedProject({ gameType: 'rpg' });
+    const streamedMap = project.maps.find((m) => m.streamed === true);
+    streamedMap.encounters = { rate: 10, actorIds: [] };
+    const errors = streamedErrors(project);
+    assert.ok(!errors.some((e) => /wandering monsters/.test(e.message)), JSON.stringify(errors));
+    assert.ok(await buildsClean(project));
+  }
+);
 
-test('D.6 negative (c): a scripted Fight command reachable on a streamed screen is refused', () => {
-  const project = withEvent(createStreamedProject({ gameType: 'rpg' }), [{ op: 'battle', monsters: [0] }]);
-  const errors = streamedErrors(project);
-  assert.ok(errors.some((e) => /starts a battle/.test(e.message)), JSON.stringify(errors));
-});
+test(
+  'D.6 positive (b): authored monster contact (an entity whose actor deals damage) on a streamed screen is accepted and builds clean',
+  { skip: !hasNesasm && 'nesasm not found on PATH' },
+  async () => {
+    const project = createStreamedProject({ gameType: 'rpg' });
+    project.sprites.actors[0] = { name: 'Slime', damage: 1, battle: { atk: 5 } };
+    assert.ok(isMonsterActor(project.sprites.actors[0]));
+    const streamedMap = project.maps.find((m) => m.streamed === true);
+    const screen = streamedMap.screens[0];
+    screen.entities = [{ actorId: 0, x: 32, y: 32, props: {} }];
+    const errors = streamedErrors(project);
+    assert.ok(!errors.some((e) => /deals contact damage/.test(e.message)), JSON.stringify(errors));
+    assert.ok(await buildsClean(project));
+  }
+);
+
+test(
+  'D.6 positive (c): a scripted Fight command reachable on a streamed screen is accepted and builds clean',
+  { skip: !hasNesasm && 'nesasm not found on PATH' },
+  async () => {
+    const project = createStreamedProject({ gameType: 'rpg' });
+    // A Fight command's own monsters array must name a real monster actor (isMonsterActor) or
+    // generate.js's own pre-existing, unrelated "no monsters" validation refuses the build --
+    // this is the D.6-shaped project only, not the fight-formation feature under test here.
+    project.sprites.actors[0] = { name: 'Slime', damage: 1, battle: { atk: 5 } };
+    withEvent(project, [{ op: 'battle', monsters: [0] }]);
+    const errors = streamedErrors(project);
+    assert.ok(!errors.some((e) => /starts a battle/.test(e.message)), JSON.stringify(errors));
+    assert.ok(await buildsClean(project));
+  }
+);
 
 test('D.6: BE_INIT is one of several BE_* entry points into call_battle, not the only one -- fight-shaped and non-fight-shaped entries coexist', () => {
   const constants = fs.readFileSync('engine/constants.asm', 'utf8');

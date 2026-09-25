@@ -85,6 +85,7 @@ import {
   STREAMWORLD_SPAWN_KERNEL_ALLOWANCE,
   STREAMWORLD_MUSIC_KERNEL_ALLOWANCE,
   STREAMWORLD_ENCOUNTER_KERNEL_ALLOWANCE,
+  STREAMWORLD_BATTLE_STRIP_CANCEL_KERNEL_ALLOWANCE,
   STREAMWORLD_BOUND_CACHE_KERNEL_ALLOWANCE,
   STREAMWORLD_CROSS_TRANSLATE_KERNEL_ALLOWANCE,
   STREAMWORLD_INIT_SESSION_KERNEL_ALLOWANCE,
@@ -5724,14 +5725,55 @@ test(
     // inside `.if BATTLE_ENABLED`).
     const rpgProject = createStreamedProject({ gameType: 'rpg' });
     rpgProject.cartridge.mapper = mapper.id;
-    const encounterSpan = await measureStreamedSpan(mapper, rpgProject, 'check_encounter_dispatch', 'check_encounter_live');
-    assert.equal(encounterSpan, STREAMWORLD_ENCOUNTER_KERNEL_ALLOWANCE);
+    const encounterSpan = await measureStreamedSpan(mapper, rpgProject, 'check_encounter_dispatch', 'check_encounter_ord');
     // start_encounter's own half of the brief's combined "check_encounter/
-    // start_encounter" term: same ldy-swap-is-free reasoning as
-    // apply_map_music, a regression guard that its absolute span (not a
-    // delta) stays the fixed 2-byte `ldy <ord_screen` size.
-    const startEncounterSpan = await measureStreamedSpan(mapper, rpgProject, 'start_encounter_dispatch', 'start_encounter_ord');
-    assert.equal(startEncounterSpan, 2, `start_encounter span: ${startEncounterSpan} != 2 (a 2-byte zero-page ldy)`);
+    // start_encounter" term: the identical cur_map-shortcut addition, same
+    // 9-byte shape (lda/beq/lda-or-ldy/jmp).
+    const startEncounterSpan = await measureStreamedSpan(mapper, rpgProject, 'start_encounter_dispatch', 'start_encounter_ord_screen');
+    assert.equal(
+      encounterSpan + startEncounterSpan,
+      STREAMWORLD_ENCOUNTER_KERNEL_ALLOWANCE,
+      `check_encounter+start_encounter span: ${encounterSpan}+${startEncounterSpan} != ${STREAMWORLD_ENCOUNTER_KERNEL_ALLOWANCE}`
+    );
+    // Fix round 1, finding 8: call_battle's own strip-cancel (engine/banks.asm)
+    // only exists inside `.if STREAMING_ENABLED` nested inside `.if
+    // BATTLE_ENABLED`, i.e. gated on usesStreaming && usesBattleBase
+    // (main/build/generate.js) exactly the way rpgProject (streamed, RPG,
+    // rpgCapable mapper 30) satisfies both.
+    const stripCancelSpan = await measureStreamedSpan(
+      mapper,
+      rpgProject,
+      'call_battle_strip_cancel',
+      'call_battle_strip_cancel_done'
+    );
+    assert.equal(
+      stripCancelSpan,
+      STREAMWORLD_BATTLE_STRIP_CANCEL_KERNEL_ALLOWANCE,
+      `call_battle_strip_cancel span: ${stripCancelSpan} != STREAMWORLD_BATTLE_STRIP_CANCEL_KERNEL_ALLOWANCE (${STREAMWORLD_BATTLE_STRIP_CANCEL_KERNEL_ALLOWANCE})`
+    );
+    // Zero cost on an uncharged shape: an action project has usesBattleBase
+    // false, so call_battle (and both its labels) never assembles at all --
+    // BATTLE_ENABLED gates the whole routine, not merely this term's own
+    // STREAMING_ENABLED sub-block.
+    const actionProject = createStreamedProject({ gameType: 'action' });
+    actionProject.cartridge.mapper = mapper.id;
+    await assert.rejects(
+      () => measureStreamedSpan(mapper, actionProject, 'call_battle_strip_cancel', 'call_battle_strip_cancel_done'),
+      'call_battle_strip_cancel must not assemble at all on an action project (usesBattleBase false) -- zero cost on this uncharged shape'
+    );
+    // A8 (fix round 2): the OTHER half of `usesStreaming && usesBattleBase` -- an ordinary
+    // (non-streamed) RPG has usesBattleBase true but usesStreaming false, a shape the two checks
+    // above never exercise (the action project above is usesBattleBase false regardless of
+    // streaming; rpgProject above is usesStreaming true). engine/banks.asm nests
+    // call_battle_strip_cancel inside `.if BATTLE_ENABLED` / `.if STREAMING_ENABLED`, so on this
+    // shape the label never assembles either, same as the action project, but reached through the
+    // inner gate rather than the outer one -- genuinely the untested half of the AND.
+    const ordinaryRpgProject = createProject('RPG', 'rpg');
+    ordinaryRpgProject.cartridge.mapper = mapper.id;
+    await assert.rejects(
+      () => measureStreamedSpan(mapper, ordinaryRpgProject, 'call_battle_strip_cancel', 'call_battle_strip_cancel_done'),
+      'call_battle_strip_cancel must not assemble at all on an ordinary non-streamed RPG (usesStreaming false) -- zero cost on this uncharged shape too'
+    );
     // Bound tiles only exist inside `.if BOUND_TILE_ENABLED`: authored on the
     // mixed project's ordinary "before" map, never the streamed one (Part D
     // item 2 refuses a bound tile there).

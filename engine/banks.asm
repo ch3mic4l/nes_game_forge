@@ -409,6 +409,21 @@ chr_ram_init:
   .if BATTLE_ENABLED
 call_battle:                ; A = a BE_* entry point
   sta <bt_call
+  .if STREAMING_ENABLED
+  ; Phase 2 slice 6: an in-flight strip must not keep draining into the
+  ; nametable while the battle bank's own drawing code issues $2006/$2007
+  ; writes of its own -- st_active alone gates sw_nmi_stream (never
+  ; game_state/paused, docs/design-streamed-worlds.md §8), so a strip armed
+  ; before this call would otherwise keep servicing every NMI straight
+  ; through the fight, racing battle's own VRAM writes. Cheap and safe to
+  ; repeat on every entry point, including BE_TICK every frame the fight
+  ; runs -- the world is frozen for gameplay's own strip-arming path by
+  ; then, so this is a no-op after the first call.
+call_battle_strip_cancel:
+  lda #0
+  sta st_active
+call_battle_strip_cancel_done:
+  .endif
   lda #BATTLE_BANK
   jsr switch_prg_bank
   jsr battle_entry

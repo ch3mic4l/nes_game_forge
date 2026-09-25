@@ -1443,17 +1443,30 @@ export const STREAMWORLD_SPAWN_KERNEL_ALLOWANCE = 12 + 164;
 // 5, the identical `ldy <x` + `lda screen_map,y` span either way).
 export const STREAMWORLD_MUSIC_KERNEL_ALLOWANCE = 0;
 // engine/rpg.asm's check_encounter/start_encounter, the brief's one named
-// term for both (Part F): check_encounter -- no random encounter while the
-// current screen is streamed (Part D refuses a nonzero encounter rate
-// reachable on any streamed map regardless, so this is defensive, not
-// load-bearing) -- `lda <map_is_streamed` + `bne check_encounter_done`, 4
-// bytes. start_encounter's own re-keyed `ldy <ord_screen`/`ldy <flat_screen`
-// swap costs nothing, the identical zero-page-both reasoning
-// STREAMWORLD_MUSIC_KERNEL_ALLOWANCE documents, so the pair's combined
-// delta is check_encounter's 4 alone. RPG-only: rpg.asm's entire contents
-// assemble inside `.if BATTLE_ENABLED`, so this is gated on that too, the
-// same as every other RPG-only term on this page.
-export const STREAMWORLD_ENCOUNTER_KERNEL_ALLOWANCE = 4;
+// term for both (Part F). Fix round 1 (finding 1): a streamed screen's
+// encounter rate and formation now resolve for real, through cur_map (the
+// owning map's raw index, already set at the landing by
+// apply_map_music_direct via sw_resolve_screen) instead of
+// screen_map[ord_screen], which has no row for a streamed screen. Each
+// routine adds one pure 9-byte shortcut (`lda <map_is_streamed` / `beq` /
+// `lda`-or-`ldy <cur_map` / `jmp`, all zero-page operands); the ord_screen/
+// flat_screen swap that follows costs nothing extra, the same reasoning
+// STREAMWORLD_MUSIC_KERNEL_ALLOWANCE documents. Combined: 9 + 9 = 18.
+// RPG-only: rpg.asm's entire contents assemble inside `.if BATTLE_ENABLED`,
+// so this is gated on that too, the same as every other RPG-only term on
+// this page.
+export const STREAMWORLD_ENCOUNTER_KERNEL_ALLOWANCE = 18;
+// engine/banks.asm's call_battle: phase 2 slice 6's own strip-cancellation
+// guard (`lda #0` / `sta st_active`, gated `.if STREAMING_ENABLED` inside the
+// routine's own `.if BATTLE_ENABLED` body) -- st_active lives above zero
+// page ($05B5), so `sta st_active` assembles as 3-byte absolute, plus the
+// 2-byte `lda #0` = 5. Measured directly (kernel-lo real usage with and
+// without this addition, both game types on UNROM 512): 7330 -> 7335 on RPG
+// (+5, matches exactly), 7120 -> 7120 on action (+0, correctly gated -- an
+// action project's call_battle body never assembles at all). RPG-only, same
+// as STREAMWORLD_ENCOUNTER_KERNEL_ALLOWANCE above, since call_battle only
+// exists at all inside `.if BATTLE_ENABLED`.
+export const STREAMWORLD_BATTLE_STRIP_CANCEL_KERNEL_ALLOWANCE = 5;
 // engine/combat.asm's init_session: a streamed landing is about to
 // overwrite both of these for real, but they're cleared defensively on
 // every "new game" anyway so a stale value from the previous session's
@@ -1724,8 +1737,35 @@ export const STREAMWORLD_HAZARD_KERNEL_ALLOWANCE = 5 + 10;
 // a second copy of it (sw_resolve_divdone, engine/streamworld.asm, now just
 // `jsr sw_enter_screen` / `jmp sw_camera_window_install`). Re-measured
 // directly (measureStreamedSpan, same boundary labels): 866, flat across
-// action/RPG/mixed.
-export const STREAMWORLD_WINDOW_KERNEL_HI_ALLOWANCE = 866;
+// action/RPG/mixed. Phase 2 slice 6 grew this again, from 866 to 1209: the
+// position-jump guard (sw_position_jump_guard/sw_pjg_check/sw_pjg_lag_trip)
+// lands inside this same bracket -- called from sw_frame_camera_window right
+// after sw_camera_window_recompute -- rather than opening a new bracket of
+// its own, the identical reasoning the landing slice gave for reusing this
+// span over opening a second one. Re-measured directly (measureStreamedSpan,
+// same boundary labels): 1209, flat across action/RPG/mixed (confirmed by a
+// real build of both game types, not assumed from one). Fix round 1 grew
+// this again, from 1209 to 1225: finding 2's outer cam_dirty hold
+// (sw_frame_camera_window's own `inc <cam_dirty` before the recompute/check
+// pair, and the `dec <cam_dirty` on both the ordinary-frame release and
+// sw_position_jump_guard's own end, replacing sw_camera_window_recompute's
+// formerly-innermost release) plus finding 3's OAM DMA
+// (`lda #$00 / sta $2003 / lda #$02 / sta $4014`, sw_position_jump_guard,
+// before the resume sequence) both land inside this same bracket. Re-
+// measured directly (measureStreamedSpan, same boundary labels): 1225, flat
+// across action/RPG/mixed (confirmed by a real build of both game types).
+// Fix round 1 (finding 4) then shrank this, from 1225 to 1102: sw_pjg_check/
+// sw_pjg_lag_trip no longer total each axis's current and desired origins to
+// a 16-bit block count via a 4-iteration shift-and-add per side before
+// comparing them -- they compare screen indices first (equal screens need
+// only the local-coordinate difference; adjacent screens need that
+// difference adjusted by one axis's own screen span; origins two or more
+// screens apart necessarily exceed the lag threshold without any further
+// arithmetic), so the four shift loops and the 16-bit add/subtract pairs
+// are gone. Re-measured directly (measureStreamedSpan, same boundary
+// labels): 1102, flat across action/RPG/mixed (confirmed by a real build of
+// both game types).
+export const STREAMWORLD_WINDOW_KERNEL_HI_ALLOWANCE = 1102;
 // Phase 2 slice 5: sw_update_player's own streamed-knockback branch
 // (engine/streamworld.asm's sw_knockback_step, now the accepted-hypothesis
 // 16-frame/1.5px-average accumulator-driven pacing, not slice 4b's interim
@@ -2036,6 +2076,7 @@ export function kernelCodeBytes(project, mapper) {
     (usesStreaming ? STREAMWORLD_SPAWN_KERNEL_ALLOWANCE : 0) +
     (usesStreaming ? STREAMWORLD_MUSIC_KERNEL_ALLOWANCE : 0) +
     (usesStreaming && usesBattleBase ? STREAMWORLD_ENCOUNTER_KERNEL_ALLOWANCE : 0) +
+    (usesStreaming && usesBattleBase ? STREAMWORLD_BATTLE_STRIP_CANCEL_KERNEL_ALLOWANCE : 0) +
     (usesStreaming && usesBoundTiles ? STREAMWORLD_BOUND_CACHE_KERNEL_ALLOWANCE : 0) +
     (usesStreaming ? STREAMWORLD_CROSS_TRANSLATE_KERNEL_ALLOWANCE : 0) +
     (usesStreaming ? STREAMWORLD_INIT_SESSION_KERNEL_ALLOWANCE : 0) +

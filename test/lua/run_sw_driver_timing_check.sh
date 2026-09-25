@@ -199,24 +199,42 @@ EXIT_NO_ROW8_EIGHT_ACTORS=16
 # a corrected, calibrated emu.getState()["masterClock"] clock (the old PPU
 # scanline/dot reconstruction silently discarded any span crossing a frame
 # boundary -- see the template's own header) and grew MARGIN_SCALE from 50
-# to 150 and added MAINLINE_MARGIN_SCALE=200 / IDLE_AVG_SCALE=100 to fit the
-# real, now-honestly-measured worst cases.
+# to 150 and added MAINLINE_MARGIN_SCALE=200 to fit the real,
+# now-honestly-measured worst cases.
 MARGIN_SCALE=150
 MAINLINE_MARGIN_SCALE=200
-IDLE_AVG_SCALE=100
+# Fix round 2 (fix2, finding A4): this was 100 while the template
+# (sw_driver_timing.lua.template's own IDLE_AVG_SCALE) already encoded at
+# 1000 -- every idle-only average this script ever decoded was 10x too
+# small, including the EXTRA_COST_MIN_DELTA figures below, which were
+# derived from that wrong decode. Must equal the template's own
+# IDLE_AVG_SCALE exactly.
+IDLE_AVG_SCALE=1000
 # Fix round 2 (gates round-2, finding 4): must track sw_driver_timing.lua.
 # template's own NMI_MARGIN_SCALE exactly, the same convention as the other
 # *_SCALE constants above.
 NMI_MARGIN_SCALE=20
 # The extra-cost control's own broken-vs-baseline average delta must clear
 # this many cycles to count as "markedly larger" -- real measurement
-# (2026-09-23, 3x61 grid, row-58 landing): unbroken idle-only average
-# 6,100-6,200 cyc/frame, broken (--break=unconditional-arm) idle-only
-# average 7,700-7,800 cyc/frame, a 1,500-1,700 cycle/frame gap depending on
-# which end of each bucket is real. Set below the guaranteed-worst-case gap
-# (1,500) so a genuine regression still trips it without chasing this exact
-# fixture's own bucket noise.
+# (2026-09-24, 3x61 grid, row-58 landing, re-measured under fix2's own
+# IDLE_AVG_SCALE=1000 correction above -- the previous scale-100 decode made
+# every figure here 10x too small): unbroken idle-only average 5,000-5,999
+# cyc/frame, broken (--break=unconditional-arm) idle-only average
+# 140,000-140,999 cyc/frame, a guaranteed gap of at least
+# 140,000-5,999=134,001 cyc (comparing the worst-case ends of each bucket).
+# Set well below that guaranteed-worst-case gap so a genuine regression still
+# trips it without chasing this exact fixture's own bucket noise; left at its
+# prior value (800) since that value was already a conservative lower bound,
+# not one derived from the wrong-scale figures it sat next to.
 EXTRA_COST_MIN_DELTA=800
+# Fix round 2 (fix2, finding A4): the bounded --break=idle-extra-work control's own delta must stay
+# UNDER this many cycles -- the same fixed ~1,276-cycle delay loop --break=slow-driver already
+# measures elsewhere (its own expensive-path/mainline-busy deltas), so at IDLE_AVG_SCALE=1000's own
+# bucket granularity the real delta should land within one or two buckets (~1,000-2,000 cyc), nowhere
+# close to unconditional-arm's own ~134,000+ cyc drift. Set generously above the real figure (see
+# this constant's own re-measurement below) so ordinary bucket noise never trips it, while staying
+# small enough that an accidental future regression toward "unbounded" would still be caught.
+IDLE_EXTRA_WORK_MAX_DELTA=5000
 # The --no-actors mainline missing-workload control's own delta must clear
 # this many cycles -- real measurement: real-actor mainline max
 # 21,200-21,400 cyc, no-actors mainline max 19,400-19,600 cyc, a guaranteed
@@ -359,6 +377,7 @@ OFFMAP_COLUMN_DIR="$WORKDIR/offmap-column"
 SLOW_DRIVER_DIR="$WORKDIR/slow-driver"
 NMI_DIR="$WORKDIR/nmi"
 ROW8_NMI_DIR="$WORKDIR/row8-nmi"
+IDLE_EXTRA_WORK_DIR="$WORKDIR/idle-extra-work"
 
 run_one "unbroken, expensive-path" "$EXPENSIVE_DIR" --report=expensive
 expensive_result=$?
@@ -430,6 +449,38 @@ if is_pass "$broken_arm_result"; then
   fi
 else
   echo "sw_driver_timing (broken, idle-only): FAIL -- exit $broken_arm_result (expected a PASS-range exit reporting a real, larger, forced-arm average cost)"
+  overall=1
+fi
+
+# Fix round 2 (fix2, finding A4): a BOUNDED, stationary-demand extra-work control, distinct from
+# --break=unconditional-arm above -- see build_sw_driver_timing_roms.mjs's own --break=idle-extra-
+# work comment for the mechanism (the same fixed ~1,276-cycle delay loop as --break=slow-driver, but
+# always idle-only, never touching window state). Its own delta over baseline must clear
+# EXTRA_COST_MIN_DELTA (same threshold as the unconditional-arm control) AND stay under
+# IDLE_EXTRA_WORK_MAX_DELTA -- proving the delta is a real, bounded, fixed cost, not an unbounded
+# drift like unconditional-arm's own (whose delta is two orders of magnitude larger and keeps
+# growing with the run's own length). The template also asserts pjgFireCount==0 for this build
+# (EXPECT_GUARD_SILENCE) -- a fail there reports EXIT_UNEXPECTED_GUARD_FIRE (18), caught by the
+# plain is_pass check below like any other non-PASS-range exit.
+run_one "idle-extra-work (bounded stationary-demand control), idle-only" "$IDLE_EXTRA_WORK_DIR" --break=idle-extra-work
+idle_extra_work_result=$?
+idle_extra_work_lo=$(decode_lo "$IDLE_AVG_SCALE" "$idle_extra_work_result")
+if is_pass "$idle_extra_work_result"; then
+  echo "sw_driver_timing (idle-extra-work, idle-only): reports exit $idle_extra_work_result, idle-only average ~$(decode_pass "$IDLE_AVG_SCALE" "$idle_extra_work_result") cycles/frame"
+  if is_pass "$idle_result"; then
+    edelta=$((idle_extra_work_lo - idle_lo))
+    if [ "$edelta" -ge "$EXTRA_COST_MIN_DELTA" ] && [ "$edelta" -le "$IDLE_EXTRA_WORK_MAX_DELTA" ]; then
+      echo "sw_driver_timing (bounded extra-work control): PASS -- idle-extra-work average floor $idle_extra_work_lo cyc/frame exceeds unbroken idle-only average floor $idle_lo cyc/frame by $edelta cyc (within [$EXTRA_COST_MIN_DELTA, $IDLE_EXTRA_WORK_MAX_DELTA], a real bounded cost, not an unbounded drift)"
+    else
+      echo "sw_driver_timing (bounded extra-work control): FAIL -- delta $edelta cyc/frame is outside the expected bounded range [$EXTRA_COST_MIN_DELTA, $IDLE_EXTRA_WORK_MAX_DELTA] -- either the fixed delay loop's own cost is no longer being measured cleanly, or it is no longer bounded"
+      overall=1
+    fi
+  else
+    echo "sw_driver_timing (bounded extra-work control): FAIL -- unbroken idle-only baseline did not PASS, so no baseline to compare against"
+    overall=1
+  fi
+else
+  echo "sw_driver_timing (idle-extra-work, idle-only): FAIL -- exit $idle_extra_work_result (expected a PASS-range exit reporting a real, bounded, larger average cost, and zero position-jump guard fires)"
   overall=1
 fi
 
