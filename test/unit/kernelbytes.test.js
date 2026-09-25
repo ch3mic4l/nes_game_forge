@@ -88,6 +88,8 @@ import {
   STREAMWORLD_BOUND_CACHE_KERNEL_ALLOWANCE,
   STREAMWORLD_CROSS_TRANSLATE_KERNEL_ALLOWANCE,
   STREAMWORLD_INIT_SESSION_KERNEL_ALLOWANCE,
+  STREAMWORLD_HURT_PLAYER_KERNEL_ALLOWANCE,
+  STREAMWORLD_KB_INIT_KERNEL_ALLOWANCE,
   STREAMWORLD_LANDING_BOUND_CACHE_KERNEL_ALLOWANCE,
   STREAMWORLD_ORDINARY_CAM_RESET_KERNEL_ALLOWANCE,
   STREAMWORLD_TILE_SWITCH_KERNEL_ALLOWANCE,
@@ -5655,6 +5657,36 @@ test(
           `sw_knockback_step must assemble no symbol at all on ${gameType} (.if !BATTLE_ENABLED is false)`
         );
       }
+      // Phase 2 slice 5: hurt_player's own map_is_streamed dispatch
+      // (engine/combat.asm) and init_session's own sw_kb_timer/sw_kb_acc
+      // clear -- both kernel-lo, both gated identically to sw_knockback_step
+      // above (`.if !BATTLE_ENABLED`, action/mixed only). hurt_player itself
+      // does not exist on an RPG build at all (the whole routine is wrapped
+      // in that same `.if`), so its bracket rejects there the same way
+      // sw_knockback_step's own lookup does, above; init_session_kb_dispatch/
+      // init_session_kb_done DO both exist on every game type (init_session
+      // itself is unconditional), collapsing to a real 0-byte span on RPG
+      // rather than throwing.
+      if (gameType === 'action') {
+        const hurtPlayerKbSpan = await measureStreamedSpan(mapper, project, 'hurt_player_kb_sw_dispatch', 'hurt_player_kb_sw_done');
+        assert.equal(
+          hurtPlayerKbSpan,
+          STREAMWORLD_HURT_PLAYER_KERNEL_ALLOWANCE,
+          `STREAMWORLD_HURT_PLAYER_KERNEL_ALLOWANCE on ${gameType}: real span ${hurtPlayerKbSpan} != ${STREAMWORLD_HURT_PLAYER_KERNEL_ALLOWANCE}`
+        );
+      } else {
+        await assert.rejects(
+          () => measureStreamedSpan(mapper, project, 'hurt_player_kb_sw_dispatch', 'hurt_player_kb_sw_done'),
+          `hurt_player must assemble no symbol at all on ${gameType} (.if !BATTLE_ENABLED is false)`
+        );
+      }
+      const initKbSpan = await measureStreamedSpan(mapper, project, 'init_session_kb_dispatch', 'init_session_kb_done');
+      const expectedInitKbSpan = gameType === 'action' ? STREAMWORLD_KB_INIT_KERNEL_ALLOWANCE : 0;
+      assert.equal(
+        initKbSpan,
+        expectedInitKbSpan,
+        `STREAMWORLD_KB_INIT_KERNEL_ALLOWANCE on ${gameType}: real span ${initKbSpan} != ${expectedInitKbSpan}`
+      );
     }
     // sw_update_player is flat across the mixed shape too, matching
     // STREAMWORLD_UPDATE_PLAYER_KERNEL_HI_ALLOWANCE_BY_GAME_TYPE's own
@@ -5666,6 +5698,27 @@ test(
       mixedUpdatePlayerSpan,
       STREAMWORLD_UPDATE_PLAYER_KERNEL_HI_ALLOWANCE_BY_GAME_TYPE.action,
       `sw_update_player span on mixed: real span ${mixedUpdatePlayerSpan} != ${STREAMWORLD_UPDATE_PLAYER_KERNEL_HI_ALLOWANCE_BY_GAME_TYPE.action}`
+    );
+    // Phase 2 slice 5: the three new knockback terms are flat across the
+    // mixed shape too, checked directly the same way as sw_update_player
+    // just above.
+    const mixedKnockbackSpan = await measureStreamedSpan(mapper, mixedProject, 'sw_knockback_step', 'sw_knockback_step_end');
+    assert.equal(
+      mixedKnockbackSpan,
+      STREAMWORLD_KNOCKBACK_KERNEL_HI_ALLOWANCE,
+      `sw_knockback_step span on mixed: real span ${mixedKnockbackSpan} != ${STREAMWORLD_KNOCKBACK_KERNEL_HI_ALLOWANCE}`
+    );
+    const mixedHurtPlayerKbSpan = await measureStreamedSpan(mapper, mixedProject, 'hurt_player_kb_sw_dispatch', 'hurt_player_kb_sw_done');
+    assert.equal(
+      mixedHurtPlayerKbSpan,
+      STREAMWORLD_HURT_PLAYER_KERNEL_ALLOWANCE,
+      `hurt_player_kb span on mixed: real span ${mixedHurtPlayerKbSpan} != ${STREAMWORLD_HURT_PLAYER_KERNEL_ALLOWANCE}`
+    );
+    const mixedInitKbSpan = await measureStreamedSpan(mapper, mixedProject, 'init_session_kb_dispatch', 'init_session_kb_done');
+    assert.equal(
+      mixedInitKbSpan,
+      STREAMWORLD_KB_INIT_KERNEL_ALLOWANCE,
+      `init_session_kb span on mixed: real span ${mixedInitKbSpan} != ${STREAMWORLD_KB_INIT_KERNEL_ALLOWANCE}`
     );
     // RPG-only: check_encounter's own guard (rpg.asm assembles entirely
     // inside `.if BATTLE_ENABLED`).

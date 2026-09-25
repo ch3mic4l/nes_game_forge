@@ -1467,6 +1467,28 @@ export const STREAMWORLD_ENCOUNTER_KERNEL_ALLOWANCE = 4;
 // streamed project, flat regardless of shape, game type or which other
 // conditional terms were also active.
 export const STREAMWORLD_INIT_SESSION_KERNEL_ALLOWANCE = 4;
+// Phase 2 slice 5: engine/combat.asm's hurt_player -- the map_is_streamed
+// dispatch into sw_kb_timer/sw_kb_acc (the streamed-map knockback's own
+// 16-frame/1.5px accumulator start) versus the ordinary kb_timer=
+// KNOCKBACK_TIME set (measureStreamedSpan, hurt_player_kb_sw_dispatch/
+// hurt_player_kb_sw_done -- 0 bytes when STREAMING_ENABLED is off, the same
+// bracket convention as update_player_knock/update_player_knock_ord).
+// !BATTLE_ENABLED-gated same as hurt_player itself and
+// STREAMWORLD_KNOCKBACK_KERNEL_HI_ALLOWANCE above (an RPG has no knockback
+// concept, streamed or ordinary, and hurt_player does not even assemble
+// there). Kernel-lo (engine/combat.asm assembles before the kernel-hi
+// streamed-worlds package). Measured directly, not assumed near-zero.
+export const STREAMWORLD_HURT_PLAYER_KERNEL_ALLOWANCE = 17;
+// Phase 2 slice 5: engine/combat.asm's init_session -- the defensive
+// sw_kb_timer/sw_kb_acc clear (a stale nonzero sw_kb_timer surviving a game
+// over would run the streamed-knockback dispatch on the very first frame of
+// a new session), the same reasoning STREAMWORLD_INIT_SESSION_KERNEL_
+// ALLOWANCE above already documents for map_is_streamed/ord_screen, but its
+// own separate bracket (init_session_kb_dispatch/init_session_kb_done) and
+// term since this one is ALSO gated `.if !BATTLE_ENABLED` (an RPG never
+// allocates the bytes any use, unlike map_is_streamed/ord_screen which both
+// game types clear). Kernel-lo. Measured directly.
+export const STREAMWORLD_KB_INIT_KERNEL_ALLOWANCE = 6;
 // engine/screens.asm's rebuild_bound_cache: a streamed CURRENT screen
 // returns an empty cache rather than reading a stale row -- Part D refuses a
 // streamed map its own bound tile, but tile_switch_changed can still reach
@@ -1704,16 +1726,26 @@ export const STREAMWORLD_HAZARD_KERNEL_ALLOWANCE = 5 + 10;
 // directly (measureStreamedSpan, same boundary labels): 866, flat across
 // action/RPG/mixed.
 export const STREAMWORLD_WINDOW_KERNEL_HI_ALLOWANCE = 866;
-// Phase 2 slice 4b: sw_update_player's own interim capped-knockback branch
-// (engine/streamworld.asm's sw_knockback_step) -- kernel-hi, gated `.if
-// !BATTLE_ENABLED` (mixed-projects/action only, per the brief's own scope:
-// an RPG's knockback stays the ordinary battle-system one). nesasm emits
-// no symbol at all for a label inside a false `.if`, so this measured 0 on
-// an RPG build (no span to take -- sw_knockback_step_end's own address is
-// never reached by a build where the block never assembles), confirmed by
-// the label lookup throwing rather than by assuming the old "shares an
-// address with what follows" model. 32 on action/mixed.
-export const STREAMWORLD_KNOCKBACK_KERNEL_HI_ALLOWANCE = 32;
+// Phase 2 slice 5: sw_update_player's own streamed-knockback branch
+// (engine/streamworld.asm's sw_knockback_step, now the accepted-hypothesis
+// 16-frame/1.5px-average accumulator-driven pacing, not slice 4b's interim
+// 8-frame/1px-flat run) -- kernel-hi, gated `.if !BATTLE_ENABLED` (mixed-
+// projects/action only, per the brief's own scope: an RPG's knockback stays
+// the ordinary battle-system one). nesasm emits no symbol at all for a
+// label inside a false `.if`, so this measured 0 on an RPG build (no span
+// to take -- sw_knockback_step_end's own address is never reached by a
+// build where the block never assembles), confirmed by the label lookup
+// throwing rather than by assuming the old "shares an address with what
+// follows" model. Grown from slice 4b's own 32 to 50 on action/mixed: the
+// dispatch body's `dec <kb_timer`/`lda #SW_KNOCKBACK_SPEED` pair (a 2-byte
+// zero-page DEC plus a 2-byte immediate load) is replaced by `dec
+// sw_kb_timer` (3 bytes, absolute -- not zero page; zero page is fully
+// committed, engine/constants.asm's own mv_ent comment) and `jsr
+// sw_kb_step_pixels` (3 bytes) -- net +2 in the dispatch body -- plus the
+// new sw_kb_step_pixels helper itself (16 bytes: an absolute lda/sta pair
+// for the accumulator, clc/adc/two immediate loads/bcc/rts). Measured
+// directly (measureStreamedSpan, same boundary labels), not derived by hand.
+export const STREAMWORLD_KNOCKBACK_KERNEL_HI_ALLOWANCE = 50;
 // Phase 2 slice 4b: sw_update_player itself (engine/streamworld.asm) --
 // the per-frame driver dispatch: the sw_event_freeze check, the capped-
 // knockback branch above, axis arbitration via sw_axis_pref, the
@@ -1725,19 +1757,23 @@ export const STREAMWORLD_KNOCKBACK_KERNEL_HI_ALLOWANCE = 32;
 // in opposite directions -- an action-only `.if !BATTLE_ENABLED`
 // knockback-dispatch arm near the top and an RPG-only `.if BATTLE_ENABLED`
 // check_encounter call near the bottom -- net difference +3 action over
-// rpg, exactly the measured 170-vs-167 gap (the same +3 the prior 135-vs-132
-// figures held, since fix round 1's growth -- findings 1/4/7: the true
-// 256/240 ownership commit and flat_screen update now live in
-// sw_pstep_left/right/up/down rather than here, but the screen_fresh gate
-// that arms them and the walk-animation restore on a same-frame crossing
-// (finding 7) both grew this body directly -- is identical on both game
-// types). Measured (measureStreamedSpan, sw_update_player/
+// rpg, exactly the measured 171-vs-167 gap (170-vs-167 before phase 2 slice
+// 5, and 135-vs-132 before that, since fix round 1's growth -- findings
+// 1/4/7: the true 256/240 ownership commit and flat_screen update now live
+// in sw_pstep_left/right/up/down rather than here, but the screen_fresh
+// gate that arms them and the walk-animation restore on a same-frame
+// crossing (finding 7) both grew this body directly -- is identical on
+// both game types). Measured (measureStreamedSpan, sw_update_player/
 // sw_update_player_end) on both game types; the mixed shape (action
-// gameType, mixed:true) measures identical to plain action (170),
-// confirming this varies on gameType alone, not on mixed-ness. Mirrors
+// gameType, mixed:true) measures identical to plain action, confirming
+// this varies on gameType alone, not on mixed-ness. Mirrors
 // ITEM_EFFECT_KERNEL_ALLOWANCE_BY_GAME_TYPE's own by-game-type shape,
-// above.
-export const STREAMWORLD_UPDATE_PLAYER_KERNEL_HI_ALLOWANCE_BY_GAME_TYPE = { action: 170, rpg: 167 };
+// above. Phase 2 slice 5: action grew 170 -> 171 -- the top-of-body
+// knockback-timer read (`lda <kb_timer`, gated `.if !BATTLE_ENABLED`, so
+// RPG's own 167 is untouched) became `lda sw_kb_timer`, a zero-page load
+// replaced by an absolute one (+1 byte), same reasoning as the knockback
+// dispatch body's own DEC above.
+export const STREAMWORLD_UPDATE_PLAYER_KERNEL_HI_ALLOWANCE_BY_GAME_TYPE = { action: 171, rpg: 167 };
 const FALLBACK_STREAMWORLD_UPDATE_PLAYER_KERNEL_HI_ALLOWANCE = Math.max(
   ...Object.values(STREAMWORLD_UPDATE_PLAYER_KERNEL_HI_ALLOWANCE_BY_GAME_TYPE)
 );
@@ -2003,6 +2039,8 @@ export function kernelCodeBytes(project, mapper) {
     (usesStreaming && usesBoundTiles ? STREAMWORLD_BOUND_CACHE_KERNEL_ALLOWANCE : 0) +
     (usesStreaming ? STREAMWORLD_CROSS_TRANSLATE_KERNEL_ALLOWANCE : 0) +
     (usesStreaming ? STREAMWORLD_INIT_SESSION_KERNEL_ALLOWANCE : 0) +
+    (usesStreaming && !usesBattleBase ? STREAMWORLD_HURT_PLAYER_KERNEL_ALLOWANCE : 0) +
+    (usesStreaming && !usesBattleBase ? STREAMWORLD_KB_INIT_KERNEL_ALLOWANCE : 0) +
     (usesStreaming && usesBoundTiles ? STREAMWORLD_LANDING_BOUND_CACHE_KERNEL_ALLOWANCE : 0) +
     (usesStreaming ? STREAMWORLD_ORDINARY_CAM_RESET_KERNEL_ALLOWANCE : 0) +
     (usesStreaming && usesBoundTiles ? STREAMWORLD_TILE_SWITCH_KERNEL_ALLOWANCE : 0) +

@@ -17,6 +17,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import { saveProject } from '../../main/project-io.js';
 import { buildProject } from '../../main/build/pipeline.js';
 import { createStreamedProject } from '../lib/streamedproject.js';
@@ -26,6 +27,10 @@ import { createProject } from '../../shared/project.js';
 import { callRoutine } from '../lib/callroutine.js';
 
 const hasNesasm = spawnSync('nesasm', [], { stdio: 'ignore' }).error?.code !== 'ENOENT';
+// Fix round 1 (phase 2 slice 5): the retained negative-control test reads the real
+// engine/streamworld.asm off disk (never edits it) to build a scratch project.code override --
+// same ROOT-from-import.meta.url convention test/unit/bankedbytes.test.js's own ROOT constant uses.
+const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 
 // from engine/constants.asm
 const PLAYER_X = 0x10;
@@ -33,6 +38,13 @@ const PLAYER_Y = 0x11;
 const GAME_STATE = 0x25;
 const KB_TIMER = 0x50;
 const KB_DIR = 0x51;
+// Phase 2 slice 5 -- engine/constants.asm:1337-1338 (the two bytes right after sw_fc_desrl,
+// $078C-$078D). Not zero page: absolute addressing, no `<` prefix.
+const SW_KB_TIMER = 0x078c;
+const SW_KB_ACC = 0x078d;
+const PLAYER_DIR = 0x12; // engine/constants.asm:25
+const MAX_ENTITIES = 8; // engine/constants.asm:692 -- knockback_dir's own floor-hit branch (X >= this)
+const KNOCKBACK_TIME_CONST = 8; // engine/constants.asm:1333 -- the ordinary (non-streamed) knockback's own frame count, unchanged by this slice
 const DASH_ON = 0x28;
 const PAD = 0x17;
 const MAP_IS_STREAMED = 0xfe;
@@ -73,6 +85,12 @@ const OAM = 0x0200; // engine/oam.asm's shadow OAM -- the player's own TL corner
 const FLAT_SCREEN = 0x16; // engine/constants.asm:29
 const ENT_ACTIVE = 0x0300; // engine/constants.asm:706, @size=MAX_ENTITIES
 const ENT_ACTOR = 0x0308; // engine/constants.asm:707, @size=MAX_ENTITIES
+const ENT_X = 0x0310; // engine/constants.asm:708, @size=MAX_ENTITIES
+const ENT_Y = 0x0318; // engine/constants.asm:709, @size=MAX_ENTITIES
+// Round 2 fix, finding 1: entity_touching_player's own overlap box (engine/entities.asm:559-584) --
+// touching means |dx| < TOUCH_RANGE AND |dy| < TOUCH_RANGE, the same box entity_contact itself gates
+// a real hit on.
+const TOUCH_RANGE = 12; // engine/constants.asm:1245
 const ST_GAMEPLAY = 0;
 const ST_DIALOG = 2;
 const MAX_X = 240;
@@ -99,6 +117,11 @@ const VRAM_READY = 0x3f;
 const SW_SPEED_SUB_X = 128;
 const SW_SPEED_SUB_Y = 112;
 const SW_STREAM_CHUNK = 3;
+// Phase 2 slice 5's own accepted-hypothesis knockback pacing -- 16 frames at an average
+// 1.5px/frame, one shared rate for both axes (engine/streamworld.asm:53, engine/constants.asm's
+// own SW_KB_TIME).
+const SW_KB_SPEED_SUB = 128;
+const SW_KB_TIME = 16;
 
 // from renderer/emulator/core/controller.js. Default gameplay bindings (shared/project.js:4280)
 // map B, not A, to the 'interact' action -- A is 'attack'.
@@ -107,6 +130,11 @@ const UP = 4;
 const DOWN = 5;
 const LEFT = 6;
 const RIGHT = 7;
+
+// engine/constants.asm:1633-1636 -- DIR_DOWN=0, DIR_UP=1, DIR_LEFT=2, DIR_RIGHT=3 (defined below).
+const DIR_DOWN = 0;
+const DIR_UP = 1;
+const DIR_LEFT = 2;
 
 /** engine/streamworld.asm sw_walk_step_x/y's own documented shape: acc += sub (8-bit wrap), step
  * is 2 on carry-out, 1 otherwise. */
@@ -409,6 +437,46 @@ function predictVerticalStep({ playerY, acc, swRow, gridH, dir }) {
   return { playerY: raw, swRow, acc: nextAcc };
 }
 
+// Phase 2 slice 5's own independent oracle: sw_kb_step_pixels' documented shape (identical to
+// sw_walk_step_x/y's own WHOLE_STEP+overflow accumulator, engine/streamworld.asm, but SW_KB_SPEED_SUB
+// on either axis, distinct sw_kb_acc state) composed with the same crossing math
+// predictHorizontalStep/predictVerticalStep already use -- one function covering all four
+// directions so a single call site can drive any of them from a shared trace loop.
+function predictKnockbackStep({ playerX, playerY, acc, swCol, swRow, gridW, gridH, dir }) {
+  const { step, acc: nextAcc } = walkStep(acc, SW_KB_SPEED_SUB);
+  if (dir === 'right') {
+    const raw = playerX + step;
+    if (raw > 255) {
+      if (swCol + 1 >= gridW) return { playerX, playerY, swCol, swRow, acc: nextAcc };
+      return { playerX: raw - 256, playerY, swCol: swCol + 1, swRow, acc: nextAcc };
+    }
+    return { playerX: raw, playerY, swCol, swRow, acc: nextAcc };
+  }
+  if (dir === 'left') {
+    const raw = playerX - step;
+    if (raw < 0) {
+      if (swCol === 0) return { playerX, playerY, swCol, swRow, acc: nextAcc };
+      return { playerX: raw + 256, playerY, swCol: swCol - 1, swRow, acc: nextAcc };
+    }
+    return { playerX: raw, playerY, swCol, swRow, acc: nextAcc };
+  }
+  if (dir === 'down') {
+    const raw = playerY + step;
+    if (raw >= 240) {
+      if (swRow + 1 >= gridH) return { playerX, playerY, swCol, swRow, acc: nextAcc };
+      return { playerX, playerY: raw - 240, swCol, swRow: swRow + 1, acc: nextAcc };
+    }
+    return { playerX, playerY: raw, swCol, swRow, acc: nextAcc };
+  }
+  // dir === 'up'
+  const raw = playerY - step;
+  if (raw < 0) {
+    if (swRow === 0) return { playerX, playerY, swCol, swRow, acc: nextAcc };
+    return { playerX, playerY: raw + 240, swCol, swRow: swRow - 1, acc: nextAcc };
+  }
+  return { playerX, playerY: raw, swCol, swRow, acc: nextAcc };
+}
+
 async function buildAndBoot(project, { requireStreamed = true } = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-streamworldmove-'));
   try {
@@ -703,18 +771,914 @@ test('streamworldmove', { skip: !hasNesasm && 'nesasm not on PATH' }, async (t) 
     nes.buttonUp(1, RIGHT);
   });
 
-  await t.test('capped knockback moves the player 1px/frame on a streamed map, not the ordinary 3', async () => {
-    const project = createStreamedProject({});
-    const { nes, mem } = await buildAndBoot(project);
-    mem[KB_TIMER] = 4;
-    mem[KB_DIR] = DIR_RIGHT;
-    let prevX = mem[PLAYER_X];
-    for (let i = 0; i < 4; i++) {
-      nes.frame();
-      assert.equal(mem[PLAYER_X], prevX + 1, `knockback tick ${i} must move exactly 1px, not KNOCKBACK_SPEED's ordinary 3`);
-      prevX = mem[PLAYER_X];
+  // Phase 2 slice 5's own accepted-hypothesis knockback pacing (16 frames at an average
+  // 1.5px/frame, a distinct sw_kb_timer/sw_kb_acc accumulator) replaces slice 4b's interim
+  // 8-frame/1px-flat sw_knockback_step -- see handoff-next/streamed-worlds-phase2-s5-report.md
+  // for the decision-rule matrix. knockback_dir's own floor-hit branch (X >= MAX_ENTITIES) gives
+  // kb_dir = player_dir XOR 1 ("bounce back the way you came") -- setting player_dir to the
+  // INVERSE of the desired knockback direction before calling hurt_player is the only way to
+  // choose kb_dir deterministically through the real gate, rather than poking kb_dir directly.
+  const KB_DIR_INVERSE = { [DIR_DOWN]: DIR_UP, [DIR_UP]: DIR_DOWN, [DIR_LEFT]: DIR_RIGHT, [DIR_RIGHT]: DIR_LEFT };
+  function triggerFloorHit(nes, mem, addrOf, dir, hearts = 1) {
+    mem[PLAYER_DIR] = KB_DIR_INVERSE[dir];
+    nes.cpu.REG_ACC = hearts;
+    nes.cpu.REG_X = MAX_ENTITIES;
+    callRoutine(nes, addrOf('hurt_player'));
+  }
+
+  // Fix round 1 (review-phase2-s5-round1-findings.md, findings 1-3): shared plumbing for the
+  // augmented containment matrix, the Flash/strip/knockback co-occurrence gate and the real
+  // end-to-end hit path below.
+  const DIR_BUTTON = { right: RIGHT, left: LEFT, up: UP, down: DOWN };
+  const DIR_CONST_BY_NAME = { right: DIR_RIGHT, left: DIR_LEFT, up: DIR_UP, down: DIR_DOWN };
+  const DIR_NAME_BY_CONST = { [DIR_RIGHT]: 'right', [DIR_LEFT]: 'left', [DIR_UP]: 'up', [DIR_DOWN]: 'down' };
+  const DIR_AXIS = { right: 1, left: 1, up: 2, down: 2 }; // ST_ACTIVE: 1=col, 2=row
+  const DIR_INVERSE = { right: 'left', left: 'right', up: 'down', down: 'up' };
+
+  // Holds a real direction until the engine itself arms a strip on the named axis (never a poke of
+  // st_active) or gives up at maxFrames -- a genuine, frame-driven precondition, not a simulated one.
+  function approachUntilAxis(nes, mem, dirName, targetAxis, maxFrames = 200) {
+    const button = DIR_BUTTON[dirName];
+    nes.buttonDown(1, button);
+    let f = 0;
+    while (mem[ST_ACTIVE] !== targetAxis && f++ < maxFrames) nes.frame();
+    nes.buttonUp(1, button);
+    return f;
+  }
+
+  // Per-section strip-state (idle/col/row) frame tallies, the same shape as the round-1 review's
+  // own strip-summary.json -- written once at the very end of this whole test to
+  // handoff-next/fix1-evidence/strip-summary.json so the fix report can quote real counts.
+  const stripTally = {};
+  function tallyStrip(section, mem) {
+    const key = String(mem[ST_ACTIVE]);
+    stripTally[section] = stripTally[section] || {};
+    stripTally[section][key] = (stripTally[section][key] || 0) + 1;
+  }
+  function checkAndTally(assertContained, section, mem, label) {
+    assertContained(label);
+    tallyStrip(section, mem);
+  }
+
+  // Retained negative control (finding 1): a flat, faster-than-design per-frame knockback rate,
+  // applied ONLY through a scratch project.code override -- the real engine/streamworld.asm on disk
+  // is never touched, so `git diff --stat -- engine main shared` stays identical before and after
+  // this file runs (this fix round's own scope is tests-only). The regex targets exactly
+  // sw_kb_step_pixels' own documented body (engine/streamworld.asm:3293-3302).
+  function fasterKnockbackOverride(project, rate) {
+    const enginePath = path.join(ROOT, 'engine', 'streamworld.asm');
+    const original = fs.readFileSync(enginePath, 'utf8');
+    const patched = original.replace(
+      /sw_kb_step_pixels:\n[\s\S]*?sw_kb_step_pixels_done:\n {2}rts/,
+      `sw_kb_step_pixels:\n  lda #${rate}\n  rts`
+    );
+    assert.notEqual(patched, original, 'fasterKnockbackOverride: the regex must actually match sw_kb_step_pixels in the real engine file');
+    project.code = { overrides: [{ name: 'streamworld.asm', text: patched }], files: [] };
+  }
+
+  // Retained negative control (round 2 finding 1): neutralizes BOTH real invulnerability gates --
+  // hurt_player's own `ldy <player_iframes / bne hurt_player_done` (engine/combat.asm:203-204) and
+  // entity_contact's own `lda <player_iframes / bne entity_contact_done` (engine/combat.asm:452-453)
+  // -- applied ONLY through a scratch project.code override, the real engine/combat.asm on disk is
+  // never touched. Mutating only one of the two gates leaves the other still blocking the real
+  // reapproach contact below, so it would not discriminate this specific end-to-end test; both must
+  // go together to prove this test can actually tell a broken invulnerability window apart from a
+  // working one.
+  function bothInvulnerabilityGatesOffOverride(project) {
+    const enginePath = path.join(ROOT, 'engine', 'combat.asm');
+    let text = fs.readFileSync(enginePath, 'utf8');
+    for (const [load, label] of [['ldy', 'hurt_player_done'], ['lda', 'entity_contact_done']]) {
+      const needle = `  ${load} <player_iframes\n  bne ${label}`;
+      assert.ok(text.includes(needle), `bothInvulnerabilityGatesOffOverride: the ${label} gate text must actually be found in the real engine file`);
+      text = text.replace(needle, `  ${load} <player_iframes\n  nop\n  nop`);
     }
-    assert.equal(mem[KB_TIMER], 0, 'kb_timer must have counted all the way down');
+    project.code = { overrides: [{ name: 'combat.asm', text }], files: [] };
+  }
+
+  test('phase 2 slice 5: streamed knockback (16 frames, 1.5px/frame average, distinct state)', { skip: !hasNesasm && 'nesasm not on PATH' }, async (t) => {
+    // -------------------------------------------------- test 1: the gate itself
+    await t.test('the streamed knockback gate fires on an all-streamed project and on a mixed one; the ordinary map in a mixed project keeps the ordinary 8-frame/3px gate', async () => {
+      // (a) all-streamed
+      {
+        const project = createStreamedProject({});
+        const { dir, nes, mem, addrOf } = await buildAndBootWithSymbols(project);
+        try {
+          triggerFloorHit(nes, mem, addrOf, DIR_RIGHT);
+          assert.equal(mem[SW_KB_TIMER], SW_KB_TIME, 'all-streamed: hurt_player must arm sw_kb_timer at SW_KB_TIME(16)');
+          assert.equal(mem[SW_KB_ACC], 0, 'all-streamed: sw_kb_acc must start fresh at 0');
+          assert.equal(mem[KB_TIMER], 0, 'all-streamed: the ordinary kb_timer must stay untouched (0)');
+        } finally {
+          fs.rmSync(dir, { recursive: true, force: true });
+        }
+      }
+      // (b) mixed, landed directly on the streamed map (map index 1)
+      {
+        const project = createStreamedProject({ mixed: true });
+        project.project.startMap = 1;
+        project.project.startScreen = 0;
+        const { dir, nes, mem, addrOf } = await buildAndBootWithSymbols(project);
+        try {
+          triggerFloorHit(nes, mem, addrOf, DIR_RIGHT);
+          assert.equal(mem[SW_KB_TIMER], SW_KB_TIME, 'mixed, on the streamed map: hurt_player must arm sw_kb_timer');
+          assert.equal(mem[KB_TIMER], 0, 'mixed, on the streamed map: the ordinary kb_timer must stay untouched');
+        } finally {
+          fs.rmSync(dir, { recursive: true, force: true });
+        }
+      }
+      // (c) mixed, landed on the DEFAULT start -- the ordinary "Before" map (map index 0,
+      // createStreamedProject's own default startMap)
+      {
+        const project = createStreamedProject({ mixed: true });
+        const d = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-streamworldmove-'));
+        try {
+          await saveProject(d, project);
+          const built = await buildProject({ dir: d, project, log: () => {} });
+          const symbols = fs.readFileSync(built.symbolPath, 'utf8');
+          const addrOf = (label) => {
+            const m = symbols.match(new RegExp(`^${label}\\s*=\\s*\\$([0-9A-Fa-f]+)`, 'm'));
+            assert.ok(m, `${label} should be a named symbol in game.fns`);
+            return parseInt(m[1], 16);
+          };
+          const bytes = new Uint8Array(fs.readFileSync(built.romPath));
+          const nes = new NES({ onFrame: () => {}, emulateSound: false });
+          nes.loadROM(bytes);
+          const mem = nes.cpu.mem;
+          let frames = 0;
+          while (mem[GAME_STATE] !== ST_GAMEPLAY && frames < 200) {
+            nes.frame();
+            frames++;
+          }
+          assert.ok(frames < 200, 'cold boot must reach ST_GAMEPLAY well within 200 frames');
+          // buildAndBoot/buildAndBootWithSymbols's own margin: game_state/map_is_streamed settle
+          // well before the landing sequence (and any spawn-grace player_iframes) fully finishes.
+          for (let i = 0; i < 100; i++) nes.frame();
+          assert.equal(mem[MAP_IS_STREAMED], 0, 'precondition: the default mixed start must be the ordinary "Before" map');
+          triggerFloorHit(nes, mem, addrOf, DIR_RIGHT);
+          assert.equal(mem[KB_TIMER], KNOCKBACK_TIME_CONST, 'mixed, on the ordinary map: hurt_player must arm the ordinary kb_timer at KNOCKBACK_TIME(8)');
+          assert.equal(mem[SW_KB_TIMER], 0, 'mixed, on the ordinary map: sw_kb_timer must stay untouched (0)');
+        } finally {
+          fs.rmSync(d, { recursive: true, force: true });
+        }
+      }
+    });
+
+    // -------------------------------------------------- tests 2/3: containment matrix --
+    // all four directions, fractional starting phases, under the slower vertical strip
+    // schedule as much as the horizontal one, driven straight from a RAM-poked sw_kb_timer/
+    // sw_kb_acc/kb_dir (the same "poke the state a hit would have produced" convention slice
+    // 4b's own interim test already used) rather than restaging a real hit each time.
+    await t.test('containment (idle strip -- no approach): all four directions x four starting accumulator phases never expose undrawn terrain', async () => {
+      const project = createStreamedProject({});
+      const { gridW, gridH } = { gridW: 3, gridH: 2 };
+      const directions = [
+        ['up', DIR_UP],
+        ['down', DIR_DOWN],
+        ['left', DIR_LEFT],
+        ['right', DIR_RIGHT]
+      ];
+      const phases = [0, 64, 128, 192];
+      for (const [dirName, dirConst] of directions) {
+        for (const phase of phases) {
+          const { nes, mem } = await buildAndBoot(project);
+          const assertContained = makeContainmentChecker(mem, { gridW, gridH });
+          checkAndTally(assertContained, 'idle-matrix', mem, `${dirName} phase ${phase}: landing`);
+          mem[KB_DIR] = dirConst;
+          mem[SW_KB_ACC] = phase;
+          mem[SW_KB_TIMER] = SW_KB_TIME;
+          for (let i = 0; i < SW_KB_TIME; i++) {
+            nes.frame();
+            checkAndTally(assertContained, 'idle-matrix', mem, `${dirName} phase ${phase}: knockback frame ${i}`);
+          }
+          assert.equal(mem[SW_KB_TIMER], 0, `${dirName} phase ${phase}: sw_kb_timer must have counted all the way down`);
+          // Give the strip a further 20 frames to fully settle/drain after the burst ends --
+          // containment must hold through the catch-up too, not just during the burst.
+          for (let i = 0; i < 20; i++) {
+            nes.frame();
+            checkAndTally(assertContained, 'idle-matrix', mem, `${dirName} phase ${phase}: post-knockback settle frame ${i}`);
+          }
+        }
+      }
+    });
+
+    // -------------------------------------------------- fix round 1, finding 1: the matrix above
+    // never actually had a strip in flight (st_active stayed 0 throughout the burst in every one of
+    // its 16 cases -- the round-1 review's own defect). This augmented matrix drives a REAL approach
+    // (held input, never a poke of st_active) until the engine itself arms a strip on a specific
+    // axis, explicitly asserts st_active equals that axis at the hit frame (so a "precondition
+    // removed" sabotage -- counting a burst that never actually had a strip in flight -- fails
+    // loudly), and only then arms the knockback (phase still poked, the same convention every other
+    // test in this file already uses for sw_kb_acc's own starting value -- only the strip's own arm
+    // is real). Covers all 4 knockback directions against BOTH a column strip and a row strip in
+    // flight: for a horizontal knockback (right/left) the same-axis strip is the column strip and
+    // the orthogonal one is the row strip, and conversely for a vertical knockback (down/up) -- so
+    // every direction exercises both strip axes across the whole matrix. The 4 accumulator phases
+    // are split evenly across the same-axis sub-case: phases 0/128 reinforce the approach direction
+    // (knockback continues the way the strip was armed), phases 64/192 REVERSE it (knockback bounces
+    // back the way the player came, the strip still draining from the other direction) -- covering
+    // "knockback that reverses the walking/approach direction" across phase classes rather than as
+    // one single bolted-on extra case. A 5x5 grid (vs. the 3x2 grid above) is used so both a column
+    // and a row strip can actually be put in flight from the same landing screen (12, the grid
+    // centre) -- verified empirically (this fix round's own scratch probes) that holding any of the
+    // 4 directions from that landing arms the matching-axis strip within at most 12 frames, well
+    // inside the 200-frame bound below.
+    await t.test('containment: all four directions x four starting phases, with a REAL column or row strip actually in flight', async () => {
+      const gridW = 5, gridH = 5;
+      const directions = ['right', 'left', 'down', 'up'];
+      const phases = [0, 64, 128, 192];
+      // Orthogonal approach direction for each knockback direction's OTHER axis -- validated
+      // (scratch probes) to arm the opposite-axis strip within at most 12 frames from the default
+      // (5x5, screen 12) landing: holding Right arms the column strip, holding Down arms the row
+      // strip, from this exact landing.
+      const ORTHOGONAL_APPROACH = { right: 'down', left: 'down', up: 'right', down: 'right' };
+      for (const dirName of directions) {
+        const dirConst = DIR_CONST_BY_NAME[dirName];
+        const sameAxis = DIR_AXIS[dirName];
+        const orthogonalAxis = sameAxis === 1 ? 2 : 1;
+        for (let phaseIndex = 0; phaseIndex < phases.length; phaseIndex++) {
+          const phase = phases[phaseIndex];
+          const reversing = phaseIndex % 2 === 1;
+          const approachDirName = reversing ? DIR_INVERSE[dirName] : dirName;
+
+          // same-axis sub-case (reinforcing on phases 0/128, reversing on phases 64/192)
+          {
+            const project = createStreamedProject({ gridW, gridH });
+            project.project.startScreen = 12;
+            const { nes, mem } = await buildAndBoot(project);
+            const assertContained = makeContainmentChecker(mem, { gridW, gridH });
+            const armFrames = approachUntilAxis(nes, mem, approachDirName, sameAxis);
+            assert.ok(armFrames < 200, `${dirName} phase ${phase} same-axis: the ${approachDirName} approach must actually arm axis ${sameAxis} within 200 frames`);
+            assert.equal(mem[ST_ACTIVE], sameAxis, `${dirName} phase ${phase} same-axis: precondition -- a strip must genuinely be in flight on axis ${sameAxis} at the hit frame`);
+            checkAndTally(assertContained, 'in-flight-same-axis', mem, `${dirName} phase ${phase} same-axis: hit frame`);
+            mem[KB_DIR] = dirConst;
+            mem[SW_KB_ACC] = phase;
+            mem[SW_KB_TIMER] = SW_KB_TIME;
+            for (let i = 0; i < SW_KB_TIME; i++) {
+              nes.frame();
+              checkAndTally(assertContained, 'in-flight-same-axis', mem, `${dirName} phase ${phase} same-axis (${reversing ? 'reversing' : 'reinforcing'}): knockback frame ${i}`);
+            }
+            assert.equal(mem[SW_KB_TIMER], 0, `${dirName} phase ${phase} same-axis: sw_kb_timer must have counted all the way down`);
+            for (let i = 0; i < 20; i++) {
+              nes.frame();
+              checkAndTally(assertContained, 'in-flight-same-axis', mem, `${dirName} phase ${phase} same-axis: post-knockback settle frame ${i}`);
+            }
+          }
+
+          // orthogonal-axis sub-case: the real strip in flight is on the OTHER axis from the
+          // knockback direction.
+          {
+            const project = createStreamedProject({ gridW, gridH });
+            project.project.startScreen = 12;
+            const { nes, mem } = await buildAndBoot(project);
+            const assertContained = makeContainmentChecker(mem, { gridW, gridH });
+            const orthogonalApproachDirName = ORTHOGONAL_APPROACH[dirName];
+            const armFrames = approachUntilAxis(nes, mem, orthogonalApproachDirName, orthogonalAxis);
+            assert.ok(armFrames < 200, `${dirName} phase ${phase} orthogonal-axis: the ${orthogonalApproachDirName} approach must actually arm axis ${orthogonalAxis} within 200 frames`);
+            assert.equal(mem[ST_ACTIVE], orthogonalAxis, `${dirName} phase ${phase} orthogonal-axis: precondition -- a strip must genuinely be in flight on axis ${orthogonalAxis} (orthogonal to the ${dirName} knockback) at the hit frame`);
+            checkAndTally(assertContained, 'in-flight-orthogonal-axis', mem, `${dirName} phase ${phase} orthogonal-axis: hit frame`);
+            mem[KB_DIR] = dirConst;
+            mem[SW_KB_ACC] = phase;
+            mem[SW_KB_TIMER] = SW_KB_TIME;
+            for (let i = 0; i < SW_KB_TIME; i++) {
+              nes.frame();
+              checkAndTally(assertContained, 'in-flight-orthogonal-axis', mem, `${dirName} phase ${phase} orthogonal-axis: knockback frame ${i}`);
+            }
+            assert.equal(mem[SW_KB_TIMER], 0, `${dirName} phase ${phase} orthogonal-axis: sw_kb_timer must have counted all the way down`);
+            for (let i = 0; i < 20; i++) {
+              nes.frame();
+              checkAndTally(assertContained, 'in-flight-orthogonal-axis', mem, `${dirName} phase ${phase} orthogonal-axis: post-knockback settle frame ${i}`);
+            }
+          }
+        }
+      }
+    });
+
+    // -------------------------------------------------- retained negative control (finding 1): a
+    // flat, faster-than-design knockback rate must fail CONTAINMENT specifically on this in-flight
+    // matrix, not merely a displacement/speed assertion -- this test only ever runs the containment
+    // checker (never predictKnockbackStep's own displacement oracle), so the only assertion capable
+    // of firing here is the containment check's own OOB failure. Bisected (this fix round's own
+    // scratch probes): rate 9px/frame is the smallest flat rate that fails containment on THIS single
+    // case (a RIGHT knockback against a column strip armed by a RIGHT approach) -- one unit tighter
+    // than the prior round's own rate-10 failure on the OLD idle-strip-only matrix, direct evidence
+    // the augmented matrix is strictly the stronger check the review demanded. Round 2 finding (b):
+    // this single case's own threshold (9) is a different number from the full 32-case matrix's own
+    // threshold -- the full matrix first fails at a flat rate 8 (on its own more sensitive RIGHT,
+    // phase 64, same-axis-reversing case, exercised for real just above), and passes rates 3-7. Rates
+    // 3-7 pass this single case too. A dedicated rate-8 control on that more sensitive case is right
+    // below.
+    await t.test('negative control: a faster-than-design flat knockback rate fails CONTAINMENT on the in-flight matrix, not merely displacement', async () => {
+      const gridW = 5, gridH = 5;
+      const rate = 9;
+      const project = createStreamedProject({ gridW, gridH });
+      project.project.startScreen = 12;
+      fasterKnockbackOverride(project, rate);
+      const { nes, mem } = await buildAndBoot(project);
+      const assertContained = makeContainmentChecker(mem, { gridW, gridH });
+      const armFrames = approachUntilAxis(nes, mem, 'right', 1);
+      assert.ok(armFrames < 200, 'negative control: the approach must still arm the column strip within 200 frames');
+      assert.equal(mem[ST_ACTIVE], 1, 'negative control: precondition -- a real strip must be in flight before the sabotaged burst');
+      mem[KB_DIR] = DIR_RIGHT;
+      mem[SW_KB_TIMER] = SW_KB_TIME;
+      assert.throws(
+        () => {
+          for (let i = 0; i < SW_KB_TIME; i++) {
+            nes.frame();
+            assertContained(`negative control rate ${rate}: knockback frame ${i}`);
+          }
+        },
+        /must be contained in the completed-content/,
+        `a flat ${rate}px/frame knockback must overrun the completed-content window and fail the containment check's own range assertion, not some other unrelated failure`
+      );
+    });
+
+    // -------------------------------------------------- retained negative control (round 2 finding
+    // (b)): the full matrix's own more sensitive case -- a LEFT approach arms the column strip, then
+    // a RIGHT knockback at starting phase 64 reverses back across it (the "same-axis reversing"
+    // sub-case, phaseIndex 1, of the augmented matrix above) -- fails containment at a flat 8px/frame,
+    // one unit below the single-case RIGHT/column control just above, which only fails at 9. This is
+    // the exact case the full-matrix run at rate 8 fails first (review-s5-round2-evidence/rate8.log:
+    // "right phase 64 same-axis (reversing): knockback frame 14").
+    await t.test('negative control: the full matrix\'s more sensitive reversing case fails containment at rate 8, one unit below the single-case control', async () => {
+      const gridW = 5, gridH = 5;
+      const rate = 8;
+      const project = createStreamedProject({ gridW, gridH });
+      project.project.startScreen = 12;
+      fasterKnockbackOverride(project, rate);
+      const { nes, mem } = await buildAndBoot(project);
+      const assertContained = makeContainmentChecker(mem, { gridW, gridH });
+      const armFrames = approachUntilAxis(nes, mem, 'left', 1);
+      assert.ok(armFrames < 200, 'negative control rate 8: the left approach must still arm the column strip within 200 frames');
+      assert.equal(mem[ST_ACTIVE], 1, 'negative control rate 8: precondition -- a real strip must be in flight before the sabotaged burst');
+      mem[KB_DIR] = DIR_RIGHT;
+      mem[SW_KB_ACC] = 64;
+      mem[SW_KB_TIMER] = SW_KB_TIME;
+      assert.throws(
+        () => {
+          for (let i = 0; i < SW_KB_TIME; i++) {
+            nes.frame();
+            assertContained(`negative control rate ${rate} (RIGHT phase 64 reversing): knockback frame ${i}`);
+          }
+        },
+        /must be contained in the completed-content/,
+        `a flat ${rate}px/frame knockback on the full matrix's own more sensitive reversing case must overrun the completed-content window and fail the containment check's own range assertion, not some other unrelated failure`
+      );
+    });
+
+    // -------------------------------------------------- ownership-boundary crossing, both axes
+    // (base case -- an idle strip: st_active starts, and stays, 0 unless the burst's own movement
+    // happens to arm one incidentally)
+    await t.test('containment: a knockback that crosses an ownership (screen) boundary mid-flight, both axes', async () => {
+      const cases = [
+        { dirName: 'right', dirConst: DIR_RIGHT, startScreen: 0, startX: 245, startY: 112 },
+        { dirName: 'left', dirConst: DIR_LEFT, startScreen: 1, startX: 8, startY: 112 },
+        { dirName: 'down', dirConst: DIR_DOWN, startScreen: 0, startX: 120, startY: 232 },
+        { dirName: 'up', dirConst: DIR_UP, startScreen: 3, startX: 120, startY: 6 } // screen (col0,row1), gridW=3
+      ];
+      for (const { dirName, dirConst, startScreen, startX, startY } of cases) {
+        const project = createStreamedProject({});
+        project.project.startScreen = startScreen;
+        project.project.startX = startX;
+        project.project.startY = startY;
+        const { nes, mem } = await buildAndBoot(project);
+        const assertContained = makeContainmentChecker(mem, { gridW: 3, gridH: 2 });
+        assertContained(`crossing ${dirName}: landing`);
+        const startSwCol = mem[SW_COL];
+        const startSwRow = mem[SW_ROW];
+        mem[KB_DIR] = dirConst;
+        mem[SW_KB_TIMER] = SW_KB_TIME;
+        let crossed = false;
+        for (let i = 0; i < SW_KB_TIME; i++) {
+          nes.frame();
+          assertContained(`crossing ${dirName}: knockback frame ${i}`);
+          if (mem[SW_COL] !== startSwCol || mem[SW_ROW] !== startSwRow) crossed = true;
+        }
+        assert.ok(crossed, `crossing ${dirName}: this case must actually cross a screen boundary within the burst`);
+        for (let i = 0; i < 20; i++) {
+          nes.frame();
+          assertContained(`crossing ${dirName}: post-knockback settle frame ${i}`);
+        }
+      }
+    });
+
+    // -------------------------------------------------- fix round 1, finding 1: the same crossing
+    // property, now with a REAL strip in flight (not idle) at the moment of the crossing. A 5x5
+    // grid, landing on screen 12 (grid centre) with a per-direction startX/startY close to that
+    // screen's own far edge, makes both properties achievable together: the player is already far
+    // enough into the grid that a real approach arms the matching-axis strip in a handful of frames
+    // (this fix round's own scratch probes), while still being close enough to the screen edge that
+    // the 16-frame knockback burst crosses it before the strip finishes draining.
+    await t.test('containment: an ownership-boundary crossing WITH a real strip in flight, all four directions', async () => {
+      const gridW = 5, gridH = 5;
+      const cases = [
+        { dirName: 'right', dirConst: DIR_RIGHT, startX: 220, axis: 1 },
+        { dirName: 'left', dirConst: DIR_LEFT, startX: 36, axis: 1 },
+        { dirName: 'down', dirConst: DIR_DOWN, startY: 228, axis: 2 },
+        { dirName: 'up', dirConst: DIR_UP, startY: 8, axis: 2 }
+      ];
+      for (const { dirName, dirConst, startX, startY, axis } of cases) {
+        const project = createStreamedProject({ gridW, gridH });
+        project.project.startScreen = 12;
+        if (startX != null) project.project.startX = startX;
+        if (startY != null) project.project.startY = startY;
+        const { nes, mem } = await buildAndBoot(project);
+        const assertContained = makeContainmentChecker(mem, { gridW, gridH });
+        const startSwCol = mem[SW_COL];
+        const startSwRow = mem[SW_ROW];
+        const armFrames = approachUntilAxis(nes, mem, dirName, axis);
+        assert.ok(armFrames < 200, `crossing+strip ${dirName}: the approach must arm axis ${axis} within 200 frames`);
+        assert.equal(mem[ST_ACTIVE], axis, `crossing+strip ${dirName}: precondition -- a strip must genuinely be in flight at the hit frame`);
+        checkAndTally(assertContained, 'crossing-with-strip', mem, `crossing+strip ${dirName}: hit frame`);
+        mem[KB_DIR] = dirConst;
+        mem[SW_KB_TIMER] = SW_KB_TIME;
+        let crossed = false;
+        let activeAtCross = null;
+        for (let i = 0; i < SW_KB_TIME; i++) {
+          nes.frame();
+          checkAndTally(assertContained, 'crossing-with-strip', mem, `crossing+strip ${dirName}: knockback frame ${i}`);
+          if (!crossed && (mem[SW_COL] !== startSwCol || mem[SW_ROW] !== startSwRow)) {
+            crossed = true;
+            activeAtCross = mem[ST_ACTIVE];
+          }
+        }
+        assert.ok(crossed, `crossing+strip ${dirName}: this case must actually cross a screen boundary within the burst`);
+        assert.notEqual(activeAtCross, 0, `crossing+strip ${dirName}: the strip must still have been in flight (st_active != 0) at the exact crossing frame, not already drained`);
+        for (let i = 0; i < 20; i++) {
+          nes.frame();
+          checkAndTally(assertContained, 'crossing-with-strip', mem, `crossing+strip ${dirName}: post-knockback settle frame ${i}`);
+        }
+      }
+    });
+
+    // -------------------------------------------------- clamped map edge, both axes, idle strip.
+    // Continuing straight outward from an already-settled boundary cannot arm a strip on that SAME
+    // axis -- there is architecturally no further screen to stream INTO past the map's own edge, so
+    // this base case never puts a strip in flight (verified empirically, this fix round's own scratch
+    // probes). Round 2 finding 2: that does NOT make "clamped edge" and "strip in flight" mutually
+    // exclusive in general -- movement ALONG the boundary can still arm an ORTHOGONAL-axis strip
+    // while the player sits at the edge, and an outward knockback can then run concurrently with that
+    // strip draining. The dedicated case for that is right after this one.
+    await t.test('containment: a knockback driven straight into a clamped map edge never exposes undrawn terrain', async () => {
+      const cases = [
+        { dirName: 'left-at-col0', dirConst: DIR_LEFT, startScreen: 0, startX: 3, startY: 112 },
+        { dirName: 'right-at-far-col', dirConst: DIR_RIGHT, startScreen: 2, startX: 252, startY: 112 }, // gridW=3, far col=2
+        { dirName: 'up-at-row0', dirConst: DIR_UP, startScreen: 0, startX: 120, startY: 3 },
+        { dirName: 'down-at-far-row', dirConst: DIR_DOWN, startScreen: 3, startX: 120, startY: 236 } // gridH=2, far row=1 (screen index 3 = col0,row1)
+      ];
+      for (const { dirName, dirConst, startScreen, startX, startY } of cases) {
+        const project = createStreamedProject({});
+        project.project.startScreen = startScreen;
+        project.project.startX = startX;
+        project.project.startY = startY;
+        const { nes, mem } = await buildAndBoot(project);
+        const assertContained = makeContainmentChecker(mem, { gridW: 3, gridH: 2 });
+        assertContained(`edge ${dirName}: landing`);
+        mem[KB_DIR] = dirConst;
+        mem[SW_KB_TIMER] = SW_KB_TIME;
+        for (let i = 0; i < SW_KB_TIME; i++) {
+          nes.frame();
+          assertContained(`edge ${dirName}: knockback frame ${i}`);
+        }
+        for (let i = 0; i < 10; i++) {
+          nes.frame();
+          assertContained(`edge ${dirName}: post-knockback settle frame ${i}`);
+        }
+      }
+    });
+
+    // -------------------------------------------------- round 2 finding 2: a clamped map edge WITH
+    // a real ORTHOGONAL-axis strip in flight. Landing directly on the edge screen (so the approach
+    // itself never has to cross the very boundary under test), then holding the direction ALONG the
+    // boundary until the engine itself arms a strip on the other axis (never poked), then knocking
+    // straight outward into the clamped edge while that strip is still draining. A 5x5 grid, the same
+    // four owner screens the round-2 review's own scratch probes used: left at (col 0, row 2), right
+    // at (col 4, row 2) with a row strip; up at (col 2, row 0), down at (col 2, row 4) with a column
+    // strip.
+    await t.test('containment: a knockback into a clamped map edge WITH a real orthogonal strip in flight', async () => {
+      const gridW = 5, gridH = 5;
+      const cases = [
+        { dirName: 'left', dirConst: DIR_LEFT, startScreen: 10, startX: 3, startY: 112, approachButton: DOWN, axis: 2, edgeAddr: SW_COL, edgeValue: 0 },
+        { dirName: 'right', dirConst: DIR_RIGHT, startScreen: 14, startX: 242, startY: 112, approachButton: DOWN, axis: 2, edgeAddr: SW_COL, edgeValue: gridW - 1 },
+        { dirName: 'up', dirConst: DIR_UP, startScreen: 2, startX: 120, startY: 3, approachButton: RIGHT, axis: 1, edgeAddr: SW_ROW, edgeValue: 0 },
+        { dirName: 'down', dirConst: DIR_DOWN, startScreen: 22, startX: 120, startY: 224, approachButton: RIGHT, axis: 1, edgeAddr: SW_ROW, edgeValue: gridH - 1 }
+      ];
+      for (const { dirName, dirConst, startScreen, startX, startY, approachButton, axis, edgeAddr, edgeValue } of cases) {
+        const project = createStreamedProject({ gridW, gridH });
+        project.project.startScreen = startScreen;
+        project.project.startX = startX;
+        project.project.startY = startY;
+        const { nes, mem } = await buildAndBoot(project);
+        const assertContained = makeContainmentChecker(mem, { gridW, gridH });
+        assert.equal(mem[edgeAddr], edgeValue, `edge+strip ${dirName}: precondition -- the landing must genuinely sit on the clamped map edge`);
+        nes.buttonDown(1, approachButton);
+        let f = 0;
+        while (mem[ST_ACTIVE] !== axis && f++ < 200) { nes.frame(); checkAndTally(assertContained, 'edge-with-strip', mem, `edge+strip ${dirName}: approach frame ${f}`); }
+        nes.buttonUp(1, approachButton);
+        assert.ok(f < 200, `edge+strip ${dirName}: the along-the-boundary approach must actually arm axis ${axis} within 200 frames`);
+        assert.equal(mem[ST_ACTIVE], axis, `edge+strip ${dirName}: precondition -- a strip must genuinely be in flight on axis ${axis} at the hit frame`);
+        assert.equal(mem[edgeAddr], edgeValue, `edge+strip ${dirName}: precondition -- the player must still be sitting on the clamped map edge at the hit frame`);
+        checkAndTally(assertContained, 'edge-with-strip', mem, `edge+strip ${dirName}: hit frame`);
+        mem[KB_DIR] = dirConst;
+        mem[SW_KB_TIMER] = SW_KB_TIME;
+        for (let i = 0; i < SW_KB_TIME; i++) {
+          nes.frame();
+          checkAndTally(assertContained, 'edge-with-strip', mem, `edge+strip ${dirName}: knockback frame ${i}`);
+        }
+        assert.equal(mem[edgeAddr], edgeValue, `edge+strip ${dirName}: the clamped edge must have refused the outward crossing -- the owning screen must be unchanged after the burst`);
+        for (let i = 0; i < 20; i++) {
+          nes.frame();
+          checkAndTally(assertContained, 'edge-with-strip', mem, `edge+strip ${dirName}: post-knockback settle frame ${i}`);
+        }
+      }
+    });
+
+    // -------------------------------------------------- test 4a: independent oracle. Poke-driven
+    // (SW_KB_TIMER/SW_KB_ACC/KB_DIR directly, the same convention tests 2/3/6/7 already use), so
+    // the frame-stepping loop below never follows a callRoutine call -- callRoutine's own PC-hijack
+    // stub (test/lib/callroutine.js) is a one-shot "arm state, then read RAM back" tool everywhere
+    // else in this codebase (every player_hazard/hurt_player callRoutine call in this same file
+    // asserts on RAM immediately, never drives a further nes.frame()); continuing normal frame
+    // emulation from wherever the stub's own PC (0x703) landed walks off the actual main loop and
+    // into whatever RAM happens to follow, which surfaced as a real crash ("invalid opcode at
+    // address $828") the first time this test tried it. Test 4b below keeps callRoutine to its own
+    // established one-shot-assertion role for the repeat-hit rule instead.
+    // Fix round 1 pending item (d): extended to loop over all 4 starting accumulator phase classes
+    // too, not just phase 0 -- still fully poke-driven (SW_KB_ACC set directly), so the total
+    // expected displacement is computed by the SAME shared walkStep primitive every other oracle in
+    // this file already uses, starting from that same poked phase, rather than a hardcoded 24.
+    await t.test('the real 1.5px/frame-for-16-frames workload matches an independently computed oracle, every direction x every starting accumulator phase', async () => {
+      const directions = [
+        ['right', DIR_RIGHT, 'playerX'],
+        ['left', DIR_LEFT, 'playerX'],
+        ['down', DIR_DOWN, 'playerY'],
+        ['up', DIR_UP, 'playerY']
+      ];
+      const phases = [0, 64, 128, 192];
+      const gridW = 3, gridH = 2;
+      for (const [dirName, dirConst, axisField] of directions) {
+        for (const phase of phases) {
+          const project = createStreamedProject({});
+          const { nes, mem } = await buildAndBoot(project);
+          let model = { playerX: mem[PLAYER_X], playerY: mem[PLAYER_Y], acc: phase, swCol: mem[SW_COL], swRow: mem[SW_ROW] };
+          const startAxis = model[axisField];
+          mem[KB_DIR] = dirConst;
+          mem[SW_KB_ACC] = phase;
+          mem[SW_KB_TIMER] = SW_KB_TIME;
+          let expectedTotal = 0;
+          let acc = phase;
+          for (let i = 0; i < SW_KB_TIME; i++) {
+            const { step, acc: next } = walkStep(acc, SW_KB_SPEED_SUB);
+            expectedTotal += step;
+            acc = next;
+          }
+          for (let i = 0; i < SW_KB_TIME; i++) {
+            nes.frame();
+            model = predictKnockbackStep({ ...model, dir: dirName, gridW, gridH });
+            assert.equal(mem[PLAYER_X], model.playerX, `${dirName} phase ${phase}: frame ${i} player_x`);
+            assert.equal(mem[PLAYER_Y], model.playerY, `${dirName} phase ${phase}: frame ${i} player_y`);
+            assert.equal(mem[SW_COL], model.swCol, `${dirName} phase ${phase}: frame ${i} sw_col`);
+            assert.equal(mem[SW_ROW], model.swRow, `${dirName} phase ${phase}: frame ${i} sw_row`);
+          }
+          assert.equal(mem[SW_KB_TIMER], 0, `${dirName} phase ${phase}: sw_kb_timer must have reached 0 after exactly SW_KB_TIME frames`);
+          const netWorld =
+            axisField === 'playerX'
+              ? model.swCol * 256 + model.playerX - startAxis
+              : model.swRow * 240 + model.playerY - startAxis;
+          const signedExpected = dirName === 'right' || dirName === 'down' ? expectedTotal : -expectedTotal;
+          assert.equal(netWorld, signedExpected, `${dirName} phase ${phase}: net world-space displacement over the burst must exactly match the independently summed walkStep trace from starting phase ${phase} (${expectedTotal}px), not a partial or over-shot amount`);
+        }
+      }
+    });
+
+    // -------------------------------------------------- test 4b: the repeated-hit rule, ISOLATED/
+    // POKE-BASED (a legal repeat after both the knockback AND the remaining invulnerability window
+    // have elapsed does not compound; a hit inside invulnerability has no effect at all). Each
+    // callRoutine call below is its own one-shot arm-then-read, exactly the established convention --
+    // "the window has elapsed" is simulated the same way this file already simulates mid-burst state
+    // (a direct mem[PLAYER_IFRAMES] poke), not by driving real frames through a callRoutine-hijacked
+    // PC. Kept alongside (not replaced by) the real, frame-driven end-to-end test below: this one
+    // isolates the repeat-hit rule itself across all 4 directions cheaply; that one proves the same
+    // rule holds through a real contact, a real oracle-matched burst and a real natural expiry.
+    await t.test('a repeated hit obeys IFRAME_TIME: no effect while invulnerable, a fresh non-compounding burst once it has elapsed', async () => {
+      const directions = [DIR_RIGHT, DIR_LEFT, DIR_DOWN, DIR_UP];
+      for (const dirConst of directions) {
+        const project = createStreamedProject({});
+        const { dir, nes, mem, addrOf } = await buildAndBootWithSymbols(project);
+        try {
+          const hpBefore = mem[PLAYER_HP];
+          triggerFloorHit(nes, mem, addrOf, dirConst);
+          assert.equal(mem[PLAYER_HP], hpBefore - 1, 'hurt_player must have taken exactly one heart');
+          assert.equal(mem[PLAYER_IFRAMES], 60, 'player_iframes must be armed at IFRAME_TIME(60)');
+          assert.equal(mem[SW_KB_TIMER], SW_KB_TIME, 'sw_kb_timer must be armed at SW_KB_TIME(16)');
+
+          // A hit attempted while still invulnerable (player_iframes > 0, whether or not a
+          // knockback burst happens to still be in flight) must have no effect at all.
+          const hpDuringIframes = mem[PLAYER_HP];
+          const kbTimerDuringIframes = mem[SW_KB_TIMER];
+          const kbAccDuringIframes = mem[SW_KB_ACC];
+          triggerFloorHit(nes, mem, addrOf, dirConst);
+          assert.equal(mem[PLAYER_HP], hpDuringIframes, 'a hit inside invulnerability must not take a heart');
+          assert.equal(mem[SW_KB_TIMER], kbTimerDuringIframes, 'a hit inside invulnerability must not touch sw_kb_timer');
+          assert.equal(mem[SW_KB_ACC], kbAccDuringIframes, 'a hit inside invulnerability must not touch sw_kb_acc');
+
+          // Simulate the invulnerability window (and any knockback burst) having fully elapsed --
+          // the same "poke the state a real frame-driven wait would have reached" convention the
+          // containment/oracle tests already use.
+          mem[PLAYER_IFRAMES] = 0;
+          mem[SW_KB_TIMER] = 0;
+          const hpBeforeRepeat = mem[PLAYER_HP];
+          triggerFloorHit(nes, mem, addrOf, dirConst);
+          assert.equal(mem[PLAYER_HP], hpBeforeRepeat - 1, 'a legal repeat hit must take exactly one more heart');
+          assert.equal(mem[PLAYER_IFRAMES], 60, 'a legal repeat hit must re-arm IFRAME_TIME(60)');
+          assert.equal(mem[SW_KB_TIMER], SW_KB_TIME, 'a legal repeat hit must arm a fresh SW_KB_TIME(16), not a stacked value');
+          assert.equal(mem[SW_KB_ACC], 0, "a legal repeat hit's sw_kb_acc must restart fresh at 0, not compound the prior burst's leftover phase");
+        } finally {
+          fs.rmSync(dir, { recursive: true, force: true });
+        }
+      }
+    });
+
+    // -------------------------------------------------- fix round 1, finding 3: the real hit path,
+    // end-to-end, no pokes and no callRoutine-then-further-frames (test 4a's own header comment
+    // explains why the latter crashes -- test/lib/callroutine.js's PC-hijack stub is a one-shot
+    // arm-then-read tool, not a place to resume normal frame emulation from). A real damaging NPC is
+    // walked into for real; the resulting burst is checked against the same independent oracle test
+    // 4a above uses (starting phase is always 0 here -- the only value a REAL hurt_player dispatch
+    // ever produces, per test 4b's own "restart fresh at 0" assertion; the 4 poked phase classes are
+    // covered by 4a's own extended matrix above, not duplicated here without pokes); a second
+    // contact attempted while still invulnerable must have no effect; stepping further away and then
+    // waiting out the rest of the window with no input at all lets player_iframes decrement
+    // naturally, once per real frame (never polled), down to exactly 0; a fresh contact after that
+    // arms a non-compounding second burst. Two approach axes, horizontal and vertical. Round 2 fix,
+    // finding 1: an optional engineOverride is applied to the project right before build, so the
+    // dedicated negative control below can reuse this exact real-contact/reapproach/retreat/cooldown
+    // sequence against a sabotaged engine, instead of a second hand-duplicated copy of it.
+    async function realHitEndToEnd(dirName, npcPos, engineOverride) {
+      const gridW = 5, gridH = 5;
+      const project = createStreamedProject({ gridW, gridH });
+      project.project.startScreen = 12;
+      const aid = project.sprites.actors.length;
+      project.sprites.actors.push({ name: 'Damage', behavior: 'npc', hp: 1, damage: 1 });
+      const screen = project.maps.find((m) => m.streamed).screens[12];
+      screen.entities = screen.entities ?? [];
+      screen.entities.push({ actorId: aid, x: npcPos.x, y: npcPos.y, props: {} });
+      if (engineOverride) engineOverride(project);
+      const { nes, mem } = await buildAndBoot(project);
+      const assertContained = makeContainmentChecker(mem, { gridW, gridH });
+      const button = DIR_BUTTON[dirName];
+      const oppositeButton = DIR_BUTTON[DIR_INVERSE[dirName]];
+
+      const hp0 = mem[PLAYER_HP];
+      for (let hit = 0; hit < 2; hit++) {
+        const hpBefore = mem[PLAYER_HP];
+        nes.buttonDown(1, button);
+        let f = 0;
+        while (mem[PLAYER_HP] === hpBefore && f++ < 150) { nes.frame(); checkAndTally(assertContained, 'real-hit-path', mem, `${dirName} hit ${hit}: approach frame ${f}`); }
+        nes.buttonUp(1, button);
+        assert.ok(f < 150, `${dirName} hit ${hit}: a real walk-in contact must occur within 150 frames`);
+        assert.equal(mem[PLAYER_HP], hpBefore - 1, `${dirName} hit ${hit}: a real contact must take exactly one heart`);
+        assert.equal(mem[PLAYER_IFRAMES], 60, `${dirName} hit ${hit}: a real contact must arm player_iframes at IFRAME_TIME(60)`);
+        assert.equal(mem[SW_KB_TIMER], SW_KB_TIME, `${dirName} hit ${hit}: a real contact must arm sw_kb_timer at SW_KB_TIME(16)`);
+        assert.equal(mem[SW_KB_ACC], 0, `${dirName} hit ${hit}: a fresh real contact's sw_kb_acc must start at 0`);
+
+        const kbDirName = DIR_NAME_BY_CONST[mem[KB_DIR]];
+        let model = { playerX: mem[PLAYER_X], playerY: mem[PLAYER_Y], acc: 0, swCol: mem[SW_COL], swRow: mem[SW_ROW] };
+        for (let k = 0; k < SW_KB_TIME; k++) {
+          nes.frame();
+          model = predictKnockbackStep({ ...model, dir: kbDirName, gridW, gridH });
+          assert.equal(mem[PLAYER_X], model.playerX, `${dirName} hit ${hit}: frame ${k} player_x vs the independent oracle`);
+          assert.equal(mem[PLAYER_Y], model.playerY, `${dirName} hit ${hit}: frame ${k} player_y vs the independent oracle`);
+          assert.equal(mem[SW_KB_TIMER], SW_KB_TIME - 1 - k, `${dirName} hit ${hit}: frame ${k} sw_kb_timer must decrement naturally, once per real frame`);
+          checkAndTally(assertContained, 'real-hit-path', mem, `${dirName} hit ${hit}: burst frame ${k}`);
+        }
+        assert.equal(mem[SW_KB_TIMER], 0, `${dirName} hit ${hit}: sw_kb_timer must reach exactly 0 after the real burst`);
+
+        // Round 2 fix, finding 1: the review found the original code below pressed the WRONG pair of
+        // buttons here -- oppositeButton to "reapproach", then button to "retreat" -- which walks the
+        // player AWAY from the NPC on both legs, so unchanged HP proved nothing (no contact was ever
+        // attempted). Reapproach with the ORIGINAL approach button (back toward the NPC) and retreat
+        // with its opposite. A real contact OPPORTUNITY is asserted directly -- player/NPC hitboxes
+        // actually overlapping, the same |dx|<TOUCH_RANGE && |dy|<TOUCH_RANGE box entity_contact's own
+        // entity_touching_player checks (engine/entities.asm:559-584) -- while player_iframes is still
+        // positive, so a build that merely never reaches the NPC again cannot pass this by accident.
+        const hpDuringIframes = mem[PLAYER_HP];
+        const kbTimerDuringIframes = mem[SW_KB_TIMER];
+        nes.buttonDown(1, button);
+        let reapproachFrames = 0;
+        let contactOpportunity = false;
+        while (mem[PLAYER_IFRAMES] > 10 && reapproachFrames++ < 60) {
+          nes.frame();
+          checkAndTally(assertContained, 'real-hit-path', mem, `${dirName} hit ${hit}: reapproach frame ${reapproachFrames}`);
+          if (Math.abs(mem[ENT_X] - mem[PLAYER_X]) < TOUCH_RANGE && Math.abs(mem[ENT_Y] - mem[PLAYER_Y]) < TOUCH_RANGE) {
+            contactOpportunity = true;
+            break;
+          }
+        }
+        nes.buttonUp(1, button);
+        assert.ok(contactOpportunity, `${dirName} hit ${hit}: reapproaching with the original approach direction must actually reach a real contact opportunity (player/NPC hitboxes overlapping) while player_iframes is still positive (${mem[PLAYER_IFRAMES]} remaining, ${reapproachFrames} frames)`);
+        assert.equal(mem[PLAYER_HP], hpDuringIframes, `${dirName} hit ${hit}: a contact attempted during the remaining invulnerability must have no effect`);
+        assert.equal(mem[SW_KB_TIMER], kbTimerDuringIframes, `${dirName} hit ${hit}: a contact attempted during the remaining invulnerability must not re-arm sw_kb_timer`);
+
+        // Step further away to genuinely break contact before letting the rest of the window
+        // expire with no input at all -- otherwise standing on the (non-solid, touch-damage-only)
+        // NPC would re-trigger a hit the instant invulnerability reached 0, corrupting the natural-
+        // expiry observation below.
+        nes.buttonDown(1, oppositeButton);
+        for (let i = 0; i < 8; i++) {
+          nes.frame();
+          checkAndTally(assertContained, 'real-hit-path', mem, `${dirName} hit ${hit}: retreat frame ${i}`);
+        }
+        nes.buttonUp(1, oppositeButton);
+
+        let drainFrames = 0;
+        let expected = mem[PLAYER_IFRAMES];
+        while (mem[PLAYER_IFRAMES] > 0 && drainFrames++ < 80) {
+          nes.frame();
+          checkAndTally(assertContained, 'real-hit-path', mem, `${dirName} hit ${hit}: cooldown frame ${drainFrames}`);
+          expected -= 1;
+          assert.equal(mem[PLAYER_IFRAMES], Math.max(expected, 0), `${dirName} hit ${hit}: player_iframes must decrement by exactly 1 per real frame (never poked)`);
+          assert.equal(mem[PLAYER_HP], hpBefore - 1, `${dirName} hit ${hit}: hp must not change while the invulnerability window drains naturally`);
+        }
+        assert.equal(mem[PLAYER_IFRAMES], 0, `${dirName} hit ${hit}: invulnerability must reach exactly 0 via real per-frame decrement, never poked`);
+      }
+      assert.equal(mem[PLAYER_HP], hp0 - 2, `${dirName}: two real, separated contacts must take exactly two hearts total, non-compounding`);
+    }
+
+    await t.test('the real hit path, end-to-end, frame-driven only: natural contact, oracle-matched burst, blocked repeat, natural expiry, fresh non-compounding second hit', async () => {
+      await realHitEndToEnd('right', { x: 158, y: 112 });
+      await realHitEndToEnd('down', { x: 120, y: 150 });
+    });
+
+    // -------------------------------------------------- round 2 finding 1: negative control --
+    // neutralizing BOTH real invulnerability gates must fail this exact end-to-end test, specifically
+    // on the reapproach's own "no effect" HP assertion: with both gates off, the real reapproach
+    // contact this fix establishes now lands a genuine second hit while player_iframes is still
+    // positive, taking a heart it must not take.
+    await t.test('negative control: neutralizing both invulnerability gates fails the real hit path on the reapproach HP assertion', async () => {
+      await assert.rejects(
+        () => realHitEndToEnd('right', { x: 158, y: 112 }, bothInvulnerabilityGatesOffOverride),
+        /a contact attempted during the remaining invulnerability must have no effect/,
+        'both invulnerability gates neutralized must fail specifically on the reapproach HP assertion, not some unrelated failure'
+      );
+    });
+
+    // -------------------------------------------------- test 5 (fix round 1, finding 2 rewrite):
+    // Flash concurrent with a REAL strip in flight AND a real knockback underway -- the round-1
+    // review's own defect was that the old version below never had a real strip in flight either
+    // (an idle 3x2 landing, no approach). flash_tick is a genuine vram_buf producer
+    // (script_op_flash queues a real palette-flash packet -- unlike Shake, which only ever touches
+    // nmi_scroll/shake_left, never vram_buf); a real strip draw (sw_render_strip's own
+    // SW_STREAM_CHUNK-at-a-time queueing) is the second producer sharing the same frames. The
+    // nes.cpu.write hook below captures vram_ready the INSTANT it is set nonzero, before this same
+    // frame's own NMI drain can clear it back to 0 -- a plain post-frame mem[] read would already
+    // see it cleared (nes.frame() runs mainline+NMI atomically).
+    await t.test('a Flash event, a real strip in flight, and a real knockback all co-occur without starving the strip draw', async () => {
+      const gridW = 5, gridH = 5;
+      const project = createStreamedProject({ gridW, gridH });
+      project.project.startScreen = 12;
+      const actorId = project.sprites.actors.length;
+      project.sprites.actors.push({ name: 'Flasher', behavior: 'npc', hp: 1, damage: 0 });
+      const screen = project.maps.find((m) => m.streamed).screens[12];
+      screen.entities = screen.entities ?? [];
+      screen.entities.push({
+        actorId,
+        x: 140,
+        y: 112,
+        props: {
+          trigger: 'interact',
+          event: { pages: [{ cond: { type: 'none', arg: 0 }, commands: [{ op: 'flash' }, { op: 'shake', frames: 20 }] }] }
+        }
+      });
+      const { nes, mem } = await buildAndBoot(project);
+      const assertContained = makeContainmentChecker(mem, { gridW, gridH });
+      assertContained('landing');
+
+      const originalWrite = nes.cpu.write.bind(nes.cpu);
+      const hits = [];
+      nes.cpu.write = (address, value) => {
+        if (address === VRAM_READY && (value & 0xff) !== 0) {
+          hits.push({ vramReady: value & 0xff, vramLen: mem[VRAM_LEN], stActive: mem[ST_ACTIVE], swKbTimer: mem[SW_KB_TIMER] });
+        }
+        return originalWrite(address, value);
+      };
+
+      const armFrames = approachUntilAxis(nes, mem, 'right', 1);
+      assert.ok(armFrames < 200, 'Flash+strip+knockback: the approach must arm the column strip within 200 frames');
+      assert.equal(mem[ST_ACTIVE], 1, 'Flash+strip+knockback: precondition -- a real column strip must be in flight before the interact/knockback');
+      assertContained('after approach, before interact');
+
+      mem[PLAYER_DIR] = DIR_RIGHT;
+      nes.buttonDown(1, B);
+      nes.frame();
+      nes.buttonUp(1, B);
+      assertContained('after interact, before knockback');
+
+      mem[KB_DIR] = DIR_RIGHT;
+      mem[SW_KB_ACC] = 0;
+      mem[SW_KB_TIMER] = SW_KB_TIME;
+      for (let i = 0; i < SW_KB_TIME; i++) {
+        nes.frame();
+        assertContained(`Flash/strip/knockback concurrent: frame ${i}`);
+      }
+      assert.equal(mem[SW_KB_TIMER], 0, 'sw_kb_timer must still have counted all the way down with Flash+strip concurrent');
+      for (let i = 0; i < 20; i++) {
+        nes.frame();
+        assertContained(`Flash/strip/knockback concurrent: settle frame ${i}`);
+      }
+
+      nes.cpu.write = originalWrite;
+
+      assert.ok(hits.length > 0, 'the Flash-produced vram_buf packet must actually have been observed opening (vram_ready != 0) at least once during this run');
+      for (const hit of hits) {
+        assert.ok(hit.vramReady !== 0, `a captured hit must have vram_ready != 0: ${JSON.stringify(hit)}`);
+        assert.ok(hit.vramLen > 0 && hit.vramLen <= 35, `a captured hit's vram_len must be in (0,35]: ${JSON.stringify(hit)}`);
+        assert.notEqual(hit.stActive, 0, `a captured hit must co-occur with a real strip in flight: ${JSON.stringify(hit)}`);
+        assert.notEqual(hit.swKbTimer, 0, `a captured hit must co-occur with a real knockback burst in flight: ${JSON.stringify(hit)}`);
+      }
+      fs.mkdirSync(path.join(ROOT, 'handoff-next', 'fix1-evidence'), { recursive: true });
+      fs.writeFileSync(path.join(ROOT, 'handoff-next', 'fix1-evidence', 'flash-strip-hits.json'), JSON.stringify(hits, null, 2));
+    });
+
+    // -------------------------------------------------- test 6: regression gate -- the streamed
+    // knockback step is never the ordinary uncapped KNOCKBACK_SPEED (3px/frame)
+    await t.test('regression gate: a streamed knockback never steps 3px in a single frame (the ordinary uncapped KNOCKBACK_SPEED)', async () => {
+      const project = createStreamedProject({});
+      const { nes, mem } = await buildAndBoot(project);
+      mem[KB_DIR] = DIR_RIGHT;
+      mem[SW_KB_ACC] = 0;
+      mem[SW_KB_TIMER] = SW_KB_TIME;
+      let prevX = mem[PLAYER_X];
+      let total = 0;
+      for (let i = 0; i < SW_KB_TIME; i++) {
+        nes.frame();
+        const delta = mem[PLAYER_X] - prevX; // no crossing expected in this run (well clear of any edge)
+        assert.ok(delta === 1 || delta === 2, `frame ${i}: streamed knockback stepped ${delta}px -- must be 1 or 2, never KNOCKBACK_SPEED's ordinary 3`);
+        total += delta;
+        prevX = mem[PLAYER_X];
+      }
+      assert.equal(total, 24, 'total displacement over the burst must be exactly 24px (16 frames averaging 1.5px/frame)');
+    });
+
+    // -------------------------------------------------- test 7: distinct state
+    await t.test('the streamed knockback counter/accumulator is distinct from kb_timer and from the walk accumulators; ordinary knockback and ordinary walking speed are both unchanged', async () => {
+      // (a) a streamed knockback must never touch kb_timer/kb_dir's OWN ordinary counter (kb_dir
+      // is shared -- knockback_dir's own direction math -- but kb_timer must stay 0), nor the walk
+      // accumulators (sw_walk_acc_x/y), which a streamed knockback never calls into (sw_pstep_*
+      // is reached directly, not through sw_walk_step_x/y).
+      {
+        const project = createStreamedProject({});
+        const { nes, mem } = await buildAndBoot(project);
+        mem[KB_DIR] = DIR_RIGHT;
+        mem[SW_KB_TIMER] = SW_KB_TIME;
+        for (let i = 0; i < SW_KB_TIME; i++) {
+          nes.frame();
+          assert.equal(mem[KB_TIMER], 0, `frame ${i}: kb_timer must stay 0 during a streamed knockback`);
+          assert.equal(mem[SW_WALK_ACC_X], 0, `frame ${i}: sw_walk_acc_x must stay untouched by a streamed knockback`);
+          assert.equal(mem[SW_WALK_ACC_Y], 0, `frame ${i}: sw_walk_acc_y must stay untouched by a streamed knockback`);
+        }
+      }
+      // (b) ordinary (non-streamed) knockback is completely unchanged: KNOCKBACK_TIME(8) frames
+      // at KNOCKBACK_SPEED(3) px/frame, 24px total, using kb_timer/kb_dir -- and it must never
+      // touch sw_kb_timer/sw_kb_acc, which mean nothing on an ordinary map.
+      {
+        const project = createStreamedProject({ mixed: true }); // default start: the ordinary "Before" map
+        const { nes, mem } = await buildAndBoot(project, { requireStreamed: false });
+        assert.equal(mem[MAP_IS_STREAMED], 0, 'precondition: landed on the ordinary map');
+        mem[KB_DIR] = DIR_RIGHT;
+        mem[KB_TIMER] = KNOCKBACK_TIME_CONST;
+        let prevX = mem[PLAYER_X];
+        let total = 0;
+        for (let i = 0; i < KNOCKBACK_TIME_CONST; i++) {
+          nes.frame();
+          const delta = mem[PLAYER_X] - prevX;
+          assert.equal(delta, 3, `frame ${i}: ordinary knockback must still move exactly KNOCKBACK_SPEED's 3px/frame, unchanged`);
+          assert.equal(mem[SW_KB_TIMER], 0, `frame ${i}: sw_kb_timer must stay 0 on an ordinary map`);
+          total += delta;
+          prevX = mem[PLAYER_X];
+        }
+        assert.equal(total, 24, 'ordinary knockback must still total exactly 24px over its own unchanged 8 frames');
+        assert.equal(mem[KB_TIMER], 0, 'kb_timer must have counted all the way down');
+      }
+      // (c) ordinary walking speed (both game surfaces) is unaffected -- sw_walk_acc_x's own
+      // documented cadence (SW_SPEED_SUB_X=128, the same 1/2px alternation the walking tests
+      // above already pin) is untouched by anything in this file.
+      {
+        const project = createStreamedProject({});
+        const { nes, mem } = await buildAndBoot(project);
+        const startX = mem[PLAYER_X];
+        const frames = 8;
+        const trace = simulateWalk(SW_SPEED_SUB_X, frames);
+        const cumulative = trace.reduce((a, b) => a + b, 0);
+        nes.buttonDown(1, RIGHT);
+        for (let i = 0; i < frames; i++) nes.frame();
+        nes.buttonUp(1, RIGHT);
+        assert.equal(mem[PLAYER_X], startX + cumulative, 'ordinary walking speed/cadence on a streamed map must be exactly what it always was');
+      }
+    });
+
+    // Fix round 1: write the accumulated strip-state tallies out for the fix report to quote --
+    // the same idle(0)/col(1)/row(2) shape the round-1 review's own strip-summary.json used.
+    fs.mkdirSync(path.join(ROOT, 'handoff-next', 'fix1-evidence'), { recursive: true });
+    fs.writeFileSync(path.join(ROOT, 'handoff-next', 'fix1-evidence', 'strip-summary.json'), JSON.stringify(stripTally, null, 2));
   });
 
   await t.test('sw_event_freeze: the frame interact opens a conversation, the player does not also step', async () => {

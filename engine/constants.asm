@@ -1181,6 +1181,15 @@ sw_fc_desl    = $0789   ; this frame's desired window localCol
 sw_fc_desr    = $078A   ; this frame's desired window screenRow
 sw_fc_desrl   = $078B   ; this frame's desired window localRow
 
+; Phase 2 slice 5's own claim: two bytes right after sw_fc_desrl, the confirmed-free run before
+; the four named-but-unallocated slice 7b/8/9 bytes ($07F0 on, above) -- the streamed knockback's
+; own timer/accumulator (sw_knockback_step, engine/streamworld.asm), distinct from kb_timer/kb_dir
+; (engine/combat.asm's ordinary 8-frame/3px knockback). Not zero page: zero page is fully
+; committed (mv_ent's own comment, above) -- absolute addressing, no `<` prefix, zeropage.test.js
+; enforces it above $100.
+sw_kb_timer   = $078C   ; frames left in a streamed knockback (0 = none in flight)
+sw_kb_acc     = $078D   ; sw_walk_step_x/y's own WHOLE_STEP+overflow accumulator shape, this axis's own copy
+
 ; Behaviours, in the same order as BEHAVIORS in shared/project.js.
 BEH_PLAYER  = 0
 BEH_PATROL  = 1
@@ -1323,11 +1332,17 @@ BURN_DMG    = 3             ; what a burned combatant loses after each turn
 IFRAME_TIME = 60
 KNOCKBACK_TIME = 8
 KNOCKBACK_SPEED = 3
-; Phase 2 slice 4b: capped knockback on a streamed map (mixed/!BATTLE_ENABLED projects only,
-; matching KNOCKBACK_SPEED/KNOCKBACK_TIME's own gate) -- 1px/frame instead of 3, so a hit never
-; outruns the window's own margin the way a 3px/frame slide could. KNOCKBACK_TIME is unchanged;
-; a capped knockback simply covers less ground over the same eight frames.
-SW_KNOCKBACK_SPEED = 1
+; Phase 2 slice 5 (mixed/!BATTLE_ENABLED projects only, matching KNOCKBACK_SPEED/KNOCKBACK_TIME's
+; own gate): the accepted-hypothesis knockback pacing for a streamed map -- 16 frames at an
+; average 1.5px/frame (SW_KB_SPEED_SUB, engine/streamworld.asm, next to SW_SPEED_SUB_X/Y), the
+; SAME total 24px distance ordinary knockback already covers (KNOCKBACK_TIME(8) *
+; KNOCKBACK_SPEED(3)), just paced over twice the frames so no single frame's step outruns the
+; strip's own draw margin the way a bare 3px/frame slide could. Distinct counter and accumulator
+; (sw_kb_timer/sw_kb_acc, below) from kb_timer/kb_dir's own ordinary 8-frame run -- a real
+; timer/rate change, not a constant swapped into the existing loop. Replaces slice 4b's own interim
+; SW_KNOCKBACK_SPEED=1 (8 frames * 1px/frame = 8px) after empirical containment testing confirmed
+; the hypothesis holds (handoff-next/streamed-worlds-phase2-s5-report.md).
+SW_KB_TIME = 16
 HURT_TIME   = 16            ; how long a struck actor flashes
 HUD_X       = 16            ; where the hearts sit, in screen pixels
 HUD_Y       = 16

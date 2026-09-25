@@ -48,6 +48,17 @@ SW_STREAM_MIXED_CHUNK = 2
 SW_SPEED_SUB_X = 128
 SW_SPEED_SUB_Y = 112
 
+; SW_KB_SPEED_SUB -- phase 2 slice 5's own streamed-knockback pacing: 128 is the identical
+; WHOLE_STEP-1-plus-overflow-every-other-frame shape SW_SPEED_SUB_X already uses, 1.5 px/frame
+; average. Unlike SW_SPEED_SUB_Y, both knockback axes share this one rate (the accepted
+; hypothesis is "16 frames at 1.5 px/frame", not an asymmetric pair) -- knockback is a bounded
+; SW_KB_TIME(16)-frame/24px burst that then stops, not sustained indefinite walking, so
+; SW_SPEED_SUB_Y's own margin reasoning (a sustained crossing's worst case ties the row strip's
+; own vblank need at 128) does not automatically transfer; empirical containment testing across
+; all four directions, phases and a boundary crossing is what actually settles it, not this
+; comment.
+SW_KB_SPEED_SUB = 128
+
 ; ==========================================================================
 ; sw_goto -- A=absolute screen column (0-254), X=absolute screen row
 ; (0-254). Selects the PRG bank holding that screen and points mtptr at its
@@ -3246,18 +3257,20 @@ sw_win_arm_region_end:
 
   .if !BATTLE_ENABLED
 ; ==========================================================================
-; sw_knockback_step -- combat.asm's own knockback_step, capped: 1px/frame
-; (SW_KNOCKBACK_SPEED) instead of 3, so a hit's own slide never outruns the
-; window's own margin the way an uncapped 3px/frame could. Same dispatch
-; shape, same move_up/left/right/down reuse (their own probe never
+; sw_knockback_step -- phase 2 slice 5: the accepted-hypothesis pacing, 16
+; frames (sw_kb_timer, SW_KB_TIME) at an average 1.5px/frame (sw_kb_acc,
+; SW_KB_SPEED_SUB) -- combat.asm's own knockback_step, but with a real
+; sub-pixel accumulator driving 1-or-2px/frame instead of a bare constant
+; speed, exactly sw_walk_step_x's own WHOLE_STEP+overflow shape. Same
+; dispatch shape, same move_up/left/right/down reuse (their own probe never
 ; straddles on a streamed map either -- see the report's own proof), same
 ; jmp-ends-in-rts convention (lands back in sw_update_player's own caller).
 ; !BATTLE_ENABLED-gated, matching knockback_step's own gate -- an RPG has no
 ; knockback concept at all.
 ; ==========================================================================
 sw_knockback_step:
-  dec <kb_timer
-  lda #SW_KNOCKBACK_SPEED
+  dec sw_kb_timer
+  jsr sw_kb_step_pixels
   sta <cur_speed
   lda <kb_dir
   cmp #DIR_UP
@@ -3273,6 +3286,20 @@ sw_knockback_left:
   jmp sw_pstep_left
 sw_knockback_right_step:
   jmp sw_pstep_right
+
+; sw_kb_step_pixels -- sw_walk_step_x/y's own accumulator shape (this file,
+; above), a distinct copy for the knockback burst alone: Out: A = this
+; frame's whole-pixel step (1 or 2). Clobbers nothing but A.
+sw_kb_step_pixels:
+  lda sw_kb_acc
+  clc
+  adc #SW_KB_SPEED_SUB
+  sta sw_kb_acc
+  lda #1
+  bcc sw_kb_step_pixels_done
+  lda #2
+sw_kb_step_pixels_done:
+  rts
   .endif
 sw_knockback_step_end:
   ; Kernel-budget boundary label: brackets sw_knockback_step alone, gated
@@ -3292,7 +3319,7 @@ sw_knockback_step_end:
 ; the jmp here); <moving> already reset to 0 there too (update_player's own
 ; top, before its streamed branch), so sw_pstep_*'s own `inc <moving>` is
 ; this frame's only writer. sw_event_freeze (an event started this frame)
-; skips movement outright; capped knockback (kb_timer active, !BATTLE_ENABLED
+; skips movement outright; streamed knockback (sw_kb_timer active, !BATTLE_ENABLED
 ; only) overrides the ordinary axis dispatch; otherwise axis arbitration
 ; (sw_axis_pref) plus the accumulator (sw_walk_step_x/y) drive exactly one
 ; axis via cur_speed=delta into sw_pstep_left/right/up/down (fix round 1,
@@ -3318,7 +3345,7 @@ sw_update_player:
   lda <sw_event_freeze
   bne sw_up_hazard
   .if !BATTLE_ENABLED
-  lda <kb_timer
+  lda sw_kb_timer
   beq sw_up_axis
   jsr sw_knockback_step
   jmp sw_up_hazard

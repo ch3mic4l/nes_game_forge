@@ -108,6 +108,20 @@ init_session_streamed_dispatch:
   sta <ord_screen
   .endif
 init_session_streamed_done:
+init_session_kb_dispatch:
+  ; Phase 2 slice 5: sw_kb_timer/sw_kb_acc (engine/streamworld.asm) cleared
+  ; the same defensive-reset reasoning as map_is_streamed/ord_screen just
+  ; above -- a stale nonzero sw_kb_timer surviving a game over would run
+  ; sw_update_player's streamed-knockback dispatch on the very first frame
+  ; of the new session. !BATTLE_ENABLED-gated: an RPG has no knockback
+  ; concept, streamed or ordinary, and never allocates the bytes any use.
+  .if STREAMING_ENABLED
+  .if !BATTLE_ENABLED
+  sta sw_kb_timer
+  sta sw_kb_acc
+  .endif
+  .endif
+init_session_kb_done:
   sta <talk_ent              ; NO_ENTITY is $FF, but boot re-writes it after this
   ldx #7
 init_session_switches:
@@ -192,8 +206,31 @@ hurt_player:
   lda #IFRAME_TIME
   sta <player_iframes
   jsr knockback_dir
+  ; Phase 2 slice 5: a streamed map's own 16-frame/1.5px-average knockback
+  ; (sw_kb_timer/sw_kb_acc, engine/streamworld.asm) replaces the ordinary
+  ; 8-frame/3px run (kb_timer) entirely -- kb_dir (just set above) is shared
+  ; by both, the direction math is identical either way. Gated the same as
+  ; knockback_dir's own caller (`.if !BATTLE_ENABLED` wraps this whole
+  ; routine): an RPG has no knockback concept at all, streamed or ordinary.
+  ; Bracket labels hold this span to exactly the STREAMING_ENABLED-added
+  ; detour (kb_sw_dispatch==kb_sw_done, 0 bytes, when it is off) -- the same
+  ; convention update_player_knock/update_player_knock_ord (engine/player.asm)
+  ; already uses. Kept under 31 characters -- nesasm v3.1 crashes outright on
+  ; a longer label, exit code 0 (docs/reference-6502-traps.md).
+hurt_player_kb_sw_dispatch:
+  .if STREAMING_ENABLED
+  lda <map_is_streamed
+  beq hurt_player_kb_sw_done
+  lda #SW_KB_TIME
+  sta sw_kb_timer
+  lda #0
+  sta sw_kb_acc
+  jmp hurt_player_kb_ordinary_done
+  .endif
+hurt_player_kb_sw_done:
   lda #KNOCKBACK_TIME
   sta <kb_timer
+hurt_player_kb_ordinary_done:
   pla
   jsr lose_hearts
   lda <player_hp
