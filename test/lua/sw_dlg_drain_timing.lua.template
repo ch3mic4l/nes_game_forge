@@ -1,0 +1,204 @@
+-- sw_dlg_drain_timing.lua.template -- Mesen (cycle-accurate) proof that the dialogue overlay's
+-- own worst single-transaction vram_buf queue -- a 32-tile row split at an X seam, two 3-byte
+-- headers + 32 payload bytes = 38 total (docs/design-streamed-worlds.md's own corrected packet
+-- arithmetic) -- drains inside vblank on real hardware timing while the real streamed dialogue
+-- lifecycle (sw_dlg15_state=DRAINING, cam_dirty held, box_state=BOX_CLOSED) is genuinely holding
+-- the camera/OAM barrier open, exactly the state engine/text.asm's own text_close_attr leaves
+-- behind for sw_dlg17_camrelease to resolve. jsnes (this project's own built-in core,
+-- test/unit/streamworlddialogue.test.js's case 8) has no hard vblank deadline, so a
+-- mechanically-correct but too-slow drain would still pass every behavioural test there; only a
+-- cycle-accurate core can fail this the way real hardware would -- the same reasoning
+-- sw_nmi_deadline.lua.template and flash_nmi_timing.lua.template already established for their
+-- own workloads.
+--
+-- No streaming strip is armed at all: contract "sw_nmi_stream is gated on st_active alone" still
+-- holds, but a box never opens while a strip is active (the pending-strip gate), so the ONLY
+-- question here is whether the ordinary, already-shipping exclusive vram_drain (no strip
+-- involved) finishes inside vblank for this byte count.
+--
+-- This is a TEMPLATE. test/lua/build_sw_dlg_drain_roms.mjs instantiates it, substituting every
+-- __PLACEHOLDER__ with an address/value resolved fresh out of that exact build's own game.fns and
+-- constants.asm/config.inc.
+--
+--   node test/lua/build_sw_dlg_drain_roms.mjs [outDir] [--break=oversize]
+--   Mesen --testRunner <outDir>/sw_dlg_drain_timing.lua <outDir>/sw_dlg_drain_timing.nes
+--
+-- (test/lua/run_sw_dlg_drain_check.sh runs both the real worst-case shape and the negative
+-- control.)
+
+local MAIN_LOOP_READY = __MAIN_LOOP_READY__
+local NMI_RTI          = __NMI_RTI__
+
+local GAME_STATE       = __GAME_STATE__
+local ST_GAMEPLAY      = __ST_GAMEPLAY__
+local ST_DIALOG        = __ST_DIALOG__
+local MAP_IS_STREAMED  = __MAP_IS_STREAMED__
+local ST_ACTIVE        = __ST_ACTIVE__
+local BOX_STATE        = __BOX_STATE__
+local BOX_CLOSED       = __BOX_CLOSED__
+local SW_DLG15_STATE   = __SW_DLG15_STATE__
+local SW_DLG15_DRAINING = __SW_DLG15_DRAINING__
+local CAM_DIRTY        = __CAM_DIRTY__
+local VRAM_LEN         = __VRAM_LEN__
+local VRAM_BUF         = __VRAM_BUF__
+local VRAM_READY       = __VRAM_READY__
+
+-- PACKET_PAYLOADS: explicit per-packet payload byte counts (never generically re-split here -- a
+-- naive greedy splitter can produce a trailing 0-payload packet, which vram_drain's own
+-- byte-counter reads as 256, CLAUDE.md's own documented trap; the BUILDER decides the real packet
+-- shape, this template just emits it). QUEUE_BYTES is the resulting total (3 header bytes per
+-- packet + its own payload).
+local PACKET_PAYLOADS = { __PACKET_PAYLOADS__ }
+local QUEUE_BYTES = 0
+for _, p in ipairs(PACKET_PAYLOADS) do QUEUE_BYTES = QUEUE_BYTES + 3 + p end
+
+local BREAK_MODE = __BREAK_MODE__
+
+local VBLANK_FIRST_SCANLINE  = 241
+local VBLANK_LAST_SCANLINE   = 260
+local DOTS_PER_SCANLINE      = 341
+local PPU_DOTS_PER_CPU_CYCLE = 3
+local RTI_REMAINING_CYCLES   = 6
+local RTI_REMAINING_DOTS     = RTI_REMAINING_CYCLES * PPU_DOTS_PER_CPU_CYCLE
+
+local EXIT_TIMEOUT          = 99
+local EXIT_NO_BOOT          = 2
+local EXIT_NOT_STREAMED     = 3
+local EXIT_STALE_ANCHOR     = 4
+local EXIT_DEADLINE_MISS    = 5
+local EXIT_UNEXPECTED_STATE = 7
+local EXIT_STRIP_ACTIVE     = 8
+
+local EXIT_PASS_BASE = 100
+local MARGIN_SCALE = 20
+local EXIT_PASS_MAX = 255
+
+local frame = 0
+local checkedAnchor = false
+local armed = false
+local checkedDeadline = false
+
+local function log(message) emu.log(string.format("[%5d] %s", frame, message)) end
+local function fail(code, message) log("FAIL: " .. message) emu.stop(code) end
+local function pass(message) log("ok   " .. message) end
+local function read(a) return emu.read(a, emu.memType.nesMemory) end
+local function write(a, v) emu.write(a, v, emu.memType.nesMemory) end
+
+local function checkAnchor()
+  local nmiByte = read(NMI_RTI)
+  if nmiByte ~= 0x40 then
+    fail(EXIT_STALE_ANCHOR, string.format(
+      "byte at NMI_RTI (0x%04x) is 0x%02x, not rti ($40) -- stale address, re-run build_sw_dlg_drain_roms.mjs",
+      NMI_RTI, nmiByte))
+    return false
+  end
+  pass(string.format("NMI_RTI anchor verified: 0x%04x is $40 (rti)", NMI_RTI))
+  return true
+end
+
+-- Queues the real worst-case (or, under --break=oversize, a deliberately larger) vram_buf
+-- transaction, then poses the real streamed dialogue lifecycle exactly as engine/text.asm's own
+-- text_close_attr leaves it for sw_dlg17_camrelease to resolve: box already visually closed,
+-- DRAINING, camera/OAM barrier held. vram_ready raised LAST, mirroring the real end-of-frame
+-- handshake's own ordering.
+local function armQueue()
+  local i = 0
+  for _, payload in ipairs(PACKET_PAYLOADS) do
+    write(VRAM_BUF + i, 0x27); i = i + 1   -- addr hi (an arbitrary real nametable address)
+    write(VRAM_BUF + i, 0x00); i = i + 1   -- addr lo
+    write(VRAM_BUF + i, payload); i = i + 1
+    for b = 1, payload do write(VRAM_BUF + i, 0xAA); i = i + 1 end
+  end
+  write(VRAM_BUF + i, 0)  -- terminator
+  write(VRAM_LEN, QUEUE_BYTES)
+  write(BOX_STATE, BOX_CLOSED)
+  write(SW_DLG15_STATE, SW_DLG15_DRAINING)
+  write(CAM_DIRTY, 1)
+  write(GAME_STATE, ST_DIALOG)
+  write(VRAM_READY, 1)
+
+  local vramLen = read(VRAM_LEN)
+  if vramLen ~= QUEUE_BYTES then
+    fail(EXIT_UNEXPECTED_STATE, string.format(
+      "immediately after arming: vram_len=%d (want %d) -- the poke did not stick",
+      vramLen, QUEUE_BYTES))
+    return
+  end
+  armed = true
+  pass(string.format("armed at main_loop_ready: vram_len=%d, box_state=BOX_CLOSED, sw_dlg15_state=DRAINING, cam_dirty held%s -- watching the immediately following nmi_rti", vramLen, BREAK_MODE and (" -- BROKEN: " .. BREAK_MODE) or ""))
+end
+
+local function onMainLoopReady()
+  if armed then return end
+  if read(GAME_STATE) ~= ST_GAMEPLAY then return end
+  if read(MAP_IS_STREAMED) == 0 then
+    fail(EXIT_NOT_STREAMED, "map_is_streamed is 0 at main_loop_ready after boot -- the landing screen never engaged streaming")
+    return
+  end
+  if read(ST_ACTIVE) ~= 0 then
+    -- The pending-strip gate means a real box never opens while a strip is active; if this ever
+    -- fires it means the harness's own landing screen armed a strip on its own, which would make
+    -- the "no strip involved" premise above false.
+    fail(EXIT_STRIP_ACTIVE, "st_active is nonzero at main_loop_ready -- a strip is active, which the real dialogue lifecycle never allows concurrently with a drain")
+    return
+  end
+  armQueue()
+end
+
+local function onNmiRti()
+  if not armed or checkedDeadline then return end
+  checkedDeadline = true
+  local vramLen = read(VRAM_LEN)
+  local state = emu.getState()
+  local scanline = state["ppu.scanline"]
+  local cycle = state["ppu.cycle"]
+  log(string.format("nmi_rti reached: scanline=%d cycle=%d vram_len=%d", scanline, cycle, vramLen))
+  if vramLen ~= 0 then
+    fail(EXIT_DEADLINE_MISS, string.format("vram_len should be 0 right after the drain, saw %d", vramLen))
+    return
+  end
+  if scanline < VBLANK_FIRST_SCANLINE or scanline > VBLANK_LAST_SCANLINE then
+    fail(EXIT_DEADLINE_MISS, string.format("nmi_rti landed on scanline %d, outside vblank (%d-%d)", scanline, VBLANK_FIRST_SCANLINE, VBLANK_LAST_SCANLINE))
+    return
+  end
+  local finishDot = cycle + RTI_REMAINING_DOTS
+  local finishScanline = scanline
+  while finishDot >= DOTS_PER_SCANLINE do
+    finishDot = finishDot - DOTS_PER_SCANLINE
+    finishScanline = finishScanline + 1
+  end
+  if finishScanline > VBLANK_LAST_SCANLINE then
+    fail(EXIT_DEADLINE_MISS, string.format("rti's own remaining dots push past vblank (scanline %d -> %d)", scanline, finishScanline))
+    return
+  end
+  local marginDots = (VBLANK_LAST_SCANLINE - finishScanline) * DOTS_PER_SCANLINE + (DOTS_PER_SCANLINE - 1 - finishDot)
+  local marginCycles = marginDots / PPU_DOTS_PER_CPU_CYCLE
+  pass(string.format("the %d-byte dialogue drain NMI finished at scanline %d, cycle %d (rti settles on scanline %d, dot %d) -- inside vblank (%d-%d), margin ~%.1f cycles", QUEUE_BYTES, scanline, cycle, finishScanline, finishDot, VBLANK_FIRST_SCANLINE, VBLANK_LAST_SCANLINE, marginCycles))
+  local code = math.min(EXIT_PASS_MAX, EXIT_PASS_BASE + math.floor(marginCycles / MARGIN_SCALE))
+  log(string.format("margin %.1f cycles -> exit code %d", marginCycles, code))
+  emu.stop(code)
+end
+
+local function onFrame()
+  frame = frame + 1
+  if not checkedAnchor then
+    checkedAnchor = true
+    if not checkAnchor() then return end
+  end
+  if not armed and frame > 300 then
+    fail(EXIT_NO_BOOT, "never reached ST_GAMEPLAY (streamed, strip idle) at main_loop_ready within 300 frames")
+    return
+  end
+  if armed and not checkedDeadline and frame > 320 then
+    fail(EXIT_TIMEOUT, "armed but no nmi_rti followed within 20 frames")
+    return
+  end
+  if frame > 600 then
+    fail(EXIT_TIMEOUT, "timed out")
+    return
+  end
+end
+
+emu.addEventCallback(onFrame, emu.eventType.endFrame)
+emu.addMemoryCallback(onMainLoopReady, emu.callbackType.exec, MAIN_LOOP_READY)
+emu.addMemoryCallback(onNmiRti, emu.callbackType.exec, NMI_RTI)

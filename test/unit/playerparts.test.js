@@ -424,6 +424,12 @@ test('sample/ builds a byte-identical ROM after PLAYER_FRAMES/PLAYER_TILES moved
   // every operand's own encoding changed (2 bytes instead of 3 for a
   // surviving zero-page access) -- the identical new hash
   // nameentry.test.js's own BASELINES.sample re-pins to.
+  // Phase 2 slice 7b fix round 1 (A5): an earlier round re-pinned this hash
+  // for text_open_step's box_row_addr move instead of restoring identity.
+  // sample carries no streamed map, so the fix (keeping that call in its
+  // original position whenever the build is not itself STREAMING_ENABLED &&
+  // TEXT_ENABLED) restores the original hash, the same one
+  // nameentry.test.js's own BASELINES.sample restores to.
   assert.equal(
     hash,
     '442565369e9da7011901b459317adb4d3c07d9c24fd8f388bcf92b731829e846',

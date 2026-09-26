@@ -1,0 +1,377 @@
+-- sw_dlg_real_workload_timing.lua.template -- Mesen (cycle-accurate) proof that the REAL streamed
+-- dialogue lifecycle -- a real player walk (scripted controller input, not a RAM teleport), a real
+-- B-press interact, a real event running `flash` then `say "AB"`, the real camera/OAM barrier, and
+-- real vram_drain -- finishes every NMI's drain inside vblank on real hardware timing, at the real
+-- reachable worst case: Flash's own 35-byte packet sharing the interact frame with the dialogue
+-- box's own first row/attribute draw (38 bytes), 73 payload bytes total (independently confirmed by
+-- re-running handoff-next/review-phase2-s7b-round1-evidence/barrier-accounting/
+-- accounting-odd-column-probe.mjs against the A6-fixed engine).
+--
+-- test/lua/sw_dlg_drain_timing.lua.template (plan test 9) already proves the ordinary vram_drain
+-- code path meets the deadline for a SYNTHETIC RAM-poked packet shape with DMA deliberately
+-- skipped. This complements it by proving the REAL production lifecycle produces that exact shape
+-- and that the real OAM/camera barrier (sw_dlg17_camhold et al.) is genuinely exercised end to end,
+-- open AND close (both sides of fix round 1 finding A6's own one-band-per-frame pacing fix to
+-- sw_dlg_hi_open_attr/sw_dlg_hi_close_attr, engine/streamworld.asm).
+--
+-- Movement is driven the same way test/lua/camera_check.lua.template already drives a real
+-- crossing: emu.setInput on inputPolled, held table computed fresh each frame from the player's
+-- and the NPC's own real RAM positions (test/lib/streamedproject.js's own interactEntity NPC,
+-- placed at (216,112) -- accounting-odd-column-probe.mjs's own scenario exactly) -- never a
+-- RAM-poked teleport, since the point of this check is that the real walk, the real camera scroll
+-- it causes, and the real interact all genuinely happen.
+--
+-- box_state is polled to BOX_ENDWAIT (open sequence -- rows, attribute bands, typewriter -- fully
+-- done; "AB" carries no page break, so the single page's own end-of-string case lands here, never
+-- BOX_PAGEWAIT) before advancing, then to BOX_CLOSED (close sequence fully done) before finishing
+-- -- never a guessed frame count, the same "driveUntil a real state, not a frame budget" convention
+-- this codebase's own JS boot helpers already use.
+--
+-- Every real NMI observed from the interact press through the box's own full close is deadline-
+-- checked (scanline/cycle math identical to sw_dlg_drain_timing.lua.template's own onNmiRti -- see
+-- that file's header for the reasoning), not merely the one at the predicted peak -- the real worst
+-- margin across the whole real lifecycle is what this script reports.
+--
+-- Negative control (BREAK_MODE == "inject-oversize", threaded in at build time by
+-- build_sw_dlg_real_workload_roms.mjs's own --break=inject-oversize -- the SAME rom, a runtime-only
+-- difference): the first time the real transaction's own vram_len is observed nonzero at
+-- main_loop_ready (before that frame's NMI drains it -- the identical poke-before-drain point
+-- sw_dlg_drain_timing.lua.template's own armQueue uses), one extra oversized fake packet is
+-- appended onto the tail of the REAL queue, on top of -- not instead of -- the genuine payload, so
+-- the resulting queue is realistically bigger than anything a real event could organically produce
+-- (every row/attribute draw is already paced to one unit of work per frame by design, so there is
+-- no "real" way to build a bigger negative control here than injecting on top of a real one).
+-- Expected outcome: the very next nmi_rti misses its deadline (EXIT_DEADLINE_MISS) -- proving the
+-- check can genuinely fail, not merely pass vacuously.
+--
+-- This is a TEMPLATE. test/lua/build_sw_dlg_real_workload_roms.mjs instantiates it, substituting
+-- every __PLACEHOLDER__ with an address/value resolved fresh out of that exact build's own
+-- game.fns and constants.asm/config.inc.
+--
+--   node test/lua/build_sw_dlg_real_workload_roms.mjs [outDir] [--break=inject-oversize]
+--   Mesen --testRunner <outDir>/sw_dlg_real_workload_timing.lua <outDir>/sw_dlg_real_workload_timing.nes
+--
+-- (test/lua/run_sw_dlg_real_workload_check.sh runs both the real run and the negative control.)
+
+local MAIN_LOOP_READY = __MAIN_LOOP_READY__
+local NMI_RTI          = __NMI_RTI__
+
+local GAME_STATE       = __GAME_STATE__
+local ST_GAMEPLAY      = __ST_GAMEPLAY__
+local ST_DIALOG        = __ST_DIALOG__
+local MAP_IS_STREAMED  = __MAP_IS_STREAMED__
+local ST_ACTIVE        = __ST_ACTIVE__
+local BOX_STATE        = __BOX_STATE__
+local BOX_CLOSED       = __BOX_CLOSED__
+-- "AB" carries no TXT_PAGE token (single page), so the typewriter's own end-of-string case
+-- (engine/text.asm's text_type_step) sets BOX_ENDWAIT directly, never BOX_PAGEWAIT (that state is
+-- reached only via an explicit page break, engine/text.asm:444-450 -- confirmed by reading the
+-- routine, not assumed).
+local BOX_ENDWAIT      = __BOX_ENDWAIT__
+local CAM_DIRTY        = __CAM_DIRTY__
+local VRAM_LEN         = __VRAM_LEN__
+local VRAM_BUF         = __VRAM_BUF__
+local VRAM_READY       = __VRAM_READY__
+local PLAYER_X         = __PLAYER_X__
+local PLAYER_Y         = __PLAYER_Y__
+-- ent_x/ent_y are @size=MAX_ENTITIES arrays (engine/constants.asm); the interact NPC is
+-- accounting-odd-column-probe.mjs's own scenario, slot 0 -- the streamed map's screen 0's only
+-- entity -- so no `+slot` offset is needed.
+local ENT_X            = __ENT_X__
+local ENT_Y            = __ENT_Y__
+
+-- The real, independently re-confirmed worst-case payload (see this template's own header):
+-- Flash's own 35-byte packet plus the dialogue box's own first 38-byte row/attribute draw sharing
+-- the interact frame. vram_len itself excludes the terminator (73, not 74).
+local EXPECTED_REAL_VRAM_LEN = __EXPECTED_REAL_VRAM_LEN__
+
+local BREAK_MODE = __BREAK_MODE__
+-- The extra fake packet BREAK_MODE appends on top of the real queue -- large enough that the
+-- combined transaction cannot possibly drain inside vblank (vram_drain's own per-byte real cost,
+-- established by sw_dlg_drain_timing.lua.template's own real 38-byte measurement, is nowhere near
+-- fast enough to clear an extra 120 bytes in the few hundred cycles vblank leaves once the real 73
+-- have already been accounted for).
+local INJECT_PAYLOAD = 120
+
+local VBLANK_FIRST_SCANLINE  = 241
+local VBLANK_LAST_SCANLINE   = 260
+local DOTS_PER_SCANLINE      = 341
+local PPU_DOTS_PER_CPU_CYCLE = 3
+local RTI_REMAINING_CYCLES   = 6
+local RTI_REMAINING_DOTS     = RTI_REMAINING_CYCLES * PPU_DOTS_PER_CPU_CYCLE
+
+local EXIT_TIMEOUT                 = 99
+local EXIT_NO_BOOT                 = 2
+local EXIT_NEVER_WALKED            = 4
+local EXIT_DEADLINE_MISS           = 5
+local EXIT_UNEXPECTED_STATE        = 7
+local EXIT_WORKLOAD_WRONG          = 9
+local EXIT_NEGATIVE_CONTROL_DID_NOT_FIRE = 11
+local EXIT_NEVER_CLOSED            = 12
+local EXIT_NEVER_OPENED            = 13
+
+local EXIT_PASS_BASE = 100
+local MARGIN_SCALE = 20
+-- Fix round 1 (A6): never emit Mesen's own generic external-failure exit code (255) as a pass --
+-- the same lesson run_sw_dlg_drain_check.sh's own fix applied at the wrapper; here it is applied
+-- proactively inside the script itself, so this template never produces the ambiguity in the first
+-- place. EXIT_PASS_MAX is the exclusive ceiling: real codes land in [EXIT_PASS_BASE, EXIT_PASS_CAP].
+local EXIT_PASS_CAP = 254
+local EXIT_PASS_MAX = 255
+
+local frame = 0
+local phase = "boot"    -- boot -> walk -> interact -> observe_open -> close_press -> observe_close -> done
+local phaseStartFrame = 0
+local held = {}
+
+-- Fix round 1 (A6): the chase logic below reads real PLAYER_X/Y vs ENT_X/Y out of live CPU memory
+-- -- meaningless (and, empirically, actively misleading) before the real cold boot has actually
+-- reached ST_GAMEPLAY on the streamed landing screen and the landing screen's own entities have
+-- been spawned; RAM holds pre-boot garbage/in-progress setup values until then, which can
+-- coincidentally satisfy the walk convergence threshold and fire a premature, bogus "arrived"
+-- transition. test/unit/streamworldmove.test.js's own buildAndBoot (and every other ROM-booting
+-- suite's own local boot helper) drives 100 EXTRA settle frames after first reaching ST_GAMEPLAY,
+-- for exactly this reason -- SETTLE_FRAMES below is that same margin.
+local SETTLE_FRAMES = 100
+local settleFrames = 0
+local bootFrames = 0
+local walked = false
+local walkFrames = 0
+local injected = false
+local maxRealVramLen = 0
+local minMarginCycles = nil
+local nmiSamples = 0
+local negativeControlFired = false
+local reported = false
+
+local function log(message) emu.log(string.format("[%5d/%s] %s", frame, phase, message)) end
+local function fail(code, message) log("FAIL: " .. message) emu.stop(code) end
+local function pass(message) log("ok   " .. message) end
+local function read(a) return emu.read(a, emu.memType.nesMemory) end
+local function write(a, v) emu.write(a, v, emu.memType.nesMemory) end
+
+local function checkAnchor()
+  local nmiByte = read(NMI_RTI)
+  if nmiByte ~= 0x40 then
+    fail(EXIT_UNEXPECTED_STATE, string.format(
+      "byte at NMI_RTI (0x%04x) is 0x%02x, not rti ($40) -- stale address, re-run build_sw_dlg_real_workload_roms.mjs",
+      NMI_RTI, nmiByte))
+    return false
+  end
+  return true
+end
+
+-- Real chase, mirroring accounting-odd-column-probe.mjs's own walkToEntity (a live threshold of 2
+-- px either side of the target, same as that file) -- but driven through real emu.setInput rather
+-- than a raw button-array poke, since this script (unlike the node:test harness) drives an actual
+-- Mesen core one real frame at a time.
+local function updateHeld()
+  if phase == "walk" then
+    local x, y = read(PLAYER_X), read(PLAYER_Y)
+    local tx, ty = read(ENT_X), read(ENT_Y)
+    local h = {}
+    if x < tx - 2 then h.right = true
+    elseif x > tx + 2 then h.left = true end
+    if y < ty - 2 then h.down = true
+    elseif y > ty + 2 then h.up = true end
+    if not h.right and not h.left and not h.up and not h.down then
+      walked = true
+      phase = "interact"
+      phaseStartFrame = frame
+      h = { b = true }
+    end
+    held = h
+  elseif phase == "interact" then
+    held = {}
+    phase = "observe_open"
+    phaseStartFrame = frame
+  elseif phase == "close_press" then
+    held = { b = true }
+    phase = "observe_close"
+    phaseStartFrame = frame
+  else
+    held = {}
+  end
+end
+
+local function onInput()
+  emu.setInput(held, 0)
+end
+
+-- Appends one extra, deliberately oversized fake packet onto the tail of whatever the REAL
+-- transaction just finalized (realLen bytes, terminator at VRAM_BUF+realLen) -- the same
+-- poke-before-drain shape sw_dlg_drain_timing.lua.template's own armQueue uses, layered on top of a
+-- genuine real payload instead of building one from scratch.
+local function injectOnTop(realLen)
+  local i = realLen
+  write(VRAM_BUF + i, 0x27); i = i + 1
+  write(VRAM_BUF + i, 0x00); i = i + 1
+  write(VRAM_BUF + i, INJECT_PAYLOAD); i = i + 1
+  for b = 1, INJECT_PAYLOAD do write(VRAM_BUF + i, 0xAA); i = i + 1 end
+  write(VRAM_BUF + i, 0)
+  injected = true -- set BEFORE the write below, so onVramLenWrite's own guard excludes this write
+                   -- from maxRealVramLen even if Mesen re-invokes a write callback for a script write
+  write(VRAM_LEN, i)
+  log(string.format("injected %d extra fake bytes on top of the real %d-byte transaction (new vram_len=%d)", INJECT_PAYLOAD, realLen, i))
+end
+
+local function onMainLoopReady()
+  if phase == "boot" or phase == "walk" then return end
+  if BREAK_MODE == "inject-oversize" and not injected then
+    local len = read(VRAM_LEN)
+    if len > 0 then
+      injectOnTop(len)
+    end
+  end
+end
+
+local function onNmiRti()
+  if phase == "boot" or phase == "walk" or phase == "interact" then return end
+  nmiSamples = nmiSamples + 1
+  local vramLen = read(VRAM_LEN)
+  local state = emu.getState()
+  local scanline = state["ppu.scanline"]
+  local cycle = state["ppu.cycle"]
+  if vramLen ~= 0 then
+    negativeControlFired = true
+    fail(EXIT_DEADLINE_MISS, string.format("vram_len should be 0 right after the drain, saw %d (phase=%s)", vramLen, phase))
+    return
+  end
+  if scanline < VBLANK_FIRST_SCANLINE or scanline > VBLANK_LAST_SCANLINE then
+    negativeControlFired = true
+    fail(EXIT_DEADLINE_MISS, string.format("nmi_rti landed on scanline %d, outside vblank (%d-%d) (phase=%s)", scanline, VBLANK_FIRST_SCANLINE, VBLANK_LAST_SCANLINE, phase))
+    return
+  end
+  local finishDot = cycle + RTI_REMAINING_DOTS
+  local finishScanline = scanline
+  while finishDot >= DOTS_PER_SCANLINE do
+    finishDot = finishDot - DOTS_PER_SCANLINE
+    finishScanline = finishScanline + 1
+  end
+  if finishScanline > VBLANK_LAST_SCANLINE then
+    negativeControlFired = true
+    fail(EXIT_DEADLINE_MISS, string.format("rti's own remaining dots push past vblank (scanline %d -> %d) (phase=%s)", scanline, finishScanline))
+    return
+  end
+  local marginDots = (VBLANK_LAST_SCANLINE - finishScanline) * DOTS_PER_SCANLINE + (DOTS_PER_SCANLINE - 1 - finishDot)
+  local marginCycles = marginDots / PPU_DOTS_PER_CPU_CYCLE
+  if minMarginCycles == nil or marginCycles < minMarginCycles then
+    minMarginCycles = marginCycles
+    log(string.format("new worst margin: %.1f cycles (phase=%s, scanline=%d cycle=%d)", marginCycles, phase, scanline, cycle))
+  end
+end
+
+-- Real-transaction observation only (never writes back) -- tracks the real peak vram_len the
+-- interact/dialogue lifecycle produced, independent of BREAK_MODE's own injected extra. Gated to
+-- phase ~= "walk": the walk phase's own initial streamed-landing camera fill legitimately writes
+-- much larger values to vram_len and would otherwise swamp the figure this is actually measuring.
+local function onVramLenWrite(address, value)
+  if phase == "boot" or phase == "walk" then return end
+  if value > maxRealVramLen and not injected then maxRealVramLen = value end
+end
+
+local function finish()
+  if reported then return end
+  reported = true
+  if BREAK_MODE == "inject-oversize" then
+    if not negativeControlFired then
+      fail(EXIT_NEGATIVE_CONTROL_DID_NOT_FIRE, "the injected oversized transaction never missed its vblank deadline -- the negative control did not fire")
+      return
+    end
+    -- onNmiRti's own fail() already called emu.stop(EXIT_DEADLINE_MISS); finish() is never reached
+    -- on that path (fail() returns before this function would run again). This branch exists only
+    -- to name the failure mode should reported logic above be reached without it -- defensive, not
+    -- expected to run.
+    return
+  end
+  if maxRealVramLen ~= EXPECTED_REAL_VRAM_LEN then
+    fail(EXIT_WORKLOAD_WRONG, string.format(
+      "real peak vram_len was %d, expected exactly %d (Flash's own 35 bytes plus the dialogue box's own first 38-byte row/attribute draw sharing the interact frame)",
+      maxRealVramLen, EXPECTED_REAL_VRAM_LEN))
+    return
+  end
+  if nmiSamples < 1 or minMarginCycles == nil then
+    fail(EXIT_UNEXPECTED_STATE, "the real lifecycle produced no deadline-checked NMI samples at all")
+    return
+  end
+  pass(string.format("real lifecycle complete: peak vram_len=%d (matches the independently confirmed worst case), %d NMIs deadline-checked, worst margin %.1f cycles",
+    maxRealVramLen, nmiSamples, minMarginCycles))
+  local code = math.min(EXIT_PASS_CAP, EXIT_PASS_BASE + math.floor(minMarginCycles / MARGIN_SCALE))
+  emu.stop(code)
+end
+
+local function onFrame()
+  frame = frame + 1
+  if frame == 1 then
+    if not checkAnchor() then return end
+  end
+
+  if phase == "boot" then
+    bootFrames = bootFrames + 1
+    if read(GAME_STATE) == ST_GAMEPLAY and read(MAP_IS_STREAMED) ~= 0 then
+      settleFrames = settleFrames + 1
+      if settleFrames >= SETTLE_FRAMES then
+        phase = "walk"
+        phaseStartFrame = frame
+        pass("boot settled: ST_GAMEPLAY + map_is_streamed held for " .. SETTLE_FRAMES .. " frames -- beginning the real walk")
+      end
+    else
+      settleFrames = 0
+    end
+    if phase == "boot" and bootFrames > 400 then
+      fail(EXIT_NO_BOOT, "never reached and held ST_GAMEPLAY (streamed) at boot within 400 frames")
+      return
+    end
+    if frame > 900 then
+      fail(EXIT_TIMEOUT, "timed out in phase " .. phase)
+      return
+    end
+    return
+  end
+
+  if phase == "walk" then
+    walkFrames = walkFrames + 1
+    if walkFrames > 400 then
+      fail(EXIT_NEVER_WALKED, "the player never walked adjacent to the interact NPC within 400 frames")
+      return
+    end
+  end
+
+  if phase == "observe_open" then
+    if read(BOX_STATE) == BOX_ENDWAIT then
+      phase = "close_press"
+      phaseStartFrame = frame
+      pass("open sequence complete: box_state reached BOX_ENDWAIT")
+    elseif frame - phaseStartFrame > 180 then
+      fail(EXIT_NEVER_OPENED, string.format("box_state never reached BOX_ENDWAIT within 180 frames of the interact press (last seen box_state=%d)", read(BOX_STATE)))
+      return
+    end
+  elseif phase == "observe_close" then
+    if read(BOX_STATE) == BOX_CLOSED then
+      phase = "done"
+      phaseStartFrame = frame
+      pass("close sequence complete: box_state returned to BOX_CLOSED")
+    elseif frame - phaseStartFrame > 180 then
+      fail(EXIT_NEVER_CLOSED, "box_state never returned to BOX_CLOSED within 180 frames of the close press")
+      return
+    end
+  elseif phase == "done" then
+    if frame - phaseStartFrame >= 3 then
+      finish()
+      return
+    end
+  end
+
+  updateHeld()
+
+  if frame > 900 then
+    fail(EXIT_TIMEOUT, "timed out in phase " .. phase)
+    return
+  end
+end
+
+emu.addEventCallback(onFrame, emu.eventType.endFrame)
+emu.addEventCallback(onInput, emu.eventType.inputPolled)
+emu.addMemoryCallback(onMainLoopReady, emu.callbackType.exec, MAIN_LOOP_READY)
+emu.addMemoryCallback(onNmiRti, emu.callbackType.exec, NMI_RTI)
+emu.addMemoryCallback(onVramLenWrite, emu.callbackType.write, VRAM_LEN)

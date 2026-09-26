@@ -604,18 +604,15 @@ ord_screen = $FF
 ; (the event-freeze policy flag) are phase 2 slice 4b's own two claims out of
 ; this reserved run; both real equates now, first writer/reader
 ; engine/player.asm's streamed movement driver and engine/input.asm's
-; do_talk respectively. The rest of the run stays a bare comment -- no code
-; in this commit references any of them, so giving them a symbol would claim
-; an address with nothing to prove it real:
-;   $F3-$FC  dialogue lifecycle  -- sw_dlg15_state and friends (slice 7b)
+; do_talk respectively.
 sw_axis_pref    = $C7      ; 0 = X owns the accumulator, 1 = Y does
 ; The dialogue overlay's own scratch (docs/design-streamed-worlds.md §7,
 ; phase 2 slice 7a) -- transient per-open-box working state for
 ; sw_dlg_tile_addr/sw_dlg_write_row (the tile mapper/split-packet writer)
 ; and sw_dlg_attr_precompute/sw_dlg_attr_open_band/sw_dlg_attr_close_band
 ; (the masked-attribute code), engine/streamworld.asm. Meaningless while no
-; box is open; owner: this slice. 29 of the reserved $C8-$F2 (43 bytes) are
-; named here -- $E5-$F2 stay free within this same reservation, nothing in
+; box is open; owner: this slice. 36 of the reserved $C8-$F2 (43 bytes) are
+; named here -- $EC-$F2 stay free within this same reservation, nothing in
 ; this slice references them.
 sw_dlgw_band     = $C8     ; sw_dlg_write_row's own band-relative tile row (0-5)
 sw_dlgw_r        = $C9     ; sw_dlg_write_row's own cam_x_lo>>3 remainder / split flag
@@ -649,8 +646,46 @@ sw_dlgw_baserow  = $E4     ; sw_dlg_attr_precompute's own unwrapped base metatil
                             ; kept OUT of sw_dlgw_tmp on purpose, so each iteration's row-wrap test
                             ; (baserow + band index, compared fresh against 15) never sees an
                             ; already-wrapped remainder from a prior iteration
+; Phase 2 slice 7b's own generic split-aware run writer (border/terrain-close/
+; text-clear/choice-label wipes/naming-grid rows -- any multi-byte row a
+; streamed box needs, as opposed to the single-tile writes that never split)
+; and its terrain-close row generator, engine/streamworld.asm.
+sw_dlgw_seamcol  = $E5     ; the column (0-31) at which the current run's packet must split --
+                            ; computed once by sw_dlg_run_open, read (never recomputed) by
+                            ; sw_dlg_run_push on every byte
+sw_dlgw_open     = $E6     ; 0 until sw_dlg_run_push's first byte opens the packet; never let a
+                            ; packet close (vram_end) having received zero pushes -- see CLAUDE.md's
+                            ; own "a count of zero drains as 256" trap
+sw_dlgw_col      = $E7     ; the column (0-31) sw_dlg_run_push is about to write, advanced by the
+                            ; caller between pushes; also sw_dlg_run_reopen's own tile_addr input
+sw_dlgw_edge     = $E8     ; sw_dlg_write_border's own left/right-edge tile id
+sw_dlgw_fill     = $E9     ; sw_dlg_write_border's own interior-fill tile id
+sw_dlgw_mtrow    = $EA     ; sw_dlg_close_row's own box-relative metatile row (box row >> 1)
+sw_dlgw_half     = $EB     ; sw_dlg_close_row's own metatile vertical half (box row & 1) --
+                            ; selects the tl/tr vs bl/br pair of sw_dlg_metatile's own result
 sw_event_freeze = $FD      ; nonzero: an event ran this frame -- update_player's
                             ; streamed branch skips movement entirely
+
+; Phase 2 slice 7b: the dialogue lifecycle's own wrapper around the ordinary
+; box_state machine (engine/text.asm) -- a streamed box's pending-open wait
+; (strip idle, then the metatile-floor camera nudge) and its drain-
+; acknowledged close (vram_ready reads 0, then the un-nudge), documented as a
+; 10-byte reservation ($F3-$FC, docs/design-streamed-worlds.md's own "complete
+; RAM map") of which this slice's own implementation uses 5: the ordinary
+; box_state/box_row counters already drive the row/attribute steps once a
+; transaction is under way, so no separate row/phase counter is needed here.
+; $F8-$FC stay a bare comment -- no code in this commit references them.
+sw_dlg15_state      = $F3  ; SW_DLG15_IDLE(0) not waiting; SW_DLG15_PENDING(1)
+                            ; box_begin deferred, waiting for st_active to
+                            ; idle before the nudge; SW_DLG15_DRAINING(2) the
+                            ; box has visually closed, waiting for vram_ready
+                            ; to read 0 before the un-nudge and close_ui
+sw_dlg15_origin_x_lo = $F4  ; sw_cam_origin_x/y_lo/hi's own value the instant
+                            ; the nudge ran, restored verbatim (never
+                            ; re-derived) by the un-nudge
+sw_dlg15_origin_x_hi = $F5
+sw_dlg15_origin_y_lo = $F6
+sw_dlg15_origin_y_hi = $F7
 
 ; draw_battle_attr's own ground-row fill (engine/battle.asm) -- rows 1-4 of
 ; the attribute table get this value before any live monster's own mon_attr
@@ -797,10 +832,33 @@ bt_digits   = $03D4         ; three decimal digits, most significant first  @siz
 ; share the identical accumulator, slice 4b, is still pending.
 sw_walk_acc_x = $03D8
 sw_walk_acc_y = $03D9
-; The remaining ten bytes are named, not allocated -- no code in this commit
-; references them, only recorded so a later slice sees the reservation:
-;   $03DA-$03DB  sw_dlg_cam_x_lo/y_lo  -- dialogue's pre-nudge camera snapshot (slice 7b)
-;   $03DC-$03E3  sw_dlg_o*/r*          -- sw_dlg_metatile's own box-origin/resolve scratch (slice 7b)
+; The dialogue lifecycle's own pre-nudge PPU-scroll snapshot (phase 2 slice
+; 7b) -- the exact cam_x_lo/cam_y_lo pair at the moment the nudge floors
+; them, restored verbatim by the un-nudge rather than re-derived (the
+; world-space counterpart, sw_dlg15_origin_x/y_lo/hi, is at $F4-$F7 above).
+sw_dlg_cam_x_lo = $03DA
+sw_dlg_cam_y_lo = $03DB
+;
+; The other eight are sw_dlg_metatile's own scratch (engine/streamworld.asm,
+; sw_dlg_mapper_start..end block), allocated by this commit. sw_dlg_ocol/
+; ocol_l/orow/orow_l are the persistent capture of "this transaction's box
+; origin" (sw_dlg_origin_capture, streamworld.asm) -- the world screenCol/
+; localCol/screenRow/localRow sitting at the camera's own top-left edge,
+; valid for the whole open/close transaction because the world is frozen
+; throughout it (docs/design-streamed-worlds.md §7's own DLG_PENDING rule).
+; sw_dlg_scr0-3 are shared transient scratch: sw_dlg_origin_capture's own
+; 16-bit divmod working copy (scr0/scr1 only) and sw_dlg_metatile's own
+; per-call local-col/local-row/screenCol/screenRow workspace (all four) --
+; safe to share because capture always finishes before the first metatile
+; call of a transaction, and no other code calls either routine between.
+sw_dlg_ocol   = $03DC  ; origin: world screenCol at the camera's own left edge
+sw_dlg_ocol_l = $03DD  ; origin: local metatile col (0-15) of that edge
+sw_dlg_orow   = $03DE  ; origin: world screenRow at the camera's own top edge
+sw_dlg_orow_l = $03DF  ; origin: local metatile row (0-14) of that edge
+sw_dlg_scr0   = $03E0  ; shared transient scratch -- see comment above
+sw_dlg_scr1   = $03E1  ; shared transient scratch
+sw_dlg_scr2   = $03E2  ; shared transient scratch
+sw_dlg_scr3   = $03E3  ; shared transient scratch
 bt_list     = $03E4  ; the open spell or item list -- up to eight  @size=8
                             ; entries, not the four the box shows at once:
                             ; build_spell_list/build_item_list
@@ -1194,9 +1252,14 @@ attr_shadow      = $0600  ; @size=256 -- overlaps flash_driver, on purpose
 ; situation MAX_ITEMS above is already in with shared/save.js's own copy.
 save_flash_buf   = $0700  ; @size=SAVE_RECORD_LEN
 ; docs/design-streamed-worlds.md, phase 2 slice 2a: four more bytes named
-; here, in the free space above save_flash_buf's own SAVE_RECORD_LEN span,
-; but NOT allocated -- no code in this commit references them:
-;   $07F0  sw_dlg17_camhold     -- a nudge/un-nudge publication hold is open (slice 7b)
+; here, in the free space above save_flash_buf's own SAVE_RECORD_LEN span.
+; Phase 2 slice 7b claims the first as a real equate -- the camera/OAM
+; publication barrier's own flag, set the instant the nudge (or un-nudge)
+; writes sw_cam_origin_x/y_lo/hi and cleared once main_loop_idle's
+; sw_dlg17_camrelease republishes it, so the NMI's own OAM DMA can skip a
+; frame whose camera origin mid-write would show a torn sprite layer. The
+; other three stay a bare comment -- no code in this commit references them:
+sw_dlg17_camhold = $07F0
 ;   $07F1  sw_dlg17_move_close  -- a close-for-Move draw-down is in progress (slice 8)
 ;   $07F2  sw_dlg17_resync_i    -- the save-resync's own row/band loop counter (slice 9)
 ;   $07F8  sw_dlg20_save_pending -- a deferred Save is waiting on a close-for-Save draw-down (slice 9)
@@ -1487,6 +1550,16 @@ BOX_NAMEDONE  = 10          ; the session just ended -- an inert value set once
                              ; text_advance or draw_ui; do_action_confirm's own
                              ; naming arm is what notices it and calls
                              ; script_resume (docs/design-name-entry.md §4)
+
+; sw_dlg15_state (phase 2 slice 7b) -- separate from box_state, which sits at
+; 0 (BOX_CLOSED) throughout PENDING and again throughout DRAINING, so
+; box_state alone cannot tell the two waits apart from "no box at all."
+SW_DLG15_IDLE     = 0       ; not waiting on anything streamed-specific --
+                             ; either no box, or a box open/running normally
+SW_DLG15_PENDING  = 1       ; box_begin deferred, waiting for st_active to go
+                             ; idle before the floor-to-16px nudge
+SW_DLG15_DRAINING = 2       ; visually closed, waiting for vram_ready to read
+                             ; 0 before the un-nudge and close_ui
 
 ; String bytes. Glyphs are $A0-$FF (see shared/font.js), so anything below the
 ; font's base is free to be a control code.

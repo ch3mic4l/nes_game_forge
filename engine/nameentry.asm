@@ -111,7 +111,21 @@ nameentry_tick_done:
   rts
 
 nameentry_raise_step:
+nameentry_raise_step_gs:
+  .if STREAMING_ENABLED
+  lda <map_is_streamed
+  beq nameentry_raise_ordinary
+  lda <box_row
+  clc
+  adc #1
+  ldx #2
+  jsr sw_dlg_run_open
+  jmp nameentry_raise_dispatch
+  .endif
+nameentry_raise_step_ge:
+nameentry_raise_ordinary:
   jsr box_text_row_addr
+nameentry_raise_dispatch:
   lda <box_row
   bne nameentry_raise_not0
   jsr nameentry_draw_preview
@@ -135,25 +149,47 @@ nameentry_raise_next:
   inc <box_row
   rts
 
+; A = tile to write to the row packet currently open (either writer -- see
+; nameentry_push below). Every push in nameentry_draw_letters/_draw_preview/
+; _draw_ctrl routes through here instead of vram_push directly, so a
+; streamed map's split-aware run writer applies without a second copy of any
+; of the three (all three already loop/index through X or Y across repeated
+; push calls, so the dispatch below must not touch either).
 nameentry_draw_letters:
   sta <bt_tmp
   lda #TILE_SPACE
+  .if STREAMING_ENABLED
+  jsr nameentry_push
+  .else
   jsr vram_push
+  .endif
   ldx #0
 nameentry_letters_loop:
   txa
   clc
   adc <bt_tmp
+  .if STREAMING_ENABLED
+  jsr nameentry_push
+  .else
   jsr vram_push
+  .endif
   inx
   cpx #26
   bne nameentry_letters_loop
   lda #TILE_SPACE
+  .if STREAMING_ENABLED
+  jmp nameentry_push
+  .else
   jmp vram_push
+  .endif
 
 nameentry_draw_preview:
   lda #TILE_SPACE
+  .if STREAMING_ENABLED
+  jsr nameentry_push
+  .else
   jsr vram_push
+  .endif
   lda #LOW(pc_name_ram)
   sta <ptr_lo
   lda #HIGH(pc_name_ram)
@@ -162,14 +198,22 @@ nameentry_draw_preview:
   jsr nameentry_stride
 nameentry_preview_loop:
   lda [ptr_lo],y
+  .if STREAMING_ENABLED
+  jsr nameentry_push
+  .else
   jsr vram_push
+  .endif
   iny
   cpy #NAME_LEN
   bne nameentry_preview_loop
   ldx #BOX_COLS-NAME_LEN-1
 nameentry_preview_pad:
   lda #TILE_SPACE
+  .if STREAMING_ENABLED
+  jsr nameentry_push
+  .else
   jsr vram_push
+  .endif
   dex
   bne nameentry_preview_pad
   rts
@@ -189,7 +233,11 @@ ndc_try_end:
   jmp ndc_next
 ndc_blank:
   lda #TILE_SPACE
+  .if STREAMING_ENABLED
+  jsr nameentry_push
+  .else
   jsr vram_push
+  .endif
 ndc_next:
   inx
   cpx #BOX_COLS
@@ -197,19 +245,69 @@ ndc_next:
   rts
 ndc_label:
   lda name_grid_control_label,y
+  .if STREAMING_ENABLED
+  jsr nameentry_push
+  .else
   jsr vram_push
+  .endif
   iny
   lda name_grid_control_label,y
+  .if STREAMING_ENABLED
+  jsr nameentry_push
+  .else
   jsr vram_push
+  .endif
   iny
   lda name_grid_control_label,y
+  .if STREAMING_ENABLED
+  jsr nameentry_push
+  .else
   jsr vram_push
+  .endif
   iny
   inx
   inx
   rts
 
+; A = byte to push. Preserves X and Y (like vram_push/sw_dlg_run_push
+; themselves) -- the pha/pla bracket exists only to keep A's incoming value
+; alive across the map_is_streamed test, which itself clobbers A. Defined
+; only under STREAMING_ENABLED -- every call site below chooses between this
+; and a plain `jsr vram_push` at compile time, so a non-streaming project
+; assembles the identical direct call it always did, no indirection added.
+nameentry_push_guard_start:
+  .if STREAMING_ENABLED
+nameentry_push:
+  pha
+  lda <map_is_streamed
+  beq nameentry_push_ordinary
+  pla
+  jmp sw_dlg_run_push
+nameentry_push_ordinary:
+  pla
+  jmp vram_push
+  .endif
+nameentry_push_guard_end:
+
+; Y = the name-length index (0-9) of the cell to redraw; A on entry (moved to
+; bt_tmp by every caller before this call) is the tile to write.
 nameentry_queue_cell:
+nameentry_queue_cell_gs:
+  .if STREAMING_ENABLED
+  lda <map_is_streamed
+  beq nameentry_queue_cell_ordinary
+  lda <bt_tmp
+  pha
+  tya
+  clc
+  adc #3                    ; the preview row's own leading TILE_SPACE (col
+                             ; 2) plus one -- BOX_TEXT_LO+1's own column
+  tax
+  lda #1                    ; tile row 1 -- the preview row is always box_row 0
+  jmp sw_dlg_single
+  .endif
+nameentry_queue_cell_ge:
+nameentry_queue_cell_ordinary:
   tya
   clc
   adc #BOX_TEXT_LO+1

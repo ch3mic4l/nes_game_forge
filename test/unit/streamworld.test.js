@@ -144,25 +144,54 @@ test(
   }
 );
 
-test('D.4 negative: Say/dialogue reachable on a streamed screen is refused', () => {
+// Phase 2 slice 7b ships the streamed dialogue lifecycle (engine/text.asm's mapper dispatch,
+// docs/design-streamed-worlds.md §7), so a Say alone on a streamed screen no longer refuses --
+// see the D.4 positive-style build-clean assertion below. What remains refused is an event that
+// BOTH shows text and moves the player: the camera-nudge hold a dialogue box takes
+// (sw_dlg15_pending_step) and a scripted Move's own edge-bounding (item 3, D.3 above) are two
+// different streamed-specific mechanisms this slice never arbitrated between.
+test('D.4 positive, phase 2 slice 7b: a Say alone (no Move) on a streamed screen builds clean', { skip: !hasNesasm && 'nesasm not found on PATH' }, async () => {
   const project = withEvent(createStreamedProject({}), [{ op: 'say', text: 'Hello.' }]);
+  assert.deepEqual(streamedErrors(project), []);
+  assert.ok(await buildsClean(project));
+});
+
+test('D.4 negative, phase 2 slice 7b: an event that both shows text (Say) and moves the player is refused', () => {
+  const project = withEvent(createStreamedProject({}), [
+    { op: 'say', text: 'Hello.' },
+    { op: 'move', who: 'player', dir: 'up', dist: 16 }
+  ]);
   const errors = streamedErrors(project);
-  assert.ok(errors.some((e) => /shows text/.test(e.message)), JSON.stringify(errors));
+  assert.ok(errors.some((e) => /shows text.*moves the player/.test(e.message)), JSON.stringify(errors));
 });
 
 // Fix round 1, finding 4: Choice dispatches straight to box_choose/box_begin (engine/script.asm's
 // script_op_choice, engine/text.asm) without ever going through Say, so an event with a Choice
-// and no Say anywhere reached the same unsupported overlay this refusal exists to block. SAY_OPS
-// (shared/project.js) used to be `new Set(['say'])`; a Choice-only event slipped past it and a
-// public build was accepted with `game_state` reaching the text UI at runtime.
-test('D.4 negative, fix round 1 finding 4: a Choice with no Say anywhere reachable on a streamed screen is refused', () => {
+// and no Say anywhere reaches the same text-and-move combination this refusal now guards -- SAY_OPS
+// (shared/project.js) is `new Set(['say', 'choice'])` precisely so a Choice-only event carrying a
+// Move is not missed by the reachability walk.
+test('D.4 positive, fix round 1 finding 4: a Choice alone (no Move) on a streamed screen builds clean', { skip: !hasNesasm && 'nesasm not found on PATH' }, async () => {
   const project = withEvent(createStreamedProject({}), [
     { op: 'choice', options: [{ text: 'Yes', commands: [] }, { text: 'No', commands: [] }] }
   ]);
+  assert.deepEqual(streamedErrors(project), []);
+  assert.ok(await buildsClean(project));
+});
+
+test('D.4 negative, fix round 1 finding 4: a Choice option that moves the player is refused', () => {
+  const project = withEvent(createStreamedProject({}), [
+    {
+      op: 'choice',
+      options: [
+        { text: 'Yes', commands: [{ op: 'move', who: 'player', dir: 'up', dist: 16 }] },
+        { text: 'No', commands: [] }
+      ]
+    }
+  ]);
   const errors = streamedErrors(project);
   assert.ok(
-    errors.some((e) => /shows text/.test(e.message)),
-    `a Choice-only event (no Say) must still be refused: ${JSON.stringify(errors)}`
+    errors.some((e) => /shows text.*moves the player/.test(e.message)),
+    `a Choice option that moves the player must still be refused: ${JSON.stringify(errors)}`
   );
 });
 
@@ -179,30 +208,56 @@ test(
   }
 );
 
-test('D.5 negative: hero naming anywhere in a project with a streamed map is refused', () => {
-  const project = createStreamedProject({ gameType: 'rpg', naming: true });
-  const errors = streamedErrors(project);
-  assert.ok(errors.some((e) => /in-game naming/.test(e.message)), JSON.stringify(errors));
-});
-
-// Case 10/18: every "*negative: ... is refused" test above and below only calls validateProject
-// (via streamedErrors) directly -- proving the MESSAGE is right, never that a caller reaching the
-// real build pipeline instead (main/build/generate.js's generateAssets, via buildProject) is
-// actually stopped by it rather than silently shipping a ROM that reaches name_begin/box_begin at
-// boot with no naming support compiled in. This is the one place that seam is checked for real.
+// Phase 2 slice 7b lifts item 5's own global naming refusal for the RPG (banked) placement:
+// nameentry.asm is one shared source, and its own map_is_streamed dispatch (nameentry_raise_step,
+// _draw_letters/_draw_preview/_draw_ctrl, _queue_cell, engine/nameentry.asm) already routes
+// through the streamed mapper unconditionally for hero AND Join naming alike, and
+// STREAMWORLD_NAMEENTRY_BATTLE_ALLOWANCE (main/build/battletables.js) measures its real, flat
+// 47-byte banked cost -- RPG + naming + streaming fits comfortably.
 test(
-  'D.5 negative, through the real build pipeline: buildProject (not just validateProject) refuses a streamed project with hero naming, rather than shipping a ROM',
+  'D.5 positive, phase 2 slice 7b: hero naming on an RPG project with a streamed map builds clean',
   { skip: !hasNesasm && 'nesasm not found on PATH' },
   async () => {
     const project = createStreamedProject({ gameType: 'rpg', naming: true });
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-streamworld-buildrefusal-'));
+    assert.deepEqual(streamedErrors(project), []);
+    assert.ok(await buildsClean(project));
+  }
+);
+
+// Fix round 1, finding A4 (Chris's ruling 2026-09-25): the action (kernel-lo) placement, once
+// refused here as never fitting, is lifted too. Relocating the six streamed dialogue call sites
+// from kernel-lo into kernel-hi (STREAMWORLD_DIALOGUE_RELOCATED_KERNEL_HI_ALLOWANCE,
+// main/build/generate.js) freed enough kernel-lo room for action + naming + streaming to assemble
+// for real; STREAMWORLD_NAMEENTRY_ACTION_KERNEL_ALLOWANCE (= 47, the same flat cost the banked
+// placement already pays) charges its real measured cost. shared/project.js no longer refuses this
+// combination at all -- a project that genuinely does not fit (too much other content, not this
+// combination itself) still gets checkCapacity's own ordinary kernel-lo/kernel-hi refusal, worded
+// for whichever bank actually overflowed (test/unit/kernelbytes.test.js's own genuine-overflow
+// check covers that case; this test only needs to prove the combination itself is no longer
+// refused).
+test(
+  'D.5 positive, phase 2 slice 7b continuation (fix round 1, finding A4): hero naming on an ACTION project with a streamed map builds clean',
+  { skip: !hasNesasm && 'nesasm not found on PATH' },
+  async () => {
+    const project = createStreamedProject({ gameType: 'action', naming: true });
+    assert.deepEqual(streamedErrors(project), []);
+    assert.ok(await buildsClean(project));
+  }
+);
+
+// Case 10/18 companion: proves the real build pipeline (main/build/generate.js's generateAssets,
+// via buildProject) actually ships this shape end to end, not merely that validateProject raises
+// no error for it.
+test(
+  'D.5 positive, phase 2 slice 7b, through the real build pipeline: buildProject ships a streamed RPG project with hero naming',
+  { skip: !hasNesasm && 'nesasm not found on PATH' },
+  async () => {
+    const project = createStreamedProject({ gameType: 'rpg', naming: true });
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-streamworld-namingbuild-'));
     try {
       await saveProject(dir, project);
-      await assert.rejects(
-        buildProject({ dir, project, log: () => {} }),
-        /in-game naming/,
-        'buildProject must reject a D.5-negative-shaped project, not silently assemble it'
-      );
+      const built = await buildProject({ dir, project, log: () => {} });
+      assert.ok(fs.existsSync(built.romPath));
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }

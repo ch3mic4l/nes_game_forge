@@ -380,6 +380,11 @@ test('do_interact enters the bag with the actor’s own id when the project has 
 // (docs/design-kernel-diet.md): every operand's own encoding changed (2
 // bytes instead of 3 for a surviving zero-page access), reflowing the whole
 // ROM's contents without changing its size.
+// Phase 2 slice 7b fix round 1 (A5): an earlier round of this slice re-pinned
+// this hash for text_open_step's box_row_addr move instead of restoring
+// identity. sample carries no streamed map, so the fix (keeping that call in
+// its original position whenever the build is not itself STREAMING_ENABLED
+// && TEXT_ENABLED) restores the original hash. Size unchanged (still 40976).
 const PINNED_BASELINE_HASH = 'a439c25f4b62b2f8a8e41eeb788d67c88a1c1f0538e9f4fb7310abb53a589be0';
 const PINNED_BASELINE_SIZE = 40976;
 
@@ -567,6 +572,10 @@ test('a project with no items and no Save is byte-identical to the pre-phase-4b 
 // pla/pla (engine/battleturn.asm) is a further +2 uniform bytes -- see
 // BASE_BATTLE_CODE_BYTES_BY_MAPPER's own comment (main/build/battletables.js)
 // for what it fixes. Size still unchanged (still 147472).
+// Phase 2 slice 7b fix round 1 (A5): an earlier round re-pinned this hash for
+// the same box_row_addr move (see PINNED_BASELINE_HASH's own comment above)
+// instead of restoring identity. sample-rpg carries no streamed map, so the
+// fix restores the original hash. Size still unchanged (still 147472).
 const PINNED_RPG_BASELINE_HASH = '32a07172e42a626b54c5c1ade9565e2479ffb974361be8eaf6690444e88948c8';
 const PINNED_RPG_BASELINE_SIZE = 147472;
 

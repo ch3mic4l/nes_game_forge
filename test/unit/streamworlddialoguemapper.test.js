@@ -613,7 +613,11 @@ test('sweep: every aligned camera position (16 X x 15 Y x 4 cam_nt) opens and cl
 // Refusal-still-fires: slice 2b's dialogue-on-streamed-map refusal is unmodified by this slice.
 // ---------------------------------------------------------------------------------------------
 
-test('refusal still fires: a Say reachable on a streamed screen is still refused -- this slice adds no way to open a box on a streamed map', () => {
+// A later slice-7b commit ships the dialogue lifecycle for real and narrows item 4's own refusal
+// to "shows text AND moves the player" (Say/Choice alone now builds clean -- streamworld.test.js's
+// own D.4 tests cover both halves). What this file's own mapper work never touched is the OTHER
+// half of that combination: a Move still cannot coexist with a Say/Choice on the same event.
+test('refusal still fires: an event that both shows text (Say) and moves the player is still refused -- this slice adds no arbitration between the two', () => {
   const project = createStreamedProject({});
   const streamedMap = project.maps.find((m) => m.streamed === true);
   const screen = streamedMap.screens[0];
@@ -622,10 +626,20 @@ test('refusal still fires: a Say reachable on a streamed screen is still refused
     actorId: 0,
     x: 32,
     y: 32,
-    props: { trigger: 'interact', event: { pages: [{ cond: { type: 'none', arg: 0 }, commands: [{ op: 'say', text: 'Hello.' }] }] } }
+    props: {
+      trigger: 'interact',
+      event: {
+        pages: [
+          {
+            cond: { type: 'none', arg: 0 },
+            commands: [{ op: 'say', text: 'Hello.' }, { op: 'move', who: 'player', dir: 'up', dist: 16 }]
+          }
+        ]
+      }
+    }
   });
   const errors = validateProject(project).filter((x) => x.severity === 'error');
-  assert.ok(errors.some((e) => /shows text/.test(e.message)), `the D.4 refusal must still fire: ${JSON.stringify(errors)}`);
+  assert.ok(errors.some((e) => /shows text.*moves the player/.test(e.message)), `the D.4 refusal must still fire: ${JSON.stringify(errors)}`);
 });
 
 // ---------------------------------------------------------------------------------------------

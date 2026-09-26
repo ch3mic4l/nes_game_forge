@@ -102,6 +102,14 @@ const hasNesasm = spawnSync('nesasm', [], { stdio: 'ignore' }).error?.code !== '
 // bank -- see BASE_BATTLE_CODE_BYTES_BY_MAPPER's own comment (main/build/
 // battletables.js) for what it fixes. Only the two RPG fixtures move again;
 // the four action fixtures are untouched.
+// Phase 2 slice 7b fix round 1 (A5): an earlier round of this slice moved
+// text_open_step's own box_row_addr call unconditionally from the top of the
+// routine to text_open_row_ordinary's entry, changing all six fixtures' ROM
+// bytes, and re-pinned these six hashes instead of restoring identity. The
+// fix keeps that call in its original position for every build that is not
+// itself STREAMING_ENABLED && TEXT_ENABLED (engine/text.asm's own comment at
+// text_open_step) -- none of these six fixtures carries a streamed map, so
+// all six restore to their original, pre-7b hashes.
 const BASELINES = {
   sample: '442565369e9da7011901b459317adb4d3c07d9c24fd8f388bcf92b731829e846',
   'sample-rpg': 'db6687d939470fde825b81f9b8b4a999097b09e26ba4255ce2ac4aa232d5e516',

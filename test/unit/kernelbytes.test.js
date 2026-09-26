@@ -75,6 +75,7 @@ import {
   HERO_NAMING_KERNEL_ALLOWANCE,
   HERO_NAMING_TITLELESS_KERNEL_ALLOWANCE,
   NAME_ENTRY_ACTION_KERNEL_ALLOWANCE,
+  STREAMWORLD_NAMEENTRY_ACTION_KERNEL_ALLOWANCE,
   HERO_DEFAULT_KERNEL_ALLOWANCE,
   NAME_TOKEN_KERNEL_ALLOWANCE,
   STREAMWORLD_KERNEL_HI_ALLOWANCE,
@@ -97,6 +98,24 @@ import {
   STREAMWORLD_MOVE_KERNEL_ALLOWANCE,
   STREAMWORLD_MOVE_KERNEL_HI_ALLOWANCE,
   STREAMWORLD_DIALOGUE_MAPPER_KERNEL_HI_ALLOWANCE,
+  STREAMWORLD_DIALOGUE_LIFECYCLE_TERRAIN_CONSUMER_KERNEL_HI_ALLOWANCE_BY_GAME_TYPE,
+  streamworldDialogueLifecycleTerrainConsumerKernelHiAllowance,
+  STREAMWORLD_DIALOGUE_RELOCATED_KERNEL_HI_ALLOWANCE,
+  STREAMWORLD_DIALOGUE_LIFECYCLE_KERNEL_ALLOWANCE,
+  STREAMWORLD_DIALOGUE_BOX_BEGIN_KERNEL_ALLOWANCE,
+  STREAMWORLD_DIALOGUE_TEXT_TICK_KERNEL_ALLOWANCE,
+  STREAMWORLD_DIALOGUE_TEXT_OPEN_ROW_KERNEL_ALLOWANCE,
+  STREAMWORLD_DIALOGUE_TEXT_OPEN_ATTR_KERNEL_ALLOWANCE,
+  STREAMWORLD_DIALOGUE_TEXT_PUT_CHAR_KERNEL_ALLOWANCE,
+  STREAMWORLD_DIALOGUE_TEXT_ARROW_WRITE_KERNEL_ALLOWANCE,
+  STREAMWORLD_DIALOGUE_TEXT_CLEAR_STEP_KERNEL_ALLOWANCE,
+  STREAMWORLD_DIALOGUE_TEXT_CHOICE_STEP_KERNEL_ALLOWANCE,
+  STREAMWORLD_DIALOGUE_CHOICE_CURSOR_KERNEL_ALLOWANCE,
+  STREAMWORLD_DIALOGUE_TEXT_CLOSE_STEP_KERNEL_ALLOWANCE,
+  STREAMWORLD_DIALOGUE_TEXT_CLOSE_ATTR_KERNEL_ALLOWANCE,
+  STREAMWORLD_DIALOGUE_TEXT_CLOSE_ATTR_TAIL_KERNEL_ALLOWANCE,
+  STREAMWORLD_DIALOGUE_CAMRELEASE_KERNEL_ALLOWANCE,
+  STREAMWORLD_OAM_GUARD_KERNEL_ALLOWANCE,
   STREAMWORLD_NMI_KERNEL_ALLOWANCE,
   STREAMWORLD_NMI_PALETTE_FX_KERNEL_ALLOWANCE,
   STREAMWORLD_PROJECT_KERNEL_ALLOWANCE,
@@ -5314,7 +5333,9 @@ test(
         (gameType === 'action' ? STREAMWORLD_KNOCKBACK_KERNEL_HI_ALLOWANCE : 0) +
         streamworldUpdatePlayerKernelHiAllowance(streamed) +
         STREAMWORLD_HAZARD_KERNEL_HI_ALLOWANCE +
-        (projectUsesText(streamed) ? STREAMWORLD_DIALOGUE_MAPPER_KERNEL_HI_ALLOWANCE : 0);
+        (projectUsesText(streamed) ? STREAMWORLD_DIALOGUE_MAPPER_KERNEL_HI_ALLOWANCE : 0) +
+        (projectUsesText(streamed) ? streamworldDialogueLifecycleTerrainConsumerKernelHiAllowance(streamed) : 0) +
+        (projectUsesText(streamed) ? STREAMWORLD_DIALOGUE_RELOCATED_KERNEL_HI_ALLOWANCE : 0);
       // fix round 1, finding 7/verification: printed on every run, pass or fail, not only in an
       // assertion failure message -- an independent, per-mapper figure a report can quote.
       console.log(`${mapper.name} (${label}): real kernel-hi delta ${delta} (expected ${expected})`);
@@ -5389,18 +5410,40 @@ test(
       const streamedDelta = swMoveUsed - swNoMoveUsed;
       const ordinaryDelta = ordMoveUsed - ordNoMoveUsed;
       const supplement = streamedDelta - ordinaryDelta;
+      // Phase 2 slice 7b: the same kernel-hi dlgTerm confound below has a
+      // kernel-LO twin. STREAMWORLD_DIALOGUE_LIFECYCLE_KERNEL_ALLOWANCE is
+      // gated on `usesStreaming && usesText`, and only ever assembles on the
+      // streamed side (an ordinary project's text.asm sites are the SAME
+      // twelve `.if STREAMING_ENABLED` blocks, which assemble nothing at all
+      // off a non-streamed project) -- so whenever the Move event's own
+      // presence is what flips projectUsesText, streamedDelta carries this
+      // term's full weight but ordinaryDelta carries none of it to cancel.
+      const dlgTerm =
+        (projectUsesText(streamedWithMove) ? STREAMWORLD_DIALOGUE_LIFECYCLE_KERNEL_ALLOWANCE : 0) -
+        (projectUsesText(streamedNoMove) ? STREAMWORLD_DIALOGUE_LIFECYCLE_KERNEL_ALLOWANCE : 0);
+      // Fix round 1 (A5): STREAMWORLD_OAM_GUARD_KERNEL_ALLOWANCE picked up the identical
+      // `usesText` gate this fix round (it was `usesStreaming` alone before, so it never
+      // confounded this test until now) -- the same "any event exists" projectUsesText flip
+      // dlgTerm already isolates carries this term's weight too, whenever the Move event's own
+      // presence is what flips it.
+      const oamTerm =
+        (projectUsesText(streamedWithMove) ? STREAMWORLD_OAM_GUARD_KERNEL_ALLOWANCE : 0) -
+        (projectUsesText(streamedNoMove) ? STREAMWORLD_OAM_GUARD_KERNEL_ALLOWANCE : 0);
+      const expectedSupplement = STREAMWORLD_MOVE_KERNEL_ALLOWANCE + dlgTerm + oamTerm;
       // fix round 1, finding 7/verification: printed on every run, pass or
       // fail -- an independent, per-shape figure a report can quote.
       console.log(
         `${mapper.name} (${label}): STREAMWORLD_MOVE_KERNEL_ALLOWANCE supplement ${supplement} ` +
-          `(streamed Move delta ${streamedDelta}, ordinary Move delta ${ordinaryDelta}, expected ${STREAMWORLD_MOVE_KERNEL_ALLOWANCE})`
+          `(streamed Move delta ${streamedDelta}, ordinary Move delta ${ordinaryDelta}, dialogue-lifecycle term ` +
+          `${dlgTerm}, oam-guard term ${oamTerm}, expected ${expectedSupplement})`
       );
       assert.equal(
         supplement,
-        STREAMWORLD_MOVE_KERNEL_ALLOWANCE,
+        expectedSupplement,
         `${mapper.name} (${label}): a live Move on a streamed map costs ${supplement} bytes of kernel-lo code beyond ` +
           `an ordinary map's own Move cost (streamed delta ${streamedDelta} - ordinary delta ${ordinaryDelta}), but ` +
-          `STREAMWORLD_MOVE_KERNEL_ALLOWANCE reserves ${STREAMWORLD_MOVE_KERNEL_ALLOWANCE} -- re-measure and correct it.`
+          `STREAMWORLD_MOVE_KERNEL_ALLOWANCE reserves ${STREAMWORLD_MOVE_KERNEL_ALLOWANCE} (expected supplement ` +
+          `${expectedSupplement} with the dialogue-lifecycle and oam-guard terms) -- re-measure and correct it.`
       );
     }
   }
@@ -5475,9 +5518,13 @@ test(
       // is not cancelled by the streamed/ordinary double-difference the way text.inc growth is --
       // whenever the Move event's own presence is what flips projectUsesText, that difference is
       // a real, separate addend to the expected supplement.
+      const dlgMapperHiTotal =
+        STREAMWORLD_DIALOGUE_MAPPER_KERNEL_HI_ALLOWANCE +
+        streamworldDialogueLifecycleTerrainConsumerKernelHiAllowance(streamedWithMove) +
+        STREAMWORLD_DIALOGUE_RELOCATED_KERNEL_HI_ALLOWANCE;
       const dlgTerm =
-        (projectUsesText(streamedWithMove) ? STREAMWORLD_DIALOGUE_MAPPER_KERNEL_HI_ALLOWANCE : 0) -
-        (projectUsesText(streamedNoMove) ? STREAMWORLD_DIALOGUE_MAPPER_KERNEL_HI_ALLOWANCE : 0);
+        (projectUsesText(streamedWithMove) ? dlgMapperHiTotal : 0) -
+        (projectUsesText(streamedNoMove) ? dlgMapperHiTotal : 0);
       const expectedSupplement = STREAMWORLD_MOVE_KERNEL_HI_ALLOWANCE + dlgTerm;
       console.log(
         `${mapper.name} (${label}): STREAMWORLD_MOVE_KERNEL_HI_ALLOWANCE supplement ${supplement} ` +
@@ -5522,7 +5569,7 @@ function withOrdinaryDialogue(project) {
 }
 
 test(
-  'phase 2 slice 7a: STREAMWORLD_DIALOGUE_MAPPER_KERNEL_HI_ALLOWANCE equals the real sw_dlg_mapper_start..end span, on UNROM 512, action+mixed+text, RPG, and RPG+mixed',
+  'phase 2 slice 7b fix round 2 (A4): STREAMWORLD_DIALOGUE_MAPPER_KERNEL_HI_ALLOWANCE + STREAMWORLD_DIALOGUE_LIFECYCLE_TERRAIN_CONSUMER_KERNEL_HI_ALLOWANCE_BY_GAME_TYPE + STREAMWORLD_DIALOGUE_RELOCATED_KERNEL_HI_ALLOWANCE equals the real sw_dlg_mapper_start..end span, on UNROM 512, action+mixed+text, RPG, and RPG+mixed',
   { skip: !hasNesasm && 'nesasm not found on PATH' },
   async (t) => {
     const mapper = resolveMapper(30);
@@ -5537,12 +5584,152 @@ test(
       const built = await buildProject({ dir, project, log: () => {} });
       const symbols = await fsp.readFile(built.symbolPath, 'utf8');
       const span = symbolAddr(symbols, 'sw_dlg_mapper_end') - symbolAddr(symbols, 'sw_dlg_mapper_start');
+      const lifecycleTerrainConsumer = streamworldDialogueLifecycleTerrainConsumerKernelHiAllowance(project);
+      const expected =
+        STREAMWORLD_DIALOGUE_MAPPER_KERNEL_HI_ALLOWANCE +
+        lifecycleTerrainConsumer +
+        STREAMWORLD_DIALOGUE_RELOCATED_KERNEL_HI_ALLOWANCE;
+      assert.equal(
+        span,
+        expected,
+        `${mapper.name} (${label}): sw_dlg_mapper_start..end spans ${span} bytes but ` +
+          `STREAMWORLD_DIALOGUE_MAPPER_KERNEL_HI_ALLOWANCE (${STREAMWORLD_DIALOGUE_MAPPER_KERNEL_HI_ALLOWANCE}) + ` +
+          `STREAMWORLD_DIALOGUE_LIFECYCLE_TERRAIN_CONSUMER_KERNEL_HI_ALLOWANCE_BY_GAME_TYPE (${lifecycleTerrainConsumer}) + ` +
+          `STREAMWORLD_DIALOGUE_RELOCATED_KERNEL_HI_ALLOWANCE (${STREAMWORLD_DIALOGUE_RELOCATED_KERNEL_HI_ALLOWANCE}) ` +
+          `= ${expected} -- re-measure and correct it.`
+      );
+    }
+  }
+);
+
+// Fix round 1/2 (A4): STREAMWORLD_DIALOGUE_RELOCATED_KERNEL_HI_ALLOWANCE is the combined span of
+// the twelve sw_dlg_hi_* helper bodies the twelve named text.asm call sites now dispatch to
+// instead of holding inline -- byte-for-byte the same code, moved, not new content, so it is named
+// apart from both the 7a mapper term and the lifecycle/terrain/consumer term above. Fix round 1
+// relocated the first six (text_open_row, text_open_attr, text_put_char, text_clear_step,
+// text_choice_step, text_close_attr); fix round 2 relocated the remaining six (box_begin,
+// text_tick, text_arrow_write, choice_cursor, text_close_step, text_close_attr_tail).
+test(
+  'phase 2 slice 7b fix round 2 (A4): STREAMWORLD_DIALOGUE_RELOCATED_KERNEL_HI_ALLOWANCE equals the real sw_dlg_relocated_start..end span, on UNROM 512, action+mixed+text, RPG, and RPG+mixed',
+  { skip: !hasNesasm && 'nesasm not found on PATH' },
+  async (t) => {
+    const mapper = resolveMapper(30);
+    const cases = [
+      { project: withOrdinaryDialogue(createStreamedProject({ gameType: 'action', mixed: true })), label: 'action, mixed, with text' },
+      { project: createStreamedProject({ gameType: 'rpg' }), label: 'rpg' },
+      { project: createStreamedProject({ gameType: 'rpg', mixed: true }), label: 'rpg, mixed' }
+    ];
+    for (const { project, label } of cases) {
+      const dir = await fsp.mkdtemp(path.join(os.tmpdir(), 'forge-kernelhi-dlg-relocated-'));
+      t.after(() => fsp.rm(dir, { recursive: true, force: true }));
+      const built = await buildProject({ dir, project, log: () => {} });
+      const symbols = await fsp.readFile(built.symbolPath, 'utf8');
+      const span = symbolAddr(symbols, 'sw_dlg_relocated_end') - symbolAddr(symbols, 'sw_dlg_relocated_start');
+      assert.equal(
+        span,
+        STREAMWORLD_DIALOGUE_RELOCATED_KERNEL_HI_ALLOWANCE,
+        `${mapper.name} (${label}): sw_dlg_relocated_start..end spans ${span} bytes but ` +
+          `STREAMWORLD_DIALOGUE_RELOCATED_KERNEL_HI_ALLOWANCE reserves ${STREAMWORLD_DIALOGUE_RELOCATED_KERNEL_HI_ALLOWANCE} -- ` +
+          're-measure and correct it.'
+      );
+    }
+  }
+);
+
+// Fix round 2 (review round 2, finding A4): STREAMWORLD_DIALOGUE_LIFECYCLE_TERRAIN_CONSUMER_
+// KERNEL_HI_ALLOWANCE_BY_GAME_TYPE is the real sw_dlg_origin_capture..sw_dlg_relocated_start span
+// -- slice 7b's own content inside sw_dlg_mapper_start..end, per Chris's 2026-09-25 ruling not to
+// fold it into the 7a mapper term above (measured directly, not derived by subtracting the mapper
+// and relocated terms from the combined span).
+test(
+  'phase 2 slice 7b fix round 2 (A4): STREAMWORLD_DIALOGUE_LIFECYCLE_TERRAIN_CONSUMER_KERNEL_HI_ALLOWANCE_BY_GAME_TYPE equals the real sw_dlg_origin_capture..sw_dlg_relocated_start span, on UNROM 512, action+mixed+text, RPG, and RPG+mixed',
+  { skip: !hasNesasm && 'nesasm not found on PATH' },
+  async (t) => {
+    const mapper = resolveMapper(30);
+    const cases = [
+      { project: withOrdinaryDialogue(createStreamedProject({ gameType: 'action', mixed: true })), label: 'action, mixed, with text' },
+      { project: createStreamedProject({ gameType: 'rpg' }), label: 'rpg' },
+      { project: createStreamedProject({ gameType: 'rpg', mixed: true }), label: 'rpg, mixed' }
+    ];
+    for (const { project, label } of cases) {
+      const dir = await fsp.mkdtemp(path.join(os.tmpdir(), 'forge-kernelhi-dlg-lifecycle-'));
+      t.after(() => fsp.rm(dir, { recursive: true, force: true }));
+      const built = await buildProject({ dir, project, log: () => {} });
+      const symbols = await fsp.readFile(built.symbolPath, 'utf8');
+      const span = symbolAddr(symbols, 'sw_dlg_relocated_start') - symbolAddr(symbols, 'sw_dlg_origin_capture');
+      const expected = streamworldDialogueLifecycleTerrainConsumerKernelHiAllowance(project);
+      assert.equal(
+        span,
+        expected,
+        `${mapper.name} (${label}): sw_dlg_origin_capture..sw_dlg_relocated_start spans ${span} bytes but ` +
+          `STREAMWORLD_DIALOGUE_LIFECYCLE_TERRAIN_CONSUMER_KERNEL_HI_ALLOWANCE_BY_GAME_TYPE reserves ${expected} -- ` +
+          're-measure and correct it.'
+      );
+    }
+  }
+);
+
+// The mapper term itself: sw_dlg_mapper_start..sw_dlg_origin_capture, 7a's own content only, must
+// stay at the measured 613 regardless of how much this slice's own lifecycle/terrain/consumer code
+// grows beside it (the exact confusion Chris's 2026-09-25 ruling corrected).
+test(
+  'phase 2 slice 7b fix round 2 (A4): STREAMWORLD_DIALOGUE_MAPPER_KERNEL_HI_ALLOWANCE equals the real sw_dlg_mapper_start..sw_dlg_origin_capture span, on UNROM 512, action+mixed+text, RPG, and RPG+mixed',
+  { skip: !hasNesasm && 'nesasm not found on PATH' },
+  async (t) => {
+    const mapper = resolveMapper(30);
+    const cases = [
+      { project: withOrdinaryDialogue(createStreamedProject({ gameType: 'action', mixed: true })), label: 'action, mixed, with text' },
+      { project: createStreamedProject({ gameType: 'rpg' }), label: 'rpg' },
+      { project: createStreamedProject({ gameType: 'rpg', mixed: true }), label: 'rpg, mixed' }
+    ];
+    for (const { project, label } of cases) {
+      const dir = await fsp.mkdtemp(path.join(os.tmpdir(), 'forge-kernelhi-dlg-mapperonly-'));
+      t.after(() => fsp.rm(dir, { recursive: true, force: true }));
+      const built = await buildProject({ dir, project, log: () => {} });
+      const symbols = await fsp.readFile(built.symbolPath, 'utf8');
+      const span = symbolAddr(symbols, 'sw_dlg_origin_capture') - symbolAddr(symbols, 'sw_dlg_mapper_start');
       assert.equal(
         span,
         STREAMWORLD_DIALOGUE_MAPPER_KERNEL_HI_ALLOWANCE,
-        `${mapper.name} (${label}): sw_dlg_mapper_start..end spans ${span} bytes but ` +
+        `${mapper.name} (${label}): sw_dlg_mapper_start..sw_dlg_origin_capture spans ${span} bytes but ` +
           `STREAMWORLD_DIALOGUE_MAPPER_KERNEL_HI_ALLOWANCE reserves ${STREAMWORLD_DIALOGUE_MAPPER_KERNEL_HI_ALLOWANCE} -- ` +
           're-measure and correct it.'
+      );
+    }
+  }
+);
+
+// Internal cross-check, not its own named allowance: the three round-1 sw_dlg_lifecycle_* brackets
+// (the camera/OAM barrier's rebuild-before-release pairs at open and close, plus this fix round's
+// own A1 draw_hud call inside close_b) are a SUBSET of the lifecycle/terrain/consumer lump above,
+// not an addend to it -- this only confirms they still sum to what they always have (11 + 2 +
+// 9-or-6, action vs rpg) and stay inside the lump's own measured span.
+test(
+  'phase 2 slice 7b fix round 2 (A4): the three round-1 sw_dlg_lifecycle_* brackets still sum correctly and stay inside the lifecycle/terrain/consumer span, on UNROM 512, action+mixed+text, RPG, and RPG+mixed',
+  { skip: !hasNesasm && 'nesasm not found on PATH' },
+  async (t) => {
+    const mapper = resolveMapper(30);
+    const cases = [
+      { project: withOrdinaryDialogue(createStreamedProject({ gameType: 'action', mixed: true })), label: 'action, mixed, with text', closeB: 9 },
+      { project: createStreamedProject({ gameType: 'rpg' }), label: 'rpg', closeB: 6 },
+      { project: createStreamedProject({ gameType: 'rpg', mixed: true }), label: 'rpg, mixed', closeB: 6 }
+    ];
+    for (const { project, label, closeB } of cases) {
+      const dir = await fsp.mkdtemp(path.join(os.tmpdir(), 'forge-kernelhi-dlg-lifecycle-brackets-'));
+      t.after(() => fsp.rm(dir, { recursive: true, force: true }));
+      const built = await buildProject({ dir, project, log: () => {} });
+      const symbols = await fsp.readFile(built.symbolPath, 'utf8');
+      const openSpan = symbolAddr(symbols, 'sw_dlg_lifecycle_open_end') - symbolAddr(symbols, 'sw_dlg_lifecycle_open_start');
+      const closeASpan = symbolAddr(symbols, 'sw_dlg_lifecycle_close_a_end') - symbolAddr(symbols, 'sw_dlg_lifecycle_close_a_start');
+      const closeBSpan = symbolAddr(symbols, 'sw_dlg_lifecycle_close_b_end') - symbolAddr(symbols, 'sw_dlg_lifecycle_close_b_start');
+      const bracketSum = openSpan + closeASpan + closeBSpan;
+      const lumpSpan = symbolAddr(symbols, 'sw_dlg_relocated_start') - symbolAddr(symbols, 'sw_dlg_origin_capture');
+      assert.equal(openSpan, 11, `${mapper.name} (${label}): sw_dlg_lifecycle_open_start..end`);
+      assert.equal(closeASpan, 2, `${mapper.name} (${label}): sw_dlg_lifecycle_close_a_start..end`);
+      assert.equal(closeBSpan, closeB, `${mapper.name} (${label}): sw_dlg_lifecycle_close_b_start..end (A1's draw_hud fix, action-only)`);
+      assert.ok(
+        bracketSum <= lumpSpan,
+        `${mapper.name} (${label}): the three brackets (${bracketSum}) must be a subset of the lifecycle/terrain/consumer span (${lumpSpan})`
       );
     }
   }
@@ -5567,6 +5754,210 @@ test(
       symbolAddr(symbols, 'sw_dlg_mapper_end') - symbolAddr(symbols, 'sw_dlg_mapper_start'),
       0,
       `${mapper.name}: a text-free project must assemble zero bytes of dialogue-mapper code`
+    );
+  }
+);
+
+// Phase 2 slice 7b: STREAMWORLD_DIALOGUE_LIFECYCLE_KERNEL_ALLOWANCE (kernel-lo). The 13 call
+// sites this term covers -- 12 in engine/text.asm's box_state machine plus the boot.asm poll that
+// releases the camera hold -- are each bracketed by their own pair of unconditional boundary
+// labels, the same Part F technique the kernel-lo tests below use, so the direct span of each site
+// on a single build is the exact, confound-free cost. Measured on the same three shapes the sibling
+// kernel-hi test above uses (action+mixed+text, RPG, RPG+mixed) -- flat across all three, since
+// the term is gated on `usesStreaming && usesText`, not on which content produced the text.
+// Fix round 2 (review round 2, finding A4): Chris's 2026-09-25 ruling -- "Name and equality-assert
+// the kernel-lo terms per site." Each site now names its OWN constant (all twelve text.asm sites
+// measure 7, the boot.asm camrelease poll measures 3), asserted individually below, not only as a
+// combined sum.
+const STREAMWORLD_DIALOGUE_LIFECYCLE_SITES = [
+  ['box_begin_guard', STREAMWORLD_DIALOGUE_BOX_BEGIN_KERNEL_ALLOWANCE],
+  ['text_tick_guard', STREAMWORLD_DIALOGUE_TEXT_TICK_KERNEL_ALLOWANCE],
+  ['text_open_row_guard', STREAMWORLD_DIALOGUE_TEXT_OPEN_ROW_KERNEL_ALLOWANCE],
+  ['text_open_attr_guard', STREAMWORLD_DIALOGUE_TEXT_OPEN_ATTR_KERNEL_ALLOWANCE],
+  ['text_put_char_guard', STREAMWORLD_DIALOGUE_TEXT_PUT_CHAR_KERNEL_ALLOWANCE],
+  ['text_arrow_write_guard', STREAMWORLD_DIALOGUE_TEXT_ARROW_WRITE_KERNEL_ALLOWANCE],
+  ['text_clear_step_guard', STREAMWORLD_DIALOGUE_TEXT_CLEAR_STEP_KERNEL_ALLOWANCE],
+  ['text_choice_step_guard', STREAMWORLD_DIALOGUE_TEXT_CHOICE_STEP_KERNEL_ALLOWANCE],
+  ['choice_cursor_guard', STREAMWORLD_DIALOGUE_CHOICE_CURSOR_KERNEL_ALLOWANCE],
+  ['text_close_step_guard', STREAMWORLD_DIALOGUE_TEXT_CLOSE_STEP_KERNEL_ALLOWANCE],
+  ['text_close_attr_guard', STREAMWORLD_DIALOGUE_TEXT_CLOSE_ATTR_KERNEL_ALLOWANCE],
+  [['text_close_attr_tail_gs', 'text_close_attr_tail_ge'], STREAMWORLD_DIALOGUE_TEXT_CLOSE_ATTR_TAIL_KERNEL_ALLOWANCE],
+  [['camrelease_call_gs', 'camrelease_call_ge'], STREAMWORLD_DIALOGUE_CAMRELEASE_KERNEL_ALLOWANCE]
+];
+
+function boundarySpan(symbols, site) {
+  const [start, end] = Array.isArray(site) ? site : [`${site}_start`, `${site}_end`];
+  return symbolAddr(symbols, end) - symbolAddr(symbols, start);
+}
+
+test(
+  "phase 2 slice 7b fix round 2 (A4): each of the 13 kernel-lo dialogue call sites equals its own named allowance, on UNROM 512, action+mixed+text, RPG, and RPG+mixed",
+  { skip: !hasNesasm && 'nesasm not found on PATH' },
+  async (t) => {
+    const mapper = resolveMapper(30);
+    const cases = [
+      { project: withOrdinaryDialogue(createStreamedProject({ gameType: 'action', mixed: true })), label: 'action, mixed, with text' },
+      { project: createStreamedProject({ gameType: 'rpg' }), label: 'rpg' },
+      { project: createStreamedProject({ gameType: 'rpg', mixed: true }), label: 'rpg, mixed' }
+    ];
+    for (const { project, label } of cases) {
+      const dir = await fsp.mkdtemp(path.join(os.tmpdir(), 'forge-kernello-dlg-lifecycle-'));
+      t.after(() => fsp.rm(dir, { recursive: true, force: true }));
+      const built = await buildProject({ dir, project, log: () => {} });
+      const symbols = await fsp.readFile(built.symbolPath, 'utf8');
+      let sum = 0;
+      for (const [site, expected] of STREAMWORLD_DIALOGUE_LIFECYCLE_SITES) {
+        const span = boundarySpan(symbols, site);
+        sum += span;
+        const siteName = Array.isArray(site) ? site[0].replace(/_gs$/, '') : site;
+        assert.equal(
+          span,
+          expected,
+          `${mapper.name} (${label}): ${siteName} spans ${span} bytes but its own named allowance reserves ${expected} -- ` +
+            're-measure and correct it.'
+        );
+      }
+      assert.equal(
+        sum,
+        STREAMWORLD_DIALOGUE_LIFECYCLE_KERNEL_ALLOWANCE,
+        `${mapper.name} (${label}): the 13 lifecycle call sites sum to ${sum} bytes but ` +
+          `STREAMWORLD_DIALOGUE_LIFECYCLE_KERNEL_ALLOWANCE reserves ${STREAMWORLD_DIALOGUE_LIFECYCLE_KERNEL_ALLOWANCE} -- ` +
+          're-measure and correct it.'
+      );
+    }
+  }
+);
+
+test(
+  'phase 2 slice 7b: a streamed project with no text sums zero bytes across the 13 dialogue-lifecycle call sites',
+  { skip: !hasNesasm && 'nesasm not found on PATH' },
+  async (t) => {
+    const mapper = resolveMapper(30);
+    const project = createStreamedProject({ gameType: 'action' });
+    project.project.titleMap = null;
+    const dir = await fsp.mkdtemp(path.join(os.tmpdir(), 'forge-kernello-dlg-lifecycle-off-'));
+    t.after(() => fsp.rm(dir, { recursive: true, force: true }));
+    const built = await buildProject({ dir, project, log: () => {} });
+    const symbols = await fsp.readFile(built.symbolPath, 'utf8');
+    const sum = STREAMWORLD_DIALOGUE_LIFECYCLE_SITES.reduce((total, [site]) => total + boundarySpan(symbols, site), 0);
+    assert.equal(
+      sum,
+      0,
+      `${mapper.name}: a text-free project must assemble zero bytes across the dialogue-lifecycle call sites`
+    );
+  }
+);
+
+// Phase 2 slice 7b: STREAMWORLD_OAM_GUARD_KERNEL_ALLOWANCE (kernel-lo) -- the nmi_oam_guard_
+// start/end span in engine/boot.asm's nmi:. Fix round 1 (review round 1, finding A5): the only
+// production writer of cam_dirty during a dialogue is text.asm's own `.if TEXT_ENABLED` lifecycle,
+// so this guard is now nested `.if STREAMING_ENABLED / .if TEXT_ENABLED` too (byte-identity fix --
+// it was unconditional inside just `.if STREAMING_ENABLED` before, costing a streaming-without-
+// text build 4 bytes its pre-7b build never paid). Gated on usesStreaming && usesText, the
+// STREAMWORLD_DIALOGUE_LIFECYCLE_KERNEL_ALLOWANCE precedent -- action's own default project here
+// carries no text, RPG's does, so the two cases exercise both sides of the gate directly.
+test(
+  'phase 2 slice 7b: STREAMWORLD_OAM_GUARD_KERNEL_ALLOWANCE equals the real nmi_oam_guard_start..end span, both game types, with and without text',
+  { skip: !hasNesasm && 'nesasm not found on PATH' },
+  async (t) => {
+    const mapper = resolveMapper(30);
+    for (const gameType of ['action', 'rpg']) {
+      const project = createStreamedProject({ gameType });
+      const dir = await fsp.mkdtemp(path.join(os.tmpdir(), 'forge-kernello-oamguard-'));
+      t.after(() => fsp.rm(dir, { recursive: true, force: true }));
+      const built = await buildProject({ dir, project, log: () => {} });
+      const symbols = await fsp.readFile(built.symbolPath, 'utf8');
+      const span = symbolAddr(symbols, 'nmi_oam_guard_end') - symbolAddr(symbols, 'nmi_oam_guard_start');
+      const expected = projectUsesText(project) ? STREAMWORLD_OAM_GUARD_KERNEL_ALLOWANCE : 0;
+      assert.equal(
+        span,
+        expected,
+        `${mapper.name} (${gameType}): nmi_oam_guard_start..end spans ${span} bytes but expected ${expected} ` +
+          `(STREAMWORLD_OAM_GUARD_KERNEL_ALLOWANCE ${STREAMWORLD_OAM_GUARD_KERNEL_ALLOWANCE}, gated on usesText) -- ` +
+          're-measure and correct it.'
+      );
+    }
+    // Off side: a non-streamed project still carries the unconditional boundary labels (present
+    // regardless of STREAMING_ENABLED, required by the single-build span technique itself), so
+    // "no streaming" is a real, direct zero rather than a missing symbol.
+    const ordinary = createStreamedProject({ gameType: 'action' });
+    for (const map of ordinary.maps) map.streamed = false;
+    const dir = await fsp.mkdtemp(path.join(os.tmpdir(), 'forge-kernello-oamguard-off-'));
+    t.after(() => fsp.rm(dir, { recursive: true, force: true }));
+    const built = await buildProject({ dir, project: ordinary, log: () => {} });
+    const symbols = await fsp.readFile(built.symbolPath, 'utf8');
+    assert.equal(
+      symbolAddr(symbols, 'nmi_oam_guard_end') - symbolAddr(symbols, 'nmi_oam_guard_start'),
+      0,
+      `${mapper.name}: a non-streamed project must assemble zero bytes for the OAM guard`
+    );
+  }
+);
+
+// Fix round 1, finding A4/Chris's ruling 2026-09-25(b): STREAMWORLD_NAMEENTRY_ACTION_KERNEL_ALLOWANCE,
+// nameentry.asm's own streamed-dispatch delta on the kernel-lo action placement -- the twin of
+// STREAMWORLD_NAMEENTRY_BATTLE_ALLOWANCE (main/build/battletables.js) on the banked RPG placement.
+// Unlike that whole-region delta, nameentry.asm already carries its own unconditional boundary label
+// pairs around each of its three `.if STREAMING_ENABLED` sites (nameentry_raise_step_gs/_ge,
+// nameentry_push_guard_start/_end, nameentry_queue_cell_gs/_ge), so a single naming-on build's own
+// symbol table gives the exact combined span directly -- no on/off diff, and so no exposure to the
+// projectUsesText confound generate.js's own comment on this constant found and had to control for
+// (turning naming on with no other text source also flips STREAMWORLD_DIALOGUE_LIFECYCLE_KERNEL_
+// ALLOWANCE and STREAMWORLD_OAM_GUARD_KERNEL_ALLOWANCE on, which this bracket technique never touches
+// at all). Both game types, since nameentry.asm's header claims the identical source assembles to
+// identical bytes regardless of placement.
+test(
+  "phase 2 slice 7b fix round 1 (A4/Chris's ruling (b)): STREAMWORLD_NAMEENTRY_ACTION_KERNEL_ALLOWANCE " +
+    'equals the real sum of nameentry.asm\'s three streamed-dispatch brackets, both game types',
+  { skip: !hasNesasm && 'nesasm not found on PATH' },
+  async (t) => {
+    const mapper = resolveMapper(30);
+    for (const gameType of ['action', 'rpg']) {
+      const project = createStreamedProject({ gameType, naming: true });
+      const dir = await fsp.mkdtemp(path.join(os.tmpdir(), 'forge-kernello-nameentry-action-'));
+      t.after(() => fsp.rm(dir, { recursive: true, force: true }));
+      const built = await buildProject({ dir, project, log: () => {} });
+      const symbols = await fsp.readFile(built.symbolPath, 'utf8');
+      const raiseSpan = symbolAddr(symbols, 'nameentry_raise_step_ge') - symbolAddr(symbols, 'nameentry_raise_step_gs');
+      const pushSpan = symbolAddr(symbols, 'nameentry_push_guard_end') - symbolAddr(symbols, 'nameentry_push_guard_start');
+      const queueSpan = symbolAddr(symbols, 'nameentry_queue_cell_ge') - symbolAddr(symbols, 'nameentry_queue_cell_gs');
+      const span = raiseSpan + pushSpan + queueSpan;
+      assert.equal(
+        span,
+        STREAMWORLD_NAMEENTRY_ACTION_KERNEL_ALLOWANCE,
+        `${mapper.name} (${gameType}): nameentry.asm's three streamed-dispatch brackets sum to ${span} bytes ` +
+          `but expected STREAMWORLD_NAMEENTRY_ACTION_KERNEL_ALLOWANCE (${STREAMWORLD_NAMEENTRY_ACTION_KERNEL_ALLOWANCE}) ` +
+          '-- re-measure and correct it.'
+      );
+    }
+  }
+);
+
+// A project that genuinely does not fit alongside this new term still gets checkCapacity's own
+// ordinary refusal, worded for whichever bank actually overflowed -- Chris's ruling 2026-09-25(b)'s
+// own requirement -- rather than silently overflowing. A large streamed grid with naming on already
+// overflows the LOOKUP TABLE budget (a different ledger than kernelCodeBytes) at this project's
+// default size, which is exactly the genuine-overflow case the ruling anticipated, not a bug in this
+// term's accounting.
+test(
+  "phase 2 slice 7b fix round 1 (A4/Chris's ruling (b)): a genuinely overfull action+streamed+naming " +
+    'project still gets an ordinary capacity refusal, not a silent overflow',
+  { skip: !hasNesasm && 'nesasm not found on PATH' },
+  async (t) => {
+    const project = createStreamedProject({ gameType: 'action', mixed: true, naming: true });
+    project.maps.find((m) => m.streamed).screens[0].entities.push({
+      x: 8,
+      y: 8,
+      actorId: 0,
+      props: { dialogue: 'Hi' }
+    });
+    const dir = await fsp.mkdtemp(path.join(os.tmpdir(), 'forge-kernello-nameentry-action-overfull-'));
+    t.after(() => fsp.rm(dir, { recursive: true, force: true }));
+    await assert.rejects(
+      () => buildProject({ dir, project, log: () => {} }),
+      (err) => /lookup tables need \d+ bytes but only \d+ are free/.test(err.message),
+      'an action project this large, streamed, with naming and a real dialogue string on, should refuse ' +
+        'with an ordinary named-Forge capacity message, not assemble silently or throw something else'
     );
   }
 );
@@ -6085,7 +6476,16 @@ test(
     // directly, dropping Visible (the cheapest remaining term,
     // VISIBLE_KERNEL_ALLOWANCE 47) is what clears this shortfall -- move and
     // Say (movement and dialogue) is what this board can now actually hold
-    // alongside a streamed map.
+    // alongside a streamed map. Phase 2 slice 7b (dialogue lifecycle,
+    // STREAMWORLD_DIALOGUE_LIFECYCLE_KERNEL_ALLOWANCE 226 + STREAMWORLD_
+    // OAM_GUARD_KERNEL_ALLOWANCE 4, both unconditional once a streamed
+    // project uses text, main/build/generate.js) narrowed it once more,
+    // past what even move+Say now leave room for (the table budget came up
+    // 126 bytes short with both commands live): measured directly, dropping
+    // Move (the only remaining term -- Say cannot go, this is the dialogue
+    // slice's own worst case) is what clears this shortfall -- Say alone
+    // (dialogue only) is what this board can now actually hold alongside a
+    // streamed map; margin lands at exactly 20, the tight end of the band.
     before.entities.push({
       actorId: 0,
       x: 32,
@@ -6095,10 +6495,7 @@ test(
           pages: [
             {
               cond: { type: 'none', arg: 0 },
-              commands: [
-                { op: 'move', who: 'self', dir: 'up', dist: 16 },
-                { op: 'say', text: 'Hello.' }
-              ]
+              commands: [{ op: 'say', text: 'Hello.' }]
             }
           ]
         }

@@ -191,6 +191,25 @@ box_begin:
   .endif
   lda <box_state
   bne box_begin_clear       ; already up: keep the frame, wipe what it holds
+                            ; -- a same-box reuse (next page/question) never
+                            ; re-nudges, streamed or not
+                            ;
+                            ; box_begin_guard_start/_end bracket only this
+                            ; slice's own new bytes -- kernelbytes.test.js
+                            ; measures the span directly, the same
+                            ; unconditional-boundary-label technique Part F's
+                            ; own kernel-lo terms already use.
+box_begin_guard_start:
+  .if STREAMING_ENABLED
+  .if TEXT_ENABLED
+  lda <map_is_streamed
+  beq box_begin_fresh
+  jmp sw_dlg_hi_box_begin   ; body relocated, engine/streamworld.asm (fix
+                            ; round 2, A4)
+  .endif
+  .endif
+box_begin_guard_end:
+box_begin_fresh:
   lda #BOX_OPENING
   sta <box_state
   rts
@@ -225,6 +244,17 @@ box_close_done:
 
 ; One step per frame. Run from ui_tick, so the world is frozen throughout.
 text_tick:
+text_tick_guard_start:
+  .if STREAMING_ENABLED
+  .if TEXT_ENABLED
+  lda <map_is_streamed
+  beq text_tick_ordinary
+  jmp sw_dlg_hi_text_tick   ; body relocated, engine/streamworld.asm (fix
+                            ; round 2, A4)
+  .endif
+  .endif
+text_tick_guard_end:
+text_tick_ordinary:
   lda <box_state
   bne text_tick_go
   rts
@@ -299,7 +329,20 @@ text_open_step:
   lda <box_row
   cmp #BOX_ROWS_HIGH
   bcs text_open_attr
+                            ; A streamed+text build defers this call past the
+                            ; map_is_streamed check below (box_row_addr opens
+                            ; a VRAM packet the streamed dispatch never pushes
+                            ; to); every other build keeps the original,
+                            ; unconditional call here so its bytes -- and the
+                            ; six fixture hashes -- stay identical to 8b4d5a9.
+  .if STREAMING_ENABLED
+  .if TEXT_ENABLED
+  .else
   jsr box_row_addr
+  .endif
+  .else
+  jsr box_row_addr
+  .endif
   lda <box_row
   beq text_open_edge
   cmp #BOX_ROWS_HIGH-1
@@ -308,12 +351,32 @@ text_open_step:
   sta <tmp
   lda #TILE_SPACE
   sta <tmp2
-  jmp text_open_row
+  jmp text_open_row_dispatch
 text_open_edge:
   lda #BORDER_CORNER        ; top and bottom: corner, rule, corner
   sta <tmp
   lda #BORDER_H
   sta <tmp2
+text_open_row_dispatch:
+text_open_row_guard_start:
+  .if STREAMING_ENABLED
+  .if TEXT_ENABLED
+  ; Fix round 1 (A4): the body itself now lives in kernel-hi
+  ; (sw_dlg_hi_open_row, engine/streamworld.asm) -- this site keeps only the
+  ; dispatch, per Chris's 2026-09-25 ruling to relocate the streamed
+  ; dialogue branches out of kernel-lo.
+  lda <map_is_streamed
+  beq text_open_row_ordinary
+  jmp sw_dlg_hi_open_row
+  .endif
+  .endif
+text_open_row_guard_end:
+text_open_row_ordinary:
+  .if STREAMING_ENABLED
+  .if TEXT_ENABLED
+  jsr box_row_addr          ; deferred from the top of text_open_step -- see
+  .endif                    ; the comment there
+  .endif
 text_open_row:
   lda <tmp
   jsr vram_push
@@ -326,10 +389,23 @@ text_open_row_loop:
   lda <tmp
   jsr vram_push
   jsr vram_end
+text_open_row_done:
   inc <box_row
   rts
 
 text_open_attr:
+text_open_attr_guard_start:
+  .if STREAMING_ENABLED
+  .if TEXT_ENABLED
+  ; Fix round 1 (A4): relocated to sw_dlg_hi_open_attr, engine/streamworld.asm
+  ; -- see text_open_row_guard_start's own comment above.
+  lda <map_is_streamed
+  beq text_open_attr_ordinary
+  jmp sw_dlg_hi_open_attr
+  .endif
+  .endif
+text_open_attr_guard_end:
+text_open_attr_ordinary:
   lda #BOX_ADDR_HI
   ldy #BOX_ATTR_LO
   jsr vram_open
@@ -416,6 +492,18 @@ msg_advance_done:
 ; A = glyph tile, written at msg_line/msg_col.
 text_put_char:
   pha
+text_put_char_guard_start:
+  .if STREAMING_ENABLED
+  .if TEXT_ENABLED
+  ; Fix round 1 (A4): relocated to sw_dlg_hi_put_char, engine/streamworld.asm
+  ; -- see text_open_row_guard_start's own comment above.
+  lda <map_is_streamed
+  beq text_put_char_ordinary
+  jmp sw_dlg_hi_put_char
+  .endif
+  .endif
+text_put_char_guard_end:
+text_put_char_ordinary:
   lda <msg_line
   asl a
   asl a
@@ -440,6 +528,17 @@ text_hide_arrow:
   lda #TILE_SPACE
 text_arrow_write:
   pha
+text_arrow_write_guard_start:
+  .if STREAMING_ENABLED
+  .if TEXT_ENABLED
+  lda <map_is_streamed
+  beq text_arrow_write_ordinary
+  jmp sw_dlg_hi_arrow_write ; body relocated, engine/streamworld.asm (fix
+                            ; round 2, A4)
+  .endif
+  .endif
+text_arrow_write_guard_end:
+text_arrow_write_ordinary:
   lda #BOX_ADDR_HI
   ldy #ARROW_LO
   jsr vram_open
@@ -455,6 +554,19 @@ text_clear_step:
   lda <box_row
   cmp #BOX_TEXT_ROWS
   bcs text_clear_done
+text_clear_step_guard_start:
+  .if STREAMING_ENABLED
+  .if TEXT_ENABLED
+  ; Fix round 1 (A4): relocated to sw_dlg_hi_clear_step,
+  ; engine/streamworld.asm -- see text_open_row_guard_start's own comment
+  ; above.
+  lda <map_is_streamed
+  beq text_clear_step_ordinary
+  jmp sw_dlg_hi_clear_step
+  .endif
+  .endif
+text_clear_step_guard_end:
+text_clear_step_ordinary:
   jsr box_text_row_addr
   ldy #BOX_COLS
 text_clear_loop:
@@ -463,6 +575,7 @@ text_clear_loop:
   dey
   bne text_clear_loop
   jsr vram_end
+text_clear_step_done:
   inc <box_row
   rts
 text_clear_done:
@@ -537,11 +650,24 @@ text_choice_step:
   ldy #0
   lda [msg_ptr_lo],y
   beq text_choice_blank
-  jsr box_text_row_addr
   ; A label is compiled to fit one row and ends with TXT_END, so the count is a
   ; backstop rather than the thing that stops the loop: it is what keeps a string
   ; this engine did not compile from running the whole queue off the end of its
   ; page.
+text_choice_step_guard_start:
+  .if STREAMING_ENABLED
+  .if TEXT_ENABLED
+  ; Fix round 1 (A4): relocated to sw_dlg_hi_choice_step,
+  ; engine/streamworld.asm -- see text_open_row_guard_start's own comment
+  ; above.
+  lda <map_is_streamed
+  beq text_choice_step_ordinary
+  jmp sw_dlg_hi_choice_step
+  .endif
+  .endif
+text_choice_step_guard_end:
+text_choice_step_ordinary:
+  jsr box_text_row_addr
   lda #BOX_COLS
   sta <box_col
   ldy #0
@@ -603,6 +729,17 @@ text_choice_down_store:
 ; A = the tile to write beside the option the cursor is on.
 choice_cursor:
   pha
+choice_cursor_guard_start:
+  .if STREAMING_ENABLED
+  .if TEXT_ENABLED
+  lda <map_is_streamed
+  beq choice_cursor_ordinary
+  jmp sw_dlg_hi_choice_cursor ; body relocated, engine/streamworld.asm (fix
+                            ; round 2, A4)
+  .endif
+  .endif
+choice_cursor_guard_end:
+choice_cursor_ordinary:
   lda <choice_sel
   asl a
   asl a
@@ -632,6 +769,17 @@ text_close_step:
   lda <box_row
   cmp #BOX_ROWS_HIGH
   bcs text_close_attr
+text_close_step_guard_start:
+  .if STREAMING_ENABLED
+  .if TEXT_ENABLED
+  lda <map_is_streamed
+  beq text_close_step_ordinary
+  jmp sw_dlg_hi_close_step  ; body relocated, engine/streamworld.asm (fix
+                            ; round 2, A4)
+  .endif
+  .endif
+text_close_step_guard_end:
+text_close_step_ordinary:
   jsr box_row_addr
 
   lda <box_row
@@ -679,10 +827,24 @@ text_close_next:
   cmp #16
   bne text_close_cell
   jsr vram_end
+text_close_step_done:
   inc <box_row
   rts
 
 text_close_attr:
+text_close_attr_guard_start:
+  .if STREAMING_ENABLED
+  .if TEXT_ENABLED
+  ; Fix round 1 (A4): relocated to sw_dlg_hi_close_attr,
+  ; engine/streamworld.asm -- see text_open_row_guard_start's own comment
+  ; above.
+  lda <map_is_streamed
+  beq text_close_attr_ordinary
+  jmp sw_dlg_hi_close_attr
+  .endif
+  .endif
+text_close_attr_guard_end:
+text_close_attr_ordinary:
   lda #BOX_ADDR_HI
   ldy #BOX_ATTR_LO
   jsr vram_open
@@ -697,8 +859,20 @@ text_close_attr_loop:
   cmp #64
   bne text_close_attr_loop
   jsr vram_end
+text_close_attr_tail:
   lda #BOX_CLOSED
   sta <box_state
+text_close_attr_tail_gs:
+  .if STREAMING_ENABLED
+  .if TEXT_ENABLED
+  lda <map_is_streamed
+  beq text_close_attr_done
+  jmp sw_dlg_hi_close_attr_tail ; body relocated, engine/streamworld.asm
+                            ; (fix round 2, A4)
+  .endif
+  .endif
+text_close_attr_tail_ge:
+text_close_attr_done:
   jmp close_ui
 
 ; Open a packet at the box's box_row'th tile row. The whole box lives inside one

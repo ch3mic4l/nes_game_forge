@@ -232,6 +232,8 @@ test(
       // oam_idx and the OAM region it would have written both stay exactly as primed.
       const slot = 0;
       mem[ENT_HURT + slot] = 0;
+      mem[ENT_ACTOR + slot] = 0;
+      mem[ENT_DIR + slot] = DIR_DOWN;
       mem[ENT_X + slot] = 100;
       mem[ENT_Y + slot] = 90;
       mem[OAM_IDX] = 40;

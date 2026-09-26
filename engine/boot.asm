@@ -78,14 +78,28 @@ boot_wait2:
   .endif
   ; A titleless cold boot never reaches start_game at all, so hero naming
   ; needs its own arrival here too (docs/design-name-entry.md §8).
+  ;
+  ; Fix round 1, finding A3: on a streamed project the request to open is
+  ; deferred to boot_naming_request (below boot_draw_done), reached only
+  ; AFTER boot_streamed_landing has resolved map_is_streamed for real --
+  ; calling box_begin (engine/text.asm) here always took its ordinary
+  ; immediate-open branch instead (map_is_streamed still reads 0 this
+  ; early, even on a streamed start map), skipping sw_dlg15_pending_step's
+  ; own strip-idle wait and camera floor entirely and leaving cam_x_lo/
+  ; cam_y_lo unaligned under a box that is already up. Gating only the
+  ; deferred half on STREAMING_ENABLED, and leaving this immediate call for
+  ; a non-streaming project exactly where it always was, keeps every
+  ; ordinary project's naming ROM byte-identical.
   .if !TITLE_ENABLED
   .if HERO_NAMING_ENABLED
   lda #ST_NAMEENTRY
   sta <game_state
+  .if !STREAMING_ENABLED
   lda #0
   jsr name_begin             ; shim (engine/ui.asm) -- A = party slot 0
   lda #BOX_NAMEENTRY
   jsr box_begin
+  .endif
   .endif
   .endif
 
@@ -152,6 +166,26 @@ boot_draw_ordinary:
   jsr draw_entities
   jsr enable_rendering
 boot_draw_done:
+boot_naming_request:
+  ; Fix round 1, finding A3: the streamed half of the titleless-naming
+  ; request above, run here instead -- map_is_streamed has now been
+  ; resolved for real by boot_streamed_landing either way (streamed or
+  ; ordinary start map), so box_begin's own map_is_streamed check
+  ; (engine/text.asm) takes the SAME deferred sw_dlg15_pending_step path an
+  ; ordinary in-game interact on a streamed map already takes, instead of a
+  ; bypass of it. box_begin only sets state; the box's own per-row raise
+  ; still happens later, one step per frame from ui_tick once main_loop is
+  ; reached below, so moving the request past this point costs no frame.
+  .if STREAMING_ENABLED
+  .if !TITLE_ENABLED
+  .if HERO_NAMING_ENABLED
+  lda #0
+  jsr name_begin             ; shim (engine/ui.asm) -- A = party slot 0
+  lda #BOX_NAMEENTRY
+  jsr box_begin
+  .endif
+  .endif
+  .endif
 
   .if SPLIT_ENABLED
   cli                       ; the MMC3 scanline counter is the only IRQ source:
@@ -356,6 +390,21 @@ main_loop_idle_freeze_dispatch:
   sta <sw_event_freeze
   .endif
 main_loop_idle_freeze_done:
+  ; Phase 2 slice 7b: sw_dlg17_camrelease (engine/streamworld.asm) is the
+  ; cheap-common-case per-frame poll that ends the dialogue lifecycle's
+  ; camera-nudge hold once the drain it is waiting on is acknowledged -- see
+  ; its own header comment for the full state machine. Gated on TEXT_ENABLED
+  ; too: the routine itself lives inside streamworld.asm's sw_dlg_mapper_
+  ; start/end span, which does not exist at all in a streamed-but-textless
+  ; build (no dialogue can ever open there, so the hold this releases can
+  ; never be taken out in the first place).
+camrelease_call_gs:
+  .if STREAMING_ENABLED
+  .if TEXT_ENABLED
+  jsr sw_dlg17_camrelease
+  .endif
+  .endif
+camrelease_call_ge:
   jmp main_loop
 
 take_door:
@@ -434,10 +483,38 @@ nmi:
   tya
   pha
 
+  ; Phase 2 slice 7b: while a streamed dialogue's camera nudge holds cam_dirty
+  ; (sw_dlg15_pending_step/sw_dlg17_camrelease, engine/streamworld.asm), OAM
+  ; must be skipped in lockstep with nmi_scroll's own stale scroll snapshot
+  ; above -- sprites otherwise DMA one frame out of step with a camera that
+  ; has already moved on to the floored nudge target (or back). cam_dirty is
+  ; reserved unconditionally the moment CAMERA_ENABLED exists as a build
+  ; option (engine/constants.asm), so this read is always a real symbol
+  ; regardless of this project's own camera setting. Fix round 1, finding
+  ; A5: gated on TEXT_ENABLED as well as STREAMING_ENABLED -- a dialogue is
+  ; the only thing that ever takes this hold out (the ordinary per-frame
+  ; camera publish and the position-jump guard both already release it
+  ; within the same mainline frame they raised it, exactly as they did
+  ; before this slice existed), so a streamed project with no text pays
+  ; nothing here and assembles its NMI handler byte-identical to its
+  ; pre-7b build. nmi_oam_guard_start/_end bracket only the guard itself
+  ; (the unconditional DMA below is untouched either way), the same
+  ; unconditional-boundary-label technique Part F's own kernel-lo terms use
+  ; (kernelbytes.test.js), so the span between them is this term's exact,
+  ; confound-free cost.
+nmi_oam_guard_start:
+  .if STREAMING_ENABLED
+  .if TEXT_ENABLED
+  lda <cam_dirty
+  bne nmi_oam_skip
+  .endif
+  .endif
+nmi_oam_guard_end:
   lda #$00
   sta $2003
   lda #$02
   sta $4014                 ; OAM DMA from $0200
+nmi_oam_skip:
 
   ; Fade's own packets were the first producer into vram_buf whose own
   ; address ends inside palette space ($3F00-$3F1F): after vram_drain

@@ -6729,12 +6729,14 @@ function eventMovesPlayer(event, commonById, seen) {
 /**
  * Phase 2 slice 2b: does `event` reach a live command whose op is in `ops`
  * (a Set), following `call` into common events the same way eventMovesPlayer
- * does? Used by validateStreamedMaps for the Say (Part D item 4) and Fight
- * (item 6) refusals -- unlike eventMovesPlayer, ownership (who runs the
- * command) does not matter for either of those: a Say opens a text box no
- * matter who is "speaking," and a scripted Fight starts a battle no matter
- * who triggers it, so this is a plain reachability walk with no route/player
- * bookkeeping of its own.
+ * does? Used by validateStreamedMaps for the Say/Choice half of item 4's own
+ * text-and-move combination refusal (phase 2 slice 7b lifted the plain
+ * Say/Choice refusal once the streamed dialogue lifecycle shipped) and the
+ * Fight (item 6) refusal, itself already lifted as of phase 2 slice 6 --
+ * unlike eventMovesPlayer, ownership (who runs the command) does not matter
+ * for either of those: a Say opens a text box no matter who is "speaking,"
+ * and a scripted Fight starts a battle no matter who triggers it, so this is
+ * a plain reachability walk with no route/player bookkeeping of its own.
  */
 function eventHasOp(event, ops, commonById, seen) {
   for (const page of compiledPages(event)) {
@@ -6882,10 +6884,17 @@ function validateStreamedMaps(project, add) {
   // dispatches straight to box_choose (engine/script.asm's script_op_choice,
   // `jmp box_choose`), so a Choice-only event with no Say anywhere reached
   // the same unsupported overlay this refusal exists to block. Join's own
-  // box_begin call (script_op_join, BOX_NAMEENTRY) needs no entry here: it
-  // is gated on JOIN_NAMING_ENABLED, itself gated on projectUsesJoinNaming,
-  // which item 5 below already refuses globally for any project with a
-  // streamed map -- that build option can never be on here.
+  // box_begin call (script_op_join, BOX_NAMEENTRY) needs no entry here
+  // either, but for a different reason since item 5's own global naming
+  // refusal was narrowed to the action placement only (phase 2 slice 7b,
+  // below): Join naming is RPG-only (projectUsesJoinNaming refuses a non-RPG
+  // project outright), so it is never subject to the narrowed refusal, and
+  // nameentry.asm is one shared source whose own map_is_streamed dispatch
+  // (nameentry_raise_step, _draw_letters/_draw_preview/_draw_ctrl,
+  // _queue_cell) already routes through the streamed mapper unconditionally
+  // for hero AND Join naming alike, so a Join-naming grid on a streamed
+  // screen needs no refusal of its own -- it is the identical code path this
+  // refusal's own Say/Choice exemption already ships.
   const SAY_OPS = new Set(['say', 'choice']);
   for (const { map, index } of streamed) {
     map.screens.forEach((screen, screenIndex) => {
@@ -6929,28 +6938,54 @@ function validateStreamedMaps(project, add) {
               'cannot cross to a new screen -- keep player Moves within the screen, or use a Warp to change screen.'
           );
         }
-        // Item 4: Say/dialogue.
-        if (eventHasOp(event, SAY_OPS, commonById, new Set([event]))) {
+        // Item 4: phase 2 slice 7b ships the streamed dialogue lifecycle
+        // (engine/text.asm's mapper dispatch, docs/design-streamed-worlds.md
+        // §7), so Say/Choice alone no longer needs refusing. What remains
+        // unsupported is an event that BOTH shows text and moves the player
+        // -- the camera-nudge hold a dialogue box takes (sw_dlg15_pending_
+        // step) and a scripted Move's own edge-bounding (item 3, above) are
+        // two different streamed-specific mechanisms this slice never
+        // arbitrated between, so a page combining them is refused rather
+        // than shipped unverified. Reuses eventMovesPlayer's own walk
+        // (already computed just above for item 3) rather than a second
+        // graph walk of the same event.
+        if (
+          eventHasOp(event, SAY_OPS, commonById, new Set([event])) &&
+          eventMovesPlayer(event, commonById, new Set([event]))
+        ) {
           add(
             'error',
             'Map Forge',
-            `${label()}: the event on ${entityLabel(project, entity)} shows text or asks a question, which a ` +
-              'streamed screen cannot yet -- remove it, or make this map ordinary.'
+            `${label()}: the event on ${entityLabel(project, entity)} both shows text or asks a question and ` +
+              'moves the player, which a streamed screen cannot yet -- split it into separate events, or make ' +
+              'this map ordinary.'
           );
         }
       }
     });
   }
 
-  // Item 5: hero/Join naming anywhere in a project that has a streamed map.
-  if (projectUsesHeroNaming(project) || projectUsesJoinNaming(project)) {
-    add(
-      'error',
-      'Map Forge',
-      'This project uses in-game naming (a renamable party member), which a project with a streamed map cannot ' +
-        'yet -- turn off naming, or remove the streamed map.'
-    );
-  }
+  // Item 5, lifted (fix round 1, finding A4/Chris's ruling 2026-09-25): the
+  // earlier blanket refusal here claimed action naming's kernel-lo placement
+  // could never fit alongside a streamed map's own kernel-lo cost on any
+  // implemented board, and that checkCapacity had no kernel-hi budget model
+  // to catch the real bank-62 (kernel-lo, not kernel-hi -- shared/
+  // cartridge.js's own prgLayout: UNROM 512's kernelLoBank is nesasmBanks-2
+  // = 62, kernelHiBank is nesasmBanks-1 = 63) overflow the refusal was
+  // guarding against. Both claims were wrong: generate.js already models
+  // kernel-hi capacity (checkKernelHiCapacity), and the six streamed dialogue
+  // call sites relocated to kernel-hi (STREAMWORLD_DIALOGUE_LIFECYCLE_
+  // KERNEL_ALLOWANCE, main/build/generate.js) free enough kernel-lo room for
+  // the action placement to assemble alongside a streamed map for real --
+  // NAME_ENTRY_ACTION_KERNEL_ALLOWANCE plus the streamed naming delta
+  // (STREAMWORLD_NAMEENTRY_ACTION_KERNEL_ALLOWANCE, the same 47 measured
+  // bytes STREAMWORLD_NAMEENTRY_BATTLE_ALLOWANCE already charges the banked
+  // placement, since nameentry.asm's own header establishes the identical
+  // source text assembles to identical bytes on either placement). A project
+  // that genuinely does not fit -- too much other content, not this
+  // combination itself -- still gets checkCapacity's own ordinary kernel-lo/
+  // kernel-hi refusal, worded for whichever bank actually overflowed.
+
   // Item 7: a live Save anywhere in a project that has a streamed map.
   if (projectUsesSave(project)) {
     add(

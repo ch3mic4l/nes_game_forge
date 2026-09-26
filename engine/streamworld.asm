@@ -4151,5 +4151,682 @@ sw_dlg_acb_wrap_end:
 sw_dlg_acb_done:
   rts
 
+; ==========================================================================
+; sw_dlg_origin_capture -- phase 2 slice 7b: Chris ruled (2026-09-25) this
+; slice owns sw_dlg_metatile, the close-path terrain-tile accessor, and this
+; is its companion. Captures this open/close transaction's own box origin
+; into sw_dlg_ocol/ocol_l/orow/orow_l (engine/constants.asm), once, from
+; sw_cam_origin_x_lo/hi and sw_cam_origin_y_lo/hi -- the streamed camera's
+; own published world-space origin, "the world position already sitting at
+; screen column/row 0" (that pair's own constants.asm comment). The
+; dialogue nudge (not yet built -- see this slice's own report) keeps that
+; origin floored to a 16px boundary and in lockstep with cam_x_lo/cam_y_lo
+; for as long as a box stays open, and the world is frozen for the whole
+; transaction (docs/design-streamed-worlds.md §7's own DLG_PENDING rule),
+; so one capture serves every sw_dlg_metatile call of that transaction --
+; the identical "compute once, consult many times" shape sw_dlg_attr_
+; precompute already has, above.
+;
+; screenCol needs no division: a screen is exactly 256px wide, so
+; sw_cam_origin_x_hi already IS the origin's own screenCol, and
+; sw_cam_origin_x_lo>>4 is its local metatile column (0-15) -- a clean
+; shift because the nudge floors it to a 16px multiple. screenRow needs a
+; real divmod: a screen is 240px tall, not a power of two -- the same
+; bounded repeated-subtract idiom sw_camera_window_recompute's own
+; sw_fcw_ydiv_loop already uses (bounded by sw_grid_h, as that routine's
+; own header documents), run here on a local copy in sw_dlg_scr0/scr1 so
+; sw_cam_origin_y_lo/hi itself is left untouched for sw_project_axis's own
+; next frame.
+;
+; In: none. Out: sw_dlg_ocol/ocol_l/orow/orow_l set. Clobbers A, X.
+; ==========================================================================
+sw_dlg_origin_capture:
+  lda sw_cam_origin_x_hi
+  sta sw_dlg_ocol
+  lda sw_cam_origin_x_lo
+  lsr a
+  lsr a
+  lsr a
+  lsr a
+  sta sw_dlg_ocol_l
+
+  lda sw_cam_origin_y_lo
+  sta sw_dlg_scr0
+  lda sw_cam_origin_y_hi
+  sta sw_dlg_scr1
+  ldx #0
+sw_dlgoc_ydiv_loop:
+  lda sw_dlg_scr1
+  bne sw_dlgoc_ydiv_sub
+  lda sw_dlg_scr0
+  cmp #240
+  bcc sw_dlgoc_ydiv_done
+sw_dlgoc_ydiv_sub:
+  lda sw_dlg_scr0
+  sec
+  sbc #240
+  sta sw_dlg_scr0
+  lda sw_dlg_scr1
+  sbc #0
+  sta sw_dlg_scr1
+  inx
+  jmp sw_dlgoc_ydiv_loop
+sw_dlgoc_ydiv_done:
+  stx sw_dlg_orow
+  lda sw_dlg_scr0
+  lsr a
+  lsr a
+  lsr a
+  lsr a
+  sta sw_dlg_orow_l
+  rts
+
+; ==========================================================================
+; sw_dlg_metatile -- the close-path terrain-tile accessor: composes
+; sw_terrain_or_fill with the caller-supplied origin sw_dlg_origin_capture
+; (above) already resolved, exactly as docs/design-streamed-worlds.md §7's
+; own "On close ... via sw_dlg_metatile (composing sw_terrain_or_fill with a
+; caller-supplied origin ...)" describes. sw_dlg_origin_capture must already
+; have run for this transaction; this routine does not call it, so a
+; caller's every close-path cell lookup pays only this routine's own small
+; add/wrap arithmetic, not a fresh divmod per cell.
+;
+; In: A = box-relative metatile row (0-2, BOX_MT_ROW's own three bands);
+;     X = box-relative metatile column (0-15).
+; Out: A = the metatile id at that cell (sw_terrain_or_fill's own fill-aware
+;     read). Clobbers X, Y (as sw_terrain_or_fill's real-read case does) and
+;     this routine's own sw_dlg_scr0-3 scratch.
+; ==========================================================================
+sw_dlg_metatile:
+  sta sw_dlg_scr1          ; stash box-relative row; A is about to be reused
+  txa
+  clc
+  adc sw_dlg_ocol_l
+  cmp #16
+  bcc sw_dlgmt_col_ok
+  sbc #16
+  sta sw_dlg_scr0
+  lda sw_dlg_ocol
+  clc
+  adc #1
+  sta sw_dlg_scr2
+  jmp sw_dlgmt_row
+sw_dlgmt_col_ok:
+  sta sw_dlg_scr0
+  lda sw_dlg_ocol
+  sta sw_dlg_scr2
+sw_dlgmt_row:
+  lda sw_dlg_scr1          ; the stashed box-relative row
+  clc
+  adc #BOX_MT_ROW
+  clc
+  adc sw_dlg_orow_l
+  cmp #15
+  bcc sw_dlgmt_row_ok
+  sbc #15
+  sta sw_dlg_scr1
+  lda sw_dlg_orow
+  clc
+  adc #1
+  sta sw_dlg_scr3
+  jmp sw_dlgmt_offset
+sw_dlgmt_row_ok:
+  sta sw_dlg_scr1
+  lda sw_dlg_orow
+  sta sw_dlg_scr3
+sw_dlgmt_offset:
+  lda sw_dlg_scr1          ; local row (0-14)
+  asl a
+  asl a
+  asl a
+  asl a                     ; * 16 metatiles per row
+  clc
+  adc sw_dlg_scr0          ; + local col -- offset within the target screen
+  tay
+  ldx sw_dlg_scr3          ; screenRow
+  lda sw_dlg_scr2          ; screenCol
+  jmp sw_terrain_or_fill
+
+; ==========================================================================
+; sw_dlg_run_open/push/reopen -- the split-aware run writer, generalised
+; from sw_dlg_write_row above to an arbitrary starting column and an
+; arbitrary (even variable, caller-decided) length: border/close-row writes
+; run the full 32-tile width from column 0, but a text-clear or choice-label
+; row starts at column 2 and runs at most BOX_COLS (28), and a choice
+; label's real length is however many glyphs precede its TXT_END, capped
+; there. sw_dlg_write_row's own single fixed-shape split is unaffected (its
+; producers, the attribute band writers, keep using it).
+;
+; sw_dlg_run_open never calls vram_open itself -- only sw_dlg_run_push's own
+; first call does, lazily, so a caller that computes the seam and then finds
+; it has nothing to write (a blank choice label) never opens a zero-push
+; packet (CLAUDE.md's "a count of zero drains as 256" trap).
+;
+; In: A = box-relative tile row (0-5); X = box-relative starting column
+;     (0-31). Out: sw_dlgw_band/col store the row/column for
+;     sw_dlg_run_push's own first-call reopen; sw_dlgw_seamcol is the column
+;     at which the physical nametable wraps (32 minus cam_x_lo>>3 -- 32 when
+;     cam_x_lo is nametable-aligned, a value no real 0-31 column ever
+;     equals, so no split ever fires); sw_dlgw_open = 0. Clobbers A.
+; ==========================================================================
+sw_dlg_run_open:
+  sta <sw_dlgw_band
+  stx <sw_dlgw_col
+  lda <cam_x_lo
+  lsr a
+  lsr a
+  lsr a
+  sta <sw_dlgw_tmp          ; r, transient -- no attr call is ever in flight
+                              ; here (see sw_dlgw_tmp's own comment above)
+  lda #32
+  sec
+  sbc <sw_dlgw_tmp
+  sta <sw_dlgw_seamcol
+  lda #0
+  sta <sw_dlgw_open
+  rts
+
+; In: A = the byte to write at the current column (sw_dlgw_col), advanced
+; here. Must be called once per column in strictly ascending order, starting
+; at the column sw_dlg_run_open was given. Preserves X and Y -- matching
+; vram_push's own contract, which every caller here is written against (a
+; loop counter in X, or a shared index/id in Y computed once and read again
+; after the call, the same shapes the ordinary vram_push callers already
+; use) -- even though the reopen path below genuinely clobbers both via
+; sw_dlg_tile_addr, saved and restored around it rather than left to leak.
+sw_dlg_run_push:
+  pha
+  txa
+  pha
+  tya
+  pha
+  lda <sw_dlgw_open
+  bne sw_dlgrp_check_seam
+  jsr sw_dlg_run_reopen
+  lda #1
+  sta <sw_dlgw_open
+  jmp sw_dlgrp_restore
+sw_dlgrp_check_seam:
+  lda <sw_dlgw_col
+  cmp <sw_dlgw_seamcol
+  bne sw_dlgrp_restore
+  jsr vram_end
+  jsr sw_dlg_run_reopen
+sw_dlgrp_restore:
+  pla
+  tay
+  pla
+  tax
+  pla
+  jsr vram_push
+  inc <sw_dlgw_col
+  rts
+
+; Open a fresh packet at sw_dlgw_band/col's own current position. Clobbers
+; A, X, Y.
+sw_dlg_run_reopen:
+  lda <sw_dlgw_band
+  ldx <sw_dlgw_col
+  jsr sw_dlg_tile_addr
+  jmp vram_open
+
+; ==========================================================================
+; sw_dlg_write_border -- one 32-tile-wide border row (text_open_step's own
+; corner/rule-or-frame/blank byte choice, made by the caller), split-aware.
+; In: A = box-relative tile row (0-5); sw_dlgw_edge = the tile at columns 0
+; and 31; sw_dlgw_fill = the tile for columns 1-30.
+; ==========================================================================
+sw_dlg_write_border:
+  ldx #0
+  jsr sw_dlg_run_open
+  lda <sw_dlgw_edge
+  jsr sw_dlg_run_push
+  ldx #30
+sw_dlgwb_loop:
+  lda <sw_dlgw_fill
+  jsr sw_dlg_run_push
+  dex
+  bne sw_dlgwb_loop
+  lda <sw_dlgw_edge
+  jsr sw_dlg_run_push
+  jmp vram_end
+
+; ==========================================================================
+; sw_dlg_close_row -- rebuild one 32-tile-wide tile row from terrain via
+; sw_dlg_metatile, split-aware -- text_close_step's own metatile math
+; (box-relative tile row 0-5 maps to metatile row (tile_row>>1)+BOX_MT_ROW,
+; top/bottom half = tile_row&1), reusing sw_dlgw_edge as the metatile-column
+; loop counter (0-15) -- safe because a border write and a close-row rebuild
+; never run in the same transaction (opposite ends of the box's own
+; open/close lifecycle).
+; In: A = box-relative tile row (0-5). Clobbers A, X, Y, sw_dlgw_mtrow/half/
+; edge, sw_dlg_metatile's own scratch.
+; ==========================================================================
+sw_dlg_close_row:
+  tax
+  and #1
+  sta <sw_dlgw_half
+  txa
+  lsr a
+  sta <sw_dlgw_mtrow
+  txa
+  ldx #0
+  jsr sw_dlg_run_open
+  lda #0
+  sta <sw_dlgw_edge
+sw_dlgcr_loop:
+  lda <sw_dlgw_mtrow
+  ldx <sw_dlgw_edge
+  jsr sw_dlg_metatile
+  tay
+  lda <sw_dlgw_half
+  bne sw_dlgcr_bottom
+  lda mt_tl,y
+  jsr sw_dlg_run_push
+  lda mt_tr,y
+  jsr sw_dlg_run_push
+  jmp sw_dlgcr_next
+sw_dlgcr_bottom:
+  lda mt_bl,y
+  jsr sw_dlg_run_push
+  lda mt_br,y
+  jsr sw_dlg_run_push
+sw_dlgcr_next:
+  inc <sw_dlgw_edge
+  lda <sw_dlgw_edge
+  cmp #16
+  bne sw_dlgcr_loop
+  jmp vram_end
+
+; ==========================================================================
+; sw_dlg_single -- one tile, through the mapper; a single byte can never
+; straddle a seam, so no split bookkeeping is needed. In: A = box-relative
+; tile row (0-5); X = box-relative tile column (0-31); the byte to write is
+; already on the caller's own stack (the same pha/…/pla shape every ordinary
+; single-tile site in engine/text.asm already uses around its own
+; vram_open). Pulls it, pushes it, closes the packet.
+; ==========================================================================
+sw_dlg_single:
+  jsr sw_dlg_tile_addr
+  jsr vram_open
+  pla
+  jsr vram_push
+  jmp vram_end
+
+; ==========================================================================
+; sw_dlg15_pending_step -- called once per frame from text_tick while
+; sw_dlg15_state == SW_DLG15_PENDING (box_begin deferred this transaction's
+; own open). Waits for the strip to go idle, then floors the camera to a
+; 16px boundary (snapshotting the exact pre-nudge state for the un-nudge to
+; restore verbatim, never re-derived) and opens the camera/OAM publication
+; hold, then completes the deferred box_begin transition.
+;
+; X axis: cam_x_lo and sw_cam_origin_x_lo are always the same value
+; (sw_camera_window_recompute writes both from sw_fc_px_lo, above) -- floored
+; independently here anyway, for symmetry with the Y axis rather than
+; leaning on that equality. Y axis: cam_y_lo = worldY mod 240 while
+; sw_cam_origin_y_lo/hi is the full world-space value; 240 is itself a
+; multiple of 16, so flooring each independently by AND #$F0 cannot
+; disagree. Neither hi byte is ever touched by a floor (AND only clears
+; bits, never borrows) -- saved and restored anyway, matching the design's
+; own 4-byte x_lo/x_hi/y_lo/y_hi block rather than depending on that.
+; ==========================================================================
+sw_dlg15_pending_step:
+  lda st_active
+  bne sw_dlg15p_wait
+  lda <cam_x_lo
+  sta sw_dlg_cam_x_lo
+  lda <cam_y_lo
+  sta sw_dlg_cam_y_lo
+  lda sw_cam_origin_x_lo
+  sta <sw_dlg15_origin_x_lo
+  lda sw_cam_origin_x_hi
+  sta <sw_dlg15_origin_x_hi
+  lda sw_cam_origin_y_lo
+  sta <sw_dlg15_origin_y_lo
+  lda sw_cam_origin_y_hi
+  sta <sw_dlg15_origin_y_hi
+  ; Fix round 1, finding A1: acquire the publication lock BEFORE the first
+  ; store to a byte nmi_scroll/nmi_oam_guard actually read (cam_x_lo,
+  ; sw_cam_origin_x/y_lo) -- an NMI landing between these stores must never
+  ; see a torn floor. Unlike the shipped code this replaces, the lock is
+  ; held only for this one mainline frame: OAM is rebuilt against the
+  ; already-floored origin (below) before the lock is released, so the same
+  ; NMI that first observes cam_dirty==0 finds the scroll write and the OAM
+  ; DMA mutually consistent. The world itself stays motionless for the
+  ; whole conversation by a completely different, pre-existing mechanism --
+  ; game_state != ST_GAMEPLAY already keeps main_loop from ever calling
+  ; update_player again (engine/boot.asm) once a box is up, so
+  ; sw_frame_camera_window/sw_camera_window_recompute do not run again
+  ; until the box closes. This lock is not what holds the camera still; it
+  ; only brackets the two moments (nudge, un-nudge) the published camera
+  ; actually changes.
+  inc <cam_dirty
+  lda <cam_x_lo
+  and #$F0
+  sta <cam_x_lo
+  lda sw_cam_origin_x_lo
+  and #$F0
+  sta sw_cam_origin_x_lo
+  lda <cam_y_lo
+  and #$F0
+  sta <cam_y_lo
+  lda sw_cam_origin_y_lo
+  and #$F0
+  sta sw_cam_origin_y_lo
+  ; Fix round 1, finding A2: capture this transaction's own terrain-restore
+  ; origin now, the instant the camera has settled at its floored value --
+  ; the only production call site sw_dlg_close_row's own sw_dlg_metatile
+  ; call depends on.
+  ; Fix round 1, finding A4: sw_dlg_lifecycle_open_start/_end brackets only
+  ; this fix round's own new bytes (A1's rebuild-before-release call pair
+  ; plus A2's origin capture) -- kept OUT of the pre-existing
+  ; STREAMWORLD_DIALOGUE_MAPPER_KERNEL_HI_ALLOWANCE span measurement and
+  ; charged instead to its own STREAMWORLD_DIALOGUE_LIFECYCLE_KERNEL_HI_
+  ; ALLOWANCE, per Chris's 2026-09-25 ruling not to fold lifecycle growth
+  ; into the 7a mapper term.
+sw_dlg_lifecycle_open_start:
+  jsr sw_dlg_origin_capture
+  ; Fix round 1, finding A1: rebuild the sprite shadow against the just-
+  ; floored origin before the lock is released below -- otherwise the very
+  ; next NMI could DMA a shadow still describing the pre-nudge camera while
+  ; already publishing the floored scroll, the exact one-frame mismatch the
+  ; walk/interact/open probe recorded. build_oam/draw_entities are already
+  ; called unconditionally, every frame, from main_loop_draw
+  ; (engine/boot.asm) right after this routine's own caller returns --
+  ; calling them again there this same frame is redundant, not wrong (both
+  ; are pure projections of state this routine does not otherwise touch),
+  ; and is what makes it safe to publish before that second call runs.
+  jsr build_oam
+  jsr draw_entities
+  ; the release itself is also new -- the pre-fix routine never decremented
+  ; here at all, relying on sw_dlg17_camrelease's own dec to match an
+  ; inc <cam_dirty this routine left standing across the whole conversation.
+  dec <cam_dirty
+sw_dlg_lifecycle_open_end:
+  lda #1
+  sta sw_dlg17_camhold
+  lda #SW_DLG15_IDLE
+  sta <sw_dlg15_state
+  lda #BOX_OPENING
+  sta <box_state
+  rts
+sw_dlg15p_wait:
+  rts
+
+; ==========================================================================
+; sw_dlg17_camrelease -- called unconditionally, once per frame, from
+; main_loop_idle (engine/boot.asm), regardless of game_state -- text_tick is
+; not reached once close_ui has already run, so the drain-acknowledged
+; release cannot live there. sw_dlg17_camhold makes the common case (no
+; hold open, every ordinary frame of the whole game) a single cheap flag
+; test.
+; ==========================================================================
+sw_dlg17_camrelease:
+  lda sw_dlg17_camhold
+  beq sw_dlg17cr_done
+  lda <sw_dlg15_state
+  cmp #SW_DLG15_DRAINING
+  bne sw_dlg17cr_done
+  lda <vram_ready
+  bne sw_dlg17cr_done
+  ; Fix round 1, finding A1: acquire before the first restore store, exactly
+  ; as sw_dlg15_pending_step's own nudge does above -- this routine is
+  ; polled from main_loop_idle (engine/boot.asm), AFTER this same frame's
+  ; main_loop_draw already ran build_oam/draw_entities against the still-
+  ; floored camera, so without a rebuild here the shadow DMA'd at the very
+  ; next NMI would still describe the floored position even though that
+  ; same NMI's scroll write already shows the restored one -- the
+  ; observed one-frame, 14-pixel sprite pop. Restore the camera, rebuild
+  ; OAM against it, THEN release: the matching pair publishes together.
+  ; sw_dlg_lifecycle_close_a/_close_b bracket only this fix round's own new
+  ; bytes (the fresh acquire, then the rebuild-before-release call pair) --
+  ; the restore stores between them already existed before this fix round
+  ; and stay counted in the pre-existing mapper span, not this new term. See
+  ; sw_dlg_lifecycle_open_start's own comment above.
+  ;
+  ; Round 2, finding A1: draw_entities parks every remaining sprite
+  ; (engine/entities.asm), which erases the action HUD's hearts that
+  ; main_loop_draw's own earlier draw_hud call (engine/boot.asm) already drew
+  ; this same frame -- this second, later rebuild must reproduce the whole
+  ; applicable OAM composition main_loop_draw itself publishes
+  ; (build_oam/draw_entities/draw_hud, in that order), not just the world
+  ; projection, or the very next real DMA shows a heart-less HUD for one
+  ; frame. Matches main_loop_draw's own !BATTLE_ENABLED gate exactly -- an
+  ; RPG has no action HUD to preserve here (ui_tick's own battle overlay
+  ; owns the shadow instead, the same reason main_loop_draw itself skips
+  ; draw_hud there).
+sw_dlg_lifecycle_close_a_start:
+  inc <cam_dirty
+sw_dlg_lifecycle_close_a_end:
+  lda sw_dlg_cam_x_lo
+  sta <cam_x_lo
+  lda sw_dlg_cam_y_lo
+  sta <cam_y_lo
+  lda <sw_dlg15_origin_x_lo
+  sta sw_cam_origin_x_lo
+  lda <sw_dlg15_origin_x_hi
+  sta sw_cam_origin_x_hi
+  lda <sw_dlg15_origin_y_lo
+  sta sw_cam_origin_y_lo
+  lda <sw_dlg15_origin_y_hi
+  sta sw_cam_origin_y_hi
+sw_dlg_lifecycle_close_b_start:
+  jsr build_oam
+  jsr draw_entities
+  .if !BATTLE_ENABLED
+  jsr draw_hud
+  .endif
+sw_dlg_lifecycle_close_b_end:
+  dec <cam_dirty
+  lda #0
+  sta sw_dlg17_camhold
+  lda #SW_DLG15_IDLE
+  sta <sw_dlg15_state
+  jmp close_ui
+sw_dlg17cr_done:
+  rts
+
+; ==========================================================================
+; Fix round 1 (review round 1, finding A4): six text.asm call sites --
+; text_open_row, text_open_attr, text_put_char, text_clear_step,
+; text_choice_step, text_close_attr -- kept only a 7-byte kernel-lo dispatch
+; (`lda <map_is_streamed / beq ordinary / jmp` here); this is where their
+; bodies actually live now. Fix round 2 (review round 2, finding A4):
+; finished the same relocation for the remaining six sites Chris's
+; 2026-09-25 ruling also named -- box_begin, text_tick, text_arrow_write,
+; choice_cursor, text_close_step, text_close_attr_tail -- so all thirteen
+; kernel-lo call sites (the twelve in text.asm plus boot.asm's own
+; camrelease_call) now hold only their own small dispatch. Each relocated
+; body is byte-for-byte the guard body text.asm used to hold inline, only
+; relocated -- every jmp back into text.asm targets the exact label the
+; inline version fell through to (a bare conditional branch back to a
+; text.asm label would be out of range from here -- CLAUDE.md's own "branches
+; are +-128 bytes" trap -- so every one of these ends in a jmp, or, where the
+; original body itself branched into two different distant continuations
+; (sw_dlg_hi_text_tick, sw_dlg_hi_close_attr_tail), a short LOCAL branch to a
+; second local label that then jmps). sw_dlg_relocated_start/_end brackets
+; the combined span of all twelve -- STREAMWORLD_DIALOGUE_RELOCATED_KERNEL_HI_
+; ALLOWANCE (main/build/generate.js), a THIRD term kept apart from both the
+; 7a mapper allowance and this fix round's own lifecycle-hi allowance above,
+; since it is neither: it is the kernel-lo bytes A4 moved, not new bytes A1/
+; A2 added.
+; ==========================================================================
+sw_dlg_relocated_start:
+sw_dlg_hi_open_row:
+  lda <tmp
+  sta <sw_dlgw_edge
+  lda <tmp2
+  sta <sw_dlgw_fill
+  lda <box_row
+  jsr sw_dlg_write_border
+  jmp text_open_row_done
+
+; Fix round 1 (A6): contract §7 (docs/design-streamed-worlds.md) requires six
+; row frames PLUS THREE attribute frames -- one band per frame -- not all
+; three bands queued in a single frame the way the pre-fix body here did.
+; box_row already tracks exactly this: text_open_step keeps calling here on
+; every frame box_row is >= BOX_ROWS_HIGH, so this routine reads the same
+; register text_open_row_dispatch already reads to tell rows apart, and
+; steps its OWN one band per call, `inc <box_row` (or `jmp box_handover`,
+; which resets it to 0 itself) instead of the caller. sw_dlg_attr_precompute
+; still runs exactly once, on the first of the three calls, per its own
+; header requirement.
+sw_dlg_hi_open_attr:
+  lda <box_row
+  cmp #BOX_ROWS_HIGH
+  bne sw_dlg_hi_open_attr_1
+  jsr sw_dlg_attr_precompute
+  lda #0
+  jsr sw_dlg_attr_open_band
+  inc <box_row
+  rts
+sw_dlg_hi_open_attr_1:
+  cmp #BOX_ROWS_HIGH+1
+  bne sw_dlg_hi_open_attr_2
+  lda #1
+  jsr sw_dlg_attr_open_band
+  inc <box_row
+  rts
+sw_dlg_hi_open_attr_2:
+  lda #2
+  jsr sw_dlg_attr_open_band
+  inc <box_row
+  jmp box_handover
+
+sw_dlg_hi_put_char:
+  lda <msg_line
+  clc
+  adc #1                    ; tile row 1-4 -- the four interior text rows
+  pha
+  lda <msg_col
+  clc
+  adc #2                    ; tile col 2-29 -- BOX_TEXT_LO's own col
+  tax                       ; component (2), never overflowing 32
+  pla
+  jmp sw_dlg_single
+
+sw_dlg_hi_clear_step:
+  lda <box_row
+  clc
+  adc #1
+  ldx #2
+  jsr sw_dlg_run_open
+  ldy #BOX_COLS
+sw_dlg_hi_clear_loop:
+  lda #TILE_SPACE
+  jsr sw_dlg_run_push
+  dey
+  bne sw_dlg_hi_clear_loop
+  jsr vram_end
+  jmp text_clear_step_done
+
+sw_dlg_hi_choice_step:
+  lda <box_row
+  clc
+  adc #1
+  ldx #2
+  jsr sw_dlg_run_open
+  lda #BOX_COLS
+  sta <box_col
+  ldy #0
+sw_dlg_hi_choice_glyph:
+  lda [msg_ptr_lo],y
+  beq sw_dlg_hi_choice_drawn
+  jsr sw_dlg_run_push       ; preserves Y, which is walking the label
+  iny
+  dec <box_col
+  bne sw_dlg_hi_choice_glyph
+sw_dlg_hi_choice_drawn:
+  jsr vram_end
+  jmp text_choice_blank
+
+; Fix round 1 (A6): the close-side twin of sw_dlg_hi_open_attr's own fix
+; above -- one band per frame, paced off the same box_row range
+; text_close_step already dispatches through. sw_dlg_attr_close_band reuses
+; sw_dlg_attr_precompute's open-time results (its own header: one precompute
+; per open/close transaction), so no precompute call belongs here.
+sw_dlg_hi_close_attr:
+  lda <box_row
+  cmp #BOX_ROWS_HIGH
+  bne sw_dlg_hi_close_attr_1
+  lda #0
+  jsr sw_dlg_attr_close_band
+  inc <box_row
+  rts
+sw_dlg_hi_close_attr_1:
+  cmp #BOX_ROWS_HIGH+1
+  bne sw_dlg_hi_close_attr_2
+  lda #1
+  jsr sw_dlg_attr_close_band
+  inc <box_row
+  rts
+sw_dlg_hi_close_attr_2:
+  lda #2
+  jsr sw_dlg_attr_close_band
+  inc <box_row
+  jmp text_close_attr_tail
+
+; Fix round 2 (review round 2, finding A4): the six remaining relocated
+; bodies -- box_begin, text_tick, text_arrow_write, choice_cursor,
+; text_close_step, text_close_attr_tail. Each is byte-for-byte the guard
+; body text.asm used to hold inline.
+sw_dlg_hi_box_begin:
+  lda #SW_DLG15_PENDING     ; defer the open until sw_dlg15_pending_step's
+  sta <sw_dlg15_state        ; own strip-idle wait and camera nudge run
+  rts
+
+; text_tick's own body branched to TWO different distant text.asm
+; continuations depending on sw_dlg15_state (the ordinary fallthrough, or a
+; tail call into sw_dlg15_pending_step) -- neither is reachable by a bare
+; conditional branch from here, so the PENDING check itself stays a local
+; branch (to a second local label, within range) and each of the two real
+; destinations is reached by its own jmp.
+sw_dlg_hi_text_tick:
+  lda <sw_dlg15_state
+  cmp #SW_DLG15_PENDING
+  beq sw_dlg_hi_text_tick_pending
+  jmp text_tick_ordinary    ; IDLE or DRAINING -- DRAINING's own completion
+                            ; is main_loop_idle's sw_dlg17_camrelease, not
+                            ; this per-tick dispatch; box_state is already 0
+                            ; throughout both, so falling through here is
+                            ; already exactly "waiting"
+sw_dlg_hi_text_tick_pending:
+  jmp sw_dlg15_pending_step  ; tail call -- its own rts answers for ours
+
+sw_dlg_hi_arrow_write:
+  lda #4                    ; ARROW_LO (158) -- fixed tile row 4, col 30
+  ldx #30
+  jmp sw_dlg_single
+
+sw_dlg_hi_choice_cursor:
+  lda <choice_sel
+  clc
+  adc #1                    ; tile row 1-4, same four rows text_put_char uses
+  ldx #1                    ; the padding column, left of the text (BOX_TEXT_LO-1)
+  jmp sw_dlg_single
+
+sw_dlg_hi_close_step:
+  lda <box_row
+  jsr sw_dlg_close_row
+  jmp text_close_step_done
+
+; text_close_attr_tail's own body: a session that never engaged the streamed
+; camera-hold (in-game naming's own raise never floors the camera -- it
+; never goes through box_begin/sw_dlg15_pending_step at all) has nothing for
+; sw_dlg17_camrelease to resolve later; close immediately, exactly as an
+; ordinary (non-streamed) close already would. The camhold check's own
+; false branch used to fall straight into text_close_attr_done -- out of
+; range from here, so it goes through a local label first.
+sw_dlg_hi_close_attr_tail:
+  lda sw_dlg17_camhold
+  beq sw_dlg_hi_close_attr_tail_done
+  lda #SW_DLG15_DRAINING
+  sta <sw_dlg15_state
+  rts
+sw_dlg_hi_close_attr_tail_done:
+  jmp text_close_attr_done
+sw_dlg_relocated_end:
+
   .endif
 sw_dlg_mapper_end:

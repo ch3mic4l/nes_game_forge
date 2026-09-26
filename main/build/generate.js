@@ -1382,19 +1382,97 @@ export const STREAMWORLD_KERNEL_HI_ALLOWANCE = 3342;
 // not kernel-lo -- see the same equality test.
 export const STREAMWORLD_MT_PAL_KERNEL_HI_BYTES = LIMITS.metatiles;
 // Phase 2 slice 7a: the dialogue overlay's address mapper, split-at-seam
-// packet writer and masked-attribute code (sw_dlg_mapper_start..end,
-// engine/streamworld.asm) -- no lifecycle state machine yet, so this is a
-// fresh isolated measurement, never a guessed fraction of the contract's
-// own combined open-questions-item-3 figures (finding 4). Gated on
-// projectUsesStreaming && projectUsesText: a streamed project with no text
-// assembles none of it (the span is itself `.if TEXT_ENABLED` inside the
-// `.if STREAMING_ENABLED` file). Measured directly off nesasm's own symbol
-// table (test/unit/kernelbytes.test.js), sw_dlg_mapper_end - sw_dlg_mapper_
-// start, on a fresh clean build -- action, RPG and mixed all equal. Round 2
-// fix (review round 1, finding A1): sw_dlg_attr_precompute now re-derives
-// each band's row from an unwrapped base held in its own sw_dlgw_baserow
-// byte instead of a destructively-wrapped running remainder -- 611 -> 613.
+// packet writer and masked-attribute code (sw_dlg_mapper_start..sw_dlg_
+// origin_capture, engine/streamworld.asm -- 7a's own last routine,
+// sw_dlg_attr_close_band, ends exactly where 7b's first routine,
+// sw_dlg_origin_capture, begins). Gated on projectUsesStreaming &&
+// projectUsesText: a streamed project with no text assembles none of it
+// (the span is itself `.if TEXT_ENABLED` inside the `.if STREAMING_ENABLED`
+// file). Measured directly off nesasm's own symbol table (test/unit/
+// kernelbytes.test.js), sw_dlg_origin_capture - sw_dlg_mapper_start, on a
+// fresh clean build -- action, RPG and mixed all equal. Round 2 fix (review
+// round 1, finding A1): sw_dlg_attr_precompute now re-derives each band's
+// row from an unwrapped base held in its own sw_dlgw_baserow byte instead
+// of a destructively-wrapped running remainder -- 611 -> 613.
+// Fix round 2 (review round 2, finding A4): Chris's 2026-09-25 ruling --
+// "the 7a mapper term stays at its measured 613." Round 1 had folded slice
+// 7b's own growth (the terrain accessor, the production caller and the
+// lifecycle state machine, all added inside this same sw_dlg_mapper_start..
+// end span because nesasm places call-linked code together) into this term,
+// taking it to 1114 -- 501 bytes of which were never 7a's own content. That
+// growth now has its own term, STREAMWORLD_DIALOGUE_LIFECYCLE_TERRAIN_
+// CONSUMER_KERNEL_HI_ALLOWANCE_BY_GAME_TYPE below, re-measured directly at
+// the true sw_dlg_mapper_start..sw_dlg_origin_capture boundary -- 613, not
+// derived by subtracting the other two terms from the combined span.
 export const STREAMWORLD_DIALOGUE_MAPPER_KERNEL_HI_ALLOWANCE = 613;
+// Fix round 2 (review round 2, finding A4): Chris's 2026-09-25 ruling --
+// "the lifecycle/terrain/consumer helpers get their own term." This is
+// slice 7b's OWN content inside sw_dlg_mapper_start..end, everything after
+// 7a's own mapper primitives and before the six relocated dispatch targets
+// (sw_dlg_origin_capture..sw_dlg_relocated_start): the terrain-tile
+// accessor (sw_dlg_origin_capture, sw_dlg_metatile), the production caller
+// (sw_dlg_run_open/push/reopen, sw_dlg_write_border, sw_dlg_close_row,
+// sw_dlg_single) and the lifecycle state machine itself (sw_dlg15_pending_
+// step, sw_dlg17_camrelease) -- one lumped term, per the reviewer's own
+// partition of the combined span ("613 mapper + 520 lifecycle/terrain/
+// consumer helpers + 167 relocated helpers"). Round 1's camera/OAM
+// publication-barrier fix (a single-frame cam_dirty hold at open and close,
+// each rebuilding OAM before releasing) and this round's A1 fix (the close
+// path's `.if !BATTLE_ENABLED / jsr draw_hud / .endif`, restoring the
+// action HUD the close rebuild used to erase) both live inside
+// sw_dlg17_camrelease, so both are already part of this same term, not a
+// separate one. Game-type-varying: A1's draw_hud call is the ONLY thing in
+// this whole span that reads BATTLE_ENABLED -- everything else (origin
+// capture, metatile, the run/border/row/single writers, the state
+// transitions themselves) is flat across game type, so the 3-byte
+// difference is exactly A1's own fix, gated the identical way
+// STREAMWORLD_UPDATE_PLAYER_KERNEL_HI_ALLOWANCE_BY_GAME_TYPE's own
+// knockback/check_encounter arms are. Measured directly off nesasm's own
+// symbol table, sw_dlg_relocated_start - sw_dlg_origin_capture, on a fresh
+// clean build: 523 action/mixed, 520 rpg/mixed. (The three sw_dlg_
+// lifecycle_* boundary-label brackets from round 1 -- open_start..end 11,
+// close_a_start..end 2, close_b_start..end 9 action/6 rpg, summing to 22
+// action/19 rpg -- still exist and are still asserted below as an internal
+// cross-check; they are a SUBSET of this lump, not an addend to it.) Gated
+// identically to the mapper term above (both live in the same `.if
+// TEXT_ENABLED` bracket of the same file).
+export const STREAMWORLD_DIALOGUE_LIFECYCLE_TERRAIN_CONSUMER_KERNEL_HI_ALLOWANCE_BY_GAME_TYPE = {
+  action: 523,
+  rpg: 520
+};
+const FALLBACK_STREAMWORLD_DIALOGUE_LIFECYCLE_TERRAIN_CONSUMER_KERNEL_HI_ALLOWANCE = Math.max(
+  ...Object.values(STREAMWORLD_DIALOGUE_LIFECYCLE_TERRAIN_CONSUMER_KERNEL_HI_ALLOWANCE_BY_GAME_TYPE)
+);
+export function streamworldDialogueLifecycleTerrainConsumerKernelHiAllowance(project) {
+  return (
+    STREAMWORLD_DIALOGUE_LIFECYCLE_TERRAIN_CONSUMER_KERNEL_HI_ALLOWANCE_BY_GAME_TYPE[project.project?.gameType] ??
+    FALLBACK_STREAMWORLD_DIALOGUE_LIFECYCLE_TERRAIN_CONSUMER_KERNEL_HI_ALLOWANCE
+  );
+}
+// Fix round 1 (A4): Chris's 2026-09-25 ruling to move the streamed dialogue
+// branches out of kernel-lo into kernel-hi, keeping only a small dispatch
+// (`lda <map_is_streamed / beq ordinary / jmp`) at each of six named
+// text.asm call sites. Their bodies now live in engine/streamworld.asm as
+// sw_dlg_hi_* helpers, byte-for-byte the same code the guard blocks used to
+// hold inline -- a THIRD term, kept apart from both the mapper allowance
+// and the lifecycle/terrain/consumer allowance above, since it is neither
+// new content nor this slice's own new work: it is relocated bodies, moved.
+// Measured directly, sw_dlg_relocated_start..end (bracketing all twelve
+// helpers together): originally 131 (round 1's own first six: text_open_
+// row, text_open_attr, text_put_char, text_clear_step, text_choice_step,
+// text_close_attr), then +36 (to 167) once A6's one-band-per-frame pacing
+// fix turned sw_dlg_hi_open_attr/sw_dlg_hi_close_attr from three
+// unconditional band calls each into a three-way box_row dispatch each.
+// Fix round 2 (review round 2, finding A4): the remaining six sites
+// (box_begin, text_tick, text_arrow_write, choice_cursor, text_close_step,
+// text_close_attr_tail) relocated the same way -- +55 (to 222), byte-for-
+// byte the same bodies these six guards used to hold inline, flat across
+// game type (none of the six new bodies reads BATTLE_ENABLED).
+// STREAMWORLD_DIALOGUE_LIFECYCLE_KERNEL_ALLOWANCE (kernel-lo, below) is the
+// sum of thirteen individually-named per-site terms now, not one lump --
+// each of the twelve relocated text.asm sites plus boot.asm's own
+// camrelease poll measures 7 or 3 bytes on its own.
+export const STREAMWORLD_DIALOGUE_RELOCATED_KERNEL_HI_ALLOWANCE = 222;
 // Phase 2 slice 2b, Part F: the kernel-LO terms streaming adds, each its own
 // named allowance rather than one lump sum -- every one of these lives
 // before assets/kernel_hi.inc in engine/main.asm's own include order (see
@@ -1726,6 +1804,86 @@ export const STREAMWORLD_EVENT_FREEZE_KERNEL_ALLOWANCE = 4 + 4;
 // player_hazard_dx_capture/player_hazard_dx_capture_end and player_hazard_
 // dispatch/player_hazard_dispatch_end), flat across action/RPG/mixed: 5 + 10.
 export const STREAMWORLD_HAZARD_KERNEL_ALLOWANCE = 5 + 10;
+// Phase 2 slice 7b: the dialogue lifecycle's call-site hooks scattered
+// across engine/text.asm's twelve pre-existing `.if STREAMING_ENABLED`
+// blocks (each now also dispatches into the new lifecycle/mapper routines
+// added to streamworld.asm's sw_dlg_mapper_start..end span, itself costed
+// separately by STREAMWORLD_DIALOGUE_MAPPER_KERNEL_HI_ALLOWANCE above --
+// that is kernel-HI; this is the kernel-LO call-site overhead at each of
+// the twelve sites) plus engine/boot.asm's own camrelease_call_gs..ge
+// (the main_loop_idle poll for sw_dlg17_camrelease). Every site is `.if
+// TEXT_ENABLED` nested inside text.asm's own `.if STREAMING_ENABLED`, or
+// (the boot.asm site) `.if STREAMING_ENABLED / .if TEXT_ENABLED` directly,
+// so a streamed project with no text pays nothing -- gated on
+// projectUsesStreaming && projectUsesText, the STREAMWORLD_DIALOGUE_MAPPER_
+// KERNEL_HI_ALLOWANCE precedent. Measured directly off nesasm's own symbol
+// table with the unconditional-boundary-label technique (one guard_start/
+// guard_end pair per site, summed), flat across action/RPG/mixed: 226, then
+// 231 once fix round 1's own A1/A2/A5 edits landed, then 118 once fix
+// round 1's own A4 relocated the first six of the thirteen sites (each
+// down to a 7-byte dispatch).
+// Fix round 2 (review round 2, finding A4): Chris's 2026-09-25 ruling --
+// "Name and equality-assert the kernel-lo terms per site, replacing the
+// single 118-byte term." The remaining six sites (box_begin, text_tick,
+// text_arrow_write, choice_cursor, text_close_step, text_close_attr_tail)
+// now relocate the same way, leaving all twelve text.asm sites at a
+// uniform 7-byte dispatch (`lda <sw_dlg15_state`-or-`<map_is_streamed` /
+// branch / jmp), plus boot.asm's own 3-byte unconditional camrelease poll
+// (`jsr sw_dlg17_camrelease`, no dispatch needed -- it is called
+// unconditionally from main_loop_idle regardless of streamed/ordinary,
+// the poll IS the dispatch). Each of the thirteen names its own site,
+// equality-asserted individually (test/unit/kernelbytes.test.js) rather
+// than only as a combined sum, per the ruling. Measured directly off
+// nesasm's own symbol table, one guard_start/guard_end pair per site, flat
+// across action/RPG/mixed.
+export const STREAMWORLD_DIALOGUE_BOX_BEGIN_KERNEL_ALLOWANCE = 7;
+export const STREAMWORLD_DIALOGUE_TEXT_TICK_KERNEL_ALLOWANCE = 7;
+export const STREAMWORLD_DIALOGUE_TEXT_OPEN_ROW_KERNEL_ALLOWANCE = 7;
+export const STREAMWORLD_DIALOGUE_TEXT_OPEN_ATTR_KERNEL_ALLOWANCE = 7;
+export const STREAMWORLD_DIALOGUE_TEXT_PUT_CHAR_KERNEL_ALLOWANCE = 7;
+export const STREAMWORLD_DIALOGUE_TEXT_ARROW_WRITE_KERNEL_ALLOWANCE = 7;
+export const STREAMWORLD_DIALOGUE_TEXT_CLEAR_STEP_KERNEL_ALLOWANCE = 7;
+export const STREAMWORLD_DIALOGUE_TEXT_CHOICE_STEP_KERNEL_ALLOWANCE = 7;
+export const STREAMWORLD_DIALOGUE_CHOICE_CURSOR_KERNEL_ALLOWANCE = 7;
+export const STREAMWORLD_DIALOGUE_TEXT_CLOSE_STEP_KERNEL_ALLOWANCE = 7;
+export const STREAMWORLD_DIALOGUE_TEXT_CLOSE_ATTR_KERNEL_ALLOWANCE = 7;
+export const STREAMWORLD_DIALOGUE_TEXT_CLOSE_ATTR_TAIL_KERNEL_ALLOWANCE = 7;
+export const STREAMWORLD_DIALOGUE_CAMRELEASE_KERNEL_ALLOWANCE = 3;
+// The combined thirteen-site total -- kept as its own export since the
+// capacity accounting below (and several existing tests) charge the whole
+// lifecycle call-site cost as one addend, the identical STREAMWORLD_
+// HAZARD_KERNEL_ALLOWANCE/STREAMWORLD_EVENT_FREEZE_KERNEL_ALLOWANCE
+// precedent of summing several named per-site constants into one exported
+// sum rather than repeating the addition at every call site.
+export const STREAMWORLD_DIALOGUE_LIFECYCLE_KERNEL_ALLOWANCE =
+  STREAMWORLD_DIALOGUE_BOX_BEGIN_KERNEL_ALLOWANCE +
+  STREAMWORLD_DIALOGUE_TEXT_TICK_KERNEL_ALLOWANCE +
+  STREAMWORLD_DIALOGUE_TEXT_OPEN_ROW_KERNEL_ALLOWANCE +
+  STREAMWORLD_DIALOGUE_TEXT_OPEN_ATTR_KERNEL_ALLOWANCE +
+  STREAMWORLD_DIALOGUE_TEXT_PUT_CHAR_KERNEL_ALLOWANCE +
+  STREAMWORLD_DIALOGUE_TEXT_ARROW_WRITE_KERNEL_ALLOWANCE +
+  STREAMWORLD_DIALOGUE_TEXT_CLEAR_STEP_KERNEL_ALLOWANCE +
+  STREAMWORLD_DIALOGUE_TEXT_CHOICE_STEP_KERNEL_ALLOWANCE +
+  STREAMWORLD_DIALOGUE_CHOICE_CURSOR_KERNEL_ALLOWANCE +
+  STREAMWORLD_DIALOGUE_TEXT_CLOSE_STEP_KERNEL_ALLOWANCE +
+  STREAMWORLD_DIALOGUE_TEXT_CLOSE_ATTR_KERNEL_ALLOWANCE +
+  STREAMWORLD_DIALOGUE_TEXT_CLOSE_ATTR_TAIL_KERNEL_ALLOWANCE +
+  STREAMWORLD_DIALOGUE_CAMRELEASE_KERNEL_ALLOWANCE;
+// Phase 2 slice 7b: engine/boot.asm's nmi_oam_guard_start..end -- the
+// cam_dirty check that skips OAM DMA for a frame while a dialogue's camera
+// nudge briefly holds cam_dirty (sw_dlg15_pending_step/sw_dlg17_camrelease,
+// engine/streamworld.asm). Fix round 1 (review round 1, finding A5): the
+// only production writer of cam_dirty during a dialogue is text.asm's own
+// lifecycle, itself `.if TEXT_ENABLED` -- a streamed project with no text
+// can never see cam_dirty nonzero here, so the guard is now nested `.if
+// STREAMING_ENABLED / .if TEXT_ENABLED` too (it was unconditional inside
+// just `.if STREAMING_ENABLED` before this fix, which cost a streaming-
+// without-text build 4 bytes its pre-7b build never paid). Gated here on
+// projectUsesStreaming && projectUsesText, the STREAMWORLD_DIALOGUE_MAPPER_
+// KERNEL_HI_ALLOWANCE precedent. Measured directly (measureStreamedSpan,
+// nmi_oam_guard_start/nmi_oam_guard_end), flat across action/RPG/mixed: 4
+// with text, 0 without.
+export const STREAMWORLD_OAM_GUARD_KERNEL_ALLOWANCE = 4;
 // Phase 2 slice 4b: the window/camera-window region in engine/
 // streamworld.asm (sw_win_col_inc/dec, sw_win_row_inc/dec, sw_win_
 // entering_col_right/row_down, sw_frame_camera_window, sw_win_arm) --
@@ -1889,6 +2047,35 @@ export const HERO_NAMING_TITLELESS_KERNEL_ALLOWANCE = 14;
 // stale-subtrahend trap docs/design-kernel-diet.md's own §4/§15 predicted
 // (675 + (115-107) = 683) resolved for real, not merely assumed.
 export const NAME_ENTRY_ACTION_KERNEL_ALLOWANCE = 683;
+// Fix round 1, finding A4/Chris's ruling 2026-09-25(b): the streamed-dispatch
+// delta nameentry.asm's own `.if STREAMING_ENABLED` sites (nameentry_raise_step,
+// nameentry_push, nameentry_queue_cell) add on top of NAME_ENTRY_ACTION_KERNEL_
+// ALLOWANCE above, once a streamed map makes STREAMING_ENABLED true for the
+// kernel-lo action placement. Measured directly rather than assumed equal to
+// STREAMWORLD_NAMEENTRY_BATTLE_ALLOWANCE (main/build/battletables.js, the same
+// file's own delta on the banked RPG placement) -- nameentry.asm's own header
+// promise ("identical source text assembles to identical bytes on either
+// placement") only covers the file's OWN body, and the first whole-bank
+// measurement here came back 169, not 47: turning naming on for a project
+// with no other text source also flips projectUsesText (shared/font.js --
+// "the grid IS text"), which on a streamed map separately charges
+// STREAMWORLD_DIALOGUE_LIFECYCLE_KERNEL_ALLOWANCE (118 at the time) and
+// STREAMWORLD_OAM_GUARD_KERNEL_ALLOWANCE (4) for the first time (47+118+4 =
+// 169 exactly, at fix round 1's own kernel-lo figure -- fix round 2's A4
+// relocation of the remaining six sites has since dropped the lifecycle
+// term to 87, so the same isolation would measure 138 today; the isolating
+// TECHNIQUE below, not this historical total, is what this term's own test
+// still relies on) -- both already modelled below, gated on usesText, so
+// folding them into this term too would double-charge them. Re-measured against a
+// streamed action project that already carries a dialogue string (so naming
+// on/off no longer flips usesText, the same isolation test/unit/
+// kernelbytes.test.js's own "SPLIT_KERNEL_ALLOWANCE is charged to a
+// naming-only MMC3 action project" comment already names as the one case that
+// needs a text-free baseline -- here it is the opposite: a text-present
+// baseline, to avoid that same confound instead of demonstrating it) came back
+// exactly 47, confirming the header's promise for real once the confound is
+// controlled for.
+export const STREAMWORLD_NAMEENTRY_ACTION_KERNEL_ALLOWANCE = 47;
 // init_session's own 11-byte action-side copy loop that reads
 // hero_name_default (engine/combat.asm) -- the loop ALONE, not the table:
 // hero_name_default's own 10-byte .db table is charged in kernelTableBytes's
@@ -1971,6 +2158,7 @@ export function kernelCodeBytes(project, mapper) {
   // BATTLE_KERNEL_ALLOWANCE_BY_MAPPER's (below) explain what this covers and
   // why it needs its own term rather than folding into the base.
   const usesBattleBase = battleEnabled;
+  const usesText = projectUsesText(project);
   const usesMove = projectUsesMove(project);
   const usesTurn = projectUsesTurn(project);
   const usesWait = projectUsesWait(project);
@@ -2082,6 +2270,7 @@ export function kernelCodeBytes(project, mapper) {
     (usesHeroNaming ? HERO_NAMING_KERNEL_ALLOWANCE : 0) +
     (usesHeroNamingTitleless ? HERO_NAMING_TITLELESS_KERNEL_ALLOWANCE : 0) +
     (usesHeroNaming && !nameEntryBanked ? NAME_ENTRY_ACTION_KERNEL_ALLOWANCE : 0) +
+    (usesHeroNaming && !nameEntryBanked && usesStreaming ? STREAMWORLD_NAMEENTRY_ACTION_KERNEL_ALLOWANCE : 0) +
     (needsHeroDefault ? HERO_DEFAULT_KERNEL_ALLOWANCE : 0) +
     (usesNameToken ? NAME_TOKEN_KERNEL_ALLOWANCE : 0) +
     (usesStreaming ? STREAMWORLD_RESOLVER_KERNEL_ALLOWANCE : 0) +
@@ -2106,6 +2295,8 @@ export function kernelCodeBytes(project, mapper) {
     (usesStreaming ? STREAMWORLD_UPDATE_PLAYER_DISPATCH_KERNEL_ALLOWANCE : 0) +
     (usesStreaming ? STREAMWORLD_EVENT_FREEZE_KERNEL_ALLOWANCE : 0) +
     (usesStreaming ? STREAMWORLD_HAZARD_KERNEL_ALLOWANCE : 0) +
+    (usesStreaming && usesText ? STREAMWORLD_DIALOGUE_LIFECYCLE_KERNEL_ALLOWANCE : 0) +
+    (usesStreaming && usesText ? STREAMWORLD_OAM_GUARD_KERNEL_ALLOWANCE : 0) +
     KERNEL_SLACK
   );
 }
@@ -3439,6 +3630,23 @@ export function checkCapacity(project) {
   // STREAMWORLD_DIALOGUE_MAPPER_KERNEL_HI_ALLOWANCE's own comment).
   const streamworldDialogueMapperHiBytes =
     hasStreamed && projectUsesText(project) ? STREAMWORLD_DIALOGUE_MAPPER_KERNEL_HI_ALLOWANCE : 0;
+  // Fix round 2 (A4): slice 7b's own lifecycle/terrain/consumer helpers,
+  // named separately (STREAMWORLD_DIALOGUE_LIFECYCLE_TERRAIN_CONSUMER_
+  // KERNEL_HI_ALLOWANCE_BY_GAME_TYPE's own comment) but gated identically to
+  // the mapper term above -- both live in the same sw_dlg_mapper_start..end
+  // span. Game-type-varying (A1's draw_hud fix), the same reason
+  // streamworldUpdatePlayerKernelHiAllowance(project) above is a function
+  // call rather than a flat constant.
+  const streamworldDialogueLifecycleHiBytes =
+    hasStreamed && projectUsesText(project)
+      ? streamworldDialogueLifecycleTerrainConsumerKernelHiAllowance(project)
+      : 0;
+  // Fix round 1 (A4): the twelve relocated text.asm bodies, named separately
+  // (STREAMWORLD_DIALOGUE_RELOCATED_KERNEL_HI_ALLOWANCE's own comment) but
+  // gated identically to the mapper term above -- all three live in the
+  // same sw_dlg_mapper_start..end span.
+  const streamworldDialogueRelocatedHiBytes =
+    hasStreamed && projectUsesText(project) ? STREAMWORLD_DIALOGUE_RELOCATED_KERNEL_HI_ALLOWANCE : 0;
   const streamworldHiBytes = hasStreamed
     ? STREAMWORLD_KERNEL_HI_ALLOWANCE +
       STREAMWORLD_MT_PAL_KERNEL_HI_BYTES +
@@ -3447,7 +3655,9 @@ export function checkCapacity(project) {
       streamworldKnockbackHiBytes +
       streamworldUpdatePlayerKernelHiAllowance(project) +
       STREAMWORLD_HAZARD_KERNEL_HI_ALLOWANCE +
-      streamworldDialogueMapperHiBytes
+      streamworldDialogueMapperHiBytes +
+      streamworldDialogueLifecycleHiBytes +
+      streamworldDialogueRelocatedHiBytes
     : 0;
   if (musicBytes + sfxBytes + text.bytes + streamworldHiBytes > BANK_SIZE - 64) {
     problems.push({

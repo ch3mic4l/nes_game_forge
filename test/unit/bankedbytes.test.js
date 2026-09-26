@@ -43,6 +43,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { loadProject, saveProject } from '../../main/project-io.js';
+import { createStreamedProject } from '../lib/streamedproject.js';
 import { buildProject } from '../../main/build/pipeline.js';
 import {
   checkCapacity,
@@ -69,6 +70,7 @@ import {
   battleTables,
   emittedBytes,
   NAME_ENTRY_BATTLE_ALLOWANCE,
+  STREAMWORLD_NAMEENTRY_BATTLE_ALLOWANCE,
   NAME_COPY_BATTLE_ALLOWANCE,
   MAGIC_POWER_BATTLE_ALLOWANCE,
   MAGIC_DEFENCE_BATTLE_ALLOWANCE,
@@ -801,6 +803,13 @@ test('battleShortfallAdvice: monster/spell and party attack-animation labels, co
 // existed at f31987d (a monster's own attack-animation reference predates
 // this whole party-visual slice), so the identical mutate function applies
 // unchanged there.
+// Phase 2 slice 7b fix round 1 (A5): an earlier round of this slice moved
+// text_open_step's own box_row_addr call unconditionally, re-pinning this
+// hash instead of restoring identity. The fix keeps that call in its
+// original position for every build that is not itself STREAMING_ENABLED &&
+// TEXT_ENABLED (see engine/text.asm's own comment at text_open_step), so
+// this action/MMC1 build -- neither streamed nor built with both flags on --
+// is byte-identical to f31987d again.
 const ACTION_ANIM_BASELINE_HASH = 'f47e7789bebc9a75463863cf48a3fe60d08014c34f8b7502405a3381e28339f9'; // f31987d, mapper 1, sample/ with actor 0's attackAnim = 0
 const ACTION_ANIM_BASELINE_SIZE = 139280;
 
@@ -1131,6 +1140,12 @@ test('a mag-only build assembles byte-identical whether or not magic defence exi
   // pla/pla (engine/battleturn.asm) is a further +2 uniform bytes, unrelated
   // to magic power/defence -- see BASE_BATTLE_CODE_BYTES_BY_MAPPER's own
   // comment (main/build/battletables.js) for what it fixes.
+  // Phase 2 slice 7b fix round 1 (A5): an earlier round of this slice
+  // re-pinned these three hashes for text_open_step's box_row_addr move
+  // instead of restoring identity. sample-rpg carries no streamed map, so
+  // the fix (keeping that call in its original position whenever the build
+  // is not itself STREAMING_ENABLED && TEXT_ENABLED) restores the original
+  // hashes on all three boards, regardless of magic power/defence.
   const HASHES = {
     1: 'a6e71f9eac77c1bd2fb7420111ba67540d598bb383ef74815ce89751305acd54', // MMC1
     4: 'a302ff492d963d57ee7eb2c186fd57dd164043115089837aed6b204a4780fc92', // MMC3
@@ -2287,6 +2302,88 @@ test(
       assert.equal(on.used, on.predicted, `${mapper.name}: battleRegionBytes should predict real usage exactly, naming on`);
       assert.equal(off.used, off.predicted, `${mapper.name}: battleRegionBytes should predict real usage exactly, naming off`);
     }
+  }
+);
+
+// Phase 2 slice 7b (continuation): STREAMWORLD_NAMEENTRY_BATTLE_ALLOWANCE, the
+// nameentry.asm streamed-dispatch delta added to the SAME banked body rows 1-3
+// above already measure as a whole. Built directly via createStreamedProject
+// rather than measureRegion's own sample-rpg baseline, because sample-rpg has
+// no streamed map and this term is gated on projectUsesStreaming -- real
+// streaming today only assembles on UNROM 512 with four-screen mirroring
+// (generate.js's own refusal messages for every other board/mirroring
+// combination), so this measures that one board only, not CAPABLE_MAPPERS.
+async function measureStreamedRegion(t, mutate = () => {}) {
+  const mapper = resolveMapper(30);
+  const dir = await fsp.mkdtemp(path.join(os.tmpdir(), 'forge-bankedbytes-streamed-'));
+  t.after(() => fsp.rm(dir, { recursive: true, force: true }));
+  const project = createStreamedProject({ gameType: 'rpg' });
+  mutate(project);
+  await saveProject(dir, project);
+  const lines = [];
+  await buildProject({ dir, project, log: (line) => lines.push(line) });
+
+  const slot = codeRegions(mapper, project.tilesets.length, 1)[0];
+  assert.ok(slot, `${mapper.name}: codeRegions() reserved no region for an RPG`);
+  const bankLine = lines.find((line) => new RegExp(`^BANK\\s+${slot.nesasmBank}\\s`).test(line));
+  assert.ok(bankLine, `${mapper.name}: nesasm's usage table never mentioned bank ${slot.nesasmBank}`);
+  const used = Number(bankLine.match(/(\d+)\/\s*(\d+)\s*$/)?.[1]);
+  assert.ok(Number.isFinite(used) && used > 0, `${mapper.name}: could not parse a used-byte count out of "${bankLine}"`);
+  return { project, used, predicted: battleRegionBytes(project, mapper) };
+}
+
+test(
+  'phase 2 slice 7b: STREAMWORLD_NAMEENTRY_BATTLE_ALLOWANCE equals real nesasm usage, on RPG + streaming, ' +
+    'UNROM 512 with four-screen mirroring',
+  { skip: !hasNesasm && 'nesasm not found on PATH' },
+  async (t) => {
+    const off = await measureStreamedRegion(t, () => {});
+    const on = await measureStreamedRegion(t, (project) => {
+      if (project.party[0]) project.party[0].renamable = true;
+    });
+    assert.equal(
+      on.used - off.used,
+      NAME_ENTRY_BATTLE_ALLOWANCE + NAME_COPY_BATTLE_ALLOWANCE + STREAMWORLD_NAMEENTRY_BATTLE_ALLOWANCE,
+      'turning naming on for a streamed RPG should cost exactly the ordinary naming allowances plus ' +
+        "streaming's own nameentry.asm dispatch delta"
+    );
+    assert.equal(on.used, on.predicted, 'battleRegionBytes should predict real usage exactly, streamed + naming on');
+    assert.equal(off.used, off.predicted, 'battleRegionBytes should predict real usage exactly, streamed + naming off');
+  }
+);
+
+test(
+  'phase 2 slice 7b: STREAMWORLD_NAMEENTRY_BATTLE_ALLOWANCE stays flat across content shapes (naming alone vs. ' +
+    'naming + a mixed ordinary map)',
+  { skip: !hasNesasm && 'nesasm not found on PATH' },
+  async (t) => {
+    const alone = await measureStreamedRegion(t, (project) => {
+      if (project.party[0]) project.party[0].renamable = true;
+    });
+    assert.equal(alone.used, alone.predicted, 'battleRegionBytes should predict real usage exactly, streamed + naming alone');
+
+    const mapper = resolveMapper(30);
+    const mixedProject = createStreamedProject({ gameType: 'rpg', mixed: true });
+    if (mixedProject.party[0]) mixedProject.party[0].renamable = true;
+    const dir = await fsp.mkdtemp(path.join(os.tmpdir(), 'forge-bankedbytes-streamed-mixed-'));
+    t.after(() => fsp.rm(dir, { recursive: true, force: true }));
+    await saveProject(dir, mixedProject);
+    const lines = [];
+    await buildProject({ dir, project: mixedProject, log: (line) => lines.push(line) });
+    const slot = codeRegions(mapper, mixedProject.tilesets.length, 1)[0];
+    const bankLine = lines.find((line) => new RegExp(`^BANK\\s+${slot.nesasmBank}\\s`).test(line));
+    const mixedUsed = Number(bankLine.match(/(\d+)\/\s*(\d+)\s*$/)?.[1]);
+    assert.equal(
+      mixedUsed,
+      battleRegionBytes(mixedProject, mapper),
+      'battleRegionBytes should predict real usage exactly, streamed + naming + a mixed ordinary map'
+    );
+    assert.equal(
+      mixedUsed - alone.used,
+      0,
+      'STREAMWORLD_NAMEENTRY_BATTLE_ALLOWANCE (and every other naming term) should cost the identical number ' +
+        'of real bytes whether or not an unrelated ordinary map is also present'
+    );
   }
 );
 

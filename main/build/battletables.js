@@ -76,6 +76,7 @@ import {
 export { statAt } from '../../shared/project.js';
 import { NESASM_BANK_BYTES } from '../../shared/cartridge.js';
 import { textToTiles } from '../../shared/font.js';
+import { projectUsesStreaming } from '../../shared/streamlayout.js';
 
 /** Longest name the battle box has room for, in its 12-column message area. */
 export const NAME_LIMIT = RPG_LIMITS.nameLength;
@@ -745,6 +746,22 @@ export const MAGIC_DEFENCE_BATTLE_ALLOWANCE = 56;
 export const NAME_ENTRY_BATTLE_ALLOWANCE = 737;
 // Re-measured for the zero-page kernel diet: 43 (down from 47).
 export const NAME_COPY_BATTLE_ALLOWANCE = 43;
+// Phase 2 slice 7b (continuation): nameentry.asm's own streamed-map dispatch
+// (nameentry_raise_step's row-open call, nameentry_push, nameentry_queue_cell's
+// streamed branch -- engine/nameentry.asm) added to the SAME banked body
+// NAME_ENTRY_BATTLE_ALLOWANCE already measures as a whole, on an RPG. Measured
+// directly (test/unit/kernelbytes.test.js's own unconditional-boundary-label
+// technique, summing nameentry_raise_step_gs..._ge + nameentry_push_guard_
+// start..._end + nameentry_queue_cell_gs..._ge on a single real build):
+// exactly 47 bytes, flat across every RPG+streaming content shape tried
+// (naming alone, naming+mixed maps) -- confirmed via buildProject on
+// UNROM 512 with four-screen mirroring, the only board/mirroring combination
+// that actually streams a world today. Gated on projectUsesNameEntry &&
+// projectUsesStreaming && banked -- the action (kernel-lo) placement never
+// reaches this term at all (a separate, narrower validateStreamedMaps refusal
+// exists for it instead: shared/project.js's own item 5, action+naming+
+// streaming does not fit kernel-hi on any implemented board).
+export const STREAMWORLD_NAMEENTRY_BATTLE_ALLOWANCE = 47;
 
 // monster_turn's pick-first rewrite plus its two gated helpers
 // (mod_monster_len, monster_pick_limit) -- docs/design-monster-spell-list.md
@@ -1084,6 +1101,7 @@ export function battleRegionBytes(project, mapper) {
     battleTableBytes(project) +
     (projectUsesItems(project) ? ITEM_LIST_FILTER_BATTLE_ALLOWANCE : 0) +
     (projectUsesNameEntry(project) && banked ? NAME_ENTRY_BATTLE_ALLOWANCE : 0) +
+    (projectUsesNameEntry(project) && banked && projectUsesStreaming(project) ? STREAMWORLD_NAMEENTRY_BATTLE_ALLOWANCE : 0) +
     (projectNeedsNameSeed(project) && banked ? NAME_COPY_BATTLE_ALLOWANCE : 0) +
     (projectUsesMagicPower(project) ? MAGIC_POWER_BATTLE_ALLOWANCE : 0) +
     (projectUsesMagicDefence(project) ? MAGIC_DEFENCE_BATTLE_ALLOWANCE : 0) +
