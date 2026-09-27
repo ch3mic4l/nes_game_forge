@@ -610,14 +610,16 @@ test('sweep: every aligned camera position (16 X x 15 Y x 4 cam_nt) opens and cl
 });
 
 // ---------------------------------------------------------------------------------------------
-// Refusal-still-fires: slice 2b's dialogue-on-streamed-map refusal is unmodified by this slice.
+// Refusal lifted: a later phase 2 slice 8 commit gives ui_tick its own close-for-Move priority
+// patch, which this file's own mapper work never touched -- restated here (not merely left to
+// streamworld.test.js/streamworldclosemove.test.js) since this file is the one a reader chasing
+// the dialogue-mapper work by name will open first.
 // ---------------------------------------------------------------------------------------------
 
-// A later slice-7b commit ships the dialogue lifecycle for real and narrows item 4's own refusal
-// to "shows text AND moves the player" (Say/Choice alone now builds clean -- streamworld.test.js's
-// own D.4 tests cover both halves). What this file's own mapper work never touched is the OTHER
-// half of that combination: a Move still cannot coexist with a Say/Choice on the same event.
-test('refusal still fires: an event that both shows text (Say) and moves the player is still refused -- this slice adds no arbitration between the two', () => {
+// Superseded: this test used to assert the D.4 refusal still fired for this combination. Phase 2
+// slice 8 (engine/ui.asm's ui_tick_move_guard_start) lifted it -- see
+// test/unit/streamworldclosemove.test.js for the real mechanism's own coverage.
+test('phase 2 slice 8: an event that both shows text (Say) and moves the player no longer refuses', () => {
   const project = createStreamedProject({});
   const streamedMap = project.maps.find((m) => m.streamed === true);
   const screen = streamedMap.screens[0];
@@ -639,7 +641,10 @@ test('refusal still fires: an event that both shows text (Say) and moves the pla
     }
   });
   const errors = validateProject(project).filter((x) => x.severity === 'error');
-  assert.ok(errors.some((e) => /shows text.*moves the player/.test(e.message)), `the D.4 refusal must still fire: ${JSON.stringify(errors)}`);
+  assert.ok(
+    !errors.some((e) => /shows text.*moves the player/.test(e.message)),
+    `the D.4 refusal must be lifted by phase 2 slice 8: ${JSON.stringify(errors)}`
+  );
 });
 
 // ---------------------------------------------------------------------------------------------

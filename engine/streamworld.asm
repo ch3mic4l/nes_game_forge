@@ -4623,7 +4623,18 @@ sw_dlg_lifecycle_close_b_end:
   sta sw_dlg17_camhold
   lda #SW_DLG15_IDLE
   sta <sw_dlg15_state
+; Phase 2 slice 8 -- close-for-Move. Whichever target this jmps to, it is
+; one 3-byte JMP absolute either way, so this line costs the
+; sw_dlg_origin_capture..sw_dlg_relocated_start span (measured above,
+; STREAMWORLD_DIALOGUE_LIFECYCLE_TERRAIN_CONSUMER_KERNEL_HI_ALLOWANCE_BY_
+; GAME_TYPE) nothing whether or not MOVE_ENABLED -- sw_dlg_closeformove_check
+; itself lives out of line, after sw_dlg_relocated_end, and is counted by
+; its own separate STREAMWORLD_CLOSEFORMOVE_KERNEL_HI_ALLOWANCE.
+  .if MOVE_ENABLED
+  jmp sw_dlg_closeformove_check
+  .else
   jmp close_ui
+  .endif
 sw_dlg17cr_done:
   rts
 
@@ -4827,6 +4838,85 @@ sw_dlg_hi_close_attr_tail:
 sw_dlg_hi_close_attr_tail_done:
   jmp text_close_attr_done
 sw_dlg_relocated_end:
+
+; ==========================================================================
+; sw_dlg_closeformove_check -- phase 2 slice 8. sw_dlg17_camrelease's own
+; draw-down release (above) jmps here instead of close_ui whenever
+; MOVE_ENABLED, and jmps straight to close_ui itself otherwise -- one 3-byte
+; JMP absolute either way, so that call site costs the terrain-consumer span
+; above nothing, on or off; this routine's own body is
+; STREAMWORLD_CLOSEFORMOVE_KERNEL_HI_ALLOWANCE (main/build/generate.js),
+; counted apart from it. If the draw-down ran because a scripted player
+; Move suspended with the box still open (sw_dlg17_move_close,
+; engine/ui.asm's own ui_tick_move_guard_start hands this frame to
+; sw_dlg_cfm_guard below, which has the arming half), the
+; conversation is NOT over: script_active, talk_ent and game_state must all
+; survive so move_finish's own script_resume can find the suspended page
+; again, so this returns directly instead of falling into close_ui -- the
+; identical "advance before suspending, never call close_ui" shape
+; close-for-Move's own arm already establishes. An ordinary close (this
+; flag clear -- true end-of-event, or any close never provoked by a Move)
+; falls through to the unmodified close_ui, byte-for-byte what every other
+; streamed close already does.
+; ==========================================================================
+  .if MOVE_ENABLED
+sw_dlg_closeformove_start:
+sw_dlg_closeformove_check:
+  lda sw_dlg17_move_close
+  beq sw_dlg_closeformove_close_ui
+  lda #0
+  sta sw_dlg17_move_close
+  rts
+sw_dlg_closeformove_close_ui:
+  jmp close_ui
+sw_dlg_closeformove_end:
+
+; ==========================================================================
+; sw_dlg_cfm_guard -- phase 2 slice 8, review round 1 fix (finding
+; B1's relocation ruling). engine/ui.asm's own ui_tick_move_guard_start tail-
+; dispatches here (`jmp sw_dlg_cfm_guard`) instead of holding the
+; whole arming guard inline, whenever STREAMING_ENABLED && TEXT_ENABLED
+; (MOVE_ENABLED is this file's own outer gate, identical to
+; sw_dlg_closeformove_check above) -- one 3-byte JMP absolute either way at
+; that call site, replacing the unconditional `jmp move_tick` ui_tick has
+; always ended with, so the low side costs nothing beyond what it already
+; paid (STREAMWORLD_CLOSEFORMOVE_KERNEL_ALLOWANCE is 0 for exactly that
+; reason). This routine's own body -- the entire guard, relocated whole --
+; is STREAMWORLD_CLOSEFORMOVE_GUARD_KERNEL_HI_ALLOWANCE.
+;
+; Fix round 1, finding A1: docs/design-streamed-worlds.md's own contract
+; (section 7) says the close-for-Move detector only ever arms for `mv_who
+; != 0` reaching mv_left, i.e., the player -- an NPC's own scripted Move
+; (mv_who == MOVE_SELF, talk_ent's own slot) carries no camera-tracking
+; obligation and must tick exactly as it always has, box open or not (a
+; Say(NPC) -> Move(self) -> Say(NPC) page, run entirely on the NPC's own
+; conversation, must never touch the player's box at all). mv_who is
+; checked FIRST, before the already-armed check: it is captured once by
+; script_op_move and stays constant for the whole suspended Move, so an
+; NPC Move skips this entire mechanism unconditionally, box open or not,
+; exactly as an ordinary (non-streamed, or non-dialogue) Move already does.
+; ==========================================================================
+sw_dlg_cfm_guard_start:
+sw_dlg_cfm_guard:
+  lda <mv_who
+  beq sw_dlg_cfm_guard_go     ; MOVE_SELF -- an NPC's own Move, unaffected
+  lda sw_dlg17_move_close
+  bne sw_dlg_cfm_guard_holding ; already armed -- this draw-down owns the frame
+  lda <map_is_streamed
+  beq sw_dlg_cfm_guard_go     ; ordinary map: nothing to close, unaffected
+  lda <box_state
+  beq sw_dlg_cfm_guard_go     ; box already closed: nothing to draw down
+  lda #1
+  sta sw_dlg17_move_close
+  jsr box_close               ; box_row=0, box_state=BOX_CLOSING -- the same
+                              ; transition an ordinary end-of-event close uses
+sw_dlg_cfm_guard_holding:
+  jmp ui_tick_state           ; hand this frame to the ordinary game_state
+                              ; dispatch (text_tick) instead of move_tick
+sw_dlg_cfm_guard_go:
+  jmp move_tick
+sw_dlg_cfm_guard_end:
+  .endif
 
   .endif
 sw_dlg_mapper_end:

@@ -1884,6 +1884,49 @@ export const STREAMWORLD_DIALOGUE_LIFECYCLE_KERNEL_ALLOWANCE =
 // nmi_oam_guard_start/nmi_oam_guard_end), flat across action/RPG/mixed: 4
 // with text, 0 without.
 export const STREAMWORLD_OAM_GUARD_KERNEL_ALLOWANCE = 4;
+// Phase 2 slice 8: engine/ui.asm's ui_tick_move_guard_start..end -- the
+// close-for-Move priority patch that intercepts ui_tick's own mv_left
+// dispatch (see that label's own comment for the full mechanism). Review
+// round 1 fix (B1's relocation ruling) moved the entire guard body into a
+// kernel-hi helper (sw_dlg_cfm_guard, STREAMWORLD_CLOSEFORMOVE_GUARD_KERNEL_
+// HI_ALLOWANCE below); what is left here is a single 3-byte JMP absolute,
+// either to that helper (usesStreaming && usesMove && usesText) or,
+// unchanged, to move_tick (every other MOVE_ENABLED shape) -- the identical
+// 3 bytes ui_tick has always spent on this dispatch, substituting only the
+// jmp's own target address. Measured directly (measureStreamedSpan,
+// ui_tick_move_guard_start..end): 3 on all four action/RPG x streamed-only/
+// mixed shapes with the feature on, and 3 with it off (an ordinary Move
+// project) -- proving the span is flatly unconditional, not a marginal
+// cost of this feature at all. This term is therefore 0: named and kept
+// (rather than deleted) for the same reason STREAMWORLD_MUSIC_KERNEL_
+// ALLOWANCE is named at 0 above -- a future regression that actually grows
+// this dispatch needs a place to be caught.
+export const STREAMWORLD_CLOSEFORMOVE_KERNEL_ALLOWANCE = 0;
+// Phase 2 slice 8: engine/streamworld.asm's sw_dlg_closeformove_start..end,
+// the release half of the mechanism -- sw_dlg17_camrelease's own draw-down
+// release jmps here instead of close_ui whenever MOVE_ENABLED (one 3-byte
+// JMP absolute either way, so that call site itself costs the
+// STREAMWORLD_DIALOGUE_LIFECYCLE_TERRAIN_CONSUMER_KERNEL_HI_ALLOWANCE_BY_
+// GAME_TYPE span nothing, confirmed by re-measuring that span with usesMove
+// on and off: 523/520 either way, unchanged from before this slice). Lives
+// entirely inside the file's own `.if TEXT_ENABLED` bracket, itself gated on
+// MOVE_ENABLED, so this is charged only usesStreaming && usesMove &&
+// usesText, the identical gate as the kernel-lo term above. Measured
+// directly (measureStreamedSpan), flat across all four action/RPG x
+// streamed-only/mixed shapes: 14.
+export const STREAMWORLD_CLOSEFORMOVE_KERNEL_HI_ALLOWANCE = 14;
+// Phase 2 slice 8, review round 1 fix (B1's relocation ruling):
+// engine/streamworld.asm's sw_dlg_cfm_guard_start..end -- the arming half of
+// the mechanism, relocated whole out of kernel-lo (see
+// STREAMWORLD_CLOSEFORMOVE_KERNEL_ALLOWANCE's own comment above). Also holds
+// finding A1's fix: the mv_who check that restricts arming to the player
+// (mv_who != 0), never an NPC's own scripted Move (mv_who == MOVE_SELF).
+// Gated identically to its two siblings above (usesStreaming && usesMove &&
+// usesText -- this routine lives inside the same `.if MOVE_ENABLED` block as
+// sw_dlg_closeformove_check, itself inside the file's own `.if
+// TEXT_ENABLED`). Measured directly (measureStreamedSpan), flat across all
+// four action/RPG x streamed-only/mixed shapes: 31.
+export const STREAMWORLD_CLOSEFORMOVE_GUARD_KERNEL_HI_ALLOWANCE = 31;
 // Phase 2 slice 4b: the window/camera-window region in engine/
 // streamworld.asm (sw_win_col_inc/dec, sw_win_row_inc/dec, sw_win_
 // entering_col_right/row_down, sw_frame_camera_window, sw_win_arm) --
@@ -2297,6 +2340,7 @@ export function kernelCodeBytes(project, mapper) {
     (usesStreaming ? STREAMWORLD_HAZARD_KERNEL_ALLOWANCE : 0) +
     (usesStreaming && usesText ? STREAMWORLD_DIALOGUE_LIFECYCLE_KERNEL_ALLOWANCE : 0) +
     (usesStreaming && usesText ? STREAMWORLD_OAM_GUARD_KERNEL_ALLOWANCE : 0) +
+    (usesStreaming && usesMove && usesText ? STREAMWORLD_CLOSEFORMOVE_KERNEL_ALLOWANCE : 0) +
     KERNEL_SLACK
   );
 }
@@ -3647,6 +3691,18 @@ export function checkCapacity(project) {
   // same sw_dlg_mapper_start..end span.
   const streamworldDialogueRelocatedHiBytes =
     hasStreamed && projectUsesText(project) ? STREAMWORLD_DIALOGUE_RELOCATED_KERNEL_HI_ALLOWANCE : 0;
+  // Phase 2 slice 8: sw_dlg_closeformove_start..end, gated on the same
+  // three-way AND as its kernel-lo sibling (STREAMWORLD_CLOSEFORMOVE_
+  // KERNEL_ALLOWANCE's own comment) -- usesMoveHere is already computed
+  // above for streamworldMoveHiBytes, projectUsesText(project) the same
+  // predicate every other dialogue-gated term here already reads.
+  const streamworldCloseformoveHiBytes =
+    hasStreamed && usesMoveHere && projectUsesText(project) ? STREAMWORLD_CLOSEFORMOVE_KERNEL_HI_ALLOWANCE : 0;
+  // Review round 1 fix (B1's relocation ruling): sw_dlg_cfm_guard_start..end,
+  // gated identically to streamworldCloseformoveHiBytes just above -- the
+  // arming half of the mechanism, relocated whole out of kernel-lo.
+  const streamworldCloseformoveGuardHiBytes =
+    hasStreamed && usesMoveHere && projectUsesText(project) ? STREAMWORLD_CLOSEFORMOVE_GUARD_KERNEL_HI_ALLOWANCE : 0;
   const streamworldHiBytes = hasStreamed
     ? STREAMWORLD_KERNEL_HI_ALLOWANCE +
       STREAMWORLD_MT_PAL_KERNEL_HI_BYTES +
@@ -3657,7 +3713,9 @@ export function checkCapacity(project) {
       STREAMWORLD_HAZARD_KERNEL_HI_ALLOWANCE +
       streamworldDialogueMapperHiBytes +
       streamworldDialogueLifecycleHiBytes +
-      streamworldDialogueRelocatedHiBytes
+      streamworldDialogueRelocatedHiBytes +
+      streamworldCloseformoveHiBytes +
+      streamworldCloseformoveGuardHiBytes
     : 0;
   if (musicBytes + sfxBytes + text.bytes + streamworldHiBytes > BANK_SIZE - 64) {
     problems.push({

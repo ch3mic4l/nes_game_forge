@@ -1260,7 +1260,21 @@ save_flash_buf   = $0700  ; @size=SAVE_RECORD_LEN
 ; frame whose camera origin mid-write would show a torn sprite layer. The
 ; other three stay a bare comment -- no code in this commit references them:
 sw_dlg17_camhold = $07F0
-;   $07F1  sw_dlg17_move_close  -- a close-for-Move draw-down is in progress (slice 8)
+; Phase 2 slice 8 claims the second of these as a real equate too: a scripted
+; PLAYER Move (mv_who != 0 -- an NPC's own Move, mv_who == MOVE_SELF, never
+; touches this at all) that suspended while a streamed dialogue box was still
+; open has armed a close-for-Move draw-down, currently in progress. Set by
+; sw_dlg_closeformove_guard (engine/streamworld.asm -- ui_tick's own mv_left
+; dispatch in engine/ui.asm tail-dispatches here as of the review round 1
+; relocation fix) the instant it detects mv_who nonzero, map_is_streamed
+; nonzero and box_state still open; read by that same guard every frame
+; thereafter (holding the frame for text_tick's ordinary draw-down instead of
+; move_tick); cleared by sw_dlg17_camrelease's own sw_dlg_closeformove_check
+; the instant the draw-down's own drain-acknowledged release fires, in place
+; of that release's ordinary close_ui call -- script_active/talk_ent/
+; game_state must survive this whole transaction untouched, since the
+; suspended page is a Move away from resuming, not a finished conversation.
+sw_dlg17_move_close = $07F1
 ;   $07F2  sw_dlg17_resync_i    -- the save-resync's own row/band loop counter (slice 9)
 ;   $07F8  sw_dlg20_save_pending -- a deferred Save is waiting on a close-for-Save draw-down (slice 9)
 ; Phase 2 slice 4b's own claim, twelve bytes starting right after save_flash_buf's own

@@ -112,6 +112,8 @@ const SW_DLG15_ORIGIN_Y_HI = 0xf7;
 const SW_DLG_CAM_X_LO = 0x03da;
 const SW_DLG_CAM_Y_LO = 0x03db;
 const SW_DLG17_CAMHOLD = 0x07f0;
+const SW_DLG17_MOVE_CLOSE = 0x07f1; // engine/constants.asm
+const SCRIPT_ACTIVE = 0x49; // engine/constants.asm
 
 const SW_DLG15_IDLE = 0;
 const SW_DLG15_PENDING = 1;
@@ -884,7 +886,7 @@ const TRANSITION_TABLE = [
   {
     label: '(PENDING, CLOSED) self-loop -- box_begin has deferred to sw_dlg15_pending_step, waiting for a strip already in flight to finish',
     kind: 'self-loop', guard: 'st_active != 0', reachedHere: false, pair: [SW_DLG15_PENDING, BOX_CLOSED],
-    reason: 'this conversation\'s own walk never arms a strip mid-interact, so st_active already reads 0 the instant box_begin runs, and PENDING resolves to IDLE within the SAME real frame box_begin itself runs (the isolated test at test/unit/streamworlddialogue.test.js:733-773 proves this exact immediate resolution) -- so PENDING is never separately sampled in this conversation\'s own per-frame trace at all (LIFECYCLE_TABLE\'s own row 1 comment already records this). The self-loop itself -- st_active nonzero actually holding PENDING across more than one real frame -- is asserted directly by the isolated unit test at test/unit/streamworlddialogue.test.js:686-699 (hand-set st_active) and, as a genuine real production mechanism (a real armed strip, real per-frame NMI drain, real per-frame sampling, no hand-poked flag on either side), by the "case 8: a genuinely armed real strip..." positive test at test/unit/streamworlddialogue.test.js:2295-2379.',
+    reason: 'this conversation\'s own walk never arms a strip mid-interact, so st_active already reads 0 the instant box_begin runs, and PENDING resolves to IDLE within the SAME real frame box_begin itself runs (the isolated test at test/unit/streamworlddialogue.test.js:733-773 proves this exact immediate resolution) -- so PENDING is never separately sampled in this conversation\'s own per-frame trace at all (LIFECYCLE_TABLE\'s own row 1 comment already records this). The self-loop itself -- st_active nonzero actually holding PENDING across more than one real frame -- is asserted directly by the isolated unit test at test/unit/streamworlddialogue.test.js:686-699 (hand-set st_active) and, as a genuine real production mechanism (a real armed strip, real per-frame NMI drain, real per-frame sampling, no hand-poked flag on either side), by the "case 8: a genuinely armed real strip..." positive test at test/unit/streamworlddialogue.test.js:2594-2678.',
   },
   {
     label: '(PENDING, CLOSED) -> (IDLE, OPENING) -- the strip (if any) has finished: box_begin\'s own deferred open completes, box_row starts its row/attribute self-loop, cam_dirty is acquired/floored/released within this one call, sw_dlg17_camhold is raised',
@@ -902,7 +904,8 @@ const TRANSITION_TABLE = [
   },
   {
     label: '(IDLE, ENDWAIT) page 1 self-loop -- message finished, waiting for the player to press B to advance',
-    kind: 'self-loop', guard: 'player input (B not yet pressed)', reachedHere: true, pair: [SW_DLG15_IDLE, BOX_ENDWAIT],
+    kind: 'self-loop', guard: 'player input (B not yet pressed)', reachedHere: 'partial', pair: [SW_DLG15_IDLE, BOX_ENDWAIT],
+    reason: 'round 2, finding A3: this test\'s own frame loop (:1101-1108) presses B the instant ENDWAIT is first sampled, so only the single arrival frame is observed here, never a genuine multi-frame no-input hold -- the pair itself IS reached (this row stays \'partial\', not false), but the hold is not. The actual observed extra no-input hold is asserted directly by the dedicated real conversation at test/unit/streamworlddialogue.test.js:1320-1321.',
   },
   {
     label: '(IDLE, CLEARING) REJECTED -- box_begin is called again for page 2 while box_state is still ENDWAIT (nonzero): box_begin\'s own bne routes this straight to box_begin_clear, never reaching sw_dlg_hi_box_begin, so sw_dlg15_state never revisits PENDING for a same-box reuse',
@@ -915,7 +918,8 @@ const TRANSITION_TABLE = [
   },
   {
     label: '(IDLE, ENDWAIT) page 2 self-loop -- finished, waiting for the player to close',
-    kind: 'self-loop', guard: 'player input (B not yet pressed)', reachedHere: true, pair: [SW_DLG15_IDLE, BOX_ENDWAIT],
+    kind: 'self-loop', guard: 'player input (B not yet pressed)', reachedHere: 'partial', pair: [SW_DLG15_IDLE, BOX_ENDWAIT],
+    reason: 'round 2, finding A3: same single-arrival-frame reason as the page 1 ENDWAIT row above (this test\'s own loop presses B the instant ENDWAIT is first sampled, both times) -- the observed extra no-input hold is asserted directly at test/unit/streamworlddialogue.test.js:1320-1321.',
   },
   {
     label: '(IDLE, CLOSING) row/attribute self-loop -- box_row advances 1..8 (row 0 fuses into the same frame as the close request, box_close\'s own comment); cam_dirty released except the one-frame close_a/close_b rebuild bracket (case 2\'s own A1 finding); sw_dlg17_camhold still raised',
@@ -926,12 +930,115 @@ const TRANSITION_TABLE = [
     label: '(DRAINING, CLOSED) self-loop -- the close-attribute packet\'s own third band is still queued: game_state stays ST_DIALOG, sw_dlg17_camhold stays raised, box_state already reads CLOSED (case 3\'s own real gap-frame finding)',
     kind: 'self-loop', guard: 'vram_ready != 0',
     reachedHere: 'partial', pair: [SW_DLG15_DRAINING, BOX_CLOSED],
-    reason: 'this conversation\'s own tiny 2-char close-attribute packet may drain within a single sampled real frame, so this self-loop may not show as a MULTI-frame hold in this run\'s own st_active/vram_ready sampling below (asserted directly either way: st_active stays 0 and, once observed, vram_ready falls to 0 before IDLE is reached). A multi-real-frame HOLD of this identical real packet (long enough to sample vram_ready != 0 on several distinct real frames) is asserted directly by the "round 3, finding A7 case 8" positive test at test/unit/streamworlddialogue.test.js:2520-2589 (its own held-frame loop, :2558-2571 -- a controlled delay of the real consumer\'s own VRAM acknowledgement holds it outstanding for 5 real frames, while frame signalling and the main loop both keep running); the three guards\' own independence (camhold/state/vram_ready) is asserted individually by the isolated test at test/unit/streamworlddialogue.test.js:785-846.',
+    reason: 'this conversation\'s own tiny 2-char close-attribute packet may drain within a single sampled real frame, so this self-loop may not show as a MULTI-frame hold in this run\'s own st_active/vram_ready sampling below (asserted directly either way: st_active stays 0 and, once observed, vram_ready falls to 0 before IDLE is reached). A multi-real-frame HOLD of this identical real packet (long enough to sample vram_ready != 0 on several distinct real frames) is asserted directly by the "round 3, finding A7 case 8" positive test at test/unit/streamworlddialogue.test.js:2819-2888 (its own held-frame loop, :2857-2870 -- a controlled delay of the real consumer\'s own VRAM acknowledgement holds it outstanding for 5 real frames, while frame signalling and the main loop both keep running); the three guards\' own independence (camhold/state/vram_ready) is asserted individually by the isolated test at test/unit/streamworlddialogue.test.js:787-848.',
   },
   {
     label: '(DRAINING, CLOSED) -> (IDLE, CLOSED) -- sw_dlg17_camrelease fires once vram_ready reads 0: restores cam_x_lo/y_lo and sw_cam_origin_*_lo/hi verbatim, clears sw_dlg17_camhold, releases cam_dirty, game_state -> ST_GAMEPLAY',
-    kind: 'legal', guard: 'sw_dlg17_camhold == 1 AND sw_dlg15_state == DRAINING AND vram_ready == 0 (all three independently, per test/unit/streamworlddialogue.test.js:785-846)',
+    kind: 'legal', guard: 'sw_dlg17_camhold == 1 AND sw_dlg15_state == DRAINING AND vram_ready == 0 (all three independently, per test/unit/streamworlddialogue.test.js:787-848)',
     reachedHere: true, pair: [SW_DLG15_IDLE, BOX_CLOSED],
+  },
+
+  // Round 4, finding A7 case 1's own "smallest acceptable repair" -- rows below this point were
+  // added to discharge it (handoff-next/review-phase2-s7b-round4-findings.md, "### A7 case 1").
+  {
+    label: '(IDLE, CLOSED) -> (PENDING, CLOSED) -- box_begin\'s own fresh dispatch (box_state was BOX_CLOSED): sw_dlg_hi_box_begin arms PENDING immediately, before any strip-idle wait is even checked; box_state itself is untouched',
+    kind: 'legal', guard: 'box_state == BOX_CLOSED at the instant box_begin is called (engine/text.asm:192-193, the fall-through side of "bne box_begin_clear")',
+    reachedHere: false, pair: [SW_DLG15_PENDING, BOX_CLOSED],
+    reason: 'this real conversation\'s own PENDING resolves within the very same sampled frame it is entered (this table\'s own row above, "PENDING resolved..."), so the fresh-entry transition itself is never separately observable here -- asserted directly by the isolated test at test/unit/streamworlddialogue.test.js:1223-1231.',
+  },
+  {
+    label: '(IDLE, CLOSING) -> (DRAINING, CLOSED) -- the closing tail\'s own camhold guard (sw_dlg_hi_close_attr_tail): a held conversation arms DRAINING rather than closing immediately, box_state already CLOSED, game_state stays the dialogue value',
+    kind: 'legal', guard: 'sw_dlg17_camhold == 1 at the closing tail (engine/streamworld.asm:4821-4829)',
+    reachedHere: false, pair: [SW_DLG15_DRAINING, BOX_CLOSED],
+    reason: 'this real conversation\'s own driveUntil sampling never happens to land exactly on the single frame this guarded jmp itself executes (it lands one frame later, already in DRAINING -- this table\'s own "PENDING resolved" row comment documents the identical same-frame-resolution reason) -- asserted directly by the isolated test at test/unit/streamworlddialogue.test.js:1233-1243.',
+  },
+  {
+    label: '(IDLE, CLOSING) -> (IDLE, CLOSED), no-hold tail alternative -- camhold == 0: closes immediately through close_ui, exactly like an ordinary (non-streamed) close, never touching sw_dlg15_state',
+    kind: 'rejected', guard: 'sw_dlg17_camhold == 0 at the closing tail (engine/streamworld.asm:4821-4829, the false branch of "beq sw_dlg_hi_close_attr_tail_done")',
+    reachedHere: false, pair: [SW_DLG15_IDLE, BOX_CLOSED],
+    reason: 'unreachable for an ordinary HELD conversation (this file\'s own real trace above always finds camhold==1 by the time this tail runs, since box_begin\'s own fresh dispatch always arms the hold first on a streamed map) -- only a session that never floors the camera (in-game naming) reaches this branch, and this precise exclusion is stated and asserted directly by the isolated test at test/unit/streamworlddialogue.test.js:1245-1255.',
+  },
+  {
+    label: '(DRAINING, CLOSED) rejected release, guard 1 -- sw_dlg17_camhold == 0: sw_dlg17_camrelease must no-op regardless of sw_dlg15_state',
+    kind: 'rejected', guard: 'sw_dlg17_camhold == 0',
+    reachedHere: false, pair: [SW_DLG15_DRAINING, BOX_CLOSED],
+    reason: 'fix round 1, finding A5: mainline polls sw_dlg17_camrelease unconditionally every real frame (engine/boot.asm\'s main_loop_idle), including every camhold==0 frame of ordinary gameplay when no conversation is open at all -- this is the common case, not a rare one; this table\'s own driving conversation simply never happens to sample a real release attempt with the hold already clear mid-conversation -- asserted directly, in isolation, by "Guard 1" of the isolated test at test/unit/streamworlddialogue.test.js:814-819.',
+  },
+  {
+    label: '(IDLE, CLOSED) rejected release, guard 2 -- sw_dlg15_state != DRAINING (e.g. IDLE) even with camhold set: sw_dlg17_camrelease must no-op',
+    kind: 'rejected', guard: 'sw_dlg15_state != SW_DLG15_DRAINING',
+    reachedHere: false, pair: [SW_DLG15_IDLE, BOX_CLOSED],
+    reason: 'this guard is checked on every ordinary frame of the whole game (the cheap common-case poll, engine/streamworld.asm\'s own comment on sw_dlg17_camrelease), never separately distinguishable in a real per-frame trace from the plain rest state -- asserted directly, in isolation, by "Guard 2" of the isolated test at test/unit/streamworlddialogue.test.js:821-826.',
+  },
+  {
+    label: '(IDLE, PAGEWAIT) self-loop -- a multi-page Say\'s own first page has finished typing, waiting for the player to advance to the next page (never a re-open, unlike ENDWAIT\'s own eventual close)',
+    kind: 'self-loop', guard: 'player input (B not yet pressed)',
+    reachedHere: false, pair: [SW_DLG15_IDLE, BOX_PAGEWAIT],
+    reason: 'this table\'s own driving conversation (a two-page Say via two SEPARATE say commands, dismissed and reopened between them) never authors a single Say long enough to wrap across a page break -- exercised by a dedicated real conversation (one Say long enough to need two pages) at test/unit/streamworlddialogue.test.js:1257-1317.',
+  },
+  {
+    label: '(IDLE, PAGEWAIT) -> (IDLE, CLEARING) -- text_advance_page: confirming a page break wipes the arrow and enters CLEARING, never touching sw_dlg15_state (unlike ENDWAIT\'s own eventual close)',
+    kind: 'legal', guard: 'player press while box_state == BOX_PAGEWAIT (engine/text.asm:302-309, "text_advance_page")',
+    reachedHere: false, pair: [SW_DLG15_IDLE, BOX_CLEARING],
+    reason: 'same reason as the PAGEWAIT row above -- asserted directly at test/unit/streamworlddialogue.test.js:1257-1317.',
+  },
+  {
+    label: '(IDLE, CLEARING) row-progression self-loop -- text_clear_step wipes BOX_TEXT_ROWS text rows one per real frame before handing off to TYPING, a genuine multi-frame self-loop (distinct from this table\'s own earlier CLEARING row, which documents the ENTRY being rejected/redirected, not this row-by-row hold)',
+    kind: 'self-loop', guard: 'box_row phase (0..BOX_TEXT_ROWS-1)',
+    reachedHere: false, pair: [SW_DLG15_IDLE, BOX_CLEARING],
+    reason: 'this table\'s own driving conversation samples once per real frame but never specifically tracks box_row through the page-2 CLEARING span (unlike the dedicated rowRuns tracking for OPENING/CLOSING above) -- box_row\'s own multi-frame advance through CLEARING is asserted directly by the dedicated real conversation at test/unit/streamworlddialogue.test.js:1257-1317 (its own rowsSeenClearing set, asserting at least two distinct box_row values are visited).',
+  },
+  {
+    label: '(IDLE, TYPING) ignored-input self-loop -- a press landing while box_state == BOX_TYPING itself must be dropped, not queued or acted on (text_advance only reacts to PAGEWAIT/ENDWAIT/CHOICEWAIT)',
+    kind: 'self-loop', guard: 'box_state == BOX_TYPING (i.e. NOT one of PAGEWAIT/ENDWAIT/CHOICEWAIT -- text_advance\'s own final "rts" fallthrough, engine/text.asm:296-300)',
+    reachedHere: false, pair: [SW_DLG15_IDLE, BOX_TYPING],
+    reason: 'this table\'s own driving conversation never deliberately presses B while box_state reads TYPING -- exercised directly (a press mid-typewriter, asserting box_state does not move) by the dedicated real conversation at test/unit/streamworlddialogue.test.js:1257-1317.',
+  },
+  {
+    label: '(IDLE, ENDWAIT) observed extra no-input self-loop frame -- ENDWAIT must hold for at least one further real frame with nothing pressed, not advance on its own',
+    kind: 'self-loop', guard: 'player input (B not yet pressed) -- same guard as this table\'s own earlier ENDWAIT rows, but this row records a DELIBERATE extra no-input frame rather than a press the instant ENDWAIT is first sampled',
+    reachedHere: false, pair: [SW_DLG15_IDLE, BOX_ENDWAIT],
+    reason: 'this table\'s own driving conversation (like most of this file\'s own driveUntil-then-tap convention) presses B the instant ENDWAIT is first sampled, never deliberately holding one further frame with nothing pressed first -- exercised directly at test/unit/streamworlddialogue.test.js:1257-1317.',
+  },
+  {
+    label: '(IDLE, CHOICE) legal production -- box_choose lists a question\'s options, one row per frame, through the mapper (streamed) or the ordinary path',
+    kind: 'legal', guard: 'the scripted event\'s own choice command (engine/script.asm dispatch into box_choose)',
+    reachedHere: false, pair: [SW_DLG15_IDLE, BOX_CHOICE],
+    reason: 'this table\'s own driving conversation is a plain two-page Say, never a choice -- exercised by case 6\'s own real choice conversation at test/unit/streamworlddialogue.test.js:2248-2281 and the confirm-resolution conversation at :1319-1359.',
+  },
+  {
+    label: '(IDLE, CHOICEWAIT) self-loop -- both option rows have finished listing, waiting for the player to move the cursor or confirm',
+    kind: 'self-loop', guard: 'player input (cursor move or confirm not yet pressed)',
+    reachedHere: false, pair: [SW_DLG15_IDLE, BOX_CHOICEWAIT],
+    reason: 'same reason as the CHOICE production row above -- exercised at test/unit/streamworlddialogue.test.js:2248-2281 and :1319-1359.',
+  },
+  {
+    label: '(IDLE, CHOICEWAIT) -> (IDLE, CLOSING) -- text_advance_pick: confirming the picked option runs script_choose; an empty-commands option lets the whole scripted event finish, closing the box behind it',
+    kind: 'legal', guard: 'player confirm press while box_state == BOX_CHOICEWAIT (engine/text.asm:320-324, "text_advance_pick")',
+    reachedHere: false, pair: [SW_DLG15_IDLE, BOX_CLOSING],
+    reason: 'this table\'s own driving conversation never asks a question -- confirming a real CHOICEWAIT and observing it actually leave that state is asserted directly by the dedicated real conversation at test/unit/streamworlddialogue.test.js:1319-1359.',
+  },
+
+  // Phase 2 slice 8 -- Close-for-Move's own new close path (box closed by a Move, not by the
+  // ordinary end-of-event close). Observed from a real Say -> Move -> Say event driven through the
+  // full script/event pipeline in test/unit/streamworldclosemove.test.js.
+  {
+    label: '(IDLE, CLOSING) -> (DRAINING, CLOSED), close-for-Move -- identical closing-tail mechanism as an ordinary close (the shared close_a/close_b block, unchanged by this slice); the ONLY difference is what sw_dlg17_camrelease does once DRAINING resolves (below)',
+    kind: 'legal', guard: 'sw_dlg17_camhold == 1 at the closing tail, exactly as an ordinary held close (engine/streamworld.asm:4821-4829) -- ui_tick_move_guard_start (engine/ui.asm) is what CALLS box_close in the first place, arming sw_dlg17_move_close alongside it',
+    reachedHere: false, pair: [SW_DLG15_DRAINING, BOX_CLOSED],
+    reason: 'observed via a real Say -> Move -> Say event\'s own recorded CLOSING -> DRAINING -> IDLE trace (box_state visiting BOX_CLOSING, then DRAINING with box_state already BOX_CLOSED and sw_dlg17_camhold raised throughout -- fix round 1, finding A5\'s own addition to the SAME held-frame loop) at test/unit/streamworldclosemove.test.js:197-267.',
+  },
+  {
+    label: '(DRAINING, CLOSED) -> (IDLE, CLOSED), close-for-Move -- sw_dlg17_camrelease fires exactly as an ordinary close (restores camera, releases the hold), but its own MOVE_ENABLED tail then jmps to sw_dlg_closeformove_check instead of close_ui: script_active/talk_ent/game_state all survive untouched (the suspended Move page is still there for script_resume to find), rather than the ordinary close\'s own reset to ST_GAMEPLAY',
+    kind: 'legal', guard: 'sw_dlg17_camhold == 1 AND sw_dlg15_state == DRAINING AND vram_ready == 0 (identical release guard as an ordinary close), AND sw_dlg17_move_close == 1 (sw_dlg_closeformove_check\'s own dispatch, engine/streamworld.asm:4862-4871)',
+    reachedHere: false, pair: [SW_DLG15_IDLE, BOX_CLOSED],
+    reason: 'this is the SAME (dlg,box) pair the ordinary release row above already names -- what distinguishes close-for-Move is the RAM this table\'s own pairs cannot express (script_active/talk_ent/game_state all surviving, rather than close_ui\'s reset) -- asserted directly by the positive runtime test\'s own post-release assertions at test/unit/streamworldclosemove.test.js:197-267 (script_active staying 1, game_state staying ST_DIALOG, then the held Move actually running and a second Say genuinely reopening), including the same test\'s own recorded trace above landing back in SW_DLG15_IDLE the instant sw_dlg17_move_close clears.',
+  },
+  {
+    label: '(IDLE, CLOSED) rejected release, close-for-Move\'s own extra guard -- sw_dlg17_move_close == 0 at the tail: falls through to the ordinary close_ui exactly as before this slice, byte-identical whether or not MOVE_ENABLED (ROM-neutral-off)',
+    kind: 'rejected', guard: 'sw_dlg17_move_close == 0 at sw_dlg_closeformove_check (engine/streamworld.asm:4862-4871)',
+    reachedHere: false, pair: [SW_DLG15_IDLE, BOX_CLOSED],
+    reason: 'every close this table\'s own driving conversation itself performs is an ORDINARY end-of-event close (never a Move-suspended one), so it always takes exactly this rejected branch -- but that alone only proves the branch is harmless when MOVE_ENABLED is off (the two byte-identity tests at test/unit/streamworldclosemove.test.js:961-978 and :980-996 build with MOVE_ENABLED off and so can never execute this branch at all). Fix round 1, finding A5: the branch IS reached, and is a genuine ordinary end-of-event close, in a Move-enabled project -- observed directly by the dedicated real conversation (a Say-only NPC alongside a separate Say-then-Move NPC, so MOVE_ENABLED compiles true project-wide while this NPC\'s own close still takes the flag-zero branch) at test/unit/streamworlddialogue.test.js:1361-1394.',
   },
 ];
 
@@ -1071,7 +1178,11 @@ test('case 1: the complete real two-page streamed conversation visits exactly th
   for (const row of TRANSITION_TABLE) {
     if (row.reachedHere !== true) {
       assert.equal(typeof row.reason, 'string', `an unreached transition must carry a reason: ${row.label}`);
-      assert.match(row.reason, /streamworlddialogue\.test\.js:\d+/, `an unreached transition's reason must cite a file:line where it is asserted instead: ${row.label}`);
+      // Phase 2 slice 8's own new rows cite test/unit/streamworldclosemove.test.js instead --
+      // that is where the real Say -> Move -> Say event this new close path needs is driven, per
+      // handoff-next/brief-streamed-worlds-phase2-s8.md Part B ("observed from a real Say-then-
+      // Move event").
+      assert.match(row.reason, /streamworld(dialogue|closemove)\.test\.js:\d+/, `an unreached transition's reason must cite a file:line where it is asserted instead: ${row.label}`);
     }
   }
   // Every row TRANSITION_TABLE marks as reached here (true or 'partial') names a (dlg_state,
@@ -1095,7 +1206,201 @@ test('case 1: the complete real two-page streamed conversation visits exactly th
   }
   assert.equal(reachedPairSet.size, observedPairSet.size, 'TRANSITION_TABLE\'s reached pairs and LIFECYCLE_TABLE\'s observed pairs must be the exact same set, neither a superset nor a subset of the other');
   const reachedSelfLoops = TRANSITION_TABLE.filter((r) => r.kind === 'self-loop' && r.reachedHere === true).length;
-  assert.equal(reachedSelfLoops, 4, 'exactly four self-loop rows are marked fully reached by this real conversation -- the opening and closing row/attribute phases (rowRuns[0]/rowRuns[1]) and the page 1/page 2 ENDWAIT player-input holds (this test\'s own frame loop waits in BOX_ENDWAIT before pressing B, both times) -- the PENDING self-loop is reachedHere:false and the DRAINING self-loop is \'partial\' (not true), and every self-loop not marked true must cite its own file:line elsewhere instead');
+  // Round 2, finding A3: only the opening and closing row/attribute phases (rowRuns[0]/rowRuns[1])
+  // are genuinely held across more than one real frame in THIS conversation's own trace. This
+  // test's own frame loop (:1101-1108) presses B the instant ENDWAIT is first sampled, both times,
+  // so the page 1/page 2 ENDWAIT rows are only single-frame ARRIVALS here -- marked 'partial'
+  // (above), not true; the genuine multi-frame no-input hold is demonstrated separately by the
+  // dedicated real conversation at test/unit/streamworlddialogue.test.js:1320-1321. The PENDING
+  // self-loop is reachedHere:false and the DRAINING self-loop is also 'partial', for the identical
+  // single-frame-sample reason.
+  assert.equal(reachedSelfLoops, 2, 'exactly two self-loop rows are marked fully reached by this real conversation -- the opening and closing row/attribute phases (rowRuns[0]/rowRuns[1]) -- and every self-loop not marked true must cite its own file:line elsewhere instead');
+});
+
+// ---------------------------------------------------------------------------------------------
+// Round 4, finding A7 case 1 -- the reviewer's own "smallest acceptable repair" (handoff-next/
+// review-phase2-s7b-round4-findings.md, "### A7 case 1"): explicit rows for the fresh (IDLE,
+// CLOSED) -> (PENDING, CLOSED) entry, the guarded closing-tail transition into DRAINING and its
+// no-hold alternative, the release guard's rejected/no-op alternatives (already unit-tested above,
+// just not yet given their own table rows), PAGEWAIT/CHOICE paths, CLEARING's own row progression,
+// an ignored-input self-loop, and an observed extra no-input ENDWAIT frame. Slice 8's own
+// close-for-Move rows are added alongside these, citing test/unit/streamworldclosemove.test.js's
+// own real Say -> Move -> Say drive. These are all short, isolated additions -- reusing every
+// existing assertion above rather than re-deriving them -- per the reviewer's own "keep the
+// current row trace and existing unit tests" instruction.
+// ---------------------------------------------------------------------------------------------
+
+test('round 4, finding A7 case 1: box_begin\'s own fresh dispatch is the actual (IDLE, CLOSED) -> (PENDING, CLOSED) entry -- box_state is untouched, only sw_dlg15_state arms', { skip: !hasNesasm && 'nesasm not found on PATH' }, async (t) => {
+  const { addrOf, nes, mem } = await buildHarness(t);
+  mem[MAP_IS_STREAMED] = 1;
+  mem[SW_DLG15_STATE] = SW_DLG15_IDLE;
+  mem[BOX_STATE] = BOX_CLOSED;
+  callRoutine(nes, addrOf('box_begin'));
+  assert.equal(mem[SW_DLG15_STATE], SW_DLG15_PENDING, 'a fresh box_begin (box_state was BOX_CLOSED) must arm PENDING immediately, before any strip-idle wait is even checked');
+  assert.equal(mem[BOX_STATE], BOX_CLOSED, 'box_begin\'s own streamed dispatch (sw_dlg_hi_box_begin) only sets sw_dlg15_state -- box_state itself stays untouched until PENDING later resolves (the case above, text_tick with PENDING + an idle strip)');
+});
+
+test('round 4, finding A7 case 1: the closing tail\'s own camhold guard is the (IDLE, CLOSING) -> (DRAINING, CLOSED) transition, held (not closed) while a hold is logically open', { skip: !hasNesasm && 'nesasm not found on PATH' }, async (t) => {
+  const { addrOf, nes, mem } = await buildHarness(t);
+  mem[SW_DLG17_CAMHOLD] = 1;
+  mem[SW_DLG15_STATE] = SW_DLG15_IDLE;
+  mem[BOX_STATE] = BOX_CLOSED; // text_close_attr_tail's own preceding store, replicated here since this call starts one instruction after it (engine/text.asm:862-865)
+  mem[GAME_STATE] = ST_DIALOG;
+  callRoutine(nes, addrOf('sw_dlg_hi_close_attr_tail'));
+  assert.equal(mem[SW_DLG15_STATE], SW_DLG15_DRAINING, 'a held conversation\'s own closing tail must arm DRAINING, not close immediately');
+  assert.equal(mem[BOX_STATE], BOX_CLOSED, 'box_state must already read CLOSED (case 3\'s own real gap-frame finding, above)');
+  assert.equal(mem[GAME_STATE], ST_DIALOG, 'must NOT reach close_ui here -- game_state stays the dialogue value until sw_dlg17_camrelease later fires');
+});
+
+test('round 4, finding A7 case 1: the closing tail\'s own camhold==0 disposition closes immediately, exactly like an ordinary close -- unreachable for an ordinary HELD conversation (case 1\'s own real trace above always finds camhold==1 here)', { skip: !hasNesasm && 'nesasm not found on PATH' }, async (t) => {
+  const { addrOf, nes, mem } = await buildHarness(t);
+  mem[SW_DLG17_CAMHOLD] = 0;
+  mem[SW_DLG15_STATE] = SW_DLG15_IDLE;
+  mem[BOX_STATE] = BOX_CLOSED;
+  mem[GAME_STATE] = ST_DIALOG;
+  callRoutine(nes, addrOf('sw_dlg_hi_close_attr_tail'));
+  assert.equal(mem[SW_DLG15_STATE], SW_DLG15_IDLE, 'without a hold to resolve, sw_dlg15_state must never touch DRAINING at all');
+  assert.equal(mem[BOX_STATE], BOX_CLOSED, 'box_state must already read CLOSED');
+  assert.equal(mem[GAME_STATE], ST_GAMEPLAY, 'must reach close_ui directly -- a session that never engaged the streamed camera-hold (in-game naming\'s own raise never floors the camera) has nothing for sw_dlg17_camrelease to resolve later, so this closes exactly as an ordinary (non-streamed) close already would (engine/streamworld.asm\'s own comment on sw_dlg_hi_close_attr_tail)');
+});
+
+test('round 4, finding A7 case 1: a real multi-page Say exercises PAGEWAIT and CLEARING\'s own row progression, an ignored press during TYPING, and an observed extra no-input ENDWAIT frame', { skip: !hasNesasm && 'nesasm not found on PATH' }, async () => {
+  const project = createStreamedProject({});
+  const longText = 'A '.repeat(70).trim(); // 139 chars -- forces at least two pages at BOX_COLS=28 x BOX_ROWS=4 (shared/font.js)
+  const slot = interactEntity(project, { x: 200, y: 112, commands: [{ op: 'say', text: longText }] });
+  const { nes, mem } = await buildAndBoot(project);
+  assert.ok(walkToEntity(nes, mem, slot), 'the player must actually reach the NPC');
+
+  nes.buttonDown(1, B);
+  nes.frame();
+  nes.buttonUp(1, B);
+
+  driveUntil(nes, mem, (m) => m[BOX_STATE] === BOX_TYPING, 30);
+  assert.equal(mem[BOX_STATE], BOX_TYPING, 'sanity: must actually reach TYPING for page 1');
+  // Ignored-input self-loop: text_advance (engine/text.asm) only reacts to PAGEWAIT/ENDWAIT/
+  // CHOICEWAIT -- a press landing during TYPING itself must be dropped, not queued or acted on.
+  nes.buttonDown(1, B);
+  nes.frame();
+  nes.buttonUp(1, B);
+  assert.equal(mem[BOX_STATE], BOX_TYPING, 'a press during TYPING must be ignored -- text_advance only reacts to PAGEWAIT/ENDWAIT/CHOICEWAIT, never TYPING itself');
+
+  // text_type_step (engine/text.asm:422-428) types one glyph per frame -- page 1's own ~56
+  // characters alone need close to that many real frames, well past this file's usual 60-frame
+  // budget for a two-character message.
+  const framesToPagewait = driveUntil(nes, mem, (m) => m[BOX_STATE] === BOX_PAGEWAIT, 150);
+  assert.ok(framesToPagewait < 150, 'the long message must actually reach a page break');
+  // Fix round 1, finding A5: an OBSERVED extra no-input PAGEWAIT frame, not merely a press the
+  // instant PAGEWAIT is first sampled (the same ask already discharged for ENDWAIT below).
+  nes.frame();
+  assert.equal(mem[BOX_STATE], BOX_PAGEWAIT, 'PAGEWAIT must self-loop for at least one further frame with no input, not advance on its own');
+  nes.buttonDown(1, B);
+  nes.frame();
+  nes.buttonUp(1, B);
+  assert.equal(mem[BOX_STATE], BOX_CLEARING, 'confirming PAGEWAIT must enter CLEARING (text_advance_page) -- never touching sw_dlg15_state a second time, unlike a same-box ENDWAIT reuse\'s own reject');
+
+  // CLEARING's own row progression: text_clear_step (engine/text.asm) wipes BOX_TEXT_ROWS text
+  // rows one per frame before handing off -- a genuine multi-frame self-loop, not an instant flip.
+  const rowsSeenClearing = new Set();
+  let clearingFrames = 0;
+  while (mem[BOX_STATE] === BOX_CLEARING && clearingFrames < 10) {
+    rowsSeenClearing.add(mem[BOX_ROW]);
+    nes.frame();
+    clearingFrames++;
+  }
+  assert.ok(rowsSeenClearing.size >= 2, `CLEARING must advance box_row across at least two distinct real frames, not resolve in a single frame: ${JSON.stringify([...rowsSeenClearing])}`);
+
+  driveUntil(nes, mem, (m) => m[BOX_STATE] === BOX_TYPING, 30);
+  assert.equal(mem[BOX_STATE], BOX_TYPING, 'CLEARING must hand off straight back to TYPING for page 2, same box, no re-open');
+
+  const framesToEndwait = driveUntil(nes, mem, (m) => m[BOX_STATE] === BOX_ENDWAIT, 60);
+  assert.ok(framesToEndwait < 60, 'page 2 must finish typing and reach ENDWAIT');
+  // Round 4, finding A7 case 1's own ask: an OBSERVED extra no-input ENDWAIT frame, not merely a
+  // press the instant ENDWAIT is first sampled (this file's own driveUntil-then-tap convention
+  // elsewhere never deliberately holds one frame with nothing pressed first).
+  nes.frame();
+  assert.equal(mem[BOX_STATE], BOX_ENDWAIT, 'ENDWAIT must self-loop for at least one further frame with no input, not advance on its own');
+  nes.buttonDown(1, B);
+  nes.frame();
+  nes.buttonUp(1, B);
+  driveUntil(nes, mem, (m) => m[GAME_STATE] === ST_GAMEPLAY, 60);
+  assert.equal(mem[GAME_STATE], ST_GAMEPLAY, 'the conversation must still close normally afterward');
+});
+
+test('round 4, finding A7 case 1: confirming a real CHOICEWAIT resolves it -- script_choose\'s own transition out, never a silent self-loop forever', { skip: !hasNesasm && 'nesasm not found on PATH' }, async () => {
+  const project = createStreamedProject({});
+  const slot = interactEntity(project, {
+    x: 200, y: 112,
+    commands: [{ op: 'choice', options: [{ text: 'Yes', commands: [] }, { text: 'No', commands: [] }] }],
+  });
+  const { nes, mem } = await buildAndBoot(project);
+  assert.ok(walkToEntity(nes, mem, slot), 'the player must actually reach the NPC');
+  nes.buttonDown(1, B);
+  nes.frame();
+  nes.buttonUp(1, B);
+  // Fix round 1, finding A5: the (IDLE, CHOICE) production row needs an observed source and
+  // destination, not merely eventual CHOICEWAIT -- record every box_state visited on the way there.
+  const statesSeen = [];
+  let openFrames = 0;
+  while (mem[BOX_STATE] !== BOX_CHOICEWAIT && openFrames < 60) {
+    statesSeen.push(mem[BOX_STATE]);
+    nes.frame();
+    openFrames++;
+  }
+  assert.ok(openFrames < 60, 'sanity: must reach the option-picking wait');
+  assert.equal(mem[BOX_STATE], BOX_CHOICEWAIT, 'sanity: must reach the option-picking wait');
+  const choiceIndex = statesSeen.indexOf(BOX_CHOICE);
+  assert.ok(choiceIndex >= 0, `the real trace must actually visit BOX_CHOICE (option-row listing) on its way to CHOICEWAIT, not skip straight there: ${JSON.stringify(statesSeen)}`);
+  assert.equal(statesSeen[choiceIndex - 1], BOX_OPENING, 'the observed SOURCE of the (IDLE, CHOICE) production is the box\'s own opening row/attribute self-loop -- box_choose is handed off from the same box_handover an ordinary Say uses, never a bare jump into CHOICE from CLOSED');
+  const lastChoiceIndex = statesSeen.lastIndexOf(BOX_CHOICE);
+  const destinationAfterChoice = lastChoiceIndex + 1 < statesSeen.length ? statesSeen[lastChoiceIndex + 1] : mem[BOX_STATE]; // last BOX_CHOICE frame recorded was the loop's own final iteration -- the loop-exit value (already asserted BOX_CHOICEWAIT above) IS the very next real frame
+  assert.equal(destinationAfterChoice, BOX_CHOICEWAIT, 'the observed DESTINATION the instant both option rows finish listing is CHOICEWAIT, immediately, with nothing in between');
+
+  // Fix round 1, finding A5: CHOICEWAIT must itself hold for at least one further real frame with
+  // nothing pressed, not advance on its own (the same ask already discharged for ENDWAIT/PAGEWAIT).
+  nes.frame();
+  assert.equal(mem[BOX_STATE], BOX_CHOICEWAIT, 'CHOICEWAIT must self-loop for at least one further frame with no input, not advance on its own');
+
+  nes.buttonDown(1, B);
+  nes.frame();
+  nes.buttonUp(1, B);
+  assert.notEqual(mem[BOX_STATE], BOX_CHOICEWAIT, 'confirming the picked option must actually leave CHOICEWAIT -- script_choose\'s own dispatch (both options here have empty commands, so the whole event finishes and the box closes)');
+  driveUntil(nes, mem, (m) => m[GAME_STATE] === ST_GAMEPLAY, 60);
+  assert.equal(mem[GAME_STATE], ST_GAMEPLAY, 'an empty-commands option must still let the event finish normally, closing the box behind it');
+});
+
+test('fix round 1, finding A5: sw_dlg_closeformove_check\'s own flag-zero branch is a genuine ordinary end-of-event close in a Move-enabled project, not an unreachable no-op', { skip: !hasNesasm && 'nesasm not found on PATH' }, async () => {
+  const project = createStreamedProject({});
+  // A SEPARATE NPC's own Say -> Move event makes MOVE_ENABLED compile true project-wide; the NPC
+  // actually interacted with below has an ORDINARY Say-only event (no trailing Move), so its own
+  // close takes sw_dlg_closeformove_check's flag-zero branch (sw_dlg17_move_close reads 0) even
+  // though the project as a whole has MOVE_ENABLED on -- the byte-identity tests this row used to
+  // cite (test/unit/streamworldclosemove.test.js) build with MOVE_ENABLED OFF and so can never
+  // execute this branch at all.
+  interactEntity(project, { x: 216, y: 112, commands: [{ op: 'say', text: 'Hi.' }, { op: 'move', who: 'player', dir: 'up', dist: 8 }], actorName: 'Mover' });
+  const slot = interactEntity(project, { x: 200, y: 160, commands: [{ op: 'say', text: 'Bye.' }], actorName: 'Talker' });
+  const { nes, mem } = await buildAndBoot(project);
+  assert.ok(walkToEntity(nes, mem, slot), 'the player must actually reach the Say-only NPC');
+  nes.buttonDown(1, B);
+  nes.frame();
+  nes.buttonUp(1, B);
+  driveUntil(nes, mem, (m) => m[BOX_STATE] === BOX_ENDWAIT, 60);
+  assert.equal(mem[BOX_STATE], BOX_ENDWAIT, 'sanity: must reach the ordinary end of the Say-only event');
+  nes.buttonDown(1, B);
+  nes.frame();
+  nes.buttonUp(1, B);
+  let closingFrames = 0;
+  while (mem[BOX_STATE] !== BOX_CLOSED && closingFrames < 20) {
+    assert.equal(mem[SW_DLG17_MOVE_CLOSE], 0, `frame ${closingFrames}: an ordinary close must never arm sw_dlg17_move_close, even in a project whose OTHER npc uses Move`);
+    nes.frame();
+    closingFrames++;
+  }
+  assert.ok(closingFrames < 20, 'the ordinary close must actually reach BOX_CLOSED within budget');
+  // sw_dlg_closeformove_check's own flag-zero branch: falls straight through to close_ui exactly
+  // as an ordinary close, resetting game_state/script_active -- never the close-for-Move survival
+  // this same slice adds for a nonzero flag.
+  const releaseFrames = driveUntil(nes, mem, (m) => m[GAME_STATE] === ST_GAMEPLAY, 30);
+  assert.ok(releaseFrames < 30, 'close_ui must actually run -- the flag-zero branch is a real, ordinary close, not a dead end');
+  assert.equal(mem[SCRIPT_ACTIVE], 0, 'close_ui must clear script_active, exactly like any ordinary close (never close-for-Move\'s own survival)');
 });
 
 // ---------------------------------------------------------------------------------------------
@@ -1688,8 +1993,12 @@ test('case 3 sabotage: never actually reaching close_ui leaves the player perman
   // dropped in favour of a plain `rts`. This is the plan's own named case-3 wrong implementation:
   // the internal state machine believes the conversation is over (sw_dlg15_state reaches IDLE,
   // the hold releases) while game_state itself never leaves ST_DIALOG -- the player is stuck.
-  const needle = '  lda #SW_DLG15_IDLE\n  sta <sw_dlg15_state\n  jmp close_ui\nsw_dlg17cr_done:\n';
-  const mutant = mutateOnce(source, needle, '  lda #SW_DLG15_IDLE\n  sta <sw_dlg15_state\n  rts\nsw_dlg17cr_done:\n', 'sw_dlg17_camrelease close_ui omission (case 3 stuck-dialogue sabotage)');
+  // Phase 2 slice 8 wraps this same `jmp close_ui` in `.if MOVE_ENABLED / jmp
+  // sw_dlg_closeformove_check / .else / jmp close_ui / .endif` -- this project (Say only, no
+  // Move) has MOVE_ENABLED off, so only the `.else` branch's jmp close_ui ever assembles; the
+  // needle now targets that branch specifically.
+  const needle = '  .else\n  jmp close_ui\n  .endif\nsw_dlg17cr_done:\n';
+  const mutant = mutateOnce(source, needle, '  .else\n  rts\n  .endif\nsw_dlg17cr_done:\n', 'sw_dlg17_camrelease close_ui omission (case 3 stuck-dialogue sabotage)');
 
   const project = createStreamedProject({});
   const slot = interactEntity(project, { x: 200, y: 112, commands: [{ op: 'say', text: 'AB' }] });
@@ -3290,19 +3599,20 @@ test('case 12 sabotage: a same-value write to attr_shadow inside the mapper is i
 });
 
 // ---------------------------------------------------------------------------------------------
-// Case 13 (plan case 13, "wrong row 7b"): a negative COMPILED-PROJECT test -- unlike
-// streamworld.test.js's own D.4 negative tests (a direct top-level Move on the entity's own
-// page), this authors a Say event that reaches a player Move only through a nested OP_CALL chain
-// (entity event -> common 0 -> common 1 -> Move), and asserts the real buildProject pipeline
-// itself refuses it -- not merely that validateProject's own in-memory predicate returns true
-// (streamworld.test.js's own file header: "built through the real public path... a refusal that
-// only fired in validateProject but not generateAssets/buildProject would ship a broken ROM").
-// eventMovesPlayer/eventHasOp (shared/project.js) already recurse into a `call` target at any
-// depth with no special-casing of how many hops away the Move sits, so this is a confirmation/
-// regression test of that existing walk through the real pipeline, not new production code.
+// Case 13 (plan case 13, "wrong row 7b"): a COMPILED-PROJECT test -- unlike streamworld.test.js's
+// own D.4 tests (a direct top-level Move on the entity's own page), this authors a Say event that
+// reaches a player Move only through a nested OP_CALL chain (entity event -> common 0 -> common 1
+// -> Move). Originally a negative test (the pre-slice-8 refusal fired even through this many
+// levels of indirection); phase 2 slice 8 lifts the refusal itself (close-for-Move handles the
+// combination directly), so this is now a positive test of the real buildProject pipeline --
+// confirming the nested-call shape still reaches a real ROM, not merely that validateProject's
+// own in-memory predicate returns clean (streamworld.test.js's own file header: "built through the
+// real public path... a refusal that only fired in validateProject but not generateAssets/
+// buildProject would ship a broken ROM" applies equally to a lifted refusal shipping a build that
+// silently still fails).
 // ---------------------------------------------------------------------------------------------
 
-test('case 13 negative: a Say that reaches a player Move only through a nested OP_CALL chain is refused by the real build, not merely validateProject', { skip: !hasNesasm && 'nesasm not found on PATH' }, async (t) => {
+test('case 13 positive, phase 2 slice 8: a Say that reaches a player Move only through a nested OP_CALL chain now builds clean through the real pipeline', { skip: !hasNesasm && 'nesasm not found on PATH' }, async (t) => {
   const project = createStreamedProject({});
   interactEntity(project, { x: 200, y: 112, commands: [{ op: 'say', text: 'Hi' }, { op: 'call', event: 0 }] });
   project.commonEvents = [
@@ -3314,10 +3624,10 @@ test('case 13 negative: a Say that reaches a player Move only through a nested O
   const dir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'forge-streamworlddlg-nestedmove-'));
   t.after(() => fs.promises.rm(dir, { recursive: true, force: true }));
   await saveProject(dir, project);
-  await assert.rejects(
-    buildProject({ dir, project, log: () => {} }),
-    /shows text.*moves the player/,
-    'a Move reached only through two levels of OP_CALL must still be refused by the real build, not merely flagged in memory'
+  const built = await buildProject({ dir, project, log: () => {} });
+  assert.ok(
+    fs.existsSync(built.romPath),
+    'a Move reached only through two levels of OP_CALL must build clean through the real pipeline now the refusal is lifted'
   );
 });
 
@@ -3337,7 +3647,13 @@ test('case 13 positive control: the identical common-event chain with the nested
   assert.ok(fs.existsSync(built.romPath), 'the positive control (identical chain, no Move at the end) must actually produce a ROM');
 });
 
-test('case 13 validator sabotage: disabling eventMovesPlayer\'s own recursion into a call target lets the identical nested-Move chain wrongly validate clean', { skip: !hasNesasm && 'nesasm not found on PATH' }, async (t) => {
+// Phase 2 slice 8 lifted the item-4 error this sabotage test used to target, but eventMovesPlayer's
+// own call-recursion is still load-bearing: it also feeds the item-3 WARNING (shared/project.js,
+// "a long enough Move can walk them to the edge of the screen"), which fires on any event that
+// moves the player regardless of text, nested behind OP_CALL or not. Repurposed to demonstrate that
+// warning instead of the removed error, so the recursion's own regression coverage survives the
+// refusal it originally guarded going away.
+test('case 13 validator sabotage: disabling eventMovesPlayer\'s own recursion into a call target lets the identical nested-Move chain wrongly validate with no item-3 warning', { skip: !hasNesasm && 'nesasm not found on PATH' }, async (t) => {
   // A scratch COPY of the whole shared/ directory (never the repository file itself), so the
   // mutated project.js's own relative imports ('./chr.js', './eventrules.js', etc.) still resolve,
   // and it can be dynamically imported as an independent module instance with its own
@@ -3377,29 +3693,30 @@ test('case 13 validator sabotage: disabling eventMovesPlayer\'s own recursion in
   ];
   project.commonEventSeq = 2;
 
-  const realErrors = validateProject(project);
+  const realWarnings = validateProject(project).filter((x) => x.severity === 'warning');
   assert.ok(
-    realErrors.some((e) => /shows text.*moves the player/.test(e.message)),
-    'sanity: the real, unmutated validateProject must still flag this exact project (case 13 negative already proves this through the real build; this re-confirms it directly against validateProject)'
+    realWarnings.some((w) => /moves the player, and a long enough Move/.test(w.message)),
+    'sanity: the real, unmutated validateProject must still flag this exact project with the item-3 warning (case 13 positive already proves this builds clean through the real pipeline; this re-confirms the warning fires directly against validateProject)'
   );
 
-  const sabotagedErrors = sabotagedValidateProject(project);
+  const sabotagedWarnings = sabotagedValidateProject(project).filter((x) => x.severity === 'warning');
   assert.ok(
-    !sabotagedErrors.some((e) => /shows text.*moves the player/.test(e.message)),
-    'with eventMovesPlayer\'s own recursion into a call target disabled, the identical nested-Move chain must wrongly validate clean -- a correct-looking test that could not tell this apart from the real validator\'s own refusal (above) would be worthless'
+    !sabotagedWarnings.some((w) => /moves the player, and a long enough Move/.test(w.message)),
+    'with eventMovesPlayer\'s own recursion into a call target disabled, the identical nested-Move chain must wrongly validate with no item-3 warning -- a correct-looking test that could not tell this apart from the real validator\'s own warning (above) would be worthless'
   );
 });
 
 // ---------------------------------------------------------------------------------------------
-// Refusal-still-fires and byte-identity: unchanged by this commit -- restated here (not merely
-// left to streamworlddialoguemapper.test.js) because this file is the one a reader chasing
-// "phase2-s7b" by name will open first.
+// Refusal lifted, and byte-identity: restated here (not merely left to
+// streamworlddialoguemapper.test.js) because this file is the one a reader chasing "phase2-s7b"
+// by name will open first.
 // ---------------------------------------------------------------------------------------------
 
-// A later slice-7b commit ships the dialogue lifecycle for real and narrows item 4's own refusal
-// to "shows text AND moves the player" (Say/Choice alone now builds clean -- streamworld.test.js's
-// own D.4 tests cover both halves). This file's own commit never touches that arbitration.
-test('refusal still fires: an event that both shows text (Say) and moves the player is still refused -- this commit adds no arbitration between the two', () => {
+// Superseded: this test used to assert the D.4 refusal still fired for this combination -- a
+// later phase 2 slice 8 commit lifts it (engine/ui.asm's ui_tick_move_guard_start), so this file's
+// own restated copy needs updating too -- see test/unit/streamworldclosemove.test.js for the real
+// mechanism's own coverage.
+test('phase 2 slice 8: an event that both shows text (Say) and moves the player no longer refuses', () => {
   const project = createStreamedProject({});
   const streamedMap = project.maps.find((m) => m.streamed === true);
   const screen = streamedMap.screens[0];
@@ -3421,7 +3738,10 @@ test('refusal still fires: an event that both shows text (Say) and moves the pla
     },
   });
   const errors = validateProject(project).filter((x) => x.severity === 'error');
-  assert.ok(errors.some((e) => /shows text.*moves the player/.test(e.message)), `the D.4 refusal must still fire: ${JSON.stringify(errors)}`);
+  assert.ok(
+    !errors.some((e) => /shows text.*moves the player/.test(e.message)),
+    `the D.4 refusal must be lifted by phase 2 slice 8: ${JSON.stringify(errors)}`
+  );
 });
 
 // Full-ROM byte-identity against a REAL pre-7b baseline (commit 8b4d5a9, "phase 2 slice 7a:

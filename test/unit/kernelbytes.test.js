@@ -116,6 +116,9 @@ import {
   STREAMWORLD_DIALOGUE_TEXT_CLOSE_ATTR_TAIL_KERNEL_ALLOWANCE,
   STREAMWORLD_DIALOGUE_CAMRELEASE_KERNEL_ALLOWANCE,
   STREAMWORLD_OAM_GUARD_KERNEL_ALLOWANCE,
+  STREAMWORLD_CLOSEFORMOVE_KERNEL_ALLOWANCE,
+  STREAMWORLD_CLOSEFORMOVE_KERNEL_HI_ALLOWANCE,
+  STREAMWORLD_CLOSEFORMOVE_GUARD_KERNEL_HI_ALLOWANCE,
   STREAMWORLD_NMI_KERNEL_ALLOWANCE,
   STREAMWORLD_NMI_PALETTE_FX_KERNEL_ALLOWANCE,
   STREAMWORLD_PROJECT_KERNEL_ALLOWANCE,
@@ -137,6 +140,7 @@ import {
   projectUsesItems,
   projectUsesBoundTiles,
   projectUsesTurn,
+  projectUsesMove,
   projectUsesHeroNaming,
   projectUsesJoinNaming,
   projectWithoutHeroNaming,
@@ -5429,13 +5433,25 @@ test(
       const oamTerm =
         (projectUsesText(streamedWithMove) ? STREAMWORLD_OAM_GUARD_KERNEL_ALLOWANCE : 0) -
         (projectUsesText(streamedNoMove) ? STREAMWORLD_OAM_GUARD_KERNEL_ALLOWANCE : 0);
-      const expectedSupplement = STREAMWORLD_MOVE_KERNEL_ALLOWANCE + dlgTerm + oamTerm;
+      // Phase 2 slice 8: STREAMWORLD_CLOSEFORMOVE_KERNEL_ALLOWANCE is gated
+      // `usesStreaming && usesMove && usesText` -- a THIRD independent
+      // confound of the identical shape as dlgTerm/oamTerm above.
+      // streamedNoMove has no live Move at all (projectUsesMove false), so
+      // this term is always 0 on that side regardless of text; streamedWithMove
+      // picks it up whenever its own Move event is also what flips
+      // projectUsesText on.
+      const closeformoveTerm =
+        (projectUsesMove(streamedWithMove) && projectUsesText(streamedWithMove)
+          ? STREAMWORLD_CLOSEFORMOVE_KERNEL_ALLOWANCE
+          : 0) -
+        (projectUsesMove(streamedNoMove) && projectUsesText(streamedNoMove) ? STREAMWORLD_CLOSEFORMOVE_KERNEL_ALLOWANCE : 0);
+      const expectedSupplement = STREAMWORLD_MOVE_KERNEL_ALLOWANCE + dlgTerm + oamTerm + closeformoveTerm;
       // fix round 1, finding 7/verification: printed on every run, pass or
       // fail -- an independent, per-shape figure a report can quote.
       console.log(
         `${mapper.name} (${label}): STREAMWORLD_MOVE_KERNEL_ALLOWANCE supplement ${supplement} ` +
           `(streamed Move delta ${streamedDelta}, ordinary Move delta ${ordinaryDelta}, dialogue-lifecycle term ` +
-          `${dlgTerm}, oam-guard term ${oamTerm}, expected ${expectedSupplement})`
+          `${dlgTerm}, oam-guard term ${oamTerm}, close-for-move term ${closeformoveTerm}, expected ${expectedSupplement})`
       );
       assert.equal(
         supplement,
@@ -5525,11 +5541,20 @@ test(
       const dlgTerm =
         (projectUsesText(streamedWithMove) ? dlgMapperHiTotal : 0) -
         (projectUsesText(streamedNoMove) ? dlgMapperHiTotal : 0);
-      const expectedSupplement = STREAMWORLD_MOVE_KERNEL_HI_ALLOWANCE + dlgTerm;
+      // Phase 2 slice 8: STREAMWORLD_CLOSEFORMOVE_KERNEL_HI_ALLOWANCE and (fix
+      // round 1's relocation) STREAMWORLD_CLOSEFORMOVE_GUARD_KERNEL_HI_
+      // ALLOWANCE are gated identically to their kernel-lo sibling above --
+      // the same independent confound, cancelled the same way, both terms
+      // summed since both share the one gate.
+      const closeformoveHiTotal = STREAMWORLD_CLOSEFORMOVE_KERNEL_HI_ALLOWANCE + STREAMWORLD_CLOSEFORMOVE_GUARD_KERNEL_HI_ALLOWANCE;
+      const closeformoveTerm =
+        (projectUsesMove(streamedWithMove) && projectUsesText(streamedWithMove) ? closeformoveHiTotal : 0) -
+        (projectUsesMove(streamedNoMove) && projectUsesText(streamedNoMove) ? closeformoveHiTotal : 0);
+      const expectedSupplement = STREAMWORLD_MOVE_KERNEL_HI_ALLOWANCE + dlgTerm + closeformoveTerm;
       console.log(
         `${mapper.name} (${label}): STREAMWORLD_MOVE_KERNEL_HI_ALLOWANCE supplement ${supplement} ` +
           `(streamed Move delta ${streamedDelta}, ordinary Move delta ${ordinaryDelta} -- the text.inc confound, ` +
-          `dialogue-mapper term ${dlgTerm}, expected ${expectedSupplement})`
+          `dialogue-mapper term ${dlgTerm}, close-for-move term ${closeformoveTerm}, expected ${expectedSupplement})`
       );
       assert.equal(
         supplement,
@@ -7031,5 +7056,214 @@ test(
     await saveProject(dir, dropped);
     const built = await buildProject({ dir, project: dropped, log: () => {} });
     assert.ok(built.romPath, 'dropping the camera, with Shake still live, should be a real, buildable fix');
+  }
+);
+
+// Phase 2 slice 8: STREAMWORLD_CLOSEFORMOVE_KERNEL_ALLOWANCE (kernel-lo) and
+// STREAMWORLD_CLOSEFORMOVE_KERNEL_HI_ALLOWANCE (kernel-hi) -- close-for-Move's
+// two halves. The kernel-lo term is engine/ui.asm's ui_tick_move_guard_
+// start..end (the priority patch that intercepts ui_tick's mv_left dispatch);
+// the kernel-hi term is engine/streamworld.asm's sw_dlg_closeformove_
+// start..end (sw_dlg17_camrelease's own draw-down release, out of line so its
+// call site costs the pre-existing terrain-consumer span nothing -- see that
+// term's own generate.js comment). Both are gated identically: usesStreaming
+// && usesMove && usesText, so an event with both a Say and a Move on the
+// streamed map turns both on together.
+function withOrdinaryDialogueAndMove(project) {
+  const map = project.maps.find((m) => m.streamed);
+  const screen = map.screens[0];
+  screen.entities = screen.entities ?? [];
+  const actorId = project.sprites.actors.length;
+  project.sprites.actors.push({ name: 'NPC', behavior: 'npc', hp: 1, damage: 0 });
+  screen.entities.push({
+    actorId,
+    x: 200,
+    y: 112,
+    props: {
+      trigger: 'interact',
+      event: {
+        pages: [
+          {
+            cond: { type: 'none', arg: 0 },
+            commands: [
+              { op: 'say', text: 'Hi.' },
+              { op: 'move', who: 'player', dir: 'up', dist: 16 }
+            ]
+          }
+        ]
+      }
+    }
+  });
+  return project;
+}
+
+const CLOSEFORMOVE_CASES = [
+  { gameType: 'action', mixed: false, label: 'action' },
+  { gameType: 'rpg', mixed: false, label: 'rpg' },
+  { gameType: 'action', mixed: true, label: 'action, mixed' },
+  { gameType: 'rpg', mixed: true, label: 'rpg, mixed' }
+];
+
+// Review round 1 fix (B1's relocation ruling): the whole arming guard moved out of kernel-lo
+// into sw_dlg_cfm_guard (engine/streamworld.asm, kernel-hi). What is left at
+// ui_tick_move_guard_start..end is a single 3-byte JMP absolute -- either to that helper or,
+// unchanged, to move_tick -- so this span must read 3 whether or not the feature is even gated
+// on, proving STREAMWORLD_CLOSEFORMOVE_KERNEL_ALLOWANCE is correctly 0: not merely a small
+// number, but genuinely no marginal kernel-lo cost for this feature at all. Covers all four
+// action/RPG x streamed-only/mixed shapes (A6), plus the gate's own off side (an ordinary,
+// non-streamed Move project) to prove the span truly does not vary with the gate.
+test(
+  'phase 2 slice 8 fix round 1 (relocation): ui_tick_move_guard_start..end is a flat, unconditional 3-byte dispatch on all four action/RPG x streamed-only/mixed shapes, and STREAMWORLD_CLOSEFORMOVE_KERNEL_ALLOWANCE is correctly 0',
+  { skip: !hasNesasm && 'nesasm not found on PATH' },
+  async (t) => {
+    const mapper = resolveMapper(30);
+    assert.equal(STREAMWORLD_CLOSEFORMOVE_KERNEL_ALLOWANCE, 0, 'the relocation left no marginal kernel-lo cost behind');
+    for (const { gameType, mixed, label } of CLOSEFORMOVE_CASES) {
+      const project = withOrdinaryDialogueAndMove(createStreamedProject({ gameType, mixed }));
+      const dir = await fsp.mkdtemp(path.join(os.tmpdir(), 'forge-kernello-closeformove-'));
+      t.after(() => fsp.rm(dir, { recursive: true, force: true }));
+      const built = await buildProject({ dir, project, log: () => {} });
+      const symbols = await fsp.readFile(built.symbolPath, 'utf8');
+      const span = symbolAddr(symbols, 'ui_tick_move_guard_end') - symbolAddr(symbols, 'ui_tick_move_guard_start');
+      assert.equal(
+        span,
+        3,
+        `${mapper.name} (${label}): ui_tick_move_guard_start..end spans ${span} bytes -- should be a single 3-byte JMP absolute either way`
+      );
+    }
+    const ordinaryProject = createStreamedProject({
+      gameType: 'action',
+      moveCommands: [{ op: 'move', who: 'self', dir: 'up', dist: 16 }]
+    });
+    for (const map of ordinaryProject.maps) map.streamed = false;
+    const dirOff = await fsp.mkdtemp(path.join(os.tmpdir(), 'forge-kernello-closeformove-off-'));
+    t.after(() => fsp.rm(dirOff, { recursive: true, force: true }));
+    const builtOff = await buildProject({ dir: dirOff, project: ordinaryProject, log: () => {} });
+    const symbolsOff = await fsp.readFile(builtOff.symbolPath, 'utf8');
+    const spanOff = symbolAddr(symbolsOff, 'ui_tick_move_guard_end') - symbolAddr(symbolsOff, 'ui_tick_move_guard_start');
+    assert.equal(
+      spanOff,
+      3,
+      `an ordinary (non-streamed) Move project spans ${spanOff} bytes at this same dispatch -- must equal the ` +
+        'streamed+move+text figure exactly, proving the gate adds nothing here'
+    );
+  }
+);
+
+test(
+  'phase 2 slice 8: STREAMWORLD_CLOSEFORMOVE_KERNEL_HI_ALLOWANCE equals the real sw_dlg_closeformove_start..end span, all four action/RPG x streamed-only/mixed shapes',
+  { skip: !hasNesasm && 'nesasm not found on PATH' },
+  async (t) => {
+    const mapper = resolveMapper(30);
+    for (const { gameType, mixed, label } of CLOSEFORMOVE_CASES) {
+      const project = withOrdinaryDialogueAndMove(createStreamedProject({ gameType, mixed }));
+      const dir = await fsp.mkdtemp(path.join(os.tmpdir(), 'forge-kernelhi-closeformove-'));
+      t.after(() => fsp.rm(dir, { recursive: true, force: true }));
+      const built = await buildProject({ dir, project, log: () => {} });
+      const symbols = await fsp.readFile(built.symbolPath, 'utf8');
+      const span = symbolAddr(symbols, 'sw_dlg_closeformove_end') - symbolAddr(symbols, 'sw_dlg_closeformove_start');
+      assert.equal(
+        span,
+        STREAMWORLD_CLOSEFORMOVE_KERNEL_HI_ALLOWANCE,
+        `${mapper.name} (${label}): sw_dlg_closeformove_start..end spans ${span} bytes but ` +
+          `STREAMWORLD_CLOSEFORMOVE_KERNEL_HI_ALLOWANCE reserves ${STREAMWORLD_CLOSEFORMOVE_KERNEL_HI_ALLOWANCE} -- ` +
+          're-measure and correct it.'
+      );
+    }
+  }
+);
+
+// Review round 1 fix (B1's relocation ruling): the new kernel-hi guard body, holding the entire
+// arming decision the kernel-lo term above used to hold inline (including finding A1's mv_who
+// check). Same gate, same four shapes.
+test(
+  'phase 2 slice 8 fix round 1 (relocation): STREAMWORLD_CLOSEFORMOVE_GUARD_KERNEL_HI_ALLOWANCE equals the real sw_dlg_cfm_guard_start..end span, all four action/RPG x streamed-only/mixed shapes',
+  { skip: !hasNesasm && 'nesasm not found on PATH' },
+  async (t) => {
+    const mapper = resolveMapper(30);
+    for (const { gameType, mixed, label } of CLOSEFORMOVE_CASES) {
+      const project = withOrdinaryDialogueAndMove(createStreamedProject({ gameType, mixed }));
+      const dir = await fsp.mkdtemp(path.join(os.tmpdir(), 'forge-kernelhi-cfmguard-'));
+      t.after(() => fsp.rm(dir, { recursive: true, force: true }));
+      const built = await buildProject({ dir, project, log: () => {} });
+      const symbols = await fsp.readFile(built.symbolPath, 'utf8');
+      const span = symbolAddr(symbols, 'sw_dlg_cfm_guard_end') - symbolAddr(symbols, 'sw_dlg_cfm_guard_start');
+      assert.equal(
+        span,
+        STREAMWORLD_CLOSEFORMOVE_GUARD_KERNEL_HI_ALLOWANCE,
+        `${mapper.name} (${label}): sw_dlg_cfm_guard_start..end spans ${span} bytes but ` +
+          `STREAMWORLD_CLOSEFORMOVE_GUARD_KERNEL_HI_ALLOWANCE reserves ${STREAMWORLD_CLOSEFORMOVE_GUARD_KERNEL_HI_ALLOWANCE} -- ` +
+          're-measure and correct it.'
+      );
+    }
+  }
+);
+
+// The gate's off side: a streamed+text project with no live Move never sees any of the three
+// brackets' labels at all (all three live inside `.if MOVE_ENABLED`, unlike the OAM guard or
+// lifecycle terms above whose boundary labels are placed OUTSIDE their own `.if` and so are
+// always present) -- confirmed here as a missing-symbol assertion, not a zero-span one, so a
+// future refactor that makes the labels unconditional would have to update this test to match,
+// rather than this test silently passing either shape. Already runs on a mixed project.
+test(
+  'phase 2 slice 8: a streamed+text project with no live Move assembles none of the three close-for-Move brackets at all',
+  { skip: !hasNesasm && 'nesasm not found on PATH' },
+  async (t) => {
+    const project = withOrdinaryDialogue(createStreamedProject({ gameType: 'action', mixed: true }));
+    const dir = await fsp.mkdtemp(path.join(os.tmpdir(), 'forge-kernel-closeformove-off-'));
+    t.after(() => fsp.rm(dir, { recursive: true, force: true }));
+    const built = await buildProject({ dir, project, log: () => {} });
+    const symbols = await fsp.readFile(built.symbolPath, 'utf8');
+    assert.ok(
+      !/^ui_tick_move_guard_start\s+=/m.test(symbols),
+      'a project with no live Move must not assemble ui_tick_move_guard_start at all'
+    );
+    assert.ok(
+      !/^sw_dlg_closeformove_start\s+=/m.test(symbols),
+      'a project with no live Move must not assemble sw_dlg_closeformove_start at all'
+    );
+    assert.ok(
+      !/^sw_dlg_cfm_guard_start\s+=/m.test(symbols),
+      'a project with no live Move must not assemble sw_dlg_cfm_guard_start at all'
+    );
+  }
+);
+
+// Confirms the refactor's own premise directly: sw_dlg17_camrelease's tail
+// jmps to sw_dlg_closeformove_check when MOVE_ENABLED and to close_ui
+// directly otherwise -- one 3-byte JMP absolute either way -- so the
+// pre-existing STREAMWORLD_DIALOGUE_LIFECYCLE_TERRAIN_CONSUMER_KERNEL_HI_
+// ALLOWANCE_BY_GAME_TYPE span (measured on the mapper/relocated brackets'
+// own tests above, action:523/rpg:520) must stay identical whether or not
+// this slice's own Move gate is live -- close-for-Move must never inflate a
+// term it does not own.
+test(
+  'phase 2 slice 8: adding a live Move does not change the sw_dlg_origin_capture..sw_dlg_relocated_start span at all, either game type',
+  { skip: !hasNesasm && 'nesasm not found on PATH' },
+  async (t) => {
+    const mapper = resolveMapper(30);
+    for (const gameType of ['action', 'rpg']) {
+      const withoutMove = createStreamedProject({ gameType, mixed: gameType === 'action' });
+      if (gameType === 'action') withOrdinaryDialogue(withoutMove);
+      const withMove = withOrdinaryDialogueAndMove(structuredClone(withoutMove));
+      const dirA = await fsp.mkdtemp(path.join(os.tmpdir(), 'forge-kernelhi-terrain-nomove-'));
+      t.after(() => fsp.rm(dirA, { recursive: true, force: true }));
+      const builtA = await buildProject({ dir: dirA, project: withoutMove, log: () => {} });
+      const symbolsA = await fsp.readFile(builtA.symbolPath, 'utf8');
+      const spanA = symbolAddr(symbolsA, 'sw_dlg_relocated_start') - symbolAddr(symbolsA, 'sw_dlg_origin_capture');
+
+      const dirB = await fsp.mkdtemp(path.join(os.tmpdir(), 'forge-kernelhi-terrain-move-'));
+      t.after(() => fsp.rm(dirB, { recursive: true, force: true }));
+      const builtB = await buildProject({ dir: dirB, project: withMove, log: () => {} });
+      const symbolsB = await fsp.readFile(builtB.symbolPath, 'utf8');
+      const spanB = symbolAddr(symbolsB, 'sw_dlg_relocated_start') - symbolAddr(symbolsB, 'sw_dlg_origin_capture');
+
+      assert.equal(
+        spanA,
+        spanB,
+        `${mapper.name} (${gameType}): sw_dlg_origin_capture..sw_dlg_relocated_start must be identical with (${spanB}) ` +
+          `and without (${spanA}) a live Move -- close-for-Move's own bytes must live entirely outside this span`
+      );
+    }
   }
 );

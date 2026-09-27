@@ -146,30 +146,40 @@ test(
 
 // Phase 2 slice 7b ships the streamed dialogue lifecycle (engine/text.asm's mapper dispatch,
 // docs/design-streamed-worlds.md §7), so a Say alone on a streamed screen no longer refuses --
-// see the D.4 positive-style build-clean assertion below. What remains refused is an event that
-// BOTH shows text and moves the player: the camera-nudge hold a dialogue box takes
-// (sw_dlg15_pending_step) and a scripted Move's own edge-bounding (item 3, D.3 above) are two
-// different streamed-specific mechanisms this slice never arbitrated between.
+// see the D.4 positive-style build-clean assertion below. Phase 2 slice 8 lifts the remaining
+// half too: ui_tick's own close-for-Move priority patch (engine/ui.asm's
+// ui_tick_move_guard_start) now closes the box first (a draw-down preserving
+// script_active/talk_ent/game_state), draining the close before ever handing the frame to
+// move_tick -- see docs/design-streamed-worlds.md §7/§8 and
+// test/unit/streamworldclosemove.test.js. The item-3 warning (D.3 above) still fires
+// independently: nothing about slice 8 changes move_tick's own edge-bounding, so a long enough
+// Move can still reach the screen edge.
 test('D.4 positive, phase 2 slice 7b: a Say alone (no Move) on a streamed screen builds clean', { skip: !hasNesasm && 'nesasm not found on PATH' }, async () => {
   const project = withEvent(createStreamedProject({}), [{ op: 'say', text: 'Hello.' }]);
   assert.deepEqual(streamedErrors(project), []);
   assert.ok(await buildsClean(project));
 });
 
-test('D.4 negative, phase 2 slice 7b: an event that both shows text (Say) and moves the player is refused', () => {
+test('D.4 positive, phase 2 slice 8: an event that both shows text (Say) and moves the player now builds clean', { skip: !hasNesasm && 'nesasm not found on PATH' }, async () => {
   const project = withEvent(createStreamedProject({}), [
     { op: 'say', text: 'Hello.' },
     { op: 'move', who: 'player', dir: 'up', dist: 16 }
   ]);
   const errors = streamedErrors(project);
-  assert.ok(errors.some((e) => /shows text.*moves the player/.test(e.message)), JSON.stringify(errors));
+  assert.deepEqual(errors, [], `close-for-Move should have lifted this refusal: ${JSON.stringify(errors)}`);
+  assert.ok(await buildsClean(project));
+  const warnings = validateProject(project).filter((x) => x.severity === 'warning');
+  assert.ok(
+    warnings.some((w) => /moves the player, and a long enough Move/.test(w.message)),
+    `the item-3 warning must still fire independently of the lifted refusal: ${JSON.stringify(warnings)}`
+  );
 });
 
 // Fix round 1, finding 4: Choice dispatches straight to box_choose/box_begin (engine/script.asm's
 // script_op_choice, engine/text.asm) without ever going through Say, so an event with a Choice
-// and no Say anywhere reaches the same text-and-move combination this refusal now guards -- SAY_OPS
-// (shared/project.js) is `new Set(['say', 'choice'])` precisely so a Choice-only event carrying a
-// Move is not missed by the reachability walk.
+// and no Say anywhere reaches the identical text-and-move combination close-for-Move now handles
+// -- ui_tick's own guard reads box_state, not which command opened it, so it closes a
+// Choice-opened box exactly the same way.
 test('D.4 positive, fix round 1 finding 4: a Choice alone (no Move) on a streamed screen builds clean', { skip: !hasNesasm && 'nesasm not found on PATH' }, async () => {
   const project = withEvent(createStreamedProject({}), [
     { op: 'choice', options: [{ text: 'Yes', commands: [] }, { text: 'No', commands: [] }] }
@@ -178,7 +188,7 @@ test('D.4 positive, fix round 1 finding 4: a Choice alone (no Move) on a streame
   assert.ok(await buildsClean(project));
 });
 
-test('D.4 negative, fix round 1 finding 4: a Choice option that moves the player is refused', () => {
+test('D.4 positive, phase 2 slice 8: a Choice option that moves the player now builds clean', { skip: !hasNesasm && 'nesasm not found on PATH' }, async () => {
   const project = withEvent(createStreamedProject({}), [
     {
       op: 'choice',
@@ -189,10 +199,12 @@ test('D.4 negative, fix round 1 finding 4: a Choice option that moves the player
     }
   ]);
   const errors = streamedErrors(project);
-  assert.ok(
-    errors.some((e) => /shows text.*moves the player/.test(e.message)),
-    `a Choice option that moves the player must still be refused: ${JSON.stringify(errors)}`
+  assert.deepEqual(
+    errors,
+    [],
+    `close-for-Move should have lifted this refusal for a Choice option too: ${JSON.stringify(errors)}`
   );
+  assert.ok(await buildsClean(project));
 });
 
 

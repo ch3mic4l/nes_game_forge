@@ -6895,7 +6895,6 @@ function validateStreamedMaps(project, add) {
   // for hero AND Join naming alike, so a Join-naming grid on a streamed
   // screen needs no refusal of its own -- it is the identical code path this
   // refusal's own Say/Choice exemption already ships.
-  const SAY_OPS = new Set(['say', 'choice']);
   for (const { map, index } of streamed) {
     map.screens.forEach((screen, screenIndex) => {
       const label = () => `${screenLabel(project, index, screenIndex)} on the streamed map "${map.name}"`;
@@ -6938,29 +6937,19 @@ function validateStreamedMaps(project, add) {
               'cannot cross to a new screen -- keep player Moves within the screen, or use a Warp to change screen.'
           );
         }
-        // Item 4: phase 2 slice 7b ships the streamed dialogue lifecycle
-        // (engine/text.asm's mapper dispatch, docs/design-streamed-worlds.md
-        // §7), so Say/Choice alone no longer needs refusing. What remains
-        // unsupported is an event that BOTH shows text and moves the player
-        // -- the camera-nudge hold a dialogue box takes (sw_dlg15_pending_
-        // step) and a scripted Move's own edge-bounding (item 3, above) are
-        // two different streamed-specific mechanisms this slice never
-        // arbitrated between, so a page combining them is refused rather
-        // than shipped unverified. Reuses eventMovesPlayer's own walk
-        // (already computed just above for item 3) rather than a second
-        // graph walk of the same event.
-        if (
-          eventHasOp(event, SAY_OPS, commonById, new Set([event])) &&
-          eventMovesPlayer(event, commonById, new Set([event]))
-        ) {
-          add(
-            'error',
-            'Map Forge',
-            `${label()}: the event on ${entityLabel(project, entity)} both shows text or asks a question and ` +
-              'moves the player, which a streamed screen cannot yet -- split it into separate events, or make ' +
-              'this map ordinary.'
-          );
-        }
+        // Item 4, lifted by phase 2 slice 8: an event that both shows text
+        // and moves the player used to be refused outright here, because the
+        // camera-nudge hold a dialogue box takes (sw_dlg15_pending_step) and
+        // a scripted Move's own edge-bounding (item 3, above) were two
+        // streamed-specific mechanisms nothing had arbitrated between yet.
+        // ui_tick's own priority patch (engine/ui.asm's
+        // ui_tick_move_guard_start) now closes the box first (draw-down
+        // preserving script_active/talk_ent/game_state), draining the close
+        // before ever handing the frame to move_tick -- see
+        // docs/design-streamed-worlds.md §7/§8 and
+        // test/unit/streamworldclosemove.test.js. The item-3 warning above
+        // (a long enough Move can still reach the screen edge) stays; only
+        // the outright combination refusal is gone.
       }
     });
   }

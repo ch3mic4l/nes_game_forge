@@ -261,7 +261,48 @@ ui_tick:
   .if MOVE_ENABLED
   lda <mv_left
   beq ui_tick_wait
+ui_tick_move_guard_start:
+  ; Phase 2 slice 8 -- close-for-Move. A scripted player Move can suspend
+  ; (mv_left nonzero) while a streamed dialogue box is still open: Say's own
+  ; BOX_ENDWAIT never closes the box, and script_resume runs the very next
+  ; command in the same frame the player dismissed the page, so mv_left goes
+  ; nonzero with the box still up. Without this patch move_tick would take
+  ; the frame instantly, corrupting the still-open overlay and stranding the
+  ; move underneath it. Detected and gated entirely at runtime
+  ; (mv_who, map_is_streamed, box_state), never merely by whether the project
+  ; could stream, so a mixed project's own ordinary-map Move is unaffected,
+  ; and armed once per closing transaction (sw_dlg17_move_close) so a later
+  ; frame's re-check never re-issues the close.
+  ;
+  ; Review round 1 fix (relocation): this used to be a 24-byte inline guard
+  ; right here. It is now a minimal kernel-lo tail-dispatch: whenever
+  ; STREAMING_ENABLED && TEXT_ENABLED, the frame is handed straight to
+  ; sw_dlg_cfm_guard (engine/streamworld.asm's own kernel-hi
+  ; resident package), which holds the ENTIRE guard body -- the mv_who
+  ; check (fix round 1, finding A1: NPC Moves, mv_who == MOVE_SELF, must
+  ; never arm this at all -- docs/design-streamed-worlds.md section 7's own
+  ; "only ever arms for mv_who != 0, i.e., the player"), the already-armed
+  ; check, the map_is_streamed/box_state arm decision, and the box_close
+  ; call -- and itself ends in a jmp to either ui_tick_state (hold this
+  ; frame for text_tick) or move_tick (ordinary case, or an NPC Move).
+  ; Every other project shape (no streaming, or no text) keeps the
+  ; unmodified `jmp move_tick` this line has always held. One 3-byte JMP
+  ; absolute either way -- no kernel-lo growth at all
+  ; (STREAMWORLD_CLOSEFORMOVE_KERNEL_ALLOWANCE, main/build/generate.js, is
+  ; 0 for exactly that reason; sw_dlg17_camrelease, engine/streamworld.asm,
+  ; is the OTHER half of the mechanism, clearing the flag and skipping its
+  ; own ordinary close_ui call once the draw-down's drain is acknowledged,
+  ; unchanged by this relocation).
+  .if STREAMING_ENABLED
+  .if TEXT_ENABLED
+  jmp sw_dlg_cfm_guard
+  .else
   jmp move_tick
+  .endif
+  .else
+  jmp move_tick
+  .endif
+ui_tick_move_guard_end:
   .endif
 ui_tick_wait:
   .if WAIT_ENABLED
