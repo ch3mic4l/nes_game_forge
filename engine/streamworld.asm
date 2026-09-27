@@ -3233,6 +3233,83 @@ sw_position_jump_guard:
   dec <cam_dirty
   rts
 
+; ==========================================================================
+; sw_save_resync -- phase 2 slice 9 (close-for-Save). save_media_commit's own
+; tail (engine/save.asm) calls this instead of enable_rendering whenever
+; map_is_streamed: enable_rendering hardcodes the scroll latch to 0,0, which
+; is exactly wrong here -- the window never moved, only the flash chip was
+; written, with rendering (and, unlike an ordinary mainline frame, NMI
+; itself) off for the whole commit. This is sw_position_jump_guard's own
+; redraw/OAM/DMA/scroll-publish tail, minus that routine's window-origin
+; install (nothing moved, so win_col_screen/win_col_local/win_row_screen/
+; win_row_local stay whatever they already were) and minus its cam_dirty
+; bracket (save_media_commit's own php/sei plus genuinely-off NMI already
+; make this transaction atomic to every other consumer; cam_dirty exists to
+; protect against a torn read during a live frame's own NMI, which cannot
+; run at all here). Nothing here touches vram_buf/vram_len/vram_ready --
+; sw_render_window, like sw_position_jump_guard's own call to it, writes the
+; nametables directly through $2006/$2007 while blanked, so whatever packet
+; was mid-queue when save_media_commit's forced blank began is simply left
+; untouched in RAM. It is NOT guaranteed to drain on the very first real NMI
+; once this routine's own final $2001 write turns rendering back on -- it
+; still waits for main_loop_ready to publish vram_ready exactly as any other
+; queued packet would on an ordinary frame (fix round 1's own correction to
+; an earlier, weaker claim here; see docs/reference-engine.md's own Flash-Save
+; paragraph).
+; ==========================================================================
+sw_save_resync_start:
+  .if SAVE_FLASH
+sw_save_resync:
+  jsr sw_render_window
+  jsr build_oam
+  jsr draw_entities
+  .if !BATTLE_ENABLED
+  jsr draw_hud
+  .endif
+  jsr draw_ui
+  lda #$00
+  sta $2003
+  lda #$02
+  sta $4014                  ; manual OAM DMA -- NMI is off for this whole
+                              ; commit, so the ordinary per-vblank DMA the
+                              ; nmi handler otherwise does never ran
+  lda <cam_nt
+  ora #PPUCTRL_ON
+  sta $2000
+  lda <cam_x_lo
+  sta $2005
+  lda <cam_y_lo
+  sta $2005
+  lda #PPUMASK_ON
+  sta $2001
+  rts
+  .endif
+sw_save_resync_end:
+
+; sw_save_commit_tail -- fix 1 (B1 local win, round 1 review): save_media_
+; commit's own resync-vs-ordinary dispatch (engine/save.asm), relocated from
+; a kernel-lo branch to this 3-byte-call kernel-hi trampoline. Reached by
+; jsr and must rts: save_media_commit's own php/sei bracket still needs its
+; plp once this returns, so this cannot tail-jmp out the way sw_dlg20_
+; pending_tick's own completion chain does. Its own span is bracketed
+; separately from sw_save_resync_start..end just above, in its own `.if
+; SAVE_FLASH` wrapper with the start/end labels outside it (the same
+; sw_save_resync_start/end convention above), so the two terms never
+; conflate a kernel-hi trampoline's cost with the redraw routine's own, and
+; both can measure a true empirical 0 whenever SAVE_FLASH is false.
+sw_save_commit_tail_start:
+  .if SAVE_FLASH
+sw_save_commit_tail:
+  lda <map_is_streamed
+  beq sw_save_commit_tail_ordinary
+  jsr sw_save_resync
+  rts
+sw_save_commit_tail_ordinary:
+  jsr enable_rendering
+  rts
+  .endif
+sw_save_commit_tail_end:
+
 ; sw_pjg_check -- both axes' lag, window "current" origin vs. this frame's
 ; "desired" one (sw_fc_desc/desl/desr/desrl, sw_camera_window_recompute's own
 ; output, just above), in blocks. Both axes are always checked (never a
@@ -4623,6 +4700,27 @@ sw_dlg_lifecycle_close_b_end:
   sta sw_dlg17_camhold
   lda #SW_DLG15_IDLE
   sta <sw_dlg15_state
+; Phase 2 slice 9 -- close-for-Save. A deferred Save's own draw-down is
+; acknowledged the same way a close-for-Move one is (sw_dlg15_state just
+; reached IDLE, above), but this routine does not resolve it -- it only
+; leaves game_state/script_active/script_ptr/talk_ent exactly as script_op_
+; save's own dispatch (engine/save.asm) left them and returns, the same
+; "acknowledge here, resolve on a later poll" split sw_dlg_closeformove_
+; check's own move_finish half already uses. ui_tick (engine/ui.asm) is
+; that poll: it runs the real commit once it sees this flag set with sw_
+; dlg15_state back at IDLE. Checked before the MOVE_ENABLED branch below
+; because a Save's own close never touches sw_dlg17_move_close (and vice
+; versa) but a project can have SAVE_FLASH without MOVE_ENABLED at all, so
+; this cannot be folded into sw_dlg_closeformove_check's own MOVE_ENABLED-
+; gated body.
+sw_dlg17cr_save_check_start:
+  .if SAVE_FLASH
+  lda sw_dlg20_save_pending
+  beq sw_dlg17cr_no_save
+  rts
+sw_dlg17cr_no_save:
+  .endif
+sw_dlg17cr_save_check_end:
 ; Phase 2 slice 8 -- close-for-Move. Whichever target this jmps to, it is
 ; one 3-byte JMP absolute either way, so this line costs the
 ; sw_dlg_origin_capture..sw_dlg_relocated_start span (measured above,
@@ -4918,5 +5016,461 @@ sw_dlg_cfm_guard_go:
 sw_dlg_cfm_guard_end:
   .endif
 
+; ==========================================================================
+; sw_dlg20_save_dispatch -- phase 2 slice 9 (close-for-Save). script_op_save
+; (engine/save.asm) tail-dispatches here once it already knows map_is_
+; streamed; this decides the rest. box_state alone answers "is a box
+; genuinely open" here: it sits at 0 throughout both SW_DLG15_PENDING and
+; SW_DLG15_DRAINING (text_close_attr_tail, engine/text.asm, sets it to
+; BOX_CLOSED before sw_dlg_hi_close_attr_tail ever sets DRAINING; the open
+; side is symmetric), so nonzero can only mean SW_DLG15_IDLE with a box
+; actually up -- the one state script_op_save's own suspended-continuation
+; reachability guarantees anyway (nothing calls script_resume/script_run
+; while sw_dlg15_state is PENDING or DRAINING), making a second sw_dlg15_
+; state check here redundant, not merely cheap to skip -- the same box_
+; state-only test sw_dlg_cfm_guard above already relies on.
+; ==========================================================================
+sw_dlg20_save_dispatch_start:
+  .if SAVE_FLASH
+sw_dlg20_save_dispatch:
+  lda <box_state
+  beq sw_dlg20_save_immediate
+  lda #1
+  jsr script_skip              ; advance script_ptr past Save's own one-byte
+                                ; opcode, exactly once -- script_next1's own
+                                ; skip amount, taken here instead because the
+                                ; immediate jmp script_run that follows it
+                                ; there is exactly what must NOT happen on
+                                ; this branch
+  lda #1
+  sta sw_dlg20_save_pending
+  jsr box_close                 ; box_state is already known nonzero, so
+                                ; box_close's own "never opened" branch can
+                                ; never be taken from here
+  rts                            ; suspended: script_active/script_ptr/
+                                ; talk_ent/game_state all untouched, and
+                                ; nothing on this path calls close_ui
+sw_dlg20_save_immediate:
+  jsr save_media_commit
+  jmp script_next1
+
+; sw_dlg20_save_check -- reached from sw_dlg20_pending_tick below (fix 1,
+; via jsr, not jmp -- see that routine's own header) once it finds
+; sw_dlg20_save_pending set and sw_dlg15_state back at SW_DLG15_IDLE. Tail-
+; calls script_resume rather than jsr/rts: whatever that reaches (another
+; Say, a Warp, script_finish's own close_ui) answers directly for
+; sw_dlg20_pending_tick's own caller, exactly as an ordinary confirm-driven
+; continuation already does from deeper inside text_tick -- jsr/jmp/…/rts is
+; still one tail-call chain regardless of how many jmps sit inside it, since
+; none of them touch the stack.
+sw_dlg20_save_check:
+  lda #0
+  sta sw_dlg20_save_pending
+  jsr save_media_commit         ; map_is_streamed is still set here -- its
+                                ; own tail takes the resync branch, not
+                                ; enable_rendering
+  jmp script_resume
+
+; sw_dlg20_pending_tick -- fix 1's single completion hook (B1's "one hook,
+; not two"): engine/boot.asm's main_loop jsrs here, ahead of dispatch_input,
+; on every pass where sw_dlg20_save_pending is set. Replaces the poll that
+; used to open ui_tick (engine/ui.asm) -- moved here rather than duplicated,
+; and now reached before input is dispatched at all rather than after, which
+; is what round 1's finding A1 needed.
+;
+; box_state alone is NOT enough here, and neither is sw_dlg15_state alone:
+; box_close (called by sw_dlg20_save_dispatch, above, the very same frame
+; sw_dlg20_save_pending is armed) sets box_state to BOX_CLOSING immediately,
+; but leaves sw_dlg15_state at SW_DLG15_IDLE for the whole multi-frame
+; close-row/close-attr draw-down that follows -- it only becomes SW_DLG15_
+; DRAINING (text_close_attr_tail's own final step, engine/text.asm, jumping
+; to sw_dlg_hi_close_attr_tail) once that draw-down has already fully
+; finished. A bare `sw_dlg15_state == IDLE` check would therefore read true
+; on the ARM frame itself, firing the commit before the box has even started
+; visibly closing. text_close_attr_tail is the ONLY place that ever restores
+; box_state to BOX_CLOSED, so `box_state == BOX_CLOSED` is false for every
+; frame of the real draw-down and only turns true exactly when it has
+; finished -- requiring both this and sw_dlg15_state == IDLE is what makes
+; this poll wait for the FULL sequence: box_state reaching BOX_CLOSED (the
+; close animation itself finishing), THEN sw_dlg15_state cycling DRAINING ->
+; IDLE (sw_dlg17_camrelease actually restoring the camera), never merely the
+; first of the two.
+;
+; Returns A/Z: zero (Z set) while still closing or draining -- the caller
+; falls through to the ordinary ui_tick chain, which is what lets text_tick
+; keep ticking the close's own per-frame draw-down every frame until it is
+; done. Nonzero (Z clear) once the real commit, resync and script_resume
+; continuation have all run THIS frame -- the caller skips ui_tick too, the
+; same "nothing else runs on the completion frame" rule the old poll's own
+; tail-jmp-out-of-ui_tick already gave for free, now made explicit since this
+; hook is reached from outside ui_tick entirely.
+sw_dlg20_pending_tick:
+  lda <box_state
+  bne sw_dlg20_pending_tick_wait
+  lda <sw_dlg15_state
+  bne sw_dlg20_pending_tick_wait
+  jsr sw_dlg20_save_check        ; jsr, not jmp: this routine must itself
+                                ; return (with a nonzero A) to its own
+                                ; caller, so the completion chain's own rts
+                                ; (wherever script_resume's continuation
+                                ; ends) lands right back here first
+  lda #1                         ; nonzero: completed this frame
+  rts
+sw_dlg20_pending_tick_wait:
+  lda #0                         ; zero: still closing/draining
+  rts
+  .endif
+sw_dlg20_save_dispatch_end:
+
   .endif
 sw_dlg_mapper_end:
+
+; ==========================================================================
+; B1 (phase 2 slice 9 fix round 1b, ROADMAP item 15): kernel-lo -> kernel-hi
+; relocation. Every routine below used to live in a kernel-lo file (named in
+; its own header) and is reached from there by a `jmp` or `jsr` that already
+; cost the same whether the target was near or far -- so moving the BODY out
+; costs nothing extra at the call site beyond what is noted per routine.
+; ==========================================================================
+
+; spawn_streamed -- relocated from engine/entities.asm (was directly after
+; spawn_clear_dispatch's own `jmp spawn_streamed`, which is unchanged: a jmp
+; costs the same 3 bytes at any distance). Phase 2 slice 2b. mtptr already
+; points at the entered streamed screen's own STREAM_RECORD (sw_resolve_
+; screen's own contract), so there is no esptr indirection to set up: the
+; record is read in place. STREAM_ENTITY_FIELDS (shared/streamlayout.js) is
+; deliberately the ordinary entity record's own field order, unchanged, so
+; this loop's body is the identical actor/x/y/target/toX/toY/event/trigger/
+; hideSwitch sequence spawn_any's own loop (entities.asm) reads -- only the
+; cursor differs: a streamed record is STREAM_RECORD_BYTES (338) long, past
+; any single Y, so sw_adv_offset (not a bare iny) crosses into mtptr_hi+1
+; once the entity block's own offsets (STREAM_OFF_ENTITIES=241 onward) pass
+; 255.
+spawn_streamed:
+  ldy #STREAM_OFF_ENTITY_COUNT
+  lda [mtptr_lo],y
+  bne spawn_streamed_any
+  jmp spawn_streamed_done
+spawn_streamed_any:
+  sta <ent_tmp
+  ldx #0
+  lda #0
+  sta <ent_spawn_rec
+  ldy #STREAM_OFF_ENTITIES
+spawn_streamed_loop:
+  lda [mtptr_lo],y          ; actor id
+  sta ent_actor,x
+  jsr sw_adv_offset
+  lda [mtptr_lo],y          ; x
+  sta ent_x,x
+  jsr sw_adv_offset
+  lda [mtptr_lo],y          ; y
+  sta ent_y,x
+  jsr sw_adv_offset
+  lda [mtptr_lo],y          ; door target -- a GLOBAL screen id already
+  sta ent_to_scr,x
+  jsr sw_adv_offset
+  lda [mtptr_lo],y          ; door target x
+  sta ent_to_x,x
+  jsr sw_adv_offset
+  lda [mtptr_lo],y          ; door target y
+  sta ent_to_y,x
+  jsr sw_adv_offset
+  lda [mtptr_lo],y          ; the event it runs
+  sta ent_event,x
+  jsr sw_adv_offset
+  lda [mtptr_lo],y          ; and what makes it run
+  sta ent_trigger,x
+  jsr sw_adv_offset
+  lda [mtptr_lo],y          ; the switch that hides it once it is on
+  jsr sw_adv_offset
+  cmp #NO_SWITCH
+  beq spawn_streamed_place
+  jsr switch_test           ; preserves both X and Y
+  bne spawn_streamed_next
+
+spawn_streamed_place:
+  lda #ENT_PRESENT
+  sta ent_active,x
+  lda <ent_spawn_rec
+  sta ent_record,x
+  sty <ent_tmp2
+  ldy ent_actor,x
+  lda actor_hp,y
+  sta ent_hp,x
+  ldy <ent_tmp2
+  lda #DIR_DOWN
+  sta ent_dir,x
+  lda #0
+  sta ent_frame,x
+  sta ent_timer,x
+  sta ent_hurt,x
+  lda ent_trigger,x
+  cmp #TRIG_ENTER
+  bne spawn_streamed_armed
+  jsr arm_event
+spawn_streamed_armed:
+  inx
+  cpx #MAX_ENTITIES
+  beq spawn_streamed_done
+spawn_streamed_next:
+  inc <ent_spawn_rec
+  dec <ent_tmp
+  beq spawn_streamed_done
+  jmp spawn_streamed_loop
+spawn_streamed_done:
+  jsr sw_locate_current      ; sw_adv_offset may have left mtptr_hi past the
+                              ; entered screen's own page 0 -- restore before
+                              ; returning, the same rule sw_peek_byte/
+                              ; sw_render_window's own tail already holds to
+  rts
+spawn_streamed_end:
+
+; build_oam_draw_sw -- relocated from engine/oam.asm (was directly after
+; build_oam_draw_dispatch's own `bne build_oam_draw_sw`, now a beq-then-jmp
+; trampoline since a plain branch can no longer reach this far -- oam.asm's
+; own comment). Phase 2 slice 4a (docs/design-streamed-worlds.md §7). The
+; streamed-world counterpart of the ordinary player draw: the identical 4
+; tiles (top-left/top-right/bottom-left/bottom-right), but each tile's own
+; OAM position is independently projected against the camera's world-space
+; origin (ruling 4: visibility is per 8x8 tile, not per metasprite origin --
+; a streamed-screen player can reach player_x=255/player_y=239, per slice 3,
+; so the right/bottom tiles of a 16x16 player near that edge sit past the
+; window and must park, not wrap). X needs no multiply at all (a screen is
+; exactly 256px wide, so local X IS world X's low byte and sw_col IS its
+; high byte); Y needs sw_oam_project_y's own row*240 multiply.
+;
+; X = the tile-table index ((dir*2+frame)*4) computed by the caller
+; (oam.asm's build_oam_draw), stashed across the corner loop (which clobbers
+; X as sw_oam_rowbase's own loop counter) in sw_tmp5 -- the one byte
+; sw_project_axis's clobber list leaves free, safe here because sw_goto
+; (oam.asm's other user of sw_tmp5) never runs concurrently with an OAM
+; build (both mainline-only).
+build_oam_draw_sw:
+  stx sw_tmp5
+  ldy #0
+build_oam_draw_sw_loop:
+  lda <player_x
+  clc
+  adc sw_oam_corner_xoff,y
+  jsr sw_oam_project_x
+  sta <tmp
+  lda #0
+  rol a
+  sta <tmp2                  ; X-hidden flag (0/1)
+
+  lda <player_y
+  clc
+  adc sw_oam_corner_yoff,y
+  jsr sw_oam_project_y
+  sta sw_tmp6                ; Y byte, stashed -- free again once
+                              ; sw_oam_project_y has returned
+  lda #0
+  rol a
+  ora <tmp2
+  bne build_oam_draw_sw_park
+
+  ldx sw_oam_corner_oam,y
+  lda sw_tmp6
+  sta OAM,x
+  tya
+  clc
+  adc sw_tmp5
+  tax
+  lda player_tiles,x
+  ldx sw_oam_corner_oam,y
+  sta OAM+1,x
+  lda player_pal
+  sta OAM+2,x
+  lda <tmp
+  sta OAM+3,x
+  jmp build_oam_draw_sw_next
+
+build_oam_draw_sw_park:
+  ldx sw_oam_corner_oam,y
+  lda #$FF
+  sta OAM,x
+build_oam_draw_sw_next:
+  iny
+  cpy #4
+  bne build_oam_draw_sw_loop
+
+  lda #16
+  sta <oam_idx
+  rts
+
+sw_oam_corner_xoff: .db 0, 8, 0, 8   ; TL, TR, BL, BR
+sw_oam_corner_yoff: .db 0, 0, 8, 8
+sw_oam_corner_oam:  .db 0, 4, 8, 12
+build_oam_draw_sw_end:
+
+; draw_one_entity_show_sw -- relocated from engine/entities.asm (was
+; directly after draw_one_entity_show's own dispatch, reached the same way
+; build_oam_draw_sw was: a bne that fix round 1b converted to a beq-then-jmp
+; trampoline since a plain branch can no longer reach this far). docs/
+; design-streamed-worlds.md §7 (phase 2 slice 4a, ruling 3/4): project each
+; of the metasprite's own TILES independently, the same per-corner mechanism
+; build_oam_draw_sw uses for the player, rather than projecting only the
+; origin and handing off to the shared draw_metasprite -- that routine's own
+; +de_ex/+de_ey adds wrap into 8-bit OAM coordinates instead of parking, and
+; ui.asm's inventory row/dialogue portrait and battleui.asm still call
+; draw_metasprite directly and must stay untouched (unlike the player's
+; fixed 16x16, an entity's placement (shared/project.js normalizeEntity) is
+; not bounded by the MAX_X/MAX_Y movement wall, and a metasprite's own
+; per-tile offsets are legal across the full signed -128..127 range, so
+; origin-only projection is not enough -- phase 2 slice 4a round 1 review,
+; finding 2).
+;
+; This duplicates draw_one_entity_animate's own NO_ANIM/metasprite-id lookup
+; (rather than jumping into it) because that lookup needs X to still be the
+; entity slot, and only after it completes is X safe to spend on the
+; projection calls below (finding 1 of the same review: an earlier version
+; read ent_x,x AFTER a call that leaves X=0, silently drawing every
+; non-slot-0 entity at slot 0's own X).
+draw_one_entity_show_sw:
+  lda ent_x,x
+  sta <de_ex                 ; entity's own BASE LOCAL x/y for the whole
+  lda ent_y,x                ; tile loop below -- not a projected OAM byte,
+  sta <de_ey                 ; unlike the non-streamed de_ex/de_ey above
+  jsr entity_animation
+  cmp #NO_ANIM
+  bne draw_one_entity_sw_have_anim  ; X still the entity slot here -- safe
+  jmp draw_one_entity_none          ; early out (jmp: bne's own +-128 range
+                                     ; can't reach draw_one_entity_none from
+                                     ; inside the streamed tile loop below)
+draw_one_entity_sw_have_anim:
+  tay
+  lda anim_ptr_lo,y
+  sta <ptr_lo
+  lda anim_ptr_hi,y
+  sta <ptr_hi
+  lda ent_frame,x
+  asl a
+  tay
+  lda [ptr_lo],y              ; metasprite id for this frame
+  tay
+  lda ms_count,y
+  bne draw_one_entity_sw_have_count ; X still the entity slot here too
+  jmp draw_one_entity_none
+draw_one_entity_sw_have_count:
+  sta <de_left
+  lda ms_ptr_lo,y
+  sta <msptr_lo
+  lda ms_ptr_hi,y
+  sta <msptr_hi
+
+  txa
+  pha                          ; entity slot -- everything below (the row
+                                ; multiply, both per-tile projections)
+                                ; clobbers X freely; restored once at the
+                                ; very end for draw_entities_loop's own inx
+
+  lda sw_row
+  jsr sw_oam_rowbase            ; rowBase16 = sw_row*240, multiplied ONCE
+                                 ; for the whole tile loop -- sw_oam_project_
+                                 ; tile_y's own header explains why a per-
+                                 ; tile re-multiply of a wrapped row would
+                                 ; silently be wrong (docs/reference-engine.md)
+  lda sw_tmp
+  sta <tmp
+  lda sw_tmp2
+  sta <tmp2
+
+  ldy #0
+draw_one_entity_sw_tile:
+  lda [msptr_lo],y             ; y offset
+  jsr sw_oam_project_tile_y
+  sta sw_tmp5                   ; OAM Y byte, stashed across the X
+                                 ; projection below the same way
+                                 ; build_oam_draw_sw stashes its own tile
+                                 ; index (oam.asm) -- sw_project_axis's own
+                                 ; clobber list leaves this one byte free
+  lda #0
+  rol a
+  sta <ent_tmp                  ; Y-hidden flag (0/1)
+  iny
+  lda [msptr_lo],y              ; tile
+  pha
+  iny
+  lda [msptr_lo],y              ; attributes
+  pha
+  iny
+  lda [msptr_lo],y              ; x offset
+  iny
+  jsr sw_oam_project_tile_x
+  sta <ent_tmp2                  ; OAM X byte
+  lda #0
+  rol a
+  ora <ent_tmp
+  bne draw_one_entity_sw_tile_park
+
+  ldx <oam_idx
+  lda sw_tmp5
+  sta OAM,x
+  pla
+  sta OAM+2,x                    ; attributes (pushed last, popped first)
+  pla
+  sta OAM+1,x                    ; tile (pushed first, popped second)
+  lda <ent_tmp2
+  sta OAM+3,x
+  jmp draw_one_entity_sw_tile_next
+
+draw_one_entity_sw_tile_park:
+  pla
+  pla
+  ldx <oam_idx
+  lda #$FF
+  sta OAM,x
+
+draw_one_entity_sw_tile_next:
+  txa
+  clc
+  adc #4
+  sta <oam_idx
+  beq draw_one_entity_sw_done    ; wrapped past the 64th sprite
+  dec <de_left
+  bne draw_one_entity_sw_tile
+
+draw_one_entity_sw_done:
+  pla
+  tax
+  rts
+draw_one_entity_show_sw_end:
+
+; sw_redraw_screen_landing -- relocated from engine/screens.asm's
+; redraw_screen (was directly after redraw_screen_dispatch's own
+; `beq redraw_screen_ordinary`); engine/boot.asm's own byte-identical
+; cold-boot copy of the same dispatch now calls this same routine instead
+; of carrying a second copy. B1 (phase 2 slice 9 fix round 1b). Both call
+; sites `jsr` here and then take their own tail (screens.asm: `rts`;
+; boot.asm: `jmp boot_draw_done`) -- this routine itself always `rts`s.
+;
+; F3 (phase 2 slice 2b fix round 1): a streamed landing must not inherit the
+; previous OWNER screen's active bound-tile cache -- rebuild_bound_cache
+; itself already takes the empty-cache branch whenever map_is_streamed is
+; set, so simply calling it here reuses that single definition rather than
+; duplicating the guard. enable_rendering's own $2005 write is hardcoded
+; (0,0) -- not used here, the same reason design-camera.md's
+; redraw_screen_slide/camera_slide_complete_b write their own $2000/$2005
+; sequence instead of calling it, for a landing whose own scroll is not
+; (0,0).
+sw_redraw_screen_landing:
+  jsr sw_render_window
+  .if BOUND_TILE_ENABLED
+  jsr rebuild_bound_cache
+  .endif
+  jsr spawn_entities
+  jsr build_oam
+  jsr draw_entities
+  jsr wait_vblank_poll
+  lda <cam_nt
+  ora #PPUCTRL_ON
+  sta $2000
+  lda <cam_x_lo
+  sta $2005
+  lda <cam_y_lo
+  sta $2005
+  lda #PPUMASK_ON
+  sta $2001
+  rts
+sw_redraw_screen_landing_end:

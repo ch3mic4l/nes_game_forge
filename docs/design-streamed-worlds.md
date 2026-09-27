@@ -2326,6 +2326,28 @@ themselves left as historical scratch, never edited in place) remains phase 1/2.
 | Game over | Cancelled | N/A | N/A | Game-over screen | Reset at the next session's start |
 | Teleport resync (lag guard) | Cancelled, replaced by a full `sw_render_window` | Not set — no ownership change | Not armed | Whatever was on screen | Resynced to the corrected window origin |
 
+**The Flash-save row's own resync tail is not time-neutral, and an earlier round's "first NMI"
+framing for it was too strong (fix round 1, correcting round 1's own review finding).** The commit
+itself may be dispatched "immediately" (not gated on the box closing first, on a no-box streamed
+Save) without the whole transaction resolving within one frame: `sw_save_resync`'s own full
+`sw_render_window` redraw, OAM pass and manual `$4014` DMA, and real `$2000`/`$2005`×2 scroll
+republish all run under forced blank with NMI genuinely off for the duration, measured directly at
+**34 additional real frames** past the triggering press (`handoff-next/s9-fix1-evidence/
+measure-blackout.mjs`, a real driven press at a real nonzero camera origin), matching round 1
+review's own independently-measured 33-34 refresh intervals at nonzero terrain — roughly the same
+order of magnitude as the dialogue overlay's own worst-case open/close totals (§7, above), not a
+rounding error. `music_tick`/`sting_tick`/`flash_tick`/`flip_tick` all hold for the entire duration
+(main_loop itself is blocked inside the commit) and resume once rendering is back on, so a playing
+song can audibly hold for over half a second on real hardware (round 3, Chris's ruling B2: the
+blackout itself is accepted as-is; "can" rather than "does" because this depends on whether music
+happens to be playing at the moment a given Save fires). Separately, a `vram_buf` packet queued
+*before* the blackout begins is **not** guaranteed to drain on the very first NMI once rendering
+resumes either — it still waits for `main_loop_ready` to publish `vram_ready`, the identical
+ordinary contract any other queued packet already has on any frame (round 1 review's own
+`E/queued-packet.jsonl` evidence) — the prior text's blanket "first NMI" statement conflated "not
+gated on the box closing first" with "resolves instantly," which this row's own "closed" entries
+above now avoid restating.
+
 **The gate on `sw_nmi_stream` is `st_active` alone, never `paused`/`game_state`.** An earlier version
 of this contract additionally gated NMI's own strip service on `paused OR game_state != 0` — the same
 byte `main_loop`'s own world-update dispatch checks — and that was a real, proven deadlock (§7's own

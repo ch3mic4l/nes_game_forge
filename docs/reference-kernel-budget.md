@@ -275,21 +275,40 @@ sizes, the route zero-cost proof and `KERNEL_SLACK` itself are each checked thei
   `symbolAddr(after) - symbolAddr(before)` off a real build between a pair of unconditional boundary
   labels bracketing each site's own `.if STREAMING_ENABLED` addition — flat across game type and the
   `mixed` shape, confirmed by measuring all three (`test/lib/streamedproject.js`):
-  - `STREAMWORLD_RESOLVER_KERNEL_ALLOWANCE = 49` — `engine/boot.asm`'s own copy of the
+  - `STREAMWORLD_RESOLVER_KERNEL_ALLOWANCE = 15` — `engine/boot.asm`'s own copy of the
     resolve-and-render dispatch (cold boot draws its first screen inline rather than calling
-    `redraw_screen`): `jsr sw_resolve_screen` plus the `map_is_streamed` branch, the whole
-    streamed-landing render sequence, and the tail jump back into the ordinary path's shared tail.
-  - `STREAMWORLD_REDRAW_KERNEL_ALLOWANCE = 47` — `engine/screens.asm`'s `redraw_screen`, the
+    `redraw_screen`): `jsr sw_resolve_screen` plus the `map_is_streamed` branch, a `jsr` into the
+    shared landing render routine (below), and the tail jump back into the ordinary path's shared
+    tail. **B1** (phase 2 slice 9 fix round 1b, Chris's relocation ruling): originally 49 bytes,
+    carrying the whole streamed-landing render sequence inline; that sequence deduplicated into one
+    shared kernel-hi routine (`STREAMWORLD_REDRAW_LANDING_KERNEL_HI_ALLOWANCE` below), leaving only
+    the dispatch and the `jsr` to it.
+  - `STREAMWORLD_REDRAW_KERNEL_ALLOWANCE = 13` — `engine/screens.asm`'s `redraw_screen`, the
     "re-keyed consumer" version of the identical dispatch, reached by every other landing
     (`start_game`, `restart_game`, `take_door`, `continue_game`); 2 bytes less than the resolver
-    term because this copy ends in `rts` rather than boot's own 3-byte tail jump.
+    term because this copy ends in `rts` rather than boot's own 3-byte tail jump. **B1**: originally
+    47 bytes, same relocation as the resolver term above.
+  - `STREAMWORLD_REDRAW_LANDING_KERNEL_HI_ALLOWANCE = 38` — **B1** (phase 2 slice 9 fix round 1b):
+    the shared kernel-hi render routine both dispatches above now `jsr` into
+    (`engine/streamworld.asm`'s `sw_redraw_screen_landing`) — `sw_render_window`, `spawn_entities`,
+    `build_oam`, `draw_entities`, `wait_vblank_poll`, the `cam_nt`/`cam_x_lo`/`cam_y_lo` scroll
+    write. New code only in the sense that it is now its own routine rather than being inlined
+    byte-for-byte at both call sites; deduplicating the two identical copies is exactly what shrank
+    the resolver and redraw terms above. Gated identically (`hasStreamed` alone).
   - `STREAMWORLD_SET_SCREEN_PTR_KERNEL_ALLOWANCE = 8` — `engine/screens.asm`'s `set_screen_ptr`: an
     early return through `sw_locate_current` when the CURRENT screen is streamed (`call_battle`
     always ends `jmp set_screen_ptr`, so this runs even for a non-fight session-lifecycle entry).
-  - `STREAMWORLD_SPAWN_KERNEL_ALLOWANCE = 12 + 164` — `engine/entities.asm`'s `spawn_entities`: the
-    streamed-vs-ordinary dispatch in `spawn_clear`'s own preamble (12) plus `spawn_streamed`'s own
-    body (164), the actor/x/y/target/toX/toY/event/trigger/hideSwitch field loop walked with
-    `sw_adv_offset` instead of a bare `iny` since a streamed record is `STREAM_RECORD_BYTES` long.
+  - `STREAMWORLD_SPAWN_KERNEL_ALLOWANCE = 12` — `engine/entities.asm`'s `spawn_entities`: the
+    streamed-vs-ordinary dispatch in `spawn_clear`'s own preamble — the `map_is_streamed` branch,
+    the ordinary side's shared join, and `jmp spawn_streamed` for the streamed side. **B1**:
+    `spawn_streamed`'s own body (the actor/x/y/target/toX/toY/event/trigger/hideSwitch field loop,
+    walked with `sw_adv_offset` instead of a bare `iny` since a streamed record is
+    `STREAM_RECORD_BYTES` long) relocated to `engine/streamworld.asm` —
+    `STREAMWORLD_SPAWN_KERNEL_HI_ALLOWANCE` below; a `jmp` costs the same regardless of distance, so
+    the dispatch itself shrank from 176 to 12.
+  - `STREAMWORLD_SPAWN_KERNEL_HI_ALLOWANCE = 164` — **B1**: `spawn_streamed`'s own body, relocated
+    whole to `engine/streamworld.asm` — see the term above. Byte-for-byte the same body, unchanged
+    by the move.
   - `STREAMWORLD_MUSIC_KERNEL_ALLOWANCE = 0` — `engine/music.asm`'s `apply_map_music`/
     `apply_map_music_direct`, named for consistency even though the measured delta is exactly zero:
     `ldy <ord_screen` and `ldy <flat_screen` are both a 2-byte zero-page load.
@@ -371,21 +390,31 @@ sizes, the route zero-cost proof and `KERNEL_SLACK` itself are each checked thei
 - Phase 2 slice 4a's own three kernel-lo terms, gated on `projectUsesStreaming` (`main/build/
   generate.js`), each equality-asserted by `kernelbytes.test.js` on both game types and the `mixed`
   shape:
-  - `STREAMWORLD_PROJECT_KERNEL_ALLOWANCE = 286` — the projection wiring's combined span, measured
-    with the same single-build-span technique as the Part F terms above: `engine/oam.asm`'s
-    `build_oam_draw_dispatch`/`_dispatch_done` branch (4) + `build_oam_draw_sw`/`_end` routine (108) =
-    112, plus `engine/entities.asm`'s `draw_one_entity_show`/`de_show_dispatch_done` branch (4) +
-    `draw_one_entity_ordinary_join`/`draw_one_entity_animate` routine (167) = 171, combined 283, plus
-    a third `entities.asm` term that is a REPLACE rather than a purely-additive bracket —
-    `draw_one_entity_hurt_dispatch`/`draw_one_entity_show` costs the ordinary build its original
-    2-byte `bne` either way, a streamed build 5 bytes (a `jmp`'s-worth more), so only the 3-byte
-    streamed-minus-ordinary delta belongs here (283 + 3 = 286). Grew from an earlier 45/161 in the
-    round 1 review fix (real per-tile projection for entities, replacing origin-only projection):
-    the join span now also duplicates `entity_animation`'s own `NO_ANIM`/metasprite-id lookup (needed
-    before X is safe to spend on the per-tile projection calls) rather than sharing it with
-    `draw_one_entity_animate`'s tail, and that larger streamed-only routine is what pushes
-    `draw_one_entity`'s own `ent_hurt` dispatch out of a plain `bne`'s ±128 range in a streaming build
-    alone.
+  - `STREAMWORLD_PROJECT_KERNEL_ALLOWANCE = 17` — the projection wiring's combined dispatch-only
+    span: `engine/oam.asm`'s `build_oam_draw_dispatch`/`_dispatch_done` trampoline (7) +
+    `engine/entities.asm`'s `draw_one_entity_show`/`de_show_dispatch_done` trampoline (7) + the
+    `draw_one_entity_hurt_dispatch`/`draw_one_entity_show` streamed-minus-ordinary REPLACE delta
+    (3, unchanged by B1 below — streamed 5, ordinary 2, `kernelbytes.test.js`'s own
+    double-difference technique) = 17. **B1** (phase 2 slice 9 fix round 1b, Chris's relocation
+    ruling): originally 286 — `build_oam_draw_sw` (108) and the
+    `draw_one_entity_ordinary_join`/`draw_one_entity_animate` join span (167, of which 164 is
+    `draw_one_entity_show_sw` itself, the other 3 the ordinary-join `jmp` that no longer exists now
+    that `draw_one_entity_animate` is unconditional) relocated whole to `engine/streamworld.asm` —
+    `STREAMWORLD_OAM_DRAW_SW_KERNEL_HI_ALLOWANCE`/`STREAMWORLD_ENTITY_SHOW_SW_KERNEL_HI_ALLOWANCE`
+    below — leaving each call site a `beq`-then-`jmp` trampoline (a `bne` can no longer reach the
+    relocated body), 3 bytes more than the original 4-byte `bne` apiece. The 286 figure itself had
+    already grown from an earlier 45/161 in the round 1 review fix (real per-tile projection for
+    entities, replacing origin-only projection): the join span duplicated `entity_animation`'s own
+    `NO_ANIM`/metasprite-id lookup (needed before X is safe to spend on the per-tile projection
+    calls) rather than sharing it with `draw_one_entity_animate`'s tail, and that larger
+    streamed-only routine is what pushed `draw_one_entity`'s own `ent_hurt` dispatch out of a plain
+    `bne`'s ±128 range in a streaming build alone — that pre-B1 history is unaffected by the
+    relocation, which only moved WHERE the bodies live, not their own byte count.
+  - `STREAMWORLD_OAM_DRAW_SW_KERNEL_HI_ALLOWANCE = 108` — **B1**: `build_oam_draw_sw`'s own body,
+    relocated whole to `engine/streamworld.asm` — see the term above. Byte-for-byte the same body.
+  - `STREAMWORLD_ENTITY_SHOW_SW_KERNEL_HI_ALLOWANCE = 164` — **B1**: `draw_one_entity_show_sw`'s own
+    body, relocated whole to `engine/streamworld.asm` — see the term above. Byte-for-byte the same
+    body.
   - `STREAMWORLD_NMI_KERNEL_ALLOWANCE = 24` — the ONE exception to that additive technique:
     `engine/boot.asm`'s NMI arbitration splice (`nmi_vram_dispatch`..`nmi_scroll`) *replaces* the
     ordinary six-line drain with a bigger three-way one rather than adding a branch in front of it,
@@ -399,3 +428,78 @@ sizes, the route zero-cost proof and `KERNEL_SLACK` itself are each checked thei
     `STREAMWORLD_MOVE_KERNEL_ALLOWANCE` above already uses, since a lone Flash command on an
     ORDINARY map already pays for its own one copy of that block and would otherwise leak into a
     naive single delta.
+- Phase 2 slice 9 (Close-for-Save) adds **seven** kernel terms, each gated on `projectUsesStreaming
+  && projectUsesText && usesSave` (SAVE_FLASH) except where noted, equality-asserted by
+  `kernelbytes.test.js` on both game types and the `mixed` shape (`node --test --test-name-pattern
+  "every Save kernel-lo/kernel-hi term equals its real assembled span"`), plus two separate gates
+  outside that predicate. Four are kernel-lo, summing to a flat **28 bytes**:
+  - `STREAMWORLD_SAVE_DISPATCH_KERNEL_ALLOWANCE = 7` — `engine/save.asm`'s
+    `script_op_save_dispatch`: the tail-dispatch on `map_is_streamed` that reroutes a streamed
+    commit into `sw_save_commit_tail` (kernel-hi) instead of the ordinary immediate-commit path.
+    Nested inside `.if SAVE_FLASH` in `engine/save.asm`, so its label is entirely ABSENT (not
+    merely zero-length) from a build with Save off.
+  - `STREAMWORLD_SAVE_ARMING_GATE_KERNEL_ALLOWANCE = 5` — `engine/input.asm`'s
+    `dispatch_save_arm_gate`, round-2 finding A1's own fix: stops the *rest of the same frame's*
+    `dispatch_loop` pass the instant an action arms the deferred Save (`sw_dlg20_save_pending` set),
+    so no later button on that identical frame can reach `do_action_dialog`/`do_action_pause`
+    against a transaction that has already begun. Gated `STREAMING_ENABLED && TEXT_ENABLED &&
+    SAVE_FLASH`, but the label itself sits OUTSIDE all three nested `.if`s, so it is present (at
+    span 0) in every build regardless of the predicate — only the body's cost depends on it.
+  - `STREAMWORLD_SAVE_GATE_KERNEL_ALLOWANCE = 16` — `engine/boot.asm`'s `main_loop_save_gate`,
+    round 1 finding A1: from the frame after arming through the frame `sw_dlg20_pending_tick`
+    commits, this `jmp`s straight to `main_loop_draw` ahead of `dispatch_input`, so `dispatch_input`
+    does not run at all on any of those frames. Same outside-the-`.if` label placement as the
+    arming gate above, present at span 0 in every build regardless of predicate.
+  - `STREAMWORLD_SAVE_COMMIT_RESYNC_KERNEL_ALLOWANCE = 0` — `save_media_commit`'s own dispatch
+    between the streamed resync tail and the ordinary `enable_rendering` tail is a REPLACEMENT at
+    an identical call site inside an existing `.if STREAMING_ENABLED / .else`, not an addition (the
+    physical `jsr sw_save_commit_tail` is 3 bytes, but its own incremental cost against
+    `kernelCodeBytes` is 0 since it displaces an equal-size `jsr enable_rendering` at the same site
+    — `save_media_commit_resync_start..end`'s own span is asserted at the literal 3, separately from
+    this allowance; `phase 2 slice 9 fix 2 (A3)` proves the 0 delta empirically against a real
+    streamed-vs-STREAMING_ENABLED-forced-off build pair, not merely by construction).
+  Four are kernel-hi, summing to **118 bytes (action) / 115 bytes (rpg)** — the RPG figure is lower
+  because `STREAMWORLD_SAVE_RESYNC_KERNEL_HI_ALLOWANCE_BY_GAME_TYPE` is the only per-game-type term
+  among the four (48/45 is that one term's own span, not the combined total):
+  - `STREAMWORLD_SAVE_CAMRELEASE_KERNEL_HI_ALLOWANCE = 6` — `engine/streamworld.asm`'s
+    `sw_dlg17cr_save_check`, checked ahead of the MOVE_ENABLED camera-release branch so a Save's own
+    close is never folded into `sw_dlg_closeformove_check`'s MOVE_ENABLED-gated body. Nested inside
+    that file's own `.if TEXT_ENABLED` block (lines 3754-5125 as of this fix round) on top of the
+    file-level `STREAMING_ENABLED` gate, so on the streamed-without-Save shape specifically it is
+    ABSENT for an action project (no dialogue at all, so `projectUsesText` is false) but PRESENT at
+    span 0 for an RPG project (`projectUsesText` hard-codes true for `gameType === 'rpg'`,
+    `shared/font.js`) — the one place in this whole ledger where a term's PRESENCE, not merely its
+    span, differs by game type on an off-predicate build.
+  - `STREAMWORLD_SAVE_DISPATCH_KERNEL_HI_ALLOWANCE = 52` — `sw_dlg20_save_dispatch`, same
+    `.if TEXT_ENABLED` nesting and the same action/RPG presence split as the term above.
+  - `STREAMWORLD_SAVE_COMMIT_TAIL_KERNEL_HI_ALLOWANCE = 12` — `sw_save_commit_tail`, the kernel-hi
+    trampoline B1 relocated `save_media_commit`'s own streamed-vs-ordinary branch onto (see B1,
+    above). Its label sits at TOP LEVEL in `engine/streamworld.asm` — only inside its own local
+    `.if SAVE_FLASH`, not nested under `TEXT_ENABLED` — so unlike the two terms above it is PRESENT
+    at span 0 on both game types whenever the file assembles at all (`STREAMING_ENABLED`), and
+    wholly ABSENT only once the project stops being streamed.
+  - `STREAMWORLD_SAVE_RESYNC_KERNEL_HI_ALLOWANCE_BY_GAME_TYPE = { action: 48, rpg: 45 }` —
+    `sw_save_resync`'s own full redraw/OAM/manual-DMA/scroll-republish body (`docs/reference-
+    engine.md`'s "34 additional real frames" paragraph). Same top-level label placement as
+    `sw_save_commit_tail` above (present at span 0 whenever streamed, regardless of Save or text).
+  `kernelbytes.test.js`'s own off-predicate section builds both the opposite-shape pairs directly —
+  a streamed project with no live Save, and a non-streamed project WITH a live Save — and asserts
+  each of these seven spans by name against the exact presence/absence + value matrix above, rather
+  than assuming "every span is 0" (round 3 finding A-blocking 3: the two shapes are not symmetric,
+  and two of the seven terms are not even symmetric across game types within the same shape).
+  **B1's tradeoff** (Chris's ruling, fix round 1b): relocating `spawn_streamed`, `build_oam_draw_sw`,
+  `draw_one_entity_show_sw` and `sw_redraw_screen_landing` from kernel-lo into kernel-hi, unconditional
+  within streaming (paid by every streamed project, Save or not — see `STREAMWORLD_PROJECT_KERNEL_
+  ALLOWANCE`/`STREAMWORLD_OAM_DRAW_SW_KERNEL_HI_ALLOWANCE`/`STREAMWORLD_ENTITY_SHOW_SW_KERNEL_HI_
+  ALLOWANCE` above), saves a measured **501 kernel-lo bytes** but costs a measured **474 kernel-hi
+  bytes** on a no-Save streamed project versus the same project built against a flat, unreconstructed
+  2563ef4 — a net **27-byte reduction**, not equality (`B1 total kernel-lo+hi bytes` test, both game
+  types: `node --test --test-name-pattern "B1 total kernel-lo\+hi bytes"` — 2 pass, 0 fail,
+  re-verified against the current tree while writing this ledger). This buys streamed-project
+  kernel-lo headroom at kernel-hi's expense rather than a wash, and is why a streamed project without
+  Save is never byte-identical to flat 2563ef4 even though it pays none of the seven Save-specific
+  terms above. The accepted-boundary figures for how many ordinary 1x1 maps a streamed+camera project
+  can still add before capacity refuses (Action Move family: 32; Action Save family: 25; RPG Say
+  family: 44) were re-measured directly against the current tree while writing this ledger
+  (`handoff-next/s9-fix3-scratch/accepted-boundary-remeasure.mjs`, a path-adjusted copy of round 3's
+  own `E3/accepted-boundary.mjs`) and are unchanged from the round-3 review's own recorded figures.

@@ -125,26 +125,11 @@ boot_streamed_landing:
   jsr sw_resolve_screen
   lda <map_is_streamed
   beq boot_draw_ordinary
-  jsr sw_render_window
-  ; F3 (phase 2 slice 2b fix round 1): see engine/screens.asm's identical
-  ; comment on redraw_screen's own streamed branch -- cold boot carries its
-  ; own copy of the same dispatch, so it needs the same empty-cache call.
-  .if BOUND_TILE_ENABLED
-  jsr rebuild_bound_cache
-  .endif
-  jsr spawn_entities
-  jsr build_oam
-  jsr draw_entities
-  jsr wait_vblank_poll
-  lda <cam_nt
-  ora #PPUCTRL_ON
-  sta $2000
-  lda <cam_x_lo
-  sta $2005
-  lda <cam_y_lo
-  sta $2005
-  lda #PPUMASK_ON
-  sta $2001
+  ; B1 (phase 2 slice 9 fix round 1b): see engine/screens.asm's identical
+  ; comment on redraw_screen's own streamed branch -- this cold-boot copy
+  ; now calls the SAME kernel-hi routine (streamworld.asm's
+  ; sw_redraw_screen_landing) rather than carrying its own duplicate body.
+  jsr sw_redraw_screen_landing
   jmp boot_draw_done
 boot_draw_ordinary:
   .endif
@@ -265,6 +250,40 @@ main_loop_no_slide:
   bne main_loop_draw        ; it took the frame; the frame was the transition's
   lda #0
   sta <screen_fresh          ; nothing has been drawn this frame yet
+; Phase 2 slice 9, fix 1: a deferred Save owns every pass ahead of
+; dispatch_input, not merely its own completion frame -- round 1's finding A1
+; caught a real controller press (Confirm or Cancel, once the close draw-down
+; had dropped box_state back to BOX_CLOSED) reaching do_action_dialog ->
+; close_ui through dispatch_input while sw_dlg20_save_pending was still set,
+; stranding the continuation forever. CLAUDE.md's own "a frame that completes
+; a transition belongs to the transition, not the player" rule -- the same
+; rule settle_owed already applies to a warp or an entry event above --
+; applies identically here, so this check runs before dispatch_input the same
+; way settle_owed does. sw_dlg20_pending_tick (engine/streamworld.asm) is the
+; single completion hook this slice keeps: ui_tick's own former poll is
+; retired outright, not duplicated (fix 1, B1's "one hook, not two").
+main_loop_save_gate_start:
+  .if STREAMING_ENABLED
+  .if TEXT_ENABLED
+  .if SAVE_FLASH
+  lda sw_dlg20_save_pending
+  beq main_loop_save_gate_done
+  jsr sw_dlg20_pending_tick  ; A/Z: nonzero (nz) once the deferred commit and
+                              ; its script_resume continuation ran THIS frame;
+                              ; zero while still closing/draining
+  beq main_loop_save_wait
+  jmp main_loop_draw          ; completed this pass -- dispatch_input and
+                              ; ui_tick both stay unreached, matching the
+                              ; completion frame's own no-input-no-event rule
+main_loop_save_wait:
+  jmp main_loop_ui             ; still closing/draining -- drive the close
+                              ; animation through the ordinary ui_tick chain;
+                              ; dispatch_input stays unreached either way
+main_loop_save_gate_done:
+  .endif
+  .endif
+  .endif
+main_loop_save_gate_end:
   jsr dispatch_input        ; button actions from the Controller Forge
   lda <paused
   bne main_loop_draw        ; a pause action freezes the world, not the screen

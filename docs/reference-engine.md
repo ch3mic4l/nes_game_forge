@@ -402,6 +402,90 @@ unconditionally is caught by a wide margin) and the frame-bound recomputation ob
 are discharged by `test/lua/sw_driver_timing.lua.template` /
 `test/lua/build_sw_driver_timing_roms.mjs` / `test/lua/run_sw_driver_timing_check.sh`.
 
+**A flash Save on a streamed map is not time-neutral: it holds the whole screen under forced blank,
+with NMI off, for around 34 real frames.** Close-for-Save (phase 2 slice 9, fix round 1) composes
+the save record unconditionally, then dispatches on `map_is_streamed`: an ordinary map's commit
+takes the pre-existing, cheap `enable_rendering(0,0)` tail unchanged; a streamed map's commit
+instead runs `sw_save_resync` (`engine/streamworld.asm`) — a full `sw_render_window` redraw of the
+whole viewport, every OAM/`draw_entities` pass, a manual `$4014` OAM DMA (NMI is off for the whole
+commit, so the ordinary per-vblank DMA never runs), and a real `$2000`/`$2005`×2 scroll republish —
+in place of that ordinary tail, since zeroing the scroll would discard a camera origin the world
+never actually moved from. If a dialogue box is open, its own ordinary close-and-drain animation
+runs first (reusing slice 8's Close-for-Move path — no second close mechanism; the completion hook
+is `sw_dlg20_pending_tick`, below); the blackout itself only starts once the box is genuinely
+closed. Measured directly (`handoff-next/s9-fix1-evidence/measure-blackout.mjs`, a real driven
+press at a real nonzero camera origin, cam_x_lo=78): **34 additional real frames** elapse between
+the triggering press and `game_state` returning to `ST_GAMEPLAY` — consistent with the round-1
+review's own independently-measured 33-34 refresh intervals at nonzero terrain. `music_tick`,
+`sting_tick`, `flash_tick` and `flip_tick` all hold for the entire duration (nothing ticks them
+while `main_loop` itself is blocked inside the commit) and resume normally once rendering is back
+on — so a playing song can audibly hold for over half a second on real hardware (34/60s), not merely
+a render hitch (round 3, Chris's ruling B2: the blackout itself is accepted as-is; "can" rather than
+"does" because whether a given Save is audible depends on whether music happens to be playing at
+all at the moment it fires, which this claim does not assume). Fix round 1's own correction to an
+earlier, weaker claim: a `vram_buf` packet queued
+*before* the blackout begins is not guaranteed to drain on the very first NMI once rendering
+resumes — it still waits for `main_loop_ready` to publish `vram_ready` exactly as any other queued
+packet would on an ordinary frame — so "commits immediately" describes when the commit is
+*dispatched* (not gated on the box closing first, unlike an open-box Save), never that the whole
+call, or a packet still in flight when it started, resolves within one frame.
+
+**Continue's own streamed landing (`sw_redraw_screen_landing`, engine/streamworld.asm) never issues
+its own manual `sta $4014` OAM DMA, unlike a flash Save's own `sw_save_resync`.** It runs
+`build_oam`/`draw_entities` (so the OAM shadow page in RAM is already correct) then ends with
+`wait_vblank_poll` — a plain `$2002` busy-poll, no DMA — followed by `$2000`/`$2005`×2/`$2001` back
+to back, too late in that same vblank for a DMA of its own to land before the real display-enable
+write. So real hardware sprite memory (`spriteMem`) genuinely does **not** yet match the OAM shadow
+page at the exact instant rendering re-enables; the ordinary per-vblank `nmi` handler
+(engine/boot.asm:498) is what actually publishes it, at its own unconditional `sta $4014`
+(engine/boot.asm:536, `nmi_oam_guard_start`/`nmi_oam_guard_end`-bracketed above it, gated on
+`cam_dirty` only when `STREAMING_ENABLED && TEXT_ENABLED`) — not a settle allowance, and not merely
+"one `nes.frame()` later": round 4's own correction (finding A-blocking 2) replaced a one-frame
+handler count and a post-frame equality check with a PC-hook observation installed *before* Continue
+is even pressed, counting real `main_loop` entries from the landing's own `$2001` enable write (the
+armed entry event must dispatch on entry #1 and nowhere else) and asserting hardware sprite memory
+already equals the independently authored landing geometry AT the observed `nmi`'s own `$4014` write
+instant, not at some later, looser boundary (`test/unit/streamworldclosesave.test.js`'s own "Continue
+landing-frame matrix" test). This is a real, deliberate difference in contract from the
+Save-resync path, which must DMA manually because it alone disables NMI service for the whole
+transaction.
+
+**The pending-window ownership rule** (fix round 1's own finding A1): `dispatch_input` DOES still run
+on the frame an open-box Save arms (`sw_dlg20_save_pending` goes 0→1 mid-dispatch — that button press
+is what arms it in the first place, via `dispatch_save_arm_gate` inside `dispatch_loop`, engine/
+input.asm), but the instant it arms, that gate stops the *rest of that same frame's own dispatch_loop
+pass* from reaching any later button (Confirm/Cancel/Pause/anything else queued behind it on the
+identical frame) — the round-2 finding A1 fix. From the *next* frame onward, through the frame the
+completion hook (`sw_dlg20_pending_tick`, called every `main_loop` pass from `engine/boot.asm`'s own
+`main_loop_save_gate`, ahead of `dispatch_input`) commits, `dispatch_input` is not called at all —
+`main_loop_save_gate` `jmp`s straight to `main_loop_draw` first — so a real controller press held or
+spammed throughout the rest of the whole window can neither re-enter `do_action_dialog` (nothing is
+actually open to advance/close) nor reach `do_action_pause` (which would otherwise freeze the very
+world `main_loop` still needs to keep driving to finish the commit). An action bound to A and pressed
+*before* B arms the Save on that same frame — earlier in that frame's own `dispatch_loop` pass, so
+Pause has already run by the time B is reached — legitimately pauses: that is a pre-arm action, not a
+leak from this gate (Chris's ruling; not something to "fix" or test against). The main-loop gate is a
+single kernel-lo stub (`STREAMWORLD_SAVE_GATE_KERNEL_ALLOWANCE`, `main/build/generate.js`) calling
+straight into `sw_dlg20_pending_tick` in kernel-hi, gated on the same predicate (streamed + text +
+Save) that turns the whole mechanism on. **This does not mean a project without that predicate is
+byte-identical to flat 2563ef4 in general** — only an *ordinary* (non-streamed) project is
+(`test/unit/streamworldclosesave.test.js`'s own A4 identity tests, against 2563ef4, every engine/*.asm
+file reverted to its exact 2563ef4 text). A *streamed* project without Save still pays for B1's own
+relocation of `spawn_streamed`, `build_oam_draw_sw`, `draw_one_entity_show_sw` and
+`sw_redraw_screen_landing` out of kernel-lo and into `streamworld.asm`'s kernel-hi block — that
+relocation is unconditional within streaming, so a streamed shape has never been byte-identical to
+flat 2563ef4 since B1 landed. Its A4 identity test instead reconstructs ONLY `engine/streamworld.asm`
+against "2563ef4 with B1's own block copied back onto it" (`mergeReconstructEngineFile`) and leaves
+every *other* engine file — `boot.asm`/`constants.asm`/`entities.asm`/`oam.asm`/`save.asm`/
+`screens.asm`/`ui.asm`/`input.asm` — at its CURRENT (uncommitted, this fix round's own) text on both
+sides of the comparison; it is not a claim that the whole ROM matches a flat "2563ef4 + B1"
+reconstruction of every file. Its own placement-only check (`B1 placement-only check`) proves the
+three pure relocations keep the same code, same symbolic targets, address operands shifted only as
+the move itself explains, and no data byte differs. Chris's ruling on this tradeoff: relocate lo→hi
+in slice 9 and accept the result — B1 saves 501 kernel-lo bytes but costs 474 kernel-hi bytes, a net
+**27-byte reduction**, not equality (`B1 total kernel-lo+hi bytes` test, both game types), buying
+streamed-project kernel-lo headroom at kernel-hi's expense rather than a wash.
+
 `box_close` keeps no copy of what the box covered: the box is tile rows 24-29, which is exactly
 metatile rows 12-14 with no half-row left over, so it rebuilds those rows straight out of
 `[mtptr]` + `mt_tl/tr/bl/br` and the attributes out of `[atptr]`. Moving the box means keeping

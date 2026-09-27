@@ -122,96 +122,14 @@ spawn_next:
 spawn_done:
   rts
 
-  .if STREAMING_ENABLED
-; spawn_streamed -- phase 2 slice 2b. mtptr already points at the entered
-; streamed screen's own STREAM_RECORD (sw_resolve_screen's own contract),
-; so there is no esptr indirection to set up: the record is read in place.
-; STREAM_ENTITY_FIELDS (shared/streamlayout.js) is deliberately the ordinary
-; entity record's own field order, unchanged, so this loop's body is the
-; identical actor/x/y/target/toX/toY/event/trigger/hideSwitch sequence
-; spawn_any's own loop reads -- only the cursor differs: a streamed record
-; is STREAM_RECORD_BYTES (338) long, past any single Y, so sw_adv_offset
-; (not a bare iny) crosses into mtptr_hi+1 once the entity block's own
-; offsets (STREAM_OFF_ENTITIES=241 onward) pass 255.
-spawn_streamed:
-  ldy #STREAM_OFF_ENTITY_COUNT
-  lda [mtptr_lo],y
-  bne spawn_streamed_any
-  jmp spawn_streamed_done
-spawn_streamed_any:
-  sta <ent_tmp
-  ldx #0
-  lda #0
-  sta <ent_spawn_rec
-  ldy #STREAM_OFF_ENTITIES
-spawn_streamed_loop:
-  lda [mtptr_lo],y          ; actor id
-  sta ent_actor,x
-  jsr sw_adv_offset
-  lda [mtptr_lo],y          ; x
-  sta ent_x,x
-  jsr sw_adv_offset
-  lda [mtptr_lo],y          ; y
-  sta ent_y,x
-  jsr sw_adv_offset
-  lda [mtptr_lo],y          ; door target -- a GLOBAL screen id already
-  sta ent_to_scr,x
-  jsr sw_adv_offset
-  lda [mtptr_lo],y          ; door target x
-  sta ent_to_x,x
-  jsr sw_adv_offset
-  lda [mtptr_lo],y          ; door target y
-  sta ent_to_y,x
-  jsr sw_adv_offset
-  lda [mtptr_lo],y          ; the event it runs
-  sta ent_event,x
-  jsr sw_adv_offset
-  lda [mtptr_lo],y          ; and what makes it run
-  sta ent_trigger,x
-  jsr sw_adv_offset
-  lda [mtptr_lo],y          ; the switch that hides it once it is on
-  jsr sw_adv_offset
-  cmp #NO_SWITCH
-  beq spawn_streamed_place
-  jsr switch_test           ; preserves both X and Y
-  bne spawn_streamed_next
-
-spawn_streamed_place:
-  lda #ENT_PRESENT
-  sta ent_active,x
-  lda <ent_spawn_rec
-  sta ent_record,x
-  sty <ent_tmp2
-  ldy ent_actor,x
-  lda actor_hp,y
-  sta ent_hp,x
-  ldy <ent_tmp2
-  lda #DIR_DOWN
-  sta ent_dir,x
-  lda #0
-  sta ent_frame,x
-  sta ent_timer,x
-  sta ent_hurt,x
-  lda ent_trigger,x
-  cmp #TRIG_ENTER
-  bne spawn_streamed_armed
-  jsr arm_event
-spawn_streamed_armed:
-  inx
-  cpx #MAX_ENTITIES
-  beq spawn_streamed_done
-spawn_streamed_next:
-  inc <ent_spawn_rec
-  dec <ent_tmp
-  beq spawn_streamed_done
-  jmp spawn_streamed_loop
-spawn_streamed_done:
-  jsr sw_locate_current      ; sw_adv_offset may have left mtptr_hi past the
-                              ; entered screen's own page 0 -- restore before
-                              ; returning, the same rule sw_peek_byte/
-                              ; sw_render_window's own tail already holds to
-  rts
-  .endif
+; spawn_streamed used to live here (kernel-lo); B1 (phase 2 slice 9 fix
+; round 1b) relocated its whole body to engine/streamworld.asm (kernel-hi)
+; -- this dispatch's own `jmp spawn_streamed` above is unchanged (a jmp
+; reaches all 64K at identical cost regardless of distance), so the only
+; kernel-lo byte this consumer costs now is spawn_clear_dispatch's own
+; 12-byte dispatch, above. See streamworld.asm for the relocated routine
+; and STREAMWORLD_SPAWN_KERNEL_HI_ALLOWANCE (main/build/generate.js) for
+; its kernel-hi accounting.
 
 ; ------------------------------------------------------------- behaviour
 
@@ -711,15 +629,21 @@ draw_one_entity_hurt_dispatch:
   bne draw_one_entity_none
   .endif
 draw_one_entity_show:
-  ; draw_one_entity_show/de_show_dispatch_done bracket just this
-  ; branch, and draw_one_entity_ordinary_join/draw_one_entity_animate bracket
-  ; the streamed projection block below (both purely additive, like
-  ; oam.asm's build_oam_draw_dispatch/build_oam_draw_dispatch_done pair) --
-  ; test/unit/kernelbytes.test.js measures each with a single streaming
+  ; draw_one_entity_show/de_show_dispatch_done bracket just this branch --
+  ; test/unit/kernelbytes.test.js measures it with a single streaming
   ; build's own span, the STREAMWORLD_RESOLVER_KERNEL_ALLOWANCE technique.
+  ; B1 (phase 2 slice 9 fix round 1b) relocated draw_one_entity_show_sw's
+  ; whole body to engine/streamworld.asm (kernel-hi) -- a bne can no longer
+  ; reach it, so this is the same beq-then-jmp trampoline
+  ; build_oam_draw_dispatch's own comment (oam.asm) describes. Since the
+  ; large streamed body no longer sits between here and draw_one_entity_
+  ; animate, that label is now unconditional (identical either way, so no
+  ; separate ordinary-join jmp is needed any more -- de_show_dispatch_done
+  ; falls straight through into it).
   .if STREAMING_ENABLED
   lda <map_is_streamed
-  bne draw_one_entity_show_sw
+  beq de_show_dispatch_done
+  jmp draw_one_entity_show_sw
   .endif
 de_show_dispatch_done:
   lda ent_y,x               ; OAM Y sits one scanline above the sprite
@@ -728,140 +652,7 @@ de_show_dispatch_done:
   sta <de_ey
   lda ent_x,x
   sta <de_ex
-  .if STREAMING_ENABLED
-draw_one_entity_ordinary_join:
-  jmp draw_one_entity_animate
-
-; docs/design-streamed-worlds.md §7 (phase 2 slice 4a, ruling 3/4): project
-; each of the metasprite's own TILES independently, the same per-corner
-; mechanism build_oam_draw_sw (engine/oam.asm) uses for the player, rather
-; than projecting only the origin and handing off to the shared
-; draw_metasprite -- that routine's own +de_ex/+de_ey adds wrap into 8-bit
-; OAM coordinates instead of parking, and ui.asm's inventory row/dialogue
-; portrait and battleui.asm still call draw_metasprite directly and must
-; stay untouched (unlike the player's fixed 16x16, an entity's placement
-; (shared/project.js normalizeEntity) is not bounded by the MAX_X/MAX_Y
-; movement wall, and a metasprite's own per-tile offsets are legal across
-; the full signed -128..127 range, so origin-only projection is not enough
-; -- phase 2 slice 4a round 1 review, finding 2).
-;
-; This duplicates draw_one_entity_animate's own NO_ANIM/metasprite-id
-; lookup (rather than jumping into it) because that lookup needs X to
-; still be the entity slot, and only after it completes is X safe to spend
-; on the projection calls below (finding 1 of the same review: an earlier
-; version read ent_x,x AFTER a call that leaves X=0, silently drawing
-; every non-slot-0 entity at slot 0's own X).
-draw_one_entity_show_sw:
-  lda ent_x,x
-  sta <de_ex                 ; entity's own BASE LOCAL x/y for the whole
-  lda ent_y,x                ; tile loop below -- not a projected OAM byte,
-  sta <de_ey                 ; unlike the non-streamed de_ex/de_ey above
-  jsr entity_animation
-  cmp #NO_ANIM
-  bne draw_one_entity_sw_have_anim  ; X still the entity slot here -- safe
-  jmp draw_one_entity_none          ; early out (jmp: bne's own +-128 range
-                                     ; can't reach draw_one_entity_none from
-                                     ; inside the streamed tile loop below)
-draw_one_entity_sw_have_anim:
-  tay
-  lda anim_ptr_lo,y
-  sta <ptr_lo
-  lda anim_ptr_hi,y
-  sta <ptr_hi
-  lda ent_frame,x
-  asl a
-  tay
-  lda [ptr_lo],y              ; metasprite id for this frame
-  tay
-  lda ms_count,y
-  bne draw_one_entity_sw_have_count ; X still the entity slot here too
-  jmp draw_one_entity_none
-draw_one_entity_sw_have_count:
-  sta <de_left
-  lda ms_ptr_lo,y
-  sta <msptr_lo
-  lda ms_ptr_hi,y
-  sta <msptr_hi
-
-  txa
-  pha                          ; entity slot -- everything below (the row
-                                ; multiply, both per-tile projections)
-                                ; clobbers X freely; restored once at the
-                                ; very end for draw_entities_loop's own inx
-
-  lda sw_row
-  jsr sw_oam_rowbase            ; rowBase16 = sw_row*240, multiplied ONCE
-                                 ; for the whole tile loop -- sw_oam_project_
-                                 ; tile_y's own header explains why a per-
-                                 ; tile re-multiply of a wrapped row would
-                                 ; silently be wrong (docs/reference-engine.md)
-  lda sw_tmp
-  sta <tmp
-  lda sw_tmp2
-  sta <tmp2
-
-  ldy #0
-draw_one_entity_sw_tile:
-  lda [msptr_lo],y             ; y offset
-  jsr sw_oam_project_tile_y
-  sta sw_tmp5                   ; OAM Y byte, stashed across the X
-                                 ; projection below the same way
-                                 ; build_oam_draw_sw stashes its own tile
-                                 ; index (oam.asm) -- sw_project_axis's own
-                                 ; clobber list leaves this one byte free
-  lda #0
-  rol a
-  sta <ent_tmp                  ; Y-hidden flag (0/1)
-  iny
-  lda [msptr_lo],y              ; tile
-  pha
-  iny
-  lda [msptr_lo],y              ; attributes
-  pha
-  iny
-  lda [msptr_lo],y              ; x offset
-  iny
-  jsr sw_oam_project_tile_x
-  sta <ent_tmp2                  ; OAM X byte
-  lda #0
-  rol a
-  ora <ent_tmp
-  bne draw_one_entity_sw_tile_park
-
-  ldx <oam_idx
-  lda sw_tmp5
-  sta OAM,x
-  pla
-  sta OAM+2,x                    ; attributes (pushed last, popped first)
-  pla
-  sta OAM+1,x                    ; tile (pushed first, popped second)
-  lda <ent_tmp2
-  sta OAM+3,x
-  jmp draw_one_entity_sw_tile_next
-
-draw_one_entity_sw_tile_park:
-  pla
-  pla
-  ldx <oam_idx
-  lda #$FF
-  sta OAM,x
-
-draw_one_entity_sw_tile_next:
-  txa
-  clc
-  adc #4
-  sta <oam_idx
-  beq draw_one_entity_sw_done    ; wrapped past the 64th sprite
-  dec <de_left
-  bne draw_one_entity_sw_tile
-
-draw_one_entity_sw_done:
-  pla
-  tax
-  rts
-
 draw_one_entity_animate:
-  .endif
   jsr entity_animation
   cmp #NO_ANIM
   beq draw_one_entity_none

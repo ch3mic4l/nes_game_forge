@@ -40,7 +40,11 @@ import { buildProject } from '../../main/build/pipeline.js';
 import { validateProject } from '../../shared/project.js';
 import { createStreamedProject } from '../lib/streamedproject.js';
 import { callRoutine } from '../lib/callroutine.js';
+import { mergeReconstructEngineFile } from '../lib/enginehistory.js';
 import NES from '../../renderer/emulator/core/nes.js';
+import { fileURLToPath } from 'node:url';
+
+const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 
 const hasNesasm = spawnSync('nesasm', [], { stdio: 'ignore' }).error?.code !== 'ENOENT';
 
@@ -659,14 +663,25 @@ test('phase 2 slice 8: an event that both shows text (Say) and moves the player 
 // change -- the new gated STREAMWORLD_DIALOGUE_MAPPER_KERNEL_HI_ALLOWANCE term -- evaluates to 0
 // either way and contributes no difference; what remains under test is that the new engine source
 // itself compiles down to zero emitted bytes when its own gate is closed.
+//
+// streamworld.asm is reconstructed via mergeReconstructEngineFile rather than a flat `git show
+// 506a8ea:...`: fix round 1b's B1 (still uncommitted, on top of HEAD) relocated several of this
+// file's routines (spawn_streamed, build_oam_draw_sw, draw_one_entity_show_sw,
+// sw_redraw_screen_landing) that current (un-overridden) boot.asm/entities.asm/oam.asm/screens.asm
+// now reference unconditionally -- a flat revert to 506a8ea drops those routines and assembly fails
+// with "Undefined symbol in operand field." The merge reconstruction keeps B1's relocation while
+// still removing every later slice's own additions (the dialogue mapper itself, slice 8, slice 9),
+// which is what "a build without the dialogue-mapper code" needs to mean now that B1 has made a
+// truly unconditional relocation permanent. constants.asm's own current diff is comment/equate-only
+// (zero bytes either way), so a flat revert of that file remains correct.
 function dialogueMapperBaselineOverrides() {
-  return ['constants.asm', 'streamworld.asm'].map((name) => ({
-    name,
-    text: execFileSync('git', ['show', `506a8ea:engine/${name}`], { encoding: 'utf8' })
-  }));
+  return [
+    { name: 'constants.asm', text: execFileSync('git', ['show', '506a8ea:engine/constants.asm'], { encoding: 'utf8' }) },
+    { name: 'streamworld.asm', text: mergeReconstructEngineFile(ROOT, '506a8ea', 'streamworld.asm') }
+  ];
 }
 
-test('byte-identity: a streamed project with no text assembles a byte-identical ROM to a build without the dialogue-mapper code (zero dialogue-mapper bytes emitted)', { skip: !hasNesasm && 'nesasm not found on PATH' }, async (t) => {
+test('byte-identity: a streamed project with no text assembles a byte-identical ROM to a build without the dialogue-mapper code, with the B1 relocation applied on both sides (zero dialogue-mapper bytes emitted)', { skip: !hasNesasm && 'nesasm not found on PATH' }, async (t) => {
   const project = createStreamedProject({ gameType: 'action' });
   project.project.titleMap = null; // the default project's own title screen is itself a text source
   const dir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'forge-streamworlddlgmapper-noText-'));
@@ -689,7 +704,7 @@ test('byte-identity: a streamed project with no text assembles a byte-identical 
   assert.deepEqual(
     fs.readFileSync(built.romPath),
     fs.readFileSync(baselineBuilt.romPath),
-    'the full ROM must be byte-identical to a build using the pre-slice-7a (506a8ea) engine sources'
+    'the full ROM must be byte-identical to a build using the pre-slice-7a (506a8ea) engine sources, with the B1 relocation applied on both sides'
   );
 });
 

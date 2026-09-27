@@ -288,32 +288,12 @@ redraw_screen_dispatch:
   jsr sw_resolve_screen
   lda <map_is_streamed
   beq redraw_screen_ordinary
-  jsr sw_render_window
-  ; F3 (phase 2 slice 2b fix round 1): a streamed landing must not inherit
-  ; the previous OWNER screen's active bound-tile cache -- rebuild_bound_cache
-  ; itself already takes the empty-cache branch whenever map_is_streamed is
-  ; set (just above, this same file), so simply calling it here reuses that
-  ; single definition rather than duplicating the guard.
-  .if BOUND_TILE_ENABLED
-  jsr rebuild_bound_cache
-  .endif
-  jsr spawn_entities
-  jsr build_oam
-  jsr draw_entities
-  jsr wait_vblank_poll
-  ; enable_rendering's own $2005 write is hardcoded (0,0) -- not used here,
-  ; the same reason design-camera.md's redraw_screen_slide/
-  ; camera_slide_complete_b write their own $2000/$2005 sequence instead of
-  ; calling it, for a landing whose own scroll is not (0,0).
-  lda <cam_nt
-  ora #PPUCTRL_ON
-  sta $2000
-  lda <cam_x_lo
-  sta $2005
-  lda <cam_y_lo
-  sta $2005
-  lda #PPUMASK_ON
-  sta $2001
+  ; B1 (phase 2 slice 9 fix round 1b): the streamed-landing render sequence
+  ; itself (sw_render_window through the scroll publish) relocated to
+  ; engine/streamworld.asm's sw_redraw_screen_landing (kernel-hi), shared
+  ; with engine/boot.asm's own identical cold-boot copy -- both call sites
+  ; now differ only in their own tail (rts here, jmp boot_draw_done there).
+  jsr sw_redraw_screen_landing
   rts
 redraw_screen_ordinary:
   ldy <ord_screen

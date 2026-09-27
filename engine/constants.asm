@@ -1275,8 +1275,24 @@ sw_dlg17_camhold = $07F0
 ; game_state must survive this whole transaction untouched, since the
 ; suspended page is a Move away from resuming, not a finished conversation.
 sw_dlg17_move_close = $07F1
-;   $07F2  sw_dlg17_resync_i    -- the save-resync's own row/band loop counter (slice 9)
-;   $07F8  sw_dlg20_save_pending -- a deferred Save is waiting on a close-for-Save draw-down (slice 9)
+; $07F2 (sw_dlg17_resync_i) stays an unclaimed comment: the prototype that named it assumed the
+; save-resync would need its own row/band loop counter, but the resync reuses sw_render_window
+; (engine/streamworld.asm) unchanged, and that routine is already fully self-contained -- no
+; caller-side counter is needed to drive it, the same way sw_position_jump_guard's own identical
+; call to it needs none. Phase 2 slice 9 claims the other of these as a real equate: set the
+; instant script_op_save's own streamed dispatch (engine/save.asm) finds a box open and defers
+; the commit instead of running it immediately; read every main_loop pass thereafter, AHEAD of
+; dispatch_input, by main_loop_save_gate's own stub (engine/boot.asm) calling straight into
+; sw_dlg20_pending_tick (engine/streamworld.asm) -- fix round 1's own correction (round-1 review
+; finding A1): the original design read this from ui_tick's priority chain, which runs AFTER
+; dispatch_input, letting a real Confirm/Cancel/Pause press reach close_ui while this was still
+; set and strand the continuation forever; sw_dlg20_pending_tick itself waits for both box_state
+; == BOX_CLOSED and sw_dlg15_state == SW_DLG15_IDLE (drain acknowledged -- sw_dlg17_camrelease's
+; own new branch, engine/streamworld.asm, deliberately just returns instead of falling into
+; close_ui/sw_dlg_closeformove_check when this is set, so game_state/script_active/talk_ent all
+; survive untouched for that hook to find); cleared by sw_dlg20_save_check (engine/streamworld.asm)
+; the instant it runs the real deferred commit.
+sw_dlg20_save_pending = $07F8
 ; Phase 2 slice 4b's own claim, twelve bytes starting right after save_flash_buf's own
 ; SAVE_RECORD_LEN span (ends $077E) and clear of the four named-but-unallocated future bytes
 ; above ($07F0-$07F8): sw_frame_camera_window's transient working set (engine/streamworld.asm).

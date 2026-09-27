@@ -90,6 +90,34 @@ dispatch_pressed:
   lda <screen_fresh
   ora <warp_ready
   bne dispatch_done
+  ; Phase 2 slice 9, fix 2 (round-2 finding A1): the arming press itself is the
+  ; same kind of frame-taking action as one that draws a screen or decides a
+  ; warp -- script_op_save's own deferred branch (engine/save.asm) sets
+  ; sw_dlg20_save_pending synchronously, mid-dispatch, the instant B/Confirm
+  ; arms it, but neither screen_fresh nor warp_ready go with it (nothing was
+  ; drawn or warped -- the box is only just starting to close). Round 1's own
+  ; main_loop_save_gate (engine/boot.asm) only runs once a frame, BEFORE
+  ; dispatch_input -- so it protects every later pass but not the rest of
+  ; THIS pass's own dispatch_loop, which would otherwise walk on to Start
+  ; (Pause) or any other later button and read it against a transaction that
+  ; has already begun. Same "the frame a transition starts belongs to the
+  ; transition" rule as screen_fresh/warp_ready just above, checked here
+  ; because dispatch_pressed is the one place every button's own action
+  ; result is read back before the next is dispatched. Gated identically to
+  ; main_loop_save_gate (usesStreaming && usesText && usesSave — SAVE_FLASH
+  ; already implies TEXT_ENABLED, but the nesting is named explicitly the
+  ; same way that gate's own three .ifs are), so an ordinary build and a
+  ; streamed build with no live Save both assemble this span at zero bytes.
+dispatch_save_arm_gate_start:
+  .if STREAMING_ENABLED
+  .if TEXT_ENABLED
+  .if SAVE_FLASH
+  lda sw_dlg20_save_pending
+  bne dispatch_done
+  .endif
+  .endif
+  .endif
+dispatch_save_arm_gate_end:
 
 dispatch_next:
   inx

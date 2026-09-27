@@ -1499,14 +1499,42 @@ export const STREAMWORLD_DIALOGUE_RELOCATED_KERNEL_HI_ALLOWANCE = 222;
 // spawn_entities, build_oam, draw_entities, wait_vblank_poll, the cam_nt/
 // cam_x_lo/cam_y_lo scroll write) plus the tail jmp back into the ordinary
 // path's own shared tail.
-export const STREAMWORLD_RESOLVER_KERNEL_ALLOWANCE = 49;
+// B1 (phase 2 slice 9 fix round 1b, Chris's relocation ruling): the render
+// sequence this dispatch used to carry inline (sw_render_window,
+// spawn_entities, build_oam, draw_entities, wait_vblank_poll, the cam_nt/
+// cam_x_lo/cam_y_lo scroll write) moved out to a new shared kernel-HI
+// routine, sw_redraw_screen_landing (engine/streamworld.asm) --
+// STREAMWORLD_REDRAW_LANDING_KERNEL_HI_ALLOWANCE below -- called with `jsr`
+// from both this site and screens.asm's redraw_screen_dispatch, rather than
+// each carrying its own copy. What is left here is only the dispatch
+// (`lda <map_is_streamed` / branch) plus a two-instruction tail back into
+// the shared routine and this site's own `jmp boot_draw_done`. Re-measured
+// directly (nesasm's own symbol table): 15, down from 49.
+export const STREAMWORLD_RESOLVER_KERNEL_ALLOWANCE = 15;
 // engine/screens.asm's redraw_screen -- the "re-keyed consumer" version of
 // the identical dispatch STREAMWORLD_RESOLVER_KERNEL_ALLOWANCE measures in
 // boot.asm, reached by every OTHER landing (start_game, restart_game,
-// take_door, continue_game). 47, not 49: this one ends in `rts` (1 byte)
-// where boot's copy ends in `jmp boot_draw_done` (3 bytes) back into its own
-// shared tail -- the only difference between the two copies.
-export const STREAMWORLD_REDRAW_KERNEL_ALLOWANCE = 47;
+// take_door, continue_game). B1 relocated this site's own inline render
+// sequence to the same shared sw_redraw_screen_landing (see
+// STREAMWORLD_RESOLVER_KERNEL_ALLOWANCE's own comment) -- what remains is
+// `jsr sw_redraw_screen_landing` plus `rts` and the dispatch itself.
+// Re-measured directly: 13, down from 47 -- 2 less than the resolver's 15
+// because this site ends in `rts` (1 byte) where boot's copy ends in `jmp
+// boot_draw_done` (3 bytes) back into its own shared tail, the only
+// difference between the two copies, same as before the relocation.
+export const STREAMWORLD_REDRAW_KERNEL_ALLOWANCE = 13;
+// B1 (phase 2 slice 9 fix round 1b): the shared kernel-HI render routine
+// itself (engine/streamworld.asm, sw_redraw_screen_landing..
+// sw_redraw_screen_landing_end) -- new code in the sense that it did not
+// exist as its own routine before (it was inlined, byte-for-byte, at BOTH
+// call sites), but not new BEHAVIOR: deduplicating the two identical copies
+// is exactly what shrank STREAMWORLD_RESOLVER_KERNEL_ALLOWANCE and
+// STREAMWORLD_REDRAW_KERNEL_ALLOWANCE above. Gated identically to
+// STREAMWORLD_KERNEL_HI_ALLOWANCE (hasStreamed alone -- every streamed
+// project reaches at least one of the two call sites). Measured directly
+// off nesasm's own symbol table, flat across action/rpg/mixed (confirmed,
+// not assumed): 38.
+export const STREAMWORLD_REDRAW_LANDING_KERNEL_HI_ALLOWANCE = 38;
 // engine/screens.asm's set_screen_ptr: an early return through
 // sw_locate_current when the CURRENT screen is streamed (call_battle always
 // ends `jmp set_screen_ptr` -- the restore IS the return -- so this runs
@@ -1514,16 +1542,25 @@ export const STREAMWORLD_REDRAW_KERNEL_ALLOWANCE = 47;
 // bytes flat, no per-mapper variance measured.
 export const STREAMWORLD_SET_SCREEN_PTR_KERNEL_ALLOWANCE = 8;
 // engine/entities.asm's spawn_entities: the streamed-vs-ordinary dispatch in
-// spawn_clear's own preamble (12 bytes: map_is_streamed branch, `ldy
+// spawn_clear's own preamble -- 12 bytes: map_is_streamed branch, `ldy
 // <ord_screen`/`jmp spawn_have_ptr` for the ordinary side reached through
-// the same shared join point) plus spawn_streamed's own body (164 bytes: the
-// actor/x/y/target/toX/toY/event/trigger/hideSwitch field loop, identical
-// order to spawn_any's own ordinary-record loop, walked with sw_adv_offset
-// instead of a bare `iny` since a streamed record is STREAM_RECORD_BYTES
-// long). One name for the whole consumer, matching how every other named
-// term on this page charges a single routine's own total delta rather than
-// a sub-block within it.
-export const STREAMWORLD_SPAWN_KERNEL_ALLOWANCE = 12 + 164;
+// the same shared join point, plus `jmp spawn_streamed` for the streamed
+// side. B1 (phase 2 slice 9 fix round 1b) relocated spawn_streamed's own
+// body (164 bytes: the actor/x/y/target/toX/toY/event/trigger/hideSwitch
+// field loop, identical order to spawn_any's own ordinary-record loop,
+// walked with sw_adv_offset instead of a bare `iny` since a streamed record
+// is STREAM_RECORD_BYTES long) to engine/streamworld.asm (kernel-hi) --
+// STREAMWORLD_SPAWN_KERNEL_HI_ALLOWANCE below. This dispatch's own `jmp
+// spawn_streamed` was unchanged by the move (a jmp reaches all 64K at
+// identical cost regardless of distance, so relocating the body cost zero
+// extra dispatch bytes), so what remains here is the dispatch alone: 12.
+export const STREAMWORLD_SPAWN_KERNEL_ALLOWANCE = 12;
+// B1 (phase 2 slice 9 fix round 1b): spawn_streamed's own body, relocated
+// whole to engine/streamworld.asm (spawn_streamed..spawn_streamed_end) --
+// see STREAMWORLD_SPAWN_KERNEL_ALLOWANCE's own comment. Gated identically
+// (hasStreamed alone). Measured directly, flat across action/rpg/mixed: 164
+// -- byte-for-byte the same body, unchanged by the move.
+export const STREAMWORLD_SPAWN_KERNEL_HI_ALLOWANCE = 164;
 // engine/music.asm's apply_map_music/apply_map_music_direct: named because
 // Part F requires this consumer named individually like every other one,
 // even though its own measured delta is exactly zero -- `ldy <ord_screen`
@@ -1649,16 +1686,28 @@ export const STREAMWORLD_CROSS_TRANSLATE_KERNEL_ALLOWANCE = 13 + 8;
 // Fix round 1, finding 3: a streamed landing must not inherit the previous
 // OWNER screen's active bound-tile cache -- both landing-site copies of the
 // resolve-and-render dispatch (engine/boot.asm's boot_streamed_landing,
-// engine/screens.asm's redraw_screen_dispatch) now call rebuild_bound_cache,
-// which itself already takes the empty-cache branch whenever map_is_streamed
-// is set (STREAMWORLD_BOUND_CACHE_KERNEL_ALLOWANCE, above). Each call site is
-// `jsr rebuild_bound_cache` inside `.if BOUND_TILE_ENABLED` -- a fixed 3
-// bytes, falling inside the SAME bracketed spans STREAMWORLD_RESOLVER_
-// KERNEL_ALLOWANCE/STREAMWORLD_REDRAW_KERNEL_ALLOWANCE already measure, so
-// those two constants stay correct for a project with no bound tiles
-// (BOUND_TILE_ENABLED off, 0 bytes either way) and this is the marginal
-// term for a project that has both streaming AND a bound tile somewhere.
-export const STREAMWORLD_LANDING_BOUND_CACHE_KERNEL_ALLOWANCE = 2 * 3;
+// engine/screens.asm's redraw_screen_dispatch) used to each carry their own
+// `jsr rebuild_bound_cache` inside `.if BOUND_TILE_ENABLED`, a fixed 3 bytes
+// apiece (6 combined), falling inside the two kernel-lo dispatch spans
+// STREAMWORLD_RESOLVER_KERNEL_ALLOWANCE/STREAMWORLD_REDRAW_KERNEL_ALLOWANCE
+// used to measure. B1 (phase 2 slice 9 fix round 1b) deduplicated both
+// landing sites' render sequences into one shared kernel-HI routine,
+// sw_redraw_screen_landing (engine/streamworld.asm), which now carries the
+// ONE remaining `jsr rebuild_bound_cache` -- STREAMWORLD_LANDING_BOUND_
+// CACHE_KERNEL_HI_ALLOWANCE below, not this kernel-lo term, which is 0 now
+// that neither dispatch span has a bound-cache call of its own left to
+// bracket. Kept named (rather than deleted) at 0, the same convention
+// STREAMWORLD_MUSIC_KERNEL_ALLOWANCE's own comment already uses for a
+// consumer whose real cost genuinely is zero.
+export const STREAMWORLD_LANDING_BOUND_CACHE_KERNEL_ALLOWANCE = 0;
+// B1 (phase 2 slice 9 fix round 1b): the single `jsr rebuild_bound_cache`
+// inside `.if BOUND_TILE_ENABLED` that now lives in the shared kernel-HI
+// sw_redraw_screen_landing (see STREAMWORLD_LANDING_BOUND_CACHE_KERNEL_
+// ALLOWANCE's own comment) -- one call site now, not two, so 3 bytes, not 6.
+// Gated on hasStreamed && usesBoundTiles, same as its kernel-lo predecessor.
+// Measured directly (sw_redraw_screen_landing's span grows from 38 to 41
+// with a bound tile authored anywhere in the project).
+export const STREAMWORLD_LANDING_BOUND_CACHE_KERNEL_HI_ALLOWANCE = 3;
 // Fix round 1, finding 2: an ordinary landing reached AFTER a streamed one
 // (a Warp back off the streamed map) must reset cam_x_lo/cam_y_lo/cam_nt to
 // (0,0,0) rather than inherit the streamed screen's own nonzero values --
@@ -1704,39 +1753,42 @@ export const STREAMWORLD_NMI_PALETTE_FX_KERNEL_ALLOWANCE = 8;
 // draw_one_entity_show branch plus the streamed projection block ending at
 // draw_one_entity_animate) -- STREAMWORLD_SPAWN_KERNEL_ALLOWANCE's own
 // precedent for naming one consumer's several sub-blocks as a single term.
-// Both sites are purely additive (the ordinary body stays, unconditional,
-// either way), unlike the NMI splice above, so each site's own span
-// (nesasm's real symbol table, test/unit/kernelbytes.test.js) is exactly
-// its own new-byte count, no baseline subtraction needed: oam.asm 4
-// (branch) + 108 (build_oam_draw_sw..build_oam_draw_sw_end) = 112,
-// entities.asm 4 (branch) + 167 (draw_one_entity_ordinary_join..
-// draw_one_entity_animate) = 171, combined 283, PLUS a third entities.asm
-// term that -- unlike those two -- is a REPLACE, not a purely-additive
-// bracket: draw_one_entity_hurt_dispatch/draw_one_entity_show costs the
-// ordinary build its original 2-byte bne either way, and a streamed build
-// 5 bytes (a jmp's-worth more), so only the 3-byte streamed-minus-ordinary
-// delta belongs here (kernelbytes.test.js's own double-difference
-// technique, identical to how the NMI splice below is measured). The
-// entities.asm terms grew (45 -> 167, and a new +3) in the round-1 review
-// fix (real per-tile projection for entities, replacing origin-only
-// projection -- docs/design-streamed-worlds.md §7 rulings 3/4, phase 2
-// slice 4a round 1 review finding 2): the join span now also duplicates
-// entity_animation's own NO_ANIM/metasprite-id lookup (needed before X is
-// safe to spend on the per-tile projection calls, finding 1 of the same
-// review) rather than sharing it with draw_one_entity_animate's tail, and
-// that much larger streamed-only routine is what pushes draw_one_entity's
-// own ent_hurt dispatch out of a plain bne's +-128 range in a streaming
-// build alone. Combined: 283 + 3 = 286. A raw whole-kernel-lo-bank-USED
-// delta reads smaller than this (conflating it with an unrelated TABLE-
-// region shrink: an ordinary screen costs its own screen_ent_lo/hi row
-// that a streamed screen's own entity data, stored in the streamed region
-// instead, does not -- forcing map.streamed off to build the baseline for
-// a delta measurement adds that row back, which has nothing to do with
-// this code) -- kernelCodeBytes' own `used - (resetAddr - 0xC000)`
-// convention (the worst-case margin test's own technique) is what strips
-// that confound out, and cross-checked against it this term reads exactly
-// 286. Flat across action/RPG/mixed.
-export const STREAMWORLD_PROJECT_KERNEL_ALLOWANCE = 286;
+// B1 (phase 2 slice 9 fix round 1b, Chris's relocation ruling) moved both
+// routine BODIES (build_oam_draw_sw, draw_one_entity_show_sw) out to
+// engine/streamworld.asm (kernel-hi) -- STREAMWORLD_OAM_DRAW_SW_KERNEL_HI_
+// ALLOWANCE and STREAMWORLD_ENTITY_SHOW_SW_KERNEL_HI_ALLOWANCE below -- so
+// this term now covers only the two dispatches plus the unchanged
+// draw_one_entity_hurt_dispatch/draw_one_entity_show REPLACE delta:
+// oam.asm's build_oam_draw_dispatch..build_oam_draw_dispatch_done (a bne
+// can no longer reach the relocated body, so this is now a beq-then-jmp
+// trampoline, 7 bytes, up from the original 4-byte bne) + entities.asm's
+// draw_one_entity_show..de_show_dispatch_done (the identical trampoline
+// shape, 7 bytes) + the draw_one_entity_hurt_dispatch/draw_one_entity_show
+// streamed-minus-ordinary delta (unchanged by the relocation, still 3:
+// streamed 5, ordinary 2 -- kernelbytes.test.js's own double-difference
+// technique). Combined: 7 + 7 + 3 = 17, down from 286 -- the relocated
+// bodies' 108 + 167 (only 164 of which is draw_one_entity_show_sw itself;
+// the remaining 3 bytes of the old 167-byte join span was the ordinary-join
+// jmp that no longer exists, now that draw_one_entity_animate is
+// unconditional) moved to kernel-hi, and the two dispatch trampolines each
+// grew by 3 bytes over their original bne. Re-measured directly off
+// nesasm's own symbol table (test/unit/kernelbytes.test.js), flat across
+// action/RPG/mixed, not derived by hand.
+export const STREAMWORLD_PROJECT_KERNEL_ALLOWANCE = 17;
+// B1 (phase 2 slice 9 fix round 1b): build_oam_draw_sw's own body, relocated
+// whole to engine/streamworld.asm (build_oam_draw_sw..build_oam_draw_sw_end)
+// -- see STREAMWORLD_PROJECT_KERNEL_ALLOWANCE's own comment. Gated
+// identically (hasStreamed alone). Measured directly, flat across
+// action/rpg/mixed: 108 -- byte-for-byte the same body, unchanged by the
+// move.
+export const STREAMWORLD_OAM_DRAW_SW_KERNEL_HI_ALLOWANCE = 108;
+// B1 (phase 2 slice 9 fix round 1b): draw_one_entity_show_sw's own body,
+// relocated whole to engine/streamworld.asm (draw_one_entity_show_sw..
+// draw_one_entity_show_sw_end) -- see STREAMWORLD_PROJECT_KERNEL_ALLOWANCE's
+// own comment. Gated identically (hasStreamed alone). Measured directly,
+// flat across action/rpg/mixed: 164 -- byte-for-byte the same body,
+// unchanged by the move.
+export const STREAMWORLD_ENTITY_SHOW_SW_KERNEL_HI_ALLOWANCE = 164;
 // Phase 2 slice 3 (docs/design-streamed-worlds.md §7, ruling 7): move_tick's
 // own streamed-player bound/crossing-probe arms in engine/entities.asm
 // (kernel-lo only -- the resident sw_move_probe/sw_move_probe_solid pair
@@ -1902,6 +1954,90 @@ export const STREAMWORLD_OAM_GUARD_KERNEL_ALLOWANCE = 4;
 // ALLOWANCE is named at 0 above -- a future regression that actually grows
 // this dispatch needs a place to be caught.
 export const STREAMWORLD_CLOSEFORMOVE_KERNEL_ALLOWANCE = 0;
+// Phase 2 slice 9: engine/save.asm's script_op_save_dispatch_start..end --
+// script_op_save's own dispatch check (map_is_streamed ? defer through
+// sw_dlg20_save_dispatch : fall through to the ordinary immediate commit).
+// Lives inside the routine's own `.if SAVE_FLASH` wrapper, itself further
+// nested `.if STREAMING_ENABLED` / `.if TEXT_ENABLED` around just this
+// check (the ordinary non-streamed commit path pays nothing extra). Since a
+// streamed project is UNROM 512 only and SAVE_FLASH = usesSave &&
+// flashSaveCapable(mapper), and SAVE_FLASH ⟹ TEXT_ENABLED (a live Save
+// needs a title screen, which needs the message font), the effective gate
+// collapses to usesStreaming && usesSave. Measured directly
+// (measureStreamedSpan, script_op_save_dispatch_start..end): 7 with
+// streaming+save, and the labels do not even exist (block does not
+// assemble) with either gate false, confirmed 0 for !usesStreaming with
+// usesSave true (handoff-next/s9-measure-spans.mjs scenario C).
+export const STREAMWORLD_SAVE_DISPATCH_KERNEL_ALLOWANCE = 7;
+// Phase 2 slice 9, fix round 2 (round-2 finding A3 -- the 3-byte overcharge):
+// engine/save.asm's save_media_commit_resync_start..end -- save_media_commit's
+// own tail branch. This is a `.if STREAMING_ENABLED / .else` pair, not an
+// addition: a streamed build assembles `jsr sw_save_commit_tail` (3 bytes) in
+// place of a non-streamed build's `jsr enable_rendering` (also 3 bytes) at
+// the exact same call site -- one replaces the other, both bracketed by the
+// identical unconditional `plp / rts` tail either way. Round 1's own comment
+// claimed the ordinary jsr "sits outside this span... from before this slice
+// existed," as though a streamed+Save build paid for both; it does not, and
+// never did -- only one of the two ever assembles. The raw span (3) is real,
+// but it is a REPLACEMENT delta, not an ADDITIVE one: going from a
+// non-streamed Save build to a streamed Save build costs 0 incremental
+// kernel-lo bytes here, because the 3 bytes this term used to add were
+// already being spent on the ordinary jsr it replaces. Round 1's equality
+// test compared the raw 3-byte span to an additive allowance and could not
+// see this, since both numbers were 3. Fixed to 0; the raw span itself
+// (still real, still exactly 3 either way) is now asserted as a replacement
+// delta -- streamed-with-Save's total build size against the same project
+// with STREAMING_ENABLED forced off, which must differ by 0 at this one call
+// site -- not folded into kernelCodeBytes at all. Effective gate:
+// usesStreaming && usesSave, same reasoning as
+// STREAMWORLD_SAVE_DISPATCH_KERNEL_ALLOWANCE above.
+export const STREAMWORLD_SAVE_COMMIT_RESYNC_KERNEL_ALLOWANCE = 0;
+// Phase 2 slice 9, fix round 1 (A1 + B1 "one hook, not two"): engine/
+// boot.asm's main_loop_save_gate_start..end -- replaces round 1's own
+// ui_tick_save_check_start..end (engine/ui.asm), which polled for
+// completion from inside ui_tick, itself reached only after dispatch_input
+// had already run that frame. Round 1's finding A1 (blocking): a real
+// Confirm/Cancel press during the close draw-down -- once box_state had
+// already returned to BOX_CLOSED but before sw_dlg15_state finished cycling
+// back to IDLE -- reached do_action_dialog -> close_ui through
+// dispatch_input while a Save was still pending, stranding the
+// continuation forever, because nothing gated dispatch_input itself. This
+// term is the fix: a `lda sw_dlg20_save_pending / beq done / jsr
+// sw_dlg20_pending_tick / beq wait / jmp main_loop_draw` gate placed in
+// main_loop BEFORE `jsr dispatch_input`, so dispatch_input (and every
+// action it could produce, not merely Confirm/Cancel) does not run at all
+// while a Save is pending -- on the completion pass, main_loop_draw is
+// reached directly (skipping both dispatch_input and ui_tick, matching the
+// "nothing else runs on the completion frame" rule the old ui_tick-based
+// design already gave for free); while still draining, main_loop_ui is
+// reached instead (running ui_tick's own close-animation tick, but never
+// dispatch_input). Nested identically to the old ui_tick poll (`.if
+// STREAMING_ENABLED` / `.if TEXT_ENABLED` / `.if SAVE_FLASH`), so the
+// effective gate is unchanged: usesStreaming && usesText && usesSave.
+// Measured directly: 16 (same size as round 1's own ui_tick poll, but
+// relocated earlier in main_loop and calling a much smaller kernel-hi hook
+// -- see STREAMWORLD_SAVE_DISPATCH_KERNEL_HI_ALLOWANCE's own growth below),
+// confirmed absent with usesSave false or usesStreaming false.
+export const STREAMWORLD_SAVE_GATE_KERNEL_ALLOWANCE = 16;
+// Phase 2 slice 9, fix round 2 (round-2 finding A1): engine/input.asm's
+// dispatch_save_arm_gate_start..end. STREAMWORLD_SAVE_GATE_KERNEL_ALLOWANCE
+// just above protects every main_loop pass AFTER the one that arms a
+// deferred Save, but not the rest of the arming pass's own dispatch_loop --
+// script_op_save's deferred branch (engine/save.asm) sets
+// sw_dlg20_save_pending synchronously, mid-dispatch, with neither
+// screen_fresh nor warp_ready set, so a later button in the same
+// dispatch_loop pass (round 2's own repro: B/Confirm arming Save, then Start
+// bound to Pause, both held together) could still reach do_action_pause with
+// the transaction already pending. This term is a `lda sw_dlg20_save_pending
+// / bne dispatch_done` check placed in dispatch_pressed right beside the
+// existing screen_fresh/warp_ready check, so the SAME frame that arms Save
+// also stops walking dispatch_loop. Nested identically to
+// STREAMWORLD_SAVE_GATE_KERNEL_ALLOWANCE (`.if STREAMING_ENABLED` / `.if
+// TEXT_ENABLED` / `.if SAVE_FLASH`), so the effective gate is unchanged:
+// usesStreaming && usesText && usesSave. Measured directly
+// (dispatch_save_arm_gate_start..end): 5 (lda absolute + bne), confirmed
+// absent with usesSave false or usesStreaming false.
+export const STREAMWORLD_SAVE_ARMING_GATE_KERNEL_ALLOWANCE = 5;
 // Phase 2 slice 8: engine/streamworld.asm's sw_dlg_closeformove_start..end,
 // the release half of the mechanism -- sw_dlg17_camrelease's own draw-down
 // release jmps here instead of close_ui whenever MOVE_ENABLED (one 3-byte
@@ -1927,6 +2063,87 @@ export const STREAMWORLD_CLOSEFORMOVE_KERNEL_HI_ALLOWANCE = 14;
 // TEXT_ENABLED`). Measured directly (measureStreamedSpan), flat across all
 // four action/RPG x streamed-only/mixed shapes: 31.
 export const STREAMWORLD_CLOSEFORMOVE_GUARD_KERNEL_HI_ALLOWANCE = 31;
+// Phase 2 slice 9: engine/streamworld.asm's sw_dlg17cr_save_check_start..end
+// -- sw_dlg17_camrelease's own early-return when a Save is pending (acking
+// the deferred close there and leaving the actual commit to ui_tick's poll,
+// the same "acknowledge here, resolve later" split as close-for-Move's own
+// camrelease/ui_tick pair). Lives inside the file's `.if SAVE_FLASH`
+// wrapper, itself inside the dialogue package's `.if TEXT_ENABLED`, itself
+// inside the file's own `.if STREAMING_ENABLED` include guard, so the
+// effective gate is usesStreaming && usesText && usesSave (SAVE_FLASH ⟹
+// TEXT_ENABLED makes this equal usesStreaming && usesSave in practice, but
+// the nesting itself needs usesText named explicitly the same way its
+// close-for-Move sibling above does). Measured directly
+// (measureStreamedSpan): 6 with streaming+text+save. The labels do not
+// exist at all with usesSave false (scenario B, the whole `.if SAVE_FLASH`
+// block is absent) or with usesStreaming false (scenario C, the whole file
+// is absent) -- both structurally correct absences, not measurement
+// failures.
+export const STREAMWORLD_SAVE_CAMRELEASE_KERNEL_HI_ALLOWANCE = 6;
+// Phase 2 slice 9: engine/streamworld.asm's
+// sw_dlg20_save_dispatch_start..end -- sw_dlg20_save_dispatch (the deferred-
+// vs-immediate decision reached from script_op_save), sw_dlg20_save_check
+// (the actual commit, reached either immediately or from the completion
+// hook below) and, since fix round 1 (finding A1), sw_dlg20_pending_tick
+// (the single completion hook engine/boot.asm's main_loop_save_gate now
+// jsrs, replacing round 1's own ui_tick-based poll) all together. Same
+// placement and gate as STREAMWORLD_SAVE_CAMRELEASE_KERNEL_HI_ALLOWANCE
+// just above: usesStreaming && usesText && usesSave. Measured directly
+// (handoff-next/s9-fix1-evidence/measure-terms.mjs): 52 with all three true
+// (up from round 1's 35 -- sw_dlg20_pending_tick's own body, 12 bytes, plus
+// its box_state/sw_dlg15_state double-check and A/Z-to-caller contract, is
+// the entire growth), N/A (block absent, not a failure) with either
+// usesSave or usesStreaming false.
+export const STREAMWORLD_SAVE_DISPATCH_KERNEL_HI_ALLOWANCE = 52;
+// Phase 2 slice 9, fix round 1 (B1 local win): engine/streamworld.asm's
+// sw_save_commit_tail_start..end -- the kernel-hi trampoline that now holds
+// the map_is_streamed dispatch save_media_commit's own tail used to decide
+// in kernel-lo (see STREAMWORLD_SAVE_COMMIT_RESYNC_KERNEL_ALLOWANCE's own
+// comment). Own `.if SAVE_FLASH` wrapper, bracketing labels outside it
+// (same convention as sw_save_resync's own pair just below), inside the
+// file's `.if STREAMING_ENABLED` include guard. Effective gate:
+// usesStreaming && usesSave (no usesText -- a Save can commit with no
+// dialogue box ever having been open). Measured directly: 12 with
+// streaming+save, confirmed a true 0 with usesSave false and streaming
+// true, N/A (file absent) with usesStreaming false.
+export const STREAMWORLD_SAVE_COMMIT_TAIL_KERNEL_HI_ALLOWANCE = 12;
+// Phase 2 slice 9: engine/streamworld.asm's sw_save_resync_start..end --
+// sw_save_resync itself, the completion-frame resync (full sw_render_window
+// redraw, OAM/DMA republish, manual $2000/$2005/$2005/$2001 scroll
+// republish) that replaces the ordinary enable_rendering(0,0) tail once a
+// streamed-map commit finishes. Placed near sw_position_jump_guard, outside
+// the dialogue package entirely (a Save can commit with no dialogue box
+// ever having been open, so this cannot depend on TEXT_ENABLED) -- only
+// `.if SAVE_FLASH` around the routine body, inside the file's own `.if
+// STREAMING_ENABLED` include guard. Effective gate: usesStreaming &&
+// usesSave (no usesText). Measured directly: 48 with streaming+save on
+// action, confirmed a true 0 with usesSave false and streaming true, and
+// N/A (file absent) with usesStreaming false.
+//
+// Fix round 1 (finding A3): this term varies by game type and a flat 48
+// overcharges RPG by 3 bytes -- the body's own `.if !BATTLE_ENABLED / jsr
+// draw_hud / .endif` (one 3-byte call, engine/streamworld.asm) is
+// action-only; RPG's own HUD is drawn elsewhere (draw_hud itself is
+// unconditionally skipped whenever BATTLE_ENABLED, and every RPG project
+// has battle enabled). Modeled the same way as
+// STREAMWORLD_UPDATE_PLAYER_KERNEL_HI_ALLOWANCE_BY_GAME_TYPE above: action
+// 48 (measured directly), rpg 45 (derived by removing the one
+// BATTLE_ENABLED-gated 3-byte call -- not independently measured by
+// assembling a full RPG+Save ROM, because RPG + streamed + camera +
+// SAVE_FLASH overflows kernel-lo for reasons unrelated to this term at all,
+// see the needs-ruling kernelbytes.test.js entry just below this section;
+// the arithmetic is exact regardless, since draw_hud's call site is the
+// only BATTLE_ENABLED-conditional code anywhere in this routine's body).
+export const STREAMWORLD_SAVE_RESYNC_KERNEL_HI_ALLOWANCE_BY_GAME_TYPE = { action: 48, rpg: 45 };
+const FALLBACK_STREAMWORLD_SAVE_RESYNC_KERNEL_HI_ALLOWANCE = Math.max(
+  ...Object.values(STREAMWORLD_SAVE_RESYNC_KERNEL_HI_ALLOWANCE_BY_GAME_TYPE)
+);
+export function streamworldSaveResyncKernelHiAllowance(project) {
+  return (
+    STREAMWORLD_SAVE_RESYNC_KERNEL_HI_ALLOWANCE_BY_GAME_TYPE[project.project?.gameType] ??
+    FALLBACK_STREAMWORLD_SAVE_RESYNC_KERNEL_HI_ALLOWANCE
+  );
+}
 // Phase 2 slice 4b: the window/camera-window region in engine/
 // streamworld.asm (sw_win_col_inc/dec, sw_win_row_inc/dec, sw_win_
 // entering_col_right/row_down, sw_frame_camera_window, sw_win_arm) --
@@ -2341,6 +2558,10 @@ export function kernelCodeBytes(project, mapper) {
     (usesStreaming && usesText ? STREAMWORLD_DIALOGUE_LIFECYCLE_KERNEL_ALLOWANCE : 0) +
     (usesStreaming && usesText ? STREAMWORLD_OAM_GUARD_KERNEL_ALLOWANCE : 0) +
     (usesStreaming && usesMove && usesText ? STREAMWORLD_CLOSEFORMOVE_KERNEL_ALLOWANCE : 0) +
+    (usesStreaming && usesSave ? STREAMWORLD_SAVE_DISPATCH_KERNEL_ALLOWANCE : 0) +
+    (usesStreaming && usesSave ? STREAMWORLD_SAVE_COMMIT_RESYNC_KERNEL_ALLOWANCE : 0) +
+    (usesStreaming && usesText && usesSave ? STREAMWORLD_SAVE_GATE_KERNEL_ALLOWANCE : 0) +
+    (usesStreaming && usesText && usesSave ? STREAMWORLD_SAVE_ARMING_GATE_KERNEL_ALLOWANCE : 0) +
     KERNEL_SLACK
   );
 }
@@ -3703,6 +3924,38 @@ export function checkCapacity(project) {
   // arming half of the mechanism, relocated whole out of kernel-lo.
   const streamworldCloseformoveGuardHiBytes =
     hasStreamed && usesMoveHere && projectUsesText(project) ? STREAMWORLD_CLOSEFORMOVE_GUARD_KERNEL_HI_ALLOWANCE : 0;
+  // Phase 2 slice 9: usesSaveHere mirrors kernelCodeBytes's own usesSave
+  // (projectUsesSave(project) && saveMediaImplemented(mapper)) rather than
+  // the loose predicate, for the identical reason given there -- there is no
+  // shared local in this function to reuse.
+  const usesSaveHere = projectUsesSave(project) && saveMediaImplemented(mapper);
+  // sw_dlg17cr_save_check_start..end and sw_dlg20_save_dispatch_start..end
+  // both live inside the dialogue package (`.if TEXT_ENABLED`), gated
+  // identically to streamworldCloseformoveHiBytes above but on usesSaveHere
+  // instead of usesMoveHere (STREAMWORLD_SAVE_CAMRELEASE_KERNEL_HI_ALLOWANCE
+  // and STREAMWORLD_SAVE_DISPATCH_KERNEL_HI_ALLOWANCE's own comments).
+  const streamworldSaveCamreleaseHiBytes =
+    hasStreamed && usesSaveHere && projectUsesText(project) ? STREAMWORLD_SAVE_CAMRELEASE_KERNEL_HI_ALLOWANCE : 0;
+  const streamworldSaveDispatchHiBytes =
+    hasStreamed && usesSaveHere && projectUsesText(project) ? STREAMWORLD_SAVE_DISPATCH_KERNEL_HI_ALLOWANCE : 0;
+  // sw_save_commit_tail_start..end lives outside the dialogue package too,
+  // same reasoning and gate as sw_save_resync just below (own comment).
+  const streamworldSaveCommitTailHiBytes =
+    hasStreamed && usesSaveHere ? STREAMWORLD_SAVE_COMMIT_TAIL_KERNEL_HI_ALLOWANCE : 0;
+  // sw_save_resync_start..end lives outside the dialogue package (a Save can
+  // commit with no dialogue box ever open), so no projectUsesText term here
+  // (STREAMWORLD_SAVE_RESYNC_KERNEL_HI_ALLOWANCE_BY_GAME_TYPE's own comment).
+  // Game-type-varying (A3's draw_hud fix), the same reason
+  // streamworldUpdatePlayerKernelHiAllowance(project) above is a function
+  // call rather than a flat constant.
+  const streamworldSaveResyncHiBytes = hasStreamed && usesSaveHere ? streamworldSaveResyncKernelHiAllowance(project) : 0;
+  // B1 (phase 2 slice 9 fix round 1b): the one remaining `jsr
+  // rebuild_bound_cache` inside the shared sw_redraw_screen_landing (see
+  // STREAMWORLD_LANDING_BOUND_CACHE_KERNEL_HI_ALLOWANCE's own comment) --
+  // gated identically to its kernel-lo predecessor, hasStreamed &&
+  // usesBoundTiles.
+  const streamworldLandingBoundCacheHiBytes =
+    hasStreamed && projectUsesBoundTiles(project) ? STREAMWORLD_LANDING_BOUND_CACHE_KERNEL_HI_ALLOWANCE : 0;
   const streamworldHiBytes = hasStreamed
     ? STREAMWORLD_KERNEL_HI_ALLOWANCE +
       STREAMWORLD_MT_PAL_KERNEL_HI_BYTES +
@@ -3715,7 +3968,22 @@ export function checkCapacity(project) {
       streamworldDialogueLifecycleHiBytes +
       streamworldDialogueRelocatedHiBytes +
       streamworldCloseformoveHiBytes +
-      streamworldCloseformoveGuardHiBytes
+      streamworldCloseformoveGuardHiBytes +
+      streamworldSaveCamreleaseHiBytes +
+      streamworldSaveDispatchHiBytes +
+      streamworldSaveCommitTailHiBytes +
+      streamworldSaveResyncHiBytes +
+      // B1 (phase 2 slice 9 fix round 1b): the four routines relocated/added
+      // by the kernel-lo->kernel-hi move, unconditional like
+      // STREAMWORLD_KERNEL_HI_ALLOWANCE itself (hasStreamed alone -- every
+      // streamed project reaches spawn_streamed, build_oam_draw_sw,
+      // draw_one_entity_show_sw and sw_redraw_screen_landing regardless of
+      // game type, Move or text).
+      STREAMWORLD_SPAWN_KERNEL_HI_ALLOWANCE +
+      STREAMWORLD_OAM_DRAW_SW_KERNEL_HI_ALLOWANCE +
+      STREAMWORLD_ENTITY_SHOW_SW_KERNEL_HI_ALLOWANCE +
+      STREAMWORLD_REDRAW_LANDING_KERNEL_HI_ALLOWANCE +
+      streamworldLandingBoundCacheHiBytes
     : 0;
   if (musicBytes + sfxBytes + text.bytes + streamworldHiBytes > BANK_SIZE - 64) {
     problems.push({

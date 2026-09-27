@@ -688,3 +688,62 @@ test(
     assert.equal(mem[OAM + base + 8], 0xff, 'a Y offset that crosses a screen boundary on its own must park');
   }
 );
+
+test(
+  "projection 10 (fix round 1c, item 1): draw_entities visits every active entity slot in order, not merely draws each visited slot correctly -- catches draw_one_entity_show_sw returning without restoring X to the entity slot, which leaves draw_entities_loop's own caller-side inx advancing from the wrong index and silently skipping a later active entity entirely",
+  async (t) => {
+    const { addrOf, nes, mem } = await buildHarness(t, (project) => {
+      project.sprites.metasprites = [
+        { id: 0, name: 'e', tiles: [{ x: 0, y: 0, tile: 0x30, palette: 0, hflip: false, vflip: false }] }
+      ];
+      project.sprites.animations = [{ id: 0, name: 'a0', loop: true, frames: [{ metaspriteId: 0, duration: 8 }] }];
+      project.sprites.actors = [{ name: 'E', behavior: 'patroller', speed: 1, hp: 1, damage: 0, anims: { walkDown: 0 } }];
+    });
+    const drawEntities = addrOf('draw_entities');
+
+    primeCommon(mem);
+    const swCol = 0;
+    const swRow = 0;
+    mem[SW_COL] = swCol;
+    mem[SW_ROW] = swRow;
+    setOrigin(mem, 0, 0);
+
+    // Three real, active, visible one-tile entities at slots 0, 1, 2, each at a distinct position.
+    // draw_one_entity_show_sw's own tile loop only ever loads X from <oam_idx> mid-body -- it never
+    // touches X again until its own final restore -- so calling the FULL draw_entities loop (not
+    // draw_one_entity in isolation, which every other test in this file uses) is what a lost
+    // restore actually breaks: slot 0's own oam_idx happens to start at 0 (== its own slot number),
+    // so a lost restore there is invisible by coincidence; slot 1's own oam_idx (4) does not match
+    // its own slot number, so a lost restore there sends draw_entities_loop's own inx off to index
+    // 5 instead of 2 -- silently skipping slot 2 for the whole rest of the pass.
+    const positions = [10, 20, 30];
+    for (let slot = 0; slot < 3; slot++) {
+      const p = positions[slot];
+      mem[ENT_ACTIVE + slot] = 1;
+      mem[ENT_HURT + slot] = 0;
+      mem[ENT_ACTOR + slot] = 0;
+      mem[ENT_X + slot] = p;
+      mem[ENT_Y + slot] = p;
+      mem[ENT_DIR + slot] = DIR_DOWN;
+      mem[ENT_FRAME + slot] = 0;
+      mem[ENT_TIMER + slot] = 0;
+    }
+    mem[OAM_IDX] = 0;
+    for (let i = 0; i < 16; i++) mem[OAM + i] = 0x77;
+
+    callRoutine(nes, drawEntities);
+
+    for (let slot = 0; slot < 3; slot++) {
+      const base = slot * 4;
+      const p = positions[slot];
+      const worldX = entityTileWorld(swCol, 256, p, 0);
+      const worldY = entityTileWorld(swRow, 240, p, 0);
+      const px = projectAxis(worldX, 0, 0);
+      const py = projectY(worldY, 0);
+      assert.equal(px.visible, true, `sanity: slot ${slot} must genuinely be visible on X`);
+      assert.equal(py.visible, true, `sanity: slot ${slot} must genuinely be visible on Y`);
+      assert.equal(mem[OAM + base], py.oamY, `slot ${slot}'s own tile Y byte must reflect its real position`);
+      assert.equal(mem[OAM + base + 3], px.byte, `slot ${slot}'s own tile X byte must reflect its real position -- draw_entities must actually reach slot ${slot}, not silently skip it because an earlier entity's own draw corrupted the loop's own index register`);
+    }
+  }
+);

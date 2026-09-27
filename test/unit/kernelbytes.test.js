@@ -82,8 +82,12 @@ import {
   STREAMWORLD_MT_PAL_KERNEL_HI_BYTES,
   STREAMWORLD_RESOLVER_KERNEL_ALLOWANCE,
   STREAMWORLD_REDRAW_KERNEL_ALLOWANCE,
+  STREAMWORLD_REDRAW_LANDING_KERNEL_HI_ALLOWANCE,
   STREAMWORLD_SET_SCREEN_PTR_KERNEL_ALLOWANCE,
   STREAMWORLD_SPAWN_KERNEL_ALLOWANCE,
+  STREAMWORLD_SPAWN_KERNEL_HI_ALLOWANCE,
+  STREAMWORLD_OAM_DRAW_SW_KERNEL_HI_ALLOWANCE,
+  STREAMWORLD_ENTITY_SHOW_SW_KERNEL_HI_ALLOWANCE,
   STREAMWORLD_MUSIC_KERNEL_ALLOWANCE,
   STREAMWORLD_ENCOUNTER_KERNEL_ALLOWANCE,
   STREAMWORLD_BATTLE_STRIP_CANCEL_KERNEL_ALLOWANCE,
@@ -93,6 +97,7 @@ import {
   STREAMWORLD_HURT_PLAYER_KERNEL_ALLOWANCE,
   STREAMWORLD_KB_INIT_KERNEL_ALLOWANCE,
   STREAMWORLD_LANDING_BOUND_CACHE_KERNEL_ALLOWANCE,
+  STREAMWORLD_LANDING_BOUND_CACHE_KERNEL_HI_ALLOWANCE,
   STREAMWORLD_ORDINARY_CAM_RESET_KERNEL_ALLOWANCE,
   STREAMWORLD_TILE_SWITCH_KERNEL_ALLOWANCE,
   STREAMWORLD_MOVE_KERNEL_ALLOWANCE,
@@ -119,6 +124,15 @@ import {
   STREAMWORLD_CLOSEFORMOVE_KERNEL_ALLOWANCE,
   STREAMWORLD_CLOSEFORMOVE_KERNEL_HI_ALLOWANCE,
   STREAMWORLD_CLOSEFORMOVE_GUARD_KERNEL_HI_ALLOWANCE,
+  STREAMWORLD_SAVE_DISPATCH_KERNEL_ALLOWANCE,
+  STREAMWORLD_SAVE_COMMIT_RESYNC_KERNEL_ALLOWANCE,
+  STREAMWORLD_SAVE_GATE_KERNEL_ALLOWANCE,
+  STREAMWORLD_SAVE_ARMING_GATE_KERNEL_ALLOWANCE,
+  STREAMWORLD_SAVE_CAMRELEASE_KERNEL_HI_ALLOWANCE,
+  STREAMWORLD_SAVE_DISPATCH_KERNEL_HI_ALLOWANCE,
+  STREAMWORLD_SAVE_COMMIT_TAIL_KERNEL_HI_ALLOWANCE,
+  STREAMWORLD_SAVE_RESYNC_KERNEL_HI_ALLOWANCE_BY_GAME_TYPE,
+  streamworldSaveResyncKernelHiAllowance,
   STREAMWORLD_NMI_KERNEL_ALLOWANCE,
   STREAMWORLD_NMI_PALETTE_FX_KERNEL_ALLOWANCE,
   STREAMWORLD_PROJECT_KERNEL_ALLOWANCE,
@@ -149,11 +163,13 @@ import {
   projectWithoutNameToken,
   projectUsesCamera,
   projectWithoutCamera,
+  projectUsesSave,
   metaspriteKernelBytes,
   RPG_LIMITS,
   LIMITS,
   BUTTONS,
-  validateProject
+  validateProject,
+  createScreen
 } from '../../shared/project.js';
 import { fontBankSplit, projectUsesText } from '../../shared/font.js';
 import { createSong } from '../../shared/audio.js';
@@ -5330,6 +5346,12 @@ test(
       // all), so it inflates this raw delta only on a shape whose own default project happens to
       // use text (RPG, unconditionally) rather than being a further confound the delta already
       // cancels the way STREAMWORLD_MOVE_KERNEL_HI_ALLOWANCE's own text.inc growth is cancelled.
+      // B1 (phase 2 slice 9 fix round 1b, Chris's relocation ruling) added a
+      // SIXTH, unconditional-under-streaming block: the four routines moved
+      // (spawn_streamed, build_oam_draw_sw, draw_one_entity_show_sw) or
+      // added (sw_redraw_screen_landing, deduplicating two identical
+      // kernel-lo copies) to engine/streamworld.asm. Flat across game type
+      // and mixed, like STREAMWORLD_KERNEL_HI_ALLOWANCE itself.
       const expected =
         STREAMWORLD_KERNEL_HI_ALLOWANCE +
         STREAMWORLD_MT_PAL_KERNEL_HI_BYTES +
@@ -5339,14 +5361,18 @@ test(
         STREAMWORLD_HAZARD_KERNEL_HI_ALLOWANCE +
         (projectUsesText(streamed) ? STREAMWORLD_DIALOGUE_MAPPER_KERNEL_HI_ALLOWANCE : 0) +
         (projectUsesText(streamed) ? streamworldDialogueLifecycleTerrainConsumerKernelHiAllowance(streamed) : 0) +
-        (projectUsesText(streamed) ? STREAMWORLD_DIALOGUE_RELOCATED_KERNEL_HI_ALLOWANCE : 0);
+        (projectUsesText(streamed) ? STREAMWORLD_DIALOGUE_RELOCATED_KERNEL_HI_ALLOWANCE : 0) +
+        STREAMWORLD_SPAWN_KERNEL_HI_ALLOWANCE +
+        STREAMWORLD_OAM_DRAW_SW_KERNEL_HI_ALLOWANCE +
+        STREAMWORLD_ENTITY_SHOW_SW_KERNEL_HI_ALLOWANCE +
+        STREAMWORLD_REDRAW_LANDING_KERNEL_HI_ALLOWANCE;
       // fix round 1, finding 7/verification: printed on every run, pass or fail, not only in an
       // assertion failure message -- an independent, per-mapper figure a report can quote.
       console.log(`${mapper.name} (${label}): real kernel-hi delta ${delta} (expected ${expected})`);
       assert.equal(
         delta,
         expected,
-        `${mapper.name} (${label}): real kernel-hi delta ${delta} != STREAMWORLD_KERNEL_HI_ALLOWANCE (${STREAMWORLD_KERNEL_HI_ALLOWANCE}) + STREAMWORLD_MT_PAL_KERNEL_HI_BYTES (${STREAMWORLD_MT_PAL_KERNEL_HI_BYTES}) + STREAMWORLD_WINDOW_KERNEL_HI_ALLOWANCE (${STREAMWORLD_WINDOW_KERNEL_HI_ALLOWANCE}) + knockback + sw_update_player + STREAMWORLD_HAZARD_KERNEL_HI_ALLOWANCE (${STREAMWORLD_HAZARD_KERNEL_HI_ALLOWANCE}) = ${expected}`
+        `${mapper.name} (${label}): real kernel-hi delta ${delta} != STREAMWORLD_KERNEL_HI_ALLOWANCE (${STREAMWORLD_KERNEL_HI_ALLOWANCE}) + STREAMWORLD_MT_PAL_KERNEL_HI_BYTES (${STREAMWORLD_MT_PAL_KERNEL_HI_BYTES}) + STREAMWORLD_WINDOW_KERNEL_HI_ALLOWANCE (${STREAMWORLD_WINDOW_KERNEL_HI_ALLOWANCE}) + knockback + sw_update_player + STREAMWORLD_HAZARD_KERNEL_HI_ALLOWANCE (${STREAMWORLD_HAZARD_KERNEL_HI_ALLOWANCE}) + dialogue terms + B1's relocated/new hi terms = ${expected}`
       );
     }
   }
@@ -5567,6 +5593,303 @@ test(
     }
   }
 );
+
+// Phase 2 slice 9 (Close-for-Save): a small helper that mirrors createStreamedProject's own
+// moveCommands convention (test/lib/streamedproject.js) but for a live Save command, since that
+// module has no options.saveCommand of its own and this is the only file that needs one. Places a
+// Save-behind-interact entity on the streamed map's first screen and gives the project a title
+// (validateProject requires one wherever a live Save exists, and saveMediaImplemented/SAVE_FLASH
+// both key off projectUsesSave, which itself requires a resolving title -- see
+// STREAMWORLD_SAVE_DISPATCH_KERNEL_ALLOWANCE's own comment above for why usesStreaming && usesSave
+// is the correct, exact gate for these seven terms). options.mixed carries the mixed shape
+// through unchanged (round-2 finding A3's "make the Save-term equality tests run on action AND
+// RPG, including the mixed... shape").
+function withStreamedSave(gameType, options = {}) {
+  const project = createStreamedProject({ gameType, mixed: !!options.mixed });
+  project.project.titleMap = 0;
+  project.project.titleScreen = 0;
+  const actorId = project.sprites.actors.length;
+  project.sprites.actors.push({ name: 'Saver', behavior: 'npc', hp: 1, damage: 0 });
+  const streamedMap = project.maps.find((m) => m.streamed);
+  const screen = streamedMap.screens[0];
+  screen.entities = screen.entities ?? [];
+  screen.entities.push({
+    actorId,
+    x: 32,
+    y: 32,
+    props: { trigger: 'interact', event: { pages: [{ cond: { type: 'none', arg: 0 }, commands: [{ op: 'save' }] }] } }
+  });
+  return project;
+}
+
+// Phase 2 slice 9, fix round 2 (round-2 findings A1 and A3): every kernel-lo/kernel-hi Save term
+// this slice added, equality-asserted together against real assembled builds on BOTH game types
+// plus the mixed shape -- round 1 had left RPG and mixed entirely unmeasured, on the theory that
+// RPG + streamed + camera + SAVE_FLASH could not assemble at all; B1's relocation (the needs-ruling
+// test below) closed that shortfall, so there is no longer a reason not to measure RPG and mixed
+// the same way action already was.
+//
+// STREAMWORLD_SAVE_DISPATCH_KERNEL_ALLOWANCE (kernel-lo, script_op_save_dispatch_start..end),
+// STREAMWORLD_SAVE_ARMING_GATE_KERNEL_ALLOWANCE (kernel-lo, engine/input.asm's own
+// dispatch_save_arm_gate_start..end -- round-2 finding A1's own fix: the rest of dispatch_loop's
+// own pass must stop the instant an action arms the deferred Save, not merely every later pass),
+// STREAMWORLD_SAVE_GATE_KERNEL_ALLOWANCE (kernel-lo, main_loop_save_gate_start..end),
+// STREAMWORLD_SAVE_CAMRELEASE_KERNEL_HI_ALLOWANCE, STREAMWORLD_SAVE_DISPATCH_KERNEL_HI_ALLOWANCE,
+// STREAMWORLD_SAVE_COMMIT_TAIL_KERNEL_HI_ALLOWANCE and
+// STREAMWORLD_SAVE_RESYNC_KERNEL_HI_ALLOWANCE_BY_GAME_TYPE are all measured directly per shape.
+//
+// save_media_commit_resync_start..end (round-2 finding A3, the 3-byte overcharge) is asserted
+// against the literal physical span (3 -- one `jsr`), not against
+// STREAMWORLD_SAVE_COMMIT_RESYNC_KERNEL_ALLOWANCE, which the fix below sets to 0: the streamed
+// branch's `jsr sw_save_commit_tail` REPLACES the non-streamed branch's `jsr enable_rendering` at
+// the identical call site inside save_media_commit's own `.if STREAMING_ENABLED / .else`, so its
+// incremental cost to kernelCodeBytes is genuinely 0 even though the raw instruction is genuinely
+// 3 bytes long either way -- the two numbers describe different things and must not be compared to
+// each other. The replacement-delta test right after this one proves that 0 empirically rather
+// than asserting it by construction.
+test(
+  'phase 2 slice 9 fix 2: every Save kernel-lo/kernel-hi term equals its real assembled span, action, RPG, action-mixed and RPG-mixed',
+  { skip: !hasNesasm && 'nesasm not found on PATH' },
+  async (t) => {
+    const mapper = resolveMapper(30);
+    const shapes = [
+      { gameType: 'action', mixed: false, label: 'action' },
+      { gameType: 'rpg', mixed: false, label: 'rpg' },
+      { gameType: 'action', mixed: true, label: 'action, mixed' },
+      { gameType: 'rpg', mixed: true, label: 'rpg, mixed' }
+    ];
+    for (const { gameType, mixed, label } of shapes) {
+      const project = withStreamedSave(gameType, { mixed });
+      const dir = await fsp.mkdtemp(path.join(os.tmpdir(), 'forge-kernel-save-terms-'));
+      t.after(() => fsp.rm(dir, { recursive: true, force: true }));
+      const built = await buildProject({ dir, project, log: () => {} });
+      const symbols = await fsp.readFile(built.symbolPath, 'utf8');
+      const span = (a, b) => symbolAddr(symbols, b) - symbolAddr(symbols, a);
+      const dispatchSpan = span('script_op_save_dispatch_start', 'script_op_save_dispatch_end');
+      const resyncSpan = span('save_media_commit_resync_start', 'save_media_commit_resync_end');
+      const armingGateSpan = span('dispatch_save_arm_gate_start', 'dispatch_save_arm_gate_end');
+      const gateSpan = span('main_loop_save_gate_start', 'main_loop_save_gate_end');
+      const camreleaseSpan = span('sw_dlg17cr_save_check_start', 'sw_dlg17cr_save_check_end');
+      const dispatchHiSpan = span('sw_dlg20_save_dispatch_start', 'sw_dlg20_save_dispatch_end');
+      const commitTailSpan = span('sw_save_commit_tail_start', 'sw_save_commit_tail_end');
+      const resyncHiSpan = span('sw_save_resync_start', 'sw_save_resync_end');
+      assert.equal(dispatchSpan, STREAMWORLD_SAVE_DISPATCH_KERNEL_ALLOWANCE, `${label}: script_op_save_dispatch span ${dispatchSpan}`);
+      assert.equal(resyncSpan, 3, `${label}: save_media_commit_resync span ${resyncSpan} (must stay the literal one-jsr size)`);
+      assert.equal(armingGateSpan, STREAMWORLD_SAVE_ARMING_GATE_KERNEL_ALLOWANCE, `${label}: dispatch_save_arm_gate span ${armingGateSpan}`);
+      assert.equal(gateSpan, STREAMWORLD_SAVE_GATE_KERNEL_ALLOWANCE, `${label}: main_loop_save_gate span ${gateSpan}`);
+      assert.equal(camreleaseSpan, STREAMWORLD_SAVE_CAMRELEASE_KERNEL_HI_ALLOWANCE, `${label}: sw_dlg17cr_save_check span ${camreleaseSpan}`);
+      assert.equal(dispatchHiSpan, STREAMWORLD_SAVE_DISPATCH_KERNEL_HI_ALLOWANCE, `${label}: sw_dlg20_save_dispatch span ${dispatchHiSpan}`);
+      assert.equal(commitTailSpan, STREAMWORLD_SAVE_COMMIT_TAIL_KERNEL_HI_ALLOWANCE, `${label}: sw_save_commit_tail span ${commitTailSpan}`);
+      assert.equal(
+        resyncHiSpan,
+        streamworldSaveResyncKernelHiAllowance({ project: { gameType } }),
+        `${label}: sw_save_resync span ${resyncHiSpan} vs STREAMWORLD_SAVE_RESYNC_KERNEL_HI_ALLOWANCE_BY_GAME_TYPE.${gameType} ` +
+          `${STREAMWORLD_SAVE_RESYNC_KERNEL_HI_ALLOWANCE_BY_GAME_TYPE[gameType]}`
+      );
+    }
+
+    // Off-predicate cases (round 3, finding A-blocking 3): a streamed project with no live Save,
+    // and a non-streamed (ordinary) project that DOES have a live Save. Presence, not merely span
+    // value, differs by label AND (for two of the seven) by game type -- there is no one shared
+    // "every span is 0" rule here, and the three gating predicates nest differently per label:
+    //  - script_op_save_dispatch's label sits INSIDE `.if SAVE_FLASH` in engine/save.asm, so it is
+    //    ABSENT (not merely zero) whenever Save itself is off, on both game types.
+    //  - dispatch_save_arm_gate (engine/input.asm) and main_loop_save_gate (engine/boot.asm) each
+    //    place their start/end labels OUTSIDE their own three nested `.if STREAMING_ENABLED / .if
+    //    TEXT_ENABLED / .if SAVE_FLASH` guards, so both labels are unconditionally present in every
+    //    build; only the body -- and so the span -- depends on the predicates.
+    //  - sw_save_commit_tail and sw_save_resync (engine/streamworld.asm) place their labels at
+    //    TOP LEVEL in that file (only inside their own local `.if SAVE_FLASH`, not nested under
+    //    TEXT_ENABLED), so they are PRESENT+0 whenever the file assembles at all (STREAMING_ENABLED)
+    //    regardless of Save or text, and wholly ABSENT the instant the project is not streamed (the
+    //    whole file is skipped at the include site).
+    //  - sw_dlg17cr_save_check and sw_dlg20_save_dispatch (engine/streamworld.asm) sit nested
+    //    inside that file's own `.if TEXT_ENABLED` block (lines 3754-5125), so on top of the
+    //    STREAMING_ENABLED gate above, they also require TEXT_ENABLED to be present at all.
+    //    projectUsesText (shared/font.js) hard-codes TEXT_ENABLED true for every RPG project
+    //    regardless of whether it carries any dialogue (`gameType === 'rpg' return true`), but an
+    //    action project only gets it from an actual text-bearing feature -- and createStreamedProject's
+    //    bare "no Save" fixture carries no dialogue at all. So on the streamed/no-Save shape these
+    //    two are PRESENT+0 for rpg and ABSENT for action; every other cell in this table is the same
+    //    on both game types.
+    // This whole matrix was confirmed empirically against builds using the SAME project builders
+    // (createStreamedProject, withStreamedSave) already defined above in this file --
+    // handoff-next/s9-fix3-scratch/probe-offpredicate-spans-v2.mjs -- not derived by reading the
+    // .asm nesting alone, and not assumed from an earlier, looser probe that turned out to miss the
+    // TEXT_ENABLED/game-type distinction entirely (that looser probe used a project shape that
+    // happened to give every span the same presence on both game types, which is not what this
+    // test's own fixtures produce). `spanOrAbsent` distinguishes "the label was never emitted" from
+    // "the label was emitted with a zero-length span" -- the round-3 finding's own required
+    // distinction -- rather than symbolAddr's unconditional throw.
+    function spanOrAbsent(symbols, startLabel, endLabel) {
+      const has = (label) => new RegExp(`^${label}\\s*=\\s*\\$[0-9A-Fa-f]+`, 'm').test(symbols);
+      const startPresent = has(startLabel);
+      const endPresent = has(endLabel);
+      assert.equal(startPresent, endPresent, `${startLabel}/${endLabel}: a start/end pair must be present or absent TOGETHER, never only one of them`);
+      if (!startPresent) return 'absent';
+      return symbolAddr(symbols, endLabel) - symbolAddr(symbols, startLabel);
+    }
+    // Per-label expectation on the streamed/no-Save shape: 'absent', 0, or a function of gameType.
+    const NOSAVE_EXPECT = {
+      script_op_save_dispatch: () => 'absent',
+      dispatch_save_arm_gate: () => 0,
+      main_loop_save_gate: () => 0,
+      sw_dlg17cr_save_check: (gameType) => (gameType === 'rpg' ? 0 : 'absent'),
+      sw_dlg20_save_dispatch: (gameType) => (gameType === 'rpg' ? 0 : 'absent'),
+      sw_save_commit_tail: () => 0,
+      sw_save_resync: () => 0,
+    };
+    // Per-label expectation on the ordinary/with-Save shape: the whole of engine/streamworld.asm is
+    // absent (not streamed), so only the two labels living outside it can be present at all.
+    const ORDINARY_EXPECT = {
+      script_op_save_dispatch: () => 0,
+      dispatch_save_arm_gate: () => 0,
+      main_loop_save_gate: () => 0,
+      sw_dlg17cr_save_check: () => 'absent',
+      sw_dlg20_save_dispatch: () => 'absent',
+      sw_save_commit_tail: () => 'absent',
+      sw_save_resync: () => 'absent',
+    };
+    const SEVEN_SAVE_TERM_SPANS = [
+      ['script_op_save_dispatch_start', 'script_op_save_dispatch_end'],
+      ['dispatch_save_arm_gate_start', 'dispatch_save_arm_gate_end'],
+      ['main_loop_save_gate_start', 'main_loop_save_gate_end'],
+      ['sw_dlg17cr_save_check_start', 'sw_dlg17cr_save_check_end'],
+      ['sw_dlg20_save_dispatch_start', 'sw_dlg20_save_dispatch_end'],
+      ['sw_save_commit_tail_start', 'sw_save_commit_tail_end'],
+      ['sw_save_resync_start', 'sw_save_resync_end'],
+    ];
+    for (const gameType of ['action', 'rpg']) {
+      const noSave = createStreamedProject({ gameType });
+      const dirOff = await fsp.mkdtemp(path.join(os.tmpdir(), 'forge-kernel-save-terms-nosave-'));
+      t.after(() => fsp.rm(dirOff, { recursive: true, force: true }));
+      const builtOff = await buildProject({ dir: dirOff, project: noSave, log: () => {} });
+      const symbolsOff = await fsp.readFile(builtOff.symbolPath, 'utf8');
+      for (const [startLabel, endLabel] of SEVEN_SAVE_TERM_SPANS) {
+        const result = spanOrAbsent(symbolsOff, startLabel, endLabel);
+        const name = startLabel.replace(/_start$/, '');
+        const expected = NOSAVE_EXPECT[name](gameType);
+        const desc = expected === 'absent'
+          ? `${gameType}, streamed, no Save: ${name} must be ABSENT from the build entirely, not merely zero-length`
+          : `${gameType}, streamed, no Save: ${name} must be present with span exactly ${expected}`;
+        assert.equal(result, expected, desc);
+      }
+
+      const ordinaryWithSave = withStreamedSave(gameType);
+      for (const map of ordinaryWithSave.maps) map.streamed = false;
+      const dirOrd = await fsp.mkdtemp(path.join(os.tmpdir(), 'forge-kernel-save-terms-ordinary-'));
+      t.after(() => fsp.rm(dirOrd, { recursive: true, force: true }));
+      const builtOrd = await buildProject({ dir: dirOrd, project: ordinaryWithSave, log: () => {} });
+      const symbolsOrd = await fsp.readFile(builtOrd.symbolPath, 'utf8');
+      for (const [startLabel, endLabel] of SEVEN_SAVE_TERM_SPANS) {
+        const result = spanOrAbsent(symbolsOrd, startLabel, endLabel);
+        const name = startLabel.replace(/_start$/, '');
+        const expected = ORDINARY_EXPECT[name](gameType);
+        const desc = expected === 'absent'
+          ? `${gameType}, ordinary, with Save: ${name} lives inside engine/streamworld.asm, whose whole file is gated on ".if STREAMING_ENABLED" at the include site -- its label must be ABSENT from a non-streamed build, not merely zero-length`
+          : `${gameType}, ordinary, with Save: ${name} must be present with span exactly ${expected}`;
+        assert.equal(result, expected, desc);
+      }
+    }
+  }
+);
+
+// Phase 2 slice 9, fix round 2 (round-2 finding A3): the replacement-delta proof for
+// save_media_commit's own tail branch. Builds the SAME project (streamed map, live Save) twice --
+// once with STREAMING_ENABLED live, once with every map's `streamed` flag forced off (so the
+// `.if STREAMING_ENABLED / .else` in save.asm takes its ordinary `jsr enable_rendering` branch
+// instead) -- and compares each build's real total kernel-lo usage. The delta between the two
+// real totals must equal kernelCodeBytes(streamed) - kernelCodeBytes(ordinary): if
+// STREAMWORLD_SAVE_COMMIT_RESYNC_KERNEL_ALLOWANCE still charged 3 (round 1's overcharge), the
+// model's predicted delta would be 3 bytes higher than the real one and this would fail.
+test(
+  'phase 2 slice 9 fix 2 (A3): save_media_commit_resync is a replacement, not an addition -- streamed-with-Save vs the same project with STREAMING_ENABLED forced off',
+  { skip: !hasNesasm && 'nesasm not found on PATH' },
+  async (t) => {
+    const mapper = resolveMapper(30);
+    async function realCodeBytes(project, tag) {
+      const dir = await fsp.mkdtemp(path.join(os.tmpdir(), `forge-resync-delta-${tag}-`));
+      t.after(() => fsp.rm(dir, { recursive: true, force: true }));
+      const lines = [];
+      const built = await buildProject({ dir, project, log: (l) => lines.push(l) });
+      const { kernelLoBank } = prgLayout(mapper);
+      const bankLine = lines.find((line) => new RegExp(`^BANK\\s+${kernelLoBank}\\s`).test(line));
+      assert.ok(bankLine, `nesasm's usage table never mentioned bank ${kernelLoBank} (kernel-lo)`);
+      const used = Number(bankLine.match(/(\d+)\/\s*(\d+)\s*$/)?.[1]);
+      const symbols = await fsp.readFile(built.symbolPath, 'utf8');
+      const resetAddr = symbolAddr(symbols, 'reset');
+      return used - (resetAddr - 0xc000);
+    }
+    for (const gameType of ['action', 'rpg']) {
+      const streamed = withStreamedSave(gameType);
+      const ordinary = withStreamedSave(gameType);
+      for (const map of ordinary.maps) map.streamed = false;
+      const realStreamed = await realCodeBytes(streamed, `${gameType}-on`);
+      const realOrdinary = await realCodeBytes(ordinary, `${gameType}-off`);
+      const realDelta = realStreamed - realOrdinary;
+      const modeledDelta = kernelCodeBytes(streamed, mapper) - kernelCodeBytes(ordinary, mapper);
+      assert.equal(
+        realDelta,
+        modeledDelta,
+        `${gameType}: real kernel-lo delta (streamed - ordinary) is ${realDelta} but the model predicts ${modeledDelta} -- ` +
+          'if these differ by exactly 3, STREAMWORLD_SAVE_COMMIT_RESYNC_KERNEL_ALLOWANCE is overcharging the replacement again.'
+      );
+    }
+  }
+);
+
+// Phase 2 slice 9, fix round 1 (A3): sw_save_resync's game-type split is exactly one conditional
+// `jsr draw_hud` (skipped whenever BATTLE_ENABLED, which every RPG sets) -- confirmed as a source
+// property alongside (not instead of) the real assembled RPG measurement above.
+test('phase 2 slice 9 fix 1 (A3): sw_save_resync\'s only BATTLE_ENABLED-conditional line is the draw_hud call, and it is exactly 3 bytes (a jsr)', async () => {
+  const src = await fsp.readFile(path.join(ROOT, 'engine/streamworld.asm'), 'utf8');
+  const bodyStart = src.indexOf('sw_save_resync:');
+  const bodyEnd = src.indexOf('sw_save_resync_end:', bodyStart);
+  const body = src.slice(bodyStart, bodyEnd);
+  const battleConditionals = [...body.matchAll(/\.if\s+!?BATTLE_ENABLED/g)];
+  assert.equal(battleConditionals.length, 1, 'sw_save_resync body must have exactly one BATTLE_ENABLED conditional');
+  assert.match(body, /\.if !BATTLE_ENABLED\s*\n\s*jsr draw_hud\s*\n\s*\.endif/, 'the one conditional must be a single 3-byte jsr draw_hud');
+  assert.equal(
+    STREAMWORLD_SAVE_RESYNC_KERNEL_HI_ALLOWANCE_BY_GAME_TYPE.action - STREAMWORLD_SAVE_RESYNC_KERNEL_HI_ALLOWANCE_BY_GAME_TYPE.rpg,
+    3,
+    'rpg must be exactly 3 bytes (one jsr) less than action'
+  );
+});
+
+// Phase 2 slice 9 needs-ruling, CLOSED by B1 (phase 2 slice 9 fix round 1b, Chris's relocation
+// ruling): RPG + STREAMING_ENABLED + camera + SAVE_FLASH used to overflow kernel-lo by a fixed,
+// content-independent 159 bytes (confirmed present at 2563ef4 with zero slice 9 bytes added, via
+// git-stash isolation of just the Item 7 refusal lift) -- a pre-existing shortfall, not something
+// slice 9 itself caused or could fix on its own. This is one of the brief's two REQUIRED B1
+// targets ("RPG Save must fit at margin >= 0 after KERNEL_SLACK"); relocating spawn_streamed,
+// build_oam_draw_sw, draw_one_entity_show_sw and the deduplicated sw_redraw_screen_landing to
+// kernel-hi freed 501 kernel-lo bytes at the cost of 474 kernel-hi bytes (net -27, plus the
+// rebalancing from a tight kernel-lo ledger to a kernel-hi ledger that had 500+ bytes of slack --
+// test/unit/kernelbytes.test.js's own margin-in-band assertions on 117/118 had flagged that slack
+// as suspiciously generous even before this fix round measured why), which is enough on its own
+// to close this shortfall with no further relocation needed. checkCapacity is called directly
+// (a pure function -- no nesasm build needed to get the exact margin) rather than only checking
+// that buildProject no longer rejects, so a future regression that eats the new margin is caught
+// before it silently reopens this shortfall.
+test('B1 (phase 2 slice 9 fix round 1b) REQUIRED target: RPG + streamed + camera + SAVE_FLASH now fits, margin in band', () => {
+  const project = withStreamedSave('rpg');
+  const mapper = resolveMapper(project.cartridge.mapper);
+  const { fixedBytes, tableBytes } = kernelTableBytes(project, mapper);
+  const kernelBudget = kernelCodeBytes(project, mapper);
+  const BANK_SIZE = 8192;
+  const kernelFree = BANK_SIZE - kernelBudget - fixedBytes - tableBytes;
+  const { problems } = checkCapacity(project);
+  const tableProblem = problems.find((p) => /lookup tables need/.test(p.message));
+  assert.equal(
+    tableProblem,
+    undefined,
+    `RPG + streamed + camera + SAVE_FLASH should now fit -- checkCapacity still refuses it: ${tableProblem?.message}`
+  );
+  assert.ok(
+    kernelFree >= 0,
+    `RPG + streamed + camera + SAVE_FLASH: kernelFree ${kernelFree} is negative -- the REQUIRED B1 target is not met`
+  );
+});
 
 // Phase 2 slice 7a: STREAMWORLD_DIALOGUE_MAPPER_KERNEL_HI_ALLOWANCE. Unlike
 // the Move term above, this one needs no double-difference -- sw_dlg_mapper_
@@ -5960,10 +6283,15 @@ test(
 
 // A project that genuinely does not fit alongside this new term still gets checkCapacity's own
 // ordinary refusal, worded for whichever bank actually overflowed -- Chris's ruling 2026-09-25(b)'s
-// own requirement -- rather than silently overflowing. A large streamed grid with naming on already
-// overflows the LOOKUP TABLE budget (a different ledger than kernelCodeBytes) at this project's
-// default size, which is exactly the genuine-overflow case the ruling anticipated, not a bug in this
-// term's accounting.
+// own requirement -- rather than silently overflowing. A large streamed grid with naming on used to
+// overflow the LOOKUP TABLE budget (a different ledger than kernelCodeBytes) at this project's
+// default size; B1 (phase 2 slice 9 fix round 1b) freed enough kernel-lo room (see the RPG+Save
+// REQUIRED-target test above) that the DEFAULT-sized project from this test no longer overflows at
+// all (confirmed directly: kernelFree +415 where it used to be negative) -- not a bug in this term's
+// accounting, the intended effect of B1. The negative control still needs a project that genuinely
+// does not fit, so this now pads the ordinary "Before" map out to a much larger grid (52 screens,
+// re-measured to leave kernelFree comfortably negative, -209, not a hair's-width -1) purely to
+// re-create a genuine overflow, not because streaming+naming+dialogue alone still overflows it.
 test(
   "phase 2 slice 7b fix round 1 (A4/Chris's ruling (b)): a genuinely overfull action+streamed+naming " +
     'project still gets an ordinary capacity refusal, not a silent overflow',
@@ -5976,6 +6304,10 @@ test(
       actorId: 0,
       props: { dialogue: 'Hi' }
     });
+    const before = project.maps[0];
+    before.gridW = 2;
+    before.gridH = 26;
+    while (before.screens.length < before.gridW * before.gridH) before.screens.push(createScreen());
     const dir = await fsp.mkdtemp(path.join(os.tmpdir(), 'forge-kernello-nameentry-action-overfull-'));
     t.after(() => fsp.rm(dir, { recursive: true, force: true }));
     await assert.rejects(
@@ -6087,14 +6419,45 @@ test(
         `cross_left..cross_none region on ${gameType}: real streaming-on delta ${crossRegionDelta} != ` +
           `STREAMWORLD_CROSS_TRANSLATE_KERNEL_ALLOWANCE (${STREAMWORLD_CROSS_TRANSLATE_KERNEL_ALLOWANCE})`
       );
-      // spawn_entities: dispatch preamble + spawn_streamed's own body, two
-      // spans summed into the one named allowance (generate.js's own comment).
+      // spawn_entities: B1 (phase 2 slice 9 fix round 1b) relocated
+      // spawn_streamed's own body to engine/streamworld.asm (kernel-hi), so
+      // the kernel-lo allowance now covers only the dispatch preamble --
+      // spawn_streamed's relocated body is checked separately below against
+      // STREAMWORLD_SPAWN_KERNEL_HI_ALLOWANCE.
       const dispatch = await measureStreamedSpan(mapper, project, 'spawn_clear_dispatch', 'spawn_clear_ord');
-      const body = await measureStreamedSpan(mapper, project, 'spawn_streamed', 'update_entities');
       assert.equal(
-        dispatch + body,
+        dispatch,
         STREAMWORLD_SPAWN_KERNEL_ALLOWANCE,
-        `STREAMWORLD_SPAWN_KERNEL_ALLOWANCE on ${gameType}: real span ${dispatch + body} != ${STREAMWORLD_SPAWN_KERNEL_ALLOWANCE}`
+        `STREAMWORLD_SPAWN_KERNEL_ALLOWANCE on ${gameType}: real span ${dispatch} != ${STREAMWORLD_SPAWN_KERNEL_ALLOWANCE}`
+      );
+      const spawnStreamedBody = await measureStreamedSpan(mapper, project, 'spawn_streamed', 'spawn_streamed_end');
+      assert.equal(
+        spawnStreamedBody,
+        STREAMWORLD_SPAWN_KERNEL_HI_ALLOWANCE,
+        `STREAMWORLD_SPAWN_KERNEL_HI_ALLOWANCE on ${gameType}: real span ${spawnStreamedBody} != ${STREAMWORLD_SPAWN_KERNEL_HI_ALLOWANCE}`
+      );
+      const oamDrawSwBody = await measureStreamedSpan(mapper, project, 'build_oam_draw_sw', 'build_oam_draw_sw_end');
+      assert.equal(
+        oamDrawSwBody,
+        STREAMWORLD_OAM_DRAW_SW_KERNEL_HI_ALLOWANCE,
+        `STREAMWORLD_OAM_DRAW_SW_KERNEL_HI_ALLOWANCE on ${gameType}: real span ${oamDrawSwBody} != ${STREAMWORLD_OAM_DRAW_SW_KERNEL_HI_ALLOWANCE}`
+      );
+      const entityShowSwBody = await measureStreamedSpan(mapper, project, 'draw_one_entity_show_sw', 'draw_one_entity_show_sw_end');
+      assert.equal(
+        entityShowSwBody,
+        STREAMWORLD_ENTITY_SHOW_SW_KERNEL_HI_ALLOWANCE,
+        `STREAMWORLD_ENTITY_SHOW_SW_KERNEL_HI_ALLOWANCE on ${gameType}: real span ${entityShowSwBody} != ${STREAMWORLD_ENTITY_SHOW_SW_KERNEL_HI_ALLOWANCE}`
+      );
+      const redrawLandingBody = await measureStreamedSpan(
+        mapper,
+        project,
+        'sw_redraw_screen_landing',
+        'sw_redraw_screen_landing_end'
+      );
+      assert.equal(
+        redrawLandingBody,
+        STREAMWORLD_REDRAW_LANDING_KERNEL_HI_ALLOWANCE,
+        `STREAMWORLD_REDRAW_LANDING_KERNEL_HI_ALLOWANCE on ${gameType}: real span ${redrawLandingBody} != ${STREAMWORLD_REDRAW_LANDING_KERNEL_HI_ALLOWANCE}`
       );
       // apply_map_music: named at 0 (generate.js's own comment) -- the span
       // measured here is NOT the delta (it includes the shared, unconditional
@@ -6301,25 +6664,38 @@ test(
     beforeScreen.boundTiles = [{ switchId: 0, row: 0, col: 0, metatileId: beforeScreen.metatiles[0] }];
     const boundSpan = await measureStreamedSpan(mapper, boundProject, 'rebuild_bound_cache_dispatch', 'rebuild_bound_cache_ordinary');
     assert.equal(boundSpan, STREAMWORLD_BOUND_CACHE_KERNEL_ALLOWANCE);
-    // F3 (phase 2 slice 2b fix round 1): both streamed-landing copies now
-    // call rebuild_bound_cache under BOUND_TILE_ENABLED, so the resolver/
-    // redraw spans measured above (on the no-bound-tile `project`) grow by
-    // STREAMWORLD_LANDING_BOUND_CACHE_KERNEL_ALLOWANCE once a project also
-    // authors a bound tile -- measured here as the marginal delta on the
-    // same boundProject already built above, not a fresh guess.
+    // F3 (phase 2 slice 2b fix round 1) originally had both streamed-landing
+    // copies call rebuild_bound_cache under BOUND_TILE_ENABLED, each in its
+    // own kernel-lo dispatch span. B1 (phase 2 slice 9 fix round 1b)
+    // deduplicated both landing sites' render sequences into the one shared
+    // kernel-HI sw_redraw_screen_landing, which now carries the ONE
+    // remaining `jsr rebuild_bound_cache` -- so the kernel-LO dispatch spans
+    // no longer grow at all with a bound tile (STREAMWORLD_LANDING_BOUND_
+    // CACHE_KERNEL_ALLOWANCE is correctly 0 now), and the marginal cost
+    // shows up instead as a 3-byte growth of the shared kernel-HI routine's
+    // own span (STREAMWORLD_LANDING_BOUND_CACHE_KERNEL_HI_ALLOWANCE).
     const resolverWithBound = await measureStreamedSpan(mapper, boundProject, 'boot_streamed_landing', 'boot_draw_ordinary');
     const redrawWithBound = await measureStreamedSpan(mapper, boundProject, 'redraw_screen_dispatch', 'redraw_screen_ordinary');
     const resolverDelta = resolverWithBound - STREAMWORLD_RESOLVER_KERNEL_ALLOWANCE;
     const redrawDelta = redrawWithBound - STREAMWORLD_REDRAW_KERNEL_ALLOWANCE;
-    // Both call sites cost the same fixed `jsr rebuild_bound_cache` (3 bytes
-    // each); the combined constant (2*3) is what the kernel-lo formula
-    // actually charges once, covering both sites in the same bank.
-    assert.equal(resolverDelta, 3, `boot_streamed_landing..boot_draw_ordinary with a bound tile: delta ${resolverDelta} != 3`);
-    assert.equal(redrawDelta, 3, `redraw_screen_dispatch..redraw_screen_ordinary with a bound tile: delta ${redrawDelta} != 3`);
+    assert.equal(resolverDelta, 0, `boot_streamed_landing..boot_draw_ordinary with a bound tile: delta ${resolverDelta} != 0`);
+    assert.equal(redrawDelta, 0, `redraw_screen_dispatch..redraw_screen_ordinary with a bound tile: delta ${redrawDelta} != 0`);
     assert.equal(
       resolverDelta + redrawDelta,
       STREAMWORLD_LANDING_BOUND_CACHE_KERNEL_ALLOWANCE,
       `combined landing bound-cache delta ${resolverDelta + redrawDelta} != STREAMWORLD_LANDING_BOUND_CACHE_KERNEL_ALLOWANCE (${STREAMWORLD_LANDING_BOUND_CACHE_KERNEL_ALLOWANCE})`
+    );
+    const landingHiWithBound = await measureStreamedSpan(
+      mapper,
+      boundProject,
+      'sw_redraw_screen_landing',
+      'sw_redraw_screen_landing_end'
+    );
+    const landingHiDelta = landingHiWithBound - STREAMWORLD_REDRAW_LANDING_KERNEL_HI_ALLOWANCE;
+    assert.equal(
+      landingHiDelta,
+      STREAMWORLD_LANDING_BOUND_CACHE_KERNEL_HI_ALLOWANCE,
+      `sw_redraw_screen_landing with a bound tile: delta ${landingHiDelta} != STREAMWORLD_LANDING_BOUND_CACHE_KERNEL_HI_ALLOWANCE (${STREAMWORLD_LANDING_BOUND_CACHE_KERNEL_HI_ALLOWANCE})`
     );
     // F5: tile_switch_changed's second (streaming) guard only exists inside
     // `.if BOUND_TILE_ENABLED` (engine/script.asm), so it can only be
@@ -6345,7 +6721,7 @@ test(
 // shape is enough; no ON/OFF diff needed (unlike the NMI splice below, which REPLACES rather than
 // adds).
 test(
-  'phase 2 slice 4a, case 13: STREAMWORLD_PROJECT_KERNEL_ALLOWANCE equals the real combined span of the five additive projection-wiring brackets, on UNROM 512, both game types and the mixed shape',
+  'phase 2 slice 4a, case 13 (B1 phase 2 slice 9 fix round 1b): STREAMWORLD_PROJECT_KERNEL_ALLOWANCE equals the real combined span of the two dispatch trampolines plus the unchanged hurt-dispatch delta, on UNROM 512, both game types and the mixed shape',
   { skip: !hasNesasm && 'nesasm not found on PATH' },
   async () => {
     const mapper = resolveMapper(30);
@@ -6358,8 +6734,12 @@ test(
       const project = createStreamedProject({ gameType, mixed });
       const ordinaryProject = structuredClone(project);
       for (const map of ordinaryProject.maps) map.streamed = false;
+      // B1 relocated both routine BODIES (build_oam_draw_sw, draw_one_entity_show_sw) to
+      // engine/streamworld.asm -- checked separately above against their own kernel-hi
+      // allowances. What remains kernel-lo is the two dispatch trampolines (each now a
+      // beq-then-jmp, since a bne can no longer reach the relocated body) plus the
+      // unchanged draw_one_entity_hurt_dispatch/draw_one_entity_show REPLACE delta.
       const dispatchSpan = await measureStreamedSpan(mapper, project, 'build_oam_draw_dispatch', 'build_oam_draw_dispatch_done');
-      const swDrawSpan = await measureStreamedSpan(mapper, project, 'build_oam_draw_sw', 'build_oam_draw_sw_end');
       // draw_one_entity_hurt_dispatch/draw_one_entity_show is a REPLACE, not a purely-additive
       // bracket (round 1 review fix: only a streaming build needs the extra jmp, so an ordinary
       // build keeps its original 2-byte bne there too) -- streamed-minus-ordinary isolates the
@@ -6368,16 +6748,15 @@ test(
       const entityHurtOrdinary = await measureStreamedSpan(mapper, ordinaryProject, 'draw_one_entity_hurt_dispatch', 'draw_one_entity_show');
       const entityHurtSpan = entityHurtStreamed - entityHurtOrdinary;
       const entityDispatchSpan = await measureStreamedSpan(mapper, project, 'draw_one_entity_show', 'de_show_dispatch_done');
-      const entityJoinSpan = await measureStreamedSpan(mapper, project, 'draw_one_entity_ordinary_join', 'draw_one_entity_animate');
-      const total = dispatchSpan + swDrawSpan + entityHurtSpan + entityDispatchSpan + entityJoinSpan;
+      const total = dispatchSpan + entityHurtSpan + entityDispatchSpan;
       console.log(
         `${mapper.name} (${label}): STREAMWORLD_PROJECT_KERNEL_ALLOWANCE total ${total} ` +
-          `(oam dispatch ${dispatchSpan}, oam sw ${swDrawSpan}, entity hurt ${entityHurtSpan} [streamed ${entityHurtStreamed}, ordinary ${entityHurtOrdinary}], entity dispatch ${entityDispatchSpan}, entity join ${entityJoinSpan}, expected ${STREAMWORLD_PROJECT_KERNEL_ALLOWANCE})`
+          `(oam dispatch ${dispatchSpan}, entity hurt ${entityHurtSpan} [streamed ${entityHurtStreamed}, ordinary ${entityHurtOrdinary}], entity dispatch ${entityDispatchSpan}, expected ${STREAMWORLD_PROJECT_KERNEL_ALLOWANCE})`
       );
       assert.equal(
         total,
         STREAMWORLD_PROJECT_KERNEL_ALLOWANCE,
-        `${mapper.name} (${label}): the five projection-wiring spans sum to ${total}, but STREAMWORLD_PROJECT_KERNEL_ALLOWANCE reserves ${STREAMWORLD_PROJECT_KERNEL_ALLOWANCE} -- re-measure and correct it.`
+        `${mapper.name} (${label}): the three projection-wiring spans sum to ${total}, but STREAMWORLD_PROJECT_KERNEL_ALLOWANCE reserves ${STREAMWORLD_PROJECT_KERNEL_ALLOWANCE} -- re-measure and correct it.`
       );
     }
   }

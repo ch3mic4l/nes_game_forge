@@ -26,7 +26,11 @@ import { saveProject } from '../../main/project-io.js';
 import { buildProject } from '../../main/build/pipeline.js';
 import { validateProject } from '../../shared/project.js';
 import { createStreamedProject } from '../lib/streamedproject.js';
+import { mergeReconstructEngineFile } from '../lib/enginehistory.js';
 import NES from '../../renderer/emulator/core/nes.js';
+import { fileURLToPath } from 'node:url';
+
+const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 
 const hasNesasm = spawnSync('nesasm', [], { stdio: 'ignore' }).error?.code !== 'ENOENT';
 
@@ -1274,13 +1278,25 @@ test('sabotage case 7 (A2): the SAME uninterrupted joint-capture drive, with the
 // ---------------------------------------------------------------------------------------------
 // Byte-identity: this slice must cost nothing when unused. Baseline is 0ea504b, the tip commit
 // immediately before this slice's own work began (git log at the top of this session).
-// ---------------------------------------------------------------------------------------------
-
+//
+// streamworld.asm alone is reconstructed via mergeReconstructEngineFile rather than a flat `git
+// show 0ea504b:...`: fix round 1b's B1 (still uncommitted, on top of HEAD) relocated several of
+// this file's routines (spawn_streamed, build_oam_draw_sw, draw_one_entity_show_sw,
+// sw_redraw_screen_landing) that current entities.asm/oam.asm/screens.asm/boot.asm -- deliberately
+// NOT in this override list, since slice 8 never touched them -- now reference unconditionally. A
+// flat revert to 0ea504b drops those routines and every one of those un-overridden files fails to
+// assemble ("Undefined symbol in operand field"); the merge reconstruction keeps B1's relocation
+// while still removing slice 8's (and, incidentally, slice 9's -- 0ea504b predates both) own
+// additions, which is exactly what "byte-identical to the pre-slice-8 engine" needs to mean now
+// that B1 has made a truly unconditional relocation permanent. constants.asm/ui.asm's own current
+// diffs from 0ea504b are comment/equate-only (zero bytes either way -- confirmed by reading both
+// diffs directly), so a flat revert of those two remains correct.
 function slice8BaselineOverrides() {
-  return ['constants.asm', 'streamworld.asm', 'ui.asm'].map((name) => ({
-    name,
-    text: execFileSync('git', ['show', `0ea504b:engine/${name}`], { encoding: 'utf8' })
-  }));
+  return [
+    { name: 'constants.asm', text: execFileSync('git', ['show', '0ea504b:engine/constants.asm'], { encoding: 'utf8' }) },
+    { name: 'streamworld.asm', text: mergeReconstructEngineFile(ROOT, '0ea504b', 'streamworld.asm') },
+    { name: 'ui.asm', text: execFileSync('git', ['show', '0ea504b:engine/ui.asm'], { encoding: 'utf8' }) }
+  ];
 }
 
 test('byte-identity: a non-streamed project assembles byte-identical to the pre-slice-8 (0ea504b) engine sources', { skip: !hasNesasm && 'nesasm not found on PATH' }, async (t) => {
@@ -1302,7 +1318,7 @@ test('byte-identity: a non-streamed project assembles byte-identical to the pre-
   );
 });
 
-test('byte-identity: a streamed project with no live Move assembles byte-identical to the pre-slice-8 (0ea504b) engine sources', { skip: !hasNesasm && 'nesasm not found on PATH' }, async (t) => {
+test('byte-identity: a streamed project with no live Move assembles byte-identical to the pre-slice-8 (0ea504b) engine sources with the B1 relocation applied', { skip: !hasNesasm && 'nesasm not found on PATH' }, async (t) => {
   const project = createStreamedProject({ gameType: 'action' });
   const dir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'forge-closemove-identity-noMove-'));
   const baselineDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'forge-closemove-identity-noMove-baseline-'));
@@ -1316,6 +1332,6 @@ test('byte-identity: a streamed project with no live Move assembles byte-identic
   assert.deepEqual(
     fs.readFileSync(built.romPath),
     fs.readFileSync(baselineBuilt.romPath),
-    'a streamed project that never uses a scripted Move must never pay for slice 8\'s own close-for-Move mechanism'
+    'a streamed project that never uses a scripted Move must never pay for slice 8\'s own close-for-Move mechanism (baseline: pre-slice-8 engine sources with the B1 relocation applied on both sides)'
   );
 });

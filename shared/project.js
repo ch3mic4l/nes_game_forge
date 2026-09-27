@@ -6975,15 +6975,12 @@ function validateStreamedMaps(project, add) {
   // combination itself -- still gets checkCapacity's own ordinary kernel-lo/
   // kernel-hi refusal, worded for whichever bank actually overflowed.
 
-  // Item 7: a live Save anywhere in a project that has a streamed map.
-  if (projectUsesSave(project)) {
-    add(
-      'error',
-      'Map Forge',
-      'This project has a live Save command, which a project with a streamed map cannot yet -- remove Save, or ' +
-        'remove the streamed map.'
-    );
-  }
+  // Item 7's own refusal (a live Save anywhere in a project with a streamed map) is lifted as of
+  // phase 2 slice 9: close-for-Save (engine/save.asm's script_op_save, engine/ui.asm's ui_tick,
+  // engine/streamworld.asm's sw_dlg20_save_dispatch/sw_dlg20_save_check/sw_save_resync) discharges
+  // obligation 4 (docs/design-streamed-worlds.md §10) for real, on both battery boards (unaffected
+  // -- SAVE_FLASH-only) and UNROM 512's flash medium, box open or not. See
+  // test/unit/streamworldclosesave.test.js's own positive coverage.
   // Item 8: the camera off. engine/boot.asm's own nmi_scroll hardcodes scroll
   // (0,0) and nametable 0 every vblank when CAMERA_ENABLED is off, which
   // would silently overwrite a streamed landing's own non-(0,0) scroll one

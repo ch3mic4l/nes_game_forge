@@ -4,10 +4,13 @@
 // Part D's refusals (shared/project.js's validateStreamedMaps), positive AND negative,
 // built through the real public path -- not merely a validateProject message match, since a
 // refusal that only fired in validateProject but not generateAssets/buildProject would ship a
-// broken ROM to a user who bypassed the editor's own warning panel. Seven items refuse the build
-// (D.1, D.2, D.4-D.8 in this file's own section order); D.3 (a scripted Move reachable on a
-// streamed screen) lifted back to a warning in phase 2 slice 3 (move_tick's own bound/probe),
-// so its own section below checks a warning plus a clean build instead of a refusal.
+// broken ROM to a user who bypassed the editor's own warning panel. Six items refuse the build
+// (D.1, D.2, D.4-D.6, D.8 in this file's own section order); D.3 (a scripted Move reachable on a
+// streamed screen) lifted back to a warning in phase 2 slice 3 (move_tick's own bound/probe), so
+// its own section below checks a warning plus a clean build instead of a refusal; D.7 (a live Save
+// anywhere in a project with a streamed map) lifted entirely in phase 2 slice 9 (close-for-Save
+// discharges obligation 4 for real), so its own section below is now positive-only, the deeper
+// mechanism coverage living in test/unit/streamworldclosesave.test.js.
 //
 // It also covers the brief's own public-path render proof: the generator's default project,
 // built through buildProject with no test-only option, booted headlessly for real (not
@@ -361,7 +364,7 @@ test('D.6: BE_INIT is one of several BE_* entry points into call_battle, not the
   assert.ok(armed.size > 1, `expected more than one armed BE_* entry point: ${JSON.stringify([...armed])}`);
 });
 
-// ---------------------------------------------------------------- D.7: live Save
+// ---------------------------------------------------------------- D.7: live Save (lifted, slice 9)
 
 test(
   'D.7 positive: no Save command in a streamed project builds clean',
@@ -373,22 +376,40 @@ test(
   }
 );
 
-test('D.7 negative: a live Save command ANYWHERE in a project with a streamed map is refused, even authored on an ordinary map', () => {
-  const project = createStreamedProject({ gameType: 'rpg', mixed: true });
-  // The mixed shape's first, ordinary "before" map -- proving item 7 is a project-wide refusal,
-  // not scoped to the streamed screen the way items 2-4/6 are (streamed.test.js's D.6/D.3/D.4
-  // negatives already cover the on-screen case).
-  const before = project.maps[0].screens[0];
-  before.entities = before.entities ?? [];
-  before.entities.push({
-    actorId: 0,
-    x: 32,
-    y: 32,
-    props: { trigger: 'interact', event: { pages: [{ cond: { type: 'none', arg: 0 }, commands: [{ op: 'save' }] }] } }
-  });
-  const errors = streamedErrors(project);
-  assert.ok(errors.some((e) => /live Save command/.test(e.message)), JSON.stringify(errors));
-});
+test(
+  'D.7 positive (lifted, slice 9): a live Save command reachable on a streamed map itself builds clean',
+  { skip: !hasNesasm && 'nesasm not found on PATH' },
+  async () => {
+    // action, not rpg: measured directly (handoff-next/s9-baseline-check*.mjs, phase 2 slice 9) --
+    // RPG + STREAMING_ENABLED + camera + SAVE_FLASH already needs 159 kernel-lo bytes more than
+    // exist, WITH ZERO SLICE-9 BYTES ADDED (confirmed by lifting only this file's own refusal at
+    // 2563ef4, no engine change at all, both on this light single-screen shape and on the heavier
+    // mixed+camera+battle shape -- identical "-159 free" either way, proving it is RPG's own fixed
+    // engine-code cost, not lookup-table content). A plain (non-streamed) RPG+SAVE_FLASH+camera
+    // project builds fine, and so does a streamed RPG+camera project with no Save -- it is the
+    // combination of all three that a pre-existing (not slice-9) shortfall in RPG's own kernel-lo
+    // footprint cannot yet absorb. That is unrelated to whether Item 7's specific refusal exists:
+    // checkCapacity's own generic overflow message already, correctly refuses it post-lift, the
+    // same class of refusal every other over-stuffed combination already gets (see this file's own
+    // comment on the NAME_ENTRY_ACTION precedent, shared/project.js, just above Item 7). Flagged
+    // under needs-ruling in the slice 9 report; action is what obligation 4 fits today.
+    const project = createStreamedProject({ gameType: 'action' });
+    project.project.titleMap = 0;
+    project.project.titleScreen = 0;
+    const screen = project.maps[0].screens[0];
+    screen.entities = screen.entities ?? [];
+    screen.entities.push({
+      actorId: 0,
+      x: 32,
+      y: 32,
+      props: { trigger: 'interact', event: { pages: [{ cond: { type: 'none', arg: 0 }, commands: [{ op: 'save' }] }] } }
+    });
+    const errors = streamedErrors(project);
+    assert.ok(!errors.some((e) => /live Save command/.test(e.message)), JSON.stringify(errors));
+    assert.deepEqual(errors, []);
+    assert.ok(await buildsClean(project));
+  }
+);
 
 // ---------------------------------------------------------------- D.8: camera
 
@@ -1044,8 +1065,8 @@ test(
       // party's own pc_level already populated (BE_INIT's own job, already done by boot above)
       // to recompute spells/hp_max/mp_max safely. Driven directly (test/lib/callroutine.js),
       // not through the whole Continue/load-a-save flow -- decision 7 is about set_screen_ptr's
-      // own streamed branch, not save/load, and D.7 refuses live Save on a streamed project
-      // anyway (Continue itself is a different mechanism, out of this test's scope).
+      // own streamed branch, not save/load; the Continue/load-a-save round trip itself is
+      // test/unit/streamworldclosesave.test.js's own scope (phase 2 slice 9).
       nes.cpu.REG_ACC = BE_RESTORE;
       callRoutine(nes, callBattle);
 

@@ -38,11 +38,15 @@ import { planStreamedRegions } from '../../main/build/generate.js';
 import { resolveMapper } from '../../shared/cartridge.js';
 import { createStreamedProject } from '../lib/streamedproject.js';
 import { callRoutine } from '../lib/callroutine.js';
+import { mergeReconstructEngineFile } from '../lib/enginehistory.js';
 import NES from '../../renderer/emulator/core/nes.js';
 import { finishNamingIfOpen, waitForNamingReady, gotoCell, clearName, typeNameAndFinish, nameBytes, tap as namingTap } from '../lib/naming.js';
 import { BUTTON } from '../../renderer/emulator/runcontrol.js';
 import { nameTiles } from '../../main/build/battletables.js';
 import { charToTile } from '../../shared/font.js';
+import { fileURLToPath } from 'node:url';
+
+const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 
 // engine/constants.asm -- hardcoded per CLAUDE.md's own rule (a test that reads the file it is
 // checking proves nothing). These are ORDINARY RAM addresses (page 3), not zero page -- nesasm
@@ -3755,10 +3759,34 @@ test('phase 2 slice 8: an event that both shows text (Say) and moves the player 
 // (boot.asm, constants.asm, nameentry.asm, streamworld.asm, text.asm) with their matched 8b4d5a9
 // versions together, so the comparison is against a real, self-consistent pre-lifecycle engine,
 // never a mix of old and new files that could reference labels the other side doesn't define.
+//
+// UPDATE (fix round 1b, B1): boot.asm is no longer in this override list, and streamworld.asm is
+// now reconstructed via mergeReconstructEngineFile rather than a flat `git show 8b4d5a9:...`. Fix
+// round 1b's B1 (still uncommitted, on top of HEAD) relocated several routines (spawn_streamed,
+// build_oam_draw_sw, draw_one_entity_show_sw, sw_redraw_screen_landing) out of entities.asm/
+// oam.asm/screens.asm/boot.asm into streamworld.asm's kernel-hi region -- a flat revert of
+// streamworld.asm to 8b4d5a9 drops those routines while entities.asm/oam.asm/screens.asm (never in
+// this override list; correctly left at current) still reference them, and nesasm fails with
+// "Undefined symbol in operand field." mergeReconstructEngineFile keeps B1's relocation while still
+// removing every later slice's own additions (dialogue lifecycle, slice 8, slice 9) from
+// streamworld.asm, which is what "byte-identical to the pre-lifecycle engine" needs to mean now
+// that B1 has made a truly unconditional relocation permanent. boot.asm itself is provably
+// UNCHANGED between 8b4d5a9 and HEAD's own last commit (0 lines of diff), so every byte of its
+// current diff from 8b4d5a9 is uncommitted work (B1's own relocation, plus slice 9's own
+// main_loop_save_gate, itself zero-cost whenever TEXT_ENABLED or SAVE_FLASH is off) that must
+// survive on BOTH sides of this comparison -- leaving it out of the override list (current,
+// unreverted, exactly as entities.asm/oam.asm/screens.asm already are) is the correct
+// reconstruction of "8b4d5a9 + B1," not an omission: overriding it with a flat `git show
+// 8b4d5a9:engine/boot.asm` would restore boot_streamed_landing's old, longer inline body in place
+// of B1's 3-byte `jsr sw_redraw_screen_landing` and break byte-identity for a genuine, unrelated
+// reason. constants.asm's own current diff is comment/equate-only (zero bytes either way);
+// nameentry.asm and text.asm are untouched by B1, so a flat revert of those two remains correct.
 function fixRound1PreLifecycleBaselineOverrides() {
-  return ['boot.asm', 'constants.asm', 'nameentry.asm', 'streamworld.asm', 'text.asm'].map((name) => ({
+  return ['constants.asm', 'nameentry.asm', 'streamworld.asm', 'text.asm'].map((name) => ({
     name,
-    text: execFileSync('git', ['show', `8b4d5a9:engine/${name}`], { encoding: 'utf8' })
+    text: name === 'streamworld.asm'
+      ? mergeReconstructEngineFile(ROOT, '8b4d5a9', name)
+      : execFileSync('git', ['show', `8b4d5a9:engine/${name}`], { encoding: 'utf8' })
   }));
 }
 
@@ -3782,7 +3810,7 @@ test('byte-identity: a non-streamed project assembles a byte-identical ROM to a 
   );
 });
 
-test('byte-identity: a streamed project with no text assembles a byte-identical ROM to a build using the pre-lifecycle (8b4d5a9) engine sources -- this fix round costs nothing when streamed but unused', { skip: !hasNesasm && 'nesasm not found on PATH' }, async (t) => {
+test('byte-identity: a streamed project with no text assembles a byte-identical ROM to a build using the pre-lifecycle (8b4d5a9) engine sources with the B1 relocation applied -- this fix round costs nothing when streamed but unused', { skip: !hasNesasm && 'nesasm not found on PATH' }, async (t) => {
   const project = createStreamedProject({ gameType: 'action' });
   project.project.titleMap = null; // the default project's own title screen is itself a text source
   const dir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'forge-streamworlddlg-identity-noText-'));
@@ -3798,6 +3826,6 @@ test('byte-identity: a streamed project with no text assembles a byte-identical 
   assert.deepEqual(
     fs.readFileSync(built.romPath),
     fs.readFileSync(baselineBuilt.romPath),
-    'the full ROM must be byte-identical to a build using the pre-lifecycle (8b4d5a9) engine sources -- a streamed project that never actually opens a box must never pay for this fix round\'s own dialogue lifecycle work'
+    'the full ROM must be byte-identical to a build using the pre-lifecycle (8b4d5a9) engine sources with the B1 relocation applied -- a streamed project that never actually opens a box must never pay for this fix round\'s own dialogue lifecycle work'
   );
 });

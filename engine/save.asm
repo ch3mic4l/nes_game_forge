@@ -214,7 +214,28 @@ save_media_commit_copy:
                               ; this must run from here, never from ROM
   pla
   jsr write_mapper_reg        ; safe again: the operation is over
+  ; Phase 2 slice 9, fix 1 (B1 local win): a streamed map's window/camera
+  ; survived this whole commit untouched in RAM (nothing above touches
+  ; win_col_screen/win_row_screen/cam_x_lo/cam_y_lo/cam_nt), but
+  ; enable_rendering itself hardcodes the scroll latch to 0,0 -- exactly
+  ; right for an ordinary landing, wrong here, where the world never moved
+  ; and a nonzero camera origin must come back unchanged. sw_save_commit_
+  ; tail (engine/streamworld.asm, kernel-hi) holds the whole map_is_streamed
+  ; dispatch now -- sw_save_resync republishing the real origin, or the
+  ; plain enable_rendering an ordinary landing already used -- so this file
+  ; pays a single 3-byte jsr regardless of which branch is taken, replacing
+  ; round 1's own inline kernel-lo branch (10 B). Bracketed alone, same as
+  ; round 1's own placement: an ordinary (non-streamed) project keeps paying
+  ; the exact same unlabeled 3-byte jsr enable_rendering it always has, from
+  ; before this slice existed at all, outside this span entirely.
+  .if STREAMING_ENABLED
+save_media_commit_resync_start:
+  jsr sw_save_commit_tail
+save_media_commit_resync_end:
+  .endif
+  .if !STREAMING_ENABLED
   jsr enable_rendering
+  .endif
   plp
   rts
   .endif
@@ -485,6 +506,31 @@ script_op_save:
   lda #SAVE_MARKER_VALID
   sta SAVE_MARKER
   .if SAVE_FLASH
+script_op_save_dispatch_start:
+  .if STREAMING_ENABLED
+  .if TEXT_ENABLED
+  ; Phase 2 slice 9 -- close-for-Save. An ordinary (non-streamed) map takes
+  ; the unmodified jsr save_media_commit fallthrough below, byte-identical
+  ; to before this slice. On a streamed map, the record above is already
+  ; fully composed in RAM -- no saved field can change between here and
+  ; whichever of the two branches below actually programs it -- so the only
+  ; question left is whether a dialogue box is up to close first.
+  ; sw_dlg20_save_dispatch (engine/streamworld.asm) holds that decision.
+  ; Nested under TEXT_ENABLED too, not merely STREAMING_ENABLED: that is
+  ; where sw_dlg20_save_dispatch itself lives (inside streamworld.asm's own
+  ; dialogue package), and a live Save command is provably always inside a
+  ; project that also has text (shared/project.js's projectUsesSave requires
+  ; a compiled page, which is exactly shared/font.js's own projectUsesText
+  ; test) -- but that is a fact about what the Forges can ever build, not
+  ; one nesasm's own conditional assembly can see, so this branch is nested
+  ; explicitly rather than assumed.
+  lda <map_is_streamed
+  beq script_op_save_ordinary
+  jmp sw_dlg20_save_dispatch
+script_op_save_ordinary:
+  .endif
+  .endif
+script_op_save_dispatch_end:
   jsr save_media_commit       ; see its own comment; no call site at all on
                               ; battery, where the record above was already
                               ; written to where it lives

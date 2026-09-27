@@ -238,6 +238,15 @@ start_dialog:
 ; is not in the Controller Forge's table -- during play it always walks, and here
 ; it always moves the highlight -- so the menu reads the pad directly.
 ui_tick:
+  ; Phase 2 slice 9, fix 1: the deferred-Save completion poll that used to
+  ; open this routine (checking sw_dlg20_save_pending against box_state and
+  ; sw_dlg15_state) has moved to engine/boot.asm's own main_loop, ahead of
+  ; dispatch_input, as sw_dlg20_pending_tick's single completion hook (see
+  ; that routine's header, engine/streamworld.asm, for the box_state-vs-
+  ; sw_dlg15_state reasoning this poll depended on) -- round 1's finding A1
+  ; needed the pending transaction to own the frame before input is ever
+  ; dispatched, not merely before this tick's own chain runs, and "one hook,
+  ; not two" retires this copy rather than keeping both.
   ; A scripted Move or Wait owns the frame ahead of whatever state it is
   ; running inside. It is always ST_DIALOG in practice -- every event runs
   ; through start_dialog -- but the test is on the counter rather than on the
