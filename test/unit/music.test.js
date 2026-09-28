@@ -431,14 +431,14 @@ test(
 
     // musicSize is private to generate.js -- not exported -- so this reads
     // the exact figure it reports back out of the refusal message itself
-    // ("... compile to N bytes (M music, ...)") and checks it against
-    // songTableBytes computed independently, closing the one gap the
+    // ("Music compiles to N bytes and sound effects to ...") and checks it
+    // against songTableBytes computed independently, closing the one gap the
     // sabotage check found: a musicSize that stopped delegating to
     // songTableBytes (drifted back to its own guess) would not be caught by
     // the "must be refused" assertion above alone, since a large enough
     // guess still refuses -- only comparing the reported NUMBER catches
     // that the two have drifted apart.
-    const reportedMusicBytes = Number(found.message.match(/\((\d+) music,/)?.[1]);
+    const reportedMusicBytes = Number(found.message.match(/Music compiles to (\d+) bytes/)?.[1]);
     assert.ok(Number.isFinite(reportedMusicBytes), `could not parse the reported music byte count out of: ${found.message}`);
     assert.equal(
       reportedMusicBytes,

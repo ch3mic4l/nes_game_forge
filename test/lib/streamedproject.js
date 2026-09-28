@@ -105,6 +105,16 @@ function buildStreamedMap(id, name, gridW, gridH) {
  * position (options.moveX ?? 32, options.moveY ?? 32) -- test/lib/streamedproject.js's own
  * withEvent-shaped helper, folded in here rather than duplicated per test file, since
  * streamedmove.test.js and streamworld.test.js's D.3 section both need the identical shape.
+ *
+ * options.songs/options.sfx: phase 2 slice 10 -- empty arrays by default (off, the same
+ * `moveCommands` no-op-by-default shape), pushed onto `project.songs`/`project.sfx` verbatim so a
+ * caller can hand in real library entries (`planLibraryImport`) or hand-authored song/sfx objects
+ * without this module knowing anything about their content.
+ * options.dialogue: phase 2 slice 10 -- empty array by default. Each entry is either a plain
+ * string or `{text, save: true}`; each becomes its own NPC actor with a one-page, `interact`-
+ * triggered event holding a single `say` (plus a trailing `save` command when `save: true`),
+ * placed round-robin across the streamed map's own screens -- a representative spread of NPCs and
+ * signs, not one screen carrying every line.
  */
 export function createStreamedProject({
   gameType = 'action',
@@ -118,7 +128,10 @@ export function createStreamedProject({
   moveCommands,
   moveScreen = 0,
   moveX = 32,
-  moveY = 32
+  moveY = 32,
+  songs = [],
+  sfx = [],
+  dialogue = []
 } = {}) {
   const project = createProject('Streamed Test', gameType);
   project.cartridge.mapper = mapper;
@@ -162,6 +175,23 @@ export function createStreamedProject({
     maps.push(after);
   }
   project.maps = maps;
+  if (songs.length) project.songs.push(...songs);
+  if (sfx.length) project.sfx.push(...sfx);
+  dialogue.forEach((entry, i) => {
+    const text = typeof entry === 'string' ? entry : entry.text;
+    const withSave = typeof entry === 'object' && entry !== null && entry.save === true;
+    const actorId = project.sprites.actors.length;
+    project.sprites.actors.push({ name: `Talker ${i}`, behavior: 'npc', hp: 1, damage: 0 });
+    const screen = streamedMap.screens[i % streamedMap.screens.length];
+    screen.entities = screen.entities ?? [];
+    const commands = withSave ? [{ op: 'say', text }, { op: 'save' }] : [{ op: 'say', text }];
+    screen.entities.push({
+      actorId,
+      x: 16 + (i % 8) * 24,
+      y: 16 + (Math.floor(i / 8) % 8) * 24,
+      props: { trigger: 'interact', event: { pages: [{ cond: { type: 'none', arg: 0 }, commands }] } }
+    });
+  });
   return project;
 }
 

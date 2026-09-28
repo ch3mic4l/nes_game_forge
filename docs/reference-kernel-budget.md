@@ -269,6 +269,127 @@ sizes, the route zero-cost proof and `KERNEL_SLACK` itself are each checked thei
     a same-frame crossing both grew this body directly — is identical on both game types). The
     `mixed` shape measures identical to plain action (170), confirmed directly, not assumed from the
     game type alone.
+- **Phase 2 slice 10 (content ceiling, R1):** `contentCeilingBytes(project)` and
+  `streamworldHiBytesFor(project)` (`main/build/generate.js`) are the single writer of the shared
+  music+SFX+text budget the $E000 kernel-hi bank leaves for content once the resident package above
+  is accounted for — `ceiling = BANK_SIZE - 64 - streamworldHiBytesFor(project)`. **The 64 is the
+  fixed kernel's whole reserved margin, not "the CPU vector table"** (corrected 2026-09-28, fix
+  round 1, item 5): the CPU vectors are exactly 6 of those 64 bytes (`engine/main.asm:134-137`,
+  `.dw nmi` / `.dw reset` / `.dw irq`); the other 58 are the rest of the always-present fixed-kernel
+  tail, never varying with project content. `checkCapacity`'s own refusal check and message (naming
+  Sound Forge and/or Map Forge, never a per-category quota, R2) both call `contentCeilingBytes`
+  rather than repeating the arithmetic inline. `streamworldHiBytesFor` returns 0 for a non-streaming
+  project, so an unstreamed project's overflow message never mentions streaming (R8) and its ceiling
+  is the ordinary `BANK_SIZE - 64`. Every reachable action/RPG × text × Move × Save combination's
+  ceiling, re-measured 2026-09-28 directly against the current tree
+  (`test/unit/streamedceiling.test.js`, cross-checked by an independent re-run of
+  `handoff-next/review-phase2-s10-round1-evidence/probe.mjs`) — **eight** unique accepted predicate
+  combinations, not eleven: an action project's `Move` or `Save` script activates text on its own,
+  and an RPG's text is *always* on (`projectUsesText`, `shared/font.js`), so "RPG + text off" is not
+  a reachable row, and neither is "action, no text/Move/Save requested, but a duplicate row with a
+  different `requestedText` input" — RPG+Move+Save is refused by kernel-**lo** capacity regardless
+  of content, a separate ceiling from the one this table measures, and so is not reachable here
+  either:
+
+  | game type | text | Move | Save | ceiling (bytes) |
+  |---|---|---|---|---|
+  | action | off | off | off | 2861 |
+  | action | on | off | off | 1503 |
+  | action | on | off | on | 1385 |
+  | action | on | on | off | 1382 |
+  | action | on | on | on | 1264 |
+  | rpg | on | off | off | 1560 |
+  | rpg | on | off | on | 1445 |
+  | rpg | on | on | off | 1439 |
+  | rpg | on | on | on | — (refused by kernel-lo, not this ceiling) |
+
+  (RPG's `text` is always on — `projectUsesText` hardcodes true for `gameType === 'rpg'`,
+  `shared/font.js` — so "RPG + text off" does not exist, matching the "reachable" framing above.)
+  **2026-09-28, fix round 1 (item 2):** the real per-category byte model
+  (`musicBytes`/`sfxBytes`/`text.bytes` from `checkCapacity`) is now reconciled to nesasm's own real
+  kernel-hi bank usage by an independently-derived, *named* exact relationship, not merely a
+  cross-case-consistent unexplained constant:
+
+  ```
+  realKernelHiUsed = musicBytes + sfxBytes + textBytes(modeled) + streamworldHiBytesFor(project)
+                     + 6 (CPU vectors) - textOverestimateBytes(project) + emptyTableStubBytes(project)
+  ```
+
+  `textOverestimateBytes(project) = placeholderTitleBytes + 4*TITLE_LINE_LIMIT(28) - realTitleBytes`
+  — the pre-existing, deliberate text padding: `textSize()` (`main/build/textcompile.js`) models all
+  four always-emitted system strings, including the title, at a fixed 28-byte pad using the
+  placeholder `'UNTITLED'` fallback, but `textTables()` then emits the real title at its own real
+  length with no padding — only `sys_title` differs between the two, so this term is exactly that
+  one difference. `emptyTableStubBytes(project) = (strings.length?0:1) + (events.length?0:1)` — a
+  second, independently-found gap of the same kind: `textTables()` emits a 1-byte `_0: .db $00`
+  placeholder per *empty* strings/events table that `textSize()`'s own `total()` never counts.
+  Neither is a bug needing a fix; both are asserted by name (not folded into an unexplained residual)
+  across five builds varying title length, empty-vs-nonempty tables, game type and the text/Move/Save
+  predicate, and the named relationship's residual is exactly **0** in every one — correcting the
+  round-0 measurement's unexplained **-101 bytes**, which was only ever a cross-case consistency
+  check (`predicted == BANK_SIZE` is tautological at any exact-fit point by construction, and was
+  rejected during round 0 for that reason, but the -101 constant itself was never independently
+  derived, so a shared omitted or overcharged term common to every boundary build could have passed
+  it unnoticed — `handoff-next/review-phase2-s10-round1-findings.md`, item 2).
+
+  **2026-09-28, fix round 1 (item 1, Chris's Option-B ruling):** the round-0 "645 bytes spare against
+  a 1,445-byte ceiling" measurement above used a 5-line placeholder sample, not a justified
+  shipped-RPG inventory, and did not establish that the revisit was actually closed. A concrete,
+  named, pairwise-distinct 24-line/2-song/8-sfx/3-monster inventory was committed in writing
+  (`handoff-next/progress-phase2-s10-fix1.md`; committed under Chris's Option-B ruling — whether
+  it was written before or after it was first measured cannot be independently established, and
+  this note makes no claim either way) and pinned so the measurement and coexistence tests fail
+  if it shrinks. Measured honestly, untrimmed: **PINCH — 568
+  bytes over** the 1,560-byte ceiling for RPG+dialogue with neither Move nor Save live (music 288 +
+  sfx 84 + text 1,756 = 2,128 bytes), against 6,000 bytes of spare headroom the identical content
+  would have unstreamed on the same board (8,128-byte ordinary ceiling). It does pinch — see
+  `docs/design-streamed-worlds.md`'s own slice 10 note for the full inventory and the ordinary-board
+  comparison. A pinch is not a stop; slice 10b (relocating the dialogue overlay, the revisit's own
+  named fallback) is scoped as a later, separate brief and was not started here. The revisit stays
+  open until slice 10b runs — the PINCH result is what triggers it, not a closure of it.
+
+  **2026-09-28, fix round 3 — three separate measured findings** (a fresh run of the same
+  constructions, `handoff-next/s10-fix3-scratch/details.log`, identical to the round-3 reviewer's
+  `handoff-next/review-phase2-s10-round3-evidence/details.log`; each is a measurement, not a
+  subtraction from another, and none changes the PINCH figure above):
+
+  - **Save:** with the committed inventory's `save` command live (which adds the Save terms to the
+    streaming reservation, 6,683 bytes, and drops the ceiling to 1,445), music 288 + sfx 84 + text
+    1,757 = 2,129 bytes against 1,445: **684 bytes over** (288 + 84 + 1,757 − 1,445).
+  - **Grouping:** the case-12 build placing the 24 lines one per actor compiles to 1,757 bytes of
+    dialogue; the shipped 3-lines-per-actor grouping compiles to 1,629 — **128 compiled bytes
+    saved** (1,757 − 1,629). This is dialogue text only; it does not change the ceiling.
+  - **Kernel-lo entity tables (a fixture-specific finding):** the one-line-per-actor build
+    (24 placed actors plus the full monster/item/spell/battle roster) is separately refused by
+    kernel-lo: the lookup tables need **310** bytes and only **239** are free, **71 over**. The same
+    build with every dialogue line replaced by `Hello.` (text 445) reports the identical 310/239, so
+    the shortfall is independent of dialogue text. It is a measured finding for this fixture's actor
+    and roster count, not a universal NPC limit.
+
+  **2026-09-28, fix round 2 (item 5) — per-term decomposition**, re-deriving the RPG+dialogue+Move
+  (no Save) row above (1439) directly from `generate.js`, file:line each: RPG base
+  `STREAMWORLD_KERNEL_HI_ALLOWANCE` 3342 (`:1369`) + `STREAMWORLD_MT_PAL_KERNEL_HI_BYTES` 64
+  (`:1383`) + `STREAMWORLD_WINDOW_KERNEL_HI_ALLOWANCE` 1102 (`:2200`) +
+  `streamworldUpdatePlayerKernelHiAllowance` (rpg) 167 (`:2248`, `:2252`) +
+  `STREAMWORLD_HAZARD_KERNEL_HI_ALLOWANCE` 64 (`:2267`) + `STREAMWORLD_SPAWN_KERNEL_HI_ALLOWANCE` 164
+  (`:1563`) + `STREAMWORLD_OAM_DRAW_SW_KERNEL_HI_ALLOWANCE` 108 (`:1784`) +
+  `STREAMWORLD_ENTITY_SHOW_SW_KERNEL_HI_ALLOWANCE` 164 (`:1791`) +
+  `STREAMWORLD_REDRAW_LANDING_KERNEL_HI_ALLOWANCE` 38 (`:1537`) = **5213**; dialogue
+  `STREAMWORLD_DIALOGUE_MAPPER_KERNEL_HI_ALLOWANCE` 613 (`:1407`) +
+  `streamworldDialogueLifecycleTerrainConsumerKernelHiAllowance` (rpg) 520 (`:1439-1442`, `:1446`) +
+  `STREAMWORLD_DIALOGUE_RELOCATED_KERNEL_HI_ALLOWANCE` 222 (`:1475`) = **1355**; Move
+  `STREAMWORLD_MOVE_KERNEL_HI_ALLOWANCE` 76 (`:1827`) + `STREAMWORLD_CLOSEFORMOVE_KERNEL_HI_ALLOWANCE`
+  14 (`:2053`) + `STREAMWORLD_CLOSEFORMOVE_GUARD_KERNEL_HI_ALLOWANCE` 31 (`:2065`) = **121**. Sum
+  5213+1355+121 = 6689; `contentCeilingBytes` = `BANK_SIZE`(8192, `:231`) − 64 − 6689 = **1439**,
+  matching the table row exactly. Save's own four terms (not charged in this row, since Save is not
+  live): `STREAMWORLD_SAVE_CAMRELEASE_KERNEL_HI_ALLOWANCE` 6 (`:2082`) +
+  `STREAMWORLD_SAVE_DISPATCH_KERNEL_HI_ALLOWANCE` 52 (`:2097`) +
+  `STREAMWORLD_SAVE_COMMIT_TAIL_KERNEL_HI_ALLOWANCE` 12 (`:2109`) +
+  `streamworldSaveResyncKernelHiAllowance` (rpg) 45 (`:2137`, `:2141`) = **115** (matches the
+  1560→1445 drop between the two `rpg`/`text=on`/`Move=off` rows above: 1560−1445=115 exactly).
+  Against the design's own original 2053+1616+123 split for base/dialogue/Move, the growth is +3160
+  (base) −261 (dialogue) −2 (Move) = **+2897**, entirely inside the resident package's measured
+  growth since the design estimate (`docs/design-streamed-worlds.md`'s own matching note).
 - Phase 2 slice 2b, Part F: ten more kernel-**lo** terms streaming adds (plus two more from phase 2
   slice 4b, listed at the end of this group), each its own named allowance (`main/build/generate.js`,
   all gated on `projectUsesStreaming`, added inside `kernelCodeBytes`), measured as

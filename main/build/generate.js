@@ -3617,6 +3617,79 @@ export function kernelTableBytes(project, mapper) {
   return { fixedBytes, tableBytes };
 }
 
+/**
+ * The resident streamed-worlds package's own kernel-hi cost for a project -- every gated term
+ * checkCapacity's content-ceiling check subtracts from the shared music+sfx+text budget. Zero for
+ * a project that does not stream (docs/design-streamed-worlds.md, phase 2 slice 10, ruling R1):
+ * this is the SINGLE writer of that sum, called by checkCapacity itself and by every ceiling-
+ * related test, so the check and the tests cannot independently drift out of agreement the way a
+ * second, hand-copied sum could. Verbatim extraction of checkCapacity's own former inline
+ * computation; no behavior change.
+ */
+export function streamworldHiBytesFor(project) {
+  if (!projectUsesStreaming(project)) return 0;
+  const mapper = resolveMapper(project.cartridge.mapper);
+  const usesMoveHere = projectUsesMove(project);
+  const usesText = projectUsesText(project);
+  const usesSaveHere = projectUsesSave(project) && saveMediaImplemented(mapper);
+  const streamworldMoveHiBytes = usesMoveHere ? STREAMWORLD_MOVE_KERNEL_HI_ALLOWANCE : 0;
+  const streamworldKnockbackHiBytes = !battleEnabledFor(project, mapper) ? STREAMWORLD_KNOCKBACK_KERNEL_HI_ALLOWANCE : 0;
+  const streamworldDialogueMapperHiBytes = usesText ? STREAMWORLD_DIALOGUE_MAPPER_KERNEL_HI_ALLOWANCE : 0;
+  const streamworldDialogueLifecycleHiBytes = usesText
+    ? streamworldDialogueLifecycleTerrainConsumerKernelHiAllowance(project)
+    : 0;
+  const streamworldDialogueRelocatedHiBytes = usesText ? STREAMWORLD_DIALOGUE_RELOCATED_KERNEL_HI_ALLOWANCE : 0;
+  const streamworldCloseformoveHiBytes =
+    usesMoveHere && usesText ? STREAMWORLD_CLOSEFORMOVE_KERNEL_HI_ALLOWANCE : 0;
+  const streamworldCloseformoveGuardHiBytes =
+    usesMoveHere && usesText ? STREAMWORLD_CLOSEFORMOVE_GUARD_KERNEL_HI_ALLOWANCE : 0;
+  const streamworldSaveCamreleaseHiBytes =
+    usesSaveHere && usesText ? STREAMWORLD_SAVE_CAMRELEASE_KERNEL_HI_ALLOWANCE : 0;
+  const streamworldSaveDispatchHiBytes =
+    usesSaveHere && usesText ? STREAMWORLD_SAVE_DISPATCH_KERNEL_HI_ALLOWANCE : 0;
+  const streamworldSaveCommitTailHiBytes = usesSaveHere ? STREAMWORLD_SAVE_COMMIT_TAIL_KERNEL_HI_ALLOWANCE : 0;
+  const streamworldSaveResyncHiBytes = usesSaveHere ? streamworldSaveResyncKernelHiAllowance(project) : 0;
+  const streamworldLandingBoundCacheHiBytes = projectUsesBoundTiles(project)
+    ? STREAMWORLD_LANDING_BOUND_CACHE_KERNEL_HI_ALLOWANCE
+    : 0;
+  return (
+    STREAMWORLD_KERNEL_HI_ALLOWANCE +
+    STREAMWORLD_MT_PAL_KERNEL_HI_BYTES +
+    streamworldMoveHiBytes +
+    STREAMWORLD_WINDOW_KERNEL_HI_ALLOWANCE +
+    streamworldKnockbackHiBytes +
+    streamworldUpdatePlayerKernelHiAllowance(project) +
+    STREAMWORLD_HAZARD_KERNEL_HI_ALLOWANCE +
+    streamworldDialogueMapperHiBytes +
+    streamworldDialogueLifecycleHiBytes +
+    streamworldDialogueRelocatedHiBytes +
+    streamworldCloseformoveHiBytes +
+    streamworldCloseformoveGuardHiBytes +
+    streamworldSaveCamreleaseHiBytes +
+    streamworldSaveDispatchHiBytes +
+    streamworldSaveCommitTailHiBytes +
+    streamworldSaveResyncHiBytes +
+    STREAMWORLD_SPAWN_KERNEL_HI_ALLOWANCE +
+    STREAMWORLD_OAM_DRAW_SW_KERNEL_HI_ALLOWANCE +
+    STREAMWORLD_ENTITY_SHOW_SW_KERNEL_HI_ALLOWANCE +
+    STREAMWORLD_REDRAW_LANDING_KERNEL_HI_ALLOWANCE +
+    streamworldLandingBoundCacheHiBytes
+  );
+}
+
+/**
+ * The one shared kernel-hi ceiling a project's compiled music+sfx+dialogue must together fit
+ * (phase 2 slice 10, ruling R1) -- BANK_SIZE minus the fixed 64-byte margin (headroom above the
+ * CPU vectors, unrelated to streaming) minus whatever the resident streamed-worlds package itself
+ * reserves in the same bank (zero when the project does not stream). checkCapacity calls this
+ * exact function for its own refusal check, and every ceiling/exact-fit/over-by-one test derives
+ * its expected numbers from it too -- never a hand-copied 4336/4459/6075/8128 literal, so the
+ * check and a test can never silently disagree about what the ceiling is.
+ */
+export function contentCeilingBytes(project) {
+  return BANK_SIZE - 64 - streamworldHiBytesFor(project);
+}
+
 /** Capacity checks that must pass before the assembler is worth running. */
 export function checkCapacity(project) {
   const text = compileText(project);
@@ -3866,138 +3939,30 @@ export function checkCapacity(project) {
         `(ids 0-${LIMITS.songs - 1}). Delete ${project.songs.length - LIMITS.songs} of them before this can build.`
     });
   }
-  // Music, sound effects, text and (streaming only) the resident streamed-worlds package share
-  // the $E000 half of the fixed kernel, above the vectors (docs/design-streamed-worlds.md, phase 2
-  // slice 2a: STREAMWORLD_KERNEL_HI_ALLOWANCE + STREAMWORLD_MT_PAL_KERNEL_HI_BYTES, gated on
-  // projectUsesStreaming alone, zero for every project that does not use the feature). Fix round 1,
-  // finding 2: sw_move_probe/sw_move_probe_solid (engine/streamworld.asm, `.if MOVE_ENABLED`) are a
-  // THIRD, separately-gated kernel-hi term -- a streamed project with no live Move must not pay for
-  // a routine nothing could ever call, so this is gated on usesMoveHere := projectUsesMove(project)
-  // as well as hasStreamed, never folded into the unconditional pair above.
-  const usesMoveHere = projectUsesMove(project);
-  const streamworldMoveHiBytes = hasStreamed && usesMoveHere ? STREAMWORLD_MOVE_KERNEL_HI_ALLOWANCE : 0;
-  // Phase 2 slice 4b: sw_update_player's own driver body and the window/
-  // camera-window region it calls into are unconditional kernel-hi terms,
-  // paid by every streamed project regardless of Move -- STREAMWORLD_WINDOW_
-  // KERNEL_HI_ALLOWANCE (flat) plus streamworldUpdatePlayerKernelHiAllowance
-  // (by game type, see that function's own comment). sw_knockback_step is a
-  // FOURTH, separately-gated term, `.if !BATTLE_ENABLED` inside sw_update_
-  // player's own file -- an RPG never assembles it (nesasm emits no symbol
-  // for a label inside a false `.if`, confirmed directly rather than assumed
-  // to share an address with what follows), so this is gated on
-  // !battleEnabledFor(project, mapper), the same predicate the RPG-vs-action
-  // split already uses everywhere else in this function.
-  const streamworldKnockbackHiBytes =
-    hasStreamed && !battleEnabledFor(project, mapper) ? STREAMWORLD_KNOCKBACK_KERNEL_HI_ALLOWANCE : 0;
-  // Phase 2 slice 7a: the dialogue mapper/packet/attribute code is a FIFTH,
-  // separately-gated kernel-hi term -- projectUsesText as well as
-  // hasStreamed, since it lives inside its own `.if TEXT_ENABLED` (see
-  // STREAMWORLD_DIALOGUE_MAPPER_KERNEL_HI_ALLOWANCE's own comment).
-  const streamworldDialogueMapperHiBytes =
-    hasStreamed && projectUsesText(project) ? STREAMWORLD_DIALOGUE_MAPPER_KERNEL_HI_ALLOWANCE : 0;
-  // Fix round 2 (A4): slice 7b's own lifecycle/terrain/consumer helpers,
-  // named separately (STREAMWORLD_DIALOGUE_LIFECYCLE_TERRAIN_CONSUMER_
-  // KERNEL_HI_ALLOWANCE_BY_GAME_TYPE's own comment) but gated identically to
-  // the mapper term above -- both live in the same sw_dlg_mapper_start..end
-  // span. Game-type-varying (A1's draw_hud fix), the same reason
-  // streamworldUpdatePlayerKernelHiAllowance(project) above is a function
-  // call rather than a flat constant.
-  const streamworldDialogueLifecycleHiBytes =
-    hasStreamed && projectUsesText(project)
-      ? streamworldDialogueLifecycleTerrainConsumerKernelHiAllowance(project)
-      : 0;
-  // Fix round 1 (A4): the twelve relocated text.asm bodies, named separately
-  // (STREAMWORLD_DIALOGUE_RELOCATED_KERNEL_HI_ALLOWANCE's own comment) but
-  // gated identically to the mapper term above -- all three live in the
-  // same sw_dlg_mapper_start..end span.
-  const streamworldDialogueRelocatedHiBytes =
-    hasStreamed && projectUsesText(project) ? STREAMWORLD_DIALOGUE_RELOCATED_KERNEL_HI_ALLOWANCE : 0;
-  // Phase 2 slice 8: sw_dlg_closeformove_start..end, gated on the same
-  // three-way AND as its kernel-lo sibling (STREAMWORLD_CLOSEFORMOVE_
-  // KERNEL_ALLOWANCE's own comment) -- usesMoveHere is already computed
-  // above for streamworldMoveHiBytes, projectUsesText(project) the same
-  // predicate every other dialogue-gated term here already reads.
-  const streamworldCloseformoveHiBytes =
-    hasStreamed && usesMoveHere && projectUsesText(project) ? STREAMWORLD_CLOSEFORMOVE_KERNEL_HI_ALLOWANCE : 0;
-  // Review round 1 fix (B1's relocation ruling): sw_dlg_cfm_guard_start..end,
-  // gated identically to streamworldCloseformoveHiBytes just above -- the
-  // arming half of the mechanism, relocated whole out of kernel-lo.
-  const streamworldCloseformoveGuardHiBytes =
-    hasStreamed && usesMoveHere && projectUsesText(project) ? STREAMWORLD_CLOSEFORMOVE_GUARD_KERNEL_HI_ALLOWANCE : 0;
-  // Phase 2 slice 9: usesSaveHere mirrors kernelCodeBytes's own usesSave
-  // (projectUsesSave(project) && saveMediaImplemented(mapper)) rather than
-  // the loose predicate, for the identical reason given there -- there is no
-  // shared local in this function to reuse.
-  const usesSaveHere = projectUsesSave(project) && saveMediaImplemented(mapper);
-  // sw_dlg17cr_save_check_start..end and sw_dlg20_save_dispatch_start..end
-  // both live inside the dialogue package (`.if TEXT_ENABLED`), gated
-  // identically to streamworldCloseformoveHiBytes above but on usesSaveHere
-  // instead of usesMoveHere (STREAMWORLD_SAVE_CAMRELEASE_KERNEL_HI_ALLOWANCE
-  // and STREAMWORLD_SAVE_DISPATCH_KERNEL_HI_ALLOWANCE's own comments).
-  const streamworldSaveCamreleaseHiBytes =
-    hasStreamed && usesSaveHere && projectUsesText(project) ? STREAMWORLD_SAVE_CAMRELEASE_KERNEL_HI_ALLOWANCE : 0;
-  const streamworldSaveDispatchHiBytes =
-    hasStreamed && usesSaveHere && projectUsesText(project) ? STREAMWORLD_SAVE_DISPATCH_KERNEL_HI_ALLOWANCE : 0;
-  // sw_save_commit_tail_start..end lives outside the dialogue package too,
-  // same reasoning and gate as sw_save_resync just below (own comment).
-  const streamworldSaveCommitTailHiBytes =
-    hasStreamed && usesSaveHere ? STREAMWORLD_SAVE_COMMIT_TAIL_KERNEL_HI_ALLOWANCE : 0;
-  // sw_save_resync_start..end lives outside the dialogue package (a Save can
-  // commit with no dialogue box ever open), so no projectUsesText term here
-  // (STREAMWORLD_SAVE_RESYNC_KERNEL_HI_ALLOWANCE_BY_GAME_TYPE's own comment).
-  // Game-type-varying (A3's draw_hud fix), the same reason
-  // streamworldUpdatePlayerKernelHiAllowance(project) above is a function
-  // call rather than a flat constant.
-  const streamworldSaveResyncHiBytes = hasStreamed && usesSaveHere ? streamworldSaveResyncKernelHiAllowance(project) : 0;
-  // B1 (phase 2 slice 9 fix round 1b): the one remaining `jsr
-  // rebuild_bound_cache` inside the shared sw_redraw_screen_landing (see
-  // STREAMWORLD_LANDING_BOUND_CACHE_KERNEL_HI_ALLOWANCE's own comment) --
-  // gated identically to its kernel-lo predecessor, hasStreamed &&
-  // usesBoundTiles.
-  const streamworldLandingBoundCacheHiBytes =
-    hasStreamed && projectUsesBoundTiles(project) ? STREAMWORLD_LANDING_BOUND_CACHE_KERNEL_HI_ALLOWANCE : 0;
-  const streamworldHiBytes = hasStreamed
-    ? STREAMWORLD_KERNEL_HI_ALLOWANCE +
-      STREAMWORLD_MT_PAL_KERNEL_HI_BYTES +
-      streamworldMoveHiBytes +
-      STREAMWORLD_WINDOW_KERNEL_HI_ALLOWANCE +
-      streamworldKnockbackHiBytes +
-      streamworldUpdatePlayerKernelHiAllowance(project) +
-      STREAMWORLD_HAZARD_KERNEL_HI_ALLOWANCE +
-      streamworldDialogueMapperHiBytes +
-      streamworldDialogueLifecycleHiBytes +
-      streamworldDialogueRelocatedHiBytes +
-      streamworldCloseformoveHiBytes +
-      streamworldCloseformoveGuardHiBytes +
-      streamworldSaveCamreleaseHiBytes +
-      streamworldSaveDispatchHiBytes +
-      streamworldSaveCommitTailHiBytes +
-      streamworldSaveResyncHiBytes +
-      // B1 (phase 2 slice 9 fix round 1b): the four routines relocated/added
-      // by the kernel-lo->kernel-hi move, unconditional like
-      // STREAMWORLD_KERNEL_HI_ALLOWANCE itself (hasStreamed alone -- every
-      // streamed project reaches spawn_streamed, build_oam_draw_sw,
-      // draw_one_entity_show_sw and sw_redraw_screen_landing regardless of
-      // game type, Move or text).
-      STREAMWORLD_SPAWN_KERNEL_HI_ALLOWANCE +
-      STREAMWORLD_OAM_DRAW_SW_KERNEL_HI_ALLOWANCE +
-      STREAMWORLD_ENTITY_SHOW_SW_KERNEL_HI_ALLOWANCE +
-      STREAMWORLD_REDRAW_LANDING_KERNEL_HI_ALLOWANCE +
-      streamworldLandingBoundCacheHiBytes
-    : 0;
-  if (musicBytes + sfxBytes + text.bytes + streamworldHiBytes > BANK_SIZE - 64) {
+  // Music, sound effects, text and (streaming only) the resident streamed-worlds package share the
+  // $E000 half of the fixed kernel, above the vectors (docs/design-streamed-worlds.md, phase 2
+  // slice 10, ruling R1). streamworldHiBytesFor/contentCeilingBytes (above) are the single writer
+  // of that resident cost and the shared ceiling it leaves for content -- every gate this block
+  // used to compute inline now lives there, so this is just the refusal check and its message.
+  const streamworldHiBytes = streamworldHiBytesFor(project);
+  const ceiling = contentCeilingBytes(project);
+  if (musicBytes + sfxBytes + text.bytes > ceiling) {
+    // R2: the message names all three categories separately with their own byte counts and Forge,
+    // the streaming engine's own reservation when the project streams, the one shared ceiling, and
+    // by how many bytes the total is over -- never implying any category has its own quota.
+    const overBy = musicBytes + sfxBytes + text.bytes - ceiling;
     problems.push({
       severity: 'error',
       where: musicBytes + sfxBytes > text.bytes ? 'Sound Forge' : 'Map Forge',
       message:
-        `The songs and sound effects compile to ${musicBytes + sfxBytes} bytes (${musicBytes} music, ` +
-        `${sfxBytes} effects), the dialogue to ${text.bytes}` +
+        `Music compiles to ${musicBytes} bytes and sound effects to ${sfxBytes} bytes (Sound Forge), ` +
+        `and dialogue compiles to ${text.bytes} bytes (Map Forge)` +
         (streamworldHiBytes
-          ? `, and the streaming engine${streamworldMoveHiBytes ? ' (including its scripted-Move probe)' : ''}` +
-            ` to ${streamworldHiBytes}`
+          ? `; the streaming engine${projectUsesMove(project) ? ' (including its scripted-Move probe)' : ''}` +
+            ` reserves ${streamworldHiBytes} bytes of the same bank`
           : '') +
-        `, which together do not fit the ${BANK_SIZE}-byte music and text bank. Shorten a song or ` +
-        'effect, or cut some dialogue.'
+        `. Together they must fit in ${ceiling} bytes of the ${BANK_SIZE}-byte music and text bank -- ` +
+        `${overBy} byte${overBy === 1 ? '' : 's'} over. Shorten a song or effect, or cut some dialogue.`
     });
   }
   return {

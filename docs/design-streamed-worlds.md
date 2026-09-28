@@ -180,6 +180,63 @@ session's own code the comment lives in, never whose choice the code encodes.
   switchable bank on boards with room. `checkCapacity` must report an overflow in plain language
   naming the Sound Forge / text either way.
 
+  **Measured, phase 2 slice 10:** `contentCeilingBytes(project)` / `streamworldHiBytesFor(project)`
+  (`main/build/generate.js`) are the single writer of this ceiling — `checkCapacity` computes it,
+  never a copy of the arithmetic. `contentCeilingBytes` is `BANK_SIZE (8,192) − 64 − streamworldHiBytesFor(project)`;
+  the 64 is the fixed kernel's whole reserved margin, not "the CPU vector table" — the CPU vectors
+  are exactly 6 of those 64 bytes (`engine/main.asm:134-137`, `.dw nmi`/`.dw reset`/`.dw irq`), the
+  remaining 58 covering the rest of the always-present fixed-kernel tail.
+
+  **2026-09-28, fix round 1 — revisit reopened; the revisit itself stays open, the PINCH result
+  triggers slice 10b, not yet started:** the round-0 measurement
+  above used a 5-line placeholder sample (`docs/reference-kernel-budget.md`'s own review found it
+  did not establish a shipped game's dialogue volume) and reported the ceiling as closed/FITS. Chris
+  ruled (Option B) that a concrete, justified, *committed* shipped-RPG content inventory be written
+  down before any replacement measurement, and that the result be reported honestly either way — a
+  pinch is not a stop. That inventory (`handoff-next/progress-phase2-s10-fix1.md`, dated
+  2026-09-28): every song (2) and sound effect (8) the starter library ships, 3 monsters, 2 items, 2
+  spells, and 24 pairwise-distinct dialogue lines (14 NPC, 4 sign, 3 shop, 3 story-beat) sized
+  against a small, complete NES-era RPG — two towns, one dungeon, a shop, a three-beat story —
+  pinned so that `test/unit/streamedceiling.test.js`'s case 1 (measurement) and case 12
+  (coexistence) fail if it shrinks. Measured honestly, untrimmed, against that inventory on UNROM
+  512: **PINCH — 568 bytes over** (music 288 + sfx 84 + text 1,756 = 2,128 bytes against a 1,560-byte
+  ceiling; the same content unstreamed on the same board leaves 6,000 bytes spare against the
+  8,128-byte ordinary ceiling — streaming's resident package is the entire difference). The
+  inventory was committed under Chris's Option-B ruling; whether it was written before or after it
+  was first measured cannot be independently established, and this note makes no claim either way.
+  The revisit's own fallback (relocating the dialogue overlay to a switchable bank) is **not** applied
+  here — that is slice 10b, written by the orchestrator in a later brief, not started by this round.
+  The R9 *coexistence* build (case 12, a smaller 8-entity/24-line grouping so kernel-lo's own,
+  separate entity-table ceiling is not also tripped) applies only the brief's own dialogue-trim
+  fallback: trimmed 556 bytes across 20 of the 24 committed lines to fit (spare 0 after trim); this
+  is a build-time compatibility fallback for that one coexistence test, not a claim that the
+  committed inventory itself fits.
+
+  **2026-09-28, fix round 3 — three separate measured findings** (a fresh run of the same
+  constructions, `handoff-next/s10-fix3-scratch/details.log`, identical to the round-3 reviewer's
+  `handoff-next/review-phase2-s10-round3-evidence/details.log`; each is a measurement, not a
+  subtraction from another, and none changes the PINCH figure above):
+
+  - **Save:** with the committed inventory's `save` command live (which adds the Save terms to the
+    streaming reservation, 6,683 bytes, and drops the ceiling to 1,445), music 288 + sfx 84 + text
+    1,757 = 2,129 bytes against 1,445: **684 bytes over** (288 + 84 + 1,757 − 1,445).
+  - **Grouping:** the case-12 build placing the 24 lines one per actor compiles to 1,757 bytes of
+    dialogue; the shipped 3-lines-per-actor grouping compiles to 1,629 — **128 compiled bytes
+    saved** (1,757 − 1,629). This is dialogue text only; it does not change the ceiling.
+  - **Kernel-lo entity tables (a fixture-specific finding):** the one-line-per-actor build
+    (24 placed actors plus the full monster/item/spell/battle roster) is separately refused by
+    kernel-lo: the lookup tables need **310** bytes and only **239** are free, **71 over**. The same
+    build with every dialogue line replaced by `Hello.` (text 445) reports the identical 310/239, so
+    the shortfall is independent of dialogue text. It is a measured finding for this fixture's actor
+    and roster count, not a universal NPC limit.
+
+  The stale 6,075/4,459/4,336 figures below are an earlier fix round's own measurements and are left
+  as history, not restated here; the current ceiling for every reachable action/RPG × text × Move ×
+  Save combination — **eight** unique accepted predicate combinations, not eleven, since an action
+  Move or Save script activates text and an RPG's text is always on — is measured directly by
+  `test/unit/streamedceiling.test.js` and `docs/reference-kernel-budget.md`'s own table, not derived
+  from these numbers by hand.
+
 ## 2. Scope, board gating, and phasing
 
 **Board gating** is per mapper-registry entry, matching `rpgCapable()`'s own shape — never a
@@ -524,6 +581,78 @@ no Move term to subtract). **Worked example:** a streamed project with dialogue 
 bytes of combined music+SFX+text data passes; the identical project at 4,343 bytes is refused, by
 `generate.js`'s own `checkCapacity`, naming whichever Forge's content (Sound Forge for music/SFX, the
 event editor's own dialogue text otherwise) pushed the total over.
+
+**Measured, phase 2 slice 10:** the figures above (6,075 / 4,459 / 4,336, and the 8,128 baseline)
+are this fix round's own real measurements at the time and are left unrewritten as history.
+`contentCeilingBytes`/`streamworldHiBytesFor` (`main/build/generate.js`, R1) are now the single
+writer of the ceiling arithmetic sketched inline above; the current measured ceiling for the RPG
+action/text/Move/Save action pair the worked example above draws its worst case from — RPG,
+dialogue live, no Move, Save live (the closest reachable combination to a real game) — is
+**1,445 bytes**, and the full table across every reachable action/RPG × text × Move × Save
+combination is in `docs/reference-kernel-budget.md`. The worked example's own 6,075/4,459/4,336
+arithmetic against the current tree is re-derived below (2026-09-28, fix round 2, item 5), term by
+term, rather than left as an unexplained gap.
+
+**2026-09-28, fix round 2, item 5 — per-term decomposition, re-derived from `generate.js` directly:**
+every addend `streamworldHiBytesFor` sums for an RPG project with dialogue and a scripted Move live
+(no Save), file:line each:
+
+- RPG base (no text, no Move, no Save; always-charged terms only): `STREAMWORLD_KERNEL_HI_ALLOWANCE`
+  3342 (`generate.js:1369`) + `STREAMWORLD_MT_PAL_KERNEL_HI_BYTES` (`LIMITS.metatiles`) 64
+  (`generate.js:1383`, `shared/project.js:251`) + `STREAMWORLD_WINDOW_KERNEL_HI_ALLOWANCE` 1102
+  (`generate.js:2200`) + `streamworldUpdatePlayerKernelHiAllowance` (rpg) 167 (`generate.js:2248`,
+  `2252`) + `STREAMWORLD_HAZARD_KERNEL_HI_ALLOWANCE` 64 (`generate.js:2267`) +
+  `STREAMWORLD_SPAWN_KERNEL_HI_ALLOWANCE` 164 (`generate.js:1563`) +
+  `STREAMWORLD_OAM_DRAW_SW_KERNEL_HI_ALLOWANCE` 108 (`generate.js:1784`) +
+  `STREAMWORLD_ENTITY_SHOW_SW_KERNEL_HI_ALLOWANCE` 164 (`generate.js:1791`) +
+  `STREAMWORLD_REDRAW_LANDING_KERNEL_HI_ALLOWANCE` 38 (`generate.js:1537`)
+  = 3342+64+1102+167+64+164+108+164+38 = **5213**.
+- Dialogue (gated on `projectUsesText`): `STREAMWORLD_DIALOGUE_MAPPER_KERNEL_HI_ALLOWANCE` 613
+  (`generate.js:1407`) + `streamworldDialogueLifecycleTerrainConsumerKernelHiAllowance` (rpg) 520
+  (`generate.js:1439-1442`, `1446`) + `STREAMWORLD_DIALOGUE_RELOCATED_KERNEL_HI_ALLOWANCE` 222
+  (`generate.js:1475`) = 613+520+222 = **1355**.
+- Move (gated on `projectUsesMove`): `STREAMWORLD_MOVE_KERNEL_HI_ALLOWANCE` 76 (`generate.js:1827`)
+  + `STREAMWORLD_CLOSEFORMOVE_KERNEL_HI_ALLOWANCE` 14 (`generate.js:2053`) +
+  `STREAMWORLD_CLOSEFORMOVE_GUARD_KERNEL_HI_ALLOWANCE` 31 (`generate.js:2065`) = 76+14+31 = **121**.
+- Save (gated on `projectUsesSave`, not charged in this combination): `STREAMWORLD_SAVE_CAMRELEASE_KERNEL_HI_ALLOWANCE`
+  6 (`generate.js:2082`) + `STREAMWORLD_SAVE_DISPATCH_KERNEL_HI_ALLOWANCE` 52 (`generate.js:2097`) +
+  `STREAMWORLD_SAVE_COMMIT_TAIL_KERNEL_HI_ALLOWANCE` 12 (`generate.js:2109`) +
+  `streamworldSaveResyncKernelHiAllowance` (rpg) 45 (`generate.js:2137`, `2141`) = 6+52+12+45 = **115**
+  (not added to the RPG+dialogue+Move total below, since Save is not live in that combination).
+
+RPG+dialogue+Move `streamworldHiBytesFor` = 5213 + 1355 + 121 = **6689**; `contentCeilingBytes`
+(`generate.js:3689`, `BANK_SIZE` 8192 `generate.js:231`) = 8192 − 64 − 6689 = **1439**, matching the
+"1,439 bytes" figure measured directly below. Against the design's own original 2053 + 1616 + 123
+split for this same combination, the growth is +3160 (base) − 261 (dialogue) − 2 (Move) = **+2897**
+— entirely inside the resident package's own measured growth since the design estimate, not a
+change to the 64-byte margin or to music/sfx/text's own byte model.
+
+**Magnitude, re-derived 2026-09-28 (fix round 1, item 5):** the worked example's own combination —
+RPG, dialogue live, a scripted Move live, Save *not* live — is the design's original "4,336 bytes"
+row (dialogue AND Move both live, the fullest common case that paragraph frames its worst case
+around). Measured directly against the current tree (`streamedceiling.test.js`'s item-2/R5 builds,
+cross-checked by `probe.mjs`'s own independent re-run), that same combination's real ceiling today
+is **1,439 bytes** — a further drop of 2,897 bytes since the design estimate, entirely inside
+`streamworldHiBytesFor`'s own resident-package growth (`STREAMWORLD_KERNEL_HI_ALLOWANCE` and its
+per-feature siblings, `docs/reference-kernel-budget.md`), not a change to the 64-byte margin or to
+music/sfx/text's own byte model. The real kernel-hi occupancy at that combination's exact fit is
+independently reconciled to nesasm's own usage with a **zero-byte residual**, not the round-0
+measurement's unexplained **-101 bytes**: `realKernelHiUsed = musicBytes + sfxBytes + textBytes +
+streamworldHiBytesFor(project) + 6 (CPU vectors) − textOverestimateBytes(project) +
+emptyTableStubBytes(project)`, where `textOverestimateBytes` is the pre-existing, deliberate text
+padding (`textSize()` in `main/build/textcompile.js` models all four always-emitted system strings,
+including the title, at a fixed `TITLE_LINE_LIMIT` (28) pad — `textTables()` then emits the real
+title at its own real length, so the difference between the placeholder `'UNTITLED'` fallback and
+the real title is the only part of that padding that is genuinely never spent) and
+`emptyTableStubBytes` is a second, independently-found gap of the same kind (`textTables()` emits a
+1-byte `_0: .db $00` stub per empty strings/events table that `textSize()`'s own `total()` never
+counts). Neither is a bug: the first is `textcompile.js`'s own deliberate padding (out of scope to
+remove without a scope ruling, per this round's own brief), and the second is a genuine, tiny,
+always-present structural byte `checkCapacity`'s content-ceiling refusal already correctly leaves
+unclaimed (nothing this slice's ceiling arithmetic needs to reserve for, since it does not vary with
+content size). Both terms are asserted by name, not absorbed into an unexplained constant, across
+five builds varying title length, table emptiness, game type and the text/Move/Save predicate
+(`test/unit/streamedceiling.test.js`, item 2).
 
 **The mandatory 2,053 and the original 1,549 overlay figure are real symbol-span measurements**
 (`main.fns` address deltas: `sw_goto` at `$E143` through the byte immediately before
