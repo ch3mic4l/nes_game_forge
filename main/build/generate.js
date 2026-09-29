@@ -888,7 +888,10 @@ export const MOVE_KERNEL_ALLOWANCE = 335;
 // confirming the routine is charged once, not twice, when both commands are.
 // Re-measured for the zero-page kernel diet: 13 (down from 16), re-derived
 // from the same MOVE+TURN+FACE(once) triangulation as MOVE_KERNEL_ALLOWANCE.
-export const FACE_KERNEL_ALLOWANCE = 13;
+// Then 37 (up 24): move_face brings ent_frame/ent_timer back into range of
+// the new facing's animation (the clamp entity_animate applies), which a Turn
+// or a Move blocked on its first tick otherwise draws unclamped.
+export const FACE_KERNEL_ALLOWANCE = 37;
 // script_op_turn plus its own dispatch-chain entry in script_run
 // (engine/script.asm) -- not move_face, which is FACE_KERNEL_ALLOWANCE.
 // Re-measured for the zero-page kernel diet: 33 (down from 35).

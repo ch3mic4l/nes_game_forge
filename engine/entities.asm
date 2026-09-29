@@ -1077,6 +1077,23 @@ move_face:
   bne move_face_player
   ldx <talk_ent
   sta ent_dir,x
+  ; A new facing can resolve to a shorter animation, and neither caller runs
+  ; entity_animate before the next draw (a Turn, or a Move blocked on its first
+  ; tick, draws the whole following Say with this frame): bring the frame back
+  ; in range now, by the rule entity_animate applies. A NO_ANIM facing draws
+  ; nothing and has no count to compare with, so it is left alone. This sits
+  ; after the player branch: the player has no ent_frame.
+  jsr entity_animation
+  cmp #NO_ANIM
+  beq move_face_done
+  tay
+  lda ent_frame,x
+  cmp anim_count,y
+  bcc move_face_done
+  lda #0
+  sta ent_frame,x
+  sta ent_timer,x
+move_face_done:
   rts
 move_face_player:
   sta <player_dir

@@ -229,6 +229,10 @@ flag to keep in step with the counter. Three rules hold it together:
   could ever end.
 - **The facing is set once, before the first step**, not per step — the "decide once, before
   acting" trap below, and it is what makes a blocked move still turn to look the way it tried to go.
+  `move_face` (shared with `Turn`, NPC path only) also brings `ent_frame`/`ent_timer` back to 0 when
+  the frame in hand is at or beyond the new facing's animation's frame count, the rule `entity_animate` applies, because
+  neither caller runs `entity_animate` before the next draw (a `Turn`, or a `Move` blocked on its first
+  tick, otherwise draws a whole `Say` with an out-of-range frame); a `NO_ANIM` facing is left alone.
 
 **A command that holds commands is not a special case to be named, it is a `nests: true` entry.**
 Three exist — `branch`, `choice` and `route`, the last also `EVENT_COMMANDS`' only `virtual: true`

@@ -111,8 +111,9 @@ sizes, the route zero-cost proof and `KERNEL_SLACK` itself are each checked thei
   three boards. Its gate is NOT `gameType === 'rpg'` but `codeRegions(...).length > 0`
   (`kernelCodeBytes` recomputes it) — the real predicate `BATTLE_ENABLED` emits from, narrower on
   a CHR-RAM board whose tilesets have claimed every switchable region.
-- `MOVE_KERNEL_ALLOWANCE = 335` plus `FACE_KERNEL_ALLOWANCE = 13` (the facing routine Move and
-  `Turn` share, charged once) — 348 total for a Move-only project. Re-measured up from 324 for
+- `MOVE_KERNEL_ALLOWANCE = 335` plus `FACE_KERNEL_ALLOWANCE = 37` (the facing routine Move and
+  `Turn` share, charged once; 13 until `move_face` gained its frame clamp, +24) — 372 total for a
+  Move-only project. Re-measured up from 324 for
   phase 2 slice 3's `mv_ent` identity capture (docs/design-streamed-worlds.md §7, ruling 7):
   `script_op_move`'s own 5-byte capture plus six call sites each trading a 2-byte `ldx <talk_ent`
   for a 3-byte `ldx mv_ent` — unconditional on `MOVE_ENABLED` itself, paid by every project using
@@ -171,8 +172,8 @@ sizes, the route zero-cost proof and `KERNEL_SLACK` itself are each checked thei
   removal `kernelShortfallAdvice` has to price by full kernel-lo occupancy (code and table
   together), the rule above.
 - `TURN_KERNEL_ALLOWANCE = 33` composes with `FACE_KERNEL_ALLOWANCE` above (Move+Turn cost
-  335+33+13=381, facing routine charged once); `WAIT_KERNEL_ALLOWANCE = 43` shares no other code
-  with Turn (33+13+43=89 for Turn+Wait, no Move). `SHAKE_KERNEL_ALLOWANCE = 60` and
+  335+33+37=405, facing routine charged once); `WAIT_KERNEL_ALLOWANCE = 43` shares no other code
+  with Turn (33+37+43=113 for Turn+Wait, no Move). `SHAKE_KERNEL_ALLOWANCE = 60` and
   `VISIBLE_KERNEL_ALLOWANCE = 47` (Show/Hide) are each flat, with no dependent term.
 - `FADE_KERNEL_ALLOWANCE = 124` and `FLASH_KERNEL_ALLOWANCE = 91` name each routine's own cost;
   both share `PALETTE_FX_KERNEL_ALLOWANCE = 52` (`fade_apply_palette` plus the NMI PPUADDR fix,
@@ -641,7 +642,11 @@ sizes, the route zero-cost proof and `KERNEL_SLACK` itself are each checked thei
   kernel-lo headroom at kernel-hi's expense rather than a wash, and is why a streamed project without
   Save is never byte-identical to flat 2563ef4 even though it pays none of the seven Save-specific
   terms above. The accepted-boundary figures for how many ordinary 1x1 maps a streamed+camera project
-  can still add before capacity refuses (Action Move family: 32; Action Save family: 25; RPG Say
-  family: 44) were re-measured directly against the current tree while writing this ledger
+  can still add before capacity refuses (Action Move family: 31; Action Save family: 25; RPG Say
+  family: 44) were re-measured directly against the current tree
   (`handoff-next/s9-fix3-scratch/accepted-boundary-remeasure.mjs`, a path-adjusted copy of round 3's
-  own `E3/accepted-boundary.mjs`) and are unchanged from the round-3 review's own recorded figures.
+  own `E3/accepted-boundary.mjs`). The Save and RPG Say figures are unchanged from the round-3
+  review's own recorded figures; the Move figure is one lower than round 3's 32 because
+  `move_face`'s pose clamp (`FACE_KERNEL_ALLOWANCE` 13 -> 37, +24 bytes) is charged to every
+  Move project (31 maps accepted at 8,165 bytes used; the 32nd needs 740 bytes of lookup tables
+  with 724 free).

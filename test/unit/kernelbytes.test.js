@@ -1829,7 +1829,7 @@ test(
         `(${moveAlone + SPLIT_KERNEL_ALLOWANCE}), or dropping Move would not close the gap either`
     );
     const message = kernelShortfallMessage(project);
-    assert.match(message, /removing every Move command \(frees 499 bytes\)/);
+    assert.match(message, /removing every Move command \(frees 523 bytes\)/);
     await assertDropFits(t, project, ['move'], 'Move alone would not close but with the split term freed too');
   }
 );
@@ -2553,7 +2553,7 @@ test('a kernel-lo shortfall either Save or Move alone would close offers both as
   project.maps[0].screens[0].entities.push(saveAndMoveEvent());
   inflate(project, 100); // recalibrated for phase 2 slice 3's ruling 7 (+11 to MOVE_KERNEL_ALLOWANCE) -- deficit 156, within (0, 348]
   const message = kernelShortfallMessage(project);
-  assert.match(message, /removing every Move command \(frees 348 bytes\) or every Save command \(frees 516 bytes\)/);
+  assert.match(message, /removing every Move command \(frees 372 bytes\) or every Save command \(frees 516 bytes\)/);
 });
 
 // Neither allowance alone covers a big enough deficit, but the two together
@@ -2571,7 +2571,7 @@ test('a kernel-lo shortfall neither Save nor Move alone would close, but both to
   project.maps[0].screens[0].entities.push(saveAndMoveEvent());
   inflate(project, 150); // recalibrated for phase 2 slice 3's ruling 7 (+11 to MOVE_KERNEL_ALLOWANCE) -- deficit 556, above 516 and within 864
   const message = kernelShortfallMessage(project);
-  assert.match(message, /removing every Move command and every Save command together \(frees 864 bytes\)/);
+  assert.match(message, /removing every Move command and every Save command together \(frees 888 bytes\)/);
 });
 
 // Turn and Wait were added to kernelShortfallAdvice's own active-feature list
@@ -3883,7 +3883,7 @@ test(
     const message = kernelShortfallMessage(project);
     assert.match(
       message,
-      /removing every Move command \(frees 348 bytes\) or every Save command \(frees 511 bytes\)/,
+      /removing every Move command \(frees 372 bytes\) or every Save command \(frees 511 bytes\)/,
       `MMC1: dropping Move or Save, not SFX, should be the offered fix once the deficit exceeds what SFX alone frees -- got: ${message}`
     );
     assert.doesNotMatch(

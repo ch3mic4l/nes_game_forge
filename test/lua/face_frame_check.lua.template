@@ -1,0 +1,194 @@
+-- face_frame_check.lua.template -- streamed worlds phase 3a, slice S0: move_face keeps the pose in
+-- range. Second-core cross-check of test/unit/faceframe.test.js (built-in emulator).
+--
+-- TEMPLATE, not run directly: test/lua/build_face_frame_roms.mjs instantiates it once per scene,
+-- substituting double-underscore tokens (addresses resolved out of that build's own constants.asm,
+-- the expected tile groups computed from the project JSON that built the ROM).
+--
+-- The scene: an NPC at (250, 100) facing down, 2-frame animation, is poked to frame 1 / timer 3 and
+-- its event started. The event turns it to a 1-frame animation (D1: Turn; D2: a Move blocked on its
+-- first tick), then Says. The animation emitted right after the 1-frame one starts with a
+-- metasprite whose only tile has X offset +16, so an unclamped frame 1 draws that tile: X = 10
+-- (266 wrapped) on an ordinary map, off screen on a streamed one.
+--
+-- The whole Say is observed, to its END: the script waits for the box to reach its end-wait
+-- (box_state == BOX_ENDWAIT), presses A through the controller (the inputPolled callback, the shape
+-- save_sram.lua proved), releases it once the box has moved on, and stops on the frame the game is
+-- back in play with the box closed. The frame bound at the bottom is a failure bound only. On every
+-- frame from the first dialogue frame to that last one the WHOLE shadow OAM is compared with an
+-- expectation built here without the ROM's tables: the player's four tiles from player state
+-- (tile = (dir*2 + frame)*4 + corner), the actor's tile group, the dialogue portrait while a box is
+-- not open (engine/ui.asm draw_dialog), and Y = $FF for every remaining slot (the engine writes only
+-- the Y byte of a parked slot, so it is the only defined byte of one). The PPU's own sprite RAM must
+-- then equal the shadow of this frame or of the one before it, byte for byte (256 bytes; attribute
+-- bits 2-4 do not exist in OAM and read back 0, so they are masked on both sides).
+--
+-- Exit: 0 pass, 2 the scene never reached gameplay, 3 the dialogue never opened (or ended before the
+-- Say did), 4 the Say did not run to its end (typing, end-wait, closing, back in play) within the
+-- bound, 5 wrong actor tile group, 6 ent_frame/ent_timer not 0, 7 wrong player tile, 8 a wrong byte
+-- anywhere else in the shadow (the portrait, an extra visible tile, an unparked slot), 9 the PPU's
+-- sprite RAM equals neither the previous nor the current shadow.
+
+local game_state  = __GAME_STATE__
+local ST_DIALOG   = __ST_DIALOG__
+local ST_GAMEPLAY = __ST_GAMEPLAY__
+local pending_ent = __PENDING_ENT__
+local ent_active  = __ENT_ACTIVE__
+local ent_dir     = __ENT_DIR__
+local ent_frame   = __ENT_FRAME__
+local ent_timer   = __ENT_TIMER__
+local map_is_streamed = __MAP_IS_STREAMED__
+local streamed    = __STREAMED__
+local box_state   = __BOX_STATE__
+local BOX_CLOSED  = __BOX_CLOSED__
+local BOX_TYPING  = __BOX_TYPING__
+local BOX_CLOSING = __BOX_CLOSING__
+local BOX_ENDWAIT = __BOX_ENDWAIT__
+local talk_ent    = __TALK_ENT__
+local MAX_ENTITIES = __MAX_ENTITIES__
+local player_x    = __PLAYER_X__
+local player_y    = __PLAYER_Y__
+local player_dir  = __PLAYER_DIR__
+local anim_frame  = __ANIM_FRAME__
+local frame_cnt   = __FRAME_CNT__
+local player_iframes = __PLAYER_IFRAMES__
+local PORTRAIT_X  = __PORTRAIT_X__
+local PORTRAIT_Y  = __PORTRAIT_Y__
+local PORTRAIT_LIFT = __PORTRAIT_LIFT__
+local actor       = { __EXPECTED_GROUP__ }    -- Y, tile, attributes, X of the actor's one tile
+local portrait    = { __PORTRAIT_TILE__ }     -- Y offset, tile, attributes, X offset of the portrait's one tile
+local FRAME_BOUND = 900                       -- a failure bound, never the success condition
+
+local frame, phase, waited, settle = 0, 0, 0, 0
+local observed, started, pressedAt = 0, false, nil
+local seen = {}
+local held = {}
+local prevShadow = nil
+local function log(m) emu.log(m) end
+local function fail(code, m) log("FAIL: " .. m) emu.stop(code) end
+local function cpu(a) return emu.read(a, emu.memType.nesMemory) end
+local function poke(a, v) emu.write(a, v, emu.memType.nesMemory) end
+local spriteRam = emu.memType.nesSpriteRam
+
+local function readShadow()
+  local t = {}
+  for b = 0, 255 do t[b] = cpu(0x0200 + b) end
+  return t
+end
+
+-- want[b] is the byte the shadow must hold, or nil where the engine leaves it undefined; kinds[slot]
+-- says which exit code a wrong byte in that slot belongs to.
+local function expectedOam(gs, box)
+  local want, kinds, slot = {}, {}, 0
+  local function put(kind, y, t, a, x)
+    local b = slot * 4
+    want[b], want[b + 1], want[b + 2], want[b + 3] = y, t, a, x
+    kinds[slot] = kind
+    slot = slot + 1
+  end
+  local px, py = cpu(player_x), cpu(player_y)
+  local base = (cpu(player_dir) * 2 + cpu(anim_frame)) * 4
+  for k = 0, 3 do
+    local dy = (k >= 2) and 8 or 0
+    local dx = (k % 2 == 1) and 8 or 0
+    put(7, (py - 1 + dy) % 256, base + k, 0, (px + dx) % 256)
+  end
+  put(5, actor[1], actor[2], actor[3], actor[4])
+  if gs == ST_DIALOG and box == BOX_CLOSED and cpu(talk_ent) < MAX_ENTITIES and cpu(ent_active) == 1 then
+    local y = PORTRAIT_Y
+    if (cpu(frame_cnt) // 16) % 2 == 1 then y = y - PORTRAIT_LIFT end
+    put(8, (y + portrait[1]) % 256, portrait[2], portrait[3], (PORTRAIT_X + portrait[4]) % 256)
+  end
+  while slot < 64 do
+    want[slot * 4] = 255
+    kinds[slot] = 8
+    slot = slot + 1
+  end
+  return want, kinds
+end
+
+local function onInput() emu.setInput(held, 0) end
+
+local function onFrame()
+  frame = frame + 1
+  if frame > FRAME_BOUND then
+    if phase == 0 then fail(2, "the scene never reached gameplay") else fail(4, "the Say did not run to its end within the frame bound") end
+    return
+  end
+  if phase == 0 then
+    if cpu(game_state) == 0 and cpu(ent_active) == 1 and (streamed == 0 or cpu(map_is_streamed) == 1) then
+      settle = settle + 1
+      if settle > 8 then   -- a few settled frames, then start the event
+        poke(ent_dir, 0); poke(ent_frame, 1); poke(ent_timer, 3); poke(pending_ent, 0)
+        phase = 1
+      end
+    end
+    return
+  end
+  local gs, box = cpu(game_state), cpu(box_state)
+  local final = pressedAt ~= nil and gs == ST_GAMEPLAY and box == BOX_CLOSED
+  -- endFrame fires at a different point of the frame than the built-in core's frame(), so the
+  -- event may open a frame later than there: allow a few frames, then every frame counts
+  if not started then
+    if gs ~= ST_DIALOG then
+      waited = waited + 1
+      if waited > 4 then fail(3, string.format("game_state %d %d frames after the event was started: the dialogue never opened", gs, waited)) end
+      return
+    end
+    started = true
+  elseif gs ~= ST_DIALOG and not final then
+    fail(3, string.format("game_state %d before the Say ended (box_state %d)", gs, box))
+    return
+  end
+  observed = observed + 1
+  seen[box] = true
+
+  local shadow = readShadow()
+  local want, kinds = expectedOam(gs, box)
+  for b = 0, 255 do
+    if want[b] ~= nil and shadow[b] ~= want[b] then
+      fail(kinds[b // 4], string.format("frame %d (game_state %d, box_state %d): OAM slot %d byte %d is %d, expected %d",
+        observed, gs, box, b // 4, b % 4, shadow[b], want[b]))
+      return
+    end
+  end
+  -- the DMA'd copy: the PPU's sprite RAM is this frame's shadow or the previous one, exactly
+  if spriteRam ~= nil and prevShadow ~= nil then
+    local eqCur, eqPrev = true, true
+    for b = 0, 255 do
+      local hw = emu.read(b, spriteRam)
+      local cur, prev = shadow[b], prevShadow[b]
+      if b % 4 == 2 then cur, prev = cur & 0xE3, prev & 0xE3 end   -- attribute bits 2-4 do not exist in OAM
+      if hw ~= cur then eqCur = false end
+      if hw ~= prev then eqPrev = false end
+    end
+    if not (eqCur or eqPrev) then
+      fail(9, string.format("frame %d: the PPU's sprite RAM equals neither this frame's shadow nor the previous one", observed))
+      return
+    end
+  end
+  prevShadow = shadow
+  if cpu(ent_frame) ~= 0 or (not final and cpu(ent_timer) ~= 0) then
+    fail(6, string.format("frame %d: ent_frame %d ent_timer %d, expected 0/0", observed, cpu(ent_frame), cpu(ent_timer)))
+    return
+  end
+
+  -- the lifecycle: press A at the end-wait, let go once the box has moved on
+  if pressedAt ~= nil and held.a and box ~= BOX_ENDWAIT then held.a = false end
+  if pressedAt == nil and box == BOX_ENDWAIT then
+    held.a = true
+    pressedAt = observed
+  end
+  if final then
+    if not (seen[BOX_TYPING] and seen[BOX_ENDWAIT] and seen[BOX_CLOSING]) then
+      fail(4, "the game came back to play without the box passing through typing, end-wait and closing")
+      return
+    end
+    log(string.format("ok   %d frames from the event to the end of the Say: actor tile [%d,%d,%d,%d], all 256 shadow bytes as expected, ent_frame 0",
+      observed, actor[1], actor[2], actor[3], actor[4]))
+    emu.stop(0)
+  end
+end
+
+emu.addEventCallback(onFrame, emu.eventType.endFrame)
+emu.addEventCallback(onInput, emu.eventType.inputPolled)
